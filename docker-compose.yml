@@ -1,0 +1,143 @@
+# ANILA Platform — Local Integration & Smoke Test
+# NOT for production deployment.
+# Standard startup: docker-compose up -d
+# All services share the anila-net network.
+
+name: anila-platform
+
+services:
+
+  # ── PostgreSQL for myCSPPlatform ─────────────────────────────────────────────
+  csp-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: csp
+      POSTGRES_PASSWORD: csp
+      POSTGRES_DB: csp
+    volumes:
+      - csp-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U csp -d csp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── PostgreSQL + pgvector for RAG Agent ──────────────────────────────────────
+  rag-db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: anila
+      POSTGRES_PASSWORD: anila
+      POSTGRES_DB: anila_rag
+    volumes:
+      - rag-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U anila -d anila_rag"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── Local OpenAI-compatible backend for smoke tests ──────────────────────────
+  mock-openai:
+    build:
+      context: smoke-openai
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    restart: unless-stopped
+
+  # ── myCSPPlatform (Data Plane, port 8000) ────────────────────────────────────
+  csp:
+    build:
+      context: myCSPPlatform/backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://csp:csp@csp-db:5432/csp
+      SECRET_KEY: ${CSP_SECRET_KEY:-dev-secret-key-change-in-prod}
+      ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: "60"
+      # Service-to-service credential: CSP injects this into downstream agent calls.
+      # Downstream agents verify this header to accept requests only from CSP.
+      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
+      AUTO_REGISTER_MODELS: >-
+        [{"name":"gpt-4o-mini","display_name":"gpt-4o-mini","model_type":"llm","endpoint_url":"http://mock-openai:8080","api_version":"v1","description":"Local smoke-test LLM backend"},{"name":"text-embedding-3-small","display_name":"text-embedding-3-small","model_type":"embedding","endpoint_url":"http://mock-openai:8080","api_version":"v1","description":"Local smoke-test embedding backend"}]
+      AUTO_REGISTER_AGENTS: >-
+        [{"name":"agentic-rag","owner_username":"admin","endpoint_url":"http://rag-agent:24786","api_version":"v1","description_for_router":"Answers questions with the RAG pipeline and indexed documents.","base_model":"gpt-4o-mini","approval_status":"approved"}]
+      AUTO_SEED_API_KEYS: >-
+        [{"username":"rag-agent-service","email":"rag-agent@example.com","role":"developer","key":"${RAG_AGENT_CSP_API_KEY:-sk-rag-agent-dev-key}","key_name":"rag-agent-dev-key","models":["gpt-4o-mini","text-embedding-3-small"]},{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY:-sk-test-user-api-key}","key_name":"smoke-user-dev-key","models":["gpt-4o-mini"],"agents":["agentic-rag"]}]
+    depends_on:
+      csp-db:
+        condition: service_healthy
+      mock-openai:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
+  # ── RAG Agent — AgenticRAG/api.py (port 24786) ───────────────────────────────
+  rag-agent:
+    build:
+      context: AgenticRAG
+    ports:
+      - "24786:24786"
+    environment:
+      DATABASE_URL: postgresql://anila:anila@rag-db:5432/anila_rag
+      # All LLM/embedding calls route through CSP data plane
+      CSP_BASE_URL: http://csp:8000
+      CSP_API_KEY: ${RAG_AGENT_CSP_API_KEY:-sk-rag-agent-dev-key}
+      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
+      MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+    depends_on:
+      rag-db:
+        condition: service_healthy
+      csp:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:24786/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
+  # ── ANILA Core Router (port 9000) ─────────────────────────────────────────────
+  router:
+    build:
+      context: .
+      dockerfile: anila-core-router/Dockerfile
+    ports:
+      - "9000:9000"
+    environment:
+      # Router calls main LLM and dispatches agents — all via CSP data plane
+      CSP_BASE_URL: http://csp:8000
+      CSP_API_KEY: ${ROUTER_CSP_API_KEY:-sk-router-dev-key}
+      MODEL: ${LLM_MODEL:-gpt-4o-mini}
+    depends_on:
+      csp:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
+networks:
+  default:
+    name: anila-net
+
+volumes:
+  csp-pgdata:
+  rag-pgdata:

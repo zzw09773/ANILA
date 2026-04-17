@@ -22,7 +22,7 @@ class User(Base):
     username = Column(String(100), unique=True, nullable=False, index=True)
     email = Column(String(255), nullable=True)
     hashed_password = Column(String(255), nullable=False)
-    role = Column(String(20), nullable=False, default="user")  # 'admin' / 'user'
+    role = Column(String(20), nullable=False, default="user")  # 'admin' / 'user' / 'developer'
     department_id = Column(
         Integer,
         ForeignKey("departments.id", ondelete="SET NULL"),

@@ -1,10 +1,13 @@
-"""Auto-register models and platform links from environment variables on startup."""
+"""Auto-register models, agents, and dev credentials from environment variables."""
 import json
 import logging
 import os
 import re
+import hashlib
 from app.config import settings
 from app.database import SessionLocal
+from app.models.agent import Agent, UserAgentPermission
+from app.models.api_key import ApiKey, ApiKeyModelPermission
 from app.models.model_registry import ModelRegistry
 from app.models.platform_link import PlatformLink
 from app.models.user import User
@@ -76,7 +79,7 @@ def _parse_model_env_vars() -> list[dict]:
 
 
 def auto_seed():
-    """Run on startup: create admin, auto-register models & links from env vars."""
+    """Run on startup: create admin, auto-register models/agents, seed dev keys."""
     db = SessionLocal()
     try:
         # 1. Ensure admin user exists
@@ -188,7 +191,157 @@ def auto_seed():
             except Exception as e:
                 logger.error(f"模型自動註冊失敗: {e}")
 
-        # 3. Auto-register platform links from AUTO_REGISTER_LINKS env
+        # 3. Auto-register agents from AUTO_REGISTER_AGENTS env
+        if settings.AUTO_REGISTER_AGENTS:
+            try:
+                agents_config = json.loads(settings.AUTO_REGISTER_AGENTS)
+                for item in agents_config:
+                    existing = db.query(Agent).filter(Agent.name == item["name"]).first()
+
+                    owner_username = item.get("owner_username", settings.ADMIN_USERNAME)
+                    owner = db.query(User).filter(User.username == owner_username).first()
+                    if owner is None:
+                        logger.warning(f"Agent {item['name']} 的 owner '{owner_username}' 不存在，跳過")
+                        continue
+
+                    base_model_id = None
+                    base_model_name = item.get("base_model")
+                    if base_model_name:
+                        base_model = db.query(ModelRegistry).filter(
+                            ModelRegistry.name == base_model_name
+                        ).first()
+                        if base_model:
+                            base_model_id = base_model.id
+                        else:
+                            logger.warning(
+                                f"Agent {item['name']} 的 base model '{base_model_name}' 未找到"
+                            )
+
+                    if not existing:
+                        existing = Agent(
+                            name=item["name"],
+                            owner_user_id=owner.id,
+                            endpoint_url=item["endpoint_url"],
+                            api_version=item.get("api_version", "v1"),
+                            description_for_router=item.get("description_for_router", ""),
+                            base_model_id=base_model_id,
+                            capabilities=item.get("capabilities"),
+                            input_schema=item.get("input_schema"),
+                            health_status=item.get("health_status", "unknown"),
+                            approval_status=item.get("approval_status", "approved"),
+                        )
+                        db.add(existing)
+                        logger.info(f"自動註冊 agent: {item['name']} -> {item['endpoint_url']}")
+                    else:
+                        existing.owner_user_id = owner.id
+                        existing.endpoint_url = item["endpoint_url"]
+                        existing.api_version = item.get("api_version", existing.api_version)
+                        existing.description_for_router = item.get(
+                            "description_for_router",
+                            existing.description_for_router,
+                        )
+                        existing.base_model_id = base_model_id
+                        existing.capabilities = item.get("capabilities", existing.capabilities)
+                        existing.input_schema = item.get("input_schema", existing.input_schema)
+                        existing.health_status = item.get("health_status", existing.health_status)
+                        existing.approval_status = item.get(
+                            "approval_status",
+                            existing.approval_status,
+                        )
+
+                    if existing.approval_status == "approved":
+                        existing.approved_by = admin.id
+
+                db.flush()
+            except json.JSONDecodeError as e:
+                logger.error(f"AUTO_REGISTER_AGENTS JSON 解析失敗: {e}")
+            except Exception as e:
+                logger.error(f"Agent 自動註冊失敗: {e}")
+
+        # 4. Auto-seed users + API keys from AUTO_SEED_API_KEYS env
+        if settings.AUTO_SEED_API_KEYS:
+            try:
+                keys_config = json.loads(settings.AUTO_SEED_API_KEYS)
+                model_id_by_name = {
+                    model.name: model.id
+                    for model in db.query(ModelRegistry).all()
+                }
+                agent_id_by_name = {
+                    agent.name: agent.id
+                    for agent in db.query(Agent).all()
+                }
+
+                for item in keys_config:
+                    username = item["username"]
+                    user = db.query(User).filter(User.username == username).first()
+                    if user is None:
+                        user = User(
+                            username=username,
+                            email=item.get("email"),
+                            hashed_password=hash_password(item.get("password", "changeme")),
+                            role=item.get("role", "user"),
+                            is_active=True,
+                            is_approved=True,
+                        )
+                        db.add(user)
+                        db.flush()
+                        logger.info(f"已建立 seed 使用者: {username}")
+                    else:
+                        if item.get("email"):
+                            user.email = item["email"]
+                        user.role = item.get("role", user.role)
+                        user.is_active = True
+                        user.is_approved = True
+
+                    raw_key = item["key"]
+                    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+                    api_key = db.query(ApiKey).filter(ApiKey.key_hash == key_hash).first()
+                    if api_key is None:
+                        api_key = ApiKey(
+                            user_id=user.id,
+                            name=item.get("key_name", f"{username}-seed-key"),
+                            key_prefix=raw_key[:8],
+                            key_suffix=raw_key[-4:],
+                            key_hash=key_hash,
+                            is_active=True,
+                        )
+                        db.add(api_key)
+                        db.flush()
+                        logger.info(f"已建立 seed API key: {api_key.name}")
+                    else:
+                        api_key.user_id = user.id
+                        api_key.name = item.get("key_name", api_key.name)
+                        api_key.is_active = True
+
+                    for model_name in item.get("models", []):
+                        model_id = model_id_by_name.get(model_name)
+                        if model_id is None:
+                            logger.warning(f"Seed API key {username}: model '{model_name}' 未註冊")
+                            continue
+                        exists = db.query(ApiKeyModelPermission).filter(
+                            ApiKeyModelPermission.api_key_id == api_key.id,
+                            ApiKeyModelPermission.model_id == model_id,
+                        ).first()
+                        if exists is None:
+                            db.add(ApiKeyModelPermission(api_key_id=api_key.id, model_id=model_id))
+
+                    for agent_name in item.get("agents", []):
+                        agent_id = agent_id_by_name.get(agent_name)
+                        if agent_id is None:
+                            logger.warning(f"Seed API key {username}: agent '{agent_name}' 未註冊")
+                            continue
+                        exists = db.query(UserAgentPermission).filter(
+                            UserAgentPermission.user_id == user.id,
+                            UserAgentPermission.agent_id == agent_id,
+                        ).first()
+                        if exists is None:
+                            db.add(UserAgentPermission(user_id=user.id, agent_id=agent_id))
+            except json.JSONDecodeError as e:
+                logger.error(f"AUTO_SEED_API_KEYS JSON 解析失敗: {e}")
+            except Exception as e:
+                logger.error(f"API key 自動初始化失敗: {e}")
+
+        # 5. Auto-register platform links from AUTO_REGISTER_LINKS env
         if settings.AUTO_REGISTER_LINKS:
             try:
                 links_config = json.loads(settings.AUTO_REGISTER_LINKS)
