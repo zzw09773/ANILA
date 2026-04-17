@@ -3,6 +3,7 @@ import hashlib
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from app.models.api_key import ApiKey, ApiKeyModelPermission
+from app.models.agent import UserAgentPermission
 from app.models.model_registry import ModelRegistry
 
 
@@ -72,6 +73,31 @@ def check_model_permission(db: Session, api_key_id: int, model_id: int) -> bool:
         .filter(
             ApiKeyModelPermission.api_key_id == api_key_id,
             ApiKeyModelPermission.model_id == model_id,
+        )
+        .first()
+    )
+    return perm is not None
+
+
+def check_agent_permission(db: Session, api_key_id: int, agent_id: int) -> bool:
+    """Check if an API key's owner has permission to call an agent.
+
+    Permission is granted via user_agent_permissions (admin grants to user,
+    user's API keys inherit). Admin users always pass.
+    """
+    api_key = db.query(ApiKey).filter(ApiKey.id == api_key_id).first()
+    if not api_key:
+        return False
+    user = api_key.user
+    if not user:
+        return False
+    if user.role == "admin":
+        return True
+    perm = (
+        db.query(UserAgentPermission)
+        .filter(
+            UserAgentPermission.user_id == user.id,
+            UserAgentPermission.agent_id == agent_id,
         )
         .first()
     )

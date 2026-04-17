@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import get_db
+from app.models.agent import Agent, UserAgentPermission
 from app.models.api_key import ApiKey, ApiKeyModelPermission
 from app.models.department import Department
 from app.models.model_registry import ModelRegistry
@@ -228,6 +229,49 @@ def update_user_allowed_models(
     return {
         "message": f"已更新使用者「{user.username}」的可用模型，並同步調整 {cascade_count} 筆 API key 權限"
     }
+
+
+@router.get("/{user_id}/allowed-agents")
+def get_user_allowed_agents(
+    user_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="使用者不存在")
+    agents = user.allowed_agents
+    return [{"id": a.id, "name": a.name, "description_for_router": a.description_for_router,
+             "approval_status": a.approval_status} for a in agents]
+
+
+@router.put("/{user_id}/allowed-agents")
+def update_user_allowed_agents(
+    user_id: int,
+    agent_ids: list[int],
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="使用者不存在")
+
+    new_ids = set(agent_ids)
+    if new_ids:
+        valid_count = db.query(Agent).filter(Agent.id.in_(new_ids)).count()
+        if valid_count != len(new_ids):
+            raise HTTPException(status_code=400, detail="包含不存在的 Agent ID")
+
+    db.query(UserAgentPermission).filter(UserAgentPermission.user_id == user_id).delete()
+    for aid in new_ids:
+        db.add(UserAgentPermission(user_id=user_id, agent_id=aid))
+
+    db.commit()
+    log_audit_event(
+        db, actor=admin, action="update_allowed_agents", resource_type="user",
+        resource_id=user.id, detail=f"更新使用者「{user.username}」可用 agents", commit=True,
+    )
+    return {"message": f"已更新使用者「{user.username}」的可用 agents"}
 
 
 @router.post("/{user_id}/approve")

@@ -1,4 +1,5 @@
 from fastapi import APIRouter
+from app.api.agents import router as agents_router
 from app.api.auth import router as auth_router
 from app.api.api_keys import router as api_keys_router
 from app.api.alerts import router as alerts_router
@@ -23,4 +24,5 @@ api_router.include_router(users_router)
 api_router.include_router(departments_router)
 api_router.include_router(auth_providers_router)
 api_router.include_router(platform_links_router)
+api_router.include_router(agents_router)
 api_router.include_router(proxy_router)

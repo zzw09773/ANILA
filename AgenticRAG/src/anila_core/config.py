@@ -82,10 +82,24 @@ try:
             default=0.7, description="Minimum cosine similarity score."
         )
 
+        # ── CSP Platform (Data Plane) ─────────────────────────────────
+        csp_base_url: str = Field(
+            default="http://localhost:8000",
+            description="Base URL of the myCSPPlatform data plane.",
+        )
+        csp_api_key: str = Field(
+            default="not-set",
+            description="CSP API Key (sk-...) used by Router / agents to call CSP proxy.",
+        )
+        csp_service_token: Optional[str] = Field(
+            default=None,
+            description="Service-to-service token CSP injects; agents verify this header.",
+        )
+
         # ── API / Auth ────────────────────────────────────────────────
         api_key: Optional[str] = Field(
             default=None,
-            description="Bearer token required for API access (None = auth disabled).",
+            description="Legacy bearer token (kept for local dev without CSP).",
         )
         api_dev_mode: bool = Field(
             default=False,
@@ -123,6 +137,9 @@ except ImportError:
         chunk_overlap: int = 50
         rag_top_k: int = 5
         rag_min_score: float = 0.7
+        csp_base_url: str = "http://localhost:8000"
+        csp_api_key: str = "not-set"
+        csp_service_token: Optional[str] = None
         api_key: Optional[str] = None
         api_dev_mode: bool = False
         upload_dir: str = "/tmp/anila_uploads"

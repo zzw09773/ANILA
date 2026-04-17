@@ -35,17 +35,27 @@ from fastapi.responses import JSONResponse, StreamingResponse
 # ── 載入 .env ─────────────────────────────────────────────────────────────────
 load_dotenv(Path(__file__).parent / ".env")
 
-LLM_URL       = os.getenv("LLM_URL",           "https://172.16.120.35/v1")
-LLM_API_KEY   = os.getenv("LLM_API_KEY",       "not-set")
+# When deployed behind CSP, LLM/Embedding calls go through CSP proxy.
+# Set CSP_BASE_URL + CSP_API_KEY in env to activate; fallback to direct URLs.
+_CSP_BASE_URL = os.getenv("CSP_BASE_URL", "").rstrip("/")
+_CSP_API_KEY  = os.getenv("CSP_API_KEY",  "not-set")
+_USE_CSP      = bool(_CSP_BASE_URL)
+
+LLM_URL       = f"{_CSP_BASE_URL}/v1" if _USE_CSP else os.getenv("LLM_URL", "https://172.16.120.35/v1")
+LLM_API_KEY   = _CSP_API_KEY          if _USE_CSP else os.getenv("LLM_API_KEY", "not-set")
+EMB_URL       = f"{_CSP_BASE_URL}/v1" if _USE_CSP else os.getenv("EMBEDDING_URL", "https://172.16.120.35/v1")
+EMB_API_KEY   = _CSP_API_KEY          if _USE_CSP else os.getenv("EMBEDDING_API_KEY", "not-set")
+
 MODEL         = os.getenv("MODEL",              "google/gemma4")
-EMB_URL       = os.getenv("EMBEDDING_URL",      "https://172.16.120.35/v1")
-EMB_API_KEY   = os.getenv("EMBEDDING_API_KEY",  "not-set")
 EMB_MODEL     = os.getenv("EMBEDDING_MODEL",    "nvidia/nv-embed-v2")
 DATABASE_URL  = os.getenv("DATABASE_URL",       "postgresql://anila:anila@localhost:5432/anila_rag")
 RAG_TOP_K     = int(os.getenv("RAG_TOP_K",     "5"))
 RAG_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.5"))
 RAG_MIN_SCORE_RETRY = float(os.getenv("RAG_MIN_SCORE_RETRY", "0.3"))
 VERIFY_SSL    = os.getenv("EMBEDDING_VERIFY_SSL", "false").lower() == "true"
+
+# Service-to-service token injected by CSP; None = auth disabled (local dev)
+_CSP_SERVICE_TOKEN = os.getenv("CSP_SERVICE_TOKEN") or None
 
 SYSTEM_PROMPT = os.getenv("RAG_SYSTEM_PROMPT", """你是一個知識檢索助手。請根據提供的參考資料回答用戶問題。
 
@@ -76,6 +86,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _pool.close()
 
 app = FastAPI(title="ANILA RAG API", version="1.0.0", lifespan=lifespan)
+
+# Add CSP service-token auth middleware (skipped when _CSP_SERVICE_TOKEN is None)
+try:
+    from anila_core.api.middleware.auth import CspServiceTokenMiddleware
+    app.add_middleware(
+        CspServiceTokenMiddleware,
+        service_token=_CSP_SERVICE_TOKEN,
+        dev_mode=(not _CSP_SERVICE_TOKEN),
+    )
+except ImportError:
+    try:
+        from src.anila_core.api.middleware.auth import CspServiceTokenMiddleware
+        app.add_middleware(
+            CspServiceTokenMiddleware,
+            service_token=_CSP_SERVICE_TOKEN,
+            dev_mode=(not _CSP_SERVICE_TOKEN),
+        )
+    except ImportError:
+        logger.warning("CspServiceTokenMiddleware not available — auth skipped")
 
 
 # ── /v1/models ────────────────────────────────────────────────────────────────
@@ -117,8 +146,8 @@ async def chat_completions(request: Request) -> StreamingResponse | JSONResponse
         if not has_system:
             messages = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
 
-    # 3. 組裝轉發給 LLM 的 payload（強制 stream=True，內部統一用 stream 收）
-    payload = {**body, "model": model, "messages": messages, "stream": True}
+    # 3. 組裝轉發給 LLM 的 payload
+    payload = {**body, "model": model, "messages": messages, "stream": stream}
     headers = {
         "Authorization": f"Bearer {LLM_API_KEY}",
         "Content-Type":  "application/json",
@@ -161,6 +190,41 @@ async def _forward_stream(
     OpenWebUI 能顯示的 delta.reasoning_content（thinking block）。
     若有 rag_sources，在 [DONE] 前插入來源清單 chunk。"""
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+    if _USE_CSP:
+        response = await _post_chat_completion({**payload, "stream": False}, headers)
+        completion_id = response.get("id", completion_id)
+        content = response["choices"][0]["message"]["content"]
+        usage = response.get("usage")
+        chunk = {
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": payload["model"],
+            "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
+        }
+        yield "data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n"
+        if rag_sources:
+            src_chunk = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": payload["model"],
+                "choices": [{"index": 0, "delta": {"content": rag_sources}, "finish_reason": None}],
+            }
+            yield "data: " + json.dumps(src_chunk, ensure_ascii=False) + "\n\n"
+        final_chunk = {
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": payload["model"],
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        }
+        if usage:
+            final_chunk["usage"] = usage
+        yield "data: " + json.dumps(final_chunk, ensure_ascii=False) + "\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
     async with httpx.AsyncClient(verify=VERIFY_SSL, timeout=120) as client:
         async with client.stream(
             "POST", f"{LLM_URL}/chat/completions",
@@ -206,6 +270,12 @@ async def _forward_stream(
 
 async def _collect_stream(payload: dict, headers: dict, rag_sources: str = "") -> dict:
     """收集 stream 回應，組裝成完整 ChatCompletion 物件。"""
+    if _USE_CSP:
+        result = await _post_chat_completion({**payload, "stream": False}, headers)
+        if rag_sources:
+            result["choices"][0]["message"]["content"] += rag_sources
+        return result
+
     content = ""
     finish_reason = "stop"
     usage: dict = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
@@ -246,6 +316,17 @@ async def _collect_stream(payload: dict, headers: dict, rag_sources: str = "") -
                      "finish_reason": finish_reason}],
         "usage":   usage,
     }
+
+
+async def _post_chat_completion(payload: dict, headers: dict) -> dict:
+    async with httpx.AsyncClient(verify=VERIFY_SSL, timeout=120) as client:
+        resp = await client.post(
+            f"{LLM_URL}/chat/completions",
+            json=payload,
+            headers=headers,
+        )
+        resp.raise_for_status()
+        return resp.json()
 
 
 # ── RAG helpers ───────────────────────────────────────────────────────────────

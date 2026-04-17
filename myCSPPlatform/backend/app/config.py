@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     USAGE_BATCH_SIZE: int = 100
     USAGE_FLUSH_INTERVAL: int = 5
 
+    # Service-to-service token sent to downstream agents so they can verify
+    # requests originate from CSP. Set to a long random string in production.
+    CSP_SERVICE_TOKEN: str = ""
+
     # Site URL (for external access, used by platform links)
     SITE_URL: str = "http://localhost"
 
@@ -45,6 +49,14 @@ class Settings(BaseSettings):
     # Auto-register models on startup (JSON string)
     # Format: '[{"name":"llama3-70b","display_name":"Llama 3 70B","model_type":"llm","endpoint_url":"http://vllm:8000","api_version":"v1"}]'
     AUTO_REGISTER_MODELS: str = ""
+
+    # Auto-register agents on startup (JSON string)
+    # Format: '[{"name":"rag-agent","endpoint_url":"http://rag-agent:24786","description_for_router":"RAG agent"}]'
+    AUTO_REGISTER_AGENTS: str = ""
+
+    # Auto-seed API keys/users on startup (JSON string)
+    # Format: '[{"username":"smoke-user","key":"sk-...","models":["gpt-4o-mini"],"agents":["rag-agent"]}]'
+    AUTO_SEED_API_KEYS: str = ""
 
     # Auto-register platform links on startup (JSON string)
     # Format: '[{"name":"n8n","url":"http://n8n:5678","icon":"workflow","description":"自動化工作流程"}]'
