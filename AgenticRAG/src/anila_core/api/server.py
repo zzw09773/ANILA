@@ -1,0 +1,389 @@
+"""FastAPI server — thin shell over the ANILA Core engine.
+
+Endpoints:
+  POST /chat                     — start a query loop, return SSE stream
+  GET  /sessions/{id}/away_summary — generate away recap
+  POST /sessions/{id}/compact    — trigger manual compact
+
+The server is intentionally thin — business logic lives in QueryEngine.
+Deployment configuration (vLLM URL, auth, monitoring) is injected via
+dependency injection, not hardcoded here.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Any, AsyncIterator, Optional
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+from ..config import settings
+from ..engine.query_engine import QueryConfig, QueryEngine
+from ..models.message import Usage, UserMessage
+from ..providers.base import Provider
+from ..router.tool_router import ToolRegistry
+from .documents import router as documents_router, set_ingestion_service
+from .search import router as search_router, set_search_providers
+from .middleware.auth import ApiKeyMiddleware
+from .events import (
+    ErrorPayload,
+    EventType,
+    MessageDeltaPayload,
+    ServerEvent,
+    ToolCallStartedPayload,
+    UsageUpdatePayload,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _parse_history(history: list[dict[str, Any]]) -> list[Any]:
+    """Convert raw history dicts into typed Message objects.
+
+    Only "user" and "assistant" roles are supported.  Unknown or malformed
+    entries are logged and skipped so a single bad item does not abort the
+    whole request.
+    """
+    from ..models.message import AssistantMessage
+
+    messages: list[Any] = []
+    for idx, item in enumerate(history):
+        role = item.get("role", "")
+        content = item.get("content", "")
+        if not content:
+            logger.debug("history[%d] has no content, skipping", idx)
+            continue
+        if role == "user":
+            messages.append(UserMessage(content=content))
+        elif role == "assistant":
+            messages.append(AssistantMessage(content=content))
+        else:
+            logger.warning(
+                "history[%d] has unsupported role %r, skipping", idx, role
+            )
+    return messages
+
+
+class ChatRequest(BaseModel):
+    """Request body for POST /chat and POST /agentic-chat."""
+
+    session_id: str
+    user_message: str
+    model: str = settings.model  # 從 .env MODEL= 讀取，預設 google/gemma4
+    max_turns: int = 10
+    system_prompt: str = ""
+    history: list[dict[str, Any]] = []
+    agent_type: str = "default"
+    user_id: str = "default"
+    project_id: str = "default"
+
+
+class AwaySummaryResponse(BaseModel):
+    summary: str
+    session_id: str
+
+
+def create_app(
+    provider: Provider,
+    tool_registry: ToolRegistry,
+    away_summary_fn: Optional[Any] = None,
+    ingestion_service: Optional[Any] = None,
+    document_store: Optional[Any] = None,
+    embedding_provider: Optional[Any] = None,
+    retrieval_provider: Optional[Any] = None,
+    db_pool: Optional[Any] = None,
+    api_key: Optional[str] = None,
+    api_dev_mode: bool = False,
+    upload_dir: str = "/tmp/anila_uploads",
+) -> FastAPI:
+    """Create and return the FastAPI application.
+
+    Args:
+        provider:            LLM provider for completions.
+        tool_registry:       Registered tools available to agents.
+        away_summary_fn:     Optional async function for away summary.
+        ingestion_service:   RAG document ingestion service.
+        document_store:      Document chunk store (for listing/retrieval).
+        embedding_provider:  Embedding provider for search endpoint.
+        retrieval_provider:  Vector retrieval provider for search endpoint.
+        db_pool:             asyncpg pool for keyword_search / read_document.
+        api_key:             Bearer token for API auth (None = disabled).
+        api_dev_mode:        Disable auth when True.
+        upload_dir:          Directory for uploaded files.
+    """
+    app = FastAPI(
+        title="ANILA Core",
+        description="Agent Runtime — query loop, tools, memory, compact, RAG",
+        version="0.2.0",
+    )
+
+    # Auth middleware
+    app.add_middleware(ApiKeyMiddleware, api_key=api_key, dev_mode=api_dev_mode)
+
+    # Register RAG routers
+    app.include_router(documents_router)
+    app.include_router(search_router)
+
+    # Inject RAG dependencies
+    if ingestion_service is not None and document_store is not None:
+        set_ingestion_service(ingestion_service, document_store, upload_dir)
+    if embedding_provider is not None and retrieval_provider is not None:
+        set_search_providers(embedding_provider, retrieval_provider)
+
+    @app.post("/chat")
+    async def chat(request: ChatRequest) -> StreamingResponse:
+        """Start a query loop and stream SSE events back to the client."""
+        config = QueryConfig(
+            max_turns=request.max_turns,
+            model=request.model,
+            system_prompt=request.system_prompt,
+        )
+        engine = QueryEngine(provider, tool_registry, config)
+
+        # Build initial messages: parse history then append new user message
+        from ..models.message import UserMessage as UM
+        messages = _parse_history(request.history) + [UM(content=request.user_message)]
+
+        async def event_generator() -> AsyncIterator[str]:
+            turn_tokens_total = Usage()
+            engine_failed = False
+            engine_error_msg = ""
+
+            async def on_delta(delta: Any) -> None:
+                nonlocal turn_tokens_total
+                if delta.type == "text" and delta.text:
+                    event = ServerEvent(
+                        type=EventType.MESSAGE_DELTA,
+                        session_id=request.session_id,
+                        payload=MessageDeltaPayload(text=delta.text).model_dump(),
+                    )
+                    # Note: can't yield from nested async fn, so we put it in a queue
+                    await _queue.put(event.to_sse())
+                elif delta.type == "tool_call" and delta.tool_call:
+                    event = ServerEvent(
+                        type=EventType.TOOL_CALL_STARTED,
+                        session_id=request.session_id,
+                        payload=ToolCallStartedPayload(
+                            tool_call_id=delta.tool_call.id,
+                            tool_name=delta.tool_call.name,
+                        ).model_dump(),
+                    )
+                    await _queue.put(event.to_sse())
+                elif delta.type == "stop" and delta.usage:
+                    turn_tokens_total = turn_tokens_total.add(delta.usage)
+
+            _queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
+
+            async def run_engine() -> None:
+                nonlocal engine_failed, engine_error_msg
+                try:
+                    await engine.run(messages, on_stream_delta=on_delta)
+                except Exception as exc:
+                    engine_failed = True
+                    engine_error_msg = str(exc)
+                    logger.error("Engine error: %s", exc)
+                    error_event = ServerEvent(
+                        type=EventType.ERROR,
+                        session_id=request.session_id,
+                        payload=ErrorPayload(message=engine_error_msg, code="engine_error").model_dump(),
+                    )
+                    await _queue.put(error_event.to_sse())
+                finally:
+                    await _queue.put(None)  # sentinel
+
+            asyncio.create_task(run_engine())
+
+            while True:
+                item = await _queue.get()
+                if item is None:
+                    break
+                yield item
+
+            if not engine_failed:
+                # Final usage event only on success
+                usage_event = ServerEvent(
+                    type=EventType.USAGE_UPDATE,
+                    session_id=request.session_id,
+                    payload=UsageUpdatePayload(
+                        input_tokens=turn_tokens_total.input_tokens,
+                        output_tokens=turn_tokens_total.output_tokens,
+                    ).model_dump(),
+                )
+                yield usage_event.to_sse()
+
+            terminal_event = ServerEvent(
+                type=EventType.STREAM_DONE,
+                session_id=request.session_id,
+                payload={"status": "error" if engine_failed else "completed"},
+            )
+            yield terminal_event.to_sse()
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.post("/agentic-chat")
+    async def agentic_chat(request: ChatRequest) -> StreamingResponse:
+        """Tool-driven AgenticRAG endpoint.
+
+        Unlike /chat, this endpoint registers RAG tools (vector_search,
+        keyword_search, read_document) and lets the LLM decide when to
+        search. No automatic context injection is performed.
+        """
+        from ..tools import (
+            create_vector_search_tool,
+            create_keyword_search_tool,
+            create_read_document_tool,
+        )
+        from ..tools.prompts import AGENTIC_RAG_SYSTEM_PROMPT
+
+        # Build a per-request tool registry with RAG tools
+        agentic_registry = ToolRegistry()
+
+        if embedding_provider is not None and retrieval_provider is not None:
+            agentic_registry.register(create_vector_search_tool(
+                embedding_provider=embedding_provider,
+                retrieval_provider=retrieval_provider,
+                user_id=request.user_id,
+                project_id=request.project_id,
+            ))
+
+        if db_pool is not None:
+            agentic_registry.register(create_keyword_search_tool(
+                db_pool=db_pool,
+                user_id=request.user_id,
+                project_id=request.project_id,
+            ))
+            agentic_registry.register(create_read_document_tool(
+                db_pool=db_pool,
+                user_id=request.user_id,
+                project_id=request.project_id,
+            ))
+
+        # Also register any tools from the global registry
+        for name in tool_registry.list_tools():
+            if name not in {"vector_search", "keyword_search", "read_document"}:
+                agentic_registry.register(tool_registry.get(name))
+
+        sys_prompt = request.system_prompt or AGENTIC_RAG_SYSTEM_PROMPT
+        config = QueryConfig(
+            max_turns=request.max_turns,
+            model=request.model,
+            system_prompt=sys_prompt,
+        )
+        engine = QueryEngine(provider, agentic_registry, config)
+
+        from ..models.message import UserMessage as UM
+        messages = _parse_history(request.history) + [UM(content=request.user_message)]
+
+        async def event_generator() -> AsyncIterator[str]:
+            turn_tokens_total = Usage()
+            engine_failed = False
+            engine_error_msg = ""
+
+            async def on_delta(delta: Any) -> None:
+                nonlocal turn_tokens_total
+                if delta.type == "text" and delta.text:
+                    event = ServerEvent(
+                        type=EventType.MESSAGE_DELTA,
+                        session_id=request.session_id,
+                        payload=MessageDeltaPayload(text=delta.text).model_dump(),
+                    )
+                    await _queue.put(event.to_sse())
+                elif delta.type == "tool_call" and delta.tool_call:
+                    event = ServerEvent(
+                        type=EventType.TOOL_CALL_STARTED,
+                        session_id=request.session_id,
+                        payload=ToolCallStartedPayload(
+                            tool_call_id=delta.tool_call.id,
+                            tool_name=delta.tool_call.name,
+                        ).model_dump(),
+                    )
+                    await _queue.put(event.to_sse())
+                elif delta.type == "stop" and delta.usage:
+                    turn_tokens_total = turn_tokens_total.add(delta.usage)
+
+            _queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
+
+            async def run_engine() -> None:
+                nonlocal engine_failed, engine_error_msg
+                try:
+                    await engine.run(messages, on_stream_delta=on_delta)
+                except Exception as exc:
+                    engine_failed = True
+                    engine_error_msg = str(exc)
+                    logger.error("Agentic engine error: %s", exc)
+                    error_event = ServerEvent(
+                        type=EventType.ERROR,
+                        session_id=request.session_id,
+                        payload=ErrorPayload(message=engine_error_msg, code="engine_error").model_dump(),
+                    )
+                    await _queue.put(error_event.to_sse())
+                finally:
+                    await _queue.put(None)
+
+            asyncio.create_task(run_engine())
+
+            while True:
+                item = await _queue.get()
+                if item is None:
+                    break
+                yield item
+
+            if not engine_failed:
+                usage_event = ServerEvent(
+                    type=EventType.USAGE_UPDATE,
+                    session_id=request.session_id,
+                    payload=UsageUpdatePayload(
+                        input_tokens=turn_tokens_total.input_tokens,
+                        output_tokens=turn_tokens_total.output_tokens,
+                    ).model_dump(),
+                )
+                yield usage_event.to_sse()
+
+            terminal_event = ServerEvent(
+                type=EventType.STREAM_DONE,
+                session_id=request.session_id,
+                payload={"status": "error" if engine_failed else "completed"},
+            )
+            yield terminal_event.to_sse()
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.get("/sessions/{session_id}/away_summary")
+    async def away_summary(session_id: str) -> AwaySummaryResponse:
+        """Generate a 1-3 sentence recap of what happened while user was away."""
+        if away_summary_fn is None:
+            raise HTTPException(status_code=501, detail="Away summary not configured")
+
+        summary_text = await away_summary_fn(session_id)
+        return AwaySummaryResponse(summary=summary_text, session_id=session_id)
+
+    @app.post("/sessions/{session_id}/compact")
+    async def compact_session(session_id: str) -> dict[str, Any]:
+        """Trigger manual compact for a session.
+
+        Not yet implemented — returns 501 until a compact service is wired.
+        """
+        raise HTTPException(status_code=501, detail="Compact service not yet implemented")
+
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok", "version": "0.1.0"}
+
+    return app

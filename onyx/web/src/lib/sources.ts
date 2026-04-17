@@ -1,0 +1,546 @@
+import {
+  AxeroIcon,
+  BookstackIcon,
+  OutlineIcon,
+  ClickupIcon,
+  ConfluenceIcon,
+  DiscourseIcon,
+  Document360Icon,
+  DropboxIcon,
+  GithubIcon,
+  GitlabIcon,
+  BitbucketIcon,
+  GmailIcon,
+  GongIcon,
+  GoogleDriveIcon,
+  GoogleSitesIcon,
+  GuruIcon,
+  HubSpotIcon,
+  JiraIcon,
+  LinearIcon,
+  LoopioIcon,
+  CodaIcon,
+  NotionIcon,
+  ProductboardIcon,
+  R2Icon,
+  SalesforceIcon,
+  SharepointIcon,
+  TeamsIcon,
+  SlabIcon,
+  ZendeskIcon,
+  ZulipIcon,
+  MediaWikiIcon,
+  WikipediaIcon,
+  AsanaIcon,
+  S3Icon,
+  OCIStorageIcon,
+  GoogleStorageIcon,
+  ColorSlackIcon,
+  XenforoIcon,
+  ColorDiscordIcon,
+  FreshdeskIcon,
+  FirefliesIcon,
+  EgnyteIcon,
+  AirtableIcon,
+  GitbookIcon,
+  HighspotIcon,
+  DrupalWikiIcon,
+  EmailIcon,
+  TestRailIcon,
+} from "@/components/icons/icons";
+import { ValidSources } from "./types";
+import { SourceCategory, SourceMetadata } from "./search/interfaces";
+import { Persona } from "@/app/admin/agents/interfaces";
+import React from "react";
+import { DOCS_ADMINS_PATH, DOCS_BASE_URL } from "./constants";
+import { SvgFileText, SvgGlobe, SvgUploadCloud } from "@opal/icons";
+
+interface PartialSourceMetadata {
+  icon: React.FC<{ size?: number; className?: string }>;
+  displayName: string;
+  category: SourceCategory;
+  isPopular?: boolean;
+  docs?: string;
+  oauthSupported?: boolean;
+  federated?: boolean;
+  federatedTooltip?: string;
+  // federated connectors store the base source type if it's a source
+  // that has both indexed connectors and federated connectors
+  baseSourceType?: ValidSources;
+  // For connectors that are always available (don't need connection setup)
+  // e.g., User Library (CraftFile) where users just upload files
+  alwaysConnected?: boolean;
+  // Custom description to show instead of status (e.g., "Manage your uploaded files")
+  customDescription?: string;
+}
+
+type SourceMap = {
+  [K in ValidSources | "federated_slack"]: PartialSourceMetadata;
+};
+
+const slackMetadata = {
+  icon: ColorSlackIcon,
+  displayName: "Slack",
+  category: SourceCategory.Messaging,
+  isPopular: true,
+  docs: `${DOCS_ADMINS_PATH}/connectors/official/slack`,
+  oauthSupported: true,
+  // Federated Slack is available as an option but not the default
+  federated: true,
+  federatedTooltip:
+    "⚠️ WARNING: Federated Slack results in significantly greater latency and lower search quality.",
+  baseSourceType: "slack",
+};
+
+export const SOURCE_METADATA_MAP: SourceMap = {
+  // Knowledge Base & Wikis
+  confluence: {
+    icon: ConfluenceIcon,
+    displayName: "Confluence",
+    category: SourceCategory.Wiki,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/confluence`,
+    oauthSupported: true,
+    isPopular: true,
+  },
+  sharepoint: {
+    icon: SharepointIcon,
+    displayName: "Sharepoint",
+    category: SourceCategory.Wiki,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/sharepoint`,
+    isPopular: true,
+  },
+  coda: {
+    icon: CodaIcon,
+    displayName: "Coda",
+    category: SourceCategory.Wiki,
+    docs: "https://docs.onyx.app/connectors/coda",
+  },
+  notion: {
+    icon: NotionIcon,
+    displayName: "Notion",
+    category: SourceCategory.Wiki,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/notion`,
+  },
+  bookstack: {
+    icon: BookstackIcon,
+    displayName: "BookStack",
+    category: SourceCategory.Wiki,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/bookstack`,
+  },
+  document360: {
+    icon: Document360Icon,
+    displayName: "Document360",
+    category: SourceCategory.Wiki,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/document360`,
+  },
+  discourse: {
+    icon: DiscourseIcon,
+    displayName: "Discourse",
+    category: SourceCategory.Wiki,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/discourse`,
+  },
+  gitbook: {
+    icon: GitbookIcon,
+    displayName: "GitBook",
+    category: SourceCategory.Wiki,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/gitbook`,
+  },
+  slab: {
+    icon: SlabIcon,
+    displayName: "Slab",
+    category: SourceCategory.Wiki,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/slab`,
+  },
+  outline: {
+    icon: OutlineIcon,
+    displayName: "Outline",
+    category: SourceCategory.Wiki,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/outline`,
+  },
+  google_sites: {
+    icon: GoogleSitesIcon,
+    displayName: "Google Sites",
+    category: SourceCategory.Wiki,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/google_sites`,
+  },
+  guru: {
+    icon: GuruIcon,
+    displayName: "Guru",
+    category: SourceCategory.Wiki,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/guru`,
+  },
+  mediawiki: {
+    icon: MediaWikiIcon,
+    displayName: "MediaWiki",
+    category: SourceCategory.Wiki,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/mediawiki`,
+  },
+  axero: {
+    icon: AxeroIcon,
+    displayName: "Axero",
+    category: SourceCategory.Wiki,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/axero`,
+  },
+  wikipedia: {
+    icon: WikipediaIcon,
+    displayName: "Wikipedia",
+    category: SourceCategory.Wiki,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/wikipedia`,
+  },
+
+  // Cloud Storage
+  google_drive: {
+    icon: GoogleDriveIcon,
+    displayName: "Google Drive",
+    category: SourceCategory.Storage,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/google_drive/overview`,
+    oauthSupported: true,
+    isPopular: true,
+  },
+  dropbox: {
+    icon: DropboxIcon,
+    displayName: "Dropbox",
+    category: SourceCategory.Storage,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/dropbox`,
+  },
+  s3: {
+    icon: S3Icon,
+    displayName: "S3",
+    category: SourceCategory.Storage,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/s3`,
+  },
+  google_cloud_storage: {
+    icon: GoogleStorageIcon,
+    displayName: "Google Storage",
+    category: SourceCategory.Storage,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/google_storage`,
+  },
+  egnyte: {
+    icon: EgnyteIcon,
+    displayName: "Egnyte",
+    category: SourceCategory.Storage,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/egnyte`,
+  },
+  oci_storage: {
+    icon: OCIStorageIcon,
+    displayName: "Oracle Storage",
+    category: SourceCategory.Storage,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/oci_storage`,
+  },
+  r2: {
+    icon: R2Icon,
+    displayName: "R2",
+    category: SourceCategory.Storage,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/r2`,
+  },
+
+  // Ticketing & Task Management
+  jira: {
+    icon: JiraIcon,
+    displayName: "Jira",
+    category: SourceCategory.TicketingAndTaskManagement,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/jira`,
+    isPopular: true,
+  },
+  zendesk: {
+    icon: ZendeskIcon,
+    displayName: "Zendesk",
+    category: SourceCategory.TicketingAndTaskManagement,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/zendesk`,
+    isPopular: true,
+  },
+  airtable: {
+    icon: AirtableIcon,
+    displayName: "Airtable",
+    category: SourceCategory.TicketingAndTaskManagement,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/airtable`,
+  },
+  linear: {
+    icon: LinearIcon,
+    displayName: "Linear",
+    category: SourceCategory.TicketingAndTaskManagement,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/linear`,
+  },
+  freshdesk: {
+    icon: FreshdeskIcon,
+    displayName: "Freshdesk",
+    category: SourceCategory.TicketingAndTaskManagement,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/freshdesk`,
+  },
+  asana: {
+    icon: AsanaIcon,
+    displayName: "Asana",
+    category: SourceCategory.TicketingAndTaskManagement,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/asana`,
+  },
+  clickup: {
+    icon: ClickupIcon,
+    displayName: "Clickup",
+    category: SourceCategory.TicketingAndTaskManagement,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/clickup`,
+  },
+  productboard: {
+    icon: ProductboardIcon,
+    displayName: "Productboard",
+    category: SourceCategory.TicketingAndTaskManagement,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/productboard`,
+  },
+  testrail: {
+    icon: TestRailIcon,
+    displayName: "TestRail",
+    category: SourceCategory.TicketingAndTaskManagement,
+  },
+
+  // Messaging
+  slack: slackMetadata,
+  federated_slack: slackMetadata,
+  teams: {
+    icon: TeamsIcon,
+    displayName: "Teams",
+    category: SourceCategory.Messaging,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/teams`,
+  },
+  gmail: {
+    icon: GmailIcon,
+    displayName: "Gmail",
+    category: SourceCategory.Messaging,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/gmail/overview`,
+  },
+  drupal_wiki: {
+    icon: DrupalWikiIcon,
+    displayName: "Drupal Wiki",
+    category: SourceCategory.Wiki,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/drupal_wiki`,
+  },
+  imap: {
+    icon: EmailIcon,
+    displayName: "Email",
+    category: SourceCategory.Messaging,
+  },
+  discord: {
+    icon: ColorDiscordIcon,
+    displayName: "Discord",
+    category: SourceCategory.Messaging,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/discord`,
+  },
+  xenforo: {
+    icon: XenforoIcon,
+    displayName: "Xenforo",
+    category: SourceCategory.Messaging,
+  },
+  zulip: {
+    icon: ZulipIcon,
+    displayName: "Zulip",
+    category: SourceCategory.Messaging,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/zulip`,
+  },
+
+  // Sales
+  salesforce: {
+    icon: SalesforceIcon,
+    displayName: "Salesforce",
+    category: SourceCategory.Sales,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/salesforce`,
+    isPopular: true,
+  },
+  hubspot: {
+    icon: HubSpotIcon,
+    displayName: "HubSpot",
+    category: SourceCategory.Sales,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/hubspot`,
+    isPopular: true,
+  },
+  gong: {
+    icon: GongIcon,
+    displayName: "Gong",
+    category: SourceCategory.Sales,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/gong`,
+    isPopular: true,
+  },
+  fireflies: {
+    icon: FirefliesIcon,
+    displayName: "Fireflies",
+    category: SourceCategory.Sales,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/fireflies`,
+  },
+  highspot: {
+    icon: HighspotIcon,
+    displayName: "Highspot",
+    category: SourceCategory.Sales,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/highspot`,
+  },
+  loopio: {
+    icon: LoopioIcon,
+    displayName: "Loopio",
+    category: SourceCategory.Sales,
+  },
+
+  // Code Repository
+  github: {
+    icon: GithubIcon,
+    displayName: "Github",
+    category: SourceCategory.CodeRepository,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/github`,
+    isPopular: true,
+  },
+  gitlab: {
+    icon: GitlabIcon,
+    displayName: "Gitlab",
+    category: SourceCategory.CodeRepository,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/gitlab`,
+  },
+  bitbucket: {
+    icon: BitbucketIcon,
+    displayName: "Bitbucket",
+    category: SourceCategory.CodeRepository,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/bitbucket`,
+  },
+
+  // Others
+  web: {
+    icon: SvgGlobe,
+    displayName: "Web",
+    category: SourceCategory.Other,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/web`,
+    isPopular: true,
+  },
+  file: {
+    icon: SvgFileText,
+    displayName: "File",
+    category: SourceCategory.Other,
+    docs: `${DOCS_ADMINS_PATH}/connectors/official/file`,
+    isPopular: true,
+  },
+  user_file: {
+    icon: SvgUploadCloud,
+    displayName: "Uploaded Files",
+    category: SourceCategory.Other,
+    docs: `${DOCS_BASE_URL}/overview/core_features/chat#projects`,
+    isPopular: false, // Needs to be false to hide from the Add Connector page
+  },
+
+  // Other
+  ingestion_api: {
+    icon: SvgGlobe,
+    displayName: "Ingestion",
+    category: SourceCategory.Other,
+  },
+
+  // Craft-specific sources
+  craft_file: {
+    icon: SvgFileText,
+    displayName: "Your Files",
+    category: SourceCategory.Other,
+    isPopular: false, // Hidden from standard Add Connector page
+    alwaysConnected: true, // No setup required, just upload files
+    customDescription: "Manage your uploaded files",
+  },
+
+  // Placeholder (non-null default)
+  not_applicable: {
+    icon: SvgGlobe,
+    displayName: "Not Applicable",
+    category: SourceCategory.Other,
+  },
+  mock_connector: {
+    icon: SvgGlobe,
+    displayName: "Mock Connector",
+    category: SourceCategory.Other,
+  },
+} as SourceMap;
+
+function fillSourceMetadata(
+  partialMetadata: PartialSourceMetadata,
+  internalName: ValidSources
+): SourceMetadata {
+  return {
+    internalName: partialMetadata.baseSourceType || internalName,
+    ...partialMetadata,
+    adminUrl: `/admin/connectors/${internalName}`,
+  };
+}
+
+export function getSourceMetadata(sourceType: ValidSources): SourceMetadata {
+  const partialMetadata = SOURCE_METADATA_MAP[sourceType];
+
+  // Fallback to not_applicable if sourceType not found in map
+  if (!partialMetadata) {
+    return fillSourceMetadata(
+      SOURCE_METADATA_MAP[ValidSources.NotApplicable],
+      ValidSources.NotApplicable
+    );
+  }
+
+  return fillSourceMetadata(partialMetadata, sourceType);
+}
+
+export function listSourceMetadata(): SourceMetadata[] {
+  /* This gives back all the viewable / common sources, primarily for
+  display in the Add Connector page */
+  const entries = Object.entries(SOURCE_METADATA_MAP)
+    .filter(
+      ([source, _]) =>
+        source !== "not_applicable" &&
+        source !== "ingestion_api" &&
+        source !== "mock_connector" &&
+        // use the "regular" slack connector when listing
+        source !== "federated_slack" &&
+        // user_file is for internal use (projects), not the Add Connector page
+        source !== "user_file"
+    )
+    .map(([source, metadata]) => {
+      return fillSourceMetadata(metadata, source as ValidSources);
+    });
+  return entries;
+}
+
+export function getSourceDocLink(sourceType: ValidSources): string | null {
+  return SOURCE_METADATA_MAP[sourceType].docs || null;
+}
+
+export const isValidSource = (sourceType: string) => {
+  return Object.keys(SOURCE_METADATA_MAP).includes(sourceType);
+};
+
+export function getSourceDisplayName(sourceType: ValidSources): string | null {
+  return getSourceMetadata(sourceType).displayName;
+}
+
+export function getSourceMetadataForSources(sources: ValidSources[]) {
+  return sources.map((source) => getSourceMetadata(source));
+}
+
+export function getSourcesForPersona(persona: Persona): ValidSources[] {
+  const personaSources: ValidSources[] = [];
+  persona.document_sets.forEach((documentSet) => {
+    documentSet.cc_pair_summaries.forEach((ccPair) => {
+      if (!personaSources.includes(ccPair.source)) {
+        personaSources.push(ccPair.source);
+      }
+    });
+  });
+  return personaSources;
+}
+
+export async function fetchTitleFromUrl(url: string): Promise<string | null> {
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      // If the remote site has no CORS header, this may fail in the browser
+      mode: "cors",
+    });
+    if (!response.ok) {
+      // Non-200 response, treat as a failure
+      return null;
+    }
+    const html = await response.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, "text/html");
+    // If the site has <title>My Demo Page</title>, we retrieve "My Demo Page"
+    const pageTitle = doc.querySelector("title")?.innerText.trim() ?? null;
+    return pageTitle;
+  } catch (error) {
+    console.error("Error fetching page title:", error);
+    return null;
+  }
+}
