@@ -21,11 +21,21 @@ import os as _os
 _TEMPLATE_DIR = Path(
     _os.environ.get(
         "ANILA_TEMPLATE_DIR",
-        str(Path(__file__).parent.parent.parent.parent.parent / "AgenticRAG/src/anila_core/cli/templates/agent-template"),
+        str(Path(__file__).parent.parent.parent.parent.parent / "AgenticRAG"),
     )
 )
 
 router = APIRouter(prefix="/api/agents", tags=["Agent 管理"])
+
+_IGNORED_TEMPLATE_PARTS = {
+    ".git",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+}
+_IGNORED_TEMPLATE_SUFFIXES = {".pyc", ".pyo"}
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -62,13 +72,22 @@ def _require_developer_or_admin(current_user: User = Depends(get_current_user)) 
     return current_user
 
 
+def _should_include_template_path(path: Path, root: Path) -> bool:
+    relative = path.relative_to(root)
+    if any(part in _IGNORED_TEMPLATE_PARTS for part in relative.parts):
+        return False
+    if path.suffix in _IGNORED_TEMPLATE_SUFFIXES:
+        return False
+    return path.is_file()
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/template/download")
 def download_template(
     current_user: User = Depends(_require_developer_or_admin),
 ) -> StreamingResponse:
-    """Serve the official anila-core agent template as a zip archive."""
+    """Serve the official anila-core template mirroring the AgenticRAG project."""
     buf = io.BytesIO()
     template_dir = _TEMPLATE_DIR
     if not template_dir.exists():
@@ -76,7 +95,7 @@ def download_template(
 
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for path in sorted(template_dir.rglob("*")):
-            if path.is_file():
+            if _should_include_template_path(path, template_dir):
                 arcname = "anila-core-template/" + path.relative_to(template_dir).as_posix()
                 zf.write(path, arcname)
 

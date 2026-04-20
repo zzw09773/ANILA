@@ -23,7 +23,8 @@ def test_developer_can_download_template(client, db):
     zf = zipfile.ZipFile(io.BytesIO(resp.content))
     names = set(zf.namelist())
     assert "anila-core-template/README.md" in names
-    assert "anila-core-template/anila.yaml" in names
+    assert "anila-core-template/pyproject.toml" in names
+    assert "anila-core-template/src/anila_core/api/router_server.py" in names
 
 
 def test_plain_user_cannot_download_template(client, db):

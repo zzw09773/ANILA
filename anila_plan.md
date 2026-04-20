@@ -250,9 +250,9 @@ Codex 明確指出：未來若有數以十計的系統要串接，Onyx 的價值
 
 ### Phase 3 — Router MVP 端到端（無專屬 chat UI，curl / OpenWebUI 驗證）
 13. 建 `anila-core-router/`
-14. **新增 repo root `docker-compose.yml`**，統一管理 `csp` / `router` / `rag-agent`（目前作為 sample agent）/ `postgres` / `pgvector`，統一 network / port / env wiring / healthcheck / depends_on；用途明確標註為 **local integration & smoke test，非 production deployment**。之後 smoke test 的標準啟動方式就是 `docker compose up -d`
-15. 管理員在 CSP 控制面把測試帳號升級成 developer，developer 下載 template 並註冊 `api.py` 為 agent，admin approve，給 test user 賦權（`allowed-agents`）
-16. Smoke test：curl → Router → CSP → `api.py` → CSP → upstream LLM → SSE 回 curl，usage 三筆都落帳
+14. **新增 repo root `docker-compose.yml`**，統一管理 `csp` / `router` / `mock-openai` / `postgres`，統一 network / port / env wiring / healthcheck / depends_on；用途明確標註為 **local integration & smoke test，非 production deployment**。root compose 不預設內建 RAG agent service，registered agent 應由 developer 另外部署與註冊。之後 smoke test 的標準啟動方式就是 `docker compose up -d`
+15. 管理員在 CSP 控制面把測試帳號升級成 developer，developer 下載官方模板（內容鏡像 `AgenticRAG` repo）並另外部署 / 註冊自己的 agent，admin approve，給 test user 賦權（`allowed-agents`）
+16. Smoke test：先驗證 `curl → Router → CSP → upstream LLM` 的 direct-answer 路徑；有註冊 agent 後，再驗證 `curl → Router → CSP → registered agent → CSP → upstream LLM` 的 dispatch 路徑
 
 ### Phase 4 — Onyx Future Module Plan（純文件）
 17. 寫 `docs/onyx-application-plan.md`
@@ -283,7 +283,7 @@ Codex 明確指出：未來若有數以十計的系統要串接，Onyx 的價值
 ```bash
 # 1. 用 repo root 的整合 compose 一次啟動所有服務（標準 smoke test 啟動方式）
 docker compose up -d
-# 服務：csp(:8000) + router(:9000) + rag-agent(:24786, 目前 sample agent) + postgres + pgvector
+# 服務：csp(:8000) + router(:9000) + mock-openai + postgres
 docker compose ps   # 確認 healthcheck 全 healthy
 
 # 2. admin 將測試帳號升級為 developer（控制面：JWT）
@@ -297,10 +297,10 @@ curl -L http://localhost:8000/api/agents/template/download \
   -H "Authorization: Bearer <DEVELOPER_JWT>" \
   -o anila-core-template.zip
 
-# 4. Developer 註冊 sample agent（控制面：JWT；目前範例服務名沿用 rag-agent）
+# 4. Developer 另外部署 agent 後，再由控制面註冊該 agent
 curl -X POST http://localhost:8000/api/agents/register \
   -H "Authorization: Bearer <DEVELOPER_JWT>" \
-  -d '{"name":"rag-agent","endpoint_url":"http://rag-agent:24786","description_for_router":"General-purpose sample agent with optional knowledge lookup"}'
+  -d '{"name":"finance-agent","endpoint_url":"http://your-agent-host:9100","description_for_router":"General-purpose sample agent with optional knowledge lookup"}'
 # admin approve（控制面：JWT）
 curl -X POST http://localhost:8000/api/agents/1/approve -H "Authorization: Bearer <ADMIN_JWT>"
 
@@ -324,9 +324,10 @@ curl -N -X POST http://localhost:9000/v1/chat/completions \
 - Router 啟動成功從 CSP 拿到該 user 可用 agent 清單（`RemoteAgentRegistry` works）
 - developer 可登入 CSP 前端、看到自己的 agent 列表並下載官方 template
 - 主 LLM 呼叫**經 CSP proxy**（token_usage 有一筆 LLM-level 紀錄）
-- 主 LLM 決策 → 呼叫 `dispatch_to_agent("rag-agent", ...)`
-- dispatch **經 CSP proxy** 轉給 `api.py`（token_usage 有一筆 agent-level 紀錄）
-- 若 `api.py` 內有 knowledge lookup / tool execution，其內部 LLM 呼叫**亦經 CSP proxy**（token_usage 再一筆）
+- 若未註冊任何 agent，Router 走 direct-answer 路徑，不依賴預設 RAG 服務
+- 若已註冊 agent，主 LLM 決策 → 呼叫 `dispatch_to_agent("<registered-agent>", ...)`
+- dispatch **經 CSP proxy** 轉給該 registered agent（token_usage 有一筆 agent-level 紀錄）
+- 若該 agent 內有 knowledge lookup / tool execution，其內部 LLM 呼叫**亦經 CSP proxy**（token_usage 再一筆）
 - SSE 逐 chunk 串回 curl（不是一次性 dump）
 - 三筆 `token_usage` 都正確 attribution 到 test user
 
