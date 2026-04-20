@@ -137,6 +137,28 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # ── ANILA Runtime UI (port 3000) ──────────────────────────────────────────────
+  anila-ui:
+    build:
+      context: ANILA_UI/anila-ui
+      args:
+        VITE_CSP_BASE_URL: ${ANILA_PUBLIC_CSP_BASE_URL:-http://localhost:8000}
+        VITE_ROUTER_BASE_URL: ${ANILA_PUBLIC_ROUTER_BASE_URL:-http://localhost:9000}
+    ports:
+      - "${ANILA_UI_PORT:-3001}:80"
+    depends_on:
+      csp:
+        condition: service_healthy
+      router:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
 networks:
   default:
     name: anila-net
