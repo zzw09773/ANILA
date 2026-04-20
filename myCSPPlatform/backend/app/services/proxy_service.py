@@ -203,6 +203,8 @@ async def proxy_request(
     endpoint_path: str,
     user_email: Optional[str] = None,
     inject_identity: bool = False,
+    conversation_id: Optional[str] = None,
+    trace_id: Optional[str] = None,
 ) -> dict:
     """Forward request to model backend with exponential backoff retry."""
     timeout = _get_timeout(model.model_type)
@@ -290,6 +292,8 @@ async def proxy_request(
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
                 request_duration_ms=duration_ms,
+                conversation_id=conversation_id,
+                trace_id=trace_id,
             )
 
             return result
@@ -343,6 +347,8 @@ async def proxy_stream(
     user_email: Optional[str] = None,
     inject_identity: bool = False,
     model_name: str | None = None,
+    conversation_id: Optional[str] = None,
+    trace_id: Optional[str] = None,
 ) -> AsyncIterator[str]:
     """Stream SSE response from a downstream backend through CSP proxy.
 
@@ -461,4 +467,6 @@ async def proxy_stream(
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
             request_duration_ms=duration_ms,
+            conversation_id=conversation_id,
+            trace_id=trace_id,
         )

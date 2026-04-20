@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, DateTime, ForeignKey, Index
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Index
 from app.database import Base
 
 
@@ -18,6 +18,9 @@ class TokenUsage(Base):
         DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
     )
     request_duration_ms = Column(Integer, nullable=True)
+    # Authoritative audit fields — populated when client passes headers
+    conversation_id = Column(String(128), nullable=True, index=True)
+    trace_id = Column(String(128), nullable=True, index=True)
 
     __table_args__ = (
         Index("idx_usage_user_time", "user_id", "request_timestamp"),

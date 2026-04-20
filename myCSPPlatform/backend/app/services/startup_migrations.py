@@ -30,6 +30,7 @@ from app.models.department import Department
 from app.models.external_identity import ExternalIdentity
 from app.models.model_registry import ModelRegistry
 from app.models.platform_link import PlatformLink
+from app.models.quota_policy import QuotaPolicy
 from app.models.token_usage import TokenUsage
 from app.models.user import User, UserModelPermission
 
