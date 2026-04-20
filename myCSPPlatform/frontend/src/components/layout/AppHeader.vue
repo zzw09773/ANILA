@@ -1,8 +1,23 @@
 <template>
-  <header class="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-    <h2 class="text-lg font-semibold text-gray-800">{{ pageTitle }}</h2>
-    <div class="flex items-center space-x-4">
+  <header class="flex flex-col gap-4 border-b border-gray-200 bg-white px-6 py-4 md:flex-row md:items-center md:justify-between">
+    <div>
+      <h2 class="text-lg font-semibold text-gray-800">{{ pageTitle }}</h2>
+      <p class="mt-1 text-xs uppercase tracking-[0.16em] text-gray-400">
+        {{ authStore.user?.role === 'admin' ? 'control plane · admin' : authStore.user?.role === 'developer' ? 'control plane · developer' : 'control plane · user' }}
+      </p>
+    </div>
+    <div class="flex flex-wrap items-center gap-3">
       <span class="text-sm text-gray-500">{{ authStore.user?.username }}</span>
+      <span
+        class="rounded-full px-2.5 py-1 text-xs font-medium"
+        :class="authStore.user?.role === 'admin'
+          ? 'bg-purple-50 text-purple-700'
+          : authStore.user?.role === 'developer'
+            ? 'bg-indigo-50 text-indigo-700'
+            : 'bg-gray-100 text-gray-600'"
+      >
+        {{ authStore.user?.role === 'admin' ? '管理員' : authStore.user?.role === 'developer' ? '開發者' : '使用者' }}
+      </span>
       <button
         @click="showChangePwModal = true"
         class="text-sm text-gray-500 hover:text-indigo-600 transition-colors"
@@ -112,6 +127,7 @@ const pageTitles = {
   '/audit-logs': '審計日誌',
   '/auth-providers': 'SSO / LDAP / OIDC',
   '/platform-links': '平台連結設定',
+  '/developer/agents': 'Agent Console',
 }
 
 const pageTitle = computed(() => pageTitles[route.path] || 'CSP Platform')

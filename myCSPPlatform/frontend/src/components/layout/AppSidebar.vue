@@ -1,11 +1,12 @@
 <template>
-  <aside class="w-64 bg-gray-900 text-white min-h-screen flex flex-col">
-    <div class="p-6 border-b border-gray-700">
-      <h1 class="text-xl font-bold">CSP Platform</h1>
-      <p class="text-gray-400 text-sm mt-1">AI 模型服務管理</p>
+  <aside class="min-h-screen w-64 border-r border-gray-800 bg-gray-950 text-white flex flex-col">
+    <div class="border-b border-gray-800 p-6">
+      <div class="text-xs uppercase tracking-[0.16em] text-gray-500">Control Plane</div>
+      <h1 class="mt-2 text-xl font-bold">CSP Platform</h1>
+      <p class="mt-1 text-sm text-gray-400">AI 模型、Agent、權限與審計治理</p>
     </div>
 
-    <nav class="flex-1 p-4 space-y-1">
+    <nav class="flex-1 space-y-1 p-4">
       <router-link
         v-for="item in menuItems"
         :key="item.path"
@@ -20,10 +21,11 @@
       </router-link>
     </nav>
 
-    <div class="p-4 border-t border-gray-700">
-      <div class="text-sm text-gray-400">
+    <div class="border-t border-gray-800 p-4">
+      <div class="text-xs uppercase tracking-[0.16em] text-gray-500">Current Session</div>
+      <div class="mt-2 text-sm text-gray-300">
         {{ authStore.user?.username }}
-        <span class="ml-1 text-xs px-2 py-0.5 rounded"
+        <span class="ml-1 rounded px-2 py-0.5 text-xs"
             :class="{
               'bg-purple-600': authStore.user?.role === 'admin',
               'bg-indigo-500': authStore.user?.role === 'developer',
@@ -31,6 +33,9 @@
             }">
           {{ authStore.user?.role === 'admin' ? '管理員' : authStore.user?.role === 'developer' ? '開發者' : '使用者' }}
         </span>
+      </div>
+      <div class="mt-2 text-xs text-gray-500">
+        {{ authStore.isAdmin ? '完整治理權限' : authStore.isDeveloper ? '可管理 Agent 與模板' : '僅可存取個人資源' }}
       </div>
     </div>
   </aside>

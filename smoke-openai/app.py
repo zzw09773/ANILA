@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 import uuid
 from typing import Any, AsyncIterator
@@ -44,9 +45,11 @@ def _system_text(messages: list[dict[str, Any]]) -> str:
 def _response_text(messages: list[dict[str, Any]]) -> str:
     user_text = _last_user_text(messages)
     system_text = _system_text(messages)
-    if "You are ANILA Router" in system_text and "agentic-rag" in system_text:
-        return f"DISPATCH:agentic-rag:{user_text}"
-    return f"Mock answer from agentic-rag: {user_text or 'ok'}"
+    if "You are ANILA Router" in system_text:
+        match = re.search(r"- [^(]+\(([^)]+)\):", system_text)
+        if match:
+            return f"DISPATCH:{match.group(1)}:{user_text}"
+    return f"Mock answer from primary model: {user_text or 'ok'}"
 
 
 def _usage(payload: dict[str, Any], content: str) -> dict[str, int]:
