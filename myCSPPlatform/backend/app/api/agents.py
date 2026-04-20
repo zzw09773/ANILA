@@ -3,8 +3,12 @@
 Credential tier: JWT access token for all endpoints here.
 Data plane list endpoint (GET /v1/agents, API Key auth) lives in proxy.py.
 """
+import io
+import zipfile
 from datetime import datetime, timezone
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.database import get_db
@@ -12,6 +16,14 @@ from app.models.agent import Agent, UserAgentPermission
 from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user, require_admin
+
+import os as _os
+_TEMPLATE_DIR = Path(
+    _os.environ.get(
+        "ANILA_TEMPLATE_DIR",
+        str(Path(__file__).parent.parent.parent.parent.parent / "AgenticRAG/src/anila_core/cli/templates/agent-template"),
+    )
+)
 
 router = APIRouter(prefix="/api/agents", tags=["Agent 管理"])
 
@@ -51,6 +63,30 @@ def _require_developer_or_admin(current_user: User = Depends(get_current_user)) 
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@router.get("/template/download")
+def download_template(
+    current_user: User = Depends(_require_developer_or_admin),
+) -> StreamingResponse:
+    """Serve the official anila-core agent template as a zip archive."""
+    buf = io.BytesIO()
+    template_dir = _TEMPLATE_DIR
+    if not template_dir.exists():
+        raise HTTPException(status_code=404, detail="Template not found on server")
+
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in sorted(template_dir.rglob("*")):
+            if path.is_file():
+                arcname = "anila-core-template/" + path.relative_to(template_dir).as_posix()
+                zf.write(path, arcname)
+
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=anila-core-template.zip"},
+    )
+
 
 @router.post("/register", response_model=AgentResponse)
 def register_agent(

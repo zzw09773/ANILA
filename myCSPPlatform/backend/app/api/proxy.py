@@ -109,13 +109,15 @@ async def chat_completions(
         if stream:
             return StreamingResponse(
                 proxy_stream(
-                    endpoint_url=agent.endpoint_url,
+                    target_url=f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions",
                     api_key_id=api_key.id,
                     user_id=api_key.user_id,
                     department_id=department_id,
-                    agent_id=agent.id,
+                    usage_model_id=agent.id,
                     request_body=body,
                     user_email=user_email,
+                    inject_identity=True,
+                    model_name=agent.name,
                 ),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -139,6 +141,27 @@ async def chat_completions(
             raise _HTTPException(status_code=502, detail=f"Agent 呼叫失敗: {e}")
 
     model = _resolve_model(db, api_key, model_name)
+    if stream:
+        target_url = (
+            f"{model.endpoint_url.rstrip('/')}/v2/chat/completions"
+            if model.api_version == "v2"
+            else f"{model.endpoint_url.rstrip('/')}/v1/chat/completions"
+        )
+        return StreamingResponse(
+            proxy_stream(
+                target_url=target_url,
+                api_key_id=api_key.id,
+                user_id=api_key.user_id,
+                department_id=department_id,
+                usage_model_id=model.id,
+                request_body=body,
+                user_email=user_email,
+                inject_identity=False,
+                model_name=model.name,
+            ),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
     return await proxy_request(
         model=model,
         api_key_id=api_key.id,

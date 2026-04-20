@@ -69,6 +69,12 @@ const routes = [
         component: () => import('../views/PlatformLinksView.vue'),
         meta: { requiresAdmin: true },
       },
+      {
+        path: 'developer/agents',
+        name: 'DeveloperAgents',
+        component: () => import('../views/DeveloperAgentsView.vue'),
+        meta: { requiresDeveloper: true },
+      },
     ],
   },
 ]
@@ -84,6 +90,8 @@ router.beforeEach((to, from, next) => {
   if (to.meta.requiresAuth !== false && !authStore.isAuthenticated) {
     next('/login')
   } else if (to.meta.requiresAdmin && authStore.user?.role !== 'admin') {
+    next('/')
+  } else if (to.meta.requiresDeveloper && !authStore.isDeveloper) {
     next('/')
   } else if (to.path === '/login' && authStore.isAuthenticated) {
     next('/')
