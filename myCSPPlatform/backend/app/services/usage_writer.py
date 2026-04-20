@@ -27,6 +27,8 @@ async def enqueue_usage(
     completion_tokens: int,
     total_tokens: int,
     request_duration_ms: int | None = None,
+    conversation_id: str | None = None,
+    trace_id: str | None = None,
 ):
     """Push usage data into the async queue (non-blocking)."""
     queue = get_usage_queue()
@@ -40,6 +42,8 @@ async def enqueue_usage(
         "total_tokens": total_tokens,
         "request_timestamp": datetime.now(timezone.utc),
         "request_duration_ms": request_duration_ms,
+        "conversation_id": conversation_id,
+        "trace_id": trace_id,
     })
 
 

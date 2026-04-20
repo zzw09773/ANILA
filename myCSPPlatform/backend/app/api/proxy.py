@@ -105,6 +105,10 @@ async def chat_completions(
     department_id = user.department_id if user else None
     user_email = user.email if user else None
 
+    # Audit fields from optional client headers
+    conversation_id: str | None = request.headers.get("X-ANILA-Conversation-Id")
+    trace_id: str | None = request.headers.get("X-ANILA-Trace-Id")
+
     # Try agent first, fallback to model_registry
     agent = _resolve_agent(db, api_key, model_name)
     if agent:
@@ -120,6 +124,8 @@ async def chat_completions(
                     user_email=user_email,
                     inject_identity=True,
                     model_name=agent.name,
+                    conversation_id=conversation_id,
+                    trace_id=trace_id,
                 ),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -169,6 +175,8 @@ async def chat_completions(
                 user_email=user_email,
                 inject_identity=False,
                 model_name=model.name,
+                conversation_id=conversation_id,
+                trace_id=trace_id,
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -180,6 +188,8 @@ async def chat_completions(
         department_id=department_id,
         request_body=body,
         endpoint_path="/v1/chat/completions",
+        conversation_id=conversation_id,
+        trace_id=trace_id,
     )
 
 
