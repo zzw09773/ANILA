@@ -16,7 +16,7 @@ import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..config import settings
 from ..registry.remote_agent_manifest import RemoteAgentManifest, RemoteAgentRegistry
-from ..tools.dispatch_tool import dispatch_to_agent
+from ..tools.dispatch_tool import dispatch_to_agent_response
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,11 @@ def _make_chunk(content: str, model: str, finish: str | None = None) -> str:
     return "data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n"
 
 
-def _make_full_response(content: str, model: str) -> dict:
+def _make_event(event: str, payload: dict[str, Any]) -> str:
+    return f"event: {event}\n" + "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+
+
+def _make_full_response(content: str, model: str, anila_meta: dict[str, Any] | None = None) -> dict:
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
         "object": "chat.completion",
@@ -84,7 +88,75 @@ def _make_full_response(content: str, model: str) -> dict:
         "model": model,
         "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "anila_meta": anila_meta or _default_anila_meta(),
     }
+
+
+def _default_anila_meta() -> dict[str, Any]:
+    return {
+        "trace_id": f"trace-{uuid.uuid4().hex[:12]}",
+        "trace": [],
+        "citations": [],
+        "confidence": None,
+        "handoff_chain": [],
+        "follow_ups": [],
+        "latency_ms": None,
+        "classified": False,
+    }
+
+
+def _make_trace_step(
+    kind: str,
+    label: str,
+    detail: str,
+    *,
+    status: str = "ok",
+    latency_ms: int | None = None,
+) -> dict[str, Any]:
+    step = {"kind": kind, "label": label, "detail": detail, "status": status}
+    if latency_ms is not None:
+        step["latency_ms"] = latency_ms
+    return step
+
+
+def _normalize_anila_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
+    base = _default_anila_meta()
+    if not meta:
+        return base
+    normalized = {**base, **meta}
+    normalized["trace"] = list(meta.get("trace") or [])
+    normalized["citations"] = list(meta.get("citations") or [])
+    normalized["handoff_chain"] = list(meta.get("handoff_chain") or [])
+    normalized["follow_ups"] = list(meta.get("follow_ups") or [])
+    return normalized
+
+
+def _merge_anila_meta(
+    base_trace: list[dict[str, Any]],
+    downstream_meta: dict[str, Any] | None,
+    *,
+    agent_id: str | None = None,
+    latency_ms: int | None = None,
+) -> dict[str, Any]:
+    merged = _normalize_anila_meta(downstream_meta)
+    merged["trace"] = [*base_trace, *merged["trace"]]
+    handoff_chain = list(merged.get("handoff_chain") or [])
+    if agent_id:
+        handoff_chain = [
+            {
+                "agent_id": "anila-router",
+                "label": "Router dispatch",
+                "status": "ok",
+                "latency_ms": latency_ms,
+                "input_summary": "router decision",
+                "output_summary": f"dispatch to {agent_id}",
+            },
+            *handoff_chain,
+        ]
+    merged["handoff_chain"] = handoff_chain
+    if latency_ms is not None:
+        merged["latency_ms"] = latency_ms
+    return merged
 
 
 def _extract_bearer_api_key(request: Request) -> str:
@@ -153,31 +225,83 @@ def create_router_app() -> FastAPI:
         else:
             routing_messages = messages
 
-        # Call main LLM via CSP to get routing decision
+        started_at = time.time()
+
+        base_trace = [
+            _make_trace_step(
+                "thinking",
+                "Router 分析意圖中",
+                f"解析 query: {_flatten_last_user_query(messages)}",
+            ),
+            _make_trace_step(
+                "registry",
+                "同步 agent 清單",
+                f"已載入 {len(agents)} 個可用 agent",
+            ),
+        ]
+
         llm_response = await _call_llm_non_stream(caller_api_key, routing_messages)
-        dispatch = _parse_dispatch(llm_response)
+        llm_text = llm_response["content"]
+        dispatch = _parse_dispatch(llm_text)
 
         if dispatch:
             agent_id, query = dispatch
             manifest = registry.get(caller_api_key, agent_id)
             if manifest is None:
-                # Agent not found — answer directly
-                content = llm_response
+                content = llm_text
+                base_trace.append(
+                    _make_trace_step("direct", "Router 直接回答", f"agent '{agent_id}' 不存在")
+                )
+                anila_meta = _merge_anila_meta(
+                    base_trace,
+                    llm_response.get("anila_meta"),
+                    latency_ms=int((time.time() - started_at) * 1000),
+                )
             else:
                 logger.info("Router: dispatching to agent '%s'", agent_id)
-                content = await dispatch_to_agent(
+                base_trace.append(
+                    _make_trace_step(
+                        "dispatch",
+                        "選擇 agent",
+                        f"dispatch_to_agent('{agent_id}')",
+                    )
+                )
+                agent_response = await dispatch_to_agent_response(
                     agent_id=agent_id,
                     query=query,
                     csp_base_url=settings.csp_base_url,
                     csp_api_key=caller_api_key,
                     stream=False,
                 )
+                content = agent_response["content"]
+                base_trace.append(
+                    _make_trace_step(
+                        "call",
+                        f"呼叫 {agent_id}",
+                        "POST /v1/chat/completions (經 CSP proxy)",
+                    )
+                )
+                anila_meta = _merge_anila_meta(
+                    base_trace,
+                    agent_response.get("anila_meta"),
+                    agent_id=agent_id,
+                    latency_ms=int((time.time() - started_at) * 1000),
+                )
         else:
-            content = llm_response
+            content = llm_text
+            base_trace.append(_make_trace_step("direct", "Router 直接回答", "無需分派 agent"))
+            anila_meta = _merge_anila_meta(
+                base_trace,
+                llm_response.get("anila_meta"),
+                latency_ms=int((time.time() - started_at) * 1000),
+            )
 
         if stream:
             async def _event_stream() -> AsyncIterator[str]:
+                for step in anila_meta["trace"]:
+                    yield _make_event("anila.trace", step)
                 yield _make_chunk(content, "anila-router")
+                yield _make_event("anila.meta", anila_meta)
                 yield _make_chunk("", "anila-router", finish="stop")
                 yield "data: [DONE]\n\n"
 
@@ -187,13 +311,24 @@ def create_router_app() -> FastAPI:
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
 
-        return JSONResponse(_make_full_response(content, "anila-router"))
+        return JSONResponse(_make_full_response(content, "anila-router", anila_meta=anila_meta))
 
     return app
 
 
-async def _call_llm_non_stream(caller_api_key: str, messages: list[dict]) -> str:
-    """Call main LLM through CSP without SSE and return the full text."""
+def _flatten_last_user_query(messages: list[dict[str, Any]]) -> str:
+    for msg in reversed(messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            return content[:120]
+        return str(content)[:120]
+    return ""
+
+
+async def _call_llm_non_stream(caller_api_key: str, messages: list[dict]) -> dict[str, Any]:
+    """Call main LLM through CSP without SSE and return content + metadata."""
     payload = {
         "model": settings.model,
         "messages": messages,
@@ -211,7 +346,11 @@ async def _call_llm_non_stream(caller_api_key: str, messages: list[dict]) -> str
         )
         response.raise_for_status()
         data = response.json()
-    return data["choices"][0]["message"]["content"].strip()
+    return {
+        "content": data["choices"][0]["message"]["content"].strip(),
+        "anila_meta": data.get("anila_meta"),
+        "raw": data,
+    }
 
 
 # Module-level app instance for direct uvicorn invocation:
