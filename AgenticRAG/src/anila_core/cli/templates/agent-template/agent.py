@@ -113,6 +113,32 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
 
     req_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
     created = int(time.time())
+    trace_id = f"trace-{uuid.uuid4().hex[:12]}"
+    anila_meta = {
+        "trace_id": trace_id,
+        "trace": [
+            {
+                "kind": "agent",
+                "label": "{{AGENT_DISPLAY_NAME}} 處理請求",
+                "detail": "stub agent response",
+                "status": "ok",
+            }
+        ],
+        "citations": [],
+        "confidence": None,
+        "handoff_chain": [
+            {
+                "agent_id": "{{AGENT_NAME}}",
+                "label": "{{AGENT_DISPLAY_NAME}}",
+                "status": "ok",
+                "input_summary": last_user_msg[:80],
+                "output_summary": "stub response generated",
+            }
+        ],
+        "follow_ups": [],
+        "latency_ms": None,
+        "classified": False,
+    }
 
     if stream:
         async def _stream() -> AsyncIterator[str]:
@@ -121,7 +147,11 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
                 "created": created, "model": "{{AGENT_NAME}}",
                 "choices": [{"index": 0, "delta": {"content": reply}, "finish_reason": None}],
             }
+            yield "event: anila.trace\n"
+            yield "data: " + json.dumps(anila_meta["trace"][0]) + "\n\n"
             yield "data: " + json.dumps(chunk) + "\n\n"
+            yield "event: anila.meta\n"
+            yield "data: " + json.dumps(anila_meta) + "\n\n"
             stop = {**chunk, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
             yield "data: " + json.dumps(stop) + "\n\n"
             yield "data: [DONE]\n\n"
@@ -139,4 +169,5 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
                      "finish_reason": "stop"}],
         "usage": {"prompt_tokens": 0, "completion_tokens": len(reply.split()),
                   "total_tokens": len(reply.split())},
+        "anila_meta": anila_meta,
     })

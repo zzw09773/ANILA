@@ -1,4 +1,6 @@
 """OpenAI-compatible API proxy endpoints."""
+import time
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
@@ -8,7 +10,7 @@ from app.models.api_key import ApiKey
 from app.models.model_registry import ModelRegistry
 from app.middleware.api_key_auth import get_api_key
 from app.services.api_key_service import check_model_permission, check_agent_permission
-from app.services.proxy_service import proxy_request, proxy_stream
+from app.services.proxy_service import build_default_anila_meta, proxy_request, proxy_stream
 
 router = APIRouter(tags=["API 代理"])
 
@@ -124,17 +126,26 @@ async def chat_completions(
             )
         # Non-streaming agent call — use proxy_request with a synthetic ModelRegistry-like obj
         # by forwarding to the agent endpoint directly
-        from app.services.proxy_service import proxy_request as _pr
         import httpx
         from fastapi import HTTPException as _HTTPException
         target = f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions"
         from app.services.proxy_service import _build_downstream_headers
         headers = _build_downstream_headers(api_key.user_id, user_email)
+        started_at = time.time()
         try:
             async with httpx.AsyncClient(timeout=120) as client:
                 resp = await client.post(target, json=body, headers=headers)
                 resp.raise_for_status()
-                return resp.json()
+                payload = resp.json()
+                payload.setdefault(
+                    "anila_meta",
+                    build_default_anila_meta(
+                        agent.name,
+                        detail=f"CSP proxy -> {target}",
+                        latency_ms=int((time.time() - started_at) * 1000),
+                    ),
+                )
+                return payload
         except httpx.HTTPStatusError as e:
             raise _HTTPException(status_code=e.response.status_code, detail=str(e))
         except Exception as e:

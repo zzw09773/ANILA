@@ -157,6 +157,43 @@ def _estimate_token_count(model_name: str | None, text: str) -> int:
     return max(wordish, heuristic, 1)
 
 
+def build_default_anila_meta(
+    source_name: str,
+    *,
+    detail: str,
+    latency_ms: int | None = None,
+) -> dict:
+    return {
+        "trace_id": f"trace-{int(time.time() * 1000)}",
+        "trace": [
+            {
+                "kind": "call",
+                "label": f"呼叫 {source_name}",
+                "detail": detail,
+                "status": "ok",
+            }
+        ],
+        "citations": [],
+        "confidence": None,
+        "handoff_chain": [],
+        "follow_ups": [],
+        "latency_ms": latency_ms,
+        "classified": False,
+    }
+
+
+def _parse_sse_block(block: str) -> tuple[str | None, str | None]:
+    event_name = None
+    data_lines: list[str] = []
+    for line in block.splitlines():
+        if line.startswith("event:"):
+            event_name = line[6:].strip()
+        elif line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+    data = "\n".join(data_lines) if data_lines else None
+    return event_name, data
+
+
 async def proxy_request(
     model: ModelRegistry,
     api_key_id: int,
@@ -235,6 +272,12 @@ async def proxy_request(
                     model.name,
                     prompt_tokens,
                     completion_tokens,
+                )
+            if not result.get("anila_meta"):
+                result["anila_meta"] = build_default_anila_meta(
+                    model.name,
+                    detail=f"Proxy -> {target_url}",
+                    latency_ms=duration_ms,
                 )
 
             # Enqueue usage record (non-blocking)
@@ -319,8 +362,10 @@ async def proxy_stream(
     start_time = time.time()
     prompt_tokens = completion_tokens = 0
     usage_seen = False
+    meta_seen = False
     prompt_text = _serialize_request_for_usage(body)
     completion_parts: list[str] = []
+    pending_done_block: str | None = None
 
     try:
         async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
@@ -328,24 +373,56 @@ async def proxy_stream(
                 if resp.status_code >= 400:
                     raise HTTPException(status_code=resp.status_code,
                                         detail=f"下游回應錯誤: {resp.status_code}")
+                block_lines: list[str] = []
                 async for line in resp.aiter_lines():
-                    if not line:
+                    if line == "":
+                        if block_lines:
+                            block = "\n".join(block_lines)
+                            event_name, data = _parse_sse_block(block)
+                            if data == "[DONE]":
+                                pending_done_block = block + "\n\n"
+                            else:
+                                if event_name == "anila.meta":
+                                    meta_seen = True
+                                if data and event_name in (None, "message"):
+                                    try:
+                                        chunk = json.loads(data)
+                                        text = _extract_stream_text(chunk)
+                                        if text:
+                                            completion_parts.append(text)
+                                        usage = chunk.get("usage") or {}
+                                        if usage:
+                                            usage_seen = True
+                                            prompt_tokens = usage.get("prompt_tokens", 0)
+                                            completion_tokens = usage.get("completion_tokens", 0)
+                                    except (json.JSONDecodeError, KeyError):
+                                        pass
+                                yield block + "\n\n"
+                            block_lines = []
                         continue
-                    yield line + "\n\n"
-                    # Parse usage from last chunk before [DONE]
-                    if line.startswith("data: ") and line != "data: [DONE]":
-                        try:
-                            chunk = json.loads(line[6:])
-                            text = _extract_stream_text(chunk)
-                            if text:
-                                completion_parts.append(text)
-                            usage = chunk.get("usage") or {}
-                            if usage:
-                                usage_seen = True
-                                prompt_tokens = usage.get("prompt_tokens", 0)
-                                completion_tokens = usage.get("completion_tokens", 0)
-                        except (json.JSONDecodeError, KeyError):
-                            pass
+                    block_lines.append(line)
+                if block_lines:
+                    block = "\n".join(block_lines)
+                    event_name, data = _parse_sse_block(block)
+                    if data == "[DONE]":
+                        pending_done_block = block + "\n\n"
+                    else:
+                        if event_name == "anila.meta":
+                            meta_seen = True
+                        if data and event_name in (None, "message"):
+                            try:
+                                chunk = json.loads(data)
+                                text = _extract_stream_text(chunk)
+                                if text:
+                                    completion_parts.append(text)
+                                usage = chunk.get("usage") or {}
+                                if usage:
+                                    usage_seen = True
+                                    prompt_tokens = usage.get("prompt_tokens", 0)
+                                    completion_tokens = usage.get("completion_tokens", 0)
+                            except (json.JSONDecodeError, KeyError):
+                                pass
+                        yield block + "\n\n"
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="下游請求逾時")
     except httpx.ConnectError:
@@ -362,6 +439,18 @@ async def proxy_stream(
             completion_tokens,
         )
     total_tokens = prompt_tokens + completion_tokens
+    if not meta_seen:
+        yield "event: anila.meta\n"
+        yield "data: " + json.dumps(
+            build_default_anila_meta(
+                model_name or target_url,
+                detail=f"Proxy stream -> {target_url}",
+                latency_ms=duration_ms,
+            ),
+            ensure_ascii=False,
+        ) + "\n\n"
+    if pending_done_block:
+        yield pending_done_block
     if total_tokens > 0:
         await enqueue_usage(
             api_key_id=api_key_id,

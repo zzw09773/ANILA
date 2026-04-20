@@ -1,1 +1,4 @@
 # 忽略各子專案原本的 .git 資料夾內容已由主 git 管理
+.pytest-csp.db
+node_modules/
+dist/
