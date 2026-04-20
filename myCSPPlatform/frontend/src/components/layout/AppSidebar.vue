@@ -23,8 +23,13 @@
     <div class="p-4 border-t border-gray-700">
       <div class="text-sm text-gray-400">
         {{ authStore.user?.username }}
-        <span class="ml-1 text-xs px-2 py-0.5 rounded bg-gray-700">
-          {{ authStore.user?.role === 'admin' ? '管理員' : '使用者' }}
+        <span class="ml-1 text-xs px-2 py-0.5 rounded"
+            :class="{
+              'bg-purple-600': authStore.user?.role === 'admin',
+              'bg-indigo-500': authStore.user?.role === 'developer',
+              'bg-gray-700': authStore.user?.role === 'user',
+            }">
+          {{ authStore.user?.role === 'admin' ? '管理員' : authStore.user?.role === 'developer' ? '開發者' : '使用者' }}
         </span>
       </div>
     </div>
@@ -44,6 +49,9 @@ const menuItems = computed(() => {
     { path: '/models', label: '模型管理', icon: '&#9881;' },
     { path: '/usage', label: '用量分析', icon: '&#128200;' },
   ]
+  if (authStore.isDeveloper) {
+    items.push({ path: '/developer/agents', label: 'Agent 管理', icon: '&#129302;' })
+  }
   if (authStore.isAdmin) {
     items.push({ path: '/users', label: '使用者管理', icon: '&#128101;' })
     items.push({ path: '/departments', label: '部門設定', icon: '&#127970;' })

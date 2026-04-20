@@ -32,9 +32,13 @@
             <td class="px-4 py-3">
               <span
                 class="text-xs px-2 py-0.5 rounded"
-                :class="user.role === 'admin' ? 'bg-purple-50 text-purple-700' : 'bg-gray-100 text-gray-600'"
+                :class="{
+                  'bg-purple-50 text-purple-700': user.role === 'admin',
+                  'bg-indigo-50 text-indigo-700': user.role === 'developer',
+                  'bg-gray-100 text-gray-600': user.role === 'user',
+                }"
               >
-                {{ user.role === 'admin' ? '管理員' : '使用者' }}
+                {{ { admin: '管理員', developer: '開發者', user: '使用者' }[user.role] || user.role }}
               </span>
             </td>
             <td class="px-4 py-3">
@@ -62,6 +66,9 @@
               </button>
               <button @click="openAllowedModelsModal(user)" class="text-teal-600 hover:text-teal-800 text-xs">
                 可用模型
+              </button>
+              <button @click="openAllowedAgentsModal(user)" class="text-indigo-600 hover:text-indigo-800 text-xs">
+                可用 Agent
               </button>
               <button @click="openResetPasswordModal(user)" class="text-orange-600 hover:text-orange-800 text-xs">
                 重設密碼
@@ -112,6 +119,7 @@
             <select v-model="form.role"
               class="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500">
               <option value="user">使用者</option>
+              <option value="developer">開發者</option>
               <option value="admin">管理員</option>
             </select>
           </div>
@@ -179,6 +187,44 @@
       </div>
     </div>
 
+    <!-- Allowed Agents Modal -->
+    <div v-if="showAllowedAgentsModal" class="fixed inset-0 z-50 flex items-center justify-center">
+      <div class="fixed inset-0 bg-black/50" @click="showAllowedAgentsModal = false"></div>
+      <div class="relative bg-white rounded-xl shadow-xl p-6 max-w-md w-full mx-4">
+        <h3 class="text-lg font-semibold mb-1">可用 Agent — {{ allowedAgentsTarget?.username }}</h3>
+        <p class="text-xs text-gray-400 mb-4">勾選該使用者被允許呼叫的已核准 Agent</p>
+
+        <div class="space-y-2 max-h-56 overflow-y-auto border border-gray-200 rounded-lg p-3">
+          <label
+            v-for="agent in allAgents"
+            :key="agent.id"
+            class="flex items-center space-x-2 cursor-pointer"
+          >
+            <input
+              type="checkbox"
+              :value="agent.id"
+              v-model="selectedAgentIds"
+              class="rounded text-indigo-600 focus:ring-indigo-500"
+            />
+            <span class="text-sm">{{ agent.name }}</span>
+            <span class="text-xs text-gray-400 truncate max-w-xs">{{ agent.description_for_router }}</span>
+          </label>
+          <p v-if="allAgents.length === 0" class="text-sm text-gray-400">尚無已核准的 Agent</p>
+        </div>
+
+        <div class="flex justify-end space-x-3 mt-6">
+          <button @click="showAllowedAgentsModal = false"
+            class="px-4 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">
+            取消
+          </button>
+          <button @click="handleSaveAllowedAgents" :disabled="savingAgents"
+            class="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50">
+            {{ savingAgents ? '儲存中...' : '儲存' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Reset Password Modal -->
     <div v-if="showResetModal" class="fixed inset-0 z-50 flex items-center justify-center">
       <div class="fixed inset-0 bg-black/50" @click="showResetModal = false"></div>
@@ -215,11 +261,12 @@ import { ref, computed, onMounted } from 'vue'
 import client from '../api/client'
 import { listDepartments } from '../api/departments'
 import { listModels } from '../api/models'
-import { getUserAllowedModels, updateUserAllowedModels } from '../api/users'
+import { getUserAllowedModels, updateUserAllowedModels, getUserAllowedAgents, updateUserAllowedAgents } from '../api/users'
 
 const users = ref([])
 const departments = ref([])
 const allModels = ref([])
+const allAgents = ref([])
 const showModal = ref(false)
 const editingId = ref(null)
 const form = ref({ username: '', password: '', email: '', role: 'user', department_id: null })
@@ -230,6 +277,10 @@ const showAllowedModelsModal = ref(false)
 const allowedModelsTarget = ref(null)
 const selectedModelIds = ref([])
 const savingModels = ref(false)
+const showAllowedAgentsModal = ref(false)
+const allowedAgentsTarget = ref(null)
+const selectedAgentIds = ref([])
+const savingAgents = ref(false)
 
 const activeDepartments = computed(() => departments.value.filter(d => d.is_active))
 
@@ -247,6 +298,10 @@ onMounted(async () => {
   try {
     const { data } = await listModels()
     allModels.value = data
+  } catch {}
+  try {
+    const { data } = await client.get('/api/agents')
+    allAgents.value = data.filter(a => a.approval_status === 'approved')
   } catch {}
 })
 
@@ -305,6 +360,29 @@ async function handleSaveAllowedModels() {
     alert(e.response?.data?.detail || '更新失敗')
   } finally {
     savingModels.value = false
+  }
+}
+
+async function openAllowedAgentsModal(user) {
+  allowedAgentsTarget.value = user
+  selectedAgentIds.value = []
+  try {
+    const { data } = await getUserAllowedAgents(user.id)
+    selectedAgentIds.value = data.map(a => a.id)
+  } catch {}
+  showAllowedAgentsModal.value = true
+}
+
+async function handleSaveAllowedAgents() {
+  savingAgents.value = true
+  try {
+    const result = await updateUserAllowedAgents(allowedAgentsTarget.value.id, selectedAgentIds.value)
+    showAllowedAgentsModal.value = false
+    alert(result.data?.message || '已更新可用 Agent')
+  } catch (e) {
+    alert(e.response?.data?.detail || '更新失敗')
+  } finally {
+    savingAgents.value = false
   }
 }
 

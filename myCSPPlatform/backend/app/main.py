@@ -12,6 +12,19 @@ from app.database import engine, Base
 from app.api.router import api_router
 
 
+def _run_alembic_upgrade() -> None:
+    """Run `alembic upgrade head` programmatically at startup."""
+    from alembic.config import Config
+    from alembic import command
+
+    migrations_dir = Path(__file__).parent.parent / "migrations"
+    alembic_ini = Path(__file__).parent.parent / "alembic.ini"
+
+    cfg = Config(str(alembic_ini))
+    cfg.set_main_option("script_location", str(migrations_dir))
+    command.upgrade(cfg, "head")
+
+
 def setup_logging():
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
@@ -31,10 +44,19 @@ def setup_logging():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
-    Base.metadata.create_all(bind=engine)
 
-    # Legacy SQLite migration + column backfills must run before auto_seed,
-    # otherwise seeding an empty Postgres would mask data from the old DB.
+    # Run Alembic migrations to bring schema to head.
+    # Falls back to create_all if Alembic config is not found (e.g. in tests).
+    try:
+        _run_alembic_upgrade()
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Alembic upgrade failed, falling back to create_all: %s", exc
+        )
+        Base.metadata.create_all(bind=engine)
+
+    # Legacy SQLite migration + column backfills (kept for zero-downtime upgrades
+    # from pre-Alembic deployments — safe to re-run, idempotent).
     from app.services.startup_migrations import run_startup_migrations
     run_startup_migrations()
 

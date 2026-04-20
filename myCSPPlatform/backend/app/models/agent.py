@@ -1,8 +1,10 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy import JSON, Column, Integer, String, DateTime, ForeignKey, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from app.database import Base
+
+JSONValue = JSON().with_variant(JSONB, "postgresql")
 
 
 class UserAgentPermission(Base):
@@ -40,8 +42,8 @@ class Agent(Base):
     endpoint_url = Column(String(500), nullable=False)
     api_version = Column(String(20), nullable=False, default="v1")
     description_for_router = Column(Text, nullable=False, default="")
-    input_schema = Column(JSONB, nullable=True)
-    capabilities = Column(JSONB, nullable=True)
+    input_schema = Column(JSONValue, nullable=True)
+    capabilities = Column(JSONValue, nullable=True)
     # health_status: unknown / healthy / unhealthy
     health_status = Column(String(20), nullable=False, default="unknown")
     # approval_status: pending / approved / rejected

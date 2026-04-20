@@ -71,6 +71,9 @@ services:
         [{"name":"agentic-rag","owner_username":"admin","endpoint_url":"http://rag-agent:24786","api_version":"v1","description_for_router":"Answers questions with the RAG pipeline and indexed documents.","base_model":"gpt-4o-mini","approval_status":"approved"}]
       AUTO_SEED_API_KEYS: >-
         [{"username":"rag-agent-service","email":"rag-agent@example.com","role":"developer","key":"${RAG_AGENT_CSP_API_KEY:-sk-rag-agent-dev-key}","key_name":"rag-agent-dev-key","models":["gpt-4o-mini","text-embedding-3-small"]},{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY:-sk-test-user-api-key}","key_name":"smoke-user-dev-key","models":["gpt-4o-mini"],"agents":["agentic-rag"]}]
+      ANILA_TEMPLATE_DIR: /app/anila-template
+    volumes:
+      - ./AgenticRAG/src/anila_core/cli/templates/agent-template:/app/anila-template:ro
     depends_on:
       csp-db:
         condition: service_healthy
