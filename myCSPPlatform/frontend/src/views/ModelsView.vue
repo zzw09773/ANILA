@@ -69,9 +69,16 @@
               <button
                 v-if="model.is_active"
                 @click="handleDeactivate(model.id)"
-                class="text-red-600 hover:text-red-800 text-xs"
+                class="text-yellow-600 hover:text-yellow-800 text-xs"
               >
                 停用
+              </button>
+              <button
+                @click="handlePurge(model)"
+                :disabled="purgingId === model.id"
+                class="text-red-600 hover:text-red-800 text-xs disabled:opacity-50"
+              >
+                {{ purgingId === model.id ? '刪除中…' : '刪除' }}
               </button>
             </td>
           </tr>
@@ -180,6 +187,7 @@ const modelsStore = useModelsStore()
 const authStore = useAuthStore()
 const showModal = ref(false)
 const editingId = ref(null)
+const purgingId = ref(null)
 
 const defaultForm = () => ({
   name: '', display_name: '', model_type: 'llm', endpoint_url: '',
@@ -253,8 +261,28 @@ async function handleHealthCheck(id) {
 }
 
 async function handleDeactivate(id) {
-  if (confirm('確定要停用此模型嗎？')) {
+  if (confirm('確定要停用此模型嗎？（停用後可透過編輯再次啟用）')) {
     await modelsStore.remove(id)
+  }
+}
+
+async function handlePurge(model) {
+  if (!model || purgingId.value === model.id) {
+    return
+  }
+  if (!window.confirm(
+    `確定要永久刪除模型「${model.display_name}」？\n` +
+    `此操作無法復原。若此模型已有用量紀錄或被其他模型引用，將會被拒絕。`
+  )) {
+    return
+  }
+  purgingId.value = model.id
+  try {
+    await modelsStore.purge(model.id)
+  } catch (e) {
+    alert(e.response?.data?.detail || '刪除模型失敗')
+  } finally {
+    purgingId.value = null
   }
 }
 </script>

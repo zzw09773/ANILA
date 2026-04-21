@@ -1,19 +1,31 @@
-"""OpenAI-compatible RAG API — port 24786
+"""AgenticRAG — Sample Agent endpoint (OpenAI-compatible).
 
-讓 OpenWebUI（或任何 OpenAI-compatible client）透過這個 API 使用
-帶有 RAG 檢索的 LLM 對話。
+這是 ANILA 平台的 **RAG 範例 agent 樣板**。Fork 本 repo 後，主要要動的就是
+這個檔案（以及 ``index_documents.py``）。
 
-流程：
+Port: 24786 — 對 CSP / Router 暴露 OpenAI-compat 介面。
+
+預設流程：
   client → POST /v1/chat/completions
+         → CspServiceTokenMiddleware 驗 s2s token
          → embed 最後一則 user message（NV-Embed-V2）
-         → pgvector 檢索 top-k chunks
-         → 注入 RAG context
-         → 轉發至後端 LLM（google/gemma4）
-         → stream 回傳 OpenAI 格式
+         → pgvector 語意 + ILIKE 關鍵字 hybrid 檢索 + RRF 融合
+         → 注入 RAG context 到 messages
+         → 轉發至後端 LLM（直連 or 透過 CSP proxy）
+         → SSE 串流回傳 OpenAI 格式 + thinking block + 來源清單
+
+Fork 時要改哪些：
+  - ``retrieve_context()`` — 整個檢索邏輯。換成你的 knowledge backend。
+  - ``SYSTEM_PROMPT`` — 你的 agent 人格與回覆格式要求。
+  - ``_forward_stream()`` / ``_collect_stream()`` — 若 LLM backend 非 OpenAI-compat。
+  - ``lifespan()`` — 開關 pgvector 連線；改為你要的資源（Redis / Milvus / API client）。
 
 啟動：
     python3 api.py
+    # 或
     uvicorn api:app --host 0.0.0.0 --port 24786
+
+更多細節見根 README.md 的「Fork → 部署 流程」章節。
 """
 
 from __future__ import annotations
@@ -87,24 +99,40 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="ANILA RAG API", version="1.0.0", lifespan=lifespan)
 
-# Add CSP service-token auth middleware (skipped when _CSP_SERVICE_TOKEN is None)
-try:
-    from anila_core.api.middleware.auth import CspServiceTokenMiddleware
-    app.add_middleware(
-        CspServiceTokenMiddleware,
-        service_token=_CSP_SERVICE_TOKEN,
-        dev_mode=(not _CSP_SERVICE_TOKEN),
-    )
-except ImportError:
+# Add CSP service-token auth middleware.
+# SECURITY: when CSP_SERVICE_TOKEN is set, the middleware MUST load. An import
+# failure would otherwise silently drop auth and expose the agent endpoint. So
+# we only tolerate the ImportError fallthrough when no token is configured
+# (explicit local-dev mode).
+_middleware_loaded = False
+for _import_path in (
+    "anila_core.api.middleware.auth",
+    "src.anila_core.api.middleware.auth",
+):
     try:
-        from src.anila_core.api.middleware.auth import CspServiceTokenMiddleware
+        _mod = __import__(_import_path, fromlist=["CspServiceTokenMiddleware"])
+        CspServiceTokenMiddleware = _mod.CspServiceTokenMiddleware
         app.add_middleware(
             CspServiceTokenMiddleware,
             service_token=_CSP_SERVICE_TOKEN,
             dev_mode=(not _CSP_SERVICE_TOKEN),
         )
+        _middleware_loaded = True
+        break
     except ImportError:
-        logger.warning("CspServiceTokenMiddleware not available — auth skipped")
+        continue
+
+if not _middleware_loaded:
+    if _CSP_SERVICE_TOKEN:
+        raise RuntimeError(
+            "CspServiceTokenMiddleware failed to import but CSP_SERVICE_TOKEN is "
+            "set. Refusing to start the agent unauthenticated. Check the "
+            "`anila_core` package is installed / on PYTHONPATH before running."
+        )
+    logger.warning(
+        "CspServiceTokenMiddleware not available and no CSP_SERVICE_TOKEN set — "
+        "running without service-to-service auth (local dev only)."
+    )
 
 
 # ── /v1/models ────────────────────────────────────────────────────────────────
@@ -328,6 +356,14 @@ async def _post_chat_completion(payload: dict, headers: dict) -> dict:
         resp.raise_for_status()
         return resp.json()
 
+
+# ═════════════════════════════════════════════════════════════════════════════
+# FORK ME ↓↓↓ — 以下是範例 RAG 實作。
+# 你要把這整塊換成自己的檢索邏輯（外部 API / 另一個模型 / 自建 index 等）。
+# 唯一的合約：``retrieve_context(messages)`` 必須回傳
+#   (context_for_llm: str, trace_for_thinking_block: str, sources_for_reply: str)
+# 三個字串。前兩個是 thinking block / 注入訊息用，最後一個是回覆末尾來源清單。
+# ═════════════════════════════════════════════════════════════════════════════
 
 # ── RAG helpers ───────────────────────────────────────────────────────────────
 
@@ -556,6 +592,11 @@ def inject_context(messages: list[dict], context: str) -> list[dict]:
                              [{"type": "text", "text": context + "\n\n"}] + orig}
             return result
     return result
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# FORK ME ↑↑↑ — 以上為範例 RAG 實作結束
+# ═════════════════════════════════════════════════════════════════════════════
 
 
 def _last_user_text(messages: list[dict]) -> str:

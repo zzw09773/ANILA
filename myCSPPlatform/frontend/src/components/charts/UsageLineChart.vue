@@ -1,9 +1,18 @@
 <template>
-  <div ref="chartRef" class="w-full" :style="{ height: height + 'px' }"></div>
+  <div class="relative w-full" :style="{ height: height + 'px' }">
+    <div ref="chartRef" class="w-full h-full"></div>
+    <div
+      v-if="isEmpty"
+      class="absolute inset-0 flex flex-col items-center justify-center text-gray-400 pointer-events-none"
+    >
+      <div class="text-sm">目前無可用用量資料</div>
+      <div class="text-xs mt-1">完成幾筆請求後，此圖會自動更新。</div>
+    </div>
+  </div>
 </template>
 
 <script setup>
-import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import * as echarts from 'echarts/core'
 import { LineChart } from 'echarts/charts'
 import {
@@ -33,6 +42,18 @@ const props = defineProps({
 const chartRef = ref(null)
 let chart = null
 
+const isEmpty = computed(() => {
+  const data = props.chartData
+  if (!data) return true
+  const timestamps = Array.isArray(data.timestamps) ? data.timestamps : []
+  const series = Array.isArray(data.series) ? data.series : []
+  if (timestamps.length === 0 || series.length === 0) return true
+  return series.every((s) => {
+    const points = Array.isArray(s?.data) ? s.data : []
+    return points.every((v) => !v)
+  })
+})
+
 function renderChart() {
   if (!chartRef.value || !props.chartData) return
 
@@ -41,6 +62,10 @@ function renderChart() {
   }
 
   const { timestamps, series } = props.chartData
+  if (!Array.isArray(timestamps) || !Array.isArray(series) || timestamps.length === 0) {
+    chart.clear()
+    return
+  }
 
   const xData = timestamps.map((ts) => {
     const d = new Date(ts * 1000)

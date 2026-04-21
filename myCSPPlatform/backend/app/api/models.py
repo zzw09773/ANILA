@@ -3,7 +3,9 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.database import get_db
+from app.models.agent import Agent
 from app.models.model_registry import ModelRegistry
+from app.models.token_usage import TokenUsage
 from app.models.user import User
 from app.schemas.model_registry import ModelCreate, ModelUpdate, ModelResponse
 from app.services.audit_service import log_audit_event
@@ -158,6 +160,52 @@ def deactivate_model(
         commit=True,
     )
     return {"message": "模型已停用"}
+
+
+@router.delete("/{model_id}/purge")
+def purge_model(
+    model_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Hard-delete a model. Blocked if token_usage or other models reference it."""
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+
+    usage_count = db.query(TokenUsage).filter(TokenUsage.model_id == model_id).count()
+    if usage_count > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=f"此模型尚有 {usage_count} 筆用量紀錄，無法硬刪除。請改以「停用」保留歷史",
+        )
+
+    dependent_count = (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.base_model_id == model_id)
+        .count()
+    )
+    if dependent_count > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=f"尚有 {dependent_count} 個模型以此為底層模型，請先解除關聯",
+        )
+
+    display_name = model.display_name
+    # agents.base_model_id will be set NULL via ondelete="SET NULL"
+    # user_allowed_models / api_key_allowed_models cascade delete
+    db.delete(model)
+    db.commit()
+    log_audit_event(
+        db,
+        actor=admin,
+        action="delete",
+        resource_type="model",
+        resource_id=model_id,
+        detail=f"刪除模型「{display_name}」",
+        commit=True,
+    )
+    return {"message": f"已刪除模型「{display_name}」"}
 
 
 @router.post("/{model_id}/health-check")

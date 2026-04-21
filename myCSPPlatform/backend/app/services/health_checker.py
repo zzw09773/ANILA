@@ -1,10 +1,11 @@
-"""Background task to periodically check model endpoint health."""
+"""Background task to periodically check model and agent endpoint health."""
 import asyncio
 import logging
 from datetime import datetime, timezone
 import httpx
 from app.database import SessionLocal
 from app.models.model_registry import ModelRegistry
+from app.models.agent import Agent
 from app.config import settings
 from app.services.alert_service import resolve_alert_by_fingerprint, upsert_alert
 
@@ -84,8 +85,63 @@ async def _health_check_loop():
         await asyncio.sleep(settings.HEALTH_CHECK_INTERVAL)
 
 
+async def _agent_health_check_loop():
+    """Periodically check all approved agent endpoints."""
+    while True:
+        try:
+            db = SessionLocal()
+            try:
+                agents = (
+                    db.query(Agent)
+                    .filter(Agent.approval_status == "approved")
+                    .all()
+                )
+                for agent in agents:
+                    status = await check_model_health(agent.id, agent.endpoint_url)
+                    if agent.health_status != status:
+                        logger.info(
+                            "Agent %s 狀態變更: %s -> %s", agent.name,
+                            agent.health_status, status,
+                        )
+                    fingerprint = f"health:agent:{agent.id}"
+                    if status == "offline":
+                        upsert_alert(
+                            db,
+                            fingerprint=fingerprint,
+                            category="health",
+                            severity="high",
+                            title=f"Agent {agent.name} 離線",
+                            message=f"無法連線至 {agent.endpoint_url}",
+                            source_type="agent",
+                            source_id=agent.id,
+                            metadata={"agent_name": agent.name,
+                                      "endpoint_url": agent.endpoint_url},
+                        )
+                    elif status == "online":
+                        resolve_alert_by_fingerprint(db, fingerprint)
+                    agent.health_status = status
+                db.commit()
+            finally:
+                db.close()
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.error("Agent 健康檢查迴圈錯誤: %s", exc)
+
+        await asyncio.sleep(settings.HEALTH_CHECK_INTERVAL)
+
+
 async def start_health_checker() -> asyncio.Task:
-    """Start the background health checker task."""
-    task = asyncio.create_task(_health_check_loop())
-    logger.info("模型健康檢查背景任務已啟動")
-    return task
+    """Start background health checker tasks for models and agents."""
+    async def _run_all() -> None:
+        model_task = asyncio.create_task(_health_check_loop())
+        agent_task = asyncio.create_task(_agent_health_check_loop())
+        try:
+            await asyncio.gather(model_task, agent_task, return_exceptions=True)
+        finally:
+            for task in (model_task, agent_task):
+                if not task.done():
+                    task.cancel()
+
+    logger.info("模型 + Agent 健康檢查背景任務已啟動")
+    return asyncio.create_task(_run_all())

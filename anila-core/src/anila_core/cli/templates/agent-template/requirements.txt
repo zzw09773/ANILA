@@ -1,0 +1,2 @@
+anila-core>=0.1.0
+uvicorn[standard]>=0.29

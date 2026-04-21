@@ -3,8 +3,12 @@
 Credential tier: JWT access token for all endpoints here.
 Data plane list endpoint (GET /v1/agents, API Key auth) lives in proxy.py.
 """
+import io
+import zipfile
 from datetime import datetime, timezone
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.database import get_db
@@ -13,7 +17,25 @@ from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user, require_admin
 
+import os as _os
+_TEMPLATE_DIR = Path(
+    _os.environ.get(
+        "ANILA_TEMPLATE_DIR",
+        str(Path(__file__).parent.parent.parent.parent.parent / "AgenticRAG"),
+    )
+)
+
 router = APIRouter(prefix="/api/agents", tags=["Agent 管理"])
+
+_IGNORED_TEMPLATE_PARTS = {
+    ".git",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+}
+_IGNORED_TEMPLATE_SUFFIXES = {".pyc", ".pyo"}
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -37,9 +59,14 @@ class AgentResponse(BaseModel):
     description_for_router: str
     health_status: str
     approval_status: str
+    requires_encryption: bool = False
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class AgentEncryptionUpdate(BaseModel):
+    requires_encryption: bool
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -50,7 +77,40 @@ def _require_developer_or_admin(current_user: User = Depends(get_current_user)) 
     return current_user
 
 
+def _should_include_template_path(path: Path, root: Path) -> bool:
+    relative = path.relative_to(root)
+    if any(part in _IGNORED_TEMPLATE_PARTS for part in relative.parts):
+        return False
+    if path.suffix in _IGNORED_TEMPLATE_SUFFIXES:
+        return False
+    return path.is_file()
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@router.get("/template/download")
+def download_template(
+    current_user: User = Depends(_require_developer_or_admin),
+) -> StreamingResponse:
+    """Serve the official anila-core template mirroring the AgenticRAG project."""
+    buf = io.BytesIO()
+    template_dir = _TEMPLATE_DIR
+    if not template_dir.exists():
+        raise HTTPException(status_code=404, detail="Template not found on server")
+
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in sorted(template_dir.rglob("*")):
+            if _should_include_template_path(path, template_dir):
+                arcname = "anila-core-template/" + path.relative_to(template_dir).as_posix()
+                zf.write(path, arcname)
+
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=anila-core-template.zip"},
+    )
+
 
 @router.post("/register", response_model=AgentResponse)
 def register_agent(
@@ -131,6 +191,31 @@ def approve_agent(
     return {"message": f"已核准 agent「{agent.name}」"}
 
 
+@router.post("/{agent_id}/encryption")
+def set_agent_encryption(
+    agent_id: int,
+    payload: AgentEncryptionUpdate,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent 不存在")
+    agent.requires_encryption = payload.requires_encryption
+    db.commit()
+    db.refresh(agent)
+    log_audit_event(
+        db, actor=admin, action="set_encryption", resource_type="agent",
+        resource_id=agent.id,
+        detail=f"{'啟用' if payload.requires_encryption else '停用'} agent「{agent.name}」加密模式",
+        commit=True,
+    )
+    return {
+        "message": f"已更新 agent「{agent.name}」的加密設定",
+        "requires_encryption": agent.requires_encryption,
+    }
+
+
 @router.post("/{agent_id}/reject")
 def reject_agent(
     agent_id: int,
@@ -149,3 +234,22 @@ def reject_agent(
         resource_id=agent.id, detail=f"拒絕 agent「{agent.name}」", commit=True,
     )
     return {"message": f"已拒絕 agent「{agent.name}」"}
+
+
+@router.delete("/{agent_id}")
+def delete_agent(
+    agent_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent 不存在")
+    agent_name = agent.name
+    db.delete(agent)
+    db.commit()
+    log_audit_event(
+        db, actor=admin, action="delete", resource_type="agent",
+        resource_id=agent_id, detail=f"刪除 agent「{agent_name}」", commit=True,
+    )
+    return {"message": f"已刪除 agent「{agent_name}」"}

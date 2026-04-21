@@ -1,46 +1,56 @@
+# syntax=docker/dockerfile:1.6
+#
+# Build context: the parent D:/ANILA directory, so that the sibling `anila-core/`
+# package is visible during install (AgenticRAG/pyproject.toml has
+# `anila-core = { path = "../anila-core" }` under [tool.uv.sources]).
+#
+# Build command (run from AgenticRAG/):
+#     docker build -f Dockerfile -t anila-rag-sample ..
+#
+# Or simply:
+#     docker compose build
+# (docker-compose.yml sets `context: ..` automatically.)
+#
+# The resulting image runs `api.py` on port 24786 — an OpenAI-compatible
+# chat/completions endpoint with pgvector RAG injection.
+
 # ── Build stage ───────────────────────────────────────────────────────────────
 FROM python:3.11-slim AS builder
 
 WORKDIR /build
 
-# 安裝系統依賴（antiword for .doc、gcc for asyncpg C extension）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    antiword \
-    gcc \
-    libpq-dev \
+      gcc libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# 複製 pyproject.toml + 原始碼，讓 hatchling 能建構 wheel
-COPY pyproject.toml ./
-COPY src/ ./src/
-COPY api.py ./
+# Copy both packages so the path reference resolves.
+COPY anila-core/            /build/anila-core/
+COPY AgenticRAG/pyproject.toml /build/AgenticRAG/
+COPY AgenticRAG/api.py          /build/AgenticRAG/
+COPY AgenticRAG/index_documents.py /build/AgenticRAG/
 
-# 安裝套件（含 [rag] extras）→ anila_core 會被安裝進 site-packages
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir ".[rag]"
+WORKDIR /build/AgenticRAG
 
-# ── Runtime stage ──────────────────────────────────────────────────────────────
+RUN pip install --no-cache-dir --upgrade pip \
+ && pip install --no-cache-dir /build/anila-core \
+ && pip install --no-cache-dir .
+
+# ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime
 
 WORKDIR /app
 
-# 執行期系統依賴
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    antiword \
-    libpq5 \
+      libpq5 \
     && rm -rf /var/lib/apt/lists/*
 
-# 從 builder 複製已安裝的所有 Python 套件（含 anila_core wheel）
 COPY --from=builder /usr/local/lib/python3.11/site-packages \
                     /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
-COPY --from=builder /build/api.py /app/api.py
+COPY --from=builder /build/AgenticRAG/api.py /app/api.py
+COPY --from=builder /build/AgenticRAG/index_documents.py /app/index_documents.py
 
-# 上傳目錄
-RUN mkdir -p /tmp/anila_uploads
-
-# 不以 root 執行
-RUN useradd -m -u 1000 anila && chown -R anila:anila /app /tmp/anila_uploads
+RUN useradd -m -u 1000 anila && chown -R anila:anila /app
 USER anila
 
 EXPOSE 24786
