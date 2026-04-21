@@ -1,18 +1,103 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-Hant">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ANILA Runtime</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
-      rel="stylesheet"
-    />
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ANILA</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<script>
+  // ---- Tweak defaults (host may rewrite this block) ----
+  window.ANILA_TWEAKS = /*EDITMODE-BEGIN*/{
+    "accent": "#a05a2c",
+    "dark": true,
+    "density": 18,
+    "sansFamily": "Noto Sans TC",
+    "monoFamily": "ui-monospace",
+    "agentSwitcherPosition": "bottom",
+    "traceStyle": "collapsible"
+  }/*EDITMODE-END*/;
+</script>
+
+<style>
+  :root {
+    --bg:            oklch(0.985 0.002 90);
+    --bg-elev:       oklch(1 0 0);
+    --bg-subtle:     oklch(0.965 0.003 90);
+    --fg:            oklch(0.18 0.005 270);
+    --fg-muted:      oklch(0.48 0.005 270);
+    --fg-subtle:     oklch(0.62 0.005 270);
+    --border:        oklch(0.91 0.004 270);
+    --border-strong: oklch(0.85 0.005 270);
+    --accent:        #0b7285;
+    --accent-fg:     #ffffff;
+    --accent-soft:   oklch(0.95 0.02 200);
+    --danger:        oklch(0.55 0.18 25);
+    --warn:          oklch(0.72 0.14 75);
+    --success:       oklch(0.58 0.10 150);
+
+    --radius-sm: 4px;
+    --radius:    6px;
+    --radius-lg: 10px;
+
+    --font-sans: "Noto Sans TC", "Inter", system-ui, -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+    --density: 16px;
+  }
+
+  [data-theme="dark"] {
+    --bg:            oklch(0.16 0.004 270);
+    --bg-elev:       oklch(0.20 0.004 270);
+    --bg-subtle:     oklch(0.22 0.004 270);
+    --fg:            oklch(0.96 0.003 90);
+    --fg-muted:      oklch(0.72 0.005 270);
+    --fg-subtle:     oklch(0.55 0.005 270);
+    --border:        oklch(0.28 0.005 270);
+    --border-strong: oklch(0.36 0.005 270);
+    --accent-soft:   oklch(0.30 0.04 200);
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  #root { height: 100%; }
+  button { font-family: inherit; cursor: pointer; }
+  input, textarea { font-family: inherit; }
+  ::selection { background: var(--accent-soft); color: var(--fg); }
+
+  /* Scrollbar — slim */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border-radius: 999px;
+    border: 3px solid var(--bg);
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--fg-subtle); }
+
+  @keyframes anila-blink { 50% { opacity: 0; } }
+
+  .boot-screen {
+    display: flex; align-items: center; justify-content: center;
+    height: 100vh; color: var(--fg-muted);
+    font-family: var(--font-mono); font-size: 13px;
+  }
+</style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.jsx"></script>
+</body>
 </html>

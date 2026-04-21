@@ -1,10 +1,9 @@
-// Multi-agent UX: handoff timeline, parallel compare, @-mention composer (ESM)
-import React from "react";
-import { IconNodes, IconChevRight, IconColumns, IconPlus, IconX, IconCheck } from "./icons.jsx";
-import { Button, IconButton } from "./components.jsx";
+// Multi-agent UX: handoff timeline, parallel compare, @-mention composer
+
+const { useState: _mUS, useEffect: _mUE, useRef: _mUR } = React;
 
 // ---- Handoff Timeline ----
-export const HandoffTimeline = ({ chain, agents }) => {
+const HandoffTimeline = ({ chain, agents }) => {
   if (!chain || chain.length === 0) return null;
   return (
     <div style={{
@@ -32,7 +31,7 @@ export const HandoffTimeline = ({ chain, agents }) => {
                       : "var(--fg-subtle)";
           return (
             <React.Fragment key={i}>
-              <div title={`${step.input_summary || ""} → ${step.output_summary || ""}`} style={{
+              <div title={`${step.input_summary} → ${step.output_summary}`} style={{
                 minWidth: 130,
                 padding: "7px 10px",
                 background: "var(--bg-elev)",
@@ -43,17 +42,15 @@ export const HandoffTimeline = ({ chain, agents }) => {
                 <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 2 }}>
                   <span style={{ width: 6, height: 6, borderRadius: 999, background: color }}/>
                   <span style={{ fontSize: 11, fontWeight: 600, fontFamily: "var(--font-mono)" }}>
-                    {a ? (a.short || a.id) : step.agent_id}
+                    {a ? a.short : step.agent_id}
                   </span>
                 </div>
                 <div style={{ fontSize: 11, color: "var(--fg-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                   {step.label}
                 </div>
-                {step.latency_ms != null && (
-                  <div style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "var(--fg-subtle)", marginTop: 2 }}>
-                    {step.latency_ms}ms
-                  </div>
-                )}
+                <div style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "var(--fg-subtle)", marginTop: 2 }}>
+                  {step.latency_ms}ms
+                </div>
               </div>
               {!last && (
                 <div style={{ display: "flex", alignItems: "center", padding: "0 4px" }}>
@@ -70,19 +67,13 @@ export const HandoffTimeline = ({ chain, agents }) => {
 };
 
 // ---- Parallel Compare Mode ----
-// NOTE: AgentSelector/Composer/MessageBubble are passed in from chat.jsx to avoid circular imports.
-export const ParallelCompareView = ({
-  agents, columns, setColumns, messagesByColumn,
-  onSend, onExit, onAdoptColumn,
-  AgentSelector, Composer, MessageBubble,
-}) => {
+const ParallelCompareView = ({ agents, columns, setColumns, messagesByColumn, onSend, onExit, onAdoptColumn }) => {
   const setColAgent = (idx, id) => {
     setColumns(cs => cs.map((c, i) => i === idx ? { ...c, agentId: id } : c));
   };
   const addColumn = () => {
     if (columns.length >= 3) return;
-    const fallback = agents.find(a => a.id !== "anila-router") || agents[0];
-    setColumns(cs => [...cs, { id: "col-" + Date.now(), agentId: fallback?.id }]);
+    setColumns(cs => [...cs, { id: "col-" + Date.now(), agentId: agents[1].id }]);
   };
   const removeColumn = (idx) => {
     if (columns.length <= 2) return;
@@ -152,7 +143,7 @@ export const ParallelCompareView = ({
       </div>
 
       <div style={{ padding: "10px 14px", borderTop: "1px solid var(--border)", background: "var(--bg)" }}>
-        <Composer onSend={onSend} agents={agents}/>
+        <Composer onSend={onSend} />
         <div style={{
           marginTop: 6, fontSize: 11,
           color: "var(--fg-subtle)", textAlign: "center",
@@ -165,37 +156,34 @@ export const ParallelCompareView = ({
   );
 };
 
-// ---- @ Mention parser ----
-export function parseMentions(text, agents) {
+// ---- @ Mention Composer ----
+// Parses @agent-short tokens from text; returns { content, explicitAgents }
+function parseMentions(text, agents) {
   const re = /@([a-z][\w-]*)/gi;
   const seen = new Set();
   const explicit = [];
+  let stripped = text;
   let m;
   while ((m = re.exec(text)) !== null) {
     const token = m[1].toLowerCase();
-    const a = agents.find(x =>
-      (x.short || "").toLowerCase() === token ||
-      (x.id || "").toLowerCase() === token,
-    );
+    const a = agents.find(x => x.short.toLowerCase() === token || x.id.toLowerCase() === token);
     if (a && !seen.has(a.id)) {
       seen.add(a.id);
       explicit.push(a.id);
     }
   }
-  return { content: text, explicitAgents: explicit };
+  return { content: stripped, explicitAgents: explicit };
 }
 
-export const HighlightedMentions = ({ text, agents }) => {
+// Render composer text with @-mentions highlighted
+const HighlightedMentions = ({ text, agents }) => {
   if (!text) return null;
   const re = /@([a-z][\w-]*)/gi;
   const parts = [];
   let last = 0, m, key = 0;
   while ((m = re.exec(text)) !== null) {
     const token = m[1].toLowerCase();
-    const a = agents.find(x =>
-      (x.short || "").toLowerCase() === token ||
-      (x.id || "").toLowerCase() === token,
-    );
+    const a = agents.find(x => x.short.toLowerCase() === token || x.id.toLowerCase() === token);
     if (m.index > last) parts.push(<span key={key++}>{text.slice(last, m.index)}</span>);
     if (a) {
       parts.push(<span key={key++} style={{
@@ -210,3 +198,8 @@ export const HighlightedMentions = ({ text, agents }) => {
   if (last < text.length) parts.push(<span key={key++}>{text.slice(last)}</span>);
   return parts;
 };
+
+Object.assign(window, {
+  HandoffTimeline, ParallelCompareView,
+  parseMentions, HighlightedMentions,
+});

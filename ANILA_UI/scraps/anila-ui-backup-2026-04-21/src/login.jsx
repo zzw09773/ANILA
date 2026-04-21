@@ -1,87 +1,26 @@
-// Login view — real CSP JWT auth + API Key validation (ESM)
-import React, { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+// Login view
 
-import { config } from "./runtime/api.js";
-import { useAuth } from "./runtime/auth.jsx";
-import { Button, IconButton, Input } from "./components.jsx";
-import {
-  AnilaGlyph,
-  IconArrowRight,
-  IconEye,
-  IconEyeOff,
-  IconKey,
-  IconUser,
-} from "./icons.jsx";
-
-export const LoginView = () => {
-  const navigate = useNavigate();
-  const { login, providers } = useAuth();
+const LoginView = ({ onLogin }) => {
   const [username, setUsername] = useState("alice.chen");
   const [password, setPassword] = useState("demo-password");
-  const [apiKey, setApiKey] = useState("");
+  const [apiKey, setApiKey] = useState("sk-anila-demo-0000000000000000000000");
   const [showPw, setShowPw] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [method, setMethod] = useState("local");
+  const [method, setMethod] = useState("local"); // local | oidc | ldap
 
-  const oidcProviders = useMemo(
-    () => providers.filter((p) => p.provider_type === "oidc"),
-    [providers],
-  );
-  const ldapProviders = useMemo(
-    () => providers.filter((p) => p.provider_type === "ldap"),
-    [providers],
-  );
-
-  async function submit(event) {
-    event.preventDefault();
+  const submit = (e) => {
+    e.preventDefault();
     setError("");
-
-    if (method !== "oidc") {
-      if (!username || !password) {
-        setError("請輸入帳號與密碼");
-        return;
-      }
-      if (apiKey && !apiKey.startsWith("sk-")) {
-        setError("CSP API Key 格式錯誤（須以 sk- 開頭）");
-        return;
-      }
-    }
-
+    if (!username || !password) { setError("請輸入帳號與密碼"); return; }
+    if (!apiKey.startsWith("sk-")) { setError("CSP API Key 格式錯誤（須以 sk- 開頭）"); return; }
     setLoading(true);
-    try {
-      if (method === "oidc") {
-        const provider = oidcProviders[0];
-        if (!provider) {
-          throw new Error("目前沒有可用的 OIDC Provider");
-        }
-        const response = await fetch(
-          `${config.cspBaseUrl}/api/auth/oidc/${provider.id}/start?next_path=/app`,
-        );
-        if (!response.ok) {
-          throw new Error("無法啟動 OIDC 登入");
-        }
-        const payload = await response.json();
-        window.location.assign(payload.authorization_url);
-        return;
-      }
-
-      await login({
-        username,
-        password,
-        authSource: method,
-        providerId: method === "ldap" ? ldapProviders[0]?.id : undefined,
-        apiKey,
-      });
-      navigate("/app", { replace: true });
-    } catch (submitError) {
-      setError(submitError.message || "登入失敗");
-    } finally {
+    setTimeout(() => {
       setLoading(false);
-    }
-  }
+      onLogin({ username, apiKey });
+    }, 900);
+  };
 
   return (
     <div style={{
@@ -89,6 +28,7 @@ export const LoginView = () => {
       gridTemplateColumns: "1fr 1fr",
       background: "var(--bg)",
     }}>
+      {/* Left — brand panel */}
       <div style={{
         background: "var(--bg-subtle)",
         borderRight: "1px solid var(--border)",
@@ -96,6 +36,7 @@ export const LoginView = () => {
         display: "flex", flexDirection: "column", justifyContent: "space-between",
         position: "relative", overflow: "hidden",
       }}>
+        {/* subtle grid pattern */}
         <div aria-hidden style={{
           position: "absolute", inset: 0, opacity: 0.4,
           backgroundImage:
@@ -106,13 +47,13 @@ export const LoginView = () => {
           WebkitMaskImage: "radial-gradient(ellipse at 30% 40%, black 20%, transparent 75%)",
         }}/>
         <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 10 }}>
-          <AnilaGlyph size={28}/>
+          <AnilaGlyph size={28} />
           <div style={{ fontWeight: 600, fontSize: 16, letterSpacing: 0.2 }}>ANILA</div>
         </div>
 
         <div style={{ position: "relative" }}>
           <div style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--fg-subtle)", marginBottom: 12, letterSpacing: 0.5 }}>
-            RUNTIME CLIENT · v0.2
+            RUNTIME CLIENT · v0.1
           </div>
           <h1 style={{ margin: 0, fontSize: 40, fontWeight: 600, lineHeight: 1.15, letterSpacing: -0.5, textWrap: "pretty" }}>
             一個入口，<br/>通往所有 agent。
@@ -125,29 +66,24 @@ export const LoginView = () => {
 
         <div style={{ position: "relative", display: "flex", gap: 24, color: "var(--fg-subtle)", fontSize: 11, fontFamily: "var(--font-mono)" }}>
           <span>router: healthy</span>
-          <span>agents: dynamic</span>
+          <span>agents: 6 available</span>
           <span>csp: 200 OK</span>
         </div>
       </div>
 
+      {/* Right — form */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 40 }}>
         <form onSubmit={submit} style={{ width: "100%", maxWidth: 380 }}>
           <div style={{ fontSize: 20, fontWeight: 600, marginBottom: 4 }}>登入</div>
-          <div style={{ fontSize: 13, color: "var(--fg-muted)", marginBottom: 24 }}>
-            使用 CSP 帳號登入，並綁定一把由 CSP 核發的 API Key
-          </div>
+          <div style={{ fontSize: 13, color: "var(--fg-muted)", marginBottom: 24 }}>使用 CSP 帳號與 API Key 進入 ANILA</div>
 
-          <div style={{
-            display: "flex", gap: 2,
-            background: "var(--bg-subtle)", padding: 3,
-            borderRadius: "var(--radius)", marginBottom: 20,
-            border: "1px solid var(--border)",
-          }}>
+          {/* auth method tabs */}
+          <div style={{ display: "flex", gap: 2, background: "var(--bg-subtle)", padding: 3, borderRadius: "var(--radius)", marginBottom: 20, border: "1px solid var(--border)" }}>
             {[
               { id: "local", label: "本機帳號" },
               { id: "ldap",  label: "LDAP" },
               { id: "oidc",  label: "SSO" },
-            ].map((t) => (
+            ].map(t => (
               <button key={t.id} type="button" onClick={() => setMethod(t.id)} style={{
                 flex: 1, padding: "6px 10px", fontSize: 12, fontWeight: 500,
                 background: method === t.id ? "var(--bg-elev)" : "transparent",
@@ -161,34 +97,31 @@ export const LoginView = () => {
 
           {method !== "oidc" ? (
             <div style={{ display: "grid", gap: 12 }}>
-              <Input label="帳號" value={username} onChange={(e) => setUsername(e.target.value)}
+              <Input label="帳號" value={username} onChange={e => setUsername(e.target.value)}
                 leftIcon={<IconUser size={14}/>}
-                placeholder={method === "ldap" ? "corp\\username" : "username"}/>
+                placeholder={method === "ldap" ? "corp\\username" : "username"} />
               <Input label="密碼" type={showPw ? "text" : "password"}
-                value={password} onChange={(e) => setPassword(e.target.value)}
+                value={password} onChange={e => setPassword(e.target.value)}
                 rightEl={
-                  <IconButton type="button" onClick={() => setShowPw((s) => !s)}>
+                  <IconButton type="button" onClick={() => setShowPw(s => !s)}>
                     {showPw ? <IconEyeOff/> : <IconEye/>}
                   </IconButton>
                 }/>
               <Input label="CSP API Key" type={showKey ? "text" : "password"}
-                value={apiKey} onChange={(e) => setApiKey(e.target.value)}
+                value={apiKey} onChange={e => setApiKey(e.target.value)}
                 leftIcon={<IconKey size={14}/>}
                 hint="由 CSP 控制面 → API Keys 頁面核發，格式 sk-..."
                 rightEl={
-                  <IconButton type="button" onClick={() => setShowKey((s) => !s)}>
+                  <IconButton type="button" onClick={() => setShowKey(s => !s)}>
                     {showKey ? <IconEyeOff/> : <IconEye/>}
                   </IconButton>
                 }/>
 
-              {error && (
-                <div style={{
-                  fontSize: 12, color: "var(--danger)",
-                  background: "oklch(0.97 0.03 25)",
-                  border: "1px solid oklch(0.88 0.08 25)",
-                  padding: "8px 10px", borderRadius: "var(--radius)",
-                }}>{error}</div>
-              )}
+              {error && <div style={{
+                fontSize: 12, color: "var(--danger)",
+                background: "oklch(0.97 0.03 25)", border: "1px solid oklch(0.88 0.08 25)",
+                padding: "8px 10px", borderRadius: "var(--radius)",
+              }}>{error}</div>}
 
               <Button variant="primary" size="lg" type="submit" disabled={loading}
                 rightIcon={loading ? null : <IconArrowRight/>}
@@ -203,23 +136,11 @@ export const LoginView = () => {
                 borderRadius: "var(--radius)", background: "var(--bg-subtle)",
                 fontSize: 13, color: "var(--fg-muted)", marginBottom: 16,
               }}>
-                將跳轉到企業 SSO 登入頁面。登入後 CSP 會回帶 access / refresh token，
-                再由控制面完成身分建立後導回 /app。
+                將跳轉到企業 SSO 登入頁面。登入後系統會自動回帶 API Key。
               </div>
-              {error && (
-                <div style={{
-                  fontSize: 12, color: "var(--danger)",
-                  background: "oklch(0.97 0.03 25)",
-                  border: "1px solid oklch(0.88 0.08 25)",
-                  padding: "8px 10px", borderRadius: "var(--radius)",
-                  marginBottom: 12,
-                }}>{error}</div>
-              )}
-              <Button variant="primary" size="lg" type="submit" disabled={loading || oidcProviders.length === 0}
+              <Button variant="primary" size="lg" type="button" onClick={() => onLogin({ username: "sso.user", apiKey })}
                 style={{ width: "100%", justifyContent: "center" }}
-                rightIcon={<IconArrowRight/>}>
-                {loading ? "導向中…" : oidcProviders.length === 0 ? "沒有可用的 SSO Provider" : "透過 SSO 登入"}
-              </Button>
+                rightIcon={<IconArrowRight/>}>透過 SSO 登入</Button>
             </div>
           )}
 
@@ -232,3 +153,5 @@ export const LoginView = () => {
     </div>
   );
 };
+
+window.LoginView = LoginView;
