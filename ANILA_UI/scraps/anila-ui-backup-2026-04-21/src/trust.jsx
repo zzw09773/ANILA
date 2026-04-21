@@ -1,11 +1,17 @@
-// Trust & transparency components (ESM)
-import React, { useState } from "react";
-import { IconBook, IconX, IconExternal, IconShield, IconGauge } from "./icons.jsx";
-import { IconButton } from "./components.jsx";
-import { renderWithRedaction } from "./data.jsx";
+// Trust & transparency components:
+// - CitationInline (the [1] superscript)
+// - CitationsDrawer
+// - RedactionChip (composer hint)
+// - RedactedSpan (user bubble rendered with masked tokens)
+// - ConfidenceChip
+// - FollowUpSuggestions
+// - AuditWatermark
+// - ClassifiedBadge / ConfidentialBanner
+
+const { useState: _tUS, useEffect: _tUE, useMemo: _tUM } = React;
 
 // ---- Inline citation [N] ----
-export const CitationInline = ({ n, citation, onOpen }) => (
+const CitationInline = ({ n, citation, onOpen }) => (
   <button
     onClick={() => onOpen?.(citation)}
     title={citation ? `${citation.title} · ${citation.section}` : ""}
@@ -26,7 +32,7 @@ export const CitationInline = ({ n, citation, onOpen }) => (
 );
 
 // Render assistant text, replacing [N] markers with CitationInline
-export const renderTextWithCitations = (text, citations, onOpen) => {
+const renderTextWithCitations = (text, citations, onOpen) => {
   if (!text) return null;
   if (!citations || citations.length === 0) return text;
   const re = /\[(\d+)\]/g;
@@ -44,7 +50,7 @@ export const renderTextWithCitations = (text, citations, onOpen) => {
 };
 
 // ---- Citations Drawer ----
-export const CitationsDrawer = ({ open, citations, activeId, onClose, onJumpTo }) => {
+const CitationsDrawer = ({ open, citations, activeId, onClose, onJumpTo }) => {
   if (!open) return null;
   return (
     <div style={{
@@ -97,56 +103,47 @@ export const CitationsDrawer = ({ open, citations, activeId, onClose, onJumpTo }
                 borderRadius: 4,
               }}>{i + 1}</span>
               <div style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>{c.title}</div>
-              {typeof c.score === "number" && (
-                <span style={{
-                  fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-subtle)",
-                }}>{Math.round(c.score * 100)}%</span>
-              )}
+              <span style={{
+                fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-subtle)",
+              }}>{Math.round(c.score * 100)}%</span>
             </div>
-            {c.section && <div style={{ fontSize: 11, color: "var(--fg-muted)", marginBottom: 6 }}>{c.section}</div>}
-            {c.snippet && (
+            <div style={{ fontSize: 11, color: "var(--fg-muted)", marginBottom: 6 }}>{c.section}</div>
+            <div style={{
+              padding: "7px 9px",
+              background: "var(--bg-subtle)",
+              borderLeft: "2px solid var(--border-strong)",
+              fontSize: 12, lineHeight: 1.6, color: "var(--fg)",
+              borderRadius: 3,
+              marginBottom: 8,
+            }}>{c.snippet}</div>
+            {/* relevance bar */}
+            <div style={{
+              height: 3, background: "var(--bg-subtle)",
+              borderRadius: 999, overflow: "hidden", marginBottom: 8,
+            }}>
               <div style={{
-                padding: "7px 9px",
-                background: "var(--bg-subtle)",
-                borderLeft: "2px solid var(--border-strong)",
-                fontSize: 12, lineHeight: 1.6, color: "var(--fg)",
-                borderRadius: 3,
-                marginBottom: 8,
-              }}>{c.snippet}</div>
-            )}
-            {typeof c.score === "number" && (
-              <div style={{
-                height: 3, background: "var(--bg-subtle)",
-                borderRadius: 999, overflow: "hidden", marginBottom: 8,
-              }}>
-                <div style={{
-                  width: `${Math.round(c.score * 100)}%`, height: "100%",
-                  background: "var(--accent)",
-                }} />
-              </div>
-            )}
+                width: `${Math.round(c.score * 100)}%`, height: "100%",
+                background: "var(--accent)",
+              }} />
+            </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              {c.updated_at && (
-                <span style={{ fontSize: 10, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>
-                  updated {c.updated_at}
-                </span>
-              )}
+              <span style={{ fontSize: 10, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>
+                updated {c.updated_at}
+              </span>
               <div style={{ flex: 1 }} />
-              {c.source_uri && (
-                <button
-                  onClick={() => onJumpTo?.(c)}
-                  style={{
-                    display: "inline-flex", alignItems: "center", gap: 4,
-                    padding: "3px 8px",
-                    background: "transparent",
-                    border: "1px solid var(--border)",
-                    borderRadius: "var(--radius)",
-                    fontSize: 11, color: "var(--fg-muted)",
-                    cursor: "pointer",
-                  }}>
-                  <IconExternal size={11} />開啟原文
-                </button>
-              )}
+              <button
+                onClick={() => onJumpTo?.(c)}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 4,
+                  padding: "3px 8px",
+                  background: "transparent",
+                  border: "1px solid var(--border)",
+                  borderRadius: "var(--radius)",
+                  fontSize: 11, color: "var(--fg-muted)",
+                  cursor: "pointer",
+                }}>
+                <IconExternal size={11} />開啟原文
+              </button>
             </div>
           </div>
         ))}
@@ -156,7 +153,7 @@ export const CitationsDrawer = ({ open, citations, activeId, onClose, onJumpTo }
 };
 
 // ---- Redaction composer hint ----
-export const RedactionHint = ({ hits, mode, onChangeMode }) => {
+const RedactionHint = ({ hits, mode, onChangeMode }) => {
   if (!hits || hits.length === 0) return null;
   const byKind = {};
   hits.forEach(h => { byKind[h.label] = (byKind[h.label] || 0) + 1; });
@@ -193,7 +190,7 @@ export const RedactionHint = ({ hits, mode, onChangeMode }) => {
 };
 
 // ---- RedactedSpan (in user bubble) ----
-export const RedactedSpan = ({ kind, label, masked }) => (
+const RedactedSpan = ({ kind, label, masked }) => (
   <span
     title={`已於 CSP 層遮罩 · kind=${kind} · LLM 未接觸原值`}
     style={{
@@ -211,7 +208,8 @@ export const RedactedSpan = ({ kind, label, masked }) => (
   </span>
 );
 
-export const RenderRedactedText = ({ text, hits }) => {
+// Render user text (which may contain redacted nodes from renderWithRedaction)
+const RenderRedactedText = ({ text, hits }) => {
   const parts = renderWithRedaction(text, hits);
   if (typeof parts === "string") return parts;
   return parts.map((p, i) => {
@@ -221,7 +219,7 @@ export const RenderRedactedText = ({ text, hits }) => {
 };
 
 // ---- Confidence chip ----
-export const ConfidenceChip = ({ confidence }) => {
+const ConfidenceChip = ({ confidence }) => {
   if (!confidence) return null;
   const { level, score } = confidence;
   const colors = {
@@ -250,7 +248,7 @@ export const ConfidenceChip = ({ confidence }) => {
 };
 
 // ---- Follow-up suggestions (shown when confidence is low/medium) ----
-export const FollowUpSuggestions = ({ suggestions, confidence, onPick }) => {
+const FollowUpSuggestions = ({ suggestions, confidence, onPick }) => {
   if (!suggestions || suggestions.length === 0) return null;
   const isLow = confidence?.level === "low" || confidence?.level === "medium";
   if (!isLow) return null;
@@ -289,8 +287,8 @@ export const FollowUpSuggestions = ({ suggestions, confidence, onPick }) => {
 };
 
 // ---- Audit watermark ----
-export const AuditWatermark = ({ traceId, conversationId, latencyMs, timestamp }) => {
-  const [copied, setCopied] = useState(false);
+const AuditWatermark = ({ traceId, conversationId, latencyMs, timestamp }) => {
+  const [copied, setCopied] = _tUS(false);
   if (!traceId) return null;
   const fullText = `trace: ${traceId} · conv: ${conversationId || "—"} · ${timestamp || "—"} · ${latencyMs || "—"}ms`;
 
@@ -325,7 +323,7 @@ export const AuditWatermark = ({ traceId, conversationId, latencyMs, timestamp }
 };
 
 // ---- Classified / Confidential badges ----
-export const ClassifiedCorner = () => (
+const ClassifiedCorner = () => (
   <div style={{
     position: "absolute", top: 0, right: 0,
     padding: "1px 7px",
@@ -337,7 +335,7 @@ export const ClassifiedCorner = () => (
   }}>CONFIDENTIAL</div>
 );
 
-export const ConfidentialWatermark = ({ userEmail, traceId }) => (
+const ConfidentialWatermark = ({ userEmail, traceId }) => (
   <div aria-hidden="true" style={{
     position: "fixed", inset: 0, pointerEvents: "none",
     zIndex: 4,
@@ -362,3 +360,10 @@ export const ConfidentialWatermark = ({ userEmail, traceId }) => (
     </div>
   </div>
 );
+
+Object.assign(window, {
+  CitationInline, CitationsDrawer, renderTextWithCitations,
+  RedactionHint, RedactedSpan, RenderRedactedText,
+  ConfidenceChip, FollowUpSuggestions,
+  AuditWatermark, ClassifiedCorner, ConfidentialWatermark,
+});

@@ -1,15 +1,14 @@
-// Collaboration: share dialog, handoff-to menu, tag/folder editor (ESM)
-import React, { useState } from "react";
-import { IconShield, IconLink, IconX, IconCheck, IconStar, IconFolder } from "./icons.jsx";
-import { Button, Modal, MenuItem, Divider, Input } from "./components.jsx";
+// Collaboration: share dialog, folder sidebar section, classified toggle, handoff-to menu
+
+const { useState: _cUS } = React;
 
 // ---- Share Dialog ----
-export const ShareDialog = ({ open, onClose, conversation, user }) => {
-  const [ttl, setTtl] = useState("24h");
-  const [scope, setScope] = useState("org");
-  const [allowFork, setAllowFork] = useState(true);
-  const [linkCreated, setLinkCreated] = useState(null);
-  const [copied, setCopied] = useState(false);
+const ShareDialog = ({ open, onClose, conversation, user }) => {
+  const [ttl, setTtl] = _cUS("24h");
+  const [scope, setScope] = _cUS("org");
+  const [allowFork, setAllowFork] = _cUS(true);
+  const [linkCreated, setLinkCreated] = _cUS(null);
+  const [copied, setCopied] = _cUS(false);
 
   if (!open) return null;
 
@@ -108,9 +107,9 @@ export const ShareDialog = ({ open, onClose, conversation, user }) => {
 };
 
 // ---- Handoff to Agent / User menu ----
-export const HandoffMenu = ({ agents, currentAgentId, onHandoffAgent, onHandoffUser, close }) => {
-  const [mode, setMode] = useState("agent");
-  const [user, setUser] = useState("");
+const HandoffMenu = ({ agents, currentAgentId, onHandoffAgent, onHandoffUser, close }) => {
+  const [mode, setMode] = _cUS("agent");
+  const [user, setUser] = _cUS("");
 
   return (
     <div style={{ minWidth: 260 }}>
@@ -136,7 +135,7 @@ export const HandoffMenu = ({ agents, currentAgentId, onHandoffAgent, onHandoffU
               leftIcon={<div style={{ width: 10, height: 10, border: "1px solid var(--border-strong)", borderRadius: 2 }}/>}>
               <div>
                 <div style={{ fontSize: 12, fontWeight: 500 }}>{a.name}</div>
-                <div style={{ fontSize: 10, color: "var(--fg-muted)", fontFamily: "var(--font-mono)" }}>{a.short || a.id}</div>
+                <div style={{ fontSize: 10, color: "var(--fg-muted)", fontFamily: "var(--font-mono)" }}>{a.short}</div>
               </div>
             </MenuItem>
           ))}
@@ -156,8 +155,8 @@ export const HandoffMenu = ({ agents, currentAgentId, onHandoffAgent, onHandoffU
 };
 
 // ---- Tag / Folder editor ----
-export const TagEditor = ({ folders, conversation, onUpdate, close }) => {
-  const [tagInput, setTagInput] = useState("");
+const TagEditor = ({ folders, conversation, onUpdate, close }) => {
+  const [tagInput, setTagInput] = _cUS("");
   return (
     <div style={{ minWidth: 240, padding: 6 }}>
       <div style={{ padding: "6px 6px 8px", fontSize: 11, color: "var(--fg-subtle)",
@@ -218,3 +217,5 @@ export const TagEditor = ({ folders, conversation, onUpdate, close }) => {
     </div>
   );
 };
+
+Object.assign(window, { ShareDialog, HandoffMenu, TagEditor });

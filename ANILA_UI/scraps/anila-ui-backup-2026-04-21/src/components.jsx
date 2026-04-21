@@ -1,9 +1,9 @@
 // Shared low-level components
-import React, { useState, useEffect, useRef } from "react";
-import { IconX } from "./icons.jsx";
+
+const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
 // Button
-export const Button = ({ variant = "default", size = "md", children, leftIcon, rightIcon, className = "", ...rest }) => {
+const Button = ({ variant = "default", size = "md", children, leftIcon, rightIcon, className = "", ...rest }) => {
   const base = {
     display: "inline-flex", alignItems: "center", gap: 6,
     border: "1px solid transparent",
@@ -36,7 +36,7 @@ export const Button = ({ variant = "default", size = "md", children, leftIcon, r
 };
 
 // Icon-only button
-export const IconButton = ({ children, active, title, className = "", ...rest }) => (
+const IconButton = ({ children, active, title, className = "", ...rest }) => (
   <button {...rest} title={title} className={className} style={{
     display: "inline-flex", alignItems: "center", justifyContent: "center",
     width: 30, height: 30,
@@ -57,7 +57,7 @@ export const IconButton = ({ children, active, title, className = "", ...rest })
 );
 
 // Agent badge / pill
-export const AgentPill = ({ agent, size = "md", selected }) => {
+const AgentPill = ({ agent, size = "md", selected }) => {
   if (!agent) return null;
   const s = size === "sm";
   return (
@@ -83,7 +83,7 @@ export const AgentPill = ({ agent, size = "md", selected }) => {
 };
 
 // Kbd
-export const Kbd = ({ children }) => (
+const Kbd = ({ children }) => (
   <span style={{
     fontFamily: "var(--font-mono)", fontSize: 10.5,
     padding: "1px 5px",
@@ -93,7 +93,7 @@ export const Kbd = ({ children }) => (
 );
 
 // Thin divider
-export const Divider = ({ vertical, style = {} }) => (
+const Divider = ({ vertical, style = {} }) => (
   <div style={{
     background: "var(--border)",
     ...(vertical ? { width: 1, alignSelf: "stretch" } : { height: 1, width: "100%" }),
@@ -102,14 +102,15 @@ export const Divider = ({ vertical, style = {} }) => (
 );
 
 // Dropdown menu
-export const Dropdown = ({ trigger, children, align = "left", width = 280, maxHeight = 360 }) => {
+const Dropdown = ({ trigger, children, align = "left", width = 280, maxHeight = 360 }) => {
   const [open, setOpen] = useState(false);
-  const [placement, setPlacement] = useState("bottom");
+  const [placement, setPlacement] = useState("bottom"); // bottom | top
   const ref = useRef(null);
   const triggerRef = useRef(null);
 
   useEffect(() => {
     if (!open) return;
+    // Decide placement based on available viewport space below the trigger
     if (triggerRef.current) {
       const rect = triggerRef.current.getBoundingClientRect();
       const spaceBelow = window.innerHeight - rect.bottom;
@@ -150,7 +151,7 @@ export const Dropdown = ({ trigger, children, align = "left", width = 280, maxHe
   );
 };
 
-export const MenuItem = ({ children, leftIcon, rightIcon, active, onClick, className = "" }) => (
+const MenuItem = ({ children, leftIcon, rightIcon, active, onClick, className = "" }) => (
   <button className={className} onClick={onClick} style={{
     display: "flex", alignItems: "center", gap: 10, width: "100%",
     padding: "8px 10px",
@@ -168,7 +169,7 @@ export const MenuItem = ({ children, leftIcon, rightIcon, active, onClick, class
 );
 
 // Modal
-export const Modal = ({ open, onClose, title, subtitle, children, width = 480 }) => {
+const Modal = ({ open, onClose, title, subtitle, children, width = 480 }) => {
   useEffect(() => {
     if (!open) return;
     const h = (e) => { if (e.key === "Escape") onClose(); };
@@ -209,7 +210,7 @@ export const Modal = ({ open, onClose, title, subtitle, children, width = 480 })
 };
 
 // Input
-export const Input = ({ label, hint, error, leftIcon, rightEl, ...rest }) => (
+const Input = ({ label, hint, error, leftIcon, rightEl, ...rest }) => (
   <label style={{ display: "block" }}>
     {label && <div style={{ fontSize: 12, fontWeight: 500, color: "var(--fg-muted)", marginBottom: 6 }}>{label}</div>}
     <div style={{
@@ -233,3 +234,7 @@ export const Input = ({ label, hint, error, leftIcon, rightEl, ...rest }) => (
     {hint && !error && <div style={{ fontSize: 11, color: "var(--fg-subtle)", marginTop: 4 }}>{hint}</div>}
   </label>
 );
+
+Object.assign(window, {
+  Button, IconButton, AgentPill, Kbd, Divider, Dropdown, MenuItem, Modal, Input,
+});

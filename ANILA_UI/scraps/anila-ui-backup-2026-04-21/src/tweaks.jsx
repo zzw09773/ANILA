@@ -1,17 +1,12 @@
-// Tweaks panel — in-design controls (ESM)
-import React from "react";
-import { IconSpark, IconX } from "./icons.jsx";
-import { IconButton } from "./components.jsx";
+// Tweaks panel — in-design controls
 
-export const TweaksPanel = ({ open, onClose, tweaks, setTweaks }) => {
+const TweaksPanel = ({ open, onClose, tweaks, setTweaks }) => {
   if (!open) return null;
 
   const update = (patch) => {
     const next = { ...tweaks, ...patch };
     setTweaks(next);
-    try {
-      window.parent?.postMessage({ type: "__edit_mode_set_keys", edits: patch }, "*");
-    } catch {}
+    window.parent.postMessage({ type: "__edit_mode_set_keys", edits: patch }, "*");
   };
 
   const Row = ({ label, children }) => (
@@ -151,3 +146,5 @@ export const TweaksPanel = ({ open, onClose, tweaks, setTweaks }) => {
     </div>
   );
 };
+
+window.TweaksPanel = TweaksPanel;
