@@ -27,6 +27,7 @@ def _build_response(model: ModelRegistry) -> dict:
         "context_window": model.context_window,
         "base_model_id": model.base_model_id,
         "base_model_name": model.base_model.display_name if model.base_model else None,
+        "requires_encryption": bool(model.requires_encryption),
         "created_at": model.created_at,
         "updated_at": model.updated_at,
     }

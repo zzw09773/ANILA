@@ -11,6 +11,7 @@ class ModelCreate(BaseModel):
     description: str | None = None
     context_window: int | None = None
     base_model_id: int | None = None  # For agents: the underlying LLM model ID
+    requires_encryption: bool = False
 
 
 class ModelUpdate(BaseModel):
@@ -22,6 +23,7 @@ class ModelUpdate(BaseModel):
     description: str | None = None
     context_window: int | None = None
     base_model_id: int | None = None
+    requires_encryption: bool | None = None
 
 
 class ModelResponse(BaseModel):
@@ -38,6 +40,7 @@ class ModelResponse(BaseModel):
     context_window: int | None
     base_model_id: int | None = None
     base_model_name: str | None = None
+    requires_encryption: bool = False
     created_at: datetime
     updated_at: datetime
 
