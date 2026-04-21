@@ -1,0 +1,15 @@
+# ANILA Agent Manifest
+# Used by `anila-core register` to register this agent on the platform.
+
+name: "{{AGENT_NAME}}"
+description_for_router: "{{AGENT_DESCRIPTION}}"
+endpoint_url: "{{ENDPOINT_URL}}"
+api_version: "v1"
+
+# Optional: link to the base LLM model_registry name this agent relies on
+# base_model: "gpt-4o-mini"
+
+# Optional: structured capabilities hint for the Router
+# capabilities:
+#   domains: ["hr", "finance"]
+#   supports_streaming: true

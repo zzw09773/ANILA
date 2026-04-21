@@ -1,7 +1,7 @@
 import csv
 import io
 from datetime import datetime, timezone
-from sqlalchemy import func, text
+from sqlalchemy import func, literal_column, text
 from sqlalchemy.orm import Session
 from app.models.department import Department
 from app.models.token_usage import TokenUsage
@@ -127,7 +127,8 @@ def get_chart_data(
         all_buckets.append(ts)
         ts += bucket_seconds
 
-    bucket_expr = text(
+    # literal_column (not text) so SQLAlchemy lets us call .label() on it.
+    bucket_expr = literal_column(
         f"(CAST(EXTRACT(EPOCH FROM request_timestamp) AS INTEGER) / {bucket_seconds}) * {bucket_seconds}"
     )
 

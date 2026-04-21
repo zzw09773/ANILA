@@ -1,4 +1,6 @@
 """OpenAI-compatible API proxy endpoints."""
+import time
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
@@ -8,7 +10,7 @@ from app.models.api_key import ApiKey
 from app.models.model_registry import ModelRegistry
 from app.middleware.api_key_auth import get_api_key
 from app.services.api_key_service import check_model_permission, check_agent_permission
-from app.services.proxy_service import proxy_request, proxy_stream
+from app.services.proxy_service import build_default_anila_meta, proxy_request, proxy_stream
 
 router = APIRouter(tags=["API 代理"])
 
@@ -72,6 +74,9 @@ def list_available_agents(
             .all()
         )
 
+    # Encryption is an agent-level policy only. Base models (LLMs) do NOT carry
+    # a requires_encryption flag — classification is decided per-agent so the
+    # same LLM can serve both classified and non-classified agents.
     data = [
         {
             "id": a.name,
@@ -81,6 +86,7 @@ def list_available_agents(
             "endpoint_url": a.endpoint_url,
             "capabilities": a.capabilities or {},
             "input_schema": a.input_schema,
+            "requires_encryption": bool(getattr(a, "requires_encryption", False)),
         }
         for a in agents
     ]
@@ -103,42 +109,91 @@ async def chat_completions(
     department_id = user.department_id if user else None
     user_email = user.email if user else None
 
+    # Audit fields from optional client headers
+    conversation_id: str | None = request.headers.get("X-ANILA-Conversation-Id")
+    trace_id: str | None = request.headers.get("X-ANILA-Trace-Id")
+
     # Try agent first, fallback to model_registry
     agent = _resolve_agent(db, api_key, model_name)
     if agent:
+        agent_requires_encryption = bool(getattr(agent, "requires_encryption", False))
         if stream:
             return StreamingResponse(
                 proxy_stream(
-                    endpoint_url=agent.endpoint_url,
+                    target_url=f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions",
                     api_key_id=api_key.id,
                     user_id=api_key.user_id,
                     department_id=department_id,
-                    agent_id=agent.id,
+                    usage_model_id=agent.id,
                     request_body=body,
                     user_email=user_email,
+                    inject_identity=True,
+                    model_name=agent.name,
+                    conversation_id=conversation_id,
+                    trace_id=trace_id,
+                    requires_encryption=agent_requires_encryption,
                 ),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
         # Non-streaming agent call — use proxy_request with a synthetic ModelRegistry-like obj
         # by forwarding to the agent endpoint directly
-        from app.services.proxy_service import proxy_request as _pr
         import httpx
         from fastapi import HTTPException as _HTTPException
         target = f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions"
         from app.services.proxy_service import _build_downstream_headers
         headers = _build_downstream_headers(api_key.user_id, user_email)
+        started_at = time.time()
         try:
             async with httpx.AsyncClient(timeout=120) as client:
                 resp = await client.post(target, json=body, headers=headers)
                 resp.raise_for_status()
-                return resp.json()
+                payload = resp.json()
+                existing_meta = payload.get("anila_meta")
+                if not existing_meta:
+                    payload["anila_meta"] = build_default_anila_meta(
+                        agent.name,
+                        detail=f"CSP proxy -> {target}",
+                        latency_ms=int((time.time() - started_at) * 1000),
+                        classified=agent_requires_encryption,
+                    )
+                elif agent_requires_encryption and isinstance(existing_meta, dict):
+                    existing_meta["classified"] = True
+                return payload
         except httpx.HTTPStatusError as e:
             raise _HTTPException(status_code=e.response.status_code, detail=str(e))
         except Exception as e:
             raise _HTTPException(status_code=502, detail=f"Agent 呼叫失敗: {e}")
 
     model = _resolve_model(db, api_key, model_name)
+    # Direct LLM calls (not through an agent) do NOT trigger CSP-side classified
+    # latch. Encryption is agent-level policy; the same LLM can back both
+    # classified and non-classified agents. Downstream-reported classified=True
+    # still latches via proxy_service's normal meta merge.
+    if stream:
+        target_url = (
+            f"{model.endpoint_url.rstrip('/')}/v2/chat/completions"
+            if model.api_version == "v2"
+            else f"{model.endpoint_url.rstrip('/')}/v1/chat/completions"
+        )
+        return StreamingResponse(
+            proxy_stream(
+                target_url=target_url,
+                api_key_id=api_key.id,
+                user_id=api_key.user_id,
+                department_id=department_id,
+                usage_model_id=model.id,
+                request_body=body,
+                user_email=user_email,
+                inject_identity=False,
+                model_name=model.name,
+                conversation_id=conversation_id,
+                trace_id=trace_id,
+                requires_encryption=False,
+            ),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
     return await proxy_request(
         model=model,
         api_key_id=api_key.id,
@@ -146,6 +201,9 @@ async def chat_completions(
         department_id=department_id,
         request_body=body,
         endpoint_path="/v1/chat/completions",
+        conversation_id=conversation_id,
+        trace_id=trace_id,
+        requires_encryption=False,
     )
 
 

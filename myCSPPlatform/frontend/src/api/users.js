@@ -23,3 +23,9 @@ export const getUserAllowedModels = (id) =>
 
 export const updateUserAllowedModels = (id, modelIds) =>
   client.put(`/api/users/${id}/allowed-models`, { model_ids: modelIds })
+
+export const getUserAllowedAgents = (id) =>
+  client.get(`/api/users/${id}/allowed-agents`)
+
+export const updateUserAllowedAgents = (id, agentIds) =>
+  client.put(`/api/users/${id}/allowed-agents`, { agent_ids: agentIds })

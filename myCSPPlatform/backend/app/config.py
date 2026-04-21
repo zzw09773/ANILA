@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     # Format: '[{"username":"smoke-user","key":"sk-...","models":["gpt-4o-mini"],"agents":["rag-agent"]}]'
     AUTO_SEED_API_KEYS: str = ""
 
+    # Attachment storage (local filesystem)
+    ATTACHMENT_STORAGE_PATH: str = "data/attachments"
+
     # Auto-register platform links on startup (JSON string)
     # Format: '[{"name":"n8n","url":"http://n8n:5678","icon":"workflow","description":"自動化工作流程"}]'
     AUTO_REGISTER_LINKS: str = ""

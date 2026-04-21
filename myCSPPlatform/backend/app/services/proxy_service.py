@@ -2,10 +2,11 @@
 import asyncio
 import json
 import logging
+import math
+import re
 import time
 from typing import AsyncIterator, Optional
 from fastapi import HTTPException
-from fastapi.responses import StreamingResponse
 import httpx
 from app.config import settings
 from app.models.model_registry import ModelRegistry
@@ -37,6 +38,171 @@ def _build_downstream_headers(
     return headers
 
 
+def _flatten_content(content) -> str:
+    """Best-effort flattening of OpenAI-compatible message content."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+                continue
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+            elif "text" in block:
+                parts.append(str(block.get("text", "")))
+            elif "content" in block:
+                parts.append(str(block.get("content", "")))
+        return "\n".join(p for p in parts if p)
+    return str(content)
+
+
+def _serialize_request_for_usage(request_body: dict) -> str:
+    """Flatten request payload into a prompt string for token estimation."""
+    parts: list[str] = []
+
+    for msg in request_body.get("messages", []) or []:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role", "user"))
+        content = _flatten_content(msg.get("content"))
+        if content:
+            parts.append(f"{role}: {content}")
+
+    for tool in request_body.get("tools", []) or []:
+        try:
+            parts.append(json.dumps(tool, ensure_ascii=False, sort_keys=True))
+        except TypeError:
+            parts.append(str(tool))
+
+    return "\n".join(parts)
+
+
+def _extract_response_text(result: dict) -> str:
+    """Extract assistant-visible text from a non-streaming response."""
+    texts: list[str] = []
+    for choice in result.get("choices", []) or []:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message") or {}
+        if isinstance(message, dict):
+            content = _flatten_content(message.get("content"))
+            if content:
+                texts.append(content)
+            reasoning = message.get("reasoning") or message.get("reasoning_content")
+            if reasoning:
+                texts.append(str(reasoning))
+    return "\n".join(texts)
+
+
+def _extract_stream_text(chunk: dict) -> str:
+    """Extract text/reasoning/tool-call deltas from a streaming chunk."""
+    parts: list[str] = []
+    for choice in chunk.get("choices", []) or []:
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta") or {}
+        if not isinstance(delta, dict):
+            continue
+        for key in ("content", "reasoning", "reasoning_content"):
+            value = delta.get(key)
+            if value:
+                parts.append(str(value))
+        for tool_call in delta.get("tool_calls", []) or []:
+            if not isinstance(tool_call, dict):
+                continue
+            fn = tool_call.get("function") or {}
+            if isinstance(fn, dict):
+                if fn.get("name"):
+                    parts.append(str(fn["name"]))
+                if fn.get("arguments"):
+                    parts.append(str(fn["arguments"]))
+    return "".join(parts)
+
+
+def _estimate_token_count(model_name: str | None, text: str) -> int:
+    """Estimate tokens when the upstream does not provide usage.
+
+    Strategy:
+    1. Try `tiktoken` when available.
+    2. Fall back to a mixed heuristic for ASCII/CJK text.
+    """
+    if not text:
+        return 0
+
+    if model_name:
+        try:
+            import tiktoken  # type: ignore[import-not-found]
+
+            try:
+                encoder = tiktoken.encoding_for_model(model_name)
+            except KeyError:
+                encoder = tiktoken.get_encoding("cl100k_base")
+            return len(encoder.encode(text))
+        except Exception:
+            pass
+
+    cjk_chars = len(re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]", text))
+    ascii_chars = sum(1 for ch in text if ord(ch) < 128 and not ch.isspace())
+    other_chars = sum(
+        1 for ch in text if not ch.isspace() and ord(ch) >= 128 and not re.match(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]", ch)
+    )
+    wordish = len(re.findall(r"[A-Za-z0-9_]+|[^\w\s]", text))
+    heuristic = math.ceil((ascii_chars / 4.0) + (cjk_chars * 1.15) + (other_chars / 2.0))
+    return max(wordish, heuristic, 1)
+
+
+def build_default_anila_meta(
+    source_name: str,
+    *,
+    detail: str,
+    latency_ms: int | None = None,
+    classified: bool = False,
+) -> dict:
+    """Build an anila_meta skeleton used when the downstream omits one.
+
+    The ``classified`` flag is a one-way latch. It is driven solely by the
+    resolved **agent's** ``requires_encryption`` attribute (base LLMs do not
+    carry this flag). Downstreams that set ``classified=true`` in their own
+    ``anila.meta`` are authoritative; this default only fills the baseline
+    when nothing is emitted.
+    """
+    return {
+        "trace_id": f"trace-{int(time.time() * 1000)}",
+        "trace": [
+            {
+                "kind": "call",
+                "label": f"呼叫 {source_name}",
+                "detail": detail,
+                "status": "ok",
+            }
+        ],
+        "citations": [],
+        "confidence": None,
+        "handoff_chain": [],
+        "follow_ups": [],
+        "latency_ms": latency_ms,
+        "classified": bool(classified),
+    }
+
+
+def _parse_sse_block(block: str) -> tuple[str | None, str | None]:
+    event_name = None
+    data_lines: list[str] = []
+    for line in block.splitlines():
+        if line.startswith("event:"):
+            event_name = line[6:].strip()
+        elif line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+    data = "\n".join(data_lines) if data_lines else None
+    return event_name, data
+
+
 async def proxy_request(
     model: ModelRegistry,
     api_key_id: int,
@@ -46,6 +212,9 @@ async def proxy_request(
     endpoint_path: str,
     user_email: Optional[str] = None,
     inject_identity: bool = False,
+    conversation_id: Optional[str] = None,
+    trace_id: Optional[str] = None,
+    requires_encryption: bool = False,
 ) -> dict:
     """Forward request to model backend with exponential backoff retry."""
     timeout = _get_timeout(model.model_type)
@@ -102,6 +271,32 @@ async def proxy_request(
             prompt_tokens = usage.get("prompt_tokens", 0)
             completion_tokens = usage.get("completion_tokens", 0)
             total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
+            if not usage:
+                prompt_tokens = _estimate_token_count(
+                    model.name, _serialize_request_for_usage(request_body)
+                )
+                completion_tokens = _estimate_token_count(
+                    model.name, _extract_response_text(result)
+                )
+                total_tokens = prompt_tokens + completion_tokens
+                logger.warning(
+                    "模型 %s 非串流回應未提供 usage，改用伺服端估算: prompt=%s completion=%s",
+                    model.name,
+                    prompt_tokens,
+                    completion_tokens,
+                )
+            existing_meta = result.get("anila_meta")
+            if not existing_meta:
+                result["anila_meta"] = build_default_anila_meta(
+                    model.name,
+                    detail=f"Proxy -> {target_url}",
+                    latency_ms=duration_ms,
+                    classified=requires_encryption,
+                )
+            elif requires_encryption and isinstance(existing_meta, dict):
+                # One-way latch: upgrade to classified when the resolved model
+                # requires encryption, even if the downstream omitted the flag.
+                existing_meta["classified"] = True
 
             # Enqueue usage record (non-blocking)
             await enqueue_usage(
@@ -113,6 +308,8 @@ async def proxy_request(
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
                 request_duration_ms=duration_ms,
+                conversation_id=conversation_id,
+                trace_id=trace_id,
             )
 
             return result
@@ -157,63 +354,158 @@ async def proxy_request(
 
 
 async def proxy_stream(
-    endpoint_url: str,
+    target_url: str,
     api_key_id: int,
     user_id: int,
     department_id: int | None,
-    agent_id: int,
+    usage_model_id: int,
     request_body: dict,
     user_email: Optional[str] = None,
+    inject_identity: bool = False,
+    model_name: str | None = None,
+    conversation_id: Optional[str] = None,
+    trace_id: Optional[str] = None,
+    requires_encryption: bool = False,
 ) -> AsyncIterator[str]:
-    """Stream SSE response from a downstream agent through CSP proxy.
+    """Stream SSE response from a downstream backend through CSP proxy.
 
     Intercepts the final usage chunk to record token consumption, then
-    forwards all SSE chunks verbatim to the caller.
+    forwards all SSE chunks verbatim to the caller. If usage is missing,
+    performs a server-side token estimate from request/response text.
     """
-    target_url = f"{endpoint_url.rstrip('/')}/v1/chat/completions"
-    headers = _build_downstream_headers(user_id, user_email)
+    headers = (
+        _build_downstream_headers(user_id, user_email)
+        if inject_identity
+        else {"Content-Type": "application/json"}
+    )
     # Force stream_options so the downstream sends usage in last chunk
     body = {**request_body, "stream": True,
             "stream_options": {"include_usage": True}}
 
     start_time = time.time()
     prompt_tokens = completion_tokens = 0
+    usage_seen = False
+    meta_seen = False
+    prompt_text = _serialize_request_for_usage(body)
+    completion_parts: list[str] = []
+    pending_done_block: str | None = None
 
     try:
         async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
             async with client.stream("POST", target_url, json=body, headers=headers) as resp:
                 if resp.status_code >= 400:
                     raise HTTPException(status_code=resp.status_code,
-                                        detail=f"Agent 回應錯誤: {resp.status_code}")
-                async for line in resp.aiter_lines():
-                    if not line:
-                        continue
-                    yield line + "\n\n"
-                    # Parse usage from last chunk before [DONE]
-                    if line.startswith("data: ") and line != "data: [DONE]":
+                                        detail=f"下游回應錯誤: {resp.status_code}")
+                def _emit(block: str, event_name: str | None, data: str | None) -> str:
+                    """Render a block, upgrading anila.meta.classified if required."""
+                    if (
+                        event_name == "anila.meta"
+                        and data
+                        and requires_encryption
+                    ):
                         try:
-                            chunk = json.loads(line[6:])
-                            usage = chunk.get("usage") or {}
-                            if usage:
-                                prompt_tokens = usage.get("prompt_tokens", 0)
-                                completion_tokens = usage.get("completion_tokens", 0)
-                        except (json.JSONDecodeError, KeyError):
+                            parsed = json.loads(data)
+                            if isinstance(parsed, dict) and not parsed.get("classified"):
+                                parsed["classified"] = True
+                                return (
+                                    "event: anila.meta\n"
+                                    + "data: "
+                                    + json.dumps(parsed, ensure_ascii=False)
+                                    + "\n\n"
+                                )
+                        except (json.JSONDecodeError, TypeError):
                             pass
+                    return block + "\n\n"
+
+                block_lines: list[str] = []
+                async for line in resp.aiter_lines():
+                    if line == "":
+                        if block_lines:
+                            block = "\n".join(block_lines)
+                            event_name, data = _parse_sse_block(block)
+                            if data == "[DONE]":
+                                pending_done_block = block + "\n\n"
+                            else:
+                                if event_name == "anila.meta":
+                                    meta_seen = True
+                                if data and event_name in (None, "message"):
+                                    try:
+                                        chunk = json.loads(data)
+                                        text = _extract_stream_text(chunk)
+                                        if text:
+                                            completion_parts.append(text)
+                                        usage = chunk.get("usage") or {}
+                                        if usage:
+                                            usage_seen = True
+                                            prompt_tokens = usage.get("prompt_tokens", 0)
+                                            completion_tokens = usage.get("completion_tokens", 0)
+                                    except (json.JSONDecodeError, KeyError):
+                                        pass
+                                yield _emit(block, event_name, data)
+                            block_lines = []
+                        continue
+                    block_lines.append(line)
+                if block_lines:
+                    block = "\n".join(block_lines)
+                    event_name, data = _parse_sse_block(block)
+                    if data == "[DONE]":
+                        pending_done_block = block + "\n\n"
+                    else:
+                        if event_name == "anila.meta":
+                            meta_seen = True
+                        if data and event_name in (None, "message"):
+                            try:
+                                chunk = json.loads(data)
+                                text = _extract_stream_text(chunk)
+                                if text:
+                                    completion_parts.append(text)
+                                usage = chunk.get("usage") or {}
+                                if usage:
+                                    usage_seen = True
+                                    prompt_tokens = usage.get("prompt_tokens", 0)
+                                    completion_tokens = usage.get("completion_tokens", 0)
+                            except (json.JSONDecodeError, KeyError):
+                                pass
+                        yield _emit(block, event_name, data)
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Agent 請求逾時")
+        raise HTTPException(status_code=504, detail="下游請求逾時")
     except httpx.ConnectError:
-        raise HTTPException(status_code=502, detail=f"無法連線到 agent {target_url}")
+        raise HTTPException(status_code=502, detail=f"無法連線到下游端點 {target_url}")
 
     duration_ms = int((time.time() - start_time) * 1000)
+    if not usage_seen:
+        prompt_tokens = _estimate_token_count(model_name, prompt_text)
+        completion_tokens = _estimate_token_count(model_name, "".join(completion_parts))
+        logger.warning(
+            "串流回應未提供 usage，改用伺服端估算 %s: prompt=%s completion=%s",
+            model_name or target_url,
+            prompt_tokens,
+            completion_tokens,
+        )
     total_tokens = prompt_tokens + completion_tokens
+    if not meta_seen:
+        yield "event: anila.meta\n"
+        yield "data: " + json.dumps(
+            build_default_anila_meta(
+                model_name or target_url,
+                detail=f"Proxy stream -> {target_url}",
+                latency_ms=duration_ms,
+                classified=requires_encryption,
+            ),
+            ensure_ascii=False,
+        ) + "\n\n"
+    if pending_done_block:
+        yield pending_done_block
     if total_tokens > 0:
         await enqueue_usage(
             api_key_id=api_key_id,
             user_id=user_id,
             department_id=department_id,
-            model_id=agent_id,
+            model_id=usage_model_id,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
             request_duration_ms=duration_ms,
+            conversation_id=conversation_id,
+            trace_id=trace_id,
         )

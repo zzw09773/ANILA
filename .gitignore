@@ -1,1 +1,105 @@
-# 忽略各子專案原本的 .git 資料夾內容已由主 git 管理
+# ── ANILA 主 repo 的 .gitignore ──────────────────────────────────────────────
+# 子專案 (myCSPPlatform / AgenticRAG / anila-core / ANILA_UI / onyx) 各自的
+# .gitignore 仍生效；此檔處理跨專案共通的忽略規則。
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg
+*.egg-info/
+.eggs/
+build/
+develop-eggs/
+.installed.cfg
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Test / lint / type-check caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyre/
+.pytype/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+ENV/
+
+# Local SQLite 測試檔
+.pytest-csp.db
+*.sqlite3
+
+# ── Node / 前端 ──────────────────────────────────────────────────────────────
+node_modules/
+dist/
+build/
+.next/
+out/
+.nuxt/
+.turbo/
+.vite/
+coverage/
+.npm/
+.yarn/
+.pnpm-store/
+*.tsbuildinfo
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ── 環境變數 / 機密 ──────────────────────────────────────────────────────────
+# 只忽略實際的 .env，不要忽略範本
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# ── IDE / 編輯器 ─────────────────────────────────────────────────────────────
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+*.swp
+*.swo
+*~
+
+# ── OS 產物 ──────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ── Claude Code 本地設定（user-local，不該共享）───────────────────────────────
+.claude/settings.local.json
+
+# ── Logs / 暫存 ──────────────────────────────────────────────────────────────
+*.log
+logs/
+tmp/
+temp/
+
+# ── runtime_logic（參考原始碼，只留 README.md 在 repo 內）────────────────────
+runtime_logic/src/
+runtime_logic/vendor/
+runtime_logic/node_modules/
