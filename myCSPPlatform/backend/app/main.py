@@ -15,7 +15,6 @@ from app.api.conversations import router as conversations_router
 from app.api.attachments import router as attachments_router
 from app.api.handoffs import router as handoffs_router
 from app.api.public_share import router as public_share_router
-from app.middleware.rate_limit import RateLimitMiddleware
 
 
 def _run_alembic_upgrade() -> None:
@@ -101,7 +100,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.add_middleware(RateLimitMiddleware)
+# On-prem local model deployment: no request/token quota enforcement.
+# RateLimitMiddleware is intentionally not registered.
 
 app.include_router(api_router)
 app.include_router(quota_policies_router)

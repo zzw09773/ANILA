@@ -21,6 +21,7 @@
             <th class="px-4 py-3 text-left text-gray-600 font-medium">類型</th>
             <th class="px-4 py-3 text-left text-gray-600 font-medium">端點</th>
             <th class="px-4 py-3 text-left text-gray-600 font-medium">API 版本</th>
+            <th class="px-4 py-3 text-left text-gray-600 font-medium">加密</th>
             <th class="px-4 py-3 text-left text-gray-600 font-medium">啟用</th>
             <th v-if="authStore.isAdmin" class="px-4 py-3 text-left text-gray-600 font-medium">操作</th>
           </tr>
@@ -55,6 +56,14 @@
             </td>
             <td class="px-4 py-3 text-gray-500">{{ model.api_version }}</td>
             <td class="px-4 py-3">
+              <span
+                :class="model.requires_encryption ? 'bg-red-50 text-red-700' : 'bg-gray-50 text-gray-500'"
+                class="text-xs px-2 py-0.5 rounded"
+              >
+                {{ model.requires_encryption ? '強制加密' : '一般' }}
+              </span>
+            </td>
+            <td class="px-4 py-3">
               <span :class="model.is_active ? 'text-green-600' : 'text-red-600'" class="text-xs">
                 {{ model.is_active ? '啟用' : '停用' }}
               </span>
@@ -76,7 +85,7 @@
             </td>
           </tr>
           <tr v-if="modelsStore.models.length === 0">
-            <td :colspan="authStore.isAdmin ? 7 : 6" class="px-4 py-8 text-center text-gray-400">
+            <td :colspan="authStore.isAdmin ? 8 : 7" class="px-4 py-8 text-center text-gray-400">
               尚無已註冊模型
             </td>
           </tr>
@@ -141,6 +150,15 @@
               class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
               placeholder="選填，例如 128000" />
           </div>
+          <div>
+            <label class="flex items-center gap-2 text-sm text-gray-700">
+              <input v-model="form.requires_encryption" type="checkbox" class="rounded" />
+              <span>強制加密模式</span>
+            </label>
+            <p class="text-xs text-gray-400 mt-1">
+              勾選後，任何使用此模型的對話會自動進入加密模式（機密、禁止分享、稽核強化）。
+            </p>
+          </div>
           <div v-if="form.model_type === 'agent'">
             <label class="block text-sm font-medium text-gray-700 mb-1">底層模型</label>
             <select v-model="form.base_model_id"
@@ -184,6 +202,7 @@ const editingId = ref(null)
 const defaultForm = () => ({
   name: '', display_name: '', model_type: 'llm', endpoint_url: '',
   api_version: 'v1', description: '', context_window: null, base_model_id: null,
+  requires_encryption: false,
 })
 const form = ref(defaultForm())
 
@@ -224,6 +243,7 @@ function openEditModal(model) {
     model_type: model.model_type, endpoint_url: model.endpoint_url,
     api_version: model.api_version, description: model.description || '',
     context_window: model.context_window, base_model_id: model.base_model_id || null,
+    requires_encryption: !!model.requires_encryption,
   }
   showModal.value = true
 }

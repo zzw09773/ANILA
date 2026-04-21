@@ -59,9 +59,14 @@ class AgentResponse(BaseModel):
     description_for_router: str
     health_status: str
     approval_status: str
+    requires_encryption: bool = False
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class AgentEncryptionUpdate(BaseModel):
+    requires_encryption: bool
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -184,6 +189,31 @@ def approve_agent(
         resource_id=agent.id, detail=f"核准 agent「{agent.name}」", commit=True,
     )
     return {"message": f"已核准 agent「{agent.name}」"}
+
+
+@router.post("/{agent_id}/encryption")
+def set_agent_encryption(
+    agent_id: int,
+    payload: AgentEncryptionUpdate,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent 不存在")
+    agent.requires_encryption = payload.requires_encryption
+    db.commit()
+    db.refresh(agent)
+    log_audit_event(
+        db, actor=admin, action="set_encryption", resource_type="agent",
+        resource_id=agent.id,
+        detail=f"{'啟用' if payload.requires_encryption else '停用'} agent「{agent.name}」加密模式",
+        commit=True,
+    )
+    return {
+        "message": f"已更新 agent「{agent.name}」的加密設定",
+        "requires_encryption": agent.requires_encryption,
+    }
 
 
 @router.post("/{agent_id}/reject")

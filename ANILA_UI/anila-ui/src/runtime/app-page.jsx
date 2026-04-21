@@ -28,13 +28,8 @@ const ROUTER_AGENT = {
   name: "ANILA Router",
   short: "auto",
   description: "自動路由：根據你的問題，由 Router 決定直接回答或分派給合適的 agent。",
+  requiresEncryption: false,
 };
-
-const RUNTIME_WAVES = [
-  { label: "WAVE 1", title: "信任與透明", detail: "引用來源、trace、confidence" },
-  { label: "WAVE 2", title: "Multi-agent UX", detail: "direct target、平行比較" },
-  { label: "WAVE 3", title: "CSP-aware runtime", detail: "JWT + API key + audit" },
-];
 
 const STARTER_PROMPTS = [
   {
@@ -105,6 +100,7 @@ function normalizeAgents(data) {
       description: item.description_for_router || "",
       endpointUrl: item.endpoint_url,
       capabilities: item.capabilities || {},
+      requiresEncryption: Boolean(item.requires_encryption),
     })),
   ];
 }
@@ -125,15 +121,6 @@ function maskApiKey(apiKey) {
     return apiKey;
   }
   return `${apiKey.slice(0, 6)}…${apiKey.slice(-4)}`;
-}
-
-function formatConfidence(confidence) {
-  if (!confidence?.level) {
-    return "尚未產生";
-  }
-  return confidence.score
-    ? `${confidence.level} · ${confidence.score.toFixed(2)}`
-    : confidence.level;
 }
 
 function normalizeTag(tag) {
@@ -188,6 +175,7 @@ export function RuntimePage() {
     () => agents.find((agent) => agent.id === selectedAgentId) || ROUTER_AGENT,
     [agents, selectedAgentId],
   );
+  const activeEncryptionRequired = Boolean(activeAgent?.requiresEncryption);
   const latestAssistantMessage = useMemo(
     () =>
       [...currentMessages]
@@ -195,33 +183,6 @@ export function RuntimePage() {
         .find((message) => message.role === "assistant" && (message.text || message.streaming)) || null,
     [currentMessages],
   );
-  const workspaceSignals = useMemo(() => {
-    if (!latestAssistantMessage) {
-      return [
-        {
-          label: "Mode",
-          value: selectedAgentId === ROUTER_AGENT.id ? "Auto route" : "Direct target",
-        },
-        { label: "Agents", value: `${directAgents.length} available` },
-        { label: "Audit", value: "CSP trace ready" },
-      ];
-    }
-
-    return [
-      {
-        label: "Trace",
-        value: `${latestAssistantMessage.trace?.length || 0} steps`,
-      },
-      {
-        label: "Sources",
-        value: `${latestAssistantMessage.citations?.length || 0} linked`,
-      },
-      {
-        label: "Confidence",
-        value: formatConfidence(latestAssistantMessage.confidence),
-      },
-    ];
-  }, [directAgents.length, latestAssistantMessage, selectedAgentId]);
   const compareSummaries = useMemo(
     () =>
       compareColumns.map((column) => {
@@ -381,8 +342,13 @@ export function RuntimePage() {
     }
   }
 
+  function agentRequiresEncryption(agentId) {
+    return Boolean(agents.find((agent) => agent.id === agentId)?.requiresEncryption);
+  }
+
   function ensureConversation(text, agentId) {
     const conversationId = selectedConversationId || makeId("cv");
+    const encryption = agentRequiresEncryption(agentId);
     if (!selectedConversationId) {
       const agentName = agents.find((agent) => agent.id === agentId)?.name || agentId;
       setConversations((current) => [
@@ -393,9 +359,9 @@ export function RuntimePage() {
           agentName,
           agentId,
           starred: false,
-          tags: [],
+          tags: encryption ? ["classified"] : [],
           folder: "all",
-          classified: false,
+          classified: encryption,
           shareDraft: null,
           handoffState: null,
           updatedAt: nowIso(),
@@ -405,11 +371,24 @@ export function RuntimePage() {
       setSelectedConversationId(conversationId);
     } else {
       setConversations((current) =>
-        current.map((conversation) =>
-          conversation.id === conversationId
-            ? { ...conversation, updatedLabel: relativeLabel(), agentId, updatedAt: nowIso() }
-            : conversation,
-        ),
+        current.map((conversation) => {
+          if (conversation.id !== conversationId) {
+            return conversation;
+          }
+          const nextClassified = encryption || conversation.classified;
+          const nextTags =
+            encryption && !(conversation.tags || []).includes("classified")
+              ? [...(conversation.tags || []), "classified"]
+              : conversation.tags;
+          return {
+            ...conversation,
+            updatedLabel: relativeLabel(),
+            agentId,
+            updatedAt: nowIso(),
+            classified: nextClassified,
+            tags: nextTags,
+          };
+        }),
       );
     }
     return conversationId;
@@ -417,12 +396,27 @@ export function RuntimePage() {
 
   function updateConversationAgent(conversationId, agentId) {
     const agentName = agents.find((agent) => agent.id === agentId)?.name || agentId;
+    const encryption = agentRequiresEncryption(agentId);
     setConversations((current) =>
-      current.map((conversation) =>
-        conversation.id === conversationId
-          ? { ...conversation, updatedLabel: relativeLabel(), agentId, agentName, updatedAt: nowIso() }
-          : conversation,
-      ),
+      current.map((conversation) => {
+        if (conversation.id !== conversationId) {
+          return conversation;
+        }
+        const nextClassified = encryption || conversation.classified;
+        const nextTags =
+          encryption && !(conversation.tags || []).includes("classified")
+            ? [...(conversation.tags || []), "classified"]
+            : conversation.tags;
+        return {
+          ...conversation,
+          updatedLabel: relativeLabel(),
+          agentId,
+          agentName,
+          updatedAt: nowIso(),
+          classified: nextClassified,
+          tags: nextTags,
+        };
+      }),
     );
   }
 
@@ -458,26 +452,6 @@ export function RuntimePage() {
     updateConversation(conversationId, (conversation) => ({
       ...conversation,
       tags: (conversation.tags || []).filter((item) => normalizeTag(item) !== normalizeTag(tag)),
-    }));
-  }
-
-  function classifyConversation(conversationId) {
-    const target = conversations.find((conversation) => conversation.id === conversationId);
-    if (!target) {
-      return;
-    }
-    if (target.classified) {
-      setRuntimeError("機密對話在前端視角中不可直接解除，需由 CSP 控制面處理。");
-      return;
-    }
-    if (!window.confirm("此對話將進入機密模式：禁止分享、複製受限，並以 local lock 形式保存。確定嗎？")) {
-      return;
-    }
-    updateConversation(conversationId, (conversation) => ({
-      ...conversation,
-      classified: true,
-      tags: Array.from(new Set([...(conversation.tags || []), "classified"])),
-      updatedAt: nowIso(),
     }));
   }
 
@@ -994,54 +968,52 @@ export function RuntimePage() {
       />
 
       <main className="runtime-main">
-        <header className="workspace-header">
-          <div className="workspace-heading">
-            <div className="workspace-kicker">PAGE 03 · RUNTIME</div>
-            <h1 className="workspace-title">
-              {compareMode ? "平行比較" : selectedConversation?.title || "你今天想問 ANILA 什麼？"}
-            </h1>
-            <p className="workspace-description">
-              {selectedConversation
-                ? "每段回答都保留路由痕跡、引用來源與 handoff context，讓 runtime 不只是聊天視窗。"
-                : "以 template 為基線，把 trust、multi-agent 與 auditable runtime 直接落在真實資料流上。"}
-            </p>
-            <div className="workspace-signal-row">
-              {workspaceSignals.map((signal) => (
-                <div key={signal.label} className="workspace-signal-card">
-                  <div className="workspace-wave-kicker">{signal.label}</div>
-                  <div className="workspace-signal-value">{signal.value}</div>
-                </div>
-              ))}
-            </div>
+        <header className="workspace-topbar">
+          <div className="workspace-topbar-title">
+            {selectedConversation?.classified ? (
+              <IconLock size={14} className="workspace-classified-glyph" />
+            ) : null}
+            <span>
+              {compareMode
+                ? "平行比較"
+                : selectedConversation?.title || "新對話"}
+            </span>
           </div>
 
-          <div className="workspace-controls">
+          <div className="workspace-topbar-actions">
             {selectedConversation && !compareMode ? (
               <>
-                <Button
-                  onClick={() => classifyConversation(selectedConversation.id)}
-                  variant={selectedConversation.classified ? "primary" : "default"}
-                >
-                  <IconLock size={14} /> {selectedConversation.classified ? "機密已鎖定" : "設為機密"}
-                </Button>
+                {selectedConversation.classified ? (
+                  <span
+                    className="workspace-classified-chip"
+                    title="此 agent 已由管理員設為強制加密；對話自動進入機密模式。"
+                  >
+                    <IconLock size={12} /> 加密模式
+                  </span>
+                ) : null}
                 <Button onClick={() => setHandoffOpen(true)}>
                   <IconNodes size={14} /> Handoff
                 </Button>
                 <Button
                   onClick={() => setShareOpen(true)}
                   disabled={selectedConversation.classified}
+                  title={selectedConversation.classified ? "加密對話不可分享" : undefined}
                 >
                   Share
                 </Button>
               </>
             ) : null}
-            <div className="workspace-key-badge">
+            <Button
+              onClick={() => setCompareMode((value) => !value)}
+              variant={compareMode ? "primary" : "default"}
+              disabled={!compareMode && directAgents.length < 2}
+            >
+              <IconColumns size={14} /> {compareMode ? "退出比較" : "Compare"}
+            </Button>
+            <div className="workspace-key-badge" title="CSP API Key">
               <span className="workspace-key-dot" />
               <span>{maskApiKey(apiKey)}</span>
             </div>
-            <Button onClick={() => setCompareMode(true)} disabled={directAgents.length < 2}>
-              <IconColumns size={14} /> Compare
-            </Button>
             <Button onClick={() => setSettingsOpen(true)}>
               <IconSettings size={14} /> 設定
             </Button>
@@ -1051,40 +1023,35 @@ export function RuntimePage() {
         {!compareMode ? (
           <>
             <ClassifiedBanner conversation={selectedConversation} />
-            <section className="workspace-ribbon">
+            <section className="workspace-ribbon workspace-ribbon-compact">
               <div className="workspace-ribbon-left">
                 <AgentPill agent={activeAgent} emphasis="accent" />
-                <span>{loadingAgents ? "同步 agent 清單中…" : runtimeError || activeAgent.description}</span>
+                <span>
+                  {loadingAgents
+                    ? "同步 agent 清單中…"
+                    : runtimeError || activeAgent.description}
+                </span>
+                {activeEncryptionRequired ? (
+                  <span className="workspace-encryption-hint">
+                    <IconLock size={12} /> 此 agent 為加密模型
+                  </span>
+                ) : null}
               </div>
               {selectedConversation && latestAssistantMessage ? (
                 <div className="workspace-ribbon-right">
-                  <span>Current target · {activeAgent.name}</span>
-                  <span>Trace ID · {latestAssistantMessage.traceId || "pending"}</span>
-                  {selectedConversation?.shareDraft?.status ? (
-                    <span>Share · {selectedConversation.shareDraft.status}</span>
-                  ) : null}
-                  {selectedConversation?.handoffState?.status ? (
-                    <span>Handoff · {selectedConversation.handoffState.status}</span>
-                  ) : null}
+                  <span>Trace · {latestAssistantMessage.traceId || "pending"}</span>
                   {latestAssistantMessage.citations?.length ? (
                     <button
                       className="workspace-inline-link"
-                      onClick={() => openCitations(latestAssistantMessage.citations[0], latestAssistantMessage)}
+                      onClick={() =>
+                        openCitations(latestAssistantMessage.citations[0], latestAssistantMessage)
+                      }
                     >
                       查看 {latestAssistantMessage.citations.length} 筆來源
                     </button>
                   ) : null}
                 </div>
               ) : null}
-              <div className="workspace-wave-row">
-                {RUNTIME_WAVES.map((wave) => (
-                  <div key={wave.label} className="workspace-wave-card">
-                    <div className="workspace-wave-kicker">{wave.label}</div>
-                    <div className="workspace-wave-title">{wave.title}</div>
-                    <div className="workspace-wave-detail">{wave.detail}</div>
-                  </div>
-                ))}
-              </div>
             </section>
 
             <section className="message-pane">

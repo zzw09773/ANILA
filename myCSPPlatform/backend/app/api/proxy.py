@@ -74,6 +74,12 @@ def list_available_agents(
             .all()
         )
 
+    def _encryption_required(agent: Agent) -> bool:
+        if getattr(agent, "requires_encryption", False):
+            return True
+        base_model = getattr(agent, "base_model", None)
+        return bool(getattr(base_model, "requires_encryption", False))
+
     data = [
         {
             "id": a.name,
@@ -83,6 +89,7 @@ def list_available_agents(
             "endpoint_url": a.endpoint_url,
             "capabilities": a.capabilities or {},
             "input_schema": a.input_schema,
+            "requires_encryption": _encryption_required(a),
         }
         for a in agents
     ]

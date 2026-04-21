@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import JSON, Column, Integer, String, DateTime, ForeignKey, Text
+from sqlalchemy import Boolean, JSON, Column, Integer, String, DateTime, ForeignKey, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -48,6 +48,9 @@ class Agent(Base):
     health_status = Column(String(20), nullable=False, default="unknown")
     # approval_status: pending / approved / rejected
     approval_status = Column(String(20), nullable=False, default="pending")
+    # When true, runtime must treat every conversation routed to this agent as
+    # classified / encrypted. Set by admin in the control panel.
+    requires_encryption = Column(Boolean, nullable=False, default=False, server_default="false")
     approved_by = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
