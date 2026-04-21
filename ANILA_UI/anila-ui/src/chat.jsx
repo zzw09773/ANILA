@@ -44,7 +44,7 @@ import {
   IconThumbUp,
   IconX,
 } from "./icons.jsx";
-import { detectPII } from "./data.jsx";
+import { BUILTIN_FOLDER_IDS, detectPII } from "./data.jsx";
 import {
   AuditWatermark,
   ClassifiedCorner,
@@ -353,6 +353,10 @@ export const AgentSelector = ({ agents, value, onChange }) => {
 };
 
 // ---- Composer ----
+// `onUpload(file) → Promise<AttachmentOut>` is optional. When provided, picked
+// files are uploaded to /api/attachments and the returned reference_id is
+// attached to the message. When absent, files are tracked locally only (legacy
+// behaviour kept for storyboard / static rendering tests).
 export const Composer = ({
   onSend,
   disabled,
@@ -361,9 +365,11 @@ export const Composer = ({
   initialValue = "",
   placeholder,
   footer,
+  onUpload,
 }) => {
   const [text, setText] = useState(initialValue);
   const [atts, setAtts] = useState([]);
+  const [uploadError, setUploadError] = useState("");
   const taRef = useRef(null);
   const [mode, setMode] = useState(redactionMode);
 
@@ -400,13 +406,43 @@ export const Composer = ({
     }
   };
 
-  const onFiles = (files) => {
-    const list = Array.from(files || []).map((f) => ({
+  const onFiles = async (files) => {
+    setUploadError("");
+    const picked = Array.from(files || []);
+    if (!picked.length) return;
+
+    // Optimistically add a placeholder so the chip appears while uploading.
+    const placeholders = picked.map((f) => ({
       name: f.name,
-      kind: f.type.startsWith("image/") ? "image" : "file",
+      kind: (f.type || "").startsWith("image/") ? "image" : "file",
       size: f.size,
+      uploading: Boolean(onUpload),
     }));
-    setAtts((a) => [...a, ...list]);
+    setAtts((a) => [...a, ...placeholders]);
+    if (!onUpload) return;
+
+    for (const file of picked) {
+      try {
+        const result = await onUpload(file);
+        setAtts((list) =>
+          list.map((a) =>
+            a.name === file.name && a.uploading
+              ? {
+                  name: result.filename || file.name,
+                  kind: (result.content_type || file.type || "").startsWith("image/") ? "image" : "file",
+                  size: result.size_bytes || file.size,
+                  referenceId: result.reference_id,
+                  contentType: result.content_type,
+                  uploading: false,
+                }
+              : a,
+          ),
+        );
+      } catch (error) {
+        setUploadError(error?.message || `${file.name} 上傳失敗`);
+        setAtts((list) => list.filter((a) => !(a.name === file.name && a.uploading)));
+      }
+    }
   };
 
   return (
@@ -447,10 +483,13 @@ export const Composer = ({
               border: "1px solid var(--border)",
               borderRadius: 999,
               fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--fg)",
+              opacity: a.uploading ? 0.6 : 1,
             }}>
               {a.kind === "image" ? <IconImage size={12} /> : <IconFile size={12} />}
               {a.name}
-              <span style={{ color: "var(--fg-subtle)" }}>{Math.round(a.size / 1024)} KB</span>
+              <span style={{ color: "var(--fg-subtle)" }}>
+                {a.uploading ? "上傳中…" : `${Math.round(a.size / 1024)} KB`}
+              </span>
               <IconButton
                 style={{ width: 18, height: 18 }}
                 onClick={() => setAtts((list) => list.filter((_, j) => j !== i))}
@@ -459,6 +498,16 @@ export const Composer = ({
               </IconButton>
             </div>
           ))}
+        </div>
+      )}
+
+      {uploadError && (
+        <div style={{
+          padding: "4px 10px",
+          fontSize: 11, color: "var(--danger)",
+          fontFamily: "var(--font-mono)",
+        }}>
+          {uploadError}
         </div>
       )}
 
@@ -550,10 +599,14 @@ export const Sidebar = ({
   folder,
   setFolder,
   folders,
+  onCreateFolder,
+  onDeleteFolder,
   onOpenTagEditor,
 }) => {
   const [tab, setTab] = useState("chats");
   const [query, setQuery] = useState("");
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
 
   const filtered = conversations.filter((c) => {
     if (folder === "starred" && !c.starred) return false;
@@ -642,25 +695,129 @@ export const Sidebar = ({
           <div style={{ padding: "0 10px 8px", display: "flex", flexWrap: "wrap", gap: 4 }}>
             {folders.map((f) => {
               const active = folder === f.id;
+              const deletable = !BUILTIN_FOLDER_IDS.has(f.id) && typeof onDeleteFolder === "function";
               const icon = f.icon === "star" ? <IconStar size={11} />
                 : f.icon === "inbox" ? <IconInbox size={11} />
                   : <IconFolder size={11} />;
               return (
-                <button key={f.id} onClick={() => setFolder(f.id)} style={{
-                  display: "inline-flex", alignItems: "center", gap: 4,
-                  padding: "3px 8px",
-                  fontSize: 11,
+                <span key={f.id} style={{
+                  display: "inline-flex", alignItems: "center", gap: 2,
                   background: active ? "var(--accent-soft)" : "var(--bg-elev)",
                   color: active ? "var(--accent)" : "var(--fg-muted)",
                   border: "1px solid " + (active ? "var(--accent)" : "var(--border)"),
                   borderRadius: 999,
-                  cursor: "pointer",
                   fontFamily: "var(--font-mono)",
+                  overflow: "hidden",
                 }}>
-                  {icon}{f.name}
-                </button>
+                  <button
+                    onClick={() => setFolder(f.id)}
+                    style={{
+                      display: "inline-flex", alignItems: "center", gap: 4,
+                      padding: "3px 8px",
+                      fontSize: 11,
+                      background: "transparent",
+                      color: "inherit",
+                      border: "none",
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                    }}
+                  >
+                    {icon}{f.name}
+                  </button>
+                  {deletable && (
+                    <button
+                      title={`刪除「${f.name}」資料夾（連同內部對話）`}
+                      onClick={() => {
+                        const count = conversations.filter((c) => c.folder === f.id).length;
+                        const msg = count > 0
+                          ? `確定刪除「${f.name}」？資料夾內的 ${count} 則對話也會一併移除（後端紀錄不受影響）。`
+                          : `確定刪除「${f.name}」？`;
+                        if (typeof window !== "undefined" && !window.confirm(msg)) return;
+                        onDeleteFolder(f.id);
+                      }}
+                      style={{
+                        display: "inline-flex", alignItems: "center", justifyContent: "center",
+                        padding: "3px 6px 3px 2px",
+                        background: "transparent",
+                        color: "inherit",
+                        border: "none",
+                        cursor: "pointer",
+                        opacity: 0.65,
+                      }}
+                    >
+                      <IconX size={10} />
+                    </button>
+                  )}
+                </span>
               );
             })}
+            {typeof onCreateFolder === "function" && (
+              newFolderOpen ? (
+                <span style={{
+                  display: "inline-flex", alignItems: "center", gap: 2,
+                  background: "var(--bg-elev)",
+                  border: "1px solid var(--accent)",
+                  borderRadius: 999,
+                  padding: "0 4px 0 8px",
+                  fontFamily: "var(--font-mono)",
+                }}>
+                  <input
+                    autoFocus
+                    value={newFolderName}
+                    onChange={(e) => setNewFolderName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        const name = newFolderName.trim();
+                        if (name) onCreateFolder(name);
+                        setNewFolderName("");
+                        setNewFolderOpen(false);
+                      } else if (e.key === "Escape") {
+                        setNewFolderName("");
+                        setNewFolderOpen(false);
+                      }
+                    }}
+                    placeholder="資料夾名稱"
+                    style={{
+                      width: 92,
+                      background: "transparent", border: "none", outline: "none",
+                      fontSize: 11, fontFamily: "inherit",
+                      color: "var(--fg)",
+                      padding: "3px 0",
+                    }}
+                  />
+                  <button
+                    title="取消"
+                    onClick={() => { setNewFolderName(""); setNewFolderOpen(false); }}
+                    style={{
+                      display: "inline-flex", alignItems: "center", justifyContent: "center",
+                      padding: "3px 6px",
+                      background: "transparent", color: "var(--fg-muted)",
+                      border: "none", cursor: "pointer",
+                    }}
+                  >
+                    <IconX size={10} />
+                  </button>
+                </span>
+              ) : (
+                <button
+                  title="新增資料夾"
+                  onClick={() => setNewFolderOpen(true)}
+                  style={{
+                    display: "inline-flex", alignItems: "center", gap: 4,
+                    padding: "3px 8px",
+                    fontSize: 11,
+                    background: "var(--bg-elev)",
+                    color: "var(--fg-muted)",
+                    border: "1px dashed var(--border)",
+                    borderRadius: 999,
+                    cursor: "pointer",
+                    fontFamily: "var(--font-mono)",
+                  }}
+                >
+                  <IconPlus size={11} /> 新增
+                </button>
+              )
+            )}
           </div>
 
           <div style={{ padding: "0 10px 6px" }}>

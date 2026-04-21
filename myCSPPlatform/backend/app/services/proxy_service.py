@@ -166,10 +166,11 @@ def build_default_anila_meta(
 ) -> dict:
     """Build an anila_meta skeleton used when the downstream omits one.
 
-    The ``classified`` flag is a one-way latch propagated from the resolved
-    model/agent's ``requires_encryption`` attribute. Downstreams that set
-    ``classified=true`` in their own ``anila.meta`` are authoritative; this
-    default only fills the baseline when nothing is emitted.
+    The ``classified`` flag is a one-way latch. It is driven solely by the
+    resolved **agent's** ``requires_encryption`` attribute (base LLMs do not
+    carry this flag). Downstreams that set ``classified=true`` in their own
+    ``anila.meta`` are authoritative; this default only fills the baseline
+    when nothing is emitted.
     """
     return {
         "trace_id": f"trace-{int(time.time() * 1000)}",

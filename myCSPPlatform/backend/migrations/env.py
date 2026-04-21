@@ -34,7 +34,6 @@ import app.models.conversation     # noqa: F401
 import app.models.handoff          # noqa: F401
 import app.models.message          # noqa: F401
 import app.models.platform_link    # noqa: F401
-import app.models.quota_policy     # noqa: F401
 import app.models.token_usage      # noqa: F401
 import app.models.user             # noqa: F401
 

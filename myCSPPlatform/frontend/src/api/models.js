@@ -12,5 +12,8 @@ export const updateModel = (id, data) =>
 export const deleteModel = (id) =>
   client.delete(`/api/models/${id}`)
 
+export const purgeModel = (id) =>
+  client.delete(`/api/models/${id}/purge`)
+
 export const triggerHealthCheck = (id) =>
   client.post(`/api/models/${id}/health-check`)

@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Table
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -24,12 +24,6 @@ class ApiKey(Base):
     key_prefix = Column(String(8), nullable=False)
     key_suffix = Column(String(4), nullable=False)
     key_hash = Column(String(255), nullable=False, unique=True, index=True)
-    quota_policy_id = Column(
-        Integer,
-        ForeignKey("quota_policies.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
     is_active = Column(Boolean, default=True)
     expires_at = Column(DateTime, nullable=True)  # None = no expiration
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -37,7 +31,6 @@ class ApiKey(Base):
 
     # Relationships
     user = relationship("User", backref="api_keys")
-    quota_policy = relationship("QuotaPolicy", foreign_keys=[quota_policy_id], lazy="select")
     allowed_models = relationship(
         "ModelRegistry",
         secondary="api_key_model_permissions",

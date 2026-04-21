@@ -45,7 +45,19 @@ class RemoteAgentRegistry:
         self._timeout = timeout
         self._agents_by_key: dict[str, dict[str, RemoteAgentManifest]] = {}
         self._last_refresh_by_key: dict[str, float] = {}
+        self._last_refresh_error: Optional[str] = None
+        self._last_refresh_at: Optional[float] = None
         self._lock = asyncio.Lock()
+
+    @property
+    def last_refresh_error(self) -> Optional[str]:
+        """Most recent refresh error across any caller, or None if the last refresh succeeded."""
+        return self._last_refresh_error
+
+    @property
+    def last_refresh_at(self) -> Optional[float]:
+        """Unix timestamp of the last completed refresh attempt (success or failure)."""
+        return self._last_refresh_at
 
     def _cache_key(self, api_key: str) -> str:
         return hashlib.sha256(api_key.encode()).hexdigest()
@@ -62,6 +74,7 @@ class RemoteAgentRegistry:
 
     async def _do_refresh(self, api_key: str) -> None:
         url = f"{self._csp_base_url}/v1/agents"
+        self._last_refresh_at = time.time()
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await client.get(
@@ -71,7 +84,9 @@ class RemoteAgentRegistry:
                 resp.raise_for_status()
                 data = resp.json()
         except Exception as exc:
-            logger.warning("RemoteAgentRegistry: failed to fetch %s — %s", url, exc)
+            err_msg = f"{type(exc).__name__}: {exc}"
+            self._last_refresh_error = err_msg
+            logger.warning("RemoteAgentRegistry: failed to fetch %s — %s", url, err_msg)
             return
 
         agents: dict[str, RemoteAgentManifest] = {}
@@ -90,6 +105,7 @@ class RemoteAgentRegistry:
         cache_key = self._cache_key(api_key)
         self._agents_by_key[cache_key] = agents
         self._last_refresh_by_key[cache_key] = time.monotonic()
+        self._last_refresh_error = None
         logger.info("RemoteAgentRegistry: loaded %d agents", len(agents))
 
     async def ensure_fresh(self, api_key: str) -> None:

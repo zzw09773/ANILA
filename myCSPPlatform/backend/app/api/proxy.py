@@ -74,12 +74,9 @@ def list_available_agents(
             .all()
         )
 
-    def _encryption_required(agent: Agent) -> bool:
-        if getattr(agent, "requires_encryption", False):
-            return True
-        base_model = getattr(agent, "base_model", None)
-        return bool(getattr(base_model, "requires_encryption", False))
-
+    # Encryption is an agent-level policy only. Base models (LLMs) do NOT carry
+    # a requires_encryption flag — classification is decided per-agent so the
+    # same LLM can serve both classified and non-classified agents.
     data = [
         {
             "id": a.name,
@@ -89,7 +86,7 @@ def list_available_agents(
             "endpoint_url": a.endpoint_url,
             "capabilities": a.capabilities or {},
             "input_schema": a.input_schema,
-            "requires_encryption": _encryption_required(a),
+            "requires_encryption": bool(getattr(a, "requires_encryption", False)),
         }
         for a in agents
     ]
@@ -119,10 +116,7 @@ async def chat_completions(
     # Try agent first, fallback to model_registry
     agent = _resolve_agent(db, api_key, model_name)
     if agent:
-        agent_requires_encryption = bool(
-            getattr(agent, "requires_encryption", False)
-            or getattr(getattr(agent, "base_model", None), "requires_encryption", False)
-        )
+        agent_requires_encryption = bool(getattr(agent, "requires_encryption", False))
         if stream:
             return StreamingResponse(
                 proxy_stream(
@@ -172,7 +166,10 @@ async def chat_completions(
             raise _HTTPException(status_code=502, detail=f"Agent 呼叫失敗: {e}")
 
     model = _resolve_model(db, api_key, model_name)
-    model_requires_encryption = bool(getattr(model, "requires_encryption", False))
+    # Direct LLM calls (not through an agent) do NOT trigger CSP-side classified
+    # latch. Encryption is agent-level policy; the same LLM can back both
+    # classified and non-classified agents. Downstream-reported classified=True
+    # still latches via proxy_service's normal meta merge.
     if stream:
         target_url = (
             f"{model.endpoint_url.rstrip('/')}/v2/chat/completions"
@@ -192,7 +189,7 @@ async def chat_completions(
                 model_name=model.name,
                 conversation_id=conversation_id,
                 trace_id=trace_id,
-                requires_encryption=model_requires_encryption,
+                requires_encryption=False,
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -206,7 +203,7 @@ async def chat_completions(
         endpoint_path="/v1/chat/completions",
         conversation_id=conversation_id,
         trace_id=trace_id,
-        requires_encryption=model_requires_encryption,
+        requires_encryption=False,
     )
 
 

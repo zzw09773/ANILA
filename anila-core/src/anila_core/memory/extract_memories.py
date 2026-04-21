@@ -6,7 +6,18 @@ Triggers:
   - Fires after each turn when the model produces a final answer (no tool calls).
   - Only processes messages NEW since the last extraction (cursor tracking).
   - Skips if main agent already wrote to the memory dir this turn.
+  - Skips for subagents (context.is_forked) — only main agent extracts.
   - Background agent has restricted tool set: reads + memory-dir writes only.
+
+Concurrency model:
+  - ``submit()`` is the fire-and-forget entry used by post-turn hooks. It
+    tracks the spawned task in ``_in_flight_tasks`` so ``drain()`` can wait
+    for completion before process shutdown.
+  - When ``submit()`` is called while an extraction is already in flight,
+    the latest context is stashed in ``_pending``; the running extraction
+    drains it as a trailing-run after finishing. Only the newest pending
+    context is kept — earlier ones are dropped because they have fewer
+    messages than the latest.
 
 The forked agent reads the existing memory manifest, then decides what to
 write / update in the memory directory.
@@ -14,6 +25,7 @@ write / update in the memory directory.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine, Optional
@@ -138,6 +150,15 @@ RunForkedAgentFn = Callable[
 
 
 @dataclass
+class _PendingExtraction:
+    """Snapshot of a submit() call stashed while another run is in progress."""
+
+    messages: list[Message]
+    context: AgentContext
+    existing_memories: str
+
+
+@dataclass
 class MemoryExtractor:
     """Post-turn hook that extracts persistent memories via a forked agent.
 
@@ -146,10 +167,72 @@ class MemoryExtractor:
 
     memory_dir: str
     last_message_uuid: Optional[str] = field(default=None, repr=False)
-    _in_progress: bool = field(default=False, repr=False, init=False)
-    _pending_context: Optional[Any] = field(default=None, repr=False, init=False)
-    _turns_since_last: int = field(default=0, repr=False, init=False)
     throttle_every_n_turns: int = 1
+    _in_progress: bool = field(default=False, repr=False, init=False)
+    _pending: Optional[_PendingExtraction] = field(default=None, repr=False, init=False)
+    _turns_since_last: int = field(default=0, repr=False, init=False)
+    _in_flight_tasks: set[asyncio.Task] = field(
+        default_factory=set, repr=False, init=False
+    )
+
+    async def submit(
+        self,
+        messages: list[Message],
+        context: AgentContext,
+        run_forked: RunForkedAgentFn,
+        existing_memories: str = "",
+    ) -> None:
+        """Fire-and-forget entry point for post-turn hooks.
+
+        Tracks the spawned task so :meth:`drain` can wait for completion at
+        shutdown. If an extraction is already in flight, stashes the latest
+        context for a trailing run rather than spawning a parallel task
+        (parallel extractions would race on the same memory files).
+        """
+        if context.is_forked:
+            # Subagents share the parent's memory; only the main agent extracts.
+            return
+
+        task = asyncio.create_task(
+            self._safe_run(messages, context, run_forked, existing_memories)
+        )
+        self._in_flight_tasks.add(task)
+        task.add_done_callback(self._in_flight_tasks.discard)
+
+    async def _safe_run(
+        self,
+        messages: list[Message],
+        context: AgentContext,
+        run_forked: RunForkedAgentFn,
+        existing_memories: str,
+    ) -> None:
+        """Internal wrapper that swallows exceptions (submit is fire-and-forget)."""
+        try:
+            await self.run(messages, context, run_forked, existing_memories)
+        except Exception as exc:
+            logger.warning("[MemoryExtractor] submit-run failed: %s", exc)
+
+    async def drain(self, timeout: float = 60.0) -> None:
+        """Await all in-flight extractions (including trailing runs).
+
+        Called from the process shutdown path so pending fork work finishes
+        before the event loop is torn down. Falls back to a soft timeout
+        rather than blocking shutdown indefinitely.
+        """
+        if not self._in_flight_tasks:
+            return
+        tasks = list(self._in_flight_tasks)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[MemoryExtractor] drain timed out after %.1fs (%d in-flight)",
+                timeout,
+                len(tasks),
+            )
 
     async def run(
         self,
@@ -160,6 +243,11 @@ class MemoryExtractor:
     ) -> list[str]:
         """Run memory extraction. Returns list of written file paths.
 
+        When called while an extraction is already in flight, the context is
+        stashed and an empty list is returned immediately. The running
+        extraction picks up the stashed context as a trailing run once it
+        finishes.
+
         Args:
             messages: Current conversation history.
             context: Parent agent context.
@@ -167,15 +255,59 @@ class MemoryExtractor:
             existing_memories: Pre-formatted memory manifest (optional).
 
         Returns:
-            List of file paths written by the extraction agent.
+            List of file paths written by the extraction agent (including
+            any trailing-run paths when called via submit()).
         """
-        if self._in_progress:
-            logger.debug("[MemoryExtractor] already in progress, skipping")
+        if context.is_forked:
             return []
 
+        if self._in_progress:
+            # Overwrite any previously stashed context — the newest one has
+            # the most messages, so the older stash is strictly redundant.
+            self._pending = _PendingExtraction(
+                messages=list(messages),
+                context=context,
+                existing_memories=existing_memories,
+            )
+            logger.debug("[MemoryExtractor] in-progress — stashed pending context")
+            return []
+
+        paths = await self._run_once(messages, context, run_forked, existing_memories)
+
+        # Drain stashed pending context as a single trailing run. Only one
+        # trailing pass per completion — any submit that arrives during the
+        # trailing run itself will be stashed again and picked up by the
+        # next submit call (or left for drain()).
+        pending = self._pending
+        self._pending = None
+        if pending is not None:
+            logger.debug("[MemoryExtractor] running trailing extraction")
+            try:
+                trailing = await self._run_once(
+                    pending.messages,
+                    pending.context,
+                    run_forked,
+                    pending.existing_memories,
+                )
+                paths.extend(trailing)
+            except Exception as exc:
+                logger.warning("[MemoryExtractor] trailing run failed: %s", exc)
+
+        return paths
+
+    async def _run_once(
+        self,
+        messages: list[Message],
+        context: AgentContext,
+        run_forked: RunForkedAgentFn,
+        existing_memories: str,
+    ) -> list[str]:
+        """Single extraction pass without trailing-run logic."""
         # Skip if main agent already wrote memories this turn
         if _has_memory_writes_since(messages, self.last_message_uuid, self.memory_dir):
-            logger.debug("[MemoryExtractor] skipping — main agent already wrote memories")
+            logger.debug(
+                "[MemoryExtractor] skipping — main agent already wrote memories"
+            )
             last = messages[-1] if messages else None
             if last and hasattr(last, "uuid"):
                 self.last_message_uuid = last.uuid
@@ -237,7 +369,9 @@ class MemoryExtractor:
         """Reset extraction state (for tests)."""
         self.last_message_uuid = None
         self._in_progress = False
+        self._pending = None
         self._turns_since_last = 0
+        self._in_flight_tasks.clear()
 
 
 def _extract_written_paths(messages: list[Message], memory_dir: str) -> list[str]:

@@ -21,7 +21,6 @@
             <th class="px-4 py-3 text-left text-gray-600 font-medium">類型</th>
             <th class="px-4 py-3 text-left text-gray-600 font-medium">端點</th>
             <th class="px-4 py-3 text-left text-gray-600 font-medium">API 版本</th>
-            <th class="px-4 py-3 text-left text-gray-600 font-medium">加密</th>
             <th class="px-4 py-3 text-left text-gray-600 font-medium">啟用</th>
             <th v-if="authStore.isAdmin" class="px-4 py-3 text-left text-gray-600 font-medium">操作</th>
           </tr>
@@ -56,14 +55,6 @@
             </td>
             <td class="px-4 py-3 text-gray-500">{{ model.api_version }}</td>
             <td class="px-4 py-3">
-              <span
-                :class="model.requires_encryption ? 'bg-red-50 text-red-700' : 'bg-gray-50 text-gray-500'"
-                class="text-xs px-2 py-0.5 rounded"
-              >
-                {{ model.requires_encryption ? '強制加密' : '一般' }}
-              </span>
-            </td>
-            <td class="px-4 py-3">
               <span :class="model.is_active ? 'text-green-600' : 'text-red-600'" class="text-xs">
                 {{ model.is_active ? '啟用' : '停用' }}
               </span>
@@ -78,14 +69,21 @@
               <button
                 v-if="model.is_active"
                 @click="handleDeactivate(model.id)"
-                class="text-red-600 hover:text-red-800 text-xs"
+                class="text-yellow-600 hover:text-yellow-800 text-xs"
               >
                 停用
+              </button>
+              <button
+                @click="handlePurge(model)"
+                :disabled="purgingId === model.id"
+                class="text-red-600 hover:text-red-800 text-xs disabled:opacity-50"
+              >
+                {{ purgingId === model.id ? '刪除中…' : '刪除' }}
               </button>
             </td>
           </tr>
           <tr v-if="modelsStore.models.length === 0">
-            <td :colspan="authStore.isAdmin ? 8 : 7" class="px-4 py-8 text-center text-gray-400">
+            <td :colspan="authStore.isAdmin ? 7 : 6" class="px-4 py-8 text-center text-gray-400">
               尚無已註冊模型
             </td>
           </tr>
@@ -150,15 +148,6 @@
               class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
               placeholder="選填，例如 128000" />
           </div>
-          <div>
-            <label class="flex items-center gap-2 text-sm text-gray-700">
-              <input v-model="form.requires_encryption" type="checkbox" class="rounded" />
-              <span>強制加密模式</span>
-            </label>
-            <p class="text-xs text-gray-400 mt-1">
-              勾選後，任何使用此模型的對話會自動進入加密模式（機密、禁止分享、稽核強化）。
-            </p>
-          </div>
           <div v-if="form.model_type === 'agent'">
             <label class="block text-sm font-medium text-gray-700 mb-1">底層模型</label>
             <select v-model="form.base_model_id"
@@ -198,11 +187,11 @@ const modelsStore = useModelsStore()
 const authStore = useAuthStore()
 const showModal = ref(false)
 const editingId = ref(null)
+const purgingId = ref(null)
 
 const defaultForm = () => ({
   name: '', display_name: '', model_type: 'llm', endpoint_url: '',
   api_version: 'v1', description: '', context_window: null, base_model_id: null,
-  requires_encryption: false,
 })
 const form = ref(defaultForm())
 
@@ -243,7 +232,6 @@ function openEditModal(model) {
     model_type: model.model_type, endpoint_url: model.endpoint_url,
     api_version: model.api_version, description: model.description || '',
     context_window: model.context_window, base_model_id: model.base_model_id || null,
-    requires_encryption: !!model.requires_encryption,
   }
   showModal.value = true
 }
@@ -273,8 +261,28 @@ async function handleHealthCheck(id) {
 }
 
 async function handleDeactivate(id) {
-  if (confirm('確定要停用此模型嗎？')) {
+  if (confirm('確定要停用此模型嗎？（停用後可透過編輯再次啟用）')) {
     await modelsStore.remove(id)
+  }
+}
+
+async function handlePurge(model) {
+  if (!model || purgingId.value === model.id) {
+    return
+  }
+  if (!window.confirm(
+    `確定要永久刪除模型「${model.display_name}」？\n` +
+    `此操作無法復原。若此模型已有用量紀錄或被其他模型引用，將會被拒絕。`
+  )) {
+    return
+  }
+  purgingId.value = model.id
+  try {
+    await modelsStore.purge(model.id)
+  } catch (e) {
+    alert(e.response?.data?.detail || '刪除模型失敗')
+  } finally {
+    purgingId.value = null
   }
 }
 </script>

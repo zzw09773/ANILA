@@ -118,6 +118,7 @@
               <th class="px-4 py-3 text-left font-medium text-gray-600">Router 描述</th>
               <th class="px-4 py-3 text-left font-medium text-gray-600">Health</th>
               <th class="px-4 py-3 text-left font-medium text-gray-600">審核狀態</th>
+              <th class="px-4 py-3 text-left font-medium text-gray-600">加密</th>
               <th class="px-4 py-3 text-left font-medium text-gray-600">建立日期</th>
               <th class="px-4 py-3 text-left font-medium text-gray-600">操作</th>
             </tr>
@@ -154,6 +155,14 @@
                   {{ approvalLabel(agent.approval_status) }}
                 </span>
               </td>
+              <td class="px-4 py-3">
+                <span
+                  class="rounded px-2 py-0.5 text-xs"
+                  :class="agent.requires_encryption ? 'bg-red-50 text-red-700' : 'bg-gray-50 text-gray-500'"
+                >
+                  {{ agent.requires_encryption ? '強制加密' : '一般' }}
+                </span>
+              </td>
               <td class="px-4 py-3 text-gray-500">{{ formatDate(agent.created_at) }}</td>
               <td class="px-4 py-3 whitespace-nowrap">
                 <div class="flex flex-wrap gap-2 text-xs">
@@ -173,6 +182,14 @@
                     class="font-medium text-red-600 hover:text-red-800"
                   >
                     拒絕
+                  </button>
+                  <button
+                    v-if="authStore.isAdmin"
+                    @click="handleDeleteAgent(agent)"
+                    :disabled="deletingId === agent.id"
+                    class="font-medium text-red-600 hover:text-red-800 disabled:opacity-50"
+                  >
+                    {{ deletingId === agent.id ? '刪除中…' : '刪除' }}
                   </button>
                 </div>
               </td>
@@ -279,7 +296,36 @@
               <div class="flex gap-3"><dt class="w-28 shrink-0 text-gray-500">建立時間</dt><dd>{{ formatDate(detailAgent.created_at) }}</dd></div>
               <div class="flex gap-3"><dt class="w-28 shrink-0 text-gray-500">Owner</dt><dd>{{ detailAgent.owner_user_id || '未提供' }}</dd></div>
               <div class="flex gap-3"><dt class="w-28 shrink-0 text-gray-500">Base Model</dt><dd>{{ detailAgent.base_model_id || '未設定' }}</dd></div>
+              <div class="flex gap-3">
+                <dt class="w-28 shrink-0 text-gray-500">加密模式</dt>
+                <dd class="flex flex-wrap items-center gap-2">
+                  <span
+                    class="rounded px-2 py-0.5 text-xs"
+                    :class="detailAgent.requires_encryption ? 'bg-red-50 text-red-700' : 'bg-gray-50 text-gray-500'"
+                  >
+                    {{ detailAgent.requires_encryption ? '強制加密' : '一般' }}
+                  </span>
+                  <button
+                    v-if="authStore.isAdmin"
+                    @click="handleToggleEncryption(detailAgent)"
+                    :disabled="encryptionBusyId === detailAgent.id"
+                    class="rounded-lg border px-2.5 py-1 text-xs transition disabled:opacity-50"
+                    :class="detailAgent.requires_encryption
+                      ? 'border-gray-300 text-gray-700 hover:bg-gray-50'
+                      : 'border-red-300 text-red-700 hover:bg-red-50'"
+                  >
+                    {{
+                      encryptionBusyId === detailAgent.id
+                        ? '更新中…'
+                        : (detailAgent.requires_encryption ? '停用加密' : '啟用強制加密')
+                    }}
+                  </button>
+                </dd>
+              </div>
             </dl>
+            <p v-if="authStore.isAdmin" class="mt-3 text-xs text-gray-400">
+              啟用後，任何使用此 Agent 的對話會自動進入加密模式；一旦對話變成加密，整段對話單向上鎖，使用者無法關閉。
+            </p>
           </div>
 
           <div>
@@ -345,7 +391,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useAuthStore } from '../stores/auth'
-import { approveAgent, downloadTemplate, getAgent, listMyAgents, registerAgent, rejectAgent } from '../api/agents'
+import { approveAgent, deleteAgent, downloadTemplate, getAgent, listMyAgents, registerAgent, rejectAgent, setAgentEncryption } from '../api/agents'
 
 const authStore = useAuthStore()
 
@@ -357,6 +403,8 @@ const detailAgent = ref(null)
 const registering = ref(false)
 const rejectTarget = ref(null)
 const rejectReason = ref('')
+const encryptionBusyId = ref(null)
+const deletingId = ref(null)
 const feedback = ref({ type: 'success', message: '' })
 const filters = ref({
   query: '',
@@ -513,6 +561,57 @@ async function handleApprove(agent) {
     await fetchAgents()
   } catch (error) {
     setFeedback('error', error.response?.data?.detail || '核准失敗')
+  }
+}
+
+async function handleToggleEncryption(agent) {
+  if (!agent || encryptionBusyId.value === agent.id) {
+    return
+  }
+  const next = !agent.requires_encryption
+  if (next && !window.confirm(`啟用後，所有走「${agent.name}」的對話會自動鎖為加密模式，使用者無法關閉。確定啟用？`)) {
+    return
+  }
+  encryptionBusyId.value = agent.id
+  try {
+    const { data } = await setAgentEncryption(agent.id, next)
+    const applied = Boolean(data?.requires_encryption ?? next)
+    const list = agents.value
+    const idx = list.findIndex((a) => a.id === agent.id)
+    if (idx !== -1) {
+      list[idx] = { ...list[idx], requires_encryption: applied }
+    }
+    if (detailAgent.value && detailAgent.value.id === agent.id) {
+      detailAgent.value = { ...detailAgent.value, requires_encryption: applied }
+    }
+    setFeedback('success', `已${applied ? '啟用' : '停用'} Agent「${agent.name}」加密模式`)
+  } catch (error) {
+    setFeedback('error', error.response?.data?.detail || '加密設定更新失敗')
+  } finally {
+    encryptionBusyId.value = null
+  }
+}
+
+async function handleDeleteAgent(agent) {
+  if (!agent || deletingId.value === agent.id) {
+    return
+  }
+  if (!window.confirm(`確定要刪除 Agent「${agent.name}」？此操作無法復原，對話中的引用會斷線。`)) {
+    return
+  }
+  deletingId.value = agent.id
+  try {
+    await deleteAgent(agent.id)
+    agents.value = agents.value.filter((a) => a.id !== agent.id)
+    if (detailAgent.value && detailAgent.value.id === agent.id) {
+      showDetailModal.value = false
+      detailAgent.value = null
+    }
+    setFeedback('success', `已刪除 Agent「${agent.name}」`)
+  } catch (error) {
+    setFeedback('error', error.response?.data?.detail || '刪除 Agent 失敗')
+  } finally {
+    deletingId.value = null
   }
 }
 

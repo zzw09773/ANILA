@@ -1,6 +1,9 @@
-// Static data (folders) + PII helpers — real agents load dynamically from CSP.
+// Default folder seed + PII helpers — real agents load dynamically from CSP.
 
-export const FOLDERS = [
+// Seed list. Users can add/remove folders at runtime (persisted in localStorage
+// under "anila-folders"). `all` and `starred` are protected because the
+// sidebar filter logic treats them specially (no-filter / starred-only).
+export const DEFAULT_FOLDERS = [
   { id: "all",       name: "全部",   icon: "inbox" },
   { id: "starred",   name: "已加星", icon: "star" },
   { id: "hr",        name: "HR",         icon: "folder" },
@@ -8,6 +11,8 @@ export const FOLDERS = [
   { id: "engineering", name: "Engineering", icon: "folder" },
   { id: "compared",  name: "比較採用",   icon: "folder" },
 ];
+
+export const BUILTIN_FOLDER_IDS = new Set(["all", "starred"]);
 
 // ---- PII detection patterns (front-end UX only; real redaction at CSP proxy) ----
 const PII_PATTERNS = [

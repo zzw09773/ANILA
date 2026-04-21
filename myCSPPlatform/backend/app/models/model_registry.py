@@ -18,9 +18,6 @@ class ModelRegistry(Base):
     health_checked_at = Column(DateTime, nullable=True)
     description = Column(Text, nullable=True)
     context_window = Column(Integer, nullable=True)
-    # When true, any conversation that hits this model is automatically treated
-    # as classified / encrypted by the runtime UI.
-    requires_encryption = Column(Boolean, nullable=False, default=False, server_default="false")
 
     # Agent -> base model relationship
     base_model_id = Column(Integer, ForeignKey("model_registry.id"), nullable=True)

@@ -30,7 +30,6 @@ from app.models.department import Department
 from app.models.external_identity import ExternalIdentity
 from app.models.model_registry import ModelRegistry
 from app.models.platform_link import PlatformLink
-from app.models.quota_policy import QuotaPolicy
 from app.models.token_usage import TokenUsage
 from app.models.user import User, UserModelPermission
 
@@ -82,76 +81,244 @@ class LegacyMigrationError(RuntimeError):
 
 
 def _ensure_schema_backfills(bind: Engine) -> None:
-    """Backfill newly added columns/indexes for pre-existing schemas."""
-    _ensure_user_column(
-        bind,
-        column="token_version",
+    """Backfill newly added columns/indexes for pre-existing schemas.
+
+    The 0001 alembic baseline does not match the current SQLAlchemy models
+    for users/model_registry/token_usage. Rather than rewriting history we
+    run idempotent ``ADD COLUMN IF NOT EXISTS`` here so any fresh or
+    previously-initialised Postgres volume self-heals at startup.
+    """
+
+    # --- users -----------------------------------------------------------
+    _ensure_column(
+        bind, "users", "token_version",
         postgres_ddl="ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0",
         generic_ddl="ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0",
     )
-    _ensure_user_column(
-        bind,
-        column="is_approved",
+    _ensure_column(
+        bind, "users", "is_approved",
         postgres_ddl="ALTER TABLE users ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT TRUE",
         generic_ddl="ALTER TABLE users ADD COLUMN is_approved BOOLEAN NOT NULL DEFAULT 1",
     )
-    _ensure_user_column(
-        bind,
-        column="department_id",
+    _ensure_column(
+        bind, "users", "department_id",
         postgres_ddl=(
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS department_id "
             "INTEGER REFERENCES departments(id) ON DELETE SET NULL"
         ),
         generic_ddl="ALTER TABLE users ADD COLUMN department_id INTEGER",
     )
-    _ensure_token_usage_column(
-        bind,
-        column="department_id",
+    _ensure_column(
+        bind, "users", "updated_at",
+        postgres_ddl="ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NULL",
+        generic_ddl="ALTER TABLE users ADD COLUMN updated_at TIMESTAMP",
+    )
+
+    # --- model_registry --------------------------------------------------
+    _ensure_column(
+        bind, "model_registry", "health_status",
+        postgres_ddl=(
+            "ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS "
+            "health_status VARCHAR(20) DEFAULT 'offline'"
+        ),
+        generic_ddl="ALTER TABLE model_registry ADD COLUMN health_status VARCHAR(20) DEFAULT 'offline'",
+    )
+    _ensure_column(
+        bind, "model_registry", "health_checked_at",
+        postgres_ddl="ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS health_checked_at TIMESTAMP NULL",
+        generic_ddl="ALTER TABLE model_registry ADD COLUMN health_checked_at TIMESTAMP",
+    )
+    _ensure_column(
+        bind, "model_registry", "context_window",
+        postgres_ddl="ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS context_window INTEGER NULL",
+        generic_ddl="ALTER TABLE model_registry ADD COLUMN context_window INTEGER",
+    )
+    _ensure_column(
+        bind, "model_registry", "base_model_id",
+        postgres_ddl=(
+            "ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS base_model_id "
+            "INTEGER REFERENCES model_registry(id)"
+        ),
+        generic_ddl="ALTER TABLE model_registry ADD COLUMN base_model_id INTEGER",
+    )
+    _ensure_column(
+        bind, "model_registry", "updated_at",
+        postgres_ddl="ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NULL",
+        generic_ddl="ALTER TABLE model_registry ADD COLUMN updated_at TIMESTAMP",
+    )
+
+    # --- token_usage -----------------------------------------------------
+    _ensure_column(
+        bind, "token_usage", "department_id",
         postgres_ddl=(
             "ALTER TABLE token_usage ADD COLUMN IF NOT EXISTS department_id "
             "INTEGER REFERENCES departments(id)"
         ),
         generic_ddl="ALTER TABLE token_usage ADD COLUMN department_id INTEGER",
     )
-    _ensure_postgres_index(
-        bind,
-        "CREATE INDEX IF NOT EXISTS idx_usage_department_time "
-        "ON token_usage (department_id, request_timestamp)",
+    _ensure_column(
+        bind, "token_usage", "request_timestamp",
+        postgres_ddl=(
+            "ALTER TABLE token_usage ADD COLUMN IF NOT EXISTS request_timestamp "
+            "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP"
+        ),
+        generic_ddl=(
+            "ALTER TABLE token_usage ADD COLUMN request_timestamp "
+            "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP"
+        ),
+    )
+    _ensure_column(
+        bind, "token_usage", "request_duration_ms",
+        postgres_ddl="ALTER TABLE token_usage ADD COLUMN IF NOT EXISTS request_duration_ms INTEGER NULL",
+        generic_ddl="ALTER TABLE token_usage ADD COLUMN request_duration_ms INTEGER",
     )
 
+    # --- token_usage indexes (must come after request_timestamp exists) --
+    for index_ddl in (
+        "CREATE INDEX IF NOT EXISTS idx_usage_user_time ON token_usage (user_id, request_timestamp)",
+        "CREATE INDEX IF NOT EXISTS idx_usage_department_time ON token_usage (department_id, request_timestamp)",
+        "CREATE INDEX IF NOT EXISTS idx_usage_model_time ON token_usage (model_id, request_timestamp)",
+        "CREATE INDEX IF NOT EXISTS idx_usage_timestamp ON token_usage (request_timestamp)",
+        "CREATE INDEX IF NOT EXISTS idx_usage_apikey_time ON token_usage (api_key_id, request_timestamp)",
+    ):
+        _ensure_postgres_index(bind, index_ddl)
 
-def _ensure_user_column(bind: Engine, *, column: str, postgres_ddl: str, generic_ddl: str) -> None:
-    inspector = inspect(bind)
-    if not inspector.has_table("users"):
-        return
-    existing_cols = {c["name"] for c in inspector.get_columns("users")}
-    if column in existing_cols:
-        return
+    # --- departments ----------------------------------------------------
+    _ensure_column(
+        bind, "departments", "updated_at",
+        postgres_ddl="ALTER TABLE departments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NULL",
+        generic_ddl="ALTER TABLE departments ADD COLUMN updated_at TIMESTAMP",
+    )
 
-    ddl = postgres_ddl if bind.dialect.name == "postgresql" else generic_ddl
-    with bind.begin() as conn:
-        conn.execute(text(ddl))
-    logger.info(f"已補上 users.{column} 欄位")
+    # --- auth_providers (0001 baseline omitted the OIDC/LDAP columns) ---
+    for col_name, ddl_suffix in [
+        ("default_role", "VARCHAR(20) NOT NULL DEFAULT 'user'"),
+        ("button_text", "VARCHAR(100) NULL"),
+        ("auto_create_users", "BOOLEAN NULL DEFAULT TRUE"),
+        ("default_department_id", "INTEGER NULL"),
+        ("updated_at", "TIMESTAMP NULL"),
+        ("oidc_client_id", "VARCHAR(255) NULL"),
+        ("oidc_client_secret", "VARCHAR(255) NULL"),
+        ("oidc_issuer_url", "VARCHAR(255) NULL"),
+        ("oidc_authorization_endpoint", "VARCHAR(255) NULL"),
+        ("oidc_token_endpoint", "VARCHAR(255) NULL"),
+        ("oidc_userinfo_endpoint", "VARCHAR(255) NULL"),
+        ("oidc_scopes", "VARCHAR(255) NULL"),
+        ("oidc_subject_claim", "VARCHAR(100) NULL"),
+        ("oidc_username_claim", "VARCHAR(100) NULL"),
+        ("oidc_email_claim", "VARCHAR(100) NULL"),
+        ("ldap_server_uri", "VARCHAR(255) NULL"),
+        ("ldap_bind_dn", "VARCHAR(255) NULL"),
+        ("ldap_bind_password", "VARCHAR(255) NULL"),
+        ("ldap_base_dn", "VARCHAR(255) NULL"),
+        ("ldap_user_filter", "VARCHAR(255) NULL"),
+        ("ldap_email_attribute", "VARCHAR(100) NULL"),
+        ("ldap_display_name_attribute", "VARCHAR(100) NULL"),
+        ("ldap_start_tls", "BOOLEAN NULL DEFAULT FALSE"),
+    ]:
+        _ensure_column(
+            bind, "auth_providers", col_name,
+            postgres_ddl=f"ALTER TABLE auth_providers ADD COLUMN IF NOT EXISTS {col_name} {ddl_suffix}",
+            generic_ddl=f"ALTER TABLE auth_providers ADD COLUMN {col_name} {ddl_suffix}",
+        )
+
+    # --- external_identities -------------------------------------------
+    for col_name, ddl_suffix in [
+        ("external_subject", "VARCHAR(255) NOT NULL DEFAULT ''"),
+        ("external_username", "VARCHAR(255) NULL"),
+        ("external_email", "VARCHAR(255) NULL"),
+        ("last_login_at", "TIMESTAMP NULL"),
+    ]:
+        _ensure_column(
+            bind, "external_identities", col_name,
+            postgres_ddl=f"ALTER TABLE external_identities ADD COLUMN IF NOT EXISTS {col_name} {ddl_suffix}",
+            generic_ddl=f"ALTER TABLE external_identities ADD COLUMN {col_name} {ddl_suffix}",
+        )
+
+    # --- api_keys ------------------------------------------------------
+    for col_name, ddl_suffix in [
+        ("expires_at", "TIMESTAMP NULL"),
+        ("key_suffix", "VARCHAR(4) NOT NULL DEFAULT ''"),
+    ]:
+        _ensure_column(
+            bind, "api_keys", col_name,
+            postgres_ddl=f"ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS {col_name} {ddl_suffix}",
+            generic_ddl=f"ALTER TABLE api_keys ADD COLUMN {col_name} {ddl_suffix}",
+        )
+
+    # --- alerts --------------------------------------------------------
+    for col_name, ddl_suffix in [
+        ("category", "VARCHAR(50) NOT NULL DEFAULT 'general'"),
+        ("severity", "VARCHAR(20) NOT NULL DEFAULT 'info'"),
+        ("status", "VARCHAR(20) NOT NULL DEFAULT 'open'"),
+        ("fingerprint", "VARCHAR(200) NOT NULL DEFAULT ''"),
+        ("source_type", "VARCHAR(50) NULL"),
+        ("source_id", "VARCHAR(100) NULL"),
+        ("first_seen_at", "TIMESTAMP NULL"),
+        ("last_seen_at", "TIMESTAMP NULL"),
+        ("acknowledged_at", "TIMESTAMP NULL"),
+        ("acknowledged_by_user_id", "INTEGER NULL"),
+        ("resolved_at", "TIMESTAMP NULL"),
+        ("metadata_json", "TEXT NULL"),
+    ]:
+        _ensure_column(
+            bind, "alerts", col_name,
+            postgres_ddl=f"ALTER TABLE alerts ADD COLUMN IF NOT EXISTS {col_name} {ddl_suffix}",
+            generic_ddl=f"ALTER TABLE alerts ADD COLUMN {col_name} {ddl_suffix}",
+        )
+
+    # --- audit_logs ----------------------------------------------------
+    for col_name, ddl_suffix in [
+        ("status", "VARCHAR(20) NOT NULL DEFAULT 'ok'"),
+        ("actor_user_id", "INTEGER NULL"),
+        ("actor_username", "VARCHAR(100) NULL"),
+        ("ip_address", "VARCHAR(64) NULL"),
+        ("metadata_json", "TEXT NULL"),
+    ]:
+        _ensure_column(
+            bind, "audit_logs", col_name,
+            postgres_ddl=f"ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS {col_name} {ddl_suffix}",
+            generic_ddl=f"ALTER TABLE audit_logs ADD COLUMN {col_name} {ddl_suffix}",
+        )
+    # Align resource_id type with model (0001 baseline declared INTEGER;
+    # model declares VARCHAR(100)). Pydantic ResponseValidationError was
+    # firing on GET /api/audit-logs because PG returned ints.
+    _ensure_column_type_varchar(
+        bind, "audit_logs", "resource_id", length=100,
+    )
+
+    # --- platform_links ------------------------------------------------
+    for col_name, ddl_suffix in [
+        ("icon", "VARCHAR(50) NULL"),
+        ("sort_order", "INTEGER NULL DEFAULT 0"),
+    ]:
+        _ensure_column(
+            bind, "platform_links", col_name,
+            postgres_ddl=f"ALTER TABLE platform_links ADD COLUMN IF NOT EXISTS {col_name} {ddl_suffix}",
+            generic_ddl=f"ALTER TABLE platform_links ADD COLUMN {col_name} {ddl_suffix}",
+        )
 
 
-def _ensure_token_usage_column(
+def _ensure_column(
     bind: Engine,
-    *,
+    table: str,
     column: str,
+    *,
     postgres_ddl: str,
     generic_ddl: str,
 ) -> None:
+    """Idempotently add ``column`` to ``table`` when missing."""
     inspector = inspect(bind)
-    if not inspector.has_table("token_usage"):
+    if not inspector.has_table(table):
         return
-    existing_cols = {c["name"] for c in inspector.get_columns("token_usage")}
+    existing_cols = {c["name"] for c in inspector.get_columns(table)}
     if column in existing_cols:
         return
 
     ddl = postgres_ddl if bind.dialect.name == "postgresql" else generic_ddl
     with bind.begin() as conn:
         conn.execute(text(ddl))
-    logger.info(f"已補上 token_usage.{column} 欄位")
+    logger.info(f"已補上 {table}.{column} 欄位")
 
 
 def _ensure_postgres_index(bind: Engine, ddl: str) -> None:
@@ -159,6 +326,36 @@ def _ensure_postgres_index(bind: Engine, ddl: str) -> None:
         return
     with bind.begin() as conn:
         conn.execute(text(ddl))
+
+
+def _ensure_column_type_varchar(
+    bind: Engine, table: str, column: str, *, length: int
+) -> None:
+    """Convert ``table.column`` to VARCHAR(length) if currently a non-text type.
+
+    Used to heal cases where an early baseline used INTEGER/BIGINT for a column
+    the SQLAlchemy model now declares as String. Idempotent — no-op if already
+    textual. Postgres-only.
+    """
+    if bind.dialect.name != "postgresql":
+        return
+    with bind.begin() as conn:
+        current = conn.execute(
+            text(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name = :t AND column_name = :c"
+            ),
+            {"t": table, "c": column},
+        ).scalar()
+        if current is None or current in ("character varying", "text"):
+            return
+        conn.execute(
+            text(
+                f"ALTER TABLE {table} ALTER COLUMN {column} TYPE VARCHAR({length}) "
+                f"USING {column}::varchar"
+            )
+        )
+    logger.info(f"已將 {table}.{column} 型別對齊為 VARCHAR({length})")
 
 
 def _resolve_legacy_sqlite_path() -> Path | None:

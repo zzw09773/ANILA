@@ -1,35 +1,54 @@
-# CSP Platform
+# myCSPPlatform（CSP — Cloud Service Platform）
 
-**Cloud Service Platform** — 企業內部 AI 模型服務的統一管理平台。
+**ANILA 平台的 Control Plane 與 Data Plane**，權威掌管使用者、API Key、模型註冊、對話、附件、分享、交接、審計、告警。對外同時提供：
 
-CSP 為組織提供一個集中式介面，用於管理多種 AI 模型（LLM、Embedding、VLM、Agent）的存取權限、API Key 發放、用量追蹤與健康監控。所有模型服務透過 OpenAI 相容 API 對外提供，讓使用者無需修改現有工具即可串接。
+- **Control Plane** — `/api/*`（JWT）：管理介面與平台內部溝通
+- **Data Plane** — `/v1/*`（`sk-` API Key）：OpenAI 相容代理，讓任何 OpenAI SDK / curl 都能直接當 endpoint 使用
+
+> 上游定位見 repo 根目錄 [`README.md`](../README.md) 與 [`anila_plan.md`](../anila_plan.md)。本 README 聚焦 CSP 自身的部署、配置、API。
+
+---
+
+## 目錄
+
+- [功能總覽](#功能總覽)
+- [技術架構](#技術架構)
+- [主要資料流程](#主要資料流程)
+- [快速開始](#快速開始)
+- [配置說明](#配置說明)
+- [模型註冊](#模型註冊)
+- [API 端點一覽](#api-端點一覽)
+- [管理腳本](#管理腳本)
+- [專案結構](#專案結構)
+- [HTTPS 啟用](#https-啟用)
 
 ---
 
 ## 功能總覽
 
 ### 核心功能
-- **API Key 管理** — 發放 `sk-` 前綴的 OpenAI 格式金鑰，支援啟用 / 停用、到期日設定、模型存取權限控制、一鍵重新核發（Regenerate）
-- **模型管理** — 支援 LLM、Embedding、VLM、Agent 四種類型，可透過環境變數自動註冊；背景定期健康檢查
-- **OpenAI 相容代理** — `/v1/chat/completions`、`/v1/embeddings`、`/v2/embeddings`，支援 SSE Streaming
-- **用量追蹤** — Token 用量即時統計、時序圖表、依模型 / 使用者分組、CSV 匯出
+- **API Key 管理** — 發放 `sk-` 前綴 OpenAI 格式金鑰，啟用 / 停用、到期日、模型存取權限、一鍵重新核發
+- **模型管理** — LLM / Embedding / VLM / Agent 四種類型；支援啟動時透過環境變數自動註冊；背景定期健康檢查；**Admin 可硬刪除**（當該模型尚有 token_usage 紀錄或被其他模型引用時會 409 拒絕以保留歷史）
+- **Agent 開發者流程** — 開發者註冊自己的 agent（endpoint + base_model），由 admin 核准後進入 `/v1/agents` 清單供 Router 分派；**Admin 可硬刪除 agent**
+- **Agent 加密標記** — `requires_encryption` 由 admin 在 agent 層面切換；一旦某個 agent 標記為需加密，凡進入該 agent 的對話即被 classified 單向閂鎖
+- **OpenAI 相容代理** — `/v1/chat/completions`、`/v1/embeddings`、`/v2/embeddings`，全面支援 SSE Streaming
+- **用量追蹤** — Token 用量即時統計、時序圖、依模型 / 使用者 group by、CSV 匯出。24 小時圖有空狀態提示
 
 ### 使用者與存取控制
-- **使用者管理** — 建立 / 編輯 / 停用使用者、管理員重設密碼
-- **自助註冊** — 使用者可自行申請帳號（需管理員核准），未核准前登入顯示「等待核准中」
-- **修改密碼** — 使用者可在已登入狀態修改自己的密碼，變更後舊 Token 立即失效
-- **模型授權分級** — 管理員可指派每位使用者可存取的模型子集；一般使用者無法自選模型，API Key 建立時自動套用允許清單；allowlist 收縮時既有 API Key 權限同步交集
-- **部門管理** — 將使用者歸屬於部門；停用部門時自動解除成員綁定
+- **自助註冊 + 管理員核准** — 使用者自行申請帳號，未核准前登入顯示「等待核准中」
+- **模型授權分級** — admin 指派每位使用者可存取的模型子集；一般使用者無法自選；API Key 建立時自動套用允許清單；allowlist 收縮時既有 API Key 權限同步交集
+- **修改密碼即失效舊 Token** — 透過 `token_version` 機制
+- **部門管理** — 停用部門時自動解除成員綁定
 
 ### 認證整合
-- **本機帳號** — JWT（Access Token 15 分鐘 + Refresh Token 7 天），Token 版本機制（`token_version`）確保密碼變更 / 帳號停用後舊 Token 立即失效
-- **LDAP 登入** — 透過 Auth Provider 設定連線 DN、Filter、StartTLS 等
-- **OIDC / SSO 登入** — Authorization Code Flow，支援自訂 Issuer、Scopes、Claim 映射
+- **本機帳號** — JWT（Access Token 15 min + Refresh Token 7 天）
+- **LDAP** — 透過 Auth Provider 設定 DN / Filter / StartTLS
+- **OIDC / SSO** — Authorization Code Flow；callback 時**自動 mint 一把 24h 短效 API Key** 回帶 UI（Wave A）
 
 ### 維運功能
-- **告警中心** — 系統異常告警，可標記確認（Acknowledge）或手動解除（Resolve）
-- **審計日誌** — 所有管理操作（建立 / 更新 / 停用 / 登入 / 密碼變更）自動記錄，可依動作、資源類型、操作者篩選
-- **平台卡片** — 儀表板顯示可自訂的快捷連結（GitLab、n8n、MLSteam 等）
+- **告警中心** — 系統異常告警，可 Ack / Resolve
+- **審計日誌** — 所有管理操作自動記錄（actor / action / resource_type / resource_id / detail），可多條件篩選
+- **平台卡片** — 儀表板可自訂快捷連結（GitLab、n8n、MLSteam 等）
 
 ---
 
@@ -37,36 +56,116 @@ CSP 為組織提供一個集中式介面，用於管理多種 AI 模型（LLM、
 
 ```
                     ┌──────────────┐
-      使用者 ──────▶│    Nginx     │ :80 (反向代理 + Rate Limit)
+      使用者 ──────▶│    Nginx     │ :80 (反向代理 + 靜態 SPA)
                     └──────┬───────┘
                            │
                     ┌──────▼───────┐
-                    │   FastAPI    │ :8000 (後端 + SPA)
-                    │  (CSP Core)  │
+                    │   FastAPI    │ :8000
+                    │ (app.main)   │
                     └──┬───────┬───┘
                        │       │
-              ┌────────▼──┐ ┌──▼──────────┐
-              │ PostgreSQL │ │  模型服務    │
-              │   :5432    │ │ vLLM/Triton │
-              └────────────┘ │ MLSteam/... │
-                             └─────────────┘
+              ┌────────▼──┐ ┌──▼──────────────┐
+              │ PostgreSQL │ │  模型 endpoint   │
+              │   :5432    │ │  （由 admin 註冊） │
+              └────────────┘ └─────────────────┘
 ```
 
 | 層級 | 技術 |
 |------|------|
-| 前端 | Vue 3 + Vite + Tailwind CSS + Apache ECharts |
-| 後端 | Python 3.11 + FastAPI + SQLAlchemy ORM |
+| 前端（管理介面） | Vue 3 + Vite + Tailwind CSS + Apache ECharts |
+| 後端 | Python 3.11 + FastAPI + SQLAlchemy ORM + Alembic |
 | 資料庫 | PostgreSQL 16 |
 | 反向代理 | Nginx (Alpine) |
 | 容器化 | Docker + Docker Compose |
-| 認證 | JWT (Access Token 15min + Refresh Token 7d) + LDAP + OIDC |
+| 認證 | JWT（Access 15 min + Refresh 7 d）+ LDAP + OIDC |
+
+---
+
+## 主要資料流程
+
+### 1. Chat Completion（OpenAI 相容代理）
+
+```
+┌──────────┐ POST /v1/chat/completions     ┌──────────────────────┐
+│  Client  │  Authorization: Bearer sk-... │ api_key_auth         │
+│  (OpenAI │──────────────────────────────▶│ middleware           │
+│   SDK)   │                               │  - 驗 sk- key 是否啟用 │
+└──────────┘                               │  - 驗 model 在        │
+     ▲                                     │    allowed_models     │
+     │  SSE / JSON                         └──────────┬───────────┘
+     │                                                │
+     │                                                ▼
+     │                                     ┌──────────────────────┐
+     │                                     │ proxy_service        │
+     │                                     │  - 依 model_type 路由 │
+     │                                     │    llm / vlm / agent  │
+     │                                     │  - 若 agent 需加密     │
+     │                                     │    → classified=true  │
+     │                                     │  - SSE 逐 chunk forward│
+     │                                     └──────────┬───────────┘
+     │                                                │
+     │                                                ▼
+     │                                     ┌──────────────────────┐
+     │                                     │ model endpoint       │
+     │                                     │ (vLLM / Ollama /     │
+     │                                     │  Triton / agent)     │
+     │                                     └──────────┬───────────┘
+     │                                                │
+     │          ┌───────────────┐                     │
+     └──────────│ usage_writer  │◀────────────────────┘
+                │ (批次寫入)     │   token 用量事件
+                └───────┬───────┘
+                        ▼
+                  ┌──────────┐
+                  │token_    │
+                  │usage     │
+                  └──────────┘
+```
+
+### 2. 使用者註冊 → 核准 → 取得 API Key
+
+```
+使用者 ── POST /api/auth/register ──▶ user 寫入 DB（is_approved=false）
+                                     ↓ 登入回「等待核准」
+
+admin ── POST /api/users/{id}/approve ──▶ is_approved=true
+                                         audit_log 記一筆
+
+使用者 ── POST /api/auth/login ──▶ JWT（access + refresh）
+                                 ↓
+使用者 ── POST /api/keys ──▶ 回傳一次性的 sk-xxxxx（只能看這一次）
+                             ↓  自動用該 user 的 allowed_models 建 permission
+                             ↓
+         → 放進 OpenAI SDK 當 API Key 用
+```
+
+### 3. Agent 註冊 → 核准 → 上線
+
+```
+developer 於 UI「Developer」分頁 ── POST /api/agents (register)
+                                   ↓  endpoint_url / base_model / requires_encryption
+                                   ↓  status=pending，audit_log
+
+admin ── POST /api/agents/{id}/approve ──▶ status=approved
+                                          is_active=true
+                                          （出現在 /v1/agents 清單）
+
+Router /v1/agents 輪詢 ──▶ RemoteAgentRegistry cache
+                          ↓
+UI 呼叫 anila-router pseudo-agent ──▶ Router 分派 ──▶ agent endpoint
+                                                      ↓
+                                                  （若 requires_encryption）
+                                                      ↓
+                                              SSE meta: classified=true
+                                                      ↓
+                                              UI 對話單向 latch 成 classified
+```
 
 ---
 
 ## 快速開始
 
 ### 前置需求
-
 - Docker 及 Docker Compose v2+
 - Git
 
@@ -94,7 +193,9 @@ vim .env
 | API 文件 (Swagger) | http://localhost/docs |
 | 健康檢查 | http://localhost/health |
 
-預設管理員帳號：`admin` / `changeme`（請於 `.env` 修改 `ADMIN_PASSWORD`）
+預設管理員：`admin` / `changeme`（**務必於 `.env` 修改 `ADMIN_PASSWORD`**）
+
+> **整合跑法**：如果你是要跑整個 ANILA stack（CSP + Router + UI），請用 **repo 根目錄**的 `docker-compose.yml`，不要用 `myCSPPlatform/docker/docker-compose.yml`。
 
 ---
 
@@ -114,8 +215,8 @@ vim .env
 | 變數 | 預設值 | 說明 |
 |------|--------|------|
 | `DATABASE_URL` | `postgresql://csp:csp_password@postgres:5432/csp` | PostgreSQL 連線字串 |
-| `DB_USER` | `csp` | PostgreSQL 使用者（docker-compose 使用） |
-| `DB_PASSWORD` | `csp_password` | PostgreSQL 密碼，**務必修改** |
+| `DB_USER` | `csp` | PostgreSQL 使用者 |
+| `DB_PASSWORD` | `csp_password` | **務必修改** |
 | `DB_NAME` | `csp` | 資料庫名稱 |
 
 ### JWT 認證
@@ -129,8 +230,8 @@ vim .env
 
 | 變數 | 預設值 | 說明 |
 |------|--------|------|
-| `ADMIN_USERNAME` | `admin` | 首次啟動自動建立的管理員帳號 |
-| `ADMIN_PASSWORD` | `changeme` | 管理員初始密碼，**務必修改** |
+| `ADMIN_USERNAME` | `admin` | 首次啟動自動建立 |
+| `ADMIN_PASSWORD` | `changeme` | **務必修改** |
 
 ### Proxy 設定
 
@@ -154,17 +255,17 @@ vim .env
 | 變數 | 預設值 | 說明 |
 |------|--------|------|
 | `NGINX_PORT` | `80` | Nginx 對外 port |
-| `SITE_URL` | `http://localhost` | 瀏覽器存取的基底 URL，用於平台卡片連結 |
+| `SITE_URL` | `http://localhost` | 瀏覽器存取的基底 URL（平台卡片連結用） |
 
 ---
 
 ## 模型註冊
 
-模型可在啟動時透過環境變數自動註冊。支援兩種方式，可並存使用。
+模型可在啟動時透過環境變數自動註冊，兩種方式可並存。
 
 ### 方式一：JSON 陣列
 
-適合一次配置多個模型，在 `.env` 中設定 `AUTO_REGISTER_MODELS`：
+適合一次配置多個模型：
 
 ```env
 AUTO_REGISTER_MODELS=[
@@ -196,12 +297,11 @@ AUTO_REGISTER_MODELS=[
 ```
 
 **模型類型 (`model_type`)：** `llm`、`embedding`、`vlm`、`agent`
-
-**Agent 模型：** 透過 `base_model` 欄位指定底層模型的 `name`，系統自動建立關聯。
+**Agent 模型：** 透過 `base_model` 指定底層模型的 `name`，系統自動建立關聯。
 
 ### 方式二：獨立環境變數
 
-適合逐一配置，格式為 `MODEL_<NAME>_<FIELD>`。`NAME` 使用底線分隔，系統自動轉為小寫連字號（如 `LLAMA3_70B` → `llama3-70b`）。
+格式：`MODEL_<NAME>_<FIELD>`。`NAME` 以底線分隔，自動轉為小寫連字號（`LLAMA3_70B` → `llama3-70b`）。
 
 ```env
 MODEL_LLAMA3_70B_HOST=vllm-llm
@@ -209,20 +309,13 @@ MODEL_LLAMA3_70B_PORT=8000
 MODEL_LLAMA3_70B_TYPE=llm
 MODEL_LLAMA3_70B_DISPLAY_NAME=Llama 3 70B Instruct
 MODEL_LLAMA3_70B_CONTEXT_WINDOW=8192
-
-MODEL_NV_EMBED_V2_HOST=triton-embedding
-MODEL_NV_EMBED_V2_PORT=8000
-MODEL_NV_EMBED_V2_TYPE=embedding
-MODEL_NV_EMBED_V2_API_VERSION=v2
 ```
 
 **可用 FIELD：** `HOST`、`PORT`、`TYPE`、`DISPLAY_NAME`、`API_VERSION`、`DESCRIPTION`、`CONTEXT_WINDOW`、`BASE_MODEL`
 
-> 兩種方式可並存。若 JSON 中已有相同 `name` 的模型，env var 不會覆蓋。
+> 若 JSON 中已有相同 `name`，env var 不會覆蓋。
 
 ### 平台卡片連結
-
-在 `.env` 中設定 `AUTO_REGISTER_LINKS`：
 
 ```env
 AUTO_REGISTER_LINKS=[
@@ -243,34 +336,34 @@ AUTO_REGISTER_LINKS=[
 | POST | `/api/auth/login` | 本機 / LDAP 登入，取得 access + refresh token |
 | POST | `/api/auth/refresh` | 使用 refresh token 換發新 token |
 | GET | `/api/auth/me` | 取得當前使用者資訊 |
-| PUT | `/api/auth/password` | 修改自身密碼（Token 同步作廢） |
+| PUT | `/api/auth/password` | 修改自身密碼（舊 Token 同步作廢） |
 | GET | `/api/auth/providers` | 列出可用的公開 SSO/LDAP Provider |
 | GET | `/api/auth/oidc/{id}/start` | 取得 OIDC 授權跳轉 URL |
-| GET | `/api/auth/oidc/{id}/callback` | OIDC Callback（瀏覽器重導用） |
+| GET | `/api/auth/oidc/{id}/callback` | OIDC Callback（瀏覽器重導，會自動發 24h API Key 回帶 UI） |
 
-### 使用者管理 (`/api/users`) — 需 Admin 權限
+### 使用者管理 (`/api/users`) — 需 Admin
 
 | 方法 | 路徑 | 說明 |
 |------|------|------|
 | GET | `/api/users` | 列出所有使用者 |
 | POST | `/api/users` | 建立使用者 |
 | GET | `/api/users/{id}` | 取得使用者詳情 |
-| PUT | `/api/users/{id}` | 更新使用者（角色 admin→user 時自動 cascade API Key 權限） |
-| POST | `/api/users/{id}/reset-password` | 重設使用者密碼（舊 Token 失效） |
-| POST | `/api/users/{id}/approve` | 核准自助申請的使用者帳號 |
+| PUT | `/api/users/{id}` | 更新使用者（admin→user 時自動 cascade API Key 權限） |
+| POST | `/api/users/{id}/reset-password` | 重設密碼（舊 Token 失效） |
+| POST | `/api/users/{id}/approve` | 核准自助申請 |
 | DELETE | `/api/users/{id}` | 停用使用者（舊 Token 立即失效） |
-| GET | `/api/users/me/allowed-models` | 取得自身可用模型清單 |
-| GET | `/api/users/{id}/allowed-models` | 取得指定使用者的可用模型 |
-| PUT | `/api/users/{id}/allowed-models` | 設定使用者可用模型，並 cascade 至其 API Key |
+| GET | `/api/users/me/allowed-models` | 取得自身可用模型 |
+| GET | `/api/users/{id}/allowed-models` | 取得指定使用者可用模型 |
+| PUT | `/api/users/{id}/allowed-models` | 設定使用者可用模型，並 cascade 至 API Key |
 
 ### API Key 管理 (`/api/keys`)
 
 | 方法 | 路徑 | 說明 |
 |------|------|------|
-| GET | `/api/keys` | 列出 API Keys（admin 看全部，一般使用者看自己的） |
-| POST | `/api/keys` | 建立新 API Key（回傳唯一一次 `sk-` 格式金鑰） |
+| GET | `/api/keys` | 列出 API Keys（admin 看全部，一般看自己的） |
+| POST | `/api/keys` | 建立新 Key（回傳一次性的 `sk-...`） |
 | GET | `/api/keys/{id}` | 取得 Key 詳情 |
-| PUT | `/api/keys/{id}` | 更新 Key 設定（更新模型權限需 Admin） |
+| PUT | `/api/keys/{id}` | 更新 Key 設定（改權限需 Admin） |
 | POST | `/api/keys/{id}/regenerate` | 重新核發（撤銷舊 Key，複製名稱/權限/到期日建新 Key） |
 | DELETE | `/api/keys/{id}` | 撤銷 Key |
 
@@ -278,74 +371,71 @@ AUTO_REGISTER_LINKS=[
 
 | 方法 | 路徑 | 說明 |
 |------|------|------|
-| GET | `/api/models` | 列出模型（一般使用者只看 allowlist 內的） |
+| GET | `/api/models` | 列出模型（一般使用者僅看 allowlist 內） |
 | POST | `/api/models` | 註冊新模型（需 Admin） |
-| GET | `/api/models/{id}` | 取得模型詳情（一般使用者需在 allowlist 內） |
-| PUT | `/api/models/{id}` | 更新模型設定（需 Admin） |
-| DELETE | `/api/models/{id}` | 停用模型（需 Admin） |
+| GET | `/api/models/{id}` | 取得模型詳情 |
+| PUT | `/api/models/{id}` | 更新（需 Admin） |
+| DELETE | `/api/models/{id}` | **停用**模型（軟刪除，需 Admin） |
+| DELETE | `/api/models/{id}/purge` | **硬刪除**模型（需 Admin；若有 token_usage 或被其他模型引用則 409） |
 | POST | `/api/models/{id}/health-check` | 手動觸發健康檢查（需 Admin） |
 
-### 部門管理 (`/api/departments`) — 需 Admin 權限
+### Agent 管理 (`/api/agents`)
 
 | 方法 | 路徑 | 說明 |
 |------|------|------|
-| GET | `/api/departments` | 列出所有部門（含使用者統計） |
-| POST | `/api/departments` | 建立部門 |
-| PUT | `/api/departments/{id}` | 更新部門 |
-| DELETE | `/api/departments/{id}` | 停用部門（成員自動解除綁定） |
+| GET | `/api/agents` | 列出 agent（開發者看自己的 + approved，admin 看全部） |
+| POST | `/api/agents` | Developer 註冊 agent（status=pending） |
+| POST | `/api/agents/{id}/approve` | 核准（需 Admin） |
+| POST | `/api/agents/{id}/reject` | 拒絕（需 Admin） |
+| PUT | `/api/agents/{id}/encryption` | 切換 `requires_encryption`（需 Admin） |
+| DELETE | `/api/agents/{id}` | **硬刪除** agent（需 Admin） |
 
-### SSO / LDAP / OIDC Provider (`/api/auth-providers`) — 需 Admin 權限
-
-| 方法 | 路徑 | 說明 |
-|------|------|------|
-| GET | `/api/auth-providers` | 列出所有 Auth Provider |
-| POST | `/api/auth-providers` | 建立 Provider（ldap / oidc） |
-| PUT | `/api/auth-providers/{id}` | 更新 Provider |
-| DELETE | `/api/auth-providers/{id}` | 停用 Provider |
-
-### 告警中心 (`/api/alerts`) — 需 Admin 權限
+### 對話 / 附件 / 分享 / 交接（UI 用）
 
 | 方法 | 路徑 | 說明 |
 |------|------|------|
-| GET | `/api/alerts` | 列出告警（可依 status / severity / category 篩選） |
-| GET | `/api/alerts/summary` | 告警統計摘要 |
-| POST | `/api/alerts/{id}/ack` | 確認告警 |
-| POST | `/api/alerts/{id}/resolve` | 手動解除告警 |
+| GET / POST | `/api/conversations` | 列出 / 建立對話 |
+| GET / PUT / DELETE | `/api/conversations/{id}` | CRUD |
+| POST | `/api/conversations/{id}/messages` | 寫入一則訊息（UI 在 SSE 完成後呼叫） |
+| GET / POST / DELETE | `/api/conversations/{id}/shares` | 公開分享連結 |
+| POST | `/api/attachments` | Multipart 上傳（回傳 attachment_id） |
+| POST | `/api/handoffs` | 建立 handoff |
+| POST | `/api/handoffs/{id}/{accept\|reject\|cancel}` | 處理 handoff |
 
-### 審計日誌 (`/api/audit-logs`) — 需 Admin 權限
+### 部門管理 (`/api/departments`) — 需 Admin
+`GET` / `POST` / `PUT` / `DELETE /api/departments[/{id}]`
+
+### Auth Provider (`/api/auth-providers`) — 需 Admin
+`GET` / `POST` / `PUT` / `DELETE /api/auth-providers[/{id}]`
+
+### 告警中心 (`/api/alerts`) — 需 Admin
 
 | 方法 | 路徑 | 說明 |
 |------|------|------|
-| GET | `/api/audit-logs` | 查詢審計日誌（可依 action / resource_type / actor / status 篩選，最多 500 筆） |
+| GET | `/api/alerts` | 列出（可 status / severity / category 篩選） |
+| GET | `/api/alerts/summary` | 告警統計 |
+| POST | `/api/alerts/{id}/ack` | 確認 |
+| POST | `/api/alerts/{id}/resolve` | 手動解除 |
+
+### 審計日誌 (`/api/audit-logs`) — 需 Admin
+`GET /api/audit-logs`（可 action / resource_type / actor / status 篩選，最多 500 筆）
 
 ### 用量統計 (`/api/usage`)
-
-| 方法 | 路徑 | 說明 |
-|------|------|------|
-| GET | `/api/usage/summary` | 過去 24 小時用量摘要 |
-| GET | `/api/usage/chart` | 時序圖表資料（支援 group_by） |
-| GET | `/api/usage/top-models` | Top N 模型排行（30 天） |
-| GET | `/api/usage/top-users` | Top N 使用者排行（30 天） |
-| GET | `/api/usage/export` | 匯出用量 CSV |
+`GET /api/usage/{summary,chart,top-models,top-users,export}`
 
 ### 平台連結 (`/api/platform-links`)
+`GET / POST / PUT / DELETE /api/platform-links[/{id}]`
+
+### OpenAI 相容代理（Data Plane）
 
 | 方法 | 路徑 | 說明 |
 |------|------|------|
-| GET | `/api/platform-links` | 列出所有平台卡片 |
-| POST | `/api/platform-links` | 新增平台卡片（需 Admin） |
-| PUT | `/api/platform-links/{id}` | 更新卡片（需 Admin） |
-| DELETE | `/api/platform-links/{id}` | 刪除卡片（需 Admin） |
+| POST | `/v1/chat/completions` | Chat（LLM / VLM / Agent，SSE 串流） |
+| POST | `/v1/embeddings` | Embeddings v1 |
+| POST | `/v2/embeddings` | Embeddings v2（Triton 等） |
+| GET | `/v1/agents` | 供 Router 撈的 agent manifest（含 `requires_encryption`） |
 
-### OpenAI 相容代理
-
-| 方法 | 路徑 | 說明 |
-|------|------|------|
-| POST | `/v1/chat/completions` | Chat Completions（LLM / VLM / Agent，支援 Streaming） |
-| POST | `/v1/embeddings` | Embeddings (v1 格式) |
-| POST | `/v2/embeddings` | Embeddings (v2 格式，Triton 等) |
-
-**代理使用方式：** 以 API Key (`sk-...`) 作為 Bearer Token，直接當 OpenAI endpoint 使用。
+**代理使用方式：**
 
 ```bash
 curl http://localhost/v1/chat/completions \
@@ -359,11 +449,8 @@ curl http://localhost/v1/chat/completions \
 ```
 
 ### 其他
-
-| 方法 | 路徑 | 說明 |
-|------|------|------|
-| GET | `/health` | 健康檢查（容器編排用） |
-| GET | `/docs` | Swagger UI API 文件 |
+- `GET /health` — 容器編排健康檢查
+- `GET /docs` — Swagger UI
 
 ---
 
@@ -372,12 +459,12 @@ curl http://localhost/v1/chat/completions \
 ```bash
 ./start.sh up        # 啟動所有服務（含建構映像）
 ./start.sh down      # 停止所有服務
-./start.sh restart   # 重啟所有服務
+./start.sh restart   # 重啟
 ./start.sh logs      # 查看所有日誌（Ctrl+C 退出）
 ./start.sh logs csp  # 只看 CSP 後端日誌
 ./start.sh status    # 查看容器狀態
-./start.sh build     # 重新建構映像（不啟動）
-./start.sh shell     # 進入後端容器 shell
+./start.sh build     # 重新建構（不啟動）
+./start.sh shell     # 進入後端容器
 ```
 
 ---
@@ -388,74 +475,61 @@ curl http://localhost/v1/chat/completions \
 myCSPPlatform/
 ├── backend/
 │   ├── app/
-│   │   ├── api/              # API 路由
-│   │   │   ├── auth.py       # 登入、註冊、OIDC Callback、密碼
-│   │   │   ├── users.py      # 使用者 CRUD + allowlist + 核准
-│   │   │   ├── api_keys.py   # API Key CRUD + regenerate
-│   │   │   ├── models.py     # 模型管理 + 健康檢查
+│   │   ├── api/
+│   │   │   ├── auth.py              # 登入、註冊、OIDC callback、密碼
+│   │   │   ├── users.py             # 使用者 CRUD + allowlist + 核准
+│   │   │   ├── api_keys.py          # API Key CRUD + regenerate
+│   │   │   ├── models.py            # 模型管理 + 健康檢查 + purge
+│   │   │   ├── agents.py            # Agent 註冊 / 核准 / 加密 / 刪除
+│   │   │   ├── conversations.py     # UI 對話 CRUD
+│   │   │   ├── attachments.py       # multipart 附件
+│   │   │   ├── public_share.py      # 公開分享連結
+│   │   │   ├── handoffs.py          # Agent 交接
 │   │   │   ├── departments.py
-│   │   │   ├── auth_providers.py  # LDAP / OIDC Provider 設定
+│   │   │   ├── auth_providers.py    # LDAP / OIDC Provider
 │   │   │   ├── alerts.py
 │   │   │   ├── audit_logs.py
 │   │   │   ├── usage.py
 │   │   │   ├── platform_links.py
-│   │   │   └── proxy.py      # OpenAI 相容代理
-│   │   ├── models/           # SQLAlchemy ORM 模型
-│   │   │   ├── user.py       # User + UserModelPermission
-│   │   │   ├── api_key.py    # ApiKey + ApiKeyModelPermission
-│   │   │   ├── model_registry.py
-│   │   │   ├── department.py
-│   │   │   ├── auth_provider.py
-│   │   │   ├── external_identity.py
-│   │   │   ├── audit_log.py
-│   │   │   ├── alert.py
-│   │   │   ├── token_usage.py
-│   │   │   └── platform_link.py
-│   │   ├── schemas/          # Pydantic 請求/回應 schema
-│   │   ├── services/         # 業務邏輯
-│   │   │   ├── auth_service.py      # JWT 驗證、Token 版本控制
-│   │   │   ├── external_auth_service.py  # LDAP / OIDC 認證
-│   │   │   ├── audit_service.py
-│   │   │   ├── alert_service.py
-│   │   │   ├── api_key_service.py
+│   │   │   └── proxy.py             # /v1/* OpenAI 相容代理
+│   │   ├── models/                  # SQLAlchemy ORM
+│   │   ├── schemas/                 # Pydantic schema
+│   │   ├── services/
+│   │   │   ├── auth_service.py      # JWT 驗證、token_version
+│   │   │   ├── proxy_service.py     # 代理核心（含 classified latch）
 │   │   │   ├── health_checker.py    # 背景健康檢查
 │   │   │   ├── usage_writer.py      # 批次寫入用量
-│   │   │   ├── auto_seed.py         # 啟動時自動建立 admin / 模型 / 連結
-│   │   │   └── startup_migrations.py  # SQLite→PG 升級 + 欄位 backfill
-│   │   ├── middleware/
-│   │   │   └── api_key_auth.py
-│   │   ├── utils/
+│   │   │   ├── audit_service.py
+│   │   │   ├── alert_service.py
+│   │   │   ├── auto_seed.py         # 啟動自動建立 admin / 模型
+│   │   │   └── startup_migrations.py
+│   │   ├── middleware/api_key_auth.py
 │   │   ├── config.py
 │   │   ├── database.py
 │   │   └── main.py
+│   ├── migrations/                  # Alembic migrations
+│   │   └── versions/
+│   │       ├── 0006_drop_quota_rate_limit.py
+│   │       └── 0007_drop_model_requires_encryption.py
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
-│   │   ├── views/            # 頁面元件
-│   │   │   ├── DashboardView.vue
-│   │   │   ├── ApiKeysView.vue
-│   │   │   ├── ModelsView.vue
-│   │   │   ├── UsageView.vue
-│   │   │   ├── UsersView.vue
-│   │   │   ├── DepartmentsView.vue
-│   │   │   ├── AlertsView.vue
-│   │   │   ├── AuditLogsView.vue
-│   │   │   ├── AuthProvidersView.vue
-│   │   │   ├── PlatformLinksView.vue
-│   │   │   └── LoginView.vue
+│   │   ├── views/                   # DashboardView, ApiKeysView, ModelsView,
+│   │   │                            # UsageView, UsersView, DeveloperAgentsView, ...
 │   │   ├── components/
-│   │   │   ├── layout/       # AppHeader、AppSidebar、AppLayout
-│   │   │   ├── charts/       # ECharts 圖表元件
-│   │   │   ├── common/       # ConfirmDialog
-│   │   │   └── dashboard/    # PlatformCard、UsageSummaryCard
-│   │   ├── api/              # Axios API client
-│   │   ├── stores/           # Pinia stores
+│   │   │   ├── layout/              # AppHeader、AppSidebar、AppLayout
+│   │   │   ├── charts/              # UsageLineChart（含空狀態）
+│   │   │   ├── common/              # ConfirmDialog
+│   │   │   └── dashboard/           # PlatformCard、UsageSummaryCard
+│   │   ├── api/                     # Axios client
+│   │   ├── stores/                  # Pinia stores
 │   │   └── router/
 │   └── package.json
 ├── docker/
-│   ├── Dockerfile            # 多階段建構（Node + Python）
-│   ├── docker-compose.yml
-│   └── nginx.conf            # Nginx 反向代理配置
+│   ├── Dockerfile                   # Multi-stage（Node + Python）
+│   ├── docker-compose.yml           # 僅 CSP 單獨開發用（整合部署請用 repo 根目錄）
+│   └── nginx.conf
+├── scripts/
 ├── start.sh
 ├── .env.example
 └── README.md
@@ -465,13 +539,13 @@ myCSPPlatform/
 
 ## HTTPS 啟用
 
-1. 將憑證放入 `docker/certs/` 目錄（`server.crt` + `server.key`）
-2. 編輯 `docker/docker-compose.yml`，取消 SSL port 和 certs volume 的註解
+1. 將憑證放入 `docker/certs/`（`server.crt` + `server.key`）
+2. 編輯 `docker/docker-compose.yml`，取消 SSL port 與 certs volume 的註解
 3. 編輯 `docker/nginx.conf`，取消 HTTPS server block 的註解
-4. 重啟服務：`./start.sh restart`
+4. `./start.sh restart`
 
 ---
 
 ## 授權
 
-內部使用專案。
+見 repo 根 [`LICENSE`](../LICENSE)。內部使用專案。
