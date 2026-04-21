@@ -1,9 +1,11 @@
+from datetime import datetime, timedelta, timezone
 from html import escape
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.auth_provider import AuthProvider
+from app.models.model_registry import ModelRegistry
 from app.models.user import User
 from app.schemas.user import (
     LoginRequest,
@@ -14,6 +16,7 @@ from app.schemas.user import (
     RegisterRequest,
 )
 from app.schemas.auth_provider import PublicAuthProviderResponse
+from app.services.api_key_service import create_api_key
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import (
     authenticate_user,
@@ -34,10 +37,38 @@ from app.utils.security import decode_token, hash_password, verify_password
 router = APIRouter(prefix="/api/auth", tags=["認證"])
 
 
-def _build_oidc_callback_html(tokens: dict, next_path: str) -> HTMLResponse:
+def _mint_sso_api_key(db: Session, user: User) -> str | None:
+    """Mint a short-lived (24h) API Key bound to all currently-active models so
+    the SPA can immediately call /v1/* after SSO without forcing the user to
+    paste a key. Returns the raw key, or None if no active models exist (in
+    which case the SPA falls back to its API-Key popover)."""
+    model_ids = [
+        row.id for row in db.query(ModelRegistry).filter(ModelRegistry.is_active == True).all()
+    ]
+    if not model_ids:
+        return None
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    _, raw_key = create_api_key(
+        db,
+        user_id=user.id,
+        name=f"sso-{user.username}-{int(expires_at.timestamp())}",
+        model_ids=model_ids,
+        expires_at=expires_at,
+    )
+    return raw_key
+
+
+def _build_oidc_callback_html(
+    tokens: dict, next_path: str, api_key: str | None = None
+) -> HTMLResponse:
     safe_next = escape(next_path if next_path.startswith("/") else "/")
     safe_access = escape(tokens["access_token"])
     safe_refresh = escape(tokens["refresh_token"])
+    api_key_script = (
+        f"sessionStorage.setItem('anilaRuntimeApiKey', '{escape(api_key)}');"
+        if api_key
+        else ""
+    )
     body = f"""
 <!doctype html>
 <html lang="zh-Hant">
@@ -46,6 +77,7 @@ def _build_oidc_callback_html(tokens: dict, next_path: str) -> HTMLResponse:
 <script>
 localStorage.setItem('accessToken', '{safe_access}');
 localStorage.setItem('refreshToken', '{safe_refresh}');
+{api_key_script}
 window.location.replace('{safe_next}');
 </script>
 正在完成登入...
@@ -222,16 +254,24 @@ async def oidc_callback(
             raise ValueError("state provider 不一致")
         user = await authenticate_oidc_code(db, provider, code)
         tokens = create_tokens(user)
+        sso_api_key = _mint_sso_api_key(db, user)
         log_audit_event(
             db,
             actor=user,
             action="login",
             resource_type="auth",
             resource_id=user.id,
-            detail=f"OIDC 登入成功: {provider.name}",
+            detail=(
+                f"OIDC 登入成功: {provider.name}"
+                + (" (auto-bound 24h API key)" if sso_api_key else "")
+            ),
             commit=True,
         )
-        return _build_oidc_callback_html(tokens, state_payload.get("next_path", "/"))
+        return _build_oidc_callback_html(
+            tokens,
+            state_payload.get("next_path", "/"),
+            api_key=sso_api_key,
+        )
     except Exception as exc:
         log_audit_event(
             db,

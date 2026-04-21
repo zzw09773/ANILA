@@ -76,7 +76,8 @@
    - `build_default_anila_meta(...)` 接收 `classified: bool = False` 參數；`proxy_request`、`proxy_stream` 新增 `requires_encryption: bool = False` 參數
    - `proxy_stream` 內部 `_emit(block, event_name, data)` 會解析下游 `anila.meta` 並在 `requires_encryption=True` 時把 `classified` 補為 `True`（一律單向 latch）
 2. **CSP (`myCSPPlatform/backend/app/api/proxy.py`)** ✅
-   - `/v1/chat/completions`（streaming + JSON 兩條路徑 + agent / model 兩種 resolve）：從 resolved agent/model 取 `requires_encryption`（agent 會 fallback 看 `base_model.requires_encryption`）帶給 `proxy_request` / `proxy_stream`，並在非串流 agent 直連時也 `setdefault`/升級 `existing_meta["classified"] = True`
+   - `/v1/chat/completions` agent 路徑（streaming + JSON）：從 resolved **agent** 直接讀 `requires_encryption`（base LLM 不再帶旗標）帶給 `proxy_request` / `proxy_stream`，並在非串流 agent 直連時也 `setdefault`/升級 `existing_meta["classified"] = True`
+   - `/v1/chat/completions` 直連 LLM 路徑：一律以 `requires_encryption=False` 呼叫 proxy；classified 只靠下游自己 meta 帶上來（agent 才是 classification 的來源）
 3. **Router (`AgenticRAG/src/anila_core/api/router_server.py` + `registry/remote_agent_manifest.py`)** ✅
    - `RemoteAgentManifest` 新增 `requires_encryption: bool`，從 `/v1/agents` response 的 `requires_encryption` 欄位讀取
    - `_merge_anila_meta(..., classified_override: bool = False)`：`classified_override or merged.get("classified")` 任一為真就把 `merged["classified"] = True`（單向 latch）
@@ -90,8 +91,27 @@
 ---
 
 ## 風險 / 注意事項
-- **Router 需讓 CSP 先標 classified**：目前 plan 是由 CSP 在 `anila_meta.classified` 直接標示；router 只要 propagate，就不需要重複查 `model_registry`
-- **UI 不會把 classified 降級**：即使某一輪 `meta.classified=false`，UI 也不下拉，因為一條對話只要曾用到機敏模型就整條鎖住（符合資安直覺）
+- **Router 需讓 CSP 先標 classified** ✅ 已完成（2026-04-21）：由 CSP 在 `anila_meta.classified` 直接標示；router 只要 propagate，不需要重複查 `model_registry`
+- **UI 不會把 classified 降級** ✅ 已完成（2026-04-21）：`applyMeta` / `ensureConversation` / `updateConversationAgent` 三處全為單向 latch；一條對話只要曾用到機敏模型就整條鎖住
 - **API Key 僅存在 `sessionStorage`**；JWT 存 `localStorage`（與原先版本一致）
-- **OIDC 流程**：由瀏覽器導到 `/api/auth/oidc/:provider/start`，回流到 `/app` 由後端 session 建立；若後端尚未支援自動回帶 API Key，需要使用者登入後再手動在設定中補上
+- **OIDC 流程** ✅ 已完成（2026-04-21，Wave A）：`myCSPPlatform/backend/app/api/auth.py` 的 `oidc_callback` 現會呼叫 `_mint_sso_api_key` 產生綁定所有 active model、24h 有效的 short-lived API Key，並在 callback HTML 內以 `sessionStorage.setItem('anilaRuntimeApiKey', ...)` 自動寫入前端。沒有 active model 時會 `return None`，SPA 降級回 API-Key popover。
+
+---
+
+## 後續 Wave（`anila_plan.md` 對齊）
+
+- **Wave A** ✅ 已完成（2026-04-21）：`/api/conversations`、`/api/attachments`、`/api/conversations/{id}/shares`、`/api/handoffs` 全數接線；`runtime/conversations.js` 集中所有 CSP control-plane wrapper；OIDC API Key auto-bind 完成。
+- **Wave B** ✅ 已完成（2026-04-21）：Router 真 SSE streaming + 錯誤降級 + registry visibility
+  - `AgenticRAG/src/anila_core/api/router_server.py`
+    - 新增 `_stream_agent_sse` async generator：`stream=True` 且有 dispatch 時直接 forward agent SSE chunks（不再等整份結果 replay）
+    - 新增 `_dispatch_safe` + `_call_llm_non_stream` 全面加上 try/except：upstream 5xx/timeout/connection error 降級成 trace step + 使用者友善訊息，**不再 500**
+    - `/health` 回報 `last_refresh_error` + `last_refresh_at`，registry refresh 失敗不再靜默
+  - `AgenticRAG/src/anila_core/registry/remote_agent_manifest.py`：新增 `last_refresh_error` / `last_refresh_at` property，`_do_refresh` 在成功/失敗時同步更新
+- **Wave C** ✅ 已完成（2026-04-21）：Root `README.md` 新增，收錄 compose 一鍵啟動、本地 LLM endpoint 對接（Ollama / vLLM / llama.cpp）、環境變數對照表、Router `/health` 判讀。`docker-compose.yml` 已對齊 on-prem（無 mock LLM）。
+- **Wave D** ✅ 已完成（2026-04-21）：classified latch 測試覆蓋 + UI pure helper 抽離。
+  - CSP pytest (`myCSPPlatform/backend/tests/test_proxy_classified.py`)：12 tests — `build_default_anila_meta` 行為 + 非串流 latch 組合真值表
+  - Router pytest (`AgenticRAG/tests/test_router_classified.py`)：16 tests — `_merge_anila_meta` 單向 latch、`RemoteAgentManifest.requires_encryption` 流動、handoff_chain shape、classified_override × downstream 組合
+  - UI vitest (`ANILA_UI/anila-ui/src/__tests__/`)：30 tests — `sse.test.js` (9)、`classified.test.js` (14)、`normalizeAgents.test.js` (7)
+  - 新增 `ANILA_UI/anila-ui/src/runtime/classified.js` pure helper (`computeConversationClassified` / `appendClassifiedTag` / `latchConversationWithMeta`)；`app.jsx` 的 `applyMeta` 改用此 helper，確保 UI latch 邏輯可被測試覆蓋
+- **Wave E / F**：依 `anila_plan.md` 排程延後（Phase 4 視覺重設計 + `build_app(mode="router")` factory + P2/P3）。
 

@@ -1,7 +1,13 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { authRequest, authRequestWithRefresh, apiKeyRequest, config } from "./api.js";
+import {
+  authRequest,
+  authRequestWithRefresh,
+  authMultipart,
+  apiKeyRequest,
+  config,
+} from "./api.js";
 
 const ACCESS_TOKEN_KEY = "accessToken";
 const REFRESH_TOKEN_KEY = "refreshToken";
@@ -167,6 +173,14 @@ export function AuthProvider({ children }) {
         authRequestWithRefresh(
           path,
           options,
+          { accessToken, refreshToken },
+          persistTokens,
+          clearAuth,
+        ),
+      multipartRequest: (path, formData) =>
+        authMultipart(
+          path,
+          formData,
           { accessToken, refreshToken },
           persistTokens,
           clearAuth,

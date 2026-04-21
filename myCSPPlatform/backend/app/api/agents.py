@@ -234,3 +234,22 @@ def reject_agent(
         resource_id=agent.id, detail=f"拒絕 agent「{agent.name}」", commit=True,
     )
     return {"message": f"已拒絕 agent「{agent.name}」"}
+
+
+@router.delete("/{agent_id}")
+def delete_agent(
+    agent_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent 不存在")
+    agent_name = agent.name
+    db.delete(agent)
+    db.commit()
+    log_audit_event(
+        db, actor=admin, action="delete", resource_type="agent",
+        resource_id=agent_id, detail=f"刪除 agent「{agent_name}」", commit=True,
+    )
+    return {"message": f"已刪除 agent「{agent_name}」"}

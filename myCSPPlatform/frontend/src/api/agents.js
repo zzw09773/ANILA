@@ -15,5 +15,11 @@ export const approveAgent = (id) =>
 export const rejectAgent = (id, reason = '') =>
   client.post(`/api/agents/${id}/reject`, { reason })
 
+export const setAgentEncryption = (id, requires_encryption) =>
+  client.post(`/api/agents/${id}/encryption`, { requires_encryption })
+
 export const downloadTemplate = () =>
   client.get('/api/agents/template/download', { responseType: 'blob' })
+
+export const deleteAgent = (id) =>
+  client.delete(`/api/agents/${id}`)

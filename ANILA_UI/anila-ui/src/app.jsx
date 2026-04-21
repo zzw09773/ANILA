@@ -18,6 +18,17 @@ import React, {
 import { apiKeyRequest, config } from "./runtime/api.js";
 import { useAuth, useLogoutRedirect } from "./runtime/auth.jsx";
 import { streamChatCompletion } from "./runtime/sse.js";
+import { latchConversationWithMeta } from "./runtime/classified.js";
+import {
+  listConversations as apiListConversations,
+  createConversation as apiCreateConversation,
+  getConversation as apiGetConversation,
+  appendMessage as apiAppendMessage,
+  createShare as apiCreateShare,
+  buildShareUrl,
+  uploadAttachment as apiUploadAttachment,
+  createHandoff as apiCreateHandoff,
+} from "./runtime/conversations.js";
 
 import {
   AgentSelector,
@@ -49,7 +60,7 @@ import {
   IconSun,
   IconUser,
 } from "./icons.jsx";
-import { FOLDERS } from "./data.jsx";
+import { BUILTIN_FOLDER_IDS, DEFAULT_FOLDERS } from "./data.jsx";
 import {
   CitationsDrawer,
   ConfidentialWatermark,
@@ -101,7 +112,7 @@ function maskApiKey(apiKey) {
 
 // normalize backend /v1/agents payload → UI agent model
 // includes the ROUTER pseudo-agent in front
-function normalizeAgents(data) {
+export function normalizeAgents(data) {
   return [
     ROUTER_AGENT,
     ...(data || []).map((item) => ({
@@ -137,7 +148,14 @@ function applyTweaks(t) {
 
 // ---- Chat Runtime ----------------------------------------------------------
 function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
-  const { apiKey, apiKeyStatus, updateApiKey } = useAuth();
+  const {
+    apiKey,
+    apiKeyStatus,
+    updateApiKey,
+    authRequest,
+    multipartRequest,
+    isAuthenticated,
+  } = useAuth();
   const logoutAndRedirect = useLogoutRedirect();
 
   // --- agents / conversations / messages ---
@@ -164,6 +182,63 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   const [shareOpen, setShareOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [folder, setFolder] = useState("all");
+
+  // folders: persisted locally. Users can add/delete; built-ins (all, starred)
+  // are guarded because the sidebar filter logic treats them specially.
+  const [folders, setFolders] = useState(() => {
+    if (typeof window === "undefined") return DEFAULT_FOLDERS;
+    try {
+      const raw = window.localStorage.getItem("anila-folders");
+      if (!raw) return DEFAULT_FOLDERS;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed) || parsed.length === 0) return DEFAULT_FOLDERS;
+      return parsed.filter((f) => f && typeof f.id === "string" && typeof f.name === "string");
+    } catch {
+      return DEFAULT_FOLDERS;
+    }
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem("anila-folders", JSON.stringify(folders));
+    } catch {
+      /* quota / private mode — fall back silently */
+    }
+  }, [folders]);
+
+  const createFolder = useCallback((rawName) => {
+    const name = (rawName || "").trim();
+    if (!name) return;
+    const baseId = `usr-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "folder"}`;
+    setFolders((prev) => {
+      if (prev.some((f) => f.name === name)) return prev;
+      let id = baseId;
+      let n = 2;
+      while (prev.some((f) => f.id === id)) {
+        id = `${baseId}-${n++}`;
+      }
+      return [...prev, { id, name, icon: "folder" }];
+    });
+  }, []);
+
+  const deleteFolder = useCallback((id) => {
+    if (BUILTIN_FOLDER_IDS.has(id)) return;
+    setFolders((prev) => prev.filter((f) => f.id !== id));
+    setConversations((prevConvs) => {
+      const doomed = prevConvs.filter((c) => c.folder === id).map((c) => c.id);
+      if (doomed.length > 0) {
+        setMessagesByConv((prevMsgs) => {
+          const next = { ...prevMsgs };
+          for (const cid of doomed) delete next[cid];
+          return next;
+        });
+        setSelectedConvId((cur) => (doomed.includes(cur) ? null : cur));
+      }
+      return prevConvs.filter((c) => c.folder !== id);
+    });
+    setFolder((current) => (current === id ? "all" : current));
+  }, []);
 
   const scrollRef = useRef(null);
 
@@ -234,19 +309,137 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     return Boolean(agents.find((a) => a.id === agentId)?.requiresEncryption);
   }
 
+  // Map a backend ConversationOut row → the sidebar shape the UI already uses.
+  function mapServerConversation(serverRow, agentNameLookup) {
+    const agentName =
+      serverRow.agent_id != null ? agentNameLookup(serverRow.agent_id) : null;
+    return {
+      id: serverRow.id,
+      title: serverRow.title,
+      ts: relativeLabel(),
+      updatedLabel: relativeLabel(),
+      agent: agentName || null,
+      agentId: serverRow.agent_id || null,
+      agentName: agentName || null,
+      folder: "all",
+      tags: serverRow.classified ? ["classified"] : [],
+      starred: false,
+      classified: Boolean(serverRow.classified),
+      updatedAt: serverRow.updated_at || serverRow.created_at || nowIso(),
+    };
+  }
+
+  function mapServerMessage(msg) {
+    const meta = msg.metadata || {};
+    return {
+      id: `srv-${msg.id}`,
+      role: msg.role,
+      text: msg.content || "",
+      trace: meta.trace || [],
+      citations: meta.citations || [],
+      followUps: meta.follow_ups || [],
+      handoffChain: meta.handoff_chain || [],
+      confidence: meta.confidence,
+      classified: meta.classified,
+      traceId: msg.trace_id || meta.trace_id,
+      latencyMs: msg.latency_ms,
+      routedAgentId: meta.routed_agent_id || null,
+      streaming: false,
+      attachments: (msg.attachments || []).map((a) => ({
+        id: a.reference_id,
+        name: a.filename,
+        contentType: a.content_type,
+        size: a.size_bytes,
+      })),
+      conversationId: null, // patched by caller
+      createdAt: msg.created_at,
+    };
+  }
+
+  // Fetch the user's conversations on login and whenever JWT changes. Messages
+  // are loaded lazily when a conversation is clicked (keeps the initial
+  // payload small).
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setConversations([]);
+      setMessagesByConv({});
+      setSelectedConvId(null);
+      return;
+    }
+    let active = true;
+    (async () => {
+      try {
+        const rows = await apiListConversations(authRequest);
+        if (!active) return;
+        const lookup = (id) => agents.find((a) => a.id === id)?.name || null;
+        setConversations(rows.map((r) => mapServerConversation(r, lookup)));
+      } catch (error) {
+        if (active) {
+          setRuntimeError(error.message || "無法載入對話清單");
+        }
+      }
+    })();
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated]);
+
+  // Hydrate messages when the selected conversation changes and we haven't
+  // loaded its messages yet.
+  useEffect(() => {
+    if (!selectedConvId || typeof selectedConvId !== "number") return;
+    if (messagesByConv[selectedConvId]?.length) return;
+    let active = true;
+    (async () => {
+      try {
+        const detail = await apiGetConversation(authRequest, selectedConvId);
+        if (!active) return;
+        const msgs = (detail.messages || []).map((m) => ({
+          ...mapServerMessage(m),
+          conversationId: selectedConvId,
+        }));
+        setMessagesByConv((prev) => ({ ...prev, [selectedConvId]: msgs }));
+      } catch (error) {
+        if (active) {
+          setRuntimeError(error.message || "無法載入對話內容");
+        }
+      }
+    })();
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedConvId]);
+
   // ---- conversation helpers (classification is one-way latch) ----
-  function ensureConversation(text, agentId) {
+  // Returns the backend integer conversation id. Creates a new row on the
+  // server if none selected. Falls back to an optimistic local id if the
+  // network call fails — so sending still works in degraded mode, but that
+  // row will only persist on retry (user can discard it via delete).
+  async function ensureConversation(text, agentId) {
     const effectiveAgentId = agentId || ROUTER_AGENT.id;
     const encryption = agentRequiresEncryption(effectiveAgentId);
     const agentName =
       agents.find((a) => a.id === effectiveAgentId)?.name || effectiveAgentId;
 
     if (!selectedConvId) {
-      const convId = makeId("cv");
+      let convId;
+      let serverRow = null;
+      try {
+        serverRow = await apiCreateConversation(authRequest, {
+          title: makeConversationTitle(text),
+          agentId: typeof effectiveAgentId === "number" ? effectiveAgentId : null,
+        });
+        convId = serverRow.id;
+      } catch (error) {
+        convId = makeId("cv-local");
+        setRuntimeError(error.message || "對話儲存失敗（離線模式）");
+      }
       setConversations((prev) => [
         {
           id: convId,
-          title: makeConversationTitle(text),
+          title: serverRow?.title || makeConversationTitle(text),
           ts: relativeLabel(),
           updatedLabel: relativeLabel(),
           agent: effectiveAgentId,
@@ -255,8 +448,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
           folder: "all",
           tags: encryption ? ["classified"] : [],
           starred: false,
-          classified: encryption,
-          updatedAt: nowIso(),
+          classified: Boolean(serverRow?.classified) || encryption,
+          updatedAt: serverRow?.updated_at || nowIso(),
         },
         ...prev,
       ]);
@@ -344,17 +537,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       conversationId: convId,
     });
 
-    // Classification latch — true once, always true.
+    // Classification latch — one-way. See runtime/classified.js.
     if (meta.classified === true) {
       setConversations((prev) =>
-        prev.map((c) => {
-          if (c.id !== convId) return c;
-          if (c.classified) return c;
-          const tags = (c.tags || []).includes("classified")
-            ? c.tags
-            : [...(c.tags || []), "classified"];
-          return { ...c, classified: true, tags };
-        }),
+        prev.map((c) => (c.id === convId ? latchConversationWithMeta(c, meta) : c)),
       );
     }
   }
@@ -371,7 +557,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     }
 
     const effectiveTarget = explicitAgents[0] || selectedAgentId;
-    const convId = ensureConversation(text, effectiveTarget);
+    const convId = await ensureConversation(text, effectiveTarget);
     updateConversationAgent(convId, effectiveTarget);
 
     const userMsg = {
@@ -410,12 +596,17 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       messages: [{ role: "user", content: text }],
     };
 
+    let finalText = "";
+    let finalMeta = null;
     try {
       await streamChatCompletion({
         url: `${baseUrl}/v1/chat/completions`,
         apiKey,
         payload,
-        onText: (acc) => updateMsg(convId, assistantId, { text: acc }),
+        onText: (acc) => {
+          finalText = acc;
+          updateMsg(convId, assistantId, { text: acc });
+        },
         onTrace: (step) => {
           setMessagesByConv((prev) => ({
             ...prev,
@@ -431,9 +622,36 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
             ),
           }));
         },
-        onMeta: (meta) => applyMeta(convId, assistantId, effectiveTarget, meta),
+        onMeta: (meta) => {
+          finalMeta = meta;
+          applyMeta(convId, assistantId, effectiveTarget, meta);
+        },
       });
       updateMsg(convId, assistantId, { streaming: false });
+
+      // Persist both turns to the backend so they survive reload. Server-side
+      // errors here surface as a toast but don't break the live UI.
+      if (typeof convId === "number") {
+        const agentNameForPersist =
+          agents.find((a) => a.id === effectiveTarget)?.name ||
+          String(effectiveTarget);
+        try {
+          await apiAppendMessage(authRequest, convId, {
+            role: "user",
+            content: text,
+          });
+          await apiAppendMessage(authRequest, convId, {
+            role: "assistant",
+            content: finalText,
+            traceId: finalMeta?.trace_id,
+            latencyMs: finalMeta?.latency_ms,
+            agentName: agentNameForPersist,
+            metadata: finalMeta || null,
+          });
+        } catch (persistError) {
+          setRuntimeError(persistError.message || "對話訊息儲存失敗");
+        }
+      }
     } catch (error) {
       updateMsg(convId, assistantId, {
         streaming: false,
@@ -699,7 +917,9 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         onToggleCollapsed={() => setCollapsed((c) => !c)}
         folder={folder}
         setFolder={setFolder}
-        folders={FOLDERS}
+        folders={folders}
+        onCreateFolder={createFolder}
+        onDeleteFolder={deleteFolder}
         onOpenTagEditor={(id, patch) => updateConv(id, patch)}
       />
 
@@ -751,7 +971,20 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                     agents={agents}
                     currentAgentId={selectedAgentId}
                     onHandoffAgent={handoffToAgent}
-                    onHandoffUser={(u) => alert(`已送出交接請求給 ${u}`)}
+                    onHandoffUser={async (target) => {
+                      if (!selectedConvId || typeof selectedConvId !== "number") {
+                        setRuntimeError("尚未建立後端對話，無法交接");
+                        return;
+                      }
+                      try {
+                        await apiCreateHandoff(authRequest, {
+                          conversationId: selectedConvId,
+                          note: `交接給 ${target}`,
+                        });
+                      } catch (error) {
+                        setRuntimeError(error.message || "交接請求失敗");
+                      }
+                    }}
                     close={close}
                   />
                 )}
@@ -768,10 +1001,15 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
           )}
 
           <IconButton
-            title={compareMode ? "退出比較" : "比較模式 (兩個 agent 並排)"}
+            title={
+              compareMode
+                ? "退出比較"
+                : directAgents.length < 2
+                  ? "比較模式 (需至少 2 個 agent)"
+                  : "比較模式 (兩個 agent 並排)"
+            }
             onClick={() => (compareMode ? exitCompare() : enterCompare())}
             active={compareMode}
-            disabled={!compareMode && directAgents.length < 2}
           >
             <IconColumns size={14} />
           </IconButton>
@@ -918,6 +1156,12 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                           ? "Auto route · 由 ANILA Router 判斷是否分派 agent"
                           : `Direct target · ${activeAgent.name}`
                       }
+                      onUpload={(file) =>
+                        apiUploadAttachment(multipartRequest, file, {
+                          conversationId:
+                            typeof selectedConvId === "number" ? selectedConvId : undefined,
+                        })
+                      }
                     />
                     <div style={{
                       marginTop: 6, fontSize: 11,
@@ -979,6 +1223,17 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         onClose={() => setShareOpen(false)}
         conversation={selectedConv}
         user={user}
+        onCreateShare={async ({ mode, allowFork, expiresAt }) => {
+          if (!selectedConvId || typeof selectedConvId !== "number") {
+            throw new Error("尚未建立後端對話 — 請先送出第一則訊息");
+          }
+          const share = await apiCreateShare(authRequest, selectedConvId, {
+            mode,
+            allowFork,
+            expiresAt,
+          });
+          return { ...share, url: buildShareUrl(share.token) };
+        }}
       />
     </div>
   );

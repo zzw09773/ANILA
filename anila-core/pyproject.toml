@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "anila-core"
 version = "0.1.0"
-description = "ANILA Core - Python agent runtime"
+description = "ANILA Core — Python agent runtime foundation (SDK)"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0",

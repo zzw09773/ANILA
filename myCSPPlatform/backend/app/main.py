@@ -10,7 +10,6 @@ from fastapi.responses import FileResponse
 from app.config import settings
 from app.database import engine, Base
 from app.api.router import api_router
-from app.api.quota_policies import router as quota_policies_router
 from app.api.conversations import router as conversations_router
 from app.api.attachments import router as attachments_router
 from app.api.handoffs import router as handoffs_router
@@ -100,11 +99,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# On-prem local model deployment: no request/token quota enforcement.
-# RateLimitMiddleware is intentionally not registered.
 
 app.include_router(api_router)
-app.include_router(quota_policies_router)
 app.include_router(conversations_router)
 app.include_router(attachments_router)
 app.include_router(handoffs_router)

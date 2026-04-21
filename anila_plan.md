@@ -250,7 +250,7 @@ Codex 明確指出：未來若有數以十計的系統要串接，Onyx 的價值
 
 ### Phase 3 — Router MVP 端到端（無專屬 chat UI，curl / OpenWebUI 驗證）
 13. 建 `anila-core-router/`
-14. **新增 repo root `docker-compose.yml`**，統一管理 `csp` / `router` / `mock-openai` / `postgres`，統一 network / port / env wiring / healthcheck / depends_on；用途明確標註為 **local integration & smoke test，非 production deployment**。root compose 不預設內建 RAG agent service，registered agent 應由 developer 另外部署與註冊。之後 smoke test 的標準啟動方式就是 `docker compose up -d`
+14. **新增 repo root `docker-compose.yml`**，統一管理 `csp` / `router` / `postgres`，統一 network / port / env wiring / healthcheck / depends_on；用途明確標註為 **local integration & smoke test，非 production deployment**。root compose 不預設內建 RAG agent service，registered agent 應由 developer 另外部署與註冊。smoke test 透過 `LOCAL_LLM_BASE_URL` 指向實際落地 LLM（vLLM / Ollama / TGI 等），不再維護 mock LLM container。之後 smoke test 的標準啟動方式就是 `docker compose up -d`
 15. 管理員在 CSP 控制面把測試帳號升級成 developer，developer 下載官方模板（內容鏡像 `AgenticRAG` repo）並另外部署 / 註冊自己的 agent，admin approve，給 test user 賦權（`allowed-agents`）
 16. Smoke test：先驗證 `curl → Router → CSP → upstream LLM` 的 direct-answer 路徑；有註冊 agent 後，再驗證 `curl → Router → CSP → registered agent → CSP → upstream LLM` 的 dispatch 路徑
 
@@ -272,9 +272,10 @@ Codex 明確指出：未來若有數以十計的系統要串接，Onyx 的價值
 ### Phase 7 — 平台穩定化（非關鍵路徑，隨 MVP 穩定後推進）
 - 正式 Alembic migration 取代 startup backfill
 - Celery beat 週期 agent health-check
-- Quota / rate-limit 表與 middleware
 - 逐步把 memory compact、session recovery、task budgeting 產品化為 runtime 標準能力
 - 若各單位 API 完成且需求成熟，再啟動 Onyx future module 的技術設計與 adapter 實作
+
+> **Decision — 不再規劃 token / request quota**：ANILA 目標為 on-prem 落地模型部署，LLM 推論由各單位內部基礎設施承擔，平台本身不做 token / request 級別的節流（`rate_limit_service` / `RateLimitMiddleware` / `quota_policies` 已於 0006 migration 移除）。nginx 層 IP 級 `limit_req` 作為 DDoS 緩衝保留，與此分流。
 
 ## Verification
 
@@ -283,7 +284,8 @@ Codex 明確指出：未來若有數以十計的系統要串接，Onyx 的價值
 ```bash
 # 1. 用 repo root 的整合 compose 一次啟動所有服務（標準 smoke test 啟動方式）
 docker compose up -d
-# 服務：csp(:8000) + router(:9000) + mock-openai + postgres
+# 服務：csp(:8000) + router(:9000) + postgres
+# LOCAL_LLM_BASE_URL 指向實際落地 LLM（vLLM / Ollama / TGI 等）
 docker compose ps   # 確認 healthcheck 全 healthy
 
 # 2. admin 將測試帳號升級為 developer（控制面：JWT）

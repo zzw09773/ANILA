@@ -23,19 +23,10 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # ── Local OpenAI-compatible backend for smoke tests ──────────────────────────
-  mock-openai:
-    build:
-      context: smoke-openai
-    healthcheck:
-      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health')\""]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 5s
-    restart: unless-stopped
-
   # ── myCSPPlatform (Control Plane + Data Plane, port 8000) ────────────────────
+  # NOTE: On-prem deployments point LOCAL_LLM_BASE_URL at a real landed LLM
+  # (e.g. vLLM, Ollama, TGI). The repo no longer ships a mock-openai container;
+  # smoke tests run against the real local model.
   csp:
     build:
       context: myCSPPlatform
@@ -43,6 +34,9 @@ services:
     ports:
       - "8000:8000"
     environment:
+      # Flush stdout/stderr immediately so `docker logs` shows request errors
+      # without waiting for buffer fill.
+      PYTHONUNBUFFERED: "1"
       DATABASE_URL: postgresql://csp:csp@csp-db:5432/csp
       SECRET_KEY: ${CSP_SECRET_KEY:-dev-secret-key-change-in-prod}
       ALGORITHM: HS256
@@ -50,17 +44,18 @@ services:
       # Service-to-service credential: CSP injects this into downstream agent calls.
       # Downstream agents verify this header to accept requests only from CSP.
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
+      # LOCAL_LLM_BASE_URL must point at an OpenAI-compatible local endpoint
+      # reachable from the csp container (e.g. http://host.docker.internal:11434/v1
+      # for host-side Ollama, or an in-cluster vLLM service URL).
       AUTO_REGISTER_MODELS: >-
-        [{"name":"gpt-4o-mini","display_name":"gpt-4o-mini","model_type":"llm","endpoint_url":"http://mock-openai:8080","api_version":"v1","description":"Local smoke-test LLM backend"},{"name":"text-embedding-3-small","display_name":"text-embedding-3-small","model_type":"embedding","endpoint_url":"http://mock-openai:8080","api_version":"v1","description":"Local smoke-test embedding backend"}]
+        [{"name":"${LOCAL_LLM_MODEL:-gpt-4o-mini}","display_name":"${LOCAL_LLM_MODEL:-gpt-4o-mini}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}","api_version":"v1","description":"On-prem local LLM"},{"name":"${LOCAL_EMBEDDING_MODEL:-text-embedding-3-small}","display_name":"${LOCAL_EMBEDDING_MODEL:-text-embedding-3-small}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-${LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}}","api_version":"v1","description":"On-prem local embedding model"}]
       AUTO_SEED_API_KEYS: >-
-        [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY:-sk-test-user-api-key}","key_name":"smoke-user-dev-key","models":["gpt-4o-mini"]}]
+        [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY:-sk-test-user-api-key}","key_name":"smoke-user-dev-key","models":["${LOCAL_LLM_MODEL:-gpt-4o-mini}"]}]
       ANILA_TEMPLATE_DIR: /app/anila-template
     volumes:
       - ./AgenticRAG:/app/anila-template:ro
     depends_on:
       csp-db:
-        condition: service_healthy
-      mock-openai:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]

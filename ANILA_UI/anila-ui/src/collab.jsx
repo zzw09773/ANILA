@@ -3,19 +3,49 @@ import React, { useState } from "react";
 import { IconShield, IconLink, IconX, IconCheck, IconStar, IconFolder } from "./icons.jsx";
 import { Button, Modal, MenuItem, Divider, Input } from "./components.jsx";
 
+// TTL choice → ISO timestamp the backend understands.
+function ttlToExpiresAt(ttlKey) {
+  if (ttlKey === "never") return null;
+  const map = { "1h": 3600, "24h": 86400, "7d": 604800 };
+  const seconds = map[ttlKey];
+  if (!seconds) return null;
+  return new Date(Date.now() + seconds * 1000).toISOString();
+}
+
 // ---- Share Dialog ----
-export const ShareDialog = ({ open, onClose, conversation, user }) => {
+// `onCreateShare({ mode, allowFork, expiresAt })` is expected to return a
+// promise resolving to `{ url, token, ... }`. The dialog stays UI-only and
+// delegates persistence to the caller.
+export const ShareDialog = ({ open, onClose, conversation, user, onCreateShare }) => {
   const [ttl, setTtl] = useState("24h");
   const [scope, setScope] = useState("org");
   const [allowFork, setAllowFork] = useState(true);
   const [linkCreated, setLinkCreated] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
 
   if (!open) return null;
 
-  const createLink = () => {
-    const suffix = Math.random().toString(16).slice(2, 10);
-    setLinkCreated(`https://anila.internal/s/c/${suffix}`);
+  const createLink = async () => {
+    if (!onCreateShare) {
+      setError("尚未提供 onCreateShare handler，無法建立分享連結");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const result = await onCreateShare({
+        mode: "read_only",
+        allowFork,
+        expiresAt: ttlToExpiresAt(ttl),
+      });
+      setLinkCreated(result?.url || result);
+    } catch (err) {
+      setError(err?.message || "建立分享連結失敗");
+    } finally {
+      setBusy(false);
+    }
   };
   const copyLink = () => {
     navigator.clipboard?.writeText(linkCreated);
@@ -79,10 +109,23 @@ export const ShareDialog = ({ open, onClose, conversation, user }) => {
           允許 fork 到對方的空間繼續對話
         </label>
 
+        {error && (
+          <div style={{
+            padding: "6px 10px",
+            background: "oklch(0.97 0.03 25)",
+            border: "1px solid oklch(0.88 0.08 25)",
+            borderRadius: "var(--radius)",
+            color: "var(--danger)",
+            fontSize: 12,
+          }}>{error}</div>
+        )}
+
         {!linkCreated ? (
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-            <Button onClick={onClose}>取消</Button>
-            <Button variant="primary" leftIcon={<IconLink size={13}/>} onClick={createLink}>產生連結</Button>
+            <Button onClick={onClose} disabled={busy}>取消</Button>
+            <Button variant="primary" leftIcon={<IconLink size={13}/>} onClick={createLink} disabled={busy}>
+              {busy ? "建立中…" : "產生連結"}
+            </Button>
           </div>
         ) : (
           <div style={{

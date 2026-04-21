@@ -8,11 +8,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Install anila-core SDK from monorepo source
-COPY AgenticRAG/pyproject.toml ./
-COPY AgenticRAG/src ./src/
+# Install anila-core SDK (pure runtime — no RAG extras).
+# Router only needs the runtime foundation (api, registry, tools, providers);
+# RAG-specific deps (pgvector / asyncpg / pymupdf4llm) live in AgenticRAG.
+COPY anila-core/pyproject.toml ./
+COPY anila-core/src ./src/
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir ".[rag]"
+    pip install --no-cache-dir "."
 
 # ── Runtime stage ──────────────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime
