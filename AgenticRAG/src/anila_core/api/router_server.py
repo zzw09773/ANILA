@@ -137,6 +137,7 @@ def _merge_anila_meta(
     *,
     agent_id: str | None = None,
     latency_ms: int | None = None,
+    classified_override: bool = False,
 ) -> dict[str, Any]:
     merged = _normalize_anila_meta(downstream_meta)
     merged["trace"] = [*base_trace, *merged["trace"]]
@@ -156,6 +157,10 @@ def _merge_anila_meta(
     merged["handoff_chain"] = handoff_chain
     if latency_ms is not None:
         merged["latency_ms"] = latency_ms
+    # One-way latch: never downgrade; upgrade to classified when either the
+    # downstream response or the resolved agent demands encryption.
+    if classified_override or merged.get("classified"):
+        merged["classified"] = True
     return merged
 
 
@@ -286,6 +291,7 @@ def create_router_app() -> FastAPI:
                     agent_response.get("anila_meta"),
                     agent_id=agent_id,
                     latency_ms=int((time.time() - started_at) * 1000),
+                    classified_override=bool(manifest.requires_encryption),
                 )
         else:
             content = llm_text

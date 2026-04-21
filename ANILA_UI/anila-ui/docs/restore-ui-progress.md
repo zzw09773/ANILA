@@ -43,46 +43,44 @@
 
 ## 剩下要做 (Remaining Plan)
 
-### A. 前端頁面 (優先)
-1. **`src/chat.jsx`** — 依 template 完整 port 成 ESM：
+### A. 前端頁面 (優先) — ✅ 完成 (2026-04-21)
+1. **`src/chat.jsx`** ✅ — 依 template 完整 port 成 ESM：
    - `TraceRow`, `RoutingTrace`（讀 `window.ANILA_TWEAKS.traceStyle`）
    - `MessageBubble`（含 citations / confidence / handoff timeline / follow-ups / redaction / classified corner）
-   - `AgentSelector`, `Composer`（PII hints + `@mention` 高亮、附件、`Shift+Enter` 換行、Enter 送出）
-   - `Sidebar`（資料夾 chips、tag 搜尋、Agents tab、使用者選單）
+   - `AgentSelector`（trigger + MenuItems 都含 `requiresEncryption` lock badge）
+   - `Composer`（PII hints + `@mention` 高亮、附件、`Shift+Enter` 換行、Enter 送出；支援 `placeholder` + `footer` props）
+   - `Sidebar`（資料夾 chips、tag 搜尋、Agents tab、使用者選單；相容 `c.agent`/`c.agentId`、`c.ts`/`c.updatedLabel`）
    - **不保留任何 user-controlled「鎖定對話」IconButton / 切換動作**
 
-2. **`src/app.jsx`** — `ChatRuntime` 接到真實後端：
-   - `refreshAgents()` 從 `/v1/agents` 取資料 → `normalizeAgents` 把 `requires_encryption` → `requiresEncryption`；前置 `ROUTER_AGENT`
-   - `sendMessage()`：
-     - 路由到 `VITE_ROUTER_BASE_URL + /v1/chat/completions`（當 agent 為 `anila-router`）或 `VITE_CSP_BASE_URL + /v1/chat/completions`（direct target）
-     - 透過 `streamChatCompletion` 串 `onText` / `onTrace` / `onMeta`
-   - `ensureConversation()`：新對話建立時把 `classified: agent.requiresEncryption` 直接寫入 conversation；**不允許使用者解除**
-   - `applyMeta()`：每次收到 `anila.meta` 時，如果 `meta.classified === true` 則把 conversation 狀態升為 classified（**一旦鎖上就不降級**）
-   - `updateConversationAgent()`：切換 agent 時若新 agent `requiresEncryption` 亦自動上鎖
-   - 頂欄刪掉 template 的「設為機密 / 解除機密」`IconButton`；保留「加密模式」唯讀標示與 classified 情況下「分享/複製」的 disabled 行為
-   - `ParallelCompareView` 把 `AgentSelector`, `Composer`, `MessageBubble` 用 props 注入
-   - `adoptCompareColumn()` / compare-merge 流程照 backup 版本搬過來
-   - `SettingsModal`, `TweaksPanel`, `ShareDialog`, `ApiKeyPopover` 一併掛上
+2. **`src/app.jsx`** ✅ — `ChatRuntime` 接到真實後端：
+   - `refreshAgents()` 從 `GET /v1/agents` 取資料 → `normalizeAgents` 把 `requires_encryption` → `requiresEncryption`；前置 `ROUTER_AGENT`
+   - `sendMessage()` 依 target 決定 baseUrl：`VITE_ROUTER_BASE_URL` (target === `"anila-router"`) vs `VITE_CSP_BASE_URL`；透過 `streamChatCompletion` 串 `onText` / `onTrace` / `onMeta`
+   - `ensureConversation()`、`updateConversationAgent()`、`applyMeta()` 三點 latch：`c.classified || agent.requiresEncryption || meta.classified`（**一旦鎖上永不降級**）
+   - 頂欄沒有任何 lock/unlock IconButton；「加密模式」chip 唯讀；`classified` 時 share/copy disabled
+   - `ParallelCompareView` 把 `AgentSelector`, `Composer`, `MessageBubble` 以 props 注入（避免循環 import）
+   - `SettingsModal`（general/apikey/privacy/account/about）、`TweaksPanel`、`ShareDialog`、`ApiKeyPopover` 都已接好
+   - `App` 預設輸出掛載 `applyTweaks` + `window.ANILA_TWEAKS` + 父視窗 `postMessage` edit-mode
 
-3. **`src/main.jsx`** — `BrowserRouter` + `AuthProvider` + `RequireAuth` 守門 + Routes：
-   - `/` → Navigate 到 `/app` 或 `/login`
-   - `/login` → `<LoginView/>`
-   - `/app` → `<RequireAuth><ChatRuntime/></RequireAuth>`
+3. **`src/main.jsx`** ✅ — `BrowserRouter` + `AuthProvider` + `RequireAuth` 守門 + Routes：
+   - `/login` → `<RedirectIfAuthed><LoginView/></RedirectIfAuthed>`
+   - `/app/*` → `<RequireAuth><App/></RequireAuth>`
+   - catch-all → `<Navigate to="/app" replace/>`
    - `!authReady` 時顯示 `.boot-screen`
 
-4. **Smoke check**
-   - `npm install` → `npm run build`：確認 Vite 可打包、沒有 import 循環
-   - `npm run dev`：瀏覽器打開確認基本渲染
+4. **Smoke check** ✅
+   - `npm install`：160 packages
+   - `npm run build`：43 modules transformed，dist/assets/index-*.js 258.59 kB gzip 79.46 kB
 
-### B. 後端：強制加密規則由伺服器側決定 (close-loop)
-1. **CSP (`myCSPPlatform/backend/app/services/proxy_service.py`)**
-   - 擴充 `build_default_anila_meta(...)` 接收 `classified: bool` 參數
-2. **CSP (`myCSPPlatform/backend/app/api/proxy.py`)**
-   - `/v1/chat/completions`（streaming + JSON）：解析出 resolved model / agent 後，把該 model 或 agent 的 `requires_encryption` 帶進 `anila_meta.classified`
-   - Streaming：在 `event: anila.meta` payload 中夾帶 `classified`
-3. **Router (`AgenticRAG/src/anila_core/api/router_server.py`)**
-   - `_merge_anila_meta` / `_default_anila_meta`：若下游 meta 的 `classified === true` 或被分派 agent 本身 `requires_encryption`，把 router meta `classified` 也設為 `true`
-   - 確保 `/v1/chat/completions` 向前轉發時不會把這個欄位漏掉
+### B. 後端：強制加密規則由伺服器側決定 (close-loop) — ✅ 完成 (2026-04-21)
+1. **CSP (`myCSPPlatform/backend/app/services/proxy_service.py`)** ✅
+   - `build_default_anila_meta(...)` 接收 `classified: bool = False` 參數；`proxy_request`、`proxy_stream` 新增 `requires_encryption: bool = False` 參數
+   - `proxy_stream` 內部 `_emit(block, event_name, data)` 會解析下游 `anila.meta` 並在 `requires_encryption=True` 時把 `classified` 補為 `True`（一律單向 latch）
+2. **CSP (`myCSPPlatform/backend/app/api/proxy.py`)** ✅
+   - `/v1/chat/completions`（streaming + JSON 兩條路徑 + agent / model 兩種 resolve）：從 resolved agent/model 取 `requires_encryption`（agent 會 fallback 看 `base_model.requires_encryption`）帶給 `proxy_request` / `proxy_stream`，並在非串流 agent 直連時也 `setdefault`/升級 `existing_meta["classified"] = True`
+3. **Router (`AgenticRAG/src/anila_core/api/router_server.py` + `registry/remote_agent_manifest.py`)** ✅
+   - `RemoteAgentManifest` 新增 `requires_encryption: bool`，從 `/v1/agents` response 的 `requires_encryption` 欄位讀取
+   - `_merge_anila_meta(..., classified_override: bool = False)`：`classified_override or merged.get("classified")` 任一為真就把 `merged["classified"] = True`（單向 latch）
+   - dispatch-to-agent 分支傳 `classified_override=bool(manifest.requires_encryption)`；direct LLM 分支透過 `_normalize_anila_meta` 讓下游 meta 的 `classified` 自然保留
 
 ### C. 交付
 - 各階段分別 commit（WIP → feat → backend hooks → build verification）
