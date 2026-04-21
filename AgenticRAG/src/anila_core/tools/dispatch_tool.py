@@ -24,6 +24,7 @@ async def dispatch_to_agent(
     stream: bool = False,
     system_prompt: Optional[str] = None,
     timeout: float = 120.0,
+    encryption_required: bool = False,
 ) -> str:
     """Call a registered agent through CSP and return the full response text.
 
@@ -63,6 +64,7 @@ async def dispatch_to_agent(
         stream=stream,
         system_prompt=system_prompt,
         timeout=timeout,
+        encryption_required=encryption_required,
     )
     return response["content"]
 
@@ -75,6 +77,7 @@ async def dispatch_to_agent_response(
     stream: bool = False,
     system_prompt: Optional[str] = None,
     timeout: float = 120.0,
+    encryption_required: bool = False,
 ) -> dict:
     """Call a registered agent through CSP and return content + metadata."""
     messages = []
@@ -86,6 +89,7 @@ async def dispatch_to_agent_response(
         "model": agent_id,
         "messages": messages,
         "stream": stream,
+        **({"metadata": {"anila_encryption_mode": "required"}} if encryption_required else {}),
     }
     headers = {
         "Authorization": f"Bearer {csp_api_key}",

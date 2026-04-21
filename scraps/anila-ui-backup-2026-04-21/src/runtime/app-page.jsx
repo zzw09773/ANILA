@@ -591,11 +591,9 @@ export function RuntimePage() {
 
     const baseUrl =
       effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
-    const encryptionRequired = agentRequiresEncryption(effectiveTarget);
     const payload = {
       model: effectiveTarget,
       messages: [{ role: "user", content: text }],
-      ...(encryptionRequired ? { metadata: { anila_encryption_mode: "required" } } : {}),
     };
 
     try {
@@ -692,9 +690,6 @@ export function RuntimePage() {
             payload: {
               model: column.agentId,
               messages: [{ role: "user", content: text }],
-              ...(agentRequiresEncryption(column.agentId)
-                ? { metadata: { anila_encryption_mode: "required" } }
-                : {}),
             },
             onText: (accumulatedText) => {
               setCompareMessages((current) => ({

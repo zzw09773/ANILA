@@ -47,7 +47,8 @@ def _build_agent_list(agents: list[RemoteAgentManifest]) -> str:
         return "Available agents: none"
     lines = ["Available agents:"]
     for m in agents:
-        lines.append(f"  - {m.to_tool_description()}")
+        encryption_hint = " [encrypted]" if m.requires_encryption else ""
+        lines.append(f"  - {m.to_tool_description()}{encryption_hint}")
     return "\n".join(lines)
 
 
@@ -157,6 +158,12 @@ def _merge_anila_meta(
     if latency_ms is not None:
         merged["latency_ms"] = latency_ms
     return merged
+
+
+def _ensure_classified(meta: dict[str, Any], required: bool) -> dict[str, Any]:
+    if required:
+        meta["classified"] = True
+    return meta
 
 
 def _extract_bearer_api_key(request: Request) -> str:
@@ -272,6 +279,7 @@ def create_router_app() -> FastAPI:
                     csp_base_url=settings.csp_base_url,
                     csp_api_key=caller_api_key,
                     stream=False,
+                    encryption_required=manifest.requires_encryption,
                 )
                 content = agent_response["content"]
                 base_trace.append(
@@ -287,6 +295,7 @@ def create_router_app() -> FastAPI:
                     agent_id=agent_id,
                     latency_ms=int((time.time() - started_at) * 1000),
                 )
+                anila_meta = _ensure_classified(anila_meta, manifest.requires_encryption)
         else:
             content = llm_text
             base_trace.append(_make_trace_step("direct", "Router 直接回答", "無需分派 agent"))
