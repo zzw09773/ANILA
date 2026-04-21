@@ -24,6 +24,7 @@ class RemoteAgentManifest:
     endpoint_url: str
     capabilities: dict[str, Any] = field(default_factory=dict)
     input_schema: Optional[dict[str, Any]] = None
+    requires_encryption: bool = False
 
     def to_tool_description(self) -> str:
         """Short description the Router LLM uses when choosing agents."""
@@ -82,6 +83,7 @@ class RemoteAgentRegistry:
                 endpoint_url=item.get("endpoint_url", ""),
                 capabilities=item.get("capabilities") or {},
                 input_schema=item.get("input_schema"),
+                requires_encryption=bool(item.get("requires_encryption", False)),
             )
             agents[manifest.agent_id] = manifest
 

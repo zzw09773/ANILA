@@ -1,0 +1,1291 @@
+// App root — ChatRuntime wired to real CSP + Router backends.
+// - Classification is backend-driven:
+//     * agent.requires_encryption=true → new conversations start classified
+//     * SSE anila.meta.classified=true → conversation latches classified (one-way)
+//     * user has NO lock/unlock toggle anywhere
+// - All data flows through the real CSP /v1/agents + /v1/chat/completions.
+
+import React, {
+  startTransition,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+
+import { apiKeyRequest, config } from "./runtime/api.js";
+import { useAuth, useLogoutRedirect } from "./runtime/auth.jsx";
+import { streamChatCompletion } from "./runtime/sse.js";
+
+import {
+  AgentSelector,
+  Composer,
+  MessageBubble,
+  Sidebar,
+} from "./chat.jsx";
+import {
+  Button,
+  IconButton,
+  Input,
+  Modal,
+  Dropdown,
+} from "./components.jsx";
+import {
+  AnilaGlyph,
+  IconColumns,
+  IconEye,
+  IconEyeOff,
+  IconKey,
+  IconLock,
+  IconMoon,
+  IconNodes,
+  IconRefresh,
+  IconSettings,
+  IconShare,
+  IconShield,
+  IconSpark,
+  IconSun,
+  IconUser,
+} from "./icons.jsx";
+import { FOLDERS } from "./data.jsx";
+import {
+  CitationsDrawer,
+  ConfidentialWatermark,
+} from "./trust.jsx";
+import { ParallelCompareView } from "./multiagent.jsx";
+import { HandoffMenu, ShareDialog } from "./collab.jsx";
+import { TweaksPanel } from "./tweaks.jsx";
+
+// ---- Router pseudo-agent ----------------------------------------------------
+const ROUTER_AGENT = Object.freeze({
+  id: "anila-router",
+  name: "ANILA Router",
+  short: "auto",
+  description: "自動路由：由 Router 決定直接回答或分派給合適的 agent。",
+  requiresEncryption: false,
+});
+
+const STARTER_PROMPTS = [
+  { title: "特休怎麼計算？",   sub: "HR · 規則 + 引用來源",      q: "公司特休怎麼計算？請附引用來源。" },
+  { title: "出差報銷流程",     sub: "Finance · 4 步流程",        q: "請整理出差報銷流程與需要準備的附件。" },
+  { title: "FastAPI SSE",     sub: "Code · streaming proxy",    q: "FastAPI 要怎麼做 SSE streaming proxy？請給我實作方向。" },
+  { title: "@vlm 解釋架構圖",  sub: "直接指定 vision agent",     q: "@vlm 解釋這張系統架構圖" },
+];
+
+// ---- Helpers ---------------------------------------------------------------
+function makeId(prefix) {
+  return `${prefix}-${Math.random().toString(16).slice(2, 10)}-${Date.now().toString(36)}`;
+}
+
+function makeConversationTitle(text) {
+  const t = (text || "").trim();
+  if (!t) return "新對話";
+  return t.length > 28 ? `${t.slice(0, 28)}…` : t;
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function relativeLabel() {
+  return "剛剛";
+}
+
+function maskApiKey(apiKey) {
+  if (!apiKey) return "未設定";
+  if (apiKey.length <= 12) return apiKey;
+  return `${apiKey.slice(0, 6)}…${apiKey.slice(-4)}`;
+}
+
+// normalize backend /v1/agents payload → UI agent model
+// includes the ROUTER pseudo-agent in front
+function normalizeAgents(data) {
+  return [
+    ROUTER_AGENT,
+    ...(data || []).map((item) => ({
+      id: item.id,
+      name: item.name || item.id,
+      short: (item.short || item.id || "").slice(0, 12),
+      description: item.description_for_router || item.description || "",
+      endpointUrl: item.endpoint_url,
+      capabilities: item.capabilities || {},
+      requiresEncryption: Boolean(item.requires_encryption),
+    })),
+  ];
+}
+
+function applyTweaks(t) {
+  const r = document.documentElement;
+  r.setAttribute("data-theme", t.dark ? "dark" : "light");
+  if (t.accent) r.style.setProperty("--accent", t.accent);
+  if (t.density) r.style.setProperty("--density", `${t.density}px`);
+  if (t.sansFamily) {
+    r.style.setProperty(
+      "--font-sans",
+      `"${t.sansFamily}", "Inter", system-ui, sans-serif`,
+    );
+  }
+  if (t.monoFamily) {
+    r.style.setProperty(
+      "--font-mono",
+      `"${t.monoFamily}", ui-monospace, Menlo, monospace`,
+    );
+  }
+}
+
+// ---- Chat Runtime ----------------------------------------------------------
+function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
+  const { apiKey, apiKeyStatus, updateApiKey } = useAuth();
+  const logoutAndRedirect = useLogoutRedirect();
+
+  // --- agents / conversations / messages ---
+  const [agents, setAgents] = useState([ROUTER_AGENT]);
+  const [selectedAgentId, setSelectedAgentId] = useState(ROUTER_AGENT.id);
+  const [loadingAgents, setLoadingAgents] = useState(false);
+  const [runtimeError, setRuntimeError] = useState("");
+
+  const [conversations, setConversations] = useState([]);
+  const [messagesByConv, setMessagesByConv] = useState({});
+  const [selectedConvId, setSelectedConvId] = useState(null);
+
+  // --- compare mode ---
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareColumns, setCompareColumns] = useState([]);
+  const [compareMsgs, setCompareMsgs] = useState({});
+
+  // --- UI state ---
+  const [citationsOpen, setCitationsOpen] = useState(false);
+  const [activeCitations, setActiveCitations] = useState([]);
+  const [activeCitationId, setActiveCitationId] = useState(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState("general");
+  const [shareOpen, setShareOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  const [folder, setFolder] = useState("all");
+
+  const scrollRef = useRef(null);
+
+  const selectedConv = useMemo(
+    () => conversations.find((c) => c.id === selectedConvId) || null,
+    [conversations, selectedConvId],
+  );
+  const currentMsgs = selectedConvId ? messagesByConv[selectedConvId] || [] : [];
+  const isClassified = Boolean(selectedConv?.classified);
+  const activeAgent = useMemo(
+    () => agents.find((a) => a.id === selectedAgentId) || ROUTER_AGENT,
+    [agents, selectedAgentId],
+  );
+  const activeEncryptionRequired = Boolean(activeAgent?.requiresEncryption);
+  const directAgents = useMemo(
+    () => agents.filter((a) => a.id !== ROUTER_AGENT.id),
+    [agents],
+  );
+  const latestAssistantMessage = useMemo(
+    () =>
+      [...currentMsgs]
+        .reverse()
+        .find((m) => m.role === "assistant" && (m.text || m.streaming)) || null,
+    [currentMsgs],
+  );
+
+  // autoscroll
+  useEffect(() => {
+    scrollRef.current?.scrollTo({
+      top: scrollRef.current.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [currentMsgs.length, currentMsgs[currentMsgs.length - 1]?.text]);
+
+  // agents: load on apiKey valid
+  useEffect(() => {
+    if (apiKeyStatus.valid && apiKey) {
+      void refreshAgents();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiKeyStatus.valid, apiKey]);
+
+  async function refreshAgents() {
+    setLoadingAgents(true);
+    setRuntimeError("");
+    try {
+      const response = await apiKeyRequest(config.cspBaseUrl, "/v1/agents", apiKey);
+      const data = await response.json();
+      const normalized = normalizeAgents(data.data || []);
+      startTransition(() => {
+        setAgents(normalized);
+        if (!normalized.some((a) => a.id === selectedAgentId)) {
+          setSelectedAgentId(ROUTER_AGENT.id);
+        }
+      });
+    } catch (error) {
+      startTransition(() => {
+        setRuntimeError(error.message || "無法載入 agent 清單");
+        setAgents([ROUTER_AGENT]);
+        setSelectedAgentId(ROUTER_AGENT.id);
+      });
+    } finally {
+      setLoadingAgents(false);
+    }
+  }
+
+  function agentRequiresEncryption(agentId) {
+    return Boolean(agents.find((a) => a.id === agentId)?.requiresEncryption);
+  }
+
+  // ---- conversation helpers (classification is one-way latch) ----
+  function ensureConversation(text, agentId) {
+    const effectiveAgentId = agentId || ROUTER_AGENT.id;
+    const encryption = agentRequiresEncryption(effectiveAgentId);
+    const agentName =
+      agents.find((a) => a.id === effectiveAgentId)?.name || effectiveAgentId;
+
+    if (!selectedConvId) {
+      const convId = makeId("cv");
+      setConversations((prev) => [
+        {
+          id: convId,
+          title: makeConversationTitle(text),
+          ts: relativeLabel(),
+          updatedLabel: relativeLabel(),
+          agent: effectiveAgentId,
+          agentId: effectiveAgentId,
+          agentName,
+          folder: "all",
+          tags: encryption ? ["classified"] : [],
+          starred: false,
+          classified: encryption,
+          updatedAt: nowIso(),
+        },
+        ...prev,
+      ]);
+      setSelectedConvId(convId);
+      return convId;
+    }
+
+    setConversations((prev) =>
+      prev.map((c) => {
+        if (c.id !== selectedConvId) return c;
+        const nextClassified = c.classified || encryption;
+        const tags =
+          encryption && !(c.tags || []).includes("classified")
+            ? [...(c.tags || []), "classified"]
+            : c.tags;
+        return {
+          ...c,
+          ts: relativeLabel(),
+          updatedLabel: relativeLabel(),
+          agent: effectiveAgentId,
+          agentId: effectiveAgentId,
+          classified: nextClassified,
+          tags,
+          updatedAt: nowIso(),
+        };
+      }),
+    );
+    return selectedConvId;
+  }
+
+  function updateConv(id, patch) {
+    setConversations((cs) =>
+      cs.map((c) => (c.id === id ? { ...c, ...patch } : c)),
+    );
+  }
+
+  function updateConversationAgent(conversationId, agentId) {
+    const agentName = agents.find((a) => a.id === agentId)?.name || agentId;
+    const encryption = agentRequiresEncryption(agentId);
+    setConversations((prev) =>
+      prev.map((c) => {
+        if (c.id !== conversationId) return c;
+        const nextClassified = c.classified || encryption;
+        const tags =
+          encryption && !(c.tags || []).includes("classified")
+            ? [...(c.tags || []), "classified"]
+            : c.tags;
+        return {
+          ...c,
+          agent: agentId,
+          agentId,
+          agentName,
+          classified: nextClassified,
+          tags,
+          ts: relativeLabel(),
+          updatedLabel: relativeLabel(),
+          updatedAt: nowIso(),
+        };
+      }),
+    );
+  }
+
+  function updateMsg(convId, msgId, patch) {
+    setMessagesByConv((prev) => {
+      const list = prev[convId] || [];
+      return {
+        ...prev,
+        [convId]: list.map((m) => (m.id === msgId ? { ...m, ...patch } : m)),
+      };
+    });
+  }
+
+  function applyMeta(convId, msgId, agentId, meta) {
+    updateMsg(convId, msgId, {
+      traceId: meta.trace_id,
+      trace: meta.trace || [],
+      citations: meta.citations || [],
+      confidence: meta.confidence,
+      handoffChain: meta.handoff_chain || [],
+      followUps: meta.follow_ups || [],
+      latencyMs: meta.latency_ms,
+      classified: meta.classified,
+      routedAgentId: meta.handoff_chain?.at?.(-1)?.agent_id || agentId,
+      stageLabel: meta.trace?.at?.(-1)?.label,
+      conversationId: convId,
+    });
+
+    // Classification latch — true once, always true.
+    if (meta.classified === true) {
+      setConversations((prev) =>
+        prev.map((c) => {
+          if (c.id !== convId) return c;
+          if (c.classified) return c;
+          const tags = (c.tags || []).includes("classified")
+            ? c.tags
+            : [...(c.tags || []), "classified"];
+          return { ...c, classified: true, tags };
+        }),
+      );
+    }
+  }
+
+  // ---- send single ----
+  async function sendMessage(text, attachments = [], meta = {}) {
+    if (!apiKey) {
+      setRuntimeError("尚未設定 CSP API Key，請先到設定 → API Key 設定。");
+      return;
+    }
+    const { explicitAgents = [], piiHits = [] } = meta;
+    if (explicitAgents.length > 1) {
+      return sendCompare(text, attachments, { explicitAgents, piiHits });
+    }
+
+    const effectiveTarget = explicitAgents[0] || selectedAgentId;
+    const convId = ensureConversation(text, effectiveTarget);
+    updateConversationAgent(convId, effectiveTarget);
+
+    const userMsg = {
+      id: makeId("u"),
+      role: "user",
+      text,
+      attachments,
+      piiHits,
+      explicitAgents,
+      conversationId: convId,
+      createdAt: nowIso(),
+    };
+    const assistantId = makeId("a");
+    const assistantMsg = {
+      id: assistantId,
+      role: "assistant",
+      text: "",
+      trace: [],
+      citations: [],
+      followUps: [],
+      streaming: true,
+      routedAgentId: effectiveTarget,
+      conversationId: convId,
+      createdAt: nowIso(),
+      timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
+    };
+    setMessagesByConv((prev) => ({
+      ...prev,
+      [convId]: [...(prev[convId] || []), userMsg, assistantMsg],
+    }));
+
+    const baseUrl =
+      effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
+    const payload = {
+      model: effectiveTarget,
+      messages: [{ role: "user", content: text }],
+    };
+
+    try {
+      await streamChatCompletion({
+        url: `${baseUrl}/v1/chat/completions`,
+        apiKey,
+        payload,
+        onText: (acc) => updateMsg(convId, assistantId, { text: acc }),
+        onTrace: (step) => {
+          setMessagesByConv((prev) => ({
+            ...prev,
+            [convId]: (prev[convId] || []).map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    trace: [...(m.trace || []), step],
+                    stageLabel: step.label,
+                    stage: (m.trace?.length ?? 0),
+                  }
+                : m,
+            ),
+          }));
+        },
+        onMeta: (meta) => applyMeta(convId, assistantId, effectiveTarget, meta),
+      });
+      updateMsg(convId, assistantId, { streaming: false });
+    } catch (error) {
+      updateMsg(convId, assistantId, {
+        streaming: false,
+        text: `請求失敗：${error.message || "unknown error"}`,
+      });
+    }
+  }
+
+  // ---- send compare ----
+  async function sendCompare(text, attachments = [], meta = {}) {
+    if (!apiKey) {
+      setRuntimeError("尚未設定 CSP API Key。");
+      return;
+    }
+    const explicit = (meta.explicitAgents || []).filter(
+      (id) => id !== ROUTER_AGENT.id,
+    );
+    const cols = explicit.length
+      ? explicit.slice(0, 3).map((agentId, i) => ({
+          id: `col-${i + 1}-${Date.now()}`,
+          agentId,
+        }))
+      : compareColumns;
+    if (cols.length && cols !== compareColumns) setCompareColumns(cols);
+
+    setCompareMode(true);
+    setCitationsOpen(false);
+
+    await Promise.all(
+      cols.map(async (col) => {
+        const uId = makeId("u-" + col.id);
+        const aId = makeId("a-" + col.id);
+        const userMsg = {
+          id: uId,
+          role: "user",
+          text,
+          attachments,
+          piiHits: meta.piiHits || [],
+          conversationId: col.id,
+          createdAt: nowIso(),
+        };
+        const assistantMsg = {
+          id: aId,
+          role: "assistant",
+          text: "",
+          trace: [],
+          citations: [],
+          followUps: [],
+          streaming: true,
+          routedAgentId: col.agentId,
+          conversationId: col.id,
+          createdAt: nowIso(),
+        };
+        setCompareMsgs((prev) => ({
+          ...prev,
+          [col.id]: [...(prev[col.id] || []), userMsg, assistantMsg],
+        }));
+
+        try {
+          await streamChatCompletion({
+            url: `${config.cspBaseUrl}/v1/chat/completions`,
+            apiKey,
+            payload: {
+              model: col.agentId,
+              messages: [{ role: "user", content: text }],
+            },
+            onText: (acc) => {
+              setCompareMsgs((prev) => ({
+                ...prev,
+                [col.id]: (prev[col.id] || []).map((m) =>
+                  m.id === aId ? { ...m, text: acc } : m,
+                ),
+              }));
+            },
+            onTrace: (step) => {
+              setCompareMsgs((prev) => ({
+                ...prev,
+                [col.id]: (prev[col.id] || []).map((m) =>
+                  m.id === aId
+                    ? {
+                        ...m,
+                        trace: [...(m.trace || []), step],
+                        stageLabel: step.label,
+                        stage: (m.trace?.length ?? 0),
+                      }
+                    : m,
+                ),
+              }));
+            },
+            onMeta: (m) => {
+              setCompareMsgs((prev) => ({
+                ...prev,
+                [col.id]: (prev[col.id] || []).map((msg) =>
+                  msg.id === aId
+                    ? {
+                        ...msg,
+                        traceId: m.trace_id,
+                        trace: m.trace || [],
+                        citations: m.citations || [],
+                        confidence: m.confidence,
+                        handoffChain: m.handoff_chain || [],
+                        followUps: m.follow_ups || [],
+                        latencyMs: m.latency_ms,
+                        classified: m.classified,
+                        routedAgentId:
+                          m.handoff_chain?.at?.(-1)?.agent_id || col.agentId,
+                      }
+                    : msg,
+                ),
+              }));
+            },
+          });
+          setCompareMsgs((prev) => ({
+            ...prev,
+            [col.id]: (prev[col.id] || []).map((m) =>
+              m.id === aId ? { ...m, streaming: false } : m,
+            ),
+          }));
+        } catch (error) {
+          setCompareMsgs((prev) => ({
+            ...prev,
+            [col.id]: (prev[col.id] || []).map((m) =>
+              m.id === aId
+                ? { ...m, streaming: false, text: `請求失敗：${error.message}` }
+                : m,
+            ),
+          }));
+        }
+      }),
+    );
+  }
+
+  function enterCompare() {
+    const pick = directAgents.slice(0, 2);
+    if (pick.length < 2) {
+      setRuntimeError("需要至少 2 個可用的 agent 才能比較");
+      return;
+    }
+    setCompareColumns(
+      pick.map((agent, i) => ({ id: `col-${i + 1}`, agentId: agent.id })),
+    );
+    setCompareMsgs({});
+    setCompareMode(true);
+  }
+
+  function exitCompare() {
+    setCompareMode(false);
+    setCompareColumns([]);
+    setCompareMsgs({});
+  }
+
+  function adoptColumn(col) {
+    const msgs = compareMsgs[col.id] || [];
+    if (!msgs.length) return;
+    const firstUser = msgs.find((m) => m.role === "user");
+    const agentName =
+      agents.find((a) => a.id === col.agentId)?.name || col.agentId;
+    const encryption = agentRequiresEncryption(col.agentId);
+    const convId = makeId("cv");
+    setConversations((prev) => [
+      {
+        id: convId,
+        title: makeConversationTitle(firstUser?.text || "採用比較結果"),
+        ts: relativeLabel(),
+        updatedLabel: relativeLabel(),
+        agent: col.agentId,
+        agentId: col.agentId,
+        agentName,
+        folder: "all",
+        tags: encryption ? ["compared", "classified"] : ["compared"],
+        starred: false,
+        classified: encryption,
+        updatedAt: nowIso(),
+      },
+      ...prev,
+    ]);
+    setMessagesByConv((prev) => ({
+      ...prev,
+      [convId]: msgs.map((m) => ({ ...m, conversationId: convId })),
+    }));
+    setSelectedConvId(convId);
+    setSelectedAgentId(col.agentId);
+    exitCompare();
+  }
+
+  // ---- misc handlers ----
+  function newChat() {
+    setSelectedConvId(null);
+    setCitationsOpen(false);
+    setCompareMode(false);
+    setShareOpen(false);
+  }
+
+  function onOpenCitation(c) {
+    const msg = [...currentMsgs]
+      .reverse()
+      .find((m) => m.role === "assistant" && m.citations?.some((x) => x.id === c?.id));
+    const target =
+      msg ||
+      [...currentMsgs]
+        .reverse()
+        .find((m) => m.role === "assistant" && m.citations?.length);
+    if (!target) return;
+    setActiveCitations(target.citations || []);
+    setActiveCitationId(c?.id || null);
+    setCitationsOpen(true);
+  }
+
+  function handoffToAgent(newAgentId) {
+    if (!selectedConvId) return;
+    const label =
+      agents.find((a) => a.id === newAgentId)?.name || newAgentId;
+    const sysMsg = {
+      id: makeId("sys"),
+      role: "assistant",
+      text: `[Router] 已從 ${selectedAgentId} 交接給 ${label}，繼承上下文。`,
+      streaming: false,
+      routedAgentId: newAgentId,
+      trace: [],
+      handoffChain: [
+        { agent_id: selectedAgentId, label: "current owner" },
+        { agent_id: newAgentId, label: "manual handoff" },
+      ],
+      confidence: { level: "high", score: 1.0, reasons: ["manual_handoff"] },
+      conversationId: selectedConvId,
+      createdAt: nowIso(),
+    };
+    setMessagesByConv((prev) => ({
+      ...prev,
+      [selectedConvId]: [...(prev[selectedConvId] || []), sysMsg],
+    }));
+    updateConversationAgent(selectedConvId, newAgentId);
+    setSelectedAgentId(newAgentId);
+  }
+
+  // ---- render: classified watermark + top bar + messages + composer ----
+  return (
+    <div style={{ display: "flex", height: "100vh", background: "var(--bg)", position: "relative" }}>
+      {isClassified && (
+        <ConfidentialWatermark
+          userEmail={user?.email || user?.username}
+          traceId={latestAssistantMessage?.traceId}
+        />
+      )}
+      <Sidebar
+        conversations={conversations}
+        selectedConvId={selectedConvId}
+        onSelectConv={(id) => {
+          setSelectedConvId(id);
+          setCitationsOpen(false);
+          setCompareMode(false);
+        }}
+        onNewChat={newChat}
+        agents={agents}
+        user={user}
+        onLogout={logoutAndRedirect}
+        onOpenSettings={(tab) => {
+          setSettingsTab(tab || "general");
+          setSettingsOpen(true);
+        }}
+        onOpenAgentBrowser={() => {}}
+        collapsed={collapsed}
+        onToggleCollapsed={() => setCollapsed((c) => !c)}
+        folder={folder}
+        setFolder={setFolder}
+        folders={FOLDERS}
+        onOpenTagEditor={(id, patch) => updateConv(id, patch)}
+      />
+
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+        <div style={{
+          display: "flex", alignItems: "center", gap: 10,
+          padding: "10px 18px",
+          borderBottom: "1px solid var(--border)",
+          background: "var(--bg)",
+        }}>
+          {tweaks.agentSwitcherPosition === "top" && !compareMode ? (
+            <AgentSelector agents={agents} value={selectedAgentId} onChange={setSelectedAgentId} />
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600, fontSize: 14 }}>
+              {selectedConv?.classified && <IconLock size={14} style={{ color: "var(--danger)" }} />}
+              <span>
+                {compareMode
+                  ? "比較模式"
+                  : selectedConv?.title || "新對話"}
+              </span>
+            </div>
+          )}
+
+          <div style={{ flex: 1 }} />
+
+          {selectedConv && !compareMode && (
+            <>
+              {selectedConv.classified && (
+                <span
+                  title="此對話已鎖為加密模式（由後端 agent 設定強制啟用）。"
+                  style={{
+                    display: "inline-flex", alignItems: "center", gap: 4,
+                    padding: "3px 9px",
+                    background: "oklch(0.95 0.02 25 / 0.4)",
+                    border: "1px solid var(--danger)",
+                    borderRadius: 999,
+                    fontSize: 11, fontFamily: "var(--font-mono)",
+                    color: "var(--danger)",
+                  }}
+                >
+                  <IconLock size={11} /> 加密模式
+                </span>
+              )}
+              <Dropdown align="right" width={260} trigger={() => (
+                <IconButton title="交接 handoff"><IconNodes size={14} /></IconButton>
+              )}>
+                {(close) => (
+                  <HandoffMenu
+                    agents={agents}
+                    currentAgentId={selectedAgentId}
+                    onHandoffAgent={handoffToAgent}
+                    onHandoffUser={(u) => alert(`已送出交接請求給 ${u}`)}
+                    close={close}
+                  />
+                )}
+              </Dropdown>
+              <IconButton
+                title={selectedConv.classified ? "加密對話不可分享" : "分享"}
+                onClick={() => !selectedConv.classified && setShareOpen(true)}
+                disabled={selectedConv.classified}
+                style={selectedConv.classified ? { opacity: 0.4, cursor: "not-allowed" } : {}}
+              >
+                <IconShare size={14} />
+              </IconButton>
+            </>
+          )}
+
+          <IconButton
+            title={compareMode ? "退出比較" : "比較模式 (兩個 agent 並排)"}
+            onClick={() => (compareMode ? exitCompare() : enterCompare())}
+            active={compareMode}
+            disabled={!compareMode && directAgents.length < 2}
+          >
+            <IconColumns size={14} />
+          </IconButton>
+
+          <Dropdown align="right" width={320} trigger={() => (
+            <button title="CSP API Key" style={{
+              display: "inline-flex", alignItems: "center", gap: 6,
+              padding: "4px 9px",
+              background: "var(--bg-subtle)", border: "1px solid var(--border)",
+              borderRadius: 999, cursor: "pointer",
+              color: "var(--fg-muted)", fontSize: 11,
+              fontFamily: "var(--font-mono)",
+            }}>
+              <span style={{
+                width: 6, height: 6, borderRadius: 999,
+                background: apiKeyStatus.valid ? "var(--success)" : "var(--danger)",
+              }} />
+              <IconKey size={12} />
+              <span>{maskApiKey(apiKey)}</span>
+            </button>
+          )}>
+            {(close) => (
+              <ApiKeyPopover
+                onClose={close}
+                onSaveApiKey={async (next) => {
+                  try {
+                    await updateApiKey(next);
+                    await refreshAgents();
+                    close();
+                  } catch (error) {
+                    alert(error.message || "API Key 驗證失敗");
+                  }
+                }}
+                apiKey={apiKey}
+                status={apiKeyStatus}
+              />
+            )}
+          </Dropdown>
+
+          <IconButton title="重新載入 agent" onClick={() => void refreshAgents()} disabled={loadingAgents}>
+            <IconRefresh size={14} />
+          </IconButton>
+
+          <IconButton title="設定" onClick={() => { setSettingsTab("general"); setSettingsOpen(true); }}>
+            <IconSettings />
+          </IconButton>
+          <IconButton
+            title={tweaks.dark ? "切換淺色" : "切換深色"}
+            onClick={() => setTweaks({ ...tweaks, dark: !tweaks.dark })}
+          >
+            {tweaks.dark ? <IconSun /> : <IconMoon />}
+          </IconButton>
+          <IconButton title="Tweaks" onClick={() => setTweaksOpen((o) => !o)} active={tweaksOpen}>
+            <IconSpark />
+          </IconButton>
+        </div>
+
+        {runtimeError && (
+          <div style={{
+            padding: "8px 18px",
+            background: "oklch(0.97 0.03 25)",
+            borderBottom: "1px solid oklch(0.88 0.08 25)",
+            color: "var(--danger)",
+            fontSize: 12, fontFamily: "var(--font-mono)",
+          }}>
+            {runtimeError}
+          </div>
+        )}
+
+        <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+            {compareMode ? (
+              <ParallelCompareView
+                agents={directAgents}
+                columns={compareColumns}
+                setColumns={setCompareColumns}
+                messagesByColumn={compareMsgs}
+                onSend={(text, atts, meta) => sendCompare(text, atts, meta)}
+                onExit={exitCompare}
+                onAdoptColumn={adoptColumn}
+                AgentSelector={AgentSelector}
+                Composer={Composer}
+                MessageBubble={MessageBubble}
+              />
+            ) : (
+              <>
+                <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", background: "var(--bg)" }}>
+                  <div style={{
+                    maxWidth: 760, margin: "0 auto",
+                    padding: `calc(var(--density) * 1.2) var(--density)`,
+                  }}>
+                    {currentMsgs.length === 0 ? (
+                      <EmptyState
+                        agent={activeAgent}
+                        loading={loadingAgents}
+                        onPick={(q) => sendMessage(q, [], {})}
+                      />
+                    ) : (
+                      currentMsgs.map((m) => (
+                        <MessageBubble
+                          key={m.id}
+                          msg={m}
+                          agents={agents}
+                          conversationId={selectedConvId}
+                          classified={isClassified}
+                          onRegenerate={() => {}}
+                          onOpenCitation={onOpenCitation}
+                          onPickFollowUp={(q) => sendMessage(q, [], {})}
+                        />
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                <div style={{ padding: "0 var(--density) var(--density)", background: "var(--bg)" }}>
+                  <div style={{ maxWidth: 760, margin: "0 auto" }}>
+                    {tweaks.agentSwitcherPosition === "bottom" && (
+                      <div style={{ marginBottom: 8, display: "flex", gap: 6, alignItems: "center" }}>
+                        <span style={{ fontSize: 11, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>
+                          target:
+                        </span>
+                        <AgentSelector agents={agents} value={selectedAgentId} onChange={setSelectedAgentId} />
+                        {activeEncryptionRequired && (
+                          <span title="此 agent 為加密模型" style={{
+                            display: "inline-flex", alignItems: "center", gap: 3,
+                            padding: "1px 7px",
+                            background: "oklch(0.95 0.02 25 / 0.4)",
+                            border: "1px solid var(--danger)",
+                            borderRadius: 999,
+                            fontSize: 11, color: "var(--danger)",
+                            fontFamily: "var(--font-mono)",
+                          }}>
+                            <IconLock size={10} /> 加密模型
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    <Composer
+                      onSend={sendMessage}
+                      agents={agents}
+                      placeholder="問 ANILA 任何事情，或用 @agent 指定 agent · Shift+Enter 換行"
+                      footer={
+                        selectedAgentId === ROUTER_AGENT.id
+                          ? "Auto route · 由 ANILA Router 判斷是否分派 agent"
+                          : `Direct target · ${activeAgent.name}`
+                      }
+                    />
+                    <div style={{
+                      marginTop: 6, fontSize: 11,
+                      color: "var(--fg-subtle)", textAlign: "center",
+                      fontFamily: "var(--font-mono)",
+                    }}>
+                      ANILA {activeAgent?.id === ROUTER_AGENT.id
+                        ? "會自動分派給合適的 agent"
+                        : `→ ${activeAgent?.name}`}
+                      {" · 所有呼叫經 CSP · "}
+                      <span style={{ color: "var(--fg-muted)" }}>回應僅供參考</span>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
+          {citationsOpen && !compareMode && (
+            <CitationsDrawer
+              open={citationsOpen}
+              citations={activeCitations}
+              activeId={activeCitationId}
+              onClose={() => setCitationsOpen(false)}
+              onJumpTo={(c) => c?.source_uri && window.open(c.source_uri, "_blank", "noopener")}
+            />
+          )}
+        </div>
+      </div>
+
+      <SettingsModal
+        open={settingsOpen}
+        tab={settingsTab}
+        setTab={setSettingsTab}
+        onClose={() => setSettingsOpen(false)}
+        user={user}
+        apiKey={apiKey}
+        apiKeyStatus={apiKeyStatus}
+        onSaveApiKey={async (next) => {
+          try {
+            await updateApiKey(next);
+            await refreshAgents();
+          } catch (error) {
+            alert(error.message || "API Key 驗證失敗");
+          }
+        }}
+        agents={agents}
+      />
+
+      <TweaksPanel
+        open={tweaksOpen}
+        onClose={() => setTweaksOpen(false)}
+        tweaks={tweaks}
+        setTweaks={setTweaks}
+      />
+
+      <ShareDialog
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
+        conversation={selectedConv}
+        user={user}
+      />
+    </div>
+  );
+}
+
+// ---- Empty state -----------------------------------------------------------
+function EmptyState({ agent, onPick, loading }) {
+  return (
+    <div style={{ padding: "64px 12px 32px", textAlign: "center" }}>
+      <AnilaGlyph size={40} />
+      <div style={{ marginTop: 16, fontSize: 22, fontWeight: 600, letterSpacing: -0.2 }}>
+        你今天想問 ANILA 什麼？
+      </div>
+      <div style={{ marginTop: 6, color: "var(--fg-muted)", fontSize: 13 }}>
+        {loading
+          ? "agent 清單載入中…"
+          : agent?.id === ROUTER_AGENT.id
+            ? "輸入問題，Router 會自動分派；也可用 @agent 直接指定"
+            : `當前 agent: ${agent?.name}`}
+      </div>
+      <div style={{
+        marginTop: 36, display: "grid",
+        gridTemplateColumns: "1fr 1fr", gap: 10,
+        maxWidth: 600, margin: "36px auto 0", textAlign: "left",
+      }}>
+        {STARTER_PROMPTS.map((s, i) => (
+          <button key={i} onClick={() => onPick(s.q)} style={{
+            padding: "12px 14px",
+            background: "var(--bg-elev)",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius)",
+            cursor: "pointer", textAlign: "left",
+            transition: "all .12s",
+          }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.borderColor = "var(--border-strong)";
+              e.currentTarget.style.transform = "translateY(-1px)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.borderColor = "var(--border)";
+              e.currentTarget.style.transform = "";
+            }}>
+            <div style={{ fontSize: 13, fontWeight: 500, color: "var(--fg)" }}>{s.title}</div>
+            <div style={{ fontSize: 12, color: "var(--fg-muted)", marginTop: 3 }}>{s.sub}</div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---- Api Key popover -------------------------------------------------------
+function ApiKeyPopover({ apiKey, onSaveApiKey, onClose, status }) {
+  const [val, setVal] = useState(apiKey || "");
+  const [show, setShow] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    setBusy(true);
+    try {
+      await onSaveApiKey(val);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ padding: 10, minWidth: 300 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>CSP API Key</div>
+      <div style={{ fontSize: 11, color: "var(--fg-muted)", marginBottom: 10 }}>
+        所有 ANILA 的 agent 呼叫都會帶這把 key。格式{" "}
+        <span style={{ fontFamily: "var(--font-mono)" }}>sk-…</span>
+      </div>
+      <Input
+        type={show ? "text" : "password"}
+        value={val}
+        onChange={(e) => setVal(e.target.value)}
+        leftIcon={<IconKey size={13} />}
+        rightEl={
+          <IconButton onClick={() => setShow((s) => !s)}>
+            {show ? <IconEyeOff /> : <IconEye />}
+          </IconButton>
+        }
+      />
+      <div style={{ display: "flex", gap: 6, marginTop: 10, justifyContent: "flex-end" }}>
+        <Button size="sm" onClick={onClose}>取消</Button>
+        <Button size="sm" variant="primary" onClick={save} disabled={busy || !val}>
+          {busy ? "驗證中…" : "儲存"}
+        </Button>
+      </div>
+      <div style={{
+        marginTop: 10, padding: "7px 9px",
+        background: "var(--bg-subtle)", border: "1px solid var(--border)",
+        borderRadius: "var(--radius)",
+        fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.5,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{
+            width: 6, height: 6, borderRadius: 999,
+            background: status?.valid ? "var(--success)" : "var(--danger)",
+          }} />
+          <span>{status?.valid ? "可呼叫 /v1/agents" : status?.error || "尚未驗證"}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---- Settings modal --------------------------------------------------------
+function SettingsModal({
+  open, tab, setTab, onClose,
+  user, apiKey, apiKeyStatus, onSaveApiKey, agents,
+}) {
+  return (
+    <Modal open={open} onClose={onClose} title="設定" subtitle="runtime 偏好與帳號" width={620}>
+      <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 20 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {[
+            { id: "general", label: "一般",       icon: <IconSettings size={13} /> },
+            { id: "apikey",  label: "API Key",    icon: <IconKey      size={13} /> },
+            { id: "privacy", label: "隱私 / 信任", icon: <IconShield   size={13} /> },
+            { id: "account", label: "帳號",        icon: <IconUser     size={13} /> },
+            { id: "about",   label: "關於",        icon: <AnilaGlyph   size={13} /> },
+          ].map((t) => (
+            <button key={t.id} onClick={() => setTab(t.id)} style={{
+              display: "flex", alignItems: "center", gap: 8,
+              padding: "7px 10px", fontSize: 13,
+              background: tab === t.id ? "var(--bg-subtle)" : "transparent",
+              border: "1px solid " + (tab === t.id ? "var(--border)" : "transparent"),
+              borderRadius: "var(--radius)",
+              color: "var(--fg)", textAlign: "left", cursor: "pointer",
+            }}>
+              {t.icon}{t.label}
+            </button>
+          ))}
+        </div>
+        <div>
+          {tab === "general" && (
+            <div style={{ display: "grid", gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>預設 agent</div>
+                <div style={{ fontSize: 11, color: "var(--fg-muted)", marginTop: 4 }}>
+                  目前由 /v1/agents 動態載入，共 {Math.max(agents.length - 1, 0)} 個可用 agent。
+                  切換預設 agent 請從主介面的 agent selector 進行。
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--fg-muted)" }}>
+                加密模式由 agent 設定（requires_encryption）或後端 meta 決定，使用者無法手動切換。
+              </div>
+            </div>
+          )}
+
+          {tab === "apikey" && (
+            <ApiKeyTab
+              apiKey={apiKey}
+              status={apiKeyStatus}
+              onSaveApiKey={onSaveApiKey}
+            />
+          )}
+
+          {tab === "privacy" && (
+            <div style={{ display: "grid", gap: 14, fontSize: 13 }}>
+              <div>
+                <div style={{ fontWeight: 500, marginBottom: 4 }}>敏感資訊處理</div>
+                <div style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.6 }}>
+                  實際遮罩在 CSP proxy 層執行。UI 只在送出前提示；無法關閉後端的審計與遮罩。
+                </div>
+              </div>
+              <div>
+                <div style={{ fontWeight: 500, marginBottom: 4 }}>加密對話</div>
+                <div style={{ fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.6 }}>
+                  若指定的 agent 為加密模型（requires_encryption=true），此對話會自動鎖為機密：
+                  禁止複製、禁止分享，且加上稽核浮水印。此狀態無法由使用者解除。
+                </div>
+              </div>
+            </div>
+          )}
+
+          {tab === "account" && (
+            <div style={{ fontSize: 13 }}>
+              <div style={{ marginBottom: 4 }}><b>{user?.username}</b></div>
+              <div style={{ color: "var(--fg-muted)", fontSize: 12 }}>
+                role: {user?.role || "user"} · auth: {user?.auth_source || "csp"}
+              </div>
+            </div>
+          )}
+
+          {tab === "about" && (
+            <div style={{ fontSize: 13, lineHeight: 1.7 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                <AnilaGlyph size={24} />
+                <div style={{ fontSize: 16, fontWeight: 600 }}>ANILA Runtime Client</div>
+              </div>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-muted)" }}>
+                v0.2.0 · trust + multi-agent + collab
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function ApiKeyTab({ apiKey, status, onSaveApiKey }) {
+  const [val, setVal] = useState(apiKey || "");
+  const [show, setShow] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  async function save() {
+    setBusy(true);
+    setMsg("");
+    try {
+      await onSaveApiKey(val);
+      setMsg("✓ 已儲存");
+    } catch (error) {
+      setMsg(error.message || "API Key 驗證失敗");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 500 }}>CSP API Key</div>
+        <div style={{ fontSize: 11, color: "var(--fg-muted)", marginBottom: 6 }}>
+          ANILA 使用 CSP 發的 API Key 做 runtime 呼叫。格式 sk-…
+        </div>
+        <Input
+          type={show ? "text" : "password"}
+          value={val}
+          onChange={(e) => { setVal(e.target.value); setMsg(""); }}
+          leftIcon={<IconKey size={13} />}
+          rightEl={
+            <IconButton onClick={() => setShow((s) => !s)}>
+              {show ? <IconEyeOff /> : <IconEye />}
+            </IconButton>
+          }
+        />
+        <div style={{ display: "flex", gap: 6, marginTop: 8, alignItems: "center" }}>
+          <Button size="sm" variant="primary" onClick={save} disabled={busy || !val}>
+            {busy ? "驗證中…" : "儲存"}
+          </Button>
+          <span style={{
+            fontSize: 11,
+            color: msg.startsWith("✓") ? "var(--success)" : "var(--fg-muted)",
+          }}>
+            {msg || (status?.valid ? `目前狀態：已驗證 · ${maskApiKey(apiKey)}` : status?.error || "尚未驗證")}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---- Root App (protected) --------------------------------------------------
+const DEFAULT_TWEAKS = {
+  accent: "#0b7285",
+  dark: false,
+  density: 18,
+  sansFamily: "Noto Sans TC",
+  monoFamily: "JetBrains Mono",
+  agentSwitcherPosition: "bottom",
+  traceStyle: "collapsible",
+};
+
+function resolveInitialTweaks() {
+  const globalTweaks =
+    typeof window !== "undefined" ? window.ANILA_TWEAKS : null;
+  return { ...DEFAULT_TWEAKS, ...(globalTweaks || {}) };
+}
+
+export default function App() {
+  const { user } = useAuth();
+  const [tweaks, setTweaks] = useState(resolveInitialTweaks);
+  const [tweaksOpen, setTweaksOpen] = useState(false);
+
+  useEffect(() => {
+    applyTweaks(tweaks);
+    if (typeof window !== "undefined") {
+      window.ANILA_TWEAKS = tweaks;
+    }
+  }, [tweaks]);
+
+  useEffect(() => {
+    const onMessage = (e) => {
+      if (e.data?.type === "__activate_edit_mode") setTweaksOpen(true);
+      if (e.data?.type === "__deactivate_edit_mode") setTweaksOpen(false);
+    };
+    window.addEventListener("message", onMessage);
+    try {
+      window.parent?.postMessage({ type: "__edit_mode_available" }, "*");
+    } catch {
+      // ignore — not embedded
+    }
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
+  return (
+    <ChatRuntime
+      user={user}
+      tweaks={tweaks}
+      setTweaks={setTweaks}
+      tweaksOpen={tweaksOpen}
+      setTweaksOpen={setTweaksOpen}
+    />
+  );
+}

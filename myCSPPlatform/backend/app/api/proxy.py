@@ -119,6 +119,10 @@ async def chat_completions(
     # Try agent first, fallback to model_registry
     agent = _resolve_agent(db, api_key, model_name)
     if agent:
+        agent_requires_encryption = bool(
+            getattr(agent, "requires_encryption", False)
+            or getattr(getattr(agent, "base_model", None), "requires_encryption", False)
+        )
         if stream:
             return StreamingResponse(
                 proxy_stream(
@@ -133,6 +137,7 @@ async def chat_completions(
                     model_name=agent.name,
                     conversation_id=conversation_id,
                     trace_id=trace_id,
+                    requires_encryption=agent_requires_encryption,
                 ),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -150,14 +155,16 @@ async def chat_completions(
                 resp = await client.post(target, json=body, headers=headers)
                 resp.raise_for_status()
                 payload = resp.json()
-                payload.setdefault(
-                    "anila_meta",
-                    build_default_anila_meta(
+                existing_meta = payload.get("anila_meta")
+                if not existing_meta:
+                    payload["anila_meta"] = build_default_anila_meta(
                         agent.name,
                         detail=f"CSP proxy -> {target}",
                         latency_ms=int((time.time() - started_at) * 1000),
-                    ),
-                )
+                        classified=agent_requires_encryption,
+                    )
+                elif agent_requires_encryption and isinstance(existing_meta, dict):
+                    existing_meta["classified"] = True
                 return payload
         except httpx.HTTPStatusError as e:
             raise _HTTPException(status_code=e.response.status_code, detail=str(e))
@@ -165,6 +172,7 @@ async def chat_completions(
             raise _HTTPException(status_code=502, detail=f"Agent 呼叫失敗: {e}")
 
     model = _resolve_model(db, api_key, model_name)
+    model_requires_encryption = bool(getattr(model, "requires_encryption", False))
     if stream:
         target_url = (
             f"{model.endpoint_url.rstrip('/')}/v2/chat/completions"
@@ -184,6 +192,7 @@ async def chat_completions(
                 model_name=model.name,
                 conversation_id=conversation_id,
                 trace_id=trace_id,
+                requires_encryption=model_requires_encryption,
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -197,6 +206,7 @@ async def chat_completions(
         endpoint_path="/v1/chat/completions",
         conversation_id=conversation_id,
         trace_id=trace_id,
+        requires_encryption=model_requires_encryption,
     )
 
 

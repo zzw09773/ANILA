@@ -162,7 +162,15 @@ def build_default_anila_meta(
     *,
     detail: str,
     latency_ms: int | None = None,
+    classified: bool = False,
 ) -> dict:
+    """Build an anila_meta skeleton used when the downstream omits one.
+
+    The ``classified`` flag is a one-way latch propagated from the resolved
+    model/agent's ``requires_encryption`` attribute. Downstreams that set
+    ``classified=true`` in their own ``anila.meta`` are authoritative; this
+    default only fills the baseline when nothing is emitted.
+    """
     return {
         "trace_id": f"trace-{int(time.time() * 1000)}",
         "trace": [
@@ -178,7 +186,7 @@ def build_default_anila_meta(
         "handoff_chain": [],
         "follow_ups": [],
         "latency_ms": latency_ms,
-        "classified": False,
+        "classified": bool(classified),
     }
 
 
@@ -205,6 +213,7 @@ async def proxy_request(
     inject_identity: bool = False,
     conversation_id: Optional[str] = None,
     trace_id: Optional[str] = None,
+    requires_encryption: bool = False,
 ) -> dict:
     """Forward request to model backend with exponential backoff retry."""
     timeout = _get_timeout(model.model_type)
@@ -275,12 +284,18 @@ async def proxy_request(
                     prompt_tokens,
                     completion_tokens,
                 )
-            if not result.get("anila_meta"):
+            existing_meta = result.get("anila_meta")
+            if not existing_meta:
                 result["anila_meta"] = build_default_anila_meta(
                     model.name,
                     detail=f"Proxy -> {target_url}",
                     latency_ms=duration_ms,
+                    classified=requires_encryption,
                 )
+            elif requires_encryption and isinstance(existing_meta, dict):
+                # One-way latch: upgrade to classified when the resolved model
+                # requires encryption, even if the downstream omitted the flag.
+                existing_meta["classified"] = True
 
             # Enqueue usage record (non-blocking)
             await enqueue_usage(
@@ -349,6 +364,7 @@ async def proxy_stream(
     model_name: str | None = None,
     conversation_id: Optional[str] = None,
     trace_id: Optional[str] = None,
+    requires_encryption: bool = False,
 ) -> AsyncIterator[str]:
     """Stream SSE response from a downstream backend through CSP proxy.
 
@@ -379,6 +395,27 @@ async def proxy_stream(
                 if resp.status_code >= 400:
                     raise HTTPException(status_code=resp.status_code,
                                         detail=f"下游回應錯誤: {resp.status_code}")
+                def _emit(block: str, event_name: str | None, data: str | None) -> str:
+                    """Render a block, upgrading anila.meta.classified if required."""
+                    if (
+                        event_name == "anila.meta"
+                        and data
+                        and requires_encryption
+                    ):
+                        try:
+                            parsed = json.loads(data)
+                            if isinstance(parsed, dict) and not parsed.get("classified"):
+                                parsed["classified"] = True
+                                return (
+                                    "event: anila.meta\n"
+                                    + "data: "
+                                    + json.dumps(parsed, ensure_ascii=False)
+                                    + "\n\n"
+                                )
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                    return block + "\n\n"
+
                 block_lines: list[str] = []
                 async for line in resp.aiter_lines():
                     if line == "":
@@ -403,7 +440,7 @@ async def proxy_stream(
                                             completion_tokens = usage.get("completion_tokens", 0)
                                     except (json.JSONDecodeError, KeyError):
                                         pass
-                                yield block + "\n\n"
+                                yield _emit(block, event_name, data)
                             block_lines = []
                         continue
                     block_lines.append(line)
@@ -428,7 +465,7 @@ async def proxy_stream(
                                     completion_tokens = usage.get("completion_tokens", 0)
                             except (json.JSONDecodeError, KeyError):
                                 pass
-                        yield block + "\n\n"
+                        yield _emit(block, event_name, data)
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="下游請求逾時")
     except httpx.ConnectError:
@@ -452,6 +489,7 @@ async def proxy_stream(
                 model_name or target_url,
                 detail=f"Proxy stream -> {target_url}",
                 latency_ms=duration_ms,
+                classified=requires_encryption,
             ),
             ensure_ascii=False,
         ) + "\n\n"
