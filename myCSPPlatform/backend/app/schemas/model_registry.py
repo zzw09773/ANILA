@@ -32,6 +32,7 @@ class ModelResponse(BaseModel):
     endpoint_url: str
     api_version: str
     is_active: bool
+    is_router_primary: bool = False
     health_status: str
     health_checked_at: datetime | None
     description: str | None

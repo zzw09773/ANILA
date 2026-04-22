@@ -19,11 +19,17 @@ import { apiKeyRequest, config } from "./runtime/api.js";
 import { useAuth, useLogoutRedirect } from "./runtime/auth.jsx";
 import { streamChatCompletion } from "./runtime/sse.js";
 import { latchConversationWithMeta } from "./runtime/classified.js";
+import { relativeLabel } from "./runtime/time.js";
 import {
   listConversations as apiListConversations,
   createConversation as apiCreateConversation,
   getConversation as apiGetConversation,
+  updateConversationTitle as apiUpdateConversationTitle,
+  deleteConversation as apiDeleteConversation,
   appendMessage as apiAppendMessage,
+  rateMessage as apiRateMessage,
+  editUserMessage as apiEditUserMessage,
+  updateMessage as apiUpdateMessage,
   createShare as apiCreateShare,
   buildShareUrl,
   uploadAttachment as apiUploadAttachment,
@@ -98,10 +104,6 @@ function makeConversationTitle(text) {
 
 function nowIso() {
   return new Date().toISOString();
-}
-
-function relativeLabel() {
-  return "剛剛";
 }
 
 function maskApiKey(apiKey) {
@@ -333,6 +335,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     const meta = msg.metadata || {};
     return {
       id: `srv-${msg.id}`,
+      dbId: msg.id,
       role: msg.role,
       text: msg.content || "",
       trace: meta.trace || [],
@@ -344,6 +347,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       traceId: msg.trace_id || meta.trace_id,
       latencyMs: msg.latency_ms,
       routedAgentId: meta.routed_agent_id || null,
+      rating: msg.rating || null,
+      reasoning: meta.reasoning || null,
       streaming: false,
       attachments: (msg.attachments || []).map((a) => ({
         id: a.reference_id,
@@ -486,6 +491,211 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     );
   }
 
+  // ---- rename / delete a conversation from the sidebar ----
+  async function handleRenameConv(convId, nextTitle) {
+    const trimmed = (nextTitle || "").trim();
+    if (!trimmed) return;
+    // Optimistic local update for instant UI; rollback on backend failure.
+    const prev = conversations.find((c) => c.id === convId);
+    updateConv(convId, { title: trimmed });
+    if (typeof convId !== "number") return; // local-only row (offline)
+    try {
+      await apiUpdateConversationTitle(authRequest, convId, trimmed);
+    } catch (err) {
+      if (prev) updateConv(convId, { title: prev.title });
+      setRuntimeError(err.message || "重新命名失敗");
+    }
+  }
+
+  async function handleDeleteConv(convId) {
+    const target = conversations.find((c) => c.id === convId);
+    if (!target) return;
+    if (!window.confirm(`確定要刪除「${target.title}」？此動作無法復原。`)) return;
+    const prev = conversations;
+    setConversations((cs) => cs.filter((c) => c.id !== convId));
+    if (selectedConvId === convId) {
+      setSelectedConvId(null);
+    }
+    setMessagesByConv((prev2) => {
+      const { [convId]: _, ...rest } = prev2;
+      return rest;
+    });
+    if (typeof convId !== "number") return;
+    try {
+      await apiDeleteConversation(authRequest, convId);
+    } catch (err) {
+      setConversations(prev);
+      setRuntimeError(err.message || "刪除對話失敗");
+    }
+  }
+
+  // ---- title auto-generation (runs once after the first turn lands) ----
+  // Uses the same LLM pathway that answered the question, via the router's
+  // primary model, so no extra admin configuration is required.
+  async function generateConversationTitle(convId, userText, assistantText, effectiveTarget) {
+    if (typeof convId !== "number") return;
+    if (!apiKey) return;
+    const baseUrl =
+      effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
+    const systemPrompt =
+      "你是對話標題產生器。閱讀以下 Q&A，回覆一個不超過 15 個繁體中文字的標題，" +
+      "只能輸出標題本身，不要加引號、冒號、標點或其他說明。";
+    const userPrompt = `使用者：${userText}\n助理：${assistantText}`;
+    try {
+      const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: effectiveTarget,
+          stream: false,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+        }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const raw = data?.choices?.[0]?.message?.content || "";
+      // Strip whitespace, quotes, trailing punctuation; clamp length.
+      const cleaned = raw
+        .trim()
+        .replace(/^["「『](.+)["」』]$/s, "$1")
+        .replace(/[。．.!！?？,、]+$/, "")
+        .slice(0, 30);
+      if (!cleaned) return;
+      updateConv(convId, { title: cleaned });
+      try {
+        await apiUpdateConversationTitle(authRequest, convId, cleaned);
+      } catch {
+        // Non-fatal: title stays local if persist fails.
+      }
+    } catch {
+      // Title generation is best-effort; silent failure is fine.
+    }
+  }
+
+  // ---- edit a user message + re-run the chat turn ----
+  async function handleEditUser(userMsg, nextText) {
+    const trimmed = (nextText || "").trim();
+    if (!trimmed || trimmed === userMsg.text) return;
+    if (!apiKey) {
+      setRuntimeError("尚未設定 CSP API Key，請先到設定 → API Key 設定。");
+      return;
+    }
+    const convId = userMsg.conversationId;
+    const existing = messagesByConv[convId] || [];
+    const idx = existing.findIndex((m) => m.id === userMsg.id);
+    if (idx < 0) return;
+
+    const effectiveTarget = selectedAgentId;
+    const baseUrl =
+      effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
+
+    // Local: truncate after the edited user message and rewrite its text;
+    // create a fresh assistant placeholder so the stream fills in below.
+    const assistantId = makeId("a");
+    const assistantMsg = {
+      id: assistantId,
+      role: "assistant",
+      text: "",
+      trace: [],
+      citations: [],
+      followUps: [],
+      streaming: true,
+      routedAgentId: effectiveTarget,
+      conversationId: convId,
+      createdAt: nowIso(),
+      timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
+    };
+    setMessagesByConv((prev) => ({
+      ...prev,
+      [convId]: [
+        ...existing.slice(0, idx),
+        { ...existing[idx], text: trimmed },
+        assistantMsg,
+      ],
+    }));
+
+    // Backend: persist the edit + server-side truncate so a future reload
+    // matches the local state.
+    if (typeof convId === "number" && typeof userMsg.dbId === "number") {
+      try {
+        await apiEditUserMessage(authRequest, convId, userMsg.dbId, trimmed);
+      } catch (err) {
+        setRuntimeError(err.message || "訊息編輯儲存失敗");
+      }
+    }
+
+    // Re-run the chat turn with the new user text.
+    const payload = {
+      model: effectiveTarget,
+      messages: [{ role: "user", content: trimmed }],
+    };
+    let finalText = "";
+    let finalMeta = null;
+    try {
+      await streamChatCompletion({
+        url: `${baseUrl}/v1/chat/completions`,
+        apiKey,
+        payload,
+        onText: (acc) => {
+          finalText = acc;
+          updateMsg(convId, assistantId, { text: acc });
+        },
+        onTrace: (step) => {
+          setMessagesByConv((prev) => ({
+            ...prev,
+            [convId]: (prev[convId] || []).map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    trace: [...(m.trace || []), step],
+                    stageLabel: step.label,
+                    stage: (m.trace?.length ?? 0),
+                  }
+                : m,
+            ),
+          }));
+        },
+        onMeta: (meta) => {
+          finalMeta = meta;
+          applyMeta(convId, assistantId, effectiveTarget, meta);
+        },
+      });
+      updateMsg(convId, assistantId, { streaming: false });
+
+      if (typeof convId === "number") {
+        const agentNameForPersist =
+          agents.find((a) => a.id === effectiveTarget)?.name ||
+          String(effectiveTarget);
+        try {
+          const saved = await apiAppendMessage(authRequest, convId, {
+            role: "assistant",
+            content: finalText,
+            traceId: finalMeta?.trace_id,
+            latencyMs: finalMeta?.latency_ms,
+            agentName: agentNameForPersist,
+            metadata: finalMeta || null,
+          });
+          if (saved && typeof saved.id === "number") {
+            updateMsg(convId, assistantId, { dbId: saved.id });
+          }
+        } catch (persistError) {
+          setRuntimeError(persistError.message || "對話訊息儲存失敗");
+        }
+      }
+    } catch (error) {
+      updateMsg(convId, assistantId, {
+        streaming: false,
+        text: `請求失敗：${error.message || "unknown error"}`,
+      });
+    }
+  }
+
   function updateConversationAgent(conversationId, agentId) {
     const agentName = agents.find((a) => a.id === agentId)?.name || agentId;
     const encryption = agentRequiresEncryption(agentId);
@@ -532,6 +742,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       followUps: meta.follow_ups || [],
       latencyMs: meta.latency_ms,
       classified: meta.classified,
+      reasoning: meta.reasoning || null,
       routedAgentId: meta.handoff_chain?.at?.(-1)?.agent_id || agentId,
       stageLabel: meta.trace?.at?.(-1)?.label,
       conversationId: convId,
@@ -640,7 +851,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
             role: "user",
             content: text,
           });
-          await apiAppendMessage(authRequest, convId, {
+          const savedAssistant = await apiAppendMessage(authRequest, convId, {
             role: "assistant",
             content: finalText,
             traceId: finalMeta?.trace_id,
@@ -648,8 +859,25 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
             agentName: agentNameForPersist,
             metadata: finalMeta || null,
           });
+          // Capture DB id so thumbs-up/down can PUT to the backend.
+          if (savedAssistant && typeof savedAssistant.id === "number") {
+            updateMsg(convId, assistantId, { dbId: savedAssistant.id });
+          }
         } catch (persistError) {
           setRuntimeError(persistError.message || "對話訊息儲存失敗");
+        }
+
+        // Bump updatedAt so the sidebar re-sorts / re-labels with live time.
+        updateConv(convId, { updatedAt: nowIso() });
+
+        // First-turn auto title: fires once (only when the existing title was
+        // produced by the first-message truncator). Background task; silent
+        // failure is acceptable.
+        const convRow = conversations.find((c) => c.id === convId);
+        const looksLikeAutoTitle =
+          !convRow?.title || convRow.title === makeConversationTitle(text);
+        if (looksLikeAutoTitle && finalText) {
+          generateConversationTitle(convId, text, finalText, effectiveTarget);
         }
       }
     } catch (error) {
@@ -657,6 +885,212 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         streaming: false,
         text: `請求失敗：${error.message || "unknown error"}`,
       });
+    }
+  }
+
+  // ---- regenerate a single assistant message ----
+  // Finds the user message immediately before the target assistant message
+  // and re-runs the chat call, replacing the assistant message's text /
+  // trace in place. Caller API key permissions and routing target are
+  // inherited from the original turn.
+  async function regenerateMessage(assistantMsg) {
+    if (!apiKey) {
+      setRuntimeError("尚未設定 CSP API Key，請先到設定 → API Key 設定。");
+      return;
+    }
+    const convId = assistantMsg.conversationId;
+    const msgs = messagesByConv[convId] || [];
+    const idx = msgs.findIndex((m) => m.id === assistantMsg.id);
+    if (idx <= 0) return;
+    // Walk back to the nearest user message. Older conversations may contain
+    // runs of consecutive assistant rows (router handoff announcements, or
+    // legacy duplicates from the pre-fix regenerate path) between the user's
+    // prompt and the reply being regenerated.
+    let userIdx = idx - 1;
+    while (userIdx >= 0 && msgs[userIdx].role !== "user") {
+      userIdx -= 1;
+    }
+    if (userIdx < 0) {
+      setRuntimeError("找不到對應的使用者訊息，無法重試。");
+      return;
+    }
+    const prevUser = msgs[userIdx];
+
+    const effectiveTarget = assistantMsg.routedAgentId || selectedAgentId;
+    const baseUrl =
+      effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
+    const payload = {
+      model: effectiveTarget,
+      messages: [{ role: "user", content: prevUser.text }],
+    };
+
+    // Snapshot the current top-level fields into revisions[] so the user can
+    // flip back to the previous answer with the < / > pager. If this is the
+    // first regenerate we seed revisions with the original reply too.
+    const currentSnapshot = {
+      text: assistantMsg.text,
+      trace: assistantMsg.trace || [],
+      reasoning: assistantMsg.reasoning || null,
+      traceId: assistantMsg.traceId,
+      latencyMs: assistantMsg.latencyMs,
+      dbId: assistantMsg.dbId,
+      timestamp: assistantMsg.timestamp,
+    };
+    const existingRevs = Array.isArray(assistantMsg.revisions) && assistantMsg.revisions.length > 0
+      ? assistantMsg.revisions
+      : [currentSnapshot];
+    // Placeholder for the revision currently being streamed; we'll rewrite
+    // it on stream completion.
+    const nextRevs = [...existingRevs, { text: "", trace: [], reasoning: null }];
+    const nextActiveIdx = nextRevs.length - 1;
+
+    // Reset the target message to a streaming state so the UI re-animates.
+    updateMsg(convId, assistantMsg.id, {
+      text: "",
+      trace: [],
+      citations: [],
+      followUps: [],
+      streaming: true,
+      rating: null,
+      reasoning: null,
+      revisions: nextRevs,
+      activeRev: nextActiveIdx,
+      timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
+    });
+
+    let finalText = "";
+    let finalMeta = null;
+    try {
+      await streamChatCompletion({
+        url: `${baseUrl}/v1/chat/completions`,
+        apiKey,
+        payload,
+        onText: (acc) => {
+          finalText = acc;
+          updateMsg(convId, assistantMsg.id, { text: acc });
+        },
+        onTrace: (step) => {
+          setMessagesByConv((prev) => ({
+            ...prev,
+            [convId]: (prev[convId] || []).map((m) =>
+              m.id === assistantMsg.id
+                ? {
+                    ...m,
+                    trace: [...(m.trace || []), step],
+                    stageLabel: step.label,
+                    stage: (m.trace?.length ?? 0),
+                  }
+                : m,
+            ),
+          }));
+        },
+        onMeta: (meta) => {
+          finalMeta = meta;
+          applyMeta(convId, assistantMsg.id, effectiveTarget, meta);
+        },
+      });
+      // Freeze the finished revision into revisions[nextActiveIdx] so that
+      // switching back and forth after completion shows stable text/trace.
+      setMessagesByConv((prev) => ({
+        ...prev,
+        [convId]: (prev[convId] || []).map((m) => {
+          if (m.id !== assistantMsg.id) return m;
+          const revs = Array.isArray(m.revisions) ? [...m.revisions] : [];
+          revs[nextActiveIdx] = {
+            text: finalText,
+            trace: [...(m.trace || [])],
+            reasoning: m.reasoning || null,
+            traceId: finalMeta?.trace_id,
+            latencyMs: finalMeta?.latency_ms,
+            dbId: m.dbId,
+            timestamp: m.timestamp,
+          };
+          return { ...m, streaming: false, revisions: revs };
+        }),
+      }));
+
+      if (typeof convId === "number") {
+        const agentNameForPersist =
+          agents.find((a) => a.id === effectiveTarget)?.name ||
+          String(effectiveTarget);
+        try {
+          if (typeof assistantMsg.dbId === "number") {
+            // Replace the existing row in place — avoids piling up orphan
+            // assistant rows that trip the "no preceding user message" guard
+            // on reload.
+            await apiUpdateMessage(authRequest, convId, assistantMsg.dbId, {
+              content: finalText,
+              traceId: finalMeta?.trace_id,
+              latencyMs: finalMeta?.latency_ms,
+              agentName: agentNameForPersist,
+              metadata: finalMeta || null,
+            });
+          } else {
+            const savedAssistant = await apiAppendMessage(authRequest, convId, {
+              role: "assistant",
+              content: finalText,
+              traceId: finalMeta?.trace_id,
+              latencyMs: finalMeta?.latency_ms,
+              agentName: agentNameForPersist,
+              metadata: finalMeta || null,
+            });
+            if (savedAssistant && typeof savedAssistant.id === "number") {
+              updateMsg(convId, assistantMsg.id, { dbId: savedAssistant.id });
+            }
+          }
+        } catch (persistError) {
+          setRuntimeError(persistError.message || "重試訊息儲存失敗");
+        }
+      }
+    } catch (error) {
+      updateMsg(convId, assistantMsg.id, {
+        streaming: false,
+        text: `重試失敗：${error.message || "unknown error"}`,
+      });
+    }
+  }
+
+  // ---- switch between assistant-reply revisions (< 2/3 > pager) ----
+  // Revisions only live in client state (not persisted), so on reload the
+  // message collapses back to the latest active revision. Swapping pulls
+  // the fields out of revisions[i] back into the top-level mirror so the
+  // rest of the render path (MarkdownView, thinking fold, rating) doesn't
+  // need to know about revisions at all.
+  function switchRevision(assistantMsg, nextIdx) {
+    const convId = assistantMsg.conversationId;
+    const revs = Array.isArray(assistantMsg.revisions) ? assistantMsg.revisions : [];
+    if (nextIdx < 0 || nextIdx >= revs.length) return;
+    if (nextIdx === assistantMsg.activeRev) return;
+    const target = revs[nextIdx] || {};
+    updateMsg(convId, assistantMsg.id, {
+      text: target.text || "",
+      trace: target.trace || [],
+      reasoning: target.reasoning || null,
+      traceId: target.traceId,
+      latencyMs: target.latencyMs,
+      timestamp: target.timestamp,
+      activeRev: nextIdx,
+    });
+  }
+
+  // ---- thumbs up / down ----
+  // Optimistically toggles rating locally for instant feedback, then PUTs to
+  // the CSP rating endpoint. On failure the optimistic value is rolled back
+  // so the UI never drifts from persisted state.
+  async function handleRate(targetMsg, nextRating) {
+    const convId = targetMsg.conversationId;
+    const prevRating = targetMsg.rating ?? null;
+    updateMsg(convId, targetMsg.id, { rating: nextRating });
+
+    if (typeof convId !== "number" || typeof targetMsg.dbId !== "number") {
+      setRuntimeError("此訊息尚未儲存至後端，反饋僅保留於本地。");
+      return;
+    }
+    try {
+      await apiRateMessage(authRequest, convId, targetMsg.dbId, nextRating);
+    } catch (err) {
+      updateMsg(convId, targetMsg.id, { rating: prevRating });
+      setRuntimeError(err.message || "反饋儲存失敗");
     }
   }
 
@@ -921,6 +1355,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         onCreateFolder={createFolder}
         onDeleteFolder={deleteFolder}
         onOpenTagEditor={(id, patch) => updateConv(id, patch)}
+        onRenameConv={handleRenameConv}
+        onDeleteConv={handleDeleteConv}
       />
 
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
@@ -1115,7 +1551,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                           agents={agents}
                           conversationId={selectedConvId}
                           classified={isClassified}
-                          onRegenerate={() => {}}
+                          onRegenerate={regenerateMessage}
+                          onRate={handleRate}
+                          onEditUser={handleEditUser}
+                          onSwitchRevision={switchRevision}
                           onOpenCitation={onOpenCitation}
                           onPickFollowUp={(q) => sendMessage(q, [], {})}
                         />

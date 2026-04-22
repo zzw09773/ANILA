@@ -87,3 +87,7 @@ class AllowedModelItem(BaseModel):
 
 class UserAllowedModelsUpdate(BaseModel):
     model_ids: list[int]
+
+
+class UserAllowedAgentsUpdate(BaseModel):
+    agent_ids: list[int]

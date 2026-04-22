@@ -1,6 +1,9 @@
-from fastapi import Depends, HTTPException, status
+import hmac
+
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
+from app.config import settings
 from app.database import get_db
 from app.models.user import User
 from app.utils.security import (
@@ -84,3 +87,25 @@ def require_admin(current_user: User = Depends(get_current_user)) -> User:
             detail="需要管理員權限",
         )
     return current_user
+
+
+def verify_service_token(
+    x_csp_service_token: str | None = Header(default=None, alias="X-CSP-Service-Token"),
+) -> None:
+    """Auth dependency for internal service-to-service endpoints.
+
+    Router / agents present the shared token in the X-CSP-Service-Token header.
+    Uses constant-time comparison and refuses when the server has no token
+    configured (fail closed).
+    """
+    expected = settings.CSP_SERVICE_TOKEN or ""
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="服務權杖未設定",
+        )
+    if not x_csp_service_token or not hmac.compare_digest(x_csp_service_token, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="服務權杖無效",
+        )

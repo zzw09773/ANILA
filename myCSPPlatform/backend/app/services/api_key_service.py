@@ -67,7 +67,22 @@ def validate_api_key(db: Session, raw_key: str) -> ApiKey | None:
 
 
 def check_model_permission(db: Session, api_key_id: int, model_id: int) -> bool:
-    """Check if an API key has permission to use a model."""
+    """Check if an API key has permission to use a model.
+
+    Admin-designated "router primary" models are treated as platform-default
+    and open to every active user — the per-api-key whitelist still applies to
+    all other models. This lets admin designate one shared LLM for the ANILA
+    main route without hand-granting every user key individually.
+    """
+    model = (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.id == model_id, ModelRegistry.is_active.is_(True))
+        .first()
+    )
+    if model is None:
+        return False
+    if getattr(model, "is_router_primary", False):
+        return True
     perm = (
         db.query(ApiKeyModelPermission)
         .filter(

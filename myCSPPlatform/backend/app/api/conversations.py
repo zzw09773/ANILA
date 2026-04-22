@@ -47,9 +47,31 @@ class MessageOut(BaseModel):
     model_name: Optional[str]
     agent_name: Optional[str]
     metadata: Optional[dict] = Field(None, alias="metadata_")
+    rating: Optional[str] = None
     created_at: datetime
     attachments: list[AttachmentOut] = []
     model_config = {"from_attributes": True, "populate_by_name": True}
+
+
+class MessageRatingUpdate(BaseModel):
+    rating: Optional[str] = Field(None, pattern="^(up|down)$")
+
+
+class MessageEdit(BaseModel):
+    content: str = Field(..., min_length=1)
+
+
+class MessageUpdate(BaseModel):
+    """In-place patch payload for ``PUT /messages/{id}``.
+
+    Only the supplied fields are written; ``None`` leaves them untouched.
+    """
+    content: Optional[str] = None
+    trace_id: Optional[str] = None
+    latency_ms: Optional[int] = None
+    model_name: Optional[str] = None
+    agent_name: Optional[str] = None
+    metadata: Optional[dict] = None
 
 
 class ConversationOut(BaseModel):
@@ -163,6 +185,59 @@ def append_message(
         agent_name=body.agent_name,
         metadata=body.metadata,
     )
+
+
+@router.put("/{conv_id}/messages/{message_id}/rating", response_model=MessageOut)
+def set_message_rating(
+    conv_id: int,
+    message_id: int,
+    body: MessageRatingUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Record thumbs-up/down on an assistant message, or clear with rating=null."""
+    return svc.set_message_rating(db, conv_id, message_id, current_user, body.rating)
+
+
+@router.put("/{conv_id}/messages/{message_id}", response_model=MessageOut)
+def update_message(
+    conv_id: int,
+    message_id: int,
+    body: MessageUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Patch an existing message (in-place, non-truncating).
+
+    Primarily used by the assistant regenerate flow to replace the old reply
+    without piling up orphan assistant rows in the DB.
+    """
+    return svc.update_message_content(
+        db, conv_id, message_id, current_user,
+        content=body.content,
+        trace_id=body.trace_id,
+        latency_ms=body.latency_ms,
+        model_name=body.model_name,
+        agent_name=body.agent_name,
+        metadata=body.metadata,
+    )
+
+
+@router.put("/{conv_id}/messages/{message_id}/edit", response_model=MessageOut)
+def edit_user_message(
+    conv_id: int,
+    message_id: int,
+    body: MessageEdit,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Rewrite a user message and drop everything after it.
+
+    The caller is expected to immediately re-send the chat turn with the new
+    content; returning the updated message lets the UI reconcile dbId / rating
+    without a separate fetch.
+    """
+    return svc.edit_user_message(db, conv_id, message_id, current_user, body.content)
 
 
 # ── Classified policy ─────────────────────────────────────────────────────────

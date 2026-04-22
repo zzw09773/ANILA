@@ -9,7 +9,7 @@ from app.models.token_usage import TokenUsage
 from app.models.user import User
 from app.schemas.model_registry import ModelCreate, ModelUpdate, ModelResponse
 from app.services.audit_service import log_audit_event
-from app.services.auth_service import get_current_user, require_admin
+from app.services.auth_service import get_current_user, require_admin, verify_service_token
 
 router = APIRouter(prefix="/api/models", tags=["模型管理"])
 
@@ -23,6 +23,7 @@ def _build_response(model: ModelRegistry) -> dict:
         "endpoint_url": model.endpoint_url,
         "api_version": model.api_version,
         "is_active": model.is_active,
+        "is_router_primary": bool(model.is_router_primary),
         "health_status": model.health_status,
         "health_checked_at": model.health_checked_at,
         "description": model.description,
@@ -80,6 +81,102 @@ def create_model(
         resource_type="model",
         resource_id=model.id,
         detail=f"建立模型「{model.display_name}」",
+        commit=True,
+    )
+    return _build_response(model)
+
+
+@router.get("/router-primary")
+def get_router_primary(
+    _: None = Depends(verify_service_token),
+    db: Session = Depends(get_db),
+):
+    """Return the LLM designated as ANILA Router's primary model.
+
+    Service-to-service endpoint consumed by anila-core-router at boot and on
+    TTL refresh. Returns 404 when no primary is set so the caller can fall
+    back to a clear "no model available" error instead of silently using the
+    wrong upstream.
+    """
+    model = (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.is_router_primary.is_(True))
+        .first()
+    )
+    if not model:
+        raise HTTPException(status_code=404, detail="尚未指定 ANILA 主路由模型")
+    if not model.is_active:
+        raise HTTPException(status_code=409, detail="已指定的主路由模型已被停用")
+    return {
+        "id": model.id,
+        "name": model.name,
+        "display_name": model.display_name,
+        "model_type": model.model_type,
+        "endpoint_url": model.endpoint_url,
+        "api_version": model.api_version,
+        "health_status": model.health_status,
+    }
+
+
+@router.post("/{model_id}/set-router-primary", response_model=ModelResponse)
+def set_router_primary(
+    model_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Mark a model as ANILA Router's primary LLM (clearing any previous one)."""
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    if model.model_type != "llm":
+        raise HTTPException(status_code=400, detail="僅 LLM 類型可設為 ANILA 主路由模型")
+    if not model.is_active:
+        raise HTTPException(status_code=400, detail="已停用的模型不能設為主路由模型")
+
+    # Clear previous primary first to avoid violating the partial unique index.
+    (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.is_router_primary.is_(True), ModelRegistry.id != model_id)
+        .update({"is_router_primary": False}, synchronize_session=False)
+    )
+    model.is_router_primary = True
+    db.commit()
+    db.refresh(model)
+    log_audit_event(
+        db,
+        actor=admin,
+        action="set_router_primary",
+        resource_type="model",
+        resource_id=model.id,
+        detail=f"設為 ANILA 主路由模型: {model.display_name}",
+        commit=True,
+    )
+    return _build_response(model)
+
+
+@router.post("/{model_id}/unset-router-primary", response_model=ModelResponse)
+def unset_router_primary(
+    model_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Remove the ANILA Router primary designation from a model."""
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    if not model.is_router_primary:
+        return _build_response(model)
+
+    model.is_router_primary = False
+    db.commit()
+    db.refresh(model)
+    log_audit_event(
+        db,
+        actor=admin,
+        action="unset_router_primary",
+        resource_type="model",
+        resource_id=model.id,
+        detail=f"取消 ANILA 主路由模型: {model.display_name}",
         commit=True,
     )
     return _build_response(model)

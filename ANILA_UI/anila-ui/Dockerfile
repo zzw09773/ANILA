@@ -8,8 +8,10 @@ ARG VITE_ROUTER_BASE_URL=http://localhost:9000
 ENV VITE_CSP_BASE_URL=${VITE_CSP_BASE_URL}
 ENV VITE_ROUTER_BASE_URL=${VITE_ROUTER_BASE_URL}
 
-COPY package.json package-lock.json ./
-RUN npm ci
+COPY package.json package-lock.json* ./
+# Use `npm install` (not `npm ci`) so package.json edits pull new deps without
+# forcing a host-side lockfile regeneration. Only runs during image build.
+RUN npm install --no-audit --no-fund
 
 COPY . ./
 RUN npm run build

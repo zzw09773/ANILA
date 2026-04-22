@@ -17,3 +17,9 @@ export const purgeModel = (id) =>
 
 export const triggerHealthCheck = (id) =>
   client.post(`/api/models/${id}/health-check`)
+
+export const setRouterPrimary = (id) =>
+  client.post(`/api/models/${id}/set-router-primary`)
+
+export const unsetRouterPrimary = (id) =>
+  client.post(`/api/models/${id}/unset-router-primary`)

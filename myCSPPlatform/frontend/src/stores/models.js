@@ -1,6 +1,9 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { listModels, createModel, updateModel, deleteModel, purgeModel, triggerHealthCheck } from '../api/models'
+import {
+  listModels, createModel, updateModel, deleteModel, purgeModel, triggerHealthCheck,
+  setRouterPrimary, unsetRouterPrimary,
+} from '../api/models'
 
 export const useModelsStore = defineStore('models', () => {
   const models = ref([])
@@ -42,5 +45,18 @@ export const useModelsStore = defineStore('models', () => {
     return data
   }
 
-  return { models, loading, fetchModels, create, update, remove, purge, checkHealth }
+  async function setPrimary(id) {
+    await setRouterPrimary(id)
+    await fetchModels()
+  }
+
+  async function unsetPrimary(id) {
+    await unsetRouterPrimary(id)
+    await fetchModels()
+  }
+
+  return {
+    models, loading, fetchModels, create, update, remove, purge, checkHealth,
+    setPrimary, unsetPrimary,
+  }
 })

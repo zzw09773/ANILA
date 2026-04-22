@@ -22,6 +22,7 @@
             <th class="px-4 py-3 text-left text-gray-600 font-medium">端點</th>
             <th class="px-4 py-3 text-left text-gray-600 font-medium">API 版本</th>
             <th class="px-4 py-3 text-left text-gray-600 font-medium">啟用</th>
+            <th class="px-4 py-3 text-left text-gray-600 font-medium">主路由</th>
             <th v-if="authStore.isAdmin" class="px-4 py-3 text-left text-gray-600 font-medium">操作</th>
           </tr>
         </thead>
@@ -59,12 +60,39 @@
                 {{ model.is_active ? '啟用' : '停用' }}
               </span>
             </td>
-            <td v-if="authStore.isAdmin" class="px-4 py-3 space-x-2">
+            <td class="px-4 py-3">
+              <span
+                v-if="model.is_router_primary"
+                class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800"
+                title="ANILA Router 會使用此模型作為主路由 LLM"
+              >
+                ★ 主路由
+              </span>
+              <span v-else class="text-xs text-gray-300">—</span>
+            </td>
+            <td v-if="authStore.isAdmin" class="px-4 py-3 space-x-2 whitespace-nowrap">
               <button @click="openEditModal(model)" class="text-indigo-600 hover:text-indigo-800 text-xs">
                 編輯
               </button>
               <button @click="handleHealthCheck(model.id)" class="text-blue-600 hover:text-blue-800 text-xs">
                 檢查
+              </button>
+              <button
+                v-if="model.model_type === 'llm' && !model.is_router_primary"
+                :disabled="!model.is_active || settingPrimaryId === model.id"
+                @click="handleSetPrimary(model.id)"
+                class="text-amber-600 hover:text-amber-800 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+                :title="model.is_active ? '設為 ANILA 主路由模型' : '需先啟用模型'"
+              >
+                {{ settingPrimaryId === model.id ? '設定中…' : '設為主路由' }}
+              </button>
+              <button
+                v-else-if="model.is_router_primary"
+                :disabled="settingPrimaryId === model.id"
+                @click="handleUnsetPrimary(model.id)"
+                class="text-gray-500 hover:text-gray-700 text-xs disabled:opacity-40"
+              >
+                取消主路由
               </button>
               <button
                 v-if="model.is_active"
@@ -83,7 +111,7 @@
             </td>
           </tr>
           <tr v-if="modelsStore.models.length === 0">
-            <td :colspan="authStore.isAdmin ? 7 : 6" class="px-4 py-8 text-center text-gray-400">
+            <td :colspan="authStore.isAdmin ? 8 : 7" class="px-4 py-8 text-center text-gray-400">
               尚無已註冊模型
             </td>
           </tr>
@@ -188,6 +216,7 @@ const authStore = useAuthStore()
 const showModal = ref(false)
 const editingId = ref(null)
 const purgingId = ref(null)
+const settingPrimaryId = ref(null)
 
 const defaultForm = () => ({
   name: '', display_name: '', model_type: 'llm', endpoint_url: '',
@@ -258,6 +287,29 @@ async function handleSubmit() {
 async function handleHealthCheck(id) {
   const result = await modelsStore.checkHealth(id)
   alert(`健康檢查結果: ${result.status}\n${result.detail}`)
+}
+
+async function handleSetPrimary(id) {
+  settingPrimaryId.value = id
+  try {
+    await modelsStore.setPrimary(id)
+  } catch (e) {
+    alert(e.response?.data?.detail || '設定失敗')
+  } finally {
+    settingPrimaryId.value = null
+  }
+}
+
+async function handleUnsetPrimary(id) {
+  if (!confirm('取消後 ANILA Router 將沒有主路由模型，直到你重新指定一個。確定要取消嗎？')) return
+  settingPrimaryId.value = id
+  try {
+    await modelsStore.unsetPrimary(id)
+  } catch (e) {
+    alert(e.response?.data?.detail || '取消失敗')
+  } finally {
+    settingPrimaryId.value = null
+  }
 }
 
 async function handleDeactivate(id) {

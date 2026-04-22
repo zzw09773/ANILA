@@ -2,7 +2,9 @@
 // ESM port of ANILA_templete/anila-ui/src/chat.jsx, with backend-driven classification:
 // no user-controlled "lock/unlock" icons here.
 
-import React, { useState, useMemo, useRef } from "react";
+import React, { useState, useMemo, useRef, useEffect } from "react";
+import { relativeLabel } from "./runtime/time.js";
+import { MarkdownView, extractThinkTags } from "./markdown.jsx";
 
 import {
   AgentPill,
@@ -17,6 +19,7 @@ import {
   IconAt,
   IconBook,
   IconChevDown,
+  IconChevLeft,
   IconChevRight,
   IconChevUp,
   IconCheck,
@@ -30,14 +33,18 @@ import {
   IconLock,
   IconLogout,
   IconMessage,
+  IconMore,
   IconPanelR,
   IconPaperclip,
+  IconPencil,
   IconPlus,
   IconRefresh,
   IconRoute,
   IconSearch,
   IconSend,
   IconSettings,
+  IconSpark,
+  IconTrash,
   IconStar,
   IconTag,
   IconThumbDn,
@@ -127,26 +134,84 @@ export const MessageBubble = ({
   conversationId,
   classified,
   onRegenerate,
+  onRate,
+  onEditUser,
+  onSwitchRevision,
   onOpenCitation,
   onPickFollowUp,
 }) => {
+  const [copied, setCopied] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(msg.text || "");
   const routedAgent = agents.find((a) => a.id === msg.routedAgentId);
 
   if (msg.role === "user") {
+    const canEdit = !classified && typeof onEditUser === "function";
+    const startEdit = () => {
+      setDraft(msg.text || "");
+      setEditing(true);
+    };
+    const cancelEdit = () => {
+      setEditing(false);
+      setDraft(msg.text || "");
+    };
+    const saveEdit = () => {
+      const next = draft.trim();
+      if (!next || next === msg.text) {
+        cancelEdit();
+        return;
+      }
+      setEditing(false);
+      onEditUser(msg, next);
+    };
+
     return (
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 20 }}>
-        <div style={{
-          position: "relative",
-          maxWidth: "78%",
-          background: "var(--bg-subtle)",
-          border: "1px solid var(--border)",
-          padding: "10px 14px",
-          borderRadius: "var(--radius-lg)",
-          borderTopRightRadius: 4,
-          fontSize: 14, lineHeight: 1.65,
-          whiteSpace: "pre-wrap",
-        }}>
+        <div
+          style={{
+            position: "relative",
+            maxWidth: "78%",
+            background: "var(--bg-subtle)",
+            border: "1px solid var(--border)",
+            padding: "10px 14px",
+            borderRadius: "var(--radius-lg)",
+            borderTopRightRadius: 4,
+            fontSize: 14, lineHeight: 1.65,
+            whiteSpace: "pre-wrap",
+          }}
+          onMouseEnter={(e) => {
+            const btn = e.currentTarget.querySelector("[data-edit-btn]");
+            if (btn) btn.style.opacity = "1";
+          }}
+          onMouseLeave={(e) => {
+            const btn = e.currentTarget.querySelector("[data-edit-btn]");
+            if (btn && !editing) btn.style.opacity = "0";
+          }}
+        >
           {classified && <ClassifiedCorner />}
+          {canEdit && !editing && (
+            <button
+              data-edit-btn
+              title="編輯"
+              onClick={startEdit}
+              style={{
+                position: "absolute",
+                top: -10,
+                right: -8,
+                width: 22, height: 22,
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+                background: "var(--bg-elev)",
+                border: "1px solid var(--border)",
+                borderRadius: 999,
+                color: "var(--fg-muted)",
+                cursor: "pointer",
+                opacity: 0,
+                transition: "opacity 120ms ease",
+              }}
+            >
+              <IconPencil size={11} />
+            </button>
+          )}
           {msg.attachments && msg.attachments.length > 0 && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
               {msg.attachments.map((a, i) => (
@@ -179,15 +244,103 @@ export const MessageBubble = ({
               })}
             </div>
           )}
-          <RenderRedactedText text={msg.text} hits={msg.piiHits} />
+          {editing ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 320 }}>
+              <textarea
+                autoFocus
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    cancelEdit();
+                  }
+                  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                    e.preventDefault();
+                    saveEdit();
+                  }
+                }}
+                style={{
+                  resize: "vertical",
+                  minHeight: 72,
+                  background: "var(--bg-elev)",
+                  border: "1px solid var(--border)",
+                  borderRadius: "var(--radius)",
+                  color: "var(--fg)",
+                  padding: "8px 10px",
+                  fontSize: 14,
+                  lineHeight: 1.55,
+                  fontFamily: "inherit",
+                  outline: "none",
+                }}
+              />
+              <div style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 6,
+              }}>
+                <span style={{ fontSize: 10, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>
+                  Esc 取消 · ⌘/Ctrl+Enter 送出
+                </span>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button
+                    onClick={cancelEdit}
+                    style={{
+                      padding: "4px 10px",
+                      fontSize: 12,
+                      background: "transparent",
+                      border: "1px solid var(--border)",
+                      borderRadius: "var(--radius)",
+                      color: "var(--fg-muted)",
+                      cursor: "pointer",
+                    }}
+                  >取消</button>
+                  <button
+                    onClick={saveEdit}
+                    disabled={!draft.trim() || draft.trim() === msg.text}
+                    style={{
+                      padding: "4px 10px",
+                      fontSize: 12,
+                      background: "var(--accent)",
+                      border: "1px solid var(--accent)",
+                      borderRadius: "var(--radius)",
+                      color: "var(--bg)",
+                      cursor: !draft.trim() || draft.trim() === msg.text ? "not-allowed" : "pointer",
+                      opacity: !draft.trim() || draft.trim() === msg.text ? 0.5 : 1,
+                    }}
+                  >送出</button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <RenderRedactedText text={msg.text} hits={msg.piiHits} />
+          )}
         </div>
       </div>
     );
   }
 
   // assistant
-  const copyText = () => navigator.clipboard?.writeText(msg.text);
+  const copyText = () => {
+    const text = msg.text ?? "";
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); } finally { document.body.removeChild(ta); }
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
   const canCopy = !classified;
+  const isStreaming = !!msg.streaming;
+  const rating = msg.rating || null;
 
   return (
     <div style={{ position: "relative", marginBottom: 24 }}>
@@ -222,20 +375,81 @@ export const MessageBubble = ({
         />
       )}
 
-      <div style={{
-        fontSize: 14.5, lineHeight: 1.75,
-        whiteSpace: "pre-wrap",
-        color: "var(--fg)",
-      }}>
-        {renderTextWithCitations(msg.text, msg.citations, onOpenCitation)}
-        {msg.streaming && msg.text && (
-          <span style={{
-            display: "inline-block", width: 7, height: 15,
-            background: "var(--fg)", marginLeft: 2, verticalAlign: "text-bottom",
-            animation: "anila-blink 1s steps(2) infinite",
-          }}/>
-        )}
-      </div>
+      {(() => {
+        // Combine reasoning from two channels so gpt-oss-20b (native field) and
+        // models that inline <think>...</think> both fold correctly.
+        const { thinking: inlineThinking, body: cleanBody } = extractThinkTags(msg.text);
+        const combinedReasoning = [msg.reasoning, inlineThinking]
+          .filter((s) => typeof s === "string" && s.trim().length > 0)
+          .join("\n\n");
+        const showReasoning = combinedReasoning.length > 0;
+        const displayBody = inlineThinking ? cleanBody : msg.text;
+        return (
+          <>
+            {showReasoning && (
+              <details
+                style={{
+                  marginBottom: 10,
+                  background: "var(--bg-subtle)",
+                  border: "1px solid var(--border)",
+                  borderRadius: "var(--radius)",
+                  fontSize: 12,
+                  color: "var(--fg-muted)",
+                }}
+              >
+                <summary
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "6px 10px",
+                    cursor: "pointer",
+                    fontFamily: "var(--font-mono)",
+                    listStyle: "none",
+                  }}
+                >
+                  <IconSpark size={12} style={{ color: "var(--fg-subtle)" }} />
+                  {msg.streaming && !msg.reasoning ? "思考中…" : "思考過程"}
+                  <span style={{ color: "var(--fg-subtle)", fontSize: 11 }}>
+                    （{combinedReasoning.length} 字）
+                  </span>
+                </summary>
+                <div
+                  style={{
+                    padding: "6px 12px 10px",
+                    borderTop: "1px solid var(--border)",
+                    whiteSpace: "pre-wrap",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 11.5,
+                    lineHeight: 1.6,
+                    color: "var(--fg-subtle)",
+                    maxHeight: 360,
+                    overflowY: "auto",
+                  }}
+                >
+                  {combinedReasoning}
+                </div>
+              </details>
+            )}
+            <div style={{
+              fontSize: 14.5, lineHeight: 1.75,
+              whiteSpace: "pre-wrap",
+              color: "var(--fg)",
+            }}>
+              {msg.citations && msg.citations.length > 0
+                ? renderTextWithCitations(displayBody, msg.citations, onOpenCitation)
+                : <MarkdownView text={displayBody} />}
+              {msg.streaming && msg.text && (
+                <span style={{
+                  display: "inline-block", width: 7, height: 15,
+                  background: "var(--fg)", marginLeft: 2, verticalAlign: "text-bottom",
+                  animation: "anila-blink 1s steps(2) infinite",
+                }}/>
+              )}
+            </div>
+          </>
+        );
+      })()}
 
       {!msg.streaming && (
         <FollowUpSuggestions
@@ -266,15 +480,94 @@ export const MessageBubble = ({
       {!msg.streaming && msg.text && (
         <div style={{ display: "flex", gap: 2, marginTop: 10, color: "var(--fg-subtle)", alignItems: "center" }}>
           {canCopy ? (
-            <IconButton title="複製" onClick={copyText}><IconCopy /></IconButton>
+            <IconButton
+              title={copied ? "已複製" : "複製"}
+              onClick={copyText}
+              style={copied ? { color: "var(--success)" } : undefined}
+            >
+              {copied ? <IconCheck /> : <IconCopy />}
+            </IconButton>
           ) : (
             <IconButton title="機密對話禁止複製" disabled style={{ opacity: 0.4, cursor: "not-allowed" }}>
               <IconLock />
             </IconButton>
           )}
-          <IconButton title="重新產生" onClick={() => onRegenerate?.(msg)}><IconRefresh /></IconButton>
-          <IconButton title="有用"><IconThumbUp /></IconButton>
-          <IconButton title="沒幫助"><IconThumbDn /></IconButton>
+          <IconButton
+            title={isStreaming ? "回應產生中…" : "重新產生"}
+            onClick={() => !isStreaming && onRegenerate?.(msg)}
+            disabled={isStreaming}
+            style={isStreaming ? { opacity: 0.4, cursor: "not-allowed" } : undefined}
+          >
+            <IconRefresh />
+          </IconButton>
+          <IconButton
+            title={rating === "up" ? "取消標記" : "標記為有用"}
+            onClick={() => onRate?.(msg, rating === "up" ? null : "up")}
+            active={rating === "up"}
+            style={rating === "up" ? { color: "var(--accent)" } : undefined}
+          >
+            <IconThumbUp />
+          </IconButton>
+          <IconButton
+            title={rating === "down" ? "取消標記" : "標記為沒幫助"}
+            onClick={() => onRate?.(msg, rating === "down" ? null : "down")}
+            active={rating === "down"}
+            style={rating === "down" ? { color: "var(--danger)" } : undefined}
+          >
+            <IconThumbDn />
+          </IconButton>
+          {Array.isArray(msg.revisions) && msg.revisions.length > 1 && (() => {
+            const total = msg.revisions.length;
+            const current = typeof msg.activeRev === "number" ? msg.activeRev : total - 1;
+            const canPrev = current > 0 && !isStreaming;
+            const canNext = current < total - 1 && !isStreaming;
+            return (
+              <span
+                title={`此回覆有 ${total} 個版本，可左右切換檢視`}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 2,
+                  marginLeft: 4,
+                  padding: "0 4px",
+                  background: "var(--bg-subtle)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 999,
+                  fontSize: 11,
+                  fontFamily: "var(--font-mono)",
+                  color: "var(--fg-muted)",
+                }}
+              >
+                <IconButton
+                  title="上一個版本"
+                  disabled={!canPrev}
+                  onClick={() => canPrev && onSwitchRevision?.(msg, current - 1)}
+                  style={{
+                    width: 20, height: 20,
+                    opacity: canPrev ? 1 : 0.35,
+                    cursor: canPrev ? "pointer" : "not-allowed",
+                  }}
+                >
+                  <IconChevLeft size={11} />
+                </IconButton>
+                <span style={{ padding: "0 4px", minWidth: 32, textAlign: "center" }}>
+                  {current + 1} / {total}
+                </span>
+                <IconButton
+                  title="下一個版本"
+                  disabled={!canNext}
+                  onClick={() => canNext && onSwitchRevision?.(msg, current + 1)}
+                  style={{
+                    width: 20, height: 20,
+                    opacity: canNext ? 1 : 0.35,
+                    cursor: canNext ? "pointer" : "not-allowed",
+                  }}
+                >
+                  <IconChevRight size={11} />
+                </IconButton>
+              </span>
+            );
+          })()}
           <div style={{ flex: 1 }} />
           <AuditWatermark
             traceId={msg.traceId}
@@ -602,11 +895,21 @@ export const Sidebar = ({
   onCreateFolder,
   onDeleteFolder,
   onOpenTagEditor,
+  onRenameConv,
+  onDeleteConv,
 }) => {
   const [tab, setTab] = useState("chats");
   const [query, setQuery] = useState("");
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
+
+  // Tick every 30s so "剛剛 → 1 分鐘前 → ..." actually progresses while the
+  // tab stays open. One interval per mounted Sidebar — negligible cost.
+  const [, setTimeTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTimeTick((n) => n + 1), 30000);
+    return () => clearInterval(id);
+  }, []);
 
   const filtered = conversations.filter((c) => {
     if (folder === "starred" && !c.starred) return false;
@@ -865,7 +1168,7 @@ export const Sidebar = ({
                       </div>
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3, flexWrap: "wrap" }}>
-                      <span style={{ fontSize: 11, color: "var(--fg-subtle)" }}>{c.ts || c.updatedLabel}</span>
+                      <span style={{ fontSize: 11, color: "var(--fg-subtle)" }}>{relativeLabel(c.updatedAt || c.createdAt)}</span>
                       {agent && <AgentPill agent={agent} size="sm" />}
                       {(c.tags || []).slice(0, 2).map((t) => (
                         <span key={t} style={{
@@ -879,7 +1182,7 @@ export const Sidebar = ({
                       ))}
                     </div>
                   </button>
-                  <div style={{ position: "absolute", right: 4, top: 5 }}>
+                  <div style={{ position: "absolute", right: 4, top: 5, display: "flex", gap: 2 }}>
                     <Dropdown align="right" width={260} trigger={() => (
                       <IconButton title="標籤 / 資料夾" style={{ width: 22, height: 22, opacity: 0.65 }}>
                         <IconTag size={11} />
@@ -892,6 +1195,33 @@ export const Sidebar = ({
                           onUpdate={(patch) => onOpenTagEditor(c.id, patch)}
                           close={close}
                         />
+                      )}
+                    </Dropdown>
+                    <Dropdown align="right" width={160} trigger={() => (
+                      <IconButton title="更多" style={{ width: 22, height: 22, opacity: 0.65 }}>
+                        <IconMore size={11} />
+                      </IconButton>
+                    )}>
+                      {(close) => (
+                        <>
+                          <MenuItem
+                            leftIcon={<IconPencil size={12} />}
+                            onClick={() => {
+                              close();
+                              const next = window.prompt("新的對話名稱", c.title);
+                              if (next !== null) onRenameConv?.(c.id, next);
+                            }}
+                          >重新命名</MenuItem>
+                          <MenuItem
+                            leftIcon={<IconTrash size={12} style={{ color: "var(--danger)" }} />}
+                            onClick={() => {
+                              close();
+                              onDeleteConv?.(c.id);
+                            }}
+                          >
+                            <span style={{ color: "var(--danger)" }}>刪除對話</span>
+                          </MenuItem>
+                        </>
                       )}
                     </Dropdown>
                   </div>

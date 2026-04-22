@@ -24,6 +24,8 @@ class Message(Base):
     agent_name = Column(String(100), nullable=True)
     # Extra structured data (citations, tool calls, etc.)
     metadata_ = Column("metadata", JSONValue, nullable=True)
+    # User feedback on assistant messages ('up' / 'down' / None)
+    rating = Column(String(8), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
     conversation = relationship("Conversation", back_populates="messages")

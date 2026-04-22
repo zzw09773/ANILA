@@ -13,6 +13,7 @@ from app.schemas.user import (
     AdminResetPassword,
     AllowedModelItem,
     UserAllowedModelsUpdate,
+    UserAllowedAgentsUpdate,
 )
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user, require_admin
@@ -248,7 +249,7 @@ def get_user_allowed_agents(
 @router.put("/{user_id}/allowed-agents")
 def update_user_allowed_agents(
     user_id: int,
-    agent_ids: list[int],
+    request: UserAllowedAgentsUpdate,
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -256,7 +257,7 @@ def update_user_allowed_agents(
     if not user:
         raise HTTPException(status_code=404, detail="使用者不存在")
 
-    new_ids = set(agent_ids)
+    new_ids = set(request.agent_ids)
     if new_ids:
         valid_count = db.query(Agent).filter(Agent.id.in_(new_ids)).count()
         if valid_count != len(new_ids):

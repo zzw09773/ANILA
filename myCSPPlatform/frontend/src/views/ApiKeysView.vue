@@ -289,7 +289,18 @@ async function handleCreate() {
 }
 
 function copyKey() {
-  navigator.clipboard.writeText(createdFullKey.value)
+  const text = createdFullKey.value
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text)
+  } else {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    try { document.execCommand('copy') } finally { document.body.removeChild(ta) }
+  }
   copied.value = true
   hasCopied.value = true
   setTimeout(() => { copied.value = false }, 2000)

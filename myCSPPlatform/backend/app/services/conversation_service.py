@@ -94,6 +94,123 @@ def append_message(
     return msg
 
 
+def edit_user_message(
+    db: Session,
+    conv_id: int,
+    message_id: int,
+    user: User,
+    content: str,
+) -> Message:
+    """Rewrite a user message's content and drop every message after it.
+
+    Used by the ANILA UI "edit" action: user revises a prompt, the UI then
+    re-sends it. Trailing messages (original assistant reply plus any further
+    turns) become stale the moment the edit lands, so we delete them in the
+    same transaction — otherwise a reload would show the new user message
+    followed by an orphaned, out-of-date assistant reply.
+    """
+    conv = get_conversation(db, conv_id, user)
+    msg = (
+        db.query(Message)
+        .filter(Message.id == message_id, Message.conversation_id == conv.id)
+        .first()
+    )
+    if msg is None:
+        raise HTTPException(status_code=404, detail="訊息不存在")
+    if msg.role != "user":
+        raise HTTPException(status_code=400, detail="僅使用者訊息可編輯")
+    msg.content = content
+    (
+        db.query(Message)
+        .filter(
+            Message.conversation_id == conv.id,
+            Message.created_at > msg.created_at,
+        )
+        .delete(synchronize_session=False)
+    )
+    conv.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(msg)
+    return msg
+
+
+def update_message_content(
+    db: Session,
+    conv_id: int,
+    message_id: int,
+    user: User,
+    *,
+    content: Optional[str] = None,
+    trace_id: Optional[str] = None,
+    latency_ms: Optional[int] = None,
+    model_name: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> Message:
+    """In-place update of an existing message (used by Regenerate).
+
+    Unlike ``edit_user_message`` (which rewrites a user message and drops
+    every later turn), this path is non-truncating — it's meant for the
+    "regenerate assistant reply" flow where we want to *replace* the body
+    of the same row, keeping created_at / rating / id stable so reload
+    order and sidebar labels don't drift.
+    """
+    conv = get_conversation(db, conv_id, user)
+    msg = (
+        db.query(Message)
+        .filter(Message.id == message_id, Message.conversation_id == conv.id)
+        .first()
+    )
+    if msg is None:
+        raise HTTPException(status_code=404, detail="訊息不存在")
+    if content is not None:
+        msg.content = content
+    if trace_id is not None:
+        msg.trace_id = trace_id
+    if latency_ms is not None:
+        msg.latency_ms = latency_ms
+    if model_name is not None:
+        msg.model_name = model_name
+    if agent_name is not None:
+        msg.agent_name = agent_name
+    if metadata is not None:
+        msg.metadata_ = metadata
+    conv.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(msg)
+    return msg
+
+
+def set_message_rating(
+    db: Session,
+    conv_id: int,
+    message_id: int,
+    user: User,
+    rating: Optional[str],
+) -> Message:
+    """Record thumbs-up/down feedback on an assistant message.
+
+    Access is gated by conversation ownership (reusing get_conversation's
+    _check_access). Only assistant messages are ratable — rating a user/system
+    message is a client bug and 400s out. ``rating=None`` clears an existing
+    rating, letting the UI toggle off.
+    """
+    conv = get_conversation(db, conv_id, user)
+    msg = (
+        db.query(Message)
+        .filter(Message.id == message_id, Message.conversation_id == conv.id)
+        .first()
+    )
+    if msg is None:
+        raise HTTPException(status_code=404, detail="訊息不存在")
+    if msg.role != "assistant":
+        raise HTTPException(status_code=400, detail="僅助理訊息可評分")
+    msg.rating = rating
+    db.commit()
+    db.refresh(msg)
+    return msg
+
+
 # ── Classified policy ─────────────────────────────────────────────────────────
 
 def classify_conversation(db: Session, conv_id: int, user: User) -> Conversation:

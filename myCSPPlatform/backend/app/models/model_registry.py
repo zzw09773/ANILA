@@ -14,6 +14,7 @@ class ModelRegistry(Base):
     endpoint_url = Column(String(500), nullable=False)
     api_version = Column(String(10), default="v1")  # 'v1' / 'v2'
     is_active = Column(Boolean, default=True)
+    is_router_primary = Column(Boolean, nullable=False, default=False)
     health_status = Column(String(20), default="offline")  # 'online' / 'connecting' / 'offline'
     health_checked_at = Column(DateTime, nullable=True)
     description = Column(Text, nullable=True)

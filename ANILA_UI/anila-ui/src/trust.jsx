@@ -315,7 +315,7 @@ export const AuditWatermark = ({ traceId, conversationId, latencyMs, timestamp }
       }}>
       <span>trace: {traceId}</span>
       <span style={{ opacity: 0.5 }}>·</span>
-      {conversationId && <><span>conv: {conversationId.slice(0, 10)}</span><span style={{ opacity: 0.5 }}>·</span></>}
+      {conversationId && <><span>conv: {String(conversationId).slice(0, 10)}</span><span style={{ opacity: 0.5 }}>·</span></>}
       {latencyMs != null && <><span>{latencyMs}ms</span><span style={{ opacity: 0.5 }}>·</span></>}
       <span style={{ color: copied ? "var(--success)" : "var(--fg-subtle)" }}>
         {copied ? "✓ copied" : "copy"}

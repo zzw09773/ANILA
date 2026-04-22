@@ -14,7 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY anila-core/pyproject.toml ./
 COPY anila-core/src ./src/
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir "."
+    pip install --no-cache-dir "." && \
+    pip install --no-cache-dir "pydantic-settings>=2.0,<3.0"
 
 # ── Runtime stage ──────────────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime

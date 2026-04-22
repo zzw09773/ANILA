@@ -60,6 +60,41 @@ export function appendMessage(authRequest, convId, payload) {
   });
 }
 
+// Record thumbs-up/down feedback. rating = "up" | "down" | null (null clears).
+export function rateMessage(authRequest, convId, messageId, rating) {
+  return authRequest(`/api/conversations/${convId}/messages/${messageId}/rating`, {
+    method: "PUT",
+    body: JSON.stringify({ rating }),
+  });
+}
+
+// Rewrite a user message's content and drop every message after it.
+// The caller must re-trigger a chat turn to produce a new assistant reply.
+export function editUserMessage(authRequest, convId, messageId, content) {
+  return authRequest(`/api/conversations/${convId}/messages/${messageId}/edit`, {
+    method: "PUT",
+    body: JSON.stringify({ content }),
+  });
+}
+
+// In-place patch of an existing message (non-truncating). Used by assistant
+// regenerate to replace the old reply without creating a new DB row.
+export function updateMessage(authRequest, convId, messageId, patch) {
+  const body = {
+    content: patch.content ?? null,
+    trace_id: patch.traceId ?? null,
+    latency_ms:
+      typeof patch.latencyMs === "number" ? patch.latencyMs : null,
+    model_name: patch.modelName ?? null,
+    agent_name: patch.agentName ?? null,
+    metadata: patch.metadata ?? null,
+  };
+  return authRequest(`/api/conversations/${convId}/messages/${messageId}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
 // ── Shares ──────────────────────────────────────────────────────────────────
 
 export function listShares(authRequest, convId) {
