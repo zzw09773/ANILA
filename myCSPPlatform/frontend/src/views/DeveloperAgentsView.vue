@@ -33,6 +33,81 @@
       {{ feedback.message }}
     </div>
 
+    <div class="rounded-xl border border-indigo-200 bg-indigo-50/50">
+      <button
+        type="button"
+        @click="showGuide = !showGuide"
+        class="flex w-full items-center justify-between px-4 py-3 text-left"
+      >
+        <div>
+          <div class="text-sm font-semibold text-indigo-900">開發者指南</div>
+          <div class="mt-0.5 text-xs text-indigo-700/80">
+            Fork 樣板 → 部署 agent → 註冊 → 等待核准。展開看步驟與 endpoint 合約。
+          </div>
+        </div>
+        <span class="text-xs text-indigo-700">{{ showGuide ? '收合 ▲' : '展開 ▼' }}</span>
+      </button>
+      <div v-if="showGuide" class="space-y-4 border-t border-indigo-200 px-4 py-4 text-sm text-gray-700">
+        <div>
+          <div class="font-medium text-gray-900">1. 取得樣板並部署</div>
+          <ol class="mt-2 list-decimal space-y-1 pl-5 text-xs text-gray-600">
+            <li>按上方「下載官方模板」解壓 <code class="rounded bg-gray-100 px-1">anila-core-template.zip</code>。</li>
+            <li>改 <code class="rounded bg-gray-100 px-1">api.py</code> 的 <code class="rounded bg-gray-100 px-1">retrieve_context()</code> 與 <code class="rounded bg-gray-100 px-1">SYSTEM_PROMPT</code> 為你的業務邏輯。</li>
+            <li>設定 <code class="rounded bg-gray-100 px-1">.env</code>（LLM / CSP 端點），執行 <code class="rounded bg-gray-100 px-1">docker compose up -d</code>。</li>
+            <li>自測：<code class="rounded bg-gray-100 px-1">curl http://&lt;host&gt;:24786/health</code> 要回 <code class="rounded bg-gray-100 px-1">{"status":"ok"}</code>。</li>
+          </ol>
+        </div>
+        <div>
+          <div class="font-medium text-gray-900">2. 你的 agent 必須實作的 endpoint</div>
+          <div class="mt-2 overflow-x-auto">
+            <table class="w-full text-xs">
+              <thead class="text-gray-500">
+                <tr class="border-b border-indigo-200">
+                  <th class="py-1.5 text-left font-medium">方法</th>
+                  <th class="py-1.5 text-left font-medium">路徑</th>
+                  <th class="py-1.5 text-left font-medium">用途</th>
+                </tr>
+              </thead>
+              <tbody class="text-gray-700">
+                <tr class="border-b border-indigo-100">
+                  <td class="py-1.5 font-mono">GET</td>
+                  <td class="py-1.5 font-mono">/health</td>
+                  <td class="py-1.5">CSP discovery / 健康探針（公開）</td>
+                </tr>
+                <tr class="border-b border-indigo-100">
+                  <td class="py-1.5 font-mono">GET</td>
+                  <td class="py-1.5 font-mono">/v1/models</td>
+                  <td class="py-1.5">回報可用模型 ID（需 s2s token）</td>
+                </tr>
+                <tr>
+                  <td class="py-1.5 font-mono">POST</td>
+                  <td class="py-1.5 font-mono">/v1/chat/completions</td>
+                  <td class="py-1.5">主要推論端點，OpenAI-compat（需 s2s token）</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          <div class="font-medium text-gray-900">3. 註冊到這個頁面</div>
+          <p class="mt-2 text-xs text-gray-600">
+            按右上「註冊 Agent」，填名稱、endpoint URL、router 描述（≥ 24 字，用自然語言說明能解決什麼問題）。
+            送出後狀態為 <span class="rounded bg-yellow-50 px-1.5 py-0.5 text-yellow-700">pending</span>，等待 admin 核准；
+            核准後 Router 會自動 discover，前端對話即可選到你的 agent。
+          </p>
+        </div>
+        <div class="rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs text-gray-600">
+          完整流程、輸出格式範例、常見送審失敗原因請見
+          <a
+            href="https://github.com/zzw09773/anila/blob/main/docs/developer-guide.md"
+            target="_blank"
+            rel="noopener"
+            class="font-medium text-indigo-700 hover:text-indigo-900"
+          >docs/developer-guide.md</a>。
+        </div>
+      </div>
+    </div>
+
     <div class="grid gap-3 md:grid-cols-4">
       <div class="rounded-xl border border-gray-200 bg-white p-4">
         <div class="text-xs uppercase tracking-[0.16em] text-gray-400">Total</div>
@@ -253,8 +328,60 @@
             <li>{{ form.name ? '✓' : '○' }} 已填 Agent 名稱</li>
             <li>{{ /^https?:\/\//.test(form.endpoint_url) ? '✓' : '○' }} Endpoint 使用 http/https URL</li>
             <li>{{ form.description_for_router.trim().length >= 24 ? '✓' : '○' }} Router 描述至少 24 字元</li>
+            <li>○ 你的 endpoint 已實作 <code class="rounded bg-white px-1">GET /health</code>、<code class="rounded bg-white px-1">POST /v1/chat/completions</code>（OpenAI-compat SSE）</li>
           </ul>
         </div>
+
+        <details class="mt-4 rounded-xl border border-gray-200 bg-white">
+          <summary class="cursor-pointer px-4 py-3 text-sm font-medium text-gray-800">
+            你的 agent 該回傳什麼？（OpenAI-compat 輸出格式）
+          </summary>
+          <div class="space-y-3 border-t border-gray-200 px-4 py-3 text-xs text-gray-600">
+            <div>
+              <div class="font-medium text-gray-800">GET /health</div>
+              <pre class="mt-1 overflow-x-auto rounded-lg bg-gray-950 p-3 text-[11px] text-gray-100">{
+  "status": "ok",
+  "model":  "google/gemma4",
+  "rag":    true
+}</pre>
+            </div>
+            <div>
+              <div class="font-medium text-gray-800">POST /v1/chat/completions（stream: true — SSE）</div>
+              <pre class="mt-1 overflow-x-auto rounded-lg bg-gray-950 p-3 text-[11px] text-gray-100">data: {"id":"chatcmpl-abc","object":"chat.completion.chunk",
+ "created":1735689600,"model":"rag/google/gemma4",
+ "choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-abc","object":"chat.completion.chunk",
+ "created":1735689600,"model":"rag/google/gemma4",
+ "choices":[{"index":0,"delta":{"content":"根據《員工手冊》"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-abc","object":"chat.completion.chunk",
+ "created":1735689600,"model":"rag/google/gemma4",
+ "choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]</pre>
+              <p class="mt-2 text-[11px] text-gray-500">
+                Response header 要 <code class="rounded bg-gray-100 px-1">Content-Type: text/event-stream</code>，以 <code class="rounded bg-gray-100 px-1">data: [DONE]</code> 結尾。
+                思考塊 / RAG 軌跡可選用 <code class="rounded bg-gray-100 px-1">delta.reasoning_content</code>。
+              </p>
+            </div>
+            <div>
+              <div class="font-medium text-gray-800">POST /v1/chat/completions（stream: false — 一次回）</div>
+              <pre class="mt-1 overflow-x-auto rounded-lg bg-gray-950 p-3 text-[11px] text-gray-100">{
+  "id":      "chatcmpl-abc123",
+  "object":  "chat.completion",
+  "created": 1735689600,
+  "model":   "rag/google/gemma4",
+  "choices": [{
+    "index": 0,
+    "message": { "role": "assistant", "content": "根據《員工手冊 §3.2》……" },
+    "finish_reason": "stop"
+  }],
+  "usage": { "prompt_tokens": 128, "completion_tokens": 64, "total_tokens": 192 }
+}</pre>
+            </div>
+          </div>
+        </details>
 
         <div class="mt-6 flex justify-end gap-3">
           <button
@@ -397,6 +524,7 @@ const authStore = useAuthStore()
 
 const agents = ref([])
 const loading = ref(false)
+const showGuide = ref(false)
 const showRegisterModal = ref(false)
 const showDetailModal = ref(false)
 const detailAgent = ref(null)
