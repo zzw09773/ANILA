@@ -43,6 +43,19 @@ class Settings(BaseSettings):
     # Site URL (for external access, used by platform links)
     SITE_URL: str = "http://localhost"
 
+    # CORS allowlist. Comma-separated origins the browser is allowed to
+    # send credentialed requests from. Required when serving the SPA from
+    # a different origin than the API (e.g. Vite dev server on :5173).
+    # Wildcard "*" is not allowed together with credentials, so this must
+    # be an explicit list in any deployment that uses the cookie flow.
+    ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:3001,http://localhost:80,http://localhost,https://localhost,https://localhost:4443"
+
+    # Mark session cookies as Secure (HTTPS-only). Defaults to True; set
+    # to False in local HTTP dev / test harnesses where cookies must
+    # traverse http:// (the TestClient, a bare dev loop without nginx,
+    # etc). In production behind nginx TLS termination leave this True.
+    COOKIE_SECURE: bool = True
+
     # Static files
     STATIC_DIR: str = str(Path(__file__).parent / "static")
 

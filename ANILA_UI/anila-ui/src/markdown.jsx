@@ -227,28 +227,21 @@ function Table({ children, ...props }) {
 }
 
 // Component overrides for react-markdown.
+//
+// Block-level margin/spacing lives in the global `.anila-msg-body …` rules
+// (index.html) so a) we can target nested list contexts with a specificity
+// strong enough to beat default CommonMark "loose list" <p> wrapping, and
+// b) unit-level tweaks don't require rebuilding the JS bundle. Only the
+// h4 renderer keeps an inline rule because it needs a muted color that
+// doesn't exist as a standalone CSS class.
 const components = {
-  p: ({ node, ...props }) => (
-    <p style={{ margin: "0 0 8px 0", lineHeight: 1.65 }} {...props} />
-  ),
-  ul: ({ node, ordered, ...props }) => (
-    <ul style={{ margin: "0 0 8px 0", paddingLeft: 22 }} {...props} />
-  ),
-  ol: ({ node, ordered, ...props }) => (
-    <ol style={{ margin: "0 0 8px 0", paddingLeft: 22 }} {...props} />
-  ),
-  li: ({ node, ordered, ...props }) => (
-    <li style={{ margin: "2px 0" }} {...props} />
-  ),
-  h1: ({ node, ...props }) => (
-    <h1 style={{ fontSize: 18, fontWeight: 600, margin: "12px 0 6px" }} {...props} />
-  ),
-  h2: ({ node, ...props }) => (
-    <h2 style={{ fontSize: 16, fontWeight: 600, margin: "12px 0 6px" }} {...props} />
-  ),
-  h3: ({ node, ...props }) => (
-    <h3 style={{ fontSize: 14, fontWeight: 600, margin: "10px 0 4px" }} {...props} />
-  ),
+  p: ({ node, ...props }) => <p {...props} />,
+  ul: ({ node, ordered, ...props }) => <ul {...props} />,
+  ol: ({ node, ordered, ...props }) => <ol {...props} />,
+  li: ({ node, ordered, ...props }) => <li {...props} />,
+  h1: ({ node, ...props }) => <h1 {...props} />,
+  h2: ({ node, ...props }) => <h2 {...props} />,
+  h3: ({ node, ...props }) => <h3 {...props} />,
   h4: ({ node, ...props }) => (
     <h4 style={{ fontSize: 13, fontWeight: 600, margin: "10px 0 4px", color: "var(--fg-muted)" }} {...props} />
   ),

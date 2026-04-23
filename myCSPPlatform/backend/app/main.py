@@ -14,6 +14,7 @@ from app.api.conversations import router as conversations_router
 from app.api.attachments import router as attachments_router
 from app.api.handoffs import router as handoffs_router
 from app.api.public_share import router as public_share_router
+from app.middleware.csrf import CsrfMiddleware
 
 
 def _run_alembic_upgrade() -> None:
@@ -92,13 +93,27 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+_allowed_origins = [
+    origin.strip()
+    for origin in (settings.ALLOWED_ORIGINS or "").split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    # Browsers reject "*" with allow_credentials=True. The config default
+    # covers local development (Vite dev server on :5173, nginx on :80/443,
+    # direct anila-ui container on :3001). Production must override via
+    # ALLOWED_ORIGINS env.
+    allow_origins=_allowed_origins or ["*"],
+    allow_credentials=bool(_allowed_origins),
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# CSRF protection for cookie-authenticated mutating requests. Runs after
+# CORS so preflight OPTIONS responses are generated without the check.
+app.add_middleware(CsrfMiddleware)
 
 app.include_router(api_router)
 app.include_router(conversations_router)

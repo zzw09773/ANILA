@@ -84,6 +84,10 @@ def get_usage_summary(
     )
     active_models = active_models_q.scalar() or 0
 
+    # COUNT(DISTINCT) skips NULLs in SQL, so this counts only named API
+    # keys — JWT-attributed traffic has api_key_id IS NULL and is surfaced
+    # separately below as "web_ui_requests" so dashboards can split
+    # SDK-originated vs SPA-originated traffic.
     active_keys_q = db.query(
         func.count(func.distinct(TokenUsage.api_key_id))
     ).filter(TokenUsage.request_timestamp >= start_time)
@@ -97,6 +101,20 @@ def get_usage_summary(
     )
     active_keys = active_keys_q.scalar() or 0
 
+    web_ui_req_q = db.query(func.count(TokenUsage.id)).filter(
+        TokenUsage.request_timestamp >= start_time,
+        TokenUsage.api_key_id.is_(None),
+    )
+    web_ui_req_q = _apply_usage_filters(
+        web_ui_req_q,
+        db,
+        model_id=model_id,
+        user_id=user_id,
+        model_type=model_type,
+        department_id=department_id,
+    )
+    web_ui_requests = web_ui_req_q.scalar() or 0
+
     return {
         "total_requests": result.total_requests or 0,
         "total_prompt_tokens": result.total_prompt_tokens or 0,
@@ -104,6 +122,7 @@ def get_usage_summary(
         "total_tokens": result.total_tokens or 0,
         "active_models": int(active_models),
         "active_api_keys": int(active_keys),
+        "web_ui_requests": int(web_ui_requests),
     }
 
 

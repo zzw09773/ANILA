@@ -26,6 +26,7 @@ class UserResponse(UserBase):
     department_name: str | None = None
     is_active: bool
     is_approved: bool = True
+    last_login_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -43,6 +44,10 @@ class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+    # Non-httpOnly CSRF token for the SPA to echo in X-CSRF-Token headers
+    # on cookie-authenticated mutating requests. Optional so legacy /refresh
+    # responses that predate Wave 2 can still parse.
+    csrf_token: str | None = None
 
 
 class RefreshRequest(BaseModel):

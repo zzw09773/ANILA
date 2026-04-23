@@ -86,19 +86,27 @@ function renderChart() {
     },
     legend: {
       data: series.map((s) => s.name),
+      // Rotated x-axis labels take ~32px; put the legend above that and
+      // leave a gap so they never overlap. `bottom: 0` was the bug.
       bottom: 0,
+      padding: [4, 8],
       textStyle: { fontSize: 12 },
     },
     grid: {
       top: 20,
       left: 60,
       right: 20,
-      bottom: series.length > 1 ? 50 : 30,
+      // Reserve room for the rotated x-axis labels (~36px at rotate:30°
+      // with fontSize:11) plus the legend (~24px tall at fontSize:12).
+      // `containLabel: true` makes ECharts auto-include axis labels in
+      // the grid box so our `bottom` sits BELOW them, not behind them.
+      bottom: 60,
+      containLabel: true,
     },
     xAxis: {
       type: 'category',
       data: xData,
-      axisLabel: { fontSize: 11, rotate: 30 },
+      axisLabel: { fontSize: 11, rotate: 30, margin: 12 },
     },
     yAxis: {
       type: 'value',

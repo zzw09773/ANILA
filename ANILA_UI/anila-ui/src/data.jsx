@@ -3,13 +3,13 @@
 // Seed list. Users can add/remove folders at runtime (persisted in localStorage
 // under "anila-folders"). `all` and `starred` are protected because the
 // sidebar filter logic treats them specially (no-filter / starred-only).
+//
+// No demo folders are seeded beyond the two built-ins — a fresh account
+// starts with a clean sidebar and the user builds their own taxonomy with
+// "＋ 新增".
 export const DEFAULT_FOLDERS = [
-  { id: "all",       name: "全部",   icon: "inbox" },
-  { id: "starred",   name: "已加星", icon: "star" },
-  { id: "hr",        name: "HR",         icon: "folder" },
-  { id: "finance",   name: "Finance",    icon: "folder" },
-  { id: "engineering", name: "Engineering", icon: "folder" },
-  { id: "compared",  name: "比較採用",   icon: "folder" },
+  { id: "all",     name: "全部",   icon: "inbox" },
+  { id: "starred", name: "已加星", icon: "star" },
 ];
 
 export const BUILTIN_FOLDER_IDS = new Set(["all", "starred"]);

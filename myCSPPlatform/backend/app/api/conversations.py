@@ -46,7 +46,15 @@ class MessageOut(BaseModel):
     latency_ms: Optional[int]
     model_name: Optional[str]
     agent_name: Optional[str]
-    metadata: Optional[dict] = Field(None, alias="metadata_")
+    # SQLAlchemy declarative classes expose a reserved ``metadata`` attribute
+    # (the Table's MetaData), so the ORM column is stored under ``metadata_``.
+    # ``validation_alias`` is the pydantic v2 knob that applies the alias
+    # ONLY on the input side (from-attributes lookup); the output key stays
+    # as the field name ``metadata``. The prior ``alias="metadata_"`` made
+    # FastAPI emit ``metadata_`` AND its ``jsonable_encoder`` pre-serializer
+    # read the wrong attribute, which manifested as every persisted trace
+    # returning empty on reload.
+    metadata: Optional[dict] = Field(None, validation_alias="metadata_")
     rating: Optional[str] = None
     created_at: datetime
     attachments: list[AttachmentOut] = []

@@ -5,23 +5,21 @@ import {
   authRequest,
   authRequestWithRefresh,
   authMultipart,
-  apiKeyRequest,
   config,
+  readCsrfCookie,
+  refreshJwt,
 } from "./api.js";
 
-const ACCESS_TOKEN_KEY = "accessToken";
-const REFRESH_TOKEN_KEY = "refreshToken";
-const API_KEY_KEY = "anilaRuntimeApiKey";
+// Wave 2: the SPA holds no tokens — JWT access/refresh live in httpOnly
+// cookies set by POST /api/auth/login. The only piece of auth state kept
+// in React memory is the probed user profile (from GET /api/auth/me) and
+// a best-effort CSRF token for submit-time echoing.
 
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [accessToken, setAccessToken] = useState(localStorage.getItem(ACCESS_TOKEN_KEY) || "");
-  const [refreshToken, setRefreshToken] = useState(localStorage.getItem(REFRESH_TOKEN_KEY) || "");
-  const [apiKey, setApiKey] = useState(sessionStorage.getItem(API_KEY_KEY) || "");
   const [user, setUser] = useState(null);
   const [authReady, setAuthReady] = useState(false);
-  const [apiKeyStatus, setApiKeyStatus] = useState({ valid: false, checked: false, error: "" });
   const [providers, setProviders] = useState([]);
 
   useEffect(() => {
@@ -30,45 +28,27 @@ export function AuthProvider({ children }) {
     async function bootstrap() {
       try {
         const listedProviders = await authRequest("/api/auth/providers");
-        if (active) {
-          setProviders(listedProviders);
-        }
+        if (active) setProviders(listedProviders);
       } catch {
-        if (active) {
-          setProviders([]);
-        }
-      }
-
-      if (!accessToken) {
-        if (active) {
-          setAuthReady(true);
-        }
-        return;
+        if (active) setProviders([]);
       }
 
       try {
-        const me = await authRequestWithRefresh(
-          "/api/auth/me",
-          { method: "GET" },
-          { accessToken, refreshToken },
-          persistTokens,
-          clearAuth,
-        );
-        if (!active) {
-          return;
-        }
+        const me = await authRequest("/api/auth/me");
+        if (!active) return;
         setUser(me);
-        if (apiKey) {
-          await validateApiKey(apiKey);
-        }
       } catch {
-        if (active) {
-          clearAuth();
+        // Not logged in, or access token expired. Try a refresh once
+        // (the refresh cookie may still be valid) and re-probe.
+        try {
+          await refreshJwt();
+          const me = await authRequest("/api/auth/me");
+          if (active) setUser(me);
+        } catch {
+          if (active) setUser(null);
         }
       } finally {
-        if (active) {
-          setAuthReady(true);
-        }
+        if (active) setAuthReady(true);
       }
     }
 
@@ -78,115 +58,54 @@ export function AuthProvider({ children }) {
     };
   }, []);
 
-  function persistTokens(data) {
-    setAccessToken(data.access_token);
-    setRefreshToken(data.refresh_token);
-    localStorage.setItem(ACCESS_TOKEN_KEY, data.access_token);
-    localStorage.setItem(REFRESH_TOKEN_KEY, data.refresh_token);
-  }
-
-  function persistApiKey(nextApiKey) {
-    setApiKey(nextApiKey);
-    if (nextApiKey) {
-      sessionStorage.setItem(API_KEY_KEY, nextApiKey);
-    } else {
-      sessionStorage.removeItem(API_KEY_KEY);
-    }
-  }
-
-  function clearAuth() {
-    setAccessToken("");
-    setRefreshToken("");
-    setUser(null);
-    setApiKeyStatus({ valid: false, checked: false, error: "" });
-    localStorage.removeItem(ACCESS_TOKEN_KEY);
-    localStorage.removeItem(REFRESH_TOKEN_KEY);
-  }
-
-  async function validateApiKey(candidate) {
-    if (!candidate) {
-      setApiKeyStatus({ valid: false, checked: true, error: "請提供 CSP API Key" });
-      return [];
-    }
-    try {
-      const response = await apiKeyRequest(config.cspBaseUrl, "/v1/agents", candidate);
-      const data = await response.json();
-      persistApiKey(candidate);
-      setApiKeyStatus({ valid: true, checked: true, error: "" });
-      return data.data || [];
-    } catch (error) {
-      setApiKeyStatus({
-        valid: false,
-        checked: true,
-        error: error.message || "API Key 驗證失敗",
-      });
-      throw error;
-    }
-  }
-
-  async function login({ username, password, authSource = "local", providerId, apiKey: loginApiKey }) {
+  async function login({ username, password, authSource = "local", providerId }) {
     const payload = {
       username,
       password,
       auth_source: authSource,
       ...(providerId ? { provider_id: providerId } : {}),
     };
-    const tokens = await authRequest("/api/auth/login", {
+    await authRequest("/api/auth/login", {
       method: "POST",
       body: JSON.stringify(payload),
     });
-    persistTokens(tokens);
-    const me = await authRequest("/api/auth/me", { method: "GET" }, tokens.access_token);
+    const me = await authRequest("/api/auth/me");
     setUser(me);
-    if (loginApiKey) {
-      await validateApiKey(loginApiKey);
-    } else {
-      setApiKeyStatus({ valid: false, checked: true, error: "尚未提供 API Key" });
-    }
     return me;
   }
 
-  async function updateApiKey(nextApiKey) {
-    return validateApiKey(nextApiKey);
+  async function logout() {
+    // Best-effort server-side invalidation. If it fails (network), we still
+    // drop local state so the UI immediately reflects the signed-out view.
+    try {
+      await authRequest("/api/auth/logout", { method: "POST" });
+    } catch {
+      // swallow — see comment above
+    }
+    setUser(null);
   }
 
-  function logout() {
-    clearAuth();
-    persistApiKey("");
-  }
+  const isAuthenticated = user !== null;
 
   const value = useMemo(
     () => ({
-      accessToken,
-      refreshToken,
-      apiKey,
       user,
       authReady,
       providers,
-      apiKeyStatus,
-      isAuthenticated: Boolean(accessToken),
+      isAuthenticated,
       login,
       logout,
-      updateApiKey,
-      validateApiKey,
+      // Callsites that previously relied on authRequest/authMultipart
+      // continue to work; the new implementations in api.js use cookies.
       authRequest: (path, options) =>
-        authRequestWithRefresh(
-          path,
-          options,
-          { accessToken, refreshToken },
-          persistTokens,
-          clearAuth,
-        ),
+        authRequestWithRefresh(path, options, null, undefined, () => setUser(null)),
       multipartRequest: (path, formData) =>
-        authMultipart(
-          path,
-          formData,
-          { accessToken, refreshToken },
-          persistTokens,
-          clearAuth,
-        ),
+        authMultipart(path, formData, null, undefined, () => setUser(null)),
+      // Expose CSRF readthrough for niche callers that assemble their own
+      // requests (none in the core flow, but keeps the surface parametric).
+      getCsrfToken: readCsrfCookie,
     }),
-    [accessToken, refreshToken, apiKey, user, authReady, providers, apiKeyStatus],
+    [user, authReady, providers, isAuthenticated],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -203,8 +122,8 @@ export function useAuth() {
 export function useLogoutRedirect() {
   const navigate = useNavigate();
   const { logout } = useAuth();
-  return () => {
-    logout();
+  return async () => {
+    await logout();
     navigate("/login", { replace: true });
   };
 }

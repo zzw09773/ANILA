@@ -7,7 +7,9 @@ class TokenUsage(Base):
     __tablename__ = "token_usage"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    api_key_id = Column(Integer, ForeignKey("api_keys.id"), nullable=False)
+    # Nullable: JWT / cookie-authenticated SPA calls have no named API key.
+    # Dashboards group such rows into a "Web UI" bucket (usage_service).
+    api_key_id = Column(Integer, ForeignKey("api_keys.id"), nullable=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     department_id = Column(Integer, ForeignKey("departments.id"), nullable=True)
     model_id = Column(Integer, ForeignKey("model_registry.id"), nullable=False)

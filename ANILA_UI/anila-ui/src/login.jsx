@@ -1,4 +1,7 @@
-// Login view — real CSP JWT auth + API Key validation (ESM)
+// Login view — CSP JWT auth via httpOnly cookie (Wave 2).
+// Users no longer paste an API Key here; the session is entirely server-
+// managed. SDK callers (curl / OpenAI SDK) still use API keys but get
+// them from the Settings → API Keys page after login, not at login time.
 import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -10,7 +13,6 @@ import {
   IconArrowRight,
   IconEye,
   IconEyeOff,
-  IconKey,
   IconUser,
 } from "./icons.jsx";
 
@@ -19,9 +21,7 @@ export const LoginView = () => {
   const { login, providers } = useAuth();
   const [username, setUsername] = useState("alice.chen");
   const [password, setPassword] = useState("demo-password");
-  const [apiKey, setApiKey] = useState("");
   const [showPw, setShowPw] = useState(false);
-  const [showKey, setShowKey] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [method, setMethod] = useState("local");
@@ -42,10 +42,6 @@ export const LoginView = () => {
     if (method !== "oidc") {
       if (!username || !password) {
         setError("請輸入帳號與密碼");
-        return;
-      }
-      if (apiKey && !apiKey.startsWith("sk-")) {
-        setError("CSP API Key 格式錯誤（須以 sk- 開頭）");
         return;
       }
     }
@@ -73,7 +69,6 @@ export const LoginView = () => {
         password,
         authSource: method,
         providerId: method === "ldap" ? ldapProviders[0]?.id : undefined,
-        apiKey,
       });
       navigate("/app", { replace: true });
     } catch (submitError) {
@@ -134,7 +129,7 @@ export const LoginView = () => {
         <form onSubmit={submit} style={{ width: "100%", maxWidth: 380 }}>
           <div style={{ fontSize: 20, fontWeight: 600, marginBottom: 4 }}>登入</div>
           <div style={{ fontSize: 13, color: "var(--fg-muted)", marginBottom: 24 }}>
-            使用 CSP 帳號登入，並綁定一把由 CSP 核發的 API Key
+            使用 CSP 帳號登入即可開始對話，無須額外設定 API Key
           </div>
 
           <div style={{
@@ -169,15 +164,6 @@ export const LoginView = () => {
                 rightEl={
                   <IconButton type="button" onClick={() => setShowPw((s) => !s)}>
                     {showPw ? <IconEyeOff/> : <IconEye/>}
-                  </IconButton>
-                }/>
-              <Input label="CSP API Key" type={showKey ? "text" : "password"}
-                value={apiKey} onChange={(e) => setApiKey(e.target.value)}
-                leftIcon={<IconKey size={14}/>}
-                hint="由 CSP 控制面 → API Keys 頁面核發，格式 sk-..."
-                rightEl={
-                  <IconButton type="button" onClick={() => setShowKey((s) => !s)}>
-                    {showKey ? <IconEyeOff/> : <IconEye/>}
                   </IconButton>
                 }/>
 

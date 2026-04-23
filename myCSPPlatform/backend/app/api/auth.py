@@ -1,9 +1,15 @@
 from datetime import datetime, timedelta, timezone
 from html import escape
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from app.database import get_db
+from app.middleware.cookies import (
+    REFRESH_COOKIE_NAME,
+    clear_session_cookies,
+    set_session_cookies,
+)
+from app.models.api_key import ApiKey
 from app.models.auth_provider import AuthProvider
 from app.models.model_registry import ModelRegistry
 from app.models.user import User
@@ -41,12 +47,32 @@ def _mint_sso_api_key(db: Session, user: User) -> str | None:
     """Mint a short-lived (24h) API Key bound to all currently-active models so
     the SPA can immediately call /v1/* after SSO without forcing the user to
     paste a key. Returns the raw key, or None if no active models exist (in
-    which case the SPA falls back to its API-Key popover)."""
+    which case the SPA falls back to its API-Key popover).
+
+    Any prior ``sso-*`` keys for the same user are revoked first so the DB
+    does not accumulate orphan keys across repeated OIDC round-trips. The
+    raw key is only delivered once (hand-off through the HTML callback) so
+    old rows can never be recovered by the SPA anyway.
+    """
     model_ids = [
         row.id for row in db.query(ModelRegistry).filter(ModelRegistry.is_active == True).all()
     ]
     if not model_ids:
         return None
+
+    # Revoke previously-minted SSO keys for this user. `sso-*` is a naming
+    # convention owned entirely by this function — user-named keys (CLI
+    # tokens, etc.) remain active.
+    (
+        db.query(ApiKey)
+        .filter(
+            ApiKey.user_id == user.id,
+            ApiKey.name.like("sso-%"),
+            ApiKey.is_active == True,  # noqa: E712
+        )
+        .update({"is_active": False}, synchronize_session=False)
+    )
+
     expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
     _, raw_key = create_api_key(
         db,
@@ -61,25 +87,27 @@ def _mint_sso_api_key(db: Session, user: User) -> str | None:
 def _build_oidc_callback_html(
     tokens: dict, next_path: str, api_key: str | None = None
 ) -> HTMLResponse:
+    """Render the tiny HTML page that finalizes an OIDC round-trip.
+
+    Wave 2: tokens are delivered via ``Set-Cookie`` on this response, not
+    injected into ``localStorage`` / ``sessionStorage``. The HTML's only
+    job is to redirect the browser back to the SPA's next_path. We keep
+    ``tokens`` / ``api_key`` parameters in the signature for transitional
+    compatibility with any callers still constructing the response
+    manually; neither is embedded in the HTML anymore.
+    """
+    del tokens, api_key  # no longer embedded — cookies do the handoff
     safe_next = escape(next_path if next_path.startswith("/") else "/")
-    safe_access = escape(tokens["access_token"])
-    safe_refresh = escape(tokens["refresh_token"])
-    api_key_script = (
-        f"sessionStorage.setItem('anilaRuntimeApiKey', '{escape(api_key)}');"
-        if api_key
-        else ""
-    )
     body = f"""
 <!doctype html>
 <html lang="zh-Hant">
-<head><meta charset="utf-8"><title>登入完成</title></head>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="0; url={safe_next}">
+  <title>登入完成</title>
+</head>
 <body>
-<script>
-localStorage.setItem('accessToken', '{safe_access}');
-localStorage.setItem('refreshToken', '{safe_refresh}');
-{api_key_script}
-window.location.replace('{safe_next}');
-</script>
+<script>window.location.replace('{safe_next}');</script>
 正在完成登入...
 </body>
 </html>
@@ -149,8 +177,32 @@ def register(request: RegisterRequest, http_request: Request, db: Session = Depe
     return {"message": "註冊成功，請等待管理員核准後再登入"}
 
 
+def _finalize_login(response: Response, tokens: dict) -> dict:
+    """Attach session cookies to the response and surface the CSRF token
+    in the JSON body so the SPA can read it even on its first request."""
+    csrf = set_session_cookies(
+        response,
+        access_token=tokens["access_token"],
+        refresh_token=tokens["refresh_token"],
+    )
+    return {**tokens, "csrf_token": csrf}
+
+
+def _stamp_last_login(db: Session, user: User) -> None:
+    """Record the current timestamp on the user's profile. Called on every
+    successful login path (local, LDAP, OIDC) so the admin user panel can
+    show ``last_login_at`` without scanning the audit log."""
+    user.last_login_at = datetime.now(timezone.utc)
+    db.commit()
+
+
 @router.post("/login", response_model=TokenResponse)
-def login(request: LoginRequest, http_request: Request, db: Session = Depends(get_db)):
+def login(
+    request: LoginRequest,
+    http_request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+):
     ip_address = http_request.client.host if http_request.client else None
 
     if request.auth_source == "ldap":
@@ -183,6 +235,7 @@ def login(request: LoginRequest, http_request: Request, db: Session = Depends(ge
                 detail="LDAP 帳號或密碼錯誤",
             )
         tokens = create_tokens(result)
+        _stamp_last_login(db, result)
         log_audit_event(
             db,
             actor=result,
@@ -193,7 +246,7 @@ def login(request: LoginRequest, http_request: Request, db: Session = Depends(ge
             ip_address=ip_address,
             commit=True,
         )
-        return tokens
+        return _finalize_login(response, tokens)
 
     result = authenticate_user(db, request.username, request.password)
     if result is None:
@@ -216,6 +269,7 @@ def login(request: LoginRequest, http_request: Request, db: Session = Depends(ge
             detail="等待核准中，請通知 admin",
         )
     tokens = create_tokens(result)
+    _stamp_last_login(db, result)
     log_audit_event(
         db,
         actor=result,
@@ -226,7 +280,7 @@ def login(request: LoginRequest, http_request: Request, db: Session = Depends(ge
         ip_address=ip_address,
         commit=True,
     )
-    return tokens
+    return _finalize_login(response, tokens)
 
 
 @router.get("/oidc/{provider_id}/callback", include_in_schema=False)
@@ -254,24 +308,28 @@ async def oidc_callback(
             raise ValueError("state provider 不一致")
         user = await authenticate_oidc_code(db, provider, code)
         tokens = create_tokens(user)
-        sso_api_key = _mint_sso_api_key(db, user)
+        _stamp_last_login(db, user)
         log_audit_event(
             db,
             actor=user,
             action="login",
             resource_type="auth",
             resource_id=user.id,
-            detail=(
-                f"OIDC 登入成功: {provider.name}"
-                + (" (auto-bound 24h API key)" if sso_api_key else "")
-            ),
+            detail=f"OIDC 登入成功: {provider.name}",
             commit=True,
         )
-        return _build_oidc_callback_html(
+        html = _build_oidc_callback_html(
             tokens,
             state_payload.get("next_path", "/"),
-            api_key=sso_api_key,
         )
+        # Cookies carry the session — SPA reads `anila_csrf` (non-httpOnly)
+        # on first render and echoes it on mutating requests.
+        set_session_cookies(
+            html,
+            access_token=tokens["access_token"],
+            refresh_token=tokens["refresh_token"],
+        )
+        return html
     except Exception as exc:
         log_audit_event(
             db,
@@ -288,10 +346,79 @@ async def oidc_callback(
 
 
 @router.post("/refresh", response_model=TokenResponse)
-def refresh(request: RefreshRequest, db: Session = Depends(get_db)):
-    payload = decode_token(request.refresh_token)
+async def refresh(
+    http_request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    """Rotate access/refresh tokens.
+
+    Refresh token may arrive in either:
+    - The ``anila_refresh_token`` cookie (SPA, Wave 2 default; cookie is
+      scoped to this path only, never leaks elsewhere), or
+    - The JSON body ``{"refresh_token": "..."}`` (SDK / legacy SPA).
+
+    On success we set fresh cookies AND return the tokens in the JSON
+    body — the body keeps the SDK path working, the cookies keep the
+    browser happy without JS token juggling.
+    """
+    token = http_request.cookies.get(REFRESH_COOKIE_NAME)
+    if not token:
+        try:
+            payload_body = await http_request.json()
+        except Exception:
+            payload_body = {}
+        token = (payload_body or {}).get("refresh_token")
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="缺少 refresh token",
+        )
+    payload = decode_token(token)
     user = _load_user_from_payload(payload, db, "refresh")
-    return create_tokens(user)
+    tokens = create_tokens(user)
+    set_session_cookies(
+        response,
+        access_token=tokens["access_token"],
+        refresh_token=tokens["refresh_token"],
+    )
+    return tokens
+
+
+@router.post("/logout")
+def logout(
+    http_request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    """Clear session cookies and bump the user's token_version.
+
+    Bumping ``token_version`` invalidates any outstanding JWTs the user
+    already issued — so logout is effective even if an attacker copied
+    the access token before logout. Cookie removal handles the active
+    browser tab; token_version handles everything else.
+    """
+    try:
+        current_user = get_current_user(http_request, None, db)
+    except HTTPException:
+        current_user = None
+
+    if current_user is not None:
+        current_user.token_version = (current_user.token_version or 0) + 1
+        db.commit()
+        log_audit_event(
+            db,
+            actor=current_user,
+            action="logout",
+            resource_type="auth",
+            resource_id=current_user.id,
+            detail="使用者登出（cookie 清除 + token_version++）",
+            ip_address=http_request.client.host if http_request.client else None,
+            commit=True,
+        )
+
+    clear_session_cookies(response)
+    return {"message": "已登出"}
 
 
 @router.get("/me", response_model=UserResponse)

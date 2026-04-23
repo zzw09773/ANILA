@@ -4,6 +4,7 @@
 
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { relativeLabel } from "./runtime/time.js";
+import { matchFuzzy } from "./runtime/searchSynonyms.js";
 import { MarkdownView, extractThinkTags } from "./markdown.jsx";
 
 import {
@@ -127,6 +128,102 @@ export const RoutingTrace = ({ trace, stage, routedAgent, done }) => {
   );
 };
 
+/** Claude.ai-style compact reasoning summary.
+ *
+ * Collapses the previous stack (ANILA brand header + RoutingTrace card +
+ * separate thinking <details>) into a single ghost row that says e.g.
+ * "已完成 4 步分析 · 637 字思考". Click to expand and see both the trace
+ * timeline and the reasoning text. When closed, it fades into the page
+ * so the answer body is visually dominant — matching ChatGPT and
+ * Claude.ai's "minimal chrome" language.
+ */
+export const ReasoningSummary = ({ trace, reasoning, routedAgent, streaming, stageLabel }) => {
+  const [open, setOpen] = useState(false);
+  const hasTrace = Array.isArray(trace) && trace.length > 0;
+  const hasReasoning = typeof reasoning === "string" && reasoning.length > 0;
+  if (!streaming && !hasTrace && !hasReasoning) return null;
+
+  const summaryParts = [];
+  if (streaming) {
+    summaryParts.push(stageLabel ? `${stageLabel}…` : "思考中…");
+  } else {
+    if (hasTrace) summaryParts.push(`${trace.length} 步分析`);
+    if (hasReasoning) summaryParts.push(`${reasoning.length} 字思考`);
+  }
+  const summary = summaryParts.join(" · ") || "已完成";
+
+  return (
+    <div className="anila-reasoning" style={{ marginBottom: 10 }}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="anila-reasoning-toggle"
+        style={{
+          display: "inline-flex", alignItems: "center", gap: 6,
+          padding: "2px 8px 2px 4px", margin: "0 0 0 -4px",
+          background: "transparent",
+          border: "none",
+          color: "var(--fg-subtle)",
+          fontSize: 12,
+          fontFamily: "inherit",
+          cursor: "pointer",
+          borderRadius: 6,
+        }}
+      >
+        {streaming
+          ? <span className="anila-reasoning-spinner" />
+          : <IconChevRight size={11} style={{
+              transform: open ? "rotate(90deg)" : "none",
+              transition: "transform 120ms ease",
+            }} />}
+        <IconSpark size={11} style={{ opacity: 0.7 }} />
+        <span style={{ lineHeight: 1.4 }}>{summary}</span>
+        {routedAgent && routedAgent.id !== "anila-router" && (
+          <AgentPill agent={routedAgent} size="sm" />
+        )}
+      </button>
+      {open && (hasTrace || hasReasoning) && (
+        <div
+          style={{
+            margin: "6px 0 2px 14px",
+            padding: "8px 12px",
+            borderLeft: "2px solid var(--border)",
+            color: "var(--fg-muted)",
+            fontSize: 12,
+          }}
+        >
+          {hasTrace && (
+            <div style={{ marginBottom: hasReasoning ? 8 : 0 }}>
+              {trace.map((ev, i) => (
+                <TraceRow
+                  key={i}
+                  event={ev}
+                  active={false}
+                  done={true}
+                />
+              ))}
+            </div>
+          )}
+          {hasReasoning && (
+            <div
+              style={{
+                whiteSpace: "pre-wrap",
+                fontFamily: "var(--font-mono)",
+                fontSize: 11.5,
+                lineHeight: 1.6,
+                color: "var(--fg-subtle)",
+                maxHeight: 320,
+                overflowY: "auto",
+              }}
+            >
+              {reasoning}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ---- Message Bubble ----
 export const MessageBubble = ({
   msg,
@@ -166,18 +263,22 @@ export const MessageBubble = ({
     };
 
     return (
-      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 20 }}>
+      <div
+        className="anila-msg anila-msg-user"
+        style={{ display: "flex", justifyContent: "flex-end", marginBottom: 24 }}
+      >
         <div
           style={{
             position: "relative",
-            maxWidth: "78%",
+            maxWidth: "80%",
             background: "var(--bg-subtle)",
-            border: "1px solid var(--border)",
-            padding: "10px 14px",
-            borderRadius: "var(--radius-lg)",
-            borderTopRightRadius: 4,
-            fontSize: 14, lineHeight: 1.65,
+            padding: "12px 16px",
+            // Uniform corner radius — Claude.ai-style flat rounded
+            // rectangle, no pointed tail.
+            borderRadius: 14,
+            fontSize: 15, lineHeight: 1.65,
             whiteSpace: "pre-wrap",
+            color: "var(--fg)",
           }}
           onMouseEnter={(e) => {
             const btn = e.currentTarget.querySelector("[data-edit-btn]");
@@ -343,36 +444,14 @@ export const MessageBubble = ({
   const rating = msg.rating || null;
 
   return (
-    <div style={{ position: "relative", marginBottom: 24 }}>
+    <div
+      className="anila-msg anila-msg-assistant"
+      style={{ position: "relative", marginBottom: 28 }}
+    >
       {classified && <ClassifiedCorner />}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-        <AnilaGlyph size={16} />
-        <span style={{ fontSize: 12, color: "var(--fg-muted)", fontWeight: 500 }}>ANILA</span>
-        {routedAgent && routedAgent.id !== "anila-router" && (
-          <>
-            <IconChevRight size={12} style={{ color: "var(--fg-subtle)" }} />
-            <AgentPill agent={routedAgent} size="sm" />
-          </>
-        )}
-        {!msg.streaming && <ConfidenceChip confidence={msg.confidence} />}
-        {msg.streaming && (
-          <span style={{ fontSize: 11, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>
-            {msg.stageLabel || "thinking"}…
-          </span>
-        )}
-      </div>
 
       {msg.handoffChain && msg.handoffChain.length > 1 && (
         <HandoffTimeline chain={msg.handoffChain} agents={agents} />
-      )}
-
-      {msg.trace && msg.trace.length > 0 && (
-        <RoutingTrace
-          trace={msg.trace}
-          stage={msg.stage ?? msg.trace.length}
-          routedAgent={routedAgent}
-          done={!msg.streaming}
-        />
       )}
 
       {(() => {
@@ -382,63 +461,33 @@ export const MessageBubble = ({
         const combinedReasoning = [msg.reasoning, inlineThinking]
           .filter((s) => typeof s === "string" && s.trim().length > 0)
           .join("\n\n");
-        const showReasoning = combinedReasoning.length > 0;
         const displayBody = inlineThinking ? cleanBody : msg.text;
+
         return (
           <>
-            {showReasoning && (
-              <details
-                style={{
-                  marginBottom: 10,
-                  background: "var(--bg-subtle)",
-                  border: "1px solid var(--border)",
-                  borderRadius: "var(--radius)",
-                  fontSize: 12,
-                  color: "var(--fg-muted)",
-                }}
-              >
-                <summary
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    padding: "6px 10px",
-                    cursor: "pointer",
-                    fontFamily: "var(--font-mono)",
-                    listStyle: "none",
-                  }}
-                >
-                  <IconSpark size={12} style={{ color: "var(--fg-subtle)" }} />
-                  {msg.streaming && !msg.reasoning ? "思考中…" : "思考過程"}
-                  <span style={{ color: "var(--fg-subtle)", fontSize: 11 }}>
-                    （{combinedReasoning.length} 字）
-                  </span>
-                </summary>
-                <div
-                  style={{
-                    padding: "6px 12px 10px",
-                    borderTop: "1px solid var(--border)",
-                    whiteSpace: "pre-wrap",
-                    fontFamily: "var(--font-mono)",
-                    fontSize: 11.5,
-                    lineHeight: 1.6,
-                    color: "var(--fg-subtle)",
-                    maxHeight: 360,
-                    overflowY: "auto",
-                  }}
-                >
-                  {combinedReasoning}
+            <ReasoningSummary
+              trace={msg.trace}
+              reasoning={combinedReasoning}
+              routedAgent={routedAgent}
+              streaming={msg.streaming}
+              stageLabel={msg.stageLabel}
+            />
+            <div
+              className="anila-msg-body"
+              style={{
+                fontSize: 15.5, lineHeight: 1.7,
+                color: "var(--fg)",
+              }}
+            >
+              {msg.citations && msg.citations.length > 0 ? (
+                // Plain-text + citation links need pre-wrap so the author's
+                // newlines survive; markdown renders block elements itself.
+                <div style={{ whiteSpace: "pre-wrap" }}>
+                  {renderTextWithCitations(displayBody, msg.citations, onOpenCitation)}
                 </div>
-              </details>
-            )}
-            <div style={{
-              fontSize: 14.5, lineHeight: 1.75,
-              whiteSpace: "pre-wrap",
-              color: "var(--fg)",
-            }}>
-              {msg.citations && msg.citations.length > 0
-                ? renderTextWithCitations(displayBody, msg.citations, onOpenCitation)
-                : <MarkdownView text={displayBody} />}
+              ) : (
+                <MarkdownView text={displayBody} />
+              )}
               {msg.streaming && msg.text && (
                 <span style={{
                   display: "inline-block", width: 7, height: 15,
@@ -447,6 +496,11 @@ export const MessageBubble = ({
                 }}/>
               )}
             </div>
+            {!msg.streaming && msg.confidence != null && (
+              <div style={{ marginTop: 6 }}>
+                <ConfidenceChip confidence={msg.confidence} />
+              </div>
+            )}
           </>
         );
       })()}
@@ -478,7 +532,13 @@ export const MessageBubble = ({
       )}
 
       {!msg.streaming && msg.text && (
-        <div style={{ display: "flex", gap: 2, marginTop: 10, color: "var(--fg-subtle)", alignItems: "center" }}>
+        <div
+          className="anila-msg-actions"
+          style={{
+            display: "flex", gap: 2, marginTop: 8,
+            color: "var(--fg-subtle)", alignItems: "center",
+          }}
+        >
           {canCopy ? (
             <IconButton
               title={copied ? "已複製" : "複製"}
@@ -663,11 +723,66 @@ export const Composer = ({
   const [text, setText] = useState(initialValue);
   const [atts, setAtts] = useState([]);
   const [uploadError, setUploadError] = useState("");
+  const [caret, setCaret] = useState(0);
+  const [mentionIdx, setMentionIdx] = useState(0);
   const taRef = useRef(null);
   const [mode, setMode] = useState(redactionMode);
 
   const piiHits = useMemo(() => detectPII(text), [text]);
   const mentionParse = useMemo(() => parseMentions(text, agents || []), [text, agents]);
+
+  // Autocomplete — detect an unfinished `@tok` at the caret and show a
+  // filtered list of real agents. Router pseudo-agent is excluded because
+  // `@router` is the default behaviour when no mention is used.
+  const mentionQuery = useMemo(() => {
+    const before = text.slice(0, caret);
+    const m = before.match(/(?:^|[\s(])@([\S]*)$/);
+    return m ? m[1] : null;
+  }, [text, caret]);
+
+  const mentionCandidates = useMemo(() => {
+    if (mentionQuery === null) return [];
+    const q = mentionQuery.toLowerCase();
+    return (agents || [])
+      .filter((a) => a.id !== "anila-router")
+      .filter((a) => {
+        if (!q) return true;
+        return (
+          a.id.toLowerCase().includes(q) ||
+          (a.name || "").toLowerCase().includes(q) ||
+          (a.short || "").toLowerCase().includes(q)
+        );
+      })
+      .slice(0, 6);
+  }, [agents, mentionQuery]);
+
+  useEffect(() => {
+    // Reset highlighted index when candidate list changes so arrow-up/down
+    // always starts from the top of the current match set.
+    setMentionIdx(0);
+  }, [mentionQuery, mentionCandidates.length]);
+
+  const insertMention = (agent) => {
+    if (!agent || mentionQuery === null) return;
+    const before = text.slice(0, caret);
+    const after = text.slice(caret);
+    // Replace the `@partial` token with the resolved name + trailing space.
+    const prefix = before.replace(/(?:^|[\s(])@[\S]*$/, (m) => {
+      const lead = m.startsWith("@") ? "" : m[0];
+      return `${lead}@${agent.name} `;
+    });
+    const next = prefix + after;
+    setText(next);
+    const nextCaret = prefix.length;
+    setCaret(nextCaret);
+    requestAnimationFrame(() => {
+      const el = taRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(nextCaret, nextCaret);
+      }
+    });
+  };
 
   const autosize = () => {
     const el = taRef.current;
@@ -693,10 +808,45 @@ export const Composer = ({
   };
 
   const onKey = (e) => {
+    // Mention menu captures arrows + Enter + Escape when it's active so
+    // typing `@ra` → ↓ → Enter picks "rag-agent" instead of sending.
+    if (mentionQuery !== null && mentionCandidates.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setMentionIdx((i) => (i + 1) % mentionCandidates.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setMentionIdx((i) => (i - 1 + mentionCandidates.length) % mentionCandidates.length);
+        return;
+      }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        insertMention(mentionCandidates[mentionIdx]);
+        return;
+      }
+      if (e.key === "Tab") {
+        e.preventDefault();
+        insertMention(mentionCandidates[mentionIdx]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        // Collapse the menu by moving the caret past the current token.
+        setCaret(text.length + 1);
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       submit();
     }
+  };
+
+  const updateCaret = (e) => {
+    const el = e.currentTarget;
+    setCaret(el.selectionStart || 0);
   };
 
   const onFiles = async (files) => {
@@ -753,11 +903,11 @@ export const Composer = ({
 
   return (
     <div style={{
+      position: "relative",
       background: "var(--bg-elev)",
       border: "1px solid var(--border-strong)",
       borderRadius: "var(--radius-lg)",
       boxShadow: "0 2px 8px -4px oklch(0.10 0 0 / 0.08)",
-      overflow: "hidden",
     }}>
       <RedactionHint hits={piiHits} mode={mode} onChangeMode={setMode} />
 
@@ -817,15 +967,85 @@ export const Composer = ({
         </div>
       )}
 
+      {mentionQuery !== null && mentionCandidates.length > 0 && (
+        <div style={{
+          position: "absolute",
+          bottom: "100%",
+          left: 8,
+          marginBottom: 6,
+          background: "var(--bg-elev)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius)",
+          boxShadow: "0 12px 32px -8px oklch(0.10 0 0 / 0.18)",
+          padding: 4,
+          minWidth: 260,
+          zIndex: 80,
+        }}>
+          <div style={{
+            padding: "4px 8px", fontSize: 10, color: "var(--fg-subtle)",
+            fontFamily: "var(--font-mono)", letterSpacing: 0.4,
+          }}>
+            @ {mentionQuery ? `mention: ${mentionQuery}` : "選 agent"}
+          </div>
+          {mentionCandidates.map((a, i) => (
+            <button
+              key={a.id}
+              type="button"
+              onMouseDown={(e) => { e.preventDefault(); insertMention(a); }}
+              onMouseEnter={() => setMentionIdx(i)}
+              style={{
+                display: "flex", alignItems: "center", gap: 8, width: "100%",
+                padding: "6px 8px",
+                background: i === mentionIdx ? "var(--bg-subtle)" : "transparent",
+                border: "none", borderRadius: 4,
+                color: "var(--fg)", textAlign: "left", cursor: "pointer",
+                fontSize: 12,
+              }}
+            >
+              <span style={{
+                fontFamily: "var(--font-mono)",
+                color: "var(--accent)",
+                fontSize: 11,
+                minWidth: 48,
+              }}>@{a.short || a.id}</span>
+              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {a.name}
+              </span>
+            </button>
+          ))}
+          <div style={{
+            padding: "4px 8px", fontSize: 10, color: "var(--fg-subtle)",
+            borderTop: "1px solid var(--border)", marginTop: 2,
+          }}>
+            ↑↓ 選擇 · Enter/Tab 確認 · Esc 關閉
+          </div>
+        </div>
+      )}
+
       <textarea
         ref={taRef}
         value={text}
-        onChange={(e) => { setText(e.target.value); autosize(); }}
+        onChange={(e) => { setText(e.target.value); autosize(); setCaret(e.target.selectionStart || 0); }}
+        onKeyUp={updateCaret}
+        onClick={updateCaret}
+        onSelect={updateCaret}
         onKeyDown={onKey}
         onPaste={(e) => {
           const items = e.clipboardData?.items || [];
+          // Some browsers/platforms — notably when copying rendered web
+          // content — populate clipboard with BOTH text/plain (the user's
+          // actual intent) AND image/png (an accessibility fallback
+          // screenshot of the selection). If we only scan for file-kind
+          // items we wrongly convert a text copy into an image upload.
+          // Rule: when any text/* payload exists, prefer text and let
+          // the browser's default paste handle it; treat as file only
+          // when the clipboard carries files and no text.
+          let hasText = false;
           const files = [];
           for (const it of items) {
+            if (it.kind === "string" && it.type.startsWith("text/")) {
+              hasText = true;
+            }
             if (it.kind === "file") {
               const f = it.getAsFile();
               if (f) {
@@ -836,7 +1056,7 @@ export const Composer = ({
               }
             }
           }
-          if (files.length) {
+          if (!hasText && files.length) {
             e.preventDefault();
             onFiles(files);
           }
@@ -953,10 +1173,10 @@ export const Sidebar = ({
       const tag = tagMatch[1];
       const rest = (tagMatch[2] || "").trim();
       if (!(c.tags || []).map((t) => t.toLowerCase()).includes(tag)) return false;
-      if (rest && !c.title.toLowerCase().includes(rest)) return false;
+      if (rest && !matchFuzzy(c, rest)) return false;
       return true;
     }
-    return c.title.toLowerCase().includes(q);
+    return matchFuzzy(c, q);
   });
 
   if (collapsed) {
@@ -1166,9 +1386,25 @@ export const Sidebar = ({
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="搜尋… (tag:hr 特休)"
+                onKeyDown={(e) => { if (e.key === "Escape" && query) { e.preventDefault(); setQuery(""); } }}
+                placeholder="搜尋… (tag:hr 特休 / 支援同義詞)"
                 style={{ flex: 1, background: "transparent", border: "none", outline: "none", fontSize: 12, color: "var(--fg)" }}
               />
+              {query && (
+                <button
+                  type="button"
+                  onClick={() => setQuery("")}
+                  title="清除搜尋 (Esc)"
+                  style={{
+                    display: "inline-flex", alignItems: "center", justifyContent: "center",
+                    width: 16, height: 16,
+                    background: "transparent", border: "none", cursor: "pointer",
+                    color: "var(--fg-subtle)", padding: 0,
+                  }}
+                >
+                  <IconX size={11} />
+                </button>
+              )}
             </div>
           </div>
 
@@ -1192,14 +1428,29 @@ export const Sidebar = ({
                   }}
                     onMouseEnter={(e) => { if (c.id !== selectedConvId) e.currentTarget.style.background = "var(--bg-elev)"; }}
                     onMouseLeave={(e) => { if (c.id !== selectedConvId) e.currentTarget.style.background = "transparent"; }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                      {c.classified && <IconLock size={11} style={{ color: "var(--danger)", flexShrink: 0 }} />}
-                      {c.starred && <IconStar size={11} style={{ color: "var(--warn)", flexShrink: 0 }} />}
-                      <div style={{ fontSize: 13, fontWeight: 500, color: "var(--fg)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: 5, paddingRight: 52 }}>
+                      {c.classified && <IconLock size={11} style={{ color: "var(--danger)", flexShrink: 0, marginTop: 4 }} />}
+                      {c.starred && <IconStar size={11} style={{ color: "var(--warn)", flexShrink: 0, marginTop: 4 }} />}
+                      <div
+                        title={c.title}
+                        style={{
+                          fontSize: 13, fontWeight: 500, color: "var(--fg)",
+                          flex: 1, minWidth: 0,
+                          lineHeight: 1.35,
+                          wordBreak: "break-word",
+                          // Two-line clamp: wraps to a second line when the
+                          // title is long, then ellipses on the tail. Matches
+                          // Claude / ChatGPT sidebar behaviour.
+                          display: "-webkit-box",
+                          WebkitLineClamp: 2,
+                          WebkitBoxOrient: "vertical",
+                          overflow: "hidden",
+                        }}
+                      >
                         {c.title}
                       </div>
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3, flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3, flexWrap: "wrap", paddingRight: 52 }}>
                       <span style={{ fontSize: 11, color: "var(--fg-subtle)" }}>{relativeLabel(c.updatedAt || c.createdAt)}</span>
                       {agent && <AgentPill agent={agent} size="sm" />}
                       {(c.tags || []).slice(0, 2).map((t) => (

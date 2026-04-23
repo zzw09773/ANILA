@@ -19,7 +19,7 @@ def get_usage_queue() -> asyncio.Queue:
 
 
 async def enqueue_usage(
-    api_key_id: int,
+    api_key_id: int | None,
     user_id: int,
     department_id: int | None,
     model_id: int,
@@ -30,7 +30,11 @@ async def enqueue_usage(
     conversation_id: str | None = None,
     trace_id: str | None = None,
 ):
-    """Push usage data into the async queue (non-blocking)."""
+    """Push usage data into the async queue (non-blocking).
+
+    ``api_key_id`` may be ``None`` for JWT / cookie-authenticated SPA traffic
+    — such rows land in the dashboard's "Web UI" bucket via usage_service.
+    """
     queue = get_usage_queue()
     await queue.put({
         "api_key_id": api_key_id,

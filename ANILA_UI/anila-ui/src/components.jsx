@@ -101,43 +101,78 @@ export const Divider = ({ vertical, style = {} }) => (
   }}/>
 );
 
-// Dropdown menu
+// Dropdown menu — uses position: fixed with viewport-clamped coordinates
+// so the panel escapes ANY ancestor overflow (sidebar's overflow-y: auto
+// was clipping the tag/actions popup on conversation cards). Caller
+// passes a preferred `align` ("left" | "right"); we keep that hint but
+// always clamp the resulting rect into the viewport with an 8px inset.
 export const Dropdown = ({ trigger, children, align = "left", width = 280, maxHeight = 360 }) => {
   const [open, setOpen] = useState(false);
-  const [placement, setPlacement] = useState("bottom");
+  const [panelStyle, setPanelStyle] = useState(null);
   const ref = useRef(null);
   const triggerRef = useRef(null);
 
   useEffect(() => {
     if (!open) return;
-    if (triggerRef.current) {
+
+    const computePosition = () => {
+      if (!triggerRef.current) return;
       const rect = triggerRef.current.getBoundingClientRect();
-      const spaceBelow = window.innerHeight - rect.bottom;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const margin = 8;
+
+      // Vertical: below if it fits, otherwise above; clamp to viewport.
+      const spaceBelow = vh - rect.bottom;
       const spaceAbove = rect.top;
-      if (spaceBelow < maxHeight && spaceAbove > spaceBelow) {
-        setPlacement("top");
+      const useTop = spaceBelow < maxHeight && spaceAbove > spaceBelow;
+      const topPx = useTop
+        ? Math.max(margin, rect.top - 4 - maxHeight)
+        : Math.min(rect.bottom + 4, vh - margin - Math.min(maxHeight, 120));
+
+      // Horizontal: start from the preferred edge, then clamp so the
+      // whole panel always sits inside [margin, vw - margin].
+      let leftPx;
+      if (align === "right") {
+        leftPx = rect.right - width;
       } else {
-        setPlacement("bottom");
+        leftPx = rect.left;
       }
-    }
+      leftPx = Math.max(margin, Math.min(leftPx, vw - margin - width));
+
+      setPanelStyle({
+        position: "fixed",
+        top: topPx,
+        left: leftPx,
+        width,
+        maxHeight,
+      });
+    };
+
+    computePosition();
+
     const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
     document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
-  }, [open, maxHeight]);
-
-  const panelPos = placement === "top"
-    ? { bottom: "calc(100% + 4px)", [align]: 0 }
-    : { top: "calc(100% + 4px)", [align]: 0 };
+    const esc = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("keydown", esc);
+    // Scroll / resize should keep the panel anchored to the trigger.
+    window.addEventListener("resize", computePosition);
+    window.addEventListener("scroll", computePosition, true);
+    return () => {
+      document.removeEventListener("mousedown", h);
+      document.removeEventListener("keydown", esc);
+      window.removeEventListener("resize", computePosition);
+      window.removeEventListener("scroll", computePosition, true);
+    };
+  }, [open, maxHeight, align, width]);
 
   return (
-    <div ref={ref} style={{ position: "relative", display: "inline-block" }}>
+    <div ref={ref} style={{ display: "inline-block" }}>
       <div ref={triggerRef} onClick={() => setOpen(o => !o)}>{trigger(open)}</div>
-      {open && (
+      {open && panelStyle && (
         <div style={{
-          position: "absolute", ...panelPos,
+          ...panelStyle,
           zIndex: 80,
-          minWidth: width,
-          maxHeight,
           overflowY: "auto",
           background: "var(--bg-elev)",
           border: "1px solid var(--border)",

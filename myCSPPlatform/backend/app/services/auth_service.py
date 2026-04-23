@@ -1,10 +1,11 @@
 import hmac
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
+from app.middleware.cookies import ACCESS_COOKIE_NAME
 from app.models.user import User
 from app.utils.security import (
     verify_password,
@@ -14,7 +15,9 @@ from app.utils.security import (
     hash_password,
 )
 
-security = HTTPBearer()
+# auto_error=False lets us fall back to the cookie when no Authorization
+# header is present, instead of raising 403 immediately.
+security = HTTPBearer(auto_error=False)
 
 
 PENDING_APPROVAL_SENTINEL = "PENDING_APPROVAL"
@@ -73,10 +76,27 @@ def _load_user_from_payload(payload: dict | None, db: Session, expected_type: st
 
 
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
     db: Session = Depends(get_db),
 ) -> User:
-    payload = decode_token(credentials.credentials)
+    """Resolve the current user from either the ``Authorization`` header
+    or the ``anila_access_token`` httpOnly cookie.
+
+    Header wins when both are present (explicit intent from SDK / curl).
+    Cookie is the SPA's Wave 2 default. If neither is present, 401.
+    """
+    token: str | None = None
+    if credentials is not None and credentials.credentials:
+        token = credentials.credentials
+    if token is None:
+        token = request.cookies.get(ACCESS_COOKIE_NAME)
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="未登入或權杖已過期",
+        )
+    payload = decode_token(token)
     return _load_user_from_payload(payload, db, "access")
 
 

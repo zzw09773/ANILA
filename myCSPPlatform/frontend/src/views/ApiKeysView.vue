@@ -154,8 +154,9 @@
           </button>
           <button
             @click="handleCreate"
-            :disabled="!newKey.name || creating || (!authStore.isAdmin && myAllowedModels.length === 0)"
-            class="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+            :disabled="!canCreate"
+            :title="!canCreate ? createDisabledReason : ''"
+            class="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {{ creating ? '建立中...' : '建立' }}
           </button>
@@ -220,7 +221,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useApiKeysStore } from '../stores/apiKeys'
 import { useAuthStore } from '../stores/auth'
 import { listModels } from '../api/models'
@@ -251,6 +252,28 @@ const newKey = ref({
   expires_at: '',
 })
 
+// Creation is gated on the same invariants the backend now enforces:
+// trimmed non-empty name AND at least one allowed model. Non-admin users
+// implicitly inherit their allowed_models, so the empty-list check only
+// applies to admin-path explicit selection.
+const canCreate = computed(() => {
+  if (creating.value) return false
+  if (!(newKey.value.name || '').trim()) return false
+  if (authStore.isAdmin) {
+    if ((newKey.value.model_ids || []).length === 0) return false
+  } else {
+    if (myAllowedModels.value.length === 0) return false
+  }
+  return true
+})
+
+const createDisabledReason = computed(() => {
+  if (!(newKey.value.name || '').trim()) return '名稱不可為空白'
+  if (authStore.isAdmin && (newKey.value.model_ids || []).length === 0) return '至少勾選一個可用模型'
+  if (!authStore.isAdmin && myAllowedModels.value.length === 0) return '尚未被指派任何可用模型，請聯絡管理員'
+  return ''
+})
+
 onMounted(async () => {
   await keysStore.fetchKeys()
   try {
@@ -266,11 +289,15 @@ onMounted(async () => {
 })
 
 async function handleCreate() {
+  if (!canCreate.value) return
   creating.value = true
   try {
     const payload = {
-      name: newKey.value.name,
-      model_ids: authStore.isAdmin ? newKey.value.model_ids : [],
+      name: (newKey.value.name || '').trim(),
+      // Non-admin path: server injects the user's allowed_models; send
+      // an empty list here and let the backend fill it, matching how the
+      // POST /api/keys endpoint already behaves.
+      model_ids: authStore.isAdmin ? newKey.value.model_ids : myAllowedModels.value.map(m => m.id),
       expires_at: newKey.value.expires_at || null,
     }
     const data = await keysStore.create(payload)

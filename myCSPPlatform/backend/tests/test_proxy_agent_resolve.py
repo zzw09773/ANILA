@@ -29,14 +29,24 @@ class TestAgentPermissionService:
         db.add(perm)
         db.commit()
 
-        assert check_agent_permission(db, key.id, agent.id) is True
+        assert (
+            check_agent_permission(
+                db, user=user, api_key_id=key.id, agent_id=agent.id
+            )
+            is True
+        )
 
     def test_key_without_permission_denied(self, db: Session):
         user = make_user(db, username="u_perm2")
         agent = make_agent(db, user, name="restricted-agent", approval_status="approved")
         key = make_api_key(db, user)
 
-        assert check_agent_permission(db, key.id, agent.id) is False
+        assert (
+            check_agent_permission(
+                db, user=user, api_key_id=key.id, agent_id=agent.id
+            )
+            is False
+        )
 
     def test_model_permission_independent_of_agent_permission(self, db: Session):
         user = make_user(db, username="u_perm3")
@@ -48,11 +58,21 @@ class TestAgentPermissionService:
         db.add(mp)
         db.commit()
 
-        assert check_model_permission(db, key.id, model.id) is True
+        assert (
+            check_model_permission(
+                db, user=user, api_key_id=key.id, model_id=model.id
+            )
+            is True
+        )
 
         # No agent permission granted
         agent = make_agent(db, user, name="agent-no-perm", approval_status="approved")
-        assert check_agent_permission(db, key.id, agent.id) is False
+        assert (
+            check_agent_permission(
+                db, user=user, api_key_id=key.id, agent_id=agent.id
+            )
+            is False
+        )
 
 
 class TestV1AgentsDataPlane:

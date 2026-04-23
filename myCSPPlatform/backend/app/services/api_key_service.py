@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.models.api_key import ApiKey, ApiKeyModelPermission
 from app.models.agent import ApiKeyAgentPermission, UserAgentPermission
 from app.models.model_registry import ModelRegistry
+from app.models.user import User
 
 
 def generate_api_key() -> tuple[str, str, str, str]:
@@ -66,13 +67,27 @@ def validate_api_key(db: Session, raw_key: str) -> ApiKey | None:
     return api_key
 
 
-def check_model_permission(db: Session, api_key_id: int, model_id: int) -> bool:
-    """Check if an API key has permission to use a model.
+def check_model_permission(
+    db: Session,
+    *,
+    user: User,
+    api_key_id: int | None,
+    model_id: int,
+) -> bool:
+    """Check caller permission to use a model.
 
-    Admin-designated "router primary" models are treated as platform-default
-    and open to every active user — the per-api-key whitelist still applies to
-    all other models. This lets admin designate one shared LLM for the ANILA
-    main route without hand-granting every user key individually.
+    Admin-designated "router primary" models are open to every active user,
+    so both auth paths (JWT and API key) accept them without a per-row
+    permission entry. For all other models:
+
+    - API key path (``api_key_id`` given): require an ``ApiKeyModelPermission``
+      row for that key. This preserves the existing per-key scoping.
+    - JWT / cookie path (``api_key_id is None``): fall back to the user's
+      ``allowed_models`` relationship — same set an admin granted for the
+      user account. The SPA uses this path exclusively.
+
+    Admin users pass any model. The SPA never impersonates API keys, so we
+    never silently widen an API key's scope via the user fallback.
     """
     model = (
         db.query(ModelRegistry)
@@ -83,41 +98,51 @@ def check_model_permission(db: Session, api_key_id: int, model_id: int) -> bool:
         return False
     if getattr(model, "is_router_primary", False):
         return True
-    perm = (
-        db.query(ApiKeyModelPermission)
-        .filter(
-            ApiKeyModelPermission.api_key_id == api_key_id,
-            ApiKeyModelPermission.model_id == model_id,
-        )
-        .first()
-    )
-    return perm is not None
-
-
-def check_agent_permission(db: Session, api_key_id: int, agent_id: int) -> bool:
-    """Check if an API key's owner has permission to call an agent.
-
-    Permission is granted via api_key_agent_permissions or inherited from
-    user_agent_permissions. Admin users always pass.
-    """
-    api_key = db.query(ApiKey).filter(ApiKey.id == api_key_id).first()
-    if not api_key:
-        return False
-    user = api_key.user
-    if not user:
-        return False
     if user.role == "admin":
         return True
-    direct_perm = (
-        db.query(ApiKeyAgentPermission)
-        .filter(
-            ApiKeyAgentPermission.api_key_id == api_key_id,
-            ApiKeyAgentPermission.agent_id == agent_id,
+
+    if api_key_id is not None:
+        perm = (
+            db.query(ApiKeyModelPermission)
+            .filter(
+                ApiKeyModelPermission.api_key_id == api_key_id,
+                ApiKeyModelPermission.model_id == model_id,
+            )
+            .first()
         )
-        .first()
-    )
-    if direct_perm is not None:
+        return perm is not None
+
+    return any(m.id == model_id for m in user.allowed_models)
+
+
+def check_agent_permission(
+    db: Session,
+    *,
+    user: User,
+    api_key_id: int | None,
+    agent_id: int,
+) -> bool:
+    """Check caller permission to invoke an agent.
+
+    API key path checks ``ApiKeyAgentPermission`` then falls back to
+    ``UserAgentPermission`` (preserves existing behavior). JWT / cookie path
+    checks ``UserAgentPermission`` directly. Admin users always pass.
+    """
+    if user.role == "admin":
         return True
+
+    if api_key_id is not None:
+        direct_perm = (
+            db.query(ApiKeyAgentPermission)
+            .filter(
+                ApiKeyAgentPermission.api_key_id == api_key_id,
+                ApiKeyAgentPermission.agent_id == agent_id,
+            )
+            .first()
+        )
+        if direct_perm is not None:
+            return True
+
     perm = (
         db.query(UserAgentPermission)
         .filter(

@@ -87,6 +87,92 @@
   }
   ::-webkit-scrollbar-thumb:hover { background: var(--fg-subtle); }
 
+  /* (list-density rules live below under .anila-msg-body so their
+     specificity beats the .anila-msg-body p margin and they don't
+     leak into other UI chrome like Settings panels.) */
+
+  /* Claude.ai-style message chrome:
+     - Assistant action toolbar is muted by default and fully revealed
+       on hover / keyboard focus of the message, so the reading surface
+       stays uncluttered.
+     - On pointer-less devices (touch) we always reveal it. */
+  .anila-msg-actions {
+    opacity: 0;
+    transition: opacity 140ms ease;
+  }
+  .anila-msg-assistant:hover .anila-msg-actions,
+  .anila-msg-assistant:focus-within .anila-msg-actions {
+    opacity: 1;
+  }
+  @media (hover: none) {
+    .anila-msg-actions { opacity: 1; }
+  }
+
+  /* Prose rhythm inside assistant replies. Tightens paragraph stacking
+     so a multi-paragraph answer reads as one flowing block, while
+     keeping headings visually distinct. Matches OpenWebUI / ChatGPT
+     compact density — margins inside lists collapse to near-zero so
+     numbered items stay readable without airy gaps. */
+  .anila-msg-body p { margin: 0 0 10px 0; }
+  .anila-msg-body p:last-child { margin-bottom: 0; }
+
+  /* Content headings are LLM-emitted section titles (e.g. "問題答案").
+     Keep them readable but restrained so they don't compete with the
+     actual H1 of the page. */
+  .anila-msg-body h1 { font-size: 17px; font-weight: 600; margin: 16px 0 6px; }
+  .anila-msg-body h2 { font-size: 15px; font-weight: 600; margin: 14px 0 5px; }
+  .anila-msg-body h3 { font-size: 14px; font-weight: 600; margin: 12px 0 4px; }
+  .anila-msg-body h1:first-child,
+  .anila-msg-body h2:first-child,
+  .anila-msg-body h3:first-child { margin-top: 0; }
+
+  /* Lists: dense like OpenWebUI. Key fix: override .anila-msg-body p
+     margin inside <li> — otherwise every loose-list item gains 10px
+     trailing space and numbered answers visibly "air out". */
+  .anila-msg-body ul,
+  .anila-msg-body ol { margin: 6px 0; padding-left: 22px; }
+  .anila-msg-body li { margin: 2px 0; }
+  .anila-msg-body li > p { margin: 0 0 2px 0; }
+  .anila-msg-body li > ul,
+  .anila-msg-body li > ol { margin: 2px 0; }
+  .anila-msg-body li > *:last-child { margin-bottom: 0; }
+
+  .anila-msg-body pre {
+    border-radius: 10px;
+    padding: 12px 14px;
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+  }
+  .anila-msg-body code {
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+  }
+  .anila-msg-body blockquote {
+    margin: 10px 0;
+    padding: 4px 12px;
+    border-left: 3px solid var(--border-strong, var(--border));
+    color: var(--fg-muted);
+  }
+
+  /* Reasoning summary — Claude.ai-style ghost row. Hover gives it a
+     subtle hit target; the disclosure body uses only a left border
+     (no background box) so it doesn't feel like another card. */
+  .anila-reasoning-toggle:hover {
+    background: var(--bg-subtle);
+    color: var(--fg-muted);
+  }
+  .anila-reasoning-spinner {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 999px;
+    border: 1.5px solid var(--border);
+    border-top-color: var(--fg-muted);
+    animation: anila-reasoning-spin 0.7s linear infinite;
+  }
+  @keyframes anila-reasoning-spin {
+    to { transform: rotate(360deg); }
+  }
+
   @keyframes anila-blink { 50% { opacity: 0; } }
 
   .boot-screen {

@@ -5,32 +5,33 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from app.database import get_db
+from app.middleware.caller import Caller, get_caller
 from app.models.agent import Agent, UserAgentPermission
-from app.models.api_key import ApiKey
 from app.models.model_registry import ModelRegistry
-from app.middleware.api_key_auth import get_api_key
 from app.services.api_key_service import check_model_permission, check_agent_permission
 from app.services.proxy_service import build_default_anila_meta, proxy_request, proxy_stream
 
 router = APIRouter(tags=["API 代理"])
 
 
-def _resolve_model(db: Session, api_key: ApiKey, model_name: str) -> ModelRegistry:
-    """Resolve model name to registry entry and check permissions."""
+def _resolve_model(db: Session, caller: Caller, model_name: str) -> ModelRegistry:
+    """Resolve model name to registry entry and check caller permissions."""
     model = db.query(ModelRegistry).filter(ModelRegistry.name == model_name).first()
     if not model:
         raise HTTPException(status_code=404, detail=f"模型 '{model_name}' 未註冊")
     if not model.is_active:
         raise HTTPException(status_code=400, detail=f"模型 '{model_name}' 已停用")
-    if not check_model_permission(db, api_key.id, model.id):
+    if not check_model_permission(
+        db, user=caller.user, api_key_id=caller.api_key_id, model_id=model.id
+    ):
         raise HTTPException(
             status_code=403,
-            detail=f"此 API Key 無權使用模型 '{model_name}'",
+            detail=f"無權使用模型 '{model_name}'",
         )
     return model
 
 
-def _resolve_agent(db: Session, api_key: ApiKey, agent_name: str) -> Agent | None:
+def _resolve_agent(db: Session, caller: Caller, agent_name: str) -> Agent | None:
     """Return the Agent if agent_name matches an approved agent, else None."""
     agent = (
         db.query(Agent)
@@ -39,27 +40,27 @@ def _resolve_agent(db: Session, api_key: ApiKey, agent_name: str) -> Agent | Non
     )
     if agent is None:
         return None
-    if not check_agent_permission(db, api_key.id, agent.id):
+    if not check_agent_permission(
+        db, user=caller.user, api_key_id=caller.api_key_id, agent_id=agent.id
+    ):
         raise HTTPException(
             status_code=403,
-            detail=f"此 API Key 無權呼叫 agent '{agent_name}'",
+            detail=f"無權呼叫 agent '{agent_name}'",
         )
     return agent
 
 
 @router.get("/v1/agents")
 def list_available_agents(
-    api_key: ApiKey = Depends(get_api_key),
+    caller: Caller = Depends(get_caller),
     db: Session = Depends(get_db),
 ):
-    """Data-plane endpoint: return approved agents available to this API Key's owner.
+    """Data-plane endpoint: return approved agents available to the caller.
 
     Used by RemoteAgentRegistry in the Router to discover agents.
     Response mirrors OpenAI /v1/models shape.
     """
-    user = api_key.user
-    if not user:
-        return JSONResponse({"object": "list", "data": []})
+    user = caller.user
 
     if user.role == "admin":
         agents = db.query(Agent).filter(Agent.approval_status == "approved").all()
@@ -96,7 +97,7 @@ def list_available_agents(
 @router.post("/v1/chat/completions")
 async def chat_completions(
     request: Request,
-    api_key: ApiKey = Depends(get_api_key),
+    caller: Caller = Depends(get_caller),
     db: Session = Depends(get_db),
 ):
     body = await request.json()
@@ -105,24 +106,24 @@ async def chat_completions(
         raise HTTPException(status_code=400, detail="缺少 model 參數")
 
     stream: bool = body.get("stream", False)
-    user = api_key.user
-    department_id = user.department_id if user else None
-    user_email = user.email if user else None
+    user = caller.user
+    department_id = user.department_id
+    user_email = user.email
 
     # Audit fields from optional client headers
     conversation_id: str | None = request.headers.get("X-ANILA-Conversation-Id")
     trace_id: str | None = request.headers.get("X-ANILA-Trace-Id")
 
     # Try agent first, fallback to model_registry
-    agent = _resolve_agent(db, api_key, model_name)
+    agent = _resolve_agent(db, caller, model_name)
     if agent:
         agent_requires_encryption = bool(getattr(agent, "requires_encryption", False))
         if stream:
             return StreamingResponse(
                 proxy_stream(
                     target_url=f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions",
-                    api_key_id=api_key.id,
-                    user_id=api_key.user_id,
+                    api_key_id=caller.api_key_id,
+                    user_id=user.id,
                     department_id=department_id,
                     usage_model_id=agent.id,
                     request_body=body,
@@ -142,7 +143,7 @@ async def chat_completions(
         from fastapi import HTTPException as _HTTPException
         target = f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions"
         from app.services.proxy_service import _build_downstream_headers, _aggregate_sse_to_chat_completion
-        headers = _build_downstream_headers(api_key.user_id, user_email)
+        headers = _build_downstream_headers(user.id, user_email)
         started_at = time.time()
         try:
             async with httpx.AsyncClient(timeout=120) as client:
@@ -173,7 +174,7 @@ async def chat_completions(
         except Exception as e:
             raise _HTTPException(status_code=502, detail=f"Agent 呼叫失敗: {e}")
 
-    model = _resolve_model(db, api_key, model_name)
+    model = _resolve_model(db, caller, model_name)
     # Direct LLM calls (not through an agent) do NOT trigger CSP-side classified
     # latch. Encryption is agent-level policy; the same LLM can back both
     # classified and non-classified agents. Downstream-reported classified=True
@@ -187,8 +188,8 @@ async def chat_completions(
         return StreamingResponse(
             proxy_stream(
                 target_url=target_url,
-                api_key_id=api_key.id,
-                user_id=api_key.user_id,
+                api_key_id=caller.api_key_id,
+                user_id=user.id,
                 department_id=department_id,
                 usage_model_id=model.id,
                 request_body=body,
@@ -204,8 +205,8 @@ async def chat_completions(
         )
     return await proxy_request(
         model=model,
-        api_key_id=api_key.id,
-        user_id=api_key.user_id,
+        api_key_id=caller.api_key_id,
+        user_id=user.id,
         department_id=department_id,
         request_body=body,
         endpoint_path="/v1/chat/completions",
@@ -218,7 +219,7 @@ async def chat_completions(
 @router.post("/v1/embeddings")
 async def embeddings_v1(
     request: Request,
-    api_key: ApiKey = Depends(get_api_key),
+    caller: Caller = Depends(get_caller),
     db: Session = Depends(get_db),
 ):
     body = await request.json()
@@ -226,12 +227,12 @@ async def embeddings_v1(
     if not model_name:
         raise HTTPException(status_code=400, detail="缺少 model 參數")
 
-    model = _resolve_model(db, api_key, model_name)
+    model = _resolve_model(db, caller, model_name)
     return await proxy_request(
         model=model,
-        api_key_id=api_key.id,
-        user_id=api_key.user_id,
-        department_id=api_key.user.department_id if api_key.user else None,
+        api_key_id=caller.api_key_id,
+        user_id=caller.user.id,
+        department_id=caller.user.department_id,
         request_body=body,
         endpoint_path="/v1/embeddings",
     )
@@ -240,7 +241,7 @@ async def embeddings_v1(
 @router.post("/v2/embeddings")
 async def embeddings_v2(
     request: Request,
-    api_key: ApiKey = Depends(get_api_key),
+    caller: Caller = Depends(get_caller),
     db: Session = Depends(get_db),
 ):
     body = await request.json()
@@ -248,12 +249,12 @@ async def embeddings_v2(
     if not model_name:
         raise HTTPException(status_code=400, detail="缺少 model 參數")
 
-    model = _resolve_model(db, api_key, model_name)
+    model = _resolve_model(db, caller, model_name)
     return await proxy_request(
         model=model,
-        api_key_id=api_key.id,
-        user_id=api_key.user_id,
-        department_id=api_key.user.department_id if api_key.user else None,
+        api_key_id=caller.api_key_id,
+        user_id=caller.user.id,
+        department_id=caller.user.department_id,
         request_body=body,
         endpoint_path="/v2/embeddings",
     )

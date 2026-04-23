@@ -39,12 +39,24 @@ export async function streamChatCompletion({
   onJson,
   onReasoning,
 }) {
+  // Wave 2: the SPA doesn't hold an API Key. When `apiKey` is falsy we
+  // rely on the browser attaching the httpOnly `anila_access_token`
+  // cookie via `credentials: "include"` and we echo the non-httpOnly
+  // `anila_csrf` cookie in the CSRF header (double-submit).
+  //
+  // `apiKey` still works — kept for transitional callers and for the
+  // tiny "test a key" flow in Settings.
+  const headers = { "Content-Type": "application/json" };
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
+  } else if (typeof document !== "undefined") {
+    const match = document.cookie.match(/(?:^|;\s*)anila_csrf=([^;]+)/);
+    if (match) headers["X-CSRF-Token"] = decodeURIComponent(match[1]);
+  }
   const response = await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
+    credentials: "include",
+    headers,
     body: JSON.stringify({ ...payload, stream: true }),
   });
 

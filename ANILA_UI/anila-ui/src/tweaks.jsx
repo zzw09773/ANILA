@@ -1,9 +1,17 @@
 // Tweaks panel — in-design controls (ESM)
-import React from "react";
+import React, { useEffect } from "react";
 import { IconSpark, IconX } from "./icons.jsx";
 import { IconButton } from "./components.jsx";
 
 export const TweaksPanel = ({ open, onClose, tweaks, setTweaks }) => {
+  // ESC closes the panel — matches Settings modal / Dropdown behavior.
+  useEffect(() => {
+    if (!open) return;
+    const h = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [open, onClose]);
+
   if (!open) return null;
 
   const update = (patch) => {

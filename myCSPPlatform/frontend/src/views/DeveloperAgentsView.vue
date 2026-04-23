@@ -245,6 +245,23 @@
                     詳情
                   </button>
                   <button
+                    v-if="canEditAgent(agent)"
+                    @click="openEditModal(agent)"
+                    class="font-medium text-amber-600 hover:text-amber-800"
+                    title="編輯 endpoint / 描述 / capabilities（名稱、審核狀態、加密模式不可改）"
+                  >
+                    編輯
+                  </button>
+                  <button
+                    v-if="authStore.isAdmin"
+                    @click="handleHealthCheck(agent)"
+                    :disabled="healthCheckingId === agent.id"
+                    class="font-medium text-blue-600 hover:text-blue-800 disabled:opacity-50"
+                    title="主動 ping agent 端點並更新健康狀態"
+                  >
+                    {{ healthCheckingId === agent.id ? '檢查中…' : '檢查' }}
+                  </button>
+                  <button
                     v-if="authStore.isAdmin && agent.approval_status === 'pending'"
                     @click="handleApprove(agent)"
                     class="font-medium text-green-600 hover:text-green-800"
@@ -320,6 +337,30 @@
               placeholder="v1"
             />
           </label>
+          <label class="grid gap-1">
+            <span class="text-sm font-medium text-gray-700">
+              底層模型 Base Model <span class="text-red-500">*</span>
+            </span>
+            <select
+              v-model.number="form.base_model_id"
+              class="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option :value="null" disabled>請選擇底層模型…</option>
+              <option
+                v-for="m in baseModelOptions"
+                :key="m.id"
+                :value="m.id"
+              >
+                {{ m.display_name }}（{{ m.name }} · {{ m.model_type }}）
+              </option>
+            </select>
+            <span v-if="formErrors.base_model_id" class="text-xs text-red-600">
+              {{ formErrors.base_model_id }}
+            </span>
+            <span v-else class="text-xs text-gray-500">
+              選擇你的 agent 內部呼叫的 LLM / VLM — 用量紀錄會歸到這個模型下。
+            </span>
+          </label>
         </div>
 
         <div class="mt-6 rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-600">
@@ -328,6 +369,7 @@
             <li>{{ form.name ? '✓' : '○' }} 已填 Agent 名稱</li>
             <li>{{ /^https?:\/\//.test(form.endpoint_url) ? '✓' : '○' }} Endpoint 使用 http/https URL</li>
             <li>{{ form.description_for_router.trim().length >= 24 ? '✓' : '○' }} Router 描述至少 24 字元</li>
+            <li>{{ form.base_model_id ? '✓' : '○' }} 已選擇底層模型</li>
             <li>○ 你的 endpoint 已實作 <code class="rounded bg-white px-1">GET /health</code>、<code class="rounded bg-white px-1">POST /v1/chat/completions</code>（OpenAI-compat SSE）</li>
           </ul>
         </div>
@@ -401,6 +443,106 @@ data: [DONE]</pre>
       </div>
     </div>
 
+    <div v-if="showEditModal && editTarget" class="fixed inset-0 z-50 flex items-center justify-center">
+      <div class="fixed inset-0 bg-black/50" @click="closeEditModal"></div>
+      <div class="relative mx-4 w-full max-w-2xl rounded-xl bg-white p-6 shadow-xl">
+        <h3 class="text-lg font-semibold">編輯 Agent</h3>
+        <p class="mt-1 text-sm text-gray-500">
+          名稱、審核狀態與加密模式無法在此修改；刪除 Agent 需 admin 權限。
+        </p>
+
+        <div class="mt-5 grid gap-4 md:grid-cols-2">
+          <label class="grid gap-1 md:col-span-2">
+            <span class="text-sm font-medium text-gray-700">Agent 名稱</span>
+            <input
+              :value="editTarget.name"
+              type="text"
+              disabled
+              class="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-gray-500"
+            />
+            <span class="text-xs text-gray-400">名稱是 agent_id，已註冊後無法修改。</span>
+          </label>
+          <label class="grid gap-1 md:col-span-2">
+            <span class="text-sm font-medium text-gray-700">Endpoint URL</span>
+            <input
+              v-model="editForm.endpoint_url"
+              type="text"
+              class="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
+              placeholder="http://host:port"
+            />
+          </label>
+          <label class="grid gap-1 md:col-span-2">
+            <span class="text-sm font-medium text-gray-700">Router 描述</span>
+            <textarea
+              v-model="editForm.description_for_router"
+              rows="4"
+              class="w-full resize-none rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
+              placeholder="用自然語言說明這個 Agent 能解決什麼問題。"
+            />
+            <span class="text-xs text-gray-400">
+              Router 會用這段文字判斷是否把使用者的問題分派給你。寫得越精確，分派越準確。
+            </span>
+          </label>
+          <label class="grid gap-1">
+            <span class="text-sm font-medium text-gray-700">API Version</span>
+            <input
+              v-model="editForm.api_version"
+              type="text"
+              class="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
+              placeholder="v1"
+            />
+          </label>
+          <label class="grid gap-1">
+            <span class="text-sm font-medium text-gray-700">
+              底層模型 Base Model <span class="text-red-500">*</span>
+            </span>
+            <select
+              v-model.number="editForm.base_model_id"
+              class="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option :value="null" disabled>請選擇底層模型…</option>
+              <option
+                v-for="m in baseModelOptions"
+                :key="m.id"
+                :value="m.id"
+              >
+                {{ m.display_name }}（{{ m.name }} · {{ m.model_type }}）
+              </option>
+            </select>
+            <span class="text-xs text-gray-500">
+              用量會歸到這個模型。換基座請確認既有流程仍能運作。
+            </span>
+          </label>
+          <label class="grid gap-1 md:col-span-2">
+            <span class="text-sm font-medium text-gray-700">Capabilities（JSON）</span>
+            <textarea
+              v-model="editForm.capabilitiesRaw"
+              rows="3"
+              class="w-full resize-none rounded-lg border border-gray-300 px-3 py-2 font-mono text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+              placeholder='{"streaming":true,"vision":false}'
+            />
+            <span v-if="editFormError" class="text-xs text-red-600">{{ editFormError }}</span>
+          </label>
+        </div>
+
+        <div class="mt-6 flex justify-end gap-3">
+          <button
+            @click="closeEditModal"
+            class="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+          >
+            取消
+          </button>
+          <button
+            @click="handleUpdateAgent"
+            :disabled="editing"
+            class="rounded-lg bg-indigo-600 px-4 py-2 text-sm text-white hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {{ editing ? '儲存中…' : '儲存' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div v-if="showDetailModal && detailAgent" class="fixed inset-0 z-50 flex items-center justify-end">
       <div class="fixed inset-0 bg-black/40" @click="showDetailModal = false"></div>
       <div class="relative h-full w-full max-w-xl overflow-y-auto bg-white p-6 shadow-2xl">
@@ -421,7 +563,7 @@ data: [DONE]</pre>
               <div class="flex gap-3"><dt class="w-28 shrink-0 text-gray-500">Health</dt><dd>{{ detailAgent.health_status }}</dd></div>
               <div class="flex gap-3"><dt class="w-28 shrink-0 text-gray-500">審核狀態</dt><dd>{{ approvalLabel(detailAgent.approval_status) }}</dd></div>
               <div class="flex gap-3"><dt class="w-28 shrink-0 text-gray-500">建立時間</dt><dd>{{ formatDate(detailAgent.created_at) }}</dd></div>
-              <div class="flex gap-3"><dt class="w-28 shrink-0 text-gray-500">Owner</dt><dd>{{ detailAgent.owner_user_id || '未提供' }}</dd></div>
+              <div class="flex gap-3"><dt class="w-28 shrink-0 text-gray-500">Owner</dt><dd>{{ ownerDisplay(detailAgent) }}</dd></div>
               <div class="flex gap-3"><dt class="w-28 shrink-0 text-gray-500">Base Model</dt><dd>{{ detailAgent.base_model_id || '未設定' }}</dd></div>
               <div class="flex gap-3">
                 <dt class="w-28 shrink-0 text-gray-500">加密模式</dt>
@@ -462,9 +604,15 @@ data: [DONE]</pre>
             </div>
           </div>
 
-          <div>
+          <div v-if="hasCapabilities(detailAgent)">
             <div class="text-xs uppercase tracking-[0.16em] text-gray-400">Capabilities</div>
             <pre class="mt-2 overflow-x-auto rounded-xl border border-gray-200 bg-gray-950 p-4 text-xs text-gray-100">{{ prettyJson(detailAgent.capabilities) }}</pre>
+          </div>
+          <div v-else>
+            <div class="text-xs uppercase tracking-[0.16em] text-gray-400">Capabilities</div>
+            <div class="mt-2 rounded-xl border border-dashed border-gray-200 bg-white p-4 text-xs text-gray-400">
+              尚未設定（Agent 未在 manifest 中宣告 capabilities）
+            </div>
           </div>
 
           <div>
@@ -518,7 +666,8 @@ data: [DONE]</pre>
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useAuthStore } from '../stores/auth'
-import { approveAgent, deleteAgent, downloadTemplate, getAgent, listMyAgents, registerAgent, rejectAgent, setAgentEncryption } from '../api/agents'
+import { approveAgent, deleteAgent, downloadTemplate, getAgent, listMyAgents, registerAgent, rejectAgent, setAgentEncryption, triggerAgentHealthCheck, updateAgent } from '../api/agents'
+import { listModels } from '../api/models'
 
 const authStore = useAuthStore()
 
@@ -533,6 +682,18 @@ const rejectTarget = ref(null)
 const rejectReason = ref('')
 const encryptionBusyId = ref(null)
 const deletingId = ref(null)
+const healthCheckingId = ref(null)
+const showEditModal = ref(false)
+const editTarget = ref(null)
+const editing = ref(false)
+const editFormError = ref('')
+const editForm = ref({
+  endpoint_url: '',
+  description_for_router: '',
+  api_version: '',
+  base_model_id: null,
+  capabilitiesRaw: '',
+})
 const feedback = ref({ type: 'success', message: '' })
 const filters = ref({
   query: '',
@@ -545,12 +706,42 @@ const form = ref({
   endpoint_url: '',
   description_for_router: '',
   api_version: 'v1',
+  base_model_id: null,
 })
 const formErrors = ref({})
+// LLM / VLM options for the base-model dropdown. Embedding models are
+// excluded because an agent's base model should be something the agent
+// calls during chat completion, not an embedding encoder.
+const availableModels = ref([])
+const baseModelOptions = computed(() =>
+  availableModels.value.filter(m => m.is_active && (m.model_type === 'llm' || m.model_type === 'vlm'))
+)
 
 const pendingCount = computed(() => agents.value.filter(agent => agent.approval_status === 'pending').length)
 const approvedCount = computed(() => agents.value.filter(agent => agent.approval_status === 'approved').length)
-const healthyCount = computed(() => agents.value.filter(agent => agent.health_status === 'healthy').length)
+// Accept both "healthy" (new agents from health-check endpoint) and
+// "online" (older rows written by the background ModelRegistry-style
+// health_checker before normalization landed). Belt-and-suspenders: the
+// backend also normalizes on read, but keeping this tolerant prevents a
+// version mismatch between UI and API from returning confusing zero.
+const healthyCount = computed(() => agents.value.filter(agent =>
+  agent.health_status === 'healthy' || agent.health_status === 'online'
+).length)
+
+function ownerDisplay(agent) {
+  if (!agent) return '未提供'
+  if (agent.owner_username) {
+    return `${agent.owner_username}${agent.owner_user_id ? ` (ID: ${agent.owner_user_id})` : ''}`
+  }
+  return agent.owner_user_id ? `ID: ${agent.owner_user_id}` : '未提供'
+}
+
+function hasCapabilities(agent) {
+  const c = agent?.capabilities
+  if (!c) return false
+  if (typeof c !== 'object') return true
+  return Object.keys(c).length > 0
+}
 
 const filteredAgents = computed(() => {
   const query = filters.value.query.trim().toLowerCase()
@@ -602,6 +793,7 @@ function resetForm() {
     endpoint_url: '',
     description_for_router: '',
     api_version: 'v1',
+    base_model_id: null,
   }
   formErrors.value = {}
 }
@@ -616,6 +808,9 @@ function validateForm() {
   }
   if (form.value.description_for_router.trim().length < 24) {
     errors.description_for_router = 'Router 描述至少需要 24 個字元'
+  }
+  if (!form.value.base_model_id) {
+    errors.base_model_id = '請選擇底層模型（用量會歸屬到此模型）'
   }
   formErrors.value = errors
   return Object.keys(errors).length === 0
@@ -633,7 +828,20 @@ async function fetchAgents() {
   }
 }
 
-onMounted(fetchAgents)
+async function fetchAvailableModels() {
+  try {
+    const { data } = await listModels()
+    availableModels.value = data
+  } catch (error) {
+    // Non-fatal: dropdown stays empty and the form's inline validator
+    // will tell the user the base_model field is required.
+    availableModels.value = []
+  }
+}
+
+onMounted(async () => {
+  await Promise.all([fetchAgents(), fetchAvailableModels()])
+})
 
 function openRegisterModal() {
   resetForm()
@@ -682,6 +890,81 @@ async function handleRegister() {
   }
 }
 
+// Edit permission: admin has global access; non-admin developers can edit
+// only the agents they registered themselves. Matches the PUT endpoint's
+// server-side check so the UI never offers a button that will 403.
+function canEditAgent(agent) {
+  if (!agent) return false
+  if (authStore.isAdmin) return true
+  return agent.owner_user_id === authStore.user?.id
+}
+
+function openEditModal(agent) {
+  editTarget.value = agent
+  editForm.value = {
+    endpoint_url: agent.endpoint_url || '',
+    description_for_router: agent.description_for_router || '',
+    api_version: agent.api_version || 'v1',
+    base_model_id: agent.base_model_id ?? null,
+    capabilitiesRaw: agent.capabilities && Object.keys(agent.capabilities).length
+      ? JSON.stringify(agent.capabilities, null, 2)
+      : '',
+  }
+  editFormError.value = ''
+  showEditModal.value = true
+}
+
+function closeEditModal() {
+  showEditModal.value = false
+  editTarget.value = null
+  editFormError.value = ''
+}
+
+async function handleUpdateAgent() {
+  if (!editTarget.value || editing.value) return
+  if (!editForm.value.base_model_id) {
+    editFormError.value = '底層模型為必填 — 用量歸屬需要這個欄位。'
+    return
+  }
+  // Parse capabilities JSON up-front so a syntax typo surfaces before the
+  // request fires. Empty string → send null (clears the field).
+  let capabilities = null
+  const raw = (editForm.value.capabilitiesRaw || '').trim()
+  if (raw) {
+    try {
+      capabilities = JSON.parse(raw)
+      if (typeof capabilities !== 'object' || Array.isArray(capabilities)) {
+        throw new Error('Capabilities 必須是 JSON 物件')
+      }
+    } catch (err) {
+      editFormError.value = `Capabilities JSON 錯誤：${err.message}`
+      return
+    }
+  }
+
+  const patch = {
+    endpoint_url: editForm.value.endpoint_url.trim() || null,
+    description_for_router: (editForm.value.description_for_router || '').trim() || null,
+    api_version: (editForm.value.api_version || '').trim() || null,
+    base_model_id: editForm.value.base_model_id,
+    capabilities,
+  }
+
+  editing.value = true
+  try {
+    const { data } = await updateAgent(editTarget.value.id, patch)
+    const idx = agents.value.findIndex((a) => a.id === data.id)
+    if (idx >= 0) agents.value[idx] = data
+    if (detailAgent.value && detailAgent.value.id === data.id) detailAgent.value = data
+    setFeedback('success', `已更新 Agent「${data.name}」`)
+    closeEditModal()
+  } catch (error) {
+    setFeedback('error', error.response?.data?.detail || '更新失敗')
+  } finally {
+    editing.value = false
+  }
+}
+
 async function handleApprove(agent) {
   try {
     await approveAgent(agent.id)
@@ -717,6 +1000,34 @@ async function handleToggleEncryption(agent) {
     setFeedback('error', error.response?.data?.detail || '加密設定更新失敗')
   } finally {
     encryptionBusyId.value = null
+  }
+}
+
+async function handleHealthCheck(agent) {
+  if (!agent || healthCheckingId.value === agent.id) {
+    return
+  }
+  healthCheckingId.value = agent.id
+  try {
+    const { data } = await triggerAgentHealthCheck(agent.id)
+    // Reflect the new health status locally without a full refetch so the
+    // coloured pill updates instantly.
+    const idx = agents.value.findIndex((a) => a.id === agent.id)
+    if (idx >= 0) {
+      agents.value[idx] = { ...agents.value[idx], health_status: data.status }
+    }
+    const ok = data.status === 'healthy'
+    setFeedback(
+      ok ? 'success' : 'error',
+      `Agent「${agent.name}」健康檢查: ${data.status}${data.detail ? ` — ${data.detail}` : ''}`,
+    )
+  } catch (error) {
+    setFeedback(
+      'error',
+      error.response?.data?.detail || `Agent「${agent.name}」健康檢查失敗`,
+    )
+  } finally {
+    healthCheckingId.value = null
   }
 }
 

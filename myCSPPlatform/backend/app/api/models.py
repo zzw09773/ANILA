@@ -1,6 +1,6 @@
 import httpx
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.agent import Agent
@@ -236,9 +236,19 @@ def update_model(
     return _build_response(model)
 
 
+def _client_ip(request: Request | None) -> str | None:
+    if request is None:
+        return None
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else None
+
+
 @router.delete("/{model_id}")
 def deactivate_model(
     model_id: int,
+    request: Request,
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -254,6 +264,7 @@ def deactivate_model(
         resource_type="model",
         resource_id=model.id,
         detail=f"停用模型「{model.display_name}」",
+        ip_address=_client_ip(request),
         commit=True,
     )
     return {"message": "模型已停用"}
@@ -308,6 +319,7 @@ def purge_model(
 @router.post("/{model_id}/health-check")
 async def trigger_health_check(
     model_id: int,
+    request: Request,
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -315,6 +327,7 @@ async def trigger_health_check(
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
 
+    ip = _client_ip(request)
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             # Try common health endpoints
@@ -332,6 +345,7 @@ async def trigger_health_check(
                             resource_type="model",
                             resource_id=model.id,
                             detail=f"手動健康檢查成功: {model.display_name}",
+                            ip_address=ip,
                             commit=True,
                         )
                         return {"status": "online", "detail": f"端點 {path} 回應正常"}
@@ -348,6 +362,7 @@ async def trigger_health_check(
                 resource_type="model",
                 resource_id=model.id,
                 detail=f"手動健康檢查離線: {model.display_name}",
+                ip_address=ip,
                 commit=True,
             )
             return {"status": "offline", "detail": "無法連線到模型端點"}
@@ -363,6 +378,7 @@ async def trigger_health_check(
             resource_id=model.id,
             status="failure",
             detail=f"手動健康檢查失敗: {model.display_name} ({e})",
+            ip_address=ip,
             commit=True,
         )
         return {"status": "offline", "detail": str(e)}

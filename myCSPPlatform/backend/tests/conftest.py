@@ -16,6 +16,8 @@ from sqlalchemy.pool import StaticPool
 os.environ["DEBUG"] = "false"
 os.environ["DATABASE_URL"] = "sqlite:///./.pytest-csp.db"
 os.environ["HEALTH_CHECK_INTERVAL"] = "3600"
+# TestClient uses http://testserver — Secure cookies would be dropped.
+os.environ.setdefault("COOKIE_SECURE", "false")
 os.environ.setdefault("AUTO_REGISTER_MODELS", "")
 os.environ.setdefault("AUTO_REGISTER_AGENTS", "")
 os.environ.setdefault("AUTO_SEED_API_KEYS", "")

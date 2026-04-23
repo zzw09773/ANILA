@@ -137,6 +137,7 @@
               <th class="px-4 py-3 text-left font-medium text-gray-600">部門</th>
               <th class="px-4 py-3 text-left font-medium text-gray-600">角色</th>
               <th class="px-4 py-3 text-left font-medium text-gray-600">狀態</th>
+              <th class="px-4 py-3 text-left font-medium text-gray-600">上次登入</th>
               <th class="px-4 py-3 text-left font-medium text-gray-600">建立日期</th>
               <th class="px-4 py-3 text-left font-medium text-gray-600">操作</th>
             </tr>
@@ -176,6 +177,7 @@
                   {{ statusLabel(user) }}
                 </span>
               </td>
+              <td class="px-4 py-3 text-gray-500">{{ user.last_login_at ? formatDate(user.last_login_at) : '從未登入' }}</td>
               <td class="px-4 py-3 text-gray-500">{{ formatDate(user.created_at) }}</td>
               <td class="px-4 py-3">
                 <div class="flex flex-wrap gap-2 text-xs">

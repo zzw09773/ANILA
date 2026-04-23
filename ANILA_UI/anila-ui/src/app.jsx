@@ -15,10 +15,12 @@ import React, {
   useState,
 } from "react";
 
-import { apiKeyRequest, config } from "./runtime/api.js";
+import { config } from "./runtime/api.js";
 import { useAuth, useLogoutRedirect } from "./runtime/auth.jsx";
 import { streamChatCompletion } from "./runtime/sse.js";
 import { latchConversationWithMeta } from "./runtime/classified.js";
+import { buildPersistMeta } from "./runtime/messageMeta.js";
+import { cleanGeneratedTitle } from "./runtime/titleClean.js";
 import { relativeLabel } from "./runtime/time.js";
 import {
   listConversations as apiListConversations,
@@ -30,6 +32,7 @@ import {
   rateMessage as apiRateMessage,
   editUserMessage as apiEditUserMessage,
   updateMessage as apiUpdateMessage,
+  classifyConversation as apiClassifyConversation,
   createShare as apiCreateShare,
   buildShareUrl,
   uploadAttachment as apiUploadAttachment,
@@ -84,12 +87,25 @@ const ROUTER_AGENT = Object.freeze({
   requiresEncryption: false,
 });
 
-const STARTER_PROMPTS = [
-  { title: "特休怎麼計算？",   sub: "HR · 規則 + 引用來源",      q: "公司特休怎麼計算？請附引用來源。" },
-  { title: "出差報銷流程",     sub: "Finance · 4 步流程",        q: "請整理出差報銷流程與需要準備的附件。" },
-  { title: "FastAPI SSE",     sub: "Code · streaming proxy",    q: "FastAPI 要怎麼做 SSE streaming proxy？請給我實作方向。" },
-  { title: "@vlm 解釋架構圖",  sub: "直接指定 vision agent",     q: "@vlm 解釋這張系統架構圖" },
-];
+// Default starter — a single card that asks the Router itself to
+// introduce ANILA AND list every agent available to this user. The
+// Router already has the agent manifest in its system prompt so it can
+// produce an accurate, up-to-date answer on first ask, and the user
+// sees their real option set instead of hand-curated marketing cards.
+function buildStarterPrompts(agents) {
+  const real = (agents || []).filter((a) => a.id !== ROUTER_AGENT.id);
+  const countLine = real.length > 0
+    ? `你目前可以使用 ${real.length} 個 agent`
+    : "平台目前尚未註冊 agent";
+  return [
+    {
+      title: "ANILA 可以做什麼？",
+      sub: `${countLine}，點一下讓 Router 介紹平台與各 agent 的能力`,
+      q: "請介紹 ANILA 這個平台能做什麼，並列出我目前可用的每一個 agent 與它們各自能解決的問題。",
+      primary: true,
+    },
+  ];
+}
 
 // ---- Helpers ---------------------------------------------------------------
 // Build an OpenAI chat message `content` for a user turn. When the message
@@ -192,14 +208,14 @@ function applyTweaks(t) {
 
 // ---- Chat Runtime ----------------------------------------------------------
 function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
-  const {
-    apiKey,
-    apiKeyStatus,
-    updateApiKey,
-    authRequest,
-    multipartRequest,
-    isAuthenticated,
-  } = useAuth();
+  // Wave 2: the SPA no longer holds an API Key. Auth rides on the
+  // httpOnly session cookie set by /api/auth/login; the stubs below keep
+  // the existing component tree alive (settings panel etc) without
+  // depending on localStorage/sessionStorage state.
+  const { authRequest, multipartRequest, isAuthenticated } = useAuth();
+  const apiKey = "";
+  const apiKeyStatus = { valid: isAuthenticated, checked: true, error: "" };
+  const updateApiKey = async () => undefined;
   const logoutAndRedirect = useLogoutRedirect();
 
   // --- agents / conversations / messages ---
@@ -317,20 +333,27 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     });
   }, [currentMsgs.length, currentMsgs[currentMsgs.length - 1]?.text]);
 
-  // agents: load on apiKey valid
+  // agents: load once the session is ready (cookie already attached)
   useEffect(() => {
-    if (apiKeyStatus.valid && apiKey) {
+    if (isAuthenticated) {
       void refreshAgents();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiKeyStatus.valid, apiKey]);
+  }, [isAuthenticated]);
 
   async function refreshAgents() {
     setLoadingAgents(true);
     setRuntimeError("");
     try {
-      const response = await apiKeyRequest(config.cspBaseUrl, "/v1/agents", apiKey);
-      const data = await response.json();
+      // /v1/agents accepts the session cookie (Wave 1 caller dep) so the
+      // same call works without the SPA holding an API Key.
+      const res = await fetch(`${config.cspBaseUrl}/v1/agents`, {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const data = await res.json();
       const normalized = normalizeAgents(data.data || []);
       startTransition(() => {
         setAgents(normalized);
@@ -576,7 +599,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   // primary model, so no extra admin configuration is required.
   async function generateConversationTitle(convId, userText, assistantText, effectiveTarget) {
     if (typeof convId !== "number") return;
-    if (!apiKey) return;
+    if (!isAuthenticated) return;
     const baseUrl =
       effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
     const systemPrompt =
@@ -584,11 +607,13 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       "只能輸出標題本身，不要加引號、冒號、標點或其他說明。";
     const userPrompt = `使用者：${userText}\n助理：${assistantText}`;
     try {
+      const csrf = document.cookie.match(/(?:^|;\s*)anila_csrf=([^;]+)/);
       const res = await fetch(`${baseUrl}/v1/chat/completions`, {
         method: "POST",
+        credentials: "include",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
+          ...(csrf ? { "X-CSRF-Token": decodeURIComponent(csrf[1]) } : {}),
         },
         body: JSON.stringify({
           model: effectiveTarget,
@@ -602,12 +627,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       if (!res.ok) return;
       const data = await res.json();
       const raw = data?.choices?.[0]?.message?.content || "";
-      // Strip whitespace, quotes, trailing punctuation; clamp length.
-      const cleaned = raw
-        .trim()
-        .replace(/^["「『](.+)["」』]$/s, "$1")
-        .replace(/[。．.!！?？,、]+$/, "")
-        .slice(0, 30);
+      // Reject outputs that echo a Router fallback placeholder etc. When the
+      // generator produces garbage, keep the user-text truncation rather
+      // than replacing a readable title with a useless one.
+      const cleaned = cleanGeneratedTitle(raw);
       if (!cleaned) return;
       updateConv(convId, { title: cleaned });
       try {
@@ -624,8 +647,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   async function handleEditUser(userMsg, nextText) {
     const trimmed = (nextText || "").trim();
     if (!trimmed || trimmed === userMsg.text) return;
-    if (!apiKey) {
-      setRuntimeError("尚未設定 CSP API Key，請先到設定 → API Key 設定。");
+    if (!isAuthenticated) {
+      setRuntimeError("尚未登入，請重新登入後再試。");
       return;
     }
     const convId = userMsg.conversationId;
@@ -679,16 +702,20 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     };
     let finalText = "";
     let finalMeta = null;
+    // See comment on sendMessage — stale closure on messagesByConv forces
+    // us to accumulate trace / reasoning locally for the persist call.
+    const accumulatedTrace = [];
+    let accumulatedReasoning = "";
     try {
       await streamChatCompletion({
         url: `${baseUrl}/v1/chat/completions`,
-        apiKey,
         payload,
         onText: (acc) => {
           finalText = acc;
           updateMsg(convId, assistantId, { text: acc });
         },
         onTrace: (step) => {
+          accumulatedTrace.push(step);
           setMessagesByConv((prev) => ({
             ...prev,
             [convId]: (prev[convId] || []).map((m) =>
@@ -708,6 +735,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
           applyMeta(convId, assistantId, effectiveTarget, meta);
         },
         onReasoning: (delta) => {
+          accumulatedReasoning += delta;
           setMessagesByConv((prev) => ({
             ...prev,
             [convId]: (prev[convId] || []).map((m) =>
@@ -724,6 +752,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         const agentNameForPersist =
           agents.find((a) => a.id === effectiveTarget)?.name ||
           String(effectiveTarget);
+        const persistMeta = buildPersistMeta(finalMeta, {
+          trace: accumulatedTrace,
+          reasoning: accumulatedReasoning,
+        });
         try {
           const saved = await apiAppendMessage(authRequest, convId, {
             role: "assistant",
@@ -731,7 +763,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
             traceId: finalMeta?.trace_id,
             latencyMs: finalMeta?.latency_ms,
             agentName: agentNameForPersist,
-            metadata: finalMeta || null,
+            metadata: persistMeta,
           });
           if (saved && typeof saved.id === "number") {
             updateMsg(convId, assistantId, { dbId: saved.id });
@@ -809,16 +841,29 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
 
     // Classification latch — one-way. See runtime/classified.js.
     if (meta.classified === true) {
-      setConversations((prev) =>
-        prev.map((c) => (c.id === convId ? latchConversationWithMeta(c, meta) : c)),
-      );
+      setConversations((prev) => {
+        const prior = prev.find((c) => c.id === convId);
+        // Only persist once: when we flip from not-classified → classified.
+        // Fire-and-forget — the DB is the safety net so a reload still
+        // renders the lock even though we also keep it in React state.
+        if (
+          prior &&
+          !prior.classified &&
+          typeof convId === "number"
+        ) {
+          apiClassifyConversation(authRequest, convId).catch(() => {});
+        }
+        return prev.map((c) =>
+          c.id === convId ? latchConversationWithMeta(c, meta) : c,
+        );
+      });
     }
   }
 
   // ---- send single ----
   async function sendMessage(text, attachments = [], meta = {}) {
-    if (!apiKey) {
-      setRuntimeError("尚未設定 CSP API Key，請先到設定 → API Key 設定。");
+    if (!isAuthenticated) {
+      setRuntimeError("尚未登入，請重新登入後再試。");
       return;
     }
     const { explicitAgents = [], piiHits = [] } = meta;
@@ -869,16 +914,25 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
 
     let finalText = "";
     let finalMeta = null;
+    // Keep trace / reasoning accumulators as plain locals so we are NOT at
+    // the mercy of React's stale-closure semantics when persisting below.
+    // `messagesByConv` captured by this function is frozen at the render
+    // that dispatched sendMessage — reading it after streaming always
+    // yields empty trace / reasoning even though setState visibly updated
+    // the UI. The locals here collect the same deltas in lockstep and
+    // feed buildPersistMeta with the live values.
+    const accumulatedTrace = [];
+    let accumulatedReasoning = "";
     try {
       await streamChatCompletion({
         url: `${baseUrl}/v1/chat/completions`,
-        apiKey,
         payload,
         onText: (acc) => {
           finalText = acc;
           updateMsg(convId, assistantId, { text: acc });
         },
         onTrace: (step) => {
+          accumulatedTrace.push(step);
           setMessagesByConv((prev) => ({
             ...prev,
             [convId]: (prev[convId] || []).map((m) =>
@@ -898,6 +952,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
           applyMeta(convId, assistantId, effectiveTarget, meta);
         },
         onReasoning: (delta) => {
+          accumulatedReasoning += delta;
           setMessagesByConv((prev) => ({
             ...prev,
             [convId]: (prev[convId] || []).map((m) =>
@@ -916,6 +971,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         const agentNameForPersist =
           agents.find((a) => a.id === effectiveTarget)?.name ||
           String(effectiveTarget);
+        const persistMeta = buildPersistMeta(finalMeta, {
+          trace: accumulatedTrace,
+          reasoning: accumulatedReasoning,
+        });
         try {
           await apiAppendMessage(authRequest, convId, {
             role: "user",
@@ -927,7 +986,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
             traceId: finalMeta?.trace_id,
             latencyMs: finalMeta?.latency_ms,
             agentName: agentNameForPersist,
-            metadata: finalMeta || null,
+            metadata: persistMeta,
           });
           // Capture DB id so thumbs-up/down can PUT to the backend.
           if (savedAssistant && typeof savedAssistant.id === "number") {
@@ -964,8 +1023,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   // trace in place. Caller API key permissions and routing target are
   // inherited from the original turn.
   async function regenerateMessage(assistantMsg) {
-    if (!apiKey) {
-      setRuntimeError("尚未設定 CSP API Key，請先到設定 → API Key 設定。");
+    if (!isAuthenticated) {
+      setRuntimeError("尚未登入，請重新登入後再試。");
       return;
     }
     const convId = assistantMsg.conversationId;
@@ -1055,7 +1114,6 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     try {
       await streamChatCompletion({
         url: `${baseUrl}/v1/chat/completions`,
-        apiKey,
         payload,
         onText: (acc) => {
           finalText = acc;
@@ -1218,8 +1276,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
 
   // ---- send compare ----
   async function sendCompare(text, attachments = [], meta = {}) {
-    if (!apiKey) {
-      setRuntimeError("尚未設定 CSP API Key。");
+    if (!isAuthenticated) {
+      setRuntimeError("尚未登入，請重新登入後再試。");
       return;
     }
     const explicit = (meta.explicitAgents || []).filter(
@@ -1269,7 +1327,6 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         try {
           await streamChatCompletion({
             url: `${config.cspBaseUrl}/v1/chat/completions`,
-            apiKey,
             payload: {
               model: col.agentId,
               messages: [{ role: "user", content: buildUserContent(text, attachments) }],
@@ -1662,6 +1719,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                     {currentMsgs.length === 0 ? (
                       <EmptyState
                         agent={activeAgent}
+                        agents={agents}
                         loading={loadingAgents}
                         onPick={(q) => sendMessage(q, [], {})}
                       />
@@ -1801,7 +1859,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
 }
 
 // ---- Empty state -----------------------------------------------------------
-function EmptyState({ agent, onPick, loading }) {
+function EmptyState({ agent, agents, onPick, loading }) {
+  const prompts = buildStarterPrompts(agents);
   return (
     <div style={{ padding: "64px 12px 32px", textAlign: "center" }}>
       <AnilaGlyph size={40} />
@@ -1817,30 +1876,42 @@ function EmptyState({ agent, onPick, loading }) {
       </div>
       <div style={{
         marginTop: 36, display: "grid",
-        gridTemplateColumns: "1fr 1fr", gap: 10,
-        maxWidth: 600, margin: "36px auto 0", textAlign: "left",
+        gridTemplateColumns: prompts.length === 1 ? "1fr" : "1fr 1fr",
+        gap: 10,
+        maxWidth: 560, margin: "36px auto 0", textAlign: "left",
       }}>
-        {STARTER_PROMPTS.map((s, i) => (
-          <button key={i} onClick={() => onPick(s.q)} style={{
-            padding: "12px 14px",
-            background: "var(--bg-elev)",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius)",
-            cursor: "pointer", textAlign: "left",
-            transition: "all .12s",
-          }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.borderColor = "var(--border-strong)";
-              e.currentTarget.style.transform = "translateY(-1px)";
+        {prompts.map((s, i) => {
+          const isPrimary = s.primary === true;
+          return (
+            <button key={i} onClick={() => onPick(s.q)} style={{
+              padding: isPrimary ? "16px 18px" : "12px 14px",
+              background: isPrimary ? "var(--accent-soft, var(--bg-elev))" : "var(--bg-elev)",
+              border: "1px solid " + (isPrimary ? "var(--accent, var(--border-strong))" : "var(--border)"),
+              borderRadius: "var(--radius)",
+              cursor: "pointer", textAlign: "left",
+              transition: "all .12s",
+              fontFamily: "inherit",
+              color: "var(--fg)",
             }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.borderColor = "var(--border)";
-              e.currentTarget.style.transform = "";
-            }}>
-            <div style={{ fontSize: 13, fontWeight: 500, color: "var(--fg)" }}>{s.title}</div>
-            <div style={{ fontSize: 12, color: "var(--fg-muted)", marginTop: 3 }}>{s.sub}</div>
-          </button>
-        ))}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.borderColor = "var(--border-strong)";
+                e.currentTarget.style.transform = "translateY(-1px)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.borderColor = isPrimary
+                  ? "var(--accent, var(--border-strong))"
+                  : "var(--border)";
+                e.currentTarget.style.transform = "";
+              }}>
+              <div style={{
+                fontSize: isPrimary ? 15 : 13,
+                fontWeight: 600,
+                color: "var(--fg)",
+              }}>{s.title}</div>
+              <div style={{ fontSize: 12, color: "var(--fg-muted)", marginTop: 4 }}>{s.sub}</div>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
