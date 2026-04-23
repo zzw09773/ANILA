@@ -141,14 +141,22 @@ async def chat_completions(
         import httpx
         from fastapi import HTTPException as _HTTPException
         target = f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions"
-        from app.services.proxy_service import _build_downstream_headers
+        from app.services.proxy_service import _build_downstream_headers, _aggregate_sse_to_chat_completion
         headers = _build_downstream_headers(api_key.user_id, user_email)
         started_at = time.time()
         try:
             async with httpx.AsyncClient(timeout=120) as client:
                 resp = await client.post(target, json=body, headers=headers)
                 resp.raise_for_status()
-                payload = resp.json()
+                # SSE-only agents (e.g. asrd) ignore ``stream: false`` and
+                # respond with event-stream regardless. Aggregate in that
+                # case so the caller still gets JSON.
+                ct = resp.headers.get("content-type", "")
+                preview = resp.text[:8].lstrip()
+                if "text/event-stream" in ct or preview.startswith("data:"):
+                    payload = _aggregate_sse_to_chat_completion(resp.text, agent.name)
+                else:
+                    payload = resp.json()
                 existing_meta = payload.get("anila_meta")
                 if not existing_meta:
                     payload["anila_meta"] = build_default_anila_meta(

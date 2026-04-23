@@ -92,6 +92,48 @@ const STARTER_PROMPTS = [
 ];
 
 // ---- Helpers ---------------------------------------------------------------
+// Build an OpenAI chat message `content` for a user turn. When the message
+// has no image attachments we keep the string form (compatible with every
+// model). When images are present we switch to the array form with
+// `image_url` parts so vision-capable models (Gemma4, gpt-4o, ...) can see
+// the image inline. Non-image attachments are referenced by filename in a
+// trailing text note.
+// Fold prior conversation turns (excluding the live streaming assistant)
+// into the OpenAI message history so the model remembers what was said —
+// and, critically, so images from earlier turns stay visible.
+function buildMessageHistory(priorMsgs, currentText, currentAttachments) {
+  const out = [];
+  for (const m of priorMsgs || []) {
+    if (!m || m.streaming) continue;
+    if (m.role === "user") {
+      out.push({ role: "user", content: buildUserContent(m.text || "", m.attachments || []) });
+    } else if (m.role === "assistant" && m.text) {
+      out.push({ role: "assistant", content: m.text });
+    }
+  }
+  out.push({ role: "user", content: buildUserContent(currentText, currentAttachments) });
+  return out;
+}
+
+function buildUserContent(text, attachments) {
+  const list = Array.isArray(attachments) ? attachments : [];
+  const images = list.filter((a) => a.dataUrl && (a.kind === "image" || (a.contentType || "").startsWith("image/")));
+  const otherFiles = list.filter((a) => !images.includes(a) && a.name);
+  if (images.length === 0) {
+    if (otherFiles.length === 0) return text;
+    const tail = otherFiles.map((a) => `- ${a.name}`).join("\n");
+    return `${text}\n\n[附件]\n${tail}`;
+  }
+  const parts = [{ type: "text", text: text || "" }];
+  for (const img of images) {
+    parts.push({ type: "image_url", image_url: { url: img.dataUrl } });
+  }
+  if (otherFiles.length > 0) {
+    parts[0].text = `${parts[0].text}\n\n[附件]\n${otherFiles.map((a) => `- ${a.name}`).join("\n")}`;
+  }
+  return parts;
+}
+
 function makeId(prefix) {
   return `${prefix}-${Math.random().toString(16).slice(2, 10)}-${Date.now().toString(36)}`;
 }
@@ -665,6 +707,16 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
           finalMeta = meta;
           applyMeta(convId, assistantId, effectiveTarget, meta);
         },
+        onReasoning: (delta) => {
+          setMessagesByConv((prev) => ({
+            ...prev,
+            [convId]: (prev[convId] || []).map((m) =>
+              m.id === assistantId
+                ? { ...m, reasoning: (m.reasoning || "") + delta }
+                : m,
+            ),
+          }));
+        },
       });
       updateMsg(convId, assistantId, { streaming: false });
 
@@ -733,9 +785,16 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   }
 
   function applyMeta(convId, msgId, agentId, meta) {
+    // Streaming paths emit each trace step as its own SSE event, and the
+    // final ``anila.meta`` intentionally ships ``trace: []`` to avoid
+    // duplicating them. Keep the accumulated trace in that case; only
+    // replace when the meta actually carries trace data (non-stream
+    // paths bundle everything into one frame).
+    const metaTrace = Array.isArray(meta.trace) ? meta.trace : [];
+    const tracePatch = metaTrace.length > 0 ? { trace: metaTrace } : {};
     updateMsg(convId, msgId, {
       traceId: meta.trace_id,
-      trace: meta.trace || [],
+      ...tracePatch,
       citations: meta.citations || [],
       confidence: meta.confidence,
       handoffChain: meta.handoff_chain || [],
@@ -795,6 +854,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       createdAt: nowIso(),
       timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
     };
+    const priorForHistory = messagesByConv[convId] || [];
     setMessagesByConv((prev) => ({
       ...prev,
       [convId]: [...(prev[convId] || []), userMsg, assistantMsg],
@@ -804,7 +864,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
     const payload = {
       model: effectiveTarget,
-      messages: [{ role: "user", content: text }],
+      messages: buildMessageHistory(priorForHistory, text, attachments),
     };
 
     let finalText = "";
@@ -836,6 +896,16 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         onMeta: (meta) => {
           finalMeta = meta;
           applyMeta(convId, assistantId, effectiveTarget, meta);
+        },
+        onReasoning: (delta) => {
+          setMessagesByConv((prev) => ({
+            ...prev,
+            [convId]: (prev[convId] || []).map((m) =>
+              m.id === assistantId
+                ? { ...m, reasoning: (m.reasoning || "") + delta }
+                : m,
+            ),
+          }));
         },
       });
       updateMsg(convId, assistantId, { streaming: false });
@@ -916,17 +986,25 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     }
     const prevUser = msgs[userIdx];
 
+    // Messages that came *after* this assistant reply. ChatGPT-style
+    // regenerate forks a new branch: the tail belongs to the old revision
+    // and must be hidden from the active thread while kept retrievable via
+    // the < N/M > pager.
+    const tailMsgs = msgs.slice(idx + 1);
+
     const effectiveTarget = assistantMsg.routedAgentId || selectedAgentId;
     const baseUrl =
       effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
     const payload = {
       model: effectiveTarget,
-      messages: [{ role: "user", content: prevUser.text }],
+      messages: buildMessageHistory(msgs.slice(0, userIdx), prevUser.text, prevUser.attachments || []),
     };
 
     // Snapshot the current top-level fields into revisions[] so the user can
     // flip back to the previous answer with the < / > pager. If this is the
-    // first regenerate we seed revisions with the original reply too.
+    // first regenerate we seed revisions with the original reply too, and
+    // attach the abandoned tail to it so flipping back restores the old
+    // branch of follow-up turns.
     const currentSnapshot = {
       text: assistantMsg.text,
       trace: assistantMsg.trace || [],
@@ -935,28 +1013,42 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       latencyMs: assistantMsg.latencyMs,
       dbId: assistantMsg.dbId,
       timestamp: assistantMsg.timestamp,
+      tail: tailMsgs,
     };
     const existingRevs = Array.isArray(assistantMsg.revisions) && assistantMsg.revisions.length > 0
-      ? assistantMsg.revisions
+      ? assistantMsg.revisions.map((r, i) =>
+          i === assistantMsg.activeRev ? { ...r, tail: tailMsgs } : r,
+        )
       : [currentSnapshot];
-    // Placeholder for the revision currently being streamed; we'll rewrite
-    // it on stream completion.
-    const nextRevs = [...existingRevs, { text: "", trace: [], reasoning: null }];
+    // Placeholder for the revision currently being streamed; new branch
+    // starts with empty tail — follow-up turns will accumulate into it as
+    // the user continues the conversation.
+    const nextRevs = [...existingRevs, { text: "", trace: [], reasoning: null, tail: [] }];
     const nextActiveIdx = nextRevs.length - 1;
 
-    // Reset the target message to a streaming state so the UI re-animates.
-    updateMsg(convId, assistantMsg.id, {
-      text: "",
-      trace: [],
-      citations: [],
-      followUps: [],
-      streaming: true,
-      rating: null,
-      reasoning: null,
-      revisions: nextRevs,
-      activeRev: nextActiveIdx,
-      timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
-    });
+    // Drop the tail from the active thread; it stays preserved on the
+    // previous revision so the user can flip back to it. Reset the
+    // assistant row to streaming state at the same time.
+    setMessagesByConv((prev) => ({
+      ...prev,
+      [convId]: (prev[convId] || []).slice(0, idx + 1).map((m) =>
+        m.id === assistantMsg.id
+          ? {
+              ...m,
+              text: "",
+              trace: [],
+              citations: [],
+              followUps: [],
+              streaming: true,
+              rating: null,
+              reasoning: null,
+              revisions: nextRevs,
+              activeRev: nextActiveIdx,
+              timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
+            }
+          : m,
+      ),
+    }));
 
     let finalText = "";
     let finalMeta = null;
@@ -987,6 +1079,16 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         onMeta: (meta) => {
           finalMeta = meta;
           applyMeta(convId, assistantMsg.id, effectiveTarget, meta);
+        },
+        onReasoning: (delta) => {
+          setMessagesByConv((prev) => ({
+            ...prev,
+            [convId]: (prev[convId] || []).map((m) =>
+              m.id === assistantMsg.id
+                ? { ...m, reasoning: (m.reasoning || "") + delta }
+                : m,
+            ),
+          }));
         },
       });
       // Freeze the finished revision into revisions[nextActiveIdx] so that
@@ -1062,14 +1164,34 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     if (nextIdx < 0 || nextIdx >= revs.length) return;
     if (nextIdx === assistantMsg.activeRev) return;
     const target = revs[nextIdx] || {};
-    updateMsg(convId, assistantMsg.id, {
-      text: target.text || "",
-      trace: target.trace || [],
-      reasoning: target.reasoning || null,
-      traceId: target.traceId,
-      latencyMs: target.latencyMs,
-      timestamp: target.timestamp,
-      activeRev: nextIdx,
+    setMessagesByConv((prev) => {
+      const list = prev[convId] || [];
+      const idx = list.findIndex((m) => m.id === assistantMsg.id);
+      if (idx < 0) return prev;
+      // Before swapping, snapshot the tail currently attached to this
+      // assistant so the revision we're leaving keeps its own branch of
+      // follow-up turns — the user can continue on either revision.
+      const currentTail = list.slice(idx + 1);
+      const updatedRevs = revs.map((r, i) =>
+          i === assistantMsg.activeRev ? { ...r, tail: currentTail } : r,
+      );
+      const updatedAssistant = {
+        ...list[idx],
+        text: target.text || "",
+        trace: target.trace || [],
+        reasoning: target.reasoning || null,
+        traceId: target.traceId,
+        latencyMs: target.latencyMs,
+        timestamp: target.timestamp,
+        activeRev: nextIdx,
+        revisions: updatedRevs,
+      };
+      const nextList = [
+        ...list.slice(0, idx),
+        updatedAssistant,
+        ...(Array.isArray(target.tail) ? target.tail : []),
+      ];
+      return { ...prev, [convId]: nextList };
     });
   }
 
@@ -1150,7 +1272,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
             apiKey,
             payload: {
               model: col.agentId,
-              messages: [{ role: "user", content: text }],
+              messages: [{ role: "user", content: buildUserContent(text, attachments) }],
             },
             onText: (acc) => {
               setCompareMsgs((prev) => ({

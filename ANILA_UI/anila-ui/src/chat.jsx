@@ -716,6 +716,18 @@ export const Composer = ({
 
     for (const file of picked) {
       try {
+        // Read image bytes as data URL so the LLM can be given the image
+        // inline (OpenAI vision format). Skipped for non-images to keep
+        // memory down.
+        let dataUrl = null;
+        if ((file.type || "").startsWith("image/") && file.size < 10 * 1024 * 1024) {
+          dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(file);
+          });
+        }
         const result = await onUpload(file);
         setAtts((list) =>
           list.map((a) =>
@@ -726,6 +738,7 @@ export const Composer = ({
                   size: result.size_bytes || file.size,
                   referenceId: result.reference_id,
                   contentType: result.content_type,
+                  dataUrl,
                   uploading: false,
                 }
               : a,
@@ -809,7 +822,26 @@ export const Composer = ({
         value={text}
         onChange={(e) => { setText(e.target.value); autosize(); }}
         onKeyDown={onKey}
-        placeholder={placeholder || "問 ANILA 任何事情 — 用 @agent 指定 agent · Shift+Enter 換行"}
+        onPaste={(e) => {
+          const items = e.clipboardData?.items || [];
+          const files = [];
+          for (const it of items) {
+            if (it.kind === "file") {
+              const f = it.getAsFile();
+              if (f) {
+                const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+                const ext = (f.type.split("/")[1] || "bin").split("+")[0];
+                const named = f.name && f.name !== "image.png" ? f : new File([f], `貼上-${stamp}.${ext}`, { type: f.type });
+                files.push(named);
+              }
+            }
+          }
+          if (files.length) {
+            e.preventDefault();
+            onFiles(files);
+          }
+        }}
+        placeholder={placeholder || "問 ANILA 任何事情 — 用 @agent 指定 agent · Shift+Enter 換行 · 可直接貼上截圖"}
         rows={1}
         style={{
           width: "100%",

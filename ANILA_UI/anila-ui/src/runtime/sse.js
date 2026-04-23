@@ -37,6 +37,7 @@ export async function streamChatCompletion({
   onTrace,
   onMeta,
   onJson,
+  onReasoning,
 }) {
   const response = await fetch(url, {
     method: "POST",
@@ -82,6 +83,15 @@ export async function streamChatCompletion({
       }
       if (event.event === "anila.meta") {
         onMeta?.(JSON.parse(event.data));
+        continue;
+      }
+      if (event.event === "anila.reasoning") {
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload?.delta) onReasoning?.(payload.delta);
+        } catch {
+          // ignore malformed reasoning frame
+        }
         continue;
       }
       const chunk = JSON.parse(event.data);

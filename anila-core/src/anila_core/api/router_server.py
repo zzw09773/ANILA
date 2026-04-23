@@ -72,7 +72,10 @@ def _build_agent_list(agents: list[RemoteAgentManifest]) -> str:
 # "anything that isn't whitespace or a colon" rather than an ASCII-only class.
 # re.UNICODE is default in Python 3 but spelled out to make intent explicit.
 _DISPATCH_RE = re.compile(
-    r"DISPATCH:([^\s:`]+):([^`\n\r]+?)(?=\s*(?:`|$))",
+    # agent_id allows spaces / parens so we tolerate Gemma echoing the
+    # full "name (alias)" tuple from the agent list; caller normalises by
+    # taking the first whitespace-delimited token before registry lookup.
+    r"DISPATCH:([^\n\r:`]+?):([^`\n\r]+?)(?=\s*(?:`|$))",
     re.MULTILINE | re.UNICODE,
 )
 
@@ -189,6 +192,10 @@ def _parse_dispatch(text: str) -> tuple[str, str, int, int] | None:
         return None
     agent_id = last.group(1).strip()
     query = last.group(2).strip()
+    # Normalise: Gemma often copies the agent list verbatim, e.g. emits
+    # ``DISPATCH:軍人法規智慧助手 (軍人法規智慧助手):...`` — take the
+    # first whitespace-delimited token as the real id.
+    agent_id = agent_id.split()[0] if agent_id else agent_id
     if not agent_id or not query:
         return None
     return agent_id, query, last.start(), last.end()
@@ -382,6 +389,25 @@ def create_router_app() -> FastAPI:
                 status="error" if registry.last_refresh_error else "ok",
             ),
         ]
+
+        # Plan C: when the caller wants streaming, tail-buffer the LLM and
+        # commit to either dispatch or direct-answer mid-stream. Direct
+        # answers are forwarded chunk-by-chunk in real time (no fake
+        # typewriter delay); dispatch retains the existing agent-stream
+        # behaviour once a DISPATCH directive is confirmed.
+        if stream:
+            return StreamingResponse(
+                _router_streaming(
+                    caller_api_key=caller_api_key,
+                    routing_messages=routing_messages,
+                    user_messages=messages,
+                    registry=registry,
+                    base_trace=base_trace,
+                    started_at=started_at,
+                ),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
 
         # Non-streaming LLM routing call (always — dispatch decision requires
         # full LLM output; see Wave B plan).
@@ -771,6 +797,93 @@ async def _dispatch_safe(
         }
 
 
+async def _stream_llm_sse(
+    caller_api_key: str,
+    messages: list[dict],
+) -> AsyncIterator[dict[str, Any]]:
+    """Open an SSE stream to the primary LLM via CSP, yielding delta events.
+
+    Yields ``{"type": "delta", "content": str}`` for each content piece,
+    ``{"type": "reasoning", "content": str}`` when upstream reports a separate
+    reasoning field, ``{"type": "done"}`` on clean end, and
+    ``{"type": "error", ...}`` on failure. Used by the router to stream the
+    routing decision/direct answer in real time (plan C).
+    """
+    payload = {
+        "model": settings.model,
+        "messages": messages,
+        "stream": True,
+    }
+    headers = {
+        "Authorization": f"Bearer {caller_api_key}",
+        "Content-Type": "application/json",
+    }
+    url = f"{settings.csp_base_url.rstrip('/')}/v1/chat/completions"
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            async with client.stream("POST", url, json=payload, headers=headers) as resp:
+                if resp.status_code >= 400:
+                    body = await resp.aread()
+                    yield {
+                        "type": "error",
+                        "error": f"LLM HTTP {resp.status_code}",
+                        "detail": body.decode("utf-8", errors="replace")[:300],
+                    }
+                    return
+                async for line in resp.aiter_lines():
+                    line = line.strip()
+                    if not line or not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str == "[DONE]":
+                        yield {"type": "done"}
+                        return
+                    try:
+                        chunk = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    try:
+                        delta = chunk["choices"][0].get("delta", {}) or {}
+                    except (KeyError, IndexError, TypeError):
+                        continue
+                    reasoning_piece = delta.get("reasoning_content") or delta.get("reasoning")
+                    if isinstance(reasoning_piece, str) and reasoning_piece:
+                        yield {"type": "reasoning", "content": reasoning_piece}
+                    content_piece = delta.get("content")
+                    if isinstance(content_piece, str) and content_piece:
+                        yield {"type": "delta", "content": content_piece}
+    except httpx.RequestError as exc:
+        yield {"type": "error", "error": f"LLM connection: {type(exc).__name__}", "detail": str(exc)}
+    except Exception as exc:
+        logger.exception("LLM stream failed unexpectedly")
+        yield {"type": "error", "error": f"LLM unexpected: {type(exc).__name__}", "detail": str(exc)}
+
+
+def _find_answer_split(buf: str) -> int:
+    """Return the index where the sustained CJK answer begins, or -1.
+
+    Mirrors the offline sanitizer's density rule: the first CJK character
+    whose 80-char lookahead contains ≥ 50 % CJK *and* ≥ 20 absolute CJK
+    chars is treated as the start of the user-visible answer. Pulls
+    leading markdown markers back so `**首先**` keeps its bold intact.
+    """
+    window = 80
+    for m in _CJK_RE.finditer(buf):
+        i = m.start()
+        if i < 10:
+            continue
+        lookahead = buf[i : i + window]
+        cjk_count = len(_CJK_RE.findall(lookahead))
+        if cjk_count >= 20 and cjk_count * 2 >= len(lookahead):
+            j = i
+            while j > 0 and buf[j - 1] in "*#":
+                j -= 1
+            if j >= 2 and buf[j - 2 : j] in ("- ", "+ "):
+                j -= 2
+            return j
+    return -1
+
+
 async def _stream_agent_sse(
     agent_id: str,
     query: str,
@@ -838,6 +951,303 @@ async def _stream_agent_sse(
             "error": f"agent '{agent_id}' unexpected: {type(exc).__name__}",
             "detail": str(exc),
         }
+
+
+async def _router_streaming(
+    caller_api_key: str,
+    routing_messages: list[dict],
+    user_messages: list[dict],
+    registry: Any,
+    base_trace: list[dict],
+    started_at: float,
+) -> AsyncIterator[str]:
+    """Router's streaming endpoint (plan C).
+
+    Consumes the primary LLM via SSE and runs a three-state machine:
+
+      * **detecting** — initial window. Look for ``DISPATCH:`` at the head
+        of the buffer (model complied with routing rule) or for a dense
+        CJK answer boundary (model leaked ``thought`` and started the
+        real answer). Nothing is forwarded to the caller yet.
+      * **answering** — commit to direct answer. Every subsequent LLM
+        delta is forwarded verbatim as a router chunk, so the caller
+        sees the same token-by-token stream OpenWebUI gives.
+      * **dispatching** — DISPATCH detected. We cancel the LLM stream and
+        hand off to the agent SSE path (same pass-through loop the
+        existing non-stream path uses for dispatch).
+
+    The detecting phase ends either when a boundary is found or when the
+    LLM stream finishes, in which case we fall back to the offline
+    sanitizer so single-shot leaks still render correctly.
+    """
+    for step in base_trace:
+        yield _make_event("anila.trace", step)
+
+    buf = ""
+    upstream_reasoning = ""
+    state = "detecting"
+    answer_emitted_up_to = 0
+    dispatch: tuple[str, str, int, int] | None = None
+    # Flag + cursor for live-streaming thought to the caller's "thinking
+    # fold" while the router is still in detecting state. Keeps the user
+    # visually engaged during the 3-6 s before the answer boundary is
+    # found. The frontend replaces reasoning with the authoritative value
+    # from the final anila.meta event, so over-emission here is benign.
+    thought_confirmed = False
+    reasoning_emitted_up_to = 0
+
+    def _has_dispatch_signal(text: str, final: bool = False) -> tuple[str, str, int, int] | None:
+        """Parse a dispatch directive, tolerant of in-flight streaming state.
+
+        The non-greedy query regex happily matches at end-of-buffer via ``$``,
+        which in mid-stream would treat a partial tail like
+        ``DISPATCH:<agent>:在`` as "done" and dispatch the single char ``在``.
+        So during streaming (``final=False``) we require the match to end
+        strictly before the current buffer length — meaning a real terminator
+        (newline / backtick) has been seen past the query.
+        """
+        parsed = _parse_dispatch(text)
+        if parsed is None or final:
+            return parsed
+        _id, _q, _start, end = parsed
+        return parsed if end < len(text) else None
+
+    async for ev in _stream_llm_sse(caller_api_key, routing_messages):
+        kind = ev.get("type")
+        if kind == "error":
+            err = ev.get("error", "LLM error")
+            yield _make_event(
+                "anila.trace",
+                _make_trace_step("direct", "LLM 無法回應", err, status="error"),
+            )
+            yield _make_chunk(
+                "（LLM 暫時無法回應，請稍後再試。若持續發生請檢查 CSP / 本地模型服務。）",
+                "anila-router",
+            )
+            yield _make_event("anila.meta", {"trace": [], "reasoning": None})
+            yield _make_chunk("", "anila-router", finish="stop")
+            yield "data: [DONE]\n\n"
+            return
+        if kind == "reasoning":
+            upstream_reasoning += ev["content"]
+            # Live-forward upstream reasoning tokens (gemma4 / gpt-oss
+            # class emit thought deltas on a separate `reasoning` field)
+            # so the caller's thinking fold grows in real time.
+            yield _make_event("anila.reasoning", {"delta": ev["content"]})
+            continue
+        if kind == "done":
+            break
+        if kind != "delta":
+            continue
+
+        buf += ev["content"]
+
+        if state == "answering":
+            # Tail pass-through: forward anything new.
+            new_chunk = buf[answer_emitted_up_to:]
+            if new_chunk:
+                yield _make_chunk(new_chunk, "anila-router")
+                answer_emitted_up_to = len(buf)
+            continue
+
+        # state == "detecting"
+        # Live-stream the buffered thought to the frontend's fold once we
+        # know this is a thought-leaking response. Flush everything since
+        # last cursor so the fold grows chunk-by-chunk.
+        if not thought_confirmed and _THOUGHT_PREFIX_RE.match(buf):
+            thought_confirmed = True
+        if thought_confirmed and len(buf) > reasoning_emitted_up_to:
+            piece = buf[reasoning_emitted_up_to:]
+            yield _make_event("anila.reasoning", {"delta": piece})
+            reasoning_emitted_up_to = len(buf)
+
+        dispatch = _has_dispatch_signal(buf)
+        if dispatch is not None:
+            state = "dispatching"
+            break
+
+        # Compliant model path: buffer looks like a pure DISPATCH attempt
+        # (starts with DISPATCH:, still being emitted). Keep buffering
+        # until we have the full line.
+        stripped = buf.lstrip()
+        if stripped.startswith("DISPATCH:"):
+            continue
+
+        # Non-thought leading, non-DISPATCH → Gemma went straight to a
+        # direct answer. Forward the buffer and switch to answering.
+        if not _THOUGHT_PREFIX_RE.match(buf) and len(buf) >= 12:
+            yield _make_chunk(buf, "anila-router")
+            answer_emitted_up_to = len(buf)
+            state = "answering"
+            continue
+
+        # Thought-prefixed path: wait until the density boundary shows.
+        split_at = _find_answer_split(buf)
+        if split_at > 0:
+            prefix = buf[split_at:]
+            if prefix.strip():
+                yield _make_chunk(prefix, "anila-router")
+                answer_emitted_up_to = len(buf)
+                state = "answering"
+
+    # --- stream ended ---
+    if state == "dispatching":
+        # fall through to dispatch handling below
+        pass
+    elif state == "detecting":
+        # Stream finished without ever committing. Use the offline
+        # sanitizer one last time — covers short answers that never hit
+        # the density threshold mid-stream.
+        final_dispatch = _has_dispatch_signal(buf, final=True)
+        if final_dispatch is not None:
+            dispatch = final_dispatch
+            state = "dispatching"
+        else:
+            # Salvage incomplete DISPATCH using the last user message.
+            empty = list(_DISPATCH_EMPTY_RE.finditer(buf))
+            if empty:
+                agent_guess = empty[-1].group(1).strip()
+                fallback_query = _flatten_last_user_query(user_messages)
+                if agent_guess and fallback_query:
+                    dispatch = (agent_guess, fallback_query, 0, 0)
+                    state = "dispatching"
+        if state == "detecting":
+            clean_content, merged_reasoning = _sanitize_leaked_thought(buf, upstream_reasoning)
+            yield _make_chunk(clean_content, "anila-router")
+            anila_meta = _merge_anila_meta(
+                base_trace + [_make_trace_step("direct", "Router 直接回答", "無需分派 agent")],
+                None,
+                latency_ms=int((time.time() - started_at) * 1000),
+            )
+            if merged_reasoning:
+                anila_meta["reasoning"] = merged_reasoning
+            anila_meta_evt = {**anila_meta, "trace": []}
+            yield _make_event("anila.meta", anila_meta_evt)
+            yield _make_chunk("", "anila-router", finish="stop")
+            yield "data: [DONE]\n\n"
+            return
+
+    # Direct-answer stream completed the normal way.
+    if state == "answering":
+        # Flush any residue not yet forwarded (shouldn't happen but be safe).
+        tail = buf[answer_emitted_up_to:]
+        if tail:
+            yield _make_chunk(tail, "anila-router")
+        # Reasoning is only meaningful when thought was actually detected
+        # mid-stream; otherwise the whole buffer *was* the answer and we
+        # must not carve an artificial thought out of it.
+        reasoning_text = upstream_reasoning
+        if thought_confirmed:
+            split_at = _find_answer_split(buf)
+            if split_at > 0:
+                thought = buf[:split_at].rstrip()
+                reasoning_text = (reasoning_text + "\n\n" + thought).strip() if reasoning_text else thought
+        anila_meta = _merge_anila_meta(
+            base_trace + [_make_trace_step("direct", "Router 直接回答", "無需分派 agent")],
+            None,
+            latency_ms=int((time.time() - started_at) * 1000),
+        )
+        if reasoning_text:
+            anila_meta["reasoning"] = reasoning_text
+        anila_meta_evt = {**anila_meta, "trace": []}
+        yield _make_event("anila.meta", anila_meta_evt)
+        yield _make_chunk("", "anila-router", finish="stop")
+        yield "data: [DONE]\n\n"
+        return
+
+    # --- dispatch path ---
+    assert dispatch is not None
+    agent_id, query, dispatch_start, _end = dispatch
+    pre_dispatch = buf[:dispatch_start].strip() if dispatch_start > 0 else ""
+    router_reasoning = upstream_reasoning.strip()
+    if pre_dispatch and pre_dispatch != router_reasoning:
+        router_reasoning = (
+            f"{router_reasoning}\n\n{pre_dispatch}" if router_reasoning else pre_dispatch
+        )
+
+    manifest = registry.get(caller_api_key, agent_id)
+    if manifest is None:
+        trace_step = _make_trace_step(
+            "route-miss",
+            "找不到 agent",
+            f"agent '{agent_id}' 未註冊於 CSP",
+            status="error",
+        )
+        yield _make_event("anila.trace", trace_step)
+        fallback = (
+            f"（Router 分析後擬分派給 agent「{agent_id}」，"
+            "但該 agent 尚未於 CSP 註冊。請聯絡管理員在 CSP 後台加入此 agent，"
+            "或改問其他已註冊 agent 能處理的問題。）"
+        )
+        yield _make_chunk(fallback, "anila-router")
+        anila_meta = _merge_anila_meta(
+            base_trace + [trace_step],
+            None,
+            latency_ms=int((time.time() - started_at) * 1000),
+        )
+        if router_reasoning:
+            anila_meta["reasoning"] = router_reasoning
+        yield _make_event("anila.meta", {**anila_meta, "trace": []})
+        yield _make_chunk("", "anila-router", finish="stop")
+        yield "data: [DONE]\n\n"
+        return
+
+    yield _make_event(
+        "anila.trace",
+        _make_trace_step("dispatch", "選擇 agent", f"dispatch_to_agent('{agent_id}')"),
+    )
+    yield _make_event(
+        "anila.trace",
+        _make_trace_step(
+            "call",
+            f"呼叫 {agent_id}",
+            "POST /v1/chat/completions (經 CSP proxy, streaming)",
+        ),
+    )
+
+    downstream_meta: dict[str, Any] | None = None
+    async for event in _stream_agent_sse(agent_id, query, caller_api_key):
+        if event.get("type") == "content":
+            yield _make_chunk(event["content"], "anila-router")
+        elif event.get("type") == "meta":
+            downstream_meta = event["anila_meta"]
+        elif event.get("type") == "error":
+            yield _make_event(
+                "anila.trace",
+                _make_trace_step(
+                    "error",
+                    f"{agent_id} 發生錯誤",
+                    event.get("detail") or event.get("error", ""),
+                    status="error",
+                ),
+            )
+            yield _make_chunk(
+                f"（agent「{agent_id}」暫時不可用：{event.get('error')}）",
+                "anila-router",
+            )
+        elif event.get("type") == "done":
+            break
+
+    final_meta = _merge_anila_meta(
+        base_trace
+        + [
+            _make_trace_step("dispatch", "選擇 agent", f"dispatch_to_agent('{agent_id}')"),
+            _make_trace_step(
+                "call",
+                f"呼叫 {agent_id}",
+                "POST /v1/chat/completions (經 CSP proxy, streaming)",
+            ),
+        ],
+        downstream_meta,
+        agent_id=agent_id,
+        latency_ms=int((time.time() - started_at) * 1000),
+        classified_override=bool(manifest.requires_encryption),
+    )
+    if router_reasoning:
+        final_meta["reasoning"] = router_reasoning
+    yield _make_event("anila.meta", {**final_meta, "trace": []})
+    yield _make_chunk("", "anila-router", finish="stop")
+    yield "data: [DONE]\n\n"
 
 
 # Module-level app instance for direct uvicorn invocation:
