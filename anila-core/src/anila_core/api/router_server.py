@@ -72,9 +72,102 @@ def _build_agent_list(agents: list[RemoteAgentManifest]) -> str:
 # "anything that isn't whitespace or a colon" rather than an ASCII-only class.
 # re.UNICODE is default in Python 3 but spelled out to make intent explicit.
 _DISPATCH_RE = re.compile(
-    r"DISPATCH:([^\s:]+):([^\n\r]+?)\s*$",
+    r"DISPATCH:([^\s:`]+):([^`\n\r]+?)(?=\s*(?:`|$))",
     re.MULTILINE | re.UNICODE,
 )
+
+# Matches an INCOMPLETE DISPATCH where the model emitted the header but
+# forgot the query (``...DISPATCH:asrd:`` at end of line / text). Used as
+# a salvage signal: we re-substitute the user's last message as the query.
+_DISPATCH_EMPTY_RE = re.compile(
+    r"DISPATCH:([^\s:`]+):\s*(?:`|$)",
+    re.MULTILINE | re.UNICODE,
+)
+
+
+# Matches a "thought" / "thinking" line at the very start of content. Gemma-
+# style models emit this when they ignore the "no chain-of-thought in content"
+# system rule. gpt-oss class models put their analysis in a separate
+# `reasoning_content` field instead, so they never trigger this path.
+_THOUGHT_PREFIX_RE = re.compile(
+    r"^\s*(?:\*{0,2}|`)?(?:thought|thinking)(?:\*{0,2}|`)?\s*[:：]?\s*(?:\n|$)",
+    re.IGNORECASE,
+)
+
+_CJK_RE = re.compile(r"[一-鿿]")
+
+
+def _sanitize_leaked_thought(content: str, reasoning: str | None) -> tuple[str, str]:
+    """Split leaked thought-prefixed content into (answer, reasoning).
+
+    Observed structure for gemma-class models that ignore the no-CoT rule:
+      ``thought\\n<English-dominant analysis, possibly with blank lines>\\n
+      <optional handoff marker>\\n<long CJK answer block>``
+
+    The thought/answer boundary is unreliable when approached as a single
+    marker (models vary: some leave a blank line, some glue ``.aggression.首先``
+    directly). The one stable invariant across all observed samples is:
+      - thought is English-dominant
+      - the final answer is a sustained CJK block
+
+    Algorithm:
+      1. If content doesn't start with "thought/thinking", passthrough — this
+         covers gpt-oss (reasoning already in its own field) and any
+         well-behaved model.
+      2. Scan forward for the first CJK character whose 80-char lookahead
+         contains ≥ 20 CJK characters. That's the start of the sustained
+         answer block.
+      3. Rewind to the nearest clean break before it: previous blank line,
+         newline, or sentence-terminator — whichever is closest. This pulls
+         the final handoff sentence (``Decision: Reply directly.`` or the
+         English concluding sentence) out of the user-visible answer.
+      4. If no sustained CJK block is found, dump the entire leak into
+         reasoning with a placeholder answer so the UI isn't empty.
+    """
+    reasoning = (reasoning or "").strip()
+    if not content or not _THOUGHT_PREFIX_RE.match(content):
+        return content, reasoning
+
+    # Scan for the first CJK char that begins a *dense* CJK run. Density
+    # (≥50 %) is the key filter — it rejects incidental CJK inside the
+    # English thought section (e.g. an agent name like "軍人法規智慧助手"
+    # that happens to appear in the analysis) while accepting the sustained
+    # answer block.
+    window = 80
+    split_at = -1
+    for m in _CJK_RE.finditer(content):
+        i = m.start()
+        if i < 10:  # still inside the "thought" header
+            continue
+        lookahead = content[i : i + window]
+        cjk_count = len(_CJK_RE.findall(lookahead))
+        # Require both ≥50% density *and* ≥20 absolute CJK chars. The
+        # minimum count rejects short CJK tails — e.g. Gemma echoing the
+        # user's 5-char query ("顯示參數表") after a broken DISPATCH line.
+        if cjk_count >= 20 and cjk_count * 2 >= len(lookahead):
+            split_at = i
+            break
+
+    if split_at > 0:
+        # Pull leading markdown markers (bold/heading/list) back into answer.
+        j = split_at
+        while j > 0 and content[j - 1] in "*#":
+            j -= 1
+        # A hyphen list marker needs a trailing space to qualify.
+        if j >= 2 and content[j - 2 : j] in ("- ", "+ "):
+            j -= 2
+        split_at = j
+        thought = content[:split_at].rstrip()
+        answer = content[split_at:].strip()
+        if answer and thought:
+            merged = (reasoning + "\n\n" + thought).strip() if reasoning else thought
+            return answer, merged
+
+    merged = (reasoning + "\n\n" + content).strip() if reasoning else content
+    placeholder = (
+        "（Router 已完成分析但未能自動萃取最終回覆，請展開上方「思考過程」檢視。）"
+    )
+    return placeholder, merged
 
 
 def _parse_dispatch(text: str) -> tuple[str, str, int, int] | None:
@@ -314,6 +407,19 @@ def create_router_app() -> FastAPI:
 
         llm_text = llm_response["content"]
         dispatch = _parse_dispatch(llm_text)
+
+        # Salvage: when Gemma emits ``DISPATCH:<agent>:`` with an empty query
+        # (it "forgot" to repeat the user query after the colon), scan the
+        # sanitized reasoning for that header and re-substitute the user's
+        # last message as the query so the agent still gets dispatched.
+        if not dispatch:
+            reasoning_text = (llm_response.get("reasoning") or "").strip()
+            empty_matches = list(_DISPATCH_EMPTY_RE.finditer(reasoning_text)) if reasoning_text else []
+            if empty_matches:
+                agent_guess = empty_matches[-1].group(1).strip()
+                fallback_query = _flatten_last_user_query(messages)
+                if agent_guess and fallback_query:
+                    dispatch = (agent_guess, fallback_query, 0, 0)
 
         # Non-dispatch path: Router answers directly.
         if not dispatch:
@@ -581,9 +687,21 @@ async def _call_llm_non_stream(caller_api_key: str, messages: list[dict]) -> dic
         # frontend does not have to care which upstream produced it.
         reasoning_raw = message.get("reasoning_content") or message.get("reasoning") or ""
         reasoning = reasoning_raw.strip() if isinstance(reasoning_raw, str) else ""
+        raw_content = (message.get("content") or "").strip()
+        # Some reasoning-capable models (e.g. gemma4 behind certain TRT-LLM
+        # builds) ignore the "no thought" system-prompt rule and inline an
+        # analysis section directly into ``content``. Salvage that here so
+        # the fold always carries the analysis and the bubble only shows the
+        # final answer. Skip sanitize when the content carries a DISPATCH
+        # directive — the caller's _parse_dispatch needs to see it, and the
+        # pre-dispatch thought extraction downstream already handles the fold.
+        if _DISPATCH_RE.search(raw_content) or _DISPATCH_EMPTY_RE.search(raw_content):
+            clean_content, merged_reasoning = raw_content, reasoning
+        else:
+            clean_content, merged_reasoning = _sanitize_leaked_thought(raw_content, reasoning)
         return {
-            "content": message["content"].strip(),
-            "reasoning": reasoning or None,
+            "content": clean_content,
+            "reasoning": merged_reasoning or None,
             "anila_meta": data.get("anila_meta"),
             "raw": data,
             "error": None,
