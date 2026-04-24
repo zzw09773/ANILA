@@ -1,31 +1,19 @@
-"""AgenticRAG — Sample Agent endpoint (OpenAI-compatible).
+"""OpenAI-compatible RAG API — port 24786
 
-這是 ANILA 平台的 **RAG 範例 agent 樣板**。Fork 本 repo 後，主要要動的就是
-這個檔案（以及 ``index_documents.py``）。
+讓 OpenWebUI（或任何 OpenAI-compatible client）透過這個 API 使用
+帶有 RAG 檢索的 LLM 對話。
 
-Port: 24786 — 對 CSP / Router 暴露 OpenAI-compat 介面。
-
-預設流程：
+流程：
   client → POST /v1/chat/completions
-         → CspServiceTokenMiddleware 驗 s2s token
          → embed 最後一則 user message（NV-Embed-V2）
-         → pgvector 語意 + ILIKE 關鍵字 hybrid 檢索 + RRF 融合
-         → 注入 RAG context 到 messages
-         → 轉發至後端 LLM（直連 or 透過 CSP proxy）
-         → SSE 串流回傳 OpenAI 格式 + thinking block + 來源清單
-
-Fork 時要改哪些：
-  - ``retrieve_context()`` — 整個檢索邏輯。換成你的 knowledge backend。
-  - ``SYSTEM_PROMPT`` — 你的 agent 人格與回覆格式要求。
-  - ``_forward_stream()`` / ``_collect_stream()`` — 若 LLM backend 非 OpenAI-compat。
-  - ``lifespan()`` — 開關 pgvector 連線；改為你要的資源（Redis / Milvus / API client）。
+         → pgvector 檢索 top-k chunks
+         → 注入 RAG context
+         → 轉發至後端 LLM（google/gemma4）
+         → stream 回傳 OpenAI 格式
 
 啟動：
     python3 api.py
-    # 或
     uvicorn api:app --host 0.0.0.0 --port 24786
-
-更多細節見根 README.md 的「Fork → 部署 流程」章節。
 """
 
 from __future__ import annotations
@@ -44,30 +32,29 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from agentic_rag.ingestion.normalize import normalize_zh
+from agentic_rag.ingestion.tokenize_zh import tokenize as _tokenize_query
+from agentic_rag.providers.reranker import (
+    RerankCandidate,
+    Reranker,
+    build_reranker_from_env,
+)
+
 # ── 載入 .env ─────────────────────────────────────────────────────────────────
 load_dotenv(Path(__file__).parent / ".env")
 
-# When deployed behind CSP, LLM/Embedding calls go through CSP proxy.
-# Set CSP_BASE_URL + CSP_API_KEY in env to activate; fallback to direct URLs.
-_CSP_BASE_URL = os.getenv("CSP_BASE_URL", "").rstrip("/")
-_CSP_API_KEY  = os.getenv("CSP_API_KEY",  "not-set")
-_USE_CSP      = bool(_CSP_BASE_URL)
-
-LLM_URL       = f"{_CSP_BASE_URL}/v1" if _USE_CSP else os.getenv("LLM_URL", "https://172.16.120.35/v1")
-LLM_API_KEY   = _CSP_API_KEY          if _USE_CSP else os.getenv("LLM_API_KEY", "not-set")
-EMB_URL       = f"{_CSP_BASE_URL}/v1" if _USE_CSP else os.getenv("EMBEDDING_URL", "https://172.16.120.35/v1")
-EMB_API_KEY   = _CSP_API_KEY          if _USE_CSP else os.getenv("EMBEDDING_API_KEY", "not-set")
-
+LLM_URL       = os.getenv("LLM_URL",           "https://172.16.120.35/v1")
+LLM_API_KEY   = os.getenv("LLM_API_KEY",       "not-set")
 MODEL         = os.getenv("MODEL",              "google/gemma4")
+EMB_URL       = os.getenv("EMBEDDING_URL",      "https://172.16.120.35/v1")
+EMB_API_KEY   = os.getenv("EMBEDDING_API_KEY",  "not-set")
 EMB_MODEL     = os.getenv("EMBEDDING_MODEL",    "nvidia/nv-embed-v2")
-DATABASE_URL  = os.getenv("DATABASE_URL",       "postgresql://anila:anila@localhost:5432/anila_rag")
+DATABASE_URL  = os.getenv("DATABASE_URL",       "postgresql://agentic:agentic@localhost:5432/agentic_rag")
 RAG_TOP_K     = int(os.getenv("RAG_TOP_K",     "5"))
 RAG_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.5"))
 RAG_MIN_SCORE_RETRY = float(os.getenv("RAG_MIN_SCORE_RETRY", "0.3"))
+RAG_RERANK_POOL_MULTIPLIER = int(os.getenv("RAG_RERANK_POOL_MULTIPLIER", "3"))
 VERIFY_SSL    = os.getenv("EMBEDDING_VERIFY_SSL", "false").lower() == "true"
-
-# Service-to-service token injected by CSP; None = auth disabled (local dev)
-_CSP_SERVICE_TOKEN = os.getenv("CSP_SERVICE_TOKEN") or None
 
 SYSTEM_PROMPT = os.getenv("RAG_SYSTEM_PROMPT", """你是一個知識檢索助手。請根據提供的參考資料回答用戶問題。
 
@@ -81,58 +68,31 @@ SYSTEM_PROMPT = os.getenv("RAG_SYSTEM_PROMPT", """你是一個知識檢索助手
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("rag-api")
 
-# ── DB pool ───────────────────────────────────────────────────────────────────
+# ── DB pool + Reranker ───────────────────────────────────────────────────────
 _pool = None
+_reranker: Reranker | None = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    global _pool
+    global _pool, _reranker
     try:
         import asyncpg  # type: ignore
         _pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=8)
         logger.info("PostgreSQL pool ready")
     except Exception as e:
         logger.warning("PostgreSQL unavailable (%s) — RAG disabled", e)
+    try:
+        _reranker = build_reranker_from_env()
+        if _reranker is not None:
+            logger.info("Reranker enabled: %s", type(_reranker).__name__)
+    except Exception as e:
+        logger.warning("Reranker init failed (%s) — disabled", e)
+        _reranker = None
     yield
     if _pool:
         await _pool.close()
 
-app = FastAPI(title="ANILA RAG API", version="1.0.0", lifespan=lifespan)
-
-# Add CSP service-token auth middleware.
-# SECURITY: when CSP_SERVICE_TOKEN is set, the middleware MUST load. An import
-# failure would otherwise silently drop auth and expose the agent endpoint. So
-# we only tolerate the ImportError fallthrough when no token is configured
-# (explicit local-dev mode).
-_middleware_loaded = False
-for _import_path in (
-    "anila_core.api.middleware.auth",
-    "src.anila_core.api.middleware.auth",
-):
-    try:
-        _mod = __import__(_import_path, fromlist=["CspServiceTokenMiddleware"])
-        CspServiceTokenMiddleware = _mod.CspServiceTokenMiddleware
-        app.add_middleware(
-            CspServiceTokenMiddleware,
-            service_token=_CSP_SERVICE_TOKEN,
-            dev_mode=(not _CSP_SERVICE_TOKEN),
-        )
-        _middleware_loaded = True
-        break
-    except ImportError:
-        continue
-
-if not _middleware_loaded:
-    if _CSP_SERVICE_TOKEN:
-        raise RuntimeError(
-            "CspServiceTokenMiddleware failed to import but CSP_SERVICE_TOKEN is "
-            "set. Refusing to start the agent unauthenticated. Check the "
-            "`anila_core` package is installed / on PYTHONPATH before running."
-        )
-    logger.warning(
-        "CspServiceTokenMiddleware not available and no CSP_SERVICE_TOKEN set — "
-        "running without service-to-service auth (local dev only)."
-    )
+app = FastAPI(title="AgenticRAG API", version="1.0.0", lifespan=lifespan)
 
 
 # ── /v1/models ────────────────────────────────────────────────────────────────
@@ -145,7 +105,7 @@ async def list_models() -> JSONResponse:
             "id":       f"rag/{MODEL}",
             "object":   "model",
             "created":  int(time.time()),
-            "owned_by": "anila-core",
+            "owned_by": "agentic-rag",
         }],
     })
 
@@ -174,8 +134,8 @@ async def chat_completions(request: Request) -> StreamingResponse | JSONResponse
         if not has_system:
             messages = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
 
-    # 3. 組裝轉發給 LLM 的 payload
-    payload = {**body, "model": model, "messages": messages, "stream": stream}
+    # 3. 組裝轉發給 LLM 的 payload（強制 stream=True，內部統一用 stream 收）
+    payload = {**body, "model": model, "messages": messages, "stream": True}
     headers = {
         "Authorization": f"Bearer {LLM_API_KEY}",
         "Content-Type":  "application/json",
@@ -218,41 +178,6 @@ async def _forward_stream(
     OpenWebUI 能顯示的 delta.reasoning_content（thinking block）。
     若有 rag_sources，在 [DONE] 前插入來源清單 chunk。"""
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
-    if _USE_CSP:
-        response = await _post_chat_completion({**payload, "stream": False}, headers)
-        completion_id = response.get("id", completion_id)
-        content = response["choices"][0]["message"]["content"]
-        usage = response.get("usage")
-        chunk = {
-            "id": completion_id,
-            "object": "chat.completion.chunk",
-            "created": int(time.time()),
-            "model": payload["model"],
-            "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
-        }
-        yield "data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n"
-        if rag_sources:
-            src_chunk = {
-                "id": completion_id,
-                "object": "chat.completion.chunk",
-                "created": int(time.time()),
-                "model": payload["model"],
-                "choices": [{"index": 0, "delta": {"content": rag_sources}, "finish_reason": None}],
-            }
-            yield "data: " + json.dumps(src_chunk, ensure_ascii=False) + "\n\n"
-        final_chunk = {
-            "id": completion_id,
-            "object": "chat.completion.chunk",
-            "created": int(time.time()),
-            "model": payload["model"],
-            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-        }
-        if usage:
-            final_chunk["usage"] = usage
-        yield "data: " + json.dumps(final_chunk, ensure_ascii=False) + "\n\n"
-        yield "data: [DONE]\n\n"
-        return
-
     async with httpx.AsyncClient(verify=VERIFY_SSL, timeout=120) as client:
         async with client.stream(
             "POST", f"{LLM_URL}/chat/completions",
@@ -298,12 +223,6 @@ async def _forward_stream(
 
 async def _collect_stream(payload: dict, headers: dict, rag_sources: str = "") -> dict:
     """收集 stream 回應，組裝成完整 ChatCompletion 物件。"""
-    if _USE_CSP:
-        result = await _post_chat_completion({**payload, "stream": False}, headers)
-        if rag_sources:
-            result["choices"][0]["message"]["content"] += rag_sources
-        return result
-
     content = ""
     finish_reason = "stop"
     usage: dict = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
@@ -346,25 +265,6 @@ async def _collect_stream(payload: dict, headers: dict, rag_sources: str = "") -
     }
 
 
-async def _post_chat_completion(payload: dict, headers: dict) -> dict:
-    async with httpx.AsyncClient(verify=VERIFY_SSL, timeout=120) as client:
-        resp = await client.post(
-            f"{LLM_URL}/chat/completions",
-            json=payload,
-            headers=headers,
-        )
-        resp.raise_for_status()
-        return resp.json()
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# FORK ME ↓↓↓ — 以下是範例 RAG 實作。
-# 你要把這整塊換成自己的檢索邏輯（外部 API / 另一個模型 / 自建 index 等）。
-# 唯一的合約：``retrieve_context(messages)`` 必須回傳
-#   (context_for_llm: str, trace_for_thinking_block: str, sources_for_reply: str)
-# 三個字串。前兩個是 thinking block / 注入訊息用，最後一個是回覆末尾來源清單。
-# ═════════════════════════════════════════════════════════════════════════════
-
 # ── RAG helpers ───────────────────────────────────────────────────────────────
 
 async def _vector_search(vec_str: str) -> list:
@@ -376,6 +276,7 @@ async def _vector_search(vec_str: str) -> list:
                    1 - (embedding <=> $1::vector) AS score
             FROM document_chunks
             WHERE embedding IS NOT NULL
+              AND chunk_type IN ('content', 'image')
               AND 1 - (embedding <=> $1::vector) >= $2
             ORDER BY embedding <=> $1::vector
             LIMIT $3
@@ -422,10 +323,39 @@ def _expand_tokens(query: str) -> list[str]:
 
 
 async def _keyword_search(query: str) -> list:
-    """ILIKE 關鍵字搜尋：對 query 本身及各種變體做 substring match。
-    處理 PDF 解析後字間有空格的情況（如「第 8 條」vs「第8條」）。
-    回傳 asyncpg Record list（無 score 欄）。
+    """關鍵字搜尋：先試 PostgreSQL FTS（content_tsv），再 fallback 到 ILIKE。
+
+    - FTS: 用相同 bigram tokenizer 處理 query 後 plainto_tsquery
+    - Fallback: 短 query / 罕見字 / FTS 全無命中時，沿用舊有 ILIKE +
+      字間空格擴展（「第8條」→「第 8 條」）
     """
+    tokenized = _tokenize_query(query)
+    fts_rows: list = []
+    if tokenized:
+        try:
+            async with _pool.acquire() as conn:
+                fts_rows = await conn.fetch(
+                    """
+                    SELECT chunk_id, content, metadata,
+                           ts_rank_cd(content_tsv, q) AS rank
+                    FROM document_chunks,
+                         plainto_tsquery('simple', $1) q
+                    WHERE embedding IS NOT NULL
+                      AND chunk_type IN ('content', 'image')
+                      AND content_tsv @@ q
+                    ORDER BY rank DESC
+                    LIMIT $2
+                    """,
+                    tokenized,
+                    RAG_TOP_K * 2,
+                )
+        except Exception as exc:
+            logger.warning("FTS search failed, falling back to ILIKE: %s", exc)
+            fts_rows = []
+
+    if fts_rows:
+        return list(fts_rows)
+
     tokens = _expand_tokens(query)
     conditions = " OR ".join(f"content ILIKE ${i + 1}" for i in range(len(tokens)))
     async with _pool.acquire() as conn:
@@ -434,6 +364,7 @@ async def _keyword_search(query: str) -> list:
             SELECT chunk_id, content, metadata
             FROM document_chunks
             WHERE embedding IS NOT NULL
+              AND chunk_type IN ('content', 'image')
               AND ({conditions})
             LIMIT ${len(tokens) + 1}
             """,
@@ -461,6 +392,7 @@ def _rrf_merge(
         cid = row["chunk_id"]
         rrf[cid] = rrf.get(cid, 0.0) + 1.0 / (k + rank)
         data[cid] = {
+            "chunk_id":  cid,
             "content":   row["content"],
             "metadata":  row["metadata"],
             "vec_score": float(row["score"]),
@@ -472,6 +404,7 @@ def _rrf_merge(
         rrf[cid] = rrf.get(cid, 0.0) + 1.0 / (k + rank)
         if cid not in data:
             data[cid] = {
+                "chunk_id":  cid,
                 "content":   row["content"],
                 "metadata":  row["metadata"],
                 "vec_score": None,
@@ -490,9 +423,10 @@ async def retrieve_context(messages: list[dict]) -> tuple[str, str, str]:
     """
     if _pool is None:
         return "", "", ""
-    query = _last_user_text(messages)
-    if not query:
+    raw_query = _last_user_text(messages)
+    if not raw_query:
         return "", "", ""
+    query = normalize_zh(raw_query)
 
     # 1. Embed query（語意搜尋用）
     try:
@@ -521,10 +455,41 @@ async def retrieve_context(messages: list[dict]) -> tuple[str, str, str]:
         logger.warning("Search failed: %s", e)
         return "", "", ""
 
-    # 3. RRF merge
-    merged = _rrf_merge(vec_rows, kw_rows, RAG_TOP_K)
+    # 3. RRF merge — fetch wider pool when reranker is available
+    pool_size = (
+        RAG_TOP_K * RAG_RERANK_POOL_MULTIPLIER if _reranker is not None else RAG_TOP_K
+    )
+    merged = _rrf_merge(vec_rows, kw_rows, pool_size)
     if not merged:
         return "", "", ""
+
+    # 3b. Optional reranker — cross-encoder over (query, content) pairs
+    if _reranker is not None and len(merged) > 1:
+        try:
+            candidates = [
+                RerankCandidate(
+                    chunk_id=str(r.get("chunk_id") or i),
+                    content=r["content"],
+                    metadata=r["metadata"] or {},
+                    original_score=r.get("rrf_score"),
+                )
+                for i, r in enumerate(merged)
+            ]
+            reranked = await _reranker.rerank(query, candidates, top_k=RAG_TOP_K)
+            if reranked:
+                by_cid = {
+                    str(r.get("chunk_id") or i): r for i, r in enumerate(merged)
+                }
+                merged = [
+                    {**by_cid[item.candidate.chunk_id], "rerank_score": item.score}
+                    for item in reranked
+                    if item.candidate.chunk_id in by_cid
+                ]
+        except Exception as exc:
+            logger.warning("Reranker call failed (%s) — using RRF order", exc)
+            merged = merged[:RAG_TOP_K]
+    else:
+        merged = merged[:RAG_TOP_K]
 
     # 4. 組裝輸出
     ctx_lines   = ["[RAG Context - Retrieved Documents]"]
@@ -592,11 +557,6 @@ def inject_context(messages: list[dict], context: str) -> list[dict]:
                              [{"type": "text", "text": context + "\n\n"}] + orig}
             return result
     return result
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# FORK ME ↑↑↑ — 以上為範例 RAG 實作結束
-# ═════════════════════════════════════════════════════════════════════════════
 
 
 def _last_user_text(messages: list[dict]) -> str:

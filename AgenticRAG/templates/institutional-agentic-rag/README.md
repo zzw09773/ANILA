@@ -21,7 +21,7 @@ The current `AgenticRAG` codebase already has useful building blocks:
 
 But it also has technical debt that makes scale-out risky:
 
-- Two runtime truths: `src/anila_core` and root `api.py`
+- Two runtime truths: `src/agentic_rag` and root `api.py`
 - Module-level mutable state in API modules
 - No formal separation between main model, advisor model, and worker model
 - No stable contract for "model as tool"
@@ -242,7 +242,7 @@ Why this works:
 
 Use this checklist before attempting large-scale multi-agent expansion.
 
-1. Merge root `api.py` behavior back into `src/anila_core`.
+1. Merge root `api.py` behavior back into `src/agentic_rag`.
 2. Move mutable API globals into injected services or app state.
 3. Introduce formal model-role config instead of a single main model field.
 4. Add `advisor_review` before implementing full worker tools.

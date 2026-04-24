@@ -1,20 +1,25 @@
-# docker-compose.yml — RAG Sample Agent
-#
-# Two services:
-#   rag-api  — OpenAI-compatible chat proxy + pgvector RAG injection (port 24786)
-#   db       — PostgreSQL with pgvector extension
-#
-# The build context is the parent directory so the sibling `anila-core/`
-# package is available. Invoke from the AgenticRAG/ directory:
-#     docker compose up -d
-#
-# Copy `.env.example` → `.env` first and fill in your LLM / embedding endpoints.
-
 services:
+  # ── AgenticRAG API ───────────────────────────────────────────────────────────
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env          # 從 .env 載入所有設定
+    environment:
+      # 覆蓋 .env 中的 DATABASE_URL，指向 compose 內部的 db 服務
+      DATABASE_URL: postgresql://anila:anila@db:5432/anila_rag
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - uploads:/tmp/anila_uploads
+    restart: unless-stopped
+
+  # ── OpenAI-compatible RAG API（供 OpenWebUI 連接）───────────────────────────
   rag-api:
-    build:
-      context: ..                     # parent D:/ANILA/ so anila-core is in scope
-      dockerfile: AgenticRAG/Dockerfile
+    build: .
+    command: ["python3", "/app/api.py"]
     ports:
       - "24786:24786"
     env_file:
@@ -24,8 +29,11 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    volumes:
+      - ./api.py:/app/api.py:ro   # 掛載 api.py，修改後重啟即生效
     restart: unless-stopped
 
+  # ── PostgreSQL + pgvector ────────────────────────────────────────────────────
   db:
     image: pgvector/pgvector:pg16
     environment:
@@ -33,7 +41,7 @@ services:
       POSTGRES_PASSWORD: anila
       POSTGRES_DB: anila_rag
     ports:
-      - "5432:5432"
+      - "5432:5432"       # 本機也可直接連，方便除錯
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -45,3 +53,4 @@ services:
 
 volumes:
   pgdata:
+  uploads:
