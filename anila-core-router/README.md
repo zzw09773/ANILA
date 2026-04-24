@@ -18,30 +18,30 @@
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as Client<br/>(UI / SDK)
-    participant R as Router :9000
-    participant CSP as CSP :8000
-    participant LLM as 主 LLM<br/>(via CSP)
-    participant A as Agent endpoint
+    participant C as Client
+    participant R as Router
+    participant CSP as CSP
+    participant LLM as MainLLM
+    participant A as Agent
 
-    C->>R: POST /v1/chat/completions<br/>model=anila-router
+    C->>R: POST /v1/chat/completions (model=anila-router)
     R->>CSP: GET /v1/agents (caller API key)
-    CSP-->>R: agents manifest<br/>(含 requires_encryption)
-    Note over R: RemoteAgentRegistry<br/>cache agents; /health 暴露<br/>last_refresh_error
+    CSP-->>R: agents manifest (含 requires_encryption)
+    Note over R: RemoteAgentRegistry caches agents<br/>/health 暴露 last_refresh_error
 
-    R->>LLM: POST /v1/chat/completions<br/>(主 LLM 判斷要不要分派)
-    LLM-->>R: SSE: tool_call or 直接回答
+    R->>LLM: POST /v1/chat/completions via CSP
+    LLM-->>R: tool_call or direct answer
 
-    alt 主 LLM 說「分派到 agent X」
-        R->>A: 轉發 request<br/>CSP_SERVICE_TOKEN s2s
-        Note over R,A: 逐 chunk SSE forward<br/>agent.requires_encryption → meta.classified=true
+    alt MainLLM 說「分派到 agent X」
+        R->>A: 轉發 request (CSP_SERVICE_TOKEN s2s)
+        Note over R,A: 若 agent.requires_encryption<br/>meta.classified=true
         A-->>R: SSE stream
         R-->>C: SSE stream + meta.classified?
-    else 直接回答 (無分派)
-        R-->>C: SSE stream forward 主 LLM 回應
+    else 直接回答（無分派）
+        R-->>C: SSE stream forward MainLLM
     end
 
-    Note over R: Agent outage (timeout / 5xx / connect error)<br/>不 500 給 client；<br/>meta 標 agent_error + 友善訊息
+    Note over R: Agent outage（timeout / 5xx / connect）<br/>不 500 給 client；meta 標 agent_error
 ```
 
 <details>

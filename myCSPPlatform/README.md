@@ -81,7 +81,7 @@ flowchart TB
     nginx --> app
     control --> db
     data --> models
-    data -->|CSP_SERVICE_TOKEN s2s<br/>若 requires_encryption<br/>→ classified=true| agents
+    data -->|"CSP_SERVICE_TOKEN s2s (若 requires_encryption → classified=true)"| agents
     health -.-> models
     health -.-> agents
     usage --> db

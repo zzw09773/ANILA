@@ -34,11 +34,11 @@ flowchart TB
         config["config.py<br/>Settings (pydantic-settings)"]
     end
 
-    router_svc["anila-core-router<br/>(薄殼部署入口)<br/>main.py: app=create_router_app()"]
-    ragtmpl["AgenticRAG template<br/>(RAG agent 起點)<br/>pip install 'anila-core[rag]'"]
+    router_svc["anila-core-router<br/>(薄殼部署入口)<br/>main.py uses create_router_app()"]
+    ragtmpl["AgenticRAG template<br/>(RAG agent 起點)<br/>pip install 'anila-core rag extras'"]
 
     core -->|import| router_svc
-    core -->|import + [rag] extras| ragtmpl
+    core -->|"import + rag extras"| ragtmpl
 
     classDef optional fill:#dbeafe,stroke:#3b82f6
     class ragtmpl optional
