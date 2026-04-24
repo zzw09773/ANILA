@@ -4,7 +4,7 @@
 >
 > **身份對照**：
 > - 執行時用的 Python runtime → `D:/ANILA/anila-core/`
-> - RAG sample agent 樣板 → `D:/ANILA/AgenticRAG/`
+> - 官方 RAG agent template → `D:/ANILA/AgenticRAG/`
 > - Router 服務 → `D:/ANILA/anila-core-router/`
 > - **本目錄** → 唯一用途是「讀它、參考它、把好的設計翻譯成 Python 放進 `anila-core/`」
 >
@@ -444,3 +444,29 @@ PowerShellTool, SnipTool, [dynamic] MCP tools
 ## 使用注意
 
 這份 TypeScript 原始碼在 `.gitignore` 排除之下僅存在於本機副本，**僅作為本專案內部架構參考**。移植成 Python 時務必**用自己的實作重寫**，避免逐字複製原文。模式（pattern）與介面（interface）可以借鑑；具體 code 字串不可以。
+
+---
+
+## 移植進度快照
+
+| 日期 | 狀態 |
+|---|---|
+| 2026-02 | 初版移植：QueryEngine turn loop、Coordinator、Compact (micro/auto/session) |
+| 2026-03 | AgentContext fork、ExtractMemories trailing-run、SessionMemory、Memdir 4-type |
+| 2026-04 | Cross-reference 敘述與 ANILA monorepo 同步更新（AgenticRAG template 升格） |
+
+參考本文件「已移植到 `anila-core/` 的模式」與「建議尚未移植但值得動手的」兩張表。
+
+---
+
+## 相關文件
+
+- ANILA 平台整體：[`../README.md`](../README.md)
+- **Python runtime 實作**（本文件參考材料移植的目的地）：[`../anila-core/README.md`](../anila-core/README.md)
+- 使用 anila-core 的實戰 template：[`../AgenticRAG/README.md`](../AgenticRAG/README.md)
+- Router 薄殼部署：[`../anila-core-router/README.md`](../anila-core-router/README.md)
+- 平台決策與路線圖：[`../anila_plan.md`](../anila_plan.md)
+
+---
+
+**Last updated**: 2026-04-24 · **Status**: 參考材料（唯讀） · **`src/` + `vendor/`**: gitignored（僅本 README 進 repo）

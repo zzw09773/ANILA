@@ -15,6 +15,38 @@
 
 ## 整體運作
 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client<br/>(UI / SDK)
+    participant R as Router :9000
+    participant CSP as CSP :8000
+    participant LLM as 主 LLM<br/>(via CSP)
+    participant A as Agent endpoint
+
+    C->>R: POST /v1/chat/completions<br/>model=anila-router
+    R->>CSP: GET /v1/agents (caller API key)
+    CSP-->>R: agents manifest<br/>(含 requires_encryption)
+    Note over R: RemoteAgentRegistry<br/>cache agents; /health 暴露<br/>last_refresh_error
+
+    R->>LLM: POST /v1/chat/completions<br/>(主 LLM 判斷要不要分派)
+    LLM-->>R: SSE: tool_call or 直接回答
+
+    alt 主 LLM 說「分派到 agent X」
+        R->>A: 轉發 request<br/>CSP_SERVICE_TOKEN s2s
+        Note over R,A: 逐 chunk SSE forward<br/>agent.requires_encryption → meta.classified=true
+        A-->>R: SSE stream
+        R-->>C: SSE stream + meta.classified?
+    else 直接回答 (無分派)
+        R-->>C: SSE stream forward 主 LLM 回應
+    end
+
+    Note over R: Agent outage (timeout / 5xx / connect error)<br/>不 500 給 client；<br/>meta 標 agent_error + 友善訊息
+```
+
+<details>
+<summary>📄 ASCII 版本（離線 / email / 舊 Markdown renderer）</summary>
+
 ```
 ┌────────────┐
 │  Client    │  POST /v1/chat/completions
@@ -58,6 +90,8 @@
 │                      │         │    驗 s2s                 │
 └──────────────────────┘         └──────────────────────────┘
 ```
+
+</details>
 
 ---
 
@@ -187,13 +221,43 @@ anila-core/src/anila_core/tools/
 
 - 平台整體：[repo 根 README](../README.md)
 - Runtime foundation（SDK）：[`anila-core/README.md`](../anila-core/README.md)
-- RAG sample agent 樣板：[`AgenticRAG/README.md`](../AgenticRAG/README.md)
+- **官方 RAG agent template**：[`AgenticRAG/README.md`](../AgenticRAG/README.md)
 - CSP 平台：[`myCSPPlatform/README.md`](../myCSPPlatform/README.md)
 - UI：[`ANILA_UI/anila-ui/README.md`](../ANILA_UI/anila-ui/README.md)
 - 路線圖與決策：[`anila_plan.md`](../anila_plan.md)
 
 ---
 
+## Release Notes
+
+### 2026-04-24 — AgenticRAG template 同步
+
+- Cross-reference 敘述更新：`AgenticRAG` 從「sample」改稱「**官方 RAG agent template**」。
+- 與 AgenticRAG 的 `CspServiceTokenMiddleware` 載入順序一致：Router 自己也是從 `anila-core/api/middleware/auth.py` 載 CSP middleware，確保跨服務的 s2s 安全邏輯是單一實作。
+
+### Wave B — 錯誤處理硬化（2026-03）
+
+- `RemoteAgentRegistry` 暴露 `last_refresh_error` 到 `/health`（之前 silent fail）
+- Agent outage (timeout / 5xx / connect error) **不** 500 給 caller；改 SSE meta 標 `agent_error`，回友善訊息
+- Middleware import 失敗 **fail-fast**；絕不 silent fallback 成 no-op
+
+### Wave A — 初版（2026-02）
+
+- `main.py = create_router_app()` 薄殼；所有分派邏輯住在 `anila-core/src/anila_core/api/router_server.py`
+- Dockerfile multi-stage build（context 需為 repo 根，會 COPY `anila-core/`）
+- `/v1/agents` 快取 + classified latch 傳播
+- Router **不**持有自己的 API Key，一律用 caller bearer 回打 CSP（caller 權限 = Router 分派權限）
+
+### Wave E 待辦
+
+- Router mode 收斂進 `anila-core.app_factory.build_app(mode="router")`，讓 `main.py` 變 1 行
+
+---
+
 ## License
 
 見 repo 根 [`LICENSE`](../LICENSE)。
+
+---
+
+**Last updated**: 2026-04-24 · **Depends on**: `anila-core` (no `[rag]` extras) · **Talks to**: `myCSPPlatform` + 已註冊 agents

@@ -54,6 +54,46 @@
 
 ## 技術架構
 
+```mermaid
+flowchart TB
+    user["🧑 使用者 / SDK / Router"]
+
+    subgraph edge["Edge :80"]
+        nginx["Nginx (反向代理 + 靜態 SPA)"]
+    end
+
+    subgraph app["FastAPI :8000"]
+        control["/api/* Control Plane (JWT)<br/>auth · users · api_keys · models<br/>agents · conversations · attachments<br/>shares · handoffs · audit · alerts"]
+        data["/v1/* Data Plane (sk- API Key)<br/>chat/completions · embeddings<br/>/v1/agents (給 Router 拉 manifest)"]
+    end
+
+    subgraph bg["背景任務"]
+        health["health_checker<br/>每 60s poll 模型 /health"]
+        usage["usage_writer<br/>批次寫入 token_usage"]
+        seed["auto_seed<br/>啟動時註冊 models/agents/links"]
+    end
+
+    db[("PostgreSQL :5432<br/>csp schema")]
+    models["模型 endpoints<br/>(vLLM / Ollama / Triton)"]
+    agents["Agent endpoints<br/>(註冊在 CSP 的 agents)"]
+
+    user -->|瀏覽器 / API| nginx
+    nginx --> app
+    control --> db
+    data --> models
+    data -->|CSP_SERVICE_TOKEN s2s<br/>若 requires_encryption<br/>→ classified=true| agents
+    health -.-> models
+    health -.-> agents
+    usage --> db
+    seed -.-> db
+
+    classDef plane fill:#fef3c7,stroke:#d97706
+    class control,data plane
+```
+
+<details>
+<summary>📄 ASCII 版本</summary>
+
 ```
                     ┌──────────────┐
       使用者 ──────▶│    Nginx     │ :80 (反向代理 + 靜態 SPA)
@@ -69,6 +109,8 @@
               │   :5432    │ │  （由 admin 註冊） │
               └────────────┘ └─────────────────┘
 ```
+
+</details>
 
 | 層級 | 技術 |
 |------|------|
@@ -549,3 +591,52 @@ myCSPPlatform/
 ## 授權
 
 見 repo 根 [`LICENSE`](../LICENSE)。內部使用專案。
+
+---
+
+## Release Notes
+
+### 2026-04-24 — AgenticRAG template 同步
+
+- `AUTO_REGISTER_AGENTS` 可直接消費 [`AgenticRAG/anila-agent.yaml`](../AgenticRAG/anila-agent.yaml)（YAML → JSON one-liner，見該檔註解）
+- Agent 註冊流程文件化：見 [`AgenticRAG/docs/CSP_INTEGRATION.md`](../AgenticRAG/docs/CSP_INTEGRATION.md)（三種註冊方式、s2s auth、trusted user headers 細節）
+
+### Wave 2 — SPA 認證重構（2026-03）
+
+- 瀏覽器 session 改走 **httpOnly cookie**（`anila_access_token` / `anila_refresh_token` / `anila_csrf`）；SPA 不再持有 API Key
+- OIDC callback **不再** mint `sso-*` short-lived key（之前會發 24h 短效 key 給 UI，已廢）
+- CSRF 用 **double-submit cookie pattern**；帶 `Authorization: Bearer` 的 SDK path 豁免 CSRF
+- `POST /api/auth/logout` 新增
+- Migration `0011`：`users.last_login_at` + audit IP 一致性
+
+### Wave 1 — 雙軌認證（2026-02）
+
+- `/v1/*` 資料面新增 `Caller` dependency，同時接受 JWT（SPA path）與 `sk-*` API Key（SDK path）
+- Migration `0010`：`token_usage.api_key_id` 改為 nullable；JWT 流量分桶到 dashboard 的 `web_ui_requests`
+
+### Wave 0 — Quota 子系統移除
+
+- Migration `0006_drop_quota_rate_limit`：落地 on-prem 部署不需要 token quota，整個子系統移除
+- Migration `0007_drop_model_requires_encryption`：加密改為 agent-level 屬性，不在 model-level 設定
+
+### Agent Console 強化
+
+- `PUT /api/agents/{id}` — owner / admin 可自行編輯 endpoint / description / capabilities；**刪除仍 admin 限定**
+- `base_model_id` **註冊時必填**；`AgentResponse` 增 `base_model_name` / `owner_username` / `capabilities`
+- `POST /api/agents/{id}/health-check` 主動檢查
+- `health_status` normalize：`online` → `healthy`、`offline` → `unhealthy`
+
+---
+
+## 相關文件
+
+- 平台整體：[`../README.md`](../README.md)
+- Runtime foundation：[`../anila-core/README.md`](../anila-core/README.md)
+- Router：[`../anila-core-router/README.md`](../anila-core-router/README.md)
+- **RAG agent template**：[`../AgenticRAG/README.md`](../AgenticRAG/README.md) · [`../AgenticRAG/docs/CSP_INTEGRATION.md`](../AgenticRAG/docs/CSP_INTEGRATION.md)
+- UI：[`../ANILA_UI/anila-ui/README.md`](../ANILA_UI/anila-ui/README.md)
+- 路線圖：[`../anila_plan.md`](../anila_plan.md)
+
+---
+
+**Last updated**: 2026-04-24 · **Role**: Control + Data Plane · **Authoritative for**: users · api_keys · models · agents · token_usage · audit_logs

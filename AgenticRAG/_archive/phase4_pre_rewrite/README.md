@@ -47,3 +47,16 @@ So the surface was deliberately collapsed to a single path each:
 
 After Phase 4 has been validated against a real H100 server and a few
 real Traditional Chinese PDFs end-to-end.
+
+---
+
+## Archive metadata
+
+| Field | Value |
+|---|---|
+| Archived on | 2026-04-07 |
+| Phase | 4 (vLLM reranker + Vision-API OCR unification) |
+| Current template location | [`../../`](../../) (ANILA monorepo after 2026-04-24 migration) |
+| Deployment spec for the new design | [`../../docs/SERVER_DEPLOYMENT_PHASE4.md`](../../docs/SERVER_DEPLOYMENT_PHASE4.md) |
+
+**Last updated**: 2026-04-24

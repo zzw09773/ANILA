@@ -43,7 +43,16 @@ Open `agent.py` and find the `# TODO` section in `chat_completions()`.
 
 Common patterns:
 - **Simple LLM call**: use `CSPPlatformProvider` to call the main LLM through CSP
-- **RAG agent**: add `anila-core[rag]` to requirements and use `QueryEngine` with `RagPreprocessor`
+- **RAG agent**: **fork the official [`AgenticRAG`](../../../../../../AgenticRAG/) template instead** — it has ingestion pipeline, Hybrid Search, cross-encoder reranker, vision OCR, and tool-driven loop already wired up. This template is only the minimum starter.
 - **Tool-calling agent**: register tools in `ToolRegistry` and use `QueryEngine`
 
-See `examples/` in the `anila-core` repo for more patterns.
+See `examples/` in the `anila-core` repo or [`AgenticRAG/`](../../../../../../AgenticRAG/) for more complete patterns.
+
+## Two scaffolds, two use cases
+
+| You want to build... | Start from... |
+|---|---|
+| **A RAG agent** (搜文件 + 引用來源) | [`AgenticRAG/`](../../../../../../AgenticRAG/) — official template, 5 min to fork |
+| **A non-RAG agent** (workflow / external API / custom logic) | **This template** (`anila-core init my-agent`) — minimal starter |
+
+Both register to myCSPPlatform the same way (see `anila-agent.yaml` + `CSP_SERVICE_TOKEN`).

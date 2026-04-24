@@ -5,14 +5,47 @@
 這是 ANILA 平台所有 agent 與 Router 共用的 **runtime 基座**。純 runtime，不綁 RAG、不綁特定向量庫、不綁特定模型供應商。RAG 相關的檔案解析、pgvector、向量檢索是 **樣板（AgenticRAG）** 才會用到的能力，透過 optional extras 提供。
 
 - **Router 部署**：只裝 `anila-core`（不加 `[rag]`），image 精簡
-- **Agent 開發者**：`pip install "anila-core[rag]"` + fork [`AgenticRAG`](../AgenticRAG/) 作為 RAG sample 起點
+- **Agent 開發者**：`pip install "anila-core[rag]"` + fork [`AgenticRAG`](../AgenticRAG/) 作為**官方 RAG agent template** 起點
 - **SDK 消費者**：`from anila_core.api.router_server import create_router_app`、`from anila_core.engine.query_engine import QueryEngine` 等
 
-> Repo 根定位請看 [`../README.md`](../README.md)。Agent 開發 workflow 與 RAG 樣板請看 [`../AgenticRAG/README.md`](../AgenticRAG/README.md)。
+> Repo 根定位請看 [`../README.md`](../README.md)。Agent 開發 workflow 與 RAG template 請看 [`../AgenticRAG/README.md`](../AgenticRAG/README.md)。
 
 ---
 
 ## 套件邊界
+
+```mermaid
+flowchart TB
+    subgraph core["anila-core (本 package)"]
+        direction TB
+        api["api/<br/>router_server · server · middleware<br/>(CSP service-token)"]
+        registry["registry/<br/>LocalAgentDefinition +<br/>RemoteAgentRegistry"]
+        engine["engine/<br/>QueryEngine (7-stage loop)<br/>+ BudgetTracker"]
+        coord["coordinator/<br/>multi-step decomposition<br/>sub-agent dispatch"]
+        tools["tools/<br/>dispatch_tool + prompts"]
+        providers["providers/<br/>Base + OpenAICompat<br/>+ CSPPlatform + Mock"]
+        storage["storage/<br/>Protocol (ports.py)<br/>+ MemoryFileStore"]
+        memory["memory/<br/>Memdir + extract<br/>+ relevance_selector"]
+        compact["compact/<br/>micro · auto · session_memory<br/>sliding_window"]
+        ctx["context/<br/>AgentContext<br/>(turn-scope injection)"]
+        models["models/<br/>Pydantic (agent · message<br/>memory · tool · storage)"]
+        router["router/<br/>tool_router · ToolRegistry"]
+        cli["cli/<br/>init · status · register<br/>(含 agent 模板)"]
+        config["config.py<br/>Settings (pydantic-settings)"]
+    end
+
+    router_svc["anila-core-router<br/>(薄殼部署入口)<br/>main.py: app=create_router_app()"]
+    ragtmpl["AgenticRAG template<br/>(RAG agent 起點)<br/>pip install 'anila-core[rag]'"]
+
+    core -->|import| router_svc
+    core -->|import + [rag] extras| ragtmpl
+
+    classDef optional fill:#dbeafe,stroke:#3b82f6
+    class ragtmpl optional
+```
+
+<details>
+<summary>📄 ASCII 版本（離線 / email / 舊 Markdown renderer）</summary>
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -61,13 +94,15 @@
        │  import                            │  optional extras [rag]
        ▼                                   ▼
 ┌──────────────────────┐       ┌──────────────────────────┐
-│  anila-core-router   │       │   AgenticRAG sample      │
+│  anila-core-router   │       │   AgenticRAG template    │
 │  (薄殼部署入口)       │       │   - api.py (RAG agent)   │
 │  main.py:            │       │   - ingestion/ + pgvector│
 │    app =             │       │   - index_documents.py   │
 │    create_router_app │       │   - 下載作為新 agent 起點 │
 └──────────────────────┘       └──────────────────────────┘
 ```
+
+</details>
 
 ---
 
@@ -123,7 +158,7 @@ async for delta in engine.run_stream([UserMessage(content="say hi")]):
     print(delta)
 ```
 
-### 3. 做自己的 agent（fork AgenticRAG 樣板）
+### 3. 做自己的 agent（fork AgenticRAG template）
 
 細節見 [`../AgenticRAG/README.md`](../AgenticRAG/README.md)。anila-core 提供的 CLI 可以 scaffold：
 
@@ -179,7 +214,7 @@ anila-core/
     └── simple-agent/
 ```
 
-> **Note (Task 3 pending)**：現階段 `ingestion/`、`storage/adapters/{pg_pool,pgvector_store,postgres_store}.py`、`providers/embedding_nvidia.py`、`engine/rag_preprocessor.py` 等仍留在 anila-core tree 裡（透過 `[rag]` extras 啟用）。下一輪會把這些 RAG-specific 檔案搬回 AgenticRAG 樣板，讓 core 真正成為 pure runtime。
+> **Note (Task 3 pending)**：現階段 `ingestion/`、`storage/adapters/{pg_pool,pgvector_store,postgres_store}.py`、`providers/embedding_nvidia.py`、`engine/rag_preprocessor.py` 等仍留在 anila-core tree 裡（透過 `[rag]` extras 啟用）。下一輪會把這些 RAG-specific 檔案搬回 AgenticRAG template，讓 core 真正成為 pure runtime。
 
 ---
 
@@ -187,11 +222,45 @@ anila-core/
 
 - 平台總覽：[`../README.md`](../README.md)
 - Router 薄殼部署：[`../anila-core-router/README.md`](../anila-core-router/README.md)
-- RAG sample agent 樣板：[`../AgenticRAG/README.md`](../AgenticRAG/README.md)
+- **官方 RAG agent template**：[`../AgenticRAG/README.md`](../AgenticRAG/README.md)
+- CSP 平台：[`../myCSPPlatform/README.md`](../myCSPPlatform/README.md)
+- UI：[`../ANILA_UI/anila-ui/README.md`](../ANILA_UI/anila-ui/README.md)
+- Runtime TS 參考原本：[`../runtime_logic/README.md`](../runtime_logic/README.md)
 - 決策與路線圖：[`../anila_plan.md`](../anila_plan.md)
+
+---
+
+## Release Notes
+
+### 2026-04-24 — AgenticRAG template 升格同步
+
+- `AgenticRAG/` 從「RAG sample」升格為 **官方 RAG agent template**；本 README 的 cross-reference 敘述統一更新。
+- `api/middleware/auth.py` 的 `CspServiceTokenMiddleware` 是 ANILA 生態**唯一權威**的 s2s auth 實作：AgenticRAG template 的 loader 會優先載入這裡的版本，fallback 到 in-package copy。
+- `cli/templates/agent-template/` 作為 `anila-core init my-agent` 的 scaffold 起點，與 AgenticRAG template 是**兩層選擇**：前者給「從零做非 RAG agent」的人、後者給「做 RAG agent」的人。
+
+### Wave B — 強化（2026-03）
+
+- `RemoteAgentRegistry.last_refresh_error` 暴露到 Router `/health`（見 `anila-core-router/`）
+- Middleware import 失敗改為 **fail-fast**（過去會 silent fallback 成 no-op，已修補）
+- `engine/query_engine.py` 加 `_post_turn_hooks` 支援 `preventContinuation` 語意
+
+### Wave A（2026-02）
+
+- 初版 `QueryEngine` 7-stage turn loop（從 `runtime_logic/` TypeScript 參考移植）
+- `compact/{micro,auto,sliding_window}` + `memory/extract_memories.py`
+- `coordinator/coordinator.py` 多 worker 協調
+
+### Task 3 待辦（下一輪）
+
+- 把 `ingestion/`、`storage/adapters/{pg_pool,pgvector_store,postgres_store}`、`providers/embedding_nvidia.py`、`engine/rag_preprocessor.py` **搬回** `AgenticRAG` template（這些是 RAG-specific，不應該住在 pure runtime 裡），讓 `anila-core` 真正成為 pure runtime foundation。
+- Compact PTL retry + `strip_images_from_messages`（見 `runtime_logic/README.md` 移植清單）
 
 ---
 
 ## License
 
 見 repo 根 [`LICENSE`](../LICENSE)。
+
+---
+
+**Last updated**: 2026-04-24 · **Package**: `anila-core` · **Consumed by**: `anila-core-router`、`AgenticRAG` template、任何 fork 的 ANILA agent

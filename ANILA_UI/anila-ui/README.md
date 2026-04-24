@@ -18,6 +18,42 @@ ANILA 平台的前端 Runtime（React + Vite），讓終端使用者登入後與
 
 ## UI 運作流程
 
+```mermaid
+flowchart TB
+    enter["🧑 使用者進入 UI"]
+    auth{"已登入?"}
+    login["/login<br/>本機帳密 or OIDC"]
+    main["ChatRuntime 主介面<br/>GET /api/conversations<br/>GET /v1/agents"]
+    pick["選對話 / 新對話 / 選 agent"]
+    send["Composer 送訊息<br/>POST /v1/chat/completions (SSE)"]
+    render["逐 chunk render<br/>message_delta / tool_call / meta"]
+    classified{"SSE meta<br/>classified=true?"}
+    latch["對話 one-way latch<br/>升級為 classified<br/>(UI 無降級路徑)"]
+    done["收到 [DONE]"]
+    persist["POST /api/conversations/{id}/messages<br/>(user + assistant 寫回 CSP)"]
+    collab["分享 / 交接 / 附件<br/>POST /shares · /handoffs<br/>multipart /attachments"]
+
+    enter --> auth
+    auth -- no --> login
+    login --> main
+    auth -- yes --> main
+    main --> pick
+    pick --> send
+    pick -.->|並行| collab
+    send --> render
+    render --> classified
+    classified -- yes --> latch
+    latch --> done
+    classified -- no --> done
+    done --> persist
+
+    classDef secure fill:#fee2e2,stroke:#dc2626
+    class latch secure
+```
+
+<details>
+<summary>📄 ASCII 版本</summary>
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                      使用者進入 UI                            │
@@ -68,6 +104,8 @@ ANILA 平台的前端 Runtime（React + Vite），讓終端使用者登入後與
       └──────────────────────┘
 ```
 
+</details>
+
 ### 分享 / 交接 / 附件
 
 ```
@@ -80,6 +118,8 @@ ANILA 平台的前端 Runtime（React + Vite），讓終端使用者登入後與
 附件：      Composer onAttach → POST /api/attachments (multipart)
             → 回傳 attachment_id → 一併送進 /v1/chat/completions
 ```
+
+> ⚠️ **Wave 2 Auth 重構同步提醒**：myCSPPlatform 的 Wave 2 把 SPA session 改為 **httpOnly cookie**（`anila_access_token` / `anila_refresh_token` / `anila_csrf`），SPA 不再 localStorage / sessionStorage 保存 token。本 README 下方「開發備忘 → 登入流程（本機）」敘述沿用舊版寫法，實作細節以當前 `src/runtime/auth.jsx` + `src/runtime/api.js` 為準。
 
 ---
 
@@ -227,6 +267,45 @@ sessionStorage: api_key（手動貼或 OIDC 自動帶回）
 
 ---
 
+## Release Notes
+
+### 2026-04-24 — AgenticRAG template 同步 + chat UI 改版
+
+- Cross-reference 更新：`AgenticRAG` 為「**官方 RAG agent template**」
+- Chat bubble 重設計：Claude.ai-style flat rounded；Assistant 無頭列框、工具列 hover-reveal
+- `ReasoningSummary`：合併 routing trace + thinking 成單行 ghost row
+- Conversation sidebar：title 兩行 clamp；dropdown 改 `position: fixed` 避 overflow 切斷
+- 搜尋框 `×` clear button + Esc；tag 搜尋 + 同義詞展開（`特休` 可找到 `年假` / `HR`）
+- Composer：`@` autocomplete 下拉實際可用 agent；paste 優先 `text/*` 避免文字被 fallback 截圖當附件
+- EmptyState 改為單卡「ANILA 可以做什麼？」，prompt 由實際 agent 清單動態產出
+- Router 系統 prompt 新增「ambiguous → clarify」規則；`_normalize_clarify_bullets` 把 inline `·` 分隔的候選 agent 轉成 markdown bullet
+
+### 2026-03 — Auth / Session Wave 2
+
+- SPA 移除 localStorage JWT 與 sessionStorage API Key，完全改走 **httpOnly cookie + CSRF**
+- OIDC callback 不再發 short-lived API Key
+- 新增 `POST /api/auth/logout`
+
+### 測試覆蓋（2026-04）
+
+- Vitest: **69 tests**（新增 `messageMeta` / `titleClean` / `searchSynonyms`）
+
+---
+
+## 相關文件
+
+- 平台整體：[`../../README.md`](../../README.md)
+- CSP（本 UI 的 backend）：[`../../myCSPPlatform/README.md`](../../myCSPPlatform/README.md)
+- Router（`anila-router` pseudo-agent 的實作端）：[`../../anila-core-router/README.md`](../../anila-core-router/README.md)
+- **官方 RAG agent template**（可註冊被本 UI 分派）：[`../../AgenticRAG/README.md`](../../AgenticRAG/README.md)
+- 路線圖：[`../../anila_plan.md`](../../anila_plan.md) · UI 設計決策：[`../../frontend_plan.md`](../../frontend_plan.md)
+
+---
+
 ## License
 
 見 repo 根 [`LICENSE`](../../LICENSE)。
+
+---
+
+**Last updated**: 2026-04-24 · **Framework**: React + Vite · **Talks to**: CSP (:8000) + Router (:9000)
