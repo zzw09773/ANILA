@@ -1,0 +1,98 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# ANILA Platform Registration Manifest
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# Declares how this agent presents itself to myCSPPlatform. Three ways to
+# apply this file:
+#
+#   1. Auto-register on platform startup
+#      Convert this file to a single JSON object and set it as
+#      ``AUTO_REGISTER_AGENTS=[{...}]`` in the platform's backend .env.
+#      Example (one-liner):
+#        python -c "import yaml,json,sys; print('['+json.dumps(yaml.safe_load(open('anila-agent.yaml')))+']')"
+#
+#   2. Developer UI
+#      Open myCSPPlatform → Developer tab → "Register agent" and copy these
+#      fields in. The ``approval_status`` will be set to ``pending`` and an
+#      admin must approve before the Router will dispatch traffic.
+#
+#   3. Direct API call (POST /agents)
+#      See docs/CSP_INTEGRATION.md for the HTTP contract.
+#
+# Fork workflow: change ``name``, ``endpoint_url``, and
+# ``description_for_router`` to match your agent's identity. Everything else
+# can usually stay as-is.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Stable identifier inside CSP. Must be unique across the platform.
+# Convention: <team>-<purpose>  e.g.  legal-rag, research-rag, hr-knowledge
+name: agentic-rag
+
+# Where CSP Router forwards ``/v1/chat/completions`` requests. Must be
+# reachable from the CSP backend container. Use Docker service name when
+# both run in the same compose network, or a DNS name / IP otherwise.
+endpoint_url: http://agentic-rag:24786
+
+# OpenAI-compatible API version prefix. Keep ``v1`` unless your agent
+# speaks a custom API.
+api_version: v1
+
+# Free-form description shown in the Router's agent picker and used by
+# semantic routing to decide when to dispatch to this agent. Be specific
+# about strengths and intended use-cases.
+description_for_router: |
+  繁體中文文件 RAG agent。支援 PDF / DOCX / DOC / ODT / MD / TXT 以及單張圖片
+  （含 PDF 內嵌圖自動 OCR）。檢索路徑：NV-Embed-V2 向量 + 繁中關鍵字 ILIKE +
+  RRF 融合 + (可選) mxbai cross-encoder reranker。適合法條、SOP、內部手冊、
+  條款類精確查詢，會在回覆末尾附標注信心度的來源清單。
+
+# Which base LLM the agent runs on (must already be registered in CSP's
+# model registry). CSP uses this for billing / quota attribution.
+base_model: google/gemma4
+
+# Declared capabilities. Used by Router filters ("only show tool-calling
+# agents", "only Chinese agents", etc).
+capabilities:
+  streaming: true
+  tool_calling: true
+  multi_turn: true
+  languages:
+    - zh-TW
+    - en
+  file_formats:
+    - pdf
+    - docx
+    - doc
+    - odt
+    - md
+    - txt
+
+# JSON Schema for the chat request body. OpenAI-compatible by default.
+# Override if your agent expects additional fields (e.g. a "corpus" selector).
+input_schema:
+  type: object
+  properties:
+    messages:
+      type: array
+      description: OpenAI-compatible chat messages array
+    stream:
+      type: boolean
+      default: true
+    model:
+      type: string
+      description: Ignored by this agent — the backend MODEL env var wins
+  required:
+    - messages
+
+# Initial health status on registration. CSP's health-checker will hit
+# ``GET <endpoint_url>/health`` every minute and update this.
+health_status: unknown
+
+# ``approved``  — immediately dispatchable by Router
+# ``pending``   — visible to admins but not to regular users until approved
+# ``rejected``  — registration declined
+approval_status: approved
+
+# Optional. Must match an existing CSP username or owner_user_id. Omitting
+# falls back to ``settings.ADMIN_USERNAME`` during auto-registration.
+# owner_username: alice

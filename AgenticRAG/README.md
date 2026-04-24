@@ -1,8 +1,19 @@
-# AgenticRAG Framework
+# AgenticRAG — ANILA 平台 RAG Agent Template
 
-部門內部的 **AgenticRAG** 開發骨架。目標是讓同仁可以在一套「
-可組裝、可測試、可替換基礎設施」上面快速疊自己的 Agentic RAG 應用，
-而不綁任何大型開源框架。
+ANILA 平台的 **官方 RAG agent template**。Fork 本目錄，改檢索邏輯與
+`anila-agent.yaml`，`docker compose up -d` 後就能註冊進
+[myCSPPlatform](../myCSPPlatform/) 被 Router 分派流量。
+
+也可以脫離 ANILA **獨立部署**——所有核心 primitives 自包（不依賴
+anila-core），直接對 OpenWebUI 或任何 OpenAI-compatible client 都能用。
+
+> **兩分鐘上手**：
+> 1. `cp .env.example .env` 並填 `LLM_URL` / `EMBEDDING_URL` / `DATABASE_URL`
+> 2. `docker compose up -d` → `curl http://localhost:24786/health` 回 200
+> 3. 要接 ANILA：設 `CSP_SERVICE_TOKEN`，把 [`anila-agent.yaml`](./anila-agent.yaml) 的欄位登錄到 CSP UI
+> 4. 要接 OpenWebUI：Settings → Connections → `http://host:24786`
+
+完整 ANILA 對接流程見 [`docs/CSP_INTEGRATION.md`](./docs/CSP_INTEGRATION.md)。
 
 ## 設計原則
 
@@ -35,6 +46,8 @@
 - [API 端點](#api-端點)
 - [SSE 事件](#sse-事件)
 - [環境變數](#環境變數)
+- [ANILA 平台整合](#anila-平台整合)
+- [Fork 到你自己的 Agent](#fork-到你自己的-agent)
 - [測試](#測試)
 - [Release Notes](#release-notes)
 - [License](#license)
@@ -595,6 +608,70 @@ curl -H "Authorization: Bearer <your-api-key>" http://localhost:8000/health
 | `API_KEY` | （空） | 留空不啟用驗證 |
 | `API_DEV_MODE` | `false` | `true` 則跳過驗證 |
 | `UPLOAD_DIR` | `/tmp/anila_uploads` | 上傳暫存目錄 |
+| `CSP_SERVICE_TOKEN` | （空） | 由 myCSPPlatform 發給 agent 的 s2s token；留空 → middleware 跳過檢查 |
+| `CSP_BASE_URL` | （空） | LLM / embedding 改走 CSP proxy 時的 base URL |
+| `CSP_API_KEY` | （空） | CSP proxy 呼叫時用的 bearer token |
+
+## ANILA 平台整合
+
+要把本 agent 註冊進 [myCSPPlatform](../myCSPPlatform/) 讓 Router 可以分派
+流量過來，有三件事要做：
+
+1. **編輯 [`anila-agent.yaml`](./anila-agent.yaml)** — 改 `name`、
+   `endpoint_url`、`description_for_router` 為你 agent 的身份。
+2. **把 YAML 登錄到 CSP** — 三種方式任選（啟動時 env 自動註冊 /
+   Developer UI / POST `/agents`），詳見 [`docs/CSP_INTEGRATION.md`](./docs/CSP_INTEGRATION.md)。
+3. **在 agent 的 `.env` 設 `CSP_SERVICE_TOKEN`** — 從 CSP UI 的 Agent
+   detail 頁複製，填到 `.env` 後重啟。middleware 會驗 `X-CSP-Service-Token`
+   header；留空則進入本機 dev mode。
+
+Middleware 載入順序：`anila_core.api.middleware.auth` → 本 package 的
+`agentic_rag.api.middleware.csp_auth` fallback。在 ANILA 平台內會自動使用
+anila-core 版本，保持跨 agent 的安全邏輯一致；脫離 ANILA 也能獨立運行。
+
+完整對接流程（含 X-ANILA-User-* header 處理、health check、多 instance
+註冊、staging vs prod token 區隔）見 [`docs/CSP_INTEGRATION.md`](./docs/CSP_INTEGRATION.md)。
+
+## Fork 到你自己的 Agent
+
+本 template 的設計目標是讓「**5 分鐘內跑起第一個自己的 agent**」。典型 fork 流程：
+
+```bash
+# 1. 複製本目錄成你自己 agent 的位置
+cp -r AgenticRAG/ my-legal-rag/
+cd my-legal-rag/
+
+# 2. 修改身份
+# - anila-agent.yaml 的 name / endpoint_url / description_for_router
+# - .env 的 MODEL / DATABASE_URL / CSP_SERVICE_TOKEN
+
+# 3. 換檢索邏輯（按需）
+# - src/agentic_rag/tools/__init__.py — 如果要改 vector/keyword search 行為
+# - src/agentic_rag/engine/rag_preprocessor.py — 如果要改 pre-process 注入策略
+# - api.py — 如果要改 OpenWebUI proxy 的 hybrid search 權重 / reranker 行為
+
+# 4. 換資料
+cp ~/your-pdfs/*.pdf data/documents/
+python index_documents.py
+
+# 5. 跑起來
+docker compose up -d
+curl http://localhost:24786/health
+```
+
+**fork 時不建議改動**：
+
+- `src/agentic_rag/api/middleware/` — CSP 相容邏輯
+- `src/agentic_rag/providers/embedding_nvidia.py` — NV-Embed-V2 介面
+- `src/agentic_rag/storage/adapters/pgvector_store.py` — 除非你換向量庫
+- `src/agentic_rag/compact/` — compaction 是框架共用能力
+
+**fork 時建議改動**：
+
+- `src/agentic_rag/tools/prompts.py` — 你的 agent 人格與回覆格式
+- `api.py` 的 `SYSTEM_PROMPT` — OpenWebUI 直連模式的預設 system message
+- `templates/institutional-agentic-rag/` — 加上你自己的 multi-agent 角色 yaml
+- `data/documents/` — 放你的真實文件集
 
 ## 測試
 
