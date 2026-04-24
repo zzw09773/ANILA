@@ -140,6 +140,25 @@ try:
             description="Temporary directory for uploaded files.",
         )
 
+        # ── ANILA / CSP Platform Integration ──────────────────────────
+        # Populated automatically when this agent is registered behind
+        # myCSPPlatform. When empty the CSP middleware runs in
+        # pass-through dev mode so the template stays clone-and-run.
+        csp_service_token: Optional[str] = Field(
+            default=None,
+            description="Expected value of the X-CSP-Service-Token header "
+            "injected by myCSPPlatform. None/empty disables the check.",
+        )
+        csp_base_url: str = Field(
+            default="",
+            description="When set, LLM / embedding / vision calls are routed "
+            "through CSP instead of a direct vLLM endpoint.",
+        )
+        csp_api_key: str = Field(
+            default="",
+            description="Bearer token presented to CSP for proxied LLM calls.",
+        )
+
         model_config = SettingsConfigDict(
             env_file=".env",
             env_file_encoding="utf-8",
@@ -177,6 +196,9 @@ except ImportError:
         api_key: Optional[str] = None
         api_dev_mode: bool = False
         upload_dir: str = "/tmp/agentic_rag_uploads"
+        csp_service_token: Optional[str] = None
+        csp_base_url: str = ""
+        csp_api_key: str = ""
 
 
 # Module-level singleton — import and use directly:

@@ -180,6 +180,7 @@ def build_app() -> FastAPI:
         api_key=settings.api_key,
         api_dev_mode=settings.api_dev_mode,
         upload_dir=settings.upload_dir,
+        csp_service_token=settings.csp_service_token,
     )
 
 

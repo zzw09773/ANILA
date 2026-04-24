@@ -32,6 +32,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from agentic_rag.api.middleware.loader import install_csp_middleware
 from agentic_rag.ingestion.normalize import normalize_zh
 from agentic_rag.ingestion.tokenize_zh import tokenize as _tokenize_query
 from agentic_rag.providers.reranker import (
@@ -43,11 +44,19 @@ from agentic_rag.providers.reranker import (
 # ── 載入 .env ─────────────────────────────────────────────────────────────────
 load_dotenv(Path(__file__).parent / ".env")
 
-LLM_URL       = os.getenv("LLM_URL",           "https://172.16.120.35/v1")
-LLM_API_KEY   = os.getenv("LLM_API_KEY",       "not-set")
+# When deployed behind myCSPPlatform, LLM / Embedding calls are proxied
+# through CSP. Set CSP_BASE_URL + CSP_API_KEY to activate; otherwise the
+# direct LLM_URL / EMBEDDING_URL below are used (standalone mode).
+_CSP_BASE_URL = os.getenv("CSP_BASE_URL", "").rstrip("/")
+_CSP_API_KEY  = os.getenv("CSP_API_KEY",  "not-set")
+_USE_CSP      = bool(_CSP_BASE_URL)
+
+LLM_URL       = f"{_CSP_BASE_URL}/v1" if _USE_CSP else os.getenv("LLM_URL", "https://172.16.120.35/v1")
+LLM_API_KEY   = _CSP_API_KEY          if _USE_CSP else os.getenv("LLM_API_KEY", "not-set")
+EMB_URL       = f"{_CSP_BASE_URL}/v1" if _USE_CSP else os.getenv("EMBEDDING_URL", "https://172.16.120.35/v1")
+EMB_API_KEY   = _CSP_API_KEY          if _USE_CSP else os.getenv("EMBEDDING_API_KEY", "not-set")
+
 MODEL         = os.getenv("MODEL",              "google/gemma4")
-EMB_URL       = os.getenv("EMBEDDING_URL",      "https://172.16.120.35/v1")
-EMB_API_KEY   = os.getenv("EMBEDDING_API_KEY",  "not-set")
 EMB_MODEL     = os.getenv("EMBEDDING_MODEL",    "nvidia/nv-embed-v2")
 DATABASE_URL  = os.getenv("DATABASE_URL",       "postgresql://agentic:agentic@localhost:5432/agentic_rag")
 RAG_TOP_K     = int(os.getenv("RAG_TOP_K",     "5"))
@@ -55,6 +64,10 @@ RAG_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.5"))
 RAG_MIN_SCORE_RETRY = float(os.getenv("RAG_MIN_SCORE_RETRY", "0.3"))
 RAG_RERANK_POOL_MULTIPLIER = int(os.getenv("RAG_RERANK_POOL_MULTIPLIER", "3"))
 VERIFY_SSL    = os.getenv("EMBEDDING_VERIFY_SSL", "false").lower() == "true"
+
+# Service-to-service token issued by myCSPPlatform. When empty the CSP
+# middleware runs in pass-through dev mode.
+_CSP_SERVICE_TOKEN = os.getenv("CSP_SERVICE_TOKEN") or None
 
 SYSTEM_PROMPT = os.getenv("RAG_SYSTEM_PROMPT", """你是一個知識檢索助手。請根據提供的參考資料回答用戶問題。
 
@@ -93,6 +106,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _pool.close()
 
 app = FastAPI(title="AgenticRAG API", version="1.0.0", lifespan=lifespan)
+
+# CSP service-to-service auth middleware. When running inside the ANILA
+# platform this loads from anila-core; standalone deployments fall back to
+# the in-package copy at agentic_rag.api.middleware.csp_auth. Either way
+# the behaviour is the same: require X-CSP-Service-Token on /v1/* when
+# CSP_SERVICE_TOKEN is set, pass-through when unset.
+_csp_loaded_from = install_csp_middleware(app, _CSP_SERVICE_TOKEN)
+logger.info(
+    "CSP middleware: loaded_from=%s, enforced=%s, csp_proxy_mode=%s",
+    _csp_loaded_from,
+    bool(_CSP_SERVICE_TOKEN),
+    _USE_CSP,
+)
 
 
 # ── /v1/models ────────────────────────────────────────────────────────────────

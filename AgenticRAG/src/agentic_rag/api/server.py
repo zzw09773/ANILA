@@ -28,6 +28,7 @@ from ..router.tool_router import ToolRegistry
 from .documents import router as documents_router, set_ingestion_service
 from .search import router as search_router, set_search_providers
 from .middleware.auth import ApiKeyMiddleware
+from .middleware.loader import install_csp_middleware
 from .events import (
     ErrorPayload,
     EventType,
@@ -100,6 +101,7 @@ def create_app(
     api_key: Optional[str] = None,
     api_dev_mode: bool = False,
     upload_dir: str = "/tmp/anila_uploads",
+    csp_service_token: Optional[str] = None,
 ) -> FastAPI:
     """Create and return the FastAPI application.
 
@@ -119,6 +121,9 @@ def create_app(
         api_key:             Bearer token for API auth (None = disabled).
         api_dev_mode:        Disable auth when True.
         upload_dir:          Directory for uploaded files.
+        csp_service_token:   Expected ``X-CSP-Service-Token`` value when this
+                             agent runs behind myCSPPlatform. When None/empty
+                             the CSP middleware runs in pass-through dev mode.
     """
     app = FastAPI(
         title="AgenticRAG",
@@ -126,7 +131,13 @@ def create_app(
         version="0.2.0",
     )
 
-    # Auth middleware
+    # CSP service-to-service auth (platform integration).
+    # Installed FIRST so it runs before the per-agent API-key check below.
+    # Loader prefers anila-core's implementation and falls back to the
+    # in-package copy when running standalone.
+    install_csp_middleware(app, csp_service_token)
+
+    # Per-agent Bearer token auth (for direct clients / OpenWebUI etc).
     app.add_middleware(ApiKeyMiddleware, api_key=api_key, dev_mode=api_dev_mode)
 
     # Register RAG routers
