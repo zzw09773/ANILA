@@ -22,12 +22,12 @@ keyword + vector search; Sprint 3 adds evaluator-side bulk operations.
 
 from __future__ import annotations
 
-import json
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, AsyncIterator
 
 import asyncpg
+from pgvector import HalfVector
 
 from anila_core.ingestion.chunking_plugins.base import ChunkResult
 from anila_core.ingestion.errors import StoreError
@@ -82,12 +82,13 @@ class AgentScopedPgVectorStore:
             tr = conn.transaction()
             await tr.start()
             try:
-                # Use a parameter substitution to defend against the
-                # already-impossible case of a non-int agent_id sneaking
-                # past __init__.
+                # ``SET LOCAL`` does not support parameter binding ($1 etc.)
+                # — PostgreSQL parses it as a configuration command, not a
+                # DML statement. We f-string the integer in directly.
+                # Safe because ``__init__`` rejects anything that's not
+                # a positive int — the value here is statically a Python int.
                 await conn.execute(
-                    "SET LOCAL anila.agent_id = $1",
-                    str(self._agent_id),
+                    f"SET LOCAL anila.agent_id = {int(self._agent_id)}"
                 )
                 yield conn
                 await tr.commit()
@@ -123,7 +124,14 @@ class AgentScopedPgVectorStore:
 
         # Build a list of tuples for executemany — each row is
         # (collection_id, agent_id, document_id, chunk_key, content,
-        #  embedding, metadata_json, token_count).
+        #  embedding, metadata_dict, token_count). The jsonb codec is
+        # registered on every connection (PgPool._init_connection), so
+        # asyncpg encodes the dict to JSONB on its own — passing a
+        # ``json.dumps`` string would double-encode.
+        # Wrap embeddings in HalfVector so the registered halfvec codec on
+        # the connection serialises them. Passing a bare list[float] would
+        # be interpreted as ``vector`` by asyncpg's codec table and the
+        # INSERT would fail with a type-mismatch on the halfvec(4000) column.
         rows = [
             (
                 collection_id,
@@ -131,8 +139,8 @@ class AgentScopedPgVectorStore:
                 document_id,
                 ch.chunk_key,
                 ch.content,
-                emb,
-                json.dumps(ch.metadata, ensure_ascii=False),
+                HalfVector(emb),
+                ch.metadata,
                 ch.token_count,
             )
             for ch, emb in zip(chunks, embeddings)
@@ -145,7 +153,7 @@ class AgentScopedPgVectorStore:
             VALUES
                 ($1, $2, $3, $4, $5,
                  to_tsvector('simple', $5),
-                 $6, $7::jsonb, $8)
+                 $6, $7, $8)
         """
         try:
             async with self._acquire() as conn:
@@ -184,6 +192,10 @@ class AgentScopedPgVectorStore:
         # similarity expression for the score column so callers can read
         # higher-is-closer. ``ORDER BY embedding <=> $1`` keeps the
         # IVFFlat index hot.
+        # Query embedding is also halfvec — wrap so the codec ships the
+        # right binary shape. The cosine ``<=>`` operator works on halfvec
+        # vs halfvec only after both sides are halfvec.
+        q = HalfVector(query_embedding)
         if collection_id is None:
             sql = """
                 SELECT id, collection_id, agent_id, document_id, chunk_key,
@@ -194,7 +206,7 @@ class AgentScopedPgVectorStore:
                  ORDER BY embedding <=> $1
                  LIMIT $3
             """
-            args: tuple[Any, ...] = (query_embedding, min_score, top_k)
+            args: tuple[Any, ...] = (q, min_score, top_k)
         else:
             sql = """
                 SELECT id, collection_id, agent_id, document_id, chunk_key,
@@ -206,7 +218,7 @@ class AgentScopedPgVectorStore:
                  ORDER BY embedding <=> $1
                  LIMIT $4
             """
-            args = (query_embedding, collection_id, min_score, top_k)
+            args = (q, collection_id, min_score, top_k)
 
         async with self._acquire() as conn:
             rows = await conn.fetch(sql, *args)
@@ -283,11 +295,9 @@ class AgentScopedPgVectorStore:
 
     @staticmethod
     def _row_to_chunk(row: asyncpg.Record, *, include_embedding: bool) -> IngestionChunk:
-        # asyncpg returns JSONB as a parsed dict; metadata defaults to {}
-        # in the schema so it can never be NULL here, but be defensive.
+        # JSONB codec parses asynchronously into a dict. Defaults to {}
+        # in the schema so this can never be NULL, but None-guard regardless.
         metadata = row["metadata"] or {}
-        if isinstance(metadata, str):
-            metadata = json.loads(metadata)
         return IngestionChunk(
             id=row["id"],
             collection_id=row["collection_id"],

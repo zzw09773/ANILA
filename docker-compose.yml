@@ -89,8 +89,14 @@ services:
           {"name":"MLSteam","url":"https://aiops.ai.ncsist.org.tw:4443/","icon":"cpu","description":"MLOps 平台 — agent 訓練與部署","sort_order":5,"is_public":true,"required_roles":["developer"]}
         ]
       ANILA_TEMPLATE_DIR: /app/anila-template
+      # Phase 2 Sprint 1: ingestion uploads land here so the worker can
+      # read them by path. csp-side upload endpoint writes; worker reads.
+      INGESTION_UPLOAD_DIR: /var/anila/ingestion-uploads
     volumes:
       - ./AgenticRAG:/app/anila-template:ro
+      # Same host path mounted into ingestion-worker so the two services
+      # share inode-level identity (no copy / no syncing overhead).
+      - ./share/uploads/ingestion:/var/anila/ingestion-uploads
     depends_on:
       csp-db:
         condition: service_healthy
@@ -100,6 +106,62 @@ services:
       timeout: 5s
       retries: 6
       start_period: 20s
+    restart: unless-stopped
+
+  # ── Redis (queue backing store for ingestion-worker) ──────────────────────
+  # Sprint 1 uses redis only for Arq queue state. No persistence needed —
+  # in-flight jobs surviving a restart is a Sprint 4 concern; for now the
+  # volume is just there so compose down/up doesn't lose AOF on restart.
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no", "--maxmemory", "256mb"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ── ingestion-worker (Phase 2 Sprint 1+) ──────────────────────────────────
+  # Async pipeline: parse → chunk → embed → index pgvector. Reads jobs
+  # from redis, reads uploaded blobs from the shared upload dir, writes
+  # chunks via AgentScopedPgVectorStore as csp_app (RLS enforced).
+  #
+  # Connects to csp-db using the non-superuser csp_app role — the worker
+  # never needs migration privileges. The upload dir is a host bind mount
+  # so the CSP container and the worker see the same files without
+  # round-tripping through redis or the DB.
+  ingestion-worker:
+    build:
+      context: .
+      dockerfile: ingestion-worker/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://csp_app:csp@csp-db:5432/csp
+      REDIS_URL: redis://redis:6379
+      # On-host embedding-proxy (NV-embed-V2 native, OpenAI-compatible).
+      # If you point at a different endpoint, EMBEDDING_DIM must be set
+      # to that endpoint's output dim AND must match the live schema
+      # column (currently halfvec(4000), see migration 0015).
+      EMBEDDING_BASE_URL: ${LOCAL_EMBEDDING_BASE_URL:-http://host.docker.internal:7011/v1}
+      EMBEDDING_MODEL: ${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}
+      EMBEDDING_API_KEY: ${LOCAL_EMBEDDING_API_KEY:-not-set}
+      EMBEDDING_DIM: "4000"
+      UPLOAD_DIR: /var/anila/ingestion-uploads
+      PYTHONUNBUFFERED: "1"
+    extra_hosts:
+      # Linux containers don't see host.docker.internal by default —
+      # this maps it to the Docker bridge gateway so the worker can
+      # reach the on-host embedding-proxy at 7011.
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./share/uploads/ingestion:/var/anila/ingestion-uploads
+    depends_on:
+      csp-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
 
   # ── ANILA Core Router (port 9000) ─────────────────────────────────────────────
@@ -310,6 +372,7 @@ networks:
 
 volumes:
   csp-pgdata:
+  redis-data:
   codeserver_config:
   n8n_data:
   gitlab_config:

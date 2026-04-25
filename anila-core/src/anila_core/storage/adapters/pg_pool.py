@@ -21,6 +21,8 @@ the pool dumb preserves the option to swap in pgbouncer / pgcat later.
 
 from __future__ import annotations
 
+import json
+
 import asyncpg
 from pgvector.asyncpg import register_vector
 
@@ -82,10 +84,22 @@ class PgPool:
     async def _init_connection(conn: asyncpg.Connection) -> None:
         """Per-connection initialiser invoked by asyncpg.
 
-        Registering the vector codec here (not per-acquire) means each
-        physical connection registers exactly once, even when reused
-        across many ``acquire()`` calls. asyncpg caches the codec on
-        the connection so subsequent queries go through it without
-        per-statement overhead.
+        Two codecs to register, both of which asyncpg leaves off by default:
+
+        - ``vector`` (pgvector): converts list[float] ↔ pgvector value.
+        - ``jsonb``: parses JSONB columns as dict instead of returning
+          the raw textual representation. The default behaviour means
+          ``row['chunking_config']`` would be a JSON string, forcing
+          every consumer to ``json.loads`` it. Registering a codec
+          centrally avoids that gotcha entirely.
+
+        Both registrations are per physical connection — asyncpg caches
+        the codec, so subsequent queries skip the per-statement overhead.
         """
         await register_vector(conn)
+        await conn.set_type_codec(
+            "jsonb",
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema="pg_catalog",
+        )

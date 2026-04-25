@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ingestion-worker"
+version = "0.1.0"
+description = "ANILA ingestion-worker — Arq-based async pipeline for parse / chunk / embed / index"
+requires-python = ">=3.11"
+dependencies = [
+    # Core SDK — chunkers + AgentScopedPgVectorStore + error taxonomy.
+    "anila-core>=0.6.0",
+    # Async DB driver and pgvector codec — also pulled by anila-core, listed
+    # explicitly so the worker's deps file documents them.
+    "asyncpg>=0.29",
+    "pgvector>=0.3",
+    # Arq for the redis-backed job queue. 0.26 is the first version with
+    # the Pydantic v2 compatible JobResult model.
+    "arq>=0.26",
+    # File parsers. Sprint 1 covers plain text, markdown, and PDF text
+    # extraction. Sprint 2 swaps in docling / mammoth for richer DOCX /
+    # OCR'd PDF coverage.
+    "pypdf>=4.0",
+    # HTTP client for the embedding endpoint (OpenAI-compatible).
+    "httpx>=0.27",
+    # Settings via env vars — reuse the same lib anila-core uses so the
+    # config style stays consistent across services.
+    "pydantic-settings>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+    "ruff>=0.4",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ingestion_worker"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

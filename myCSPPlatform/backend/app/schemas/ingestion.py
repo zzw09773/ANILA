@@ -58,12 +58,13 @@ class CollectionCreate(BaseModel):
         description="Embedding endpoint identifier; worker resolves to a credential.",
     )
     embedding_dim: int = Field(
-        default=1536,
+        default=4000,
         ge=64,
         le=4000,
         description=(
             "Vector dimension used by ``document_chunks.embedding``. Must match "
-            "the live ``vector(N)`` schema column — currently 1536."
+            "the live schema column — currently halfvec(4000) per migration "
+            "0015. NV-embed-V2 native is 4096-d; the worker truncates to 4000."
         ),
     )
 

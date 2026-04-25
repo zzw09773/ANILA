@@ -1,9 +1,13 @@
 """Ingestion platform API package (Phase 2 Sprint 1+).
 
-Sprint 1 ships only the collections CRUD endpoint group. Document upload
-+ async job tracking + chunking evaluator land in Sprints 2-3.
+Sprint 1 ships:
+- collections CRUD (5 endpoints)
+- document upload + list + detail (3 endpoints, async via Arq)
+
+Sprint 2 adds: job progress SSE, chunking evaluator UI, agent_llm_credentials.
 """
 
 from app.api.ingestion.collections import router as collections_router
+from app.api.ingestion.documents import router as documents_router
 
-__all__ = ["collections_router"]
+__all__ = ["collections_router", "documents_router"]
