@@ -4,6 +4,80 @@ All notable changes to this package. anila-core is **not yet 1.0** — internal
 breaking changes are acceptable but always documented here. SemVer kicks in
 once we cut v1.0 (no concrete date).
 
+## v0.6.0 (2026-04-25) — Ingestion Platform foundation (Sprint 1, Chunks A–G)
+
+### Added
+
+The boundary v0.5.0 left was "anila-core is a pure runtime". v0.6.0 adds
+the ingestion-platform SDK layer back on top, this time as a thin,
+agent-scoped facade rather than the per-deployment runtime that was
+deleted. Sprint 1 ships:
+
+- **`anila_core.ingestion`** — ingestion support layer for the central
+  worker service.
+  - `errors.IngestionError` taxonomy (5 codes: `E_PARSE_FORMAT_UNSUPPORTED`,
+    `E_PARSE_CORRUPT`, `E_EMBED_TIMEOUT`, `E_PG_CONNECT`,
+    `E_PG_RLS_VIOLATION`). Each carries `retryable` / `severity`.
+    `E_PG_RLS_VIOLATION` is hard-coded as `severity=critical, retryable=False`
+    — RLS bypass is a security incident, never auto-recovered.
+  - `chunking_plugins` — Protocol + idempotent registry + 3 built-in
+    strategies (`hierarchical`, `fixed`, `markdown-aware`). The 3
+    remaining strategies from the design doc (`pdf-page`, `cjk-sentence`,
+    `semantic`) live in the worker service alongside their heavier deps.
+
+- **`anila_core.storage.adapters`** — agent-scoped pgvector access.
+  - `PgPool` returns. Same name as the v0.5.0-deleted class but the new
+    one auto-registers `vector` + `halfvec` + `sparsevec` + `jsonb`
+    codecs on every connection (the legacy adapter only did `vector`).
+  - `AgentScopedPgVectorStore` is the only sanctioned read/write path
+    into `document_chunks`. Constructor refuses non-positive int
+    `agent_id` (rejects None / str / float / bool / 0 / negative).
+    Every method wraps work in `BEGIN ... SET LOCAL anila.agent_id = N
+    ... COMMIT` — without the explicit transaction, asyncpg autocommits
+    each statement and Layer 2 RLS is silently bypassed.
+  - Methods: `index_chunks`, `similarity_search`,
+    **`keyword_search`** (FTS via `plainto_tsquery` against
+    `content_tsv`), `list_by_document`, `list_by_collection`,
+    `delete_document`, `delete_collection`.
+
+- **`anila_core.models.ingestion`** — `IngestionChunk` + `SearchHit`
+  Pydantic models for the new schema. The legacy
+  `models.storage.DocumentChunk` (TEXT chunk_id, user_id/project_id)
+  remains for back-compat but is no longer the canonical chunk type.
+
+### BREAKING (since v0.5.0)
+
+- `pyproject.toml`: `asyncpg>=0.29` and `pgvector>=0.3` are core deps
+  again (v0.5.0 demoted them to optional). The central SDK needs them.
+- Dependency footprint up by ~15 MB installed; v0.5.0's clean-runtime
+  promise is intentionally relaxed because the central SDK lives here now.
+
+### Tests
+
+- 35 unit tests added (errors / chunking_plugins / store constructor
+  guards / G3 static gate) — total 209 passing on this branch.
+- 6 integration tests under `tests/integration/` (G1 random workload,
+  G2 RLS bypass × 4) — runtime ~2s against a live pgvector. Auto-skip
+  when no DB is reachable.
+
+### Sprint 1 G1/G2/G3 gates
+
+| Gate | Result |
+|---|---|
+| G1: 5 agents × random workload, zero cross-agent leakage | ✅ |
+| G2: raw asyncpg without GUC sees 0 rows; RLS holds | ✅ |
+| G3: actual SQL on `document_chunks` lives in 1 file (the SDK) | ✅ |
+
+### Migration
+
+| If you …                                              | Do this                                                                                                                  |
+|---|---|
+| Already shipped a fork on v0.5.0                       | Add `RAG_AGENT_ID` env to the deployment; switch to `csp_app` runtime DSN; drop your own `pgvector_store.py` if cloned. |
+| Were importing from `anila_core.storage.adapters` v0.5 | Imports still work. `AgentScopedPgVectorStore` and `PgPool` are new. The MemoryFileStore re-export is unchanged.            |
+| Were calling old `models.DocumentChunk`               | Still there. New code uses `models.ingestion.IngestionChunk`.                                                            |
+
+---
+
 ## v0.5.0 (2026-04-25) — Boundary cleanup (Sprint 1)
 
 ### BREAKING
