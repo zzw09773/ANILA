@@ -232,54 +232,32 @@ def create_app(
 
     @app.post("/agentic-chat")
     async def agentic_chat(request: ChatRequest) -> StreamingResponse:
-        """Tool-driven AgenticRAG endpoint.
+        """Tool-driven chat endpoint — runs the agent loop with whatever
+        tools the host registered into the global ToolRegistry.
 
-        Unlike /chat, this endpoint registers RAG tools (vector_search,
-        keyword_search, read_document) and lets the LLM decide when to
-        search. No automatic context injection is performed.
+        Sprint 1 boundary cleanup (anila-core-boundary.md Grey Zone B)
+        moved RAG tool wiring out of core: this endpoint no longer knows
+        about vector_search / keyword_search / read_document. Callers
+        building RAG agents (e.g. AgenticRAG template) register their
+        own tools at app-factory time, and the request body must supply
+        a system prompt — there's no longer a RAG-specific default.
         """
-        from ..tools import (
-            create_vector_search_tool,
-            create_keyword_search_tool,
-            create_read_document_tool,
-        )
-        from ..tools.prompts import AGENTIC_RAG_SYSTEM_PROMPT
+        if not request.system_prompt:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "system_prompt is required — anila-core no longer ships "
+                    "a default RAG prompt. Use AgenticRAG template or pass "
+                    "your own."
+                ),
+            )
 
-        # Build a per-request tool registry with RAG tools
-        agentic_registry = ToolRegistry()
-
-        if embedding_provider is not None and retrieval_provider is not None:
-            agentic_registry.register(create_vector_search_tool(
-                embedding_provider=embedding_provider,
-                retrieval_provider=retrieval_provider,
-                user_id=request.user_id,
-                project_id=request.project_id,
-            ))
-
-        if db_pool is not None:
-            agentic_registry.register(create_keyword_search_tool(
-                db_pool=db_pool,
-                user_id=request.user_id,
-                project_id=request.project_id,
-            ))
-            agentic_registry.register(create_read_document_tool(
-                db_pool=db_pool,
-                user_id=request.user_id,
-                project_id=request.project_id,
-            ))
-
-        # Also register any tools from the global registry
-        for name in tool_registry.list_tools():
-            if name not in {"vector_search", "keyword_search", "read_document"}:
-                agentic_registry.register(tool_registry.get(name))
-
-        sys_prompt = request.system_prompt or AGENTIC_RAG_SYSTEM_PROMPT
         config = QueryConfig(
             max_turns=request.max_turns,
             model=request.model,
-            system_prompt=sys_prompt,
+            system_prompt=request.system_prompt,
         )
-        engine = QueryEngine(provider, agentic_registry, config)
+        engine = QueryEngine(provider, tool_registry, config)
 
         from ..models.message import UserMessage as UM
         messages = _parse_history(request.history) + [UM(content=request.user_message)]
