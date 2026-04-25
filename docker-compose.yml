@@ -200,6 +200,47 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # ── n8n workflow automation ────────────────────────────────────────────────────
+  # Subpath deployment under /n8n via N8N_PATH. Settings adopted from
+  # My-OpenAI-Frontend prod (which ran this same workload for years), only
+  # generalised: ANILA_HOST defaults to 172.16.120.35 with HTTPS so absolute
+  # webhook URLs resolve through our reverse proxy.
+  n8n:
+    image: n8nio/n8n:1.98.2
+    # Run as the image's built-in 'node' user (UID 1000) — not the host
+    # 'aia' UID. n8n_data is a Docker-managed named volume so we don't
+    # need host-uid alignment, and overriding user: trips n8n on first
+    # boot (HOME falls back to / and mkdir /.n8n EACCESes).
+    environment:
+      TZ: Asia/Taipei
+      # Tells n8n's editor + redirect helpers it lives at /n8n.
+      N8N_PATH: /n8n/
+      N8N_HOST: ${ANILA_HOST:-172.16.120.35}
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: ${N8N_WEBHOOK_URL:-https://172.16.120.35/n8n/}
+      # Self-signed cert in dev — let n8n's outbound HTTP nodes trust it.
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+      # We're behind an HTTPS reverse proxy but n8n itself sees HTTP, so
+      # telling it the cookie is non-secure prevents login bouncing.
+      N8N_SECURE_COOKIE: "false"
+      # Code node sandbox flags — kept lax to match the prod reference. If
+      # you tighten n8n usage policy, narrow these.
+      NODE_FUNCTION_ALLOW_EXTERNAL: "*"
+      NODE_FUNCTION_ALLOW_BUILTIN: "*"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    expose:
+      - "5678"
+    healthcheck:
+      # n8n exposes /healthz at the engine root regardless of N8N_PATH.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+    restart: unless-stopped
+
   # ── GitLab CE (Phase 1 Step 6) ────────────────────────────────────────────────
   # Subpath deployment via Workhorse: external_url tells GitLab to render every
   # absolute link under /gitlab, internal nginx is disabled so the bundled
@@ -252,6 +293,7 @@ networks:
 volumes:
   csp-pgdata:
   codeserver_config:
+  n8n_data:
   gitlab_config:
   gitlab_logs:
   gitlab_data:
