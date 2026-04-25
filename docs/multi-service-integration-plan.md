@@ -10,6 +10,30 @@
 
 ## 0. Decisions Log
 
+### v0.5.3 (2026-04-25) — Phase 1 Step 5-8 落地 + GitLab Subpath 真實 trap
+
+實際把 codeserver + GitLab 跑起來才發現 §5.0.1 / §5.0.2 設計遺漏的 4 個 trap，doc 補進來：
+
+| # | 問題 | 修正 | 為什麼 |
+|---|---|---|---|
+| 21 | nginx `proxy_set_header Host $host` 對 subpath service 不夠 | 改 **`Host $http_host`** | `$host` 只有 server name 不含 port。GitLab 收到 `Host: localhost`（沒 :4443）後 redirect 也少 port，跳到 default port 443 server block 結果落到 CSP backend 拿到 CSP HTML。`$http_host` 保留完整 Host header（含 port） |
+| 22 | GitLab Docker healthcheck 設 `/gitlab/-/health` 一直 unhealthy | 改 **`/gitlab/users/sign_in`** | GitLab 的 `/-/health` 有 `monitoring_whitelist`（預設 127/8 only），nginx 透過 docker bridge 172.20.x.x 來打就 404；in-container loopback OK 但 external monitor 不通。`/users/sign_in` public + 200 即代表 Puma 在 serve |
+| 23 | Edit 工具改 bind-mounted file 後 `nginx -s reload` 沒效果 | 必須 **`docker restart anila-nginx`** | Edit 工具是 atomic rename（換新 inode）；Docker bind mount 釘原 inode，container 還看舊檔。reload 只重讀同一份 in-memory config。改 nginx config 必須 restart container |
+| 24 | docker-compose `expose:` 先寫 `8443` 上面提到「expose 不對外」可能讓人誤會 | doc + compose 註解都加上「**expose ≠ publish**」說明 | `expose` 只是 declarative metadata 不開 host port；`ports:` 才是 publish。codeserver/gitlab 都用 expose 而非 ports，刻意只給內網 nginx 看 |
+
+**Step 5+6+7+8 落地 commits**：
+- `11d572c` — codeserver + gitlab compose + nginx 同源 path 初版
+- `ec2272e` — Host header fix（trap #21）+ GitLab healthcheck URL fix（trap #22）
+
+**驗證**：
+- `https://localhost:4443/codeserver/` → 302 redirect 到 `/codeserver/login` ✓
+- `https://localhost:4443/gitlab/` → 302 redirect 到 `/gitlab/users/sign_in`（port 保留）✓
+- `https://localhost:4443/gitlab/users/sign_in` → 200，HTML 是真 GitLab login page，asset path 都帶 `/gitlab` prefix ✓
+- GitLab 初始 root password 在 `docker exec anila-platform-gitlab-1 cat /etc/gitlab/initial_root_password`，**首次登入立即 rotate**
+
+**已知未解但 acceptable**：
+- 既存 gitlab container 仍顯示 `unhealthy`（用著舊 healthcheck URL `/gitlab/-/health`），純粹 cosmetic — 容器其實 work。下次 `docker compose up -d gitlab` 觸發 recreate 即會套新 healthcheck 變 healthy
+
 ### v0.5.2 (2026-04-25) — Phase 1 Step 3 落地 + URL/語意修正
 
 | # | 設計（v0.5 之前） | 實作（v0.5.2 修訂） | 為什麼 |
@@ -1518,10 +1542,10 @@ await audit_log(
 | 2 | CSP backend 實作 `can_access_link()` + grant CRUD endpoints（§7.5）| 0.5 天 | ✅ commit `7c4df4a` |
 | 3 | 寫 `AUTO_REGISTER_LINKS` 5 筆（NotebookLM / codeserver / n8n / gitlab / mlsteam，URL 見 §7.1） | 30 分鐘 | ✅ 待 commit |
 | 4 | CSP UI Dashboard 顯示卡片時依 `can_access_link()` 過濾 + Service Access 管理 UI（§7.5.3）| 1-1.5 天 | ⏳ |
-| 5 | ANILA monorepo `docker-compose.yml` 新增 `codeserver` service（§5.0.1）| 30 分鐘 | ⏳ |
-| 6 | **(v0.4)** ANILA monorepo `docker-compose.yml` 新增 `gitlab` service（§5.0.2）| 1 小時 | ⏳ |
-| 7 | **(v0.4)** GitLab 首次啟動 + reconfigure（等 healthy）+ root 密碼設定 + 開 admin 帳號 | 1-2 小時 | ⏳ |
-| 8 | Nginx 設定 `/codeserver` + `/gitlab` 同源 reverse proxy（§5.0.1、§5.0.2）| 1.5 小時 | ⏳ |
+| 5 | ANILA monorepo `docker-compose.yml` 新增 `codeserver` service（§5.0.1）| 30 分鐘 | ✅ commit `11d572c` |
+| 6 | **(v0.4)** ANILA monorepo `docker-compose.yml` 新增 `gitlab` service（§5.0.2）| 1 小時 | ✅ commits `11d572c` + `ec2272e`（healthcheck fix）|
+| 7 | **(v0.4)** GitLab 首次啟動 + reconfigure（等 healthy）+ root 密碼設定 + 開 admin 帳號 | 1-2 小時 | ✅ booted；初始 root password 在 `/etc/gitlab/initial_root_password`（首次登入務必輪換）|
+| 8 | Nginx 設定 `/codeserver` + `/gitlab` 同源 reverse proxy（§5.0.1、§5.0.2）| 1.5 小時 | ✅ commits `11d572c` + `ec2272e`（Host header fix）|
 | 9 | E2E 測試 1：admin grant 工程部 access NotebookLM → 部門使用者 dashboard 看到卡片 → 點開（Phase 1 仍重新登入）| 1.5 小時 | ⏳ |
 | 10 | E2E 測試 2：admin / developer 進 codeserver 與 GitLab 同源 path、WebSocket terminal / CI log live tail 都能用 | 1.5 小時 | ⏳ |
 | 11 | My-OpenAI-Frontend 停用：`docker compose down` + nginx `/v1/*` 改 410 + README archive notice（§3.0.1）| 30 分鐘 | ⏳ |
