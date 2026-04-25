@@ -178,9 +178,12 @@ services:
       TZ: Asia/Taipei
       PASSWORD: ${CODESERVER_PASSWORD:-changeme-codeserver}
       SUDO_PASSWORD: ${CODESERVER_SUDO_PASSWORD:-changeme-codeserver-sudo}
-      # PROXY_DOMAIN: code-server uses this to render absolute URLs back at
-      # the user. Including the port so the cookie / preview URLs match.
-      PROXY_DOMAIN: ${ANILA_HOST:-172.16.120.35:4443}
+      # PROXY_DOMAIN: code-server uses this to construct asset / cookie URLs
+      # internally, and it MUST match the host the browser actually sees.
+      # Users hit ANILA via default HTTPS (port 443), so the canonical form
+      # is plain hostname — adding ':4443' here breaks _doResolveAuthority
+      # because the browser-supplied host has no port.
+      PROXY_DOMAIN: ${ANILA_HOST:-172.16.120.35}
       DEFAULT_WORKSPACE: /workspace
     volumes:
       - codeserver_config:/config
