@@ -176,13 +176,19 @@ services:
   # auth_request validating the CSP JWT cookie (see design §5.0.1).
   codeserver:
     image: codercom/code-server:latest
-    user: "${UID:-1000}:${GID:-1000}"
+    # Default 1001:1001 matches the host 'aia' UID — repo files end up
+    # owned by the in-container user, so saves don't EACCES.
+    user: "${UID:-1001}:${GID:-1001}"
     environment:
       TZ: Asia/Taipei
       PASSWORD: ${CODESERVER_PASSWORD:-changeme-codeserver}
     volumes:
       - codeserver_config:/home/coder/.config
-      - codeserver_workspace:/home/coder/workspace
+      # Bind-mount the ANILA repo so code-server is a live editor on the
+      # actual codebase (matches My-OpenAI-Frontend prod's pattern of
+      # mounting host project root into /home/coder). Override via
+      # ${CODESERVER_WORKSPACE} for other repo layouts.
+      - ${CODESERVER_WORKSPACE:-./}:/home/coder/workspace
     working_dir: /home/coder/workspace
     expose:
       - "8080"
@@ -202,7 +208,7 @@ services:
   # Initial root password lives in /etc/gitlab/initial_root_password inside
   # the container; rotate it on first login.
   gitlab:
-    image: gitlab/gitlab-ce:16.10.0-ce.0
+    image: gitlab/gitlab-ce:16.10.10-ce.0
     hostname: gitlab.anila.internal
     environment:
       GITLAB_OMNIBUS_CONFIG: |
@@ -246,7 +252,6 @@ networks:
 volumes:
   csp-pgdata:
   codeserver_config:
-  codeserver_workspace:
   gitlab_config:
   gitlab_logs:
   gitlab_data:
