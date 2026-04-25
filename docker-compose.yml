@@ -129,6 +129,10 @@ services:
     volumes:
       - ./myCSPPlatform/docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./myCSPPlatform/docker/certs:/etc/nginx/certs:ro
+      # Runtime data shared with workflow services (n8n etc). Static files
+      # are read-only; uploads are writable. See share/README.md for layout.
+      - ./share/static:/usr/share/nginx/share-files/static:ro
+      - ./share/uploads:/usr/share/nginx/share-files/uploads:rw
     depends_on:
       csp:
         condition: service_healthy

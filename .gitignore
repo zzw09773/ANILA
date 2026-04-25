@@ -103,3 +103,11 @@ temp/
 runtime_logic/src/
 runtime_logic/vendor/
 runtime_logic/node_modules/
+
+# ── runtime data: n8n workflow assets / uploads ───────────────────────────────
+# Static templates (e.g. fina./) and user uploads served by nginx at /static
+# and /uploads. These are workflow-specific runtime data, not source code —
+# back them up out-of-band. README.md is tracked so the directory layout
+# stays self-documenting for fresh checkouts.
+share/static/
+share/uploads/
