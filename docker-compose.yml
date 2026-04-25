@@ -41,7 +41,17 @@ services:
       # Flush stdout/stderr immediately so `docker logs` shows request errors
       # without waiting for buffer fill.
       PYTHONUNBUFFERED: "1"
-      DATABASE_URL: postgresql://csp:csp@csp-db:5432/csp
+      # Runtime connections use the non-superuser ``csp_app`` role, NOT
+      # ``csp``. ``csp`` is reserved for migrations because it has the
+      # CREATE EXTENSION / CREATE ROLE privileges. ``csp_app`` is the role
+      # whose RLS policies actually fire — superusers and BYPASSRLS roles
+      # bypass document_chunks isolation unconditionally. See migration
+      # 0014 § "csp_app runtime role" for the rationale.
+      DATABASE_URL: postgresql://csp_app:csp@csp-db:5432/csp
+      # Migration role — used by docker-entrypoint or one-off `alembic
+      # upgrade` runs. Distinct from runtime so we don't ship superuser
+      # to the request path.
+      MIGRATION_DATABASE_URL: postgresql://csp:csp@csp-db:5432/csp
       SECRET_KEY: ${CSP_SECRET_KEY:-dev-secret-key-change-in-prod}
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "60"
