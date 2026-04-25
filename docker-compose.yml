@@ -18,6 +18,12 @@ services:
       POSTGRES_USER: csp
       POSTGRES_PASSWORD: csp
       POSTGRES_DB: csp
+    # Expose 5432 to localhost so Sprint 1 G1/G2 integration tests can
+    # reach pgvector + RLS from host-side pytest. Bound to 127.0.0.1 only
+    # — never leaves the dev machine. Production deployments should drop
+    # this line and let the DB stay on the internal compose network.
+    ports:
+      - "127.0.0.1:5432:5432"
     volumes:
       - csp-pgdata:/var/lib/postgresql/data
     healthcheck:

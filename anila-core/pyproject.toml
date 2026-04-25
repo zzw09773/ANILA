@@ -56,7 +56,16 @@ packages = ["src/anila_core"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Session-scoped fixtures (e.g. integration tests' shared PgPool) need
+# a session-scoped event loop, otherwise asyncpg connections opened in
+# fixture setup raise "attached to a different loop" when consumed by
+# function-scoped tests. Default since pytest-asyncio 0.23 is "function"
+# which broke our G1/G2 gates.
+asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests"]
+markers = [
+    "integration: tests that require a live pgvector + RLS database",
+]
 
 [tool.ruff]
 line-length = 100
