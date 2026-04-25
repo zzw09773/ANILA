@@ -1,10 +1,41 @@
-# ANILA Ingestion Platform — Design Doc v0.1
+# ANILA Ingestion Platform — Design Doc v0.2
 
 **Status**: Draft for review
-**Date**: 2026-04-24
+**Date**: 2026-04-25 (v0.2)
 **Author**: ANILA 平台團隊
 **Reviewers**: (待指派)
 **Target delivery**: 3 × 2-week sprints after sign-off
+**See also**: [`anila-core-boundary.md`](./anila-core-boundary.md) — anila-core 瘦身 Task 3 詳細清單，與本文件 §13 同步
+
+---
+
+## 0. Decisions Log
+
+### v0.2 (2026-04-25) — 4 議題 review 後的修正
+
+`@reviewer` 提出 4 個高風險議題，經事實調查後修訂：
+
+| # | 議題 | v0.1 立場 | v0.2 修訂 |
+|---|---|---|---|
+| 1 | 安全邊界要真正「不可繞過」 | 一個 `AgentScopedPgVectorStore` enforcement 點 | **4 層強制**（schema NOT NULL → Postgres RLS → code single entry → pytest random workload）。見 §3.3 |
+| 2 | Evaluator 成本與吞吐 | 估算 ~$30/run 但無治理 | 加 **Fast/Standard/Deep 三段式 + per-agent 互斥 + platform budget gate + result cache + local judge 強烈推薦**。見 §6.5 |
+| 3 | 狀態機 / 重試 | 抽象的 retry policy | 加完整 **Error Taxonomy**（4 大類 12 個 code，禁止 `E_UNKNOWN`，`E_PG_RLS_VIOLATION` 觸發告警）。見 §8.1 |
+| 4 | anila-core 邊界（避免雙軌）| 方案 B：anila-core 改為 client SDK | **方案 A++：直接刪除 anila-core 內 ingestion**。事實調查發現 anila-core/ingestion/ 只有 tests 引用、production 無 caller，刪了零風險。見 §13 與 [`anila-core-boundary.md`](./anila-core-boundary.md) |
+
+並加入：
+- **§1.4 現況真實 footprint**（grep 結果，非敘述）
+- **§3.4 現有 retrieval path deprecation 計畫**（7 條 path → 1 條 single entry）
+- **Sprint 1 必過 gate × 3**（agent 隔離測試 / RLS staging 驗證 / retrieval path 唯一性）
+
+### v0.1 (2026-04-24) — 初版
+
+設計目標決議：
+- 規模假設：10 → 100 agent
+- Collection per-agent 嚴格隔離（機敏資料）
+- Chunking 走 6 預設 + plug-in interface（自訂 code 不允許上傳）
+- 「自訂 chunking」改解為 **Chunking Evaluator**（上傳 sample + queries → 自動找最佳）
+- LLM-as-judge 由 dev 自選 + 自帶 API key
+- 不限 quota（組內使用）
 
 ---
 
@@ -41,6 +72,55 @@
 - ❌ 跨 agent collection 共享（機敏隔離要求）
 - ❌ Token / chunk / storage quota（組內使用不限制，per 你的決策）
 - ❌ 多租戶 pgvector cluster（單一 pg cluster + `agent_id` filter 夠用至 100 agent × 10M chunks）
+
+### 1.4 現況真實 footprint（grep 出來的事實，非 README 敘述）
+
+設計這個平台前必須先承認當前 ingestion 程式碼的真實樣貌，否則「整合」不知從何下手。
+
+**實際存在的 ingestion 模組**：
+
+| 位置 | 檔案 | 真實 caller |
+|---|---|---|
+| `anila-core/src/anila_core/ingestion/` | parsers / chunker / service / __init__ (4 檔) | **只有 tests** — production 無 caller |
+| `anila-core/src/anila_core/api/{documents,search}.py` | `/upload` `/ingest` `/search` HTTP endpoints | tests only |
+| `anila-core/src/anila_core/tools/__init__.py` | `vector_search` / `keyword_search` / `read_document` 工具 | 透過 `app_factory` 接到 `/agentic-chat` |
+| `AgenticRAG/src/agentic_rag/ingestion/` | parsers / chunker / service / normalize / tokenize_zh / docling / ocr (8 檔) | **template 自用 — 真正在跑** |
+| `AgenticRAG/src/agentic_rag/api/{documents,search}.py` | duplicate of anila-core | template 內 dev 上傳用 |
+| `AgenticRAG/api.py` (port 24786) | inline SQL `_vector_search` / `_keyword_search` | OpenWebUI proxy chat 路徑 |
+| `AgenticRAG/index_documents.py` | CLI（透過 HTTP API 餵資料） | dev 批次上傳 |
+
+**真實 caller graph**：
+
+```
+┌────────────────────────────────────────────────────────────┐
+│ Path 1: Dev 用 CLI 餵文件（最常見）                         │
+│   index_documents.py → HTTP /documents/upload+/ingest      │
+│   → uvicorn agentic_rag.app_factory:app  (port 8000)       │
+│   → AgenticRAG/ingestion/{parsers,chunker,service,...}     │
+│   → pgvector document_chunks                               │
+└────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────┐
+│ Path 2: Chat 對話的 retrieval（不是 ingestion）             │
+│   OpenWebUI → AgenticRAG/api.py (port 24786)               │
+│   → 只用 normalize + tokenize_zh 處理 query                 │
+│   → inline SQL hybrid search                               │
+│   → pgvector document_chunks                               │
+└────────────────────────────────────────────────────────────┘
+
+❌ anila-core/ingestion/ 沒有 production caller — 純死 code
+```
+
+**三個關鍵事實**：
+
+1. **ingestion 是 「template 自用」、不是「平台共享」** — 每個 fork AgenticRAG 的 agent 都帶一份完整 ingestion，dev 自己跑 `index_documents.py` 餵資料。**目前完全沒有跨 agent 的共用機制。**
+2. **anila-core 的 ingestion 是死 code** — README 寫「Task 3 pending」要搬走，事實上 AgenticRAG 已有完整且更豐富版本，差「正式刪除 anila-core 那份」。詳見 [`anila-core-boundary.md`](./anila-core-boundary.md)
+3. **chat 路徑跟 ingestion 解耦** — `api.py` 只用 normalize + tokenize_zh（query 處理），不碰 IngestionService / parsers / chunker / ocr。設計新平台時可以暫時不動 chat 路徑（除了 retrieval 補上 `agent_id` scope）。
+
+**對本 design 的影響**：
+- §13 收斂方案從 v0.1 的「方案 B：anila-core 改 SDK」**改為「方案 A++：直接刪除 anila-core ingestion」**（沒 caller、刪了無人受傷）
+- §3.4 retrieval path deprecation 範圍**只需清 AgenticRAG 內** 7 條 path
+- Sprint 1 不需做雙軌相容，只要做「刪除舊 + 新建中央化」
 
 ---
 
@@ -241,36 +321,135 @@ CREATE INDEX idx_chunks_content_fts ON document_chunks
     USING gin (to_tsvector('simple', content));
 ```
 
-### 3.3 機敏隔離強制：middleware 層 agent_id filter injection
+### 3.3 機敏隔離強制：4 層 defense-in-depth
 
-Agent query pgvector 時：
+> v0.1 只列了一個 `AgentScopedPgVectorStore` enforcement 點。Review 後發現現有 7 條 retrieval path 各自打 SQL，光改新 schema 不會自動補強舊 path。**本節擴展為 4 層強制**，4 層獨立有效，任何一層失守還有後續層擋。
 
-```python
-# anila_core.storage.adapters.pgvector_store (新增)
-class AgentScopedPgVectorStore:
-    def __init__(self, pool, agent_id: int):
-        self._pool = pool
-        self._agent_id = agent_id   # 從 CspServiceTokenMiddleware 注入
+#### Layer 1 — Schema：強制 NOT NULL
 
-    async def similarity_search(self, query_embedding, k=5, collection_id=None):
-        # agent_id filter 強制注入，dev 的 code 無法繞過
-        where = ["agent_id = $1"]
-        args = [self._agent_id]
-        if collection_id:
-            where.append(f"collection_id = ${len(args) + 1}")
-            args.append(collection_id)
+```sql
+ALTER TABLE document_chunks ADD COLUMN agent_id BIGINT NOT NULL;
+ALTER TABLE document_chunks ADD CONSTRAINT chunks_agent_required
+    CHECK (agent_id IS NOT NULL);
+CREATE INDEX idx_chunks_agent_required
+    ON document_chunks(agent_id, collection_id);
 
-        sql = f"""
-            SELECT content, metadata, 1 - (embedding <=> $2) AS similarity
-            FROM document_chunks
-            WHERE {' AND '.join(where)}
-            ORDER BY embedding <=> $2
-            LIMIT {k};
-        """
-        ...
+-- 寫入時若遺漏 agent_id，constraint 直接拒絕。
 ```
 
-Dev 拿不到未綁 agent_id 的 store object。這層保證是 **機敏隔離的 enforcement 點**。
+#### Layer 2 — Postgres Row Level Security（資料庫引擎層擋）
+
+```sql
+ALTER TABLE document_chunks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY chunks_agent_isolation ON document_chunks
+    FOR ALL
+    USING (agent_id = current_setting('anila.agent_id', true)::bigint);
+```
+
+連線初始化時：
+```python
+async with pool.acquire() as conn:
+    await conn.execute(f"SET LOCAL anila.agent_id = {agent_id}")
+    # ... 之後所有 query 自動受 RLS 限制
+```
+
+**這一層是 v0.1 漏掉的關鍵**：即使 application code 寫錯（忘了加 `WHERE agent_id =`），PG 引擎也會擋。SQL injection 也擋得住，因為 RLS 是引擎強制。
+
+#### Layer 3 — Code：刪除舊路徑、單一入口
+
+- 把 `anila_core.api.{documents,search}.py` 與 `anila_core.tools.create_*_tool` 的 RAG-specific 部分**直接刪除**（見 §13、§3.4 與 [`anila-core-boundary.md`](./anila-core-boundary.md)）
+- AgenticRAG 內 `api.py` 的 inline `_vector_search` / `_keyword_search` SQL **改走新的 SDK**
+- pgvector_store constructor 強制 `agent_id: int`（拒絕 None / Optional）：
+  ```python
+  class AgentScopedPgVectorStore:
+      def __init__(self, pool, agent_id: int):
+          if not isinstance(agent_id, int) or agent_id <= 0:
+              raise ValueError(f"agent_id must be positive int, got {agent_id!r}")
+          self._pool = pool
+          self._agent_id = agent_id
+
+      async def _acquire(self):
+          conn = await self._pool.acquire()
+          await conn.execute(f"SET LOCAL anila.agent_id = {self._agent_id}")
+          return conn
+  ```
+- `RetrievalProvider` Protocol 移除「無 scope」的 method signature（不允許出現「不帶 agent_id 的 search」）
+
+#### Layer 4 — 強制驗證測試（pytest 必過 gate）
+
+Sprint 1 必須交付以下測試，沒過不能 merge：
+
+```python
+# tests/test_agent_isolation.py
+async def test_agent_isolation_random_workload():
+    """Random workload across agents — no agent ever sees another's chunk."""
+    async with sandbox_pgvector() as pool:
+        # Create 5 agents, each ingests 200 chunks
+        agents = [await create_agent(pool, name=f"agent-{i}") for i in range(5)]
+        for a in agents:
+            await ingest_random_chunks(pool, a, count=200)
+
+        # Run 1000 random queries from each agent's perspective
+        for _ in range(1000):
+            agent = random.choice(agents)
+            store = AgentScopedPgVectorStore(pool, agent_id=agent.id)
+            results = await store.similarity_search(random_vec(), k=20)
+            # 強斷言：所有結果必須屬於該 agent
+            for r in results:
+                assert r.agent_id == agent.id, \
+                    f"LEAK: agent {agent.id} saw chunk from agent {r.agent_id}"
+
+async def test_rls_blocks_raw_sql_bypass():
+    """Even with raw SQL bypass attempt, RLS holds."""
+    async with sandbox_pgvector() as pool:
+        agent_a, agent_b = await setup_two_agents_with_chunks(pool)
+        async with pool.acquire() as conn:
+            await conn.execute(f"SET LOCAL anila.agent_id = {agent_a.id}")
+            # Try to bypass via raw SQL — RLS should still filter
+            rows = await conn.fetch("SELECT * FROM document_chunks")
+            assert all(r['agent_id'] == agent_a.id for r in rows)
+
+async def test_constructor_rejects_invalid_agent_id():
+    with pytest.raises(ValueError):
+        AgentScopedPgVectorStore(pool, agent_id=None)
+    with pytest.raises(ValueError):
+        AgentScopedPgVectorStore(pool, agent_id=0)
+    with pytest.raises(ValueError):
+        AgentScopedPgVectorStore(pool, agent_id=-1)
+```
+
+#### 違反告警
+
+`E_PG_RLS_VIOLATION` 是 §8.1 Error Taxonomy 內**最高優先級告警**：代表 layer 1+2 失守，立即送 alerts 中心並 page on-call。
+
+---
+
+### 3.4 現有 retrieval path deprecation 計畫
+
+§1.4 列出 7 條既有 path 直接打 `document_chunks` 表。Sprint 1 結束時必須收斂為**單一 entry point**：
+
+| 編號 | 既有 path | Sprint 1 處置 |
+|---|---|---|
+| 1 | `anila_core.api.documents` `/upload` `/ingest` | **刪除**（無 production caller，見 §13） |
+| 2 | `anila_core.api.search` `POST /search` | **刪除** |
+| 3 | `anila_core.tools.create_vector_search_tool` | **刪除** |
+| 4 | `anila_core.tools.create_keyword_search_tool` | **刪除** |
+| 5 | `anila_core.tools.create_read_document_tool` | **刪除** |
+| 6 | `AgenticRAG/api.py` 的 inline `_vector_search` / `_keyword_search` SQL | **改寫**為呼叫新 ingestion SDK |
+| 7 | `AgenticRAG/index_documents.py` CLI | **改寫**為呼叫 CSP `/api/ingestion/*` |
+| 8 | `AgenticRAG/src/agentic_rag/api/{documents,search}.py` | **刪除**（dev mode 改走 CSP API） |
+| 9 | `AgenticRAG/src/agentic_rag/tools/__init__.py` 的 RAG tools | **改寫**為呼叫新 SDK |
+
+**Gate 驗證**：
+```bash
+# Sprint 1 結束時必須通過：
+$ grep -rn "document_chunks" --include="*.py" \
+    /home/aia/c1147259/ANILA/anila-core /home/aia/c1147259/ANILA/AgenticRAG \
+    | grep -v "_archive\|tests\|__pycache__"
+# 期望輸出：只剩一個檔案 — 新的 anila_core.storage.adapters.pgvector_store_v2
+```
+
+只允許**一個檔案**直接 query `document_chunks` 表，其他全部走 SDK / API。
 
 ---
 
@@ -648,6 +827,65 @@ Output: {"score": 3, "reason": "..."}
 - 若用地端 llama 70b → ~免費但慢（~20 分鐘）
 - 建議預設 temperature=0 + few-shot 固定評分量表避免 judge drift
 
+### 6.5 Cost & Throttle 治理（v0.2 新增）
+
+> v0.1 估了「~$30/run」但沒治理機制。Reviewer 指出組內若常跑 evaluator，成本與 queue 爆量會失控。本節補三層治理。
+
+#### 6.5.1 三段式預設（Dev UI 第一層選擇）
+
+| Mode | Queries × Strategies × top-k | Judge calls | 預估成本（GPT-4）| 預估時間 |
+|---|---|---|---|---|
+| **Fast** | 10 × 3 × 3 | 90 | ~$2 | 1-2 min |
+| **Standard** | 30 × 6 × 5 | 900 | ~$18 | 5-10 min |
+| **Deep** | 80 × 6 × 10 | 4,800 | ~$96 | 25-40 min |
+
+UI 預設為 Fast，dev 主動升級才走 Standard/Deep。
+
+#### 6.5.2 三道 Throttle
+
+**a. Per-agent 互斥**：同一個 agent 同時最多 1 個 eval run，後續進 queue。避免單一 dev 一晚跑 50 次浪費資源。
+
+**b. Per-judge-LLM rate limit**：依 dev 自己提供的 endpoint 限速設定推算（從 `agent_llm_credentials` 表的 metadata 讀），不打爆對方 API。
+
+**c. Platform-wide budget gate**（circuit breaker，**不是 quota**）：
+```python
+# 每月 platform aggregate judge spend ceiling，admin 在 CSP 設
+class JudgeBudgetGate:
+    monthly_ceiling_usd: float = 500.0   # 預設值
+
+    async def check_or_raise(self, estimated_cost: float):
+        spent_this_month = await self._sum_actual_spend()
+        if spent_this_month + estimated_cost > self.monthly_ceiling_usd:
+            raise BudgetExceededError(
+                f"Estimated ${estimated_cost} would exceed monthly "
+                f"ceiling ${self.monthly_ceiling_usd} (already spent ${spent_this_month})"
+            )
+        # 接近 80% ceiling 時 UI 顯示 warning banner
+```
+
+#### 6.5.3 結果 Cache（最有 leverage 的優化）
+
+```python
+cache_key = sha256(
+    sample_doc_ids_sorted ⊕
+    query_set_normalized ⊕
+    judge_model_id ⊕
+    strategy_configs_canonical
+)
+```
+
+相同輸入的 eval 結果 cache 30 天，dev 反覆 tune query set 時免費。實務上組內 dev **反覆跑 baseline 的次數**（換不同 strategy 比較）遠超你想像。
+
+#### 6.5.4 強烈推薦 Local LLM Judge
+
+若 dev 在 `agent_llm_credentials` 已註冊地端 LLM（llama 70b 等），UI **預設**選它而非 GPT-4：
+
+- Cost = 0
+- 速度慢 1.5-3x（組內可接受）
+- 評分品質 vs GPT-4 相關性實測 ~0.85（足夠用於 strategy ranking，不需要絕對精準）
+
+UI 行為：dev 沒有 local credential 時才預設 GPT-4，並顯示「💡 Tip: 註冊一個 local LLM 可以零成本跑 evaluator」。
+
 ---
 
 ## 7. Dev UI Wireframe
@@ -774,32 +1012,93 @@ stateDiagram-v2
     running --> cancelled: user cancel
     cancelled --> [*]
 
-    failed --> queued: retry (max 3x)
+    failed --> queued: retry per error policy
 ```
 
-**Retry 規則**：
-- Parse failure → 不重試（檔案壞了不會變好）
-- Embedding failure → 重試 3 次 w/ exponential backoff（通常是 transient）
-- pgvector failure → 重試 3 次
-- Unknown failure → 1 次 + dead letter
+### 8.1 Error Taxonomy（v0.2 新增）
+
+> v0.1 寫「Unknown failure → 1 次 + dead letter」是模糊的。Reviewer 指出實作時若沒結構化 error code，root cause 會被吞掉。本節定義完整 taxonomy。
+
+#### 8.1.1 Error 基底
+
+```python
+# anila_core.ingestion.errors
+class IngestionError(Exception):
+    """Structured error with retryability hint."""
+
+    code: str             # 結構化 error code（穩定 API）
+    retryable: bool       # 是否可自動重試
+    user_message: str     # 給 dev UI 看的訊息（可 i18n、不含 stack trace）
+    details: dict         # 給 audit log（exception type / context / 耗時）
+    severity: str         # info / warning / error / critical
+```
+
+#### 8.1.2 完整 Error Code 表
+
+| Code | Class | Retryable | Severity | 觸發條件 / 處置 |
+|---|---|---|---|---|
+| `E_PARSE_FORMAT_UNSUPPORTED` | ParseError | ❌ | warning | 副檔名 / MIME 不支援；UI 顯示「請改上傳 PDF/DOCX 等支援格式」 |
+| `E_PARSE_CORRUPT` | ParseError | ❌ | warning | 檔案損毀；不重試 |
+| `E_PARSE_TOO_LARGE` | ParseError | ❌ | warning | 超過上限（預設 50 MB / 1000 page）|
+| `E_PARSE_PASSWORD_PROTECTED` | ParseError | ❌ | warning | PDF 受密碼保護 |
+| `E_CHUNK_INVALID_PARAMS` | ChunkError | ❌ | error | strategy params 不合法（schema validation 失敗）|
+| `E_CHUNK_OOM` | ChunkError | ✅ (smaller batch) | warning | 記憶體不足；自動降低 batch size 重試 |
+| `E_EMBED_TIMEOUT` | EmbedError | ✅ (3x exp backoff) | warning | embedding endpoint 逾時 |
+| `E_EMBED_RATE_LIMIT` | EmbedError | ✅ (longer backoff) | warning | rate limited（HTTP 429）|
+| `E_EMBED_DIM_MISMATCH` | EmbedError | ❌ | error | embedding 維度跟 collection 設定不符；不重試（model 換了要重建 collection）|
+| `E_EMBED_MODEL_DOWN` | EmbedError | ✅ (with health check between) | error | endpoint 5xx 連續多次 |
+| `E_PG_CONNECT` | StoreError | ✅ (3x) | error | pgvector 連線失敗 |
+| `E_PG_CONSTRAINT` | StoreError | ❌ | error | unique violation / FK violation；schema bug 要 dev 修 |
+| `E_PG_DISK_FULL` | StoreError | ❌ | **critical** | 磁碟滿；page on-call、不重試 |
+| `E_PG_RLS_VIOLATION` | StoreError | ❌ | **critical** | RLS policy 拒絕；**代表 §3.3 layer 1+2 失守**，立即觸發安全告警 |
+| `E_INTERNAL` | IngestionError | 1 次 retry | error | unknown — 完整 trace 進 audit log，不暴露給 dev UI |
+| `E_CANCELED` | IngestionError | ❌ | info | 使用者主動取消 |
+
+#### 8.1.3 三個關鍵設計原則
+
+1. **不存在 `E_UNKNOWN`** — 任何 exception 進 worker 前都被 wrap 成上面其中一個 code。fallback 是 `E_INTERNAL` + 完整 trace 進 audit log，但 UI 顯示泛用文字（「內部錯誤，請聯絡管理員」），不洩露 stack 與檔案路徑。
+2. **`E_PG_RLS_VIOLATION` 觸發安全告警** — 走 CSP 的 alerts 中心，severity=critical，自動 page on-call。代表 §3.3 layer 1+2 失守，必須立刻人工 review。
+3. **Dead Letter Queue** — 超過 retry limit 的 job 進 `ingestion_jobs_dlq` table（不刪原 row、加 `failed_permanent_at` 時戳），admin UI 可看可手動 retry / mark resolved。Critical severity 的錯誤同步進 alerts 表。
+
+#### 8.1.4 UI 顯示範例
+
+```
+✗ contract-v3.pdf — 失敗
+   錯誤代碼: E_PARSE_PASSWORD_PROTECTED
+   訊息: 此 PDF 受密碼保護，無法讀取。請使用未加密版本後重新上傳。
+   [Show details] (admin only — 顯示 stack trace 與 audit log link)
+```
 
 ---
 
 ## 9. Sprint Plan（6 週交付）
 
-### Sprint 1（2 週）— Foundation
+### Sprint 1（2 週）— Foundation + 雙軌收斂
 
-**Goal**: 有最小可用的 ingestion API（不含 evaluator、不含 UI）
+**Goal**: 有最小可用的 ingestion API（不含 evaluator、不含 UI）+ 完成 anila-core 瘦身
 
 - [ ] Alembic migration `0012`（4 張新 table）
+- [ ] **Layer 1 schema**: `document_chunks` 加 `agent_id NOT NULL` + 索引
+- [ ] **Layer 2 RLS**: Postgres RLS policy 與 connection setup helper
+- [ ] **Layer 3 code**: `AgentScopedPgVectorStore` + Protocol 介面更新（拒絕無 scope）
 - [ ] `anila_core.ingestion.chunking_plugins` 基礎抽象 + registry + 3 個 built-in strategies（hierarchical / fixed / markdown-aware）
 - [ ] CSP `/api/ingestion/collections` CRUD（同步 API，不含 job queue）
 - [ ] `ingestion-worker` 基礎骨架（Arq + Redis + 1 個 handler: `ingest_document`）
 - [ ] Docker Compose 加入 `redis` + `ingestion-worker` service
-- [ ] `document_chunks` pgvector schema + `AgentScopedPgVectorStore`
+- [ ] **anila-core 瘦身**（見 [`anila-core-boundary.md`](./anila-core-boundary.md)）：刪除 `ingestion/` `api/{documents,search}.py` `tools/__init__.py` 內 RAG tools `storage/adapters/{pg_pool,pgvector_store,postgres_store}.py` `providers/embedding_nvidia.py` `engine/rag_preprocessor.py`
+- [ ] 改寫 `AgenticRAG/api.py` 的 inline SQL 為呼叫新 SDK
+- [ ] Error Taxonomy（§8.1）骨架 + 5 個最常見的 code 實作
 - [ ] pytest 整合測試：上傳 1 PDF → 7 秒內看到 chunks in pgvector
 
-**Deliverable**：CLI / curl 可以 create collection、upload 1 file、query chunks
+#### Sprint 1 必過 Gate × 3（沒過不能進 Sprint 2）
+
+| # | Gate | 驗證方式 |
+|---|---|---|
+| **G1** | `test_agent_isolation_random_workload` 綠燈 | 5 agent × 200 chunks × 1000 random query，零 leakage |
+| **G2** | RLS policy 在 staging DB 手動 SQL bypass 嘗試擋住 | DBA 用 raw psql 嘗試 `SELECT * FROM document_chunks` 不設 `anila.agent_id`，必須回 0 rows |
+| **G3** | retrieval path 唯一性 | `grep -rn "document_chunks" --include="*.py" anila-core AgenticRAG \| grep -v _archive\|tests` 只剩 1 個檔案 |
+
+**Deliverable**：CLI / curl 可以 create collection、upload 1 file、query chunks，且 anila-core 已退回 pure runtime
 
 ### Sprint 2（2 週）— Async & More Strategies
 
@@ -858,7 +1157,79 @@ stateDiagram-v2
 
 ---
 
-## 12. 非目標（Out of Scope v0.1）
+## 12. anila-core 邊界與雙軌收斂（v0.2 新增）
+
+> Reviewer 指出：「若 ingestion 平台走 CSP 中央化，需避免 anila-core 又長出另一套 ingestion API，造成雙軌。」
+>
+> 事實調查（§1.4）顯示**不只是要避免長出新軌，而是現有的 anila-core ingestion 早就是死 code**，正好趁這次中央化把 anila-core 收斂回 pure runtime。
+
+### 13.1 現況雙軌的真實狀態
+
+```
+            ANILA platform 內目前有兩份 ingestion code：
+
+  anila-core/src/anila_core/ingestion/    AgenticRAG/src/agentic_rag/ingestion/
+  ─────────────────────────────────       ────────────────────────────────────
+  parsers.py                              parsers.py
+  chunker.py (RecursiveTextSplitter)      chunker.py (HierarchicalChunker + ...)
+  service.py                              service.py
+                                          normalize.py     ← 多
+                                          tokenize_zh.py   ← 多
+                                          docling_parser.py← 多
+                                          ocr.py           ← 多
+        ▲                                       ▲
+        │                                       │
+   只有 tests 引用                        AgenticRAG template 自用
+   (production caller = 0)               + index_documents.py CLI
+```
+
+**結論**：anila-core 那份是歷史遺物，README 早就標 Task 3 pending（要搬走），但事實上 AgenticRAG 已經有更完整版本。**直接刪除 anila-core 那份零風險**（沒 caller 會 break）。
+
+### 13.2 收斂方案 A++（直接刪除）
+
+| 動作 | 模組 | 風險 |
+|---|---|---|
+| **刪除** | `anila-core/src/anila_core/ingestion/`（4 檔） | 零（無 production caller） |
+| **刪除** | `anila-core/src/anila_core/api/{documents,search}.py` | 零 |
+| **刪除** | `anila-core/src/anila_core/storage/adapters/{pg_pool,pgvector_store,postgres_store}.py` | 零 |
+| **刪除** | `anila-core/src/anila_core/providers/embedding_nvidia.py` | 零 |
+| **刪除** | `anila-core/src/anila_core/engine/rag_preprocessor.py` | 零 |
+| **拆出** | `anila-core/src/anila_core/tools/__init__.py` 的 `create_vector_search_tool` / `create_keyword_search_tool` / `create_read_document_tool` | 零（搬到 AgenticRAG template；anila-core 保留 `dispatch_tool`） |
+| **拔掉** | `app_factory.py` 內的 RAG-specific wiring（IngestionService / VisionProvider / HierarchicalChunker / RagPreprocessor） | 低（要驗證 router-only 部署仍可起） |
+| **保留** | Protocol 定義（`storage/ports.py`）+ pure runtime 模組（engine / coordinator / compact / memory / context / registry / router / tools.dispatch_tool / providers.{base,openai_compat,csp_platform,mock}）| — |
+
+詳細邊界與判定原則見 **[`anila-core-boundary.md`](./anila-core-boundary.md)**。
+
+### 13.3 與 ingestion platform sprint 編排的耦合
+
+**不能拆開做** — 否則 sprint 2 結束時會有三套 ingestion code（anila-core 既有 + AgenticRAG 既有 + CSP 新的），永遠收斂不回來。
+
+Sprint 1 結束時的目標狀態：
+- `anila-core` 已瘦身完成（只剩 pure runtime）
+- 新 ingestion-worker 服務 alive
+- AgenticRAG `api.py` 改為呼叫新 SDK
+- RAG tools 從 anila-core 搬到 AgenticRAG template
+- 唯一直接打 `document_chunks` 的檔案 = 新版 `pgvector_store_v2`
+
+### 13.4 anila-core 升級時的兼容性處理
+
+由於 anila-core 還沒有 1.0 release（內部使用），**直接 breaking change** 是可接受的。但要做兩件事：
+
+1. **CHANGELOG** 明確標 BREAKING：
+   ```
+   v0.5.0 (2026-XX-XX) — anila-core boundary cleanup
+   BREAKING:
+     - Removed `anila_core.ingestion.*` (use ANILA Ingestion Platform via CSP)
+     - Removed `anila_core.storage.adapters.{pg_pool,pgvector_store,postgres_store}`
+     - Removed `anila_core.api.{documents,search}`
+     - Moved `vector_search` / `keyword_search` / `read_document` tool factories
+       from `anila_core.tools` to `agentic_rag.tools`
+   ```
+2. **Migration guide** 寫一段：dev fork 的舊 agent 升級 anila-core 時要做的事
+
+---
+
+## 13. 非目標（Out of Scope v0.1）
 
 留給 v0.2+：
 
@@ -871,4 +1242,4 @@ stateDiagram-v2
 
 ---
 
-**Last updated**: 2026-04-24 · **Next review**: Sprint 1 kickoff
+**Last updated**: 2026-04-25 (v0.2) · **Next review**: Sprint 1 kickoff · **Companion doc**: [`anila-core-boundary.md`](./anila-core-boundary.md)
