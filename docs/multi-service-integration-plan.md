@@ -10,6 +10,33 @@
 
 ## 0. Decisions Log
 
+### v0.6 (2026-04-25) — Phase 1 全部完工 + 結構性決策修訂
+
+**Phase 1 §8.1 task list 全 11 項 + 1 follow-up 完成。** Branch `ingestion-design`，14 個 commits（從 `e611d89` Step 1 migration 到 `c322427` nginx resolver tech debt）。
+
+| Step | 狀態 | Commit |
+|---|---|---|
+| 1 / 1.5. Migrations 0012 + 0013 | ✅ | `e611d89` + `cc121e3` |
+| 2 / 2.5. access_control + grant CRUD + is_public | ✅ | `7c4df4a` + `91f1b10` |
+| 3. AUTO_REGISTER_LINKS 5 筆 | ✅ | `c9aefc7` |
+| 4. CSP UI Service Access management（Vue）| ✅ | `af450ea` |
+| 5–8. codeserver + GitLab + n8n + nginx 同源 | ✅ | `11d572c` → `5c2a5ac` |
+| 9–10. E2E grant flow + 同源路由驗證 | ✅ | `28fc351` |
+| 11. My-OpenAI-Frontend 停用 | ✅ | (user 直接 down，README 不動 — 不是我們的 repo) |
+| follow-up. n8n self-hosted | ✅ | `88df3fc` |
+| follow-up. /static + /uploads share dir | ✅ | `d687080` |
+| follow-up. nginx resolver auto-recover | ✅ | `c322427` |
+
+**結構性決策修訂：**
+
+| # | 之前 | v0.6 修訂 | 為什麼 |
+|---|---|---|---|
+| 30 | §6 規劃 NotebookLM Phase 4 agentification（單 agent + 9 tools 路線 B）| **取消 agentification，NotebookLM 永遠保持獨立 service** | NotebookLM 對話流（給文件 → 生 PPTX/PDF/mind map）跟 OpenAI chat 完全不同範式，包成 agent 收益小、複雜度高。保持獨立 service + platform_link 卡片 + 之後做 OIDC SSO 即可 |
+| 31 | nginx 每次 service recreate 都要手動 `docker restart anila-nginx` flush stale upstream IP | **`resolver 127.0.0.11 + variable proxy_pass`** 自動 re-resolve | codeserver pivot saga 撞了 4 次 502 才察覺，commit `c322427` 一次解決 |
+| 32 | 前述 Phase 1 過程中 nginx 對 `set` / `rewrite ... break` 的順序敏感不知道 | doc 化 trap：**`set` 必須在 `rewrite ... break` 之前**（同 module，break 終止後續 set 處理）| `c322427` commit message 詳細紀錄 |
+
+**§6 整段重新定位：** Phase 1 SSO + grant 不變（已實作）；§6.1–6.5 agent 化內容**標為 cancelled**，保留作為「曾考慮的 alternative，後人不要重複論證」的紀錄。
+
 ### v0.5.5 (2026-04-25) — codeserver 真實 root cause: image fork + nginx config 一起錯
 
 v0.5.4 把 codeserver 改 dedicated port 仍然爆炸，最後翻 [`/home/aia/c1147259/project/My-OpenAI-Frontend/docker-compose.prod.yml`](https://) + `nginx.prod.conf` 對照組裡 prod 跑了多年的 working setup，找到真正 root cause：
@@ -1095,7 +1122,12 @@ mlsteam 是 organization-wide GPU 平台，**不歸 ANILA 管**。ANILA 跟 mlst
 
 ---
 
-## 6. NotebookLM 整合（Phase 1 SSO + grant，Phase 4 agent 化）
+## 6. NotebookLM 整合（Phase 1 SSO + grant；agent 化 v0.6 取消）
+
+> **v0.6 決策更新（§0 #30）**：原本 §6.1 之後規劃的 Phase 4 agentification（單 agent + 9 tools）**取消**。NotebookLM 對話範式（給文件 → 生 PPTX/PDF/mind map artifact）跟 OpenAI chat completions 完全不同，包成 agent 工程量大、收益小。**永遠保持獨立 service** + platform_link 卡片 + Phase 3 OIDC SSO 即可。
+>
+> 以下 §6.1–6.5 內容是 v0.6 之前的設計，保留作為 historical record（避免後人重新論證 agentification）。實作面看 §6.0.1 + §6.0.2 即可。
+
 
 ### 6.0 v0.2 修訂：兩個階段
 
@@ -1163,11 +1195,11 @@ NotebookLM 直接進 workspace（無需再登入）
 - 收到 `Authorization: Bearer <csp_jwt>` → 用 CSP JWKS 驗 → 從 token claim 撈 `user_id` / `username`
 - 本地 password 認證 deprecated（保留 superuser fallback for emergency）
 
-### 6.1 為什麼 agent 化現在不做
+### ~~6.1 為什麼 agent 化現在不做（v0.6 取消，整段不再 actionable）~~
 
 NotebookLM 是 prod 服務、有自己 user base、有 9 種 artifact 生成，貿然 agent 化的破壞風險高。先放著、寫 plan，等 ANILA platform 成熟後再啟動。
 
-### 6.2 兩種 agent 化路線
+### ~~6.2 兩種 agent 化路線（v0.6 取消）~~
 
 #### 路線 A：9 種 artifact 各自當一個 agent
 
@@ -1212,7 +1244,7 @@ notebooklm-studio          agent
 - Router 精準分派的價值在 RAG 類「不同知識庫」，不在「同知識庫不同呈現方式」
 - LLM tool_calling 的能力已經足夠在 multi-tool agent 內做選擇
 
-### 6.3 Agent 化的前置條件
+### ~~6.3 Agent 化的前置條件（v0.6 取消）~~
 
 NotebookLM 啟動 agent 化前，必須完成：
 1. **CSP 取代 My-OpenAI-Frontend** — NotebookLM 內部要打 CSP `/v1/*` 而非 OpenAI Frontend
@@ -1221,7 +1253,7 @@ NotebookLM 啟動 agent 化前，必須完成：
 
 未滿足這 3 個條件，agent 化會打結。
 
-### 6.4 Agent 化執行步驟（未來）
+### ~~6.4 Agent 化執行步驟（v0.6 取消）~~
 
 ```
 Step 1: NotebookLM backend 加 OpenAI-compatible endpoint
@@ -1661,7 +1693,9 @@ await audit_log(
 
 ---
 
-## 11. Phase 4：NotebookLM Agent 化（時間未定）
+## ~~11. Phase 4：NotebookLM Agent 化（v0.6 取消）~~
+
+> v0.6 決策（§0 #30）：NotebookLM 永遠保持獨立 service。整章 cancelled。下面內容是歷史紀錄。
 
 詳見 §6。要點：
 - 必須先完成 Phase 2（取代 My-OpenAI-Frontend）+ Ingestion Platform 上線 + Phase 3 SSO
@@ -1688,7 +1722,7 @@ await audit_log(
 
 1. **codeserver 部署位置** — 是放在 ANILA monorepo 內 `docker-compose.yml`，還是組裡已經有獨立部署？確認 URL 後填 §7.1
 2. **mlsteam 連線資訊** — 確認內部 hostname（目前 §7.1 寫 `mlsteam.internal` 是猜的）
-3. **NotebookLM Chroma 處理** — Phase 4 啟動時，NotebookLM 自有 chroma 要：(a) 完全廢棄改用 ANILA pgvector；(b) 並存（chroma 給 artifact 生成、pgvector 給跨 agent 共用檢索）；(c) 一次性 migrate 進 pgvector。
+3. ~~**NotebookLM Chroma 處理**~~ — v0.6 取消 NotebookLM agent 化（§11），NotebookLM 永遠用自己的 chroma，無需處理 ANILA pgvector 共用問題。
 4. **My-OpenAI-Frontend 廢除時間軸** — 跟 Ingestion Platform Sprint 1 並行，還是 Sprint 4 之後再做？
 5. **ComfyUI workflow preset 選誰負責** — `comfyui-bridge` 內建 3-5 種 workflow，由誰提供（內部設計師 / 沿用 ComfyUI community workflow）？
 6. **dev credentials 的 PG role TTL** — 24h 太長還是太短？要不要做「續期」endpoint？
@@ -1704,10 +1738,10 @@ Week 4-5   ─── Phase 2 (My-OpenAI-Frontend 廢除) +
                 Ingestion Platform Sprint 2 (UI + worker)
 Week 6-7   ─── Ingestion Platform Sprint 3 (Evaluator)
 Week 8-9   ─── Phase 3 (SSO + codeserver dev workspace)
-Week 10+   ─── 觀察期 + Phase 4 NotebookLM agent 化決策
+Week 10+   ─── 觀察期（NotebookLM agent 化 v0.6 取消，§11）
 ```
 
-**Critical path**：Phase 1 → Ingestion Platform → Phase 2 → Phase 3 → Phase 4。
+**Critical path**：Phase 1 → Ingestion Platform → Phase 2 → Phase 3。
 
 各階段獨立 deploy、獨立 rollback。
 
