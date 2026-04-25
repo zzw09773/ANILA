@@ -73,7 +73,7 @@
 | `storage/adapters/pg_pool.py` | asyncpg 連線池，只給 pgvector 用 | **刪除** |
 | `storage/adapters/pgvector_store.py` | 特定向量庫 implementation | **刪除**（新平台會建 v2 在自己模組裡） |
 | `storage/adapters/postgres_store.py` | RAG 用的 SessionStore / TraceStore | **刪除** |
-| `storage/adapters/memory_file_store.py` | 檔案系統 store（dev 測試用） | **改判**：這是通用 storage adapter，**留下**或搬到 `dev/` 子模組 |
+| `storage/adapters/memory_file_store.py` | `MemoryStore` Protocol 的檔案系統 implementation；存 Markdown + frontmatter 到 `{base_dir}/{user_id}/{project_id}/*.md`，給 anila-core 的 `memory/` module（memdir / extract / relevance / consolidation）做 backend | **KEEP**（dev / standalone mode 用）— 並非 RAG-specific，是平台 memory infra 的一個 storage 選項。**Phase 3+ 補一個 `PostgresMemoryStore` impl** 給 prod 用（中央化、可加 RLS 機敏隔離），兩個 impl 並存讓 deployment 自選。Memory module 本身（memdir / extract / relevance / consolidation）完全留 anila-core，見 §2.2 KEEP list |
 | `providers/embedding_nvidia.py` | 特定 embedding 模型 (NV-Embed-V2) | **刪除**（新平台會在 ingestion-worker 內接） |
 | `engine/rag_preprocessor.py` | RAG context injection（pre-process pattern）| **刪除**（pattern 不再使用，新平台改 tool-driven） |
 | `tools/__init__.py` 內的 `create_vector_search_tool` / `create_keyword_search_tool` / `create_read_document_tool` | 三個 RAG-specific tool factory | **搬到** `AgenticRAG/src/agentic_rag/tools/`（template 自帶；anila-core 不認） |

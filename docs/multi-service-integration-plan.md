@@ -10,19 +10,39 @@
 
 ## 0. Decisions Log
 
+### v0.2 (2026-04-25) — 7 個議題 review 後的修訂
+
+第二輪討論（含 ComfyUI namespace 釐清、NotebookLM 部門級 grant、My-OpenAI-Frontend 「停用備份」而非廢除等）後的修訂：
+
+| # | 議題 | v0.1 立場 | v0.2 修訂 |
+|---|---|---|---|
+| 1 | Memory file 的定位 | 不明確 | **`memory/` module 留 anila-core；`MemoryFileStore` KEEP（dev mode）；Phase 3+ 補 `PostgresMemoryStore`（prod mode）**。詳見 §1.4 與 [`anila-core-boundary.md`](./anila-core-boundary.md) §2.3 |
+| 2 | ComfyUI 整合方式 | 註冊為 Model | **改為註冊為 Agent**。理由：ANILA 主介面是 chat 對話，Router 必須在 manifest 看到「會畫圖的 agent」才能自動分派；Model 介面只能透過 OpenAI SDK 顯式呼叫 model name 觸發。詳見 §4 |
+| 3 | NotebookLM 權限模式 | 平台連結卡片（無 access control）| **OIDC SSO + 模式 A 嚴格白名單**。`required_roles=NULL` + `service_access_grants` table，**支援 user-level 與 department-level grant 兩種**（部門 grant 一次蓋整批）。詳見 §6 與 §7.5 |
+| 4 | codeserver 部署位置 | 平台連結（外部跳轉）| **納入 ANILA monorepo `docker-compose.yml`** — 組裡沒獨立部署，要新增 service。詳見 §5 |
+| 5 | n8n / gitlab / mlsteam URL | 假設值 | **實際 URL 已查證**（從 `My-OpenAI-Frontend/webui/src/pages/index.tsx` 取得）：mlsteam=`https://aiops.ai.ncsist.org.tw:4443/`、n8n=`/n8n`（nginx 內部 path）。GitLab URL 待你補。詳見 §7 |
+| 6 | My-OpenAI-Frontend 處置 | 2-3 週廢除工程 + data migration | **改為「停用備份」**：現在沒人在用，不做 migration。docker compose down + 保留 image + README 加 archive notice。詳見 §3 |
+| 7 | dev DB credential TTL | 24 小時 | **改為 30 天** + revoke API + 30d 自動 reminder + audit log。詳見 §10.2 |
+
+並加入：
+- **§1.4 Memory architecture 章節**（澄清 platform memory ≠ Ingestion 的關係）
+- **§4 ComfyUI namespace 釐清**（ANILA 的「model」vs ComfyUI workflow 內部的「model」是兩個不相干 namespace）
+- **§4.5 ComfyUI workflow preset 4 層擴展機制**（Layer 0 內建預設 / Layer 1 admin 加 preset / Layer 2 LLM 自動選 / Layer 3 dev fork agent template）
+- **§7.5 Service Access Control**（`required_roles` + `service_access_grants` 雙機制 + effective access 演算法）
+
 ### v0.1 (2026-04-25) — 初版
 
-關於組內既有服務（位於 `/home/aia/c1147259/project`）如何整合進 ANILA 平台的決議：
+關於組內既有服務（位於 `/home/aia/c1147259/project`）如何整合進 ANILA 平台的初版決議：
 
 | 服務 | 決議 | 理由 |
 |---|---|---|
-| **My-OpenAI-Frontend** | **取代** — CSP 接手所有功能 | 離職同仁開發、無人維護；功能 95% 與 CSP 重疊 |
-| **NotebookLM** | **暫保獨立** + 平台連結卡片 + 寫 future agent 化 plan | 現役 prod 服務，破壞風險高；未來再考慮整合成 multi-artifact agent |
-| **data-quality** | **不納入** | 是 n8n workflow 的一部分，不是獨立服務 |
-| **ComfyUI** | **註冊為 Model**（Phase 1）+ 留 Agent 升級路徑（Phase 2 可選）| 90% 使用情境只需要 OpenAI Images API；10% 進階 workflow 才需要 agent |
-| **codeserver** | **ANILA 平台集成 dev 入口** — 不是 agent，而是讓 dev 連回 ANILA postgres 做 ingestion / 檢索 | dev 實際開發在 mlsteam，codeserver 是 unified dev workspace |
-| **n8n**（新增） | **平台連結卡片** | workflow 平台，使用者跳轉使用 |
-| **gitlab**（新增） | **平台連結卡片** | git server，使用者跳轉使用 |
+| **My-OpenAI-Frontend** | ~~取代~~ → **停用備份** (v0.2 修訂) | 離職同仁開發、無人維護；現在沒 active 使用者 |
+| **NotebookLM** | **暫保獨立** + 平台連結卡片 + 寫 future agent 化 plan | 現役 prod 服務，破壞風險高 |
+| **data-quality** | **不納入** | 是 n8n workflow 的一部分 |
+| **ComfyUI** | ~~註冊為 Model~~ → **註冊為 Agent** (v0.2 修訂) | Router 須能在自然對話分派 |
+| **codeserver** | ~~Platform Link 卡片~~ → **納入 monorepo** (v0.2 修訂) | 組裡沒獨立部署，要新增 service |
+| **n8n** | **平台連結卡片** | workflow 平台 |
+| **gitlab** | **平台連結卡片** | git server |
 
 ---
 
@@ -47,9 +67,41 @@ CSP 已有的 `AUTO_REGISTER_LINKS` 機制（範例見 `myCSPPlatform/README.md`
 
 | 本 doc | 相關 doc | 關聯點 |
 |---|---|---|
-| §4 ComfyUI 註冊為 model | `myCSPPlatform/README.md` 的 `model_registry` | 走既有 model 註冊機制 |
+| §4 ComfyUI 註冊為 Agent | `AgenticRAG/anila-agent.yaml` template | 走 agent 註冊流程 |
 | §5 codeserver DB credential | [`ingestion-platform-design.md`](./ingestion-platform-design.md) §3.3 RLS | per-dev credentials 自動 `SET LOCAL anila.agent_id` |
 | §6 NotebookLM agent 化 | [`anila-core-boundary.md`](./anila-core-boundary.md) | NotebookLM 9 種 artifact 對應 agent template fork pattern |
+| §1.4 Memory architecture | [`anila-core-boundary.md`](./anila-core-boundary.md) §2.3 | platform memory module 留 anila-core；MemoryFileStore 為 dev-mode impl |
+
+### 1.4 Memory ≠ Ingestion（澄清）
+
+設計討論中常被誤會的一個點：「ANILA 平台需要 memory 嗎？跟新做的 Ingestion Platform 有衝突嗎？」
+
+**不衝突。兩者解的問題完全不同**：
+
+| 面向 | Ingestion Platform | Platform Memory |
+|---|---|---|
+| 解的問題 | 把使用者上傳的「文件」變成可檢索的 chunks | 記住跨 session 的「對話 facts / user preferences / past decisions」 |
+| 寫入時機 | Dev 主動上傳 documents（一次性 batch）| 每個 chat turn 自動 background extraction（trailing-run coalescing）|
+| 資料量級 | 大 — 整本 PDF 切幾百個 chunk | 小 — 每個 user 累積幾百個 markdown memory file |
+| 儲存 | pgvector 共用 cluster + agent_id 隔離 | 目前 file system (`MemoryFileStore`)；Phase 3+ 新增 PG impl |
+| Schema | `document_chunks` table | `MEMORY.md` 索引 + 個別 `.md` files（4-type taxonomy: user_preference / project_convention / debugging_lesson / api_pattern）|
+| 對應 anila-core | 從 anila-core **搬出**到 AgenticRAG template（見 boundary doc）| **留在 anila-core**（pure runtime 必備）|
+| 程式入口 | `anila_core.ingestion.*`（搬走後）→ `agentic_rag.ingestion.*` | `anila_core.memory.*`（memdir / extract_memories / relevance_selector / consolidation）|
+
+**生命週期對比**：
+
+```
+Ingestion 寫入：dev 一次性上傳 → IngestionService.ingest() → 寫 pgvector
+Memory  寫入：每個 chat turn 結束 → background ExtractMemories worker
+              → 從 conversation 萃取 facts → 寫 MemoryStore
+
+Ingestion 讀取：agent 對話時 vector_search 工具 → top-k chunks
+Memory  讀取：agent turn 開始時 RelevanceSelector → 選相關 memories 注入 context
+```
+
+**未來進階方向（v0.3 才考慮，本 plan 不做）**：類似 Ingestion Platform 的 design pattern，做一個 **central memory service**，讓 100 agent 共享 user-level preferences（例如「使用者 A 偏好簡短回覆」這個 fact 被所有 agent 共用）。屆時 `MemoryStore` Protocol 加一個 `CentralMemoryClient` impl 走 CSP `/api/memory/*`。但這要等 platform memory 真有跨 agent 共用需求時再啟動。
+
+**本 plan 立場**：memory 不是 multi-service integration 的範疇，只在這節做澄清避免誤會。memory module 本身的演進（`PostgresMemoryStore` 補上、未來 central memory service）走獨立 design doc。
 
 ---
 
@@ -86,9 +138,50 @@ Class D: 「不納入」
 
 ---
 
-## 3. Class A：My-OpenAI-Frontend 廢除計畫
+## 3. Class A：My-OpenAI-Frontend 處置（v0.2: 從廢除改為停用備份）
 
-### 3.1 重疊範圍實證
+### 3.0 v0.2 修訂
+
+> v0.1 規劃 2-3 週的「廢除工程」（含 model_registry / api_keys / token_usage / users 一次性 migration）。
+>
+> **v0.2 修訂為「停用備份」**：經確認**現在沒有 active 使用者打 My-OpenAI-Frontend 的 `/v1/*`**，data migration 沒必要做。改為直接停用 + 保留 image 作為災難備份。
+
+### 3.0.1 v0.2 處置步驟（簡化版）
+
+```
+Step 1  ──  Audit
+   grep 整個內網確認沒有 client 還在打 My-OpenAI-Frontend `/v1/*`
+   工具：grep -rn "my-openai-frontend\|MY_OPENAI" /home /opt
+   若找到，先請該 client owner 改打 CSP
+
+Step 2  ──  Sunset
+   docker compose down (My-OpenAI-Frontend 那組 service)
+   不刪 image，保留作備份
+   nginx 把 /v1/* 路由改回 410 Gone（防誤打）
+   保留 admin UI（如果還有人想看歷史 usage 數據）
+
+Step 3  ──  Archive notice
+   在 My-OpenAI-Frontend repo README 加上：
+     ⚠️ DEPRECATED — Use myCSPPlatform instead.
+     This service is kept as a backup; new traffic should not be sent here.
+```
+
+**完成標準**：
+- `docker ps | grep my-openai-frontend` 無 running container
+- `curl <my-openai-frontend>/v1/...` 回 410 Gone
+- README 有 archive notice
+- ANILA dashboard 上不顯示 My-OpenAI-Frontend 卡片（或顯示但標 `[ARCHIVED]`）
+
+**不做的事（跟 v0.1 對比）**：
+- ❌ 不做 model_registry data migration
+- ❌ 不做 api_keys / token_usage migration
+- ❌ 不開發 audio transcription endpoint（v0.1 為了「無縫 cutover」要補的）— 改為**有人實際需要時再補進 CSP**
+
+### 3.1 為什麼還是要記錄這段（功能重疊實證）
+
+雖然不做廢除，但功能重疊事實要留檔，避免日後有人不知情又啟用 My-OpenAI-Frontend。
+
+### 3.1.1 重疊範圍實證
 
 從 `/home/aia/c1147259/project/My-OpenAI-Frontend/README.md` 與 `myCSPPlatform/README.md` 對比：
 
@@ -102,9 +195,15 @@ Class D: 「不納入」
 | Multi-model | ✅ load balance | ✅ model_registry + 健康檢查 + 自動註冊 | CSP 更全面 |
 | Audio transcription endpoint | ✅ | ❌ | **CSP 缺，需補** |
 
-**只有一項 CSP 缺**：audio transcription（whisper-style）endpoint。Phase 2 動工時要補上 `/v1/audio/transcriptions`。
+**唯一 CSP 缺的功能**：audio transcription（whisper-style）endpoint。
+- v0.1 計畫：cutover 前先補上
+- **v0.2 修訂**：改為「有人實際需要時再補」（沒人用、沒急迫性）
 
-### 3.2 廢除 Migration 步驟
+### 3.2 ~~廢除 Migration 步驟（v0.2 已棄用）~~
+
+> 以下保留作為**未來若改變決策**（決定真的廢除 + migrate）的執行 reference。
+
+#### v0.1 原計畫
 
 ```
 ┌─ Step 1: Audit ──────────────────────────────────────────────┐
@@ -201,126 +300,224 @@ async def migrate():
 
 ---
 
-## 4. Class C：ComfyUI 整合 — Model 優先 + Agent 升級路徑
+## 4. Class C：ComfyUI 整合 — 註冊為 Agent（v0.2 修訂）
 
-### 4.1 為什麼是 Model 而不是 Agent
+### 4.0 v0.1 → v0.2 修訂
 
-**ComfyUI 的本質**：
-- 不是單一 model，是 workflow runner（把 stable diffusion / FLUX / LoRA / ControlNet 串成 graph）
-- 對外 expose 的 API 不是 OpenAI compatible（`POST /prompt` + `GET /history/{id}` + WebSocket progress）
+> v0.1 推薦「Model 優先 + Agent 升級」，理由是「90% 使用情境只需要 OpenAI Images API」。
+>
+> **v0.2 修訂為單一路徑「Agent」**。理由：ANILA 主介面是 chat 對話，必須有「會講 chat 介面的 agent」才會被 Router 自動分派；Model 介面只能透過 OpenAI SDK 顯式呼叫 model name 觸發，**一般使用者在 ANILA chat 永遠用不到**。
 
-**使用者的 90/10 分布**：
-- **90% 場景**：「給 prompt → 拿圖」 — 不關心 workflow 細節
-- **10% 進階場景**：「用我這個 LoRA + ControlNet workflow」— 需要客製 graph
+### 4.1 為什麼必須是 Agent（場景對比）
 
-### 4.2 推薦做法：兩段式整合
+#### 場景 A：ComfyUI 是 Model（v0.1 路線，已被 v0.2 否決）
 
-#### Phase 1（推薦現在做）：ComfyUI 註冊為 Model
+```
+使用者 chat 框輸入「畫一張海報」
+    ↓
+Router 看 message + agent manifest：
+   「manifest 裡沒有 image agent，只能回答『我不會畫圖』」
+    ↓
+使用者體驗 ❌ — 一般 user 在 ANILA chat 永遠摸不到 ComfyUI
 
-寫一個 **thin wrapper service `comfyui-bridge`**：
-- 對外 expose **OpenAI Images API**（`POST /v1/images/generations`）
-- 對內 把 prompt 餵給預設 workflow（或從 `workflow_preset` 選）
-- CSP `model_registry` 加一筆 `model_type = "image"` 的 model
+只有寫 SDK script 的人能用：
+   openai.images.generate(model="comfyui-x", prompt=...)
+```
 
-```python
-# comfyui-bridge/main.py
-from fastapi import FastAPI
-import httpx
+#### 場景 B：ComfyUI 是 Agent（v0.2 採用）
 
-app = FastAPI()
+```
+使用者 chat 框輸入「畫一張海報」
+    ↓
+Router 看 message + agent manifest：
+   「manifest 裡有 comfyui-image agent，描述包含『圖片生成』
+    → 分派！」
+    ↓
+ComfyUI Agent 收到 chat request：
+   1. 從 messages 抽出 prompt
+   2. 跑 ComfyUI workflow
+   3. SSE stream：先「生成中...」 → markdown image embed
+    ↓
+使用者在 chat 介面看到圖 ✅
+```
 
-# Pre-defined workflow presets (放 ComfyUI workflow JSON)
-PRESETS = {
-    "sd-default": load_workflow("workflows/sd_default.json"),
-    "flux-fast": load_workflow("workflows/flux_fast.json"),
-    "high-quality-zhtw": load_workflow("workflows/zhtw_quality.json"),
-}
+### 4.2 Namespace 釐清（重要：兩個「model」不是同一個）
 
-@app.post("/v1/images/generations")
-async def generate(req: ImageGenRequest):
-    """OpenAI Images API compatible.
+**設計討論裡常被混淆的點**：
 
-    Body:
-      model: "sd-default" | "flux-fast" | ...   (對應 PRESET name)
-      prompt: str
-      n: int = 1
-      size: str = "1024x1024"
-    """
-    workflow = PRESETS[req.model].copy()
-    inject_prompt(workflow, req.prompt, req.size)
+| 名詞 | 意義 | 例子 | 在哪管 |
+|---|---|---|---|
+| **ANILA model** | `model_registry` 註冊的 LLM / Embedding / VLM | `google/gemma4`、`nvidia/NV-embed-V2`、`meta/llama-4-maverick` | CSP 的 `model_registry` table |
+| **ComfyUI 內部的 model** | Diffusion checkpoint file（圖片生成的「畫筆」）| `flux1-dev.safetensors`、`sd_xl_base_1.0.safetensors` | ComfyUI 機器的本機 `models/checkpoints/` |
 
-    # Submit to ComfyUI
-    async with httpx.AsyncClient() as client:
-        r = await client.post("http://comfyui:8188/prompt", json={"prompt": workflow})
-        prompt_id = r.json()["prompt_id"]
+**兩者完全不相干**。本節討論的 ComfyUI workflow preset **只跟 ComfyUI 自己的 model 有關**，跟 ANILA 的 LLM `model_registry` 無關。
 
-    # Poll for completion (或 WS subscribe)
-    image_urls = await wait_for_completion(prompt_id)
+一份 ComfyUI workflow JSON 簡化長這樣：
 
-    # Return OpenAI-compatible response
-    return {
-        "created": int(time.time()),
-        "data": [{"url": u} for u in image_urls]
+```json
+{
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": { "ckpt_name": "flux1-dev.safetensors" }
+  },
+  "2": {
+    "class_type": "CLIPTextEncode",
+    "inputs": { "text": "{{USER_PROMPT}}", "clip": ["1", 1] }
+  },
+  "3": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["1", 0], "positive": ["2", 0],
+      "steps": 20, "cfg": 7.5, "sampler_name": "euler",
+      "scheduler": "normal", "seed": 42
     }
+  },
+  "4": { "class_type": "VAEDecode", "inputs": { "samples": ["3", 0], "vae": ["1", 2] } },
+  "5": { "class_type": "SaveImage", "inputs": { "images": ["4", 0] } }
+}
 ```
 
-**CSP 端註冊**：
+「workflow preset / 食譜」就是**這整份 JSON**。它指定的全部是 ComfyUI 自己世界的東西（哪個 .safetensors / 幾步 / 什麼 sampler / 要不要套 LoRA）。
+
+### 4.3 工程上要做什麼：`comfyui-agent` service
+
+寫一個 **約 250 行 Python 的 service**（fork AgenticRAG template 起步）：
+
+```
+   對外（給 ANILA Router 用）
+      POST /v1/chat/completions   ← OpenAI 格式
+                                      ↓
+                comfyui-agent 內部邏輯
+                                      ↓
+            從 messages 抽 user prompt
+            選 workflow preset（預設或從文字判斷風格）
+                                      ↓
+   對內（呼叫 ComfyUI 真的 API）
+      POST http://comfyui:8188/prompt   ← ComfyUI 自己的格式
+                                      ↓
+                拿到 image url
+                                      ↓
+            SSE stream 回傳給 ANILA Router
+              「生成中...」
+              ![](https://anila.tw/images/abc.png)
+```
+
+**`anila-agent.yaml` 註冊**：
+
 ```yaml
-# AUTO_REGISTER_MODELS 加一筆
-- name: "comfyui-sd-default"
-  display_name: "ComfyUI - SD Default"
-  model_type: "image"
-  endpoint_url: "http://comfyui-bridge:8200"
-  api_version: "v1"
+name: comfyui-image
+endpoint_url: http://comfyui-agent:8210
+api_version: v1
+description_for_router: |
+  圖片生成 agent — 海報、概念圖、繪畫、視覺素材。
+  支援風格：FLUX 高品質繁中字型（預設）。
+  輸入：自然語言描述要的圖。輸出：markdown embedded image。
+base_model: flux1-dev   # 註：這是 description 用，不是真實 ANILA model_registry 名字
+capabilities:
+  streaming: true
+  image_generation: true
+  languages: [zh-TW, en]
+approval_status: approved
 ```
 
-**使用者體驗**：
-```bash
-# 任何 OpenAI SDK 都能用
-curl -X POST http://csp:8000/v1/images/generations \
-  -H "Authorization: Bearer sk-xxx" \
-  -d '{"model": "comfyui-sd-default", "prompt": "繁中海報設計"}'
-```
+### 4.4 一個預設食譜，使用者完全不用設
 
-**工程量**：1 個 Python file ~200 行 + 3-5 個預設 workflow JSON。**1-2 天可交付**。
-
-#### Phase 2（看需求才做）：ComfyUI Agent Template
-
-當有人需要「客製 workflow」時，再做：
-- AgenticRAG template 風格 — 一份 `ComfyUIAgent` template，dev fork 後改 workflow registry
-- 註冊為 Agent（model_type = `agent`）
-- 走 anila-router 分派
-- 適合「我要用我自己的 LoRA」、「我要做 ControlNet 多步流程」這類進階場景
-
-### 4.3 兩者並行不衝突
+Phase 1 出貨時 `comfyui-agent/workflows/` 只放**1 個 preset**：
 
 ```
-   一般使用者 ──→ POST /v1/images/generations (model="comfyui-sd-default")
-                         ↓ CSP proxy
-                  comfyui-bridge wrapper
-                         ↓ predefined workflow
-                       ComfyUI
-
-   進階 dev   ──→ POST /v1/chat/completions (model="my-comfy-agent")
-                         ↓ Router 分派
-                   ComfyUI Agent (fork from template)
-                         ↓ 客製 workflow
-                       ComfyUI
+comfyui-agent/
+├── main.py
+├── workflows/
+│   └── default.json    ← 唯一的預設食譜（FLUX 高品質繁中字型）
+└── Dockerfile
 ```
 
-兩條路打同一個 ComfyUI instance，不會打架。
+使用者在 chat 說「畫海報」就直接用 `default.json` 出圖。**完全不用知道有「workflow preset」這個概念**。
 
-### 4.4 決策原則（給未來新增類似服務時參考）
+### 4.5 workflow preset 的 4 層擴展機制（未來）
 
-| 服務特徵 | 註冊為... |
-|---|---|
-| 無狀態、單次請求、輸入/輸出固定 | **Model**（走 `/v1/*` proxy）|
-| 有狀態、多輪 tool calling、需要 LLM 自主決策 | **Agent**（走 Router 分派）|
-| 兩者都要 | **同一服務註冊兩次**（不同 model name）|
+當需要更多風格時，4 層擴展：
+
+| Layer | 怎麼加 | 誰可以加 | 何時做 |
+|---|---|---|---|
+| **0** | 內建 1 個預設食譜 | 平台團隊 | **Phase 1 出貨**（本次）|
+| **1** | 多個 preset 並列（日系 / 寫實 / 卡通 / ...）| **admin** 在 CSP UI 上傳 workflow JSON | Phase 2+（看需求）|
+| **2** | Agent 從使用者文字自動選 preset（LLM 判斷風格）| 由 LLM 判斷 | Phase 2+ |
+| **3** | Dev 自帶整套 workflow → 註冊成自己的 agent | **developer** fork comfyui-agent template | Phase 3+ |
+
+**為什麼 Layer 1 上傳 workflow 限 admin**（更正 v0.1 措辭）：
+
+不是因為「會洩漏 ANILA LLM model」（兩個 namespace 不交集），實際理由：
+
+1. ComfyUI workflow 會 reference **本機存在的 .safetensors file** — admin 才知道 GPU 機器上有哪些 checkpoint，user 上傳 workflow 引用不存在的 model 會跑爆
+2. 控制 **GPU 資源使用** — 某些 workflow 設成 1024×1024 + 100 steps + batch=4 會吃光顯存
+3. **平台一致性** — 讓使用者從乾淨選單挑 preset，不接觸 raw workflow JSON
+
+### 4.6 兩種介面是否並存？
+
+**v0.2 立場**：Phase 1 **只做 Agent 介面**（OpenAI chat completions）。
+
+理由：
+- ANILA 主流量是 chat 對話，Agent 是必須的
+- OpenAI Images API (`/v1/images/generations`) 在組內沒人在寫（grep 沒 caller）
+- 加 SDK direct 介面 = 多寫一個 endpoint + 多一份維護成本，沒收益就不做
+
+**未來若有 SDK 直接呼叫需求**：在 `comfyui-agent` 加 `POST /v1/images/generations` endpoint，內部共用同一份 workflow runner。一個服務兩 endpoint 不衝突。
 
 ---
 
-## 5. codeserver — ANILA 平台集成 Dev 入口
+## 5. codeserver — ANILA 平台集成 Dev 入口（v0.2: 納入 monorepo deploy）
+
+### 5.0 v0.1 → v0.2 修訂
+
+> v0.1 把 codeserver 視為「外部已部署服務」，只在 `AUTO_REGISTER_LINKS` 加導向卡片。
+>
+> **v0.2 修訂**：經確認**組裡沒有獨立 codeserver 部署**，要由 ANILA 平台**自己提供**。所以 codeserver 不只是「導向卡片」，要**納入 ANILA monorepo 的 `docker-compose.yml`** 作為平台 service 之一。
+
+### 5.0.1 部署整合
+
+ANILA 根 `docker-compose.yml` 加新 service：
+
+```yaml
+services:
+  # ... 既有 csp / router / anila-ui / csp-db ...
+
+  codeserver:
+    image: lscr.io/linuxserver/code-server:latest
+    container_name: anila-codeserver
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Taipei
+      - PASSWORD_FILE=/run/secrets/codeserver_password   # 從 secret 讀
+      - SUDO_PASSWORD_FILE=/run/secrets/codeserver_sudo_password
+      - PROXY_DOMAIN=anila.internal                       # 反向代理域名
+      - DEFAULT_WORKSPACE=/workspace
+    volumes:
+      - codeserver_config:/config
+      - codeserver_workspace:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock:ro      # 讓 dev 看 container 狀態（read-only）
+    ports:
+      - "8443:8443"
+    networks:
+      - anila_internal
+    secrets:
+      - codeserver_password
+      - codeserver_sudo_password
+    restart: unless-stopped
+
+volumes:
+  codeserver_config:
+  codeserver_workspace:
+
+secrets:
+  codeserver_password:
+    file: ./secrets/codeserver_password.txt
+  codeserver_sudo_password:
+    file: ./secrets/codeserver_sudo_password.txt
+```
+
+**Phase 3 SSO 之後**：移除 `PASSWORD_FILE` env，改走 nginx `auth_request` 模組驗證 CSP JWT cookie，code-server 直接 trust upstream auth header。
 
 ### 5.1 角色定位
 
@@ -376,9 +573,11 @@ codeserver 在 ANILA 體系的角色 **不是 agent，也不是 model**：
 
 ### 5.3 實作機制
 
-CSP 後端提供 endpoint `POST /api/dev-credentials/db`：
+CSP 後端提供 endpoint `POST /api/dev-credentials/db`（v0.2: TTL 改 30d + revoke + reminder）：
 
 ```python
+DEV_CRED_TTL = timedelta(days=30)   # v0.2: 從 24h 改為 30d
+
 @router.post("/api/dev-credentials/db")
 async def issue_db_credential(
     agent_id: int,
@@ -389,23 +588,38 @@ async def issue_db_credential(
     if agent.owner_user_id != caller.id and not caller.is_admin:
         raise HTTPException(403)
 
-    # 建立短效 PG role
+    # 撤銷該 agent 之前的 active credential（同一 agent 同時只能有一把）
+    await revoke_active_credentials_for_agent(agent_id)
+
+    # 建立 30 天 PG role
     role_name = f"dev_{agent.name}_{secrets.token_hex(4)}"
     password = secrets.token_urlsafe(32)
+    expiry = datetime.utcnow() + DEV_CRED_TTL
     await pg_admin.execute(f"""
         CREATE ROLE {role_name} LOGIN PASSWORD '{password}'
-            VALID UNTIL '{datetime.utcnow() + timedelta(hours=24)}';
+            VALID UNTIL '{expiry.isoformat()}';
         GRANT pg_read_all_data TO {role_name};
         GRANT pg_write_all_data TO {role_name};
-        ALTER ROLE {role_name} SET anila.agent_id = '{agent_id}';   -- 關鍵
+        ALTER ROLE {role_name} SET anila.agent_id = '{agent_id}';   -- 關鍵：自動觸發 RLS
     """)
+
+    # 記錄到 dev_db_credentials 表（追蹤 active credentials 用）
+    cred_id = await db.insert(DevDbCredential(
+        agent_id=agent_id,
+        issued_to=caller.id,
+        pg_role_name=role_name,
+        issued_at=datetime.utcnow(),
+        expires_at=expiry,
+        revoked_at=None,
+    ))
 
     # 寫進 audit log
     await audit_log("issued_dev_db_credential", actor=caller.id,
                     resource_type="agent", resource_id=agent_id,
-                    detail={"role": role_name, "ttl_hours": 24})
+                    detail={"cred_id": cred_id, "ttl_days": 30})
 
     return {
+        "credential_id": cred_id,
         "host": settings.PG_HOST,
         "port": settings.PG_PORT,
         "database": settings.PG_DB,
@@ -414,19 +628,87 @@ async def issue_db_credential(
         "valid_until": expiry.isoformat(),
         "scope": {"agent_id": agent_id},
     }
+
+
+@router.post("/api/dev-credentials/{cred_id}/revoke")
+async def revoke_db_credential(
+    cred_id: int,
+    caller: User = Depends(get_current_user),
+):
+    """Dev / admin 隨時可撤銷自己的 credential。"""
+    cred = await get_credential(cred_id)
+    if cred.issued_to != caller.id and not caller.is_admin:
+        raise HTTPException(403)
+
+    await pg_admin.execute(f"DROP ROLE IF EXISTS {cred.pg_role_name};")
+    await db.update(DevDbCredential, cred_id, revoked_at=datetime.utcnow())
+    await audit_log("revoked_dev_db_credential", actor=caller.id,
+                    resource_type="dev_credential", resource_id=cred_id)
+    return {"status": "revoked"}
 ```
 
-**關鍵設計**：`ALTER ROLE ... SET anila.agent_id = N` — 這個 PG role 一登入就自動 set session var，**RLS policy 自動套用**，dev 寫的任何 query 都不可能看到別 agent 的 data。完全跟 ingestion-platform-design §3.3 layer 2 對齊。
+**Schema**：
 
-### 5.4 codeserver 的角色
+```sql
+CREATE TABLE dev_db_credentials (
+    id              BIGSERIAL PRIMARY KEY,
+    agent_id        BIGINT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    issued_to       BIGINT NOT NULL REFERENCES users(id),
+    pg_role_name    TEXT NOT NULL UNIQUE,
+    issued_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at      TIMESTAMPTZ NOT NULL,
+    revoked_at      TIMESTAMPTZ,
+    last_used_at    TIMESTAMPTZ
+);
 
-codeserver 不需要特別整合到這個機制 — 它就是個一般的 browser VS Code，dev 在裡面：
-1. 用 git clone agent 的 repo
-2. 點 ANILA dashboard 的「Get DB Credentials」拿 connection string
-3. 貼進自己 agent 的 `.env`
-4. 寫 code、跑 test
+CREATE INDEX idx_dev_creds_active ON dev_db_credentials(agent_id, expires_at)
+    WHERE revoked_at IS NULL;
+```
 
-**codeserver 在 ANILA 的位置**：純粹是 platform link 卡片（Class B），點下去開新分頁進入 codeserver workspace。
+**自動 reminder（背景任務）**：
+
+```python
+# 每天跑一次 — 檢查即將過期的 credential
+async def remind_expiring_credentials():
+    soon = datetime.utcnow() + timedelta(days=3)
+    creds = await db.fetch(
+        "SELECT * FROM dev_db_credentials "
+        "WHERE revoked_at IS NULL AND expires_at <= :soon AND expires_at > now()",
+        soon=soon
+    )
+    for cred in creds:
+        await send_notification(
+            user_id=cred.issued_to,
+            type="dev_credential_expiring",
+            message=f"Agent '{cred.agent_name}' 的 DB credential 將於 {cred.expires_at} 過期，"
+                    f"請至 ANILA Dev Console 重新 issue。"
+        )
+```
+
+**關鍵設計**：`ALTER ROLE ... SET anila.agent_id = N` — 這個 PG role 一登入就自動 set session var，**RLS policy 自動套用**，dev 寫的任何 query 都不可能看到別 agent 的 data。完全跟 [`ingestion-platform-design.md`](./ingestion-platform-design.md) §3.3 layer 2 對齊。
+
+**TTL 30d 的理由（v0.2 修訂）**：
+- 24h 太短：dev 每天要 issue 麻煩，倒逼大家把 credential 寫死在 config
+- 30d 適中：對應一個 sprint 週期，過期前有 reminder
+- 90d 太長：洩漏風險明顯放大
+- **配套**：revoke API 隨時可撤、自動 reminder（過期前 3 天）、audit 每次 issue 與 revoke
+
+### 5.4 codeserver 的使用流程
+
+codeserver 由 ANILA 平台部署（見 §5.0.1），dev 流程：
+
+1. ANILA dashboard 點「Code Server」卡片（admin role 才看得到，§7.5）
+2. 開新分頁進入 codeserver workspace（`https://anila.internal/codeserver`）
+3. 用 git clone 自己 agent 的 repo（gitlab）
+4. 點 ANILA dashboard 的「Get DB Credentials」拿 connection string（30d TTL）
+5. 貼進自己 agent 的 `.env`
+6. 寫 code、跑 test、push 回 gitlab
+7. agent build 完 deploy 到 mlsteam（不是 codeserver — codeserver 不跑 production agent）
+
+**codeserver 在 ANILA 的位置**：
+- **Phase 1**：admin-only platform service（`required_roles=['admin']`），其他人看不到
+- **Phase 3 SSO**：可以擴大開放給 developer role
+- **長期**：作為 ANILA 平台與 mlsteam 之間的「地面站」— dev 在 codeserver 開發、測試（連回 ANILA postgres），確認 OK 後 deploy 到 mlsteam GPU 機器跑
 
 ### 5.5 為什麼 mlsteam 不算 ANILA 子服務
 
@@ -439,9 +721,75 @@ mlsteam 是 organization-wide GPU 平台，**不歸 ANILA 管**。ANILA 跟 mlst
 
 ---
 
-## 6. NotebookLM 未來 Agent 化計畫（Phase 4）
+## 6. NotebookLM 整合（Phase 1 SSO + grant，Phase 4 agent 化）
 
-### 6.1 為什麼現在不做
+### 6.0 v0.2 修訂：兩個階段
+
+> v0.1 只規劃了 Phase 4 的 agent 化計畫。v0.2 補上 **Phase 1 / Phase 3 的 access integration**：
+
+| 階段 | 整合內容 |
+|---|---|
+| **Phase 1** | 平台連結卡片 + `service_access_grants` 嚴格白名單（模式 A） |
+| **Phase 3** | OIDC SSO（NotebookLM auth 認 CSP token） |
+| **Phase 4** | Agent 化（單 agent + 9 tools） |
+
+### 6.0.1 Phase 1：嚴格白名單 grant（模式 A）
+
+NotebookLM 在 `platform_links` table 註冊：
+
+```sql
+INSERT INTO platform_links (name, url, icon, description, required_roles)
+VALUES (
+  'NotebookLM',
+  'http://notebooklm.internal:3100',
+  'book-open',
+  'AI 學習內容生成（podcast / slides / mind map / quiz / report）',
+  NULL   -- ★ 純白名單模式：required_roles=NULL → 任何 role 預設都看不到
+);
+```
+
+**Effective access**（演算法見 §7.5）：
+- `required_roles=NULL` → 沒有 role-based 自動授權
+- 使用者必須有 `service_access_grants` 紀錄才看得到卡片
+- admin 在 CSP UI 一個個（或一個部門一次）grant
+
+**Admin UI**：
+```
+Platform Link: NotebookLM
+  Required Roles: (none — 純 grant 白名單模式)
+
+  🏢 Department Grants
+     ✅ 工程部           granted 2026-04-25 by admin (12 users)
+     ✅ 產品部           granted 2026-04-26 by admin (8 users)
+     [+ Grant to department]
+
+  👤 Individual User Grants (例外加開)
+     ✅ alice@example.com   granted 2026-04-25 by admin
+     [+ Grant to user]
+
+  📊 Effective Access: 21 users
+```
+
+### 6.0.2 Phase 3：OIDC SSO（auth 共用）
+
+Phase 1 階段使用者點卡片進 NotebookLM **仍要單獨登入**（NotebookLM 自己的 JWT）。Phase 3 補上 SSO：
+
+```
+User 已登入 ANILA
+    ↓ CSP 已發 JWT cookie
+User 點 NotebookLM 卡片
+    ↓ CSP 簽 OIDC ID token 帶在 redirect URL
+NotebookLM 收到 callback
+    ↓ 用 CSP 的 JWKS 驗 token（不是用本地 password）
+NotebookLM 直接進 workspace（無需再登入）
+```
+
+**NotebookLM 改動**：
+- `auth.py` 加 OIDC client middleware（FastAPI `authlib`）
+- 收到 `Authorization: Bearer <csp_jwt>` → 用 CSP JWKS 驗 → 從 token claim 撈 `user_id` / `username`
+- 本地 password 認證 deprecated（保留 superuser fallback for emergency）
+
+### 6.1 為什麼 agent 化現在不做
 
 NotebookLM 是 prod 服務、有自己 user base、有 9 種 artifact 生成，貿然 agent 化的破壞風險高。先放著、寫 plan，等 ANILA platform 成熟後再啟動。
 
@@ -536,42 +884,54 @@ NotebookLM 不會變成 template，它是**一個特殊的 agent 實例**（One 
 
 ---
 
-## 7. n8n 與 GitLab — Platform Link 卡片
+## 7. Platform Links — 完整服務清單（v0.2 更新）
 
-### 7.1 註冊內容
+### 7.1 v0.2 完整註冊內容
+
+URL 已從 `My-OpenAI-Frontend/webui/src/pages/index.tsx` 查證實際值：
 
 ```yaml
-# myCSPPlatform/.env 的 AUTO_REGISTER_LINKS
-
-- name: "n8n 工作流程"
-  url: "http://n8n.internal:5678"
-  icon: "workflow"
-  description: "自動化工作流程平台 — 排程任務、跨服務串接"
-
-- name: "GitLab"
-  url: "http://gitlab.internal:8080"
-  icon: "git-branch"
-  description: "Git server — agent 程式碼與 issue tracking"
+# myCSPPlatform/.env 的 AUTO_REGISTER_LINKS（v0.2 final）
 
 - name: "NotebookLM"
   url: "http://notebooklm.internal:3100"
   icon: "book-open"
   description: "AI 學習內容生成（podcast / slides / mind map / quiz / report）"
+  required_roles: null   # 純白名單，admin 個別 grant（§6.0.1）
 
 - name: "Code Server"
-  url: "http://codeserver.internal:8443"
+  url: "http://codeserver.internal:8443"   # ← ANILA monorepo 自己部署（§5.0.1）
   icon: "code"
   description: "Browser VS Code — agent 開發整合入口"
+  required_roles: ["admin"]   # 僅 admin
 
-- name: "ComfyUI Studio"
-  url: "http://comfyui.internal:8188"
-  icon: "image"
-  description: "圖片生成 workflow editor（進階）— 一般使用者請改用 model 介面"
+- name: "n8n 工作流程"
+  url: "/n8n"   # nginx 同源 reverse proxy 路徑（已有，從 my-openai-frontend 確認）
+  icon: "workflow"
+  description: "自動化工作流程平台 — 排程任務、跨服務串接"
+  required_roles: ["admin", "developer"]
+
+- name: "GitLab"
+  url: "http://TODO-gitlab-url"   # ⚠️ 你要補：my-openai-frontend 註解掉了沒填
+  icon: "git-branch"
+  description: "Git server — agent 程式碼與 issue tracking"
+  required_roles: ["admin", "developer"]
 
 - name: "MLSteam"
-  url: "http://mlsteam.internal"
+  url: "https://aiops.ai.ncsist.org.tw:4443/"   # ← 已從 my-openai-frontend 查得
   icon: "cpu"
   description: "MLOps 平台 — agent 訓練與部署"
+  required_roles: ["admin", "developer"]
+
+# ComfyUI Studio (raw UI) 是否要做卡片是個 design choice：
+#   - 一般使用者透過 chat agent 用（§4），不需要直接進 ComfyUI UI
+#   - 但 admin / developer 可能需要「進去看 ComfyUI 自己有什麼 model file」
+#   - 本 v0.2 暫不加 ComfyUI Studio 卡片，等真有需求時再開
+# - name: "ComfyUI Studio"
+#   url: "http://comfyui.internal:8188"
+#   icon: "image"
+#   description: "ComfyUI 直接介面（進階；一般使用者請在 ANILA chat 直接畫圖）"
+#   required_roles: ["admin", "developer"]
 ```
 
 ### 7.2 SSO 整合（Phase 3 才做）
@@ -580,38 +940,167 @@ n8n 與 gitlab 都支援 OAuth2：
 - n8n: `N8N_AUTH_TYPE=oauth2` + IdP discovery
 - GitLab: 內建 OmniAuth
 
-CSP 啟用 OIDC Provider mode 後，這兩個服務改認 CSP 為 IdP，使用者點導向卡片就直接登入。
+CSP 啟用 OIDC Provider mode 後（見 §6.0.2），這兩個服務改認 CSP 為 IdP，使用者點導向卡片就直接登入。
 
-**Phase 1 不做 SSO** — 純跳轉就好，雖然要重新登入，但破壞風險最低。
+**Phase 1 不做 SSO** — 純跳轉，使用者重新登入但破壞風險最低。
+
+### 7.3 你要補的資訊
+
+| Item | 為什麼缺 | 怎麼補 |
+|---|---|---|
+| GitLab 內網 URL | My-OpenAI-Frontend 註解掉了沒填 | 你提供，更新到 §7.1 |
+| codeserver 是否要對外 hostname（例如 `https://anila-codeserver.tw:8443`）vs 同源 nginx path（`/codeserver`）| §5.0.1 用同源 path 較安全（不需另開 cert）| 確認 nginx 設定方式 |
+| `comfyui.internal` 的實際 host | grep 沒到，可能組裡用其他名字 | 你提供 |
+
+### 7.5 Service Access Control（v0.2 新增）
+
+#### 7.5.1 Schema
+
+```sql
+-- platform_links 加 required_roles 欄位
+ALTER TABLE platform_links
+    ADD COLUMN required_roles TEXT[] DEFAULT NULL;
+-- NULL = 看 service_access_grants 才決定（純白名單）
+-- ['admin'] = admin role 自動有，其他人需要 grant
+-- ['admin','developer'] = 兩個 role 都自動有，其他需 grant
+
+-- 新表：grant 記錄（支援 user-level 與 department-level）
+CREATE TABLE service_access_grants (
+    id                BIGSERIAL PRIMARY KEY,
+    user_id           BIGINT REFERENCES users(id) ON DELETE CASCADE,
+    department_id     BIGINT REFERENCES departments(id) ON DELETE CASCADE,
+    platform_link_id  BIGINT NOT NULL REFERENCES platform_links(id) ON DELETE CASCADE,
+    granted_by        BIGINT REFERENCES users(id),
+    granted_at        TIMESTAMPTZ DEFAULT now(),
+    revoked_at        TIMESTAMPTZ,
+
+    -- 強制 exactly-one：每筆 grant 要嘛 user 要嘛 dept，不能兩個都填
+    CHECK ((user_id IS NOT NULL) != (department_id IS NOT NULL)),
+
+    -- 同一 user / dept 對同一 link 只有一筆 active grant
+    UNIQUE (user_id, platform_link_id),
+    UNIQUE (department_id, platform_link_id)
+);
+
+CREATE INDEX idx_grants_user ON service_access_grants(user_id) WHERE user_id IS NOT NULL;
+CREATE INDEX idx_grants_dept ON service_access_grants(department_id) WHERE department_id IS NOT NULL;
+```
+
+**為什麼選兩個 nullable FK + CHECK 強制 exactly-one**：
+- 比 polymorphic 安全：FK constraint 可以正常 cascade（部門刪掉時 grant 自動清）
+- 比兩張表簡單：同一個 SQL `JOIN` 就能查，UI 只需要一個 list 介面
+- CHECK 強制 exactly-one 防止資料髒掉
+
+#### 7.5.2 Effective Access 演算法
+
+```python
+def can_access(user, link) -> bool:
+    """Decide if user has access to a platform link."""
+
+    # 1. Role-based 自動通過（required_roles）
+    if link.required_roles and user.role in link.required_roles:
+        return True
+
+    # 2. Admin 永遠通過（superuser bypass）
+    if user.role == "admin":
+        return True
+
+    # 3. 個別 user grant（active 且未 revoke）
+    if has_active_grant(user_id=user.id, link_id=link.id):
+        return True
+
+    # 4. 部門 grant（user.department_id 從 user 表抓）
+    if user.department_id and has_active_grant(
+        department_id=user.department_id,
+        link_id=link.id
+    ):
+        return True
+
+    return False
+```
+
+**Cascade 行為**（admin 撤部門 grant 時的安全提醒）：
+- 部門 grant 撤銷 → 該部門 user **只靠部門 grant 的會失去 access**
+- 該部門 user **有額外個別 grant 的不受影響**（兩種 grant 是 OR 關係）
+- UI 撤銷部門 grant 時要警告：「將影響 12 位使用者，其中 2 位有個別 grant 不受影響」
+
+#### 7.5.3 Admin UI
+
+```
+Platform Link: NotebookLM
+  Required Roles: (none — 純 grant 白名單模式)
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  🏢 Department Grants (一次蓋整批)
+     ✅ 工程部           granted 2026-04-25 by admin (12 users)
+     ✅ 產品部           granted 2026-04-26 by admin (8 users)
+     [+ Grant to department]
+
+  👤 Individual User Grants (例外加開)
+     ✅ alice@example.com   granted 2026-04-25 by admin
+     ✅ bob@example.com     granted 2026-04-26 by admin
+     [+ Grant to user]
+
+  📊 Effective Access Summary
+     Total users with access: 22 (20 via dept + 2 individual)
+     [View user list]
+```
+
+#### 7.5.4 Audit log
+
+每次 `grant_*` / `revoke_*` 寫進既有 `audit_logs` 表（CSP 已有此基礎建設）：
+
+```python
+await audit_log(
+    action="grant_platform_link_access",
+    actor=admin.id,
+    resource_type="platform_link",
+    resource_id=link.id,
+    detail={
+        "grantee_type": "department",
+        "grantee_id": dept.id,
+        "grantee_name": dept.name,
+    }
+)
+```
 
 ---
 
-## 8. Phase 1 立即可做（純導向卡片 + ComfyUI model wrapper）
+## 8. Phase 1 立即可做（v0.2 更新）
 
-### 8.1 工作項目
+### 8.1 工作項目（v0.2 final）
 
 | # | 項目 | 工程量 |
 |---|---|---|
-| 1 | 寫 6 筆 `AUTO_REGISTER_LINKS`（NotebookLM / codeserver / n8n / gitlab / ComfyUI / mlsteam） | 30 分鐘 |
-| 2 | CSP UI Dashboard 顯示「ANILA legacy 服務區」分類（visual grouping） | 1 小時 |
-| 3 | 寫 `comfyui-bridge` wrapper service（200 行 Python + 3 個預設 workflow JSON） | 1 天 |
-| 4 | Docker Compose 加入 `comfyui-bridge` service | 30 分鐘 |
-| 5 | CSP `model_registry` 註冊 `comfyui-sd-default` 等 3 個 model | 30 分鐘 |
-| 6 | E2E 測試：透過 OpenAI SDK 呼叫 CSP 生成圖片 | 2 小時 |
+| 1 | Alembic migration `0013`：`platform_links.required_roles` + `service_access_grants` table（§7.5）| 1-2 小時 |
+| 2 | CSP backend 實作 `can_access()` + grant CRUD endpoints（§7.5）| 0.5 天 |
+| 3 | 寫 `AUTO_REGISTER_LINKS` 5 筆（NotebookLM / codeserver / n8n / gitlab / mlsteam，URL 見 §7.1） | 30 分鐘 |
+| 4 | CSP UI Dashboard 顯示卡片時依 `can_access()` 過濾 + Service Access 管理 UI（§7.5.3）| 1-1.5 天 |
+| 5 | ANILA monorepo `docker-compose.yml` 新增 `codeserver` service（§5.0.1）| 30 分鐘 |
+| 6 | 寫 `comfyui-agent` service（fork AgenticRAG template，250 行 Python + 1 個預設 workflow JSON）| 1 天 |
+| 7 | ANILA monorepo `docker-compose.yml` 新增 `comfyui-agent` service | 30 分鐘 |
+| 8 | CSP `AUTO_REGISTER_AGENTS` 註冊 `comfyui-image` agent（§4.3）| 15 分鐘 |
+| 9 | E2E 測試 1：使用者在 ANILA chat 說「畫海報」→ Router 分派到 comfyui-image → 看到圖 | 2 小時 |
+| 10 | E2E 測試 2：admin grant 工程部 access NotebookLM → 部門使用者 dashboard 看到卡片 → 點開（Phase 1 仍重新登入）| 2 小時 |
+| 11 | My-OpenAI-Frontend 停用：`docker compose down` + nginx `/v1/*` 改 410 + README archive notice（§3.0.1）| 30 分鐘 |
 
-**總工程量**：1.5-2 天。
+**總工程量**：3-4 天（從 v0.1 的 1.5-2 天上升，因為加了 access control + codeserver + comfyui-agent 改 Agent 介面 + 部門 grant UI）
 
 ### 8.2 Phase 1 Deliverable
 
-- 使用者登入 ANILA dashboard 看到所有服務卡片
-- 任何 OpenAI SDK 都能透過 CSP 呼叫 ComfyUI 生圖
-- `comfyui-bridge` 可獨立 deploy、不依賴其他改動
+- 使用者登入 ANILA dashboard 看到「自己有權限」的服務卡片（依 `service_access_grants` 過濾）
+- ANILA chat 使用者說「畫海報」可以拿到圖（透過 comfyui-image agent）
+- admin 可以一次 grant 整個部門 access 某個服務
+- codeserver 跟著 ANILA stack 一起部署（admin only）
+- My-OpenAI-Frontend 已停用，不再有流量
 
 ### 8.3 Phase 1 不會做
 
-- 不做 SSO（各服務維持原 auth）
-- 不動 My-OpenAI-Frontend（Phase 2 才動）
-- 不動 NotebookLM（Phase 4 才動）
+- 不做 SSO（各服務維持原 auth；使用者點 NotebookLM 卡片仍要登入）→ Phase 3
+- 不做 My-OpenAI-Frontend data migration（沒 active 使用者，不需要）
+- 不動 NotebookLM 內部結構 → Phase 4 才動
+- 不做 ComfyUI workflow preset Layer 1+（admin 上傳新 preset 的 UI）→ Phase 2 看需求
+- 不做 dev DB credential endpoint（§5.3）→ Phase 3
 
 ---
 

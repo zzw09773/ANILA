@@ -124,6 +124,22 @@
 - §3.4 retrieval path deprecation 範圍**只需清 AgenticRAG 內** 7 條 path
 - Sprint 1 不需做雙軌相容，只要做「刪除舊 + 新建中央化」
 
+#### Memory ≠ Ingestion（v0.2 補充澄清）
+
+設計討論中常出現的混淆：「ANILA 平台的記憶（memory）功能跟新做的 Ingestion Platform 有衝突嗎？」
+
+**不衝突，兩者解的問題完全不同**：
+
+| 面向 | Ingestion（本 doc）| Platform Memory |
+|---|---|---|
+| 解的問題 | 文件 → vector chunks | 跨 session 對話 facts / preferences |
+| 寫入時機 | Dev 主動上傳（一次性 batch）| 每 chat turn 自動 background 萃取 |
+| 資料量 | 大（PDF 切數百 chunks）| 小（per user 數百個 markdown）|
+| 程式入口 | `agentic_rag.ingestion.*`（搬走後）| `anila_core.memory.*`（留在 anila-core）|
+| Schema | `document_chunks` table | `MEMORY.md` 索引 + 個別 `.md` files |
+
+詳細討論見 [`multi-service-integration-plan.md`](./multi-service-integration-plan.md) §1.4。**本 doc 設計範圍不包含 platform memory**；memory module 的演進（補 `PostgresMemoryStore`、未來可能的 central memory service）走獨立 design doc。
+
 ---
 
 ## 2. 架構總覽
