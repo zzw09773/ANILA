@@ -10,6 +10,26 @@
 
 ## 0. Decisions Log
 
+### v0.5.2 (2026-04-25) — Phase 1 Step 3 落地 + URL/語意修正
+
+| # | 設計（v0.5 之前） | 實作（v0.5.2 修訂） | 為什麼 |
+|---|---|---|---|
+| 18 | NotebookLM/Code Server URL 用 internal DN（`notebooklm.internal:3100`）| 全部改 **nginx 同源 path**（`/notebooklm`, `/codeserver`, `/n8n`, `/gitlab`）| Browser 無法解析 internal DN 且 cross-origin 觸發 Mixed Content 警告。同源 path 解決此問題並讓 Phase 3 OIDC SSO 不需處理 cookie cross-origin |
+| 19 | n8n / GitLab / MLSteam 的 `required_roles=['admin', 'developer']` | 改為 `['developer']` + `is_public=true` | v0.5.1 admin bypass 提前後不需 explicit 列 `'admin'`；`is_public=true` 才能讓 developer 不需 grant 就看到（之前 `is_public=false` 會卡在 grant check 步驟 5）|
+| 20 | `auto_seed.py` 的 AUTO_REGISTER_LINKS 處理只認 5 個欄位、INSERT-only | 擴充認 `is_public` + `required_roles` + 改成 idempotent upsert | 0012/0013 加的欄位舊 seed 不認；env 改了 restart 不會 sync 是隱蔽 bug |
+
+**Step 3 落地 commit**：`<TBD>` — `docker-compose.yml` AUTO_REGISTER_LINKS 5 筆 + `auto_seed.py` upsert 邏輯。
+
+3 role × 6 link 訪問矩陣全部驗證對齊預期（admin: 6, user: 1, developer: 4）。
+
+### v0.5.1 (2026-04-25) — admin bypass 提前
+
+| # | 設計 | 修正 | 為什麼 |
+|---|---|---|---|
+| 18-pre | algorithm step 2 = role gate, step 3 = admin bypass | 對調：step 2 = admin bypass, step 3 = role gate | `required_roles=['developer']` 會把 admin 擋掉，跟「admin 永遠通過」矛盾；提前後 §7.1 不必寫 `['admin','developer']` 那種重複 |
+
+修正 commit：`91f1b10`。
+
 ### v0.5 (2026-04-25) — Phase 1 Step 1+2+2.5 落地，記錄與 v0.4 設計的差異
 
 實作 access control 過程中發現幾個 design doc 與真實 schema / codebase 慣例的不對齊，已修正：
@@ -1180,43 +1200,58 @@ NotebookLM 不會變成 template，它是**一個特殊的 agent 實例**（One 
 
 ## 7. Platform Links — 完整服務清單（v0.2 更新）
 
-### 7.1 v0.2 完整註冊內容
+### 7.1 完整註冊內容（v0.5.1 對齊實作 — Phase 1 Step 3 已落地）
 
-URL 已從 `My-OpenAI-Frontend/webui/src/pages/index.tsx` 查證實際值：
+> **實作狀態**：✅ 5 筆 link seed 完成。權威 source 在 [`docker-compose.yml`](../docker-compose.yml) 的 `csp.environment.AUTO_REGISTER_LINKS`，對應 [`auto_seed.py`](../myCSPPlatform/backend/app/services/auto_seed.py) §5 邏輯。
+
+**設計重點：4 個內網服務全走 nginx 同源 path**（v0.5.1 修正 — `notebooklm.internal:3100` / `codeserver.internal:8443` 那種內網 DN 是錯的，browser 進不去且觸發 Mixed Content 警告）。只有 MLSteam 是公網 service，保留絕對 FQDN。
+
+**`is_public` × `required_roles` 兩個維度的組合語意**（admin 永遠通過，因為 v0.5.1 algorithm step 2 admin bypass）：
+
+| 用途 | `is_public` | `required_roles` | 效果 |
+|---|---|---|---|
+| 全員可見入口（如 ANILA 主面板）| `true` | `[]` | 任何登入用戶都看得到 |
+| 角色公開（如 n8n / GitLab）| `true` | `[role1, role2]` | 該 role 通過 gate 就看得到 |
+| 角色限定 + 個別 grant（如 NotebookLM mode A）| `false` | `[]` | 任何 role 都過 gate，但要 admin 個別 grant 才看得到 |
+| Admin 專屬 + 個別 grant（極少見）| `false` | `['admin']` | 等同 admin only |
 
 ```yaml
-# myCSPPlatform/.env 的 AUTO_REGISTER_LINKS（v0.2 final）
+# docker-compose.yml csp.environment.AUTO_REGISTER_LINKS（Phase 1 Step 3 final）
 
 - name: "NotebookLM"
-  url: "http://notebooklm.internal:3100"
+  url: "/notebooklm"                           # ← nginx 同源 path（在 monorepo）
   icon: "book-open"
   description: "AI 學習內容生成（podcast / slides / mind map / quiz / report）"
-  required_roles: null   # 純白名單，admin 個別 grant（§6.0.1）
+  is_public: false                             # 不公開
+  required_roles: []                           # role gate 開放（admin 個別 grant，§6.0.1）
 
 - name: "Code Server"
-  url: "http://codeserver.internal:8443"   # ← ANILA monorepo 自己部署（§5.0.1）
+  url: "/codeserver"                           # ← nginx 同源 path（Phase 1 Step 5 部署）
   icon: "code"
   description: "Browser VS Code — agent 開發整合入口"
-  required_roles: ["admin"]   # 僅 admin
+  is_public: false                             # admin only（admin bypass 已涵蓋；is_public 對非 admin 無關）
+  required_roles: ["admin"]
 
 - name: "n8n 工作流程"
-  url: "/n8n"   # nginx 同源 reverse proxy 路徑（已有，從 my-openai-frontend 確認）
+  url: "/n8n"                                  # nginx 同源 path（已部署）
   icon: "workflow"
   description: "自動化工作流程平台 — 排程任務、跨服務串接"
-  required_roles: ["admin", "developer"]
+  is_public: true                              # 對 developer 公開（不需 grant）
+  required_roles: ["developer"]                # admin 透過 step 2 bypass 也看得到
 
 - name: "GitLab"
-  url: "/gitlab"   # v0.4: 同源 nginx path（GitLab 由 ANILA monorepo 自己 deploy，§5.0.2）
-                   # ISO 42001 合規必備存放庫（§7.4）
+  url: "/gitlab"                               # nginx 同源 path（Phase 1 Step 6+8 部署）
   icon: "git-branch"
-  description: "Git server — agent 程式碼與 issue tracking（ISO 42001 合規必備）"
-  required_roles: ["admin", "developer"]
+  description: "Git server — agent 程式碼與 issue tracking（ISO 42001 合規必備，§7.4）"
+  is_public: true
+  required_roles: ["developer"]
 
 - name: "MLSteam"
-  url: "https://aiops.ai.ncsist.org.tw:4443/"   # ← 已從 my-openai-frontend 查得
+  url: "https://aiops.ai.ncsist.org.tw:4443/"  # 公網 FQDN（外部 service，不是 monorepo 部署）
   icon: "cpu"
   description: "MLOps 平台 — agent 訓練與部署"
-  required_roles: ["admin", "developer"]
+  is_public: true
+  required_roles: ["developer"]
 
 # ComfyUI Studio (raw UI) 是否要做卡片是個 design choice：
 #   - 一般使用者透過 chat agent 用（§4），不需要直接進 ComfyUI UI
@@ -1481,7 +1516,7 @@ await audit_log(
 | 1 | Alembic migration `0012`：`platform_links.required_roles` + `service_access_grants` + `dev_db_credentials` 三表（§7.5、§5.3）| 2 小時 | ✅ commit `e611d89` |
 | 1.5 | Alembic migration `0013`：`platform_links.is_public` + grandfather backfill（§7.5.1、§0 v0.5 #16）| 30 分鐘 | ✅ commit `cc121e3` |
 | 2 | CSP backend 實作 `can_access_link()` + grant CRUD endpoints（§7.5）| 0.5 天 | ✅ commit `7c4df4a` |
-| 3 | 寫 `AUTO_REGISTER_LINKS` 5 筆（NotebookLM / codeserver / n8n / gitlab / mlsteam，URL 見 §7.1） | 30 分鐘 | ⏳ in progress |
+| 3 | 寫 `AUTO_REGISTER_LINKS` 5 筆（NotebookLM / codeserver / n8n / gitlab / mlsteam，URL 見 §7.1） | 30 分鐘 | ✅ 待 commit |
 | 4 | CSP UI Dashboard 顯示卡片時依 `can_access_link()` 過濾 + Service Access 管理 UI（§7.5.3）| 1-1.5 天 | ⏳ |
 | 5 | ANILA monorepo `docker-compose.yml` 新增 `codeserver` service（§5.0.1）| 30 分鐘 | ⏳ |
 | 6 | **(v0.4)** ANILA monorepo `docker-compose.yml` 新增 `gitlab` service（§5.0.2）| 1 小時 | ⏳ |

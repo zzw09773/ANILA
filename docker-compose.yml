@@ -51,6 +51,29 @@ services:
         [{"name":"${LOCAL_LLM_MODEL:-gpt-4o-mini}","display_name":"${LOCAL_LLM_MODEL:-gpt-4o-mini}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}","api_version":"v1","description":"On-prem local LLM"},{"name":"${LOCAL_EMBEDDING_MODEL:-text-embedding-3-small}","display_name":"${LOCAL_EMBEDDING_MODEL:-text-embedding-3-small}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-${LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}}","api_version":"v1","description":"On-prem local embedding model"}]
       AUTO_SEED_API_KEYS: >-
         [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY:-sk-test-user-api-key}","key_name":"smoke-user-dev-key","models":["${LOCAL_LLM_MODEL:-gpt-4o-mini}"]}]
+      # Phase 1 Step 3 multi-service-integration-plan §7.1 — five platform
+      # links seeded on startup. URLs are nginx same-origin paths (resolved
+      # by the ANILA reverse proxy in front of this stack) except MLSteam
+      # which is an external service. is_public/required_roles semantics:
+      #
+      #   NotebookLM (mode A allowlist):  is_public=false, required_roles=[]
+      #     → admin manually grants per-user / per-department (§6.0.1)
+      #
+      #   Code Server (admin-only):       is_public=false, required_roles=['admin']
+      #     → only admin passes role gate; admin bypass already covers
+      #
+      #   n8n / GitLab / MLSteam (open to developers without grant):
+      #                                    is_public=true,  required_roles=['developer']
+      #     → 'developer' passes role gate, then is_public bypass; admin
+      #     bypass also covers; non-developer users blocked at role gate
+      AUTO_REGISTER_LINKS: >-
+        [
+          {"name":"NotebookLM","url":"/notebooklm","icon":"book-open","description":"AI 學習內容生成（podcast / slides / mind map / quiz / report）","sort_order":1,"is_public":false,"required_roles":[]},
+          {"name":"Code Server","url":"/codeserver","icon":"code","description":"Browser VS Code — agent 開發整合入口","sort_order":2,"is_public":false,"required_roles":["admin"]},
+          {"name":"n8n 工作流程","url":"/n8n","icon":"workflow","description":"自動化工作流程平台 — 排程任務、跨服務串接","sort_order":3,"is_public":true,"required_roles":["developer"]},
+          {"name":"GitLab","url":"/gitlab","icon":"git-branch","description":"Git server — agent 程式碼與 issue tracking（ISO 42001 合規必備）","sort_order":4,"is_public":true,"required_roles":["developer"]},
+          {"name":"MLSteam","url":"https://aiops.ai.ncsist.org.tw:4443/","icon":"cpu","description":"MLOps 平台 — agent 訓練與部署","sort_order":5,"is_public":true,"required_roles":["developer"]}
+        ]
       ANILA_TEMPLATE_DIR: /app/anila-template
     volumes:
       - ./AgenticRAG:/app/anila-template:ro
