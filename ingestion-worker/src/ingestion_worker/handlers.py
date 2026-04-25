@@ -125,16 +125,64 @@ async def _record_job_failure(
         UPDATE ingestion_jobs
            SET status = 'failed',
                progress_pct = 100,
-               error_code = $2,
-               error_message = $3,
+               error_code = $2::text,
+               error_message = $3::text,
                completed_at = now()
-         WHERE arq_job_id = $1
+         WHERE arq_job_id = $1::text
     """
     try:
         async with pool.acquire() as conn:
             await conn.execute(sql, arq_job_id, err.code, err.user_message)
     except Exception:
         # Don't shadow the original IngestionError.
+        pass
+
+
+async def _update_job(
+    pool: PgPool,
+    arq_job_id: str | None,
+    *,
+    status: str | None = None,
+    progress_pct: int | None = None,
+    progress_message: str | None = None,
+    started: bool = False,
+    succeeded: bool = False,
+) -> None:
+    """Update one ingestion_jobs row's status / progress.
+
+    Used by the handler to drive the SSE stream's progression
+    (queued → running → parsing → chunking → embedding → indexing →
+    succeeded). Best-effort — silently ignores DB failures so a
+    transient blip doesn't kill the actual ingestion.
+    """
+    if arq_job_id is None:
+        return
+    sets = []
+    args: list = [arq_job_id]
+    if status is not None:
+        sets.append(f"status = ${len(args) + 1}::text")
+        args.append(status)
+    if progress_pct is not None:
+        sets.append(f"progress_pct = ${len(args) + 1}::smallint")
+        args.append(progress_pct)
+    if progress_message is not None:
+        sets.append(f"progress_message = ${len(args) + 1}::text")
+        args.append(progress_message)
+    if started:
+        sets.append("started_at = COALESCE(started_at, now())")
+    if succeeded:
+        sets.append("completed_at = now()")
+    if not sets:
+        return
+    sql = (
+        "UPDATE ingestion_jobs SET "
+        + ", ".join(sets)
+        + " WHERE arq_job_id = $1::text"
+    )
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(sql, *args)
+    except Exception:
         pass
 
 
@@ -154,6 +202,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
     arq_job_id: str | None = ctx.get("job_id")
 
     started_at = datetime.now(timezone.utc)
+    await _update_job(pool, arq_job_id, status="running", started=True, progress_pct=5)
     try:
         meta = await _load_document_meta(pool, document_id)
         agent_id = int(meta["agent_id"])
@@ -172,6 +221,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
 
         # 1. Parse — pure function, fast.
         await _update_document_status(pool, document_id, "parsing")
+        await _update_job(pool, arq_job_id, progress_pct=15, progress_message="parsing")
         with open(storage_path, "rb") as f:
             blob = f.read()
         text, parse_meta = extract_text(meta["filename"], blob, meta["mime_type"])
@@ -183,6 +233,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         # interface pure-sync at the cost of a second embedding pass
         # (whose tokens we'd compute anyway).
         await _update_document_status(pool, document_id, "chunking")
+        await _update_job(pool, arq_job_id, progress_pct=30, progress_message="chunking")
         chunking_config = meta["chunking_config"] or {"strategy": "hierarchical"}
         strategy = chunking_config.get("strategy", "hierarchical")
         params = dict(chunking_config.get("params", {}))
@@ -217,9 +268,14 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
 
         # 3. Embed — the slow part; everything else is microseconds.
         await _update_document_status(pool, document_id, "embedding")
+        await _update_job(
+            pool, arq_job_id, progress_pct=60,
+            progress_message=f"embedding {len(chunks)} chunks",
+        )
         embeddings = await embedder.embed([c.content for c in chunks])
 
         # 4. Index — single transaction via the agent-scoped store.
+        await _update_job(pool, arq_job_id, progress_pct=85, progress_message="indexing")
         store = AgentScopedPgVectorStore(pool, agent_id=agent_id)
         await store.index_chunks(
             collection_id=collection_id,
@@ -236,6 +292,10 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         )
         await _bump_collection_counters(
             pool, collection_id, document_count_delta=1, chunk_count_delta=len(chunks)
+        )
+        await _update_job(
+            pool, arq_job_id, status="succeeded", succeeded=True,
+            progress_pct=100, progress_message=f"{len(chunks)} chunks indexed",
         )
 
         return {

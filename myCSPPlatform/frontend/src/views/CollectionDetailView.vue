@@ -120,7 +120,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { getCollection } from '../api/ingestionCollections'
 import {
@@ -130,6 +130,7 @@ import {
   documentBlobUrl,
   getChunkEmbeddingDebug,
 } from '../api/ingestionDocuments'
+import { streamJob } from '../api/ingestionJobs'
 
 const route = useRoute()
 const collectionId = ref(Number(route.params.id))
@@ -151,6 +152,8 @@ const vecDebug = ref({})
 const vecLoading = ref({})
 
 let pollTimer = null
+let sseHandle = null
+const TERMINAL = new Set(['indexed', 'failed', 'cancelled'])
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────
 
@@ -205,6 +208,11 @@ function stopPolling() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
 }
 
+onUnmounted(() => {
+  stopPolling()
+  if (sseHandle) { sseHandle.close(); sseHandle = null }
+})
+
 watch(() => route.params.id, (id) => {
   if (id) {
     collectionId.value = Number(id)
@@ -217,11 +225,49 @@ watch(() => route.params.id, (id) => {
 // ── Selection ───────────────────────────────────────────────────────────────
 
 async function selectDoc(d) {
+  // Tear down any prior SSE — only one selected doc at a time.
+  if (sseHandle) { sseHandle.close(); sseHandle = null }
+
   selectedDoc.value = d
   chunks.value = []
   vecDebug.value = {}
   if (d.status === 'indexed' || d.chunk_count > 0) {
     await loadChunks(d.id)
+  }
+
+  // If the doc isn't terminal, the latest job will keep moving —
+  // open SSE for live status updates (faster than the 3s poll).
+  if (!TERMINAL.has(d.status)) {
+    try {
+      const detail = await import('../api/ingestionDocuments').then(m => m.getDocument(d.id))
+      const jobId = detail.data.latest_job_id
+      if (jobId) {
+        sseHandle = streamJob(jobId, async (snap) => {
+          if (selectedDoc.value?.id !== d.id) return  // user switched docs
+          // Patch the selected doc's render-relevant fields.
+          if (snap.status === 'succeeded' || snap.status === 'indexed') {
+            selectedDoc.value = { ...selectedDoc.value, status: 'indexed' }
+            await loadDocs()
+            await loadChunks(d.id)
+          } else if (snap.status === 'failed') {
+            selectedDoc.value = {
+              ...selectedDoc.value,
+              status: 'failed',
+              error_message: snap.error_message,
+            }
+            await loadDocs()
+          } else {
+            // running / parsing / chunking / embedding / indexing →
+            // we synthesise a doc-level status from the job for the
+            // sidebar progress badge.
+            const docStatus = snap.progress_message?.split(' ')[0] || snap.status
+            selectedDoc.value = { ...selectedDoc.value, status: docStatus }
+          }
+        })
+      }
+    } catch {
+      // Fall back to the existing 3s poll if SSE init fails.
+    }
   }
 }
 
