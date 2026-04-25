@@ -224,6 +224,67 @@ class AgentScopedPgVectorStore:
             rows = await conn.fetch(sql, *args)
         return [self._row_to_search_hit(r) for r in rows]
 
+    async def keyword_search(
+        self,
+        query: str,
+        collection_id: int | None = None,
+        top_k: int = 10,
+        tokenized_query: str | None = None,
+    ) -> list[SearchHit]:
+        """Full-text keyword search via the GIN index on ``content_tsv``.
+
+        Two ranking modes:
+
+        - When ``tokenized_query`` is provided (e.g. CJK pre-tokenized
+          input, or any caller-shaped tsquery-friendly form), use
+          ``plainto_tsquery`` on it and rank by ``ts_rank_cd``.
+        - When only ``query`` is given, use ``plainto_tsquery`` directly
+          on the raw user text. This works fine for languages with
+          whitespace word boundaries; CJK callers should pass
+          ``tokenized_query`` for better recall.
+
+        ``score`` on the returned ``SearchHit`` is the ``ts_rank_cd``
+        value (higher = better match) — NOT a [0,1] cosine similarity
+        like ``similarity_search`` returns. Callers that mix the two
+        must be explicit about which axis they're sorting by; RRF
+        merges them by rank position which is dimension-agnostic.
+        """
+        if top_k <= 0:
+            return []
+
+        # Use tokenized form when given; otherwise let PG tokenize.
+        tsquery_input = tokenized_query if tokenized_query else query
+
+        if collection_id is None:
+            sql = """
+                SELECT id, collection_id, agent_id, document_id, chunk_key,
+                       content, metadata, token_count, created_at,
+                       ts_rank_cd(content_tsv, q) AS score
+                  FROM document_chunks,
+                       plainto_tsquery('simple', $1) q
+                 WHERE content_tsv @@ q
+                 ORDER BY score DESC
+                 LIMIT $2
+            """
+            args: tuple[Any, ...] = (tsquery_input, top_k)
+        else:
+            sql = """
+                SELECT id, collection_id, agent_id, document_id, chunk_key,
+                       content, metadata, token_count, created_at,
+                       ts_rank_cd(content_tsv, q) AS score
+                  FROM document_chunks,
+                       plainto_tsquery('simple', $1) q
+                 WHERE collection_id = $2
+                   AND content_tsv @@ q
+                 ORDER BY score DESC
+                 LIMIT $3
+            """
+            args = (tsquery_input, collection_id, top_k)
+
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, *args)
+        return [self._row_to_search_hit(r) for r in rows]
+
     async def list_by_document(
         self,
         document_id: int,

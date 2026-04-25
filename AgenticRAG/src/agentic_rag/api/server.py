@@ -251,50 +251,36 @@ def create_app(
     async def agentic_chat(request: ChatRequest) -> StreamingResponse:
         """Tool-driven AgenticRAG endpoint.
 
-        Unlike /chat, this endpoint registers RAG tools (vector_search,
-        keyword_search, read_document) and lets the LLM decide when to
-        search. No automatic context injection is performed.
+        v0.6 Chunk F: the in-package ``create_vector_search_tool`` /
+        ``create_keyword_search_tool`` / ``create_read_document_tool``
+        factories were retired (their inline SQL was tied to the pre-0014
+        schema). Re-implementations against the central
+        ``AgentScopedPgVectorStore`` SDK are a Sprint 2 deliverable —
+        until they ship this endpoint exposes only whatever non-RAG tools
+        the host registered into ``tool_registry``.
+
+        ``request.system_prompt`` is required (422 on missing) — the
+        legacy default ``AGENTIC_RAG_SYSTEM_PROMPT`` constant was deleted
+        in v0.5.0 boundary cleanup and a generic placeholder here would
+        likely be the wrong policy for any real deployment.
         """
-        from ..tools import (
-            create_vector_search_tool,
-            create_keyword_search_tool,
-            create_read_document_tool,
-        )
-        from ..tools.prompts import AGENTIC_RAG_SYSTEM_PROMPT
+        if not request.system_prompt:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "system_prompt is required. The default RAG prompt was "
+                    "removed in v0.5.0; pass an explicit one suited to your "
+                    "agent."
+                ),
+            )
 
-        # Build a per-request tool registry with RAG tools
+        # Per-request registry mirrors the global one. RAG tools are
+        # deferred to Sprint 2; the host registry is consumed verbatim.
         agentic_registry = ToolRegistry()
-
-        if embedding_provider is not None and retrieval_provider is not None:
-            agentic_registry.register(create_vector_search_tool(
-                embedding_provider=embedding_provider,
-                retrieval_provider=retrieval_provider,
-                user_id=request.user_id,
-                project_id=request.project_id,
-                reranker=reranker,
-                rerank_pool_multiplier=rerank_pool_multiplier,
-            ))
-
-        if db_pool is not None:
-            agentic_registry.register(create_keyword_search_tool(
-                db_pool=db_pool,
-                user_id=request.user_id,
-                project_id=request.project_id,
-                reranker=reranker,
-                rerank_pool_multiplier=rerank_pool_multiplier,
-            ))
-            agentic_registry.register(create_read_document_tool(
-                db_pool=db_pool,
-                user_id=request.user_id,
-                project_id=request.project_id,
-            ))
-
-        # Also register any tools from the global registry
         for name in tool_registry.list_tools():
-            if name not in {"vector_search", "keyword_search", "read_document"}:
-                agentic_registry.register(tool_registry.get(name))
+            agentic_registry.register(tool_registry.get(name))
 
-        sys_prompt = request.system_prompt or AGENTIC_RAG_SYSTEM_PROMPT
+        sys_prompt = request.system_prompt
         config = QueryConfig(
             max_turns=request.max_turns,
             model=request.model,

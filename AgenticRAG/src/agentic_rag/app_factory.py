@@ -10,40 +10,58 @@ Environment variables (see config.py for full list):
     EMBEDDING_MODEL = nvidia/NV-embed-V2
     VISION_URL      = https://172.16.120.35/v1
     VISION_MODEL    = meta/llama-4-maverick
-    DATABASE_URL    = postgresql://agentic:agentic@localhost:5432/agentic_rag
+    DATABASE_URL    = postgresql://csp_app:csp@csp-db:5432/csp
+    RAG_AGENT_ID    = (positive int — the agent this container serves)
     API_KEY         = (optional bearer token)
+
+Phase 2 Sprint 1 / Chunk F changes:
+- Local ``storage.adapters.pg_pool`` and ``storage.adapters.pgvector_store``
+  retired in favour of the central ``anila_core`` SDK. Same semantics,
+  but the central path enforces RLS via ``SET LOCAL anila.agent_id``.
+- Local ``ingestion.service.IngestionService`` (and the chunker / parser
+  / docling pipeline behind it) is no longer wired into the FastAPI app
+  — the ingestion-worker container is the canonical ingestion path now.
+  Legacy code is left in the tree for evaluator reference but isn't
+  imported by the entry points; CSP ``/api/ingestion/*`` + the worker
+  pipeline replace it.
+- ``init_pg_schema`` (sessions / messages tables only — never touched
+  document_chunks) still runs to keep AgenticRAG's chat-side persistence
+  working.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI
 
-import os
+# Central SDK — anila-core owns the document_chunks schema and its
+# RLS-scoped accessor. AgenticRAG retrieves through these classes; it
+# never imports the legacy local adapters anymore.
+from anila_core.storage.adapters import AgentScopedPgVectorStore, PgPool
 
 from .config import settings
-from .ingestion.service import IngestionService
-from .ingestion.chunker import HierarchicalChunker
 from .providers.openai_compat import OpenAICompatProvider
-from .providers.embedding_nvidia import NvidiaEmbeddingProvider
 from .providers.reranker import build_reranker_from_env
 from .providers.vision import VisionProvider
 from .router.tool_router import ToolRegistry
-from .storage.adapters.pg_pool import PgPool
-from .storage.adapters.pgvector_store import PgVectorStore
 from .storage.adapters.postgres_store import initialize_schema as init_pg_schema
 from .api.server import create_app
 
 logger = logging.getLogger(__name__)
 
+# Agent the container serves — used as RLS scope for every retrieval.
+# Defaults to 0 (RAG disabled) if unset; ops MUST set this per deployment.
+_RAG_AGENT_ID = int(os.environ.get("RAG_AGENT_ID", "0"))
+
 # ---------------------------------------------------------------------------
 # Shared state (initialised in lifespan)
 # ---------------------------------------------------------------------------
 _pg_pool: PgPool | None = None
-_pgvector_store: PgVectorStore | None = None
+_pgvector_store: AgentScopedPgVectorStore | None = None
 
 
 @asynccontextmanager
@@ -68,23 +86,38 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.vision_enabled,
     )
 
-    # PostgreSQL pool
+    # Central anila-core PgPool. The ``open()`` API matches what was
+    # previously called ``initialize()`` on the legacy adapter — same
+    # semantics, asyncpg pool with vector + halfvec + jsonb codecs.
     _pg_pool = PgPool(
         dsn=settings.database_url,
         min_size=settings.pg_pool_min,
         max_size=settings.pg_pool_max,
-        ssl=settings.pg_ssl,
     )
-    await _pg_pool.initialize()
+    await _pg_pool.open()
+
+    # AgenticRAG's chat-side persistence (sessions / messages /
+    # retrieval_traces) still uses postgres_store; init that schema.
+    # ``document_chunks`` is NOT covered here — it's owned by CSP
+    # alembic migration 0014/0015 and the central worker.
     await init_pg_schema(_pg_pool)
 
-    # pgvector store (doubles as DocumentStore + RetrievalProvider)
-    _pgvector_store = PgVectorStore(pool=_pg_pool, dimension=settings.embedding_dimension)
-    await _pgvector_store.initialize_schema()
+    if _RAG_AGENT_ID > 0:
+        _pgvector_store = AgentScopedPgVectorStore(
+            _pg_pool, agent_id=_RAG_AGENT_ID
+        )
+        logger.info(
+            "AgentScopedPgVectorStore ready (agent_id=%d, dim=%d)",
+            _RAG_AGENT_ID,
+            settings.embedding_dimension,
+        )
+    else:
+        logger.warning(
+            "RAG_AGENT_ID not set — AgenticRAG running without retrieval."
+        )
 
     yield
 
-    # Shutdown
     if _pg_pool:
         await _pg_pool.close()
 
@@ -96,14 +129,6 @@ def build_app() -> FastAPI:
     llm_provider = OpenAICompatProvider(
         base_url=settings.llm_url,
         api_key=settings.llm_api_key,
-    )
-
-    # Embedding provider (NV-Embed-V2)
-    embedding_provider = NvidiaEmbeddingProvider(
-        base_url=settings.embedding_url,
-        api_key=settings.embedding_api_key,
-        model=settings.embedding_model,
-        verify_ssl=settings.embedding_verify_ssl,
     )
 
     # Vision provider (VLM — maverick4 / gemma4-vision / etc.)
@@ -118,32 +143,28 @@ def build_app() -> FastAPI:
         if settings.vision_enabled
         else None
     )
+    _ = vision_provider  # currently unused outside legacy ingestion path.
 
     # Tool registry (empty by default — register tools externally)
     tool_registry = ToolRegistry()
 
-    # Hierarchical chunker — tree shape follows document structure, not
-    # a fixed token budget; chunk_size is only a soft cap for oversized
-    # paragraphs.
-    chunker = HierarchicalChunker(
-        max_leaf_tokens=settings.chunk_size,
-        overlap_tokens=settings.chunk_overlap,
-    )
-
-    # Lazy references to stores (initialised in lifespan)
+    # Lazy references to stores (initialised in lifespan).
+    # AgentScopedPgVectorStore replaces the legacy PgVectorStore but
+    # exposes ``similarity_search`` / ``keyword_search`` rather than the
+    # old DocumentStore Protocol — server.py's retrieval-provider
+    # consumer adapts on attribute access.
     class _LazyStoreProxy:
-        """Proxy that forwards calls to _pgvector_store after lifespan init."""
-
         def __getattr__(self, name: str):
             if _pgvector_store is None:
-                raise RuntimeError("pgvector store not yet initialized")
+                raise RuntimeError(
+                    "AgentScopedPgVectorStore not initialized — set "
+                    "RAG_AGENT_ID and ensure the lifespan has run."
+                )
             return getattr(_pgvector_store, name)
 
     lazy_store = _LazyStoreProxy()
 
     class _LazyPoolProxy:
-        """Proxy that forwards calls to _pg_pool after lifespan init."""
-
         def __getattr__(self, name: str):
             if _pg_pool is None:
                 raise RuntimeError("pg pool not yet initialized")
@@ -151,14 +172,13 @@ def build_app() -> FastAPI:
 
     lazy_pool = _LazyPoolProxy()
 
-    # Ingestion service
-    ingestion_service = IngestionService(
-        embedding_provider=embedding_provider,
-        document_store=lazy_store,
-        retrieval_provider=lazy_store,
-        vision_provider=vision_provider,
-        chunker=chunker,
-    )
+    # Ingestion service is RETIRED in v0.6: the central ingestion-worker
+    # container is the canonical ingestion path. Leaving these as None
+    # turns off the ``/upload`` etc. endpoint registration in
+    # server.create_app — see server.py's ``if ingestion_service is not
+    # None`` gates.
+    ingestion_service = None
+    embedding_provider = None  # only the legacy ingestion path used it.
 
     # Optional cross-encoder reranker hosted on the internal vLLM server
     # (e.g. mxbai-rerank-large-v1 via /v1/score). Returns None when

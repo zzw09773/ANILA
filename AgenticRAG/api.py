@@ -32,6 +32,13 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+# Phase 2 Sprint 1 / Chunk F: AgenticRAG retrieves through the central
+# anila-core SDK, not its own pg_pool / pgvector_store. The SDK enforces
+# Layer 3 agent isolation (RLS via SET LOCAL anila.agent_id) so this
+# template can't accidentally read another agent's chunks.
+from anila_core.storage.adapters import AgentScopedPgVectorStore, PgPool
+from anila_core.models.ingestion import SearchHit
+
 from agentic_rag.api.middleware.loader import install_csp_middleware
 from agentic_rag.ingestion.normalize import normalize_zh
 from agentic_rag.ingestion.tokenize_zh import tokenize as _tokenize_query
@@ -58,7 +65,13 @@ EMB_API_KEY   = _CSP_API_KEY          if _USE_CSP else os.getenv("EMBEDDING_API_
 
 MODEL         = os.getenv("MODEL",              "google/gemma4")
 EMB_MODEL     = os.getenv("EMBEDDING_MODEL",    "nvidia/nv-embed-v2")
-DATABASE_URL  = os.getenv("DATABASE_URL",       "postgresql://agentic:agentic@localhost:5432/agentic_rag")
+DATABASE_URL  = os.getenv("DATABASE_URL",       "postgresql://csp_app:csp@localhost:5432/csp")
+# Sprint 1 Chunk F: AgenticRAG is single-tenant per deployment — the
+# host platform launches one container per agent and pins this env. The
+# value flows into AgentScopedPgVectorStore at startup and every
+# retrieval inherits its RLS scope from there. No per-request agent
+# selection at this layer (Sprint 2's multi-tenant routing handles that).
+RAG_AGENT_ID  = int(os.getenv("RAG_AGENT_ID",   "0"))
 RAG_TOP_K     = int(os.getenv("RAG_TOP_K",     "5"))
 RAG_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.5"))
 RAG_MIN_SCORE_RETRY = float(os.getenv("RAG_MIN_SCORE_RETRY", "0.3"))
@@ -81,19 +94,44 @@ SYSTEM_PROMPT = os.getenv("RAG_SYSTEM_PROMPT", """你是一個知識檢索助手
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("rag-api")
 
-# ── DB pool + Reranker ───────────────────────────────────────────────────────
-_pool = None
+# ── DB pool + RAG store + Reranker ────────────────────────────────────────────
+# Sprint 1 Chunk F: replaced raw asyncpg pool with anila_core's PgPool.
+# AgentScopedPgVectorStore is the only retrieval entry point; it pins
+# RAG_AGENT_ID into ``anila.agent_id`` per-connection so RLS auto-scopes.
+_pool: PgPool | None = None
+_store: AgentScopedPgVectorStore | None = None
 _reranker: Reranker | None = None
+
+# halfvec(4000) is the central schema (CSP migration 0015). NV-Embed-V2
+# returns 4096-d; we truncate to 4000 client-side because the embedding
+# proxy ignores OpenAI's ``dimensions`` parameter. Drop the tail 96 dims
+# — Matryoshka-trained NV-Embed-V2 keeps near-full quality at 4000.
+_EMBEDDING_DIM = 4000
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    global _pool, _reranker
-    try:
-        import asyncpg  # type: ignore
-        _pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=8)
-        logger.info("PostgreSQL pool ready")
-    except Exception as e:
-        logger.warning("PostgreSQL unavailable (%s) — RAG disabled", e)
+    global _pool, _store, _reranker
+    if RAG_AGENT_ID <= 0:
+        logger.warning(
+            "RAG_AGENT_ID is %d — RAG disabled. Set a positive int per "
+            "the agent this AgenticRAG container serves.",
+            RAG_AGENT_ID,
+        )
+    else:
+        try:
+            _pool = PgPool(DATABASE_URL, min_size=2, max_size=8)
+            await _pool.open()
+            _store = AgentScopedPgVectorStore(_pool, agent_id=RAG_AGENT_ID)
+            logger.info(
+                "PostgreSQL pool ready; AgentScopedPgVectorStore "
+                "scoped to agent_id=%d",
+                RAG_AGENT_ID,
+            )
+        except Exception as e:
+            logger.warning("PostgreSQL unavailable (%s) — RAG disabled", e)
+            _pool = None
+            _store = None
     try:
         _reranker = build_reranker_from_env()
         if _reranker is not None:
@@ -293,38 +331,28 @@ async def _collect_stream(payload: dict, headers: dict, rag_sources: str = "") -
 
 # ── RAG helpers ───────────────────────────────────────────────────────────────
 
-async def _vector_search(vec_str: str) -> list:
-    """pgvector 語意搜尋，含低門檻 retry。回傳 asyncpg Record list（含 score 欄）。"""
-    async with _pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT chunk_id, content, metadata,
-                   1 - (embedding <=> $1::vector) AS score
-            FROM document_chunks
-            WHERE embedding IS NOT NULL
-              AND chunk_type IN ('content', 'image')
-              AND 1 - (embedding <=> $1::vector) >= $2
-            ORDER BY embedding <=> $1::vector
-            LIMIT $3
-            """,
-            vec_str, RAG_MIN_SCORE, RAG_TOP_K,
+async def _vector_search(embedding: list[float]) -> list[SearchHit]:
+    """Semantic search via central SDK (RLS-scoped to RAG_AGENT_ID).
+
+    Two-tier threshold: try ``RAG_MIN_SCORE`` first; if no hits, retry
+    with the lower ``RAG_MIN_SCORE_RETRY``. Lets us keep precision in
+    the common case but degrade gracefully on rare queries where the
+    corpus has only weak matches.
+    """
+    if _store is None:
+        return []
+    hits = await _store.similarity_search(
+        embedding, top_k=RAG_TOP_K, min_score=RAG_MIN_SCORE
+    )
+    if not hits and RAG_MIN_SCORE_RETRY < RAG_MIN_SCORE:
+        logger.info(
+            "RAG vector: no results at %.2f, retry at %.2f",
+            RAG_MIN_SCORE, RAG_MIN_SCORE_RETRY,
         )
-        if not rows and RAG_MIN_SCORE_RETRY < RAG_MIN_SCORE:
-            logger.info("RAG vector: no results at %.2f, retry at %.2f",
-                        RAG_MIN_SCORE, RAG_MIN_SCORE_RETRY)
-            rows = await conn.fetch(
-                """
-                SELECT chunk_id, content, metadata,
-                       1 - (embedding <=> $1::vector) AS score
-                FROM document_chunks
-                WHERE embedding IS NOT NULL
-                  AND 1 - (embedding <=> $1::vector) >= $2
-                ORDER BY embedding <=> $1::vector
-                LIMIT $3
-                """,
-                vec_str, RAG_MIN_SCORE_RETRY, RAG_TOP_K,
-            )
-    return list(rows)
+        hits = await _store.similarity_search(
+            embedding, top_k=RAG_TOP_K, min_score=RAG_MIN_SCORE_RETRY
+        )
+    return hits
 
 
 def _expand_tokens(query: str) -> list[str]:
@@ -348,91 +376,68 @@ def _expand_tokens(query: str) -> list[str]:
     return list(variants)
 
 
-async def _keyword_search(query: str) -> list:
-    """關鍵字搜尋：先試 PostgreSQL FTS（content_tsv），再 fallback 到 ILIKE。
+async def _keyword_search(query: str) -> list[SearchHit]:
+    """Keyword search via central SDK FTS path.
 
-    - FTS: 用相同 bigram tokenizer 處理 query 後 plainto_tsquery
-    - Fallback: 短 query / 罕見字 / FTS 全無命中時，沿用舊有 ILIKE +
-      字間空格擴展（「第8條」→「第 8 條」）
+    Pre-tokenises CJK with the existing ``tokenize_zh`` so plainto_tsquery
+    sees space-separated tokens (PG's default tokenizer doesn't split
+    Chinese). When FTS returns nothing the SDK simply yields an empty
+    list; the previous ILIKE-fallback path is dropped because it no
+    longer compiles against the new schema (chunk_type column gone)
+    and hybrid RRF tolerates zero keyword hits gracefully — vector
+    search alone still produces results.
     """
-    tokenized = _tokenize_query(query)
-    fts_rows: list = []
-    if tokenized:
-        try:
-            async with _pool.acquire() as conn:
-                fts_rows = await conn.fetch(
-                    """
-                    SELECT chunk_id, content, metadata,
-                           ts_rank_cd(content_tsv, q) AS rank
-                    FROM document_chunks,
-                         plainto_tsquery('simple', $1) q
-                    WHERE embedding IS NOT NULL
-                      AND chunk_type IN ('content', 'image')
-                      AND content_tsv @@ q
-                    ORDER BY rank DESC
-                    LIMIT $2
-                    """,
-                    tokenized,
-                    RAG_TOP_K * 2,
-                )
-        except Exception as exc:
-            logger.warning("FTS search failed, falling back to ILIKE: %s", exc)
-            fts_rows = []
-
-    if fts_rows:
-        return list(fts_rows)
-
-    tokens = _expand_tokens(query)
-    conditions = " OR ".join(f"content ILIKE ${i + 1}" for i in range(len(tokens)))
-    async with _pool.acquire() as conn:
-        rows = await conn.fetch(
-            f"""
-            SELECT chunk_id, content, metadata
-            FROM document_chunks
-            WHERE embedding IS NOT NULL
-              AND chunk_type IN ('content', 'image')
-              AND ({conditions})
-            LIMIT ${len(tokens) + 1}
-            """,
-            *[f"%{t}%" for t in tokens],
-            RAG_TOP_K * 2,
+    if _store is None:
+        return []
+    tokenized = _tokenize_query(query) if query else None
+    try:
+        return await _store.keyword_search(
+            query=query,
+            tokenized_query=tokenized or None,
+            top_k=RAG_TOP_K * 2,
         )
-    return list(rows)
+    except Exception as exc:
+        logger.warning("Keyword search failed (%s) — vector path only", exc)
+        return []
 
 
 def _rrf_merge(
-    vec_rows: list,
-    kw_rows: list,
+    vec_hits: list[SearchHit],
+    kw_hits: list[SearchHit],
     top_k: int,
     k: int = 60,
 ) -> list[dict]:
-    """Reciprocal Rank Fusion：合併語意搜尋與關鍵字搜尋結果。
+    """Reciprocal Rank Fusion across central-SDK SearchHits.
 
-    score = Σ 1/(k + rank)，k=60 為標準值。
-    回傳 list[dict]，每筆包含 content / metadata / vec_score / kw_rank / rrf_score。
+    Both inputs are ``list[SearchHit]`` from anila_core. We key by
+    ``chunk.id`` (BIGINT, schema-level unique) — the legacy ``chunk_id``
+    name is preserved on the output dict for downstream compatibility
+    (reranker / context builder still read ``r["chunk_id"]``).
+
+    score = Σ 1/(k + rank); k=60 standard.
     """
-    rrf: dict[str, float] = {}
-    data: dict[str, dict] = {}
+    rrf: dict[int, float] = {}
+    data: dict[int, dict] = {}
 
-    for rank, row in enumerate(vec_rows, 1):
-        cid = row["chunk_id"]
+    for rank, hit in enumerate(vec_hits, 1):
+        cid = hit.chunk.id
         rrf[cid] = rrf.get(cid, 0.0) + 1.0 / (k + rank)
         data[cid] = {
             "chunk_id":  cid,
-            "content":   row["content"],
-            "metadata":  row["metadata"],
-            "vec_score": float(row["score"]),
+            "content":   hit.chunk.content,
+            "metadata":  hit.chunk.metadata,
+            "vec_score": float(hit.score),
             "kw_match":  False,
         }
 
-    for rank, row in enumerate(kw_rows, 1):
-        cid = row["chunk_id"]
+    for rank, hit in enumerate(kw_hits, 1):
+        cid = hit.chunk.id
         rrf[cid] = rrf.get(cid, 0.0) + 1.0 / (k + rank)
         if cid not in data:
             data[cid] = {
                 "chunk_id":  cid,
-                "content":   row["content"],
-                "metadata":  row["metadata"],
+                "content":   hit.chunk.content,
+                "metadata":  hit.chunk.metadata,
                 "vec_score": None,
                 "kw_match":  True,
             }
@@ -447,7 +452,7 @@ async def retrieve_context(messages: list[dict]) -> tuple[str, str, str]:
     """Hybrid Search（語意 + 關鍵字）後回傳
     (context_for_llm, trace_for_thinking_block, sources_for_reply)。
     """
-    if _pool is None:
+    if _store is None:
         return "", "", ""
     raw_query = _last_user_text(messages)
     if not raw_query:
@@ -469,12 +474,16 @@ async def retrieve_context(messages: list[dict]) -> tuple[str, str, str]:
         logger.warning("Embedding failed: %s", e)
         return "", "", ""
 
+    # Truncate to halfvec(4000) schema dim. NV-Embed-V2 native 4096-d
+    # → keep first 4000. Must match what the ingestion-worker stored.
+    if len(embedding) > _EMBEDDING_DIM:
+        embedding = embedding[:_EMBEDDING_DIM]
+
     # 2. 並行執行語意搜尋 + 關鍵字搜尋
     import asyncio as _asyncio
-    vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
     try:
         vec_rows, kw_rows = await _asyncio.gather(
-            _vector_search(vec_str),
+            _vector_search(embedding),
             _keyword_search(query),
         )
     except Exception as e:
