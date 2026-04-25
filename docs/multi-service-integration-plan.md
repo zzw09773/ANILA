@@ -10,6 +10,21 @@
 
 ## 0. Decisions Log
 
+### v0.5.4 (2026-04-25) — codeserver 從 subpath 改 dedicated port
+
+實際 browser 測試發現 codeserver subpath 部署有 hard limitation：
+
+| # | 問題 | 修正 | 為什麼 |
+|---|---|---|---|
+| 25 | code-server `_doResolveAuthority` 在 subpath 部署下 throw `Failed to construct 'URL': Invalid URL` | 改成 **dedicated port `:8443`**（nginx 加新 server block，不再 strip prefix）| code-server client bundle 有 hardcoded URL builders 不認 `X-Forwarded-Prefix`，subpath 下 vscode-remote URI 構造失敗 → workspace fs provider 無法 register → editor / terminal / file tree 全部不 work（不只是 webview）。dedicated port 讓 code-server 認為自己 serve 在 `/`（事實如此），URL builders 跟 standalone 部署一致，不再撞 edge case |
+
+對 §5.0.1 設計表的修訂：
+- 原本「同源 path 採用」這列要改寫，subpath 在 code-server 上是錯的選擇
+- 但 GitLab 跟其他 service 仍走 subpath（GitLab 自己對 subpath 部署支援度高，已驗證 work）
+- 所以 §5.0.1 的決策表應理解為「**個別 service 看狀況決定 subpath / dedicated port**」，不是統一 subpath
+
+**修正 commits**: `<TBD>` — docker-compose.yml + nginx.conf + AUTO_REGISTER_LINKS + design doc
+
 ### v0.5.3 (2026-04-25) — Phase 1 Step 5-8 落地 + GitLab Subpath 真實 trap
 
 實際把 codeserver + GitLab 跑起來才發現 §5.0.1 / §5.0.2 設計遺漏的 4 個 trap，doc 補進來：
