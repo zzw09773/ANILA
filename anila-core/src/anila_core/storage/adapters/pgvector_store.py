@@ -222,9 +222,9 @@ class AgentScopedPgVectorStore:
         """Inspector-side: list chunks belonging to one document.
 
         ``include_embedding`` defaults False because the inspector UI
-        doesn't render the 4096-d vector — sending it bloats the payload.
+        doesn't render the 1536-d vector — sending it bloats the payload.
         Set True only when the dev explicitly asks (e.g. embedding-norm
-        debug column).
+        debug column behind the inspector's "show vector debug" toggle).
         """
         cols = (
             "id, collection_id, agent_id, document_id, chunk_key, content, "

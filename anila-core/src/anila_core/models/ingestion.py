@@ -31,9 +31,10 @@ class IngestionChunk(BaseModel):
 
     Mirrors the ``document_chunks`` row introduced by migration 0014.
     The ``embedding`` field is optional in this Pydantic model so the
-    API can return chunk metadata without shipping a 4096-d float
+    API can return chunk metadata without shipping a 1536-d float
     array on every query — the inspector UI especially does NOT want
-    to download tens of MB of vectors per page render.
+    to download MB of vectors per page render. Inspector loads the
+    vector only when the dev opens the "show vector debug" panel.
     """
 
     id: int
