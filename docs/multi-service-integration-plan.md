@@ -10,20 +10,41 @@
 
 ## 0. Decisions Log
 
-### v0.5.4 (2026-04-25) — codeserver 從 subpath 改 dedicated port
+### v0.5.5 (2026-04-25) — codeserver 真實 root cause: image fork + nginx config 一起錯
+
+v0.5.4 把 codeserver 改 dedicated port 仍然爆炸，最後翻 [`/home/aia/c1147259/project/My-OpenAI-Frontend/docker-compose.prod.yml`](https://) + `nginx.prod.conf` 對照組裡 prod 跑了多年的 working setup，找到真正 root cause：
+
+| # | 之前以為的問題 | 真實 root cause |
+|---|---|---|
+| 26 | code-server 對 subpath 不友善 | **是 `lscr.io/linuxserver/code-server` fork 的問題**。fork 額外的 s6-overlay init 讓 client bundle 收到 X-Forwarded-Prefix 後構造 `_doResolveAuthority` URL 失敗。upstream `codercom/code-server` 沒有此問題，**subpath 部署完全 work**（My-OpenAI-Frontend prod 跑了好幾年） |
+| 27 | 多塞 X-Forwarded-Prefix / X-Forwarded-Proto 才會工作 | 反過來，**少塞越好**。My-OpenAI-Frontend 只送 `Host $http_host` + `Upgrade $http_upgrade` + `Connection 'Upgrade'`（literal 字串），其他都不要。code-server upstream 自己會從 Host 推所有需要的東西 |
+| 28 | nginx `proxy_pass http://codeserver:8443/` 用 trailing slash strip prefix | 改用 **`rewrite ^/codeserver/(.*)$ /$1 break;` + 無 trailing slash 的 proxy_pass**。My-OpenAI-Frontend 證明這 pattern 對 code-server 比 trailing slash 友善 |
+| 29 | PROXY_DOMAIN env 必須設成 user 看到的 host:port | **完全不設 PROXY_DOMAIN**。upstream image 不需要 |
+
+最終 working setup：
+- Image: `codercom/code-server:latest`（不是 lscr.io fork）
+- Port: 8080（upstream 的 default）
+- subpath: `/codeserver` 透過 nginx rewrite + minimal headers
+- 無 PROXY_DOMAIN env
+
+`§5.0.1` 設計表的「同源 path 採用」這列**仍然成立** — subpath 對 codercom/code-server upstream 完全 work。之前 v0.5.4 改 dedicated port 是錯誤的判斷（誤以為是 code-server 通病，實際是 image fork bug）。
+
+**修正 commits**: `<TBD>` — docker-compose.yml + nginx.conf + AUTO_REGISTER_LINKS + design doc
+
+### v0.5.4 (2026-04-25) — codeserver 短暫嘗試 dedicated port（v0.5.5 已 revert）
 
 實際 browser 測試發現 codeserver subpath 部署有 hard limitation：
 
 | # | 問題 | 修正 | 為什麼 |
 |---|---|---|---|
-| 25 | code-server `_doResolveAuthority` 在 subpath 部署下 throw `Failed to construct 'URL': Invalid URL` | 改成 **dedicated port `:8443`**（nginx 加新 server block，不再 strip prefix）| code-server client bundle 有 hardcoded URL builders 不認 `X-Forwarded-Prefix`，subpath 下 vscode-remote URI 構造失敗 → workspace fs provider 無法 register → editor / terminal / file tree 全部不 work（不只是 webview）。dedicated port 讓 code-server 認為自己 serve 在 `/`（事實如此），URL builders 跟 standalone 部署一致，不再撞 edge case |
+| 25 | code-server `_doResolveAuthority` 在 subpath 部署下 throw `Failed to construct 'URL': Invalid URL` | 改成 **dedicated port `:8443`**（nginx 加新 server block，不再 strip prefix）| ~~code-server client bundle 有 hardcoded URL builders 不認 `X-Forwarded-Prefix`~~ — 此判斷在 v0.5.5 推翻：實為 lscr.io/linuxserver fork 的 bug，換 codercom upstream 後 subpath 完全 work |
 
 對 §5.0.1 設計表的修訂：
-- 原本「同源 path 採用」這列要改寫，subpath 在 code-server 上是錯的選擇
+- 原本「同源 path 採用」這列要改寫，subpath 在 code-server 上是錯的選擇 ~~v0.5.5 推翻：subpath 對 upstream image 完全 work~~
 - 但 GitLab 跟其他 service 仍走 subpath（GitLab 自己對 subpath 部署支援度高，已驗證 work）
 - 所以 §5.0.1 的決策表應理解為「**個別 service 看狀況決定 subpath / dedicated port**」，不是統一 subpath
 
-**修正 commits**: `<TBD>` — docker-compose.yml + nginx.conf + AUTO_REGISTER_LINKS + design doc
+**修正 commits**: `34ec13f` — 已被 v0.5.5 revert
 
 ### v0.5.3 (2026-04-25) — Phase 1 Step 5-8 落地 + GitLab Subpath 真實 trap
 
