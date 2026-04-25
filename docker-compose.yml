@@ -227,7 +227,13 @@ services:
       - "22"     # SSH for git push/pull (not host-exposed yet)
     shm_size: 256m
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8181/-/health || exit 1"]
+      # GitLab gates /-/health behind monitoring_whitelist (127/8 only by
+      # default), which works for an in-container probe but blocks any
+      # external monitoring. /users/sign_in is unauthenticated and 200s
+      # the moment Puma is serving — exactly what we want for readiness.
+      # The /gitlab prefix is required because external_url='.../gitlab'
+      # makes Workhorse expect every URL under that subpath.
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8181/gitlab/users/sign_in || exit 1"]
       interval: 60s
       timeout: 10s
       retries: 5
