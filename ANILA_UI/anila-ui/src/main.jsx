@@ -10,7 +10,6 @@ import {
 } from "react-router-dom";
 
 import App from "./app.jsx";
-import AdminAccessPage from "./admin/access.jsx";
 import { LoginView } from "./login.jsx";
 import { AuthProvider, useAuth } from "./runtime/auth.jsx";
 
@@ -63,14 +62,6 @@ function RootRoutes() {
           <RedirectIfAuthed>
             <LoginView />
           </RedirectIfAuthed>
-        }
-      />
-      <Route
-        path="/app/admin/access"
-        element={
-          <RequireAuth>
-            <AdminAccessPage />
-          </RequireAuth>
         }
       />
       <Route

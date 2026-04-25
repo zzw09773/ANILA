@@ -70,6 +70,12 @@ const routes = [
         meta: { requiresAdmin: true },
       },
       {
+        path: 'service-access',
+        name: 'ServiceAccess',
+        component: () => import('../views/ServiceAccessView.vue'),
+        meta: { requiresAdmin: true },
+      },
+      {
         path: 'developer/agents',
         name: 'DeveloperAgents',
         component: () => import('../views/DeveloperAgentsView.vue'),

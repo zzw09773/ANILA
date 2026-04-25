@@ -92,6 +92,48 @@
             <label class="block text-sm font-medium text-gray-700 mb-1">排序</label>
             <input v-model.number="form.sort_order" type="number" class="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" />
           </div>
+
+          <div class="border-t border-gray-200 pt-4 space-y-3">
+            <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider">存取控制</div>
+
+            <label class="flex items-start gap-3">
+              <input
+                v-model="form.is_public"
+                type="checkbox"
+                class="mt-1 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              <span class="text-sm">
+                <span class="font-medium">公開（is_public）</span>
+                <span class="ml-2 text-xs text-gray-500">通過 role gate 的 user 即可看到，不需個別 grant</span>
+              </span>
+            </label>
+
+            <div>
+              <div class="block text-sm font-medium text-gray-700 mb-1">Required Roles</div>
+              <div class="flex flex-wrap gap-3">
+                <label
+                  v-for="role in availableRoles"
+                  :key="role"
+                  class="inline-flex items-center gap-2 px-3 py-1.5 border rounded text-sm cursor-pointer transition"
+                  :class="form.required_roles.includes(role)
+                    ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                    : 'border-gray-300 text-gray-600 hover:bg-gray-50'"
+                >
+                  <input
+                    type="checkbox"
+                    :value="role"
+                    :checked="form.required_roles.includes(role)"
+                    @change="toggleRole(role)"
+                    class="h-3.5 w-3.5 rounded border-gray-300 text-indigo-600"
+                  />
+                  {{ role }}
+                </label>
+              </div>
+              <div class="mt-1 text-xs text-gray-500">
+                空白 = role gate 開放（所有 role 通過）；非空 = 該名單之 role 才能通過。Admin 一律 bypass。
+              </div>
+            </div>
+          </div>
         </div>
 
         <div class="flex justify-end space-x-3 mt-6">
@@ -116,8 +158,25 @@ import { listPlatformLinks, createPlatformLink, updatePlatformLink, deletePlatfo
 const links = ref([])
 const showModal = ref(false)
 const editingId = ref(null)
-const form = ref({ name: '', url: '', icon: '', description: '', sort_order: 0 })
+const form = ref({
+  name: '', url: '', icon: '', description: '', sort_order: 0,
+  is_public: false, required_roles: [],
+})
 const pageError = ref('')
+
+// Roles allowed by the backend's PlatformLink schema validator.
+// Keep in lockstep with myCSPPlatform/backend/app/schemas/platform_link.py
+// _ALLOWED_ROLES — backend rejects unknown roles with 422.
+const availableRoles = ['admin', 'developer', 'user']
+
+function toggleRole(role) {
+  const idx = form.value.required_roles.indexOf(role)
+  if (idx >= 0) {
+    form.value.required_roles.splice(idx, 1)
+  } else {
+    form.value.required_roles.push(role)
+  }
+}
 
 async function fetchLinks() {
   pageError.value = ''
@@ -133,7 +192,10 @@ onMounted(fetchLinks)
 
 function openCreateModal() {
   editingId.value = null
-  form.value = { name: '', url: '', icon: '', description: '', sort_order: 0 }
+  form.value = {
+    name: '', url: '', icon: '', description: '', sort_order: 0,
+    is_public: false, required_roles: [],
+  }
   showModal.value = true
 }
 
@@ -145,6 +207,8 @@ function openEditModal(link) {
     icon: link.icon || '',
     description: link.description || '',
     sort_order: link.sort_order || 0,
+    is_public: !!link.is_public,
+    required_roles: Array.isArray(link.required_roles) ? [...link.required_roles] : [],
   }
   showModal.value = true
 }
@@ -156,6 +220,8 @@ async function handleSubmit() {
     icon: form.value.icon.trim() || null,
     description: form.value.description.trim() || null,
     sort_order: form.value.sort_order || 0,
+    is_public: !!form.value.is_public,
+    required_roles: form.value.required_roles,
   }
   try {
     if (editingId.value) {

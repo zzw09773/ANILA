@@ -64,6 +64,7 @@ const menuItems = computed(() => {
     items.push({ path: '/audit-logs', label: '審計日誌', icon: '&#128221;' })
     items.push({ path: '/auth-providers', label: 'SSO / LDAP / OIDC', icon: '&#128274;' })
     items.push({ path: '/platform-links', label: '平台連結設定', icon: '&#128279;' })
+    items.push({ path: '/service-access', label: '服務存取權限', icon: '&#128737;' })
   }
   return items
 })
