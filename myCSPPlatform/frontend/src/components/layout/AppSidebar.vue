@@ -56,6 +56,7 @@ const menuItems = computed(() => {
   ]
   if (authStore.isDeveloper) {
     items.push({ path: '/developer/agents', label: 'Agent 管理', icon: '&#129302;' })
+    items.push({ path: '/knowledge-collections', label: 'Knowledge Collections', icon: '&#128218;' })
   }
   if (authStore.isAdmin) {
     items.push({ path: '/users', label: '使用者管理', icon: '&#128101;' })

@@ -76,6 +76,21 @@ async def lifespan(app: FastAPI):
     health_task = await start_health_checker()
     writer_task = await start_usage_writer()
 
+    # Phase 2 Sprint 2 / Chunk H: open the shared anila_core PgPool
+    # used by the ingestion inspector endpoints (read-only chunk
+    # listing + agent-scoped FTS). The pool registers vector / halfvec
+    # / jsonb codecs per-connection, so SQLAlchemy-side queries are
+    # untouched. Skip silently if the env / DB isn't available so a
+    # pre-0014 schema doesn't crash startup.
+    from app.services.ingestion_pool import open_pool, close_pool
+    try:
+        await open_pool()
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Ingestion PgPool open failed (%s) — inspector endpoints "
+            "will return 503 until the pool comes back.", exc,
+        )
+
     yield
 
     # Cleanup
@@ -83,6 +98,7 @@ async def lifespan(app: FastAPI):
         health_task.cancel()
     if writer_task:
         writer_task.cancel()
+    await close_pool()
 
 
 app = FastAPI(

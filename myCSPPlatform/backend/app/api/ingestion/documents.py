@@ -31,9 +31,13 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+
+from anila_core.storage.adapters.pg_pool import PgPool
+from anila_core.storage.adapters.pgvector_store import AgentScopedPgVectorStore
 
 from app.api.ingestion.collections import _require_agent_access
 from app.database import get_db
@@ -284,3 +288,189 @@ def get_document(
         payload.latest_job_error_code = latest_job.error_code
         payload.arq_job_id = latest_job.arq_job_id
     return payload
+
+
+# ── Inspector endpoints (Sprint 2 Chunk H) ──────────────────────────────────
+
+
+class ChunkRow(BaseModel):
+    """Inspector-facing chunk row.
+
+    Embedding is omitted by default because the inspector list view
+    doesn't render the 4000-d vector. Vector debug info goes through
+    the dedicated ``/embedding-debug`` endpoint behind a UI toggle.
+    """
+
+    id: int
+    chunk_key: str
+    content: str
+    metadata: dict
+    token_count: int | None
+    created_at: datetime
+
+
+class ChunkEmbeddingDebug(BaseModel):
+    """Vector-debug summary for a single chunk.
+
+    Only ``dim`` and ``norm`` are returned — never the full vector.
+    Bandwidth: 30 bytes per chunk vs ~16 KB if the raw embedding shipped.
+    Useful to confirm chunks were actually embedded (norm ≈ 1 means
+    L2-normalised; embedding pipelines that drop normalisation surface
+    here as norm ≠ 1).
+    """
+
+    chunk_id: int
+    dim: int
+    norm: float
+
+
+@router.get(
+    "/api/ingestion/documents/{document_id}/chunks",
+    response_model=list[ChunkRow],
+)
+async def list_document_chunks(
+    document_id: int,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[ChunkRow]:
+    """Inspector chunk-list — agent-scoped via AgentScopedPgVectorStore.
+
+    Goes through the central SDK so RLS auto-filters even if the API
+    layer's own auth check (``_resolve_collection``) is buggy. Belt-
+    and-suspenders security.
+    """
+    from app.services.ingestion_pool import get_pool
+
+    doc = (
+        db.query(IngestionDocument)
+        .filter(IngestionDocument.id == document_id)
+        .first()
+    )
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    coll = _resolve_collection(db, current_user, doc.collection_id)
+
+    try:
+        pool = get_pool()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    store = AgentScopedPgVectorStore(pool, agent_id=coll.agent_id)
+    chunks = await store.list_by_document(
+        document_id=document_id,
+        limit=limit,
+        offset=offset,
+        include_embedding=False,
+    )
+    return [
+        ChunkRow(
+            id=c.id,
+            chunk_key=c.chunk_key,
+            content=c.content,
+            metadata=c.metadata or {},
+            token_count=c.token_count,
+            created_at=c.created_at,
+        )
+        for c in chunks
+    ]
+
+
+@router.get(
+    "/api/ingestion/documents/{document_id}/chunks/{chunk_id}/embedding-debug",
+    response_model=ChunkEmbeddingDebug,
+)
+async def get_chunk_embedding_debug(
+    document_id: int,
+    chunk_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ChunkEmbeddingDebug:
+    """Return ``(dim, L2 norm)`` for one chunk — the "Show vector debug"
+    payload behind the Inspector toggle.
+
+    The route is keyed on ``(document_id, chunk_id)`` rather than
+    ``chunk_id`` alone because the Layer 2 RLS policy default-denies
+    every ``document_chunks`` row when no GUC is set, which means we
+    can't look up the owning agent_id directly from the chunks table.
+    Resolving via ``ingestion_documents`` → ``ingestion_collections``
+    (regular non-RLS tables) is the clean way through. The frontend
+    always has both ids in hand from the chunks-list endpoint anyway.
+
+    Wire payload is 2 scalars (~30 bytes); the full halfvec stays
+    server-side. Used behind the inspector's "Show vector debug"
+    toggle so the page render isn't paying for it by default.
+    """
+    import math
+
+    from app.services.ingestion_pool import get_pool
+
+    doc = (
+        db.query(IngestionDocument)
+        .filter(IngestionDocument.id == document_id)
+        .first()
+    )
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    coll = _resolve_collection(db, current_user, doc.collection_id)
+
+    try:
+        pool = get_pool()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    store = AgentScopedPgVectorStore(pool, agent_id=coll.agent_id)
+    async with store._acquire() as conn:  # noqa: SLF001
+        row = await conn.fetchrow(
+            """
+            SELECT id, embedding
+              FROM document_chunks
+             WHERE id = $1 AND document_id = $2
+            """,
+            chunk_id,
+            document_id,
+        )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Chunk not found")
+
+    emb = row["embedding"]
+    # ``HalfVector`` from pgvector exposes ``.to_list()``; raw lists
+    # iterate directly. Both shapes appear depending on codec version.
+    components = list(emb.to_list()) if hasattr(emb, "to_list") else list(emb)
+    norm = math.sqrt(sum(c * c for c in components)) if components else 0.0
+    return ChunkEmbeddingDebug(
+        chunk_id=int(row["id"]),
+        dim=len(components),
+        norm=norm,
+    )
+
+
+@router.get("/api/ingestion/documents/{document_id}/blob")
+def download_document_blob(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> FileResponse:
+    """Stream the raw uploaded file back to the inspector.
+
+    Auth: standard collection-scope check. The blob lives at
+    ``UPLOAD_DIR/<sha[:2]>/<sha>`` — we don't do path traversal because
+    we read storage_path from the DB row, not from a query string.
+    """
+    doc = (
+        db.query(IngestionDocument)
+        .filter(IngestionDocument.id == document_id)
+        .first()
+    )
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    _resolve_collection(db, current_user, doc.collection_id)  # auth check
+
+    if not doc.storage_path or not os.path.exists(doc.storage_path):
+        raise HTTPException(status_code=410, detail="Blob no longer on disk")
+    return FileResponse(
+        path=doc.storage_path,
+        media_type=doc.mime_type or "application/octet-stream",
+        filename=doc.filename,
+    )

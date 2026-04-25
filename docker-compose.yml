@@ -39,8 +39,12 @@ services:
   # smoke tests run against the real local model.
   csp:
     build:
-      context: myCSPPlatform
-      dockerfile: docker/Dockerfile
+      # Build context promoted to repo root (Phase 2 Sprint 2 / Chunk H)
+      # so the Dockerfile can COPY anila-core for the inspector
+      # endpoints. Existing Dockerfile paths get a ``myCSPPlatform/``
+      # prefix to match the new context.
+      context: .
+      dockerfile: myCSPPlatform/docker/Dockerfile
     ports:
       - "8000:8000"
     environment:

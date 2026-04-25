@@ -81,6 +81,20 @@ const routes = [
         component: () => import('../views/DeveloperAgentsView.vue'),
         meta: { requiresDeveloper: true },
       },
+      // Phase 2 Sprint 2 / Chunk H — Knowledge Collections inspector.
+      // Developer-tier (any user with UserAgentPermission, plus admins).
+      {
+        path: 'knowledge-collections',
+        name: 'KnowledgeCollections',
+        component: () => import('../views/KnowledgeCollectionsView.vue'),
+        meta: { requiresDeveloper: true },
+      },
+      {
+        path: 'knowledge-collections/:id',
+        name: 'CollectionDetail',
+        component: () => import('../views/CollectionDetailView.vue'),
+        meta: { requiresDeveloper: true },
+      },
     ],
   },
 ]

@@ -1,27 +1,37 @@
+# Build context is repo root (set in docker-compose.yml). Dockerfile
+# paths are repo-relative — myCSPPlatform/* for everything historical,
+# anila-core/ for the central SDK that the inspector endpoints need.
+#
 # Stage 1: Build frontend
 FROM node:22-alpine AS frontend-build
 WORKDIR /build
-COPY frontend/package.json frontend/package-lock.json* ./
+COPY myCSPPlatform/frontend/package.json myCSPPlatform/frontend/package-lock.json* ./
 RUN npm install
-COPY frontend/ ./
+COPY myCSPPlatform/frontend/ ./
 RUN npm run build
 
 # Stage 2: Production
 FROM python:3.11-slim
 WORKDIR /app
 
-# Install Python dependencies
-COPY backend/requirements.txt ./
+# Install anila-core first (changes less often than backend code, so
+# layer caching survives most builds). The package brings asyncpg +
+# pgvector + the AgentScopedPgVectorStore the inspector uses.
+COPY anila-core /tmp/anila-core
+RUN pip install --no-cache-dir /tmp/anila-core
+
+# Install Python dependencies (CSP-specific)
+COPY myCSPPlatform/backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy backend code
-COPY backend/ ./
+COPY myCSPPlatform/backend/ ./
 
 # Copy built frontend
 COPY --from=frontend-build /build/dist /app/frontend-dist
 
 # Copy scripts and data directory
-COPY scripts/ /app/scripts/
+COPY myCSPPlatform/scripts/ /app/scripts/
 RUN mkdir -p /app/logs
 
 # Download Swagger UI static files for offline use
