@@ -1381,7 +1381,7 @@ UPDATE platform_links SET is_public = true;
 - 語意分離乾淨：`required_roles` = **過濾 gate**，`is_public` = **通過判定**
 - 兩個維度可獨立組合：`required_roles=['developer'] + is_public=true` = 「公開給所有 developer」（這在 sentinel 設計下難表達）
 
-#### 7.5.2 Effective Access 演算法（實作版 — 5 步）
+#### 7.5.2 Effective Access 演算法（實作版 — 5 步，v0.5.1 admin bypass 提前）
 
 權威實作：[`app/services/access_control.py`](../myCSPPlatform/backend/app/services/access_control.py)。語意改變請看 §0 v0.5 #16。
 
@@ -1396,15 +1396,17 @@ def can_access_link(db, user, link) -> bool:
     if not link.is_active:
         return False
 
-    # 2. role gate — required_roles 是過濾條件，不是自動通過。空 list = gate
+    # 2. admin bypass — admin 在 active link 上一律通過
+    #    放在 role gate 之前：避免 required_roles=['developer'] 把 admin
+    #    擋在外面（admin 永遠是 superuser，universally trusted）
+    if user.role == "admin":
+        return True
+
+    # 3. role gate — required_roles 是過濾條件，不是自動通過。空 list = gate
     #    開放；非空 = user.role 必須在裡面才通過 gate
     required = link.required_roles or []
     if required and user.role not in required:
         return False
-
-    # 3. admin bypass — 通過 gate 的 admin 一律允許
-    if user.role == "admin":
-        return True
 
     # 4. is_public bypass — 通過 gate 的 public link 對任何人都允許（不需 grant）
     if link.is_public:
@@ -1415,9 +1417,13 @@ def can_access_link(db, user, link) -> bool:
     return link.id in _active_link_ids_for_user(db, user)
 ```
 
+**v0.5.1 修正（admin bypass 提前）**：
+- 原 v0.5 把 admin bypass 放在 role gate 之後，這代表 `required_roles=['developer']` 會把 admin 也擋掉 — 跟「admin 永遠通過」的意圖矛盾，且 §7.1 必須寫 `['admin','developer']` 才 work（重複贅字）
+- v0.5.1 後 admin bypass 在 step 2，admin 看得到任何 active link，§7.1 可以乾脆只寫 `['developer']`（admin 隱式通過）
+
 **為什麼 `required_roles` 是 filter 不是 auto-pass**（v0.5 修訂）：
 - v0.4 寫法（auto-pass）有歧義：`required_roles=['admin']` 到底是「admin 自動通過」還是「只開放 admin 看」？
-- v0.5 把 `required_roles` 定位為「**必須要的 role gate**」（filter）— 想要 admin 自動通過已經有 step 3；想要公開可見已經有 step 4 的 `is_public`。維度分離乾淨。
+- v0.5 把 `required_roles` 定位為「**必須要的 role gate**」（filter）— 想要 admin 自動通過已經有 step 2 admin bypass；想要公開可見已經有 step 4 的 `is_public`。維度分離乾淨。
 
 **Cascade 行為**（admin 撤部門 grant 時的安全提醒）：
 - 部門 grant 撤銷 → 該部門 user **只靠部門 grant 的會失去 access**
