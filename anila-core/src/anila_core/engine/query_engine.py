@@ -34,7 +34,6 @@ from ..config import settings
 from ..providers.base import Provider, ProviderRequest
 from ..router.tool_router import ToolRegistry, execute_batch
 from .budget_tracker import BudgetTracker, ContinueDecision, check_token_budget
-from .rag_preprocessor import RagPreprocessor
 
 logger = logging.getLogger(__name__)
 
@@ -80,13 +79,11 @@ class QueryEngine:
         provider: Provider,
         tool_registry: ToolRegistry,
         config: QueryConfig,
-        rag_preprocessor: Optional[RagPreprocessor] = None,
         session_id: str = "",
     ) -> None:
         self._provider = provider
         self._tools = tool_registry
         self._config = config
-        self._rag_preprocessor = rag_preprocessor
         self._session_id = session_id
         self._post_turn_hooks: list[PostTurnHook] = []
         self._budget_tracker = BudgetTracker()
@@ -191,13 +188,12 @@ class QueryEngine:
     ) -> tuple[list[Message], Optional[str]]:
         """Stage 1: prepare the history for the upcoming API call.
 
-        If a RagPreprocessor is attached, retrieves semantically relevant
-        document chunks and injects them as context before the LLM call.
+        Sprint 1 boundary cleanup removed the RagPreprocessor injection
+        path — the new model is tool-driven (the LLM decides when to
+        search via registered tools). This stage is now a passthrough,
+        kept as a hook for future preprocessing concerns (token budget
+        gates, redaction, etc).
         """
-        if self._rag_preprocessor is not None:
-            return await self._rag_preprocessor.preprocess(
-                history, session_id=self._session_id
-            )
         return history, None
 
     async def _api_call(
