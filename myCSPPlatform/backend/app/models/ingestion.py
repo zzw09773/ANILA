@@ -23,6 +23,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    LargeBinary,
     SmallInteger,
     String,
     Text,
@@ -128,6 +129,45 @@ class IngestionDocument(Base):
     indexed_at = Column(DateTime, nullable=True)
 
     collection = relationship("IngestionCollection", back_populates="documents")
+
+
+class AgentLlmCredential(Base):
+    """Dev-supplied LLM credential for the Chunking Evaluator's judge.
+
+    See ``app/services/credential_crypto.py`` for the encryption shape
+    (AES-256-GCM with PBKDF2-derived master key).
+
+    The ``api_key`` plaintext is NEVER read from this table directly by
+    application code outside the evaluator handler — every consumer
+    goes through ``decrypt_credential(...)`` which keeps the decrypted
+    string only as long as the outbound HTTP call needs it.
+    """
+
+    __tablename__ = "agent_llm_credentials"
+    __table_args__ = (
+        UniqueConstraint("agent_id", "name", name="uq_agent_llm_credentials_name"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    agent_id = Column(
+        Integer,
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name = Column(String(200), nullable=False)
+    endpoint_url = Column(String(1000), nullable=False)
+    model_name = Column(String(200), nullable=False)
+    api_key_encrypted = Column(LargeBinary, nullable=False)
+    api_key_nonce = Column(LargeBinary, nullable=False)
+    api_key_tag = Column(LargeBinary, nullable=False)
+    last_used_at = Column(DateTime, nullable=True)
+    created_by = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at = Column(
+        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
 
 
 class IngestionJob(Base):

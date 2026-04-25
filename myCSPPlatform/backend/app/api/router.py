@@ -14,6 +14,7 @@ from app.api.proxy import router as proxy_router
 from app.api.service_access_grants import router as service_access_grants_router
 from app.api.ingestion import (
     collections_router as ingestion_collections_router,
+    credentials_router as ingestion_credentials_router,
     documents_router as ingestion_documents_router,
     jobs_router as ingestion_jobs_router,
 )
@@ -33,6 +34,7 @@ api_router.include_router(platform_links_router)
 api_router.include_router(service_access_grants_router)
 api_router.include_router(agents_router)
 api_router.include_router(ingestion_collections_router)
+api_router.include_router(ingestion_credentials_router)
 api_router.include_router(ingestion_documents_router)
 api_router.include_router(ingestion_jobs_router)
 api_router.include_router(proxy_router)

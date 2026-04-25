@@ -8,7 +8,13 @@ Sprint 2 adds: job progress SSE, chunking evaluator UI, agent_llm_credentials.
 """
 
 from app.api.ingestion.collections import router as collections_router
+from app.api.ingestion.credentials import router as credentials_router
 from app.api.ingestion.documents import router as documents_router
 from app.api.ingestion.jobs import router as jobs_router
 
-__all__ = ["collections_router", "documents_router", "jobs_router"]
+__all__ = [
+    "collections_router",
+    "credentials_router",
+    "documents_router",
+    "jobs_router",
+]
