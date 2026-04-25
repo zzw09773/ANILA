@@ -10,6 +10,26 @@
 
 ## 0. Decisions Log
 
+### v0.5 (2026-04-25) — Phase 1 Step 1+2+2.5 落地，記錄與 v0.4 設計的差異
+
+實作 access control 過程中發現幾個 design doc 與真實 schema / codebase 慣例的不對齊，已修正：
+
+| # | 設計（v0.4 之前） | 實作（v0.5 修訂） | 為什麼 |
+|---|---|---|---|
+| 12 | Migration `0013` 一支搞定三表 | 拆成 **`0012`**（required_roles + service_access_grants + dev_db_credentials）+ **`0013`**（is_public column + grandfather backfill）| 寫的時候才發現現有最高 revision 是 0011（不是 0012），且 is_public 是後來才補的設計（v0.4 沒有），分兩支讓 migration history 反映真實的設計演進 |
+| 13 | PK 用 `BIGSERIAL` / `BIGINT` | PK 用 **`Integer` / `SERIAL`** | 既有 schema 全部用 Integer，跟著走；grant 數量級 < 10K，BIGINT 是過度設計 |
+| 14 | `required_roles TEXT[] DEFAULT NULL` | `required_roles JSONB DEFAULT '[]'::jsonb NOT NULL` | codebase 慣例（[`agent.py`](../myCSPPlatform/backend/app/models/agent.py)）已用 `JSONValue` pattern 處理 JSON-shaped data；JSONB 跟 TEXT[] 的查詢效能對 < 10 個元素的 array 沒差別 |
+| 15 | `UNIQUE (user_id, link_id)` 純 unique | **partial unique `WHERE revoked_at IS NULL`** | 原版 unique 會擋「revoke 後 re-grant」（除非手動清 row）。partial unique 讓 revoked row 留作 audit trail，新 grant 不撞 unique |
+| 16 | 沒有 `is_public` column，algorithm 是「default-deny + role auto-pass」 | **新增 `is_public` BOOLEAN**（migration 0013）+ 演算法改成 5 步：`is_active → role gate → admin bypass → is_public → grant` | v0.4 設計的「`required_roles` 自動通過」語意有歧義（`['admin']` 是「只開放給 admin」還是「admin 自動通過」？）。改成乾淨的 5 步：`required_roles` 是**過濾 gate**（不通過直接 deny），`is_public` 是**通過判定**（通過則不需 grant）。詳見更新後的 §7.5.2 |
+| 17 | `dev_db_credentials.last_used_at` | `dev_db_credentials.reminder_sent_at` | `last_used_at` 需要 PG hooks（pg_stat_activity polling 或 login event trigger）才能填，工程量比預想大；`reminder_sent_at` 直接由 reminder cron 寫，idempotent（避免重複寄 email）。前者是「nice to know」、後者才是 lifecycle 必需。先做後者，前者等真的需要時補 |
+
+**3 個 commit 落地（branch `ingestion-design`）：**
+- `e611d89` — migration 0012 + ORM models
+- `7c4df4a` — Step 2: access_control service + grant CRUD endpoints
+- `cc121e3` — Step 2.5: migration 0013 + is_public column + 5-step algorithm
+
+22 個 E2E checkpoints（5 SQL smoke + 12 endpoint + 10 is_public flow）全部通過。
+
 ### v0.4 (2026-04-25) — GitLab 納入 ANILA container + ComfyUI 推後
 
 兩個 decision 影響 Phase 1 的範圍：
@@ -911,22 +931,32 @@ async def revoke_db_credential(
     return {"status": "revoked"}
 ```
 
-**Schema**：
+**Schema（v0.5 對齊實作 — migration 0012）**：
 
 ```sql
 CREATE TABLE dev_db_credentials (
-    id              BIGSERIAL PRIMARY KEY,
-    agent_id        BIGINT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    issued_to       BIGINT NOT NULL REFERENCES users(id),
-    pg_role_name    TEXT NOT NULL UNIQUE,
-    issued_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    expires_at      TIMESTAMPTZ NOT NULL,
-    revoked_at      TIMESTAMPTZ,
-    last_used_at    TIMESTAMPTZ
+    id                SERIAL PRIMARY KEY,                      -- Integer，跟既有 schema 一致
+    user_id           INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,  -- 跟其他表的命名統一（v0.4 寫的 issued_to 改名）
+    agent_id          INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    pg_role_name      VARCHAR(100) NOT NULL UNIQUE,            -- PG role 全域 unique
+    issued_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at        TIMESTAMP NOT NULL,
+    revoked_at        TIMESTAMP,
+    -- v0.5 修訂：last_used_at（追蹤 PG role 最後使用時間，需要 PG hook）
+    -- 改為 reminder_sent_at（idempotent reminder 旗標）。前者是 nice-to-know
+    -- 但實作成本高（pg_stat_activity polling 或 login event trigger）；後者
+    -- 才是 lifecycle 必需。等真有需求再補 last_used_at。
+    reminder_sent_at  TIMESTAMP
 );
 
-CREATE INDEX idx_dev_creds_active ON dev_db_credentials(agent_id, expires_at)
-    WHERE revoked_at IS NULL;
+-- 一個 (user, agent) 對只能有一個 active credential
+CREATE UNIQUE INDEX uq_dev_db_credentials_user_agent_active
+    ON dev_db_credentials(user_id, agent_id) WHERE revoked_at IS NULL;
+-- Cron 用：scan WHERE revoked_at IS NULL AND expires_at < now() 自動 revoke
+CREATE INDEX ix_dev_db_credentials_expires_at
+    ON dev_db_credentials(expires_at) WHERE revoked_at IS NULL;
+CREATE INDEX ix_dev_db_credentials_user_id ON dev_db_credentials(user_id);
+CREATE INDEX ix_dev_db_credentials_agent_id ON dev_db_credentials(agent_id);
 ```
 
 **自動 reminder（背景任務）**：
@@ -1282,72 +1312,112 @@ ISO 42001 對 ANILA 的影響不只 GitLab。建議下一份 design doc：
 **本 plan 不展開**，只在這節記錄 surface area。下一輪 design 衝刺再做。
 
 
-### 7.5 Service Access Control（v0.2 新增）
+### 7.5 Service Access Control（v0.2 新增，v0.5 對齊實作）
 
-#### 7.5.1 Schema
+> **實作狀態**：✅ Phase 1 Step 1+2+2.5 已落地。Migrations [`0012`](../myCSPPlatform/backend/migrations/versions/0012_add_service_access_control.py) + [`0013`](../myCSPPlatform/backend/migrations/versions/0013_add_platform_link_is_public.py)，service [`access_control.py`](../myCSPPlatform/backend/app/services/access_control.py)，router [`service_access_grants.py`](../myCSPPlatform/backend/app/api/service_access_grants.py)。本節以實際 schema / 演算法為準。
+
+#### 7.5.1 Schema（實作版）
 
 ```sql
--- platform_links 加 required_roles 欄位
+-- ── Migration 0012 ──────────────────────────────────────────────────────
+-- platform_links 加 required_roles 欄位（role 過濾 gate，非自動通過）
 ALTER TABLE platform_links
-    ADD COLUMN required_roles TEXT[] DEFAULT NULL;
--- NULL = 看 service_access_grants 才決定（純白名單）
--- ['admin'] = admin role 自動有，其他人需要 grant
--- ['admin','developer'] = 兩個 role 都自動有，其他需 grant
+    ADD COLUMN required_roles JSONB NOT NULL DEFAULT '[]'::jsonb;
+-- []                       = role gate 開放（任何 role 都通過此 gate）
+-- ['admin']                = 只有 admin 通過 gate（其他人連看不到）
+-- ['admin','developer']    = 這兩個 role 通過 gate
 
 -- 新表：grant 記錄（支援 user-level 與 department-level）
 CREATE TABLE service_access_grants (
-    id                BIGSERIAL PRIMARY KEY,
-    user_id           BIGINT REFERENCES users(id) ON DELETE CASCADE,
-    department_id     BIGINT REFERENCES departments(id) ON DELETE CASCADE,
-    platform_link_id  BIGINT NOT NULL REFERENCES platform_links(id) ON DELETE CASCADE,
-    granted_by        BIGINT REFERENCES users(id),
-    granted_at        TIMESTAMPTZ DEFAULT now(),
-    revoked_at        TIMESTAMPTZ,
+    id                SERIAL PRIMARY KEY,            -- Integer 跟既有 schema 一致
+    user_id           INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    department_id     INTEGER REFERENCES departments(id) ON DELETE CASCADE,
+    platform_link_id  INTEGER NOT NULL REFERENCES platform_links(id) ON DELETE CASCADE,
+    granted_by        INTEGER REFERENCES users(id) ON DELETE SET NULL,  -- 保 audit
+    granted_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    revoked_at        TIMESTAMP,
 
-    -- 強制 exactly-one：每筆 grant 要嘛 user 要嘛 dept，不能兩個都填
-    CHECK ((user_id IS NOT NULL) != (department_id IS NOT NULL)),
-
-    -- 同一 user / dept 對同一 link 只有一筆 active grant
-    UNIQUE (user_id, platform_link_id),
-    UNIQUE (department_id, platform_link_id)
+    -- 強制 exactly-one：每筆 grant 要嘛 user 要嘛 dept，不能兩者都填或都空
+    CONSTRAINT ck_service_access_grants_user_xor_department
+        CHECK ((user_id IS NOT NULL) <> (department_id IS NOT NULL))
 );
 
-CREATE INDEX idx_grants_user ON service_access_grants(user_id) WHERE user_id IS NOT NULL;
-CREATE INDEX idx_grants_dept ON service_access_grants(department_id) WHERE department_id IS NOT NULL;
+-- Lookup indexes（兩個方向都會被查）
+CREATE INDEX ix_service_access_grants_user_id
+    ON service_access_grants(user_id) WHERE user_id IS NOT NULL;
+CREATE INDEX ix_service_access_grants_department_id
+    ON service_access_grants(department_id) WHERE department_id IS NOT NULL;
+CREATE INDEX ix_service_access_grants_platform_link_id
+    ON service_access_grants(platform_link_id);
+
+-- Partial unique：只在「active grant（revoked_at IS NULL）」上強制 unique
+-- 這讓 revoke 後 re-grant 不撞 unique（revoked row 留作 audit trail）
+CREATE UNIQUE INDEX uq_service_access_grants_user_active
+    ON service_access_grants(user_id, platform_link_id)
+    WHERE user_id IS NOT NULL AND revoked_at IS NULL;
+CREATE UNIQUE INDEX uq_service_access_grants_department_active
+    ON service_access_grants(department_id, platform_link_id)
+    WHERE department_id IS NOT NULL AND revoked_at IS NULL;
+
+-- ── Migration 0013 ──────────────────────────────────────────────────────
+-- is_public：portal-style link 不需要 grant 也能讓所有通過 role gate 的 user 看到
+ALTER TABLE platform_links
+    ADD COLUMN is_public BOOLEAN NOT NULL DEFAULT false;
+-- 0013 同時 backfill 既有 row 為 is_public=true 以保留 pre-migration 可見性
+UPDATE platform_links SET is_public = true;
 ```
 
-**為什麼選兩個 nullable FK + CHECK 強制 exactly-one**：
+**為什麼選兩個 nullable FK + CHECK 強制 exactly-one**（不變）：
 - 比 polymorphic 安全：FK constraint 可以正常 cascade（部門刪掉時 grant 自動清）
-- 比兩張表簡單：同一個 SQL `JOIN` 就能查，UI 只需要一個 list 介面
+- 比兩張表簡單：同一個 SQL 查就能列，UI 只需要一個 list 介面
 - CHECK 強制 exactly-one 防止資料髒掉
 
-#### 7.5.2 Effective Access 演算法
+**為什麼 partial unique 而非純 unique**（v0.5 補充）：
+- 純 unique 會擋掉「revoke 後 re-grant」這個常見流程（admin 撤回 grant 後又改主意要 re-grant）
+- partial unique `WHERE revoked_at IS NULL` 把 revoked row 從 unique 索引中排除，等同「軟刪除」語意
+- 結合 `revoked_at` 的 audit 用途：歷史 grant 都看得到，新 grant 又能順利寫入
+
+**為什麼 is_public 是獨立 column 而非 `required_roles=['*']` 之類的 sentinel**（v0.5 新增）：
+- 語意分離乾淨：`required_roles` = **過濾 gate**，`is_public` = **通過判定**
+- 兩個維度可獨立組合：`required_roles=['developer'] + is_public=true` = 「公開給所有 developer」（這在 sentinel 設計下難表達）
+
+#### 7.5.2 Effective Access 演算法（實作版 — 5 步）
+
+權威實作：[`app/services/access_control.py`](../myCSPPlatform/backend/app/services/access_control.py)。語意改變請看 §0 v0.5 #16。
 
 ```python
-def can_access(user, link) -> bool:
-    """Decide if user has access to a platform link."""
+def can_access_link(db, user, link) -> bool:
+    """Single source of truth — every API endpoint that gates on a link MUST
+    go through this function (or accessible_links_for() for batch listing).
+    """
 
-    # 1. Role-based 自動通過（required_roles）
-    if link.required_roles and user.role in link.required_roles:
-        return True
+    # 1. is_active gate — 停用的 link 對誰都 deny（包含 admin，admin 要看
+    #    要走 GET /api/platform-links?include_inactive=true）
+    if not link.is_active:
+        return False
 
-    # 2. Admin 永遠通過（superuser bypass）
+    # 2. role gate — required_roles 是過濾條件，不是自動通過。空 list = gate
+    #    開放；非空 = user.role 必須在裡面才通過 gate
+    required = link.required_roles or []
+    if required and user.role not in required:
+        return False
+
+    # 3. admin bypass — 通過 gate 的 admin 一律允許
     if user.role == "admin":
         return True
 
-    # 3. 個別 user grant（active 且未 revoke）
-    if has_active_grant(user_id=user.id, link_id=link.id):
+    # 4. is_public bypass — 通過 gate 的 public link 對任何人都允許（不需 grant）
+    if link.is_public:
         return True
 
-    # 4. 部門 grant（user.department_id 從 user 表抓）
-    if user.department_id and has_active_grant(
-        department_id=user.department_id,
-        link_id=link.id
-    ):
-        return True
-
-    return False
+    # 5. grant check — 必須有 active grant（revoked_at IS NULL），user-level
+    #    或 user.department 所屬的 dept-level 都算
+    return link.id in _active_link_ids_for_user(db, user)
 ```
+
+**為什麼 `required_roles` 是 filter 不是 auto-pass**（v0.5 修訂）：
+- v0.4 寫法（auto-pass）有歧義：`required_roles=['admin']` 到底是「admin 自動通過」還是「只開放 admin 看」？
+- v0.5 把 `required_roles` 定位為「**必須要的 role gate**」（filter）— 想要 admin 自動通過已經有 step 3；想要公開可見已經有 step 4 的 `is_public`。維度分離乾淨。
 
 **Cascade 行為**（admin 撤部門 grant 時的安全提醒）：
 - 部門 grant 撤銷 → 該部門 user **只靠部門 grant 的會失去 access**
@@ -1398,23 +1468,24 @@ await audit_log(
 
 ## 8. Phase 1 立即可做（v0.4 更新）
 
-### 8.1 工作項目（v0.4 final — ComfyUI 推後到 Phase 1.5）
+### 8.1 工作項目（v0.5 — Step 1+2+2.5 已落地）
 
-| # | 項目 | 工程量 |
-|---|---|---|
-| 1 | Alembic migration `0013`：`platform_links.required_roles` + `service_access_grants` + `dev_db_credentials` 三表（§7.5、§5.3）| 2 小時 |
-| 2 | CSP backend 實作 `can_access()` + grant CRUD endpoints（§7.5）| 0.5 天 |
-| 3 | 寫 `AUTO_REGISTER_LINKS` 5 筆（NotebookLM / codeserver / n8n / gitlab / mlsteam，URL 見 §7.1） | 30 分鐘 |
-| 4 | CSP UI Dashboard 顯示卡片時依 `can_access()` 過濾 + Service Access 管理 UI（§7.5.3）| 1-1.5 天 |
-| 5 | ANILA monorepo `docker-compose.yml` 新增 `codeserver` service（§5.0.1）| 30 分鐘 |
-| 6 | **(v0.4)** ANILA monorepo `docker-compose.yml` 新增 `gitlab` service（§5.0.2）| 1 小時 |
-| 7 | **(v0.4)** GitLab 首次啟動 + reconfigure（等 healthy）+ root 密碼設定 + 開 admin 帳號 | 1-2 小時 |
-| 8 | Nginx 設定 `/codeserver` + `/gitlab` 同源 reverse proxy（§5.0.1、§5.0.2）| 1.5 小時 |
-| 9 | E2E 測試 1：admin grant 工程部 access NotebookLM → 部門使用者 dashboard 看到卡片 → 點開（Phase 1 仍重新登入）| 1.5 小時 |
-| 10 | E2E 測試 2：admin / developer 進 codeserver 與 GitLab 同源 path、WebSocket terminal / CI log live tail 都能用 | 1.5 小時 |
-| 11 | My-OpenAI-Frontend 停用：`docker compose down` + nginx `/v1/*` 改 410 + README archive notice（§3.0.1）| 30 分鐘 |
+| # | 項目 | 工程量 | 狀態 |
+|---|---|---|---|
+| 1 | Alembic migration `0012`：`platform_links.required_roles` + `service_access_grants` + `dev_db_credentials` 三表（§7.5、§5.3）| 2 小時 | ✅ commit `e611d89` |
+| 1.5 | Alembic migration `0013`：`platform_links.is_public` + grandfather backfill（§7.5.1、§0 v0.5 #16）| 30 分鐘 | ✅ commit `cc121e3` |
+| 2 | CSP backend 實作 `can_access_link()` + grant CRUD endpoints（§7.5）| 0.5 天 | ✅ commit `7c4df4a` |
+| 3 | 寫 `AUTO_REGISTER_LINKS` 5 筆（NotebookLM / codeserver / n8n / gitlab / mlsteam，URL 見 §7.1） | 30 分鐘 | ⏳ in progress |
+| 4 | CSP UI Dashboard 顯示卡片時依 `can_access_link()` 過濾 + Service Access 管理 UI（§7.5.3）| 1-1.5 天 | ⏳ |
+| 5 | ANILA monorepo `docker-compose.yml` 新增 `codeserver` service（§5.0.1）| 30 分鐘 | ⏳ |
+| 6 | **(v0.4)** ANILA monorepo `docker-compose.yml` 新增 `gitlab` service（§5.0.2）| 1 小時 | ⏳ |
+| 7 | **(v0.4)** GitLab 首次啟動 + reconfigure（等 healthy）+ root 密碼設定 + 開 admin 帳號 | 1-2 小時 | ⏳ |
+| 8 | Nginx 設定 `/codeserver` + `/gitlab` 同源 reverse proxy（§5.0.1、§5.0.2）| 1.5 小時 | ⏳ |
+| 9 | E2E 測試 1：admin grant 工程部 access NotebookLM → 部門使用者 dashboard 看到卡片 → 點開（Phase 1 仍重新登入）| 1.5 小時 | ⏳ |
+| 10 | E2E 測試 2：admin / developer 進 codeserver 與 GitLab 同源 path、WebSocket terminal / CI log live tail 都能用 | 1.5 小時 | ⏳ |
+| 11 | My-OpenAI-Frontend 停用：`docker compose down` + nginx `/v1/*` 改 410 + README archive notice（§3.0.1）| 30 分鐘 | ⏳ |
 
-**總工程量**：3-5.5 天（v0.3 的 3-5 天 + GitLab 部署 ~1.5 天 - ComfyUI 推後 ~1 天）
+**進度**：1 / 1.5 / 2 完工（~6 小時實際工程量，含 smoke test）；剩 3 → 11 約 2.5–4 天。
 
 **v0.4 從 Phase 1 移除的項目**（推到 Phase 1.5，§8.4）：
 - ~~寫 `comfyui-agent` service~~
