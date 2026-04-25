@@ -21,6 +21,12 @@ dependencies = [
     "anyio>=4.0",
     "sse-starlette>=2.0",
     "aiofiles>=23.0",
+    # Phase 2 Sprint 1 (v0.6.0): the ingestion platform's central
+    # AgentScopedPgVectorStore lives here, so asyncpg/pgvector are back
+    # as core deps. v0.5.0 removed them when RAG-flavour code moved out;
+    # the new ingestion platform makes pgvector an anila-core concern again.
+    "asyncpg>=0.29",
+    "pgvector>=0.3",
 ]
 
 # v0.5.0 BREAKING — `[rag]` extras removed. The packages it pulled

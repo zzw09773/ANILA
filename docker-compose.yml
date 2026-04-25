@@ -9,7 +9,11 @@ services:
 
   # ── PostgreSQL for myCSPPlatform ─────────────────────────────────────────────
   csp-db:
-    image: postgres:16-alpine
+    # pgvector/pgvector ships PG16 with the `vector` extension preinstalled —
+    # required by migration 0014 (Phase 2 ingestion platform). The image is a
+    # superset of postgres:16, so existing data and config carry over without
+    # change. Switching back to upstream postgres breaks the ingestion stack.
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: csp
       POSTGRES_PASSWORD: csp
