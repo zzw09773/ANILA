@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, Boolean, DateTime
+from sqlalchemy.dialects.postgresql import JSONB
 from app.database import Base
 
 
@@ -13,4 +14,11 @@ class PlatformLink(Base):
     description = Column(String(255), nullable=True)
     sort_order = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
+    # JSONB array of role names. [] = everyone (default); ['admin'] = admin
+    # only; ['admin','developer'] = either role passes the gate. Required-role
+    # check is the cheap first filter before the per-user/per-department
+    # ServiceAccessGrant lookup.
+    required_roles = Column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

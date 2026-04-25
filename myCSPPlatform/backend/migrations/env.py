@@ -27,6 +27,7 @@ import app.models.agent           # noqa: F401
 import app.models.audit_log       # noqa: F401
 import app.models.auth_provider   # noqa: F401
 import app.models.department      # noqa: F401
+import app.models.dev_db_credential  # noqa: F401
 import app.models.external_identity  # noqa: F401
 import app.models.model_registry  # noqa: F401
 import app.models.attachment       # noqa: F401
@@ -34,6 +35,7 @@ import app.models.conversation     # noqa: F401
 import app.models.handoff          # noqa: F401
 import app.models.message          # noqa: F401
 import app.models.platform_link    # noqa: F401
+import app.models.service_access_grant  # noqa: F401
 import app.models.token_usage      # noqa: F401
 import app.models.user             # noqa: F401
 
