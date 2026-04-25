@@ -1582,9 +1582,12 @@ await audit_log(
 | 6 | **(v0.4)** ANILA monorepo `docker-compose.yml` 新增 `gitlab` service（§5.0.2）| 1 小時 | ✅ commits `11d572c` + `ec2272e`（healthcheck fix）|
 | 7 | **(v0.4)** GitLab 首次啟動 + reconfigure（等 healthy）+ root 密碼設定 + 開 admin 帳號 | 1-2 小時 | ✅ booted；初始 root password 在 `/etc/gitlab/initial_root_password`（首次登入務必輪換）|
 | 8 | Nginx 設定 `/codeserver` + `/gitlab` 同源 reverse proxy（§5.0.1、§5.0.2）| 1.5 小時 | ✅ commits `11d572c` + `ec2272e`（Host header fix）|
-| 9 | E2E 測試 1：admin grant 工程部 access NotebookLM → 部門使用者 dashboard 看到卡片 → 點開（Phase 1 仍重新登入）| 1.5 小時 | ⏳ |
-| 10 | E2E 測試 2：admin / developer 進 codeserver 與 GitLab 同源 path、WebSocket terminal / CI log live tail 都能用 | 1.5 小時 | ⏳ |
-| 11 | My-OpenAI-Frontend 停用：`docker compose down` + nginx `/v1/*` 改 410 + README archive notice（§3.0.1）| 30 分鐘 | ⏳ |
+| 9 | E2E 測試 1：admin grant 工程部 access NotebookLM → 部門使用者 dashboard 看到卡片 → 點開（Phase 1 仍重新登入）| 1.5 小時 | ✅ `scripts/phase1-e2e.sh` Step 9（default-deny → dept grant unlock → revoke 三段全綠）|
+| 10 | E2E 測試 2：admin / developer 進 codeserver 與 GitLab 同源 path、WebSocket terminal / CI log live tail 都能用 | 1.5 小時 | ✅ `scripts/phase1-e2e.sh` Step 10（codeserver/gitlab/n8n title 都正確；WS upgrade probe 401 = 路由通但 auth gate 擋下，跟 standalone 部署一致）|
+| 11 | My-OpenAI-Frontend 停用：`docker compose down` + nginx `/v1/*` 改 410 + README archive notice（§3.0.1）| 30 分鐘 | ⏳ 需 user 確認再動（destructive，需要先 migrate user 的 n8n workflows 等資料）|
+
+**Phase 1 follow-up（不在原 §8.1 但 Step 3 之後 surfaced）：**
+- ✅ n8n 自部署（commit `88df3fc`）— 之前 `/n8n` 是 my-openai-frontend nginx 代理的，Step 11 cutover 前必須先 self-host 否則 path 會 502
 
 **進度**：1 / 1.5 / 2 完工（~6 小時實際工程量，含 smoke test）；剩 3 → 11 約 2.5–4 天。
 
