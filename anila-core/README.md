@@ -91,15 +91,16 @@ flowchart TB
 │   config.py        Settings（pydantic-settings，env）   │
 └─────────────────────────────────────────────────────────┘
        │                                   │
-       │  import                            │  optional extras [rag]
+       │  import                            │  fork & extend
        ▼                                   ▼
 ┌──────────────────────┐       ┌──────────────────────────┐
 │  anila-core-router   │       │   AgenticRAG template    │
 │  (薄殼部署入口)       │       │   - api.py (RAG agent)   │
 │  main.py:            │       │   - ingestion/ + pgvector│
-│    app =             │       │   - index_documents.py   │
-│    create_router_app │       │   - 下載作為新 agent 起點 │
-└──────────────────────┘       └──────────────────────────┘
+│    app =             │       │     (591-line parsers,   │
+│    create_router_app │       │      docling, OCR, CJK)  │
+└──────────────────────┘       │   - 下載作為新 agent 起點 │
+                               └──────────────────────────┘
 ```
 
 </details>
@@ -112,11 +113,12 @@ flowchart TB
 
 ```bash
 # 於 repo 根
-pip install -e "./anila-core"                  # pure runtime
-pip install -e "./anila-core[rag]"             # + 檔案解析 / pgvector / asyncpg
-pip install -e "./anila-core[dev]"             # + pytest / ruff / mypy
-pip install -e "./anila-core[rag,dev]"         # 全部
+pip install -e "./anila-core"          # pure runtime（v0.5.0 後不再有 [rag] extras）
+pip install -e "./anila-core[dev]"     # + pytest / ruff / mypy
 ```
+
+> **v0.5.0 BREAKING**：`[rag]` extras 已**移除**。檔案解析、pgvector、asyncpg、NV-Embed-V2 都搬回 [`AgenticRAG`](../AgenticRAG/) template。
+> 要做 RAG agent 請 fork AgenticRAG，不要 install anila-core 的 RAG extras（已不存在）。
 
 ### 從 wheel 安裝（日後 CI 推到內部 PyPI 後）
 
@@ -197,24 +199,28 @@ anila-core/
 │       ├── api/
 │       ├── cli/
 │       ├── compact/
-│       ├── context/
-│       ├── coordinator/
-│       ├── engine/
-│       ├── ingestion/        # RAG（[rag] extras 才會用到）
-│       ├── memory/
-│       ├── models/
-│       ├── providers/
-│       ├── registry/
-│       ├── router/
+│       ├── api/             # FastAPI server + middleware + router_server
+│       ├── cli/              # `anila-core init` agent template scaffolder
+│       ├── compact/          # L1/L2/L3 history compression
+│       ├── coordinator/      # multi-worker coordination
+│       ├── engine/           # query_engine（7-stage turn loop）
+│       ├── memory/           # memdir / extract / relevance / consolidation
+│       ├── models/           # Message / Tool dataclasses
+│       ├── providers/        # base + openai_compat + cspplatform + mocks
+│       ├── registry/         # remote agent manifest cache
+│       ├── router/           # tool router
 │       ├── storage/
-│       └── tools/
+│       │   ├── ports.py      # Protocol interfaces (KEPT)
+│       │   └── adapters/
+│       │       └── memory_file_store.py   # MemoryStore impl (KEPT)
+│       └── tools/            # dispatch_tool only（其他 RAG tools 在 AgenticRAG）
 ├── tests/                    # pytest
 └── examples/
     ├── router-mode/
     └── simple-agent/
 ```
 
-> **Note (Task 3 pending)**：現階段 `ingestion/`、`storage/adapters/{pg_pool,pgvector_store,postgres_store}.py`、`providers/embedding_nvidia.py`、`engine/rag_preprocessor.py` 等仍留在 anila-core tree 裡（透過 `[rag]` extras 啟用）。下一輪會把這些 RAG-specific 檔案搬回 AgenticRAG template，讓 core 真正成為 pure runtime。
+> **Sprint 1 cleanup（v0.5.0 BREAKING，2026-04-25）已完成**：`ingestion/`、`api/{documents,search}.py`、`storage/adapters/{pg_pool,pgvector_store,postgres_store}.py`、`providers/embedding_nvidia.py`、`engine/rag_preprocessor.py`、以及 `tools/__init__.py` 內 3 個 RAG factory（vector_search / keyword_search / read_document）全部從 anila-core 移除（總計 −3998 行 RAG dead code）。RAG agent 用 [`AgenticRAG`](../AgenticRAG/) template；100-agent 共用 ingestion 的中央化 service 在 [`docs/ingestion-platform-design.md`](../docs/ingestion-platform-design.md)。詳見 [CHANGELOG.md](./CHANGELOG.md) v0.5.0。
 
 ---
 
@@ -231,6 +237,17 @@ anila-core/
 ---
 
 ## Release Notes
+
+### 2026-04-25 — v0.5.0 Boundary cleanup (Sprint 1)
+
+**BREAKING**：anila-core 從「RAG runtime + agent runtime」收斂為純 agent / chat runtime。詳見 [`CHANGELOG.md`](./CHANGELOG.md)。
+
+- 移除 `ingestion/`、`api/{documents,search}.py`、`storage/adapters/{pg_pool,pgvector_store,postgres_store}.py`、`providers/embedding_nvidia.py`、`engine/rag_preprocessor.py`、`tools/__init__.py` 內 3 個 RAG factory
+- 移除 `pyproject.toml` 的 `[rag]` extras（這些檔案已不在 anila-core tree 內）
+- `create_app()` signature 移除 6 個 RAG kwargs；`config.py` 從 ~20 個欄位收斂到 8 個
+- 累計 −3998 行 RAG dead code；166 tests passed，0 regression
+
+→ Migration：RAG agent 改 fork [`AgenticRAG`](../AgenticRAG/) template。
 
 ### 2026-04-24 — AgenticRAG template 升格同步
 
@@ -250,10 +267,11 @@ anila-core/
 - `compact/{micro,auto,sliding_window}` + `memory/extract_memories.py`
 - `coordinator/coordinator.py` 多 worker 協調
 
-### Task 3 待辦（下一輪）
+### 後續路線
 
-- 把 `ingestion/`、`storage/adapters/{pg_pool,pgvector_store,postgres_store}`、`providers/embedding_nvidia.py`、`engine/rag_preprocessor.py` **搬回** `AgenticRAG` template（這些是 RAG-specific，不應該住在 pure runtime 裡），讓 `anila-core` 真正成為 pure runtime foundation。
-- Compact PTL retry + `strip_images_from_messages`（見 `runtime_logic/README.md` 移植清單）
+- Compact PTL retry + `strip_images_from_messages`（見 [`runtime_logic/README.md`](../runtime_logic/README.md) 移植清單）
+- Phase 3+：補 `PostgresMemoryStore` 跟 `MemoryFileStore` 並列為 MemoryStore Protocol 的兩個 impl，讓 production deploy 可選中央化 PG store
+- Day 10 G3 gate：✅ `grep document_chunks anila-core/` = 0 hits（boundary cleanup verified）
 
 ---
 
