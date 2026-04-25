@@ -22,6 +22,7 @@ from app.models.ingestion import (
     AgentLlmCredential,
     IngestionCollection,
     IngestionDocument,
+    IngestionEvalRun,
     IngestionJob,
 )
 from app.models.message import Message
@@ -46,6 +47,7 @@ __all__ = [
     "Handoff",
     "IngestionCollection",
     "IngestionDocument",
+    "IngestionEvalRun",
     "IngestionJob",
     "Message",
     "ModelRegistry",

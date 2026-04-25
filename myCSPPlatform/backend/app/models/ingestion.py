@@ -29,7 +29,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import CHAR, JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, CHAR, JSONB
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -129,6 +129,45 @@ class IngestionDocument(Base):
     indexed_at = Column(DateTime, nullable=True)
 
     collection = relationship("IngestionCollection", back_populates="documents")
+
+
+class IngestionEvalRun(Base):
+    """One Chunking Evaluator run.
+
+    The full input set (sample doc IDs + strategies + queries) lives on
+    the row so the results page can render without re-fetching pieces.
+    ``results`` holds the per-strategy metrics dict produced by the
+    worker handler at completion time.
+    """
+
+    __tablename__ = "ingestion_eval_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    collection_id = Column(
+        Integer,
+        ForeignKey("ingestion_collections.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name = Column(String(200), nullable=False)
+    sample_document_ids = Column(ARRAY(Integer), nullable=False)
+    strategies_tried = Column(JSONB, nullable=False)
+    queries = Column(JSONB, nullable=False)
+    judge_llm_config = Column(JSONB, nullable=True)
+    arq_job_id = Column(String(100), nullable=True, unique=True)
+    status = Column(String(20), nullable=False, default="queued")
+    results = Column(JSONB, nullable=True)
+    recommended_strategy = Column(String(64), nullable=True)
+    error_code = Column(String(64), nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_by = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at = Column(
+        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
 
 
 class AgentLlmCredential(Base):

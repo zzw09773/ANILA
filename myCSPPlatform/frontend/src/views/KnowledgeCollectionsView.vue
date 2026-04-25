@@ -58,6 +58,9 @@
           <router-link :to="{ name: 'CollectionDetail', params: { id: c.id } }" class="link">
             🔍 Inspector
           </router-link>
+          <router-link :to="{ name: 'Evaluator', params: { id: c.id } }" class="link">
+            🧪 Evaluator
+          </router-link>
           <button
             v-if="c.status === 'active'"
             class="ghost"

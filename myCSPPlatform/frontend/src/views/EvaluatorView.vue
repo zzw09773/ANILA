@@ -1,0 +1,405 @@
+<template>
+  <div class="ev-root">
+    <header class="page-header">
+      <router-link :to="{ name: 'CollectionDetail', params: { id: collectionId } }" class="back">
+        ← 回到 collection
+      </router-link>
+      <h1>🧪 Chunking Evaluator</h1>
+      <p v-if="collection" class="subtitle">
+        collection #{{ collection.id }} · {{ collection.name }} ·
+        agent #{{ collection.agent_id }}
+      </p>
+    </header>
+
+    <div class="layout">
+      <!-- Wizard pane -->
+      <section class="wizard">
+        <header class="wizard-head">
+          <h2>新建 evaluation run</h2>
+          <ol class="step-pills">
+            <li :class="{ active: step === 1, done: step > 1 }">1. Sample documents</li>
+            <li :class="{ active: step === 2, done: step > 2 }">2. Eval queries</li>
+            <li :class="{ active: step === 3, done: step > 3 }">3. Strategies</li>
+            <li :class="{ active: step === 4 }">4. Confirm</li>
+          </ol>
+        </header>
+
+        <!-- Step 1 -->
+        <div v-if="step === 1">
+          <p class="hint">挑要評的 documents（必須先 indexed）。建議 5–10 篇 representative。</p>
+          <div v-if="loadingDocs" class="banner muted">載入中…</div>
+          <ul v-else class="doc-pick">
+            <li v-for="d in indexedDocs" :key="d.id">
+              <label>
+                <input type="checkbox" :value="d.id" v-model="form.sample_document_ids" />
+                <span class="filename">{{ d.filename }}</span>
+                <span class="muted">{{ d.chunk_count }} chunks · {{ humanBytes(d.bytes) }}</span>
+              </label>
+            </li>
+          </ul>
+          <div class="step-actions">
+            <button class="primary" :disabled="form.sample_document_ids.length === 0" @click="step = 2">下一步</button>
+          </div>
+        </div>
+
+        <!-- Step 2 -->
+        <div v-if="step === 2">
+          <p class="hint">寫 (query, expected document) 對。Hit@k / MRR 用這份 golden set 評分。</p>
+          <table class="query-grid">
+            <thead><tr><th>Query</th><th>Expected document</th><th></th></tr></thead>
+            <tbody>
+              <tr v-for="(q, i) in form.queries" :key="i">
+                <td><input v-model.trim="q.query" placeholder="例如：第八條的內容是什麼" /></td>
+                <td>
+                  <select v-model.number="q.expected_doc_id">
+                    <option :value="0" disabled>— 選 doc —</option>
+                    <option v-for="d in pickedDocs" :key="d.id" :value="d.id">
+                      {{ d.filename }} (#{{ d.id }})
+                    </option>
+                  </select>
+                </td>
+                <td><button class="ghost small" @click="form.queries.splice(i, 1)">×</button></td>
+              </tr>
+            </tbody>
+          </table>
+          <button class="ghost small" @click="addQuery">＋ 新增 query</button>
+          <div class="step-actions">
+            <button class="ghost" @click="step = 1">上一步</button>
+            <button class="primary" :disabled="!validQueries" @click="step = 3">下一步</button>
+          </div>
+        </div>
+
+        <!-- Step 3 -->
+        <div v-if="step === 3">
+          <p class="hint">挑要 benchmark 的 strategies（≥ 2 才有比較意義）。</p>
+          <ul class="strategy-pick">
+            <li v-for="s in availableStrategies" :key="s.name">
+              <label>
+                <input type="checkbox" :value="s" v-model="pickedStrategies" />
+                <span class="strategy-label">{{ s.label }}</span>
+                <span class="muted">{{ s.note }}</span>
+              </label>
+            </li>
+          </ul>
+          <div class="step-actions">
+            <button class="ghost" @click="step = 2">上一步</button>
+            <button class="primary" :disabled="pickedStrategies.length < 1" @click="step = 4">下一步</button>
+          </div>
+        </div>
+
+        <!-- Step 4 -->
+        <div v-if="step === 4">
+          <p class="hint">確認後 enqueue。Run 結束後右側會出現結果。</p>
+          <label class="field">
+            <span>Run name</span>
+            <input v-model.trim="form.name" placeholder="2026-04-25 baseline" />
+          </label>
+          <dl class="confirm">
+            <div><dt>Documents</dt><dd>{{ form.sample_document_ids.length }} 篇</dd></div>
+            <div><dt>Queries</dt><dd>{{ form.queries.length }} 條</dd></div>
+            <div><dt>Strategies</dt><dd>{{ pickedStrategies.map(s => s.name).join(', ') }}</dd></div>
+          </dl>
+          <div class="step-actions">
+            <button class="ghost" @click="step = 3">上一步</button>
+            <button
+              class="primary"
+              :disabled="!form.name || submitting"
+              @click="submit"
+            >
+              {{ submitting ? '送出中…' : '🚀 啟動 evaluation' }}
+            </button>
+          </div>
+          <div v-if="submitError" class="banner error inline">{{ submitError }}</div>
+        </div>
+      </section>
+
+      <!-- Results pane -->
+      <section class="results">
+        <h2>📊 最近 runs</h2>
+        <div v-if="runs.length === 0" class="banner muted">尚無 evaluation runs。</div>
+        <ul v-else class="run-list">
+          <li v-for="r in runs" :key="r.id" :class="{ selected: selectedRun?.id === r.id }">
+            <button class="run-row" @click="selectedRun = r">
+              <strong>{{ r.name }}</strong>
+              <span class="badge" :class="r.status">{{ r.status }}</span>
+              <span class="muted">{{ r.strategies_tried.length }} strategies · {{ r.queries.length }} queries</span>
+            </button>
+          </li>
+        </ul>
+
+        <article v-if="selectedRun" class="run-detail">
+          <h3>{{ selectedRun.name }}</h3>
+          <p v-if="selectedRun.status !== 'succeeded'" class="banner muted">
+            status: {{ selectedRun.status }}
+            <span v-if="selectedRun.error_message"> — {{ selectedRun.error_message }}</span>
+          </p>
+
+          <div v-if="selectedRun.results">
+            <p>
+              ⏱ {{ selectedRun.results.elapsed_seconds }}s ·
+              {{ selectedRun.results.n_docs }} docs ·
+              {{ selectedRun.results.n_queries }} queries ·
+              <strong>recommended:</strong>
+              <code>{{ selectedRun.recommended_strategy || '—' }}</code>
+            </p>
+            <table class="metrics">
+              <thead>
+                <tr>
+                  <th>Strategy</th>
+                  <th>Hit@1</th>
+                  <th>Hit@5</th>
+                  <th>MRR</th>
+                  <th>Chunks/doc</th>
+                  <th>Avg tokens</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="(metrics, name) in selectedRun.results.per_strategy"
+                  :key="name"
+                  :class="{ best: name === selectedRun.recommended_strategy }"
+                >
+                  <td><code>{{ name }}</code></td>
+                  <template v-if="metrics.error">
+                    <td colspan="5" class="err">⚠ {{ metrics.error }}</td>
+                  </template>
+                  <template v-else>
+                    <td>{{ formatPct(metrics.hit_at_1) }}</td>
+                    <td>{{ formatPct(metrics.hit_at_5) }}</td>
+                    <td>{{ metrics.mrr.toFixed(3) }}</td>
+                    <td>{{ metrics.chunks_per_doc }}</td>
+                    <td>{{ metrics.avg_chunk_tokens }}</td>
+                  </template>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import { getCollection } from '../api/ingestionCollections'
+import { listDocuments } from '../api/ingestionDocuments'
+import { createEvalRun, getEvalRun, listEvalRuns } from '../api/ingestionEvalRuns'
+
+const route = useRoute()
+const collectionId = ref(Number(route.params.id))
+
+const collection = ref(null)
+const documents = ref([])
+const loadingDocs = ref(false)
+
+const indexedDocs = computed(() =>
+  documents.value.filter((d) => d.status === 'indexed'),
+)
+const pickedDocs = computed(() =>
+  indexedDocs.value.filter((d) => form.value.sample_document_ids.includes(d.id)),
+)
+
+const step = ref(1)
+const form = ref({
+  name: `eval-${new Date().toISOString().slice(0, 10)}`,
+  sample_document_ids: [],
+  queries: [{ query: '', expected_doc_id: 0 }],
+  strategies_tried: [],
+})
+const submitting = ref(false)
+const submitError = ref('')
+
+const availableStrategies = [
+  { name: 'hierarchical', label: 'hierarchical', params: { max_leaf_tokens: 1024 }, note: 'heading 樹 + ancestor context' },
+  { name: 'fixed', label: 'fixed', params: { size: 1024, overlap: 128 }, note: 'token-budget windowing' },
+  { name: 'markdown-aware', label: 'markdown-aware', params: { max_leaf_tokens: 1024 }, note: 'heading + code-fence safe' },
+  { name: 'pdf-page', label: 'pdf-page', params: { max_page_tokens: 4096 }, note: 'PDF page boundaries（PDF only）' },
+  { name: 'cjk-sentence', label: 'cjk-sentence', params: { target_tokens: 512 }, note: 'CJK 句法 + token merge' },
+  { name: 'semantic', label: 'semantic', params: { breakpoint_percentile: 80 }, note: 'embedding distance（昂貴）' },
+]
+const pickedStrategies = ref([])
+
+const runs = ref([])
+const selectedRun = ref(null)
+let pollTimer = null
+
+// ── Wizard validation ──────────────────────────────────────────────────────
+
+const validQueries = computed(() =>
+  form.value.queries.length > 0 &&
+  form.value.queries.every((q) => q.query && q.expected_doc_id > 0),
+)
+
+function addQuery() {
+  form.value.queries.push({ query: '', expected_doc_id: 0 })
+}
+
+// ── Lifecycle ──────────────────────────────────────────────────────────────
+
+onMounted(async () => {
+  loadingDocs.value = true
+  try {
+    const [coll, docs, list] = await Promise.all([
+      getCollection(collectionId.value),
+      listDocuments(collectionId.value),
+      listEvalRuns({ collection_id: collectionId.value }),
+    ])
+    collection.value = coll.data
+    documents.value = docs.data
+    runs.value = list.data
+    if (list.data.length > 0) selectedRun.value = list.data[0]
+  } finally {
+    loadingDocs.value = false
+  }
+  startPolling()
+})
+
+function startPolling() {
+  pollTimer = setInterval(async () => {
+    const inFlight = runs.value.some(
+      (r) => !['succeeded', 'failed', 'cancelled'].includes(r.status),
+    )
+    if (!inFlight && selectedRun.value && ['succeeded', 'failed'].includes(selectedRun.value.status)) {
+      return
+    }
+    try {
+      const { data } = await listEvalRuns({ collection_id: collectionId.value })
+      runs.value = data
+      if (selectedRun.value) {
+        const refreshed = data.find((r) => r.id === selectedRun.value.id)
+        if (refreshed) selectedRun.value = refreshed
+      }
+    } catch { /* transient */ }
+  }, 2500)
+}
+
+watch(() => route.params.id, (id) => {
+  if (id) {
+    collectionId.value = Number(id)
+  }
+})
+
+import { onUnmounted } from 'vue'
+onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
+
+// ── Submit ─────────────────────────────────────────────────────────────────
+
+async function submit() {
+  submitting.value = true
+  submitError.value = ''
+  try {
+    const payload = {
+      collection_id: collectionId.value,
+      name: form.value.name,
+      sample_document_ids: [...form.value.sample_document_ids],
+      strategies_tried: pickedStrategies.value.map((s) => ({
+        name: s.name, params: s.params,
+      })),
+      queries: form.value.queries.map((q) => ({
+        query: q.query, expected_doc_id: q.expected_doc_id,
+      })),
+    }
+    const { data } = await createEvalRun(payload)
+    runs.value.unshift(data)
+    selectedRun.value = data
+    // Reset wizard for the next run.
+    step.value = 1
+    form.value = {
+      name: `eval-${new Date().toISOString().slice(0, 10)}`,
+      sample_document_ids: [],
+      queries: [{ query: '', expected_doc_id: 0 }],
+      strategies_tried: [],
+    }
+    pickedStrategies.value = []
+  } catch (e) {
+    submitError.value = e.response?.data?.detail || e.message
+  } finally {
+    submitting.value = false
+  }
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function humanBytes(n) {
+  if (!n) return '0'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let v = Number(n), u = 0
+  while (v >= 1024 && u < units.length - 1) { v /= 1024; u += 1 }
+  return `${v.toFixed(v >= 10 || u === 0 ? 0 : 1)} ${units[u]}`
+}
+
+function formatPct(v) {
+  return `${(v * 100).toFixed(1)}%`
+}
+</script>
+
+<style scoped>
+.ev-root { padding: 1.25rem; max-width: 1400px; }
+.page-header { margin-bottom: 1rem; }
+.back { color: #2563eb; text-decoration: none; font-size: 0.85rem; }
+.back:hover { text-decoration: underline; }
+.page-header h1 { margin: 0.25rem 0; font-size: 1.4rem; }
+.subtitle { margin: 0; color: #6b7280; font-size: 0.85rem; }
+
+.layout { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+.wizard, .results { background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 1.25rem; }
+.wizard-head h2, .results h2 { margin: 0 0 0.75rem; font-size: 1.1rem; }
+.step-pills { list-style: none; padding: 0; margin: 0 0 1rem; display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.step-pills li { font-size: 0.75rem; padding: 0.25rem 0.6rem; border-radius: 999px; background: #f3f4f6; color: #6b7280; }
+.step-pills li.active { background: #2563eb; color: #fff; }
+.step-pills li.done { background: #d1fae5; color: #065f46; }
+
+.hint { color: #6b7280; font-size: 0.85rem; margin-bottom: 0.75rem; }
+.field { display: flex; flex-direction: column; gap: 0.25rem; margin-bottom: 0.75rem; }
+.field span { font-size: 0.85rem; color: #4b5563; }
+.field input, .field select { padding: 0.4rem 0.6rem; border: 1px solid #d1d5db; border-radius: 4px; }
+
+.doc-pick, .strategy-pick { list-style: none; padding: 0; margin: 0 0 1rem; max-height: 300px; overflow-y: auto; }
+.doc-pick li, .strategy-pick li { padding: 0.4rem 0.5rem; border-bottom: 1px solid #f3f4f6; }
+.doc-pick label, .strategy-pick label { display: flex; gap: 0.6rem; align-items: center; cursor: pointer; }
+.filename, .strategy-label { font-size: 0.9rem; flex-grow: 1; }
+.muted { color: #9ca3af; font-size: 0.8rem; }
+
+.query-grid { width: 100%; border-collapse: collapse; margin-bottom: 0.75rem; }
+.query-grid th, .query-grid td { padding: 0.4rem 0.3rem; border-bottom: 1px solid #f3f4f6; font-size: 0.85rem; text-align: left; }
+.query-grid input, .query-grid select { width: 100%; padding: 0.3rem 0.5rem; border: 1px solid #d1d5db; border-radius: 3px; }
+
+.confirm { display: grid; grid-template-columns: max-content 1fr; gap: 0.4rem 1rem; }
+.confirm dt { color: #6b7280; }
+.confirm dd { margin: 0; }
+
+.step-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1rem; }
+button { padding: 0.5rem 0.9rem; border: 1px solid transparent; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
+button.primary { background: #2563eb; color: #fff; }
+button.primary:hover:not(:disabled) { background: #1d4ed8; }
+button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+button.ghost { background: #f3f4f6; color: #374151; border: 1px solid #d1d5db; }
+button.small { font-size: 0.8rem; padding: 0.3rem 0.6rem; }
+
+.run-list { list-style: none; padding: 0; margin: 0 0 1rem; }
+.run-list li { margin-bottom: 0.4rem; }
+.run-row { display: flex; gap: 0.5rem; align-items: center; width: 100%; padding: 0.6rem 0.8rem; border: 1px solid #e5e7eb; border-radius: 4px; background: #fff; text-align: left; cursor: pointer; }
+.run-row:hover { border-color: #93c5fd; }
+.run-list li.selected .run-row { border-color: #2563eb; background: #eff6ff; }
+
+.badge { font-size: 0.65rem; padding: 0.15rem 0.45rem; border-radius: 999px; text-transform: uppercase; }
+.badge.queued, .badge.running { background: #fef3c7; color: #92400e; }
+.badge.succeeded { background: #d1fae5; color: #065f46; }
+.badge.failed { background: #fee2e2; color: #991b1b; }
+
+.run-detail { margin-top: 1rem; }
+.run-detail h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+
+.metrics { width: 100%; border-collapse: collapse; margin-top: 0.75rem; font-size: 0.85rem; }
+.metrics th, .metrics td { padding: 0.4rem 0.5rem; border-bottom: 1px solid #f3f4f6; text-align: right; }
+.metrics th:first-child, .metrics td:first-child { text-align: left; }
+.metrics tr.best { background: #ecfdf5; font-weight: 600; }
+.metrics .err { color: #b91c1c; text-align: left; }
+
+.banner { padding: 0.6rem 0.8rem; border-radius: 4px; margin-bottom: 0.5rem; font-size: 0.85rem; }
+.banner.muted { background: #f9fafb; color: #6b7280; }
+.banner.error { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
+.banner.inline { margin-top: 0.5rem; }
+</style>

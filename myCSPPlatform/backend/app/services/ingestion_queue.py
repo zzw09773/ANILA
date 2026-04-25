@@ -59,3 +59,18 @@ async def enqueue_with_metadata(
     """Convenience wrapper returning what the API row insert needs."""
     job_id = await enqueue_ingest_document(document_id)
     return {"arq_job_id": job_id}
+
+
+async def enqueue_evaluator_run(eval_run_id: int) -> str:
+    """Enqueue an ``evaluate_strategies`` job (Sprint 3 Chunk N).
+
+    The worker reads ``ingestion_eval_runs`` and writes results back
+    in the same row — caller polls via the GET endpoint.
+    """
+    pool = await _get_pool()
+    job = await pool.enqueue_job("evaluate_strategies", eval_run_id)
+    if job is None:
+        raise RuntimeError(
+            "Arq returned no job — possible duplicate id collision."
+        )
+    return job.job_id

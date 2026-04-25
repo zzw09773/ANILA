@@ -29,6 +29,7 @@ from arq.connections import RedisSettings
 from anila_core.storage.adapters.pg_pool import PgPool
 
 from ingestion_worker.embedder import Embedder
+from ingestion_worker.evaluator import evaluate_strategies
 from ingestion_worker.handlers import ingest_document
 from ingestion_worker.settings import settings
 
@@ -58,7 +59,7 @@ async def on_shutdown(ctx: dict) -> None:
 class WorkerSettings:
     """Arq config — discovered by ``arq <module>:WorkerSettings``."""
 
-    functions = [ingest_document]
+    functions = [ingest_document, evaluate_strategies]
     on_startup = on_startup
     on_shutdown = on_shutdown
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
