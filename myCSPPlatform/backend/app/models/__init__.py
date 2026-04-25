@@ -18,6 +18,11 @@ from app.models.conversation import Conversation
 from app.models.department import Department
 from app.models.external_identity import ExternalIdentity
 from app.models.handoff import Handoff
+from app.models.ingestion import (
+    IngestionCollection,
+    IngestionDocument,
+    IngestionJob,
+)
 from app.models.message import Message
 from app.models.model_registry import ModelRegistry
 from app.models.platform_link import PlatformLink
@@ -37,6 +42,9 @@ __all__ = [
     "Department",
     "ExternalIdentity",
     "Handoff",
+    "IngestionCollection",
+    "IngestionDocument",
+    "IngestionJob",
     "Message",
     "ModelRegistry",
     "PlatformLink",
