@@ -10,6 +10,12 @@ requires-python = ">=3.11"
 dependencies = [
     # Core SDK — chunkers + AgentScopedPgVectorStore + error taxonomy.
     "anila-core>=0.6.0",
+    # NOTE: ``agentic-rag[rag]`` is a transitive runtime dep but NOT
+    # listed here because it isn't published to PyPI — it lives in the
+    # repo at ``../AgenticRAG/`` and is path-installed by the worker
+    # Dockerfile right before this package. Worker code imports
+    # ``agentic_rag.ingestion.parsers.ParserRegistry`` for file parsing.
+    #
     # Async DB driver and pgvector codec — also pulled by anila-core, listed
     # explicitly so the worker's deps file documents them.
     "asyncpg>=0.29",
@@ -17,10 +23,6 @@ dependencies = [
     # Arq for the redis-backed job queue. 0.26 is the first version with
     # the Pydantic v2 compatible JobResult model.
     "arq>=0.26",
-    # File parsers. Sprint 1 covers plain text, markdown, and PDF text
-    # extraction. Sprint 2 swaps in docling / mammoth for richer DOCX /
-    # OCR'd PDF coverage.
-    "pypdf>=4.0",
     # HTTP client for the embedding endpoint (OpenAI-compatible).
     "httpx>=0.27",
     # Settings via env vars — reuse the same lib anila-core uses so the

@@ -74,6 +74,14 @@ class ChunkerStrategy(ABC):
     # schema *narrow* — every editable field becomes a UI knob.
     param_schema: ClassVar[dict[str, Any]]
 
+    # Set to True by strategies that need embeddings to run (e.g.
+    # ``semantic``). The ingestion-worker checks this flag and pre-
+    # computes embeddings for the candidate segments before calling
+    # ``chunk()``, passing them in via ``params["_embeddings"]`` and
+    # ``params["_segments"]``. Default False keeps the contract simple
+    # for the common case of pure-text-input chunkers.
+    requires_embedder: ClassVar[bool] = False
+
     @abstractmethod
     def chunk(
         self,

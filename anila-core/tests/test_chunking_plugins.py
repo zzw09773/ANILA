@@ -200,3 +200,150 @@ def test_chunk_result_is_frozen() -> None:
     cr = ChunkResult(content="x", chunk_key="k", token_count=1)
     with pytest.raises((AttributeError, TypeError)):
         cr.content = "mutated"  # type: ignore[misc]
+
+
+# ── PdfPageChunker contract ─────────────────────────────────────────────────
+
+
+def test_pdf_page_splits_on_form_feed() -> None:
+    """One chunk per ``\\f``-separated page; metadata records page number."""
+    text = "page one body\fpage two body\fpage three body"
+    chunks = get_chunker("pdf-page").chunk(text, {}, {"max_page_tokens": 4096})
+    assert len(chunks) == 3
+    pages = [c.metadata["page"] for c in chunks]
+    assert pages == [1, 2, 3]
+    assert all(c.metadata["total_pages"] == 3 for c in chunks)
+    assert chunks[0].chunk_key == "page-0001"
+
+
+def test_pdf_page_falls_back_to_fixed_for_oversized_page() -> None:
+    """Page > max_page_tokens splits into sub-chunks tagged with same page."""
+    text = "page one " * 4 + "\f" + ("words " * 5000)
+    chunks = get_chunker("pdf-page").chunk(text, {}, {"max_page_tokens": 200})
+    by_page = {}
+    for c in chunks:
+        by_page.setdefault(c.metadata["page"], []).append(c)
+    assert len(by_page[1]) == 1
+    assert len(by_page[2]) > 1, "oversized page 2 should be split"
+    assert all("page-0002" in c.chunk_key for c in by_page[2])
+
+
+def test_pdf_page_handles_no_page_markers() -> None:
+    """Single page (no ``\\f``) → one chunk."""
+    text = "the only page in this document"
+    chunks = get_chunker("pdf-page").chunk(text, {}, {})
+    assert len(chunks) == 1
+    assert chunks[0].metadata["page"] == 1
+
+
+# ── CjkSentenceChunker contract ─────────────────────────────────────────────
+
+
+def test_cjk_sentence_splits_on_chinese_terminators() -> None:
+    text = "第一句話。第二句話！第三句話？" * 10
+    chunks = get_chunker("cjk-sentence").chunk(
+        text, {}, {"target_tokens": 16, "max_tokens": 32}
+    )
+    assert len(chunks) >= 2
+    # Every chunk must end on a terminator (or be the last) — sanity
+    # that we never split mid-sentence.
+    for c in chunks[:-1]:
+        last = c.content.rstrip()[-1]
+        assert last in "。！？!?.", f"chunk doesn't end on terminator: {c.content!r}"
+
+
+def test_cjk_sentence_groups_below_target() -> None:
+    """Sentences merge until target_tokens reached; respect ceiling."""
+    text = "短句一。短句二。" * 50
+    chunks = get_chunker("cjk-sentence").chunk(
+        text, {}, {"target_tokens": 64, "max_tokens": 128}
+    )
+    # Merged chunks should be reasonably close to target, never over ceiling.
+    for c in chunks:
+        assert c.token_count <= 128 + 16, (
+            f"chunk overflows ceiling: tokens={c.token_count}"
+        )
+
+
+def test_cjk_sentence_long_sentence_falls_back_to_fixed() -> None:
+    """Single sentence > ceiling: split via fixed inside, marked long_sentence."""
+    text = ("a" * 5000) + "。"  # one giant sentence
+    chunks = get_chunker("cjk-sentence").chunk(
+        text, {}, {"target_tokens": 100, "max_tokens": 200}
+    )
+    assert len(chunks) > 1
+    assert any(c.metadata.get("long_sentence") for c in chunks)
+
+
+def test_cjk_sentence_max_lt_target_rejected() -> None:
+    """Misconfiguration: max_tokens < target_tokens is invalid."""
+    with pytest.raises(ValueError, match="max_tokens"):
+        get_chunker("cjk-sentence").chunk(
+            "anything", {}, {"target_tokens": 100, "max_tokens": 50}
+        )
+
+
+# ── SemanticChunker contract ────────────────────────────────────────────────
+
+
+def test_semantic_requires_embedder_flag_set() -> None:
+    """Worker dispatcher reads this attribute to decide whether to pre-compute."""
+    cls = get_chunker("semantic").__class__
+    assert cls.requires_embedder is True
+
+
+def test_semantic_raises_without_precomputed_segments() -> None:
+    """Direct ``chunk()`` without worker preprocessing must fail loudly."""
+    with pytest.raises(ValueError, match="pre-compute"):
+        get_chunker("semantic").chunk("some text", {}, {})
+
+
+def test_semantic_with_two_clusters_finds_one_boundary() -> None:
+    """Two semantically-distinct sentence groups → one boundary, two chunks."""
+    segments = ["alpha beta gamma", "alpha beta gamma", "delta epsilon zeta"]
+    # Embeddings: first two are nearly identical, third is far away.
+    embeddings = [
+        [1.0, 0.0, 0.0],
+        [0.99, 0.01, 0.0],
+        [0.0, 0.0, 1.0],
+    ]
+    chunks = get_chunker("semantic").chunk(
+        "ignored: pre-computed",
+        {},
+        {
+            "_segments": segments,
+            "_embeddings": embeddings,
+            "breakpoint_percentile": 50,
+        },
+    )
+    assert len(chunks) == 2
+    assert chunks[0].metadata["segment_range"] == [0, 2]
+    assert chunks[1].metadata["segment_range"] == [2, 3]
+
+
+def test_semantic_segment_count_mismatch_rejected() -> None:
+    with pytest.raises(ValueError, match="mismatch"):
+        get_chunker("semantic").chunk(
+            "x",
+            {},
+            {"_segments": ["a", "b"], "_embeddings": [[1.0]]},
+        )
+
+
+def test_semantic_split_segments_helper() -> None:
+    """``split_segments`` produces sentence-grouped candidates >= min_tokens."""
+    from anila_core.ingestion.chunking_plugins.builtins import SemanticChunker
+
+    text = "短句。短句。" * 100
+    segs = SemanticChunker.split_segments(text, min_tokens=64)
+    assert len(segs) >= 2
+    # Every emitted segment is non-empty.
+    assert all(s.strip() for s in segs)
+
+
+# ── Sprint 3 strategies registered ─────────────────────────────────────────
+
+
+def test_sprint3_strategies_registered() -> None:
+    names = {c["name"] for c in list_chunkers()}
+    assert {"pdf-page", "cjk-sentence", "semantic"}.issubset(names)

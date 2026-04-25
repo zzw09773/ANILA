@@ -1,8 +1,19 @@
 # ANILA ingestion-worker
 #
-# Lean image: just python + the worker + anila-core. No system deps beyond
-# what asyncpg / pypdf already pull. We mount the upload dir from the host
-# so the CSP container and the worker share files without duplication.
+# Build context is repo root (set in docker-compose.yml). Three packages
+# get pip-installed in dependency order, each in its own layer so cache
+# survives most code edits:
+#
+#   1. anila-core           — central SDK (chunkers + AgentScopedPgVectorStore)
+#   2. agentic-rag[rag]     — file parser stack (pymupdf4llm, python-docx,
+#                             odfpy, striprtf, Pillow). Worker calls
+#                             ``ParserRegistry.parse(path)``.
+#   3. ingestion-worker     — the Arq handler that wires it all together.
+#
+# Optional ``[docling]`` and ``[zh]`` extras of agentic-rag are NOT
+# installed by default — they each pull >1 GB of model weights / Torch.
+# Set ``DOC_PARSER=docling`` env to enable Docling layout-aware parsing
+# after rebuilding with ``[docling]`` added below.
 
 FROM python:3.11-slim
 
@@ -12,14 +23,16 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Install anila-core first so its layer is cached separately from worker
-# code that changes more often. Both packages are copied in editable mode
-# because we want code changes (during dev) to land without rebuilds; the
-# image is a development-shape one for now, not optimised for prod size.
+# Install in dependency order. anila-core / AgenticRAG change less often
+# than worker code, so their layers stay cached on most rebuilds.
 COPY anila-core /tmp/anila-core
-COPY ingestion-worker /tmp/ingestion-worker
+RUN pip install /tmp/anila-core
 
-RUN pip install /tmp/anila-core /tmp/ingestion-worker
+COPY AgenticRAG /tmp/AgenticRAG
+RUN pip install '/tmp/AgenticRAG[rag]'
+
+COPY ingestion-worker /tmp/ingestion-worker
+RUN pip install /tmp/ingestion-worker
 
 # Default upload dir — overridden by env / volume mount in compose.
 RUN mkdir -p /var/anila/ingestion-uploads

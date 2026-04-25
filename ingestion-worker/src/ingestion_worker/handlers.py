@@ -177,11 +177,35 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         text, parse_meta = extract_text(meta["filename"], blob, meta["mime_type"])
 
         # 2. Chunk — bounded by document size, also fast.
+        # Semantic strategies need embeddings up-front: pre-split into
+        # candidate segments, embed each, then call ``chunk()`` with the
+        # embeddings stuffed into params. This keeps the chunker
+        # interface pure-sync at the cost of a second embedding pass
+        # (whose tokens we'd compute anyway).
         await _update_document_status(pool, document_id, "chunking")
         chunking_config = meta["chunking_config"] or {"strategy": "hierarchical"}
         strategy = chunking_config.get("strategy", "hierarchical")
-        params = chunking_config.get("params", {})
+        params = dict(chunking_config.get("params", {}))
         chunker = get_chunker(strategy)
+        if getattr(chunker, "requires_embedder", False):
+            from anila_core.ingestion.chunking_plugins.builtins import SemanticChunker
+
+            min_tok = int(params.get("min_segment_tokens", 128))
+            segments = SemanticChunker.split_segments(text, min_tokens=min_tok)
+            params["_segments"] = segments
+            if len(segments) >= 2:
+                # Real path: embed every candidate segment, semantic
+                # chunker does the boundary detection.
+                params["_embeddings"] = await embedder.embed(segments)
+            elif len(segments) == 1:
+                # Single-segment short-circuit. The chunker checks
+                # ``len(segments) == 1`` early and returns one chunk
+                # without touching the embeddings list, but we still
+                # need the count to match (or emit a dummy entry to
+                # satisfy the mismatch guard).
+                params["_embeddings"] = [[]]
+            else:
+                params["_embeddings"] = []
         chunks = chunker.chunk(text, parse_meta, params)
         if not chunks:
             await _update_document_status(

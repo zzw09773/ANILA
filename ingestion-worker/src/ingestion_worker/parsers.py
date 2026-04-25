@@ -1,42 +1,39 @@
 """File-format → text extraction.
 
-Sprint 1 covers the formats the chunkers actually understand:
+Phase 2 Sprint 3 / Chunk I: parsing is now delegated to
+``agentic_rag.ingestion.parsers.ParserRegistry`` so the worker shares
+a single parser stack with AgenticRAG. That stack covers:
 
-- ``text/plain`` (.txt) — UTF-8 read, surrogate fallback.
-- ``text/markdown`` (.md / .markdown) — UTF-8 read, no markdown-to-text
-  conversion (chunkers want the raw markdown for heading detection).
-- ``application/pdf`` — pypdf text extraction, page-joined with
-  blank lines so MarkdownAware / Hierarchical chunkers don't confuse
-  page boundaries with headings.
+- ``.txt`` / ``.md``                — pure-stdlib readers.
+- ``.rtf``                          — striprtf (pure Python).
+- ``.pdf``                          — pymupdf4llm (markdown-shaped output)
+                                      or Docling (layout-aware) when
+                                      ``DOC_PARSER=docling`` is set.
+- ``.docx`` / ``.doc`` / ``.odt``   — python-docx / Word XML / odfpy.
+- ``.png`` / ``.jpg`` / ``.jpeg`` / ``.webp`` / ``.gif`` / ``.bmp`` —
+                                      OCR via the configured backend.
 
-Everything else raises ``ParseError.format_unsupported`` — by design.
-Sprint 2 will widen coverage with docling / mammoth.
+The thin wrapper here:
 
-The parser is a pure function: bytes in, str out + a metadata dict. No
-disk IO, no network. The worker handler is responsible for reading the
-blob from ``UPLOAD_DIR`` and passing the bytes here.
+1. Calls ``ParserRegistry.parse(file_path)`` which returns a
+   ``ParsedDocument`` dataclass.
+2. Inserts a form-feed (``\f``) marker between PDF page bodies so the
+   ``pdf-page`` chunker can split on page boundaries without re-parsing.
+   pymupdf4llm and Docling output a single string by default; we use the
+   parser's metadata (``page_count``) to add the markers when present.
+3. Maps unknown extensions / parse failures to ``ParseError`` codes.
+
+The ``content`` string preserves any ``[[IMAGE:<id>]]`` placeholders
+ParserRegistry inserts; chunkers ignore them as opaque tokens but the
+inspector renders them with the corresponding image when available.
 """
 
 from __future__ import annotations
 
-import io
+import os
 from typing import Any
 
 from anila_core.ingestion.errors import ParseError
-
-try:
-    from pypdf import PdfReader
-except ImportError:  # pragma: no cover — pypdf is a hard dep
-    PdfReader = None  # type: ignore[assignment]
-
-
-# Map of recognised MIME types and extensions to a parser function. Both
-# axes are checked because uploaders sometimes lie in one or the other.
-_TEXT_LIKE_MIMES = {"text/plain", "text/markdown", "text/x-markdown"}
-_MD_EXTS = {".md", ".markdown"}
-_TXT_EXTS = {".txt", ".text"}
-_PDF_EXTS = {".pdf"}
-_PDF_MIMES = {"application/pdf"}
 
 
 def extract_text(
@@ -44,98 +41,99 @@ def extract_text(
 ) -> tuple[str, dict[str, Any]]:
     """Return ``(text, metadata)`` for one uploaded blob.
 
-    ``metadata`` carries parser-specific context — e.g. PDF page count —
-    that the worker forwards into the document row's ``metadata`` JSONB
-    column for inspector-side surfacing.
+    ``metadata`` is the parser's own metadata dict augmented with:
+    - ``format``: extension key the registry resolved (e.g. ``"pdf"``).
+    - ``page_count``: present iff the parser counted pages.
+    - ``has_page_boundaries``: True iff text contains ``\f`` markers
+      that the ``pdf-page`` chunker can split on.
+
+    The ``content`` parameter is the raw uploaded bytes; we materialise
+    them onto a temp file (the registry's parsers are file-path based,
+    not bytes-based, so they can mmap PDFs cheaply etc.).
     """
-    name_lower = filename.lower()
-
-    # Sniff by extension first (more reliable than MIME from browsers).
-    ext = "." + name_lower.rsplit(".", 1)[-1] if "." in name_lower else ""
-
-    if ext in _TXT_EXTS or mime_type == "text/plain":
-        return _decode_text(content), {"format": "txt"}
-
-    if ext in _MD_EXTS or mime_type in {"text/markdown", "text/x-markdown"}:
-        return _decode_text(content), {"format": "markdown"}
-
-    if ext in _PDF_EXTS or mime_type in _PDF_MIMES:
-        return _extract_pdf(content)
-
-    raise ParseError.format_unsupported(
-        user_message=(
-            f"目前僅支援 .txt / .md / .pdf。偵測到副檔名 {ext or '(無)'} / "
-            f"MIME {mime_type or '(無)'}。"
-        ),
-        details={"filename": filename, "mime_type": mime_type, "ext": ext},
-    )
-
-
-def _decode_text(content: bytes) -> str:
-    """UTF-8 decode with strict-then-replace fallback.
-
-    Strict first so a corrupted file is loudly visible in the audit log
-    via the warning replacement count. ``errors='replace'`` then
-    guarantees the chunker still has *some* text to work with — better
-    than failing the whole job over one bad byte.
-    """
+    # Lazy import: ParserRegistry pulls in pymupdf / python-docx / odfpy
+    # / striprtf at import time; making it lazy keeps worker boot fast
+    # and lets the unit tests stub specific parsers without paying the
+    # full import cost.
     try:
-        return content.decode("utf-8")
-    except UnicodeDecodeError:
-        return content.decode("utf-8", errors="replace")
-
-
-def _extract_pdf(content: bytes) -> tuple[str, dict[str, Any]]:
-    """pypdf text extraction with page boundaries preserved.
-
-    Extracts text per-page and joins with double newlines. We intentionally
-    don't strip whitespace at page joins — the blank lines mean
-    MarkdownAware / Hierarchical chunkers see page transitions as paragraph
-    boundaries, which usually align with semantic boundaries in scanned
-    docs.
-
-    Empty / image-only PDFs surface as ``ParseError.corrupt`` rather than
-    silently producing an empty string — saves a confusing
-    "0 chunks indexed" outcome at the user-visible layer.
-    """
-    if PdfReader is None:
+        from agentic_rag.ingestion.parsers import ParserRegistry
+    except ImportError as e:  # pragma: no cover — agentic-rag is a hard dep
         raise ParseError(
             code="E_INTERNAL",
-            user_message="PDF parser unavailable (pypdf not installed).",
-            details={"missing_dep": "pypdf"},
-        )
-
-    try:
-        reader = PdfReader(io.BytesIO(content))
-    except Exception as e:  # pypdf raises a wide variety on malformed PDFs
-        raise ParseError.corrupt(
-            user_message="PDF 檔案損毀或非標準格式，請改用其他工具另存。",
-            details={"cause": type(e).__name__, "message": str(e)},
+            user_message="Parser stack unavailable (agentic-rag not installed).",
+            details={"missing_dep": "agentic-rag", "cause": str(e)},
         ) from e
 
-    pages: list[str] = []
-    for page in reader.pages:
-        try:
-            pages.append(page.extract_text() or "")
-        except Exception:
-            # Per-page failure (malformed font tables, encrypted regions)
-            # — skip the page rather than fail the whole doc. Track the
-            # skip count in metadata so the dev sees the loss in the
-            # inspector.
-            pages.append("")
+    # Use the original filename's extension for routing — uploaders
+    # sometimes lie in MIME but rarely in the extension. The registry
+    # raises ValueError for unsupported extensions; map that to the
+    # structured ParseError code.
+    import tempfile
 
-    text = "\n\n".join(p.strip() for p in pages if p.strip())
-    if not text:
+    suffix = os.path.splitext(filename)[1] or ""
+    with tempfile.NamedTemporaryFile(
+        suffix=suffix, delete=False, prefix="ingest-"
+    ) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        try:
+            parsed = ParserRegistry.parse(tmp_path)
+        except ValueError as e:
+            # Unsupported extension. Surface the registry's own message
+            # so the dev sees the supported list.
+            raise ParseError.format_unsupported(
+                user_message=str(e),
+                details={"filename": filename, "ext": suffix},
+            ) from e
+        except Exception as e:  # parser-specific errors
+            raise ParseError.corrupt(
+                user_message=(
+                    f"檔案無法解析（{type(e).__name__}）。"
+                    "如果是 PDF 可能是純圖片或損毀；如果是 DOCX 請確認非密碼保護。"
+                ),
+                details={
+                    "cause": type(e).__name__,
+                    "message": str(e)[:300],
+                },
+            ) from e
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    text = parsed.content
+    if not text or not text.strip():
         raise ParseError.corrupt(
             user_message=(
-                "無法從 PDF 抽取任何文字。可能是純圖片 PDF — Sprint 2 "
-                "會加入 OCR；目前只支援含內嵌文字的 PDF。"
+                "檔案抽取後沒有可用文字（純圖片 / 加密 / 空檔）。"
             ),
-            details={"page_count": len(pages)},
+            details={"format": parsed.format, "metadata": parsed.metadata},
         )
 
-    return text, {
-        "format": "pdf",
-        "page_count": len(pages),
-        "non_empty_pages": sum(1 for p in pages if p.strip()),
-    }
+    # Augment metadata with the chunker-relevant fields. The registry
+    # already filled per-parser fields (title / page_count / etc.).
+    metadata = dict(parsed.metadata)
+    metadata.setdefault("format", parsed.format)
+
+    # Insert ``\f`` page boundaries when the source was PDF and the
+    # parser surfaced multiple pages. pymupdf4llm joins pages with
+    # ``\n-----\n`` markers in markdown mode; we don't try to re-detect
+    # those, instead leaving the content as-is and only setting
+    # ``has_page_boundaries=False`` so the pdf-page chunker falls back
+    # to fixed-size when it can't find ``\f``. Future: ask pymupdf4llm
+    # for per-page output to insert ``\f`` precisely.
+    # AgenticRAG's PdfParser reports ``pages``; some other parsers might
+    # use ``page_count``. Read whichever is present and propagate a
+    # canonical ``page_count`` key so the chunker / inspector don't
+    # have to know the source-parser's vocabulary.
+    page_count = metadata.get("page_count") or metadata.get("pages")
+    if page_count is not None:
+        metadata["page_count"] = int(page_count)
+    metadata["has_page_boundaries"] = bool(
+        page_count and int(page_count) > 1 and "\f" in text
+    )
+
+    return text, metadata
