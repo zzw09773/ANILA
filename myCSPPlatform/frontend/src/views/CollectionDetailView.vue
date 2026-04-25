@@ -19,16 +19,57 @@
       <input
         ref="fileInput"
         type="file"
-        accept=".txt,.md,.markdown,.pdf,text/plain,text/markdown,application/pdf"
+        accept=".txt,.md,.markdown,.pdf,.docx,.doc,.odt,.rtf,text/plain,text/markdown,application/pdf"
         @change="onFilePicked"
         style="display: none"
       />
+      <input
+        ref="zipInput"
+        type="file"
+        accept=".zip,application/zip"
+        @change="onZipPicked"
+        style="display: none"
+      />
       <button class="primary" @click="$refs.fileInput.click()" :disabled="uploading">
-        {{ uploading ? `上傳中… ${Math.round(progress * 100)}%` : '＋ 上傳 .txt / .md / .pdf' }}
+        {{ uploading ? `上傳中… ${Math.round(progress * 100)}%` : '＋ 上傳單檔' }}
       </button>
-      <p class="hint">或拖檔到這裡。Sprint 1 上限 50 MB。</p>
+      <button class="ghost" @click="$refs.zipInput.click()" :disabled="uploading">
+        📦 上傳 zip（多檔）
+      </button>
+      <label class="toggle">
+        <input type="checkbox" v-model="preserveFolderStructure" />
+        <span>保留資料夾路徑（zip）</span>
+      </label>
+      <p class="hint">或拖檔到這裡。單檔 ≤ 50 MB；zip ≤ 500 MB / 200 files。</p>
       <div v-if="uploadError" class="banner error inline">{{ uploadError }}</div>
     </section>
+
+    <!-- Zip result summary modal -->
+    <div v-if="zipResult" class="modal-overlay" @click.self="zipResult = null">
+      <div class="modal">
+        <h2>Zip 上傳結果</h2>
+        <dl class="zip-summary">
+          <div><dt>檔案總數</dt><dd>{{ zipResult.files_in_archive }}</dd></div>
+          <div class="enq"><dt>已 enqueue</dt><dd>{{ zipResult.enqueued }}</dd></div>
+          <div class="dup"><dt>重複（sha256）</dt><dd>{{ zipResult.duplicates }}</dd></div>
+          <div class="skip"><dt>跳過</dt><dd>{{ zipResult.skipped }}</dd></div>
+          <div class="err" v-if="zipResult.errors"><dt>錯誤</dt><dd>{{ zipResult.errors }}</dd></div>
+        </dl>
+        <details>
+          <summary>逐檔結果（{{ zipResult.results.length }}）</summary>
+          <ul class="zip-results">
+            <li v-for="r in zipResult.results" :key="r.filename" :class="r.status">
+              <span class="name">{{ r.filename }}</span>
+              <span class="badge" :class="r.status">{{ r.status }}</span>
+              <span v-if="r.detail" class="detail">{{ r.detail }}</span>
+            </li>
+          </ul>
+        </details>
+        <div class="modal-actions">
+          <button class="primary" @click="zipResult = null">關閉</button>
+        </div>
+      </div>
+    </div>
 
     <!-- Documents list (left) + chunks panel (right when expanded) -->
     <section v-if="collection" class="split">
@@ -126,6 +167,7 @@ import { getCollection } from '../api/ingestionCollections'
 import {
   listDocuments,
   uploadDocument,
+  uploadZip,
   listDocumentChunks,
   documentBlobUrl,
   getChunkEmbeddingDebug,
@@ -146,6 +188,8 @@ const loadingChunks = ref(false)
 const uploading = ref(false)
 const progress = ref(0)
 const uploadError = ref('')
+const preserveFolderStructure = ref(false)
+const zipResult = ref(null)
 
 const showVectorDebug = ref(false)
 const vecDebug = ref({})
@@ -292,9 +336,20 @@ async function onFilePicked(e) {
   e.target.value = ''  // allow re-uploading same name after pipeline
 }
 
+async function onZipPicked(e) {
+  const file = e.target.files?.[0]
+  if (file) await doZipUpload(file)
+  e.target.value = ''
+}
+
 async function onDrop(e) {
   const file = e.dataTransfer?.files?.[0]
-  if (file) await doUpload(file)
+  if (!file) return
+  if (file.name.toLowerCase().endsWith('.zip')) {
+    await doZipUpload(file)
+  } else {
+    await doUpload(file)
+  }
 }
 
 async function doUpload(file) {
@@ -303,6 +358,28 @@ async function doUpload(file) {
   uploadError.value = ''
   try {
     await uploadDocument(collectionId.value, file, (p) => { progress.value = p })
+    await loadDocs()
+  } catch (e) {
+    uploadError.value = e.response?.data?.detail || e.message
+  } finally {
+    uploading.value = false
+    progress.value = 0
+  }
+}
+
+async function doZipUpload(file) {
+  uploading.value = true
+  progress.value = 0
+  uploadError.value = ''
+  zipResult.value = null
+  try {
+    const { data } = await uploadZip(
+      collectionId.value,
+      file,
+      { preserveFolderStructure: preserveFolderStructure.value },
+      (p) => { progress.value = p },
+    )
+    zipResult.value = data
     await loadDocs()
   } catch (e) {
     uploadError.value = e.response?.data?.detail || e.message
@@ -422,4 +499,27 @@ button.ghost { background: #f3f4f6; color: #374151; border: 1px solid #d1d5db; }
 .banner.muted { background: #f9fafb; color: #6b7280; }
 .banner.error { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
 .banner.inline { margin-top: 0.5rem; }
+
+/* Zip result modal */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
+.modal { background: #fff; padding: 1.5rem; border-radius: 6px; min-width: 480px; max-width: 90vw; max-height: 80vh; overflow-y: auto; }
+.modal h2 { margin: 0 0 1rem; font-size: 1.1rem; }
+.modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1rem; }
+.zip-summary { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem 1rem; margin-bottom: 1rem; }
+.zip-summary > div { display: flex; flex-direction: column; padding: 0.5rem 0.75rem; border-radius: 4px; background: #f9fafb; }
+.zip-summary dt { font-size: 0.7rem; color: #9ca3af; text-transform: uppercase; }
+.zip-summary dd { margin: 0; font-weight: 600; font-size: 1.1rem; }
+.zip-summary .enq { background: #d1fae5; }
+.zip-summary .dup { background: #fef3c7; }
+.zip-summary .skip { background: #e5e7eb; }
+.zip-summary .err { background: #fee2e2; }
+.zip-results { list-style: none; padding: 0; margin: 0.5rem 0; max-height: 400px; overflow-y: auto; font-size: 0.85rem; }
+.zip-results li { display: grid; grid-template-columns: 1fr auto auto; gap: 0.5rem; padding: 0.4rem 0.5rem; border-bottom: 1px solid #f3f4f6; align-items: center; }
+.zip-results li.error, .zip-results li.too_large { background: #fef2f2; }
+.zip-results .name { word-break: break-all; }
+.zip-results .detail { color: #6b7280; font-size: 0.8rem; }
+.zip-results .badge.enqueued { background: #d1fae5; color: #065f46; }
+.zip-results .badge.duplicate { background: #fef3c7; color: #92400e; }
+.zip-results .badge.skipped, .zip-results .badge.too_large { background: #e5e7eb; color: #374151; }
+.zip-results .badge.error { background: #fee2e2; color: #991b1b; }
 </style>

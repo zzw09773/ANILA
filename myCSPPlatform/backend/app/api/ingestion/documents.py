@@ -225,6 +225,219 @@ async def upload_document(
     return DocumentResponse.model_validate(doc)
 
 
+class ZipUploadResult(BaseModel):
+    """Per-file outcome of a multi-file zip upload."""
+
+    filename: str
+    document_id: int | None = None
+    arq_job_id: str | None = None
+    status: str  # 'enqueued' | 'duplicate' | 'skipped' | 'too_large' | 'error'
+    detail: str | None = None
+
+
+class ZipUploadResponse(BaseModel):
+    """Aggregated outcome of a single zip upload."""
+
+    files_in_archive: int
+    enqueued: int
+    duplicates: int
+    skipped: int
+    errors: int
+    results: list[ZipUploadResult]
+
+
+@router.post(
+    "/api/ingestion/collections/{collection_id}/documents/zip",
+    response_model=ZipUploadResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def upload_zip(
+    collection_id: int,
+    file: UploadFile = File(...),
+    preserve_folder_structure: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ZipUploadResponse:
+    """Bulk upload via zip archive.
+
+    Each file in the zip becomes a document in the collection. Files
+    that hit the per-file 50 MB cap are reported as ``too_large`` but
+    don't fail the whole upload; same-sha256 duplicates report
+    ``duplicate`` and skip enqueue. Folders / dotfiles (``__MACOSX/``,
+    ``.DS_Store``) are filtered out.
+
+    ``preserve_folder_structure``: when True, prepends the in-zip path
+    to ``filename`` so the inspector can group by folder. When False
+    (default), only the basename is kept — useful when the zip was
+    created with a "compress everything in this folder" UI that
+    introduces a useless top-level wrapper.
+
+    Hard limit: 200 files per zip. Bigger archives should be split or
+    use the future Sprint 4 streaming API.
+    """
+    import zipfile
+    from io import BytesIO
+
+    coll = _resolve_collection(db, current_user, collection_id)
+
+    archive_bytes = await file.read()
+    if len(archive_bytes) > 500 * 1024 * 1024:  # 500 MB cap on archive
+        raise HTTPException(status_code=413, detail="Zip archive > 500 MB")
+    try:
+        zf = zipfile.ZipFile(BytesIO(archive_bytes))
+    except zipfile.BadZipFile as e:
+        raise HTTPException(status_code=400, detail=f"Not a valid zip: {e}") from e
+
+    # Filter to actual file entries; reject anything that smells dodgy.
+    members = [
+        m for m in zf.infolist()
+        if not m.is_dir()
+        and not m.filename.startswith("__MACOSX/")
+        and not os.path.basename(m.filename).startswith(".")
+    ]
+    if len(members) > 200:
+        raise HTTPException(
+            status_code=413,
+            detail=f"{len(members)} files in archive; limit is 200 per zip",
+        )
+
+    results: list[ZipUploadResult] = []
+    enqueued = duplicates = skipped = errors = 0
+
+    for member in members:
+        # Choose the document filename based on preserve_folder_structure.
+        in_zip_path = member.filename
+        out_name = (
+            in_zip_path if preserve_folder_structure
+            else os.path.basename(in_zip_path)
+        )
+
+        try:
+            content = zf.read(member)
+        except Exception as e:
+            errors += 1
+            results.append(ZipUploadResult(
+                filename=in_zip_path, status="error",
+                detail=f"unzip failed: {type(e).__name__}",
+            ))
+            continue
+
+        size = len(content)
+        if size == 0:
+            skipped += 1
+            results.append(ZipUploadResult(
+                filename=out_name, status="skipped", detail="empty file",
+            ))
+            continue
+        if size > _MAX_BYTES:
+            skipped += 1
+            results.append(ZipUploadResult(
+                filename=out_name, status="too_large",
+                detail=f"{size:,} bytes exceeds {_MAX_BYTES:,} limit",
+            ))
+            continue
+
+        sha256 = hashlib.sha256(content).hexdigest()
+        storage_path = _persist_blob(content, sha256)
+
+        # Check for duplicate (same sha within collection).
+        existing = (
+            db.query(IngestionDocument)
+            .filter(
+                IngestionDocument.collection_id == collection_id,
+                IngestionDocument.sha256 == sha256,
+            )
+            .first()
+        )
+        if existing is not None:
+            duplicates += 1
+            results.append(ZipUploadResult(
+                filename=out_name, status="duplicate",
+                document_id=existing.id,
+                detail="same sha already in collection",
+            ))
+            continue
+
+        # Sniff a MIME from the filename — UploadFile.content_type is the
+        # zip's content_type, not per-member.
+        import mimetypes
+        mime, _ = mimetypes.guess_type(out_name)
+
+        doc = IngestionDocument(
+            collection_id=collection_id,
+            filename=out_name,
+            sha256=sha256,
+            mime_type=mime,
+            bytes=size,
+            storage_path=storage_path,
+            status="pending",
+            chunk_count=0,
+            uploaded_by=current_user.id,
+        )
+        db.add(doc)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            duplicates += 1
+            results.append(ZipUploadResult(
+                filename=out_name, status="duplicate",
+                detail="raced with concurrent upload",
+            ))
+            continue
+        db.refresh(doc)
+
+        try:
+            arq_job_id = await enqueue_ingest_document(doc.id)
+        except Exception as e:
+            errors += 1
+            results.append(ZipUploadResult(
+                filename=out_name, status="error",
+                document_id=doc.id,
+                detail=f"enqueue failed: {type(e).__name__}",
+            ))
+            continue
+
+        job = IngestionJob(
+            arq_job_id=arq_job_id,
+            collection_id=collection_id,
+            document_id=doc.id,
+            job_type="ingest",
+            status="queued",
+            progress_pct=0,
+            enqueued_by=current_user.id,
+        )
+        db.add(job)
+        db.commit()
+
+        enqueued += 1
+        results.append(ZipUploadResult(
+            filename=out_name, status="enqueued",
+            document_id=doc.id, arq_job_id=arq_job_id,
+        ))
+
+    log_audit_event(
+        db,
+        actor=current_user,
+        action="ingestion_document_upload_zip",
+        resource_type="ingestion_collection",
+        resource_id=collection_id,
+        metadata={
+            "files_in_archive": len(members),
+            "enqueued": enqueued, "duplicates": duplicates,
+            "skipped": skipped, "errors": errors,
+        },
+    )
+    return ZipUploadResponse(
+        files_in_archive=len(members),
+        enqueued=enqueued,
+        duplicates=duplicates,
+        skipped=skipped,
+        errors=errors,
+        results=results,
+    )
+
+
 @router.get(
     "/api/ingestion/collections/{collection_id}/documents",
     response_model=list[DocumentResponse],

@@ -36,6 +36,33 @@ export const uploadDocument = (collectionId, file, onProgress) => {
 }
 
 /**
+ * Bulk upload via zip archive. Returns the per-file outcome list so the
+ * UI can show "5 enqueued / 2 duplicates / 1 too_large".
+ *
+ * @param {number} collectionId
+ * @param {File} file  must be a .zip
+ * @param {{ preserveFolderStructure?: boolean }} [opts]
+ * @param {(progress: number) => void} [onProgress]
+ */
+export const uploadZip = (collectionId, file, opts = {}, onProgress) => {
+  const form = new FormData()
+  form.append('file', file)
+  return client.post(
+    `/api/ingestion/collections/${collectionId}/documents/zip`,
+    form,
+    {
+      params: {
+        preserve_folder_structure: opts.preserveFolderStructure ? 'true' : 'false',
+      },
+      headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress: onProgress
+        ? (e) => { if (e.total) onProgress(e.loaded / e.total) }
+        : undefined,
+    },
+  )
+}
+
+/**
  * Inspector chunks list — paginated. Returns ChunkRow[].
  */
 export const listDocumentChunks = (documentId, params) =>
