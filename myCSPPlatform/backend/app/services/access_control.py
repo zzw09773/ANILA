@@ -7,20 +7,21 @@ endpoints that surface or gate on a platform_link MUST go through this module
     1. Link must be active (``is_active = True``). Else: deny.
     2. ``role`` gate — if ``link.required_roles`` is non-empty, ``user.role``
        must be in it. Else: deny. Empty list means the gate is open.
-    3. Admin bypass — if ``user.role == 'admin'``, allow (the bypass sits
-       AFTER step 1+2 deliberately so admins still don't see deactivated
-       links unless they explicitly opt into ``include_inactive``).
-    4. Grant check — must have an active grant (``revoked_at IS NULL``)
+    3. Admin bypass — if ``user.role == 'admin'``, allow.
+    4. Public bypass — if ``link.is_public`` is True, allow. Public links
+       still respect step 2's role gate (so "public to developers only"
+       works), but they skip the per-user / per-department grant check.
+    5. Grant check — must have an active grant (``revoked_at IS NULL``)
        targeting this link, EITHER user-level (``user_id = me``) OR
        department-level (``department_id = my_department``).
 
-This means access is "default deny" — no automatic open access just because a
-link exists. The role gate is the cheap pre-filter; the grant check is the
-authoritative per-user / per-department opt-in.
+This means access is "default deny" for non-public links — no automatic open
+access just because a link exists. The role gate is the cheap pre-filter;
+the grant check is the authoritative per-user / per-department opt-in.
 
 See docs/multi-service-integration-plan.md §7.5 for the design rationale and
-the migration in 0012_add_service_access_control.py for the underlying
-schema.
+the migrations 0012_add_service_access_control.py + 0013_add_platform_link_is_public.py
+for the underlying schema.
 """
 
 from __future__ import annotations
@@ -61,6 +62,8 @@ def can_access_link(db: Session, user: User, link: PlatformLink) -> bool:
         return False
     if user.role == "admin":
         return True
+    if link.is_public:
+        return True
     return link.id in _active_link_ids_for_user(db, user)
 
 
@@ -94,9 +97,8 @@ def accessible_links_for(
         required = link.required_roles or []
         if required and user.role not in required:
             continue
-        if link.id not in grant_set:
-            continue
-        out.append(link)
+        if link.is_public or link.id in grant_set:
+            out.append(link)
     return out
 
 

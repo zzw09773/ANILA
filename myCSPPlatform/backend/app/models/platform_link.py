@@ -14,6 +14,12 @@ class PlatformLink(Base):
     description = Column(String(255), nullable=True)
     sort_order = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
+    # When True, the link is visible to anyone passing the role gate — no
+    # per-user / per-department grant required. Set on portal-style links
+    # (the ANILA dashboard itself) and Help pages. Sensitive services
+    # (NotebookLM / codeserver / GitLab) leave this False so they require
+    # an explicit ServiceAccessGrant. New rows default to False (private).
+    is_public = Column(Boolean, nullable=False, default=False, server_default="false")
     # JSONB array of role names. [] = everyone (default); ['admin'] = admin
     # only; ['admin','developer'] = either role passes the gate. Required-role
     # check is the cheap first filter before the per-user/per-department

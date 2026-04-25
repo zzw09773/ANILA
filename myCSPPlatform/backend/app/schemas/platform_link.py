@@ -27,6 +27,7 @@ class PlatformLinkCreate(BaseModel):
     icon: str | None = None
     description: str | None = None
     sort_order: int = 0
+    is_public: bool = False
     required_roles: list[str] = Field(default_factory=list)
 
     @field_validator("required_roles")
@@ -42,6 +43,7 @@ class PlatformLinkUpdate(BaseModel):
     description: str | None = None
     sort_order: int | None = None
     is_active: bool | None = None
+    is_public: bool | None = None
     required_roles: list[str] | None = None
 
     @field_validator("required_roles")
@@ -58,6 +60,7 @@ class PlatformLinkResponse(BaseModel):
     description: str | None
     sort_order: int
     is_active: bool
+    is_public: bool
     required_roles: list[str]
     created_at: datetime
 
