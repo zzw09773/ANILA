@@ -1,23 +1,31 @@
-"""Agent-scoped pgvector store (docs/ingestion-platform-design.md §3.3 Layer 3).
+"""Collection-scoped pgvector store (docs/ingestion-platform-design.md §3.3 Layer 3).
 
-The single sanctioned write/read path into ``document_chunks``. Per the
-4-layer defence:
+Sprint 4 refactor renamed this class from ``AgentScopedPgVectorStore``
+when the platform's ownership model moved from agent-scoped collections
+to collection-as-first-class. The defence-in-depth shape is unchanged,
+just keyed differently:
 
-- Layer 1 (schema): ``agent_id NOT NULL`` + CHECK constraint, set in
-  migration 0014.
-- Layer 2 (RLS): ``CREATE POLICY chunks_agent_isolation`` filtering on
-  ``current_setting('anila.agent_id')``, also from migration 0014.
+- Layer 1 (schema): ``document_chunks.collection_id`` is NOT NULL + FK
+  (set in migration 0014; the legacy ``agent_id`` column was dropped in
+  migration 0019).
+- Layer 2 (RLS): ``CREATE POLICY chunks_collection_isolation`` filtering
+  on ``current_setting('anila.collection_id')`` (migration 0019).
 - **Layer 3 (this class)**: constructor refuses anything but a positive
-  int ``agent_id``; every connection acquired by this store calls
-  ``SET LOCAL anila.agent_id = $self._agent_id`` so RLS is automatically
-  enforced for every query, even ones the developer forgot to scope.
+  int ``collection_id``; every connection acquired by this store calls
+  ``SET LOCAL anila.collection_id = $self._collection_id`` so RLS is
+  automatically enforced for every query, even ones the developer
+  forgot to scope.
 
-Constructing this class without a valid ``agent_id`` is a programming
-error — fail fast at construction so we never get to a state where a
-caller could accidentally run an unscoped query.
+Constructing this class without a valid ``collection_id`` is a
+programming error — fail fast at construction so we never get to a
+state where a caller could accidentally run an unscoped query.
+
+Back-compat alias ``AgentScopedPgVectorStore`` is preserved for one
+release cycle; consumers should switch to ``CollectionScopedPgVectorStore``.
 
 Sprint 1 scope: index / search / list / delete. Sprint 2 adds hybrid
-keyword + vector search; Sprint 3 adds evaluator-side bulk operations.
+keyword + vector search; Sprint 3 adds evaluator-side bulk operations;
+Sprint 4 dropped agent_id throughout.
 """
 
 from __future__ import annotations
@@ -35,43 +43,42 @@ from anila_core.models.ingestion import IngestionChunk, SearchHit
 from anila_core.storage.adapters.pg_pool import PgPool
 
 
-class AgentScopedPgVectorStore:
-    """Read/write pgvector chunks under a single agent's RLS scope.
+class CollectionScopedPgVectorStore:
+    """Read/write pgvector chunks under a single collection's RLS scope.
 
-    Construct one per (agent, request)-style operation. Cheap to
+    Construct one per (collection, request)-style operation. Cheap to
     construct; the heavy resource (pool) is shared across instances.
 
     Concurrency model: each ``index_chunks`` / ``similarity_search``
-    call acquires a fresh connection from the pool, sets ``anila.agent_id``
-    locally on that connection, and releases it. ``SET LOCAL`` is
-    transactional, so as long as the connection isn't reused outside a
-    transaction we get the right scoping. The internal ``_acquire``
-    context manager wraps everything in an explicit transaction to make
-    that contract impossible to violate.
+    call acquires a fresh connection from the pool, sets
+    ``anila.collection_id`` locally on that connection, and releases it.
+    ``SET LOCAL`` is transactional, so as long as the connection isn't
+    reused outside a transaction we get the right scoping. The internal
+    ``_acquire`` context manager wraps everything in an explicit
+    transaction to make that contract impossible to violate.
     """
 
-    def __init__(self, pool: PgPool, agent_id: int) -> None:
+    def __init__(self, pool: PgPool, collection_id: int) -> None:
         # Refuse anything that isn't clearly a positive Postgres BIGINT.
-        # `bool` is a subclass of `int`, so explicitly rule it out — a
-        # caller passing ``True`` (the result of some accidental boolean)
-        # must not silently scope to agent_id = 1.
-        if isinstance(agent_id, bool) or not isinstance(agent_id, int):
+        # ``bool`` is a subclass of int in Python; rule it out so a stray
+        # ``True`` doesn't silently scope to collection_id = 1.
+        if isinstance(collection_id, bool) or not isinstance(collection_id, int):
             raise ValueError(
-                f"agent_id must be a positive int, got {type(agent_id).__name__} "
-                f"{agent_id!r}"
+                f"collection_id must be a positive int, got "
+                f"{type(collection_id).__name__} {collection_id!r}"
             )
-        if agent_id <= 0:
-            raise ValueError(f"agent_id must be > 0, got {agent_id}")
+        if collection_id <= 0:
+            raise ValueError(f"collection_id must be > 0, got {collection_id}")
         self._pool = pool
-        self._agent_id = agent_id
+        self._collection_id = collection_id
 
     @property
-    def agent_id(self) -> int:
-        return self._agent_id
+    def collection_id(self) -> int:
+        return self._collection_id
 
     @asynccontextmanager
     async def _acquire(self) -> AsyncIterator[asyncpg.Connection]:
-        """Acquire a connection scoped to this agent.
+        """Acquire a connection scoped to this collection.
 
         Wraps the work in an explicit transaction because ``SET LOCAL``
         only persists within a transaction — without ``BEGIN``, asyncpg
@@ -82,13 +89,11 @@ class AgentScopedPgVectorStore:
             tr = conn.transaction()
             await tr.start()
             try:
-                # ``SET LOCAL`` does not support parameter binding ($1 etc.)
-                # — PostgreSQL parses it as a configuration command, not a
-                # DML statement. We f-string the integer in directly.
-                # Safe because ``__init__`` rejects anything that's not
-                # a positive int — the value here is statically a Python int.
+                # ``SET LOCAL`` doesn't accept parameter binding ($1) —
+                # Postgres parses it as a config command, not DML.
+                # F-string is safe because ``__init__`` rejects non-int.
                 await conn.execute(
-                    f"SET LOCAL anila.agent_id = {int(self._agent_id)}"
+                    f"SET LOCAL anila.collection_id = {int(self._collection_id)}"
                 )
                 yield conn
                 await tr.commit()
@@ -100,18 +105,21 @@ class AgentScopedPgVectorStore:
 
     async def index_chunks(
         self,
-        collection_id: int,
         document_id: int,
         chunks: list[ChunkResult],
         embeddings: list[list[float]],
     ) -> int:
         """Bulk-insert chunks with their embeddings.
 
+        Sprint 4: ``collection_id`` is no longer a per-call argument —
+        the store is constructed against one collection, so all writes
+        land in that scope. Pass ``document_id`` only.
+
         Returns the number of rows written. Caller-supplied
         ``len(chunks) == len(embeddings)`` is enforced.
 
-        On constraint violation (e.g. duplicate ``chunk_key`` within
-        collection) we re-raise the asyncpg error wrapped in
+        On constraint violation (duplicate ``chunk_key`` within the
+        document) we re-raise the asyncpg error wrapped in
         ``StoreError`` so the worker's error taxonomy stays uniform.
         """
         if len(chunks) != len(embeddings):
@@ -122,20 +130,16 @@ class AgentScopedPgVectorStore:
         if not chunks:
             return 0
 
-        # Build a list of tuples for executemany — each row is
-        # (collection_id, agent_id, document_id, chunk_key, content,
-        #  embedding, metadata_dict, token_count). The jsonb codec is
-        # registered on every connection (PgPool._init_connection), so
-        # asyncpg encodes the dict to JSONB on its own — passing a
-        # ``json.dumps`` string would double-encode.
-        # Wrap embeddings in HalfVector so the registered halfvec codec on
-        # the connection serialises them. Passing a bare list[float] would
-        # be interpreted as ``vector`` by asyncpg's codec table and the
-        # INSERT would fail with a type-mismatch on the halfvec(4000) column.
+        # JSONB codec is registered on every connection (PgPool.
+        # _init_connection), so asyncpg encodes the dict to JSONB
+        # on its own — passing a ``json.dumps`` string would
+        # double-encode. HalfVector wraps the float list so the halfvec
+        # codec ships the right binary shape into the halfvec(4000)
+        # column; a bare list[float] would be interpreted as ``vector``
+        # and rejected as a type mismatch.
         rows = [
             (
-                collection_id,
-                self._agent_id,
+                self._collection_id,
                 document_id,
                 ch.chunk_key,
                 ch.content,
@@ -148,12 +152,12 @@ class AgentScopedPgVectorStore:
 
         sql = """
             INSERT INTO document_chunks
-                (collection_id, agent_id, document_id, chunk_key,
+                (collection_id, document_id, chunk_key,
                  content, content_tsv, embedding, metadata, token_count)
             VALUES
-                ($1, $2, $3, $4, $5,
-                 to_tsvector('simple', $5),
-                 $6, $7, $8)
+                ($1, $2, $3, $4,
+                 to_tsvector('simple', $4),
+                 $5, $6, $7)
         """
         try:
             async with self._acquire() as conn:
@@ -170,16 +174,14 @@ class AgentScopedPgVectorStore:
     async def similarity_search(
         self,
         query_embedding: list[float],
-        collection_id: int | None = None,
         top_k: int = 10,
         min_score: float = 0.0,
     ) -> list[SearchHit]:
-        """Vector similarity search scoped to this agent.
+        """Vector similarity search scoped to this collection.
 
-        ``collection_id`` is optional — leaving it None searches all
-        collections owned by the agent (RLS still enforces no leakage
-        across agents). Most callers should pin a collection because
-        prompt-side context conflation across topics hurts retrieval.
+        Sprint 4: dropped the legacy ``collection_id`` per-call argument
+        — the store IS the collection scope. RLS auto-filters via
+        ``anila.collection_id`` GUC set inside ``_acquire()``.
 
         Cosine *similarity* is what we return (1 - cosine_distance), so
         ``min_score`` reads naturally: 0.7 = "at least 70% similar".
@@ -187,102 +189,62 @@ class AgentScopedPgVectorStore:
         if top_k <= 0:
             return []
 
-        # The ANN index is on ``embedding vector_cosine_ops``; ``<=>`` is
-        # cosine distance ([0, 2]). We re-rank with the explicit cosine
-        # similarity expression for the score column so callers can read
-        # higher-is-closer. ``ORDER BY embedding <=> $1`` keeps the
-        # IVFFlat index hot.
-        # Query embedding is also halfvec — wrap so the codec ships the
-        # right binary shape. The cosine ``<=>`` operator works on halfvec
-        # vs halfvec only after both sides are halfvec.
+        # The ANN index is HNSW on ``embedding halfvec_cosine_ops``;
+        # ``<=>`` is cosine distance. We compute 1 - distance for the
+        # score column so callers can read higher-is-closer.
         q = HalfVector(query_embedding)
-        if collection_id is None:
-            sql = """
-                SELECT id, collection_id, agent_id, document_id, chunk_key,
-                       content, metadata, token_count, created_at,
-                       1 - (embedding <=> $1) AS score
-                  FROM document_chunks
-                 WHERE 1 - (embedding <=> $1) >= $2
-                 ORDER BY embedding <=> $1
-                 LIMIT $3
-            """
-            args: tuple[Any, ...] = (q, min_score, top_k)
-        else:
-            sql = """
-                SELECT id, collection_id, agent_id, document_id, chunk_key,
-                       content, metadata, token_count, created_at,
-                       1 - (embedding <=> $1) AS score
-                  FROM document_chunks
-                 WHERE collection_id = $2
-                   AND 1 - (embedding <=> $1) >= $3
-                 ORDER BY embedding <=> $1
-                 LIMIT $4
-            """
-            args = (q, collection_id, min_score, top_k)
-
+        sql = """
+            SELECT id, collection_id, document_id, chunk_key,
+                   content, metadata, token_count, created_at,
+                   1 - (embedding <=> $1) AS score
+              FROM document_chunks
+             WHERE 1 - (embedding <=> $1) >= $2
+             ORDER BY embedding <=> $1
+             LIMIT $3
+        """
         async with self._acquire() as conn:
-            rows = await conn.fetch(sql, *args)
+            rows = await conn.fetch(sql, q, min_score, top_k)
         return [self._row_to_search_hit(r) for r in rows]
 
     async def keyword_search(
         self,
         query: str,
-        collection_id: int | None = None,
         top_k: int = 10,
         tokenized_query: str | None = None,
     ) -> list[SearchHit]:
         """Full-text keyword search via the GIN index on ``content_tsv``.
 
+        Sprint 4: dropped the legacy ``collection_id`` per-call argument.
+
         Two ranking modes:
 
         - When ``tokenized_query`` is provided (e.g. CJK pre-tokenized
-          input, or any caller-shaped tsquery-friendly form), use
-          ``plainto_tsquery`` on it and rank by ``ts_rank_cd``.
+          input), use ``plainto_tsquery`` on it and rank by
+          ``ts_rank_cd``.
         - When only ``query`` is given, use ``plainto_tsquery`` directly
-          on the raw user text. This works fine for languages with
-          whitespace word boundaries; CJK callers should pass
-          ``tokenized_query`` for better recall.
+          on the raw user text. Works fine for whitespace-tokenised
+          languages; CJK callers should pre-tokenise.
 
-        ``score`` on the returned ``SearchHit`` is the ``ts_rank_cd``
-        value (higher = better match) — NOT a [0,1] cosine similarity
-        like ``similarity_search`` returns. Callers that mix the two
-        must be explicit about which axis they're sorting by; RRF
-        merges them by rank position which is dimension-agnostic.
+        ``score`` is ``ts_rank_cd`` — NOT a [0,1] cosine. Callers that
+        mix this with ``similarity_search`` results need to merge by
+        rank position (RRF) rather than score axis.
         """
         if top_k <= 0:
             return []
 
-        # Use tokenized form when given; otherwise let PG tokenize.
         tsquery_input = tokenized_query if tokenized_query else query
-
-        if collection_id is None:
-            sql = """
-                SELECT id, collection_id, agent_id, document_id, chunk_key,
-                       content, metadata, token_count, created_at,
-                       ts_rank_cd(content_tsv, q) AS score
-                  FROM document_chunks,
-                       plainto_tsquery('simple', $1) q
-                 WHERE content_tsv @@ q
-                 ORDER BY score DESC
-                 LIMIT $2
-            """
-            args: tuple[Any, ...] = (tsquery_input, top_k)
-        else:
-            sql = """
-                SELECT id, collection_id, agent_id, document_id, chunk_key,
-                       content, metadata, token_count, created_at,
-                       ts_rank_cd(content_tsv, q) AS score
-                  FROM document_chunks,
-                       plainto_tsquery('simple', $1) q
-                 WHERE collection_id = $2
-                   AND content_tsv @@ q
-                 ORDER BY score DESC
-                 LIMIT $3
-            """
-            args = (tsquery_input, collection_id, top_k)
-
+        sql = """
+            SELECT id, collection_id, document_id, chunk_key,
+                   content, metadata, token_count, created_at,
+                   ts_rank_cd(content_tsv, q) AS score
+              FROM document_chunks,
+                   plainto_tsquery('simple', $1) q
+             WHERE content_tsv @@ q
+             ORDER BY score DESC
+             LIMIT $2
+        """
         async with self._acquire() as conn:
-            rows = await conn.fetch(sql, *args)
+            rows = await conn.fetch(sql, tsquery_input, top_k)
         return [self._row_to_search_hit(r) for r in rows]
 
     async def list_by_document(
@@ -300,10 +262,10 @@ class AgentScopedPgVectorStore:
         debug column behind the inspector's "show vector debug" toggle).
         """
         cols = (
-            "id, collection_id, agent_id, document_id, chunk_key, content, "
+            "id, collection_id, document_id, chunk_key, content, "
             "embedding, metadata, token_count, created_at"
             if include_embedding
-            else "id, collection_id, agent_id, document_id, chunk_key, content, "
+            else "id, collection_id, document_id, chunk_key, content, "
             "metadata, token_count, created_at"
         )
         sql = f"""
@@ -317,39 +279,46 @@ class AgentScopedPgVectorStore:
             rows = await conn.fetch(sql, document_id, limit, offset)
         return [self._row_to_chunk(r, include_embedding=include_embedding) for r in rows]
 
-    async def list_by_collection(
+    async def list_in_collection(
         self,
-        collection_id: int,
         limit: int = 100,
         offset: int = 0,
     ) -> list[IngestionChunk]:
-        """Inspector-side: paginated list of chunks in a collection."""
+        """Inspector-side: paginated list of chunks in this collection.
+
+        Sprint 4 rename (was ``list_by_collection``): the store IS the
+        collection, so the parameter is implicit. RLS does the filtering.
+        """
         sql = """
-            SELECT id, collection_id, agent_id, document_id, chunk_key,
+            SELECT id, collection_id, document_id, chunk_key,
                    content, metadata, token_count, created_at
               FROM document_chunks
-             WHERE collection_id = $1
              ORDER BY id
-             LIMIT $2 OFFSET $3
+             LIMIT $1 OFFSET $2
         """
         async with self._acquire() as conn:
-            rows = await conn.fetch(sql, collection_id, limit, offset)
+            rows = await conn.fetch(sql, limit, offset)
         return [self._row_to_chunk(r, include_embedding=False) for r in rows]
 
     # ── Delete path ─────────────────────────────────────────────────────────
 
     async def delete_document(self, document_id: int) -> int:
-        """Delete every chunk for one document. Returns count deleted."""
+        """Delete every chunk for one document in this collection."""
         sql = "DELETE FROM document_chunks WHERE document_id = $1"
         async with self._acquire() as conn:
             result = await conn.execute(sql, document_id)
         return int(result.split()[-1]) if result.startswith("DELETE ") else 0
 
-    async def delete_collection(self, collection_id: int) -> int:
-        """Delete every chunk for a whole collection. Returns count deleted."""
-        sql = "DELETE FROM document_chunks WHERE collection_id = $1"
+    async def delete_all(self) -> int:
+        """Delete every chunk in this collection. Returns count deleted.
+
+        Sprint 4 rename (was ``delete_collection``): RLS scopes us to
+        the construction-time collection automatically; the SQL no
+        longer carries an explicit collection_id.
+        """
+        sql = "DELETE FROM document_chunks"
         async with self._acquire() as conn:
-            result = await conn.execute(sql, collection_id)
+            result = await conn.execute(sql)
         return int(result.split()[-1]) if result.startswith("DELETE ") else 0
 
     # ── Row mappers ─────────────────────────────────────────────────────────
@@ -362,7 +331,6 @@ class AgentScopedPgVectorStore:
         return IngestionChunk(
             id=row["id"],
             collection_id=row["collection_id"],
-            agent_id=row["agent_id"],
             document_id=row["document_id"],
             chunk_key=row["chunk_key"],
             content=row["content"],
@@ -381,7 +349,6 @@ class AgentScopedPgVectorStore:
             chunk=IngestionChunk(
                 id=row["id"],
                 collection_id=row["collection_id"],
-                agent_id=row["agent_id"],
                 document_id=row["document_id"],
                 chunk_key=row["chunk_key"],
                 content=row["content"],
@@ -391,3 +358,10 @@ class AgentScopedPgVectorStore:
             ),
             score=float(row["score"]),
         )
+
+
+# ── Back-compat alias ───────────────────────────────────────────────────────
+# Sprint 4 renamed the class from AgentScopedPgVectorStore. Existing
+# imports survive one cycle through this alias; new code should use
+# CollectionScopedPgVectorStore directly.
+AgentScopedPgVectorStore = CollectionScopedPgVectorStore

@@ -100,11 +100,15 @@
               <option value="hierarchical">hierarchical（heading 樹 + ancestor context）</option>
               <option value="markdown-aware">markdown-aware（heading + code-fence safe）</option>
               <option value="fixed">fixed（token-budget windowing）</option>
+              <option value="pdf-page">pdf-page（PDF page 邊界，PDF only）</option>
+              <option value="cjk-sentence">cjk-sentence（中文句法 + token merge）</option>
+              <option value="semantic">semantic（embedding distance — 慢但精準）</option>
             </select>
           </label>
           <label class="field">
-            <span>max_leaf_tokens / size</span>
+            <span>{{ tokenLabel }}</span>
             <input type="number" v-model.number="form.maxTokens" min="64" max="8192" />
+            <small class="muted">{{ tokenHint }}</small>
           </label>
           <div class="modal-actions">
             <button type="button" class="ghost" @click="creating = false">取消</button>
@@ -131,7 +135,17 @@ import {
 
 const agents = ref([])
 const loadingAgents = ref(false)
-const selectedAgentId = ref(null)
+// Persist last-picked agent to localStorage so dev doesn't re-select
+// every visit. The architectural redo (collection-as-first-class
+// resource, no agent picker) is Sprint 4 territory; this is the
+// pragmatic UX patch in the meantime.
+const _LAST_AGENT_KEY = 'anila.kc.lastAgentId'
+const selectedAgentId = ref(
+  Number(localStorage.getItem(_LAST_AGENT_KEY)) || null,
+)
+watch(selectedAgentId, (id) => {
+  if (id) localStorage.setItem(_LAST_AGENT_KEY, String(id))
+})
 const includeArchived = ref(false)
 
 const collections = ref([])
@@ -150,8 +164,18 @@ onMounted(async () => {
   try {
     const { data } = await listMyAgents()
     agents.value = Array.isArray(data) ? data : data.items || []
-    if (agents.value.length === 1) {
+    // Auto-select preference order:
+    //   1. localStorage last-picked, if it's still in the user's list.
+    //   2. Single-agent shortcut (if user only has one).
+    //   3. Otherwise, leave null and prompt the user.
+    const lastId = selectedAgentId.value
+    const matchLast = agents.value.find((a) => a.id === lastId)
+    if (matchLast) {
+      selectedAgentId.value = matchLast.id
+    } else if (agents.value.length === 1) {
       selectedAgentId.value = agents.value[0].id
+    } else {
+      selectedAgentId.value = null
     }
   } catch (e) {
     error.value = `載入 agents 失敗：${e.response?.data?.detail || e.message}`
@@ -269,17 +293,28 @@ function humanBytes(n) {
 .subtitle { margin: 0 0 1rem; color: #6b7280; font-size: 0.9rem; }
 
 .picker-row {
-  display: flex; gap: 1rem; align-items: end;
+  display: flex; gap: 1.25rem; align-items: flex-end;
   margin-bottom: 1rem;
   padding: 0.75rem 1rem; background: #f9fafb; border-radius: 6px;
   flex-wrap: wrap;
 }
 .field { display: flex; flex-direction: column; gap: 0.25rem; }
-.field span { font-size: 0.85rem; color: #4b5563; }
-.field.checkbox { flex-direction: row; align-items: center; gap: 0.4rem; }
-.field select, .field input, .field textarea {
+.field > span { font-size: 0.85rem; color: #4b5563; }
+.field.checkbox {
+  /* Same baseline as the other fields so the checkbox row aligns
+     with the bottom of the Agent <select> rather than the bottom of
+     its tiny "Agent" label. */
+  flex-direction: row; align-items: center; gap: 0.5rem;
+  padding-bottom: 0.5rem;  /* matches the select's vertical padding */
+  white-space: nowrap;
+}
+.field.checkbox > span { font-size: 0.9rem; }
+.field.checkbox input[type="checkbox"] {
+  width: 1rem; height: 1rem; min-width: 0; padding: 0; margin: 0;
+}
+.field select, .field input:not([type="checkbox"]), .field textarea {
   padding: 0.4rem 0.6rem; border: 1px solid #d1d5db; border-radius: 4px;
-  min-width: 200px; font-size: 0.95rem;
+  min-width: 220px; font-size: 0.95rem;
 }
 
 button { padding: 0.5rem 0.9rem; border: 1px solid transparent; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }

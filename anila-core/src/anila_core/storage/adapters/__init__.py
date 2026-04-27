@@ -25,10 +25,14 @@ What lives here today:
 
 from .memory_file_store import MemoryFileStore
 from .pg_pool import PgPool
-from .pgvector_store import AgentScopedPgVectorStore
+from .pgvector_store import (
+    AgentScopedPgVectorStore,  # back-compat alias for one transition cycle.
+    CollectionScopedPgVectorStore,
+)
 
 __all__ = [
     "AgentScopedPgVectorStore",
+    "CollectionScopedPgVectorStore",
     "MemoryFileStore",
     "PgPool",
 ]

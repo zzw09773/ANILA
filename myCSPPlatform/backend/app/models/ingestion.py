@@ -36,29 +36,28 @@ from app.database import Base
 
 
 class IngestionCollection(Base):
-    """A per-agent grouping of corpora.
+    """A user-owned corpus grouping (Sprint 4 first-class refactor).
 
-    One agent can own multiple collections (e.g. "legal-regs" + "internal-sop")
-    — the ``UNIQUE (agent_id, name)`` constraint enforces unique names within
-    a single agent's namespace, but allows the same name across agents.
+    Sprint 1–3 scoped collections to ``agent_id`` (one collection per
+    agent). Sprint 4 (migration 0019) drops that coupling — collections
+    are platform-shared resources owned by the user who created them;
+    any agent backend can configure ``RAG_COLLECTION_ID`` to point at
+    one. The platform stops caring which agent uses which collection.
 
-    Counter columns (``document_count`` / ``chunk_count`` / ``bytes_stored``)
-    are denormalized for fast list-page rendering. The worker updates them
-    inside the same transaction as the chunk insert; nothing else writes them.
+    Engine-level isolation moved with it: the RLS policy on
+    ``document_chunks`` is now keyed on ``anila.collection_id`` GUC
+    instead of ``anila.agent_id``. Agent backends issue
+    ``SET LOCAL anila.collection_id = N`` before retrieval queries.
+
+    Counter columns (``document_count`` / ``chunk_count`` /
+    ``bytes_stored``) are denormalized for fast list-page rendering.
+    The worker updates them inside the same transaction as the chunk
+    insert; nothing else writes them.
     """
 
     __tablename__ = "ingestion_collections"
-    __table_args__ = (
-        UniqueConstraint("agent_id", "name", name="uq_collections_agent_name"),
-    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    agent_id = Column(
-        Integer,
-        ForeignKey("agents.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
     name = Column(String(200), nullable=False)
     description = Column(Text, nullable=True)
     chunking_config = Column(JSONB, nullable=False)
@@ -68,8 +67,12 @@ class IngestionCollection(Base):
     document_count = Column(Integer, nullable=False, default=0)
     chunk_count = Column(Integer, nullable=False, default=0)
     bytes_stored = Column(BigInteger, nullable=False, default=0)
+    # Owner (NOT NULL post-Sprint-4 — see migration 0019). Same person
+    # who created the collection; ON DELETE RESTRICT would lock user
+    # deletes, so we stay with default and rely on app-layer reassign
+    # if a user is offboarded.
     created_by = Column(
-        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=False
     )
     created_at = Column(
         DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
@@ -170,27 +173,32 @@ class IngestionEvalRun(Base):
     completed_at = Column(DateTime, nullable=True)
 
 
-class AgentLlmCredential(Base):
-    """Dev-supplied LLM credential for the Chunking Evaluator's judge.
+class UserLlmCredential(Base):
+    """User-owned LLM credential (Sprint 4 rename: was AgentLlmCredential).
+
+    Devs register their judge / external LLM endpoints once; the
+    credential is reusable across every collection owned by that
+    same user. The Chunking Evaluator's judge step looks creds up
+    by ``(created_by, name)``.
+
+    Pre-Sprint-4 the FK was ``agent_id``; migration 0019 rebases onto
+    ``users.id`` (= ``created_by``) and renames the table to
+    ``user_llm_credentials``.
 
     See ``app/services/credential_crypto.py`` for the encryption shape
-    (AES-256-GCM with PBKDF2-derived master key).
-
-    The ``api_key`` plaintext is NEVER read from this table directly by
-    application code outside the evaluator handler — every consumer
-    goes through ``decrypt_credential(...)`` which keeps the decrypted
-    string only as long as the outbound HTTP call needs it.
+    (AES-256-GCM with PBKDF2-derived master key). The ``api_key``
+    plaintext never leaves the encrypt / decrypt helpers.
     """
 
-    __tablename__ = "agent_llm_credentials"
+    __tablename__ = "user_llm_credentials"
     __table_args__ = (
-        UniqueConstraint("agent_id", "name", name="uq_agent_llm_credentials_name"),
+        UniqueConstraint("created_by", "name", name="uq_user_llm_credentials_name"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    agent_id = Column(
+    created_by = Column(
         Integer,
-        ForeignKey("agents.id", ondelete="CASCADE"),
+        ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -201,12 +209,14 @@ class AgentLlmCredential(Base):
     api_key_nonce = Column(LargeBinary, nullable=False)
     api_key_tag = Column(LargeBinary, nullable=False)
     last_used_at = Column(DateTime, nullable=True)
-    created_by = Column(
-        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
     created_at = Column(
         DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
     )
+
+
+# Back-compat alias so existing imports survive one transition cycle.
+# Sprint 5 will drop this. New code should import ``UserLlmCredential``.
+AgentLlmCredential = UserLlmCredential
 
 
 class IngestionJob(Base):

@@ -19,11 +19,12 @@ from app.models.department import Department
 from app.models.external_identity import ExternalIdentity
 from app.models.handoff import Handoff
 from app.models.ingestion import (
-    AgentLlmCredential,
+    AgentLlmCredential,  # back-compat alias for UserLlmCredential
     IngestionCollection,
     IngestionDocument,
     IngestionEvalRun,
     IngestionJob,
+    UserLlmCredential,
 )
 from app.models.message import Message
 from app.models.model_registry import ModelRegistry
@@ -55,5 +56,6 @@ __all__ = [
     "TokenUsage",
     "User",
     "UserAgentPermission",
+    "UserLlmCredential",
     "UserModelPermission",
 ]

@@ -39,7 +39,6 @@ class IngestionChunk(BaseModel):
 
     id: int
     collection_id: int
-    agent_id: int
     document_id: int
     chunk_key: str
     content: str
