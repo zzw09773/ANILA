@@ -13,6 +13,25 @@
 
 ## 0. Decisions Log
 
+### v0.4 (2026-04-27) — Sprint 4 collection-as-first-class
+
+Sprint 1–3 假設「100 agent = 100 個獨立租戶」，所以 collection 跟 agent 1:1 綁定（`ingestion_collections.agent_id NOT NULL`、RLS keyed on `anila.agent_id`）。實際 dev workflow 證明這是 over-coupling — 平台的角色是 **pgvector + chunking infrastructure**，agent backend 自己寫 `RAG_COLLECTION_ID` 指過來就能用。
+
+| 議題 | v0.3 立場 | v0.4 修訂 |
+|---|---|---|
+| Collection 擁有者 | 屬於 agent | **屬於 user**（`created_by NOT NULL`，platform-shared resource） |
+| RLS GUC | `anila.agent_id` | **`anila.collection_id`**（每 connection 一個 collection 範圍；FORCE RLS + non-bypass csp_app role 不變） |
+| SDK 命名 | `AgentScopedPgVectorStore(pool, agent_id=N)` | **`CollectionScopedPgVectorStore(pool, collection_id=N)`**；舊名一個 cycle alias |
+| Agent backend env | `RAG_AGENT_ID` | **`RAG_COLLECTION_ID`** |
+| LLM judge 憑證範圍 | per-agent (`agent_llm_credentials`) | **per-user (`user_llm_credentials`)**；一個 dev 一把 OpenAI key 通用所有自家 collection |
+| CSP UI agent picker | 必須先選 agent 才看 collection | **拿掉**；landing 頁直接列 my collections；admin 可切「全部」 |
+| `_require_agent_access` | 走 `UserAgentPermission` | **`_require_collection_access`** = admin 或 owner（`created_by`） |
+
+並加入：
+- **Migration 0019** drop agent_id 跟 RLS 重 key（含一個 ops trap：CSP 失敗 fallback `Base.metadata.create_all` 會 re-create orphan tables，migration 開頭要先 `DROP TABLE IF EXISTS user_llm_credentials CASCADE` 清乾淨）
+- **G1/G2 重命名**：`test_g1_collection_isolation` / `test_g2_rls_bypass`（GUC 從 `anila.agent_id` 改 `anila.collection_id`）
+- **CHANGELOG v0.7.0** 對應這次 7 個 chunks 的 commits（O→T）
+
 ### v0.3 (2026-04-25) — Sprint 1 實作回報 + schema/role 修訂
 
 Sprint 1（Chunks A–G，commits `567bd9c` → `e9e913a`）實際實作後發現 4 個 design vs reality gap，本版同步修訂：

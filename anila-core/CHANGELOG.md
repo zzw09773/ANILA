@@ -4,6 +4,84 @@ All notable changes to this package. anila-core is **not yet 1.0** — internal
 breaking changes are acceptable but always documented here. SemVer kicks in
 once we cut v1.0 (no concrete date).
 
+## v0.7.0 (2026-04-27) — Collection-as-first-class (Sprint 4, Chunks O–T)
+
+### BREAKING
+
+The Sprint 1–3 architecture treated every collection as the property of
+exactly one agent (``ingestion_collections.agent_id NOT NULL``). Smoke-
+testing on real workflows showed this was over-coupling: ANILA's posture
+is "platform = pgvector infrastructure", agent backends just configure
+``DB_URL + COLLECTION_ID`` and the platform doesn't care which agent
+reads what. v0.7 drops the agent coupling entirely.
+
+#### Schema
+
+| Concept | v0.6 | v0.7 |
+|---|---|---|
+| Collection ownership | `agent_id` FK to agents | `created_by` FK to users (NOT NULL) |
+| Chunk RLS scope | `anila.agent_id` GUC | `anila.collection_id` GUC |
+| Chunk `agent_id` column | denormalised | dropped |
+| LLM credentials FK | agents | users (table renamed `agent_llm_credentials` → `user_llm_credentials`) |
+
+Migration 0019 (CSP) handles all of the above plus a "csp lifespan
+fallback ``Base.metadata.create_all`` re-creates orphan tables" gotcha
+discovered during the refactor.
+
+#### SDK
+
+- `AgentScopedPgVectorStore` → **`CollectionScopedPgVectorStore`**.
+  Constructor takes `collection_id: int` (positive int guard kept).
+  ``_acquire`` sets ``anila.collection_id`` GUC.
+- ``index_chunks(document_id, chunks, embeddings)`` — dropped redundant
+  ``collection_id`` per-call argument.
+- ``similarity_search`` / ``keyword_search`` — dropped optional
+  ``collection_id`` per-call arguments. RLS does the scoping.
+- ``list_in_collection(limit, offset)`` — Sprint 4 rename of
+  ``list_by_collection``; parameter is implicit now.
+- ``delete_all()`` — Sprint 4 rename of ``delete_collection``.
+- All SQL paths drop ``agent_id`` from SELECT projections.
+- ``IngestionChunk`` Pydantic model: ``agent_id`` field removed.
+
+#### Back-compat
+
+- ``AgentScopedPgVectorStore`` aliases ``CollectionScopedPgVectorStore``
+  for one transition cycle. Old callers fail at the call site with
+  the constructor kwarg name change (``agent_id`` → ``collection_id``)
+  rather than an obvious import error — by design, the forcing function
+  for them to update.
+
+### Tests
+
+- ``test_collection_scoped_pgvector_store.py`` — 13 constructor-guard
+  tests rewritten around ``collection_id``. New test pins the
+  back-compat alias invariant.
+- ``test_g1_collection_isolation.py`` — Sprint 1 G1 rebase; 5
+  collections × 50 chunks × 30 random queries = 750 leakage probes.
+- ``test_g2_rls_bypass.py`` — Sprint 1 G2 rebase; FORCE RLS posture
+  + collection-scoped GUC bypass attempts (4 paths).
+- Old ``test_g1_agent_isolation.py`` and
+  ``test_agent_scoped_pgvector_store.py`` deleted.
+
+### Sprint 4 G1/G2/G3 results
+
+| Gate | v0.6 scope | v0.7 scope | Result |
+|---|---|---|---|
+| G1 random workload, zero leakage | 5 agents | **5 collections** | ✅ 1.96s |
+| G2 raw asyncpg without GUC sees 0 rows | `anila.agent_id` | **`anila.collection_id`** | ✅ |
+| G3 single SQL entry point | unchanged | unchanged | ✅ |
+
+### Migration
+
+| If you …                                         | Do this                                                                                                |
+|---|---|
+| Were using ``AgentScopedPgVectorStore``           | Switch to ``CollectionScopedPgVectorStore``; constructor kwarg ``agent_id`` → ``collection_id``.       |
+| Had ``RAG_AGENT_ID`` env on AgenticRAG / forks    | Switch to ``RAG_COLLECTION_ID``. The collection it points at must already exist in CSP UI.            |
+| Had per-tenant `agent_llm_credentials` rows       | They became ``user_llm_credentials`` rows scoped to ``created_by``. Re-issue if FK chain was broken. |
+| Were calling `index_chunks(collection_id=..., document_id=..., ...)` | Drop the redundant `collection_id` kwarg. The store already knows.                                    |
+
+---
+
 ## v0.6.0 (2026-04-25) — Ingestion Platform foundation (Sprint 1, Chunks A–G)
 
 ### Added
