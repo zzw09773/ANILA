@@ -37,7 +37,7 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.orm import Session
 
 from app.api.ingestion.collections import _require_collection_access
@@ -74,6 +74,15 @@ class QuerySpec(BaseModel):
     expected_doc_id: int
 
 
+# Sprint 5 X security review (M1): judge calls hit a user-owned LLM
+# (BYO key). Without a cap, a 200-query × 10-strategy run = 2000 sequential
+# judge calls. That's both a cost-bomb on the user's provider AND a
+# DoS on the worker pool (≥30 min wall time blocking other ingest jobs).
+# Sprint 6 will add tiered budgets (Fast/Standard/Deep); this simple
+# product cap is a hold-the-line guard for Sprint 5.
+JUDGE_MAX_CALLS_PER_RUN = 100
+
+
 class EvalRunCreate(BaseModel):
     collection_id: int
     name: str = Field(..., min_length=1, max_length=200)
@@ -86,6 +95,23 @@ class EvalRunCreate(BaseModel):
     # = retrieval-only run (the original Sprint 3 behaviour).
     judge_credential_id: int | None = Field(default=None, ge=1)
     judge_top_k: int = Field(default=5, ge=1, le=20)
+
+    @model_validator(mode="after")
+    def _enforce_judge_call_budget(self) -> "EvalRunCreate":
+        # Only relevant when judge is enabled — retrieval-only runs are
+        # cheap (everything stays in the worker / pgvector).
+        if self.judge_credential_id is None:
+            return self
+        projected = len(self.queries) * len(self.strategies_tried)
+        if projected > JUDGE_MAX_CALLS_PER_RUN:
+            raise ValueError(
+                f"With judge enabled, queries × strategies "
+                f"({len(self.queries)} × {len(self.strategies_tried)} = "
+                f"{projected}) exceeds the per-run cap of "
+                f"{JUDGE_MAX_CALLS_PER_RUN}. Trim either list, or run "
+                f"the strategies in separate eval runs."
+            )
+        return self
 
 
 class EvalRunResponse(BaseModel):

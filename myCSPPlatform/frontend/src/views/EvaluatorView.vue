@@ -195,15 +195,19 @@
                 <span v-else>
                   {{ selectedCredentialLabel }}
                   · top-{{ form.judge_top_k }}
+                  · <strong>{{ projectedJudgeCalls }}</strong> judge calls
                 </span>
               </dd>
             </div>
           </dl>
+          <p v-if="judgeCallsExceedCap" class="banner error inline">
+            ⚠ Judge 預估 {{ projectedJudgeCalls }} 次呼叫，超過單次 run 上限 {{ JUDGE_MAX_CALLS_PER_RUN }}。請減少 queries 或 strategies。
+          </p>
           <div class="step-actions">
             <button class="ghost" @click="step = 4">上一步</button>
             <button
               class="primary"
-              :disabled="!form.name || submitting"
+              :disabled="!form.name || submitting || judgeCallsExceedCap"
               @click="submit"
             >
               {{ submitting ? '送出中…' : '🚀 啟動 evaluation' }}
@@ -336,6 +340,19 @@ const selectedCredentialLabel = computed(() => {
   const c = credentials.value.find((x) => x.id === form.value.judge_credential_id)
   return c ? `${c.name} · ${c.model_name}` : ''
 })
+
+// Sprint 5 X / M1 — judge cost gate. Backend rejects with 422 if
+// projected > JUDGE_MAX_CALLS_PER_RUN; frontend shows the projection
+// up-front so the user doesn't get a surprise on submit.
+const JUDGE_MAX_CALLS_PER_RUN = 100
+const projectedJudgeCalls = computed(
+  () => form.value.queries.length * pickedStrategies.value.length,
+)
+const judgeCallsExceedCap = computed(
+  () =>
+    Boolean(form.value.judge_credential_id) &&
+    projectedJudgeCalls.value > JUDGE_MAX_CALLS_PER_RUN,
+)
 
 // Inline "+ 新增 credential" form state — lets the user create a judge
 // credential without leaving the wizard. POST returns no plaintext key,

@@ -76,16 +76,26 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 
 async def _load_sample_docs(
-    pool: PgPool, doc_ids: list[int]
+    pool: PgPool, doc_ids: list[int], collection_id: int
 ) -> list[dict[str, Any]]:
-    """Fetch storage_path / filename / mime for each sample doc."""
+    """Fetch storage_path / filename / mime for each sample doc.
+
+    Sprint 5 X security review (M4): the CSP API checks docs belong to
+    the collection at create-time, but the worker re-checks here as
+    defense-in-depth. Without this filter, a tampered eval_run row
+    (e.g. via direct SQL INSERT, future bug, or transient race) could
+    cause the worker to read file blobs from another tenant's
+    collection — and with judge enabled, exfil them to the user's
+    LLM. Cheap to add the WHERE clause; expensive to discover later.
+    """
     sql = """
         SELECT id, filename, mime_type, storage_path
           FROM ingestion_documents
          WHERE id = ANY($1::int[])
+           AND collection_id = $2
     """
     async with pool.acquire() as conn:
-        rows = await conn.fetch(sql, doc_ids)
+        rows = await conn.fetch(sql, doc_ids, collection_id)
     return [dict(r) for r in rows]
 
 
@@ -255,6 +265,9 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
 
     try:
         sample_doc_ids = list(row["sample_document_ids"])
+        # Sprint 5 X / M4: keep collection_id in scope so _load_sample_docs
+        # can filter by it (defense-in-depth — see helper docstring).
+        run_collection_id = int(row["collection_id"])
         strategies = row["strategies_tried"]
         queries = row["queries"]
         billing_user_id = row["created_by"]  # Sprint 4 V: usage attribution
@@ -292,7 +305,7 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
                 )
 
         # 2. Load all sample docs once (raw blobs from disk).
-        docs = await _load_sample_docs(pool, sample_doc_ids)
+        docs = await _load_sample_docs(pool, sample_doc_ids, run_collection_id)
         parsed_docs: dict[int, tuple[str, dict]] = {}
         for d in docs:
             sp = d["storage_path"]
