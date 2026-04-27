@@ -11,6 +11,8 @@ import client from './client'
  *   sample_document_ids: number[],
  *   strategies_tried: { name: string, params?: Record<string, unknown> }[],
  *   queries: { query: string, expected_doc_id: number }[],
+ *   judge_credential_id?: number | null,
+ *   judge_top_k?: number,
  * }} payload
  */
 export const createEvalRun = (payload) =>

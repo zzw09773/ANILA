@@ -20,7 +20,8 @@
             <li :class="{ active: step === 1, done: step > 1 }">1. Sample documents</li>
             <li :class="{ active: step === 2, done: step > 2 }">2. Eval queries</li>
             <li :class="{ active: step === 3, done: step > 3 }">3. Strategies</li>
-            <li :class="{ active: step === 4 }">4. Confirm</li>
+            <li :class="{ active: step === 4, done: step > 4 }">4. Judge LLM <span class="muted">(optional)</span></li>
+            <li :class="{ active: step === 5 }">5. Confirm</li>
           </ol>
         </header>
 
@@ -87,8 +88,42 @@
           </div>
         </div>
 
-        <!-- Step 4 -->
+        <!-- Step 4 — Judge LLM (optional) -->
         <div v-if="step === 4">
+          <p class="hint">
+            選一個 user-owned LLM credential 來跑 LLM-as-judge。Judge 會對每個
+            (query, top-k chunks) 給 1–3 分（1=答非所問，3=直接命中），平均到
+            <code>judge_avg</code>。<strong>這是可選的</strong> — 跳過就只跑 Hit@k / MRR。
+          </p>
+          <div v-if="loadingCredentials" class="banner muted">載入 credentials…</div>
+          <div v-else-if="credentials.length === 0" class="banner muted">
+            尚未建立任何 LLM credential。可在 Settings → LLM Credentials 加一個
+            （例如自家 OpenAI key），或直接跳過此步。
+          </div>
+          <label v-else class="field">
+            <span>Judge credential</span>
+            <select v-model.number="form.judge_credential_id">
+              <option :value="null">— 不用 judge（只跑 Hit@k / MRR）—</option>
+              <option v-for="c in credentials" :key="c.id" :value="c.id">
+                {{ c.name }} · {{ c.model_name }}
+              </option>
+            </select>
+          </label>
+          <label v-if="form.judge_credential_id" class="field">
+            <span>Top-k chunks per query (judge 看幾個 chunks)</span>
+            <input type="number" min="1" max="20" v-model.number="form.judge_top_k" />
+          </label>
+          <p v-if="form.judge_credential_id" class="hint muted">
+            ⚠ Judge 走你的 credential，計費由 LLM provider 直接收，不在 CSP 的 token_usage 裡。
+          </p>
+          <div class="step-actions">
+            <button class="ghost" @click="step = 3">上一步</button>
+            <button class="primary" @click="step = 5">下一步</button>
+          </div>
+        </div>
+
+        <!-- Step 5 — Confirm -->
+        <div v-if="step === 5">
           <p class="hint">確認後 enqueue。Run 結束後右側會出現結果。</p>
           <label class="field">
             <span>Run name</span>
@@ -98,9 +133,19 @@
             <div><dt>Documents</dt><dd>{{ form.sample_document_ids.length }} 篇</dd></div>
             <div><dt>Queries</dt><dd>{{ form.queries.length }} 條</dd></div>
             <div><dt>Strategies</dt><dd>{{ pickedStrategies.map(s => s.name).join(', ') }}</dd></div>
+            <div>
+              <dt>Judge LLM</dt>
+              <dd>
+                <span v-if="!form.judge_credential_id" class="muted">— 不啟用 —</span>
+                <span v-else>
+                  {{ selectedCredentialLabel }}
+                  · top-{{ form.judge_top_k }}
+                </span>
+              </dd>
+            </div>
           </dl>
           <div class="step-actions">
-            <button class="ghost" @click="step = 3">上一步</button>
+            <button class="ghost" @click="step = 4">上一步</button>
             <button
               class="primary"
               :disabled="!form.name || submitting"
@@ -149,6 +194,7 @@
                   <th>Hit@1</th>
                   <th>Hit@5</th>
                   <th>MRR</th>
+                  <th title="LLM-as-judge 1–3 平均，僅當 judge 啟用">Judge avg</th>
                   <th>Chunks/doc</th>
                   <th>Avg tokens</th>
                 </tr>
@@ -161,12 +207,19 @@
                 >
                   <td><code>{{ name }}</code></td>
                   <template v-if="metrics.error">
-                    <td colspan="5" class="err">⚠ {{ metrics.error }}</td>
+                    <td colspan="6" class="err">⚠ {{ metrics.error }}</td>
                   </template>
                   <template v-else>
                     <td>{{ formatPct(metrics.hit_at_1) }}</td>
                     <td>{{ formatPct(metrics.hit_at_5) }}</td>
                     <td>{{ metrics.mrr.toFixed(3) }}</td>
+                    <td>
+                      <span v-if="metrics.judge_avg != null">
+                        {{ metrics.judge_avg.toFixed(2) }}
+                        <span class="muted">/3 (n={{ metrics.judge_n_scored }})</span>
+                      </span>
+                      <span v-else class="muted">—</span>
+                    </td>
                     <td>{{ metrics.chunks_per_doc }}</td>
                     <td>{{ metrics.avg_chunk_tokens }}</td>
                   </template>
@@ -186,6 +239,7 @@ import { useRoute } from 'vue-router'
 import { getCollection } from '../api/ingestionCollections'
 import { listDocuments } from '../api/ingestionDocuments'
 import { createEvalRun, getEvalRun, listEvalRuns } from '../api/ingestionEvalRuns'
+import { listLlmCredentials } from '../api/ingestionLlmCredentials'
 
 const route = useRoute()
 const collectionId = ref(Number(route.params.id))
@@ -207,9 +261,19 @@ const form = ref({
   sample_document_ids: [],
   queries: [{ query: '', expected_doc_id: 0 }],
   strategies_tried: [],
+  // Sprint 5 X — optional LLM-as-judge.
+  judge_credential_id: null,
+  judge_top_k: 5,
 })
 const submitting = ref(false)
 const submitError = ref('')
+
+const credentials = ref([])
+const loadingCredentials = ref(false)
+const selectedCredentialLabel = computed(() => {
+  const c = credentials.value.find((x) => x.id === form.value.judge_credential_id)
+  return c ? `${c.name} · ${c.model_name}` : ''
+})
 
 const availableStrategies = [
   { name: 'hierarchical', label: 'hierarchical', params: { max_leaf_tokens: 1024 }, note: 'heading 樹 + ancestor context' },
@@ -240,18 +304,22 @@ function addQuery() {
 
 onMounted(async () => {
   loadingDocs.value = true
+  loadingCredentials.value = true
   try {
-    const [coll, docs, list] = await Promise.all([
+    const [coll, docs, list, creds] = await Promise.all([
       getCollection(collectionId.value),
       listDocuments(collectionId.value),
       listEvalRuns({ collection_id: collectionId.value }),
+      listLlmCredentials().catch(() => ({ data: [] })), // soft-fail; user just won't see judge picker
     ])
     collection.value = coll.data
     documents.value = docs.data
     runs.value = list.data
+    credentials.value = creds.data
     if (list.data.length > 0) selectedRun.value = list.data[0]
   } finally {
     loadingDocs.value = false
+    loadingCredentials.value = false
   }
   startPolling()
 })
@@ -300,6 +368,8 @@ async function submit() {
       queries: form.value.queries.map((q) => ({
         query: q.query, expected_doc_id: q.expected_doc_id,
       })),
+      judge_credential_id: form.value.judge_credential_id || null,
+      judge_top_k: form.value.judge_top_k,
     }
     const { data } = await createEvalRun(payload)
     runs.value.unshift(data)
@@ -311,6 +381,8 @@ async function submit() {
       sample_document_ids: [],
       queries: [{ query: '', expected_doc_id: 0 }],
       strategies_tried: [],
+      judge_credential_id: null,
+      judge_top_k: 5,
     }
     pickedStrategies.value = []
   } catch (e) {

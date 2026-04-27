@@ -171,6 +171,13 @@ services:
       EMBEDDING_API_KEY: ${INTERNAL_PLATFORM_API_KEY:-sk-internal-worker-changeme}
       EMBEDDING_DIM: "4000"
       UPLOAD_DIR: /var/anila/ingestion-uploads
+      # Sprint 5 / Chunk X: needed by anila_core.security.decrypt_credential
+      # so the Chunking Evaluator's judge phase can decrypt the
+      # AES-encrypted user_llm_credentials row chosen in the wizard.
+      # MUST match CSP's SECRET_KEY — the cipher key is derived from it,
+      # so a mismatch makes every judge decrypt fail (silently soft-fails
+      # to "judge skipped" but you'd get judge_n_scored=0 forever).
+      SECRET_KEY: ${CSP_SECRET_KEY:-dev-secret-key-change-in-prod}
       PYTHONUNBUFFERED: "1"
     volumes:
       - ./share/uploads/ingestion:/var/anila/ingestion-uploads

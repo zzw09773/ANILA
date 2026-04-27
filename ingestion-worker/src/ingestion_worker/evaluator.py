@@ -23,17 +23,22 @@ For each eval run row:
       - MRR: 1 / rank where expected first appears, else 0.
    d. Average across queries.
 
-3. Pick the strategy with highest Hit@1 (tiebreak by MRR) as
-   ``recommended_strategy`` and write everything back.
+3. Pick the strategy with highest Hit@1 (tiebreak by MRR, then by
+   ``judge_avg`` when the judge LLM ran) as ``recommended_strategy``
+   and write everything back.
 
 Cost: 1 query embedding + 1 doc-chunk-batch embedding per strategy.
 For 10 docs × 6 strategies × 50 chunks/strategy/doc, total chunk
 embeddings = 3000 × N_strategies. Realistically a 6-strategy run is
 ~10–30 seconds depending on embedder latency.
 
-LLM-as-judge scoring is NOT in this Sprint. The ``judge_llm_config``
-column is read-only here; future commit will iterate over its
-endpoint + use ``decrypt_credential`` to decrypt the API key.
+Sprint 5 / Chunk X: optional LLM-as-judge axis. When the eval run
+row carries ``judge_llm_config = {"credential_id": <user_llm_credentials.id>}``
+the worker decrypts the credential via ``anila_core.security`` and
+scores each (query, top-k chunks) pair 1–3 with the judge LLM (see
+``judge.py``). Failed judge calls are skipped — the run still yields
+retrieval metrics. The judge LLM call goes through the CSP proxy so
+``token_usage`` rows get written with ``request_type='judge'``.
 """
 
 from __future__ import annotations
@@ -116,11 +121,16 @@ async def _score_strategy(
     top_k: int = 10,
     *,
     billing_user_id: int | None = None,
+    judge_credential: Any = None,  # JudgeCredential | None
+    judge_top_k: int = 5,
 ) -> dict[str, Any]:
     """Run every query against this strategy's chunks and average.
 
-    Returns ``{hit_at_1, hit_at_5, mrr, avg_chunk_tokens, chunks_per_doc,
-    per_query: [...]}``.
+    Sprint 5 X: when ``judge_credential`` is provided, also runs a
+    judge-LLM scoring pass over the top-k chunks per query and reports
+    ``judge_avg`` (mean of 1–3 scores). Failed judge calls are
+    skipped from the average rather than counted as 0; if every call
+    fails, ``judge_avg`` is None.
     """
     # Embed queries in a single batch (counted as evaluator usage).
     query_texts = [q["query"] for q in queries]
@@ -136,6 +146,7 @@ async def _score_strategy(
     hits_at_1 = 0
     hits_at_5 = 0
     rr_total = 0.0
+    judge_scores: list[int] = []
     per_query: list[dict[str, Any]] = []
 
     for q, q_emb in zip(queries, query_embeddings):
@@ -145,11 +156,11 @@ async def _score_strategy(
             reverse=True,
         )[:top_k]
         top_doc_ids = [flat[idx][0] for idx, _ in scored]
+        top_chunks = [flat[idx][1] for idx, _ in scored]
 
         expected = q["expected_doc_id"]
         h1 = top_doc_ids[:1].count(expected) > 0 if top_doc_ids else False
         h5 = expected in top_doc_ids[:5]
-        # MRR: 1 / first-rank-doc-matches, else 0.
         rank = next(
             (i + 1 for i, d in enumerate(top_doc_ids) if d == expected),
             None,
@@ -160,6 +171,21 @@ async def _score_strategy(
         if h5: hits_at_5 += 1
         rr_total += rr
 
+        # ── Judge phase (optional) ──────────────────────────────────
+        # Score the top ``judge_top_k`` chunks; if the judge LLM is
+        # unreachable / parses failure, ``score_one`` returns None
+        # and we just skip this query's score.
+        per_q_judge: int | None = None
+        if judge_credential is not None:
+            from ingestion_worker.judge import score_one
+
+            judge_chunks = [c.content for c in top_chunks[:judge_top_k]]
+            per_q_judge = await score_one(
+                judge_credential, q["query"], judge_chunks
+            )
+            if per_q_judge is not None:
+                judge_scores.append(per_q_judge)
+
         per_query.append({
             "query": q["query"],
             "expected_doc_id": expected,
@@ -167,14 +193,22 @@ async def _score_strategy(
             "rank": rank,
             "hit_at_1": h1,
             "hit_at_5": h5,
+            "judge_score": per_q_judge,
         })
 
     n = len(queries) or 1
     total_chunks = sum(len(c) for c in chunks_by_doc.values())
+    judge_avg = (
+        round(sum(judge_scores) / len(judge_scores), 3)
+        if judge_scores
+        else None
+    )
     return {
         "hit_at_1": round(hits_at_1 / n, 4),
         "hit_at_5": round(hits_at_5 / n, 4),
         "mrr": round(rr_total / n, 4),
+        "judge_avg": judge_avg,
+        "judge_n_scored": len(judge_scores),
         "avg_chunk_tokens": round(
             sum(c.token_count for chunks in chunks_by_doc.values() for c in chunks)
             / max(1, total_chunks),
@@ -198,7 +232,7 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
         row = await conn.fetchrow(
             """
             SELECT id, collection_id, sample_document_ids, strategies_tried,
-                   queries, arq_job_id, created_by
+                   queries, arq_job_id, created_by, judge_llm_config
               FROM ingestion_eval_runs
              WHERE id = $1
             """,
@@ -220,6 +254,19 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
         strategies = row["strategies_tried"]
         queries = row["queries"]
         billing_user_id = row["created_by"]  # Sprint 4 V: usage attribution
+        # Sprint 5 X: optional LLM-as-judge.
+        # ``judge_llm_config = {"credential_id": <int>, "top_k": 5}``
+        judge_cfg = row["judge_llm_config"] or {}
+        judge_credential = None
+        if isinstance(judge_cfg, dict) and judge_cfg.get("credential_id"):
+            from ingestion_worker.judge import load_judge_credential
+            try:
+                judge_credential = await load_judge_credential(
+                    pool, int(judge_cfg["credential_id"])
+                )
+            except Exception as exc:
+                # Soft failure — eval still produces retrieval metrics.
+                pass
 
         # 2. Load all sample docs once (raw blobs from disk).
         docs = await _load_sample_docs(pool, sample_doc_ids)
@@ -280,10 +327,18 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
             metrics = await _score_strategy(
                 embedder, chunks_by_doc, embeds_by_doc, queries,
                 billing_user_id=billing_user_id,
+                judge_credential=judge_credential,
+                judge_top_k=int(judge_cfg.get("top_k", 5)) if isinstance(judge_cfg, dict) else 5,
             )
             per_strategy[sname] = metrics
 
-        # 4. Pick recommended strategy: highest Hit@1, tiebreak MRR.
+        # 4. Pick recommended strategy.
+        # Default tiebreak: Hit@1 then MRR.
+        # Sprint 5 X: when judge ran successfully on this strategy,
+        # add judge_avg as the *third* tiebreak — retrieval still wins
+        # the primary axis (judge can hallucinate, Hit@1 can't), but a
+        # higher-quality retrieval set breaks ties between two strategies
+        # that produce identical Hit@1/MRR.
         valid = {
             k: v for k, v in per_strategy.items()
             if isinstance(v, dict) and "hit_at_1" in v
@@ -291,7 +346,11 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
         recommended = (
             max(
                 valid.items(),
-                key=lambda kv: (kv[1]["hit_at_1"], kv[1]["mrr"]),
+                key=lambda kv: (
+                    kv[1]["hit_at_1"],
+                    kv[1]["mrr"],
+                    kv[1].get("judge_avg") or 0.0,
+                ),
             )[0]
             if valid
             else None

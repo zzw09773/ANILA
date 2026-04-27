@@ -27,6 +27,11 @@ dependencies = [
     # the new ingestion platform makes pgvector an anila-core concern again.
     "asyncpg>=0.29",
     "pgvector>=0.3",
+    # Sprint 5 (v0.7.0): centralised AES-GCM credential crypto for
+    # user_llm_credentials lives in anila_core.security. Both CSP
+    # (encrypt at create time) and ingestion-worker (decrypt at judge
+    # time) consume it, so cryptography is a core dep — not optional.
+    "cryptography>=42",
 ]
 
 # v0.5.0 BREAKING — `[rag]` extras removed. The packages it pulled
