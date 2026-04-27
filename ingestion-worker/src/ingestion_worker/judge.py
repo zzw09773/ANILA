@@ -67,11 +67,35 @@ class JudgeCredential:
 
     Built from a ``user_llm_credentials`` row + ``decrypt_credential``.
     Frozen so call sites can't accidentally mutate the API key string.
+
+    Sprint 5 X security review:
+
+    M2 — ``__repr__`` masks the api_key so accidental ``logger.warning(
+    "%s", cred)`` / traceback frames / exception ``__cause__`` chains
+    don't expose the Bearer token. The default dataclass-generated
+    repr would print the plaintext; we override with a constant
+    ``api_key='***'`` placeholder.
+
+    L2 — Plaintext stays in memory for the duration of the eval run.
+    We don't attempt to zeroize because Python ``str`` is immutable and
+    interned: once the cipher returned a ``str`` to ``decrypt_credential``,
+    copies may exist in CPython's small-string cache and httpx's
+    request frame. Real defense would need ``bytearray`` end-to-end +
+    secure-zero on disposal; out of scope for Sprint 5 (would require
+    rewriting cryptography callers + httpx header builder). Risk
+    accepted — exfil requires a process memory dump, by which point
+    other secrets are equally exposed.
     """
 
     endpoint_url: str
     model_name: str
     api_key: str
+
+    def __repr__(self) -> str:  # noqa: D401 — short repr by design
+        return (
+            f"JudgeCredential(endpoint_url={self.endpoint_url!r}, "
+            f"model_name={self.model_name!r}, api_key='***')"
+        )
 
 
 async def load_judge_credential(
@@ -81,6 +105,14 @@ async def load_judge_credential(
 
     Raises ``LookupError`` when the row doesn't exist; the call site
     should swallow + record on the eval_run as a soft failure.
+
+    Sprint 5 X security review (L3): bumps ``last_used_at`` on
+    successful decrypt. The CSP already stamps create / update /
+    delete via audit_service; this gives forensics a "last consumed"
+    signal for every credential without round-tripping audit-event
+    inserts from the worker side. SET happens AFTER the decrypt
+    succeeds so a failed decrypt (tampered ciphertext, wrong key)
+    doesn't leave a misleading "last_used_at = now" trail.
     """
     # Central anila-core decrypt helper. Same crypto as CSP's create
     # path so encrypt(at CSP) → decrypt(at worker) round-trips.
@@ -94,13 +126,18 @@ async def load_judge_credential(
     """
     async with pool.acquire() as conn:
         row = await conn.fetchrow(sql, credential_id)
-    if row is None:
-        raise LookupError(f"user_llm_credential {credential_id} not found")
-    plaintext = decrypt_credential(
-        bytes(row["api_key_encrypted"]),
-        bytes(row["api_key_nonce"]),
-        bytes(row["api_key_tag"]),
-    )
+        if row is None:
+            raise LookupError(f"user_llm_credential {credential_id} not found")
+        plaintext = decrypt_credential(
+            bytes(row["api_key_encrypted"]),
+            bytes(row["api_key_nonce"]),
+            bytes(row["api_key_tag"]),
+        )
+        # Forensics breadcrumb — only after decrypt succeeds.
+        await conn.execute(
+            "UPDATE user_llm_credentials SET last_used_at = now() WHERE id = $1",
+            credential_id,
+        )
     return JudgeCredential(
         endpoint_url=row["endpoint_url"],
         model_name=row["model_name"],

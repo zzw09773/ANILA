@@ -132,6 +132,9 @@
 
             <div v-else class="cred-form">
               <h4>新增 LLM credential</h4>
+              <p v-if="insecureContext" class="banner error inline">
+                ⚠ 目前頁面非 HTTPS（{{ pageProtocol }}）。送出後 API key 會以明文走網路 — 請改用 HTTPS 入口（例如 https://&lt;host&gt;:4443）後再建。
+              </p>
               <label class="field">
                 <span>Name (給自己看的標籤)</span>
                 <input v-model.trim="newCredential.name" placeholder="openai-judge" />
@@ -340,6 +343,15 @@ const selectedCredentialLabel = computed(() => {
   const c = credentials.value.find((x) => x.id === form.value.judge_credential_id)
   return c ? `${c.name} · ${c.model_name}` : ''
 })
+
+// Sprint 5 X / M3 — surface non-HTTPS context. Browser-side localhost
+// is whitelisted (window.isSecureContext === true) so dev across
+// http://localhost still works without spurious warnings; everything
+// else falls back to the protocol check.
+const pageProtocol = typeof window !== 'undefined' ? window.location.protocol : 'unknown:'
+const insecureContext = typeof window !== 'undefined'
+  && !window.isSecureContext
+  && window.location.protocol !== 'https:'
 
 // Sprint 5 X / M1 — judge cost gate. Backend rejects with 422 if
 // projected > JUDGE_MAX_CALLS_PER_RUN; frontend shows the projection

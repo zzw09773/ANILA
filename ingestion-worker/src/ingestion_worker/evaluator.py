@@ -56,6 +56,7 @@ from anila_core.ingestion.chunking_plugins.builtins import SemanticChunker
 from anila_core.storage.adapters.pg_pool import PgPool
 
 from ingestion_worker.embedder import Embedder
+from ingestion_worker.judge import JudgeCredential, load_judge_credential, score_one
 from ingestion_worker.parsers import extract_text
 
 
@@ -135,7 +136,7 @@ async def _score_strategy(
     top_k: int = 10,
     *,
     billing_user_id: int | None = None,
-    judge_credential: Any = None,  # JudgeCredential | None
+    judge_credential: JudgeCredential | None = None,
     judge_top_k: int = 5,
 ) -> dict[str, Any]:
     """Run every query against this strategy's chunks and average.
@@ -191,8 +192,6 @@ async def _score_strategy(
         # and we just skip this query's score.
         per_q_judge: int | None = None
         if judge_credential is not None:
-            from ingestion_worker.judge import score_one
-
             judge_chunks = [c.content for c in top_chunks[:judge_top_k]]
             per_q_judge = await score_one(
                 judge_credential, q["query"], judge_chunks
@@ -281,7 +280,6 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
         # carry plaintext fragments or key bytes for some crypto errors.
         judge_load_error: str | None = None
         if isinstance(judge_cfg, dict) and judge_cfg.get("credential_id"):
-            from ingestion_worker.judge import load_judge_credential
             cred_id = int(judge_cfg["credential_id"])
             try:
                 judge_credential = await load_judge_credential(pool, cred_id)
