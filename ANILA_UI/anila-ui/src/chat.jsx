@@ -30,7 +30,6 @@ import {
   IconGrid,
   IconImage,
   IconInbox,
-  IconKey,
   IconLock,
   IconLogout,
   IconMessage,
@@ -1571,7 +1570,7 @@ export const Sidebar = ({
           {(close) => (
             <div>
               <MenuItem leftIcon={<IconSettings size={14} />} onClick={() => { onOpenSettings(); close(); }}>設定</MenuItem>
-              <MenuItem leftIcon={<IconKey size={14} />} onClick={() => { onOpenSettings("apikey"); close(); }}>API Key</MenuItem>
+              {/* Sprint 7 X follow-up：API Key menu item 已移除（cookie 流程後 dead code）。 */}
               <Divider />
               <MenuItem leftIcon={<IconLogout size={14} />} onClick={onLogout}>登出</MenuItem>
             </div>
