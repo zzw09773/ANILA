@@ -6,7 +6,7 @@ import client from './client'
 // declarative.
 
 /**
- * @param {{ agent_id: number, include_archived?: boolean }} params
+ * @param {{ include_archived?: boolean, owned_only?: boolean }} [params]
  */
 export const listCollections = (params) =>
   client.get('/api/ingestion/collections', { params })
@@ -15,8 +15,10 @@ export const getCollection = (collectionId) =>
   client.get(`/api/ingestion/collections/${collectionId}`)
 
 /**
+ * Sprint 4: collections are user-owned. ``agent_id`` is no longer in
+ * the payload — ``created_by`` is set server-side from the JWT.
+ *
  * @param {{
- *   agent_id: number,
  *   name: string,
  *   description?: string,
  *   chunking_config: { strategy: string, params?: Record<string, unknown> },
