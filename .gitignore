@@ -113,3 +113,10 @@ share/static/
 share/uploads/
 
 ANILALM
+
+# Onyx upstream clone — handed off to the agent dev team for ongoing
+# maintenance. Their code, their repo. Kept on disk for local reference
+# but not under our version control. The handover spec we owe them
+# stays tracked at docs/onyx-target-system-api-spec.md and
+# docs/onyx-application-plan.md.
+onyx/
