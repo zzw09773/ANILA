@@ -16,10 +16,35 @@ from app.models.user import User
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 
-BLOCKED_EXTENSIONS = {
-    ".exe", ".bat", ".cmd", ".com", ".ps1", ".sh", ".msi",
-    ".vbs", ".js", ".jar",
+# L5: 改用 allow-list — 只允許平台明確支援的文件 / 圖檔型別。其餘一律
+# 拒絕，比 deny-list 更不易因新副檔名漏網。
+ALLOWED_EXTENSIONS = {
+    # 文件
+    ".pdf", ".txt", ".md", ".csv", ".tsv", ".json", ".log",
+    ".doc", ".docx", ".odt", ".rtf",
+    ".ppt", ".pptx", ".odp",
+    ".xls", ".xlsx", ".ods",
+    # 圖檔（聊天附件可能會貼）
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg",
+    # 純文字 / 程式碼
+    ".html", ".htm", ".xml", ".yaml", ".yml", ".toml", ".ini",
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".go", ".rs", ".sql",
+    # 壓縮
+    ".zip",
 }
+
+ALLOWED_MIME_PREFIXES = (
+    "image/",
+    "text/",
+    "application/json",
+    "application/pdf",
+    "application/zip",
+    "application/vnd.openxmlformats-officedocument.",  # docx / pptx / xlsx
+    "application/vnd.oasis.opendocument.",  # odt / ods / odp
+    "application/msword",
+    "application/vnd.ms-",  # .ppt / .xls 舊格式
+    "application/x-yaml",
+)
 
 
 def _storage_root() -> Path:
@@ -37,8 +62,18 @@ async def upload_attachment(
 ) -> Attachment:
     filename = file.filename or "upload"
     ext = Path(filename).suffix.lower()
-    if ext in BLOCKED_EXTENSIONS:
+    if ext and ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"不允許上傳 {ext} 類型的檔案")
+
+    declared_mime = (file.content_type or "").split(";")[0].strip().lower()
+    if declared_mime and not any(
+        declared_mime == m or declared_mime.startswith(m)
+        for m in ALLOWED_MIME_PREFIXES
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"不允許上傳 {declared_mime!r} 類型的檔案",
+        )
 
     content = await file.read()
     if len(content) > MAX_FILE_SIZE:

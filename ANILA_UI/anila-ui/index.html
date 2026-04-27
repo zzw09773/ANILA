@@ -4,9 +4,14 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>ANILA</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<!-- Fonts intentionally NOT loaded from Google CDN — outer nginx ships a
+     strict CSP (`style-src 'self' 'unsafe-inline'; font-src 'self' data:`)
+     that forbids external stylesheet sources, and on-prem deploys may be
+     air-gapped anyway. ``--font-sans`` and ``--font-mono`` below already
+     fall through to system fonts (Noto Sans CJK TC on Linux, PingFang TC
+     on macOS, Microsoft JhengHei on Windows; ui-monospace family for
+     code) so the visual still reads as a Chinese-friendly UI without
+     the CDN dependency. -->
 
 <script>
   // ---- Tweak defaults (host may rewrite this block) ----
@@ -42,8 +47,12 @@
     --radius:    6px;
     --radius-lg: 10px;
 
-    --font-sans: "Noto Sans TC", "Inter", system-ui, -apple-system, sans-serif;
-    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    /* System font stacks: Latin handles via -apple-system / Segoe UI / system-ui;
+       Traditional Chinese falls through to whatever the OS ships (PingFang TC
+       / Microsoft JhengHei / Noto Sans CJK TC). No webfont download needed. */
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft JhengHei",
+      "PingFang TC", "Noto Sans CJK TC", system-ui, sans-serif;
+    --font-mono: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, Consolas, monospace;
 
     --density: 16px;
   }

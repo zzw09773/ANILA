@@ -30,13 +30,14 @@ from app.services.auth_service import (
     get_current_user,
     _load_user_from_payload,
     PENDING_APPROVAL_SENTINEL,
+    LOCAL_PASSWORD_DISABLED_SENTINEL,
 )
 from app.services.external_auth_service import (
-    authenticate_ldap,
     authenticate_oidc_code,
     build_oidc_authorization_url,
     decode_external_state,
     list_public_auth_providers,
+    sanitize_next_path,
 )
 from app.utils.security import decode_token, hash_password, verify_password
 
@@ -97,7 +98,9 @@ def _build_oidc_callback_html(
     manually; neither is embedded in the HTML anymore.
     """
     del tokens, api_key  # no longer embedded — cookies do the handoff
-    safe_next = escape(next_path if next_path.startswith("/") else "/")
+    # B3 縱深：state 端與 query 端都 sanitize 過一次，這裡再 sanitize 一次，
+    # 然後 HTML escape — 三層任何一層通過都安全。
+    safe_next = escape(sanitize_next_path(next_path))
     body = f"""
 <!doctype html>
 <html lang="zh-Hant">
@@ -145,7 +148,9 @@ async def start_oidc_login(
     )
     if not provider:
         raise HTTPException(status_code=404, detail="OIDC Provider 不存在")
-    authorization_url = await build_oidc_authorization_url(provider, next_path=next_path)
+    authorization_url = await build_oidc_authorization_url(
+        provider, next_path=sanitize_next_path(next_path),
+    )
     return {"authorization_url": authorization_url}
 
 
@@ -205,48 +210,12 @@ def login(
 ):
     ip_address = http_request.client.host if http_request.client else None
 
-    if request.auth_source == "ldap":
-        provider = None
-        if request.provider_id is not None:
-            provider = (
-                db.query(AuthProvider)
-                .filter(
-                    AuthProvider.id == request.provider_id,
-                    AuthProvider.provider_type == "ldap",
-                    AuthProvider.is_active == True,
-                )
-                .first()
-            )
-        if not provider:
-            raise HTTPException(status_code=400, detail="LDAP Provider 不存在或未啟用")
-        result = authenticate_ldap(db, provider, request.username, request.password)
-        if result is None:
-            log_audit_event(
-                db,
-                action="login",
-                resource_type="auth",
-                status="failure",
-                detail=f"LDAP 登入失敗: {provider.name}/{request.username}",
-                ip_address=ip_address,
-                commit=True,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="LDAP 帳號或密碼錯誤",
-            )
-        tokens = create_tokens(result)
-        _stamp_last_login(db, result)
-        log_audit_event(
-            db,
-            actor=result,
-            action="login",
-            resource_type="auth",
-            resource_id=result.id,
-            detail=f"LDAP 登入成功: {provider.name}",
-            ip_address=ip_address,
-            commit=True,
+    if request.auth_source not in (None, "", "local"):
+        # LDAP 已自系統移除（將以 SSO 取代），僅保留本地登入 + OIDC callback。
+        raise HTTPException(
+            status_code=400,
+            detail="僅支援本地登入；OIDC 請走 /api/auth/oidc 流程",
         )
-        return _finalize_login(response, tokens)
 
     result = authenticate_user(db, request.username, request.password)
     if result is None:
@@ -267,6 +236,21 @@ def login(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="等待核准中，請通知 admin",
+        )
+    if result is LOCAL_PASSWORD_DISABLED_SENTINEL:
+        # Sprint 6 X / B2：使用者已切換到 SSO-only，引導改走 OIDC。
+        log_audit_event(
+            db,
+            action="login",
+            resource_type="auth",
+            status="failure",
+            detail=f"本機登入被阻擋（local_password_disabled=true）: {request.username}",
+            ip_address=ip_address,
+            commit=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="此帳號已切換為 SSO 登入；請改用單一登入按鈕。",
         )
     tokens = create_tokens(result)
     _stamp_last_login(db, result)
@@ -306,7 +290,9 @@ async def oidc_callback(
         state_payload = decode_external_state(state)
         if int(state_payload["provider_id"]) != provider_id:
             raise ValueError("state provider 不一致")
-        user = await authenticate_oidc_code(db, provider, code)
+        # state 內有 PKCE verifier 與 nonce，必須完整傳給 authenticate_oidc_code
+        # 才能驗 id_token；任何缺漏由該函式 raise ValueError。
+        user = await authenticate_oidc_code(db, provider, code, state_payload)
         tokens = create_tokens(user)
         _stamp_last_login(db, user)
         log_audit_event(

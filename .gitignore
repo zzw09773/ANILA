@@ -103,3 +103,28 @@ temp/
 runtime_logic/src/
 runtime_logic/vendor/
 runtime_logic/node_modules/
+
+# ── runtime data: n8n workflow assets / uploads ───────────────────────────────
+# Static templates (e.g. fina./) and user uploads served by nginx at /static
+# and /uploads. These are workflow-specific runtime data, not source code —
+# back them up out-of-band. README.md is tracked so the directory layout
+# stays self-documenting for fresh checkouts.
+share/static/
+share/uploads/
+# code-server 的工作目錄（C3 收斂後，預設不再掛 repo root）。
+# 由 ops 自行決定要塞什麼進這個 sandbox；不 commit 內容。
+share/codeserver-sandbox/
+
+# ── Misc dev tooling ──────────────────────────────────────────────────────────
+# Observer / loop process locks
+.observer.lock
+*.observer.lock
+
+ANILALM
+
+# Onyx upstream clone — handed off to the agent dev team for ongoing
+# maintenance. Their code, their repo. Kept on disk for local reference
+# but not under our version control. The handover spec we owe them
+# stays tracked at docs/onyx-target-system-api-spec.md and
+# docs/onyx-application-plan.md.
+onyx/

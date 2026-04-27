@@ -25,8 +25,6 @@ from ..engine.query_engine import QueryConfig, QueryEngine
 from ..models.message import Usage, UserMessage
 from ..providers.base import Provider
 from ..router.tool_router import ToolRegistry
-from .documents import router as documents_router, set_ingestion_service
-from .search import router as search_router, set_search_providers
 from .middleware.auth import ApiKeyMiddleware
 from .events import (
     ErrorPayload,
@@ -90,48 +88,37 @@ def create_app(
     provider: Provider,
     tool_registry: ToolRegistry,
     away_summary_fn: Optional[Any] = None,
-    ingestion_service: Optional[Any] = None,
-    document_store: Optional[Any] = None,
-    embedding_provider: Optional[Any] = None,
-    retrieval_provider: Optional[Any] = None,
-    db_pool: Optional[Any] = None,
     api_key: Optional[str] = None,
     api_dev_mode: bool = False,
-    upload_dir: str = "/tmp/anila_uploads",
 ) -> FastAPI:
     """Create and return the FastAPI application.
 
+    Sprint 1 boundary cleanup (anila-core-boundary.md §2.3) removed the
+    RAG kwargs (ingestion_service / document_store / embedding_provider /
+    retrieval_provider / db_pool / upload_dir) and the corresponding
+    routers. The runtime is now a pure agent loop — hosts that need
+    RAG endpoints fork the AgenticRAG template, which carries its own
+    /upload, /ingest, /status, /search routers.
+
     Args:
         provider:            LLM provider for completions.
-        tool_registry:       Registered tools available to agents.
+        tool_registry:       Pre-configured registry of tools the agent
+                             can call. anila-core does not register any
+                             tools by default; callers wire whatever
+                             they need.
         away_summary_fn:     Optional async function for away summary.
-        ingestion_service:   RAG document ingestion service.
-        document_store:      Document chunk store (for listing/retrieval).
-        embedding_provider:  Embedding provider for search endpoint.
-        retrieval_provider:  Vector retrieval provider for search endpoint.
-        db_pool:             asyncpg pool for keyword_search / read_document.
-        api_key:             Bearer token for API auth (None = disabled).
+        api_key:             Bearer token for ApiKeyMiddleware (None = no
+                             auth in production; use api_dev_mode for local).
         api_dev_mode:        Disable auth when True.
-        upload_dir:          Directory for uploaded files.
     """
     app = FastAPI(
         title="ANILA Core",
-        description="Agent Runtime — query loop, tools, memory, compact, RAG",
-        version="0.2.0",
+        description="Agent Runtime — query loop, tools, memory, compact",
+        version="0.5.0",
     )
 
     # Auth middleware
     app.add_middleware(ApiKeyMiddleware, api_key=api_key, dev_mode=api_dev_mode)
-
-    # Register RAG routers
-    app.include_router(documents_router)
-    app.include_router(search_router)
-
-    # Inject RAG dependencies
-    if ingestion_service is not None and document_store is not None:
-        set_ingestion_service(ingestion_service, document_store, upload_dir)
-    if embedding_provider is not None and retrieval_provider is not None:
-        set_search_providers(embedding_provider, retrieval_provider)
 
     @app.post("/chat")
     async def chat(request: ChatRequest) -> StreamingResponse:
@@ -232,54 +219,32 @@ def create_app(
 
     @app.post("/agentic-chat")
     async def agentic_chat(request: ChatRequest) -> StreamingResponse:
-        """Tool-driven AgenticRAG endpoint.
+        """Tool-driven chat endpoint — runs the agent loop with whatever
+        tools the host registered into the global ToolRegistry.
 
-        Unlike /chat, this endpoint registers RAG tools (vector_search,
-        keyword_search, read_document) and lets the LLM decide when to
-        search. No automatic context injection is performed.
+        Sprint 1 boundary cleanup (anila-core-boundary.md Grey Zone B)
+        moved RAG tool wiring out of core: this endpoint no longer knows
+        about vector_search / keyword_search / read_document. Callers
+        building RAG agents (e.g. AgenticRAG template) register their
+        own tools at app-factory time, and the request body must supply
+        a system prompt — there's no longer a RAG-specific default.
         """
-        from ..tools import (
-            create_vector_search_tool,
-            create_keyword_search_tool,
-            create_read_document_tool,
-        )
-        from ..tools.prompts import AGENTIC_RAG_SYSTEM_PROMPT
+        if not request.system_prompt:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "system_prompt is required — anila-core no longer ships "
+                    "a default RAG prompt. Use AgenticRAG template or pass "
+                    "your own."
+                ),
+            )
 
-        # Build a per-request tool registry with RAG tools
-        agentic_registry = ToolRegistry()
-
-        if embedding_provider is not None and retrieval_provider is not None:
-            agentic_registry.register(create_vector_search_tool(
-                embedding_provider=embedding_provider,
-                retrieval_provider=retrieval_provider,
-                user_id=request.user_id,
-                project_id=request.project_id,
-            ))
-
-        if db_pool is not None:
-            agentic_registry.register(create_keyword_search_tool(
-                db_pool=db_pool,
-                user_id=request.user_id,
-                project_id=request.project_id,
-            ))
-            agentic_registry.register(create_read_document_tool(
-                db_pool=db_pool,
-                user_id=request.user_id,
-                project_id=request.project_id,
-            ))
-
-        # Also register any tools from the global registry
-        for name in tool_registry.list_tools():
-            if name not in {"vector_search", "keyword_search", "read_document"}:
-                agentic_registry.register(tool_registry.get(name))
-
-        sys_prompt = request.system_prompt or AGENTIC_RAG_SYSTEM_PROMPT
         config = QueryConfig(
             max_turns=request.max_turns,
             model=request.model,
-            system_prompt=sys_prompt,
+            system_prompt=request.system_prompt,
         )
-        engine = QueryEngine(provider, agentic_registry, config)
+        engine = QueryEngine(provider, tool_registry, config)
 
         from ..models.message import UserMessage as UM
         messages = _parse_history(request.history) + [UM(content=request.user_message)]

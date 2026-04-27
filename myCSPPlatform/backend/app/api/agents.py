@@ -8,6 +8,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 import httpx
+from anila_core.security import UnsafeEndpointError, validate_outbound_url
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -17,6 +18,20 @@ from app.models.agent import Agent, UserAgentPermission
 from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user, require_admin
+
+
+def _enforce_endpoint_url(url: str) -> None:
+    """Reject SSRF-prone agent endpoint URLs (loopback / private / metadata).
+
+    ``anila_core.security.url_guard.validate_outbound_url`` is the same
+    helper the ingestion-credentials API uses; agents now share the
+    deny-list so a developer can't register an internal-only endpoint and
+    have an admin unknowingly approve it.
+    """
+    try:
+        validate_outbound_url(url)
+    except UnsafeEndpointError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 import os as _os
 _TEMPLATE_DIR = Path(
@@ -198,6 +213,11 @@ def register_agent(
     if existing:
         raise HTTPException(status_code=400, detail=f"Agent 名稱「{request.name}」已存在")
 
+    # SSRF guard — block loopback / private / cloud-metadata endpoints
+    # before they ever land in the DB. Same helper the ingestion
+    # credentials API uses (anila_core.security.url_guard).
+    _enforce_endpoint_url(request.endpoint_url)
+
     # Validate base model — a registered agent must wrap a real, active
     # model_registry row so per-model usage accounting stays truthful.
     from app.models.model_registry import ModelRegistry
@@ -290,6 +310,16 @@ def update_agent(
     if not patch:
         raise HTTPException(status_code=400, detail="沒有提供要更新的欄位")
 
+    # SSRF guard — endpoint_url 變更時重新驗證；同時把 approval_status 退回
+    # pending，避免 owner 把已核可 agent 的 endpoint 改到內網（H4）。
+    endpoint_changed = (
+        "endpoint_url" in patch
+        and patch["endpoint_url"] is not None
+        and patch["endpoint_url"] != agent.endpoint_url
+    )
+    if endpoint_changed:
+        _enforce_endpoint_url(patch["endpoint_url"])
+
     # If the caller is replacing base_model_id, keep the same invariant
     # the register endpoint enforces: the new id must point at an active
     # model. base_model_id itself is required on the model (not nullable
@@ -315,6 +345,15 @@ def update_agent(
             changed.append(field)
     if not changed:
         return _serialize_agent(agent)
+
+    # 任何端點變更都會強制重新核可，避免「核可一次後 owner 改成內網」的
+    # bypass。admin 變更自己的 agent 也一樣 — 規則一致才好稽核。
+    reapproval_required = endpoint_changed and agent.approval_status == "approved"
+    if reapproval_required:
+        agent.approval_status = "pending"
+        agent.approved_by = None
+        agent.approved_at = None
+        changed.append("approval_status->pending")
 
     db.commit()
     db.refresh(agent)

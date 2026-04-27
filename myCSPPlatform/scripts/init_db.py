@@ -47,7 +47,7 @@ def init_db():
                 "sort_order": 2,
             },
             {
-                "name": "MyNotebookLM",
+                "name": "ANILA LM",
                 "url": "http://localhost:3000",
                 "icon": "notebook",
                 "description": "AI 筆記本",

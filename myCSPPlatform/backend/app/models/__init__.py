@@ -18,6 +18,14 @@ from app.models.conversation import Conversation
 from app.models.department import Department
 from app.models.external_identity import ExternalIdentity
 from app.models.handoff import Handoff
+from app.models.ingestion import (
+    AgentLlmCredential,  # back-compat alias for UserLlmCredential
+    IngestionCollection,
+    IngestionDocument,
+    IngestionEvalRun,
+    IngestionJob,
+    UserLlmCredential,
+)
 from app.models.message import Message
 from app.models.model_registry import ModelRegistry
 from app.models.platform_link import PlatformLink
@@ -36,12 +44,18 @@ __all__ = [
     "Conversation",
     "Department",
     "ExternalIdentity",
+    "AgentLlmCredential",
     "Handoff",
+    "IngestionCollection",
+    "IngestionDocument",
+    "IngestionEvalRun",
+    "IngestionJob",
     "Message",
     "ModelRegistry",
     "PlatformLink",
     "TokenUsage",
     "User",
     "UserAgentPermission",
+    "UserLlmCredential",
     "UserModelPermission",
 ]

@@ -10,4 +10,9 @@ bcrypt==4.0.1
 python-multipart==0.0.20
 httpx==0.28.1
 psycopg2-binary==2.9.10
-ldap3==2.9.1
+# ldap3 已移除：LDAP 認證自系統下線，後續以 OIDC SSO 取代
+# Phase 2 Sprint 1: Arq job queue client. CSP enqueues ingestion jobs;
+# the worker container (separate service) consumes them. Importing arq
+# alone gives us create_pool + enqueue_job; no extra redis client needed.
+arq==0.26.1
+

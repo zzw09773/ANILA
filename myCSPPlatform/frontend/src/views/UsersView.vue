@@ -193,6 +193,22 @@
                   <button @click="openAllowedAgentsModal(user)" class="text-indigo-600 hover:text-indigo-800">可用 Agent</button>
                   <button @click="openResetPasswordModal(user)" class="text-orange-600 hover:text-orange-800">重設密碼</button>
                   <button
+                    v-if="!user.local_password_disabled"
+                    @click="handleToggleSsoOnly(user, true)"
+                    class="text-purple-600 hover:text-purple-800"
+                    title="切換為 SSO-only：拒絕本機密碼登入，只能透過 OIDC 進站"
+                  >
+                    切 SSO-only
+                  </button>
+                  <button
+                    v-else
+                    @click="handleToggleSsoOnly(user, false)"
+                    class="text-purple-600 hover:text-purple-800"
+                    title="允許本機密碼登入"
+                  >
+                    解除 SSO-only
+                  </button>
+                  <button
                     v-if="user.is_active && user.is_approved"
                     @click="handleDeactivate(user)"
                     class="text-red-600 hover:text-red-800"
@@ -652,6 +668,27 @@ async function handleDeactivate(user) {
     await fetchUsers()
   } catch (error) {
     setFeedback('error', error.response?.data?.detail || '停用失敗')
+  }
+}
+
+// Sprint 6 X / B2：admin 切換「本機密碼登入禁用」flag。flip → True 表示
+// 該使用者只能透過 SSO 進站；flip → False 解除限制。
+async function handleToggleSsoOnly(user, disable) {
+  const action = disable ? '切換為 SSO-only' : '解除 SSO-only 限制'
+  if (!window.confirm(`確定要對「${user.username}」${action}嗎？`)) {
+    return
+  }
+  try {
+    await updateUser(user.id, { local_password_disabled: disable })
+    setFeedback(
+      'success',
+      disable
+        ? `「${user.username}」已切換為 SSO-only，本機密碼登入會被拒絕。`
+        : `已恢復「${user.username}」的本機密碼登入。`,
+    )
+    await fetchUsers()
+  } catch (error) {
+    setFeedback('error', error.response?.data?.detail || `${action}失敗`)
   }
 }
 

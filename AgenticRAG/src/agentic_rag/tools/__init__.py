@@ -1,20 +1,34 @@
-"""RAG Tools — LLM-callable tools for Agentic RAG.
+"""AgenticRAG LLM-callable tool surface.
 
-Provides ToolDefinition instances for:
-- vector_search: semantic vector search via pgvector
-- keyword_search: trigram / BM25-style keyword search
-- read_document: read full document chunks by document ID
+Phase 2 Sprint 3 / Chunk M re-implementation:
+  The original Chunk F retirement note still applies — the OLD factory
+  variants (with inline SQL on the pre-0014 schema) are gone. The
+  re-implementations below take an ``AgentScopedPgVectorStore`` from
+  anila-core's central SDK instead of a raw db_pool. RLS auto-scopes
+  the queries via the store's ``SET LOCAL anila.agent_id`` block, so
+  tools are guaranteed to never see another agent's chunks even if
+  the LLM gets confused about which agent it's serving.
 
-These tools wrap existing storage adapters so the LLM can drive
-retrieval autonomously (tool-driven RAG) instead of relying on
-pre-process injection.
+Three tools:
+
+- ``vector_search(query, top_k)`` — embed query, similarity search.
+- ``keyword_search(query, top_k)`` — FTS over content_tsv.
+- ``read_document(document_id, max_chunks)`` — full document text.
+
+The factories return ``ToolDefinition`` objects ready to register on
+the per-request ``ToolRegistry`` in ``server.py``'s ``/agentic-chat``.
+
+The cross-encoder rerank helper survives unchanged.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-from typing import Any
+from typing import Any, Awaitable, Callable
+
+import httpx
+
+from anila_core.storage.adapters import AgentScopedPgVectorStore
 
 from ..models.tool import ToolDefinition, ToolSafety
 from ..providers.reranker import RerankCandidate, Reranker
@@ -50,7 +64,9 @@ async def _arerank_candidates(
         reranked = await reranker.rerank(query, candidates, top_k=top_k)
         if not reranked:
             return pool[:top_k]
-        by_cid = {str(item.get(chunk_id_key) or i): item for i, item in enumerate(pool)}
+        by_cid = {
+            str(item.get(chunk_id_key) or i): item for i, item in enumerate(pool)
+        }
         out: list[dict[str, Any]] = []
         for r in reranked:
             src = by_cid.get(r.candidate.chunk_id)
@@ -63,95 +79,120 @@ async def _arerank_candidates(
         return pool[:top_k]
 
 
-# ---------------------------------------------------------------------------
-# Tool Implementations (closures over storage adapters)
-# ---------------------------------------------------------------------------
+# ── Embedder helper ─────────────────────────────────────────────────────────
+
+
+# Type alias for the "embed one query" callable that vector_search needs.
+# Keeping it minimal-surface so callers can pass any async function with
+# the right signature, including a stub for tests.
+EmbedFn = Callable[[str], Awaitable[list[float]]]
+
+
+def _build_default_embedder(
+    base_url: str, api_key: str, model: str, target_dim: int = 4000,
+    verify_ssl: bool = False,
+) -> EmbedFn:
+    """Construct an OpenAI-compatible embed-one-query callable.
+
+    Truncates to ``target_dim`` (4000 for the live halfvec(4000) schema).
+    Stays sync to async with httpx — matches the worker's embedder
+    pattern but per-call (tools are short-lived, not pooled).
+    """
+    async def _embed(text: str) -> list[float]:
+        async with httpx.AsyncClient(verify=verify_ssl, timeout=30) as client:
+            resp = await client.post(
+                f"{base_url.rstrip('/')}/embeddings",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={"model": model, "input": [text], "input_type": "query"},
+            )
+            resp.raise_for_status()
+            vec = resp.json()["data"][0]["embedding"]
+        if len(vec) > target_dim:
+            vec = vec[:target_dim]
+        return vec
+
+    return _embed
+
+
+# ── Tool factories ─────────────────────────────────────────────────────────
+
 
 def create_vector_search_tool(
-    embedding_provider: Any,
-    retrieval_provider: Any,
-    user_id: str = "default",
-    project_id: str = "default",
+    store: AgentScopedPgVectorStore,
+    embedder: EmbedFn,
+    *,
+    default_top_k: int = 5,
+    min_score: float = 0.0,
     reranker: Reranker | None = None,
     rerank_pool_multiplier: int = 3,
+    collection_id: int | None = None,
 ) -> ToolDefinition:
-    """Create a vector_search tool backed by pgvector.
+    """Vector similarity search over the agent's chunks.
 
-    The LLM calls this tool with a ``query`` string. The implementation
-    embeds the query, searches pgvector, and returns top-k chunks.
-
-    When *reranker* is provided, fetches ``top_k * rerank_pool_multiplier``
-    candidates first then applies cross-encoder rerank to keep top_k.
+    Args:
+      store: the request-scoped ``AgentScopedPgVectorStore`` (already
+        pinned to ``RAG_AGENT_ID``).
+      embedder: async ``str -> list[float]`` callback. Use
+        ``_build_default_embedder`` or your own.
+      reranker: optional cross-encoder; when set, fetches
+        ``top_k * rerank_pool_multiplier`` then reranks down to top_k.
+      collection_id: pin search to one collection. ``None`` = all of
+        the agent's collections (RLS still applies at the agent boundary).
     """
 
     async def _impl(params: dict[str, Any], **_ctx: Any) -> dict:
-        from ..ingestion.normalize import normalize_zh
-
-        raw_query = params.get("query", "")
-        top_k = int(params.get("top_k", 5))
-
-        if not raw_query:
+        query = params.get("query", "").strip()
+        if not query:
             return {"error": "query is required"}
-
-        query = normalize_zh(raw_query)
+        top_k = int(params.get("top_k", default_top_k))
         pool_k = top_k * rerank_pool_multiplier if reranker is not None else top_k
 
         try:
-            embeddings = await embedding_provider.embed([query], input_type="query")
-            query_vec = embeddings[0]
+            embedding = await embedder(query)
         except Exception as exc:
-            logger.warning("vector_search embed failed: %s", exc)
-            return {"error": f"Embedding failed: {exc}"}
+            return {"error": f"embedding failed: {type(exc).__name__}: {exc}"}
 
-        try:
-            citations = await retrieval_provider.search(
-                query_embedding=query_vec,
-                user_id=user_id,
-                project_id=project_id,
-                top_k=pool_k,
-                min_score=0.0,
-            )
-        except Exception as exc:
-            logger.warning("vector_search retrieval failed: %s", exc)
-            return {"error": f"Search failed: {exc}"}
-
-        items = [
+        hits = await store.similarity_search(
+            embedding,
+            collection_id=collection_id,
+            top_k=pool_k,
+            min_score=min_score,
+        )
+        results = [
             {
-                "chunk_id": c.chunk_id,
-                "document_id": c.document_id,
-                "document_title": c.document_title,
-                "content": c.content[:2000],
-                "confidence": round(float(c.confidence), 4),
-                "heading_path": c.heading_path,
-                "page": c.page,
-                "chunk_type": c.chunk_type.value if hasattr(c.chunk_type, "value") else str(c.chunk_type),
-                "citation": c.cite(),
-                "source": c.source_path,
+                "chunk_id": h.chunk.id,
+                "document_id": h.chunk.document_id,
+                "chunk_key": h.chunk.chunk_key,
+                "content": h.chunk.content,
+                "metadata": h.chunk.metadata,
+                "score": round(float(h.score), 4),
             }
-            for c in citations
+            for h in hits
         ]
-
-        if reranker is not None and len(items) > 1:
-            items = await _arerank_candidates(reranker, query, items, top_k)
+        if reranker is not None and len(results) > 1:
+            results = await _arerank_candidates(reranker, query, results, top_k)
         else:
-            items = items[:top_k]
-
-        return {"results": items, "total": len(items)}
+            results = results[:top_k]
+        return {"results": results}
 
     return ToolDefinition(
         name="vector_search",
-        description="根據語義相似度搜索知識庫。適用於概念性問題、模糊查詢。",
+        description=(
+            "Semantic vector search over the agent's knowledge collections. "
+            "Returns the top-k most similar chunks for the query."
+        ),
         input_schema={
             "type": "object",
             "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "搜索查詢文字",
-                },
+                "query": {"type": "string", "description": "Natural language query."},
                 "top_k": {
-                    "type": "number",
-                    "description": "返回結果數量（預設 5）",
-                    "default": 5,
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "default": default_top_k,
                 },
             },
             "required": ["query"],
@@ -162,132 +203,68 @@ def create_vector_search_tool(
 
 
 def create_keyword_search_tool(
-    db_pool: Any,
-    user_id: str = "default",
-    project_id: str = "default",
+    store: AgentScopedPgVectorStore,
+    *,
+    default_top_k: int = 5,
     reranker: Reranker | None = None,
     rerank_pool_multiplier: int = 3,
+    collection_id: int | None = None,
+    tokenizer: Callable[[str], str] | None = None,
 ) -> ToolDefinition:
-    """Create a keyword_search tool using PostgreSQL FTS / trigram.
+    """Full-text keyword search via the central SDK's tsvector path.
 
-    Tries Traditional-Chinese-aware tsvector FTS first (filled in by the
-    pgvector adapter via the ``content_tsv`` column), then pg_trgm
-    similarity, then a final ILIKE fallback.
-
-    The *user_id* and *project_id* are captured in a closure so the LLM
-    cannot override the scope — all queries are bounded to the caller's tenant.
-
-    When *reranker* is provided, a wider pool is fetched and cross-encoder
-    rerank narrows it to ``top_k``.
+    ``tokenizer``: callable that pre-tokenises the query. CJK callers
+    should pass ``agentic_rag.ingestion.tokenize_zh.tokenize`` so
+    plainto_tsquery sees space-separated tokens. Latin-only callers
+    can leave it ``None``.
     """
 
     async def _impl(params: dict[str, Any], **_ctx: Any) -> dict:
-        from ..ingestion.normalize import normalize_zh
-        from ..ingestion.tokenize_zh import tokenize as _tokenize
-
-        raw_query = params.get("query", "")
-        top_k = int(params.get("top_k", 5))
-
-        if not raw_query:
+        query = params.get("query", "").strip()
+        if not query:
             return {"error": "query is required"}
-
-        query = normalize_zh(raw_query)
+        top_k = int(params.get("top_k", default_top_k))
         pool_k = top_k * rerank_pool_multiplier if reranker is not None else top_k
 
-        rows: list[Any] = []
-        try:
-            async with db_pool.acquire() as conn:
-                # Tier 1: tsvector FTS via tokenize_zh (bigram or CKIP)
-                try:
-                    tsq = _tokenize(query)
-                    if tsq.strip():
-                        rows = await conn.fetch(
-                            """
-                            SELECT chunk_id, document_id, content, metadata,
-                                   ts_rank_cd(content_tsv,
-                                              plainto_tsquery('simple', $1)) AS score
-                            FROM document_chunks
-                            WHERE user_id = $3 AND project_id = $4
-                              AND content_tsv @@ plainto_tsquery('simple', $1)
-                            ORDER BY score DESC
-                            LIMIT $2
-                            """,
-                            tsq, pool_k, user_id, project_id,
-                        )
-                except Exception as exc:
-                    logger.debug("FTS path unavailable, falling back: %s", exc)
-                    rows = []
-
-                # Tier 2: pg_trgm similarity
-                if not rows:
-                    try:
-                        rows = await conn.fetch(
-                            """
-                            SELECT chunk_id, document_id, content, metadata,
-                                   similarity(content, $1) AS score
-                            FROM document_chunks
-                            WHERE user_id = $3 AND project_id = $4
-                              AND content % $1
-                            ORDER BY similarity(content, $1) DESC
-                            LIMIT $2
-                            """,
-                            query, pool_k, user_id, project_id,
-                        )
-                    except Exception:
-                        rows = []
-
-                # Tier 3: ILIKE fallback
-                if not rows:
-                    like_pattern = f"%{query}%"
-                    rows = await conn.fetch(
-                        """
-                        SELECT chunk_id, document_id, content, metadata,
-                               0.5 AS score
-                        FROM document_chunks
-                        WHERE user_id = $3 AND project_id = $4
-                          AND content ILIKE $1
-                        LIMIT $2
-                        """,
-                        like_pattern, pool_k, user_id, project_id,
-                    )
-        except Exception as exc:
-            logger.warning("keyword_search failed: %s", exc)
-            return {"error": f"Search failed: {exc}"}
-
-        results = []
-        for row in rows:
-            meta = row["metadata"] or {}
-            if isinstance(meta, str):
-                meta = json.loads(meta)
-            results.append({
-                "chunk_id": row["chunk_id"],
-                "document_id": row["document_id"],
-                "content": row["content"][:2000],
-                "score": round(float(row["score"]), 4),
-                "source": meta.get("source_path", ""),
-            })
-
+        tokenized = tokenizer(query) if tokenizer else None
+        hits = await store.keyword_search(
+            query=query,
+            collection_id=collection_id,
+            top_k=pool_k,
+            tokenized_query=tokenized,
+        )
+        results = [
+            {
+                "chunk_id": h.chunk.id,
+                "document_id": h.chunk.document_id,
+                "chunk_key": h.chunk.chunk_key,
+                "content": h.chunk.content,
+                "metadata": h.chunk.metadata,
+                "score": round(float(h.score), 4),
+            }
+            for h in hits
+        ]
         if reranker is not None and len(results) > 1:
             results = await _arerank_candidates(reranker, query, results, top_k)
         else:
             results = results[:top_k]
-
-        return {"results": results, "total": len(results)}
+        return {"results": results}
 
     return ToolDefinition(
         name="keyword_search",
-        description="根據關鍵字精確匹配搜索知識庫。適用於特定術語、名稱、代碼等精確查詢。",
+        description=(
+            "Full-text keyword search over the agent's knowledge collections. "
+            "Returns chunks matching the query terms via PostgreSQL tsvector."
+        ),
         input_schema={
             "type": "object",
             "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "關鍵字查詢文字",
-                },
+                "query": {"type": "string"},
                 "top_k": {
-                    "type": "number",
-                    "description": "返回結果數量（預設 5）",
-                    "default": 5,
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "default": default_top_k,
                 },
             },
             "required": ["query"],
@@ -298,82 +275,54 @@ def create_keyword_search_tool(
 
 
 def create_read_document_tool(
-    db_pool: Any,
-    user_id: str = "default",
-    project_id: str = "default",
+    store: AgentScopedPgVectorStore,
+    *,
+    max_chunks: int = 200,
 ) -> ToolDefinition:
-    """Create a read_document tool that retrieves all chunks for a document.
+    """Read all chunks of one document, ordered by id.
 
-    When the LLM sees a snippet from vector_search and wants the full
-    document content, it can call this tool with the document_id.
-
-    The *user_id* and *project_id* are captured in a closure — the LLM
-    can only read documents that belong to the caller's tenant.
+    Useful for "summarize this document" / "answer based on document N"
+    LLM patterns where vector search is too narrow. Caps at
+    ``max_chunks`` so a malicious / confused LLM can't pull a multi-MB
+    document into the prompt.
     """
 
     async def _impl(params: dict[str, Any], **_ctx: Any) -> dict:
-        document_id = params.get("document_id", "")
-
-        if not document_id:
-            return {"error": "document_id is required"}
-
         try:
-            async with db_pool.acquire() as conn:
-                rows = await conn.fetch(
-                    """
-                    SELECT chunk_id, content, metadata,
-                           chunk_type, chunk_level, heading_path
-                    FROM document_chunks
-                    WHERE document_id = $1
-                      AND user_id = $2
-                      AND project_id = $3
-                      AND chunk_type IN ('content', 'image')
-                    ORDER BY chunk_level, created_at
-                    """,
-                    document_id,
-                    user_id,
-                    project_id,
-                )
-        except Exception as exc:
-            logger.warning("read_document failed: %s", exc)
-            return {"error": f"Read failed: {exc}"}
+            doc_id = int(params.get("document_id"))
+        except (TypeError, ValueError):
+            return {"error": "document_id (integer) is required"}
 
-        if not rows:
-            return {"error": f"Document '{document_id}' not found"}
-
-        chunks = []
-        for row in rows:
-            meta = row["metadata"] or {}
-            if isinstance(meta, str):
-                meta = json.loads(meta)
-            heading_path = row["heading_path"] or []
-            if isinstance(heading_path, str):
-                heading_path = json.loads(heading_path)
-            chunks.append({
-                "chunk_id": row["chunk_id"],
-                "content": row["content"],
-                "chunk_type": row["chunk_type"],
-                "heading_path": list(heading_path) if heading_path else [],
-            })
-
-        full_content = "\n\n---\n\n".join(c["content"] for c in chunks)
-
+        chunks = await store.list_by_document(
+            document_id=doc_id,
+            limit=max_chunks,
+        )
         return {
-            "document_id": document_id,
-            "total_chunks": len(chunks),
-            "content": full_content[:16000],
-            "truncated": len(full_content) > 16000,
+            "document_id": doc_id,
+            "chunk_count": len(chunks),
+            "chunks": [
+                {
+                    "chunk_id": c.id,
+                    "chunk_key": c.chunk_key,
+                    "content": c.content,
+                    "metadata": c.metadata,
+                }
+                for c in chunks
+            ],
         }
 
     return ToolDefinition(
         name="read_document",
-        description="讀取文檔的完整內容。當向量搜尋結果中看到感興趣的片段時，用此工具讀取完整文件。",
+        description=(
+            "Read every chunk of one document by document_id. Returns "
+            "the chunks in original order."
+        ),
         input_schema={
             "type": "object",
             "properties": {
                 "document_id": {
-                    "type": "string",
-                    "description": "文檔 ID（從 vector_search 結果中取得）",
+                    "type": "integer",
+                    "description": "ID of the document to read.",
                 },
             },
             "required": ["document_id"],
@@ -381,3 +330,13 @@ def create_read_document_tool(
         safety=ToolSafety.READ_ONLY,
         implementation=_impl,
     )
+
+
+__all__ = [
+    "EmbedFn",
+    "_arerank_candidates",
+    "_build_default_embedder",
+    "create_keyword_search_tool",
+    "create_read_document_tool",
+    "create_vector_search_tool",
+]

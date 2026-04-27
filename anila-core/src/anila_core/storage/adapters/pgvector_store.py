@@ -1,296 +1,367 @@
-"""pgvector-backed document chunk store and retrieval provider.
+"""Collection-scoped pgvector store (docs/ingestion-platform-design.md §3.3 Layer 3).
 
-Implements:
-  - RetrievalProvider Protocol  (search / index / delete_document)
-  - DocumentStore Protocol      (store / retrieve / list_by_document / delete_document)
+Sprint 4 refactor renamed this class from ``AgentScopedPgVectorStore``
+when the platform's ownership model moved from agent-scoped collections
+to collection-as-first-class. The defence-in-depth shape is unchanged,
+just keyed differently:
 
-Schema (created by initialize_schema()):
-  CREATE EXTENSION IF NOT EXISTS vector;
-  CREATE TABLE document_chunks ( ... embedding vector(4096) ... );
+- Layer 1 (schema): ``document_chunks.collection_id`` is NOT NULL + FK
+  (set in migration 0014; the legacy ``agent_id`` column was dropped in
+  migration 0019).
+- Layer 2 (RLS): ``CREATE POLICY chunks_collection_isolation`` filtering
+  on ``current_setting('anila.collection_id')`` (migration 0019).
+- **Layer 3 (this class)**: constructor refuses anything but a positive
+  int ``collection_id``; every connection acquired by this store calls
+  ``SET LOCAL anila.collection_id = $self._collection_id`` so RLS is
+  automatically enforced for every query, even ones the developer
+  forgot to scope.
 
-Uses cosine distance (<=>)  for nearest-neighbour search.
+Constructing this class without a valid ``collection_id`` is a
+programming error — fail fast at construction so we never get to a
+state where a caller could accidentally run an unscoped query.
+
+Back-compat alias ``AgentScopedPgVectorStore`` is preserved for one
+release cycle; consumers should switch to ``CollectionScopedPgVectorStore``.
+
+Sprint 1 scope: index / search / list / delete. Sprint 2 adds hybrid
+keyword + vector search; Sprint 3 adds evaluator-side bulk operations;
+Sprint 4 dropped agent_id throughout.
 """
 
 from __future__ import annotations
 
-import json
-import logging
-from typing import Any, Optional
+from contextlib import asynccontextmanager
+from datetime import datetime
+from typing import Any, AsyncIterator
 
-from ...models.storage import DocumentChunk
-from .pg_pool import PgPool
+import asyncpg
+from pgvector import HalfVector
 
-logger = logging.getLogger(__name__)
-
-# DDL executed on first initialize_schema() call
-_SCHEMA_SQL = """
-CREATE EXTENSION IF NOT EXISTS vector;
-
-CREATE TABLE IF NOT EXISTS document_chunks (
-    chunk_id    TEXT PRIMARY KEY,
-    document_id TEXT NOT NULL,
-    user_id     TEXT NOT NULL,
-    project_id  TEXT NOT NULL,
-    content     TEXT NOT NULL,
-    embedding   vector(4096),
-    metadata    JSONB DEFAULT '{}',
-    created_at  TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_chunks_document
-    ON document_chunks(document_id);
-
-CREATE INDEX IF NOT EXISTS idx_chunks_project
-    ON document_chunks(user_id, project_id);
-"""
-
-# IVFFlat index is created separately (requires rows to exist first)
-_IVFFLAT_INDEX_SQL = """
-CREATE INDEX IF NOT EXISTS idx_chunks_embedding
-    ON document_chunks
-    USING ivfflat (embedding vector_cosine_ops)
-    WITH (lists = 100);
-"""
+from anila_core.ingestion.chunking_plugins.base import ChunkResult
+from anila_core.ingestion.errors import StoreError
+from anila_core.models.ingestion import IngestionChunk, SearchHit
+from anila_core.storage.adapters.pg_pool import PgPool
 
 
-class PgVectorStore:
-    """Combined DocumentStore + RetrievalProvider backed by pgvector.
+class CollectionScopedPgVectorStore:
+    """Read/write pgvector chunks under a single collection's RLS scope.
 
-    Args:
-        pool:      Shared PgPool instance.
-        dimension: Embedding dimension (must match the vector column).
+    Construct one per (collection, request)-style operation. Cheap to
+    construct; the heavy resource (pool) is shared across instances.
+
+    Concurrency model: each ``index_chunks`` / ``similarity_search``
+    call acquires a fresh connection from the pool, sets
+    ``anila.collection_id`` locally on that connection, and releases it.
+    ``SET LOCAL`` is transactional, so as long as the connection isn't
+    reused outside a transaction we get the right scoping. The internal
+    ``_acquire`` context manager wraps everything in an explicit
+    transaction to make that contract impossible to violate.
     """
 
-    def __init__(self, pool: PgPool, dimension: int = 4096) -> None:
+    def __init__(self, pool: PgPool, collection_id: int) -> None:
+        # Refuse anything that isn't clearly a positive Postgres BIGINT.
+        # ``bool`` is a subclass of int in Python; rule it out so a stray
+        # ``True`` doesn't silently scope to collection_id = 1.
+        if isinstance(collection_id, bool) or not isinstance(collection_id, int):
+            raise ValueError(
+                f"collection_id must be a positive int, got "
+                f"{type(collection_id).__name__} {collection_id!r}"
+            )
+        if collection_id <= 0:
+            raise ValueError(f"collection_id must be > 0, got {collection_id}")
         self._pool = pool
-        self._dimension = dimension
+        self._collection_id = collection_id
 
-    async def initialize_schema(self, create_ivfflat: bool = False) -> None:
-        """Create tables and indexes if they do not yet exist."""
+    @property
+    def collection_id(self) -> int:
+        return self._collection_id
+
+    @asynccontextmanager
+    async def _acquire(self) -> AsyncIterator[asyncpg.Connection]:
+        """Acquire a connection scoped to this collection.
+
+        Wraps the work in an explicit transaction because ``SET LOCAL``
+        only persists within a transaction — without ``BEGIN``, asyncpg
+        would auto-commit each statement and the GUC would be reset
+        after the first query, defeating Layer 2.
+        """
         async with self._pool.acquire() as conn:
-            await conn.execute(_SCHEMA_SQL)
-            if create_ivfflat:
-                try:
-                    await conn.execute(_IVFFLAT_INDEX_SQL)
-                except Exception as exc:
-                    # IVFFlat requires at least some rows; log and skip.
-                    logger.warning("IVFFlat index not created (may need data first): %s", exc)
+            tr = conn.transaction()
+            await tr.start()
+            try:
+                # ``SET LOCAL`` doesn't accept parameter binding ($1) —
+                # Postgres parses it as a config command, not DML.
+                # F-string is safe because ``__init__`` rejects non-int.
+                await conn.execute(
+                    f"SET LOCAL anila.collection_id = {int(self._collection_id)}"
+                )
+                yield conn
+                await tr.commit()
+            except BaseException:
+                await tr.rollback()
+                raise
 
-    # ------------------------------------------------------------------
-    # DocumentStore Protocol
-    # ------------------------------------------------------------------
+    # ── Write path ──────────────────────────────────────────────────────────
 
-    async def store(self, chunk: DocumentChunk) -> None:
-        """Upsert a document chunk (with optional embedding)."""
-        embedding_value = _to_pg_vector(chunk.embedding)
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO document_chunks
-                    (chunk_id, document_id, user_id, project_id,
-                     content, embedding, metadata)
-                VALUES ($1, $2, $3, $4, $5, $6::vector, $7::jsonb)
-                ON CONFLICT (chunk_id) DO UPDATE SET
-                    content    = EXCLUDED.content,
-                    embedding  = EXCLUDED.embedding,
-                    metadata   = EXCLUDED.metadata
-                """,
-                chunk.chunk_id,
-                chunk.document_id,
-                chunk.user_id,
-                chunk.project_id,
-                chunk.content,
-                embedding_value,
-                json.dumps(chunk.metadata),
+    async def index_chunks(
+        self,
+        document_id: int,
+        chunks: list[ChunkResult],
+        embeddings: list[list[float]],
+    ) -> int:
+        """Bulk-insert chunks with their embeddings.
+
+        Sprint 4: ``collection_id`` is no longer a per-call argument —
+        the store is constructed against one collection, so all writes
+        land in that scope. Pass ``document_id`` only.
+
+        Returns the number of rows written. Caller-supplied
+        ``len(chunks) == len(embeddings)`` is enforced.
+
+        On constraint violation (duplicate ``chunk_key`` within the
+        document) we re-raise the asyncpg error wrapped in
+        ``StoreError`` so the worker's error taxonomy stays uniform.
+        """
+        if len(chunks) != len(embeddings):
+            raise ValueError(
+                f"index_chunks: got {len(chunks)} chunks but {len(embeddings)} "
+                f"embeddings; counts must match"
             )
+        if not chunks:
+            return 0
 
-    async def retrieve(self, chunk_id: str) -> Optional[DocumentChunk]:
-        """Return a chunk by ID, or None if not found."""
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM document_chunks WHERE chunk_id = $1",
-                chunk_id,
+        # JSONB codec is registered on every connection (PgPool.
+        # _init_connection), so asyncpg encodes the dict to JSONB
+        # on its own — passing a ``json.dumps`` string would
+        # double-encode. HalfVector wraps the float list so the halfvec
+        # codec ships the right binary shape into the halfvec(4000)
+        # column; a bare list[float] would be interpreted as ``vector``
+        # and rejected as a type mismatch.
+        rows = [
+            (
+                self._collection_id,
+                document_id,
+                ch.chunk_key,
+                ch.content,
+                HalfVector(emb),
+                ch.metadata,
+                ch.token_count,
             )
-        return _row_to_chunk(row) if row else None
+            for ch, emb in zip(chunks, embeddings)
+        ]
+
+        sql = """
+            INSERT INTO document_chunks
+                (collection_id, document_id, chunk_key,
+                 content, content_tsv, embedding, metadata, token_count)
+            VALUES
+                ($1, $2, $3, $4,
+                 to_tsvector('simple', $4),
+                 $5, $6, $7)
+        """
+        try:
+            async with self._acquire() as conn:
+                await conn.executemany(sql, rows)
+        except asyncpg.ConnectionDoesNotExistError as e:
+            raise StoreError.pg_connect(
+                user_message="資料庫連線中斷，請稍後再試",
+                details={"cause": type(e).__name__},
+            ) from e
+        return len(rows)
+
+    # ── Read path ───────────────────────────────────────────────────────────
+
+    async def similarity_search(
+        self,
+        query_embedding: list[float],
+        top_k: int = 10,
+        min_score: float = 0.0,
+    ) -> list[SearchHit]:
+        """Vector similarity search scoped to this collection.
+
+        Sprint 4: dropped the legacy ``collection_id`` per-call argument
+        — the store IS the collection scope. RLS auto-filters via
+        ``anila.collection_id`` GUC set inside ``_acquire()``.
+
+        Cosine *similarity* is what we return (1 - cosine_distance), so
+        ``min_score`` reads naturally: 0.7 = "at least 70% similar".
+        """
+        if top_k <= 0:
+            return []
+
+        # The ANN index is HNSW on ``embedding halfvec_cosine_ops``;
+        # ``<=>`` is cosine distance. We compute 1 - distance for the
+        # score column so callers can read higher-is-closer.
+        q = HalfVector(query_embedding)
+        sql = """
+            SELECT id, collection_id, document_id, chunk_key,
+                   content, metadata, token_count, created_at,
+                   1 - (embedding <=> $1) AS score
+              FROM document_chunks
+             WHERE 1 - (embedding <=> $1) >= $2
+             ORDER BY embedding <=> $1
+             LIMIT $3
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, q, min_score, top_k)
+        return [self._row_to_search_hit(r) for r in rows]
+
+    async def keyword_search(
+        self,
+        query: str,
+        top_k: int = 10,
+        tokenized_query: str | None = None,
+    ) -> list[SearchHit]:
+        """Full-text keyword search via the GIN index on ``content_tsv``.
+
+        Sprint 4: dropped the legacy ``collection_id`` per-call argument.
+
+        Two ranking modes:
+
+        - When ``tokenized_query`` is provided (e.g. CJK pre-tokenized
+          input), use ``plainto_tsquery`` on it and rank by
+          ``ts_rank_cd``.
+        - When only ``query`` is given, use ``plainto_tsquery`` directly
+          on the raw user text. Works fine for whitespace-tokenised
+          languages; CJK callers should pre-tokenise.
+
+        ``score`` is ``ts_rank_cd`` — NOT a [0,1] cosine. Callers that
+        mix this with ``similarity_search`` results need to merge by
+        rank position (RRF) rather than score axis.
+        """
+        if top_k <= 0:
+            return []
+
+        tsquery_input = tokenized_query if tokenized_query else query
+        sql = """
+            SELECT id, collection_id, document_id, chunk_key,
+                   content, metadata, token_count, created_at,
+                   ts_rank_cd(content_tsv, q) AS score
+              FROM document_chunks,
+                   plainto_tsquery('simple', $1) q
+             WHERE content_tsv @@ q
+             ORDER BY score DESC
+             LIMIT $2
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, tsquery_input, top_k)
+        return [self._row_to_search_hit(r) for r in rows]
 
     async def list_by_document(
         self,
-        document_id: str,
-        user_id: Optional[str] = None,
-        project_id: Optional[str] = None,
-    ) -> list[DocumentChunk]:
-        """Return all chunks for a document, ordered by creation time.
+        document_id: int,
+        limit: int = 100,
+        offset: int = 0,
+        include_embedding: bool = False,
+    ) -> list[IngestionChunk]:
+        """Inspector-side: list chunks belonging to one document.
 
-        When *user_id* and *project_id* are provided the query is scoped to
-        that tenant only, preventing cross-tenant data access.
+        ``include_embedding`` defaults False because the inspector UI
+        doesn't render the 1536-d vector — sending it bloats the payload.
+        Set True only when the dev explicitly asks (e.g. embedding-norm
+        debug column behind the inspector's "show vector debug" toggle).
         """
-        async with self._pool.acquire() as conn:
-            if user_id is not None and project_id is not None:
-                rows = await conn.fetch(
-                    """
-                    SELECT * FROM document_chunks
-                    WHERE document_id = $1
-                      AND user_id = $2
-                      AND project_id = $3
-                    ORDER BY created_at
-                    """,
-                    document_id,
-                    user_id,
-                    project_id,
-                )
-            else:
-                rows = await conn.fetch(
-                    "SELECT * FROM document_chunks WHERE document_id = $1 ORDER BY created_at",
-                    document_id,
-                )
-        return [_row_to_chunk(r) for r in rows]
-
-    async def list_all_documents(
-        self,
-        user_id: str = "default",
-        project_id: str = "default",
-    ) -> list[dict]:
-        """Return one summary row per document_id, scoped to user_id + project_id.
-
-        Each row contains:
-            document_id, filename, source_path, title, chunk_count, last_indexed
+        cols = (
+            "id, collection_id, document_id, chunk_key, content, "
+            "embedding, metadata, token_count, created_at"
+            if include_embedding
+            else "id, collection_id, document_id, chunk_key, content, "
+            "metadata, token_count, created_at"
+        )
+        sql = f"""
+            SELECT {cols}
+              FROM document_chunks
+             WHERE document_id = $1
+             ORDER BY id
+             LIMIT $2 OFFSET $3
         """
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT
-                    document_id,
-                    metadata->>'filename'    AS filename,
-                    metadata->>'source_path' AS source_path,
-                    metadata->>'title'       AS title,
-                    COUNT(*)                 AS chunk_count,
-                    MAX(created_at)          AS last_indexed
-                FROM document_chunks
-                WHERE user_id = $1 AND project_id = $2
-                GROUP BY document_id,
-                         metadata->>'filename',
-                         metadata->>'source_path',
-                         metadata->>'title'
-                ORDER BY MAX(created_at) DESC
-                """,
-                user_id,
-                project_id,
-            )
-        return [dict(r) for r in rows]
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, document_id, limit, offset)
+        return [self._row_to_chunk(r, include_embedding=include_embedding) for r in rows]
 
-    async def delete_document(
+    async def list_in_collection(
         self,
-        document_id: str,
-        user_id: Optional[str] = None,
-        project_id: Optional[str] = None,
-    ) -> None:
-        """Delete all chunks belonging to *document_id*.
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[IngestionChunk]:
+        """Inspector-side: paginated list of chunks in this collection.
 
-        When *user_id* and *project_id* are provided, only chunks matching
-        the scope are deleted — preventing cross-tenant deletions.
+        Sprint 4 rename (was ``list_by_collection``): the store IS the
+        collection, so the parameter is implicit. RLS does the filtering.
         """
-        async with self._pool.acquire() as conn:
-            if user_id is not None and project_id is not None:
-                await conn.execute(
-                    """
-                    DELETE FROM document_chunks
-                    WHERE document_id = $1
-                      AND user_id = $2
-                      AND project_id = $3
-                    """,
-                    document_id,
-                    user_id,
-                    project_id,
-                )
-            else:
-                await conn.execute(
-                    "DELETE FROM document_chunks WHERE document_id = $1",
-                    document_id,
-                )
+        sql = """
+            SELECT id, collection_id, document_id, chunk_key,
+                   content, metadata, token_count, created_at
+              FROM document_chunks
+             ORDER BY id
+             LIMIT $1 OFFSET $2
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, limit, offset)
+        return [self._row_to_chunk(r, include_embedding=False) for r in rows]
 
-    # ------------------------------------------------------------------
-    # RetrievalProvider Protocol
-    # ------------------------------------------------------------------
+    # ── Delete path ─────────────────────────────────────────────────────────
 
-    async def search(
-        self,
-        query_embedding: list[float],
-        user_id: str,
-        project_id: str,
-        top_k: int = 5,
-        min_score: float = 0.0,
-    ) -> list[DocumentChunk]:
-        """Return top-k chunks nearest to *query_embedding* (cosine similarity)."""
-        vector_str = _to_pg_vector(query_embedding)
+    async def delete_document(self, document_id: int) -> int:
+        """Delete every chunk for one document in this collection."""
+        sql = "DELETE FROM document_chunks WHERE document_id = $1"
+        async with self._acquire() as conn:
+            result = await conn.execute(sql, document_id)
+        return int(result.split()[-1]) if result.startswith("DELETE ") else 0
 
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT *,
-                       1 - (embedding <=> $1::vector) AS score
-                FROM document_chunks
-                WHERE user_id = $2 AND project_id = $3
-                  AND embedding IS NOT NULL
-                  AND 1 - (embedding <=> $1::vector) >= $4
-                ORDER BY embedding <=> $1::vector
-                LIMIT $5
-                """,
-                vector_str,
-                user_id,
-                project_id,
-                min_score,
-                top_k,
-            )
+    async def delete_all(self) -> int:
+        """Delete every chunk in this collection. Returns count deleted.
 
-        chunks: list[DocumentChunk] = []
-        for row in rows:
-            chunk = _row_to_chunk(row)
-            chunk = chunk.model_copy(
-                update={"metadata": {**chunk.metadata, "score": float(row["score"])}}
-            )
-            chunks.append(chunk)
-        return chunks
+        Sprint 4 rename (was ``delete_collection``): RLS scopes us to
+        the construction-time collection automatically; the SQL no
+        longer carries an explicit collection_id.
+        """
+        sql = "DELETE FROM document_chunks"
+        async with self._acquire() as conn:
+            result = await conn.execute(sql)
+        return int(result.split()[-1]) if result.startswith("DELETE ") else 0
 
-    async def index(self, chunk: DocumentChunk) -> None:
-        """Alias for store() — adds a chunk to the vector index."""
-        await self.store(chunk)
+    # ── Row mappers ─────────────────────────────────────────────────────────
 
-    # delete_document is shared between DocumentStore and RetrievalProvider
+    @staticmethod
+    def _row_to_chunk(row: asyncpg.Record, *, include_embedding: bool) -> IngestionChunk:
+        # JSONB codec parses asynchronously into a dict. Defaults to {}
+        # in the schema so this can never be NULL, but None-guard regardless.
+        metadata = row["metadata"] or {}
+        return IngestionChunk(
+            id=row["id"],
+            collection_id=row["collection_id"],
+            document_id=row["document_id"],
+            chunk_key=row["chunk_key"],
+            content=row["content"],
+            embedding=list(row["embedding"]) if include_embedding else None,
+            metadata=metadata,
+            token_count=row["token_count"],
+            created_at=row["created_at"]
+            if isinstance(row["created_at"], datetime)
+            else datetime.fromisoformat(str(row["created_at"])),
+        )
 
-
-# ------------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------------
-
-def _to_pg_vector(values: Optional[list[float]]) -> Optional[str]:
-    """Convert a Python float list to pgvector literal string '[v1,v2,...]'."""
-    if values is None:
-        return None
-    return "[" + ",".join(str(v) for v in values) + "]"
+    @classmethod
+    def _row_to_search_hit(cls, row: asyncpg.Record) -> SearchHit:
+        # similarity_search SELECT does not return the embedding column.
+        return SearchHit(
+            chunk=IngestionChunk(
+                id=row["id"],
+                collection_id=row["collection_id"],
+                document_id=row["document_id"],
+                chunk_key=row["chunk_key"],
+                content=row["content"],
+                metadata=row["metadata"] or {},
+                token_count=row["token_count"],
+                created_at=row["created_at"],
+            ),
+            score=float(row["score"]),
+        )
 
 
-def _row_to_chunk(row: Any) -> DocumentChunk:
-    """Convert an asyncpg Record to a DocumentChunk."""
-    metadata = row["metadata"] or {}
-    if isinstance(metadata, str):
-        metadata = json.loads(metadata)
-
-    embedding: Optional[list[float]] = None
-    raw_emb = row["embedding"]
-    if raw_emb is not None:
-        # asyncpg returns pgvector as a string like '[0.1,0.2,...]'
-        if isinstance(raw_emb, str):
-            embedding = [float(v) for v in raw_emb.strip("[]").split(",")]
-        else:
-            embedding = list(raw_emb)
-
-    return DocumentChunk(
-        chunk_id=row["chunk_id"],
-        document_id=row["document_id"],
-        user_id=row["user_id"],
-        project_id=row["project_id"],
-        content=row["content"],
-        embedding=embedding,
-        metadata=metadata,
-        created_at=row["created_at"],
-    )
+# ── Back-compat alias ───────────────────────────────────────────────────────
+# Sprint 4 renamed the class from AgentScopedPgVectorStore. Existing
+# imports survive one cycle through this alias; new code should use
+# CollectionScopedPgVectorStore directly.
+AgentScopedPgVectorStore = CollectionScopedPgVectorStore

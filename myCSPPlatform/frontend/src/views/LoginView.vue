@@ -6,45 +6,8 @@
         <p class="text-gray-500 mt-2">AI 模型服務管理平台</p>
       </div>
 
-      <div v-if="ldapProviders.length" class="mb-6">
-        <div class="grid grid-cols-2 gap-2 rounded-lg bg-gray-100 p-1">
-          <button
-            type="button"
-            @click="authMode = 'local'"
-            class="px-3 py-2 text-sm rounded-md transition"
-            :class="authMode === 'local' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-600 hover:text-gray-800'"
-          >
-            本機登入
-          </button>
-          <button
-            type="button"
-            @click="authMode = 'ldap'"
-            class="px-3 py-2 text-sm rounded-md transition"
-            :class="authMode === 'ldap' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-600 hover:text-gray-800'"
-          >
-            LDAP 登入
-          </button>
-        </div>
-      </div>
-
-      <!-- Login Form -->
+      <!-- Login Form (本機帳號) -->
       <form @submit.prevent="handleLogin" class="space-y-5">
-        <div v-if="authMode === 'ldap'">
-          <label class="block text-sm font-medium text-gray-700 mb-1">LDAP Provider</label>
-          <select
-            v-model="selectedLdapProviderId"
-            class="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition"
-          >
-            <option
-              v-for="provider in ldapProviders"
-              :key="provider.id"
-              :value="provider.id"
-            >
-              {{ provider.button_text || provider.name }}
-            </option>
-          </select>
-        </div>
-
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">帳號</label>
           <input
@@ -74,14 +37,13 @@
 
         <button
           type="submit"
-          :disabled="loading || (authMode === 'ldap' && !selectedLdapProviderId)"
+          :disabled="loading"
           class="w-full bg-indigo-600 text-white py-2.5 rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-50 transition"
         >
-          {{ loading ? '登入中...' : authMode === 'ldap' ? '使用 LDAP 登入' : '登入' }}
+          {{ loading ? '登入中...' : '登入' }}
         </button>
 
         <button
-          v-if="authMode === 'local'"
           type="button"
           @click="openRegisterModal"
           class="w-full border border-gray-300 text-gray-700 py-2.5 rounded-lg font-medium hover:bg-gray-50 transition"
@@ -90,6 +52,7 @@
         </button>
       </form>
 
+      <!-- 單一登入（OIDC） -->
       <div v-if="oidcProviders.length" class="mt-8 pt-6 border-t border-gray-200">
         <p class="text-sm font-medium text-gray-700 mb-3">單一登入</p>
         <div class="space-y-3">
@@ -143,7 +106,6 @@
               placeholder="請輸入密碼"
             />
             <p class="text-xs text-gray-400 mt-1">至少 8 字元，須包含大小寫字母及特殊符號</p>
-            <!-- Password strength hints -->
             <ul class="text-xs mt-2 space-y-0.5" v-if="reg.password">
               <li :class="reg.password.length >= 8 ? 'text-green-600' : 'text-gray-400'">
                 {{ reg.password.length >= 8 ? '✓' : '○' }} 至少 8 個字元
@@ -205,7 +167,6 @@ import { getOidcStartUrl, listPublicAuthProviders, register as registerApi } fro
 const router = useRouter()
 const authStore = useAuthStore()
 
-const authMode = ref('local')
 const username = ref('')
 const password = ref('')
 const error = ref('')
@@ -213,7 +174,6 @@ const isPending = ref(false)
 const loading = ref(false)
 const oidcLoadingId = ref(null)
 const providers = ref([])
-const selectedLdapProviderId = ref(null)
 
 const showRegisterModal = ref(false)
 const registering = ref(false)
@@ -235,10 +195,7 @@ const canRegister = computed(() =>
   hasSpecial(reg.value.password)
 )
 
-const ldapProviders = computed(() =>
-  providers.value.filter(provider => provider.provider_type === 'ldap')
-)
-
+// LDAP 已下線；只剩 OIDC 一種外部 provider。
 const oidcProviders = computed(() =>
   providers.value.filter(provider => provider.provider_type === 'oidc')
 )
@@ -247,9 +204,6 @@ async function fetchProviders() {
   try {
     const { data } = await listPublicAuthProviders()
     providers.value = data
-    if (!selectedLdapProviderId.value && ldapProviders.value.length) {
-      selectedLdapProviderId.value = ldapProviders.value[0].id
-    }
   } catch {
     providers.value = []
   }
@@ -262,10 +216,7 @@ async function handleLogin() {
   isPending.value = false
   loading.value = true
   try {
-    const extra = authMode.value === 'ldap'
-      ? { auth_source: 'ldap', provider_id: selectedLdapProviderId.value }
-      : { auth_source: 'local' }
-    await authStore.login(username.value, password.value, extra)
+    await authStore.login(username.value, password.value, { auth_source: 'local' })
     router.push('/')
   } catch (e) {
     const detail = e.response?.data?.detail || '登入失敗，請檢查帳號密碼'

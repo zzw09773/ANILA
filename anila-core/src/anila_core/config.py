@@ -1,15 +1,25 @@
-"""Unified configuration for ANILA Core.
+"""Unified configuration for anila-core (chat / agent runtime only).
+
+Sprint 1 boundary cleanup (anila-core-boundary.md §2.3) removed the
+RAG-specific fields:
+
+    embedding_*       (moved to AgenticRAG template)
+    database_url      (anila-core no longer talks to PG directly)
+    pg_pool_*, pg_ssl
+    chunk_size, chunk_overlap
+    rag_top_k, rag_min_score
+    upload_dir        (the /upload endpoint is gone)
+
+Forks (e.g. AgenticRAG) carry their own config module with these fields.
 
 All settings can be overridden by environment variables (case-insensitive).
-Environment variable names match the field names:
-    LLM_URL, LLM_API_KEY, MODEL, EMBEDDING_MODEL, DATABASE_URL, etc.
+Field names map directly to env vars: LLM_URL, MODEL, API_KEY, etc.
 
-Example .env:
-    LLM_URL=https://172.16.120.35/v1
-    MODEL=google/gemma4
-    EMBEDDING_MODEL=Nvidia/NV-embed-V2
-    DATABASE_URL=postgresql://anila:secret@localhost/anila_rag
-    API_KEY=my-secret-key
+Example .env::
+
+    LLM_URL = https://172.16.120.35/v1
+    MODEL   = google/gemma4
+    API_KEY = my-secret-key
 """
 
 from __future__ import annotations
@@ -38,50 +48,6 @@ try:
             description="Model identifier sent to the LLM provider.",
         )
 
-        # ── Embedding ──────────────────────────────────────────────────
-        embedding_url: str = Field(
-            default="https://172.16.120.35/v1",
-            description="Base URL of the embedding endpoint (OpenAI-compatible).",
-        )
-        embedding_api_key: str = Field(
-            default="not-set",
-            description="API key / Bearer token for the embedding endpoint.",
-        )
-        embedding_model: str = Field(
-            default="Nvidia/NV-embed-V2",
-            description="Embedding model identifier.",
-        )
-        embedding_dimension: int = Field(
-            default=4096,
-            description="Embedding vector dimension (NV-Embed-V2 = 4096).",
-        )
-        embedding_verify_ssl: bool = Field(
-            default=False,
-            description="Verify TLS certificates for the embedding endpoint.",
-        )
-
-        # ── PostgreSQL ────────────────────────────────────────────────
-        database_url: str = Field(
-            default="postgresql://anila:anila@localhost:5432/anila_rag",
-            description="PostgreSQL DSN (asyncpg format).",
-        )
-        pg_pool_min: int = Field(default=2, description="Min asyncpg pool connections.")
-        pg_pool_max: int = Field(default=10, description="Max asyncpg pool connections.")
-        pg_ssl: str = Field(
-            default="disable",
-            description="SSL mode for PostgreSQL (disable/require/verify-ca).",
-        )
-
-        # ── Chunking ──────────────────────────────────────────────────
-        chunk_size: int = Field(default=512, description="Target chunk size in tokens.")
-        chunk_overlap: int = Field(default=50, description="Token overlap between chunks.")
-
-        # ── RAG Retrieval ─────────────────────────────────────────────
-        rag_top_k: int = Field(default=5, description="Number of chunks to retrieve per query.")
-        rag_min_score: float = Field(
-            default=0.7, description="Minimum cosine similarity score."
-        )
-
         # ── CSP Platform (Data Plane) ─────────────────────────────────
         csp_base_url: str = Field(
             default="http://localhost:8000",
@@ -105,10 +71,6 @@ try:
             default=False,
             description="Disable auth checks when True (development only).",
         )
-        upload_dir: str = Field(
-            default="/tmp/anila_uploads",
-            description="Temporary directory for uploaded files.",
-        )
 
         model_config = SettingsConfigDict(
             env_file=".env",
@@ -124,25 +86,11 @@ except ImportError:
         llm_url: str = "https://172.16.120.35/v1"
         llm_api_key: str = "not-set"
         model: str = "google/gemma4"
-        embedding_url: str = "https://172.16.120.35/v1"
-        embedding_api_key: str = "not-set"
-        embedding_model: str = "Nvidia/NV-embed-V2"
-        embedding_dimension: int = 4096
-        embedding_verify_ssl: bool = False
-        database_url: str = "postgresql://anila:anila@localhost:5432/anila_rag"
-        pg_pool_min: int = 2
-        pg_pool_max: int = 10
-        pg_ssl: str = "disable"
-        chunk_size: int = 512
-        chunk_overlap: int = 50
-        rag_top_k: int = 5
-        rag_min_score: float = 0.7
         csp_base_url: str = "http://localhost:8000"
         csp_api_key: str = "not-set"
         csp_service_token: Optional[str] = None
         api_key: Optional[str] = None
         api_dev_mode: bool = False
-        upload_dir: str = "/tmp/anila_uploads"
 
 
 # Module-level singleton — import and use directly:

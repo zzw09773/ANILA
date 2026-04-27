@@ -55,9 +55,6 @@ import {
 import {
   AnilaGlyph,
   IconColumns,
-  IconEye,
-  IconEyeOff,
-  IconKey,
   IconLock,
   IconMoon,
   IconNodes,
@@ -164,11 +161,8 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function maskApiKey(apiKey) {
-  if (!apiKey) return "未設定";
-  if (apiKey.length <= 12) return apiKey;
-  return `${apiKey.slice(0, 6)}…${apiKey.slice(-4)}`;
-}
+// Sprint 7 X follow-up：API key UI 已下線（cookie 流程後 SPA 不持有 key），
+// 因此原本的 maskApiKey helper 也一併移除，避免 UI 仍假裝可以管理 key。
 
 // normalize backend /v1/agents payload → UI agent model
 // includes the ROUTER pseudo-agent in front
@@ -208,14 +202,16 @@ function applyTweaks(t) {
 
 // ---- Chat Runtime ----------------------------------------------------------
 function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
-  // Wave 2: the SPA no longer holds an API Key. Auth rides on the
-  // httpOnly session cookie set by /api/auth/login; the stubs below keep
-  // the existing component tree alive (settings panel etc) without
-  // depending on localStorage/sessionStorage state.
+  // Sprint 7 X follow-up：SPA 完全不持有 API Key，認證統一走 httpOnly
+  // session cookie + double-submit CSRF（見 runtime/sse.js）。原本為了
+  // 過渡保留的 apiKey / apiKeyStatus / updateApiKey stub 已移除，避免
+  // 使用者誤以為 settings 內可以管理 key。SDK / curl 仍可在 Authorization
+  // header 帶 sk-* token，但 SPA 不再有 UI 入口。
+  // ``isAuthenticated`` is referenced by 9 callsites below (auth-gated
+  // effects + sendMessage / regenerateMessage / sendCompare / handleEditUser
+  // early returns). Missing from this destructure → ReferenceError once the
+  // first guard triggers, which crashes the whole App after login.
   const { authRequest, multipartRequest, isAuthenticated } = useAuth();
-  const apiKey = "";
-  const apiKeyStatus = { valid: isAuthenticated, checked: true, error: "" };
-  const updateApiKey = async () => undefined;
   const logoutAndRedirect = useLogoutRedirect();
 
   // --- agents / conversations / messages ---
@@ -1629,40 +1625,9 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
             <IconColumns size={14} />
           </IconButton>
 
-          <Dropdown align="right" width={320} trigger={() => (
-            <button title="CSP API Key" style={{
-              display: "inline-flex", alignItems: "center", gap: 6,
-              padding: "4px 9px",
-              background: "var(--bg-subtle)", border: "1px solid var(--border)",
-              borderRadius: 999, cursor: "pointer",
-              color: "var(--fg-muted)", fontSize: 11,
-              fontFamily: "var(--font-mono)",
-            }}>
-              <span style={{
-                width: 6, height: 6, borderRadius: 999,
-                background: apiKeyStatus.valid ? "var(--success)" : "var(--danger)",
-              }} />
-              <IconKey size={12} />
-              <span>{maskApiKey(apiKey)}</span>
-            </button>
-          )}>
-            {(close) => (
-              <ApiKeyPopover
-                onClose={close}
-                onSaveApiKey={async (next) => {
-                  try {
-                    await updateApiKey(next);
-                    await refreshAgents();
-                    close();
-                  } catch (error) {
-                    alert(error.message || "API Key 驗證失敗");
-                  }
-                }}
-                apiKey={apiKey}
-                status={apiKeyStatus}
-              />
-            )}
-          </Dropdown>
+          {/* Sprint 7 X follow-up：API Key dropdown 已下線。SPA 用 cookie
+              流程，使用者沒有也不該管理 key；SDK 用戶仍可從 control
+              plane 取得 sk-* 並用 Authorization header 呼叫。 */}
 
           <IconButton title="重新載入 agent" onClick={() => void refreshAgents()} disabled={loadingAgents}>
             <IconRefresh size={14} />
@@ -1817,16 +1782,6 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         setTab={setSettingsTab}
         onClose={() => setSettingsOpen(false)}
         user={user}
-        apiKey={apiKey}
-        apiKeyStatus={apiKeyStatus}
-        onSaveApiKey={async (next) => {
-          try {
-            await updateApiKey(next);
-            await refreshAgents();
-          } catch (error) {
-            alert(error.message || "API Key 驗證失敗");
-          }
-        }}
         agents={agents}
       />
 
@@ -1917,67 +1872,12 @@ function EmptyState({ agent, agents, onPick, loading }) {
   );
 }
 
-// ---- Api Key popover -------------------------------------------------------
-function ApiKeyPopover({ apiKey, onSaveApiKey, onClose, status }) {
-  const [val, setVal] = useState(apiKey || "");
-  const [show, setShow] = useState(false);
-  const [busy, setBusy] = useState(false);
-
-  async function save() {
-    setBusy(true);
-    try {
-      await onSaveApiKey(val);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div style={{ padding: 10, minWidth: 300 }}>
-      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>CSP API Key</div>
-      <div style={{ fontSize: 11, color: "var(--fg-muted)", marginBottom: 10 }}>
-        所有 ANILA 的 agent 呼叫都會帶這把 key。格式{" "}
-        <span style={{ fontFamily: "var(--font-mono)" }}>sk-…</span>
-      </div>
-      <Input
-        type={show ? "text" : "password"}
-        value={val}
-        onChange={(e) => setVal(e.target.value)}
-        leftIcon={<IconKey size={13} />}
-        rightEl={
-          <IconButton onClick={() => setShow((s) => !s)}>
-            {show ? <IconEyeOff /> : <IconEye />}
-          </IconButton>
-        }
-      />
-      <div style={{ display: "flex", gap: 6, marginTop: 10, justifyContent: "flex-end" }}>
-        <Button size="sm" onClick={onClose}>取消</Button>
-        <Button size="sm" variant="primary" onClick={save} disabled={busy || !val}>
-          {busy ? "驗證中…" : "儲存"}
-        </Button>
-      </div>
-      <div style={{
-        marginTop: 10, padding: "7px 9px",
-        background: "var(--bg-subtle)", border: "1px solid var(--border)",
-        borderRadius: "var(--radius)",
-        fontSize: 11, color: "var(--fg-muted)", lineHeight: 1.5,
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{
-            width: 6, height: 6, borderRadius: 999,
-            background: status?.valid ? "var(--success)" : "var(--danger)",
-          }} />
-          <span>{status?.valid ? "可呼叫 /v1/agents" : status?.error || "尚未驗證"}</span>
-        </div>
-      </div>
-    </div>
-  );
-}
+// Sprint 7 X follow-up：ApiKeyPopover 元件已移除（cookie 流程後完全 dead code）。
 
 // ---- Settings modal --------------------------------------------------------
 function SettingsModal({
   open, tab, setTab, onClose,
-  user, apiKey, apiKeyStatus, onSaveApiKey, agents,
+  user, agents,
 }) {
   return (
     <Modal open={open} onClose={onClose} title="設定" subtitle="runtime 偏好與帳號" width={620}>
@@ -1985,7 +1885,6 @@ function SettingsModal({
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
           {[
             { id: "general", label: "一般",       icon: <IconSettings size={13} /> },
-            { id: "apikey",  label: "API Key",    icon: <IconKey      size={13} /> },
             { id: "privacy", label: "隱私 / 信任", icon: <IconShield   size={13} /> },
             { id: "account", label: "帳號",        icon: <IconUser     size={13} /> },
             { id: "about",   label: "關於",        icon: <AnilaGlyph   size={13} /> },
@@ -2018,13 +1917,7 @@ function SettingsModal({
             </div>
           )}
 
-          {tab === "apikey" && (
-            <ApiKeyTab
-              apiKey={apiKey}
-              status={apiKeyStatus}
-              onSaveApiKey={onSaveApiKey}
-            />
-          )}
+          {/* Sprint 7 X follow-up：apikey tab 已下線 — SPA 不再持有 key。 */}
 
           {tab === "privacy" && (
             <div style={{ display: "grid", gap: 14, fontSize: 13 }}>
@@ -2070,58 +1963,7 @@ function SettingsModal({
   );
 }
 
-function ApiKeyTab({ apiKey, status, onSaveApiKey }) {
-  const [val, setVal] = useState(apiKey || "");
-  const [show, setShow] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState("");
-
-  async function save() {
-    setBusy(true);
-    setMsg("");
-    try {
-      await onSaveApiKey(val);
-      setMsg("✓ 已儲存");
-    } catch (error) {
-      setMsg(error.message || "API Key 驗證失敗");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div style={{ display: "grid", gap: 12 }}>
-      <div>
-        <div style={{ fontSize: 13, fontWeight: 500 }}>CSP API Key</div>
-        <div style={{ fontSize: 11, color: "var(--fg-muted)", marginBottom: 6 }}>
-          ANILA 使用 CSP 發的 API Key 做 runtime 呼叫。格式 sk-…
-        </div>
-        <Input
-          type={show ? "text" : "password"}
-          value={val}
-          onChange={(e) => { setVal(e.target.value); setMsg(""); }}
-          leftIcon={<IconKey size={13} />}
-          rightEl={
-            <IconButton onClick={() => setShow((s) => !s)}>
-              {show ? <IconEyeOff /> : <IconEye />}
-            </IconButton>
-          }
-        />
-        <div style={{ display: "flex", gap: 6, marginTop: 8, alignItems: "center" }}>
-          <Button size="sm" variant="primary" onClick={save} disabled={busy || !val}>
-            {busy ? "驗證中…" : "儲存"}
-          </Button>
-          <span style={{
-            fontSize: 11,
-            color: msg.startsWith("✓") ? "var(--success)" : "var(--fg-muted)",
-          }}>
-            {msg || (status?.valid ? `目前狀態：已驗證 · ${maskApiKey(apiKey)}` : status?.error || "尚未驗證")}
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
+// Sprint 7 X follow-up：ApiKeyTab 元件已移除（cookie 流程後 dead code）。
 
 // ---- Root App (protected) --------------------------------------------------
 const DEFAULT_TWEAKS = {

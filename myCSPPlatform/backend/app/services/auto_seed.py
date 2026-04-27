@@ -342,23 +342,55 @@ def auto_seed():
                 logger.error(f"API key 自動初始化失敗: {e}")
 
         # 5. Auto-register platform links from AUTO_REGISTER_LINKS env
+        # Idempotent upsert — also syncs is_public + required_roles on
+        # existing rows so that flipping a flag in env survives a restart
+        # without manual DB editing. Migrations 0012 (required_roles) and
+        # 0013 (is_public) added these fields; this seed honours them.
         if settings.AUTO_REGISTER_LINKS:
             try:
                 links_config = json.loads(settings.AUTO_REGISTER_LINKS)
                 for idx, link_data in enumerate(links_config):
+                    name = link_data["name"]
+                    # Coerce nullable required_roles → [] (schema is NOT NULL
+                    # JSONB DEFAULT '[]'). Keeps the env var copy-pastable
+                    # from older v0.4 design doc that wrote `null`.
+                    required_roles = link_data.get("required_roles") or []
+                    is_public = bool(link_data.get("is_public", False))
+
                     existing = db.query(PlatformLink).filter(
-                        PlatformLink.name == link_data["name"]
+                        PlatformLink.name == name
                     ).first()
-                    if not existing:
-                        link = PlatformLink(
-                            name=link_data["name"],
+                    if existing is None:
+                        db.add(PlatformLink(
+                            name=name,
                             url=link_data["url"],
                             icon=link_data.get("icon", ""),
                             description=link_data.get("description", ""),
                             sort_order=link_data.get("sort_order", idx + 1),
-                        )
-                        db.add(link)
-                        logger.info(f"自動註冊平台連結: {link_data['name']}")
+                            is_public=is_public,
+                            required_roles=required_roles,
+                        ))
+                        logger.info(f"自動註冊平台連結: {name}")
+                    else:
+                        # Sync mutable fields. Don't touch is_active so an
+                        # admin's manual deactivation isn't reverted on
+                        # restart (admin > env var here).
+                        changed = False
+                        for field, new_value in (
+                            ("url", link_data["url"]),
+                            ("icon", link_data.get("icon", existing.icon or "")),
+                            ("description", link_data.get(
+                                "description", existing.description or "")),
+                            ("sort_order", link_data.get(
+                                "sort_order", existing.sort_order)),
+                            ("is_public", is_public),
+                            ("required_roles", required_roles),
+                        ):
+                            if getattr(existing, field) != new_value:
+                                setattr(existing, field, new_value)
+                                changed = True
+                        if changed:
+                            logger.info(f"同步平台連結: {name}")
             except json.JSONDecodeError as e:
                 logger.error(f"AUTO_REGISTER_LINKS JSON 解析失敗: {e}")
 

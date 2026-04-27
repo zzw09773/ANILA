@@ -63,8 +63,23 @@ def _flatten_content(content) -> str:
 
 
 def _serialize_request_for_usage(request_body: dict) -> str:
-    """Flatten request payload into a prompt string for token estimation."""
+    """Flatten request payload into a prompt string for token estimation.
+
+    Sprint 5: also handles embedding-shaped bodies — ``input`` may be a
+    string or list of strings (OpenAI-compatible). Without this, embedding
+    calls always estimated to 0 tokens because the loops below only
+    looked at chat ``messages`` / ``tools``.
+    """
     parts: list[str] = []
+
+    # Embedding-shape: ``input`` is the prompt material.
+    embedding_input = request_body.get("input")
+    if isinstance(embedding_input, str):
+        parts.append(embedding_input)
+    elif isinstance(embedding_input, list):
+        for item in embedding_input:
+            if isinstance(item, str):
+                parts.append(item)
 
     for msg in request_body.get("messages", []) or []:
         if not isinstance(msg, dict):
@@ -274,9 +289,32 @@ async def proxy_request(
     trace_id: Optional[str] = None,
     requires_encryption: bool = False,
 ) -> dict:
-    """Forward request to model backend with exponential backoff retry."""
+    """Forward request to model backend with exponential backoff retry.
+
+    Sprint 5 / Chunk W: classifies the call as ``request_type='embedding'``
+    when the path looks like an embedding endpoint, ``'judge'`` when an
+    explicit ``X-Anila-Request-Type: judge`` header is set upstream, else
+    'chat'. The classification rides into ``token_usage`` for split-by-kind
+    dashboards.
+    """
     timeout = _get_timeout(model.model_type)
     base_url = model.endpoint_url.rstrip("/")
+    request_type = (
+        "embedding"
+        if "embedding" in endpoint_path or model.model_type == "embedding"
+        else "chat"
+    )
+
+    # Sprint 5 / Chunk W: AUTO_REGISTER_MODELS has historically set
+    # endpoint_url with a trailing ``/v1`` (e.g. ``http://...:11434/v1``);
+    # endpoint_path also starts with ``/v1`` (``/v1/embeddings``).
+    # Naive concat → ``//v1/v1/embeddings`` → upstream 404. Strip the
+    # trailing version segment from base_url when endpoint_path already
+    # carries one. Idempotent for already-stripped urls.
+    if base_url.endswith("/v1") and endpoint_path.startswith("/v1/"):
+        base_url = base_url[:-3]
+    elif base_url.endswith("/v2") and endpoint_path.startswith("/v2/"):
+        base_url = base_url[:-3]
 
     # Determine the correct path based on api_version
     if model.api_version == "v2" and "embedding" in endpoint_path:
@@ -365,7 +403,10 @@ async def proxy_request(
                 # requires encryption, even if the downstream omitted the flag.
                 existing_meta["classified"] = True
 
-            # Enqueue usage record (non-blocking)
+            # Enqueue usage record (non-blocking).
+            # Sprint 5 / Chunk W: ``request_type`` flows from the
+            # endpoint-path classification at the top of this function so
+            # embedding rows get tagged distinct from chat rows.
             await enqueue_usage(
                 api_key_id=api_key_id,
                 user_id=user_id,
@@ -377,6 +418,7 @@ async def proxy_request(
                 request_duration_ms=duration_ms,
                 conversation_id=conversation_id,
                 trace_id=trace_id,
+                request_type=request_type,
             )
 
             return result

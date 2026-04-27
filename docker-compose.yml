@@ -9,11 +9,21 @@ services:
 
   # ── PostgreSQL for myCSPPlatform ─────────────────────────────────────────────
   csp-db:
-    image: postgres:16-alpine
+    # pgvector/pgvector ships PG16 with the `vector` extension preinstalled —
+    # required by migration 0014 (Phase 2 ingestion platform). The image is a
+    # superset of postgres:16, so existing data and config carry over without
+    # change. Switching back to upstream postgres breaks the ingestion stack.
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: csp
       POSTGRES_PASSWORD: csp
       POSTGRES_DB: csp
+    # Expose 5432 to localhost so Sprint 1 G1/G2 integration tests can
+    # reach pgvector + RLS from host-side pytest. Bound to 127.0.0.1 only
+    # — never leaves the dev machine. Production deployments should drop
+    # this line and let the DB stay on the internal compose network.
+    ports:
+      - "127.0.0.1:5432:5432"
     volumes:
       - csp-pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -29,31 +39,90 @@ services:
   # smoke tests run against the real local model.
   csp:
     build:
-      context: myCSPPlatform
-      dockerfile: docker/Dockerfile
+      # Build context promoted to repo root (Phase 2 Sprint 2 / Chunk H)
+      # so the Dockerfile can COPY anila-core for the inspector
+      # endpoints. Existing Dockerfile paths get a ``myCSPPlatform/``
+      # prefix to match the new context.
+      context: .
+      dockerfile: myCSPPlatform/docker/Dockerfile
     ports:
       - "8000:8000"
     environment:
       # Flush stdout/stderr immediately so `docker logs` shows request errors
       # without waiting for buffer fill.
       PYTHONUNBUFFERED: "1"
-      DATABASE_URL: postgresql://csp:csp@csp-db:5432/csp
+      # Runtime connections use the non-superuser ``csp_app`` role, NOT
+      # ``csp``. ``csp`` is reserved for migrations because it has the
+      # CREATE EXTENSION / CREATE ROLE privileges. ``csp_app`` is the role
+      # whose RLS policies actually fire — superusers and BYPASSRLS roles
+      # bypass document_chunks isolation unconditionally. See migration
+      # 0014 § "csp_app runtime role" for the rationale.
+      DATABASE_URL: postgresql://csp_app:csp@csp-db:5432/csp
+      # Migration role — used by docker-entrypoint or one-off `alembic
+      # upgrade` runs. Distinct from runtime so we don't ship superuser
+      # to the request path.
+      MIGRATION_DATABASE_URL: postgresql://csp:csp@csp-db:5432/csp
       SECRET_KEY: ${CSP_SECRET_KEY:-dev-secret-key-change-in-prod}
+      # Sprint 5 / Chunk X (H2): credential_crypto refuses the dev
+      # default unless this opt-in is set. Local docker-compose IS
+      # dev; prod overrides CSP_SECRET_KEY and leaves this unset.
+      ANILA_ALLOW_DEV_SECRET: "${ANILA_ALLOW_DEV_SECRET:-1}"
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "60"
       # Service-to-service credential: CSP injects this into downstream agent calls.
       # Downstream agents verify this header to accept requests only from CSP.
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
       # LOCAL_LLM_BASE_URL must point at an OpenAI-compatible local endpoint
-      # reachable from the csp container (e.g. http://host.docker.internal:11434/v1
-      # for host-side Ollama, or an in-cluster vLLM service URL).
+      # reachable from the csp container. Defaults match the on-prem
+      # inference stack actually running on the host (gpt-oss-20b @ :7000,
+      # NV-embed-V2 @ :7011). The earlier defaults (gpt-4o-mini @ :11434
+      # for Ollama / text-embedding-3-small) were mock and had no real
+      # service behind them — auto-seeding them caused 200/incomplete-
+      # chunked-encoding when ANILALM tried to chat. Override per env if
+      # you point at a different cluster.
       AUTO_REGISTER_MODELS: >-
-        [{"name":"${LOCAL_LLM_MODEL:-gpt-4o-mini}","display_name":"${LOCAL_LLM_MODEL:-gpt-4o-mini}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}","api_version":"v1","description":"On-prem local LLM"},{"name":"${LOCAL_EMBEDDING_MODEL:-text-embedding-3-small}","display_name":"${LOCAL_EMBEDDING_MODEL:-text-embedding-3-small}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-${LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}}","api_version":"v1","description":"On-prem local embedding model"}]
+        [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://172.16.120.35:7000}","api_version":"v1","description":"On-prem local LLM"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://host.docker.internal:7011/v1}","api_version":"v1","description":"On-prem NV-embed-V2 (or other OpenAI-compatible embedder)"}]
       AUTO_SEED_API_KEYS: >-
-        [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY:-sk-test-user-api-key}","key_name":"smoke-user-dev-key","models":["${LOCAL_LLM_MODEL:-gpt-4o-mini}"]}]
+        [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY:-sk-test-user-api-key}","key_name":"smoke-user-dev-key","models":["${LOCAL_LLM_MODEL:-gpt-oss-20b}"]},
+         {"username":"ingestion-worker","email":"ingestion-worker@anila.local","role":"system","key":"${INTERNAL_PLATFORM_API_KEY:-sk-internal-worker-changeme}","key_name":"ingestion-worker-system-key","models":["${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}"]}]
+      # Phase 1 Step 3 multi-service-integration-plan §7.1 — five platform
+      # links seeded on startup. URLs are nginx same-origin paths (resolved
+      # by the ANILA reverse proxy in front of this stack) except MLSteam
+      # which is an external service. is_public/required_roles semantics:
+      #
+      #   ANILA LM (mode A allowlist):  is_public=false, required_roles=[]
+      #     → admin manually grants per-user / per-department (§6.0.1)
+      #
+      #   Code Server (admin-only):       is_public=false, required_roles=['admin']
+      #     → only admin passes role gate; admin bypass already covers
+      #
+      #   n8n / GitLab / MLSteam (open to developers without grant):
+      #                                    is_public=true,  required_roles=['developer']
+      #     → 'developer' passes role gate, then is_public bypass; admin
+      #     bypass also covers; non-developer users blocked at role gate
+      AUTO_REGISTER_LINKS: >-
+        [
+          {"name":"ANILA LM","url":"/anilalm","icon":"book-open","description":"AI 學習內容生成（podcast / slides / mind map / quiz / report）","sort_order":1,"is_public":false,"required_roles":[]},
+          {"name":"Code Server","url":"/codeserver","icon":"code","description":"Browser VS Code — agent 開發整合入口","sort_order":2,"is_public":false,"required_roles":["admin"]},
+          {"name":"n8n 工作流程","url":"/n8n","icon":"workflow","description":"自動化工作流程平台 — 排程任務、跨服務串接","sort_order":3,"is_public":true,"required_roles":["developer"]},
+          {"name":"GitLab","url":"/gitlab","icon":"git-branch","description":"Git server — agent 程式碼與 issue tracking（ISO 42001 合規必備）","sort_order":4,"is_public":true,"required_roles":["developer"]},
+          {"name":"MLSteam","url":"https://aiops.ai.ncsist.org.tw:4443/","icon":"cpu","description":"MLOps 平台 — agent 訓練與部署","sort_order":5,"is_public":true,"required_roles":["developer"]}
+        ]
       ANILA_TEMPLATE_DIR: /app/anila-template
+      # Phase 2 Sprint 1: ingestion uploads land here so the worker can
+      # read them by path. csp-side upload endpoint writes; worker reads.
+      INGESTION_UPLOAD_DIR: /var/anila/ingestion-uploads
     volumes:
       - ./AgenticRAG:/app/anila-template:ro
+      # Same host path mounted into ingestion-worker so the two services
+      # share inode-level identity (no copy / no syncing overhead).
+      - ./share/uploads/ingestion:/var/anila/ingestion-uploads
+    extra_hosts:
+      # Sprint 5 / Chunk W: csp now forwards /v1/embeddings to the
+      # on-host embedding-proxy at :7011 (model_registry endpoint URL
+      # uses host.docker.internal). Linux containers don't see that name
+      # by default; map to the bridge gateway.
+      - "host.docker.internal:host-gateway"
     depends_on:
       csp-db:
         condition: service_healthy
@@ -63,6 +132,73 @@ services:
       timeout: 5s
       retries: 6
       start_period: 20s
+    restart: unless-stopped
+
+  # ── Redis (queue backing store for ingestion-worker) ──────────────────────
+  # Sprint 1 uses redis only for Arq queue state. No persistence needed —
+  # in-flight jobs surviving a restart is a Sprint 4 concern; for now the
+  # volume is just there so compose down/up doesn't lose AOF on restart.
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no", "--maxmemory", "256mb"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ── ingestion-worker (Phase 2 Sprint 1+) ──────────────────────────────────
+  # Async pipeline: parse → chunk → embed → index pgvector. Reads jobs
+  # from redis, reads uploaded blobs from the shared upload dir, writes
+  # chunks via AgentScopedPgVectorStore as csp_app (RLS enforced).
+  #
+  # Connects to csp-db using the non-superuser csp_app role — the worker
+  # never needs migration privileges. The upload dir is a host bind mount
+  # so the CSP container and the worker see the same files without
+  # round-tripping through redis or the DB.
+  ingestion-worker:
+    build:
+      context: .
+      dockerfile: ingestion-worker/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://csp_app:csp@csp-db:5432/csp
+      REDIS_URL: redis://redis:6379
+      # On-host embedding-proxy (NV-embed-V2 native, OpenAI-compatible).
+      # Sprint 5 Chunk W: worker calls CSP /v1/embeddings (which forwards
+      # to the real embedder + writes token_usage with request_type
+      # ='embedding'). Direct 7011 access is gone so every embedding is
+      # metered. Schema dim still must match — currently halfvec(4000).
+      EMBEDDING_BASE_URL: http://csp:8000/v1
+      EMBEDDING_MODEL: ${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}
+      # Internal system API key (auto-seeded by CSP for the
+      # ingestion-worker user). Same key the AgenticRAG container would
+      # use when its query embedder routes through CSP. Override per
+      # deployment via the env var.
+      EMBEDDING_API_KEY: ${INTERNAL_PLATFORM_API_KEY:-sk-internal-worker-changeme}
+      EMBEDDING_DIM: "4000"
+      UPLOAD_DIR: /var/anila/ingestion-uploads
+      # Sprint 5 / Chunk X: needed by anila_core.security.decrypt_credential
+      # so the Chunking Evaluator's judge phase can decrypt the
+      # AES-encrypted user_llm_credentials row chosen in the wizard.
+      # MUST match CSP's SECRET_KEY — the cipher key is derived from it,
+      # so a mismatch makes every judge decrypt fail (silently soft-fails
+      # to "judge skipped" but you'd get judge_n_scored=0 forever).
+      SECRET_KEY: ${CSP_SECRET_KEY:-dev-secret-key-change-in-prod}
+      # See csp service comment — dev opt-in for the default secret.
+      ANILA_ALLOW_DEV_SECRET: "${ANILA_ALLOW_DEV_SECRET:-1}"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./share/uploads/ingestion:/var/anila/ingestion-uploads
+    depends_on:
+      csp-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      csp:
+        condition: service_healthy
     restart: unless-stopped
 
   # ── ANILA Core Router (port 9000) ─────────────────────────────────────────────
@@ -106,14 +242,53 @@ services:
     volumes:
       - ./myCSPPlatform/docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./myCSPPlatform/docker/certs:/etc/nginx/certs:ro
+      # Runtime data shared with workflow services (n8n etc). Static files
+      # are read-only; uploads are writable. See share/README.md for layout.
+      - ./share/static:/usr/share/nginx/share-files/static:ro
+      - ./share/uploads:/usr/share/nginx/share-files/uploads:rw
     depends_on:
       csp:
+        condition: service_healthy
+      anilalm:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "nginx", "-t"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # ── ANILA LM (knowledge-base frontend, mounted at /anilalm/) ────────
+  # Vite + React + TS SPA that talks to CSP for auth, ingestion, conversations
+  # and the OpenAI-compatible /v1/chat/completions proxy. Built once with
+  # BASE_PATH=/anilalm/ baked in so asset URLs resolve absolutely behind
+  # the outer reverse proxy. The built image is a vanilla nginx serving the
+  # static dist; no runtime API key lives in the bundle (JWT is browser-side).
+  #
+  # Connects only via anila-net — no host-port mapping. The outer ``nginx``
+  # service proxies https://<host>/anilalm to anilalm:80.
+  anilalm:
+    build:
+      context: ANILALM
+      args:
+        BASE_PATH: ${ANILALM_BASE_PATH:-/anilalm/}
+        # Decoupled from LOCAL_LLM_MODEL because that env governs CSP's
+        # auto-registration; ANILALM only needs to pick a model that's
+        # already in model_registry AND that the user has permission for.
+        # Default `gemma4` matches the on-prem inference endpoint at
+        # 172.16.120.35:7000 which is what users have access to today.
+        VITE_DEFAULT_CHAT_MODEL: ${ANILALM_DEFAULT_CHAT_MODEL:-gemma4}
+    expose:
+      - "80"
+    depends_on:
+      csp:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
       start_period: 10s
     restart: unless-stopped
 
@@ -142,9 +317,144 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  # ── code-server (Phase 1 Step 5) ──────────────────────────────────────────────
+  # Browser-based VS Code, reachable via /codeserver subpath through ANILA nginx.
+  # Image: codercom/code-server (upstream) — the lscr.io/linuxserver fork
+  # ships extra init / s6-overlay layers that broke subpath deployments
+  # (workspace fs provider failed to register because client-side URL builders
+  # got confused by the linuxserver-specific defaults). Upstream + the
+  # rewrite-based nginx config from My-OpenAI-Frontend prod is the proven pattern.
+  # Phase 1 auth: PASSWORD env var (single shared). Phase 3 will swap to nginx
+  # auth_request validating the CSP JWT cookie (see design §5.0.1).
+  codeserver:
+    image: codercom/code-server:latest
+    # Default 1001:1001 matches the host 'aia' UID — repo files end up
+    # owned by the in-container user, so saves don't EACCES.
+    user: "${UID:-1001}:${GID:-1001}"
+    environment:
+      TZ: Asia/Taipei
+      # Sprint 5 X / C3: PASSWORD MUST be overridden — startup_security
+      # gate refuses the dev default `changeme-codeserver`. Set
+      # CODESERVER_PASSWORD to a long random secret in your .env. Once
+      # SSO (Phase 3) is wired we should drop PASSWORD entirely and
+      # require `auth_request` validation against CSP.
+      PASSWORD: ${CODESERVER_PASSWORD:?CODESERVER_PASSWORD must be set}
+    volumes:
+      - codeserver_config:/home/coder/.config
+      # C3: 不再預設掛入整個 repo root（會讓任何拿到密碼的人看見 .env、
+      # docker secret、私鑰等）。明確要求設定 CODESERVER_WORKSPACE，且建議
+      # 指向某個受限子目錄（例如 ${PWD}/sandbox）。
+      - ${CODESERVER_WORKSPACE:?CODESERVER_WORKSPACE must point to a non-secret-bearing directory}:/home/coder/workspace
+    working_dir: /home/coder/workspace
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    restart: unless-stopped
+
+  # ── n8n workflow automation ────────────────────────────────────────────────────
+  # Subpath deployment under /n8n via N8N_PATH. Settings adopted from
+  # My-OpenAI-Frontend prod (which ran this same workload for years), only
+  # generalised: ANILA_HOST defaults to 172.16.120.35 with HTTPS so absolute
+  # webhook URLs resolve through our reverse proxy.
+  n8n:
+    image: n8nio/n8n:1.98.2
+    # Run as the image's built-in 'node' user (UID 1000) — not the host
+    # 'aia' UID. n8n_data is a Docker-managed named volume so we don't
+    # need host-uid alignment, and overriding user: trips n8n on first
+    # boot (HOME falls back to / and mkdir /.n8n EACCESes).
+    environment:
+      TZ: Asia/Taipei
+      # Tells n8n's editor + redirect helpers it lives at /n8n.
+      N8N_PATH: /n8n/
+      N8N_HOST: ${ANILA_HOST:-172.16.120.35}
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: ${N8N_WEBHOOK_URL:-https://172.16.120.35/n8n/}
+      # Sprint 5 X / C2: 過去全域關 TLS 驗證 (NODE_TLS_REJECT_UNAUTHORIZED=0)
+      # 把 n8n 對外網路變成完全裸奔。改為「預設啟用 TLS 驗證」，本機 dev
+      # 若要連自簽 endpoint 請逐節點設定 self-signed CA，而不是全域關掉。
+      # 若仍需暫時關閉，明確覆寫此 env 為 "0" 並只在離線環境使用。
+      NODE_TLS_REJECT_UNAUTHORIZED: "${N8N_TLS_REJECT_UNAUTHORIZED:-1}"
+      # We're behind an HTTPS reverse proxy but n8n itself sees HTTP, so
+      # telling it the cookie is non-secure prevents login bouncing.
+      N8N_SECURE_COOKIE: "false"
+      # Sprint 5 X / C2: Code Node 過去開放任意 require()，等同把 n8n
+      # 變成 RCE 平台。改為僅允許明確列表；若工作流真的需要其他模組，
+      # 在 .env 透過 N8N_NODE_FUNCTION_ALLOW_EXTERNAL / _BUILTIN 加白名單。
+      NODE_FUNCTION_ALLOW_EXTERNAL: "${N8N_NODE_FUNCTION_ALLOW_EXTERNAL:-axios,lodash,dayjs}"
+      NODE_FUNCTION_ALLOW_BUILTIN: "${N8N_NODE_FUNCTION_ALLOW_BUILTIN:-crypto,url}"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    expose:
+      - "5678"
+    healthcheck:
+      # n8n exposes /healthz at the engine root regardless of N8N_PATH.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+    restart: unless-stopped
+
+  # ── GitLab CE (Phase 1 Step 6) ────────────────────────────────────────────────
+  # Subpath deployment via Workhorse: external_url tells GitLab to render every
+  # absolute link under /gitlab, internal nginx is disabled so the bundled
+  # workhorse listens on 8181 for the ANILA nginx to reverse-proxy. First boot
+  # runs reconfigure for ~5-10 minutes — start_period accounts for that.
+  # Initial root password lives in /etc/gitlab/initial_root_password inside
+  # the container; rotate it on first login.
+  gitlab:
+    image: gitlab/gitlab-ce:16.10.10-ce.0
+    hostname: gitlab.anila.internal
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'https://${ANILA_HOST:-172.16.120.35:4443}/gitlab'
+        nginx['enable'] = false
+        gitlab_workhorse['listen_network'] = "tcp"
+        gitlab_workhorse['listen_addr'] = "0.0.0.0:8181"
+        gitlab_rails['time_zone'] = 'Asia/Taipei'
+        # Internal LAN deployment — admin issues accounts; no self sign-up.
+        gitlab_rails['gitlab_signup_enabled'] = false
+        # Trim memory: skip Prometheus + Alertmanager. Re-enable if metrics
+        # become a Phase 1 requirement (design §5.0.2 explicitly defers).
+        prometheus['enable'] = false
+        alertmanager['enable'] = false
+    volumes:
+      - gitlab_config:/etc/gitlab
+      - gitlab_logs:/var/log/gitlab
+      - gitlab_data:/var/opt/gitlab
+    expose:
+      - "8181"   # Workhorse for ANILA nginx
+      - "22"     # SSH for git push/pull (not host-exposed yet)
+    shm_size: 256m
+    healthcheck:
+      # GitLab gates /-/health behind monitoring_whitelist (127/8 only by
+      # default), which works for an in-container probe but blocks any
+      # external monitoring. /users/sign_in is unauthenticated and 200s
+      # the moment Puma is serving — exactly what we want for readiness.
+      # The /gitlab prefix is required because external_url='.../gitlab'
+      # makes Workhorse expect every URL under that subpath.
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8181/gitlab/users/sign_in || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 5
+      start_period: 600s
+    restart: unless-stopped
+
 networks:
   default:
     name: anila-net
 
 volumes:
   csp-pgdata:
+  redis-data:
+  codeserver_config:
+  n8n_data:
+  gitlab_config:
+  gitlab_logs:
+  gitlab_data:

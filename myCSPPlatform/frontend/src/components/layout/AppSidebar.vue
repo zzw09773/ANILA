@@ -56,14 +56,16 @@ const menuItems = computed(() => {
   ]
   if (authStore.isDeveloper) {
     items.push({ path: '/developer/agents', label: 'Agent 管理', icon: '&#129302;' })
+    items.push({ path: '/knowledge-collections', label: 'Knowledge Collections', icon: '&#128218;' })
   }
   if (authStore.isAdmin) {
     items.push({ path: '/users', label: '使用者管理', icon: '&#128101;' })
     items.push({ path: '/departments', label: '部門設定', icon: '&#127970;' })
     items.push({ path: '/alerts', label: '告警中心', icon: '&#9888;' })
     items.push({ path: '/audit-logs', label: '審計日誌', icon: '&#128221;' })
-    items.push({ path: '/auth-providers', label: 'SSO / LDAP / OIDC', icon: '&#128274;' })
+    items.push({ path: '/auth-providers', label: 'SSO / OIDC', icon: '&#128274;' })
     items.push({ path: '/platform-links', label: '平台連結設定', icon: '&#128279;' })
+    items.push({ path: '/service-access', label: '服務存取權限', icon: '&#128737;' })
   }
   return items
 })

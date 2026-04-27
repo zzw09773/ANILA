@@ -5,11 +5,50 @@
 **Author**: ANILA 平台團隊
 **Reviewers**: (待指派)
 **Target delivery**: 3 × 2-week sprints after sign-off
-**See also**: [`anila-core-boundary.md`](./anila-core-boundary.md) — anila-core 瘦身 Task 3 詳細清單，與本文件 §13 同步
+**See also**:
+- [`anila-core-boundary.md`](./anila-core-boundary.md) — anila-core 瘦身 Task 3 詳細清單，與本文件 §12 同步
+- [`multi-service-integration-plan.md`](./multi-service-integration-plan.md) — 組內既有服務（ANILA LM / ComfyUI / codeserver / n8n / gitlab）整合進 ANILA 的計畫，與本平台 sprint 排程交織
 
 ---
 
 ## 0. Decisions Log
+
+### v0.4 (2026-04-27) — Sprint 4 collection-as-first-class
+
+Sprint 1–3 假設「100 agent = 100 個獨立租戶」，所以 collection 跟 agent 1:1 綁定（`ingestion_collections.agent_id NOT NULL`、RLS keyed on `anila.agent_id`）。實際 dev workflow 證明這是 over-coupling — 平台的角色是 **pgvector + chunking infrastructure**，agent backend 自己寫 `RAG_COLLECTION_ID` 指過來就能用。
+
+| 議題 | v0.3 立場 | v0.4 修訂 |
+|---|---|---|
+| Collection 擁有者 | 屬於 agent | **屬於 user**（`created_by NOT NULL`，platform-shared resource） |
+| RLS GUC | `anila.agent_id` | **`anila.collection_id`**（每 connection 一個 collection 範圍；FORCE RLS + non-bypass csp_app role 不變） |
+| SDK 命名 | `AgentScopedPgVectorStore(pool, agent_id=N)` | **`CollectionScopedPgVectorStore(pool, collection_id=N)`**；舊名一個 cycle alias |
+| Agent backend env | `RAG_AGENT_ID` | **`RAG_COLLECTION_ID`** |
+| LLM judge 憑證範圍 | per-agent (`agent_llm_credentials`) | **per-user (`user_llm_credentials`)**；一個 dev 一把 OpenAI key 通用所有自家 collection |
+| CSP UI agent picker | 必須先選 agent 才看 collection | **拿掉**；landing 頁直接列 my collections；admin 可切「全部」 |
+| `_require_agent_access` | 走 `UserAgentPermission` | **`_require_collection_access`** = admin 或 owner（`created_by`） |
+
+並加入：
+- **Migration 0019** drop agent_id 跟 RLS 重 key（含一個 ops trap：CSP 失敗 fallback `Base.metadata.create_all` 會 re-create orphan tables，migration 開頭要先 `DROP TABLE IF EXISTS user_llm_credentials CASCADE` 清乾淨）
+- **G1/G2 重命名**：`test_g1_collection_isolation` / `test_g2_rls_bypass`（GUC 從 `anila.agent_id` 改 `anila.collection_id`）
+- **CHANGELOG v0.7.0** 對應這次 7 個 chunks 的 commits（O→T）
+
+### v0.3 (2026-04-25) — Sprint 1 實作回報 + schema/role 修訂
+
+Sprint 1（Chunks A–G，commits `567bd9c` → `e9e913a`）實際實作後發現 4 個 design vs reality gap，本版同步修訂：
+
+| # | 議題 | v0.2 立場 | v0.3 修訂 |
+|---|---|---|---|
+| 1 | Migration 編號 | 「migration 0012」 | **0012 已被 service_access_control 用走**；ingestion 用 **0014（4 張表 + RLS 啟用）+ 0015（halfvec(4000) 升級）**。design doc §3.1 對照表更新 |
+| 2 | embedding 維度 | `vector(4096)` 配 ivfflat | **`halfvec(4000)` 配 HNSW**。pgvector 0.8.x 的 `vector` HNSW/IVFFlat 上限只到 2000-d；NV-embed-V2 native 4096 → worker truncate 到 4000 → halfvec 索引。drop 96 dim 在 Matryoshka 噪訊以下，halfvec 半 storage |
+| 3 | RLS 啟用條件 | `ENABLE ROW LEVEL SECURITY` + Policy 即可 | **ENABLE + FORCE + 非 superuser/非 BYPASSRLS role 三者缺一不可**。預設 postgres image 的 `csp` role 是 superuser+BYPASSRLS 一律 bypass；遷出新的 `csp_app` runtime role + ownership transfer 才讓 RLS 真的擋。見新增的 §3.3 Layer 2-prime |
+| 4 | Sprint 1 範圍 | 1 個 chunk size 覆蓋 | 實際拆 **A→G 七 chunk** 落地：A schema、B chunkers、C SDK、D CSP CRUD、E worker+halfvec、F AgenticRAG SDK 切換、G G1/G2/G3 pytest gate。見 §9 Sprint 1 修訂版 |
+
+並加入：
+- **§3.1 表頭** 標明 alembic 編號實際對應
+- **§3.2 schema 修正版** halfvec(4000) + HNSW
+- **§3.3 Layer 2-prime** csp_app role 拆分（PG superuser/BYPASSRLS 強制 bypass 的 trap）
+- **§9 Sprint 1 已完成清單** 對應 commit hash
+- **G1/G2/G3 pytest 落地路徑** 跟 stress 參數
 
 ### v0.2 (2026-04-25) — 4 議題 review 後的修正
 
@@ -122,6 +161,22 @@
 - §3.4 retrieval path deprecation 範圍**只需清 AgenticRAG 內** 7 條 path
 - Sprint 1 不需做雙軌相容，只要做「刪除舊 + 新建中央化」
 
+#### Memory ≠ Ingestion（v0.2 補充澄清）
+
+設計討論中常出現的混淆：「ANILA 平台的記憶（memory）功能跟新做的 Ingestion Platform 有衝突嗎？」
+
+**不衝突，兩者解的問題完全不同**：
+
+| 面向 | Ingestion（本 doc）| Platform Memory |
+|---|---|---|
+| 解的問題 | 文件 → vector chunks | 跨 session 對話 facts / preferences |
+| 寫入時機 | Dev 主動上傳（一次性 batch）| 每 chat turn 自動 background 萃取 |
+| 資料量 | 大（PDF 切數百 chunks）| 小（per user 數百個 markdown）|
+| 程式入口 | `agentic_rag.ingestion.*`（搬走後）| `anila_core.memory.*`（留在 anila-core）|
+| Schema | `document_chunks` table | `MEMORY.md` 索引 + 個別 `.md` files |
+
+詳細討論見 [`multi-service-integration-plan.md`](./multi-service-integration-plan.md) §1.4。**本 doc 設計範圍不包含 platform memory**；memory module 的演進（補 `PostgresMemoryStore`、未來可能的 central memory service）走獨立 design doc。
+
 ---
 
 ## 2. 架構總覽
@@ -187,7 +242,13 @@ flowchart TB
 
 ## 3. 資料 Schema
 
-### 3.1 CSP 新增 tables（Alembic migration `0012`）
+### 3.1 CSP 新增 tables（Alembic migration `0014` + `0015`）
+
+> v0.3 修訂：design doc 原寫 `0012`，但 0012 編號已被 ServiceAccessGrant
+> 用走（`0012_add_service_access_control.py`）。ingestion 平台實際拿到的是
+> `0014_add_ingestion_platform.py`（4 張表 + RLS + csp_app role + ownership
+> transfer）+ `0015_chunks_halfvec_4000.py`（vector(1536) → halfvec(4000)
+> 升級）。下方 SQL 是合併後的最終 schema。
 
 ```sql
 -- 每個 agent 的 ingestion collection（一個 agent 可以多個 collection，例如「法規」「SOP」分開）
@@ -293,32 +354,42 @@ CREATE TABLE agent_llm_credentials (
 
 ### 3.2 pgvector 資料表（per-collection physical isolation optional）
 
+> v0.3 修訂：原本 `vector(4096)` + IVFFlat 在 pgvector 0.8.2 撐不住 — `vector`
+> 跟 `halfvec` 兩種 type 的 HNSW/IVFFlat 上限分別是 **2000-d** 跟 **4000-d**。
+> NV-embed-V2 native 4096-d 沒辦法直接索引。實際採用 **halfvec(4000)** + HNSW：
+> worker 在 client 端 truncate 4096 → 4000（drop 96 dim 在 Matryoshka 噪訊
+> 之下，相當於 free upgrade），halfvec 又把 storage 砍半。
+
 ```sql
 -- 所有 agent 共享同一張 document_chunks，靠 (agent_id, collection_id) 做 logical filter
 CREATE TABLE document_chunks (
     id                    BIGSERIAL PRIMARY KEY,
-    collection_id         BIGINT NOT NULL REFERENCES ingestion_collections(id) ON DELETE CASCADE,
-    agent_id              BIGINT NOT NULL,   -- denormalized from collections，for fast filter
-    document_id           BIGINT NOT NULL REFERENCES ingestion_documents(id) ON DELETE CASCADE,
-    chunk_key             TEXT NOT NULL,     -- hierarchical id, e.g. "doc123/ch1/sec2/para5"
+    collection_id         INTEGER NOT NULL REFERENCES ingestion_collections(id) ON DELETE CASCADE,
+    agent_id              INTEGER NOT NULL,   -- denormalized from collections, for fast filter + RLS
+    document_id           INTEGER NOT NULL REFERENCES ingestion_documents(id) ON DELETE CASCADE,
+    chunk_key             TEXT NOT NULL,      -- hierarchical id, e.g. "leaf-0007-Section-Title"
     content               TEXT NOT NULL,
-    embedding             vector(4096) NOT NULL,
-    metadata              JSONB,             -- heading_path / page / parent_content / etc.
-    token_count           INT,
+    content_tsv           tsvector,           -- FTS for keyword_search; built via to_tsvector at INSERT
+    embedding             halfvec(4000),      -- NV-embed-V2 truncated client-side
+    metadata              JSONB NOT NULL DEFAULT '{}',
+    token_count           INTEGER,
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (collection_id, chunk_key)
+    CONSTRAINT chunks_agent_required CHECK (agent_id IS NOT NULL),
+    CONSTRAINT uq_chunks_collection_chunk_key UNIQUE (collection_id, chunk_key)
 );
 
--- 強制 retrieval 一定走 agent_id 的 partial index
-CREATE INDEX idx_chunks_agent_retrieval ON document_chunks
-    USING ivfflat (embedding vector_cosine_ops)
-    WITH (lists = 100);
+-- 過濾索引：retrieval 走完 agent_id+collection_id 才到 vector 距離計算
+CREATE INDEX ix_chunks_agent_collection ON document_chunks(agent_id, collection_id);
+CREATE INDEX ix_chunks_document_id      ON document_chunks(document_id);
 
-CREATE INDEX idx_chunks_agent_collection ON document_chunks(agent_id, collection_id);
+-- HNSW (pgvector 0.5+, halfvec_cosine_ops 對 halfvec)
+CREATE INDEX ix_chunks_embedding_hnsw ON document_chunks
+    USING hnsw (embedding halfvec_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
 
--- Keyword search index (hybrid)
-CREATE INDEX idx_chunks_content_fts ON document_chunks
-    USING gin (to_tsvector('simple', content));
+-- Keyword search GIN index (hybrid)
+CREATE INDEX ix_chunks_content_tsv ON document_chunks
+    USING gin (content_tsv);
 ```
 
 ### 3.3 機敏隔離強制：4 層 defense-in-depth
@@ -354,6 +425,43 @@ async with pool.acquire() as conn:
 ```
 
 **這一層是 v0.1 漏掉的關鍵**：即使 application code 寫錯（忘了加 `WHERE agent_id =`），PG 引擎也會擋。SQL injection 也擋得住，因為 RLS 是引擎強制。
+
+#### Layer 2-prime — RLS 真正啟用的三個必要條件（v0.3 補充）
+
+**v0.2 漏寫的 trap：PG 預設條件下 RLS policy 會被一聲不響地 bypass**。Sprint 1
+實作時 smoke test 才發現「policy 設了但 query 還是看得到所有 row」。原因是
+`policy.USING` 對下列 caller 自動短路：
+
+| Bypass 條件 | 預設 postgres image 是否中槍 |
+|---|---|
+| `rolsuper = true` (superuser) | ✅ 中：`POSTGRES_USER=csp` 自動是 superuser |
+| `rolbypassrls = true` | ✅ 中：superuser 自動帶 BYPASSRLS |
+| Table owner（沒 `FORCE ROW LEVEL SECURITY` 時） | ✅ 中：migration 跑完 csp owns 表 |
+
+任一條件成立 RLS 都當沒事。所以「ENABLE + Policy」是必要不充分。Sprint 1 落地的
+**三個必要條件**：
+
+1. **`ALTER TABLE document_chunks FORCE ROW LEVEL SECURITY`** — 把 owner 也納入 policy 範圍。
+2. **拆 runtime role**：建 `csp_app` 帶 `NOSUPERUSER NOBYPASSRLS NOCREATEDB
+   NOCREATEROLE`。應用程式（CSP backend、ingestion-worker、AgenticRAG）的
+   DATABASE_URL 切到 `csp_app`；migration 留在 `csp` superuser（CREATE EXTENSION
+   vector / CREATE ROLE 需要 superuser）。
+3. **Ownership transfer**：`csp_app` 不只 GRANT 還要 OWN 所有 public 表，否則
+   ALTER TABLE（startup migrations）會失敗。migration 0014 結尾跑：
+
+   ```sql
+   FOR r IN SELECT tablename FROM pg_tables WHERE schemaname='public' LOOP
+       EXECUTE format('ALTER TABLE %I OWNER TO csp_app', r.tablename);
+   END LOOP;
+   ```
+
+migration 0014 把以上三條同包進去。docker-compose 拆兩條 env：
+`DATABASE_URL=postgresql://csp_app:csp@...` 給 runtime；`MIGRATION_DATABASE_URL=postgresql://csp:csp@...`
+給 alembic upgrade。alembic env.py 優先讀 MIGRATION_DATABASE_URL。
+
+驗證走的是 G2 pytest（`test_g2_csp_app_role_lacks_bypass_attributes` +
+`test_g2_force_rls_enabled_on_document_chunks`），catalog 直接 query
+`pg_roles.rolsuper / rolbypassrls` 與 `pg_class.relforcerowsecurity`。
 
 #### Layer 3 — Code：刪除舊路徑、單一入口
 
@@ -1073,32 +1181,36 @@ class IngestionError(Exception):
 
 ## 9. Sprint Plan（6 週交付）
 
-### Sprint 1（2 週）— Foundation + 雙軌收斂
+### Sprint 1（2 週）— Foundation + 雙軌收斂 ✅ 已完成 (2026-04-25)
 
 **Goal**: 有最小可用的 ingestion API（不含 evaluator、不含 UI）+ 完成 anila-core 瘦身
 
-- [ ] Alembic migration `0012`（4 張新 table）
-- [ ] **Layer 1 schema**: `document_chunks` 加 `agent_id NOT NULL` + 索引
-- [ ] **Layer 2 RLS**: Postgres RLS policy 與 connection setup helper
-- [ ] **Layer 3 code**: `AgentScopedPgVectorStore` + Protocol 介面更新（拒絕無 scope）
-- [ ] `anila_core.ingestion.chunking_plugins` 基礎抽象 + registry + 3 個 built-in strategies（hierarchical / fixed / markdown-aware）
-- [ ] CSP `/api/ingestion/collections` CRUD（同步 API，不含 job queue）
-- [ ] `ingestion-worker` 基礎骨架（Arq + Redis + 1 個 handler: `ingest_document`）
-- [ ] Docker Compose 加入 `redis` + `ingestion-worker` service
-- [ ] **anila-core 瘦身**（見 [`anila-core-boundary.md`](./anila-core-boundary.md)）：刪除 `ingestion/` `api/{documents,search}.py` `tools/__init__.py` 內 RAG tools `storage/adapters/{pg_pool,pgvector_store,postgres_store}.py` `providers/embedding_nvidia.py` `engine/rag_preprocessor.py`
-- [ ] 改寫 `AgenticRAG/api.py` 的 inline SQL 為呼叫新 SDK
-- [ ] Error Taxonomy（§8.1）骨架 + 5 個最常見的 code 實作
-- [ ] pytest 整合測試：上傳 1 PDF → 7 秒內看到 chunks in pgvector
+實際拆成 7 個 chunks 落地，commits 列在 anila-core CHANGELOG v0.6.0：
 
-#### Sprint 1 必過 Gate × 3（沒過不能進 Sprint 2）
-
-| # | Gate | 驗證方式 |
+| Chunk | 範圍 | Commit |
 |---|---|---|
-| **G1** | `test_agent_isolation_random_workload` 綠燈 | 5 agent × 200 chunks × 1000 random query，零 leakage |
-| **G2** | RLS policy 在 staging DB 手動 SQL bypass 嘗試擋住 | DBA 用 raw psql 嘗試 `SELECT * FROM document_chunks` 不設 `anila.agent_id`，必須回 0 rows |
-| **G3** | retrieval path 唯一性 | `grep -rn "document_chunks" --include="*.py" anila-core AgenticRAG \| grep -v _archive\|tests` 只剩 1 個檔案 |
+| A | Migration 0014（4 表 + Layer 1 + Layer 2 RLS）+ Error Taxonomy 5 codes | `567bd9c` |
+| B | `anila_core.ingestion.chunking_plugins` 基礎抽象 + registry + 3 strategies | `567bd9c` |
+| C | `AgentScopedPgVectorStore` + `PgPool`（jsonb / vector / halfvec codecs）+ `IngestionChunk` model + 12 constructor-guard tests | `567bd9c` |
+| (RLS fix) | csp_app role 拆分 + FORCE RLS + halfvec(4000) 升級（Layer 2-prime gap）| `7c5b627` |
+| D | CSP `/api/ingestion/collections` 5-endpoint CRUD + auth + audit log | `1c30c85` |
+| E | `ingestion-worker` 服務（Arq + Redis）+ docker-compose 整合 + parsers (txt/md/pdf) + embedder (NV-embed-V2 client truncation) + handler. Migration 0015 把 schema 改 halfvec(4000) | `a984fa5` |
+| F | AgenticRAG `api.py` + `app_factory.py` 改接中央 SDK；刪 legacy `pg_pool.py` / `pgvector_store.py`；retire 舊 IngestionService 路徑；G3 gate ✅ | `9e6ba86` |
+| G | G1 / G2 / G3 pytest gates 上 CI；docker-compose 暴露 csp-db port for host pytest | `e9e913a` |
 
-**Deliverable**：CLI / curl 可以 create collection、upload 1 file、query chunks，且 anila-core 已退回 pure runtime
+#### Sprint 1 必過 Gate × 3 — 結果
+
+| # | Gate | 落地路徑 | 結果 |
+|---|---|---|---|
+| **G1** | `test_g1_random_workload_no_cross_agent_leak` | `anila-core/tests/integration/test_g1_agent_isolation.py` | ✅ 5 agent × 50 chunks × 30 query × 5 agent = **750 queries 零 leakage** (~1.7s)。`_CHUNKS_PER_AGENT` / `_QUERIES_PER_AGENT` 可調，design doc 原寫 200/1000，CI 跑 50/30 + sanity test 確保不是「RLS 把所有東西擋掉」的 false-positive |
+| **G2** | `test_g2_csp_app_role_lacks_bypass_attributes` + `test_g2_force_rls_enabled_on_document_chunks` + 兩個 raw-psql bypass 測試 | `anila-core/tests/integration/test_g2_rls_bypass.py` | ✅ 4 paths 全擋：role attrs / FORCE / no-GUC / wrong-agent |
+| **G3** | `test_g3_single_sql_entry_point` + literal grep ceiling | `anila-core/tests/test_g3_retrieval_path_uniqueness.py` | ✅ Actual SQL on `document_chunks` = 1 file (`pgvector_store.py`)。Literal grep 7 files (mostly docstrings)；ceiling 12 |
+
+**Deliverable 驗證**：
+
+- E2E pipeline 跑通，markdown upload → indexed in **200ms**（design doc 目標 7s），real NV-embed-V2 4096-d truncated to 4000-d．chunk_count = 3 in `document_chunks`．
+- Agent isolation：`agent_3` 看 `agent_2` 已 indexed 的 3 chunks → **0 rows**．
+- anila-core 209 passed（`+8` from Sprint 1 work）+ AgenticRAG 248 passed (`+24`)．0 regression．
 
 ### Sprint 2（2 週）— Async & More Strategies
 

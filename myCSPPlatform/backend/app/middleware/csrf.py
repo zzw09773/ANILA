@@ -29,6 +29,8 @@ Safe methods (GET/HEAD/OPTIONS) always skip the check.
 
 from __future__ import annotations
 
+import hmac
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -63,7 +65,13 @@ class CsrfMiddleware(BaseHTTPMiddleware):
         cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
         header_token = request.headers.get(CSRF_HEADER_NAME)
 
-        if not cookie_token or not header_token or cookie_token != header_token:
+        # constant-time 比對，避免透露 token 前綴。雖然 CSRF token 是短期
+        # 隨機值，仍依 OWASP 建議使用 hmac.compare_digest。
+        if (
+            not cookie_token
+            or not header_token
+            or not hmac.compare_digest(cookie_token, header_token)
+        ):
             return JSONResponse(
                 status_code=403,
                 content={"detail": "CSRF 驗證失敗，請重新登入"},

@@ -55,8 +55,13 @@ try:
             description="Embedding model identifier.",
         )
         embedding_dimension: int = Field(
-            default=4096,
-            description="Embedding vector dimension (NV-Embed-V2 = 4096).",
+            default=4000,
+            description=(
+                "Embedding vector dimension after client-side truncation. "
+                "NV-Embed-V2 native = 4096-d; truncated to 4000 to match "
+                "the central halfvec(4000) schema (CSP migration 0015 — "
+                "halfvec HNSW caps at 4000-d on pgvector 0.8.x)."
+            ),
         )
         embedding_verify_ssl: bool = Field(
             default=False,
@@ -176,7 +181,7 @@ except ImportError:
         embedding_url: str = "https://172.16.120.35/v1"
         embedding_api_key: str = "not-set"
         embedding_model: str = "nvidia/NV-embed-V2"
-        embedding_dimension: int = 4096
+        embedding_dimension: int = 4000
         embedding_verify_ssl: bool = False
         vision_url: str = "https://172.16.120.35/v1"
         vision_api_key: str = "not-set"

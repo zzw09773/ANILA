@@ -113,6 +113,18 @@ def _ensure_schema_backfills(bind: Engine) -> None:
         postgres_ddl="ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NULL",
         generic_ddl="ALTER TABLE users ADD COLUMN updated_at TIMESTAMP",
     )
+    # Sprint 6 X / B2：local_password_disabled flag。defaults FALSE，所以
+    # 既有 row 載入後仍能用本機密碼登入；admin 切換才禁用。
+    _ensure_column(
+        bind, "users", "local_password_disabled",
+        postgres_ddl=(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+            "local_password_disabled BOOLEAN NOT NULL DEFAULT FALSE"
+        ),
+        generic_ddl=(
+            "ALTER TABLE users ADD COLUMN local_password_disabled BOOLEAN NOT NULL DEFAULT 0"
+        ),
+    )
 
     # --- model_registry --------------------------------------------------
     _ensure_column(
@@ -198,7 +210,8 @@ def _ensure_schema_backfills(bind: Engine) -> None:
         ("default_department_id", "INTEGER NULL"),
         ("updated_at", "TIMESTAMP NULL"),
         ("oidc_client_id", "VARCHAR(255) NULL"),
-        ("oidc_client_secret", "VARCHAR(255) NULL"),
+        # client_secret 改 envelope（base64(nonce|tag|ct)），需更寬欄位
+        ("oidc_client_secret", "VARCHAR(2000) NULL"),
         ("oidc_issuer_url", "VARCHAR(255) NULL"),
         ("oidc_authorization_endpoint", "VARCHAR(255) NULL"),
         ("oidc_token_endpoint", "VARCHAR(255) NULL"),
@@ -207,14 +220,7 @@ def _ensure_schema_backfills(bind: Engine) -> None:
         ("oidc_subject_claim", "VARCHAR(100) NULL"),
         ("oidc_username_claim", "VARCHAR(100) NULL"),
         ("oidc_email_claim", "VARCHAR(100) NULL"),
-        ("ldap_server_uri", "VARCHAR(255) NULL"),
-        ("ldap_bind_dn", "VARCHAR(255) NULL"),
-        ("ldap_bind_password", "VARCHAR(255) NULL"),
-        ("ldap_base_dn", "VARCHAR(255) NULL"),
-        ("ldap_user_filter", "VARCHAR(255) NULL"),
-        ("ldap_email_attribute", "VARCHAR(100) NULL"),
-        ("ldap_display_name_attribute", "VARCHAR(100) NULL"),
-        ("ldap_start_tls", "BOOLEAN NULL DEFAULT FALSE"),
+        # ldap_* 欄位由 0021 migration 直接 DROP；這裡不再 ensure 它們存在。
     ]:
         _ensure_column(
             bind, "auth_providers", col_name,

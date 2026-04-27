@@ -16,7 +16,11 @@ import logging
 from typing import Any, Optional
 
 from ...models.storage import RetrievalTrace, Session, StoredMessage
-from .pg_pool import PgPool
+
+# Phase 2 Sprint 1 / Chunk F: legacy ``.pg_pool`` was deleted; use the
+# central anila-core PgPool which has the same ``acquire()`` semantics
+# (asyncpg pool with vector + halfvec + jsonb codecs registered).
+from anila_core.storage.adapters import PgPool
 
 logger = logging.getLogger(__name__)
 

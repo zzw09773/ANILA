@@ -81,12 +81,18 @@ def app_with_rag():
 
 @pytest.mark.asyncio
 async def test_agentic_chat_returns_sse(app_with_rag):
-    """POST /agentic-chat should return SSE stream."""
+    """POST /agentic-chat should return SSE stream.
+
+    v0.6 Chunk F: ``system_prompt`` is now required (the legacy default
+    AGENTIC_RAG_SYSTEM_PROMPT was removed in boundary cleanup). Each
+    test must pass an explicit prompt suited to its scenario.
+    """
     transport = ASGITransport(app=app_with_rag)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post("/agentic-chat", json={
             "session_id": "test-session",
             "user_message": "什麼是 RAG？",
+            "system_prompt": "You are a helpful retrieval assistant.",
         })
         assert resp.status_code == 200
         assert "text/event-stream" in resp.headers["content-type"]
@@ -115,8 +121,21 @@ async def test_agentic_chat_no_providers(app_no_tools):
         resp = await client.post("/agentic-chat", json={
             "session_id": "test-session",
             "user_message": "Hello",
+            "system_prompt": "You are a helpful assistant.",
         })
         assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_agentic_chat_requires_system_prompt(app_no_tools):
+    """v0.6 contract: missing system_prompt → 422 (no implicit default)."""
+    transport = ASGITransport(app=app_no_tools)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/agentic-chat", json={
+            "session_id": "test-session",
+            "user_message": "Hello",
+        })
+        assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -167,6 +186,7 @@ async def test_agentic_chat_with_tool_calling():
         resp = await client.post("/agentic-chat", json={
             "session_id": "test-session",
             "user_message": "什麼是 RAG？",
+            "system_prompt": "You are a helpful retrieval assistant.",
         })
         assert resp.status_code == 200
 

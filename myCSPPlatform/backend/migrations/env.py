@@ -27,20 +27,31 @@ import app.models.agent           # noqa: F401
 import app.models.audit_log       # noqa: F401
 import app.models.auth_provider   # noqa: F401
 import app.models.department      # noqa: F401
+import app.models.dev_db_credential  # noqa: F401
 import app.models.external_identity  # noqa: F401
 import app.models.model_registry  # noqa: F401
 import app.models.attachment       # noqa: F401
 import app.models.conversation     # noqa: F401
 import app.models.handoff          # noqa: F401
+import app.models.ingestion        # noqa: F401
 import app.models.message          # noqa: F401
 import app.models.platform_link    # noqa: F401
+import app.models.service_access_grant  # noqa: F401
 import app.models.token_usage      # noqa: F401
 import app.models.user             # noqa: F401
 
 # ─────────────────────────────────────────────────────────────────────────────
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# Migrations need a superuser-class connection (CREATE EXTENSION, CREATE
+# ROLE in 0014). Runtime DATABASE_URL points at the non-privileged
+# ``csp_app`` role so RLS actually fires; MIGRATION_DATABASE_URL is the
+# escalated alternative we *only* read here in alembic. Falling back to
+# DATABASE_URL keeps local dev working when the env var isn't split.
+import os
+
+migration_url = os.environ.get("MIGRATION_DATABASE_URL", settings.DATABASE_URL)
+config.set_main_option("sqlalchemy.url", migration_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

@@ -211,7 +211,13 @@ class PdfParser:
         finally:
             doc.close()
 
-        content = "\n\n".join(p for p in parts if p)
+        # Page join uses ``\f\n`` (form-feed) so consumers that need
+        # per-page boundaries (e.g. the central ingestion-worker's
+        # ``pdf-page`` chunker) can split on the marker without
+        # re-parsing the PDF. ``\f`` is rarely emitted by PDF text
+        # extractors so the marker is safe to insert. Markdown-style
+        # consumers ignore it as whitespace.
+        content = "\f\n".join(p for p in parts if p)
         ocr_used = False
 
         # Optional OCR fallback for scanned / font-subsetted PDFs.
@@ -382,11 +388,14 @@ class DocParser:
 
         path = Path(file_path)
         try:
+            # L7: 用 ``--`` 分隔 option 與 positional arg，避免 file_path
+            # 開頭為 ``-`` 時被 antiword 解析成 flag（argument injection）。
             result = subprocess.run(
-                ["antiword", file_path],
+                ["antiword", "--", file_path],
                 capture_output=True,
                 text=True,
                 timeout=30,
+                check=False,
             )
             content = result.stdout
             if not content and result.returncode != 0:

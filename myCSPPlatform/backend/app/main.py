@@ -50,6 +50,12 @@ def setup_logging():
 async def lifespan(app: FastAPI):
     setup_logging()
 
+    # Sprint 5 X / M1: refuse to boot when known-dev defaults are still in
+    # place (SECRET_KEY / admin / service token / DB password). Skipping
+    # this check requires explicit ANILA_ALLOW_DEV_SECRET=1.
+    from app.services.startup_security import assert_no_dev_defaults
+    assert_no_dev_defaults()
+
     # Run Alembic migrations to bring schema to head.
     # Falls back to create_all if Alembic config is not found (e.g. in tests).
     try:
@@ -76,6 +82,21 @@ async def lifespan(app: FastAPI):
     health_task = await start_health_checker()
     writer_task = await start_usage_writer()
 
+    # Phase 2 Sprint 2 / Chunk H: open the shared anila_core PgPool
+    # used by the ingestion inspector endpoints (read-only chunk
+    # listing + agent-scoped FTS). The pool registers vector / halfvec
+    # / jsonb codecs per-connection, so SQLAlchemy-side queries are
+    # untouched. Skip silently if the env / DB isn't available so a
+    # pre-0014 schema doesn't crash startup.
+    from app.services.ingestion_pool import open_pool, close_pool
+    try:
+        await open_pool()
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Ingestion PgPool open failed (%s) — inspector endpoints "
+            "will return 503 until the pool comes back.", exc,
+        )
+
     yield
 
     # Cleanup
@@ -83,6 +104,7 @@ async def lifespan(app: FastAPI):
         health_task.cancel()
     if writer_task:
         writer_task.cancel()
+    await close_pool()
 
 
 app = FastAPI(
@@ -162,9 +184,25 @@ if frontend_dist:
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="frontend-assets")
 
+    # M6: 確保任何 ``../`` 解析後仍位於 frontend_dist 內；否則一律 fallback
+    # 到 SPA index.html，避免讀到 /etc/passwd 或 backend source。
+    _frontend_root = frontend_dist.resolve()
+
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_spa(full_path: str):
-        file_path = frontend_dist / full_path
-        if file_path.is_file():
-            return FileResponse(str(file_path))
-        return FileResponse(str(frontend_dist / "index.html"))
+        index_path = _frontend_root / "index.html"
+        # 任何含 NUL / 非法 byte 的 path → 直接給 index.html。
+        if "\x00" in full_path:
+            return FileResponse(str(index_path))
+        try:
+            candidate = (_frontend_root / full_path).resolve()
+        except (OSError, ValueError):
+            return FileResponse(str(index_path))
+        # 必須仍位於 _frontend_root 子樹中；否則視為 SPA route fallback。
+        try:
+            candidate.relative_to(_frontend_root)
+        except ValueError:
+            return FileResponse(str(index_path))
+        if candidate.is_file():
+            return FileResponse(str(candidate))
+        return FileResponse(str(index_path))

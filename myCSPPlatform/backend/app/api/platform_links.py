@@ -8,6 +8,7 @@ from app.schemas.platform_link import (
     PlatformLinkUpdate,
     PlatformLinkResponse,
 )
+from app.services.access_control import accessible_links_for
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user, require_admin
 
@@ -20,10 +21,17 @@ def list_links(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    query = db.query(PlatformLink).order_by(PlatformLink.sort_order, PlatformLink.created_at)
-    if not include_inactive or current_user.role != "admin":
-        query = query.filter(PlatformLink.is_active == True)
-    return query.all()
+    # Admin: full visibility, with the existing include_inactive toggle.
+    # Non-admin: access_control applies the role gate + grant check; the
+    # include_inactive flag is silently ignored (admin-only feature).
+    if current_user.role == "admin":
+        query = db.query(PlatformLink).order_by(
+            PlatformLink.sort_order, PlatformLink.created_at
+        )
+        if not include_inactive:
+            query = query.filter(PlatformLink.is_active == True)
+        return query.all()
+    return accessible_links_for(db, current_user)
 
 
 @router.post("", response_model=PlatformLinkResponse)

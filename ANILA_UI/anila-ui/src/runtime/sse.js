@@ -31,7 +31,6 @@ export function parseSseEvent(block) {
 
 export async function streamChatCompletion({
   url,
-  apiKey,
   payload,
   onText,
   onTrace,
@@ -39,17 +38,12 @@ export async function streamChatCompletion({
   onJson,
   onReasoning,
 }) {
-  // Wave 2: the SPA doesn't hold an API Key. When `apiKey` is falsy we
-  // rely on the browser attaching the httpOnly `anila_access_token`
-  // cookie via `credentials: "include"` and we echo the non-httpOnly
-  // `anila_csrf` cookie in the CSRF header (double-submit).
-  //
-  // `apiKey` still works — kept for transitional callers and for the
-  // tiny "test a key" flow in Settings.
+  // Sprint 7 X follow-up：SPA 完全走 httpOnly cookie + double-submit CSRF。
+  // `apiKey` parameter 已移除，避免讓呼叫端誤以為前端可以管理 key（dead
+  // 路徑也是攻擊面）。SDK / curl 用戶請改打 ``apiKeyRequest`` 或自己組
+  // Authorization header — 那不會經過此函式。
   const headers = { "Content-Type": "application/json" };
-  if (apiKey) {
-    headers.Authorization = `Bearer ${apiKey}`;
-  } else if (typeof document !== "undefined") {
+  if (typeof document !== "undefined") {
     const match = document.cookie.match(/(?:^|;\s*)anila_csrf=([^;]+)/);
     if (match) headers["X-CSRF-Token"] = decodeURIComponent(match[1]);
   }

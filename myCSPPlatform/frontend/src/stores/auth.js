@@ -1,31 +1,28 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { login as loginApi, refreshTokenApi, getMe } from '../api/auth'
+import { login as loginApi, refreshTokenApi, getMe, logout as logoutApi } from '../api/auth'
 
+// Sprint 5 X / H5: cookie-only auth store. Tokens 不再進 localStorage —
+// 認證狀態由 backend 設的 httpOnly cookie 決定，前端只記住目前登入的
+// User 物件（用 /api/auth/me 重新確認）。瀏覽器重啟後第一次讀 user 會
+// 觸發 /me；若 cookie 失效就回登入頁。
 export const useAuthStore = defineStore('auth', () => {
-  const accessToken = ref(localStorage.getItem('accessToken') || '')
-  const refreshTokenValue = ref(localStorage.getItem('refreshToken') || '')
   const user = ref(null)
+  const initialized = ref(false)
 
-  const isAuthenticated = computed(() => !!accessToken.value)
+  const isAuthenticated = computed(() => !!user.value)
   const isAdmin = computed(() => user.value?.role === 'admin')
   const isDeveloper = computed(() => user.value?.role === 'developer' || user.value?.role === 'admin')
 
   async function login(username, password, extra = {}) {
-    const { data } = await loginApi(username, password, extra)
-    accessToken.value = data.access_token
-    refreshTokenValue.value = data.refresh_token
-    localStorage.setItem('accessToken', data.access_token)
-    localStorage.setItem('refreshToken', data.refresh_token)
+    // 後端 set cookies；body 仍帶 token 是給 SDK 用的，SPA 不再儲存。
+    await loginApi(username, password, extra)
     await fetchUser()
   }
 
   async function refreshToken() {
-    const { data } = await refreshTokenApi(refreshTokenValue.value)
-    accessToken.value = data.access_token
-    refreshTokenValue.value = data.refresh_token
-    localStorage.setItem('accessToken', data.access_token)
-    localStorage.setItem('refreshToken', data.refresh_token)
+    // 後端從 anila_refresh_token cookie 取 token；不需傳 body。
+    await refreshTokenApi()
   }
 
   async function fetchUser() {
@@ -33,26 +30,28 @@ export const useAuthStore = defineStore('auth', () => {
       const { data } = await getMe()
       user.value = data
     } catch {
-      logout()
+      user.value = null
+    } finally {
+      initialized.value = true
     }
   }
 
-  function logout() {
-    accessToken.value = ''
-    refreshTokenValue.value = ''
+  async function logout() {
+    try {
+      await logoutApi()
+    } catch {
+      // 後端 logout 失敗也要清前端狀態，避免使用者卡在 ghost session。
+    }
     user.value = null
-    localStorage.removeItem('accessToken')
-    localStorage.removeItem('refreshToken')
   }
 
-  // Auto-fetch user on init if token exists
-  if (accessToken.value) {
-    fetchUser()
-  }
+  // 在第一次取用 store 時嘗試載入 /me：cookie 還在 → 自動還原 user；
+  // 不在 → user 為 null，路由守衛會把使用者送去 /login。
+  fetchUser()
 
   return {
-    accessToken,
     user,
+    initialized,
     isAuthenticated,
     isAdmin,
     isDeveloper,

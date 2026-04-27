@@ -113,7 +113,7 @@ export const LoginView = () => {
             一個入口，<br/>通往所有 agent。
           </h1>
           <p style={{ color: "var(--fg-muted)", fontSize: 14, marginTop: 16, maxWidth: 380, lineHeight: 1.65 }}>
-            ANILA 是多租戶 AI 平台的 runtime client — 透過 CSP 核發的 API Key 進入，
+            ANILA 是多租戶 AI 平台的 runtime client — 用 CSP 帳號登入後，
             由 Router 自動分派到最合適的 agent 處理你的查詢。
           </p>
         </div>
@@ -129,7 +129,7 @@ export const LoginView = () => {
         <form onSubmit={submit} style={{ width: "100%", maxWidth: 380 }}>
           <div style={{ fontSize: 20, fontWeight: 600, marginBottom: 4 }}>登入</div>
           <div style={{ fontSize: 13, color: "var(--fg-muted)", marginBottom: 24 }}>
-            使用 CSP 帳號登入即可開始對話，無須額外設定 API Key
+            使用 CSP 帳號登入即可開始對話。
           </div>
 
           <div style={{

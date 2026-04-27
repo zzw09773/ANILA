@@ -1,96 +1,105 @@
-"""Shared asyncpg connection pool manager.
+"""asyncpg connection pool with pgvector codec registered.
 
-All PostgreSQL adapters (pgvector_store, postgres_store) share a single pool
-to avoid redundant connections. The pool is lazily initialized on first use
-and torn down via close().
+Re-introduced in v0.6.0 (Phase 2 Sprint 1) after being removed in v0.5.0
+boundary cleanup. The reason it's back: the central ingestion platform
+ships ``AgentScopedPgVectorStore`` in anila-core, and that store needs a
+shared pool.
 
-Usage:
-    pool = PgPool(dsn="postgresql://user:pass@host/db")
-    await pool.initialize()
-    async with pool.acquire() as conn:
-        await conn.execute("SELECT 1")
-    await pool.close()
+Two responsibilities:
+
+1. Wrap ``asyncpg.create_pool`` with sane defaults for the platform's
+   workload (small min pool, modest max, generous timeouts so RLS-aware
+   ``SET LOCAL`` setup never blocks).
+2. On every connection acquired, register the pgvector ``vector`` codec
+   so application code can pass ``list[float]`` and receive
+   ``list[float]`` without manual SQL casting on every query.
+
+We deliberately do NOT manage transactions or RLS GUC setup here — that
+belongs to the consumer (``AgentScopedPgVectorStore._acquire``). Keeping
+the pool dumb preserves the option to swap in pgbouncer / pgcat later.
 """
 
 from __future__ import annotations
 
-import logging
-from typing import Any, AsyncIterator
-from contextlib import asynccontextmanager
+import json
 
-logger = logging.getLogger(__name__)
+import asyncpg
+from pgvector.asyncpg import register_vector
 
 
 class PgPool:
-    """Wrapper around asyncpg.Pool with lazy initialization.
+    """Async connection pool with pgvector codec auto-registered.
 
-    Args:
-        dsn:         PostgreSQL DSN string.
-        min_size:    Minimum pool connections.
-        max_size:    Maximum pool connections.
-        ssl:         SSL mode string ('disable', 'require', 'verify-ca', etc.)
-        timeout:     Connection acquisition timeout in seconds.
+    Construct with the connection string; call ``open()`` once during
+    application startup, ``close()`` on shutdown. ``acquire()`` returns
+    an asyncpg.Connection with the vector codec already registered.
+
+    Designed for re-use across all anila-core consumers (the ingestion
+    worker, evaluator runs, future memory store) — one pool per service
+    instance, not one per request.
     """
 
     def __init__(
         self,
         dsn: str,
-        min_size: int = 2,
+        *,
+        min_size: int = 1,
         max_size: int = 10,
-        ssl: str = "disable",
-        timeout: float = 30.0,
+        command_timeout: float = 30.0,
     ) -> None:
         self._dsn = dsn
         self._min_size = min_size
         self._max_size = max_size
-        self._ssl = ssl
-        self._timeout = timeout
-        self._pool: Any = None  # asyncpg.Pool
+        self._command_timeout = command_timeout
+        self._pool: asyncpg.Pool | None = None
 
-    async def initialize(self) -> None:
-        """Create the connection pool. Idempotent."""
+    async def open(self) -> None:
+        """Create the pool. Idempotent: safe to call twice."""
         if self._pool is not None:
             return
-        try:
-            import asyncpg  # type: ignore[import]
-        except ImportError as exc:
-            raise ImportError(
-                "asyncpg is required for PostgreSQL storage. "
-                "Install with: pip install 'anila-core[rag]'"
-            ) from exc
-
-        ssl_context: Any = None
-        if self._ssl not in ("disable", "prefer", "allow"):
-            import ssl as ssl_module
-            ssl_context = ssl_module.create_default_context()
-            if self._ssl == "require":
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl_module.CERT_NONE
-
         self._pool = await asyncpg.create_pool(
-            self._dsn,
+            dsn=self._dsn,
             min_size=self._min_size,
             max_size=self._max_size,
-            ssl=ssl_context,
-            command_timeout=self._timeout,
+            command_timeout=self._command_timeout,
+            init=self._init_connection,
         )
-        logger.info("asyncpg pool created (min=%d, max=%d)", self._min_size, self._max_size)
 
     async def close(self) -> None:
-        """Close all connections in the pool."""
-        if self._pool is not None:
-            await self._pool.close()
-            self._pool = None
-            logger.info("asyncpg pool closed")
-
-    @asynccontextmanager
-    async def acquire(self) -> AsyncIterator[Any]:
-        """Acquire a connection from the pool as an async context manager."""
+        """Close the pool. Idempotent."""
         if self._pool is None:
-            await self.initialize()
-        async with self._pool.acquire() as conn:
-            yield conn
+            return
+        await self._pool.close()
+        self._pool = None
 
-    @property
-    def is_initialized(self) -> bool:
-        return self._pool is not None
+    def acquire(self) -> asyncpg.pool.PoolAcquireContext:
+        """Acquire a connection. Raises if ``open()`` was not called."""
+        if self._pool is None:
+            raise RuntimeError(
+                "PgPool not opened. Call await pool.open() during startup."
+            )
+        return self._pool.acquire()
+
+    @staticmethod
+    async def _init_connection(conn: asyncpg.Connection) -> None:
+        """Per-connection initialiser invoked by asyncpg.
+
+        Two codecs to register, both of which asyncpg leaves off by default:
+
+        - ``vector`` (pgvector): converts list[float] ↔ pgvector value.
+        - ``jsonb``: parses JSONB columns as dict instead of returning
+          the raw textual representation. The default behaviour means
+          ``row['chunking_config']`` would be a JSON string, forcing
+          every consumer to ``json.loads`` it. Registering a codec
+          centrally avoids that gotcha entirely.
+
+        Both registrations are per physical connection — asyncpg caches
+        the codec, so subsequent queries skip the per-statement overhead.
+        """
+        await register_vector(conn)
+        await conn.set_type_codec(
+            "jsonb",
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema="pg_catalog",
+        )
