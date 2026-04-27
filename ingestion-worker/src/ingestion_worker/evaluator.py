@@ -81,7 +81,13 @@ async def _load_sample_docs(
 
 
 async def _chunk_doc(
-    text: str, parse_meta: dict, strategy_name: str, params: dict, embedder: Embedder
+    text: str,
+    parse_meta: dict,
+    strategy_name: str,
+    params: dict,
+    embedder: Embedder,
+    *,
+    billing_user_id: int | None = None,
 ) -> list[ChunkResult]:
     """Apply one strategy to one doc, including the semantic-pre-embed
     pre-pass when needed."""
@@ -92,7 +98,9 @@ async def _chunk_doc(
         segments = SemanticChunker.split_segments(text, min_tokens=min_tok)
         chunk_params["_segments"] = segments
         if len(segments) >= 2:
-            chunk_params["_embeddings"] = await embedder.embed(segments)
+            chunk_params["_embeddings"] = await embedder.embed(
+                segments, user_id=billing_user_id
+            )
         elif len(segments) == 1:
             chunk_params["_embeddings"] = [[]]
         else:
@@ -106,15 +114,17 @@ async def _score_strategy(
     chunk_embeddings_by_doc: dict[int, list[list[float]]],
     queries: list[dict[str, Any]],
     top_k: int = 10,
+    *,
+    billing_user_id: int | None = None,
 ) -> dict[str, Any]:
     """Run every query against this strategy's chunks and average.
 
     Returns ``{hit_at_1, hit_at_5, mrr, avg_chunk_tokens, chunks_per_doc,
     per_query: [...]}``.
     """
-    # Embed queries in a single batch.
+    # Embed queries in a single batch (counted as evaluator usage).
     query_texts = [q["query"] for q in queries]
-    query_embeddings = await embedder.embed(query_texts)
+    query_embeddings = await embedder.embed(query_texts, user_id=billing_user_id)
 
     # Flatten (doc_id, chunk, embedding) for scoring.
     flat: list[tuple[int, ChunkResult, list[float]]] = []
@@ -188,7 +198,7 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
         row = await conn.fetchrow(
             """
             SELECT id, collection_id, sample_document_ids, strategies_tried,
-                   queries, arq_job_id
+                   queries, arq_job_id, created_by
               FROM ingestion_eval_runs
              WHERE id = $1
             """,
@@ -209,6 +219,7 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
         sample_doc_ids = list(row["sample_document_ids"])
         strategies = row["strategies_tried"]
         queries = row["queries"]
+        billing_user_id = row["created_by"]  # Sprint 4 V: usage attribution
 
         # 2. Load all sample docs once (raw blobs from disk).
         docs = await _load_sample_docs(pool, sample_doc_ids)
@@ -238,7 +249,8 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
             for doc_id, (text, parse_meta) in parsed_docs.items():
                 try:
                     chunks = await _chunk_doc(
-                        text, parse_meta, sname, sparams, embedder
+                        text, parse_meta, sname, sparams, embedder,
+                        billing_user_id=billing_user_id,
                     )
                 except Exception as exc:
                     # Bad params / unsupported strategy → skip this strategy
@@ -252,7 +264,7 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
                 chunks_by_doc[doc_id] = chunks
                 if chunks:
                     embeds_by_doc[doc_id] = await embedder.embed(
-                        [c.content for c in chunks]
+                        [c.content for c in chunks], user_id=billing_user_id,
                     )
                 else:
                     embeds_by_doc[doc_id] = []
@@ -266,7 +278,8 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
                 continue
 
             metrics = await _score_strategy(
-                embedder, chunks_by_doc, embeds_by_doc, queries
+                embedder, chunks_by_doc, embeds_by_doc, queries,
+                billing_user_id=billing_user_id,
             )
             per_strategy[sname] = metrics
 

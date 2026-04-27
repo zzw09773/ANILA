@@ -21,18 +21,51 @@ the embedder would multiply attempts confusingly.
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 
 from anila_core.ingestion.errors import EmbedError
+from anila_core.storage.adapters.pg_pool import PgPool
 
 from ingestion_worker.settings import WorkerSettings
 
 
-class Embedder:
-    """One-shot embedding client. Stateless; cheap to construct per-job."""
+logger = logging.getLogger(__name__)
 
-    def __init__(self, settings: WorkerSettings) -> None:
+
+# Rough OpenAI estimate: 4 chars ≈ 1 token. Embedding endpoints don't
+# return token usage in the response, so this is the best we have.
+_CHARS_PER_TOKEN = 4
+
+
+class Embedder:
+    """One-shot embedding client with optional usage tracking.
+
+    Sprint 4 / Chunk V: when ``pool`` is provided, each successful
+    ``embed()`` call writes a row into ``token_usage`` with
+    ``request_type='embedding'``. Token count is estimated from char
+    length (embedding endpoints don't return usage in the response,
+    unlike chat completions). ``user_id`` is the billing target —
+    typically the document's ``uploaded_by`` for ingest jobs, or the
+    eval run's ``created_by`` for evaluator usage.
+
+    Pool-less construction (the default) keeps unit tests simple and
+    matches the worker's startup ordering — usage tracking is a
+    best-effort secondary concern, not a hard precondition.
+    """
+
+    def __init__(
+        self,
+        settings: WorkerSettings,
+        *,
+        pool: PgPool | None = None,
+    ) -> None:
         self._settings = settings
+        self._pool = pool
+        # Cached after first lookup; CSP's auto_seed registers the
+        # embedding model with the same name we use to call it.
+        self._cached_model_id: int | None = None
         # Build the client once per Embedder so connection pooling is
         # reused across the .embed() calls of a single job.
         self._client = httpx.AsyncClient(
@@ -41,7 +74,12 @@ class Embedder:
             headers={"Authorization": f"Bearer {settings.embedding_api_key}"},
         )
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(
+        self,
+        texts: list[str],
+        *,
+        user_id: int | None = None,
+    ) -> list[list[float]]:
         """Return one vector per input text in the same order.
 
         Batches everything in a single request — most OpenAI-compatible
@@ -144,7 +182,68 @@ class Embedder:
                     details={"got": len(v), "expected": expected, "index": i},
                 )
 
+        # Best-effort usage record. Failures here never break the
+        # ingestion / evaluator pipeline — billing is secondary to the
+        # actual work.
+        if self._pool is not None:
+            try:
+                await self._record_usage(texts, user_id=user_id)
+            except Exception as exc:
+                logger.warning(
+                    "Embedding usage record failed (%s) — continuing without billing row",
+                    exc,
+                )
+
         return vectors
+
+    async def _record_usage(
+        self, texts: list[str], *, user_id: int | None
+    ) -> None:
+        """Insert one ``token_usage`` row for this batch.
+
+        - ``request_type='embedding'`` so dashboards can split by kind.
+        - ``prompt_tokens`` estimated by char count // 4 — embedding
+          endpoints don't return real token counts in the response.
+        - ``completion_tokens=0`` (embeddings have no completion).
+        - ``model_id`` looked up by name from ``model_registry`` once
+          and cached on the Embedder instance.
+        - When ``user_id`` is None, falls back to the platform admin (id=1)
+          so the row is never NOT-NULL violating; flag this in metadata.
+        """
+        if user_id is None:
+            user_id = 1  # admin fallback for system-context calls
+        # Prompt-tokens estimate: total chars across all batched inputs
+        # divided by 4. Same heuristic OpenAI's "rough estimate" page uses.
+        char_total = sum(len(t) for t in texts)
+        est_tokens = max(1, char_total // _CHARS_PER_TOKEN)
+
+        async with self._pool.acquire() as conn:
+            if self._cached_model_id is None:
+                row = await conn.fetchrow(
+                    "SELECT id FROM model_registry WHERE name = $1 AND model_type = 'embedding' LIMIT 1",
+                    self._settings.embedding_model,
+                )
+                if row is None:
+                    # Embedding model not registered in CSP — skip the
+                    # usage row rather than fabricate a model_id.
+                    logger.info(
+                        "embedding model %r not in model_registry; skipping usage record",
+                        self._settings.embedding_model,
+                    )
+                    return
+                self._cached_model_id = int(row["id"])
+
+            await conn.execute(
+                """
+                INSERT INTO token_usage
+                    (user_id, model_id, prompt_tokens, completion_tokens,
+                     total_tokens, request_type)
+                VALUES ($1, $2, $3, 0, $3, 'embedding')
+                """,
+                user_id,
+                self._cached_model_id,
+                est_tokens,
+            )
 
     async def close(self) -> None:
         await self._client.aclose()

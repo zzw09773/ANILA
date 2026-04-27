@@ -47,7 +47,9 @@ async def _load_document_meta(
                d.filename      AS filename,
                d.mime_type     AS mime_type,
                d.storage_path  AS storage_path,
-               c.chunking_config AS chunking_config
+               d.uploaded_by   AS uploaded_by,
+               c.chunking_config AS chunking_config,
+               c.created_by    AS owner_user_id
           FROM ingestion_documents d
           JOIN ingestion_collections c ON c.id = d.collection_id
          WHERE d.id = $1
@@ -206,6 +208,12 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         meta = await _load_document_meta(pool, document_id)
         collection_id = int(meta["collection_id"])
         storage_path = meta["storage_path"]
+        # Bill embedding usage to whoever uploaded the file; fall back
+        # to the collection owner when the doc row's uploaded_by is null
+        # (could happen for system-seeded docs).
+        billing_user_id = (
+            meta.get("uploaded_by") or meta.get("owner_user_id")
+        )
         if not storage_path or not os.path.exists(storage_path):
             raise StoreError(
                 code="E_INTERNAL",
@@ -245,7 +253,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             if len(segments) >= 2:
                 # Real path: embed every candidate segment, semantic
                 # chunker does the boundary detection.
-                params["_embeddings"] = await embedder.embed(segments)
+                params["_embeddings"] = await embedder.embed(segments, user_id=billing_user_id)
             elif len(segments) == 1:
                 # Single-segment short-circuit. The chunker checks
                 # ``len(segments) == 1`` early and returns one chunk
@@ -270,7 +278,9 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             pool, arq_job_id, progress_pct=60,
             progress_message=f"embedding {len(chunks)} chunks",
         )
-        embeddings = await embedder.embed([c.content for c in chunks])
+        embeddings = await embedder.embed(
+            [c.content for c in chunks], user_id=billing_user_id,
+        )
 
         # 4. Index — single transaction via the collection-scoped store.
         await _update_job(pool, arq_job_id, progress_pct=85, progress_message="indexing")

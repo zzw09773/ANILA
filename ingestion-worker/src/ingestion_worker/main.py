@@ -43,7 +43,11 @@ async def on_startup(ctx: dict) -> None:
     )
     await pool.open()
     ctx["pool"] = pool
-    ctx["embedder"] = Embedder(settings)
+    # Sprint 4 / Chunk V: pass the same pool to the Embedder so each
+    # successful embed() call writes a token_usage row tagged
+    # request_type='embedding'. Best-effort — failures don't break
+    # the ingest / eval pipeline.
+    ctx["embedder"] = Embedder(settings, pool=pool)
 
 
 async def on_shutdown(ctx: dict) -> None:

@@ -72,7 +72,7 @@ services:
       # reachable from the csp container (e.g. http://host.docker.internal:11434/v1
       # for host-side Ollama, or an in-cluster vLLM service URL).
       AUTO_REGISTER_MODELS: >-
-        [{"name":"${LOCAL_LLM_MODEL:-gpt-4o-mini}","display_name":"${LOCAL_LLM_MODEL:-gpt-4o-mini}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}","api_version":"v1","description":"On-prem local LLM"},{"name":"${LOCAL_EMBEDDING_MODEL:-text-embedding-3-small}","display_name":"${LOCAL_EMBEDDING_MODEL:-text-embedding-3-small}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-${LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}}","api_version":"v1","description":"On-prem local embedding model"}]
+        [{"name":"${LOCAL_LLM_MODEL:-gpt-4o-mini}","display_name":"${LOCAL_LLM_MODEL:-gpt-4o-mini}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}","api_version":"v1","description":"On-prem local LLM"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://host.docker.internal:7011/v1}","api_version":"v1","description":"On-prem NV-embed-V2 (or other OpenAI-compatible embedder)"}]
       AUTO_SEED_API_KEYS: >-
         [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY:-sk-test-user-api-key}","key_name":"smoke-user-dev-key","models":["${LOCAL_LLM_MODEL:-gpt-4o-mini}"]}]
       # Phase 1 Step 3 multi-service-integration-plan §7.1 — five platform
