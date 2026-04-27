@@ -73,12 +73,17 @@ services:
       # Downstream agents verify this header to accept requests only from CSP.
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
       # LOCAL_LLM_BASE_URL must point at an OpenAI-compatible local endpoint
-      # reachable from the csp container (e.g. http://host.docker.internal:11434/v1
-      # for host-side Ollama, or an in-cluster vLLM service URL).
+      # reachable from the csp container. Defaults match the on-prem
+      # inference stack actually running on the host (gpt-oss-20b @ :7000,
+      # NV-embed-V2 @ :7011). The earlier defaults (gpt-4o-mini @ :11434
+      # for Ollama / text-embedding-3-small) were mock and had no real
+      # service behind them — auto-seeding them caused 200/incomplete-
+      # chunked-encoding when ANILALM tried to chat. Override per env if
+      # you point at a different cluster.
       AUTO_REGISTER_MODELS: >-
-        [{"name":"${LOCAL_LLM_MODEL:-gpt-4o-mini}","display_name":"${LOCAL_LLM_MODEL:-gpt-4o-mini}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}","api_version":"v1","description":"On-prem local LLM"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://host.docker.internal:7011/v1}","api_version":"v1","description":"On-prem NV-embed-V2 (or other OpenAI-compatible embedder)"}]
+        [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://172.16.120.35:7000}","api_version":"v1","description":"On-prem local LLM"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://host.docker.internal:7011/v1}","api_version":"v1","description":"On-prem NV-embed-V2 (or other OpenAI-compatible embedder)"}]
       AUTO_SEED_API_KEYS: >-
-        [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY:-sk-test-user-api-key}","key_name":"smoke-user-dev-key","models":["${LOCAL_LLM_MODEL:-gpt-4o-mini}"]},
+        [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY:-sk-test-user-api-key}","key_name":"smoke-user-dev-key","models":["${LOCAL_LLM_MODEL:-gpt-oss-20b}"]},
          {"username":"ingestion-worker","email":"ingestion-worker@anila.local","role":"system","key":"${INTERNAL_PLATFORM_API_KEY:-sk-internal-worker-changeme}","key_name":"ingestion-worker-system-key","models":["${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}"]}]
       # Phase 1 Step 3 multi-service-integration-plan §7.1 — five platform
       # links seeded on startup. URLs are nginx same-origin paths (resolved
@@ -268,7 +273,12 @@ services:
       context: ANILALM
       args:
         BASE_PATH: ${ANILALM_BASE_PATH:-/anilalm/}
-        VITE_DEFAULT_CHAT_MODEL: ${LOCAL_LLM_MODEL:-gpt-4o-mini}
+        # Decoupled from LOCAL_LLM_MODEL because that env governs CSP's
+        # auto-registration; ANILALM only needs to pick a model that's
+        # already in model_registry AND that the user has permission for.
+        # Default `gemma4` matches the on-prem inference endpoint at
+        # 172.16.120.35:7000 which is what users have access to today.
+        VITE_DEFAULT_CHAT_MODEL: ${ANILALM_DEFAULT_CHAT_MODEL:-gemma4}
     expose:
       - "80"
     depends_on:

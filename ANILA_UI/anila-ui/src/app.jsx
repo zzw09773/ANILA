@@ -207,7 +207,11 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   // 過渡保留的 apiKey / apiKeyStatus / updateApiKey stub 已移除，避免
   // 使用者誤以為 settings 內可以管理 key。SDK / curl 仍可在 Authorization
   // header 帶 sk-* token，但 SPA 不再有 UI 入口。
-  const { authRequest, multipartRequest } = useAuth();
+  // ``isAuthenticated`` is referenced by 9 callsites below (auth-gated
+  // effects + sendMessage / regenerateMessage / sendCompare / handleEditUser
+  // early returns). Missing from this destructure → ReferenceError once the
+  // first guard triggers, which crashes the whole App after login.
+  const { authRequest, multipartRequest, isAuthenticated } = useAuth();
   const logoutAndRedirect = useLogoutRedirect();
 
   // --- agents / conversations / messages ---
