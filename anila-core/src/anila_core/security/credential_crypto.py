@@ -48,6 +48,20 @@ _DERIVATION_SALT = b"agent_llm_credentials_v1"
 _DERIVATION_ITERS = 100_000
 _NONCE_BYTES = 12  # GCM standard
 
+# Sprint 5 / Chunk X security review (H2): ops sometimes ship docker
+# compose without overriding the dev default, encrypting all rows with
+# a publicly-known string. We refuse to start unless either the secret
+# is actually customised OR the operator opts in via env. The opt-in
+# is intentionally noisy so it can't be done accidentally — if you
+# typed `ANILA_ALLOW_DEV_SECRET=1` you knew what you were doing.
+_KNOWN_DEV_SECRETS = frozenset({
+    "dev-secret-key-change-in-prod",
+    "change-me",
+    "change_me",
+    "secret",
+    "",
+})
+
 
 def _derive_key() -> bytes:
     secret = os.environ.get("SECRET_KEY") or os.environ.get("CSP_SECRET_KEY")
@@ -55,6 +69,16 @@ def _derive_key() -> bytes:
         raise RuntimeError(
             "SECRET_KEY (or CSP_SECRET_KEY) env var must be set for "
             "credential encryption."
+        )
+    if (
+        secret.strip().lower() in _KNOWN_DEV_SECRETS
+        and os.environ.get("ANILA_ALLOW_DEV_SECRET") != "1"
+    ):
+        raise RuntimeError(
+            "SECRET_KEY is the dev default. All user_llm_credentials would "
+            "be encrypted with a publicly-known key. Set CSP_SECRET_KEY "
+            "(or SECRET_KEY) to a real production value, or — only for "
+            "intentional dev work — export ANILA_ALLOW_DEV_SECRET=1."
         )
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),

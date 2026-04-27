@@ -43,9 +43,13 @@ retrieval metrics. The judge LLM call goes through the CSP proxy so
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 from anila_core.ingestion.chunking_plugins import ChunkResult, get_chunker
 from anila_core.ingestion.chunking_plugins.builtins import SemanticChunker
@@ -258,15 +262,34 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
         # ``judge_llm_config = {"credential_id": <int>, "top_k": 5}``
         judge_cfg = row["judge_llm_config"] or {}
         judge_credential = None
+        # Sprint 5 X security review (H3): record decrypt failures so
+        # tampering / wrong-key incidents aren't invisible. We log the
+        # exception *type* only — never the exception value, which can
+        # carry plaintext fragments or key bytes for some crypto errors.
+        judge_load_error: str | None = None
         if isinstance(judge_cfg, dict) and judge_cfg.get("credential_id"):
             from ingestion_worker.judge import load_judge_credential
+            cred_id = int(judge_cfg["credential_id"])
             try:
-                judge_credential = await load_judge_credential(
-                    pool, int(judge_cfg["credential_id"])
+                judge_credential = await load_judge_credential(pool, cred_id)
+            except LookupError:
+                judge_load_error = "credential_not_found"
+                logger.warning(
+                    "judge credential id=%s not found — judge skipped",
+                    cred_id,
                 )
             except Exception as exc:
-                # Soft failure — eval still produces retrieval metrics.
-                pass
+                # Soft failure: retrieval metrics still produced. We
+                # surface the exception class on the eval_run so the
+                # operator can correlate (e.g. InvalidTag = ciphertext
+                # tampered or SECRET_KEY rotated; RuntimeError = env
+                # var missing).
+                judge_load_error = type(exc).__name__
+                logger.warning(
+                    "judge credential id=%s decrypt failed (%s) — judge skipped",
+                    cred_id,
+                    type(exc).__name__,
+                )
 
         # 2. Load all sample docs once (raw blobs from disk).
         docs = await _load_sample_docs(pool, sample_doc_ids)
@@ -361,6 +384,9 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
             "elapsed_seconds": round(time.time() - started, 2),
             "n_docs": len(parsed_docs),
             "n_queries": len(queries),
+            # Surfaces a judge-credential decrypt / lookup failure
+            # (None when judge wasn't requested or worked fine).
+            "judge_load_error": judge_load_error,
         }
 
         async with pool.acquire() as conn:

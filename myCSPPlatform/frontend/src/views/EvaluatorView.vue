@@ -242,6 +242,9 @@
               <strong>recommended:</strong>
               <code>{{ selectedRun.recommended_strategy || '—' }}</code>
             </p>
+            <p v-if="selectedRun.results.judge_load_error" class="banner error inline">
+              ⚠ Judge credential 載入失敗（{{ selectedRun.results.judge_load_error }}）— 已跳過 judge 評分。請檢查 credential 是否被刪除、key 是否被輪替。
+            </p>
             <table class="metrics">
               <thead>
                 <tr>

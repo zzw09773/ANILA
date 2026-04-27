@@ -25,12 +25,22 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from anila_core.security import UnsafeEndpointError, validate_outbound_url
+
 from app.database import get_db
 from app.models.ingestion import UserLlmCredential
 from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user
 from app.services.credential_crypto import encrypt_credential
+
+
+def _check_endpoint_url(url: str) -> None:
+    """Translate ``UnsafeEndpointError`` into HTTP 400 for API callers."""
+    try:
+        validate_outbound_url(url)
+    except UnsafeEndpointError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 router = APIRouter(tags=["Ingestion / LLM credentials"])
@@ -92,6 +102,9 @@ def create_credential(
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> CredentialResponse:
+    # SSRF guard — reject endpoint URLs pointing at internal/private hosts
+    # before the encrypted row lands in the DB. See anila_core.security.url_guard.
+    _check_endpoint_url(payload.endpoint_url)
     ciphertext, nonce, tag = encrypt_credential(payload.api_key)
     cred = UserLlmCredential(
         created_by=current_user.id,
@@ -158,6 +171,10 @@ def update_credential(
     cred = _own_credential(db, current_user, credential_id)
     changed = []
     if payload.endpoint_url is not None:
+        # Re-validate on update — the guard policy may have tightened
+        # since the credential was created (e.g. a new metadata host
+        # added to the deny list).
+        _check_endpoint_url(payload.endpoint_url)
         cred.endpoint_url = payload.endpoint_url
         changed.append("endpoint_url")
     if payload.model_name is not None:

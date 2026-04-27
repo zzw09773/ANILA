@@ -125,6 +125,19 @@ async def score_one(
     if not chunk_contents:
         return None
 
+    # Defense-in-depth SSRF guard: even if a row predates the CSP-side
+    # validator (or someone bypassed it via direct DB INSERT), refuse
+    # to issue the outbound POST. Returning None matches the rest of
+    # the soft-failure contract (judge_n_scored stays 0 + warning logged).
+    from anila_core.security import UnsafeEndpointError, validate_outbound_url
+    try:
+        validate_outbound_url(cred.endpoint_url)
+    except UnsafeEndpointError as exc:
+        logger.warning(
+            "judge endpoint rejected by SSRF guard (%s) — score skipped", exc
+        )
+        return None
+
     chunks_block = "\n\n".join(
         f"[chunk {i + 1}]\n{c}" for i, c in enumerate(chunk_contents)
     )
