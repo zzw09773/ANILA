@@ -96,19 +96,74 @@
             <code>judge_avg</code>。<strong>這是可選的</strong> — 跳過就只跑 Hit@k / MRR。
           </p>
           <div v-if="loadingCredentials" class="banner muted">載入 credentials…</div>
-          <div v-else-if="credentials.length === 0" class="banner muted">
-            尚未建立任何 LLM credential。可在 Settings → LLM Credentials 加一個
-            （例如自家 OpenAI key），或直接跳過此步。
+          <div v-else>
+            <div v-if="credentials.length === 0" class="banner muted">
+              尚未建立任何 LLM credential — 點下方「＋ 新增 credential」加一個（例如自家 OpenAI key），或直接跳過此步。
+            </div>
+            <label v-else class="field">
+              <span>Judge credential</span>
+              <div class="cred-row">
+                <select v-model.number="form.judge_credential_id" class="cred-select">
+                  <option :value="null">— 不用 judge（只跑 Hit@k / MRR）—</option>
+                  <option v-for="c in credentials" :key="c.id" :value="c.id">
+                    {{ c.name }} · {{ c.model_name }}
+                  </option>
+                </select>
+                <button
+                  v-if="form.judge_credential_id"
+                  class="ghost small"
+                  type="button"
+                  :disabled="deletingCredentialId === form.judge_credential_id"
+                  @click="onDeleteCredential(form.judge_credential_id)"
+                >
+                  {{ deletingCredentialId === form.judge_credential_id ? '刪除中…' : '🗑 刪除' }}
+                </button>
+              </div>
+            </label>
+
+            <button
+              v-if="!showCredentialForm"
+              class="ghost small"
+              type="button"
+              @click="showCredentialForm = true"
+            >
+              ＋ 新增 credential
+            </button>
+
+            <div v-else class="cred-form">
+              <h4>新增 LLM credential</h4>
+              <label class="field">
+                <span>Name (給自己看的標籤)</span>
+                <input v-model.trim="newCredential.name" placeholder="openai-judge" />
+              </label>
+              <label class="field">
+                <span>Endpoint URL</span>
+                <input v-model.trim="newCredential.endpoint_url" placeholder="https://api.openai.com/v1" />
+              </label>
+              <label class="field">
+                <span>Model name</span>
+                <input v-model.trim="newCredential.model_name" placeholder="gpt-4o-mini" />
+              </label>
+              <label class="field">
+                <span>API key</span>
+                <input v-model.trim="newCredential.api_key" type="password" placeholder="sk-..." />
+                <span class="muted">送出後 AES-GCM 加密落 DB；之後讀不出 plaintext，要換 key 請刪掉重建。</span>
+              </label>
+              <div class="cred-form-actions">
+                <button class="ghost small" type="button" @click="cancelCredentialForm">取消</button>
+                <button
+                  class="primary small"
+                  type="button"
+                  :disabled="!validNewCredential || creatingCredential"
+                  @click="onCreateCredential"
+                >
+                  {{ creatingCredential ? '送出中…' : '✔ 建立並選用' }}
+                </button>
+              </div>
+              <div v-if="credentialError" class="banner error inline">{{ credentialError }}</div>
+            </div>
           </div>
-          <label v-else class="field">
-            <span>Judge credential</span>
-            <select v-model.number="form.judge_credential_id">
-              <option :value="null">— 不用 judge（只跑 Hit@k / MRR）—</option>
-              <option v-for="c in credentials" :key="c.id" :value="c.id">
-                {{ c.name }} · {{ c.model_name }}
-              </option>
-            </select>
-          </label>
+
           <label v-if="form.judge_credential_id" class="field">
             <span>Top-k chunks per query (judge 看幾個 chunks)</span>
             <input type="number" min="1" max="20" v-model.number="form.judge_top_k" />
@@ -239,7 +294,11 @@ import { useRoute } from 'vue-router'
 import { getCollection } from '../api/ingestionCollections'
 import { listDocuments } from '../api/ingestionDocuments'
 import { createEvalRun, getEvalRun, listEvalRuns } from '../api/ingestionEvalRuns'
-import { listLlmCredentials } from '../api/ingestionLlmCredentials'
+import {
+  createLlmCredential,
+  deleteLlmCredential,
+  listLlmCredentials,
+} from '../api/ingestionLlmCredentials'
 
 const route = useRoute()
 const collectionId = ref(Number(route.params.id))
@@ -274,6 +333,65 @@ const selectedCredentialLabel = computed(() => {
   const c = credentials.value.find((x) => x.id === form.value.judge_credential_id)
   return c ? `${c.name} · ${c.model_name}` : ''
 })
+
+// Inline "+ 新增 credential" form state — lets the user create a judge
+// credential without leaving the wizard. POST returns no plaintext key,
+// so the form's api_key field is only used at creation time.
+const showCredentialForm = ref(false)
+const creatingCredential = ref(false)
+const deletingCredentialId = ref(null)
+const credentialError = ref('')
+const newCredential = ref({
+  name: '',
+  endpoint_url: '',
+  model_name: '',
+  api_key: '',
+})
+const validNewCredential = computed(() =>
+  Boolean(
+    newCredential.value.name &&
+    newCredential.value.endpoint_url &&
+    newCredential.value.model_name &&
+    newCredential.value.api_key,
+  ),
+)
+
+function cancelCredentialForm() {
+  showCredentialForm.value = false
+  credentialError.value = ''
+  newCredential.value = { name: '', endpoint_url: '', model_name: '', api_key: '' }
+}
+
+async function onCreateCredential() {
+  creatingCredential.value = true
+  credentialError.value = ''
+  try {
+    const { data } = await createLlmCredential({ ...newCredential.value })
+    credentials.value = [...credentials.value, data]
+    form.value.judge_credential_id = data.id
+    cancelCredentialForm()
+  } catch (e) {
+    credentialError.value = e.response?.data?.detail || e.message
+  } finally {
+    creatingCredential.value = false
+  }
+}
+
+async function onDeleteCredential(credentialId) {
+  if (!window.confirm('刪除此 credential? 無法復原（key 不可解密）。')) return
+  deletingCredentialId.value = credentialId
+  try {
+    await deleteLlmCredential(credentialId)
+    credentials.value = credentials.value.filter((c) => c.id !== credentialId)
+    if (form.value.judge_credential_id === credentialId) {
+      form.value.judge_credential_id = null
+    }
+  } catch (e) {
+    credentialError.value = e.response?.data?.detail || e.message
+  } finally {
+    deletingCredentialId.value = null
+  }
+}
 
 const availableStrategies = [
   { name: 'hierarchical', label: 'hierarchical', params: { max_leaf_tokens: 1024 }, note: 'heading 樹 + ancestor context' },
@@ -474,4 +592,11 @@ button.small { font-size: 0.8rem; padding: 0.3rem 0.6rem; }
 .banner.muted { background: #f9fafb; color: #6b7280; }
 .banner.error { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
 .banner.inline { margin-top: 0.5rem; }
+
+.cred-row { display: flex; gap: 0.5rem; align-items: center; }
+.cred-select { flex: 1; padding: 0.4rem 0.6rem; border: 1px solid #d1d5db; border-radius: 4px; }
+
+.cred-form { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 0.9rem; margin-top: 0.75rem; }
+.cred-form h4 { margin: 0 0 0.6rem; font-size: 0.95rem; }
+.cred-form-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.4rem; }
 </style>
