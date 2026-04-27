@@ -74,7 +74,8 @@ services:
       AUTO_REGISTER_MODELS: >-
         [{"name":"${LOCAL_LLM_MODEL:-gpt-4o-mini}","display_name":"${LOCAL_LLM_MODEL:-gpt-4o-mini}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}","api_version":"v1","description":"On-prem local LLM"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://host.docker.internal:7011/v1}","api_version":"v1","description":"On-prem NV-embed-V2 (or other OpenAI-compatible embedder)"}]
       AUTO_SEED_API_KEYS: >-
-        [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY:-sk-test-user-api-key}","key_name":"smoke-user-dev-key","models":["${LOCAL_LLM_MODEL:-gpt-4o-mini}"]}]
+        [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY:-sk-test-user-api-key}","key_name":"smoke-user-dev-key","models":["${LOCAL_LLM_MODEL:-gpt-4o-mini}"]},
+         {"username":"ingestion-worker","email":"ingestion-worker@anila.local","role":"system","key":"${INTERNAL_PLATFORM_API_KEY:-sk-internal-worker-changeme}","key_name":"ingestion-worker-system-key","models":["${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}"]}]
       # Phase 1 Step 3 multi-service-integration-plan §7.1 — five platform
       # links seeded on startup. URLs are nginx same-origin paths (resolved
       # by the ANILA reverse proxy in front of this stack) except MLSteam
@@ -107,6 +108,12 @@ services:
       # Same host path mounted into ingestion-worker so the two services
       # share inode-level identity (no copy / no syncing overhead).
       - ./share/uploads/ingestion:/var/anila/ingestion-uploads
+    extra_hosts:
+      # Sprint 5 / Chunk W: csp now forwards /v1/embeddings to the
+      # on-host embedding-proxy at :7011 (model_registry endpoint URL
+      # uses host.docker.internal). Linux containers don't see that name
+      # by default; map to the bridge gateway.
+      - "host.docker.internal:host-gateway"
     depends_on:
       csp-db:
         condition: service_healthy
@@ -151,26 +158,28 @@ services:
       DATABASE_URL: postgresql://csp_app:csp@csp-db:5432/csp
       REDIS_URL: redis://redis:6379
       # On-host embedding-proxy (NV-embed-V2 native, OpenAI-compatible).
-      # If you point at a different endpoint, EMBEDDING_DIM must be set
-      # to that endpoint's output dim AND must match the live schema
-      # column (currently halfvec(4000), see migration 0015).
-      EMBEDDING_BASE_URL: ${LOCAL_EMBEDDING_BASE_URL:-http://host.docker.internal:7011/v1}
+      # Sprint 5 Chunk W: worker calls CSP /v1/embeddings (which forwards
+      # to the real embedder + writes token_usage with request_type
+      # ='embedding'). Direct 7011 access is gone so every embedding is
+      # metered. Schema dim still must match — currently halfvec(4000).
+      EMBEDDING_BASE_URL: http://csp:8000/v1
       EMBEDDING_MODEL: ${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}
-      EMBEDDING_API_KEY: ${LOCAL_EMBEDDING_API_KEY:-not-set}
+      # Internal system API key (auto-seeded by CSP for the
+      # ingestion-worker user). Same key the AgenticRAG container would
+      # use when its query embedder routes through CSP. Override per
+      # deployment via the env var.
+      EMBEDDING_API_KEY: ${INTERNAL_PLATFORM_API_KEY:-sk-internal-worker-changeme}
       EMBEDDING_DIM: "4000"
       UPLOAD_DIR: /var/anila/ingestion-uploads
       PYTHONUNBUFFERED: "1"
-    extra_hosts:
-      # Linux containers don't see host.docker.internal by default —
-      # this maps it to the Docker bridge gateway so the worker can
-      # reach the on-host embedding-proxy at 7011.
-      - "host.docker.internal:host-gateway"
     volumes:
       - ./share/uploads/ingestion:/var/anila/ingestion-uploads
     depends_on:
       csp-db:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      csp:
         condition: service_healthy
     restart: unless-stopped
 

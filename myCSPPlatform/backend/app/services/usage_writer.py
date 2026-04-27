@@ -29,11 +29,17 @@ async def enqueue_usage(
     request_duration_ms: int | None = None,
     conversation_id: str | None = None,
     trace_id: str | None = None,
+    request_type: str = "chat",
 ):
     """Push usage data into the async queue (non-blocking).
 
     ``api_key_id`` may be ``None`` for JWT / cookie-authenticated SPA traffic
     — such rows land in the dashboard's "Web UI" bucket via usage_service.
+
+    ``request_type`` (Sprint 4 / migration 0020): 'chat' / 'embedding' /
+    'judge'. Lets dashboards split spend by kind without joining
+    ``model_registry.model_type``. Default 'chat' keeps every existing
+    caller working unchanged.
     """
     queue = get_usage_queue()
     await queue.put({
@@ -48,6 +54,7 @@ async def enqueue_usage(
         "request_duration_ms": request_duration_ms,
         "conversation_id": conversation_id,
         "trace_id": trace_id,
+        "request_type": request_type,
     })
 
 

@@ -43,11 +43,11 @@ async def on_startup(ctx: dict) -> None:
     )
     await pool.open()
     ctx["pool"] = pool
-    # Sprint 4 / Chunk V: pass the same pool to the Embedder so each
-    # successful embed() call writes a token_usage row tagged
-    # request_type='embedding'. Best-effort — failures don't break
-    # the ingest / eval pipeline.
-    ctx["embedder"] = Embedder(settings, pool=pool)
+    # Sprint 5 / Chunk W: usage tracking moved to CSP-side. Embedder
+    # routes through ``http://csp:8000/v1/embeddings`` with the
+    # ``ingestion-worker`` system API key; CSP's proxy_service writes
+    # token_usage rows with request_type='embedding' on every call.
+    ctx["embedder"] = Embedder(settings)
 
 
 async def on_shutdown(ctx: dict) -> None:

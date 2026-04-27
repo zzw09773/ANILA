@@ -3,20 +3,25 @@
 OpenAI-compatible POST to ``/v1/embeddings`` with batched ``input``. The
 endpoint is configured via ``WorkerSettings.embedding_*``.
 
-Sprint 1 dim contract: the schema column is ``halfvec(4000)`` (migration
-0015). The deployed embedding-proxy returns native NV-embed-V2 4096-d
-vectors and ignores the OpenAI ``dimensions`` truncation parameter, so
-the worker truncates client-side: keep first 4000 of 4096. The dropped
-2.3% sits well under Matryoshka noise — the 4000-d truncation tested
-indistinguishable from full 4096 in NVIDIA's published benchmarks.
+Sprint 5 / Chunk W: ``embedding_base_url`` now points at the CSP proxy
+(``http://csp:8000/v1``) rather than the embedding endpoint directly.
+CSP forwards to the real embedder AND writes a ``token_usage`` row
+with ``request_type='embedding'`` per request, so usage tracking is
+consolidated under one code path (proxy_service.proxy_request). The
+worker's own ad-hoc usage-record path was removed — there's only one
+metering point now.
+
+Sprint 1 dim contract: schema is ``halfvec(4000)`` (migration 0015).
+The deployed embedder returns native NV-embed-V2 4096-d and ignores
+the OpenAI ``dimensions`` truncation param, so we truncate client-side
+(drop the trailing 96 dims; well below the Matryoshka noise floor).
 
 We assert the dim on every response — a wrong-dim INSERT into
 ``halfvec(4000)`` would only fail at the asyncpg layer with a less
 helpful error.
 
 Retry policy is intentionally NOT here. The worker's job-level retry
-(via Arq) handles transient failures uniformly; layering retry inside
-the embedder would multiply attempts confusingly.
+(via Arq) handles transient failures uniformly.
 """
 
 from __future__ import annotations
@@ -26,7 +31,6 @@ import logging
 import httpx
 
 from anila_core.ingestion.errors import EmbedError
-from anila_core.storage.adapters.pg_pool import PgPool
 
 from ingestion_worker.settings import WorkerSettings
 
@@ -34,38 +38,19 @@ from ingestion_worker.settings import WorkerSettings
 logger = logging.getLogger(__name__)
 
 
-# Rough OpenAI estimate: 4 chars ≈ 1 token. Embedding endpoints don't
-# return token usage in the response, so this is the best we have.
-_CHARS_PER_TOKEN = 4
-
-
 class Embedder:
-    """One-shot embedding client with optional usage tracking.
+    """One-shot embedding client. Stateless; cheap to construct per-job.
 
-    Sprint 4 / Chunk V: when ``pool`` is provided, each successful
-    ``embed()`` call writes a row into ``token_usage`` with
-    ``request_type='embedding'``. Token count is estimated from char
-    length (embedding endpoints don't return usage in the response,
-    unlike chat completions). ``user_id`` is the billing target —
-    typically the document's ``uploaded_by`` for ingest jobs, or the
-    eval run's ``created_by`` for evaluator usage.
-
-    Pool-less construction (the default) keeps unit tests simple and
-    matches the worker's startup ordering — usage tracking is a
-    best-effort secondary concern, not a hard precondition.
+    Sprint 5 routing: ``settings.embedding_base_url`` points at the CSP
+    proxy. CSP authenticates the worker via the ``embedding_api_key``
+    Bearer token (auto-seeded as the ``ingestion-worker`` system user)
+    and writes the ``token_usage`` row itself. The worker doesn't need
+    a pool reference any more — usage tracking is centralised on the
+    CSP side.
     """
 
-    def __init__(
-        self,
-        settings: WorkerSettings,
-        *,
-        pool: PgPool | None = None,
-    ) -> None:
+    def __init__(self, settings: WorkerSettings) -> None:
         self._settings = settings
-        self._pool = pool
-        # Cached after first lookup; CSP's auto_seed registers the
-        # embedding model with the same name we use to call it.
-        self._cached_model_id: int | None = None
         # Build the client once per Embedder so connection pooling is
         # reused across the .embed() calls of a single job.
         self._client = httpx.AsyncClient(
@@ -182,68 +167,16 @@ class Embedder:
                     details={"got": len(v), "expected": expected, "index": i},
                 )
 
-        # Best-effort usage record. Failures here never break the
-        # ingestion / evaluator pipeline — billing is secondary to the
-        # actual work.
-        if self._pool is not None:
-            try:
-                await self._record_usage(texts, user_id=user_id)
-            except Exception as exc:
-                logger.warning(
-                    "Embedding usage record failed (%s) — continuing without billing row",
-                    exc,
-                )
-
+        # Sprint 5 / Chunk W: usage tracking happens on the CSP side
+        # (proxy_service.proxy_request writes the token_usage row with
+        # request_type='embedding'). The ``user_id`` arg is kept for
+        # callsite compatibility — we don't need it here because CSP
+        # attributes the call via the ``ingestion-worker`` system API
+        # key. Future: pass user_id as ``X-Anila-Bill-To-User`` header
+        # if we want to bill to the uploading user instead of the
+        # worker's system user.
+        del user_id  # explicitly discarded; see comment above
         return vectors
-
-    async def _record_usage(
-        self, texts: list[str], *, user_id: int | None
-    ) -> None:
-        """Insert one ``token_usage`` row for this batch.
-
-        - ``request_type='embedding'`` so dashboards can split by kind.
-        - ``prompt_tokens`` estimated by char count // 4 — embedding
-          endpoints don't return real token counts in the response.
-        - ``completion_tokens=0`` (embeddings have no completion).
-        - ``model_id`` looked up by name from ``model_registry`` once
-          and cached on the Embedder instance.
-        - When ``user_id`` is None, falls back to the platform admin (id=1)
-          so the row is never NOT-NULL violating; flag this in metadata.
-        """
-        if user_id is None:
-            user_id = 1  # admin fallback for system-context calls
-        # Prompt-tokens estimate: total chars across all batched inputs
-        # divided by 4. Same heuristic OpenAI's "rough estimate" page uses.
-        char_total = sum(len(t) for t in texts)
-        est_tokens = max(1, char_total // _CHARS_PER_TOKEN)
-
-        async with self._pool.acquire() as conn:
-            if self._cached_model_id is None:
-                row = await conn.fetchrow(
-                    "SELECT id FROM model_registry WHERE name = $1 AND model_type = 'embedding' LIMIT 1",
-                    self._settings.embedding_model,
-                )
-                if row is None:
-                    # Embedding model not registered in CSP — skip the
-                    # usage row rather than fabricate a model_id.
-                    logger.info(
-                        "embedding model %r not in model_registry; skipping usage record",
-                        self._settings.embedding_model,
-                    )
-                    return
-                self._cached_model_id = int(row["id"])
-
-            await conn.execute(
-                """
-                INSERT INTO token_usage
-                    (user_id, model_id, prompt_tokens, completion_tokens,
-                     total_tokens, request_type)
-                VALUES ($1, $2, $3, 0, $3, 'embedding')
-                """,
-                user_id,
-                self._cached_model_id,
-                est_tokens,
-            )
 
     async def close(self) -> None:
         await self._client.aclose()
