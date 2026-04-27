@@ -31,7 +31,7 @@
 
 | # | 之前 | v0.6 修訂 | 為什麼 |
 |---|---|---|---|
-| 30 | §6 規劃 NotebookLM Phase 4 agentification（單 agent + 9 tools 路線 B）| **取消 agentification，NotebookLM 永遠保持獨立 service** | NotebookLM 對話流（給文件 → 生 PPTX/PDF/mind map）跟 OpenAI chat 完全不同範式，包成 agent 收益小、複雜度高。保持獨立 service + platform_link 卡片 + 之後做 OIDC SSO 即可 |
+| 30 | §6 規劃 ANILA LM Phase 4 agentification（單 agent + 9 tools 路線 B）| **取消 agentification，ANILA LM 永遠保持獨立 service** | ANILA LM 對話流（給文件 → 生 PPTX/PDF/mind map）跟 OpenAI chat 完全不同範式，包成 agent 收益小、複雜度高。保持獨立 service + platform_link 卡片 + 之後做 OIDC SSO 即可 |
 | 31 | nginx 每次 service recreate 都要手動 `docker restart anila-nginx` flush stale upstream IP | **`resolver 127.0.0.11 + variable proxy_pass`** 自動 re-resolve | codeserver pivot saga 撞了 4 次 502 才察覺，commit `c322427` 一次解決 |
 | 32 | 前述 Phase 1 過程中 nginx 對 `set` / `rewrite ... break` 的順序敏感不知道 | doc 化 trap：**`set` 必須在 `rewrite ... break` 之前**（同 module，break 終止後續 set 處理）| `c322427` commit message 詳細紀錄 |
 
@@ -101,7 +101,7 @@ v0.5.4 把 codeserver 改 dedicated port 仍然爆炸，最後翻 [`/home/aia/c1
 
 | # | 設計（v0.5 之前） | 實作（v0.5.2 修訂） | 為什麼 |
 |---|---|---|---|
-| 18 | NotebookLM/Code Server URL 用 internal DN（`notebooklm.internal:3100`）| 全部改 **nginx 同源 path**（`/notebooklm`, `/codeserver`, `/n8n`, `/gitlab`）| Browser 無法解析 internal DN 且 cross-origin 觸發 Mixed Content 警告。同源 path 解決此問題並讓 Phase 3 OIDC SSO 不需處理 cookie cross-origin |
+| 18 | ANILA LM/Code Server URL 用 internal DN（`anilalm.internal:3100`）| 全部改 **nginx 同源 path**（`/anilalm`, `/codeserver`, `/n8n`, `/gitlab`）| Browser 無法解析 internal DN 且 cross-origin 觸發 Mixed Content 警告。同源 path 解決此問題並讓 Phase 3 OIDC SSO 不需處理 cookie cross-origin |
 | 19 | n8n / GitLab / MLSteam 的 `required_roles=['admin', 'developer']` | 改為 `['developer']` + `is_public=true` | v0.5.1 admin bypass 提前後不需 explicit 列 `'admin'`；`is_public=true` 才能讓 developer 不需 grant 就看到（之前 `is_public=false` 會卡在 grant check 步驟 5）|
 | 20 | `auto_seed.py` 的 AUTO_REGISTER_LINKS 處理只認 5 個欄位、INSERT-only | 擴充認 `is_public` + `required_roles` + 改成 idempotent upsert | 0012/0013 加的欄位舊 seed 不認；env 改了 restart 不會 sync 是隱蔽 bug |
 
@@ -144,7 +144,7 @@ v0.5.4 把 codeserver 改 dedicated port 仍然爆炸，最後翻 [`/home/aia/c1
 | # | 議題 | 立場 |
 |---|---|---|
 | 10 | **GitLab 跟 codeserver 一樣，由 ANILA monorepo 自己 deploy**（不是等 SRE 另開）— 走同源 nginx path `/gitlab` | GitLab 是 ISO 42001 必備（§7.4），由 ANILA 自己 deploy 確保上線時序。技術細節比 codeserver 複雜（GitLab Omnibus 對 subpath 部署敏感），詳見 §5.0.2 |
-| 11 | **ComfyUI 模型還沒跑起來** → ComfyUI agent 推後到 Phase 1.5 | Phase 1 範圍縮小、更聚焦：access control + codeserver + GitLab + NotebookLM 卡片 + My-OpenAI-Frontend 停用。ComfyUI 等模型部署完成後再做（§8.4） |
+| 11 | **ComfyUI 模型還沒跑起來** → ComfyUI agent 推後到 Phase 1.5 | Phase 1 範圍縮小、更聚焦：access control + codeserver + GitLab + ANILA LM 卡片 + My-OpenAI-Frontend 停用。ComfyUI 等模型部署完成後再做（§8.4） |
 
 對 sprint 的影響：
 - Phase 1 工程量從 v0.3 的 **3-5 天** 微幅調整：移除 ComfyUI 任務 (-1 天) + 加 GitLab 部署 (+1.5 天) = **3-5.5 天**
@@ -165,13 +165,13 @@ v0.5.4 把 codeserver 改 dedicated port 仍然爆炸，最後翻 [`/home/aia/c1
 
 ### v0.2 (2026-04-25) — 7 個議題 review 後的修訂
 
-第二輪討論（含 ComfyUI namespace 釐清、NotebookLM 部門級 grant、My-OpenAI-Frontend 「停用備份」而非廢除等）後的修訂：
+第二輪討論（含 ComfyUI namespace 釐清、ANILA LM 部門級 grant、My-OpenAI-Frontend 「停用備份」而非廢除等）後的修訂：
 
 | # | 議題 | v0.1 立場 | v0.2 修訂 |
 |---|---|---|---|
 | 1 | Memory file 的定位 | 不明確 | **`memory/` module 留 anila-core；`MemoryFileStore` KEEP（dev mode）；Phase 3+ 補 `PostgresMemoryStore`（prod mode）**。詳見 §1.4 與 [`anila-core-boundary.md`](./anila-core-boundary.md) §2.3 |
 | 2 | ComfyUI 整合方式 | 註冊為 Model | **改為註冊為 Agent**。理由：ANILA 主介面是 chat 對話，Router 必須在 manifest 看到「會畫圖的 agent」才能自動分派；Model 介面只能透過 OpenAI SDK 顯式呼叫 model name 觸發。詳見 §4 |
-| 3 | NotebookLM 權限模式 | 平台連結卡片（無 access control）| **OIDC SSO + 模式 A 嚴格白名單**。`required_roles=NULL` + `service_access_grants` table，**支援 user-level 與 department-level grant 兩種**（部門 grant 一次蓋整批）。詳見 §6 與 §7.5 |
+| 3 | ANILA LM 權限模式 | 平台連結卡片（無 access control）| **OIDC SSO + 模式 A 嚴格白名單**。`required_roles=NULL` + `service_access_grants` table，**支援 user-level 與 department-level grant 兩種**（部門 grant 一次蓋整批）。詳見 §6 與 §7.5 |
 | 4 | codeserver 部署位置 | 平台連結（外部跳轉）| **納入 ANILA monorepo `docker-compose.yml`** — 組裡沒獨立部署，要新增 service。詳見 §5 |
 | 5 | n8n / gitlab / mlsteam URL | 假設值 | **實際 URL 已查證**（從 `My-OpenAI-Frontend/webui/src/pages/index.tsx` 取得）：mlsteam=`https://aiops.ai.ncsist.org.tw:4443/`、n8n=`/n8n`（nginx 內部 path）。GitLab URL 待你補。詳見 §7 |
 | 6 | My-OpenAI-Frontend 處置 | 2-3 週廢除工程 + data migration | **改為「停用備份」**：現在沒人在用，不做 migration。docker compose down + 保留 image + README 加 archive notice。詳見 §3 |
@@ -190,7 +190,7 @@ v0.5.4 把 codeserver 改 dedicated port 仍然爆炸，最後翻 [`/home/aia/c1
 | 服務 | 決議 | 理由 |
 |---|---|---|
 | **My-OpenAI-Frontend** | ~~取代~~ → **停用備份** (v0.2 修訂) | 離職同仁開發、無人維護；現在沒 active 使用者 |
-| **NotebookLM** | **暫保獨立** + 平台連結卡片 + 寫 future agent 化 plan | 現役 prod 服務，破壞風險高 |
+| **ANILA LM** | **暫保獨立** + 平台連結卡片 + 寫 future agent 化 plan | 現役 prod 服務，破壞風險高 |
 | **data-quality** | **不納入** | 是 n8n workflow 的一部分 |
 | **ComfyUI** | ~~註冊為 Model~~ → **註冊為 Agent** (v0.2 修訂) | Router 須能在自然對話分派 |
 | **codeserver** | ~~Platform Link 卡片~~ → **納入 monorepo** (v0.2 修訂) | 組裡沒獨立部署，要新增 service |
@@ -203,7 +203,7 @@ v0.5.4 把 codeserver 改 dedicated port 仍然爆炸，最後翻 [`/home/aia/c1
 
 ### 1.1 從 LLM Gateway 升格為「多服務管理平台」
 
-CSP 目前定位是 control + data plane，但組內現實是**還有一堆獨立服務各自跑**（NotebookLM、ComfyUI、n8n、gitlab、codeserver）。使用者每個服務都要單獨記網址、單獨登入、各自管 API key。
+CSP 目前定位是 control + data plane，但組內現實是**還有一堆獨立服務各自跑**（ANILA LM、ComfyUI、n8n、gitlab、codeserver）。使用者每個服務都要單獨記網址、單獨登入、各自管 API key。
 
 CSP 已有的 `AUTO_REGISTER_LINKS` 機制（範例見 `myCSPPlatform/README.md`）是「平台連結卡片」雛形。本 plan 把它擴充成完整的多服務管理平台，讓 ANILA dashboard 變成**組內所有 AI / dev 服務的統一入口**。
 
@@ -222,7 +222,7 @@ CSP 已有的 `AUTO_REGISTER_LINKS` 機制（範例見 `myCSPPlatform/README.md`
 |---|---|---|
 | §4 ComfyUI 註冊為 Agent | `AgenticRAG/anila-agent.yaml` template | 走 agent 註冊流程 |
 | §5 codeserver DB credential | [`ingestion-platform-design.md`](./ingestion-platform-design.md) §3.3 RLS | per-dev credentials 自動 `SET LOCAL anila.agent_id` |
-| §6 NotebookLM agent 化 | [`anila-core-boundary.md`](./anila-core-boundary.md) | NotebookLM 9 種 artifact 對應 agent template fork pattern |
+| §6 ANILA LM agent 化 | [`anila-core-boundary.md`](./anila-core-boundary.md) | ANILA LM 9 種 artifact 對應 agent template fork pattern |
 | §1.4 Memory architecture | [`anila-core-boundary.md`](./anila-core-boundary.md) §2.3 | platform memory module 留 anila-core；MemoryFileStore 為 dev-mode impl |
 
 ### 1.4 Memory ≠ Ingestion（澄清）
@@ -267,7 +267,7 @@ Class A: 「取代」                   — CSP 直接接手功能
   └─ My-OpenAI-Frontend
 
 Class B: 「平台連結卡片」（純跳轉） — 使用者點卡片開新分頁
-  ├─ NotebookLM
+  ├─ ANILA LM
   ├─ codeserver
   ├─ n8n
   └─ gitlab
@@ -283,7 +283,7 @@ Class D: 「不納入」
 
 | 服務 | 內部 URL | Auth 模式 | 說明 |
 |---|---|---|---|
-| NotebookLM | `http://localhost:3100` (FE) / `:8100` (BE) | 自帶 JWT | 9 種 artifact 生成 |
+| ANILA LM | `http://localhost:3100` (FE) / `:8100` (BE) | 自帶 JWT | 9 種 artifact 生成 |
 | codeserver | `http://localhost:8443`（推測，需確認）| 自帶（VS Code session）| Dev workspace |
 | n8n | `http://n8n:5678` | OAuth2 capable | Workflow 平台 |
 | gitlab | `http://gitlab:8080`（內網推測）| OAuth2 capable | Git server |
@@ -361,7 +361,7 @@ Step 3  ──  Archive notice
 ```
 ┌─ Step 1: Audit ──────────────────────────────────────────────┐
 │ grep 整個內網找出所有打 My-OpenAI-Frontend `/v1/*` 的 client：│
-│   - NotebookLM backend `.env` 的 LLM_API_BASE_URL            │
+│   - ANILA LM backend `.env` 的 LLM_API_BASE_URL            │
 │   - data-quality n8n workflow 內的 LLM call URL              │
 │   - 其他散落的 SDK caller / curl script                       │
 │                                                              │
@@ -386,7 +386,7 @@ Step 3  ──  Archive notice
 
 ┌─ Step 4: Client cutover ─────────────────────────────────────┐
 │ 一鍵切換：                                                    │
-│   - NotebookLM `.env` LLM_API_BASE_URL → CSP                 │
+│   - ANILA LM `.env` LLM_API_BASE_URL → CSP                 │
 │   - data-quality n8n workflow 改 URL                          │
 │   - 其他 client 同步                                          │
 │                                                              │
@@ -1122,9 +1122,9 @@ mlsteam 是 organization-wide GPU 平台，**不歸 ANILA 管**。ANILA 跟 mlst
 
 ---
 
-## 6. NotebookLM 整合（Phase 1 SSO + grant；agent 化 v0.6 取消）
+## 6. ANILA LM 整合（Phase 1 SSO + grant；agent 化 v0.6 取消）
 
-> **v0.6 決策更新（§0 #30）**：原本 §6.1 之後規劃的 Phase 4 agentification（單 agent + 9 tools）**取消**。NotebookLM 對話範式（給文件 → 生 PPTX/PDF/mind map artifact）跟 OpenAI chat completions 完全不同，包成 agent 工程量大、收益小。**永遠保持獨立 service** + platform_link 卡片 + Phase 3 OIDC SSO 即可。
+> **v0.6 決策更新（§0 #30）**：原本 §6.1 之後規劃的 Phase 4 agentification（單 agent + 9 tools）**取消**。ANILA LM 對話範式（給文件 → 生 PPTX/PDF/mind map artifact）跟 OpenAI chat completions 完全不同，包成 agent 工程量大、收益小。**永遠保持獨立 service** + platform_link 卡片 + Phase 3 OIDC SSO 即可。
 >
 > 以下 §6.1–6.5 內容是 v0.6 之前的設計，保留作為 historical record（避免後人重新論證 agentification）。實作面看 §6.0.1 + §6.0.2 即可。
 
@@ -1136,18 +1136,18 @@ mlsteam 是 organization-wide GPU 平台，**不歸 ANILA 管**。ANILA 跟 mlst
 | 階段 | 整合內容 |
 |---|---|
 | **Phase 1** | 平台連結卡片 + `service_access_grants` 嚴格白名單（模式 A） |
-| **Phase 3** | OIDC SSO（NotebookLM auth 認 CSP token） |
+| **Phase 3** | OIDC SSO（ANILA LM auth 認 CSP token） |
 | **Phase 4** | Agent 化（單 agent + 9 tools） |
 
 ### 6.0.1 Phase 1：嚴格白名單 grant（模式 A）
 
-NotebookLM 在 `platform_links` table 註冊：
+ANILA LM 在 `platform_links` table 註冊：
 
 ```sql
 INSERT INTO platform_links (name, url, icon, description, required_roles)
 VALUES (
-  'NotebookLM',
-  'http://notebooklm.internal:3100',
+  'ANILA LM',
+  'http://anilalm.internal:3100',
   'book-open',
   'AI 學習內容生成（podcast / slides / mind map / quiz / report）',
   NULL   -- ★ 純白名單模式：required_roles=NULL → 任何 role 預設都看不到
@@ -1161,7 +1161,7 @@ VALUES (
 
 **Admin UI**：
 ```
-Platform Link: NotebookLM
+Platform Link: ANILA LM
   Required Roles: (none — 純 grant 白名單模式)
 
   🏢 Department Grants
@@ -1178,41 +1178,41 @@ Platform Link: NotebookLM
 
 ### 6.0.2 Phase 3：OIDC SSO（auth 共用）
 
-Phase 1 階段使用者點卡片進 NotebookLM **仍要單獨登入**（NotebookLM 自己的 JWT）。Phase 3 補上 SSO：
+Phase 1 階段使用者點卡片進 ANILA LM **仍要單獨登入**（ANILA LM 自己的 JWT）。Phase 3 補上 SSO：
 
 ```
 User 已登入 ANILA
     ↓ CSP 已發 JWT cookie
-User 點 NotebookLM 卡片
+User 點 ANILA LM 卡片
     ↓ CSP 簽 OIDC ID token 帶在 redirect URL
-NotebookLM 收到 callback
+ANILA LM 收到 callback
     ↓ 用 CSP 的 JWKS 驗 token（不是用本地 password）
-NotebookLM 直接進 workspace（無需再登入）
+ANILA LM 直接進 workspace（無需再登入）
 ```
 
-**NotebookLM 改動**：
+**ANILA LM 改動**：
 - `auth.py` 加 OIDC client middleware（FastAPI `authlib`）
 - 收到 `Authorization: Bearer <csp_jwt>` → 用 CSP JWKS 驗 → 從 token claim 撈 `user_id` / `username`
 - 本地 password 認證 deprecated（保留 superuser fallback for emergency）
 
 ### ~~6.1 為什麼 agent 化現在不做（v0.6 取消，整段不再 actionable）~~
 
-NotebookLM 是 prod 服務、有自己 user base、有 9 種 artifact 生成，貿然 agent 化的破壞風險高。先放著、寫 plan，等 ANILA platform 成熟後再啟動。
+ANILA LM 是 prod 服務、有自己 user base、有 9 種 artifact 生成，貿然 agent 化的破壞風險高。先放著、寫 plan，等 ANILA platform 成熟後再啟動。
 
 ### ~~6.2 兩種 agent 化路線（v0.6 取消）~~
 
 #### 路線 A：9 種 artifact 各自當一個 agent
 
 ```
-notebooklm-podcast-generator        agent
-notebooklm-slides-generator         agent
-notebooklm-mindmap-generator        agent
-notebooklm-flashcards-generator     agent
-notebooklm-quiz-generator           agent
-notebooklm-infographic-generator    agent
-notebooklm-datatable-generator      agent
-notebooklm-report-generator         agent
-notebooklm-video-script-generator   agent
+anilalm-podcast-generator        agent
+anilalm-slides-generator         agent
+anilalm-mindmap-generator        agent
+anilalm-flashcards-generator     agent
+anilalm-quiz-generator           agent
+anilalm-infographic-generator    agent
+anilalm-datatable-generator      agent
+anilalm-report-generator         agent
+anilalm-video-script-generator   agent
 ```
 
 | 優點 | 缺點 |
@@ -1224,7 +1224,7 @@ notebooklm-video-script-generator   agent
 #### 路線 B：合一個 multi-tool agent
 
 ```
-notebooklm-studio          agent
+anilalm-studio          agent
   ├─ tool: generate_podcast
   ├─ tool: generate_slides
   ├─ tool: generate_mindmap
@@ -1240,23 +1240,23 @@ notebooklm-studio          agent
 #### 推薦：**路線 B**（單 agent + 9 tools）
 
 理由：
-- NotebookLM 9 個 artifact 共用底層邏輯（同一份文件 → 不同呈現），拆 9 個 agent 等於重複實作
+- ANILA LM 9 個 artifact 共用底層邏輯（同一份文件 → 不同呈現），拆 9 個 agent 等於重複實作
 - Router 精準分派的價值在 RAG 類「不同知識庫」，不在「同知識庫不同呈現方式」
 - LLM tool_calling 的能力已經足夠在 multi-tool agent 內做選擇
 
 ### ~~6.3 Agent 化的前置條件（v0.6 取消）~~
 
-NotebookLM 啟動 agent 化前，必須完成：
-1. **CSP 取代 My-OpenAI-Frontend** — NotebookLM 內部要打 CSP `/v1/*` 而非 OpenAI Frontend
-2. **Ingestion Platform 上線** — NotebookLM 的 chroma 改用 ANILA pgvector（或保留 chroma 但加同步）
-3. **SSO** — NotebookLM auth 改認 CSP token
+ANILA LM 啟動 agent 化前，必須完成：
+1. **CSP 取代 My-OpenAI-Frontend** — ANILA LM 內部要打 CSP `/v1/*` 而非 OpenAI Frontend
+2. **Ingestion Platform 上線** — ANILA LM 的 chroma 改用 ANILA pgvector（或保留 chroma 但加同步）
+3. **SSO** — ANILA LM auth 改認 CSP token
 
 未滿足這 3 個條件，agent 化會打結。
 
 ### ~~6.4 Agent 化執行步驟（v0.6 取消）~~
 
 ```
-Step 1: NotebookLM backend 加 OpenAI-compatible endpoint
+Step 1: ANILA LM backend 加 OpenAI-compatible endpoint
         POST /v1/chat/completions
           ↓ 內部 dispatch 到 9 個 artifact generator
           ↓ 用 tool_calling pattern
@@ -1264,8 +1264,8 @@ Step 1: NotebookLM backend 加 OpenAI-compatible endpoint
 
 Step 2: 註冊到 CSP 為 Agent
         anila-agent.yaml:
-          name: notebooklm-studio
-          endpoint_url: http://notebooklm-backend:8100
+          name: anilalm-studio
+          endpoint_url: http://anilalm-backend:8100
           base_model: gemma4
           requires_encryption: false
           capabilities:
@@ -1273,20 +1273,20 @@ Step 2: 註冊到 CSP 為 Agent
             tools: [podcast, slides, mindmap, ...]
 
 Step 3: ANILA UI 的 router 自動發現
-        使用者透過 anila-router 呼叫 notebooklm-studio
+        使用者透過 anila-router 呼叫 anilalm-studio
         Router 把 LLM 主對話轉給它
 ```
 
 ### 6.5 與 AgenticRAG template 的差異
 
-| 面向 | AgenticRAG template | NotebookLM (agent 化後) |
+| 面向 | AgenticRAG template | ANILA LM (agent 化後) |
 |---|---|---|
 | 知識來源 | pgvector（共用 ANILA Ingestion Platform） | Chroma（自有，內部生成 artifact 用）|
 | 對話類型 | 多輪檢索 + 來源標注 | 單次「給文件 → 生 artifact」|
 | Output | 文字 + citations | PPTX / PDF / mind map JSON 等 |
 | Fork 對象 | 一般部門 RAG agent | 不適合 fork（特殊用途）|
 
-NotebookLM 不會變成 template，它是**一個特殊的 agent 實例**（One of a kind）。
+ANILA LM 不會變成 template，它是**一個特殊的 agent 實例**（One of a kind）。
 
 ---
 
@@ -1296,7 +1296,7 @@ NotebookLM 不會變成 template，它是**一個特殊的 agent 實例**（One 
 
 > **實作狀態**：✅ 5 筆 link seed 完成。權威 source 在 [`docker-compose.yml`](../docker-compose.yml) 的 `csp.environment.AUTO_REGISTER_LINKS`，對應 [`auto_seed.py`](../myCSPPlatform/backend/app/services/auto_seed.py) §5 邏輯。
 
-**設計重點：4 個內網服務全走 nginx 同源 path**（v0.5.1 修正 — `notebooklm.internal:3100` / `codeserver.internal:8443` 那種內網 DN 是錯的，browser 進不去且觸發 Mixed Content 警告）。只有 MLSteam 是公網 service，保留絕對 FQDN。
+**設計重點：4 個內網服務全走 nginx 同源 path**（v0.5.1 修正 — `anilalm.internal:3100` / `codeserver.internal:8443` 那種內網 DN 是錯的，browser 進不去且觸發 Mixed Content 警告）。只有 MLSteam 是公網 service，保留絕對 FQDN。
 
 **`is_public` × `required_roles` 兩個維度的組合語意**（admin 永遠通過，因為 v0.5.1 algorithm step 2 admin bypass）：
 
@@ -1304,14 +1304,14 @@ NotebookLM 不會變成 template，它是**一個特殊的 agent 實例**（One 
 |---|---|---|---|
 | 全員可見入口（如 ANILA 主面板）| `true` | `[]` | 任何登入用戶都看得到 |
 | 角色公開（如 n8n / GitLab）| `true` | `[role1, role2]` | 該 role 通過 gate 就看得到 |
-| 角色限定 + 個別 grant（如 NotebookLM mode A）| `false` | `[]` | 任何 role 都過 gate，但要 admin 個別 grant 才看得到 |
+| 角色限定 + 個別 grant（如 ANILA LM mode A）| `false` | `[]` | 任何 role 都過 gate，但要 admin 個別 grant 才看得到 |
 | Admin 專屬 + 個別 grant（極少見）| `false` | `['admin']` | 等同 admin only |
 
 ```yaml
 # docker-compose.yml csp.environment.AUTO_REGISTER_LINKS（Phase 1 Step 3 final）
 
-- name: "NotebookLM"
-  url: "/notebooklm"                           # ← nginx 同源 path（在 monorepo）
+- name: "ANILA LM"
+  url: "/anilalm"                           # ← nginx 同源 path（在 monorepo）
   icon: "book-open"
   description: "AI 學習內容生成（podcast / slides / mind map / quiz / report）"
   is_public: false                             # 不公開
@@ -1560,7 +1560,7 @@ def can_access_link(db, user, link) -> bool:
 #### 7.5.3 Admin UI
 
 ```
-Platform Link: NotebookLM
+Platform Link: ANILA LM
   Required Roles: (none — 純 grant 白名單模式)
   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -1608,13 +1608,13 @@ await audit_log(
 | 1 | Alembic migration `0012`：`platform_links.required_roles` + `service_access_grants` + `dev_db_credentials` 三表（§7.5、§5.3）| 2 小時 | ✅ commit `e611d89` |
 | 1.5 | Alembic migration `0013`：`platform_links.is_public` + grandfather backfill（§7.5.1、§0 v0.5 #16）| 30 分鐘 | ✅ commit `cc121e3` |
 | 2 | CSP backend 實作 `can_access_link()` + grant CRUD endpoints（§7.5）| 0.5 天 | ✅ commit `7c4df4a` |
-| 3 | 寫 `AUTO_REGISTER_LINKS` 5 筆（NotebookLM / codeserver / n8n / gitlab / mlsteam，URL 見 §7.1） | 30 分鐘 | ✅ 待 commit |
+| 3 | 寫 `AUTO_REGISTER_LINKS` 5 筆（ANILA LM / codeserver / n8n / gitlab / mlsteam，URL 見 §7.1） | 30 分鐘 | ✅ 待 commit |
 | 4 | CSP UI Dashboard 顯示卡片時依 `can_access_link()` 過濾 + Service Access 管理 UI（§7.5.3）| 1-1.5 天 | ⏳ |
 | 5 | ANILA monorepo `docker-compose.yml` 新增 `codeserver` service（§5.0.1）| 30 分鐘 | ✅ commit `11d572c` |
 | 6 | **(v0.4)** ANILA monorepo `docker-compose.yml` 新增 `gitlab` service（§5.0.2）| 1 小時 | ✅ commits `11d572c` + `ec2272e`（healthcheck fix）|
 | 7 | **(v0.4)** GitLab 首次啟動 + reconfigure（等 healthy）+ root 密碼設定 + 開 admin 帳號 | 1-2 小時 | ✅ booted；初始 root password 在 `/etc/gitlab/initial_root_password`（首次登入務必輪換）|
 | 8 | Nginx 設定 `/codeserver` + `/gitlab` 同源 reverse proxy（§5.0.1、§5.0.2）| 1.5 小時 | ✅ commits `11d572c` + `ec2272e`（Host header fix）|
-| 9 | E2E 測試 1：admin grant 工程部 access NotebookLM → 部門使用者 dashboard 看到卡片 → 點開（Phase 1 仍重新登入）| 1.5 小時 | ✅ `scripts/phase1-e2e.sh` Step 9（default-deny → dept grant unlock → revoke 三段全綠）|
+| 9 | E2E 測試 1：admin grant 工程部 access ANILA LM → 部門使用者 dashboard 看到卡片 → 點開（Phase 1 仍重新登入）| 1.5 小時 | ✅ `scripts/phase1-e2e.sh` Step 9（default-deny → dept grant unlock → revoke 三段全綠）|
 | 10 | E2E 測試 2：admin / developer 進 codeserver 與 GitLab 同源 path、WebSocket terminal / CI log live tail 都能用 | 1.5 小時 | ✅ `scripts/phase1-e2e.sh` Step 10（codeserver/gitlab/n8n title 都正確；WS upgrade probe 401 = 路由通但 auth gate 擋下，跟 standalone 部署一致）|
 | 11 | My-OpenAI-Frontend 停用：`docker compose down` + nginx `/v1/*` 改 410 + README archive notice（§3.0.1）| 30 分鐘 | ⏳ 需 user 確認再動（destructive，需要先 migrate user 的 n8n workflows 等資料）|
 
@@ -1641,9 +1641,9 @@ await audit_log(
 
 ### 8.3 Phase 1 不會做
 
-- 不做 SSO（各服務維持原 auth；使用者點 NotebookLM / codeserver / GitLab 卡片仍要重新登入）→ Phase 3
+- 不做 SSO（各服務維持原 auth；使用者點 ANILA LM / codeserver / GitLab 卡片仍要重新登入）→ Phase 3
 - 不做 My-OpenAI-Frontend data migration（沒 active 使用者，不需要）
-- 不動 NotebookLM 內部結構 → Phase 4 才動
+- 不動 ANILA LM 內部結構 → Phase 4 才動
 - **(v0.4)** 不做 ComfyUI agent → Phase 1.5（等模型部署）
 - 不做 ComfyUI workflow preset Layer 1+（admin 上傳新 preset 的 UI）→ Phase 2+ 看需求
 - 不做 dev DB credential endpoint（§5.3）→ Phase 3
@@ -1683,7 +1683,7 @@ await audit_log(
 ### 10.1 SSO
 
 - CSP 啟用 OIDC Provider mode
-- NotebookLM / n8n / gitlab / codeserver 改認 CSP 為 IdP
+- ANILA LM / n8n / gitlab / codeserver 改認 CSP 為 IdP
 
 ### 10.2 codeserver Dev Workspace 整合
 
@@ -1693,14 +1693,14 @@ await audit_log(
 
 ---
 
-## ~~11. Phase 4：NotebookLM Agent 化（v0.6 取消）~~
+## ~~11. Phase 4：ANILA LM Agent 化（v0.6 取消）~~
 
-> v0.6 決策（§0 #30）：NotebookLM 永遠保持獨立 service。整章 cancelled。下面內容是歷史紀錄。
+> v0.6 決策（§0 #30）：ANILA LM 永遠保持獨立 service。整章 cancelled。下面內容是歷史紀錄。
 
 詳見 §6。要點：
 - 必須先完成 Phase 2（取代 My-OpenAI-Frontend）+ Ingestion Platform 上線 + Phase 3 SSO
 - 採路線 B：單 agent + 9 tools
-- 新加 OpenAI-compatible endpoint 到 NotebookLM backend
+- 新加 OpenAI-compatible endpoint 到 ANILA LM backend
 - 註冊為 CSP agent
 
 ---
@@ -1712,7 +1712,7 @@ await audit_log(
 | Phase 2 cutover 漏改 client | 2 | grep audit + Step 5 410 Gone 暴露漏網之魚 |
 | ComfyUI bridge 預設 workflow 不滿足使用者 | 1 | 提供 3-5 種預設、之後加 `workflow_url` 欄位讓 dev 自帶 |
 | codeserver dev credential 洩漏 | 3 | 24h TTL + audit log + revoke API |
-| NotebookLM agent 化破壞 prod 流量 | 4 | 雙軌跑 1 個月（舊 UI + 新 agent endpoint），確認後再 sunset 舊 UI |
+| ANILA LM agent 化破壞 prod 流量 | 4 | 雙軌跑 1 個月（舊 UI + 新 agent endpoint），確認後再 sunset 舊 UI |
 | n8n / gitlab SSO 失敗 | 3 | 各服務本地登入 fallback 保留 |
 | ComfyUI bridge timeout（圖片生成慢） | 1 | wrapper 內部 polling 10 分鐘 ceiling，超時回 504 |
 
@@ -1722,7 +1722,7 @@ await audit_log(
 
 1. **codeserver 部署位置** — 是放在 ANILA monorepo 內 `docker-compose.yml`，還是組裡已經有獨立部署？確認 URL 後填 §7.1
 2. **mlsteam 連線資訊** — 確認內部 hostname（目前 §7.1 寫 `mlsteam.internal` 是猜的）
-3. ~~**NotebookLM Chroma 處理**~~ — v0.6 取消 NotebookLM agent 化（§11），NotebookLM 永遠用自己的 chroma，無需處理 ANILA pgvector 共用問題。
+3. ~~**ANILA LM Chroma 處理**~~ — v0.6 取消 ANILA LM agent 化（§11），ANILA LM 永遠用自己的 chroma，無需處理 ANILA pgvector 共用問題。
 4. **My-OpenAI-Frontend 廢除時間軸** — 跟 Ingestion Platform Sprint 1 並行，還是 Sprint 4 之後再做？
 5. **ComfyUI workflow preset 選誰負責** — `comfyui-bridge` 內建 3-5 種 workflow，由誰提供（內部設計師 / 沿用 ComfyUI community workflow）？
 6. **dev credentials 的 PG role TTL** — 24h 太長還是太短？要不要做「續期」endpoint？
@@ -1738,7 +1738,7 @@ Week 4-5   ─── Phase 2 (My-OpenAI-Frontend 廢除) +
                 Ingestion Platform Sprint 2 (UI + worker)
 Week 6-7   ─── Ingestion Platform Sprint 3 (Evaluator)
 Week 8-9   ─── Phase 3 (SSO + codeserver dev workspace)
-Week 10+   ─── 觀察期（NotebookLM agent 化 v0.6 取消，§11）
+Week 10+   ─── 觀察期（ANILA LM agent 化 v0.6 取消，§11）
 ```
 
 **Critical path**：Phase 1 → Ingestion Platform → Phase 2 → Phase 3。

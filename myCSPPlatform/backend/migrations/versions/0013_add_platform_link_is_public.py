@@ -2,7 +2,7 @@
 
 Without this flag the access-control algorithm shipped in 0012 was strictly
 default-deny: non-admin users see *no* links until an explicit grant exists.
-That's the right policy for sensitive services (NotebookLM / codeserver /
+That's the right policy for sensitive services (ANILA LM / codeserver /
 GitLab), but it's wrong for the ANILA portal link itself, which should be
 visible to everyone passing the role gate.
 

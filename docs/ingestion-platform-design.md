@@ -7,7 +7,7 @@
 **Target delivery**: 3 × 2-week sprints after sign-off
 **See also**:
 - [`anila-core-boundary.md`](./anila-core-boundary.md) — anila-core 瘦身 Task 3 詳細清單，與本文件 §12 同步
-- [`multi-service-integration-plan.md`](./multi-service-integration-plan.md) — 組內既有服務（NotebookLM / ComfyUI / codeserver / n8n / gitlab）整合進 ANILA 的計畫，與本平台 sprint 排程交織
+- [`multi-service-integration-plan.md`](./multi-service-integration-plan.md) — 組內既有服務（ANILA LM / ComfyUI / codeserver / n8n / gitlab）整合進 ANILA 的計畫，與本平台 sprint 排程交織
 
 ---
 
