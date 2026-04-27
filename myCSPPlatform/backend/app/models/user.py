@@ -32,6 +32,15 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     is_approved = Column(Boolean, nullable=False, default=True, server_default="true")
     token_version = Column(Integer, nullable=False, default=0, server_default="0")
+    # Sprint 6 X / B2：當 admin 把使用者切到 SSO-only 時設為 True；
+    # ``authenticate_user`` 會在密碼比對之後拒絕本地登入。預設 False，
+    # 不影響既有使用者。未來全域切到 SSO 時可透過 admin 介面批次更新。
+    local_password_disabled = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
     # Stamped on every successful authentication (local login, OIDC).
     # Powers the "上次登入" column in the admin user panel and lets audit
     # reports flag dormant accounts without scanning AuditLog.

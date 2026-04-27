@@ -113,6 +113,18 @@ def _ensure_schema_backfills(bind: Engine) -> None:
         postgres_ddl="ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NULL",
         generic_ddl="ALTER TABLE users ADD COLUMN updated_at TIMESTAMP",
     )
+    # Sprint 6 X / B2：local_password_disabled flag。defaults FALSE，所以
+    # 既有 row 載入後仍能用本機密碼登入；admin 切換才禁用。
+    _ensure_column(
+        bind, "users", "local_password_disabled",
+        postgres_ddl=(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+            "local_password_disabled BOOLEAN NOT NULL DEFAULT FALSE"
+        ),
+        generic_ddl=(
+            "ALTER TABLE users ADD COLUMN local_password_disabled BOOLEAN NOT NULL DEFAULT 0"
+        ),
+    )
 
     # --- model_registry --------------------------------------------------
     _ensure_column(
@@ -208,17 +220,7 @@ def _ensure_schema_backfills(bind: Engine) -> None:
         ("oidc_subject_claim", "VARCHAR(100) NULL"),
         ("oidc_username_claim", "VARCHAR(100) NULL"),
         ("oidc_email_claim", "VARCHAR(100) NULL"),
-        # LDAP 欄位已棄用；保留 column 以維持向下相容（舊 row 仍可讀）。
-        # 新部署也讓 ADD COLUMN IF NOT EXISTS 為 idempotent，這些欄位會以
-        # NULL 形式存在但永不被讀寫；後續 migration 會 DROP。
-        ("ldap_server_uri", "VARCHAR(255) NULL"),
-        ("ldap_bind_dn", "VARCHAR(255) NULL"),
-        ("ldap_bind_password", "VARCHAR(255) NULL"),
-        ("ldap_base_dn", "VARCHAR(255) NULL"),
-        ("ldap_user_filter", "VARCHAR(255) NULL"),
-        ("ldap_email_attribute", "VARCHAR(100) NULL"),
-        ("ldap_display_name_attribute", "VARCHAR(100) NULL"),
-        ("ldap_start_tls", "BOOLEAN NULL DEFAULT FALSE"),
+        # ldap_* 欄位由 0021 migration 直接 DROP；這裡不再 ensure 它們存在。
     ]:
         _ensure_column(
             bind, "auth_providers", col_name,

@@ -25,6 +25,9 @@ class UserUpdate(BaseModel):
     role: UserRole | None = None
     department_id: int | None = None
     is_active: bool | None = None
+    # Sprint 6 X / B2：admin 可切到 SSO-only。預設不變更（None）；
+    # True = 拒絕此使用者用本機密碼登入；False = 允許。
+    local_password_disabled: bool | None = None
 
 
 class UserResponse(UserBase):
@@ -33,6 +36,7 @@ class UserResponse(UserBase):
     department_name: str | None = None
     is_active: bool
     is_approved: bool = True
+    local_password_disabled: bool = False
     last_login_at: datetime | None = None
     created_at: datetime
     updated_at: datetime

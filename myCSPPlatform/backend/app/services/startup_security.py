@@ -77,6 +77,13 @@ def assert_no_dev_defaults() -> None:
     In dev mode (``ANILA_ALLOW_DEV_SECRET=1``) we log warnings instead of
     raising — so docker-compose still boots locally without a per-developer
     .env, but production deployments get a hard failure at startup.
+
+    Two failure modes:
+
+    - ``offenders``：fatal regardless of dev_mode（例如 ``SECRET_KEY`` 為
+      空 — 完全沒有加密金鑰，dev 也不該允許）。
+    - ``warnings``：與已知 dev 預設值字面相同；dev_mode 下 log warning，
+      production 直接 raise。
     """
     dev_mode = _is_dev_mode()
     offenders: list[str] = []
@@ -88,14 +95,17 @@ def assert_no_dev_defaults() -> None:
             continue
         normalized = value.strip().lower()
         if not normalized:
-            # Empty values are flagged separately for SECRET_KEY only —
-            # CSP_SERVICE_TOKEN being empty is documented as "本機跳過".
+            # 空 SECRET_KEY 在加密路徑上等於沒設，永遠 fatal。
             if name == "SECRET_KEY":
                 offenders.append(f"{name} 為空")
             continue
         if normalized in defaults:
             warnings.append(name)
-            continue
+
+    if offenders:
+        raise RuntimeError(
+            "Refusing to start: " + "; ".join(offenders)
+        )
 
     if not warnings:
         return
