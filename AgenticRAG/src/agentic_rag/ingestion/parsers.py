@@ -388,11 +388,14 @@ class DocParser:
 
         path = Path(file_path)
         try:
+            # L7: 用 ``--`` 分隔 option 與 positional arg，避免 file_path
+            # 開頭為 ``-`` 時被 antiword 解析成 flag（argument injection）。
             result = subprocess.run(
-                ["antiword", file_path],
+                ["antiword", "--", file_path],
                 capture_output=True,
                 text=True,
                 timeout=30,
+                check=False,
             )
             content = result.stdout
             if not content and result.returncode != 0:

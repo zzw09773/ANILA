@@ -2,6 +2,10 @@ from datetime import datetime
 from pydantic import BaseModel, field_validator
 
 
+# OIDC client_secret 不再以明文回應；list/get 回傳 mask 而非密文。
+SECRET_MASK = "***"
+
+
 class AuthProviderBase(BaseModel):
     name: str
     provider_type: str
@@ -11,17 +15,9 @@ class AuthProviderBase(BaseModel):
     default_role: str = "user"
     default_department_id: int | None = None
 
-    ldap_server_uri: str | None = None
-    ldap_bind_dn: str | None = None
-    ldap_bind_password: str | None = None
-    ldap_base_dn: str | None = None
-    ldap_user_filter: str | None = None
-    ldap_start_tls: bool = False
-    ldap_email_attribute: str | None = None
-    ldap_display_name_attribute: str | None = None
-
     oidc_issuer_url: str | None = None
     oidc_client_id: str | None = None
+    # 寫入 (create / update) 用 plaintext；讀取回應一律是 SECRET_MASK 或 None。
     oidc_client_secret: str | None = None
     oidc_authorization_endpoint: str | None = None
     oidc_token_endpoint: str | None = None
@@ -42,8 +38,9 @@ class AuthProviderBase(BaseModel):
     @field_validator("provider_type")
     @classmethod
     def validate_provider_type(cls, value: str) -> str:
-        if value not in {"ldap", "oidc"}:
-            raise ValueError("provider_type 僅支援 ldap 或 oidc")
+        # LDAP 已自系統下線，僅保留 OIDC（後續會以完整 SSO 取代本地登入）。
+        if value != "oidc":
+            raise ValueError("provider_type 僅支援 oidc（LDAP 已停用）")
         return value
 
 
@@ -59,17 +56,9 @@ class AuthProviderUpdate(BaseModel):
     default_role: str | None = None
     default_department_id: int | None = None
 
-    ldap_server_uri: str | None = None
-    ldap_bind_dn: str | None = None
-    ldap_bind_password: str | None = None
-    ldap_base_dn: str | None = None
-    ldap_user_filter: str | None = None
-    ldap_start_tls: bool | None = None
-    ldap_email_attribute: str | None = None
-    ldap_display_name_attribute: str | None = None
-
     oidc_issuer_url: str | None = None
     oidc_client_id: str | None = None
+    # 傳入 SECRET_MASK 表示「不變更」；傳入空字串表示「清空」；其他字串表示「替換」。
     oidc_client_secret: str | None = None
     oidc_authorization_endpoint: str | None = None
     oidc_token_endpoint: str | None = None

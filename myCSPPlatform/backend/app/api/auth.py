@@ -32,7 +32,6 @@ from app.services.auth_service import (
     PENDING_APPROVAL_SENTINEL,
 )
 from app.services.external_auth_service import (
-    authenticate_ldap,
     authenticate_oidc_code,
     build_oidc_authorization_url,
     decode_external_state,
@@ -205,48 +204,12 @@ def login(
 ):
     ip_address = http_request.client.host if http_request.client else None
 
-    if request.auth_source == "ldap":
-        provider = None
-        if request.provider_id is not None:
-            provider = (
-                db.query(AuthProvider)
-                .filter(
-                    AuthProvider.id == request.provider_id,
-                    AuthProvider.provider_type == "ldap",
-                    AuthProvider.is_active == True,
-                )
-                .first()
-            )
-        if not provider:
-            raise HTTPException(status_code=400, detail="LDAP Provider 不存在或未啟用")
-        result = authenticate_ldap(db, provider, request.username, request.password)
-        if result is None:
-            log_audit_event(
-                db,
-                action="login",
-                resource_type="auth",
-                status="failure",
-                detail=f"LDAP 登入失敗: {provider.name}/{request.username}",
-                ip_address=ip_address,
-                commit=True,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="LDAP 帳號或密碼錯誤",
-            )
-        tokens = create_tokens(result)
-        _stamp_last_login(db, result)
-        log_audit_event(
-            db,
-            actor=result,
-            action="login",
-            resource_type="auth",
-            resource_id=result.id,
-            detail=f"LDAP 登入成功: {provider.name}",
-            ip_address=ip_address,
-            commit=True,
+    if request.auth_source not in (None, "", "local"):
+        # LDAP 已自系統移除（將以 SSO 取代），僅保留本地登入 + OIDC callback。
+        raise HTTPException(
+            status_code=400,
+            detail="僅支援本地登入；OIDC 請走 /api/auth/oidc 流程",
         )
-        return _finalize_login(response, tokens)
 
     result = authenticate_user(db, request.username, request.password)
     if result is None:

@@ -45,6 +45,11 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 # 0019 renamed the table to ``user_llm_credentials`` but we keep the
 # salt to avoid invalidating every existing encrypted row.
 _DERIVATION_SALT = b"agent_llm_credentials_v1"
+# 100k iter 是 OWASP 2023 SHA-256 下限；2024 已建議 >= 600k。直接調高
+# 會讓既有加密 row 解不開（KDF 對同一 password 但不同 iters 會推出不同
+# 的 key），所以升級需要搭配一輪 re-encrypt migration（讀舊 key 解 →
+# 用新 key 加密寫回）。在那輪 migration 寫好之前先維持 100k；TODO
+# 追蹤於 docs/ingestion-platform-design.md §Sprint 6 X。
 _DERIVATION_ITERS = 100_000
 _NONCE_BYTES = 12  # GCM standard
 

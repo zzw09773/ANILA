@@ -198,7 +198,8 @@ def _ensure_schema_backfills(bind: Engine) -> None:
         ("default_department_id", "INTEGER NULL"),
         ("updated_at", "TIMESTAMP NULL"),
         ("oidc_client_id", "VARCHAR(255) NULL"),
-        ("oidc_client_secret", "VARCHAR(255) NULL"),
+        # client_secret 改 envelope（base64(nonce|tag|ct)），需更寬欄位
+        ("oidc_client_secret", "VARCHAR(2000) NULL"),
         ("oidc_issuer_url", "VARCHAR(255) NULL"),
         ("oidc_authorization_endpoint", "VARCHAR(255) NULL"),
         ("oidc_token_endpoint", "VARCHAR(255) NULL"),
@@ -207,6 +208,9 @@ def _ensure_schema_backfills(bind: Engine) -> None:
         ("oidc_subject_claim", "VARCHAR(100) NULL"),
         ("oidc_username_claim", "VARCHAR(100) NULL"),
         ("oidc_email_claim", "VARCHAR(100) NULL"),
+        # LDAP 欄位已棄用；保留 column 以維持向下相容（舊 row 仍可讀）。
+        # 新部署也讓 ADD COLUMN IF NOT EXISTS 為 idempotent，這些欄位會以
+        # NULL 形式存在但永不被讀寫；後續 migration 會 DROP。
         ("ldap_server_uri", "VARCHAR(255) NULL"),
         ("ldap_bind_dn", "VARCHAR(255) NULL"),
         ("ldap_bind_password", "VARCHAR(255) NULL"),

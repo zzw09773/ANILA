@@ -1,11 +1,18 @@
 from datetime import datetime
+from typing import Literal
 from pydantic import BaseModel, field_validator
+
+
+# L3: role 改 Literal 而非任意字串，避免 admin 不慎把 role 設為「typo」字串。
+# system 是 ingestion-worker 之類的內部帳號（auto_seed 會用到），不對外開放
+# 由 admin 介面手動指派。
+UserRole = Literal["admin", "developer", "user", "system"]
 
 
 class UserBase(BaseModel):
     username: str
     email: str | None = None
-    role: str = "user"
+    role: UserRole = "user"
 
 
 class UserCreate(UserBase):
@@ -15,7 +22,7 @@ class UserCreate(UserBase):
 
 class UserUpdate(BaseModel):
     email: str | None = None
-    role: str | None = None
+    role: UserRole | None = None
     department_id: int | None = None
     is_active: bool | None = None
 

@@ -125,7 +125,7 @@ const pageTitles = {
   '/departments': '部門設定',
   '/alerts': '告警中心',
   '/audit-logs': '審計日誌',
-  '/auth-providers': 'SSO / LDAP / OIDC',
+  '/auth-providers': 'SSO / OIDC',
   '/platform-links': '平台連結設定',
   '/developer/agents': 'Agent Console',
 }

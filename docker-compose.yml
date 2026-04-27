@@ -85,7 +85,7 @@ services:
       # by the ANILA reverse proxy in front of this stack) except MLSteam
       # which is an external service. is_public/required_roles semantics:
       #
-      #   NotebookLM (mode A allowlist):  is_public=false, required_roles=[]
+      #   ANILA LM (mode A allowlist):  is_public=false, required_roles=[]
       #     → admin manually grants per-user / per-department (§6.0.1)
       #
       #   Code Server (admin-only):       is_public=false, required_roles=['admin']
@@ -97,7 +97,7 @@ services:
       #     bypass also covers; non-developer users blocked at role gate
       AUTO_REGISTER_LINKS: >-
         [
-          {"name":"NotebookLM","url":"/notebooklm","icon":"book-open","description":"AI 學習內容生成（podcast / slides / mind map / quiz / report）","sort_order":1,"is_public":false,"required_roles":[]},
+          {"name":"ANILA LM","url":"/anilalm","icon":"book-open","description":"AI 學習內容生成（podcast / slides / mind map / quiz / report）","sort_order":1,"is_public":false,"required_roles":[]},
           {"name":"Code Server","url":"/codeserver","icon":"code","description":"Browser VS Code — agent 開發整合入口","sort_order":2,"is_public":false,"required_roles":["admin"]},
           {"name":"n8n 工作流程","url":"/n8n","icon":"workflow","description":"自動化工作流程平台 — 排程任務、跨服務串接","sort_order":3,"is_public":true,"required_roles":["developer"]},
           {"name":"GitLab","url":"/gitlab","icon":"git-branch","description":"Git server — agent 程式碼與 issue tracking（ISO 42001 合規必備）","sort_order":4,"is_public":true,"required_roles":["developer"]},
@@ -244,11 +244,41 @@ services:
     depends_on:
       csp:
         condition: service_healthy
+      anilalm:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "nginx", "-t"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # ── ANILA LM (knowledge-base frontend, mounted at /anilalm/) ────────
+  # Vite + React + TS SPA that talks to CSP for auth, ingestion, conversations
+  # and the OpenAI-compatible /v1/chat/completions proxy. Built once with
+  # BASE_PATH=/anilalm/ baked in so asset URLs resolve absolutely behind
+  # the outer reverse proxy. The built image is a vanilla nginx serving the
+  # static dist; no runtime API key lives in the bundle (JWT is browser-side).
+  #
+  # Connects only via anila-net — no host-port mapping. The outer ``nginx``
+  # service proxies https://<host>/anilalm to anilalm:80.
+  anilalm:
+    build:
+      context: ANILALM
+      args:
+        BASE_PATH: ${ANILALM_BASE_PATH:-/anilalm/}
+        VITE_DEFAULT_CHAT_MODEL: ${LOCAL_LLM_MODEL:-gpt-4o-mini}
+    expose:
+      - "80"
+    depends_on:
+      csp:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
       start_period: 10s
     restart: unless-stopped
 
@@ -293,14 +323,18 @@ services:
     user: "${UID:-1001}:${GID:-1001}"
     environment:
       TZ: Asia/Taipei
-      PASSWORD: ${CODESERVER_PASSWORD:-changeme-codeserver}
+      # Sprint 5 X / C3: PASSWORD MUST be overridden — startup_security
+      # gate refuses the dev default `changeme-codeserver`. Set
+      # CODESERVER_PASSWORD to a long random secret in your .env. Once
+      # SSO (Phase 3) is wired we should drop PASSWORD entirely and
+      # require `auth_request` validation against CSP.
+      PASSWORD: ${CODESERVER_PASSWORD:?CODESERVER_PASSWORD must be set}
     volumes:
       - codeserver_config:/home/coder/.config
-      # Bind-mount the ANILA repo so code-server is a live editor on the
-      # actual codebase (matches My-OpenAI-Frontend prod's pattern of
-      # mounting host project root into /home/coder). Override via
-      # ${CODESERVER_WORKSPACE} for other repo layouts.
-      - ${CODESERVER_WORKSPACE:-./}:/home/coder/workspace
+      # C3: 不再預設掛入整個 repo root（會讓任何拿到密碼的人看見 .env、
+      # docker secret、私鑰等）。明確要求設定 CODESERVER_WORKSPACE，且建議
+      # 指向某個受限子目錄（例如 ${PWD}/sandbox）。
+      - ${CODESERVER_WORKSPACE:?CODESERVER_WORKSPACE must point to a non-secret-bearing directory}:/home/coder/workspace
     working_dir: /home/coder/workspace
     expose:
       - "8080"
@@ -330,15 +364,19 @@ services:
       N8N_HOST: ${ANILA_HOST:-172.16.120.35}
       N8N_PROTOCOL: https
       WEBHOOK_URL: ${N8N_WEBHOOK_URL:-https://172.16.120.35/n8n/}
-      # Self-signed cert in dev — let n8n's outbound HTTP nodes trust it.
-      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+      # Sprint 5 X / C2: 過去全域關 TLS 驗證 (NODE_TLS_REJECT_UNAUTHORIZED=0)
+      # 把 n8n 對外網路變成完全裸奔。改為「預設啟用 TLS 驗證」，本機 dev
+      # 若要連自簽 endpoint 請逐節點設定 self-signed CA，而不是全域關掉。
+      # 若仍需暫時關閉，明確覆寫此 env 為 "0" 並只在離線環境使用。
+      NODE_TLS_REJECT_UNAUTHORIZED: "${N8N_TLS_REJECT_UNAUTHORIZED:-1}"
       # We're behind an HTTPS reverse proxy but n8n itself sees HTTP, so
       # telling it the cookie is non-secure prevents login bouncing.
       N8N_SECURE_COOKIE: "false"
-      # Code node sandbox flags — kept lax to match the prod reference. If
-      # you tighten n8n usage policy, narrow these.
-      NODE_FUNCTION_ALLOW_EXTERNAL: "*"
-      NODE_FUNCTION_ALLOW_BUILTIN: "*"
+      # Sprint 5 X / C2: Code Node 過去開放任意 require()，等同把 n8n
+      # 變成 RCE 平台。改為僅允許明確列表；若工作流真的需要其他模組，
+      # 在 .env 透過 N8N_NODE_FUNCTION_ALLOW_EXTERNAL / _BUILTIN 加白名單。
+      NODE_FUNCTION_ALLOW_EXTERNAL: "${N8N_NODE_FUNCTION_ALLOW_EXTERNAL:-axios,lodash,dayjs}"
+      NODE_FUNCTION_ALLOW_BUILTIN: "${N8N_NODE_FUNCTION_ALLOW_BUILTIN:-crypto,url}"
       N8N_DIAGNOSTICS_ENABLED: "false"
     volumes:
       - n8n_data:/home/node/.n8n

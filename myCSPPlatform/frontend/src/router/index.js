@@ -111,8 +111,14 @@ const router = createRouter({
   routes,
 })
 
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
   const authStore = useAuthStore()
+
+  // Cookie 流程下，第一次進站只有 cookie，user 物件需先從 /me 取回。
+  // 等 store 完成初始 fetchUser() 才能正確判斷 isAuthenticated。
+  if (!authStore.initialized) {
+    await authStore.fetchUser()
+  }
 
   if (to.meta.requiresAuth !== false && !authStore.isAuthenticated) {
     next('/login')

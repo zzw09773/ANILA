@@ -50,6 +50,12 @@ def setup_logging():
 async def lifespan(app: FastAPI):
     setup_logging()
 
+    # Sprint 5 X / M1: refuse to boot when known-dev defaults are still in
+    # place (SECRET_KEY / admin / service token / DB password). Skipping
+    # this check requires explicit ANILA_ALLOW_DEV_SECRET=1.
+    from app.services.startup_security import assert_no_dev_defaults
+    assert_no_dev_defaults()
+
     # Run Alembic migrations to bring schema to head.
     # Falls back to create_all if Alembic config is not found (e.g. in tests).
     try:
@@ -178,9 +184,25 @@ if frontend_dist:
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="frontend-assets")
 
+    # M6: 確保任何 ``../`` 解析後仍位於 frontend_dist 內；否則一律 fallback
+    # 到 SPA index.html，避免讀到 /etc/passwd 或 backend source。
+    _frontend_root = frontend_dist.resolve()
+
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_spa(full_path: str):
-        file_path = frontend_dist / full_path
-        if file_path.is_file():
-            return FileResponse(str(file_path))
-        return FileResponse(str(frontend_dist / "index.html"))
+        index_path = _frontend_root / "index.html"
+        # 任何含 NUL / 非法 byte 的 path → 直接給 index.html。
+        if "\x00" in full_path:
+            return FileResponse(str(index_path))
+        try:
+            candidate = (_frontend_root / full_path).resolve()
+        except (OSError, ValueError):
+            return FileResponse(str(index_path))
+        # 必須仍位於 _frontend_root 子樹中；否則視為 SPA route fallback。
+        try:
+            candidate.relative_to(_frontend_root)
+        except ValueError:
+            return FileResponse(str(index_path))
+        if candidate.is_file():
+            return FileResponse(str(candidate))
+        return FileResponse(str(index_path))

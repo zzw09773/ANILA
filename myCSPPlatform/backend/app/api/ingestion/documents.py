@@ -60,6 +60,42 @@ _UPLOAD_DIR = os.environ.get("INGESTION_UPLOAD_DIR", "/var/anila/ingestion-uploa
 # resumable, progress) — for now hard-fail with 413.
 _MAX_BYTES = 50 * 1024 * 1024  # 50 MB
 
+# Sprint 5 X / M2: zip 解壓總量上限。每檔 50MB × 200 檔 = 10GB 太寬鬆，
+# 真正想處理的是「一次塞 200 個小檔」而不是「200 個極限大檔」；用
+# total cap 1GB 限制磁碟寫入量，超過時直接停止後續解壓。
+_ZIP_MAX_TOTAL_BYTES = 1 * 1024 * 1024 * 1024  # 1 GB
+
+# 控制 zip 內檔名能用的字元 — 阻擋 NUL / CR / LF（Content-Disposition
+# header 注入）以及任何 ``..`` segment（路徑遍歷顯示偽裝）。儲存路徑用
+# sha256 不會受影響，但使用者下載時的 ``filename`` 一定要乾淨。
+_FILENAME_BAD_CHARS = ("\x00", "\r", "\n")
+
+
+def _sanitize_archive_filename(raw: str, *, preserve_folder_structure: bool) -> str:
+    """Return a safe ``filename`` for documents pulled from an uploaded zip.
+
+    - ``preserve_folder_structure=False``: keep basename only.
+    - ``preserve_folder_structure=True``: keep relative path BUT collapse
+      any ``..`` segments and reject control chars. We never use this name
+      to build a filesystem path (that's ``storage_path`` derived from
+      sha256), but it is echoed back in JSON responses and as the download
+      ``Content-Disposition``, so we still need to keep it free of CRLF.
+    """
+    name = raw or "upload"
+    if preserve_folder_structure:
+        # Drop leading slashes / drive letters; collapse "..".
+        parts = [p for p in name.replace("\\", "/").split("/") if p and p != "."]
+        parts = [p for p in parts if p != ".."]
+        name = "/".join(parts) or "upload"
+    else:
+        name = os.path.basename(name) or "upload"
+
+    for ch in _FILENAME_BAD_CHARS:
+        name = name.replace(ch, "_")
+    # Cap the displayable length so a malicious 65k-char filename can't
+    # be persisted (DB column is 1000 wide; trim safely below that).
+    return name[:512]
+
 
 class DocumentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -301,14 +337,26 @@ async def upload_zip(
 
     results: list[ZipUploadResult] = []
     enqueued = duplicates = skipped = errors = 0
+    # 累積解壓資料量；超過 _ZIP_MAX_TOTAL_BYTES 後續成員一律 skipped。
+    cumulative_bytes = 0
 
     for member in members:
         # Choose the document filename based on preserve_folder_structure.
         in_zip_path = member.filename
-        out_name = (
-            in_zip_path if preserve_folder_structure
-            else os.path.basename(in_zip_path)
+        out_name = _sanitize_archive_filename(
+            in_zip_path,
+            preserve_folder_structure=preserve_folder_structure,
         )
+
+        # Bail early if we already wrote 1 GB+ of decompressed content —
+        # avoids the worst-case 200-file × 50MB zip-bomb shape.
+        if cumulative_bytes >= _ZIP_MAX_TOTAL_BYTES:
+            skipped += 1
+            results.append(ZipUploadResult(
+                filename=out_name, status="skipped",
+                detail="archive total exceeds 1 GB cap",
+            ))
+            continue
 
         try:
             content = zf.read(member)
@@ -332,6 +380,14 @@ async def upload_zip(
             results.append(ZipUploadResult(
                 filename=out_name, status="too_large",
                 detail=f"{size:,} bytes exceeds {_MAX_BYTES:,} limit",
+            ))
+            continue
+        cumulative_bytes += size
+        if cumulative_bytes > _ZIP_MAX_TOTAL_BYTES:
+            skipped += 1
+            results.append(ZipUploadResult(
+                filename=out_name, status="skipped",
+                detail="archive total exceeds 1 GB cap (this file pushed over)",
             ))
             continue
 

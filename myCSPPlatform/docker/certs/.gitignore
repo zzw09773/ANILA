@@ -1,0 +1,9 @@
+# Self-signed dev certificate material — never commit.
+# server.crt 是公開憑證可以追蹤；server.key / *.key / *.pem 一律忽略。
+# 重新簽發：
+#   openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+#     -keyout server.key -out server.crt \
+#     -subj "/C=TW/ST=Taiwan/L=Taipei/O=CSP Platform/CN=<your-host>"
+*.key
+*.key.bak
+*.pem

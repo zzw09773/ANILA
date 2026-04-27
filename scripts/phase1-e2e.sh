@@ -28,11 +28,11 @@ USER_TOKEN=$(login smoke-user changeme)
 DEV_TOKEN=$(login 1140921 changeme)
 [ "$ADMIN_TOKEN" = "LOGIN_FAILED" ] && { red "admin 登入失敗"; exit 1; }
 
-NOTEBOOK_ID=$(req "$ADMIN_TOKEN" GET "/api/platform-links?include_inactive=true" | python3 -c "import json,sys;print([l['id'] for l in json.load(sys.stdin) if l['name']=='NotebookLM'][0])")
-section "Setup: NotebookLM platform_link id=$NOTEBOOK_ID"
+NOTEBOOK_ID=$(req "$ADMIN_TOKEN" GET "/api/platform-links?include_inactive=true" | python3 -c "import json,sys;print([l['id'] for l in json.load(sys.stdin) if l['name']=='ANILA LM'][0])")
+section "Setup: ANILA LM platform_link id=$NOTEBOOK_ID"
 
 # Step 9 — department-scoped grant flow
-section "Step 9 — admin grants department access → users in that dept see NotebookLM"
+section "Step 9 — admin grants department access → users in that dept see ANILA LM"
 
 # Create department if not exists
 DEPT_NAME="工程部-e2e-$$"
@@ -47,25 +47,25 @@ echo "Moved smoke-user (id=$SMOKE_ID) into department $DEPT_ID"
 # Refresh user token (department change may not invalidate JWT but be safe)
 USER_TOKEN=$(login smoke-user changeme)
 
-# Verify smoke-user CANNOT see NotebookLM yet (grant not issued)
+# Verify smoke-user CANNOT see ANILA LM yet (grant not issued)
 BEFORE=$(req "$USER_TOKEN" GET "/api/platform-links" | python3 -c "import json,sys;print('YES' if any(l['id']==$NOTEBOOK_ID for l in json.load(sys.stdin)) else 'NO')")
-echo "  smoke-user sees NotebookLM BEFORE grant: $BEFORE  (expected: NO)"
+echo "  smoke-user sees ANILA LM BEFORE grant: $BEFORE  (expected: NO)"
 [ "$BEFORE" = "NO" ] && green "    ✓ default-deny" || red "    ✗ unexpected pass-through"
 
 # Admin issues department grant
 GRANT_RESP=$(req "$ADMIN_TOKEN" POST "/api/service-access-grants" "{\"platform_link_id\":$NOTEBOOK_ID,\"department_id\":$DEPT_ID}")
 GRANT_ID=$(echo "$GRANT_RESP" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('id') or d.get('detail','FAIL'))")
-echo "Admin granted dept $DEPT_ID → NotebookLM (grant id=$GRANT_ID)"
+echo "Admin granted dept $DEPT_ID → ANILA LM (grant id=$GRANT_ID)"
 
-# Verify smoke-user CAN see NotebookLM now
+# Verify smoke-user CAN see ANILA LM now
 AFTER=$(req "$USER_TOKEN" GET "/api/platform-links" | python3 -c "import json,sys;print('YES' if any(l['id']==$NOTEBOOK_ID for l in json.load(sys.stdin)) else 'NO')")
-echo "  smoke-user sees NotebookLM AFTER grant:  $AFTER  (expected: YES)"
+echo "  smoke-user sees ANILA LM AFTER grant:  $AFTER  (expected: YES)"
 [ "$AFTER" = "YES" ] && green "    ✓ dept grant unlocks visibility" || red "    ✗ grant not propagated"
 
 # Revoke and verify it disappears again
 req "$ADMIN_TOKEN" DELETE "/api/service-access-grants/$GRANT_ID" >/dev/null
 AFTER_REVOKE=$(req "$USER_TOKEN" GET "/api/platform-links" | python3 -c "import json,sys;print('YES' if any(l['id']==$NOTEBOOK_ID for l in json.load(sys.stdin)) else 'NO')")
-echo "  smoke-user sees NotebookLM AFTER revoke: $AFTER_REVOKE  (expected: NO)"
+echo "  smoke-user sees ANILA LM AFTER revoke: $AFTER_REVOKE  (expected: NO)"
 [ "$AFTER_REVOKE" = "NO" ] && green "    ✓ revoke removes visibility" || red "    ✗ revoke leaked"
 
 # Step 10 — codeserver + GitLab + n8n smoke through nginx
@@ -89,8 +89,14 @@ echo "  /codeserver/ WS upgrade probe → HTTP $WS_HTTP  (expected 101 or 400 if
 section "Cleanup"
 req "$ADMIN_TOKEN" PUT "/api/users/$SMOKE_ID" '{"department_id":null}' >/dev/null
 echo "  smoke-user moved out of test department"
-docker exec anila-platform-csp-db-1 psql -U csp -d csp -c "DELETE FROM service_access_grants WHERE department_id=$DEPT_ID;" 2>&1 | tail -1
-docker exec anila-platform-csp-db-1 psql -U csp -d csp -c "DELETE FROM departments WHERE id=$DEPT_ID;" 2>&1 | tail -1
+# L2: 用 psql -v 變數注入而不是 shell 字串內插，避免 $DEPT_ID 含意外字元
+# 時破壞 SQL（雖然當前流程確保是整數，但這樣更安全也容易 review）。
+docker exec anila-platform-csp-db-1 psql -U csp -d csp \
+  -v dept_id="$DEPT_ID" \
+  -c "DELETE FROM service_access_grants WHERE department_id=:dept_id;" 2>&1 | tail -1
+docker exec anila-platform-csp-db-1 psql -U csp -d csp \
+  -v dept_id="$DEPT_ID" \
+  -c "DELETE FROM departments WHERE id=:dept_id;" 2>&1 | tail -1
 green "Cleanup done"
 
 section "Final state"

@@ -32,7 +32,7 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     is_approved = Column(Boolean, nullable=False, default=True, server_default="true")
     token_version = Column(Integer, nullable=False, default=0, server_default="0")
-    # Stamped on every successful authentication (local login, LDAP, OIDC).
+    # Stamped on every successful authentication (local login, OIDC).
     # Powers the "上次登入" column in the admin user panel and lets audit
     # reports flag dormant accounts without scanning AuditLog.
     last_login_at = Column(DateTime, nullable=True)

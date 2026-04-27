@@ -1,3 +1,9 @@
+"""External authentication service.
+
+LDAP 已自系統移除（將以 SSO 取代）；本模組僅保留 OIDC 流程，並在
+provision 階段強制 ``email_verified`` 與 ``(provider_id, subject)`` 為唯一
+身分鍵，避免攻擊者透過任意 OIDC provider 用既有 admin email 接管帳號。
+"""
 from __future__ import annotations
 
 import secrets
@@ -6,8 +12,6 @@ from urllib.parse import urlencode
 
 import httpx
 from jose import jwt
-from ldap3 import Connection, Server, Tls
-from ldap3.utils.conv import escape_filter_chars
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -24,7 +28,10 @@ EXTERNAL_STATE_AUDIENCE = "external-auth"
 def list_public_auth_providers(db: Session) -> list[AuthProvider]:
     return (
         db.query(AuthProvider)
-        .filter(AuthProvider.is_active == True)
+        .filter(
+            AuthProvider.is_active == True,
+            AuthProvider.provider_type == "oidc",
+        )
         .order_by(AuthProvider.provider_type, AuthProvider.name)
         .all()
     )
@@ -49,6 +56,13 @@ def decode_external_state(state: str) -> dict:
     )
 
 
+def _resolve_oidc_secret(provider: AuthProvider) -> str:
+    """Decrypt the stored OIDC client_secret. Empty string when unset."""
+    from app.services.auth_provider_secret import load_oidc_client_secret
+
+    return load_oidc_client_secret(provider) or ""
+
+
 async def build_oidc_authorization_url(provider: AuthProvider, next_path: str = "/") -> str:
     metadata = await _resolve_oidc_metadata(provider)
     redirect_uri = f"{settings.SITE_URL.rstrip('/')}/api/auth/oidc/{provider.id}/callback"
@@ -69,6 +83,7 @@ async def authenticate_oidc_code(
 ) -> User:
     metadata = await _resolve_oidc_metadata(provider)
     redirect_uri = f"{settings.SITE_URL.rstrip('/')}/api/auth/oidc/{provider.id}/callback"
+    client_secret = _resolve_oidc_secret(provider)
     async with httpx.AsyncClient(timeout=15) as client:
         token_resp = await client.post(
             metadata["token_endpoint"],
@@ -76,7 +91,7 @@ async def authenticate_oidc_code(
                 "grant_type": "authorization_code",
                 "code": code,
                 "client_id": provider.oidc_client_id,
-                "client_secret": provider.oidc_client_secret,
+                "client_secret": client_secret,
                 "redirect_uri": redirect_uri,
             },
             headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -108,6 +123,7 @@ async def authenticate_oidc_code(
         or subject
     )
     email = userinfo.get(email_claim)
+    email_verified = bool(userinfo.get("email_verified"))
 
     return _provision_external_user(
         db,
@@ -115,75 +131,7 @@ async def authenticate_oidc_code(
         subject=subject,
         username=str(username),
         email=email,
-    )
-
-
-def authenticate_ldap(
-    db: Session,
-    provider: AuthProvider,
-    username: str,
-    password: str,
-) -> User | None:
-    server = Server(provider.ldap_server_uri or "", get_info=None)
-    bind_kwargs = {"raise_exceptions": True}
-    if provider.ldap_bind_dn:
-        bind_kwargs.update(
-            {
-                "user": provider.ldap_bind_dn,
-                "password": provider.ldap_bind_password or "",
-            }
-        )
-
-    try:
-        with Connection(server, **bind_kwargs) as search_conn:
-            if provider.ldap_start_tls:
-                search_conn.start_tls()
-
-            search_filter = (provider.ldap_user_filter or "(uid={username})").format(
-                username=escape_filter_chars(username)
-            )
-            search_conn.search(
-                search_base=provider.ldap_base_dn or "",
-                search_filter=search_filter,
-                attributes=[
-                    provider.ldap_email_attribute or "mail",
-                    provider.ldap_display_name_attribute or "displayName",
-                    "uid",
-                    "cn",
-                ],
-            )
-            if not search_conn.entries:
-                return None
-            entry = search_conn.entries[0]
-            user_dn = entry.entry_dn
-            email = _safe_ldap_attr(entry, provider.ldap_email_attribute or "mail")
-            display_name = _safe_ldap_attr(
-                entry,
-                provider.ldap_display_name_attribute or "displayName",
-            )
-    except Exception:
-        return None
-
-    try:
-        with Connection(
-            server,
-            user=user_dn,
-            password=password,
-            auto_bind=True,
-            raise_exceptions=True,
-        ):
-            pass
-    except Exception:
-        return None
-
-    provision_username = display_name or username
-    return _provision_external_user(
-        db,
-        provider=provider,
-        subject=user_dn,
-        username=provision_username,
-        email=email,
-        fallback_username=username,
+        email_verified=email_verified,
     )
 
 
@@ -217,8 +165,23 @@ def _provision_external_user(
     subject: str,
     username: str,
     email: str | None,
-    fallback_username: str | None = None,
+    email_verified: bool,
 ) -> User:
+    """Resolve / create the local user backing this external identity.
+
+    Identity binding strategy (Sprint 5 X security review §H2):
+
+    1. The only identity key we accept is ``(provider_id, subject)``. Any
+       previously-bound identity is reused as-is.
+    2. We **never** silently merge into an existing local user just because
+       the ``email`` claim happens to match. That used to allow a malicious
+       OIDC provider to take over the local admin account by claiming the
+       admin's email; refuse the bind and surface an explicit error so an
+       admin can choose whether to manually link the accounts.
+    3. ``email_verified`` is required for any new auto-provisioning so an
+       attacker that controls a reusable email at an unknown provider
+       cannot spawn a real-user-shaped row in our DB.
+    """
     identity = (
         db.query(ExternalIdentity)
         .filter(
@@ -234,33 +197,43 @@ def _provision_external_user(
         db.commit()
         return identity.user
 
-    candidate_user = None
-    if email:
-        candidate_user = db.query(User).filter(User.email == email).first()
-    if not candidate_user:
-        lookup_username = fallback_username or username
-        candidate_user = db.query(User).filter(User.username == lookup_username).first()
+    if not provider.auto_create_users:
+        raise ValueError("此外部登入來源未啟用自動建立使用者")
 
-    if not candidate_user:
-        if not provider.auto_create_users:
-            raise ValueError("此外部登入來源未啟用自動建立使用者")
-        candidate_user = User(
-            username=_generate_unique_username(db, fallback_username or username or email or "external"),
-            email=email,
-            hashed_password=hash_password(secrets.token_urlsafe(32)),
-            role=provider.default_role or "user",
-            department_id=_validate_default_department(db, provider.default_department_id),
-            is_active=True,
-            is_approved=True,
+    if email and not email_verified:
+        raise ValueError(
+            "OIDC userinfo 未提供 email_verified=true；拒絕自動建立帳號。"
+            "請於 IdP 端確認 email 已驗證或要求 admin 手動建立。"
         )
-        db.add(candidate_user)
-        db.flush()
+
+    # Refuse to silently bind to a local account just because email matches.
+    # Email collisions are surfaced as a hard error — the admin must choose
+    # whether to manually merge identities (out-of-band).
+    if email:
+        existing = db.query(User).filter(User.email == email).first()
+        if existing is not None:
+            raise ValueError(
+                f"OIDC 回應的 email「{email}」已綁定到本地帳號；"
+                "為避免帳號接管風險，自動合併已停用，請聯絡 admin 手動處理。"
+            )
+
+    candidate_user = User(
+        username=_generate_unique_username(db, username or email or subject),
+        email=email,
+        hashed_password=hash_password(secrets.token_urlsafe(32)),
+        role=provider.default_role or "user",
+        department_id=_validate_default_department(db, provider.default_department_id),
+        is_active=True,
+        is_approved=True,
+    )
+    db.add(candidate_user)
+    db.flush()
 
     identity = ExternalIdentity(
         user_id=candidate_user.id,
         provider_id=provider.id,
         external_subject=subject,
-        external_username=fallback_username or username,
+        external_username=username,
         external_email=email,
         last_login_at=datetime.now(timezone.utc),
     )
@@ -286,13 +259,3 @@ def _validate_default_department(db: Session, department_id: int | None) -> int 
         return None
     department = db.query(Department).filter(Department.id == department_id).first()
     return department.id if department and department.is_active else None
-
-
-def _safe_ldap_attr(entry, name: str) -> str | None:
-    try:
-        value = entry[name].value
-    except Exception:
-        return None
-    if isinstance(value, list):
-        return str(value[0]) if value else None
-    return str(value) if value else None

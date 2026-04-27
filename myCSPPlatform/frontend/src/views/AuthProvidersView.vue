@@ -1,7 +1,7 @@
 <template>
   <div class="space-y-6">
     <div class="flex items-center justify-between">
-      <h2 class="text-lg font-semibold">SSO / LDAP / OIDC</h2>
+      <h2 class="text-lg font-semibold">SSO / OIDC</h2>
       <button
         @click="openCreateModal"
         class="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 transition"
@@ -68,8 +68,7 @@
           </div>
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">類型</label>
-            <select v-model="form.provider_type" :disabled="!!editingId" class="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-100">
-              <option value="ldap">LDAP</option>
+            <select v-model="form.provider_type" disabled class="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none bg-gray-100">
               <option value="oidc">OIDC</option>
             </select>
           </div>
@@ -94,45 +93,7 @@
           </label>
         </div>
 
-        <div class="mt-6" v-if="form.provider_type === 'ldap'">
-          <h4 class="text-sm font-semibold text-gray-800 mb-3">LDAP 設定</h4>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">LDAP Server URI</label>
-              <input v-model="form.ldap_server_uri" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" placeholder="ldap://ldap.example.com:389" />
-            </div>
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">Base DN</label>
-              <input v-model="form.ldap_base_dn" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" placeholder="ou=users,dc=example,dc=com" />
-            </div>
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">Bind DN</label>
-              <input v-model="form.ldap_bind_dn" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" />
-            </div>
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">Bind Password</label>
-              <input v-model="form.ldap_bind_password" type="password" class="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" />
-            </div>
-            <div class="md:col-span-2">
-              <label class="block text-sm font-medium text-gray-700 mb-1">User Filter</label>
-              <input v-model="form.ldap_user_filter" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" placeholder="(uid={username})" />
-            </div>
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">Email Attribute</label>
-              <input v-model="form.ldap_email_attribute" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" placeholder="mail" />
-            </div>
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">Display Name Attribute</label>
-              <input v-model="form.ldap_display_name_attribute" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" placeholder="displayName" />
-            </div>
-            <label class="flex items-center gap-2 text-sm text-gray-700">
-              <input v-model="form.ldap_start_tls" type="checkbox" class="rounded text-indigo-600 focus:ring-indigo-500" />
-              使用 StartTLS
-            </label>
-          </div>
-        </div>
-
-        <div class="mt-6" v-else>
+        <div class="mt-6">
           <h4 class="text-sm font-semibold text-gray-800 mb-3">OIDC 設定</h4>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
@@ -145,7 +106,13 @@
             </div>
             <div>
               <label class="block text-sm font-medium text-gray-700 mb-1">Client Secret</label>
-              <input v-model="form.oidc_client_secret" type="password" class="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" />
+              <input
+                v-model="form.oidc_client_secret"
+                type="password"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
+                :placeholder="editingId ? '保持空白即不變更（顯示為 ***）' : '請輸入 Client Secret'"
+              />
+              <p class="text-xs text-gray-400 mt-1">已加密儲存（AES-GCM）；後端永遠不會回傳明文。</p>
             </div>
             <div>
               <label class="block text-sm font-medium text-gray-700 mb-1">Scopes</label>
@@ -198,6 +165,8 @@ import { ref, onMounted } from 'vue'
 import { listDepartments } from '../api/departments'
 import { createAuthProvider, deactivateAuthProvider, listAuthProviders, updateAuthProvider } from '../api/authProviders'
 
+const SECRET_MASK = '***'
+
 const providers = ref([])
 const departments = ref([])
 const showModal = ref(false)
@@ -206,20 +175,12 @@ const pageError = ref('')
 
 const defaultForm = () => ({
   name: '',
-  provider_type: 'ldap',
+  provider_type: 'oidc',
   button_text: '',
   is_active: true,
   auto_create_users: true,
   default_role: 'user',
   default_department_id: null,
-  ldap_server_uri: '',
-  ldap_bind_dn: '',
-  ldap_bind_password: '',
-  ldap_base_dn: '',
-  ldap_user_filter: '(uid={username})',
-  ldap_start_tls: false,
-  ldap_email_attribute: 'mail',
-  ldap_display_name_attribute: 'displayName',
   oidc_issuer_url: '',
   oidc_client_id: '',
   oidc_client_secret: '',
@@ -258,12 +219,20 @@ function openCreateModal() {
 
 function openEditModal(provider) {
   editingId.value = provider.id
-  form.value = { ...defaultForm(), ...provider }
-  showModal.value = true
+  // Backend 回傳 oidc_client_secret 為 SECRET_MASK 或 null；UI 編輯時保留空字串，
+  // 由 handleSubmit 決定送出 SECRET_MASK（不變更）或 plaintext（替換）。
+  const merged = { ...defaultForm(), ...provider }
+  merged.oidc_client_secret = ''
+  form.value = merged
 }
 
 async function handleSubmit() {
   const payload = { ...form.value }
+  // 編輯模式且使用者沒輸入新 secret → 送 SECRET_MASK 表示「不變更」。
+  // 新增模式或使用者輸入新值 → 直接送 plaintext，後端會加密落地。
+  if (editingId.value && !payload.oidc_client_secret) {
+    payload.oidc_client_secret = SECRET_MASK
+  }
   try {
     if (editingId.value) {
       await updateAuthProvider(editingId.value, payload)
