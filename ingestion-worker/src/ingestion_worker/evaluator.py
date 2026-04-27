@@ -2,7 +2,7 @@
 
 For each eval run row:
 1. Load each sample document's already-stored chunks via the
-   AgentScopedPgVectorStore — we use the *parsed text* as input
+   CollectionScopedPgVectorStore — we use the *parsed text* as input
    to the candidate strategies (chunker is deterministic given input
    text, so re-parse isn't necessary; we just re-chunk).
 

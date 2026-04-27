@@ -1,20 +1,19 @@
 """Ingestion collections CRUD (`/api/ingestion/collections`).
 
-Sprint 1 (sync API, no jobs): create / list / detail / update / delete
-operations on ``IngestionCollection`` rows. Document upload and chunk
-indexing live in Sprint 2 once the worker queue is up — POSTing a
-collection in Sprint 1 just creates the metadata row, not any chunks.
+Sprint 4 refactor: collections are first-class user-owned resources.
+Sprint 1–3 scoped them to ``agent_id``; that coupling was over-design
+for the platform's "infra not multi-tenant SaaS" posture. CSP UI no
+longer asks for an agent. Any agent backend points at a collection
+via its own deploy config (``RAG_COLLECTION_ID`` env).
 
-Authorisation model:
+Authorisation:
+- ``admin`` users: list / manage every collection (cross-org admin).
+- non-admin: list / manage only collections they own (``created_by``).
+  Sharing-with-other-users is a Sprint-5 ``collection_access_grants``
+  concern; not in scope here.
 
-- ``admin`` users can manage any agent's collections.
-- Non-admin users need ``UserAgentPermission`` on the collection's
-  ``agent_id``. Same gate the chat path uses for the agent itself,
-  so "if you can talk to the agent you can manage its corpus" is the
-  default — adjust per-collection ACL is a Sprint 2+ concern.
-
-Mutations also write an ``audit_log`` row so a misuse / accidental
-delete is traceable to a user.
+Mutations write an ``audit_log`` row so misuse / accidental delete is
+traceable.
 """
 
 from __future__ import annotations
@@ -26,7 +25,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.agent import Agent, UserAgentPermission
 from app.models.ingestion import IngestionCollection
 from app.models.user import User
 from app.schemas.ingestion import (
@@ -43,39 +41,54 @@ router = APIRouter(tags=["Ingestion / Collections"])
 # ── Authorisation helper ────────────────────────────────────────────────────
 
 
-def _require_agent_access(db: Session, user: User, agent_id: int) -> Agent:
-    """Resolve the agent and confirm caller has access.
+def _require_collection_access(
+    db: Session, user: User, collection_id: int
+) -> IngestionCollection:
+    """Resolve the collection + confirm caller can manage it.
 
-    Centralised so every endpoint applies the same rule. Returns the
-    Agent row (fetched anyway for FK validation) so callers can read
-    e.g. agent.name for audit messages.
-
-    Admin bypasses; non-admin requires ``UserAgentPermission``.
+    Returns the row (callers usually need other fields anyway).
+    Admin bypasses; non-admin must be the ``created_by`` owner. Future
+    Sprint may add a ``collection_access_grants`` table for sharing
+    across users; this helper is the single point that needs to grow
+    when that lands.
     """
-    agent = db.query(Agent).filter(Agent.id == agent_id).first()
-    if agent is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Agent {agent_id} not found",
-        )
-
-    if user.role == "admin":
-        return agent
-
-    perm = (
-        db.query(UserAgentPermission)
-        .filter(
-            UserAgentPermission.user_id == user.id,
-            UserAgentPermission.agent_id == agent_id,
-        )
+    coll = (
+        db.query(IngestionCollection)
+        .filter(IngestionCollection.id == collection_id)
         .first()
     )
-    if perm is None:
+    if coll is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Collection {collection_id} not found",
+        )
+    if user.role == "admin":
+        return coll
+    if coll.created_by != user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"No access to agent {agent_id}",
+            detail=f"No access to collection {collection_id}",
         )
-    return agent
+    return coll
+
+
+# Back-compat alias so other endpoint files (documents.py / eval_runs.py /
+# jobs.py) that still call ``_require_agent_access`` keep working until
+# their Chunk Q sub-passes update them.
+def _require_agent_access(db: Session, user: User, agent_id: int):  # noqa: ARG001
+    """Sprint 4 deprecated — agent-scope access checks are gone.
+
+    Existing callers pass ``coll.agent_id`` which was renamed away. To
+    avoid breaking them mid-refactor, accept any int and grant access
+    if the user is admin. Sub-passes in Chunk Q rewrite each caller to
+    use ``_require_collection_access`` directly.
+    """
+    if user.role == "admin":
+        return None
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="legacy _require_agent_access called; refactor to use _require_collection_access",
+    )
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
@@ -91,11 +104,8 @@ def create_collection(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> CollectionResponse:
-    """Create a new (empty) collection scoped to ``payload.agent_id``."""
-    _require_agent_access(db, current_user, payload.agent_id)
-
+    """Create a new (empty) collection owned by the calling user."""
     coll = IngestionCollection(
-        agent_id=payload.agent_id,
         name=payload.name,
         description=payload.description,
         chunking_config=payload.chunking_config.model_dump(),
@@ -112,14 +122,9 @@ def create_collection(
         db.commit()
     except IntegrityError as e:
         db.rollback()
-        # The only realistic IntegrityError here is the
-        # ``uq_collections_agent_name`` collision — translate to 409.
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Collection name '{payload.name}' already exists for agent "
-                f"{payload.agent_id}"
-            ),
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Collection creation failed: {e.orig}",
         ) from e
     db.refresh(coll)
 
@@ -129,7 +134,7 @@ def create_collection(
         action="ingestion_collection_create",
         resource_type="ingestion_collection",
         resource_id=coll.id,
-        metadata={"agent_id": payload.agent_id, "name": payload.name},
+        metadata={"name": payload.name, "created_by": current_user.id},
     )
     return CollectionResponse.model_validate(coll)
 
@@ -139,28 +144,37 @@ def create_collection(
     response_model=list[CollectionResponse],
 )
 def list_collections(
-    agent_id: int = Query(..., description="必填：列出此 agent 的 collections"),
     include_archived: bool = Query(
         False, description="預設只列 active；True 連 archived 一起回"
+    ),
+    owned_only: bool = Query(
+        True,
+        description=(
+            "預設只列自己的 collections；admin 設 False 可看全部"
+        ),
     ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[CollectionResponse]:
-    """List collections for one agent.
+    """List collections accessible to the current user.
 
-    ``agent_id`` is required (not optional) because the API never has a
-    legitimate "list every agent's collections" use case — that would
-    cross tenant boundaries. Admin who wants to scan all agents calls
-    this endpoint per agent.
+    Sprint 4: no ``agent_id`` filter. Default behaviour:
+    - non-admin: only own collections (admin-bypass when ``owned_only=False``
+      is rejected for non-admins).
+    - admin: own collections by default; pass ``owned_only=false`` to
+      see every collection on the platform.
     """
-    _require_agent_access(db, current_user, agent_id)
+    if not owned_only and current_user.role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="owned_only=false requires admin role",
+        )
 
-    q = db.query(IngestionCollection).filter(
-        IngestionCollection.agent_id == agent_id
-    )
+    q = db.query(IngestionCollection)
+    if owned_only:
+        q = q.filter(IngestionCollection.created_by == current_user.id)
     if not include_archived:
         q = q.filter(IngestionCollection.status == "active")
-
     rows = q.order_by(IngestionCollection.id).all()
     return [CollectionResponse.model_validate(r) for r in rows]
 
@@ -174,12 +188,7 @@ def get_collection(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> CollectionResponse:
-    coll = db.query(IngestionCollection).filter(
-        IngestionCollection.id == collection_id
-    ).first()
-    if coll is None:
-        raise HTTPException(status_code=404, detail="Collection not found")
-    _require_agent_access(db, current_user, coll.agent_id)
+    coll = _require_collection_access(db, current_user, collection_id)
     return CollectionResponse.model_validate(coll)
 
 
@@ -193,12 +202,7 @@ def update_collection(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> CollectionResponse:
-    coll = db.query(IngestionCollection).filter(
-        IngestionCollection.id == collection_id
-    ).first()
-    if coll is None:
-        raise HTTPException(status_code=404, detail="Collection not found")
-    _require_agent_access(db, current_user, coll.agent_id)
+    coll = _require_collection_access(db, current_user, collection_id)
 
     changed: dict[str, object] = {}
     if payload.name is not None:
@@ -222,10 +226,9 @@ def update_collection(
         db.commit()
     except IntegrityError as e:
         db.rollback()
-        # Same uniqueness translation as create — name collision.
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Name collision with another collection on the same agent",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Update failed: {e.orig}",
         ) from e
     db.refresh(coll)
 
@@ -253,21 +256,14 @@ def delete_collection(
     """Hard delete a collection.
 
     CASCADE drops every document and chunk in pgvector. There is no
-    soft-delete here — admin-only operation per UI gating, and there's
-    no audit benefit to keeping orphan rows because the audit_log has
-    a timestamped record of the delete itself.
+    soft-delete here — admin-or-owner only operation, and there's no
+    audit benefit to keeping orphan rows because the audit_log has a
+    timestamped record of the delete itself.
     """
-    coll = db.query(IngestionCollection).filter(
-        IngestionCollection.id == collection_id
-    ).first()
-    if coll is None:
-        raise HTTPException(status_code=404, detail="Collection not found")
-    _require_agent_access(db, current_user, coll.agent_id)
-
-    snapshot = {"agent_id": coll.agent_id, "name": coll.name}
+    coll = _require_collection_access(db, current_user, collection_id)
+    snapshot = {"name": coll.name, "created_by": coll.created_by}
     db.delete(coll)
     db.commit()
-
     log_audit_event(
         db,
         actor=current_user,

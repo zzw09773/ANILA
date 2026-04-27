@@ -34,9 +34,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 # Phase 2 Sprint 1 / Chunk F: AgenticRAG retrieves through the central
 # anila-core SDK, not its own pg_pool / pgvector_store. The SDK enforces
-# Layer 3 agent isolation (RLS via SET LOCAL anila.agent_id) so this
+# Layer 3 agent isolation (RLS via SET LOCAL anila.collection_id) so this
 # template can't accidentally read another agent's chunks.
-from anila_core.storage.adapters import AgentScopedPgVectorStore, PgPool
+from anila_core.storage.adapters import CollectionScopedPgVectorStore, PgPool
 from anila_core.models.ingestion import SearchHit
 
 from agentic_rag.api.middleware.loader import install_csp_middleware
@@ -68,10 +68,10 @@ EMB_MODEL     = os.getenv("EMBEDDING_MODEL",    "nvidia/nv-embed-v2")
 DATABASE_URL  = os.getenv("DATABASE_URL",       "postgresql://csp_app:csp@localhost:5432/csp")
 # Sprint 1 Chunk F: AgenticRAG is single-tenant per deployment — the
 # host platform launches one container per agent and pins this env. The
-# value flows into AgentScopedPgVectorStore at startup and every
+# value flows into CollectionScopedPgVectorStore at startup and every
 # retrieval inherits its RLS scope from there. No per-request agent
 # selection at this layer (Sprint 2's multi-tenant routing handles that).
-RAG_AGENT_ID  = int(os.getenv("RAG_AGENT_ID",   "0"))
+RAG_COLLECTION_ID  = int(os.getenv("RAG_COLLECTION_ID",   "0"))
 RAG_TOP_K     = int(os.getenv("RAG_TOP_K",     "5"))
 RAG_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.5"))
 RAG_MIN_SCORE_RETRY = float(os.getenv("RAG_MIN_SCORE_RETRY", "0.3"))
@@ -96,10 +96,10 @@ logger = logging.getLogger("rag-api")
 
 # ── DB pool + RAG store + Reranker ────────────────────────────────────────────
 # Sprint 1 Chunk F: replaced raw asyncpg pool with anila_core's PgPool.
-# AgentScopedPgVectorStore is the only retrieval entry point; it pins
-# RAG_AGENT_ID into ``anila.agent_id`` per-connection so RLS auto-scopes.
+# CollectionScopedPgVectorStore is the only retrieval entry point; it pins
+# RAG_COLLECTION_ID into ``anila.collection_id`` per-connection so RLS auto-scopes.
 _pool: PgPool | None = None
-_store: AgentScopedPgVectorStore | None = None
+_store: CollectionScopedPgVectorStore | None = None
 _reranker: Reranker | None = None
 
 # halfvec(4000) is the central schema (CSP migration 0015). NV-Embed-V2
@@ -112,21 +112,21 @@ _EMBEDDING_DIM = 4000
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _pool, _store, _reranker
-    if RAG_AGENT_ID <= 0:
+    if RAG_COLLECTION_ID <= 0:
         logger.warning(
-            "RAG_AGENT_ID is %d — RAG disabled. Set a positive int per "
+            "RAG_COLLECTION_ID is %d — RAG disabled. Set a positive int per "
             "the agent this AgenticRAG container serves.",
-            RAG_AGENT_ID,
+            RAG_COLLECTION_ID,
         )
     else:
         try:
             _pool = PgPool(DATABASE_URL, min_size=2, max_size=8)
             await _pool.open()
-            _store = AgentScopedPgVectorStore(_pool, agent_id=RAG_AGENT_ID)
+            _store = CollectionScopedPgVectorStore(_pool, collection_id=RAG_COLLECTION_ID)
             logger.info(
-                "PostgreSQL pool ready; AgentScopedPgVectorStore "
-                "scoped to agent_id=%d",
-                RAG_AGENT_ID,
+                "PostgreSQL pool ready; CollectionScopedPgVectorStore "
+                "scoped to collection_id=%d",
+                RAG_COLLECTION_ID,
             )
         except Exception as e:
             logger.warning("PostgreSQL unavailable (%s) — RAG disabled", e)
@@ -332,7 +332,7 @@ async def _collect_stream(payload: dict, headers: dict, rag_sources: str = "") -
 # ── RAG helpers ───────────────────────────────────────────────────────────────
 
 async def _vector_search(embedding: list[float]) -> list[SearchHit]:
-    """Semantic search via central SDK (RLS-scoped to RAG_AGENT_ID).
+    """Semantic search via central SDK (RLS-scoped to RAG_COLLECTION_ID).
 
     Two-tier threshold: try ``RAG_MIN_SCORE`` first; if no hits, retry
     with the lower ``RAG_MIN_SCORE_RETRY``. Lets us keep precision in

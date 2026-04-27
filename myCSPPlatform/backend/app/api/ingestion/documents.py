@@ -37,9 +37,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from anila_core.storage.adapters.pg_pool import PgPool
-from anila_core.storage.adapters.pgvector_store import AgentScopedPgVectorStore
+from anila_core.storage.adapters.pgvector_store import CollectionScopedPgVectorStore
 
-from app.api.ingestion.collections import _require_agent_access
+from app.api.ingestion.collections import _require_collection_access
 from app.database import get_db
 from app.models.ingestion import (
     IngestionCollection,
@@ -93,15 +93,13 @@ class DocumentDetailResponse(DocumentResponse):
 def _resolve_collection(
     db: Session, user: User, collection_id: int
 ) -> IngestionCollection:
-    coll = (
-        db.query(IngestionCollection)
-        .filter(IngestionCollection.id == collection_id)
-        .first()
-    )
-    if coll is None:
-        raise HTTPException(status_code=404, detail="Collection not found")
-    _require_agent_access(db, user, coll.agent_id)
-    return coll
+    """Sprint 4: collection access keyed on ownership, not agent_id.
+
+    ``_require_collection_access`` does its own row fetch + 404 + ACL —
+    we just delegate. Returning the row keeps the existing call sites
+    working unchanged.
+    """
+    return _require_collection_access(db, user, collection_id)
 
 
 def _persist_blob(content: bytes, sha256: str) -> str:
@@ -570,7 +568,7 @@ async def list_document_chunks(
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    store = AgentScopedPgVectorStore(pool, agent_id=coll.agent_id)
+    store = CollectionScopedPgVectorStore(pool, collection_id=coll.id)
     chunks = await store.list_by_document(
         document_id=document_id,
         limit=limit,
@@ -633,7 +631,7 @@ async def get_chunk_embedding_debug(
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    store = AgentScopedPgVectorStore(pool, agent_id=coll.agent_id)
+    store = CollectionScopedPgVectorStore(pool, collection_id=coll.id)
     async with store._acquire() as conn:  # noqa: SLF001
         row = await conn.fetchrow(
             """

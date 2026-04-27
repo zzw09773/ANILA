@@ -11,13 +11,13 @@ Environment variables (see config.py for full list):
     VISION_URL      = https://172.16.120.35/v1
     VISION_MODEL    = meta/llama-4-maverick
     DATABASE_URL    = postgresql://csp_app:csp@csp-db:5432/csp
-    RAG_AGENT_ID    = (positive int — the agent this container serves)
+    RAG_COLLECTION_ID    = (positive int — the agent this container serves)
     API_KEY         = (optional bearer token)
 
 Phase 2 Sprint 1 / Chunk F changes:
 - Local ``storage.adapters.pg_pool`` and ``storage.adapters.pgvector_store``
   retired in favour of the central ``anila_core`` SDK. Same semantics,
-  but the central path enforces RLS via ``SET LOCAL anila.agent_id``.
+  but the central path enforces RLS via ``SET LOCAL anila.collection_id``.
 - Local ``ingestion.service.IngestionService`` (and the chunker / parser
   / docling pipeline behind it) is no longer wired into the FastAPI app
   — the ingestion-worker container is the canonical ingestion path now.
@@ -41,7 +41,7 @@ from fastapi import FastAPI
 # Central SDK — anila-core owns the document_chunks schema and its
 # RLS-scoped accessor. AgenticRAG retrieves through these classes; it
 # never imports the legacy local adapters anymore.
-from anila_core.storage.adapters import AgentScopedPgVectorStore, PgPool
+from anila_core.storage.adapters import CollectionScopedPgVectorStore, PgPool
 
 from .config import settings
 from .providers.openai_compat import OpenAICompatProvider
@@ -55,13 +55,13 @@ logger = logging.getLogger(__name__)
 
 # Agent the container serves — used as RLS scope for every retrieval.
 # Defaults to 0 (RAG disabled) if unset; ops MUST set this per deployment.
-_RAG_AGENT_ID = int(os.environ.get("RAG_AGENT_ID", "0"))
+_RAG_COLLECTION_ID = int(os.environ.get("RAG_COLLECTION_ID", "0"))
 
 # ---------------------------------------------------------------------------
 # Shared state (initialised in lifespan)
 # ---------------------------------------------------------------------------
 _pg_pool: PgPool | None = None
-_pgvector_store: AgentScopedPgVectorStore | None = None
+_pgvector_store: CollectionScopedPgVectorStore | None = None
 
 
 @asynccontextmanager
@@ -102,18 +102,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # alembic migration 0014/0015 and the central worker.
     await init_pg_schema(_pg_pool)
 
-    if _RAG_AGENT_ID > 0:
-        _pgvector_store = AgentScopedPgVectorStore(
-            _pg_pool, agent_id=_RAG_AGENT_ID
+    if _RAG_COLLECTION_ID > 0:
+        _pgvector_store = CollectionScopedPgVectorStore(
+            _pg_pool, collection_id=_RAG_COLLECTION_ID
         )
         logger.info(
-            "AgentScopedPgVectorStore ready (agent_id=%d, dim=%d)",
-            _RAG_AGENT_ID,
+            "CollectionScopedPgVectorStore ready (collection_id=%d, dim=%d)",
+            _RAG_COLLECTION_ID,
             settings.embedding_dimension,
         )
     else:
         logger.warning(
-            "RAG_AGENT_ID not set — AgenticRAG running without retrieval."
+            "RAG_COLLECTION_ID not set — AgenticRAG running without retrieval."
         )
 
     yield
@@ -149,7 +149,7 @@ def build_app() -> FastAPI:
     tool_registry = ToolRegistry()
 
     # Lazy references to stores (initialised in lifespan).
-    # AgentScopedPgVectorStore replaces the legacy PgVectorStore but
+    # CollectionScopedPgVectorStore replaces the legacy PgVectorStore but
     # exposes ``similarity_search`` / ``keyword_search`` rather than the
     # old DocumentStore Protocol — server.py's retrieval-provider
     # consumer adapts on attribute access.
@@ -157,8 +157,8 @@ def build_app() -> FastAPI:
         def __getattr__(self, name: str):
             if _pgvector_store is None:
                 raise RuntimeError(
-                    "AgentScopedPgVectorStore not initialized — set "
-                    "RAG_AGENT_ID and ensure the lifespan has run."
+                    "CollectionScopedPgVectorStore not initialized — set "
+                    "RAG_COLLECTION_ID and ensure the lifespan has run."
                 )
             return getattr(_pgvector_store, name)
 

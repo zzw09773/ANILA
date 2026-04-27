@@ -25,7 +25,7 @@ import asyncpg
 from anila_core.ingestion.chunking_plugins import get_chunker
 from anila_core.ingestion.errors import IngestionError, StoreError
 from anila_core.storage.adapters.pg_pool import PgPool
-from anila_core.storage.adapters.pgvector_store import AgentScopedPgVectorStore
+from anila_core.storage.adapters.pgvector_store import CollectionScopedPgVectorStore
 
 from ingestion_worker.embedder import Embedder
 from ingestion_worker.parsers import extract_text
@@ -35,11 +35,11 @@ from ingestion_worker.settings import settings
 async def _load_document_meta(
     pool: PgPool, document_id: int
 ) -> dict[str, Any]:
-    """Read the document row + its collection's chunking config + agent_id.
+    """Read the document row + its collection's chunking config.
 
-    A single SQL fetch joins the two tables so we don't pay an extra
-    round trip. Returns a dict the rest of the handler treats as
-    immutable input.
+    Sprint 4: ``agent_id`` no longer exists on ``ingestion_collections``;
+    the collection itself IS the scope. A single SQL fetch joins the
+    two tables so we don't pay an extra round trip.
     """
     sql = """
         SELECT d.id            AS document_id,
@@ -47,7 +47,6 @@ async def _load_document_meta(
                d.filename      AS filename,
                d.mime_type     AS mime_type,
                d.storage_path  AS storage_path,
-               c.agent_id      AS agent_id,
                c.chunking_config AS chunking_config
           FROM ingestion_documents d
           JOIN ingestion_collections c ON c.id = d.collection_id
@@ -205,7 +204,6 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
     await _update_job(pool, arq_job_id, status="running", started=True, progress_pct=5)
     try:
         meta = await _load_document_meta(pool, document_id)
-        agent_id = int(meta["agent_id"])
         collection_id = int(meta["collection_id"])
         storage_path = meta["storage_path"]
         if not storage_path or not os.path.exists(storage_path):
@@ -274,11 +272,10 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         )
         embeddings = await embedder.embed([c.content for c in chunks])
 
-        # 4. Index — single transaction via the agent-scoped store.
+        # 4. Index — single transaction via the collection-scoped store.
         await _update_job(pool, arq_job_id, progress_pct=85, progress_message="indexing")
-        store = AgentScopedPgVectorStore(pool, agent_id=agent_id)
+        store = CollectionScopedPgVectorStore(pool, collection_id=collection_id)
         await store.index_chunks(
-            collection_id=collection_id,
             document_id=document_id,
             chunks=chunks,
             embeddings=embeddings,

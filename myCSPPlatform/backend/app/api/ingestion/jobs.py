@@ -34,7 +34,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.ingestion.collections import _require_agent_access
+from app.api.ingestion.collections import _require_collection_access
 from app.database import SessionLocal, get_db
 from app.models.ingestion import IngestionCollection, IngestionJob
 from app.models.user import User
@@ -84,7 +84,7 @@ def _job_snapshot(job: IngestionJob) -> dict:
     }
 
 
-async def _stream(job_id: int, agent_id: int) -> AsyncIterator[bytes]:
+async def _stream(job_id: int, collection_id: int) -> AsyncIterator[bytes]:
     """Async generator: yields SSE frames until the job terminates.
 
     Opens a fresh SQLAlchemy Session per poll because we don't want a
@@ -157,19 +157,13 @@ async def stream_job(
             detail=f"Job {job_id} not found",
         )
 
-    coll = (
-        db.query(IngestionCollection)
-        .filter(IngestionCollection.id == job.collection_id)
-        .first()
-    )
-    if coll is None:
-        # Orphan job — its collection was deleted. Still 404 for the
-        # caller because the audit story is "job is no longer accessible".
-        raise HTTPException(status_code=404, detail="Job's collection is gone")
-    _require_agent_access(db, current_user, coll.agent_id)
+    # Owns + 404 in one call. ``_require_collection_access`` raises
+    # 404 when the collection is gone (orphan job after parent delete);
+    # 403 when the caller doesn't own it.
+    coll = _require_collection_access(db, current_user, job.collection_id)
 
     return StreamingResponse(
-        _stream(job_id, coll.agent_id),
+        _stream(job_id, coll.id),
         media_type="text/event-stream",
         # Disable buffering at the proxy / nginx layer for SSE.
         headers={

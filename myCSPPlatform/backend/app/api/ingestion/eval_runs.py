@@ -35,7 +35,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from app.api.ingestion.collections import _require_agent_access
+from app.api.ingestion.collections import _require_collection_access
 from app.database import get_db
 from app.models.ingestion import (
     IngestionCollection,
@@ -110,18 +110,12 @@ async def create_eval_run(
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> EvalRunResponse:
-    coll = (
-        db.query(IngestionCollection)
-        .filter(IngestionCollection.id == payload.collection_id)
-        .first()
-    )
-    if coll is None:
-        raise HTTPException(status_code=404, detail="Collection not found")
-    _require_agent_access(db, current_user, coll.agent_id)
+    # Sprint 4: collection-scoped access (admin OR owner).
+    coll = _require_collection_access(db, current_user, payload.collection_id)
 
     # Validate every sample document belongs to this collection — guards
     # against a buggy frontend or a malicious caller mixing in another
-    # agent's doc ids.
+    # collection's doc ids.
     docs = (
         db.query(IngestionDocument)
         .filter(
@@ -198,14 +192,7 @@ def get_eval_run(
     run = db.query(IngestionEvalRun).filter(IngestionEvalRun.id == run_id).first()
     if run is None:
         raise HTTPException(status_code=404, detail="Eval run not found")
-    coll = (
-        db.query(IngestionCollection)
-        .filter(IngestionCollection.id == run.collection_id)
-        .first()
-    )
-    if coll is None:
-        raise HTTPException(status_code=404, detail="Collection gone")
-    _require_agent_access(db, current_user, coll.agent_id)
+    _require_collection_access(db, current_user, run.collection_id)
     return EvalRunResponse.model_validate(run)
 
 
@@ -218,14 +205,7 @@ def list_eval_runs(
     db: Annotated[Session, Depends(get_db)] = None,
     current_user: Annotated[User, Depends(get_current_user)] = None,
 ) -> list[EvalRunResponse]:
-    coll = (
-        db.query(IngestionCollection)
-        .filter(IngestionCollection.id == collection_id)
-        .first()
-    )
-    if coll is None:
-        raise HTTPException(status_code=404, detail="Collection not found")
-    _require_agent_access(db, current_user, coll.agent_id)
+    _require_collection_access(db, current_user, collection_id)
     rows = (
         db.query(IngestionEvalRun)
         .filter(IngestionEvalRun.collection_id == collection_id)

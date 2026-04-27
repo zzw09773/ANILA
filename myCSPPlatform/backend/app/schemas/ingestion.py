@@ -47,9 +47,13 @@ class ChunkingConfig(BaseModel):
 
 
 class CollectionCreate(BaseModel):
-    """Payload to ``POST /api/ingestion/collections``."""
+    """Payload to ``POST /api/ingestion/collections``.
 
-    agent_id: int = Field(..., description="Owning agent. Must be agent the caller has access to.")
+    Sprint 4: ``agent_id`` is gone. ``created_by`` is auto-set to the
+    authenticated user; collections are user-owned and reusable across
+    any agent backend that points at them.
+    """
+
     name: str = Field(..., min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
     chunking_config: ChunkingConfig
@@ -93,12 +97,15 @@ class CollectionUpdate(BaseModel):
 
 
 class CollectionResponse(BaseModel):
-    """Full row projection used by both list and detail endpoints."""
+    """Full row projection used by both list and detail endpoints.
+
+    Sprint 4: ``agent_id`` removed; ``created_by`` is the new ownership
+    field (always populated post-migration 0019).
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    agent_id: int
     name: str
     description: str | None
     chunking_config: dict[str, Any]
@@ -108,6 +115,6 @@ class CollectionResponse(BaseModel):
     document_count: int
     chunk_count: int
     bytes_stored: int
-    created_by: int | None
+    created_by: int
     created_at: datetime
     updated_at: datetime
