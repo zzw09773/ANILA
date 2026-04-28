@@ -28,7 +28,7 @@
 - **Live Test Console**：dev 在 UI 上直接跑、看 events stream
 - **Audit log**：每次 Action 觸發保留 360 天（含完整 events_json，redact 後）
 - **RBAC**：`developer` 寫；`developer`+`admin` 看 code；所有 role 看 metadata 並用 enabled function；`admin` 可 disable / 設 admin Valves
-- **Worker isolation**：獨立 `anila-functions-worker` container，subprocess per run，**`cap_drop: ALL`**、**read-only rootfs + tmpfs `/tmp`**、**egress 預設 deny + outbound proxy allowlist**、rss 256MB / 30s timeout / non-root
+- **Worker 兩層隔離**：trusted **`anila-functions-worker-api`**（接 CSP）+ untrusted **`anila-functions-runner-exec`** / **`anila-functions-runner-extract`**（exec user code）；runner 加 **`cap_drop: ALL`**、**read-only rootfs + tmpfs `/tmp`**、**egress 預設 deny + outbound proxy allowlist**、**docker cgroup `mem_limit` + `pids_limit`**、30s timeout（runner-extract 3s）、non-root；container 在 `internal:true` networks 上、CSP 透過 control 層 talk to api 而非 runner
 - **Event types**：`status`、**`host_command`（白名單動詞集；無 raw JS eval）**、`message`、`citation`、`error`（+ runtime sentinel `__done__`）
 - **Worker schema extraction**：CSP 不 import / exec user code，valves & actions schema 解析委派 worker `/extract-meta` endpoint
 - **/run 強制 ownership 檢查**：複用 CSP `conversation_service` gate（conversation/message access、message role=assistant、classified gate）
@@ -99,26 +99,41 @@
                                                     │ X-Functions-Secret
                                                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  anila-functions-worker (NEW service)                            │
+│  anila-functions-worker-api (NEW, trusted gate)                  │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │  POST /exec  body: {code, body, valves, user, metadata} │   │
-│  │  → spawn subprocess (python -u runtime.py, non-root)    │   │
-│  │  → SSE stream events as Action emits                    │   │
-│  │  preinstalled: httpx requests pydantic python-dateutil  │   │
-│  │  Resource limits: 256MB rss, 30s timeout, 32 nproc      │   │
-│  │  Concurrency: pool of 8 simultaneous runs               │   │
-│  └──────────────────────────────────────────────────────────┘   │
+│  │  POST /exec, /extract-meta — CSP-facing                  │   │
+│  │  → forward to runner via control-net                     │   │
+│  │  → SSE relay; verifies X-Functions-Secret                │   │
+│  │  Does NOT exec user code itself                          │   │
+│  └────────────────────┬──────────────────────┬──────────────┘   │
+│                        │ control-net          │                  │
+│                        ▼                      ▼                  │
+│  ┌─ runner-exec (NEW, untrusted) ─┐ ┌─ runner-extract (NEW) ─┐  │
+│  │  POST /exec → spawn subprocess │ │  POST /extract-meta    │  │
+│  │  cap_drop:ALL, seccomp, RO     │ │  比 exec 更嚴 profile  │  │
+│  │  mem_limit:256m, pids_limit:32 │ │  mem_limit:64m, 3s     │  │
+│  │  egress: only via egress-proxy │ │  egress: NONE          │  │
+│  │  Concurrency: pool of 8        │ │  (extract-net 完全隔離) │  │
+│  └────────────────────────────────┘ └──────────────────────────┘ │
+│             │                                                    │
+│             ▼ (functions-net, internal:true)                     │
+│  ┌─ anila-functions-egress (NEW squid sidecar) ───────────────┐  │
+│  │  Bridge to anila-internal; allowlist-only forwarding       │  │
+│  └─────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 **Component summary**：
 
-| Component | New / Existing | Role |
-|---|---|---|
-| `anila-ui` (`ANILA_UI/anila-ui`) | Existing, extended | 加 `/admin/functions/*` 路由與 ChatRuntime button render |
-| CSP (`myCSPPlatform`) | Existing, extended | 加 4 張表 / endpoint / SSE relay logic |
-| `anila-functions-worker` | NEW | Stateless executor，subprocess sandbox |
-| PostgreSQL | Existing | 多 4 張表（CSP DB 內） |
+| Component | New / Existing | Networks | Trusted? | Role |
+|---|---|---|---|---|
+| `anila-ui` (`ANILA_UI/anila-ui`) | Existing, extended | anila-internal | ✅ | 加 `/admin/functions/*` 路由與 ChatRuntime button render |
+| CSP (`myCSPPlatform`) | Existing, extended | anila-internal | ✅ | 加表 / endpoint / SSE relay logic |
+| `anila-functions-worker-api` | **NEW** | anila-internal + control-net | ✅ trusted | 接 CSP；轉發到 runner；不 exec user code |
+| `anila-functions-runner-exec` | **NEW** | control-net + functions-net (`internal:true`) | ❌ untrusted | exec user code；連得到 egress-proxy only |
+| `anila-functions-runner-extract` | **NEW** | control-net + extract-net (`internal:true`, 無 proxy) | ❌ untrusted | exec user code；無任何 egress |
+| `anila-functions-egress` | **NEW** | anila-internal + functions-net | ✅ trusted | squid，allowlist 內 host 才轉 |
+| PostgreSQL | Existing | anila-internal | ✅ | 多 5 張表（含 reports） |
 
 ---
 
@@ -399,33 +414,58 @@ data: {"run_id":789,"duration_ms":234,"status":"success"}
 
 ### 5.1 時序
 
+CSP 透過 `anila-internal` call **worker-api**（trusted gate），api 透過 `anila-functions-control-net` call runner（untrusted、會 spawn subprocess 跑 user code）。
+
 ```
-Browser                        CSP /run                        worker /exec
-   │  POST {action_id, context}   │                                │
-   ├──────────────────────────────▶│                                │
-   │                              │  RBAC / status / test_mode 檢查 │
-   │                              │  從 DB 拉 code + valves(decrypt)│
-   │                              │  INSERT runs row(running)      │
-   │                              │  POST /exec + X-Functions-Secret│
-   │                              ├──────────────────────────────▶│
-   │                              │                                │  spawn subprocess
-   │  SSE: event=function_event   │  SSE chunks (redacted)         │  runtime.py
-   │ ◀────────────────────────────┤ ◀──────────────────────────────┤
-   │   ...                        │   ...                          │   ...
-   │                              │  data={"type":"__done__"}     │
-   │                              │ ◀──────────────────────────────┤
-   │                              │  redact + UPDATE runs(success) │
-   │  event=function_done         │                                │
-   │ ◀────────────────────────────┤                                │
+Browser   CSP /run         worker-api          runner-exec        subprocess
+  │  POST  │                  │                    │                   │
+  ├───────▶│                  │                    │                   │
+  │        │ RBAC + ownership │                    │                   │
+  │        │ DB lookup        │                    │                   │
+  │        │ INSERT runs(run.)│                    │                   │
+  │        │ POST /exec +     │                    │                   │
+  │        │  X-Functions-Sec │                    │                   │
+  │        ├─(anila-internal)▶│                    │                   │
+  │        │                  │ verify secret      │                   │
+  │        │                  │ POST /exec to      │                   │
+  │        │                  │  runner-exec       │                   │
+  │        │                  ├─(control-net)─────▶│                   │
+  │        │                  │                    │ spawn subprocess  │
+  │        │                  │                    ├──────────────────▶│
+  │SSE     │SSE (redact)      │SSE relay           │SSE (per-line)     │ stdout
+  │◀───────┤◀─────────────────┤◀───────────────────┤◀──────────────────┤
+  │  ...   │  ...             │  ...               │  ...              │ ...
+  │        │                  │                    │ data="__done__"   │
+  │        │                  │                    │◀──────────────────┤
+  │        │                  │ relay __done__     │                   │
+  │        │ redact + UPDATE  │                    │                   │
+  │        │  runs(success)   │                    │                   │
+  │event=  │                  │                    │                   │
+  │function│                  │                    │                   │
+  │_done   │                  │                    │                   │
+  │◀───────┤                  │                    │                   │
 ```
 
-### 5.2 Worker `/exec` handler（要點）
+`/extract-meta` 走同樣的拓樸但 runner 是 `runner-extract`（連 extract-net、無 egress）。
 
-- 收到 ExecRequest 驗 `X-Functions-Secret`
+### 5.2 Worker handlers（要點）
+
+**`anila-functions-worker-api` `/exec` handler（trusted gate）**：
+- 接收 ExecRequest（驗 `X-Functions-Secret`）
+- 純 forward 到 runner-exec（control-net 上的 internal hostname）；自身不 import / exec user code
+- 把 runner 回的 SSE stream 轉送回 CSP（順便兜底 timeout / connection error）
+
+**`anila-functions-worker-api` `/extract-meta` handler**：
+- 同上但 forward 到 runner-extract
+
+**`anila-functions-runner-exec` `/exec` handler（untrusted runner）**：
+- 接收 ExecRequest（驗 `X-Functions-Secret`，跟 api 共用）
 - spawn `python -u runtime.py`，stdin pipe 餵 JSON request
-- preexec_fn 套 rlimits（rss 256MB、cpu 30s、nproc 32）
+- preexec_fn 補強 rlimits（cpu 30s、nproc 32）；**memory 由 docker `mem_limit:256m` cgroup 控制（不靠 RLIMIT_RSS — Linux 上不可靠）**
 - StreamingResponse async 把 stdout 每行轉成 SSE `data:` line
 - 結束 wait 2s 後強制 wait
+
+**`anila-functions-runner-extract` `/extract-meta` handler**：同上但設定不同（3s timeout、64MB cgroup mem、不傳 valves/user/metadata）
 
 ### 5.3 Worker `/extract-meta` endpoint（schema 抽取，**比 /exec 更嚴**）
 
@@ -445,9 +485,10 @@ Browser                        CSP /run                        worker /exec
 **Stage 2 — Restricted sandbox exec（fallback）**：
 - 觸發條件：stage 1 偵測到 dynamic 結構（Valves 用 `Annotated[X, Field(...)]` 含複雜 default、actions list 是 comprehension 等）
 - Profile（**比正式 run 嚴格**）：
-  - **Egress 完全 deny**：worker 跑 extract 時改連到「extract-meta-net」（另一個 docker network、`internal: true`、**無** egress proxy）；連 allowlisted host 都連不到
+  - **Egress 完全 deny**：runner-extract 連到 `anila-functions-extract-net`（`internal: true`、**無** egress proxy）；連 allowlisted host 都連不到
   - **Timeout 3s**（vs run 的 30s）
-  - **RSS 64MB**（vs run 的 256MB）
+  - **Memory：docker `mem_limit:64m`**（cgroup-enforced；vs run 的 256m）；不靠 RLIMIT_RSS
+  - **`pids_limit:16`**（fork bomb 擋）
   - **不傳 valves / `__user__` / `__metadata__`**（runtime.py 進 extract mode 時這些都不注入）
   - **Stdout / stderr cap 16KB**（多砍掉、防止 fork bomb 把 log 灌爆）
   - **不執行 `Action.action()`**：runtime.py extract mode 只 `exec` 模組頂層、`Action.actions` 讀屬性、`Valves` 呼叫 `.model_json_schema()`，**不**呼叫 instance.action()
@@ -464,7 +505,7 @@ worker stage 1: ast static parse
    - 偵測 dynamic feature → stage 2
 worker stage 2: spawn subprocess in extract-mode
    - extract network (internal: true, no egress)
-   - 3s timeout, 64MB rss, no valves/user/metadata
+   - 3s timeout, mem_limit:64m (cgroup), pids_limit:16, no valves/user/metadata
    - exec module top-level
    - read Action.actions (attribute), Valves.model_json_schema() (method call)
    - 不 instantiate / 不 call action()
@@ -473,17 +514,11 @@ worker stage 2: spawn subprocess in extract-mode
 CSP 收到 JSON → INSERT versions row（plain string + JSON，**不 exec**）
 ```
 
-**Network 拓樸補充**（在 §5.7 的圖之外）：
+**Network 隔離（v1 採用兩個 runner container，不用 netns 切換）**：
 
-```
-┌────── network: anila-functions-extract-net ──────┐
-│  anila-functions-worker  (extract mode)          │   ← internal: true, 完全沒出口
-└──────────────────────────────────────────────────┘
-```
+`anila-functions-runner-exec` 連 `anila-functions-net`（有 egress proxy）；`anila-functions-runner-extract` 連 `anila-functions-extract-net`（**無** egress proxy、`internal:true` 完全沒出口）。worker-api 透過 control-net 路由 `/exec` 到 runner-exec、`/extract-meta` 到 runner-extract。
 
-worker 同時是兩個 network 的成員：在 `/exec` 跑時 spawn subprocess 走 functions-net（有 egress proxy）；在 `/extract-meta` 跑時 spawn subprocess 走 extract-net（無 egress）。具體做法：worker 進程本身在兩個 network 上、subprocess 透過 `unshare(CLONE_NEWNET)` 或啟動時注入 `network_namespace` 切換（Python 端用 `os.unshare` + `subprocess` 在指定 netns 執行）。
-
-**Implementation 簡化選項（v1 OK）**：跑兩個 worker container 副本，一個叫 `anila-functions-worker-exec`（連 functions-net）、一個叫 `anila-functions-worker-extract`（連 extract-net），CSP 路由 `/exec` 與 `/extract-meta` 到不同 service。Operationally 比 namespace 切換簡單。
+⚠️ **不**使用 `unshare(CLONE_NEWNET)` / `os.unshare` 切 netns 的方案：seccomp 明確 block `unshare` syscall（§5.7），這條路是死的；同時若允許 unshare、user code 也可能濫用、跟 sandbox 哲學矛盾。兩個 runner container 在 ops 上多 1 個 service 但邊界乾淨、跟 seccomp 政策一致。
 
 **Worker `/extract-meta` request**：`{code: string}` + `X-Functions-Secret` header
 **Response**：
@@ -588,9 +623,11 @@ asyncio.run(main())
 | 限制 | 值 | 觸發 |
 |---|---|---|
 | Wall clock | 30s | SIGKILL → SSE error + function_done(timeout) |
-| Memory (RSS) | 256 MB | OOM kill → SSE error: out_of_memory |
+| **Memory** | **runner-exec: docker `mem_limit:256m`（cgroup-enforced，hard limit）；runner-extract: `mem_limit:64m`** | container OOM kill → subprocess SIGKILL → SSE `error: out_of_memory` |
+| **PIDs** | runner-exec `pids_limit:32`；runner-extract `pids_limit:16` | fork bomb cgroup 級別擋下 |
+| ~~RSS rlimit~~ | ~~256/64 MB~~ | **Linux `RLIMIT_RSS` 多數 kernel 不 enforce、不可靠**；保留 cpu/nproc 的 setrlimit 為輔，記憶體靠 cgroup |
 | CPU | 30s ulimit | 同 wall clock |
-| **Network egress** | **預設 deny；出網經 outbound proxy + allowlist** | proxy 拒絕 → user code 收 connection refused |
+| **Network egress** | **預設 deny；出網經 outbound proxy + allowlist** | proxy 拒絕 → user code 收連線失敗（具體錯誤可能是 connection refused / timeout / no route，視 docker 版本與目標 IP 而定；測試應驗「不能連通」、不綁特定錯誤字串） |
 | Filesystem | 容器內 `tmpfs:/tmp:size=64m,mode=1777`（per-run subdir）；rootfs `read_only:true` | — |
 | Subprocess UID | 非 root（`nobody`） | docker isolation |
 | **Linux capabilities** | **`cap_drop: [ALL]`** | 容器啟動就丟掉 |
@@ -601,68 +638,126 @@ asyncio.run(main())
 | Worker container 不掛 `docker.sock` / `/var/run/docker.sock` | 強制 | docker socket bind = container escape primitive |
 | Concurrent runs | 8（worker pool semaphore） | 第 9 個 → error: queue_full |
 
-**Outbound egress 控制 — 安全邊界在網路拓樸，不在 env vars**：
+**Outbound egress 控制 — 安全邊界在網路拓樸 + 「API gate」與「Runner」兩層分離**：
 
 ⚠️ Env vars（`HTTP_PROXY` 等）是 user code 自願使用的便利機制，user code 可以 `del os.environ['HTTP_PROXY']` 或繞 socket 庫直接連、env 不能擋。**真正的 enforcement 必須在 Linux network layer**。
 
-**v1 採用「分裂網路拓樸」做法（不依賴 host iptables，純 docker compose 達成）**：
+⚠️ **Control plane 跟 user code execution 必須分容器**：把 worker 接到 `anila-internal` 給 CSP call → user code 也看得到 CSP；把 worker 移出 `anila-internal` → CSP call 不到。唯一乾淨解是**拆兩層**：trusted API gate 接 CSP request；untrusted runner 跑 user code、網路隔離。
+
+**v1 拓樸（4 個 services + 4 個 networks）**：
 
 ```
-┌──────────────────────── docker-compose ────────────────────────┐
-│                                                                  │
-│   ┌────── network: anila-internal ──────┐                        │
-│   │  csp                                │                        │
-│   │  router                             │                        │
-│   │  csp-db                             │                        │
-│   │  anila-ui                           │                        │
-│   │  ingestion-worker                   │                        │
-│   │  ...                                │                        │
-│   └─────────────────────┬──────────────┘                        │
-│                          │                                       │
-│                          │  (only egress proxy bridges)         │
-│                          ▼                                       │
-│   ┌────── network: anila-functions-net ─────────┐               │
-│   │  anila-functions-worker  ← only this here   │               │
-│   │  anila-functions-egress  ← bridges to      │               │
-│   │                            anila-internal  │               │
-│   └──────────────────────────────────────────────┘               │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
+┌────────────────────── docker-compose ──────────────────────────────────┐
+│                                                                          │
+│   ┌────── network: anila-internal ──────────┐                            │
+│   │  csp / router / csp-db / anila-ui ...   │                            │
+│   └────────────┬────────────────────────────┘                            │
+│                │ (1) CSP POST /exec, /extract-meta                       │
+│                ▼                                                          │
+│   ┌── anila-functions-worker-api ─────────────┐ ← trusted, 不 exec user │
+│   │  接 CSP；分流 /exec 到 runner-exec、       │   code，本身無 user code │
+│   │  /extract-meta 到 runner-extract          │   執行能力                 │
+│   └────────┬───────────┬───────────────────────┘                          │
+│            │ (2)       │ (2)                                              │
+│   ┌── anila-functions-control-net ──────────┐ ← internal:true             │
+│   │  api ↔ runner-exec ↔ runner-extract     │   trusted IPC channel       │
+│   └────┬───────────────┬─────────────────────┘                            │
+│        │               │                                                   │
+│        ▼               ▼                                                   │
+│   ┌─ runner-exec ─┐  ┌─ runner-extract ─┐ ← UNTRUSTED, exec user code     │
+│   │  /exec API    │  │  /extract-meta   │   subprocess sandbox            │
+│   │               │  │  (更嚴 profile)   │                                  │
+│   └───┬───────────┘  └─────────────┬────┘                                 │
+│       │ (3) outbound httpx/requests │                                     │
+│       ▼                             │                                     │
+│   ┌─ anila-functions-net ──────────┐│ ← internal:true; runner-exec 唯一   │
+│   │  runner-exec ↔ egress-proxy    ││   能連的對外網路                     │
+│   └────────┬───────────────────────┘│                                     │
+│            │                        ▼                                     │
+│            ▼                  ┌─ anila-functions-extract-net ─┐           │
+│   ┌─ anila-functions-egress ─┐│  runner-extract only          │           │
+│   │  squid：bridge 到         ││  internal:true、無 egress      │           │
+│   │  anila-internal allowlist ││  proxy；完全沒出口              │           │
+│   └───────────────────────────┘└───────────────────────────────┘           │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **`anila-functions-worker` 只連 `anila-functions-net`**，**不**連 `anila-internal`
-- **`anila-functions-egress`（squid）連兩個 network**：對 worker 提供 proxy；對 internal network 拿 allowlist 內的 host
-- 結果：worker 任何 user code 想連任何 host（含 raw socket / 跳過 HTTP_PROXY）→ 唯一 reachable 的是 egress proxy 容器；連其他 IP 直接 `connection refused`（route 不存在）
-- `anila-functions-egress` ACL 從 `ANILA_FUNCTIONS_EGRESS_ALLOWLIST`（CSV `host:port`）讀，proxy CONNECT / GET 不在白名單 → reject
-- Public internet 預設**不通**（egress proxy 沒 allowlist 任何外網 host 就連不出去）；要新增 host 改 deploy config
+**容器職責**：
 
-**為什麼這樣比 host iptables 簡單**：
-- 純 docker network、無需 host 層改 firewall
-- 即使 worker 的 user code disable 自身 HTTP_PROXY、嘗試直接 raw socket 連 8.8.8.8、結果都一樣：`connection refused`（沒 route）
+| Service | Networks | Trusted? | 跑 user code? |
+|---|---|---|---|
+| `anila-functions-worker-api` | `anila-internal`（接 CSP）+ `anila-functions-control-net`（call runner） | ✅ trusted | ❌ 不執行；只 forward request 到 runner、relay SSE 回 CSP |
+| `anila-functions-runner-exec` | `anila-functions-control-net`（接 api）+ `anila-functions-net`（出 egress） | ❌ untrusted | ✅ subprocess sandbox |
+| `anila-functions-runner-extract` | `anila-functions-control-net`（接 api）+ `anila-functions-extract-net`（無出口） | ❌ untrusted | ✅ subprocess sandbox（更嚴 profile） |
+| `anila-functions-egress` | `anila-internal`（拿 allowlist 內 host）+ `anila-functions-net`（給 runner-exec proxy） | ✅ trusted | ❌ |
+
+**關鍵 invariant**：
+1. **runner 容器不在 `anila-internal`** — user code 在 runner 內、無法 reach CSP / router / DB
+2. **api 容器不 exec user code** — 即使 api 有 `anila-internal` 連通性、也無 RCE 出口
+3. **api ↔ runner via control-net**（`internal: true`）— 純粹 trusted IPC，不對外、跟 user code execution 環境分離
+4. **runner-exec 唯一 reachable 的「對外」是 egress proxy** — 即使 user code disable HTTP_PROXY、raw socket 也只有 functions-net 上一個 hop（egress proxy）；其他 IP 連不通（具體錯誤碼依 docker / kernel 行為而定）
+5. **runner-extract 沒任何 egress** — extract-net 上只有自己一台，無 proxy、無 bridge；user code top-level 跑出 side effect 也送不出去
 
 **docker-compose 配置點**：
 ```yaml
 networks:
   anila-internal:
     driver: bridge
+  anila-functions-control-net:
+    driver: bridge
+    internal: true
   anila-functions-net:
     driver: bridge
-    internal: true   # 不連 docker0、無 NAT 出 host
+    internal: true
+  anila-functions-extract-net:
+    driver: bridge
+    internal: true
 
 services:
-  anila-functions-worker:
-    networks: [anila-functions-net]   # 只在這
+  anila-functions-worker-api:
+    networks: [anila-internal, anila-functions-control-net]
+    environment:
+      X_FUNCTIONS_SECRET: ${X_FUNCTIONS_SECRET}
+      RUNNER_EXEC_URL: http://anila-functions-runner-exec:8001
+      RUNNER_EXTRACT_URL: http://anila-functions-runner-extract:8002
+
+  anila-functions-runner-exec:
+    networks: [anila-functions-control-net, anila-functions-net]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    security_opt: ["no-new-privileges:true", "seccomp:./worker-seccomp.json"]
+    user: "65534:65534"   # nobody
+    mem_limit: 256m       # cgroup-enforced（Linux RSS rlimit 不可靠）
+    pids_limit: 32
     environment:
       HTTP_PROXY: http://anila-functions-egress:3128
       HTTPS_PROXY: http://anila-functions-egress:3128
-      NO_PROXY: ""
+      X_FUNCTIONS_SECRET: ${X_FUNCTIONS_SECRET}
+
+  anila-functions-runner-extract:
+    networks: [anila-functions-control-net, anila-functions-extract-net]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    security_opt: ["no-new-privileges:true", "seccomp:./worker-seccomp.json"]
+    user: "65534:65534"
+    mem_limit: 64m
+    pids_limit: 16
+    environment:
+      X_FUNCTIONS_SECRET: ${X_FUNCTIONS_SECRET}
+      EXTRACT_TIMEOUT: 3
+      EXTRACT_STDOUT_KB: 16
 
   anila-functions-egress:
-    image: squid:5
-    networks: [anila-internal, anila-functions-net]   # 跨兩網
+    image: ubuntu/squid:5
+    networks: [anila-internal, anila-functions-net]
+    environment:
+      ANILA_FUNCTIONS_EGRESS_ALLOWLIST: ${ANILA_FUNCTIONS_EGRESS_ALLOWLIST}
 ```
 
-**註**：`networks.anila-functions-net.internal: true` 讓這個 network 沒有 NAT、沒有 default gateway 出 host，徹底隔離。worker 的唯一連通對象是同 network 上的 egress proxy。
+**為什麼複雜度值得**：相比把 worker 直接接 `anila-internal`、再靠「subprocess env strict scrub + entrypoint 把 secret unset」這種「在 application layer 維持 isolation」的設計，**network topology 層的隔離不依賴 application 寫對**。多 1 個容器（api gate）換掉一整個 application layer 的 audit / 攻擊面分析負擔。
 
 ---
 
@@ -783,7 +878,7 @@ Tabs：
 
 | ID | 威脅 | 影響 | 緩解 |
 |---|---|---|---|
-| T1 | Developer 寫 RCE Python code | worker container 受影響 | 獨立 container、subprocess 限 256MB/30s/non-root、`cap_drop:ALL`、seccomp、read-only rootfs、tmpfs `/tmp`、egress proxy allowlist；rlimit 不是 sandbox、container hardening 才是 |
+| T1 | Developer 寫 RCE Python code | worker runner container 受影響（**API gate 不受影響、不在同 container**） | runner 獨立 container（兩層 arch：trusted api + untrusted runner）、subprocess 限 30s/non-root、docker `mem_limit:256m` + `pids_limit:32` cgroup（**不靠 RLIMIT_RSS**）、`cap_drop:ALL`、seccomp、read-only rootfs、tmpfs `/tmp`、egress proxy allowlist；rlimit 不是 sandbox、container hardening + cgroup + 網路拓樸才是 |
 | T2 | ~~Developer 注入 XSS via `execute`~~（v1 raw execute 已移除） | — | v1 改 `host_command` 白名單；無 raw JS eval；前後端兩層 verb / args schema 驗證 |
 | T3 | Test mode 逃逸 | 繞過 admin disable | server enforce：test_mode=true + status≠enabled → 403 unless author/admin |
 | T4 | 無限迴圈 / fork bomb / OOM | DoS worker | rlimit + nproc + 8-concurrent semaphore → queue_full |
@@ -794,13 +889,15 @@ Tabs：
 | T9 | Marketplace 釣魚（命名相似 slug） | 誤觸發惡意 button | UI 強制顯示 author + forked_from + "new" 標示；user role 看不到 code 也降低偽造能力；abuse report 入口 |
 | T10 | SQL injection（slug / tag） | DB compromise | ORM + parameterized；slug regex `^[a-z0-9][a-z0-9-]{0,63}$`；tag 限 20 字元 |
 | **T11** | **Social engineering via host_command**（dev 寫 button 把 composer 設成釣魚字串、彈 modal 假冒系統訊息、link.open 騰空跳到惡意站） | 使用者被誘導執行操作 | host_command 白名單動詞（無 raw HTML / JS）；URL allowlist regex；modal content 走 DOMPurify；audit 全文（事後追源）；abuse report；admin disable kill switch；user role 看不到 code 仍可看 metadata 警示「button 來自 author X」 |
-| **T12** | **CSP exec user code at save path（schema extraction RCE）** | save endpoint 變 RCE | CSP 不 import / exec user code；schema extraction 走 worker `/extract-meta`；偏好 static AST，必要時才 sandbox exec、且 profile **比 /exec 更嚴**（無 egress、無 valves、3s timeout、64MB） |
+| **T12** | **CSP exec user code at save path（schema extraction RCE）** | save endpoint 變 RCE | CSP 不 import / exec user code；schema extraction 走 worker-api → runner-extract；偏好 static AST，必要時才 sandbox exec、且 profile **比 /exec 更嚴**（無 egress、無 valves、3s timeout、mem_limit:64m cgroup、pids_limit:16） |
 | **T13** | **`/run` 缺 conversation/message ownership 驗證** | horizontal authz、user A 對 user B 的 message 觸發 Action | §4.5 明列前置授權兩條路徑（chat_message 走完整 owner check；test_console 走 author/admin synthetic）；v1 沿用 conversation_service 既有 owner+admin gate（不畫蛇添足造輪子） |
 | **T14** | **circular FK / version_no 並發撞 unique key** | save 失敗或邏輯混亂 | `latest_version_id` 去掉 FK；namespaced advisory lock（NS=42, function_id）per-function + INSERT 在 transaction |
 | **T15** | **Egress proxy 設計自相矛盾（env scrub vs HTTP_PROXY）** | sandbox bypass | 安全邊界改成「分裂網路拓樸」：worker 在 `internal: true` 的 functions-net、唯一 reachable 是 egress proxy；env vars 只是 dev convenience、不是 enforcement |
 | **T16** | **`/extract-meta` 仍 exec user code、save 觸發 side effect** | save 變 trigger 對 allowlisted host 做 side effect | extract 用獨立 extract-meta-net（**完全沒 egress**）+ 短 timeout + 不傳 valves；偏好 static AST stage 1 |
 | **T17** | **Disabled by admin 的 code 仍對 dev 可見** | dev 複製偷學被 disable 的釣魚 code | 加 `quarantined` 第四 status；code 鎖到 author+admin；`disabled_reason` 欄位讓 admin 寫理由 |
 | **T18** | **clipboard.copy / link.open user-activation 失敗 silent** | UX 體驗破裂、user 不知道為什麼沒效 | 兩個 verb 改成 toast 二段確認：dispatch 後顯示「Click to copy / Click to open」toast、user 點才執行；自動繼承 user activation；同時是 anti-phishing 護欄 |
+| **T19** | **單一 worker container 既接 CSP 又跑 user code → user code 可達 CSP / DB / router** | horizontal lateral movement（user code RCE → 拿 anila-internal 上其他服務） | 拆兩層：api gate（trusted、連 anila-internal）；runner（untrusted、不連 anila-internal、只能 reach egress proxy）；api ↔ runner 透過 control-net 跨容器、無共享 process / fs |
+| **T20** | **RLIMIT_RSS Linux kernel 不一定 enforce** | dev 寫的 Function 把 worker 容器吃光記憶體 | docker `mem_limit` cgroup（hard limit）+ `pids_limit`；rlimit 只做輔助 |
 
 ### 7.3 加密 / Key 管理
 
@@ -885,8 +982,9 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 - **`/extract-meta` egress 隔離：user code top-level `requests.get('http://csp:8000')` → fail（extract-net 無 egress proxy）**
 - **`/extract-meta` 不傳 valves：runtime extract mode 不 inject `instance.valves`，user code 讀 `self.valves` 拿到 None / AttributeError**
 - **`/extract-meta` timeout：3s 後 SIGKILL、回 errors=['timeout']**
-- **網路拓樸：worker-exec 容器 `curl https://example.com` → 唯一 reachable proxy；proxy ACL 拒絕 → connection refused**
-- **網路拓樸：worker-exec 容器 `curl 8.8.8.8:443` raw socket → no route，connection failed（不依賴 HTTP_PROXY env）**
+- **網路拓樸：runner-exec 容器內 `curl https://not-allowlisted.example.com` → 唯一 reachable proxy 拒絕後**連線失敗**（assert: not 200、不 assert 具體錯誤碼）**
+- **網路拓樸：runner-exec 容器內 raw socket 直連 `8.8.8.8:443`（不走 HTTP_PROXY）→ **連線失敗**（assert: 連不通；不 assert ENXIO vs ETIMEDOUT 等具體 errno）**
+- **網路拓樸：runner-extract 容器內任何 outbound（含 proxy host）都 → **連線失敗**（extract-net 沒 proxy）**
 - **`cap_drop:ALL` 生效：subprocess 無法 mount / ptrace / unshare**
 - **Subprocess env：保留 HTTP_PROXY/HTTPS_PROXY 給 dev convenience；scrub LD_PRELOAD 等 sensitive**
 - **`host_command` event 經 worker SSE 出去，不會被攔掉（worker 不驗 verb，CSP 才驗）**
@@ -938,13 +1036,23 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 
 ### 9.1 New services in docker-compose
 
-新增 **3** 個 service + **2** 個專屬 network：
+新增 **4** 個 service + **3** 個專屬 network：
 
 **Networks**：
-- `anila-functions-net`（`internal: true`）— `anila-functions-worker-exec` + `anila-functions-egress` 共用；無 default gateway
-- `anila-functions-extract-net`（`internal: true`）— `anila-functions-worker-extract` 獨享；**無** egress proxy、完全沒出口
+- `anila-functions-control-net`（`internal: true`）— api ↔ runner-exec ↔ runner-extract 之間的 trusted IPC，不對外
+- `anila-functions-net`（`internal: true`）— runner-exec + egress proxy 共用，runner-exec 唯一的「對外」窗口
+- `anila-functions-extract-net`（`internal: true`）— runner-extract 獨享，**無** egress proxy、完全沒出口
 
-#### 9.1.1 `anila-functions-worker-exec`（正式執行）
+#### 9.1.1 `anila-functions-worker-api`（trusted gate，CSP 從這 call）
+
+- Base image：`python:3.12-slim`
+- Preinstalled：`fastapi`, `uvicorn`, `httpx`
+- 職責：接 CSP 的 `/exec` 與 `/extract-meta`、forward 到 runner、轉發 SSE 回 CSP；自身**不 import / exec user code**
+- Container hardening：non-root；其他不需要強化（trusted）
+- Network：`anila-internal` + `anila-functions-control-net`
+- ENV：`X_FUNCTIONS_SECRET`、`RUNNER_EXEC_URL=http://anila-functions-runner-exec:8001`、`RUNNER_EXTRACT_URL=http://anila-functions-runner-extract:8002`
+
+#### 9.1.2 `anila-functions-runner-exec`（untrusted runner，正式執行）
 
 - Base image：`python:3.12-slim`
 - Preinstalled：`fastapi`, `uvicorn`, `httpx`, `requests`, `pydantic`, `python-dateutil`, `cryptography`
@@ -952,27 +1060,33 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
   - `read_only: true`
   - `tmpfs: ["/tmp:size=64m,mode=1777"]`
   - `cap_drop: [ALL]`
-  - `security_opt: ["no-new-privileges:true", "seccomp:./worker-seccomp.json", "apparmor:anila-worker"]`（host 有哪個用哪個）
-  - non-root user `nobody`
+  - `security_opt: ["no-new-privileges:true", "seccomp:./runner-seccomp.json", "apparmor:anila-runner"]`（host 有哪個用哪個）
+  - **`mem_limit: 256m`**（cgroup-enforced；不靠 RLIMIT_RSS）
+  - **`pids_limit: 32`**
+  - non-root user `nobody`（uid 65534）
   - 不掛 `docker.sock` 或任何 host volume
-- Network：只連 `anila-functions-net`（不連 `anila-internal`）；唯一 reachable 是 egress proxy
-- ENV：`X_FUNCTIONS_SECRET`、`HTTP_PROXY=http://anila-functions-egress:3128`、`HTTPS_PROXY=同`
+- Network：`anila-functions-control-net`（接 api request）+ `anila-functions-net`（出 egress proxy）
+- ENV：`X_FUNCTIONS_SECRET`、`HTTP_PROXY=http://anila-functions-egress:3128`、`HTTPS_PROXY` 同
+- Endpoint：只 listen `/exec`（control-net 上）
 
-#### 9.1.2 `anila-functions-worker-extract`（schema 抽取，**比 exec 更嚴**）
+#### 9.1.3 `anila-functions-runner-extract`（untrusted runner，schema 抽取，**比 exec 更嚴**）
 
-- 同 image、同 hardening
-- Network：只連 `anila-functions-extract-net`（**無** egress proxy）
-- 配置：`MAX_TIMEOUT=3`、`MAX_RSS_MB=64`、`MAX_STDOUT_KB=16`
-- 不接受 valves / __user__ / __metadata__ injection（runtime 端 strip）
-- Endpoint：只暴露 `/extract-meta`，不暴露 `/exec`
+- 同 image、同 hardening **加嚴**：
+  - `mem_limit: 64m`（vs exec 的 256m）
+  - `pids_limit: 16`（vs exec 的 32）
+  - `tmpfs:` 縮小到 16m
+- Network：`anila-functions-control-net`（接 api）+ `anila-functions-extract-net`（**無 egress proxy、完全沒出口**）
+- 配置：`MAX_TIMEOUT=3`（vs exec 的 30）、`MAX_STDOUT_KB=16`
+- runtime 端：不接受 valves / `__user__` / `__metadata__`；不執行 `instance.action()`、只 read `Action.actions` + `Valves.model_json_schema()`
+- Endpoint：只 listen `/extract-meta`（control-net 上）
 
-#### 9.1.3 `anila-functions-egress`（**新 outbound proxy sidecar**）
+#### 9.1.4 `anila-functions-egress`（squid sidecar）
 
 - 預設 squid（簡單成熟；envoy 是 v2 candidate）
 - 配置從 ENV `ANILA_FUNCTIONS_EGRESS_ALLOWLIST` 讀（CSV `host:port` 列）
 - ACL：allow listed → forward；其餘 → deny + log
 - Network：跨 `anila-internal` + `anila-functions-net` 兩個（橋）
-- 不接受 worker 以外的 client（network 層拓樸天然限制）
+- 不接受 runner 以外的 client（network 層拓樸天然限制；runner-extract 跟它在不同 network）
 - Metrics：`function_egress_blocked_total{host}` 從 access log 抽
 
 ### 9.2 CSP migrations
@@ -1039,18 +1153,20 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 - 客戶端 lint endpoint（slug regex / size limit）
 - Unit + integration tests
 
-**Sprint 2** — Worker（exec + extract）+ SSE relay + 兩條 ownership 路徑
-- `anila-functions-worker-exec` + `anila-functions-worker-extract` 兩個服務
-- runtime.py 支援 normal mode + extract mode（後者 strip valves/user/metadata）
+**Sprint 2** — 三層服務（api + 2 runners）+ SSE relay + 兩條 ownership 路徑
+- `anila-functions-worker-api`（trusted gate，純 forward）
+- `anila-functions-runner-exec`（untrusted、跑正式 user code）
+- `anila-functions-runner-extract`（untrusted、跑 extract、更嚴 profile）
+- runtime.py 支援 normal mode + extract mode（後者 strip valves/user/metadata；不 call `Action.action()`）
 - `/extract-meta` 兩階段：static AST stage 1 + sandboxed exec stage 2
 - CSP `/run` SSE relay + 兩條 ownership 路徑（chat_message vs test_console）+ host_command verb / args 驗證 + redaction pass
 - Worker tests + end-to-end SSE flow test
 
 **Sprint 3** — 網路拓樸 + container hardening + sandbox tests
-- Docker compose 更新（2 個 internal network、3 個服務、squid egress proxy）
-- `cap_drop:ALL` + seccomp + read-only rootfs + tmpfs + non-root + env partial-scrub
-- 拓樸測試：worker-exec 不能繞 proxy 連任何 host（即使 disable HTTP_PROXY）；worker-extract 連 proxy 都連不到
-- Stress / chaos：8 並發、subprocess kill 中途、egress allowlist 動態 update
+- Docker compose 更新（3 個 internal network、4 個服務、squid egress proxy）
+- runner 容器：`cap_drop:ALL` + seccomp + read-only rootfs + tmpfs + non-root + `mem_limit` + `pids_limit` + env partial-scrub
+- 拓樸測試（assert 連不通、不綁具體錯誤碼）：runner-exec 不能繞 proxy 連任何 host（即使 disable HTTP_PROXY）；runner-extract 連 proxy 都連不到
+- Stress / chaos：8 並發、subprocess kill 中途、egress allowlist 動態 update、cgroup mem_limit OOM kill 行為
 
 **Sprint 4** — Frontend + dogfood
 - `/admin/functions/*` 路由與頁面（list / editor / Test Console / audit / report queue / quarantine UI）
@@ -1108,3 +1224,12 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 | Disabled by admin 後 code 可見度 | 沿用 disabled / 加 quarantined 第四狀態 | **加 quarantined**：code 鎖到 author+admin；`disabled_reason` 欄位記理由 |
 | advisory lock key | hashtext / function_id 直接 | **namespaced 2-int (NS=42, function_id)** |
 | clipboard.copy / link.open browser activation | 直接執行 / 二段確認 toast | **二段確認 toast**（順便 anti-phishing） |
+
+### 第四輪修法（Codex round-3 review，2026-04-28）
+
+| 決定 | 選項 | 結果 |
+|---|---|---|
+| Worker container 數量 | 1 個 worker（連 anila-internal + functions-net）/ 2 層（trusted api + untrusted runner） | **2 層**：api + runner-exec + runner-extract（CSP 連得到 api、user code 連不到 CSP） |
+| /extract-meta network 隔離方法 | netns + os.unshare 切換 / 兩個 runner container | **兩個 runner container**（unshare 被 seccomp block；兩個 container 跟 sandbox 政策一致） |
+| Memory limit | RLIMIT_RSS / docker `mem_limit` cgroup | **docker mem_limit cgroup + pids_limit**（RSS rlimit 在 Linux 上不可靠） |
+| 連線失敗 assert 方式 | 綁特定錯誤字串 / 只 assert 連不通 | **只 assert 連不通**（具體錯誤碼依 docker / kernel 行為） |
