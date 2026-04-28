@@ -67,6 +67,14 @@ services:
       # default unless this opt-in is set. Local docker-compose IS
       # dev; prod overrides CSP_SECRET_KEY and leaves this unset.
       ANILA_ALLOW_DEV_SECRET: "${ANILA_ALLOW_DEV_SECRET:-1}"
+      # Sprint 5 X / H4 + Sprint 7 X follow-up：url_guard 兩個 dev opt-in。
+      # ALLOW_HTTP_ENDPOINT 鬆綁 http scheme（cleartext credential 風險）；
+      # ALLOW_PRIVATE_ENDPOINT 鬆綁 RFC 1918 私網（SSRF 風險，但 on-prem
+      # agent 在 LAN 是 first-class case）。loopback / link-local / cloud
+      # metadata / docker service name 永遠擋，不受 flag 影響。正式環境
+      # 兩個都保持 unset。
+      ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-}"
+      ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-}"
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "60"
       # Service-to-service credential: CSP injects this into downstream agent calls.
@@ -189,6 +197,10 @@ services:
       SECRET_KEY: ${CSP_SECRET_KEY:-dev-secret-key-change-in-prod}
       # See csp service comment — dev opt-in for the default secret.
       ANILA_ALLOW_DEV_SECRET: "${ANILA_ALLOW_DEV_SECRET:-1}"
+      # Sprint 5 X / H4 + Sprint 7 X follow-up：worker judge 路徑也經過
+      # url_guard；與 csp service 一致 propagate 兩個 opt-in。
+      ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-}"
+      ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-}"
       PYTHONUNBUFFERED: "1"
     volumes:
       - ./share/uploads/ingestion:/var/anila/ingestion-uploads
