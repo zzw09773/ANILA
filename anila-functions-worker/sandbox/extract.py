@@ -87,29 +87,59 @@ def _extract_module_metadata(tree: ast.Module) -> dict[str, Any]:
 
 
 def _extract_actions(tree: ast.Module) -> tuple[list[dict], bool]:
-    """Look for ``class Action: actions = [literal, ...]``.
+    """Look for ``Action.actions = [literal, ...]`` declared either as a
+    class-level attribute OR inside ``__init__`` as ``self.actions = [...]``.
+
+    OpenWebUI's canonical Function template puts the actions list in
+    ``__init__`` (so the original 填入文字助手 example reads
+    ``self.actions = [{...}]``). Treating both shapes as equivalent
+    avoids surprising the dev: whichever Python idiom they used, the
+    static extractor finds the literal.
 
     Returns ``(actions_list, dynamic_flag)``. ``dynamic_flag=True``
-    means we found ``Action`` but its ``actions`` attribute isn't a
-    pure literal — caller should fall through to dynamic introspection.
+    means an ``Action.actions`` (class- or instance-level) was found
+    but isn't a pure literal — caller should fall through to dynamic
+    introspection.
     """
     for node in tree.body:
         if not (isinstance(node, ast.ClassDef) and node.name == "Action"):
             continue
+
+        # 1) class-level `actions = [...]` assignment
         for item in node.body:
-            if not isinstance(item, ast.Assign):
+            if isinstance(item, ast.Assign):
+                targets = [
+                    t.id for t in item.targets if isinstance(t, ast.Name)
+                ]
+                if "actions" in targets:
+                    literal = _evaluate_literal(item.value)
+                    if literal is _DYNAMIC:
+                        return [], True
+                    return literal or [], False
+
+        # 2) `self.actions = [...]` inside __init__
+        for item in node.body:
+            if not (isinstance(item, ast.FunctionDef) and item.name == "__init__"):
                 continue
-            targets = [
-                t.id for t in item.targets if isinstance(t, ast.Name)
-            ]
-            if "actions" not in targets:
-                continue
-            literal = _evaluate_literal(item.value)
-            if literal is _DYNAMIC:
-                return [], True
-            return literal or [], False
-        # Found Action class but no `actions = ...` assignment
+            for stmt in item.body:
+                if not isinstance(stmt, ast.Assign):
+                    continue
+                # Match `self.actions = ...`
+                for target in stmt.targets:
+                    if (
+                        isinstance(target, ast.Attribute)
+                        and target.attr == "actions"
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id == "self"
+                    ):
+                        literal = _evaluate_literal(stmt.value)
+                        if literal is _DYNAMIC:
+                            return [], True
+                        return literal or [], False
+
+        # Found Action class but no actions assignment at all
         return [], False
+
     # No Action class at all — caller decides whether that's an error
     return [], False
 
@@ -208,7 +238,15 @@ async def run_extract(
         await emit_done(None)
         return
 
+    # OpenWebUI convention puts ``actions`` in ``__init__`` (instance
+    # attribute) — class-level lookup misses it. Try class-level first,
+    # then fall back to instantiating and reading the instance attr.
     actions = list(getattr(action_cls, "actions", []) or [])
+    if not actions:
+        try:
+            actions = list(getattr(action_cls(), "actions", []) or [])
+        except Exception as exc:
+            await emit_error(f"failed to instantiate Action(): {exc}")
 
     valves_schema: dict = {}
     valves_cls = user_ns.get("Valves")

@@ -26,7 +26,7 @@ import { relativeLabel } from "./runtime/time.js";
 // ANILA Functions v1: enabled-actions cache + run-stream + event handler.
 import { runFunctionStream } from "./runtime/functions.js";
 import { consumeFunctionEventStream } from "./runtime/functionEvents.js";
-import { loadEnabledActions } from "./runtime/functionsStore.js";
+import { loadEnabledActions, invalidate as invalidateActionsCache } from "./runtime/functionsStore.js";
 import {
   listConversations as apiListConversations,
   createConversation as apiCreateConversation,
@@ -238,13 +238,30 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   useEffect(() => {
     if (!isAuthenticated) return;
     let cancelled = false;
-    loadEnabledActions().then((list) => {
-      if (!cancelled) setFunctionActions(list || []);
-    }).catch((err) => {
-      // eslint-disable-next-line no-console
-      console.warn("[ANILA Functions] enabled-actions load failed:", err.message);
-    });
-    return () => { cancelled = true; };
+    const fetchActions = () => {
+      invalidateActionsCache();  // bust stale cache so a save in admin shows up
+      loadEnabledActions()
+        .then((list) => { if (!cancelled) setFunctionActions(list || []); })
+        .catch((err) => {
+          // eslint-disable-next-line no-console
+          console.warn("[ANILA Functions] enabled-actions load failed:", err.message);
+        });
+    };
+    // Initial fetch
+    fetchActions();
+    // Refetch whenever the user comes back to this tab (e.g. after
+    // saving a function in /admin/functions and clicking Back to chat
+    // — the SPA doesn't unmount ChatRuntime, but visibility-change
+    // fires when the tab regains focus).
+    const onVisible = () => { if (!document.hidden) fetchActions(); };
+    const onFocus = () => fetchActions();
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onFocus);
+    };
   }, [isAuthenticated]);
 
   // Single SSE → host_command dispatch handler. Wired to MessageBubble's
