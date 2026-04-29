@@ -97,7 +97,16 @@ class ActionFunction(Base):
         index=True,
     )
     status = Column(
-        Enum(ActionFunctionStatus, name="action_function_status"),
+        Enum(
+            ActionFunctionStatus,
+            name="action_function_status",
+            # Use .value (lowercase) for the Postgres enum type instead of
+            # SQLAlchemy's default .name (uppercase). The migration created
+            # the type with lowercase labels ('draft', 'enabled', ...);
+            # without this callable SA writes 'DRAFT' / 'ENABLED' and PG
+            # rejects it as `invalid input value for enum`.
+            values_callable=lambda x: [e.value for e in x],
+        ),
         nullable=False,
         default=ActionFunctionStatus.DRAFT,
         server_default="draft",
@@ -207,7 +216,11 @@ class ActionFunctionRun(Base):
         nullable=False,
     )
     context_type = Column(
-        Enum(ActionFunctionRunContext, name="action_function_run_context"),
+        Enum(
+            ActionFunctionRunContext,
+            name="action_function_run_context",
+            values_callable=lambda x: [e.value for e in x],
+        ),
         nullable=False,
     )
     conversation_id = Column(
@@ -222,7 +235,11 @@ class ActionFunctionRun(Base):
     )
     request_payload_json = Column(JSONB, nullable=False, default=dict, server_default="{}")
     status = Column(
-        Enum(ActionFunctionRunStatus, name="action_function_run_status"),
+        Enum(
+            ActionFunctionRunStatus,
+            name="action_function_run_status",
+            values_callable=lambda x: [e.value for e in x],
+        ),
         nullable=False,
     )
     error_message = Column(Text, nullable=True)
@@ -248,7 +265,11 @@ class ActionFunctionReport(Base):
     )
     reason = Column(Text, nullable=False)
     status = Column(
-        Enum(ActionFunctionReportStatus, name="action_function_report_status"),
+        Enum(
+            ActionFunctionReportStatus,
+            name="action_function_report_status",
+            values_callable=lambda x: [e.value for e in x],
+        ),
         nullable=False,
         default=ActionFunctionReportStatus.OPEN,
         server_default="open",

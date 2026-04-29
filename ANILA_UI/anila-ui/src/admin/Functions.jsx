@@ -45,6 +45,57 @@ class Action:
         })
 `;
 
+const SLUG_REGEX = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const SLUG_HINT = "lowercase letters, digits, hyphens (start with letter/digit), max 64 chars";
+
+// Format any thrown error into a flat string. FastAPI 422 returns
+// `detail: [{loc, msg, type}, ...]`; rendering that array as a React
+// child crashes the tree, so we always coerce to string here.
+function formatApiError(err) {
+  if (!err) return "Unknown error";
+  if (typeof err === "string") return err;
+  const detail = err.detail;
+  if (detail) {
+    if (Array.isArray(detail)) {
+      return detail.map((d) => {
+        const loc = Array.isArray(d.loc) ? d.loc.join(".") : "";
+        return `${loc ? loc + ": " : ""}${d.msg || JSON.stringify(d)}`;
+      }).join(" · ");
+    }
+    if (typeof detail === "string") return detail;
+    if (typeof detail === "object") {
+      if (typeof detail.detail === "string") return detail.detail;
+      if (Array.isArray(detail.detail)) return formatApiError({ detail: detail.detail });
+      if (Array.isArray(detail.extract_errors)) return "extract: " + detail.extract_errors.join(", ");
+      return JSON.stringify(detail);
+    }
+  }
+  return err.message || String(err);
+}
+
+// Last-line-of-defence error boundary so a render failure in any
+// sub-component doesn't blank the whole page.
+class FunctionsErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  componentDidCatch(err, info) {
+    // eslint-disable-next-line no-console
+    console.error("[FunctionsAdmin] render crash:", err, info);
+  }
+  render() {
+    if (!this.state.err) return this.props.children;
+    return (
+      <div style={{ padding: 16, background: "#fee", border: "1px solid #f99", margin: 12 }}>
+        <strong>Functions UI crashed.</strong>{" "}
+        <code>{String(this.state.err.message || this.state.err)}</code>
+        <div style={{ marginTop: 8 }}>
+          <button onClick={() => this.setState({ err: null })}>Reset</button>
+        </div>
+      </div>
+    );
+  }
+}
+
 export function FunctionsAdmin({ user }) {
   const [view, setView] = useState({ kind: "list", tab: "library" });
   const [items, setItems] = useState([]);
@@ -59,7 +110,7 @@ export function FunctionsAdmin({ user }) {
       const list = await listFunctions(filters);
       setItems(list || []);
     } catch (err) {
-      setError(err.message);
+      setError(formatApiError(err));
     }
   }, [view.tab]);
 
@@ -95,7 +146,7 @@ export function FunctionsAdmin({ user }) {
         <Tab active={view.tab === "disabled"} onClick={() => setView({ kind: "list", tab: "disabled" })}>Disabled</Tab>
       </nav>
 
-      {error && <div className="error">{error}</div>}
+      {error && <div style={{padding:"8px 12px",background:"#fee",border:"1px solid #f99",borderRadius:4,margin:"8px 0",color:"#900",fontSize:13}}>{error}</div>}
 
       <ul className="anila-fns-list" style={{ listStyle: "none", padding: 0 }}>
         {items.map((fn) => (
@@ -113,14 +164,14 @@ export function FunctionsAdmin({ user }) {
                 {isDeveloper && fn.status === "enabled" && (
                   <button onClick={async () => {
                     try { await forkFunction(fn.slug, {}); refresh(); }
-                    catch (err) { setError(err.message); }
+                    catch (err) { setError(formatApiError(err)); }
                   }}>Fork</button>
                 )}
                 {(user?.role === "admin" || fn.author_user_id === user?.id) && (
                   <button onClick={async () => {
                     const reason = prompt("Disable reason?") || "";
                     try { await patchFunction(fn.slug, { status: "disabled" }); refresh(); }
-                    catch (err) { setError(err.message); }
+                    catch (err) { setError(formatApiError(err)); }
                   }}>Disable</button>
                 )}
               </div>
@@ -135,6 +186,22 @@ export function FunctionsAdmin({ user }) {
 function Tab({ active, onClick, children }) {
   return (
     <button onClick={onClick} style={{ fontWeight: active ? "bold" : "normal" }}>{children}</button>
+  );
+}
+
+function UnsavedPlaceholder({ feature }) {
+  return (
+    <div style={{
+      padding: 24, textAlign: "center",
+      color: "var(--fg-subtle, #888)",
+      border: "1px dashed var(--border, #ddd)",
+      borderRadius: 6, margin: "12px 0",
+    }}>
+      <div style={{ fontSize: 14, marginBottom: 4 }}>
+        {feature} is available after the function is saved.
+      </div>
+      <small>Fill in the slug + title above and click Save first.</small>
+    </div>
   );
 }
 
@@ -161,14 +228,30 @@ function FunctionEditor({ slug: initialSlug, user, onClose }) {
         setStatus(fn.status);
         if (fn.code !== null && fn.code !== undefined) setCode(fn.code);
         else setReadOnly(true);
-      } catch (err) { setError(err.message); }
+      } catch (err) { setError(formatApiError(err)); }
     })();
   }, [initialSlug]);
 
   const canEdit = !readOnly && (user?.role === "admin" || /* author check needs author_user_id, fetched above; simplified for v1: */ true);
 
+  // Live slug validation. Empty is allowed in `initialSlug` (edit
+  // existing) since we lock the input; for `new` mode the regex is
+  // strict and matches the backend constraint exactly so users see
+  // the problem before getting a 422.
+  const slugInvalid = !initialSlug && slug && !SLUG_REGEX.test(slug);
+  const titleInvalid = !title.trim();
+  const saveDisabled = !canEdit || (!initialSlug && (slugInvalid || !slug || titleInvalid));
+
   async function save() {
     setError(null);
+    if (!initialSlug && !SLUG_REGEX.test(slug)) {
+      setError(`Invalid slug. ${SLUG_HINT}`);
+      return;
+    }
+    if (!title.trim()) {
+      setError("Title is required.");
+      return;
+    }
     try {
       if (!initialSlug) {
         await createFunction({ slug, title, description, code, tags: [] });
@@ -177,21 +260,39 @@ function FunctionEditor({ slug: initialSlug, user, onClose }) {
         await patchFunction(slug, { title, description, status });
       }
       onClose();
-    } catch (err) { setError(err.detail?.detail || err.message); }
+    } catch (err) { setError(formatApiError(err)); }
   }
 
   return (
     <div className="anila-fns-editor">
-      <header style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+      <header style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
         <button onClick={onClose}>← Functions</button>
-        <input value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="slug" disabled={!!initialSlug} />
-        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="title" />
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <input
+            value={slug}
+            onChange={(e) => setSlug(e.target.value.toLowerCase())}
+            placeholder="slug — lowercase, digits, hyphens"
+            disabled={!!initialSlug}
+            style={{ borderColor: slugInvalid ? "#c00" : undefined }}
+          />
+          {!initialSlug && (
+            <small style={{ color: slugInvalid ? "#c00" : "var(--fg-subtle, #888)", fontSize: 11 }}>
+              {slugInvalid ? `Invalid: ${SLUG_HINT}` : SLUG_HINT}
+            </small>
+          )}
+        </div>
+        <input
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="title (required)"
+          style={{ borderColor: titleInvalid ? "#c00" : undefined }}
+        />
         <select value={status} onChange={(e) => setStatus(e.target.value)} disabled={!canEdit}>
           <option value="draft">draft</option>
           <option value="enabled">enabled</option>
           <option value="disabled">disabled</option>
         </select>
-        <button onClick={save} disabled={!canEdit}>Save</button>
+        <button onClick={save} disabled={saveDisabled}>Save</button>
       </header>
 
       <nav style={{ display: "flex", gap: "8px", margin: "12px 0" }}>
@@ -201,7 +302,7 @@ function FunctionEditor({ slug: initialSlug, user, onClose }) {
         <Tab active={tab === "runs"}    onClick={() => setTab("runs")}>Runs</Tab>
       </nav>
 
-      {error && <div className="error">{error}</div>}
+      {error && <div style={{padding:"8px 12px",background:"#fee",border:"1px solid #f99",borderRadius:4,margin:"8px 0",color:"#900",fontSize:13}}>{error}</div>}
 
       {tab === "code" && (
         <textarea
@@ -213,9 +314,15 @@ function FunctionEditor({ slug: initialSlug, user, onClose }) {
           aria-label="function code"
         />
       )}
-      {tab === "valves" && initialSlug && <ValvesPanel slug={initialSlug}  user={user} />}
-      {tab === "test"   && initialSlug && <TestConsole slug={initialSlug}  />}
-      {tab === "runs"   && initialSlug && <RunsPanel   slug={initialSlug}  />}
+      {tab === "valves" && (initialSlug
+        ? <ValvesPanel slug={initialSlug} user={user} />
+        : <UnsavedPlaceholder feature="Valves" />)}
+      {tab === "test" && (initialSlug
+        ? <TestConsole slug={initialSlug} />
+        : <UnsavedPlaceholder feature="Test Console" />)}
+      {tab === "runs" && (initialSlug
+        ? <RunsPanel slug={initialSlug} />
+        : <UnsavedPlaceholder feature="Runs" />)}
     </div>
   );
 }
@@ -230,7 +337,7 @@ function ValvesPanel({ slug, user }) {
       try {
         const r = await getValves(slug);
         setFields(r.fields || {});
-      } catch (err) { setError(err.message); }
+      } catch (err) { setError(formatApiError(err)); }
     })();
   }, [slug]);
 
@@ -245,13 +352,13 @@ function ValvesPanel({ slug, user }) {
       setDraft({});
       const r = await getValves(slug);
       setFields(r.fields || {});
-    } catch (err) { setError(err.message); }
+    } catch (err) { setError(formatApiError(err)); }
   }
 
   if (user?.role !== "admin") return <div>Only admin can edit Valves.</div>;
   return (
     <div>
-      {error && <div className="error">{error}</div>}
+      {error && <div style={{padding:"8px 12px",background:"#fee",border:"1px solid #f99",borderRadius:4,margin:"8px 0",color:"#900",fontSize:13}}>{error}</div>}
       {Object.entries(fields).map(([k, v]) => (
         <label key={k} style={{ display: "block", marginBottom: "8px" }}>
           <span>{k}</span>
@@ -323,13 +430,13 @@ function RunsPanel({ slug }) {
   useEffect(() => {
     (async () => {
       try { setRuns(await listRuns(slug) || []); }
-      catch (err) { setError(err.message); }
+      catch (err) { setError(formatApiError(err)); }
     })();
   }, [slug]);
 
   return (
     <div>
-      {error && <div className="error">{error}</div>}
+      {error && <div style={{padding:"8px 12px",background:"#fee",border:"1px solid #f99",borderRadius:4,margin:"8px 0",color:"#900",fontSize:13}}>{error}</div>}
       <table>
         <thead><tr><th>id</th><th>status</th><th>action</th><th>duration</th><th>started</th></tr></thead>
         <tbody>

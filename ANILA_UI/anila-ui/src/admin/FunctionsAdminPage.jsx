@@ -10,6 +10,31 @@ import { Link } from "react-router-dom";
 import { useAuth } from "../runtime/auth.jsx";
 import { FunctionsAdmin } from "./Functions.jsx";
 
+class PageErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  componentDidCatch(err, info) {
+    // eslint-disable-next-line no-console
+    console.error("[FunctionsAdminPage] crash:", err, info);
+  }
+  render() {
+    if (!this.state.err) return this.props.children;
+    return (
+      <div style={{ padding: 24, background: "#fee", border: "1px solid #f99", margin: 12, borderRadius: 8 }}>
+        <h2 style={{ marginTop: 0 }}>Functions admin crashed</h2>
+        <p style={{ fontFamily: "monospace", fontSize: 13 }}>
+          {String(this.state.err.message || this.state.err)}
+        </p>
+        <p style={{ fontSize: 12, color: "#666" }}>
+          Open the browser console for the full stack. Then click Reset to try again.
+        </p>
+        <button onClick={() => this.setState({ err: null })}>Reset</button>
+        <Link to="/app" style={{ marginLeft: 12 }}>← Back to chat</Link>
+      </div>
+    );
+  }
+}
+
 export function FunctionsAdminPage() {
   const { user } = useAuth();
   return (
@@ -26,7 +51,9 @@ export function FunctionsAdminPage() {
           {user?.username} · {user?.role || "user"}
         </span>
       </header>
-      <FunctionsAdmin user={user} />
+      <PageErrorBoundary>
+        <FunctionsAdmin user={user} />
+      </PageErrorBoundary>
     </div>
   );
 }
