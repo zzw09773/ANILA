@@ -27,3 +27,8 @@ arq==0.26.1
 # simplified Chinese so this is a quality lever, not a vanity fix.
 opencc-python-reimplemented==0.1.7
 
+# ANILA Functions v1: explicit AES-256-GCM for action_function admin
+# valves at-rest encryption. cryptography is already pulled in via
+# python-jose[cryptography] but pinning here so AES-GCM API surface
+# is locked to a known-tested version. See spec §7.3.
+cryptography==44.0.0
