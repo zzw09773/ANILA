@@ -270,14 +270,29 @@ function FunctionEditor({ slug: initialSlug, user, onClose }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <input
             value={slug}
-            onChange={(e) => setSlug(e.target.value.toLowerCase())}
+            onChange={(e) => {
+              // Aggressive sanitisation. \s already catches normal
+              // whitespace including NBSP. The explicit codepoints
+              // catch zero-width space, zero-width joiner / non-joiner,
+              // and byte-order mark — all of which clipboard paste can
+              // sneak in when copying from rich-text sources.
+              const ZW = String.fromCharCode(0x200B, 0x200C, 0x200D, 0xFEFF);
+              const re = new RegExp("[\\s" + ZW + "]+", "g");
+              const cleaned = e.target.value.replace(re, "").toLowerCase();
+              setSlug(cleaned);
+            }}
             placeholder="slug — lowercase, digits, hyphens"
             disabled={!!initialSlug}
             style={{ borderColor: slugInvalid ? "#c00" : undefined }}
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
           />
           {!initialSlug && (
             <small style={{ color: slugInvalid ? "#c00" : "var(--fg-subtle, #888)", fontSize: 11 }}>
-              {slugInvalid ? `Invalid: ${SLUG_HINT}` : SLUG_HINT}
+              {slugInvalid
+                ? `Invalid: ${SLUG_HINT}. Saw "${slug}" (${slug.length} chars)`
+                : SLUG_HINT}
             </small>
           )}
         </div>
