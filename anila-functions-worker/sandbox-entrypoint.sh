@@ -24,8 +24,16 @@ if [ ! -d "$JOBS_DIR" ]; then
     mkdir -p "$JOBS_DIR"
 fi
 
-chown sandbox:anila-jobs "$JOBS_DIR"
+# Order matters: chmod BEFORE chown.
+#
+# After chown changes the directory's owner from root to `sandbox`,
+# root no longer "owns" the dir. With cap_drop:ALL we lack CAP_FOWNER,
+# so a subsequent chmod by root on a non-root-owned directory hits
+# EPERM. Doing chmod first (while still root-owned, no cap needed)
+# then chown-ing avoids the issue without needing to add CAP_FOWNER
+# to the container.
 chmod 0770 "$JOBS_DIR"
+chown sandbox:anila-jobs "$JOBS_DIR"
 
 # Hand off to the daemon as `sandbox` user with ambient SETUID/SETGID.
 # CHOWN intentionally NOT in --inh-caps / --ambient-caps so daemon can't

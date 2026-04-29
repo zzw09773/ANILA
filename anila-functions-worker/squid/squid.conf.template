@@ -1,23 +1,28 @@
 # Generated at container start by entrypoint.sh from
 # $ANILA_FUNCTIONS_EGRESS_ALLOWLIST. Format: comma-separated
-# `host:port` entries; entrypoint emits one `acl allow_dst dstdomain`
-# / `acl allow_dstport port` pair per entry.
+# `host:port` entries; entrypoint substitutes one
+# `acl <label>_host dstdomain` / `acl <label>_port port` pair plus
+# matching `http_access allow ...` per entry.
 
 http_port 3128
 
-# Reject everything by default. Explicit allows below.
-acl manager proto cache_object
-acl localhost src 127.0.0.1/32 ::1
-acl localnet src 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+# Mandatory port ACLs (squid refuses to start without them)
+acl SSL_ports port 443
+acl Safe_ports port 80
+acl Safe_ports port 443
+acl Safe_ports port 1024-65535
+acl CONNECT method CONNECT
 
-http_access allow manager localhost
-http_access deny manager
+http_access deny !Safe_ports
+http_access deny CONNECT !SSL_ports
 
 # __ALLOWLIST_PLACEHOLDER__
 
 http_access deny all
 
-# Quiet logs to stdout for docker
-access_log stdio:/dev/stdout combined
-cache_log /dev/null
+# Cache disabled — we're a forward proxy, not a cache
 cache deny all
+
+# Logs to stderr so docker logs sees them
+access_log stderr
+cache_log stderr
