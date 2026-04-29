@@ -1,0 +1,42 @@
+# anila-functions-sandbox — used for both `sandbox-exec` and
+# `sandbox-extract`. Container starts as root (USER 0) so the entrypoint
+# can chown the named volume; the entrypoint then `setpriv`s down to
+# `sandbox` (uid 65533) carrying SETUID+SETGID in the ambient cap set
+# so the daemon can spawn user-code subprocess as `subproc` (65534).
+#
+# The two service flavors differ only in network attachment + env:
+#
+#   sandbox-exec     → anila-functions-net          (egress proxy reachable)
+#   sandbox-extract  → anila-functions-extract-net  (no egress at all)
+#
+# `util-linux` provides `setpriv`. `cryptography` is included so user
+# code can use it (the runtime container itself doesn't decrypt
+# anything; valves arrive already-decrypted from CSP).
+
+FROM python:3.12-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends util-linux libcap2-bin && \
+    rm -rf /var/lib/apt/lists/*
+
+# Three identities: `web` is for symmetry with worker-api image (unused
+# here but keeps GID layout aligned), `sandbox` runs the daemon,
+# `subproc` runs user code. `anila-jobs` (gid 65530) is the supplementary
+# group that gates IPC volume access — sandbox is in it, subproc is NOT.
+RUN groupadd -g 65530 anila-jobs && \
+    useradd -u 65533 -g 65533 -G anila-jobs -m -s /usr/sbin/nologin sandbox && \
+    useradd -u 65534 -g 65534 -m -s /usr/sbin/nologin subproc
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY sandbox/ /app/sandbox/
+COPY shared/ /app/shared/
+COPY sandbox-entrypoint.sh /usr/local/bin/sandbox-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/sandbox-entrypoint.sh
+
+# Container starts as root so the entrypoint has CAP_CHOWN to fix volume
+# ownership before dropping to sandbox uid via setpriv.
+USER 0
+ENTRYPOINT ["/usr/local/bin/sandbox-entrypoint.sh"]

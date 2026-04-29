@@ -1,0 +1,22 @@
+# anila-functions-worker-api — trusted gate, hardened.
+#
+# Lives on `anila-internal` so CSP can reach it. Mounts both
+# `jobs-exec` and `jobs-extract` volumes for IPC to the two sandbox
+# containers. Does NOT execute user code.
+
+FROM python:3.12-slim
+
+RUN groupadd -g 65530 anila-jobs && \
+    useradd -u 65532 -g 65532 -G anila-jobs -m -s /usr/sbin/nologin web
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY worker_api/ /app/worker_api/
+COPY shared/ /app/shared/
+
+USER 65532
+EXPOSE 8000
+
+ENTRYPOINT ["uvicorn", "worker_api.main:app", "--host", "0.0.0.0", "--port", "8000"]

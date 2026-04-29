@@ -1,0 +1,16 @@
+# anila-functions-egress — squid sidecar.
+#
+# Bridges `anila-internal` and `anila-functions-net` per the spec
+# topology (§5.7). Forwards only allowlisted host:port pairs from
+# `ANILA_FUNCTIONS_EGRESS_ALLOWLIST`; everything else gets ACL-denied.
+
+FROM ubuntu/squid:5
+
+# squid.conf.template + entrypoint go in. Entrypoint substitutes the
+# allowlist env var into a real squid.conf at boot.
+COPY squid/squid.conf.template /etc/squid/squid.conf.template
+COPY squid/entrypoint.sh /usr/local/bin/anila-egress-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/anila-egress-entrypoint.sh
+
+EXPOSE 3128
+ENTRYPOINT ["/usr/local/bin/anila-egress-entrypoint.sh"]
