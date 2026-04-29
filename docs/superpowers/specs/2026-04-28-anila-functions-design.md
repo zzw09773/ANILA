@@ -96,13 +96,13 @@
 │  └───────────────────────┘                        │              │
 └──────────────────────────────────────────────────┼──────────────┘
                                                     │ HTTP (intranet)
-                                                    │ X-Functions-Secret
+                                                    │ X-Functions-Api-Secret
                                                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  anila-functions-worker-api (NEW, trusted gate, hardened)         │
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │  POST /exec, /extract-meta — CSP-facing                  │   │
-│  │  Verifies X-Functions-Secret (CSP↔api auth)              │   │
+│  │  Verifies X-Functions-Api-Secret (CSP↔api auth)              │   │
 │  │  Writes job + connects to Unix socket on shared volume   │   │
 │  │  Streams events back as SSE to CSP                       │   │
 │  │  Does NOT exec user code; not on functions-net           │   │
@@ -459,7 +459,7 @@ Browser   CSP /run         worker-api          (volume)            sandbox-exec 
 ### 5.2 Service handlers（要點）
 
 **`anila-functions-worker-api` `/exec` handler（trusted gate, hardened）**：
-- 接收 ExecRequest（驗 `X-Functions-Secret`，CSP↔api 共用）
+- 接收 ExecRequest（驗 `X-Functions-Api-Secret`，CSP↔api 共用）
 - 連接 `/jobs-exec/control.sock`（Unix domain socket on shared docker volume）
 - 寫入序列化的 job request（含 code / body / valves / user / metadata）
 - 從 socket 讀回 SSE event stream，轉送回 CSP（順便 timeout / connection error 兜底）
@@ -532,7 +532,7 @@ CSP 收到 JSON → INSERT versions row（plain string + JSON，**不 exec**）
 
 ⚠️ **不**使用 `unshare(CLONE_NEWNET)` / `os.unshare` 切 netns 的方案：seccomp 明確 block `unshare` syscall（§5.7），這條路是死的；同時若允許 unshare、user code 也可能濫用、跟 sandbox 哲學矛盾。兩個 sandbox container 在 ops 上多 1 個 service 但邊界乾淨、跟 seccomp 政策一致。
 
-**Worker `/extract-meta` request**：`{code: string}` + `X-Functions-Secret` header
+**Worker `/extract-meta` request**：`{code: string}` + `X-Functions-Api-Secret` header
 **Response**：
 ```json
 {
@@ -667,7 +667,7 @@ asyncio.run(main())
 │                │ (1) CSP POST /exec, /extract-meta                       │
 │                ▼                                                          │
 │   ┌── anila-functions-worker-api ─────────────┐ ← trusted（hardened）   │
-│   │  接 CSP；驗 X-Functions-Secret             │   不 exec user code      │
+│   │  接 CSP；驗 X-Functions-Api-Secret             │   不 exec user code      │
 │   │  寫 job spec 進 docker volume、connect    │   不在 functions-net 上   │
 │   │  Unix socket on volume；read SSE events   │                          │
 │   └────────┬───────────────┬──────────────────┘                          │
@@ -940,35 +940,73 @@ def spawn_subprocess(...):
 | child 嘗試 `os.setuid(0)` → `PermissionError` | no_new_privs + cap_drop 阻擋 |
 | Volume `/jobs-exec` `stat` → `sandbox:anila-jobs` `0770` | entrypoint chown 成功 |
 
-**Fallback 策略**（若以上 smoke test 任一失敗、改用 file capability）：
+**Fallback 策略 — 「spawn helper」模式**（若 setpriv + ambient 路徑 smoke test 任一失敗）：
 
-```dockerfile
-# 在 image 內 build 一支 setuid wrapper binary
-COPY spawn_user.c /tmp/
-RUN gcc -static -o /usr/local/bin/spawn_user /tmp/spawn_user.c && \
-    setcap 'cap_setuid,cap_setgid+eip' /usr/local/bin/spawn_user
+⚠️ **不能用 file capability** — `setcap cap_setuid,cap_setgid+eip` 在 binary 上的做法會被 docker `no-new-privileges:true` 擋掉（`no_new_privs` 阻擋 exec 後因為 file cap 取得新權限）。
+
+可行的 fallback 是把「需要 SETUID 的小代理」獨立成另一個 process，daemon 透過 internal socket 請它代執行：
+
+```
+container (user: 0:0, cap_add: SETUID/SETGID/CHOWN, no-new-privileges):
+  entrypoint as root:
+    chown sandbox:anila-jobs /jobs-* + chmod 0770
+    fork:
+      spawn-helper (子 process A) — 留在 root（或 sandbox+ambient SETUID/SETGID）
+        listen Unix socket /tmp/spawn-helper.sock (mode 0660 root:sandbox)
+        loop: accept → read request → setuid(SUBPROC_UID) + execve(runtime.py)
+        程式 ~50 行、不 import user code、code path 只能 spawn `runtime.py` 跟硬編 uid 65534
+      daemon (子 process B) — setpriv 到 sandbox:65533、無 SETUID/SETGID
+        accept worker-api 連線、forward 給 spawn-helper、串接 stdout
 ```
 
-daemon 起 subprocess 改 invoke `/usr/local/bin/spawn_user 65534 65534 -- python -u runtime.py`；wrapper 在 binary 層級拿到 file caps、daemon 自己不需要 ambient。但這條路要做 wrapper 程式 + setcap、複雜度更高，所以列為 fallback。
+**為什麼 spawn-helper 安全**：
+- 程式碼極小（單檔 setuid + execve），審計成本低
+- Daemon 即使被 RCE 也只能要求 spawn-helper 跑 `runtime.py` as `subproc:65534`、不能改 uid 跟 binary（spawn-helper 硬編）
+- spawn-helper 自己**不**跑 user code、不 import 任何 user-supplied 字元
+- 攻擊面 = spawn-helper 程式碼本身有 bug；50 行程式比 setpriv path 還小
+
+**為什麼仍是 fallback**：spawn-helper 要寫 + 維護 + 審；setpriv path 是純 ops 配置、零 application code。優先 setpriv，spawn-helper 是備案。
+
+**如果連 spawn-helper 都做不通**（極端情境，例如 host kernel 完全不支援 ambient cap）：spec 認列為「**v1 設計死路**」，停工重新評估容器策略（例：改用 podman / runc per-run、或評估 user namespace remap）。**不**接受「砍 no-new-privileges」當解。
 
 **Image build / Dockerfile 要做的事**（兩個 sandbox image 共用一個 base）：
 
 ```dockerfile
 FROM python:3.12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends util-linux && rm -rf /var/lib/apt/lists/*
 RUN groupadd -g 65530 anila-jobs && \
     useradd -u 65533 -g 65533 -G anila-jobs -m -s /usr/sbin/nologin sandbox && \
     useradd -u 65534 -g 65534 -m -s /usr/sbin/nologin subproc
-# /jobs-* dir 在 entrypoint 啟動時 chown sandbox:anila-jobs && chmod 0770
-USER 65533
-ENTRYPOINT ["python", "-u", "/app/sandbox_daemon.py"]
+COPY sandbox-entrypoint.sh /usr/local/bin/sandbox-entrypoint.sh
+COPY sandbox_daemon.py /app/sandbox_daemon.py
+COPY runtime.py /app/runtime.py
+RUN chmod 0755 /usr/local/bin/sandbox-entrypoint.sh
+# 注意：USER 0（root）— entrypoint 短暫 root 處理 chown，再 setpriv 降權到 65533
+USER 0
+ENTRYPOINT ["/usr/local/bin/sandbox-entrypoint.sh"]
 ```
 
-worker-api image 對應：
+`sandbox-entrypoint.sh`：
+```bash
+#!/bin/sh
+set -e
+chown sandbox:anila-jobs "$JOBS_DIR"
+chmod 0770 "$JOBS_DIR"
+exec setpriv \
+  --reuid=sandbox --regid=sandbox --init-groups \
+  --no-new-privs \
+  --inh-caps=+setuid,+setgid \
+  --ambient-caps=+setuid,+setgid \
+  -- python -u /app/sandbox_daemon.py
+```
+
+worker-api image 對應（worker-api 沒 spawn subprocess、不需要 setpriv path、可以直接 USER 65532）：
 
 ```dockerfile
 FROM python:3.12-slim
 RUN groupadd -g 65530 anila-jobs && \
     useradd -u 65532 -g 65532 -G anila-jobs -m -s /usr/sbin/nologin web
+COPY worker_api.py /app/worker_api.py
 USER 65532
 ENTRYPOINT ["python", "-u", "/app/worker_api.py"]
 ```
@@ -1110,10 +1148,10 @@ Tabs：
 | T2 | ~~Developer 注入 XSS via `execute`~~（v1 raw execute 已移除） | — | v1 改 `host_command` 白名單；無 raw JS eval；前後端兩層 verb / args schema 驗證 |
 | T3 | Test mode 逃逸 | 繞過 admin disable | server enforce：test_mode=true + status≠enabled → 403 unless author/admin |
 | T4 | 無限迴圈 / fork bomb / OOM | DoS worker | rlimit + nproc + 8-concurrent semaphore → queue_full |
-| T5 | 子程序 escape worker container | 影響 host | `cap_drop:ALL` + `cap_add:[SETUID, SETGID]` 限定、seccomp、AppArmor/SELinux confine、read-only rootfs、daemon 跑 `sandbox:65533`、subprocess 跑 `subproc:65534`（無 supplementary group）、no-new-privileges、不掛 docker.sock |
+| T5 | 子程序 escape worker container | 影響 host | `cap_drop:ALL` + `cap_add:[SETUID, SETGID, CHOWN]` 容器限定（CHOWN 只 entrypoint 用、daemon setpriv 後沒）、seccomp、AppArmor/SELinux confine、read-only rootfs、daemon 跑 `sandbox:65533`、subprocess 跑 `subproc:65534`（無 supplementary group）、no-new-privileges、不掛 docker.sock |
 | T6 | Valves XSS | XSS 拿 admin token | values JSON-stringify 顯示；description 走既有 markdown sanitize |
 | T7 | Token 出現在明文位置 | Credential 外洩 | **主防線**：egress proxy 不通 = secret 出不去（T1 mitigation 順帶處理）；**次防線**：admin Valves AES-256-GCM at rest、UI password input、GET 不回明文、minimal valve injection（subprocess 只拿到 schema 宣告的欄位）；**兜底**：substring redaction（best effort、擋誤 leak、不 expect 擋 active attacker） |
-| T8 | CSP↔Worker 沒驗證 | bypass CSP | shared secret `X-Functions-Secret`；worker 只 listen docker compose internal network |
+| T8 | CSP↔Worker 沒驗證 | bypass CSP | shared secret `X-Functions-Api-Secret`；worker 只 listen docker compose internal network |
 | T9 | Marketplace 釣魚（命名相似 slug） | 誤觸發惡意 button | UI 強制顯示 author + forked_from + "new" 標示；user role 看不到 code 也降低偽造能力；abuse report 入口 |
 | T10 | SQL injection（slug / tag） | DB compromise | ORM + parameterized；slug regex `^[a-z0-9][a-z0-9-]{0,63}$`；tag 限 20 字元 |
 | **T11** | **Social engineering via host_command**（dev 寫 button 把 composer 設成釣魚字串、彈 modal 假冒系統訊息、link.open 騰空跳到惡意站） | 使用者被誘導執行操作 | host_command 白名單動詞（無 raw HTML / JS）；URL allowlist regex；modal content 走 DOMPurify；audit 全文（事後追源）；abuse report；admin disable kill switch；user role 看不到 code 仍可看 metadata 警示「button 來自 author X」 |
@@ -1129,18 +1167,20 @@ Tabs：
 | **T21** | **subprocess 繼承 container netns → 即使分兩層、user code 仍可 reach 跟 sandbox 同 container 連到的所有 network** | sandbox 為了接受 control 流量被迫上 control-net → subprocess 也上 control-net → 反向 reach worker-api / 偷 secret | sandbox container **不在任何 control plane network**；api ↔ sandbox 走 **docker volume + Unix socket**，跨容器但不跨網路；sandbox 唯一 network 是 functions-net（exec）或 extract-net（extract） |
 | **T22** | **sandbox container 持有 secret env → user code 從 `/proc/1/environ` 讀到** | secret 外洩、可重用呼叫 worker-api / CSP | sandbox container env 內**完全沒 ANILA secret**；IPC 認證靠 filesystem permission（volume mount 限 worker-api + 對應 sandbox），不是 token-based |
 | **T23** | **container 內 daemon 跟 user subprocess 同 UID → user code 可 connect 自己 daemon 的 socket、讀 job 目錄、偷 concurrent run 的 valves** | 同 sandbox 容器內 cross-run secret leak、並可向 daemon 假裝是 worker-api 連線製造混亂 | 容器內三層 UID 隔離（§5.8）：daemon `sandbox:65533` 在 `anila-jobs:65530` group；subprocess `subproc:65534` 不在；socket / job dir mode 0660/0770 owner sandbox:anila-jobs；subprocess 連 / 列 / 讀都 EACCES |
-| **T24** | **`cap_drop:ALL` 跟 daemon 需要 setuid 降權矛盾** | 沒能力降權 → subprocess 跟 daemon 同 UID → T23 修不掉 | `cap_drop:[ALL]` + `cap_add:[SETUID, SETGID]`；只給 daemon 降 UID 的 cap，不給 `CAP_DAC_OVERRIDE` / `CAP_SYS_ADMIN`；subprocess 降權後遇 `no-new-privileges:true` 跟剩餘 `cap_drop:ALL`，無法爬回 |
+| **T24** | **`cap_drop:ALL` 跟 daemon 需要 setuid 降權矛盾** | 沒能力降權 → subprocess 跟 daemon 同 UID → T23 修不掉 | 容器 `cap_drop:[ALL]` + `cap_add:[SETUID, SETGID, CHOWN]`；entrypoint 短暫 root 用 CHOWN 處理 volume，再 `setpriv` 降權帶 ambient SETUID/SETGID；subprocess 起來後配 `no-new-privileges:true` + 剩餘 `cap_drop:ALL`、無法爬回 |
 
 ### 7.3 Secrets / Key 管理（**分層 + sandbox 完全沒 secret**）
 
 **Secret 清單與持有者**：
 
-| Secret | 用途 | 持有者 |
-|---|---|---|
-| `ANILA_FUNCTIONS_API_SECRET` | CSP → worker-api 認證 | CSP container env、worker-api container env |
-| `ANILA_FUNCTIONS_VALVES_KEY` | admin Valves AES-256-GCM 加解密 | CSP container env only |
-| ~~CSP → sandbox 直接 secret~~ | ~~不存在~~ | ~~sandbox 完全不接 CSP 流量~~ |
-| ~~worker-api → sandbox secret~~ | ~~不存在~~ | ~~改用 volume + Unix socket，filesystem permission 認證~~ |
+| Secret | HTTP header 名 | 用途 | 持有者 |
+|---|---|---|---|
+| `ANILA_FUNCTIONS_API_SECRET` | **`X-Functions-Api-Secret`** | CSP → worker-api 認證 | CSP container env、worker-api container env |
+| `ANILA_FUNCTIONS_VALVES_KEY` | — | admin Valves AES-256-GCM 加解密 | CSP container env only |
+| ~~CSP → sandbox 直接 secret~~ | — | ~~不存在~~ | ~~sandbox 完全不接 CSP 流量~~ |
+| ~~worker-api → sandbox secret~~ | — | ~~不存在~~ | ~~改用 volume + Unix socket，filesystem permission 認證~~ |
+
+⚠️ **header 名跟 env name 不同**：HTTP header 是 `X-Functions-Api-Secret`（HTTP header convention，hyphenated）；ENV 是 `ANILA_FUNCTIONS_API_SECRET`（ENV convention，full prefix）。值是同一個 string、worker-api 比對 header 跟 env 是否匹配。
 
 **為什麼 worker-api → sandbox 不需要 token**：兩個 container 共享 docker volume；socket 檔案 `0660` owner `sandbox:anila-jobs`（worker-api 的 `web` user 在 `anila-jobs` supplementary group），其他 container 沒 mount 進來、看不到；user subprocess（`subproc` uid 65534、不在 anila-jobs）連、列、讀都 `EACCES`。攻擊者要偽造 IPC 必須先攻破 worker-api 或 sandbox 任一個的 fs 權限 — 而 sandbox 沒 ANILA secret、worker-api 是 trusted。
 
@@ -1450,7 +1490,7 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 **Sprint 3** — 網路拓樸 + container hardening + UID 隔離 + sandbox tests
 - Docker compose 更新（2 個 internal network + 2 個 docker volume + 4 個 services + squid egress proxy）
 - Image build：sandbox image 內 create `sandbox:65533`（in `anila-jobs:65530`）+ `subproc:65534`（不在 anila-jobs）；worker-api image 內 create `web:65532`（in anila-jobs）
-- sandbox 容器：`cap_drop:ALL` + `cap_add:[SETUID, SETGID]`（daemon 降權需要）+ seccomp + read-only rootfs + tmpfs + `mem_limit` + `pids_limit` + env partial-scrub + **無任何 ANILA secret env**
+- sandbox 容器：`cap_drop:ALL` + `cap_add:[SETUID, SETGID, CHOWN]`（CHOWN 給 entrypoint 初始化 volume；SETUID/SETGID 給 daemon 降權）+ seccomp + read-only rootfs + tmpfs + `mem_limit` + `pids_limit` + env partial-scrub + **無任何 ANILA secret env**
 - worker-api 容器：trusted 但仍 harden（uid 65532, read-only, cap_drop:ALL, mem_limit）
 - entrypoint：daemon 啟動時 chown `/jobs-*` 為 `sandbox:anila-jobs` mode 0770、bind socket mode 0660 owner sandbox:anila-jobs
 - daemon spawn subprocess 用 `subprocess.Popen(user='subproc', group='subproc')` 降權
@@ -1554,3 +1594,12 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 | Subprocess ambient cap | 繼承 daemon ambient（不安全）/ daemon spawn 前 clear ambient | **daemon clear ambient**：用 `prctl(PR_CAP_AMBIENT_CLEAR_ALL)` 在 `preexec_fn` 裡執行；確保 subprocess 沒 SETUID/SETGID |
 | Disk 暫存檔案 | 留 `<run_id>.*` cleanup 描述 / 完全清乾淨 | **完全清乾淨**：v1 純 socket-stream、不寫 disk；spec 對齊 |
 | Socket owner/mode 描述 | `worker-api:sandbox` / `sandbox:anila-jobs` | **`sandbox:anila-jobs`**（worker-api 透過 supplementary group 進）：spec 全文統一 |
+
+### 第八輪修法（Codex round-7 review，2026-04-29）
+
+| 決定 | 選項 | 結果 |
+|---|---|---|
+| Setpriv path 失敗的 fallback | file capability + setcap binary（被 no_new_privs 擋）/ 砍 no_new_privs / spawn-helper process / 設計死路 | **spawn-helper process**：獨立小 process（保留 SETUID cap）、daemon 透過 internal socket 請它 setuid+exec subprocess；helper 不跑 user code、攻擊面極小；列為次選、設計死路是 last resort |
+| Dockerfile 範本 user / entrypoint | `USER 65533` + `ENTRYPOINT python` / `USER 0` + `entrypoint.sh` | **`USER 0` + `sandbox-entrypoint.sh`**（含 setpriv chain）：對齊 §5.8 的 setpriv path |
+| sandbox cap_add 寫法 | `[SETUID, SETGID]` / `[SETUID, SETGID, CHOWN]` | **`[SETUID, SETGID, CHOWN]`**：CHOWN 給 entrypoint 初始化 volume，setpriv 後 daemon 沒 CHOWN；spec 全文統一 |
+| HTTP header / ENV 命名 | `X-Functions-Secret` / `X-Functions-Api-Secret` + `ANILA_FUNCTIONS_API_SECRET` 兩種 | **header `X-Functions-Api-Secret`、env `ANILA_FUNCTIONS_API_SECRET`**（明文 spec 註明 header / env naming convention 不同但值同步） |
