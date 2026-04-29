@@ -287,6 +287,18 @@ async def _serve() -> None:
     # Restrict socket access: owner = sandbox uid, group = anila-jobs.
     # Worker-api's ``web`` user is in anila-jobs supplementary group;
     # ``subproc`` user (user code) is NOT — so user code can't connect.
+    #
+    # bind() creates the socket with the daemon's primary gid (sandbox,
+    # 65533), not the parent dir's group. We explicitly chgrp to
+    # anila-jobs so worker-api's supplementary-group access works.
+    # uid=-1 = leave owner alone.
+    import grp
+    try:
+        anila_jobs_gid = grp.getgrnam("anila-jobs").gr_gid
+        os.chown(SOCKET_PATH, -1, anila_jobs_gid)
+    except KeyError:
+        # Fallback if group lookup fails — use the conventional GID.
+        os.chown(SOCKET_PATH, -1, 65530)
     os.chmod(SOCKET_PATH, 0o660)
 
     logger.info("sandbox daemon listening on %s", SOCKET_PATH)

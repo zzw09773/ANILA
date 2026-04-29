@@ -75,6 +75,13 @@ services:
       # 兩個都保持 unset。
       ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-}"
       ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-}"
+      # ANILA Functions v1: CSP needs to call worker-api (with shared
+      # secret in X-Functions-Api-Secret header) and decrypt admin
+      # Valves with the AES-256-GCM key.
+      ANILA_FUNCTIONS_WORKER_API_URL: "${ANILA_FUNCTIONS_WORKER_API_URL:-http://anila-functions-worker-api:8000}"
+      ANILA_FUNCTIONS_API_SECRET: "${ANILA_FUNCTIONS_API_SECRET:-}"
+      ANILA_FUNCTIONS_VALVES_KEY: "${ANILA_FUNCTIONS_VALVES_KEY:-}"
+      ANILA_FUNCTIONS_LINK_OPEN_ALLOWLIST: "${ANILA_FUNCTIONS_LINK_OPEN_ALLOWLIST:-}"
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "60"
       # Service-to-service credential: CSP injects this into downstream agent calls.
@@ -509,7 +516,13 @@ services:
       context: ./anila-functions-worker
       dockerfile: Dockerfile.worker_api
     container_name: anila-functions-worker-api
-    user: "65532:65532"
+    # Use the user name from the Dockerfile (USER web) so supplementary
+    # groups (anila-jobs, gid 65530) resolve from /etc/group. Numeric
+    # `user: "65532:65532"` skips that lookup and the process starts
+    # with only its primary gid — IPC socket access (mode 0660 owner
+    # sandbox:anila-jobs) then breaks for worker-api.
+    group_add:
+      - "65530"  # anila-jobs (IPC volume access)
     read_only: true
     tmpfs:
       - "/tmp:size=16m"
