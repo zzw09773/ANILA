@@ -19,13 +19,24 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends util-linux libcap2-bin && \
     rm -rf /var/lib/apt/lists/*
 
-# Three identities: `web` is for symmetry with worker-api image (unused
-# here but keeps GID layout aligned), `sandbox` runs the daemon,
-# `subproc` runs user code. `anila-jobs` (gid 65530) is the supplementary
-# group that gates IPC volume access — sandbox is in it, subproc is NOT.
+# Two new identities + reuse the base image's `nobody:nogroup` (65534).
+#
+# * `anila-jobs` (gid 65530) — supplementary group gating IPC volume
+#   access. sandbox is in it, nobody is NOT.
+# * `sandbox` (uid/gid 65533) — runs the daemon. Created with explicit
+#   primary group because `useradd -g <gid>` requires the group to
+#   already exist.
+# * user-code subprocess uses the base image's existing `nobody`
+#   account (uid 65534, primary group `nogroup` gid 65534). We
+#   deliberately do NOT create a separate `subproc` user — gid 65534
+#   is already taken by `nogroup` in python:3.12-slim, and `nobody`
+#   already has the exact properties we want (no supplementary
+#   groups, no shell, no home dir of consequence). The daemon refers
+#   to subprocess identity by numeric uid only (see SUBPROC_UID
+#   env), so the username doesn't matter.
 RUN groupadd -g 65530 anila-jobs && \
-    useradd -u 65533 -g 65533 -G anila-jobs -m -s /usr/sbin/nologin sandbox && \
-    useradd -u 65534 -g 65534 -m -s /usr/sbin/nologin subproc
+    groupadd -g 65533 sandbox && \
+    useradd -u 65533 -g 65533 -G anila-jobs -m -s /usr/sbin/nologin sandbox
 
 WORKDIR /app
 COPY requirements.txt .
