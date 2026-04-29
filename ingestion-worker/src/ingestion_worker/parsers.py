@@ -38,14 +38,22 @@ from anila_core.ingestion.errors import ParseError
 
 def extract_text(
     filename: str, content: bytes, mime_type: str | None = None
-) -> tuple[str, dict[str, Any]]:
-    """Return ``(text, metadata)`` for one uploaded blob.
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    """Return ``(text, metadata, images)`` for one uploaded blob.
 
     ``metadata`` is the parser's own metadata dict augmented with:
     - ``format``: extension key the registry resolved (e.g. ``"pdf"``).
     - ``page_count``: present iff the parser counted pages.
     - ``has_page_boundaries``: True iff text contains ``\f`` markers
       that the ``pdf-page`` chunker can split on.
+
+    ``images`` is the parser's per-image map: ``{image_id: ImageRef}``
+    where each ``ImageRef`` carries ``image_bytes``, ``mime``, ``page``
+    and an empty ``caption``. The caller can pass these to a VLM to
+    fill in ``caption`` and rewrite ``[[IMAGE:<id>]]`` placeholders
+    in ``text`` before chunking. Empty dict for non-imagey formats
+    (txt/md/rtf/etc.) — callers should ``if images:`` before doing
+    work.
 
     The ``content`` parameter is the raw uploaded bytes; we materialise
     them onto a temp file (the registry's parsers are file-path based,
@@ -136,4 +144,8 @@ def extract_text(
         page_count and int(page_count) > 1 and "\f" in text
     )
 
-    return text, metadata
+    # parsed.images may be empty (.txt etc.) or unset on older parser
+    # versions; default to {} so the caller's ``if images:`` is safe
+    # without an attribute check.
+    images = getattr(parsed, "images", None) or {}
+    return text, metadata, images

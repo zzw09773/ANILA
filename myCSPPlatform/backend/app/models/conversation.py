@@ -14,6 +14,20 @@ class Conversation(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     agent_id = Column(Integer, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
     title = Column(String(255), nullable=False, default="新對話")
+    # Free-form origin tag — which frontend created this conversation.
+    # Today's values: 'anila-ui' / 'anilalm' / NULL (legacy = ANILA UI).
+    # See migration 0023 for the rationale.
+    origin = Column(String(32), nullable=True)
+    # Knowledge-base scope for ANILALM. NULL means "not collection-scoped"
+    # (anila-ui rows and pre-0024 legacy). When origin='anilalm' the API
+    # layer requires this to be set so the sidebar can filter by the
+    # currently-open knowledge base. ON DELETE SET NULL so deleting a
+    # collection doesn't drag chat history into the void. See 0024.
+    collection_id = Column(
+        Integer,
+        ForeignKey("ingestion_collections.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     classified = Column(Boolean, nullable=False, default=False, server_default="false")
     classified_at = Column(DateTime, nullable=True)
     classified_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

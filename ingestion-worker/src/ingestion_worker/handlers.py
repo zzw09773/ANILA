@@ -16,6 +16,8 @@ is the embedding endpoint, not parsing.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Any
@@ -30,6 +32,202 @@ from anila_core.storage.adapters.pgvector_store import CollectionScopedPgVectorS
 from ingestion_worker.embedder import Embedder
 from ingestion_worker.parsers import extract_text
 from ingestion_worker.settings import settings
+
+
+logger = logging.getLogger(__name__)
+
+
+# ── VLM caption injection ────────────────────────────────────────────
+#
+# Built lazily on first use so import-time has no network dependency.
+# A single VisionProvider is reused across documents; httpx connection
+# pooling keeps this efficient even on image-heavy queues.
+_vision_provider: Any | None = None
+
+
+def _get_vision_provider() -> Any | None:
+    """Return a cached VisionProvider, or None if VLM caption is off.
+
+    Returns None when:
+      * ``settings.enable_image_captions`` is False, OR
+      * ``settings.vision_url`` is empty (deployment doesn't have a VLM).
+
+    Either case is a "captioning skipped" fast path — callers should
+    treat None as "no captioning available, leave placeholders alone".
+    """
+    global _vision_provider
+    if not settings.enable_image_captions:
+        return None
+    if not settings.vision_url:
+        return None
+    if _vision_provider is None:
+        # Lazy import keeps the AgenticRAG dep optional at module load
+        # — the worker boots fine even if vision isn't configured.
+        from agentic_rag.providers.vision import VisionProvider
+
+        _vision_provider = VisionProvider(
+            base_url=settings.vision_url,
+            api_key=settings.vision_api_key,
+            model=settings.vision_model,
+            timeout=settings.vision_timeout_seconds,
+            verify_ssl=settings.vision_verify_ssl,
+            max_image_bytes=settings.vision_max_image_bytes,
+        )
+    return _vision_provider
+
+
+# Reasoning-preamble patterns gemma4 likes to emit even when the prompt
+# forbids it. We strip them at ingest time rather than fighting the
+# model — same trick Studio does for its slide-spec JSON parser.
+import re as _re
+
+_THINK_BLOCK_RE = _re.compile(
+    r"<think(?:ing)?>.*?</think(?:ing)?>", _re.DOTALL | _re.IGNORECASE,
+)
+# A "thought\n* ..." preamble — sometimes the model writes a markdown
+# bullet list of its own reasoning before the actual answer. We strip
+# from the literal "thought" prefix up to the first paragraph break that
+# isn't a continuation of the bullets.
+_THOUGHT_PREAMBLE_RE = _re.compile(
+    r"^\s*thought\s*\n(?:[*\-\s].*?\n|\s*\n)*", _re.IGNORECASE,
+)
+# Maximum chars we keep per caption. Longer captions tend to be
+# meta-commentary rather than image content; truncating keeps chunks
+# focused and embedding cost bounded.
+_CAPTION_MAX_CHARS = 600
+
+
+def _clean_caption(raw: str) -> str:
+    """Trim reasoning preamble + truncate captions to a sensible size.
+
+    gemma4 emits a "thought\\n* ..." preamble even when the prompt asks
+    for terse output. We strip the obvious shapes and fall back to
+    "take the longest natural-language paragraph" for messier outputs.
+    Empty input → empty output (caller decides whether to keep the
+    placeholder when caption fails).
+    """
+    if not raw:
+        return ""
+    s = _THINK_BLOCK_RE.sub("", raw).strip()
+    s = _THOUGHT_PREAMBLE_RE.sub("", s).strip()
+    # If the model emitted multiple paragraphs (e.g. summary + reasoning),
+    # the LAST paragraph is almost always the actual description — gemma4
+    # writes its conclusion at the end. Take the last non-bulleted block
+    # that has at least 20 chars so we don't keep a "Q1 Q2 Q3" header
+    # fragment on its own.
+    paras = [p.strip() for p in _re.split(r"\n\s*\n", s) if p.strip()]
+    if paras:
+        # Filter paras that are purely bullets ("*   x\n*   y") — keep
+        # them only if they're ALL we have.
+        non_bullet = [p for p in paras if not p.startswith("*") and len(p) >= 20]
+        s = (non_bullet[-1] if non_bullet else paras[-1]).strip()
+    # Strip leading markdown markers and excessive whitespace.
+    s = _re.sub(r"^[\*\-\s]+", "", s)
+    s = _re.sub(r"\s+", " ", s).strip()
+    if len(s) > _CAPTION_MAX_CHARS:
+        s = s[:_CAPTION_MAX_CHARS].rstrip() + "…"
+    return s
+
+
+async def _caption_images_into(text: str, images: dict[str, Any]) -> str:
+    """Replace every ``[[IMAGE:<id>]]`` placeholder in ``text`` with a
+    VLM-generated caption.
+
+    Behaviour:
+      * No-op when there's no configured vision provider, no images, or
+        the text contains no placeholders. Returns ``text`` unchanged.
+      * Caption requests run with bounded parallelism
+        (``settings.vision_concurrency``) so we don't melt the GPU when
+        a 200-page PDF has 50 charts.
+      * A single failed caption does NOT fail the whole ingest — the
+        placeholder is replaced with a neutral ``[image]`` so chunking
+        proceeds. Only logs at warning level; an operator can correlate
+        with the VLM endpoint's logs if a pattern appears.
+
+    Replacement format embeds the caption in a sentinel-flanked block so
+    the chunker (and any future debugger) can tell "this came from VLM"
+    from "this was prose":
+      ``[圖片描述: <caption>]``
+    Curly Chinese brackets are deliberately NOT used — kept ASCII-safe
+    so the OpenCC-style normalization passes downstream don't fight it.
+    """
+    if not images or "[[IMAGE:" not in text:
+        return text
+    vision = _get_vision_provider()
+    if vision is None:
+        # Configured-off path. The chunker's existing fallback turns
+        # remaining placeholders into ``[image]`` tokens, so retrieval
+        # behaviour is unchanged from before this feature.
+        logger.info(
+            "Image captioning skipped (enable=%s url_set=%s) — %d image(s) "
+            "left as placeholders.",
+            settings.enable_image_captions, bool(settings.vision_url),
+            len(images),
+        )
+        return text
+
+    semaphore = asyncio.Semaphore(max(1, settings.vision_concurrency))
+
+    async def _caption_one(image_id: str, ref: Any) -> tuple[str, str]:
+        # Skip oversized images at the application layer — VisionProvider
+        # raises on max_image_bytes too but that surfaces as a generic
+        # error log; a structured fallback caption is friendlier.
+        size = len(getattr(ref, "image_bytes", b"") or b"")
+        if size > settings.vision_max_image_bytes:
+            logger.warning(
+                "Image %s skipped: %d bytes > limit %d",
+                image_id, size, settings.vision_max_image_bytes,
+            )
+            return image_id, ""
+        try:
+            async with semaphore:
+                caption = await vision.describe_image(
+                    ref.image_bytes,
+                    mime=getattr(ref, "mime", None) or "image/png",
+                )
+            return image_id, _clean_caption(caption)
+        except Exception as e:  # noqa: BLE001 — best-effort; fall back gracefully
+            logger.warning(
+                "VLM caption failed for image %s (%s); using fallback marker.",
+                image_id, type(e).__name__,
+            )
+            return image_id, ""
+
+    results = await asyncio.gather(
+        *(_caption_one(img_id, ref) for img_id, ref in images.items()),
+        return_exceptions=False,
+    )
+
+    captions: dict[str, str] = {img_id: cap for img_id, cap in results}
+    out_chunks: list[str] = []
+    cursor = 0
+    needle = "[[IMAGE:"
+    while True:
+        i = text.find(needle, cursor)
+        if i < 0:
+            out_chunks.append(text[cursor:])
+            break
+        out_chunks.append(text[cursor:i])
+        end = text.find("]]", i + len(needle))
+        if end < 0:
+            # Malformed placeholder — leave as-is and stop scanning to
+            # avoid infinite loop. Chunker's existing fallback handles
+            # the leftover token gracefully.
+            out_chunks.append(text[i:])
+            break
+        image_id = text[i + len(needle) : end]
+        cap = captions.get(image_id, "")
+        if cap:
+            out_chunks.append(f"[圖片描述：{cap}]")
+        else:
+            # Captioning failed or returned empty — keep the existing
+            # placeholder shape so the chunker's IMAGE-leaf fallback
+            # still kicks in (it strips the `[[IMAGE:id]]` token to
+            # `[image]` for indexing).
+            out_chunks.append(text[i : end + 2])
+        cursor = end + 2
+
+    return "".join(out_chunks)
 
 
 async def _load_document_meta(
@@ -230,7 +428,22 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         await _update_job(pool, arq_job_id, progress_pct=15, progress_message="parsing")
         with open(storage_path, "rb") as f:
             blob = f.read()
-        text, parse_meta = extract_text(meta["filename"], blob, meta["mime_type"])
+        text, parse_meta, images = extract_text(
+            meta["filename"], blob, meta["mime_type"],
+        )
+
+        # 1a. Caption embedded images via VLM (when configured).
+        # Replaces ``[[IMAGE:<id>]]`` placeholders with VLM-generated
+        # descriptions BEFORE chunking, so charts/diagrams become
+        # searchable text instead of opaque tokens. No-op if disabled
+        # or no images. See _caption_images_into for the full contract.
+        if images:
+            await _update_job(
+                pool, arq_job_id,
+                progress_pct=22,
+                progress_message=f"captioning {len(images)} image(s)",
+            )
+            text = await _caption_images_into(text, images)
 
         # 2. Chunk — bounded by document size, also fast.
         # Semantic strategies need embeddings up-front: pre-split into
