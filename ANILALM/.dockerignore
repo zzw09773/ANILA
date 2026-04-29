@@ -1,0 +1,12 @@
+node_modules
+dist
+dist-ssr
+.vite
+*.local
+.env
+.env.local
+.git
+.DS_Store
+*.log
+_design
+README.md

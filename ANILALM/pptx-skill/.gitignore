@@ -1,0 +1,16 @@
+# Vendored deps for on-prem / air-gapped pptx generation. Yes, we DO commit
+# node_modules — that's the whole point of "vendor mode". The skill is meant
+# to be a single self-contained artifact: copy the directory, run, no npm.
+#
+# To refresh:
+#   rm -rf node_modules package-lock.json && npm install
+#   git add -A && git commit
+#
+# Things we still don't want under git:
+*.log
+.DS_Store
+
+# The native sharp prebuilt has platform-specific binaries; keep them all
+# (linux-x64 + linux-arm64 cover both x86 servers and Apple-Silicon dev
+# machines). Don't add platform exclusions here — that defeats the air-gap
+# goal.

@@ -1,0 +1,14 @@
+{
+  "name": "anilalm-pptx-skill",
+  "version": "0.1.0",
+  "description": "Vendored runtime deps for the pptx-skill (on-prem, air-gap-friendly).",
+  "private": true,
+  "dependencies": {
+    "express": "^5.2.1",
+    "pptxgenjs": "^3.12.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-icons": "^5.4.0",
+    "sharp": "^0.33.5"
+  }
+}

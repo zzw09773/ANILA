@@ -1,0 +1,1929 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ANILALM — Interactive Prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+TC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body { font-family: "Inter", "Noto Sans TC", system-ui, sans-serif; background: #0B0D10; color: #E8EAED; transition: background 220ms ease, color 220ms ease; }
+  body.light { background: #FAFAF7; color: #1A1A1A; }
+  *, *::before, *::after { box-sizing: border-box; }
+  button, input, textarea { font-family: inherit; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  @keyframes slideUp { from { opacity: 0; transform: translateY(12px) scale(.98); } to { opacity: 1; transform: none; } }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.25); border-radius: 999px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(128,128,128,0.5); }
+</style>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="env,react">
+const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+// ─── Theme tokens ──────────────────────────────────────────────────
+const TOKENS = {
+  dark: {
+    bg: "#0B0D10", surface: "#13161B", surface2: "#191D24", elevated: "#20242C",
+    border: "#262B34", borderStrong: "#323844",
+    text: "#E8EAED", textMuted: "#9AA3AE", textSubtle: "#6B7280",
+    accent: "#7C7BFF", accentHover: "#8E8DFF",
+    accentSoft: "rgba(124,123,255,0.14)", accentBorder: "rgba(124,123,255,0.32)",
+    success: "#3DD68C", warning: "#F4B740", danger: "#FF6B6B",
+    chipBg: "#1A1F27",
+  },
+  light: {
+    bg: "#FAFAF7", surface: "#FFFFFF", surface2: "#F5F5F0", elevated: "#FFFFFF",
+    border: "#E8E6DF", borderStrong: "#D4D2CB",
+    text: "#1A1A1A", textMuted: "#5C6470", textSubtle: "#8B919C",
+    accent: "#5957E8", accentHover: "#4A48D6",
+    accentSoft: "rgba(89,87,232,0.10)", accentBorder: "rgba(89,87,232,0.28)",
+    success: "#2BB673", warning: "#D89B1F", danger: "#E5484D",
+    chipBg: "#F2F1EB",
+  },
+};
+
+const ThemeContext = React.createContext({ theme: "dark", t: TOKENS.dark, toggle: () => {} });
+const useTheme = () => React.useContext(ThemeContext);
+
+// ─── Icons ─────────────────────────────────────────────────────────
+const Icon = ({ name, size = 16, stroke = "currentColor", strokeWidth = 1.75, fill = "none", style }) => {
+  const props = { width: size, height: size, viewBox: "0 0 24 24", fill, stroke, strokeWidth, strokeLinecap: "round", strokeLinejoin: "round", style };
+  const p = {
+    book: <><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></>,
+    plus: <><path d="M12 5v14M5 12h14" /></>,
+    search: <><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></>,
+    settings: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></>,
+    trash: <><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></>,
+    file: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></>,
+    upload: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></>,
+    chevL: <><polyline points="15 18 9 12 15 6" /></>,
+    chevR: <><polyline points="9 18 15 12 9 6" /></>,
+    msg: <><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></>,
+    send: <><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></>,
+    sparkle: <><path d="M12 3l1.9 5.5L19 10l-5.1 1.5L12 17l-1.9-5.5L5 10l5.1-1.5z" /><path d="M19 3v3M21 4.5h-3M5 17v3M6.5 18.5h-3" /></>,
+    layers: <><polygon points="12 2 2 7 12 12 22 7 12 2" /><polyline points="2 17 12 22 22 17" /><polyline points="2 12 12 17 22 12" /></>,
+    sun: <><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" /></>,
+    moon: <><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" /></>,
+    panel: <><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M9 3v18" /></>,
+    mic: <><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8" /></>,
+    deck: <><rect x="2" y="3" width="20" height="14" rx="2" /><line x1="8" y1="21" x2="16" y2="21" /><line x1="12" y1="17" x2="12" y2="21" /></>,
+    video: <><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" /></>,
+    git: <><circle cx="6" cy="6" r="2" /><circle cx="18" cy="6" r="2" /><circle cx="12" cy="18" r="2" /><path d="M6 8v3a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V8M12 13v3" /></>,
+    flash: <><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></>,
+    quiz: <><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01" /></>,
+    chart: <><line x1="12" y1="20" x2="12" y2="10" /><line x1="18" y1="20" x2="18" y2="4" /><line x1="6" y1="20" x2="6" y2="16" /></>,
+    table: <><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18M3 15h18M9 3v18M15 3v18" /></>,
+    paperclip: <><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" /></>,
+    arrowR: <><line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" /></>,
+    folder: <><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></>,
+    pin: <><line x1="12" y1="17" x2="12" y2="22" /><path d="M5 17h14l-1.5-9h-11z" /><path d="M9 8V3h6v5" /></>,
+    check: <><polyline points="20 6 9 17 4 12" /></>,
+    x: <><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></>,
+    edit: <><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></>,
+    quote: <><path d="M3 21c3-1 5-3 5-7V5H3v9h3" /><path d="M17 21c3-1 5-3 5-7V5h-5v9h3" /></>,
+    logout: <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></>,
+    play: <><polygon points="6 4 20 12 6 20" /></>,
+    dots: <><circle cx="12" cy="5" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="12" cy="19" r="1" /></>,
+    grid: <><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></>,
+  };
+  return <svg {...props}>{p[name]}</svg>;
+};
+
+// ─── Common bits ───────────────────────────────────────────────────
+const ThemeSwitch = () => {
+  const { theme, toggle, t } = useTheme();
+  return (
+    <button onClick={toggle} aria-label="Toggle theme"
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 6,
+        padding: "5px 10px", borderRadius: 999,
+        background: t.surface2, border: `1px solid ${t.border}`,
+        color: t.text, cursor: "pointer", fontSize: 11.5, fontWeight: 500,
+        transition: "all 150ms",
+      }}>
+      <Icon name={theme === "dark" ? "moon" : "sun"} size={13} stroke={t.text} />
+      {theme === "dark" ? "深色" : "淺色"}
+    </button>
+  );
+};
+
+const Cite = ({ children, onClick }) => {
+  const { t } = useTheme();
+  return (
+    <span onClick={onClick} style={{
+      display: "inline-grid", placeItems: "center",
+      minWidth: 18, height: 18, padding: "0 5px",
+      background: t.accentSoft, color: t.accent,
+      borderRadius: 4, fontSize: 10.5, fontWeight: 600,
+      margin: "0 2px", verticalAlign: "1px", cursor: "pointer",
+      border: `1px solid ${t.accentBorder}`,
+    }}>{children}</span>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════════
+//  LOGIN — 3 variants
+// ═══════════════════════════════════════════════════════════════════
+const useLoginLogic = (onLogin) => {
+  const [tab, setTab] = useState("login");
+  const [u, setU] = useState("zzw");
+  const [p, setP] = useState("password");
+  const [err, setErr] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const submit = (e) => {
+    if (e) e.preventDefault();
+    setErr(null);
+    if (!u.trim() || u.length < 3) return setErr("使用者名稱至少 3 個字元");
+    if (!p || p.length < 6) return setErr("密碼至少 6 個字元");
+    setLoading(true);
+    setTimeout(() => { setLoading(false); onLogin(u); }, 700);
+  };
+
+  return { tab, setTab, u, setU, p, setP, err, setErr, loading, submit };
+};
+
+const Login = ({ onLogin }) => <LoginTerminal onLogin={onLogin} />;
+
+// ─── Terminal — CLI / monospace aesthetic ──────────────────────────
+const LoginTerminal = ({ onLogin }) => {
+  const { t, theme, toggle: toggleTheme } = useTheme();
+  const { tab, setTab, u, setU, p, setP, err, loading, submit } = useLoginLogic(onLogin);
+  const [focused, setFocused] = useState("u");
+  const [time, setTime] = useState(() => new Date());
+
+  useEffect(() => {
+    const id = setInterval(() => setTime(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const mono = `ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace`;
+  const bg = theme === "dark" ? "#08090C" : "#F5F4EE";
+  const ink = theme === "dark" ? "#E6E8EA" : "#1A1A1A";
+  const dim = theme === "dark" ? "#6B7280" : "#8B919C";
+  const ok = "#3DD68C";
+  const accent = theme === "dark" ? "#7C7BFF" : "#5957E8";
+  const line = theme === "dark" ? "#1E2128" : "#E0DDD3";
+
+  const ts = time.toTimeString().slice(0, 8);
+
+  return (
+    <div style={{
+      minHeight: "100vh", background: bg, color: ink, fontFamily: mono,
+      display: "flex", flexDirection: "column",
+      backgroundImage: theme === "dark"
+        ? "radial-gradient(circle at 20% 0%, rgba(124,123,255,0.05), transparent 50%)"
+        : "radial-gradient(circle at 20% 0%, rgba(89,87,232,0.04), transparent 50%)",
+    }}>
+      {/* Top bar — terminal chrome */}
+      <div style={{
+        height: 32, padding: "0 14px", display: "flex", alignItems: "center", gap: 10,
+        borderBottom: `1px solid ${line}`,
+        background: theme === "dark" ? "#0C0E13" : "#EFEDE5",
+      }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {["#FF5F56", "#FFBD2E", "#27C93F"].map(c => (
+            <span key={c} style={{ width: 11, height: 11, borderRadius: "50%", background: c }} />
+          ))}
+        </div>
+        <span style={{ fontSize: 11, color: dim }}>~/anilalm — auth — 80×24</span>
+        <button onClick={toggleTheme} title="切換主題" style={{
+          marginLeft: "auto", padding: "3px 9px", border: `1px solid ${line}`,
+          background: "transparent", color: dim, fontSize: 10.5, fontFamily: mono,
+          cursor: "pointer", borderRadius: 0, letterSpacing: 0.5,
+          display: "inline-flex", alignItems: "center", gap: 6,
+          transition: "all 150ms",
+        }}
+          onMouseEnter={e => { e.currentTarget.style.color = ink; e.currentTarget.style.borderColor = accent; }}
+          onMouseLeave={e => { e.currentTarget.style.color = dim; e.currentTarget.style.borderColor = line; }}
+        >
+          <span style={{ color: accent }}>$</span> theme --set <span style={{ color: ink }}>{theme === "dark" ? "light" : "dark"}</span>
+        </button>
+        <span style={{ fontSize: 11, color: dim, marginLeft: 10 }}>{ts}</span>
+      </div>
+
+      {/* Body */}
+      <div style={{ flex: 1, display: "grid", placeItems: "center", padding: 24 }}>
+        <div style={{ width: "100%", maxWidth: 620, fontSize: 13.5, lineHeight: 1.85 }}>
+          {/* ASCII logo */}
+          <pre style={{
+            margin: 0, color: accent, fontSize: 14, lineHeight: 1.05, fontWeight: 700,
+            letterSpacing: 0,
+          }}>{` █████╗ ███╗   ██╗██╗██╗      █████╗ ██╗     ███╗   ███╗
+██╔══██╗████╗  ██║██║██║     ██╔══██╗██║     ████╗ ████║
+███████║██╔██╗ ██║██║██║     ███████║██║     ██╔████╔██║
+██╔══██║██║╚██╗██║██║██║     ██╔══██║██║     ██║╚██╔╝██║
+██║  ██║██║ ╚████║██║███████╗██║  ██║███████╗██║ ╚═╝ ██║
+╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝╚══════╝╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝`}</pre>
+          <div style={{ marginTop: 8, color: dim, fontSize: 11.5 }}>
+            v0.1.0 · 把你的文件變成會聊天的知識庫
+          </div>
+
+          <div style={{ marginTop: 32, color: dim }}>
+            <span style={{ color: ok }}>●</span> 連線到 <span style={{ color: ink }}>api.anilalm.local</span> ... <span style={{ color: ok }}>OK</span>
+          </div>
+          <div style={{ color: dim }}>
+            <span style={{ color: ok }}>●</span> TLS 1.3 · 8 個來源已索引 · 1,247 個段落已嵌入
+          </div>
+
+          <div style={{ marginTop: 28 }}>
+            <span style={{ color: dim }}>$</span> <span style={{ color: ink }}>auth login --help</span>
+            <div style={{ color: dim, marginTop: 4, paddingLeft: 14, fontSize: 12 }}>
+              使用者名稱長度 ≥ 3，密碼長度 ≥ 6
+            </div>
+          </div>
+
+          {/* Tab switcher — minimal */}
+          <div style={{ marginTop: 24, display: "flex", gap: 0 }}>
+            {[["login", "登入"], ["register", "註冊"]].map(([k, l], i) => (
+              <button key={k} onClick={() => setTab(k)} style={{
+                padding: "6px 14px", border: "none", cursor: "pointer", fontFamily: mono,
+                background: "transparent",
+                color: tab === k ? accent : dim,
+                fontSize: 12.5, fontWeight: tab === k ? 600 : 400,
+                borderBottom: `2px solid ${tab === k ? accent : "transparent"}`,
+                transition: "all 150ms",
+              }}>
+                <span style={{ opacity: 0.5, marginRight: 6 }}>0{i + 1}</span>{l}
+              </button>
+            ))}
+          </div>
+
+          <form onSubmit={submit} style={{ marginTop: 20, display: "flex", flexDirection: "column", gap: 4 }}>
+            {/* Username field */}
+            <div onClick={() => { setFocused("u"); document.getElementById("term-u")?.focus(); }} style={{
+              display: "flex", alignItems: "center", gap: 8,
+              padding: "8px 0", cursor: "text",
+            }}>
+              <span style={{ color: focused === "u" ? accent : dim, width: 12 }}>{focused === "u" ? "▸" : " "}</span>
+              <span style={{ color: dim, minWidth: 80 }}>username:</span>
+              <input id="term-u" value={u} onChange={e => setU(e.target.value)}
+                onFocus={() => setFocused("u")}
+                placeholder="zzw"
+                style={{
+                  flex: 1, border: "none", outline: "none", background: "transparent",
+                  color: ink, fontSize: 13.5, fontFamily: mono, caretColor: accent,
+                }}
+              />
+            </div>
+            {/* Password field */}
+            <div onClick={() => { setFocused("p"); document.getElementById("term-p")?.focus(); }} style={{
+              display: "flex", alignItems: "center", gap: 8,
+              padding: "8px 0", cursor: "text",
+            }}>
+              <span style={{ color: focused === "p" ? accent : dim, width: 12 }}>{focused === "p" ? "▸" : " "}</span>
+              <span style={{ color: dim, minWidth: 80 }}>password:</span>
+              <input id="term-p" type="password" value={p} onChange={e => setP(e.target.value)}
+                onFocus={() => setFocused("p")}
+                placeholder="••••••••"
+                style={{
+                  flex: 1, border: "none", outline: "none", background: "transparent",
+                  color: ink, fontSize: 13.5, fontFamily: mono, caretColor: accent,
+                }}
+              />
+            </div>
+
+            {err && (
+              <div style={{
+                marginTop: 10, padding: "8px 10px", borderLeft: `2px solid #FF6B6B`,
+                background: theme === "dark" ? "rgba(255,107,107,0.08)" : "rgba(229,72,77,0.06)",
+                color: "#FF6B6B", fontSize: 12.5,
+              }}>
+                <span style={{ color: "#FF6B6B" }}>[error]</span> {err}
+              </div>
+            )}
+
+            {/* Submit row */}
+            <div style={{ marginTop: 20, display: "flex", alignItems: "center", gap: 12 }}>
+              <button type="submit" disabled={loading} style={{
+                padding: "8px 18px", border: `1px solid ${accent}`,
+                background: theme === "dark" ? "rgba(124,123,255,0.12)" : "rgba(89,87,232,0.08)",
+                color: accent, fontSize: 13, fontFamily: mono, fontWeight: 500,
+                cursor: loading ? "wait" : "pointer", borderRadius: 0,
+                display: "inline-flex", alignItems: "center", gap: 8,
+              }}>
+                {loading ? "[ ⠼ 驗證中... ]" : `[ ↵ ${tab === "login" ? "execute login" : "execute register"} ]`}
+              </button>
+              <span style={{ fontSize: 11.5, color: dim }}>
+                按 <span style={{ color: ink, padding: "1px 5px", border: `1px solid ${line}` }}>Enter</span> 執行
+              </span>
+            </div>
+          </form>
+
+          {/* Status footer */}
+          <div style={{
+            marginTop: 36, paddingTop: 14, borderTop: `1px dashed ${line}`,
+            display: "flex", justifyContent: "space-between", color: dim, fontSize: 11,
+          }}>
+            <span>NORMAL · auth.tsx · UTF-8 · LF</span>
+            <span>session: <span style={{ color: ok }}>● secure</span> · {time.toLocaleDateString("zh-TW")}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const Field = ({ label, value, onChange, placeholder, type = "text" }) => {
+  const { t } = useTheme();
+  const [focused, setFocused] = useState(false);
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <span style={{ fontSize: 12, fontWeight: 500, color: t.textMuted }}>{label}</span>
+      <input
+        type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+        onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+        style={{
+          height: 42, padding: "0 14px", borderRadius: 10,
+          background: t.surface, border: `1px solid ${focused ? t.accent : t.border}`,
+          color: t.text, fontSize: 14, outline: "none",
+          transition: "all 150ms",
+          boxShadow: focused ? `0 0 0 3px ${t.accentSoft}` : "none",
+        }}
+      />
+    </label>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════════
+//  DASHBOARD
+// ═══════════════════════════════════════════════════════════════════
+const INITIAL_PROJECTS = [
+  { id: 1, name: "GPT-5 技術論文研究", count: 4, conv: 3, updated: "2 小時前", color: "#7C7BFF", pin: true },
+  { id: 2, name: "畢業論文文獻", count: 27, conv: 14, updated: "昨天", color: "#3DD68C" },
+  { id: 3, name: "AI 倫理與社會影響", count: 6, conv: 3, updated: "3 天前", color: "#F4B740" },
+  { id: 4, name: "Transformer 架構筆記", count: 9, conv: 5, updated: "上週", color: "#FF8FAB" },
+  { id: 5, name: "投資理財書摘", count: 4, conv: 2, updated: "上週", color: "#5BC0EB" },
+  { id: 6, name: "Rust 程式語言", count: 18, conv: 11, updated: "2 週前", color: "#C792EA" },
+];
+const COLORS = ["#7C7BFF", "#3DD68C", "#F4B740", "#FF8FAB", "#5BC0EB", "#C792EA"];
+
+const Dashboard = ({ user, onSelect, onLogout }) => {
+  const { theme, t } = useTheme();
+  const [projects, setProjects] = useState(INITIAL_PROJECTS);
+  const [search, setSearch] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [menuOpen, setMenuOpen] = useState(null);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (creating && inputRef.current) inputRef.current.focus();
+  }, [creating]);
+
+  const filtered = projects.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
+
+  const create = () => {
+    if (!newName.trim()) return setCreating(false);
+    const np = {
+      id: Date.now(), name: newName.trim(), count: 0, conv: 0,
+      updated: "剛剛", color: COLORS[projects.length % COLORS.length],
+    };
+    setProjects([np, ...projects]);
+    setNewName("");
+    setCreating(false);
+    setTimeout(() => onSelect(np), 200);
+  };
+
+  const remove = (id) => {
+    if (!confirm("確定刪除此專案？")) return;
+    setProjects(projects.filter(p => p.id !== id));
+    setMenuOpen(null);
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: t.bg, color: t.text, display: "flex", flexDirection: "column" }}>
+      {/* Topbar */}
+      <header style={{
+        height: 60, padding: "0 32px", display: "flex", alignItems: "center", justifyContent: "space-between",
+        borderBottom: `1px solid ${t.border}`, background: t.surface,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ width: 28, height: 28, borderRadius: 7, background: t.accent, display: "grid", placeItems: "center" }}>
+            <Icon name="book" size={16} stroke="#fff" />
+          </div>
+          <div style={{ fontWeight: 600, fontSize: 15, letterSpacing: -0.2 }}>ANILALM</div>
+          <div style={{
+            marginLeft: 8, padding: "2px 8px", fontSize: 11, fontWeight: 500,
+            color: t.textMuted, border: `1px solid ${t.border}`, borderRadius: 999,
+          }}>v0.1.0</div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <ThemeSwitch />
+          <button title="設定" style={iconBtn(t)}><Icon name="settings" size={15} stroke={t.textMuted} /></button>
+          <button title="登出" onClick={onLogout} style={iconBtn(t)}><Icon name="logout" size={15} stroke={t.textMuted} /></button>
+          <div style={{
+            display: "flex", alignItems: "center", gap: 8, padding: "5px 10px 5px 5px",
+            background: t.surface2, border: `1px solid ${t.border}`, borderRadius: 999,
+          }}>
+            <div style={{ width: 24, height: 24, borderRadius: "50%", background: t.accent, color: "#fff", display: "grid", placeItems: "center", fontSize: 11, fontWeight: 600 }}>
+              {user[0].toUpperCase()}
+            </div>
+            <span style={{ fontSize: 12 }}>{user}</span>
+          </div>
+        </div>
+      </header>
+
+      <main style={{ flex: 1, padding: "40px 64px", maxWidth: 1280, width: "100%", margin: "0 auto" }}>
+        <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 28, gap: 16, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 500, color: t.accent, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>Workspace</div>
+            <h1 style={{ fontSize: 32, fontWeight: 600, letterSpacing: -0.8, margin: 0 }}>你的研究空間</h1>
+            <p style={{ color: t.textMuted, fontSize: 14, margin: "6px 0 0" }}>
+              {projects.length} 個專案 · 共 {projects.reduce((a, p) => a + p.count, 0)} 份文件
+            </p>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <div style={{
+              display: "flex", alignItems: "center", gap: 8, padding: "0 14px", height: 40,
+              background: t.surface, border: `1px solid ${t.border}`, borderRadius: 10, minWidth: 240,
+            }}>
+              <Icon name="search" size={15} stroke={t.textMuted} />
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="搜尋專案..." style={{
+                flex: 1, background: "transparent", border: "none", outline: "none",
+                color: t.text, fontSize: 13, minWidth: 0,
+              }} />
+            </div>
+            <button onClick={() => setCreating(true)} style={primaryBtn(t)}>
+              <Icon name="plus" size={15} stroke="#fff" /> 新專案
+            </button>
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 }}>
+          {creating && (
+            <div style={{
+              padding: 22, borderRadius: 14, minHeight: 168,
+              background: t.surface, border: `1.5px solid ${t.accent}`,
+              display: "flex", flexDirection: "column", justifyContent: "center", gap: 12,
+              animation: "slideUp 200ms ease-out",
+            }}>
+              <div style={{ fontSize: 12, color: t.textMuted }}>新專案名稱</div>
+              <input ref={inputRef} value={newName} onChange={e => setNewName(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") create(); if (e.key === "Escape") setCreating(false); }}
+                placeholder="例：GPT-5 技術論文研究"
+                style={{
+                  height: 38, padding: "0 12px", borderRadius: 8,
+                  background: t.surface2, border: `1px solid ${t.border}`,
+                  color: t.text, fontSize: 14, outline: "none",
+                }}
+              />
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={create} style={{ ...primaryBtn(t), flex: 1, height: 36 }}>建立</button>
+                <button onClick={() => setCreating(false)} style={{
+                  height: 36, padding: "0 14px", borderRadius: 8,
+                  background: "transparent", border: `1px solid ${t.border}`,
+                  color: t.text, fontSize: 13, cursor: "pointer",
+                }}>取消</button>
+              </div>
+            </div>
+          )}
+
+          {!creating && (
+            <div onClick={() => setCreating(true)} style={{
+              padding: 22, borderRadius: 14, minHeight: 168,
+              border: `1.5px dashed ${t.borderStrong}`, background: "transparent",
+              display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", gap: 10,
+              cursor: "pointer", color: t.textMuted, transition: "all 150ms",
+            }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = t.accent; e.currentTarget.style.background = t.accentSoft; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = t.borderStrong; e.currentTarget.style.background = "transparent"; }}
+            >
+              <div style={{ width: 40, height: 40, borderRadius: 10, background: t.accentSoft, display: "grid", placeItems: "center" }}>
+                <Icon name="plus" size={20} stroke={t.accent} />
+              </div>
+              <div style={{ fontWeight: 500, color: t.text, fontSize: 14 }}>建立新專案</div>
+              <div style={{ fontSize: 12 }}>從上傳文件或網頁開始</div>
+            </div>
+          )}
+
+          {filtered.map(p => (
+            <div key={p.id} onClick={() => onSelect(p)} style={{
+              padding: 22, borderRadius: 14, minHeight: 168,
+              background: t.surface, border: `1px solid ${t.border}`,
+              display: "flex", flexDirection: "column", justifyContent: "space-between",
+              cursor: "pointer", position: "relative", transition: "all 150ms",
+              boxShadow: theme === "light" ? "0 1px 2px rgba(0,0,0,0.03)" : "none",
+            }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = t.accentBorder; e.currentTarget.style.transform = "translateY(-2px)"; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = t.border; e.currentTarget.style.transform = "none"; }}
+            >
+              <div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+                  <div style={{
+                    width: 36, height: 36, borderRadius: 9, background: `${p.color}22`,
+                    display: "grid", placeItems: "center",
+                  }}>
+                    <Icon name="folder" size={18} stroke={p.color} />
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4, position: "relative" }}>
+                    {p.pin && <Icon name="pin" size={14} stroke={t.textMuted} />}
+                    <button onClick={e => { e.stopPropagation(); setMenuOpen(menuOpen === p.id ? null : p.id); }}
+                      style={{
+                        width: 24, height: 24, borderRadius: 6, border: "none",
+                        background: "transparent", cursor: "pointer", color: t.textMuted,
+                        display: "grid", placeItems: "center",
+                      }}>
+                      <Icon name="dots" size={14} />
+                    </button>
+                    {menuOpen === p.id && (
+                      <div onClick={e => e.stopPropagation()} style={{
+                        position: "absolute", top: 28, right: 0, zIndex: 10,
+                        background: t.elevated, border: `1px solid ${t.border}`,
+                        borderRadius: 9, minWidth: 120, padding: 4,
+                        boxShadow: theme === "dark" ? "0 10px 30px rgba(0,0,0,0.5)" : "0 10px 30px rgba(0,0,0,0.1)",
+                        animation: "slideUp 150ms",
+                      }}>
+                        <button onClick={() => remove(p.id)} style={{
+                          width: "100%", padding: "8px 10px", borderRadius: 6,
+                          background: "transparent", border: "none",
+                          color: t.danger, fontSize: 12.5, textAlign: "left", cursor: "pointer",
+                          display: "flex", alignItems: "center", gap: 7,
+                        }}>
+                          <Icon name="trash" size={12} stroke={t.danger} /> 刪除專案
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div style={{ fontWeight: 500, fontSize: 15, marginBottom: 6, letterSpacing: -0.2 }}>{p.name}</div>
+                <div style={{ display: "flex", gap: 12, fontSize: 12, color: t.textMuted }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    <Icon name="file" size={12} stroke={t.textMuted} /> {p.count}
+                  </span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    <Icon name="msg" size={12} stroke={t.textMuted} /> {p.conv}
+                  </span>
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ fontSize: 11, color: t.textSubtle }}>{p.updated}</span>
+                <Icon name="arrowR" size={14} stroke={t.textMuted} />
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {filtered.length === 0 && search && (
+          <div style={{ textAlign: "center", padding: 60, color: t.textMuted }}>
+            找不到符合「{search}」的專案
+          </div>
+        )}
+      </main>
+    </div>
+  );
+};
+
+const iconBtn = (t) => ({
+  width: 32, height: 32, borderRadius: 8, border: `1px solid ${t.border}`,
+  background: t.surface, display: "grid", placeItems: "center", cursor: "pointer",
+});
+const primaryBtn = (t) => ({
+  height: 40, padding: "0 16px", borderRadius: 10, border: "none",
+  background: t.accent, color: "#fff", fontWeight: 500, fontSize: 13, cursor: "pointer",
+  display: "inline-flex", alignItems: "center", gap: 6,
+  boxShadow: `0 6px 20px -8px ${t.accent}`,
+  transition: "transform 120ms",
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//  WORKSPACE — Sidebar
+// ═══════════════════════════════════════════════════════════════════
+const INITIAL_DOCS = [
+  { id: 1, name: "GPT-5 Technical Report.pdf", size: "12.4 MB", status: "done" },
+  { id: 2, name: "Attention is All You Need.pdf", size: "1.8 MB", status: "done" },
+  { id: 3, name: "Constitutional AI - Anthropic.pdf", size: "3.2 MB", status: "done" },
+  { id: 4, name: "Scaling Laws.pdf", size: "2.1 MB", status: "processing" },
+];
+const INITIAL_CONVS = [
+  { id: 1, name: "GPT-5 在數學推理的提升", time: "剛剛" },
+  { id: 2, name: "比較不同 attention 機制", time: "今天" },
+  { id: 3, name: "RLHF 訓練流程細節", time: "昨天" },
+];
+
+const Sidebar = ({ project, onBack, activeConv, setActiveConv, docs, setDocs }) => {
+  const { t } = useTheme();
+  const [convs, setConvs] = useState(INITIAL_CONVS);
+  const [activeDoc, setActiveDoc] = useState(1);
+  const fileRef = useRef(null);
+
+  const upload = (files) => {
+    if (!files || !files.length) return;
+    const list = Array.from(files).map((f, i) => ({
+      id: Date.now() + i, name: f.name, size: `${(f.size / 1024 / 1024).toFixed(1)} MB`,
+      status: "processing",
+    }));
+    setDocs(d => [...d, ...list]);
+    list.forEach((d, i) => {
+      setTimeout(() => {
+        setDocs(prev => prev.map(x => x.id === d.id ? { ...x, status: "done" } : x));
+      }, 1500 + i * 400);
+    });
+  };
+
+  return (
+    <aside style={{
+      width: 300, height: "100%", background: t.surface,
+      borderRight: `1px solid ${t.border}`,
+      display: "flex", flexDirection: "column", flexShrink: 0,
+    }}>
+      <div style={{ padding: "14px 16px", borderBottom: `1px solid ${t.border}` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button onClick={onBack} title="返回專案列表" style={{
+            width: 28, height: 28, borderRadius: 7, border: "none",
+            background: "transparent", cursor: "pointer",
+            display: "grid", placeItems: "center", color: t.textMuted,
+          }}>
+            <Icon name="chevL" size={14} />
+          </button>
+          <div style={{ width: 26, height: 26, borderRadius: 7, background: `${project.color}22`, display: "grid", placeItems: "center" }}>
+            <Icon name="folder" size={14} stroke={project.color} />
+          </div>
+          <div style={{ flex: 1, fontWeight: 500, fontSize: 13, letterSpacing: -0.1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {project.name}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ padding: "14px 16px 8px" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: t.textMuted, textTransform: "uppercase", letterSpacing: 0.8 }}>來源</div>
+          <span style={{ fontSize: 11, color: t.textSubtle }}>{docs.length}</span>
+        </div>
+        <input ref={fileRef} type="file" multiple onChange={e => upload(e.target.files)} style={{ display: "none" }} />
+        <button onClick={() => fileRef.current?.click()} style={{
+          width: "100%", padding: "10px 12px", borderRadius: 9, marginBottom: 8,
+          border: `1px dashed ${t.borderStrong}`, background: "transparent",
+          color: t.textMuted, fontSize: 12, cursor: "pointer",
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontFamily: "inherit",
+        }}>
+          <Icon name="upload" size={13} stroke={t.textMuted} /> 上傳文件
+        </button>
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {docs.map(d => (
+            <div key={d.id} onClick={() => setActiveDoc(d.id)} style={{
+              padding: "9px 10px", borderRadius: 8, display: "flex", alignItems: "center", gap: 9,
+              background: activeDoc === d.id ? t.accentSoft : "transparent",
+              border: activeDoc === d.id ? `1px solid ${t.accentBorder}` : "1px solid transparent",
+              cursor: "pointer", transition: "all 150ms",
+            }}>
+              <div style={{
+                width: 26, height: 26, borderRadius: 6,
+                background: activeDoc === d.id ? t.accent : t.chipBg,
+                display: "grid", placeItems: "center", flexShrink: 0,
+              }}>
+                <Icon name="file" size={13} stroke={activeDoc === d.id ? "#fff" : t.textMuted} />
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, color: t.text, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {d.name}
+                </div>
+                <div style={{ fontSize: 10.5, color: t.textSubtle, display: "flex", alignItems: "center", gap: 5, marginTop: 2 }}>
+                  <span>{d.size}</span>
+                  {d.status === "processing" && (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: t.warning }}>
+                      <span style={{ width: 5, height: 5, borderRadius: "50%", background: t.warning, animation: "pulse 1.4s infinite" }} />
+                      處理中
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ padding: "16px 16px 8px", borderTop: `1px solid ${t.border}`, marginTop: 10, flex: 1, overflow: "auto" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: t.textMuted, textTransform: "uppercase", letterSpacing: 0.8 }}>對話</div>
+          <button onClick={() => setActiveConv(null)} title="新對話" style={{
+            width: 22, height: 22, borderRadius: 6, border: "none",
+            background: t.surface2, display: "grid", placeItems: "center", cursor: "pointer",
+          }}>
+            <Icon name="plus" size={12} stroke={t.textMuted} />
+          </button>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+          {convs.map(c => (
+            <div key={c.id} onClick={() => setActiveConv(c)} style={{
+              padding: "9px 10px", borderRadius: 8, cursor: "pointer",
+              background: activeConv?.id === c.id ? t.surface2 : "transparent",
+              borderLeft: activeConv?.id === c.id ? `2px solid ${t.accent}` : "2px solid transparent",
+              transition: "background 120ms",
+            }}>
+              <div style={{ fontSize: 12.5, color: t.text, fontWeight: activeConv?.id === c.id ? 500 : 400, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {c.name}
+              </div>
+              <div style={{ fontSize: 10.5, color: t.textSubtle, marginTop: 2 }}>{c.time}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ padding: 12, borderTop: `1px solid ${t.border}`, display: "flex", alignItems: "center", gap: 8 }}>
+        <ThemeSwitch />
+      </div>
+    </aside>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════════
+//  WORKSPACE — Chat
+// ═══════════════════════════════════════════════════════════════════
+const SAMPLE_REPLY = `根據文件中的基準測試，GPT-5 在 MATH 與 AIME 2025 的表現相較於 GPT-4 有顯著提升。MATH benchmark 從 GPT-4 的 50.4% 提升到 GPT-5 的 89.2%；AIME 2025 在無工具情況下達到 74.5%。`;
+
+const Chat = ({ activeConv, onToggleStudio, studioOpen }) => {
+  const { t } = useTheme();
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [streaming, setStreaming] = useState(false);
+  const endRef = useRef(null);
+
+  useEffect(() => {
+    if (activeConv) {
+      setMessages([
+        { role: "user", content: "GPT-5 跟 GPT-4 比，在數學推理上有什麼具體進步？" },
+        {
+          role: "assistant",
+          content: SAMPLE_REPLY,
+          citations: [
+            { n: 1, src: "GPT-5 Technical Report.pdf", quote: "On the MATH benchmark, our model achieves 89.2%..." },
+            { n: 2, src: "GPT-5 Technical Report.pdf", quote: "Section 4.2 — Reasoning evaluation" },
+          ],
+          followUps: ["GPT-5 用了哪些新的訓練技巧？", "與 Claude 4 在 reasoning 上的比較？", "為什麼 hallucination 率下降？"],
+        },
+      ]);
+    } else {
+      setMessages([]);
+    }
+  }, [activeConv?.id]);
+
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+  const send = (text) => {
+    if (!text.trim() || streaming) return;
+    setInput("");
+    const userMsg = { role: "user", content: text };
+    const assistant = { role: "assistant", content: "", citations: [], followUps: [] };
+    setMessages(m => [...m, userMsg, assistant]);
+    setStreaming(true);
+
+    // Simulate streaming
+    const reply = `這是一個示意回應。我會根據你的來源文件給出具體答案，並標記引用 ${"\u00A0"}例如：根據文件 1 的內容，這個問題的核心是...`;
+    let i = 0;
+    const tick = () => {
+      i += Math.floor(Math.random() * 3) + 2;
+      setMessages(m => {
+        const next = [...m];
+        next[next.length - 1] = { ...next[next.length - 1], content: reply.slice(0, i) };
+        return next;
+      });
+      if (i < reply.length) {
+        setTimeout(tick, 35);
+      } else {
+        setMessages(m => {
+          const next = [...m];
+          next[next.length - 1] = {
+            ...next[next.length - 1],
+            citations: [{ n: 1, src: "GPT-5 Technical Report.pdf", quote: "Section 4.2..." }],
+            followUps: ["再深入問一點", "要不要做成簡報？"],
+          };
+          return next;
+        });
+        setStreaming(false);
+      }
+    };
+    setTimeout(tick, 120);
+  };
+
+  return (
+    <main style={{ flex: 1, height: "100%", display: "flex", flexDirection: "column", background: t.bg, minWidth: 0 }}>
+      <div style={{
+        height: 56, padding: "0 24px", borderBottom: `1px solid ${t.border}`,
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+          <div style={{
+            fontSize: 14, fontWeight: 500, letterSpacing: -0.1,
+            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          }}>
+            {activeConv ? activeConv.name : "新對話"}
+          </div>
+          <span style={{ fontSize: 11, color: t.textSubtle, padding: "2px 7px", border: `1px solid ${t.border}`, borderRadius: 999, flexShrink: 0 }}>
+            4 sources
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button onClick={onToggleStudio} style={{
+            height: 32, padding: "0 12px", borderRadius: 8,
+            background: studioOpen ? t.surface2 : t.accent, color: studioOpen ? t.text : "#fff",
+            fontSize: 12, fontWeight: 500, border: studioOpen ? `1px solid ${t.border}` : "none",
+            cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6,
+            transition: "all 150ms",
+          }}>
+            <Icon name="layers" size={13} stroke={studioOpen ? t.text : "#fff"} />
+            {studioOpen ? "收合製作台" : "開啟製作台"}
+          </button>
+        </div>
+      </div>
+
+      <div style={{ flex: 1, overflow: "auto", padding: "28px 0" }}>
+        {messages.length === 0 ? (
+          <EmptyState onAsk={send} />
+        ) : (
+          <div style={{ maxWidth: 720, margin: "0 auto", padding: "0 24px", display: "flex", flexDirection: "column", gap: 28 }}>
+            {messages.map((m, i) => (
+              <Message key={i} m={m} onAsk={send} />
+            ))}
+            <div ref={endRef} />
+          </div>
+        )}
+      </div>
+
+      <Composer value={input} onChange={setInput} onSend={() => send(input)} disabled={streaming} />
+    </main>
+  );
+};
+
+const EmptyState = ({ onAsk }) => {
+  const { t } = useTheme();
+  const suggestions = ["這份文件的主要內容是什麼？", "請幫我總結重點", "有什麼關鍵發現？", "給我一個 200 字的摘要"];
+  return (
+    <div style={{ maxWidth: 720, margin: "60px auto 0", padding: "0 24px", textAlign: "center" }}>
+      <div style={{
+        width: 56, height: 56, borderRadius: 14, background: t.accentSoft, border: `1px solid ${t.accentBorder}`,
+        display: "grid", placeItems: "center", margin: "0 auto 18px",
+      }}>
+        <Icon name="sparkle" size={26} stroke={t.accent} />
+      </div>
+      <h2 style={{ fontSize: 22, fontWeight: 600, letterSpacing: -0.4, margin: "0 0 8px" }}>問點什麼來開始</h2>
+      <p style={{ color: t.textMuted, fontSize: 14, margin: "0 0 28px" }}>AI 會引用你的來源文件，並提供精確答案</p>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, maxWidth: 520, margin: "0 auto" }}>
+        {suggestions.map(s => (
+          <button key={s} onClick={() => onAsk(s)} style={{
+            padding: "12px 14px", borderRadius: 10, cursor: "pointer",
+            background: t.surface, border: `1px solid ${t.border}`,
+            color: t.text, fontSize: 13, textAlign: "left", fontFamily: "inherit",
+            transition: "all 150ms",
+          }}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = t.accentBorder; e.currentTarget.style.background = t.accentSoft; }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = t.border; e.currentTarget.style.background = t.surface; }}
+          >{s}</button>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const Message = ({ m, onAsk }) => {
+  const { t } = useTheme();
+  if (m.role === "user") {
+    return (
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <div style={{
+          maxWidth: 480, padding: "11px 16px", borderRadius: 14,
+          background: t.accent, color: "#fff", fontSize: 14, lineHeight: 1.55,
+          borderBottomRightRadius: 4,
+        }}>{m.content}</div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: "flex", gap: 12 }}>
+      <div style={{
+        width: 30, height: 30, borderRadius: 8, background: t.accentSoft,
+        border: `1px solid ${t.accentBorder}`, flexShrink: 0,
+        display: "grid", placeItems: "center",
+      }}>
+        <Icon name="sparkle" size={14} stroke={t.accent} />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14, lineHeight: 1.7, color: t.text, whiteSpace: "pre-wrap" }}>
+          {m.content}
+          {m.content === "" && <span style={{ display: "inline-block", width: 7, height: 14, background: t.accent, verticalAlign: "-2px", animation: "pulse 1s infinite" }} />}
+        </div>
+        {m.citations?.length > 0 && (
+          <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+            {m.citations.map(c => (
+              <div key={c.n} style={{
+                padding: "8px 11px", borderRadius: 8,
+                background: t.surface, border: `1px solid ${t.border}`,
+                fontSize: 11.5, color: t.textMuted, maxWidth: 280,
+                display: "flex", gap: 8, alignItems: "flex-start",
+              }}>
+                <span style={{
+                  width: 18, height: 18, borderRadius: 4, background: t.accentSoft, color: t.accent,
+                  fontSize: 10, fontWeight: 600, display: "grid", placeItems: "center", flexShrink: 0,
+                  border: `1px solid ${t.accentBorder}`,
+                }}>{c.n}</span>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ color: t.text, fontWeight: 500, fontSize: 11.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.src}</div>
+                  <div style={{ marginTop: 2 }}>"{c.quote}"</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {m.followUps?.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 14 }}>
+            <div style={{ fontSize: 11, color: t.textSubtle, fontWeight: 500, textTransform: "uppercase", letterSpacing: 0.6 }}>建議追問</div>
+            {m.followUps.map(s => (
+              <button key={s} onClick={() => onAsk(s)} style={{
+                textAlign: "left", padding: "9px 13px", borderRadius: 9,
+                background: t.surface, border: `1px solid ${t.border}`,
+                color: t.text, fontSize: 13, cursor: "pointer", fontFamily: "inherit",
+                display: "flex", alignItems: "center", gap: 8,
+                transition: "all 150ms",
+              }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = t.accentBorder; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = t.border; }}
+              >
+                <Icon name="sparkle" size={12} stroke={t.accent} /> {s}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const Composer = ({ value, onChange, onSend, disabled }) => {
+  const { theme, t } = useTheme();
+  const taRef = useRef(null);
+
+  useEffect(() => {
+    const ta = taRef.current;
+    if (ta) {
+      ta.style.height = "auto";
+      ta.style.height = Math.min(ta.scrollHeight, 200) + "px";
+    }
+  }, [value]);
+
+  const onKey = (e) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); onSend(); }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSend(); }
+  };
+
+  return (
+    <div style={{ padding: "0 24px 22px", background: t.bg }}>
+      <div style={{ maxWidth: 720, margin: "0 auto" }}>
+        <div style={{
+          background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 14,
+          padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10,
+          boxShadow: theme === "light" ? "0 1px 2px rgba(0,0,0,0.04)" : "none",
+          transition: "border-color 120ms",
+        }}>
+          <textarea ref={taRef} value={value} onChange={e => onChange(e.target.value)} onKeyDown={onKey}
+            placeholder="問點什麼... (Enter 送出 · Shift+Enter 換行)" rows={1}
+            style={{
+              border: "none", outline: "none", background: "transparent",
+              color: t.text, fontSize: 14, fontFamily: "inherit", resize: "none",
+              lineHeight: 1.5, maxHeight: 200, minHeight: 44,
+            }}
+          />
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button style={chipBtn(t)}><Icon name="paperclip" size={13} stroke={t.textMuted} /></button>
+              <button style={chipBtn(t)}><Icon name="quote" size={13} stroke={t.textMuted} /> 引用來源</button>
+            </div>
+            <button onClick={onSend} disabled={disabled || !value.trim()} style={{
+              width: 34, height: 34, borderRadius: 9, border: "none",
+              cursor: disabled || !value.trim() ? "not-allowed" : "pointer",
+              opacity: disabled || !value.trim() ? 0.4 : 1,
+              background: t.accent, display: "grid", placeItems: "center",
+              boxShadow: `0 4px 14px -4px ${t.accent}`, transition: "all 150ms",
+            }}>
+              <Icon name="send" size={14} stroke="#fff" />
+            </button>
+          </div>
+        </div>
+        <div style={{ textAlign: "center", fontSize: 11, color: t.textSubtle, marginTop: 8 }}>
+          模型可能出錯。請以原始文件為準。
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const chipBtn = (t) => ({
+  height: 28, padding: "0 9px", borderRadius: 7,
+  background: t.surface2, border: `1px solid ${t.border}`,
+  color: t.textMuted, fontSize: 11.5, cursor: "pointer",
+  display: "inline-flex", alignItems: "center", gap: 5, fontFamily: "inherit",
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//  WORKSPACE — Studio
+// ═══════════════════════════════════════════════════════════════════
+const FORMATS = [
+  { k: "podcast",     l: "語音摘要",  i: "mic",   c: "#FF8FAB", cat: "audio",  hint: "兩位主持人對談" },
+  { k: "slides",      l: "簡報",      i: "deck",  c: "#7C7BFF", cat: "visual", hint: "12 張投影片" },
+  { k: "video",       l: "影片腳本",  i: "video", c: "#5BC0EB", cat: "visual", hint: "含分鏡與旁白" },
+  { k: "mindmap",     l: "心智圖",    i: "git",   c: "#3DD68C", cat: "visual", hint: "可展開分支" },
+  { k: "report",      l: "深度報告",  i: "file",  c: "#F4B740", cat: "doc",    hint: "含引用文獻" },
+  { k: "flashcards",  l: "抽認卡",    i: "flash", c: "#C792EA", cat: "study",  hint: "間隔複習" },
+  { k: "quiz",        l: "測驗",      i: "quiz",  c: "#FF6B6B", cat: "study",  hint: "選擇 + 申論" },
+  { k: "infographic", l: "資訊圖表",  i: "chart", c: "#5BC0EB", cat: "visual", hint: "數據可視化" },
+  { k: "datatable",   l: "資料表",    i: "table", c: "#3DD68C", cat: "doc",    hint: "結構化整理" },
+];
+
+const Studio = ({ onClose, docs, setDocs }) => {
+  const { t } = useTheme();
+  const [modal, setModal] = useState(null);
+  const [noteEditor, setNoteEditor] = useState(null); // null | {id?, title, body}
+  const [filter, setFilter] = useState("all");
+  const [notes, setNotes] = useState([
+    { id: 1, title: "GPT-5 重點筆記", body: "## 主要發現\n\n- **MATH benchmark**: 89.2% (vs GPT-4 50.4%)\n- **AIME 2025**: 74.5% 無工具\n\n值得追問為什麼 hallucination 率下降。", ago: "昨天" },
+  ]);
+  const [history, setHistory] = useState([
+    { id: 1, i: "mic", t: "GPT-5 在數學推理的躍進", k: "語音摘要", src: 4, ago: "剛剛", c: "#FF8FAB", playable: true, dur: "8:24" },
+    { id: 2, i: "deck", t: "Transformer 架構演進回顧", k: "簡報", src: 3, ago: "今天 14:22", c: "#7C7BFF", pages: "12 頁" },
+    { id: 3, i: "git", t: "Constitutional AI 核心概念", k: "心智圖", src: 1, ago: "昨天", c: "#3DD68C" },
+  ]);
+
+  const saveNote = (note, addToSources) => {
+    if (note.id) {
+      setNotes(n => n.map(x => x.id === note.id ? { ...x, ...note, ago: "剛剛" } : x));
+    } else {
+      const newNote = { ...note, id: Date.now(), ago: "剛剛" };
+      setNotes(n => [newNote, ...n]);
+      if (addToSources) {
+        const src = {
+          id: Date.now() + 1,
+          name: (note.title || "未命名筆記") + ".md",
+          size: `${(note.body.length / 1024).toFixed(1)} KB`,
+          status: "done",
+          isNote: true,
+        };
+        setDocs(d => [...d, src]);
+      }
+    }
+    setNoteEditor(null);
+  };
+
+  const deleteNote = (id) => {
+    if (!confirm("確定刪除此筆記？")) return;
+    setNotes(n => n.filter(x => x.id !== id));
+  };
+
+  const cats = [
+    { k: "all", l: "全部", c: t.text },
+    { k: "audio", l: "聲音", c: "#FF8FAB" },
+    { k: "visual", l: "視覺", c: "#7C7BFF" },
+    { k: "study", l: "學習", c: "#3DD68C" },
+    { k: "doc", l: "文件", c: "#F4B740" },
+  ];
+  const filtered = filter === "all" ? FORMATS : FORMATS.filter(f => f.cat === filter);
+
+  const onGenerate = (format, opts) => {
+    const newItem = {
+      id: Date.now(), i: format.i, t: opts.style + " · " + format.l,
+      k: format.l, src: 4, ago: "剛剛", c: format.c,
+      playable: format.k === "podcast",
+      dur: format.k === "podcast" ? "10:12" : null,
+      pages: format.k === "slides" ? "10 頁" : null,
+    };
+    setHistory(h => [newItem, ...h]);
+    setModal(null);
+  };
+
+  return (
+    <aside style={{
+      width: 380, height: "100%", background: t.surface,
+      borderLeft: `1px solid ${t.border}`,
+      display: "flex", flexDirection: "column", flexShrink: 0,
+      animation: "slideUp 200ms ease-out",
+    }}>
+      <div style={{
+        height: 56, padding: "0 18px", borderBottom: `1px solid ${t.border}`,
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+          <div style={{
+            width: 24, height: 24, borderRadius: 6, background: t.accentSoft,
+            border: `1px solid ${t.accentBorder}`,
+            display: "grid", placeItems: "center",
+          }}>
+            <Icon name="sparkle" size={12} stroke={t.accent} />
+          </div>
+          <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: -0.1 }}>製作台</div>
+          <span style={{ fontSize: 10.5, color: t.textSubtle, padding: "1px 6px", border: `1px solid ${t.border}`, borderRadius: 4 }}>
+            {history.length}
+          </span>
+        </div>
+        <button onClick={onClose} style={{ ...iconBtn(t), width: 28, height: 28 }}>
+          <Icon name="x" size={13} stroke={t.textMuted} />
+        </button>
+      </div>
+
+      <div style={{ flex: 1, overflow: "auto" }}>
+        {/* Categories */}
+        <div style={{ padding: "14px 14px 10px", display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {cats.map(c => (
+            <button key={c.k} onClick={() => setFilter(c.k)} style={{
+              padding: "5px 10px", borderRadius: 999, cursor: "pointer", fontFamily: "inherit",
+              background: filter === c.k ? t.text : "transparent",
+              color: filter === c.k ? t.bg : t.textMuted,
+              border: filter === c.k ? `1px solid ${t.text}` : `1px solid ${t.border}`,
+              fontSize: 11.5, fontWeight: 500, transition: "all 150ms",
+              display: "inline-flex", alignItems: "center", gap: 5,
+            }}>
+              {c.k !== "all" && <span style={{ width: 6, height: 6, borderRadius: 999, background: c.c }} />}
+              {c.l}
+            </button>
+          ))}
+        </div>
+
+        {/* Format list */}
+        <div style={{ padding: "0 14px", display: "flex", flexDirection: "column", gap: 4 }}>
+          {filtered.map(f => (
+            <button key={f.k} onClick={() => setModal(f)} style={{
+              padding: "10px 11px", borderRadius: 9, cursor: "pointer",
+              background: "transparent", border: "1px solid transparent",
+              display: "flex", alignItems: "center", gap: 11, fontFamily: "inherit", textAlign: "left",
+              transition: "all 120ms",
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = t.surface2; e.currentTarget.style.borderColor = t.border; }}
+            onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.borderColor = "transparent"; }}
+            >
+              <div style={{
+                width: 28, height: 28, borderRadius: 7, background: `${f.c}1f`,
+                border: `1px solid ${f.c}33`,
+                display: "grid", placeItems: "center", flexShrink: 0,
+              }}>
+                <Icon name={f.i} size={13} stroke={f.c} />
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 500, color: t.text }}>{f.l}</div>
+                <div style={{ fontSize: 10.5, color: t.textSubtle, marginTop: 1 }}>{f.hint}</div>
+              </div>
+              <Icon name="plus" size={13} stroke={t.textMuted} />
+            </button>
+          ))}
+        </div>
+
+        {/* Notes (markdown) */}
+        <div style={{ marginTop: 22, padding: "0 14px" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 4px 10px" }}>
+            <div style={{ fontSize: 10.5, fontWeight: 600, color: t.textMuted, textTransform: "uppercase", letterSpacing: 1 }}>
+              ── 筆記
+            </div>
+            <button onClick={() => setNoteEditor({ title: "", body: "" })} title="新筆記" style={{
+              width: 22, height: 22, borderRadius: 6, border: `1px solid ${t.border}`,
+              background: t.surface2, display: "grid", placeItems: "center", cursor: "pointer",
+            }}>
+              <Icon name="plus" size={11} stroke={t.textMuted} />
+            </button>
+          </div>
+          {notes.length === 0 ? (
+            <button onClick={() => setNoteEditor({ title: "", body: "" })} style={{
+              width: "100%", padding: "14px 12px", borderRadius: 10,
+              background: "transparent", border: `1px dashed ${t.borderStrong}`,
+              color: t.textMuted, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+            }}>
+              <Icon name="edit" size={12} stroke={t.textMuted} /> 寫一份筆記（支援 Markdown）
+            </button>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {notes.map(n => (
+                <div key={n.id} onClick={() => setNoteEditor(n)} style={{
+                  padding: "10px 12px", borderRadius: 9, cursor: "pointer",
+                  background: t.surface2, border: `1px solid ${t.border}`,
+                  display: "flex", alignItems: "flex-start", gap: 9,
+                  transition: "all 120ms",
+                }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = t.borderStrong; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = t.border; }}
+                >
+                  <div style={{
+                    width: 24, height: 24, borderRadius: 6, flexShrink: 0,
+                    background: t.chipBg, display: "grid", placeItems: "center",
+                    border: `1px solid ${t.border}`,
+                  }}>
+                    <Icon name="edit" size={11} stroke={t.textMuted} />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontSize: 12.5, fontWeight: 500, color: t.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {n.title || "未命名筆記"}
+                      </span>
+                      <span style={{ fontSize: 10.5, color: t.textSubtle, marginLeft: "auto", flexShrink: 0 }}>{n.ago}</span>
+                    </div>
+                    <div style={{
+                      fontSize: 11, color: t.textMuted, marginTop: 2,
+                      lineHeight: 1.45, display: "-webkit-box",
+                      WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden",
+                    }}>
+                      {n.body.replace(/[#*`>\-_]/g, "").trim().slice(0, 80) || "(空筆記)"}
+                    </div>
+                  </div>
+                  <button onClick={e => { e.stopPropagation(); deleteNote(n.id); }} style={{
+                    width: 22, height: 22, borderRadius: 5, border: "none",
+                    background: "transparent", cursor: "pointer", flexShrink: 0,
+                    display: "grid", placeItems: "center", color: t.textSubtle,
+                  }}>
+                    <Icon name="trash" size={11} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Timeline */}
+        {history.length > 0 && (
+          <div style={{ marginTop: 22, padding: "0 14px 24px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 4px 10px" }}>
+              <div style={{ fontSize: 10.5, fontWeight: 600, color: t.textMuted, textTransform: "uppercase", letterSpacing: 1 }}>
+                ── 已完成
+              </div>
+            </div>
+            <div style={{ position: "relative", paddingLeft: 14 }}>
+              <div style={{ position: "absolute", left: 5, top: 6, bottom: 6, width: 1, background: t.border }} />
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {history.map(h => (
+                  <div key={h.id} style={{ position: "relative", animation: "slideUp 250ms ease-out" }}>
+                    <div style={{
+                      position: "absolute", left: -14, top: 14,
+                      width: 11, height: 11, borderRadius: "50%",
+                      background: t.surface, border: `2px solid ${h.c}`,
+                    }} />
+                    <div style={{
+                      padding: "11px 12px", borderRadius: 10, cursor: "pointer",
+                      background: t.surface2, border: `1px solid ${t.border}`,
+                      display: "flex", flexDirection: "column", gap: 8,
+                      transition: "all 120ms",
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = t.borderStrong; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = t.border; }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <div style={{
+                          padding: "2px 7px", borderRadius: 4,
+                          background: `${h.c}22`, color: h.c,
+                          fontSize: 10, fontWeight: 600,
+                        }}>{h.k}</div>
+                        <span style={{ fontSize: 10.5, color: t.textSubtle, marginLeft: "auto" }}>{h.ago}</span>
+                      </div>
+                      <div style={{ fontSize: 12.5, fontWeight: 500, color: t.text, lineHeight: 1.35 }}>{h.t}</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 10.5, color: t.textMuted }}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                          <Icon name="file" size={10} stroke={t.textMuted} /> {h.src} 來源
+                        </span>
+                        {h.dur && <span>· {h.dur}</span>}
+                        {h.pages && <span>· {h.pages}</span>}
+                        <div style={{ marginLeft: "auto", display: "flex", gap: 2 }}>
+                          {h.playable && (
+                            <button style={{ width: 22, height: 22, borderRadius: 5, border: "none", background: "transparent", cursor: "pointer", display: "grid", placeItems: "center" }}>
+                              <Icon name="play" size={11} stroke={t.textMuted} fill={t.textMuted} />
+                            </button>
+                          )}
+                          <button style={{ width: 22, height: 22, borderRadius: 5, border: "none", background: "transparent", cursor: "pointer", display: "grid", placeItems: "center" }}>
+                            <Icon name="dots" size={11} stroke={t.textMuted} />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {modal && <CommandModal item={modal} onClose={() => setModal(null)} onGenerate={onGenerate} />}
+      {noteEditor && <NoteEditor note={noteEditor} onClose={() => setNoteEditor(null)} onSave={saveNote} />}
+    </aside>
+  );
+};
+
+// ─── Note Editor (markdown) ────────────────────────────────────────
+const renderMarkdown = (md) => {
+  if (!md) return [];
+  const lines = md.split("\n");
+  const blocks = [];
+  let para = [];
+  let list = null;
+  let inCode = false;
+  let code = [];
+
+  const flushPara = () => {
+    if (para.length) { blocks.push({ type: "p", text: para.join(" ") }); para = []; }
+  };
+  const flushList = () => {
+    if (list) { blocks.push(list); list = null; }
+  };
+
+  for (const line of lines) {
+    if (line.trim().startsWith("```")) {
+      if (inCode) { blocks.push({ type: "code", text: code.join("\n") }); code = []; inCode = false; }
+      else { flushPara(); flushList(); inCode = true; }
+      continue;
+    }
+    if (inCode) { code.push(line); continue; }
+
+    if (/^#{1,3}\s/.test(line)) {
+      flushPara(); flushList();
+      const level = line.match(/^(#+)/)[1].length;
+      blocks.push({ type: `h${level}`, text: line.replace(/^#+\s+/, "") });
+    } else if (/^>\s/.test(line)) {
+      flushPara(); flushList();
+      blocks.push({ type: "quote", text: line.replace(/^>\s+/, "") });
+    } else if (/^\s*[-*]\s/.test(line)) {
+      flushPara();
+      if (!list) list = { type: "ul", items: [] };
+      list.items.push(line.replace(/^\s*[-*]\s+/, ""));
+    } else if (/^\s*\d+\.\s/.test(line)) {
+      flushPara();
+      if (!list || list.type !== "ol") { flushList(); list = { type: "ol", items: [] }; }
+      list.items.push(line.replace(/^\s*\d+\.\s+/, ""));
+    } else if (line.trim() === "") {
+      flushPara(); flushList();
+    } else {
+      flushList();
+      para.push(line);
+    }
+  }
+  flushPara(); flushList();
+  return blocks;
+};
+
+const renderInline = (text, t) => {
+  // bold **x**, italic *x*, code `x`, link [t](u)
+  const parts = [];
+  let i = 0;
+  let buf = "";
+  const push = () => { if (buf) { parts.push(buf); buf = ""; } };
+  while (i < text.length) {
+    if (text.startsWith("**", i)) {
+      const end = text.indexOf("**", i + 2);
+      if (end > -1) { push(); parts.push(<strong key={parts.length} style={{ fontWeight: 600, color: t.text }}>{text.slice(i + 2, end)}</strong>); i = end + 2; continue; }
+    }
+    if (text[i] === "`") {
+      const end = text.indexOf("`", i + 1);
+      if (end > -1) {
+        push();
+        parts.push(<code key={parts.length} style={{
+          fontFamily: "ui-monospace, monospace", fontSize: "0.9em",
+          background: t.chipBg, padding: "1px 5px", borderRadius: 4,
+          border: `1px solid ${t.border}`, color: t.text,
+        }}>{text.slice(i + 1, end)}</code>);
+        i = end + 1; continue;
+      }
+    }
+    if (text[i] === "*" && text[i + 1] !== "*") {
+      const end = text.indexOf("*", i + 1);
+      if (end > -1) { push(); parts.push(<em key={parts.length}>{text.slice(i + 1, end)}</em>); i = end + 1; continue; }
+    }
+    buf += text[i]; i++;
+  }
+  push();
+  return parts;
+};
+
+const MarkdownPreview = ({ md }) => {
+  const { t } = useTheme();
+  const blocks = renderMarkdown(md);
+  if (!blocks.length) {
+    return <div style={{ color: t.textSubtle, fontStyle: "italic", fontSize: 13 }}>預覽會顯示在這裡...</div>;
+  }
+  return (
+    <div style={{ fontSize: 13.5, lineHeight: 1.65, color: t.text }}>
+      {blocks.map((b, i) => {
+        if (b.type === "h1") return <h1 key={i} style={{ fontSize: 20, fontWeight: 600, margin: "14px 0 8px", letterSpacing: -0.3, color: t.text }}>{renderInline(b.text, t)}</h1>;
+        if (b.type === "h2") return <h2 key={i} style={{ fontSize: 17, fontWeight: 600, margin: "14px 0 6px", letterSpacing: -0.2, color: t.text }}>{renderInline(b.text, t)}</h2>;
+        if (b.type === "h3") return <h3 key={i} style={{ fontSize: 14.5, fontWeight: 600, margin: "12px 0 4px", color: t.text }}>{renderInline(b.text, t)}</h3>;
+        if (b.type === "p") return <p key={i} style={{ margin: "8px 0", color: t.text }}>{renderInline(b.text, t)}</p>;
+        if (b.type === "quote") return <blockquote key={i} style={{
+          margin: "10px 0", padding: "6px 12px",
+          borderLeft: `3px solid ${t.accent}`, color: t.textMuted,
+          background: t.accentSoft, borderRadius: "0 6px 6px 0",
+        }}>{renderInline(b.text, t)}</blockquote>;
+        if (b.type === "code") return <pre key={i} style={{
+          margin: "10px 0", padding: 12, borderRadius: 8,
+          background: t.chipBg, border: `1px solid ${t.border}`,
+          fontFamily: "ui-monospace, monospace", fontSize: 12, color: t.text,
+          overflow: "auto", lineHeight: 1.5,
+        }}>{b.text}</pre>;
+        if (b.type === "ul") return <ul key={i} style={{ margin: "8px 0", paddingLeft: 20, color: t.text }}>
+          {b.items.map((x, j) => <li key={j} style={{ margin: "3px 0" }}>{renderInline(x, t)}</li>)}
+        </ul>;
+        if (b.type === "ol") return <ol key={i} style={{ margin: "8px 0", paddingLeft: 20, color: t.text }}>
+          {b.items.map((x, j) => <li key={j} style={{ margin: "3px 0" }}>{renderInline(x, t)}</li>)}
+        </ol>;
+        return null;
+      })}
+    </div>
+  );
+};
+
+const NoteEditor = ({ note, onClose, onSave }) => {
+  const { theme, t } = useTheme();
+  const [title, setTitle] = useState(note.title || "");
+  const [body, setBody] = useState(note.body || "");
+  const [mode, setMode] = useState("edit"); // edit | preview | split
+  const [savedHint, setSavedHint] = useState(null);
+  const isNew = !note.id;
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const insertSyntax = (before, after = "") => {
+    const ta = document.getElementById("note-body-ta");
+    if (!ta) return;
+    const start = ta.selectionStart, end = ta.selectionEnd;
+    const sel = body.slice(start, end);
+    const next = body.slice(0, start) + before + sel + after + body.slice(end);
+    setBody(next);
+    setTimeout(() => { ta.focus(); ta.setSelectionRange(start + before.length, start + before.length + sel.length); }, 0);
+  };
+
+  const save = (addToSources) => {
+    if (!body.trim() && !title.trim()) return;
+    setSavedHint(addToSources ? "已加為來源" : "已儲存");
+    onSave({ id: note.id, title: title || "未命名筆記", body }, addToSources);
+  };
+
+  const tools = [
+    { l: "H1", action: () => insertSyntax("# ") },
+    { l: "H2", action: () => insertSyntax("## ") },
+    { l: "B", style: { fontWeight: 700 }, action: () => insertSyntax("**", "**") },
+    { l: "I", style: { fontStyle: "italic" }, action: () => insertSyntax("*", "*") },
+    { l: "‹›", action: () => insertSyntax("`", "`") },
+    { l: "•", action: () => insertSyntax("- ") },
+    { l: "❝", action: () => insertSyntax("> ") },
+  ];
+
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, zIndex: 100,
+      display: "grid", placeItems: "center",
+      background: theme === "dark" ? "rgba(0,0,0,0.6)" : "rgba(20,20,20,0.5)",
+      backdropFilter: "blur(4px)",
+      animation: "fadeIn 150ms ease-out",
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width: 760, maxWidth: "94vw", height: 580, maxHeight: "88vh",
+        background: t.surface, border: `1px solid ${t.border}`,
+        borderRadius: 14, display: "flex", flexDirection: "column",
+        boxShadow: theme === "dark" ? "0 30px 80px rgba(0,0,0,0.7)" : "0 30px 80px rgba(0,0,0,0.18)",
+        overflow: "hidden", animation: "slideUp 200ms ease-out",
+      }}>
+        {/* Header */}
+        <div style={{
+          padding: "12px 14px", borderBottom: `1px solid ${t.border}`,
+          display: "flex", alignItems: "center", gap: 10,
+        }}>
+          <div style={{
+            width: 26, height: 26, borderRadius: 7, background: t.accentSoft,
+            border: `1px solid ${t.accentBorder}`,
+            display: "grid", placeItems: "center", flexShrink: 0,
+          }}>
+            <Icon name="edit" size={12} stroke={t.accent} />
+          </div>
+          <input
+            value={title} onChange={e => setTitle(e.target.value)}
+            placeholder="筆記標題..."
+            style={{
+              flex: 1, border: "none", outline: "none", background: "transparent",
+              color: t.text, fontSize: 14, fontWeight: 500, fontFamily: "inherit",
+              letterSpacing: -0.1,
+            }}
+          />
+          <span style={{ fontSize: 11, color: t.textSubtle, padding: "2px 7px", border: `1px solid ${t.border}`, borderRadius: 999 }}>
+            {isNew ? "新筆記" : "編輯中"}
+          </span>
+          <button onClick={onClose} style={{
+            width: 26, height: 26, borderRadius: 6, border: "none",
+            background: "transparent", cursor: "pointer",
+            display: "grid", placeItems: "center", color: t.textMuted,
+          }}>
+            <Icon name="x" size={13} />
+          </button>
+        </div>
+
+        {/* Toolbar */}
+        <div style={{
+          padding: "8px 12px", borderBottom: `1px solid ${t.border}`,
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+          background: t.surface2,
+        }}>
+          <div style={{ display: "flex", gap: 3 }}>
+            {tools.map(tool => (
+              <button key={tool.l} onClick={tool.action} title={tool.l} style={{
+                minWidth: 28, height: 26, padding: "0 7px", borderRadius: 5,
+                border: `1px solid ${t.border}`, background: t.surface,
+                color: t.textMuted, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit",
+                ...tool.style,
+              }}>
+                {tool.l}
+              </button>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 2, padding: 2, background: t.surface, border: `1px solid ${t.border}`, borderRadius: 7 }}>
+            {[
+              { k: "edit", l: "編輯" }, { k: "split", l: "分頁" }, { k: "preview", l: "預覽" },
+            ].map(m => (
+              <button key={m.k} onClick={() => setMode(m.k)} style={{
+                padding: "4px 10px", borderRadius: 5, border: "none",
+                background: mode === m.k ? t.accent : "transparent",
+                color: mode === m.k ? "#fff" : t.textMuted,
+                fontSize: 11, fontWeight: 500, cursor: "pointer", fontFamily: "inherit",
+                transition: "all 120ms",
+              }}>{m.l}</button>
+            ))}
+          </div>
+        </div>
+
+        {/* Body — edit / preview / split */}
+        <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0 }}>
+          {(mode === "edit" || mode === "split") && (
+            <div style={{
+              flex: 1, padding: "14px 16px", overflow: "auto",
+              borderRight: mode === "split" ? `1px solid ${t.border}` : "none",
+              minWidth: 0,
+            }}>
+              <textarea
+                id="note-body-ta"
+                value={body} onChange={e => setBody(e.target.value)}
+                placeholder={`# 標題\n\n用 Markdown 寫筆記。\n\n- 重點 1\n- 重點 2\n\n> 引用文件中的關鍵段落\n\n\`\`\`\n程式碼區塊\n\`\`\``}
+                style={{
+                  width: "100%", height: "100%", minHeight: 360,
+                  border: "none", outline: "none", background: "transparent",
+                  color: t.text, fontSize: 13.5, fontFamily: "ui-monospace, 'JetBrains Mono', monospace",
+                  resize: "none", lineHeight: 1.7,
+                }}
+              />
+            </div>
+          )}
+          {(mode === "preview" || mode === "split") && (
+            <div style={{ flex: 1, padding: "14px 18px", overflow: "auto", background: mode === "split" ? t.surface : t.surface, minWidth: 0 }}>
+              <MarkdownPreview md={body} />
+            </div>
+          )}
+        </div>
+
+        {/* Footer — save actions */}
+        <div style={{
+          padding: "12px 14px", borderTop: `1px solid ${t.border}`,
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+        }}>
+          <div style={{ fontSize: 11, color: t.textSubtle, display: "flex", alignItems: "center", gap: 6 }}>
+            {savedHint ? (
+              <><Icon name="check" size={12} stroke={t.success} /> <span style={{ color: t.success, fontWeight: 500 }}>{savedHint}</span></>
+            ) : (
+              <>{body.length} 字元 · 支援 Markdown 語法</>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={onClose} style={{
+              padding: "7px 14px", borderRadius: 8, border: `1px solid ${t.border}`,
+              background: t.surface, color: t.text, fontSize: 12.5, fontWeight: 500,
+              cursor: "pointer", fontFamily: "inherit",
+            }}>取消</button>
+            <button onClick={() => save(false)} disabled={!body.trim()} style={{
+              padding: "7px 14px", borderRadius: 8, border: `1px solid ${t.border}`,
+              background: t.surface2, color: t.text, fontSize: 12.5, fontWeight: 500,
+              cursor: body.trim() ? "pointer" : "not-allowed", fontFamily: "inherit",
+              opacity: body.trim() ? 1 : 0.5,
+              display: "inline-flex", alignItems: "center", gap: 5,
+            }}>
+              <Icon name="check" size={12} stroke={t.text} /> 存為筆記
+            </button>
+            {isNew && (
+              <button onClick={() => save(true)} disabled={!body.trim()} style={{
+                padding: "7px 14px", borderRadius: 8, border: "none",
+                background: t.accent, color: "#fff", fontSize: 12.5, fontWeight: 500,
+                cursor: body.trim() ? "pointer" : "not-allowed", fontFamily: "inherit",
+                opacity: body.trim() ? 1 : 0.5,
+                display: "inline-flex", alignItems: "center", gap: 5,
+                boxShadow: `0 4px 14px -4px ${t.accent}`,
+              }}>
+                <Icon name="upload" size={12} stroke="#fff" /> 存並加為來源
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ─── Command Modal (2-step) ────────────────────────────────────────
+const PRESETS = {
+  report: [
+    { l: "深度技術綜述", d: "嚴謹學術風格、含完整引用與章節結構", tag: "推薦" },
+    { l: "重點摘要", d: "1-2 頁的精華筆記，適合快速回顧" },
+    { l: "教學講義", d: "概念 + 範例 + 練習題的學習導向格式" },
+    { l: "對外溝通文件", d: "客觀中立、適合分享給非技術讀者" },
+  ],
+  podcast: [
+    { l: "深入對談", d: "兩位主持人辯證觀點 · 約 8-12 分鐘", tag: "推薦" },
+    { l: "說書節奏", d: "敘事旁白把研究材料說成故事 · 5-7 分鐘" },
+    { l: "快速摘要", d: "單人旁白核心要點 · 3 分鐘以內" },
+  ],
+  slides: [
+    { l: "經典報告結構", d: "封面 → 大綱 → 內容 → 結論 · 10-15 張", tag: "推薦" },
+    { l: "Lightning Talk", d: "5 張投影片濃縮版" },
+    { l: "教學投影片", d: "概念 + 範例 + 練習" },
+  ],
+};
+const INSIGHTS = [
+  { l: "聚焦在數學推理章節", d: "從 GPT-5 報告第 4.2 節抽取 benchmark 對比" },
+  { l: "對比 GPT-4 vs GPT-5", d: "把兩代差異整理成對照表，含百分比變化" },
+  { l: "面向學生的科普版", d: "假設讀者沒有 ML 背景，把術語都解釋一遍" },
+];
+
+const CommandModal = ({ item, onClose, onGenerate }) => {
+  const { theme, t } = useTheme();
+  const [step, setStep] = useState(0);
+  const [selected, setSelected] = useState(0);
+  const [extra, setExtra] = useState("");
+  const [generating, setGenerating] = useState(false);
+
+  const list = PRESETS[item.k] || [
+    { l: `自動${item.l}`, d: "由 AI 依文件內容決定最適合的呈現方式", tag: "推薦" },
+    { l: "簡短版本", d: "壓縮為核心要點" },
+    { l: "詳細版本", d: "包含完整脈絡與背景" },
+  ];
+
+  const generate = () => {
+    setGenerating(true);
+    setTimeout(() => {
+      onGenerate(item, { style: list[selected].l, extra });
+    }, 1400);
+  };
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape" && !generating) onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [generating]);
+
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, zIndex: 100,
+      display: "grid", placeItems: "center",
+      background: theme === "dark" ? "rgba(0,0,0,0.6)" : "rgba(20,20,20,0.5)",
+      backdropFilter: "blur(4px)",
+      animation: "fadeIn 150ms ease-out",
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width: 560, maxWidth: "92vw", maxHeight: "84vh",
+        background: t.surface, border: `1px solid ${t.border}`,
+        borderRadius: 14, display: "flex", flexDirection: "column",
+        boxShadow: theme === "dark" ? "0 30px 80px rgba(0,0,0,0.7)" : "0 30px 80px rgba(0,0,0,0.18)",
+        overflow: "hidden", animation: "slideUp 200ms ease-out",
+      }}>
+        <div style={{
+          padding: "14px 16px", display: "flex", alignItems: "center", gap: 10,
+          borderBottom: `1px solid ${t.border}`,
+        }}>
+          <div style={{
+            width: 26, height: 26, borderRadius: 7, background: `${item.c}22`,
+            display: "grid", placeItems: "center", border: `1px solid ${item.c}33`,
+          }}><Icon name={item.i} size={12} stroke={item.c} /></div>
+          <div style={{ fontSize: 13, fontWeight: 500, color: t.text }}>建立 {item.l}</div>
+          <span style={{ fontSize: 11, color: t.textSubtle }}>· 步驟 {step + 1} / 2</span>
+          <button onClick={onClose} style={{
+            marginLeft: "auto", width: 24, height: 24, borderRadius: 6, border: "none",
+            background: "transparent", cursor: "pointer",
+            display: "grid", placeItems: "center", color: t.textMuted,
+          }}>
+            <Icon name="x" size={13} />
+          </button>
+        </div>
+
+        <div style={{ flex: 1, overflow: "auto", padding: "18px 16px 8px" }}>
+          {generating ? (
+            <div style={{ padding: "40px 20px", textAlign: "center" }}>
+              <div style={{
+                width: 44, height: 44, margin: "0 auto 18px",
+                borderRadius: 12, background: t.accentSoft, border: `1px solid ${t.accentBorder}`,
+                display: "grid", placeItems: "center",
+              }}>
+                <span style={{
+                  width: 22, height: 22, border: `2.5px solid ${t.accentBorder}`,
+                  borderTopColor: t.accent, borderRadius: "50%",
+                  animation: "spin 0.7s linear infinite",
+                }} />
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 6, color: t.text }}>正在鑄造 {item.l}...</div>
+              <div style={{ fontSize: 12, color: t.textMuted }}>分析 4 個來源 · 套用「{list[selected].l}」風格</div>
+              <div style={{
+                margin: "20px auto 0", maxWidth: 280, height: 4, borderRadius: 999,
+                background: t.surface2, overflow: "hidden",
+              }}>
+                <div style={{
+                  height: "100%", width: "60%",
+                  background: `linear-gradient(90deg, ${t.accent}, ${t.accentHover}, ${t.accent})`,
+                  backgroundSize: "200% 100%", animation: "shimmer 1.5s infinite",
+                  borderRadius: 999,
+                }} />
+              </div>
+            </div>
+          ) : step === 0 ? (
+            <>
+              <div style={{ fontSize: 11, fontWeight: 600, color: t.textMuted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>01 · 選擇風格</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 22 }}>
+                {list.map((p, i) => (
+                  <button key={i} onClick={() => setSelected(i)} style={{
+                    textAlign: "left", padding: "12px 14px", borderRadius: 10, cursor: "pointer",
+                    background: selected === i ? t.accentSoft : t.surface2,
+                    border: `1px solid ${selected === i ? t.accentBorder : t.border}`,
+                    display: "flex", alignItems: "flex-start", gap: 11, fontFamily: "inherit",
+                    transition: "all 120ms",
+                  }}>
+                    <div style={{
+                      width: 16, height: 16, borderRadius: "50%", flexShrink: 0, marginTop: 2,
+                      background: selected === i ? t.accent : "transparent",
+                      border: `1.5px solid ${selected === i ? t.accent : t.borderStrong}`,
+                      display: "grid", placeItems: "center",
+                    }}>
+                      {selected === i && <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff" }} />}
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
+                        <span style={{ fontSize: 13, fontWeight: 500, color: t.text }}>{p.l}</span>
+                        {p.tag && <span style={{
+                          fontSize: 9.5, fontWeight: 600, color: t.accent,
+                          padding: "1px 6px", background: t.accentSoft, borderRadius: 4,
+                          letterSpacing: 0.4, border: `1px solid ${t.accentBorder}`,
+                        }}>推薦</span>}
+                      </div>
+                      <div style={{ fontSize: 11.5, color: t.textMuted, lineHeight: 1.5 }}>{p.d}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: t.textMuted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10, display: "flex", alignItems: "center", gap: 7 }}>
+                <Icon name="sparkle" size={11} stroke={t.accent} /> AI 觀察 · 你的來源中可能值得探索的角度
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {INSIGHTS.map((s, i) => (
+                  <button key={i} onClick={() => setExtra(s.l + "：" + s.d)} style={{
+                    textAlign: "left", padding: "10px 13px", borderRadius: 9, cursor: "pointer",
+                    background: t.surface2, border: `1px dashed ${t.borderStrong}`,
+                    display: "flex", flexDirection: "column", gap: 2, fontFamily: "inherit",
+                    transition: "all 120ms",
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = t.accent; e.currentTarget.style.background = t.accentSoft; }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = t.borderStrong; e.currentTarget.style.background = t.surface2; }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <span style={{ fontSize: 12.5, fontWeight: 500, color: t.text }}>{s.l}</span>
+                      <Icon name="plus" size={11} stroke={t.textMuted} />
+                    </div>
+                    <span style={{ fontSize: 11, color: t.textMuted, lineHeight: 1.5 }}>{s.d}</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 11, fontWeight: 600, color: t.textMuted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>02 · 補充指示（可略過）</div>
+              <textarea value={extra} onChange={e => setExtra(e.target.value)}
+                placeholder="例：聚焦在 4.2 節的數學評估、避免提及商業競爭..."
+                rows={5}
+                style={{
+                  width: "100%", padding: 13, borderRadius: 10,
+                  background: t.surface2, border: `1px solid ${t.border}`,
+                  color: t.text, fontSize: 13, fontFamily: "inherit", lineHeight: 1.55,
+                  outline: "none", resize: "vertical",
+                }}
+              />
+              <div style={{
+                marginTop: 14, padding: "11px 13px", borderRadius: 10,
+                background: t.accentSoft, border: `1px solid ${t.accentBorder}`,
+                fontSize: 11.5, color: t.text, lineHeight: 1.55,
+                display: "flex", gap: 9, alignItems: "flex-start",
+              }}>
+                <Icon name="sparkle" size={13} stroke={t.accent} style={{ marginTop: 1, flexShrink: 0 }} />
+                <div>
+                  <div style={{ fontWeight: 500, marginBottom: 2, color: t.text }}>已選擇：{list[selected].l}</div>
+                  <div style={{ color: t.textMuted }}>4 個來源將會被引用 · 預估生成時間 30-60 秒</div>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        {!generating && (
+          <div style={{
+            padding: "12px 16px", borderTop: `1px solid ${t.border}`,
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+          }}>
+            <div style={{ display: "flex", gap: 4 }}>
+              {[0, 1].map(i => (
+                <div key={i} style={{
+                  width: step >= i ? 18 : 6, height: 4, borderRadius: 2,
+                  background: step >= i ? t.accent : t.border, transition: "all 200ms",
+                }} />
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              {step > 0 && (
+                <button onClick={() => setStep(0)} style={{
+                  padding: "7px 14px", borderRadius: 8, border: `1px solid ${t.border}`,
+                  background: t.surface, color: t.text, fontSize: 12.5, fontWeight: 500,
+                  cursor: "pointer", fontFamily: "inherit",
+                }}>上一步</button>
+              )}
+              {step === 0 ? (
+                <button onClick={() => setStep(1)} style={{
+                  padding: "7px 16px", borderRadius: 8, border: "none",
+                  background: t.accent, color: "#fff", fontSize: 12.5, fontWeight: 500,
+                  cursor: "pointer", fontFamily: "inherit",
+                  display: "inline-flex", alignItems: "center", gap: 6,
+                  boxShadow: `0 4px 14px -4px ${t.accent}`,
+                }}>繼續 <Icon name="arrowR" size={11} stroke="#fff" /></button>
+              ) : (
+                <button onClick={generate} style={{
+                  padding: "7px 16px", borderRadius: 8, border: "none",
+                  background: t.accent, color: "#fff", fontSize: 12.5, fontWeight: 500,
+                  cursor: "pointer", fontFamily: "inherit",
+                  display: "inline-flex", alignItems: "center", gap: 6,
+                  boxShadow: `0 4px 14px -4px ${t.accent}`,
+                }}><Icon name="sparkle" size={11} stroke="#fff" /> 開始鑄造</button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════════
+//  WORKSPACE shell
+// ═══════════════════════════════════════════════════════════════════
+const Workspace = ({ project, onBack }) => {
+  const { t } = useTheme();
+  const [activeConv, setActiveConv] = useState(INITIAL_CONVS[0]);
+  const [studioOpen, setStudioOpen] = useState(true);
+  const [docs, setDocs] = useState(INITIAL_DOCS);
+
+  return (
+    <div style={{ height: "100vh", display: "flex", overflow: "hidden", background: t.bg, color: t.text }}>
+      <Sidebar project={project} onBack={onBack} activeConv={activeConv} setActiveConv={setActiveConv} docs={docs} setDocs={setDocs} />
+      <Chat activeConv={activeConv} onToggleStudio={() => setStudioOpen(s => !s)} studioOpen={studioOpen} />
+      {studioOpen && <Studio onClose={() => setStudioOpen(false)} docs={docs} setDocs={setDocs} />}
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════════
+//  ROOT
+// ═══════════════════════════════════════════════════════════════════
+const App = () => {
+  const [theme, setTheme] = useState(() => localStorage.getItem("nblm-theme") || "dark");
+  const [user, setUser] = useState(null);
+  const [project, setProject] = useState(null);
+
+  useEffect(() => {
+    document.body.classList.toggle("light", theme === "light");
+    localStorage.setItem("nblm-theme", theme);
+  }, [theme]);
+
+  const ctx = useMemo(() => ({
+    theme, t: TOKENS[theme],
+    toggle: () => setTheme(th => th === "dark" ? "light" : "dark"),
+  }), [theme]);
+
+  return (
+    <ThemeContext.Provider value={ctx}>
+      {!user ? (
+        <Login onLogin={setUser} />
+      ) : !project ? (
+        <Dashboard user={user} onSelect={setProject} onLogout={() => setUser(null)} />
+      ) : (
+        <Workspace project={project} onBack={() => setProject(null)} />
+      )}
+    </ThemeContext.Provider>
+  );
+};
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
