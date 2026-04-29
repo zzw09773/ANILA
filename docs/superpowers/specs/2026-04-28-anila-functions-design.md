@@ -28,7 +28,7 @@
 - **Live Test Console**：dev 在 UI 上直接跑、看 events stream
 - **Audit log**：每次 Action 觸發保留 360 天（含完整 events_json，redact 後）
 - **RBAC**：`developer` 寫；`developer`+`admin` 看 code；所有 role 看 metadata 並用 enabled function；`admin` 可 disable / 設 admin Valves
-- **Worker 兩層隔離**：trusted **`anila-functions-worker-api`**（接 CSP）+ untrusted **`anila-functions-runner-exec`** / **`anila-functions-runner-extract`**（exec user code）；runner 加 **`cap_drop: ALL`**、**read-only rootfs + tmpfs `/tmp`**、**egress 預設 deny + outbound proxy allowlist**、**docker cgroup `mem_limit` + `pids_limit`**、30s timeout（runner-extract 3s）、non-root；container 在 `internal:true` networks 上、CSP 透過 control 層 talk to api 而非 runner
+- **Worker 兩層隔離 + volume IPC**：trusted **`anila-functions-worker-api`**（接 CSP，hardened）+ untrusted **`anila-functions-sandbox-exec`** / **`anila-functions-sandbox-extract`**（exec user code）；**worker-api 跟 sandbox 透過 shared docker volume + Unix socket IPC，不共享 network namespace**（避免 user code subprocess 跨容器 reach control plane）；sandbox 加 **`cap_drop: ALL`**、**read-only rootfs + tmpfs `/tmp`**、**egress 預設 deny + outbound proxy allowlist**（exec only；extract 完全無 egress）、**docker cgroup `mem_limit` + `pids_limit`**、30s timeout（extract 3s）、non-root；sandbox 容器**不在** `anila-internal`、**完全不持有任何 ANILA secret**
 - **Event types**：`status`、**`host_command`（白名單動詞集；無 raw JS eval）**、`message`、`citation`、`error`（+ runtime sentinel `__done__`）
 - **Worker schema extraction**：CSP 不 import / exec user code，valves & actions schema 解析委派 worker `/extract-meta` endpoint
 - **/run 強制 ownership 檢查**：複用 CSP `conversation_service` gate（conversation/message access、message role=assistant、classified gate）
@@ -99,24 +99,27 @@
                                                     │ X-Functions-Secret
                                                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  anila-functions-worker-api (NEW, trusted gate)                  │
+│  anila-functions-worker-api (NEW, trusted gate, hardened)         │
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │  POST /exec, /extract-meta — CSP-facing                  │   │
-│  │  → forward to runner via control-net                     │   │
-│  │  → SSE relay; verifies X-Functions-Secret                │   │
-│  │  Does NOT exec user code itself                          │   │
-│  └────────────────────┬──────────────────────┬──────────────┘   │
-│                        │ control-net          │                  │
-│                        ▼                      ▼                  │
-│  ┌─ runner-exec (NEW, untrusted) ─┐ ┌─ runner-extract (NEW) ─┐  │
-│  │  POST /exec → spawn subprocess │ │  POST /extract-meta    │  │
-│  │  cap_drop:ALL, seccomp, RO     │ │  比 exec 更嚴 profile  │  │
-│  │  mem_limit:256m, pids_limit:32 │ │  mem_limit:64m, 3s     │  │
-│  │  egress: only via egress-proxy │ │  egress: NONE          │  │
-│  │  Concurrency: pool of 8        │ │  (extract-net 完全隔離) │  │
-│  └────────────────────────────────┘ └──────────────────────────┘ │
-│             │                                                    │
-│             ▼ (functions-net, internal:true)                     │
+│  │  Verifies X-Functions-Secret (CSP↔api auth)              │   │
+│  │  Writes job + connects to Unix socket on shared volume   │   │
+│  │  Streams events back as SSE to CSP                       │   │
+│  │  Does NOT exec user code; not on functions-net           │   │
+│  └────────────┬───────────────────────────┬─────────────────┘   │
+│               │ volume: jobs-exec         │ volume: jobs-extract │
+│               │ (Unix socket IPC)         │                      │
+│               ▼                            ▼                     │
+│  ┌─ sandbox-exec (NEW, untrusted) ─┐ ┌─ sandbox-extract (NEW) ─┐│
+│  │  Listens on Unix socket         │ │  比 exec 更嚴 profile     ││
+│  │  Spawns subprocess per job      │ │  mem_limit:64m, 3s        ││
+│  │  cap_drop:ALL, seccomp, RO      │ │  egress: NONE             ││
+│  │  mem_limit:256m, pids_limit:32  │ │  (extract-net 完全隔離)    ││
+│  │  Networks: functions-net only   │ │  Networks: extract-net only││
+│  │  No ANILA secret in env         │ │  No ANILA secret in env    ││
+│  └─────┬───────────────────────────┘ └──────────────────────────┘│
+│        │ (functions-net, internal:true)                          │
+│        ▼                                                          │
 │  ┌─ anila-functions-egress (NEW squid sidecar) ───────────────┐  │
 │  │  Bridge to anila-internal; allowlist-only forwarding       │  │
 │  └─────────────────────────────────────────────────────────────┘  │
@@ -129,11 +132,12 @@
 |---|---|---|---|---|
 | `anila-ui` (`ANILA_UI/anila-ui`) | Existing, extended | anila-internal | ✅ | 加 `/admin/functions/*` 路由與 ChatRuntime button render |
 | CSP (`myCSPPlatform`) | Existing, extended | anila-internal | ✅ | 加表 / endpoint / SSE relay logic |
-| `anila-functions-worker-api` | **NEW** | anila-internal + control-net | ✅ trusted | 接 CSP；轉發到 runner；不 exec user code |
-| `anila-functions-runner-exec` | **NEW** | control-net + functions-net (`internal:true`) | ❌ untrusted | exec user code；連得到 egress-proxy only |
-| `anila-functions-runner-extract` | **NEW** | control-net + extract-net (`internal:true`, 無 proxy) | ❌ untrusted | exec user code；無任何 egress |
+| `anila-functions-worker-api` | **NEW** | anila-internal only | ✅ trusted（hardened） | 接 CSP；寫 job 到 volume；讀 events stream；不 exec user code；持有 CSP↔api secret |
+| `anila-functions-sandbox-exec` | **NEW** | functions-net (`internal:true`) only | ❌ untrusted | exec user code；只能 reach egress-proxy；**不持有任何 ANILA secret** |
+| `anila-functions-sandbox-extract` | **NEW** | extract-net (`internal:true`, 無 proxy) only | ❌ untrusted | exec user code；**完全無 egress**；不持有任何 secret |
 | `anila-functions-egress` | **NEW** | anila-internal + functions-net | ✅ trusted | squid，allowlist 內 host 才轉 |
 | PostgreSQL | Existing | anila-internal | ✅ | 多 5 張表（含 reports） |
+| **Volumes** `jobs-exec` / `jobs-extract` | **NEW** | — | — | docker volume；worker-api 跟 sandbox 共享 mount；Unix socket IPC + job/events files；filesystem permission 限制存取 |
 
 ---
 
@@ -414,58 +418,66 @@ data: {"run_id":789,"duration_ms":234,"status":"success"}
 
 ### 5.1 時序
 
-CSP 透過 `anila-internal` call **worker-api**（trusted gate），api 透過 `anila-functions-control-net` call runner（untrusted、會 spawn subprocess 跑 user code）。
+CSP 透過 `anila-internal` call **worker-api**（trusted gate）；worker-api 透過 **shared docker volume + Unix socket** 跟 sandbox 通訊（**完全不靠網路**，因此 sandbox 容器**不必、也不**在 anila-internal 或 control-net 上）。
 
 ```
-Browser   CSP /run         worker-api          runner-exec        subprocess
-  │  POST  │                  │                    │                   │
-  ├───────▶│                  │                    │                   │
-  │        │ RBAC + ownership │                    │                   │
-  │        │ DB lookup        │                    │                   │
-  │        │ INSERT runs(run.)│                    │                   │
-  │        │ POST /exec +     │                    │                   │
-  │        │  X-Functions-Sec │                    │                   │
-  │        ├─(anila-internal)▶│                    │                   │
-  │        │                  │ verify secret      │                   │
-  │        │                  │ POST /exec to      │                   │
-  │        │                  │  runner-exec       │                   │
-  │        │                  ├─(control-net)─────▶│                   │
-  │        │                  │                    │ spawn subprocess  │
-  │        │                  │                    ├──────────────────▶│
-  │SSE     │SSE (redact)      │SSE relay           │SSE (per-line)     │ stdout
-  │◀───────┤◀─────────────────┤◀───────────────────┤◀──────────────────┤
-  │  ...   │  ...             │  ...               │  ...              │ ...
-  │        │                  │                    │ data="__done__"   │
-  │        │                  │                    │◀──────────────────┤
-  │        │                  │ relay __done__     │                   │
-  │        │ redact + UPDATE  │                    │                   │
-  │        │  runs(success)   │                    │                   │
-  │event=  │                  │                    │                   │
-  │function│                  │                    │                   │
-  │_done   │                  │                    │                   │
-  │◀───────┤                  │                    │                   │
+Browser   CSP /run         worker-api          (volume)            sandbox-exec     subprocess
+  │  POST  │                  │                    │                    │              │
+  ├───────▶│                  │                    │                    │              │
+  │        │ RBAC + ownership │                    │                    │              │
+  │        │ DB lookup        │                    │                    │              │
+  │        │ INSERT runs(run.)│                    │                    │              │
+  │        │ POST /exec +     │                    │                    │              │
+  │        │  X-Func-Secret   │                    │                    │              │
+  │        ├─(anila-internal)▶│                    │                    │              │
+  │        │                  │ verify secret      │                    │              │
+  │        │                  │ connect Unix socket│                    │              │
+  │        │                  │ /jobs-exec/ctl.sock│                    │              │
+  │        │                  ├───────────────────▶│ inotify accept    │              │
+  │        │                  │                    │ ───────────────────▶              │
+  │        │                  │ write {code,body,  │                    │ spawn subprocess
+  │        │                  │  valves,user,meta} │                    │ runtime.py
+  │        │                  │ ───────────────────│ ───────────────────│─────────────▶│
+  │SSE     │SSE (redact)      │read events stream  │                    │              │
+  │◀───────┤◀─────────────────┤◀───────────────────│ ◀───────────────────│ stdout (per-line)
+  │  ...   │  ...             │ ...                │                    │              │
+  │        │                  │                    │                    │ "__done__"   │
+  │        │                  │                    │                    │ ◀────────────┤
+  │        │                  │ ◀───────────────────│ ◀───────────────────│              │
+  │        │                  │ disconnect socket  │                    │              │
+  │        │                  │ GC job/event files │                    │              │
+  │        │ redact + UPDATE  │                    │                    │              │
+  │        │  runs(success)   │                    │                    │              │
+  │event=  │                  │                    │                    │              │
+  │function│                  │                    │                    │              │
+  │_done   │                  │                    │                    │              │
+  │◀───────┤                  │                    │                    │              │
 ```
 
-`/extract-meta` 走同樣的拓樸但 runner 是 `runner-extract`（連 extract-net、無 egress）。
+`/extract-meta` 走同一形狀但 sandbox 是 `sandbox-extract`（連 extract-net、無 egress、不接受 valves）；volume 是 `jobs-extract`。
 
-### 5.2 Worker handlers（要點）
+### 5.2 Service handlers（要點）
 
-**`anila-functions-worker-api` `/exec` handler（trusted gate）**：
-- 接收 ExecRequest（驗 `X-Functions-Secret`）
-- 純 forward 到 runner-exec（control-net 上的 internal hostname）；自身不 import / exec user code
-- 把 runner 回的 SSE stream 轉送回 CSP（順便兜底 timeout / connection error）
+**`anila-functions-worker-api` `/exec` handler（trusted gate, hardened）**：
+- 接收 ExecRequest（驗 `X-Functions-Secret`，CSP↔api 共用）
+- 連接 `/jobs-exec/control.sock`（Unix domain socket on shared docker volume）
+- 寫入序列化的 job request（含 code / body / valves / user / metadata）
+- 從 socket 讀回 SSE event stream，轉送回 CSP（順便 timeout / connection error 兜底）
+- **本身不 spawn subprocess、不 import user code、不在 functions-net 上**
+- run 結束清理 `/jobs-exec/<run_id>.*` 檔案
 
 **`anila-functions-worker-api` `/extract-meta` handler**：
-- 同上但 forward 到 runner-extract
+- 同上但連 `/jobs-extract/control.sock`、走 `jobs-extract` volume
 
-**`anila-functions-runner-exec` `/exec` handler（untrusted runner）**：
-- 接收 ExecRequest（驗 `X-Functions-Secret`，跟 api 共用）
-- spawn `python -u runtime.py`，stdin pipe 餵 JSON request
+**`anila-functions-sandbox-exec`（untrusted runner，only on functions-net）**：
+- 啟動時 `bind()` Unix socket `/jobs-exec/control.sock`、`accept()` loop
+- 每個連線 = 一個 job；read job spec → spawn `python -u runtime.py`，stdin pipe 餵 JSON
 - preexec_fn 補強 rlimits（cpu 30s、nproc 32）；**memory 由 docker `mem_limit:256m` cgroup 控制（不靠 RLIMIT_RSS — Linux 上不可靠）**
-- StreamingResponse async 把 stdout 每行轉成 SSE `data:` line
-- 結束 wait 2s 後強制 wait
+- subprocess stdout 每行直接 forward 進 socket（worker-api 那端讀 SSE）
+- subprocess 結束 → 寫 `__done__` event → 關 socket 連線
+- **不持有任何 ANILA secret**；env 內沒 `ANILA_FUNCTIONS_API_SECRET` / `ANILA_FUNCTIONS_VALVES_KEY` / 任何 token
 
-**`anila-functions-runner-extract` `/extract-meta` handler**：同上但設定不同（3s timeout、64MB cgroup mem、不傳 valves/user/metadata）
+**`anila-functions-sandbox-extract`**：同上但 socket 在 `/jobs-extract/control.sock`、profile 更嚴（3s timeout、64MB cgroup mem、不傳 valves/user/metadata）、容器在 extract-net（完全無 egress）
 
 ### 5.3 Worker `/extract-meta` endpoint（schema 抽取，**比 /exec 更嚴**）
 
@@ -485,7 +497,7 @@ Browser   CSP /run         worker-api          runner-exec        subprocess
 **Stage 2 — Restricted sandbox exec（fallback）**：
 - 觸發條件：stage 1 偵測到 dynamic 結構（Valves 用 `Annotated[X, Field(...)]` 含複雜 default、actions list 是 comprehension 等）
 - Profile（**比正式 run 嚴格**）：
-  - **Egress 完全 deny**：runner-extract 連到 `anila-functions-extract-net`（`internal: true`、**無** egress proxy）；連 allowlisted host 都連不到
+  - **Egress 完全 deny**：sandbox-extract 連到 `anila-functions-extract-net`（`internal: true`、**無** egress proxy）；連 allowlisted host 都連不到
   - **Timeout 3s**（vs run 的 30s）
   - **Memory：docker `mem_limit:64m`**（cgroup-enforced；vs run 的 256m）；不靠 RLIMIT_RSS
   - **`pids_limit:16`**（fork bomb 擋）
@@ -516,9 +528,9 @@ CSP 收到 JSON → INSERT versions row（plain string + JSON，**不 exec**）
 
 **Network 隔離（v1 採用兩個 runner container，不用 netns 切換）**：
 
-`anila-functions-runner-exec` 連 `anila-functions-net`（有 egress proxy）；`anila-functions-runner-extract` 連 `anila-functions-extract-net`（**無** egress proxy、`internal:true` 完全沒出口）。worker-api 透過 control-net 路由 `/exec` 到 runner-exec、`/extract-meta` 到 runner-extract。
+`anila-functions-sandbox-exec` 連 `anila-functions-net`（有 egress proxy）；`anila-functions-sandbox-extract` 連 `anila-functions-extract-net`（**無** egress proxy、`internal:true` 完全沒出口）。worker-api 透過 docker volume + Unix socket 路由：`jobs-exec/control.sock` 到 sandbox-exec、`jobs-extract/control.sock` 到 sandbox-extract。
 
-⚠️ **不**使用 `unshare(CLONE_NEWNET)` / `os.unshare` 切 netns 的方案：seccomp 明確 block `unshare` syscall（§5.7），這條路是死的；同時若允許 unshare、user code 也可能濫用、跟 sandbox 哲學矛盾。兩個 runner container 在 ops 上多 1 個 service 但邊界乾淨、跟 seccomp 政策一致。
+⚠️ **不**使用 `unshare(CLONE_NEWNET)` / `os.unshare` 切 netns 的方案：seccomp 明確 block `unshare` syscall（§5.7），這條路是死的；同時若允許 unshare、user code 也可能濫用、跟 sandbox 哲學矛盾。兩個 sandbox container 在 ops 上多 1 個 service 但邊界乾淨、跟 seccomp 政策一致。
 
 **Worker `/extract-meta` request**：`{code: string}` + `X-Functions-Secret` header
 **Response**：
@@ -623,8 +635,8 @@ asyncio.run(main())
 | 限制 | 值 | 觸發 |
 |---|---|---|
 | Wall clock | 30s | SIGKILL → SSE error + function_done(timeout) |
-| **Memory** | **runner-exec: docker `mem_limit:256m`（cgroup-enforced，hard limit）；runner-extract: `mem_limit:64m`** | container OOM kill → subprocess SIGKILL → SSE `error: out_of_memory` |
-| **PIDs** | runner-exec `pids_limit:32`；runner-extract `pids_limit:16` | fork bomb cgroup 級別擋下 |
+| **Memory** | **sandbox-exec: docker `mem_limit:256m`（cgroup-enforced，hard limit）；sandbox-extract: `mem_limit:64m`；worker-api: `mem_limit:128m`** | container OOM kill → subprocess SIGKILL → SSE `error: out_of_memory` |
+| **PIDs** | sandbox-exec `pids_limit:32`；sandbox-extract `pids_limit:16`；worker-api `pids_limit:64` | fork bomb cgroup 級別擋下 |
 | ~~RSS rlimit~~ | ~~256/64 MB~~ | **Linux `RLIMIT_RSS` 多數 kernel 不 enforce、不可靠**；保留 cpu/nproc 的 setrlimit 為輔，記憶體靠 cgroup |
 | CPU | 30s ulimit | 同 wall clock |
 | **Network egress** | **預設 deny；出網經 outbound proxy + allowlist** | proxy 拒絕 → user code 收連線失敗（具體錯誤可能是 connection refused / timeout / no route，視 docker 版本與目標 IP 而定；測試應驗「不能連通」、不綁特定錯誤字串） |
@@ -638,13 +650,13 @@ asyncio.run(main())
 | Worker container 不掛 `docker.sock` / `/var/run/docker.sock` | 強制 | docker socket bind = container escape primitive |
 | Concurrent runs | 8（worker pool semaphore） | 第 9 個 → error: queue_full |
 
-**Outbound egress 控制 — 安全邊界在網路拓樸 + 「API gate」與「Runner」兩層分離**：
+**Outbound egress 控制 — 安全邊界在網路拓樸 + volume IPC 把 control plane 跟 user code 完全切開**：
 
 ⚠️ Env vars（`HTTP_PROXY` 等）是 user code 自願使用的便利機制，user code 可以 `del os.environ['HTTP_PROXY']` 或繞 socket 庫直接連、env 不能擋。**真正的 enforcement 必須在 Linux network layer**。
 
-⚠️ **Control plane 跟 user code execution 必須分容器**：把 worker 接到 `anila-internal` 給 CSP call → user code 也看得到 CSP；把 worker 移出 `anila-internal` → CSP call 不到。唯一乾淨解是**拆兩層**：trusted API gate 接 CSP request；untrusted runner 跑 user code、網路隔離。
+⚠️ **Container 拆兩層還不夠 — subprocess 繼承 container netns**：如果 sandbox container 為了「接受 worker-api 的 control 流量」也加入 control-net、那 sandbox 內 spawn 的 subprocess（user code）也在 control-net 上、可反向 reach worker-api、可讀 worker-api 的 secret。**v1 用 docker volume + Unix socket 做 IPC、完全繞開「sandbox 必須上 control-net」的需求**。
 
-**v1 拓樸（4 個 services + 4 個 networks）**：
+**v1 拓樸（4 個 services + 3 個 networks + 2 個 volumes）**：
 
 ```
 ┌────────────────────── docker-compose ──────────────────────────────────┐
@@ -654,59 +666,63 @@ asyncio.run(main())
 │   └────────────┬────────────────────────────┘                            │
 │                │ (1) CSP POST /exec, /extract-meta                       │
 │                ▼                                                          │
-│   ┌── anila-functions-worker-api ─────────────┐ ← trusted, 不 exec user │
-│   │  接 CSP；分流 /exec 到 runner-exec、       │   code，本身無 user code │
-│   │  /extract-meta 到 runner-extract          │   執行能力                 │
-│   └────────┬───────────┬───────────────────────┘                          │
-│            │ (2)       │ (2)                                              │
-│   ┌── anila-functions-control-net ──────────┐ ← internal:true             │
-│   │  api ↔ runner-exec ↔ runner-extract     │   trusted IPC channel       │
-│   └────┬───────────────┬─────────────────────┘                            │
-│        │               │                                                   │
-│        ▼               ▼                                                   │
-│   ┌─ runner-exec ─┐  ┌─ runner-extract ─┐ ← UNTRUSTED, exec user code     │
-│   │  /exec API    │  │  /extract-meta   │   subprocess sandbox            │
-│   │               │  │  (更嚴 profile)   │                                  │
-│   └───┬───────────┘  └─────────────┬────┘                                 │
-│       │ (3) outbound httpx/requests │                                     │
-│       ▼                             │                                     │
-│   ┌─ anila-functions-net ──────────┐│ ← internal:true; runner-exec 唯一   │
-│   │  runner-exec ↔ egress-proxy    ││   能連的對外網路                     │
-│   └────────┬───────────────────────┘│                                     │
-│            │                        ▼                                     │
-│            ▼                  ┌─ anila-functions-extract-net ─┐           │
-│   ┌─ anila-functions-egress ─┐│  runner-extract only          │           │
-│   │  squid：bridge 到         ││  internal:true、無 egress      │           │
-│   │  anila-internal allowlist ││  proxy；完全沒出口              │           │
-│   └───────────────────────────┘└───────────────────────────────┘           │
+│   ┌── anila-functions-worker-api ─────────────┐ ← trusted（hardened）   │
+│   │  接 CSP；驗 X-Functions-Secret             │   不 exec user code      │
+│   │  寫 job spec 進 docker volume、connect    │   不在 functions-net 上   │
+│   │  Unix socket on volume；read SSE events   │                          │
+│   └────────┬───────────────┬──────────────────┘                          │
+│            │ (2)           │ (2)                                          │
+│        volume:           volume:                                          │
+│       jobs-exec         jobs-extract                                      │
+│       (Unix socket      (Unix socket                                      │
+│        + job/events     + job/events                                      │
+│        files)            files)                                           │
+│            │               │                                              │
+│            ▼               ▼                                              │
+│   ┌─ sandbox-exec ─┐  ┌─ sandbox-extract ─┐ ← UNTRUSTED, exec user code │
+│   │ accept Unix    │  │  accept Unix      │   subprocess sandbox        │
+│   │ socket; spawn  │  │  socket; spawn    │   無任何 ANILA secret in env│
+│   │ subprocess     │  │  subprocess（更嚴 │                              │
+│   │                │  │  profile）        │                              │
+│   └───┬────────────┘  └─────────────┬─────┘                              │
+│       │ (3) outbound httpx/requests │                                    │
+│       ▼                             │                                    │
+│   ┌─ anila-functions-net ──────────┐│ ← internal:true; sandbox-exec      │
+│   │  sandbox-exec ↔ egress-proxy   ││   唯一 reachable 對外網路           │
+│   └────────┬───────────────────────┘│                                    │
+│            │                        ▼                                    │
+│            ▼                  ┌─ anila-functions-extract-net ─┐          │
+│   ┌─ anila-functions-egress ─┐│  sandbox-extract only          │          │
+│   │  squid：bridge 到         ││  internal:true、無 proxy       │          │
+│   │  anila-internal allowlist ││  完全沒出口                     │          │
+│   └───────────────────────────┘└────────────────────────────────┘          │
 │                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **容器職責**：
 
-| Service | Networks | Trusted? | 跑 user code? |
-|---|---|---|---|
-| `anila-functions-worker-api` | `anila-internal`（接 CSP）+ `anila-functions-control-net`（call runner） | ✅ trusted | ❌ 不執行；只 forward request 到 runner、relay SSE 回 CSP |
-| `anila-functions-runner-exec` | `anila-functions-control-net`（接 api）+ `anila-functions-net`（出 egress） | ❌ untrusted | ✅ subprocess sandbox |
-| `anila-functions-runner-extract` | `anila-functions-control-net`（接 api）+ `anila-functions-extract-net`（無出口） | ❌ untrusted | ✅ subprocess sandbox（更嚴 profile） |
-| `anila-functions-egress` | `anila-internal`（拿 allowlist 內 host）+ `anila-functions-net`（給 runner-exec proxy） | ✅ trusted | ❌ |
+| Service | Networks | Volumes | Trusted? | 跑 user code? |
+|---|---|---|---|---|
+| `anila-functions-worker-api` | `anila-internal` only | `jobs-exec`, `jobs-extract` (mount) | ✅ trusted（hardened） | ❌ 不執行；寫 job 進 volume、讀 events stream、relay SSE 回 CSP |
+| `anila-functions-sandbox-exec` | `anila-functions-net` only | `jobs-exec` (mount) | ❌ untrusted | ✅ subprocess sandbox |
+| `anila-functions-sandbox-extract` | `anila-functions-extract-net` only | `jobs-extract` (mount) | ❌ untrusted | ✅ subprocess sandbox（更嚴 profile） |
+| `anila-functions-egress` | `anila-internal` + `anila-functions-net` | — | ✅ trusted | ❌ |
 
 **關鍵 invariant**：
-1. **runner 容器不在 `anila-internal`** — user code 在 runner 內、無法 reach CSP / router / DB
-2. **api 容器不 exec user code** — 即使 api 有 `anila-internal` 連通性、也無 RCE 出口
-3. **api ↔ runner via control-net**（`internal: true`）— 純粹 trusted IPC，不對外、跟 user code execution 環境分離
-4. **runner-exec 唯一 reachable 的「對外」是 egress proxy** — 即使 user code disable HTTP_PROXY、raw socket 也只有 functions-net 上一個 hop（egress proxy）；其他 IP 連不通（具體錯誤碼依 docker / kernel 行為而定）
-5. **runner-extract 沒任何 egress** — extract-net 上只有自己一台，無 proxy、無 bridge；user code top-level 跑出 side effect 也送不出去
+1. **sandbox 容器不在 `anila-internal`、不在任何 control plane network** — user code subprocess 繼承 sandbox netns、無法 reach CSP / router / DB / worker-api
+2. **api 容器不 exec user code** — 即使 api 有 `anila-internal` + secret，無 RCE 出口
+3. **api ↔ sandbox 透過 docker volume + Unix socket**（不靠網路）— sandbox 不必在 control 層的 network 上、徹底切斷 user code 反向 reach control plane 的可能性
+4. **sandbox-exec 唯一 reachable 的「對外」是 egress proxy** — 即使 user code disable HTTP_PROXY、raw socket 也只有 functions-net 上一個 hop（egress proxy）；其他 IP 連不通（具體錯誤碼依 docker / kernel 行為而定）
+5. **sandbox-extract 沒任何 egress** — extract-net 上只有自己一台，無 proxy、無 bridge；user code top-level 跑出 side effect 也送不出去
+6. **sandbox 不持有任何 ANILA secret** — env 內無 `X_FUNCTIONS_SECRET`、無任何 token；user code 讀 `os.environ` / `/proc/1/environ` 只看到無關緊要的 ENV
+7. **Volume 存取靠 filesystem permission** — 兩個 volume 只 mount 在 worker-api 跟對應的 sandbox 容器內、其他容器看不到；socket 檔案的 owner / mode 也限制存取
 
 **docker-compose 配置點**：
 ```yaml
 networks:
   anila-internal:
     driver: bridge
-  anila-functions-control-net:
-    driver: bridge
-    internal: true
   anila-functions-net:
     driver: bridge
     internal: true
@@ -714,41 +730,61 @@ networks:
     driver: bridge
     internal: true
 
+volumes:
+  jobs-exec:
+  jobs-extract:
+
 services:
   anila-functions-worker-api:
-    networks: [anila-internal, anila-functions-control-net]
+    networks: [anila-internal]
+    volumes:
+      - jobs-exec:/jobs-exec
+      - jobs-extract:/jobs-extract
+    user: "65534:65534"   # non-root（即使 trusted 也 harden）
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
+    pids_limit: 64
     environment:
-      X_FUNCTIONS_SECRET: ${X_FUNCTIONS_SECRET}
-      RUNNER_EXEC_URL: http://anila-functions-runner-exec:8001
-      RUNNER_EXTRACT_URL: http://anila-functions-runner-extract:8002
+      ANILA_FUNCTIONS_API_SECRET: ${ANILA_FUNCTIONS_API_SECRET}   # CSP↔api auth
+      JOBS_EXEC_DIR: /jobs-exec
+      JOBS_EXTRACT_DIR: /jobs-extract
 
-  anila-functions-runner-exec:
-    networks: [anila-functions-control-net, anila-functions-net]
+  anila-functions-sandbox-exec:
+    networks: [anila-functions-net]
+    volumes:
+      - jobs-exec:/jobs-exec
     cap_drop: [ALL]
     read_only: true
     tmpfs: ["/tmp:size=64m,mode=1777"]
-    security_opt: ["no-new-privileges:true", "seccomp:./worker-seccomp.json"]
-    user: "65534:65534"   # nobody
+    security_opt: ["no-new-privileges:true", "seccomp:./sandbox-seccomp.json"]
+    user: "65534:65534"
     mem_limit: 256m       # cgroup-enforced（Linux RSS rlimit 不可靠）
     pids_limit: 32
     environment:
       HTTP_PROXY: http://anila-functions-egress:3128
       HTTPS_PROXY: http://anila-functions-egress:3128
-      X_FUNCTIONS_SECRET: ${X_FUNCTIONS_SECRET}
+      JOBS_DIR: /jobs-exec
+      # 注意：完全沒 ANILA_FUNCTIONS_API_SECRET / X_FUNCTIONS_SECRET
 
-  anila-functions-runner-extract:
-    networks: [anila-functions-control-net, anila-functions-extract-net]
+  anila-functions-sandbox-extract:
+    networks: [anila-functions-extract-net]
+    volumes:
+      - jobs-extract:/jobs-extract
     cap_drop: [ALL]
     read_only: true
     tmpfs: ["/tmp:size=16m,mode=1777"]
-    security_opt: ["no-new-privileges:true", "seccomp:./worker-seccomp.json"]
+    security_opt: ["no-new-privileges:true", "seccomp:./sandbox-seccomp.json"]
     user: "65534:65534"
     mem_limit: 64m
     pids_limit: 16
     environment:
-      X_FUNCTIONS_SECRET: ${X_FUNCTIONS_SECRET}
+      JOBS_DIR: /jobs-extract
       EXTRACT_TIMEOUT: 3
       EXTRACT_STDOUT_KB: 16
+      # 注意：同樣沒 secret env
 
   anila-functions-egress:
     image: ubuntu/squid:5
@@ -757,7 +793,16 @@ services:
       ANILA_FUNCTIONS_EGRESS_ALLOWLIST: ${ANILA_FUNCTIONS_EGRESS_ALLOWLIST}
 ```
 
-**為什麼複雜度值得**：相比把 worker 直接接 `anila-internal`、再靠「subprocess env strict scrub + entrypoint 把 secret unset」這種「在 application layer 維持 isolation」的設計，**network topology 層的隔離不依賴 application 寫對**。多 1 個容器（api gate）換掉一整個 application layer 的 audit / 攻擊面分析負擔。
+**Volume IPC 細節**：
+- `jobs-exec/control.sock`：sandbox 啟動時 `bind`+`listen`；worker-api 收到 `/exec` request 時 `connect`；socket 設 `0660 worker-api:sandbox`，沒有第三個 container 能讀寫
+- 連線生命週期 = job 生命週期：worker-api connect → 寫 job spec → 讀 events stream → done sentinel → close
+- 連線中斷（worker-api 那端 disconnect）→ sandbox 那端立即 SIGKILL subprocess（避免 zombie）
+- 沒有 long-lived job state；run 結束 socket 連線關掉、就清掉
+
+**為什麼 volume IPC 比 control-net HTTP 安全**：
+- HTTP-on-control-net 需要 sandbox 在 control-net 上 → user code subprocess 也在 control-net 上 → 暴露 control plane API surface
+- Unix socket on volume 跨容器但不跨網路 → sandbox 容器不需要任何 control 層 network
+- 自然不存在「user code 能 reach worker-api / 偷 secret」的攻擊面
 
 ---
 
@@ -889,19 +934,34 @@ Tabs：
 | T9 | Marketplace 釣魚（命名相似 slug） | 誤觸發惡意 button | UI 強制顯示 author + forked_from + "new" 標示；user role 看不到 code 也降低偽造能力；abuse report 入口 |
 | T10 | SQL injection（slug / tag） | DB compromise | ORM + parameterized；slug regex `^[a-z0-9][a-z0-9-]{0,63}$`；tag 限 20 字元 |
 | **T11** | **Social engineering via host_command**（dev 寫 button 把 composer 設成釣魚字串、彈 modal 假冒系統訊息、link.open 騰空跳到惡意站） | 使用者被誘導執行操作 | host_command 白名單動詞（無 raw HTML / JS）；URL allowlist regex；modal content 走 DOMPurify；audit 全文（事後追源）；abuse report；admin disable kill switch；user role 看不到 code 仍可看 metadata 警示「button 來自 author X」 |
-| **T12** | **CSP exec user code at save path（schema extraction RCE）** | save endpoint 變 RCE | CSP 不 import / exec user code；schema extraction 走 worker-api → runner-extract；偏好 static AST，必要時才 sandbox exec、且 profile **比 /exec 更嚴**（無 egress、無 valves、3s timeout、mem_limit:64m cgroup、pids_limit:16） |
+| **T12** | **CSP exec user code at save path（schema extraction RCE）** | save endpoint 變 RCE | CSP 不 import / exec user code；schema extraction 走 worker-api → sandbox-extract（volume IPC）；偏好 static AST，必要時才 sandbox exec、且 profile **比 /exec 更嚴**（無 egress、無 valves、3s timeout、mem_limit:64m cgroup、pids_limit:16） |
 | **T13** | **`/run` 缺 conversation/message ownership 驗證** | horizontal authz、user A 對 user B 的 message 觸發 Action | §4.5 明列前置授權兩條路徑（chat_message 走完整 owner check；test_console 走 author/admin synthetic）；v1 沿用 conversation_service 既有 owner+admin gate（不畫蛇添足造輪子） |
 | **T14** | **circular FK / version_no 並發撞 unique key** | save 失敗或邏輯混亂 | `latest_version_id` 去掉 FK；namespaced advisory lock（NS=42, function_id）per-function + INSERT 在 transaction |
 | **T15** | **Egress proxy 設計自相矛盾（env scrub vs HTTP_PROXY）** | sandbox bypass | 安全邊界改成「分裂網路拓樸」：worker 在 `internal: true` 的 functions-net、唯一 reachable 是 egress proxy；env vars 只是 dev convenience、不是 enforcement |
 | **T16** | **`/extract-meta` 仍 exec user code、save 觸發 side effect** | save 變 trigger 對 allowlisted host 做 side effect | extract 用獨立 extract-meta-net（**完全沒 egress**）+ 短 timeout + 不傳 valves；偏好 static AST stage 1 |
 | **T17** | **Disabled by admin 的 code 仍對 dev 可見** | dev 複製偷學被 disable 的釣魚 code | 加 `quarantined` 第四 status；code 鎖到 author+admin；`disabled_reason` 欄位讓 admin 寫理由 |
 | **T18** | **clipboard.copy / link.open user-activation 失敗 silent** | UX 體驗破裂、user 不知道為什麼沒效 | 兩個 verb 改成 toast 二段確認：dispatch 後顯示「Click to copy / Click to open」toast、user 點才執行；自動繼承 user activation；同時是 anti-phishing 護欄 |
-| **T19** | **單一 worker container 既接 CSP 又跑 user code → user code 可達 CSP / DB / router** | horizontal lateral movement（user code RCE → 拿 anila-internal 上其他服務） | 拆兩層：api gate（trusted、連 anila-internal）；runner（untrusted、不連 anila-internal、只能 reach egress proxy）；api ↔ runner 透過 control-net 跨容器、無共享 process / fs |
+| **T19** | **單一 worker container 既接 CSP 又跑 user code → user code 可達 CSP / DB / router** | horizontal lateral movement（user code RCE → 拿 anila-internal 上其他服務） | 拆兩層：api gate（trusted、連 anila-internal）；sandbox（untrusted、不連 anila-internal、只能 reach egress proxy）；api ↔ sandbox 透過 docker volume + Unix socket、不共享 network namespace |
 | **T20** | **RLIMIT_RSS Linux kernel 不一定 enforce** | dev 寫的 Function 把 worker 容器吃光記憶體 | docker `mem_limit` cgroup（hard limit）+ `pids_limit`；rlimit 只做輔助 |
+| **T21** | **subprocess 繼承 container netns → 即使分兩層、user code 仍可 reach 跟 sandbox 同 container 連到的所有 network** | sandbox 為了接受 control 流量被迫上 control-net → subprocess 也上 control-net → 反向 reach worker-api / 偷 secret | sandbox container **不在任何 control plane network**；api ↔ sandbox 走 **docker volume + Unix socket**，跨容器但不跨網路；sandbox 唯一 network 是 functions-net（exec）或 extract-net（extract） |
+| **T22** | **sandbox container 持有 secret env → user code 從 `/proc/1/environ` 讀到** | secret 外洩、可重用呼叫 worker-api / CSP | sandbox container env 內**完全沒 ANILA secret**（`X_FUNCTIONS_SECRET` / `ANILA_FUNCTIONS_API_SECRET` 都不放）；IPC 認證靠 filesystem permission（volume mount 限 worker-api + 對應 sandbox），不是 token-based |
 
-### 7.3 加密 / Key 管理
+### 7.3 Secrets / Key 管理（**分層 + sandbox 完全沒 secret**）
 
+**Secret 清單與持有者**：
+
+| Secret | 用途 | 持有者 |
+|---|---|---|
+| `ANILA_FUNCTIONS_API_SECRET` | CSP → worker-api 認證 | CSP container env、worker-api container env |
+| `ANILA_FUNCTIONS_VALVES_KEY` | admin Valves AES-256-GCM 加解密 | CSP container env only |
+| ~~CSP → sandbox 直接 secret~~ | ~~不存在~~ | ~~sandbox 完全不接 CSP 流量~~ |
+| ~~worker-api → sandbox secret~~ | ~~不存在~~ | ~~改用 volume + Unix socket，filesystem permission 認證~~ |
+
+**為什麼 worker-api → sandbox 不需要 token**：兩個 container 共享 docker volume；socket 檔案 `0660 worker-api-uid:sandbox-gid`、其他 container 沒 mount 進來、看不到。攻擊者要偽造 IPC 必須先攻破 worker-api 或 sandbox 任一個的 fs 權限 — 而 sandbox 沒 ANILA secret、worker-api 是 trusted。
+
+**Key 管理**：
 - `ANILA_FUNCTIONS_VALVES_KEY`：256-bit base64，CSP container env，不入 git
+- `ANILA_FUNCTIONS_API_SECRET`：32+ char random，CSP + worker-api 共用，不入 git
 - AES-256-GCM with random nonce per encrypt
 - Key rotation v1：手動 migration script（new key → re-encrypt → bump key_version；舊 key 仍解 `key_version=1` 的 row）
 - 自動 rotation v2
@@ -982,9 +1042,12 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 - **`/extract-meta` egress 隔離：user code top-level `requests.get('http://csp:8000')` → fail（extract-net 無 egress proxy）**
 - **`/extract-meta` 不傳 valves：runtime extract mode 不 inject `instance.valves`，user code 讀 `self.valves` 拿到 None / AttributeError**
 - **`/extract-meta` timeout：3s 後 SIGKILL、回 errors=['timeout']**
-- **網路拓樸：runner-exec 容器內 `curl https://not-allowlisted.example.com` → 唯一 reachable proxy 拒絕後**連線失敗**（assert: not 200、不 assert 具體錯誤碼）**
-- **網路拓樸：runner-exec 容器內 raw socket 直連 `8.8.8.8:443`（不走 HTTP_PROXY）→ **連線失敗**（assert: 連不通；不 assert ENXIO vs ETIMEDOUT 等具體 errno）**
-- **網路拓樸：runner-extract 容器內任何 outbound（含 proxy host）都 → **連線失敗**（extract-net 沒 proxy）**
+- **網路拓樸：sandbox-exec 容器內 `curl https://not-allowlisted.example.com` → 唯一 reachable proxy 拒絕後**連線失敗**（assert: not 200、不 assert 具體錯誤碼）**
+- **網路拓樸：sandbox-exec 容器內 raw socket 直連 `8.8.8.8:443`（不走 HTTP_PROXY）→ **連線失敗**（assert: 連不通；不 assert ENXIO vs ETIMEDOUT 等具體 errno）**
+- **網路拓樸：sandbox-exec 容器內 raw socket 直連 `csp:8000` / `worker-api:8000` → 連線失敗（不在 functions-net 上）**
+- **網路拓樸：sandbox-extract 容器內任何 outbound（含 proxy host）都 → **連線失敗**（extract-net 沒 proxy）**
+- **Secret 隔離：sandbox-exec / sandbox-extract 容器內 `os.environ.keys()` 不含 `ANILA_FUNCTIONS_API_SECRET` / `ANILA_FUNCTIONS_VALVES_KEY`；`/proc/1/environ` 同樣不含**
+- **Volume IPC：worker-api 跟 sandbox-exec 都讀寫得到 `jobs-exec/control.sock`；其他 container（如 csp、router）沒 mount 進來、`stat` 該 socket 看不到**
 - **`cap_drop:ALL` 生效：subprocess 無法 mount / ptrace / unshare**
 - **Subprocess env：保留 HTTP_PROXY/HTTPS_PROXY 給 dev convenience；scrub LD_PRELOAD 等 sensitive**
 - **`host_command` event 經 worker SSE 出去，不會被攔掉（worker 不驗 verb，CSP 才驗）**
@@ -1036,49 +1099,64 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 
 ### 9.1 New services in docker-compose
 
-新增 **4** 個 service + **3** 個專屬 network：
+新增 **4** 個 service + **2** 個專屬 network + **2** 個 docker volume（IPC 用）：
 
 **Networks**：
-- `anila-functions-control-net`（`internal: true`）— api ↔ runner-exec ↔ runner-extract 之間的 trusted IPC，不對外
-- `anila-functions-net`（`internal: true`）— runner-exec + egress proxy 共用，runner-exec 唯一的「對外」窗口
-- `anila-functions-extract-net`（`internal: true`）— runner-extract 獨享，**無** egress proxy、完全沒出口
+- `anila-functions-net`（`internal: true`）— sandbox-exec + egress proxy 共用；sandbox-exec 唯一的「對外」窗口
+- `anila-functions-extract-net`（`internal: true`）— sandbox-extract 獨享；**無** egress proxy、完全沒出口
+
+**Volumes**（不是 host bind mount，是 docker named volume）：
+- `jobs-exec`：worker-api ↔ sandbox-exec IPC（Unix socket + 暫時 job/events 檔）
+- `jobs-extract`：worker-api ↔ sandbox-extract IPC
+
+⚠️ **沒有 control-net**：worker-api 跟 sandbox 透過 volume + Unix socket 通訊、不靠網路。
 
 #### 9.1.1 `anila-functions-worker-api`（trusted gate，CSP 從這 call）
 
 - Base image：`python:3.12-slim`
-- Preinstalled：`fastapi`, `uvicorn`, `httpx`
-- 職責：接 CSP 的 `/exec` 與 `/extract-meta`、forward 到 runner、轉發 SSE 回 CSP；自身**不 import / exec user code**
-- Container hardening：non-root；其他不需要強化（trusted）
-- Network：`anila-internal` + `anila-functions-control-net`
-- ENV：`X_FUNCTIONS_SECRET`、`RUNNER_EXEC_URL=http://anila-functions-runner-exec:8001`、`RUNNER_EXTRACT_URL=http://anila-functions-runner-extract:8002`
+- Preinstalled：`fastapi`, `uvicorn`
+- 職責：接 CSP 的 `/exec` 與 `/extract-meta`、寫 job 進對應 volume、connect Unix socket 取 SSE event stream、轉發回 CSP；自身**不 import / exec user code**、**不在 functions-net 上**
+- Container hardening（trusted 但仍 harden）：
+  - `read_only: true` + `tmpfs:/tmp:size=16m`
+  - `cap_drop: [ALL]`
+  - `security_opt: ["no-new-privileges:true"]`
+  - non-root user `nobody`
+  - `mem_limit: 128m`、`pids_limit: 64`
+  - 不掛 `docker.sock` 或任何 host volume（除 jobs-* 外）
+- Network：`anila-internal` only（給 CSP call）
+- Volumes mount：`jobs-exec:/jobs-exec`、`jobs-extract:/jobs-extract`
+- ENV：`ANILA_FUNCTIONS_API_SECRET`（CSP↔api 認證）、`JOBS_EXEC_DIR=/jobs-exec`、`JOBS_EXTRACT_DIR=/jobs-extract`
 
-#### 9.1.2 `anila-functions-runner-exec`（untrusted runner，正式執行）
+#### 9.1.2 `anila-functions-sandbox-exec`（untrusted sandbox，正式執行）
 
 - Base image：`python:3.12-slim`
-- Preinstalled：`fastapi`, `uvicorn`, `httpx`, `requests`, `pydantic`, `python-dateutil`, `cryptography`
+- Preinstalled：`httpx`, `requests`, `pydantic`, `python-dateutil`, `cryptography`（不需要 fastapi/uvicorn — 它不 listen HTTP）
+- 職責：啟動時 bind+listen Unix socket `/jobs-exec/control.sock`；accept 連線就 read job spec、spawn `python -u runtime.py` subprocess、把 stdout 即時寫回 socket
 - Container hardening：
   - `read_only: true`
   - `tmpfs: ["/tmp:size=64m,mode=1777"]`
   - `cap_drop: [ALL]`
-  - `security_opt: ["no-new-privileges:true", "seccomp:./runner-seccomp.json", "apparmor:anila-runner"]`（host 有哪個用哪個）
+  - `security_opt: ["no-new-privileges:true", "seccomp:./sandbox-seccomp.json", "apparmor:anila-sandbox"]`
   - **`mem_limit: 256m`**（cgroup-enforced；不靠 RLIMIT_RSS）
   - **`pids_limit: 32`**
   - non-root user `nobody`（uid 65534）
   - 不掛 `docker.sock` 或任何 host volume
-- Network：`anila-functions-control-net`（接 api request）+ `anila-functions-net`（出 egress proxy）
-- ENV：`X_FUNCTIONS_SECRET`、`HTTP_PROXY=http://anila-functions-egress:3128`、`HTTPS_PROXY` 同
-- Endpoint：只 listen `/exec`（control-net 上）
+- Network：`anila-functions-net` only
+- Volumes mount：`jobs-exec:/jobs-exec`
+- ENV：`HTTP_PROXY=http://anila-functions-egress:3128`、`HTTPS_PROXY` 同、`JOBS_DIR=/jobs-exec`
+- **完全沒 ANILA secret env**
 
-#### 9.1.3 `anila-functions-runner-extract`（untrusted runner，schema 抽取，**比 exec 更嚴**）
+#### 9.1.3 `anila-functions-sandbox-extract`（untrusted sandbox，schema 抽取，**比 exec 更嚴**）
 
 - 同 image、同 hardening **加嚴**：
   - `mem_limit: 64m`（vs exec 的 256m）
   - `pids_limit: 16`（vs exec 的 32）
   - `tmpfs:` 縮小到 16m
-- Network：`anila-functions-control-net`（接 api）+ `anila-functions-extract-net`（**無 egress proxy、完全沒出口**）
-- 配置：`MAX_TIMEOUT=3`（vs exec 的 30）、`MAX_STDOUT_KB=16`
+- Network：`anila-functions-extract-net` only（**無 egress proxy、完全沒出口**）
+- Volumes mount：`jobs-extract:/jobs-extract`
 - runtime 端：不接受 valves / `__user__` / `__metadata__`；不執行 `instance.action()`、只 read `Action.actions` + `Valves.model_json_schema()`
-- Endpoint：只 listen `/extract-meta`（control-net 上）
+- ENV：`JOBS_DIR=/jobs-extract`、`MAX_TIMEOUT=3`、`MAX_STDOUT_KB=16`
+- **完全沒 ANILA secret env**
 
 #### 9.1.4 `anila-functions-egress`（squid sidecar）
 
@@ -1086,7 +1164,7 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 - 配置從 ENV `ANILA_FUNCTIONS_EGRESS_ALLOWLIST` 讀（CSV `host:port` 列）
 - ACL：allow listed → forward；其餘 → deny + log
 - Network：跨 `anila-internal` + `anila-functions-net` 兩個（橋）
-- 不接受 runner 以外的 client（network 層拓樸天然限制；runner-extract 跟它在不同 network）
+- 不接受 sandbox 以外的 client（network 層拓樸天然限制；sandbox-extract 跟它在不同 network）
 - Metrics：`function_egress_blocked_total{host}` 從 access log 抽
 
 ### 9.2 CSP migrations
@@ -1106,11 +1184,13 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 | ENV | 哪個 service | 用途 |
 |---|---|---|
 | `ANILA_FUNCTIONS_VALVES_KEY` | CSP | AES-GCM 對 valves 加解密 |
-| `ANILA_FUNCTIONS_WORKER_URL` | CSP | worker `/exec` 與 `/extract-meta` URL（compose internal） |
-| `X_FUNCTIONS_SECRET` | CSP + worker | shared secret |
+| `ANILA_FUNCTIONS_WORKER_API_URL` | CSP | worker-api `/exec` / `/extract-meta` URL（compose internal）；**只指 worker-api，不指 sandbox** |
+| `ANILA_FUNCTIONS_API_SECRET` | CSP + worker-api | CSP ↔ api 認證；**sandbox 不持有此 secret** |
 | **`ANILA_FUNCTIONS_EGRESS_ALLOWLIST`** | egress proxy | CSV `host:port` 白名單（例 `csp:8000,router:9000,internal-lint.intra:443`） |
 | **`ANILA_FUNCTIONS_LINK_OPEN_ALLOWLIST`** | CSP（驗 host_command `link.open` URL） | 正則 list；`link.open` URL 必須 match 一條 |
-| **`HTTP_PROXY` / `HTTPS_PROXY`** | worker | 指向 `anila-functions-egress:3128` |
+| **`HTTP_PROXY` / `HTTPS_PROXY`** | sandbox-exec only | 指向 `anila-functions-egress:3128`；sandbox-extract / worker-api 不設 |
+| `JOBS_EXEC_DIR` / `JOBS_EXTRACT_DIR` | worker-api | volume mount 路徑（IPC dir） |
+| `JOBS_DIR` | sandbox-exec / sandbox-extract | sandbox 端對應的 volume mount 路徑 |
 
 ### 9.4 Rollout 順序
 
@@ -1153,20 +1233,23 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 - 客戶端 lint endpoint（slug regex / size limit）
 - Unit + integration tests
 
-**Sprint 2** — 三層服務（api + 2 runners）+ SSE relay + 兩條 ownership 路徑
-- `anila-functions-worker-api`（trusted gate，純 forward）
-- `anila-functions-runner-exec`（untrusted、跑正式 user code）
-- `anila-functions-runner-extract`（untrusted、跑 extract、更嚴 profile）
+**Sprint 2** — 三層服務（api + 2 sandboxes）+ volume IPC + SSE relay + 兩條 ownership 路徑
+- `anila-functions-worker-api`（trusted gate；HTTP in、Unix socket out）
+- `anila-functions-sandbox-exec`（untrusted；Unix socket listen + spawn subprocess）
+- `anila-functions-sandbox-extract`（untrusted；Unix socket listen + spawn subprocess、更嚴 profile）
+- IPC：worker-api connect Unix socket on volume → 寫 job spec → read events SSE → close
 - runtime.py 支援 normal mode + extract mode（後者 strip valves/user/metadata；不 call `Action.action()`）
 - `/extract-meta` 兩階段：static AST stage 1 + sandboxed exec stage 2
 - CSP `/run` SSE relay + 兩條 ownership 路徑（chat_message vs test_console）+ host_command verb / args 驗證 + redaction pass
 - Worker tests + end-to-end SSE flow test
 
 **Sprint 3** — 網路拓樸 + container hardening + sandbox tests
-- Docker compose 更新（3 個 internal network、4 個服務、squid egress proxy）
-- runner 容器：`cap_drop:ALL` + seccomp + read-only rootfs + tmpfs + non-root + `mem_limit` + `pids_limit` + env partial-scrub
-- 拓樸測試（assert 連不通、不綁具體錯誤碼）：runner-exec 不能繞 proxy 連任何 host（即使 disable HTTP_PROXY）；runner-extract 連 proxy 都連不到
-- Stress / chaos：8 並發、subprocess kill 中途、egress allowlist 動態 update、cgroup mem_limit OOM kill 行為
+- Docker compose 更新（2 個 internal network + 2 個 docker volume + 4 個 services + squid egress proxy）
+- sandbox 容器：`cap_drop:ALL` + seccomp + read-only rootfs + tmpfs + non-root + `mem_limit` + `pids_limit` + env partial-scrub + **無任何 ANILA secret env**
+- worker-api 容器：trusted 但仍 harden（non-root, read-only, cap_drop, mem_limit）
+- 拓樸測試（assert 連不通、不綁具體錯誤碼）：sandbox-exec 不能繞 proxy 連任何 host（即使 disable HTTP_PROXY）；sandbox-extract 連 proxy 都連不到；sandbox 容器 `os.environ` / `/proc/1/environ` 都沒 ANILA secret
+- Volume permission 測試：worker-api 跟 sandbox-exec 雙方都讀寫得到 `jobs-exec/control.sock`、其他 container 看不到
+- Stress / chaos：8 並發、subprocess kill 中途、egress allowlist 動態 update、cgroup mem_limit OOM kill 行為、worker-api crash 中途 sandbox 端正確 SIGKILL subprocess
 
 **Sprint 4** — Frontend + dogfood
 - `/admin/functions/*` 路由與頁面（list / editor / Test Console / audit / report queue / quarantine UI）
@@ -1233,3 +1316,13 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 | /extract-meta network 隔離方法 | netns + os.unshare 切換 / 兩個 runner container | **兩個 runner container**（unshare 被 seccomp block；兩個 container 跟 sandbox 政策一致） |
 | Memory limit | RLIMIT_RSS / docker `mem_limit` cgroup | **docker mem_limit cgroup + pids_limit**（RSS rlimit 在 Linux 上不可靠） |
 | 連線失敗 assert 方式 | 綁特定錯誤字串 / 只 assert 連不通 | **只 assert 連不通**（具體錯誤碼依 docker / kernel 行為） |
+
+### 第五輪修法（Codex round-4 review，2026-04-29）
+
+| 決定 | 選項 | 結果 |
+|---|---|---|
+| Sandbox 接收 control 流量機制 | control-net HTTP（subprocess 共享 netns 風險）/ docker volume + Unix socket / 其他 IPC | **docker volume + Unix socket**：sandbox 不需要任何 control 層 network、process 繼承 sandbox netns 不再是問題 |
+| Worker 內部容器拆法 | api + 2 runners（接 control HTTP）/ api + 2 sandboxes（接 volume socket） | **api + 2 sandboxes**：sandbox 不在 control plane，user code 反向 reach worker-api 的攻擊路徑被切斷 |
+| Sandbox container 持有 secret | 同 worker-api（多 secret） / 分層 secret / 完全沒 secret | **完全沒 secret**：IPC 認證靠 filesystem permission，sandbox env scrubbed |
+| worker-api hardening level | trusted 不需要 / 適度 harden / 同 sandbox 強度 | **適度 harden**（non-root + read-only + cap_drop + mem_limit + no docker.sock；不到 sandbox 強度但比 round-3 寫的「trusted 不需要」嚴） |
+| Worker URL ENV 命名 | `ANILA_FUNCTIONS_WORKER_URL` / `..._WORKER_API_URL` | `ANILA_FUNCTIONS_WORKER_API_URL`：CSP 只 talk to worker-api，sandbox URL 是 worker-api 內部關注、不暴露到 CSP env |
