@@ -8,6 +8,17 @@ locate a name``. Import order here is alphabetical — SQLAlchemy handles the
 actual dependency resolution once every class is registered.
 """
 
+from app.models.action_function import (
+    ActionFunction,
+    ActionFunctionReport,
+    ActionFunctionReportStatus,
+    ActionFunctionRun,
+    ActionFunctionRunContext,
+    ActionFunctionRunStatus,
+    ActionFunctionStatus,
+    ActionFunctionValves,
+    ActionFunctionVersion,
+)
 from app.models.agent import Agent, ApiKeyAgentPermission, UserAgentPermission
 from app.models.alert import Alert
 from app.models.api_key import ApiKey, ApiKeyModelPermission
@@ -33,6 +44,15 @@ from app.models.token_usage import TokenUsage
 from app.models.user import User, UserModelPermission
 
 __all__ = [
+    "ActionFunction",
+    "ActionFunctionReport",
+    "ActionFunctionReportStatus",
+    "ActionFunctionRun",
+    "ActionFunctionRunContext",
+    "ActionFunctionRunStatus",
+    "ActionFunctionStatus",
+    "ActionFunctionValves",
+    "ActionFunctionVersion",
     "Agent",
     "Alert",
     "ApiKey",
