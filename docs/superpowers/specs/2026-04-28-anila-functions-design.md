@@ -464,7 +464,7 @@ Browser   CSP /run         worker-api          (volume)            sandbox-exec 
 - 寫入序列化的 job request（含 code / body / valves / user / metadata）
 - 從 socket 讀回 SSE event stream，轉送回 CSP（順便 timeout / connection error 兜底）
 - **本身不 spawn subprocess、不 import user code、不在 functions-net 上**
-- run 結束清理 `/jobs-exec/<run_id>.*` 檔案
+- run 結束 close socket 連線、cancel subprocess、清掉 in-memory state（v1 不寫任何 job spec / events 到 disk，所以沒有 `<run_id>.*` 檔案要清）
 
 **`anila-functions-worker-api` `/extract-meta` handler**：
 - 同上但連 `/jobs-extract/control.sock`、走 `jobs-extract` volume
@@ -758,17 +758,21 @@ services:
     volumes:
       - jobs-exec:/jobs-exec
     cap_drop: [ALL]
-    cap_add: [SETUID, SETGID]   # daemon 需要降權 spawn subprocess 為 subproc(65534)
+    cap_add: [SETUID, SETGID, CHOWN]   # CHOWN 給 entrypoint 初始化、SETUID/SETGID 給 daemon 降權；run 時 daemon 已不持有 CHOWN
     read_only: true
     tmpfs: ["/tmp:size=64m,mode=1777"]
     security_opt: ["no-new-privileges:true", "seccomp:./sandbox-seccomp.json"]
-    user: "65533:65533"   # daemon 跑 sandbox uid，subprocess 由 daemon 內 setuid 到 subproc(65534)
+    user: "0:0"   # 容器以 root 啟動 entrypoint；daemon 由 entrypoint 用 setpriv 降權到 65533 + ambient SETUID/SETGID
     mem_limit: 256m       # cgroup-enforced（Linux RSS rlimit 不可靠）
     pids_limit: 32
+    entrypoint: ["/usr/local/bin/sandbox-entrypoint.sh"]
     environment:
       HTTP_PROXY: http://anila-functions-egress:3128
       HTTPS_PROXY: http://anila-functions-egress:3128
       JOBS_DIR: /jobs-exec
+      DAEMON_UID: 65533
+      DAEMON_GID: 65533
+      DAEMON_GROUPS: anila-jobs
       SUBPROC_UID: 65534
       SUBPROC_GID: 65534
       # 注意：完全沒 ANILA_FUNCTIONS_API_SECRET
@@ -778,17 +782,21 @@ services:
     volumes:
       - jobs-extract:/jobs-extract
     cap_drop: [ALL]
-    cap_add: [SETUID, SETGID]
+    cap_add: [SETUID, SETGID, CHOWN]
     read_only: true
     tmpfs: ["/tmp:size=16m,mode=1777"]
     security_opt: ["no-new-privileges:true", "seccomp:./sandbox-seccomp.json"]
-    user: "65533:65533"
+    user: "0:0"
     mem_limit: 64m
     pids_limit: 16
+    entrypoint: ["/usr/local/bin/sandbox-entrypoint.sh"]
     environment:
       JOBS_DIR: /jobs-extract
       EXTRACT_TIMEOUT: 3
       EXTRACT_STDOUT_KB: 16
+      DAEMON_UID: 65533
+      DAEMON_GID: 65533
+      DAEMON_GROUPS: anila-jobs
       SUBPROC_UID: 65534
       SUBPROC_GID: 65534
       # 注意：同樣沒 secret env
@@ -801,7 +809,7 @@ services:
 ```
 
 **Volume IPC 細節**：
-- `jobs-exec/control.sock`：sandbox 啟動時 `bind`+`listen`；worker-api 收到 `/exec` request 時 `connect`；socket 設 `0660 worker-api:sandbox`，沒有第三個 container 能讀寫
+- `jobs-exec/control.sock`：sandbox daemon 啟動時 `bind`+`listen` 後 `chmod 0660`；owner `sandbox:anila-jobs`（worker-api 透過 supplementary group `anila-jobs` 進來）；user subprocess 因為不在 anila-jobs group，連 / 列 / 讀都 `EACCES`
 - 連線生命週期 = job 生命週期：worker-api connect → 寫 job spec → 讀 events stream → done sentinel → close
 - 連線中斷（worker-api 那端 disconnect）→ sandbox 那端立即 SIGKILL subprocess（避免 zombie）
 - 沒有 long-lived job state；run 結束 socket 連線關掉、就清掉
@@ -845,14 +853,103 @@ services:
 ```yaml
 sandbox-exec / sandbox-extract:
   cap_drop: [ALL]
-  cap_add: [SETUID, SETGID]   # daemon 需要降權 spawn subprocess
+  cap_add: [SETUID, SETGID, CHOWN]   # SETUID/SETGID 給 daemon 降權；CHOWN 給 entrypoint 初始化 volume，run 期間 drop
+  user: "0:0"                          # 容器以 root 啟動 entrypoint；daemon 由 entrypoint 降權到 65533
+  security_opt: ["no-new-privileges:true", ...]
 ```
 
-`SETUID + SETGID` 只給 daemon 能 setuid 的能力、**不給** root；不允許 daemon 自我 escalate（沒 `CAP_SYS_ADMIN` / `DAC_OVERRIDE` etc.）。subprocess 起來後因為 `no-new-privileges:true` 跟 `cap_drop:ALL`、不能再爬回去。
+**為什麼 user 是 root**：
 
-**為什麼不能直接給 daemon 用 cap_drop:ALL（沒 SETUID）**：
-- Python `subprocess.Popen(user=...)` 內部會 `setuid()` syscall、kernel reject 沒 CAP_SETUID 的 process
-- 沒這 cap → daemon 無法降權、subprocess 跟 daemon 同 UID → H1 修不掉
+⚠️ Linux capability 模型細節：`cap_add` 只設 docker 容器層級的 bounding set，**不等於 effective capability**。如果 container 以 user 65533 直接啟動：
+- `cap_add:[SETUID, SETGID]` → bounding 有，但 65533 沒辦法用（permitted/effective 都空）
+- daemon `subprocess.Popen(user=...)` 內部 `setuid()` → `EPERM`、降權失敗
+- entrypoint 想 `chown` named volume → 沒 CAP_CHOWN → fail
+- 結果：UID 隔離設計**整個垮掉**
+
+正確做法：**entrypoint 短暫 root → 設定完 → `setpriv` 降權帶 ambient caps**。
+
+**Entrypoint 流程**：
+
+```bash
+#!/bin/sh
+set -e
+
+# 1) 以 root 跑 init：chown / chmod named volume
+chown sandbox:anila-jobs /jobs-exec
+chmod 0770 /jobs-exec
+
+# 2) 以 root 預先 bind socket（這樣 socket 一開始就是 daemon 想要的 owner/mode）
+# 由 daemon python 用 file descriptor 接手；或讓 daemon 自己 bind 後 chown chmod
+# v1：直接讓 daemon 自己 bind chmod 比較簡單
+
+# 3) 用 setpriv 降權到 sandbox uid，把 SETUID + SETGID 進 ambient cap
+# CHOWN 不放進 ambient，run 期間就 drop 掉
+exec setpriv \
+  --reuid=sandbox \
+  --regid=sandbox \
+  --init-groups \
+  --no-new-privs \
+  --inh-caps=+setuid,+setgid \
+  --ambient-caps=+setuid,+setgid \
+  -- python -u /app/sandbox_daemon.py
+```
+
+`setpriv` 是 util-linux 標準工具、Debian/Ubuntu base image 都有；不需要額外 install。
+
+降權後：
+- daemon 跑在 sandbox:65533、uid 跟 gid 對
+- effective + permitted + ambient: `SETUID, SETGID`（CHOWN dropped）
+- bounding set: `SETUID, SETGID`（cap_add 給的）；CHOWN 也在 bounding 但不影響、daemon 沒 effective
+- 起 subprocess 時 daemon `subprocess.Popen(user='subproc', ...)` → kernel 看 effective SETUID → 允許 → subprocess 跑成 65534
+
+**Subprocess 起來後**：
+- ambient caps 進入 subprocess 但 setpriv 沒 pass `+setuid +setgid` 進 subprocess（daemon 那邊 spawn 用 vanilla `Popen`、不 raise ambient）
+- 加上 `no-new-privileges:true` + `cap_drop:ALL` 在 docker 層、bounding set 也限制 escalation
+- subprocess 嘗試 `setuid(0)` → `EPERM`
+
+**為什麼 no-new-privileges + ambient caps 共存可行**：
+- `no_new_privs` 阻止「exec setuid binary 升權」這條路；它**不**阻止「parent ambient cap 透過普通 exec 傳給 child」
+- 但 setpriv 內部會 set ambient 在 daemon 上、daemon 起 subprocess 時 default 不再 raise → subprocess 拿到的 ambient 是 daemon ambient（如果 daemon 沒 explicit drop） — 所以實作上 daemon spawn subprocess 前要主動 `prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL)` 把 ambient 清空、確保 subprocess 沒 SETUID/SETGID
+
+實作面（daemon Python 偽碼）：
+```python
+import ctypes, ctypes.util
+libc = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
+PR_CAP_AMBIENT = 47
+PR_CAP_AMBIENT_CLEAR_ALL = 4
+
+def spawn_subprocess(...):
+    def preexec():
+        libc.prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0)
+    return subprocess.Popen(
+        ['python', '-u', 'runtime.py'],
+        user='subproc', group='subproc',
+        preexec_fn=preexec,
+        ...
+    )
+```
+
+**⚠️ Smoke test 必做**（capability landing 不確定性大、prototype 必須驗證）：
+
+| 測試 | 預期 |
+|---|---|
+| `capsh --print`（容器 entrypoint 起手）| Bounding: SETUID, SETGID, CHOWN |
+| `capsh --print`（daemon python 內 `subprocess.run('capsh', '--print')`）| Effective: SETUID, SETGID；Bounding: 同；Inheritable + Ambient: SETUID, SETGID |
+| daemon 跑 `os.setuid(65534)` test → 然後 `os.setuid(0)` → `PermissionError` | 確認降權 + 升權阻擋 |
+| daemon `subprocess.Popen(user='subproc')` 起 child、child `getuid()==65534` | 降權成功 |
+| child 嘗試 `os.setuid(0)` → `PermissionError` | no_new_privs + cap_drop 阻擋 |
+| Volume `/jobs-exec` `stat` → `sandbox:anila-jobs` `0770` | entrypoint chown 成功 |
+
+**Fallback 策略**（若以上 smoke test 任一失敗、改用 file capability）：
+
+```dockerfile
+# 在 image 內 build 一支 setuid wrapper binary
+COPY spawn_user.c /tmp/
+RUN gcc -static -o /usr/local/bin/spawn_user /tmp/spawn_user.c && \
+    setcap 'cap_setuid,cap_setgid+eip' /usr/local/bin/spawn_user
+```
+
+daemon 起 subprocess 改 invoke `/usr/local/bin/spawn_user 65534 65534 -- python -u runtime.py`；wrapper 在 binary 層級拿到 file caps、daemon 自己不需要 ambient。但這條路要做 wrapper 程式 + setcap、複雜度更高，所以列為 fallback。
 
 **Image build / Dockerfile 要做的事**（兩個 sandbox image 共用一個 base）：
 
@@ -1045,7 +1142,7 @@ Tabs：
 | ~~CSP → sandbox 直接 secret~~ | ~~不存在~~ | ~~sandbox 完全不接 CSP 流量~~ |
 | ~~worker-api → sandbox secret~~ | ~~不存在~~ | ~~改用 volume + Unix socket，filesystem permission 認證~~ |
 
-**為什麼 worker-api → sandbox 不需要 token**：兩個 container 共享 docker volume；socket 檔案 `0660 worker-api-uid:sandbox-gid`、其他 container 沒 mount 進來、看不到。攻擊者要偽造 IPC 必須先攻破 worker-api 或 sandbox 任一個的 fs 權限 — 而 sandbox 沒 ANILA secret、worker-api 是 trusted。
+**為什麼 worker-api → sandbox 不需要 token**：兩個 container 共享 docker volume；socket 檔案 `0660` owner `sandbox:anila-jobs`（worker-api 的 `web` user 在 `anila-jobs` supplementary group），其他 container 沒 mount 進來、看不到；user subprocess（`subproc` uid 65534、不在 anila-jobs）連、列、讀都 `EACCES`。攻擊者要偽造 IPC 必須先攻破 worker-api 或 sandbox 任一個的 fs 權限 — 而 sandbox 沒 ANILA secret、worker-api 是 trusted。
 
 **Key 管理**：
 - `ANILA_FUNCTIONS_VALVES_KEY`：256-bit base64，CSP container env，不入 git
@@ -1226,23 +1323,24 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 
 - Base image：`python:3.12-slim`
 - Preinstalled：`httpx`, `requests`, `pydantic`, `python-dateutil`, `cryptography`（不需要 fastapi/uvicorn — 它不 listen HTTP）
-- **Image 在 build 時 create 兩個 user**：
+- **Image 在 build 時 create 兩個 user + 一個 group**：
+  - group `anila-jobs:65530`
   - `sandbox` uid 65533、primary group `sandbox:65533`、supplementary group `anila-jobs:65530`
   - `subproc` uid 65534、primary group `subproc:65534`、**不**在 anila-jobs
-  - daemon 跑在 sandbox uid；subprocess 由 daemon `subprocess.Popen(user='subproc', group='subproc')` 降權 spawn
-- 職責：啟動時 chown `/jobs-exec/` 為 `sandbox:anila-jobs` 0770、bind+listen Unix socket `/jobs-exec/control.sock`（mode 0660 owner sandbox:anila-jobs）；accept 連線就 read job spec、spawn `python -u runtime.py` subprocess as subproc、把 stdout 即時寫回 socket
+  - daemon 跑在 sandbox uid；subprocess 由 daemon `subprocess.Popen(user='subproc', group='subproc', preexec_fn=clear_ambient)` 降權 spawn
+- **容器啟動策略**：以 `user: 0:0` 啟動 → entrypoint script as root 做 `chown sandbox:anila-jobs /jobs-*` + `chmod 0770` → 用 `setpriv` 降權到 65533 並把 SETUID + SETGID 帶進 ambient cap → exec daemon python（詳見 §5.8 entrypoint）
+- 職責：daemon 啟動後 bind+listen Unix socket `/jobs-exec/control.sock`、`chmod 0660`（owner sandbox:anila-jobs）；accept 連線就 read job spec、`Popen(user='subproc', group='subproc', preexec_fn=clear_ambient)` 起 `runtime.py` subprocess、把 stdout 即時寫回 socket
 - Container hardening：
   - `read_only: true`
   - `tmpfs: ["/tmp:size=64m,mode=1777"]`
-  - **`cap_drop: [ALL]` + `cap_add: [SETUID, SETGID]`**（後兩個 cap 給 daemon 降權用，不給 root）
+  - **`cap_drop: [ALL]` + `cap_add: [SETUID, SETGID, CHOWN]`**（CHOWN 給 entrypoint 初始化 volume；run 期間 daemon 經 setpriv 後沒 CHOWN）
   - `security_opt: ["no-new-privileges:true", "seccomp:./sandbox-seccomp.json", "apparmor:anila-sandbox"]`
   - **`mem_limit: 256m`**（cgroup-enforced；不靠 RLIMIT_RSS）
   - **`pids_limit: 32`**
   - 不掛 `docker.sock` 或任何 host volume
-- `user: "65533:65533"` — daemon 起來就是 sandbox uid，subprocess 由 daemon 降權
 - Network：`anila-functions-net` only
 - Volumes mount：`jobs-exec:/jobs-exec`
-- ENV：`HTTP_PROXY=http://anila-functions-egress:3128`、`HTTPS_PROXY` 同、`JOBS_DIR=/jobs-exec`、`SUBPROC_UID=65534`、`SUBPROC_GID=65534`
+- ENV：`HTTP_PROXY=http://anila-functions-egress:3128`、`HTTPS_PROXY` 同、`JOBS_DIR=/jobs-exec`、`DAEMON_UID=65533`、`DAEMON_GID=65533`、`DAEMON_GROUPS=anila-jobs`、`SUBPROC_UID=65534`、`SUBPROC_GID=65534`
 - **完全沒 ANILA secret env**
 
 #### 9.1.3 `anila-functions-sandbox-extract`（untrusted sandbox，schema 抽取，**比 exec 更嚴**）
@@ -1342,6 +1440,13 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 - CSP `/run` SSE relay + 兩條 ownership 路徑（chat_message vs test_console）+ host_command verb / args 驗證 + redaction pass
 - Worker tests + end-to-end SSE flow test
 
+**Sprint 2.5（prototype gate，sprint 3 開始前）** — Capability landing 驗證
+- 必做：起一個最小 compose（worker-api + sandbox-exec），跑 §5.8 列的 6 個 smoke test
+- 確認 setpriv + ambient SETUID/SETGID 路徑可行（daemon 真能 spawn subprocess as 65534）
+- 確認 entrypoint chown 可以動 named volume
+- 失敗 → 切換 fallback 策略（file capability + setuid wrapper binary）；spec §5.8 已列 fallback Dockerfile 草稿
+- **不通過 prototype gate 不開 sprint 3**（避免在錯誤前提下做完整 implementation）
+
 **Sprint 3** — 網路拓樸 + container hardening + UID 隔離 + sandbox tests
 - Docker compose 更新（2 個 internal network + 2 個 docker volume + 4 個 services + squid egress proxy）
 - Image build：sandbox image 內 create `sandbox:65533`（in `anila-jobs:65530`）+ `subproc:65534`（不在 anila-jobs）；worker-api image 內 create `web:65532`（in anila-jobs）
@@ -1438,3 +1543,14 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 | sandbox cap_drop vs daemon 降權需求 | 純 `cap_drop:ALL`（無法降權，矛盾）/ `cap_drop:ALL` + `cap_add:[SETUID, SETGID]` | **後者**：給 daemon 最小必要 cap，subprocess 起來後仍 cap_drop:ALL + no-new-privileges 不能 escalate |
 | Per-run state 落不落 disk | 純 socket-stream / job/event files on volume | **純 socket-stream**：v1 不寫任何 job spec / events 到 disk，避免 user subprocess 即使破 permission 也讀不到內容；v2 才考慮 daemon crash recovery 用的 per-run 0700 dir |
 | IPC 認證機制 | filesystem permission（GID-based）/ token-based / mTLS | **filesystem permission（GID-based）**：socket mode 0660 owner sandbox:anila-jobs；只有同 group 容器（worker-api）能連；user subprocess 不在 group，連不到 |
+
+### 第七輪修法（Codex round-6 review，2026-04-29）
+
+| 決定 | 選項 | 結果 |
+|---|---|---|
+| 容器啟動 user | `user: 65533` 直接（cap_add 不會 effective）/ `user: 0` + entrypoint 降權 / file capability wrapper | **`user: 0` + entrypoint 用 `setpriv` 降權帶 ambient SETUID/SETGID**；fallback 是 file capability wrapper binary |
+| Volume chown 機制 | daemon 自己 chown（沒 CHOWN cap）/ entrypoint 短暫 root chown / init container | **entrypoint 短暫 root**：`cap_add:[CHOWN]` 給 entrypoint 用，setpriv 降權後 daemon 不再持有 CHOWN |
+| Capability 落地驗證時機 | 直接做 implementation / 加 prototype gate | **加 sprint 2.5 prototype gate**：跑 6 個 smoke test 驗證 setpriv + ambient cap 路徑；失敗切 file cap fallback |
+| Subprocess ambient cap | 繼承 daemon ambient（不安全）/ daemon spawn 前 clear ambient | **daemon clear ambient**：用 `prctl(PR_CAP_AMBIENT_CLEAR_ALL)` 在 `preexec_fn` 裡執行；確保 subprocess 沒 SETUID/SETGID |
+| Disk 暫存檔案 | 留 `<run_id>.*` cleanup 描述 / 完全清乾淨 | **完全清乾淨**：v1 純 socket-stream、不寫 disk；spec 對齊 |
+| Socket owner/mode 描述 | `worker-api:sandbox` / `sandbox:anila-jobs` | **`sandbox:anila-jobs`**（worker-api 透過 supplementary group 進）：spec 全文統一 |
