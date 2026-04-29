@@ -15,13 +15,17 @@ import React, {
   useState,
 } from "react";
 
-import { config } from "./runtime/api.js";
+import { config, readCsrfCookie } from "./runtime/api.js";
 import { useAuth, useLogoutRedirect } from "./runtime/auth.jsx";
 import { streamChatCompletion } from "./runtime/sse.js";
 import { latchConversationWithMeta } from "./runtime/classified.js";
 import { buildPersistMeta } from "./runtime/messageMeta.js";
 import { cleanGeneratedTitle } from "./runtime/titleClean.js";
 import { relativeLabel } from "./runtime/time.js";
+// ANILA Functions v1: enabled-actions cache + run-stream + event handler.
+import { runFunctionStream } from "./runtime/functions.js";
+import { consumeFunctionEventStream } from "./runtime/functionEvents.js";
+import { loadEnabledActions } from "./runtime/functionsStore.js";
 import {
   listConversations as apiListConversations,
   createConversation as apiCreateConversation,
@@ -223,6 +227,77 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   const [conversations, setConversations] = useState([]);
   const [messagesByConv, setMessagesByConv] = useState({});
   const [selectedConvId, setSelectedConvId] = useState(null);
+
+  // ANILA Functions v1: list of {function_slug, action_id, name,
+  // icon_data_url, function_version} cached on first auth load.
+  // MessageBubble renders these as buttons after thumbs-down.
+  const [functionActions, setFunctionActions] = useState([]);
+  const [functionToast, setFunctionToast] = useState(null);
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let cancelled = false;
+    loadEnabledActions().then((list) => {
+      if (!cancelled) setFunctionActions(list || []);
+    }).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn("[ANILA Functions] enabled-actions load failed:", err.message);
+    });
+    return () => { cancelled = true; };
+  }, [isAuthenticated]);
+
+  // Single SSE → host_command dispatch handler. Wired to MessageBubble's
+  // onRunFunction prop. The composer ref / modal / clipboard / link
+  // handlers are stubbed to plain DOM-level effects for v1; refining to
+  // first-class component refs is a follow-up.
+  const onRunFunction = useCallback(async (fnAction, msg, conversationId) => {
+    try {
+      const csrf = readCsrfCookie();
+      const resp = await runFunctionStream(
+        fnAction.function_slug,
+        {
+          action_id: fnAction.action_id,
+          context: {
+            conversation_id: conversationId,
+            message_id: msg?.id,
+            selected_text: window.getSelection()?.toString() || null,
+          },
+          test_mode: false,
+        },
+        csrf,
+      );
+      const ctx = {
+        onStatus: (e) => setFunctionToast({ kind: "status", ...e }),
+        onMessage: (e) => setFunctionToast({ kind: "message", text: e.content }),
+        onError: (m) => setFunctionToast({ kind: "error", text: m }),
+        composer: {
+          setText: (text) => {
+            const el = document.querySelector('textarea[placeholder*="訊息"], textarea[placeholder*="ask"], div[contenteditable=true]');
+            if (el && "value" in el) {
+              el.value = text;
+              el.dispatchEvent(new Event("input", { bubbles: true }));
+            } else if (el) {
+              el.textContent = text;
+            }
+          },
+          insertText: (text, at) => {
+            const el = document.querySelector('textarea[placeholder*="訊息"], textarea[placeholder*="ask"]');
+            if (el && "value" in el) {
+              const pos = at === "end" ? el.value.length : (el.selectionStart || 0);
+              el.value = el.value.slice(0, pos) + text + el.value.slice(pos);
+              el.dispatchEvent(new Event("input", { bubbles: true }));
+            }
+          },
+        },
+        toast: { show: (t) => setFunctionToast(t) },
+        modal: { show: ({ title, contentMarkdown }) =>
+          setFunctionToast({ kind: "modal", title, text: contentMarkdown }) },
+        citations: { open: (c) => setFunctionToast({ kind: "citation", text: JSON.stringify(c) }) },
+      };
+      await consumeFunctionEventStream(resp, ctx);
+    } catch (err) {
+      setFunctionToast({ kind: "error", text: err.message });
+    }
+  }, []);
 
   // --- compare mode ---
   const [compareMode, setCompareMode] = useState(false);
@@ -1505,6 +1580,35 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
           traceId={latestAssistantMessage?.traceId}
         />
       )}
+      {/* ANILA Functions v1: toast for status / message / error / two-step
+          confirm (clipboard.copy + link.open). Auto-dismisses after 5s
+          unless user-actionable (host_action_confirm has its own button). */}
+      {functionToast && (
+        <div style={{
+          position: "fixed", bottom: 24, right: 24, zIndex: 9999,
+          background: functionToast.kind === "error" ? "#fee" : "var(--surface, #fff)",
+          border: "1px solid var(--border, #ccc)", padding: "10px 14px",
+          borderRadius: 8, maxWidth: 360, boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+          fontSize: 13,
+        }}>
+          {functionToast.title && <div style={{ fontWeight: 600, marginBottom: 4 }}>{functionToast.title}</div>}
+          <div>{functionToast.label || functionToast.description || functionToast.text || ""}</div>
+          {functionToast.type === "host_action_confirm" && functionToast.onConfirm && (
+            <button
+              style={{ marginTop: 8, padding: "4px 10px" }}
+              onClick={() => { functionToast.onConfirm(); setFunctionToast(null); }}
+            >
+              Confirm
+            </button>
+          )}
+          <button
+            style={{ marginLeft: 8, marginTop: 8, padding: "4px 10px" }}
+            onClick={() => setFunctionToast(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       <Sidebar
         conversations={conversations}
         selectedConvId={selectedConvId}
@@ -1702,6 +1806,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                           onSwitchRevision={switchRevision}
                           onOpenCitation={onOpenCitation}
                           onPickFollowUp={(q) => sendMessage(q, [], {})}
+                          functionActions={functionActions}
+                          onRunFunction={onRunFunction}
                         />
                       ))
                     )}
