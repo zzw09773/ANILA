@@ -28,7 +28,7 @@
 - **Live Test Console**：dev 在 UI 上直接跑、看 events stream
 - **Audit log**：每次 Action 觸發保留 360 天（含完整 events_json，redact 後）
 - **RBAC**：`developer` 寫；`developer`+`admin` 看 code；所有 role 看 metadata 並用 enabled function；`admin` 可 disable / 設 admin Valves
-- **Worker 兩層隔離 + volume IPC**：trusted **`anila-functions-worker-api`**（接 CSP，hardened）+ untrusted **`anila-functions-sandbox-exec`** / **`anila-functions-sandbox-extract`**（exec user code）；**worker-api 跟 sandbox 透過 shared docker volume + Unix socket IPC，不共享 network namespace**（避免 user code subprocess 跨容器 reach control plane）；sandbox 加 **`cap_drop: ALL`**、**read-only rootfs + tmpfs `/tmp`**、**egress 預設 deny + outbound proxy allowlist**（exec only；extract 完全無 egress）、**docker cgroup `mem_limit` + `pids_limit`**、30s timeout（extract 3s）、non-root；sandbox 容器**不在** `anila-internal`、**完全不持有任何 ANILA secret**
+- **Worker 兩層隔離 + volume IPC + 容器內 UID 三層**：trusted **`anila-functions-worker-api`**（接 CSP，hardened）+ untrusted **`anila-functions-sandbox-exec`** / **`anila-functions-sandbox-extract`**（exec user code）；**worker-api 跟 sandbox 透過 shared docker volume + Unix socket IPC，不共享 network namespace**；sandbox 容器內**daemon 跟 user subprocess 跑不同 UID**（daemon `sandbox` uid 65533、subprocess `subproc` uid 65534），daemon 在 `anila-jobs` group、subprocess 不在；socket / job 目錄 mode 限 daemon owner+group → user code 無法 connect、無法讀 job spec / 偷其他 run 的 valves；sandbox 加 **`cap_drop: ALL` + `cap_add: [SETUID, SETGID]`**（daemon spawn subprocess 時降權需要）、**read-only rootfs + tmpfs `/tmp`**、**egress 預設 deny + outbound proxy allowlist**（exec only；extract 完全無 egress）、**docker cgroup `mem_limit` + `pids_limit`**、30s timeout（extract 3s）；sandbox 容器**不在** `anila-internal`、**完全不持有任何 ANILA secret**
 - **Event types**：`status`、**`host_command`（白名單動詞集；無 raw JS eval）**、`message`、`citation`、`error`（+ runtime sentinel `__done__`）
 - **Worker schema extraction**：CSP 不 import / exec user code，valves & actions schema 解析委派 worker `/extract-meta` endpoint
 - **/run 強制 ownership 檢查**：複用 CSP `conversation_service` gate（conversation/message access、message role=assistant、classified gate）
@@ -641,7 +641,7 @@ asyncio.run(main())
 | CPU | 30s ulimit | 同 wall clock |
 | **Network egress** | **預設 deny；出網經 outbound proxy + allowlist** | proxy 拒絕 → user code 收連線失敗（具體錯誤可能是 connection refused / timeout / no route，視 docker 版本與目標 IP 而定；測試應驗「不能連通」、不綁特定錯誤字串） |
 | Filesystem | 容器內 `tmpfs:/tmp:size=64m,mode=1777`（per-run subdir）；rootfs `read_only:true` | — |
-| Subprocess UID | 非 root（`nobody`） | docker isolation |
+| Subprocess UID | `subproc:65534`（daemon 在 `sandbox:65533`，spawn 時 setuid 降權） | docker isolation + UID 分層（§5.8） |
 | **Linux capabilities** | **`cap_drop: [ALL]`** | 容器啟動就丟掉 |
 | **Seccomp** | 自訂 profile（block: `ptrace`, `mount`, `unshare`, `kernel_module`, `bpf`, `clone3`）；以 docker default 為基礎收緊 | syscall 不允 → SIGSYS |
 | **AppArmor / SELinux**（哪個 host 有就用） | confine profile，禁止 `mount`, `ptrace`, capability raise | — |
@@ -715,8 +715,9 @@ asyncio.run(main())
 3. **api ↔ sandbox 透過 docker volume + Unix socket**（不靠網路）— sandbox 不必在 control 層的 network 上、徹底切斷 user code 反向 reach control plane 的可能性
 4. **sandbox-exec 唯一 reachable 的「對外」是 egress proxy** — 即使 user code disable HTTP_PROXY、raw socket 也只有 functions-net 上一個 hop（egress proxy）；其他 IP 連不通（具體錯誤碼依 docker / kernel 行為而定）
 5. **sandbox-extract 沒任何 egress** — extract-net 上只有自己一台，無 proxy、無 bridge；user code top-level 跑出 side effect 也送不出去
-6. **sandbox 不持有任何 ANILA secret** — env 內無 `X_FUNCTIONS_SECRET`、無任何 token；user code 讀 `os.environ` / `/proc/1/environ` 只看到無關緊要的 ENV
-7. **Volume 存取靠 filesystem permission** — 兩個 volume 只 mount 在 worker-api 跟對應的 sandbox 容器內、其他容器看不到；socket 檔案的 owner / mode 也限制存取
+6. **sandbox 不持有任何 ANILA secret** — env 內無 token；user code 讀 `os.environ` / `/proc/1/environ` 只看到無關緊要的 ENV
+7. **Volume 存取靠雙層 isolation**：跨容器 — 兩個 volume 只 mount 在 worker-api + 對應 sandbox；同容器內 — UID/GID + filesystem permission 把 daemon 跟 user subprocess 隔開（見 §5.8）
+8. **IPC 純 socket-stream、不落 disk** — job spec / events 只在 Unix socket 連線中傳遞、不寫進任何檔案；user subprocess 即使能列 `/jobs-exec` 也讀不到 job 內容（事實上 mode 0700 連列都列不到）
 
 **docker-compose 配置點**：
 ```yaml
@@ -740,7 +741,7 @@ services:
     volumes:
       - jobs-exec:/jobs-exec
       - jobs-extract:/jobs-extract
-    user: "65534:65534"   # non-root（即使 trusted 也 harden）
+    user: "65532:65532"   # web user, 在 image 內也屬 anila-jobs (gid 65530)
     read_only: true
     tmpfs: ["/tmp:size=16m"]
     cap_drop: [ALL]
@@ -757,33 +758,39 @@ services:
     volumes:
       - jobs-exec:/jobs-exec
     cap_drop: [ALL]
+    cap_add: [SETUID, SETGID]   # daemon 需要降權 spawn subprocess 為 subproc(65534)
     read_only: true
     tmpfs: ["/tmp:size=64m,mode=1777"]
     security_opt: ["no-new-privileges:true", "seccomp:./sandbox-seccomp.json"]
-    user: "65534:65534"
+    user: "65533:65533"   # daemon 跑 sandbox uid，subprocess 由 daemon 內 setuid 到 subproc(65534)
     mem_limit: 256m       # cgroup-enforced（Linux RSS rlimit 不可靠）
     pids_limit: 32
     environment:
       HTTP_PROXY: http://anila-functions-egress:3128
       HTTPS_PROXY: http://anila-functions-egress:3128
       JOBS_DIR: /jobs-exec
-      # 注意：完全沒 ANILA_FUNCTIONS_API_SECRET / X_FUNCTIONS_SECRET
+      SUBPROC_UID: 65534
+      SUBPROC_GID: 65534
+      # 注意：完全沒 ANILA_FUNCTIONS_API_SECRET
 
   anila-functions-sandbox-extract:
     networks: [anila-functions-extract-net]
     volumes:
       - jobs-extract:/jobs-extract
     cap_drop: [ALL]
+    cap_add: [SETUID, SETGID]
     read_only: true
     tmpfs: ["/tmp:size=16m,mode=1777"]
     security_opt: ["no-new-privileges:true", "seccomp:./sandbox-seccomp.json"]
-    user: "65534:65534"
+    user: "65533:65533"
     mem_limit: 64m
     pids_limit: 16
     environment:
       JOBS_DIR: /jobs-extract
       EXTRACT_TIMEOUT: 3
       EXTRACT_STDOUT_KB: 16
+      SUBPROC_UID: 65534
+      SUBPROC_GID: 65534
       # 注意：同樣沒 secret env
 
   anila-functions-egress:
@@ -803,6 +810,85 @@ services:
 - HTTP-on-control-net 需要 sandbox 在 control-net 上 → user code subprocess 也在 control-net 上 → 暴露 control plane API surface
 - Unix socket on volume 跨容器但不跨網路 → sandbox 容器不需要任何 control 層 network
 - 自然不存在「user code 能 reach worker-api / 偷 secret」的攻擊面
+
+### 5.8 容器內 UID/GID 三層隔離（防 user subprocess 連 socket / 讀 job spec）
+
+⚠️ **container 不是最內層 trust boundary** — sandbox container 內 daemon 跟 user subprocess 共享同一 UID 等於零隔離。user subprocess 可以 `connect` Unix socket、讀 jobs 目錄、偷 concurrent run 的 valves。修法：**daemon 跟 subprocess 跑不同 UID/GID**，volume / socket permission 用 group 限制。
+
+**UID / GID layout**（image build 時 create）：
+
+| User | UID | Groups | 跑在哪個 container | 跑什麼 |
+|---|---|---|---|---|
+| `web` | 65532 | primary `web:65532` + supplementary `anila-jobs:65530` | worker-api | FastAPI process（trusted） |
+| `sandbox` | 65533 | primary `sandbox:65533` + supplementary `anila-jobs:65530` | sandbox-exec / sandbox-extract | daemon process（accept Unix socket、spawn subprocess） |
+| `subproc` | 65534 | primary `subproc:65534` **only**（**不**在 `anila-jobs`） | sandbox-exec / sandbox-extract | user code subprocess（spawn 時 setuid 過去） |
+
+**`anila-jobs:65530` 是「能存取 IPC volume」的 GID**。daemon 跟 worker-api 都在這個 group、subprocess 不在。
+
+**Volume / socket 權限**：
+
+| Path | Mode | Owner:Group | web 讀寫 | sandbox 讀寫 | subproc 讀寫 |
+|---|---|---|---|---|---|
+| `/jobs-exec/` (dir) | `0770` | `sandbox:anila-jobs` | ✅ (group) | ✅ (owner) | ❌ |
+| `/jobs-exec/control.sock` | `0660` | `sandbox:anila-jobs` | ✅ (group) | ✅ (owner) | ❌ |
+| `/jobs-extract/` 同上 | | | | | |
+
+**subprocess spawn 流程**：
+1. daemon process 跑在 `sandbox:65533`、`anila-jobs` group
+2. daemon 收到 worker-api connect 進 socket、讀 job spec
+3. daemon `subprocess.Popen(['python', '-u', 'runtime.py'], user='subproc', group='subproc', ...)` — Python 3.9+ 支援，需要 `CAP_SETUID` + `CAP_SETGID`
+4. subprocess 跑在 `subproc:65534`、**只**在 `subproc:65534` group
+5. subprocess `connect('/jobs-exec/control.sock')` → `EACCES`（mode 0660 不允許 owner 跟 group 之外的人）；`os.listdir('/jobs-exec')` → `EACCES`
+
+**Capabilities 取捨**：
+
+```yaml
+sandbox-exec / sandbox-extract:
+  cap_drop: [ALL]
+  cap_add: [SETUID, SETGID]   # daemon 需要降權 spawn subprocess
+```
+
+`SETUID + SETGID` 只給 daemon 能 setuid 的能力、**不給** root；不允許 daemon 自我 escalate（沒 `CAP_SYS_ADMIN` / `DAC_OVERRIDE` etc.）。subprocess 起來後因為 `no-new-privileges:true` 跟 `cap_drop:ALL`、不能再爬回去。
+
+**為什麼不能直接給 daemon 用 cap_drop:ALL（沒 SETUID）**：
+- Python `subprocess.Popen(user=...)` 內部會 `setuid()` syscall、kernel reject 沒 CAP_SETUID 的 process
+- 沒這 cap → daemon 無法降權、subprocess 跟 daemon 同 UID → H1 修不掉
+
+**Image build / Dockerfile 要做的事**（兩個 sandbox image 共用一個 base）：
+
+```dockerfile
+FROM python:3.12-slim
+RUN groupadd -g 65530 anila-jobs && \
+    useradd -u 65533 -g 65533 -G anila-jobs -m -s /usr/sbin/nologin sandbox && \
+    useradd -u 65534 -g 65534 -m -s /usr/sbin/nologin subproc
+# /jobs-* dir 在 entrypoint 啟動時 chown sandbox:anila-jobs && chmod 0770
+USER 65533
+ENTRYPOINT ["python", "-u", "/app/sandbox_daemon.py"]
+```
+
+worker-api image 對應：
+
+```dockerfile
+FROM python:3.12-slim
+RUN groupadd -g 65530 anila-jobs && \
+    useradd -u 65532 -g 65532 -G anila-jobs -m -s /usr/sbin/nologin web
+USER 65532
+ENTRYPOINT ["python", "-u", "/app/worker_api.py"]
+```
+
+**Per-run job state（v1：完全 in-memory，不落 disk）**：
+- job spec / events 只在 Unix socket 連線內傳遞、雙方都不寫檔案
+- run_id 用作 socket 連線內的 framing identifier、不是檔名
+- 即使 user subprocess 後來能列 `/jobs-exec`（不能、但假設能），也找不到任何 file 含 valves / job spec
+- **v2 才考慮**：persistent run state（要做 daemon crash restart）的話、改用 `/jobs-exec/<run_id>/` per-run 目錄 + mode 0700 owner sandbox + run 結束 unlink
+
+**測試（必須）**：
+- subprocess 內 `os.getuid() == 65534`、`os.getgroups() == [65534]`（不在 65530）
+- subprocess 內 `socket.socket(AF_UNIX, SOCK_STREAM).connect('/jobs-exec/control.sock')` → `PermissionError`
+- subprocess 內 `os.listdir('/jobs-exec')` → `PermissionError`
+- subprocess 內 `open('/jobs-exec/control.sock', 'rb')` → `PermissionError`
+- daemon 跑 8 個 concurrent jobs，第 4 個 job 的 user code 嘗試讀 socket 影響第 5 個 → 都失敗（同樣的權限結果）
+- worker-api 容器內 `socket.socket(AF_UNIX, SOCK_STREAM).connect('/jobs-exec/control.sock')` → 成功（在 anila-jobs group）
 
 ---
 
@@ -927,7 +1013,7 @@ Tabs：
 | T2 | ~~Developer 注入 XSS via `execute`~~（v1 raw execute 已移除） | — | v1 改 `host_command` 白名單；無 raw JS eval；前後端兩層 verb / args schema 驗證 |
 | T3 | Test mode 逃逸 | 繞過 admin disable | server enforce：test_mode=true + status≠enabled → 403 unless author/admin |
 | T4 | 無限迴圈 / fork bomb / OOM | DoS worker | rlimit + nproc + 8-concurrent semaphore → queue_full |
-| T5 | 子程序 escape worker container | 影響 host | `cap_drop:ALL`、seccomp、AppArmor/SELinux confine、read-only rootfs、`nobody` user、no-new-privileges、不掛 docker.sock |
+| T5 | 子程序 escape worker container | 影響 host | `cap_drop:ALL` + `cap_add:[SETUID, SETGID]` 限定、seccomp、AppArmor/SELinux confine、read-only rootfs、daemon 跑 `sandbox:65533`、subprocess 跑 `subproc:65534`（無 supplementary group）、no-new-privileges、不掛 docker.sock |
 | T6 | Valves XSS | XSS 拿 admin token | values JSON-stringify 顯示；description 走既有 markdown sanitize |
 | T7 | Token 出現在明文位置 | Credential 外洩 | **主防線**：egress proxy 不通 = secret 出不去（T1 mitigation 順帶處理）；**次防線**：admin Valves AES-256-GCM at rest、UI password input、GET 不回明文、minimal valve injection（subprocess 只拿到 schema 宣告的欄位）；**兜底**：substring redaction（best effort、擋誤 leak、不 expect 擋 active attacker） |
 | T8 | CSP↔Worker 沒驗證 | bypass CSP | shared secret `X-Functions-Secret`；worker 只 listen docker compose internal network |
@@ -944,7 +1030,9 @@ Tabs：
 | **T19** | **單一 worker container 既接 CSP 又跑 user code → user code 可達 CSP / DB / router** | horizontal lateral movement（user code RCE → 拿 anila-internal 上其他服務） | 拆兩層：api gate（trusted、連 anila-internal）；sandbox（untrusted、不連 anila-internal、只能 reach egress proxy）；api ↔ sandbox 透過 docker volume + Unix socket、不共享 network namespace |
 | **T20** | **RLIMIT_RSS Linux kernel 不一定 enforce** | dev 寫的 Function 把 worker 容器吃光記憶體 | docker `mem_limit` cgroup（hard limit）+ `pids_limit`；rlimit 只做輔助 |
 | **T21** | **subprocess 繼承 container netns → 即使分兩層、user code 仍可 reach 跟 sandbox 同 container 連到的所有 network** | sandbox 為了接受 control 流量被迫上 control-net → subprocess 也上 control-net → 反向 reach worker-api / 偷 secret | sandbox container **不在任何 control plane network**；api ↔ sandbox 走 **docker volume + Unix socket**，跨容器但不跨網路；sandbox 唯一 network 是 functions-net（exec）或 extract-net（extract） |
-| **T22** | **sandbox container 持有 secret env → user code 從 `/proc/1/environ` 讀到** | secret 外洩、可重用呼叫 worker-api / CSP | sandbox container env 內**完全沒 ANILA secret**（`X_FUNCTIONS_SECRET` / `ANILA_FUNCTIONS_API_SECRET` 都不放）；IPC 認證靠 filesystem permission（volume mount 限 worker-api + 對應 sandbox），不是 token-based |
+| **T22** | **sandbox container 持有 secret env → user code 從 `/proc/1/environ` 讀到** | secret 外洩、可重用呼叫 worker-api / CSP | sandbox container env 內**完全沒 ANILA secret**；IPC 認證靠 filesystem permission（volume mount 限 worker-api + 對應 sandbox），不是 token-based |
+| **T23** | **container 內 daemon 跟 user subprocess 同 UID → user code 可 connect 自己 daemon 的 socket、讀 job 目錄、偷 concurrent run 的 valves** | 同 sandbox 容器內 cross-run secret leak、並可向 daemon 假裝是 worker-api 連線製造混亂 | 容器內三層 UID 隔離（§5.8）：daemon `sandbox:65533` 在 `anila-jobs:65530` group；subprocess `subproc:65534` 不在；socket / job dir mode 0660/0770 owner sandbox:anila-jobs；subprocess 連 / 列 / 讀都 EACCES |
+| **T24** | **`cap_drop:ALL` 跟 daemon 需要 setuid 降權矛盾** | 沒能力降權 → subprocess 跟 daemon 同 UID → T23 修不掉 | `cap_drop:[ALL]` + `cap_add:[SETUID, SETGID]`；只給 daemon 降 UID 的 cap，不給 `CAP_DAC_OVERRIDE` / `CAP_SYS_ADMIN`；subprocess 降權後遇 `no-new-privileges:true` 跟剩餘 `cap_drop:ALL`，無法爬回 |
 
 ### 7.3 Secrets / Key 管理（**分層 + sandbox 完全沒 secret**）
 
@@ -1048,6 +1136,13 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 - **網路拓樸：sandbox-extract 容器內任何 outbound（含 proxy host）都 → **連線失敗**（extract-net 沒 proxy）**
 - **Secret 隔離：sandbox-exec / sandbox-extract 容器內 `os.environ.keys()` 不含 `ANILA_FUNCTIONS_API_SECRET` / `ANILA_FUNCTIONS_VALVES_KEY`；`/proc/1/environ` 同樣不含**
 - **Volume IPC：worker-api 跟 sandbox-exec 都讀寫得到 `jobs-exec/control.sock`；其他 container（如 csp、router）沒 mount 進來、`stat` 該 socket 看不到**
+- **容器內 UID 隔離：subprocess 內 `os.getuid() == 65534`、`os.getgroups() == [65534]`（不在 65530 anila-jobs）**
+- **容器內權限：subprocess 內 `socket.socket(AF_UNIX).connect('/jobs-exec/control.sock')` → `PermissionError`**
+- **容器內權限：subprocess 內 `os.listdir('/jobs-exec')` → `PermissionError`**
+- **容器內權限：subprocess 內 `open('/jobs-exec/control.sock', 'rb')` → `PermissionError`**
+- **Concurrent runs：8 個 jobs 並行、其中一個 user code 嘗試讀 socket / 列 dir / connect → 都失敗（filesystem permission 不依賴 race window）**
+- **worker-api 容器內 connect socket → 成功（在 anila-jobs group）**
+- **`cap_add:[SETUID, SETGID]` 邊界：daemon 可 setuid 65534；subprocess 起來後 `setuid(0)` → `EPERM`（已 cap_drop:ALL + no-new-privileges）**
 - **`cap_drop:ALL` 生效：subprocess 無法 mount / ptrace / unshare**
 - **Subprocess env：保留 HTTP_PROXY/HTTPS_PROXY 給 dev convenience；scrub LD_PRELOAD 等 sensitive**
 - **`host_command` event 經 worker SSE 出去，不會被攔掉（worker 不驗 verb，CSP 才驗）**
@@ -1120,7 +1215,7 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
   - `read_only: true` + `tmpfs:/tmp:size=16m`
   - `cap_drop: [ALL]`
   - `security_opt: ["no-new-privileges:true"]`
-  - non-root user `nobody`
+  - non-root user `web:65532`（in `anila-jobs:65530` group 給 IPC volume 存取用）
   - `mem_limit: 128m`、`pids_limit: 64`
   - 不掛 `docker.sock` 或任何 host volume（除 jobs-* 外）
 - Network：`anila-internal` only（給 CSP call）
@@ -1131,31 +1226,35 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 
 - Base image：`python:3.12-slim`
 - Preinstalled：`httpx`, `requests`, `pydantic`, `python-dateutil`, `cryptography`（不需要 fastapi/uvicorn — 它不 listen HTTP）
-- 職責：啟動時 bind+listen Unix socket `/jobs-exec/control.sock`；accept 連線就 read job spec、spawn `python -u runtime.py` subprocess、把 stdout 即時寫回 socket
+- **Image 在 build 時 create 兩個 user**：
+  - `sandbox` uid 65533、primary group `sandbox:65533`、supplementary group `anila-jobs:65530`
+  - `subproc` uid 65534、primary group `subproc:65534`、**不**在 anila-jobs
+  - daemon 跑在 sandbox uid；subprocess 由 daemon `subprocess.Popen(user='subproc', group='subproc')` 降權 spawn
+- 職責：啟動時 chown `/jobs-exec/` 為 `sandbox:anila-jobs` 0770、bind+listen Unix socket `/jobs-exec/control.sock`（mode 0660 owner sandbox:anila-jobs）；accept 連線就 read job spec、spawn `python -u runtime.py` subprocess as subproc、把 stdout 即時寫回 socket
 - Container hardening：
   - `read_only: true`
   - `tmpfs: ["/tmp:size=64m,mode=1777"]`
-  - `cap_drop: [ALL]`
+  - **`cap_drop: [ALL]` + `cap_add: [SETUID, SETGID]`**（後兩個 cap 給 daemon 降權用，不給 root）
   - `security_opt: ["no-new-privileges:true", "seccomp:./sandbox-seccomp.json", "apparmor:anila-sandbox"]`
   - **`mem_limit: 256m`**（cgroup-enforced；不靠 RLIMIT_RSS）
   - **`pids_limit: 32`**
-  - non-root user `nobody`（uid 65534）
   - 不掛 `docker.sock` 或任何 host volume
+- `user: "65533:65533"` — daemon 起來就是 sandbox uid，subprocess 由 daemon 降權
 - Network：`anila-functions-net` only
 - Volumes mount：`jobs-exec:/jobs-exec`
-- ENV：`HTTP_PROXY=http://anila-functions-egress:3128`、`HTTPS_PROXY` 同、`JOBS_DIR=/jobs-exec`
+- ENV：`HTTP_PROXY=http://anila-functions-egress:3128`、`HTTPS_PROXY` 同、`JOBS_DIR=/jobs-exec`、`SUBPROC_UID=65534`、`SUBPROC_GID=65534`
 - **完全沒 ANILA secret env**
 
 #### 9.1.3 `anila-functions-sandbox-extract`（untrusted sandbox，schema 抽取，**比 exec 更嚴**）
 
-- 同 image、同 hardening **加嚴**：
+- 同 image、同 hardening、同 UID/GID 隔離結構（sandbox uid 65533 + subproc uid 65534）**加嚴**：
   - `mem_limit: 64m`（vs exec 的 256m）
   - `pids_limit: 16`（vs exec 的 32）
   - `tmpfs:` 縮小到 16m
 - Network：`anila-functions-extract-net` only（**無 egress proxy、完全沒出口**）
 - Volumes mount：`jobs-extract:/jobs-extract`
 - runtime 端：不接受 valves / `__user__` / `__metadata__`；不執行 `instance.action()`、只 read `Action.actions` + `Valves.model_json_schema()`
-- ENV：`JOBS_DIR=/jobs-extract`、`MAX_TIMEOUT=3`、`MAX_STDOUT_KB=16`
+- ENV：`JOBS_DIR=/jobs-extract`、`MAX_TIMEOUT=3`、`MAX_STDOUT_KB=16`、`SUBPROC_UID=65534`、`SUBPROC_GID=65534`
 - **完全沒 ANILA secret env**
 
 #### 9.1.4 `anila-functions-egress`（squid sidecar）
@@ -1214,7 +1313,7 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 - [ ] Metrics stack：ANILA 現在有 Prometheus 嗎？沒有的話 v1 用 structured log 兜，明確標記後續接 Prom
 - [ ] CSP `audit_logs` 高階紀錄的 actor / target 欄位要怎麼填？需確認既有 schema 對「FUNCTION_RUN」/「FUNCTION_REPORT」事件的容量
 - [ ] Monaco bundle size：bundle 進去會讓 anila-ui build 變大幾 MB？需要 dynamic import 讓非 admin 路由不載
-- [ ] `nobody` UID 在 worker container 裡是否需要 chown tmpfs `/tmp` subdir？需要時 entrypoint script 處理
+- [ ] `subproc` UID 在 sandbox container 裡的 tmpfs `/tmp` 寫入權限：tmpfs `mode=1777` 已 sticky world-writable、subproc 寫得到自己的檔；但 daemon 偵測 subproc 留下的 file（log / 暫存）時要小心 race（subproc 結束後 daemon 立刻清）
 - [ ] **Outbound proxy 選擇**：squid（簡單成熟）vs envoy sidecar（更現代、metrics 好接）；v1 預設 squid、v2 視 ops 偏好換
 - [ ] **Seccomp profile 取得**：從 docker default 往下收緊還是寫客製 profile？v1 先用 default 再標記 follow-up
 - [ ] **AppArmor / SELinux**：host 是哪個？compose 配置的 profile 名要對齊 host
@@ -1243,12 +1342,16 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 - CSP `/run` SSE relay + 兩條 ownership 路徑（chat_message vs test_console）+ host_command verb / args 驗證 + redaction pass
 - Worker tests + end-to-end SSE flow test
 
-**Sprint 3** — 網路拓樸 + container hardening + sandbox tests
+**Sprint 3** — 網路拓樸 + container hardening + UID 隔離 + sandbox tests
 - Docker compose 更新（2 個 internal network + 2 個 docker volume + 4 個 services + squid egress proxy）
-- sandbox 容器：`cap_drop:ALL` + seccomp + read-only rootfs + tmpfs + non-root + `mem_limit` + `pids_limit` + env partial-scrub + **無任何 ANILA secret env**
-- worker-api 容器：trusted 但仍 harden（non-root, read-only, cap_drop, mem_limit）
+- Image build：sandbox image 內 create `sandbox:65533`（in `anila-jobs:65530`）+ `subproc:65534`（不在 anila-jobs）；worker-api image 內 create `web:65532`（in anila-jobs）
+- sandbox 容器：`cap_drop:ALL` + `cap_add:[SETUID, SETGID]`（daemon 降權需要）+ seccomp + read-only rootfs + tmpfs + `mem_limit` + `pids_limit` + env partial-scrub + **無任何 ANILA secret env**
+- worker-api 容器：trusted 但仍 harden（uid 65532, read-only, cap_drop:ALL, mem_limit）
+- entrypoint：daemon 啟動時 chown `/jobs-*` 為 `sandbox:anila-jobs` mode 0770、bind socket mode 0660 owner sandbox:anila-jobs
+- daemon spawn subprocess 用 `subprocess.Popen(user='subproc', group='subproc')` 降權
 - 拓樸測試（assert 連不通、不綁具體錯誤碼）：sandbox-exec 不能繞 proxy 連任何 host（即使 disable HTTP_PROXY）；sandbox-extract 連 proxy 都連不到；sandbox 容器 `os.environ` / `/proc/1/environ` 都沒 ANILA secret
-- Volume permission 測試：worker-api 跟 sandbox-exec 雙方都讀寫得到 `jobs-exec/control.sock`、其他 container 看不到
+- **UID 隔離測試**：subprocess `getuid()==65534`、`getgroups()==[65534]`（不在 65530）；subprocess connect socket → EACCES；subprocess listdir `/jobs-exec` → EACCES；subprocess 嘗試 `setuid(0)` → EPERM
+- Volume permission 測試：worker-api 跟 sandbox 都讀寫得到 socket、其他 container 看不到；concurrent 8 jobs 之間 user code 不能跨 run 偷 valves
 - Stress / chaos：8 並發、subprocess kill 中途、egress allowlist 動態 update、cgroup mem_limit OOM kill 行為、worker-api crash 中途 sandbox 端正確 SIGKILL subprocess
 
 **Sprint 4** — Frontend + dogfood
@@ -1326,3 +1429,12 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 | Sandbox container 持有 secret | 同 worker-api（多 secret） / 分層 secret / 完全沒 secret | **完全沒 secret**：IPC 認證靠 filesystem permission，sandbox env scrubbed |
 | worker-api hardening level | trusted 不需要 / 適度 harden / 同 sandbox 強度 | **適度 harden**（non-root + read-only + cap_drop + mem_limit + no docker.sock；不到 sandbox 強度但比 round-3 寫的「trusted 不需要」嚴） |
 | Worker URL ENV 命名 | `ANILA_FUNCTIONS_WORKER_URL` / `..._WORKER_API_URL` | `ANILA_FUNCTIONS_WORKER_API_URL`：CSP 只 talk to worker-api，sandbox URL 是 worker-api 內部關注、不暴露到 CSP env |
+
+### 第六輪修法（Codex round-5 review，2026-04-29）
+
+| 決定 | 選項 | 結果 |
+|---|---|---|
+| sandbox container 內 daemon vs subprocess UID | 同 UID（都 nobody）/ 不同 UID + GID 群組隔離 / per-run separate container | **不同 UID + GID 隔離**：daemon `sandbox:65533`（in `anila-jobs:65530`）、subprocess `subproc:65534`（不在 anila-jobs）；socket / job dir mode 0660/0770 owner sandbox:anila-jobs；user code 連、列、讀都 EACCES |
+| sandbox cap_drop vs daemon 降權需求 | 純 `cap_drop:ALL`（無法降權，矛盾）/ `cap_drop:ALL` + `cap_add:[SETUID, SETGID]` | **後者**：給 daemon 最小必要 cap，subprocess 起來後仍 cap_drop:ALL + no-new-privileges 不能 escalate |
+| Per-run state 落不落 disk | 純 socket-stream / job/event files on volume | **純 socket-stream**：v1 不寫任何 job spec / events 到 disk，避免 user subprocess 即使破 permission 也讀不到內容；v2 才考慮 daemon crash recovery 用的 per-run 0700 dir |
+| IPC 認證機制 | filesystem permission（GID-based）/ token-based / mTLS | **filesystem permission（GID-based）**：socket mode 0660 owner sandbox:anila-jobs；只有同 group 容器（worker-api）能連；user subprocess 不在 group，連不到 |
