@@ -15,6 +15,7 @@ import React, {
   useState,
 } from "react";
 
+import { useNavigate } from "react-router-dom";
 import { config, readCsrfCookie } from "./runtime/api.js";
 import { useAuth, useLogoutRedirect } from "./runtime/auth.jsx";
 import { streamChatCompletion } from "./runtime/sse.js";
@@ -217,6 +218,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   // first guard triggers, which crashes the whole App after login.
   const { authRequest, multipartRequest, isAuthenticated } = useAuth();
   const logoutAndRedirect = useLogoutRedirect();
+  const navigate = useNavigate();
 
   // --- agents / conversations / messages ---
   const [agents, setAgents] = useState([ROUTER_AGENT]);
@@ -1625,6 +1627,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
           setSettingsTab(tab || "general");
           setSettingsOpen(true);
         }}
+        onOpenFunctions={() => navigate("/admin/functions")}
         onOpenAgentBrowser={() => {}}
         collapsed={collapsed}
         onToggleCollapsed={() => setCollapsed((c) => !c)}

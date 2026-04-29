@@ -12,6 +12,7 @@ import {
 import App from "./app.jsx";
 import { LoginView } from "./login.jsx";
 import { AuthProvider, useAuth } from "./runtime/auth.jsx";
+import { FunctionsAdminPage } from "./admin/FunctionsAdminPage.jsx";
 
 function BootScreen({ label = "啟動中…" }) {
   return (
@@ -69,6 +70,18 @@ function RootRoutes() {
         element={
           <RequireAuth>
             <App />
+          </RequireAuth>
+        }
+      />
+      {/* ANILA Functions v1: developer / admin Function management UI.
+          Inside RequireAuth so unauthenticated traffic redirects to
+          /login; the page itself further gates create / edit / disable
+          actions per user.role. */}
+      <Route
+        path="/admin/functions/*"
+        element={
+          <RequireAuth>
+            <FunctionsAdminPage />
           </RequireAuth>
         }
       />

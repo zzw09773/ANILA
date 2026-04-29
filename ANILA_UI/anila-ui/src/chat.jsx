@@ -1158,6 +1158,9 @@ export const Sidebar = ({
   user,
   onLogout,
   onOpenSettings,
+  // ANILA Functions v1: developer / admin jump to /admin/functions.
+  // Optional — Sidebar still renders if not provided.
+  onOpenFunctions,
   collapsed,
   onToggleCollapsed,
   folder,
@@ -1590,6 +1593,14 @@ export const Sidebar = ({
           {(close) => (
             <div>
               <MenuItem leftIcon={<IconSettings size={14} />} onClick={() => { onOpenSettings(); close(); }}>設定</MenuItem>
+              {/* ANILA Functions v1: only developer / admin see this entry.
+                  Routes to /admin/functions where they can author Action
+                  buttons, manage Valves, and review the audit log. */}
+              {(user?.role === "developer" || user?.role === "admin") && onOpenFunctions && (
+                <MenuItem leftIcon={<IconSpark size={14} />} onClick={() => { onOpenFunctions(); close(); }}>
+                  Functions
+                </MenuItem>
+              )}
               {/* Sprint 7 X follow-up：API Key menu item 已移除（cookie 流程後 dead code）。 */}
               <Divider />
               <MenuItem leftIcon={<IconLogout size={14} />} onClick={onLogout}>登出</MenuItem>

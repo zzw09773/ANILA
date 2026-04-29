@@ -45,8 +45,7 @@ class Action:
         })
 `;
 
-export function FunctionsAdmin({ user, authState, onAuthRefresh, onAuthExpired }) {
-  const auth = [authState, onAuthRefresh, onAuthExpired];
+export function FunctionsAdmin({ user }) {
   const [view, setView] = useState({ kind: "list", tab: "library" });
   const [items, setItems] = useState([]);
   const [error, setError] = useState(null);
@@ -57,12 +56,12 @@ export function FunctionsAdmin({ user, authState, onAuthRefresh, onAuthExpired }
       if (view.tab === "my") filters.author = "me";
       else if (view.tab === "disabled") filters.status = "disabled";
       else filters.status = "enabled";
-      const list = await listFunctions(filters, ...auth);
+      const list = await listFunctions(filters);
       setItems(list || []);
     } catch (err) {
       setError(err.message);
     }
-  }, [view.tab, ...auth]);
+  }, [view.tab]);
 
   useEffect(() => { if (view.kind === "list") refresh(); }, [view, refresh]);
 
@@ -71,7 +70,7 @@ export function FunctionsAdmin({ user, authState, onAuthRefresh, onAuthExpired }
       <FunctionEditor
         slug={view.slug}
         user={user}
-        auth={auth}
+        
         onClose={() => { invalidateActionsCache(); setView({ kind: "list", tab: view.returnTab || "library" }); }}
       />
     );
@@ -113,14 +112,14 @@ export function FunctionsAdmin({ user, authState, onAuthRefresh, onAuthExpired }
                 <button onClick={() => setView({ kind: "editor", slug: fn.slug, returnTab: view.tab })}>Open</button>
                 {isDeveloper && fn.status === "enabled" && (
                   <button onClick={async () => {
-                    try { await forkFunction(fn.slug, {}, ...auth); refresh(); }
+                    try { await forkFunction(fn.slug, {}); refresh(); }
                     catch (err) { setError(err.message); }
                   }}>Fork</button>
                 )}
                 {(user?.role === "admin" || fn.author_user_id === user?.id) && (
                   <button onClick={async () => {
                     const reason = prompt("Disable reason?") || "";
-                    try { await patchFunction(fn.slug, { status: "disabled" }, ...auth); refresh(); }
+                    try { await patchFunction(fn.slug, { status: "disabled" }); refresh(); }
                     catch (err) { setError(err.message); }
                   }}>Disable</button>
                 )}
@@ -141,7 +140,7 @@ function Tab({ active, onClick, children }) {
 
 // ── Editor ─────────────────────────────────────────────────────────────
 
-function FunctionEditor({ slug: initialSlug, user, auth, onClose }) {
+function FunctionEditor({ slug: initialSlug, user, onClose }) {
   const [slug, setSlug] = useState(initialSlug || "");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -155,7 +154,7 @@ function FunctionEditor({ slug: initialSlug, user, auth, onClose }) {
     if (!initialSlug) return;
     (async () => {
       try {
-        const fn = await getFunction(initialSlug, ...auth);
+        const fn = await getFunction(initialSlug);
         setSlug(fn.slug);
         setTitle(fn.title);
         setDescription(fn.description || "");
@@ -172,10 +171,10 @@ function FunctionEditor({ slug: initialSlug, user, auth, onClose }) {
     setError(null);
     try {
       if (!initialSlug) {
-        await createFunction({ slug, title, description, code, tags: [] }, ...auth);
+        await createFunction({ slug, title, description, code, tags: [] });
       } else {
-        await saveVersion(slug, { code, commit_message: null }, ...auth);
-        await patchFunction(slug, { title, description, status }, ...auth);
+        await saveVersion(slug, { code, commit_message: null });
+        await patchFunction(slug, { title, description, status });
       }
       onClose();
     } catch (err) { setError(err.detail?.detail || err.message); }
@@ -214,14 +213,14 @@ function FunctionEditor({ slug: initialSlug, user, auth, onClose }) {
           aria-label="function code"
         />
       )}
-      {tab === "valves" && initialSlug && <ValvesPanel slug={initialSlug} auth={auth} user={user} />}
-      {tab === "test"   && initialSlug && <TestConsole slug={initialSlug} auth={auth} />}
-      {tab === "runs"   && initialSlug && <RunsPanel   slug={initialSlug} auth={auth} />}
+      {tab === "valves" && initialSlug && <ValvesPanel slug={initialSlug}  user={user} />}
+      {tab === "test"   && initialSlug && <TestConsole slug={initialSlug}  />}
+      {tab === "runs"   && initialSlug && <RunsPanel   slug={initialSlug}  />}
     </div>
   );
 }
 
-function ValvesPanel({ slug, auth, user }) {
+function ValvesPanel({ slug, user }) {
   const [fields, setFields] = useState({});
   const [draft, setDraft] = useState({});
   const [error, setError] = useState(null);
@@ -229,7 +228,7 @@ function ValvesPanel({ slug, auth, user }) {
   useEffect(() => {
     (async () => {
       try {
-        const r = await getValves(slug, ...auth);
+        const r = await getValves(slug);
         setFields(r.fields || {});
       } catch (err) { setError(err.message); }
     })();
@@ -242,9 +241,9 @@ function ValvesPanel({ slug, auth, user }) {
       const clean = Object.fromEntries(
         Object.entries(merged).filter(([k, v]) => !(v && typeof v === "object" && "has_value" in v))
       );
-      await putValves(slug, clean, ...auth);
+      await putValves(slug, clean);
       setDraft({});
-      const r = await getValves(slug, ...auth);
+      const r = await getValves(slug);
       setFields(r.fields || {});
     } catch (err) { setError(err.message); }
   }
@@ -268,7 +267,7 @@ function ValvesPanel({ slug, auth, user }) {
   );
 }
 
-function TestConsole({ slug, auth }) {
+function TestConsole({ slug }) {
   const [actionId, setActionId] = useState("");
   const [selectedText, setSelectedText] = useState("");
   const [events, setEvents] = useState([]);
@@ -317,13 +316,13 @@ function TestConsole({ slug, auth }) {
   );
 }
 
-function RunsPanel({ slug, auth }) {
+function RunsPanel({ slug }) {
   const [runs, setRuns] = useState([]);
   const [error, setError] = useState(null);
 
   useEffect(() => {
     (async () => {
-      try { setRuns(await listRuns(slug, ...auth) || []); }
+      try { setRuns(await listRuns(slug) || []); }
       catch (err) { setError(err.message); }
     })();
   }, [slug]);
