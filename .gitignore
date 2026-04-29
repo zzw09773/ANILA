@@ -120,7 +120,6 @@ share/codeserver-sandbox/
 .observer.lock
 *.observer.lock
 
-ANILALM
 
 # Onyx upstream clone — handed off to the agent dev team for ongoing
 # maintenance. Their code, their repo. Kept on disk for local reference

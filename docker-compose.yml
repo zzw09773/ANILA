@@ -201,6 +201,20 @@ services:
       # url_guard；與 csp service 一致 propagate 兩個 opt-in。
       ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-}"
       ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-}"
+      # ── VLM image captioning (Sprint 8 X / Phase 4) ──────────────
+      # When ENABLE_IMAGE_CAPTIONS=true and VISION_URL is set, the
+      # worker calls the VLM per-image during ingest and replaces
+      # ``[[IMAGE:id]]`` placeholders with caption text BEFORE chunking
+      # — so charts/diagrams in PDFs become searchable instead of
+      # vanishing into [image] tokens. Endpoint goes through CSP's
+      # /v1 proxy so token usage is metered consistently with embeds.
+      ENABLE_IMAGE_CAPTIONS: "${ENABLE_IMAGE_CAPTIONS:-true}"
+      VISION_URL: "${VISION_URL:-http://csp:8000/v1}"
+      VISION_MODEL: "${VISION_MODEL:-gemma4}"
+      VISION_API_KEY: ${INTERNAL_PLATFORM_API_KEY:-sk-internal-worker-changeme}
+      VISION_VERIFY_SSL: "${VISION_VERIFY_SSL:-false}"
+      VISION_CONCURRENCY: "${VISION_CONCURRENCY:-4}"
+      VISION_TIMEOUT_SECONDS: "${VISION_TIMEOUT_SECONDS:-60}"
       PYTHONUNBUFFERED: "1"
     volumes:
       - ./share/uploads/ingestion:/var/anila/ingestion-uploads
@@ -269,6 +283,29 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+    restart: unless-stopped
+
+  # ── pptx-renderer (Node + LibreOffice for slide deck generation) ────────
+  # Sprint 8 X: Studio 「下載 .pptx」流程的執行端。
+  #
+  # 把 ANILALM/pptx-skill/ 包成獨立 service，CSP 後端透過
+  # http://pptx-renderer:7100/{render,screenshots} 呼叫。分容器的理由是把
+  # Node + LibreOffice 跟 Python CSP image 完全切開——CSP 純 Python，這個
+  # 容器負責 .pptx 的生成跟 vision QA 用的 PNG 截圖。
+  pptx-renderer:
+    build:
+      context: ANILALM/pptx-skill
+      dockerfile: Dockerfile
+    expose:
+      - "7100"
+    healthcheck:
+      # Use node's built-in http module — bookworm-slim doesn't ship
+      # curl/wget by default and we don't want to bloat the image.
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:7100/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
     restart: unless-stopped
 
   # ── ANILA LM (knowledge-base frontend, mounted at /anilalm/) ────────
