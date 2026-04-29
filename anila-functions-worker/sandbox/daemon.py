@@ -227,6 +227,55 @@ async def _send_event(writer: asyncio.StreamWriter, event: dict) -> None:
 # ── Bootstrap ───────────────────────────────────────────────────────────
 
 
+def _log_capability_probe() -> None:
+    """Log the daemon's identity + capability state at startup.
+
+    Lets ops verify the Sprint 2.5 prototype gate (spec §5.8) by
+    reading ``docker compose logs anila-functions-sandbox-exec`` —
+    the entrypoint's setpriv chain is the only place where ambient
+    caps are seeded, so any external probe via ``docker exec`` would
+    be a fresh process without those caps and would mislead.
+    """
+    import ctypes
+    import ctypes.util
+
+    libc = ctypes.CDLL(
+        ctypes.util.find_library("c") or "libc.so.6", use_errno=True
+    )
+    PR_CAP_AMBIENT = 47
+    PR_CAP_AMBIENT_IS_SET = 1
+    CAP_SETUID = 7
+    CAP_SETGID = 6
+
+    ambient_uid = libc.prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_IS_SET, CAP_SETUID, 0, 0)
+    ambient_gid = libc.prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_IS_SET, CAP_SETGID, 0, 0)
+    logger.info(
+        "[probe] uid=%s gid=%s groups=%s ambient_setuid=%s ambient_setgid=%s",
+        os.getuid(), os.getgid(), os.getgroups(),
+        ambient_uid, ambient_gid,
+    )
+
+    # Also probe the can-spawn-as-subproc invariant (test 3 in the
+    # prototype gate) so log output answers it directly.
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["python3", "-c", "import os; print(os.getuid())"],
+            user=SUBPROC_UID,
+            group=SUBPROC_GID,
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip() == str(SUBPROC_UID):
+            logger.info("[probe] spawn-as-subproc OK (uid=%s)", SUBPROC_UID)
+        else:
+            logger.warning(
+                "[probe] spawn-as-subproc FAILED rc=%s out=%r err=%r",
+                result.returncode, result.stdout.strip(), result.stderr.strip(),
+            )
+    except Exception as exc:
+        logger.warning("[probe] spawn-as-subproc CRASH: %s", exc)
+
+
 async def _serve() -> None:
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
     if SOCKET_PATH.exists():
@@ -250,6 +299,7 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    _log_capability_probe()
     asyncio.run(_serve())
 
 

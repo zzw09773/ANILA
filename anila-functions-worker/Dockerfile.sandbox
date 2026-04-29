@@ -44,6 +44,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY sandbox/ /app/sandbox/
 COPY shared/ /app/shared/
+# tests/ is included so the Sprint 2.5 prototype gate + UID isolation
+# tests can run via `docker compose exec anila-functions-sandbox-* pytest`.
+# These are deploy-time validation only (not invoked at runtime).
+COPY tests/ /app/tests/
 COPY sandbox-entrypoint.sh /usr/local/bin/sandbox-entrypoint.sh
 RUN chmod 0755 /usr/local/bin/sandbox-entrypoint.sh
 
