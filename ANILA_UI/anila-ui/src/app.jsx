@@ -271,13 +271,27 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   const onRunFunction = useCallback(async (fnAction, msg, conversationId) => {
     try {
       const csrf = readCsrfCookie();
+      // mapServerMessage stores the server-side int as `dbId`, with
+      // `id` being the prefixed `srv-<n>` string used as React key.
+      // /run's Pydantic schema expects an int (or None), so we MUST
+      // send dbId — sending the prefixed `id` blows up with 422.
+      const messageId = msg?.dbId ?? null;
+      if (msg && messageId == null) {
+        // Streaming assistant turn that hasn't been persisted yet —
+        // refuse rather than send an unparseable id.
+        setFunctionToast({
+          kind: "error",
+          text: "Wait for the assistant to finish before triggering Functions",
+        });
+        return;
+      }
       const resp = await runFunctionStream(
         fnAction.function_slug,
         {
           action_id: fnAction.action_id,
           context: {
             conversation_id: conversationId,
-            message_id: msg?.id,
+            message_id: messageId,
             selected_text: window.getSelection()?.toString() || null,
           },
           test_mode: false,
