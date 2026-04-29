@@ -23,6 +23,14 @@ http_access deny all
 # Cache disabled — we're a forward proxy, not a cache
 cache deny all
 
-# Logs to stderr so docker logs sees them
-access_log stderr
-cache_log stderr
+# Squid 6 refuses to run as root and refuses to log to /dev/stderr
+# after dropping to `proxy` (the dev fds are root-owned and the
+# dropped process can't reopen them). Use the proxy-owned log dir
+# the base image already provisions. To inspect logs:
+#
+#     docker compose exec anila-functions-egress tail -f /var/log/squid/access.log
+#
+# `docker logs anila-functions-egress` will only show the entrypoint
+# banner and squid's startup messages — sufficient to see crashes.
+access_log /var/log/squid/access.log combined
+cache_log /var/log/squid/cache.log

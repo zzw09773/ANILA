@@ -36,8 +36,14 @@ chmod 0770 "$JOBS_DIR"
 chown sandbox:anila-jobs "$JOBS_DIR"
 
 # Hand off to the daemon as `sandbox` user with ambient SETUID/SETGID.
-# CHOWN intentionally NOT in --inh-caps / --ambient-caps so daemon can't
-# re-chown anything.
+# CHOWN/FOWNER intentionally NOT in --inh-caps / --ambient-caps so the
+# daemon can't re-chown / re-permission anything (those caps were only
+# needed by this entrypoint).
+#
+# Run via `python -m sandbox.daemon` with PYTHONPATH=/app so the
+# package import (`from sandbox.ambient ...`) resolves; if we just say
+# `python /app/sandbox/daemon.py`, Python prepends /app/sandbox/ to
+# sys.path which doesn't help the package-style imports.
 exec setpriv \
     --reuid=sandbox \
     --regid=sandbox \
@@ -45,4 +51,4 @@ exec setpriv \
     --no-new-privs \
     --inh-caps=+setuid,+setgid \
     --ambient-caps=+setuid,+setgid \
-    -- python -u /app/sandbox/daemon.py
+    -- env PYTHONPATH=/app python -u -m sandbox.daemon

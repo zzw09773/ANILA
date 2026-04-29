@@ -538,7 +538,13 @@ services:
     # drops to sandbox(65533) with ambient SETUID/SETGID before exec'ing
     # the daemon — see sandbox-entrypoint.sh.
     cap_drop: [ALL]
-    cap_add: [SETUID, SETGID, CHOWN]
+    # CHOWN + FOWNER for entrypoint init (chown + chmod the volume even
+    # when previous-run state already chowned it away from root).
+    # SETUID + SETGID for daemon's Popen(user=...) drop-to-subprocess.
+    # All four are dropped by setpriv before exec'ing the daemon (none
+    # passed to --inh-caps / --ambient-caps), so daemon doesn't keep
+    # any of them at runtime.
+    cap_add: [SETUID, SETGID, CHOWN, FOWNER]
     security_opt:
       - "no-new-privileges:true"
     read_only: true
@@ -571,7 +577,13 @@ services:
       dockerfile: Dockerfile.sandbox
     container_name: anila-functions-sandbox-extract
     cap_drop: [ALL]
-    cap_add: [SETUID, SETGID, CHOWN]
+    # CHOWN + FOWNER for entrypoint init (chown + chmod the volume even
+    # when previous-run state already chowned it away from root).
+    # SETUID + SETGID for daemon's Popen(user=...) drop-to-subprocess.
+    # All four are dropped by setpriv before exec'ing the daemon (none
+    # passed to --inh-caps / --ambient-caps), so daemon doesn't keep
+    # any of them at runtime.
+    cap_add: [SETUID, SETGID, CHOWN, FOWNER]
     security_opt:
       - "no-new-privileges:true"
     read_only: true
