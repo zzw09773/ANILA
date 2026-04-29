@@ -1,0 +1,17 @@
+# anila-functions-worker — runtime dependencies for both
+# `anila-functions-worker-api` (trusted gate) and the two sandbox
+# images (`sandbox-exec`, `sandbox-extract`).
+
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+httpx==0.28.1
+pydantic==2.10.4
+pydantic-settings==2.7.1
+python-dateutil==2.9.0
+cryptography==44.0.0
+
+# Test-time only — kept in the same file so the image build stays
+# single-source for both runtime and CI/test installs. If image size
+# becomes an issue, split into requirements-dev.txt.
+pytest==8.3.4
+pytest-asyncio==0.25.2
