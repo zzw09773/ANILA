@@ -28,7 +28,7 @@
 - **Live Test Console**：dev 在 UI 上直接跑、看 events stream
 - **Audit log**：每次 Action 觸發保留 360 天（含完整 events_json，redact 後）
 - **RBAC**：`developer` 寫；`developer`+`admin` 看 code；所有 role 看 metadata 並用 enabled function；`admin` 可 disable / 設 admin Valves
-- **Worker 兩層隔離 + volume IPC + 容器內 UID 三層**：trusted **`anila-functions-worker-api`**（接 CSP，hardened）+ untrusted **`anila-functions-sandbox-exec`** / **`anila-functions-sandbox-extract`**（exec user code）；**worker-api 跟 sandbox 透過 shared docker volume + Unix socket IPC，不共享 network namespace**；sandbox 容器內**daemon 跟 user subprocess 跑不同 UID**（daemon `sandbox` uid 65533、subprocess `subproc` uid 65534），daemon 在 `anila-jobs` group、subprocess 不在；socket / job 目錄 mode 限 daemon owner+group → user code 無法 connect、無法讀 job spec / 偷其他 run 的 valves；sandbox 加 **`cap_drop: ALL` + `cap_add: [SETUID, SETGID]`**（daemon spawn subprocess 時降權需要）、**read-only rootfs + tmpfs `/tmp`**、**egress 預設 deny + outbound proxy allowlist**（exec only；extract 完全無 egress）、**docker cgroup `mem_limit` + `pids_limit`**、30s timeout（extract 3s）；sandbox 容器**不在** `anila-internal`、**完全不持有任何 ANILA secret**
+- **Worker 兩層隔離 + volume IPC + 容器內 UID 三層**：trusted **`anila-functions-worker-api`**（接 CSP，hardened）+ untrusted **`anila-functions-sandbox-exec`** / **`anila-functions-sandbox-extract`**（exec user code）；**worker-api 跟 sandbox 透過 shared docker volume + Unix socket IPC，不共享 network namespace**；sandbox 容器內**daemon 跟 user subprocess 跑不同 UID**（daemon `sandbox` uid 65533、subprocess `subproc` uid 65534），daemon 在 `anila-jobs` group、subprocess 不在；socket / job 目錄 mode 限 daemon owner+group → user code 無法 connect、無法讀 job spec / 偷其他 run 的 valves；sandbox 容器以 `user:0` 啟動 entrypoint（chown volume + setpriv 降權帶 ambient SETUID/SETGID）、**`cap_drop: ALL` + `cap_add: [SETUID, SETGID, CHOWN]`**（CHOWN 給 entrypoint 初始化 volume；SETUID/SETGID 給 daemon 降權）、**read-only rootfs + tmpfs `/tmp`**、**egress 預設 deny + outbound proxy allowlist**（exec only；extract 完全無 egress）、**docker cgroup `mem_limit` + `pids_limit`**、30s timeout（extract 3s）；sandbox 容器**不在** `anila-internal`、**完全不持有任何 ANILA secret**
 - **Event types**：`status`、**`host_command`（白名單動詞集；無 raw JS eval）**、`message`、`citation`、`error`（+ runtime sentinel `__done__`）
 - **Worker schema extraction**：CSP 不 import / exec user code，valves & actions schema 解析委派 worker `/extract-meta` endpoint
 - **/run 強制 ownership 檢查**：複用 CSP `conversation_service` gate（conversation/message access、message role=assistant、classified gate）
@@ -1588,9 +1588,9 @@ CSP 收到 worker SSE chunk 後 → push 到 SSE-to-browser 之前 → 寫 audit
 
 | 決定 | 選項 | 結果 |
 |---|---|---|
-| 容器啟動 user | `user: 65533` 直接（cap_add 不會 effective）/ `user: 0` + entrypoint 降權 / file capability wrapper | **`user: 0` + entrypoint 用 `setpriv` 降權帶 ambient SETUID/SETGID**；fallback 是 file capability wrapper binary |
+| 容器啟動 user | `user: 65533` 直接（cap_add 不會 effective）/ `user: 0` + entrypoint 降權 / file capability wrapper | **`user: 0` + entrypoint 用 `setpriv` 降權帶 ambient SETUID/SETGID**；fallback ~~file capability wrapper binary~~ → **後續 round-8 修正為 spawn-helper**（file cap 跟 `no-new-privileges:true` 衝突） |
 | Volume chown 機制 | daemon 自己 chown（沒 CHOWN cap）/ entrypoint 短暫 root chown / init container | **entrypoint 短暫 root**：`cap_add:[CHOWN]` 給 entrypoint 用，setpriv 降權後 daemon 不再持有 CHOWN |
-| Capability 落地驗證時機 | 直接做 implementation / 加 prototype gate | **加 sprint 2.5 prototype gate**：跑 6 個 smoke test 驗證 setpriv + ambient cap 路徑；失敗切 file cap fallback |
+| Capability 落地驗證時機 | 直接做 implementation / 加 prototype gate | **加 sprint 2.5 prototype gate**：跑 6 個 smoke test 驗證 setpriv + ambient cap 路徑；失敗切 ~~file cap fallback~~ **spawn-helper fallback**（round-8 更新） |
 | Subprocess ambient cap | 繼承 daemon ambient（不安全）/ daemon spawn 前 clear ambient | **daemon clear ambient**：用 `prctl(PR_CAP_AMBIENT_CLEAR_ALL)` 在 `preexec_fn` 裡執行；確保 subprocess 沒 SETUID/SETGID |
 | Disk 暫存檔案 | 留 `<run_id>.*` cleanup 描述 / 完全清乾淨 | **完全清乾淨**：v1 純 socket-stream、不寫 disk；spec 對齊 |
 | Socket owner/mode 描述 | `worker-api:sandbox` / `sandbox:anila-jobs` | **`sandbox:anila-jobs`**（worker-api 透過 supplementary group 進）：spec 全文統一 |
