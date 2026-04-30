@@ -55,4 +55,9 @@ See `examples/` in the `anila-core` repo or [`AgenticRAG/`](../../../../../../Ag
 | **A RAG agent** (搜文件 + 引用來源) | [`AgenticRAG/`](../../../../../../AgenticRAG/) — official template, 5 min to fork |
 | **A non-RAG agent** (workflow / external API / custom logic) | **This template** (`anila-core init my-agent`) — minimal starter |
 
-Both register to myCSPPlatform the same way (see `anila-agent.yaml` + `CSP_SERVICE_TOKEN`).
+Both register to myCSPPlatform the same way: edit `anila.yaml` (manifest) and run
+`anila-core register` (which logs in with username/password and posts to
+`/api/agents/register` with a JWT — registration itself does **not** use
+`CSP_SERVICE_TOKEN`). At runtime the agent then verifies inbound CSP traffic
+via `CSP_SERVICE_TOKEN` (currently a global env shared with myCSPPlatform;
+per-agent issuance UI is planned).

@@ -133,15 +133,19 @@ CSP 驗過使用者之後，會注入下列 headers 再轉發給 agent：
 
 | Header | 內容 | 用途 |
 |---|---|---|
-| `X-CSP-Service-Token` | agent 註冊時拿到的 shared secret | agent 用 middleware 驗證來源 |
-| `X-ANILA-User-Id`     | CSP 內部 user id | 給 agent 做 per-user scoping（本 template 預設不用）|
-| `X-ANILA-User-Email`  | 使用者 email | audit log |
-| `X-ANILA-User-Groups` | 逗號分隔的 group 名 | RBAC / 企業內部權限過濾 |
+| `X-CSP-Service-Token` | s2s shared secret（目前共用全域 env，per-agent 規劃中） | agent 用 middleware 驗證來源 |
+| `X-ANILA-User-Id`     | CSP 內部 user id | 預期用途：per-user scoping |
+| `X-ANILA-User-Email`  | 使用者 email | 預期用途：audit log |
+| `X-ANILA-User-Groups` | 逗號分隔的 group 名 | 預期用途：RBAC / 企業內部權限過濾 |
 
-要在本 agent 用 user-scoped 檢索（例如不同部門看不同文件）：
+> ⚠️ **本 template 並沒有實作 X-ANILA-User-* 的讀取邏輯** —— `api.py` 與
+> `src/agentic_rag/api/server.py` 都沒有從 request headers 取出這些欄位。
+> 上游 `myCSPPlatform/backend/app/services/proxy_service.py` 確實會注入
+> 這些 header；要做 per-user scoping / RBAC 必須自行加 handler 邏輯，
+> 例如：
 
 ```python
-# src/agentic_rag/api/server.py 內
+# src/agentic_rag/api/server.py 內（自行實作）
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     user_id = request.headers.get("X-ANILA-User-Id", "default")
@@ -151,7 +155,8 @@ async def chat_completions(request: Request):
 ```
 
 這些 headers **只有 CSP 能設定** — 直接對 agent 打的外部流量會先被
-`CspServiceTokenMiddleware` 擋下，所以信任鏈成立。
+`CspServiceTokenMiddleware` 擋下（前提是 `CSP_SERVICE_TOKEN` 有設），
+所以信任鏈成立。
 
 ---
 
@@ -171,7 +176,7 @@ LLM_API_KEY=...
 啟動後 log 會有：
 
 ```
-INFO CSP middleware installed from agentic_rag.api.middleware.csp_auth (dev_mode=True)
+INFO CSP middleware installed from local fallback agentic_rag.api.middleware.csp_auth (dev_mode=True)
 INFO CSP middleware: loaded_from=agentic_rag.api.middleware.csp_auth, enforced=False, csp_proxy_mode=False
 ```
 

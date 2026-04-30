@@ -184,7 +184,7 @@ admin ── POST /api/users/{id}/approve ──▶ is_approved=true
 ### 3. Agent 註冊 → 核准 → 上線
 
 ```
-developer 於 UI「Developer」分頁 ── POST /api/agents (register)
+developer 於 UI「Agent Console」（路由：/developer/agents） ── POST /api/agents (register)
                                    ↓  endpoint_url / base_model / requires_encryption
                                    ↓  status=pending，audit_log
 
@@ -231,9 +231,9 @@ vim .env
 
 | 服務 | 網址 |
 |------|------|
-| 管理平台 | http://localhost |
-| API 文件 (Swagger) | http://localhost/docs |
-| 健康檢查 | http://localhost/health |
+| 管理平台 | https://localhost（HTTP 80 會被 nginx 301 → HTTPS 443） |
+| API 文件 (Swagger) | https://localhost/docs |
+| 健康檢查 | https://localhost/health |
 
 預設管理員：`admin` / `changeme`（**務必於 `.env` 修改 `ADMIN_PASSWORD`**）
 

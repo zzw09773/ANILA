@@ -33,15 +33,18 @@ sequenceDiagram
     LLM-->>R: tool_call or direct answer
 
     alt MainLLM 說「分派到 agent X」
-        R->>A: 轉發 request (CSP_SERVICE_TOKEN s2s)
+        R->>CSP: POST /v1/chat/completions (Bearer caller_api_key, model=agent_id)
+        Note over CSP,A: CSP proxy 加上 X-CSP-Service-Token<br/>後 forward 到 agent endpoint
+        CSP->>A: forward 並注入 s2s header
         Note over R,A: 若 agent.requires_encryption<br/>meta.classified=true
-        A-->>R: SSE stream
+        A-->>CSP: SSE stream
+        CSP-->>R: SSE stream
         R-->>C: SSE stream + meta.classified?
     else 直接回答（無分派）
         R-->>C: SSE stream forward MainLLM
     end
 
-    Note over R: Agent outage（timeout / 5xx / connect）<br/>不 500 給 client；meta 標 agent_error
+    Note over R: Agent outage（timeout / 5xx / connect）<br/>不 500 給 client；trace step kind="error"、回友善訊息
 ```
 
 <details>
@@ -140,9 +143,12 @@ docker run -p 9000:9000 \
 | 變數 | 說明 | 預設 |
 |---|---|---|
 | `CSP_BASE_URL` | myCSPPlatform 基底 URL（容器內網址） | **必填** |
-| `MODEL` | 主 LLM 的模型名稱（必須已註冊在 CSP） | `gpt-4o-mini` |
+| `CSP_SERVICE_TOKEN` | bootstrap 用 — Router 在 startup / 每 60 秒呼叫 CSP `/api/models/router-primary` 拿主 LLM 名稱時帶 `X-CSP-Service-Token`（main.py:64） | **必填** |
+| `PRIMARY_TTL_SECONDS` | primary model name 的 cache TTL（秒） | `60` |
 
-> Router **不**需要自己的 API Key：它用 caller（UI / OpenAI SDK）的 Bearer API Key 回打 CSP data plane。這代表 caller 看得到的 agent 跟 Router 分派得出去的 agent 完全同步於該 API Key 的 allowed_models。
+> Router 對 caller / agent 流量**不**需要自己的 API Key：它用 caller（UI / OpenAI SDK）的 Bearer API Key 回打 CSP data plane（`router_server.py:796, 918, 1004`）。這代表 caller 看得到的 agent 跟 Router 分派得出去的 agent 完全同步於該 API Key 的 allowed_models。
+>
+> 主 LLM 模型名稱**不**透過 env 設定 —— 由 admin 在 CSP UI Models 頁挑選 primary，Router 啟動時透過 `/api/models/router-primary` 抓並週期性 refresh。沒有 `MODEL` env var。
 
 ---
 
@@ -184,15 +190,19 @@ curl -N -X POST http://localhost:9000/v1/chat/completions \
 
 ```
 anila-core-router/
-├── main.py        # 3 行：app = create_router_app()
+├── main.py        # ~140 行：bootstrap primary LLM from CSP +
+│                  # _gate_on_primary middleware + /router/primary-status
 ├── Dockerfile     # Multi-stage；build context 需為 repo 根
 └── README.md      # 本檔
 
 # 實際實作在 anila-core：
 anila-core/src/anila_core/api/
 ├── router_server.py              # create_router_app() + 分派邏輯
-├── middleware/auth.py            # CSP_SERVICE_TOKEN 驗證
 └── ...
+
+# 注意：Router 本身**不**掛 CspServiceTokenMiddleware；agent 端的
+# X-CSP-Service-Token 驗證由 CSP proxy（myCSPPlatform/.../proxy_service.py）
+# 注入後在 agent 端的 anila_core.api.middleware.auth 驗證。
 
 anila-core/src/anila_core/registry/
 └── remote_agent_manifest.py      # RemoteAgentRegistry（CSP /v1/agents 快取）
@@ -201,8 +211,12 @@ anila-core/src/anila_core/tools/
 └── dispatch_tool.py              # agent 分派（含 timeout / 5xx 降級）
 ```
 
-為什麼 `main.py` 只有 3 行？因為整個「router mode」其實就是一個 app factory：
-`create_router_app()` 位於 `anila_core/api/router_server.py`，負責掛 middleware、健康探針、以及 `/v1/chat/completions`。Runtime foundation 與部署入口刻意分離，之後 SDK 會進一步 generalize 成 `build_app(mode="router")`（見 `anila_plan.md` Wave E）。
+`main.py` 並非極小入口 —— 除了 `app = create_router_app()` 之外還有 primary
+LLM bootstrap（`_refresh_primary` / `_ensure_primary` / cron-style 週期 refresh）、
+gating middleware (`_gate_on_primary`)，以及 debug endpoint
+`/router/primary-status`。`create_router_app()` 位於 `anila_core/api/router_server.py`，
+負責掛核心 middleware、健康探針、以及 `/v1/chat/completions`；之後 SDK 會
+進一步 generalize 成 `build_app(mode="router")`（見 `anila_plan.md` Wave E）。
 
 ---
 
@@ -210,10 +224,10 @@ anila-core/src/anila_core/tools/
 
 | 情境 | 行為 |
 |---|---|
-| Agent timeout / 5xx | 不把 500 丟給 caller；記 trace step、SSE meta 標 `agent_error`、回友善訊息 |
+| Agent timeout / 5xx | 不把 500 丟給 caller；記 trace step（`kind="error"`）、回友善訊息給使用者 |
 | Agent connect error | 同上；Registry 下次 refresh 會把該 agent 標為 unavailable |
 | CSP `/v1/agents` 抓失敗 | `RemoteAgentRegistry` 紀錄 `last_refresh_error`；分派時 fallback 為 "Router 直接回答" |
-| Middleware import 失敗 | **Fail-fast**（raise），**絕不** silent fallback 成 no-op |
+| Primary LLM 未設定 | `_gate_on_primary` middleware 直接回 503，不靜默呼叫缺失的 model |
 
 ---
 

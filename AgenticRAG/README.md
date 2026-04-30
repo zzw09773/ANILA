@@ -608,7 +608,7 @@ curl -H "Authorization: Bearer <your-api-key>" http://localhost:8000/health
 | `API_KEY` | （空） | 留空不啟用驗證 |
 | `API_DEV_MODE` | `false` | `true` 則跳過驗證 |
 | `UPLOAD_DIR` | `/tmp/anila_uploads` | 上傳暫存目錄 |
-| `CSP_SERVICE_TOKEN` | （空） | 由 myCSPPlatform 發給 agent 的 s2s token；留空 → middleware 跳過檢查 |
+| `CSP_SERVICE_TOKEN` | （空） | s2s token；目前是與 myCSPPlatform `CSP_SERVICE_TOKEN` 共用的全域 secret（運維手動同步），per-agent issuance 規劃中。留空 → middleware 跳過檢查（dev mode）|
 | `CSP_BASE_URL` | （空） | LLM / embedding 改走 CSP proxy 時的 base URL |
 | `CSP_API_KEY` | （空） | CSP proxy 呼叫時用的 bearer token |
 
@@ -621,9 +621,11 @@ curl -H "Authorization: Bearer <your-api-key>" http://localhost:8000/health
    `endpoint_url`、`description_for_router` 為你 agent 的身份。
 2. **把 YAML 登錄到 CSP** — 三種方式任選（啟動時 env 自動註冊 /
    Developer UI / POST `/agents`），詳見 [`docs/CSP_INTEGRATION.md`](./docs/CSP_INTEGRATION.md)。
-3. **在 agent 的 `.env` 設 `CSP_SERVICE_TOKEN`** — 從 CSP UI 的 Agent
-   detail 頁複製，填到 `.env` 後重啟。middleware 會驗 `X-CSP-Service-Token`
-   header；留空則進入本機 dev mode。
+3. **在 agent 的 `.env` 設 `CSP_SERVICE_TOKEN`** — 目前的做法是運維把
+   一個共用 secret 同時設在 myCSPPlatform `CSP_SERVICE_TOKEN` 與每個 agent
+   的 `.env`（兩端必須同值）。Per-agent issuance UI 規劃中（屆時 Create Agent
+   會自動產生並只回明文一次）。middleware 驗 `X-CSP-Service-Token` header；
+   留空則進入本機 dev mode。
 
 Middleware 載入順序：`anila_core.api.middleware.auth` → 本 package 的
 `agentic_rag.api.middleware.csp_auth` fallback。在 ANILA 平台內會自動使用

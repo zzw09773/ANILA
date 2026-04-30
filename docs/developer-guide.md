@@ -87,7 +87,7 @@ Router 只會碰你的 agent 這幾條路徑，其他都可以自己加。
       "id":       "rag/google/gemma4",
       "object":   "model",
       "created":  1735689600,
-      "owned_by": "anila-core"
+      "owned_by": "agentic-rag"
     }
   ]
 }
@@ -169,11 +169,13 @@ data: [DONE]
 | `description_for_router` | ✅（≥24 字元） | `處理員工手冊、請假規定、薪酬結構等 HR 法規查詢。` | 自然語言；Router 用這段做 agent 選擇 |
 | `api_version` | ❌（預設 `v1`） | `v1` | 目前 Router 只認得 `v1` |
 
-後端 schema（`myCSPPlatform/backend/app/api/agents.py:43`）還接受兩個可選欄位，UI 目前沒露出、但 API 有支援：
+後端 schema（`myCSPPlatform/backend/app/api/agents.py:43`）還收下列欄位：
 
-- `capabilities`: JSON dict，自由 metadata（能力標籤、tag、可處理領域…）。
-- `input_schema`: JSON Schema，描述你的 agent 期待的輸入結構。
-- `base_model_id`: 整數，指向 CSP Model Registry 中已註冊的底層 LLM。
+- `base_model_id`: ✅ **必填**。整數，指向 CSP Model Registry 中已註冊的底層 LLM（`Field(..., description="必須指定底層模型 ID")`）。
+- `capabilities`: ❌ 可選。JSON dict，自由 metadata（能力標籤、tag、可處理領域…）。
+- `input_schema`: ❌ 可選。JSON Schema，描述你的 agent 期待的輸入結構。
+
+> ⚠️ **per-agent service token / api_key（規劃中）**：未來 Create 流程會額外回傳 agent 專屬的 `service_token`（inbound 驗證用）與 `api_key`（agent 呼 LLM/embedding 走 CSP proxy 用）。目前這兩把仍是手動共享的全域 secret。
 
 送出後 agent 進入 `approval_status = "pending"`，`health_status = "unknown"`。
 
@@ -193,7 +195,7 @@ data: [DONE]
 
 | 狀況 | 怎麼修 |
 |---|---|
-| `Endpoint 必須是 http 或 https URL` | 前端 L486 檢查；補上 scheme。 |
+| `Endpoint 必須是 http 或 https URL` | 前端 `DeveloperAgentsView.vue` 內驗證；補上 scheme。 |
 | `Router 描述至少需要 24 個字元` | 寫清楚這個 agent 處理什麼領域、什麼格式的問題。 |
 | 註冊成功但 health 一直 `unhealthy` | CSP backend 連不到你的 host/port；檢查防火牆、Docker 網段、`endpoint_url` 是否是 CSP 能解析到的位址（不是 `localhost`）。 |
 | 核准後 Router 叫不到 | `X-CSP-Service-Token` 驗證失敗；`.env` 的 `CSP_SERVICE_TOKEN` 要跟 CSP 發的一致；留空則只能跑 dev mode。 |
