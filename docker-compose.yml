@@ -75,13 +75,6 @@ services:
       # 兩個都保持 unset。
       ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-}"
       ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-}"
-      # ANILA Functions v1: CSP needs to call worker-api (with shared
-      # secret in X-Functions-Api-Secret header) and decrypt admin
-      # Valves with the AES-256-GCM key.
-      ANILA_FUNCTIONS_WORKER_API_URL: "${ANILA_FUNCTIONS_WORKER_API_URL:-http://anila-functions-worker-api:8000}"
-      ANILA_FUNCTIONS_API_SECRET: "${ANILA_FUNCTIONS_API_SECRET:-}"
-      ANILA_FUNCTIONS_VALVES_KEY: "${ANILA_FUNCTIONS_VALVES_KEY:-}"
-      ANILA_FUNCTIONS_LINK_OPEN_ALLOWLIST: "${ANILA_FUNCTIONS_LINK_OPEN_ALLOWLIST:-}"
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "60"
       # Service-to-service credential: CSP injects this into downstream agent calls.
@@ -502,152 +495,9 @@ services:
       start_period: 600s
     restart: unless-stopped
 
-  # ── ANILA Functions v1 ────────────────────────────────────────────────
-  # 4 services: worker-api (trusted gate, on anila-net so csp can reach
-  # it) + sandbox-exec (untrusted, on anila-functions-net only) +
-  # sandbox-extract (untrusted, on anila-functions-extract-net only) +
-  # egress squid sidecar (bridges anila-net ↔ anila-functions-net).
-  #
-  # The Sprint 2.5 prototype gate must validate the setpriv + ambient
-  # cap chain before this stack ships to dogfood.
-
-  anila-functions-worker-api:
-    build:
-      context: ./anila-functions-worker
-      dockerfile: Dockerfile.worker_api
-    container_name: anila-functions-worker-api
-    # Use the user name from the Dockerfile (USER web) so supplementary
-    # groups (anila-jobs, gid 65530) resolve from /etc/group. Numeric
-    # `user: "65532:65532"` skips that lookup and the process starts
-    # with only its primary gid — IPC socket access (mode 0660 owner
-    # sandbox:anila-jobs) then breaks for worker-api.
-    group_add:
-      - "65530"  # anila-jobs (IPC volume access)
-    read_only: true
-    tmpfs:
-      - "/tmp:size=16m"
-    cap_drop: [ALL]
-    security_opt:
-      - "no-new-privileges:true"
-    mem_limit: 128m
-    pids_limit: 64
-    networks:
-      - default
-    volumes:
-      - anila-functions-jobs-exec:/jobs-exec
-      - anila-functions-jobs-extract:/jobs-extract
-    environment:
-      ANILA_FUNCTIONS_API_SECRET: ${ANILA_FUNCTIONS_API_SECRET}
-      JOBS_EXEC_DIR: /jobs-exec
-      JOBS_EXTRACT_DIR: /jobs-extract
-    restart: unless-stopped
-
-  anila-functions-sandbox-exec:
-    build:
-      context: ./anila-functions-worker
-      dockerfile: Dockerfile.sandbox
-    container_name: anila-functions-sandbox-exec
-    # USER 0 in Dockerfile so entrypoint can chown the volume; setpriv
-    # drops to sandbox(65533) with ambient SETUID/SETGID before exec'ing
-    # the daemon — see sandbox-entrypoint.sh.
-    cap_drop: [ALL]
-    # CHOWN + FOWNER for entrypoint init (chown + chmod the volume even
-    # when previous-run state already chowned it away from root).
-    # SETUID + SETGID for daemon's Popen(user=...) drop-to-subprocess.
-    # All four are dropped by setpriv before exec'ing the daemon (none
-    # passed to --inh-caps / --ambient-caps), so daemon doesn't keep
-    # any of them at runtime.
-    cap_add: [SETUID, SETGID, CHOWN, FOWNER]
-    security_opt:
-      - "no-new-privileges:true"
-    read_only: true
-    tmpfs:
-      - "/tmp:size=64m,mode=1777"
-    mem_limit: 256m
-    pids_limit: 32
-    networks:
-      - anila-functions-net
-    volumes:
-      - anila-functions-jobs-exec:/jobs-exec
-    environment:
-      JOBS_DIR: /jobs-exec
-      DAEMON_UID: 65533
-      DAEMON_GID: 65533
-      DAEMON_GROUPS: anila-jobs
-      SUBPROC_UID: 65534
-      SUBPROC_GID: 65534
-      MAX_TIMEOUT: 30
-      MAX_CONCURRENT: 8
-      HTTP_PROXY: http://anila-functions-egress:3128
-      HTTPS_PROXY: http://anila-functions-egress:3128
-    depends_on:
-      - anila-functions-egress
-    restart: unless-stopped
-
-  anila-functions-sandbox-extract:
-    build:
-      context: ./anila-functions-worker
-      dockerfile: Dockerfile.sandbox
-    container_name: anila-functions-sandbox-extract
-    cap_drop: [ALL]
-    # CHOWN + FOWNER for entrypoint init (chown + chmod the volume even
-    # when previous-run state already chowned it away from root).
-    # SETUID + SETGID for daemon's Popen(user=...) drop-to-subprocess.
-    # All four are dropped by setpriv before exec'ing the daemon (none
-    # passed to --inh-caps / --ambient-caps), so daemon doesn't keep
-    # any of them at runtime.
-    cap_add: [SETUID, SETGID, CHOWN, FOWNER]
-    security_opt:
-      - "no-new-privileges:true"
-    read_only: true
-    tmpfs:
-      - "/tmp:size=16m,mode=1777"
-    mem_limit: 64m
-    pids_limit: 16
-    # extract-net is fully isolated; no egress proxy here, so even
-    # module top-level side effects in user code can't exfiltrate.
-    networks:
-      - anila-functions-extract-net
-    volumes:
-      - anila-functions-jobs-extract:/jobs-extract
-    environment:
-      JOBS_DIR: /jobs-extract
-      DAEMON_UID: 65533
-      DAEMON_GID: 65533
-      DAEMON_GROUPS: anila-jobs
-      SUBPROC_UID: 65534
-      SUBPROC_GID: 65534
-      MAX_TIMEOUT: 3
-      MAX_CONCURRENT: 4
-      MAX_STDOUT_KB: 16
-    restart: unless-stopped
-
-  anila-functions-egress:
-    build:
-      context: ./anila-functions-worker
-      dockerfile: Dockerfile.egress
-    container_name: anila-functions-egress
-    networks:
-      - default
-      - anila-functions-net
-    environment:
-      ANILA_FUNCTIONS_EGRESS_ALLOWLIST: ${ANILA_FUNCTIONS_EGRESS_ALLOWLIST:-}
-    restart: unless-stopped
-
 networks:
   default:
     name: anila-net
-  # ── ANILA Functions v1 networks ─────────────────────────────────────
-  # `internal: true` means no NAT bridge to docker0, no default gateway
-  # outbound. Containers on these nets can ONLY reach other containers
-  # on the same net. This is the structural egress control — see spec
-  # §5.7. Worker-api stays on default `anila-net` so CSP can reach it;
-  # sandbox containers are deliberately not on `anila-net` so user
-  # code can't reach CSP / DB / router / anything.
-  anila-functions-net:
-    internal: true
-  anila-functions-extract-net:
-    internal: true
 
 volumes:
   csp-pgdata:
@@ -657,10 +507,3 @@ volumes:
   gitlab_config:
   gitlab_logs:
   gitlab_data:
-  # ── ANILA Functions v1 IPC volumes ──────────────────────────────────
-  # Shared between worker-api (mounts both) and the corresponding
-  # sandbox container (mounts only its own). Hosts a Unix-domain
-  # socket file plus per-run scratch space (none in v1 — pure socket
-  # IPC, see spec §5.8 / decision log round-6).
-  anila-functions-jobs-exec:
-  anila-functions-jobs-extract:
