@@ -70,6 +70,11 @@ LAYOUT_KINDS: tuple[str, ...] = (
     "quote",
     "two_column",
     "icon_rows",
+    # Phase 5: layout that puts a real image (extracted from a source
+    # PDF / docx) on one half of the slide. Requires Slide.image_ref to
+    # point at an ingestion_images row; renderer falls back to
+    # `standard` if image_ref is missing or unresolvable.
+    "image_focus",
 )
 
 
@@ -143,6 +148,13 @@ class Slide(BaseModel):
     quote: Quote | None = None
     columns: list[Column] | None = Field(default=None, max_length=3)
     icon_rows: list[IconRow] | None = Field(default=None, max_length=6)
+    # Phase 5: opaque ID into ingestion_images that the LLM picks from
+    # the "可用圖" prompt list. The renderer-side path resolves it to
+    # actual image bytes; if unresolvable we fall back to `standard`.
+    # Validation is intentionally lax — we only check max_length so
+    # malformed values don't crash, the renderer's `if image_data` guard
+    # is the real safety net.
+    image_ref: str | None = Field(default=None, max_length=64)
 
     @field_validator("title", "speaker_notes")
     @classmethod

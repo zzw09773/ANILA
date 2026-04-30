@@ -54,6 +54,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import re
 from typing import Any
 
@@ -99,9 +100,24 @@ logger = logging.getLogger(__name__)
 
 # Retrieval depth for slide deck generation. Higher than chat (top-5) because
 # Studio synthesises across the whole deck, not a single Q&A turn.
-STUDIO_TOP_K = 12
+# How many image hits to surface alongside the chunks. Pulling fewer
+# than chunks because (a) we have ~10× fewer images than chunks per
+# document, (b) the LLM only picks 1-2 per deck, (c) prompt budget
+# tightens fast when each image carries a 200-char caption.
+STUDIO_IMAGE_TOP_K = 6
+STUDIO_IMAGE_MIN_SCORE = 0.25
+
+
+# Retrieval depth was originally 12 / 800 chars / total ~9.6 KB context.
+# Bumped after the carbon-thesis case where a 74-page paper produced
+# 100-char/slide bullets — symptom of the LLM not having enough context
+# to write specifically. New defaults give ~30 KB context, which is well
+# under Gemma 4's 256K window but enough to surface every section of a
+# typical paper. Going higher costs prompt tokens linearly with little
+# extra value (top-20 hits already cover the deck's narrative space).
+STUDIO_TOP_K = 20
 STUDIO_MIN_SCORE = 0.25
-STUDIO_CONTENT_LIMIT_CHARS = 800
+STUDIO_CONTENT_LIMIT_CHARS = 1500
 
 # How many times to retry on Pydantic validation failure. One re-roll is
 # usually enough; if the LLM emits two malformed responses in a row, the
@@ -256,6 +272,10 @@ async def _retrieve_chunks(
     )
     filenames = {r.id: r.filename for r in rows}
 
+    return _build_chunk_dicts(hits, filenames)
+
+
+def _build_chunk_dicts(hits, filenames):  # noqa: ANN001 — internal
     return [
         {
             "filename": filenames.get(h.chunk.document_id, "<unknown>"),
@@ -267,7 +287,107 @@ async def _retrieve_chunks(
     ]
 
 
+async def _retrieve_images(
+    db: Session,
+    user: User,
+    collection_id: int,
+    seed_query: str,
+) -> list[dict[str, Any]]:
+    """Top-K relevant ingestion_images rows for the deck topic.
+
+    Phase 5. Mirrors ``_retrieve_chunks`` but searches the
+    ``ingestion_images`` vector index instead of ``document_chunks``.
+    Returns a list of dicts the prompt builder can splat into the
+    "可用圖" section, plus the renderer's CSP-side helper can hydrate
+    by ``image_id`` to inline the actual PNG bytes.
+
+    Empty list when:
+      * collection has no images at all (text-only knowledge base);
+      * embedder returned an empty vector;
+      * pgvector match scores are all below threshold.
+    """
+    coll = _require_collection_access(db, user, collection_id)
+    if coll.status != "active":
+        return []
+
+    q_vec = await _embed_query(
+        db, user, coll.embedding_model, coll.embedding_dim, seed_query,
+    )
+    if not q_vec:
+        return []
+
+    pool = get_pool()
+    # Wrap with HalfVector — the same codec PgPool registers on every
+    # connection. Passing a Python string + ::halfvec cast fails
+    # because halfvec's text-input parser misreads the leading `[`
+    # ("could not convert string to float"). HalfVector ships the
+    # right binary wire format directly.
+    from pgvector import HalfVector
+
+    q_value = HalfVector(q_vec)
+
+    # halfvec uses cosine distance; pgvector returns 0 = identical, so
+    # similarity = 1 - distance. Filter on distance < (1 - min_score).
+    max_dist = 1.0 - STUDIO_IMAGE_MIN_SCORE
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                i.image_id,
+                i.document_id,
+                i.page,
+                i.storage_path,
+                i.mime,
+                i.caption,
+                d.filename,
+                (i.embedding <=> $2) AS dist
+            FROM ingestion_images i
+            JOIN ingestion_documents d ON d.id = i.document_id
+            WHERE i.collection_id = $1
+              AND i.embedding IS NOT NULL
+              AND (i.embedding <=> $2) < $3
+            ORDER BY i.embedding <=> $2
+            LIMIT $4
+            """,
+            collection_id, q_value, max_dist, STUDIO_IMAGE_TOP_K,
+        )
+
+    return [
+        {
+            "image_id": r["image_id"],
+            "document_id": r["document_id"],
+            "page": r["page"],
+            "storage_path": r["storage_path"],
+            "mime": r["mime"],
+            "caption": (r["caption"] or "").strip(),
+            "filename": r["filename"],
+            "score": float(1.0 - r["dist"]),
+        }
+        for r in rows
+    ]
+
+
 # ── Step 4-5: LLM call helpers ────────────────────────────────────────────
+
+
+# Preset name → (count hint, min slides). The frontend's CommandModal
+# shows these ranges as hints in the picker; without mapping them on
+# the backend the prompt stays at "8-12" regardless of preset, which
+# is why "經典報告結構" decks always came out at 10 instead of the
+# advertised 12-15. min_slides drives the section_break-frequency rule
+# below: a 5-slide Lightning Talk shouldn't be forced to insert a
+# mid-deck section break.
+_PRESET_COUNT: dict[str, tuple[str, int]] = {
+    "經典報告結構":     ("12-15 張投影片", 12),
+    "Lightning Talk":   ("5 張投影片，重點濃縮、視覺優先", 5),
+    "教學投影片":       ("8-12 張投影片", 8),
+}
+
+
+def _count_hint(preset: str) -> tuple[str, int]:
+    """Resolve a preset name to (human range, min count). Falls back to
+    8-12 / min=8 for unknown / extra_instructions-only flows."""
+    return _PRESET_COUNT.get(preset.strip(), ("8-12 張投影片", 8))
 
 
 def _build_generation_prompt(
@@ -275,6 +395,7 @@ def _build_generation_prompt(
     preset: str,
     extra_instructions: str | None,
     chunks: list[dict[str, Any]],
+    images: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str]:
     """Compose (system, user) prompts for the slide-deck LLM call.
 
@@ -290,6 +411,7 @@ def _build_generation_prompt(
     aspirationally choose a fancy layout AND still ship a usable slide
     if the layout-specific fields don't pan out.
     """
+    count_hint, min_slides = _count_hint(preset)
     system = "\n".join(
         [
             "You are a JSON-only slide-deck generator. Output is parsed",
@@ -368,12 +490,68 @@ def _build_generation_prompt(
             "5. **承諾或從簡**（commit fully or keep simple）：要花俏就整份花俏；",
             "   要簡潔就整份簡潔。一張花俏配一張無聊是最差的配對。",
             "",
+            "── 最重要的硬規則（違反 = deck 不合格） ──",
+            f"**規則 0 / 投影片數量**：本次 preset 要求 **{count_hint}**。"
+            f"少於 {min_slides} 張視為違反規則，請務必達到下限；"
+            f"上限可彈性放寬以容納所有重點。",
+            "**規則 1 / 第一張投影片必須是 section_break**：以簡報主題作為 title，",
+            "  bullets 第 0 條寫一句副標說明。這是整份 deck 的封面，沒有它整份簡報",
+            "  讀起來像流水帳。**不要把第一張做成 standard layout**，直接 layout_kind",
+            "  填 'section_break' 即可。**這是規則第 1 條，不是建議**。",
+            (
+                "**規則 2 / 至少再有 1 張 section_break**：放在簡報三分之一或一半處"
+                "作為章節分隔（例：「方法」、「實驗結果」、「結論」）。"
+                "沒有章節隔段的長簡報是 AI slop 的標誌。"
+            ) if min_slides >= 8 else (
+                "**規則 2 / Lightning Talk 不需中段 section_break**：5 張的短簡報"
+                "已被首張封面 + 內容流自然分節，不要硬塞額外 section_break。"
+            ),
+            "**規則 3 / standard 不可超過 60%**：技術內容穿插 icon_rows，"
+            "章節穿插 section_break，數字穿插 stat_callout。",
+            "**規則 4 / 數據必須有 stat_callout 至少 1 張**：若下方 chunks 出現",
+            "  **任何百分比、實驗數值、KPI、提升幅度、F1/Recall/Accuracy 數字、",
+            "  樣本數 N=...、誤差降幅** 之類，**必須**挑最關鍵的那一個做 stat_callout，",
+            "  把該數字大字呈現。例：「MAPE 降低 88.73%」、「F1-score 0.92」、",
+            "  「N=10,000」。**沒有 stat_callout 的數據型 deck = 視覺陽春**。",
+            "**規則 5 / 對照型內容必須 two_column**：若內容有「A vs B」",
+            "  （例：原始 vs 融合、本研究 vs 既有方法、有無 data augmentation、",
+            "  Cross-machine 之間比較），用 1 張 two_column 拆成兩欄。",
+            "**規則 6 / 若可用圖清單非空，必須至少 1 張 image_focus**：把「相關性",
+            "  最高的那張」做 image_focus（layout_kind='image_focus' + 設 image_ref）。",
+            "  論文 / 技術文件的圖（架構圖、實驗結果圖）幾乎都比文字描述更有說服力。",
+            "",
+            "── 引用「圖片描述」段落（這是 deck 變具體的關鍵） ──",
+            "下方檢索段落中可能含「圖片描述：...」的段落 — 那是文件原圖的",
+            "VLM 描述（含軸標、數值、座標、組件等具體資訊）。**bullet 必須優先",
+            "從這些段落取材**，例如「Figure 3 雙分支架構顯示左 RGB / 右 Tsallis」、",
+            "「圖 4 結果柱狀圖：CT350 機台達到 88.73% 改善」這種具體寫法，",
+            "而非抽象的「本研究透過資訊融合提升效能」。**沒有具體 = bullet 失敗**。",
+            "",
             "── 整體內容規則 ──",
             "- 使用**台灣繁體中文**（不只字符繁體、用詞也要台灣本土）。",
-            "- 8-12 張投影片；首張可以是 section_break 介紹簡報主題。",
-            "- 每張 3-6 個 bullet（如 layout 不需要 bullet 也要填 1-2 句保險用）。",
+            f"- 投影片數量：{count_hint}（首張固定為 section_break，規則 1）。",
+            "- 每張 3-6 個 bullet（layout 不需要 bullet 也要填 1-2 句保險用）。",
             "- speaker_notes 寫 2-4 句講者口述稿。",
             "- standard slide 的 title 不可重複（section_break 例外、可重複）。",
+            "",
+            "── 其他 layout 條件選用 ──",
+            "- **stat_callout**：文件含量化結果（百分比、實驗數值、KPI、提升幅度）",
+            "  時，挑最關鍵的 1 個做 stat_callout。stat.value 是大字數字，",
+            "  stat.label 是該數字代表什麼，stat.supporting 是補充細節。",
+            "- **two_column**：內容天然有對照（before/after、本研究 vs 既有方法、",
+            "  兩種模型架構比較）時用 1 張。columns 必須 **2 個元素**、各填 heading + bullets。",
+            "- **quote**：有名言、客戶證言、概念金句時用。",
+            "- **icon_rows**：3-5 個並列要點各有 icon。concept 從白名單挑。",
+            "- **image_focus**（Phase 5 新增）：文件原檔有相關插圖時用。例：",
+            "  論文的 architecture diagram、實驗結果柱狀圖、流程圖。設",
+            "  layout_kind='image_focus' 並把使用者訊息「可用圖」清單中相對應的",
+            "  image_id 填到 Slide.image_ref。bullets 仍要寫 2-4 條，描述圖之外的",
+            "  補充資訊；圖會佔投影片左半，bullets 在右半。**沒可用圖（清單為空）",
+            "  就不要用 image_focus**。一張圖只應出現在一張投影片。",
+            "- **commit fully**：選了豐富版型就把欄位填好；不要半途而廢。",
+            "- **layout_kind 拼寫精確**：'standard' / 'section_break' / 'stat_callout' /",
+            "  'quote' / 'two_column' / 'icon_rows' / 'image_focus'。",
+            "  其他寫法會被歸類為 standard。",
             "",
             "── 台灣用語對映（簡中用詞 → 台灣慣用詞，務必使用右邊） ──",
             "  視頻 → 影片        軟件 → 軟體        硬件 → 硬體",
@@ -413,6 +591,26 @@ def _build_generation_prompt(
             "（本次未檢索到相關段落；請依使用者輸入直接發揮，"
             "並在末尾的 speaker_notes 內提醒「本草稿未取得文件支撐」。）"
         )
+    if images:
+        parts.append("")
+        parts.append("── 可用圖（從文件原始嵌入圖中依與本主題的相似度檢索） ──")
+        parts.append(
+            "若某張投影片用以下任一張圖更具說服力，請設 layout_kind='image_focus' "
+            "並把該行的 image_id 填到 Slide.image_ref。一張圖只應被一張投影片引用；"
+            "若全部圖都不夠相關，請忽略這份清單、不要硬塞。"
+        )
+        parts.append("")
+        for i, im in enumerate(images, start=1):
+            cap = (im.get("caption") or "").replace("\n", " ")[:240]
+            page = im.get("page")
+            parts.append(
+                f"[img_{i}] image_id={im['image_id']} "
+                f"page={page if page is not None else '?'} "
+                f"score={im.get('score', 0):.3f}"
+            )
+            parts.append(f"  caption: {cap}")
+        parts.append("")
+
     if extra_instructions:
         parts.append("")
         parts.append(f"使用者補充指示：\n{extra_instructions}")
@@ -480,6 +678,7 @@ async def _generate_validated_spec(
     preset: str,
     extra_instructions: str | None,
     chunks: list[dict[str, Any]],
+    images: list[dict[str, Any]] | None = None,
 ) -> tuple[SlidesSpec, bool]:
     """LLM → JSON → SlidesSpec, retrying once on validation failure.
 
@@ -490,18 +689,22 @@ async def _generate_validated_spec(
     """
 
     system, user_msg = _build_generation_prompt(
-        collection_name, preset, extra_instructions, chunks,
+        collection_name, preset, extra_instructions, chunks, images=images,
     )
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system},
         {"role": "user", "content": user_msg},
     ]
 
-    # temperature=0.2 (down from default 0.4) — slide deck generation is
-    # mostly extraction, not creative writing; lower temp keeps gemma4
-    # away from the "thought\n*   Role: ..." preamble pattern.
+    # temperature=0.3 — bumped from 0.2 after observing decks where
+    # gemma4 picked the safest layout (standard) for every slide. Low
+    # temp helps with structural fidelity (JSON validity) but starves
+    # the layout-selection step of variation. 0.3 keeps it close enough
+    # to deterministic for schema purposes while letting the model
+    # actually USE the section_break / stat_callout / two_column knobs
+    # we're describing in the prompt.
     raw = await _call_llm_chat(
-        db, user, SLIDES_LLM_MODEL, messages, temperature=0.2,
+        db, user, SLIDES_LLM_MODEL, messages, temperature=0.3,
     )
 
     last_err: ValidationError | ValueError | json.JSONDecodeError | None = None
@@ -635,17 +838,93 @@ def _build_fallback_spec(
 # ── Step 7: render via the Node service ──────────────────────────────────
 
 
-async def _render_pptx(spec: SlidesSpec) -> tuple[bytes, str]:
+def _hydrate_image_refs(
+    spec_dict: dict[str, Any],
+    images_lookup: dict[str, dict[str, Any]],
+    upload_dir: str,
+) -> dict[str, Any]:
+    """Resolve every Slide.image_ref into inline base64 PNG bytes.
+
+    The renderer is a separate Node service that doesn't have CSP
+    credentials or DB access, so we can't have it pull images by id at
+    render time. Instead CSP — which already trusts itself to the disk
+    — reads the bytes here and inlines them as a `image_data` field
+    (data URL) on the slide before POSTing the spec.
+
+    Falls back to dropping `image_ref` (renderer falls back to
+    `standard` layout) when:
+      * image_ref isn't in `images_lookup` (LLM hallucinated an id);
+      * the on-disk path has been GC'd / never existed;
+      * read failed mid-flight (rare, e.g. NFS hiccup).
+
+    Why the renderer can't just trust the LLM-emitted ref blindly:
+    a malicious or buggy generation could put an arbitrary string
+    there. We only follow refs that came out of `images_lookup`,
+    which itself is built from `_retrieve_images` over THIS user's
+    collection — so cross-collection access is impossible by
+    construction.
+    """
+    import base64
+
+    slides = spec_dict.get("slides") or []
+    for slide in slides:
+        ref = slide.get("image_ref")
+        if not ref:
+            continue
+        meta = images_lookup.get(ref)
+        if not meta:
+            # LLM emitted an id we never offered. Strip silently —
+            # renderer's image_focus → standard fallback handles it.
+            slide.pop("image_ref", None)
+            continue
+        try:
+            abs_path = os.path.join(upload_dir, meta["storage_path"])
+            with open(abs_path, "rb") as f:
+                blob = f.read()
+            mime = meta.get("mime") or "image/png"
+            slide["image_data"] = (
+                f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"
+            )
+        except OSError as e:
+            logger.warning(
+                "Failed to hydrate image_ref=%s for storage_path=%s: %s — "
+                "slide will fall back to standard layout.",
+                ref, meta.get("storage_path"), e,
+            )
+            slide.pop("image_ref", None)
+    return spec_dict
+
+
+async def _render_pptx(
+    spec: SlidesSpec,
+    images_lookup: dict[str, dict[str, Any]] | None = None,
+) -> tuple[bytes, str]:
     """POST spec → renderer → (pptx bytes, server-side path).
 
     Returns the path so /screenshots can refer to it without us having to
     base64 the .pptx through CSP memory.
+
+    `images_lookup` (optional) is the dict that drove the LLM's
+    image-suggestion list, keyed by image_id. When provided, every
+    Slide.image_ref gets hydrated into inline `image_data` bytes via
+    `_hydrate_image_refs` before the spec leaves the CSP boundary.
     """
+    spec_dict = spec.model_dump()
+    if images_lookup:
+        # Worker writes to share/uploads/ingestion via INGESTION_UPLOAD_DIR;
+        # CSP mounts the same directory at the same path (see compose).
+        # storage_path on the row is relative to that root, so we just
+        # join here.
+        ingest_upload = os.getenv(
+            "INGESTION_UPLOAD_DIR", "/var/anila/ingestion-uploads",
+        )
+        spec_dict = _hydrate_image_refs(spec_dict, images_lookup, ingest_upload)
+
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             r = await client.post(
                 f"{RENDERER_BASE_URL}/render",
-                json={"spec": spec.model_dump()},
+                json={"spec": spec_dict},
             )
         except httpx.HTTPError as e:
             raise HTTPException(
@@ -859,6 +1138,7 @@ async def _run_pipeline(
             )
         )
         chunks: list[dict[str, Any]] = []
+        images: list[dict[str, Any]] = []
         if not payload.skip_retrieval:
             try:
                 chunks = await _retrieve_chunks(
@@ -872,6 +1152,36 @@ async def _run_pipeline(
                 logger.warning(
                     "Studio retrieval failed (%s); generating without context.", e,
                 )
+            # Phase 5: image vector search runs alongside chunk search
+            # so the LLM gets both kinds of context in one prompt. Empty
+            # list when the collection has no images at all (text-only
+            # knowledge base) — the prompt skip-emits the section.
+            try:
+                images = await _retrieve_images(
+                    db, user, payload.collection_id, seed_query,
+                )
+                if images:
+                    logger.info(
+                        "Studio retrieved %d images for deck '%s'",
+                        len(images), payload.preset,
+                    )
+            except HTTPException:
+                raise
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "Studio image retrieval failed (%s); proceeding "
+                    "without image suggestions.",
+                    e,
+                )
+
+        # Build the lookup the renderer-side hydration needs. Keyed by
+        # image_id so `Slide.image_ref` resolves in O(1) without re-
+        # querying the DB during render. Only images actually surfaced
+        # to the LLM are eligible — this is also the security boundary
+        # for "user can't reference cross-collection images".
+        images_lookup: dict[str, dict[str, Any]] = {
+            im["image_id"]: im for im in images
+        }
 
         # ── Steps 4-6: LLM → JSON → SlidesSpec ──
         await updater.set(step=JOB_STEP_GENERATING)
@@ -882,6 +1192,7 @@ async def _run_pipeline(
             payload.preset,
             payload.extra_instructions,
             chunks,
+            images=images,
         )
         # ── Step 6.5: zh-CN → zh-TW post-processing ──
         # Gemma 4 leaks simplified-Chinese phrasing into 繁體 output (研究第
@@ -897,7 +1208,7 @@ async def _run_pipeline(
 
         # ── Step 7: render ──
         await updater.set(step=JOB_STEP_RENDERING)
-        pptx_bytes, pptx_path = await _render_pptx(spec)
+        pptx_bytes, pptx_path = await _render_pptx(spec, images_lookup)
 
         # ── Step 8: vision QA + (optional) one fix-and-rerender ──
         # Skip vision QA entirely when serving the fallback deck. The
@@ -933,7 +1244,7 @@ async def _run_pipeline(
                     title=spec.title,
                     slide_count=len(spec.slides),
                 )
-                pptx_bytes, pptx_path = await _render_pptx(spec)
+                pptx_bytes, pptx_path = await _render_pptx(spec, images_lookup)
 
         # ── Step 9: terminal "done" — pptx_bytes is the artifact ──
         await updater.mark_done(

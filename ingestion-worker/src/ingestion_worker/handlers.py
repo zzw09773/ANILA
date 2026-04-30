@@ -129,6 +129,174 @@ def _clean_caption(raw: str) -> str:
     return s
 
 
+async def _persist_images(
+    pool: Any,
+    collection_id: int,
+    document_id: int,
+    images: dict[str, Any],
+    embedder: Any,
+    billing_user_id: int | None,
+) -> int:
+    """Write every captioned image to disk + DB so Studio can later
+    surface them via vector search.
+
+    Phase 5 / Sprint X. Each ImageRef whose ``caption`` field is set
+    (filled in by ``_caption_images_into`` upstream) gets:
+
+      1. Bytes flushed to ``<UPLOAD_DIR>/anila-images/<doc_id>/<image_id>.<ext>``
+         where the extension comes from ``ref.mime`` (image/png → .png).
+      2. A row inserted into ``ingestion_images`` with the caption + a
+         caption embedding for vector search. ``ON CONFLICT DO NOTHING``
+         on (document_id, image_id) so re-ingesting the same document
+         doesn't duplicate rows; the worker's existing chunk-level
+         delete-and-reinsert dance handles the cleanup of stale rows
+         (see migration 0025: FK to documents is ON DELETE CASCADE so
+         worker's existing ``DELETE FROM ingestion_documents`` already
+         takes care of the orphan case).
+
+    Why batch the embedding into a single call: ``Embedder.embed`` is
+    HTTP-backed; one call with N captions is much cheaper than N calls
+    with one each, and we don't risk partial writes on transient errors
+    (the function as a whole still continues on failure — caption
+    embedding is best-effort).
+
+    Returns the count of images successfully persisted (for log
+    correlation).
+    """
+    if not images:
+        return 0
+    upload_dir = settings.upload_dir
+    images_root = os.path.join(upload_dir, "anila-images", str(document_id))
+    try:
+        os.makedirs(images_root, mode=0o755, exist_ok=True)
+    except OSError as e:
+        # If we can't even mkdir we won't be able to persist anything;
+        # bail loudly so an op-level alert can fire (the rest of ingest
+        # still completes — the captions are already inlined in `text`).
+        logger.error(
+            "Failed to mkdir %s for image persistence: %s", images_root, e,
+        )
+        return 0
+
+    # Build the to-be-inserted rows AND collect captions for batch embed.
+    rows: list[dict[str, Any]] = []
+    captions_to_embed: list[str] = []
+    for img_id, ref in images.items():
+        try:
+            mime = getattr(ref, "mime", None) or "image/png"
+            ext = ".png" if "png" in mime else (".jpg" if "jpeg" in mime else ".bin")
+            # Sanitise image_id for the filename (parser uses UUID-ish so
+            # this is paranoia, but cheap insurance against future ID
+            # shapes that could include path separators).
+            safe_img_id = "".join(
+                c if c.isalnum() or c in "-_" else "_" for c in str(img_id)
+            )[:64]
+            rel_path = os.path.join(
+                "anila-images", str(document_id), f"{safe_img_id}{ext}",
+            )
+            abs_path = os.path.join(upload_dir, rel_path)
+            image_bytes = getattr(ref, "image_bytes", b"") or b""
+            if not image_bytes:
+                continue
+            with open(abs_path, "wb") as f:
+                f.write(image_bytes)
+            try:
+                os.chmod(abs_path, 0o644)
+            except OSError:
+                pass
+
+            caption = getattr(ref, "caption", "") or ""
+            page = getattr(ref, "page", None)
+            alt_text = getattr(ref, "alt_text", "") or None
+            rows.append({
+                "image_id": safe_img_id,
+                "page": page,
+                "storage_path": rel_path,
+                "mime": mime,
+                "alt_text": alt_text,
+                "caption": caption,
+                "bytes_size": len(image_bytes),
+            })
+            captions_to_embed.append(caption or alt_text or "image")
+        except Exception as e:  # noqa: BLE001 — per-image best-effort
+            logger.warning(
+                "Skip persisting image %s for doc %s: %s",
+                img_id, document_id, e,
+            )
+
+    if not rows:
+        return 0
+
+    # Embed all captions in one HTTP roundtrip; on failure, persist the
+    # rows without an embedding (caption text + storage path are still
+    # valuable, image-vector search just won't surface them).
+    embeddings: list[list[float]] | None = None
+    try:
+        embeddings = await embedder.embed(
+            captions_to_embed, user_id=billing_user_id,
+        )
+        if len(embeddings) != len(rows):
+            logger.warning(
+                "Caption embedding count mismatch (got %d, expected %d); "
+                "persisting without embeddings.",
+                len(embeddings), len(rows),
+            )
+            embeddings = None
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "Caption batch embedding failed for doc %s: %s — "
+            "persisting rows without embeddings.",
+            document_id, e,
+        )
+
+    # Use the same HalfVector wrapper the chunks store uses (see
+    # anila_core/storage/adapters/pgvector_store.py:146). PgPool's
+    # _init_connection registers the pgvector codec on every conn so
+    # asyncpg knows the binary wire shape; passing a Python string of
+    # the form '[v,v,...]' with a ``::halfvec`` cast fails because the
+    # halfvec text-input parser interprets the leading `[` as a token
+    # start and tries to atof() the literal — surfacing as the
+    # "could not convert string to float" we hit on the first
+    # deployment of this code path.
+    from pgvector import HalfVector
+
+    inserted = 0
+    async with pool.acquire() as conn:
+        for i, row in enumerate(rows):
+            emb = embeddings[i] if embeddings is not None else None
+            emb_value = HalfVector(emb) if emb is not None else None
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO ingestion_images
+                        (collection_id, document_id, image_id, page,
+                         storage_path, mime, alt_text, caption,
+                         bytes_size, embedding)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    ON CONFLICT (document_id, image_id) DO UPDATE
+                       SET caption     = EXCLUDED.caption,
+                           storage_path= EXCLUDED.storage_path,
+                           bytes_size  = EXCLUDED.bytes_size,
+                           embedding   = EXCLUDED.embedding,
+                           updated_at  = CURRENT_TIMESTAMP
+                    """,
+                    collection_id, document_id, row["image_id"], row["page"],
+                    row["storage_path"], row["mime"], row["alt_text"],
+                    row["caption"], row["bytes_size"], emb_value,
+                )
+                inserted += 1
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "Failed to insert image row %s for doc %s: %s",
+                    row["image_id"], document_id, e,
+                )
+    logger.info(
+        "Persisted %d/%d images for doc %s (with embedding=%s)",
+        inserted, len(rows), document_id, embeddings is not None,
+    )
+    return inserted
+
+
 async def _caption_images_into(text: str, images: dict[str, Any]) -> str:
     """Replace every ``[[IMAGE:<id>]]`` placeholder in ``text`` with a
     VLM-generated caption.
@@ -185,7 +353,15 @@ async def _caption_images_into(text: str, images: dict[str, Any]) -> str:
                     ref.image_bytes,
                     mime=getattr(ref, "mime", None) or "image/png",
                 )
-            return image_id, _clean_caption(caption)
+            cleaned = _clean_caption(caption)
+            # Stash on the ref so the caller can persist (B.2/B.3) without
+            # threading the captions dict through another layer. Existing
+            # ImageRef has a `caption` slot expressly for this hand-off.
+            try:
+                ref.caption = cleaned
+            except Exception:
+                pass  # ImageRef should always be writable; defensive only
+            return image_id, cleaned
         except Exception as e:  # noqa: BLE001 — best-effort; fall back gracefully
             logger.warning(
                 "VLM caption failed for image %s (%s); using fallback marker.",
@@ -444,6 +620,23 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
                 progress_message=f"captioning {len(images)} image(s)",
             )
             text = await _caption_images_into(text, images)
+            # 1b. Persist captioned images to disk + DB so Studio can
+            # vector-search over them (Phase 5). Best-effort: a failure
+            # here doesn't fail ingest — the captions are already inlined
+            # into `text` from step 1a, so retrieval over chunks still
+            # works. Only the image-as-image use case is degraded.
+            try:
+                await _persist_images(
+                    pool, collection_id, document_id, images,
+                    embedder, billing_user_id,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "Image persistence failed for doc %s: %s — captions "
+                    "are still inlined in chunks; image-as-image retrieval "
+                    "will be empty for this document.",
+                    document_id, e,
+                )
 
         # 2. Chunk — bounded by document size, also fast.
         # Semantic strategies need embeddings up-front: pre-split into

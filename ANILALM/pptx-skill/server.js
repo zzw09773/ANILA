@@ -423,6 +423,75 @@ async function renderIconRows(pres, s, p) {
 }
 
 /**
+ * Image-focus layout (Phase 5) — embeds a real image extracted from the
+ * source document on the left half, with bullets on the right.
+ *
+ * The CSP backend hydrates `slide.image_data` (a `data:image/...;base64,...`
+ * URL) from the LLM's `image_ref` before sending the spec here. If
+ * `image_data` is missing we fall back to standard layout so a stale or
+ * malformed ref doesn't crash the deck.
+ *
+ * Aspect-ratio handling: pptxgenjs's `addImage({ sizing })` would scale
+ * to fit but we want letterboxing (preserve aspect, centre in box). We
+ * pass the box bounds and rely on pptxgenjs's `sizing.type='contain'`
+ * for that behaviour.
+ */
+function renderImageFocus(pres, s, p) {
+  if (!s.image_data || typeof s.image_data !== 'string') {
+    return renderStandard(pres, s, p)
+  }
+  const slide = pres.addSlide({ masterName: 'ANILA_BASE' })
+
+  // Title bar — same as other layouts.
+  slide.addText(String(s.title || ''), {
+    x: 0.5, y: 0.1, w: 12.3, h: 0.6,
+    fontSize: 26, bold: true, color: p.barText,
+    align: 'left', valign: 'middle',
+    fontFace: FONT_FACE, margin: 0,
+  })
+
+  // Image box — left 50%. Slide width 13.33"; minus 0.5" left + 0.4"
+  // gap → image gets 5.95" wide (mirrors two_column geometry so
+  // visual rhythm stays consistent across the deck).
+  const IMG_X = 0.5
+  const IMG_Y = 1.1
+  const IMG_W = 5.95
+  const IMG_H = 5.7
+  slide.addImage({
+    data: s.image_data,
+    x: IMG_X, y: IMG_Y, w: IMG_W, h: IMG_H,
+    // 'contain' keeps the source's aspect ratio inside the box,
+    // letterboxing rather than stretching — important for a chart
+    // whose axis labels would distort under a forced-stretch.
+    sizing: { type: 'contain', w: IMG_W, h: IMG_H },
+  })
+
+  // Bullets — right 50%.
+  const TEXT_X = IMG_X + IMG_W + 0.4
+  const TEXT_W = 13.33 - TEXT_X - 0.5
+  const bullets = Array.isArray(s.bullets) ? s.bullets : []
+  if (bullets.length > 0) {
+    // Same dynamic font sizing as standard — fewer bullets → bigger.
+    const n = bullets.length
+    const fontSize = n <= 3 ? 22 : (n <= 5 ? 20 : 18)
+    const paraSpaceAfter = n <= 3 ? 18 : (n <= 5 ? 14 : 10)
+    slide.addText(
+      bullets.map((b) => ({
+        text: String(b),
+        options: { bullet: { code: '25CF' }, color: p.ink },
+      })),
+      {
+        x: TEXT_X, y: IMG_Y, w: TEXT_W, h: IMG_H,
+        fontSize, color: p.ink, fontFace: FONT_FACE,
+        paraSpaceAfter, valign: 'top', indentLevel: 0,
+      },
+    )
+  }
+  if (s.speaker_notes) slide.addNotes(String(s.speaker_notes))
+  return slide
+}
+
+/**
  * Dispatcher — picks the renderer based on slide.layout_kind. Unknown
  * kinds fall back to `renderStandard`. Async so callers can `await` it
  * uniformly even though only icon_rows is actually async.
@@ -435,6 +504,7 @@ async function renderSlideByKind(pres, s, p) {
     case 'quote':         return renderQuote(pres, s, p)
     case 'two_column':    return renderTwoColumn(pres, s, p)
     case 'icon_rows':     return await renderIconRows(pres, s, p)
+    case 'image_focus':   return renderImageFocus(pres, s, p)
     default:              return renderStandard(pres, s, p)
   }
 }

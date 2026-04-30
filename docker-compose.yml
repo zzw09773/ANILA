@@ -241,7 +241,7 @@ services:
       # Shared service token used by router to call CSP's service-auth endpoints
       # (e.g. GET /api/models/router-primary). Must match CSP's CSP_SERVICE_TOKEN.
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
-      MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      MODEL: ${LLM_MODEL:-gemma4}
     depends_on:
       csp:
         condition: service_healthy
@@ -273,10 +273,22 @@ services:
       - ./share/static:/usr/share/nginx/share-files/static:ro
       - ./share/uploads:/usr/share/nginx/share-files/uploads:rw
     depends_on:
+      # `restart: true` (Compose 2.17+) forces nginx to restart whenever
+      # one of these dependencies restarts. Required because csp_backend /
+      # router_backend / anila_ui_static are STATIC upstream blocks in
+      # nginx.conf — they resolve DNS once at config load and pin the IP
+      # forever. Without this flag, `compose up --build <svc>` gives the
+      # rebuilt container a new IP but nginx keeps proxying to the dead
+      # one → permanent 502 until manual nginx restart. codeserver / n8n /
+      # anilalm / gitlab use variable proxy_pass and don't need this, but
+      # anilalm is kept in the list because nginx still benefits from
+      # waiting for it during cold start.
       csp:
         condition: service_healthy
+        restart: true
       anilalm:
         condition: service_healthy
+        restart: true
       # Fast-starting upstreams nginx proxies to. Without these, requests
       # arriving in the gap between nginx start and upstream listen-socket
       # ready return 502 — easy to hit right after `compose up --build`.
@@ -285,8 +297,10 @@ services:
       # path users hit after a rebuild.
       router:
         condition: service_healthy
+        restart: true
       anila-ui:
         condition: service_healthy
+        restart: true
     healthcheck:
       test: ["CMD", "nginx", "-t"]
       interval: 30s
