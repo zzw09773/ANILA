@@ -277,6 +277,16 @@ services:
         condition: service_healthy
       anilalm:
         condition: service_healthy
+      # Fast-starting upstreams nginx proxies to. Without these, requests
+      # arriving in the gap between nginx start and upstream listen-socket
+      # ready return 502 — easy to hit right after `compose up --build`.
+      # codeserver / n8n / gitlab are intentionally omitted: they boot
+      # slowly (gitlab's start_period is 10 min) and are rarely the first
+      # path users hit after a rebuild.
+      router:
+        condition: service_healthy
+      anila-ui:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "nginx", "-t"]
       interval: 30s
