@@ -1,109 +1,87 @@
 <template>
-  <header class="flex flex-col gap-4 border-b border-gray-200 bg-white px-6 py-4 md:flex-row md:items-center md:justify-between">
-    <div>
-      <h2 class="text-lg font-semibold text-gray-800">{{ pageTitle }}</h2>
-      <p class="mt-1 text-xs uppercase tracking-[0.16em] text-gray-400">
-        {{ authStore.user?.role === 'admin' ? 'control plane · admin' : authStore.user?.role === 'developer' ? 'control plane · developer' : 'control plane · user' }}
-      </p>
+  <header class="topbar">
+    <div class="topbar__left">
+      <TermLogo :size="14" />
+      <span class="topbar__rule">│</span>
+      <span class="topbar__path">
+        <span class="topbar__path-prefix">{{ hostPrompt }}</span>
+        <span class="topbar__path-segment">{{ currentSegment }}</span>
+        <span class="term-caret" aria-hidden="true" />
+      </span>
     </div>
-    <div class="flex flex-wrap items-center gap-3">
-      <span class="text-sm text-gray-500">{{ authStore.user?.username }}</span>
-      <span
-        class="rounded-full px-2.5 py-1 text-xs font-medium"
-        :class="authStore.user?.role === 'admin'
-          ? 'bg-purple-50 text-purple-700'
-          : authStore.user?.role === 'developer'
-            ? 'bg-indigo-50 text-indigo-700'
-            : 'bg-gray-100 text-gray-600'"
-      >
-        {{ authStore.user?.role === 'admin' ? '管理員' : authStore.user?.role === 'developer' ? '開發者' : '使用者' }}
+
+    <div class="topbar__right">
+      <span class="topbar__hints">
+        <span class="topbar__hint"><TermKbd>?</TermKbd> shortcuts</span>
       </span>
       <button
-        @click="showChangePwModal = true"
-        class="text-sm text-gray-500 hover:text-indigo-600 transition-colors"
+        class="topbar__theme"
+        type="button"
+        :aria-label="`switch to ${otherTheme} theme`"
+        :title="`switch to ${otherTheme} theme`"
+        @click="toggleTheme"
       >
-        修改密碼
+        <span class="topbar__theme-icon">{{ theme === 'dark' ? '◐' : '◑' }}</span>
+        <span class="topbar__theme-label">{{ theme }}</span>
       </button>
-      <button
-        @click="handleLogout"
-        class="text-sm text-gray-500 hover:text-red-600 transition-colors"
-      >
-        登出
+
+      <span class="topbar__rule">│</span>
+
+      <span class="topbar__user">
+        <span class="topbar__user-name">{{ authStore.user?.username || 'guest' }}</span>
+        <span class="topbar__user-role" :class="`is-${authStore.user?.role || 'user'}`">
+          @{{ authStore.user?.role || 'guest' }}
+        </span>
+      </span>
+
+      <button class="topbar__action" type="button" @click="showChangePwModal = true">
+        change-pw
+      </button>
+      <button class="topbar__action topbar__action--danger" type="button" @click="handleLogout">
+        logout
       </button>
     </div>
   </header>
 
-  <!-- Change Password Modal -->
-  <div v-if="showChangePwModal" class="fixed inset-0 z-50 flex items-center justify-center">
-    <div class="fixed inset-0 bg-black/50" @click="closeChangePw"></div>
-    <div class="relative bg-white rounded-xl shadow-xl p-6 max-w-md w-full mx-4">
-      <h3 class="text-lg font-semibold mb-4">修改密碼</h3>
+  <!-- Change-password modal — terminal style ----------------------------- -->
+  <TermModal :visible="showChangePwModal" title="change password" width="440px" @close="closeChangePw">
+    <div class="pw-grid">
+      <TermField label="current password">
+        <input v-model="pw.current" type="password" class="term-input" placeholder="••••••••" autocomplete="current-password" />
+      </TermField>
 
-      <div class="space-y-4">
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">目前密碼</label>
-          <input
-            v-model="pw.current"
-            type="password"
-            class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
-            placeholder="請輸入目前密碼"
-          />
-        </div>
+      <TermField label="new password" :hint="pw.new ? '' : 'at least 8 chars · upper · lower · symbol'">
+        <input v-model="pw.new" type="password" class="term-input" placeholder="••••••••" autocomplete="new-password" />
+        <ul v-if="pw.new" class="pw-rules">
+          <li :class="pwRule(pw.new.length >= 8)">{{ pwGlyph(pw.new.length >= 8) }} 8+ characters</li>
+          <li :class="pwRule(/[A-Z]/.test(pw.new))">{{ pwGlyph(/[A-Z]/.test(pw.new)) }} uppercase</li>
+          <li :class="pwRule(/[a-z]/.test(pw.new))">{{ pwGlyph(/[a-z]/.test(pw.new)) }} lowercase</li>
+          <li :class="pwRule(hasSpecial(pw.new))">{{ pwGlyph(hasSpecial(pw.new)) }} symbol</li>
+        </ul>
+      </TermField>
 
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">新密碼</label>
-          <input
-            v-model="pw.new"
-            type="password"
-            class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
-            placeholder="請輸入新密碼"
-          />
-          <ul class="text-xs mt-2 space-y-0.5" v-if="pw.new">
-            <li :class="pw.new.length >= 8 ? 'text-green-600' : 'text-gray-400'">
-              {{ pw.new.length >= 8 ? '✓' : '○' }} 至少 8 個字元
-            </li>
-            <li :class="/[A-Z]/.test(pw.new) ? 'text-green-600' : 'text-gray-400'">
-              {{ /[A-Z]/.test(pw.new) ? '✓' : '○' }} 至少一個大寫字母
-            </li>
-            <li :class="/[a-z]/.test(pw.new) ? 'text-green-600' : 'text-gray-400'">
-              {{ /[a-z]/.test(pw.new) ? '✓' : '○' }} 至少一個小寫字母
-            </li>
-            <li :class="hasSpecial(pw.new) ? 'text-green-600' : 'text-gray-400'">
-              {{ hasSpecial(pw.new) ? '✓' : '○' }} 至少一個特殊符號
-            </li>
-          </ul>
-        </div>
+      <TermField
+        label="confirm new password"
+        :error="pw.confirm && pw.new !== pw.confirm ? 'mismatch' : ''"
+      >
+        <input v-model="pw.confirm" type="password" class="term-input" placeholder="••••••••" autocomplete="new-password" />
+      </TermField>
 
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">確認新密碼</label>
-          <input
-            v-model="pw.confirm"
-            type="password"
-            class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
-            placeholder="再次輸入新密碼"
-          />
-          <p v-if="pw.confirm && pw.new !== pw.confirm" class="text-xs text-red-500 mt-1">密碼不一致</p>
-        </div>
-
-        <div v-if="pwError" class="text-red-600 text-sm bg-red-50 p-3 rounded-lg">{{ pwError }}</div>
-        <div v-if="pwSuccess" class="text-green-700 text-sm bg-green-50 border border-green-200 p-3 rounded-lg">{{ pwSuccess }}</div>
-      </div>
-
-      <div class="flex justify-end space-x-3 mt-6">
-        <button @click="closeChangePw"
-          class="px-4 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">
-          取消
-        </button>
-        <button
-          @click="handleChangePassword"
-          :disabled="!canSubmit || saving"
-          class="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
-        >
-          {{ saving ? '儲存中...' : '更新密碼' }}
-        </button>
-      </div>
+      <div v-if="pwError" class="pw-msg pw-msg--err">! {{ pwError }}</div>
+      <div v-if="pwSuccess" class="pw-msg pw-msg--ok">✓ {{ pwSuccess }}</div>
     </div>
-  </div>
+
+    <template #footer>
+      <TermButton variant="ghost" @click="closeChangePw" label="cancel" />
+      <TermButton
+        variant="primary"
+        :disabled="!canSubmit"
+        :loading="saving"
+        :label="saving ? 'saving' : 'update'"
+        @click="handleChangePassword"
+      />
+    </template>
+  </TermModal>
 </template>
 
 <script setup>
@@ -111,26 +89,49 @@ import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { changePassword } from '../../api/auth'
+import { useTheme } from '../../composables/useTheme'
+import TermLogo from '../cli/TermLogo.vue'
+import TermKbd from '../cli/TermKbd.vue'
+import TermModal from '../cli/TermModal.vue'
+import TermField from '../cli/TermField.vue'
+import TermButton from '../cli/TermButton.vue'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
+const { theme, toggleTheme } = useTheme()
 
-const pageTitles = {
-  '/': '儀表板',
-  '/api-keys': 'API Key 管理',
-  '/models': '模型管理',
-  '/usage': '用量分析',
-  '/users': '使用者管理',
-  '/departments': '部門設定',
-  '/alerts': '告警中心',
-  '/audit-logs': '審計日誌',
-  '/auth-providers': 'SSO / OIDC',
-  '/platform-links': '平台連結設定',
-  '/developer/agents': 'Agent Console',
+const otherTheme = computed(() => (theme.value === 'dark' ? 'light' : 'dark'))
+
+const hostPrompt = computed(() => {
+  const role = authStore.user?.role || 'guest'
+  return `csp-${role}@anila:`
+})
+
+const segmentMap = {
+  '/': '/dashboard',
+  '/api-keys': '/api-keys',
+  '/models': '/models',
+  '/usage': '/usage',
+  '/users': '/admin/users',
+  '/departments': '/admin/departments',
+  '/alerts': '/admin/alerts',
+  '/audit-logs': '/admin/audit',
+  '/auth-providers': '/admin/sso',
+  '/platform-links': '/admin/platform-links',
+  '/service-access': '/admin/service-access',
+  '/developer/agents': '/dev/agents',
+  '/knowledge-collections': '/dev/collections',
 }
-
-const pageTitle = computed(() => pageTitles[route.path] || 'CSP Platform')
+const currentSegment = computed(() => {
+  if (segmentMap[route.path]) return segmentMap[route.path]
+  if (route.path.startsWith('/knowledge-collections/')) {
+    return route.path.endsWith('/evaluator')
+      ? '/dev/collections/evaluator'
+      : '/dev/collections/detail'
+  }
+  return route.path
+})
 
 const showChangePwModal = ref(false)
 const pw = ref({ current: '', new: '', confirm: '' })
@@ -139,12 +140,13 @@ const pwSuccess = ref('')
 const saving = ref(false)
 
 const SPECIAL_CHARS = '!@#$%^&*()_+-=[]{}|;:,.<>?/~`"\'\\'
-function hasSpecial(str) {
-  return [...str].some(c => SPECIAL_CHARS.includes(c))
-}
+function hasSpecial(str) { return [...str].some(c => SPECIAL_CHARS.includes(c)) }
+function pwRule(ok) { return ok ? 'is-ok' : 'is-pending' }
+function pwGlyph(ok) { return ok ? '●' : '○' }
 
 const canSubmit = computed(() =>
-  pw.value.current &&
+  !saving.value &&
+  !!pw.value.current &&
   pw.value.new.length >= 8 &&
   /[A-Z]/.test(pw.value.new) &&
   /[a-z]/.test(pw.value.new) &&
@@ -165,19 +167,14 @@ async function handleChangePassword() {
   saving.value = true
   try {
     await changePassword(pw.value.current, pw.value.new)
-    pwSuccess.value = '密碼已更新，請重新登入'
-    // Token was rotated by backend — force re-login after a short delay
+    pwSuccess.value = 'password updated — re-auth required'
     setTimeout(() => {
       authStore.logout()
       router.push('/login')
     }, 1500)
   } catch (e) {
     const detail = e.response?.data?.detail
-    if (Array.isArray(detail)) {
-      pwError.value = detail.map(d => d.msg).join('；')
-    } else {
-      pwError.value = detail || '更新失敗'
-    }
+    pwError.value = Array.isArray(detail) ? detail.map(d => d.msg).join('; ') : (detail || 'update failed')
   } finally {
     saving.value = false
   }
@@ -188,3 +185,143 @@ function handleLogout() {
   router.push('/login')
 }
 </script>
+
+<style scoped>
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: var(--shell-topbar-h);
+  padding: 0 var(--gap-3);
+  background: var(--c-surface-2);
+  border-bottom: 0;
+  font-size: var(--t-xs);
+  color: var(--c-fg-2);
+  gap: var(--gap-3);
+}
+
+.topbar__left,
+.topbar__right {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-3);
+  min-width: 0;
+}
+
+.topbar__rule {
+  color: var(--c-border-strong);
+  font-size: var(--t-base);
+  user-select: none;
+}
+
+.topbar__path {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.topbar__path-prefix {
+  color: var(--c-fg-3);
+}
+.topbar__path-segment {
+  color: var(--c-accent);
+  margin-left: 2px;
+  font-weight: 500;
+}
+
+.topbar__hints {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-3);
+  margin-right: var(--gap-2);
+}
+.topbar__hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--c-fg-3);
+  font-size: var(--t-2xs);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.topbar__theme {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: var(--border-w) solid var(--c-border);
+  color: var(--c-fg-2);
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--r-soft);
+  font-size: var(--t-2xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color var(--motion-fast), border-color var(--motion-fast), background-color var(--motion-fast);
+}
+.topbar__theme:hover {
+  color: var(--c-accent);
+  border-color: var(--c-accent);
+  background: var(--c-accent-soft);
+}
+.topbar__theme-icon { font-size: var(--t-sm); }
+
+.topbar__user {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: var(--t-xs);
+}
+.topbar__user-name { color: var(--c-fg-1); font-weight: 500; }
+.topbar__user-role {
+  color: var(--c-fg-3);
+  font-size: var(--t-2xs);
+  letter-spacing: 0.05em;
+  text-transform: lowercase;
+}
+.topbar__user-role.is-admin     { color: var(--c-warn); }
+.topbar__user-role.is-developer { color: var(--c-info); }
+.topbar__user-role.is-user      { color: var(--c-fg-3); }
+
+.topbar__action {
+  background: transparent;
+  border: 0;
+  color: var(--c-fg-3);
+  font-family: inherit;
+  font-size: var(--t-xs);
+  cursor: pointer;
+  padding: 0;
+  letter-spacing: 0.05em;
+  text-transform: lowercase;
+  transition: color var(--motion-fast);
+}
+.topbar__action:hover { color: var(--c-accent); }
+.topbar__action--danger:hover { color: var(--c-danger); }
+
+/* Password modal styles ----------------------------------------------- */
+.pw-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-3);
+}
+.pw-rules {
+  margin-top: var(--gap-1);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px var(--gap-3);
+  font-size: var(--t-2xs);
+}
+.pw-rules li.is-ok      { color: var(--c-ok); }
+.pw-rules li.is-pending { color: var(--c-fg-3); }
+.pw-msg {
+  font-size: var(--t-xs);
+  border: var(--border-w) solid;
+  padding: var(--gap-2) var(--gap-3);
+}
+.pw-msg--err { color: var(--c-danger); border-color: var(--c-danger); background: var(--c-danger-soft); }
+.pw-msg--ok  { color: var(--c-ok);     border-color: var(--c-ok);     background: var(--c-ok-soft); }
+</style>

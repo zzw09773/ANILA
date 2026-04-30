@@ -1,21 +1,19 @@
+<!--
+  Thin shim around TermStat — kept so the existing DashboardView continues
+  to compile if anyone re-imports it elsewhere. New views should import
+  TermStat directly from `components/cli`.
+-->
 <template>
-  <div class="bg-white rounded-xl border border-gray-200 p-5">
-    <p class="text-sm text-gray-500">{{ label }}</p>
-    <p class="text-2xl font-bold text-gray-900 mt-1">{{ formattedValue }}</p>
-  </div>
+  <TermStat :label="label" :value="value" :hint="hint" :tone="tone" />
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import TermStat from '../cli/TermStat.vue'
 
-const props = defineProps({
+defineProps({
   label: { type: String, required: true },
   value: { type: Number, default: 0 },
-})
-
-const formattedValue = computed(() => {
-  if (props.value >= 1000000) return (props.value / 1000000).toFixed(1) + 'M'
-  if (props.value >= 1000) return (props.value / 1000).toFixed(1) + 'K'
-  return props.value.toLocaleString()
+  hint: { type: String, default: '' },
+  tone: { type: String, default: 'default' },
 })
 </script>

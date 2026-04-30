@@ -1,208 +1,155 @@
 <template>
-  <div class="space-y-6">
-    <div class="flex items-center justify-between">
-      <h2 class="text-lg font-semibold">模型管理</h2>
-      <button
-        v-if="authStore.isAdmin"
-        @click="openCreateModal"
-        class="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 transition"
-      >
-        註冊模型
-      </button>
+  <div class="page">
+    <header class="page-head">
+      <div>
+        <p class="page-head__eyebrow">control plane · registry</p>
+        <h1 class="page-head__title">models</h1>
+        <p class="page-head__sub">
+          llm · vlm · embedding · agent — registered endpoints proxied via /v1/*
+        </p>
+      </div>
+      <TermButton v-if="authStore.isAdmin" variant="primary" @click="openCreateModal" label="register model" />
+    </header>
+
+    <div class="kpi-row">
+      <TermStat label="models · total" :value="modelsStore.models.length" />
+      <TermStat label="online" :value="onlineCount" tone="accent" />
+      <TermStat label="connecting" :value="connectingCount" />
+      <TermStat label="offline" :value="offlineCount" :tone="offlineCount ? 'danger' : 'default'" />
     </div>
 
-    <!-- Models Table -->
-    <div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
-      <table class="w-full text-sm">
-        <thead class="bg-gray-50 border-b">
+    <TermBox :title="`registry · ${modelsStore.models.length}`" hint="health-checked every 60s" pad="none" flush>
+      <table class="term-table">
+        <thead>
           <tr>
-            <th class="px-4 py-3 text-left text-gray-600 font-medium">狀態</th>
-            <th class="px-4 py-3 text-left text-gray-600 font-medium">名稱</th>
-            <th class="px-4 py-3 text-left text-gray-600 font-medium">類型</th>
-            <th class="px-4 py-3 text-left text-gray-600 font-medium">端點</th>
-            <th class="px-4 py-3 text-left text-gray-600 font-medium">API 版本</th>
-            <th class="px-4 py-3 text-left text-gray-600 font-medium">啟用</th>
-            <th class="px-4 py-3 text-left text-gray-600 font-medium">主路由</th>
-            <th v-if="authStore.isAdmin" class="px-4 py-3 text-left text-gray-600 font-medium">操作</th>
+            <th style="width: 60px">health</th>
+            <th>name</th>
+            <th style="width: 100px">type</th>
+            <th>endpoint</th>
+            <th style="width: 80px">api</th>
+            <th style="width: 80px">active</th>
+            <th style="width: 110px">router</th>
+            <th v-if="authStore.isAdmin" style="width: 26%">ops</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="model in modelsStore.models" :key="model.id" class="border-b last:border-0 hover:bg-gray-50">
-            <td class="px-4 py-3">
-              <span
-                class="inline-block w-3 h-3 rounded-full"
-                :class="{
-                  'bg-green-500': model.health_status === 'online',
-                  'bg-yellow-500': model.health_status === 'connecting',
-                  'bg-red-500': model.health_status === 'offline',
-                }"
-                :title="healthLabel(model.health_status)"
-              ></span>
+          <tr v-for="model in modelsStore.models" :key="model.id">
+            <td>
+              <span class="health">
+                <TermDot :status="healthStatus(model.health_status)" :title="healthLabel(model.health_status)" />
+                <span class="health__txt">{{ healthLabel(model.health_status) }}</span>
+              </span>
             </td>
-            <td class="px-4 py-3">
-              <div class="font-medium">{{ model.display_name }}</div>
-              <div class="text-xs text-gray-400">{{ model.name }}</div>
-              <div v-if="model.base_model_name" class="text-xs text-indigo-500 mt-0.5">
-                底層: {{ model.base_model_name }}
+            <td>
+              <div class="cell-strong">{{ model.display_name }}</div>
+              <div class="cell-meta">{{ model.name }}</div>
+              <div v-if="model.base_model_name" class="cell-base">↳ base: {{ model.base_model_name }}</div>
+            </td>
+            <td><TermBadge :tone="model.model_type">{{ model.model_type }}</TermBadge></td>
+            <td><code class="cell-url" :title="model.endpoint_url">{{ model.endpoint_url }}</code></td>
+            <td class="cell-meta">{{ model.api_version }}</td>
+            <td>
+              <TermBadge :variant="model.is_active ? 'ok' : 'danger'" dot>
+                {{ model.is_active ? 'on' : 'off' }}
+              </TermBadge>
+            </td>
+            <td>
+              <span v-if="model.is_router_primary" class="primary-pill" title="ANILA Router uses this as primary LLM">
+                ★ primary
+              </span>
+              <span v-else class="cell-meta">—</span>
+            </td>
+            <td v-if="authStore.isAdmin">
+              <div class="row-actions">
+                <button class="term-action" @click="openEditModal(model)">edit</button>
+                <span class="row-actions__sep">·</span>
+                <button class="term-action" @click="handleHealthCheck(model.id)">probe</button>
+                <span v-if="model.model_type === 'llm' && !model.is_router_primary" class="row-actions__sep">·</span>
+                <button
+                  v-if="model.model_type === 'llm' && !model.is_router_primary"
+                  class="term-action"
+                  :disabled="!model.is_active || settingPrimaryId === model.id"
+                  @click="handleSetPrimary(model.id)"
+                >
+                  {{ settingPrimaryId === model.id ? 'pinning…' : 'set-primary' }}
+                </button>
+                <span v-else-if="model.is_router_primary" class="row-actions__sep">·</span>
+                <button
+                  v-if="model.is_router_primary"
+                  class="term-action"
+                  :disabled="settingPrimaryId === model.id"
+                  @click="handleUnsetPrimary(model.id)"
+                >
+                  unpin
+                </button>
+                <span v-if="model.is_active" class="row-actions__sep">·</span>
+                <button v-if="model.is_active" class="term-action" @click="handleDeactivate(model.id)">deactivate</button>
+                <span class="row-actions__sep">·</span>
+                <button class="term-action term-action--danger" :disabled="purgingId === model.id" @click="handlePurge(model)">
+                  {{ purgingId === model.id ? 'purging…' : 'purge' }}
+                </button>
               </div>
-            </td>
-            <td class="px-4 py-3">
-              <span class="text-xs px-2 py-0.5 rounded" :class="typeColor(model.model_type)">
-                {{ model.model_type.toUpperCase() }}
-              </span>
-            </td>
-            <td class="px-4 py-3 font-mono text-xs text-gray-500 max-w-[200px] truncate">
-              {{ model.endpoint_url }}
-            </td>
-            <td class="px-4 py-3 text-gray-500">{{ model.api_version }}</td>
-            <td class="px-4 py-3">
-              <span :class="model.is_active ? 'text-green-600' : 'text-red-600'" class="text-xs">
-                {{ model.is_active ? '啟用' : '停用' }}
-              </span>
-            </td>
-            <td class="px-4 py-3">
-              <span
-                v-if="model.is_router_primary"
-                class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800"
-                title="ANILA Router 會使用此模型作為主路由 LLM"
-              >
-                ★ 主路由
-              </span>
-              <span v-else class="text-xs text-gray-300">—</span>
-            </td>
-            <td v-if="authStore.isAdmin" class="px-4 py-3 space-x-2 whitespace-nowrap">
-              <button @click="openEditModal(model)" class="text-indigo-600 hover:text-indigo-800 text-xs">
-                編輯
-              </button>
-              <button @click="handleHealthCheck(model.id)" class="text-blue-600 hover:text-blue-800 text-xs">
-                檢查
-              </button>
-              <button
-                v-if="model.model_type === 'llm' && !model.is_router_primary"
-                :disabled="!model.is_active || settingPrimaryId === model.id"
-                @click="handleSetPrimary(model.id)"
-                class="text-amber-600 hover:text-amber-800 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
-                :title="model.is_active ? '設為 ANILA 主路由模型' : '需先啟用模型'"
-              >
-                {{ settingPrimaryId === model.id ? '設定中…' : '設為主路由' }}
-              </button>
-              <button
-                v-else-if="model.is_router_primary"
-                :disabled="settingPrimaryId === model.id"
-                @click="handleUnsetPrimary(model.id)"
-                class="text-gray-500 hover:text-gray-700 text-xs disabled:opacity-40"
-              >
-                取消主路由
-              </button>
-              <button
-                v-if="model.is_active"
-                @click="handleDeactivate(model.id)"
-                class="text-yellow-600 hover:text-yellow-800 text-xs"
-              >
-                停用
-              </button>
-              <button
-                @click="handlePurge(model)"
-                :disabled="purgingId === model.id"
-                class="text-red-600 hover:text-red-800 text-xs disabled:opacity-50"
-              >
-                {{ purgingId === model.id ? '刪除中…' : '刪除' }}
-              </button>
             </td>
           </tr>
           <tr v-if="modelsStore.models.length === 0">
-            <td :colspan="authStore.isAdmin ? 8 : 7" class="px-4 py-8 text-center text-gray-400">
-              尚無已註冊模型
-            </td>
+            <td :colspan="authStore.isAdmin ? 8 : 7"><TermEmpty message="no models registered · register one to enable /v1/* proxy" /></td>
           </tr>
         </tbody>
       </table>
-    </div>
+    </TermBox>
 
-    <!-- Create/Edit Modal -->
-    <div v-if="showModal" class="fixed inset-0 z-50 flex items-center justify-center">
-      <div class="fixed inset-0 bg-black/50" @click="showModal = false"></div>
-      <div class="relative bg-white rounded-xl shadow-xl p-6 max-w-lg w-full mx-4">
-        <h3 class="text-lg font-semibold mb-4">{{ editingId ? '編輯模型' : '註冊新模型' }}</h3>
-
-        <div class="space-y-4">
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">模型名稱（ID）</label>
-            <input v-model="form.name" :disabled="!!editingId" type="text"
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none disabled:bg-gray-100"
-              placeholder="例如：llama3-70b" />
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">顯示名稱</label>
-            <input v-model="form.display_name" type="text"
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
-              placeholder="例如：Llama 3 70B Instruct" />
-          </div>
-          <div class="grid grid-cols-2 gap-4">
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">模型類型</label>
-              <select v-model="form.model_type"
-                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none">
-                <option value="llm">LLM</option>
-                <option value="vlm">VLM</option>
-                <option value="embedding">Embedding</option>
-                <option value="agent">Agent</option>
-              </select>
-            </div>
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">API 版本</label>
-              <select v-model="form.api_version"
-                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none">
-                <option value="v1">v1</option>
-                <option value="v2">v2</option>
-              </select>
-            </div>
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">端點 URL</label>
-            <input v-model="form.endpoint_url" type="text"
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
-              placeholder="例如：http://gpu-server:8080" />
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">說明</label>
-            <textarea v-model="form.description" rows="2"
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
-              placeholder="選填"></textarea>
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">Context Window</label>
-            <input v-model.number="form.context_window" type="number"
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
-              placeholder="選填，例如 128000" />
-          </div>
-          <div v-if="form.model_type === 'agent'">
-            <label class="block text-sm font-medium text-gray-700 mb-1">底層模型</label>
-            <select v-model="form.base_model_id"
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none">
-              <option :value="null">無（獨立部署）</option>
-              <option
-                v-for="m in baseModelOptions"
-                :key="m.id"
-                :value="m.id"
-              >{{ m.display_name }} ({{ m.model_type.toUpperCase() }})</option>
+    <TermModal :visible="showModal" :title="editingId ? 'edit · model' : 'register · model'" width="600px" @close="showModal = false">
+      <div class="form-grid">
+        <TermField label="model id" hint="immutable · used in api requests · e.g. llama3-70b">
+          <input v-model="form.name" :disabled="!!editingId" class="term-input" placeholder="llama3-70b" />
+        </TermField>
+        <TermField label="display name">
+          <input v-model="form.display_name" class="term-input" placeholder="Llama 3 70B Instruct" />
+        </TermField>
+        <div class="form-row-2">
+          <TermField label="type">
+            <select v-model="form.model_type" class="term-select">
+              <option value="llm">llm</option>
+              <option value="vlm">vlm</option>
+              <option value="embedding">embedding</option>
+              <option value="agent">agent</option>
             </select>
-            <p class="text-xs text-gray-400 mt-1">選擇此 Agent 所使用的底層模型，用於關聯統計</p>
-          </div>
+          </TermField>
+          <TermField label="api version">
+            <select v-model="form.api_version" class="term-select">
+              <option value="v1">v1</option>
+              <option value="v2">v2</option>
+            </select>
+          </TermField>
         </div>
-
-        <div class="flex justify-end space-x-3 mt-6">
-          <button @click="showModal = false"
-            class="px-4 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">
-            取消
-          </button>
-          <button @click="handleSubmit" :disabled="!form.name || !form.display_name || !form.endpoint_url"
-            class="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50">
-            {{ editingId ? '更新' : '建立' }}
-          </button>
-        </div>
+        <TermField label="endpoint url">
+          <input v-model="form.endpoint_url" class="term-input" placeholder="http://gpu-server:8080" />
+        </TermField>
+        <TermField label="description" optional>
+          <textarea v-model="form.description" rows="2" class="term-textarea" />
+        </TermField>
+        <TermField label="context window" optional hint="tokens">
+          <input v-model.number="form.context_window" type="number" class="term-input" placeholder="128000" />
+        </TermField>
+        <TermField v-if="form.model_type === 'agent'" label="base model" hint="for usage attribution">
+          <select v-model="form.base_model_id" class="term-select">
+            <option :value="null">— standalone —</option>
+            <option v-for="m in baseModelOptions" :key="m.id" :value="m.id">
+              {{ m.display_name }} ({{ m.model_type }})
+            </option>
+          </select>
+        </TermField>
       </div>
-    </div>
+      <template #footer>
+        <TermButton variant="ghost" @click="showModal = false" label="cancel" />
+        <TermButton
+          variant="primary"
+          :disabled="!form.name || !form.display_name || !form.endpoint_url"
+          :label="editingId ? 'update' : 'register'"
+          @click="handleSubmit"
+        />
+      </template>
+    </TermModal>
   </div>
 </template>
 
@@ -210,6 +157,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useModelsStore } from '../stores/models'
 import { useAuthStore } from '../stores/auth'
+import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, TermDot } from '../components/cli'
 
 const modelsStore = useModelsStore()
 const authStore = useAuthStore()
@@ -224,36 +172,26 @@ const defaultForm = () => ({
 })
 const form = ref(defaultForm())
 
-// Non-agent models available as base model options (exclude current editing model)
 const baseModelOptions = computed(() =>
   modelsStore.models.filter(m =>
     m.model_type !== 'agent' && m.is_active && m.id !== editingId.value
   )
 )
 
+const onlineCount = computed(() => modelsStore.models.filter(m => m.health_status === 'online').length)
+const connectingCount = computed(() => modelsStore.models.filter(m => m.health_status === 'connecting').length)
+const offlineCount = computed(() => modelsStore.models.filter(m => m.health_status === 'offline').length)
+
 onMounted(() => modelsStore.fetchModels())
 
-function typeColor(type) {
-  const colors = {
-    llm: 'bg-blue-50 text-blue-700',
-    vlm: 'bg-purple-50 text-purple-700',
-    embedding: 'bg-green-50 text-green-700',
-    agent: 'bg-orange-50 text-orange-700',
-  }
-  return colors[type] || 'bg-gray-50 text-gray-700'
+function healthStatus(s) {
+  return ({ online: 'ok', connecting: 'warn', offline: 'danger' })[s] || 'idle'
+}
+function healthLabel(s) {
+  return ({ online: 'online', connecting: 'connecting', offline: 'offline' })[s] || s || 'unknown'
 }
 
-function healthLabel(status) {
-  const labels = { online: '運行中', connecting: '連線中', offline: '斷開' }
-  return labels[status] || status
-}
-
-function openCreateModal() {
-  editingId.value = null
-  form.value = defaultForm()
-  showModal.value = true
-}
-
+function openCreateModal() { editingId.value = null; form.value = defaultForm(); showModal.value = true }
 function openEditModal(model) {
   editingId.value = model.id
   form.value = {
@@ -268,10 +206,7 @@ function openEditModal(model) {
 async function handleSubmit() {
   try {
     const payload = { ...form.value }
-    // Clear base_model_id if not agent type
-    if (payload.model_type !== 'agent') {
-      payload.base_model_id = null
-    }
+    if (payload.model_type !== 'agent') payload.base_model_id = null
     if (editingId.value) {
       const { name, ...updateData } = payload
       await modelsStore.update(editingId.value, updateData)
@@ -280,61 +215,89 @@ async function handleSubmit() {
     }
     showModal.value = false
   } catch (e) {
-    alert(e.response?.data?.detail || '操作失敗')
+    alert(e.response?.data?.detail || 'operation failed')
   }
 }
 
 async function handleHealthCheck(id) {
   const result = await modelsStore.checkHealth(id)
-  alert(`健康檢查結果: ${result.status}\n${result.detail}`)
+  alert(`health probe → ${result.status}\n${result.detail}`)
 }
 
 async function handleSetPrimary(id) {
   settingPrimaryId.value = id
-  try {
-    await modelsStore.setPrimary(id)
-  } catch (e) {
-    alert(e.response?.data?.detail || '設定失敗')
-  } finally {
-    settingPrimaryId.value = null
-  }
+  try { await modelsStore.setPrimary(id) }
+  catch (e) { alert(e.response?.data?.detail || 'pin failed') }
+  finally { settingPrimaryId.value = null }
 }
-
 async function handleUnsetPrimary(id) {
-  if (!confirm('取消後 ANILA Router 將沒有主路由模型，直到你重新指定一個。確定要取消嗎？')) return
+  if (!confirm('unpin primary? ANILA Router will have no primary LLM until you pin a new one.')) return
   settingPrimaryId.value = id
-  try {
-    await modelsStore.unsetPrimary(id)
-  } catch (e) {
-    alert(e.response?.data?.detail || '取消失敗')
-  } finally {
-    settingPrimaryId.value = null
-  }
+  try { await modelsStore.unsetPrimary(id) }
+  catch (e) { alert(e.response?.data?.detail || 'unpin failed') }
+  finally { settingPrimaryId.value = null }
 }
-
 async function handleDeactivate(id) {
-  if (confirm('確定要停用此模型嗎？（停用後可透過編輯再次啟用）')) {
+  if (confirm('deactivate this model? you can re-enable from the edit panel.')) {
     await modelsStore.remove(id)
   }
 }
-
 async function handlePurge(model) {
-  if (!model || purgingId.value === model.id) {
-    return
-  }
-  if (!window.confirm(
-    `確定要永久刪除模型「${model.display_name}」？\n` +
-    `此操作無法復原。若此模型已有用量紀錄或被其他模型引用，將會被拒絕。`
-  )) {
-    return
-  }
+  if (!model || purgingId.value === model.id) return
+  if (!window.confirm(`hard-delete '${model.display_name}'? non-reversible. rejected if usage records or other models reference it.`)) return
   purgingId.value = model.id
-  try {
-    await modelsStore.purge(model.id)
-  } catch (e) {
-    alert(e.response?.data?.detail || '刪除模型失敗')
-  } finally {
-    purgingId.value = null
-  }
+  try { await modelsStore.purge(model.id) }
+  catch (e) { alert(e.response?.data?.detail || 'purge failed') }
+  finally { purgingId.value = null }
 }
 </script>
+
+<style scoped>
+.page { display: flex; flex-direction: column; gap: var(--gap-4); padding-bottom: var(--gap-8); }
+
+.page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--gap-3); flex-wrap: wrap; }
+.page-head__eyebrow { font-size: var(--t-2xs); letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--c-fg-3); }
+.page-head__title { font-size: var(--t-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin: 4px 0 2px; }
+.page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }
+
+.kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--gap-3); }
+@media (max-width: 800px) { .kpi-row { grid-template-columns: repeat(2, 1fr); } }
+
+.cell-strong { color: var(--c-fg-1); font-weight: 500; }
+.cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }
+.cell-base { color: var(--c-info); font-size: var(--t-2xs); margin-top: 2px; }
+.cell-url {
+  display: inline-block;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  color: var(--c-fg-2);
+  background: var(--c-bg);
+  border: var(--border-w) solid var(--c-border);
+  padding: 1px 6px;
+}
+
+.health { display: inline-flex; align-items: center; gap: 6px; }
+.health__txt { font-size: var(--t-2xs); color: var(--c-fg-3); text-transform: lowercase; }
+
+.primary-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--t-2xs);
+  color: var(--c-warn);
+  border: var(--border-w) solid var(--c-warn);
+  padding: 1px 6px;
+  background: var(--c-warn-soft);
+  letter-spacing: 0.04em;
+}
+
+.row-actions { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-xs); flex-wrap: wrap; }
+.row-actions__sep { color: var(--c-border-strong); }
+
+.form-grid { display: flex; flex-direction: column; gap: var(--gap-3); }
+.form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap-3); }
+</style>

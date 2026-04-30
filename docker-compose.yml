@@ -23,7 +23,7 @@ services:
     # — never leaves the dev machine. Production deployments should drop
     # this line and let the DB stay on the internal compose network.
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - csp-pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -399,125 +399,125 @@ services:
   # rewrite-based nginx config from My-OpenAI-Frontend prod is the proven pattern.
   # Phase 1 auth: PASSWORD env var (single shared). Phase 3 will swap to nginx
   # auth_request validating the CSP JWT cookie (see design §5.0.1).
-  codeserver:
-    image: codercom/code-server:latest
-    # Default 1001:1001 matches the host 'aia' UID — repo files end up
-    # owned by the in-container user, so saves don't EACCES.
-    user: "${UID:-1001}:${GID:-1001}"
-    environment:
-      TZ: Asia/Taipei
-      # Sprint 5 X / C3: PASSWORD MUST be overridden — startup_security
-      # gate refuses the dev default `changeme-codeserver`. Set
-      # CODESERVER_PASSWORD to a long random secret in your .env. Once
-      # SSO (Phase 3) is wired we should drop PASSWORD entirely and
-      # require `auth_request` validation against CSP.
-      PASSWORD: ${CODESERVER_PASSWORD:?CODESERVER_PASSWORD must be set}
-    volumes:
-      - codeserver_config:/home/coder/.config
-      # C3: 不再預設掛入整個 repo root（會讓任何拿到密碼的人看見 .env、
-      # docker secret、私鑰等）。明確要求設定 CODESERVER_WORKSPACE，且建議
-      # 指向某個受限子目錄（例如 ${PWD}/sandbox）。
-      - ${CODESERVER_WORKSPACE:?CODESERVER_WORKSPACE must point to a non-secret-bearing directory}:/home/coder/workspace
-    working_dir: /home/coder/workspace
-    expose:
-      - "8080"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 6
-      start_period: 30s
-    restart: unless-stopped
+  # codeserver:
+  #   image: codercom/code-server:latest
+  #   # Default 1001:1001 matches the host 'aia' UID — repo files end up
+  #   # owned by the in-container user, so saves don't EACCES.
+  #   user: "${UID:-1001}:${GID:-1001}"
+  #   environment:
+  #     TZ: Asia/Taipei
+  #     # Sprint 5 X / C3: PASSWORD MUST be overridden — startup_security
+  #     # gate refuses the dev default `changeme-codeserver`. Set
+  #     # CODESERVER_PASSWORD to a long random secret in your .env. Once
+  #     # SSO (Phase 3) is wired we should drop PASSWORD entirely and
+  #     # require `auth_request` validation against CSP.
+  #     PASSWORD: ${CODESERVER_PASSWORD:?CODESERVER_PASSWORD must be set}
+  #   volumes:
+  #     - codeserver_config:/home/coder/.config
+  #     # C3: 不再預設掛入整個 repo root（會讓任何拿到密碼的人看見 .env、
+  #     # docker secret、私鑰等）。明確要求設定 CODESERVER_WORKSPACE，且建議
+  #     # 指向某個受限子目錄（例如 ${PWD}/sandbox）。
+  #     - ${CODESERVER_WORKSPACE:?CODESERVER_WORKSPACE must point to a non-secret-bearing directory}:/home/coder/workspace
+  #   working_dir: /home/coder/workspace
+  #   expose:
+  #     - "8080"
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
+  #     interval: 15s
+  #     timeout: 5s
+  #     retries: 6
+  #     start_period: 30s
+  #   restart: unless-stopped
 
-  # ── n8n workflow automation ────────────────────────────────────────────────────
-  # Subpath deployment under /n8n via N8N_PATH. Settings adopted from
-  # My-OpenAI-Frontend prod (which ran this same workload for years), only
-  # generalised: ANILA_HOST defaults to 172.16.120.35 with HTTPS so absolute
-  # webhook URLs resolve through our reverse proxy.
-  n8n:
-    image: n8nio/n8n:1.98.2
-    # Run as the image's built-in 'node' user (UID 1000) — not the host
-    # 'aia' UID. n8n_data is a Docker-managed named volume so we don't
-    # need host-uid alignment, and overriding user: trips n8n on first
-    # boot (HOME falls back to / and mkdir /.n8n EACCESes).
-    environment:
-      TZ: Asia/Taipei
-      # Tells n8n's editor + redirect helpers it lives at /n8n.
-      N8N_PATH: /n8n/
-      N8N_HOST: ${ANILA_HOST:-172.16.120.35}
-      N8N_PROTOCOL: https
-      WEBHOOK_URL: ${N8N_WEBHOOK_URL:-https://172.16.120.35/n8n/}
-      # Sprint 5 X / C2: 過去全域關 TLS 驗證 (NODE_TLS_REJECT_UNAUTHORIZED=0)
-      # 把 n8n 對外網路變成完全裸奔。改為「預設啟用 TLS 驗證」，本機 dev
-      # 若要連自簽 endpoint 請逐節點設定 self-signed CA，而不是全域關掉。
-      # 若仍需暫時關閉，明確覆寫此 env 為 "0" 並只在離線環境使用。
-      NODE_TLS_REJECT_UNAUTHORIZED: "${N8N_TLS_REJECT_UNAUTHORIZED:-1}"
-      # We're behind an HTTPS reverse proxy but n8n itself sees HTTP, so
-      # telling it the cookie is non-secure prevents login bouncing.
-      N8N_SECURE_COOKIE: "false"
-      # Sprint 5 X / C2: Code Node 過去開放任意 require()，等同把 n8n
-      # 變成 RCE 平台。改為僅允許明確列表；若工作流真的需要其他模組，
-      # 在 .env 透過 N8N_NODE_FUNCTION_ALLOW_EXTERNAL / _BUILTIN 加白名單。
-      NODE_FUNCTION_ALLOW_EXTERNAL: "${N8N_NODE_FUNCTION_ALLOW_EXTERNAL:-axios,lodash,dayjs}"
-      NODE_FUNCTION_ALLOW_BUILTIN: "${N8N_NODE_FUNCTION_ALLOW_BUILTIN:-crypto,url}"
-      N8N_DIAGNOSTICS_ENABLED: "false"
-    volumes:
-      - n8n_data:/home/node/.n8n
-    expose:
-      - "5678"
-    healthcheck:
-      # n8n exposes /healthz at the engine root regardless of N8N_PATH.
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz >/dev/null || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 6
-      start_period: 60s
-    restart: unless-stopped
+  # # ── n8n workflow automation ────────────────────────────────────────────────────
+  # # Subpath deployment under /n8n via N8N_PATH. Settings adopted from
+  # # My-OpenAI-Frontend prod (which ran this same workload for years), only
+  # # generalised: ANILA_HOST defaults to 172.16.120.35 with HTTPS so absolute
+  # # webhook URLs resolve through our reverse proxy.
+  # n8n:
+  #   image: n8nio/n8n:1.98.2
+  #   # Run as the image's built-in 'node' user (UID 1000) — not the host
+  #   # 'aia' UID. n8n_data is a Docker-managed named volume so we don't
+  #   # need host-uid alignment, and overriding user: trips n8n on first
+  #   # boot (HOME falls back to / and mkdir /.n8n EACCESes).
+  #   environment:
+  #     TZ: Asia/Taipei
+  #     # Tells n8n's editor + redirect helpers it lives at /n8n.
+  #     N8N_PATH: /n8n/
+  #     N8N_HOST: ${ANILA_HOST:-172.16.120.35}
+  #     N8N_PROTOCOL: https
+  #     WEBHOOK_URL: ${N8N_WEBHOOK_URL:-https://172.16.120.35/n8n/}
+  #     # Sprint 5 X / C2: 過去全域關 TLS 驗證 (NODE_TLS_REJECT_UNAUTHORIZED=0)
+  #     # 把 n8n 對外網路變成完全裸奔。改為「預設啟用 TLS 驗證」，本機 dev
+  #     # 若要連自簽 endpoint 請逐節點設定 self-signed CA，而不是全域關掉。
+  #     # 若仍需暫時關閉，明確覆寫此 env 為 "0" 並只在離線環境使用。
+  #     NODE_TLS_REJECT_UNAUTHORIZED: "${N8N_TLS_REJECT_UNAUTHORIZED:-1}"
+  #     # We're behind an HTTPS reverse proxy but n8n itself sees HTTP, so
+  #     # telling it the cookie is non-secure prevents login bouncing.
+  #     N8N_SECURE_COOKIE: "false"
+  #     # Sprint 5 X / C2: Code Node 過去開放任意 require()，等同把 n8n
+  #     # 變成 RCE 平台。改為僅允許明確列表；若工作流真的需要其他模組，
+  #     # 在 .env 透過 N8N_NODE_FUNCTION_ALLOW_EXTERNAL / _BUILTIN 加白名單。
+  #     NODE_FUNCTION_ALLOW_EXTERNAL: "${N8N_NODE_FUNCTION_ALLOW_EXTERNAL:-axios,lodash,dayjs}"
+  #     NODE_FUNCTION_ALLOW_BUILTIN: "${N8N_NODE_FUNCTION_ALLOW_BUILTIN:-crypto,url}"
+  #     N8N_DIAGNOSTICS_ENABLED: "false"
+  #   volumes:
+  #     - n8n_data:/home/node/.n8n
+  #   expose:
+  #     - "5678"
+  #   healthcheck:
+  #     # n8n exposes /healthz at the engine root regardless of N8N_PATH.
+  #     test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz >/dev/null || exit 1"]
+  #     interval: 15s
+  #     timeout: 5s
+  #     retries: 6
+  #     start_period: 60s
+  #   restart: unless-stopped
 
-  # ── GitLab CE (Phase 1 Step 6) ────────────────────────────────────────────────
-  # Subpath deployment via Workhorse: external_url tells GitLab to render every
-  # absolute link under /gitlab, internal nginx is disabled so the bundled
-  # workhorse listens on 8181 for the ANILA nginx to reverse-proxy. First boot
-  # runs reconfigure for ~5-10 minutes — start_period accounts for that.
-  # Initial root password lives in /etc/gitlab/initial_root_password inside
-  # the container; rotate it on first login.
-  gitlab:
-    image: gitlab/gitlab-ce:16.10.10-ce.0
-    hostname: gitlab.anila.internal
-    environment:
-      GITLAB_OMNIBUS_CONFIG: |
-        external_url 'https://${ANILA_HOST:-172.16.120.35:4443}/gitlab'
-        nginx['enable'] = false
-        gitlab_workhorse['listen_network'] = "tcp"
-        gitlab_workhorse['listen_addr'] = "0.0.0.0:8181"
-        gitlab_rails['time_zone'] = 'Asia/Taipei'
-        # Internal LAN deployment — admin issues accounts; no self sign-up.
-        gitlab_rails['gitlab_signup_enabled'] = false
-        # Trim memory: skip Prometheus + Alertmanager. Re-enable if metrics
-        # become a Phase 1 requirement (design §5.0.2 explicitly defers).
-        prometheus['enable'] = false
-        alertmanager['enable'] = false
-    volumes:
-      - gitlab_config:/etc/gitlab
-      - gitlab_logs:/var/log/gitlab
-      - gitlab_data:/var/opt/gitlab
-    expose:
-      - "8181"   # Workhorse for ANILA nginx
-      - "22"     # SSH for git push/pull (not host-exposed yet)
-    shm_size: 256m
-    healthcheck:
-      # GitLab gates /-/health behind monitoring_whitelist (127/8 only by
-      # default), which works for an in-container probe but blocks any
-      # external monitoring. /users/sign_in is unauthenticated and 200s
-      # the moment Puma is serving — exactly what we want for readiness.
-      # The /gitlab prefix is required because external_url='.../gitlab'
-      # makes Workhorse expect every URL under that subpath.
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8181/gitlab/users/sign_in || exit 1"]
-      interval: 60s
-      timeout: 10s
-      retries: 5
-      start_period: 600s
-    restart: unless-stopped
+  # # ── GitLab CE (Phase 1 Step 6) ────────────────────────────────────────────────
+  # # Subpath deployment via Workhorse: external_url tells GitLab to render every
+  # # absolute link under /gitlab, internal nginx is disabled so the bundled
+  # # workhorse listens on 8181 for the ANILA nginx to reverse-proxy. First boot
+  # # runs reconfigure for ~5-10 minutes — start_period accounts for that.
+  # # Initial root password lives in /etc/gitlab/initial_root_password inside
+  # # the container; rotate it on first login.
+  # gitlab:
+  #   image: gitlab/gitlab-ce:16.10.10-ce.0
+  #   hostname: gitlab.anila.internal
+  #   environment:
+  #     GITLAB_OMNIBUS_CONFIG: |
+  #       external_url 'https://${ANILA_HOST:-172.16.120.35:4443}/gitlab'
+  #       nginx['enable'] = false
+  #       gitlab_workhorse['listen_network'] = "tcp"
+  #       gitlab_workhorse['listen_addr'] = "0.0.0.0:8181"
+  #       gitlab_rails['time_zone'] = 'Asia/Taipei'
+  #       # Internal LAN deployment — admin issues accounts; no self sign-up.
+  #       gitlab_rails['gitlab_signup_enabled'] = false
+  #       # Trim memory: skip Prometheus + Alertmanager. Re-enable if metrics
+  #       # become a Phase 1 requirement (design §5.0.2 explicitly defers).
+  #       prometheus['enable'] = false
+  #       alertmanager['enable'] = false
+  #   volumes:
+  #     - gitlab_config:/etc/gitlab
+  #     - gitlab_logs:/var/log/gitlab
+  #     - gitlab_data:/var/opt/gitlab
+  #   expose:
+  #     - "8181"   # Workhorse for ANILA nginx
+  #     - "22"     # SSH for git push/pull (not host-exposed yet)
+  #   shm_size: 256m
+  #   healthcheck:
+  #     # GitLab gates /-/health behind monitoring_whitelist (127/8 only by
+  #     # default), which works for an in-container probe but blocks any
+  #     # external monitoring. /users/sign_in is unauthenticated and 200s
+  #     # the moment Puma is serving — exactly what we want for readiness.
+  #     # The /gitlab prefix is required because external_url='.../gitlab'
+  #     # makes Workhorse expect every URL under that subpath.
+  #     test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8181/gitlab/users/sign_in || exit 1"]
+  #     interval: 60s
+  #     timeout: 10s
+  #     retries: 5
+  #     start_period: 600s
+  #   restart: unless-stopped
 
 networks:
   default:

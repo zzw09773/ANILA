@@ -1,205 +1,107 @@
 <template>
-  <div class="space-y-6">
-    <div class="flex items-start justify-between gap-4">
+  <div class="page">
+    <header class="page-head">
       <div>
-        <h2 class="text-lg font-semibold">服務存取權限</h2>
-        <p class="mt-1 text-sm text-gray-500">
-          管理 platform_links 的個別 user / 部門 grant — 對應 multi-service-integration-plan §7.5.3
-        </p>
+        <p class="page-head__eyebrow">admin · access</p>
+        <h1 class="page-head__title">service-access</h1>
+        <p class="page-head__sub">per-user / per-department grants for platform_links · multi-service-integration §7.5.3</p>
       </div>
-    </div>
+    </header>
 
-    <div v-if="pageError" class="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-      {{ pageError }}
-    </div>
+    <div v-if="pageError" class="feedback is-err">! {{ pageError }}</div>
+    <div v-if="loading" class="loading">loading…</div>
 
-    <div v-if="loading" class="rounded-xl border border-gray-200 bg-white px-4 py-6 text-sm text-gray-500">
-      載入中…
-    </div>
-
-    <div v-else class="space-y-4">
-      <div
-        v-for="link in sortedLinks"
-        :key="link.id"
-        class="bg-white rounded-xl border border-gray-200 overflow-hidden"
-      >
-        <button
-          type="button"
-          class="flex w-full items-start justify-between gap-4 px-5 py-4 text-left hover:bg-gray-50 transition"
-          @click="toggleExpand(link.id)"
-        >
-          <div class="min-w-0 space-y-1">
-            <div class="flex items-center gap-2 flex-wrap">
-              <span class="font-medium">{{ link.name }}</span>
-              <span
-                v-if="!link.is_active"
-                class="text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-600"
-              >已停用</span>
-              <span
-                v-if="link.is_public"
-                class="text-xs px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200"
-              >public</span>
-              <span
-                class="text-xs px-2 py-0.5 rounded font-mono"
-                :class="(link.required_roles || []).length === 0
-                  ? 'bg-gray-100 text-gray-500'
-                  : 'bg-indigo-50 text-indigo-700 border border-indigo-200'"
-              >
-                {{ (link.required_roles || []).length === 0 ? 'role gate: 開放' : (link.required_roles || []).join(' / ') }}
-              </span>
-            </div>
-            <div class="font-mono text-xs text-gray-400 break-all">{{ link.url }}</div>
+    <div v-else class="link-list">
+      <article v-for="link in sortedLinks" :key="link.id" class="link-card">
+        <button type="button" class="link-card__head" :class="{ 'is-open': expandedId === link.id }" @click="toggleExpand(link.id)">
+          <div class="link-card__title">
+            <span class="link-card__name">{{ link.name }}</span>
+            <TermBadge v-if="!link.is_active" variant="">inactive</TermBadge>
+            <TermBadge v-if="link.is_public" variant="ok">public</TermBadge>
+            <span class="role-gate" :class="(link.required_roles || []).length ? 'is-set' : 'is-open'">
+              <span class="role-gate__k">role-gate</span>
+              <span class="role-gate__v">{{ (link.required_roles || []).length === 0 ? 'open' : (link.required_roles || []).join(' · ') }}</span>
+            </span>
           </div>
-          <div class="text-right shrink-0">
-            <div class="text-xs text-gray-500">active grants</div>
-            <div class="text-xl font-semibold text-gray-800">{{ activeGrantsCount(link.id) }}</div>
+          <div class="link-card__url">{{ link.url }}</div>
+          <div class="link-card__count">
+            <span class="cell-meta">active grants</span>
+            <span class="link-card__count-num tnum">{{ activeGrantsCount(link.id) }}</span>
           </div>
+          <span class="link-card__chev">{{ expandedId === link.id ? '−' : '+' }}</span>
         </button>
 
-        <div v-if="expandedId === link.id" class="border-t border-gray-200 bg-gray-50">
-          <div class="flex items-center gap-2 px-5 py-3 border-b border-gray-200">
-            <button
-              class="px-3 py-1.5 bg-indigo-600 text-white text-xs rounded hover:bg-indigo-700 transition"
-              @click="openGrantModal(link, 'user')"
-            >+ 給 user</button>
-            <button
-              class="px-3 py-1.5 bg-white border border-gray-300 text-gray-700 text-xs rounded hover:bg-gray-100 transition"
-              @click="openGrantModal(link, 'department')"
-            >+ 給部門</button>
-            <span class="ml-auto text-xs text-gray-400">
-              {{ activeGrantsForLink(link.id).length }} 筆 active grant
-              <span v-if="!link.is_public && (link.required_roles || []).length === 0" class="ml-2 text-amber-700">
-                (private + 開放 gate — 純白名單模式)
+        <div v-if="expandedId === link.id" class="link-card__body">
+          <div class="link-card__bar">
+            <TermButton size="xs" variant="primary" @click="openGrantModal(link, 'user')" label="+ grant user" />
+            <TermButton size="xs" @click="openGrantModal(link, 'department')" label="+ grant dept" />
+            <span class="bar-meta">
+              {{ activeGrantsForLink(link.id).length }} active
+              <span v-if="!link.is_public && (link.required_roles || []).length === 0" class="bar-meta--warn">
+                · private + open gate · pure whitelist mode
               </span>
             </span>
           </div>
 
-          <div v-if="activeGrantsForLink(link.id).length === 0" class="px-5 py-6 text-sm text-gray-400">
-            尚未發出任何 active grant{{ link.is_public ? '（已 public，user 通過 role gate 即可看到）' : '' }}
-          </div>
-
-          <div
-            v-for="g in activeGrantsForLink(link.id)"
-            :key="g.id"
-            class="flex items-center justify-between gap-3 px-5 py-3 border-b border-gray-200 last:border-b-0 text-sm"
-          >
-            <div class="min-w-0 space-y-0.5">
-              <div class="flex items-center gap-2">
-                <span
-                  class="text-xs px-2 py-0.5 rounded font-mono"
-                  :class="g.user_id != null
-                    ? 'bg-indigo-50 text-indigo-700'
-                    : 'bg-amber-50 text-amber-700'"
-                >{{ g.user_id != null ? 'USER' : 'DEPT' }}</span>
-                <span class="font-medium">{{ targetLabel(g) }}</span>
-              </div>
-              <div class="text-xs text-gray-400">
-                {{ formatDate(g.granted_at) }} · 授權者 {{ granterLabel(g) }}
-              </div>
-            </div>
-            <button
-              class="text-xs text-red-600 hover:text-red-800"
-              @click="handleRevoke(g)"
-            >Revoke</button>
-          </div>
+          <table v-if="activeGrantsForLink(link.id).length" class="term-table">
+            <thead>
+              <tr>
+                <th style="width: 80px">scope</th>
+                <th>target</th>
+                <th style="width: 22%">granted</th>
+                <th style="width: 90px">ops</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="g in activeGrantsForLink(link.id)" :key="g.id">
+                <td><TermBadge :variant="g.user_id != null ? 'info' : 'warn'">{{ g.user_id != null ? 'user' : 'dept' }}</TermBadge></td>
+                <td class="cell-strong">{{ targetLabel(g) }}</td>
+                <td class="cell-meta tnum">{{ formatDate(g.granted_at) }} · by {{ granterLabel(g) }}</td>
+                <td><button class="term-action term-action--danger" @click="handleRevoke(g)">revoke</button></td>
+              </tr>
+            </tbody>
+          </table>
+          <TermEmpty v-else :message="link.is_public ? 'no grants · public — anyone passing the role gate sees this link' : 'no grants yet'" />
         </div>
-      </div>
+      </article>
 
-      <div v-if="sortedLinks.length === 0" class="px-4 py-10 text-center text-gray-400 bg-white rounded-xl border border-gray-200">
-        尚無平台連結 — 請先到「平台連結設定」建立。
+      <div v-if="sortedLinks.length === 0" class="term-box" style="padding: var(--gap-6);">
+        <TermEmpty message="no platform links · register one in /admin/platform-links first" />
       </div>
     </div>
 
-    <div v-if="showGrantModal" class="fixed inset-0 z-50 flex items-center justify-center">
-      <div class="fixed inset-0 bg-black/50" @click="closeGrantModal"></div>
-      <div class="relative bg-white rounded-xl shadow-xl p-6 max-w-lg w-full mx-4">
-        <h3 class="text-lg font-semibold">
-          授權 {{ grantModalLink?.name }}
-        </h3>
-        <p class="mt-1 text-xs text-gray-500">同一目標只能有一筆 active grant</p>
-
-        <div class="mt-4 flex gap-2 text-sm">
-          <button
-            class="px-3 py-1.5 rounded transition"
-            :class="grantModalType === 'user'
-              ? 'bg-indigo-600 text-white'
-              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
-            @click="setGrantModalType('user')"
-          >User-level</button>
-          <button
-            class="px-3 py-1.5 rounded transition"
-            :class="grantModalType === 'department'
-              ? 'bg-indigo-600 text-white'
-              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
-            @click="setGrantModalType('department')"
-          >Department-level</button>
-        </div>
-
-        <input
-          v-model="grantModalFilter"
-          :placeholder="grantModalType === 'user' ? '搜尋 username / email' : '搜尋部門名稱'"
-          class="mt-3 w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
-        />
-
-        <div class="mt-3 max-h-64 overflow-y-auto border border-gray-200 rounded-lg bg-gray-50">
-          <template v-if="grantModalType === 'user'">
-            <button
-              v-for="u in filteredUsers"
-              :key="u.id"
-              type="button"
-              class="block w-full text-left px-4 py-2 border-b border-gray-200 last:border-b-0 text-sm transition"
-              :class="grantModalSelectedId === u.id ? 'bg-indigo-50' : 'hover:bg-white'"
-              @click="grantModalSelectedId = u.id"
-            >
-              <div class="flex justify-between gap-3">
-                <span class="font-medium">{{ u.username }}</span>
-                <span class="text-xs text-gray-400">
-                  {{ u.role }}{{ u.department_name ? ` · ${u.department_name}` : '' }}
-                </span>
-              </div>
-              <div v-if="u.email" class="text-xs text-gray-500 mt-0.5">{{ u.email }}</div>
-            </button>
-            <div v-if="filteredUsers.length === 0" class="px-4 py-6 text-xs text-gray-400 text-center">
-              沒有符合的 user
-            </div>
-          </template>
-          <template v-else>
-            <button
-              v-for="d in filteredDepts"
-              :key="d.id"
-              type="button"
-              class="block w-full text-left px-4 py-2 border-b border-gray-200 last:border-b-0 text-sm transition"
-              :class="grantModalSelectedId === d.id ? 'bg-indigo-50' : 'hover:bg-white'"
-              @click="grantModalSelectedId = d.id"
-            >
-              <div class="flex justify-between gap-3">
-                <span class="font-medium">{{ d.name }}</span>
-                <span class="text-xs text-gray-400">{{ d.user_count ?? 0 }} 位使用者</span>
-              </div>
-            </button>
-            <div v-if="filteredDepts.length === 0" class="px-4 py-6 text-xs text-gray-400 text-center">
-              {{ departments.length === 0 ? '尚未建立任何部門。請先到部門設定。' : '沒有符合的部門' }}
-            </div>
-          </template>
-        </div>
-
-        <div v-if="grantModalError" class="mt-3 text-sm text-red-600">
-          {{ grantModalError }}
-        </div>
-
-        <div class="flex justify-end gap-3 mt-5">
-          <button
-            class="px-4 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
-            @click="closeGrantModal"
-          >取消</button>
-          <button
-            class="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
-            :disabled="grantModalSubmitting || !grantModalSelectedId"
-            @click="submitGrant"
-          >{{ grantModalSubmitting ? '授權中…' : '授權' }}</button>
-        </div>
+    <TermModal :visible="showGrantModal" :title="`grant · ${grantModalLink?.name || ''}`" width="520px" @close="closeGrantModal">
+      <p class="cell-meta">a target may have at most one active grant per link.</p>
+      <div class="seg">
+        <button class="seg__opt" :class="{ 'is-on': grantModalType === 'user' }" @click="setGrantModalType('user')">user-level</button>
+        <button class="seg__opt" :class="{ 'is-on': grantModalType === 'department' }" @click="setGrantModalType('department')">department-level</button>
       </div>
-    </div>
+      <input v-model="grantModalFilter" :placeholder="grantModalType === 'user' ? 'search username · email' : 'search department'" class="term-input" style="margin-top: var(--gap-2);" />
+      <div class="picker term-box term-box--inset" style="margin-top: var(--gap-2);">
+        <template v-if="grantModalType === 'user'">
+          <button v-for="u in filteredUsers" :key="u.id" type="button" class="picker__row" :class="{ 'is-on': grantModalSelectedId === u.id }" @click="grantModalSelectedId = u.id">
+            <span class="picker__main">
+              <span class="cell-strong">{{ u.username }}</span>
+              <span class="cell-meta">{{ u.role }}{{ u.department_name ? ` · ${u.department_name}` : '' }}</span>
+            </span>
+            <span v-if="u.email" class="cell-meta">{{ u.email }}</span>
+          </button>
+          <TermEmpty v-if="filteredUsers.length === 0" message="no matching users" />
+        </template>
+        <template v-else>
+          <button v-for="d in filteredDepts" :key="d.id" type="button" class="picker__row" :class="{ 'is-on': grantModalSelectedId === d.id }" @click="grantModalSelectedId = d.id">
+            <span class="picker__main"><span class="cell-strong">{{ d.name }}</span></span>
+            <span class="cell-meta">{{ d.user_count ?? 0 }} users</span>
+          </button>
+          <TermEmpty v-if="filteredDepts.length === 0" :message="departments.length === 0 ? 'no departments yet — create one first' : 'no matching departments'" />
+        </template>
+      </div>
+      <div v-if="grantModalError" class="feedback is-err" style="margin-top: var(--gap-2);">! {{ grantModalError }}</div>
+      <template #footer>
+        <TermButton variant="ghost" @click="closeGrantModal" label="cancel" />
+        <TermButton variant="primary" :disabled="grantModalSubmitting || !grantModalSelectedId" :loading="grantModalSubmitting" :label="grantModalSubmitting ? 'granting' : 'grant'" @click="submitGrant" />
+      </template>
+    </TermModal>
   </div>
 </template>
 
@@ -209,6 +111,7 @@ import { listPlatformLinks } from '../api/platformLinks'
 import { listGrants, createGrant, revokeGrant } from '../api/serviceAccessGrants'
 import { listUsers } from '../api/users'
 import { listDepartments } from '../api/departments'
+import { TermBadge, TermButton, TermEmpty, TermModal } from '../components/cli'
 
 const links = ref([])
 const grants = ref([])
@@ -230,52 +133,27 @@ async function loadAll() {
   loading.value = true
   pageError.value = ''
   try {
-    const [linksRes, grantsRes, usersRes, deptsRes] = await Promise.all([
+    const [l, g, u, d] = await Promise.all([
       listPlatformLinks({ include_inactive: true }),
-      listGrants(),
-      listUsers(),
-      listDepartments(),
+      listGrants(), listUsers(), listDepartments(),
     ])
-    links.value = linksRes.data || []
-    grants.value = grantsRes.data || []
-    users.value = usersRes.data || []
-    departments.value = deptsRes.data || []
+    links.value = l.data || []
+    grants.value = g.data || []
+    users.value = u.data || []
+    departments.value = d.data || []
   } catch (e) {
-    pageError.value = e.response?.data?.detail || e.message || '載入失敗'
-  } finally {
-    loading.value = false
-  }
+    pageError.value = e.response?.data?.detail || e.message || 'failed to load'
+  } finally { loading.value = false }
 }
-
 onMounted(loadAll)
 
-const sortedLinks = computed(() => {
-  return links.value.slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
-})
+const sortedLinks = computed(() => links.value.slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)))
+function activeGrantsForLink(id) { return grants.value.filter(g => g.platform_link_id === id && !g.revoked_at) }
+function activeGrantsCount(id) { return activeGrantsForLink(id).length }
+function toggleExpand(id) { expandedId.value = expandedId.value === id ? null : id }
 
-function activeGrantsForLink(linkId) {
-  return grants.value.filter((g) => g.platform_link_id === linkId && !g.revoked_at)
-}
-
-function activeGrantsCount(linkId) {
-  return activeGrantsForLink(linkId).length
-}
-
-function toggleExpand(id) {
-  expandedId.value = expandedId.value === id ? null : id
-}
-
-const userById = computed(() => {
-  const m = new Map()
-  for (const u of users.value) m.set(u.id, u)
-  return m
-})
-
-const deptById = computed(() => {
-  const m = new Map()
-  for (const d of departments.value) m.set(d.id, d)
-  return m
-})
+const userById = computed(() => { const m = new Map(); for (const u of users.value) m.set(u.id, u); return m })
+const deptById = computed(() => { const m = new Map(); for (const d of departments.value) m.set(d.id, d); return m })
 
 function targetLabel(g) {
   if (g.user_id != null) {
@@ -285,32 +163,20 @@ function targetLabel(g) {
   const d = deptById.value.get(g.department_id)
   return d ? d.name : `dept#${g.department_id}`
 }
-
 function granterLabel(g) {
   if (!g.granted_by) return 'system'
   const u = userById.value.get(g.granted_by)
   return u ? u.username : `user#${g.granted_by}`
 }
-
-function formatDate(s) {
-  if (!s) return '—'
-  return new Date(s).toLocaleString('zh-TW', { dateStyle: 'short', timeStyle: 'short' })
-}
+function formatDate(s) { return s ? new Date(s).toLocaleString('en-GB') : '—' }
 
 const filteredUsers = computed(() => {
   const q = grantModalFilter.value.trim().toLowerCase()
-  if (!q) return users.value
-  return users.value.filter(
-    (u) =>
-      u.username.toLowerCase().includes(q) ||
-      (u.email || '').toLowerCase().includes(q),
-  )
+  return q ? users.value.filter(u => u.username.toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q)) : users.value
 })
-
 const filteredDepts = computed(() => {
   const q = grantModalFilter.value.trim().toLowerCase()
-  if (!q) return departments.value
-  return departments.value.filter((d) => d.name.toLowerCase().includes(q))
+  return q ? departments.value.filter(d => d.name.toLowerCase().includes(q)) : departments.value
 })
 
 function openGrantModal(link, type) {
@@ -322,19 +188,8 @@ function openGrantModal(link, type) {
   grantModalError.value = ''
   showGrantModal.value = true
 }
-
-function closeGrantModal() {
-  showGrantModal.value = false
-  grantModalLink.value = null
-  grantModalSelectedId.value = null
-  grantModalError.value = ''
-}
-
-function setGrantModalType(type) {
-  if (grantModalType.value === type) return
-  grantModalType.value = type
-  grantModalSelectedId.value = null
-}
+function closeGrantModal() { showGrantModal.value = false; grantModalLink.value = null; grantModalSelectedId.value = null; grantModalError.value = '' }
+function setGrantModalType(t) { if (grantModalType.value === t) return; grantModalType.value = t; grantModalSelectedId.value = null }
 
 async function submitGrant() {
   if (!grantModalSelectedId.value || !grantModalLink.value) return
@@ -343,28 +198,132 @@ async function submitGrant() {
   try {
     const payload = {
       platform_link_id: grantModalLink.value.id,
-      ...(grantModalType.value === 'user'
-        ? { user_id: grantModalSelectedId.value }
-        : { department_id: grantModalSelectedId.value }),
+      ...(grantModalType.value === 'user' ? { user_id: grantModalSelectedId.value } : { department_id: grantModalSelectedId.value }),
     }
     await createGrant(payload)
     closeGrantModal()
     await loadAll()
   } catch (e) {
-    grantModalError.value = e.response?.data?.detail || '授權失敗'
-  } finally {
-    grantModalSubmitting.value = false
-  }
+    grantModalError.value = e.response?.data?.detail || 'grant failed'
+  } finally { grantModalSubmitting.value = false }
 }
-
 async function handleRevoke(g) {
-  const target = targetLabel(g)
-  if (!confirm(`確認 revoke ${target} 的 grant？此動作可由再次 grant 還原。`)) return
-  try {
-    await revokeGrant(g.id)
-    await loadAll()
-  } catch (e) {
-    alert(e.response?.data?.detail || 'Revoke 失敗')
-  }
+  if (!confirm(`revoke grant for ${targetLabel(g)}?`)) return
+  try { await revokeGrant(g.id); await loadAll() }
+  catch (e) { alert(e.response?.data?.detail || 'revoke failed') }
 }
 </script>
+
+<style scoped>
+.page { display: flex; flex-direction: column; gap: var(--gap-4); padding-bottom: var(--gap-8); }
+.page-head__eyebrow { font-size: var(--t-2xs); letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--c-fg-3); }
+.page-head__title { font-size: var(--t-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin: 4px 0 2px; }
+.page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }
+
+.feedback { font-size: var(--t-xs); padding: var(--gap-2) var(--gap-3); border: var(--border-w) solid; }
+.feedback.is-err { color: var(--c-danger); border-color: var(--c-danger); background: var(--c-danger-soft); }
+.loading { padding: var(--gap-6); text-align: center; color: var(--c-fg-3); font-size: var(--t-sm); }
+
+.link-list { display: flex; flex-direction: column; gap: var(--gap-3); }
+.link-card {
+  border: var(--border-w) solid var(--c-border);
+  background: var(--c-surface-1);
+}
+.link-card__head {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: var(--gap-3);
+  align-items: center;
+  padding: var(--gap-3) var(--gap-4);
+  background: transparent;
+  border: 0;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  color: var(--c-fg-1);
+}
+.link-card__head.is-open { border-bottom: var(--border-w) solid var(--c-border); }
+.link-card__head:hover { background: var(--c-row-hover); }
+
+.link-card__title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; grid-column: 1 / 2; }
+.link-card__name { font-weight: 500; }
+.link-card__url {
+  grid-column: 1 / 2;
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  color: var(--c-fg-3);
+  word-break: break-all;
+  margin-top: 4px;
+}
+.link-card__count { display: flex; flex-direction: column; align-items: flex-end; }
+.link-card__count-num { font-size: var(--t-xl); color: var(--c-fg-1); font-weight: 600; }
+.link-card__chev { color: var(--c-fg-3); font-size: var(--t-base); }
+
+.role-gate {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--t-2xs);
+  padding: 0 6px;
+  height: 18px;
+  border: var(--border-w) solid var(--c-border-strong);
+  font-family: var(--font-mono);
+}
+.role-gate__k { color: var(--c-fg-3); }
+.role-gate__v { color: var(--c-fg-1); }
+.role-gate.is-set { border-color: var(--c-info); color: var(--c-info); }
+.role-gate.is-set .role-gate__k,
+.role-gate.is-set .role-gate__v { color: var(--c-info); }
+
+.link-card__body { background: var(--c-bg); }
+.link-card__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-2);
+  padding: var(--gap-2) var(--gap-4);
+  border-bottom: var(--border-w) solid var(--c-border);
+}
+.bar-meta { margin-left: auto; font-size: var(--t-2xs); color: var(--c-fg-3); }
+.bar-meta--warn { color: var(--c-warn); }
+
+.cell-strong { color: var(--c-fg-1); font-weight: 500; }
+.cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }
+
+.seg {
+  display: inline-flex;
+  border: var(--border-w) solid var(--c-border-strong);
+  border-radius: var(--r-soft);
+  overflow: hidden;
+  margin-top: var(--gap-2);
+}
+.seg__opt {
+  background: transparent;
+  border: 0;
+  padding: 4px 12px;
+  color: var(--c-fg-2);
+  font: inherit;
+  cursor: pointer;
+}
+.seg__opt + .seg__opt { border-left: var(--border-w) solid var(--c-border); }
+.seg__opt.is-on { background: var(--c-accent); color: var(--c-accent-fg); font-weight: 600; }
+
+.picker { max-height: 280px; overflow-y: auto; padding: 0; }
+.picker__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: var(--gap-2) var(--gap-3);
+  background: transparent;
+  border: 0;
+  border-bottom: var(--border-w) solid var(--c-border);
+  text-align: left;
+  font: inherit;
+  color: var(--c-fg-1);
+  cursor: pointer;
+}
+.picker__row:last-child { border-bottom: 0; }
+.picker__row:hover { background: var(--c-row-hover); }
+.picker__row.is-on { background: var(--c-accent-soft); }
+.picker__main { display: flex; flex-direction: column; gap: 2px; }
+</style>

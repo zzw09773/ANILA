@@ -1,160 +1,129 @@
 <template>
-  <div class="min-h-screen flex items-center justify-center bg-gray-100">
-    <div class="bg-white p-8 rounded-xl shadow-lg w-full max-w-md">
-      <div class="text-center mb-8">
-        <h1 class="text-2xl font-bold text-gray-900">CSP Platform</h1>
-        <p class="text-gray-500 mt-2">AI 模型服務管理平台</p>
+  <div class="login">
+    <!-- Top status strip — mirrors the in-app statusbar so the design system
+         is consistent before login as after. ----------------------------- -->
+    <header class="login__topbar">
+      <TermLogo :size="14" />
+      <span class="login__topbar-rule">│</span>
+      <span class="login__topbar-path">control-plane@anila <span class="term-caret" /></span>
+      <span class="login__topbar-spacer" />
+      <button class="login__theme" type="button" @click="toggleTheme" :title="`switch to ${otherTheme}`">
+        {{ theme === 'dark' ? '◐' : '◑' }} {{ theme }}
+      </button>
+    </header>
+
+    <main class="login__main">
+      <section class="login__panel">
+        <!-- Boot log ----------------------------------------------------- -->
+        <ol class="bootlog" aria-hidden="true">
+          <li v-for="(line, i) in bootLines" :key="i" class="bootlog__line" :style="{ animationDelay: `${i * 60}ms` }">
+            <span class="bootlog__ts">[{{ line.ts }}]</span>
+            <span :class="['bootlog__lvl', `is-${line.lvl}`]">{{ line.lvl }}</span>
+            <span class="bootlog__msg">{{ line.msg }}</span>
+          </li>
+        </ol>
+
+        <TermBox title="auth · local session" pad="lg" hint="local · ldap · oidc">
+          <form class="login__form" @submit.prevent="handleLogin" autocomplete="on">
+            <TermField label="username">
+              <input
+                v-model="username"
+                type="text"
+                class="term-input"
+                placeholder="enter username"
+                autocomplete="username"
+                autofocus
+                required
+              />
+            </TermField>
+            <TermField label="password">
+              <input
+                v-model="password"
+                type="password"
+                class="term-input"
+                placeholder="••••••••"
+                autocomplete="current-password"
+                required
+              />
+            </TermField>
+
+            <div v-if="error" class="login__msg" :class="isPending ? 'is-warn' : 'is-err'">
+              <span class="login__msg-glyph">{{ isPending ? '⏳' : '!' }}</span>
+              <span>{{ error }}</span>
+            </div>
+
+            <div class="login__actions">
+              <TermButton type="submit" variant="primary" :loading="loading" :label="loading ? 'auth' : 'sign-in'" />
+              <TermButton variant="ghost" @click="openRegisterModal" label="register" />
+            </div>
+
+            <p class="login__hint">
+              <TermKbd>↵</TermKbd> submit · <TermKbd>Tab</TermKbd> field · <TermKbd>1</TermKbd>–<TermKbd>9</TermKbd> sso provider
+            </p>
+          </form>
+        </TermBox>
+
+        <TermBox v-if="oidcProviders.length" title="auth · single sign-on" pad="md">
+          <ul class="login__sso">
+            <li
+              v-for="(provider, i) in oidcProviders"
+              :key="provider.id"
+              class="login__sso-row"
+            >
+              <span class="login__sso-key">[{{ i + 1 }}]</span>
+              <span class="login__sso-name">{{ provider.name }}</span>
+              <span class="login__sso-meta">oidc · {{ provider.button_text || `${provider.name} provider` }}</span>
+              <button
+                type="button"
+                class="login__sso-btn"
+                :disabled="oidcLoadingId === provider.id"
+                @click="handleOidcLogin(provider)"
+              >
+                {{ oidcLoadingId === provider.id ? 'redirecting…' : 'connect →' }}
+              </button>
+            </li>
+          </ul>
+        </TermBox>
+
+        <p class="login__legal">
+          ANILA · CSP control plane &nbsp;·&nbsp; on-prem &nbsp;·&nbsp; access requires admin approval
+        </p>
+      </section>
+    </main>
+
+    <!-- Register modal ------------------------------------------------- -->
+    <TermModal :visible="showRegisterModal" title="register · self-service" width="480px" @close="closeRegisterModal">
+      <div v-if="!regSuccess" class="login__reg">
+        <TermField label="username">
+          <input v-model="reg.username" class="term-input" placeholder="e.g. j.smith" autocomplete="username" />
+        </TermField>
+        <TermField label="email">
+          <input v-model="reg.email" type="email" class="term-input" placeholder="user@corp.example" autocomplete="email" />
+        </TermField>
+        <TermField label="password" hint="8+ chars · upper · lower · symbol">
+          <input v-model="reg.password" type="password" class="term-input" placeholder="••••••••" autocomplete="new-password" />
+          <ul v-if="reg.password" class="login__rules">
+            <li :class="reg.password.length >= 8 ? 'is-ok' : 'is-pending'">{{ reg.password.length >= 8 ? '●' : '○' }} 8+ chars</li>
+            <li :class="/[A-Z]/.test(reg.password) ? 'is-ok' : 'is-pending'">{{ /[A-Z]/.test(reg.password) ? '●' : '○' }} uppercase</li>
+            <li :class="/[a-z]/.test(reg.password) ? 'is-ok' : 'is-pending'">{{ /[a-z]/.test(reg.password) ? '●' : '○' }} lowercase</li>
+            <li :class="hasSpecial(reg.password) ? 'is-ok' : 'is-pending'">{{ hasSpecial(reg.password) ? '●' : '○' }} symbol</li>
+          </ul>
+        </TermField>
+        <div v-if="regError" class="login__msg is-err">! {{ regError }}</div>
+      </div>
+      <div v-else class="login__reg-done">
+        <p class="login__msg is-ok">✓ {{ regSuccess }}</p>
+        <p class="login__legal">an admin must approve this account before first login.</p>
       </div>
 
-      <!-- Login Form (本機帳號) -->
-      <form @submit.prevent="handleLogin" class="space-y-5">
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">帳號</label>
-          <input
-            v-model="username"
-            type="text"
-            required
-            class="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition"
-            placeholder="請輸入帳號"
-          />
-        </div>
-
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">密碼</label>
-          <input
-            v-model="password"
-            type="password"
-            required
-            class="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition"
-            placeholder="請輸入密碼"
-          />
-        </div>
-
-        <div v-if="error" class="text-sm p-3 rounded-lg" :class="isPending ? 'text-yellow-700 bg-yellow-50 border border-yellow-200' : 'text-red-600 bg-red-50'">
-          <span v-if="isPending">⏳ {{ error }}</span>
-          <span v-else>{{ error }}</span>
-        </div>
-
-        <button
-          type="submit"
-          :disabled="loading"
-          class="w-full bg-indigo-600 text-white py-2.5 rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-50 transition"
-        >
-          {{ loading ? '登入中...' : '登入' }}
-        </button>
-
-        <button
-          type="button"
-          @click="openRegisterModal"
-          class="w-full border border-gray-300 text-gray-700 py-2.5 rounded-lg font-medium hover:bg-gray-50 transition"
-        >
-          註冊新帳號
-        </button>
-      </form>
-
-      <!-- 單一登入（OIDC） -->
-      <div v-if="oidcProviders.length" class="mt-8 pt-6 border-t border-gray-200">
-        <p class="text-sm font-medium text-gray-700 mb-3">單一登入</p>
-        <div class="space-y-3">
-          <button
-            v-for="provider in oidcProviders"
-            :key="provider.id"
-            type="button"
-            @click="handleOidcLogin(provider)"
-            :disabled="oidcLoadingId === provider.id"
-            class="w-full border border-gray-300 text-gray-700 py-2.5 rounded-lg font-medium hover:bg-gray-50 disabled:opacity-50 transition"
-          >
-            {{ oidcLoadingId === provider.id ? '跳轉中...' : (provider.button_text || `使用 ${provider.name} 登入`) }}
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Register Modal -->
-    <div v-if="showRegisterModal" class="fixed inset-0 z-50 flex items-center justify-center">
-      <div class="fixed inset-0 bg-black/50" @click="closeRegisterModal"></div>
-      <div class="relative bg-white rounded-xl shadow-xl p-6 max-w-md w-full mx-4">
-        <h3 class="text-lg font-semibold mb-4">註冊新帳號</h3>
-
-        <div class="space-y-4">
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">帳號</label>
-            <input
-              v-model="reg.username"
-              type="text"
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
-              placeholder="請輸入帳號"
-            />
-          </div>
-
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">Email</label>
-            <input
-              v-model="reg.email"
-              type="email"
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
-              placeholder="請輸入 Email"
-            />
-          </div>
-
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">密碼</label>
-            <input
-              v-model="reg.password"
-              type="password"
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
-              placeholder="請輸入密碼"
-            />
-            <p class="text-xs text-gray-400 mt-1">至少 8 字元，須包含大小寫字母及特殊符號</p>
-            <ul class="text-xs mt-2 space-y-0.5" v-if="reg.password">
-              <li :class="reg.password.length >= 8 ? 'text-green-600' : 'text-gray-400'">
-                {{ reg.password.length >= 8 ? '✓' : '○' }} 至少 8 個字元
-              </li>
-              <li :class="/[A-Z]/.test(reg.password) ? 'text-green-600' : 'text-gray-400'">
-                {{ /[A-Z]/.test(reg.password) ? '✓' : '○' }} 至少一個大寫字母
-              </li>
-              <li :class="/[a-z]/.test(reg.password) ? 'text-green-600' : 'text-gray-400'">
-                {{ /[a-z]/.test(reg.password) ? '✓' : '○' }} 至少一個小寫字母
-              </li>
-              <li :class="hasSpecial(reg.password) ? 'text-green-600' : 'text-gray-400'">
-                {{ hasSpecial(reg.password) ? '✓' : '○' }} 至少一個特殊符號
-              </li>
-            </ul>
-          </div>
-
-          <div v-if="regError" class="text-red-600 text-sm bg-red-50 p-3 rounded-lg">{{ regError }}</div>
-
-          <div v-if="regSuccess" class="text-green-700 text-sm bg-green-50 border border-green-200 p-3 rounded-lg">
-            {{ regSuccess }}
-          </div>
-        </div>
-
-        <div class="flex justify-end space-x-3 mt-6">
-          <button
-            v-if="!regSuccess"
-            @click="closeRegisterModal"
-            class="px-4 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
-          >
-            取消
-          </button>
-          <button
-            v-if="!regSuccess"
-            @click="handleRegister"
-            :disabled="!canRegister || registering"
-            class="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
-          >
-            {{ registering ? '送出中...' : '送出申請' }}
-          </button>
-          <button
-            v-if="regSuccess"
-            @click="closeRegisterModal"
-            class="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
-          >
-            關閉
-          </button>
-        </div>
-      </div>
-    </div>
+      <template #footer>
+        <template v-if="!regSuccess">
+          <TermButton variant="ghost" @click="closeRegisterModal" label="cancel" />
+          <TermButton variant="primary" :disabled="!canRegister" :loading="registering" :label="registering ? 'submitting' : 'submit'" @click="handleRegister" />
+        </template>
+        <TermButton v-else variant="primary" @click="closeRegisterModal" label="close" />
+      </template>
+    </TermModal>
   </div>
 </template>
 
@@ -163,9 +132,18 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { getOidcStartUrl, listPublicAuthProviders, register as registerApi } from '../api/auth'
+import { useTheme } from '../composables/useTheme'
+import TermLogo from '../components/cli/TermLogo.vue'
+import TermBox from '../components/cli/TermBox.vue'
+import TermButton from '../components/cli/TermButton.vue'
+import TermField from '../components/cli/TermField.vue'
+import TermKbd from '../components/cli/TermKbd.vue'
+import TermModal from '../components/cli/TermModal.vue'
 
 const router = useRouter()
 const authStore = useAuthStore()
+const { theme, toggleTheme } = useTheme()
+const otherTheme = computed(() => (theme.value === 'dark' ? 'light' : 'dark'))
 
 const username = ref('')
 const password = ref('')
@@ -181,10 +159,18 @@ const regError = ref('')
 const regSuccess = ref('')
 const reg = ref({ username: '', email: '', password: '' })
 
-const SPECIAL_CHARS = '!@#$%^&*()_+-=[]{}|;:,.<>?/~`"\'\\'
-function hasSpecial(str) {
-  return [...str].some(c => SPECIAL_CHARS.includes(c))
+// Stable boot sequence — purely cosmetic but reinforces the terminal frame.
+// Timestamps anchored to load to feel real instead of random.
+const bootLines = ref([])
+const t0 = Date.now()
+function ts(offsetMs) {
+  const d = new Date(t0 + offsetMs)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
+
+const SPECIAL_CHARS = '!@#$%^&*()_+-=[]{}|;:,.<>?/~`"\'\\'
+function hasSpecial(str) { return [...str].some(c => SPECIAL_CHARS.includes(c)) }
 
 const canRegister = computed(() =>
   reg.value.username &&
@@ -195,9 +181,8 @@ const canRegister = computed(() =>
   hasSpecial(reg.value.password)
 )
 
-// LDAP 已下線；只剩 OIDC 一種外部 provider。
 const oidcProviders = computed(() =>
-  providers.value.filter(provider => provider.provider_type === 'oidc')
+  providers.value.filter(p => p.provider_type === 'oidc')
 )
 
 async function fetchProviders() {
@@ -207,9 +192,28 @@ async function fetchProviders() {
   } catch {
     providers.value = []
   }
+  // Patch the boot log with whatever the providers tell us is wired up.
+  bootLines.value = [
+    { ts: ts(0),   lvl: 'info', msg: 'ANILA · CSP control plane — booting tty/0' },
+    { ts: ts(40),  lvl: 'info', msg: 'loading auth providers...' },
+    { ts: ts(120), lvl: 'ok',   msg: `${providers.value.length} provider(s) registered` },
+    { ts: ts(180), lvl: 'info', msg: 'awaiting credentials' },
+  ]
 }
 
-onMounted(fetchProviders)
+onMounted(() => {
+  fetchProviders()
+  document.addEventListener('keydown', handleHotkey)
+})
+
+function handleHotkey(e) {
+  // Number keys trigger SSO providers when nothing else has focus on inputs.
+  if (e.target?.tagName === 'INPUT') return
+  const num = Number(e.key)
+  if (Number.isFinite(num) && num >= 1 && num <= oidcProviders.value.length) {
+    handleOidcLogin(oidcProviders.value[num - 1])
+  }
+}
 
 async function handleLogin() {
   error.value = ''
@@ -219,8 +223,8 @@ async function handleLogin() {
     await authStore.login(username.value, password.value, { auth_source: 'local' })
     router.push('/')
   } catch (e) {
-    const detail = e.response?.data?.detail || '登入失敗，請檢查帳號密碼'
-    if (detail.includes('等待核准')) {
+    const detail = e.response?.data?.detail || 'login failed — check credentials'
+    if (detail.includes('等待核准') || detail.toLowerCase().includes('pending')) {
       isPending.value = true
     }
     error.value = detail
@@ -230,6 +234,7 @@ async function handleLogin() {
 }
 
 async function handleOidcLogin(provider) {
+  if (!provider) return
   error.value = ''
   isPending.value = false
   oidcLoadingId.value = provider.id
@@ -237,8 +242,7 @@ async function handleOidcLogin(provider) {
     const { data } = await getOidcStartUrl(provider.id, '/')
     window.location.href = data.authorization_url
   } catch (e) {
-    const detail = e.response?.data?.detail
-    error.value = detail || '無法啟動單一登入流程'
+    error.value = e.response?.data?.detail || 'unable to start sso flow'
     oidcLoadingId.value = null
   }
 }
@@ -249,7 +253,6 @@ function openRegisterModal() {
   regSuccess.value = ''
   showRegisterModal.value = true
 }
-
 function closeRegisterModal() {
   showRegisterModal.value = false
 }
@@ -259,16 +262,186 @@ async function handleRegister() {
   registering.value = true
   try {
     const { data } = await registerApi(reg.value.username, reg.value.email, reg.value.password)
-    regSuccess.value = data.message || '註冊成功，請等待管理員核准'
+    regSuccess.value = data.message || 'registered — pending approval'
   } catch (e) {
     const detail = e.response?.data?.detail
-    if (Array.isArray(detail)) {
-      regError.value = detail.map(d => d.msg).join('；')
-    } else {
-      regError.value = detail || '註冊失敗'
-    }
+    regError.value = Array.isArray(detail) ? detail.map(d => d.msg).join('; ') : (detail || 'register failed')
   } finally {
     registering.value = false
   }
 }
 </script>
+
+<style scoped>
+.login {
+  min-height: 100vh;
+  background: var(--c-bg);
+  display: grid;
+  grid-template-rows: var(--shell-topbar-h) 1fr;
+}
+
+.login__topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-3);
+  padding: 0 var(--gap-4);
+  background: var(--c-surface-2);
+  border-bottom: var(--border-w) solid var(--c-border);
+  font-size: var(--t-xs);
+  color: var(--c-fg-2);
+}
+.login__topbar-rule { color: var(--c-border-strong); }
+.login__topbar-path { color: var(--c-fg-3); }
+.login__topbar-path .term-caret { vertical-align: -0.05em; }
+.login__topbar-spacer { flex: 1; }
+.login__theme {
+  background: transparent;
+  border: var(--border-w) solid var(--c-border);
+  color: var(--c-fg-2);
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--r-soft);
+  font-size: var(--t-2xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.login__theme:hover { color: var(--c-accent); border-color: var(--c-accent); }
+
+.login__main {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--gap-6);
+}
+
+.login__panel {
+  width: 100%;
+  max-width: 520px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-4);
+}
+
+.bootlog {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 var(--gap-2);
+  font-size: var(--t-2xs);
+  color: var(--c-fg-3);
+  border-bottom: var(--border-w) dashed var(--c-border);
+}
+.bootlog__line {
+  display: flex;
+  gap: var(--gap-2);
+  padding: 1px 0;
+  opacity: 0;
+  animation: boot-fade 220ms var(--easing) forwards;
+}
+@keyframes boot-fade {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: none; }
+}
+.bootlog__ts { color: var(--c-fg-mute); font-variant-numeric: tabular-nums; }
+.bootlog__lvl {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  width: 32px;
+  flex-shrink: 0;
+}
+.bootlog__lvl.is-info { color: var(--c-info); }
+.bootlog__lvl.is-ok   { color: var(--c-ok); }
+.bootlog__lvl.is-warn { color: var(--c-warn); }
+.bootlog__lvl.is-err  { color: var(--c-danger); }
+
+.login__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-3);
+}
+.login__actions {
+  display: flex;
+  gap: var(--gap-2);
+  margin-top: var(--gap-1);
+}
+.login__hint {
+  font-size: var(--t-2xs);
+  color: var(--c-fg-3);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.login__msg {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-2);
+  font-size: var(--t-xs);
+  padding: var(--gap-2) var(--gap-3);
+  border: var(--border-w) solid;
+}
+.login__msg.is-err  { color: var(--c-danger); border-color: var(--c-danger); background: var(--c-danger-soft); }
+.login__msg.is-warn { color: var(--c-warn);   border-color: var(--c-warn);   background: var(--c-warn-soft); }
+.login__msg.is-ok   { color: var(--c-ok);     border-color: var(--c-ok);     background: var(--c-ok-soft); }
+.login__msg-glyph { font-weight: 600; }
+
+.login__sso {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.login__sso-row {
+  display: grid;
+  grid-template-columns: 28px 1fr auto auto;
+  align-items: center;
+  gap: var(--gap-3);
+  padding: var(--gap-2) 0;
+  border-top: var(--border-w) dashed var(--c-border);
+  font-size: var(--t-sm);
+}
+.login__sso-row:first-child { border-top: 0; }
+.login__sso-key { color: var(--c-fg-3); font-size: var(--t-xs); }
+.login__sso-name { color: var(--c-fg-1); font-weight: 500; }
+.login__sso-meta { color: var(--c-fg-3); font-size: var(--t-2xs); letter-spacing: 0.04em; }
+.login__sso-btn {
+  background: transparent;
+  color: var(--c-accent);
+  border: 0;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  font-size: var(--t-xs);
+}
+.login__sso-btn:hover { text-decoration: underline; }
+.login__sso-btn:disabled { color: var(--c-fg-3); cursor: not-allowed; }
+
+.login__legal {
+  font-size: var(--t-2xs);
+  color: var(--c-fg-mute);
+  text-align: center;
+  letter-spacing: 0.04em;
+}
+
+.login__reg {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-3);
+}
+.login__rules {
+  margin-top: var(--gap-1);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px var(--gap-3);
+  font-size: var(--t-2xs);
+}
+.login__rules li.is-ok      { color: var(--c-ok); }
+.login__rules li.is-pending { color: var(--c-fg-3); }
+.login__reg-done {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-3);
+}
+</style>
