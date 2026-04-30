@@ -62,11 +62,11 @@ from alembic import op
 
 
 revision: str = "0026"
-# 0025 was already taken by 0025_add_action_functions which user landed
-# in parallel with this Phase 5 work; both share parent 0024. Chaining
-# this onto 0025 (rather than rebasing 0025 to a sibling) keeps the
-# history linear without rewriting the action-functions migration.
-down_revision: Union[str, None] = "0025"
+# Chains directly onto 0024. (0025_add_action_functions was removed when
+# the ANILA Functions v1 prototype was wound down; this migration was
+# previously chained onto it and is now rebased to 0024 to keep the
+# history linear.)
+down_revision: Union[str, None] = "0024"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

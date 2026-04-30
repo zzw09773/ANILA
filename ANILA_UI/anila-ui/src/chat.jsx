@@ -235,10 +235,6 @@ export const MessageBubble = ({
   onSwitchRevision,
   onOpenCitation,
   onPickFollowUp,
-  // ANILA Functions v1: optional toolbar actions list + run handler.
-  // Threaded from ChatRuntime; absent props degrade gracefully.
-  functionActions,
-  onRunFunction,
 }) => {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -579,22 +575,6 @@ export const MessageBubble = ({
           >
             <IconThumbDn />
           </IconButton>
-          {/* ANILA Functions v1: developer-authored Action buttons.
-              Up to 4 inline; if more, follow-up commit will add an
-              overflow menu. Each button POSTs to /api/functions/<slug>/run
-              and the parent ChatRuntime handles SSE event dispatch. */}
-          {Array.isArray(functionActions) && functionActions.slice(0, 4).map((fnAct) => (
-            <IconButton
-              key={`${fnAct.function_slug}:${fnAct.action_id}`}
-              title={fnAct.name}
-              onClick={() => onRunFunction?.(fnAct, msg, conversationId)}
-              disabled={isStreaming}
-            >
-              {fnAct.icon_data_url
-                ? <img src={fnAct.icon_data_url} alt="" width={16} height={16} />
-                : <span style={{ fontSize: 14 }}>✦</span>}
-            </IconButton>
-          ))}
           {Array.isArray(msg.revisions) && msg.revisions.length > 1 && (() => {
             const total = msg.revisions.length;
             const current = typeof msg.activeRev === "number" ? msg.activeRev : total - 1;
@@ -1158,9 +1138,6 @@ export const Sidebar = ({
   user,
   onLogout,
   onOpenSettings,
-  // ANILA Functions v1: developer / admin jump to /admin/functions.
-  // Optional — Sidebar still renders if not provided.
-  onOpenFunctions,
   collapsed,
   onToggleCollapsed,
   folder,
@@ -1593,14 +1570,6 @@ export const Sidebar = ({
           {(close) => (
             <div>
               <MenuItem leftIcon={<IconSettings size={14} />} onClick={() => { onOpenSettings(); close(); }}>設定</MenuItem>
-              {/* ANILA Functions v1: only developer / admin see this entry.
-                  Routes to /admin/functions where they can author Action
-                  buttons, manage Valves, and review the audit log. */}
-              {(user?.role === "developer" || user?.role === "admin") && onOpenFunctions && (
-                <MenuItem leftIcon={<IconSpark size={14} />} onClick={() => { onOpenFunctions(); close(); }}>
-                  Functions
-                </MenuItem>
-              )}
               {/* Sprint 7 X follow-up：API Key menu item 已移除（cookie 流程後 dead code）。 */}
               <Divider />
               <MenuItem leftIcon={<IconLogout size={14} />} onClick={onLogout}>登出</MenuItem>
