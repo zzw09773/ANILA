@@ -19,6 +19,11 @@ import { config, readCsrfCookie } from "./runtime/api.js";
 import { useAuth, useLogoutRedirect } from "./runtime/auth.jsx";
 import { streamChatCompletion } from "./runtime/sse.js";
 import { latchConversationWithMeta } from "./runtime/classified.js";
+import {
+  enqueueClassifyRetry,
+  flushAll as flushClassifyRetries,
+  installFocusFlush,
+} from "./runtime/classifyRetryQueue.js";
 import { buildPersistMeta } from "./runtime/messageMeta.js";
 import { cleanGeneratedTitle } from "./runtime/titleClean.js";
 import { relativeLabel } from "./runtime/time.js";
@@ -335,6 +340,17 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     if (isAuthenticated) {
       void refreshAgents();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated]);
+
+  // Sprint 8 X / Phase K — drain any pending classify retries on
+  // window focus so a flaky network or a page that was backgrounded
+  // mid-stream still ends up with the lock persisted to CSP.
+  useEffect(() => {
+    if (!isAuthenticated) return undefined;
+    const sender = (numericId) => apiClassifyConversation(authRequest, numericId);
+    void flushClassifyRetries(sender);
+    return installFocusFlush(sender);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated]);
 
@@ -837,18 +853,28 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     });
 
     // Classification latch — one-way. See runtime/classified.js.
+    //
+    // Persistence:
+    //   * If convId is already a numeric server id → POST /classify
+    //     immediately. Failures land in the retry queue (page focus /
+    //     next user message will re-send).
+    //   * If convId is still a client temp string id (the brief
+    //     window between optimistic create and the server reply) →
+    //     queue with numericId=null so resolveTempId can replay it
+    //     once ensureConversation hands us the real id.
     if (meta.classified === true) {
       setConversations((prev) => {
         const prior = prev.find((c) => c.id === convId);
-        // Only persist once: when we flip from not-classified → classified.
-        // Fire-and-forget — the DB is the safety net so a reload still
-        // renders the lock even though we also keep it in React state.
-        if (
-          prior &&
-          !prior.classified &&
-          typeof convId === "number"
-        ) {
-          apiClassifyConversation(authRequest, convId).catch(() => {});
+        if (prior && !prior.classified) {
+          if (typeof convId === "number") {
+            apiClassifyConversation(authRequest, convId).catch((err) => {
+              // eslint-disable-next-line no-console
+              console.error("[classified-latch] persistence failed", err);
+              enqueueClassifyRetry(convId, { numericId: convId });
+            });
+          } else {
+            enqueueClassifyRetry(convId, { numericId: null });
+          }
         }
         return prev.map((c) =>
           c.id === convId ? latchConversationWithMeta(c, meta) : c,

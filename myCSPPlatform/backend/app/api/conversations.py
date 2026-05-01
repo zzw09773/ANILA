@@ -329,6 +329,14 @@ def edit_user_message(
 
 
 # ── Classified policy ─────────────────────────────────────────────────────────
+#
+# Classified is one-way (README, Wave 2). The platform's invariant is
+# "once latched, never downgraded" — Sprint 8 X / Phase K removes the
+# /declassify endpoint entirely (was a pre-existing backdoor that
+# violated the invariant; nothing in the frontend ever called it).
+# To handle a genuine misclassification, ops should write a manual
+# admin script + audit entry rather than expose a downgrade HTTP
+# surface.
 
 @router.post("/{conv_id}/classify", response_model=ConversationOut)
 def classify_conversation(
@@ -337,15 +345,6 @@ def classify_conversation(
     current_user: User = Depends(get_current_user),
 ):
     return svc.classify_conversation(db, conv_id, current_user)
-
-
-@router.post("/{conv_id}/declassify", response_model=ConversationOut)
-def declassify_conversation(
-    conv_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    return svc.declassify_conversation(db, conv_id, current_user)
 
 
 # ── Share links ───────────────────────────────────────────────────────────────

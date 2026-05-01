@@ -608,7 +608,12 @@ curl -H "Authorization: Bearer <your-api-key>" http://localhost:8000/health
 | `API_KEY` | （空） | 留空不啟用驗證 |
 | `API_DEV_MODE` | `false` | `true` 則跳過驗證 |
 | `UPLOAD_DIR` | `/tmp/anila_uploads` | 上傳暫存目錄 |
-| `CSP_SERVICE_TOKEN` | （空） | 由 myCSPPlatform 發給 agent 的 s2s token；留空 → middleware 跳過檢查 |
+| `CSP_BOOTSTRAP_TOKEN` | （空） | （Sprint 8 X / Phase D）首次啟動 bootstrap；entrypoint 會把它換成 `csk-` 寫進 state file 後失效。詳見 [`docs/BOOTSTRAP_DEPLOYMENT.md`](docs/BOOTSTRAP_DEPLOYMENT.md) |
+| `ANILA_AGENT_ID` | （空） | bootstrap 用；CSP 註冊後的 agent id |
+| `ANILA_ENDPOINT_URL` | （空） | bootstrap 用；agent 自己對外的 URL，必須與 CSP 註冊資料相同 |
+| `ANILA_REPLICA_LABEL` | （空） | bootstrap 用；K8s 多副本時建議帶 `pod-0` 等 |
+| `ANILA_AGENT_STATE_DIR` | `/var/lib/anila-agent` | 持久化 service token 的目錄；docker-compose 用 named volume；K8s 用 PVC |
+| `CSP_SERVICE_TOKEN` | （空） | **Legacy**（fleet-shared）— state file 不存在時的 fallback；建議 cutover 完成後從 env 移除 |
 | `CSP_BASE_URL` | （空） | LLM / embedding 改走 CSP proxy 時的 base URL |
 | `CSP_API_KEY` | （空） | CSP proxy 呼叫時用的 bearer token |
 

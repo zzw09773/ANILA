@@ -41,9 +41,10 @@
 - **部門管理** — 停用部門時自動解除成員綁定
 
 ### 認證整合
-- **本機帳號** — JWT（Access Token 15 min + Refresh Token 7 天）
-- **LDAP** — 透過 Auth Provider 設定 DN / Filter / StartTLS
-- **OIDC / SSO** — Authorization Code Flow；callback 時**自動 mint 一把 24h 短效 API Key** 回帶 UI（Wave A）
+- **本機帳號** — JWT（Access Token 15 min + Refresh Token 7 天，httpOnly cookie）
+- **OIDC / SSO** — Authorization Code Flow + PKCE (S256) + nonce + JWKS 驗 `id_token`；callback 完全用 cookie，**不再 mint 24h 短效 API Key**（Wave 2 / Sprint 6 X 後）
+- **LDAP**（已下線）— Sprint 5 X / migration 0021 移除欄位；對 `/api/auth/login` 帶 `auth_source=ldap` 直接回 400。SSO cutover 路線見 [`../docs/sso-migration.md`](../docs/sso-migration.md)
+- **Service-to-service**（Sprint 8 X / Phase A）— Agent / Router / Worker 不再共用單一 env-var token；改走 per-credential `agent_credentials` / `service_clients` table，admin 在 UI issue bootstrap → agent CLI 換 long-lived `csk-` token。詳見 [`../docs/runbooks/service-token-cutover.md`](../docs/runbooks/service-token-cutover.md)
 
 ### 維運功能
 - **告警中心** — 系統異常告警，可 Ack / Resolve
@@ -377,11 +378,12 @@ AUTO_REGISTER_LINKS=[
 | POST | `/api/auth/register` | 自助申請帳號（需管理員核准） |
 | POST | `/api/auth/login` | 本機 / LDAP 登入，取得 access + refresh token |
 | POST | `/api/auth/refresh` | 使用 refresh token 換發新 token |
+| POST | `/api/auth/logout` | 登出 — 清 httpOnly cookie + bump token_version 撤銷既存 access token |
 | GET | `/api/auth/me` | 取得當前使用者資訊 |
 | PUT | `/api/auth/password` | 修改自身密碼（舊 Token 同步作廢） |
-| GET | `/api/auth/providers` | 列出可用的公開 SSO/LDAP Provider |
-| GET | `/api/auth/oidc/{id}/start` | 取得 OIDC 授權跳轉 URL |
-| GET | `/api/auth/oidc/{id}/callback` | OIDC Callback（瀏覽器重導，會自動發 24h API Key 回帶 UI） |
+| GET | `/api/auth/providers` | 列出可用的公開 OIDC Provider |
+| GET | `/api/auth/oidc/{id}/start` | 取得 OIDC 授權跳轉 URL（含 PKCE state + nonce） |
+| GET | `/api/auth/oidc/{id}/callback` | OIDC Callback（瀏覽器重導，cookie-only；Wave 2 起不再回帶 API Key） |
 
 ### 使用者管理 (`/api/users`) — 需 Admin
 
@@ -432,6 +434,30 @@ AUTO_REGISTER_LINKS=[
 | PUT | `/api/agents/{id}/encryption` | 切換 `requires_encryption`（需 Admin） |
 | DELETE | `/api/agents/{id}` | **硬刪除** agent（需 Admin） |
 
+#### Sprint 8 X / Phase A — service-token bootstrap
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| POST | `/api/agents/{id}/issue-bootstrap` | 核發單次使用 `bsk-` token（需 Admin），15 分鐘預設 TTL |
+| POST | `/api/agents/{id}/bootstrap` | 公開（token-gated）— agent 用 `bsk-` 換長效 `csk-` |
+| POST | `/api/agents/{id}/credentials/issue-static` | 核發長效 `csk-`，跳過 bootstrap（Phase F Tier 0；需 Admin） |
+| GET | `/api/agents/{id}/credentials` | 列出該 agent 的 active + revoked credentials（需 Admin） |
+| POST | `/api/agents/{id}/credentials/{cid}/rotate` | 輪替 credential，舊 token 24h grace 仍可用（需 Admin） |
+| DELETE | `/api/agents/{id}/credentials/{cid}` | 立即吊銷 credential（需 Admin） |
+| GET | `/api/agents/{id}/credentials/me` | Agent self-introspection（auth = service token；Phase F Tier 1） |
+
+### Service Clients (`/api/service-clients`) — 需 Admin
+
+Router / worker / admin-tool 用的 service token 管理（不是 agent，但走相同的 envelope + lookup hash 機制）。
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| GET | `/api/service-clients` | 列出全部 |
+| POST | `/api/service-clients` | 建立新 client + 核發初始 token |
+| POST | `/api/service-clients/{id}/issue-static` | 直接重發 token（無 grace） |
+| POST | `/api/service-clients/{id}/rotate` | 輪替 token（含 grace） |
+| DELETE | `/api/service-clients/{id}` | 吊銷 |
+
 ### 對話 / 附件 / 分享 / 交接（UI 用）
 
 | 方法 | 路徑 | 說明 |
@@ -463,7 +489,17 @@ AUTO_REGISTER_LINKS=[
 `GET /api/audit-logs`（可 action / resource_type / actor / status 篩選，最多 500 筆）
 
 ### 用量統計 (`/api/usage`)
-`GET /api/usage/{summary,chart,top-models,top-users,export}`
+
+`GET /api/usage/{summary,chart,top-models,top-users,top-departments,export}`
+
+Sprint 8 X / Phase G — caller attribution 計量（admin only）：
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| GET | `/api/usage/top-agents?days=30&limit=10` | 過去 N 天 token 消耗最多的 agent |
+| GET | `/api/usage/by-base-model?days=30` | group by `agents.base_model_id`，看哪些底層 LLM 被 agent 透過 CSP 用了多少 |
+| GET | `/api/usage/by-client?days=30` | group by `service_clients.id`（Router / worker） |
+| GET | `/api/usage/agents/{id}?days=30` | 單一 agent 的時序 + summary |
 
 ### 平台連結 (`/api/platform-links`)
 `GET / POST / PUT / DELETE /api/platform-links[/{id}]`
@@ -639,4 +675,4 @@ myCSPPlatform/
 
 ---
 
-**Last updated**: 2026-04-24 · **Role**: Control + Data Plane · **Authoritative for**: users · api_keys · models · agents · token_usage · audit_logs
+**Last updated**: 2026-05-01 (Sprint 8 X — Phase A/G) · **Role**: Control + Data Plane · **Authoritative for**: users · api_keys · models · agents · agent_credentials · service_clients · token_usage · audit_logs

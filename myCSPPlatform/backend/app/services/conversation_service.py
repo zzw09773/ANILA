@@ -283,27 +283,10 @@ def classify_conversation(db: Session, conv_id: int, user: User) -> Conversation
     return conv
 
 
-def declassify_conversation(db: Session, conv_id: int, admin: User) -> Conversation:
-    """Remove classified status — admin only."""
-    if admin.role != "admin":
-        raise HTTPException(status_code=403, detail="需要管理員權限")
-    conv = db.query(Conversation).filter(Conversation.id == conv_id).first()
-    if not conv:
-        raise HTTPException(status_code=404, detail="找不到此對話")
-    conv.classified = False
-    conv.classified_at = None
-    conv.classified_by = None
-    db.add(AuditLog(
-        user_id=admin.id,
-        action="declassify_conversation",
-        resource_type="conversation",
-        resource_id=str(conv_id),
-        status="success",
-        details=f"Admin {admin.username} declassified conversation {conv_id}",
-    ))
-    db.commit()
-    db.refresh(conv)
-    return conv
+# Sprint 8 X / Phase K — declassify_conversation removed. Classified
+# is one-way per platform invariant. The previous implementation was a
+# backdoor that the README explicitly contradicted; the corresponding
+# HTTP route in app/api/conversations.py is also gone.
 
 
 def log_classified_access(db: Session, conv_id: int, user: User) -> None:
