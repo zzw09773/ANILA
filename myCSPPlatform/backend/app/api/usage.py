@@ -12,12 +12,16 @@ from app.schemas.token_usage import (
 )
 from app.services.auth_service import get_current_user, require_admin
 from app.services.usage_service import (
-    get_usage_summary,
+    export_usage_csv,
+    get_agent_usage,
     get_chart_data,
+    get_top_agents,
+    get_top_departments,
     get_top_models,
     get_top_users,
-    get_top_departments,
-    export_usage_csv,
+    get_usage_by_base_model,
+    get_usage_by_client,
+    get_usage_summary,
 )
 
 router = APIRouter(prefix="/api/usage", tags=["用量統計"])
@@ -124,6 +128,51 @@ def top_departments(
         model_type=model_type,
         department_id=department_id,
     )
+
+
+# ── Sprint 8 X / Phase G — caller attribution rollups ───────────────────────
+
+
+@router.get("/top-agents")
+def top_agents(
+    days: int = Query(30, ge=1, le=180),
+    limit: int = Query(10, ge=1, le=50),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Top-N agents by token consumption over the last ``days`` days."""
+    return get_top_agents(db, days=days, limit=limit)
+
+
+@router.get("/by-base-model")
+def by_base_model(
+    days: int = Query(30, ge=1, le=180),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Group attributed token spend by ``agents.base_model_id``."""
+    return get_usage_by_base_model(db, days=days)
+
+
+@router.get("/by-client")
+def by_client(
+    days: int = Query(30, ge=1, le=180),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Group attributed token spend by ``service_clients.id`` (Router / worker)."""
+    return get_usage_by_client(db, days=days)
+
+
+@router.get("/agents/{agent_id}")
+def usage_for_agent(
+    agent_id: int,
+    days: int = Query(30, ge=1, le=180),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Time-series + summary for one specific agent."""
+    return get_agent_usage(db, agent_id=agent_id, days=days)
 
 
 @router.get("/export")

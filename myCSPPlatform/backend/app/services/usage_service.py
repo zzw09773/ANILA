@@ -414,3 +414,194 @@ def export_usage_csv(
         )
 
     return output.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Sprint 8 X / Phase G — caller attribution rollups.
+#
+# All four functions filter on ``token_usage.request_timestamp`` so a
+# ``days`` parameter governs the lookback window. They return plain
+# dicts so the API layer can pydantic-shape them; tests can assert
+# against dicts without ORM gymnastics.
+# ---------------------------------------------------------------------------
+
+
+def get_top_agents(
+    db: Session,
+    *,
+    days: int = 30,
+    limit: int = 10,
+) -> list[dict]:
+    """Top-N agents by token consumption (CSP-forwarded + agent-callback)."""
+    from datetime import timedelta as _td
+
+    from app.models.agent import Agent
+
+    start_time = datetime.now(timezone.utc) - _td(days=days)
+    rows = (
+        db.query(
+            TokenUsage.caller_agent_id.label("agent_id"),
+            func.sum(TokenUsage.total_tokens).label("total_tokens"),
+            func.sum(TokenUsage.prompt_tokens).label("prompt_tokens"),
+            func.sum(TokenUsage.completion_tokens).label("completion_tokens"),
+            func.count(TokenUsage.id).label("total_requests"),
+        )
+        .filter(
+            TokenUsage.request_timestamp >= start_time,
+            TokenUsage.caller_agent_id.isnot(None),
+        )
+        .group_by(TokenUsage.caller_agent_id)
+        .order_by(func.sum(TokenUsage.total_tokens).desc())
+        .limit(limit)
+        .all()
+    )
+    if not rows:
+        return []
+    agents = {a.id: a for a in db.query(Agent).all()}
+    out: list[dict] = []
+    for r in rows:
+        agent = agents.get(r.agent_id)
+        out.append(
+            {
+                "agent_id": r.agent_id,
+                "agent_name": agent.name if agent else "(已刪除)",
+                "base_model_id": agent.base_model_id if agent else None,
+                "total_tokens": int(r.total_tokens or 0),
+                "prompt_tokens": int(r.prompt_tokens or 0),
+                "completion_tokens": int(r.completion_tokens or 0),
+                "total_requests": int(r.total_requests or 0),
+            }
+        )
+    return out
+
+
+def get_usage_by_base_model(db: Session, *, days: int = 30) -> list[dict]:
+    """Group token usage by ``agents.base_model_id``.
+
+    Joins ``token_usage`` → ``agents`` (on ``caller_agent_id``) →
+    ``model_registry`` (on ``base_model_id``). Only attributable rows
+    appear; orphan rows (no caller_agent_id) are excluded — they
+    already aggregate under ``model_id`` directly via
+    ``get_top_models``.
+    """
+    from datetime import timedelta as _td
+
+    from app.models.agent import Agent
+
+    start_time = datetime.now(timezone.utc) - _td(days=days)
+    rows = (
+        db.query(
+            Agent.base_model_id.label("base_model_id"),
+            func.sum(TokenUsage.total_tokens).label("total_tokens"),
+            func.count(TokenUsage.id).label("total_requests"),
+        )
+        .join(Agent, Agent.id == TokenUsage.caller_agent_id)
+        .filter(
+            TokenUsage.request_timestamp >= start_time,
+            Agent.base_model_id.isnot(None),
+        )
+        .group_by(Agent.base_model_id)
+        .order_by(func.sum(TokenUsage.total_tokens).desc())
+        .all()
+    )
+    if not rows:
+        return []
+    models = {m.id: m for m in db.query(ModelRegistry).all()}
+    return [
+        {
+            "base_model_id": r.base_model_id,
+            "base_model_name": (
+                models.get(r.base_model_id).display_name
+                if models.get(r.base_model_id)
+                else "(已刪除)"
+            ),
+            "total_tokens": int(r.total_tokens or 0),
+            "total_requests": int(r.total_requests or 0),
+        }
+        for r in rows
+    ]
+
+
+def get_agent_usage(
+    db: Session, *, agent_id: int, days: int = 30
+) -> dict:
+    """Per-agent rollup: total tokens / requests / time-series for one agent."""
+    from datetime import timedelta as _td
+
+    start_time = datetime.now(timezone.utc) - _td(days=days)
+    rows = (
+        db.query(
+            func.date_trunc("day", TokenUsage.request_timestamp).label("bucket"),
+            func.sum(TokenUsage.total_tokens).label("total_tokens"),
+            func.count(TokenUsage.id).label("total_requests"),
+            func.avg(TokenUsage.request_duration_ms).label("avg_duration_ms"),
+        )
+        .filter(
+            TokenUsage.request_timestamp >= start_time,
+            TokenUsage.caller_agent_id == agent_id,
+        )
+        .group_by("bucket")
+        .order_by("bucket")
+        .all()
+    )
+
+    series = [
+        {
+            "timestamp": r.bucket.isoformat() if r.bucket else None,
+            "total_tokens": int(r.total_tokens or 0),
+            "total_requests": int(r.total_requests or 0),
+            "avg_duration_ms": float(r.avg_duration_ms) if r.avg_duration_ms else None,
+        }
+        for r in rows
+    ]
+    return {
+        "agent_id": agent_id,
+        "days": days,
+        "total_tokens": sum(p["total_tokens"] for p in series),
+        "total_requests": sum(p["total_requests"] for p in series),
+        "series": series,
+    }
+
+
+def get_usage_by_client(db: Session, *, days: int = 30) -> list[dict]:
+    """Group token usage by ``service_clients.id`` (Router / worker)."""
+    from datetime import timedelta as _td
+
+    from app.models.service_client import ServiceClient
+
+    start_time = datetime.now(timezone.utc) - _td(days=days)
+    rows = (
+        db.query(
+            TokenUsage.caller_client_id.label("client_id"),
+            func.sum(TokenUsage.total_tokens).label("total_tokens"),
+            func.count(TokenUsage.id).label("total_requests"),
+        )
+        .filter(
+            TokenUsage.request_timestamp >= start_time,
+            TokenUsage.caller_client_id.isnot(None),
+        )
+        .group_by(TokenUsage.caller_client_id)
+        .order_by(func.sum(TokenUsage.total_tokens).desc())
+        .all()
+    )
+    if not rows:
+        return []
+    clients = {c.id: c for c in db.query(ServiceClient).all()}
+    return [
+        {
+            "client_id": r.client_id,
+            "client_name": (
+                clients.get(r.client_id).client_name
+                if clients.get(r.client_id)
+                else "(已刪除)"
+            ),
+            "client_type": (
+                clients.get(r.client_id).client_type
+                if clients.get(r.client_id)
+                else None
+            ),
+            "total_tokens": int(r.total_tokens or 0),
+            "total_requests": int(r.total_requests or 0),
+        }
+        for r in rows
+    ]

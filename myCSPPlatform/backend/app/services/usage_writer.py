@@ -30,6 +30,8 @@ async def enqueue_usage(
     conversation_id: str | None = None,
     trace_id: str | None = None,
     request_type: str = "chat",
+    caller_agent_id: int | None = None,
+    caller_client_id: int | None = None,
 ):
     """Push usage data into the async queue (non-blocking).
 
@@ -40,6 +42,13 @@ async def enqueue_usage(
     'judge'. Lets dashboards split spend by kind without joining
     ``model_registry.model_type``. Default 'chat' keeps every existing
     caller working unchanged.
+
+    ``caller_agent_id`` / ``caller_client_id`` (Sprint 8 X / Phase G —
+    migration 0027): when CSP forwards or receives s2s traffic on
+    behalf of a known agent / service client, populate the matching
+    column for "by agent" / "by base model" / "by client" dashboards.
+    Both ``None`` (default) keeps direct UI / SDK traffic looking
+    exactly like it did before.
     """
     queue = get_usage_queue()
     await queue.put({
@@ -55,6 +64,8 @@ async def enqueue_usage(
         "conversation_id": conversation_id,
         "trace_id": trace_id,
         "request_type": request_type,
+        "caller_agent_id": caller_agent_id,
+        "caller_client_id": caller_client_id,
     })
 
 

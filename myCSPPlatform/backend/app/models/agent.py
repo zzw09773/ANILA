@@ -57,6 +57,20 @@ class Agent(Base):
     approved_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
+    # Sprint 8 X / Phase A — bootstrap-then-provision flow.
+    # Admin issues a single-use ``bsk-`` token via
+    # ``POST /api/agents/{id}/issue-bootstrap``; agent then calls
+    # ``POST /api/agents/{id}/bootstrap`` to exchange it for a long-lived
+    # service token written to ``agent_credentials``. Atomic CAS on
+    # ``bootstrap_token_consumed_at`` is what stops a leaked bsk- token
+    # from being replayed.
+    bootstrap_token_hash = Column(String(64), nullable=True)
+    bootstrap_token_expires_at = Column(DateTime, nullable=True)
+    bootstrap_token_consumed_at = Column(DateTime, nullable=True)
+    bootstrap_token_issued_by = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
     owner = relationship("User", foreign_keys=[owner_user_id], backref="owned_agents")
     approver = relationship("User", foreign_keys=[approved_by])
     base_model = relationship("ModelRegistry", foreign_keys=[base_model_id])

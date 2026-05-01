@@ -1,4 +1,5 @@
 import hmac
+import logging
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -7,6 +8,8 @@ from app.config import settings
 from app.database import get_db
 from app.middleware.cookies import ACCESS_COOKIE_NAME
 from app.models.user import User
+from app.services import agent_credential_service
+from app.services.audit_service import log_audit_event
 from app.utils.security import (
     verify_password,
     create_access_token,
@@ -14,6 +17,8 @@ from app.utils.security import (
     decode_token,
     hash_password,
 )
+
+logger = logging.getLogger(__name__)
 
 # auto_error=False lets us fall back to the cookie when no Authorization
 # header is present, instead of raising 403 immediately.
@@ -122,22 +127,66 @@ def require_admin(current_user: User = Depends(get_current_user)) -> User:
 
 
 def verify_service_token(
+    request: Request,
+    db: Session = Depends(get_db),
     x_csp_service_token: str | None = Header(default=None, alias="X-CSP-Service-Token"),
-) -> None:
+) -> "agent_credential_service.CallerIdentity | None":
     """Auth dependency for internal service-to-service endpoints.
 
-    Router / agents present the shared token in the X-CSP-Service-Token header.
-    Uses constant-time comparison and refuses when the server has no token
-    configured (fail closed).
+    Sprint 8 X / Phase A — DB-backed verify. Resolves the token in this
+    order:
+
+      1. ``service_clients`` (Router / worker traffic).
+      2. ``agent_credentials`` (per-agent traffic).
+      3. ``settings.CSP_SERVICE_TOKEN`` env var (legacy fleet-shared
+         fallback). Hits also write a ``service_token_legacy_env_used``
+         audit event so admins can watch cutover progress in the
+         dashboard. The fallback is removed entirely once the cutover
+         dashboard widget shows zero hits for a release window.
+
+    On match we attach the ``CallerIdentity`` to ``request.state`` so
+    downstream handlers / proxy / usage_writer can read who triggered
+    the call without re-doing the lookup. Returns the identity (or
+    ``None`` for legacy env-var path so callers can still distinguish).
     """
-    expected = settings.CSP_SERVICE_TOKEN or ""
-    if not expected:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="服務權杖未設定",
-        )
-    if not x_csp_service_token or not hmac.compare_digest(x_csp_service_token, expected):
+    if not x_csp_service_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="服務權杖無效",
+            detail="缺少 X-CSP-Service-Token header",
         )
+
+    # 1) + 2) DB lookup.
+    identity = agent_credential_service.verify_service_token(
+        db, token=x_csp_service_token
+    )
+    if identity is not None:
+        request.state.csp_caller = identity
+        return identity
+
+    # 3) Legacy env-var fallback. Removed in cutover step 5 (see
+    #    docs/runbooks/service-token-cutover.md).
+    legacy = (settings.CSP_SERVICE_TOKEN or "").strip()
+    if legacy and hmac.compare_digest(x_csp_service_token, legacy):
+        request.state.csp_caller = None  # explicit: legacy = unattributed
+        try:
+            log_audit_event(
+                db,
+                actor=None,
+                action=agent_credential_service.AUDIT_LEGACY_TOKEN_USED,
+                resource_type="service_token",
+                resource_id=None,
+                detail=(
+                    "CSP_SERVICE_TOKEN env-var fallback hit — caller "
+                    "unattributed. Schedule per-agent cutover."
+                ),
+                ip_address=getattr(request.client, "host", None),
+                commit=True,
+            )
+        except Exception:  # noqa: BLE001 — never let audit fail the request
+            logger.exception("Failed to write legacy_service_token_used audit event")
+        return None
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="服務權杖無效",
+    )
