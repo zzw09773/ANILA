@@ -245,6 +245,13 @@ openai-agents-python/
 
 ---
 
+## 深入分析
+
+| 對象 | 文件 |
+|---|---|
+| `openai-agents-python` | [`../docs/runtime-logic-openai-agents-deep-dive.md`](../docs/runtime-logic-openai-agents-deep-dive.md) — 12 條 subsystem 一一拆解 + 對 AgenticRAG 強化的 actionable map（P0–P2 順序與起點檔） |
+| `claude-code-src` | **不另寫深入分析** — 該 codebase 自帶完整 `docs/` 與 `docs.zip`（離線快照），架構與 feature locator 都在裡面，需要時 grep 該 docs 即可 |
+
 ## 跟其他文件的關係
 
 - 平台總覽：[`../README.md`](../README.md)
@@ -252,6 +259,7 @@ openai-agents-python/
 - RAG agent template（強化目標）：[`../AgenticRAG/README.md`](../AgenticRAG/README.md)
 - 既有 service-token cutover plan：[`../docs/runbooks/service-token-cutover.md`](../docs/runbooks/service-token-cutover.md)
 - Parent-child RAG design（Sprint 9 X）：[`../docs/parent-child-rag-design.md`](../docs/parent-child-rag-design.md)
+- openai-agents-python deep dive：[`../docs/runtime-logic-openai-agents-deep-dive.md`](../docs/runtime-logic-openai-agents-deep-dive.md)
 
 ---
 
