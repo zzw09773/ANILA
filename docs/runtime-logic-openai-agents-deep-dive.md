@@ -1,11 +1,22 @@
-# openai-agents-python — deep dive for AgenticRAG enhancement
+# openai-agents-python — deep dive for ANILA platform enhancement
 
 > **Source**: `runtime_logic/openai-agents-python/` (gitignored；本機快照)
 > **Version studied**: src/agents/ 截至 2026-05-02 (RunState schema 1.9)
-> **Status**: 為 AgenticRAG / anila-core 強化計畫提供「該讀什麼、該翻什麼介面、該怎麼接」的對照地圖
+> **Status**: 為 anila-core 與 AgenticRAG 兩個 consumer 提供「該讀什麼、該翻什麼介面、該長在哪一層」的對照地圖
 > **Reading rule**: 只讀 pattern + interface，自己重寫實作；逐字搬運禁止
 
-整份 SDK 把「agent run = LLM + tools + handoffs + guardrails + memory + tracing」拆成 12 個明確邊界的模組。本文按那 12 條邊界一一拆解，每段最後附 AgenticRAG / anila-core 的 actionable 強化點。
+整份 SDK 把「agent run = LLM + tools + handoffs + guardrails + memory + tracing」拆成 12 個明確邊界的模組。本文按那 12 條邊界一一拆解。
+
+## 兩個 consumer，各自落點不同
+
+從 openai-agents-python 學到的 pattern 不會全部住在同一層。本文每個 subsystem 把「落地建議」拆成兩塊：
+
+| 落點 | 受眾 | 適合放什麼 |
+|---|---|---|
+| **→ anila-core** | Router、所有 agent（含 AgenticRAG）、ingestion-worker — 整個 ANILA fleet | 通用 runtime 抽象：agent / turn loop / Session protocol / tool framework / guardrail framework / tracing / retry / lifecycle hooks。Pillar 1 是 in-process agent 用；Pillar 2 是 fleet 共用 infra（9 X-5 邊界決策） |
+| **→ AgenticRAG** | RAG agent template 自身 + 任何 fork 出去的具體 agent | RAG-flavor 具體實作：retrieval-specific guardrail / RAG handoff sub-agent definitions / retrieval span data / embedding-cost lifecycle hook 等 |
+
+**判斷規則**：「這個如果新開非 RAG 的 agent 也會想用 → anila-core」；「這個跟 retrieval / chunking / RAG 黏緊 → AgenticRAG」。本文每章後段標清楚。
 
 ---
 
@@ -157,7 +168,13 @@ NextStep = NextStepRunAgain | NextStepFinalOutput | NextStepHandoff | NextStepIn
 | `run_grouping.py` | trace group |
 | `_asyncio_progress.py` | async progress utils |
 
-對 AgenticRAG / anila-core 的 takeaway：**single big run.py 是 anti-pattern**。當功能變多，就拆 internal/* 並在主檔只留 public flow control + composition。AGENTS.md 明確規定「`run.py` 不應再長」。
+### 2.5 落地建議
+
+**→ anila-core**：當 `engine/query_engine.py` 或 `api/router_server.py` 成長到 > 500 行，把細節拆 `engine/internal/` 子目錄（`turn_loop.py` / `turn_resolution.py` / `tool_execution.py` / `session_persistence.py`），主檔只留 wiring。OpenAI 的 22-file `run_internal/` 是當這條 lib 已經 production 規模時自然演化的結果，不是一開始就拆，但**達到 500 行的 trigger 要明訂在 anila-core README**。
+
+**→ AgenticRAG**：本身的 `agentic_rag/api/server.py` 直接走 anila-core engine，沒有 turn loop 邏輯需要改。但要學的是「streaming 跟 non-streaming 行為對齊」這條 invariant — 目前 AgenticRAG 的 `/agentic-chat` (streaming) 跟 `/chat` (non-streaming) 的 trace 完整度不一致，未來補同樣事件時要 mirror 兩邊。
+
+**通則**：`NextStep` union 表達 turn outcome 是值得抄到 anila-core 的 ergonomics — 比 if/else 連環清楚很多。
 
 ---
 
@@ -200,16 +217,30 @@ class HandoffInputData:
 
 `input_filter(data) → data` 是純函數，filter 寫起來像 reducer。`extensions/handoff_filters.py` 提供 `remove_all_tools` / `summarize_history` 等現成 filter。
 
-### 3.3 對 AgenticRAG 的價值
+### 3.3 落地建議
 
-當前 AgenticRAG = single agent + tool-loop。要做「retrieve agent → answer agent → cite-verify agent」這種 RAG pipeline，handoff 是現成 abstraction。落地路徑：
+**→ anila-core**（**主要**落點）：
 
-1. AgenticRAG `Agent` definition 增加 `handoffs: list[Handoff]` 欄位
-2. 內建 `RetrievalAgent` / `AnswerAgent` / `VerifierAgent` 三個 sub-agent
-3. `handoff_filter` 寫一個「只給 retrieval 結果不給原 query」這樣保 verify agent 客觀
-4. Top-level orchestrator agent 用 `handoffs=[retrieve, answer, verify]`
+把 handoff 抽成 fleet 通用的 multi-agent 機制。具體：
 
-LOC 估：~150 (handoff core) + 100 (3 個 sub-agent definition)。讀 `handoffs/__init__.py` 一份檔即可開工。
+1. `anila-core/registry/agent_registry.py` 的 `LocalAgentDefinition` 加 `handoffs: list[HandoffSpec]` 欄位
+2. 新檔 `anila-core/coordinator/handoffs.py`：`Handoff` dataclass + `HandoffInputData` + `HandoffInputFilter` Protocol
+3. `engine/query_engine.py` 的 turn loop 在 `NextStep.handoff` branch 切換 active agent + 套 input_filter
+4. `extensions/handoff_filters.py` 內建幾個常用 filter（remove_all_tools / summarize_history / keep_last_n_items）
+
+LOC 估：~250 (整個 handoff core)。讀 `handoffs/__init__.py` 一份檔即可開工。
+
+**→ AgenticRAG**（**消費**落點）：
+
+定義 RAG-specific 的 sub-agent + 套用 handoff：
+
+1. `agentic_rag/agents/retrieval_agent.py` — 只暴露 vector_search / keyword_search，產出 chunks
+2. `agentic_rag/agents/answer_agent.py` — 接 chunks + 原 query，生答案
+3. `agentic_rag/agents/verifier_agent.py` — 對答案做 citation completeness 檢查
+4. Top-level orchestrator 用 `Agent(handoffs=[retrieval, answer, verifier])`
+5. 寫 RAG-specific filter：`only_pass_chunks_not_query` — verifier 看 chunks + answer，但不看原 query（避免被 query 字面影響判斷）
+
+LOC 估：~100 (3 個 sub-agent + filter)。**前置條件**：anila-core 的 handoff core 已就位。
 
 ---
 
@@ -260,9 +291,22 @@ def block_pii(data: ToolInputGuardrailData) -> ToolGuardrailFunctionOutput:
     return ToolGuardrailFunctionOutput.allow()
 ```
 
-### 4.3 對 AgenticRAG 的價值
+### 4.3 落地建議
 
-幾個 immediate use case：
+**→ anila-core**（**框架**落點）：
+
+把 guardrail 框架放進 fleet：
+
+1. 新檔 `anila-core/engine/guardrails.py`：`InputGuardrail` / `OutputGuardrail` / `GuardrailFunctionOutput` / `*TripwireTriggered` exception 群
+2. 新檔 `anila-core/tools/tool_guardrails.py`：`ToolInputGuardrail` / `ToolOutputGuardrail` / 三 behavior 列舉
+3. `engine/query_engine.py` turn loop 加 hooks：first-turn 跑 input_guardrails 並行（`run_in_parallel=True`）；final 前跑 output_guardrails；每個 tool call 前後跑對應 tool guardrail
+4. `LocalAgentDefinition` 加 `input_guardrails / output_guardrails / tool_guardrails` 欄位
+
+LOC 估：~250 (整個 guardrail framework)。
+
+**→ AgenticRAG**（**具體 RAG guardrail**）：
+
+寫 RAG-specific guardrails，住在 `agentic_rag/guardrails/`：
 
 | Use case | guardrail 類型 | 行為 |
 |---|---|---|
@@ -272,7 +316,7 @@ def block_pii(data: ToolInputGuardrailData) -> ToolGuardrailFunctionOutput:
 | answer 沒附 citation | OutputGuardrail | tripwire — 重試 |
 | answer 跟 retrieval chunks 距離過遠（hallucination 偵測） | OutputGuardrail | tripwire 或重試 |
 
-落地：~80 LOC 起步，建一個 `agentic_rag/guardrails/` 子目錄，每條 use case 一個 file。
+LOC 估：~80 (5 個 guardrail file)。**前置條件**：anila-core 的 guardrail framework 已就位。
 
 ---
 
@@ -324,16 +368,23 @@ class OpenAIResponsesCompactionSession(SessionABC, OpenAIResponsesCompactionAwar
 
 精彩之處：用 **decorator pattern** 包現有 session，不需要改 `Runner.run` 一行。decorator 在 `add_items` 後檢查 threshold，超過就 fire-and-forget 呼叫 OpenAI 的 `responses.compact`。AgenticRAG 的 sliding-window compact 已經是 in-process 版本，這個 pattern 給的是「server-side compaction 為什麼不用」的 reference。
 
-### 5.4 對 AgenticRAG / anila-core 的價值
+### 5.4 落地建議
 
-anila-core 沒有 Session abstraction —— conversation history 散在 `anila_core/storage/`、`compact/`、`memory/`。重點 takeaway：
+**→ anila-core**（**整段都在這層**）：
 
-1. **抽 Session protocol 出來放 storage/ports.py**，4 method
-2. 在 `engine/query_engine.py` 入口接受 optional `session: Session`
-3. 提供 `MemoryFileStoreSession` / `PostgresSession` / `CompactingSession` 三個 impl
-4. RAG 用 `CompactingSession.wrap(PostgresSession(...))` 自動把長對話 compact
+Session abstraction 是 fleet-wide 通用的，不該重複在每個 agent 寫一次。
 
-LOC 估：~200。特別有用的副作用：把目前 anila-core 已實作的 SessionMemory + Compact 整合在 single boundary 後，CSP 那邊可以直接 `session.add_items(history)` 帶進來，不用每個 caller 自己去處理 history persistence。
+1. `anila-core/storage/ports.py` 加 4-method `Session` Protocol（與 OpenAI SDK 對齊）
+2. `engine/query_engine.py` 入口接受 optional `session: Session`，run start `await session.get_items()` / 每 turn 後 `await session.add_items(new)` 自動接
+3. `storage/adapters/` 多三個 impl：
+   - `MemoryFileStoreSession` — 已存在的 MemoryFileStore 包成 Session
+   - `PostgresSession` — 接 CSP 的 `conversations` 表
+   - `CompactingSession`（decorator）— 包別人，threshold 達到自動 trigger anila-core 的 sliding_window / autoCompact
+4. AgenticRAG / 任何 fork 出去的 agent 0 改動受惠
+
+LOC 估：~200。特別有用的副作用：把目前 anila-core 已實作的 SessionMemory + Compact 收成 single boundary 後，CSP 那邊可以直接 `session.add_items(history)` 帶進來，不用每個 caller 自己處理 history persistence。
+
+**→ AgenticRAG**：無新增邏輯，純消費 anila-core 提供的 Session。`ChatRequest` 接到 `session_id` 後從 `PostgresSession(session_id)` 灌進 query engine 即可。
 
 ---
 
@@ -434,17 +485,36 @@ async def get_all_tools(self, run_context):
 
 → 這代表 MCP server 中途加 tool / 撤 tool，下一輪 turn 自動反映，不需 restart。
 
-### 7.4 對 AgenticRAG 的價值
+### 7.4 落地建議
 
-最直接的應用：**讓 enterprise 用戶把自家內部系統包成 MCP server，AgenticRAG 自動消費**。譬如：
+**→ anila-core**（**整套**進這層）：
 
-- `slack-mcp-server` → `search_messages` / `get_thread` tool
-- `confluence-mcp-server` → `search_pages` tool
-- `github-mcp-server` → `search_code` / `read_file` tool
+MCP 是 fleet-wide 的 tool source，不該每個 agent 自己接。
 
-AgenticRAG 端 0 改動，只要 user 在 `anila-agent.yaml` 配上 `mcp_servers: [...]`，新 tool 自動進到 RAG agent 的 tool list。
+1. 新檔 `anila-core/tools/mcp/server.py`：`MCPServer` ABC + `MCPServerStdio`（先做這個 transport）
+2. 新檔 `anila-core/tools/mcp/manager.py`：`MCPServerManager` async-context-manager pattern + `drop_failed_servers` / `connect_in_parallel` / `reconnect`
+3. 新檔 `anila-core/tools/mcp/util.py`：`MCPUtil.get_all_function_tools()` 把 MCP tool 自動轉 FunctionTool
+4. `LocalAgentDefinition` 加 `mcp_servers: list[MCPServer]` 欄位
+5. `engine/query_engine.py` 在 turn 起頭呼叫 `agent.get_all_tools(ctx)` 動態合併 function tools + MCP tools
 
-落地：先把 `MCPServer` Protocol + `MCPServerManager` pattern 翻成 Python；連接細節（stdio / SSE / HTTP）可以三選一先做 stdio，其他 incremental。LOC ~250。
+LOC 估：~250 (stdio transport 為主；SSE / streamable HTTP 之後增量)。
+
+**→ AgenticRAG**：
+
+純消費 anila-core 的 MCP infrastructure。enterprise 用戶 fork AgenticRAG 後在 `anila-agent.yaml` 配：
+
+```yaml
+mcp_servers:
+  - type: stdio
+    command: ["npx", "-y", "@modelcontextprotocol/server-slack"]
+    env: { SLACK_TOKEN: "${SLACK_TOKEN}" }
+  - type: stdio
+    command: ["python", "-m", "confluence_mcp"]
+```
+
+`agentic_rag/registry/agent_registry.py` 解析這段 yaml 灌到 `MCPServer` instance 列表。AgenticRAG 0 自寫 MCP code。
+
+LOC 估：~30 (yaml→MCPServer 解析)。**前置條件**：anila-core MCP infrastructure 已就位。
 
 ---
 
@@ -498,19 +568,30 @@ with custom_span("vector-search-rrf-fusion") as span:
     hits = await vector_search(...)
 ```
 
-### 8.4 對 AgenticRAG 的價值
+### 8.4 落地建議
 
-目前 `anila-core/engine/query_engine.py` 只有 `_post_turn_hooks`，**沒有結構化 trace**。痛點：debug RAG quality 時看不到「哪個 chunk 命中、reranker 怎麼排、為什麼選這個 strategy」的時序紀錄。
+**→ anila-core**（**框架 + 通用 span types**）：
 
-落地路徑：
+目前 `anila-core/engine/query_engine.py` 只有 `_post_turn_hooks`，**沒有結構化 trace**。整個 framework 該住這層：
 
-1. 從 `tracing/spans.py` 抄 `Span` / `Trace` data class shape（不抄實作）
-2. 寫 `anila_core/tracing/` 子套件：core types + 一個 default in-memory processor
-3. `query_engine.run_stream` 包進 `with trace(...)`；每個 chunker / embedder / retriever 呼叫包成 span
-4. CSP audit_logs 加一個 `trace_id` 欄位串起來
-5. 後端可以 dump trace 到 Studio / EvaluatorView 給 dev review
+1. 新檔 `anila-core/tracing/spans.py`：`Span` / `Trace` data class（不抄實作，重畫）
+2. 新檔 `anila-core/tracing/processor.py`：`TracingProcessor` Protocol + 一個 default in-memory processor + 一個 stdout processor
+3. 通用 span types：`AgentSpanData` / `TurnSpanData` / `GenerationSpanData` / `FunctionSpanData` / `HandoffSpanData` / `GuardrailSpanData`
+4. `query_engine.run_stream` 包進 `with trace(...)`；turn / LLM call / tool call 自動 span
+5. CSP `audit_logs` 加 `trace_id` 欄位 + `/api/audit-logs?trace_id=...` 端點
+6. 文件 / runbook：CSP 實作 OTel exporter processor 串到 enterprise APM
 
-LOC ~300，但是**最高 ROI 的 single 加法之一** —— 一旦 tracing 上線，所有後續 RAG quality 改進都有 ground truth 可比。
+LOC ~300。**最高 ROI 的 single 加法之一** —— tracing 上線後所有後續 RAG quality 改進都有 ground truth 可比。
+
+**→ AgenticRAG**（**RAG-specific span types**）：
+
+加 RAG 自己的 span 子型，繼承 anila-core 的 framework：
+
+1. `agentic_rag/tracing/rag_spans.py` — `RetrievalSpanData` (top_k / min_score / strategy / hit_count) / `RerankerSpanData` / `CitationVerifySpanData`
+2. retrieval / reranker / citation-verify 路徑包進對應 `with retrieval_span(...)`
+3. EvaluatorView 解析 trace 視覺化「哪個 chunk 命中、reranker 怎麼排」
+
+LOC ~80 (RAG span types + 整合 hook)。**前置條件**：anila-core tracing framework 就位。
 
 ---
 
@@ -532,14 +613,16 @@ sandbox/
 
 `Manifest` 是 declarative 的 — declare 哪些 path / 哪些 command 可以動，runtime 強制 enforce。default allowlist 在 manifest.py 開頭：`ls / find / cat / grep / rg / head / tail / ...`。
 
-### 9.2 對 AgenticRAG 的價值
+### 9.2 落地建議
 
-如果 AgenticRAG 的 RAG agent 未來要做：
+**→ anila-core**：暫不需要。anila-core 目前唯一可能要 sandbox 的 vector 是「未來 LocalShellTool / FileEditTool」這類能力，但**這些能力本身就還沒進 anila-core**。預留設計空間：tool 介面允許 optional `sandbox_manifest` 欄位，未來填。
+
+**→ AgenticRAG**：未來如果要做：
 - 「執行 user 提供的 SQL」
 - 「跑 user 寫的 transformer pipeline」
 - 「在 user workspace 寫檔案」
 
-這類「user 給的 untrusted code」就要走 sandbox。OpenAI 的 sandbox 子系統是 production-tested 的範本，但複雜度高（manifest、capabilities、entries）。
+那時走 sandbox。OpenAI 的 sandbox 子系統是 production-tested 範本，但複雜度高（manifest、capabilities、entries）。**短期不做**，文件留下這個 reference 路徑供未來查找。
 
 **短期不需要**，但 design 設計可以先 align —— 譬如 `agentic_rag.tools` 裡未來加 `execute_user_query_tool` 時，先預留 `manifest: SandboxManifest | None` 欄位，內部用 None 表示 trusted。日後接 sandbox 不破 API。
 
@@ -573,15 +656,29 @@ class MyAuditHooks(AgentHooks):
 agent.hooks = MyAuditHooks()
 ```
 
-### 10.3 對 AgenticRAG 的價值
+### 10.3 落地建議
 
-立刻可用：
-- 實作 `RateLimitHooks` 在 `on_tool_start` 卡 quota
-- 實作 `AuditHooks` 取代目前散在各處的 ad-hoc audit_log 寫法
-- 實作 `MetricsHooks` 在 `on_llm_end` 寫 token_usage
-- Plugin 開發者用 hooks 包自訂行為，不用 fork core
+**→ anila-core**（**框架 + fleet hooks**）：
 
-落地：~80 LOC。先把現有 anila-core engine 的 `_post_turn_hooks` 升級成 12-點 `RunHooks` interface，再把 CSP `proxy_service` 對 audit / metrics 的 ad-hoc 處理搬到 hook 實作裡。**比 tracing 更輕量但同樣高 ROI**。
+升級 `engine/query_engine.py` 既有的 `_post_turn_hooks` 為 12-點 `RunHooks` / `AgentHooks` 介面：
+
+1. 新檔 `anila-core/engine/lifecycle.py`：`RunHooksBase` / `AgentHooksBase` 兩個 base class
+2. `LocalAgentDefinition` 加 `hooks: AgentHooks | None` 欄位
+3. `engine/query_engine.py` 在 12 個 lifecycle 點 fire 對應 hook
+4. fleet 共用的 `RateLimitHooks` / `AuditHooks` / `MetricsHooks`（這些對所有 agent 都通用）放在 `anila-core/engine/hooks_builtin.py`
+5. CSP `proxy_service` 對 audit / metrics 的 ad-hoc 處理搬到 `AuditHooks.on_tool_start` 等
+
+LOC 估：~120 (framework + 3 個 builtin hooks)。**比 tracing 更輕量但同樣高 ROI**。
+
+**→ AgenticRAG**（**RAG-specific hooks**）：
+
+寫 RAG-flavor hooks 住在 `agentic_rag/hooks/`：
+
+- `EmbeddingCostHook.on_tool_start` 拿 query 估算 embedding token cost，超 budget 阻擋
+- `RetrievalAuditHook.on_tool_end` 把 retrieval hits + score 寫進 audit + ingestion_eval_runs 供 EvaluatorView 用
+- `CitationCompletenessHook.on_agent_end` 確認 final answer 對每個 chunk 有 citation
+
+LOC 估：~60 (3 個 RAG-specific hooks)。**前置條件**：anila-core lifecycle framework 就位。
 
 ---
 
@@ -612,16 +709,31 @@ class AgentUpdatedStreamEvent:
 
 意思：用戶 iterate 整個 stream 時看到三層粒度的事件。要顯示 typing dots 用 `RawResponsesStreamEvent`；要顯示「agent 在用 X 工具」用 `RunItemStreamEvent.name == "tool_called"`；要顯示「現在切換到 billing agent」用 `AgentUpdatedStreamEvent`。
 
-### 11.2 對 AgenticRAG 的價值
+### 11.2 落地建議
 
-目前 AgenticRAG 的 SSE `/agentic-chat` 自定 12 種 event type（`message_delta` / `tool_call_started` / `usage_update` 等），不是 OpenAI 原生格式。如果做 multi-agent handoff，現有 stream event 模型不夠。
+**→ anila-core**（**event 模型 + 通用 RunItem types**）：
 
-落地：把 anila-core / AgenticRAG 的 SSE event taxonomy 照這份架構 align 成三層：
-- **Raw**: text delta / token level
-- **RunItem**: tool_called / handoff_requested / message_complete
-- **AgentUpdated**: handoff 切換
+stream event 模型在 fleet 共用：
 
-frontend 跟 client SDK 都受益（統一語意、容易測試）。LOC ~150。
+1. 新檔 `anila-core/api/stream_events.py`：三層 dataclass `RawResponsesStreamEvent` / `RunItemStreamEvent` / `AgentUpdatedStreamEvent`
+2. 通用 `RunItem.name` literals：`message_output_created` / `tool_called` / `tool_output` / `handoff_requested` / `handoff_occurred` / `agent_message`
+3. `engine/query_engine.run_stream` 出口改 emit 三層 event 而不是 ad-hoc string
+4. anila-core/api/router_server.py 跟著對齊，frontend SDK 統一接
+
+LOC 估：~150 (含 router_server.py 對齊)。
+
+**→ AgenticRAG**（**RAG-specific RunItem 子型**）：
+
+定義 RAG 自己的 `RunItem.name` 列舉值，繼承 anila-core 的 event 模型：
+
+- `retrieval_completed` — 檢索完成（payload: hits + scores）
+- `reranked` — reranker 排序完
+- `citation_attached` — answer 加上 citation
+- `chunk_filtered` — guardrail 把某 chunk 拿掉
+
+`agentic_rag/api/stream_events.py` 只擴充新名字，不重新定義 envelope。frontend 讀到不認識的 name 就降級顯示通用 message。
+
+LOC 估：~30 (RAG-specific names + 觸發點)。
 
 ---
 
@@ -658,15 +770,31 @@ DEFAULT_BACKOFF_MULTIPLIER = 2.0
 DEFAULT_BACKOFF_JITTER = True
 ```
 
-### 12.3 對 AgenticRAG 的價值
+### 12.3 落地建議
 
-目前 AgenticRAG 對 model call 失敗沒有結構化重試。CSP `proxy_service` 有 `PROXY_MAX_RETRIES` 但是 ad-hoc。值得抄的 design：
+**→ anila-core**（**整套**）：
 
-- `RetryDecision` enum + `decision` 欄位讓重試策略可被 callable 換掉
-- `ModelRetryNormalizedError` 把 raw exception 分類 — 不同 error code 不同 retry policy（429 應該長 backoff、context_length_exceeded 不該 retry）
-- 把 retry 從 proxy_service 抽出來放 `anila-core/engine/retry.py`，agent 可選 inject
+retry 是 fleet-wide 通用的 model call robustness layer：
 
-LOC ~180。
+1. 新檔 `anila-core/providers/retry.py`：`ModelRetrySettings` + `ModelRetryAdvice` + `RetryDecision` enum + `ModelRetryNormalizedError`
+2. error 分類器：把 `httpx.TimeoutException` / `RateLimitError` / `ContextLengthExceeded` / 5xx 等分類
+3. 預設 advice provider：429 long backoff、context_length_exceeded 直接 abort、5xx exponential、timeout 重試 1 次
+4. CSP `proxy_service` 既有的 `PROXY_MAX_RETRIES` ad-hoc 邏輯改為呼叫 anila-core retry
+5. Provider 介面 (`anila-core/providers/base.py`) 加 `retry_settings: ModelRetrySettings | None` 參數
+
+LOC 估：~180。**前置條件**：跟 lifecycle hooks 同層級無依賴關係，可獨立 ship。
+
+**→ AgenticRAG**（**RAG-specific advice**）：
+
+寫 retrieval-specific retry advice：
+
+- embedding endpoint 5xx → 短 backoff 立刻重試（embedding 服務一般延遲低，重試便宜）
+- pgvector query timeout → 不重試，當 fail-fast 信號（DB 出問題不該硬撐）
+- reranker model 失敗 → fallback to no-rerank，繼續
+
+放 `agentic_rag/providers/retry_advice.py`，inject 進 `ModelRetrySettings.advice_provider`。
+
+LOC 估：~40。**前置條件**：anila-core retry framework 就位。
 
 ---
 
@@ -695,32 +823,50 @@ LOC ~180。
 6. **`RunState` schema versioned**。每次 schema 動就 bump `CURRENT_SCHEMA_VERSION` 跟 `SCHEMA_VERSION_SUMMARIES`。released schema 不可變。
 7. **Hooks 12 點 + Tracing span tree** 是 observability minimum baseline，不是 nice-to-have。
 
-### 14.2 對 AgenticRAG 強化的 P0 順序（runtime_logic README 已記但這裡更具體）
+### 14.2 強化 P0 順序（依 consumer 落點分組）
 
-| # | 強化點 | 起點檔 | 為什麼這個順序 |
-|---|---|---|---|
-| 1 | **Lifecycle hooks 12 點** | `lifecycle.py` 全 200 行 | 最便宜、立刻能拆掉散落 audit / metrics 程式碼，產生信號為其他工作的 baseline |
-| 2 | **Tool guardrails 三 behavior** | `tool_guardrails.py` 全 280 行 | 安全性最大 ROI，落到 RAG search tool 直接擋 PII / SQL inject |
-| 3 | **Tracing span tree** | `tracing/__init__.py` + `spans.py` + `processors.py` | 之後做 multi-agent handoff 一定需要 trace 才 debug 得動 |
-| 4 | **Multi-agent handoff** | `handoffs/__init__.py` + `extensions/handoff_filters.py` | RAG quality 下一躍升點；前 3 步驟做完才有足夠工具撐住 |
-| 5 | **Session Protocol + CompactingSession decorator** | `memory/session.py` + `memory/openai_responses_compaction_session.py` | 把 anila-core 散落的 history persistence 收掉 |
-| 6 | **MCP server 整合** | `mcp/server.py` + `mcp/manager.py` + `mcp/util.py` | enterprise feature，做 multi-agent 後再開即可 |
-| 7 | **`run_internal/` 拆分風格** | `run_internal/__init__.py` + AGENTS.md 規範段 | 不是新 feature，是當 anila-core/engine 又長了再 refactor 的 reference |
+每條都標清楚是 **anila-core (A)** 還是 **AgenticRAG (R)** 的工作；多數 RAG 工作都依賴 anila-core 對應 framework 先就位。
 
-整段 1–7 加總 LOC 估 ~1200，4–5 週工作量。但每一項都可獨立 ship；P0-1 兩天就可以見效。
+| # | 強化點 | 落點 | 起點 reference 檔 | LOC |
+|---|---|---|---|---|
+| 1 | Lifecycle hooks 12 點（framework + 通用 audit/rate/metrics hooks） | **A** | `lifecycle.py` | ~120 |
+| 1' | RAG-specific hooks（embedding-cost / retrieval-audit / citation-completeness） | R（dep on 1）| 自家 `agentic_rag/hooks/` | ~60 |
+| 2 | Guardrail framework（input/output + tool 三 behavior） | **A** | `guardrail.py` + `tool_guardrails.py` | ~250 |
+| 2' | RAG guardrails（PII / threshold / hallucination / citation） | R（dep on 2）| 自家 `agentic_rag/guardrails/` | ~80 |
+| 3 | Tracing framework（spans + processor + 通用 span types） | **A** | `tracing/` 全套 | ~300 |
+| 3' | RAG span types（retrieval / reranker / citation-verify） | R（dep on 3）| 自家 `agentic_rag/tracing/rag_spans.py` | ~80 |
+| 4 | Handoff framework（multi-agent control transfer） | **A** | `handoffs/__init__.py` | ~250 |
+| 4' | RAG handoff agents（RetrievalAgent / AnswerAgent / VerifierAgent） | R（dep on 4）| 自家 `agentic_rag/agents/*` | ~100 |
+| 5 | Session Protocol + 3 backend + CompactingSession decorator | **A** | `memory/session.py` + `memory/openai_responses_compaction_session.py` | ~200 |
+| 6 | MCP server framework（stdio transport + Manager pattern） | **A** | `mcp/server.py` + `mcp/manager.py` | ~250 |
+| 6' | AgenticRAG yaml → MCPServer 配置解析 | R（dep on 6）| 自家 `agentic_rag/registry/` 擴充 | ~30 |
+| 7 | Retry framework（policy + advice + error normalize） | **A** | `retry.py` + `run_internal/model_retry.py` | ~180 |
+| 7' | RAG retry advice（embedding 5xx / pgvector timeout） | R（dep on 7）| 自家 `agentic_rag/providers/retry_advice.py` | ~40 |
+| 8 | `run_internal/` 拆分風格（refactor reference 而非新 feature） | A | AGENTS.md 規範段 | trigger 條件 |
+| 9 | Sandbox 預留設計接點（不立即實作） | A + R | `sandbox/` | 0 |
+
+**Anila-core 工作（必前置）**：1 / 2 / 3 / 4 / 5 / 6 / 7 = ~1450 LOC、~3 週
+**AgenticRAG 工作（依 anila-core 完成）**：1' / 2' / 3' / 4' / 6' / 7' = ~290 LOC、~1 週
+
+**獨立可 ship 的最小單位**：1 (lifecycle framework) → 1' (RAG hooks)。兩天可上線一個閉環。
+
+**依賴清楚的 critical path**：3 (tracing) → 4 (handoff) — 沒有 tracing 之前 multi-agent debug 太痛苦，硬上會回頭重做。
+
+**無依賴可平行**：5 (Session) / 6 (MCP) / 7 (Retry) 三者跟前面五項互相獨立，可在 1-4 進行中平行開發。
 
 ---
 
 ## 15 · 怎麼用本文
 
-把這份文件當成 **「目錄索引」**：
+把這份文件當成 **「目錄索引」+「per-consumer 落點地圖」**：
 
-- 想查某個能力 → 第 X 章對應的 `對 AgenticRAG 的價值` 段
-- 想動手前讀什麼 → 第 X 章開頭的「結構」段，列出該模組的核心檔
+- 想查某個能力 → 第 X 章「落地建議」段，看清楚 anila-core 跟 AgenticRAG 各分別該做什麼
+- 想動手前讀什麼 → 第 X 章開頭的結構段，列出該模組的核心檔
 - 想知道為什麼這樣設計 → 第 14 章 takeaway
+- 想知道做事順序 → 第 14.2 P0 表，A / R 標記告訴你該動哪個 repo
 
 **讀完不需要把整份 SDK 看完**。讀對自己要做的能力對應的那 1–2 個檔，看清介面、寫自己的版本。Source tree 在 `runtime_logic/openai-agents-python/src/agents/`（gitignored，本機）。
 
 ---
 
-**Last updated**: 2026-05-02 · **Source studied**: openai-agents-python @ RunState schema 1.9 · **Next consumer**: AgenticRAG retrieval pipeline 重構 + anila-core engine refactor
+**Last updated**: 2026-05-02 · **Source studied**: openai-agents-python @ RunState schema 1.9 · **Per-consumer split**: anila-core (Pillar 1+2 framework) vs AgenticRAG (RAG-flavor specific implementations)
