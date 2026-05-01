@@ -31,7 +31,7 @@ The shipped `AgenticRAG/docker-compose.yml` mounts a named volume
 restarts. First-time bring-up:
 
 ```bash
-# 1. Admin registers your agent in CSP UI (or via anila-core register / API).
+# 1. Admin registers your agent in CSP UI (Developer Agents view).
 # 2. Admin issues a bootstrap token from the agent detail panel:
 #    POST /api/agents/<id>/issue-bootstrap → returns bsk-XXXX
 # 3. Set the four entrypoint vars in .env:
@@ -42,12 +42,13 @@ ANILA_ENDPOINT_URL=http://agentic-rag:24786
 CSP_BOOTSTRAP_TOKEN=bsk-XXXX-from-admin
 EOF
 
-# 4. Start. The entrypoint runs anila-core agent bootstrap on first boot,
+# 4. Start. The entrypoint runs the bootstrap CLI on first boot,
 #    writes /var/lib/anila-agent/service_token.json (mode 0600), then execs
-#    uvicorn.
+#    uvicorn. The CLI lives in agentic_rag.cli.bootstrap — no anila-core
+#    install required.
 docker compose up -d
 docker compose logs -f api | head -30
-# expect: [entrypoint] running anila-core agent bootstrap ...
+# expect: [entrypoint] running agentic_rag bootstrap CLI ...
 #         OK: service token written to /var/lib/anila-agent/service_token.json
 
 # 5. Remove CSP_BOOTSTRAP_TOKEN from .env. It's been consumed; CSP rejects

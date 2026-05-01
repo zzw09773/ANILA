@@ -32,12 +32,13 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-# Phase 2 Sprint 1 / Chunk F: AgenticRAG retrieves through the central
-# anila-core SDK, not its own pg_pool / pgvector_store. The SDK enforces
-# Layer 3 agent isolation (RLS via SET LOCAL anila.collection_id) so this
-# template can't accidentally read another agent's chunks.
-from anila_core.storage.adapters import CollectionScopedPgVectorStore, PgPool
-from anila_core.models.ingestion import SearchHit
+# Phase 0 (2026-05-02): retrieval goes through AgenticRAG's own
+# pg_pool / pgvector_store again. anila-core is no longer imported —
+# AgenticRAG is a fork-template; devs cloning this repo must not be
+# forced to install platform-internal packages. Layer 3 RLS (``SET
+# LOCAL anila.collection_id``) is preserved by CollectionScopedPgVectorStore.
+from agentic_rag.storage.adapters import CollectionScopedPgVectorStore, PgPool
+from agentic_rag.models.ingestion import SearchHit
 
 from agentic_rag.api.middleware.loader import install_csp_middleware
 from agentic_rag.ingestion.normalize import normalize_zh
@@ -95,9 +96,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("rag-api")
 
 # ── DB pool + RAG store + Reranker ────────────────────────────────────────────
-# Sprint 1 Chunk F: replaced raw asyncpg pool with anila_core's PgPool.
-# CollectionScopedPgVectorStore is the only retrieval entry point; it pins
-# RAG_COLLECTION_ID into ``anila.collection_id`` per-connection so RLS auto-scopes.
+# Phase 0 (2026-05-02): PgPool / CollectionScopedPgVectorStore live in
+# agentic_rag.storage.adapters — local code, no anila-core dep.
+# CollectionScopedPgVectorStore pins RAG_COLLECTION_ID into
+# ``anila.collection_id`` per-connection so RLS auto-scopes.
 _pool: PgPool | None = None
 _store: CollectionScopedPgVectorStore | None = None
 _reranker: Reranker | None = None
@@ -407,10 +409,10 @@ def _rrf_merge(
     top_k: int,
     k: int = 60,
 ) -> list[dict]:
-    """Reciprocal Rank Fusion across central-SDK SearchHits.
+    """Reciprocal Rank Fusion across SearchHits.
 
-    Both inputs are ``list[SearchHit]`` from anila_core. We key by
-    ``chunk.id`` (BIGINT, schema-level unique) — the legacy ``chunk_id``
+    Both inputs are ``list[SearchHit]`` from agentic_rag.models. We key
+    by ``chunk.id`` (BIGINT, schema-level unique) — the legacy ``chunk_id``
     name is preserved on the output dict for downstream compatibility
     (reranker / context builder still read ``r["chunk_id"]``).
 

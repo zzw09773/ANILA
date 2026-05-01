@@ -320,6 +320,24 @@
                 {{ issuedSecret.meta.kind }} · credential_id={{ issuedSecret.meta.credential_id }}{{ issuedSecret.meta.label ? ` · label=${issuedSecret.meta.label}` : '' }}
               </li>
             </ul>
+
+            <!-- Phase 0.5 — collapsible "how to use" with per-language
+                 snippets pre-filled with this agent's bsk- + ids.
+                 Only shown for bsk- since the csk- path differs (admin
+                 hand-installs the token; no exchange flow). -->
+            <details
+              v-if="issuedSecret.kind === 'bsk' && issuedSecret.meta"
+              class="secret-banner__howto"
+              open
+            >
+              <summary class="secret-banner__howto-summary">how to use this token →</summary>
+              <BootstrapHowToTabs
+                :csp-url="cspUrl"
+                :agent-id="issuedSecret.meta.agent_id"
+                :endpoint-url="issuedSecret.meta.endpoint_url"
+                :bsk="issuedSecret.value"
+              />
+            </details>
           </div>
 
           <div class="row-actions" style="margin-bottom: 8px;">
@@ -435,6 +453,14 @@ import {
 } from '../api/agentCredentials'
 import { listModels } from '../api/models'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, TermSection } from '../components/cli'
+import BootstrapHowToTabs from '../components/agents/BootstrapHowToTabs.vue'
+
+// CSP base URL the snippets should reference. Derived from the
+// browser origin so the dev's copy-pasted code targets whatever host
+// they're actually viewing — `localhost:5173` in dev, prod hostname
+// in prod. Override via VITE_CSP_BASE_URL when the API lives on a
+// different origin from the SPA.
+const cspUrl = import.meta.env?.VITE_CSP_BASE_URL || (typeof window !== 'undefined' ? window.location.origin : '')
 
 const authStore = useAuthStore()
 
@@ -982,6 +1008,19 @@ function buildStatusHistory(agent) {
 .secret-banner__meta code {
   background: var(--c-bg-1, #000); padding: 1px 4px; font-size: var(--t-3xs);
 }
+
+.secret-banner__howto { margin-top: 12px; }
+.secret-banner__howto-summary {
+  cursor: pointer;
+  font-size: var(--t-2xs);
+  color: var(--c-fg-2);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 4px 0;
+  user-select: none;
+}
+.secret-banner__howto-summary:hover { color: var(--c-fg-1); }
+.secret-banner__howto[open] .secret-banner__howto-summary { margin-bottom: 8px; }
 
 .cred-table { width: 100%; border-collapse: collapse; font-size: var(--t-2xs); }
 .cred-table th {

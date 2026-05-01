@@ -92,9 +92,9 @@ Schema 欄位與 `anila-agent.yaml` 相同；實際 API 位置請以 CSP backend
 
 ## 本 agent 側的設定
 
-### Middleware 載入順序（Sprint 8 X / Phase D 後）
+### Middleware 載入順序（Phase 0 後）
 
-本 template 啟動時會用 anila-core 的 **`RotatingServiceTokenMiddleware`**：
+本 template 啟動時會掛 **`CspServiceTokenMiddleware`**：
 
 1. 讀取 `${ANILA_AGENT_STATE_DIR}/service_token.json`（預設 `/var/lib/anila-agent/`）
 2. 找不到檔案 → 退回 `CSP_SERVICE_TOKEN` env var（legacy fallback）
@@ -103,9 +103,12 @@ Schema 欄位與 `anila-agent.yaml` 相同；實際 API 位置請以 CSP backend
 收到 incoming `X-CSP-Service-Token` 與在記憶體的 token mismatch 時，會**重新讀
 state file 一次後重試**，這樣 admin rotation 不需要重啟 container 就能生效。
 
-實作位於 [`anila-core/src/anila_core/api/middleware/auth.py`](../../anila-core/src/anila_core/api/middleware/auth.py)。
-原本的本地 fallback 仍存在 [`src/agentic_rag/api/middleware/csp_auth.py`](../src/agentic_rag/api/middleware/csp_auth.py)
-給 standalone（無 anila-core）部署使用。
+Loader 邏輯在 [`src/agentic_rag/api/middleware/loader.py`](../src/agentic_rag/api/middleware/loader.py)：
+若 host 環境碰巧有裝 anila-core 就優先用 `anila_core.api.middleware.auth.CspServiceTokenMiddleware`
+（platform-side 部署常見情境）；其他情況一律 fallback 到內建版
+[`src/agentic_rag/api/middleware/csp_auth.py`](../src/agentic_rag/api/middleware/csp_auth.py)。
+**Devs fork 本 template 永遠不需要 anila-core**——內建 fallback 行為與
+anila-core 版本完全一致。
 
 ### 相關環境變數（Sprint 8 X / Phase D 後）
 

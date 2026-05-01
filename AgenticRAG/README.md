@@ -630,9 +630,10 @@ curl -H "Authorization: Bearer <your-api-key>" http://localhost:8000/health
    detail 頁複製，填到 `.env` 後重啟。middleware 會驗 `X-CSP-Service-Token`
    header；留空則進入本機 dev mode。
 
-Middleware 載入順序：`anila_core.api.middleware.auth` → 本 package 的
-`agentic_rag.api.middleware.csp_auth` fallback。在 ANILA 平台內會自動使用
-anila-core 版本，保持跨 agent 的安全邏輯一致；脫離 ANILA 也能獨立運行。
+Middleware 載入順序：若 host 環境碰巧有 `anila_core.api.middleware.auth`
+（platform-side 部署常見情況）優先使用；其他情況一律 fallback 到內建
+`agentic_rag.api.middleware.csp_auth`。**Fork 本 template 永遠不需要安裝
+anila-core**——兩個版本的安全邏輯完全一致。
 
 完整對接流程（含 X-ANILA-User-* header 處理、health check、多 instance
 註冊、staging vs prod token 區隔）見 [`docs/CSP_INTEGRATION.md`](./docs/CSP_INTEGRATION.md)。

@@ -4,7 +4,7 @@
 > [官方 AgenticRAG template](../../) 作為起點後，如果你的場景屬於下列高信任、
 > 高問責情境（國防 / 金融 / 醫療 / 政府 / 法律），可以把這份 spec 的角色定義
 > （coordinator / mission-analyst / rag-researcher / document-drafter / reviewer）
-> 用 `anila-core.registry` 載入，組成多 agent 編排。
+> 用 `agentic_rag.registry` 載入，組成多 agent 編排。
 >
 > 本 README 描述 **多 agent 編排的設計目標與 agent YAML 格式**，不是 quickstart。
 > 要上手 RAG agent template 本身，先看 [`../../README.md`](../../README.md)。

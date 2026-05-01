@@ -3,31 +3,31 @@
 History:
 
 - v0.5: shipped local ``pg_pool``, ``pgvector_store``, ``postgres_store``,
-  ``memory_file_store``. The first two duplicated what would later become
-  the central ANILA platform SDK; the last two are AgenticRAG-specific
-  conversation persistence and stay.
-- v0.6 / Phase 2 Sprint 1 Chunk F: ``pg_pool`` and ``pgvector_store``
-  were retired in favour of ``anila_core.storage.adapters``. The
-  ``document_chunks`` schema is now owned by CSP migrations 0014 + 0015
-  and accessed exclusively through ``AgentScopedPgVectorStore`` so RLS
-  enforcement (``SET LOCAL anila.agent_id``) is centralised.
+  ``memory_file_store``.
+- v0.6 / Sprint 1 Chunk F: ``pg_pool`` + ``pgvector_store`` were
+  retired in favour of ``anila_core.storage.adapters`` (centralised
+  for RLS enforcement at the time when AgenticRAG was treated as a
+  platform-internal service).
+- Phase 0 (2026-05-02): boundary repositioned. AgenticRAG is now a
+  fork-template for devs starting new agents, not a platform-internal
+  service. Local copies of ``pg_pool`` and ``pgvector_store`` are
+  re-introduced; platform deploys can inject anila-core's RLS-aware
+  variant via ``app_factory.build_app(vector_store_override=...)``.
 
-What's left here:
+Modules:
 
-- ``MemoryFileStore`` — filesystem MemoryStore impl for the conversation
-  memdir / extract / relevance pipeline. Not RAG-specific.
-- ``PgSessionStore`` / ``PgMessageStore`` / ``PgRetrievalTraceStore``
-  via ``postgres_store`` — chat-side persistence (sessions / messages /
-  retrieval audit trail). Schema lives in ``initialize_schema``.
-
-Importing ``PgPool`` from this package now re-exports anila_core's so
-existing call sites in ``postgres_store.py`` and elsewhere continue to
-work without chasing the central package path.
+- ``pg_pool`` — asyncpg pool with pgvector / halfvec / jsonb codecs
+- ``pgvector_store`` — collection-scoped pgvector reader/writer
+- ``memory_file_store`` — filesystem MemoryStore impl
+- ``postgres_store`` — chat-side sessions / messages / retrieval_traces
 """
 
-from anila_core.storage.adapters import PgPool
-
 from .memory_file_store import MemoryFileStore
+from .pg_pool import PgPool
+from .pgvector_store import (
+    AgentScopedPgVectorStore,  # back-compat alias for v0.5 callers
+    CollectionScopedPgVectorStore,
+)
 from .postgres_store import (
     PgMessageStore,
     PgRetrievalTraceStore,
@@ -36,6 +36,8 @@ from .postgres_store import (
 )
 
 __all__ = [
+    "AgentScopedPgVectorStore",
+    "CollectionScopedPgVectorStore",
     "MemoryFileStore",
     "PgMessageStore",
     "PgPool",

@@ -48,8 +48,11 @@ RUN useradd -m -u 1000 anila \
     && chown -R anila:anila /app /tmp/anila_uploads /var/lib/anila-agent
 USER anila
 
-# Phase D entrypoint: auto-runs `anila-core agent bootstrap` when the
-# state file is missing AND $CSP_BOOTSTRAP_TOKEN is set.
+# Phase D entrypoint: auto-runs `python -m agentic_rag.cli bootstrap`
+# when the state file is missing AND $CSP_BOOTSTRAP_TOKEN is set.
+# (Phase 0, 2026-05-02: the bootstrap CLI moved from anila-core into
+# AgenticRAG itself so this template is self-contained — no anila-core
+# install needed in the runtime image.)
 COPY --chown=anila:anila docker/entrypoint.sh /usr/local/bin/anila-entrypoint.sh
 USER root
 RUN chmod +x /usr/local/bin/anila-entrypoint.sh

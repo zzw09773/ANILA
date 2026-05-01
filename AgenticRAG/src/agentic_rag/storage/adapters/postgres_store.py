@@ -17,10 +17,9 @@ from typing import Any, Optional
 
 from ...models.storage import RetrievalTrace, Session, StoredMessage
 
-# Phase 2 Sprint 1 / Chunk F: legacy ``.pg_pool`` was deleted; use the
-# central anila-core PgPool which has the same ``acquire()`` semantics
-# (asyncpg pool with vector + halfvec + jsonb codecs registered).
-from anila_core.storage.adapters import PgPool
+# Phase 0 (2026-05-02): reclaimed local PgPool — AgenticRAG must
+# not import platform-internal anila-core packages.
+from .pg_pool import PgPool
 
 logger = logging.getLogger(__name__)
 

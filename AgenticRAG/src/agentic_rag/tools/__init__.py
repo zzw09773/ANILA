@@ -1,13 +1,9 @@
 """AgenticRAG LLM-callable tool surface.
 
-Phase 2 Sprint 3 / Chunk M re-implementation:
-  The original Chunk F retirement note still applies — the OLD factory
-  variants (with inline SQL on the pre-0014 schema) are gone. The
-  re-implementations below take an ``AgentScopedPgVectorStore`` from
-  anila-core's central SDK instead of a raw db_pool. RLS auto-scopes
-  the queries via the store's ``SET LOCAL anila.agent_id`` block, so
-  tools are guaranteed to never see another agent's chunks even if
-  the LLM gets confused about which agent it's serving.
+Phase 0 (2026-05-02): the tool factories now consume the local
+``AgentScopedPgVectorStore`` (alias of ``CollectionScopedPgVectorStore``)
+from ``agentic_rag.storage.adapters``. AgenticRAG is a fork-template and
+must not import platform-internal anila-core packages.
 
 Three tools:
 
@@ -19,6 +15,13 @@ The factories return ``ToolDefinition`` objects ready to register on
 the per-request ``ToolRegistry`` in ``server.py``'s ``/agentic-chat``.
 
 The cross-encoder rerank helper survives unchanged.
+
+Known issue (pre-existing, Sprint 2 deliverable to fix): the
+``collection_id=`` kwarg passed below to ``store.similarity_search`` /
+``store.keyword_search`` is not part of the current store API
+(collection scope is constructor-level). These factories are not yet
+wired into ``server.create_app``'s /agentic-chat path so the breakage
+is dormant; Sprint 2 will reconcile signatures.
 """
 
 from __future__ import annotations
@@ -28,7 +31,7 @@ from typing import Any, Awaitable, Callable
 
 import httpx
 
-from anila_core.storage.adapters import AgentScopedPgVectorStore
+from ..storage.adapters import AgentScopedPgVectorStore
 
 from ..models.tool import ToolDefinition, ToolSafety
 from ..providers.reranker import RerankCandidate, Reranker

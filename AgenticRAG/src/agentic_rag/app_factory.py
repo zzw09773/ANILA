@@ -14,19 +14,19 @@ Environment variables (see config.py for full list):
     RAG_COLLECTION_ID    = (positive int — the agent this container serves)
     API_KEY         = (optional bearer token)
 
-Phase 2 Sprint 1 / Chunk F changes:
-- Local ``storage.adapters.pg_pool`` and ``storage.adapters.pgvector_store``
-  retired in favour of the central ``anila_core`` SDK. Same semantics,
-  but the central path enforces RLS via ``SET LOCAL anila.collection_id``.
-- Local ``ingestion.service.IngestionService`` (and the chunker / parser
-  / docling pipeline behind it) is no longer wired into the FastAPI app
-  — the ingestion-worker container is the canonical ingestion path now.
-  Legacy code is left in the tree for evaluator reference but isn't
-  imported by the entry points; CSP ``/api/ingestion/*`` + the worker
-  pipeline replace it.
-- ``init_pg_schema`` (sessions / messages tables only — never touched
-  document_chunks) still runs to keep AgenticRAG's chat-side persistence
-  working.
+Phase 0 decoupling (2026-05-02):
+- Local ``storage.adapters.pg_pool`` and
+  ``storage.adapters.pgvector_store`` re-introduced; we no longer
+  import from ``anila_core``. AgenticRAG is a fork-template and must
+  not pull platform-internal packages into the dev's environment.
+- Platform deployments that want anila-core's RLS-aware variant inject
+  it via the ``vector_store_override`` arg to ``build_app()`` — the
+  default is the local ``CollectionScopedPgVectorStore`` here.
+- ``init_pg_schema`` (sessions / messages tables only — never touches
+  document_chunks) still runs to keep chat-side persistence working.
+- The legacy ingestion service path remains retired in favour of the
+  central ingestion-worker container; the leftover code is for
+  evaluator reference only.
 """
 
 from __future__ import annotations
@@ -38,17 +38,14 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI
 
-# Central SDK — anila-core owns the document_chunks schema and its
-# RLS-scoped accessor. AgenticRAG retrieves through these classes; it
-# never imports the legacy local adapters anymore.
-from anila_core.storage.adapters import CollectionScopedPgVectorStore, PgPool
-
 from .config import settings
 from .providers.openai_compat import OpenAICompatProvider
 from .providers.reranker import build_reranker_from_env
 from .providers.vision import VisionProvider
 from .router.tool_router import ToolRegistry
+from .storage.adapters import CollectionScopedPgVectorStore, PgPool
 from .storage.adapters.postgres_store import initialize_schema as init_pg_schema
+from .storage.protocols import VectorStore
 from .api.server import create_app
 
 logger = logging.getLogger(__name__)
@@ -61,7 +58,23 @@ _RAG_COLLECTION_ID = int(os.environ.get("RAG_COLLECTION_ID", "0"))
 # Shared state (initialised in lifespan)
 # ---------------------------------------------------------------------------
 _pg_pool: PgPool | None = None
-_pgvector_store: CollectionScopedPgVectorStore | None = None
+_pgvector_store: VectorStore | None = None
+_vector_store_factory: "_VectorStoreFactory | None" = None
+
+
+# Plugin hook signature: given the open pool and the collection id,
+# return any object satisfying the VectorStore Protocol. Set by
+# ``build_app(vector_store_override=...)``; consumed inside lifespan.
+class _VectorStoreFactory:
+    def __init__(self, fn) -> None:
+        self.fn = fn
+
+    def build(self, pool: PgPool, collection_id: int) -> VectorStore:
+        return self.fn(pool, collection_id)
+
+
+def _default_vector_store_factory(pool: PgPool, collection_id: int) -> VectorStore:
+    return CollectionScopedPgVectorStore(pool, collection_id=collection_id)
 
 
 @asynccontextmanager
@@ -86,9 +99,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.vision_enabled,
     )
 
-    # Central anila-core PgPool. The ``open()`` API matches what was
-    # previously called ``initialize()`` on the legacy adapter — same
-    # semantics, asyncpg pool with vector + halfvec + jsonb codecs.
+    # Local PgPool — same asyncpg pool with vector + halfvec + jsonb
+    # codecs registered. Was briefly delegated to anila-core; reclaimed
+    # in Phase 0 so the fork-template stays self-contained.
     _pg_pool = PgPool(
         dsn=settings.database_url,
         min_size=settings.pg_pool_min,
@@ -97,17 +110,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await _pg_pool.open()
 
     # AgenticRAG's chat-side persistence (sessions / messages /
-    # retrieval_traces) still uses postgres_store; init that schema.
-    # ``document_chunks`` is NOT covered here — it's owned by CSP
-    # alembic migration 0014/0015 and the central worker.
+    # retrieval_traces) initialises here. ``document_chunks`` is NOT
+    # covered — it's owned by CSP migration 0014/0015 and the central
+    # ingestion-worker container.
     await init_pg_schema(_pg_pool)
 
     if _RAG_COLLECTION_ID > 0:
-        _pgvector_store = CollectionScopedPgVectorStore(
-            _pg_pool, collection_id=_RAG_COLLECTION_ID
+        factory = _vector_store_factory or _VectorStoreFactory(
+            _default_vector_store_factory
         )
+        _pgvector_store = factory.build(_pg_pool, _RAG_COLLECTION_ID)
         logger.info(
-            "CollectionScopedPgVectorStore ready (collection_id=%d, dim=%d)",
+            "Vector store ready: %s (collection_id=%d, dim=%d)",
+            type(_pgvector_store).__name__,
             _RAG_COLLECTION_ID,
             settings.embedding_dimension,
         )
@@ -122,8 +137,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _pg_pool.close()
 
 
-def build_app() -> FastAPI:
-    """Build the FastAPI application with all RAG components wired up."""
+def build_app(
+    *,
+    vector_store_override=None,
+) -> FastAPI:
+    """Build the FastAPI application with all RAG components wired up.
+
+    Args:
+        vector_store_override: optional callable
+            ``(pool: PgPool, collection_id: int) -> VectorStore``.
+            Platform deployments inject anila-core's RLS-aware impl
+            here. When ``None``, the local
+            ``CollectionScopedPgVectorStore`` is used.
+    """
+    global _vector_store_factory
+    if vector_store_override is not None:
+        _vector_store_factory = _VectorStoreFactory(vector_store_override)
+    else:
+        _vector_store_factory = _VectorStoreFactory(_default_vector_store_factory)
 
     # LLM provider
     llm_provider = OpenAICompatProvider(
