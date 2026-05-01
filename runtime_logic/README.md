@@ -1,472 +1,268 @@
-# runtime_logic — Agent Runtime 參考代碼（TypeScript）
+# runtime_logic — agent runtime reference codebases
 
-> **定位**：本目錄存放一份**成熟的 agent runtime TypeScript 實作快照**，以「參考材料」身份納入 ANILA。它**不是 ANILA runtime 的執行碼**（執行碼在 `anila-core/`，是 Python），而是用來對照、借鑑、移植其架構模式的「設計原本」。
+> **定位**：本目錄收兩份**生產級 agent runtime 的原始碼快照**，作為「設計參考」。它**不是 ANILA 的執行碼**（執行碼在 `anila-core/` Python tree、agent template 在 `AgenticRAG/`），而是用來**對照、借鑑、把好的設計模式翻譯成 Python 後納入 anila-core / AgenticRAG**。
 >
-> **身份對照**：
-> - 執行時用的 Python runtime → `D:/ANILA/anila-core/`
-> - 官方 RAG agent template → `D:/ANILA/AgenticRAG/`
-> - Router 服務 → `D:/ANILA/anila-core-router/`
-> - **本目錄** → 唯一用途是「讀它、參考它、把好的設計翻譯成 Python 放進 `anila-core/`」
+> **下一波重點目標**：用這兩份 reference 強化 [`AgenticRAG`](../AgenticRAG/) 的 agent runtime 能力 — multi-agent handoffs、guardrails、tracing、sandbox tool execution、session memory 等等 — 都已經在 reference codebase 內有成熟實作，可以照著 pattern 翻譯。
 >
-> ⚠️ **`src/` 與 `vendor/` 已由 `.gitignore` 排除**，不會進 repo。只有本 README 被追蹤。原始碼在本機維護，作者自行管理副本。
+> ⚠️ **`claude-code-src/` 與 `openai-agents-python/` 的整個 source tree 已由 `.gitignore` 排除**，不會進 repo。只有本 README 被追蹤。原始碼在本機維護，作者自行管理副本。
+>
+> 規範：**讀 pattern、學介面、自己重寫**；不可逐字複製。授權見各 codebase 自己的 LICENSE。
 
 ---
 
-## 為什麼要保留整份 TypeScript 原始碼（在本機）
+## 為什麼要保留兩份 reference
 
-這份 runtime 在真實迭代中把一堆**看起來很小但實際上很重要**的邊緣案例寫得扎實：
+不同 codebase 暴露不同 design surface。各自的長處：
 
-- Prompt cache 共享的 byte-identical fork prefix
-- Compact 本身撞到 token limit 時的 PTL（Prompt Too Long）降級
-- 背景 memory 萃取在 user 連續送訊時的 trailing-run coalescing
-- Stop hook 可以阻止繼續生成（`preventContinuation`）
-- Tool-as-folder 的 UI / prompt / constants / logic 分離
+| Reference | 長處 | 對應 ANILA 痛點 |
+|---|---|---|
+| **`claude-code-src/`**（TypeScript Claude Code CLI） | 長期單一 conversation 的 turn-loop 細節（compact 三層、PTL retry、background memory extraction、stop hooks、tool-as-folder UI/prompt 分離） | 我們已經從這裡移植 7-stage QueryEngine、coordinator、compact 三層、SessionMemory、Memdir 4-type 等到 `anila-core/`；尚有 **PTL retry、preventContinuation hook、prompt-cache fork prefix** 等待移植 |
+| **`openai-agents-python/`**（OpenAI 官方 Agents SDK） | 多 agent 編排（handoffs / agents-as-tools / sub-agent state）、tool guardrails、structured tracing、sandbox tool execution、conversation session abstraction、retry semantics、MCP server 整合 | AgenticRAG 目前**單 agent + 線性 tool loop**；要往「多 agent handoff RAG」（檢索 agent → 生成 agent → 引用驗證 agent）、「sandboxed tool 執行」、「結構化 tracing」走，這份 reference 是現成藍圖 |
 
-這些東西在一般 SDK docs 看不到，只有讀原始碼能學。所以我們**本機整份保留**，作為 `anila-core/` 日後要補強時的一手資料。
-
----
-
-## 目錄結構（僅本機存在，供參考）
-
-```
-runtime_logic/
-├── src/                            # ← gitignored
-│   ├── QueryEngine.ts              # 主引擎：一個 conversation 一個 engine
-│   ├── Task.ts                     # Task 抽象：TaskType union + TaskStatus
-│   ├── Tool.ts                     # Tool 契約 + ToolUseContext
-│   ├── tools.ts                    # 工具註冊表（feature-gated）
-│   ├── commands.ts                 # slash commands
-│   ├── query/
-│   │   ├── config.ts               # QueryConfig（immutable snapshot per query）
-│   │   ├── deps.ts                 # QueryDeps（DI: callModel/compact/uuid）
-│   │   ├── stopHooks.ts            # handleStopHooks (AsyncGenerator)
-│   │   └── tokenBudget.ts          # BudgetTracker + diminishing returns
-│   ├── coordinator/
-│   │   └── coordinatorMode.ts      # 多 worker 編排模式的 system prompt
-│   ├── tools/
-│   │   └── AgentTool/
-│   │       ├── AgentTool.tsx       # 工具定義（call → runAgent）
-│   │       ├── runAgent.ts         # 實際 fork + 執行 subagent
-│   │       ├── forkSubagent.ts     # byte-identical prefix fork
-│   │       └── loadAgentsDir.ts    # agent markdown 掃描（zod schema）
-│   ├── skills/
-│   │   ├── loadSkillsDir.ts        # LoadedFrom taxonomy
-│   │   └── bundledSkills.ts        # 內建 skill registry
-│   ├── memdir/
-│   │   ├── memdir.ts               # MEMORY.md 入口 + 200 line / 25KB caps
-│   │   └── memoryTypes.ts          # 4-type taxonomy 的 prompt 片段
-│   ├── services/
-│   │   ├── compact/compact.ts      # micro/auto/session + PTL retry
-│   │   ├── extractMemories/        # 背景 memory 萃取（trailing-run）
-│   │   └── SessionMemory/          # 對話摘要 → session memory
-│   └── hooks/
-│       └── toolPermission/         # PermissionContext（5 種 source）
-├── vendor/                         # ← gitignored
-└── README.md                       # ← 你正在讀的檔（唯一進 repo 的檔）
-```
+兩份合起來涵蓋了「單 agent 深度 」+「多 agent 廣度」兩個維度。
 
 ---
 
-## 核心子系統
+## 兩份 reference 的目錄概覽
 
-### 1. QueryEngine — 一個 conversation 一個 engine
+> 完整檔案結構保留在本機 `claude-code-src/src/`、`openai-agents-python/src/agents/`，以下只列出最常被引用的子模組以便對應地圖閱讀。
 
-**檔案**：`src/QueryEngine.ts`
-
-每個 conversation 配一個 `QueryEngine` instance。每次使用者送訊息，呼叫 `submitMessage()`，回傳一個 `AsyncGenerator<SDKMessage>`。State 跨 turn 持久化，由 engine 管理。
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant QueryEngine
-    participant Provider
-    participant ToolRouter
-    participant StopHooks
-
-    User->>QueryEngine: submitMessage(prompt, options)
-    QueryEngine->>QueryEngine: snapshot gates → QueryConfig
-    QueryEngine->>QueryEngine: inject system prompt parts
-
-    loop Turn loop (max_turns)
-        QueryEngine->>Provider: stream_completion(messages, tools)
-        Provider-->>QueryEngine: SSE stream (text + tool_use)
-
-        alt finish_reason = end_turn, no tool_use
-            QueryEngine->>StopHooks: executeStopHooks (AsyncGenerator)
-            StopHooks-->>QueryEngine: yield messages / blockingError
-            QueryEngine-->>User: final message
-        else has tool_use
-            QueryEngine->>ToolRouter: execute_batch(tool_calls)
-            ToolRouter-->>QueryEngine: tool_results
-            QueryEngine->>QueryEngine: checkTokenBudget
-            alt action=continue
-                QueryEngine->>QueryEngine: inject nudge_message
-            else action=stop
-                QueryEngine-->>User: stop_reason=budget
-            end
-        end
-    end
-```
-
-**關鍵設計：**
-- `QueryConfig`（`query/config.ts`）是 **immutable snapshot**，每次 `submitMessage()` 進入時拍一次。跟 mutable per-turn state 分離，未來可以把 turn loop 抽成 pure reducer `(state, event, config) → newState`。
-- `QueryDeps`（`query/deps.ts`）注入 `callModel / microcompact / autocompact / uuid`，測試時可以 mock，production 走 `productionDeps()`。
-
-### 2. Tool 契約 — Tool-as-folder
-
-**檔案**：`src/Tool.ts`、`src/tools/*/`
-
-每個 Tool 是一個**資料夾**（不是一個檔案）：
+### `claude-code-src/`（TypeScript）
 
 ```
-tools/FileReadTool/
-├── FileReadTool.ts       # 主邏輯：call() / validateInput() / isEnabled
-├── UI.tsx                # 結果顯示 React 元件
-├── prompt.ts             # 工具描述（給 LLM 看的 prompt）
-├── constants.ts          # 工具名稱等常數
-└── utils/                # 局部輔助函式
+claude-code-src/
+├── README.md, LICENSE
+├── docs/                            ← Claude Code 官方文件（離線快照）
+└── src/                             ← 主要源碼樹（gitignored）
+    ├── QueryEngine.ts               ← 7-stage turn loop 入口
+    ├── Task.ts, Tool.ts, tools.ts   ← Task type union + Tool 契約 + registry
+    ├── query/
+    │   ├── config.ts                ← QueryConfig immutable snapshot
+    │   ├── deps.ts                  ← QueryDeps DI（callModel / compact / uuid）
+    │   ├── stopHooks.ts             ← AsyncGenerator-based stop hook chain
+    │   └── tokenBudget.ts           ← BudgetTracker + diminishing returns
+    ├── tools/                       ← 43 個內建 tool（每個是 1 個資料夾）
+    │   ├── AgentTool/               ← subagent fork + byte-identical prefix
+    │   ├── BashTool/, GrepTool/, FileEditTool/, …
+    │   └── REPLTool/, RemoteTriggerTool/, ScheduleCronTool/
+    ├── services/
+    │   ├── compact/                 ← micro / auto / sessionMemory / time-based
+    │   ├── extractMemories/         ← background memory extraction + cursor
+    │   ├── SessionMemory/           ← conversation summary maintenance
+    │   ├── AgentSummary/            ← subagent completion summary
+    │   ├── awaySummary.ts           ← "what changed while you were away"
+    │   ├── MagicDocs/               ← magic doc generation
+    │   └── PromptSuggestion/        ← inline prompt suggestion engine
+    ├── memdir/                      ← MEMORY.md + 4-type taxonomy + relevance
+    ├── coordinator/                 ← multi-worker orchestration prompt
+    ├── hooks/toolPermission/        ← 5-source PermissionContext
+    └── ink/, components/, screens/  ← terminal UI（**不要移植**）
 ```
 
-**`ToolUseContext`** 是一個有 50+ 欄位的「context object」，每次 tool 呼叫時傳入：
-- `abortController`、`agentId`、`messageId`、`setAppState`、`readFileState`、`toolPermissionContext`、`options`（mainLoopModel / tools / ...）等等
-- `DeepImmutable<T>` 包裝避免 tool 直接改 shared state
+### `openai-agents-python/`（Python）
 
-**工具註冊**（`tools.ts`）：
-- `getAllBaseTools()` 列出約 40 個內建工具
-- 每個工具可以用 `feature('...')` gate 掉（bundle 編譯時決定）
-- 範例：`BashTool`, `GlobTool`, `GrepTool`, `FileRead/Edit/Write`, `AgentTool`, `SkillTool`, `WebFetch`, `TodoWrite`, `TaskStop`, `AskUserQuestion`, `SendMessage`, `Monitor`, `Cron`, ...
-
-### 3. Task 類型聯集
-
-**檔案**：`src/Task.ts`、`src/tasks/types.ts`
-
-```typescript
-export type TaskType =
-  | 'local_bash'          // bash 前景/背景命令
-  | 'local_agent'         // 本機 subagent（via AgentTool）
-  | 'remote_agent'        // 遠端 agent（via MCP / HTTP）
-  | 'in_process_teammate' // 同進程 teammate agent
-  | 'local_workflow'      // Workflow tool
-  | 'monitor_mcp'         // MCP 長連線監控
-  | 'dream'               // 閒置時背景思考
-
-export type TaskStatus =
-  | 'pending' | 'running' | 'completed' | 'failed' | 'killed'
 ```
-
-Task ID = `type-specific-letter` + 8 chars base36（`36^8 ≈ 2.8 trillion`，抗 symlink brute-force）。
-
-`isBackgroundTask` 是 type guard，用來區分長期 task vs 單發 call。
-
-### 4. AgentTool — Subagent 與 Fork
-
-**檔案**：`src/tools/AgentTool/*.ts`
-
-三個檔案各司其職：
-
-```mermaid
-graph TD
-    subgraph "AgentTool 三層"
-        A[AgentTool.tsx<br/>工具入口<br/>input 驗證 + call 分派]
-        B[runAgent.ts<br/>fork parent context<br/>+ 啟動 MCP servers<br/>+ cleanup closure]
-        C[forkSubagent.ts<br/>byte-identical prompt prefix<br/>→ prompt cache 共享]
-        D[loadAgentsDir.ts<br/>scan .md files<br/>→ zod schema 驗證]
-    end
-
-    A --> B
-    B --> C
-    B --> D
+openai-agents-python/
+├── README.md, LICENSE, AGENTS.md, CLAUDE.md, PLANS.md
+├── pyproject.toml, mkdocs.yml
+├── docs/, examples/, tests/
+└── src/agents/                      ← 主要源碼樹（gitignored）
+    ├── agent.py, _public_agent.py   ← Agent 抽象 + tool / handoff 配置
+    ├── run.py, run_state.py         ← Run loop + persistent state
+    ├── run_internal/                ← Run loop 細節（hidden API）
+    ├── retry.py, run_error_handlers ← Retry + error policies
+    ├── lifecycle.py                 ← AgentHooks (on_start / on_tool / on_end)
+    ├── stream_events.py             ← Event-stream iteration
+    ├── tool.py, tool_context.py     ← Tool 契約
+    ├── tool_guardrails.py           ← Tool-level safety check pipeline
+    ├── guardrail.py                 ← Input/output guardrail framework
+    ├── handoffs/                    ← Multi-agent handoff（控制權移轉）
+    ├── extensions/handoff_filters.py← 標準 handoff filter 範本
+    ├── memory/
+    │   ├── session.py               ← Session abstraction
+    │   ├── sqlite_session.py        ← Sqlite 持久化
+    │   ├── openai_responses_compaction_session.py ← 自動 compact
+    │   ├── openai_conversations_session.py        ← OpenAI Conversations API 後端
+    │   └── session_settings.py      ← Session config
+    ├── models/                      ← Provider abstraction + retry
+    │   ├── interface.py             ← Provider Protocol
+    │   ├── openai_chatcompletions.py / openai_responses.py
+    │   ├── _openai_retry.py         ← 429 / 5xx retry policy
+    │   └── multi_provider.py
+    ├── mcp/                         ← MCP server 整合（tools / prompts / resources）
+    │   ├── manager.py, server.py, util.py
+    ├── tracing/                     ← 結構化 tracing
+    │   ├── create.py, processor_interface.py, processors.py
+    │   └── provider.py
+    ├── sandbox/                     ← Tool sandboxed execution
+    │   ├── apply_patch.py, files.py
+    │   ├── capabilities/, entries/, instructions/, manifest.py
+    ├── realtime/                    ← Voice / realtime agents（多半 RAG 不需要）
+    └── extensions/experimental/     ← 預覽功能
 ```
-
-**`forkSubagent.ts` 的關鍵**：所有子 worker 的 API request **前綴必須 byte-identical**（只差最後一個 text block），這樣 LLM provider 端的 prompt cache 才會共享。差一個空白都會破掉 cache。
-
-**Agent-as-markdown**（`loadAgentsDir.ts`）：每個 agent 是一個 `.md` 檔，frontmatter 用 zod schema 驗證：
-
-```yaml
----
-description: 做什麼的
-tools: [Read, Grep, Bash]
-disallowedTools: [Write]
-model: inherit | <model-id>
-permissionMode: default | bubble | strict
-mcpServers: [...]
-hooks: [...]
-skills: [...]
-memory: user | project | local
-background: false
-isolation: none | worktree | remote
----
-<system-prompt body>
-```
-
-### 5. Skills — Frontmatter + Lazy Content
-
-**檔案**：`src/skills/*.ts`
-
-**`LoadedFrom` taxonomy**：
-```typescript
-type LoadedFrom =
-  | 'bundled'     // 編譯進 binary
-  | 'managed'     // 遠端 CDN 下載
-  | 'user'        // ~/<tool-config-dir>/skills/
-  | 'project'     // <repo>/.skills/
-  | 'plugin'      // plugin 貢獻的
-  | 'mcp'         // MCP server 貢獻的
-```
-
-**Token 估算只看 frontmatter**（`name` + `description` + `whenToUse`）。Skill body 是 **lazy-loaded**：模型決定要用這個 skill → 才讀 body 注入 context。
-
-**Symlink dedup**：用 `realpath` 得到 file identity，避免兩個 symlink 指向同一個檔時重複載入。
-
-### 6. Memdir — 4-Type Memory Taxonomy
-
-**檔案**：`src/memdir/*.ts`
-
-```mermaid
-graph LR
-    subgraph "Memory 結構"
-        I[MEMORY.md<br/>索引<br/>200 lines / 25KB cap]
-        I --> U[user_preference/*.md]
-        I --> P[project_convention/*.md]
-        I --> D[debugging_lesson/*.md]
-        I --> A[api_pattern/*.md]
-    end
-```
-
-**4 種 memory type**（`memoryTypes.ts`）：
-- `user_preference`：使用者的偏好、風格
-- `project_convention`：專案的 pattern、架構決策
-- `debugging_lesson`：debug 過程的 root cause、解法
-- `api_pattern`：API 使用模式、版本 gotcha
-
-**`MEMORY.md`** 是輕量索引（200 lines / 25KB cap），不直接存 memory 內容。每個 memory 是獨立 `.md` 檔，MEMORY.md 只放一行指標：`- [Title](file.md) - hook`。
-
-### 7. ExtractMemories — Trailing-Run Coalescing
-
-**檔案**：`src/services/extractMemories/extractMemories.ts`
-
-背景 memory 萃取的精巧設計（**值得 100% 移植**）：
-
-```mermaid
-stateDiagram-v2
-    [*] --> Idle
-    Idle --> Running: submit()
-    Running --> Running: submit() → stash pending<br/>(覆蓋前一個)
-    Running --> TrailingRun: finish + pending exists
-    Running --> Idle: finish + no pending
-    TrailingRun --> Idle: finish
-```
-
-**關鍵行為**：
-1. **Cursor tracking**：只處理 `lastMemoryMessageUuid` 之後的新訊息
-2. **Subagent guard**：`context.toolUseContext.agentId` 有值 → skip（只有 main agent 才萃取）
-3. **Main-agent mutual exclusion**：如果 main agent 這個 turn 已經寫過 memory file → 推進 cursor 直接跳過
-4. **Trailing-run coalescing**：執行中有新呼叫 → stash（覆蓋舊的），結束後用最新 context 跑一次 trailing run
-5. **Drain**：process shutdown 前 `drainPendingExtraction(timeout=60_000)` 等所有 in-flight + trailing 完成
-6. **Forked agent 權限**：只能用 Read/Grep/Glob + read-only Bash + `Edit/Write` 限制在 memory 目錄內
-
-### 8. SessionMemory — 自動摘要
-
-**檔案**：`src/services/SessionMemory/sessionMemory.ts`
-
-跟 ExtractMemories 不同：
-- ExtractMemories → 保存「跨 session 持久」的 memory（user 習慣、專案慣例）
-- SessionMemory → 目前 conversation 的摘要，主要給 compact 用
-
-**觸發條件**（AND）：
-- 已達 `minimumTokensBetweenUpdate`（token 閾值）
-- 已達 `toolCallsBetweenUpdates`（tool call 閾值）
-- **OR** token 閾值達到 + last turn 沒有 tool_use（「自然 breakpoint」）
-
-### 9. Compact — 三種模式 + PTL Retry
-
-**檔案**：`src/services/compact/compact.ts`
-
-三種 compact：
-| 模式 | 觸發 | 行為 |
-|------|------|------|
-| `autoCompact` | context window 即將滿 | 全對話摘要成一段 |
-| `microCompact` | 每個 turn 結束 | 壓單一 tool_use 的大 output |
-| `session_memory` | 排程 | 維護 conversation summary |
-
-**關鍵常數**：
-```typescript
-POST_COMPACT_TOKEN_BUDGET = 50_000             // 壓縮後的 budget
-POST_COMPACT_MAX_TOKENS_PER_SKILL = 5_000      // 每個 skill 最多保留
-POST_COMPACT_SKILLS_TOKEN_BUDGET = 25_000      // skills 加總 budget
-MAX_PTL_RETRIES = 3                             // PTL retry 次數
-```
-
-**PTL（Prompt Too Long）retry**：Compact request 本身送 API 時如果回 `invalid_request_error: prompt is too long`，會 `truncateHeadForPTLRetry()` 丟掉最舊訊息再重送，最多 3 次。
-
-**`stripImagesFromMessages`**：送 compact 請求前移除所有 image block（image tokens 特別肥，且 compact summary 不需要）。
-
-**`stripReinjectedAttachments`**：post-compact 後某些系統會重新注入 skill_discovery 清單，需要去掉重複。
-
-### 10. Coordinator Mode — 多 Worker 編排
-
-**檔案**：`src/coordinator/coordinatorMode.ts`
-
-`isCoordinatorMode()` 由 `feature('COORDINATOR_MODE')` + env flag 控制。
-
-`getCoordinatorSystemPrompt()` 是一份 250 行的 prompt，定義協調者角色：
-- 用 `AgentTool` 並行派發任務給 worker
-- `SendMessage` 延續已完成 worker 的對話
-- `TaskStop` 停止執行中 worker
-- Worker 結果格式：`<task-notification task-id="..." status="..." summary="...">result</task-notification>`
-- Phase 結構：**research → synthesis → implementation → verification**
-- **synthesize spec（不是「based on your findings」）**：絕對避免把理解外包給 worker
-- 給出 continue-vs-spawn decision matrix 決定何時延續 worker、何時開新 worker
-
-### 11. Stop Hooks — AsyncGenerator
-
-**檔案**：`src/query/stopHooks.ts`
-
-`handleStopHooks()` 是 AsyncGenerator，依序 yield：
-1. Job classifier
-2. Extract memories（forked agent）
-3. Auto dream（feature-gated 閒置思考）
-4. `executeStopHooks`（user 自訂 PostStop hook）
-5. Teammate 專屬：`TaskCompletedHooks` + `TeammateIdleHooks`
-
-任何 hook 可以回傳：
-- `yield messages`：插入訊息但繼續
-- `blockingError`：中止整個 flow
-- `preventContinuation`：阻止下一輪繼續（對 continuation loop 特別重要）
-
-### 12. Permission System
-
-**檔案**：`src/hooks/toolPermission/PermissionContext.ts`
-
-每次 tool call 都經過 permission check，decision source 有 5 種：
-
-```typescript
-type PermissionApprovalSource =
-  | { type: 'hook'; permanent?: boolean }
-  | { type: 'user'; permanent: boolean }
-  | { type: 'classifier' }                    // bash auto-approval
-
-type PermissionRejectionSource =
-  | { type: 'hook' }
-  | { type: 'user_abort' }
-  | { type: 'user_reject'; hasFeedback: boolean }
-```
-
-`createResolveOnce()` 處理 race condition：user 和 classifier 可能同時 resolve，用 `claim()` 做 atomic check-and-mark。
 
 ---
 
-## 用法：當你要移植某個模式到 `anila-core/`
+## AgenticRAG 強化對應地圖
 
-### Step 1：先讀對應 TS 檔
+> 這是本目錄存在的核心理由：每當 AgenticRAG 要長新能力，從這個表查「哪份 reference 的哪個檔有現成 pattern」。
 
-| 要做的事 | 先讀這個檔 |
-|---------|----------|
-| Turn loop 優化 | `src/QueryEngine.ts` + `src/query/config.ts` |
-| 加 budget 邏輯 | `src/query/tokenBudget.ts` |
-| Fork subagent | `src/tools/AgentTool/{forkSubagent,runAgent}.ts` |
-| Agent 定義格式 | `src/tools/AgentTool/loadAgentsDir.ts`（zod schema） |
-| 背景 memory 萃取 | `src/services/extractMemories/extractMemories.ts` |
-| Compact 邏輯 | `src/services/compact/compact.ts` |
-| Permission 決策 | `src/hooks/toolPermission/PermissionContext.ts` |
-| Coordinator prompt | `src/coordinator/coordinatorMode.ts` |
+### 已落地的能力（AgenticRAG / anila-core 已實作）
 
-### Step 2：翻譯到 Python 時的對應
+| 能力 | 來源 reference | 目前位置 |
+|---|---|---|
+| 7-stage turn loop | `claude-code-src/src/QueryEngine.ts` + `query/config.ts` | `anila-core/src/anila_core/engine/query_engine.py` |
+| BudgetTracker + diminishing returns | `claude-code-src/src/query/tokenBudget.ts` | `anila-core/src/anila_core/engine/budget_tracker.py` |
+| AgentContext fork (subagent isolation) | `claude-code-src/src/tools/AgentTool/runAgent.ts` + ts AsyncLocalStorage | `anila-core/src/anila_core/context/agent_context.py` |
+| ExtractMemories + cursor + trailing-run | `claude-code-src/src/services/extractMemories/` | `anila-core/src/anila_core/memory/extract_memories.py` |
+| AutoCompact + buffer reservation | `claude-code-src/src/services/compact/autoCompact.ts` | `anila-core/src/anila_core/compact/auto_compact.py` |
+| MicroCompact (per-turn output trim) | `claude-code-src/src/services/compact/microCompact.ts` | `anila-core/src/anila_core/compact/micro_compact.py` |
+| SessionMemory | `claude-code-src/src/services/SessionMemory/` | `anila-core/src/anila_core/compact/session_memory.py` |
+| Memdir 4-type taxonomy | `claude-code-src/src/memdir/memoryTypes.ts` | `anila-core/src/anila_core/memory/memdir.py` |
+| Coordinator XML notifications | `claude-code-src/src/coordinator/coordinatorMode.ts` | `anila-core/src/anila_core/coordinator/coordinator.py` |
+| Tool-driven RAG loop（vector / keyword / read_document） | original AgenticRAG（沒從 reference 來） | `AgenticRAG/src/agentic_rag/` |
+| Sliding-window compact (Layer 3 hard truncation) | original AgenticRAG | `AgenticRAG/src/agentic_rag/compact/sliding_window.py` |
+| Hierarchical chunking + parent-child（Sprint 9 X）| original ANILA | `anila-core/src/anila_core/ingestion/chunking_plugins/builtins.py:HierarchicalChunker` |
 
-| TypeScript | Python (anila-core) |
-|-----------|---------------------|
-| `AsyncGenerator<T>` | `AsyncIterator[T]` via `async def` + `yield` |
-| `zod schema` | `pydantic.BaseModel` 或 `dataclass` + 手寫驗證 |
-| `AsyncLocalStorage` | `contextvars.ContextVar` |
-| `Set<Promise<void>>` 追蹤 | `set[asyncio.Task]` + `add_done_callback` |
-| `Promise.race([x, timeout])` | `asyncio.wait_for(x, timeout=...)` |
-| `feature('FLAG')` | `config.py` flag 或 `os.environ.get(...)` |
-| `bundle` compile-time | Python 沒有；改 runtime check |
-| React `useState` | 不用移植（UI only） |
-| `DeepImmutable<T>` | `dataclass(frozen=True)` 或 protocol |
+### 強化 backlog（priority 順序）
 
-### Step 3：明確**不要**移植的東西
+> 每條都是 AgenticRAG 即將要長 / 該長但還沒長的能力。標 ⭐ 為高 ROI 候選。
 
-這些是 CLI-only，不屬於 runtime SDK 職責：
+#### 🟢 P0 — 強烈推薦，高 ROI、低改動
 
-- `src/ink/`、`src/vim/`、`src/buddy/`、`src/voice/` — terminal UI
-- 所有 `src/hooks/use*.ts` 是 React hooks（除了 `toolPermission/`）
-- `src/screens/`、`src/components/` — terminal 元件
-- `src/keybindings/` — 鍵盤快捷鍵
-- `src/upstreamproxy/` — CLI 專用的 proxy 邏輯
+| # | 能力 | reference 位置 | 為什麼值得 | 預估工作量 |
+|---|---|---|---|---|
+| 1 ⭐ | **Multi-agent handoff** — 從 single-agent RAG → 「retrieve agent → answer agent → cite-verify agent」pipeline | `openai-agents-python/src/agents/handoffs/` + `extensions/handoff_filters.py` | RAG 品質的下一個躍升點：retrieval / 生成 / 驗證分工。OpenAI SDK 的 handoff 介面已經 production-ready，pattern 直接移植 | 3–5 天 |
+| 2 ⭐ | **Tracing 框架** — agent run / tool call / handoff 的結構化 tracing | `openai-agents-python/src/agents/tracing/` | 目前 AgenticRAG 跟 anila-core 都只有 `_post_turn_hooks`，沒有結構化 trace。對 debug RAG quality issue（哪個 chunk 命中、為什麼選這個 strategy）超有幫助 | 2 天 |
+| 3 ⭐ | **Tool guardrails** — tool 呼叫前的 safety / validation pipeline | `openai-agents-python/src/agents/tool_guardrails.py` + `guardrail.py` | RAG agent 對外暴露 search tool 時，guardrail 可以擋 PII / SQL-injection / over-broad query。有現成 pattern 不用自己想 | 1.5 天 |
+| 4 | **PTL (Prompt Too Long) retry**（已 flagged 在 anila-core README） | `claude-code-src/src/services/compact/compact.ts:truncateHeadForPTLRetry + MAX_PTL_RETRIES=3` | compact 自己撞到 token limit 時的 graceful degrade。沒做的話 long conversation 會 fail-stop | 0.5 天 |
+| 5 | **`stripImagesFromMessages` for compact** | `claude-code-src/src/services/compact/compact.ts` | 送 compact request 前移除 image block；image tokens 特別肥，且 compact summary 不需要 | 0.3 天 |
+| 6 | **`preventContinuation` stop hook semantic** | `claude-code-src/src/query/stopHooks.ts` | post-turn hook 目前在 `anila-core` 只能 log；不能阻止下一輪 budget nudge 繼續。補進 `engine/query_engine.py` | 0.5 天 |
+
+#### 🟡 P1 — 中等優先，有清楚動機就做
+
+| # | 能力 | reference 位置 | 為什麼 | 預估 |
+|---|---|---|---|---|
+| 7 | **Session abstraction**（conversation persistence with auto-compact） | `openai-agents-python/src/agents/memory/session.py` + `sqlite_session.py` + `openai_responses_compaction_session.py` | AgenticRAG 目前 session storage 散在多處；統一成 Session Protocol 後可以接 SQLite / Postgres / Redis 多 backend | 2 天 |
+| 8 | **MCP server 整合作為 tool source** | `openai-agents-python/src/agents/mcp/` + `claude-code-src/src/services/mcp/` + `tools/MCPTool/` | 讓 AgenticRAG 能消費外部 MCP tool（例如 Slack / Jira / GitHub MCP server），不用為每個整合自己刻 | 2 天 |
+| 9 | **AgentTool fork — byte-identical prefix** | `claude-code-src/src/tools/AgentTool/forkSubagent.ts` | 多 worker 共享 prompt-cache 的關鍵；`coordinator.py` 目前直接 fork context，cache 沒共享，每個 worker 都重算 prefix → 浪費 30–50% provider 成本 | 1 天 |
+| 10 | **Lifecycle hooks** (`on_start` / `on_tool_start` / `on_handoff` / `on_end`) | `openai-agents-python/src/agents/lifecycle.py` | observability + plugin point；很多 enterprise需求（audit / quota / rate-limit）走 lifecycle hook 最乾淨 | 1.5 天 |
+| 11 | **Tool sandboxing**（apply patch / file ops in sandbox） | `openai-agents-python/src/agents/sandbox/` | RAG agent 如果要長「執行 user-provided code」這類能力，sandbox 是必須。短期不需要，但設計地基要先讀 | 3 天 (僅讀 + 寫 design doc) |
+| 12 | **Stream-event semantics** | `openai-agents-python/src/agents/stream_events.py` + `claude-code-src/src/api/streamProcessor.ts` | 統一 Tool call / message_delta / handoff / final 的 event 命名與 schema，方便前端 / tracing / replay 共用同一份 event 模型 | 2 天 |
+
+#### 🔵 P2 — 看實際需求再評估
+
+| # | 能力 | reference 位置 | 注意 |
+|---|---|---|---|
+| 13 | Magic Docs（auto-generate doc from code） | `claude-code-src/src/services/MagicDocs/` | 跟 AgenticRAG core mission 距離稍遠；可能更適合作為獨立 agent template |
+| 14 | PromptSuggestion（inline 提示） | `claude-code-src/src/services/PromptSuggestion/` | UI-driven，比較像 anila-ui 的事 |
+| 15 | AwaySummary | `claude-code-src/src/services/awaySummary.ts` | 對長期 conversation 有用；短 RAG 互動沒差 |
+| 16 | Realtime / voice | `openai-agents-python/src/agents/realtime/` | 多半超出 RAG 範疇；如果未來做 voice-RAG 再來 |
+
+#### ⚫ 明確不適合移植
+
+- `claude-code-src/src/ink/`、`components/`、`screens/`、`buddy/`、`voice/` — terminal UI / CLI bound，跟 ANILA 後端服務不對齊
+- `openai-agents-python/src/agents/realtime/` — voice / WebSocket 路徑，本案非目標
+- 各種 `keybindings/` — keyboard 快捷鍵 binding
 
 ---
 
-## 已移植到 `anila-core/` 的模式（截至今日）
+## 工作流：當 AgenticRAG 要新長一個能力
 
-| 模式 | 來源 TS | 目前 Python 位置 |
-|------|---------|-----------------|
-| QueryEngine 7-stage turn loop | `QueryEngine.ts` | `engine/query_engine.py` |
-| BudgetTracker + diminishing returns | `query/tokenBudget.ts` | `engine/budget_tracker.py` |
-| Post-turn hooks + drain | `query/stopHooks.ts` | `engine/query_engine.py` (`_post_turn_hooks`) |
-| AgentContext fork (subagent) | `AsyncLocalStorage` | `context/agent_context.py` |
-| ExtractMemories + cursor tracking | `services/extractMemories/` | `memory/extract_memories.py` |
-| ExtractMemories subagent guard | 同上 | 同上（`context.is_forked` check）|
-| ExtractMemories trailing-run coalescing | 同上 | 同上（`_pending` + `submit()` + `drain()`）|
-| AutoCompact + buffer reservation | `services/compact/autoCompact.ts` | `compact/auto_compact.py` |
-| SessionMemory | `services/SessionMemory/` | `compact/session_memory.py` |
-| MicroCompact | `services/compact/microCompact.ts` | `compact/micro_compact.py` |
-| Coordinator mode XML notifications | `coordinator/coordinatorMode.ts` | `coordinator/coordinator.py` |
-| Memdir 4-type taxonomy | `memdir/memoryTypes.ts` | `memory/memdir.py` |
+### Step 1 — 先到對應地圖找
 
-## 建議尚未移植但值得動手的
+「我們要加 X」→ 翻上面的 backlog 表 → 找到對應 reference 模組。
 
-1. **Compact PTL retry** — `truncateHeadForPTLRetry` + `MAX_PTL_RETRIES=3`，要補進 `compact/auto_compact.py` 的實際執行路徑
-2. **`strip_images_from_messages`** — 送 compact API 前清理 image block（Python 目前還沒做）
-3. **Post-compact token budgets** — `POST_COMPACT_TOKEN_BUDGET` 等常數需要在 compact 後端生效
-4. **Fork byte-identical prompt prefix** — `coordinator/coordinator.py` 現在是直接 fork context；要改成用一個共同的前綴 builder，讓 worker 共享 prompt cache
-5. **Stop hook `preventContinuation`** — 目前 post-turn hooks 只能記 log，沒辦法阻止 budget nudge 繼續。補進 `engine/query_engine.py` 的 budget 決策路徑
-6. **Permission 決策系統** — anila-core 目前沒有 permission system；未來如果要做 agent 互呼或 remote tool execution 需要類似 `PermissionContext` 的 decision source taxonomy
-7. **Agent-as-markdown loader** — anila-core 目前 agent 定義是程式化的 `AgentDefinition`；要支援 `<agents-dir>/*.md` + pydantic schema 才好讓使用者擴充
+### Step 2 — 讀 reference 的 contract，不讀 implementation
 
-## 參考：完整 Tool 列表
+看：
+- 函式簽名、type / class shape（API 表面）
+- 配置選項（哪些東西該被外露）
+- 錯誤處理 / edge case（commit message、test 名字常常有 hint）
+- 跟其他模組的依賴關係
 
-`getAllBaseTools()`（`src/tools.ts`）列出的內建工具，給移植者參考：
+不要：
+- 逐字翻譯邏輯（變相 derivative work）
+- 把 reference 的 internal helper 一起搬過來
 
-```
-AgentTool, BashTool, GlobTool, GrepTool, ExitPlanModeV2Tool,
-FileReadTool, FileEditTool, FileWriteTool, NotebookEditTool,
-WebFetchTool, WebSearchTool, TodoWriteTool, TaskStopTool,
-AskUserQuestionTool, SkillTool, EnterPlanModeTool, SendMessageTool,
-TeamCreateTool, TeamDeleteTool, REPLTool,
-WorkflowTool, SleepTool, CronTool, RemoteTriggerTool, MonitorTool,
-BriefTool, SendUserFileTool, PushNotificationTool, SubscribePRTool,
-PowerShellTool, SnipTool, [dynamic] MCP tools
-```
+### Step 3 — 設計 ANILA 自己的 implementation
+
+問自己：
+- 這個 pattern 在 ANILA 的 context 下需要哪些調整？（pgvector vs in-memory store / 多租戶 / 中文 corpus / on-prem 約束）
+- 有沒有更簡單的形狀？（reference 為了通用性常 over-design，我們可以更貼合）
+- API surface 有沒有跟既有模組對齊？
+
+### Step 4 — 寫 anila-core / AgenticRAG 的版本
+
+純 Python，自己重寫，自己取名字，自己寫 docstring。注釋裡可以引用 reference 路徑作為 design provenance（譬如 `# Pattern from runtime_logic/openai-agents-python/src/agents/handoffs/`），但不引用任何具體 code。
+
+### Step 5 — 跨 reference verify
+
+如果兩份 reference 都有對應 module（譬如 compact / memory），看它們**怎麼處理同一個問題**。差異點通常是真正的 design decision 所在。
+
+---
+
+## 對應地圖之外 — 兩份 reference 該讀的「軟體工程養分」
+
+### claude-code-src
+
+- **commit history 寫得極佳**（內含 docs.zip 是離線快照不含 commits，但仍可從 src 看 hint）
+- **tool-as-folder pattern** — 每個 tool 自帶 prompt / UI / logic / constants 的分檔哲學，照搬到 Python 就是一個 package per tool
+- **`ToolUseContext` 的 50+ 欄位** 跟 `DeepImmutable<T>` 寫法 — 提示了一個成熟系統需要傳給 tool 哪些 contextual 資訊
+
+### openai-agents-python
+
+- **PLANS.md** + **AGENTS.md** + **CLAUDE.md** 三份 dev-facing doc — 看人家怎麼寫 agent SDK 的「如何擴充」說明
+- **`docs/`** 的編寫順序（getting started → concepts → advanced → reference）— 對 AgenticRAG 自己的 docs 重整有借鑑
+- **`tests/`** 大量 fixture pattern — 寫 agent test 怎麼 mock provider / tool 結果 / handoff，照學
+
+---
+
+## 維護規則
+
+### 加新 reference codebase 時
+
+1. 把整個 source tree 放到 `runtime_logic/<codebase-name>/`
+2. 在 `.gitignore` 加 `runtime_logic/<codebase-name>/`
+3. 在本 README 的「兩份 reference 概覽」加一節，列關鍵模組
+4. 在「對應地圖」加新 codebase 適合解決的能力
+5. commit 只動 README + .gitignore；source tree 永遠不進 repo
+
+### 移植 pattern 進 anila-core / AgenticRAG 時
+
+1. 在 PR description 註明來源 reference 路徑（譬如 `Inspired by openai-agents-python/src/agents/handoffs/agent_tool_input.py`）
+2. **不引用** reference 的具體 code chunk
+3. 移植完後在這份 README 的「已落地的能力」表加一行記錄
+
+### 移除 reference 時
+
+當 ANILA 自己的實作已經完整覆蓋 reference 的某個 pattern 集合，可以考慮把 reference 移到 archive。流程：
+
+1. 在本 README 「已落地的能力」表確認所有想要的 pattern 都 ✓
+2. 把該 codebase 從 `runtime_logic/<codebase-name>/` 搬到本機 archive
+3. 更新 `.gitignore` 移除對應行
+4. 更新本 README 把該 codebase 段落改寫成「已歸檔」備註
+
+---
+
+## 跟其他文件的關係
+
+- 平台總覽：[`../README.md`](../README.md)
+- Python runtime（移植目的地）：[`../anila-core/README.md`](../anila-core/README.md)
+- RAG agent template（強化目標）：[`../AgenticRAG/README.md`](../AgenticRAG/README.md)
+- 既有 service-token cutover plan：[`../docs/runbooks/service-token-cutover.md`](../docs/runbooks/service-token-cutover.md)
+- Parent-child RAG design（Sprint 9 X）：[`../docs/parent-child-rag-design.md`](../docs/parent-child-rag-design.md)
 
 ---
 
 ## 使用注意
 
-這份 TypeScript 原始碼在 `.gitignore` 排除之下僅存在於本機副本，**僅作為本專案內部架構參考**。移植成 Python 時務必**用自己的實作重寫**，避免逐字複製原文。模式（pattern）與介面（interface）可以借鑑；具體 code 字串不可以。
+- 兩份 reference 的 source tree 在 `.gitignore` 排除之下僅存在於本機副本，**僅作為本專案內部架構參考**
+- 移植成 Python 時務必**用自己的實作重寫**，避免逐字複製原文。模式（pattern）與介面（interface）可以借鑑；具體 code 字串不可以
+- 本 README 是 ANILA 工作流的一部分；source 不在 repo 不代表參考它的工作流也不在
 
 ---
 
-## 移植進度快照
-
-| 日期 | 狀態 |
-|---|---|
-| 2026-02 | 初版移植：QueryEngine turn loop、Coordinator、Compact (micro/auto/session) |
-| 2026-03 | AgentContext fork、ExtractMemories trailing-run、SessionMemory、Memdir 4-type |
-| 2026-04 | Cross-reference 敘述與 ANILA monorepo 同步更新（AgenticRAG template 升格） |
-
-參考本文件「已移植到 `anila-core/` 的模式」與「建議尚未移植但值得動手的」兩張表。
-
----
-
-## 相關文件
-
-- ANILA 平台整體：[`../README.md`](../README.md)
-- **Python runtime 實作**（本文件參考材料移植的目的地）：[`../anila-core/README.md`](../anila-core/README.md)
-- 使用 anila-core 的實戰 template：[`../AgenticRAG/README.md`](../AgenticRAG/README.md)
-- Router 薄殼部署：[`../anila-core-router/README.md`](../anila-core-router/README.md)
-- 平台決策與路線圖：[`../anila_plan.md`](../anila_plan.md)
-
----
-
-**Last updated**: 2026-04-24 · **Status**: 參考材料（唯讀） · **`src/` + `vendor/`**: gitignored（僅本 README 進 repo）
+**Last updated**: 2026-05-02（Sprint 9 X — runtime_logic 結構從單 TS reference 升級為雙 reference 配置）
+**Status**: 兩份 source tree gitignored；只追本檔
+**Next consumers**: AgenticRAG 強化（multi-agent handoff、tracing、guardrails、session）+ anila-core 補洞（PTL retry、stripImagesFromMessages、preventContinuation hook）
