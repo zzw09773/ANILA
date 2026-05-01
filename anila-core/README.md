@@ -14,93 +14,112 @@
 
 ## 套件邊界
 
+anila-core 同時承擔兩個責任。**Pillar 1（agent runtime）** 是 Router 與每支 agent 服務單一聊天 turn 所需的 in-process 元件；**Pillar 2（shared infrastructure）** 是不專屬於某個 agent process、被 ANILA 後端 fleet（Router、agent、ingestion-worker，以及未來各種 batch worker）共用的基底元件。
+
 ```mermaid
 flowchart TB
     subgraph core["anila-core (本 package)"]
         direction TB
-        api["api/<br/>router_server · server · middleware<br/>(CSP service-token)"]
-        registry["registry/<br/>LocalAgentDefinition +<br/>RemoteAgentRegistry"]
-        engine["engine/<br/>QueryEngine (7-stage loop)<br/>+ BudgetTracker"]
-        coord["coordinator/<br/>multi-step decomposition<br/>sub-agent dispatch"]
-        tools["tools/<br/>dispatch_tool + prompts"]
-        providers["providers/<br/>Base + OpenAICompat<br/>+ CSPPlatform + Mock"]
-        storage["storage/<br/>Protocol (ports.py)<br/>+ MemoryFileStore"]
-        memory["memory/<br/>Memdir + extract<br/>+ relevance_selector"]
-        compact["compact/<br/>micro · auto · session_memory<br/>sliding_window"]
-        ctx["context/<br/>AgentContext<br/>(turn-scope injection)"]
-        models["models/<br/>Pydantic (agent · message<br/>memory · tool · storage)"]
-        router["router/<br/>tool_router · ToolRegistry"]
-        cli["cli/<br/>init · status · register<br/>(含 agent 模板)"]
-        config["config.py<br/>Settings (pydantic-settings)"]
+        subgraph p1["Pillar 1 · Agent runtime"]
+            api["api/<br/>router_server · server · middleware<br/>(CspServiceToken / RotatingServiceToken)"]
+            registry["registry/<br/>LocalAgentDefinition +<br/>RemoteAgentRegistry"]
+            engine["engine/<br/>QueryEngine (7-stage loop)<br/>+ BudgetTracker"]
+            coord["coordinator/<br/>multi-step decomposition<br/>sub-agent dispatch"]
+            tools["tools/<br/>dispatch_tool + prompts"]
+            providers["providers/<br/>Base + OpenAICompat<br/>+ CSPPlatform + Mock"]
+            memory["memory/<br/>Memdir + extract<br/>+ relevance_selector"]
+            compact["compact/<br/>micro · auto · session_memory<br/>sliding_window"]
+            ctx["context/<br/>AgentContext<br/>(turn-scope injection)"]
+            modelsmod["models/<br/>Pydantic (agent · message<br/>memory · tool · storage)"]
+            tool_router["router/<br/>tool_router · ToolRegistry"]
+            cli["cli/<br/>init · register · status<br/>+ agent bootstrap"]
+            config["config.py<br/>Settings (pydantic-settings)"]
+        end
+        subgraph p2["Pillar 2 · Shared infrastructure"]
+            security["security/<br/>credential_crypto (AES-GCM + PBKDF2 600k)<br/>+ url_guard (SSRF deny-list)"]
+            storage_p["storage/<br/>ports.py (Protocol) +<br/>adapters/{pg_pool,<br/>pgvector_store,<br/>memory_file_store}"]
+            ingestion["ingestion/<br/>IngestionError taxonomy +<br/>chunking_plugins (registry +<br/>FixedChunker / MarkdownAware /<br/>SemanticChunker / @register_chunker)"]
+        end
     end
 
-    router_svc["anila-core-router<br/>(薄殼部署入口)<br/>main.py uses create_router_app()"]
-    ragtmpl["AgenticRAG template<br/>(RAG agent 起點)<br/>pip install 'anila-core rag extras'"]
+    router_svc["anila-core-router<br/>(deployment entry)"]
+    ragtmpl["AgenticRAG template<br/>(fork starting point)"]
+    worker["ingestion-worker<br/>(Arq async pipeline)"]
 
-    core -->|import| router_svc
-    core -->|"import + rag extras"| ragtmpl
+    p1 --> router_svc
+    p1 --> ragtmpl
+    p2 --> router_svc
+    p2 --> ragtmpl
+    p2 --> worker
 
-    classDef optional fill:#dbeafe,stroke:#3b82f6
-    class ragtmpl optional
+    classDef pillar1 fill:#fef3c7,stroke:#d97706
+    classDef pillar2 fill:#dbeafe,stroke:#3b82f6
+    class api,registry,engine,coord,tools,providers,memory,compact,ctx,modelsmod,tool_router,cli,config pillar1
+    class security,storage_p,ingestion pillar2
 ```
 
 <details>
 <summary>📄 ASCII 版本（離線 / email / 舊 Markdown renderer）</summary>
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    anila-core (本 package)               │
-│                                                         │
-│   api/             router_server / server / events /    │
-│                    middleware（CSP service-token 驗證） │
-│                                                         │
-│   registry/        LocalAgentDefinition registry +      │
-│                    RemoteAgentRegistry（從 CSP /v1/     │
-│                    agents 同步 manifest）                │
-│                                                         │
-│   engine/          QueryEngine（7-stage turn loop）+    │
-│                    budget_tracker                        │
-│                                                         │
-│   coordinator/     Multi-step task decomposition /      │
-│                    sub-agent dispatch                    │
-│                                                         │
-│   tools/           dispatch_tool（agent 分派）+ prompts │
-│                                                         │
-│   providers/       Abstract base + OpenAICompat +       │
-│                    CSPPlatform + mock                    │
-│                                                         │
-│   storage/         Protocol (ports.py) + in-memory      │
-│                    adapter（MemoryFileStore）            │
-│                                                         │
-│   memory/          Memdir + extract_memories +          │
-│                    relevance_selector + consolidation   │
-│                                                         │
-│   compact/         micro / auto / session_memory /      │
-│                    sliding_window                        │
-│                                                         │
-│   context/         AgentContext（turn-scope 注入）      │
-│                                                         │
-│   models/          Pydantic models（agent / memory /    │
-│                    message / storage / tool）            │
-│                                                         │
-│   router/          tool_router（ToolRegistry）          │
-│                                                         │
-│   cli/             `anila-core` dev CLI（init / status /│
-│                    register）含 agent 模板              │
-│                                                         │
-│   config.py        Settings（pydantic-settings，env）   │
-└─────────────────────────────────────────────────────────┘
-       │                                   │
-       │  import                            │  fork & extend
-       ▼                                   ▼
-┌──────────────────────┐       ┌──────────────────────────┐
-│  anila-core-router   │       │   AgenticRAG template    │
-│  (薄殼部署入口)       │       │   - api.py (RAG agent)   │
-│  main.py:            │       │   - ingestion/ + pgvector│
-│    app =             │       │     (591-line parsers,   │
-│    create_router_app │       │      docling, OCR, CJK)  │
-└──────────────────────┘       │   - 下載作為新 agent 起點 │
-                               └──────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                anila-core (shared platform Python lib)            │
+│                                                                   │
+│  Pillar 1 — Agent runtime（in-process; Router & agent 共用）      │
+│   api/                router_server / server / events /          │
+│                       middleware（CSP service-token，含           │
+│                       Sprint 8 X RotatingServiceTokenMiddleware）│
+│   registry/           LocalAgentDefinition + RemoteAgentRegistry │
+│   engine/             QueryEngine 7-stage turn loop +            │
+│                       BudgetTracker                              │
+│   coordinator/        Multi-worker / multi-step orchestration    │
+│   tools/              dispatch_tool + prompts                    │
+│   providers/          OpenAICompat + CSPPlatform + Mock          │
+│   memory/             Memdir + extract / select / consolidate    │
+│   compact/            micro / auto / session_memory / sliding    │
+│   context/            AgentContext (turn-scope contextvars)      │
+│   models/             pydantic dtos (message / tool / agent /    │
+│                       memory / storage)                          │
+│   router/             tool_router (ToolRegistry)                 │
+│   cli/                init / register / status /                 │
+│                       agent bootstrap (Sprint 8 X)               │
+│   config.py           Settings via pydantic-settings             │
+│                                                                   │
+│  Pillar 2 — Shared infrastructure（fleet 共用，含 batch worker）  │
+│   security/           credential_crypto (AES-GCM + PBKDF2 600k) +│
+│                       url_guard (SSRF deny-list)                 │
+│   storage/            ports.py (Protocol) +                       │
+│   ├── adapters/                                                  │
+│   │     pg_pool.py            asyncpg connection pool            │
+│   │     pgvector_store.py     CollectionScopedPgVectorStore      │
+│   │     memory_file_store.py  in-memory adapter for tests        │
+│   ingestion/          IngestionError + chunking_plugins registry │
+│   │     errors.py             ParseError / ChunkError /          │
+│   │                           EmbedError / StoreError            │
+│   └── chunking_plugins/                                          │
+│         base.py              ChunkerStrategy ABC + ChunkResult   │
+│         registry.py          @register_chunker + get_chunker     │
+│         builtins.py          Fixed / MarkdownAware / Semantic    │
+└──────────────────────────────────────────────────────────────────┘
+       │                                          │
+       │  import                                  │  fork & extend
+       ▼                                          ▼
+┌──────────────────────┐                ┌────────────────────────┐
+│  anila-core-router   │                │   AgenticRAG template  │
+│  Pillar 1 + 2 user   │                │   Pillar 1 + 2 user;   │
+│  state-file +        │                │   ships its own        │
+│  per-credential s2s  │                │   ingestion (parsers, │
+└──────────────────────┘                │   docling, OCR, CJK)   │
+                                        └────────────────────────┘
+                  ▲
+                  │  Pillar 2 only
+                  │
+┌──────────────────────────────────────────────────┐
+│ ingestion-worker                                  │
+│   Arq + Redis backbone; consumes anila-core's     │
+│   chunking_plugins + IngestionError + pg_pool +   │
+│   pgvector_store. Does NOT use Pillar 1.          │
+└──────────────────────────────────────────────────┘
 ```
 
 </details>
@@ -113,12 +132,13 @@ flowchart TB
 
 ```bash
 # 於 repo 根
-pip install -e "./anila-core"          # pure runtime（v0.5.0 後不再有 [rag] extras）
+pip install -e "./anila-core"          # 完整 Pillar 1 + Pillar 2
 pip install -e "./anila-core[dev]"     # + pytest / ruff / mypy
 ```
 
-> **v0.5.0 BREAKING**：`[rag]` extras 已**移除**。檔案解析、pgvector、asyncpg、NV-Embed-V2 都搬回 [`AgenticRAG`](../AgenticRAG/) template。
-> 要做 RAG agent 請 fork AgenticRAG，不要 install anila-core 的 RAG extras（已不存在）。
+> **`[rag]` extras 已移除**（v0.5.0）：檔案解析、NV-Embed-V2、與 RAG agent 專屬 tool factory 都搬到 [`AgenticRAG`](../AgenticRAG/) template。要做 RAG agent 請 fork AgenticRAG。
+>
+> 但 `asyncpg` / `pgvector` / `chunking_plugins` 沒走 — 它們是 Pillar 2 共用基礎元件（ingestion-worker 主要使用者）。直接 `pip install -e "./anila-core"` 就會把它們一起裝。
 
 ### 從 wheel 安裝（日後 CI 推到內部 PyPI 後）
 
@@ -188,39 +208,76 @@ pytest --cov=src             # + coverage
 
 ```
 anila-core/
-├── pyproject.toml            # name=anila-core
+├── pyproject.toml            # name=anila-core, v0.7.0
 ├── README.md                 # 本檔
+├── CHANGELOG.md
 ├── e2e_smoke.py              # 手動 e2e（需 OPENAI_API_KEY）
-├── src/
-│   └── anila_core/
-│       ├── __init__.py
-│       ├── config.py
-│       ├── app_factory.py    # （含 RAG 預設 wiring；Task 3 會拆）
-│       ├── api/
-│       ├── cli/
-│       ├── compact/
-│       ├── api/             # FastAPI server + middleware + router_server
-│       ├── cli/              # `anila-core init` agent template scaffolder
-│       ├── compact/          # L1/L2/L3 history compression
-│       ├── coordinator/      # multi-worker coordination
-│       ├── engine/           # query_engine（7-stage turn loop）
-│       ├── memory/           # memdir / extract / relevance / consolidation
-│       ├── models/           # Message / Tool dataclasses
-│       ├── providers/        # base + openai_compat + cspplatform + mocks
-│       ├── registry/         # remote agent manifest cache
-│       ├── router/           # tool router
-│       ├── storage/
-│       │   ├── ports.py      # Protocol interfaces (KEPT)
-│       │   └── adapters/
-│       │       └── memory_file_store.py   # MemoryStore impl (KEPT)
-│       └── tools/            # dispatch_tool only（其他 RAG tools 在 AgenticRAG）
-├── tests/                    # pytest
-└── examples/
-    ├── router-mode/
-    └── simple-agent/
+├── examples/
+│   ├── router-mode/
+│   └── simple-agent/
+├── tests/                    # pytest（含 test_rotating_middleware）
+└── src/
+    └── anila_core/
+        ├── __init__.py
+        ├── config.py
+        ├── app_factory.py
+        │
+        ├── ──── Pillar 1 · agent runtime ────
+        ├── api/                   # FastAPI server / events /
+        │   ├── server.py          # create_app()
+        │   ├── router_server.py   # create_router_app() + 分派邏輯
+        │   ├── events.py
+        │   └── middleware/
+        │       └── auth.py        # CspServiceTokenMiddleware (legacy) +
+        │                          # RotatingServiceTokenMiddleware (Sprint 8 X)
+        ├── cli/                   # init / register / status / agent bootstrap
+        ├── compact/               # micro / auto / session_memory / sliding
+        ├── context/               # AgentContext (turn-scope contextvars)
+        ├── coordinator/           # multi-worker / multi-step orchestration
+        ├── engine/                # query_engine (7-stage) + budget_tracker
+        ├── memory/                # memdir / extract / relevance / consolidation
+        ├── models/                # pydantic dtos
+        ├── providers/             # base + openai_compat + cspplatform + mocks
+        ├── registry/              # local + remote agent manifest cache
+        ├── router/                # tool_router (ToolRegistry)
+        ├── tools/                 # dispatch_tool + prompts
+        │
+        └── ──── Pillar 2 · shared infrastructure ────
+            ├── security/          # credential_crypto + url_guard
+            ├── storage/
+            │   ├── ports.py       # Protocol interfaces
+            │   └── adapters/
+            │       ├── pg_pool.py            # asyncpg pool
+            │       ├── pgvector_store.py     # CollectionScopedPgVectorStore
+            │       └── memory_file_store.py  # tests / dev
+            └── ingestion/
+                ├── errors.py      # IngestionError / Parse / Chunk /
+                │                  # Embed / Store
+                └── chunking_plugins/
+                    ├── base.py       # ChunkerStrategy ABC + ChunkResult
+                    ├── registry.py   # @register_chunker / get_chunker /
+                    │                 # list_chunkers
+                    └── builtins.py   # FixedChunker /
+                                      # MarkdownAwareChunker /
+                                      # SemanticChunker
 ```
 
-> **Sprint 1 cleanup（v0.5.0 BREAKING，2026-04-25）已完成**：`ingestion/`、`api/{documents,search}.py`、`storage/adapters/{pg_pool,pgvector_store,postgres_store}.py`、`providers/embedding_nvidia.py`、`engine/rag_preprocessor.py`、以及 `tools/__init__.py` 內 3 個 RAG factory（vector_search / keyword_search / read_document）全部從 anila-core 移除（總計 −3998 行 RAG dead code）。RAG agent 用 [`AgenticRAG`](../AgenticRAG/) template；100-agent 共用 ingestion 的中央化 service 在 [`docs/ingestion-platform-design.md`](../docs/ingestion-platform-design.md)。詳見 [CHANGELOG.md](./CHANGELOG.md) v0.5.0。
+> **v0.5.0 boundary 修正（Sprint 8 X 審查後）**：上一版 release notes 寫
+> 「`ingestion/`、`storage/adapters/{pg_pool,pgvector_store}` 已從
+> anila-core 移除」是過時且不符實情的描述 — 這幾個模組從未真正搬走，
+> ingestion-worker 依賴它們提供 chunking_plugins 與 pg / pgvector
+> primitives。Sprint 8 X 的決策是**保留**這幾個模組並把它們明確
+> 歸類在 Pillar 2「shared infrastructure」，與 Pillar 1 agent runtime
+> 並列。anila-core 因此是「ANILA 後端共用 Python lib」，不只是
+> agent runtime — `security/` 與這些 ingestion / pg primitives 都有
+> 獨立的 fleet 級消費者，跟 agent process 內的元件邊界乾淨。
+>
+> 真正在 v0.5.0 移除的：`api/{documents,search}.py`、
+> `storage/adapters/postgres_store.py`、`providers/embedding_nvidia.py`、
+> `engine/rag_preprocessor.py`、`tools/__init__.py` 內 3 個 RAG factory
+> （vector_search / keyword_search / read_document）。這些是 RAG-agent
+> 專屬路徑，搬到 [`AgenticRAG`](../AgenticRAG/) template；
+> ingestion-worker 沒消費過。
 
 ---
 
@@ -238,16 +295,35 @@ anila-core/
 
 ## Release Notes
 
+### 2026-05-01 — v0.7.0 Boundary correction (Sprint 8 X)
+
+**Doc-only correction**（無程式變更）。Sprint 8 X audit 發現 v0.5.0 的「已移除 ingestion/ 與 pg_pool / pgvector_store」描述沒落實 — 這幾個模組從未真正搬走，ingestion-worker 也持續在 import。本版正式承認 anila-core 是 **「ANILA 後端共用 Python lib」**（不只是 agent runtime），並把 module 邊界重畫成兩個 pillar：
+
+- **Pillar 1 · Agent runtime**：api / engine / coordinator / registry / context / tools / router / providers / memory / compact / models / cli / config — Router 與 in-process agent 共用
+- **Pillar 2 · Shared infrastructure**：security / storage（含 pg_pool + pgvector_store）/ ingestion（errors + chunking_plugins）— 整個 ANILA 後端 fleet 共用，含 ingestion-worker 與未來各種 batch worker
+
+`__init__.py` docstring 拿掉「RAG orchestration」這條 v0.5.0 之後就不正確的責任宣告，改成兩個 pillar 對應。`__version__` 從 0.1.0 同步到 pyproject.toml 的 0.7.0。詳見 [`CHANGELOG.md`](./CHANGELOG.md)。
+
 ### 2026-04-25 — v0.5.0 Boundary cleanup (Sprint 1)
 
-**BREAKING**：anila-core 從「RAG runtime + agent runtime」收斂為純 agent / chat runtime。詳見 [`CHANGELOG.md`](./CHANGELOG.md)。
+**部分 BREAKING**：anila-core 從「RAG runtime + agent runtime」往「shared lib + agent runtime」方向收斂。詳見 [`CHANGELOG.md`](./CHANGELOG.md)。
 
-- 移除 `ingestion/`、`api/{documents,search}.py`、`storage/adapters/{pg_pool,pgvector_store,postgres_store}.py`、`providers/embedding_nvidia.py`、`engine/rag_preprocessor.py`、`tools/__init__.py` 內 3 個 RAG factory
-- 移除 `pyproject.toml` 的 `[rag]` extras（這些檔案已不在 anila-core tree 內）
-- `create_app()` signature 移除 6 個 RAG kwargs；`config.py` 從 ~20 個欄位收斂到 8 個
-- 累計 −3998 行 RAG dead code；166 tests passed，0 regression
+實際移除（這些是 RAG-agent 路徑專屬，搬到 [`AgenticRAG`](../AgenticRAG/) template，沒有 fleet 層級消費者）：
 
-→ Migration：RAG agent 改 fork [`AgenticRAG`](../AgenticRAG/) template。
+- `api/{documents,search}.py`
+- `storage/adapters/postgres_store.py`
+- `providers/embedding_nvidia.py`
+- `engine/rag_preprocessor.py`
+- `tools/__init__.py` 內 3 個 RAG factory（vector_search / keyword_search / read_document）
+- `pyproject.toml` 的 `[rag]` extras
+- `create_app()` 6 個 RAG kwargs；`config.py` 從 ~20 收斂到 8 個欄位
+
+**未移除**（v0.5.0 release notes 寫「移除」是過時宣告，Sprint 8 X 已修正 — 見上方 v0.7.0 條目）：
+
+- `ingestion/`（errors + chunking_plugins）— ingestion-worker 重度依賴
+- `storage/adapters/pg_pool.py`、`pgvector_store.py` — ingestion-worker + AgenticRAG 都用
+
+→ Migration：RAG agent 改 fork [`AgenticRAG`](../AgenticRAG/) template。Batch worker（ingestion-worker、未來 PII/scoring/refresh worker）持續直接 import anila-core 的 Pillar 2 共用元件。
 
 ### 2026-04-24 — AgenticRAG template 升格同步
 
@@ -271,7 +347,7 @@ anila-core/
 
 - Compact PTL retry + `strip_images_from_messages`（見 [`runtime_logic/README.md`](../runtime_logic/README.md) 移植清單）
 - Phase 3+：補 `PostgresMemoryStore` 跟 `MemoryFileStore` 並列為 MemoryStore Protocol 的兩個 impl，讓 production deploy 可選中央化 PG store
-- Day 10 G3 gate：✅ `grep document_chunks anila-core/` = 0 hits（boundary cleanup verified）
+- 若未來真的長出 ≥3 個 batch worker 且彼此共用 chunking_plugins，再評估抽出獨立 `anila-shared` package（Sprint 8 X 階段判定 1 個 consumer 就拆 package 是 over-engineering）
 
 ---
 
@@ -281,4 +357,4 @@ anila-core/
 
 ---
 
-**Last updated**: 2026-04-24 · **Package**: `anila-core` · **Consumed by**: `anila-core-router`、`AgenticRAG` template、任何 fork 的 ANILA agent
+**Last updated**: 2026-05-01（Sprint 8 X — boundary correction）· **Package**: `anila-core` v0.7.0 · **Consumed by**: `anila-core-router` (P1+P2)、`AgenticRAG` template (P1+P2)、`ingestion-worker` (P2 only)、任何 fork 的 ANILA agent

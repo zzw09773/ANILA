@@ -4,6 +4,27 @@ All notable changes to this package. anila-core is **not yet 1.0** — internal
 breaking changes are acceptable but always documented here. SemVer kicks in
 once we cut v1.0 (no concrete date).
 
+## Unreleased — Sprint 8 X boundary correction (doc-only, 2026-05-01)
+
+No code changes. Sprint 8 X audit found that v0.5.0's release notes
+claimed `ingestion/` and `storage/adapters/{pg_pool,pgvector_store}.py`
+had been removed, but they were not — `ingestion-worker` imports them
+in production. The architecture is therefore **two-pillar**:
+
+* **Pillar 1 — Agent runtime**: api / engine / coordinator / registry /
+  context / tools / router / providers / memory / compact / models /
+  cli / config. In-process; consumed by Router and every agent.
+* **Pillar 2 — Shared infrastructure**: security / storage (incl.
+  pg_pool, pgvector_store, memory_file_store) / ingestion (errors +
+  chunking_plugins). Fleet-level; consumed by Router, agents, AND
+  batch workers (`ingestion-worker` today; future PII / scoring /
+  refresh workers tomorrow).
+
+`__init__.py` docstring rewritten to surface this split. `__version__`
+synced from stale `0.1.0` to `pyproject.toml`'s `0.7.0`. README's
+boundary diagram, file tree, and v0.5.0 release-notes block all
+corrected to reflect actual scope. No imports moved, no APIs changed.
+
 ## v0.7.0 (2026-04-27) — Collection-as-first-class (Sprint 4, Chunks O–T)
 
 ### BREAKING
