@@ -183,7 +183,9 @@ async function submitCreate() {
   else if (s === 'pdf-page') params = { max_page_tokens: form.value.maxTokens }
   else if (s === 'cjk-sentence') params = { target_tokens: form.value.maxTokens, max_tokens: form.value.maxTokens * 2 }
   else if (s === 'semantic') params = { min_segment_tokens: form.value.maxTokens, breakpoint_percentile: 80 }
-  else params = { max_leaf_tokens: form.value.maxTokens }
+  // hierarchical: thread overlap_tokens so user-tweaked
+  // max_leaf_tokens scales the fallback overlap proportionally.
+  else params = { max_leaf_tokens: form.value.maxTokens, overlap_tokens: Math.floor(form.value.maxTokens / 16) }
   try {
     await createCollection({
       name: form.value.name,

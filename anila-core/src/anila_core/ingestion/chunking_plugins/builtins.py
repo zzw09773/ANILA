@@ -32,8 +32,9 @@ from typing import Any, ClassVar
 from anila_core.ingestion.chunking_plugins.base import ChunkResult, ChunkerStrategy
 from anila_core.ingestion.chunking_plugins.registry import register_chunker
 
-# 4 chars-per-token is the same heuristic OpenAI's "rough estimate" page uses.
-# Good enough for chunk-sizing within ±25%; not used for embedding billing.
+# Latin-script token density. OpenAI's CL100K BPE averages ~4 chars per
+# token for English / Latin-script content. Used as the divisor for
+# the non-CJK portion of any text.
 _CHARS_PER_TOKEN = 4
 
 # Markdown ATX heading pattern: 1-6 leading hashes, then space, then title.
@@ -44,9 +45,63 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", flags=re.MULTILINE)
 _CODE_FENCE_RE = re.compile(r"^(```|~~~).*?^\1\s*$", flags=re.MULTILINE | re.DOTALL)
 
 
+def _is_cjk(c: str) -> bool:
+    """Return True for CJK ideograph / kana / hangul characters.
+
+    Covers CJK Unified Ideographs, Hiragana, Katakana, Hangul Syllables.
+    Used to switch the chars-per-token heuristic — BPE collapses
+    Latin-script text into ~4 chars/token but Asian scripts stay
+    closer to 1 char/token because each ideograph is its own concept.
+    """
+    return (
+        "一" <= c <= "鿿"   # CJK Unified Ideographs
+        or "぀" <= c <= "ヿ"  # Hiragana + Katakana
+        or "가" <= c <= "힯"  # Hangul Syllables
+    )
+
+
 def _tokens(text: str) -> int:
-    """Rough token count without pulling tiktoken into core."""
-    return max(1, len(text) // _CHARS_PER_TOKEN)
+    """Approximate token count without pulling tiktoken into core.
+
+    Mixed-script aware: CJK characters count ~1 token each, Latin
+    text ~``_CHARS_PER_TOKEN`` chars per token. The previous flat
+    ``len // 4`` was English-biased and undercounted CJK by roughly
+    4×, which caused fixed-size chunkers to produce chunks far
+    larger than the user's stated ``size`` budget for Chinese /
+    Japanese / Korean docs.
+
+    Still a heuristic — real tokenisation (tiktoken / sentencepiece)
+    is the ground truth — but acceptable for chunk sizing where ±10%
+    is fine and we'd rather not pull a heavyweight dep into core.
+    """
+    if not text:
+        return 0
+    cjk = sum(1 for c in text if _is_cjk(c))
+    other = len(text) - cjk
+    return max(1, cjk + other // _CHARS_PER_TOKEN)
+
+
+def _estimate_char_budget(text: str, target_tokens: int) -> int:
+    """Inverse of ``_tokens`` — how many characters approximate
+    ``target_tokens`` for **this specific text**'s language mix.
+
+    Sliding-window chunkers need to step in CHARS but the user's
+    parameter is in TOKENS. Scaling by a flat constant fails for
+    mixed / CJK content. We sample the head of the document, compute
+    an empirical chars-per-token, and return the budget. Cheap
+    (one O(n) sample pass) but adapts to content.
+    """
+    if not text or target_tokens <= 0:
+        return 0
+    # Sample up to 2048 chars from the document head. For docs larger
+    # than that the language mix in the head is a fine proxy for the
+    # whole; smaller docs use the entire text.
+    sample = text[: min(2048, len(text))]
+    sample_tokens = _tokens(sample)
+    if sample_tokens <= 0:
+        return target_tokens * _CHARS_PER_TOKEN
+    chars_per_token = len(sample) / sample_tokens
+    return max(1, int(target_tokens * chars_per_token))
 
 
 def _slug(s: str, maxlen: int = 40) -> str:
@@ -87,8 +142,16 @@ class FixedChunker(ChunkerStrategy):
                 f"fixed: overlap ({overlap_tok}) must be < size ({size_tok})"
             )
 
-        size_chars = size_tok * _CHARS_PER_TOKEN
-        step_chars = (size_tok - overlap_tok) * _CHARS_PER_TOKEN
+        # CJK-aware sizing — see ``_estimate_char_budget``. The previous
+        # ``size_tok * 4`` constant overshot Chinese / Japanese / Korean
+        # text by ~4× because BPE behaves differently on those scripts.
+        size_chars = _estimate_char_budget(document_text, size_tok)
+        step_chars = _estimate_char_budget(document_text, size_tok - overlap_tok)
+        if step_chars <= 0:
+            # Defensive — shouldn't happen given the overlap < size guard
+            # above plus min-1 inside the helper, but cheap insurance
+            # against an infinite loop on pathological inputs.
+            step_chars = 1
         chunks: list[ChunkResult] = []
         text_len = len(document_text)
         idx = 0

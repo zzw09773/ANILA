@@ -149,6 +149,9 @@
               <TermStat label="total tokens" :value="entry.stats.total_tokens" />
               <TermStat label="avg tokens" :value="entry.stats.avg_tokens" />
             </div>
+            <p class="cell-meta overlap-line">
+              <strong>overlap:</strong> {{ overlapDescription(entry) }}
+            </p>
             <p v-if="entry.stats.truncated_to" class="cell-meta" style="margin-top: var(--gap-1);">
               ⚠ 顯示前 {{ entry.stats.truncated_to }} 個（實際更多）
             </p>
@@ -429,7 +432,10 @@ async function commitCreate() {
   else if (s === 'pdf-page') params = { max_page_tokens: v }
   else if (s === 'cjk-sentence') params = { target_tokens: v, max_tokens: v * 2 }
   else if (s === 'semantic') params = { min_segment_tokens: v, breakpoint_percentile: 80 }
-  else params = { max_leaf_tokens: v }
+  // hierarchical: also pass overlap_tokens so user-tweaked
+  // ``max_leaf_tokens`` scales the fallback overlap proportionally
+  // (defaults are 1024 / 64 → ratio 1/16).
+  else params = { max_leaf_tokens: v, overlap_tokens: Math.floor(v / 16) }
 
   try {
     const { data } = await createCollection({
@@ -453,6 +459,41 @@ function humanBytes(n) {
   let i = 0; let x = n
   while (x >= 1024 && i < u.length - 1) { x /= 1024; i++ }
   return `${x.toFixed(x >= 10 ? 0 : 1)} ${u[i]}`
+}
+
+// Sprint 8 X / chunking-preview Phase 4 — overlap surfacing.
+//
+// Each chunker exposes overlap differently in default_params; the
+// preview backend ships those defaults verbatim through the
+// ``/strategies`` endpoint so we can render a one-line summary on
+// each card without reaching into chunker internals from the
+// frontend. Three categories:
+//
+//   * fixed:        every chunk overlaps the previous by N tokens.
+//                   Active on every chunk → quote the % of size.
+//   * hierarchical: only fallback when a heading leaf exceeds
+//                   ``max_leaf_tokens``. Quote the absolute value
+//                   plus a "fallback only" qualifier.
+//   * everything else: chunkers don't have a user-tunable overlap
+//                   knob. Their hardcoded fallback (``size//16`` or
+//                   ``target//8``) is internal-only.
+function overlapDescription(entry) {
+  const dp = entry.default_params || {}
+  if (entry.name === 'fixed') {
+    const o = dp.overlap ?? 128
+    const s = dp.size ?? 1024
+    const pct = s ? Math.round((o / s) * 100) : 0
+    return `${o} tokens / chunk · ~${pct}% of size · sliding-window`
+  }
+  if (entry.name === 'hierarchical') {
+    const o = dp.overlap_tokens ?? 64
+    return `${o} tokens · only when section exceeds max_leaf_tokens`
+  }
+  if (entry.name === 'semantic') {
+    return 'none · embedding-distance boundary'
+  }
+  // markdown-aware / pdf-page / cjk-sentence: hardcoded internal fallback only.
+  return 'internal fallback only · not user-tunable'
 }
 </script>
 
@@ -498,6 +539,15 @@ function humanBytes(n) {
   background: var(--c-bg-1, #000); padding: 6px 8px;
   max-height: 180px; overflow-y: auto;
 }
+
+.overlap-line {
+  margin: var(--gap-1) 0 0;
+  padding: 4px 8px;
+  background: var(--c-bg-elev-1, rgba(255,255,255,0.03));
+  border-left: 2px solid var(--c-divider);
+  font-size: var(--t-3xs);
+}
+.overlap-line strong { color: var(--c-fg-1); font-weight: 500; }
 
 .actions { margin-top: var(--gap-2); }
 .term-action { background: none; border: none; color: var(--c-accent); cursor: pointer; font-size: var(--t-2xs); padding: 4px 0; font-family: var(--font-mono); }
