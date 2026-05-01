@@ -126,7 +126,11 @@ const error = ref('')
 const creating = ref(false)
 const submitting = ref(false)
 const formError = ref('')
-const form = ref({ name: '', description: '', strategy: 'hierarchical', maxTokens: 1024 })
+// maxTokens default 256 matches the post-Sprint-9-X HierarchicalChunker
+// leaf budget. Power users can crank it for legacy section-sized
+// chunking, but small leaves give vector recall the headroom the
+// parent-child design assumes.
+const form = ref({ name: '', description: '', strategy: 'hierarchical', maxTokens: 256 })
 
 const tokenLabel = computed(() => ({
   fixed: 'size (tokens)',
@@ -170,7 +174,8 @@ async function loadCollections() {
 
 function openCreateModal() {
   formError.value = ''
-  form.value = { name: '', description: '', strategy: 'hierarchical', maxTokens: 1024 }
+  // 256 matches HierarchicalChunker's post-Sprint-9-X default leaf budget.
+  form.value = { name: '', description: '', strategy: 'hierarchical', maxTokens: 256 }
   creating.value = true
 }
 
@@ -183,9 +188,15 @@ async function submitCreate() {
   else if (s === 'pdf-page') params = { max_page_tokens: form.value.maxTokens }
   else if (s === 'cjk-sentence') params = { target_tokens: form.value.maxTokens, max_tokens: form.value.maxTokens * 2 }
   else if (s === 'semantic') params = { min_segment_tokens: form.value.maxTokens, breakpoint_percentile: 80 }
-  // hierarchical: thread overlap_tokens so user-tweaked
-  // max_leaf_tokens scales the fallback overlap proportionally.
-  else params = { max_leaf_tokens: form.value.maxTokens, overlap_tokens: Math.floor(form.value.maxTokens / 16) }
+  // hierarchical (Sprint 9 X / parent-child RAG):
+  //   * max_leaf_tokens — embedded-leaf budget
+  //   * max_parent_tokens — heading-section context (4× leaf)
+  //   * overlap_tokens — fallback overlap on oversized paragraphs
+  else params = {
+    max_leaf_tokens: form.value.maxTokens,
+    max_parent_tokens: form.value.maxTokens * 4,
+    overlap_tokens: Math.max(16, Math.floor(form.value.maxTokens / 16)),
+  }
   try {
     await createCollection({
       name: form.value.name,

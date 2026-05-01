@@ -678,41 +678,77 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             )
             return {"chunk_count": 0, "warning": "no chunks produced"}
 
-        # 3. Embed — the slow part; everything else is microseconds.
+        # Sprint 9 X / parent-child — two-pass persistence.
+        #
+        # The HierarchicalChunker (and any future tree-emitting
+        # chunker) returns a mix of:
+        #
+        #   * parent rows (chunk_type='heading' / 'document') — no
+        #     embedding; their content is the heading title which
+        #     gets JOIN-fetched as ``parent_content`` at retrieval.
+        #   * leaf rows (chunk_type='leaf') — embedded for vector
+        #     search; carry ``parent_chunk_key`` in metadata pointing
+        #     at one of the parent rows above.
+        #
+        # We split, insert parents first (returning chunk_key→id),
+        # then embed and insert leaves with parent_chunk_id resolved.
+        # Other chunkers that emit only leaves still work unchanged
+        # because the partition simply yields an empty parents list.
+        parents = [c for c in chunks if (c.metadata or {}).get("chunk_type") in ("heading", "document")]
+        leaves = [c for c in chunks if (c.metadata or {}).get("chunk_type", "leaf") == "leaf"]
+
+        # 3. Embed leaves only (the slow part). Parent rows skip the
+        #    embedding pass entirely → cost stays at the same total
+        #    embedded-tokens count as the pre-9-X flat-leaf flow.
         await _update_document_status(pool, document_id, "embedding")
         await _update_job(
             pool, arq_job_id, progress_pct=60,
-            progress_message=f"embedding {len(chunks)} chunks",
+            progress_message=f"embedding {len(leaves)} leaf chunks",
         )
         embeddings = await embedder.embed(
-            [c.content for c in chunks], user_id=billing_user_id,
-        )
+            [c.content for c in leaves], user_id=billing_user_id,
+        ) if leaves else []
 
-        # 4. Index — single transaction via the collection-scoped store.
+        # 4. Index — parents first to populate the chunk_key→id map;
+        #    leaves second with their parent_chunk_id resolved.
         await _update_job(pool, arq_job_id, progress_pct=85, progress_message="indexing")
         store = CollectionScopedPgVectorStore(pool, collection_id=collection_id)
-        await store.index_chunks(
-            document_id=document_id,
-            chunks=chunks,
-            embeddings=embeddings,
-        )
+        parent_id_map: dict[str, int] = {}
+        if parents:
+            parent_id_map = await store.add_parent_chunks(
+                document_id=document_id,
+                chunks=parents,
+            )
+        if leaves:
+            await store.index_chunks(
+                document_id=document_id,
+                chunks=leaves,
+                embeddings=embeddings,
+                parent_id_map=parent_id_map,
+            )
 
+        total_chunks = len(chunks)
         # 5. Status + counters.
         await _update_document_status(
             pool, document_id, "indexed",
-            chunk_count=len(chunks),
+            chunk_count=total_chunks,
             error_message=None,
         )
         await _bump_collection_counters(
-            pool, collection_id, document_count_delta=1, chunk_count_delta=len(chunks)
+            pool, collection_id, document_count_delta=1, chunk_count_delta=total_chunks
         )
         await _update_job(
             pool, arq_job_id, status="succeeded", succeeded=True,
-            progress_pct=100, progress_message=f"{len(chunks)} chunks indexed",
+            progress_pct=100,
+            progress_message=(
+                f"{len(leaves)} leaves + {len(parents)} parents indexed"
+            ),
         )
 
         return {
-            "chunk_count": len(chunks),
+            "chunk_count": total_chunks,
+            "leaf_count": len(leaves),
+            "parent_count": len(parents),
             "elapsed_seconds": (
                 datetime.now(timezone.utc) - started_at
             ).total_seconds(),

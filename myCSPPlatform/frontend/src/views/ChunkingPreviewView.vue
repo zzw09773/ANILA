@@ -149,6 +149,16 @@
               <TermStat label="total tokens" :value="entry.stats.total_tokens" />
               <TermStat label="avg tokens" :value="entry.stats.avg_tokens" />
             </div>
+            <!-- Sprint 9 X / parent-child RAG — surface the tree
+                 split when the chunker emits parents (currently only
+                 ``hierarchical`` after the 9-X redesign). Helps users
+                 see that the chunk_count includes both leaves
+                 (embedded for retrieval) and parent rows (no
+                 embedding, JOIN-fetched for LLM context). -->
+            <p v-if="entry.parentLeafSplit" class="cell-meta overlap-line">
+              <strong>tree:</strong> {{ entry.parentLeafSplit.leaves }} leaves (embedded)
+              · {{ entry.parentLeafSplit.parents }} parents (JOIN-fetched as context)
+            </p>
             <p class="cell-meta overlap-line">
               <strong>overlap:</strong> {{ overlapDescription(entry) }}
             </p>
@@ -244,15 +254,29 @@ const strategyEntries = computed(() => {
   return strategies.value.map((s) => {
     const r = result.value.per_strategy[s.name]
     const skipped = result.value.skipped_strategies.includes(s.name)
+    const chunks = r?.chunks || []
+    // Sprint 9 X / parent-child RAG — count parent vs leaf rows when
+    // the chunker emits a tree (currently only ``hierarchical``).
+    // Each chunk's metadata.chunk_type is one of 'leaf' / 'heading'
+    // / 'document'; only show the split when there ARE parents.
+    let parentLeafSplit = null
+    if (chunks.length > 0) {
+      const parents = chunks.filter(
+        (c) => (c.metadata?.chunk_type || 'leaf') !== 'leaf',
+      ).length
+      const leaves = chunks.length - parents
+      if (parents > 0) parentLeafSplit = { leaves, parents }
+    }
     return {
       name: s.name,
       displayName: s.display_name,
       previewable: s.previewable,
       requires_embedder: s.requires_embedder,
       default_params: s.default_params || {},
-      chunks: r?.chunks || [],
+      chunks,
       stats: r?.stats || { chunk_count: 0, total_tokens: 0, avg_tokens: 0 },
       error: r?.error || null,
+      parentLeafSplit,
       runMessage: skipped
         ? 'skipped · needs embeddings'
         : r ? '' : 'not requested',
@@ -432,10 +456,16 @@ async function commitCreate() {
   else if (s === 'pdf-page') params = { max_page_tokens: v }
   else if (s === 'cjk-sentence') params = { target_tokens: v, max_tokens: v * 2 }
   else if (s === 'semantic') params = { min_segment_tokens: v, breakpoint_percentile: 80 }
-  // hierarchical: also pass overlap_tokens so user-tweaked
-  // ``max_leaf_tokens`` scales the fallback overlap proportionally
-  // (defaults are 1024 / 64 → ratio 1/16).
-  else params = { max_leaf_tokens: v, overlap_tokens: Math.floor(v / 16) }
+  // hierarchical (Sprint 9 X / parent-child RAG):
+  //   * max_leaf_tokens — embedded-leaf budget (default 256)
+  //   * max_parent_tokens — heading-section context budget (4× leaf)
+  //   * overlap_tokens — fallback overlap when a paragraph exceeds the
+  //     leaf budget and recurses into FixedChunker
+  else params = {
+    max_leaf_tokens: v,
+    max_parent_tokens: v * 4,
+    overlap_tokens: Math.max(16, Math.floor(v / 16)),
+  }
 
   try {
     const { data } = await createCollection({

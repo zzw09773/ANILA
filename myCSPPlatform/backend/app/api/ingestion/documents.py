@@ -661,6 +661,13 @@ class ChunkRow(BaseModel):
     metadata: dict
     token_count: int | None
     created_at: datetime
+    # Sprint 9 X / parent-child RAG (migration 0028). All optional;
+    # legacy rows that predate the new chunker default to
+    # ``chunk_type='leaf'`` / ``parent_chunk_id=None`` so existing UIs
+    # see no behaviour change unless they look at the new fields.
+    parent_chunk_id: int | None = None
+    chunk_type: str = "leaf"
+    chunk_level: int = 0
 
 
 class ChunkEmbeddingDebug(BaseModel):
@@ -726,6 +733,9 @@ async def list_document_chunks(
             metadata=c.metadata or {},
             token_count=c.token_count,
             created_at=c.created_at,
+            parent_chunk_id=getattr(c, "parent_chunk_id", None),
+            chunk_type=getattr(c, "chunk_type", "leaf") or "leaf",
+            chunk_level=getattr(c, "chunk_level", 0) or 0,
         )
         for c in chunks
     ]

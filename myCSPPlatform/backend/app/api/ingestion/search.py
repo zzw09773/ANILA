@@ -82,6 +82,15 @@ class SearchHitOut(BaseModel):
     content: str
     score: float = Field(..., description="cosine similarity in [0, 1]; higher = closer")
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Sprint 9 X / parent-child RAG. ``parent_content`` is JOIN-fetched
+    # at retrieval time when the matched leaf carries a
+    # ``parent_chunk_id``; downstream RAG agents can prefer it over
+    # ``content`` when assembling LLM context for richer structural
+    # framing. Always None for legacy rows / root-level chunks.
+    parent_chunk_id: int | None = None
+    parent_content: str | None = None
+    chunk_type: str = "leaf"
+    chunk_level: int = 0
 
 
 class SearchResponse(BaseModel):
@@ -262,6 +271,14 @@ async def search_collection(
                 content=h.chunk.content,
                 score=h.score,
                 metadata=h.chunk.metadata or {},
+                # Sprint 9 X — surface parent context if the storage
+                # layer attached it (CollectionScopedPgVectorStore
+                # populates ``parent_content`` via _attach_parent_content
+                # in the same round-trip after the vector match).
+                parent_chunk_id=getattr(h.chunk, "parent_chunk_id", None),
+                parent_content=getattr(h, "parent_content", None),
+                chunk_type=getattr(h.chunk, "chunk_type", "leaf") or "leaf",
+                chunk_level=getattr(h.chunk, "chunk_level", 0) or 0,
             )
             for h in hits
         ],

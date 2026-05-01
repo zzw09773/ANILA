@@ -108,12 +108,20 @@ class CollectionScopedPgVectorStore:
         document_id: int,
         chunks: list[ChunkResult],
         embeddings: list[list[float]],
+        parent_id_map: dict[str, int] | None = None,
     ) -> int:
-        """Bulk-insert chunks with their embeddings.
+        """Bulk-insert leaf chunks with their embeddings.
 
         Sprint 4: ``collection_id`` is no longer a per-call argument —
         the store is constructed against one collection, so all writes
         land in that scope. Pass ``document_id`` only.
+
+        Sprint 9 X / parent-child: each chunk's metadata may carry
+        ``parent_chunk_key`` referring to a previously-inserted parent
+        row. ``parent_id_map`` (returned from ``add_parent_chunks``)
+        translates those keys into FK ids written into the
+        ``parent_chunk_id`` column. Missing references are silently
+        treated as NULL — caller can validate ahead of time.
 
         Returns the number of rows written. Caller-supplied
         ``len(chunks) == len(embeddings)`` is enforced.
@@ -130,6 +138,8 @@ class CollectionScopedPgVectorStore:
         if not chunks:
             return 0
 
+        parent_id_map = parent_id_map or {}
+
         # JSONB codec is registered on every connection (PgPool.
         # _init_connection), so asyncpg encodes the dict to JSONB
         # on its own — passing a ``json.dumps`` string would
@@ -137,27 +147,37 @@ class CollectionScopedPgVectorStore:
         # codec ships the right binary shape into the halfvec(4000)
         # column; a bare list[float] would be interpreted as ``vector``
         # and rejected as a type mismatch.
-        rows = [
-            (
-                self._collection_id,
-                document_id,
-                ch.chunk_key,
-                ch.content,
-                HalfVector(emb),
-                ch.metadata,
-                ch.token_count,
+        rows = []
+        for ch, emb in zip(chunks, embeddings):
+            meta = ch.metadata or {}
+            chunk_type = meta.get("chunk_type", "leaf")
+            chunk_level = int(meta.get("chunk_level", 0))
+            parent_key = meta.get("parent_chunk_key")
+            parent_id = parent_id_map.get(parent_key) if parent_key else None
+            rows.append(
+                (
+                    self._collection_id,
+                    document_id,
+                    ch.chunk_key,
+                    ch.content,
+                    HalfVector(emb),
+                    meta,
+                    ch.token_count,
+                    chunk_type,
+                    chunk_level,
+                    parent_id,
+                )
             )
-            for ch, emb in zip(chunks, embeddings)
-        ]
 
         sql = """
             INSERT INTO document_chunks
                 (collection_id, document_id, chunk_key,
-                 content, content_tsv, embedding, metadata, token_count)
+                 content, content_tsv, embedding, metadata, token_count,
+                 chunk_type, chunk_level, parent_chunk_id)
             VALUES
                 ($1, $2, $3, $4,
                  to_tsvector('simple', $4),
-                 $5, $6, $7)
+                 $5, $6, $7, $8, $9, $10)
         """
         try:
             async with self._acquire() as conn:
@@ -192,19 +212,90 @@ class CollectionScopedPgVectorStore:
         # The ANN index is HNSW on ``embedding halfvec_cosine_ops``;
         # ``<=>`` is cosine distance. We compute 1 - distance for the
         # score column so callers can read higher-is-closer.
+        #
+        # Sprint 9 X / parent-child: vector search restricted to
+        # ``chunk_type='leaf'`` rows. Heading / document parent rows
+        # have ``embedding=NULL`` so they wouldn't match the cosine
+        # operator anyway, but the explicit filter lets the planner
+        # skip them without computing distance.
         q = HalfVector(query_embedding)
         sql = """
             SELECT id, collection_id, document_id, chunk_key,
                    content, metadata, token_count, created_at,
+                   parent_chunk_id, chunk_type, chunk_level,
                    1 - (embedding <=> $1) AS score
               FROM document_chunks
-             WHERE 1 - (embedding <=> $1) >= $2
+             WHERE chunk_type = 'leaf'
+               AND 1 - (embedding <=> $1) >= $2
              ORDER BY embedding <=> $1
              LIMIT $3
         """
         async with self._acquire() as conn:
             rows = await conn.fetch(sql, q, min_score, top_k)
-        return [self._row_to_search_hit(r) for r in rows]
+            hits = [self._row_to_search_hit(r) for r in rows]
+            await self._attach_parent_content(conn, hits)
+        return hits
+
+    async def add_parent_chunks(
+        self,
+        document_id: int,
+        chunks: list,
+    ) -> dict[str, int]:
+        """Sprint 9 X / parent-child — insert non-leaf rows (no embedding).
+
+        ``HierarchicalChunker`` emits ``chunk_type='heading'`` and
+        ``chunk_type='document'`` rows alongside leaves. Parents have
+        no embedding; their job is to be JOIN-fetched as
+        ``parent_content`` at retrieval time.
+
+        Returns ``{chunk_key: db_id}`` so the caller can resolve
+        ``parent_chunk_key`` references on the leaf rows it inserts
+        next via the regular ``index_chunks`` path.
+
+        We use ``INSERT ... RETURNING id, chunk_key`` so the mapping
+        comes back in one round-trip; ``executemany`` doesn't surface
+        RETURNING values, hence the per-row loop.
+        """
+        if not chunks:
+            return {}
+
+        sql = """
+            INSERT INTO document_chunks
+                (collection_id, document_id, chunk_key,
+                 content, content_tsv, embedding, metadata, token_count,
+                 chunk_type, chunk_level, parent_chunk_id)
+            VALUES
+                ($1, $2, $3, $4,
+                 to_tsvector('simple', $4),
+                 NULL, $5, $6, $7, $8, NULL)
+            RETURNING id, chunk_key
+        """
+        out: dict[str, int] = {}
+        try:
+            async with self._acquire() as conn:
+                async with conn.transaction():
+                    for ch in chunks:
+                        meta = ch.metadata or {}
+                        chunk_type = meta.get("chunk_type", "heading")
+                        chunk_level = int(meta.get("chunk_level", 0))
+                        row = await conn.fetchrow(
+                            sql,
+                            self._collection_id,
+                            document_id,
+                            ch.chunk_key,
+                            ch.content,
+                            meta,
+                            ch.token_count,
+                            chunk_type,
+                            chunk_level,
+                        )
+                        out[row["chunk_key"]] = row["id"]
+        except asyncpg.ConnectionDoesNotExistError as e:
+            raise StoreError.pg_connect(
+                user_message="資料庫連線中斷，請稍後再試",
+                details={"cause": type(e).__name__},
+            ) from e
+        return out
 
     async def keyword_search(
         self,
@@ -233,19 +324,65 @@ class CollectionScopedPgVectorStore:
             return []
 
         tsquery_input = tokenized_query if tokenized_query else query
+        # Sprint 9 X / parent-child: same leaf-only filter as
+        # similarity_search. Parent rows carry only the heading title
+        # which would inflate keyword-match noise (every doc would
+        # match its own chapter titles); leaves carry the substantive
+        # text users actually search for.
         sql = """
             SELECT id, collection_id, document_id, chunk_key,
                    content, metadata, token_count, created_at,
+                   parent_chunk_id, chunk_type, chunk_level,
                    ts_rank_cd(content_tsv, q) AS score
               FROM document_chunks,
                    plainto_tsquery('simple', $1) q
-             WHERE content_tsv @@ q
+             WHERE chunk_type = 'leaf'
+               AND content_tsv @@ q
              ORDER BY score DESC
              LIMIT $2
         """
         async with self._acquire() as conn:
             rows = await conn.fetch(sql, tsquery_input, top_k)
-        return [self._row_to_search_hit(r) for r in rows]
+            hits = [self._row_to_search_hit(r) for r in rows]
+            await self._attach_parent_content(conn, hits)
+        return hits
+
+    async def _attach_parent_content(
+        self,
+        conn,
+        hits: list,
+    ) -> None:
+        """Sprint 9 X — fill ``hit.parent_content`` from the parent row's content.
+
+        Single ``id = ANY($1::bigint[])`` round-trip pulls every
+        unique parent in one shot. Hits whose parent_chunk_id is NULL
+        (root rows / legacy leaves without a parent) are left with
+        ``parent_content=None``.
+        """
+        if not hits:
+            return
+        parent_ids = {
+            h.chunk.parent_chunk_id
+            for h in hits
+            if getattr(h.chunk, "parent_chunk_id", None)
+        }
+        if not parent_ids:
+            return
+        rows = await conn.fetch(
+            """
+            SELECT id, content
+              FROM document_chunks
+             WHERE id = ANY($1::bigint[])
+               AND collection_id = $2
+            """,
+            list(parent_ids),
+            self._collection_id,
+        )
+        parent_map = {r["id"]: r["content"] for r in rows}
+        for h in hits:
+            pid = getattr(h.chunk, "parent_chunk_id", None)
+            if pid and pid in parent_map:
+                h.parent_content = parent_map[pid]
 
     async def list_by_document(
         self,
@@ -328,6 +465,15 @@ class CollectionScopedPgVectorStore:
         # JSONB codec parses asynchronously into a dict. Defaults to {}
         # in the schema so this can never be NULL, but None-guard regardless.
         metadata = row["metadata"] or {}
+        # Sprint 9 X new columns are optional — list endpoints that
+        # don't SELECT them won't have the keys in the asyncpg.Record.
+        # ``Record.get`` doesn't exist; use a try/except dance.
+        def _opt(name: str, default=None):
+            try:
+                return row[name]
+            except (KeyError, IndexError):
+                return default
+
         return IngestionChunk(
             id=row["id"],
             collection_id=row["collection_id"],
@@ -340,11 +486,20 @@ class CollectionScopedPgVectorStore:
             created_at=row["created_at"]
             if isinstance(row["created_at"], datetime)
             else datetime.fromisoformat(str(row["created_at"])),
+            parent_chunk_id=_opt("parent_chunk_id"),
+            chunk_type=_opt("chunk_type", "leaf") or "leaf",
+            chunk_level=_opt("chunk_level", 0) or 0,
         )
 
     @classmethod
     def _row_to_search_hit(cls, row: asyncpg.Record) -> SearchHit:
         # similarity_search SELECT does not return the embedding column.
+        def _opt(name: str, default=None):
+            try:
+                return row[name]
+            except (KeyError, IndexError):
+                return default
+
         return SearchHit(
             chunk=IngestionChunk(
                 id=row["id"],
@@ -355,6 +510,9 @@ class CollectionScopedPgVectorStore:
                 metadata=row["metadata"] or {},
                 token_count=row["token_count"],
                 created_at=row["created_at"],
+                parent_chunk_id=_opt("parent_chunk_id"),
+                chunk_type=_opt("chunk_type", "leaf") or "leaf",
+                chunk_level=_opt("chunk_level", 0) or 0,
             ),
             score=float(row["score"]),
         )
