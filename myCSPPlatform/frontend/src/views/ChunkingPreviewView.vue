@@ -53,6 +53,85 @@
         </p>
       </TermBox>
 
+      <!-- Sprint 8 X / chunking-preview Phase 4 — visual diff strip.
+           Three views, ordered by signal density: stats table for the
+           numbers comparison, boundary bars for "where do strategies
+           place breakpoints", first-chunk side-by-side for content
+           differences at the start of the doc. -->
+      <TermBox title="visual diff · how strategies actually differ on this doc" pad="md" v-if="diffStrategies.length">
+        <!-- (a) Stats compare table — outliers highlighted ------------ -->
+        <div class="diff-section">
+          <h4 class="diff-section__title">stats · side-by-side</h4>
+          <table class="cmp-table">
+            <thead>
+              <tr>
+                <th>strategy</th>
+                <th class="num">chunks</th>
+                <th class="num">avg tokens</th>
+                <th class="num">total tokens</th>
+                <th class="num">size variance</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="d in diffStrategies" :key="d.name"
+                  :class="{ 'is-outlier': d.isOutlier }">
+                <td>
+                  <span class="cell-strong">{{ d.name }}</span>
+                  <span v-if="d.isOutlier" class="cell-meta"> · outlier</span>
+                </td>
+                <td class="num tnum">{{ d.stats.chunk_count }}</td>
+                <td class="num tnum">{{ d.stats.avg_tokens }}</td>
+                <td class="num tnum">{{ d.stats.total_tokens }}</td>
+                <td class="num tnum">{{ d.variance }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="cell-meta">
+            outlier = chunk count 是中位數的 ≥ 2x 或 ≤ 0.5x；通常代表這 strategy 對這份 doc 過於激進或過於保守。
+            size variance 越大代表 chunk 大小越不平均。
+          </p>
+        </div>
+
+        <!-- (b) Boundary bars — where each strategy splits ------------- -->
+        <div class="diff-section">
+          <h4 class="diff-section__title">boundary positions · token-proportional</h4>
+          <p class="cell-meta">
+            水平條長度代表 doc 的 100%；豎線代表該 strategy 的 chunk 邊界。線越多 = 切得越碎；
+            落點不同 = 對「哪裡該斷」的判斷不同。
+          </p>
+          <ul class="bars">
+            <li v-for="d in diffStrategies" :key="d.name" class="bar-row">
+              <span class="bar-row__label">{{ d.name }}</span>
+              <div class="bar">
+                <span
+                  v-for="(pct, idx) in d.boundaryPercents" :key="idx"
+                  class="bar__tick" :style="{ left: pct + '%' }"
+                />
+              </div>
+              <span class="bar-row__count tnum">{{ d.stats.chunk_count }}</span>
+            </li>
+          </ul>
+        </div>
+
+        <!-- (c) First-chunk preview side-by-side -------------------- -->
+        <div class="diff-section">
+          <h4 class="diff-section__title">first chunk · content head-to-head</h4>
+          <p class="cell-meta">
+            同一份 doc，每個 strategy 的「第一個 chunk」是什麼樣子。
+            最容易看出對 heading / paragraph 邊界的處理差異。
+          </p>
+          <div class="head2head">
+            <div v-for="d in diffStrategies" :key="d.name" class="head2head__cell">
+              <header class="head2head__title">
+                <code>{{ d.name }}</code>
+                <span class="cell-meta tnum">· {{ d.firstChunkTokens }} tokens</span>
+              </header>
+              <pre class="head2head__content">{{ d.firstChunkPreview || '(empty)' }}</pre>
+            </div>
+          </div>
+        </div>
+      </TermBox>
+
       <!-- per-strategy cards in a responsive grid -->
       <section class="grid">
         <TermBox v-for="entry in strategyEntries" :key="entry.name"
@@ -177,6 +256,77 @@ const strategyEntries = computed(() => {
       // canPick: any strategy that has a preview row OR is requires_embedder
       // (semantic) — for the latter we trust the worker to do it on commit.
       canPick: !!r || s.requires_embedder,
+    }
+  })
+})
+
+// Sprint 8 X / chunking-preview Phase 4 — visual diff data.
+//
+// ``diffStrategies`` is a derived view over the same per-strategy
+// preview rows that the cards-grid uses, but pre-computed for the
+// three visualisation widgets at the top:
+//
+//   * ``boundaryPercents`` — cumulative-token positions (0–100) of
+//     every chunk boundary EXCEPT the document end. Lets the bar
+//     widget place tick marks at the right horizontal offsets.
+//   * ``firstChunkPreview`` — first chunk's content truncated to
+//     ~240 chars. Shown side-by-side so users can see how each
+//     strategy treats the document's opening.
+//   * ``variance`` — std-dev of per-chunk token counts. Quick proxy
+//     for "uniform vs jagged" sizing.
+//   * ``isOutlier`` — chunk count ≥ 2x or ≤ 0.5x median across all
+//     strategies; flags overly-aggressive / overly-coarse strategies
+//     for this specific doc.
+//
+// Strategies that errored, were skipped, or are not previewable
+// are filtered out of the diff strip — they don't have stats to
+// compare. They still render in the cards grid below.
+const diffStrategies = computed(() => {
+  const rows = strategyEntries.value.filter(
+    (e) => e.previewable && !e.error && e.chunks.length > 0,
+  )
+  if (rows.length === 0) return []
+
+  const counts = rows.map((r) => r.stats.chunk_count).sort((a, b) => a - b)
+  const median = counts[Math.floor(counts.length / 2)] || 1
+
+  return rows.map((entry) => {
+    // Cumulative tokens → percentage offsets for boundary ticks.
+    // We skip the trailing "100%" (= end of doc), which isn't a
+    // boundary; only N-1 ticks for N chunks.
+    let cum = 0
+    const total = entry.stats.total_tokens || 1
+    const boundaryPercents = []
+    for (let i = 0; i < entry.chunks.length - 1; i++) {
+      cum += entry.chunks[i].token_count || 0
+      boundaryPercents.push(Math.min(99.5, (cum / total) * 100))
+    }
+
+    // Population std-dev of per-chunk token counts.
+    const tokens = entry.chunks.map((c) => c.token_count || 0)
+    const mean = tokens.reduce((s, t) => s + t, 0) / tokens.length
+    const sqDiff = tokens.reduce((s, t) => s + (t - mean) ** 2, 0)
+    const variance = Math.round(Math.sqrt(sqDiff / tokens.length))
+
+    const ratio = entry.stats.chunk_count / median
+    const isOutlier = rows.length >= 3 && (ratio >= 2 || ratio <= 0.5)
+
+    const firstChunk = entry.chunks[0]
+    const firstChunkPreview = firstChunk
+      ? firstChunk.content.length > 240
+        ? firstChunk.content.slice(0, 240) + '…'
+        : firstChunk.content
+      : ''
+
+    return {
+      name: entry.name,
+      stats: entry.stats,
+      chunks: entry.chunks,
+      boundaryPercents,
+      variance,
+      isOutlier,
+      firstChunkPreview,
+      firstChunkTokens: firstChunk?.token_count || 0,
     }
   })
 })
@@ -355,4 +505,60 @@ function humanBytes(n) {
 .term-link:hover { text-decoration: underline; }
 
 .form-grid { display: flex; flex-direction: column; gap: var(--gap-2); }
+
+/* Phase 4 — visual diff strip ---------------------------------------- */
+.diff-section { padding: var(--gap-2) 0; border-top: 1px solid var(--c-divider); }
+.diff-section:first-child { border-top: 0; padding-top: 0; }
+.diff-section__title {
+  font-size: var(--t-2xs); font-weight: 500; margin: 0 0 var(--gap-2);
+  color: var(--c-fg-1); letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.cmp-table {
+  width: 100%; border-collapse: collapse; font-size: var(--t-2xs);
+  margin-bottom: var(--gap-2);
+}
+.cmp-table th {
+  text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--c-divider);
+  font-weight: 500; color: var(--c-fg-2);
+  font-size: var(--t-3xs); letter-spacing: 0.04em; text-transform: uppercase;
+}
+.cmp-table td { padding: 6px 8px; border-bottom: 1px dotted var(--c-divider); }
+.cmp-table .num { text-align: right; }
+.cmp-table tr.is-outlier td { color: var(--c-warn, #c08a2c); }
+
+/* Boundary bars */
+.bars { list-style: none; padding: 0; margin: var(--gap-2) 0 0; display: flex; flex-direction: column; gap: 8px; }
+.bar-row { display: grid; grid-template-columns: 130px 1fr 50px; align-items: center; gap: var(--gap-2); font-size: var(--t-2xs); }
+.bar-row__label { font-family: var(--font-mono); color: var(--c-fg-1); }
+.bar-row__count { color: var(--c-fg-2); text-align: right; }
+.bar {
+  position: relative; height: 18px;
+  background: var(--c-bg-1, #000);
+  border: 1px solid var(--c-divider);
+}
+.bar__tick {
+  position: absolute; top: -1px; bottom: -1px; width: 2px;
+  background: var(--c-accent);
+}
+
+/* Head-to-head first-chunk preview */
+.head2head {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--gap-2); margin-top: var(--gap-2);
+}
+.head2head__cell {
+  border: 1px solid var(--c-divider);
+  padding: 8px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.head2head__title { display: flex; justify-content: space-between; align-items: baseline; }
+.head2head__content {
+  margin: 0; font-family: var(--font-mono); font-size: var(--t-3xs);
+  white-space: pre-wrap; word-break: break-word;
+  background: var(--c-bg-1, #000); padding: 6px 8px;
+  max-height: 140px; overflow-y: auto; line-height: 1.5;
+}
 </style>
