@@ -27,6 +27,12 @@
         為什麼要 preview：六種 chunker 對不同 doc 結構會切出大不相同的結果。
         短的純文字 / 簡單 markdown 各 strategy 容易看起來一樣；長的有 heading 結構或 PDF 的差異就明顯。
       </p>
+      <p class="cell-meta" style="margin-top: var(--gap-2);">
+        <router-link :to="{ name: 'KnowledgeCollections', query: { quick: 1 } }" class="term-link">
+          → skip preview · quick create with strategy dropdown
+        </router-link>
+        <span style="margin-left: 8px;">— 已知道要哪個 strategy 的 power user 路徑</span>
+      </p>
     </TermBox>
 
     <!-- Step 2: results compare --------------------------------------- -->
@@ -345,6 +351,8 @@ function humanBytes(n) {
 
 .actions { margin-top: var(--gap-2); }
 .term-action { background: none; border: none; color: var(--c-accent); cursor: pointer; font-size: var(--t-2xs); padding: 4px 0; font-family: var(--font-mono); }
+.term-link { color: var(--c-accent); text-decoration: none; font-family: var(--font-mono); }
+.term-link:hover { text-decoration: underline; }
 
 .form-grid { display: flex; flex-direction: column; gap: var(--gap-2); }
 </style>

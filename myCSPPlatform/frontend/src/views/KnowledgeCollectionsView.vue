@@ -8,17 +8,15 @@
           first-class rag store · agent backend mounts via <code>RAG_COLLECTION_ID=&lt;id&gt;</code>
         </p>
       </div>
-      <div class="cta-group">
-        <!-- Sprint 8 X / chunking-preview Phase 3 — preview-then-create
-             flow. Lets users compare all chunkers on a sample doc
-             before locking in a strategy. Lives next to the existing
-             quick-create for power users who already know which
-             strategy they want. -->
-        <router-link :to="{ name: 'ChunkingPreview' }" class="term-link">
-          + compare strategies first
-        </router-link>
-        <TermButton variant="primary" @click="openCreateModal" label="new collection" />
-      </div>
+      <!-- Sprint 8 X / chunking-preview Phase 3 — preview-then-pick
+           is the canonical create flow. Users upload a representative
+           doc, compare every strategy's chunks side-by-side, then
+           pick. The old "instant dropdown" form is reachable via the
+           wizard's "skip preview" link for power users who already
+           know which strategy they want. -->
+      <router-link :to="{ name: 'ChunkingPreview' }" custom v-slot="{ navigate }">
+        <TermButton variant="primary" label="+ new collection" @click="navigate" />
+      </router-link>
     </header>
 
     <TermBox title="filter" pad="sm">
@@ -110,11 +108,13 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { listCollections, createCollection, updateCollection, deleteCollection } from '../api/ingestionCollections'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal } from '../components/cli'
 
 const authStore = useAuthStore()
+const route = useRoute()
 const isAdmin = computed(() => authStore.isAdmin)
 
 const includeArchived = ref(false)
@@ -142,7 +142,17 @@ const tokenHint = computed(() => ({
   semantic: 'segment cap · boundary by embedding distance',
 })[form.value.strategy] || 'token cap per heading-tree leaf')
 
-onMounted(loadCollections)
+onMounted(() => {
+  loadCollections()
+  // Sprint 8 X / chunking-preview Phase 3 — escape hatch from the
+  // wizard. Wizard step 1 has a "skip preview · quick create" link
+  // pointing at /knowledge-collections?quick=1; landing here with
+  // that query param auto-opens the legacy create modal so power
+  // users get to the strategy dropdown in 2 clicks total.
+  if (route.query.quick) {
+    openCreateModal()
+  }
+})
 watch([includeArchived, showAllCollections], loadCollections)
 
 async function loadCollections() {
