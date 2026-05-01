@@ -133,6 +133,17 @@ async def chat_completions(
                     conversation_id=conversation_id,
                     trace_id=trace_id,
                     requires_encryption=agent_requires_encryption,
+                    # Sprint 8 X / Phase G — caller attribution.
+                    #   target_agent_id  → proxy_service picks the per-agent
+                    #                      service token from agent_credentials
+                    #                      (5-min in-memory cache) instead of
+                    #                      the legacy fleet-shared env var.
+                    #   caller_agent_id  → token_usage row for this LLM call
+                    #                      gets attributed to the agent so
+                    #                      "top-agents" / "by-base-model"
+                    #                      dashboards can rollup correctly.
+                    target_agent_id=agent.id,
+                    caller_agent_id=agent.id,
                 ),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -143,7 +154,12 @@ async def chat_completions(
         from fastapi import HTTPException as _HTTPException
         target = f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions"
         from app.services.proxy_service import _build_downstream_headers, _aggregate_sse_to_chat_completion
-        headers = _build_downstream_headers(user.id, user_email)
+        # Phase G: also pass target_agent_id so the per-agent token + cache
+        # path applies to non-streaming calls. usage_writer attribution for
+        # this branch is still TODO — non-streaming agent forwards don't
+        # currently emit a token_usage row at all (orthogonal pre-existing
+        # gap, tracked in Sprint 9 X follow-ups).
+        headers = _build_downstream_headers(user.id, user_email, target_agent_id=agent.id)
         started_at = time.time()
         try:
             async with httpx.AsyncClient(timeout=120) as client:

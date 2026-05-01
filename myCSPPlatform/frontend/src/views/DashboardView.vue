@@ -58,6 +58,62 @@
       </TermBox>
     </section>
 
+    <!-- Sprint 8 X / Phase H — admin observability strip ---------------- -->
+    <section v-if="authStore.isAdmin" class="dash-grid">
+      <!-- legacy-token cutover progress widget -->
+      <TermBox
+        title="cutover · legacy service-token"
+        :hint="legacyTokenHint"
+        :tone="legacyTokenStats?.count_24h ? 'warn' : ''"
+        pad="md"
+      >
+        <div v-if="legacyTokenStats" class="cutover">
+          <div class="cutover__stats">
+            <TermStat label="24h · hits" :value="legacyTokenStats.count_24h" :tone="legacyTokenStats.count_24h ? 'warn' : 'ok'" />
+            <TermStat label="7d · hits"  :value="legacyTokenStats.count_7d" />
+            <TermStat label="30d · hits" :value="legacyTokenStats.count_30d" />
+          </div>
+          <p class="cutover__last">
+            <span class="cutover__k">last seen</span>
+            <span class="cutover__v tnum">{{ legacyTokenStats.last_seen_at ? formatTs(legacyTokenStats.last_seen_at) : 'never (cutover clean)' }}</span>
+          </p>
+          <p v-if="legacyTokenStats.count_30d === 0" class="cutover__hint cutover__hint--ok">
+            ✓ 30 天內無 fallback 命中 — 可進入 cutover stage 4（從 .env 拿掉 CSP_SERVICE_TOKEN）
+          </p>
+          <p v-else class="cutover__hint cutover__hint--warn">
+            仍有 agent / Router 走 legacy env-var fallback — 請至 audit log 查 ip_address 找出未 cutover 主機。
+          </p>
+        </div>
+        <TermEmpty v-else message="loading…" />
+      </TermBox>
+
+      <!-- top-5 agents over the last 30 days -->
+      <TermBox title="top · agents · 30d" hint="caller-attributed token spend" pad="none" flush>
+        <table class="term-table">
+          <thead>
+            <tr>
+              <th>agent</th>
+              <th class="num" style="width: 110px">tokens</th>
+              <th class="num" style="width: 110px">requests</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="a in topAgents" :key="a.agent_id">
+              <td>
+                <span class="cell-strong">{{ a.agent_name }}</span>
+                <span v-if="a.base_model_id" class="cell-meta"> · base #{{ a.base_model_id }}</span>
+              </td>
+              <td class="num tnum">{{ formatNum(a.total_tokens) }}</td>
+              <td class="num tnum">{{ formatNum(a.total_requests) }}</td>
+            </tr>
+            <tr v-if="topAgents.length === 0">
+              <td colspan="3"><TermEmpty message="no caller-attributed agent usage in the last 30 days" /></td>
+            </tr>
+          </tbody>
+        </table>
+      </TermBox>
+    </section>
+
     <!-- Platform links ------------------------------------------------- -->
     <TermBox title="platform · external tooling" :hint="`${platformLinks.length} bound`" pad="md">
       <div v-if="platformLinks.length" class="links">
@@ -73,6 +129,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useUsageStore } from '../stores/usage'
 import { useAuthStore } from '../stores/auth'
 import { listPlatformLinks } from '../api/platformLinks'
+import client from '../api/client'
 import UsageLineChart from '../components/charts/UsageLineChart.vue'
 import PlatformCard from '../components/dashboard/PlatformCard.vue'
 import TermBox from '../components/cli/TermBox.vue'
@@ -88,6 +145,31 @@ const platformLinks = ref([])
 const refreshedAt = ref(null)
 const loading = ref(false)
 
+// Sprint 8 X / Phase H — admin-only observability widgets.
+//   legacyTokenStats: cutover progress for the legacy CSP_SERVICE_TOKEN
+//                     fallback. When sustained at 0 for a release window
+//                     ops can drop the env var and remove the fallback
+//                     branch in auth_service.verify_service_token.
+//   topAgents:        top-5 by 30-day caller-attributed token spend.
+const legacyTokenStats = ref(null)
+const topAgents = ref([])
+
+const legacyTokenHint = computed(() => {
+  if (!legacyTokenStats.value) return ''
+  const c = legacyTokenStats.value.count_24h
+  return c === 0 ? 'no fallback hits in 24h' : `${c} fallback hit${c === 1 ? '' : 's'} in 24h`
+})
+
+function formatNum(n) {
+  if (n === null || n === undefined) return '0'
+  return Number(n).toLocaleString()
+}
+function formatTs(iso) {
+  if (!iso) return '—'
+  try { return new Date(iso).toISOString().replace('T', ' ').slice(0, 19) }
+  catch { return iso }
+}
+
 const scopeLabel = computed(() => {
   if (authStore.isAdmin) return 'full · governance'
   if (authStore.isDeveloper) return 'agents · collections · self'
@@ -101,6 +183,20 @@ const refreshedLabel = computed(() => {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 })
 
+async function fetchAdminWidgets() {
+  if (!authStore.isAdmin) return
+  try {
+    const [{ data: stats }, { data: agents }] = await Promise.all([
+      client.get('/api/usage/legacy-token-stats'),
+      client.get('/api/usage/top-agents', { params: { days: 30, limit: 5 } }),
+    ])
+    legacyTokenStats.value = stats
+    topAgents.value = Array.isArray(agents) ? agents : []
+  } catch {
+    // Quiet failure — same posture as the rest of the dashboard.
+  }
+}
+
 async function refresh() {
   loading.value = true
   try {
@@ -108,6 +204,7 @@ async function refresh() {
       usageStore.fetchSummary(),
       usageStore.fetchChart({ range: '24h', group_by: 'model' }),
       listPlatformLinks().then(({ data }) => { platformLinks.value = data }),
+      fetchAdminWidgets(),
     ])
     summary.value = usageStore.summary
     chartData.value = usageStore.chartData
@@ -223,4 +320,26 @@ onMounted(refresh)
 }
 @media (max-width: 1100px) { .links { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 700px)  { .links { grid-template-columns: 1fr; } }
+
+/* Sprint 8 X / Phase H — cutover widget */
+.cutover { display: flex; flex-direction: column; gap: 10px; }
+.cutover__stats { display: flex; gap: 12px; flex-wrap: wrap; }
+.cutover__last { margin: 0; font-size: var(--t-2xs); color: var(--c-fg-2); }
+.cutover__k { display: inline-block; min-width: 80px; color: var(--c-fg-3); }
+.cutover__v { color: var(--c-fg-1); font-family: var(--font-mono); }
+.cutover__hint { margin: 4px 0 0; font-size: var(--t-2xs); }
+.cutover__hint--ok { color: var(--c-success, #5ca663); }
+.cutover__hint--warn { color: var(--c-warn, #c08a2c); }
+
+.term-table { width: 100%; border-collapse: collapse; font-size: var(--t-2xs); }
+.term-table th {
+  text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--c-divider);
+  font-weight: 500; color: var(--c-fg-2);
+  font-size: var(--t-3xs); text-transform: uppercase; letter-spacing: 0.04em;
+}
+.term-table td { padding: 6px 8px; border-bottom: 1px solid var(--c-divider); }
+.term-table .num { text-align: right; }
+.tnum { font-variant-numeric: tabular-nums; }
+.cell-strong { color: var(--c-fg-1); font-weight: 500; }
+.cell-meta { color: var(--c-fg-2); font-size: var(--t-3xs); }
 </style>

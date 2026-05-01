@@ -175,6 +175,51 @@ def usage_for_agent(
     return get_agent_usage(db, agent_id=agent_id, days=days)
 
 
+# Sprint 8 X / Phase H — cutover progress widget data source.
+#
+# Pulls counts of ``service_token_legacy_env_used`` audit events over
+# 24h / 7d / 30d windows so the DashboardView widget can render a
+# single number per window + the timestamp of the most recent fallback
+# hit. When this number is sustained at zero for a release window
+# (default 14 d), ops can safely drop the legacy ``CSP_SERVICE_TOKEN``
+# env var and remove the fallback branch in
+# ``auth_service.verify_service_token``.
+
+@router.get("/legacy-token-stats")
+def legacy_token_stats(
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Cutover progress: counts of legacy CSP_SERVICE_TOKEN fallback hits.
+
+    Returns ``{count_24h, count_7d, count_30d, last_seen_at}``.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import func
+
+    from app.models.audit_log import AuditLog
+    from app.services.agent_credential_service import AUDIT_LEGACY_TOKEN_USED
+
+    now = datetime.now(timezone.utc)
+    base = db.query(AuditLog).filter(AuditLog.action == AUDIT_LEGACY_TOKEN_USED)
+
+    def _count_since(delta: timedelta) -> int:
+        return (
+            base.filter(AuditLog.created_at >= now - delta).count()
+        )
+
+    last = (
+        base.with_entities(func.max(AuditLog.created_at)).scalar()
+    )
+    return {
+        "count_24h": _count_since(timedelta(hours=24)),
+        "count_7d": _count_since(timedelta(days=7)),
+        "count_30d": _count_since(timedelta(days=30)),
+        "last_seen_at": last.isoformat() if last else None,
+    }
+
+
 @router.get("/export")
 def export_csv(
     range: str = Query("24h", regex="^(4h|12h|24h|7d|30d)$"),

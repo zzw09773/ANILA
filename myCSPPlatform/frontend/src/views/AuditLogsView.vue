@@ -19,6 +19,19 @@
         <TermField label="action">
           <input v-model="filters.action" class="term-input" placeholder="e.g. create" />
         </TermField>
+        <!-- Sprint 8 X / Phase H quick-filter — service-token cutover monitoring. -->
+        <TermField label="quick · service token" hint="audit cutover progress">
+          <select v-model="filters.action" class="term-select" @change="fetchLogs">
+            <option value="">— pick to filter —</option>
+            <option value="service_token_legacy_env_used">legacy env-var fallback hits</option>
+            <option value="service_token_bootstrap_issued">bootstrap issued (admin)</option>
+            <option value="service_token_bootstrap_consumed">bootstrap consumed</option>
+            <option value="service_token_issued">credential issued</option>
+            <option value="service_token_rotated">credential rotated</option>
+            <option value="service_token_revoked">credential revoked</option>
+            <option value="service_token_verified">verify ok</option>
+          </select>
+        </TermField>
         <TermField label="resource">
           <input v-model="filters.resource_type" class="term-input" placeholder="e.g. user" />
         </TermField>
