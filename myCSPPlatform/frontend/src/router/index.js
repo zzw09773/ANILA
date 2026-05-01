@@ -81,6 +81,14 @@ const routes = [
         component: () => import('../views/DeveloperAgentsView.vue'),
         meta: { requiresDeveloper: true },
       },
+      // Sprint 8 X / Phase E — service_clients (Router / worker / admin tool)
+      // service-token management. Admin-only.
+      {
+        path: 'service-clients',
+        name: 'ServiceClients',
+        component: () => import('../views/ServiceClientsView.vue'),
+        meta: { requiresAdmin: true },
+      },
       // Phase 2 Sprint 2 / Chunk H — Knowledge Collections inspector.
       // Developer-tier (any user with UserAgentPermission, plus admins).
       {

@@ -14,6 +14,11 @@ services:
         condition: service_healthy
     volumes:
       - uploads:/tmp/anila_uploads
+      # Sprint 8 X / Phase D — persist the bootstrap-issued csk- token
+      # across container restarts. Without this the entrypoint would
+      # try to re-bootstrap on every restart and CSP would reject the
+      # already-consumed bsk-.
+      - anila-agent-state:/var/lib/anila-agent
     restart: unless-stopped
 
   # ── OpenAI-compatible RAG API（供 OpenWebUI 連接）───────────────────────────
@@ -31,6 +36,7 @@ services:
         condition: service_healthy
     volumes:
       - ./api.py:/app/api.py:ro   # 掛載 api.py，修改後重啟即生效
+      - anila-agent-state:/var/lib/anila-agent
     restart: unless-stopped
 
   # ── PostgreSQL + pgvector ────────────────────────────────────────────────────
@@ -54,3 +60,4 @@ services:
 volumes:
   pgdata:
   uploads:
+  anila-agent-state:

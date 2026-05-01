@@ -121,6 +121,54 @@
           </tbody>
         </table>
       </TermBox>
+
+      <!-- Sprint 8 X / Phase G — caller attribution rollups (admin) -->
+      <TermBox v-if="authStore.isAdmin" title="top · agents · 30d" pad="none" flush>
+        <table class="term-table">
+          <thead>
+            <tr>
+              <th>agent</th>
+              <th class="num" style="width: 110px">tokens</th>
+              <th class="num" style="width: 110px">requests</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="a in topAgents" :key="a.agent_id">
+              <td>
+                <span class="cell-strong">{{ a.agent_name }}</span>
+                <span v-if="a.base_model_id" class="cell-meta"> · base #{{ a.base_model_id }}</span>
+              </td>
+              <td class="num tnum">{{ formatNum(a.total_tokens) }}</td>
+              <td class="num tnum">{{ formatNum(a.total_requests) }}</td>
+            </tr>
+            <tr v-if="topAgents.length === 0">
+              <td colspan="3"><TermEmpty message="no caller-attributed agent usage yet (pre-Phase-G rows show as unattributed)" /></td>
+            </tr>
+          </tbody>
+        </table>
+      </TermBox>
+
+      <TermBox v-if="authStore.isAdmin" title="by · base model · 30d" pad="none" flush>
+        <table class="term-table">
+          <thead>
+            <tr>
+              <th>base model</th>
+              <th class="num" style="width: 110px">tokens</th>
+              <th class="num" style="width: 110px">requests</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="m in byBaseModel" :key="m.base_model_id">
+              <td>{{ m.base_model_name }}</td>
+              <td class="num tnum">{{ formatNum(m.total_tokens) }}</td>
+              <td class="num tnum">{{ formatNum(m.total_requests) }}</td>
+            </tr>
+            <tr v-if="byBaseModel.length === 0">
+              <td colspan="3"><TermEmpty message="no agent → base-model attribution yet" /></td>
+            </tr>
+          </tbody>
+        </table>
+      </TermBox>
     </div>
   </div>
 </template>
@@ -138,6 +186,27 @@ import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermStat } from '
 
 const usageStore = useUsageStore()
 const authStore = useAuthStore()
+
+// Sprint 8 X / Phase G — Phase G stores its rollups inline rather
+// than in usageStore because they're admin-only and don't share
+// filter dimensions with the rest of the view.
+const topAgents = ref([])
+const byBaseModel = ref([])
+
+async function fetchPhaseGRollups() {
+  if (!authStore.isAdmin) return
+  try {
+    const [{ data: a }, { data: b }] = await Promise.all([
+      client.get('/api/usage/top-agents', { params: { days: 30, limit: 10 } }),
+      client.get('/api/usage/by-base-model', { params: { days: 30 } }),
+    ])
+    topAgents.value = Array.isArray(a) ? a : []
+    byBaseModel.value = Array.isArray(b) ? b : []
+  } catch {
+    topAgents.value = []
+    byBaseModel.value = []
+  }
+}
 
 const selectedRange = ref('24h')
 const selectedModel = ref(null)
@@ -202,6 +271,7 @@ async function refreshUsage() {
     usageStore.fetchChart(usageParams),
     usageStore.fetchSummary(summaryParams),
     refreshRankings(),
+    fetchPhaseGRollups(),
   ])
 }
 

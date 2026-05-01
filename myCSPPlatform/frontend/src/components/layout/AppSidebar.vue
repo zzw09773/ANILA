@@ -83,6 +83,7 @@ const menuGroups = computed(() => {
         { path: '/auth-providers', label: 'sso · oidc' },
         { path: '/platform-links', label: 'platform-links' },
         { path: '/service-access', label: 'service-access' },
+        { path: '/service-clients', label: 'service-clients' },
       ],
     })
   }

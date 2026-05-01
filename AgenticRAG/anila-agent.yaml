@@ -19,6 +19,20 @@
 #   3. Direct API call (POST /agents)
 #      See docs/CSP_INTEGRATION.md for the HTTP contract.
 #
+# Service-token bootstrap (Sprint 8 X / Phase D)
+# ──────────────────────────────────────────────
+# After this agent's registration is approved, the admin will hand you
+# a one-shot ``bsk-...`` bootstrap token from the CSP "Service token"
+# panel on the agent detail page. Paste it into the agent's ``.env`` as
+# ``CSP_BOOTSTRAP_TOKEN`` and start the container — the entrypoint
+# runs ``anila-core agent bootstrap`` automatically and writes a
+# long-lived ``csk-...`` token to ``/var/lib/anila-agent/service_token.json``.
+# After successful bootstrap, the bsk- env var can be removed (it's
+# single-use and CSP rejects replays).
+#
+# Legacy ``CSP_SERVICE_TOKEN`` env var still works as a fallback during
+# cutover; new deployments should prefer bootstrap.
+#
 # Fork workflow: change ``name``, ``endpoint_url``, and
 # ``description_for_router`` to match your agent's identity. Everything else
 # can usually stay as-is.

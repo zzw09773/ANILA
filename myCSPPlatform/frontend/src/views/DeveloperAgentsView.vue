@@ -243,7 +243,7 @@
     </TermModal>
 
     <!-- Detail drawer (modal-style) ------------------------------- -->
-    <TermModal :visible="showDetailModal" :title="detailAgent ? `detail · ${detailAgent.name}` : 'detail'" width="640px" @close="showDetailModal = false">
+    <TermModal :visible="showDetailModal" :title="detailAgent ? `detail · ${detailAgent.name}` : 'detail'" width="720px" @close="closeDetailModal">
       <div v-if="detailAgent" class="detail">
         <TermSection title="overview" />
         <dl class="detail__list">
@@ -291,9 +291,117 @@
             </div>
           </li>
         </ol>
+
+        <!-- Sprint 8 X / Phase A — service token management ------------ -->
+        <template v-if="authStore.isAdmin">
+          <TermSection title="service token" />
+
+          <!-- One-shot plaintext display: only shown right after a
+               successful issue / rotate; clears when the modal closes. -->
+          <div v-if="issuedSecret" class="secret-banner" :class="`secret-banner--${issuedSecret.kind}`">
+            <div class="secret-banner__head">
+              <span class="cell-strong">
+                {{ issuedSecret.kind === 'bsk' ? 'bootstrap token (bsk-)' : 'service token (csk-)' }}
+              </span>
+              <span class="cell-meta">copy now — will not be shown again</span>
+            </div>
+            <div class="secret-banner__body">
+              <code class="secret-banner__token">{{ issuedSecret.value }}</code>
+              <TermButton size="sm" variant="ghost" @click="copyToClipboard(issuedSecret.value)" label="copy" />
+              <TermButton size="sm" variant="ghost" @click="clearIssuedSecret" label="hide" />
+            </div>
+            <ul v-if="issuedSecret.meta" class="secret-banner__meta">
+              <li v-if="issuedSecret.kind === 'bsk'">
+                expires {{ formatDate(issuedSecret.meta.expires_at) }} — agent must call
+                <code>POST /api/agents/{{ issuedSecret.meta.agent_id }}/bootstrap</code>
+                with this token + <code>endpoint_url={{ issuedSecret.meta.endpoint_url }}</code>
+              </li>
+              <li v-if="issuedSecret.kind === 'csk' && issuedSecret.meta.kind">
+                {{ issuedSecret.meta.kind }} · credential_id={{ issuedSecret.meta.credential_id }}{{ issuedSecret.meta.label ? ` · label=${issuedSecret.meta.label}` : '' }}
+              </li>
+            </ul>
+          </div>
+
+          <div class="row-actions" style="margin-bottom: 8px;">
+            <button class="term-action" :disabled="credentialBusyId === -1" @click="handleIssueBootstrap">
+              {{ credentialBusyId === -1 ? 'issuing…' : 'issue bootstrap (bsk-)' }}
+            </button>
+            <span class="row-actions__sep">·</span>
+            <button class="term-action" :disabled="credentialBusyId === -2" @click="openIssueStaticModal">
+              {{ credentialBusyId === -2 ? 'issuing…' : 'issue static (csk-)' }}
+            </button>
+            <span class="row-actions__sep">·</span>
+            <button class="term-action" @click="refreshDetailCredentials">refresh</button>
+          </div>
+
+          <TermEmpty v-if="!credentialsLoading && detailCredentials.length === 0" message="no credentials yet — issue a bootstrap or static token to start" />
+          <table v-else class="cred-table">
+            <thead>
+              <tr>
+                <th>id</th>
+                <th>label</th>
+                <th>status</th>
+                <th>issued</th>
+                <th>rotated</th>
+                <th>grace</th>
+                <th>actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="c in detailCredentials" :key="c.id" :class="{ 'is-revoked': !c.is_active }">
+                <td class="tnum">{{ c.id }}</td>
+                <td>
+                  <span v-if="c.label">{{ c.label }}</span>
+                  <span v-else class="cell-meta">—</span>
+                  <TermBadge v-if="c.is_legacy" variant="warn" style="margin-left: 6px;">legacy</TermBadge>
+                </td>
+                <td>
+                  <TermBadge :variant="c.is_active ? '' : 'danger'" dot>
+                    {{ c.is_active ? 'active' : 'revoked' }}
+                  </TermBadge>
+                </td>
+                <td class="cell-meta tnum">{{ formatDate(c.issued_at) }}</td>
+                <td class="cell-meta tnum">{{ c.rotated_at ? formatDate(c.rotated_at) : '—' }}</td>
+                <td class="cell-meta tnum">
+                  <span v-if="c.has_previous_token">until {{ formatDate(c.previous_expires_at) }}</span>
+                  <span v-else>—</span>
+                </td>
+                <td>
+                  <div class="row-actions">
+                    <template v-if="c.is_active">
+                      <button class="term-action" :disabled="credentialBusyId === c.id" @click="handleRotateCredential(c)">
+                        {{ credentialBusyId === c.id ? '…' : 'rotate' }}
+                      </button>
+                      <span class="row-actions__sep">·</span>
+                      <button class="term-action term-action--danger" :disabled="credentialBusyId === c.id" @click="handleRevokeCredential(c)">
+                        {{ credentialBusyId === c.id ? '…' : 'revoke' }}
+                      </button>
+                    </template>
+                    <span v-else class="cell-meta">—</span>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
       </div>
       <template #footer>
-        <TermButton variant="ghost" @click="showDetailModal = false" label="close" />
+        <TermButton variant="ghost" @click="closeDetailModal" label="close" />
+      </template>
+    </TermModal>
+
+    <!-- Issue static token modal (Phase F Tier 0) -->
+    <TermModal :visible="showIssueStaticModal" title="issue static service token" width="440px" @close="showIssueStaticModal = false">
+      <p class="cell-meta">
+        靜態 csk- 不會自動輪替；建議每 90 天手動 rotate 一次。
+        適合無法跑 anila-core bootstrap CLI 的舊版 / 第三方 agent（Phase F Tier 0）。
+      </p>
+      <TermField label="label (optional)" hint="e.g. vendor-foo / pod-1 / staging">
+        <input v-model="staticLabel" class="term-input" placeholder="" maxlength="100" />
+      </TermField>
+      <template #footer>
+        <TermButton variant="ghost" @click="showIssueStaticModal = false" label="cancel" />
+        <TermButton variant="primary" :loading="credentialBusyId === -2" :disabled="credentialBusyId === -2" label="issue" @click="handleIssueStatic" />
       </template>
     </TermModal>
 
@@ -318,6 +426,13 @@ import {
   approveAgent, deleteAgent, downloadTemplate, getAgent, listMyAgents,
   registerAgent, rejectAgent, setAgentEncryption, triggerAgentHealthCheck, updateAgent,
 } from '../api/agents'
+import {
+  issueBootstrapToken,
+  issueStaticCredential,
+  listAgentCredentials,
+  revokeAgentCredential,
+  rotateAgentCredential,
+} from '../api/agentCredentials'
 import { listModels } from '../api/models'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, TermSection } from '../components/cli'
 
@@ -341,6 +456,17 @@ const editing = ref(false)
 const editFormError = ref('')
 const editForm = ref({ endpoint_url: '', description_for_router: '', api_version: '', base_model_id: null, capabilitiesRaw: '' })
 const feedback = ref({ type: 'success', message: '' })
+
+// ── Sprint 8 X / Phase A — agent service-token management ────────────────────
+// detailCredentials is loaded on detail-modal open. issuedSecret holds the
+// one-shot plaintext returned by issue-bootstrap / issue-static / rotate so
+// we can display it once and clear it the moment the modal closes.
+const detailCredentials = ref([])
+const credentialsLoading = ref(false)
+const credentialBusyId = ref(null)
+const issuedSecret = ref(null) // { kind: 'bsk'|'csk', value, meta?, ttlExpiresAt? }
+const showIssueStaticModal = ref(false)
+const staticLabel = ref('')
 const filters = ref({ query: '', approval: 'all', health: 'all', sort: 'newest' })
 const form = ref({ name: '', endpoint_url: '', description_for_router: '', api_version: 'v1', base_model_id: null })
 const formErrors = ref({})
@@ -420,6 +546,136 @@ async function openDetailModal(agent) {
   try { const { data } = await getAgent(agent.id); detailAgent.value = data }
   catch { detailAgent.value = agent }
   showDetailModal.value = true
+  // Lazy-load credentials only when admin opens the modal — avoids
+  // hitting the endpoint for non-admin viewers.
+  if (authStore.isAdmin) await refreshDetailCredentials()
+}
+
+async function refreshDetailCredentials() {
+  if (!detailAgent.value) return
+  credentialsLoading.value = true
+  try {
+    detailCredentials.value = await listAgentCredentials(detailAgent.value.id)
+  } catch (e) {
+    setFeedback('error', e.response?.data?.detail || 'failed to load credentials')
+    detailCredentials.value = []
+  } finally {
+    credentialsLoading.value = false
+  }
+}
+
+function clearIssuedSecret() {
+  issuedSecret.value = null
+}
+
+function closeDetailModal() {
+  showDetailModal.value = false
+  detailAgent.value = null
+  detailCredentials.value = []
+  clearIssuedSecret()
+}
+
+async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text)
+    setFeedback('success', 'copied to clipboard')
+  } catch {
+    setFeedback('error', 'clipboard write failed — copy manually')
+  }
+}
+
+async function handleIssueBootstrap() {
+  if (!detailAgent.value) return
+  if (!confirm(`為「${detailAgent.value.name}」核發新的 bootstrap token？\n\n舊 bootstrap（若存在）會立即失效。`)) return
+  credentialBusyId.value = -1
+  try {
+    const data = await issueBootstrapToken(detailAgent.value.id)
+    issuedSecret.value = {
+      kind: 'bsk',
+      value: data.bootstrap_token,
+      meta: {
+        agent_name: data.agent_name,
+        agent_id: data.agent_id,
+        endpoint_url: data.endpoint_url,
+        expires_at: data.expires_at,
+      },
+    }
+    setFeedback('success', 'bootstrap token issued — copy now, it will not be shown again')
+  } catch (e) {
+    setFeedback('error', e.response?.data?.detail || 'failed to issue bootstrap')
+  } finally {
+    credentialBusyId.value = null
+  }
+}
+
+function openIssueStaticModal() {
+  staticLabel.value = ''
+  showIssueStaticModal.value = true
+}
+
+async function handleIssueStatic() {
+  if (!detailAgent.value) return
+  credentialBusyId.value = -2
+  try {
+    const data = await issueStaticCredential(detailAgent.value.id, staticLabel.value || null)
+    issuedSecret.value = {
+      kind: 'csk',
+      value: data.service_token,
+      meta: {
+        credential_id: data.credential_id,
+        label: data.label,
+        issued_at: data.issued_at,
+        kind: 'static (no auto-rotate)',
+      },
+    }
+    setFeedback('success', 'service token issued — copy now, it will not be shown again')
+    showIssueStaticModal.value = false
+    await refreshDetailCredentials()
+  } catch (e) {
+    setFeedback('error', e.response?.data?.detail || 'failed to issue static token')
+  } finally {
+    credentialBusyId.value = null
+  }
+}
+
+async function handleRotateCredential(credential) {
+  if (!detailAgent.value) return
+  if (!confirm(`輪替 credential id=${credential.id}？舊 token 仍可用 24h（grace window）。`)) return
+  credentialBusyId.value = credential.id
+  try {
+    const data = await rotateAgentCredential(detailAgent.value.id, credential.id)
+    issuedSecret.value = {
+      kind: 'csk',
+      value: data.service_token,
+      meta: {
+        credential_id: data.credential_id,
+        label: credential.label,
+        issued_at: data.issued_at,
+        kind: 'rotated (previous valid 24h)',
+      },
+    }
+    setFeedback('success', 'credential rotated — copy new token now')
+    await refreshDetailCredentials()
+  } catch (e) {
+    setFeedback('error', e.response?.data?.detail || 'failed to rotate')
+  } finally {
+    credentialBusyId.value = null
+  }
+}
+
+async function handleRevokeCredential(credential) {
+  if (!detailAgent.value) return
+  if (!confirm(`立即吊銷 credential id=${credential.id}？無 grace window。`)) return
+  credentialBusyId.value = credential.id
+  try {
+    await revokeAgentCredential(detailAgent.value.id, credential.id)
+    setFeedback('success', `credential id=${credential.id} revoked`)
+    await refreshDetailCredentials()
+  } catch (e) {
+    setFeedback('error', e.response?.data?.detail || 'failed to revoke')
+  } finally {
+    credentialBusyId.value = null
+  }
 }
 
 function openRejectModal(agent) { rejectTarget.value = agent; rejectReason.value = '' }
@@ -701,4 +957,38 @@ function buildStatusHistory(agent) {
 }
 .timeline__label { color: var(--c-fg-1); font-size: var(--t-sm); margin: 0; font-weight: 500; }
 .timeline__detail { color: var(--c-fg-2); font-size: var(--t-2xs); margin: 4px 0 0; }
+
+/* Sprint 8 X / Phase A — service-token banner + table */
+.secret-banner {
+  border: 1px solid var(--c-accent);
+  background: var(--c-bg-elev-1, rgba(255,255,255,0.04));
+  padding: 8px 10px;
+  margin: 8px 0 12px;
+  font-size: var(--t-2xs);
+}
+.secret-banner--bsk { border-color: var(--c-warn, #c08a2c); }
+.secret-banner__head {
+  display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px;
+}
+.secret-banner__body { display: flex; align-items: center; gap: 8px; }
+.secret-banner__token {
+  flex: 1;
+  font-family: var(--font-mono); font-size: var(--t-sm);
+  background: var(--c-bg-1, #000); padding: 4px 6px;
+  word-break: break-all; user-select: all;
+}
+.secret-banner__meta { margin: 6px 0 0; padding-left: 1.2em; color: var(--c-fg-2); }
+.secret-banner__meta li { line-height: 1.5; }
+.secret-banner__meta code {
+  background: var(--c-bg-1, #000); padding: 1px 4px; font-size: var(--t-3xs);
+}
+
+.cred-table { width: 100%; border-collapse: collapse; font-size: var(--t-2xs); }
+.cred-table th {
+  text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--c-divider);
+  font-weight: 500; color: var(--c-fg-2); text-transform: uppercase;
+  font-size: var(--t-3xs); letter-spacing: 0.04em;
+}
+.cred-table td { padding: 6px; border-bottom: 1px solid var(--c-divider); vertical-align: middle; }
+.cred-table tr.is-revoked td { opacity: 0.5; }
 </style>
