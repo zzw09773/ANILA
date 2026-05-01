@@ -97,6 +97,15 @@ const routes = [
         component: () => import('../views/KnowledgeCollectionsView.vue'),
         meta: { requiresDeveloper: true },
       },
+      // Sprint 8 X / chunking-preview Phase 3 — interactive strategy
+      // comparison wizard. Users land here from KnowledgeCollections
+      // "+ compare strategies first" CTA.
+      {
+        path: 'knowledge-collections/preview',
+        name: 'ChunkingPreview',
+        component: () => import('../views/ChunkingPreviewView.vue'),
+        meta: { requiresDeveloper: true },
+      },
       {
         path: 'knowledge-collections/:id',
         name: 'CollectionDetail',

@@ -8,7 +8,17 @@
           first-class rag store · agent backend mounts via <code>RAG_COLLECTION_ID=&lt;id&gt;</code>
         </p>
       </div>
-      <TermButton variant="primary" @click="openCreateModal" label="new collection" />
+      <div class="cta-group">
+        <!-- Sprint 8 X / chunking-preview Phase 3 — preview-then-create
+             flow. Lets users compare all chunkers on a sample doc
+             before locking in a strategy. Lives next to the existing
+             quick-create for power users who already know which
+             strategy they want. -->
+        <router-link :to="{ name: 'ChunkingPreview' }" class="term-link">
+          + compare strategies first
+        </router-link>
+        <TermButton variant="primary" @click="openCreateModal" label="new collection" />
+      </div>
     </header>
 
     <TermBox title="filter" pad="sm">
@@ -207,6 +217,10 @@ function humanBytes(n) {
 .page-head__title { font-size: var(--t-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin: 4px 0 2px; }
 .page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }
 .page-head__sub code { color: var(--c-accent); background: var(--c-accent-soft); padding: 0 4px; }
+
+.cta-group { display: flex; align-items: center; gap: var(--gap-3); }
+.term-link { color: var(--c-accent); font-size: var(--t-2xs); text-decoration: none; font-family: var(--font-mono); }
+.term-link:hover { text-decoration: underline; }
 
 .filters { display: flex; gap: var(--gap-4); flex-wrap: wrap; }
 .filters__toggle { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-sm); color: var(--c-fg-2); cursor: pointer; }

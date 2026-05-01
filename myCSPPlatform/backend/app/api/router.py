@@ -20,6 +20,7 @@ from app.api.ingestion import (
     documents_router as ingestion_documents_router,
     eval_runs_router as ingestion_eval_runs_router,
     jobs_router as ingestion_jobs_router,
+    preview_router as ingestion_preview_router,
     search_router as ingestion_search_router,
 )
 
@@ -43,6 +44,7 @@ api_router.include_router(ingestion_credentials_router)
 api_router.include_router(ingestion_documents_router)
 api_router.include_router(ingestion_eval_runs_router)
 api_router.include_router(ingestion_jobs_router)
+api_router.include_router(ingestion_preview_router)
 api_router.include_router(ingestion_search_router)
 api_router.include_router(studio_router)
 api_router.include_router(proxy_router)
