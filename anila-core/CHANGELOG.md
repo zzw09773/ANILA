@@ -4,6 +4,126 @@ All notable changes to this package. anila-core is **not yet 1.0** — internal
 breaking changes are acceptable but always documented here. SemVer kicks in
 once we cut v1.0 (no concrete date).
 
+## v0.10.0 (2026-05-02) — Sprint 11 · Governance & observability
+
+Sprint 11 layers governance + observability on top of Sprints 9-10.
+QueryEngine now exposes synchronous lifecycle hooks; an OTel-style
+hierarchical tracing module ships in-tree; tools gain a per-call
+permission policy with an interactive ASK mode; and the Router's
+multi-turn loop supports streaming.
+
+### Added — primitives
+
+* **Lifecycle hooks** (`anila_core.engine.lifecycle`):
+  - `RunHooks` base class with no-op defaults — subclass and override
+    only what you need. Pass instance to `QueryEngine(hooks=…)`.
+  - Hook points: `on_run_start` / `on_run_end` / `on_agent_start` /
+    `on_agent_end` / `on_tool_start` / `on_tool_end` / `on_run_paused`
+    / `on_run_resumed` / `on_handoff`.
+  - All hooks are async; exceptions are caught + logged via
+    `_safe_call`, never abort the run loop.
+  - Distinct from QueryEngine's existing fire-and-forget
+    `post_turn_hooks` (lifecycle hooks are synchronous, see real-time
+    state, fire at multiple points).
+
+* **Hierarchical tracing** (`anila_core.tracing`):
+  - `Span` — frozen-on-close timed unit with parent / children, status,
+    attributes, events.
+  - `SpanKind` — `RUN` / `AGENT` / `LLM` / `TOOL` / `HANDOFF` /
+    `INTERRUPT` / `INTERNAL`.
+  - `SpanStatus` — `UNSET` / `OK` / `ERROR`.
+  - `Tracer` — owns the current-span stack via contextvars; sync
+    `tracer.span(...)` and async `tracer.async_span(...)` context
+    managers; exceptions inside the block automatically mark the span
+    `ERROR` with the exception text.
+  - `SpanProcessor` Protocol + `InMemoryProcessor` reference impl
+    (`.spans` for collected list, `.to_tree()` for nested
+    parent-rooted dict tree).
+  - `TracingHooks(Tracer)` — `RunHooks` adapter that emits spans
+    automatically for every run / agent / tool / handoff / pause /
+    resume event. `QueryEngine(hooks=TracingHooks(tracer))` is the
+    one-line wire-up.
+
+* **Per-tool permission policy** (`anila_core.models.tool.ToolPermission`):
+  - `ALLOW` (default) / `DENY` / `ASK`.
+  - DENY rejects with an error result.
+  - ASK pauses the run via an `InterruptItem(kind="tool_approval")` —
+    Sprint 9's pause-resume primitive does the heavy lifting.
+  - On approve, the resume helper re-executes the original tool with
+    `bypass_gates=True` (also bypasses Sprint 9's plan-mode gate); on
+    deny, emits a synthetic `is_error=True` ToolResult so the model
+    can change strategy.
+  - New `ToolRegistry.execute(..., bypass_gates: bool = False)` kwarg
+    + `engine.approvals.resume_tool_approval(session, registry,
+    interrupt_id, *, approved, comment)` helper.
+
+### Added — HTTP / Router
+
+* **Streaming multi-turn Router** — Sprint 10's `anila_multi_turn`
+  body field now works with `stream: true`. Implementation: trace
+  events fire at each iteration step (LLM call, dispatch, agent
+  reply); content chunks are emitted only for the *final* synthesised
+  answer, soft-chunked for natural-feeling delivery. Single-shot
+  streaming (`anila_multi_turn` omitted or `1`) keeps the existing
+  real-time token-by-token path with all DISPATCH parsing intact.
+
+### Modified
+
+* `engine.query_engine.QueryEngine.__init__` accepts `hooks:
+  RunHooks | None = None`. Stage 4 fires `on_tool_start` /
+  `on_tool_end` per call (matched by `tool_call_id`); Stage 1 fires
+  `on_run_start` + `on_agent_start`; close-out fires `on_agent_end` +
+  `on_run_end`. `_pause_on_interrupt` fires `on_run_paused`,
+  `_handoff` fires `on_handoff`, `resume_from_interrupt` fires
+  `on_run_resumed`.
+* `router.tool_router.ToolRegistry.execute` gained the
+  `bypass_gates: bool = False` kw-only arg. Plan-mode gate (Sprint 9)
+  and permission gate both honour it.
+* `engine.query_engine.QueryEngine.resume_from_interrupt` peeks at
+  the pending interrupt; `tool_approval` kind is routed to the new
+  `resume_tool_approval` helper instead of the generic `resume_with`.
+* `models.tool.ToolDefinition` gained `permission: ToolPermission =
+  ToolPermission.ALLOW`.
+* `models/__init__.py` exports `ToolPermission`. `engine/__init__.py`
+  exports `RunHooks`, `RunHooksProtocol`, `resume_tool_approval`.
+* `api/router_server.py` `chat_completions` routes streaming requests
+  with `anila_multi_turn > 1` to the new
+  `_router_streaming_multi_turn` helper. Helper emits soft-chunked
+  final content via `_emit_soft_chunks`.
+
+### Tests
+
+44 new tests across `test_lifecycle_hooks` (11), `test_tracing` (16),
+`test_tool_permission` (13), `test_router_streaming_multi_turn` (4).
+Full suite **432 passed** (up from 388). Lint clean, mypy net-zero
+added, 5 pre-existing CJK / unrelated failures unchanged.
+
+### Migration
+
+* Existing callers see no behavioural change: `hooks` defaults to
+  None, tool `permission` defaults to ALLOW, streaming multi-turn is
+  opt-in through the same `anila_multi_turn` field that already
+  defaults to `1`.
+* Forks that registered tools with destructive side effects can now
+  set `permission=ToolPermission.ASK` to require user approval per
+  call. The HTTP layer (api/server.py from Sprint 9) already returns
+  `interrupt_requested` SSE for this kind; web frontends just need to
+  handle the `tool_approval` kind in their renderer.
+* New tools that want hierarchical tracing should pass
+  `hooks=TracingHooks(tracer)` to `QueryEngine`. The flat
+  `anila_meta.trace` stays — spans are an additional view, not a
+  replacement.
+
+### What's next (Sprint 12 plan)
+
+Tier D + Tier E from the Sprint 9 design: per-tool input/output
+guardrails (openai-agents `tool_guardrails.py`), agent persona /
+output style configuration (claude-code `outputStyles/`), file /
+shell tool suite (Bash / FileRead / FileWrite / Glob / Grep), and
+optional sandbox runtime (openai-agents `sandbox/`). Streaming
+multi-turn may also gain true per-turn streaming once the synthesis
+UX is well-understood.
+
 ## v0.9.0 (2026-05-02) — Sprint 10 · Multi-agent control flow
 
 Built on Sprint 9's Session + Approvals foundation. Sprint 10 lets the

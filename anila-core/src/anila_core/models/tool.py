@@ -16,6 +16,28 @@ class ToolSafety(str, Enum):
     CONCURRENCY_SAFE = "concurrency_safe"
 
 
+class ToolPermission(str, Enum):
+    """Per-tool permission policy (Sprint 11 PR 3).
+
+    Distinct from :class:`ToolSafety` (which is a *capability* hint
+    about concurrency / destructiveness). Permission is the *governance*
+    gate that says whether the tool may run at all in the current
+    context, and how:
+
+    - ``ALLOW``  — tool runs whenever the LLM calls it (default).
+    - ``DENY``   — tool is always rejected with an error result.
+    - ``ASK``    — pause the run, ask the user; on approve, the tool
+                   runs with the original input. Implemented by
+                   returning :class:`InterruptItem(kind="tool_approval")`
+                   from the registry; the resume endpoint re-executes
+                   the tool with the gate bypassed.
+    """
+
+    ALLOW = "allow"
+    DENY = "deny"
+    ASK = "ask"
+
+
 class ToolDefinition(BaseModel):
     """Definition of a tool available to agents.
 
@@ -27,6 +49,7 @@ class ToolDefinition(BaseModel):
     description: str
     input_schema: dict[str, Any]
     safety: ToolSafety = ToolSafety.READ_ONLY
+    permission: ToolPermission = ToolPermission.ALLOW
     implementation: Optional[Callable[..., Any]] = Field(default=None, exclude=True)
 
     model_config = {"arbitrary_types_allowed": True}

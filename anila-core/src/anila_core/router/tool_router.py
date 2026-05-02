@@ -13,7 +13,7 @@ from ..context.agent_context import get_current_context
 from ..models.handoff import HandoffRequest
 from ..models.interrupt import InterruptItem
 from ..models.message import ToolCall, ToolResult
-from ..models.tool import ToolDefinition, ToolSafety
+from ..models.tool import ToolDefinition, ToolPermission, ToolSafety
 
 
 class RouterError(Exception):
@@ -105,11 +105,18 @@ class ToolRegistry:
         self,
         call: ToolCall,
         context: Optional[dict[str, Any]] = None,
+        *,
+        bypass_gates: bool = False,
     ) -> ToolResult:
         """Execute a single tool call.
 
         Returns a ToolResult. On permission denial or missing implementation,
         returns an error ToolResult rather than raising.
+
+        Sprint 11 PR 3: ``bypass_gates`` skips both the plan-mode gate
+        and the per-tool ``permission`` gate. The resume path for
+        ``tool_approval`` interrupts uses this when the user has
+        explicitly approved the call.
         """
         if not self.can_use(call.name):
             return ToolResult(
@@ -142,7 +149,8 @@ class ToolRegistry:
         # in their implementation.
         ctx = get_current_context()
         if (
-            ctx is not None
+            not bypass_gates
+            and ctx is not None
             and ctx.plan_mode
             and tool.safety == ToolSafety.DESTRUCTIVE
         ):
@@ -155,6 +163,39 @@ class ToolRegistry:
                 ),
                 is_error=True,
             )
+
+        # Per-tool permission gate (Sprint 11 PR 3). DENY rejects
+        # outright; ASK pauses the run so the user can approve. The
+        # resume path re-executes with ``bypass_gates=True``.
+        if not bypass_gates:
+            if tool.permission == ToolPermission.DENY:
+                return ToolResult(
+                    tool_call_id=call.id,
+                    content=(
+                        f"Tool '{call.name}' is permission-DENIED in this "
+                        "context."
+                    ),
+                    is_error=True,
+                )
+            if tool.permission == ToolPermission.ASK:
+                # Surface a ``tool_approval`` interrupt — QueryEngine
+                # Stage 4 already detects ``ToolResult.interrupt`` and
+                # raises RunPaused. The persisted record carries the
+                # original tool_call so the resume helper can re-execute.
+                interrupt = InterruptItem(
+                    kind="tool_approval",
+                    payload={
+                        "tool_name": call.name,
+                        "tool_call_id": call.id,
+                        "tool_input": call.input,
+                        "description": tool.description,
+                    },
+                )
+                return ToolResult(
+                    tool_call_id=call.id,
+                    content="",
+                    interrupt=interrupt,
+                )
 
         try:
             if asyncio.iscoroutinefunction(tool.implementation):

@@ -141,6 +141,103 @@ def build_resume_message(
     return UserMessage(content=blocks)
 
 
+async def resume_tool_approval(
+    session: Session,
+    registry: Any,  # ToolRegistry — Any avoids a router/engine import cycle
+    interrupt_id: str,
+    *,
+    approved: bool,
+    comment: str = "",
+) -> UserMessage:
+    """Resume a ``tool_approval`` interrupt (Sprint 11 PR 3).
+
+    Pops the interrupt, then either:
+
+    - re-executes the original tool with ``bypass_gates=True`` and
+      stitches its real result into the next-turn UserMessage, OR
+    - emits a synthetic deny ToolResult ("permission denied by user")
+      when ``approved`` is False.
+
+    Sibling tool results (the ones executed in the same turn that
+    triggered the interrupt) are replayed alongside so the model sees
+    one coherent UserMessage with all tool_result blocks.
+
+    Args:
+        session: The Session holding the pending interrupt.
+        registry: ToolRegistry to dispatch the approved call against.
+            Typed as ``Any`` to avoid an import cycle.
+        interrupt_id: Quoted from the SSE event.
+        approved: Whether the user said yes.
+        comment: Optional free-text explanation surfaced into the result.
+
+    Raises:
+        ValueError: if the interrupt doesn't exist or isn't
+            ``tool_approval``.
+    """
+    record = await session.pop_interrupt(interrupt_id)
+    if record is None:
+        raise ValueError(
+            f"Interrupt '{interrupt_id}' not found in session "
+            f"'{session.session_id}' (already answered, or unknown id)."
+        )
+    if record.kind != "tool_approval":
+        raise ValueError(
+            f"resume_tool_approval expected kind=tool_approval, "
+            f"got kind={record.kind!r}"
+        )
+
+    payload = record.payload
+    tool_call_meta = payload["tool_call"]
+    tool_call = ToolCall(
+        id=tool_call_meta["id"],
+        name=tool_call_meta["name"],
+        input=tool_call_meta["input"],
+    )
+    sibling_results = [
+        _deserialize_tool_result(d)
+        for d in payload.get("sibling_results", [])
+    ]
+
+    if not approved:
+        denied_msg = "permission denied by user"
+        if comment:
+            denied_msg = f"{denied_msg}: {comment}"
+        gate_result = ToolResult(
+            tool_call_id=tool_call.id,
+            content=denied_msg,
+            is_error=True,
+        )
+    else:
+        gate_result = await registry.execute(tool_call, bypass_gates=True)
+
+    blocks: list[dict[str, Any]] = []
+    for r in sibling_results:
+        block: dict[str, Any] = {
+            "type": "tool_result",
+            "tool_use_id": r.tool_call_id,
+            "content": (
+                r.content if isinstance(r.content, str)
+                else _flatten_content(r.content)
+            ),
+        }
+        if r.is_error:
+            block["is_error"] = True
+        blocks.append(block)
+    result_block: dict[str, Any] = {
+        "type": "tool_result",
+        "tool_use_id": tool_call.id,
+        "content": (
+            gate_result.content
+            if isinstance(gate_result.content, str)
+            else _flatten_content(gate_result.content)
+        ),
+    }
+    if gate_result.is_error:
+        result_block["is_error"] = True
+    blocks.append(result_block)
+    return UserMessage(content=blocks)
+
+
 async def resume_with(
     session: Session,
     interrupt_id: str,

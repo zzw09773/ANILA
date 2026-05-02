@@ -14,7 +14,7 @@ from .message import (
 from .agent import AgentDefinition, PermissionMode, TaskState, Todo, TodoStatus
 from .handoff import HandoffRequest
 from .interrupt import InterruptItem, InterruptKind
-from .tool import ToolDefinition, ToolError, ToolSafety
+from .tool import ToolDefinition, ToolError, ToolPermission, ToolSafety
 from .memory import (
     ConsolidationLock,
     MemoryFile,
@@ -45,6 +45,7 @@ __all__ = [
     "InterruptKind",
     "ToolDefinition",
     "ToolError",
+    "ToolPermission",
     "ToolSafety",
     "ConsolidationLock",
     "MemoryFile",

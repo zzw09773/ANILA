@@ -37,11 +37,13 @@ from ..router.tool_router import ToolRegistry, execute_batch
 from .approvals import (
     MultipleInterruptsError,
     RunPaused,
+    resume_tool_approval,
     resume_with,
     to_record,
 )
 from .budget_tracker import BudgetTracker, ContinueDecision, check_token_budget
 from .handoff import RunHandoff
+from .lifecycle import RunHooks, _safe_call
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +91,7 @@ class QueryEngine:
         config: QueryConfig,
         session_id: str = "",
         session: Optional[Session] = None,
+        hooks: Optional[RunHooks] = None,
     ) -> None:
         self._provider = provider
         self._tools = tool_registry
@@ -99,6 +102,8 @@ class QueryEngine:
         # Session's own session_id field.
         self._session_id = session.session_id if session else session_id
         self._session = session
+        # Sprint 11 PR 1: synchronous lifecycle hooks. None = no-op.
+        self._hooks = hooks
         self._post_turn_hooks: list[PostTurnHook] = []
         self._budget_tracker = BudgetTracker()
         self._in_flight_hooks: set[asyncio.Task] = set()  # type: ignore[type-arg]
@@ -127,6 +132,19 @@ class QueryEngine:
         turn_count = 0
         stop_reason = "completed"
 
+        # Sprint 11 PR 1: lifecycle hook firing point. Fires once per run()
+        # entry; on_agent_start fires once per agent activation (which for
+        # the current single-agent QueryEngine is also once per run).
+        agent_id = self._config.agent_id or ""
+        await _safe_call(
+            self._hooks, "on_run_start",
+            agent_id=agent_id, session_id=self._session_id,
+        )
+        await _safe_call(
+            self._hooks, "on_agent_start",
+            agent_id=agent_id, session_id=self._session_id,
+        )
+
         while turn_count < self._config.max_turns:
             turn_count += 1
 
@@ -150,10 +168,36 @@ class QueryEngine:
 
             # Stage 4: tool_execution
             if assistant_msg.has_tool_calls():
+                # Sprint 11 PR 1: per-tool start hooks fire BEFORE batch
+                # execution so an instrumentation layer can stamp
+                # in-flight spans / stash request payloads. Hooks are
+                # always-await and never abort the dispatch.
+                for tc in assistant_msg.tool_calls:
+                    await _safe_call(
+                        self._hooks, "on_tool_start",
+                        agent_id=agent_id,
+                        session_id=self._session_id,
+                        call=tc,
+                    )
+
                 results = await execute_batch(
                     self._tools,
                     assistant_msg.tool_calls,
                 )
+
+                # Pair each result back to its call by tool_call_id so
+                # on_tool_end carries a matched (call, result) pair.
+                calls_by_id = {tc.id: tc for tc in assistant_msg.tool_calls}
+                for r in results:
+                    matched_call = calls_by_id.get(r.tool_call_id)
+                    if matched_call is not None:
+                        await _safe_call(
+                            self._hooks, "on_tool_end",
+                            agent_id=agent_id,
+                            session_id=self._session_id,
+                            call=matched_call,
+                            result=r,
+                        )
 
                 # Approvals: when a tool returned an InterruptItem, persist
                 # conversation state + the interrupt to Session and raise
@@ -217,6 +261,18 @@ class QueryEngine:
             turn_count=turn_count,
             finish_reason=stop_reason,
             stop_reason=stop_reason,
+        )
+
+        # Sprint 11 PR 1: synchronous lifecycle close-out — fires before
+        # the fire-and-forget post_turn_hooks so observers see the run
+        # end before any async work spawned by them races them.
+        await _safe_call(
+            self._hooks, "on_agent_end",
+            agent_id=agent_id, session_id=self._session_id, result=result,
+        )
+        await _safe_call(
+            self._hooks, "on_run_end",
+            agent_id=agent_id, session_id=self._session_id, result=result,
         )
 
         # Fire post-turn hooks non-blocking
@@ -341,6 +397,12 @@ class QueryEngine:
         # No interrupt record is pushed — the Router consumes the request
         # immediately. Sprint 10 PR 3 may revisit this if we want resume
         # semantics for handoffs.
+        await _safe_call(
+            self._hooks, "on_handoff",
+            source_agent_id=self._config.agent_id or "",
+            session_id=self._session.session_id if self._session else "",
+            request=request,
+        )
         raise RunHandoff(
             session_id=self._session.session_id if self._session else "",
             request=request,
@@ -389,6 +451,13 @@ class QueryEngine:
             sibling_results=sibling_results,
         )
         await self._session.push_interrupt(record)
+        await _safe_call(
+            self._hooks, "on_run_paused",
+            agent_id=self._config.agent_id or "",
+            session_id=self._session.session_id,
+            interrupt_id=record.id,
+            kind=record.kind,
+        )
         raise RunPaused(
             session_id=self._session.session_id,
             interrupt_id=record.id,
@@ -419,7 +488,37 @@ class QueryEngine:
                 "Pass session=… to QueryEngine."
             )
         history = await self._session.get_items()
-        resume_msg = await resume_with(self._session, interrupt_id, answer)
+        # Sprint 11 PR 3: ``tool_approval`` interrupts have a different
+        # resume shape — the source tool runs (or doesn't) instead of
+        # the user's answer being treated as the tool's reply text.
+        # Peek at the pending interrupt to decide which helper to use.
+        pending = await self._session.pending_interrupts()
+        target = next((p for p in pending if p.id == interrupt_id), None)
+        if target is not None and target.kind == "tool_approval":
+            if isinstance(answer, dict):
+                approved = bool(answer.get("approved", False))
+                comment = str(answer.get("comment", "") or "")
+            else:
+                # Permissive fallback: a string answer "yes" / "approve"
+                # counts as approval; anything else is a deny.
+                approved = str(answer).strip().lower() in {
+                    "yes", "approve", "approved", "true", "ok"
+                }
+                comment = ""
+            resume_msg = await resume_tool_approval(
+                self._session, self._tools, interrupt_id,
+                approved=approved, comment=comment,
+            )
+        else:
+            resume_msg = await resume_with(
+                self._session, interrupt_id, answer
+            )
+        await _safe_call(
+            self._hooks, "on_run_resumed",
+            agent_id=self._config.agent_id or "",
+            session_id=self._session.session_id,
+            interrupt_id=interrupt_id,
+        )
         # Resume by re-calling run() with the hydrated + completed history.
         # The next turn starts at Stage 1 with the full picture and the
         # model sees the user's answer as the awaited tool_result block.

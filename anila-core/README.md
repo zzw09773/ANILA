@@ -235,20 +235,26 @@ anila-core/
         ├── context/               # AgentContext (+ plan_mode / todos / event_emitter)
         ├── coordinator/           # multi-worker / multi-step orchestration
         ├── engine/                # query_engine (7-stage) + budget_tracker
-        │                          # + approvals (Sprint 9: pause-resume)
+        │                          # + approvals (Sprint 9: pause-resume,
+        │                          #              Sprint 11: tool_approval)
         │                          # + handoff (Sprint 10: control transfer)
+        │                          # + lifecycle (Sprint 11: RunHooks)
         ├── memory/                # memdir / extract / relevance / consolidation
         │                          # + session / sqlite_session / memory_session
         │                          # (Sprint 9: per-chat conversation persistence)
-        ├── models/                # pydantic dtos (+ interrupt, Todo, handoff)
+        ├── models/                # pydantic dtos (+ interrupt, Todo, handoff,
+        │                          #                 Sprint 11: ToolPermission)
         ├── post_turn/             # Sprint 9: PromptSuggestion (follow-up chips)
         ├── providers/             # base + openai_compat + cspplatform + mocks
         ├── registry/              # local + remote agent manifest cache
         ├── router/                # tool_router (ToolRegistry, plan-mode gate,
-        │                          # handoff detection)
+        │                          # handoff detection, Sprint 11: permission gate
+        │                          # + bypass_gates)
         ├── tools/                 # dispatch_tool (Sprint 10: stateful + handoff),
         │                          # ask_user, plan_mode, todo_write,
         │                          # agent_as_tool (Sprint 10)
+        ├── tracing/               # Sprint 11: Span / Tracer /
+        │                          # InMemoryProcessor / TracingHooks
         │
         └── ──── Pillar 2 · shared infrastructure ────
             ├── security/          # credential_crypto + url_guard
@@ -302,6 +308,21 @@ anila-core/
 ---
 
 ## Release Notes
+
+### 2026-05-02 — v0.10.0 Sprint 11 · Governance & observability
+
+Sprint 11 加治理 + 觀測層在 Sprint 9-10 之上：QueryEngine 暴露同步 lifecycle hooks、in-tree 出 OTel 風格 hierarchical tracing、tools 拿到 per-call permission policy（含互動 ASK 模式）、Router 多輪 loop 支援 streaming。
+
+| 模組 | 來源 | 用途 |
+|---|---|---|
+| `engine.lifecycle` (`RunHooks` + 9 hook points) | openai-agents `lifecycle.py` | 同步 hook：`on_run_start/end` / `on_agent_start/end` / `on_tool_start/end` / `on_run_paused/resumed` / `on_handoff`；exception 不會中斷 run loop |
+| `tracing/` (`Span` / `Tracer` / `InMemoryProcessor` / `TracingHooks`) | openai-agents `tracing/` | OTel-style span tree；`SpanKind` 涵蓋 RUN / AGENT / LLM / TOOL / HANDOFF / INTERRUPT / INTERNAL；`TracingHooks(tracer)` 一行接到 QueryEngine |
+| `models.tool.ToolPermission` (ALLOW / DENY / ASK) + `bypass_gates` | claude-code `hooks/toolPermission/` | per-tool 治理閘；ASK 走 Sprint 9 `InterruptItem(kind="tool_approval")`，resume 時實際執行工具 |
+| `api.router_server._router_streaming_multi_turn` | Sprint 10 PR 4 + soft-chunk emit | `anila_multi_turn > 1` + `stream: true` 路徑：迭代用 non-stream，最終答案 soft-chunk stream |
+
+新 `engine.approvals.resume_tool_approval(session, registry, interrupt_id, *, approved, comment)` 處理 ASK 模式批准/拒絕；`QueryEngine.resume_from_interrupt` 偵測 `tool_approval` 種類並走這條 helper。`ToolRegistry.execute(..., bypass_gates=True)` 同時跳過 plan-mode gate 跟 permission gate。
+
+44 新測試 / lint clean / mypy 持平 / 5 個 pre-existing failures 不變。完整 hook 觸發順序 / 移轉指引見 [`CHANGELOG.md`](./CHANGELOG.md) v0.10.0。
 
 ### 2026-05-02 — v0.9.0 Sprint 10 · Multi-agent control flow
 

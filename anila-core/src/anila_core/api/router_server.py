@@ -546,6 +546,30 @@ def create_router_app(
         # typewriter delay); dispatch retains the existing agent-stream
         # behaviour once a DISPATCH directive is confirmed.
         if stream:
+            # Sprint 11 PR 4: when multi-turn is requested, stream the
+            # *final* answer only — intermediate dispatches produce
+            # trace events but no content chunks. Single-shot streaming
+            # (max_iterations == 1) keeps the existing real-time
+            # token-by-token path with all its DISPATCH parsing.
+            if max_iterations > 1:
+                return StreamingResponse(
+                    _router_streaming_multi_turn(
+                        caller_api_key=caller_api_key,
+                        routing_messages=routing_messages,
+                        user_messages=messages,
+                        registry=registry,
+                        base_trace=base_trace,
+                        started_at=started_at,
+                        session_id=session_id,
+                        max_iterations=max_iterations,
+                    ),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "X-Accel-Buffering": "no",
+                        "X-Anila-Session-Id": session_id,
+                    },
+                )
             return StreamingResponse(
                 _router_streaming(
                     caller_api_key=caller_api_key,
@@ -937,6 +961,215 @@ def _flatten_last_user_query(messages: list[dict[str, Any]]) -> str:
             return content[:120]
         return str(content)[:120]
     return ""
+
+
+async def _router_streaming_multi_turn(
+    *,
+    caller_api_key: str,
+    routing_messages: list[dict[str, Any]],
+    user_messages: list[dict[str, Any]],
+    registry: Any,
+    base_trace: list[dict[str, Any]],
+    started_at: float,
+    session_id: str,
+    max_iterations: int,
+) -> AsyncIterator[str]:
+    """Sprint 11 PR 4 — Streaming multi-turn Router.
+
+    The stream emits trace events at each step (router LLM calls,
+    dispatches, agent replies) so the UI can render progress, but
+    keeps content chunks for the *final* synthesised answer only.
+    Intermediate dispatches use non-stream calls internally — when
+    the loop converges on a final answer (or hits max_iterations),
+    that text is soft-chunked back to the caller.
+
+    Trade-off: users wait until the loop ends before seeing tokens,
+    but the trace gives ongoing visual feedback ("dispatching to A",
+    "received from A", "synthesising"). Future PR may upgrade to true
+    per-turn streaming once the multi-turn UX is well-understood.
+    """
+    # Pre-flush all the base_trace steps so the UI shows them
+    # immediately alongside the loading affordance.
+    for step in base_trace:
+        yield _make_event("anila.trace", step)
+
+    # First router LLM call.
+    llm_response = await _call_llm_non_stream(
+        caller_api_key, routing_messages
+    )
+    if llm_response["error"]:
+        err_step = _make_trace_step(
+            "direct", "LLM 無法回應", llm_response["error"], status="error",
+        )
+        yield _make_event("anila.trace", err_step)
+        fallback = (
+            "（LLM 暫時無法回應，請稍後再試。）"
+        )
+        async for chunk in _emit_soft_chunks(fallback):
+            yield chunk
+        anila_meta = _merge_anila_meta(
+            base_trace + [err_step], None,
+            latency_ms=int((time.time() - started_at) * 1000),
+        )
+        yield _make_event("anila.meta", {**anila_meta, "trace": []})
+        yield _make_chunk("", "anila-router", finish="stop")
+        yield "data: [DONE]\n\n"
+        return
+
+    llm_text = llm_response["content"]
+    router_reasoning = (llm_response.get("reasoning") or "").strip()
+    dispatch = _parse_dispatch(llm_text)
+
+    if not dispatch:
+        # Direct router answer — no dispatch needed even with multi-turn.
+        direct_step = _make_trace_step(
+            "direct", "Router 直接回答", "無需分派 agent",
+        )
+        yield _make_event("anila.trace", direct_step)
+        cleaned = _normalize_clarify_bullets(llm_text)
+        async for chunk in _emit_soft_chunks(cleaned):
+            yield chunk
+        anila_meta = _merge_anila_meta(
+            base_trace + [direct_step], None,
+            latency_ms=int((time.time() - started_at) * 1000),
+        )
+        if router_reasoning:
+            anila_meta["reasoning"] = router_reasoning
+        yield _make_event("anila.meta", {**anila_meta, "trace": []})
+        yield _make_chunk("", "anila-router", finish="stop")
+        yield "data: [DONE]\n\n"
+        return
+
+    # First dispatch.
+    agent_id, query, dispatch_start, _ = dispatch
+    pre_dispatch = llm_text[:dispatch_start].strip()
+    if pre_dispatch and pre_dispatch != router_reasoning:
+        router_reasoning = (
+            f"{router_reasoning}\n\n{pre_dispatch}"
+            if router_reasoning else pre_dispatch
+        )
+
+    manifest = registry.get(caller_api_key, agent_id)
+    if manifest is None:
+        miss_step = _make_trace_step(
+            "route-miss", "找不到 agent",
+            f"agent '{agent_id}' 未註冊", status="error",
+        )
+        yield _make_event("anila.trace", miss_step)
+        fallback = (
+            f"（Router 分派 '{agent_id}' 但該 agent 未註冊。）"
+        )
+        async for chunk in _emit_soft_chunks(fallback):
+            yield chunk
+        anila_meta = _merge_anila_meta(
+            base_trace + [miss_step], None,
+            latency_ms=int((time.time() - started_at) * 1000),
+        )
+        if router_reasoning:
+            anila_meta["reasoning"] = router_reasoning
+        yield _make_event("anila.meta", {**anila_meta, "trace": []})
+        yield _make_chunk("", "anila-router", finish="stop")
+        yield "data: [DONE]\n\n"
+        return
+
+    dispatch_step = _make_trace_step(
+        "dispatch", "選擇 agent",
+        f"dispatch_to_agent('{agent_id}')",
+    )
+    yield _make_event("anila.trace", dispatch_step)
+    base_trace.append(dispatch_step)
+
+    agent_response = await _dispatch_safe(
+        agent_id, query, caller_api_key,
+        stream=False, session_id=session_id,
+    )
+    if agent_response["error"]:
+        err_step = _make_trace_step(
+            "error", f"{agent_id} 發生錯誤",
+            agent_response["error"], status="error",
+        )
+    else:
+        err_step = _make_trace_step(
+            "call", f"呼叫 {agent_id}",
+            "POST /v1/chat/completions (經 CSP proxy)",
+        )
+    yield _make_event("anila.trace", err_step)
+    base_trace.append(err_step)
+
+    # Multi-turn loop reuses the non-streaming helper.
+    (
+        agent_response,
+        last_agent_id,
+        last_manifest,
+        base_trace,
+        final_text,
+        router_reasoning,
+    ) = await _multi_turn_dispatch(
+        caller_api_key=caller_api_key,
+        routing_messages=routing_messages,
+        first_llm_text=llm_text,
+        first_agent_id=agent_id,
+        first_agent_response=agent_response,
+        first_manifest=manifest,
+        registry=registry,
+        base_trace=base_trace,
+        max_iterations=max_iterations,
+        started_at=started_at,
+        session_id=session_id,
+        router_reasoning=router_reasoning,
+    )
+
+    # Emit any new trace steps the loop appended (we already emitted
+    # the ones from before the loop). Skip the prefix we already sent.
+    already_emitted = 2 + len(
+        [s for s in base_trace[: 2 + 2] if True]
+    )
+    for step in base_trace[already_emitted:]:
+        yield _make_event("anila.trace", step)
+
+    # Stream the final content (router synthesis if any, else last agent).
+    final_content = final_text or agent_response["content"]
+    async for chunk in _emit_soft_chunks(final_content):
+        yield chunk
+
+    anila_meta = _merge_anila_meta(
+        base_trace,
+        agent_response.get("anila_meta") if final_text is None else None,
+        agent_id=last_agent_id,
+        latency_ms=int((time.time() - started_at) * 1000),
+        classified_override=bool(
+            last_manifest.requires_encryption if last_manifest else False
+        ),
+    )
+    if router_reasoning:
+        anila_meta["reasoning"] = router_reasoning
+    yield _make_event("anila.meta", {**anila_meta, "trace": []})
+    yield _make_chunk("", "anila-router", finish="stop")
+    yield "data: [DONE]\n\n"
+
+
+async def _emit_soft_chunks(content: str) -> AsyncIterator[str]:
+    """Soft-chunk text into paragraph / sentence-aware SSE chunks.
+
+    Mirrors the chunking inside ``_respond``'s stream branch so the UX
+    feels like real streaming even though we have the full text.
+    """
+    buf: list[str] = []
+    chunk_chars = 0
+    max_chars = 48
+    for ch in content:
+        buf.append(ch)
+        chunk_chars += 1
+        boundary = ch in "\n。！？!?" or (
+            chunk_chars >= max_chars and ch in " 、,，。."
+        )
+        if boundary or chunk_chars >= max_chars * 2:
+            yield _make_chunk("".join(buf), "anila-router")
+            buf = []
+            chunk_chars = 0
+            await asyncio.sleep(0.012)
+    if buf:
+        yield _make_chunk("".join(buf), "anila-router")
 
 
 async def _multi_turn_dispatch(
