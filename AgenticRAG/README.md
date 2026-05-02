@@ -1,790 +1,297 @@
-# AgenticRAG — ANILA 平台 RAG Agent Template
+# AgenticRAG — ANILA Agent Template
 
-ANILA 平台的 **官方 RAG agent template**。Fork 本目錄，改檢索邏輯與
-`anila-agent.yaml`，`docker compose up -d` 後就能註冊進
-[myCSPPlatform](../myCSPPlatform/) 被 Router 分派流量。
+ANILA 平台的**官方 sub-agent 模板**。Fork 本目錄、改邏輯、`docker compose up -d`，即可註冊進 [myCSPPlatform](../myCSPPlatform/) 被 Router 分派流量；也能脫離 ANILA 獨立部署，對接 OpenWebUI 或任何 OpenAI-compatible client。
 
-也可以脫離 ANILA **獨立部署**——所有核心 primitives 自包（不依賴
-anila-core），直接對 OpenWebUI 或任何 OpenAI-compatible client 都能用。
-
-> **兩分鐘上手**：
-> 1. `cp .env.example .env` 並填 `LLM_URL` / `EMBEDDING_URL` / `DATABASE_URL`
-> 2. `docker compose up -d` → `curl http://localhost:24786/health` 回 200
-> 3. 要接 ANILA：設 `CSP_SERVICE_TOKEN`，把 [`anila-agent.yaml`](./anila-agent.yaml) 的欄位登錄到 CSP UI
-> 4. 要接 OpenWebUI：Settings → Connections → `http://host:24786`
-
-完整 ANILA 對接流程見 [`docs/CSP_INTEGRATION.md`](./docs/CSP_INTEGRATION.md)。
-
-## 設計原則
-
-1. **不走 LangChain / LangGraph**：所有核心組件（provider、chunker、retriever、
-   tool router、session memory）皆為手刻，避免被開源套件的入口 / 介面變更牽著走。
-2. **多格式文件解析**：`.pdf` `.docx` `.txt` `.rtf` `.odt` `.md`，外加單張圖片
-   (`.png` / `.jpg` / `.jpeg` / `.webp` / `.gif` / `.bmp`)。
-3. **視覺能力**：配合 maverick4 / gemma4-vision 等 VLM，PDF / DOCX 內嵌圖片會被
-   抽出並用獨立的 `VISION_MODEL` endpoint 產生描述後一起索引。
-4. **Embedding 固定用 `nvidia/NV-embed-V2`**（dim = 4096），
-   走 OpenAI-compatible `/embeddings` endpoint，可接 NIM 或自建 TEI。
-5. **Metadata + 信心度**：檢索回傳的不是裸 chunk，而是
-   `Citation { content, confidence, document_title, heading_path, page, parent_content }`
-   ——前端可直接渲染「書名 › 章 › 節 (p.3) 87%」。
-6. **父子階層索引**：切分依文件結構（標題 → 子標題 → 內文 → 內文中的圖片），
-   不是依固定 token 數。只有葉節點（`content` / `image`）參與向量搜尋，
-   命中後會附上父節點內容做 context expansion。
-
-## 目錄
-
-- [功能亮點](#功能亮點)
-- [架構總覽](#架構總覽)
-- [模組地圖](#模組地圖)
-- [快速啟動（Docker）](#快速啟動docker)
-- [本機開發啟動](#本機開發啟動)
-- [批次索引文件](#批次索引文件)
-- [OpenWebUI 整合（api.py）](#openwebui-整合apipy)
-- [AgenticRAG 端點（/agentic-chat）](#agenticrag-端點agentic-chat)
-- [System Prompt 設定](#system-prompt-設定)
-- [API 端點](#api-端點)
-- [SSE 事件](#sse-事件)
-- [環境變數](#環境變數)
-- [ANILA 平台整合](#anila-平台整合)
-- [Fork 到你自己的 Agent](#fork-到你自己的-agent)
-- [測試](#測試)
-- [Release Notes](#release-notes)
-- [License](#license)
-
-## 功能亮點
-
-**RAG 管線**
-- 文件解析：`.txt` `.md` `.rtf` `.pdf` `.docx` `.doc` `.odt` + 單張圖片
-- PDF / DOCX 內嵌圖片自動抽出 → `VisionProvider` 產生描述 → 與原文一起索引
-- `HierarchicalChunker`：依文件結構建樹（標題 → 子標題 → 內文 → 圖片）
-- Embedding：Nvidia NV-Embed-V2（dim=4096）via OpenAI-compatible endpoint
-- 向量儲存：PostgreSQL + pgvector（cosine distance，IVFFlat index）
-- 搜尋只對葉節點做，回傳 `Citation`（含 confidence + heading_path + parent_content）
-- RAG Pre-processor：在每次 LLM 呼叫前自動注入相關段落
-
-**AgenticRAG（v0.3.0 新增）**
-- **Tool-driven RAG**：LLM 自主決定何時搜尋、搜什麼、是否需要多輪檢索
-- 3 個 RAG 工具：`vector_search`（語意搜尋）、`keyword_search`（關鍵字搜尋）、`read_document`（讀取完整文件）
-- `POST /agentic-chat` 端點：SSE 串流，支援多輪 tool calling
-- Layer 3 滑動窗口壓縮：超長對話的 hard truncation fallback
-- JSON Schema `integer` → `number` 自動正規化（gemma4 相容）
-- System prompt 預設注入 + `RAG_MIN_SCORE_RETRY` 動態門檻
-
-**Agent 協調**
-- Agent Registry（YAML / Markdown frontmatter，欄位驗證與覆蓋策略）
-- Tool Router（allow/deny/wildcard，並行執行 concurrency-safe 工具）
-- Query Engine：7 階段 turn loop + BudgetTracker + diminishing returns 停止條件
-- Context Isolation：contextvars 實作 subagent 隔離
-- Coordinator Mode：多 worker 並行或序列執行
-- Compact + Session Memory：降低 token 壓力並保留會話脈絡
-- Memory Lifecycle：萃取 → 相關性選擇 → 跨 session 整合
-
-**OpenWebUI 整合（api.py）**
-- OpenAI-compatible `/v1/chat/completions` proxy（port 24786）
-- **Hybrid Search**：語意搜尋（pgvector）+ 關鍵字搜尋（ILIKE）並行，RRF 融合排名
-  - 語意搜尋：擅長概念性問題（「記過的條件是什麼」）
-  - 關鍵字搜尋：擅長精確詞彙（「第8條」「第三章」），自動處理 PDF 字間空格
-- RAG 檢索結果顯示於 thinking block（`reasoning_content`），標注匹配方式
-- 回覆末尾附來源清單：高相關度粗體、低相關度加提示
-- 可直接在 OpenWebUI 新增連線：`http://host:24786`
-
-**基礎設施**
-- FastAPI + SSE 事件串流
-- Bearer token 驗證 middleware
-- PostgreSQL 儲存（Session / Message / RetrievalTrace）
-- Docker Compose 一鍵啟動（3 個服務：`api` port 8000 + `rag-api` port 24786 + `db`）
-
-## 架構總覽
-
-```
-┌────────────────────────────────────────────────────────────────┐
-│                        FastAPI / SSE                           │
-│   /chat   /agentic-chat   /documents/*   /search   /health     │
-├─────────────────────┬──────────────────────────────────────────┤
-│   QueryEngine       │   IngestionService                       │
-│   (7-stage loop)    │   Parser → Chunker → Embed → pgvector    │
-│   + RagPreprocessor │                                          │
-├─────────────────────┼──────────────────────────────────────────┤
-│   RAG Tools (new)   │                                          │
-│   vector_search     │                                          │
-│   keyword_search    │                                          │
-│   read_document     │                                          │
-├─────────────────────┴──────────────────────────────────────────┤
-│  Coordinator │ Registry │ Router │ Compact │ Memory            │
-├────────────────────────────────────────────────────────────────┤
-│  Storage Adapters                                              │
-│  PgVectorStore  │  PostgresStore  │  MemoryFileStore           │
-├────────────────────────────────────────────────────────────────┤
-│  Providers                                                     │
-│  NvidiaEmbeddingProvider  │  OpenAICompatProvider  │  Mock     │
-├────────────────────────────────────────────────────────────────┤
-│  PostgreSQL + pgvector                                         │
-└────────────────────────────────────────────────────────────────┘
+```bash
+git clone <your-fork>/AgenticRAG && cd AgenticRAG
+cp .env.example .env       # 填 LLM_URL / EMBEDDING_URL / DATABASE_URL
+docker compose up -d
+curl http://localhost:24786/health   # → {"status":"ok"}
 ```
 
-## 模組地圖
+> **Phase 1 = AgenticRAG sub-agent template**（你在這）。Phase 2 = anila-core 主腦未來再做。
 
-```text
-src/agentic_rag/
-  app_factory.py          # ASGI 入口點，完整 RAG stack 接線
-  config.py               # pydantic-settings（環境變數 / .env）
-  api/
-    server.py             # FastAPI create_app + /chat + /health
-    documents.py          # POST /documents/upload, /ingest, GET/DELETE
-    search.py             # POST /search（語意搜尋）
-    events.py             # SSE 事件類型定義
-    middleware/auth.py    # Bearer token 驗證
-  ingestion/
-    parsers.py            # 6 格式文件解析器 + ParserRegistry
-    chunker.py            # RecursiveTextSplitter
-    service.py            # IngestionService（解析→分塊→向量→索引）
-  engine/
-    query_engine.py       # 7 階段 turn loop
-    rag_preprocessor.py   # RAG 上下文注入
-    budget_tracker.py     # Token 預算管理
-  providers/
-    embedding_nvidia.py   # NV-Embed-V2（batch=50，dim=4096）
-    embedding_mock.py     # 測試用 mock embedding
-    openai_compat.py      # OpenAI-compatible LLM provider
-    mock.py               # 測試用 mock LLM provider
-  storage/
-    ports.py              # Protocol 介面定義
-    adapters/
-      pg_pool.py          # asyncpg 連線池
-      pgvector_store.py   # DocumentStore + RetrievalProvider
-      postgres_store.py   # SessionStore + MessageStore + TraceStore
-      memory_file_store.py# 檔案系統 MemoryStore
-  compact/                # auto/micro compact + session memory + sliding window
-  coordinator/            # 多 worker 協調
-  context/                # contextvars agent 隔離
-  memory/                 # 萃取、相關性選擇、整合、memdir
-  models/                 # Pydantic v2 domain models
-  registry/               # Agent 定義載入
-  router/                 # Tool 策略與執行
-  tools/
-    __init__.py           # RAG 工具定義（vector_search, keyword_search, read_document）
-    prompts.py            # AgenticRAG system prompt
+---
 
-api.py                    # OpenWebUI-compatible RAG proxy（port 24786）
-index_documents.py        # 批次文件索引腳本
-docker-compose.yml        # 3 服務：api(8000) + rag-api(24786) + db(5432)
-Dockerfile                # Multi-stage build（antiword + asyncpg）
-.env.example              # 完整環境變數範本
+## 為什麼 fork 這個
+
+AgenticRAG 是一份**自包**的 agent 模板：
+
+- 整套 agent runtime（Action / Agent / Runner / Middleware / StateMachine / Memory / Coordinator / BG Task / Skill / MCP）vendored 在 `agentic_rag/runtime/framework/`
+- **零** ANILA-internal 套件依賴（`anila-core`、`anila-agent-framework` 都不裝）
+- 第三方 OSS 隨你用（langchain、llama-index、sentence-transformers …）—只是別把 anila-* 內部套件拉進來
+- RAG 工具現成（vector_search / keyword_search / read_document）+ 完整 ingestion 管線
+- 跑在你自己的 vLLM / NIM / TGI / Ollama 後面，**完全本地**，不打外網
+
+---
+
+## Architecture in 30 seconds
+
 ```
+┌─────────────────────────────────────────────────────────────────┐
+│  agentic_rag/runtime/framework/   ← 47 modules, vendored, MIT   │
+│                                                                  │
+│  ┌──────────┐  ┌──────────┐  ┌────────────┐  ┌──────────────┐  │
+│  │ Action   │→ │  Agent   │→ │  Runner    │→ │ StreamEvent  │  │
+│  │ (frozen) │  │ (frozen) │  │ .run()     │  │ async iter   │  │
+│  └──────────┘  └──────────┘  │ .stream()  │  └──────────────┘  │
+│                              │ .resume()  │                     │
+│                              └────────────┘                     │
+│        ↓                          ↓                  ↓          │
+│  Middleware chain          StateMachine        Memory Protocol  │
+│  (Trace/Cost/Guard/        (RunPhase enum,     (MessageHistory  │
+│   ShellHook/Retry/         RunSerializer,      + SemanticMemory │
+│   OutputTrimmer)           checkpoint+resume)  + Kind enum)     │
+│                                                                  │
+│  Coordinator   BgTaskRunner    SkillLoader       MCP            │
+│  (worker spawn)(bg jobs)       (.md frontmatter) (subprocess)   │
+└─────────────────────────────────────────────────────────────────┘
+                          ↓ ↑
+┌─────────────────────────────────────────────────────────────────┐
+│  agentic_rag/runtime/bridge/   ← AgenticRAG-specific glue      │
+│   provider_adapter / rag_actions / agent_builder / sse_runner   │
+│   citation_guardrail / coordinator_bridge / semantic_memory     │
+└─────────────────────────────────────────────────────────────────┘
+                          ↓ ↑
+┌─────────────────────────────────────────────────────────────────┐
+│  agentic_rag/{api,engine,storage,ingestion,memory,compact,...}  │
+│   FastAPI surface · QueryEngine (legacy) · pgvector store ·     │
+│   chunker · memdir · auto_compact                               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+兩個 endpoint 並存：
+- **`/chat`** — 老 QueryEngine 路徑，7-stage turn loop + budget tracker（Phase 1 期間保留）
+- **`/agentic-chat`** — framework 路徑，走 `bridge/sse_runner.py` → `Runner.run()`
+
+兩者吐同一份 SSE wire format（`ServerEvent`），前端不用分。
+
+---
+
+## 5 分鐘上手 — 寫你第一個 tool
+
+```python
+from agentic_rag.runtime.framework import tool, ActionContext, Agent, Runner
+from agentic_rag.runtime.bridge import FrameworkProviderAdapter
+from typing import Annotated
+
+@tool
+async def get_weather(
+    ctx: ActionContext,
+    city: str,
+    units: Annotated[str, "celsius or fahrenheit"] = "celsius",
+) -> dict:
+    """Look up current weather for a city.
+
+    Args:
+        city: City name (e.g. "Taipei").
+        units: Temperature unit.
+    """
+    # ... your retrieval / API logic here ...
+    return {"city": city, "temp": 24, "units": units}
+
+# Wire into an agent
+adapter = FrameworkProviderAdapter(my_existing_provider)
+agent = Agent(
+    name="weather-bot",
+    instructions="Use get_weather to answer weather questions.",
+    provider=adapter,
+    model="google/gemma4",
+    actions=(get_weather,),
+)
+result = await Runner().run(agent, "What's the weather in Taipei?")
+print(result.final_output)
+```
+
+`@tool` 自動從 type hints + Google-style docstring `Args:` 區塊產 JSON schema、Action name、description。不用手寫 schema。
+
+---
+
+## 主要能力
+
+| 想做的事 | 用什麼 |
+|---|---|
+| 寫 LLM 可呼叫的 tool | `@tool` 裝飾器（auto schema）|
+| 追蹤每個 tool 呼叫 | `TraceMiddleware(InMemoryBackend())` |
+| 計算 token / cost | `CostMiddleware(CostTracker())` — token 永遠記，dollar 看 model 是否在 PriceTable |
+| 強制答案要 cite 來源 | `enforce_citations(run_result, mode='warn')` |
+| Tool output 太大塞爆 context | `ToolOutputTrimmerMiddleware(max_chars=2000)` |
+| 重試 flaky tool | `RetryMiddleware(RetryPolicy(max_attempts=3), on_exceptions=(ConnectionError,))` |
+| Shell hook 對每次 tool 呼叫做 audit | `ShellHookMiddleware(when='before', command=['./audit.sh'])` |
+| Pod 重啟接續 run | `RunSerializer.dump(state)` → 寫檔 → restart → `Runner().resume_from_state(state, agents)` |
+| Self-RAG critique loop | `Agent(reflection_enabled=True)` |
+| 結構化輸出 | `Agent(output_type=MyPydanticModel)` |
+| LLM spawn N 個平行 sub-agent | `Coordinator + make_coordinator_actions(coord)` |
+| 長時背景任務（ingest / reindex） | `ActionKind.BG_TASK` + `BgTaskRunner` |
+| 非工程師加 tool | drop `*.md` 檔到 `~/.agentic-rag/skills/` → `load_skills_from_dir()` |
+| 接 `mcp-server-filesystem` / `mcp-server-github` | `MCPServer` + `MCPClient`（需 `pip install 'agentic-rag[mcp]'`）|
+| 對話太長自動壓縮 | `compact.trigger_compaction.run_compaction()` + `ModelWindowTable` |
+
+完整教學：[CSP UI → Developer Guide](https://your-csp-host/dev/guide)，或本地 fork 直接讀 `agentic_rag/runtime/framework/__init__.py` 的 docstring。
+
+---
+
+## RAG 內建工具（已經寫好的）
+
+```python
+from agentic_rag.runtime.bridge import build_rag_agent
+
+agent = build_rag_agent(
+    name="rag-bot",
+    instructions="Answer questions using the search tool.",
+    provider=adapter,
+    model="google/gemma4",
+    store=my_pgvector_store,
+    embedder=my_embed_fn,
+    reranker=my_reranker,    # optional
+)
+# Agent 自動帶 vector_search / keyword_search / read_document
+```
+
+每個 tool 回傳的 `Citation` 帶 `chunk_id / document_title / heading_path / page / confidence`，前端可直接 render「書名 › 章 › 節 (p.3) 87%」。
+
+---
+
+## Memory（已 ported 自 claude-code）
+
+```
+agentic_rag/memory/        — extract_memories / session_memory / memdir / consolidation / relevance_selector
+agentic_rag/compact/       — auto_compact / sliding_window / micro_compact / trigger_compaction
+```
+
+Framework 端 `runtime.framework.memory` 暴露 `MessageHistory` + `SemanticMemory` 兩個 Protocol；`runtime.bridge.semantic_memory_bridge.MemdirSemanticMemory` 把上面整套接成 framework 介面。
+
+```python
+from agentic_rag.runtime.bridge import MemdirSemanticMemory
+from agentic_rag.memory.relevance_selector import ModelBasedRelevanceSelector
+
+selector = ModelBasedRelevanceSelector(provider, model="haiku-local")
+memory = MemdirSemanticMemory(memory_dir="/var/agent/memory", relevance_selector=selector)
+hits = await memory.recall("user preferences for terse answers", limit=3)
+```
+
+---
 
 ## 快速啟動（Docker）
 
-### 前置需求
-
-- Docker + Docker Compose
-- Nvidia NIM API Key 或自架 embedding endpoint
-
-### 步驟
-
 ```bash
-# 1. 複製並填入環境變數
 cp .env.example .env
-# 編輯 .env，至少設定：
-#   LLM_URL / LLM_API_KEY / MODEL
-#   EMBEDDING_URL / EMBEDDING_API_KEY
 
-# 2. 啟動所有服務
+# 必填：
+#   LLM_URL=https://your-vllm:8000/v1
+#   EMBEDDING_URL=https://your-tei:8001/v1
+#   DATABASE_URL=postgresql://agentic:agentic@db:5432/agentic_rag
+#   API_DEV_MODE=true                     # 本地開發；上正式環境改填 API_KEY=...
+
 docker compose up -d
-
-# 3. 確認健康狀態
-curl http://localhost:8000/health
-# {"status":"ok"}
+docker compose logs -f api | head -30     # 看 entrypoint 是否 OK
+curl http://localhost:24786/health        # → {"status":"ok"}
 ```
 
-服務啟動後：
-
-| 服務 | 位址 | 說明 |
-|------|------|------|
-| `api` | `http://localhost:8000` | AgenticRAG（/chat, /documents, /search） |
-| `rag-api` | `http://localhost:24786` | OpenWebUI-compatible RAG proxy |
-| `db` | `localhost:5432` | PostgreSQL + pgvector |
-
-停止：
+可選 extras：
 
 ```bash
-docker compose down
+pip install 'agentic-rag[rag]'      # 文件解析 + pgvector
+pip install 'agentic-rag[openai]'   # framework 內建 OpenAICompatProvider（裝 openai SDK）
+pip install 'agentic-rag[mcp]'      # MCP client（接外部 MCP server）
+pip install 'agentic-rag[zh]'       # 繁中分詞（CKIP；~2GB 模型）
+pip install 'agentic-rag[docling]'  # IBM Docling parser（layout-aware）
 ```
-
-## 本機開發啟動
-
-### 安裝
-
-```bash
-pip install -e ".[rag,dev]"
-```
-
-### 啟動 PostgreSQL（需 pgvector）
-
-```bash
-docker compose up -d db
-```
-
-### 啟動 API
-
-```bash
-uvicorn agentic_rag.app_factory:app --host 0.0.0.0 --port 8000 --reload
-```
-
-## 批次索引文件
-
-`index_documents.py` 是一個獨立腳本，透過 API 批次上傳、索引、管理文件。
-
-### 索引文件
-
-```bash
-# 基本：索引 data/documents/ 下所有文件
-python3 index_documents.py
-
-# 指定資料夾
-python3 index_documents.py --dir /path/to/docs
-
-# 指定 user / project scope
-python3 index_documents.py --user alice --project myproject
-
-# 指定 API 位址（預設 localhost:8000）
-python3 index_documents.py --api http://192.168.1.10:8000
-```
-
-支援格式：`.txt` `.md` `.pdf` `.docx` `.doc` `.odt`
-
-### 列出已索引文件
-
-```bash
-python3 index_documents.py --list
-```
-
-輸出範例：
-
-```
-#    document_id                            chunks  檔名
---------------------------------------------------------------------------------
-1    3f2a1b4c-...                               42  陸海空軍懲罰法.pdf
-2    9e8d7c6b-...                               18  操作手冊.docx
-```
-
-### 刪除文件
-
-```bash
-# 依檔名刪除（支援部分匹配）
-python3 index_documents.py --delete 陸海空軍懲罰法.pdf
-
-# 依 document_id 刪除（支援多個）
-python3 index_documents.py --delete 3f2a1b4c-... 9e8d7c6b-...
-
-# 混用檔名與 ID
-python3 index_documents.py --delete 陸海空軍 9e8d7c6b-...
-
-# 刪除全部（需確認）
-python3 index_documents.py --delete-all
-
-# 刪除全部（跳過確認，適合自動化腳本）
-python3 index_documents.py --delete-all --yes
-```
-
-### 索引後語意查詢
-
-```bash
-curl -X POST http://localhost:8000/search \
-  -H "Content-Type: application/json" \
-  -d '{"query": "你的問題", "user_id": "alice", "project_id": "myproject", "top_k": 5}'
-```
-
-## OpenWebUI 整合（api.py）
-
-`api.py` 是一個獨立的 OpenAI-compatible RAG proxy，讓 **OpenWebUI** 或任何 OpenAI-compatible client 透過標準 `/v1/chat/completions` 端點使用帶有 RAG 的 LLM 對話。
-
-### 架構
-
-```
-OpenWebUI
-  │  POST /v1/chat/completions
-  ▼
-api.py (port 24786)
-  ├─ 取最後一則 user message
-  ├─ [並行] NV-Embed-V2 向量化 → pgvector 語意搜尋
-  ├─ [並行] ILIKE 關鍵字搜尋（含字間空格展開）
-  ├─ RRF（Reciprocal Rank Fusion）融合兩種結果
-  ├─ 注入 RAG context 到 messages
-  └─ 轉發至後端 LLM → stream 回傳
-       ├─ thinking block：顯示各 chunk 匹配方式 + RRF 分數
-       └─ 回覆末尾：附來源清單（標注匹配方式與相關度）
-```
-
-### 啟動
-
-Docker Compose（隨 `docker compose up` 自動啟動）：
-```yaml
-rag-api:
-  ports: ["24786:24786"]
-```
-
-或單獨執行：
-```bash
-python3 api.py
-# 或
-uvicorn api:app --host 0.0.0.0 --port 24786
-```
-
-### OpenWebUI 設定
-
-1. 進入 **Settings → Connections → OpenAI API**
-2. 新增連線：
-   - URL：`http://<host>:24786`
-   - API Key：任意字串（不驗證）
-3. 選擇模型 `rag/google/gemma4`（依 `.env` 的 `MODEL` 自動命名）
-4. 開始對話，RAG 結果會自動注入
-
-### 相關設定（`.env`）
-
-```bash
-RAG_TOP_K=5              # 每次檢索幾筆（語意 + 關鍵字各取此數，RRF 後再取 top-k）
-RAG_MIN_SCORE=0.7        # 語意搜尋主要門檻；低於此分的來源會標注「低相關度」
-RAG_MIN_SCORE_RETRY=0.3  # 語意搜尋無結果時的 fallback 門檻
-```
-
-> **注意：** NV-Embed-V2（4096 維）在高維空間下，不同 chunk 的相似度會集中在相近範圍
-> （例如 0.52 ~ 0.56），這是正常現象。建議優先看**排名**而非絕對分數，
-> 並透過 Hybrid Search 讓關鍵字查詢補足語意搜尋的不足。
-
-## AgenticRAG 端點（/agentic-chat）
-
-`POST /agentic-chat` 是 **tool-driven RAG** 端點。與 `/chat`（pre-process injection）不同，
-此端點讓 LLM **自主決定**何時搜尋知識庫、用哪種搜尋、是否需要多輪檢索。
-
-### 兩種 RAG 模式對比
-
-| 模式 | 端點 | 決策者 | 搜尋策略 |
-|------|------|--------|---------|
-| Pre-process（被動） | `POST /chat` + `api.py` | 系統自動 | 每次對話前 auto embed → search → inject |
-| AgenticRAG（主動） | `POST /agentic-chat` | LLM 自行判斷 | 不搜 / 單次 / 多輪 / 混合搜尋 |
-
-### AgenticRAG 流程
-
-```
-用戶提問 → LLM 思考 → 需要搜尋？
-  ├─ 是 → LLM 呼叫 vector_search("語意查詢")
-  │        → 結果不夠？→ LLM 呼叫 keyword_search("關鍵字")
-  │        → 想看全文？→ LLM 呼叫 read_document(doc_id)
-  │        → 足夠 → LLM 生成答案（引用來源）
-  └─ 否 → LLM 直接回答
-```
-
-### RAG 工具
-
-| 工具名稱 | 說明 | 適用場景 |
-|----------|------|---------|
-| `vector_search` | 語意向量搜尋（pgvector cosine） | 概念性問題、模糊查詢 |
-| `keyword_search` | 關鍵字匹配（pg_trgm / ILIKE） | 特定術語、名稱、代碼 |
-| `read_document` | 讀取完整文件內容 | 搜尋結果中的片段想看全文 |
-
-### 使用範例
-
-```bash
-curl -X POST http://localhost:8000/agentic-chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "session_id": "s-001",
-    "user_message": "請說明系統架構的設計原則",
-    "user_id": "user-1",
-    "project_id": "proj-1"
-  }'
-```
-
-回傳 SSE 串流，事件格式與 `/chat` 相同（`message_delta`, `tool_call_started`, `usage_update`, `stream_done`）。
-
-### 自訂 System Prompt
-
-預設使用內建的 AgenticRAG system prompt（指示 LLM 如何使用搜尋工具）。
-可在 request body 中帶 `system_prompt` 覆蓋：
-
-```json
-{
-  "session_id": "s-001",
-  "user_message": "...",
-  "system_prompt": "你是法律助理。搜尋時優先使用 keyword_search 找法規條文。"
-}
-```
-
-預設 prompt 位於 `src/agentic_rag/tools/prompts.py`。
-
-## System Prompt 設定
-
-System prompt 在主架構中共有 **三個層次**，可依使用情境選擇：
-
-| 設定位置 | 方式 | 適用場景 |
-|----------|------|---------|
-| Agent `.md` 檔 | Markdown body = system_prompt | 多 Agent 架構，各 agent 角色各異 |
-| `POST /chat` request body | 帶 `system_prompt` 欄位 | 使用 AgenticRAG `/chat` 端點時 |
-| `api.py` | 修改 messages 插入 system message | OpenWebUI RAG proxy |
 
 ---
-
-### 層次一：Agent 定義層（Agent `.md` 檔）
-
-`src/agentic_rag/models/agent.py:41`、`registry/agent_registry.py:103-105`
-
-在 `agents/` 目錄下建立 Markdown 檔，**Markdown body 自動成為該 Agent 的 system prompt**：
-
-```markdown
----
-name: legal-assistant
-model: google/gemma4
----
-你是一個專業的法律助理。請根據檢索到的文件內容回答問題，
-引用具體條文時請標注來源。若文件中找不到相關資訊，請明確告知。
-```
-
-> 目前 `agents/` 資料夾不存在，代表只有 default agent，system prompt 為空字串。
-
----
-
-### 層次二：API 請求層（POST /chat）
-
-`src/agentic_rag/api/server.py:53` → `query_engine.py:52` → `openai_compat.py:120`
-
-呼叫 `/chat` 時在 request body 帶 `system_prompt`，最終組裝成
-`{"role": "system", "content": "..."}` 放到 messages 最前面送給 LLM：
-
-```bash
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "session_id": "s-001",
-    "user_message": "請分析這份文件",
-    "system_prompt": "你是一個專業的法律助理，請根據檢索到的文件內容回答問題。"
-  }'
-```
-
-傳遞路徑：`ChatRequest.system_prompt` → `QueryConfig.system_prompt` → LLM `system` 欄位
-
----
-
-### 層次三：api.py（OpenWebUI RAG Proxy）
-
-`api.py` 在 server 端**自動注入** system prompt（`api.py` 頂部讀取 `RAG_SYSTEM_PROMPT` 環境變數）。
-若 client 的 messages 中已有 `role=system`，則不覆蓋（client 優先）。
-
-預設 system prompt 指示 LLM 使用繁體中文、優先引用 RAG context 並標注來源。
-
-自訂方式：
-
-```bash
-# .env 中設定（永久生效）
-RAG_SYSTEM_PROMPT="你是一個專業的法律助理，請根據檢索到的文件內容回答，引用具體條文時請標注來源。"
-```
-
-或在 OpenWebUI 的 **Model Settings → System Prompt** 欄位設定（client 端覆蓋）。
 
 ## API 端點
 
-### Agent Chat
+| Method | Path | 用途 |
+|---|---|---|
+| `GET` | `/health` | discovery + health probe（公開） |
+| `POST` | `/chat` | legacy QueryEngine SSE stream |
+| `POST` | `/agentic-chat` | framework Runner SSE stream（推薦新 fork 用這個） |
+| `GET` | `/sessions/{id}/away_summary` | away recap |
+| `POST` | `/sessions/{id}/compact` | manual compact trigger |
+| `POST` | `/documents/upload` | RAG ingestion |
+| `POST` | `/search` | 純檢索（不過 LLM） |
 
-| 方法 | 路徑 | 說明 |
-|------|------|------|
-| `POST` | `/chat` | 啟動 agent query loop（pre-process RAG），回傳 SSE 串流 |
-| `POST` | `/agentic-chat` | 啟動 AgenticRAG（tool-driven RAG），回傳 SSE 串流 |
-| `GET` | `/sessions/{id}/away_summary` | 取得離開期間的摘要 |
-| `POST` | `/sessions/{id}/compact` | 手動觸發 compact |
-| `GET` | `/health` | 服務健康探針 |
+ANILA / CSP-platform 對接所需的 OpenAI-compatible 端點（`/v1/models` / `/v1/chat/completions`）由 `api.py` 提供（套在 `app_factory:app` 之上）。
 
-**POST /chat 範例**
+---
 
-```bash
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "session_id": "s-001",
-    "user_message": "請介紹這份文件的主要內容",
-    "model": "google/gemma4"
-  }'
+## SSE 事件 schema
+
+```json
+event: message_delta
+data: {"type":"message_delta","session_id":"s1","payload":{"text":"...","turn_index":0}}
+
+event: tool_call_started
+data: {"type":"tool_call_started","payload":{"tool_call_id":"c1","tool_name":"vector_search","input":{"query":"..."}}}
+
+event: tool_call_finished
+data: {"type":"tool_call_finished","payload":{"tool_call_id":"c1","is_error":false,"output_preview":"..."}}
+
+event: usage_update
+data: {"type":"usage_update","payload":{"input_tokens":123,"output_tokens":45,"turn_count":2}}
+
+event: stream_done
+data: {"type":"stream_done","payload":{"status":"completed"}}
 ```
 
-### 文件管理
+完整 schema：`agentic_rag/api/events.py`。
 
-| 方法 | 路徑 | 說明 |
-|------|------|------|
-| `POST` | `/documents/upload` | 上傳文件檔案（multipart/form-data） |
-| `POST` | `/documents/ingest` | 解析 + 分塊 + 向量化 + 索引 |
-| `GET` | `/documents` | 列出所有已索引文件 |
-| `GET` | `/documents/{id}` | 取得文件詳情 |
-| `GET` | `/documents/{id}/status` | 取得攝取狀態 |
-| `DELETE` | `/documents/{id}` | 刪除文件及所有向量 |
+---
 
-**上傳並攝取文件範例**
+## ANILA / CSP 平台對接
 
-```bash
-# 上傳
-curl -X POST http://localhost:8000/documents/upload \
-  -F "file=@report.pdf" \
-  -F "user_id=user-1" \
-  -F "project_id=proj-1"
+1. CSP UI（Developer → Agents）下載 template / 註冊本 agent
+2. CSP 發 bootstrap token（`bsk-...`），單次使用，15 分鐘 TTL
+3. 你的 `.env` 設 `CSP_BOOTSTRAP_TOKEN=bsk-XXXX` + `CSP_URL=...` + `ANILA_AGENT_ID=...`
+4. `docker compose up -d` 第一次啟動時 entrypoint 會自動跑 bootstrap CLI，換成長期 service token（`csk-...`）寫到 `/var/lib/anila-agent/service_token.json`
+5. 之後刪掉 `.env` 裡的 `CSP_BOOTSTRAP_TOKEN`（已經被消費掉了，留著就是多一個 secret）
+6. CSP 管理員 approve agent → router 開始把流量導過來
 
-# 回傳 {"file_path": "/tmp/anila_uploads/...", "filename": "report.pdf", ...}
+完整流程：[`docs/BOOTSTRAP_DEPLOYMENT.md`](./docs/BOOTSTRAP_DEPLOYMENT.md) · [`docs/CSP_INTEGRATION.md`](./docs/CSP_INTEGRATION.md)
 
-# 攝取（向量化 + 索引）
-curl -X POST http://localhost:8000/documents/ingest \
-  -H "Content-Type: application/json" \
-  -d '{
-    "file_path": "/tmp/anila_uploads/report.pdf",
-    "document_id": "doc-report-001",
-    "user_id": "user-1",
-    "project_id": "proj-1"
-  }'
-```
-
-### 語意搜尋
-
-| 方法 | 路徑 | 說明 |
-|------|------|------|
-| `POST` | `/search` | 語意向量搜尋（NV-Embed-V2 + pgvector） |
-
-```bash
-curl -X POST http://localhost:8000/search \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "系統架構設計原則",
-    "user_id": "user-1",
-    "project_id": "proj-1",
-    "top_k": 5
-  }'
-```
-
-### Auth（可選）
-
-設定 `.env` 中的 `API_KEY` 後，所有端點需帶 Bearer token：
-
-```bash
-curl -H "Authorization: Bearer <your-api-key>" http://localhost:8000/health
-```
-
-留空則不啟用驗證（開發模式）。
-
-## SSE 事件
-
-`POST /chat` 回傳 `text/event-stream`，事件類型：
-
-| 事件 | 說明 |
-|------|------|
-| `message_delta` | LLM 回應文字片段 |
-| `reasoning_delta` | 推理過程文字（若模型支援） |
-| `tool_call_started` | 工具呼叫開始 |
-| `tool_call_finished` | 工具呼叫結束（含結果） |
-| `task_notification` | 多 worker 任務狀態通知 |
-| `agent_summary` | Subagent 完成摘要 |
-| `usage_update` | Token 使用量更新 |
-| `memory_saved` | 記憶寫入通知 |
-| `compact_triggered` | Compact 觸發通知 |
-| `away_summary` | 離開期間摘要 |
-| `stream_done` | 串流結束 |
-| `error` | 錯誤事件 |
-
-## 環境變數
-
-完整設定請參考 `.env.example`。主要變數：
-
-| 變數 | 預設值 | 說明 |
-|------|--------|------|
-| `LLM_URL` | `https://172.16.120.35/v1` | LLM endpoint base URL |
-| `LLM_API_KEY` | `not-set` | LLM API key |
-| `MODEL` | `google/gemma4` | 預設模型名稱 |
-| `EMBEDDING_URL` | `https://172.16.120.35/v1` | Embedding endpoint |
-| `EMBEDDING_API_KEY` | `not-set` | Embedding API key |
-| `EMBEDDING_MODEL` | `Nvidia/NV-embed-V2` | Embedding 模型 |
-| `EMBEDDING_DIMENSION` | `4096` | 向量維度 |
-| `EMBEDDING_VERIFY_SSL` | `false` | 是否驗證 TLS |
-| `DATABASE_URL` | `postgresql://anila:anila@localhost:5432/anila_rag` | PostgreSQL DSN |
-| `CHUNK_SIZE` | `512` | 分塊大小（tokens） |
-| `CHUNK_OVERLAP` | `50` | 分塊重疊（tokens） |
-| `RAG_TOP_K` | `5` | 每次檢索筆數 |
-| `RAG_MIN_SCORE` | `0.7` | 最低相似度門檻 |
-| `RAG_MIN_SCORE_RETRY` | `0.3` | api.py fallback 重試門檻（找不到結果時自動降低再試一次）|
-| `RAG_SYSTEM_PROMPT` | （內建中文 RAG 助理） | api.py 預設 system prompt；client 帶 system message 時自動跳過 |
-| `API_KEY` | （空） | 留空不啟用驗證 |
-| `API_DEV_MODE` | `false` | `true` 則跳過驗證 |
-| `UPLOAD_DIR` | `/tmp/anila_uploads` | 上傳暫存目錄 |
-| `CSP_BOOTSTRAP_TOKEN` | （空） | （Sprint 8 X / Phase D）首次啟動 bootstrap；entrypoint 會把它換成 `csk-` 寫進 state file 後失效。詳見 [`docs/BOOTSTRAP_DEPLOYMENT.md`](docs/BOOTSTRAP_DEPLOYMENT.md) |
-| `ANILA_AGENT_ID` | （空） | bootstrap 用；CSP 註冊後的 agent id |
-| `ANILA_ENDPOINT_URL` | （空） | bootstrap 用；agent 自己對外的 URL，必須與 CSP 註冊資料相同 |
-| `ANILA_REPLICA_LABEL` | （空） | bootstrap 用；K8s 多副本時建議帶 `pod-0` 等 |
-| `ANILA_AGENT_STATE_DIR` | `/var/lib/anila-agent` | 持久化 service token 的目錄；docker-compose 用 named volume；K8s 用 PVC |
-| `CSP_SERVICE_TOKEN` | （空） | **Legacy**（fleet-shared）— state file 不存在時的 fallback；建議 cutover 完成後從 env 移除 |
-| `CSP_BASE_URL` | （空） | LLM / embedding 改走 CSP proxy 時的 base URL |
-| `CSP_API_KEY` | （空） | CSP proxy 呼叫時用的 bearer token |
-
-## ANILA 平台整合
-
-要把本 agent 註冊進 [myCSPPlatform](../myCSPPlatform/) 讓 Router 可以分派
-流量過來，有三件事要做：
-
-1. **編輯 [`anila-agent.yaml`](./anila-agent.yaml)** — 改 `name`、
-   `endpoint_url`、`description_for_router` 為你 agent 的身份。
-2. **把 YAML 登錄到 CSP** — 三種方式任選（啟動時 env 自動註冊 /
-   Developer UI / POST `/agents`），詳見 [`docs/CSP_INTEGRATION.md`](./docs/CSP_INTEGRATION.md)。
-3. **在 agent 的 `.env` 設 `CSP_SERVICE_TOKEN`** — 從 CSP UI 的 Agent
-   detail 頁複製，填到 `.env` 後重啟。middleware 會驗 `X-CSP-Service-Token`
-   header；留空則進入本機 dev mode。
-
-Middleware 載入順序：若 host 環境碰巧有 `anila_core.api.middleware.auth`
-（platform-side 部署常見情況）優先使用；其他情況一律 fallback 到內建
-`agentic_rag.api.middleware.csp_auth`。**Fork 本 template 永遠不需要安裝
-anila-core**——兩個版本的安全邏輯完全一致。
-
-完整對接流程（含 X-ANILA-User-* header 處理、health check、多 instance
-註冊、staging vs prod token 區隔）見 [`docs/CSP_INTEGRATION.md`](./docs/CSP_INTEGRATION.md)。
+---
 
 ## Fork 到你自己的 Agent
 
-本 template 的設計目標是讓「**5 分鐘內跑起第一個自己的 agent**」。典型 fork 流程：
+最少改三個地方：
 
-```bash
-# 1. 複製本目錄成你自己 agent 的位置
-cp -r AgenticRAG/ my-legal-rag/
-cd my-legal-rag/
+1. **`agentic_rag/tools/`** — 加你自己的 `@tool` 函式（auto schema），或寫 `Action(...)` 手動
+2. **system prompt** — 透過 API 請求的 `system_prompt` field 帶入；或在 `bridge/agent_builder.py` 改 `instructions`
+3. **`anila-agent.yaml`** — 改 name / description / capabilities，註冊到 CSP
 
-# 2. 修改身份
-# - anila-agent.yaml 的 name / endpoint_url / description_for_router
-# - .env 的 MODEL / DATABASE_URL / CSP_SERVICE_TOKEN
+進階：替換 `LLMProvider`、加 Middleware、開 BG_TASK / Coordinator / Skill / MCP，看 [Developer Guide](https://your-csp-host/dev/guide)。
 
-# 3. 換檢索邏輯（按需）
-# - src/agentic_rag/tools/__init__.py — 如果要改 vector/keyword search 行為
-# - src/agentic_rag/engine/rag_preprocessor.py — 如果要改 pre-process 注入策略
-# - api.py — 如果要改 OpenWebUI proxy 的 hybrid search 權重 / reranker 行為
-
-# 4. 換資料
-cp ~/your-pdfs/*.pdf data/documents/
-python index_documents.py
-
-# 5. 跑起來
-docker compose up -d
-curl http://localhost:24786/health
-```
-
-**fork 時不建議改動**：
-
-- `src/agentic_rag/api/middleware/` — CSP 相容邏輯
-- `src/agentic_rag/providers/embedding_nvidia.py` — NV-Embed-V2 介面
-- `src/agentic_rag/storage/adapters/pgvector_store.py` — 除非你換向量庫
-- `src/agentic_rag/compact/` — compaction 是框架共用能力
-
-**fork 時建議改動**：
-
-- `src/agentic_rag/tools/prompts.py` — 你的 agent 人格與回覆格式
-- `api.py` 的 `SYSTEM_PROMPT` — OpenWebUI 直連模式的預設 system message
-- `templates/institutional-agentic-rag/` — 加上你自己的 multi-agent 角色 yaml
-- `data/documents/` — 放你的真實文件集
+---
 
 ## 測試
 
 ```bash
-# 安裝開發依賴
-pip install -e ".[rag,dev]"
-
-# 執行全部測試（不需要資料庫，全部使用 mock）
-pytest tests/ -v
-
-# 程式碼品質
-ruff check src tests
-mypy src
+pip install -e '.[rag,dev]'
+pytest                                    # 632/633（striprtf optional dep 那 1 個跳過）
+pytest --cov=agentic_rag --cov-report=term-missing
+mypy src/agentic_rag/runtime/             # strict mode, 47 source files
+ruff check src/ tests/
 ```
 
-目前測試：**182 tests，全部通過**，無需真實 LLM / Embedding / DB 連線。
-
-測試覆蓋：
-
-| 檔案 | 測試對象 |
-|------|---------|
-| `test_parsers.py` | 6 種文件格式解析 |
-| `test_chunker.py` | RecursiveTextSplitter 分塊邏輯 |
-| `test_ingestion_service.py` | IngestionService 整合流程 |
-| `test_embedding_mock.py` | Mock Embedding Provider |
-| `test_rag_preprocessor.py` | RAG 上下文注入 |
-| `test_engine.py` | QueryEngine turn loop |
-| `test_coordinator.py` | 多 worker 協調 |
-| `test_compact.py` | Compact 服務 |
-| `test_memory.py` | Memory lifecycle |
-| `test_registry.py` | Agent Registry |
-| `test_router.py` | Tool Router |
-| `test_rag_tools.py` | RAG 工具（vector_search, keyword_search, read_document） |
-| `test_agentic_chat.py` | AgenticRAG /agentic-chat 端點 |
-| `test_sliding_window.py` | 滑動窗口壓縮 + JSON Schema 正規化 |
+---
 
 ## Release Notes
 
-### v0.3.0
+**v0.4.0 (2026-05-02)** — 8 sprint 一次推完
+- v0.1 framework 全 surface 落地：Action / Agent / Runner / Middleware (Trace/Cost/Guardrail/ShellHook/Retry/OutputTrimmer) / StateMachine + checkpoint / Memory primitive / Coordinator + worker spawn / BG_TASK runtime / Skill loader / MCP integration
+- `@tool` decorator + structured output via Pydantic + `Runner.stream()` async generator
+- Pod-restart resilience：`RunSerializer` checkpoint / resume；persistent extraction cursor
+- Citation guardrail（`enforce_citations()`）
+- Self-RAG REFLECTING phase（opt-in）
+- 632 tests, mypy strict clean, ruff clean
 
-**AgenticRAG — Tool-driven RAG loop**
+**v0.3.x** — Phase 0 reclaimed：local copies of `pg_pool` / `pgvector_store`，零 anila-core 硬依賴
 
-核心新增：
-- `POST /agentic-chat` 端點 — LLM 自主決定搜尋策略的 AgenticRAG
-- `VectorSearchTool` — 語意向量搜尋工具（wraps pgvector）
-- `KeywordSearchTool` — 關鍵字搜尋工具（pg_trgm / ILIKE）
-- `ReadDocumentTool` — 完整文件讀取工具
+歷史細節：見 git log。
 
-增強：
-- Layer 3 滑動窗口壓縮 (`compact/sliding_window.py`) — 超長對話 hard truncation
-- JSON Schema `integer` → `number` 自動正規化（gemma4 相容性）
-- `api.py` system prompt 預設注入（env `RAG_SYSTEM_PROMPT`）
-- `api.py` `RAG_MIN_SCORE_RETRY` — 低門檻 fallback 重試
-
-測試：182 tests 全部通過（新增 28 tests）
-
-### v0.2.3
-
-**Hybrid Search — 語意 + 關鍵字並行搜尋**
-
-- `api.py` 改為 Hybrid Search：語意搜尋（pgvector）與關鍵字搜尋（ILIKE）並行執行，RRF 融合排名
-- 關鍵字搜尋自動展開 PDF 字間空格變體（「第8條」→ 也搜「第 8 條」）
-- 來源清單標注匹配方式：`語意 0.xxx + 關鍵字` / `關鍵字匹配` / `相似度 0.xxx`
-- 全部結果低於 `RAG_MIN_SCORE` 時，整個來源區塊加提示「相關度較低，僅供參考」
-- `GET /documents` 改從 DB 讀取（不再依賴 in-memory status，容器重啟後清單仍正確）
-- `index_documents.py` 新增 `--list` / `--delete` / `--delete-all` / `--yes`
-
-### v0.2.2
-
-System Prompt 三層架構文件更新：
-- Agent 定義層（.md 檔）
-- API 請求層（/chat request body）
-- api.py 層（OpenWebUI proxy）
-
-### v0.2.1
-
-新增 OpenWebUI 整合：
-
-- `api.py`：OpenAI-compatible RAG proxy（port 24786）
-  - 自動 embed → pgvector 檢索 → context inject
-  - RAG 結果輸出至 thinking block（`reasoning_content`）
-  - 回覆末尾附來源清單（文件名 + 相似度）
-- `docker-compose.yml` 新增 `rag-api` 服務（port 24786）
-
-### v0.2.0
-
-完整 Agentic RAG 後端實作：
-
-- 文件解析管線（6 格式）+ RecursiveTextSplitter
-- Nvidia NV-Embed-V2 embedding provider
-- pgvector 向量儲存（cosine search + IVFFlat）
-- RAG Pre-processor（query → embed → search → context inject）
-- PostgreSQL 儲存 adapter（Session / Message / RetrievalTrace）
-- 文件管理 API + 語意搜尋 API
-- 統一 pydantic-settings 配置
-- Bearer token auth middleware
-- Docker Compose 部署（API + pgvector DB）
-- 全端 app_factory 接線
-
-### v0.1.0
-
-初始版本，包含：
-
-- Agent 協調核心（registry、router、engine、coordinator）
-- Compact + Memory lifecycle 服務
-- Provider abstraction + FastAPI/SSE 介面
+---
 
 ## License
 
-This repository includes a `LICENSE` file. See it for terms.
+MIT. Files inspired by [openai-agents-python](https://github.com/openai/openai-agents-python) (MIT) carry provenance headers in their docstrings.

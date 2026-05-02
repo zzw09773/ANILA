@@ -11,12 +11,8 @@ cover the parts that don't need a real model:
 from __future__ import annotations
 
 import base64
-import json
 import sys
 import threading
-from types import SimpleNamespace
-from typing import Any
-from unittest.mock import patch
 
 import httpx
 import pytest

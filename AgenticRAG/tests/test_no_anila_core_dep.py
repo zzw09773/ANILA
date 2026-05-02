@@ -1,24 +1,23 @@
-"""Phase 0 boundary regression test — AgenticRAG must not hard-import anila-core.
+"""Boundary regression test — AgenticRAG must not hard-import anila-* packages.
 
-Why: AgenticRAG is a fork-template for devs starting new agents. Hard
-imports from anila-core would force every fork to install the
-platform-internal package — breaking the fork promise. Phase 0
-(2026-05-02) reclaimed local copies of pg_pool / pgvector_store / etc.
-This test catches regressions where someone re-introduces an
-``import anila_core`` outside the documented soft-fallback whitelist.
+Why: AgenticRAG is a self-contained fork-template for devs starting
+new agents. Hard imports from any ANILA-internal package (anila-core,
+the now-retired anila-agent-framework, or anything else anila-prefix)
+would force every fork to install platform-internal packages — breaking
+the fork promise. The agent runtime primitives live INSIDE AgenticRAG
+at ``agentic_rag.runtime.framework`` for exactly this reason.
 
-Whitelist:
+Whitelist (anila-core only):
   - ``api/middleware/loader.py`` — uses ``importlib.import_module`` to
     prefer anila-core's middleware when the platform happens to install
     it; falls back to the local ``csp_auth.py`` otherwise. Soft import
     only, no top-level ``from anila_core ...`` statement.
   - ``api/middleware/csp_auth.py`` — the local fallback itself, contains
     only docstring references.
-  - Any file with anila_core mentions confined to comments / docstrings
-    (provenance notes from the Phase 0 refactor).
 
-Failure mode: any new ``from anila_core ...`` or ``import anila_core``
-at module top level outside the whitelist fails this test.
+Failure mode: any new ``from anila_core ...`` / ``import anila_core``
+or ``from anila_agent ...`` / ``import anila_agent`` at module top
+level outside the whitelist fails this test.
 """
 
 from __future__ import annotations
@@ -37,6 +36,10 @@ _REPO_ROOT_API = Path(__file__).resolve().parent.parent / "api.py"
 # string literals. Anchored to start-of-line (with optional indent).
 _HARD_IMPORT_RE = re.compile(
     r"^\s*(?:from\s+anila_core\b|import\s+anila_core\b)",
+    re.MULTILINE,
+)
+_HARD_FRAMEWORK_RE = re.compile(
+    r"^\s*(?:from\s+anila_agent\b|import\s+anila_agent\b)",
     re.MULTILINE,
 )
 
@@ -134,3 +137,53 @@ def test_app_factory_imports_without_anila_core(monkeypatch: pytest.MonkeyPatch)
         PgPool,
     )
     from agentic_rag.storage.protocols import VectorStore  # noqa: F401
+
+
+def test_no_hard_anila_agent_framework_imports() -> None:
+    """No ``from anila_agent ...`` or ``import anila_agent`` anywhere.
+
+    The previously-tried separate ``anila-agent-framework`` PyPI package
+    was retired (2026-05-02) — its primitives now live inside AgenticRAG
+    at ``agentic_rag.runtime.framework``. Any code reaching for
+    ``anila_agent`` is either stale or attempting to add a forbidden
+    ANILA-internal dep back. Either way: fail.
+    """
+    offenders: list[tuple[Path, list[str]]] = []
+    files = list(_REPO_SRC.rglob("*.py"))
+    if _REPO_ROOT_API.is_file():
+        files.append(_REPO_ROOT_API)
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        hits = [
+            ln
+            for ln in text.splitlines()
+            if _HARD_FRAMEWORK_RE.match(ln)
+            and not ln.strip().startswith("#")
+        ]
+        if hits:
+            offenders.append((path, hits))
+    if offenders:
+        msg = ["AgenticRAG must not import the retired anila_agent package. Found:"]
+        for path, hits in offenders:
+            msg.append(f"  {path.relative_to(_REPO_SRC.parent.parent)}:")
+            for h in hits:
+                msg.append(f"    {h}")
+        msg.append(
+            "\nThe agent runtime primitives are vendored at "
+            "agentic_rag.runtime.framework. Use that import path."
+        )
+        pytest.fail("\n".join(msg))
+
+
+def test_pyproject_does_not_depend_on_anila_packages() -> None:
+    """The pyproject.toml dependencies list must not reference any
+    anila-* package. The framework is vendored inside AgenticRAG."""
+    pyproject = _REPO_SRC.parent.parent / "pyproject.toml"
+    text = pyproject.read_text(encoding="utf-8")
+    # Match dep strings like "anila-core", "anila-agent-framework", etc.
+    bad = re.findall(r'"(anila[\w-]*)', text)
+    assert not bad, (
+        f"pyproject.toml must not list any anila-* dep; found: {bad}. "
+        "All ANILA-internal primitives must be vendored inside "
+        "agentic_rag.runtime.framework."
+    )

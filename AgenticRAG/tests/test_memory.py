@@ -250,7 +250,7 @@ class TestModelBasedRelevanceSelector:
         provider = MockProvider([
             ScriptedResponse(text=json.dumps(selected))
         ])
-        selector = ModelBasedRelevanceSelector(provider)
+        selector = ModelBasedRelevanceSelector(provider, model="test-model")
         headers = self._make_headers()
         result = await selector.select(
             query="user preferences",
@@ -269,7 +269,7 @@ class TestModelBasedRelevanceSelector:
         provider = MockProvider([
             ScriptedResponse(text=json.dumps(selected))
         ])
-        selector = ModelBasedRelevanceSelector(provider)
+        selector = ModelBasedRelevanceSelector(provider, model="test-model")
         headers = self._make_headers()
         result = await selector.select(
             query="something",
@@ -286,7 +286,7 @@ class TestModelBasedRelevanceSelector:
         provider = MockProvider([
             ScriptedResponse(text=json.dumps({"selected_memories": []}))
         ])
-        selector = ModelBasedRelevanceSelector(provider)
+        selector = ModelBasedRelevanceSelector(provider, model="test-model")
         result = await selector.select(
             query="test",
             memory_headers=self._make_headers(),
@@ -300,7 +300,7 @@ class TestModelBasedRelevanceSelector:
         provider = MockProvider([
             ScriptedResponse(raise_error=Exception("provider error"))
         ])
-        selector = ModelBasedRelevanceSelector(provider)
+        selector = ModelBasedRelevanceSelector(provider, model="test-model")
         result = await selector.select(
             query="test",
             memory_headers=self._make_headers(),

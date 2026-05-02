@@ -249,21 +249,32 @@ def create_app(
 
     @app.post("/agentic-chat")
     async def agentic_chat(request: ChatRequest) -> StreamingResponse:
-        """Tool-driven AgenticRAG endpoint.
+        """Tool-driven AgenticRAG endpoint, framework-runtime path.
 
-        v0.6 Chunk F: the in-package ``create_vector_search_tool`` /
-        ``create_keyword_search_tool`` / ``create_read_document_tool``
-        factories were retired (their inline SQL was tied to the pre-0014
-        schema). Re-implementations against the central
-        ``AgentScopedPgVectorStore`` SDK are a Sprint 2 deliverable —
-        until they ship this endpoint exposes only whatever non-RAG tools
-        the host registered into ``tool_registry``.
+        Backed by ``agentic_rag.runtime.framework`` (Action / Agent / Runner) via
+        ``agentic_rag.runtime``. Wraps the host-registered AgenticRAG
+        ``ToolDefinition`` objects into framework ``Action``s; the same
+        tools the legacy QueryEngine path (``/chat``) sees are exposed
+        to this runner.
 
-        ``request.system_prompt`` is required (422 on missing) — the
-        legacy default ``AGENTIC_RAG_SYSTEM_PROMPT`` constant was deleted
-        in v0.5.0 boundary cleanup and a generic placeholder here would
-        likely be the wrong policy for any real deployment.
+        Wire format matches ``/chat`` (same ``ServerEvent`` envelope and
+        SSE event types) so frontend code is endpoint-agnostic. The
+        framework Runner is unary in v0.1, so MESSAGE_DELTA fires once
+        per turn rather than per-token; token-level streaming returns in
+        Sprint 2 alongside the Middleware framework.
+
+        ``request.system_prompt`` is required (422 on missing) — there
+        is no built-in default RAG prompt; the policy belongs to the
+        deployment.
         """
+        from agentic_rag.runtime import (
+            FrameworkProviderAdapter,
+            build_rag_agent,
+            run_agentic_chat_sse,
+        )
+        from agentic_rag.runtime.bridge.rag_actions import wrap_tool_definition
+        from ..models.message import UserMessage as UM
+
         if not request.system_prompt:
             raise HTTPException(
                 status_code=422,
@@ -274,97 +285,44 @@ def create_app(
                 ),
             )
 
-        # Per-request registry mirrors the global one. RAG tools are
-        # deferred to Sprint 2; the host registry is consumed verbatim.
-        agentic_registry = ToolRegistry()
-        for name in tool_registry.list_tools():
-            agentic_registry.register(tool_registry.get(name))
+        # Lift host-registered AgenticRAG ToolDefinitions into framework
+        # Actions so the same tool surface reaches the new runner.
+        extra_actions = [
+            wrap_tool_definition(tool_registry.get(name))
+            for name in tool_registry.list_tools()
+        ]
 
-        sys_prompt = request.system_prompt
-        config = QueryConfig(
-            max_turns=request.max_turns,
+        adapter = FrameworkProviderAdapter(provider)
+        agent = build_rag_agent(
+            name=request.agent_type or "rag-agent",
+            instructions=request.system_prompt,
+            provider=adapter,
             model=request.model,
-            system_prompt=sys_prompt,
+            extra_actions=extra_actions,
+            max_turns=request.max_turns,
         )
-        engine = QueryEngine(provider, agentic_registry, config)
 
-        from ..models.message import UserMessage as UM
-        messages = _parse_history(request.history) + [UM(content=request.user_message)]
+        history_msgs = _parse_history(request.history)
+        seed_user = UM(content=request.user_message)
+        # Convert AgenticRAG history → framework Message list. The
+        # adapter's converters are the inverse direction (framework →
+        # AgenticRAG); for the seed we just pass plain text via the
+        # framework's convenience constructors.
+        from agentic_rag.runtime.framework.items import Message as FwMessage
 
-        async def event_generator() -> AsyncIterator[str]:
-            turn_tokens_total = Usage()
-            engine_failed = False
-            engine_error_msg = ""
-
-            async def on_delta(delta: Any) -> None:
-                nonlocal turn_tokens_total
-                if delta.type == "text" and delta.text:
-                    event = ServerEvent(
-                        type=EventType.MESSAGE_DELTA,
-                        session_id=request.session_id,
-                        payload=MessageDeltaPayload(text=delta.text).model_dump(),
-                    )
-                    await _queue.put(event.to_sse())
-                elif delta.type == "tool_call" and delta.tool_call:
-                    event = ServerEvent(
-                        type=EventType.TOOL_CALL_STARTED,
-                        session_id=request.session_id,
-                        payload=ToolCallStartedPayload(
-                            tool_call_id=delta.tool_call.id,
-                            tool_name=delta.tool_call.name,
-                        ).model_dump(),
-                    )
-                    await _queue.put(event.to_sse())
-                elif delta.type == "stop" and delta.usage:
-                    turn_tokens_total = turn_tokens_total.add(delta.usage)
-
-            _queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
-
-            async def run_engine() -> None:
-                nonlocal engine_failed, engine_error_msg
-                try:
-                    await engine.run(messages, on_stream_delta=on_delta)
-                except Exception as exc:
-                    engine_failed = True
-                    engine_error_msg = str(exc)
-                    logger.error("Agentic engine error: %s", exc)
-                    error_event = ServerEvent(
-                        type=EventType.ERROR,
-                        session_id=request.session_id,
-                        payload=ErrorPayload(message=engine_error_msg, code="engine_error").model_dump(),
-                    )
-                    await _queue.put(error_event.to_sse())
-                finally:
-                    await _queue.put(None)
-
-            asyncio.create_task(run_engine())
-
-            while True:
-                item = await _queue.get()
-                if item is None:
-                    break
-                yield item
-
-            if not engine_failed:
-                usage_event = ServerEvent(
-                    type=EventType.USAGE_UPDATE,
-                    session_id=request.session_id,
-                    payload=UsageUpdatePayload(
-                        input_tokens=turn_tokens_total.input_tokens,
-                        output_tokens=turn_tokens_total.output_tokens,
-                    ).model_dump(),
-                )
-                yield usage_event.to_sse()
-
-            terminal_event = ServerEvent(
-                type=EventType.STREAM_DONE,
-                session_id=request.session_id,
-                payload={"status": "error" if engine_failed else "completed"},
-            )
-            yield terminal_event.to_sse()
+        seed: list[FwMessage] = []
+        for m in history_msgs:
+            text = m.get_text() if hasattr(m, "get_text") else ""
+            if not text:
+                continue
+            if m.role == "user":
+                seed.append(FwMessage.user(text))
+            elif m.role == "assistant":
+                seed.append(FwMessage.assistant(text))
+        seed.append(FwMessage.user(seed_user.get_text()))
 
         return StreamingResponse(
-            event_generator(),
+            run_agentic_chat_sse(agent, seed, session_id=request.session_id),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

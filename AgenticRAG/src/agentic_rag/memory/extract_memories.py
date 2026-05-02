@@ -20,6 +20,7 @@ from typing import Any, Callable, Coroutine, Optional
 
 from ..context.agent_context import AgentContext, create_subagent_context
 from ..models.message import AssistantMessage, Message, UserMessage
+from .extraction_state import CursorStore
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,14 @@ class MemoryExtractor:
     """Post-turn hook that extracts persistent memories via a forked agent.
 
     State is instance-level (not module-level) so tests can use fresh instances.
+
+    Persistence (B1): pass ``cursor_store`` and a ``session_id`` to make
+    the cursor durable across pod restarts. On the first ``run()`` call
+    the extractor reads the persisted cursor; after each successful
+    extraction it flushes the new cursor back. Without these, the
+    extractor remains in-memory only and a restart re-extracts from
+    the start of every still-open session — duplicates and wasted
+    inference.
     """
 
     memory_dir: str
@@ -150,6 +159,9 @@ class MemoryExtractor:
     _pending_context: Optional[Any] = field(default=None, repr=False, init=False)
     _turns_since_last: int = field(default=0, repr=False, init=False)
     throttle_every_n_turns: int = 1
+    cursor_store: Optional[CursorStore] = field(default=None, repr=False)
+    session_id: Optional[str] = field(default=None, repr=False)
+    _loaded_persisted_cursor: bool = field(default=False, repr=False, init=False)
 
     async def run(
         self,
@@ -172,6 +184,12 @@ class MemoryExtractor:
         if self._in_progress:
             logger.debug("[MemoryExtractor] already in progress, skipping")
             return []
+
+        # Lazy-load the persisted cursor on first call. We do this here
+        # rather than __post_init__ so callers that build the extractor
+        # without a cursor_store still construct cleanly, and because
+        # the session_id may be set after construction.
+        self._maybe_load_persisted_cursor()
 
         # Skip if main agent already wrote memories this turn
         if _has_memory_writes_since(messages, self.last_message_uuid, self.memory_dir):
@@ -223,6 +241,7 @@ class MemoryExtractor:
             last = messages[-1] if messages else None
             if last and hasattr(last, "uuid"):
                 self.last_message_uuid = last.uuid
+                self._persist_cursor()
 
             return written
 
@@ -234,10 +253,56 @@ class MemoryExtractor:
             self._in_progress = False
 
     def reset(self) -> None:
-        """Reset extraction state (for tests)."""
+        """Reset extraction state (for tests).
+
+        Also clears the persisted cursor when a ``cursor_store`` +
+        ``session_id`` are configured, so a test that uses a real
+        store doesn't leak state between runs.
+        """
         self.last_message_uuid = None
         self._in_progress = False
         self._turns_since_last = 0
+        self._loaded_persisted_cursor = False
+        if self.cursor_store is not None and self.session_id:
+            self.cursor_store.delete(self.session_id)
+
+    def _maybe_load_persisted_cursor(self) -> None:
+        """Read the on-disk cursor on first ``run()``, if configured.
+
+        Idempotent: only the first call has any effect. The flag also
+        guards against repeated reads on every turn (cheap I/O but
+        avoidable).
+        """
+        if self._loaded_persisted_cursor:
+            return
+        self._loaded_persisted_cursor = True
+        if self.cursor_store is None or not self.session_id:
+            return
+        if self.last_message_uuid is not None:
+            # Caller pre-set a cursor; respect it over the persisted one.
+            return
+        record = self.cursor_store.get(self.session_id)
+        if record is None:
+            return
+        self.last_message_uuid = record.last_message_uuid
+        logger.debug(
+            "[MemoryExtractor] resumed from persisted cursor for session %s",
+            self.session_id,
+        )
+
+    def _persist_cursor(self) -> None:
+        """Flush the current cursor to disk.
+
+        Best-effort — store-side I/O failures are swallowed by
+        ``CursorStore.set``.
+        """
+        if (
+            self.cursor_store is None
+            or not self.session_id
+            or self.last_message_uuid is None
+        ):
+            return
+        self.cursor_store.set(self.session_id, self.last_message_uuid)
 
 
 def _extract_written_paths(messages: list[Message], memory_dir: str) -> list[str]:
