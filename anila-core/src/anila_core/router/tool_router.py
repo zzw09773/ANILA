@@ -10,6 +10,7 @@ import asyncio
 from typing import Any, Optional
 
 from ..context.agent_context import get_current_context
+from ..models.handoff import HandoffRequest
 from ..models.interrupt import InterruptItem
 from ..models.message import ToolCall, ToolResult
 from ..models.tool import ToolDefinition, ToolSafety
@@ -170,6 +171,16 @@ class ToolRegistry:
                     tool_call_id=call.id,
                     content="",
                     interrupt=raw,
+                )
+
+            # Handoff primitive (Sprint 10 PR 1): tool requested a control
+            # transfer to another agent. Same shape as interrupts —
+            # QueryEngine detects and raises RunHandoff at Stage 4.
+            if isinstance(raw, HandoffRequest):
+                return ToolResult(
+                    tool_call_id=call.id,
+                    content="",
+                    handoff=raw,
                 )
 
             # Normalize result to string

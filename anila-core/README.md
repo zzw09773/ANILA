@@ -236,15 +236,19 @@ anila-core/
         ├── coordinator/           # multi-worker / multi-step orchestration
         ├── engine/                # query_engine (7-stage) + budget_tracker
         │                          # + approvals (Sprint 9: pause-resume)
+        │                          # + handoff (Sprint 10: control transfer)
         ├── memory/                # memdir / extract / relevance / consolidation
         │                          # + session / sqlite_session / memory_session
         │                          # (Sprint 9: per-chat conversation persistence)
-        ├── models/                # pydantic dtos (+ interrupt, Todo)
+        ├── models/                # pydantic dtos (+ interrupt, Todo, handoff)
         ├── post_turn/             # Sprint 9: PromptSuggestion (follow-up chips)
         ├── providers/             # base + openai_compat + cspplatform + mocks
         ├── registry/              # local + remote agent manifest cache
-        ├── router/                # tool_router (ToolRegistry, plan-mode gate)
-        ├── tools/                 # dispatch_tool, ask_user, plan_mode, todo_write
+        ├── router/                # tool_router (ToolRegistry, plan-mode gate,
+        │                          # handoff detection)
+        ├── tools/                 # dispatch_tool (Sprint 10: stateful + handoff),
+        │                          # ask_user, plan_mode, todo_write,
+        │                          # agent_as_tool (Sprint 10)
         │
         └── ──── Pillar 2 · shared infrastructure ────
             ├── security/          # credential_crypto + url_guard
@@ -298,6 +302,28 @@ anila-core/
 ---
 
 ## Release Notes
+
+### 2026-05-02 — v0.9.0 Sprint 10 · Multi-agent control flow
+
+接 Sprint 9 的 Session + Approvals 基礎，補上多 agent 之間的控制流。Router 與個別 agent 不再受限於 single-shot dispatch；agent 能 handoff 給專家、Router 能在一個 user turn 裡串接多次 dispatch、dispatch 本身也變成 stateful（session 與 filtered context 跨越邊界）。
+
+| 模組 | 來源 | 用途 |
+|---|---|---|
+| `engine.handoff` (`HandoffRequest` / `RunHandoff` / `NoFilter` / `LastNFilter` / `SummaryFilter`) | openai-agents `handoffs/` + `extensions/handoff_filters.py` | 工具回 `HandoffRequest` → run 暫停 → Router 接 → dispatch target with filtered context |
+| `tools.dispatch_tool` (新增 `context_messages` / `session_id` / `handoff_meta` + `dispatch_for_handoff`) | openai-agents handoff dispatch path | 跨 agent 帶上下文與 session；CSP 透傳 `anila_*` 擴充欄位 |
+| `tools.agent_as_tool` (`make_agent_tool`) | openai-agents `_public_agent.py` `Agent.as_tool()` | 把 `RemoteAgentManifest` 包成 `ToolDefinition`，agent 可同步呼叫專家 |
+| `api.router_server` (Session 整合 + `anila_multi_turn` loop + `/v1/sessions/{id}/state`) | openai-agents run loop + Claude Code Router | Router 持有 session、可多輪重新評估、輪詢 user 狀態 |
+
+新 Router 行為：
+
+- **Session-aware**：`POST /v1/chat/completions` 接受 `session_id` / `anila_session_id`（缺則自動產生），response 帶 `X-Anila-Session-Id` header
+- **Multi-turn 編排**：opt-in 透過 `anila_multi_turn: <int>` body 欄位（預設 1 = 既有 single-shot）。值 > 1 時 Router 第一輪 dispatch 拿到回應後可（a）綜合答覆 user，或（b）再 `DISPATCH:<other>:<query>` 給另一個 agent，最多 N 輪
+- **`GET /v1/sessions/{id}/state`**：UI rehydrate 用，回對話歷史 + pending interrupts
+- 內部 `_dispatch_safe` / `_stream_agent_sse` 都會把 `session_id` 透過 `anila_session_id` 擴充欄位帶到目標 agent
+
+`ToolResult` 多 `handoff: HandoffRequest | None` 欄位（鏡像 Sprint 9 的 `interrupt`），`ToolRegistry` 偵測 handoff 結果與 `InterruptItem` 同等對待，`QueryEngine` Stage 4 也會在 handoff 出現時 raise `RunHandoff`。
+
+51 新測試 / lint clean / mypy 持平 / 5 個 pre-existing failures 不變。完整變更與向後相容性 / 移轉指引見 [`CHANGELOG.md`](./CHANGELOG.md) v0.9.0。
 
 ### 2026-05-02 — v0.8.0 Sprint 9 · Web 對話 protocol
 

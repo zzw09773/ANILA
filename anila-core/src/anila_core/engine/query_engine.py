@@ -41,6 +41,7 @@ from .approvals import (
     to_record,
 )
 from .budget_tracker import BudgetTracker, ContinueDecision, check_token_budget
+from .handoff import RunHandoff
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,18 @@ class QueryEngine:
                     # _pause_on_interrupt always raises; the explicit raise
                     # below is unreachable but keeps mypy happy about flow.
                     raise AssertionError("_pause_on_interrupt must raise")
+
+                # Handoff (Sprint 10 PR 1): control transfer to another
+                # agent. Persist current conversation, then raise
+                # RunHandoff carrying the request — the Router catches it
+                # and dispatches the target agent with filtered context.
+                handoffs = [r for r in results if r.handoff is not None]
+                if handoffs:
+                    await self._handoff(
+                        history=history,
+                        handoff_result=handoffs[0],
+                    )
+                    raise AssertionError("_handoff must raise")
 
                 # Stage 5: attachments
                 tool_user_msg = self._build_tool_result_message(results)
@@ -306,6 +319,32 @@ class QueryEngine:
                 block["is_error"] = True
             content_blocks.append(block)
         return UserMessage(content=content_blocks)
+
+    async def _handoff(
+        self,
+        *,
+        history: list[Message],
+        handoff_result: ToolResult,
+    ) -> None:
+        """Persist conversation, then raise :class:`RunHandoff`.
+
+        Unlike interrupts (which the user must answer), a handoff is a
+        control transfer to another agent — the Router catches the
+        exception and dispatches the target with filtered context.
+        Persistence still happens so callers that re-create the engine
+        can rehydrate the source agent's session if needed.
+        """
+        request = handoff_result.handoff
+        assert request is not None  # by construction in caller
+        if self._session is not None:
+            await self._session.add_items(history)
+        # No interrupt record is pushed — the Router consumes the request
+        # immediately. Sprint 10 PR 3 may revisit this if we want resume
+        # semantics for handoffs.
+        raise RunHandoff(
+            session_id=self._session.session_id if self._session else "",
+            request=request,
+        )
 
     async def _pause_on_interrupt(
         self,

@@ -22,6 +22,11 @@ pip-delete-this-directory.txt
 .pyre/
 .pytype/
 .tox/
+
+# Sprint 9 — anila-core's default Session SQLite store. The path is
+# configurable via settings.session_db_path; default lives under
+# `.anila/` next to wherever the agent / router process started.
+.anila/
 .nox/
 .coverage
 .coverage.*

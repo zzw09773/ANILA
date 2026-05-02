@@ -13,6 +13,7 @@ from typing import Any, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
+from .handoff import HandoffRequest
 from .interrupt import InterruptItem
 
 
@@ -76,6 +77,10 @@ class ToolResult(BaseModel):
     content: Union[str, list[dict[str, Any]]]
     is_error: bool = False
     interrupt: Optional[InterruptItem] = None
+    handoff: Optional[HandoffRequest] = None
+    """Sprint 10 PR 1 — set when the tool returned :class:`HandoffRequest`.
+    QueryEngine raises :class:`RunHandoff` instead of feeding the result
+    back to the model."""
 
     def as_text(self) -> str:
         """Return the content as a plain string."""

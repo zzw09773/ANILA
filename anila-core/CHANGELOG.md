@@ -4,6 +4,118 @@ All notable changes to this package. anila-core is **not yet 1.0** — internal
 breaking changes are acceptable but always documented here. SemVer kicks in
 once we cut v1.0 (no concrete date).
 
+## v0.9.0 (2026-05-02) — Sprint 10 · Multi-agent control flow
+
+Built on Sprint 9's Session + Approvals foundation. Sprint 10 lets the
+Router and individual agents move beyond the single-shot dispatch
+shape: agents can hand off control to a specialist, the Router can
+chain multiple dispatches per user turn, and dispatch is now stateful
+(session and filtered context cross the boundary).
+
+### Added — primitives
+
+* **Handoff primitive** (`anila_core.engine.handoff`,
+  `anila_core.models.handoff`) — control transfer to another agent.
+  - `HandoffRequest` — Pydantic model returned by a tool to signal
+    handoff. Carries `target_agent_id`, `message`, pre-filtered
+    `context_messages`, optional `reason` + `metadata`.
+  - `RunHandoff` — exception QueryEngine raises after persisting the
+    source agent's history; the Router catches it and dispatches the
+    target.
+  - `HandoffFilter` Protocol + built-ins:
+    - `NoFilter` — pass full conversation through.
+    - `LastNFilter(n)` — keep last N visible turns; tool_result
+      user-messages are skipped automatically.
+    - `SummaryFilter(summary)` — replace history with a single
+      assistant note (LLM-driven variant deferred).
+* **Agent-as-tool wrapper** (`anila_core.tools.agent_as_tool`) —
+  `make_agent_tool(manifest, …)` turns a `RemoteAgentManifest` into a
+  callable `ToolDefinition`. Lets one agent *consult* a specialist as a
+  normal tool call (sync sub-call, distinct from `Handoff`'s control
+  transfer). Tool body forwards via `dispatch_to_agent_response` and
+  pulls `session_id` from the bound `AgentContext` by default.
+
+### Added — HTTP
+
+* **Session-aware Router** (`api/router_server.py`):
+  - `create_router_app(session_db_path=…, session_factory=…)` — same
+    Session integration shape as `api/server.py` (Sprint 9).
+  - `POST /v1/chat/completions` accepts optional `session_id` /
+    `anila_session_id` (auto-generated when absent).
+  - `X-Anila-Session-Id` response header on every reply so the caller
+    can pin subsequent calls.
+  - User turn persisted to the Router's Session for cross-turn
+    orchestration.
+  - `GET /v1/sessions/{id}/state` — Router-side snapshot
+    (conversation history + pending interrupts).
+* **Multi-turn Router orchestration** — opt-in via
+  `anila_multi_turn: <int>` request field (default `1` = single-shot,
+  preserves existing behaviour). When `> 1`, after the first dispatch
+  the Router LLM is re-invoked with the agent's reply and may either
+  produce a final synthesised answer or `DISPATCH:<other>:<query>` for
+  another iteration. Trace records each round; reasoning fold
+  accumulates per-iteration analysis. Streaming path keeps single-shot
+  for now (multi-turn streaming deferred).
+
+### Added — dispatch_tool extensions
+
+`dispatch_to_agent` / `dispatch_to_agent_response` (`tools/dispatch_tool`)
+gained kw-only fields:
+
+- `context_messages: list[dict] | None` — pre-filtered prior turns
+  inserted before the new user query.
+- `session_id: str | None` — embedded in request body as
+  `anila_session_id` extension field; CSP forwards verbatim, agents
+  that recognise it attach the same Session adapter.
+- `handoff_meta: dict | None` — embedded as `anila_handoff` extension
+  field for agents that want to render "handed off from X" UI.
+
+New convenience: `dispatch_for_handoff(request, …)` unpacks a
+`HandoffRequest` into the right parameters — what the Router calls
+when it catches `RunHandoff`.
+
+### Modified
+
+* `models.message.ToolResult` gained `handoff: HandoffRequest | None`
+  (mirrors the Sprint 9 `interrupt` field).
+* `router.tool_router.ToolRegistry.execute` detects `HandoffRequest`
+  returns alongside `InterruptItem` and tags the `ToolResult`.
+* `engine.query_engine.QueryEngine` Stage 4 now also raises
+  `RunHandoff` when any tool returned a handoff (one-handoff-per-turn
+  contract; sibling tools execute normally).
+* Router's internal `_dispatch_safe` and `_stream_agent_sse` both
+  forward `session_id` to the dispatched agent.
+* `models/__init__.py` exports `HandoffRequest`, `InterruptItem`,
+  `InterruptKind`. `engine/__init__.py` exports `RunHandoff` +
+  filters. `tools/__init__.py` exports `make_agent_tool`.
+
+### Tests
+
+51 new tests across `test_handoff` (19), `test_dispatch_stateful` (8),
+`test_router_session` (6), `test_router_multi_turn` (4),
+`test_agent_as_tool` (14). Full suite **388 passed** (up from 337).
+The 5 pre-existing CJK / unrelated failures remain unchanged. lint
+clean, mypy net-zero added.
+
+### Migration
+
+* Existing callers of `create_router_app()` keep working — `session_id`
+  is auto-generated when omitted, new headers / endpoints are
+  additive, multi-turn loop is opt-in.
+* `dispatch_to_agent*` signatures are backward-compatible (all new
+  params are kw-only with defaults).
+* Forks that have their own Router/agent server should add
+  `anila_session_id` / `anila_handoff` to their request schemas (and
+  optionally honour `anila_multi_turn`) to participate in the new
+  flow. anila-core's reference Router does this automatically.
+
+### What's next (Sprint 11 plan)
+
+Tier C from the Sprint 9 design: lifecycle hooks (on_agent_start /
+on_handoff / on_tool_*), per-tool guardrails, OTel-style hierarchical
+tracing, and per-tool permission policy. Streaming multi-turn Router
+also lands here.
+
 ## v0.8.0 (2026-05-02) — Sprint 9 · Web 對話 protocol
 
 Vendored five primitives from `runtime_logic/` (Claude Code +

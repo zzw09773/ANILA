@@ -24,6 +24,7 @@ What still lives in this package:
 
 from __future__ import annotations
 
+from .agent_as_tool import make_agent_tool
 from .ask_user import ask_user_tool
 from .plan_mode import (
     enter_plan_mode_tool,
@@ -37,6 +38,7 @@ __all__ = [
     "enter_plan_mode_tool",
     "exit_plan_mode_tool",
     "is_plan_mode_active",
+    "make_agent_tool",
     "todo_write_tool",
     "TodoValidationError",
 ]

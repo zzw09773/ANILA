@@ -8,6 +8,13 @@ from .approvals import (
     to_record,
 )
 from .budget_tracker import BudgetTracker, TokenBudgetDecision, check_token_budget
+from .handoff import (
+    HandoffFilter,
+    LastNFilter,
+    NoFilter,
+    RunHandoff,
+    SummaryFilter,
+)
 from .query_engine import QueryEngine, QueryConfig, TurnResult
 
 __all__ = [
@@ -23,4 +30,10 @@ __all__ = [
     "to_record",
     "build_resume_message",
     "resume_with",
+    # Handoff primitive (Sprint 10 PR 1)
+    "RunHandoff",
+    "HandoffFilter",
+    "NoFilter",
+    "LastNFilter",
+    "SummaryFilter",
 ]
