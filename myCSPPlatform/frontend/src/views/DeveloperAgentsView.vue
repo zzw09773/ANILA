@@ -21,36 +21,55 @@
 
     <TermBox title="developer · guide" pad="md">
       <button type="button" class="guide-toggle" @click="showGuide = !showGuide">
-        <span>{{ showGuide ? '▾' : '▸' }} fork template → deploy → register → wait for approval</span>
+        <span>{{ showGuide ? '▾' : '▸' }} fork AgenticRAG · write a tool · register here · wait for approval</span>
         <span class="cell-meta">{{ showGuide ? 'collapse' : 'expand' }}</span>
       </button>
       <div v-if="showGuide" class="guide">
+        <p class="guide__lead">
+          Phase 1 of ANILA ships <strong>AgenticRAG</strong> as the official sub-agent template.
+          Fork it, drop in your tools, register here. Full walkthrough on the
+          <router-link to="/developer/guide" class="guide__link">developer guide page →</router-link>
+        </p>
         <ol class="guide__list">
           <li>
             <span class="guide__step">01</span>
             <div>
-              <p>get the template, edit <code>retrieve_context()</code> and <code>SYSTEM_PROMPT</code> for your domain.</p>
-              <p>configure <code>.env</code>, <code>docker compose up -d</code>, verify <code>curl http://&lt;host&gt;:24786/health</code> returns <code>{"status":"ok"}</code>.</p>
+              <p><strong>fork &amp; run</strong> · clone <code>AgenticRAG</code>, edit <code>.env</code>, <code>docker compose up -d</code>, verify <code>curl http://&lt;host&gt;:24786/health</code> returns <code>{"status":"ok"}</code>.</p>
             </div>
           </li>
           <li>
             <span class="guide__step">02</span>
             <div>
-              <p>your agent must implement these endpoints:</p>
-              <table class="term-table guide__table">
-                <thead><tr><th style="width: 70px">method</th><th>path</th><th>purpose</th></tr></thead>
-                <tbody>
-                  <tr><td><code>GET</code></td><td><code>/health</code></td><td>discovery + health probe (public)</td></tr>
-                  <tr><td><code>GET</code></td><td><code>/v1/models</code></td><td>list available model ids (s2s)</td></tr>
-                  <tr><td><code>POST</code></td><td><code>/v1/chat/completions</code></td><td>main inference, openai-compat (s2s)</td></tr>
-                </tbody>
-              </table>
+              <p><strong>add your tool</strong> · use the <code>@tool</code> decorator (auto JSON schema from type hints + docstring):</p>
+              <pre class="guide__code">@tool
+async def my_tool(ctx: ActionContext, query: str) -&gt; dict:
+    """One-line description.
+
+    Args:
+        query: What the user asked.
+    """
+    return {"result": "..."}</pre>
+              <p>or drop a Markdown skill into <code>~/.agentic-rag/skills/</code>, or wire an external MCP server. Details on the dev guide page.</p>
             </div>
           </li>
           <li>
             <span class="guide__step">03</span>
             <div>
-              <p>register on this page · status starts as <TermBadge variant="warn">pending</TermBadge> · admin review unblocks router auto-discovery.</p>
+              <p>your agent must expose these s2s endpoints:</p>
+              <table class="term-table guide__table">
+                <thead><tr><th style="width: 70px">method</th><th>path</th><th>purpose</th></tr></thead>
+                <tbody>
+                  <tr><td><code>GET</code></td><td><code>/health</code></td><td>discovery + health probe (public)</td></tr>
+                  <tr><td><code>GET</code></td><td><code>/v1/models</code></td><td>list available model ids</td></tr>
+                  <tr><td><code>POST</code></td><td><code>/v1/chat/completions</code></td><td>main inference, openai-compat</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </li>
+          <li>
+            <span class="guide__step">04</span>
+            <div>
+              <p><strong>register here</strong> · status starts as <TermBadge variant="warn">pending</TermBadge> · admin review unblocks router auto-discovery.</p>
             </div>
           </li>
         </ol>
@@ -906,9 +925,18 @@ function buildStatusHistory(agent) {
 }
 .guide-toggle:hover { color: var(--c-accent); }
 .guide { margin-top: var(--gap-3); }
+.guide__lead {
+  margin: 0 0 var(--gap-3); padding: var(--gap-2) var(--gap-3);
+  background: var(--c-bg); border-left: 2px solid var(--c-accent);
+  font-size: var(--t-sm); color: var(--c-fg-2);
+}
+.guide__lead strong { color: var(--c-fg-1); }
+.guide__link { color: var(--c-accent); text-decoration: none; }
+.guide__link:hover { text-decoration: underline; }
 .guide__list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--gap-3); }
 .guide__list li { display: grid; grid-template-columns: 28px 1fr; gap: var(--gap-3); font-size: var(--t-sm); color: var(--c-fg-2); }
 .guide__list li p { margin: 0 0 4px; }
+.guide__list li p strong { color: var(--c-fg-1); }
 .guide__list li code {
   font-family: var(--font-mono); background: var(--c-bg);
   border: var(--border-w) solid var(--c-border); padding: 1px 4px;
@@ -919,6 +947,12 @@ function buildStatusHistory(agent) {
   font-variant-numeric: tabular-nums;
 }
 .guide__table { margin-top: 6px; }
+.guide__code {
+  margin: 6px 0; padding: var(--gap-2) var(--gap-3);
+  background: var(--c-bg); border: var(--border-w) solid var(--c-border);
+  font-family: var(--font-mono); font-size: var(--t-2xs);
+  color: var(--c-fg-1); white-space: pre; overflow-x: auto;
+}
 
 .cell-strong { color: var(--c-fg-1); font-weight: 500; }
 .cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }

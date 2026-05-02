@@ -120,6 +120,7 @@ const segmentMap = {
   '/auth-providers': '/admin/sso',
   '/platform-links': '/admin/platform-links',
   '/service-access': '/admin/service-access',
+  '/developer/guide': '/dev/guide',
   '/developer/agents': '/dev/agents',
   '/knowledge-collections': '/dev/collections',
 }

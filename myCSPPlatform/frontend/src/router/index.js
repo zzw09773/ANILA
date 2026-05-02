@@ -81,6 +81,14 @@ const routes = [
         component: () => import('../views/DeveloperAgentsView.vue'),
         meta: { requiresDeveloper: true },
       },
+      // v0.1 framework rollout — dedicated dev walkthrough page.
+      // Linked from DeveloperAgentsView guide block.
+      {
+        path: 'developer/guide',
+        name: 'DeveloperGuide',
+        component: () => import('../views/DeveloperGuideView.vue'),
+        meta: { requiresDeveloper: true },
+      },
       // Sprint 8 X / Phase E — service_clients (Router / worker / admin tool)
       // service-token management. Admin-only.
       {
