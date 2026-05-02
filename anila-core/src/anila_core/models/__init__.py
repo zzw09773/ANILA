@@ -11,7 +11,7 @@ from .message import (
     Usage,
     UserMessage,
 )
-from .agent import AgentDefinition, PermissionMode, TaskState
+from .agent import AgentDefinition, PermissionMode, TaskState, Todo, TodoStatus
 from .tool import ToolDefinition, ToolError, ToolSafety
 from .memory import (
     ConsolidationLock,
@@ -36,6 +36,8 @@ __all__ = [
     "AgentDefinition",
     "PermissionMode",
     "TaskState",
+    "Todo",
+    "TodoStatus",
     "ToolDefinition",
     "ToolError",
     "ToolSafety",

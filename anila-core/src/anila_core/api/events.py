@@ -41,6 +41,25 @@ class EventType(str, Enum):
     # Session management
     AWAY_SUMMARY = "away_summary"
 
+    # Approvals / interrupts (Sprint 9 PR 3)
+    INTERRUPT_REQUESTED = "interrupt_requested"
+    """Run paused on a tool that returned InterruptItem (ask_user / plan /
+    tool_approval). Payload carries enough for the UI to render and for
+    the caller to know which interrupt id to POST to /sessions/{id}/answer.
+    """
+
+    RESUMED = "resumed"
+    """Emitted just before the first chunk after a successful resume.
+    Lets the UI clear its 'paused' affordance."""
+
+    TODOS_UPDATED = "todos_updated"
+    """Sprint 9 PR 4 — agent rewrote its task board. Payload mirrors
+    AgentContext.todos so the UI can re-render the checklist."""
+
+    FOLLOW_UPS = "follow_ups"
+    """Sprint 9 PR 5 — PromptSuggestion produced 3 chip ideas after
+    a successful turn. Payload: ``{suggestions: [str, ...]}``."""
+
     # Terminal events
     STREAM_DONE = "stream_done"
     ERROR = "error"
@@ -121,3 +140,38 @@ class TaskNotificationPayload(BaseModel):
 class ErrorPayload(BaseModel):
     message: str
     code: Optional[str] = None
+
+
+class InterruptRequestedPayload(BaseModel):
+    """Sprint 9 PR 3 — emitted with INTERRUPT_REQUESTED.
+
+    Mirrors :class:`anila_core.memory.session.InterruptRecord` plus the
+    rendered ``data`` payload. Web UIs render directly from ``payload``;
+    structure varies by ``kind``:
+
+    - ``ask_user``: ``{question, options, multi_select, allow_other}``
+    - ``plan``:     ``{plan}``
+    - ``tool_approval`` (future): ``{tool_name, args, reason}``
+    """
+
+    interrupt_id: str
+    kind: str  # 'ask_user' | 'plan' | 'tool_approval'
+    payload: dict[str, Any]
+
+
+class ResumedPayload(BaseModel):
+    """Sprint 9 PR 3 — emitted with RESUMED right before resumed content."""
+
+    interrupt_id: str
+
+
+class TodosUpdatedPayload(BaseModel):
+    """Sprint 9 PR 4 — full task-board snapshot (replace, not patch)."""
+
+    todos: list[dict[str, Any]]
+
+
+class FollowUpsPayload(BaseModel):
+    """Sprint 9 PR 5 — chip suggestions for the user's next question."""
+
+    suggestions: list[str]

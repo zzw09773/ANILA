@@ -1,4 +1,4 @@
-"""Agent definition and task state models."""
+"""Agent definition, task state and todo-list models."""
 
 from __future__ import annotations
 
@@ -10,6 +10,32 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 from .message import Usage
+
+
+# ---------------------------------------------------------------------------
+# Sprint 9 PR 4: Todo
+# ---------------------------------------------------------------------------
+
+
+TodoStatus = Literal["pending", "in_progress", "completed"]
+
+
+class Todo(BaseModel):
+    """A single item in the agent's task board.
+
+    The model is what ``todo_write`` writes into
+    :attr:`AgentContext.todos`. Schema mirrors Claude Code's TodoWrite:
+    ``content`` is the imperative form ("Run tests"), ``active_form`` is
+    the present-continuous form rendered while the task is in progress
+    ("Running tests"). Exactly one task may be ``in_progress`` at a time;
+    the validation lives in :mod:`anila_core.tools.todo_write`.
+    """
+
+    content: str
+    active_form: str
+    status: TodoStatus = "pending"
+
+    model_config = {"frozen": True}
 
 
 class PermissionMode(str, Enum):

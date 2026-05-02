@@ -72,6 +72,17 @@ try:
             description="Disable auth checks when True (development only).",
         )
 
+        # ── Sessions (Sprint 9) ───────────────────────────────────────
+        session_db_path: str = Field(
+            default="./.anila/sessions.db",
+            description=(
+                "SQLite path for the default Session adapter. Override "
+                "with ANILA_SESSION_DB_PATH or set to ':memory:' for "
+                "tests. Multi-process deployments should swap to a "
+                "Postgres / Redis Session implementation."
+            ),
+        )
+
         model_config = SettingsConfigDict(
             env_file=".env",
             env_file_encoding="utf-8",
@@ -91,6 +102,7 @@ except ImportError:
         csp_service_token: Optional[str] = None
         api_key: Optional[str] = None
         api_dev_mode: bool = False
+        session_db_path: str = "./.anila/sessions.db"
 
 
 # Module-level singleton — import and use directly:

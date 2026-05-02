@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Optional
 
+from ..context.agent_context import get_current_context
+from ..models.interrupt import InterruptItem
 from ..models.message import ToolCall, ToolResult
 from ..models.tool import ToolDefinition, ToolSafety
 
@@ -130,11 +132,45 @@ class ToolRegistry:
                 is_error=True,
             )
 
+        # Plan mode gate (Sprint 9): destructive tools must be proposed via
+        # exit_plan_mode for user approval before they can run. The
+        # exit_plan_mode tool itself is READ_ONLY (it just returns an
+        # InterruptItem) so it always passes; only DESTRUCTIVE tools are
+        # blocked. Tool authors who want a non-destructive tool to also
+        # respect plan mode can call ``tools.plan_mode.is_plan_mode_active``
+        # in their implementation.
+        ctx = get_current_context()
+        if (
+            ctx is not None
+            and ctx.plan_mode
+            and tool.safety == ToolSafety.DESTRUCTIVE
+        ):
+            return ToolResult(
+                tool_call_id=call.id,
+                content=(
+                    f"Tool '{call.name}' is destructive and cannot run in "
+                    "plan mode. Call exit_plan_mode with a finalised plan "
+                    "to seek user approval first."
+                ),
+                is_error=True,
+            )
+
         try:
             if asyncio.iscoroutinefunction(tool.implementation):
                 raw = await tool.implementation(call.input, **(context or {}))
             else:
                 raw = tool.implementation(call.input, **(context or {}))
+
+            # Approvals primitive: when a tool returns InterruptItem the
+            # run loop must pause rather than forward content to the
+            # model. We attach it to the ToolResult and let QueryEngine
+            # detect + raise RunPaused at Stage 4.
+            if isinstance(raw, InterruptItem):
+                return ToolResult(
+                    tool_call_id=call.id,
+                    content="",
+                    interrupt=raw,
+                )
 
             # Normalize result to string
             if isinstance(raw, str):

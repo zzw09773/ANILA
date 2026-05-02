@@ -4,6 +4,123 @@ All notable changes to this package. anila-core is **not yet 1.0** — internal
 breaking changes are acceptable but always documented here. SemVer kicks in
 once we cut v1.0 (no concrete date).
 
+## v0.8.0 (2026-05-02) — Sprint 9 · Web 對話 protocol
+
+Vendored five primitives from `runtime_logic/` (Claude Code +
+openai-agents-python) that turn an anila-core agent into a Claude.ai-
+style chat partner. No CLI / TUI surface — every interaction is shaped
+to be rendered by a web frontend.
+
+### Added — primitives
+
+* **Session protocol** (`anila_core.memory.session.Session`) — stores
+  conversation history + pending interrupts for one chat session.
+  Two adapters ship: `MemorySession` (tests / dev) and `SqliteSession`
+  (default, single-process; uses `aiosqlite` and writes to
+  `settings.session_db_path`). Multi-process / HA deployments can
+  drop in their own adapter.
+* **Approvals primitive** (`anila_core.engine.approvals`) — pause /
+  resume the run loop on a tool's request. A tool implementation
+  returns `InterruptItem`; QueryEngine persists conversation + the
+  interrupt to the active Session and raises `RunPaused`. The new
+  `QueryEngine.resume_from_interrupt(interrupt_id, answer)`
+  rehydrates from session, stitches the user's answer + sibling
+  tool results into one `tool_result` message, and continues the
+  loop. Mandates **one interrupt per turn** (Sprint 10 may relax).
+* **`ask_user` tool** (`anila_core.tools.ask_user`) — multiple-choice
+  question to the user mid-run.
+* **`enter_plan_mode` / `exit_plan_mode` tools** (`anila_core.tools.plan_mode`)
+  — propose-then-execute. `enter_plan_mode` flips
+  `AgentContext.plan_mode = True`; `ToolRegistry` then rejects any
+  `DESTRUCTIVE` tool until `exit_plan_mode(plan)` surfaces the plan
+  via an `InterruptItem` for user approval.
+* **`todo_write` tool** (`anila_core.tools.todo_write`) — agent-managed
+  task board. Validates "exactly one in_progress" and writes to
+  `AgentContext.todos`; emits `todos_updated` SSE.
+* **PromptSuggestion post-turn hook**
+  (`anila_core.post_turn.prompt_suggestion`) — small LLM call after a
+  successful turn produces 3 follow-up question chips; emits
+  `follow_ups` SSE.
+
+### Added — HTTP
+
+`api/server.py` (`create_app`) gained:
+
+* Automatic Session attachment (configurable via
+  `session_db_path=` or fully overrideable via
+  `session_factory=` for Postgres / Redis adapters / tests).
+* `RunPaused` is caught and surfaced as `interrupt_requested` SSE,
+  with `stream_done.status = "paused"` rather than `"error"`.
+* `POST /sessions/{id}/answer` — resume a paused run with the
+  user's answer. Streams the resumed turn back as SSE starting
+  with a `resumed` event.
+* `GET /sessions/{id}/state` — snapshot of conversation history +
+  pending interrupts; for UI rehydration after reload.
+* `AgentContext` is bound around each run loop with an
+  `event_emitter` so tools can push SSE events without coupling
+  to the transport layer.
+
+### Added — SSE event types
+
+In `anila_core.api.events.EventType`:
+
+* `interrupt_requested` (+ `InterruptRequestedPayload`)
+* `resumed` (+ `ResumedPayload`)
+* `todos_updated` (+ `TodosUpdatedPayload`)
+* `follow_ups` (+ `FollowUpsPayload`)
+
+### Added — supporting model
+
+* `anila_core.models.interrupt.InterruptItem` — runtime form of an
+  interrupt (lives under `models/` so `ToolResult.interrupt` can
+  reference it without an inter-package import cycle).
+* `anila_core.models.agent.Todo` (+ `TodoStatus`).
+
+### Modified
+
+* `models.message.ToolResult` gained `interrupt: InterruptItem | None`.
+* `router.tool_router.ToolRegistry.execute` now (a) detects
+  `InterruptItem` returns and tags the ToolResult, (b) gates
+  `DESTRUCTIVE` tools when `AgentContext.plan_mode` is active.
+* `engine.query_engine.QueryEngine.__init__` accepts an optional
+  `session=` kwarg; Stage 4 raises `RunPaused` when an interrupt
+  was returned by any tool in the turn.
+* `context.agent_context.AgentContext` gained `plan_mode`, `todos`,
+  `event_emitter`. `create_subagent_context` propagates all three.
+* `config.settings.session_db_path` (`ANILA_SESSION_DB_PATH` env).
+* `api/server.py` `create_app(api_key=...)` now correctly forwards
+  to `CspServiceTokenMiddleware(service_token=...)` (latent bug
+  exposed by Sprint 9 test coverage; legacy `api_key` kwarg name
+  preserved for back-compat).
+
+### Dependencies
+
+* `aiosqlite>=0.20` (base dep — backs the default Session adapter).
+
+### Tests
+
+109 new tests across `test_session_memory`, `test_session_sqlite`,
+`test_approvals`, `test_engine_interrupt`, `test_tool_ask_user`,
+`test_tool_plan_mode`, `test_tool_todo_write`,
+`test_prompt_suggestion`, `test_server_interrupt_flow`. Full suite
+337 passed (5 pre-existing unrelated failures unchanged).
+
+### Migration
+
+* Existing callers of `create_app()` get session integration
+  automatically (default SQLite under `./.anila/sessions.db`).
+  Override with `session_db_path=` or `session_factory=` if you
+  need a different store.
+* No changes required for callers that don't register `ask_user` /
+  `plan_mode` / `todo_write` tools — pause-resume only fires when
+  one of those tools is invoked.
+
+### What's next (Sprint 10 plan)
+
+Tier B from the Sprint 9 design: multi-turn router orchestration,
+handoff-with-context-filter (openai-agents `extensions/handoff_filters`),
+and Session-aware Router so dispatched agents can share context.
+
 ## Unreleased — Sprint 8 X boundary correction (doc-only, 2026-05-01)
 
 No code changes. Sprint 8 X audit found that v0.5.0's release notes

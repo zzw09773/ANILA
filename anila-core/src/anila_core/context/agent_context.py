@@ -11,10 +11,14 @@ import asyncio
 import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
-from ..models.agent import AgentDefinition
+from ..models.agent import AgentDefinition, Todo
 from ..models.message import Message
+
+
+# Async (event_name, payload) → None — see AgentContext.event_emitter.
+EventEmitter = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 
 _current_context: ContextVar["AgentContext"] = ContextVar("current_context")
@@ -40,6 +44,16 @@ class AgentContext:
     parent_context_id: Optional[str] = None
     allowed_tools: set[str] = field(default_factory=set)
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Sprint 9: plan_mode gates DESTRUCTIVE tools so the model can draft
+    # without committing. Toggled by ``tools.plan_mode.enter_plan_mode``;
+    # cleared after ``exit_plan_mode`` is approved.
+    plan_mode: bool = False
+    todos: list[Todo] = field(default_factory=list)
+    """Sprint 9 PR 4: TodoWrite tool writes here."""
+    event_emitter: Optional[EventEmitter] = None
+    """Sprint 9 PR 4: optional async ``(event_name, payload) -> None``
+    callback the FastAPI server installs so tools can push SSE events
+    (e.g. ``todos_updated``) without coupling to transport details."""
 
     def __post_init__(self) -> None:
         if self.abort_signal is None:
@@ -101,4 +115,7 @@ def create_subagent_context(
         parent_context_id=parent.context_id,
         allowed_tools=fork_tools,
         metadata=dict(parent.metadata),
+        plan_mode=parent.plan_mode,
+        todos=list(parent.todos),  # independent copy (Sprint 9 PR 4)
+        event_emitter=parent.event_emitter,
     )

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "anila-core"
-version = "0.7.0"
+version = "0.8.0"
 description = "ANILA Core — Python agent runtime foundation (chat / agent / memory / dispatch)"
 requires-python = ">=3.11"
 dependencies = [
@@ -32,6 +32,12 @@ dependencies = [
     # (encrypt at create time) and ingestion-worker (decrypt at judge
     # time) consume it, so cryptography is a core dep — not optional.
     "cryptography>=42",
+    # Sprint 9 (Session abstraction): aiosqlite backs the default
+    # anila_core.memory.sqlite_session adapter for single-process
+    # deployments. Multi-process / HA setups can swap in a Postgres or
+    # Redis Session implementing the same Protocol; aiosqlite stays a
+    # base dep so the in-tree adapter ships out of the box.
+    "aiosqlite>=0.20",
 ]
 
 # v0.5.0 BREAKING — `[rag]` extras removed. The packages it pulled

@@ -22,6 +22,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine, Optional
 
+from ..memory.session import Session
 from ..models.message import (
     AssistantMessage,
     Message,
@@ -33,6 +34,12 @@ from ..models.message import (
 from ..config import settings
 from ..providers.base import Provider, ProviderRequest
 from ..router.tool_router import ToolRegistry, execute_batch
+from .approvals import (
+    MultipleInterruptsError,
+    RunPaused,
+    resume_with,
+    to_record,
+)
 from .budget_tracker import BudgetTracker, ContinueDecision, check_token_budget
 
 logger = logging.getLogger(__name__)
@@ -80,11 +87,17 @@ class QueryEngine:
         tool_registry: ToolRegistry,
         config: QueryConfig,
         session_id: str = "",
+        session: Optional[Session] = None,
     ) -> None:
         self._provider = provider
         self._tools = tool_registry
         self._config = config
-        self._session_id = session_id
+        # ``session_id`` (string) predates the Session abstraction and is kept
+        # for back-compat; ``session`` (Sprint 9) is what enables pause-resume
+        # and conversation persistence. When both are passed we trust the
+        # Session's own session_id field.
+        self._session_id = session.session_id if session else session_id
+        self._session = session
         self._post_turn_hooks: list[PostTurnHook] = []
         self._budget_tracker = BudgetTracker()
         self._in_flight_hooks: set[asyncio.Task] = set()  # type: ignore[type-arg]
@@ -140,6 +153,21 @@ class QueryEngine:
                     self._tools,
                     assistant_msg.tool_calls,
                 )
+
+                # Approvals: when a tool returned an InterruptItem, persist
+                # conversation state + the interrupt to Session and raise
+                # RunPaused so the SSE handler can flush its stream cleanly.
+                interrupted = [r for r in results if r.interrupt is not None]
+                if interrupted:
+                    await self._pause_on_interrupt(
+                        history=history,
+                        results=results,
+                        assistant_msg=assistant_msg,
+                    )
+                    # _pause_on_interrupt always raises; the explicit raise
+                    # below is unreachable but keeps mypy happy about flow.
+                    raise AssertionError("_pause_on_interrupt must raise")
+
                 # Stage 5: attachments
                 tool_user_msg = self._build_tool_result_message(results)
                 history = history + [tool_user_msg]
@@ -278,6 +306,85 @@ class QueryEngine:
                 block["is_error"] = True
             content_blocks.append(block)
         return UserMessage(content=content_blocks)
+
+    async def _pause_on_interrupt(
+        self,
+        *,
+        history: list[Message],
+        results: list[ToolResult],
+        assistant_msg: AssistantMessage,
+    ) -> None:
+        """Persist conversation + interrupt to Session, then raise RunPaused.
+
+        ``history`` already includes ``assistant_msg`` (Stage 2 appended it).
+        We persist the full history so that ``resume_from_interrupt`` can
+        rehydrate without depending on the caller to keep state.
+        """
+        if self._session is None:
+            raise RuntimeError(
+                "Tool returned InterruptItem but QueryEngine has no Session. "
+                "Pass session=… to QueryEngine to enable pause-resume."
+            )
+        interrupted = [r for r in results if r.interrupt is not None]
+        if len(interrupted) > 1:
+            raise MultipleInterruptsError(
+                f"{len(interrupted)} tools returned InterruptItem in one turn; "
+                "Sprint 9 supports at most one. Tools: "
+                + ", ".join(r.tool_call_id for r in interrupted)
+            )
+        interrupted_result = interrupted[0]
+        # mypy: interrupted_result.interrupt is not None by construction.
+        assert interrupted_result.interrupt is not None
+        sibling_results = [r for r in results if r.interrupt is None]
+        interrupted_call = next(
+            c for c in assistant_msg.tool_calls
+            if c.id == interrupted_result.tool_call_id
+        )
+
+        # Persist *full* history (including assistant_msg) before raising;
+        # resume_from_interrupt rehydrates from this snapshot.
+        await self._session.add_items(history)
+        record = to_record(
+            interrupted_result.interrupt,
+            tool_call=interrupted_call,
+            sibling_results=sibling_results,
+        )
+        await self._session.push_interrupt(record)
+        raise RunPaused(
+            session_id=self._session.session_id,
+            interrupt_id=record.id,
+            kind=record.kind,  # type: ignore[arg-type]
+        )
+
+    async def resume_from_interrupt(
+        self,
+        interrupt_id: str,
+        answer: "dict[str, Any] | str",
+        on_stream_delta: Optional[
+            Callable[[Any], Coroutine[Any, Any, None]]
+        ] = None,
+    ) -> TurnResult:
+        """Resume a paused run with the user's answer.
+
+        Loads conversation history from session, pops the named interrupt,
+        builds the resume :class:`UserMessage` (with sibling tool results
+        + the user's answer), then re-enters :meth:`run` from there.
+
+        Raises:
+            RuntimeError: if no Session is configured.
+            ValueError: if the interrupt_id is unknown / already answered.
+        """
+        if self._session is None:
+            raise RuntimeError(
+                "resume_from_interrupt requires a Session. "
+                "Pass session=… to QueryEngine."
+            )
+        history = await self._session.get_items()
+        resume_msg = await resume_with(self._session, interrupt_id, answer)
+        # Resume by re-calling run() with the hydrated + completed history.
+        # The next turn starts at Stage 1 with the full picture and the
+        # model sees the user's answer as the awaited tool_result block.
+        return await self.run(history + [resume_msg], on_stream_delta=on_stream_delta)
 
     async def _fire_post_turn_hooks(self, result: TurnResult) -> None:
         """Launch post-turn hooks as fire-and-forget async tasks."""

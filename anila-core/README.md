@@ -232,15 +232,19 @@ anila-core/
         │                          # RotatingServiceTokenMiddleware (Sprint 8 X)
         ├── cli/                   # init / register / status / agent bootstrap
         ├── compact/               # micro / auto / session_memory / sliding
-        ├── context/               # AgentContext (turn-scope contextvars)
+        ├── context/               # AgentContext (+ plan_mode / todos / event_emitter)
         ├── coordinator/           # multi-worker / multi-step orchestration
         ├── engine/                # query_engine (7-stage) + budget_tracker
+        │                          # + approvals (Sprint 9: pause-resume)
         ├── memory/                # memdir / extract / relevance / consolidation
-        ├── models/                # pydantic dtos
+        │                          # + session / sqlite_session / memory_session
+        │                          # (Sprint 9: per-chat conversation persistence)
+        ├── models/                # pydantic dtos (+ interrupt, Todo)
+        ├── post_turn/             # Sprint 9: PromptSuggestion (follow-up chips)
         ├── providers/             # base + openai_compat + cspplatform + mocks
         ├── registry/              # local + remote agent manifest cache
-        ├── router/                # tool_router (ToolRegistry)
-        ├── tools/                 # dispatch_tool + prompts
+        ├── router/                # tool_router (ToolRegistry, plan-mode gate)
+        ├── tools/                 # dispatch_tool, ask_user, plan_mode, todo_write
         │
         └── ──── Pillar 2 · shared infrastructure ────
             ├── security/          # credential_crypto + url_guard
@@ -294,6 +298,35 @@ anila-core/
 ---
 
 ## Release Notes
+
+### 2026-05-02 — v0.8.0 Sprint 9 · Web 對話 protocol
+
+新增「像 Claude.ai 一樣會對話」需要的 5 個 primitive，全部來自
+[`runtime_logic/`](../runtime_logic/) 的 Claude Code + openai-agents
+參考實作（去 CLI / 去 TUI，只留 web 前端可 render 的形狀）：
+
+| 模組 | 來源 | 用途 |
+|---|---|---|
+| `memory.session` (`Session` Protocol + `SqliteSession` + `MemorySession`) | openai-agents `memory/session.py` + `sqlite_session.py` | 一個 chat session 的對話歷史 + pending interrupts |
+| `engine.approvals` (`InterruptItem` / `RunPaused` / `resume_with`) | openai-agents `run_internal/approvals.py` | 工具回 `InterruptItem` → run 暫停 → 用戶答 → resume |
+| `tools.ask_user` | claude-code `AskUserQuestionTool` | 多選題式中段問答 |
+| `tools.plan_mode` (`enter_plan_mode` + `exit_plan_mode`) | claude-code `EnterPlanModeTool` / `ExitPlanModeTool` | 提案 → 批准 → 執行；plan mode 下 `DESTRUCTIVE` 工具被 `ToolRegistry` 阻擋 |
+| `tools.todo_write` | claude-code `TodoWriteTool` | 任務看板（恰好一個 in_progress） |
+| `post_turn.prompt_suggestion` | claude-code `services/PromptSuggestion/` | turn 結束後 suggest 3 個 follow-up question chip |
+
+`api/server.py` 的 `create_app()` 同步整合：
+
+- 自動 attach `Session`（預設 `SqliteSession` 寫到 `settings.session_db_path`，可用 `session_db_path=` 或完全 override `session_factory=`）
+- `RunPaused` 不再當 error，而是 emit `interrupt_requested` SSE + `stream_done.status = "paused"`
+- 新 endpoint `POST /sessions/{id}/answer` 接 user 答覆並 stream resumed turn
+- 新 endpoint `GET /sessions/{id}/state` snapshot 對話 + pending interrupts（UI rehydrate 用）
+- 每次 run 綁一個 `AgentContext`，工具透過 `ctx.event_emitter` 推 SSE，不耦合 transport
+
+新 SSE event types（`api/events.py`）：`interrupt_requested` / `resumed` / `todos_updated` / `follow_ups`。
+
+新增依賴：`aiosqlite>=0.20`（單機部署的預設 Session adapter；多機部署換成 Postgres / Redis 實作）。
+
+109 新測試 / lint clean / mypy 持平 / 5 個 pre-existing failures 不變。完整破壞性變更 / 移轉指引見 [`CHANGELOG.md`](./CHANGELOG.md) v0.8.0。
 
 ### 2026-05-01 — v0.7.0 Boundary correction (Sprint 8 X)
 
