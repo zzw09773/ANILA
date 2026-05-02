@@ -3,61 +3,61 @@
     <header class="page-head">
       <div>
         <p class="page-head__eyebrow">developer · guide</p>
-        <h1 class="page-head__title">build an ANILA agent</h1>
+        <h1 class="page-head__title">打造 ANILA agent</h1>
         <p class="page-head__sub">
-          fork AgenticRAG · plug in your tools · register · ship to router
+          fork AgenticRAG · 寫你的工具 · 註冊 · 上線到 router
         </p>
       </div>
     </header>
 
     <!-- TL;DR -->
-    <TermBox title="tl;dr" pad="md">
+    <TermBox title="tl;dr · 五步上線" pad="md">
       <ol class="tldr">
         <li><code>git clone &lt;your-fork&gt;/AgenticRAG &amp;&amp; cd AgenticRAG</code></li>
-        <li><code>cp .env.example .env</code> · fill <code>LLM_URL</code> / <code>EMBEDDING_URL</code> / <code>DATABASE_URL</code></li>
+        <li><code>cp .env.example .env</code> · 填 <code>LLM_URL</code> / <code>EMBEDDING_URL</code> / <code>DATABASE_URL</code></li>
         <li><code>docker compose up -d</code> · <code>curl :24786/health</code> → <code>{"status":"ok"}</code></li>
-        <li>add tools (<code>@tool</code>, skills, MCP) · point your custom logic at <code>agentic_rag/tools/</code></li>
-        <li>register on <router-link to="/developer/agents">/developer/agents</router-link> · wait for admin approval · router auto-discovers</li>
+        <li>加你自己的工具（<code>@tool</code> 裝飾器、Markdown skill、或外部 MCP server） · 把客製邏輯放到 <code>agentic_rag/tools/</code></li>
+        <li>到 <router-link to="/developer/agents">/developer/agents</router-link> 註冊 · 等管理員審核通過 · router 自動發現</li>
       </ol>
     </TermBox>
 
     <!-- Section nav -->
-    <TermBox title="contents" pad="sm">
+    <TermBox title="目錄" pad="sm">
       <ul class="toc">
-        <li><a href="#what-you-fork">what you fork</a></li>
-        <li><a href="#tools">add a tool · the @tool decorator</a></li>
+        <li><a href="#what-you-fork">你 fork 到的是什麼</a></li>
+        <li><a href="#tools">加工具 · @tool 裝飾器</a></li>
         <li><a href="#middleware">middleware · trace / cost / guardrail / retry</a></li>
-        <li><a href="#advanced">advanced · coordinator · bg task · skills · mcp</a></li>
-        <li><a href="#endpoints">endpoints your agent must expose</a></li>
-        <li><a href="#bootstrap">register · bootstrap · service token</a></li>
-        <li><a href="#testing">testing &amp; quality gates</a></li>
-        <li><a href="#troubleshoot">troubleshooting</a></li>
+        <li><a href="#advanced">進階 · coordinator · bg task · skills · mcp</a></li>
+        <li><a href="#endpoints">agent 必須暴露的端點</a></li>
+        <li><a href="#bootstrap">註冊 · bootstrap · service token</a></li>
+        <li><a href="#testing">測試與品質閘門</a></li>
+        <li><a href="#troubleshoot">疑難排解</a></li>
       </ul>
     </TermBox>
 
     <!-- What you fork -->
-    <TermBox id="what-you-fork" title="what you fork" pad="md">
+    <TermBox id="what-you-fork" title="你 fork 到的是什麼" pad="md">
       <p class="lead">
-        <strong>AgenticRAG</strong> is the official sub-agent template for Phase 1 of ANILA.
-        Self-contained: zero ANILA-internal package dependencies.
-        Third-party OSS (langchain, llama-index, sentence-transformers, …) is fine — just don't pull anila-* internal packages.
+        <strong>AgenticRAG</strong> 是 ANILA Phase 1 的官方 sub-agent 模板。
+        完全自包：對 ANILA 內部套件零依賴。
+        第三方開源套件（langchain、llama-index、sentence-transformers …）隨你用 — 只是別把 anila-* 內部套件拉進來。
       </p>
       <p>
-        The repo ships a vendored agent runtime at <code>agentic_rag/runtime/framework/</code>
-        (47 modules covering Action / Agent / Runner / Middleware / StateMachine / Memory / Coordinator / BG&nbsp;Task / Skill / MCP),
-        plus a complete RAG pipeline (vector_search / keyword_search / read_document, hierarchical chunker, vision-aware ingestion, cross-encoder reranker).
+        Repo 內建一份 vendored 的 agent runtime 放在 <code>agentic_rag/runtime/framework/</code>
+        （47 個模組，涵蓋 Action / Agent / Runner / Middleware / StateMachine / Memory / Coordinator / BG&nbsp;Task / Skill / MCP），
+        還附上完整 RAG 管線（vector_search / keyword_search / read_document、階層式 chunker、含視覺的 ingestion、cross-encoder reranker）。
       </p>
       <p>
-        Two endpoints coexist: <code>/chat</code> (legacy QueryEngine, 7-stage turn loop) and <code>/agentic-chat</code> (new framework Runner).
-        Both emit the same SSE wire format. New forks should target <code>/agentic-chat</code>.
+        並存兩個端點：<code>/chat</code>（舊的 QueryEngine，7-stage turn loop）跟 <code>/agentic-chat</code>（新的 framework Runner）。
+        兩者吐相同的 SSE wire format。新 fork 應該瞄準 <code>/agentic-chat</code>。
       </p>
     </TermBox>
 
     <!-- Tools -->
-    <TermBox id="tools" title="add a tool · @tool decorator" pad="md">
+    <TermBox id="tools" title="加工具 · @tool 裝飾器" pad="md">
       <p>
-        The <code>@tool</code> decorator auto-generates JSON schema from Python type hints + Google-style docstring <code>Args:</code> block.
-        Drop the function in <code>agentic_rag/tools/</code> (or any module) and wire it into your Agent's <code>actions=</code> tuple.
+        <code>@tool</code> 裝飾器會從 Python type hints + Google 風格 docstring 的 <code>Args:</code> 區塊自動產生 JSON schema。
+        把函式丟到 <code>agentic_rag/tools/</code>（或任何模組）後，串到你的 Agent 的 <code>actions=</code> tuple 即可。
       </p>
       <pre class="code">from agentic_rag.runtime.framework import tool, ActionContext
 from typing import Annotated
@@ -77,11 +77,11 @@ async def get_weather(
     # ... your retrieval / API logic here ...
     return {"city": city, "temp": 24, "units": units}</pre>
       <p class="hint">
-        the framework auto-converts return-dict to <code>ActionResult(output=dict)</code>; raise / return <code>ActionResult(error="...")</code> for failure.
-        first param must be <code>ctx</code> / <code>context</code> / annotated <code>ActionContext</code>.
+        框架會自動把回傳的 dict 包成 <code>ActionResult(output=dict)</code>；想表達失敗就 raise 或 <code>return ActionResult(error="...")</code>。
+        第一個參數必須是 <code>ctx</code> / <code>context</code> 或標註成 <code>ActionContext</code>。
       </p>
 
-      <h4>wire into an agent</h4>
+      <h4>串進 agent</h4>
       <pre class="code">from agentic_rag.runtime.framework import Agent, Runner
 from agentic_rag.runtime.bridge import FrameworkProviderAdapter
 
@@ -96,7 +96,7 @@ agent = Agent(
 result = await Runner().run(agent, "What's the weather in Taipei?")
 print(result.final_output)</pre>
 
-      <h4>RAG tools (already shipped)</h4>
+      <h4>RAG 工具（已內建）</h4>
       <pre class="code">from agentic_rag.runtime.bridge import build_rag_agent
 
 agent = build_rag_agent(
@@ -108,55 +108,55 @@ agent = build_rag_agent(
     embedder=my_embed_fn,
     reranker=my_reranker,    # optional
 )
-# Auto-registers vector_search / keyword_search / read_document.
-# Each result is a Citation (chunk_id / document_title / heading_path / page / confidence).</pre>
+# 自動註冊 vector_search / keyword_search / read_document。
+# 每筆結果都是 Citation（chunk_id / document_title / heading_path / page / confidence）。</pre>
     </TermBox>
 
     <!-- Middleware -->
-    <TermBox id="middleware" title="middleware · 5 built-ins" pad="md">
+    <TermBox id="middleware" title="middleware · 6 個內建中件" pad="md">
       <p>
-        Middleware composes around every Action call. Run-level middleware wraps action-level middleware wraps the handler.
-        Order matters: first registered = outermost (sees input first, output last).
+        Middleware 把每次 Action 呼叫包起來。Run-level middleware 包住 action-level middleware 再包住 handler。
+        順序很重要：最先註冊的 = 最外層（最先看到 input，最後看到 output）。
       </p>
       <table class="term-table">
         <thead>
-          <tr><th>middleware</th><th>what it does</th><th>typical use</th></tr>
+          <tr><th>middleware</th><th>做什麼</th><th>典型用途</th></tr>
         </thead>
         <tbody>
           <tr>
             <td><code>TraceMiddleware</code></td>
-            <td>open span around each action; record input/output/timing</td>
-            <td>audit log; live tracing dashboard</td>
+            <td>每個 action 開一個 span，記錄 input / output / 耗時</td>
+            <td>audit log；即時 tracing dashboard</td>
           </tr>
           <tr>
             <td><code>CostMiddleware</code></td>
-            <td>token-count tracking; optional dollar tracking; budget gate</td>
-            <td>per-agent capacity reports (ANILA = local, no $$ to track)</td>
+            <td>token 計數；選配 dollar 追蹤；budget gate</td>
+            <td>各 agent 的容量報表（ANILA 純本地，沒有美金成本要算）</td>
           </tr>
           <tr>
             <td><code>GuardrailMiddleware</code></td>
-            <td>input / output checks; allow / deny / modify decisions</td>
-            <td>PII redaction; citation enforcement; prompt-injection guard</td>
+            <td>input / output 檢查；allow / deny / modify 決策</td>
+            <td>PII 遮罩；citation 強制；prompt-injection 防守</td>
           </tr>
           <tr>
             <td><code>RetryMiddleware</code></td>
-            <td>exception or error-result retry with exponential backoff</td>
-            <td>flaky reranker; vLLM hiccup recovery</td>
+            <td>對例外或 error result 做指數退避重試</td>
+            <td>不穩定的 reranker；vLLM 抖動回復</td>
           </tr>
           <tr>
             <td><code>ShellHookMiddleware</code></td>
-            <td>spawn shell command before/after action; JSON over stdin/stdout</td>
-            <td>corporate audit pipe; ops-team-maintained deny-list</td>
+            <td>action 前後 spawn shell 命令；用 stdin/stdout 走 JSON</td>
+            <td>企業 audit pipe；資安團隊維護的 deny-list</td>
           </tr>
           <tr>
             <td><code>ToolOutputTrimmerMiddleware</code></td>
-            <td>cap tool output size; preview replacement when over threshold</td>
-            <td>vector_search returns 50 chunks → don't blow context window</td>
+            <td>限制 tool 輸出大小；超過門檻就替換成預覽</td>
+            <td>vector_search 回 50 個 chunk 時不要把 context window 灌爆</td>
           </tr>
         </tbody>
       </table>
 
-      <h4>example · build a runner with trace + retry</h4>
+      <h4>範例 · 建一個帶 trace + retry 的 runner</h4>
       <pre class="code">from agentic_rag.runtime.framework import Runner
 from agentic_rag.runtime.framework.middleware import (
     TraceMiddleware, InMemoryBackend, RetryMiddleware, RetryPolicy,
@@ -173,20 +173,20 @@ runner = Runner(middleware=[
 result = await runner.run(agent, "...")
 # backend.spans now holds one Span per action invocation.</pre>
 
-      <h4>citation guardrail · enforce answers cite sources</h4>
+      <h4>citation guardrail · 強制答案 cite 來源</h4>
       <pre class="code">from agentic_rag.runtime.bridge import enforce_citations
 
 result = await runner.run(agent, "what does the docs say about X?")
-verdict = enforce_citations(result, mode="warn")  # or mode="block" to raise
+verdict = enforce_citations(result, mode="warn")  # mode="block" 則會直接 raise
 # verdict.cited / verdict.matched / verdict.candidates</pre>
     </TermBox>
 
     <!-- Advanced primitives -->
-    <TermBox id="advanced" title="advanced primitives" pad="md">
-      <h4>Coordinator · LLM-driven sub-agent fan-out</h4>
+    <TermBox id="advanced" title="進階 primitives" pad="md">
+      <h4>Coordinator · LLM 驅動的 sub-agent fan-out</h4>
       <p>
-        Spawn N parallel sub-agents (read-only) or sequential ones (write-safe).
-        The coordinator <em>agent</em> is just an Agent whose <code>actions=</code> includes <code>spawn_worker</code> / <code>check_worker</code> / <code>wait_for_workers</code>.
+        Spawn N 個平行的 sub-agent（read-only）或序列的（write-safe）。
+        Coordinator <em>agent</em> 本身就是個普通 Agent，只是它的 <code>actions=</code> 帶了 <code>spawn_worker</code> / <code>check_worker</code> / <code>wait_for_workers</code>。
       </p>
       <pre class="code">from agentic_rag.runtime.framework import Coordinator, make_coordinator_actions
 
@@ -198,10 +198,10 @@ coord_agent = Agent(
     actions=tuple(make_coordinator_actions(coord)),
 )</pre>
 
-      <h4>BG_TASK · long-running background work</h4>
+      <h4>BG_TASK · 長時間背景工作</h4>
       <p>
-        For non-LLM batch jobs (ingest 10k PDFs, rebuild vector index, batch inference).
-        Returns a handle immediately; the LLM uses <code>check_bg_task</code> / <code>cancel_bg_task</code> to control.
+        給非 LLM 的批次工作用（ingest 一萬份 PDF、重建向量索引、批次推論）。
+        立刻回 handle；LLM 用 <code>check_bg_task</code> / <code>cancel_bg_task</code> 控制。
       </p>
       <pre class="code">from agentic_rag.runtime.framework import (
     Action, ActionKind, BgTaskRunner, make_bg_task_actions,
@@ -226,7 +226,7 @@ agent = Agent(
 
       <h4>Skills · Markdown frontmatter → tool</h4>
       <p>
-        Drop a <code>.md</code> file into <code>~/.agentic-rag/skills/</code>; non-coders can author tools.
+        丟一個 <code>.md</code> 檔到 <code>~/.agentic-rag/skills/</code>；非工程師也能寫工具。
       </p>
       <pre class="code">---
 name: summarise_pr
@@ -247,15 +247,15 @@ Step 3: write a 3-bullet summary the user can scan.</pre>
 
 skills = load_skills_from_dir("~/.agentic-rag/skills/")
 registry = SkillRegistry(skills)
-# All skills:
+# 全部 skill：
 agent = Agent(actions=tuple(registry.all_actions()), ...)
-# Or filtered to query (saves prompt tokens):
+# 或按 query 篩選（省 prompt token）：
 relevant = registry.actions_for(user_query, limit=5)</pre>
 
-      <h4>MCP · plug in third-party MCP servers</h4>
+      <h4>MCP · 接第三方 MCP server</h4>
       <p>
-        Connect to <code>mcp-server-filesystem</code>, <code>mcp-server-github</code>, <code>mcp-server-sentry</code>, or any custom stdio MCP server.
-        Requires <code>pip install 'agentic-rag[mcp]'</code>.
+        接 <code>mcp-server-filesystem</code>、<code>mcp-server-github</code>、<code>mcp-server-sentry</code>，或任何自製 stdio MCP server。
+        需要 <code>pip install 'agentic-rag[mcp]'</code>。
       </p>
       <pre class="code">from agentic_rag.runtime.framework.mcp import MCPClientPool, MCPServer
 
@@ -271,140 +271,140 @@ async with pool:
     </TermBox>
 
     <!-- Endpoints -->
-    <TermBox id="endpoints" title="endpoints your agent must expose" pad="md">
-      <p>The CSP router calls these. <code>api.py</code> in AgenticRAG already implements them.</p>
+    <TermBox id="endpoints" title="agent 必須暴露的端點" pad="md">
+      <p>CSP router 會打這些端點。AgenticRAG 內的 <code>api.py</code> 已經實作好了。</p>
       <table class="term-table">
         <thead>
-          <tr><th style="width: 70px">method</th><th>path</th><th>auth</th><th>purpose</th></tr>
+          <tr><th style="width: 70px">method</th><th>path</th><th>auth</th><th>用途</th></tr>
         </thead>
         <tbody>
           <tr>
             <td><code>GET</code></td><td><code>/health</code></td><td>public</td>
-            <td>discovery + health probe; returns <code>{"status":"ok"}</code></td>
+            <td>discovery + health probe，回 <code>{"status":"ok"}</code></td>
           </tr>
           <tr>
             <td><code>GET</code></td><td><code>/v1/models</code></td><td>s2s</td>
-            <td>list available model ids (OpenAI-compat)</td>
+            <td>列出可用的 model id（OpenAI-compat）</td>
           </tr>
           <tr>
             <td><code>POST</code></td><td><code>/v1/chat/completions</code></td><td>s2s</td>
-            <td>main inference (OpenAI-compat); SSE-stream by default</td>
+            <td>主推論（OpenAI-compat）；預設走 SSE stream</td>
           </tr>
           <tr>
             <td><code>POST</code></td><td><code>/agentic-chat</code></td><td>s2s</td>
-            <td>framework Runner SSE stream (richer tool-call events)</td>
+            <td>framework Runner 的 SSE stream（更豐富的 tool-call 事件）</td>
           </tr>
           <tr>
             <td><code>POST</code></td><td><code>/documents/upload</code></td><td>s2s</td>
-            <td>RAG ingestion; multipart/form-data</td>
+            <td>RAG 文件 ingestion；multipart/form-data</td>
           </tr>
           <tr>
             <td><code>POST</code></td><td><code>/search</code></td><td>s2s</td>
-            <td>raw retrieval (no LLM)</td>
+            <td>純檢索（不過 LLM）</td>
           </tr>
         </tbody>
       </table>
       <p class="hint">
-        s2s = service-to-service. Two auth headers run side-by-side: <code>X-CSP-Service-Token</code> from the platform, <code>Authorization: Bearer ...</code> for direct clients (OpenWebUI etc).
+        s2s = service-to-service。兩個 auth header 並行：平台來的 <code>X-CSP-Service-Token</code>、直連客戶端（OpenWebUI 等）用的 <code>Authorization: Bearer ...</code>。
       </p>
     </TermBox>
 
     <!-- Bootstrap -->
-    <TermBox id="bootstrap" title="register · bootstrap · service token" pad="md">
+    <TermBox id="bootstrap" title="註冊 · bootstrap · service token" pad="md">
       <ol class="steps">
         <li>
-          register your agent on <router-link to="/developer/agents">/developer/agents</router-link> ·
-          status starts as <TermBadge variant="warn">pending</TermBadge>
+          到 <router-link to="/developer/agents">/developer/agents</router-link> 註冊你的 agent ·
+          狀態起始為 <TermBadge variant="warn">pending</TermBadge>
         </li>
         <li>
-          admin approves · status flips to <TermBadge variant="ok">approved</TermBadge>
+          管理員 approve · 狀態翻成 <TermBadge variant="ok">approved</TermBadge>
         </li>
         <li>
-          admin issues a one-shot <strong>bootstrap token</strong> (<code>bsk-...</code>, 15-min TTL)
+          管理員核發一次性的 <strong>bootstrap token</strong>（<code>bsk-...</code>，15 分鐘 TTL）
         </li>
         <li>
-          set in your agent's <code>.env</code>:
+          在你 agent 的 <code>.env</code> 設好：
           <pre class="code">CSP_URL=http://csp:8000
 ANILA_AGENT_ID=&lt;your-id&gt;
 ANILA_ENDPOINT_URL=http://&lt;your-host&gt;:24786
 CSP_BOOTSTRAP_TOKEN=bsk-XXXX-from-admin</pre>
         </li>
         <li>
-          first <code>docker compose up -d</code> auto-runs the bootstrap CLI: trades the bsk for a long-lived <code>csk-...</code> service token written to <code>/var/lib/anila-agent/service_token.json</code> (mode 0600)
+          第一次 <code>docker compose up -d</code> 時 entrypoint 會自動跑 bootstrap CLI：把 bsk 換成長期的 <code>csk-...</code> service token，寫到 <code>/var/lib/anila-agent/service_token.json</code>（mode 0600）
         </li>
         <li>
-          remove <code>CSP_BOOTSTRAP_TOKEN</code> from <code>.env</code> · it's been consumed; CSP rejects replays
+          從 <code>.env</code> 拿掉 <code>CSP_BOOTSTRAP_TOKEN</code> · 已經被消費掉了，CSP 會擋 replay
         </li>
         <li>
-          router auto-discovers your <code>/health</code> · starts dispatching traffic
+          router 自動探測你的 <code>/health</code> · 開始派送流量
         </li>
       </ol>
       <p class="hint">
-        full lifecycle (rotation, multi-replica K8s, fallback to fleet-shared <code>CSP_SERVICE_TOKEN</code>): see <code>AgenticRAG/docs/BOOTSTRAP_DEPLOYMENT.md</code>
+        完整生命週期（rotation、多 replica K8s、退回 fleet 共用 <code>CSP_SERVICE_TOKEN</code>）：見 <code>AgenticRAG/docs/BOOTSTRAP_DEPLOYMENT.md</code>
       </p>
     </TermBox>
 
     <!-- Testing -->
-    <TermBox id="testing" title="testing &amp; quality gates" pad="md">
+    <TermBox id="testing" title="測試與品質閘門" pad="md">
       <pre class="code">pip install -e '.[rag,dev]'
 pytest                                    # 632 tests
 pytest --cov=agentic_rag --cov-report=term-missing
 mypy src/agentic_rag/runtime/             # strict mode
 ruff check src/ tests/</pre>
       <p>
-        Quality bars maintained on the framework path: mypy strict + ruff clean + boundary test ensures no anila-* hard imports leak in.
-        Add tests under <code>tests/</code> for your new tools — the <code>tests/runtime/framework/test_schema_generator.py</code> file is a good template for <code>@tool</code> coverage.
+        Framework path 維持的品質基線：mypy strict + ruff clean + boundary test 確保不會漏進 anila-* 的硬依賴。
+        新工具請在 <code>tests/</code> 下加測試 — <code>tests/runtime/framework/test_schema_generator.py</code> 是 <code>@tool</code> 覆蓋率的好範本。
       </p>
     </TermBox>
 
     <!-- Troubleshooting -->
-    <TermBox id="troubleshoot" title="troubleshooting" pad="md">
+    <TermBox id="troubleshoot" title="疑難排解" pad="md">
       <table class="term-table">
-        <thead><tr><th>symptom</th><th>likely cause · fix</th></tr></thead>
+        <thead><tr><th>症狀</th><th>可能原因 · 修法</th></tr></thead>
         <tbody>
           <tr>
-            <td><code>503</code> on every request</td>
-            <td><code>API_KEY</code> not set and <code>API_DEV_MODE</code> not <code>true</code> · set one of them in <code>.env</code></td>
+            <td>每個請求都回 <code>503</code></td>
+            <td><code>API_KEY</code> 沒設且 <code>API_DEV_MODE</code> 不是 <code>true</code> · 在 <code>.env</code> 設其中一個</td>
           </tr>
           <tr>
-            <td>bootstrap CLI exits with <code>token consumed</code></td>
-            <td>service-token state file already present · delete <code>/var/lib/anila-agent/service_token.json</code> if you want to re-bootstrap</td>
+            <td>bootstrap CLI 噴 <code>token consumed</code></td>
+            <td>service-token state 檔已經存在 · 想重新 bootstrap 就刪掉 <code>/var/lib/anila-agent/service_token.json</code></td>
           </tr>
           <tr>
-            <td>router never dispatches to your agent</td>
-            <td>approval still <code>pending</code> · admin needs to act on <router-link to="/developer/agents">/developer/agents</router-link></td>
+            <td>router 不派送流量到你的 agent</td>
+            <td>審核還是 <code>pending</code> · 管理員要去 <router-link to="/developer/agents">/developer/agents</router-link> 處理</td>
           </tr>
           <tr>
-            <td>vector_search returns empty</td>
-            <td>collection not assigned · ingestion not finished · embedding model mismatch (must match what was used at ingest)</td>
+            <td>vector_search 都回空</td>
+            <td>collection 沒指派 · ingestion 還沒跑完 · embedding model 對不上（要跟 ingest 時用的一致）</td>
           </tr>
           <tr>
-            <td>LLM keeps hallucinating tool names</td>
-            <td>schema isn't reaching the model · check <code>agent.registry.tool_definitions()</code> output matches what your provider expects</td>
+            <td>LLM 一直幻想出不存在的 tool name</td>
+            <td>schema 沒送到 model · 檢查 <code>agent.registry.tool_definitions()</code> 輸出跟 provider 的預期是否一致</td>
           </tr>
           <tr>
-            <td>memory extraction storms after pod restart</td>
-            <td>configure <code>CursorStore</code> on <code>MemoryExtractor</code> for persistence · see <code>agentic_rag/memory/extraction_state.py</code></td>
+            <td>pod 重啟後 memory extraction 大爆發</td>
+            <td>把 <code>CursorStore</code> 設定到 <code>MemoryExtractor</code> 上做持久化 · 見 <code>agentic_rag/memory/extraction_state.py</code></td>
           </tr>
           <tr>
-            <td>tool output blowing context window</td>
-            <td>add <code>ToolOutputTrimmerMiddleware(max_chars=2000)</code> to runner middleware</td>
+            <td>tool 輸出把 context window 灌爆</td>
+            <td>在 runner middleware 加一個 <code>ToolOutputTrimmerMiddleware(max_chars=2000)</code></td>
           </tr>
           <tr>
-            <td>cancellation doesn't actually stop the run</td>
-            <td>handler must check <code>ctx.metadata["_bg_cancel_signal"].is_set()</code> at await points; framework can't preempt arbitrary CPU loops</td>
+            <td>取消訊號發出去但 run 沒停</td>
+            <td>handler 必須在 await 點檢查 <code>ctx.metadata["_bg_cancel_signal"].is_set()</code>；框架沒辦法強制中斷任意 CPU 迴圈</td>
           </tr>
         </tbody>
       </table>
     </TermBox>
 
     <!-- Footer cross-link -->
-    <TermBox title="next steps" pad="md">
+    <TermBox title="後續步驟" pad="md">
       <ul class="next">
-        <li>register your agent → <router-link to="/developer/agents">/developer/agents</router-link></li>
-        <li>browse knowledge collections → <router-link to="/knowledge-collections">/knowledge-collections</router-link></li>
-        <li>deeper docs in <code>AgenticRAG/docs/</code> · <code>BOOTSTRAP_DEPLOYMENT.md</code> · <code>CSP_INTEGRATION.md</code></li>
-        <li>v0.1 milestone changelog: see <code>AgenticRAG/README.md</code></li>
+        <li>註冊你的 agent → <router-link to="/developer/agents">/developer/agents</router-link></li>
+        <li>瀏覽知識庫 collection → <router-link to="/knowledge-collections">/knowledge-collections</router-link></li>
+        <li>更深入的文件在 <code>AgenticRAG/docs/</code> · <code>BOOTSTRAP_DEPLOYMENT.md</code> · <code>CSP_INTEGRATION.md</code></li>
+        <li>v0.1 milestone 變更紀錄：見 <code>AgenticRAG/README.md</code></li>
       </ul>
     </TermBox>
   </div>
@@ -448,7 +448,7 @@ import { TermBox, TermBadge } from '../components/cli'
 
 h4 {
   font-size: var(--t-sm); color: var(--c-fg-1); font-weight: 500;
-  margin: var(--gap-3) 0 var(--gap-2); text-transform: lowercase; letter-spacing: 0.02em;
+  margin: var(--gap-3) 0 var(--gap-2); letter-spacing: 0.02em;
 }
 
 .code {
