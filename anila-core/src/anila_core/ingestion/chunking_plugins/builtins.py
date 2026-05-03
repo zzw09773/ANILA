@@ -32,8 +32,9 @@ from typing import Any, ClassVar
 from anila_core.ingestion.chunking_plugins.base import ChunkResult, ChunkerStrategy
 from anila_core.ingestion.chunking_plugins.registry import register_chunker
 
-# 4 chars-per-token is the same heuristic OpenAI's "rough estimate" page uses.
-# Good enough for chunk-sizing within ±25%; not used for embedding billing.
+# Latin-script token density. OpenAI's CL100K BPE averages ~4 chars per
+# token for English / Latin-script content. Used as the divisor for
+# the non-CJK portion of any text.
 _CHARS_PER_TOKEN = 4
 
 # Markdown ATX heading pattern: 1-6 leading hashes, then space, then title.
@@ -44,9 +45,63 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", flags=re.MULTILINE)
 _CODE_FENCE_RE = re.compile(r"^(```|~~~).*?^\1\s*$", flags=re.MULTILINE | re.DOTALL)
 
 
+def _is_cjk(c: str) -> bool:
+    """Return True for CJK ideograph / kana / hangul characters.
+
+    Covers CJK Unified Ideographs, Hiragana, Katakana, Hangul Syllables.
+    Used to switch the chars-per-token heuristic — BPE collapses
+    Latin-script text into ~4 chars/token but Asian scripts stay
+    closer to 1 char/token because each ideograph is its own concept.
+    """
+    return (
+        "一" <= c <= "鿿"   # CJK Unified Ideographs
+        or "぀" <= c <= "ヿ"  # Hiragana + Katakana
+        or "가" <= c <= "힯"  # Hangul Syllables
+    )
+
+
 def _tokens(text: str) -> int:
-    """Rough token count without pulling tiktoken into core."""
-    return max(1, len(text) // _CHARS_PER_TOKEN)
+    """Approximate token count without pulling tiktoken into core.
+
+    Mixed-script aware: CJK characters count ~1 token each, Latin
+    text ~``_CHARS_PER_TOKEN`` chars per token. The previous flat
+    ``len // 4`` was English-biased and undercounted CJK by roughly
+    4×, which caused fixed-size chunkers to produce chunks far
+    larger than the user's stated ``size`` budget for Chinese /
+    Japanese / Korean docs.
+
+    Still a heuristic — real tokenisation (tiktoken / sentencepiece)
+    is the ground truth — but acceptable for chunk sizing where ±10%
+    is fine and we'd rather not pull a heavyweight dep into core.
+    """
+    if not text:
+        return 0
+    cjk = sum(1 for c in text if _is_cjk(c))
+    other = len(text) - cjk
+    return max(1, cjk + other // _CHARS_PER_TOKEN)
+
+
+def _estimate_char_budget(text: str, target_tokens: int) -> int:
+    """Inverse of ``_tokens`` — how many characters approximate
+    ``target_tokens`` for **this specific text**'s language mix.
+
+    Sliding-window chunkers need to step in CHARS but the user's
+    parameter is in TOKENS. Scaling by a flat constant fails for
+    mixed / CJK content. We sample the head of the document, compute
+    an empirical chars-per-token, and return the budget. Cheap
+    (one O(n) sample pass) but adapts to content.
+    """
+    if not text or target_tokens <= 0:
+        return 0
+    # Sample up to 2048 chars from the document head. For docs larger
+    # than that the language mix in the head is a fine proxy for the
+    # whole; smaller docs use the entire text.
+    sample = text[: min(2048, len(text))]
+    sample_tokens = _tokens(sample)
+    if sample_tokens <= 0:
+        return target_tokens * _CHARS_PER_TOKEN
+    chars_per_token = len(sample) / sample_tokens
+    return max(1, int(target_tokens * chars_per_token))
 
 
 def _slug(s: str, maxlen: int = 40) -> str:
@@ -87,8 +142,16 @@ class FixedChunker(ChunkerStrategy):
                 f"fixed: overlap ({overlap_tok}) must be < size ({size_tok})"
             )
 
-        size_chars = size_tok * _CHARS_PER_TOKEN
-        step_chars = (size_tok - overlap_tok) * _CHARS_PER_TOKEN
+        # CJK-aware sizing — see ``_estimate_char_budget``. The previous
+        # ``size_tok * 4`` constant overshot Chinese / Japanese / Korean
+        # text by ~4× because BPE behaves differently on those scripts.
+        size_chars = _estimate_char_budget(document_text, size_tok)
+        step_chars = _estimate_char_budget(document_text, size_tok - overlap_tok)
+        if step_chars <= 0:
+            # Defensive — shouldn't happen given the overlap < size guard
+            # above plus min-1 inside the helper, but cheap insurance
+            # against an infinite loop on pathological inputs.
+            step_chars = 1
         chunks: list[ChunkResult] = []
         text_len = len(document_text)
         idx = 0
@@ -205,23 +268,47 @@ class MarkdownAwareChunker(ChunkerStrategy):
 
 @register_chunker
 class HierarchicalChunker(ChunkerStrategy):
-    """Multi-level heading tree with parent-context preserved per leaf.
+    """Multi-level heading tree — emits parent (heading) + leaf rows.
 
-    Differs from ``markdown-aware`` by retaining the FULL ancestor chain
-    in each leaf's metadata (``heading_path: ["Chapter 1", "Section 1.2",
-    "Subsection 1.2.3"]``). Retrieval then surfaces the parent path back
-    into prompts so the LLM sees structural context — important for legal
-    / regulation corpora where "第八條" alone is meaningless without
-    knowing which Chapter / Article-set it belongs to.
+    Sprint 9 X / parent-child RAG redesign. Now produces a TREE of
+    chunks instead of a flat list of leaves:
+
+    1. One ``chunk_type='heading'`` row per heading the chunker
+       discovers. ``content`` is the heading title; embedding stays
+       NULL (heading rows are JOIN-fetched, never vector-searched).
+    2. One or more ``chunk_type='leaf'`` rows under each heading.
+       Each carries ``parent_chunk_key`` in metadata so the worker
+       can resolve the FK after the parent row is inserted.
+
+    A "leaf" is a paragraph-sized chunk (~``max_leaf_tokens``,
+    default 256 — was 1024 pre-9-X). Sections that exceed the leaf
+    budget recurse into fixed-size windowing inside the section,
+    keeping the heading path attached.
+
+    Result: small chunks for vector recall + structural parent for
+    LLM context. The worker's persistence layer is responsible for
+    writing parents before children so the FK can be filled in.
+    Until that wiring lands (Phase 3), parent_chunk_key is metadata-
+    only and the rows still flow through pgvector_store as
+    independent chunks.
     """
 
     name = "hierarchical"
     display_name = "Hierarchical (heading tree + ancestor context)"
-    default_params = {"max_leaf_tokens": 1024, "overlap_tokens": 64}
+    default_params = {
+        # Sprint 9 X: dropped from 1024 → 256 (paragraph-level leaves)
+        # to give vector retrieval finer granularity. Use the
+        # ``max_parent_tokens`` budget for the heading-section
+        # context that gets JOIN-fetched at retrieval.
+        "max_leaf_tokens": 256,
+        "max_parent_tokens": 1024,
+        "overlap_tokens": 32,
+    }
     param_schema = {
         "type": "object",
         "properties": {
-            "max_leaf_tokens": {"type": "integer", "minimum": 128, "maximum": 8192},
+            "max_leaf_tokens": {"type": "integer", "minimum": 64, "maximum": 4096},
+            "max_parent_tokens": {"type": "integer", "minimum": 128, "maximum": 8192},
             "overlap_tokens": {"type": "integer", "minimum": 0, "maximum": 512},
         },
         "additionalProperties": False,
@@ -234,89 +321,193 @@ class HierarchicalChunker(ChunkerStrategy):
         params: dict[str, Any],
     ) -> list[ChunkResult]:
         merged = {**self.default_params, **params}
-        max_tok = int(merged["max_leaf_tokens"])
+        max_leaf = int(merged["max_leaf_tokens"])
+        max_parent = int(merged["max_parent_tokens"])
         overlap_tok = int(merged["overlap_tokens"])
 
         masked = _CODE_FENCE_RE.sub(lambda m: " " * len(m.group(0)), document_text)
-        # Maintain a heading stack indexed by level (1..6).
-        # `heading_stack[i]` is the most-recent heading at level i (or None).
-        heading_stack: list[str | None] = [None] * 7
-        # Collect (start_offset, end_offset, heading_path) for each leaf.
-        leaves: list[tuple[int, int, list[str]]] = []
-        last_pos = 0
 
-        for m in _HEADING_RE.finditer(masked):
+        # Walk the heading regex once, building a list of section
+        # records: (heading_title, heading_level, body_start,
+        # body_end, heading_path_at_this_section).
+        sections = self._extract_sections(document_text, masked)
+
+        chunks: list[ChunkResult] = []
+        # Track which heading (chunk_key) is the current parent for
+        # subsequent leaf emission. Sections without their own
+        # heading (i.e. preamble before the first ``#``) attach to
+        # an implicit ``preface`` parent so leaves still have a
+        # parent_chunk_key.
+        heading_idx = 0
+        leaf_idx = 0
+
+        for section in sections:
+            title = section["title"]
+            level = section["level"]
+            body = section["body"]
+            heading_path = section["path"]
+
+            # Emit the heading-level parent row (no embedding).
+            # ``content`` is the heading title — what the JOIN at
+            # retrieval time will return as ``parent_content``.
+            parent_chunk_key = (
+                f"heading-{heading_idx:04d}-{_slug(title) or 'preface'}"
+            )
+            chunks.append(
+                ChunkResult(
+                    content=title or "(preface)",
+                    chunk_key=parent_chunk_key,
+                    token_count=_tokens(title or ""),
+                    metadata={
+                        "chunk_type": "heading",
+                        "chunk_level": level,
+                        "heading_path": heading_path,
+                        "heading_depth": len(heading_path),
+                        "strategy": self.name,
+                    },
+                )
+            )
+            heading_idx += 1
+
+            if not body.strip():
+                continue
+
+            # Decide leaf granularity for this section's body. We
+            # split into paragraph-sized leaves (~max_leaf tokens).
+            # Paragraph boundaries = blank-line gaps; if a paragraph
+            # itself exceeds the leaf budget, recurse into fixed-size
+            # windows inside that paragraph with overlap.
+            leaves = self._split_into_leaves(body, max_leaf, overlap_tok)
+            for leaf_text in leaves:
+                if not leaf_text.strip():
+                    continue
+                leaf_key = (
+                    f"leaf-{leaf_idx:05d}-{_slug(title) or 'preface'}"
+                )
+                chunks.append(
+                    ChunkResult(
+                        content=leaf_text,
+                        chunk_key=leaf_key,
+                        token_count=_tokens(leaf_text),
+                        metadata={
+                            "chunk_type": "leaf",
+                            "chunk_level": level + 1,
+                            "heading_path": heading_path,
+                            "heading_depth": len(heading_path),
+                            "parent_chunk_key": parent_chunk_key,
+                            "strategy": self.name,
+                        },
+                    )
+                )
+                leaf_idx += 1
+
+        # Note: ``max_parent_tokens`` is currently informational —
+        # parent rows store only the heading title, not the section
+        # body, so they're always small. Reserved for a future
+        # variant where parents carry a section summary or first-N-
+        # tokens body for richer JOIN content.
+        _ = max_parent
+
+        return chunks
+
+    @staticmethod
+    def _extract_sections(
+        document_text: str, masked: str
+    ) -> list[dict[str, Any]]:
+        """Walk heading regex; return one record per section.
+
+        A "section" is the span between one heading and the next.
+        Document preface (text before any ``#``) becomes a synthetic
+        ``level=0`` section with empty title so it still gets a
+        parent row to anchor its leaves.
+        """
+        records: list[dict[str, Any]] = []
+        heading_stack: list[str | None] = [None] * 7
+
+        # Snapshot before any heading: an implicit preface section.
+        preface_end = len(document_text)
+        first_heading = next(_HEADING_RE.finditer(masked), None)
+        if first_heading is not None:
+            preface_end = first_heading.start()
+        if preface_end > 0:
+            records.append(
+                {
+                    "title": "",
+                    "level": 0,
+                    "body": document_text[:preface_end],
+                    "path": [],
+                }
+            )
+
+        # Walk all headings, recording the body span between each
+        # heading and the next.
+        heading_positions = list(_HEADING_RE.finditer(masked))
+        for i, m in enumerate(heading_positions):
             start = m.start()
             level = len(m.group(1))
             title = m.group(2).strip()
 
-            # Close out the leaf preceding this heading.
-            if start > last_pos:
-                leaves.append((last_pos, start, self._snapshot(heading_stack)))
-
-            # Update stack: new heading at `level` clears all deeper levels.
             heading_stack[level] = title
             for deeper in range(level + 1, 7):
                 heading_stack[deeper] = None
 
-            last_pos = start
-
-        # Final leaf from the last heading to EOF.
-        if last_pos < len(document_text):
-            leaves.append(
-                (last_pos, len(document_text), self._snapshot(heading_stack))
+            body_start = m.end()
+            body_end = (
+                heading_positions[i + 1].start()
+                if i + 1 < len(heading_positions)
+                else len(document_text)
+            )
+            records.append(
+                {
+                    "title": title,
+                    "level": level,
+                    "body": document_text[body_start:body_end],
+                    "path": [h for h in heading_stack if h is not None],
+                }
             )
 
-        chunks: list[ChunkResult] = []
-        idx = 0
-        for start, end, path in leaves:
-            section = document_text[start:end]
-            if not section.strip():
-                continue
-
-            if _tokens(section) <= max_tok:
-                chunks.append(self._make_chunk(idx, section, path))
-                idx += 1
-                continue
-
-            # Leaf too big — recurse into fixed-size with overlap, keeping
-            # the parent heading path on every sub-chunk.
-            sub_chunks = FixedChunker().chunk(
-                section, {}, {"size": max_tok, "overlap": overlap_tok}
-            )
-            for sub_idx, sub in enumerate(sub_chunks):
-                chunks.append(self._make_chunk(idx, sub.content, path, sub_idx))
-                idx += 1
-        return chunks
+        return records
 
     @staticmethod
-    def _snapshot(stack: list[str | None]) -> list[str]:
-        """Return current heading_path with Nones stripped."""
-        return [h for h in stack if h is not None]
+    def _split_into_leaves(
+        body: str, max_leaf_tokens: int, overlap_tokens: int
+    ) -> list[str]:
+        """Split a section body into paragraph-sized leaves.
 
-    def _make_chunk(
-        self,
-        idx: int,
-        content: str,
-        heading_path: list[str],
-        sub_idx: int | None = None,
-    ) -> ChunkResult:
-        slug_tail = _slug(heading_path[-1]) if heading_path else "preface"
-        chunk_key = (
-            f"leaf-{idx:04d}-{slug_tail}"
-            if sub_idx is None
-            else f"leaf-{idx:04d}-{slug_tail}-{sub_idx:03d}"
-        )
-        return ChunkResult(
-            content=content,
-            chunk_key=chunk_key,
-            token_count=_tokens(content),
-            metadata={
-                "heading_path": heading_path,
-                "heading_depth": len(heading_path),
-                "strategy": self.name,
-            },
-        )
+        First pass: split on blank-line gaps (paragraph boundaries).
+        Second pass: any paragraph still over budget falls back to
+        FixedChunker windowing with overlap (mirrors the pre-9-X
+        section-overflow behaviour).
+        """
+        # Greedy merge of consecutive paragraphs up to max_leaf.
+        paragraphs = [p for p in re.split(r"\n\s*\n", body) if p.strip()]
+        if not paragraphs:
+            return []
+
+        merged: list[str] = []
+        buf: list[str] = []
+        buf_tok = 0
+        for p in paragraphs:
+            p_tok = _tokens(p)
+            if p_tok > max_leaf_tokens:
+                # Flush buffer first, then recurse on the oversized
+                # paragraph via fixed-size windowing.
+                if buf:
+                    merged.append("\n\n".join(buf))
+                    buf, buf_tok = [], 0
+                fixed = FixedChunker().chunk(
+                    p, {}, {"size": max_leaf_tokens, "overlap": overlap_tokens}
+                )
+                merged.extend(c.content for c in fixed)
+                continue
+            if buf_tok + p_tok > max_leaf_tokens and buf:
+                merged.append("\n\n".join(buf))
+                buf, buf_tok = [], 0
+            buf.append(p)
+            buf_tok += p_tok
+        if buf:
+            merged.append("\n\n".join(buf))
+        return merged
 
 
 @register_chunker

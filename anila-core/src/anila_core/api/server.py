@@ -21,7 +21,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..config import settings
+from ..context.agent_context import AgentContext, set_current_context
+from ..engine.approvals import RunPaused
 from ..engine.query_engine import QueryConfig, QueryEngine
+from ..memory.session import Session
+from ..memory.sqlite_session import SqliteSession
 from ..models.message import Usage, UserMessage
 from ..providers.base import Provider
 from ..router.tool_router import ToolRegistry
@@ -29,7 +33,9 @@ from .middleware.auth import ApiKeyMiddleware
 from .events import (
     ErrorPayload,
     EventType,
+    InterruptRequestedPayload,
     MessageDeltaPayload,
+    ResumedPayload,
     ServerEvent,
     ToolCallStartedPayload,
     UsageUpdatePayload,
@@ -84,12 +90,35 @@ class AwaySummaryResponse(BaseModel):
     session_id: str
 
 
+class AnswerRequest(BaseModel):
+    """Sprint 9 PR 3 — body for ``POST /sessions/{id}/answer``.
+
+    ``answer`` shape depends on the interrupt kind; see
+    :func:`anila_core.engine.approvals._render_answer` for the
+    structured-vs-string split. Examples:
+
+    - ``ask_user``: ``{"selected": ["blue"], "other_text": "hot pink"}``
+    - ``plan``: ``{"approved": true, "comment": "lgtm"}``
+    - any: ``"raw user text"`` (string fallback)
+    """
+
+    interrupt_id: str
+    answer: Any
+    # Resume runs reuse the same QueryConfig knobs as /chat. Most callers
+    # pass nothing here (defaults are fine).
+    model: str = settings.model
+    max_turns: int = 10
+    system_prompt: str = ""
+
+
 def create_app(
     provider: Provider,
     tool_registry: ToolRegistry,
     away_summary_fn: Optional[Any] = None,
     api_key: Optional[str] = None,
     api_dev_mode: bool = False,
+    session_db_path: Optional[str] = None,
+    session_factory: Optional[Any] = None,
 ) -> FastAPI:
     """Create and return the FastAPI application.
 
@@ -110,6 +139,13 @@ def create_app(
         api_key:             Bearer token for ApiKeyMiddleware (None = no
                              auth in production; use api_dev_mode for local).
         api_dev_mode:        Disable auth when True.
+        session_db_path:     Override SQLite path for the default Session
+                             adapter. Defaults to ``settings.session_db_path``.
+                             Ignored when ``session_factory`` is provided.
+        session_factory:     Optional ``(session_id) -> Session`` factory
+                             for tests / Postgres / Redis adapters. When
+                             None, a SqliteSession on ``session_db_path``
+                             is used.
     """
     app = FastAPI(
         title="ANILA Core",
@@ -117,99 +153,199 @@ def create_app(
         version="0.5.0",
     )
 
-    # Auth middleware
-    app.add_middleware(ApiKeyMiddleware, api_key=api_key, dev_mode=api_dev_mode)
+    # Auth middleware. The ``api_key`` kwarg is the legacy name; the
+    # underlying ``CspServiceTokenMiddleware`` was renamed but kept
+    # back-compat aliased. Pass via ``service_token=`` to match the
+    # current signature.
+    app.add_middleware(
+        ApiKeyMiddleware, service_token=api_key, dev_mode=api_dev_mode
+    )
+
+    resolved_db_path = session_db_path or settings.session_db_path
+
+    def _make_session(session_id: str) -> Session:
+        if session_factory is not None:
+            return session_factory(session_id)  # type: ignore[no-any-return]
+        return SqliteSession(resolved_db_path, session_id)
+
+    async def _stream_engine_run(
+        *,
+        session_id: str,
+        engine: QueryEngine,
+        coro_factory: Any,
+    ) -> AsyncIterator[str]:
+        """Run an engine coroutine and stream SSE events.
+
+        ``coro_factory(on_delta) -> Awaitable`` is what's awaited; this
+        decoupling lets both ``run`` and ``resume_from_interrupt`` share
+        the same SSE plumbing without duplicating it.
+
+        Sprint 9 PR 4: an :class:`AgentContext` is bound for the duration
+        of the run so tools can:
+
+        - read / write ``ctx.todos`` (TodoWrite);
+        - emit SSE events via ``ctx.event_emitter`` without coupling to
+          this transport.
+        """
+        turn_tokens_total = Usage()
+        engine_failed = False
+        engine_error_msg = ""
+        paused: Optional[RunPaused] = None
+        _queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
+
+        async def emit_event(event_name: str, payload: dict[str, Any]) -> None:
+            """Tool-facing emitter. Maps event_name → typed envelope."""
+            try:
+                event_type = EventType(event_name)
+            except ValueError:
+                # Unknown event name — fall through with a string type so
+                # the UI can still display something rather than us
+                # silently dropping.
+                logger.warning(
+                    "Unknown event_name from tool: %r", event_name
+                )
+                event_type = EventType.MESSAGE_DELTA  # least-bad fallback
+            await _queue.put(
+                ServerEvent(
+                    type=event_type,
+                    session_id=session_id,
+                    payload=payload,
+                ).to_sse()
+            )
+
+        # Bind AgentContext for this run so tools (todo_write, plan_mode,
+        # etc.) can pick it up via get_current_context(). The contextvar
+        # propagates into the asyncio.create_task call below.
+        ctx = AgentContext(
+            session_id=session_id,
+            event_emitter=emit_event,
+        )
+        set_current_context(ctx)
+
+        async def on_delta(delta: Any) -> None:
+            nonlocal turn_tokens_total
+            if delta.type == "text" and delta.text:
+                event = ServerEvent(
+                    type=EventType.MESSAGE_DELTA,
+                    session_id=session_id,
+                    payload=MessageDeltaPayload(text=delta.text).model_dump(),
+                )
+                await _queue.put(event.to_sse())
+            elif delta.type == "tool_call" and delta.tool_call:
+                event = ServerEvent(
+                    type=EventType.TOOL_CALL_STARTED,
+                    session_id=session_id,
+                    payload=ToolCallStartedPayload(
+                        tool_call_id=delta.tool_call.id,
+                        tool_name=delta.tool_call.name,
+                    ).model_dump(),
+                )
+                await _queue.put(event.to_sse())
+            elif delta.type == "stop" and delta.usage:
+                turn_tokens_total = turn_tokens_total.add(delta.usage)
+
+        async def run_engine() -> None:
+            nonlocal engine_failed, engine_error_msg, paused
+            try:
+                await coro_factory(on_delta)
+            except RunPaused as p:
+                paused = p
+                # Look up the persisted interrupt's full payload so the
+                # UI can render directly from the SSE event without an
+                # extra GET roundtrip.
+                interrupt_payload: dict[str, Any] = {}
+                if engine._session is not None:  # noqa: SLF001
+                    pending = await engine._session.pending_interrupts()  # noqa: SLF001
+                    for rec in pending:
+                        if rec.id == p.interrupt_id:
+                            interrupt_payload = rec.payload.get("data", {})
+                            break
+                event = ServerEvent(
+                    type=EventType.INTERRUPT_REQUESTED,
+                    session_id=session_id,
+                    payload=InterruptRequestedPayload(
+                        interrupt_id=p.interrupt_id,
+                        kind=p.kind,
+                        payload=interrupt_payload,
+                    ).model_dump(),
+                )
+                await _queue.put(event.to_sse())
+            except Exception as exc:
+                engine_failed = True
+                engine_error_msg = str(exc)
+                logger.error("Engine error: %s", exc)
+                error_event = ServerEvent(
+                    type=EventType.ERROR,
+                    session_id=session_id,
+                    payload=ErrorPayload(
+                        message=engine_error_msg, code="engine_error"
+                    ).model_dump(),
+                )
+                await _queue.put(error_event.to_sse())
+            finally:
+                await _queue.put(None)
+
+        asyncio.create_task(run_engine())
+
+        while True:
+            item = await _queue.get()
+            if item is None:
+                break
+            yield item
+
+        if not engine_failed:
+            usage_event = ServerEvent(
+                type=EventType.USAGE_UPDATE,
+                session_id=session_id,
+                payload=UsageUpdatePayload(
+                    input_tokens=turn_tokens_total.input_tokens,
+                    output_tokens=turn_tokens_total.output_tokens,
+                ).model_dump(),
+            )
+            yield usage_event.to_sse()
+
+        if paused is not None:
+            terminal_status = "paused"
+        elif engine_failed:
+            terminal_status = "error"
+        else:
+            terminal_status = "completed"
+        yield ServerEvent(
+            type=EventType.STREAM_DONE,
+            session_id=session_id,
+            payload={"status": terminal_status},
+        ).to_sse()
 
     @app.post("/chat")
     async def chat(request: ChatRequest) -> StreamingResponse:
-        """Start a query loop and stream SSE events back to the client."""
+        """Start a query loop and stream SSE events back to the client.
+
+        Sprint 9: an automatic SqliteSession (or ``session_factory``) is
+        attached so tools that return :class:`InterruptItem` can pause the
+        loop. The persisted history lets ``POST /v1/sessions/{id}/answer``
+        resume in a fresh process / engine instance.
+        """
         config = QueryConfig(
             max_turns=request.max_turns,
             model=request.model,
             system_prompt=request.system_prompt,
         )
-        engine = QueryEngine(provider, tool_registry, config)
+        sess = _make_session(request.session_id)
+        engine = QueryEngine(provider, tool_registry, config, session=sess)
 
-        # Build initial messages: parse history then append new user message
         from ..models.message import UserMessage as UM
-        messages = _parse_history(request.history) + [UM(content=request.user_message)]
-
-        async def event_generator() -> AsyncIterator[str]:
-            turn_tokens_total = Usage()
-            engine_failed = False
-            engine_error_msg = ""
-
-            async def on_delta(delta: Any) -> None:
-                nonlocal turn_tokens_total
-                if delta.type == "text" and delta.text:
-                    event = ServerEvent(
-                        type=EventType.MESSAGE_DELTA,
-                        session_id=request.session_id,
-                        payload=MessageDeltaPayload(text=delta.text).model_dump(),
-                    )
-                    # Note: can't yield from nested async fn, so we put it in a queue
-                    await _queue.put(event.to_sse())
-                elif delta.type == "tool_call" and delta.tool_call:
-                    event = ServerEvent(
-                        type=EventType.TOOL_CALL_STARTED,
-                        session_id=request.session_id,
-                        payload=ToolCallStartedPayload(
-                            tool_call_id=delta.tool_call.id,
-                            tool_name=delta.tool_call.name,
-                        ).model_dump(),
-                    )
-                    await _queue.put(event.to_sse())
-                elif delta.type == "stop" and delta.usage:
-                    turn_tokens_total = turn_tokens_total.add(delta.usage)
-
-            _queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
-
-            async def run_engine() -> None:
-                nonlocal engine_failed, engine_error_msg
-                try:
-                    await engine.run(messages, on_stream_delta=on_delta)
-                except Exception as exc:
-                    engine_failed = True
-                    engine_error_msg = str(exc)
-                    logger.error("Engine error: %s", exc)
-                    error_event = ServerEvent(
-                        type=EventType.ERROR,
-                        session_id=request.session_id,
-                        payload=ErrorPayload(message=engine_error_msg, code="engine_error").model_dump(),
-                    )
-                    await _queue.put(error_event.to_sse())
-                finally:
-                    await _queue.put(None)  # sentinel
-
-            asyncio.create_task(run_engine())
-
-            while True:
-                item = await _queue.get()
-                if item is None:
-                    break
-                yield item
-
-            if not engine_failed:
-                # Final usage event only on success
-                usage_event = ServerEvent(
-                    type=EventType.USAGE_UPDATE,
-                    session_id=request.session_id,
-                    payload=UsageUpdatePayload(
-                        input_tokens=turn_tokens_total.input_tokens,
-                        output_tokens=turn_tokens_total.output_tokens,
-                    ).model_dump(),
-                )
-                yield usage_event.to_sse()
-
-            terminal_event = ServerEvent(
-                type=EventType.STREAM_DONE,
-                session_id=request.session_id,
-                payload={"status": "error" if engine_failed else "completed"},
-            )
-            yield terminal_event.to_sse()
+        messages = _parse_history(request.history) + [
+            UM(content=request.user_message)
+        ]
 
         return StreamingResponse(
-            event_generator(),
+            _stream_engine_run(
+                session_id=request.session_id,
+                engine=engine,
+                coro_factory=lambda on_delta: engine.run(
+                    messages, on_stream_delta=on_delta
+                ),
+            ),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -244,91 +380,111 @@ def create_app(
             model=request.model,
             system_prompt=request.system_prompt,
         )
-        engine = QueryEngine(provider, tool_registry, config)
+        sess = _make_session(request.session_id)
+        engine = QueryEngine(provider, tool_registry, config, session=sess)
 
         from ..models.message import UserMessage as UM
-        messages = _parse_history(request.history) + [UM(content=request.user_message)]
-
-        async def event_generator() -> AsyncIterator[str]:
-            turn_tokens_total = Usage()
-            engine_failed = False
-            engine_error_msg = ""
-
-            async def on_delta(delta: Any) -> None:
-                nonlocal turn_tokens_total
-                if delta.type == "text" and delta.text:
-                    event = ServerEvent(
-                        type=EventType.MESSAGE_DELTA,
-                        session_id=request.session_id,
-                        payload=MessageDeltaPayload(text=delta.text).model_dump(),
-                    )
-                    await _queue.put(event.to_sse())
-                elif delta.type == "tool_call" and delta.tool_call:
-                    event = ServerEvent(
-                        type=EventType.TOOL_CALL_STARTED,
-                        session_id=request.session_id,
-                        payload=ToolCallStartedPayload(
-                            tool_call_id=delta.tool_call.id,
-                            tool_name=delta.tool_call.name,
-                        ).model_dump(),
-                    )
-                    await _queue.put(event.to_sse())
-                elif delta.type == "stop" and delta.usage:
-                    turn_tokens_total = turn_tokens_total.add(delta.usage)
-
-            _queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
-
-            async def run_engine() -> None:
-                nonlocal engine_failed, engine_error_msg
-                try:
-                    await engine.run(messages, on_stream_delta=on_delta)
-                except Exception as exc:
-                    engine_failed = True
-                    engine_error_msg = str(exc)
-                    logger.error("Agentic engine error: %s", exc)
-                    error_event = ServerEvent(
-                        type=EventType.ERROR,
-                        session_id=request.session_id,
-                        payload=ErrorPayload(message=engine_error_msg, code="engine_error").model_dump(),
-                    )
-                    await _queue.put(error_event.to_sse())
-                finally:
-                    await _queue.put(None)
-
-            asyncio.create_task(run_engine())
-
-            while True:
-                item = await _queue.get()
-                if item is None:
-                    break
-                yield item
-
-            if not engine_failed:
-                usage_event = ServerEvent(
-                    type=EventType.USAGE_UPDATE,
-                    session_id=request.session_id,
-                    payload=UsageUpdatePayload(
-                        input_tokens=turn_tokens_total.input_tokens,
-                        output_tokens=turn_tokens_total.output_tokens,
-                    ).model_dump(),
-                )
-                yield usage_event.to_sse()
-
-            terminal_event = ServerEvent(
-                type=EventType.STREAM_DONE,
-                session_id=request.session_id,
-                payload={"status": "error" if engine_failed else "completed"},
-            )
-            yield terminal_event.to_sse()
+        messages = _parse_history(request.history) + [
+            UM(content=request.user_message)
+        ]
 
         return StreamingResponse(
-            event_generator(),
+            _stream_engine_run(
+                session_id=request.session_id,
+                engine=engine,
+                coro_factory=lambda on_delta: engine.run(
+                    messages, on_stream_delta=on_delta
+                ),
+            ),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
                 "X-Accel-Buffering": "no",
             },
         )
+
+    # -------------------------------------------------------------------
+    # Sprint 9: pause / resume — interrupt answer + session state
+    # -------------------------------------------------------------------
+
+    @app.post("/sessions/{session_id}/answer")
+    async def submit_answer(
+        session_id: str, request: "AnswerRequest"
+    ) -> StreamingResponse:
+        """Resume a paused run with the user's answer.
+
+        Streams the resumed turn back as SSE — same envelope as ``/chat``,
+        starting with a ``RESUMED`` event so the UI can clear its
+        "paused" affordance.
+        """
+        sess = _make_session(session_id)
+        config = QueryConfig(
+            max_turns=request.max_turns,
+            model=request.model,
+            system_prompt=request.system_prompt,
+        )
+        engine = QueryEngine(provider, tool_registry, config, session=sess)
+
+        # Emit RESUMED first so the UI sees lifecycle context, then run.
+        async def coro_factory(on_delta: Any) -> Any:
+            # No SSE plumbing here — _stream_engine_run handles it. We
+            # still want a RESUMED event before any model output. Fold it
+            # into the on_delta queue by piggy-backing on the first
+            # provider call. Simpler: prepend it via a wrapper.
+            return await engine.resume_from_interrupt(
+                request.interrupt_id,
+                request.answer,
+                on_stream_delta=on_delta,
+            )
+
+        async def stream_with_resume_marker() -> AsyncIterator[str]:
+            # Emit RESUMED event before any model deltas.
+            yield ServerEvent(
+                type=EventType.RESUMED,
+                session_id=session_id,
+                payload=ResumedPayload(
+                    interrupt_id=request.interrupt_id
+                ).model_dump(),
+            ).to_sse()
+            async for chunk in _stream_engine_run(
+                session_id=session_id,
+                engine=engine,
+                coro_factory=coro_factory,
+            ):
+                yield chunk
+
+        return StreamingResponse(
+            stream_with_resume_marker(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.get("/sessions/{session_id}/state")
+    async def session_state(session_id: str) -> dict[str, Any]:
+        """Snapshot of conversation history + pending interrupts.
+
+        Use this when the UI needs to rehydrate after a reload, or wants
+        to show pending interrupts without subscribing to a stream.
+        """
+        sess = _make_session(session_id)
+        items = await sess.get_items()
+        pending = await sess.pending_interrupts()
+        return {
+            "session_id": session_id,
+            "messages": [m.model_dump(mode="json") for m in items],
+            "pending_interrupts": [
+                {
+                    "id": p.id,
+                    "kind": p.kind,
+                    "payload": p.payload.get("data", {}),
+                    "created_at": p.created_at.isoformat(),
+                }
+                for p in pending
+            ],
+        }
 
     @app.get("/sessions/{session_id}/away_summary")
     async def away_summary(session_id: str) -> AwaySummaryResponse:

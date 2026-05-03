@@ -1,12 +1,9 @@
 <template>
-  <div class="relative w-full" :style="{ height: height + 'px' }">
-    <div ref="chartRef" class="w-full h-full"></div>
-    <div
-      v-if="isEmpty"
-      class="absolute inset-0 flex flex-col items-center justify-center text-gray-400 pointer-events-none"
-    >
-      <div class="text-sm">目前無可用用量資料</div>
-      <div class="text-xs mt-1">完成幾筆請求後，此圖會自動更新。</div>
+  <div class="usage-chart" :style="{ height: height + 'px' }">
+    <div ref="chartRef" class="usage-chart__canvas" />
+    <div v-if="isEmpty" class="usage-chart__empty">
+      <span>── no usage data ──</span>
+      <small>chart updates after the first proxied request lands.</small>
     </div>
   </div>
 </template>
@@ -41,6 +38,8 @@ const props = defineProps({
 
 const chartRef = ref(null)
 let chart = null
+let themeObserver = null
+let resizeHandler = null
 
 const isEmpty = computed(() => {
   const data = props.chartData
@@ -54,8 +53,33 @@ const isEmpty = computed(() => {
   })
 })
 
+function readPalette() {
+  const root = document.documentElement
+  const css = getComputedStyle(root)
+  const v = (name, fb) => (css.getPropertyValue(name).trim() || fb)
+  return {
+    series: [
+      v('--chart-1', '#7fd99b'),
+      v('--chart-2', '#6cb6ff'),
+      v('--chart-3', '#e0a458'),
+      v('--chart-4', '#c79bff'),
+      v('--chart-5', '#ec6f7c'),
+      v('--chart-6', '#4dd0c0'),
+    ],
+    fg1: v('--c-fg-1', '#d8dee8'),
+    fg2: v('--c-fg-2', '#9aa4b6'),
+    fg3: v('--c-fg-3', '#66708a'),
+    grid: v('--chart-grid', '#1f2530'),
+    axis: v('--chart-axis', '#66708a'),
+    surface: v('--c-surface-1', '#11151c'),
+    border: v('--c-border', '#1f2530'),
+    mono: v('--font-mono', '"JetBrains Mono", monospace'),
+  }
+}
+
 function renderChart() {
-  if (!chartRef.value || !props.chartData) return
+  if (!chartRef.value) return
+  if (!props.chartData) return
 
   if (!chart) {
     chart = echarts.init(chartRef.value)
@@ -67,9 +91,11 @@ function renderChart() {
     return
   }
 
+  const p = readPalette()
+
   const xData = timestamps.map((ts) => {
     const d = new Date(ts * 1000)
-    return d.toLocaleString('zh-TW', {
+    return d.toLocaleString('en-GB', {
       month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
@@ -78,56 +104,70 @@ function renderChart() {
   })
 
   const option = {
+    backgroundColor: 'transparent',
+    textStyle: { fontFamily: p.mono, fontSize: 11, color: p.fg2 },
     tooltip: {
       trigger: 'axis',
-      backgroundColor: 'rgba(255,255,255,0.95)',
-      borderColor: '#e5e7eb',
-      textStyle: { color: '#1f2937', fontSize: 12 },
+      backgroundColor: p.surface,
+      borderColor: p.border,
+      borderWidth: 1,
+      textStyle: { color: p.fg1, fontFamily: p.mono, fontSize: 11 },
+      extraCssText: 'border-radius: 0; box-shadow: none;',
+      axisPointer: { lineStyle: { color: p.axis, type: 'dashed' } },
     },
     legend: {
       data: series.map((s) => s.name),
-      // Rotated x-axis labels take ~32px; put the legend above that and
-      // leave a gap so they never overlap. `bottom: 0` was the bug.
       bottom: 0,
       padding: [4, 8],
-      textStyle: { fontSize: 12 },
+      textStyle: { fontSize: 11, color: p.fg2, fontFamily: p.mono },
+      itemWidth: 16,
+      itemHeight: 2,
+      icon: 'rect',
     },
     grid: {
-      top: 20,
-      left: 60,
-      right: 20,
-      // Reserve room for the rotated x-axis labels (~36px at rotate:30°
-      // with fontSize:11) plus the legend (~24px tall at fontSize:12).
-      // `containLabel: true` makes ECharts auto-include axis labels in
-      // the grid box so our `bottom` sits BELOW them, not behind them.
-      bottom: 60,
+      top: 18,
+      left: 56,
+      right: 16,
+      bottom: 56,
       containLabel: true,
     },
     xAxis: {
       type: 'category',
       data: xData,
-      axisLabel: { fontSize: 11, rotate: 30, margin: 12 },
+      axisLine: { lineStyle: { color: p.axis } },
+      axisTick: { lineStyle: { color: p.axis } },
+      axisLabel: { fontSize: 10, color: p.fg3, rotate: 30, margin: 12, fontFamily: p.mono },
+      splitLine: { show: false },
     },
     yAxis: {
       type: 'value',
+      axisLine: { show: false },
+      axisTick: { show: false },
       axisLabel: {
-        fontSize: 11,
+        fontSize: 10,
+        color: p.fg3,
+        fontFamily: p.mono,
         formatter: (v) => {
-          if (v >= 1000000) return (v / 1000000).toFixed(1) + 'M'
-          if (v >= 1000) return (v / 1000).toFixed(1) + 'K'
+          if (v >= 1_000_000) return (v / 1_000_000).toFixed(1) + 'M'
+          if (v >= 1_000) return (v / 1_000).toFixed(1) + 'K'
           return v
         },
       },
+      splitLine: { lineStyle: { color: p.grid, type: 'dashed' } },
     },
     series: series.map((s, i) => ({
       name: s.name,
       type: 'line',
       data: s.data,
-      smooth: true,
-      lineStyle: { width: 2 },
-      areaStyle: { opacity: 0.08 },
+      smooth: false,
+      symbol: 'none',
+      lineStyle: { width: 1.5, color: p.series[i % p.series.length] },
+      areaStyle: {
+        opacity: 0.10,
+        color: p.series[i % p.series.length],
+      },
     })),
-    color: ['#6366f1', '#06b6d4', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6'],
+    color: p.series,
   }
 
   chart.setOption(option, true)
@@ -137,11 +177,37 @@ watch(() => props.chartData, renderChart, { deep: true })
 
 onMounted(() => {
   renderChart()
-  window.addEventListener('resize', () => chart?.resize())
+  resizeHandler = () => chart?.resize()
+  window.addEventListener('resize', resizeHandler)
+
+  // Re-render when the document theme attribute changes — we read tokens
+  // off CSSOM so the chart palette must refresh on theme swap.
+  themeObserver = new MutationObserver(() => renderChart())
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
 })
 
 onUnmounted(() => {
+  if (resizeHandler) window.removeEventListener('resize', resizeHandler)
+  themeObserver?.disconnect()
   chart?.dispose()
-  window.removeEventListener('resize', () => chart?.resize())
+  chart = null
 })
 </script>
+
+<style scoped>
+.usage-chart { position: relative; width: 100%; }
+.usage-chart__canvas { width: 100%; height: 100%; }
+.usage-chart__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: var(--c-fg-3);
+  font-size: var(--t-xs);
+  pointer-events: none;
+}
+.usage-chart__empty small { font-size: var(--t-2xs); color: var(--c-fg-mute); }
+</style>

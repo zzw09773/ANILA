@@ -46,6 +46,12 @@ class IngestionChunk(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     token_count: Optional[int] = None
     created_at: datetime
+    # Sprint 9 X / parent-child RAG (migration 0028). All NULL for rows
+    # written before the migration / new chunker landed; populated
+    # going forward by HierarchicalChunker.
+    parent_chunk_id: Optional[int] = None
+    chunk_type: str = "leaf"
+    chunk_level: int = 0
 
 
 class SearchHit(BaseModel):
@@ -62,3 +68,7 @@ class SearchHit(BaseModel):
     # asyncpg's cosine *distance* output here so the rest of the platform
     # can speak in the more intuitive direction without per-call flipping.
     score: float
+    # Sprint 9 X — parent's content, JOIN-fetched at retrieval time
+    # when the matched leaf has a ``parent_chunk_id``. None for legacy
+    # rows or root-level chunks.
+    parent_content: Optional[str] = None

@@ -92,38 +92,54 @@ Schema 欄位與 `anila-agent.yaml` 相同；實際 API 位置請以 CSP backend
 
 ## 本 agent 側的設定
 
-### Middleware 載入順序
+### Middleware 載入順序（Phase 0 後）
 
-本 template 在啟動時會依序嘗試：
+本 template 啟動時會掛 **`CspServiceTokenMiddleware`**：
 
-1. **`anila_core.api.middleware.auth.CspServiceTokenMiddleware`** — ANILA 平台內的標準實作
-2. **`agentic_rag.api.middleware.csp_auth.CspServiceTokenMiddleware`** — 本 package 內的備援
+1. 讀取 `${ANILA_AGENT_STATE_DIR}/service_token.json`（預設 `/var/lib/anila-agent/`）
+2. 找不到檔案 → 退回 `CSP_SERVICE_TOKEN` env var（legacy fallback）
+3. 兩者皆無 → 進入「local dev mode」，所有 incoming 請求放行
 
-兩者 signature 相同，行為一致。**ANILA 平台內會優先用 anila-core 版本**，確保
-跨 agent 的安全邏輯是一份 source of truth。Standalone 部署會自動退回本地版，
-不需要裝 anila-core 也能跑。
+收到 incoming `X-CSP-Service-Token` 與在記憶體的 token mismatch 時，會**重新讀
+state file 一次後重試**，這樣 admin rotation 不需要重啟 container 就能生效。
 
-實作位於 [`src/agentic_rag/api/middleware/loader.py`](../src/agentic_rag/api/middleware/loader.py)。
+Loader 邏輯在 [`src/agentic_rag/api/middleware/loader.py`](../src/agentic_rag/api/middleware/loader.py)：
+若 host 環境碰巧有裝 anila-core 就優先用 `anila_core.api.middleware.auth.CspServiceTokenMiddleware`
+（platform-side 部署常見情境）；其他情況一律 fallback 到內建版
+[`src/agentic_rag/api/middleware/csp_auth.py`](../src/agentic_rag/api/middleware/csp_auth.py)。
+**Devs fork 本 template 永遠不需要 anila-core**——內建 fallback 行為與
+anila-core 版本完全一致。
 
-### 相關環境變數
-
-只有三個，全部在 [`.env`](../.env.example) 裡：
+### 相關環境變數（Sprint 8 X / Phase D 後）
 
 ```bash
-# 從 CSP UI → Agent detail 頁複製下來貼這裡。
-# 留空 → middleware 跳過檢查，等同本機 dev mode。
-CSP_SERVICE_TOKEN=<secret-from-csp>
+# 一次性 bootstrap：admin 從 CSP UI 「Issue bootstrap token」複製過來。
+# 容器 entrypoint 會用它呼叫 CSP /api/agents/{id}/bootstrap，把回傳的
+# csk- 寫進 /var/lib/anila-agent/service_token.json (mode 0600)。
+# 用過即失效；首次啟動完成後務必從 .env 移除。
+CSP_BOOTSTRAP_TOKEN=bsk-XXXX
 
-# 若 LLM / embedding 也要走 CSP proxy（而非直連內網 vLLM）就填這兩個；
-# CSP 會統一處理 quota、audit、model routing。
+# Bootstrap 必填的 3 個參數：
+CSP_URL=http://csp:8000
+ANILA_AGENT_ID=2
+ANILA_ENDPOINT_URL=http://agentic-rag:24786
+ANILA_REPLICA_LABEL=pod-0   # K8s 多副本時建議加；single-replica 可略
+
+# Legacy（cutover 過渡期還可用，建議遷出）：
+# CSP_SERVICE_TOKEN=<fleet-shared-secret>
+
+# 若 LLM / embedding 也要走 CSP proxy 而非直連內網 vLLM：
 CSP_BASE_URL=https://csp-backend.internal
 CSP_API_KEY=<agent-api-key-issued-by-csp>
 ```
 
-`CSP_SERVICE_TOKEN` 與 `CSP_BASE_URL` **可獨立設定**：
-- 只設前者 → CSP 轉進來的 traffic 會被驗證，但 agent 自己直連 vLLM
-- 只設後者 → agent 把 LLM 呼叫透過 CSP 走，但自己不驗 CSP token（適合極信任內網）
-- 兩者都設 → 完整 ANILA 整合
+完整部署步驟（含 K8s multi-replica + recovery）：見
+[`BOOTSTRAP_DEPLOYMENT.md`](BOOTSTRAP_DEPLOYMENT.md)。
+
+`CSP_BOOTSTRAP_TOKEN` / `CSP_SERVICE_TOKEN` 與 `CSP_BASE_URL` **可獨立設定**：
+- 只設 token 群（任一）→ CSP 轉進來的 traffic 會被驗證，但 agent 自己直連 vLLM
+- 只設 `CSP_BASE_URL` → agent 把 LLM 呼叫透過 CSP 走，但自己不驗 CSP token（適合極信任內網）
+- 都設 → 完整 ANILA 整合
 
 ---
 

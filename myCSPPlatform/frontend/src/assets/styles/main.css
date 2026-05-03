@@ -1,9 +1,432 @@
+@import "./tokens.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* JetBrains Mono — variable, with stylistic features */
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap");
+
 @layer base {
-  body {
-    @apply text-gray-800 antialiased;
+  html,
+  body,
+  #app {
+    height: 100%;
+    background: var(--c-bg);
+    color: var(--c-fg-1);
   }
+
+  body {
+    font-family: var(--font-mono);
+    font-feature-settings: var(--font-feat);
+    font-size: var(--t-base);
+    line-height: var(--lh-base);
+    -webkit-font-smoothing: antialiased;
+    color-scheme: var(--scheme);
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Selection inherits accent */
+  ::selection {
+    background: var(--c-selection-bg);
+    color: var(--c-fg-1);
+  }
+
+  /* Scrollbar — thin, in-theme */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--c-border-strong) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--c-border);
+    border: 2px solid var(--c-bg);
+    border-radius: 0;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--c-border-strong);
+  }
+
+  /* Native form controls inherit theme */
+  input,
+  select,
+  textarea,
+  button {
+    font-family: inherit;
+    font-feature-settings: inherit;
+    color: inherit;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--c-fg-mute);
+  }
+
+  :focus-visible {
+    outline: 1px solid var(--c-focus-ring);
+    outline-offset: 1px;
+  }
+
+  /* Heading defaults — keep monospace, suppress browser bold to control weight */
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    letter-spacing: var(--tracking-tight);
+  }
+
+  hr {
+    border-color: var(--c-border);
+  }
+
+  a {
+    color: var(--c-accent);
+    text-decoration: none;
+  }
+  a:hover {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    text-decoration-color: var(--c-accent);
+  }
+}
+
+/* =========================================================================
+   Component primitives wired to tokens — tiny utility layer the views build on
+   ========================================================================= */
+@layer components {
+  /* Section box ------------------------------------------------------- */
+  .term-box {
+    background: var(--c-surface-1);
+    border: var(--border-w) solid var(--c-border);
+    border-radius: var(--r-sharp);
+  }
+  .term-box--inset {
+    background: var(--c-bg);
+  }
+
+  /* Top status bar / footer status bar ------------------------------- */
+  .term-statusbar {
+    height: var(--shell-statusbar-h);
+    background: var(--c-surface-2);
+    border-top: var(--border-w) solid var(--c-border);
+    color: var(--c-fg-3);
+    font-size: var(--t-2xs);
+    letter-spacing: 0.05em;
+    display: flex;
+    align-items: center;
+    padding: 0 var(--gap-3);
+    gap: var(--gap-4);
+  }
+
+  /* Small caps section / column label ------------------------------- */
+  .term-label {
+    font-size: var(--t-2xs);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-caps);
+    color: var(--c-fg-3);
+  }
+
+  /* Bracketed text — `[ value ]` */
+  .term-bracket::before { content: "["; color: var(--c-fg-3); margin-right: 4px; }
+  .term-bracket::after  { content: "]"; color: var(--c-fg-3); margin-left: 4px; }
+
+  /* Prompt prefix — `>` `$` `λ` */
+  .term-prompt::before {
+    content: "> ";
+    color: var(--c-accent);
+    font-weight: 500;
+  }
+
+  /* Field group ------------------------------------------------------- */
+  .term-field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap-1);
+  }
+  .term-field > label {
+    font-size: var(--t-2xs);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-caps);
+    color: var(--c-fg-3);
+  }
+
+  .term-input,
+  .term-select,
+  .term-textarea {
+    width: 100%;
+    height: var(--input-h);
+    padding: 0 var(--gap-2);
+    background: var(--c-bg);
+    border: var(--border-w) solid var(--c-border-strong);
+    border-radius: var(--r-soft);
+    color: var(--c-fg-1);
+    font-family: var(--font-mono);
+    font-size: var(--t-base);
+    transition: border-color var(--motion) var(--easing);
+  }
+  .term-textarea {
+    height: auto;
+    min-height: 64px;
+    padding: var(--gap-2);
+    line-height: var(--lh-base);
+  }
+  .term-input:hover,
+  .term-select:hover,
+  .term-textarea:hover {
+    border-color: var(--c-border-strong);
+  }
+  .term-input:focus,
+  .term-select:focus,
+  .term-textarea:focus {
+    outline: none;
+    border-color: var(--c-accent);
+    box-shadow: 0 0 0 1px var(--c-accent) inset;
+  }
+  .term-input:disabled,
+  .term-select:disabled,
+  .term-textarea:disabled {
+    background: var(--c-surface-2);
+    color: var(--c-fg-3);
+    border-color: var(--c-border);
+    cursor: not-allowed;
+  }
+
+  /* Buttons — bracketed `[ Submit ]` */
+  .term-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--gap-2);
+    height: var(--input-h);
+    padding: 0 var(--gap-3);
+    background: transparent;
+    border: var(--border-w) solid var(--c-border-strong);
+    border-radius: var(--r-soft);
+    color: var(--c-fg-1);
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    cursor: pointer;
+    transition: background-color var(--motion-fast) var(--easing),
+                color var(--motion-fast) var(--easing),
+                border-color var(--motion-fast) var(--easing);
+  }
+  .term-btn:hover {
+    background: var(--c-surface-2);
+    border-color: var(--c-fg-3);
+  }
+  .term-btn:active {
+    background: var(--c-surface-3);
+  }
+  .term-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    background: transparent !important;
+  }
+  .term-btn--primary {
+    background: var(--c-accent);
+    border-color: var(--c-accent);
+    color: var(--c-accent-fg);
+    font-weight: 600;
+  }
+  .term-btn--primary:hover {
+    background: var(--c-accent-strong);
+    border-color: var(--c-accent-strong);
+    color: var(--c-accent-fg);
+  }
+  .term-btn--danger {
+    border-color: var(--c-danger);
+    color: var(--c-danger);
+  }
+  .term-btn--danger:hover {
+    background: var(--c-danger-soft);
+    border-color: var(--c-danger);
+    color: var(--c-danger);
+  }
+  .term-btn--ghost {
+    border-color: transparent;
+    color: var(--c-fg-2);
+  }
+  .term-btn--ghost:hover {
+    background: var(--c-surface-2);
+    color: var(--c-fg-1);
+  }
+  .term-btn--xs {
+    height: 22px;
+    padding: 0 var(--gap-2);
+    font-size: var(--t-xs);
+  }
+
+  /* Inline action link — `[ revoke ]` style */
+  .term-action {
+    color: var(--c-fg-2);
+    cursor: pointer;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    transition: color var(--motion-fast) var(--easing);
+  }
+  .term-action:hover { color: var(--c-accent); }
+  .term-action--danger { color: var(--c-danger); }
+  .term-action--danger:hover { color: var(--c-danger); text-decoration: underline; }
+  .term-action:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* Tables — dense, gridded -------------------------------------------- */
+  .term-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--t-base);
+  }
+  .term-table thead th {
+    text-align: left;
+    font-weight: 500;
+    font-size: var(--t-2xs);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-caps);
+    color: var(--c-fg-3);
+    padding: var(--gap-2) var(--gap-3);
+    border-bottom: var(--border-w) solid var(--c-border);
+    background: var(--c-surface-2);
+    white-space: nowrap;
+  }
+  .term-table tbody td {
+    padding: var(--gap-2) var(--gap-3);
+    border-bottom: var(--border-w) solid var(--c-border);
+    color: var(--c-fg-1);
+    vertical-align: middle;
+    height: var(--row-h);
+  }
+  .term-table tbody tr:hover td {
+    background: var(--c-row-hover);
+  }
+  .term-table tbody tr:last-child td {
+    border-bottom: 0;
+  }
+  .term-table .num {
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  .term-table .dim { color: var(--c-fg-3); }
+
+  /* Badge / tag chip -------------------------------------------------- */
+  .term-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 6px;
+    height: 18px;
+    font-size: var(--t-2xs);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    border: var(--border-w) solid var(--c-border-strong);
+    color: var(--c-fg-2);
+    background: transparent;
+    border-radius: var(--r-soft);
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .term-badge--ok      { color: var(--c-ok);     border-color: var(--c-ok);     background: var(--c-ok-soft); }
+  .term-badge--warn    { color: var(--c-warn);   border-color: var(--c-warn);   background: var(--c-warn-soft); }
+  .term-badge--danger  { color: var(--c-danger); border-color: var(--c-danger); background: var(--c-danger-soft); }
+  .term-badge--info    { color: var(--c-info);   border-color: var(--c-info);   background: var(--c-info-soft); }
+  .term-badge--accent  { color: var(--c-accent); border-color: var(--c-accent); background: var(--c-accent-soft); }
+  .term-badge--llm     { color: var(--c-llm);    border-color: var(--c-llm); }
+  .term-badge--vlm     { color: var(--c-vlm);    border-color: var(--c-vlm); }
+  .term-badge--embedding,
+  .term-badge--embed   { color: var(--c-embedding); border-color: var(--c-embedding); }
+  .term-badge--agent   { color: var(--c-agent);  border-color: var(--c-agent); }
+
+  /* Status dot -------------------------------------------------------- */
+  .term-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--c-fg-mute);
+    box-shadow: 0 0 0 1px var(--c-bg);
+    flex-shrink: 0;
+  }
+  .term-dot--ok      { background: var(--c-ok);     box-shadow: 0 0 6px var(--c-ok); }
+  .term-dot--warn    { background: var(--c-warn);   box-shadow: 0 0 6px var(--c-warn); }
+  .term-dot--danger  { background: var(--c-danger); box-shadow: 0 0 6px var(--c-danger); }
+  .term-dot--info    { background: var(--c-info); }
+  .term-dot--idle    { background: var(--c-fg-mute); }
+
+  /* Keyboard chip — `Ctrl+K` */
+  .term-kbd {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 6px;
+    height: 18px;
+    font-size: var(--t-2xs);
+    color: var(--c-fg-2);
+    background: var(--c-surface-2);
+    border: var(--border-w) solid var(--c-border);
+    border-bottom-width: 2px;
+    border-radius: var(--r-soft);
+    font-family: var(--font-mono);
+    line-height: 1;
+  }
+
+  /* Section header bar — `┌─ TITLE ─────────…` */
+  .term-section {
+    display: flex;
+    align-items: center;
+    gap: var(--gap-2);
+    padding: 0 0 var(--gap-2) 0;
+    border-bottom: var(--border-w) solid var(--c-border);
+    margin-bottom: var(--gap-3);
+  }
+  .term-section__title {
+    font-size: var(--t-xs);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-caps);
+    color: var(--c-fg-2);
+    font-weight: 600;
+  }
+  .term-section__rule {
+    flex: 1;
+    height: 1px;
+    background: var(--c-border);
+  }
+
+  /* Empty state ------------------------------------------------------- */
+  .term-empty {
+    padding: var(--gap-8) var(--gap-3);
+    text-align: center;
+    color: var(--c-fg-3);
+    font-size: var(--t-sm);
+  }
+  .term-empty::before {
+    content: "── ";
+    color: var(--c-border-strong);
+  }
+  .term-empty::after {
+    content: " ──";
+    color: var(--c-border-strong);
+  }
+
+  /* Caret blink — for headline use only */
+  .term-caret {
+    display: inline-block;
+    width: 0.5em;
+    height: 1em;
+    background: var(--c-accent);
+    margin-left: 0.15em;
+    vertical-align: -0.12em;
+    animation: term-blink 1s steps(2, jump-none) infinite;
+  }
+  @keyframes term-blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+  }
+}
+
+/* Util — tabular numerals (use sparingly to avoid breaking copy text) */
+.tnum {
+  font-variant-numeric: tabular-nums;
 }

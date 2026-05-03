@@ -63,7 +63,11 @@ class MockRetrieval:
 def app_no_tools():
     """App with no RAG dependencies — agentic-chat should still work."""
     provider = FakeProvider()
-    return create_app(provider=provider, tool_registry=ToolRegistry())
+    return create_app(
+        provider=provider,
+        tool_registry=ToolRegistry(),
+        api_dev_mode=True,
+    )
 
 
 @pytest.fixture
@@ -76,6 +80,7 @@ def app_with_rag():
         embedding_provider=MockEmbedding(),
         retrieval_provider=MockRetrieval(),
         db_pool=MockPool(),
+        api_dev_mode=True,
     )
 
 
@@ -179,6 +184,7 @@ async def test_agentic_chat_with_tool_calling():
         embedding_provider=MockEmbedding(),
         retrieval_provider=MockRetrieval(),
         db_pool=MockPool(),
+        api_dev_mode=True,
     )
 
     transport = ASGITransport(app=app)

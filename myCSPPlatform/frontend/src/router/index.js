@@ -81,12 +81,45 @@ const routes = [
         component: () => import('../views/DeveloperAgentsView.vue'),
         meta: { requiresDeveloper: true },
       },
+      // v0.1 framework rollout — dedicated dev walkthrough page.
+      // Linked from DeveloperAgentsView guide block.
+      {
+        path: 'developer/guide',
+        name: 'DeveloperGuide',
+        component: () => import('../views/DeveloperGuideView.vue'),
+        meta: { requiresDeveloper: true },
+      },
+      // Sprint 13 PR C1 — per-agent runtime knobs (tool permissions /
+      // workspace caps / guardrails). Owner of the agent OR admin.
+      {
+        path: 'developer/agents/:id/runtime-config',
+        name: 'AgentRuntimeConfig',
+        component: () => import('../views/AgentRuntimeConfigView.vue'),
+        meta: { requiresDeveloper: true },
+      },
+      // Sprint 8 X / Phase E — service_clients (Router / worker / admin tool)
+      // service-token management. Admin-only.
+      {
+        path: 'service-clients',
+        name: 'ServiceClients',
+        component: () => import('../views/ServiceClientsView.vue'),
+        meta: { requiresAdmin: true },
+      },
       // Phase 2 Sprint 2 / Chunk H — Knowledge Collections inspector.
       // Developer-tier (any user with UserAgentPermission, plus admins).
       {
         path: 'knowledge-collections',
         name: 'KnowledgeCollections',
         component: () => import('../views/KnowledgeCollectionsView.vue'),
+        meta: { requiresDeveloper: true },
+      },
+      // Sprint 8 X / chunking-preview Phase 3 — interactive strategy
+      // comparison wizard. Users land here from KnowledgeCollections
+      // "+ compare strategies first" CTA.
+      {
+        path: 'knowledge-collections/preview',
+        name: 'ChunkingPreview',
+        component: () => import('../views/ChunkingPreviewView.vue'),
         meta: { requiresDeveloper: true },
       },
       {

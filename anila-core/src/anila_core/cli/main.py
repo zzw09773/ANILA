@@ -4,6 +4,7 @@ Usage:
     anila-core init [name] [--description TEXT] [--endpoint URL]
     anila-core register [--csp URL] [--endpoint URL] [--username USER]
     anila-core status [--csp URL] [--username USER] [--name NAME | --id ID | --all]
+    anila-core agent bootstrap --csp-url URL --bootstrap-token bsk- --agent-id N --endpoint-url URL
     anila-core --help
 """
 
@@ -16,6 +17,7 @@ _COMMANDS = {
     "init": "anila_core.cli.init_cmd",
     "register": "anila_core.cli.register_cmd",
     "status": "anila_core.cli.status_cmd",
+    "agent": "anila_core.cli.bootstrap_cmd",
 }
 
 _HELP = """\
@@ -25,6 +27,7 @@ Commands:
   init       Scaffold a new ANILA agent project
   register   Register an agent on the ANILA CSP platform
   status     Check agent registration / approval status
+  agent      Manage agent service-token credentials (bootstrap)
 
 Run `anila-core <command> --help` for details on each command.
 """

@@ -1,0 +1,644 @@
+<template>
+  <div class="page">
+    <header class="page-head">
+      <div>
+        <router-link :to="{ name: 'KnowledgeCollections' }" class="back-link">← collections</router-link>
+        <h1 class="page-head__title">chunking · preview &amp; pick</h1>
+        <p class="page-head__sub">
+          上傳一份代表性文件 → 並排比較 6 種 strategy 切出來的 chunks → 選最合適的 → 真正建立 collection。
+          純 dry-run，不寫 DB、不打 embedding。
+        </p>
+      </div>
+    </header>
+
+    <!-- Step 1: upload ------------------------------------------------- -->
+    <TermBox v-if="!result" title="step 1 · upload one document" pad="md" hint="≤ 10 MB · txt / md / pdf / docx / odt / rtf / 圖片">
+      <div class="upload" @drop.prevent="onDrop" @dragover.prevent>
+        <input ref="fileInput" type="file"
+               accept=".txt,.md,.markdown,.pdf,.docx,.doc,.odt,.rtf,.png,.jpg,.jpeg,.webp,.gif,.bmp,text/plain,text/markdown,application/pdf"
+               @change="onFilePicked" style="display:none" />
+        <TermButton variant="primary" :disabled="loading" :loading="loading"
+                    :label="loading ? `running ${runningSec}s…` : '+ choose file'"
+                    @click="$refs.fileInput.click()" />
+        <span class="cell-meta">drag &amp; drop also works</span>
+      </div>
+      <div v-if="error" class="feedback is-err" style="margin-top: var(--gap-2);">! {{ error }}</div>
+      <p class="cell-meta" style="margin-top: var(--gap-2);">
+        為什麼要 preview：六種 chunker 對不同 doc 結構會切出大不相同的結果。
+        短的純文字 / 簡單 markdown 各 strategy 容易看起來一樣；長的有 heading 結構或 PDF 的差異就明顯。
+      </p>
+      <p class="cell-meta" style="margin-top: var(--gap-2);">
+        <router-link :to="{ name: 'KnowledgeCollections', query: { quick: 1 } }" class="term-link">
+          → skip preview · quick create with strategy dropdown
+        </router-link>
+        <span style="margin-left: 8px;">— 已知道要哪個 strategy 的 power user 路徑</span>
+      </p>
+    </TermBox>
+
+    <!-- Step 2: results compare --------------------------------------- -->
+    <template v-if="result">
+      <TermBox title="step 2 · compare" pad="md">
+        <div class="meta-row">
+          <div>
+            <span class="cell-strong">{{ result.filename }}</span>
+            <span class="cell-meta"> · {{ humanBytes(result.bytes) }}</span>
+            <span v-if="result.parse_metadata.format" class="cell-meta"> · format <code>{{ result.parse_metadata.format }}</code></span>
+            <span v-if="result.parse_metadata.page_count" class="cell-meta"> · {{ result.parse_metadata.page_count }} pages</span>
+          </div>
+          <TermButton variant="ghost" label="↻ start over" @click="reset" />
+        </div>
+        <p v-if="result.skipped_strategies.length" class="cell-meta" style="margin-top: var(--gap-2);">
+          skipped (preview 不支援，commit 時可選):
+          <code>{{ result.skipped_strategies.join(', ') }}</code>
+        </p>
+      </TermBox>
+
+      <!-- Sprint 8 X / chunking-preview Phase 4 — visual diff strip.
+           Three views, ordered by signal density: stats table for the
+           numbers comparison, boundary bars for "where do strategies
+           place breakpoints", first-chunk side-by-side for content
+           differences at the start of the doc. -->
+      <TermBox title="visual diff · how strategies actually differ on this doc" pad="md" v-if="diffStrategies.length">
+        <!-- (a) Stats compare table — outliers highlighted ------------ -->
+        <div class="diff-section">
+          <h4 class="diff-section__title">stats · side-by-side</h4>
+          <table class="cmp-table">
+            <thead>
+              <tr>
+                <th>strategy</th>
+                <th class="num">chunks</th>
+                <th class="num">avg tokens</th>
+                <th class="num">total tokens</th>
+                <th class="num">size variance</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="d in diffStrategies" :key="d.name"
+                  :class="{ 'is-outlier': d.isOutlier }">
+                <td>
+                  <span class="cell-strong">{{ d.name }}</span>
+                  <span v-if="d.isOutlier" class="cell-meta"> · outlier</span>
+                </td>
+                <td class="num tnum">{{ d.stats.chunk_count }}</td>
+                <td class="num tnum">{{ d.stats.avg_tokens }}</td>
+                <td class="num tnum">{{ d.stats.total_tokens }}</td>
+                <td class="num tnum">{{ d.variance }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="cell-meta">
+            outlier = chunk count 是中位數的 ≥ 2x 或 ≤ 0.5x；通常代表這 strategy 對這份 doc 過於激進或過於保守。
+            size variance 越大代表 chunk 大小越不平均。
+          </p>
+        </div>
+
+        <!-- (b) Boundary bars — where each strategy splits ------------- -->
+        <div class="diff-section">
+          <h4 class="diff-section__title">boundary positions · token-proportional</h4>
+          <p class="cell-meta">
+            水平條長度代表 doc 的 100%；豎線代表該 strategy 的 chunk 邊界。線越多 = 切得越碎；
+            落點不同 = 對「哪裡該斷」的判斷不同。
+          </p>
+          <ul class="bars">
+            <li v-for="d in diffStrategies" :key="d.name" class="bar-row">
+              <span class="bar-row__label">{{ d.name }}</span>
+              <div class="bar">
+                <span
+                  v-for="(pct, idx) in d.boundaryPercents" :key="idx"
+                  class="bar__tick" :style="{ left: pct + '%' }"
+                />
+              </div>
+              <span class="bar-row__count tnum">{{ d.stats.chunk_count }}</span>
+            </li>
+          </ul>
+        </div>
+
+        <!-- (c) First-chunk preview side-by-side -------------------- -->
+        <div class="diff-section">
+          <h4 class="diff-section__title">first chunk · content head-to-head</h4>
+          <p class="cell-meta">
+            同一份 doc，每個 strategy 的「第一個 chunk」是什麼樣子。
+            最容易看出對 heading / paragraph 邊界的處理差異。
+          </p>
+          <div class="head2head">
+            <div v-for="d in diffStrategies" :key="d.name" class="head2head__cell">
+              <header class="head2head__title">
+                <code>{{ d.name }}</code>
+                <span class="cell-meta tnum">· {{ d.firstChunkTokens }} tokens</span>
+              </header>
+              <pre class="head2head__content">{{ d.firstChunkPreview || '(empty)' }}</pre>
+            </div>
+          </div>
+        </div>
+      </TermBox>
+
+      <!-- per-strategy cards in a responsive grid -->
+      <section class="grid">
+        <TermBox v-for="entry in strategyEntries" :key="entry.name"
+                 :title="entry.displayName" :hint="entry.runMessage" pad="md"
+                 :tone="entry.error ? 'warn' : ''">
+          <div v-if="entry.error" class="feedback is-err">! {{ entry.error }}</div>
+          <template v-else-if="!entry.previewable">
+            <p class="cell-meta">
+              ⓘ 此 strategy 需要 embeddings；preview 階段略過。建立 collection 時會在 commit 階段執行。
+            </p>
+          </template>
+          <template v-else>
+            <div class="stats">
+              <TermStat label="chunks" :value="entry.stats.chunk_count" tone="accent" />
+              <TermStat label="total tokens" :value="entry.stats.total_tokens" />
+              <TermStat label="avg tokens" :value="entry.stats.avg_tokens" />
+            </div>
+            <!-- Sprint 9 X / parent-child RAG — surface the tree
+                 split when the chunker emits parents (currently only
+                 ``hierarchical`` after the 9-X redesign). Helps users
+                 see that the chunk_count includes both leaves
+                 (embedded for retrieval) and parent rows (no
+                 embedding, JOIN-fetched for LLM context). -->
+            <p v-if="entry.parentLeafSplit" class="cell-meta overlap-line">
+              <strong>tree:</strong> {{ entry.parentLeafSplit.leaves }} leaves (embedded)
+              · {{ entry.parentLeafSplit.parents }} parents (JOIN-fetched as context)
+            </p>
+            <p class="cell-meta overlap-line">
+              <strong>overlap:</strong> {{ overlapDescription(entry) }}
+            </p>
+            <p v-if="entry.stats.truncated_to" class="cell-meta" style="margin-top: var(--gap-1);">
+              ⚠ 顯示前 {{ entry.stats.truncated_to }} 個（實際更多）
+            </p>
+            <details class="chunks">
+              <summary>preview chunks ({{ entry.chunks.length }})</summary>
+              <ol class="chunk-list">
+                <li v-for="c in entry.chunks.slice(0, expandedCount[entry.name] || 5)" :key="c.chunk_key" class="chunk">
+                  <header class="chunk__head">
+                    <code>{{ c.chunk_key }}</code>
+                    <span class="cell-meta tnum">{{ c.token_count }} tokens</span>
+                  </header>
+                  <pre class="chunk__content">{{ c.content }}</pre>
+                </li>
+              </ol>
+              <button v-if="entry.chunks.length > (expandedCount[entry.name] || 5)"
+                      class="term-action"
+                      @click.prevent="expandedCount[entry.name] = (expandedCount[entry.name] || 5) + 10">
+                show 10 more ({{ entry.chunks.length - (expandedCount[entry.name] || 5) }} remaining)
+              </button>
+            </details>
+          </template>
+          <div class="actions">
+            <TermButton variant="primary" :disabled="!entry.canPick"
+                        :label="entry.canPick ? '↓ use this strategy' : 'unavailable'"
+                        @click="pickStrategy(entry)" />
+          </div>
+        </TermBox>
+      </section>
+    </template>
+
+    <!-- Step 3: confirm + create -------------------------------------- -->
+    <TermModal :visible="!!chosen" :title="chosen ? `step 3 · create with ${chosen.displayName}` : 'create'" width="520px" @close="cancelChoice">
+      <div v-if="chosen" class="form-grid">
+        <TermField label="strategy" hint="locked from preview pick">
+          <input :value="chosen.name" readonly disabled class="term-input" />
+        </TermField>
+        <TermField label="name">
+          <input v-model.trim="commitForm.name" class="term-input" maxlength="200" placeholder="legal-regs" />
+        </TermField>
+        <TermField label="description" optional>
+          <textarea v-model.trim="commitForm.description" rows="2" class="term-textarea" maxlength="2000" />
+        </TermField>
+        <TermField :label="tokenLabel" :hint="tokenHint">
+          <input v-model.number="commitForm.maxTokens" type="number" class="term-input" min="64" max="8192" />
+        </TermField>
+        <p class="cell-meta">
+          ⓘ 建立完 collection 後再上傳檔案才會真的索引。本次預覽用的檔案 <strong>不會</strong> 自動進入 collection。
+        </p>
+        <div v-if="commitError" class="feedback is-err">! {{ commitError }}</div>
+      </div>
+      <template #footer>
+        <TermButton variant="ghost" @click="cancelChoice" label="cancel" />
+        <TermButton variant="primary" :loading="committing" :disabled="committing || !commitForm.name"
+                    :label="committing ? 'creating' : 'create collection'" @click="commitCreate" />
+      </template>
+    </TermModal>
+  </div>
+</template>
+
+<script setup>
+import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { listStrategies, previewChunking } from '../api/chunkingPreview'
+import { createCollection } from '../api/ingestionCollections'
+import { TermBox, TermButton, TermField, TermModal, TermStat } from '../components/cli'
+
+const router = useRouter()
+
+const fileInput = ref(null)
+const loading = ref(false)
+const runningSec = ref(0)
+const error = ref('')
+const result = ref(null)
+const strategies = ref([])  // catalogue from /strategies endpoint
+
+// expand "show more" state per strategy.
+const expandedCount = reactive({})
+
+const chosen = ref(null)
+const commitForm = ref({ name: '', description: '', maxTokens: 1024 })
+const commitError = ref('')
+const committing = ref(false)
+
+// Build a row per registered strategy by joining the catalogue with
+// the per-strategy preview output. Cards render even when a strategy
+// returned an error or was skipped — better than hiding rows so the
+// user sees the full picture.
+const strategyEntries = computed(() => {
+  if (!result.value) return []
+  return strategies.value.map((s) => {
+    const r = result.value.per_strategy[s.name]
+    const skipped = result.value.skipped_strategies.includes(s.name)
+    const chunks = r?.chunks || []
+    // Sprint 9 X / parent-child RAG — count parent vs leaf rows when
+    // the chunker emits a tree (currently only ``hierarchical``).
+    // Each chunk's metadata.chunk_type is one of 'leaf' / 'heading'
+    // / 'document'; only show the split when there ARE parents.
+    let parentLeafSplit = null
+    if (chunks.length > 0) {
+      const parents = chunks.filter(
+        (c) => (c.metadata?.chunk_type || 'leaf') !== 'leaf',
+      ).length
+      const leaves = chunks.length - parents
+      if (parents > 0) parentLeafSplit = { leaves, parents }
+    }
+    return {
+      name: s.name,
+      displayName: s.display_name,
+      previewable: s.previewable,
+      requires_embedder: s.requires_embedder,
+      default_params: s.default_params || {},
+      chunks,
+      stats: r?.stats || { chunk_count: 0, total_tokens: 0, avg_tokens: 0 },
+      error: r?.error || null,
+      parentLeafSplit,
+      runMessage: skipped
+        ? 'skipped · needs embeddings'
+        : r ? '' : 'not requested',
+      // canPick: any strategy that has a preview row OR is requires_embedder
+      // (semantic) — for the latter we trust the worker to do it on commit.
+      canPick: !!r || s.requires_embedder,
+    }
+  })
+})
+
+// Sprint 8 X / chunking-preview Phase 4 — visual diff data.
+//
+// ``diffStrategies`` is a derived view over the same per-strategy
+// preview rows that the cards-grid uses, but pre-computed for the
+// three visualisation widgets at the top:
+//
+//   * ``boundaryPercents`` — cumulative-token positions (0–100) of
+//     every chunk boundary EXCEPT the document end. Lets the bar
+//     widget place tick marks at the right horizontal offsets.
+//   * ``firstChunkPreview`` — first chunk's content truncated to
+//     ~240 chars. Shown side-by-side so users can see how each
+//     strategy treats the document's opening.
+//   * ``variance`` — std-dev of per-chunk token counts. Quick proxy
+//     for "uniform vs jagged" sizing.
+//   * ``isOutlier`` — chunk count ≥ 2x or ≤ 0.5x median across all
+//     strategies; flags overly-aggressive / overly-coarse strategies
+//     for this specific doc.
+//
+// Strategies that errored, were skipped, or are not previewable
+// are filtered out of the diff strip — they don't have stats to
+// compare. They still render in the cards grid below.
+const diffStrategies = computed(() => {
+  const rows = strategyEntries.value.filter(
+    (e) => e.previewable && !e.error && e.chunks.length > 0,
+  )
+  if (rows.length === 0) return []
+
+  const counts = rows.map((r) => r.stats.chunk_count).sort((a, b) => a - b)
+  const median = counts[Math.floor(counts.length / 2)] || 1
+
+  return rows.map((entry) => {
+    // Cumulative tokens → percentage offsets for boundary ticks.
+    // We skip the trailing "100%" (= end of doc), which isn't a
+    // boundary; only N-1 ticks for N chunks.
+    let cum = 0
+    const total = entry.stats.total_tokens || 1
+    const boundaryPercents = []
+    for (let i = 0; i < entry.chunks.length - 1; i++) {
+      cum += entry.chunks[i].token_count || 0
+      boundaryPercents.push(Math.min(99.5, (cum / total) * 100))
+    }
+
+    // Population std-dev of per-chunk token counts.
+    const tokens = entry.chunks.map((c) => c.token_count || 0)
+    const mean = tokens.reduce((s, t) => s + t, 0) / tokens.length
+    const sqDiff = tokens.reduce((s, t) => s + (t - mean) ** 2, 0)
+    const variance = Math.round(Math.sqrt(sqDiff / tokens.length))
+
+    const ratio = entry.stats.chunk_count / median
+    const isOutlier = rows.length >= 3 && (ratio >= 2 || ratio <= 0.5)
+
+    const firstChunk = entry.chunks[0]
+    const firstChunkPreview = firstChunk
+      ? firstChunk.content.length > 240
+        ? firstChunk.content.slice(0, 240) + '…'
+        : firstChunk.content
+      : ''
+
+    return {
+      name: entry.name,
+      stats: entry.stats,
+      chunks: entry.chunks,
+      boundaryPercents,
+      variance,
+      isOutlier,
+      firstChunkPreview,
+      firstChunkTokens: firstChunk?.token_count || 0,
+    }
+  })
+})
+
+const tokenLabel = computed(() => ({
+  fixed: 'size (tokens)',
+  'pdf-page': 'max page tokens',
+  'cjk-sentence': 'target tokens',
+  semantic: 'min segment tokens',
+})[chosen.value?.name] || 'max leaf tokens')
+
+const tokenHint = computed(() => ({
+  fixed: 'token budget per chunk · overlap auto = size/8',
+  'pdf-page': 'oversized pages split inside via fixed strategy',
+  'cjk-sentence': 'merge sentences until target reached',
+  semantic: 'segment cap · boundary by embedding distance',
+})[chosen.value?.name] || 'token cap per heading-tree leaf')
+
+onMounted(async () => {
+  try {
+    const { data } = await listStrategies()
+    strategies.value = data
+  } catch (e) {
+    error.value = `failed to load strategy catalogue: ${e.response?.data?.detail || e.message}`
+  }
+})
+
+function reset() {
+  result.value = null
+  error.value = ''
+  Object.keys(expandedCount).forEach((k) => delete expandedCount[k])
+  if (fileInput.value) fileInput.value.value = ''
+}
+
+function onFilePicked(evt) {
+  const file = evt.target.files?.[0]
+  if (file) runPreview(file)
+}
+
+function onDrop(evt) {
+  const file = evt.dataTransfer?.files?.[0]
+  if (file) runPreview(file)
+}
+
+async function runPreview(file) {
+  reset()
+  loading.value = true
+  error.value = ''
+  runningSec.value = 0
+  const tickerId = setInterval(() => { runningSec.value += 1 }, 1000)
+  try {
+    const { data } = await previewChunking(file)
+    result.value = data
+  } catch (e) {
+    error.value = e.response?.data?.detail || e.message
+  } finally {
+    clearInterval(tickerId)
+    loading.value = false
+  }
+}
+
+function pickStrategy(entry) {
+  chosen.value = entry
+  commitForm.value = {
+    name: '',
+    description: '',
+    maxTokens: defaultTokenForStrategy(entry),
+  }
+  commitError.value = ''
+}
+
+function defaultTokenForStrategy(entry) {
+  const dp = entry.default_params || {}
+  return (
+    dp.size ??
+    dp.max_leaf_tokens ??
+    dp.max_page_tokens ??
+    dp.target_tokens ??
+    dp.min_segment_tokens ??
+    1024
+  )
+}
+
+function cancelChoice() {
+  chosen.value = null
+  commitError.value = ''
+}
+
+async function commitCreate() {
+  if (!chosen.value) return
+  commitError.value = ''
+  committing.value = true
+  // Mirror the param shape the existing KnowledgeCollections create
+  // form uses so commit semantics stay identical between the two
+  // entry points.
+  const s = chosen.value.name
+  const v = commitForm.value.maxTokens
+  let params
+  if (s === 'fixed') params = { size: v, overlap: Math.floor(v / 8) }
+  else if (s === 'pdf-page') params = { max_page_tokens: v }
+  else if (s === 'cjk-sentence') params = { target_tokens: v, max_tokens: v * 2 }
+  else if (s === 'semantic') params = { min_segment_tokens: v, breakpoint_percentile: 80 }
+  // hierarchical (Sprint 9 X / parent-child RAG):
+  //   * max_leaf_tokens — embedded-leaf budget (default 256)
+  //   * max_parent_tokens — heading-section context budget (4× leaf)
+  //   * overlap_tokens — fallback overlap when a paragraph exceeds the
+  //     leaf budget and recurses into FixedChunker
+  else params = {
+    max_leaf_tokens: v,
+    max_parent_tokens: v * 4,
+    overlap_tokens: Math.max(16, Math.floor(v / 16)),
+  }
+
+  try {
+    const { data } = await createCollection({
+      name: commitForm.value.name,
+      description: commitForm.value.description || null,
+      chunking_config: { strategy: s, params },
+    })
+    // Drop user back onto the new collection's detail page so they
+    // can upload the real corpus there.
+    router.push({ name: 'CollectionDetail', params: { id: data.id } })
+  } catch (e) {
+    commitError.value = e.response?.data?.detail || e.message
+  } finally {
+    committing.value = false
+  }
+}
+
+function humanBytes(n) {
+  if (!n) return '0 B'
+  const u = ['B', 'KB', 'MB', 'GB']
+  let i = 0; let x = n
+  while (x >= 1024 && i < u.length - 1) { x /= 1024; i++ }
+  return `${x.toFixed(x >= 10 ? 0 : 1)} ${u[i]}`
+}
+
+// Sprint 8 X / chunking-preview Phase 4 — overlap surfacing.
+//
+// Each chunker exposes overlap differently in default_params; the
+// preview backend ships those defaults verbatim through the
+// ``/strategies`` endpoint so we can render a one-line summary on
+// each card without reaching into chunker internals from the
+// frontend. Three categories:
+//
+//   * fixed:        every chunk overlaps the previous by N tokens.
+//                   Active on every chunk → quote the % of size.
+//   * hierarchical: only fallback when a heading leaf exceeds
+//                   ``max_leaf_tokens``. Quote the absolute value
+//                   plus a "fallback only" qualifier.
+//   * everything else: chunkers don't have a user-tunable overlap
+//                   knob. Their hardcoded fallback (``size//16`` or
+//                   ``target//8``) is internal-only.
+function overlapDescription(entry) {
+  const dp = entry.default_params || {}
+  if (entry.name === 'fixed') {
+    const o = dp.overlap ?? 128
+    const s = dp.size ?? 1024
+    const pct = s ? Math.round((o / s) * 100) : 0
+    return `${o} tokens / chunk · ~${pct}% of size · sliding-window`
+  }
+  if (entry.name === 'hierarchical') {
+    const o = dp.overlap_tokens ?? 64
+    return `${o} tokens · only when section exceeds max_leaf_tokens`
+  }
+  if (entry.name === 'semantic') {
+    return 'none · embedding-distance boundary'
+  }
+  // markdown-aware / pdf-page / cjk-sentence: hardcoded internal fallback only.
+  return 'internal fallback only · not user-tunable'
+}
+</script>
+
+<style scoped>
+.page { padding: var(--gap-3); display: flex; flex-direction: column; gap: var(--gap-3); }
+.page-head { margin-bottom: var(--gap-2); }
+.back-link { color: var(--c-fg-2); font-size: var(--t-2xs); text-decoration: none; }
+.back-link:hover { color: var(--c-accent); }
+.page-head__title { font-size: var(--t-lg); font-weight: 500; margin: 4px 0 6px; }
+.page-head__sub { font-size: var(--t-2xs); color: var(--c-fg-2); margin: 0; line-height: 1.6; }
+
+.upload {
+  display: flex; align-items: center; gap: var(--gap-2);
+  padding: var(--gap-3) var(--gap-2);
+  border: 1px dashed var(--c-divider);
+  font-size: var(--t-2xs);
+}
+
+.feedback.is-err { color: var(--c-danger, #c44); font-size: var(--t-2xs); }
+.cell-meta { color: var(--c-fg-2); font-size: var(--t-2xs); }
+.cell-strong { color: var(--c-fg-1); font-weight: 500; }
+.tnum { font-variant-numeric: tabular-nums; }
+
+.meta-row { display: flex; justify-content: space-between; align-items: baseline; }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--gap-3);
+}
+@media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } }
+
+.stats { display: flex; gap: var(--gap-3); flex-wrap: wrap; }
+
+.chunks { margin-top: var(--gap-2); font-size: var(--t-2xs); }
+.chunks summary { cursor: pointer; color: var(--c-accent); }
+.chunk-list { list-style: none; padding: 0; margin: var(--gap-2) 0 0; display: flex; flex-direction: column; gap: var(--gap-2); }
+.chunk { border-left: 2px solid var(--c-divider); padding: 4px 8px; }
+.chunk__head { display: flex; justify-content: space-between; margin-bottom: 4px; }
+.chunk__content {
+  margin: 0; font-family: var(--font-mono); font-size: var(--t-3xs);
+  white-space: pre-wrap; word-break: break-word;
+  background: var(--c-bg-1, #000); padding: 6px 8px;
+  max-height: 180px; overflow-y: auto;
+}
+
+.overlap-line {
+  margin: var(--gap-1) 0 0;
+  padding: 4px 8px;
+  background: var(--c-bg-elev-1, rgba(255,255,255,0.03));
+  border-left: 2px solid var(--c-divider);
+  font-size: var(--t-3xs);
+}
+.overlap-line strong { color: var(--c-fg-1); font-weight: 500; }
+
+.actions { margin-top: var(--gap-2); }
+.term-action { background: none; border: none; color: var(--c-accent); cursor: pointer; font-size: var(--t-2xs); padding: 4px 0; font-family: var(--font-mono); }
+.term-link { color: var(--c-accent); text-decoration: none; font-family: var(--font-mono); }
+.term-link:hover { text-decoration: underline; }
+
+.form-grid { display: flex; flex-direction: column; gap: var(--gap-2); }
+
+/* Phase 4 — visual diff strip ---------------------------------------- */
+.diff-section { padding: var(--gap-2) 0; border-top: 1px solid var(--c-divider); }
+.diff-section:first-child { border-top: 0; padding-top: 0; }
+.diff-section__title {
+  font-size: var(--t-2xs); font-weight: 500; margin: 0 0 var(--gap-2);
+  color: var(--c-fg-1); letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.cmp-table {
+  width: 100%; border-collapse: collapse; font-size: var(--t-2xs);
+  margin-bottom: var(--gap-2);
+}
+.cmp-table th {
+  text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--c-divider);
+  font-weight: 500; color: var(--c-fg-2);
+  font-size: var(--t-3xs); letter-spacing: 0.04em; text-transform: uppercase;
+}
+.cmp-table td { padding: 6px 8px; border-bottom: 1px dotted var(--c-divider); }
+.cmp-table .num { text-align: right; }
+.cmp-table tr.is-outlier td { color: var(--c-warn, #c08a2c); }
+
+/* Boundary bars */
+.bars { list-style: none; padding: 0; margin: var(--gap-2) 0 0; display: flex; flex-direction: column; gap: 8px; }
+.bar-row { display: grid; grid-template-columns: 130px 1fr 50px; align-items: center; gap: var(--gap-2); font-size: var(--t-2xs); }
+.bar-row__label { font-family: var(--font-mono); color: var(--c-fg-1); }
+.bar-row__count { color: var(--c-fg-2); text-align: right; }
+.bar {
+  position: relative; height: 18px;
+  background: var(--c-bg-1, #000);
+  border: 1px solid var(--c-divider);
+}
+.bar__tick {
+  position: absolute; top: -1px; bottom: -1px; width: 2px;
+  background: var(--c-accent);
+}
+
+/* Head-to-head first-chunk preview */
+.head2head {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--gap-2); margin-top: var(--gap-2);
+}
+.head2head__cell {
+  border: 1px solid var(--c-divider);
+  padding: 8px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.head2head__title { display: flex; justify-content: space-between; align-items: baseline; }
+.head2head__content {
+  margin: 0; font-family: var(--font-mono); font-size: var(--t-3xs);
+  white-space: pre-wrap; word-break: break-word;
+  background: var(--c-bg-1, #000); padding: 6px 8px;
+  max-height: 140px; overflow-y: auto; line-height: 1.5;
+}
+</style>

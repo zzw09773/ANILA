@@ -22,6 +22,11 @@ pip-delete-this-directory.txt
 .pyre/
 .pytype/
 .tox/
+
+# Sprint 9 — anila-core's default Session SQLite store. The path is
+# configurable via settings.session_db_path; default lives under
+# `.anila/` next to wherever the agent / router process started.
+.anila/
 .nox/
 .coverage
 .coverage.*
@@ -99,7 +104,17 @@ logs/
 tmp/
 temp/
 
-# ── runtime_logic（參考原始碼，只留 README.md 在 repo 內）────────────────────
+# ── runtime_logic（reference codebases — only README.md tracked）─────────────
+# Sprint 9 X update: structure changed from a single TS reference at
+# ``runtime_logic/src/`` to per-codebase subdirs. Both ``claude-code-src``
+# (TypeScript Claude Code internals) and ``openai-agents-python`` (OpenAI
+# Agents SDK) are studied locally for AgenticRAG enhancement work but
+# their source trees stay out of this repo. Add a new subdir-style entry
+# whenever a fresh reference codebase lands here.
+runtime_logic/claude-code-src/
+runtime_logic/openai-agents-python/
+# Legacy single-tree paths kept for back-compat with branches still on
+# the old layout — harmless to leave.
 runtime_logic/src/
 runtime_logic/vendor/
 runtime_logic/node_modules/
@@ -120,7 +135,6 @@ share/codeserver-sandbox/
 .observer.lock
 *.observer.lock
 
-ANILALM
 
 # Onyx upstream clone — handed off to the agent dev team for ongoing
 # maintenance. Their code, their repo. Kept on disk for local reference

@@ -22,6 +22,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine, Optional
 
+from ..memory.session import Session
 from ..models.message import (
     AssistantMessage,
     Message,
@@ -33,7 +34,16 @@ from ..models.message import (
 from ..config import settings
 from ..providers.base import Provider, ProviderRequest
 from ..router.tool_router import ToolRegistry, execute_batch
+from .approvals import (
+    MultipleInterruptsError,
+    RunPaused,
+    resume_tool_approval,
+    resume_with,
+    to_record,
+)
 from .budget_tracker import BudgetTracker, ContinueDecision, check_token_budget
+from .handoff import RunHandoff
+from .lifecycle import RunHooks, _safe_call
 
 logger = logging.getLogger(__name__)
 
@@ -80,11 +90,20 @@ class QueryEngine:
         tool_registry: ToolRegistry,
         config: QueryConfig,
         session_id: str = "",
+        session: Optional[Session] = None,
+        hooks: Optional[RunHooks] = None,
     ) -> None:
         self._provider = provider
         self._tools = tool_registry
         self._config = config
-        self._session_id = session_id
+        # ``session_id`` (string) predates the Session abstraction and is kept
+        # for back-compat; ``session`` (Sprint 9) is what enables pause-resume
+        # and conversation persistence. When both are passed we trust the
+        # Session's own session_id field.
+        self._session_id = session.session_id if session else session_id
+        self._session = session
+        # Sprint 11 PR 1: synchronous lifecycle hooks. None = no-op.
+        self._hooks = hooks
         self._post_turn_hooks: list[PostTurnHook] = []
         self._budget_tracker = BudgetTracker()
         self._in_flight_hooks: set[asyncio.Task] = set()  # type: ignore[type-arg]
@@ -113,6 +132,19 @@ class QueryEngine:
         turn_count = 0
         stop_reason = "completed"
 
+        # Sprint 11 PR 1: lifecycle hook firing point. Fires once per run()
+        # entry; on_agent_start fires once per agent activation (which for
+        # the current single-agent QueryEngine is also once per run).
+        agent_id = self._config.agent_id or ""
+        await _safe_call(
+            self._hooks, "on_run_start",
+            agent_id=agent_id, session_id=self._session_id,
+        )
+        await _safe_call(
+            self._hooks, "on_agent_start",
+            agent_id=agent_id, session_id=self._session_id,
+        )
+
         while turn_count < self._config.max_turns:
             turn_count += 1
 
@@ -136,10 +168,63 @@ class QueryEngine:
 
             # Stage 4: tool_execution
             if assistant_msg.has_tool_calls():
+                # Sprint 11 PR 1: per-tool start hooks fire BEFORE batch
+                # execution so an instrumentation layer can stamp
+                # in-flight spans / stash request payloads. Hooks are
+                # always-await and never abort the dispatch.
+                for tc in assistant_msg.tool_calls:
+                    await _safe_call(
+                        self._hooks, "on_tool_start",
+                        agent_id=agent_id,
+                        session_id=self._session_id,
+                        call=tc,
+                    )
+
                 results = await execute_batch(
                     self._tools,
                     assistant_msg.tool_calls,
                 )
+
+                # Pair each result back to its call by tool_call_id so
+                # on_tool_end carries a matched (call, result) pair.
+                calls_by_id = {tc.id: tc for tc in assistant_msg.tool_calls}
+                for r in results:
+                    matched_call = calls_by_id.get(r.tool_call_id)
+                    if matched_call is not None:
+                        await _safe_call(
+                            self._hooks, "on_tool_end",
+                            agent_id=agent_id,
+                            session_id=self._session_id,
+                            call=matched_call,
+                            result=r,
+                        )
+
+                # Approvals: when a tool returned an InterruptItem, persist
+                # conversation state + the interrupt to Session and raise
+                # RunPaused so the SSE handler can flush its stream cleanly.
+                interrupted = [r for r in results if r.interrupt is not None]
+                if interrupted:
+                    await self._pause_on_interrupt(
+                        history=history,
+                        results=results,
+                        assistant_msg=assistant_msg,
+                    )
+                    # _pause_on_interrupt always raises; the explicit raise
+                    # below is unreachable but keeps mypy happy about flow.
+                    raise AssertionError("_pause_on_interrupt must raise")
+
+                # Handoff (Sprint 10 PR 1): control transfer to another
+                # agent. Persist current conversation, then raise
+                # RunHandoff carrying the request — the Router catches it
+                # and dispatches the target agent with filtered context.
+                handoffs = [r for r in results if r.handoff is not None]
+                if handoffs:
+                    await self._handoff(
+                        history=history,
+                        handoff_result=handoffs[0],
+                    )
+                    raise AssertionError("_handoff must raise")
+
                 # Stage 5: attachments
                 tool_user_msg = self._build_tool_result_message(results)
                 history = history + [tool_user_msg]
@@ -176,6 +261,18 @@ class QueryEngine:
             turn_count=turn_count,
             finish_reason=stop_reason,
             stop_reason=stop_reason,
+        )
+
+        # Sprint 11 PR 1: synchronous lifecycle close-out — fires before
+        # the fire-and-forget post_turn_hooks so observers see the run
+        # end before any async work spawned by them races them.
+        await _safe_call(
+            self._hooks, "on_agent_end",
+            agent_id=agent_id, session_id=self._session_id, result=result,
+        )
+        await _safe_call(
+            self._hooks, "on_run_end",
+            agent_id=agent_id, session_id=self._session_id, result=result,
         )
 
         # Fire post-turn hooks non-blocking
@@ -278,6 +375,154 @@ class QueryEngine:
                 block["is_error"] = True
             content_blocks.append(block)
         return UserMessage(content=content_blocks)
+
+    async def _handoff(
+        self,
+        *,
+        history: list[Message],
+        handoff_result: ToolResult,
+    ) -> None:
+        """Persist conversation, then raise :class:`RunHandoff`.
+
+        Unlike interrupts (which the user must answer), a handoff is a
+        control transfer to another agent — the Router catches the
+        exception and dispatches the target with filtered context.
+        Persistence still happens so callers that re-create the engine
+        can rehydrate the source agent's session if needed.
+        """
+        request = handoff_result.handoff
+        assert request is not None  # by construction in caller
+        if self._session is not None:
+            await self._session.add_items(history)
+        # No interrupt record is pushed — the Router consumes the request
+        # immediately. Sprint 10 PR 3 may revisit this if we want resume
+        # semantics for handoffs.
+        await _safe_call(
+            self._hooks, "on_handoff",
+            source_agent_id=self._config.agent_id or "",
+            session_id=self._session.session_id if self._session else "",
+            request=request,
+        )
+        raise RunHandoff(
+            session_id=self._session.session_id if self._session else "",
+            request=request,
+        )
+
+    async def _pause_on_interrupt(
+        self,
+        *,
+        history: list[Message],
+        results: list[ToolResult],
+        assistant_msg: AssistantMessage,
+    ) -> None:
+        """Persist conversation + interrupt to Session, then raise RunPaused.
+
+        ``history`` already includes ``assistant_msg`` (Stage 2 appended it).
+        We persist the full history so that ``resume_from_interrupt`` can
+        rehydrate without depending on the caller to keep state.
+        """
+        if self._session is None:
+            raise RuntimeError(
+                "Tool returned InterruptItem but QueryEngine has no Session. "
+                "Pass session=… to QueryEngine to enable pause-resume."
+            )
+        interrupted = [r for r in results if r.interrupt is not None]
+        if len(interrupted) > 1:
+            raise MultipleInterruptsError(
+                f"{len(interrupted)} tools returned InterruptItem in one turn; "
+                "Sprint 9 supports at most one. Tools: "
+                + ", ".join(r.tool_call_id for r in interrupted)
+            )
+        interrupted_result = interrupted[0]
+        # mypy: interrupted_result.interrupt is not None by construction.
+        assert interrupted_result.interrupt is not None
+        sibling_results = [r for r in results if r.interrupt is None]
+        interrupted_call = next(
+            c for c in assistant_msg.tool_calls
+            if c.id == interrupted_result.tool_call_id
+        )
+
+        # Persist *full* history (including assistant_msg) before raising;
+        # resume_from_interrupt rehydrates from this snapshot.
+        await self._session.add_items(history)
+        record = to_record(
+            interrupted_result.interrupt,
+            tool_call=interrupted_call,
+            sibling_results=sibling_results,
+        )
+        await self._session.push_interrupt(record)
+        await _safe_call(
+            self._hooks, "on_run_paused",
+            agent_id=self._config.agent_id or "",
+            session_id=self._session.session_id,
+            interrupt_id=record.id,
+            kind=record.kind,
+        )
+        raise RunPaused(
+            session_id=self._session.session_id,
+            interrupt_id=record.id,
+            kind=record.kind,  # type: ignore[arg-type]
+        )
+
+    async def resume_from_interrupt(
+        self,
+        interrupt_id: str,
+        answer: "dict[str, Any] | str",
+        on_stream_delta: Optional[
+            Callable[[Any], Coroutine[Any, Any, None]]
+        ] = None,
+    ) -> TurnResult:
+        """Resume a paused run with the user's answer.
+
+        Loads conversation history from session, pops the named interrupt,
+        builds the resume :class:`UserMessage` (with sibling tool results
+        + the user's answer), then re-enters :meth:`run` from there.
+
+        Raises:
+            RuntimeError: if no Session is configured.
+            ValueError: if the interrupt_id is unknown / already answered.
+        """
+        if self._session is None:
+            raise RuntimeError(
+                "resume_from_interrupt requires a Session. "
+                "Pass session=… to QueryEngine."
+            )
+        history = await self._session.get_items()
+        # Sprint 11 PR 3: ``tool_approval`` interrupts have a different
+        # resume shape — the source tool runs (or doesn't) instead of
+        # the user's answer being treated as the tool's reply text.
+        # Peek at the pending interrupt to decide which helper to use.
+        pending = await self._session.pending_interrupts()
+        target = next((p for p in pending if p.id == interrupt_id), None)
+        if target is not None and target.kind == "tool_approval":
+            if isinstance(answer, dict):
+                approved = bool(answer.get("approved", False))
+                comment = str(answer.get("comment", "") or "")
+            else:
+                # Permissive fallback: a string answer "yes" / "approve"
+                # counts as approval; anything else is a deny.
+                approved = str(answer).strip().lower() in {
+                    "yes", "approve", "approved", "true", "ok"
+                }
+                comment = ""
+            resume_msg = await resume_tool_approval(
+                self._session, self._tools, interrupt_id,
+                approved=approved, comment=comment,
+            )
+        else:
+            resume_msg = await resume_with(
+                self._session, interrupt_id, answer
+            )
+        await _safe_call(
+            self._hooks, "on_run_resumed",
+            agent_id=self._config.agent_id or "",
+            session_id=self._session.session_id,
+            interrupt_id=interrupt_id,
+        )
+        # Resume by re-calling run() with the hydrated + completed history.
+        # The next turn starts at Stage 1 with the full picture and the
+        # model sees the user's answer as the awaited tool_result block.
+        return await self.run(history + [resume_msg], on_stream_delta=on_stream_delta)
 
     async def _fire_post_turn_hooks(self, result: TurnResult) -> None:
         """Launch post-turn hooks as fire-and-forget async tasks."""

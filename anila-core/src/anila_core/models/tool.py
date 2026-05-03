@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Callable, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ToolSafety(str, Enum):
@@ -14,6 +14,28 @@ class ToolSafety(str, Enum):
     READ_ONLY = "read_only"
     DESTRUCTIVE = "destructive"
     CONCURRENCY_SAFE = "concurrency_safe"
+
+
+class ToolPermission(str, Enum):
+    """Per-tool permission policy (Sprint 11 PR 3).
+
+    Distinct from :class:`ToolSafety` (which is a *capability* hint
+    about concurrency / destructiveness). Permission is the *governance*
+    gate that says whether the tool may run at all in the current
+    context, and how:
+
+    - ``ALLOW``  — tool runs whenever the LLM calls it (default).
+    - ``DENY``   — tool is always rejected with an error result.
+    - ``ASK``    — pause the run, ask the user; on approve, the tool
+                   runs with the original input. Implemented by
+                   returning :class:`InterruptItem(kind="tool_approval")`
+                   from the registry; the resume endpoint re-executes
+                   the tool with the gate bypassed.
+    """
+
+    ALLOW = "allow"
+    DENY = "deny"
+    ASK = "ask"
 
 
 class ToolDefinition(BaseModel):
@@ -27,9 +49,16 @@ class ToolDefinition(BaseModel):
     description: str
     input_schema: dict[str, Any]
     safety: ToolSafety = ToolSafety.READ_ONLY
+    permission: ToolPermission = ToolPermission.ALLOW
     implementation: Optional[Callable[..., Any]] = Field(default=None, exclude=True)
+    # Sprint 12 PR 5: per-tool guardrails. Typed as ``list[Any]`` to
+    # avoid pulling in the engine layer here (Protocol enforcement
+    # happens at runtime in ToolRegistry.execute). See
+    # :mod:`anila_core.engine.guardrails`.
+    input_guardrails: list[Any] = Field(default_factory=list, exclude=True)
+    output_guardrails: list[Any] = Field(default_factory=list, exclude=True)
 
-    model_config = {"arbitrary_types_allowed": True}
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def to_openai_schema(self) -> dict[str, Any]:
         """Generate OpenAI-compatible tool schema.

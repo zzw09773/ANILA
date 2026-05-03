@@ -5,11 +5,14 @@ import logging
 import math
 import re
 import time
+from threading import Lock
 from typing import AsyncIterator, Optional
 from fastapi import HTTPException
 import httpx
 from app.config import settings
+from app.database import SessionLocal
 from app.models.model_registry import ModelRegistry
+from app.services import agent_credential_service
 from app.services.usage_writer import enqueue_usage
 
 logger = logging.getLogger(__name__)
@@ -21,15 +24,119 @@ def _get_timeout(model_type: str) -> float:
     return settings.LLM_TIMEOUT
 
 
+# ---------------------------------------------------------------------------
+# Per-agent service-token cache (Sprint 8 X / Phase A — decision #2)
+#
+# DB-decrypt-per-outgoing-call is wasteful: under chat streaming load
+# we'd hit ``decrypt_credential`` once per request just to write a
+# header value that hasn't changed. A 5-minute TTL cache keyed by
+# agent id covers ≥99% of traffic; rotation makes the cached value
+# stale, but a cached stale token only hurts during the rotation
+# grace window — and ``service_token_previous_*`` is precisely the
+# mechanism that keeps the stale value valid for the next 24h.
+#
+# Concurrency: ``Lock`` rather than asyncio.Lock so synchronous
+# callers (e.g. test fixtures, ad-hoc scripts) can use the cache too.
+# Lock contention is irrelevant — get/set is microsecond-level work.
+# ---------------------------------------------------------------------------
+
+_PER_AGENT_TOKEN_TTL_SECONDS = 300
+
+_per_agent_token_cache: dict[int, tuple[str, float]] = {}
+_per_agent_token_lock = Lock()
+
+
+def _get_cached_agent_token(agent_id: int) -> Optional[str]:
+    with _per_agent_token_lock:
+        entry = _per_agent_token_cache.get(agent_id)
+        if entry is None:
+            return None
+        token, expires_at = entry
+        if expires_at < time.monotonic():
+            _per_agent_token_cache.pop(agent_id, None)
+            return None
+        return token
+
+
+def _set_cached_agent_token(agent_id: int, token: str) -> None:
+    with _per_agent_token_lock:
+        _per_agent_token_cache[agent_id] = (
+            token,
+            time.monotonic() + _PER_AGENT_TOKEN_TTL_SECONDS,
+        )
+
+
+def invalidate_agent_token_cache(agent_id: Optional[int] = None) -> None:
+    """Hook for rotation / revocation paths.
+
+    Called by ``agents.py`` admin endpoints after writing a new
+    credential / rotating an existing one. Pass ``None`` to flush
+    everything (rare — used by tests).
+    """
+    with _per_agent_token_lock:
+        if agent_id is None:
+            _per_agent_token_cache.clear()
+        else:
+            _per_agent_token_cache.pop(agent_id, None)
+
+
+def _resolve_outgoing_service_token(target_agent_id: Optional[int]) -> Optional[str]:
+    """Decide which service token to put on the outgoing CSP→agent header.
+
+    Resolution order:
+
+      1. Per-agent token from ``agent_credentials`` (cached 5 min).
+      2. Legacy fleet-shared ``CSP_SERVICE_TOKEN`` env var.
+      3. ``None`` — caller chose to skip identity injection.
+
+    Step 1 needs ``target_agent_id`` because we don't know which row
+    is "this agent's" without it. When the proxy is forwarding to a
+    raw model endpoint (e.g. vLLM, not a registered agent),
+    ``target_agent_id`` is ``None`` and we go straight to legacy.
+    """
+    if target_agent_id is not None:
+        cached = _get_cached_agent_token(target_agent_id)
+        if cached:
+            return cached
+        db = SessionLocal()
+        try:
+            plaintext = agent_credential_service.get_active_plaintext_for_agent(
+                db, agent_id=target_agent_id
+            )
+        finally:
+            db.close()
+        if plaintext:
+            _set_cached_agent_token(target_agent_id, plaintext)
+            return plaintext
+        # Fall through to legacy when an agent has no DB credential
+        # yet — happens during the migration window before admin runs
+        # the cutover for that specific agent.
+
+    if settings.CSP_SERVICE_TOKEN:
+        return settings.CSP_SERVICE_TOKEN
+
+    return None
+
+
 def _build_downstream_headers(
     user_id: int,
     user_email: Optional[str] = None,
     user_groups: Optional[str] = None,
+    target_agent_id: Optional[int] = None,
 ) -> dict:
-    """Build service credential + identity headers for downstream agents."""
+    """Build service credential + identity headers for downstream agents.
+
+    Sprint 8 X: ``target_agent_id`` is the registered ``agents.id`` if
+    we're forwarding to an agent (vs a raw model). When set, we prefer
+    the per-agent token from ``agent_credentials``; falls back to the
+    legacy env-var token when no DB credential exists yet for that
+    agent. Both paths emit the same ``X-CSP-Service-Token`` header on
+    the wire — agents don't need to know the source changed.
+    """
     headers: dict = {"Content-Type": "application/json"}
-    if settings.CSP_SERVICE_TOKEN:
-        headers["X-CSP-Service-Token"] = settings.CSP_SERVICE_TOKEN
+    token = _resolve_outgoing_service_token(target_agent_id)
+    if token:
+        headers["X-CSP-Service-Token"] = token
     headers["X-ANILA-User-Id"] = str(user_id)
     if user_email:
         headers["X-ANILA-User-Email"] = user_email
@@ -288,6 +395,9 @@ async def proxy_request(
     conversation_id: Optional[str] = None,
     trace_id: Optional[str] = None,
     requires_encryption: bool = False,
+    target_agent_id: Optional[int] = None,
+    caller_agent_id: Optional[int] = None,
+    caller_client_id: Optional[int] = None,
 ) -> dict:
     """Forward request to model backend with exponential backoff retry.
 
@@ -326,7 +436,9 @@ async def proxy_request(
     start_time = time.time()
 
     req_headers = (
-        _build_downstream_headers(user_id, user_email)
+        _build_downstream_headers(
+            user_id, user_email, target_agent_id=target_agent_id
+        )
         if inject_identity
         else {"Content-Type": "application/json"}
     )
@@ -419,6 +531,8 @@ async def proxy_request(
                 conversation_id=conversation_id,
                 trace_id=trace_id,
                 request_type=request_type,
+                caller_agent_id=caller_agent_id,
+                caller_client_id=caller_client_id,
             )
 
             return result
@@ -475,6 +589,9 @@ async def proxy_stream(
     conversation_id: Optional[str] = None,
     trace_id: Optional[str] = None,
     requires_encryption: bool = False,
+    target_agent_id: Optional[int] = None,
+    caller_agent_id: Optional[int] = None,
+    caller_client_id: Optional[int] = None,
 ) -> AsyncIterator[str]:
     """Stream SSE response from a downstream backend through CSP proxy.
 
@@ -483,7 +600,9 @@ async def proxy_stream(
     performs a server-side token estimate from request/response text.
     """
     headers = (
-        _build_downstream_headers(user_id, user_email)
+        _build_downstream_headers(
+            user_id, user_email, target_agent_id=target_agent_id
+        )
         if inject_identity
         else {"Content-Type": "application/json"}
     )
@@ -617,4 +736,6 @@ async def proxy_stream(
             request_duration_ms=duration_ms,
             conversation_id=conversation_id,
             trace_id=trace_id,
+            caller_agent_id=caller_agent_id,
+            caller_client_id=caller_client_id,
         )

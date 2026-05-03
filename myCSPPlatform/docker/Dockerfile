@@ -20,6 +20,15 @@ WORKDIR /app
 COPY anila-core /tmp/anila-core
 RUN pip install --no-cache-dir /tmp/anila-core
 
+# Sprint 8 X / chunking-preview Phase 1 — install AgenticRAG[rag] so
+# CSP can call ``anila_core.ingestion.parsers.extract_text`` directly
+# from request handlers (POST /api/ingestion/chunking-preview).
+# AgenticRAG is the canonical home of pymupdf4llm / Docling / OCR /
+# CJK normalisation; ingestion-worker has been pulling it in via the
+# same pattern since Sprint 3.
+COPY AgenticRAG /tmp/AgenticRAG
+RUN pip install --no-cache-dir '/tmp/AgenticRAG[rag]'
+
 # Install Python dependencies (CSP-specific)
 COPY myCSPPlatform/backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt

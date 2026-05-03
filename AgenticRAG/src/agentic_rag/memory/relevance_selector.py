@@ -93,14 +93,27 @@ def format_memory_manifest(headers: list[MemoryHeader]) -> str:
 
 
 class ModelBasedRelevanceSelector:
-    """Selects relevant memories by asking the model via a side query.
+    """Selects relevant memories by asking a model via a side query.
 
-    This is the initial implementation — the Protocol allows future
-    replacement with embedding-based selection.
+    Initial implementation; the ``RelevanceSelector`` Protocol allows
+    future replacement with embedding-based selection.
+
+    For ANILA's local-only deployment, point ``model`` at a
+    Haiku-class on-prem inference endpoint (vLLM with a small model
+    runs this query in <500ms; reusing the agent's main 70B model
+    burns capacity and latency for what is essentially a routing
+    decision).
     """
 
-    def __init__(self, provider: Provider) -> None:
+    def __init__(self, provider: Provider, *, model: str) -> None:
+        if not model:
+            raise ValueError(
+                "ModelBasedRelevanceSelector requires an explicit model — "
+                "pass the local model id you want for the side query "
+                "(typically a small Haiku-tier model)."
+            )
         self._provider = provider
+        self._model = model
 
     async def select(
         self,
@@ -156,7 +169,7 @@ class ModelBasedRelevanceSelector:
             from ..models.message import UserMessage
 
             request = ProviderRequest(
-                model="",  # caller should set; provider may override
+                model=self._model,
                 system=SELECT_MEMORIES_SYSTEM_PROMPT,
                 messages=[UserMessage(content=user_content)],
                 max_tokens=256,
@@ -188,3 +201,69 @@ class ModelBasedRelevanceSelector:
         except Exception as exc:
             logger.warning("[RelevanceSelector] side query failed: %s", exc)
             return []
+
+
+# ── Memory injection into prompts ─────────────────────────────────────
+
+
+MEMORY_INJECTION_HEADER = "## Relevant Memories"
+"""Header used at the top of the injected memory block."""
+
+
+def render_memories_for_prompt(
+    memories: list[RelevantMemory],
+    *,
+    read_body: Optional[callable] = None,
+    max_chars_per_memory: int = 2_000,
+) -> str:
+    """Format a list of selected memories as a system-prompt section.
+
+    Returns an empty string when ``memories`` is empty (so callers can
+    do ``system_prompt + render_memories_for_prompt(...)`` without a
+    branch). Each memory's body is read via ``read_body(path)`` (a
+    callable so tests can inject without touching disk); on failure,
+    the memory is skipped with a warning.
+
+    ``max_chars_per_memory`` caps each body to keep the injected block
+    bounded — a misconfigured 50KB memory file shouldn't blow the
+    prompt budget.
+    """
+    if not memories:
+        return ""
+
+    if read_body is None:
+        def _default_read(path: str) -> str:
+            from pathlib import Path
+
+            return Path(path).read_text(encoding="utf-8")
+
+        read_body = _default_read
+
+    sections: list[str] = [MEMORY_INJECTION_HEADER, ""]
+    for mem in memories:
+        try:
+            body = read_body(mem.path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "render_memories_for_prompt: failed to read %s: %s", mem.path, exc
+            )
+            continue
+        if not body:
+            continue
+        if len(body) > max_chars_per_memory:
+            body = body[:max_chars_per_memory] + "\n[…truncated…]"
+        sections.append(f"### {mem.filename}\n{body}\n")
+    if len(sections) <= 2:
+        return ""  # All reads failed
+    return "\n".join(sections).rstrip() + "\n"
+
+
+__all__ = [
+    "MAX_RELEVANT_MEMORIES",
+    "MEMORY_INJECTION_HEADER",
+    "ModelBasedRelevanceSelector",
+    "RelevanceSelector",
+    "RelevantMemory",
+    "format_memory_manifest",
+    "render_memories_for_prompt",
+]

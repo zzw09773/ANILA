@@ -28,6 +28,7 @@ from fastapi import (
     File,
     HTTPException,
     Query,
+    Response,
     UploadFile,
     status,
 )
@@ -557,6 +558,92 @@ def get_document(
     return payload
 
 
+@router.delete(
+    "/api/ingestion/documents/{document_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+def delete_document(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    """Delete a document, its chunks (CASCADE), and its blob if unique.
+
+    Three layers to clean up:
+      1. ``ingestion_documents`` row — straight DELETE.
+      2. ``document_chunks`` rows — handled by ``ON DELETE CASCADE`` on
+         the FK (see migration 0014); pgvector + tsv index entries fall
+         out automatically.
+      3. The on-disk blob at ``UPLOAD_DIR/<sha256[:2]>/<sha256>`` — the
+         storage layer is content-addressable, so the SAME file may
+         back multiple ``ingestion_documents`` rows (uploading the same
+         PDF to two collections shares the bytes). We only ``unlink``
+         when no other row references that ``sha256``. This keeps the
+         FS lean for the common case while staying correct under
+         deduped re-uploads.
+
+    Job rows in ``ingestion_jobs`` keep their FK pointing at the doc id
+    via ``ON DELETE CASCADE`` too, so worker history disappears with the
+    document. If you want to retain audit trail beyond the row, the
+    ``audit_log`` entry below is the durable record.
+    """
+    doc = (
+        db.query(IngestionDocument)
+        .filter(IngestionDocument.id == document_id)
+        .first()
+    )
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Auth: must be admin or own the parent collection.
+    _resolve_collection(db, current_user, doc.collection_id)
+
+    snapshot = {
+        "filename": doc.filename,
+        "sha256": doc.sha256,
+        "collection_id": doc.collection_id,
+        "bytes": doc.bytes,
+    }
+    blob_path = doc.storage_path
+    sha256 = doc.sha256
+
+    db.delete(doc)
+    db.commit()
+
+    # Refcount the blob: only unlink if nothing else points at this sha.
+    # Done AFTER commit so a concurrent upload that lands the same sha
+    # on disk doesn't lose its file (the new row is visible to this
+    # query). The race window is tiny — ingestion_documents.sha256 has a
+    # uniqueness constraint per collection, so we'd have to commit a new
+    # doc in another collection between the commit above and the count
+    # below. In that race we'd unlink and the new doc's worker would
+    # repopulate via _persist_blob (idempotent: writes only if absent).
+    still_referenced = (
+        db.query(IngestionDocument)
+        .filter(IngestionDocument.sha256 == sha256)
+        .count()
+    )
+    if still_referenced == 0 and blob_path:
+        try:
+            if os.path.exists(blob_path):
+                os.unlink(blob_path)
+        except OSError:
+            # FS errors are not fatal — the row is gone, the orphan
+            # blob is at worst a cleanup chore handled by a sweeper job.
+            pass
+
+    log_audit_event(
+        db,
+        actor=current_user,
+        action="ingestion_document_delete",
+        resource_type="ingestion_document",
+        resource_id=document_id,
+        metadata=snapshot,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 # ── Inspector endpoints (Sprint 2 Chunk H) ──────────────────────────────────
 
 
@@ -574,6 +661,13 @@ class ChunkRow(BaseModel):
     metadata: dict
     token_count: int | None
     created_at: datetime
+    # Sprint 9 X / parent-child RAG (migration 0028). All optional;
+    # legacy rows that predate the new chunker default to
+    # ``chunk_type='leaf'`` / ``parent_chunk_id=None`` so existing UIs
+    # see no behaviour change unless they look at the new fields.
+    parent_chunk_id: int | None = None
+    chunk_type: str = "leaf"
+    chunk_level: int = 0
 
 
 class ChunkEmbeddingDebug(BaseModel):
@@ -639,6 +733,9 @@ async def list_document_chunks(
             metadata=c.metadata or {},
             token_count=c.token_count,
             created_at=c.created_at,
+            parent_chunk_id=getattr(c, "parent_chunk_id", None),
+            chunk_type=getattr(c, "chunk_type", "leaf") or "leaf",
+            chunk_level=getattr(c, "chunk_level", 0) or 0,
         )
         for c in chunks
     ]

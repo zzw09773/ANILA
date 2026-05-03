@@ -12,12 +12,16 @@ from app.schemas.token_usage import (
 )
 from app.services.auth_service import get_current_user, require_admin
 from app.services.usage_service import (
-    get_usage_summary,
+    export_usage_csv,
+    get_agent_usage,
     get_chart_data,
+    get_top_agents,
+    get_top_departments,
     get_top_models,
     get_top_users,
-    get_top_departments,
-    export_usage_csv,
+    get_usage_by_base_model,
+    get_usage_by_client,
+    get_usage_summary,
 )
 
 router = APIRouter(prefix="/api/usage", tags=["用量統計"])
@@ -124,6 +128,96 @@ def top_departments(
         model_type=model_type,
         department_id=department_id,
     )
+
+
+# ── Sprint 8 X / Phase G — caller attribution rollups ───────────────────────
+
+
+@router.get("/top-agents")
+def top_agents(
+    days: int = Query(30, ge=1, le=180),
+    limit: int = Query(10, ge=1, le=50),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Top-N agents by token consumption over the last ``days`` days."""
+    return get_top_agents(db, days=days, limit=limit)
+
+
+@router.get("/by-base-model")
+def by_base_model(
+    days: int = Query(30, ge=1, le=180),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Group attributed token spend by ``agents.base_model_id``."""
+    return get_usage_by_base_model(db, days=days)
+
+
+@router.get("/by-client")
+def by_client(
+    days: int = Query(30, ge=1, le=180),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Group attributed token spend by ``service_clients.id`` (Router / worker)."""
+    return get_usage_by_client(db, days=days)
+
+
+@router.get("/agents/{agent_id}")
+def usage_for_agent(
+    agent_id: int,
+    days: int = Query(30, ge=1, le=180),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Time-series + summary for one specific agent."""
+    return get_agent_usage(db, agent_id=agent_id, days=days)
+
+
+# Sprint 8 X / Phase H — cutover progress widget data source.
+#
+# Pulls counts of ``service_token_legacy_env_used`` audit events over
+# 24h / 7d / 30d windows so the DashboardView widget can render a
+# single number per window + the timestamp of the most recent fallback
+# hit. When this number is sustained at zero for a release window
+# (default 14 d), ops can safely drop the legacy ``CSP_SERVICE_TOKEN``
+# env var and remove the fallback branch in
+# ``auth_service.verify_service_token``.
+
+@router.get("/legacy-token-stats")
+def legacy_token_stats(
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Cutover progress: counts of legacy CSP_SERVICE_TOKEN fallback hits.
+
+    Returns ``{count_24h, count_7d, count_30d, last_seen_at}``.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import func
+
+    from app.models.audit_log import AuditLog
+    from app.services.agent_credential_service import AUDIT_LEGACY_TOKEN_USED
+
+    now = datetime.now(timezone.utc)
+    base = db.query(AuditLog).filter(AuditLog.action == AUDIT_LEGACY_TOKEN_USED)
+
+    def _count_since(delta: timedelta) -> int:
+        return (
+            base.filter(AuditLog.created_at >= now - delta).count()
+        )
+
+    last = (
+        base.with_entities(func.max(AuditLog.created_at)).scalar()
+    )
+    return {
+        "count_24h": _count_since(timedelta(hours=24)),
+        "count_7d": _count_since(timedelta(days=7)),
+        "count_30d": _count_since(timedelta(days=30)),
+        "last_seen_at": last.isoformat() if last else None,
+    }
 
 
 @router.get("/export")

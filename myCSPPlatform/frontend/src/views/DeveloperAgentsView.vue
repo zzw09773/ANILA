@@ -1,673 +1,500 @@
 <template>
-  <div class="space-y-6">
-    <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+  <div class="page">
+    <header class="page-head">
       <div>
-        <h2 class="text-lg font-semibold">Agent Console</h2>
-        <p class="text-sm text-gray-500 mt-0.5">
-          {{ authStore.isAdmin ? '審核與管理所有已註冊 Agent' : '管理你的 Agent 與模板下載流程' }}
+        <p class="page-head__eyebrow">developer · console</p>
+        <h1 class="page-head__title">agents</h1>
+        <p class="page-head__sub">
+          {{ authStore.isAdmin ? 'review and govern every registered agent' : 'manage your agents · download templates · ship to router' }}
         </p>
       </div>
-      <div class="flex flex-wrap gap-2">
-        <button
-          @click="handleDownloadTemplate"
-          class="px-4 py-2 text-sm border border-indigo-300 text-indigo-700 rounded-lg hover:bg-indigo-50 transition"
-        >
-          下載官方模板
-        </button>
-        <button
-          @click="openRegisterModal"
-          class="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 transition"
-        >
-          註冊 Agent
-        </button>
+      <div class="page-head__actions">
+        <TermButton @click="handleDownloadTemplate" label="download template" />
+        <TermButton variant="primary" @click="openRegisterModal" label="register agent" />
       </div>
+    </header>
+
+    <div v-if="feedback.message" class="feedback" :class="feedback.type === 'error' ? 'is-err' : 'is-ok'">
+      <span>{{ feedback.type === 'error' ? '!' : '✓' }}</span>
+      <span>{{ feedback.message }}</span>
     </div>
 
-    <div
-      v-if="feedback.message"
-      class="rounded-xl border px-4 py-3 text-sm"
-      :class="feedback.type === 'error'
-        ? 'border-red-200 bg-red-50 text-red-700'
-        : 'border-green-200 bg-green-50 text-green-700'"
-    >
-      {{ feedback.message }}
-    </div>
-
-    <div class="rounded-xl border border-indigo-200 bg-indigo-50/50">
-      <button
-        type="button"
-        @click="showGuide = !showGuide"
-        class="flex w-full items-center justify-between px-4 py-3 text-left"
-      >
-        <div>
-          <div class="text-sm font-semibold text-indigo-900">開發者指南</div>
-          <div class="mt-0.5 text-xs text-indigo-700/80">
-            Fork 樣板 → 部署 agent → 註冊 → 等待核准。展開看步驟與 endpoint 合約。
-          </div>
-        </div>
-        <span class="text-xs text-indigo-700">{{ showGuide ? '收合 ▲' : '展開 ▼' }}</span>
+    <TermBox title="developer · guide" pad="md">
+      <button type="button" class="guide-toggle" @click="showGuide = !showGuide">
+        <span>{{ showGuide ? '▾' : '▸' }} fork AgenticRAG · write a tool · register here · wait for approval</span>
+        <span class="cell-meta">{{ showGuide ? 'collapse' : 'expand' }}</span>
       </button>
-      <div v-if="showGuide" class="space-y-4 border-t border-indigo-200 px-4 py-4 text-sm text-gray-700">
-        <div>
-          <div class="font-medium text-gray-900">1. 取得樣板並部署</div>
-          <ol class="mt-2 list-decimal space-y-1 pl-5 text-xs text-gray-600">
-            <li>按上方「下載官方模板」解壓 <code class="rounded bg-gray-100 px-1">anila-core-template.zip</code>。</li>
-            <li>改 <code class="rounded bg-gray-100 px-1">api.py</code> 的 <code class="rounded bg-gray-100 px-1">retrieve_context()</code> 與 <code class="rounded bg-gray-100 px-1">SYSTEM_PROMPT</code> 為你的業務邏輯。</li>
-            <li>設定 <code class="rounded bg-gray-100 px-1">.env</code>（LLM / CSP 端點），執行 <code class="rounded bg-gray-100 px-1">docker compose up -d</code>。</li>
-            <li>自測：<code class="rounded bg-gray-100 px-1">curl http://&lt;host&gt;:24786/health</code> 要回 <code class="rounded bg-gray-100 px-1">{"status":"ok"}</code>。</li>
-          </ol>
-        </div>
-        <div>
-          <div class="font-medium text-gray-900">2. 你的 agent 必須實作的 endpoint</div>
-          <div class="mt-2 overflow-x-auto">
-            <table class="w-full text-xs">
-              <thead class="text-gray-500">
-                <tr class="border-b border-indigo-200">
-                  <th class="py-1.5 text-left font-medium">方法</th>
-                  <th class="py-1.5 text-left font-medium">路徑</th>
-                  <th class="py-1.5 text-left font-medium">用途</th>
-                </tr>
-              </thead>
-              <tbody class="text-gray-700">
-                <tr class="border-b border-indigo-100">
-                  <td class="py-1.5 font-mono">GET</td>
-                  <td class="py-1.5 font-mono">/health</td>
-                  <td class="py-1.5">CSP discovery / 健康探針（公開）</td>
-                </tr>
-                <tr class="border-b border-indigo-100">
-                  <td class="py-1.5 font-mono">GET</td>
-                  <td class="py-1.5 font-mono">/v1/models</td>
-                  <td class="py-1.5">回報可用模型 ID（需 s2s token）</td>
-                </tr>
-                <tr>
-                  <td class="py-1.5 font-mono">POST</td>
-                  <td class="py-1.5 font-mono">/v1/chat/completions</td>
-                  <td class="py-1.5">主要推論端點，OpenAI-compat（需 s2s token）</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-        <div>
-          <div class="font-medium text-gray-900">3. 註冊到這個頁面</div>
-          <p class="mt-2 text-xs text-gray-600">
-            按右上「註冊 Agent」，填名稱、endpoint URL、router 描述（≥ 24 字，用自然語言說明能解決什麼問題）。
-            送出後狀態為 <span class="rounded bg-yellow-50 px-1.5 py-0.5 text-yellow-700">pending</span>，等待 admin 核准；
-            核准後 Router 會自動 discover，前端對話即可選到你的 agent。
-          </p>
-        </div>
-        <div class="rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs text-gray-600">
-          完整流程、輸出格式範例、常見送審失敗原因請見
-          <a
-            href="https://github.com/zzw09773/anila/blob/main/docs/developer-guide.md"
-            target="_blank"
-            rel="noopener"
-            class="font-medium text-indigo-700 hover:text-indigo-900"
-          >docs/developer-guide.md</a>。
-        </div>
-      </div>
-    </div>
-
-    <div class="grid gap-3 md:grid-cols-4">
-      <div class="rounded-xl border border-gray-200 bg-white p-4">
-        <div class="text-xs uppercase tracking-[0.16em] text-gray-400">Total</div>
-        <div class="mt-2 text-2xl font-semibold">{{ agents.length }}</div>
-      </div>
-      <div class="rounded-xl border border-gray-200 bg-white p-4">
-        <div class="text-xs uppercase tracking-[0.16em] text-gray-400">Pending</div>
-        <div class="mt-2 text-2xl font-semibold text-yellow-700">{{ pendingCount }}</div>
-      </div>
-      <div class="rounded-xl border border-gray-200 bg-white p-4">
-        <div class="text-xs uppercase tracking-[0.16em] text-gray-400">Approved</div>
-        <div class="mt-2 text-2xl font-semibold text-green-700">{{ approvedCount }}</div>
-      </div>
-      <div class="rounded-xl border border-gray-200 bg-white p-4">
-        <div class="text-xs uppercase tracking-[0.16em] text-gray-400">Healthy</div>
-        <div class="mt-2 text-2xl font-semibold text-indigo-700">{{ healthyCount }}</div>
-      </div>
-    </div>
-
-    <div class="grid gap-3 rounded-xl border border-gray-200 bg-white p-4 lg:grid-cols-4">
-      <label class="grid gap-1">
-        <span class="text-xs font-medium uppercase tracking-[0.16em] text-gray-400">搜尋</span>
-        <input
-          v-model="filters.query"
-          type="text"
-          class="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-          placeholder="名稱、描述、endpoint"
-        />
-      </label>
-      <label class="grid gap-1">
-        <span class="text-xs font-medium uppercase tracking-[0.16em] text-gray-400">審核狀態</span>
-        <select
-          v-model="filters.approval"
-          class="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-        >
-          <option value="all">全部</option>
-          <option value="pending">待審核</option>
-          <option value="approved">已核准</option>
-          <option value="rejected">已拒絕</option>
-        </select>
-      </label>
-      <label class="grid gap-1">
-        <span class="text-xs font-medium uppercase tracking-[0.16em] text-gray-400">Health</span>
-        <select
-          v-model="filters.health"
-          class="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-        >
-          <option value="all">全部</option>
-          <option value="healthy">Healthy</option>
-          <option value="unhealthy">Unhealthy</option>
-          <option value="unknown">Unknown</option>
-        </select>
-      </label>
-      <label class="grid gap-1">
-        <span class="text-xs font-medium uppercase tracking-[0.16em] text-gray-400">排序</span>
-        <select
-          v-model="filters.sort"
-          class="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-        >
-          <option value="newest">最新優先</option>
-          <option value="oldest">最舊優先</option>
-          <option value="name">名稱 A-Z</option>
-          <option value="approval">待審核優先</option>
-        </select>
-      </label>
-    </div>
-
-    <div v-if="authStore.isAdmin" class="rounded-xl border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-800">
-      目前有 {{ pendingCount }} 個 Agent 待審核。可用篩選切到「待審核」快速處理 approval queue。
-    </div>
-
-    <div class="overflow-hidden rounded-xl border border-gray-200 bg-white">
-      <div v-if="loading" class="px-4 py-10 text-center text-sm text-gray-400">載入 Agent 清單中...</div>
-      <div v-else-if="filteredAgents.length === 0" class="px-4 py-10 text-center text-sm text-gray-400">
-        {{ agents.length === 0 ? '尚無 Agent，從模板下載與註冊流程開始。' : '沒有符合目前篩選條件的 Agent。' }}
-      </div>
-      <div v-else class="overflow-x-auto">
-        <table class="min-w-full text-sm">
-          <thead class="border-b bg-gray-50">
-            <tr>
-              <th class="px-4 py-3 text-left font-medium text-gray-600">名稱</th>
-              <th class="px-4 py-3 text-left font-medium text-gray-600">Endpoint</th>
-              <th class="px-4 py-3 text-left font-medium text-gray-600">Router 描述</th>
-              <th class="px-4 py-3 text-left font-medium text-gray-600">Health</th>
-              <th class="px-4 py-3 text-left font-medium text-gray-600">審核狀態</th>
-              <th class="px-4 py-3 text-left font-medium text-gray-600">加密</th>
-              <th class="px-4 py-3 text-left font-medium text-gray-600">建立日期</th>
-              <th class="px-4 py-3 text-left font-medium text-gray-600">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="agent in filteredAgents"
-              :key="agent.id"
-              class="border-b last:border-0 hover:bg-gray-50"
-            >
-              <td class="px-4 py-3">
-                <div class="font-medium">{{ agent.name }}</div>
-                <div class="mt-1 text-xs text-gray-400">ID: {{ agent.id }}</div>
-              </td>
-              <td class="px-4 py-3 text-xs font-mono text-gray-500">
-                <div class="max-w-[220px] truncate">{{ agent.endpoint_url }}</div>
-              </td>
-              <td class="px-4 py-3 text-xs text-gray-500">
-                <div class="max-w-[260px] truncate">{{ agent.description_for_router }}</div>
-              </td>
-              <td class="px-4 py-3">
-                <span
-                  class="rounded px-2 py-0.5 text-xs"
-                  :class="healthPillClass(agent.health_status)"
-                >
-                  {{ agent.health_status }}
-                </span>
-              </td>
-              <td class="px-4 py-3">
-                <span
-                  class="rounded px-2 py-0.5 text-xs"
-                  :class="approvalPillClass(agent.approval_status)"
-                >
-                  {{ approvalLabel(agent.approval_status) }}
-                </span>
-              </td>
-              <td class="px-4 py-3">
-                <span
-                  class="rounded px-2 py-0.5 text-xs"
-                  :class="agent.requires_encryption ? 'bg-red-50 text-red-700' : 'bg-gray-50 text-gray-500'"
-                >
-                  {{ agent.requires_encryption ? '強制加密' : '一般' }}
-                </span>
-              </td>
-              <td class="px-4 py-3 text-gray-500">{{ formatDate(agent.created_at) }}</td>
-              <td class="px-4 py-3 whitespace-nowrap">
-                <div class="flex flex-wrap gap-2 text-xs">
-                  <button @click="openDetailModal(agent)" class="font-medium text-indigo-600 hover:text-indigo-800">
-                    詳情
-                  </button>
-                  <button
-                    v-if="canEditAgent(agent)"
-                    @click="openEditModal(agent)"
-                    class="font-medium text-amber-600 hover:text-amber-800"
-                    title="編輯 endpoint / 描述 / capabilities（名稱、審核狀態、加密模式不可改）"
-                  >
-                    編輯
-                  </button>
-                  <button
-                    v-if="authStore.isAdmin"
-                    @click="handleHealthCheck(agent)"
-                    :disabled="healthCheckingId === agent.id"
-                    class="font-medium text-blue-600 hover:text-blue-800 disabled:opacity-50"
-                    title="主動 ping agent 端點並更新健康狀態"
-                  >
-                    {{ healthCheckingId === agent.id ? '檢查中…' : '檢查' }}
-                  </button>
-                  <button
-                    v-if="authStore.isAdmin && agent.approval_status === 'pending'"
-                    @click="handleApprove(agent)"
-                    class="font-medium text-green-600 hover:text-green-800"
-                  >
-                    核准
-                  </button>
-                  <button
-                    v-if="authStore.isAdmin && agent.approval_status === 'pending'"
-                    @click="openRejectModal(agent)"
-                    class="font-medium text-red-600 hover:text-red-800"
-                  >
-                    拒絕
-                  </button>
-                  <button
-                    v-if="authStore.isAdmin"
-                    @click="handleDeleteAgent(agent)"
-                    :disabled="deletingId === agent.id"
-                    class="font-medium text-red-600 hover:text-red-800 disabled:opacity-50"
-                  >
-                    {{ deletingId === agent.id ? '刪除中…' : '刪除' }}
-                  </button>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div v-if="showRegisterModal" class="fixed inset-0 z-50 flex items-center justify-center">
-      <div class="fixed inset-0 bg-black/50" @click="showRegisterModal = false"></div>
-      <div class="relative mx-4 w-full max-w-2xl rounded-xl bg-white p-6 shadow-xl">
-        <h3 class="text-lg font-semibold">註冊新 Agent</h3>
-        <p class="mt-1 text-sm text-gray-500">提交後會進入 pending 狀態，等待 admin 核准。</p>
-
-        <div class="mt-5 grid gap-4 md:grid-cols-2">
-          <label class="grid gap-1 md:col-span-2">
-            <span class="text-sm font-medium text-gray-700">Agent 名稱</span>
-            <input
-              v-model="form.name"
-              type="text"
-              class="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="例如：hr-policy-agent"
-            />
-            <span v-if="formErrors.name" class="text-xs text-red-600">{{ formErrors.name }}</span>
-          </label>
-          <label class="grid gap-1 md:col-span-2">
-            <span class="text-sm font-medium text-gray-700">Endpoint URL</span>
-            <input
-              v-model="form.endpoint_url"
-              type="text"
-              class="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="http://host:port"
-            />
-            <span v-if="formErrors.endpoint_url" class="text-xs text-red-600">{{ formErrors.endpoint_url }}</span>
-          </label>
-          <label class="grid gap-1 md:col-span-2">
-            <span class="text-sm font-medium text-gray-700">Router 描述</span>
-            <textarea
-              v-model="form.description_for_router"
-              rows="3"
-              class="w-full resize-none rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="用自然語言說明這個 Agent 能解決什麼問題。"
-            />
-            <span v-if="formErrors.description_for_router" class="text-xs text-red-600">{{ formErrors.description_for_router }}</span>
-          </label>
-          <label class="grid gap-1">
-            <span class="text-sm font-medium text-gray-700">API Version</span>
-            <input
-              v-model="form.api_version"
-              type="text"
-              class="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="v1"
-            />
-          </label>
-          <label class="grid gap-1">
-            <span class="text-sm font-medium text-gray-700">
-              底層模型 Base Model <span class="text-red-500">*</span>
-            </span>
-            <select
-              v-model.number="form.base_model_id"
-              class="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-            >
-              <option :value="null" disabled>請選擇底層模型…</option>
-              <option
-                v-for="m in baseModelOptions"
-                :key="m.id"
-                :value="m.id"
-              >
-                {{ m.display_name }}（{{ m.name }} · {{ m.model_type }}）
-              </option>
-            </select>
-            <span v-if="formErrors.base_model_id" class="text-xs text-red-600">
-              {{ formErrors.base_model_id }}
-            </span>
-            <span v-else class="text-xs text-gray-500">
-              選擇你的 agent 內部呼叫的 LLM / VLM — 用量紀錄會歸到這個模型下。
-            </span>
-          </label>
-        </div>
-
-        <div class="mt-6 rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-600">
-          <div class="font-medium text-gray-800">提交前檢查</div>
-          <ul class="mt-2 space-y-1 text-xs">
-            <li>{{ form.name ? '✓' : '○' }} 已填 Agent 名稱</li>
-            <li>{{ /^https?:\/\//.test(form.endpoint_url) ? '✓' : '○' }} Endpoint 使用 http/https URL</li>
-            <li>{{ form.description_for_router.trim().length >= 24 ? '✓' : '○' }} Router 描述至少 24 字元</li>
-            <li>{{ form.base_model_id ? '✓' : '○' }} 已選擇底層模型</li>
-            <li>○ 你的 endpoint 已實作 <code class="rounded bg-white px-1">GET /health</code>、<code class="rounded bg-white px-1">POST /v1/chat/completions</code>（OpenAI-compat SSE）</li>
-          </ul>
-        </div>
-
-        <details class="mt-4 rounded-xl border border-gray-200 bg-white">
-          <summary class="cursor-pointer px-4 py-3 text-sm font-medium text-gray-800">
-            你的 agent 該回傳什麼？（OpenAI-compat 輸出格式）
-          </summary>
-          <div class="space-y-3 border-t border-gray-200 px-4 py-3 text-xs text-gray-600">
-            <div>
-              <div class="font-medium text-gray-800">GET /health</div>
-              <pre class="mt-1 overflow-x-auto rounded-lg bg-gray-950 p-3 text-[11px] text-gray-100">{
-  "status": "ok",
-  "model":  "google/gemma4",
-  "rag":    true
-}</pre>
-            </div>
-            <div>
-              <div class="font-medium text-gray-800">POST /v1/chat/completions（stream: true — SSE）</div>
-              <pre class="mt-1 overflow-x-auto rounded-lg bg-gray-950 p-3 text-[11px] text-gray-100">data: {"id":"chatcmpl-abc","object":"chat.completion.chunk",
- "created":1735689600,"model":"rag/google/gemma4",
- "choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
-
-data: {"id":"chatcmpl-abc","object":"chat.completion.chunk",
- "created":1735689600,"model":"rag/google/gemma4",
- "choices":[{"index":0,"delta":{"content":"根據《員工手冊》"},"finish_reason":null}]}
-
-data: {"id":"chatcmpl-abc","object":"chat.completion.chunk",
- "created":1735689600,"model":"rag/google/gemma4",
- "choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
-
-data: [DONE]</pre>
-              <p class="mt-2 text-[11px] text-gray-500">
-                Response header 要 <code class="rounded bg-gray-100 px-1">Content-Type: text/event-stream</code>，以 <code class="rounded bg-gray-100 px-1">data: [DONE]</code> 結尾。
-                思考塊 / RAG 軌跡可選用 <code class="rounded bg-gray-100 px-1">delta.reasoning_content</code>。
-              </p>
-            </div>
-            <div>
-              <div class="font-medium text-gray-800">POST /v1/chat/completions（stream: false — 一次回）</div>
-              <pre class="mt-1 overflow-x-auto rounded-lg bg-gray-950 p-3 text-[11px] text-gray-100">{
-  "id":      "chatcmpl-abc123",
-  "object":  "chat.completion",
-  "created": 1735689600,
-  "model":   "rag/google/gemma4",
-  "choices": [{
-    "index": 0,
-    "message": { "role": "assistant", "content": "根據《員工手冊 §3.2》……" },
-    "finish_reason": "stop"
-  }],
-  "usage": { "prompt_tokens": 128, "completion_tokens": 64, "total_tokens": 192 }
-}</pre>
-            </div>
-          </div>
-        </details>
-
-        <div class="mt-6 flex justify-end gap-3">
-          <button
-            @click="showRegisterModal = false"
-            class="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-          >
-            取消
-          </button>
-          <button
-            @click="handleRegister"
-            :disabled="registering"
-            class="rounded-lg bg-indigo-600 px-4 py-2 text-sm text-white hover:bg-indigo-700 disabled:opacity-50"
-          >
-            {{ registering ? '提交中...' : '提交審核' }}
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="showEditModal && editTarget" class="fixed inset-0 z-50 flex items-center justify-center">
-      <div class="fixed inset-0 bg-black/50" @click="closeEditModal"></div>
-      <div class="relative mx-4 w-full max-w-2xl rounded-xl bg-white p-6 shadow-xl">
-        <h3 class="text-lg font-semibold">編輯 Agent</h3>
-        <p class="mt-1 text-sm text-gray-500">
-          名稱、審核狀態與加密模式無法在此修改；刪除 Agent 需 admin 權限。
+      <div v-if="showGuide" class="guide">
+        <p class="guide__lead">
+          Phase 1 of ANILA ships <strong>AgenticRAG</strong> as the official sub-agent template.
+          Fork it, drop in your tools, register here. Full walkthrough on the
+          <router-link to="/developer/guide" class="guide__link">developer guide page →</router-link>
         </p>
+        <ol class="guide__list">
+          <li>
+            <span class="guide__step">01</span>
+            <div>
+              <p><strong>fork &amp; run</strong> · clone <code>AgenticRAG</code>, edit <code>.env</code>, <code>docker compose up -d</code>, verify <code>curl http://&lt;host&gt;:24786/health</code> returns <code>{"status":"ok"}</code>.</p>
+            </div>
+          </li>
+          <li>
+            <span class="guide__step">02</span>
+            <div>
+              <p><strong>add your tool</strong> · use the <code>@tool</code> decorator (auto JSON schema from type hints + docstring):</p>
+              <pre class="guide__code">@tool
+async def my_tool(ctx: ActionContext, query: str) -&gt; dict:
+    """One-line description.
 
-        <div class="mt-5 grid gap-4 md:grid-cols-2">
-          <label class="grid gap-1 md:col-span-2">
-            <span class="text-sm font-medium text-gray-700">Agent 名稱</span>
-            <input
-              :value="editTarget.name"
-              type="text"
-              disabled
-              class="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-gray-500"
-            />
-            <span class="text-xs text-gray-400">名稱是 agent_id，已註冊後無法修改。</span>
-          </label>
-          <label class="grid gap-1 md:col-span-2">
-            <span class="text-sm font-medium text-gray-700">Endpoint URL</span>
-            <input
-              v-model="editForm.endpoint_url"
-              type="text"
-              class="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="http://host:port"
-            />
-          </label>
-          <label class="grid gap-1 md:col-span-2">
-            <span class="text-sm font-medium text-gray-700">Router 描述</span>
-            <textarea
-              v-model="editForm.description_for_router"
-              rows="4"
-              class="w-full resize-none rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="用自然語言說明這個 Agent 能解決什麼問題。"
-            />
-            <span class="text-xs text-gray-400">
-              Router 會用這段文字判斷是否把使用者的問題分派給你。寫得越精確，分派越準確。
-            </span>
-          </label>
-          <label class="grid gap-1">
-            <span class="text-sm font-medium text-gray-700">API Version</span>
-            <input
-              v-model="editForm.api_version"
-              type="text"
-              class="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="v1"
-            />
-          </label>
-          <label class="grid gap-1">
-            <span class="text-sm font-medium text-gray-700">
-              底層模型 Base Model <span class="text-red-500">*</span>
-            </span>
-            <select
-              v-model.number="editForm.base_model_id"
-              class="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-            >
-              <option :value="null" disabled>請選擇底層模型…</option>
-              <option
-                v-for="m in baseModelOptions"
-                :key="m.id"
-                :value="m.id"
-              >
-                {{ m.display_name }}（{{ m.name }} · {{ m.model_type }}）
+    Args:
+        query: What the user asked.
+    """
+    return {"result": "..."}</pre>
+              <p>or drop a Markdown skill into <code>~/.agentic-rag/skills/</code>, or wire an external MCP server. Details on the dev guide page.</p>
+            </div>
+          </li>
+          <li>
+            <span class="guide__step">03</span>
+            <div>
+              <p>your agent must expose these s2s endpoints:</p>
+              <table class="term-table guide__table">
+                <thead><tr><th style="width: 70px">method</th><th>path</th><th>purpose</th></tr></thead>
+                <tbody>
+                  <tr><td><code>GET</code></td><td><code>/health</code></td><td>discovery + health probe (public)</td></tr>
+                  <tr><td><code>GET</code></td><td><code>/v1/models</code></td><td>list available model ids</td></tr>
+                  <tr><td><code>POST</code></td><td><code>/v1/chat/completions</code></td><td>main inference, openai-compat</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </li>
+          <li>
+            <span class="guide__step">04</span>
+            <div>
+              <p><strong>register here</strong> · status starts as <TermBadge variant="warn">pending</TermBadge> · admin review unblocks router auto-discovery.</p>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </TermBox>
+
+    <div class="kpi-row">
+      <TermStat label="agents · total" :value="agents.length" />
+      <TermStat label="pending" :value="pendingCount" :tone="pendingCount ? 'warn' : 'default'" />
+      <TermStat label="approved" :value="approvedCount" tone="accent" />
+      <TermStat label="healthy" :value="healthyCount" />
+    </div>
+
+    <TermBox title="filter" pad="sm">
+      <div class="filters">
+        <TermField label="search">
+          <input v-model="filters.query" class="term-input" placeholder="name · description · endpoint" />
+        </TermField>
+        <TermField label="approval">
+          <select v-model="filters.approval" class="term-select">
+            <option value="all">all</option>
+            <option value="pending">pending</option>
+            <option value="approved">approved</option>
+            <option value="rejected">rejected</option>
+          </select>
+        </TermField>
+        <TermField label="health">
+          <select v-model="filters.health" class="term-select">
+            <option value="all">all</option>
+            <option value="healthy">healthy</option>
+            <option value="unhealthy">unhealthy</option>
+            <option value="unknown">unknown</option>
+          </select>
+        </TermField>
+        <TermField label="sort">
+          <select v-model="filters.sort" class="term-select">
+            <option value="newest">newest</option>
+            <option value="oldest">oldest</option>
+            <option value="name">name a→z</option>
+            <option value="approval">pending first</option>
+          </select>
+        </TermField>
+      </div>
+    </TermBox>
+
+    <div v-if="authStore.isAdmin && pendingCount > 0" class="banner">
+      <span>{{ pendingCount }} agent(s) pending · use the filter to triage the queue.</span>
+    </div>
+
+    <TermBox :title="`agents · ${filteredAgents.length}/${agents.length}`" pad="none" flush>
+      <div v-if="loading" class="loading">loading agents…</div>
+      <div v-else-if="filteredAgents.length === 0" style="padding: var(--gap-6);">
+        <TermEmpty :message="agents.length === 0 ? 'no agents yet · download the template to get started' : 'no agents match the filter'" />
+      </div>
+      <table v-else class="term-table">
+        <thead>
+          <tr>
+            <th>name</th>
+            <th>endpoint</th>
+            <th>router description</th>
+            <th style="width: 100px">health</th>
+            <th style="width: 110px">approval</th>
+            <th style="width: 100px">enc</th>
+            <th style="width: 14%">created</th>
+            <th>ops</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="agent in filteredAgents" :key="agent.id">
+            <td>
+              <div class="cell-strong">{{ agent.name }}</div>
+              <div class="cell-meta">id #{{ agent.id }}</div>
+            </td>
+            <td>
+              <code class="cell-url" :title="agent.endpoint_url">{{ agent.endpoint_url }}</code>
+            </td>
+            <td>
+              <div class="cell-desc" :title="agent.description_for_router">{{ agent.description_for_router }}</div>
+            </td>
+            <td><TermBadge :variant="healthVariant(agent.health_status)" dot>{{ agent.health_status }}</TermBadge></td>
+            <td><TermBadge :variant="approvalVariant(agent.approval_status)" dot>{{ agent.approval_status }}</TermBadge></td>
+            <td>
+              <TermBadge :variant="agent.requires_encryption ? 'danger' : ''">
+                {{ agent.requires_encryption ? 'forced' : 'normal' }}
+              </TermBadge>
+            </td>
+            <td class="cell-meta tnum">{{ formatDate(agent.created_at) }}</td>
+            <td>
+              <div class="row-actions">
+                <button class="term-action" @click="openDetailModal(agent)">detail</button>
+                <span class="row-actions__sep">·</span>
+                <button v-if="canEditAgent(agent)" class="term-action" @click="openEditModal(agent)">edit</button>
+                <span v-if="canEditAgent(agent) && authStore.isAdmin" class="row-actions__sep">·</span>
+                <button v-if="authStore.isAdmin" class="term-action" :disabled="healthCheckingId === agent.id" @click="handleHealthCheck(agent)">
+                  {{ healthCheckingId === agent.id ? 'probe…' : 'probe' }}
+                </button>
+                <template v-if="authStore.isAdmin && agent.approval_status === 'pending'">
+                  <span class="row-actions__sep">·</span>
+                  <button class="term-action" @click="handleApprove(agent)">approve</button>
+                  <span class="row-actions__sep">·</span>
+                  <button class="term-action term-action--danger" @click="openRejectModal(agent)">reject</button>
+                </template>
+                <template v-if="authStore.isAdmin">
+                  <span class="row-actions__sep">·</span>
+                  <button class="term-action term-action--danger" :disabled="deletingId === agent.id" @click="handleDeleteAgent(agent)">
+                    {{ deletingId === agent.id ? 'delete…' : 'delete' }}
+                  </button>
+                </template>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </TermBox>
+
+    <!-- Register modal ----------------------------------------------- -->
+    <TermModal :visible="showRegisterModal" title="register · agent" width="640px" @close="showRegisterModal = false">
+      <div class="form-grid">
+        <TermField label="name" hint="immutable identifier · letters, digits, dashes" :error="formErrors.name">
+          <input v-model="form.name" class="term-input" placeholder="hr-policy-agent" />
+        </TermField>
+        <TermField label="endpoint url" :error="formErrors.endpoint_url">
+          <input v-model="form.endpoint_url" class="term-input" placeholder="http://host:port" />
+        </TermField>
+        <TermField label="router description" hint="≥ 24 chars · plain language describing what this agent solves" :error="formErrors.description_for_router">
+          <textarea v-model="form.description_for_router" rows="3" class="term-textarea" />
+        </TermField>
+        <div class="form-row-2">
+          <TermField label="api version">
+            <input v-model="form.api_version" class="term-input" placeholder="v1" />
+          </TermField>
+          <TermField label="base model" :error="formErrors.base_model_id" hint="usage attribution target">
+            <select v-model.number="form.base_model_id" class="term-select">
+              <option :value="null" disabled>— select base —</option>
+              <option v-for="m in baseModelOptions" :key="m.id" :value="m.id">
+                {{ m.display_name }} ({{ m.name }} · {{ m.model_type }})
               </option>
             </select>
-            <span class="text-xs text-gray-500">
-              用量會歸到這個模型。換基座請確認既有流程仍能運作。
-            </span>
-          </label>
-          <label class="grid gap-1 md:col-span-2">
-            <span class="text-sm font-medium text-gray-700">Capabilities（JSON）</span>
-            <textarea
-              v-model="editForm.capabilitiesRaw"
-              rows="3"
-              class="w-full resize-none rounded-lg border border-gray-300 px-3 py-2 font-mono text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder='{"streaming":true,"vision":false}'
-            />
-            <span v-if="editFormError" class="text-xs text-red-600">{{ editFormError }}</span>
-          </label>
+          </TermField>
         </div>
 
-        <div class="mt-6 flex justify-end gap-3">
-          <button
-            @click="closeEditModal"
-            class="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-          >
-            取消
-          </button>
-          <button
-            @click="handleUpdateAgent"
-            :disabled="editing"
-            class="rounded-lg bg-indigo-600 px-4 py-2 text-sm text-white hover:bg-indigo-700 disabled:opacity-50"
-          >
-            {{ editing ? '儲存中…' : '儲存' }}
-          </button>
-        </div>
+        <TermSection title="pre-flight checklist" />
+        <ul class="check">
+          <li :class="form.name ? 'is-ok' : 'is-pending'">{{ form.name ? '●' : '○' }} agent name set</li>
+          <li :class="/^https?:\/\//.test(form.endpoint_url) ? 'is-ok' : 'is-pending'">{{ /^https?:\/\//.test(form.endpoint_url) ? '●' : '○' }} endpoint is http(s) url</li>
+          <li :class="form.description_for_router.trim().length >= 24 ? 'is-ok' : 'is-pending'">{{ form.description_for_router.trim().length >= 24 ? '●' : '○' }} description ≥ 24 chars</li>
+          <li :class="form.base_model_id ? 'is-ok' : 'is-pending'">{{ form.base_model_id ? '●' : '○' }} base model selected</li>
+          <li class="is-pending">○ <code>GET /health</code> + <code>POST /v1/chat/completions</code> implemented (manual check)</li>
+        </ul>
       </div>
-    </div>
+      <template #footer>
+        <TermButton variant="ghost" @click="showRegisterModal = false" label="cancel" />
+        <TermButton variant="primary" :loading="registering" :disabled="registering" :label="registering ? 'submitting' : 'submit'" @click="handleRegister" />
+      </template>
+    </TermModal>
 
-    <div v-if="showDetailModal && detailAgent" class="fixed inset-0 z-50 flex items-center justify-end">
-      <div class="fixed inset-0 bg-black/40" @click="showDetailModal = false"></div>
-      <div class="relative h-full w-full max-w-xl overflow-y-auto bg-white p-6 shadow-2xl">
-        <div class="flex items-start justify-between gap-4">
-          <div>
-            <h3 class="text-lg font-semibold">Agent 詳情</h3>
-            <p class="mt-1 text-sm text-gray-500">{{ detailAgent.name }}</p>
-          </div>
-          <button @click="showDetailModal = false" class="text-sm text-gray-500 hover:text-gray-700">關閉</button>
+    <!-- Edit modal ------------------------------------------------- -->
+    <TermModal :visible="showEditModal" title="edit · agent" width="640px" @close="closeEditModal">
+      <div class="form-grid" v-if="editTarget">
+        <TermField label="name" hint="immutable">
+          <input :value="editTarget.name" class="term-input" disabled />
+        </TermField>
+        <TermField label="endpoint url">
+          <input v-model="editForm.endpoint_url" class="term-input" />
+        </TermField>
+        <TermField label="router description" hint="router uses this to dispatch — be precise">
+          <textarea v-model="editForm.description_for_router" rows="4" class="term-textarea" />
+        </TermField>
+        <div class="form-row-2">
+          <TermField label="api version">
+            <input v-model="editForm.api_version" class="term-input" />
+          </TermField>
+          <TermField label="base model">
+            <select v-model.number="editForm.base_model_id" class="term-select">
+              <option :value="null" disabled>— select base —</option>
+              <option v-for="m in baseModelOptions" :key="m.id" :value="m.id">
+                {{ m.display_name }} ({{ m.name }} · {{ m.model_type }})
+              </option>
+            </select>
+          </TermField>
         </div>
+        <TermField label="capabilities · json" hint='e.g. {"streaming":true,"vision":false}' :error="editFormError">
+          <textarea v-model="editForm.capabilitiesRaw" rows="3" class="term-textarea" style="font-family: var(--font-mono); font-size: var(--t-xs);" />
+        </TermField>
+      </div>
+      <template #footer>
+        <TermButton variant="ghost" @click="closeEditModal" label="cancel" />
+        <TermButton variant="primary" :disabled="editing" :loading="editing" :label="editing ? 'saving' : 'save'" @click="handleUpdateAgent" />
+      </template>
+    </TermModal>
 
-        <div class="mt-6 space-y-5">
-          <div class="rounded-xl border border-gray-200 bg-gray-50 p-4">
-            <div class="text-xs uppercase tracking-[0.16em] text-gray-400">Overview</div>
-            <dl class="mt-3 space-y-2 text-sm">
-              <div class="flex gap-3"><dt class="w-28 shrink-0 text-gray-500">Endpoint</dt><dd class="font-mono text-xs break-all">{{ detailAgent.endpoint_url }}</dd></div>
-              <div class="flex gap-3"><dt class="w-28 shrink-0 text-gray-500">API Version</dt><dd>{{ detailAgent.api_version || 'v1' }}</dd></div>
-              <div class="flex gap-3"><dt class="w-28 shrink-0 text-gray-500">Health</dt><dd>{{ detailAgent.health_status }}</dd></div>
-              <div class="flex gap-3"><dt class="w-28 shrink-0 text-gray-500">審核狀態</dt><dd>{{ approvalLabel(detailAgent.approval_status) }}</dd></div>
-              <div class="flex gap-3"><dt class="w-28 shrink-0 text-gray-500">建立時間</dt><dd>{{ formatDate(detailAgent.created_at) }}</dd></div>
-              <div class="flex gap-3"><dt class="w-28 shrink-0 text-gray-500">Owner</dt><dd>{{ ownerDisplay(detailAgent) }}</dd></div>
-              <div class="flex gap-3"><dt class="w-28 shrink-0 text-gray-500">Base Model</dt><dd>{{ detailAgent.base_model_id || '未設定' }}</dd></div>
-              <div class="flex gap-3">
-                <dt class="w-28 shrink-0 text-gray-500">加密模式</dt>
-                <dd class="flex flex-wrap items-center gap-2">
-                  <span
-                    class="rounded px-2 py-0.5 text-xs"
-                    :class="detailAgent.requires_encryption ? 'bg-red-50 text-red-700' : 'bg-gray-50 text-gray-500'"
-                  >
-                    {{ detailAgent.requires_encryption ? '強制加密' : '一般' }}
-                  </span>
-                  <button
-                    v-if="authStore.isAdmin"
-                    @click="handleToggleEncryption(detailAgent)"
-                    :disabled="encryptionBusyId === detailAgent.id"
-                    class="rounded-lg border px-2.5 py-1 text-xs transition disabled:opacity-50"
-                    :class="detailAgent.requires_encryption
-                      ? 'border-gray-300 text-gray-700 hover:bg-gray-50'
-                      : 'border-red-300 text-red-700 hover:bg-red-50'"
-                  >
-                    {{
-                      encryptionBusyId === detailAgent.id
-                        ? '更新中…'
-                        : (detailAgent.requires_encryption ? '停用加密' : '啟用強制加密')
-                    }}
-                  </button>
-                </dd>
-              </div>
-            </dl>
-            <p v-if="authStore.isAdmin" class="mt-3 text-xs text-gray-400">
-              啟用後，任何使用此 Agent 的對話會自動進入加密模式；一旦對話變成加密，整段對話單向上鎖，使用者無法關閉。
-            </p>
-          </div>
-
+    <!-- Detail drawer (modal-style) ------------------------------- -->
+    <TermModal :visible="showDetailModal" :title="detailAgent ? `detail · ${detailAgent.name}` : 'detail'" width="720px" @close="closeDetailModal">
+      <div v-if="detailAgent" class="detail">
+        <TermSection title="overview" />
+        <dl class="detail__list">
+          <div><dt>endpoint</dt><dd><code>{{ detailAgent.endpoint_url }}</code></dd></div>
+          <div><dt>api version</dt><dd>{{ detailAgent.api_version || 'v1' }}</dd></div>
+          <div><dt>health</dt><dd>{{ detailAgent.health_status }}</dd></div>
+          <div><dt>approval</dt><dd>{{ detailAgent.approval_status }}</dd></div>
+          <div><dt>created</dt><dd class="tnum">{{ formatDate(detailAgent.created_at) }}</dd></div>
+          <div><dt>owner</dt><dd>{{ ownerDisplay(detailAgent) }}</dd></div>
+          <div><dt>base model</dt><dd>{{ detailAgent.base_model_id || '—' }}</dd></div>
           <div>
-            <div class="text-xs uppercase tracking-[0.16em] text-gray-400">Router Description</div>
-            <div class="mt-2 rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-700">
-              {{ detailAgent.description_for_router || '未提供' }}
-            </div>
-          </div>
-
-          <div v-if="hasCapabilities(detailAgent)">
-            <div class="text-xs uppercase tracking-[0.16em] text-gray-400">Capabilities</div>
-            <pre class="mt-2 overflow-x-auto rounded-xl border border-gray-200 bg-gray-950 p-4 text-xs text-gray-100">{{ prettyJson(detailAgent.capabilities) }}</pre>
-          </div>
-          <div v-else>
-            <div class="text-xs uppercase tracking-[0.16em] text-gray-400">Capabilities</div>
-            <div class="mt-2 rounded-xl border border-dashed border-gray-200 bg-white p-4 text-xs text-gray-400">
-              尚未設定（Agent 未在 manifest 中宣告 capabilities）
-            </div>
-          </div>
-
-          <div>
-            <div class="text-xs uppercase tracking-[0.16em] text-gray-400">Status Timeline</div>
-            <div class="mt-2 space-y-3">
-              <div
-                v-for="entry in buildStatusHistory(detailAgent)"
-                :key="entry.label + entry.timestamp"
-                class="rounded-xl border border-gray-200 bg-white p-4"
+            <dt>encryption</dt>
+            <dd>
+              <TermBadge :variant="detailAgent.requires_encryption ? 'danger' : ''" dot>
+                {{ detailAgent.requires_encryption ? 'forced' : 'normal' }}
+              </TermBadge>
+              <button
+                v-if="authStore.isAdmin"
+                class="term-action"
+                style="margin-left: 8px;"
+                :disabled="encryptionBusyId === detailAgent.id"
+                @click="handleToggleEncryption(detailAgent)"
               >
-                <div class="font-medium">{{ entry.label }}</div>
-                <div class="mt-1 text-xs text-gray-500">{{ entry.timestamp }}</div>
-                <div v-if="entry.detail" class="mt-2 text-sm text-gray-600">{{ entry.detail }}</div>
-              </div>
-            </div>
+                {{ encryptionBusyId === detailAgent.id ? 'updating…' : (detailAgent.requires_encryption ? 'disable' : 'enable') }}
+              </button>
+            </dd>
           </div>
-        </div>
-      </div>
-    </div>
+        </dl>
 
-    <div v-if="rejectTarget" class="fixed inset-0 z-50 flex items-center justify-center">
-      <div class="fixed inset-0 bg-black/50" @click="closeRejectModal"></div>
-      <div class="relative mx-4 w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
-        <h3 class="text-lg font-semibold">拒絕 Agent</h3>
-        <p class="mt-1 text-sm text-gray-500">你可以留下一段拒絕理由，方便開發者修改後再送審。</p>
-        <textarea
-          v-model="rejectReason"
-          rows="4"
-          class="mt-4 w-full resize-none rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-red-500"
-          placeholder="例如：缺少健康檢查、Router 描述過短。"
-        />
-        <div class="mt-6 flex justify-end gap-3">
-          <button
-            @click="closeRejectModal"
-            class="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-          >
-            取消
-          </button>
-          <button
-            @click="handleReject"
-            class="rounded-lg bg-red-600 px-4 py-2 text-sm text-white hover:bg-red-700"
-          >
-            確認拒絕
-          </button>
-        </div>
+        <TermSection title="router description" />
+        <p class="detail__desc">{{ detailAgent.description_for_router || '—' }}</p>
+
+        <TermSection title="capabilities" />
+        <pre v-if="hasCapabilities(detailAgent)" class="detail__pre">{{ prettyJson(detailAgent.capabilities) }}</pre>
+        <TermEmpty v-else message="no capabilities declared in manifest" />
+
+        <!-- Sprint 13 PR C1 — quick link to the per-agent runtime
+             config editor (tool permissions / workspace caps / guardrails). -->
+        <TermSection title="runtime config" />
+        <p class="cell-meta">
+          tool permissions · workspace caps · guardrails — live-applied via 30s poll on the agent.
+          {{ detailAgent.runtime_config ? 'currently overridden.' : 'using compiled-in defaults.' }}
+        </p>
+        <router-link
+          :to="{ name: 'AgentRuntimeConfig', params: { id: detailAgent.id } }"
+          class="term-action"
+          style="display: inline-block; margin-top: 4px;"
+        >
+          edit runtime config →
+        </router-link>
+
+        <TermSection title="status timeline" />
+        <ol class="timeline">
+          <li v-for="entry in buildStatusHistory(detailAgent)" :key="entry.label + entry.timestamp">
+            <span class="timeline__dot" />
+            <div>
+              <p class="timeline__label">{{ entry.label }}</p>
+              <p class="cell-meta tnum">{{ entry.timestamp }}</p>
+              <p v-if="entry.detail" class="timeline__detail">{{ entry.detail }}</p>
+            </div>
+          </li>
+        </ol>
+
+        <!-- Sprint 8 X / Phase A — service token management ------------ -->
+        <template v-if="authStore.isAdmin">
+          <TermSection title="service token" />
+
+          <!-- One-shot plaintext display: only shown right after a
+               successful issue / rotate; clears when the modal closes. -->
+          <div v-if="issuedSecret" class="secret-banner" :class="`secret-banner--${issuedSecret.kind}`">
+            <div class="secret-banner__head">
+              <span class="cell-strong">
+                {{ issuedSecret.kind === 'bsk' ? 'bootstrap token (bsk-)' : 'service token (csk-)' }}
+              </span>
+              <span class="cell-meta">copy now — will not be shown again</span>
+            </div>
+            <div class="secret-banner__body">
+              <code class="secret-banner__token">{{ issuedSecret.value }}</code>
+              <TermButton size="sm" variant="ghost" @click="copyToClipboard(issuedSecret.value)" label="copy" />
+              <TermButton size="sm" variant="ghost" @click="clearIssuedSecret" label="hide" />
+            </div>
+            <ul v-if="issuedSecret.meta" class="secret-banner__meta">
+              <li v-if="issuedSecret.kind === 'bsk'">
+                expires {{ formatDate(issuedSecret.meta.expires_at) }} — agent must call
+                <code>POST /api/agents/{{ issuedSecret.meta.agent_id }}/bootstrap</code>
+                with this token + <code>endpoint_url={{ issuedSecret.meta.endpoint_url }}</code>
+              </li>
+              <li v-if="issuedSecret.kind === 'csk' && issuedSecret.meta.kind">
+                {{ issuedSecret.meta.kind }} · credential_id={{ issuedSecret.meta.credential_id }}{{ issuedSecret.meta.label ? ` · label=${issuedSecret.meta.label}` : '' }}
+              </li>
+            </ul>
+
+            <!-- Phase 0.5 — collapsible "how to use" with per-language
+                 snippets pre-filled with this agent's bsk- + ids.
+                 Only shown for bsk- since the csk- path differs (admin
+                 hand-installs the token; no exchange flow). -->
+            <details
+              v-if="issuedSecret.kind === 'bsk' && issuedSecret.meta"
+              class="secret-banner__howto"
+              open
+            >
+              <summary class="secret-banner__howto-summary">how to use this token →</summary>
+              <BootstrapHowToTabs
+                :csp-url="cspUrl"
+                :agent-id="issuedSecret.meta.agent_id"
+                :endpoint-url="issuedSecret.meta.endpoint_url"
+                :bsk="issuedSecret.value"
+              />
+            </details>
+          </div>
+
+          <div class="row-actions" style="margin-bottom: 8px;">
+            <button class="term-action" :disabled="credentialBusyId === -1" @click="handleIssueBootstrap">
+              {{ credentialBusyId === -1 ? 'issuing…' : 'issue bootstrap (bsk-)' }}
+            </button>
+            <span class="row-actions__sep">·</span>
+            <button class="term-action" :disabled="credentialBusyId === -2" @click="openIssueStaticModal">
+              {{ credentialBusyId === -2 ? 'issuing…' : 'issue static (csk-)' }}
+            </button>
+            <span class="row-actions__sep">·</span>
+            <button class="term-action" @click="refreshDetailCredentials">refresh</button>
+          </div>
+
+          <TermEmpty v-if="!credentialsLoading && detailCredentials.length === 0" message="no credentials yet — issue a bootstrap or static token to start" />
+          <table v-else class="cred-table">
+            <thead>
+              <tr>
+                <th>id</th>
+                <th>label</th>
+                <th>status</th>
+                <th>issued</th>
+                <th>rotated</th>
+                <th>grace</th>
+                <th>actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="c in detailCredentials" :key="c.id" :class="{ 'is-revoked': !c.is_active }">
+                <td class="tnum">{{ c.id }}</td>
+                <td>
+                  <span v-if="c.label">{{ c.label }}</span>
+                  <span v-else class="cell-meta">—</span>
+                  <TermBadge v-if="c.is_legacy" variant="warn" style="margin-left: 6px;">legacy</TermBadge>
+                </td>
+                <td>
+                  <TermBadge :variant="c.is_active ? '' : 'danger'" dot>
+                    {{ c.is_active ? 'active' : 'revoked' }}
+                  </TermBadge>
+                </td>
+                <td class="cell-meta tnum">{{ formatDate(c.issued_at) }}</td>
+                <td class="cell-meta tnum">{{ c.rotated_at ? formatDate(c.rotated_at) : '—' }}</td>
+                <td class="cell-meta tnum">
+                  <span v-if="c.has_previous_token">until {{ formatDate(c.previous_expires_at) }}</span>
+                  <span v-else>—</span>
+                </td>
+                <td>
+                  <div class="row-actions">
+                    <template v-if="c.is_active">
+                      <button class="term-action" :disabled="credentialBusyId === c.id" @click="handleRotateCredential(c)">
+                        {{ credentialBusyId === c.id ? '…' : 'rotate' }}
+                      </button>
+                      <span class="row-actions__sep">·</span>
+                      <button class="term-action term-action--danger" :disabled="credentialBusyId === c.id" @click="handleRevokeCredential(c)">
+                        {{ credentialBusyId === c.id ? '…' : 'revoke' }}
+                      </button>
+                    </template>
+                    <span v-else class="cell-meta">—</span>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
       </div>
-    </div>
+      <template #footer>
+        <TermButton variant="ghost" @click="closeDetailModal" label="close" />
+      </template>
+    </TermModal>
+
+    <!-- Issue static token modal (Phase F Tier 0) -->
+    <TermModal :visible="showIssueStaticModal" title="issue static service token" width="440px" @close="showIssueStaticModal = false">
+      <p class="cell-meta">
+        靜態 csk- 不會自動輪替；建議每 90 天手動 rotate 一次。
+        適合無法跑 anila-core bootstrap CLI 的舊版 / 第三方 agent（Phase F Tier 0）。
+      </p>
+      <TermField label="label (optional)" hint="e.g. vendor-foo / pod-1 / staging">
+        <input v-model="staticLabel" class="term-input" placeholder="" maxlength="100" />
+      </TermField>
+      <template #footer>
+        <TermButton variant="ghost" @click="showIssueStaticModal = false" label="cancel" />
+        <TermButton variant="primary" :loading="credentialBusyId === -2" :disabled="credentialBusyId === -2" label="issue" @click="handleIssueStatic" />
+      </template>
+    </TermModal>
+
+    <!-- Reject modal ---------------------------------------------- -->
+    <TermModal :visible="!!rejectTarget" title="reject · agent" width="440px" @close="closeRejectModal">
+      <p class="cell-meta">leave a reason so the developer can iterate.</p>
+      <TermField label="reason">
+        <textarea v-model="rejectReason" rows="4" class="term-textarea" placeholder="e.g. missing /health endpoint · description too short" />
+      </TermField>
+      <template #footer>
+        <TermButton variant="ghost" @click="closeRejectModal" label="cancel" />
+        <TermButton variant="danger" @click="handleReject" label="confirm reject" />
+      </template>
+    </TermModal>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useAuthStore } from '../stores/auth'
-import { approveAgent, deleteAgent, downloadTemplate, getAgent, listMyAgents, registerAgent, rejectAgent, setAgentEncryption, triggerAgentHealthCheck, updateAgent } from '../api/agents'
+import {
+  approveAgent, deleteAgent, downloadTemplate, getAgent, listMyAgents,
+  registerAgent, rejectAgent, setAgentEncryption, triggerAgentHealthCheck, updateAgent,
+} from '../api/agents'
+import {
+  issueBootstrapToken,
+  issueStaticCredential,
+  listAgentCredentials,
+  revokeAgentCredential,
+  rotateAgentCredential,
+} from '../api/agentCredentials'
 import { listModels } from '../api/models'
+import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, TermSection } from '../components/cli'
+import BootstrapHowToTabs from '../components/agents/BootstrapHowToTabs.vue'
+
+// CSP base URL the snippets should reference. Derived from the
+// browser origin so the dev's copy-pasted code targets whatever host
+// they're actually viewing — `localhost:5173` in dev, prod hostname
+// in prod. Override via VITE_CSP_BASE_URL when the API lives on a
+// different origin from the SPA.
+const cspUrl = import.meta.env?.VITE_CSP_BASE_URL || (typeof window !== 'undefined' ? window.location.origin : '')
 
 const authStore = useAuthStore()
 
@@ -687,55 +514,36 @@ const showEditModal = ref(false)
 const editTarget = ref(null)
 const editing = ref(false)
 const editFormError = ref('')
-const editForm = ref({
-  endpoint_url: '',
-  description_for_router: '',
-  api_version: '',
-  base_model_id: null,
-  capabilitiesRaw: '',
-})
+const editForm = ref({ endpoint_url: '', description_for_router: '', api_version: '', base_model_id: null, capabilitiesRaw: '' })
 const feedback = ref({ type: 'success', message: '' })
-const filters = ref({
-  query: '',
-  approval: 'all',
-  health: 'all',
-  sort: 'newest',
-})
-const form = ref({
-  name: '',
-  endpoint_url: '',
-  description_for_router: '',
-  api_version: 'v1',
-  base_model_id: null,
-})
+
+// ── Sprint 8 X / Phase A — agent service-token management ────────────────────
+// detailCredentials is loaded on detail-modal open. issuedSecret holds the
+// one-shot plaintext returned by issue-bootstrap / issue-static / rotate so
+// we can display it once and clear it the moment the modal closes.
+const detailCredentials = ref([])
+const credentialsLoading = ref(false)
+const credentialBusyId = ref(null)
+const issuedSecret = ref(null) // { kind: 'bsk'|'csk', value, meta?, ttlExpiresAt? }
+const showIssueStaticModal = ref(false)
+const staticLabel = ref('')
+const filters = ref({ query: '', approval: 'all', health: 'all', sort: 'newest' })
+const form = ref({ name: '', endpoint_url: '', description_for_router: '', api_version: 'v1', base_model_id: null })
 const formErrors = ref({})
-// LLM / VLM options for the base-model dropdown. Embedding models are
-// excluded because an agent's base model should be something the agent
-// calls during chat completion, not an embedding encoder.
 const availableModels = ref([])
 const baseModelOptions = computed(() =>
   availableModels.value.filter(m => m.is_active && (m.model_type === 'llm' || m.model_type === 'vlm'))
 )
 
-const pendingCount = computed(() => agents.value.filter(agent => agent.approval_status === 'pending').length)
-const approvedCount = computed(() => agents.value.filter(agent => agent.approval_status === 'approved').length)
-// Accept both "healthy" (new agents from health-check endpoint) and
-// "online" (older rows written by the background ModelRegistry-style
-// health_checker before normalization landed). Belt-and-suspenders: the
-// backend also normalizes on read, but keeping this tolerant prevents a
-// version mismatch between UI and API from returning confusing zero.
-const healthyCount = computed(() => agents.value.filter(agent =>
-  agent.health_status === 'healthy' || agent.health_status === 'online'
-).length)
+const pendingCount = computed(() => agents.value.filter(a => a.approval_status === 'pending').length)
+const approvedCount = computed(() => agents.value.filter(a => a.approval_status === 'approved').length)
+const healthyCount = computed(() => agents.value.filter(a => a.health_status === 'healthy' || a.health_status === 'online').length)
 
 function ownerDisplay(agent) {
-  if (!agent) return '未提供'
-  if (agent.owner_username) {
-    return `${agent.owner_username}${agent.owner_user_id ? ` (ID: ${agent.owner_user_id})` : ''}`
-  }
-  return agent.owner_user_id ? `ID: ${agent.owner_user_id}` : '未提供'
+  if (!agent) return '—'
+  if (agent.owner_username) return `${agent.owner_username}${agent.owner_user_id ? ` (#${agent.owner_user_id})` : ''}`
+  return agent.owner_user_id ? `#${agent.owner_user_id}` : '—'
 }
-
 function hasCapabilities(agent) {
   const c = agent?.capabilities
   if (!c) return false
@@ -745,133 +553,196 @@ function hasCapabilities(agent) {
 
 const filteredAgents = computed(() => {
   const query = filters.value.query.trim().toLowerCase()
-  let next = agents.value.filter(agent => {
-    if (filters.value.approval !== 'all' && agent.approval_status !== filters.value.approval) {
-      return false
-    }
-    if (filters.value.health !== 'all' && agent.health_status !== filters.value.health) {
-      return false
-    }
-    if (!query) {
-      return true
-    }
-    return [
-      agent.name,
-      agent.endpoint_url,
-      agent.description_for_router,
-      agent.id,
-    ]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase()
-      .includes(query)
+  let next = agents.value.filter(a => {
+    if (filters.value.approval !== 'all' && a.approval_status !== filters.value.approval) return false
+    if (filters.value.health !== 'all' && a.health_status !== filters.value.health) return false
+    if (!query) return true
+    return [a.name, a.endpoint_url, a.description_for_router, a.id].filter(Boolean).join(' ').toLowerCase().includes(query)
   })
-
-  next = [...next].sort((left, right) => {
-    if (filters.value.sort === 'name') {
-      return (left.name || '').localeCompare(right.name || '')
-    }
-    if (filters.value.sort === 'oldest') {
-      return new Date(left.created_at) - new Date(right.created_at)
-    }
-    if (filters.value.sort === 'approval') {
-      return (left.approval_status === 'pending' ? -1 : 1) - (right.approval_status === 'pending' ? -1 : 1)
-    }
-    return new Date(right.created_at) - new Date(left.created_at)
+  next = [...next].sort((l, r) => {
+    if (filters.value.sort === 'name') return (l.name || '').localeCompare(r.name || '')
+    if (filters.value.sort === 'oldest') return new Date(l.created_at) - new Date(r.created_at)
+    if (filters.value.sort === 'approval') return (l.approval_status === 'pending' ? -1 : 1) - (r.approval_status === 'pending' ? -1 : 1)
+    return new Date(r.created_at) - new Date(l.created_at)
   })
-
   return next
 })
 
 function setFeedback(type, message) {
   feedback.value = { type, message }
+  if (message) setTimeout(() => { feedback.value = { type: 'success', message: '' } }, 5000)
 }
 
 function resetForm() {
-  form.value = {
-    name: '',
-    endpoint_url: '',
-    description_for_router: '',
-    api_version: 'v1',
-    base_model_id: null,
-  }
+  form.value = { name: '', endpoint_url: '', description_for_router: '', api_version: 'v1', base_model_id: null }
   formErrors.value = {}
 }
 
 function validateForm() {
   const errors = {}
-  if (!form.value.name.trim()) {
-    errors.name = '請提供 Agent 名稱'
-  }
-  if (!/^https?:\/\//.test(form.value.endpoint_url.trim())) {
-    errors.endpoint_url = 'Endpoint 必須是 http 或 https URL'
-  }
-  if (form.value.description_for_router.trim().length < 24) {
-    errors.description_for_router = 'Router 描述至少需要 24 個字元'
-  }
-  if (!form.value.base_model_id) {
-    errors.base_model_id = '請選擇底層模型（用量會歸屬到此模型）'
-  }
+  if (!form.value.name.trim()) errors.name = 'agent name required'
+  if (!/^https?:\/\//.test(form.value.endpoint_url.trim())) errors.endpoint_url = 'must be http or https url'
+  if (form.value.description_for_router.trim().length < 24) errors.description_for_router = 'min 24 chars'
+  if (!form.value.base_model_id) errors.base_model_id = 'base model required for usage attribution'
   formErrors.value = errors
   return Object.keys(errors).length === 0
 }
 
 async function fetchAgents() {
   loading.value = true
-  try {
-    const { data } = await listMyAgents()
-    agents.value = data
-  } catch (error) {
-    setFeedback('error', error.response?.data?.detail || '載入 Agent 清單失敗')
-  } finally {
-    loading.value = false
-  }
+  try { const { data } = await listMyAgents(); agents.value = data }
+  catch (e) { setFeedback('error', e.response?.data?.detail || 'failed to load agents') }
+  finally { loading.value = false }
 }
-
 async function fetchAvailableModels() {
-  try {
-    const { data } = await listModels()
-    availableModels.value = data
-  } catch (error) {
-    // Non-fatal: dropdown stays empty and the form's inline validator
-    // will tell the user the base_model field is required.
-    availableModels.value = []
-  }
+  try { const { data } = await listModels(); availableModels.value = data }
+  catch { availableModels.value = [] }
 }
+onMounted(async () => { await Promise.all([fetchAgents(), fetchAvailableModels()]) })
 
-onMounted(async () => {
-  await Promise.all([fetchAgents(), fetchAvailableModels()])
-})
-
-function openRegisterModal() {
-  resetForm()
-  showRegisterModal.value = true
-}
+function openRegisterModal() { resetForm(); showRegisterModal.value = true }
 
 async function openDetailModal(agent) {
-  try {
-    const { data } = await getAgent(agent.id)
-    detailAgent.value = data
-  } catch {
-    detailAgent.value = agent
-  }
+  try { const { data } = await getAgent(agent.id); detailAgent.value = data }
+  catch { detailAgent.value = agent }
   showDetailModal.value = true
+  // Lazy-load credentials only when admin opens the modal — avoids
+  // hitting the endpoint for non-admin viewers.
+  if (authStore.isAdmin) await refreshDetailCredentials()
 }
 
-function openRejectModal(agent) {
-  rejectTarget.value = agent
-  rejectReason.value = ''
+async function refreshDetailCredentials() {
+  if (!detailAgent.value) return
+  credentialsLoading.value = true
+  try {
+    detailCredentials.value = await listAgentCredentials(detailAgent.value.id)
+  } catch (e) {
+    setFeedback('error', e.response?.data?.detail || 'failed to load credentials')
+    detailCredentials.value = []
+  } finally {
+    credentialsLoading.value = false
+  }
 }
 
-function closeRejectModal() {
-  rejectTarget.value = null
-  rejectReason.value = ''
+function clearIssuedSecret() {
+  issuedSecret.value = null
 }
+
+function closeDetailModal() {
+  showDetailModal.value = false
+  detailAgent.value = null
+  detailCredentials.value = []
+  clearIssuedSecret()
+}
+
+async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text)
+    setFeedback('success', 'copied to clipboard')
+  } catch {
+    setFeedback('error', 'clipboard write failed — copy manually')
+  }
+}
+
+async function handleIssueBootstrap() {
+  if (!detailAgent.value) return
+  if (!confirm(`為「${detailAgent.value.name}」核發新的 bootstrap token？\n\n舊 bootstrap（若存在）會立即失效。`)) return
+  credentialBusyId.value = -1
+  try {
+    const data = await issueBootstrapToken(detailAgent.value.id)
+    issuedSecret.value = {
+      kind: 'bsk',
+      value: data.bootstrap_token,
+      meta: {
+        agent_name: data.agent_name,
+        agent_id: data.agent_id,
+        endpoint_url: data.endpoint_url,
+        expires_at: data.expires_at,
+      },
+    }
+    setFeedback('success', 'bootstrap token issued — copy now, it will not be shown again')
+  } catch (e) {
+    setFeedback('error', e.response?.data?.detail || 'failed to issue bootstrap')
+  } finally {
+    credentialBusyId.value = null
+  }
+}
+
+function openIssueStaticModal() {
+  staticLabel.value = ''
+  showIssueStaticModal.value = true
+}
+
+async function handleIssueStatic() {
+  if (!detailAgent.value) return
+  credentialBusyId.value = -2
+  try {
+    const data = await issueStaticCredential(detailAgent.value.id, staticLabel.value || null)
+    issuedSecret.value = {
+      kind: 'csk',
+      value: data.service_token,
+      meta: {
+        credential_id: data.credential_id,
+        label: data.label,
+        issued_at: data.issued_at,
+        kind: 'static (no auto-rotate)',
+      },
+    }
+    setFeedback('success', 'service token issued — copy now, it will not be shown again')
+    showIssueStaticModal.value = false
+    await refreshDetailCredentials()
+  } catch (e) {
+    setFeedback('error', e.response?.data?.detail || 'failed to issue static token')
+  } finally {
+    credentialBusyId.value = null
+  }
+}
+
+async function handleRotateCredential(credential) {
+  if (!detailAgent.value) return
+  if (!confirm(`輪替 credential id=${credential.id}？舊 token 仍可用 24h（grace window）。`)) return
+  credentialBusyId.value = credential.id
+  try {
+    const data = await rotateAgentCredential(detailAgent.value.id, credential.id)
+    issuedSecret.value = {
+      kind: 'csk',
+      value: data.service_token,
+      meta: {
+        credential_id: data.credential_id,
+        label: credential.label,
+        issued_at: data.issued_at,
+        kind: 'rotated (previous valid 24h)',
+      },
+    }
+    setFeedback('success', 'credential rotated — copy new token now')
+    await refreshDetailCredentials()
+  } catch (e) {
+    setFeedback('error', e.response?.data?.detail || 'failed to rotate')
+  } finally {
+    credentialBusyId.value = null
+  }
+}
+
+async function handleRevokeCredential(credential) {
+  if (!detailAgent.value) return
+  if (!confirm(`立即吊銷 credential id=${credential.id}？無 grace window。`)) return
+  credentialBusyId.value = credential.id
+  try {
+    await revokeAgentCredential(detailAgent.value.id, credential.id)
+    setFeedback('success', `credential id=${credential.id} revoked`)
+    await refreshDetailCredentials()
+  } catch (e) {
+    setFeedback('error', e.response?.data?.detail || 'failed to revoke')
+  } finally {
+    credentialBusyId.value = null
+  }
+}
+
+function openRejectModal(agent) { rejectTarget.value = agent; rejectReason.value = '' }
+function closeRejectModal() { rejectTarget.value = null; rejectReason.value = '' }
 
 async function handleRegister() {
-  if (!validateForm()) {
-    return
-  }
+  if (!validateForm()) return
   registering.value = true
   try {
     await registerAgent({
@@ -881,24 +752,17 @@ async function handleRegister() {
       description_for_router: form.value.description_for_router.trim(),
     })
     showRegisterModal.value = false
-    setFeedback('success', 'Agent 已提交審核，狀態為 pending。')
+    setFeedback('success', 'agent submitted · pending admin review')
     await fetchAgents()
-  } catch (error) {
-    setFeedback('error', error.response?.data?.detail || '提交 Agent 失敗')
-  } finally {
-    registering.value = false
-  }
+  } catch (e) { setFeedback('error', e.response?.data?.detail || 'register failed') }
+  finally { registering.value = false }
 }
 
-// Edit permission: admin has global access; non-admin developers can edit
-// only the agents they registered themselves. Matches the PUT endpoint's
-// server-side check so the UI never offers a button that will 403.
 function canEditAgent(agent) {
   if (!agent) return false
   if (authStore.isAdmin) return true
   return agent.owner_user_id === authStore.user?.id
 }
-
 function openEditModal(agent) {
   editTarget.value = agent
   editForm.value = {
@@ -907,41 +771,24 @@ function openEditModal(agent) {
     api_version: agent.api_version || 'v1',
     base_model_id: agent.base_model_id ?? null,
     capabilitiesRaw: agent.capabilities && Object.keys(agent.capabilities).length
-      ? JSON.stringify(agent.capabilities, null, 2)
-      : '',
+      ? JSON.stringify(agent.capabilities, null, 2) : '',
   }
   editFormError.value = ''
   showEditModal.value = true
 }
-
-function closeEditModal() {
-  showEditModal.value = false
-  editTarget.value = null
-  editFormError.value = ''
-}
+function closeEditModal() { showEditModal.value = false; editTarget.value = null; editFormError.value = '' }
 
 async function handleUpdateAgent() {
   if (!editTarget.value || editing.value) return
-  if (!editForm.value.base_model_id) {
-    editFormError.value = '底層模型為必填 — 用量歸屬需要這個欄位。'
-    return
-  }
-  // Parse capabilities JSON up-front so a syntax typo surfaces before the
-  // request fires. Empty string → send null (clears the field).
+  if (!editForm.value.base_model_id) { editFormError.value = 'base model required'; return }
   let capabilities = null
   const raw = (editForm.value.capabilitiesRaw || '').trim()
   if (raw) {
     try {
       capabilities = JSON.parse(raw)
-      if (typeof capabilities !== 'object' || Array.isArray(capabilities)) {
-        throw new Error('Capabilities 必須是 JSON 物件')
-      }
-    } catch (err) {
-      editFormError.value = `Capabilities JSON 錯誤：${err.message}`
-      return
-    }
+      if (typeof capabilities !== 'object' || Array.isArray(capabilities)) throw new Error('capabilities must be an object')
+    } catch (err) { editFormError.value = `capabilities json error: ${err.message}`; return }
   }
-
   const patch = {
     endpoint_url: editForm.value.endpoint_url.trim() || null,
     description_for_router: (editForm.value.description_for_router || '').trim() || null,
@@ -949,120 +796,72 @@ async function handleUpdateAgent() {
     base_model_id: editForm.value.base_model_id,
     capabilities,
   }
-
   editing.value = true
   try {
     const { data } = await updateAgent(editTarget.value.id, patch)
-    const idx = agents.value.findIndex((a) => a.id === data.id)
+    const idx = agents.value.findIndex(a => a.id === data.id)
     if (idx >= 0) agents.value[idx] = data
     if (detailAgent.value && detailAgent.value.id === data.id) detailAgent.value = data
-    setFeedback('success', `已更新 Agent「${data.name}」`)
+    setFeedback('success', `updated '${data.name}'`)
     closeEditModal()
-  } catch (error) {
-    setFeedback('error', error.response?.data?.detail || '更新失敗')
-  } finally {
-    editing.value = false
-  }
+  } catch (e) { setFeedback('error', e.response?.data?.detail || 'update failed') }
+  finally { editing.value = false }
 }
 
 async function handleApprove(agent) {
-  try {
-    await approveAgent(agent.id)
-    setFeedback('success', `已核准 Agent「${agent.name}」`)
-    await fetchAgents()
-  } catch (error) {
-    setFeedback('error', error.response?.data?.detail || '核准失敗')
-  }
+  try { await approveAgent(agent.id); setFeedback('success', `approved '${agent.name}'`); await fetchAgents() }
+  catch (e) { setFeedback('error', e.response?.data?.detail || 'approve failed') }
 }
 
 async function handleToggleEncryption(agent) {
-  if (!agent || encryptionBusyId.value === agent.id) {
-    return
-  }
+  if (!agent || encryptionBusyId.value === agent.id) return
   const next = !agent.requires_encryption
-  if (next && !window.confirm(`啟用後，所有走「${agent.name}」的對話會自動鎖為加密模式，使用者無法關閉。確定啟用？`)) {
-    return
-  }
+  if (next && !window.confirm(`enable forced encryption for '${agent.name}'? all conversations through it lock to encrypted mode — irreversible per conversation.`)) return
   encryptionBusyId.value = agent.id
   try {
     const { data } = await setAgentEncryption(agent.id, next)
     const applied = Boolean(data?.requires_encryption ?? next)
-    const list = agents.value
-    const idx = list.findIndex((a) => a.id === agent.id)
-    if (idx !== -1) {
-      list[idx] = { ...list[idx], requires_encryption: applied }
-    }
-    if (detailAgent.value && detailAgent.value.id === agent.id) {
-      detailAgent.value = { ...detailAgent.value, requires_encryption: applied }
-    }
-    setFeedback('success', `已${applied ? '啟用' : '停用'} Agent「${agent.name}」加密模式`)
-  } catch (error) {
-    setFeedback('error', error.response?.data?.detail || '加密設定更新失敗')
-  } finally {
-    encryptionBusyId.value = null
-  }
+    const idx = agents.value.findIndex(a => a.id === agent.id)
+    if (idx !== -1) agents.value[idx] = { ...agents.value[idx], requires_encryption: applied }
+    if (detailAgent.value && detailAgent.value.id === agent.id) detailAgent.value = { ...detailAgent.value, requires_encryption: applied }
+    setFeedback('success', `encryption ${applied ? 'enabled' : 'disabled'} for '${agent.name}'`)
+  } catch (e) { setFeedback('error', e.response?.data?.detail || 'encryption update failed') }
+  finally { encryptionBusyId.value = null }
 }
 
 async function handleHealthCheck(agent) {
-  if (!agent || healthCheckingId.value === agent.id) {
-    return
-  }
+  if (!agent || healthCheckingId.value === agent.id) return
   healthCheckingId.value = agent.id
   try {
     const { data } = await triggerAgentHealthCheck(agent.id)
-    // Reflect the new health status locally without a full refetch so the
-    // coloured pill updates instantly.
-    const idx = agents.value.findIndex((a) => a.id === agent.id)
-    if (idx >= 0) {
-      agents.value[idx] = { ...agents.value[idx], health_status: data.status }
-    }
-    const ok = data.status === 'healthy'
-    setFeedback(
-      ok ? 'success' : 'error',
-      `Agent「${agent.name}」健康檢查: ${data.status}${data.detail ? ` — ${data.detail}` : ''}`,
-    )
-  } catch (error) {
-    setFeedback(
-      'error',
-      error.response?.data?.detail || `Agent「${agent.name}」健康檢查失敗`,
-    )
-  } finally {
-    healthCheckingId.value = null
-  }
+    const idx = agents.value.findIndex(a => a.id === agent.id)
+    if (idx >= 0) agents.value[idx] = { ...agents.value[idx], health_status: data.status }
+    setFeedback(data.status === 'healthy' ? 'success' : 'error',
+      `'${agent.name}' health: ${data.status}${data.detail ? ` — ${data.detail}` : ''}`)
+  } catch (e) { setFeedback('error', e.response?.data?.detail || `'${agent.name}' health probe failed`) }
+  finally { healthCheckingId.value = null }
 }
 
 async function handleDeleteAgent(agent) {
-  if (!agent || deletingId.value === agent.id) {
-    return
-  }
-  if (!window.confirm(`確定要刪除 Agent「${agent.name}」？此操作無法復原，對話中的引用會斷線。`)) {
-    return
-  }
+  if (!agent || deletingId.value === agent.id) return
+  if (!window.confirm(`delete '${agent.name}'? non-reversible · live references will break.`)) return
   deletingId.value = agent.id
   try {
     await deleteAgent(agent.id)
-    agents.value = agents.value.filter((a) => a.id !== agent.id)
-    if (detailAgent.value && detailAgent.value.id === agent.id) {
-      showDetailModal.value = false
-      detailAgent.value = null
-    }
-    setFeedback('success', `已刪除 Agent「${agent.name}」`)
-  } catch (error) {
-    setFeedback('error', error.response?.data?.detail || '刪除 Agent 失敗')
-  } finally {
-    deletingId.value = null
-  }
+    agents.value = agents.value.filter(a => a.id !== agent.id)
+    if (detailAgent.value && detailAgent.value.id === agent.id) { showDetailModal.value = false; detailAgent.value = null }
+    setFeedback('success', `deleted '${agent.name}'`)
+  } catch (e) { setFeedback('error', e.response?.data?.detail || 'delete failed') }
+  finally { deletingId.value = null }
 }
 
 async function handleReject() {
   try {
     await rejectAgent(rejectTarget.value.id, rejectReason.value.trim())
-    setFeedback('success', `已拒絕 Agent「${rejectTarget.value.name}」`)
+    setFeedback('success', `rejected '${rejectTarget.value.name}'`)
     closeRejectModal()
     await fetchAgents()
-  } catch (error) {
-    setFeedback('error', error.response?.data?.detail || '拒絕失敗')
-  }
+  } catch (e) { setFeedback('error', e.response?.data?.detail || 'reject failed') }
 }
 
 async function handleDownloadTemplate() {
@@ -1074,70 +873,210 @@ async function handleDownloadTemplate() {
     link.download = 'anila-core-template.zip'
     link.click()
     URL.revokeObjectURL(url)
-    setFeedback('success', '官方模板已下載。')
-  } catch (error) {
-    setFeedback('error', error.response?.data?.detail || '模板下載失敗')
-  }
+    setFeedback('success', 'template downloaded')
+  } catch (e) { setFeedback('error', e.response?.data?.detail || 'download failed') }
 }
 
-function approvalLabel(status) {
-  return { pending: '待審核', approved: '已核准', rejected: '已拒絕' }[status] || status
+function approvalVariant(s) {
+  return ({ pending: 'warn', approved: 'ok', rejected: 'danger' })[s] || ''
 }
-
-function approvalPillClass(status) {
-  return {
-    pending: 'bg-yellow-50 text-yellow-700',
-    approved: 'bg-green-50 text-green-700',
-    rejected: 'bg-red-50 text-red-700',
-  }[status] || 'bg-gray-100 text-gray-500'
+function healthVariant(s) {
+  if (s === 'healthy' || s === 'online') return 'ok'
+  if (s === 'unhealthy' || s === 'offline') return 'danger'
+  return ''
 }
-
-function healthPillClass(status) {
-  return {
-    healthy: 'bg-green-50 text-green-700',
-    unhealthy: 'bg-red-50 text-red-700',
-    unknown: 'bg-gray-100 text-gray-500',
-  }[status] || 'bg-gray-100 text-gray-500'
-}
-
-function formatDate(dateStr) {
-  if (!dateStr) {
-    return '未提供'
-  }
-  return new Date(dateStr).toLocaleString('zh-TW')
-}
-
-function prettyJson(value) {
-  return JSON.stringify(value || {}, null, 2)
-}
-
+function formatDate(s) { return s ? new Date(s).toLocaleString('en-GB') : '—' }
+function prettyJson(value) { return JSON.stringify(value || {}, null, 2) }
 function buildStatusHistory(agent) {
-  const history = [
-    {
-      label: 'Agent 已建立',
-      timestamp: formatDate(agent.created_at),
-      detail: '已完成 endpoint / description 註冊。',
-    },
-  ]
+  const history = [{ label: 'agent registered', timestamp: formatDate(agent.created_at), detail: 'endpoint and description bound to registry' }]
   if (agent.approval_status === 'approved') {
-    history.push({
-      label: 'Admin 已核准',
-      timestamp: formatDate(agent.approved_at),
-      detail: agent.approved_by ? `approved_by: ${agent.approved_by}` : '',
-    })
+    history.push({ label: 'approved', timestamp: formatDate(agent.approved_at), detail: agent.approved_by ? `by user #${agent.approved_by}` : '' })
   }
   if (agent.approval_status === 'rejected') {
-    history.push({
-      label: '審核被拒絕',
-      timestamp: formatDate(agent.updated_at || agent.created_at),
-      detail: '請檢查健康狀態、Router 描述與 endpoint 可用性後再送審。',
-    })
+    history.push({ label: 'rejected', timestamp: formatDate(agent.updated_at || agent.created_at), detail: 'check health, description, and endpoint then re-submit' })
   }
-  history.push({
-    label: `Health · ${agent.health_status || 'unknown'}`,
-    timestamp: formatDate(agent.updated_at || agent.created_at),
-    detail: '此時間點依目前 API 回傳推估；若後端之後補 health history，可直接接上。',
-  })
+  history.push({ label: `health · ${agent.health_status || 'unknown'}`, timestamp: formatDate(agent.updated_at || agent.created_at), detail: 'derived from latest probe' })
   return history
 }
 </script>
+
+<style scoped>
+.page { display: flex; flex-direction: column; gap: var(--gap-4); padding-bottom: var(--gap-8); }
+.page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--gap-3); flex-wrap: wrap; }
+.page-head__eyebrow { font-size: var(--t-2xs); letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--c-fg-3); }
+.page-head__title { font-size: var(--t-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin: 4px 0 2px; }
+.page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }
+.page-head__actions { display: inline-flex; gap: var(--gap-2); }
+
+.feedback { display: flex; gap: var(--gap-2); align-items: center; font-size: var(--t-xs); padding: var(--gap-2) var(--gap-3); border: var(--border-w) solid; }
+.feedback.is-err { color: var(--c-danger); border-color: var(--c-danger); background: var(--c-danger-soft); }
+.feedback.is-ok  { color: var(--c-ok);     border-color: var(--c-ok);     background: var(--c-ok-soft); }
+
+.banner {
+  font-size: var(--t-xs);
+  color: var(--c-warn);
+  border: var(--border-w) solid var(--c-warn);
+  background: var(--c-warn-soft);
+  padding: var(--gap-2) var(--gap-3);
+}
+
+.kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--gap-3); }
+@media (max-width: 800px) { .kpi-row { grid-template-columns: repeat(2, 1fr); } }
+
+.filters { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: var(--gap-3); }
+@media (max-width: 800px) { .filters { grid-template-columns: 1fr 1fr; } }
+
+.guide-toggle {
+  background: transparent;
+  border: 0;
+  color: var(--c-fg-1);
+  font: inherit;
+  cursor: pointer;
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0;
+}
+.guide-toggle:hover { color: var(--c-accent); }
+.guide { margin-top: var(--gap-3); }
+.guide__lead {
+  margin: 0 0 var(--gap-3); padding: var(--gap-2) var(--gap-3);
+  background: var(--c-bg); border-left: 2px solid var(--c-accent);
+  font-size: var(--t-sm); color: var(--c-fg-2);
+}
+.guide__lead strong { color: var(--c-fg-1); }
+.guide__link { color: var(--c-accent); text-decoration: none; }
+.guide__link:hover { text-decoration: underline; }
+.guide__list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--gap-3); }
+.guide__list li { display: grid; grid-template-columns: 28px 1fr; gap: var(--gap-3); font-size: var(--t-sm); color: var(--c-fg-2); }
+.guide__list li p { margin: 0 0 4px; }
+.guide__list li p strong { color: var(--c-fg-1); }
+.guide__list li code {
+  font-family: var(--font-mono); background: var(--c-bg);
+  border: var(--border-w) solid var(--c-border); padding: 1px 4px;
+  font-size: var(--t-2xs); color: var(--c-accent);
+}
+.guide__step {
+  font-size: var(--t-xs); color: var(--c-fg-mute);
+  font-variant-numeric: tabular-nums;
+}
+.guide__table { margin-top: 6px; }
+.guide__code {
+  margin: 6px 0; padding: var(--gap-2) var(--gap-3);
+  background: var(--c-bg); border: var(--border-w) solid var(--c-border);
+  font-family: var(--font-mono); font-size: var(--t-2xs);
+  color: var(--c-fg-1); white-space: pre; overflow-x: auto;
+}
+
+.cell-strong { color: var(--c-fg-1); font-weight: 500; }
+.cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }
+.cell-desc {
+  font-size: var(--t-xs); color: var(--c-fg-2);
+  max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cell-url {
+  display: inline-block;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  color: var(--c-fg-2);
+  background: var(--c-bg);
+  border: var(--border-w) solid var(--c-border);
+  padding: 1px 6px;
+}
+
+.row-actions { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: var(--t-xs); }
+.row-actions__sep { color: var(--c-border-strong); }
+
+.loading { padding: var(--gap-6); text-align: center; color: var(--c-fg-3); font-size: var(--t-sm); }
+
+.form-grid { display: flex; flex-direction: column; gap: var(--gap-3); }
+.form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap-3); }
+
+.check { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; font-size: var(--t-2xs); }
+.check li.is-ok { color: var(--c-ok); }
+.check li.is-pending { color: var(--c-fg-3); }
+.check code {
+  font-family: var(--font-mono); background: var(--c-bg);
+  border: var(--border-w) solid var(--c-border); padding: 0 4px;
+  color: var(--c-fg-2);
+}
+
+/* Detail drawer */
+.detail__list {
+  display: grid; grid-template-columns: 110px 1fr; gap: 4px var(--gap-3); margin: 0;
+  font-size: var(--t-sm);
+}
+.detail__list dt { color: var(--c-fg-3); font-size: var(--t-2xs); text-transform: uppercase; letter-spacing: var(--tracking-caps); }
+.detail__list dd { margin: 0; color: var(--c-fg-1); }
+.detail__list code { font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--c-fg-2); }
+.detail__desc { color: var(--c-fg-2); white-space: pre-wrap; font-size: var(--t-sm); margin: 0; }
+.detail__pre {
+  background: var(--c-bg); border: var(--border-w) solid var(--c-border);
+  padding: var(--gap-3); margin: 0; font-size: var(--t-2xs); color: var(--c-fg-2);
+  max-height: 240px; overflow: auto;
+}
+
+.timeline { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--gap-2); }
+.timeline li {
+  display: grid; grid-template-columns: 12px 1fr; gap: var(--gap-2);
+  padding: var(--gap-2) 0; border-bottom: var(--border-w) dashed var(--c-border);
+}
+.timeline li:last-child { border-bottom: 0; }
+.timeline__dot {
+  width: 8px; height: 8px; background: var(--c-accent); margin-top: 4px;
+}
+.timeline__label { color: var(--c-fg-1); font-size: var(--t-sm); margin: 0; font-weight: 500; }
+.timeline__detail { color: var(--c-fg-2); font-size: var(--t-2xs); margin: 4px 0 0; }
+
+/* Sprint 8 X / Phase A — service-token banner + table */
+.secret-banner {
+  border: 1px solid var(--c-accent);
+  background: var(--c-bg-elev-1, rgba(255,255,255,0.04));
+  padding: 8px 10px;
+  margin: 8px 0 12px;
+  font-size: var(--t-2xs);
+}
+.secret-banner--bsk { border-color: var(--c-warn, #c08a2c); }
+.secret-banner__head {
+  display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px;
+}
+.secret-banner__body { display: flex; align-items: center; gap: 8px; }
+.secret-banner__token {
+  flex: 1;
+  font-family: var(--font-mono); font-size: var(--t-sm);
+  background: var(--c-bg-1, #000); padding: 4px 6px;
+  word-break: break-all; user-select: all;
+}
+.secret-banner__meta { margin: 6px 0 0; padding-left: 1.2em; color: var(--c-fg-2); }
+.secret-banner__meta li { line-height: 1.5; }
+.secret-banner__meta code {
+  background: var(--c-bg-1, #000); padding: 1px 4px; font-size: var(--t-3xs);
+}
+
+.secret-banner__howto { margin-top: 12px; }
+.secret-banner__howto-summary {
+  cursor: pointer;
+  font-size: var(--t-2xs);
+  color: var(--c-fg-2);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 4px 0;
+  user-select: none;
+}
+.secret-banner__howto-summary:hover { color: var(--c-fg-1); }
+.secret-banner__howto[open] .secret-banner__howto-summary { margin-bottom: 8px; }
+
+.cred-table { width: 100%; border-collapse: collapse; font-size: var(--t-2xs); }
+.cred-table th {
+  text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--c-divider);
+  font-weight: 500; color: var(--c-fg-2); text-transform: uppercase;
+  font-size: var(--t-3xs); letter-spacing: 0.04em;
+}
+.cred-table td { padding: 6px; border-bottom: 1px solid var(--c-divider); vertical-align: middle; }
+.cred-table tr.is-revoked td { opacity: 0.5; }
+</style>

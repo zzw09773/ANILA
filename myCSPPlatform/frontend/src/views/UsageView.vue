@@ -1,182 +1,174 @@
 <template>
-  <div class="space-y-6">
-    <div class="flex items-center justify-between flex-wrap gap-4">
-      <h2 class="text-lg font-semibold">用量分析</h2>
-      <div class="flex items-center space-x-4">
+  <div class="page">
+    <header class="page-head">
+      <div>
+        <p class="page-head__eyebrow">control plane · analytics</p>
+        <h1 class="page-head__title">usage</h1>
+        <p class="page-head__sub">throughput · token spend · per model · per user</p>
+      </div>
+      <div class="page-head__actions">
         <TimeRangeSelector v-model="selectedRange" @update:model-value="refreshUsage" />
-        <button
-          @click="handleExport"
-          class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50"
-        >
-          匯出 CSV
-        </button>
+        <TermButton size="md" variant="default" @click="handleExport" label="export csv" />
       </div>
-    </div>
+    </header>
 
-    <div class="flex items-center space-x-4 flex-wrap gap-2">
-      <div>
-        <label class="text-sm text-gray-600 mr-2">類型：</label>
-        <select
-          v-model="selectedModelType"
-          @change="onModelTypeChange"
-          class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
-        >
-          <option :value="null">全部</option>
-          <option value="llm">LLM</option>
-          <option value="vlm">VLM</option>
-          <option value="embedding">Embedding</option>
-          <option value="agent">Agent</option>
-        </select>
+    <!-- Filter bar ----------------------------------------------------- -->
+    <TermBox title="filter" pad="sm" hint="server-evaluated">
+      <div class="filters">
+        <TermField label="type">
+          <select v-model="selectedModelType" @change="onModelTypeChange" class="term-select">
+            <option :value="null">all</option>
+            <option value="llm">llm</option>
+            <option value="vlm">vlm</option>
+            <option value="embedding">embedding</option>
+            <option value="agent">agent</option>
+          </select>
+        </TermField>
+        <TermField v-if="authStore.isAdmin" label="department">
+          <select v-model="selectedDepartment" @change="onDepartmentChange" class="term-select">
+            <option :value="null">all</option>
+            <option v-for="d in activeDepartments" :key="d.id" :value="d.id">{{ d.name }}</option>
+          </select>
+        </TermField>
+        <TermField label="model">
+          <select v-model="selectedModel" @change="refreshUsage" class="term-select">
+            <option :value="null">all</option>
+            <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ m.display_name }}</option>
+          </select>
+        </TermField>
+        <TermField v-if="authStore.isAdmin" label="user">
+          <select v-model="selectedUser" @change="refreshUsage" class="term-select">
+            <option :value="null">all</option>
+            <option v-for="u in filteredUsers" :key="u.id" :value="u.id">{{ u.username }}</option>
+          </select>
+        </TermField>
+        <TermField label="group by">
+          <select v-model="groupBy" @change="refreshUsage" class="term-select">
+            <option value="total">total</option>
+            <option value="model">model</option>
+            <option v-if="authStore.isAdmin" value="department">department</option>
+            <option v-if="authStore.isAdmin" value="user">user</option>
+          </select>
+        </TermField>
       </div>
-      <div v-if="authStore.isAdmin">
-        <label class="text-sm text-gray-600 mr-2">部門：</label>
-        <select
-          v-model="selectedDepartment"
-          @change="onDepartmentChange"
-          class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
-        >
-          <option :value="null">全部</option>
-          <option v-for="d in activeDepartments" :key="d.id" :value="d.id">{{ d.name }}</option>
-        </select>
-      </div>
-      <div>
-        <label class="text-sm text-gray-600 mr-2">模型：</label>
-        <select
-          v-model="selectedModel"
-          @change="refreshUsage"
-          class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
-        >
-          <option :value="null">全部</option>
-          <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ m.display_name }}</option>
-        </select>
-      </div>
-      <div v-if="authStore.isAdmin">
-        <label class="text-sm text-gray-600 mr-2">使用者：</label>
-        <select
-          v-model="selectedUser"
-          @change="refreshUsage"
-          class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
-        >
-          <option :value="null">全部</option>
-          <option v-for="u in filteredUsers" :key="u.id" :value="u.id">{{ u.username }}</option>
-        </select>
-      </div>
-      <div>
-        <label class="text-sm text-gray-600 mr-2">分組：</label>
-        <select
-          v-model="groupBy"
-          @change="refreshUsage"
-          class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
-        >
-          <option value="total">總計</option>
-          <option value="model">依模型</option>
-          <option v-if="authStore.isAdmin" value="department">依部門</option>
-          <option v-if="authStore.isAdmin" value="user">依使用者</option>
-        </select>
-      </div>
-    </div>
+    </TermBox>
 
-    <div class="bg-white rounded-xl border border-gray-200 p-5">
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
-        <div class="rounded-xl bg-gray-50 border border-gray-200 p-4">
-          <div class="text-sm text-gray-500">{{ rangeLabel }} 總請求</div>
-          <div class="text-2xl font-semibold mt-2">{{ formatNum(usageStore.summary?.total_requests || 0) }}</div>
-        </div>
-        <div class="rounded-xl bg-gray-50 border border-gray-200 p-4">
-          <div class="text-sm text-gray-500">{{ rangeLabel }} 總 Tokens</div>
-          <div class="text-2xl font-semibold mt-2">{{ formatNum(usageStore.summary?.total_tokens || 0) }}</div>
-        </div>
-        <div class="rounded-xl bg-gray-50 border border-gray-200 p-4">
-          <div class="text-sm text-gray-500">{{ rangeLabel }} 活躍 API Keys</div>
-          <div class="text-2xl font-semibold mt-2">{{ formatNum(usageStore.summary?.active_api_keys || 0) }}</div>
-        </div>
+    <!-- Summary + chart ----------------------------------------------- -->
+    <TermBox :title="`throughput · ${rangeLabel}`" pad="md" hint="lower-bound = first request in window">
+      <div class="kpi-row">
+        <TermStat :label="`${rangeLabel} · requests`" :value="usageStore.summary?.total_requests || 0" tone="accent" />
+        <TermStat :label="`${rangeLabel} · tokens`" :value="usageStore.summary?.total_tokens || 0" />
+        <TermStat :label="`${rangeLabel} · active keys`" :value="usageStore.summary?.active_api_keys || 0" />
       </div>
+      <div class="chart-wrap">
+        <UsageLineChart :chart-data="usageStore.chartData" :height="380" />
+      </div>
+    </TermBox>
 
-      <UsageLineChart :chart-data="usageStore.chartData" :height="400" />
-    </div>
-
-    <div
-      class="grid gap-6"
-      :class="authStore.isAdmin ? 'grid-cols-1 xl:grid-cols-3' : 'grid-cols-1 lg:grid-cols-2'"
-    >
-      <div class="bg-white rounded-xl border border-gray-200 p-5">
-        <h3 class="text-sm font-medium text-gray-700 mb-3">Top 模型用量（30 天）</h3>
-        <table class="w-full text-sm">
+    <!-- Top tables ----------------------------------------------------- -->
+    <div class="tops" :class="{ 'tops--admin': authStore.isAdmin }">
+      <TermBox title="top · models · 30d" pad="none" flush>
+        <table class="term-table">
           <thead>
-            <tr class="text-gray-500 border-b">
-              <th class="py-2 text-left">模型</th>
-              <th class="py-2 text-left">類型</th>
-              <th class="py-2 text-right">Token 數</th>
-              <th class="py-2 text-right">請求數</th>
-            </tr>
+            <tr><th>model</th><th style="width: 90px">type</th><th class="num" style="width: 110px">tokens</th><th class="num" style="width: 110px">requests</th></tr>
           </thead>
           <tbody>
-            <tr v-for="m in usageStore.topModels" :key="m.model_id" class="border-b last:border-0">
-              <td class="py-2">{{ m.model_name }}</td>
-              <td class="py-2">
-                <span class="text-xs px-1.5 py-0.5 rounded" :class="typeTagColor(m.model_type)">
-                  {{ (m.model_type || '').toUpperCase() }}
-                </span>
-              </td>
-              <td class="py-2 text-right font-mono">{{ formatNum(m.total_tokens) }}</td>
-              <td class="py-2 text-right font-mono">{{ formatNum(m.total_requests) }}</td>
+            <tr v-for="m in usageStore.topModels" :key="m.model_id">
+              <td>{{ m.model_name }}</td>
+              <td><TermBadge :tone="m.model_type">{{ m.model_type || '?' }}</TermBadge></td>
+              <td class="num tnum">{{ formatNum(m.total_tokens) }}</td>
+              <td class="num tnum">{{ formatNum(m.total_requests) }}</td>
             </tr>
             <tr v-if="usageStore.topModels.length === 0">
-              <td colspan="4" class="py-4 text-center text-gray-400">暫無資料</td>
+              <td colspan="4"><TermEmpty message="no model usage yet" /></td>
             </tr>
           </tbody>
         </table>
-      </div>
+      </TermBox>
 
-      <div v-if="authStore.isAdmin" class="bg-white rounded-xl border border-gray-200 p-5">
-        <h3 class="text-sm font-medium text-gray-700 mb-3">Top 部門用量（30 天）</h3>
-        <table class="w-full text-sm">
+      <TermBox v-if="authStore.isAdmin" title="top · departments · 30d" pad="none" flush>
+        <table class="term-table">
           <thead>
-            <tr class="text-gray-500 border-b">
-              <th class="py-2 text-left">部門</th>
-              <th class="py-2 text-right">Token 數</th>
-              <th class="py-2 text-right">請求數</th>
-            </tr>
+            <tr><th>department</th><th class="num" style="width: 110px">tokens</th><th class="num" style="width: 110px">requests</th></tr>
           </thead>
           <tbody>
-            <tr
-              v-for="department in usageStore.topDepartments"
-              :key="department.department_id ?? 'unassigned'"
-              class="border-b last:border-0"
-            >
-              <td class="py-2">{{ department.department_name }}</td>
-              <td class="py-2 text-right font-mono">{{ formatNum(department.total_tokens) }}</td>
-              <td class="py-2 text-right font-mono">{{ formatNum(department.total_requests) }}</td>
+            <tr v-for="d in usageStore.topDepartments" :key="d.department_id ?? 'unassigned'">
+              <td>{{ d.department_name }}</td>
+              <td class="num tnum">{{ formatNum(d.total_tokens) }}</td>
+              <td class="num tnum">{{ formatNum(d.total_requests) }}</td>
             </tr>
             <tr v-if="usageStore.topDepartments.length === 0">
-              <td colspan="3" class="py-4 text-center text-gray-400">暫無資料</td>
+              <td colspan="3"><TermEmpty message="no department usage yet" /></td>
             </tr>
           </tbody>
         </table>
-      </div>
+      </TermBox>
 
-      <div v-if="authStore.isAdmin" class="bg-white rounded-xl border border-gray-200 p-5">
-        <h3 class="text-sm font-medium text-gray-700 mb-3">Top 使用者用量（30 天）</h3>
-        <table class="w-full text-sm">
+      <TermBox v-if="authStore.isAdmin" title="top · users · 30d" pad="none" flush>
+        <table class="term-table">
           <thead>
-            <tr class="text-gray-500 border-b">
-              <th class="py-2 text-left">使用者</th>
-              <th class="py-2 text-right">Token 數</th>
-              <th class="py-2 text-right">請求數</th>
+            <tr><th>user</th><th class="num" style="width: 110px">tokens</th><th class="num" style="width: 110px">requests</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="u in usageStore.topUsers" :key="u.user_id">
+              <td>{{ u.username }}</td>
+              <td class="num tnum">{{ formatNum(u.total_tokens) }}</td>
+              <td class="num tnum">{{ formatNum(u.total_requests) }}</td>
+            </tr>
+            <tr v-if="usageStore.topUsers.length === 0">
+              <td colspan="3"><TermEmpty message="no user usage yet" /></td>
+            </tr>
+          </tbody>
+        </table>
+      </TermBox>
+
+      <!-- Sprint 8 X / Phase G — caller attribution rollups (admin) -->
+      <TermBox v-if="authStore.isAdmin" title="top · agents · 30d" pad="none" flush>
+        <table class="term-table">
+          <thead>
+            <tr>
+              <th>agent</th>
+              <th class="num" style="width: 110px">tokens</th>
+              <th class="num" style="width: 110px">requests</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="u in usageStore.topUsers" :key="u.user_id" class="border-b last:border-0">
-              <td class="py-2">{{ u.username }}</td>
-              <td class="py-2 text-right font-mono">{{ formatNum(u.total_tokens) }}</td>
-              <td class="py-2 text-right font-mono">{{ formatNum(u.total_requests) }}</td>
+            <tr v-for="a in topAgents" :key="a.agent_id">
+              <td>
+                <span class="cell-strong">{{ a.agent_name }}</span>
+                <span v-if="a.base_model_id" class="cell-meta"> · base #{{ a.base_model_id }}</span>
+              </td>
+              <td class="num tnum">{{ formatNum(a.total_tokens) }}</td>
+              <td class="num tnum">{{ formatNum(a.total_requests) }}</td>
             </tr>
-            <tr v-if="usageStore.topUsers.length === 0">
-              <td colspan="3" class="py-4 text-center text-gray-400">暫無資料</td>
+            <tr v-if="topAgents.length === 0">
+              <td colspan="3"><TermEmpty message="no caller-attributed agent usage yet (pre-Phase-G rows show as unattributed)" /></td>
             </tr>
           </tbody>
         </table>
-      </div>
+      </TermBox>
+
+      <TermBox v-if="authStore.isAdmin" title="by · base model · 30d" pad="none" flush>
+        <table class="term-table">
+          <thead>
+            <tr>
+              <th>base model</th>
+              <th class="num" style="width: 110px">tokens</th>
+              <th class="num" style="width: 110px">requests</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="m in byBaseModel" :key="m.base_model_id">
+              <td>{{ m.base_model_name }}</td>
+              <td class="num tnum">{{ formatNum(m.total_tokens) }}</td>
+              <td class="num tnum">{{ formatNum(m.total_requests) }}</td>
+            </tr>
+            <tr v-if="byBaseModel.length === 0">
+              <td colspan="3"><TermEmpty message="no agent → base-model attribution yet" /></td>
+            </tr>
+          </tbody>
+        </table>
+      </TermBox>
     </div>
   </div>
 </template>
@@ -190,9 +182,31 @@ import { listModels } from '../api/models'
 import UsageLineChart from '../components/charts/UsageLineChart.vue'
 import TimeRangeSelector from '../components/charts/TimeRangeSelector.vue'
 import client from '../api/client'
+import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermStat } from '../components/cli'
 
 const usageStore = useUsageStore()
 const authStore = useAuthStore()
+
+// Sprint 8 X / Phase G — Phase G stores its rollups inline rather
+// than in usageStore because they're admin-only and don't share
+// filter dimensions with the rest of the view.
+const topAgents = ref([])
+const byBaseModel = ref([])
+
+async function fetchPhaseGRollups() {
+  if (!authStore.isAdmin) return
+  try {
+    const [{ data: a }, { data: b }] = await Promise.all([
+      client.get('/api/usage/top-agents', { params: { days: 30, limit: 10 } }),
+      client.get('/api/usage/by-base-model', { params: { days: 30 } }),
+    ])
+    topAgents.value = Array.isArray(a) ? a : []
+    byBaseModel.value = Array.isArray(b) ? b : []
+  } catch {
+    topAgents.value = []
+    byBaseModel.value = []
+  }
+}
 
 const selectedRange = ref('24h')
 const selectedModel = ref(null)
@@ -205,27 +219,18 @@ const users = ref([])
 const departments = ref([])
 
 const activeDepartments = computed(() => departments.value.filter(d => d.is_active))
-
 const filteredModels = computed(() => {
   if (!selectedModelType.value) return models.value
   return models.value.filter(m => m.model_type === selectedModelType.value)
 })
-
 const filteredUsers = computed(() => {
   if (!selectedDepartment.value) return users.value
   return users.value.filter(u => u.department_id === selectedDepartment.value)
 })
 
-const rangeLabel = computed(() => {
-  const labels = {
-    '4h': '4 小時',
-    '12h': '12 小時',
-    '24h': '24 小時',
-    '7d': '7 天',
-    '30d': '30 天',
-  }
-  return labels[selectedRange.value] || selectedRange.value
-})
+const rangeLabel = computed(() => ({
+  '4h': '4h', '12h': '12h', '24h': '24h', '7d': '7d', '30d': '30d',
+})[selectedRange.value] || selectedRange.value)
 
 function buildUsageParams() {
   return {
@@ -237,25 +242,22 @@ function buildUsageParams() {
     group_by: groupBy.value,
   }
 }
-
 function buildRankingParams() {
   return {
     model_type: selectedModelType.value || undefined,
     department_id: authStore.isAdmin ? (selectedDepartment.value || undefined) : undefined,
   }
 }
-
 async function refreshRankings() {
-  const rankingParams = buildRankingParams()
-  await usageStore.fetchTopModels(10, rankingParams)
+  const r = buildRankingParams()
+  await usageStore.fetchTopModels(10, r)
   if (authStore.isAdmin) {
     await Promise.all([
-      usageStore.fetchTopUsers(10, rankingParams),
-      usageStore.fetchTopDepartments(10, rankingParams),
+      usageStore.fetchTopUsers(10, r),
+      usageStore.fetchTopDepartments(10, r),
     ])
   }
 }
-
 async function refreshUsage() {
   const usageParams = buildUsageParams()
   const summaryParams = {
@@ -269,26 +271,19 @@ async function refreshUsage() {
     usageStore.fetchChart(usageParams),
     usageStore.fetchSummary(summaryParams),
     refreshRankings(),
+    fetchPhaseGRollups(),
   ])
 }
 
 onMounted(async () => {
-  try {
-    const { data } = await listModels()
-    models.value = data
-  } catch {}
-
+  try { const { data } = await listModels(); models.value = data } catch {}
   if (authStore.isAdmin) {
     try {
-      const [{ data: usersData }, { data: departmentsData }] = await Promise.all([
-        client.get('/api/users'),
-        listDepartments(),
-      ])
-      users.value = usersData
-      departments.value = departmentsData
+      const [{ data: u }, { data: d }] = await Promise.all([client.get('/api/users'), listDepartments()])
+      users.value = u
+      departments.value = d
     } catch {}
   }
-
   await refreshUsage()
 })
 
@@ -298,17 +293,13 @@ function onModelTypeChange() {
   }
   refreshUsage()
 }
-
 function onDepartmentChange() {
   if (selectedUser.value && !filteredUsers.value.some(u => u.id === selectedUser.value)) {
     selectedUser.value = null
   }
-  if (groupBy.value === 'department' && selectedDepartment.value) {
-    groupBy.value = 'total'
-  }
+  if (groupBy.value === 'department' && selectedDepartment.value) groupBy.value = 'total'
   refreshUsage()
 }
-
 function handleExport() {
   usageStore.exportCsv({
     range: selectedRange.value,
@@ -318,21 +309,37 @@ function handleExport() {
     model_type: selectedModelType.value || undefined,
   })
 }
-
-function typeTagColor(type) {
-  const colors = {
-    llm: 'bg-blue-50 text-blue-700',
-    vlm: 'bg-purple-50 text-purple-700',
-    embedding: 'bg-green-50 text-green-700',
-    agent: 'bg-orange-50 text-orange-700',
-  }
-  return colors[type] || 'bg-gray-50 text-gray-700'
-}
-
 function formatNum(n) {
   if (!n) return '0'
-  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M'
-  if (n >= 1000) return (n / 1000).toFixed(1) + 'K'
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K'
   return n.toLocaleString()
 }
 </script>
+
+<style scoped>
+.page { display: flex; flex-direction: column; gap: var(--gap-4); padding-bottom: var(--gap-8); }
+
+.page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--gap-3); flex-wrap: wrap; }
+.page-head__eyebrow { font-size: var(--t-2xs); letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--c-fg-3); }
+.page-head__title { font-size: var(--t-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin: 4px 0 2px; }
+.page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }
+.page-head__actions { display: flex; align-items: center; gap: var(--gap-2); }
+
+.filters {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--gap-3);
+}
+@media (max-width: 1100px) { .filters { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 700px)  { .filters { grid-template-columns: repeat(2, 1fr); } }
+
+.kpi-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--gap-3); }
+@media (max-width: 700px) { .kpi-row { grid-template-columns: 1fr; } }
+
+.chart-wrap { margin-top: var(--gap-3); padding-top: var(--gap-3); border-top: var(--border-w) dashed var(--c-border); }
+
+.tops { display: grid; grid-template-columns: 1fr; gap: var(--gap-3); }
+.tops--admin { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 1100px) { .tops--admin { grid-template-columns: 1fr; } }
+</style>

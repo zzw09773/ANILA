@@ -77,6 +77,84 @@ class WorkerSettings(BaseSettings):
     pg_pool_min: int = 1
     pg_pool_max: int = 5
 
+    # ── VLM-based image captioning ─────────────────────────────────────
+    #
+    # PDF parsers extract embedded images and leave ``[[IMAGE:<id>]]``
+    # placeholders in the text. Without VLM captioning these become
+    # opaque tokens that the chunker stuffs in as ``[image]`` — meaning
+    # any chart, diagram, or table embedded in a text-PDF disappears
+    # from retrieval.
+    #
+    # When ``enable_image_captions=True`` AND ``vision_url`` is non-empty
+    # the worker calls the VLM endpoint per-image (concurrency-capped)
+    # and rewrites every ``[[IMAGE:<id>]]`` placeholder with the caption
+    # text BEFORE chunking. Both flags must be on; either off → captioning
+    # is skipped and a one-line info log explains why. The placeholders
+    # become "[image]" via the chunker's existing fallback so retrieval
+    # still works, just without the chart's content.
+    #
+    # Endpoint conventions match the existing OCR fallback (vision.py):
+    # ``vision_url`` is the OpenAI-compatible base URL (no
+    # ``/chat/completions`` suffix). Default points at CSP's ``/v1`` proxy
+    # so token usage is metered consistently with embeddings — same
+    # internal API key flow.
+    enable_image_captions: bool = Field(
+        default=True,
+        description=(
+            "Master switch for VLM caption injection. Set False to skip "
+            "captioning entirely (e.g. for text-only knowledge bases "
+            "where the latency cost is not worth it)."
+        ),
+    )
+    vision_url: str = Field(
+        default="",
+        description=(
+            "OpenAI-compatible VLM endpoint base URL (no /chat/completions "
+            "suffix). Empty disables image captioning even when "
+            "enable_image_captions=True; this is the safe default for "
+            "deployments without a configured VLM."
+        ),
+    )
+    vision_model: str = Field(
+        default="gemma4",
+        description="VLM identifier passed in the chat-completions body.",
+    )
+    vision_api_key: str = Field(
+        default="not-set",
+        description=(
+            "Bearer token for the VLM endpoint. Re-uses the same internal "
+            "platform API key the embedding path uses by default."
+        ),
+    )
+    vision_verify_ssl: bool = Field(
+        default=False,
+        description=(
+            "Verify TLS for the VLM endpoint. Defaults False because the "
+            "internal CSP nginx uses a self-signed cert in dev; flip to "
+            "True once a real cert is in place."
+        ),
+    )
+    vision_concurrency: int = Field(
+        default=4,
+        description=(
+            "Max parallel VLM calls per ingest job. Higher → faster on "
+            "image-heavy PDFs but risks starving the GPU if other "
+            "callers (Studio QA, OCR) share the same VLM endpoint."
+        ),
+    )
+    vision_timeout_seconds: float = Field(
+        default=60.0,
+        description="Per-image VLM request timeout.",
+    )
+    vision_max_image_bytes: int = Field(
+        default=8 * 1024 * 1024,
+        description=(
+            "Skip captioning images larger than this (bytes). The VLM "
+            "endpoint OOMs on huge PNGs; the chunker's placeholder "
+            "caption is the fallback in that case."
+        ),
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

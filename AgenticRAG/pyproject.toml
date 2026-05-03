@@ -15,6 +15,10 @@ dependencies = [
     "python-frontmatter>=1.1",
     "pyyaml>=6.0",
     "anyio>=4.0",
+    # Agent runtime primitives (agentic_rag.runtime.framework) need
+    # typing-extensions for Protocol / runtime_checkable / TypeAlias
+    # cushion across supported Python versions.
+    "typing-extensions>=4.12",
     "sse-starlette>=2.0",
     "aiofiles>=23.0",
 ]
@@ -35,6 +39,22 @@ rag = [
     "python-multipart>=0.0.9",
     # Settings from env
     "pydantic-settings>=2.0",
+]
+openai = [
+    # Optional: enables agentic_rag.runtime.framework.providers.openai_compat.
+    # AgenticRAG's default agentic-chat path uses the bridge adapter over
+    # the existing stream-based Provider, so this extra is only needed by
+    # forks that want to drive the framework Runner directly against an
+    # OpenAI-compat HTTP endpoint (vLLM / NIM / TGI / Ollama / OpenAI).
+    "openai>=1.0",
+]
+mcp = [
+    # Optional: enables agentic_rag.runtime.framework.mcp.* — connect to
+    # third-party MCP servers (filesystem, github, sentry, postgres, custom
+    # ops scripts) over stdio. The framework consumes MCP servers as a
+    # client; we don't host an MCP server. Install only if your fork
+    # plans to wire external MCP tooling into agents.
+    "mcp>=1.0",
 ]
 dev = [
     "pytest>=8.0",

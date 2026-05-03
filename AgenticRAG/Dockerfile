@@ -37,12 +37,30 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 # 上傳目錄
 RUN mkdir -p /tmp/anila_uploads
 
+# Sprint 8 X / Phase D — service token state directory.
+# Compose / k8s should mount a persistent volume here so the csk-
+# token survives container restarts (otherwise every restart triggers
+# a fresh bootstrap which the bsk- token has been consumed by).
+RUN mkdir -p /var/lib/anila-agent
+
 # 不以 root 執行
-RUN useradd -m -u 1000 anila && chown -R anila:anila /app /tmp/anila_uploads
+RUN useradd -m -u 1000 anila \
+    && chown -R anila:anila /app /tmp/anila_uploads /var/lib/anila-agent
+USER anila
+
+# Phase D entrypoint: auto-runs `python -m agentic_rag.cli bootstrap`
+# when the state file is missing AND $CSP_BOOTSTRAP_TOKEN is set.
+# (Phase 0, 2026-05-02: the bootstrap CLI moved from anila-core into
+# AgenticRAG itself so this template is self-contained — no anila-core
+# install needed in the runtime image.)
+COPY --chown=anila:anila docker/entrypoint.sh /usr/local/bin/anila-entrypoint.sh
+USER root
+RUN chmod +x /usr/local/bin/anila-entrypoint.sh
 USER anila
 
 EXPOSE 8000
 
+ENTRYPOINT ["/usr/local/bin/anila-entrypoint.sh"]
 CMD ["uvicorn", "agentic_rag.app_factory:app", \
      "--host", "0.0.0.0", \
      "--port", "8000", \

@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -24,6 +24,15 @@ router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 class ConversationCreate(BaseModel):
     title: str = Field("新對話", max_length=255)
     agent_id: Optional[int] = None
+    # Free-form tag for the calling frontend. None / '' is treated as
+    # "unspecified". ANILALM sends 'anilalm', ANILA UI sends 'anila-ui'.
+    # Future apps can pick any short identifier; see migration 0023.
+    origin: Optional[str] = Field(default=None, max_length=32)
+    # Knowledge-base scope. REQUIRED when origin='anilalm' (the LM
+    # sidebar filters on it); MUST be None for any other origin
+    # (anila-ui has no collection concept). The endpoint enforces this
+    # contract; clients passing the wrong combination get 400.
+    collection_id: Optional[int] = Field(default=None, ge=1)
 
 
 class ConversationUpdate(BaseModel):
@@ -86,6 +95,10 @@ class ConversationOut(BaseModel):
     id: int
     title: str
     agent_id: Optional[int]
+    origin: Optional[str] = None
+    # Surfaced so the frontend can confirm scoping (e.g. ANILALM never
+    # accepts a row whose collection_id != current workspace id).
+    collection_id: Optional[int] = None
     classified: bool
     classified_at: Optional[datetime]
     created_at: datetime
@@ -128,10 +141,44 @@ class ShareOut(BaseModel):
 
 @router.get("", response_model=list[ConversationOut])
 def list_conversations(
+    origin: Optional[str] = Query(
+        default=None,
+        max_length=32,
+        description="Only return conversations tagged with this origin (e.g. 'anilalm').",
+    ),
+    exclude_origin: Optional[str] = Query(
+        default=None,
+        max_length=32,
+        description=(
+            "Return everything EXCEPT this origin. NULL-origin (legacy) "
+            "rows are kept. Mutually exclusive with `origin`."
+        ),
+    ),
+    collection_id: Optional[int] = Query(
+        default=None,
+        ge=1,
+        description=(
+            "Only return conversations scoped to this knowledge base. "
+            "Required by ANILALM (cross-collection bleed otherwise); "
+            "leave unset for ANILA UI (no collection concept). "
+            "NULL-collection rows are NOT returned when this is set — "
+            "see service docstring for rationale."
+        ),
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return svc.list_conversations(db, current_user)
+    if origin is not None and exclude_origin is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="origin and exclude_origin are mutually exclusive",
+        )
+    return svc.list_conversations(
+        db, current_user,
+        origin=origin,
+        exclude_origin=exclude_origin,
+        collection_id=collection_id,
+    )
 
 
 @router.post("", response_model=ConversationOut, status_code=201)
@@ -140,7 +187,40 @@ def create_conversation(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return svc.create_conversation(db, current_user.id, title=body.title, agent_id=body.agent_id)
+    # Contract enforcement (see ConversationCreate.collection_id docstring):
+    #   - origin='anilalm' MUST set collection_id
+    #   - any other origin MUST leave collection_id None
+    # We treat the empty string the same as None for `origin` to stay
+    # consistent with the rest of the API.
+    origin = body.origin or None
+    if origin == "anilalm" and body.collection_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="anilalm conversations require a collection_id",
+        )
+    if origin != "anilalm" and body.collection_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "collection_id is only valid for origin='anilalm' "
+                "(other origins have no knowledge-base scope)"
+            ),
+        )
+    # If a collection_id was supplied, verify the user actually owns /
+    # has access to that collection so we don't end up creating a
+    # conversation pinned to someone else's knowledge base. Lazy import
+    # to avoid a circular dependency between conversations and ingestion.
+    if body.collection_id is not None:
+        from app.api.ingestion.collections import _require_collection_access
+        _require_collection_access(db, current_user, body.collection_id)
+    return svc.create_conversation(
+        db,
+        current_user.id,
+        title=body.title,
+        agent_id=body.agent_id,
+        origin=origin,
+        collection_id=body.collection_id,
+    )
 
 
 @router.get("/{conv_id}", response_model=ConversationDetail)
@@ -249,6 +329,14 @@ def edit_user_message(
 
 
 # ── Classified policy ─────────────────────────────────────────────────────────
+#
+# Classified is one-way (README, Wave 2). The platform's invariant is
+# "once latched, never downgraded" — Sprint 8 X / Phase K removes the
+# /declassify endpoint entirely (was a pre-existing backdoor that
+# violated the invariant; nothing in the frontend ever called it).
+# To handle a genuine misclassification, ops should write a manual
+# admin script + audit entry rather than expose a downgrade HTTP
+# surface.
 
 @router.post("/{conv_id}/classify", response_model=ConversationOut)
 def classify_conversation(
@@ -257,15 +345,6 @@ def classify_conversation(
     current_user: User = Depends(get_current_user),
 ):
     return svc.classify_conversation(db, conv_id, current_user)
-
-
-@router.post("/{conv_id}/declassify", response_model=ConversationOut)
-def declassify_conversation(
-    conv_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    return svc.declassify_conversation(db, conv_id, current_user)
 
 
 # ── Share links ───────────────────────────────────────────────────────────────

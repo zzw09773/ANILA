@@ -1,181 +1,126 @@
 <template>
-  <div class="space-y-6">
-    <div class="flex items-center justify-between">
-      <h2 class="text-lg font-semibold">平台連結設定</h2>
-      <button
-        @click="openCreateModal"
-        class="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 transition"
-      >
-        新增連結
-      </button>
-    </div>
+  <div class="page">
+    <header class="page-head">
+      <div>
+        <p class="page-head__eyebrow">admin · platform</p>
+        <h1 class="page-head__title">platform-links</h1>
+        <p class="page-head__sub">external tooling shown on dashboard · per-link role gate + grant whitelist</p>
+      </div>
+      <TermButton variant="primary" @click="openCreateModal" label="add link" />
+    </header>
 
-    <div v-if="pageError" class="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-      {{ pageError }}
-    </div>
+    <div v-if="pageError" class="feedback is-err">! {{ pageError }}</div>
 
-    <div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
-      <table class="w-full text-sm">
-        <thead class="bg-gray-50 border-b">
+    <TermBox :title="`links · ${links.length}`" pad="none" flush>
+      <table class="term-table">
+        <thead>
           <tr>
-            <th class="px-4 py-3 text-left text-gray-600 font-medium">名稱</th>
-            <th class="px-4 py-3 text-left text-gray-600 font-medium">網址</th>
-            <th class="px-4 py-3 text-left text-gray-600 font-medium">排序</th>
-            <th class="px-4 py-3 text-left text-gray-600 font-medium">狀態</th>
-            <th class="px-4 py-3 text-left text-gray-600 font-medium">操作</th>
+            <th>name</th>
+            <th>url</th>
+            <th style="width: 80px" class="num">order</th>
+            <th style="width: 100px">status</th>
+            <th style="width: 14%">ops</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="link in links" :key="link.id" class="border-b last:border-0 hover:bg-gray-50">
-            <td class="px-4 py-3">
-              <div class="font-medium">{{ link.name }}</div>
-              <div class="text-xs text-gray-400">{{ link.description || '無描述' }}</div>
+          <tr v-for="link in links" :key="link.id">
+            <td>
+              <div class="cell-strong">{{ link.name }}</div>
+              <div class="cell-meta">{{ link.description || 'no description' }}</div>
             </td>
-            <td class="px-4 py-3 font-mono text-xs text-gray-500">{{ link.url }}</td>
-            <td class="px-4 py-3 text-gray-500">{{ link.sort_order }}</td>
-            <td class="px-4 py-3">
-              <span
-                class="text-xs px-2 py-0.5 rounded"
-                :class="link.is_active ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-600'"
-              >
-                {{ link.is_active ? '啟用' : '停用' }}
-              </span>
-            </td>
-            <td class="px-4 py-3 space-x-2">
-              <button @click="openEditModal(link)" class="text-indigo-600 hover:text-indigo-800 text-xs">編輯</button>
-              <button
-                v-if="link.is_active"
-                @click="handleDeactivate(link)"
-                class="text-red-600 hover:text-red-800 text-xs"
-              >
-                停用
-              </button>
-              <button
-                v-else
-                @click="handleReactivate(link)"
-                class="text-emerald-600 hover:text-emerald-800 text-xs"
-              >
-                啟用
-              </button>
+            <td><code class="cell-url" :title="link.url">{{ link.url }}</code></td>
+            <td class="num tnum">{{ link.sort_order }}</td>
+            <td><TermBadge :variant="link.is_active ? 'ok' : 'danger'" dot>{{ link.is_active ? 'active' : 'inactive' }}</TermBadge></td>
+            <td>
+              <div class="row-actions">
+                <button class="term-action" @click="openEditModal(link)">edit</button>
+                <span class="row-actions__sep">·</span>
+                <button v-if="link.is_active" class="term-action term-action--danger" @click="handleDeactivate(link)">deactivate</button>
+                <button v-else class="term-action" @click="handleReactivate(link)">reactivate</button>
+              </div>
             </td>
           </tr>
           <tr v-if="links.length === 0">
-            <td colspan="5" class="px-4 py-8 text-center text-gray-400">尚無平台連結</td>
+            <td colspan="5"><TermEmpty message="no platform links · add one to surface external tools on the dashboard" /></td>
           </tr>
         </tbody>
       </table>
-    </div>
+    </TermBox>
 
-    <div v-if="showModal" class="fixed inset-0 z-50 flex items-center justify-center">
-      <div class="fixed inset-0 bg-black/50" @click="showModal = false"></div>
-      <div class="relative bg-white rounded-xl shadow-xl p-6 max-w-lg w-full mx-4">
-        <h3 class="text-lg font-semibold mb-4">{{ editingId ? '編輯平台連結' : '新增平台連結' }}</h3>
+    <TermModal :visible="showModal" :title="editingId ? 'edit · link' : 'add · link'" width="540px" @close="showModal = false">
+      <div class="form-grid">
+        <TermField label="name">
+          <input v-model="form.name" class="term-input" />
+        </TermField>
+        <TermField label="url">
+          <input v-model="form.url" class="term-input" placeholder="https://…" />
+        </TermField>
+        <div class="form-row-2">
+          <TermField label="icon" hint="workflow · git · notebook · chat · monitor · database · api · docs · cpu">
+            <input v-model="form.icon" class="term-input" placeholder="workflow" />
+          </TermField>
+          <TermField label="sort order">
+            <input v-model.number="form.sort_order" type="number" class="term-input" />
+          </TermField>
+        </div>
+        <TermField label="description" optional>
+          <textarea v-model="form.description" rows="2" class="term-textarea" />
+        </TermField>
 
-        <div class="space-y-4">
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">名稱</label>
-            <input v-model="form.name" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" />
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">網址</label>
-            <input v-model="form.url" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" />
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">Icon</label>
-            <input v-model="form.icon" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" placeholder="例如：workflow" />
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">說明</label>
-            <textarea v-model="form.description" rows="2" class="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">排序</label>
-            <input v-model.number="form.sort_order" type="number" class="w-full px-3 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" />
-          </div>
+        <TermSection title="access control" />
 
-          <div class="border-t border-gray-200 pt-4 space-y-3">
-            <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider">存取控制</div>
+        <label class="form-toggle">
+          <input v-model="form.is_public" type="checkbox" />
+          <span>
+            <span class="form-toggle__title">public</span>
+            <span class="form-toggle__hint">any user passing the role gate can see this · no individual grant required</span>
+          </span>
+        </label>
 
-            <label class="flex items-start gap-3">
+        <TermField label="required roles" hint="empty = open gate · admin always passes">
+          <div class="role-grid">
+            <label
+              v-for="role in availableRoles"
+              :key="role"
+              class="role-chip"
+              :class="{ 'is-on': form.required_roles.includes(role) }"
+            >
               <input
-                v-model="form.is_public"
                 type="checkbox"
-                class="mt-1 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                :value="role"
+                :checked="form.required_roles.includes(role)"
+                @change="toggleRole(role)"
               />
-              <span class="text-sm">
-                <span class="font-medium">公開（is_public）</span>
-                <span class="ml-2 text-xs text-gray-500">通過 role gate 的 user 即可看到，不需個別 grant</span>
-              </span>
+              <span>{{ role }}</span>
             </label>
-
-            <div>
-              <div class="block text-sm font-medium text-gray-700 mb-1">Required Roles</div>
-              <div class="flex flex-wrap gap-3">
-                <label
-                  v-for="role in availableRoles"
-                  :key="role"
-                  class="inline-flex items-center gap-2 px-3 py-1.5 border rounded text-sm cursor-pointer transition"
-                  :class="form.required_roles.includes(role)
-                    ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
-                    : 'border-gray-300 text-gray-600 hover:bg-gray-50'"
-                >
-                  <input
-                    type="checkbox"
-                    :value="role"
-                    :checked="form.required_roles.includes(role)"
-                    @change="toggleRole(role)"
-                    class="h-3.5 w-3.5 rounded border-gray-300 text-indigo-600"
-                  />
-                  {{ role }}
-                </label>
-              </div>
-              <div class="mt-1 text-xs text-gray-500">
-                空白 = role gate 開放（所有 role 通過）；非空 = 該名單之 role 才能通過。Admin 一律 bypass。
-              </div>
-            </div>
           </div>
-        </div>
-
-        <div class="flex justify-end space-x-3 mt-6">
-          <button @click="showModal = false" class="px-4 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">取消</button>
-          <button
-            @click="handleSubmit"
-            :disabled="!form.name.trim() || !form.url.trim()"
-            class="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
-          >
-            {{ editingId ? '更新' : '建立' }}
-          </button>
-        </div>
+        </TermField>
       </div>
-    </div>
+      <template #footer>
+        <TermButton variant="ghost" @click="showModal = false" label="cancel" />
+        <TermButton variant="primary" :disabled="!form.name.trim() || !form.url.trim()" :label="editingId ? 'update' : 'create'" @click="handleSubmit" />
+      </template>
+    </TermModal>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
 import { listPlatformLinks, createPlatformLink, updatePlatformLink, deletePlatformLink } from '../api/platformLinks'
+import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermSection } from '../components/cli'
 
 const links = ref([])
 const showModal = ref(false)
 const editingId = ref(null)
-const form = ref({
-  name: '', url: '', icon: '', description: '', sort_order: 0,
-  is_public: false, required_roles: [],
-})
+const form = ref({ name: '', url: '', icon: '', description: '', sort_order: 0, is_public: false, required_roles: [] })
 const pageError = ref('')
 
-// Roles allowed by the backend's PlatformLink schema validator.
-// Keep in lockstep with myCSPPlatform/backend/app/schemas/platform_link.py
-// _ALLOWED_ROLES — backend rejects unknown roles with 422.
 const availableRoles = ['admin', 'developer', 'user']
 
 function toggleRole(role) {
   const idx = form.value.required_roles.indexOf(role)
-  if (idx >= 0) {
-    form.value.required_roles.splice(idx, 1)
-  } else {
-    form.value.required_roles.push(role)
-  }
+  if (idx >= 0) form.value.required_roles.splice(idx, 1)
+  else form.value.required_roles.push(role)
 }
 
 async function fetchLinks() {
@@ -184,74 +129,110 @@ async function fetchLinks() {
     const { data } = await listPlatformLinks({ include_inactive: true })
     links.value = data
   } catch (e) {
-    pageError.value = e.response?.data?.detail || '載入平台連結失敗'
+    pageError.value = e.response?.data?.detail || 'failed to load links'
   }
 }
-
 onMounted(fetchLinks)
 
 function openCreateModal() {
   editingId.value = null
-  form.value = {
-    name: '', url: '', icon: '', description: '', sort_order: 0,
-    is_public: false, required_roles: [],
-  }
+  form.value = { name: '', url: '', icon: '', description: '', sort_order: 0, is_public: false, required_roles: [] }
   showModal.value = true
 }
-
 function openEditModal(link) {
   editingId.value = link.id
   form.value = {
-    name: link.name,
-    url: link.url,
-    icon: link.icon || '',
-    description: link.description || '',
-    sort_order: link.sort_order || 0,
-    is_public: !!link.is_public,
-    required_roles: Array.isArray(link.required_roles) ? [...link.required_roles] : [],
+    name: link.name, url: link.url, icon: link.icon || '',
+    description: link.description || '', sort_order: link.sort_order || 0,
+    is_public: !!link.is_public, required_roles: Array.isArray(link.required_roles) ? [...link.required_roles] : [],
   }
   showModal.value = true
 }
-
 async function handleSubmit() {
   const payload = {
-    name: form.value.name.trim(),
-    url: form.value.url.trim(),
-    icon: form.value.icon.trim() || null,
-    description: form.value.description.trim() || null,
+    name: form.value.name.trim(), url: form.value.url.trim(),
+    icon: form.value.icon.trim() || null, description: form.value.description.trim() || null,
     sort_order: form.value.sort_order || 0,
-    is_public: !!form.value.is_public,
-    required_roles: form.value.required_roles,
+    is_public: !!form.value.is_public, required_roles: form.value.required_roles,
   }
   try {
-    if (editingId.value) {
-      await updatePlatformLink(editingId.value, payload)
-    } else {
-      await createPlatformLink(payload)
-    }
+    if (editingId.value) await updatePlatformLink(editingId.value, payload)
+    else await createPlatformLink(payload)
     showModal.value = false
     await fetchLinks()
-  } catch (e) {
-    alert(e.response?.data?.detail || '操作失敗')
-  }
+  } catch (e) { alert(e.response?.data?.detail || 'save failed') }
 }
-
 async function handleDeactivate(link) {
-  if (!confirm(`確定要停用平台連結「${link.name}」嗎？`)) return
-  try {
-    await deletePlatformLink(link.id)
-    await fetchLinks()
-  } catch (e) {
-    alert(e.response?.data?.detail || '停用平台連結失敗')
-  }
+  if (!confirm(`deactivate '${link.name}'?`)) return
+  try { await deletePlatformLink(link.id); await fetchLinks() }
+  catch (e) { alert(e.response?.data?.detail || 'deactivate failed') }
 }
-
 async function handleReactivate(link) {
-  try {
-    await updatePlatformLink(link.id, { is_active: true })
-    await fetchLinks()
-  } catch (e) {
-    alert(e.response?.data?.detail || '啟用平台連結失敗')
-  }
+  try { await updatePlatformLink(link.id, { is_active: true }); await fetchLinks() }
+  catch (e) { alert(e.response?.data?.detail || 'reactivate failed') }
 }
 </script>
+
+<style scoped>
+.page { display: flex; flex-direction: column; gap: var(--gap-4); padding-bottom: var(--gap-8); }
+.page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--gap-3); flex-wrap: wrap; }
+.page-head__eyebrow { font-size: var(--t-2xs); letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--c-fg-3); }
+.page-head__title { font-size: var(--t-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin: 4px 0 2px; }
+.page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }
+
+.feedback { font-size: var(--t-xs); padding: var(--gap-2) var(--gap-3); border: var(--border-w) solid; }
+.feedback.is-err { color: var(--c-danger); border-color: var(--c-danger); background: var(--c-danger-soft); }
+
+.cell-strong { color: var(--c-fg-1); font-weight: 500; }
+.cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }
+.cell-url {
+  display: inline-block;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  color: var(--c-fg-2);
+  background: var(--c-bg);
+  border: var(--border-w) solid var(--c-border);
+  padding: 1px 6px;
+}
+.row-actions { display: inline-flex; gap: 6px; align-items: center; font-size: var(--t-xs); }
+.row-actions__sep { color: var(--c-border-strong); }
+
+.form-grid { display: flex; flex-direction: column; gap: var(--gap-3); }
+.form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap-3); }
+.form-toggle {
+  display: flex;
+  gap: var(--gap-3);
+  align-items: flex-start;
+  cursor: pointer;
+  padding: var(--gap-2) var(--gap-3);
+  border: var(--border-w) solid var(--c-border);
+  background: var(--c-bg);
+  font-size: var(--t-sm);
+}
+.form-toggle input { margin-top: 2px; accent-color: var(--c-accent); }
+.form-toggle__title { display: block; color: var(--c-fg-1); font-weight: 500; }
+.form-toggle__hint { display: block; color: var(--c-fg-3); font-size: var(--t-2xs); margin-top: 2px; }
+
+.role-grid { display: flex; flex-wrap: wrap; gap: var(--gap-2); }
+.role-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: var(--border-w) solid var(--c-border-strong);
+  background: var(--c-bg);
+  color: var(--c-fg-2);
+  cursor: pointer;
+  font-size: var(--t-sm);
+}
+.role-chip.is-on {
+  border-color: var(--c-accent);
+  color: var(--c-accent);
+  background: var(--c-accent-soft);
+}
+.role-chip input { accent-color: var(--c-accent); }
+</style>

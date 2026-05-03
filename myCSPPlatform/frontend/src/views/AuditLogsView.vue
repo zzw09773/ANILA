@@ -1,87 +1,108 @@
 <template>
-  <div class="space-y-6">
-    <div class="flex items-center justify-between flex-wrap gap-4">
-      <h2 class="text-lg font-semibold">審計日誌</h2>
-      <div class="text-sm text-gray-500">顯示最近 {{ filters.limit }} 筆</div>
-    </div>
+  <div class="page">
+    <header class="page-head">
+      <div>
+        <p class="page-head__eyebrow">admin · audit</p>
+        <h1 class="page-head__title">audit-log</h1>
+        <p class="page-head__sub">last {{ filters.limit }} entries · governance trail · admin write ops</p>
+      </div>
+      <span class="cell-meta">{{ logs.length }} record(s)</span>
+    </header>
 
-    <div v-if="pageError" class="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-      {{ pageError }}
-    </div>
+    <div v-if="pageError" class="feedback is-err">! {{ pageError }}</div>
 
-    <div class="flex items-center gap-3 flex-wrap">
-      <input v-model="filters.actor_username" type="text" placeholder="操作者" class="px-3 py-2 text-sm border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" />
-      <input v-model="filters.action" type="text" placeholder="動作，例如 create" class="px-3 py-2 text-sm border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" />
-      <input v-model="filters.resource_type" type="text" placeholder="資源，例如 user" class="px-3 py-2 text-sm border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" />
-      <select v-model="filters.status" class="px-3 py-2 text-sm border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500">
-        <option value="">全部狀態</option>
-        <option value="success">Success</option>
-        <option value="failure">Failure</option>
-      </select>
-      <select v-model.number="filters.limit" class="px-3 py-2 text-sm border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500">
-        <option :value="50">50</option>
-        <option :value="100">100</option>
-        <option :value="200">200</option>
-      </select>
-      <button @click="fetchLogs" class="px-3 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">查詢</button>
-    </div>
+    <TermBox title="filter" pad="sm">
+      <div class="filters">
+        <TermField label="actor">
+          <input v-model="filters.actor_username" class="term-input" placeholder="username" />
+        </TermField>
+        <TermField label="action">
+          <input v-model="filters.action" class="term-input" placeholder="e.g. create" />
+        </TermField>
+        <!-- Sprint 8 X / Phase H quick-filter — service-token cutover monitoring. -->
+        <TermField label="quick · service token" hint="audit cutover progress">
+          <select v-model="filters.action" class="term-select" @change="fetchLogs">
+            <option value="">— pick to filter —</option>
+            <option value="service_token_legacy_env_used">legacy env-var fallback hits</option>
+            <option value="service_token_bootstrap_issued">bootstrap issued (admin)</option>
+            <option value="service_token_bootstrap_consumed">bootstrap consumed</option>
+            <option value="service_token_issued">credential issued</option>
+            <option value="service_token_rotated">credential rotated</option>
+            <option value="service_token_revoked">credential revoked</option>
+            <option value="service_token_verified">verify ok</option>
+          </select>
+        </TermField>
+        <TermField label="resource">
+          <input v-model="filters.resource_type" class="term-input" placeholder="e.g. user" />
+        </TermField>
+        <TermField label="status">
+          <select v-model="filters.status" class="term-select">
+            <option value="">all</option>
+            <option value="success">success</option>
+            <option value="failure">failure</option>
+          </select>
+        </TermField>
+        <TermField label="limit">
+          <select v-model.number="filters.limit" class="term-select">
+            <option :value="50">50</option>
+            <option :value="100">100</option>
+            <option :value="200">200</option>
+            <option :value="500">500</option>
+          </select>
+        </TermField>
+        <div class="filters__cta">
+          <TermButton @click="fetchLogs" label="query" />
+        </div>
+      </div>
+    </TermBox>
 
-    <div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
-      <table class="w-full text-sm">
-        <thead class="bg-gray-50 border-b">
+    <TermBox title="entries" pad="none" flush>
+      <table class="term-table">
+        <thead>
           <tr>
-            <th class="px-4 py-3 text-left text-gray-600 font-medium">時間</th>
-            <th class="px-4 py-3 text-left text-gray-600 font-medium">操作者</th>
-            <th class="px-4 py-3 text-left text-gray-600 font-medium">動作</th>
-            <th class="px-4 py-3 text-left text-gray-600 font-medium">資源</th>
-            <th class="px-4 py-3 text-left text-gray-600 font-medium">結果</th>
-            <th class="px-4 py-3 text-left text-gray-600 font-medium">細節</th>
+            <th style="width: 14%">timestamp</th>
+            <th style="width: 12%">actor</th>
+            <th style="width: 10%">action</th>
+            <th style="width: 14%">resource</th>
+            <th style="width: 80px">result</th>
+            <th>detail</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="log in logs" :key="log.id" class="border-b last:border-0 hover:bg-gray-50 align-top">
-            <td class="px-4 py-3 text-gray-500">{{ formatDate(log.created_at) }}</td>
-            <td class="px-4 py-3">
-              <div class="font-medium">{{ log.actor_username || 'system' }}</div>
-              <div class="text-xs text-gray-400">{{ log.ip_address || '-' }}</div>
+          <tr v-for="log in logs" :key="log.id">
+            <td class="cell-meta tnum">{{ formatDate(log.created_at) }}</td>
+            <td>
+              <div class="cell-strong">{{ log.actor_username || 'system' }}</div>
+              <div class="cell-meta">{{ log.ip_address || '—' }}</div>
             </td>
-            <td class="px-4 py-3">{{ log.action }}</td>
-            <td class="px-4 py-3">
+            <td><code class="action-code">{{ log.action }}</code></td>
+            <td>
               <div>{{ log.resource_type }}</div>
-              <div class="text-xs text-gray-400">{{ log.resource_id || '-' }}</div>
+              <div class="cell-meta">{{ log.resource_id || '—' }}</div>
             </td>
-            <td class="px-4 py-3">
-              <span class="text-xs px-2 py-0.5 rounded" :class="log.status === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'">
-                {{ log.status }}
-              </span>
-            </td>
-            <td class="px-4 py-3 text-gray-500">
-              <div>{{ log.detail || '-' }}</div>
-              <pre v-if="log.metadata" class="mt-2 text-xs bg-gray-50 p-2 rounded overflow-x-auto">{{ JSON.stringify(log.metadata, null, 2) }}</pre>
+            <td><TermBadge :variant="log.status === 'success' ? 'ok' : 'danger'" dot>{{ log.status }}</TermBadge></td>
+            <td>
+              <div class="cell-detail">{{ log.detail || '—' }}</div>
+              <pre v-if="log.metadata" class="meta-block">{{ JSON.stringify(log.metadata, null, 2) }}</pre>
             </td>
           </tr>
           <tr v-if="logs.length === 0">
-            <td colspan="6" class="px-4 py-8 text-center text-gray-400">尚無審計資料</td>
+            <td colspan="6"><TermEmpty message="no audit entries match" /></td>
           </tr>
         </tbody>
       </table>
-    </div>
+    </TermBox>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
 import { listAuditLogs } from '../api/auditLogs'
+import { TermBox, TermButton, TermField, TermBadge, TermEmpty } from '../components/cli'
 
 const logs = ref([])
 const pageError = ref('')
-const filters = ref({
-  actor_username: '',
-  action: '',
-  resource_type: '',
-  status: '',
-  limit: 100,
-})
+const filters = ref({ actor_username: '', action: '', resource_type: '', status: '', limit: 100 })
 
 async function fetchLogs() {
   pageError.value = ''
@@ -95,13 +116,47 @@ async function fetchLogs() {
     })
     logs.value = data
   } catch (e) {
-    pageError.value = e.response?.data?.detail || '載入審計日誌失敗'
+    pageError.value = e.response?.data?.detail || 'failed to load audit log'
   }
 }
-
 onMounted(fetchLogs)
-
-function formatDate(value) {
-  return new Date(value).toLocaleString('zh-TW')
-}
+function formatDate(v) { return new Date(v).toLocaleString('en-GB') }
 </script>
+
+<style scoped>
+.page { display: flex; flex-direction: column; gap: var(--gap-4); padding-bottom: var(--gap-8); }
+.page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--gap-3); flex-wrap: wrap; }
+.page-head__eyebrow { font-size: var(--t-2xs); letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--c-fg-3); }
+.page-head__title { font-size: var(--t-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin: 4px 0 2px; }
+.page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }
+
+.feedback { font-size: var(--t-xs); padding: var(--gap-2) var(--gap-3); border: var(--border-w) solid; }
+.feedback.is-err { color: var(--c-danger); border-color: var(--c-danger); background: var(--c-danger-soft); }
+
+.filters { display: grid; grid-template-columns: 1fr 1fr 1fr 0.8fr 0.6fr auto; gap: var(--gap-3); align-items: end; }
+.filters__cta { padding-bottom: 1px; }
+@media (max-width: 1100px) { .filters { grid-template-columns: 1fr 1fr 1fr; } }
+@media (max-width: 700px)  { .filters { grid-template-columns: 1fr 1fr; } }
+
+.cell-strong { color: var(--c-fg-1); font-weight: 500; }
+.cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }
+.cell-detail { color: var(--c-fg-2); font-size: var(--t-xs); white-space: pre-wrap; }
+.action-code {
+  font-family: var(--font-mono);
+  background: var(--c-bg);
+  border: var(--border-w) solid var(--c-border);
+  padding: 1px 6px;
+  font-size: var(--t-2xs);
+  color: var(--c-accent);
+}
+.meta-block {
+  margin: var(--gap-2) 0 0;
+  background: var(--c-bg);
+  border: var(--border-w) solid var(--c-border);
+  padding: var(--gap-2);
+  font-size: var(--t-2xs);
+  color: var(--c-fg-2);
+  max-height: 160px;
+  overflow: auto;
+}
+</style>

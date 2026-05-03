@@ -1,0 +1,5 @@
+# node_modules IS intentionally NOT ignored — vendored deps must ride
+# into the image. See Dockerfile preamble for the rationale.
+*.log
+.DS_Store
+.git

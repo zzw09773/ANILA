@@ -1,0 +1,235 @@
+/* =========================================================================
+   ANILA · CSP Terminal/CLI design tokens
+   - Two themes: dark (carbon) + light (paper-cream)
+   - Toggled via [data-theme="dark"|"light"] on <html>
+   - All view-level styling MUST consume these variables (no raw hex in views)
+   ========================================================================= */
+
+:root {
+  /* Type ---------------------------------------------------------------- */
+  --font-mono: "JetBrains Mono", "JetBrains Mono Variable", "IBM Plex Mono",
+    "SF Mono", "Cascadia Mono", "Roboto Mono", "Menlo", monospace;
+  --font-feat: "ss02" on, "ss19" on, "zero" on, "calt" off, "liga" off;
+
+  --t-2xs: 10px;
+  --t-xs:  11px;
+  --t-sm:  12px;
+  --t-base: 13px;
+  --t-md:  14px;
+  --t-lg:  16px;
+  --t-xl:  19px;
+  --t-2xl: 22px;
+  --t-3xl: 28px;
+  --t-4xl: 36px;
+
+  --lh-tight: 1.25;
+  --lh-base:  1.45;
+  --lh-loose: 1.65;
+
+  --tracking-caps: 0.16em;
+  --tracking-tight: -0.01em;
+
+  /* Density ------------------------------------------------------------- */
+  --row-h: 28px;
+  --input-h: 28px;
+  --tap-h: 32px;
+
+  --r-sharp: 0;
+  --r-soft: 2px;
+
+  --border-w: 1px;
+  --border-w-strong: 2px;
+
+  --gap-0: 0;
+  --gap-1: 4px;
+  --gap-2: 8px;
+  --gap-3: 12px;
+  --gap-4: 16px;
+  --gap-5: 20px;
+  --gap-6: 24px;
+  --gap-8: 32px;
+  --gap-10: 40px;
+  --gap-12: 48px;
+
+  /* Layout -------------------------------------------------------------- */
+  --shell-sidebar: 240px;
+  --shell-statusbar-h: 24px;
+  --shell-topbar-h: 40px;
+
+  /* Motion -------------------------------------------------------------- */
+  --motion-fast: 80ms;
+  --motion: 140ms;
+  --easing: cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   DARK · "carbon" — the default. Modern dark IDE vibe, not phosphor neon.
+   ──────────────────────────────────────────────────────────────────────── */
+:root,
+[data-theme="dark"] {
+  /* Surfaces */
+  --c-bg:        #0a0d12;
+  --c-surface-1: #11151c;
+  --c-surface-2: #171c25;
+  --c-surface-3: #1d2330;
+  --c-overlay:   rgba(10, 13, 18, 0.72);
+
+  /* Strokes */
+  --c-border:        #1f2530;
+  --c-border-strong: #2c3442;
+  --c-border-accent: #2f4c3a;
+
+  /* Foreground */
+  --c-fg-1: #d8dee8;
+  --c-fg-2: #9aa4b6;
+  --c-fg-3: #66708a;
+  --c-fg-mute: #4a546a;
+
+  /* Accent — mint terminal green */
+  --c-accent:        #7fd99b;
+  --c-accent-strong: #9ee5b6;
+  --c-accent-soft:   rgba(127, 217, 155, 0.10);
+  --c-accent-fg:     #0a0d12;
+
+  /* Status */
+  --c-info:    #6cb6ff;
+  --c-info-soft: rgba(108, 182, 255, 0.10);
+  --c-warn:    #e0a458;
+  --c-warn-soft: rgba(224, 164, 88, 0.12);
+  --c-danger:  #ec6f7c;
+  --c-danger-soft: rgba(236, 111, 124, 0.12);
+  --c-ok:      #7fd99b;
+  --c-ok-soft: rgba(127, 217, 155, 0.10);
+
+  /* Type semantics */
+  --c-llm:       #6cb6ff;
+  --c-vlm:       #c79bff;
+  --c-embedding: #7fd99b;
+  --c-agent:     #e0a458;
+
+  /* Selection / focus */
+  --c-selection-bg: rgba(127, 217, 155, 0.22);
+  --c-focus-ring:   #7fd99b;
+  --c-row-hover:    #161b25;
+
+  /* Chart palette (terminal-aware) */
+  --chart-1: #7fd99b;
+  --chart-2: #6cb6ff;
+  --chart-3: #e0a458;
+  --chart-4: #c79bff;
+  --chart-5: #ec6f7c;
+  --chart-6: #4dd0c0;
+  --chart-grid: #1f2530;
+  --chart-axis: #66708a;
+
+  --scheme: dark;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   LIGHT · "paper" — warm cream, ink-on-paper. Reads like a tech manual.
+   ──────────────────────────────────────────────────────────────────────── */
+[data-theme="light"] {
+  /* Surfaces */
+  --c-bg:        #f4f0e6;
+  --c-surface-1: #faf6ea;
+  --c-surface-2: #ece6d4;
+  --c-surface-3: #ddd5be;
+  --c-overlay:   rgba(21, 23, 28, 0.40);
+
+  /* Strokes */
+  --c-border:        #d4ccb6;
+  --c-border-strong: #b1a78b;
+  --c-border-accent: #abc7b1;
+
+  /* Foreground */
+  --c-fg-1: #15171c;
+  --c-fg-2: #44495a;
+  --c-fg-3: #6d7587;
+  --c-fg-mute: #918a76;
+
+  /* Accent — deep ink green */
+  --c-accent:        #1f6b35;
+  --c-accent-strong: #154d25;
+  --c-accent-soft:   rgba(31, 107, 53, 0.08);
+  --c-accent-fg:     #faf6ea;
+
+  /* Status */
+  --c-info:    #1c5fa3;
+  --c-info-soft: rgba(28, 95, 163, 0.08);
+  --c-warn:    #a86417;
+  --c-warn-soft: rgba(168, 100, 23, 0.10);
+  --c-danger:  #ad2e2e;
+  --c-danger-soft: rgba(173, 46, 46, 0.10);
+  --c-ok:      #1f6b35;
+  --c-ok-soft: rgba(31, 107, 53, 0.08);
+
+  /* Type semantics */
+  --c-llm:       #1c5fa3;
+  --c-vlm:       #6f3aa8;
+  --c-embedding: #1f6b35;
+  --c-agent:     #a86417;
+
+  /* Selection / focus */
+  --c-selection-bg: rgba(31, 107, 53, 0.18);
+  --c-focus-ring:   #1f6b35;
+  --c-row-hover:    #ece6d4;
+
+  /* Chart palette */
+  --chart-1: #1f6b35;
+  --chart-2: #1c5fa3;
+  --chart-3: #a86417;
+  --chart-4: #6f3aa8;
+  --chart-5: #ad2e2e;
+  --chart-6: #2a8a87;
+  --chart-grid: #d4ccb6;
+  --chart-axis: #6d7587;
+
+  --scheme: light;
+}
+
+/* Respect OS preference until user has explicitly chosen ------------------ */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    /* re-emit light tokens at :root scope so they override the dark default */
+    --c-bg:        #f4f0e6;
+    --c-surface-1: #faf6ea;
+    --c-surface-2: #ece6d4;
+    --c-surface-3: #ddd5be;
+    --c-overlay:   rgba(21, 23, 28, 0.40);
+    --c-border:        #d4ccb6;
+    --c-border-strong: #b1a78b;
+    --c-border-accent: #abc7b1;
+    --c-fg-1: #15171c;
+    --c-fg-2: #44495a;
+    --c-fg-3: #6d7587;
+    --c-fg-mute: #918a76;
+    --c-accent:        #1f6b35;
+    --c-accent-strong: #154d25;
+    --c-accent-soft:   rgba(31, 107, 53, 0.08);
+    --c-accent-fg:     #faf6ea;
+    --c-info:    #1c5fa3;
+    --c-info-soft: rgba(28, 95, 163, 0.08);
+    --c-warn:    #a86417;
+    --c-warn-soft: rgba(168, 100, 23, 0.10);
+    --c-danger:  #ad2e2e;
+    --c-danger-soft: rgba(173, 46, 46, 0.10);
+    --c-ok:      #1f6b35;
+    --c-ok-soft: rgba(31, 107, 53, 0.08);
+    --c-llm:       #1c5fa3;
+    --c-vlm:       #6f3aa8;
+    --c-embedding: #1f6b35;
+    --c-agent:     #a86417;
+    --c-selection-bg: rgba(31, 107, 53, 0.18);
+    --c-focus-ring:   #1f6b35;
+    --c-row-hover:    #ece6d4;
+    --chart-1: #1f6b35;
+    --chart-2: #1c5fa3;
+    --chart-3: #a86417;
+    --chart-4: #6f3aa8;
+    --chart-5: #ad2e2e;
+    --chart-6: #2a8a87;
+    --chart-grid: #d4ccb6;
+    --chart-axis: #6d7587;
+    --scheme: light;
+  }
+}

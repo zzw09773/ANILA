@@ -57,6 +57,46 @@ class Agent(Base):
     approved_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
+    # Sprint 8 X / Phase A — bootstrap-then-provision flow.
+    # Admin issues a single-use ``bsk-`` token via
+    # ``POST /api/agents/{id}/issue-bootstrap``; agent then calls
+    # ``POST /api/agents/{id}/bootstrap`` to exchange it for a long-lived
+    # service token written to ``agent_credentials``. Atomic CAS on
+    # ``bootstrap_token_consumed_at`` is what stops a leaked bsk- token
+    # from being replayed.
+    bootstrap_token_hash = Column(String(64), nullable=True)
+    bootstrap_token_expires_at = Column(DateTime, nullable=True)
+    bootstrap_token_consumed_at = Column(DateTime, nullable=True)
+    bootstrap_token_issued_by = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Sprint 13 PR A3 — admin-editable per-agent runtime knobs that the
+    # agent process polls every 30 s (PR A4). Shape is open so admins
+    # can extend it without DB migrations; the agent-side parser
+    # tolerates unknown keys. Common shape:
+    #
+    #   {
+    #     "tool_permissions": {
+    #       "allow_list": ["*"],
+    #       "deny_list": ["exec_bash"],
+    #       "ask_tools": ["exec_python"],
+    #     },
+    #     "workspace": {
+    #       "max_bytes": 10485760,
+    #       "allow_network": false,
+    #       "allowed_mounts": ["/data/agent-foo"]
+    #     },
+    #     "guardrails": {
+    #       "input": [{"kind": "regex_block", "pattern": "sk-\\w+"}],
+    #       "output": [{"kind": "max_length", "max_chars": 4096}]
+    #     }
+    #   }
+    #
+    # NULL means "agent uses its hard-coded defaults"; an explicit
+    # ``{}`` means "admin set empty" (e.g. clear all guardrails).
+    runtime_config = Column(JSONValue, nullable=True)
+
     owner = relationship("User", foreign_keys=[owner_user_id], backref="owned_agents")
     approver = relationship("User", foreign_keys=[approved_by])
     base_model = relationship("ModelRegistry", foreign_keys=[base_model_id])

@@ -6,10 +6,23 @@
 // takes `multipartRequest(path, formData)` instead because the browser must
 // set the multipart boundary itself.
 
+// Origin tag for this frontend. Migration 0023 added the
+// `conversations.origin` column so multiple SPAs (ANILA UI + ANILALM
+// + future bots) can co-exist on the same backend without bleeding
+// each other's chat history into each other's sidebars.
+export const ANILA_UI_ORIGIN = "anila-ui";
+
 // ── Conversations ───────────────────────────────────────────────────────────
 
-export function listConversations(authRequest) {
-  return authRequest("/api/conversations", { method: "GET" });
+/**
+ * List conversations the user owns, EXCLUDING ANILALM (the knowledge-base
+ * SPA) ones. NULL-origin rows (legacy / pre-migration) are kept so users
+ * don't lose their existing chat history. ``allOrigins=true`` is an
+ * escape hatch for an admin debug view; default is what the sidebar wants.
+ */
+export function listConversations(authRequest, { allOrigins = false } = {}) {
+  const qs = allOrigins ? "" : "?exclude_origin=anilalm";
+  return authRequest(`/api/conversations${qs}`, { method: "GET" });
 }
 
 export function createConversation(authRequest, { title, agentId } = {}) {
@@ -18,6 +31,7 @@ export function createConversation(authRequest, { title, agentId } = {}) {
     body: JSON.stringify({
       title: title || "新對話",
       agent_id: typeof agentId === "number" ? agentId : null,
+      origin: ANILA_UI_ORIGIN,
     }),
   });
 }

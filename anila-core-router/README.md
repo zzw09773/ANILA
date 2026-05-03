@@ -140,9 +140,14 @@ docker run -p 9000:9000 \
 | 變數 | 說明 | 預設 |
 |---|---|---|
 | `CSP_BASE_URL` | myCSPPlatform 基底 URL（容器內網址） | **必填** |
-| `MODEL` | 主 LLM 的模型名稱（必須已註冊在 CSP） | `gpt-4o-mini` |
+| `MODEL` | （已過時）— Sprint 8 X 之後 Router 從 CSP `/api/models/router-primary` runtime 拉，env var 會被 startup 覆蓋。保留為歷史相容 | `gpt-4o-mini` |
+| `CSP_BOOTSTRAP_TOKEN` | （Sprint 8 X / Phase C）首次啟動的 bootstrap token；entrypoint 會把它寫進 state file。後續輪替由 admin 在 CSP UI 觸發 | `""` |
+| `CSP_SERVICE_TOKEN` | Legacy fleet-shared shared-secret；state file 不存在時的 fallback。建議 cutover 完成後從 env 移除 | `""` |
+| `ANILA_ROUTER_STATE_DIR` | 持久化 service token 的目錄；至少需 `/var/lib/anila-router` 等可寫入的 volume mount | `/var/lib/anila-router` |
 
-> Router **不**需要自己的 API Key：它用 caller（UI / OpenAI SDK）的 Bearer API Key 回打 CSP data plane。這代表 caller 看得到的 agent 跟 Router 分派得出去的 agent 完全同步於該 API Key 的 allowed_models。
+> Router **不**需要自己的 user API Key：它用 caller（UI / OpenAI SDK）的 Bearer API Key 回打 CSP data plane。這代表 caller 看得到的 agent 跟 Router 分派得出去的 agent 完全同步於該 API Key 的 allowed_models。
+>
+> Service token（Router→CSP 內部端點如 `/api/models/router-primary`）走 3-priority resolution：state file → bootstrap → legacy env。詳見下面「程式結構」。
 
 ---
 
@@ -171,12 +176,34 @@ curl -N -X POST http://localhost:9000/v1/chat/completions \
 {
   "status": "ok",
   "cached_agents": 3,
-  "last_refresh_error": null
+  "last_refresh_error": null,
+  "last_refresh_at": "2026-04-30T11:22:33+00:00"
 }
 ```
 
 - `cached_agents` — RemoteAgentRegistry 目前快取了幾個 agent。
 - `last_refresh_error` — 最近一次從 CSP 撈 agent 清單的錯誤（成功為 `null`）。若長時間非 null，代表 `CSP_BASE_URL` 或 API Key 不對，或 CSP 沒起來。
+- `last_refresh_at` — RemoteAgentRegistry 最後成功 refresh 的 ISO timestamp（除錯排查用）。
+
+### `GET /v1/models`
+
+OpenAI 相容；列出 Router 對外暴露的 pseudo-model（`anila-router`）。讓 OpenWebUI / SDK 的 model picker 看得到 Router。
+
+### `GET /router/primary-status` *(internal / debug)*
+
+```json
+{
+  "name": "google/gemma4",
+  "fetched_at": 1714478400.123,
+  "error": null,
+  "ttl_seconds": 60,
+  "service_token_source": "state_file",
+  "csp_base_url": "http://csp:8000",
+  "state_file": "/var/lib/anila-router/service_token.json"
+}
+```
+
+`service_token_source` ∈ `state_file` / `bootstrap` / `legacy_env` / `none` — 讓 ops 一眼看出 Router 的 s2s token 是哪條路徑載入的。
 
 ---
 
@@ -184,14 +211,17 @@ curl -N -X POST http://localhost:9000/v1/chat/completions \
 
 ```
 anila-core-router/
-├── main.py        # 3 行：app = create_router_app()
+├── main.py        # ~280 行：app factory + 主路由模型 TTL refresh
+│                  #         + service-token state-file 管理
+│                  #         + /router/primary-status debug endpoint
 ├── Dockerfile     # Multi-stage；build context 需為 repo 根
 └── README.md      # 本檔
 
-# 實際實作在 anila-core：
+# 實際實作的核心在 anila-core：
 anila-core/src/anila_core/api/
 ├── router_server.py              # create_router_app() + 分派邏輯
-├── middleware/auth.py            # CSP_SERVICE_TOKEN 驗證
+├── middleware/auth.py            # CspServiceTokenMiddleware (legacy)
+│                                 # + RotatingServiceTokenMiddleware (Sprint 8 X)
 └── ...
 
 anila-core/src/anila_core/registry/
@@ -201,8 +231,13 @@ anila-core/src/anila_core/tools/
 └── dispatch_tool.py              # agent 分派（含 timeout / 5xx 降級）
 ```
 
-為什麼 `main.py` 只有 3 行？因為整個「router mode」其實就是一個 app factory：
-`create_router_app()` 位於 `anila_core/api/router_server.py`，負責掛 middleware、健康探針、以及 `/v1/chat/completions`。Runtime foundation 與部署入口刻意分離，之後 SDK 會進一步 generalize 成 `build_app(mode="router")`（見 `anila_plan.md` Wave E）。
+`main.py` 不是 3 行的薄殼 — Sprint 8 X 後額外負責三件事：
+
+1. **主路由模型 TTL refresh** — `_refresh_primary` 從 CSP `/api/models/router-primary` 拉目前指定的主 LLM 名稱，60s TTL；中間層 middleware 在沒有主路由模型時把 `/v1/chat/completions` 503，避免 silent fall-back 到錯誤 endpoint
+2. **Service token 3-priority 載入** — startup 時先試 `${ANILA_ROUTER_STATE_DIR}/service_token.json` → 試 `CSP_BOOTSTRAP_TOKEN` 自動 bootstrap → 退回 `CSP_SERVICE_TOKEN` legacy。startup log 會明示走了哪條
+3. **CSP 拒絕 service token 時 hot-reload state file 一次** — admin 在 CSP UI 對 router-primary credential 點 rotate 後，Router 會在下一次 refresh 撞到 401 → 自動重讀 state file → 用新 token 重試。零停機
+
+`build_app(mode="router")` 的更激進薄殼化路線見 `anila_plan.md` Wave E。
 
 ---
 
@@ -229,6 +264,17 @@ anila-core/src/anila_core/tools/
 ---
 
 ## Release Notes
+
+### 2026-05-03 — Sprint 13: typed-event pass-through + resume proxy
+
+對應 anila-core **v0.12.0**。Router 從「只認得自己 emit 的 anila.* 事件」升級成「會 forward agent 的 typed events」，並新增使用者可達的 resume endpoint。
+
+- **`_stream_agent_sse` 改寫成正規 SSE parser**：之前 `event:` header 被忽略，agent 用 template 格式（`event: anila.meta\ndata: {...}\n\n`）emit 的 meta 整個漏掉；Sprint 9-12 加的 typed events（`interrupt_requested` / `resumed` / `todos_updated` / `follow_ups` / `tool_call_started` / `tool_call_finished` / `usage_update` / `memory_saved` / `compact_triggered` / `agent_summary` / `task_notification`）也全部漏。新版 parser 認 header、把 `anila.*` 命名的 event 原封 forward、把白名單裡的 typed events rename 成 `anila.<name>` 統一輸出。
+- **Session-owner 持久化**：新 `session_owners` SQLite 表（與 `session_items` / `session_interrupts` 同檔），每次 dispatch 都寫 `(session_id, agent_id)`。涵蓋所有 dispatch 路徑（single-shot streaming / single-shot non-streaming / multi-turn 兩種 helper 的每一輪）。
+- **新 endpoint `POST /v1/sessions/{sid}/answer`**：使用者面 UI 只知道 Router URL；這個 endpoint 從 `session_owners` 查擁有該 session 的 agent，再透過 CSP 的新 `POST /v1/agents/{a}/sessions/{sid}/answer` proxy 把 `{interrupt_id, answer}` payload 轉到 agent 的 `/sessions/{id}/answer`。回應同樣是 SSE，先 emit Router 自己的 `anila.resumed`，再原封 pass-through agent 的 stream。Header 帶 `X-Anila-Owner-Agent` 讓 UI 顯示「Resume on <agent>」。
+- **`GET /v1/sessions/{sid}/state` 擴充**：新增 `owner_agent_id` 欄位。
+- **測試**：`tests/test_router_sse_passthrough.py`（16）、`tests/test_router_resume_proxy.py`（6）、`tests/test_session_owner.py`（5）、`tests/test_e2e_ask_user_resume.py`（1 — 完整 Router → CSP → agent 串流）。
+- 限制：multi-turn 路徑會 update owner 為「最後一個 dispatch 的 agent」。如果 user 在中間某個 agent 的 interrupt 拋出後立刻 resume，會 land 在最後那個 agent 上 —— 邊界 case，文件先記著。
 
 ### 2026-04-24 — AgenticRAG template 同步
 
@@ -260,4 +306,4 @@ anila-core/src/anila_core/tools/
 
 ---
 
-**Last updated**: 2026-04-24 · **Depends on**: `anila-core` (no `[rag]` extras) · **Talks to**: `myCSPPlatform` + 已註冊 agents
+**Last updated**: 2026-05-03 (Sprint 13 — typed-event pass-through + resume proxy) · **Depends on**: `anila-core` ≥ v0.12.0 (no `[rag]` extras) · **Talks to**: `myCSPPlatform` + 已註冊 agents

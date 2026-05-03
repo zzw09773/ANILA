@@ -9,6 +9,7 @@ actual dependency resolution once every class is registered.
 """
 
 from app.models.agent import Agent, ApiKeyAgentPermission, UserAgentPermission
+from app.models.agent_credential import AgentCredential
 from app.models.alert import Alert
 from app.models.api_key import ApiKey, ApiKeyModelPermission
 from app.models.attachment import Attachment
@@ -29,11 +30,13 @@ from app.models.ingestion import (
 from app.models.message import Message
 from app.models.model_registry import ModelRegistry
 from app.models.platform_link import PlatformLink
+from app.models.service_client import ServiceClient
 from app.models.token_usage import TokenUsage
 from app.models.user import User, UserModelPermission
 
 __all__ = [
     "Agent",
+    "AgentCredential",
     "Alert",
     "ApiKey",
     "ApiKeyAgentPermission",
@@ -53,6 +56,7 @@ __all__ = [
     "Message",
     "ModelRegistry",
     "PlatformLink",
+    "ServiceClient",
     "TokenUsage",
     "User",
     "UserAgentPermission",

@@ -18,15 +18,26 @@ import re
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional
+
+
+# Sprint 13 PR A2: callable threaded through multi-turn helpers so
+# every dispatch site can pin the (session_id, agent_id) mapping for
+# the resume endpoint. ``Optional`` because tests / non-persistent
+# session_factory paths skip persistence.
+PinOwnerFn = Optional[Callable[[str], Awaitable[None]]]
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..config import settings
+from ..memory.session import Session, new_session_id
+from ..memory.sqlite_session import SqliteSession
+from ..models.message import UserMessage
 from ..registry.remote_agent_manifest import RemoteAgentManifest, RemoteAgentRegistry
 from ..tools.dispatch_tool import dispatch_to_agent_response
+from .session_owner import get_session_owner, set_session_owner
 
 logger = logging.getLogger(__name__)
 
@@ -410,13 +421,55 @@ def _extract_bearer_api_key(request: Request) -> str:
     raise HTTPException(status_code=401, detail="Missing Bearer API key")
 
 
-def create_router_app() -> FastAPI:
-    """Build and return the ANILA Core Router FastAPI application."""
+def create_router_app(
+    session_db_path: str | None = None,
+    session_factory: Any = None,
+) -> FastAPI:
+    """Build and return the ANILA Core Router FastAPI application.
+
+    Sprint 10 PR 3: optional Session integration so the Router can
+    persist user-visible turns and (PR 4) handoff state across calls.
+
+    Args:
+        session_db_path: Override SQLite path for the default Session
+            adapter. Defaults to ``settings.session_db_path``. Ignored
+            when ``session_factory`` is provided.
+        session_factory: Optional ``(session_id) -> Session`` factory
+            for tests / Postgres / Redis adapters.
+    """
 
     registry = RemoteAgentRegistry(
         csp_base_url=settings.csp_base_url,
         ttl=60.0,
     )
+
+    resolved_db_path = session_db_path or settings.session_db_path
+
+    def _make_session(sid: str) -> Session:
+        if session_factory is not None:
+            return session_factory(sid)  # type: ignore[no-any-return]
+        return SqliteSession(resolved_db_path, sid)
+
+    async def _pin_owner(sid: str, agent_id: str) -> None:
+        """Sprint 13 PR A2: best-effort persistence of session→agent.
+
+        Failures are logged but never break the dispatch flow — the only
+        consequence of a missing mapping is that the user can't resume
+        a paused turn through Router (the agent's direct
+        ``/sessions/{id}/answer`` still works for callers who can reach
+        the agent process). When ``session_factory`` is supplied (tests)
+        the per-test in-memory DB is the authoritative one and we should
+        not write the production owners table.
+        """
+        if session_factory is not None:
+            return
+        try:
+            await set_session_owner(resolved_db_path, sid, agent_id)
+        except Exception as exc:  # pragma: no cover — defensive only
+            logger.warning(
+                "set_session_owner failed (sid=%s agent=%s): %s",
+                sid, agent_id, exc,
+            )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -457,6 +510,32 @@ def create_router_app() -> FastAPI:
         messages: list[dict] = body.get("messages", [])
         stream: bool = body.get("stream", False)
 
+        # Sprint 10 PR 3: Router-side Session. Accept either standard
+        # ``session_id`` (so OpenAI clients can pass it as an extension
+        # field) or our prefixed ``anila_session_id``. Auto-generate
+        # when missing — the response surfaces the chosen id in
+        # ``X-Anila-Session-Id`` so the caller can pin subsequent calls.
+        session_id = (
+            body.get("session_id")
+            or body.get("anila_session_id")
+            or new_session_id()
+        )
+        sess = _make_session(session_id)
+        # Persist the latest user message so cross-turn orchestration
+        # (PR 4 multi-turn handoff) and /v1/sessions/{id}/state have
+        # something to read. Idempotent within one call.
+        last_user_text = _flatten_last_user_query(messages)
+        if last_user_text:
+            await sess.add_items([UserMessage(content=last_user_text)])
+
+        # Sprint 10 PR 4: opt-in multi-turn orchestration. Value > 1 lets
+        # the Router dispatch agent A → see its result → dispatch agent B
+        # → … up to N iterations before returning a final answer. Default
+        # 1 preserves the single-shot single-dispatch behaviour the
+        # existing UI relies on. Streaming path keeps single-shot for now
+        # — multi-turn streaming is deferred to a future PR.
+        max_iterations = max(1, int(body.get("anila_multi_turn", 1)))
+
         await registry.ensure_fresh(caller_api_key)
         agents = registry.list_agents(caller_api_key)
 
@@ -496,6 +575,40 @@ def create_router_app() -> FastAPI:
         # typewriter delay); dispatch retains the existing agent-stream
         # behaviour once a DISPATCH directive is confirmed.
         if stream:
+            # Sprint 11 PR 4: when multi-turn is requested, stream the
+            # *final* answer only — intermediate dispatches produce
+            # trace events but no content chunks. Single-shot streaming
+            # (max_iterations == 1) keeps the existing real-time
+            # token-by-token path with all its DISPATCH parsing.
+            if max_iterations > 1:
+                # Sprint 13 PR A2: thread pin_owner so each multi-turn
+                # dispatch refreshes the session→agent mapping the
+                # resume endpoint reads.
+                async def _pin_owner_cb(agent_id: str) -> None:
+                    await _pin_owner(session_id, agent_id)
+
+                return StreamingResponse(
+                    _router_streaming_multi_turn(
+                        caller_api_key=caller_api_key,
+                        routing_messages=routing_messages,
+                        user_messages=messages,
+                        registry=registry,
+                        base_trace=base_trace,
+                        started_at=started_at,
+                        session_id=session_id,
+                        max_iterations=max_iterations,
+                        pin_owner=_pin_owner_cb,
+                    ),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "X-Accel-Buffering": "no",
+                        "X-Anila-Session-Id": session_id,
+                    },
+                )
+            async def _pin_owner_cb_single(agent_id_inner: str) -> None:
+                await _pin_owner(session_id, agent_id_inner)
+
             return StreamingResponse(
                 _router_streaming(
                     caller_api_key=caller_api_key,
@@ -504,9 +617,16 @@ def create_router_app() -> FastAPI:
                     registry=registry,
                     base_trace=base_trace,
                     started_at=started_at,
+                    session_id=session_id,
+                    session=sess,
+                    pin_owner=_pin_owner_cb_single,
                 ),
                 media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                    "X-Anila-Session-Id": session_id,
+                },
             )
 
         # Non-streaming LLM routing call (always — dispatch decision requires
@@ -529,7 +649,7 @@ def create_router_app() -> FastAPI:
                 None,
                 latency_ms=int((time.time() - started_at) * 1000),
             )
-            return _respond(fallback_content, anila_meta, stream)
+            return _respond(fallback_content, anila_meta, stream, session_id=session_id)
 
         llm_text = llm_response["content"]
         dispatch = _parse_dispatch(llm_text)
@@ -559,7 +679,7 @@ def create_router_app() -> FastAPI:
             )
             if llm_response.get("reasoning"):
                 anila_meta["reasoning"] = llm_response["reasoning"]
-            return _respond(_normalize_clarify_bullets(llm_text), anila_meta, stream)
+            return _respond(_normalize_clarify_bullets(llm_text), anila_meta, stream, session_id=session_id)
 
         agent_id, query, dispatch_start, _dispatch_end = dispatch
         # Anything the model wrote before the DISPATCH line is router-side
@@ -601,7 +721,7 @@ def create_router_app() -> FastAPI:
                 "但該 agent 尚未於 CSP 註冊。請聯絡管理員在 CSP 後台加入此 agent，"
                 "或改問其他已註冊 agent 能處理的問題。）"
             )
-            return _respond(fallback, anila_meta, stream)
+            return _respond(fallback, anila_meta, stream, session_id=session_id)
 
         logger.info("Router: dispatching to agent '%s' (stream=%s)", agent_id, stream)
         base_trace.append(
@@ -611,6 +731,11 @@ def create_router_app() -> FastAPI:
                 f"dispatch_to_agent('{agent_id}')",
             )
         )
+
+        # Sprint 13 PR A2: pin the owning agent so a future
+        # ``POST /v1/sessions/{session_id}/answer`` can be routed back
+        # to the same agent without the caller needing to remember it.
+        await _pin_owner(session_id, agent_id)
 
         # Streaming dispatch path: forward agent SSE chunks in real time.
         if stream:
@@ -631,7 +756,9 @@ def create_router_app() -> FastAPI:
                 had_error = False
                 aggregated = ""
 
-                async for event in _stream_agent_sse(agent_id, query, caller_api_key):
+                async for event in _stream_agent_sse(
+                    agent_id, query, caller_api_key, session_id=session_id
+                ):
                     kind = event.get("type")
                     if kind == "content":
                         piece = event["content"]
@@ -639,6 +766,27 @@ def create_router_app() -> FastAPI:
                         yield _make_chunk(piece, "anila-router")
                     elif kind == "meta":
                         downstream_meta = event["anila_meta"]
+                    elif kind == "anila_event":
+                        # Sprint 13 PR A1: re-emit the agent's named SSE
+                        # event verbatim. ``anila.meta`` doubles as the
+                        # downstream meta source so we don't have to
+                        # synthesise a second envelope at the end of the
+                        # stream — keep the agent-emitted payload as
+                        # ``downstream_meta`` for the merge step too.
+                        ev_name = event["event"]
+                        ev_payload = event["payload"]
+                        if ev_name == "anila.meta" and isinstance(ev_payload, dict):
+                            downstream_meta = ev_payload
+                            # Don't re-emit yet — the final merged
+                            # ``anila.meta`` below will carry it with the
+                            # router's own trace prepended.
+                            continue
+                        if ev_name == "anila.trace":
+                            # Trace steps from the agent stream into the
+                            # caller's panel as they happen.
+                            yield _make_event(ev_name, ev_payload)
+                            continue
+                        yield _make_event(ev_name, ev_payload)
                     elif kind == "error":
                         had_error = True
                         friendly = (
@@ -681,12 +829,20 @@ def create_router_app() -> FastAPI:
             return StreamingResponse(
                 _event_stream(),
                 media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                    "X-Anila-Session-Id": session_id,
+                },
             )
 
         # Non-streaming dispatch path: aggregate via safe dispatch.
         agent_response = await _dispatch_safe(
-            agent_id, query, caller_api_key, stream=False
+            agent_id,
+            query,
+            caller_api_key,
+            stream=False,
+            session_id=session_id,
         )
         if agent_response["error"]:
             base_trace.append(
@@ -705,21 +861,81 @@ def create_router_app() -> FastAPI:
                     "POST /v1/chat/completions (經 CSP proxy)",
                 )
             )
+
+        # Sprint 10 PR 4: multi-turn loop. After the first dispatch, give
+        # the Router LLM a chance to inspect the agent's reply and either
+        # synthesise a final answer or DISPATCH another agent. Capped by
+        # max_iterations to bound latency and runaway loops.
+        last_agent_id = agent_id
+        last_manifest = manifest
+        if max_iterations > 1 and not agent_response["error"]:
+            async def _pin_owner_cb(agent_id_inner: str) -> None:
+                await _pin_owner(session_id, agent_id_inner)
+
+            (
+                agent_response,
+                last_agent_id,
+                last_manifest,
+                base_trace,
+                final_text,
+                router_reasoning,
+            ) = await _multi_turn_dispatch(
+                caller_api_key=caller_api_key,
+                routing_messages=routing_messages,
+                first_llm_text=llm_text,
+                first_agent_id=agent_id,
+                first_agent_response=agent_response,
+                first_manifest=manifest,
+                registry=registry,
+                base_trace=base_trace,
+                max_iterations=max_iterations,
+                started_at=started_at,
+                session_id=session_id,
+                router_reasoning=router_reasoning,
+                pin_owner=_pin_owner_cb,
+            )
+            if final_text is not None:
+                # Router LLM produced a final synthesis without further
+                # dispatch — return that text instead of the last
+                # agent's raw output.
+                anila_meta = _merge_anila_meta(
+                    base_trace,
+                    None,
+                    latency_ms=int((time.time() - started_at) * 1000),
+                    classified_override=bool(
+                        last_manifest.requires_encryption
+                        if last_manifest
+                        else False
+                    ),
+                )
+                if router_reasoning:
+                    anila_meta["reasoning"] = router_reasoning
+                return _respond(
+                    final_text,
+                    anila_meta,
+                    stream=False,
+                    session_id=session_id,
+                )
+
         anila_meta = _merge_anila_meta(
             base_trace,
             agent_response.get("anila_meta"),
-            agent_id=agent_id,
+            agent_id=last_agent_id,
             latency_ms=int((time.time() - started_at) * 1000),
-            classified_override=bool(manifest.requires_encryption),
+            classified_override=bool(
+                last_manifest.requires_encryption if last_manifest else False
+            ),
         )
         if router_reasoning:
             anila_meta["reasoning"] = router_reasoning
-        return _respond(agent_response["content"], anila_meta, stream=False)
+        return _respond(agent_response["content"], anila_meta, stream=False, session_id=session_id)
 
     def _respond(
         content: str,
         anila_meta: dict[str, Any],
         stream: bool,
+        *,
+        session_id: str = "",
     ) -> StreamingResponse | JSONResponse:
         """Shared response builder for the non-streaming-dispatch paths.
 
@@ -759,13 +975,215 @@ def create_router_app() -> FastAPI:
                 yield _make_chunk("", "anila-router", finish="stop")
                 yield "data: [DONE]\n\n"
 
+            headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+            if session_id:
+                headers["X-Anila-Session-Id"] = session_id
             return StreamingResponse(
                 _event_stream(),
                 media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                headers=headers,
             )
 
-        return JSONResponse(_make_full_response(content, "anila-router", anila_meta=anila_meta))
+        json_headers = (
+            {"X-Anila-Session-Id": session_id} if session_id else None
+        )
+        return JSONResponse(
+            _make_full_response(content, "anila-router", anila_meta=anila_meta),
+            headers=json_headers,
+        )
+
+    @app.get("/v1/sessions/{session_id}/state")
+    async def session_state(session_id: str) -> JSONResponse:
+        """Sprint 10 PR 3 — Router-side session snapshot.
+
+        Returns conversation history (the user-visible turns the Router
+        has seen) plus any pending interrupts. PR 4 will extend this
+        with multi-turn handoff state.
+        """
+        sess = _make_session(session_id)
+        items = await sess.get_items()
+        pending = await sess.pending_interrupts()
+        owner_agent: str | None = None
+        if session_factory is None:
+            try:
+                owner_agent = await get_session_owner(
+                    resolved_db_path, session_id
+                )
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "get_session_owner failed sid=%s: %s", session_id, exc
+                )
+        return JSONResponse(
+            {
+                "session_id": session_id,
+                "messages": [m.model_dump(mode="json") for m in items],
+                "pending_interrupts": [
+                    {
+                        "id": p.id,
+                        "kind": p.kind,
+                        "payload": p.payload.get("data", {}),
+                        "created_at": p.created_at.isoformat(),
+                    }
+                    for p in pending
+                ],
+                # Sprint 13 PR A2: surface the agent that owns this
+                # session so the UI can show "Resume on <agent>" or
+                # decide whether to enable the resume affordance.
+                "owner_agent_id": owner_agent,
+            }
+        )
+
+    @app.post("/v1/sessions/{session_id}/answer", response_model=None)
+    async def submit_session_answer(
+        session_id: str, request: Request
+    ) -> StreamingResponse | JSONResponse:
+        """Sprint 13 PR A2 — Router-side resume proxy.
+
+        The user-facing UI only knows the Router URL. When an
+        ``ask_user`` / ``plan`` interrupt fires inside an agent, the
+        UI POSTs the answer here; the Router looks up the owning agent
+        from the ``session_owners`` table and forwards the resume
+        through CSP so audit / auth / per-agent token attribution all
+        flow as for normal dispatches.
+
+        Body shape mirrors the agent's ``/sessions/{id}/answer``::
+
+            { "interrupt_id": str,
+              "answer": str | dict,
+              "max_turns": int (optional),
+              "model": str (optional),
+              "system_prompt": str (optional) }
+
+        Streams the resumed turn back as SSE — same envelope as the
+        normal ``chat_completions`` path: an ``anila.resumed`` event
+        first, then deltas + named events from the agent.
+        """
+        caller_api_key = _extract_bearer_api_key(request)
+        body: dict = await request.json()
+
+        if "interrupt_id" not in body or "answer" not in body:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "POST /v1/sessions/{id}/answer requires both "
+                    "'interrupt_id' and 'answer' fields."
+                ),
+            )
+
+        # Resolve owning agent. session_factory paths (tests) skip the
+        # production owners table and 503 — they should drive resume
+        # against the agent server directly.
+        if session_factory is not None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Router answer proxy is unavailable when running "
+                    "with a custom session_factory (tests). Drive resume "
+                    "against the agent's /sessions/{id}/answer directly."
+                ),
+            )
+        agent_id = await get_session_owner(resolved_db_path, session_id)
+        if agent_id is None:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"No owning agent recorded for session '{session_id}'. "
+                    "Either the session was never dispatched to an agent, "
+                    "or the Router DB has been wiped. Start a new turn "
+                    "via POST /v1/chat/completions to (re)bind ownership."
+                ),
+            )
+        manifest = registry.get(caller_api_key, agent_id)
+        if manifest is None:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"Owning agent '{agent_id}' is no longer registered "
+                    "in CSP. The session is orphaned; start a new turn."
+                ),
+            )
+
+        # CSP exposes a generic resume proxy at
+        # /v1/agents/{agent_id}/sessions/{session_id}/answer (added
+        # in this PR). It applies the same identity-injection +
+        # service-token swap proxy_stream uses for chat completions.
+        url = (
+            f"{settings.csp_base_url.rstrip('/')}"
+            f"/v1/agents/{agent_id}/sessions/{session_id}/answer"
+        )
+        headers = {
+            "Authorization": f"Bearer {caller_api_key}",
+            "Content-Type": "application/json",
+        }
+
+        async def _stream_resume() -> AsyncIterator[str]:
+            # Emit our own anila.resumed echo first so the UI can clear
+            # its 'paused' affordance even before the agent replies.
+            yield _make_event(
+                "anila.resumed",
+                {"interrupt_id": body["interrupt_id"]},
+            )
+            try:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    async with client.stream(
+                        "POST", url, json=body, headers=headers
+                    ) as resp:
+                        if resp.status_code >= 400:
+                            err_body = await resp.aread()
+                            yield _make_event(
+                                "anila.trace",
+                                _make_trace_step(
+                                    "error",
+                                    f"resume {agent_id} 失敗",
+                                    f"HTTP {resp.status_code} "
+                                    f"{err_body[:200].decode('utf-8', errors='replace')}",
+                                    status="error",
+                                ),
+                            )
+                            yield _make_chunk(
+                                f"（resume 失敗：HTTP {resp.status_code}）",
+                                "anila-router",
+                            )
+                            yield _make_chunk(
+                                "", "anila-router", finish="stop"
+                            )
+                            yield "data: [DONE]\n\n"
+                            return
+                        # Pass-through the agent's SSE stream verbatim.
+                        # The agent already emits in the same envelope
+                        # we want to surface (event: anila.* + data:
+                        # OpenAI chunks), so no re-parsing is needed.
+                        async for raw_line in resp.aiter_lines():
+                            if raw_line == "":
+                                yield "\n"
+                            else:
+                                yield raw_line + "\n"
+            except httpx.RequestError as exc:
+                yield _make_event(
+                    "anila.trace",
+                    _make_trace_step(
+                        "error",
+                        f"resume {agent_id} 連線錯誤",
+                        f"{type(exc).__name__}: {exc}",
+                        status="error",
+                    ),
+                )
+                yield _make_chunk(
+                    "（resume 失敗：連線錯誤，請重試。）", "anila-router"
+                )
+                yield _make_chunk("", "anila-router", finish="stop")
+                yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            _stream_resume(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "X-Anila-Session-Id": session_id,
+                "X-Anila-Owner-Agent": agent_id,
+            },
+        )
 
     return app
 
@@ -779,6 +1197,403 @@ def _flatten_last_user_query(messages: list[dict[str, Any]]) -> str:
             return content[:120]
         return str(content)[:120]
     return ""
+
+
+async def _router_streaming_multi_turn(
+    *,
+    caller_api_key: str,
+    routing_messages: list[dict[str, Any]],
+    user_messages: list[dict[str, Any]],
+    registry: Any,
+    base_trace: list[dict[str, Any]],
+    started_at: float,
+    session_id: str,
+    max_iterations: int,
+    pin_owner: PinOwnerFn = None,
+) -> AsyncIterator[str]:
+    """Sprint 11 PR 4 — Streaming multi-turn Router.
+
+    The stream emits trace events at each step (router LLM calls,
+    dispatches, agent replies) so the UI can render progress, but
+    keeps content chunks for the *final* synthesised answer only.
+    Intermediate dispatches use non-stream calls internally — when
+    the loop converges on a final answer (or hits max_iterations),
+    that text is soft-chunked back to the caller.
+
+    Trade-off: users wait until the loop ends before seeing tokens,
+    but the trace gives ongoing visual feedback ("dispatching to A",
+    "received from A", "synthesising"). Future PR may upgrade to true
+    per-turn streaming once the multi-turn UX is well-understood.
+    """
+    # Pre-flush all the base_trace steps so the UI shows them
+    # immediately alongside the loading affordance.
+    for step in base_trace:
+        yield _make_event("anila.trace", step)
+
+    # First router LLM call.
+    llm_response = await _call_llm_non_stream(
+        caller_api_key, routing_messages
+    )
+    if llm_response["error"]:
+        err_step = _make_trace_step(
+            "direct", "LLM 無法回應", llm_response["error"], status="error",
+        )
+        yield _make_event("anila.trace", err_step)
+        fallback = (
+            "（LLM 暫時無法回應，請稍後再試。）"
+        )
+        async for chunk in _emit_soft_chunks(fallback):
+            yield chunk
+        anila_meta = _merge_anila_meta(
+            base_trace + [err_step], None,
+            latency_ms=int((time.time() - started_at) * 1000),
+        )
+        yield _make_event("anila.meta", {**anila_meta, "trace": []})
+        yield _make_chunk("", "anila-router", finish="stop")
+        yield "data: [DONE]\n\n"
+        return
+
+    llm_text = llm_response["content"]
+    router_reasoning = (llm_response.get("reasoning") or "").strip()
+    dispatch = _parse_dispatch(llm_text)
+
+    if not dispatch:
+        # Direct router answer — no dispatch needed even with multi-turn.
+        direct_step = _make_trace_step(
+            "direct", "Router 直接回答", "無需分派 agent",
+        )
+        yield _make_event("anila.trace", direct_step)
+        cleaned = _normalize_clarify_bullets(llm_text)
+        async for chunk in _emit_soft_chunks(cleaned):
+            yield chunk
+        anila_meta = _merge_anila_meta(
+            base_trace + [direct_step], None,
+            latency_ms=int((time.time() - started_at) * 1000),
+        )
+        if router_reasoning:
+            anila_meta["reasoning"] = router_reasoning
+        yield _make_event("anila.meta", {**anila_meta, "trace": []})
+        yield _make_chunk("", "anila-router", finish="stop")
+        yield "data: [DONE]\n\n"
+        return
+
+    # First dispatch.
+    agent_id, query, dispatch_start, _ = dispatch
+    pre_dispatch = llm_text[:dispatch_start].strip()
+    if pre_dispatch and pre_dispatch != router_reasoning:
+        router_reasoning = (
+            f"{router_reasoning}\n\n{pre_dispatch}"
+            if router_reasoning else pre_dispatch
+        )
+
+    manifest = registry.get(caller_api_key, agent_id)
+    if manifest is None:
+        miss_step = _make_trace_step(
+            "route-miss", "找不到 agent",
+            f"agent '{agent_id}' 未註冊", status="error",
+        )
+        yield _make_event("anila.trace", miss_step)
+        fallback = (
+            f"（Router 分派 '{agent_id}' 但該 agent 未註冊。）"
+        )
+        async for chunk in _emit_soft_chunks(fallback):
+            yield chunk
+        anila_meta = _merge_anila_meta(
+            base_trace + [miss_step], None,
+            latency_ms=int((time.time() - started_at) * 1000),
+        )
+        if router_reasoning:
+            anila_meta["reasoning"] = router_reasoning
+        yield _make_event("anila.meta", {**anila_meta, "trace": []})
+        yield _make_chunk("", "anila-router", finish="stop")
+        yield "data: [DONE]\n\n"
+        return
+
+    dispatch_step = _make_trace_step(
+        "dispatch", "選擇 agent",
+        f"dispatch_to_agent('{agent_id}')",
+    )
+    yield _make_event("anila.trace", dispatch_step)
+    base_trace.append(dispatch_step)
+
+    if pin_owner is not None:
+        await pin_owner(agent_id)
+    agent_response = await _dispatch_safe(
+        agent_id, query, caller_api_key,
+        stream=False, session_id=session_id,
+    )
+    if agent_response["error"]:
+        err_step = _make_trace_step(
+            "error", f"{agent_id} 發生錯誤",
+            agent_response["error"], status="error",
+        )
+    else:
+        err_step = _make_trace_step(
+            "call", f"呼叫 {agent_id}",
+            "POST /v1/chat/completions (經 CSP proxy)",
+        )
+    yield _make_event("anila.trace", err_step)
+    base_trace.append(err_step)
+
+    # Multi-turn loop reuses the non-streaming helper.
+    (
+        agent_response,
+        last_agent_id,
+        last_manifest,
+        base_trace,
+        final_text,
+        router_reasoning,
+    ) = await _multi_turn_dispatch(
+        caller_api_key=caller_api_key,
+        routing_messages=routing_messages,
+        first_llm_text=llm_text,
+        first_agent_id=agent_id,
+        first_agent_response=agent_response,
+        first_manifest=manifest,
+        registry=registry,
+        base_trace=base_trace,
+        max_iterations=max_iterations,
+        started_at=started_at,
+        session_id=session_id,
+        router_reasoning=router_reasoning,
+        pin_owner=pin_owner,
+    )
+
+    # Emit any new trace steps the loop appended (we already emitted
+    # the ones from before the loop). Skip the prefix we already sent.
+    already_emitted = 2 + len(
+        [s for s in base_trace[: 2 + 2] if True]
+    )
+    for step in base_trace[already_emitted:]:
+        yield _make_event("anila.trace", step)
+
+    # Stream the final content (router synthesis if any, else last agent).
+    final_content = final_text or agent_response["content"]
+    async for chunk in _emit_soft_chunks(final_content):
+        yield chunk
+
+    anila_meta = _merge_anila_meta(
+        base_trace,
+        agent_response.get("anila_meta") if final_text is None else None,
+        agent_id=last_agent_id,
+        latency_ms=int((time.time() - started_at) * 1000),
+        classified_override=bool(
+            last_manifest.requires_encryption if last_manifest else False
+        ),
+    )
+    if router_reasoning:
+        anila_meta["reasoning"] = router_reasoning
+    yield _make_event("anila.meta", {**anila_meta, "trace": []})
+    yield _make_chunk("", "anila-router", finish="stop")
+    yield "data: [DONE]\n\n"
+
+
+async def _emit_soft_chunks(content: str) -> AsyncIterator[str]:
+    """Soft-chunk text into paragraph / sentence-aware SSE chunks.
+
+    Mirrors the chunking inside ``_respond``'s stream branch so the UX
+    feels like real streaming even though we have the full text.
+    """
+    buf: list[str] = []
+    chunk_chars = 0
+    max_chars = 48
+    for ch in content:
+        buf.append(ch)
+        chunk_chars += 1
+        boundary = ch in "\n。！？!?" or (
+            chunk_chars >= max_chars and ch in " 、,，。."
+        )
+        if boundary or chunk_chars >= max_chars * 2:
+            yield _make_chunk("".join(buf), "anila-router")
+            buf = []
+            chunk_chars = 0
+            await asyncio.sleep(0.012)
+    if buf:
+        yield _make_chunk("".join(buf), "anila-router")
+
+
+async def _multi_turn_dispatch(
+    *,
+    caller_api_key: str,
+    routing_messages: list[dict[str, Any]],
+    first_llm_text: str,
+    first_agent_id: str,
+    first_agent_response: dict[str, Any],
+    first_manifest: Any,
+    registry: Any,
+    base_trace: list[dict[str, Any]],
+    max_iterations: int,
+    started_at: float,
+    session_id: str,
+    router_reasoning: str,
+    pin_owner: PinOwnerFn = None,
+) -> tuple[
+    dict[str, Any],
+    str,
+    Any,
+    list[dict[str, Any]],
+    str | None,
+    str,
+]:
+    """Sprint 10 PR 4 — Router-side multi-turn dispatch loop.
+
+    After the first agent reply, give the Router LLM a chance to
+    inspect the result and either DISPATCH another agent or synthesise
+    a final answer. Returns:
+
+    - ``agent_response``: the most recent agent response (used when the
+      LLM didn't produce a final synthesis — caller falls back to it).
+    - ``last_agent_id`` / ``last_manifest``: who answered last (for
+      classified-encryption flag in :func:`_merge_anila_meta`).
+    - ``base_trace``: appended trace steps from each iteration.
+    - ``final_text``: when the Router LLM ended with a direct answer
+      (no DISPATCH), the synthesised text to return; otherwise None
+      (caller uses agent_response["content"]).
+    - ``router_reasoning``: accumulates pre-DISPATCH analysis across
+      iterations so the UI fold shows the full thinking trail.
+
+    Iteration is bounded by ``max_iterations`` to cap latency and
+    prevent runaway loops. ``max_iterations`` counts the *total* router
+    LLM calls, so passing 3 means: turn 1 dispatched (caller already
+    handled), turns 2 + 3 happen here.
+    """
+    agent_response = first_agent_response
+    last_agent_id = first_agent_id
+    last_manifest = first_manifest
+    last_llm_text = first_llm_text
+
+    # Conversation accumulates: each iteration appends the previous
+    # router-LLM directive + the dispatched agent's reply, then asks the
+    # LLM what to do next. The follow-up framing nudges the model to
+    # either synthesise or dispatch again.
+    convo = list(routing_messages)
+
+    for iteration in range(2, max_iterations + 1):
+        if agent_response["error"]:
+            # Don't continue on dispatch error — surface what we have.
+            break
+        convo = convo + [
+            {"role": "assistant", "content": last_llm_text},
+            {
+                "role": "user",
+                "content": (
+                    f"Agent '{last_agent_id}' responded:\n"
+                    f"{agent_response['content']}\n\n"
+                    "If the user's question is now fully answered, reply "
+                    "directly with a final synthesised answer. Otherwise, "
+                    "you may emit another DISPATCH:<agent_id>:<query> to "
+                    "consult a different specialist."
+                ),
+            },
+        ]
+        next_llm = await _call_llm_non_stream(caller_api_key, convo)
+        if next_llm["error"]:
+            base_trace.append(
+                _make_trace_step(
+                    "direct",
+                    f"Router 第 {iteration} 輪 LLM 失敗",
+                    next_llm["error"],
+                    status="error",
+                )
+            )
+            break
+
+        next_text = next_llm["content"]
+        next_dispatch = _parse_dispatch(next_text)
+        # Capture pre-DISPATCH / pre-synthesis analysis for the fold.
+        if next_dispatch:
+            pre = next_text[: next_dispatch[2]].strip()
+        else:
+            pre = ""
+        if pre and pre not in router_reasoning:
+            router_reasoning = (
+                f"{router_reasoning}\n\n[iteration {iteration}]\n{pre}"
+                if router_reasoning
+                else f"[iteration {iteration}]\n{pre}"
+            )
+        new_reasoning = (next_llm.get("reasoning") or "").strip()
+        if new_reasoning and new_reasoning not in router_reasoning:
+            router_reasoning = (
+                f"{router_reasoning}\n\n[iteration {iteration}]\n{new_reasoning}"
+                if router_reasoning
+                else f"[iteration {iteration}]\n{new_reasoning}"
+            )
+
+        if not next_dispatch:
+            base_trace.append(
+                _make_trace_step(
+                    "direct",
+                    f"Router 第 {iteration} 輪綜合答覆",
+                    "無需再分派 agent",
+                )
+            )
+            return (
+                agent_response,
+                last_agent_id,
+                last_manifest,
+                base_trace,
+                next_text,
+                router_reasoning,
+            )
+
+        next_agent_id, next_query, _, _ = next_dispatch
+        next_manifest = registry.get(caller_api_key, next_agent_id)
+        if next_manifest is None:
+            base_trace.append(
+                _make_trace_step(
+                    "route-miss",
+                    f"第 {iteration} 輪找不到 agent",
+                    f"agent '{next_agent_id}' 未註冊",
+                    status="error",
+                )
+            )
+            break
+
+        base_trace.append(
+            _make_trace_step(
+                "dispatch",
+                f"第 {iteration} 輪選擇 agent",
+                f"dispatch_to_agent('{next_agent_id}')",
+            )
+        )
+        if pin_owner is not None:
+            await pin_owner(next_agent_id)
+        agent_response = await _dispatch_safe(
+            next_agent_id,
+            next_query,
+            caller_api_key,
+            stream=False,
+            session_id=session_id,
+        )
+        if agent_response["error"]:
+            base_trace.append(
+                _make_trace_step(
+                    "error",
+                    f"{next_agent_id} 發生錯誤",
+                    agent_response["error"],
+                    status="error",
+                )
+            )
+        else:
+            base_trace.append(
+                _make_trace_step(
+                    "call",
+                    f"呼叫 {next_agent_id}",
+                    "POST /v1/chat/completions (經 CSP proxy)",
+                )
+            )
+        last_agent_id = next_agent_id
+        last_manifest = next_manifest
+        last_llm_text = next_text
+
+    return (
+        agent_response,
+        last_agent_id,
+        last_manifest,
+        base_trace,
+        None,
+        router_reasoning,
+    )
 
 
 async def _call_llm_non_stream(caller_api_key: str, messages: list[dict]) -> dict[str, Any]:
@@ -852,11 +1667,17 @@ async def _dispatch_safe(
     caller_api_key: str,
     *,
     stream: bool = False,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Call the dispatched agent through CSP; never raises.
 
     On failure returns ``{"content": <friendly msg>, "error": <str>, ...}`` so
     the Router can surface the outage as a trace step instead of a 500.
+
+    Sprint 10 PR 3: ``session_id`` is forwarded as the ANILA-extension
+    field ``anila_session_id`` so the target agent can attach the same
+    Session adapter (pause-resume + cross-turn context survives the
+    Router → agent boundary).
     """
     try:
         result = await dispatch_to_agent_response(
@@ -865,6 +1686,7 @@ async def _dispatch_safe(
             csp_base_url=settings.csp_base_url,
             csp_api_key=caller_api_key,
             stream=stream,
+            session_id=session_id,
         )
         result["error"] = None
         return result
@@ -984,27 +1806,133 @@ def _find_answer_split(buf: str) -> int:
     return -1
 
 
+# Sprint 13 PR A1: agent-side typed SSE events that the Router should
+# pass through to the caller as ``anila.<event>``. Anything not in this
+# set (and not already an ``anila.*`` named event) is treated as the
+# default ``message`` channel — i.e. an OpenAI chunk envelope.
+#
+# Source: ``anila_core.api.events.EventType`` (Sprint 9-12 additions).
+# We rename to the ``anila.<name>`` namespace so the user-facing stream
+# stays consistent with the existing ``anila.trace`` / ``anila.meta`` /
+# ``anila.reasoning`` events the Router already emits.
+_AGENT_PASSTHROUGH_EVENTS: frozenset[str] = frozenset({
+    "interrupt_requested",
+    "resumed",
+    "todos_updated",
+    "follow_ups",
+    "tool_call_started",
+    "tool_call_finished",
+    "usage_update",
+    "memory_saved",
+    "compact_triggered",
+    "agent_summary",
+    "task_notification",
+})
+
+
 async def _stream_agent_sse(
     agent_id: str,
     query: str,
     caller_api_key: str,
+    *,
+    session_id: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Open an SSE connection to the dispatched agent via CSP and yield parsed chunks.
+    """Open an SSE connection to the dispatched agent via CSP and yield parsed events.
 
-    Each yield is a dict: ``{"type": "content"|"meta"|"error"|"done", ...}``. This
-    lets the Router forward content deltas as they arrive (true streaming) while
-    still capturing agent ``anila_meta`` for the final merged event.
+    Each yield is a dict with one of these shapes:
+
+    - ``{"type": "content", "content": str}`` — OpenAI chunk delta text
+    - ``{"type": "meta", "anila_meta": dict}`` — legacy ``anila_meta`` field
+      embedded in an OpenAI chunk envelope
+    - ``{"type": "anila_event", "event": str, "payload": dict}`` — an
+      ``anila.*`` named SSE event (``anila.trace``/``anila.meta``/
+      ``anila.reasoning``) emitted by the agent template, OR a Sprint
+      9-12 typed event (``interrupt_requested`` / ``todos_updated`` /
+      ``follow_ups`` / …) renamed to ``anila.<event>`` so the caller-
+      facing stream is namespaced consistently.
+    - ``{"type": "error", "error": str, "detail": str}``
+    - ``{"type": "done"}`` — terminal ``data: [DONE]``
+
+    Sprint 13 PR A1 rewrites this to be a proper SSE parser: it tracks
+    the ``event:`` header per message instead of treating every line
+    independently. The previous version silently dropped every named
+    SSE event, which is why ``anila.meta`` from agents that used the
+    template format never reached the Router (and why all Sprint 9-12
+    typed events were invisible end-to-end).
+
+    Sprint 10 PR 3: ``session_id`` is forwarded via the ANILA-extension
+    field ``anila_session_id`` so the dispatched agent attaches the
+    same Session adapter (cross-turn context survives the boundary).
     """
-    payload = {
+    payload: dict[str, Any] = {
         "model": agent_id,
         "messages": [{"role": "user", "content": query}],
         "stream": True,
     }
+    if session_id:
+        payload["anila_session_id"] = session_id
     headers = {
         "Authorization": f"Bearer {caller_api_key}",
         "Content-Type": "application/json",
     }
     url = f"{settings.csp_base_url.rstrip('/')}/v1/chat/completions"
+
+    def _classify_and_yield(
+        event_name: str | None, data_str: str
+    ) -> dict[str, Any] | None:
+        """Turn a single dispatched SSE message into a yield dict.
+
+        Returns None to skip (parse failures, empty deltas) or a sentinel
+        ``{"type": "done"}`` for ``[DONE]``. Caller is responsible for
+        terminating iteration on that sentinel.
+        """
+        if data_str == "[DONE]":
+            return {"type": "done"}
+
+        # Named anila.* event from the agent template (anila.trace,
+        # anila.meta, anila.reasoning). Pass-through unchanged.
+        if event_name and event_name.startswith("anila."):
+            try:
+                parsed = json.loads(data_str)
+            except json.JSONDecodeError:
+                return None
+            return {
+                "type": "anila_event",
+                "event": event_name,
+                "payload": parsed,
+            }
+
+        # Sprint 9-12 typed event from the agent's QueryEngine path
+        # (interrupt_requested, todos_updated, follow_ups, …). Rename
+        # to anila.<event> so the user-facing stream is namespaced.
+        if event_name in _AGENT_PASSTHROUGH_EVENTS:
+            try:
+                parsed = json.loads(data_str)
+            except json.JSONDecodeError:
+                return None
+            return {
+                "type": "anila_event",
+                "event": f"anila.{event_name}",
+                "payload": parsed,
+            }
+
+        # Default channel — OpenAI chunk envelope OR legacy ``anila_meta``
+        # key embedded in an OpenAI chunk.
+        try:
+            chunk = json.loads(data_str)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(chunk, dict) and chunk.get("anila_meta"):
+            return {"type": "meta", "anila_meta": chunk["anila_meta"]}
+        try:
+            delta = chunk["choices"][0].get("delta", {}) or {}
+        except (KeyError, IndexError, TypeError):
+            return None
+        content_piece = delta.get("content") or ""
+        if content_piece:
+            return {"type": "content", "content": content_piece}
+        return None
+
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             async with client.stream("POST", url, json=payload, headers=headers) as resp:
@@ -1016,28 +1944,62 @@ async def _stream_agent_sse(
                         "detail": body.decode("utf-8", errors="replace")[:300],
                     }
                     return
-                async for line in resp.aiter_lines():
-                    line = line.strip()
-                    if not line or not line.startswith("data: "):
+
+                # SSE message accumulator. Per spec
+                # (https://html.spec.whatwg.org/multipage/server-sent-events.html):
+                #   * blank line → dispatch buffered message
+                #   * lines starting with ":" → comment
+                #   * "field: value" → set/append field; trailing space
+                #     after the colon is optional and stripped
+                #   * multiple ``data:`` lines join with ``\n`` before
+                #     dispatch; ``event:`` resets to "" after dispatch
+                event_name: str | None = None
+                data_lines: list[str] = []
+
+                async for raw_line in resp.aiter_lines():
+                    if raw_line == "":
+                        if data_lines:
+                            data_str = "\n".join(data_lines)
+                            data_lines = []
+                            dispatched_event = event_name
+                            event_name = None
+                            result = _classify_and_yield(
+                                dispatched_event, data_str
+                            )
+                            if result is not None:
+                                yield result
+                                if result.get("type") == "done":
+                                    return
+                        else:
+                            event_name = None
                         continue
-                    data_str = line[6:]
-                    if data_str == "[DONE]":
-                        yield {"type": "done"}
-                        return
-                    try:
-                        chunk = json.loads(data_str)
-                    except json.JSONDecodeError:
+                    if raw_line.startswith(":"):
+                        # SSE comment / heartbeat — ignore
                         continue
-                    if isinstance(chunk, dict) and chunk.get("anila_meta"):
-                        yield {"type": "meta", "anila_meta": chunk["anila_meta"]}
+                    if raw_line.startswith("event:"):
+                        value = raw_line[6:]
+                        if value.startswith(" "):
+                            value = value[1:]
+                        event_name = value
                         continue
-                    try:
-                        delta = chunk["choices"][0].get("delta", {}) or {}
-                    except (KeyError, IndexError, TypeError):
+                    if raw_line.startswith("event"):
+                        # malformed (no colon) — ignore
                         continue
-                    content_piece = delta.get("content") or ""
-                    if content_piece:
-                        yield {"type": "content", "content": content_piece}
+                    if raw_line.startswith("data:"):
+                        value = raw_line[5:]
+                        if value.startswith(" "):
+                            value = value[1:]
+                        data_lines.append(value)
+                        continue
+                    # id: / retry: / unknown → ignore
+
+                # Stream ended without a trailing blank line — flush.
+                if data_lines:
+                    data_str = "\n".join(data_lines)
+                    result = _classify_and_yield(event_name, data_str)
+                    if result is not None:
+                        yield result
+
     except httpx.RequestError as exc:
         yield {
             "type": "error",
@@ -1060,6 +2022,10 @@ async def _router_streaming(
     registry: Any,
     base_trace: list[dict],
     started_at: float,
+    *,
+    session_id: str | None = None,
+    session: Session | None = None,
+    pin_owner: PinOwnerFn = None,
 ) -> AsyncIterator[str]:
     """Router's streaming endpoint (plan C).
 
@@ -1305,13 +2271,31 @@ async def _router_streaming(
         ),
     )
 
+    # Sprint 13 PR A2: pin so the resume endpoint can find this agent.
+    if pin_owner is not None:
+        await pin_owner(agent_id)
+
     downstream_meta: dict[str, Any] | None = None
-    async for event in _stream_agent_sse(agent_id, query, caller_api_key):
-        if event.get("type") == "content":
+    async for event in _stream_agent_sse(
+        agent_id, query, caller_api_key, session_id=session_id
+    ):
+        kind = event.get("type")
+        if kind == "content":
             yield _make_chunk(event["content"], "anila-router")
-        elif event.get("type") == "meta":
+        elif kind == "meta":
             downstream_meta = event["anila_meta"]
-        elif event.get("type") == "error":
+        elif kind == "anila_event":
+            # Sprint 13 PR A1: pass-through agent's named SSE events.
+            # ``anila.meta`` is captured for the final merge instead of
+            # being re-emitted; everything else (anila.trace, the new
+            # Sprint 9-12 typed events) flows straight through.
+            ev_name = event["event"]
+            ev_payload = event["payload"]
+            if ev_name == "anila.meta" and isinstance(ev_payload, dict):
+                downstream_meta = ev_payload
+                continue
+            yield _make_event(ev_name, ev_payload)
+        elif kind == "error":
             yield _make_event(
                 "anila.trace",
                 _make_trace_step(
@@ -1325,7 +2309,7 @@ async def _router_streaming(
                 f"（agent「{agent_id}」暫時不可用：{event.get('error')}）",
                 "anila-router",
             )
-        elif event.get("type") == "done":
+        elif kind == "done":
             break
 
     final_meta = _merge_anila_meta(

@@ -21,8 +21,24 @@ def create_conversation(
     user_id: int,
     title: str = "新對話",
     agent_id: Optional[int] = None,
+    origin: Optional[str] = None,
+    collection_id: Optional[int] = None,
 ) -> Conversation:
-    conv = Conversation(user_id=user_id, title=title, agent_id=agent_id)
+    """Create a conversation row.
+
+    `collection_id` is only meaningful for `origin='anilalm'` (knowledge-
+    base scoping). The API layer enforces the contract that anilalm
+    conversations MUST set collection_id; other origins MUST leave it
+    None. This function trusts whatever the caller passed and just
+    persists it.
+    """
+    conv = Conversation(
+        user_id=user_id,
+        title=title,
+        agent_id=agent_id,
+        origin=origin,
+        collection_id=collection_id,
+    )
     db.add(conv)
     db.commit()
     db.refresh(conv)
@@ -37,13 +53,46 @@ def get_conversation(db: Session, conv_id: int, user: User) -> Conversation:
     return conv
 
 
-def list_conversations(db: Session, user: User) -> list[Conversation]:
-    return (
-        db.query(Conversation)
-        .filter(Conversation.user_id == user.id)
-        .order_by(Conversation.updated_at.desc())
-        .all()
-    )
+def list_conversations(
+    db: Session,
+    user: User,
+    origin: Optional[str] = None,
+    exclude_origin: Optional[str] = None,
+    collection_id: Optional[int] = None,
+) -> list[Conversation]:
+    """List the caller's conversations, optionally filtered.
+
+    Origin filtering modes (mutually exclusive — endpoint validates this):
+      - ``origin='anilalm'``           → only LM-side conversations.
+      - ``exclude_origin='anilalm'``   → everything except LM-side; this
+        is what ANILA UI uses so its sidebar doesn't see retrieval Q&A.
+        ``NULL`` rows (pre-migration legacy) are kept in the result so
+        users don't lose their pre-existing chat history.
+      - both NULL                      → all the user's conversations.
+
+    Collection scoping (independent from origin filters):
+      - ``collection_id=N``            → only conversations scoped to that
+        knowledge base. Required by ANILALM so its sidebar shows just
+        the open knowledge base's chats.
+      - omitted                        → don't constrain on collection;
+        legacy / cross-origin lists work as before.
+
+    The collection filter does NOT include NULL-collection rows, even
+    though origin's exclude mode does. Reason: a NULL-collection row is
+    unambiguously "not scoped to any knowledge base"; pretending it
+    belongs to whichever collection the user is currently viewing would
+    re-introduce the cross-collection leak this filter exists to fix.
+    """
+    q = db.query(Conversation).filter(Conversation.user_id == user.id)
+    if origin is not None:
+        q = q.filter(Conversation.origin == origin)
+    elif exclude_origin is not None:
+        q = q.filter(
+            (Conversation.origin.is_(None)) | (Conversation.origin != exclude_origin)
+        )
+    if collection_id is not None:
+        q = q.filter(Conversation.collection_id == collection_id)
+    return q.order_by(Conversation.updated_at.desc()).all()
 
 
 def update_title(db: Session, conv_id: int, title: str, user: User) -> Conversation:
@@ -234,27 +283,10 @@ def classify_conversation(db: Session, conv_id: int, user: User) -> Conversation
     return conv
 
 
-def declassify_conversation(db: Session, conv_id: int, admin: User) -> Conversation:
-    """Remove classified status — admin only."""
-    if admin.role != "admin":
-        raise HTTPException(status_code=403, detail="需要管理員權限")
-    conv = db.query(Conversation).filter(Conversation.id == conv_id).first()
-    if not conv:
-        raise HTTPException(status_code=404, detail="找不到此對話")
-    conv.classified = False
-    conv.classified_at = None
-    conv.classified_by = None
-    db.add(AuditLog(
-        user_id=admin.id,
-        action="declassify_conversation",
-        resource_type="conversation",
-        resource_id=str(conv_id),
-        status="success",
-        details=f"Admin {admin.username} declassified conversation {conv_id}",
-    ))
-    db.commit()
-    db.refresh(conv)
-    return conv
+# Sprint 8 X / Phase K — declassify_conversation removed. Classified
+# is one-way per platform invariant. The previous implementation was a
+# backdoor that the README explicitly contradicted; the corresponding
+# HTTP route in app/api/conversations.py is also gone.
 
 
 def log_classified_access(db: Session, conv_id: int, user: User) -> None:

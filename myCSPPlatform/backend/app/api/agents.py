@@ -17,7 +17,11 @@ from app.database import get_db
 from app.models.agent import Agent, UserAgentPermission
 from app.models.user import User
 from app.services.audit_service import log_audit_event
-from app.services.auth_service import get_current_user, require_admin
+from app.services.auth_service import (
+    get_current_user,
+    require_admin,
+    verify_service_token,
+)
 
 
 def _enforce_endpoint_url(url: str) -> None:
@@ -84,9 +88,23 @@ class AgentResponse(BaseModel):
     health_status: str
     approval_status: str
     requires_encryption: bool = False
+    # Sprint 13 PR A3 — admin-editable runtime knobs (tool permissions,
+    # workspace caps, guardrails). NULL means "agent uses code defaults".
+    runtime_config: dict | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class AgentRuntimeConfigUpdate(BaseModel):
+    """PATCH payload for ``runtime_config``.
+
+    Setting ``runtime_config`` to ``None`` clears the override (agent
+    falls back to code defaults). An explicit empty dict ``{}`` means
+    "admin set empty" — different semantics from ``None``.
+    """
+
+    runtime_config: dict | None = None
 
 
 # Agents and Models track health status in different vocabularies —
@@ -124,6 +142,7 @@ def _serialize_agent(agent: Agent) -> dict:
         "health_status": normalized,
         "approval_status": agent.approval_status,
         "requires_encryption": bool(getattr(agent, "requires_encryption", False)),
+        "runtime_config": getattr(agent, "runtime_config", None),
         "created_at": agent.created_at,
     }
 
@@ -394,6 +413,89 @@ def approve_agent(
     return {"message": f"已核准 agent「{agent.name}」"}
 
 
+@router.get("/{agent_id}/runtime-config")
+def get_agent_runtime_config(
+    agent_id: int,
+    current_user: User = Depends(_require_developer_or_admin),
+    db: Session = Depends(get_db),
+):
+    """Sprint 13 PR A3 — read the agent's persisted runtime config.
+
+    Used by:
+      * the CSP admin UI ``AgentRuntimeConfigView.vue`` to populate the
+        permission / workspace / guardrails tabs;
+      * the agent process itself (Sprint 13 PR A4) which polls every
+        30 s for hot-reload — that path uses the agent's own service
+        token, not a developer/admin token, so future work may add a
+        token-class check; for now any developer/admin can read it.
+
+    Returns ``{"runtime_config": dict | None}``. NULL means the agent
+    falls back to its hard-coded defaults.
+    """
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent 不存在")
+    if current_user.role != "admin" and agent.owner_user_id != current_user.id:
+        raise HTTPException(
+            status_code=403, detail="只有 agent 擁有者或管理員可讀取此設定",
+        )
+    return {
+        "agent_id": agent.id,
+        "agent_name": agent.name,
+        "runtime_config": agent.runtime_config,
+    }
+
+
+@router.patch("/{agent_id}/runtime-config")
+def patch_agent_runtime_config(
+    agent_id: int,
+    payload: AgentRuntimeConfigUpdate,
+    request: Request,
+    current_user: User = Depends(_require_developer_or_admin),
+    db: Session = Depends(get_db),
+):
+    """Sprint 13 PR A3 — write per-agent runtime config.
+
+    PATCH semantics: the body's ``runtime_config`` value REPLACES the
+    stored value (no deep-merge). Pass ``None`` to clear the override
+    so the agent reverts to code defaults; pass ``{}`` to enforce
+    "explicit empty" semantics (cleared permission lists, no
+    guardrails). Audit logged.
+
+    Validation here is intentionally loose — the column accepts any
+    JSON shape because admins may set keys the deployed agent code
+    doesn't recognise yet (forward-compat). The agent-side parser
+    (PR A4) is responsible for tolerating unknown keys.
+    """
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent 不存在")
+    if current_user.role != "admin" and agent.owner_user_id != current_user.id:
+        raise HTTPException(
+            status_code=403, detail="只有 agent 擁有者或管理員可變更此設定",
+        )
+
+    agent.runtime_config = payload.runtime_config
+    db.commit()
+    db.refresh(agent)
+
+    log_audit_event(
+        db, actor=current_user, action="set_runtime_config",
+        resource_type="agent", resource_id=agent.id,
+        detail=(
+            f"更新 agent「{agent.name}」runtime_config "
+            f"({'cleared' if payload.runtime_config is None else 'set'})"
+        ),
+        ip_address=_client_ip(request), commit=True,
+    )
+
+    return {
+        "agent_id": agent.id,
+        "agent_name": agent.name,
+        "runtime_config": agent.runtime_config,
+    }
+
+
 @router.post("/{agent_id}/encryption")
 def set_agent_encryption(
     agent_id: int,
@@ -528,3 +630,387 @@ def delete_agent(
         ip_address=_client_ip(request), commit=True,
     )
     return {"message": f"已刪除 agent「{agent_name}」"}
+
+
+# ── Sprint 8 X / Phase A — service token bootstrap & credentials ─────────────
+#
+# Six new endpoints sit on top of the ``agent_credentials`` table:
+#
+#   POST /api/agents/{id}/issue-bootstrap        admin → bsk- token (one-shot)
+#   POST /api/agents/{id}/bootstrap              caller → exchange bsk- for csk-
+#   POST /api/agents/{id}/credentials/issue-static  admin (Phase F Tier 0)
+#   GET  /api/agents/{id}/credentials            admin → list active credentials
+#   POST /api/agents/{id}/credentials/{cid}/rotate  admin → rotate one credential
+#   DELETE /api/agents/{id}/credentials/{cid}    admin → revoke one credential
+#
+# Plus one self-service endpoint for Tier 1 polling agents:
+#
+#   GET /api/agents/{id}/credentials/me          agent (auth = service token)
+
+from app.models.agent_credential import AgentCredential
+from app.services import agent_credential_service
+from app.services.proxy_service import invalidate_agent_token_cache
+
+
+# ---- Schemas ---------------------------------------------------------------
+
+
+class IssueBootstrapRequest(BaseModel):
+    ttl_seconds: int = Field(
+        default=900,
+        ge=60,
+        le=3600,
+        description="bsk- token 有效時間（秒），預設 15 分鐘，最長 1 小時",
+    )
+
+
+class IssueBootstrapResponse(BaseModel):
+    bootstrap_token: str = Field(
+        ...,
+        description="bsk- 開頭的單次使用 token；只在此回應出現一次",
+    )
+    expires_at: datetime
+    agent_id: int
+    agent_name: str
+    endpoint_url: str = Field(
+        ..., description="bootstrap 流程要 verify 的 endpoint_url；agent 端必須帶相同值"
+    )
+
+
+class BootstrapExchangeRequest(BaseModel):
+    bootstrap_token: str = Field(..., description="admin 核發的 bsk- token")
+    endpoint_url: str = Field(
+        ...,
+        description="agent 自身 endpoint_url，必須與 CSP 紀錄相符（防 token 在錯誤 agent 上被使用）",
+    )
+    label: str | None = Field(
+        default=None,
+        max_length=100,
+        description="(可選) 多副本部署時用來標記這個 credential，例如 pod-1 / staging",
+    )
+
+
+class BootstrapExchangeResponse(BaseModel):
+    service_token: str = Field(
+        ..., description="csk- 開頭的長效 service token；agent 應寫進 state file"
+    )
+    credential_id: int
+    issued_at: datetime
+    label: str | None
+
+
+class IssueStaticRequest(BaseModel):
+    label: str | None = Field(default=None, max_length=100)
+
+
+class CredentialResponse(BaseModel):
+    id: int
+    agent_id: int
+    label: str | None
+    is_active: bool
+    is_legacy: bool
+    issued_at: datetime
+    rotated_at: datetime | None
+    revoked_at: datetime | None
+    has_previous_token: bool
+    previous_expires_at: datetime | None
+    client_cert_fingerprint: str | None
+
+
+class RotateCredentialRequest(BaseModel):
+    grace_seconds: int = Field(
+        default=24 * 3600,
+        ge=60,
+        le=7 * 24 * 3600,
+        description="輪替後，舊 token 仍可被驗證的 grace 視窗（秒）。預設 24h。",
+    )
+
+
+def _serialize_credential(cred: AgentCredential) -> CredentialResponse:
+    return CredentialResponse(
+        id=cred.id,
+        agent_id=cred.agent_id,
+        label=cred.label,
+        is_active=cred.is_active,
+        is_legacy=cred.is_legacy,
+        issued_at=cred.service_token_issued_at,
+        rotated_at=cred.service_token_rotated_at,
+        revoked_at=cred.revoked_at,
+        has_previous_token=bool(cred.service_token_previous_envelope),
+        previous_expires_at=cred.service_token_previous_expires_at,
+        client_cert_fingerprint=cred.client_cert_fingerprint,
+    )
+
+
+def _resolve_agent(db: Session, agent_id: int) -> Agent:
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent 不存在")
+    return agent
+
+
+def _resolve_credential(
+    db: Session, agent_id: int, credential_id: int
+) -> AgentCredential:
+    cred = (
+        db.query(AgentCredential)
+        .filter(
+            AgentCredential.id == credential_id,
+            AgentCredential.agent_id == agent_id,
+        )
+        .first()
+    )
+    if not cred:
+        raise HTTPException(status_code=404, detail="Credential 不存在")
+    return cred
+
+
+# ---- Endpoints -------------------------------------------------------------
+
+
+@router.post(
+    "/{agent_id}/issue-bootstrap", response_model=IssueBootstrapResponse
+)
+def issue_bootstrap(
+    agent_id: int,
+    payload: IssueBootstrapRequest,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Admin: mint a single-use bsk- token for an agent.
+
+    The plaintext is returned exactly once; CSP only stores its sha256
+    hash. Re-issuing while a previous bootstrap is still pending
+    invalidates the previous token.
+    """
+    from datetime import timedelta as _td
+
+    agent = _resolve_agent(db, agent_id)
+    plaintext = agent_credential_service.issue_bootstrap_token(
+        db,
+        agent=agent,
+        issuer=admin,
+        ttl=_td(seconds=payload.ttl_seconds),
+    )
+    db.commit()
+    db.refresh(agent)
+    return IssueBootstrapResponse(
+        bootstrap_token=plaintext,
+        expires_at=agent.bootstrap_token_expires_at,
+        agent_id=agent.id,
+        agent_name=agent.name,
+        endpoint_url=agent.endpoint_url,
+    )
+
+
+@router.post(
+    "/{agent_id}/bootstrap", response_model=BootstrapExchangeResponse
+)
+def bootstrap_exchange(
+    agent_id: int,
+    payload: BootstrapExchangeRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Public (token-gated): exchange a bsk- for a long-lived csk-.
+
+    Anyone holding a valid bsk- can call this — the bsk- itself is the
+    auth. ``endpoint_url`` must match the agent's registered URL to
+    stop a leaked token from being replayed against a different agent.
+    """
+    agent = _resolve_agent(db, agent_id)
+    try:
+        cred, plaintext = agent_credential_service.consume_bootstrap_token(
+            db,
+            agent=agent,
+            presented_token=payload.bootstrap_token,
+            presented_endpoint_url=payload.endpoint_url,
+            label=payload.label,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    db.commit()
+    db.refresh(cred)
+    invalidate_agent_token_cache(agent_id)
+    return BootstrapExchangeResponse(
+        service_token=plaintext,
+        credential_id=cred.id,
+        issued_at=cred.service_token_issued_at,
+        label=cred.label,
+    )
+
+
+@router.post(
+    "/{agent_id}/credentials/issue-static",
+    response_model=BootstrapExchangeResponse,
+)
+def issue_static_credential(
+    agent_id: int,
+    payload: IssueStaticRequest,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Phase F (Tier 0): admin direct-issues a credential without bootstrap.
+
+    For agents that cannot run the bootstrap CLI — third-party,
+    non-Python, or rapid cutover from the old fleet-shared env var.
+    No automatic rotation; admin must rotate periodically.
+    """
+    agent = _resolve_agent(db, agent_id)
+    cred, plaintext = agent_credential_service.issue_static_credential(
+        db,
+        agent=agent,
+        issuer=admin,
+        label=payload.label,
+    )
+    db.commit()
+    db.refresh(cred)
+    invalidate_agent_token_cache(agent_id)
+    return BootstrapExchangeResponse(
+        service_token=plaintext,
+        credential_id=cred.id,
+        issued_at=cred.service_token_issued_at,
+        label=cred.label,
+    )
+
+
+@router.get("/{agent_id}/credentials", response_model=list[CredentialResponse])
+def list_credentials(
+    agent_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Admin: list all credentials (active + revoked) for an agent."""
+    _resolve_agent(db, agent_id)
+    rows = (
+        db.query(AgentCredential)
+        .filter(AgentCredential.agent_id == agent_id)
+        .order_by(AgentCredential.service_token_issued_at.desc())
+        .all()
+    )
+    return [_serialize_credential(r) for r in rows]
+
+
+@router.post(
+    "/{agent_id}/credentials/{credential_id}/rotate",
+    response_model=BootstrapExchangeResponse,
+)
+def rotate_credential(
+    agent_id: int,
+    credential_id: int,
+    payload: RotateCredentialRequest,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Admin: rotate one credential. Returns the new plaintext (one-shot).
+
+    Old token stays valid for ``grace_seconds`` afterwards via
+    ``service_token_previous_*`` so streaming SSE doesn't drop.
+    """
+    from datetime import timedelta as _td
+
+    cred = _resolve_credential(db, agent_id, credential_id)
+    if not cred.is_active:
+        raise HTTPException(status_code=400, detail="無法輪替已撤銷的 credential")
+    plaintext = agent_credential_service.rotate_agent_credential(
+        db,
+        credential=cred,
+        actor=admin,
+        grace=_td(seconds=payload.grace_seconds),
+    )
+    db.commit()
+    db.refresh(cred)
+    invalidate_agent_token_cache(agent_id)
+    return BootstrapExchangeResponse(
+        service_token=plaintext,
+        credential_id=cred.id,
+        issued_at=cred.service_token_rotated_at or cred.service_token_issued_at,
+        label=cred.label,
+    )
+
+
+@router.delete("/{agent_id}/credentials/{credential_id}")
+def revoke_credential(
+    agent_id: int,
+    credential_id: int,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Admin: revoke a credential immediately (no grace window)."""
+    cred = _resolve_credential(db, agent_id, credential_id)
+    agent_credential_service.revoke_agent_credential(
+        db,
+        credential=cred,
+        actor=admin,
+        reason=f"manual revoke via /api/agents/{agent_id}/credentials/{credential_id}",
+    )
+    db.commit()
+    invalidate_agent_token_cache(agent_id)
+    return {"message": f"已撤銷 credential id={credential_id}"}
+
+
+@router.get("/{agent_id}/credentials/me", response_model=CredentialResponse)
+def get_my_credential(
+    agent_id: int,
+    db: Session = Depends(get_db),
+    identity: agent_credential_service.CallerIdentity | None = Depends(verify_service_token),
+):
+    """Phase F (Tier 1): agent self-introspection.
+
+    Authenticates with the agent's own service token; returns the
+    matching credential row's metadata. Used by polling-style agents
+    that don't run anila-core middleware to detect when their token
+    was rotated by admin (so they can fetch the new one out-of-band).
+    The plaintext token itself is NOT returned — agents must already
+    hold it.
+    """
+    if identity is None or identity.kind != "agent" or identity.agent_id != agent_id:
+        raise HTTPException(
+            status_code=403,
+            detail="此 endpoint 只能由 agent 自身的 service token 呼叫",
+        )
+    cred = _resolve_credential(db, agent_id, identity.credential_id)
+    return _serialize_credential(cred)
+
+
+@router.get("/me/runtime-config")
+def get_my_runtime_config(
+    db: Session = Depends(get_db),
+    identity: agent_credential_service.CallerIdentity | None = Depends(verify_service_token),
+):
+    """Sprint 13 PR A3 — agent self-fetch of its admin-set runtime knobs.
+
+    Authenticates with the agent's own ``X-CSP-Service-Token``; returns
+    its current ``runtime_config``. The agent process polls this every
+    30 s (Sprint 13 PR A4) so admin changes apply without a restart.
+
+    Returns ``{"agent_id": int, "agent_name": str,
+    "runtime_config": dict | None, "etag": str}``. The ETag is a stable
+    hash of the JSON so the agent can short-circuit re-applying when
+    the config hasn't changed since last poll.
+    """
+    if identity is None or identity.kind != "agent" or identity.agent_id is None:
+        raise HTTPException(
+            status_code=403,
+            detail="此 endpoint 只能由 agent 自身的 service token 呼叫",
+        )
+    agent = db.query(Agent).filter(Agent.id == identity.agent_id).first()
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent 不存在")
+
+    import hashlib
+    import json as _json
+    cfg = agent.runtime_config
+    serialized = _json.dumps(cfg, sort_keys=True, separators=(",", ":"))
+    etag = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
+
+    return {
+        "agent_id": agent.id,
+        "agent_name": agent.name,
+        "runtime_config": cfg,
+        "etag": etag,
+    }

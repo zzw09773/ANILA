@@ -1,136 +1,124 @@
 <template>
-  <div class="kc-root">
-    <header class="page-header">
-      <h1>📚 Knowledge Collections</h1>
-      <p class="subtitle">
-        Sprint 4：collection 是 first-class 資源，與 agent 解耦。
-        agent backend 寫 <code>RAG_COLLECTION_ID</code> 指過來就能用。
-      </p>
+  <div class="page">
+    <header class="page-head">
+      <div>
+        <p class="page-head__eyebrow">developer · rag</p>
+        <h1 class="page-head__title">collections</h1>
+        <p class="page-head__sub">
+          first-class rag store · agent backend mounts via <code>RAG_COLLECTION_ID=&lt;id&gt;</code>
+        </p>
+      </div>
+      <!-- Sprint 8 X / chunking-preview Phase 3 — preview-then-pick
+           is the canonical create flow. Users upload a representative
+           doc, compare every strategy's chunks side-by-side, then
+           pick. The old "instant dropdown" form is reachable via the
+           wizard's "skip preview" link for power users who already
+           know which strategy they want. -->
+      <router-link :to="{ name: 'ChunkingPreview' }" custom v-slot="{ navigate }">
+        <TermButton variant="primary" label="+ new collection" @click="navigate" />
+      </router-link>
     </header>
 
-    <!-- Top toolbar (Sprint 4: no agent picker) -->
-    <section class="picker-row">
-      <label class="field checkbox">
-        <input type="checkbox" v-model="includeArchived" />
-        <span>顯示 archived</span>
-      </label>
+    <TermBox title="filter" pad="sm">
+      <div class="filters">
+        <label class="filters__toggle">
+          <input type="checkbox" v-model="includeArchived" /> show archived
+        </label>
+        <label v-if="isAdmin" class="filters__toggle">
+          <input type="checkbox" v-model="showAllCollections" /> show others' collections (admin)
+        </label>
+      </div>
+    </TermBox>
 
-      <label v-if="isAdmin" class="field checkbox">
-        <input type="checkbox" v-model="showAllCollections" />
-        <span>顯示其他人的 collections（admin）</span>
-      </label>
+    <div v-if="error" class="feedback is-err">! {{ error }}</div>
+    <div v-else-if="loadingCollections" class="loading">loading collections…</div>
 
-      <button class="primary" @click="openCreateModal">
-        ＋ 新建 collection
-      </button>
-    </section>
-
-    <!-- State banners -->
-    <div v-if="error" class="banner error">{{ error }}</div>
-    <div v-else-if="loadingCollections" class="banner muted">載入中…</div>
-    <div v-else-if="collections.length === 0" class="banner muted">
-      還沒有 collection — 點右上「＋ 新建 collection」建立第一個。
+    <div v-if="collections.length === 0 && !loadingCollections && !error" class="term-box" style="padding: var(--gap-6);">
+      <TermEmpty message="no collections yet · click [new collection] to create one" />
     </div>
 
-    <!-- Collection cards -->
-    <section v-if="collections.length > 0" class="cards">
-      <article v-for="c in collections" :key="c.id" class="card">
-        <header class="card-head">
-          <h2>📁 {{ c.name }}</h2>
-          <span class="badge" :class="c.status">{{ c.status }}</span>
+    <div v-if="collections.length > 0" class="grid">
+      <article v-for="c in collections" :key="c.id" class="cc">
+        <header class="cc__head">
+          <div class="cc__title">
+            <span class="cc__name">{{ c.name }}</span>
+            <TermBadge :variant="c.status === 'active' ? 'ok' : ''">{{ c.status }}</TermBadge>
+          </div>
+          <div class="cc__id tnum">id #{{ c.id }}</div>
         </header>
-        <p v-if="c.description" class="desc">{{ c.description }}</p>
-        <dl class="stats">
-          <div><dt>Documents</dt><dd>{{ c.document_count.toLocaleString() }}</dd></div>
-          <div><dt>Chunks</dt><dd>{{ c.chunk_count.toLocaleString() }}</dd></div>
-          <div><dt>Bytes</dt><dd>{{ humanBytes(c.bytes_stored) }}</dd></div>
-          <div><dt>Strategy</dt><dd>{{ c.chunking_config.strategy }}</dd></div>
-          <div><dt>Embedding</dt><dd>{{ c.embedding_model }} · {{ c.embedding_dim }}-d</dd></div>
-          <div><dt>Owner</dt><dd>user #{{ c.created_by }}</dd></div>
+        <p v-if="c.description" class="cc__desc">{{ c.description }}</p>
+
+        <dl class="cc__stats">
+          <div><dt>documents</dt><dd class="tnum">{{ c.document_count.toLocaleString() }}</dd></div>
+          <div><dt>chunks</dt><dd class="tnum">{{ c.chunk_count.toLocaleString() }}</dd></div>
+          <div><dt>bytes</dt><dd class="tnum">{{ humanBytes(c.bytes_stored) }}</dd></div>
+          <div><dt>strategy</dt><dd>{{ c.chunking_config.strategy }}</dd></div>
+          <div><dt>embedding</dt><dd>{{ c.embedding_model }} · {{ c.embedding_dim }}-d</dd></div>
+          <div><dt>owner</dt><dd>user #{{ c.created_by }}</dd></div>
         </dl>
-        <p class="dsn-hint">
-          <strong>agent backend 設定：</strong>
+
+        <div class="cc__dsn">
+          <span class="cell-meta">agent backend env</span>
           <code>RAG_COLLECTION_ID={{ c.id }}</code>
-        </p>
-        <footer class="card-actions">
-          <router-link :to="{ name: 'CollectionDetail', params: { id: c.id } }" class="link">
-            🔍 Inspector
-          </router-link>
-          <router-link :to="{ name: 'Evaluator', params: { id: c.id } }" class="link">
-            🧪 Evaluator
-          </router-link>
-          <button
-            v-if="c.status === 'active'"
-            class="ghost"
-            @click="archiveCollection(c)"
-            title="標記為 archived（不再列出）"
-          >
-            Archive
-          </button>
-          <button v-else class="ghost" @click="restoreCollection(c)">Restore</button>
-          <button class="danger" @click="confirmDelete(c)">刪除</button>
+        </div>
+
+        <footer class="cc__foot">
+          <router-link :to="{ name: 'CollectionDetail', params: { id: c.id } }" class="term-action">→ inspector</router-link>
+          <span class="cc__sep">·</span>
+          <router-link :to="{ name: 'Evaluator', params: { id: c.id } }" class="term-action">→ evaluator</router-link>
+          <span class="cc__sep">·</span>
+          <button v-if="c.status === 'active'" class="term-action" @click="archiveCollection(c)">archive</button>
+          <button v-else class="term-action" @click="restoreCollection(c)">restore</button>
+          <span class="cc__sep">·</span>
+          <button class="term-action term-action--danger" @click="confirmDelete(c)">delete</button>
         </footer>
       </article>
-    </section>
-
-    <!-- Create modal -->
-    <div v-if="creating" class="modal-overlay" @click.self="creating = false">
-      <div class="modal">
-        <h2>新建 collection</h2>
-        <form @submit.prevent="submitCreate">
-          <label class="field">
-            <span>名稱 *</span>
-            <input v-model.trim="form.name" required maxlength="200" placeholder="例如：legal-regs" />
-          </label>
-          <label class="field">
-            <span>描述</span>
-            <textarea v-model.trim="form.description" rows="2" maxlength="2000" />
-          </label>
-          <label class="field">
-            <span>Chunking strategy</span>
-            <select v-model="form.strategy">
-              <option value="hierarchical">hierarchical（heading 樹 + ancestor context）</option>
-              <option value="markdown-aware">markdown-aware（heading + code-fence safe）</option>
-              <option value="fixed">fixed（token-budget windowing）</option>
-              <option value="pdf-page">pdf-page（PDF page 邊界，PDF only）</option>
-              <option value="cjk-sentence">cjk-sentence（中文句法 + token merge）</option>
-              <option value="semantic">semantic（embedding distance — 慢但精準）</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>{{ tokenLabel }}</span>
-            <input type="number" v-model.number="form.maxTokens" min="64" max="8192" />
-            <small class="muted">{{ tokenHint }}</small>
-          </label>
-          <div class="modal-actions">
-            <button type="button" class="ghost" @click="creating = false">取消</button>
-            <button type="submit" class="primary" :disabled="submitting">
-              {{ submitting ? '建立中…' : '建立' }}
-            </button>
-          </div>
-          <div v-if="formError" class="banner error inline">{{ formError }}</div>
-        </form>
-      </div>
     </div>
+
+    <TermModal :visible="creating" title="new · collection" width="520px" @close="creating = false">
+      <div class="form-grid">
+        <TermField label="name">
+          <input v-model.trim="form.name" class="term-input" maxlength="200" placeholder="legal-regs" />
+        </TermField>
+        <TermField label="description" optional>
+          <textarea v-model.trim="form.description" rows="2" class="term-textarea" maxlength="2000" />
+        </TermField>
+        <TermField label="chunking strategy">
+          <select v-model="form.strategy" class="term-select">
+            <option value="hierarchical">hierarchical · heading tree + ancestor context</option>
+            <option value="markdown-aware">markdown-aware · heading + code-fence safe</option>
+            <option value="fixed">fixed · token-budget windowing</option>
+            <option value="pdf-page">pdf-page · pdf only · page boundaries</option>
+            <option value="cjk-sentence">cjk-sentence · cjk syntax + token merge</option>
+            <option value="semantic">semantic · embedding distance · slow but precise</option>
+          </select>
+        </TermField>
+        <TermField :label="tokenLabel" :hint="tokenHint">
+          <input v-model.number="form.maxTokens" type="number" class="term-input" min="64" max="8192" />
+        </TermField>
+        <div v-if="formError" class="feedback is-err">! {{ formError }}</div>
+      </div>
+      <template #footer>
+        <TermButton variant="ghost" @click="creating = false" label="cancel" />
+        <TermButton variant="primary" :loading="submitting" :disabled="submitting" :label="submitting ? 'creating' : 'create'" @click="submitCreate" />
+      </template>
+    </TermModal>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
-import {
-  listCollections,
-  createCollection,
-  updateCollection,
-  deleteCollection,
-} from '../api/ingestionCollections'
+import { listCollections, createCollection, updateCollection, deleteCollection } from '../api/ingestionCollections'
+import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal } from '../components/cli'
 
 const authStore = useAuthStore()
+const route = useRoute()
 const isAdmin = computed(() => authStore.isAdmin)
 
 const includeArchived = ref(false)
 const showAllCollections = ref(false)
-
 const collections = ref([])
 const loadingCollections = ref(false)
 const error = ref('')
@@ -138,73 +126,76 @@ const error = ref('')
 const creating = ref(false)
 const submitting = ref(false)
 const formError = ref('')
-const form = ref({ name: '', description: '', strategy: 'hierarchical', maxTokens: 1024 })
+// maxTokens default 256 matches the post-Sprint-9-X HierarchicalChunker
+// leaf budget. Power users can crank it for legacy section-sized
+// chunking, but small leaves give vector recall the headroom the
+// parent-child design assumes.
+const form = ref({ name: '', description: '', strategy: 'hierarchical', maxTokens: 256 })
 
-// ── Strategy-specific param label ──────────────────────────────────────────
+const tokenLabel = computed(() => ({
+  fixed: 'size (tokens)',
+  'pdf-page': 'max page tokens',
+  'cjk-sentence': 'target tokens',
+  semantic: 'min segment tokens',
+})[form.value.strategy] || 'max leaf tokens')
 
-const tokenLabel = computed(() => {
-  if (form.value.strategy === 'fixed') return 'size (tokens)'
-  if (form.value.strategy === 'pdf-page') return 'max_page_tokens'
-  if (form.value.strategy === 'cjk-sentence') return 'target_tokens'
-  if (form.value.strategy === 'semantic') return 'min_segment_tokens'
-  return 'max_leaf_tokens'
+const tokenHint = computed(() => ({
+  fixed: 'token budget per chunk · overlap auto = size/8',
+  'pdf-page': 'oversized pages split inside via fixed strategy',
+  'cjk-sentence': 'merge sentences until target reached',
+  semantic: 'segment cap · boundary by embedding distance',
+})[form.value.strategy] || 'token cap per heading-tree leaf')
+
+onMounted(() => {
+  loadCollections()
+  // Sprint 8 X / chunking-preview Phase 3 — escape hatch from the
+  // wizard. Wizard step 1 has a "skip preview · quick create" link
+  // pointing at /knowledge-collections?quick=1; landing here with
+  // that query param auto-opens the legacy create modal so power
+  // users get to the strategy dropdown in 2 clicks total.
+  if (route.query.quick) {
+    openCreateModal()
+  }
 })
-const tokenHint = computed(() => {
-  if (form.value.strategy === 'fixed') return 'token budget per chunk; auto overlap = size/8'
-  if (form.value.strategy === 'pdf-page') return 'oversized pages split inside via fixed'
-  if (form.value.strategy === 'cjk-sentence') return '合併鄰近句子直到達標'
-  if (form.value.strategy === 'semantic') return 'segment 上限；boundary by embedding distance'
-  return 'heading 樹 leaf 的 token 上限'
-})
-
-// ── Lifecycle ───────────────────────────────────────────────────────────────
-
-onMounted(loadCollections)
 watch([includeArchived, showAllCollections], loadCollections)
-
-// ── Data ────────────────────────────────────────────────────────────────────
 
 async function loadCollections() {
   loadingCollections.value = true
   error.value = ''
   try {
     const params = { include_archived: includeArchived.value }
-    if (showAllCollections.value && isAdmin.value) {
-      params.owned_only = false
-    }
+    if (showAllCollections.value && isAdmin.value) params.owned_only = false
     const { data } = await listCollections(params)
     collections.value = data
   } catch (e) {
-    error.value = `載入 collections 失敗：${e.response?.data?.detail || e.message}`
-  } finally {
-    loadingCollections.value = false
-  }
+    error.value = `failed to load collections: ${e.response?.data?.detail || e.message}`
+  } finally { loadingCollections.value = false }
 }
-
-// ── Create ──────────────────────────────────────────────────────────────────
 
 function openCreateModal() {
   formError.value = ''
-  form.value = { name: '', description: '', strategy: 'hierarchical', maxTokens: 1024 }
+  // 256 matches HierarchicalChunker's post-Sprint-9-X default leaf budget.
+  form.value = { name: '', description: '', strategy: 'hierarchical', maxTokens: 256 }
   creating.value = true
 }
 
 async function submitCreate() {
   formError.value = ''
   submitting.value = true
-  // Build per-strategy params from the single tokens input.
   const s = form.value.strategy
   let params
-  if (s === 'fixed') {
-    params = { size: form.value.maxTokens, overlap: Math.floor(form.value.maxTokens / 8) }
-  } else if (s === 'pdf-page') {
-    params = { max_page_tokens: form.value.maxTokens }
-  } else if (s === 'cjk-sentence') {
-    params = { target_tokens: form.value.maxTokens, max_tokens: form.value.maxTokens * 2 }
-  } else if (s === 'semantic') {
-    params = { min_segment_tokens: form.value.maxTokens, breakpoint_percentile: 80 }
-  } else {
-    params = { max_leaf_tokens: form.value.maxTokens }
+  if (s === 'fixed') params = { size: form.value.maxTokens, overlap: Math.floor(form.value.maxTokens / 8) }
+  else if (s === 'pdf-page') params = { max_page_tokens: form.value.maxTokens }
+  else if (s === 'cjk-sentence') params = { target_tokens: form.value.maxTokens, max_tokens: form.value.maxTokens * 2 }
+  else if (s === 'semantic') params = { min_segment_tokens: form.value.maxTokens, breakpoint_percentile: 80 }
+  // hierarchical (Sprint 9 X / parent-child RAG):
+  //   * max_leaf_tokens — embedded-leaf budget
+  //   * max_parent_tokens — heading-section context (4× leaf)
+  //   * overlap_tokens — fallback overlap on oversized paragraphs
+  else params = {
+    max_leaf_tokens: form.value.maxTokens,
+    max_parent_tokens: form.value.maxTokens * 4,
+    overlap_tokens: Math.max(16, Math.floor(form.value.maxTokens / 16)),
   }
   try {
     await createCollection({
@@ -216,122 +207,120 @@ async function submitCreate() {
     await loadCollections()
   } catch (e) {
     formError.value = e.response?.data?.detail || e.message
-  } finally {
-    submitting.value = false
-  }
+  } finally { submitting.value = false }
 }
-
-// ── Archive / Restore / Delete ──────────────────────────────────────────────
 
 async function archiveCollection(c) {
-  try {
-    await updateCollection(c.id, { status: 'archived' })
-    await loadCollections()
-  } catch (e) {
-    error.value = `Archive 失敗：${e.response?.data?.detail || e.message}`
-  }
+  try { await updateCollection(c.id, { status: 'archived' }); await loadCollections() }
+  catch (e) { error.value = `archive failed: ${e.response?.data?.detail || e.message}` }
 }
-
 async function restoreCollection(c) {
-  try {
-    await updateCollection(c.id, { status: 'active' })
-    await loadCollections()
-  } catch (e) {
-    error.value = `Restore 失敗：${e.response?.data?.detail || e.message}`
-  }
+  try { await updateCollection(c.id, { status: 'active' }); await loadCollections() }
+  catch (e) { error.value = `restore failed: ${e.response?.data?.detail || e.message}` }
 }
-
 async function confirmDelete(c) {
-  if (!confirm(
-    `刪除 collection「${c.name}」會 CASCADE 刪除其下 ${c.document_count} 個 documents 與 ${c.chunk_count} 個 chunks。\n\n確定刪除？`,
-  )) return
-  try {
-    await deleteCollection(c.id)
-    await loadCollections()
-  } catch (e) {
-    error.value = `刪除失敗：${e.response?.data?.detail || e.message}`
-  }
+  if (!confirm(`delete '${c.name}'? CASCADE removes ${c.document_count} docs and ${c.chunk_count} chunks.`)) return
+  try { await deleteCollection(c.id); await loadCollections() }
+  catch (e) { error.value = `delete failed: ${e.response?.data?.detail || e.message}` }
 }
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
 
 function humanBytes(n) {
   if (!n) return '0'
   const units = ['B', 'KB', 'MB', 'GB']
-  let v = Number(n)
-  let u = 0
+  let v = Number(n), u = 0
   while (v >= 1024 && u < units.length - 1) { v /= 1024; u += 1 }
   return `${v.toFixed(v >= 10 || u === 0 ? 0 : 1)} ${units[u]}`
 }
 </script>
 
 <style scoped>
-.kc-root { padding: 1.25rem; max-width: 1200px; }
+.page { display: flex; flex-direction: column; gap: var(--gap-4); padding-bottom: var(--gap-8); }
+.page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--gap-3); flex-wrap: wrap; }
+.page-head__eyebrow { font-size: var(--t-2xs); letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--c-fg-3); }
+.page-head__title { font-size: var(--t-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin: 4px 0 2px; }
+.page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }
+.page-head__sub code { color: var(--c-accent); background: var(--c-accent-soft); padding: 0 4px; }
 
-.page-header h1 { margin: 0 0 0.25rem; font-size: 1.5rem; }
-.subtitle { margin: 0 0 1rem; color: #6b7280; font-size: 0.9rem; }
-.subtitle code { background: #f3f4f6; padding: 0.1rem 0.3rem; border-radius: 3px; }
+.cta-group { display: flex; align-items: center; gap: var(--gap-3); }
+.term-link { color: var(--c-accent); font-size: var(--t-2xs); text-decoration: none; font-family: var(--font-mono); }
+.term-link:hover { text-decoration: underline; }
 
-.picker-row {
-  display: flex; gap: 1.5rem; align-items: center;
-  margin-bottom: 1rem;
-  padding: 0.75rem 1rem; background: #f9fafb; border-radius: 6px;
+.filters { display: flex; gap: var(--gap-4); flex-wrap: wrap; }
+.filters__toggle { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-sm); color: var(--c-fg-2); cursor: pointer; }
+.filters__toggle input { accent-color: var(--c-accent); }
+
+.feedback { font-size: var(--t-xs); padding: var(--gap-2) var(--gap-3); border: var(--border-w) solid; }
+.feedback.is-err { color: var(--c-danger); border-color: var(--c-danger); background: var(--c-danger-soft); }
+.loading { padding: var(--gap-6); text-align: center; color: var(--c-fg-3); font-size: var(--t-sm); }
+
+.grid {
+  display: grid;
+  gap: var(--gap-3);
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+}
+
+.cc {
+  background: var(--c-surface-1);
+  border: var(--border-w) solid var(--c-border);
+  display: flex;
+  flex-direction: column;
+}
+.cc__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: var(--gap-3) var(--gap-4);
+  border-bottom: var(--border-w) solid var(--c-border);
+  background: var(--c-surface-2);
+}
+.cc__title { display: flex; align-items: center; gap: 8px; }
+.cc__name { color: var(--c-fg-1); font-weight: 600; font-size: var(--t-md); }
+.cc__id { color: var(--c-fg-3); font-size: var(--t-2xs); }
+.cc__desc {
+  margin: 0;
+  padding: var(--gap-2) var(--gap-4);
+  color: var(--c-fg-2);
+  font-size: var(--t-sm);
+  border-bottom: var(--border-w) dashed var(--c-border);
+}
+.cc__stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px var(--gap-3);
+  margin: 0;
+  padding: var(--gap-3) var(--gap-4);
+}
+.cc__stats > div { display: flex; flex-direction: column; }
+.cc__stats dt {
+  font-size: var(--t-2xs); color: var(--c-fg-3);
+  text-transform: uppercase; letter-spacing: var(--tracking-caps);
+}
+.cc__stats dd { margin: 0; color: var(--c-fg-1); font-size: var(--t-sm); }
+
+.cc__dsn {
+  margin: 0 var(--gap-4) var(--gap-3);
+  padding: var(--gap-2) var(--gap-3);
+  background: var(--c-bg);
+  border: var(--border-w) solid var(--c-border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--t-2xs);
+}
+.cc__dsn code { font-family: var(--font-mono); color: var(--c-accent); }
+
+.cc__foot {
+  padding: var(--gap-2) var(--gap-4);
+  border-top: var(--border-w) solid var(--c-border);
+  display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--t-xs);
+  background: var(--c-surface-2);
 }
-.field { display: flex; flex-direction: column; gap: 0.25rem; }
-.field > span { font-size: 0.85rem; color: #4b5563; }
-.field.checkbox {
-  flex-direction: row; align-items: center; gap: 0.5rem;
-  white-space: nowrap;
-}
-.field.checkbox > span { font-size: 0.9rem; color: #374151; }
-.field.checkbox input[type="checkbox"] {
-  width: 1rem; height: 1rem; min-width: 0; padding: 0; margin: 0;
-}
-.field select, .field input:not([type="checkbox"]), .field textarea {
-  padding: 0.4rem 0.6rem; border: 1px solid #d1d5db; border-radius: 4px;
-  min-width: 220px; font-size: 0.95rem;
-}
+.cc__sep { color: var(--c-border-strong); }
+.cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }
 
-button { padding: 0.5rem 0.9rem; border: 1px solid transparent; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
-button.primary { background: #2563eb; color: #fff; }
-button.primary:hover:not(:disabled) { background: #1d4ed8; }
-button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
-button.ghost { background: #f3f4f6; color: #374151; border-color: #d1d5db; }
-button.ghost:hover { background: #e5e7eb; }
-button.danger { background: #fff; color: #b91c1c; border-color: #fca5a5; }
-button.danger:hover { background: #fef2f2; }
-
-.banner { padding: 0.75rem 1rem; border-radius: 4px; margin-bottom: 1rem; font-size: 0.9rem; }
-.banner.muted { background: #f9fafb; color: #6b7280; }
-.banner.error { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
-.banner.inline { margin-top: 0.75rem; }
-
-.cards { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); }
-.card { background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem; }
-.card-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.5rem; }
-.card-head h2 { margin: 0; font-size: 1.05rem; }
-.desc { font-size: 0.85rem; color: #6b7280; margin: 0 0 0.75rem; line-height: 1.4; }
-.badge { font-size: 0.7rem; padding: 0.2rem 0.5rem; border-radius: 999px; text-transform: uppercase; }
-.badge.active { background: #d1fae5; color: #065f46; }
-.badge.archived { background: #e5e7eb; color: #374151; }
-.stats { display: grid; gap: 0.4rem 1rem; grid-template-columns: 1fr 1fr; margin: 0.5rem 0 0.5rem; }
-.stats > div { display: flex; flex-direction: column; }
-.stats dt { font-size: 0.7rem; color: #9ca3af; text-transform: uppercase; }
-.stats dd { margin: 0; font-size: 0.9rem; color: #111827; }
-.dsn-hint {
-  margin: 0.5rem 0 0.75rem; font-size: 0.8rem; color: #4b5563;
-  padding: 0.4rem 0.6rem; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 4px;
-}
-.dsn-hint code { background: rgba(0,0,0,0.04); padding: 0.05rem 0.3rem; border-radius: 3px; }
-.card-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
-.link { color: #2563eb; text-decoration: none; padding: 0.5rem 0.9rem; border-radius: 4px; border: 1px solid #bfdbfe; background: #eff6ff; font-size: 0.9rem; }
-.link:hover { background: #dbeafe; }
-
-.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
-.modal { background: #fff; padding: 1.5rem; border-radius: 6px; min-width: 420px; max-width: 90vw; }
-.modal h2 { margin: 0 0 1rem; font-size: 1.1rem; }
-.modal form { display: flex; flex-direction: column; gap: 0.85rem; }
-.modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.5rem; }
-.muted { color: #9ca3af; font-size: 0.8rem; }
+.form-grid { display: flex; flex-direction: column; gap: var(--gap-3); }
 </style>
