@@ -278,6 +278,18 @@ ruff check src/ tests/
 
 ## Release Notes
 
+**Note (2026-05-03)** — anila-core 在 monorepo 推到 **v0.12.0**（Sprint 9-13），新增了 ask_user / plan / tool_approval interrupt、todo board、follow-up 提示、per-tool ASK/DENY、workspace + sandboxed file/shell/patch 工具、tool guardrails、跟 admin 可改的 runtime_config 熱更新。
+
+AgenticRAG **沒有強制升級** —— 本模板自包，零 `anila-core` 內部依賴；想用上述新功能，需要在你 fork 出去的版本內：
+
+1. 把對應 anila-core API 引進來（例如 `from anila_core.runtime_config import RuntimeConfigPoller`）；
+2. 自己在 lifespan 起動 poller / 在工具實作裡 emit interrupt；
+3. 對應的 SSE 事件流會被 ANILA_UI 自動渲染（`InterruptCard` / `TodoChecklist` / `FollowUpChips` / `ToolExecutionWidget`）。
+
+CSP 的 admin runtime_config 編輯介面（`/developer/agents/{id}/runtime-config`）對任何已註冊 agent 都可用，但只有 agent 端有跑 `RuntimeConfigPoller` 才會吃到。詳細用法請看根 [`README.md`](../README.md) Sprint 13 區塊與 [`anila-core/CHANGELOG.md`](../anila-core/CHANGELOG.md) v0.12.0。
+
+---
+
 **v0.4.0 (2026-05-02)** — 8 sprint 一次推完
 - v0.1 framework 全 surface 落地：Action / Agent / Runner / Middleware (Trace/Cost/Guardrail/ShellHook/Retry/OutputTrimmer) / StateMachine + checkpoint / Memory primitive / Coordinator + worker spawn / BG_TASK runtime / Skill loader / MCP integration
 - `@tool` decorator + structured output via Pydantic + `Runner.stream()` async generator

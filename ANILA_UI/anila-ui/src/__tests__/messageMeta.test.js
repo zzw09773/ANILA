@@ -95,6 +95,59 @@ describe("buildPersistMeta - handoff_chain / citations / follow_ups", () => {
   });
 });
 
+// ----- Sprint 13 PR B1: typed event persistence -----
+
+describe("buildPersistMeta - Sprint 13 typed events", () => {
+  it("falls back to state.todos when final meta omits todos", () => {
+    const todos = [
+      { id: "t1", content: "Read", status: "in_progress" },
+      { id: "t2", content: "Write", status: "pending" },
+    ];
+    const result = buildPersistMeta({ trace_id: "t" }, { todos });
+    expect(result.todos).toEqual(todos);
+  });
+
+  it("falls back to state.toolCalls list", () => {
+    const toolCalls = [
+      {
+        tool_call_id: "tc1",
+        tool_name: "exec_python",
+        is_error: false,
+        output_preview: "42",
+      },
+    ];
+    const result = buildPersistMeta({ trace_id: "t" }, { toolCalls });
+    expect(result.tool_calls).toEqual(toolCalls);
+  });
+
+  it("falls back to state.spans tree", () => {
+    const spans = [{ id: "s1", name: "agent_run", parent_id: null }];
+    const result = buildPersistMeta({ trace_id: "t" }, { spans });
+    expect(result.spans).toEqual(spans);
+  });
+
+  it("persists the most recent interrupt payload", () => {
+    const interrupt = {
+      interrupt_id: "int-9",
+      kind: "ask_user",
+      payload: { question: "Pick", options: ["A", "B"] },
+    };
+    const result = buildPersistMeta({ trace_id: "t" }, { interrupt });
+    expect(result.interrupt).toEqual(interrupt);
+  });
+
+  it("prefers final meta values when both sources carry the field", () => {
+    const finalTodos = [{ id: "x", content: "from server", status: "pending" }];
+    const stateTodos = [{ id: "y", content: "stale", status: "completed" }];
+    const result = buildPersistMeta(
+      { todos: finalTodos },
+      { todos: stateTodos },
+    );
+    expect(result.todos).toEqual(finalTodos);
+  });
+});
+
+
 describe("buildPersistMeta - edge cases", () => {
   it("returns null when neither source has anything useful", () => {
     expect(buildPersistMeta(null, null)).toBeNull();

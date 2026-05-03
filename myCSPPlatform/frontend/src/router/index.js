@@ -89,6 +89,14 @@ const routes = [
         component: () => import('../views/DeveloperGuideView.vue'),
         meta: { requiresDeveloper: true },
       },
+      // Sprint 13 PR C1 — per-agent runtime knobs (tool permissions /
+      // workspace caps / guardrails). Owner of the agent OR admin.
+      {
+        path: 'developer/agents/:id/runtime-config',
+        name: 'AgentRuntimeConfig',
+        component: () => import('../views/AgentRuntimeConfigView.vue'),
+        meta: { requiresDeveloper: true },
+      },
       // Sprint 8 X / Phase E — service_clients (Router / worker / admin tool)
       // service-token management. Admin-only.
       {

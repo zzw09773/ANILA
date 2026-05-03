@@ -299,6 +299,21 @@ async def my_tool(ctx: ActionContext, query: str) -&gt; dict:
         <pre v-if="hasCapabilities(detailAgent)" class="detail__pre">{{ prettyJson(detailAgent.capabilities) }}</pre>
         <TermEmpty v-else message="no capabilities declared in manifest" />
 
+        <!-- Sprint 13 PR C1 — quick link to the per-agent runtime
+             config editor (tool permissions / workspace caps / guardrails). -->
+        <TermSection title="runtime config" />
+        <p class="cell-meta">
+          tool permissions · workspace caps · guardrails — live-applied via 30s poll on the agent.
+          {{ detailAgent.runtime_config ? 'currently overridden.' : 'using compiled-in defaults.' }}
+        </p>
+        <router-link
+          :to="{ name: 'AgentRuntimeConfig', params: { id: detailAgent.id } }"
+          class="term-action"
+          style="display: inline-block; margin-top: 4px;"
+        >
+          edit runtime config →
+        </router-link>
+
         <TermSection title="status timeline" />
         <ol class="timeline">
           <li v-for="entry in buildStatusHistory(detailAgent)" :key="entry.label + entry.timestamp">

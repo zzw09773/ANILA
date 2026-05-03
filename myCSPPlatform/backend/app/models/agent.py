@@ -71,6 +71,32 @@ class Agent(Base):
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
+    # Sprint 13 PR A3 — admin-editable per-agent runtime knobs that the
+    # agent process polls every 30 s (PR A4). Shape is open so admins
+    # can extend it without DB migrations; the agent-side parser
+    # tolerates unknown keys. Common shape:
+    #
+    #   {
+    #     "tool_permissions": {
+    #       "allow_list": ["*"],
+    #       "deny_list": ["exec_bash"],
+    #       "ask_tools": ["exec_python"],
+    #     },
+    #     "workspace": {
+    #       "max_bytes": 10485760,
+    #       "allow_network": false,
+    #       "allowed_mounts": ["/data/agent-foo"]
+    #     },
+    #     "guardrails": {
+    #       "input": [{"kind": "regex_block", "pattern": "sk-\\w+"}],
+    #       "output": [{"kind": "max_length", "max_chars": 4096}]
+    #     }
+    #   }
+    #
+    # NULL means "agent uses its hard-coded defaults"; an explicit
+    # ``{}`` means "admin set empty" (e.g. clear all guardrails).
+    runtime_config = Column(JSONValue, nullable=True)
+
     owner = relationship("User", foreign_keys=[owner_user_id], backref="owned_agents")
     approver = relationship("User", foreign_keys=[approved_by])
     base_model = relationship("ModelRegistry", foreign_keys=[base_model_id])

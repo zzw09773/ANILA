@@ -28,6 +28,11 @@
         <li><a href="#tools">加工具 · @tool 裝飾器</a></li>
         <li><a href="#middleware">middleware · trace / cost / guardrail / retry</a></li>
         <li><a href="#advanced">進階 · coordinator · bg task · skills · mcp</a></li>
+        <li><a href="#agentic-loop">agentic loop · 中斷 / 任務板 / 後續提示（Sprint 9）</a></li>
+        <li><a href="#approvals-tools">敏感工具 · ASK / DENY / 人工授權（Sprint 11）</a></li>
+        <li><a href="#workspace">workspace 沙盒 · 檔案 / patch / shell（Sprint 12）</a></li>
+        <li><a href="#guardrails">guardrails · 輸入輸出資料閘道（Sprint 12）</a></li>
+        <li><a href="#runtime-config">runtime_config · 不重啟調整 agent（Sprint 13）</a></li>
         <li><a href="#endpoints">agent 必須暴露的端點</a></li>
         <li><a href="#bootstrap">註冊 · bootstrap · service token</a></li>
         <li><a href="#testing">測試與品質閘門</a></li>
@@ -268,6 +273,225 @@ async with pool:
         name="ops", instructions="...", provider=adapter, model="google/gemma4",
         actions=tuple(pool.all_actions()),  # tool names: fs__read_file, gh__list_prs, ...
     )</pre>
+    </TermBox>
+
+    <!-- Sprint 9 — agentic loop primitives -->
+    <TermBox id="agentic-loop" title="agentic loop · 中斷 / 任務板 / 後續提示（Sprint 9）" pad="md">
+      <p class="lead">
+        Sprint 9 把 agent 從「一問一答」升級成「會問你、會記任務、會建議下一步」。
+        三組工具 + 三個 SSE 事件，前端的
+        <code>InterruptCard</code> / <code>TodoChecklist</code> / <code>FollowUpChips</code>
+        會自動渲染。
+      </p>
+
+      <h4>ask_user · 暫停問使用者</h4>
+      <pre class="code">from anila_core.tools.ask_user import ask_user
+# Tool 回傳 InterruptItem(kind="ask_user")，QueryEngine 會 raise RunPaused，
+# /chat 的 SSE 流出 event: interrupt_requested 給前端，run loop 停在這裡。
+# 使用者透過 /v1/sessions/&lt;id&gt;/answer 把答案送回來，
+# resume_from_interrupt 會重啟 turn loop。
+result = await ask_user(
+    ctx,
+    question="哪個檔要刪？",
+    options=["a.txt", "b.txt", "都刪"],
+    multi_select=False,
+    allow_other=True,
+)</pre>
+
+      <h4>plan_mode · 計畫先確認再執行</h4>
+      <pre class="code">from anila_core.tools.plan_mode import enter_plan_mode, exit_plan_mode
+# enter_plan_mode 把 ctx.plan_mode = True；之後所有
+# DESTRUCTIVE 工具自動被 router 擋下。
+# exit_plan_mode 帶著 plan markdown，會 InterruptItem(kind="plan")，
+# 前端 PlanCard 出來等使用者核准 / 拒絕。
+await enter_plan_mode(ctx)
+# ... 計畫期間只能做 READ_ONLY 探索 ...
+await exit_plan_mode(ctx, plan="1. 刪 a.txt\n2. 寫新 b.txt\n3. 跑測試")</pre>
+
+      <h4>todo_write · 任務板</h4>
+      <pre class="code">from anila_core.tools.todo_write import todo_write
+# 寫進 ctx.todos 並 emit event: todos_updated，前端 TodoChecklist
+# 跟著重畫。狀態只能是 pending / in_progress / completed。
+await todo_write(ctx, todos=[
+    {"id": "t1", "content": "讀 README", "status": "completed"},
+    {"id": "t2", "content": "寫測試",   "status": "in_progress"},
+    {"id": "t3", "content": "submit PR", "status": "pending"},
+])</pre>
+
+      <h4>follow_ups · 自動產生後續提示</h4>
+      <p>
+        每輪對話後，<code>PromptSuggestion</code> post-turn hook 會丟出
+        <code>event: follow_ups</code>。前端 <code>FollowUpChips</code>
+        把 3 個建議渲染成可點 chip。要關掉就在 <code>create_app()</code>
+        時別註冊這個 hook。
+      </p>
+
+      <h4>resume 流程</h4>
+      <ol class="steps">
+        <li>agent 拋出 InterruptItem → SSE <code>event: interrupt_requested</code></li>
+        <li>前端鎖住輸入、顯示 <code>InterruptCard</code></li>
+        <li>使用者點選後，<code>POST /v1/sessions/&lt;sid&gt;/answer { interrupt_id, answer }</code> 走 Router → CSP → agent</li>
+        <li>agent <code>resume_from_interrupt</code> 重啟 turn loop，先 emit <code>event: resumed</code> 解鎖前端，再串接後續 deltas</li>
+      </ol>
+    </TermBox>
+
+    <!-- Sprint 11 — per-tool permissions -->
+    <TermBox id="approvals-tools" title="敏感工具 · ASK / DENY / 人工授權（Sprint 11）" pad="md">
+      <p class="lead">
+        每個 <code>ToolDefinition</code> 帶一個 <code>permission</code> 欄位
+        （<code>ALLOW</code> / <code>ASK</code> / <code>DENY</code>），
+        是 governance 閘門。<code>ASK</code> 會自動產生
+        <code>tool_approval</code> interrupt，使用者按授權鈕後重跑該 tool 並 bypass gate。
+      </p>
+      <pre class="code">from anila_core.models.tool import ToolDefinition, ToolPermission, ToolSafety
+
+dangerous_tool = ToolDefinition(
+    name="exec_python",
+    description="執行 Python script",
+    input_schema={"type": "object", "properties": {"code": {"type": "string"}}},
+    safety=ToolSafety.DESTRUCTIVE,
+    permission=ToolPermission.ASK,   # 👈 預設要使用者授權
+    implementation=run_python,
+)</pre>
+      <p class="hint">
+        plan_mode 是另一層獨立閘門：當 <code>ctx.plan_mode=True</code>，
+        所有 <code>safety=DESTRUCTIVE</code> 工具自動被擋，
+        不論 permission 設定。三層獨立組合：plan_mode 閘 / permission 閘 / guardrails。
+      </p>
+    </TermBox>
+
+    <!-- Sprint 12 — workspace + sandboxed tools -->
+    <TermBox id="workspace" title="workspace 沙盒 · 檔案 / patch / shell（Sprint 12）" pad="md">
+      <p class="lead">
+        <code>Workspace</code> 是個能力範圍化的暫存目錄。
+        所有 file / shell / python 工具都在 workspace 內執行，
+        路徑跳脫一律擋下。能力（<code>WorkspaceCaps</code>）控制讀 / 寫 / 網路 / 子 process / 大小上限。
+      </p>
+      <pre class="code">from anila_core.workspace import make_workspace
+from anila_core.workspace.caps import WorkspaceCaps
+from anila_core.tools.files import file_read, file_write, glob, grep
+from anila_core.tools.shell import exec_bash, exec_python
+from anila_core.tools.apply_patch import apply_patch
+
+caps = WorkspaceCaps(
+    fs_read=True, fs_write=True,
+    network=False,           # 子 process 看不到代理 env
+    exec_bash=True,
+    command_allowlist=("ls", "cat", "grep", "rg"),
+    max_exec_seconds=10,
+    max_workspace_size_mb=50,
+)
+async with make_workspace("code-review", caps) as ws:
+    ctx.workspace = ws
+    # 註冊上面那些 tool 進 registry — 它們從 ctx.workspace 拿路徑
+    result = await runner.run(agent, "Review the diff")</pre>
+
+      <h4>檔案編輯 · V4A patch envelope</h4>
+      <p>
+        <code>apply_patch</code> 接的是 V4A 格式（人讀的 hunks，不是 unified diff line numbers）—
+        LLM 寫起來比 unified diff 穩很多。
+      </p>
+      <pre class="code">*** Update File: src/foo.py
+@@ class Foo:
+@@     def bar(self):
+-       return 1
++       return 2
+
+*** Add File: src/baz.py
++def baz():
++    return "new"
+
+*** Delete File: src/old.py</pre>
+
+      <p class="hint">
+        資料分析 agent / 程式碼審查 agent / 檔案編輯 agent 的典型骨架：
+        裝 CSV / clone repo 進 workspace → 給對的 caps → 註冊對的 tool 子集 →
+        agent 在沙盒內動。Docker 還是硬隔離；workspace 是輕量第二層。
+      </p>
+    </TermBox>
+
+    <!-- Sprint 12 — tool guardrails -->
+    <TermBox id="guardrails" title="guardrails · 輸入輸出資料閘道（Sprint 12）" pad="md">
+      <p class="lead">
+        guardrails 跟 permission 是兩件事：permission 管「能不能跑」，
+        guardrails 管「資料能不能流」。
+        三組內建 + Protocol 介面讓你寫自訂的。
+      </p>
+      <pre class="code">from anila_core.engine.guardrails import (
+    RegexBlockInput, RegexBlockOutput, MaxLengthOutput,
+)
+from anila_core.models.tool import ToolDefinition
+
+t = ToolDefinition(
+    name="exec_python",
+    description="...",
+    input_schema={...},
+    implementation=run_py,
+    input_guardrails=[
+        # 把疑似 API key 的 token 在送進工具前 redact 掉
+        RegexBlockInput(pattern=r"sk-[a-zA-Z0-9]+", mode="redact",
+                        replacement="[REDACTED]"),
+        # 看到 password=xxx 直接 reject
+        RegexBlockInput(pattern=r"password=\S+", mode="reject"),
+    ],
+    output_guardrails=[
+        # 工具回傳給 model 前砍到 4096 字以內
+        MaxLengthOutput(max_chars=4096),
+        # 防止洩漏 .env 內容
+        RegexBlockOutput(pattern=r"DATABASE_URL=\S+", mode="redact"),
+    ],
+)</pre>
+      <p class="hint">
+        <code>bypass_gates</code>（resume tool_approval 時用）會跳過 permission /
+        plan_mode 兩個閘門，但 <strong>guardrails 永遠跑</strong> ——
+        資料層的清洗跟人類授權無關。
+      </p>
+    </TermBox>
+
+    <!-- Sprint 13 — runtime_config hot-reload -->
+    <TermBox id="runtime-config" title="runtime_config · 不重啟調整 agent（Sprint 13）" pad="md">
+      <p class="lead">
+        管理員在 CSP 上面改 permission / workspace caps / guardrails，
+        agent 程序每 30 秒輪詢
+        <code>GET /api/agents/me/runtime-config</code>，
+        下一輪自動套用。沒重啟、沒 redeploy。
+      </p>
+      <p>
+        agent 端要做的事：在 lifespan 啟動 <code>RuntimeConfigPoller</code>，
+        把它指向你建的 <code>ToolRegistry</code>。
+      </p>
+      <pre class="code">from anila_core.config import settings
+from anila_core.runtime_config import RuntimeConfigPoller
+from anila_core.workspace.caps import WorkspaceCaps
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    poller = RuntimeConfigPoller(
+        csp_base_url=settings.csp_base_url,
+        csp_service_token=settings.csp_service_token,
+        registry=tool_registry,
+        base_workspace_caps=WorkspaceCaps(),  # 你 agent 的預設值
+        on_change=lambda snap, caps: workspace_factory.update_caps(caps),
+        interval_seconds=30,
+    )
+    await poller.start()       # 第一次 poll 是 inline，所以 lifespan 結束時 caps 已套好
+    try:
+        yield
+    finally:
+        await poller.stop()</pre>
+      <p>
+        管理介面：到 <router-link to="/developer/agents">/developer/agents</router-link> →
+        點某個 agent 開 detail → <code>edit runtime config →</code>。
+        三個分頁：<strong>tool permissions</strong> /
+        <strong>workspace caps</strong> /
+        <strong>guardrails</strong>。
+        存檔後 agent 在 30 秒內套用。
+      </p>
+      <p class="hint">
+        ETag short-circuit：CSP 算出來的 hash 跟上次一樣就直接跳過 apply，
+        不會在每次 poll 都重建 guardrail 物件。
+        失敗（4xx / 5xx / 連線錯誤）不會清掉現行 snapshot，agent 維持上次成功的設定。
+      </p>
     </TermBox>
 
     <!-- Endpoints -->

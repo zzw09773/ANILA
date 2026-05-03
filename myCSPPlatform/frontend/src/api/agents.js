@@ -32,3 +32,13 @@ export const triggerAgentHealthCheck = (id) =>
 // are intentionally not updatable from here.
 export const updateAgent = (id, patch) =>
   client.put(`/api/agents/${id}`, patch)
+
+// Sprint 13 PR A3 — per-agent runtime config (tool permissions,
+// workspace caps, guardrails). Agents poll their own copy via
+// X-CSP-Service-Token at /api/agents/me/runtime-config; this admin
+// surface uses owner / admin auth.
+export const getAgentRuntimeConfig = (id) =>
+  client.get(`/api/agents/${id}/runtime-config`)
+
+export const setAgentRuntimeConfig = (id, runtime_config) =>
+  client.patch(`/api/agents/${id}/runtime-config`, { runtime_config })

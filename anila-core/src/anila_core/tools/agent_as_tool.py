@@ -120,11 +120,20 @@ def make_agent_tool(
         sys_prompt = (
             str(sys_override).strip() if sys_override else None
         ) or None
+        ctx = get_current_context()
         sid = captured_session_id
-        if sid is None:
-            ctx = get_current_context()
-            if ctx is not None and ctx.session_id:
-                sid = ctx.session_id
+        if sid is None and ctx is not None and ctx.session_id:
+            sid = ctx.session_id
+
+        # Sprint 13 follow-up: short-circuit the dispatch when the
+        # *manifest itself* says the consulted agent is classified —
+        # we know the latch must flip even before we hear back. Done
+        # before the call so a network failure doesn't drop the latch
+        # (fail-closed: a partially-completed dispatch must still
+        # taint the caller).
+        if ctx is not None and bool(getattr(manifest, "requires_encryption", False)):
+            ctx.classified_latch = True
+
         try:
             result = await dispatch_to_agent_response(
                 agent_id=manifest.agent_id,
@@ -136,6 +145,15 @@ def make_agent_tool(
                 timeout=timeout,
                 session_id=sid,
             )
+            # Defence in depth: even if the manifest didn't carry the
+            # encryption flag (older registry, drift, or the consulted
+            # agent inherited classification from data only its body
+            # knows about), the response's ``anila_meta.classified``
+            # is the authoritative latch source — propagate it.
+            if ctx is not None:
+                downstream_meta = result.get("anila_meta") or {}
+                if isinstance(downstream_meta, dict) and downstream_meta.get("classified"):
+                    ctx.classified_latch = True
             return str(result.get("content", "") or "")
         except Exception as exc:
             logger.warning(

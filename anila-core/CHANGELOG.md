@@ -4,6 +4,131 @@ All notable changes to this package. anila-core is **not yet 1.0** — internal
 breaking changes are acceptable but always documented here. SemVer kicks in
 once we cut v1.0 (no concrete date).
 
+## v0.12.0 (2026-05-03) — Sprint 13 · Router resume + runtime hot-reload
+
+Sprint 13 closes the loop on the Sprint 9-12 features by wiring them
+through the public stack: Router learns about typed agent events,
+gains a resume proxy, and agents can have their tool permissions /
+workspace caps / guardrails reconfigured without a restart.
+
+### Added — Router
+
+* **Typed SSE pass-through** (`api.router_server._stream_agent_sse`):
+  rewritten as a proper SSE parser. Tracks `event:` headers per
+  message instead of dropping them. Anila-template events
+  (`anila.trace` / `anila.meta` / `anila.reasoning`) flow through
+  unchanged; Sprint 9-12 typed events (`interrupt_requested` /
+  `resumed` / `todos_updated` / `follow_ups` / `tool_call_started` /
+  `tool_call_finished` / `usage_update` / `memory_saved` /
+  `compact_triggered` / `agent_summary` / `task_notification`) get
+  renamed to `anila.<name>` so the user-facing stream stays in one
+  namespace. Previously these were silently dropped — including
+  `anila.meta` from agents using the template format.
+* **Session-owner persistence** (`api.session_owner` +
+  `memory.sqlite_session._SCHEMA`): a `session_owners` table records
+  every dispatch. The Router writes (`session_id`, `agent_id`) on
+  every dispatch (single-shot streaming, single-shot non-streaming,
+  and each turn of the multi-turn helpers).
+* **Resume proxy** (`POST /v1/sessions/{session_id}/answer`): the
+  user-facing UI only knows the Router URL; this endpoint looks up
+  the owning agent and forwards the resume through CSP. Returns SSE
+  framed identically to a normal turn (`anila.resumed` first, then
+  the agent's deltas + named events).
+* **`session_state` extension**: `GET /v1/sessions/{id}/state` now
+  surfaces `owner_agent_id` so the UI can show a "Resume on <agent>"
+  affordance.
+
+### Added — CSP
+
+* **`agents.runtime_config` JSONB column** (migration 0029) — admin-
+  editable per-agent runtime knobs (tool permissions, workspace caps,
+  guardrail bundles). Open shape; agent-side parser tolerates unknown
+  keys for forward-compat.
+* **Endpoints**:
+  - `GET /api/agents/{id}/runtime-config` (owner / admin auth).
+  - `PATCH /api/agents/{id}/runtime-config` (owner / admin auth).
+    Audit-logged. Body `{"runtime_config": null}` clears the override
+    (revert to compiled-in defaults); `{}` is "explicit empty"
+    (cleared lists, no guardrails) — distinct semantics.
+  - `GET /api/agents/me/runtime-config` (agent self via
+    `X-CSP-Service-Token`). Returns `{runtime_config, etag}` so the
+    polling agent can short-circuit re-applies.
+* **Agent dispatch resume passthrough**:
+  `POST /v1/agents/{agent_name}/sessions/{session_id}/answer` proxies
+  to the agent's `/sessions/{id}/answer` with the same identity
+  injection / per-agent service-token swap as `chat_completions`.
+
+### Added — anila-core agent runtime
+
+* **`anila_core.runtime_config`** — three-layer hot-reload subsystem:
+  - `RuntimeConfigSnapshot` + `parse_runtime_config()` — tolerant
+    JSON → typed parser. Unknown keys logged at DEBUG and dropped.
+  - `apply_runtime_config()` — mutates a live `ToolRegistry`:
+    swaps allow/deny lists, flips per-tool `permission` flags
+    (ALLOW/ASK/DENY), installs guardrail instances tagged with a
+    `_runtime_marker` sentinel so re-applies don't accumulate and
+    code-defined guardrails survive. Returns the resolved
+    `WorkspaceCaps` (snapshot overrides overlaid on the agent's
+    base caps).
+  - `RuntimeConfigPoller` — async background task. First poll runs
+    inline so the agent serves under the admin's config from request
+    one; thereafter polls every 30 s. ETag-cached. 4xx/5xx /
+    network errors keep the previous snapshot in place.
+
+### Added — ANILA_UI runtime layer
+
+* `runtime/sse.js`:
+  - `dispatchSseEvent` — extracted dispatch table, exported for
+    testing. Routes Sprint 9-12 typed events through new callbacks
+    (`onInterrupt` / `onResumed` / `onTodos` / `onFollowUps` /
+    `onToolCallStarted` / `onToolCallFinished` / `onSpans`) plus a
+    catch-all `onUnknownEvent(name, rawData)`.
+  - `streamSessionAnswer` — POST resume helper that streams the
+    Router's SSE response through the same dispatch table.
+  - `streamChatCompletion` now also surfaces `X-Anila-Session-Id`
+    via an `onSessionId` callback.
+* `runtime/api.js`: `getSessionState(sid)` + `submitSessionAnswer`
+  (the JSON twin of the streaming helper, mostly for tests).
+* `runtime/messageMeta.js`: persists the new typed-event state
+  (`todos`, `tool_calls`, `spans`, `interrupt`) so reloading a
+  conversation rebuilds the same UI affordances.
+
+### Added — ANILA_UI components
+
+* `agentic.jsx` — `<PausedBadge>`, `<InterruptCard>` (handles
+  `ask_user` / `plan` / `tool_approval` interrupt kinds with
+  type-specific UI), `<TodoChecklist>`, `<FollowUpChips>`.
+* `toolExecution.jsx` — `<ToolExecutionWidget>` with renderer
+  selection by tool name: `TerminalOutput` (exec_bash/exec_python),
+  `DiffOutput` (apply_patch/file_edit, ANSI-style + / - colouring),
+  `FileTreeOutput` (glob/ls), `PlainOutput` (fallback).
+* `spanTree.jsx` — `<SpanTreeViewer>` dev-only (toggle via
+  `localStorage.anila_dev=1` or `?devspans=1`). Renders the OTel-
+  style span tree from the backend tracing module
+  (`InMemoryProcessor.to_tree()`).
+
+### Added — CSP UI
+
+* `views/AgentRuntimeConfigView.vue` — three-section editor for
+  per-agent runtime config. Linked from the agent detail drawer in
+  `DeveloperAgentsView.vue`.
+* `views/DeveloperGuideView.vue` — five new Chinese sections covering
+  Sprint 9 (agentic loop primitives), Sprint 11 (per-tool ASK/DENY),
+  Sprint 12 (workspace + guardrails), Sprint 13 (runtime hot-reload).
+
+### Tests
+
+Net new: 24 runtime-config tests (`test_runtime_config.py`),
+16 SSE pass-through tests (`test_router_sse_passthrough.py`),
+6 resume-proxy tests (`test_router_resume_proxy.py`),
+5 owner-persistence tests (`test_session_owner.py`),
+plus 60 ANILA_UI tests (`agentic.test.jsx`, `spanTree.test.jsx`,
+`toolExecution.test.jsx`, expanded `sse.test.js` and
+`messageMeta.test.js`).
+
+Total: 616 anila-core pass (5 pre-existing failures unchanged),
+120 ANILA_UI tests pass.
+
 ## v0.11.0 (2026-05-03) — Sprint 12 · Workspace, sandboxed tools, guardrails
 
 Sprint 12 ships the foundation for the three roadmap agents (data

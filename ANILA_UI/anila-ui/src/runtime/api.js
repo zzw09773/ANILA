@@ -197,6 +197,70 @@ export async function authMultipart(path, formData, _authState, onTokenRefresh, 
   }
 }
 
+/**
+ * Sprint 13 PR B1: Router-side session helpers.
+ *
+ * `getSessionState` queries the snapshot endpoint added in PR A2. The
+ * response includes the persisted history, any pending interrupts and
+ * `owner_agent_id` (so the UI can show "Resume on <agent>" badges).
+ *
+ * `submitSessionAnswer` is the JSON-only counterpart of
+ * `streamSessionAnswer` from sse.js — useful for tests / non-streaming
+ * resume flows. Mainline UI prefers the streaming helper.
+ */
+export async function getSessionState(sessionId) {
+  if (!sessionId) {
+    throw new Error("getSessionState: sessionId is required");
+  }
+  const url = joinUrl(
+    config.routerBaseUrl,
+    `/v1/sessions/${encodeURIComponent(sessionId)}/state`,
+  );
+  const response = await fetch(url, {
+    method: "GET",
+    credentials: "include",
+    headers: buildHeaders("GET"),
+  });
+  if (!response.ok) {
+    const detail = await readError(response);
+    const error = new Error(detail);
+    error.status = response.status;
+    throw error;
+  }
+  return response.json();
+}
+
+
+export async function submitSessionAnswer(sessionId, interruptId, answer) {
+  if (!sessionId) {
+    throw new Error("submitSessionAnswer: sessionId is required");
+  }
+  if (!interruptId) {
+    throw new Error("submitSessionAnswer: interruptId is required");
+  }
+  const url = joinUrl(
+    config.routerBaseUrl,
+    `/v1/sessions/${encodeURIComponent(sessionId)}/answer`,
+  );
+  const response = await fetch(url, {
+    method: "POST",
+    credentials: "include",
+    headers: buildHeaders("POST"),
+    body: JSON.stringify({ interrupt_id: interruptId, answer }),
+  });
+  if (!response.ok) {
+    const detail = await readError(response);
+    const error = new Error(detail);
+    error.status = response.status;
+    throw error;
+  }
+  // The Router's /answer endpoint streams SSE on success; non-streaming
+  // callers shouldn't hit this branch much, but if they do we just
+  // return the raw text so the caller can decide what to do with it.
+  return response.text();
+}
+
+
 // Raw-Bearer helper kept for SDK-style probes (the admin panel uses it to
 // sanity-check a named API key before displaying it). Not used by the
 // mainline SPA flow any more.

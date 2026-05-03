@@ -265,6 +265,17 @@ anila-core/src/anila_core/tools/
 
 ## Release Notes
 
+### 2026-05-03 — Sprint 13: typed-event pass-through + resume proxy
+
+對應 anila-core **v0.12.0**。Router 從「只認得自己 emit 的 anila.* 事件」升級成「會 forward agent 的 typed events」，並新增使用者可達的 resume endpoint。
+
+- **`_stream_agent_sse` 改寫成正規 SSE parser**：之前 `event:` header 被忽略，agent 用 template 格式（`event: anila.meta\ndata: {...}\n\n`）emit 的 meta 整個漏掉；Sprint 9-12 加的 typed events（`interrupt_requested` / `resumed` / `todos_updated` / `follow_ups` / `tool_call_started` / `tool_call_finished` / `usage_update` / `memory_saved` / `compact_triggered` / `agent_summary` / `task_notification`）也全部漏。新版 parser 認 header、把 `anila.*` 命名的 event 原封 forward、把白名單裡的 typed events rename 成 `anila.<name>` 統一輸出。
+- **Session-owner 持久化**：新 `session_owners` SQLite 表（與 `session_items` / `session_interrupts` 同檔），每次 dispatch 都寫 `(session_id, agent_id)`。涵蓋所有 dispatch 路徑（single-shot streaming / single-shot non-streaming / multi-turn 兩種 helper 的每一輪）。
+- **新 endpoint `POST /v1/sessions/{sid}/answer`**：使用者面 UI 只知道 Router URL；這個 endpoint 從 `session_owners` 查擁有該 session 的 agent，再透過 CSP 的新 `POST /v1/agents/{a}/sessions/{sid}/answer` proxy 把 `{interrupt_id, answer}` payload 轉到 agent 的 `/sessions/{id}/answer`。回應同樣是 SSE，先 emit Router 自己的 `anila.resumed`，再原封 pass-through agent 的 stream。Header 帶 `X-Anila-Owner-Agent` 讓 UI 顯示「Resume on <agent>」。
+- **`GET /v1/sessions/{sid}/state` 擴充**：新增 `owner_agent_id` 欄位。
+- **測試**：`tests/test_router_sse_passthrough.py`（16）、`tests/test_router_resume_proxy.py`（6）、`tests/test_session_owner.py`（5）、`tests/test_e2e_ask_user_resume.py`（1 — 完整 Router → CSP → agent 串流）。
+- 限制：multi-turn 路徑會 update owner 為「最後一個 dispatch 的 agent」。如果 user 在中間某個 agent 的 interrupt 拋出後立刻 resume，會 land 在最後那個 agent 上 —— 邊界 case，文件先記著。
+
 ### 2026-04-24 — AgenticRAG template 同步
 
 - Cross-reference 敘述更新：`AgenticRAG` 從「sample」改稱「**官方 RAG agent template**」。
@@ -295,4 +306,4 @@ anila-core/src/anila_core/tools/
 
 ---
 
-**Last updated**: 2026-05-01 (Sprint 8 X — Phase C) · **Depends on**: `anila-core` (no `[rag]` extras) · **Talks to**: `myCSPPlatform` + 已註冊 agents
+**Last updated**: 2026-05-03 (Sprint 13 — typed-event pass-through + resume proxy) · **Depends on**: `anila-core` ≥ v0.12.0 (no `[rag]` extras) · **Talks to**: `myCSPPlatform` + 已註冊 agents

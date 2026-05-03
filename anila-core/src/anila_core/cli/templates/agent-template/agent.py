@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from anila_core.api.middleware.auth import CspServiceTokenMiddleware
 from anila_core.config import settings
+from anila_core.context.agent_context import get_current_context
 from anila_core.providers.cspplatform_provider import CSPPlatformProvider
 
 
@@ -114,6 +115,18 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
     req_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
     created = int(time.time())
     trace_id = f"trace-{uuid.uuid4().hex[:12]}"
+
+    # Sprint 13 follow-up: honour the per-run classified latch. Tools
+    # that consulted a classified agent during this turn (e.g.
+    # ``agent_as_tool`` against an agent whose
+    # ``requires_encryption=True``) will have flipped
+    # ``ctx.classified_latch``. OR it into our own classified flag so
+    # the downstream ``anila_meta.classified`` one-way latch keeps
+    # working even when the taint enters via a sub-call rather than
+    # via direct CSP dispatch.
+    ctx = get_current_context()
+    classified_from_subcalls = bool(ctx and ctx.classified_latch)
+
     anila_meta = {
         "trace_id": trace_id,
         "trace": [
@@ -137,7 +150,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
         ],
         "follow_ups": [],
         "latency_ms": None,
-        "classified": False,
+        "classified": classified_from_subcalls,
     }
 
     if stream:

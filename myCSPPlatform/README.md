@@ -446,6 +446,15 @@ AUTO_REGISTER_LINKS=[
 | DELETE | `/api/agents/{id}/credentials/{cid}` | 立即吊銷 credential（需 Admin） |
 | GET | `/api/agents/{id}/credentials/me` | Agent self-introspection（auth = service token；Phase F Tier 1） |
 
+#### Sprint 13 — agent runtime hot-reload + resume proxy
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| GET | `/api/agents/{id}/runtime-config` | 讀 agent 的 admin-set runtime knobs（owner / admin） |
+| PATCH | `/api/agents/{id}/runtime-config` | 設或清空 runtime config；body `null` = 清除（用 code defaults），`{}` = 顯式空（清空 lists / 無 guardrails）。Audit-logged |
+| GET | `/api/agents/me/runtime-config` | Agent 自取（auth = `X-CSP-Service-Token`）。回 `{runtime_config, etag}`，agent 端 30s 輪詢 ETag-cached |
+| POST | `/v1/agents/{name}/sessions/{sid}/answer` | Resume proxy — 把 `{interrupt_id, answer}` 透過 identity-injection + per-agent service-token swap forward 到 agent 的 `/sessions/{id}/answer`（資料面，bearer auth） |
+
 ### Service Clients (`/api/service-clients`) — 需 Admin
 
 Router / worker / admin-tool 用的 service token 管理（不是 agent，但走相同的 envelope + lookup hash 機制）。
@@ -632,6 +641,15 @@ myCSPPlatform/
 
 ## Release Notes
 
+### 2026-05-03 — Sprint 13: agent runtime hot-reload + resume proxy
+
+- **Migration `0029`** — `agents` 表新增 `runtime_config` JSONB 欄位（nullable）。Admin 可放任意 JSON 形狀的「per-agent runtime knobs」（tool permissions / workspace caps / guardrails），agent process 每 30 秒 ETag-cached 輪詢自取並套用，無需重啟。
+- **3 個新 API endpoint**：`GET` / `PATCH /api/agents/{id}/runtime-config`（owner / admin）、`GET /api/agents/me/runtime-config`（agent 用 `X-CSP-Service-Token` 自取）。語意：`null` = 清除 override（用 code defaults）、`{}` = 顯式空。Audit-logged。
+- **新 resume proxy** `POST /v1/agents/{name}/sessions/{sid}/answer`：把使用者面 UI 的 `{interrupt_id, answer}` 透過 `_build_downstream_headers`（同 `chat_completions` 的 identity injection + per-agent service-token swap）forward 到 agent 的 `/sessions/{id}/answer`。SSE pass-through。讓 Sprint 9 的 ask_user / plan / tool_approval interrupts 可以從 user UI 走 Router → CSP → agent 完整鏈路 resume。
+- **新 admin view** `AgentRuntimeConfigView.vue`：三段式編輯器（permissions / workspace / guardrails），帶 raw JSON preview 與 clear-override 按鈕。從 `DeveloperAgentsView` 的 detail drawer 入口進。
+- **DeveloperGuideView 大幅擴充**：5 個新中文章節（Sprint 9 agentic loop primitives / Sprint 11 per-tool ASK / Sprint 12 workspace + guardrails / Sprint 13 runtime_config 用法）。
+- 對應 anila-core **v0.12.0**。完整 changelog：[`../anila-core/CHANGELOG.md`](../anila-core/CHANGELOG.md)。
+
 ### 2026-04-24 — AgenticRAG template 同步
 
 - `AUTO_REGISTER_AGENTS` 可直接消費 [`AgenticRAG/anila-agent.yaml`](../AgenticRAG/anila-agent.yaml)（YAML → JSON one-liner，見該檔註解）
@@ -675,4 +693,4 @@ myCSPPlatform/
 
 ---
 
-**Last updated**: 2026-05-01 (Sprint 8 X — Phase A/G) · **Role**: Control + Data Plane · **Authoritative for**: users · api_keys · models · agents · agent_credentials · service_clients · token_usage · audit_logs
+**Last updated**: 2026-05-03 (Sprint 13 — runtime_config + resume proxy) · **Role**: Control + Data Plane · **Authoritative for**: users · api_keys · models · agents · agent_credentials · agents.runtime_config · service_clients · token_usage · audit_logs

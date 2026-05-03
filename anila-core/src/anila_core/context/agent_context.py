@@ -55,6 +55,17 @@ class AgentContext:
     callback the FastAPI server installs so tools can push SSE events
     (e.g. ``todos_updated``) without coupling to transport details."""
 
+    classified_latch: bool = False
+    """Sprint 13 follow-up: one-way latch flipped by tools that received
+    a classified payload during this run. ``agent_as_tool`` flips it
+    when the consulted agent's ``anila_meta.classified`` is True so the
+    *calling* agent's response builder can OR it into its own
+    ``anila_meta.classified``. The latch is per-run (not persisted across
+    sessions) and never downgrades — once True, stays True for the
+    remainder of the turn. Forks (``create_subagent_context``) inherit
+    the parent's value so subagents start at least as tainted as their
+    parent."""
+
     def __post_init__(self) -> None:
         if self.abort_signal is None:
             self.abort_signal = asyncio.Event()
@@ -118,4 +129,10 @@ def create_subagent_context(
         plan_mode=parent.plan_mode,
         todos=list(parent.todos),  # independent copy (Sprint 9 PR 4)
         event_emitter=parent.event_emitter,
+        # Subagents start at least as tainted as their parent — never
+        # downgrade. Subagent flipping it on does NOT auto-bubble back
+        # to parent (forks have independent state); tools that want
+        # parent-visible taint should set it on the parent's context
+        # directly, which is what ``agent_as_tool`` does.
+        classified_latch=parent.classified_latch,
     )

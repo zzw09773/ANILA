@@ -183,17 +183,25 @@ src/
 ├── main.jsx             # ReactDOM 掛載入口
 ├── markdown.jsx         # ReactMarkdown 包裝 + KaTeX / highlight.js 設定
 ├── components.jsx       # 共用 UI 元件（lock badge、attachment chip 等）
+├── agentic.jsx          # Sprint 13 — InterruptCard / TodoChecklist /
+│                        # FollowUpChips / PausedBadge
+├── toolExecution.jsx    # Sprint 13 — ToolExecutionWidget + Terminal /
+│                        # Diff / FileTree / Plain renderer 子元件
+├── spanTree.jsx         # Sprint 13 — SpanTreeViewer dev-only viewer
 ├── icons.jsx            # 自製 SVG icon set
 ├── data.jsx             # mock / placeholder data 給 EmptyState 等
 └── runtime/
     ├── api.js           # fetch wrapper + cookie + CSRF + multipart helper
+    │                    # + Sprint 13 getSessionState / submitSessionAnswer
     ├── auth.jsx         # AuthProvider + useAuth hook
     ├── conversations.js # CSP control-plane endpoint wrappers
-    ├── sse.js           # SSE parser（/v1/chat/completions）
+    ├── sse.js           # SSE parser + dispatchSseEvent (Sprint 13 PR B1)
+    │                    # + streamSessionAnswer resume helper
     ├── classified.js    # one-way latch helper（meta → conversation）
     ├── classifyRetryQueue.js  # Sprint 8 X / Phase K — sessionStorage retry
     │                          # queue + page-focus flush 確保 latch 永遠抵達 CSP
-    ├── messageMeta.js   # 訊息 metadata 正規化
+    ├── messageMeta.js   # 訊息 metadata 正規化（Sprint 13 加 todos /
+    │                    # tool_calls / spans / interrupt 持久化）
     ├── searchSynonyms.js # tag 搜尋同義詞展開（特休 → 年假 / HR）
     ├── time.js          # 相對時間 / ISO 格式 helper
     └── titleClean.js    # LLM 自動產出標題的後處理（去重、placeholder 黑名單）
@@ -267,16 +275,29 @@ SPA **不再** 持有任何 plaintext token 或 API Key — 完全沒有 localSt
 
 ### SSE parsing
 
-`runtime/sse.js` 解析 `data: {...}` 行，產生 `{ type, payload }` stream。支援：
+`runtime/sse.js` 把 SSE event header（`event: <name>`）+ data lines 解成 `{ event, data }`，再交給 `dispatchSseEvent`（Sprint 13 PR B1 抽出來、可單獨測）路由到對應 callback：
 
-| event | 用途 |
-|---|---|
-| `message_delta` | 文字片段 |
-| `tool_call_started` / `tool_call_finished` | 工具呼叫（UI trace） |
-| `meta` | 含 `classified`、`agent_id`、`citations` 等 |
-| `usage_update` | token 使用量 |
-| `stream_done` | 結束 |
-| `error` | 錯誤 |
+| event name | callback | 用途 |
+|---|---|---|
+| `anila.trace` | `onTrace` | 路由 / 分派 trace step（內含 `kind` / `label` / `detail` / `status` / `latency_ms`） |
+| `anila.meta` | `onMeta` | 終結性 anila_meta（trace / handoff_chain / citations / follow_ups / classified / latency_ms） |
+| `anila.reasoning` | `onReasoning(delta)` | 推理流（reasoning fold） |
+| `anila.interrupt_requested` | `onInterrupt` | Sprint 9 ask_user / plan / tool_approval interrupt（觸發 `<InterruptCard>`） |
+| `anila.resumed` | `onResumed` | resume 後第一個 chunk 之前送，UI 清掉 paused affordance |
+| `anila.todos_updated` | `onTodos` | 任務板全量取代 → `<TodoChecklist>` |
+| `anila.follow_ups` | `onFollowUps` | post-turn 建議 → `<FollowUpChips>` |
+| `anila.tool_call_started` / `anila.tool_call_finished` | `onToolCallStarted` / `onToolCallFinished` | 工具呼叫狀態 → `<ToolExecutionWidget>` 渲染 |
+| `anila.spans` | `onSpans` | OTel 風 span tree → `<SpanTreeViewer>`（dev-only） |
+| 未列舉的 `anila.*` | `onUnknownEvent(name, raw)` | forward-compat：新事件不需要前端先升級就能傳到 |
+| 預設（無 event header）| `onText` / `onJson` | OpenAI chunk envelope，從 `choices[0].delta.content` 累積文字 |
+
+`X-Anila-Session-Id` response header 透過 `onSessionId(sid)` 回拋給呼叫端，方便 pin 後續 turn 與 resume。
+
+### Resume（Sprint 13 PR B1）
+
+`streamSessionAnswer({ routerBaseUrl, sessionId, interruptId, answer, callbacks })` POST `/v1/sessions/{sid}/answer` 走 Router resume proxy，response 是 SSE stream，dispatch 表跟正常 turn 完全共用。
+
+`getSessionState(sid)` 拉 Router 的 session snapshot，回 `{ messages, pending_interrupts, owner_agent_id }`，UI 可顯示「Resume on <agent>」提示。
 
 ### Classified latch 實作
 
@@ -294,6 +315,21 @@ Sprint 8 X / Phase K 後，latch 的後端持久化（`POST /api/conversations/:
 ---
 
 ## Release Notes
+
+### Sprint 13 — Agentic loop UI surfaces（2026-05-03）
+
+對應 anila-core **v0.12.0**。前端把 Sprint 9-12 累積的 typed event 全部視覺化，並加 dev tooling。
+
+- **Runtime（`runtime/`）**：
+  - `sse.js` — `dispatchSseEvent` 抽出來成 export，新增 7 個 callback（`onInterrupt` / `onResumed` / `onTodos` / `onFollowUps` / `onToolCallStarted` / `onToolCallFinished` / `onSpans`）+ `onUnknownEvent` 兜底；`streamChatCompletion` 多回拋 `X-Anila-Session-Id` 給 `onSessionId`；新增 `streamSessionAnswer` resume helper。
+  - `api.js` — 新 `getSessionState(sid)` / `submitSessionAnswer` helper（pure JSON twin，主要給測試）。
+  - `messageMeta.js` — `buildPersistMeta` 多 4 個累積欄位（`todos` / `tool_calls` / `spans` / `interrupt`），重載對話會還原同樣的 UI affordance。
+- **元件**：
+  - `agentic.jsx` — `<PausedBadge>`、`<InterruptCard>`（三個 kind 各自渲染：ask_user 帶 radio/checkbox + allow_other free-text、plan 帶 markdown plan + accept/decline、tool_approval 帶工具名 + JSON-formatted input preview + approve/deny）、`<TodoChecklist>`（可勾選樣式但唯讀，agent 端透過 `todo_write` 工具更新）、`<FollowUpChips>`（chip click → 父元件決定怎麼送）。
+  - `toolExecution.jsx` — `<ToolExecutionWidget>` 依 `tool_name` 路由到 `TerminalOutput`（exec_bash/exec_python，黑底等寬 + status border）/ `DiffOutput`（apply_patch/file_edit，行首 +/- 著色）/ `FileTreeOutput`（glob/ls，JSON array 或 newline 任一）/ `PlainOutput`（fallback）。
+  - `spanTree.jsx` — `<SpanTreeViewer>` 把後端 `InMemoryProcessor.to_tree()` 渲染成可摺疊的縮排樹。**Dev-only**，三種 opt-in：`localStorage.anila_dev=1` / `?devspans=1` / Vite `import.meta.env.DEV`。
+- **測試**：新 `agentic.test.jsx` (21) / `toolExecution.test.jsx` (18) / `spanTree.test.jsx` (14) + 擴充 `sse.test.js` (+12 dispatch tests) / `messageMeta.test.js` (+5 typed-event 持久化 tests)。`vitest.setup.js` 加 `afterEach(cleanup)` 避免 jsdom 累積 sibling。總計 **120 tests pass**。
+- **Setup 變更**：`vitest.setup.js` import `cleanup` from `@testing-library/react`，所有元件測試 between-test cleanup。
 
 ### Sprint 8 X — Phase K（2026-05-01）— Classified latch reload-escape hotfix
 
@@ -354,4 +390,4 @@ Sprint 8 X / Phase K 後，latch 的後端持久化（`POST /api/conversations/:
 
 ---
 
-**Last updated**: 2026-05-01 (Sprint 8 X — Phase K + README rewrite) · **Framework**: React + Vite · **Talks to**: CSP (`/api/*` + `/v1/*` cookie) + Router (`/v1/chat/completions` cookie + `model=anila-router`) — both fronted by `nginx`
+**Last updated**: 2026-05-03 (Sprint 13 — agentic loop UI surfaces) · **Framework**: React + Vite · **Talks to**: CSP (`/api/*` + `/v1/*` cookie) + Router (`/v1/chat/completions` + `/v1/sessions/{id}/{state,answer}` cookie + `model=anila-router`) — both fronted by `nginx`

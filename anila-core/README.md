@@ -313,6 +313,49 @@ anila-core/
 
 ## Release Notes
 
+### 2026-05-03 — v0.12.0 Sprint 13 · Router resume + runtime hot-reload
+
+Sprint 13 把 Sprint 9-12 累積的事件 / 互動 / 工具能力跨層串到底：Router 認得 typed agent events、能代理 resume，agent 的 tool permission / workspace caps / guardrails 可在不重啟的情況下被改。
+
+| 層 | 重點 | 用途 |
+|---|---|---|
+| Router | `_stream_agent_sse` 重寫成 SSE parser；`anila.*` namespace 統一；`POST /v1/sessions/{id}/answer` resume proxy；`session_owners` 表 | 使用者面 UI 不必知道哪個 agent 在跑就能 resume；agent emit 的 `interrupt_requested` / `todos_updated` / `follow_ups` / `tool_call_*` 一路流到瀏覽器 |
+| CSP | `agents.runtime_config` JSONB（migration 0029）+ owner/admin GET/PATCH + `me/runtime-config` 給 agent service-token 自取 | 管理員可以改任一 agent 的 permission / caps / guardrails；agent 30 秒內套用 |
+| anila-core | `runtime_config/` 子套件：`parse → apply → poller`；`apply_runtime_config` 動 ToolRegistry + 標記 `_runtime_marker` 不汙染 code-defined guardrails | agent process 啟動時 inline 拉一次，後續每 30 秒 ETag-cached 增量 |
+| ANILA_UI | `runtime/sse.js` `dispatchSseEvent` + 7 個新 callback；`agentic.jsx` (`InterruptCard` / `TodoChecklist` / `FollowUpChips` / `PausedBadge`)；`toolExecution.jsx` (Terminal/Diff/FileTree)；`spanTree.jsx` dev-only viewer | 前端把 agent 行為視覺化：plan/ask_user/tool_approval interrupt 卡片、任務板、後續提示 chip、工具輸出依類型渲染 |
+| CSP UI | `AgentRuntimeConfigView.vue` 三段式編輯器；`DeveloperGuideView.vue` 加 5 個中文章節（agentic loop / per-tool ASK / workspace / guardrails / runtime_config） | 管理員 UI 直接編輯每個 agent 的 runtime knobs，不用 SQL |
+
+resume 流程（user → Router → CSP → agent，全鏈路 streaming）：
+
+```
+[ANILA_UI]
+  ├── stream POST /v1/chat/completions  → Router pin (sid, agent_id) → agent
+  ├── 收到 anila.interrupt_requested     → 顯示 <InterruptCard>
+  └── 使用者按送出 → POST /v1/sessions/{sid}/answer
+                       │
+                       ▼
+  [Router] lookup owning agent → POST /v1/agents/{a}/sessions/{sid}/answer
+                       │
+                       ▼
+  [CSP] _build_downstream_headers → POST {agent}/sessions/{sid}/answer
+                       │
+                       ▼
+  [agent] resume_from_interrupt → SSE: anila.resumed + deltas + new events
+```
+
+Hot-reload demo（管理員在 CSP UI 把 `exec_bash` 從 ALLOW 改成 DENY）：
+
+```python
+poller = RuntimeConfigPoller(
+    csp_base_url=settings.csp_base_url,
+    csp_service_token=settings.csp_service_token,
+    registry=tool_registry,
+    base_workspace_caps=WorkspaceCaps(),  # agent 預設值
+    on_change=lambda snap, caps: workspace_factory.update_caps(caps),
+)
+await poller.start()  # inline 第一次 poll；之後 30s/次
+```
+
 ### 2026-05-03 — v0.11.0 Sprint 12 · Workspace, sandboxed tools, guardrails
 
 Sprint 12 鋪三個 roadmap agent（資料分析 / 程式碼審查 / 檔案編輯）共用的基礎：per-session capability-scoped workspace、file + shell 工具套件、V4A 風格多檔 patch applier、per-tool guardrails。**故意不抄** openai-agents 的 sandbox manifest / snapshot / materialization — 我們是 single-process single-host，「temp dir + cap dict」就夠；硬隔離仍由 per-agent Docker container 負責。

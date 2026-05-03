@@ -14,6 +14,11 @@ const ACCUMULATED_FALLBACKS = [
   "handoff_chain",
   "citations",
   "follow_ups",
+  // Sprint 13 PR B1
+  "todos",
+  "tool_calls",
+  "interrupt",
+  "spans",
 ];
 
 /**
@@ -68,6 +73,30 @@ export function buildPersistMeta(finalMeta, messageState) {
   // lock icon. Never downgrade.
   if (state.classified === true || base.classified === true) {
     base.classified = true;
+  }
+
+  // Sprint 13 PR B1: persist Sprint 9-12 typed event state so reloading
+  // a conversation rebuilds the same UI affordances.
+  //   * todos / tool_calls / spans : streaming-cumulative; final meta
+  //     never carries them, take from state.
+  //   * interrupt : the most recent INTERRUPT_REQUESTED payload, kept
+  //     even after a successful resume so the reload UI can render
+  //     "Paused on X / Resumed at Y" affordances.
+  if (!Array.isArray(base.todos) && Array.isArray(state.todos)) {
+    base.todos = state.todos;
+  }
+  if (!Array.isArray(base.tool_calls) && Array.isArray(state.toolCalls)) {
+    base.tool_calls = state.toolCalls;
+  }
+  if (!Array.isArray(base.spans) && Array.isArray(state.spans)) {
+    base.spans = state.spans;
+  }
+  if (
+    base.interrupt == null &&
+    state.interrupt != null &&
+    typeof state.interrupt === "object"
+  ) {
+    base.interrupt = state.interrupt;
   }
 
   // Drop undefined-only results (empty-object meta isn't useful to persist).

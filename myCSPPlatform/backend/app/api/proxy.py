@@ -232,6 +232,87 @@ async def chat_completions(
     )
 
 
+@router.post("/v1/agents/{agent_name}/sessions/{session_id}/answer")
+async def resume_agent_session(
+    agent_name: str,
+    session_id: str,
+    request: Request,
+    caller: Caller = Depends(get_caller),
+    db: Session = Depends(get_db),
+):
+    """Sprint 13 PR A2 — Router-driven resume proxy for paused agent runs.
+
+    The Router persists ``session_id → agent_id`` per dispatch and uses
+    this endpoint to forward the user's answer to the agent that owns
+    the paused run. Identity injection + per-agent service-token swap
+    use the same machinery as agent ``chat_completions`` so audit and
+    token attribution are consistent.
+
+    Body shape mirrors the agent's ``/sessions/{id}/answer``::
+
+        { "interrupt_id": str,
+          "answer": str | dict,
+          "max_turns": int (optional),
+          "model": str (optional),
+          "system_prompt": str (optional) }
+
+    Response: SSE stream of the resumed turn, passed through verbatim.
+    """
+    body = await request.json()
+    agent = _resolve_agent(db, caller, agent_name)
+    if agent is None:
+        raise HTTPException(
+            status_code=404, detail=f"Agent '{agent_name}' 未註冊或未審核",
+        )
+
+    user = caller.user
+    target = (
+        f"{agent.endpoint_url.rstrip('/')}/sessions/{session_id}/answer"
+    )
+    from app.services.proxy_service import _build_downstream_headers
+    headers = _build_downstream_headers(
+        user.id, user.email, target_agent_id=agent.id,
+    )
+
+    import httpx
+
+    async def _passthrough_stream():
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                async with client.stream(
+                    "POST", target, json=body, headers=headers,
+                ) as resp:
+                    if resp.status_code >= 400:
+                        err = await resp.aread()
+                        # Surface the upstream error inline so the
+                        # caller's SSE framing stays valid.
+                        msg = err[:300].decode("utf-8", errors="replace")
+                        yield (
+                            f"event: error\n"
+                            f"data: {{\"status\": {resp.status_code}, "
+                            f"\"detail\": {msg!r}}}\n\n"
+                        )
+                        return
+                    async for raw_line in resp.aiter_lines():
+                        if raw_line == "":
+                            yield "\n"
+                        else:
+                            yield raw_line + "\n"
+        except httpx.RequestError as exc:
+            yield (
+                f"event: error\n"
+                f"data: {{\"status\": 502, "
+                f"\"detail\": \"agent connection error: "
+                f"{type(exc).__name__}\"}}\n\n"
+            )
+
+    return StreamingResponse(
+        _passthrough_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.post("/v1/embeddings")
 async def embeddings_v1(
     request: Request,

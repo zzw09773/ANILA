@@ -72,6 +72,17 @@ CREATE TABLE IF NOT EXISTS session_interrupts (
 );
 CREATE INDEX IF NOT EXISTS idx_session_interrupts_sid
     ON session_interrupts(session_id, rowid);
+
+-- Sprint 13 PR A2: per-session ownership mapping. The Router writes
+-- (session_id, agent_id) every time it dispatches a query so the
+-- ``POST /v1/sessions/{id}/answer`` resume path knows which agent to
+-- forward to. Last-writer-wins; a session that crosses agents (rare
+-- under normal use, but possible after explicit handoff) updates here.
+CREATE TABLE IF NOT EXISTS session_owners (
+    session_id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 

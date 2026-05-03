@@ -83,6 +83,23 @@ class TestContextIsolation:
         child = create_subagent_context(parent, agent_def=agent_def)
         assert child.model == "gpt-4o-mini"
 
+    def test_subagent_inherits_classified_latch(self) -> None:
+        """Sprint 13 follow-up: a fork must start at least as tainted
+        as its parent (one-way latch — never downgrades)."""
+        parent = AgentContext(session_id="s1", classified_latch=True)
+        child = create_subagent_context(parent)
+        assert child.classified_latch is True
+
+    def test_subagent_latch_does_not_bubble_back_to_parent(self) -> None:
+        """A subagent flipping the latch on its own forked context must
+        NOT mutate the parent's value — they're independent dataclass
+        instances. Tools that need parent-visible taint (e.g.
+        ``agent_as_tool``) write directly on the parent's context."""
+        parent = AgentContext(session_id="s1", classified_latch=False)
+        child = create_subagent_context(parent)
+        child.classified_latch = True
+        assert parent.classified_latch is False
+
     def test_create_subagent_inherits_parent_model_when_no_override(self) -> None:
         parent = AgentContext(session_id="s1", model="gpt-4o")
         child = create_subagent_context(parent)
