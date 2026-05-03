@@ -4,6 +4,143 @@ All notable changes to this package. anila-core is **not yet 1.0** — internal
 breaking changes are acceptable but always documented here. SemVer kicks in
 once we cut v1.0 (no concrete date).
 
+## v0.11.0 (2026-05-03) — Sprint 12 · Workspace, sandboxed tools, guardrails
+
+Sprint 12 ships the foundation for the three roadmap agents (data
+analysis / code review / file editing): a per-session capability-scoped
+workspace, file + shell tool suites that resolve every path through it,
+a V4A-style multi-file patch applier, and a per-tool guardrails layer.
+Deliberately skips openai-agents' full sandbox manifest / snapshot /
+materialization machinery — single-process single-host with a
+``temp dir + cap dict`` is enough; the per-agent Docker container is the
+hard isolation boundary.
+
+### Added — primitives
+
+* **Workspace** (`anila_core.workspace`):
+  - `Workspace` class — temp directory + :class:`WorkspaceCaps` + safe
+    path resolver. ``safe_path()`` blocks ``..`` traversal and
+    symlink escapes; ``relative()`` renders absolute paths back as
+    workspace-rooted POSIX strings the LLM can quote.
+  - :class:`WorkspaceCaps` (frozen dataclass) — `fs_read`, `fs_write`,
+    `network`, `exec_bash`, `exec_python`, `command_allowlist`,
+    `max_exec_seconds`, `max_workspace_size_mb`. Defaults: read +
+    write only; no network, no exec.
+  - :func:`make_workspace` factory + sync context-manager support;
+    `cleanup_after=False` opt-out for post-mortem inspection.
+  - :class:`PathEscapeError` / :class:`CapDeniedError` /
+    :class:`WorkspaceError` taxonomy.
+  - Root path overridable via ``ANILA_WORKSPACE_ROOT`` env var.
+
+* **File tools** (`anila_core.tools.files`) — five workspace-scoped
+  factories all routing paths through ``safe_path``:
+  - `file_read_tool` — line-numbered (`cat -n`-style) output, offset/limit windowing.
+  - `file_write_tool` — overwrite + create parent dirs; size cap aware.
+  - `file_edit_tool` — exact-string replacement; refuses on duplicate
+    matches unless ``replace_all=true``.
+  - `glob_tool` — recursive glob, capped at 250 results.
+  - `grep_tool` — regex search; ``files_with_matches`` (default) or
+    ``content`` mode; case-insensitive flag; ``path``+``glob`` filters.
+  - `all_file_tools(workspace)` convenience returns all five.
+
+* **Shell tools** (`anila_core.tools.shell`):
+  - `exec_bash_tool` — `asyncio.create_subprocess_shell` with
+    workspace cwd, scrubbed proxy env when network=False, kill on
+    ``max_exec_seconds`` timeout, optional ``command_allowlist``
+    enforcement, 8 KB output cap with ``[…truncated]`` marker.
+  - `exec_python_tool` — writes the script into the workspace, runs
+    ``sys.executable script.py`` with the same constraints.
+  - Both expose ``ANILA_WORKSPACE`` env var to subprocess.
+  - `all_shell_tools(workspace)` convenience.
+
+* **apply_patch** (`anila_core.tools.apply_patch`):
+  - V4A-style envelope (`*** Begin Patch` / `*** End Patch`) with
+    `*** Add File:`, `*** Update File:` (`@@`-delimited hunks with
+    ` `/`-`/`+` lines), `*** Delete File:` operations.
+  - `apply_patch(workspace, text)` programmatic + `apply_patch_tool`
+    factory for LLM use.
+  - Hunk matching: build "before" block (context + `-` lines) and
+    require **exactly one** match in the file — rejects on missing
+    or duplicate, prompting the LLM to add more context.
+  - Path safety identical to file tools (workspace-scoped).
+  - :class:`PatchParseError` / :class:`PatchApplyError`.
+
+* **Tool guardrails** (`anila_core.engine.guardrails`):
+  - :class:`InputGuardrail` / :class:`OutputGuardrail` Protocols.
+  - :class:`GuardrailResult` (ok / modified / reject) +
+    :class:`GuardrailChainResult`.
+  - Built-ins:
+    - :class:`RegexBlockInput` — regex over JSON-walked input;
+      ``mode='reject'`` blocks the call, ``mode='redact'`` substitutes.
+      Walks nested dicts / lists.
+    - :class:`RegexBlockOutput` — same for string outputs.
+    - :class:`MaxLengthOutput` — soft-cap with truncation marker.
+  - :func:`apply_input_guardrails` / :func:`apply_output_guardrails`
+    chain runners — first reject wins, modifications compose.
+
+### Modified
+
+* `models.tool.ToolDefinition` gained
+  ``input_guardrails: list[Any]`` + ``output_guardrails: list[Any]``
+  (lists kept ``Any`` to dodge the engine→models import direction
+  concern; Protocol is enforced at runtime in the registry).
+* `router.tool_router.ToolRegistry.execute` now runs input guardrails
+  after permission gates but before the tool body (rejections become
+  ``ToolResult(is_error=True)``; modifications substitute the input).
+  After the body, output guardrails run on the result content. Both
+  are imported lazily to avoid the circular dep with
+  ``engine/__init__.py``.
+* ``bypass_gates`` (Sprint 11) skips permission + plan-mode gates but
+  **does not** skip guardrails — guardrails are a data-validation
+  concern, separate from permission.
+* `engine/__init__.py` exports the new guardrail Protocols + built-ins.
+* `tools/__init__.py` exports the file / shell / apply_patch surfaces.
+
+### .gitignore
+
+* No change in this sprint — Sprint 9 already added `.anila/`. The new
+  default workspace root sits under the platform tempdir (or
+  ``$ANILA_WORKSPACE_ROOT``), so no repo-level ignores are needed.
+
+### Tests
+
+133 new tests across `test_workspace` (26 + 1 platform skip),
+`test_file_tools` (29), `test_shell_tools` (21), `test_apply_patch`
+(29), `test_tool_guardrails` (28). Full suite **565 passed, 1
+skipped** (up from 432 / 1). Lint clean, mypy net-zero added, 5
+pre-existing CJK / unrelated failures unchanged.
+
+### Migration
+
+* Existing tools / agents see no behavioural change — every Sprint 12
+  surface is opt-in (workspace must be constructed; file/shell tools
+  must be registered; guardrails default to empty lists).
+* The 三個 roadmap agents wire it like::
+
+      ws = make_workspace(caps=WorkspaceCaps(
+          exec_bash=True, exec_python=True,
+          network=True,  # for the code-review agent's git clone
+      ))
+      registry = ToolRegistry()
+      for t in [*all_file_tools(ws), *all_shell_tools(ws), apply_patch_tool(ws)]:
+          registry.register(t)
+      engine = QueryEngine(provider, registry, config, session=sess)
+
+* For destructive tools (`file_write`, `file_edit`, `apply_patch`,
+  `exec_bash`, `exec_python`) flip ``permission=ToolPermission.ASK``
+  (Sprint 11) when you want per-call user approval.
+
+### What's deliberately not in Sprint 12
+
+* openai-agents `sandbox/manifest.py` / `snapshot.py` / `materialization.py`
+  / `sandboxes/` / `session/` — see Sprint 12 design discussion: too
+  heavy for our single-process single-host shape.
+* Hard process isolation (Docker-in-Docker / firejail / nsjail) — the
+  per-agent Docker container at the CSP layer remains the hard
+  boundary; Workspace is the soft layer.
+* Output style / persona, schedule / cron, Task lifecycle API —
+  defer to Sprint 13+ if the use cases land.
+
 ## v0.10.0 (2026-05-02) — Sprint 11 · Governance & observability
 
 Sprint 11 layers governance + observability on top of Sprints 9-10.

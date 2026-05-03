@@ -253,8 +253,12 @@ anila-core/
         ├── tools/                 # dispatch_tool (Sprint 10: stateful + handoff),
         │                          # ask_user, plan_mode, todo_write,
         │                          # agent_as_tool (Sprint 10)
+        │                          # Sprint 12: files (read/write/edit/glob/grep),
+        │                          # shell (exec_bash/exec_python), apply_patch
         ├── tracing/               # Sprint 11: Span / Tracer /
         │                          # InMemoryProcessor / TracingHooks
+        ├── workspace/             # Sprint 12: capability-scoped sandbox
+        │                          # (Workspace + WorkspaceCaps + safe_path)
         │
         └── ──── Pillar 2 · shared infrastructure ────
             ├── security/          # credential_crypto + url_guard
@@ -308,6 +312,32 @@ anila-core/
 ---
 
 ## Release Notes
+
+### 2026-05-03 — v0.11.0 Sprint 12 · Workspace, sandboxed tools, guardrails
+
+Sprint 12 鋪三個 roadmap agent（資料分析 / 程式碼審查 / 檔案編輯）共用的基礎：per-session capability-scoped workspace、file + shell 工具套件、V4A 風格多檔 patch applier、per-tool guardrails。**故意不抄** openai-agents 的 sandbox manifest / snapshot / materialization — 我們是 single-process single-host，「temp dir + cap dict」就夠；硬隔離仍由 per-agent Docker container 負責。
+
+| 模組 | 來源 | 用途 |
+|---|---|---|
+| `workspace/` (`Workspace` + `WorkspaceCaps` + `safe_path` + `make_workspace`) | openai-agents `sandbox/` 精簡版（去 manifest / snapshot / materialization） | 每個 session 一個 capability-scoped temp dir；路徑解析阻 `..` 跳脫與 symlink escape |
+| `tools.files` (`file_read_tool` / `file_write_tool` / `file_edit_tool` / `glob_tool` / `grep_tool`) | claude-code `tools/{FileRead,FileWrite,FileEdit,GlobTool,GrepTool}` | 全部走 `Workspace.safe_path`；含 line-numbered output、size cap、replace_all 重複保護、glob/grep 截至 250 結果 |
+| `tools.shell` (`exec_bash_tool` / `exec_python_tool`) | claude-code `tools/{BashTool,REPLTool}` 精簡 | `asyncio` subprocess + workspace cwd + timeout + scrub proxy env when network=False + `command_allowlist` + 8 KB 輸出截斷 |
+| `tools.apply_patch` (V4A envelope) | openai-agents `sandbox/apply_patch.py` + `apply_diff.py` | Add / Update / Delete File 操作，hunk 用「context + ±lines」做唯一 string match，找不到或重複 match 拒絕 |
+| `engine.guardrails` (`InputGuardrail` / `OutputGuardrail` Protocols + `RegexBlockInput/Output` + `MaxLengthOutput`) | openai-agents `tool_guardrails.py` | per-tool input 驗證 + output 過濾；reject / redact mode；接到 `ToolDefinition.input_guardrails` / `output_guardrails`，由 `ToolRegistry.execute` 執行；`bypass_gates` 不會跳過 guardrails |
+
+`Workspace` 預設 caps 是**安全的** — fs RW only，網路 + exec 都關。要 exec 必須在 `make_workspace(caps=...)` 顯式打開：
+
+```python
+ws = make_workspace(caps=WorkspaceCaps(
+    exec_bash=True, exec_python=True, network=True,
+))
+for t in [*all_file_tools(ws), *all_shell_tools(ws), apply_patch_tool(ws)]:
+    registry.register(t)
+```
+
+破壞性工具（`file_write` / `file_edit` / `apply_patch` / `exec_*`）建議在 production 設 `permission=ToolPermission.ASK`（Sprint 11）— Sprint 9 的 `tool_approval` interrupt + web UI 接到對話批准 flow 即可。
+
+133 新測試 / lint clean / mypy 持平 / 5 個 pre-existing failures 不變。完整 wire-up 範例與**為什麼故意不做** sandbox manifest / snapshot 見 [`CHANGELOG.md`](./CHANGELOG.md) v0.11.0。
 
 ### 2026-05-02 — v0.10.0 Sprint 11 · Governance & observability
 

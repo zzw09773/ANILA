@@ -197,11 +197,42 @@ class ToolRegistry:
                     interrupt=interrupt,
                 )
 
+        # Sprint 12 PR 5: input guardrails fire before the tool body so
+        # rejections never touch the implementation. They compose with
+        # ALLOW permission (DENY / ASK already short-circuited above).
+        # ``bypass_gates`` does NOT skip guardrails — they're a data
+        # layer, not a permission layer.
+        # Lazy import avoids a circular dep: engine/__init__ imports
+        # query_engine which imports this module.
+        effective_input = call.input
+        if tool.input_guardrails:
+            from ..engine.guardrails import apply_input_guardrails
+            input_chain = apply_input_guardrails(
+                list(tool.input_guardrails),
+                tool_name=call.name,
+                tool_input=call.input,
+            )
+            if not input_chain.passed:
+                return ToolResult(
+                    tool_call_id=call.id,
+                    content=(
+                        f"input rejected by guardrail "
+                        f"{input_chain.rejected_by!r}: {input_chain.reason}"
+                    ),
+                    is_error=True,
+                )
+            if input_chain.modified_value is not None:
+                effective_input = input_chain.modified_value
+
         try:
             if asyncio.iscoroutinefunction(tool.implementation):
-                raw = await tool.implementation(call.input, **(context or {}))
+                raw = await tool.implementation(
+                    effective_input, **(context or {})
+                )
             else:
-                raw = tool.implementation(call.input, **(context or {}))
+                raw = tool.implementation(
+                    effective_input, **(context or {})
+                )
 
             # Approvals primitive: when a tool returns InterruptItem the
             # run loop must pause rather than forward content to the
@@ -232,6 +263,34 @@ class ToolRegistry:
                 content = json.dumps(raw, ensure_ascii=False)
             else:
                 content = str(raw)
+
+            # Sprint 12 PR 5: output guardrails. Compose redactions /
+            # length caps before the model sees the result. Reject
+            # turns the call into an error result.
+            # Lazy import — see input guardrail comment above for why.
+            if tool.output_guardrails:
+                from ..engine.guardrails import apply_output_guardrails
+                output_chain = apply_output_guardrails(
+                    list(tool.output_guardrails),
+                    tool_name=call.name,
+                    output=content,
+                )
+                if not output_chain.passed:
+                    return ToolResult(
+                        tool_call_id=call.id,
+                        content=(
+                            f"output rejected by guardrail "
+                            f"{output_chain.rejected_by!r}: "
+                            f"{output_chain.reason}"
+                        ),
+                        is_error=True,
+                    )
+                if output_chain.modified_value is not None:
+                    content = (
+                        output_chain.modified_value
+                        if isinstance(output_chain.modified_value, str)
+                        else str(output_chain.modified_value)
+                    )
 
             return ToolResult(tool_call_id=call.id, content=content)
 

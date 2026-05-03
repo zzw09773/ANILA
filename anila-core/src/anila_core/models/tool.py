@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Callable, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ToolSafety(str, Enum):
@@ -51,8 +51,14 @@ class ToolDefinition(BaseModel):
     safety: ToolSafety = ToolSafety.READ_ONLY
     permission: ToolPermission = ToolPermission.ALLOW
     implementation: Optional[Callable[..., Any]] = Field(default=None, exclude=True)
+    # Sprint 12 PR 5: per-tool guardrails. Typed as ``list[Any]`` to
+    # avoid pulling in the engine layer here (Protocol enforcement
+    # happens at runtime in ToolRegistry.execute). See
+    # :mod:`anila_core.engine.guardrails`.
+    input_guardrails: list[Any] = Field(default_factory=list, exclude=True)
+    output_guardrails: list[Any] = Field(default_factory=list, exclude=True)
 
-    model_config = {"arbitrary_types_allowed": True}
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def to_openai_schema(self) -> dict[str, Any]:
         """Generate OpenAI-compatible tool schema.

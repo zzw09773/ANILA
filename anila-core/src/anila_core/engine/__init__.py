@@ -9,6 +9,17 @@ from .approvals import (
     to_record,
 )
 from .budget_tracker import BudgetTracker, TokenBudgetDecision, check_token_budget
+from .guardrails import (
+    GuardrailChainResult,
+    GuardrailResult,
+    InputGuardrail,
+    MaxLengthOutput,
+    OutputGuardrail,
+    RegexBlockInput,
+    RegexBlockOutput,
+    apply_input_guardrails,
+    apply_output_guardrails,
+)
 from .handoff import (
     HandoffFilter,
     LastNFilter,
@@ -42,4 +53,14 @@ __all__ = [
     # Lifecycle hooks (Sprint 11 PR 1)
     "RunHooks",
     "RunHooksProtocol",
+    # Tool guardrails (Sprint 12 PR 5)
+    "GuardrailResult",
+    "GuardrailChainResult",
+    "InputGuardrail",
+    "OutputGuardrail",
+    "RegexBlockInput",
+    "RegexBlockOutput",
+    "MaxLengthOutput",
+    "apply_input_guardrails",
+    "apply_output_guardrails",
 ]
