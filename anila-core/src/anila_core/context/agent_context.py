@@ -16,6 +16,15 @@ from typing import Any, Awaitable, Callable, Optional
 from ..models.agent import AgentDefinition, Todo
 from ..models.message import Message
 
+# Forward declaration to avoid hard import (caller_context imports
+# from ``fastapi``; agent_context is imported by code paths that
+# don't always have FastAPI available, e.g. CLI tooling). Type
+# checkers see the real class via TYPE_CHECKING.
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..api.caller_context import CallerContext
+
 
 # Async (event_name, payload) → None — see AgentContext.event_emitter.
 EventEmitter = Callable[[str, dict[str, Any]], Awaitable[None]]
@@ -65,6 +74,21 @@ class AgentContext:
     remainder of the turn. Forks (``create_subagent_context``) inherit
     the parent's value so subagents start at least as tainted as their
     parent."""
+
+    caller: Optional["CallerContext"] = None
+    """Route-3 Phase 3: identity headers forwarded by CSP for this run.
+
+    Populated by ``api.caller_context.extract_caller_context`` before
+    the engine starts. Carries the calling user's id + the agent's
+    own service token, which together let the agent call back into
+    CSP for cross-tenant reads (notably user memory facts via
+    :func:`anila_core.memory.long_term.clients.make_user_memory_reader`).
+
+    None when the request didn't come through CSP (dev / test
+    curl). Agent code should None-check before using identity-bound
+    features and degrade to "no user attribution" rather than fail.
+    Forked subagent contexts inherit the parent's caller verbatim —
+    a subagent serves the same user as its parent."""
 
     def __post_init__(self) -> None:
         if self.abort_signal is None:
@@ -135,4 +159,8 @@ def create_subagent_context(
         # parent-visible taint should set it on the parent's context
         # directly, which is what ``agent_as_tool`` does.
         classified_latch=parent.classified_latch,
+        # Subagent inherits the parent's caller — same user, same
+        # service token. Pass-by-reference because CallerContext is
+        # frozen (immutable), so sharing is safe.
+        caller=parent.caller,
     )

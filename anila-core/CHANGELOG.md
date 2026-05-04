@@ -4,6 +4,101 @@ All notable changes to this package. anila-core is **not yet 1.0** — internal
 breaking changes are acceptable but always documented here. SemVer kicks in
 once we cut v1.0 (no concrete date).
 
+## v0.13.0 (2026-05-04) — Sprint 14 · Unified user-tenant memory layer (route 3)
+
+Pulls the platform-level user memory feature (CSP P1/P2/P3) under
+the anila-core umbrella so semantics live with the SDK, not the
+backend that hosts the storage. Restructures the memory module
+into a clean short-term / long-term / backends taxonomy and adds
+the Phase-3 cross-tenant client + agent runtime plug-in.
+
+### Added — `anila_core.memory` restructure
+
+* **`memory/short_term/`** — `Session` Protocol + in-memory / sqlite
+  adapters (was `session.py` / `memory_session.py` / `sqlite_session.py`
+  at the top level). Same public API; old paths preserved as
+  re-export shims so existing call sites (router_server,
+  query_engine, handoff models) keep working untouched.
+* **`memory/long_term/`** — new home for cross-session memory:
+  - `models.py` — `UserFactDTO`, `RetrievedChunk`,
+    `MemoryReadResult` (frozen dataclasses; ORM-free).
+  - `extraction.py` — `EXTRACTION_SYSTEM_PROMPT`,
+    `parse_extraction_response`, `format_transcript_for_extraction`.
+  - `embedding.py` — embedding contract (`EMBED_DIM=4000`,
+    `EMBED_NATIVE_DIM=4096`, `DEFAULT_EMBED_MODEL`,
+    `truncate_embedding`).
+  - `adapter.py` — `MemoryAdapter` Protocol (9 async methods)
+    that storage backends implement. `@runtime_checkable` so
+    callers can `isinstance`-check.
+  - `backends/filesystem/` — the legacy `MemdirManager` family
+    (manager / extractor / selector / consolidator) moved as a
+    backend implementation; old paths preserved as shims.
+  - `backends/postgres/` — contract stub; the concrete
+    `PostgresMemoryAdapter` lives in CSP because it owns the
+    SQLAlchemy session + alembic.
+  - `clients/` — HTTP clients for cross-tenant access:
+    `HttpUserFactReader`, `UserFactReadError`,
+    `make_user_memory_reader` factory.
+
+### Added — Phase 3 cross-tenant agent runtime plug-in
+
+* **`api/caller_context.py`** — `CallerContext` dataclass + the
+  `extract_caller_context` FastAPI dependency. Reads the headers
+  CSP's `_build_downstream_headers` sets on every dispatched
+  agent request (`X-ANILA-User-Id`, `X-ANILA-User-Email`,
+  `X-CSP-Service-Token`) and resolves the `csp_base_url` from
+  the `ANILA_CSP_BASE_URL` env. Stashes the result on
+  `request.state.caller_context` so background tasks can recover
+  it without re-parsing.
+* **`AgentContext.caller`** — new optional field threaded into
+  every agent run. `create_subagent_context` propagates it
+  verbatim so a sub-agent serves the same user as its parent.
+* **`make_user_memory_reader(caller)`** — convenience factory
+  that returns a configured `HttpUserFactReader` or `None` when
+  the caller is missing any of (`user_id`, `service_token`,
+  `csp_base_url`). Lets agent code do
+  `reader = make_user_memory_reader(ctx.caller)` and degrade to
+  "no facts" without any conditional ceremony when running
+  outside the CSP proxy.
+
+### Tests
+
+* 14 unit tests for the user-tenant DTO / extraction / embedding /
+  adapter contract (`test_memory_user_layer.py`).
+* 6 respx-mocked tests for `HttpUserFactReader` covering
+  happy-path + 401 / 403 / network-error / empty / trailing-slash
+  edge cases (`test_memory_user_http_client.py`).
+* 11 tests for `CallerContext` parsing, factory gating, and
+  subagent caller propagation (`test_caller_context.py`).
+* End-to-end validated against a running CSP container with a
+  real `csk-` agent service token: simulated agent receives
+  request with CSP headers → `extract_caller_context` →
+  `make_user_memory_reader` → `HttpUserFactReader` → returns
+  the smoke-user's facts. Audit log row written.
+
+### Backward compatibility
+
+* All pre-v0.13 import paths preserved as shims:
+  - `anila_core.memory.session` → `short_term.protocol`
+  - `anila_core.memory.memory_session` → `short_term.in_memory`
+  - `anila_core.memory.sqlite_session` → `short_term.sqlite`
+  - `anila_core.memory.memdir` → `long_term.backends.filesystem.manager`
+  - `anila_core.memory.extract_memories` → `long_term.backends.filesystem.extractor`
+  - `anila_core.memory.relevance_selector` → `long_term.backends.filesystem.selector`
+  - `anila_core.memory.consolidation` → `long_term.backends.filesystem.consolidator`
+  - `anila_core.memory.user` → `long_term`
+* Internal anila-core production code (api/ engine/) updated to
+  use canonical paths. Tests left on shims to exercise the
+  backward-compat surface.
+* No public method signatures changed.
+
+### Stats
+
+* 655 / 655 anila-core unit tests pass (was 638; +17 new).
+* No CSP-side schema migrations beyond the route-3 Phase 1
+  `user_facts` / `conversation_memory_chunks` (shipped via CSP
+  migrations 0030 / 0031 in the previous release).
+
 ## v0.12.0 (2026-05-03) — Sprint 13 · Router resume + runtime hot-reload
 
 Sprint 13 closes the loop on the Sprint 9-12 features by wiring them

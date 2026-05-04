@@ -11,6 +11,11 @@ CSP. Putting the client here means an agent SDK consumer doesn't
 have to depend on the platform backend package just to read user
 facts.
 """
+from .factory import make_user_memory_reader
 from .http_user_facts import HttpUserFactReader, UserFactReadError
 
-__all__ = ["HttpUserFactReader", "UserFactReadError"]
+__all__ = [
+    "HttpUserFactReader",
+    "UserFactReadError",
+    "make_user_memory_reader",
+]
