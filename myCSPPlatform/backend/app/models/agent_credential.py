@@ -47,7 +47,7 @@ from sqlalchemy import (
     String,
     Text,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import backref, relationship
 
 from app.database import Base
 
@@ -102,7 +102,15 @@ class AgentCredential(Base):
         DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
     )
 
-    agent = relationship("Agent", backref="credentials")
+    # passive_deletes=True: trust the DB-level CASCADE on agent_credentials.
+    # agent_id (NOT NULL). Without it, SQLAlchemy tries to NULL out child
+    # agent_id on Agent delete and fails the NOT NULL check before the
+    # CASCADE can fire — manifests as 500 on DELETE /api/agents/{id}
+    # whenever the agent has at least one credential row.
+    agent = relationship(
+        "Agent",
+        backref=backref("credentials", passive_deletes=True),
+    )
     revoker = relationship("User", foreign_keys=[revoked_by])
 
     __table_args__ = (

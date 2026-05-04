@@ -22,7 +22,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine, Optional
 
-from ..memory.session import Session
+from ..memory.short_term import Session
 from ..models.message import (
     AssistantMessage,
     Message,

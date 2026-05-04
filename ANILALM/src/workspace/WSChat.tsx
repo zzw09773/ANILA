@@ -43,6 +43,18 @@ const RAG_MIN_SCORE = 0.3
 // users who want the full text click the citation card to drill in.
 const RAG_CONTENT_LIMIT = 1200
 
+// Hard language directive prepended to every system prompt. Placed first so
+// it dominates any later instructions; covers the common drift modes
+// (English fallback, simplified-zh from quoted source material).
+const ZHTW_DIRECTIVE = [
+  '【語言規則・最高優先】',
+  '- 一律以繁體中文（zh-TW，台灣慣用語）回答。',
+  '- 即使使用者以英文、簡體中文、日文或其他語言提問，仍以繁體中文回答。',
+  '- 程式碼、API 名稱、技術專有名詞可保留原文，說明文字一律使用繁體中文。',
+  '- 引用簡體中文原文時，請於引用後加上繁體中文翻譯或對照。',
+  '- 絕不在輸出中混用簡體字。',
+].join('\n')
+
 interface WSChatProps {
   flex: number
 }
@@ -161,7 +173,8 @@ export function WSChat({ flex }: WSChatProps) {
 
       if (indexedCount === 0) {
         return [
-          '你是 ANILA LM 的研究助理，使用繁體中文回答。',
+          ZHTW_DIRECTIVE,
+          '你是 ANILA LM 的研究助理。',
           `知識庫名稱：「${collName}」。`,
           '使用者尚未上傳已完成索引的文件，請依使用者輸入直接作答，',
           '並提醒可上傳資料以獲得引用支撐的回答。',
@@ -170,7 +183,8 @@ export function WSChat({ flex }: WSChatProps) {
 
       if (hits.length === 0) {
         return [
-          '你是 ANILA LM 的研究助理，使用繁體中文回答。',
+          ZHTW_DIRECTIVE,
+          '你是 ANILA LM 的研究助理。',
           `當前知識庫：「${collName}」（共 ${indexedCount} 份已索引文件）。`,
           '本次查詢在向量檢索中沒有命中相似度 ≥ 0.3 的段落。請：',
           '1) 先告知使用者「已搜尋但無高相似度命中」，',
@@ -191,7 +205,8 @@ export function WSChat({ flex }: WSChatProps) {
         .join('\n\n')
 
       return [
-        '你是 ANILA LM 的研究助理，使用繁體中文回答，並以使用者知識庫的段落為依據。',
+        ZHTW_DIRECTIVE,
+        '你是 ANILA LM 的研究助理，以使用者知識庫的段落為依據作答。',
         `當前知識庫：「${collName}」。`,
         '',
         '以下是針對本次提問檢索到的相關段落（已依相似度排序）：',

@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 from typing import Any, cast
 
-from ..memory.session import InterruptRecord, Session
+from ..memory.short_term import InterruptRecord, Session
 from ..models.interrupt import InterruptItem, InterruptKind
 from ..models.message import ToolCall, ToolResult, UserMessage
 

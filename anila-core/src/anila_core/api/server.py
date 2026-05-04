@@ -24,8 +24,7 @@ from ..config import settings
 from ..context.agent_context import AgentContext, set_current_context
 from ..engine.approvals import RunPaused
 from ..engine.query_engine import QueryConfig, QueryEngine
-from ..memory.session import Session
-from ..memory.sqlite_session import SqliteSession
+from ..memory.short_term import Session, SqliteSession
 from ..models.message import Usage, UserMessage
 from ..providers.base import Provider
 from ..router.tool_router import ToolRegistry

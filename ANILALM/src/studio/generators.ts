@@ -19,6 +19,18 @@ const STUDIO_TOP_K = 12
 const STUDIO_MIN_SCORE = 0.25
 const STUDIO_CONTENT_LIMIT = 800
 
+// Hard language directive prepended to every Studio system prompt. Same
+// rules as WSChat.ZHTW_DIRECTIVE — duplicated locally instead of imported
+// to keep generators.ts free of cross-feature React deps.
+const ZHTW_DIRECTIVE = [
+  '【語言規則・最高優先】',
+  '- 一律以繁體中文（zh-TW，台灣慣用語）輸出。',
+  '- 即使檢索到的段落或使用者輸入是英文 / 簡體中文 / 其他語言，仍以繁體中文撰寫。',
+  '- 程式碼、API 名稱、技術專有名詞可保留原文，說明文字一律繁體中文。',
+  '- 引用簡體中文原文時，於引用後加上繁體中文翻譯或對照。',
+  '- 絕不在輸出中混用簡體字。',
+].join('\n')
+
 function newId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
@@ -170,8 +182,9 @@ export async function generateReport({
   const presetHint = REPORT_PRESET_HINTS[preset] ?? ''
   const hits = await retrieveContext(collection, preset, extraInstructions)
   const system = [
+    ZHTW_DIRECTIVE,
+    '',
     '你是 ANILA LM 的深度報告生成器。請輸出純 Markdown（不要包在 ```markdown 代碼塊內）。',
-    '使用繁體中文。',
     '結構規範：',
     '- 第一行使用 # 標題',
     '- 接著一段 100-200 字的 TL;DR（粗體前置「TL;DR：」）',
@@ -248,6 +261,8 @@ export async function generateSlides({
   const countHint = SLIDE_COUNT_HINT[preset] ?? '預設 10-12 張投影片。'
   const hits = await retrieveContext(collection, preset, extraInstructions)
   const system = [
+    ZHTW_DIRECTIVE,
+    '',
     '你是 ANILA LM 的簡報草稿生成器。',
     '',
     '【絕對規則】整個回應必須是、且只能是一個 JSON 物件：',
@@ -260,7 +275,7 @@ export async function generateSlides({
     '格式：',
     '{ "title": "簡報標題", "slides": [{"title": "...", "bullets": ["..."], "speakerNotes": "..."}] }',
     '',
-    '使用繁體中文。每張投影片 3-6 個 bullet，speakerNotes 寫成 2-4 句講者口述稿。',
+    '每張投影片 3-6 個 bullet，speakerNotes 寫成 2-4 句講者口述稿。',
     `數量：${countHint}`,
     '',
     '若使用者訊息提供了已檢索到的段落，請以那些段落為事實依據；bullets 可在末尾用 (參 [N]) 標註來源。',

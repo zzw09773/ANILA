@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from ..memory.sqlite_session import _get_connection
+from ..memory.short_term.sqlite import _get_connection
 
 
 async def set_session_owner(
