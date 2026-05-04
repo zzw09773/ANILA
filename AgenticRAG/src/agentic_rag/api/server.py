@@ -16,7 +16,7 @@ import asyncio
 import logging
 from typing import Any, AsyncIterator, Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -25,10 +25,9 @@ from ..engine.query_engine import QueryConfig, QueryEngine
 from ..models.message import Usage, UserMessage
 from ..providers.base import Provider
 from ..router.tool_router import ToolRegistry
-from ..runtime.user_memory import (
-    AgenticRagCallerContext,
-    extract_caller_context,
-    fetch_user_facts,
+from ..runtime.personalization import (
+    NoopUserContextProvider,
+    UserContextProvider,
     format_user_facts_block,
 )
 from .documents import router as documents_router, set_ingestion_service
@@ -93,23 +92,27 @@ class AwaySummaryResponse(BaseModel):
     session_id: str
 
 
-async def _enrich_system_prompt_with_user_memory(
+async def _enrich_system_prompt_with_user_facts(
     base_prompt: Optional[str],
-    caller: AgenticRagCallerContext,
+    provider: UserContextProvider,
+    request: Request,
 ) -> Optional[str]:
     """Prepend a "user background" block to the agent's system prompt.
 
-    Pulls the caller's facts from CSP via ``fetch_user_facts``
-    (route-3 cross-tenant read). Failures are absorbed inside the
-    fetch — empty list means "no enrichment", chat proceeds as-is.
+    Pulls user facts via the configured ``UserContextProvider``
+    (Noop by default; operator-supplied implementation when
+    AgenticRAG is fronting an identity / personalization backend).
+    Failures absorbed by the provider's contract — empty list means
+    "no enrichment", chat proceeds as-is.
 
     Returns the enriched prompt (or the original when there's
     nothing to add). Caller passes the result through to
-    :class:`QueryConfig` unchanged.
+    :class:`QueryConfig` / ``build_rag_agent`` unchanged.
+
+    See ``docs/examples/memory.md`` for example provider
+    implementations (HTTP backend / static dict / DB-backed).
     """
-    if not caller.can_read_user_memory:
-        return base_prompt
-    facts = await fetch_user_facts(caller)
+    facts = await provider.get_user_facts(request)
     block = format_user_facts_block(facts)
     if not block:
         return base_prompt
@@ -133,6 +136,7 @@ def create_app(
     api_dev_mode: bool = False,
     upload_dir: str = "/tmp/anila_uploads",
     csp_service_token: Optional[str] = None,
+    user_context_provider: Optional[UserContextProvider] = None,
 ) -> FastAPI:
     """Create and return the FastAPI application.
 
@@ -155,7 +159,17 @@ def create_app(
         csp_service_token:   Expected ``X-CSP-Service-Token`` value when this
                              agent runs behind myCSPPlatform. When None/empty
                              the CSP middleware runs in pass-through dev mode.
+        user_context_provider:
+                             Pluggable source of per-request user
+                             personalization data injected into agent
+                             prompts. Defaults to
+                             :class:`NoopUserContextProvider` (no
+                             enrichment). See ``docs/examples/memory.md``
+                             for example implementations.
     """
+    if user_context_provider is None:
+        user_context_provider = NoopUserContextProvider()
+
     app = FastAPI(
         title="AgenticRAG",
         description="Agent Runtime — query loop, tools, memory, compact, RAG",
@@ -184,20 +198,19 @@ def create_app(
     @app.post("/chat")
     async def chat(
         request: ChatRequest,
-        caller: AgenticRagCallerContext = Depends(extract_caller_context),
+        raw_request: Request,
     ) -> StreamingResponse:
         """Start a query loop and stream SSE events back to the client.
 
-        ``caller`` is populated from CSP-forwarded headers
-        (X-ANILA-User-Id / X-CSP-Service-Token / etc.) when this
-        AgenticRAG instance is fronted by the CSP proxy. We use it
-        to enrich the system prompt with the user's long-term facts
-        (route-3 cross-tenant read). When the caller lacks
-        credentials (dev curl, no proxy) the prompt passes through
-        unchanged.
+        The configured ``user_context_provider`` (Noop by default) is
+        called with the raw FastAPI ``Request`` so it can inspect
+        headers / state / cookies as needed by the operator's
+        backend. Returned facts are prepended to the system prompt
+        as a Markdown block; the agent treats them as context and
+        keeps its tool / RAG behaviour unchanged.
         """
-        enriched_prompt = await _enrich_system_prompt_with_user_memory(
-            request.system_prompt, caller
+        enriched_prompt = await _enrich_system_prompt_with_user_facts(
+            request.system_prompt, user_context_provider, raw_request
         )
         config = QueryConfig(
             max_turns=request.max_turns,
@@ -296,7 +309,7 @@ def create_app(
     @app.post("/agentic-chat")
     async def agentic_chat(
         request: ChatRequest,
-        caller: AgenticRagCallerContext = Depends(extract_caller_context),
+        raw_request: Request,
     ) -> StreamingResponse:
         """Tool-driven AgenticRAG endpoint, framework-runtime path.
 
@@ -334,11 +347,10 @@ def create_app(
                 ),
             )
 
-        # Route-3 cross-tenant read: prepend user-memory block to the
-        # caller-supplied system prompt when CSP forwarded credentials.
-        # Falls through unchanged for dev curl with no proxy in front.
-        enriched_prompt = await _enrich_system_prompt_with_user_memory(
-            request.system_prompt, caller
+        # Personalization: prepend user-facts block via the configured
+        # provider (Noop default → no enrichment, prompt passes through).
+        enriched_prompt = await _enrich_system_prompt_with_user_facts(
+            request.system_prompt, user_context_provider, raw_request
         )
 
         # Lift host-registered AgenticRAG ToolDefinitions into framework
