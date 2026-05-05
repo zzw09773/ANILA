@@ -122,13 +122,14 @@ export const Dropdown = ({ trigger, children, align = "left", width = 280, maxHe
       const vh = window.innerHeight;
       const margin = 8;
 
-      // Vertical: below if it fits, otherwise above; clamp to viewport.
+      // Vertical: prefer below; flip above only if below clearly doesn't
+      // fit AND above has more room. When flipping above, anchor the panel
+      // by its BOTTOM edge to the trigger's top — anchoring by `top` would
+      // reserve maxHeight worth of space and leave a large empty gap above
+      // the trigger when the menu actually has only a couple of items.
       const spaceBelow = vh - rect.bottom;
       const spaceAbove = rect.top;
       const useTop = spaceBelow < maxHeight && spaceAbove > spaceBelow;
-      const topPx = useTop
-        ? Math.max(margin, rect.top - 4 - maxHeight)
-        : Math.min(rect.bottom + 4, vh - margin - Math.min(maxHeight, 120));
 
       // Horizontal: start from the preferred edge, then clamp so the
       // whole panel always sits inside [margin, vw - margin].
@@ -140,13 +141,23 @@ export const Dropdown = ({ trigger, children, align = "left", width = 280, maxHe
       }
       leftPx = Math.max(margin, Math.min(leftPx, vw - margin - width));
 
-      setPanelStyle({
+      const baseStyle = {
         position: "fixed",
-        top: topPx,
         left: leftPx,
         width,
         maxHeight,
-      });
+      };
+      if (useTop) {
+        setPanelStyle({
+          ...baseStyle,
+          bottom: Math.max(margin, vh - rect.top + 4),
+        });
+      } else {
+        setPanelStyle({
+          ...baseStyle,
+          top: Math.min(rect.bottom + 4, vh - margin - 24),
+        });
+      }
     };
 
     computePosition();

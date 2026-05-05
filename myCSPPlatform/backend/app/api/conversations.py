@@ -101,6 +101,13 @@ class ConversationOut(BaseModel):
     collection_id: Optional[int] = None
     classified: bool
     classified_at: Optional[datetime]
+    # P3: TRUE when ``classified`` was set by the platform's memory
+    # inheritance latch rather than by an agent's requires_encryption
+    # flag or an admin's manual classify action. The UI uses this to
+    # render a different banner ("此對話因引用過往加密記憶而升級為機密"
+    # vs the existing "此對話為機密"). Always FALSE on rows pre-dating
+    # migration 0031, so old data renders as before.
+    classification_inherited: bool = False
     created_at: datetime
     updated_at: datetime
     model_config = {"from_attributes": True}

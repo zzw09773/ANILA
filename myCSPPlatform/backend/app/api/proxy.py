@@ -1,5 +1,8 @@
 """OpenAI-compatible API proxy endpoints."""
+import asyncio
+import logging
 import time
+from typing import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -8,8 +11,225 @@ from app.database import get_db
 from app.middleware.caller import Caller, get_caller
 from app.models.agent import Agent, UserAgentPermission
 from app.models.model_registry import ModelRegistry
+from app.services import memory_service
 from app.services.api_key_service import check_model_permission, check_agent_permission
 from app.services.proxy_service import build_default_anila_meta, proxy_request, proxy_stream
+
+logger = logging.getLogger(__name__)
+
+
+def _coerce_conversation_id(raw: str | None) -> int | None:
+    """Convert the X-ANILA-Conversation-Id header to int for FK use.
+
+    The header is free-form per the proxy contract — clients send the
+    int row PK as a string today, but legacy / external callers may
+    send non-numeric ids (e.g. UUIDs). Memory write paths need a real
+    FK, so non-coercible values disable the writer for this turn but
+    still allow the reader (which only depends on user_id).
+    """
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _latch_inherited_classification(db: Session, conversation_id: int) -> None:
+    """Mark the conversation as classified-via-inheritance, one-shot.
+
+    Idempotent — calling twice on the same row is a no-op (the WHERE
+    clause filters out rows already in the inherited state). Doesn't
+    overwrite a manual / agent-driven classification that didn't go
+    through inheritance: those rows already have classified=true and
+    classification_inherited=false, and the WHERE clause skips them.
+    Net effect: ``classification_inherited`` only becomes TRUE when
+    the latch path is the first thing to flip it.
+
+    The current behaviour is "either path can flip classified=true,
+    only the first path stamps the timestamp / source flags". A
+    cleaner design would model classification as an event log rather
+    than a snapshot, but a single boolean + timestamp is enough for
+    P3's UI needs and avoids a much larger schema migration.
+    """
+    from sqlalchemy import text as sql_text
+    db.execute(
+        sql_text(
+            """
+            UPDATE conversations
+               SET classified = TRUE,
+                   classification_inherited = TRUE,
+                   classified_at = COALESCE(classified_at, CURRENT_TIMESTAMP)
+             WHERE id = :conv_id
+               AND classification_inherited = FALSE
+            """
+        ),
+        {"conv_id": conversation_id},
+    )
+    db.commit()
+
+
+def _extract_assistant_text(payload: dict | None) -> str | None:
+    """Pull the assistant message text out of an OpenAI chat response."""
+    if not isinstance(payload, dict):
+        return None
+    choices = payload.get("choices") or []
+    for c in choices:
+        if not isinstance(c, dict):
+            continue
+        msg = c.get("message") or {}
+        content = msg.get("content")
+        if isinstance(content, str) and content:
+            return content
+    return None
+
+
+def _extract_latest_user_message(body: dict) -> str | None:
+    """Pull the most recent user-role message text out of an OpenAI body."""
+    messages = body.get("messages") or []
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            return content
+        # Multimodal content: concatenate text parts only — image / audio
+        # parts are dropped because the embedder is text-only.
+        if isinstance(content, list):
+            parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
+            joined = " ".join(p for p in parts if p)
+            return joined or None
+    return None
+
+
+async def _inject_memory(
+    db: Session,
+    user_id: int,
+    body: dict,
+    *,
+    exclude_conversation_id: int | None,
+) -> memory_service.MemoryReadResult | None:
+    """Mutate ``body`` in-place to prepend a memory block to system msg.
+
+    Returns the read result (so the caller can inspect
+    ``encryption_inherited``) or None when there's no user message to
+    embed against. Failures are swallowed and logged — memory must
+    not break chat.
+    """
+    user_text = _extract_latest_user_message(body)
+    if not user_text:
+        return None
+    try:
+        result = await memory_service.build_memory_block(
+            db,
+            user_id=user_id,
+            latest_user_message=user_text,
+            exclude_conversation_id=exclude_conversation_id,
+        )
+    except Exception:
+        logger.exception("memory_service: build_memory_block failed user_id=%s", user_id)
+        return None
+
+    if not result.block:
+        return result
+
+    messages = list(body.get("messages") or [])
+    # Find a leading system message to prepend the memory block to.
+    # Some clients send the system role as messages[0]; if there isn't
+    # one, we insert a fresh system message at index 0 so the memory
+    # block always lands BEFORE the assistant sees user content.
+    if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system":
+        existing = messages[0].get("content") or ""
+        if isinstance(existing, str):
+            messages[0] = {**messages[0], "content": f"{result.block}\n\n{existing}"}
+        else:
+            # Multimodal system content — push memory as a sibling text
+            # part rather than touching the existing parts list.
+            messages[0] = {
+                **messages[0],
+                "content": [{"type": "text", "text": result.block}, *list(existing)],
+            }
+    else:
+        messages.insert(0, {"role": "system", "content": result.block})
+    body["messages"] = messages
+    return result
+
+
+def _schedule_memory_write(
+    *,
+    user_id: int,
+    conversation_id: int | None,
+    user_message: str | None,
+    assistant_message: str | None,
+    is_encrypted: bool,
+) -> None:
+    """Fire-and-forget the post-turn memory writer.
+
+    Skips silently if the conversation FK is missing (legacy header
+    formats) or either side of the turn is empty.
+    """
+    if conversation_id is None or not user_message or not assistant_message:
+        return
+    try:
+        asyncio.create_task(
+            memory_service.persist_turn(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                user_message=user_message,
+                assistant_message=assistant_message,
+                is_encrypted=is_encrypted,
+            )
+        )
+    except RuntimeError:
+        # No running event loop (shouldn't happen inside FastAPI but
+        # be defensive — proxy.py is also imported in test contexts).
+        logger.warning("memory_service: no event loop, skipping persist_turn")
+
+
+async def _tee_stream_capture_assistant(
+    upstream: AsyncIterator[str],
+    *,
+    on_complete: callable,
+) -> AsyncIterator[str]:
+    """Pass SSE chunks through while collecting assistant text.
+
+    The upstream generator (``proxy_stream``) emits server-sent-event
+    blocks; we forward them verbatim and inspect ``data:`` lines to
+    pull out the assistant delta text. After the stream finishes,
+    ``on_complete`` is called with the assembled assistant string so
+    the memory writer can persist the turn.
+    """
+    import json
+    parts: list[str] = []
+    try:
+        async for block in upstream:
+            # SSE block format: "event: foo\ndata: {...}\n\n" — extract
+            # the data payload and pull "delta.content" if present.
+            for line in block.split("\n"):
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if not payload or payload == "[DONE]":
+                    continue
+                try:
+                    chunk = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                # OpenAI streaming format
+                choices = chunk.get("choices") or []
+                for c in choices:
+                    delta = c.get("delta") or {}
+                    txt = delta.get("content")
+                    if isinstance(txt, str) and txt:
+                        parts.append(txt)
+            yield block
+    finally:
+        try:
+            on_complete("".join(parts))
+        except Exception:
+            logger.exception("memory_service: on_complete callback failed")
 
 router = APIRouter(tags=["API 代理"])
 
@@ -114,37 +334,95 @@ async def chat_completions(
     conversation_id: str | None = request.headers.get("X-ANILA-Conversation-Id")
     trace_id: str | None = request.headers.get("X-ANILA-Trace-Id")
 
+    # ── Memory: read path (sync, ~150ms) ─────────────────────────────────────
+    # Inject the user's long-term memory block into the system prompt
+    # BEFORE forwarding downstream. We need this regardless of agent/model
+    # path so do it once here. The conv_id (if numeric) is excluded from
+    # RAG because the active conversation's history is already in the
+    # messages array — re-injecting would just waste prompt tokens.
+    conv_id_int = _coerce_conversation_id(conversation_id)
+    memory_read = await _inject_memory(
+        db,
+        user.id,
+        body,
+        exclude_conversation_id=conv_id_int,
+    )
+    # P3: latch the consuming conversation into classified state when
+    # memory recall pulled at least one encrypted chunk. One-shot — once
+    # set, never cleared by a later non-encrypted turn (would otherwise
+    # let a single clean turn launder the classification). Only writes
+    # when we actually have a conversation FK and the row exists.
+    if (
+        conv_id_int is not None
+        and memory_read
+        and memory_read.encryption_inherited
+    ):
+        try:
+            _latch_inherited_classification(db, conv_id_int)
+        except Exception:
+            logger.exception(
+                "memory_service: classification latch failed conv_id=%s",
+                conv_id_int,
+            )
+    # Capture the user message text NOW (after memory injection but
+    # before any downstream mutation) so the post-turn writer has the
+    # exact string the user sent.
+    captured_user_text = _extract_latest_user_message(
+        # _inject_memory may have altered the messages list; use the
+        # last user message which is unchanged across that path.
+        body
+    )
+
     # Try agent first, fallback to model_registry
     agent = _resolve_agent(db, caller, model_name)
     if agent:
         agent_requires_encryption = bool(getattr(agent, "requires_encryption", False))
+        # P3 hook: if any retrieved memory chunk was encrypted at write
+        # time, inherit that classification onto this turn even if the
+        # current agent isn't itself encrypted (Bell-LaPadula no-write-
+        # down). For P1 we just OR them — UI / latch wiring lands in P3.
+        if memory_read and memory_read.encryption_inherited:
+            agent_requires_encryption = True
         if stream:
-            return StreamingResponse(
-                proxy_stream(
-                    target_url=f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions",
-                    api_key_id=caller.api_key_id,
+            upstream = proxy_stream(
+                target_url=f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions",
+                api_key_id=caller.api_key_id,
+                user_id=user.id,
+                department_id=department_id,
+                usage_model_id=agent.id,
+                request_body=body,
+                user_email=user_email,
+                inject_identity=True,
+                model_name=agent.name,
+                conversation_id=conversation_id,
+                trace_id=trace_id,
+                requires_encryption=agent_requires_encryption,
+                # Sprint 8 X / Phase G — caller attribution.
+                #   target_agent_id  → proxy_service picks the per-agent
+                #                      service token from agent_credentials
+                #                      (5-min in-memory cache) instead of
+                #                      the legacy fleet-shared env var.
+                #   caller_agent_id  → token_usage row for this LLM call
+                #                      gets attributed to the agent so
+                #                      "top-agents" / "by-base-model"
+                #                      dashboards can rollup correctly.
+                target_agent_id=agent.id,
+                caller_agent_id=agent.id,
+            )
+            # Tee the SSE so we can capture the final assistant text and
+            # schedule the memory writer once the stream drains.
+            teed = _tee_stream_capture_assistant(
+                upstream,
+                on_complete=lambda assistant_text: _schedule_memory_write(
                     user_id=user.id,
-                    department_id=department_id,
-                    usage_model_id=agent.id,
-                    request_body=body,
-                    user_email=user_email,
-                    inject_identity=True,
-                    model_name=agent.name,
-                    conversation_id=conversation_id,
-                    trace_id=trace_id,
-                    requires_encryption=agent_requires_encryption,
-                    # Sprint 8 X / Phase G — caller attribution.
-                    #   target_agent_id  → proxy_service picks the per-agent
-                    #                      service token from agent_credentials
-                    #                      (5-min in-memory cache) instead of
-                    #                      the legacy fleet-shared env var.
-                    #   caller_agent_id  → token_usage row for this LLM call
-                    #                      gets attributed to the agent so
-                    #                      "top-agents" / "by-base-model"
-                    #                      dashboards can rollup correctly.
-                    target_agent_id=agent.id,
-                    caller_agent_id=agent.id,
+                    conversation_id=conv_id_int,
+                    user_message=captured_user_text,
+                    assistant_message=assistant_text,
+                    is_encrypted=agent_requires_encryption,
                 ),
+            )
+            return StreamingResponse(
+                teed,
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
@@ -184,6 +462,15 @@ async def chat_completions(
                     )
                 elif agent_requires_encryption and isinstance(existing_meta, dict):
                     existing_meta["classified"] = True
+                # Memory write (non-streaming agent path)
+                assistant_text = _extract_assistant_text(payload)
+                _schedule_memory_write(
+                    user_id=user.id,
+                    conversation_id=conv_id_int,
+                    user_message=captured_user_text,
+                    assistant_message=assistant_text,
+                    is_encrypted=agent_requires_encryption,
+                )
                 return payload
         except httpx.HTTPStatusError as e:
             raise _HTTPException(status_code=e.response.status_code, detail=str(e))
@@ -195,31 +482,45 @@ async def chat_completions(
     # latch. Encryption is agent-level policy; the same LLM can back both
     # classified and non-classified agents. Downstream-reported classified=True
     # still latches via proxy_service's normal meta merge.
+    # Inheritance: if memory injected encrypted material, latch this
+    # direct-LLM call as encrypted too (matches agent path semantics).
+    inherited_encryption = bool(memory_read and memory_read.encryption_inherited)
     if stream:
         target_url = (
             f"{model.endpoint_url.rstrip('/')}/v2/chat/completions"
             if model.api_version == "v2"
             else f"{model.endpoint_url.rstrip('/')}/v1/chat/completions"
         )
-        return StreamingResponse(
-            proxy_stream(
-                target_url=target_url,
-                api_key_id=caller.api_key_id,
+        upstream = proxy_stream(
+            target_url=target_url,
+            api_key_id=caller.api_key_id,
+            user_id=user.id,
+            department_id=department_id,
+            usage_model_id=model.id,
+            request_body=body,
+            user_email=user_email,
+            inject_identity=False,
+            model_name=model.name,
+            conversation_id=conversation_id,
+            trace_id=trace_id,
+            requires_encryption=inherited_encryption,
+        )
+        teed = _tee_stream_capture_assistant(
+            upstream,
+            on_complete=lambda assistant_text: _schedule_memory_write(
                 user_id=user.id,
-                department_id=department_id,
-                usage_model_id=model.id,
-                request_body=body,
-                user_email=user_email,
-                inject_identity=False,
-                model_name=model.name,
-                conversation_id=conversation_id,
-                trace_id=trace_id,
-                requires_encryption=False,
+                conversation_id=conv_id_int,
+                user_message=captured_user_text,
+                assistant_message=assistant_text,
+                is_encrypted=inherited_encryption,
             ),
+        )
+        return StreamingResponse(
+            teed,
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
-    return await proxy_request(
+    payload = await proxy_request(
         model=model,
         api_key_id=caller.api_key_id,
         user_id=user.id,
@@ -228,8 +529,17 @@ async def chat_completions(
         endpoint_path="/v1/chat/completions",
         conversation_id=conversation_id,
         trace_id=trace_id,
-        requires_encryption=False,
+        requires_encryption=inherited_encryption,
     )
+    assistant_text = _extract_assistant_text(payload)
+    _schedule_memory_write(
+        user_id=user.id,
+        conversation_id=conv_id_int,
+        user_message=captured_user_text,
+        assistant_message=assistant_text,
+        is_encrypted=inherited_encryption,
+    )
+    return payload
 
 
 @router.post("/v1/agents/{agent_name}/sessions/{session_id}/answer")

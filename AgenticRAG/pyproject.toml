@@ -60,6 +60,9 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
+    # respx mocks httpx requests at the transport layer, used by
+    # tests for the user_memory client (route-3 cross-tenant flow).
+    "respx>=0.21",
     "ruff>=0.4",
     "mypy>=1.9",
 ]

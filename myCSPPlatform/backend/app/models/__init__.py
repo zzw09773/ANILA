@@ -33,6 +33,7 @@ from app.models.platform_link import PlatformLink
 from app.models.service_client import ServiceClient
 from app.models.token_usage import TokenUsage
 from app.models.user import User, UserModelPermission
+from app.models.user_memory import ConversationMemoryChunk, UserFact
 
 __all__ = [
     "Agent",
@@ -48,6 +49,7 @@ __all__ = [
     "Department",
     "ExternalIdentity",
     "AgentLlmCredential",
+    "ConversationMemoryChunk",
     "Handoff",
     "IngestionCollection",
     "IngestionDocument",
@@ -60,6 +62,7 @@ __all__ = [
     "TokenUsage",
     "User",
     "UserAgentPermission",
+    "UserFact",
     "UserLlmCredential",
     "UserModelPermission",
 ]

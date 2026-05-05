@@ -31,6 +31,14 @@ class Conversation(Base):
     classified = Column(Boolean, nullable=False, default=False, server_default="false")
     classified_at = Column(DateTime, nullable=True)
     classified_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # P3 / Sprint 14 — Bell-LaPadula style "no write down" inheritance.
+    # When TRUE, the platform set classified=true automatically because
+    # this thread pulled an encrypted memory chunk into its prompt. The
+    # UI uses this flag to render a different banner from manually-set
+    # classification (provenance matters; see migration 0031).
+    classification_inherited = Column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
         DateTime,

@@ -1428,7 +1428,21 @@ export const Sidebar = ({
                     onMouseEnter={(e) => { if (c.id !== selectedConvId) e.currentTarget.style.background = "var(--bg-elev)"; }}
                     onMouseLeave={(e) => { if (c.id !== selectedConvId) e.currentTarget.style.background = "transparent"; }}>
                     <div style={{ display: "flex", alignItems: "flex-start", gap: 5, paddingRight: 52 }}>
-                      {c.classified && <IconLock size={11} style={{ color: "var(--danger)", flexShrink: 0, marginTop: 4 }} />}
+                      {c.classified && (
+                        <IconLock
+                          size={11}
+                          // P3: inherited classification (latched via memory
+                          // recall) renders in --warn instead of --danger so
+                          // the user can distinguish it from agent-required
+                          // classification at a glance.
+                          style={{
+                            color: c.classificationInherited ? "var(--warn)" : "var(--danger)",
+                            flexShrink: 0,
+                            marginTop: 4,
+                          }}
+                          title={c.classificationInherited ? "因引用過往加密記憶而升級" : "機密對話"}
+                        />
+                      )}
                       {c.starred && <IconStar size={11} style={{ color: "var(--warn)", flexShrink: 0, marginTop: 4 }} />}
                       <div
                         title={c.title}
@@ -1562,7 +1576,7 @@ export const Sidebar = ({
             }}>{(user?.username || "?").slice(0, 2).toUpperCase()}</div>
             <div style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
               <div style={{ fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.username}</div>
-              <div style={{ fontSize: 10, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>runtime · user</div>
+              <div style={{ fontSize: 10, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>runtime · {user?.role || "user"}</div>
             </div>
             <IconChevDown size={13} style={{ color: "var(--fg-muted)" }} />
           </button>
