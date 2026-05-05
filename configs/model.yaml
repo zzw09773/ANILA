@@ -1,0 +1,14 @@
+# Model resolution. All fields can be overridden by environment variables
+# (ANILA_BASE_URL / ANILA_API_KEY / ANILA_MODEL).
+#
+# Backed by openai-agents.extensions.models.litellm_model.LitellmModel,
+# which speaks any OpenAI-compatible endpoint.
+
+model: gpt-4o-mini
+base_url: http://localhost:8000/v1
+api_key_env: ANILA_API_KEY
+
+# Sampling defaults. Anything you put here is passed through to ModelSettings.
+settings:
+  temperature: 0.2
+  max_tokens: 4096

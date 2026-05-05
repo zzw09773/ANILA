@@ -1,0 +1,24 @@
+# Short-term: per-session conversation history (SQLite).
+short_term:
+  enabled: true
+  # Resolved relative to ANILA_HOME (defaults to ./.anila).
+  path: sessions/anila.db
+
+# Long-term: file-backed typed-memory directory ported from claude-code memdir.
+# MEMORY.md is the index; one .md per topic with YAML frontmatter (name, description, type).
+long_term:
+  enabled: true
+  path: memory/
+  # Hard caps from claude-code memdir.
+  max_index_lines: 200
+  max_index_bytes: 25000
+  max_files: 200
+
+# End-of-turn auto-extraction. Off by default — costs one extra LLM call.
+# When enabled, runs as a Stop hook (see anila_agent/memory/summarizer.py).
+auto_memory:
+  enabled: false
+  # Minimum number of model-visible messages between extractions.
+  min_messages_between_runs: 4
+  # Side-call model. Defaults to model.yaml.model when null.
+  model: null

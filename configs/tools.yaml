@@ -1,0 +1,21 @@
+# Tool wiring. Built-in tools are loaded by qualified name; custom tools
+# can be registered via tools/registry.py.
+
+builtin:
+  - anila_agent.tools.rag_tools.search_documents
+  - anila_agent.tools.rag_tools.read_document
+  - anila_agent.tools.filesystem_tools.read_file
+  - anila_agent.tools.filesystem_tools.list_dir
+
+# Hooks fire around tool calls. Each entry is a qualified callable returning
+# a HookResult. Match by tool name regex (use ".*" to match all).
+hooks:
+  pre_tool_use: []
+  post_tool_use: []
+  stop:
+    # Auto-extraction is registered here when memory.yaml.auto_memory.enabled is true.
+    # The runner reads the flag and inserts the hook automatically.
+    - { matcher: ".*", callback: anila_agent.memory.summarizer.extract_on_stop, when: auto_memory }
+
+# MCP servers. Add entries in the openai-agents MCP format.
+mcp_servers: []
