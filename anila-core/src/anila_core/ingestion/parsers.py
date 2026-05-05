@@ -1,26 +1,19 @@
 """File-format → text extraction (Pillar 2 shared infrastructure).
 
-Sprint 8 X / Phase 1 of chunking-preview: this thin wrapper moved from
-``ingestion_worker.parsers`` so multiple consumers can share it:
+Thin façade over ``anila_core.ingestion.parser_registry.ParserRegistry``
+so multiple consumers can share the same ``extract_text`` callable:
 
     * ingestion-worker (Arq job pipeline, the original consumer)
     * CSP backend (POST /api/ingestion/chunking-preview, dry-run)
     * any future batch worker that needs to extract text from blobs
 
-The HEAVY parser stack (pymupdf4llm, Docling, OCR, OpenCC, …) still lives
-in AgenticRAG's ``agentic_rag.ingestion.parsers.ParserRegistry``. We
-keep that arrangement on purpose:
+The HEAVY parser stack (pymupdf4llm, Docling, OCR, …) lives at
+``anila_core.ingestion.parser_registry``. AgenticRAG/ in this branch is
+a pure starter template — production code does not depend on it. To
+get the parser stack pulled into your env, install ``anila-core[rag]``
+(see anila-core/pyproject.toml).
 
-    * AgenticRAG ships the actual file-format-specific parsers because
-      that's where docling / OCR / CJK normalisation are evolved.
-    * anila-core (this module) provides a stable Pillar-2-shaped
-      callable that hides which parser library is in use, plus the
-      adapter logic (temp file, page boundary insertion, ImageRef
-      passthrough).
-
-To call ``extract_text`` you must have ``agentic-rag[rag]`` installed in
-the Python env. CSP and ingestion-worker Dockerfiles both do this.
-Standalone scripts that don't have AgenticRAG installed will see a
+Standalone envs that didn't install the ``[rag]`` extra will see a
 clear ``ParseError(code='E_INTERNAL')`` rather than a cryptic
 ``ImportError``.
 
@@ -71,17 +64,17 @@ def extract_text(
     them onto a temp file (the registry's parsers are file-path based,
     not bytes-based, so they can mmap PDFs cheaply etc.).
     """
-    # Lazy import: ParserRegistry pulls in pymupdf / python-docx / odfpy
+    # Lazy import: parser_registry pulls in pymupdf / python-docx / odfpy
     # / striprtf at import time; making it lazy keeps importing this
     # module fast (CSP imports it eagerly via app boot) and lets unit
     # tests stub specific parsers without paying the full import cost.
     try:
-        from agentic_rag.ingestion.parsers import ParserRegistry
+        from anila_core.ingestion.parser_registry import ParserRegistry
     except ImportError as e:
         raise ParseError(
             code="E_INTERNAL",
-            user_message="Parser stack unavailable (agentic-rag not installed).",
-            details={"missing_dep": "agentic-rag", "cause": str(e)},
+            user_message="Parser stack unavailable (install anila-core[rag]).",
+            details={"missing_dep": "anila-core[rag]", "cause": str(e)},
         ) from e
 
     # Use the original filename's extension for routing — uploaders

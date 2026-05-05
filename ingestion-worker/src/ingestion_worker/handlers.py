@@ -61,9 +61,9 @@ def _get_vision_provider() -> Any | None:
     if not settings.vision_url:
         return None
     if _vision_provider is None:
-        # Lazy import keeps the AgenticRAG dep optional at module load
+        # Lazy import keeps the rag-extra dep optional at module load
         # — the worker boots fine even if vision isn't configured.
-        from agentic_rag.providers.vision import VisionProvider
+        from anila_core.providers.vision import VisionProvider
 
         _vision_provider = VisionProvider(
             base_url=settings.vision_url,

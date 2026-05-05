@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "anila-core"
-version = "0.13.0"
+version = "0.14.0"
 description = "ANILA Core — Python agent runtime foundation (chat / agent / memory / dispatch)"
 requires-python = ">=3.11"
 dependencies = [
@@ -40,12 +40,21 @@ dependencies = [
     "aiosqlite>=0.20",
 ]
 
-# v0.5.0 BREAKING — `[rag]` extras removed. The packages it pulled
-# (pymupdf4llm, python-docx, odfpy, asyncpg, pgvector, python-multipart)
-# are RAG-specific and now live in AgenticRAG/pyproject.toml. Forks that
-# want the full ingestion stack should `pip install -e ./AgenticRAG`,
-# not anila-core.
+# v0.14.0 — `[rag]` extra restored. AgenticRAG/ on this branch is now
+# a pure starter template (no production code depends on it). The
+# heavy parser stack lives at ``anila_core.ingestion.parser_registry``
+# and ``anila_core.providers.vision``; install with
+# ``pip install anila-core[rag]`` to pull in pymupdf / python-docx / etc.
 [project.optional-dependencies]
+rag = [
+    # Document parsing
+    "pymupdf4llm>=0.0.10",
+    "pymupdf>=1.24",          # embedded image extraction from PDFs
+    "python-docx>=1.1",
+    "odfpy>=1.4",
+    "striprtf>=0.0.26",       # RTF parser
+    "Pillow>=10.0",           # image loading for vision pipeline
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

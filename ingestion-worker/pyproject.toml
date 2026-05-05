@@ -9,12 +9,11 @@ description = "ANILA ingestion-worker — Arq-based async pipeline for parse / c
 requires-python = ">=3.11"
 dependencies = [
     # Core SDK — chunkers + AgentScopedPgVectorStore + error taxonomy.
-    "anila-core>=0.6.0",
-    # NOTE: ``agentic-rag[rag]`` is a transitive runtime dep but NOT
-    # listed here because it isn't published to PyPI — it lives in the
-    # repo at ``../AgenticRAG/`` and is path-installed by the worker
-    # Dockerfile right before this package. Worker code imports
-    # ``agentic_rag.ingestion.parsers.ParserRegistry`` for file parsing.
+    # ``[rag]`` extra pulls in the parser stack (pymupdf4llm, python-docx,
+    # odfpy, striprtf, Pillow) and is required because handlers.py /
+    # evaluator.py call ``anila_core.ingestion.parsers.extract_text``
+    # which delegates to ``anila_core.ingestion.parser_registry``.
+    "anila-core[rag]>=0.14.0",
     #
     # Async DB driver and pgvector codec — also pulled by anila-core, listed
     # explicitly so the worker's deps file documents them.

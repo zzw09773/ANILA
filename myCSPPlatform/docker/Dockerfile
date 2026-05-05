@@ -16,18 +16,17 @@ WORKDIR /app
 
 # Install anila-core first (changes less often than backend code, so
 # layer caching survives most builds). The package brings asyncpg +
-# pgvector + the AgentScopedPgVectorStore the inspector uses.
+# pgvector + the AgentScopedPgVectorStore the inspector uses, and the
+# ``[rag]`` extra adds the parser stack (pymupdf4llm / python-docx /
+# odfpy / striprtf / Pillow) needed by
+# ``anila_core.ingestion.parsers.extract_text``, which CSP calls
+# directly from POST /api/ingestion/chunking-preview.
+#
+# AgenticRAG/ in this branch is a pure starter template — production
+# code (CSP, ingestion-worker, evaluator) imports parsers/vision from
+# anila_core.* directly and does NOT install AgenticRAG at runtime.
 COPY anila-core /tmp/anila-core
-RUN pip install --no-cache-dir /tmp/anila-core
-
-# Sprint 8 X / chunking-preview Phase 1 — install AgenticRAG[rag] so
-# CSP can call ``anila_core.ingestion.parsers.extract_text`` directly
-# from request handlers (POST /api/ingestion/chunking-preview).
-# AgenticRAG is the canonical home of pymupdf4llm / Docling / OCR /
-# CJK normalisation; ingestion-worker has been pulling it in via the
-# same pattern since Sprint 3.
-COPY AgenticRAG /tmp/AgenticRAG
-RUN pip install --no-cache-dir '/tmp/AgenticRAG[rag]'
+RUN pip install --no-cache-dir '/tmp/anila-core[rag]'
 
 # Install Python dependencies (CSP-specific)
 COPY myCSPPlatform/backend/requirements.txt ./

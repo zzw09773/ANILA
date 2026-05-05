@@ -303,21 +303,31 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
                 )
 
         # 2. Load all sample docs once (raw blobs from disk).
+        # Per-doc parse errors are recorded so the operator can see WHY
+        # a doc was skipped — silently swallowing them previously hid
+        # missing-parser-stack failures behind a generic "0 chunks" error.
         docs = await _load_sample_docs(pool, sample_doc_ids, run_collection_id)
         parsed_docs: dict[int, tuple[str, dict]] = {}
+        parse_errors: dict[int, str] = {}
         for d in docs:
+            doc_id = int(d["id"])
             sp = d["storage_path"]
             if not sp:
+                parse_errors[doc_id] = "missing storage_path"
                 continue
             try:
                 with open(sp, "rb") as f:
                     blob = f.read()
-                text, parse_meta = extract_text(d["filename"], blob, d["mime_type"])
-                parsed_docs[int(d["id"])] = (text, parse_meta)
-            except Exception:
-                # Skip unreadable docs; they'll show up as missing in
-                # results but don't fail the run.
-                continue
+                text, parse_meta, _images = extract_text(
+                    d["filename"], blob, d["mime_type"]
+                )
+                parsed_docs[doc_id] = (text, parse_meta)
+            except Exception as exc:
+                parse_errors[doc_id] = f"{type(exc).__name__}: {str(exc)[:200]}"
+                logger.warning(
+                    "eval %s: parse failed for doc %s: %s",
+                    eval_run_id, doc_id, parse_errors[doc_id],
+                )
 
         # 3. Per-strategy scoring.
         per_strategy: dict[str, Any] = {}
@@ -395,6 +405,9 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
             "elapsed_seconds": round(time.time() - started, 2),
             "n_docs": len(parsed_docs),
             "n_queries": len(queries),
+            # Per-doc parse failures (doc_id → "ExceptionType: message").
+            # Empty when every sample parsed cleanly.
+            "parse_errors": parse_errors,
             # Surfaces a judge-credential decrypt / lookup failure
             # (None when judge wasn't requested or worked fine).
             "judge_load_error": judge_load_error,
