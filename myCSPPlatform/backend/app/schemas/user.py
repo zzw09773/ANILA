@@ -6,7 +6,9 @@ from pydantic import BaseModel, field_validator
 # L3: role 改 Literal 而非任意字串，避免 admin 不慎把 role 設為「typo」字串。
 # system 是 ingestion-worker 之類的內部帳號（auto_seed 會用到），不對外開放
 # 由 admin 介面手動指派。
-UserRole = Literal["admin", "developer", "user", "system"]
+# owner 是 0032 加的最高層 — 由 require_owner 把關 admin 帳號變更、auth
+# provider 編輯、purge、audit log 敏感欄位、model endpoint URL。
+UserRole = Literal["owner", "admin", "developer", "user", "system"]
 
 
 class UserBase(BaseModel):
