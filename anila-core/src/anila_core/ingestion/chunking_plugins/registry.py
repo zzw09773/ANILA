@@ -78,6 +78,11 @@ def list_chunkers() -> list[dict[str, Any]]:
             "display_name": cls.display_name,
             "default_params": dict(cls.default_params),
             "param_schema": dict(cls.param_schema),
+            # Surface the class-level flag so the chunking-preview API can
+            # filter out chunkers that need pre-computed embeddings (e.g.
+            # ``semantic``) — without this, preview tries to run them and
+            # the chunker raises a confusing "missing _segments" error.
+            "requires_embedder": getattr(cls, "requires_embedder", False),
         }
         for cls in _REGISTRY.values()
     ]

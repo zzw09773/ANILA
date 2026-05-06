@@ -18,7 +18,11 @@ import React, {
 import { config, readCsrfCookie } from "./runtime/api.js";
 import { useAuth, useLogoutRedirect } from "./runtime/auth.jsx";
 import { streamChatCompletion } from "./runtime/sse.js";
-import { latchConversationWithMeta } from "./runtime/classified.js";
+import {
+  appendClassifiedTag,
+  computeConversationClassified,
+  latchConversationWithMeta,
+} from "./runtime/classified.js";
 import {
   enqueueClassifyRetry,
   flushAll as flushClassifyRetries,
@@ -400,9 +404,23 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   }
 
   // Map a backend ConversationOut row → the sidebar shape the UI already uses.
-  function mapServerConversation(serverRow, agentNameLookup) {
+  //
+  // Classification follows the latch invariant in runtime/classified.js:
+  // ANY truthy signal (server-persisted classified + agent.requires_encryption)
+  // wins. Without this OR, a hard refresh that races the agents fetch ahead
+  // of the conversations fetch would silently drop encryption mode for
+  // conversations whose classified=true wasn't (yet) persisted on the row.
+  function mapServerConversation(serverRow, agentNameLookup, agentRequiresEncryptionLookup) {
     const agentName =
       serverRow.agent_id != null ? agentNameLookup(serverRow.agent_id) : null;
+    const agentRequiresEncryption =
+      serverRow.agent_id != null && agentRequiresEncryptionLookup
+        ? Boolean(agentRequiresEncryptionLookup(serverRow.agent_id))
+        : false;
+    const classified = computeConversationClassified(
+      { classified: serverRow.classified },
+      { agentRequiresEncryption },
+    );
     return {
       id: serverRow.id,
       title: serverRow.title,
@@ -412,9 +430,9 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       agentId: serverRow.agent_id || null,
       agentName: agentName || null,
       folder: "all",
-      tags: serverRow.classified ? ["classified"] : [],
+      tags: classified ? appendClassifiedTag([]) : [],
       starred: false,
-      classified: Boolean(serverRow.classified),
+      classified,
       // P3: distinguishes inheritance-driven latch from agent-required
       // or admin-set classification. Drives the warning banner copy
       // and the (lighter-weight) lock icon variant on the sidebar.
@@ -468,8 +486,14 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       try {
         const rows = await apiListConversations(authRequest);
         if (!active) return;
-        const lookup = (id) => agents.find((a) => a.id === id)?.name || null;
-        setConversations(rows.map((r) => mapServerConversation(r, lookup)));
+        const lookupName = (id) => agents.find((a) => a.id === id)?.name || null;
+        const lookupRequiresEncryption = (id) =>
+          Boolean(agents.find((a) => a.id === id)?.requiresEncryption);
+        setConversations(
+          rows.map((r) =>
+            mapServerConversation(r, lookupName, lookupRequiresEncryption),
+          ),
+        );
       } catch (error) {
         if (active) {
           setRuntimeError(error.message || "無法載入對話清單");
@@ -481,6 +505,33 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated]);
+
+  // Race recovery: conversations and agents fetch in parallel on login /
+  // hard refresh. If conversations land first, their classified flag was
+  // computed against an empty agents list and any agent-driven encryption
+  // was silently lost. When agents finally arrive, walk the existing
+  // conversations and re-apply the latch — never downgrades because
+  // ``computeConversationClassified`` honours ``conversation.classified``
+  // as a "prior" signal.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    if (agents.length <= 1) return; // only ROUTER_AGENT loaded — nothing to upgrade against
+    setConversations((prev) =>
+      prev.map((c) => {
+        const requires = agentRequiresEncryption(c.agentId);
+        const next = computeConversationClassified(c, {
+          agentRequiresEncryption: requires,
+        });
+        if (next === Boolean(c.classified)) return c;
+        return {
+          ...c,
+          classified: next,
+          tags: appendClassifiedTag(c.tags),
+        };
+      }),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agents, isAuthenticated]);
 
   // Hydrate messages when the selected conversation changes and we haven't
   // loaded its messages yet.

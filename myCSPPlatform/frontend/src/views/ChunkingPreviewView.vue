@@ -139,8 +139,17 @@
                  :tone="entry.error ? 'warn' : ''">
           <div v-if="entry.error" class="feedback is-err">! {{ entry.error }}</div>
           <template v-else-if="!entry.previewable">
-            <p class="cell-meta">
-              ⓘ 此 strategy 需要 embeddings；preview 階段略過。建立 collection 時會在 commit 階段執行。
+            <p class="cell-meta" style="line-height: 1.6;">
+              <strong>ⓘ 設計如此，非錯誤</strong><br>
+              <code>{{ entry.name }}</code> 透過 embedding 向量距離找切點，需要對每個段落呼叫
+              embedding 模型（NV-Embed），單次預覽 ≈ 5–10 秒並消耗 token quota。
+              preview 是純 CPU 同步快查（&lt; 50 ms），所以略過此策略以保持互動性。
+              <br><br>
+              <strong>仍可選用：</strong>按
+              <code>↓ use this strategy</code>
+              直接以此策略建立 collection — ingestion-worker 端有 embedding 預算，會在
+              非同步 ingest 流程中正確執行。要看實際分塊品質可以在
+              <em>Chunking Evaluator</em> 跑（worker 後台跑、可比較指標）。
             </p>
           </template>
           <template v-else>
