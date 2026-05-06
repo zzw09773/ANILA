@@ -9,18 +9,39 @@ from app.models.token_usage import TokenUsage
 from app.models.user import User
 from app.schemas.model_registry import ModelCreate, ModelUpdate, ModelResponse
 from app.services.audit_service import log_audit_event
-from app.services.auth_service import get_current_user, require_admin, verify_service_token
+from app.services.auth_service import (
+    get_current_user,
+    is_owner,
+    require_admin,
+    require_owner,
+    verify_service_token,
+)
 
 router = APIRouter(prefix="/api/models", tags=["模型管理"])
 
+# Sentinel returned to non-owner callers in place of the actual endpoint
+# URL. A literal sentinel (instead of None / empty string) is clearer in
+# logs and keeps the field's response_model type as a non-empty string.
+ENDPOINT_REDACTED = "<owner-only>"
 
-def _build_response(model: ModelRegistry) -> dict:
+
+def _build_response(model: ModelRegistry, *, caller: User | None = None) -> dict:
+    """Serialize a model row.
+
+    ``endpoint_url`` is owner-only — admins and below see
+    ``ENDPOINT_REDACTED`` because the URL+port carries deployment-topology
+    detail (which GPU box / which container LAN, often the only thing
+    standing between a curious admin and direct unmediated access). When
+    ``caller`` is None (e.g. internal callers passing through verify_service_token)
+    we redact too — opt-in to surface by passing the caller explicitly.
+    """
+    show_endpoint = caller is not None and is_owner(caller)
     data = {
         "id": model.id,
         "name": model.name,
         "display_name": model.display_name,
         "model_type": model.model_type,
-        "endpoint_url": model.endpoint_url,
+        "endpoint_url": model.endpoint_url if show_endpoint else ENDPOINT_REDACTED,
         "api_version": model.api_version,
         "is_active": model.is_active,
         "is_router_primary": bool(model.is_router_primary),
@@ -45,13 +66,16 @@ def list_models(
     query = db.query(ModelRegistry).order_by(ModelRegistry.model_type, ModelRegistry.name)
     if model_type:
         query = query.filter(ModelRegistry.model_type == model_type)
-    # Non-admin users only see models they are authorized for
-    if current_user.role != "admin":
+    # Non-admin/owner users only see models they are authorized for. Owner
+    # inherits admin's full registry view (auth_service.require_admin
+    # covers both, but this list query uses a direct role check so we
+    # need to keep the tier explicit here too).
+    if current_user.role not in ("admin", "owner"):
         allowed_ids = [m.id for m in current_user.allowed_models]
         if not allowed_ids:
             return []
         query = query.filter(ModelRegistry.id.in_(allowed_ids))
-    return [_build_response(m) for m in query.all()]
+    return [_build_response(m, caller=current_user) for m in query.all()]
 
 
 @router.post("", response_model=ModelResponse)
@@ -83,7 +107,7 @@ def create_model(
         detail=f"建立模型「{model.display_name}」",
         commit=True,
     )
-    return _build_response(model)
+    return _build_response(model, caller=admin)
 
 
 @router.get("/router-primary")
@@ -151,7 +175,7 @@ def set_router_primary(
         detail=f"設為 ANILA 主路由模型: {model.display_name}",
         commit=True,
     )
-    return _build_response(model)
+    return _build_response(model, caller=admin)
 
 
 @router.post("/{model_id}/unset-router-primary", response_model=ModelResponse)
@@ -165,7 +189,7 @@ def unset_router_primary(
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
     if not model.is_router_primary:
-        return _build_response(model)
+        return _build_response(model, caller=admin)
 
     model.is_router_primary = False
     db.commit()
@@ -179,7 +203,7 @@ def unset_router_primary(
         detail=f"取消 ANILA 主路由模型: {model.display_name}",
         commit=True,
     )
-    return _build_response(model)
+    return _build_response(model, caller=admin)
 
 
 @router.get("/{model_id}", response_model=ModelResponse)
@@ -191,11 +215,11 @@ def get_model(
     model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
-    if current_user.role != "admin":
+    if current_user.role not in ("admin", "owner"):
         allowed_ids = {m.id for m in current_user.allowed_models}
         if model.id not in allowed_ids:
             raise HTTPException(status_code=404, detail="模型不存在")
-    return _build_response(model)
+    return _build_response(model, caller=current_user)
 
 
 @router.put("/{model_id}", response_model=ModelResponse)
@@ -233,7 +257,7 @@ def update_model(
         detail=f"更新模型「{model.display_name}」",
         commit=True,
     )
-    return _build_response(model)
+    return _build_response(model, caller=admin)
 
 
 def _client_ip(request: Request | None) -> str | None:
@@ -295,7 +319,7 @@ def activate_model(
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
     if model.is_active:
-        return _build_response(model)
+        return _build_response(model, caller=admin)
     model.is_active = True
     db.commit()
     db.refresh(model)
@@ -309,16 +333,17 @@ def activate_model(
         ip_address=_client_ip(request),
         commit=True,
     )
-    return _build_response(model)
+    return _build_response(model, caller=admin)
 
 
 @router.delete("/{model_id}/purge")
 def purge_model(
     model_id: int,
-    admin: User = Depends(require_admin),
+    owner: User = Depends(require_owner),
     db: Session = Depends(get_db),
 ):
-    """Hard-delete a model. Blocked if token_usage or other models reference it."""
+    """Hard-delete a model. Owner-only — irreversible. Blocked if
+    token_usage or other models reference it."""
     model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
@@ -348,7 +373,7 @@ def purge_model(
     db.commit()
     log_audit_event(
         db,
-        actor=admin,
+        actor=owner,
         action="delete",
         resource_type="model",
         resource_id=model_id,

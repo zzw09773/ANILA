@@ -155,7 +155,11 @@ router.beforeEach(async (to, from, next) => {
 
   if (to.meta.requiresAuth !== false && !authStore.isAuthenticated) {
     next('/login')
-  } else if (to.meta.requiresAdmin && authStore.user?.role !== 'admin') {
+  } else if (to.meta.requiresAdmin && !authStore.isAdmin) {
+    // ``isAdmin`` is admin-OR-owner (tier check). Don't compare role
+    // strings here — owner is admin's superset and must keep access.
+    next('/')
+  } else if (to.meta.requiresOwner && !authStore.isOwner) {
     next('/')
   } else if (to.meta.requiresDeveloper && !authStore.isDeveloper) {
     next('/')

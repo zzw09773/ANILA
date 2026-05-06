@@ -135,11 +135,16 @@
             <option value="user">user</option>
             <option value="developer">developer</option>
             <option value="admin">admin</option>
+            <option v-if="authStore.isOwner" value="owner">owner</option>
           </select>
         </TermField>
         <div v-if="form.role !== 'user'" class="role-warn">
           <span>!</span>
-          <span>{{ form.role === 'developer' ? 'developer can register agents and download templates.' : 'admin can manage every user, model, audit, and platform setting.' }}</span>
+          <span>{{ roleHelp(form.role) }}</span>
+        </div>
+        <div v-if="!authStore.isOwner && elevatedRole(form.role)" class="role-warn" style="margin-top: 4px;">
+          <span>⛔</span>
+          <span>only owner can create / promote admin or owner accounts.</span>
         </div>
         <TermField label="department">
           <select v-model="form.department_id" class="term-select">
@@ -220,6 +225,9 @@ import {
   updateUserAllowedModels,
 } from '../api/users'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat } from '../components/cli'
+import { useAuthStore } from '../stores/auth'
+
+const authStore = useAuthStore()
 
 const users = ref([])
 const departments = ref([])
@@ -421,7 +429,19 @@ async function handleBulkDeactivate() {
 }
 
 function roleVariant(role) {
-  return role === 'admin' ? 'warn' : role === 'developer' ? 'info' : ''
+  if (role === 'owner') return 'danger'
+  if (role === 'admin') return 'warn'
+  if (role === 'developer') return 'info'
+  return ''
+}
+function elevatedRole(role) {
+  return role === 'admin' || role === 'owner'
+}
+function roleHelp(role) {
+  if (role === 'owner') return 'owner is the platform operator — exclusive control over auth providers, hard-purge, raw audit fields, and admin/owner role management.'
+  if (role === 'admin') return 'admin can manage users, models, audits, billing, and usage. cannot create/demote admins or alter platform-level config.'
+  if (role === 'developer') return 'developer can register agents and download templates.'
+  return ''
 }
 function statusVariant(u) {
   if (!u.is_approved) return 'warn'

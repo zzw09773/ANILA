@@ -117,11 +117,41 @@ def get_current_user(
     return _load_user_from_payload(payload, db, "access")
 
 
+_ADMIN_TIER_ROLES = ("admin", "owner")
+
+
+def is_owner(user: User) -> bool:
+    """Single check used by serializers / response shaping that needs to
+    decide whether to surface owner-only fields (e.g. model endpoint URL,
+    audit log IP / metadata)."""
+    return user.role == "owner"
+
+
 def require_admin(current_user: User = Depends(get_current_user)) -> User:
-    if current_user.role != "admin":
+    """Tier check: ``admin`` and the higher ``owner`` both satisfy.
+
+    Owner inherits all admin privileges by design — the ``owner`` tier
+    sits ABOVE admin, so any endpoint that accepts admins must also
+    accept owners. Endpoints that owner-only should depend on
+    :func:`require_owner` directly instead.
+    """
+    if current_user.role not in _ADMIN_TIER_ROLES:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="需要管理員權限",
+        )
+    return current_user
+
+
+def require_owner(current_user: User = Depends(get_current_user)) -> User:
+    """Top-tier gate. Reserved for irreversible / platform-altering ops:
+    promoting/demoting admins, rotating SECRET_KEY, editing auth
+    providers, hard-purging registry rows, viewing raw audit log fields.
+    """
+    if current_user.role != "owner":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="需要 owner 權限",
         )
     return current_user
 

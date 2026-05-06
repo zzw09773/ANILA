@@ -46,7 +46,14 @@
               <div v-if="model.base_model_name" class="cell-base">↳ base: {{ model.base_model_name }}</div>
             </td>
             <td><TermBadge :tone="model.model_type">{{ model.model_type }}</TermBadge></td>
-            <td><code class="cell-url" :title="model.endpoint_url">{{ model.endpoint_url }}</code></td>
+            <td>
+              <span
+                v-if="model.endpoint_url === ENDPOINT_REDACTED"
+                class="cell-meta"
+                title="endpoint URL is owner-only (deployment topology)"
+              >🔒 owner-only</span>
+              <code v-else class="cell-url" :title="model.endpoint_url">{{ model.endpoint_url }}</code>
+            </td>
             <td class="cell-meta">{{ model.api_version }}</td>
             <td>
               <TermBadge :variant="model.is_active ? 'ok' : 'danger'" dot>
@@ -93,8 +100,14 @@
                   class="term-action"
                   @click="handleActivate(model.id)"
                 >activate</button>
-                <span class="row-actions__sep">·</span>
-                <button class="term-action term-action--danger" :disabled="purgingId === model.id" @click="handlePurge(model)">
+                <span v-if="authStore.isOwner" class="row-actions__sep">·</span>
+                <button
+                  v-if="authStore.isOwner"
+                  class="term-action term-action--danger"
+                  :disabled="purgingId === model.id"
+                  :title="'hard-delete this row · irreversible · owner-only'"
+                  @click="handlePurge(model)"
+                >
                   {{ purgingId === model.id ? 'purging…' : 'purge' }}
                 </button>
               </div>
@@ -131,8 +144,13 @@
             </select>
           </TermField>
         </div>
-        <TermField label="endpoint url">
-          <input v-model="form.endpoint_url" class="term-input" placeholder="http://gpu-server:8080" />
+        <TermField label="endpoint url" :hint="endpointFieldLocked ? '🔒 owner-only — admins keep the registered URL untouched on update' : ''">
+          <input
+            v-model="form.endpoint_url"
+            class="term-input"
+            :disabled="endpointFieldLocked"
+            :placeholder="endpointFieldLocked ? '— owner-only —' : 'http://gpu-server:8080'"
+          />
         </TermField>
         <TermField label="description" optional>
           <textarea v-model="form.description" rows="2" class="term-textarea" />
@@ -200,22 +218,39 @@ function healthLabel(s) {
   return ({ online: 'online', connecting: 'connecting', offline: 'offline' })[s] || s || 'unknown'
 }
 
+// Owner-only sentinel returned by backend when endpoint_url is redacted.
+// Keep in sync with myCSPPlatform/backend/app/api/models.py::ENDPOINT_REDACTED.
+const ENDPOINT_REDACTED = '<owner-only>'
+
 function openCreateModal() { editingId.value = null; form.value = defaultForm(); showModal.value = true }
 function openEditModal(model) {
   editingId.value = model.id
+  // Drop the sentinel before populating the form — otherwise saving
+  // would PUT the literal "<owner-only>" string back to backend and
+  // corrupt the registered endpoint. Non-owner admins see a placeholder
+  // hint instead and the field is disabled.
+  const endpointUrl = model.endpoint_url === ENDPOINT_REDACTED ? '' : model.endpoint_url
   form.value = {
     name: model.name, display_name: model.display_name,
-    model_type: model.model_type, endpoint_url: model.endpoint_url,
+    model_type: model.model_type, endpoint_url: endpointUrl,
     api_version: model.api_version, description: model.description || '',
     context_window: model.context_window, base_model_id: model.base_model_id || null,
   }
   showModal.value = true
 }
 
+const endpointFieldLocked = computed(() =>
+  !!editingId.value && !authStore.isOwner,
+)
+
 async function handleSubmit() {
   try {
     const payload = { ...form.value }
     if (payload.model_type !== 'agent') payload.base_model_id = null
+    // Don't ship endpoint_url back when the field was locked (admin
+    // editing a row whose URL they couldn't see). Backend would accept
+    // the empty string and overwrite the real endpoint with junk.
+    if (endpointFieldLocked.value) delete payload.endpoint_url
     if (editingId.value) {
       const { name, ...updateData } = payload
       await modelsStore.update(editingId.value, updateData)

@@ -13,7 +13,7 @@ from app.schemas.auth_provider import (
 )
 from app.services.audit_service import log_audit_event
 from app.services.auth_provider_secret import encode_oidc_client_secret
-from app.services.auth_service import require_admin
+from app.services.auth_service import require_admin, require_owner
 
 router = APIRouter(prefix="/api/auth-providers", tags=["SSO / OIDC"])
 
@@ -80,7 +80,7 @@ def list_auth_providers(
 @router.post("", response_model=AuthProviderResponse)
 def create_auth_provider(
     request: AuthProviderCreate,
-    admin: User = Depends(require_admin),
+    owner: User = Depends(require_owner),
     db: Session = Depends(get_db),
 ):
     existing = db.query(AuthProvider).filter(AuthProvider.name == request.name).first()
@@ -99,7 +99,7 @@ def create_auth_provider(
     db.add(provider)
     log_audit_event(
         db,
-        actor=admin,
+        actor=owner,
         action="create",
         resource_type="auth_provider",
         detail=f"建立 {provider.provider_type} Provider「{provider.name}」",
@@ -113,7 +113,7 @@ def create_auth_provider(
 def update_auth_provider(
     provider_id: int,
     request: AuthProviderUpdate,
-    admin: User = Depends(require_admin),
+    owner: User = Depends(require_owner),
     db: Session = Depends(get_db),
 ):
     provider = db.query(AuthProvider).filter(AuthProvider.id == provider_id).first()
@@ -150,7 +150,7 @@ def update_auth_provider(
 
     log_audit_event(
         db,
-        actor=admin,
+        actor=owner,
         action="update",
         resource_type="auth_provider",
         resource_id=provider.id,
@@ -164,7 +164,7 @@ def update_auth_provider(
 @router.delete("/{provider_id}")
 def deactivate_auth_provider(
     provider_id: int,
-    admin: User = Depends(require_admin),
+    owner: User = Depends(require_owner),
     db: Session = Depends(get_db),
 ):
     provider = db.query(AuthProvider).filter(AuthProvider.id == provider_id).first()
@@ -173,7 +173,7 @@ def deactivate_auth_provider(
     provider.is_active = False
     log_audit_event(
         db,
-        actor=admin,
+        actor=owner,
         action="deactivate",
         resource_type="auth_provider",
         resource_id=provider.id,

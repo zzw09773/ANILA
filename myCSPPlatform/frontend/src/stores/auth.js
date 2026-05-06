@@ -11,8 +11,20 @@ export const useAuthStore = defineStore('auth', () => {
   const initialized = ref(false)
 
   const isAuthenticated = computed(() => !!user.value)
-  const isAdmin = computed(() => user.value?.role === 'admin')
-  const isDeveloper = computed(() => user.value?.role === 'developer' || user.value?.role === 'admin')
+  // Tier hierarchy (high → low): owner > admin > developer ≈ user.
+  // ``isAdmin`` is admin-OR-above (matches backend's ``require_admin``,
+  // which accepts both 'admin' and 'owner'). Owner-only UI gates on
+  // ``isOwner`` directly — e.g. revealing model endpoint URLs / raw
+  // audit log fields, or the auth-provider config form.
+  const isOwner = computed(() => user.value?.role === 'owner')
+  const isAdmin = computed(() =>
+    user.value?.role === 'admin' || user.value?.role === 'owner',
+  )
+  const isDeveloper = computed(() =>
+    user.value?.role === 'developer'
+    || user.value?.role === 'admin'
+    || user.value?.role === 'owner',
+  )
 
   async function login(username, password, extra = {}) {
     // 後端 set cookies；body 仍帶 token 是給 SDK 用的，SPA 不再儲存。
@@ -53,6 +65,7 @@ export const useAuthStore = defineStore('auth', () => {
     user,
     initialized,
     isAuthenticated,
+    isOwner,
     isAdmin,
     isDeveloper,
     login,

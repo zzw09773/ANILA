@@ -16,10 +16,27 @@ from app.schemas.user import (
     UserAllowedAgentsUpdate,
 )
 from app.services.audit_service import log_audit_event
-from app.services.auth_service import get_current_user, require_admin
+from app.services.auth_service import get_current_user, is_owner, require_admin
 from app.utils.security import hash_password
 
 router = APIRouter(prefix="/api/users", tags=["使用者管理"])
+
+_ELEVATED_ROLES = {"admin", "owner"}
+
+
+def _ensure_owner_for_elevated(target_role: str | None, current_user: User) -> None:
+    """Block non-owner admins from creating / promoting / demoting /
+    deleting / resetting-password admins or owners.
+
+    Only ``owner`` may touch the elevated tier — keeps the
+    "owner > admin > dev/user" hierarchy from being subverted by an
+    admin promoting themselves or another account they control.
+    """
+    if target_role in _ELEVATED_ROLES and not is_owner(current_user):
+        raise HTTPException(
+            status_code=403,
+            detail="需要 owner 權限以管理 admin/owner 帳號",
+        )
 
 
 def _cascade_user_key_permissions(db: Session, user: User, allowed_ids: set) -> int:
@@ -59,6 +76,7 @@ def create_user(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    _ensure_owner_for_elevated(request.role, admin)
     existing = db.query(User).filter(User.username == request.username).first()
     if existing:
         raise HTTPException(status_code=400, detail="使用者名稱已存在")
@@ -109,6 +127,13 @@ def update_user(
         raise HTTPException(status_code=404, detail="使用者不存在")
 
     update_data = request.model_dump(exclude_unset=True)
+    # Owner-only gate: editing an admin/owner row OR promoting any row
+    # to admin/owner both go through this check. Either side being
+    # elevated is enough to require the higher tier.
+    new_role = update_data.get("role")
+    _ensure_owner_for_elevated(user.role, admin)
+    _ensure_owner_for_elevated(new_role, admin)
+
     if "department_id" in update_data:
         update_data["department_id"] = _validate_department_id(
             db,
@@ -148,6 +173,7 @@ def admin_reset_password(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="使用者不存在")
+    _ensure_owner_for_elevated(user.role, admin)
     user.hashed_password = hash_password(request.new_password)
     user.token_version = (user.token_version or 0) + 1
     db.commit()
@@ -309,6 +335,7 @@ def deactivate_user(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="使用者不存在")
+    _ensure_owner_for_elevated(user.role, admin)
     user.is_active = False
     user.token_version = (user.token_version or 0) + 1
     db.commit()

@@ -1,12 +1,15 @@
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 
-# Roles defined on User.role today: 'admin' / 'user' / 'developer'.
+# Roles defined on User.role today: 'owner' / 'admin' / 'user' / 'developer'.
+# Tier order (high → low): owner > admin > developer ≈ user. ``owner`` is
+# the platform-operator role added in 0033 — gating role-altering ops,
+# auth provider edits, and hard-purge endpoints.
 # An empty list means the role gate is open (any role passes); a non-empty
 # list means the user's role must be in the list. Validated at the API
 # boundary so a typo ('Admin', 'dev') fails fast rather than silently
 # locking everyone out.
-_ALLOWED_ROLES = {"admin", "user", "developer"}
+_ALLOWED_ROLES = {"owner", "admin", "user", "developer"}
 
 
 def _validate_required_roles(value: list[str] | None) -> list[str] | None:

@@ -284,6 +284,7 @@ function handleLogout() {
   letter-spacing: 0.05em;
   text-transform: lowercase;
 }
+.topbar__user-role.is-owner     { color: var(--c-danger); font-weight: 600; }
 .topbar__user-role.is-admin     { color: var(--c-warn); }
 .topbar__user-role.is-developer { color: var(--c-info); }
 .topbar__user-role.is-user      { color: var(--c-fg-3); }
