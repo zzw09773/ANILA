@@ -1,9 +1,25 @@
 # Self-signed dev certificate material — never commit.
-# server.crt 是公開憑證可以追蹤；server.key / *.key / *.pem 一律忽略。
-# 重新簽發：
+#
+# Both cert AND key are now gitignored. Earlier we tracked server.crt
+# "because it's public", but that created an asymmetric tracking state:
+# crt followed branches, key followed disk, branch switches reliably
+# desynced them and crashed nginx with "key values mismatch". Better to
+# treat the matched pair atomically: each dev / host regenerates locally,
+# git stays out of it.
+#
+# Regenerate (matching pair, with SAN for browsers ≥ Chrome 58):
+#
 #   openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
 #     -keyout server.key -out server.crt \
-#     -subj "/C=TW/ST=Taiwan/L=Taipei/O=CSP Platform/CN=<your-host>"
+#     -subj "/C=TW/ST=Taiwan/L=Taipei/O=CSP Platform/CN=localhost" \
+#     -addext "subjectAltName=DNS:localhost,DNS:<hostname>,IP:127.0.0.1,IP:<lan-ip>" \
+#     -addext "keyUsage=digitalSignature,keyEncipherment" \
+#     -addext "extendedKeyUsage=serverAuth"
+#
+# Verify match: diff <(openssl x509 -in server.crt -pubkey -noout) \
+#                    <(openssl pkey -in server.key -pubout)
+*.crt
+*.crt.bak
 *.key
 *.key.bak
 *.pem
