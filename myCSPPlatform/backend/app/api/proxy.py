@@ -35,6 +35,34 @@ def _coerce_conversation_id(raw: str | None) -> int | None:
         return None
 
 
+def _latch_agent_classification(db: Session, conversation_id: int) -> None:
+    """Persist conversations.classified=true when the routed agent has
+    ``requires_encryption=true``. Idempotent — no-ops on rows already
+    classified. Distinct from ``_latch_inherited_classification`` in that
+    it leaves ``classification_inherited=FALSE`` (the source is the
+    agent's own policy, not memory inheritance).
+
+    Without this latch the classified flag only lived on the SSE
+    ``anila_meta`` payload — front-ends could latch the in-memory
+    conversation, but a hard refresh re-read the row from the DB and
+    found ``classified=false``, silently dropping encryption mode.
+    """
+    from sqlalchemy import text as sql_text
+    db.execute(
+        sql_text(
+            """
+            UPDATE conversations
+               SET classified = TRUE,
+                   classified_at = COALESCE(classified_at, CURRENT_TIMESTAMP)
+             WHERE id = :conv_id
+               AND classified = FALSE
+            """
+        ),
+        {"conv_id": conversation_id},
+    )
+    db.commit()
+
+
 def _latch_inherited_classification(db: Session, conversation_id: int) -> None:
     """Mark the conversation as classified-via-inheritance, one-shot.
 
@@ -383,6 +411,20 @@ async def chat_completions(
         # down). For P1 we just OR them — UI / latch wiring lands in P3.
         if memory_read and memory_read.encryption_inherited:
             agent_requires_encryption = True
+        # Persist classified state to the conversation row so it survives
+        # hard refresh. ROUTER routing to an encrypted downstream agent
+        # is the canonical case: conversation.agent_id stays NULL (router)
+        # but the row's classified flag must record the encrypted turn so
+        # the next GET /api/conversations latches the UI back into
+        # encrypted mode.
+        if agent_requires_encryption and conv_id_int is not None:
+            try:
+                _latch_agent_classification(db, conv_id_int)
+            except Exception:
+                logger.exception(
+                    "agent classification latch failed conv_id=%s",
+                    conv_id_int,
+                )
         if stream:
             upstream = proxy_stream(
                 target_url=f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions",

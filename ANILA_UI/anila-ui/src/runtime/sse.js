@@ -59,6 +59,7 @@ export function parseSseEvent(block) {
 export async function streamChatCompletion({
   url,
   payload,
+  conversationId,
   onText,
   onTrace,
   onMeta,
@@ -83,6 +84,16 @@ export async function streamChatCompletion({
   if (typeof document !== "undefined") {
     const match = document.cookie.match(/(?:^|;\s*)anila_csrf=([^;]+)/);
     if (match) headers["X-CSRF-Token"] = decodeURIComponent(match[1]);
+  }
+  // Surface the conversation id to CSP so server-side latches
+  // (memory inheritance, agent.requires_encryption) can persist
+  // ``classified=true`` to the conversation row. Without this header
+  // CSP can't tell which row to update, the latch silently no-ops, and
+  // a hard refresh re-reads the row as un-classified — losing
+  // encryption mode for the user. Sent as a header (not in payload) so
+  // it doesn't get forwarded into the OpenAI-compat downstream body.
+  if (typeof conversationId === "number") {
+    headers["X-ANILA-Conversation-Id"] = String(conversationId);
   }
   const response = await fetch(url, {
     method: "POST",

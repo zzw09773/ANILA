@@ -113,6 +113,22 @@ async function flushOne(entry, sender) {
     );
     _write(after);
   } catch (err) {
+    // Terminal errors: the row no longer exists (404) or the user lost
+    // access (403). Both are non-recoverable — keeping the entry just
+    // produces a console error on every focus / refresh forever. Drop
+    // it so the queue stays clean.
+    const status = err && typeof err.status === "number" ? err.status : null;
+    if (status === 404 || status === 403) {
+      const after = _read().filter(
+        (e) => String(e.tempId) !== String(entry.tempId)
+      );
+      _write(after);
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[classified-latch] dropping entry conv=${entry.numericId} (status ${status})`,
+      );
+      return;
+    }
     enqueueClassifyRetry(entry.tempId, { numericId: entry.numericId });
     // eslint-disable-next-line no-console
     console.error("[classified-latch] retry failed", err);

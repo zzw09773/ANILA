@@ -290,13 +290,21 @@ def classify_conversation(db: Session, conv_id: int, user: User) -> Conversation
 
 
 def log_classified_access(db: Session, conv_id: int, user: User) -> None:
+    # Field names match the AuditLog model exactly: actor_user_id /
+    # actor_username / detail (singular). The previous spelling
+    # ``user_id`` / ``details`` slipped through because no code path
+    # actually triggered classified-access logging until the
+    # conversations.classified column started being persisted by
+    # ``_latch_agent_classification`` — at which point GET /api/conversations/:id
+    # blew up with TypeError on construction.
     db.add(AuditLog(
-        user_id=user.id,
+        actor_user_id=user.id,
+        actor_username=user.username,
         action="access_classified_conversation",
         resource_type="conversation",
         resource_id=str(conv_id),
         status="success",
-        details=f"User {user.username} accessed classified conversation {conv_id}",
+        detail=f"User {user.username} accessed classified conversation {conv_id}",
     ))
     db.commit()
 

@@ -788,6 +788,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       await streamChatCompletion({
         url: `${baseUrl}/v1/chat/completions`,
         payload,
+        conversationId: typeof convId === "number" ? convId : undefined,
         onText: (acc) => {
           finalText = acc;
           updateMsg(convId, assistantId, { text: acc });
@@ -1015,6 +1016,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       await streamChatCompletion({
         url: `${baseUrl}/v1/chat/completions`,
         payload,
+        conversationId: typeof convId === "number" ? convId : undefined,
         onText: (acc) => {
           finalText = acc;
           updateMsg(convId, assistantId, { text: acc });
@@ -1203,6 +1205,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       await streamChatCompletion({
         url: `${baseUrl}/v1/chat/completions`,
         payload,
+        conversationId: typeof convId === "number" ? convId : undefined,
         onText: (acc) => {
           finalText = acc;
           updateMsg(convId, assistantMsg.id, { text: acc });
@@ -1419,6 +1422,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
               model: col.agentId,
               messages: [{ role: "user", content: buildUserContent(text, attachments) }],
             },
+            conversationId: typeof col.id === "number" ? col.id : undefined,
             onText: (acc) => {
               setCompareMsgs((prev) => ({
                 ...prev,
