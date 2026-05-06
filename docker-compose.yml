@@ -121,7 +121,12 @@ services:
       # read them by path. csp-side upload endpoint writes; worker reads.
       INGESTION_UPLOAD_DIR: /var/anila/ingestion-uploads
     volumes:
-      - ./AgenticRAG:/app/anila-template:ro
+      # Template served as the canonical sub-agent starter via CSP's
+      # template-download endpoint. Sourced from the upstream
+      # https://github.com/zzw09773/anila-agent.git via git-subtree at
+      # ``./anila-agent`` — see README §"Updating anila-agent" for the
+      # subtree pull / push workflow.
+      - ./anila-agent:/app/anila-template:ro
       # Same host path mounted into ingestion-worker so the two services
       # share inode-level identity (no copy / no syncing overhead).
       - ./share/uploads/ingestion:/var/anila/ingestion-uploads
