@@ -82,8 +82,17 @@
                 >
                   unpin
                 </button>
-                <span v-if="model.is_active" class="row-actions__sep">·</span>
-                <button v-if="model.is_active" class="term-action" @click="handleDeactivate(model.id)">deactivate</button>
+                <span class="row-actions__sep">·</span>
+                <button
+                  v-if="model.is_active"
+                  class="term-action"
+                  @click="handleDeactivate(model.id)"
+                >deactivate</button>
+                <button
+                  v-else
+                  class="term-action"
+                  @click="handleActivate(model.id)"
+                >activate</button>
                 <span class="row-actions__sep">·</span>
                 <button class="term-action term-action--danger" :disabled="purgingId === model.id" @click="handlePurge(model)">
                   {{ purgingId === model.id ? 'purging…' : 'purge' }}
@@ -238,9 +247,13 @@ async function handleUnsetPrimary(id) {
   finally { settingPrimaryId.value = null }
 }
 async function handleDeactivate(id) {
-  if (confirm('deactivate this model? you can re-enable from the edit panel.')) {
+  if (confirm('deactivate this model? you can re-activate it later via the activate button on this row.')) {
     await modelsStore.remove(id)
   }
+}
+async function handleActivate(id) {
+  try { await modelsStore.activate(id) }
+  catch (e) { alert(e.response?.data?.detail || 'activate failed') }
 }
 async function handlePurge(model) {
   if (!model || purgingId.value === model.id) return

@@ -256,6 +256,13 @@ def deactivate_model(
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
     model.is_active = False
+    # Deactivating a model that's the router primary would leave the router
+    # without a primary AND keep is_router_primary=true on a disabled row —
+    # which is_active filters in the picker would then trip on. Clear the
+    # primary flag here so the invariant ``is_router_primary => is_active``
+    # holds; admin must explicitly re-pin a primary after re-activation.
+    if model.is_router_primary:
+        model.is_router_primary = False
     db.commit()
     log_audit_event(
         db,
@@ -268,6 +275,41 @@ def deactivate_model(
         commit=True,
     )
     return {"message": "模型已停用"}
+
+
+@router.post("/{model_id}/activate", response_model=ModelResponse)
+def activate_model(
+    model_id: int,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Re-enable a previously deactivated model.
+
+    Symmetric with ``DELETE /{model_id}`` (which sets ``is_active=False``).
+    The router primary flag is NOT auto-restored — admins should pin a
+    primary explicitly via ``POST /{model_id}/set-router-primary`` after
+    re-activation.
+    """
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    if model.is_active:
+        return _build_response(model)
+    model.is_active = True
+    db.commit()
+    db.refresh(model)
+    log_audit_event(
+        db,
+        actor=admin,
+        action="activate",
+        resource_type="model",
+        resource_id=model.id,
+        detail=f"啟用模型「{model.display_name}」",
+        ip_address=_client_ip(request),
+        commit=True,
+    )
+    return _build_response(model)
 
 
 @router.delete("/{model_id}/purge")
