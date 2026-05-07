@@ -492,6 +492,235 @@ function renderImageFocus(pres, s, p) {
 }
 
 /**
+ * Closing statement (Phase 6) — final-slide aesthetic. Full-bleed accent
+ * background with centred italic title (the question / call-to-action)
+ * and an optional small tagline from bullets[0]. Distinct from
+ * section_break which uses palette.bar (navy) — closing uses palette.
+ * accent (amber/coral) so it visually closes the deck rather than
+ * starting a new section.
+ *
+ * Skips ANILA_BASE master entirely so the standard navy header bar
+ * doesn't appear above the closing statement (it would read as "still
+ * in the deck" rather than "we're done").
+ */
+function renderClosingStatement(pres, s, p) {
+  const slide = pres.addSlide()
+  // Solid accent background — same trick section_break uses with the bar
+  // colour. We pick `accent` here (the amber / coral / sage) because it's
+  // the brightest tone in each palette and visually says "the end".
+  slide.background = { color: p.accent }
+
+  // Subtle vignette at the bottom via a second rect at low opacity. Skip
+  // it — pptxgenjs's fill alpha is unreliable across PowerPoint /
+  // LibreOffice (same bug we hit in icon_rows). Solid colour + good
+  // typography is enough.
+
+  // Title — large, italic, centred. Lower vertical centre than
+  // section_break so the slide reads as "wrap-up" rather than "intro".
+  slide.addText(String(s.title || ''), {
+    x: 0.5, y: 2.4, w: 12.3, h: 2.2,
+    fontSize: 52, bold: true, italic: true, color: 'FFFFFF',
+    align: 'center', valign: 'middle', fontFace: FONT_FACE,
+  })
+
+  // Optional tagline from bullets[0]. We use the SAME field the LLM
+  // already populates for section_break sub-titles, so the prompt
+  // instruction "bullets[0] = 副標" is consistent across both layouts.
+  const bullets = Array.isArray(s.bullets) ? s.bullets : []
+  if (bullets[0]) {
+    slide.addText(String(bullets[0]), {
+      x: 1.0, y: 4.6, w: 11.3, h: 0.7,
+      fontSize: 22, color: 'FFFFFF', italic: false,
+      align: 'center', valign: 'middle', fontFace: FONT_FACE,
+    })
+  }
+  if (s.speaker_notes) slide.addNotes(String(s.speaker_notes))
+  return slide
+}
+
+/**
+ * Before/After (Phase 6) — comparison framing. Reuses `slide.columns`
+ * (must be exactly 2). Adds two visual elements two_column doesn't have:
+ *   1. Pill-shaped labels above each column ("Before" / "After" by
+ *      default; LLM can put alternative labels in column.heading).
+ *   2. A right-pointing arrow shape between the two columns to make the
+ *      directionality (left → right) explicit.
+ * Falls back to renderTwoColumn if columns are missing or only 1 — at
+ * that point the "before/after" framing has no meaning anyway.
+ */
+function renderBeforeAfter(pres, s, p) {
+  if (!Array.isArray(s.columns) || s.columns.length < 2) {
+    return renderTwoColumn(pres, s, p)
+  }
+  const cols = s.columns.slice(0, 2)
+  const slide = pres.addSlide({ masterName: 'ANILA_BASE' })
+  slide.addText(String(s.title || ''), {
+    x: 0.5, y: 0.1, w: 12.3, h: 0.6,
+    fontSize: 26, bold: true, color: p.barText,
+    align: 'left', valign: 'middle',
+    fontFace: FONT_FACE, margin: 0,
+  })
+
+  // Same column maths as two_column for visual rhythm consistency.
+  // Slightly narrower columns (5.6 vs 5.95) so the centre arrow has
+  // breathing room.
+  const COL_WIDTH = 5.6
+  const leftX = 0.4
+  const rightX = leftX + COL_WIDTH + 1.1
+  // Arrow occupies the gap between columns.
+  const ARROW_X = leftX + COL_WIDTH + 0.05
+  const ARROW_W = 1.0
+
+  cols.forEach((col, i) => {
+    const x = i === 0 ? leftX : rightX
+    // Default heading text — LLM can override via column.heading. We use
+    // the literal column heading if non-empty; otherwise fall back to
+    // "Before" / "After".
+    const fallback = i === 0 ? 'Before' : 'After'
+    const headingText = String(col.heading || fallback)
+
+    // Pill background for the heading. palette.bar for "Before" (subdued),
+    // palette.accent for "After" (highlighted) — visually communicates
+    // direction-of-improvement without an explicit colour key.
+    const pillFill = i === 0 ? p.muted : p.accent
+    slide.addShape('roundRect', {
+      x, y: 1.05, w: COL_WIDTH, h: 0.55,
+      fill: { color: pillFill },
+      line: { type: 'none' },
+      rectRadius: 0.27, // half the height = full pill
+    })
+    slide.addText(headingText, {
+      x, y: 1.05, w: COL_WIDTH, h: 0.55,
+      fontSize: 18, bold: true, color: 'FFFFFF',
+      align: 'center', valign: 'middle', fontFace: FONT_FACE,
+    })
+
+    const bullets = Array.isArray(col.bullets) ? col.bullets : []
+    slide.addText(
+      bullets.map((b) => ({
+        text: String(b),
+        options: { bullet: { code: '25CF' }, color: p.ink },
+      })),
+      {
+        x: x + 0.1, y: 1.85, w: COL_WIDTH - 0.1, h: 4.9,
+        fontSize: 18, color: p.ink, fontFace: FONT_FACE,
+        paraSpaceAfter: 12, valign: 'top',
+      },
+    )
+  })
+
+  // Centre arrow — chevron-right shape from the AutoShape catalogue
+  // pptxgenjs ships. `rightArrow` reads as "left becomes right" without
+  // needing extra labels.
+  slide.addShape('rightArrow', {
+    x: ARROW_X, y: 3.2, w: ARROW_W, h: 1.2,
+    fill: { color: p.accent },
+    line: { color: p.accent, width: 0 },
+  })
+  if (s.speaker_notes) slide.addNotes(String(s.speaker_notes))
+  return slide
+}
+
+/**
+ * Image grid (Phase 6) — 2-4 source figures arranged in a grid below
+ * the title bar. Reads `slide.image_data_list` (a parallel array of
+ * data URLs) populated by CSP's `_hydrate_image_refs`. Captions, when
+ * present, render as small italic text under each cell.
+ *
+ * Layout strategy:
+ *   2 cells → side-by-side, each ~6 in wide
+ *   3 cells → 1 large left + 2 stacked right (asymmetric Hero look)
+ *   4 cells → 2x2 grid
+ * We pick layouts that *use* the available space rather than always
+ * forcing a 2x2 even for 2 cells (which leaves dead bottom half).
+ *
+ * Falls back to renderStandard if image_data_list is missing or has
+ * fewer than 2 cells (CSP-side hydration already guarantees ≥2 when
+ * the field exists, so this is just defence-in-depth).
+ */
+function renderImageGrid(pres, s, p) {
+  const cells = Array.isArray(s.image_data_list) ? s.image_data_list : []
+  if (cells.length < 2) {
+    return renderStandard(pres, s, p)
+  }
+  const captions = (s.image_grid && Array.isArray(s.image_grid.captions))
+    ? s.image_grid.captions
+    : []
+  const n = Math.min(cells.length, 4)
+
+  const slide = pres.addSlide({ masterName: 'ANILA_BASE' })
+  slide.addText(String(s.title || ''), {
+    x: 0.5, y: 0.1, w: 12.3, h: 0.6,
+    fontSize: 26, bold: true, color: p.barText,
+    align: 'left', valign: 'middle',
+    fontFace: FONT_FACE, margin: 0,
+  })
+
+  // Vertical area available for the grid: 1.0 (top) → 6.9 (bottom).
+  // Captions eat 0.35in below each row; account for that in cell height.
+  const GRID_TOP = 1.05
+  const GRID_BOTTOM = 6.85
+  const CAP_H = 0.35
+  const GAP = 0.2
+
+  // Geometry per layout.
+  const placements = []
+  if (n === 2) {
+    // 1 row × 2 cols, full vertical bleed below the bar.
+    const cellW = (13.33 - 0.5 * 2 - GAP) / 2
+    const cellH = GRID_BOTTOM - GRID_TOP - CAP_H
+    placements.push({ x: 0.5,                   y: GRID_TOP, w: cellW, h: cellH, capY: GRID_TOP + cellH })
+    placements.push({ x: 0.5 + cellW + GAP,     y: GRID_TOP, w: cellW, h: cellH, capY: GRID_TOP + cellH })
+  } else if (n === 3) {
+    // 1 large left (full height), 2 stacked right (half height each).
+    const leftW = 7.5
+    const rightW = 13.33 - 0.5 * 2 - leftW - GAP
+    const fullH = GRID_BOTTOM - GRID_TOP - CAP_H
+    const halfH = (GRID_BOTTOM - GRID_TOP - GAP - CAP_H * 2) / 2
+    placements.push({ x: 0.5,                       y: GRID_TOP, w: leftW,  h: fullH, capY: GRID_TOP + fullH })
+    placements.push({ x: 0.5 + leftW + GAP,         y: GRID_TOP, w: rightW, h: halfH, capY: GRID_TOP + halfH })
+    placements.push({
+      x: 0.5 + leftW + GAP,
+      y: GRID_TOP + halfH + CAP_H + GAP,
+      w: rightW, h: halfH,
+      capY: GRID_TOP + halfH + CAP_H + GAP + halfH,
+    })
+  } else {
+    // 2x2 grid, equal cells.
+    const cellW = (13.33 - 0.5 * 2 - GAP) / 2
+    const cellH = (GRID_BOTTOM - GRID_TOP - GAP - CAP_H * 2) / 2
+    for (let row = 0; row < 2; row++) {
+      for (let col = 0; col < 2; col++) {
+        const x = 0.5 + col * (cellW + GAP)
+        const y = GRID_TOP + row * (cellH + CAP_H + GAP)
+        placements.push({ x, y, w: cellW, h: cellH, capY: y + cellH })
+      }
+    }
+  }
+
+  for (let i = 0; i < n; i++) {
+    const place = placements[i]
+    slide.addImage({
+      data: cells[i],
+      x: place.x, y: place.y, w: place.w, h: place.h,
+      // contain — same letterboxing strategy as image_focus, important
+      // because source figures rarely match our box aspect ratio.
+      sizing: { type: 'contain', w: place.w, h: place.h },
+    })
+    const cap = captions[i] && String(captions[i]).trim()
+    if (cap) {
+      slide.addText(cap, {
+        x: place.x, y: place.capY, w: place.w, h: CAP_H,
+        fontSize: 11, italic: true, color: p.muted,
+        align: 'center', valign: 'top', fontFace: FONT_FACE,
+      })
+    }
+  }
+  if (s.speaker_notes) slide.addNotes(String(s.speaker_notes))
+  return slide
+}
+
+/**
  * Dispatcher — picks the renderer based on slide.layout_kind. Unknown
  * kinds fall back to `renderStandard`. Async so callers can `await` it
  * uniformly even though only icon_rows is actually async.
@@ -499,13 +728,16 @@ function renderImageFocus(pres, s, p) {
 async function renderSlideByKind(pres, s, p) {
   const kind = String(s.layout_kind || 'standard')
   switch (kind) {
-    case 'section_break': return renderSectionBreak(pres, s, p)
-    case 'stat_callout':  return renderStatCallout(pres, s, p)
-    case 'quote':         return renderQuote(pres, s, p)
-    case 'two_column':    return renderTwoColumn(pres, s, p)
-    case 'icon_rows':     return await renderIconRows(pres, s, p)
-    case 'image_focus':   return renderImageFocus(pres, s, p)
-    default:              return renderStandard(pres, s, p)
+    case 'section_break':     return renderSectionBreak(pres, s, p)
+    case 'stat_callout':      return renderStatCallout(pres, s, p)
+    case 'quote':             return renderQuote(pres, s, p)
+    case 'two_column':        return renderTwoColumn(pres, s, p)
+    case 'icon_rows':         return await renderIconRows(pres, s, p)
+    case 'image_focus':       return renderImageFocus(pres, s, p)
+    case 'closing_statement': return renderClosingStatement(pres, s, p)
+    case 'before_after':      return renderBeforeAfter(pres, s, p)
+    case 'image_grid':        return renderImageGrid(pres, s, p)
+    default:                  return renderStandard(pres, s, p)
   }
 }
 

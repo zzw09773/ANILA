@@ -123,6 +123,21 @@ def _normalize_slide(slide: Slide) -> Slide:
             for ir in slide.icon_rows
         ]
 
+    if slide.image_grid is not None:
+        # image_refs are opaque ids — never convert. Captions are
+        # user-visible strings and may contain zh-CN leakage like the
+        # rest of the deck, so they go through s2twp the same way
+        # bullets do. We rebuild via model_copy to stay immutable.
+        patch["image_grid"] = slide.image_grid.model_copy(
+            update={
+                "captions": (
+                    [_convert(c) or "" for c in slide.image_grid.captions]
+                    if slide.image_grid.captions is not None
+                    else None
+                ),
+            },
+        )
+
     return slide.model_copy(update=patch)
 
 

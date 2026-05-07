@@ -442,8 +442,18 @@ def _build_generation_prompt(
             '  "section_break"     章節過渡頁；title 是章節名，bullets 用 1-2 句副標',
             '  "stat_callout"      強調單一數字／百分比；要附 stat 物件',
             '  "quote"             引用名言或客戶證言；要附 quote 物件',
-            '  "two_column"        對照／互補（before/after, pros/cons）；要附 columns',
+            '  "two_column"        並列兩塊內容（功能對照、模組分工）；要附 columns',
             '  "icon_rows"         3-5 個並列要點，每個有 icon；要附 icon_rows',
+            '  "image_focus"       一張關鍵圖佔半版（架構圖／實驗圖）；要設 image_ref',
+            # Phase 6 additions
+            '  "before_after"      明確「之前 vs 之後」對比；reuse columns（恰好 2 個，',
+            '                      column[0]=before、column[1]=after）；renderer 會加',
+            '                      pill label + 中間箭頭，視覺比 two_column 更強烈',
+            '  "image_grid"        2-4 張並列圖（多圖比較、流程拼貼）；要附 image_grid',
+            '                      物件，只有當「可用圖」清單 ≥2 張時才能用',
+            '  "closing_statement" 結尾頁；title 寫一句問句或行動呼籲（"還有問題嗎？"、',
+            '                      "下一步行動"），bullets[0] 寫副標；整版置中、字大、',
+            '                      無條列符號。**僅最後 1 張可用此 layout**',
             "",
             "Layout-specific 物件（以下是欄位形狀，**不要把這些範例值複製到輸出**）：",
             '  stat 形狀：{"value": "47%", "label": "...", "supporting": "..."}',
@@ -453,8 +463,13 @@ def _build_generation_prompt(
             '  columns 形狀：[{"heading": "...", "bullets": ["..."]},',
             '                 {"heading": "...", "bullets": ["..."]}]',
             '             固定 2 個元素的陣列；多於 2 會被忽略、少於 2 會降級為 standard。',
+            '             two_column 與 before_after 共用此欄位，差別只在 layout_kind。',
             '  icon_rows 形狀：[{"concept": "...", "heading": "...", "description": "..."}]',
             '             3-5 個元素；concept 必須來自下方白名單。',
+            '  image_grid 形狀：{"image_refs": ["img_id_a", "img_id_b", ...],',
+            '                    "captions": ["說明1", "說明2", ...]}',
+            '             image_refs 2-4 個、不可重複；captions 為選填、與 image_refs',
+            '             同 index 對應。每個 image_id 必須來自「可用圖」清單。',
             "",
             "重要：bullets 任何 layout 都要填（renderer 在 layout-specific 欄位",
             "缺漏時會回退用 bullets 渲染，不要省）。",
@@ -519,6 +534,19 @@ def _build_generation_prompt(
             "**規則 6 / 若可用圖清單非空，必須至少 1 張 image_focus**：把「相關性",
             "  最高的那張」做 image_focus（layout_kind='image_focus' + 設 image_ref）。",
             "  論文 / 技術文件的圖（架構圖、實驗結果圖）幾乎都比文字描述更有說服力。",
+            "**規則 7 / 結尾頁建議用 closing_statement**：簡報的最後一張 slide，"
+            "  若是「Q&A」、「謝謝聆聽」、「下一步」、「行動呼籲」這類收尾，"
+            "  使用 layout_kind='closing_statement'。**僅限最後一張**，中段不可使用。"
+            "  若簡報無此性質的結尾（純資訊性 deck），最後一張用 standard 即可。",
+            "**規則 8 / 對照型內容若有「時間先後」優先用 before_after**：規則 5 提到",
+            "  對照用 two_column。若對照的兩端有「先 → 後」、「舊 → 新」、「未優化 → ",
+            "  優化後」這種時間／改動方向，改用 before_after layout — 視覺上會多一個",
+            "  從 column[0] 指向 column[1] 的箭頭，比並列的 two_column 更精準。",
+            "  純功能對照（A 模組 / B 模組）仍用 two_column。",
+            "**規則 9 / 多張圖比較用 image_grid**：若可用圖清單 ≥2 張且使用者意圖是",
+            "  「比較 A、B、C 三張結果圖」、「展示 4 個流程截圖」這類多圖併排，用",
+            "  layout_kind='image_grid' + image_grid.image_refs（2-4 個）。**單張關鍵圖",
+            "  仍用 image_focus**；image_grid 不要為了「拿來放放」硬塞 — 圖太多反而稀釋焦點。",
             "",
             "── 引用「圖片描述」段落（這是 deck 變具體的關鍵） ──",
             "下方檢索段落中可能含「圖片描述：...」的段落 — 那是文件原圖的",
@@ -550,8 +578,8 @@ def _build_generation_prompt(
             "  就不要用 image_focus**。一張圖只應出現在一張投影片。",
             "- **commit fully**：選了豐富版型就把欄位填好；不要半途而廢。",
             "- **layout_kind 拼寫精確**：'standard' / 'section_break' / 'stat_callout' /",
-            "  'quote' / 'two_column' / 'icon_rows' / 'image_focus'。",
-            "  其他寫法會被歸類為 standard。",
+            "  'quote' / 'two_column' / 'icon_rows' / 'image_focus' / 'closing_statement' /",
+            "  'before_after' / 'image_grid'。其他寫法會被歸類為 standard。",
             "",
             "── 台灣用語對映（簡中用詞 → 台灣慣用詞，務必使用右邊） ──",
             "  視頻 → 影片        軟件 → 軟體        硬件 → 硬體",
@@ -835,6 +863,249 @@ def _build_fallback_spec(
     )
 
 
+# ── Step 6.7: structural self-QA (rule-based, pre-render) ────────────────
+#
+# Borrowed from guizang-ppt-skill's "checklist self-inspection" (Phase 4
+# of its pipeline). The vision QA below only sees rendered pixels — it
+# can spot overflow and overlap, but it can't tell us "this deck is 100%
+# standard slides" or "the data-heavy chunks produced no stat_callout".
+# Those are deck-level structural issues that are cheaper to detect with
+# a few regex/counting passes than to generate, render, screenshot, and
+# vision-LLM-inspect.
+#
+# Output is a list of plain-text issues. If non-empty, we run ONE fix-
+# pass against the LLM with the issue list; if the fix still has issues,
+# we ship the deck as-is rather than loop. The assumption is that the
+# big-rocks rules (no stat_callout when data exists; first slide not a
+# section_break) are worth the extra LLM round-trip; the small-rocks
+# (>60% standard) are nice-to-haves and we can live with imperfect.
+
+# Heuristic: do the retrieved chunks contain quantitative claims that
+# would justify a stat_callout? Conservative pattern — favours false
+# negatives (we'd rather not nag the LLM about a stat for a qualitative
+# deck) over false positives. Matches:
+#   - bare percentages: "47%", "12.3 %"
+#   - decimal scores: "F1 0.92", "Recall 0.88"
+#   - sample sizes: "N=10000", "n = 1,234"
+#   - uppercase metric tokens followed by numbers: "MAPE 12.4"
+_NUMERIC_CLAIM_RE = re.compile(
+    r"\b(\d+(?:[.,]\d+)?\s*%"
+    r"|(?:F1|Recall|Precision|Accuracy|AUC|BLEU|ROUGE|MAPE|RMSE|MSE)"
+    r"\s*[:=]?\s*\d+(?:\.\d+)?"
+    r"|N\s*[=≈]\s*\d[\d,]*)",
+    re.IGNORECASE,
+)
+
+
+def _chunks_have_numerics(chunks: list[dict[str, Any]]) -> bool:
+    """True iff any retrieved chunk contains a quantitative claim worth
+    making into a stat_callout. Used by the structural QA rule that
+    flags data-heavy decks missing a stat layout.
+    """
+    for c in chunks:
+        if _NUMERIC_CLAIM_RE.search(str(c.get("content", ""))):
+            return True
+    return False
+
+
+def _structural_qa_pass(
+    spec: SlidesSpec,
+    *,
+    chunks_have_numerics: bool,
+    images_offered: int,
+    min_slides: int,
+) -> list[str]:
+    """Rule-based structural checks. Returns human-readable issue list.
+
+    Empty list ≡ deck passes structural QA. Non-empty list goes back to
+    the LLM verbatim for one fix-pass.
+
+    Rules (in priority order — first violation reported per rule):
+      1. First slide must be section_break (mirrors prompt rule 1).
+      2. ≥8-slide decks must have ≥2 section_breaks total (rule 2).
+      3. closing_statement, if present, must be the LAST slide.
+      4. closing_statement may appear at most once.
+      5. ≥3 consecutive same-layout_kind runs are flagged (rhythm).
+      6. standard ratio > 0.6 → "AI slop" warning (rule 3).
+      7. chunks_have_numerics AND no stat_callout → missing big number (rule 4).
+      8. images_offered ≥ 1 AND no image_focus / image_grid → ignored figure
+         (rule 6 + new rule 9).
+      9. before_after must use exactly 2 columns with non-empty headings.
+     10. image_grid.image_refs items must be unique within a single grid
+         AND across all grids (already in pydantic for intra-grid; cross-
+         grid uniqueness checked here so two grids don't reuse a figure).
+    """
+    issues: list[str] = []
+    slides = spec.slides
+    if not slides:
+        return ["deck has zero slides"]
+
+    # 1
+    if slides[0].layout_kind != "section_break":
+        issues.append(
+            "第 1 張投影片不是 section_break — 整份 deck 缺封面，請把第 1 張改成 "
+            "layout_kind='section_break'，title 寫簡報主題。"
+        )
+
+    # 2
+    section_count = sum(1 for s in slides if s.layout_kind == "section_break")
+    if min_slides >= 8 and section_count < 2:
+        issues.append(
+            f"deck 共 {len(slides)} 張但只有 {section_count} 張 section_break；"
+            "≥8 張的長簡報應在三分之一或一半處再加 1 張章節分隔。"
+        )
+
+    # 3 + 4
+    closing_indexes = [
+        i for i, s in enumerate(slides) if s.layout_kind == "closing_statement"
+    ]
+    if len(closing_indexes) > 1:
+        issues.append(
+            f"closing_statement 出現 {len(closing_indexes)} 次（僅最後 1 張可用）；"
+            "請把非最後一張的改成 standard 或 section_break。"
+        )
+    if closing_indexes and closing_indexes[-1] != len(slides) - 1:
+        issues.append(
+            f"closing_statement 出現在第 {closing_indexes[-1] + 1} 張（不是最後 1 張）；"
+            "把它移到 deck 最末，或改成其他 layout_kind。"
+        )
+
+    # 5
+    run_kind: str | None = None
+    run_len = 0
+    run_start = 0
+    for i, s in enumerate(slides):
+        if s.layout_kind == run_kind:
+            run_len += 1
+        else:
+            if run_kind is not None and run_len >= 3:
+                issues.append(
+                    f"第 {run_start + 1}-{run_start + run_len} 張連續 {run_len} 張 "
+                    f"{run_kind!r}；用 stat_callout / quote / icon_rows 打斷節奏。"
+                )
+            run_kind = s.layout_kind
+            run_len = 1
+            run_start = i
+    if run_kind is not None and run_len >= 3:
+        issues.append(
+            f"第 {run_start + 1}-{run_start + run_len} 張連續 {run_len} 張 "
+            f"{run_kind!r}；用 stat_callout / quote / icon_rows 打斷節奏。"
+        )
+
+    # 6
+    standard_ratio = sum(1 for s in slides if s.layout_kind == "standard") / len(slides)
+    if standard_ratio > 0.6:
+        issues.append(
+            f"standard 比例 {standard_ratio:.0%} 超過 60%；此 deck 視覺單調，"
+            "在文字頁之間插入 stat_callout / icon_rows / two_column 製造對比。"
+        )
+
+    # 7
+    has_stat = any(s.layout_kind == "stat_callout" for s in slides)
+    if chunks_have_numerics and not has_stat:
+        issues.append(
+            "檢索段落含百分比 / F1 / 樣本數 等量化指標，但 deck 沒有任何 "
+            "stat_callout。挑最關鍵的數字做 1 張大字呈現。"
+        )
+
+    # 8
+    has_image_layout = any(
+        s.layout_kind in ("image_focus", "image_grid") for s in slides
+    )
+    if images_offered >= 1 and not has_image_layout:
+        issues.append(
+            f"prompt 提供了 {images_offered} 張可用圖，但 deck 沒有任何 image_focus "
+            "或 image_grid。挑最相關的 1 張做 image_focus（單張）或 2-4 張做 "
+            "image_grid（多張比較）。"
+        )
+
+    # 9
+    for i, s in enumerate(slides):
+        if s.layout_kind != "before_after":
+            continue
+        cols = s.columns or []
+        if len(cols) != 2 or any(not (c.heading or "").strip() for c in cols):
+            issues.append(
+                f"第 {i + 1} 張 before_after 的 columns 必須恰好 2 個、且每個 heading "
+                "都要寫（column[0] 是 before、column[1] 是 after）。"
+            )
+
+    # 10
+    used_refs: dict[str, int] = {}  # ref → first slide index
+    for i, s in enumerate(slides):
+        if s.layout_kind != "image_grid" or s.image_grid is None:
+            continue
+        for ref in s.image_grid.image_refs:
+            if ref in used_refs:
+                issues.append(
+                    f"image_id={ref} 同時出現在第 {used_refs[ref] + 1} 與第 {i + 1} "
+                    "張的 image_grid 內；同一張圖只應在一張投影片用一次。"
+                )
+                break
+            used_refs[ref] = i
+
+    return issues
+
+
+async def _fix_spec_with_structural_issues(
+    db: Session,
+    user: User,
+    current_spec: SlidesSpec,
+    issues: list[str],
+) -> SlidesSpec:
+    """One-pass LLM revise driven by structural QA findings.
+
+    Distinct from `_fix_spec_with_defects` (which works on vision-QA
+    pixel-level findings). The two functions are kept separate even
+    though they're shaped similarly because the prompts they emit need
+    very different framing — a structural complaint like "70% standard"
+    asks the model to RESTRUCTURE the deck (swap layouts), whereas a
+    visual complaint like "text overflow on slide 3" asks for a SURGICAL
+    edit (shorten that bullet). Mixing them in one prompt produced
+    decks where the model would shrink bullets when we wanted it to
+    convert a slide to stat_callout.
+
+    Returns a new SlidesSpec; on parse failure caller should fall back
+    to the unfixed spec rather than retry (one pass is the budget).
+    """
+    issue_list = "\n".join(f"- {x}" for x in issues)
+    system = (
+        "你是 ANILA LM 的簡報結構修訂助手。輸入是一份既有的 SlidesSpec JSON "
+        "和結構檢查發現的問題清單。請輸出修正後的完整 SlidesSpec JSON。\n\n"
+        "規則同生成階段：第一字 {、最後字 }、不可前言、不可代碼塊、雙引號。\n\n"
+        "修正策略：\n"
+        "1) 第 1 張不是 section_break → 把第 1 張改成 layout_kind='section_break'，"
+        "title 用簡報主題。\n"
+        "2) 連續多張同 layout → 把中段的某些張換成 stat_callout / quote / "
+        "icon_rows / two_column 製造節奏。\n"
+        "3) standard 太多 → 同上，挑出真的有對照／數據／並列的張，換成更合適的 layout。\n"
+        "4) 缺 stat_callout 但檢索有數字 → 挑最關鍵的指標做 1 張 stat_callout，"
+        "stat.value 是大字、stat.label 是說明。\n"
+        "5) 缺 image_focus 但 prompt 給了可用圖 → 挑相關性最高的圖做 image_focus，"
+        "或 2-4 張做 image_grid。\n"
+        "6) before_after 欠 columns → 補上恰好 2 個 columns，column[0]=before、"
+        "column[1]=after。\n"
+        "7) closing_statement 不在最後 → 移到最後，或把該張改成 standard / "
+        "section_break。\n\n"
+        "保留 title / palette 與沒問題的投影片。slide 數量可以略增略減（±1-2）"
+        "若結構修正需要。"
+    )
+    user_msg = (
+        "現有 SlidesSpec：\n"
+        f"{current_spec.model_dump_json(indent=2)}\n\n"
+        f"結構問題清單：\n{issue_list}"
+    )
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user_msg},
+    ]
+    raw = await _call_llm_chat(
+        db, user, SLIDES_LLM_MODEL, messages, temperature=0.3,
+    )
+    extracted = _extract_json_object(raw)
+    return SlidesSpec.model_validate(_loads_lenient(extracted))
+
+
 # ── Step 7: render via the Node service ──────────────────────────────────
 
 
@@ -866,32 +1137,72 @@ def _hydrate_image_refs(
     """
     import base64
 
-    slides = spec_dict.get("slides") or []
-    for slide in slides:
-        ref = slide.get("image_ref")
-        if not ref:
-            continue
+    def _read_data_url(ref: str) -> str | None:
+        """Resolve one image_id → data URL, or None if unresolvable."""
         meta = images_lookup.get(ref)
         if not meta:
-            # LLM emitted an id we never offered. Strip silently —
-            # renderer's image_focus → standard fallback handles it.
-            slide.pop("image_ref", None)
-            continue
+            return None
         try:
             abs_path = os.path.join(upload_dir, meta["storage_path"])
             with open(abs_path, "rb") as f:
                 blob = f.read()
-            mime = meta.get("mime") or "image/png"
-            slide["image_data"] = (
-                f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"
-            )
         except OSError as e:
             logger.warning(
-                "Failed to hydrate image_ref=%s for storage_path=%s: %s — "
-                "slide will fall back to standard layout.",
+                "Failed to hydrate image ref=%s storage_path=%s: %s",
                 ref, meta.get("storage_path"), e,
             )
-            slide.pop("image_ref", None)
+            return None
+        mime = meta.get("mime") or "image/png"
+        return f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"
+
+    slides = spec_dict.get("slides") or []
+    for slide in slides:
+        # Single-image layout (image_focus). Resolve image_ref → image_data.
+        ref = slide.get("image_ref")
+        if ref:
+            data_url = _read_data_url(ref)
+            if data_url is None:
+                # LLM emitted an id we never offered or storage_path is GC'd.
+                # Strip silently — renderer's image_focus → standard
+                # fallback handles it.
+                slide.pop("image_ref", None)
+            else:
+                slide["image_data"] = data_url
+
+        # Multi-image layout (image_grid). Resolve each ref; keep the
+        # parallel index alignment with captions. We do NOT pad missing
+        # cells — if 1 of 4 refs is dead, we ship a 3-cell grid rather
+        # than a placeholder cell. If <2 cells survive, drop the grid
+        # entirely so the renderer falls back to standard.
+        grid = slide.get("image_grid")
+        if isinstance(grid, dict):
+            refs = grid.get("image_refs") or []
+            captions_in = grid.get("captions") or []
+            cells: list[str] = []
+            captions_out: list[str] = []
+            for i, r in enumerate(refs):
+                if not r:
+                    continue
+                url = _read_data_url(str(r))
+                if url is None:
+                    continue
+                cells.append(url)
+                if i < len(captions_in) and captions_in[i]:
+                    captions_out.append(str(captions_in[i]))
+                else:
+                    captions_out.append("")
+            if len(cells) >= 2:
+                # Renderer reads `image_data_list` (parallel to image_focus's
+                # `image_data`). Captions stay in image_grid.captions.
+                slide["image_data_list"] = cells
+                slide["image_grid"]["captions"] = captions_out
+                # Strip image_refs — renderer doesn't need them after
+                # hydration and they only inflate payload size.
+                slide["image_grid"].pop("image_refs", None)
+            else:
+                # Not enough live cells → drop the grid; renderer falls
+                # back to standard rendering of bullets.
+                slide.pop("image_grid", None)
     return spec_dict
 
 
@@ -1202,6 +1513,43 @@ async def _run_pipeline(
         # structural integrity check has already passed) and BEFORE render
         # / vision QA (so all downstream steps see clean Traditional Chinese).
         spec = normalize_spec(spec)
+
+        # ── Step 6.7: structural self-QA + optional one-pass fix ──
+        # Rule-based check (cheap, deterministic) catches deck-level issues
+        # the vision QA can't see — e.g. "70% standard slides", "no
+        # stat_callout despite numerical chunks", "consecutive run of 4
+        # standards". Runs once: if the LLM's revise still has issues, we
+        # ship anyway rather than spin. Skipped on fallback decks (their
+        # shape is deliberately minimal).
+        if not used_fallback:
+            count_hint, min_slides = _count_hint(payload.preset)
+            structural_issues = _structural_qa_pass(
+                spec,
+                chunks_have_numerics=_chunks_have_numerics(chunks),
+                images_offered=len(images),
+                min_slides=min_slides,
+            )
+            if structural_issues:
+                logger.info(
+                    "Studio structural QA found %d issue(s); running fix-pass: %s",
+                    len(structural_issues),
+                    "; ".join(structural_issues)[:600],
+                )
+                try:
+                    revised = await _fix_spec_with_structural_issues(
+                        db, user, spec, structural_issues,
+                    )
+                    spec = normalize_spec(revised)
+                except (ValueError, ValidationError, json.JSONDecodeError) as e:
+                    # One-pass budget. Bad fix → keep the original spec
+                    # (which at worst has minor structural shortcomings;
+                    # better than a parse-error abort).
+                    logger.warning(
+                        "Structural fix-pass returned invalid JSON; keeping "
+                        "pre-fix spec. Error: %s",
+                        str(e)[:200],
+                    )
+
         # Surface the title early so the UI can show "鑄造中：<title>"
         # before render finishes.
         await updater.set(title=spec.title, slide_count=len(spec.slides))

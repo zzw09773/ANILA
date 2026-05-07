@@ -24,9 +24,12 @@ Two principles, applied at *every* schema level:
                                     navy_amber). Renderer maps to a colour
                                     set so the LLM doesn't have to think
                                     in hex.
-- `Slide.layout_kind`               selects one of 6 visual templates;
-                                    fallback to "standard" if unknown.
-- `Slide.stat` / `quote` / `columns` / `icon_rows`
+- `Slide.layout_kind`               selects one of 10 visual templates
+                                    (Phase 6 added closing_statement /
+                                    before_after / image_grid for parity
+                                    with guizang-ppt-skill); fallback to
+                                    "standard" if unknown.
+- `Slide.stat` / `quote` / `columns` / `icon_rows` / `image_grid`
                                     layout-specific structured payloads,
                                     used only by the renderer for the
                                     matching layout_kind.
@@ -75,6 +78,23 @@ LAYOUT_KINDS: tuple[str, ...] = (
     # point at an ingestion_images row; renderer falls back to
     # `standard` if image_ref is missing or unresolvable.
     "image_focus",
+    # Phase 6 (Open-Design parity — borrows the missing 3 from
+    # guizang-ppt-skill's 10-layout catalogue):
+    #   closing_statement  Final-slide aesthetic. Centred large italic
+    #                      title (a question or call-to-action), no bullet
+    #                      bar — distinct from section_break which lives
+    #                      mid-deck. Uses Slide.title + bullets[0] (optional
+    #                      tagline). No new payload.
+    #   before_after       Comparison framing. Reuses Slide.columns (must
+    #                      be exactly 2; column[0]=before, column[1]=after);
+    #                      renderer adds pill labels + centre arrow shape
+    #                      that two_column doesn't have.
+    #   image_grid         2-4 source figures laid out in a grid. Requires
+    #                      Slide.image_grid payload (multi-ref); renderer
+    #                      hydrates each ref like image_focus does.
+    "closing_statement",
+    "before_after",
+    "image_grid",
 )
 
 
@@ -113,6 +133,37 @@ class Column(BaseModel):
 
     heading: str = Field(..., min_length=1, max_length=120)
     bullets: list[str] = Field(..., min_length=1, max_length=6)
+
+
+class ImageGrid(BaseModel):
+    """2-4 source figures in a grid. Used by layout_kind='image_grid'.
+
+    `image_refs` are opaque ids into ingestion_images that the LLM picks
+    from the same "可用圖" prompt list `image_focus` uses. The renderer-
+    side hydration in `_hydrate_image_refs` resolves each ref to inline
+    base64 PNG bytes; unresolvable refs are silently dropped (the grid
+    just renders fewer cells). If fewer than 2 refs survive hydration,
+    the renderer falls back to `standard` rather than draw a degenerate
+    grid.
+
+    Captions are optional and parallel image_refs by index. They render
+    as small text below each cell when present.
+    """
+
+    image_refs: list[str] = Field(..., min_length=2, max_length=4)
+    captions: list[str] | None = Field(default=None, max_length=4)
+
+    @field_validator("image_refs")
+    @classmethod
+    def _refs_unique(cls, v: list[str]) -> list[str]:
+        # Same image twice in one grid is always a mistake — the LLM
+        # confused itself or the prompt didn't make uniqueness clear.
+        seen: set[str] = set()
+        for r in v:
+            if r in seen:
+                raise ValueError(f"image_grid.image_refs 出現重複：{r!r}")
+            seen.add(r)
+        return v
 
 
 class IconRow(BaseModel):
@@ -155,6 +206,11 @@ class Slide(BaseModel):
     # malformed values don't crash, the renderer's `if image_data` guard
     # is the real safety net.
     image_ref: str | None = Field(default=None, max_length=64)
+
+    # Phase 6: multi-image grid payload. Only populated when
+    # layout_kind='image_grid'; renderer falls back to standard when
+    # absent or when fewer than 2 refs survive hydration.
+    image_grid: ImageGrid | None = None
 
     @field_validator("title", "speaker_notes")
     @classmethod
@@ -236,10 +292,12 @@ class SlidesSpec(BaseModel):
         # correction has a chance to disambiguate.
         # Section breaks are exempt: titles like "第二部分" or "結語" can
         # legitimately repeat a top-level section title; the dup check
-        # would be a false positive there.
+        # would be a false positive there. Closing statement is also
+        # exempt — its title IS the slide content (e.g. "Questions?"),
+        # which may legitimately echo a mid-deck section heading.
         seen: dict[str, int] = {}
         for s in self.slides:
-            if s.layout_kind == "section_break":
+            if s.layout_kind in ("section_break", "closing_statement"):
                 continue
             seen[s.title] = seen.get(s.title, 0) + 1
         dups = [t for t, n in seen.items() if n > 1]
