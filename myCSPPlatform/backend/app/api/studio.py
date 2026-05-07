@@ -931,9 +931,13 @@ def _structural_qa_pass(
       8. images_offered ≥ 1 AND no image_focus / image_grid → ignored figure
          (rule 6 + new rule 9).
       9. before_after must use exactly 2 columns with non-empty headings.
-     10. image_grid.image_refs items must be unique within a single grid
-         AND across all grids (already in pydantic for intra-grid; cross-
-         grid uniqueness checked here so two grids don't reuse a figure).
+     10. image_ref / image_grid.image_refs must be unique across the
+         entire deck — both layouts pull from the same offered-image
+         pool, so reusing one figure across two slides (regardless of
+         whether the second is image_focus or image_grid) is the same
+         "the LLM forgot it already used this" failure mode that
+         duplicate titles flag. Intra-grid dups are caught by Pydantic
+         on ImageGrid; cross-slide is what we add here.
     """
     issues: list[str] = []
     slides = spec.slides
@@ -1033,14 +1037,23 @@ def _structural_qa_pass(
     # 10
     used_refs: dict[str, int] = {}  # ref → first slide index
     for i, s in enumerate(slides):
-        if s.layout_kind != "image_grid" or s.image_grid is None:
-            continue
-        for ref in s.image_grid.image_refs:
+        # Collect every image ref this slide touches, regardless of
+        # which image-bearing layout it uses. image_focus contributes
+        # its single `image_ref`; image_grid contributes the whole list.
+        # Other layouts contribute nothing.
+        slide_refs: list[str] = []
+        if s.layout_kind == "image_focus" and s.image_ref:
+            slide_refs.append(s.image_ref)
+        elif s.layout_kind == "image_grid" and s.image_grid is not None:
+            slide_refs.extend(s.image_grid.image_refs)
+
+        for ref in slide_refs:
             if ref in used_refs:
                 issues.append(
-                    f"image_id={ref} 同時出現在第 {used_refs[ref] + 1} 與第 {i + 1} "
-                    "張的 image_grid 內；同一張圖只應在一張投影片用一次。"
+                    f"image_id={ref} 重複出現在第 {used_refs[ref] + 1} 與第 {i + 1} "
+                    "張投影片；同一張圖只應在一張投影片用一次。"
                 )
+                # First dup per slide is enough — no need to spam.
                 break
             used_refs[ref] = i
 
