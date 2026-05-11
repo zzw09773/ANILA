@@ -6,6 +6,7 @@ from app.models.api_key import ApiKey, ApiKeyModelPermission
 from app.models.agent import ApiKeyAgentPermission, UserAgentPermission
 from app.models.model_registry import ModelRegistry
 from app.models.user import User
+from app.services.auth_service import is_admin_tier
 
 
 def generate_api_key() -> tuple[str, str, str, str]:
@@ -98,7 +99,7 @@ def check_model_permission(
         return False
     if getattr(model, "is_router_primary", False):
         return True
-    if user.role == "admin":
+    if is_admin_tier(user):
         return True
 
     if api_key_id is not None:
@@ -126,9 +127,9 @@ def check_agent_permission(
 
     API key path checks ``ApiKeyAgentPermission`` then falls back to
     ``UserAgentPermission`` (preserves existing behavior). JWT / cookie path
-    checks ``UserAgentPermission`` directly. Admin users always pass.
+    checks ``UserAgentPermission`` directly. admin / owner always pass.
     """
-    if user.role == "admin":
+    if is_admin_tier(user):
         return True
 
     if api_key_id is not None:

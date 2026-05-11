@@ -12,6 +12,7 @@ from app.models.audit_log import AuditLog
 from app.models.conversation import Conversation, ConversationShare
 from app.models.message import Message
 from app.models.user import User
+from app.services.auth_service import is_admin_tier
 
 
 # ── Conversation CRUD ─────────────────────────────────────────────────────────
@@ -372,7 +373,7 @@ def revoke_share(db: Session, share_id: int, user: User) -> None:
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _check_access(conv: Conversation, user: User) -> None:
-    if user.role == "admin":
+    if is_admin_tier(user):
         return
     if conv.user_id != user.id:
         raise HTTPException(status_code=403, detail="無權存取此對話")

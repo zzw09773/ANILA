@@ -19,6 +19,7 @@ from app.models.user import User
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import (
     get_current_user,
+    is_admin_tier,
     require_admin,
     verify_service_token,
 )
@@ -41,7 +42,7 @@ import os as _os
 _TEMPLATE_DIR = Path(
     _os.environ.get(
         "ANILA_TEMPLATE_DIR",
-        str(Path(__file__).parent.parent.parent.parent.parent / "AgenticRAG"),
+        str(Path(__file__).parent.parent.parent.parent.parent / "anila-agent"),
     )
 )
 
@@ -169,7 +170,11 @@ class AgentUpdateRequest(BaseModel):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _require_developer_or_admin(current_user: User = Depends(get_current_user)) -> User:
-    if current_user.role not in ("admin", "developer"):
+    # Sprint owner-tier: owner 是 admin 之上的最高權限,凡 admin 能做的事 owner 也能做。
+    # 漏掉 owner 會讓系統最高權限者反而拿不到開發者頁面 (download template、register
+    # agent 等),這是 RBAC 新增層級時典型的回歸坑。和 auth_service._ADMIN_TIER_ROLES
+    # 保持一致。
+    if current_user.role not in ("admin", "developer", "owner"):
         raise HTTPException(status_code=403, detail="需要開發者或管理員權限")
     return current_user
 
@@ -283,7 +288,11 @@ def list_agents(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if current_user.role == "admin":
+    # admin + owner 都應該看到所有 agent。先前單獨檢查 "admin" 會把
+    # owner 推到 else 的 owner_user_id 過濾,讓 owner 看不到不是自己
+    # 註冊的 agent — 造成「CSP UI 顯示 2 個、ANILA UI 顯示 3 個」的
+    # 錯覺,以為刪除沒同步,實際上 agent 還在 DB,只是被 UI 藏起來。
+    if is_admin_tier(current_user):
         agents = db.query(Agent).order_by(Agent.created_at.desc()).all()
     else:
         agents = db.query(Agent).filter(Agent.owner_user_id == current_user.id).all()
@@ -299,7 +308,7 @@ def get_agent(
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent 不存在")
-    if current_user.role != "admin" and agent.owner_user_id != current_user.id:
+    if not is_admin_tier(current_user) and agent.owner_user_id != current_user.id:
         raise HTTPException(status_code=403, detail="無權限查看此 Agent")
     return _serialize_agent(agent)
 
@@ -322,7 +331,7 @@ def update_agent(
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent 不存在")
-    if current_user.role != "admin" and agent.owner_user_id != current_user.id:
+    if not is_admin_tier(current_user) and agent.owner_user_id != current_user.id:
         raise HTTPException(status_code=403, detail="無權限編輯此 Agent")
 
     patch = payload.model_dump(exclude_unset=True)
@@ -435,7 +444,7 @@ def get_agent_runtime_config(
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent 不存在")
-    if current_user.role != "admin" and agent.owner_user_id != current_user.id:
+    if not is_admin_tier(current_user) and agent.owner_user_id != current_user.id:
         raise HTTPException(
             status_code=403, detail="只有 agent 擁有者或管理員可讀取此設定",
         )
@@ -470,7 +479,7 @@ def patch_agent_runtime_config(
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent 不存在")
-    if current_user.role != "admin" and agent.owner_user_id != current_user.id:
+    if not is_admin_tier(current_user) and agent.owner_user_id != current_user.id:
         raise HTTPException(
             status_code=403, detail="只有 agent 擁有者或管理員可變更此設定",
         )

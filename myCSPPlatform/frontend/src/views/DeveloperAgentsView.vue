@@ -21,35 +21,43 @@
 
     <TermBox title="developer · guide" pad="md">
       <button type="button" class="guide-toggle" @click="showGuide = !showGuide">
-        <span>{{ showGuide ? '▾' : '▸' }} fork AgenticRAG · write a tool · register here · wait for approval</span>
+        <span>{{ showGuide ? '▾' : '▸' }} download anila-agent template · wrap in FastAPI · register · wait for approval</span>
         <span class="cell-meta">{{ showGuide ? 'collapse' : 'expand' }}</span>
       </button>
       <div v-if="showGuide" class="guide">
         <p class="guide__lead">
-          Phase 1 of ANILA ships <strong>AgenticRAG</strong> as the official sub-agent template.
-          Fork it, drop in your tools, register here. Full walkthrough on the
+          Phase 2 ships <strong>anila-agent</strong> (openai-agents runtime + Claude-Code-style harness) as the official sub-agent template.
+          Fork it, add tools, wrap in FastAPI, register. Full walkthrough on the
           <router-link to="/developer/guide" class="guide__link">developer guide page →</router-link>
         </p>
         <ol class="guide__list">
           <li>
             <span class="guide__step">01</span>
             <div>
-              <p><strong>fork &amp; run</strong> · clone <code>AgenticRAG</code>, edit <code>.env</code>, <code>docker compose up -d</code>, verify <code>curl http://&lt;host&gt;:24786/health</code> returns <code>{"status":"ok"}</code>.</p>
+              <p><strong>install &amp; verify</strong> · click <em>download template</em> above, then <code>uv pip install -e '.[dev,pgvector]'</code>, copy <code>.env.example</code>, run <code>anila --prompt "ping"</code> to confirm the REPL works.</p>
             </div>
           </li>
           <li>
             <span class="guide__step">02</span>
             <div>
-              <p><strong>add your tool</strong> · use the <code>@tool</code> decorator (auto JSON schema from type hints + docstring):</p>
-              <pre class="guide__code">@tool
-async def my_tool(ctx: ActionContext, query: str) -&gt; dict:
-    """One-line description.
+              <p><strong>add your tool</strong> · use the <code>@anila_tool</code> decorator (auto JSON schema from type hints + docstring):</p>
+              <pre class="guide__code">from anila_agent.tools.base import anila_tool
+
+@anila_tool(is_read_only=True, category="domain")
+def employee_count(department: str) -&gt; int:
+    """Count active employees.
 
     Args:
-        query: What the user asked.
+        department: Department name.
     """
-    return {"result": "..."}</pre>
-              <p>or drop a Markdown skill into <code>~/.agentic-rag/skills/</code>, or wire an external MCP server. Details on the dev guide page.</p>
+    return _query_hr_db(department)</pre>
+              <p>or list it in <code>configs/tools.yaml</code> under <code>builtin:</code>. Hook events (<code>pre_tool_use</code> / <code>post_tool_use</code> / <code>stop</code>) registered in the same yaml.</p>
+            </div>
+          </li>
+          <li>
+            <span class="guide__step">02b</span>
+            <div>
+              <p><strong>wrap in FastAPI</strong> · anila-agent is CLI/library, not a service. Add a thin wrapper exposing <code>/health</code> + <code>/v1/chat/completions</code> + <code>/v1/models</code> bridging <code>AnilaRunner</code> ↔ OpenAI-compat SSE. Boilerplate on the dev guide page.</p>
             </div>
           </li>
           <li>

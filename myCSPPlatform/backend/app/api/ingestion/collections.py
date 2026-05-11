@@ -33,7 +33,7 @@ from app.schemas.ingestion import (
     CollectionUpdate,
 )
 from app.services.audit_service import log_audit_event
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_current_user, is_admin_tier
 
 router = APIRouter(tags=["Ingestion / Collections"])
 
@@ -62,7 +62,7 @@ def _require_collection_access(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Collection {collection_id} not found",
         )
-    if user.role == "admin":
+    if is_admin_tier(user):
         return coll
     if coll.created_by != user.id:
         raise HTTPException(
@@ -83,7 +83,7 @@ def _require_agent_access(db: Session, user: User, agent_id: int):  # noqa: ARG0
     if the user is admin. Sub-passes in Chunk Q rewrite each caller to
     use ``_require_collection_access`` directly.
     """
-    if user.role == "admin":
+    if is_admin_tier(user):
         return None
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
@@ -164,7 +164,7 @@ def list_collections(
     - admin: own collections by default; pass ``owned_only=false`` to
       see every collection on the platform.
     """
-    if not owned_only and current_user.role != "admin":
+    if not owned_only and not is_admin_tier(current_user):
         raise HTTPException(
             status_code=403,
             detail="owned_only=false requires admin role",

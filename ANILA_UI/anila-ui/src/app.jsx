@@ -237,6 +237,11 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   const [selectedAgentId, setSelectedAgentId] = useState(ROUTER_AGENT.id);
   const [loadingAgents, setLoadingAgents] = useState(false);
   const [runtimeError, setRuntimeError] = useState("");
+  // 上次抓 /v1/agents 的時間戳，給 focus-refresh 用做 15s 節流，
+  // 避免使用者頻繁 alt-tab 把 CSP 打爆。CSP 端管理員刪了 agent
+  // 後，下一次 ANILA UI 重新取得焦點時(且距離上一次抓超過 15s)
+  // 會自動重抓清單。
+  const lastAgentsRefreshAtRef = useRef(0);
 
   const [conversations, setConversations] = useState([]);
   const [messagesByConv, setMessagesByConv] = useState({});
@@ -357,6 +362,24 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated]);
 
+  // Window-focus 重抓 agent 清單 — CSP 端管理員刪了 / approve 了 agent
+  // 後，使用者切回 ANILA UI 時自動同步，不用 hard refresh。15 秒
+  // 節流避免 alt-tab 連發 fetch。refreshAgents 自身會把
+  // selectedAgentId 不在新清單時退回 ROUTER_AGENT (line ~387)，
+  // 所以即便當下選的 agent 被刪了 UI 也能自我恢復。
+  useEffect(() => {
+    if (!isAuthenticated) return undefined;
+    const handler = () => {
+      const now = Date.now();
+      if (now - lastAgentsRefreshAtRef.current < 15_000) return;
+      lastAgentsRefreshAtRef.current = now;
+      void refreshAgents();
+    };
+    window.addEventListener("focus", handler);
+    return () => window.removeEventListener("focus", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated]);
+
   // Sprint 8 X / Phase K — drain any pending classify retries on
   // window focus so a flaky network or a page that was backgrounded
   // mid-stream still ends up with the lock persisted to CSP.
@@ -371,6 +394,9 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   async function refreshAgents() {
     setLoadingAgents(true);
     setRuntimeError("");
+    // 在送出 fetch 的那一刻就標記時間戳 — 即使後續 await 還沒完成，
+    // 也能擋掉緊接著的 focus 事件造成的重覆 fetch。
+    lastAgentsRefreshAtRef.current = Date.now();
     try {
       // /v1/agents accepts the session cookie (Wave 1 caller dep) so the
       // same call works without the SPA holding an API Key.

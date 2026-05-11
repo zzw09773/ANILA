@@ -40,6 +40,7 @@ from sqlalchemy.orm import Session
 from app.models.platform_link import PlatformLink
 from app.models.service_access_grant import ServiceAccessGrant
 from app.models.user import User
+from app.services.auth_service import is_admin_tier
 
 
 def _active_link_ids_for_user(db: Session, user: User) -> set[int]:
@@ -63,11 +64,11 @@ def can_access_link(db: Session, user: User, link: PlatformLink) -> bool:
     """Return True iff user is allowed to see/open this link."""
     if not link.is_active:
         return False
-    if user.role == "admin":
-        # Admin bypass placed *before* the role gate so an admin viewing a
-        # link configured with required_roles=['developer'] still sees it.
-        # This matches the documented "superuser is universally trusted"
-        # model and is consistent with accessible_links_for() below.
+    if is_admin_tier(user):
+        # admin / owner bypass placed *before* the role gate so they
+        # see links configured with required_roles=['developer'] regardless.
+        # Matches the documented "superuser is universally trusted"
+        # model and stays consistent with accessible_links_for() below.
         return True
     required = link.required_roles or []
     if required and user.role not in required:
@@ -96,9 +97,9 @@ def accessible_links_for(
         query = query.filter(PlatformLink.is_active.is_(True))
     links: list[PlatformLink] = query.all()
 
-    if user.role == "admin":
-        # Admin sees every active link; role gate + grant check both
-        # bypassed (matches can_access_link()'s admin path).
+    if is_admin_tier(user):
+        # admin / owner see every active link; role gate + grant check both
+        # bypassed (matches can_access_link()'s admin-tier path).
         return links
 
     grant_set = _active_link_ids_for_user(db, user)

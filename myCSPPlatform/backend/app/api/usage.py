@@ -10,7 +10,7 @@ from app.schemas.token_usage import (
     TopUserUsage,
     TopDepartmentUsage,
 )
-from app.services.auth_service import get_current_user, require_admin
+from app.services.auth_service import get_current_user, is_admin_tier, require_admin
 from app.services.usage_service import (
     export_usage_csv,
     get_agent_usage,
@@ -36,8 +36,10 @@ def usage_summary(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    user_id = None if current_user.role == "admin" else current_user.id
-    if current_user.role != "admin":
+    # admin / owner 看到整 tenant aggregate;一般 user 只看自己。
+    caller_is_admin_tier = is_admin_tier(current_user)
+    user_id = None if caller_is_admin_tier else current_user.id
+    if not caller_is_admin_tier:
         department_id = None
     return get_usage_summary(
         db,
@@ -60,8 +62,9 @@ def usage_chart(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # Non-admin can only see their own data
-    if current_user.role != "admin":
+    # 一般 user 只看得到自己的資料,group_by 也回退成 total。
+    # admin / owner 都享 tenant-wide 視野。
+    if not is_admin_tier(current_user):
         user_id = current_user.id
         department_id = None
         if group_by in {"department", "user"}:
@@ -86,8 +89,9 @@ def top_models(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    user_id = None if current_user.role == "admin" else current_user.id
-    if current_user.role != "admin":
+    caller_is_admin_tier = is_admin_tier(current_user)
+    user_id = None if caller_is_admin_tier else current_user.id
+    if not caller_is_admin_tier:
         department_id = None
     return get_top_models(
         db,
@@ -230,7 +234,7 @@ def export_csv(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if current_user.role != "admin":
+    if not is_admin_tier(current_user):
         user_id = current_user.id
         department_id = None
 

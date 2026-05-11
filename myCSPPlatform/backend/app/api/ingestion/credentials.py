@@ -31,7 +31,7 @@ from app.database import get_db
 from app.models.ingestion import UserLlmCredential
 from app.models.user import User
 from app.services.audit_service import log_audit_event
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_current_user, is_admin_tier
 from app.services.credential_crypto import encrypt_credential
 
 
@@ -77,7 +77,7 @@ class CredentialResponse(BaseModel):
 def _own_credential(
     db: Session, user: User, credential_id: int
 ) -> UserLlmCredential:
-    """Lookup with owner check. Admin can see anyone's; users see own only."""
+    """Lookup with owner check. admin / owner can see anyone's; regular users see own only."""
     cred = (
         db.query(UserLlmCredential)
         .filter(UserLlmCredential.id == credential_id)
@@ -85,7 +85,7 @@ def _own_credential(
     )
     if cred is None:
         raise HTTPException(status_code=404, detail="Credential not found")
-    if user.role != "admin" and cred.created_by != user.id:
+    if not is_admin_tier(user) and cred.created_by != user.id:
         raise HTTPException(
             status_code=403, detail=f"No access to credential {credential_id}"
         )

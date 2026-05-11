@@ -127,6 +127,21 @@ def is_owner(user: User) -> bool:
     return user.role == "owner"
 
 
+def is_admin_tier(user: User) -> bool:
+    """True for both `admin` and the higher `owner` role.
+
+    Use this everywhere old code does ``user.role == "admin"`` to gate
+    a "sees everything / can edit anything" data scope. Without this,
+    owner accounts get treated as regular users by per-owner_user_id /
+    per-grant filters and the admin UI silently hides rows the owner
+    didn't personally create — see the 2026-05-11 regression where
+    CSP /api/agents listed only owner-registered agents while ANILA UI
+    still surfaced others, making operators think a delete had partially
+    succeeded.
+    """
+    return user.role in _ADMIN_TIER_ROLES
+
+
 def require_admin(current_user: User = Depends(get_current_user)) -> User:
     """Tier check: ``admin`` and the higher ``owner`` both satisfy.
 

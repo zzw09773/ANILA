@@ -10,7 +10,7 @@ from app.schemas.api_key import (
     ApiKeyCreatedResponse,
 )
 from app.services.audit_service import log_audit_event
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_current_user, is_admin_tier
 from app.services.api_key_service import create_api_key
 
 router = APIRouter(prefix="/api/keys", tags=["API Key 管理"])
@@ -37,7 +37,7 @@ def list_api_keys(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if current_user.role == "admin":
+    if is_admin_tier(current_user):
         keys = db.query(ApiKey).order_by(ApiKey.created_at.desc()).all()
     else:
         keys = (
@@ -55,7 +55,7 @@ def create_key(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if current_user.role == "admin":
+    if is_admin_tier(current_user):
         effective_model_ids = request.model_ids
     else:
         effective_model_ids = [m.id for m in current_user.allowed_models]
@@ -95,7 +95,7 @@ def get_key(
     api_key = db.query(ApiKey).filter(ApiKey.id == key_id).first()
     if not api_key:
         raise HTTPException(status_code=404, detail="API Key 不存在")
-    if current_user.role != "admin" and api_key.user_id != current_user.id:
+    if not is_admin_tier(current_user) and api_key.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="無權限存取此 API Key")
     return _build_response(api_key)
 
@@ -110,7 +110,7 @@ def update_key(
     api_key = db.query(ApiKey).filter(ApiKey.id == key_id).first()
     if not api_key:
         raise HTTPException(status_code=404, detail="API Key 不存在")
-    if current_user.role != "admin" and api_key.user_id != current_user.id:
+    if not is_admin_tier(current_user) and api_key.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="無權限修改此 API Key")
 
     if request.name is not None:
@@ -118,7 +118,7 @@ def update_key(
     if request.is_active is not None:
         api_key.is_active = request.is_active
     if request.model_ids is not None:
-        if current_user.role != "admin":
+        if not is_admin_tier(current_user):
             raise HTTPException(status_code=403, detail="只有管理員可以修改 API Key 的模型權限")
         # Clear existing permissions and set new ones
         db.query(ApiKeyModelPermission).filter(
@@ -151,7 +151,7 @@ def regenerate_key(
     old_key = db.query(ApiKey).filter(ApiKey.id == key_id).first()
     if not old_key:
         raise HTTPException(status_code=404, detail="API Key 不存在")
-    if current_user.role != "admin" and old_key.user_id != current_user.id:
+    if not is_admin_tier(current_user) and old_key.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="無權限操作此 API Key")
     if not old_key.is_active:
         raise HTTPException(
@@ -196,7 +196,7 @@ def revoke_key(
     api_key = db.query(ApiKey).filter(ApiKey.id == key_id).first()
     if not api_key:
         raise HTTPException(status_code=404, detail="API Key 不存在")
-    if current_user.role != "admin" and api_key.user_id != current_user.id:
+    if not is_admin_tier(current_user) and api_key.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="無權限撤銷此 API Key")
 
     api_key.is_active = False

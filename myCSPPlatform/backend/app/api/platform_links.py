@@ -10,7 +10,7 @@ from app.schemas.platform_link import (
 )
 from app.services.access_control import accessible_links_for
 from app.services.audit_service import log_audit_event
-from app.services.auth_service import get_current_user, require_admin
+from app.services.auth_service import get_current_user, is_admin_tier, require_admin
 
 router = APIRouter(prefix="/api/platform-links", tags=["平台連結"])
 
@@ -21,10 +21,10 @@ def list_links(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # Admin: full visibility, with the existing include_inactive toggle.
-    # Non-admin: access_control applies the role gate + grant check; the
-    # include_inactive flag is silently ignored (admin-only feature).
-    if current_user.role == "admin":
+    # admin / owner 都享全可視 + include_inactive 切換;
+    # 一般 user 走 access_control 的 role gate + grant check,
+    # include_inactive 對非 admin-tier 靜默忽略。
+    if is_admin_tier(current_user):
         query = db.query(PlatformLink).order_by(
             PlatformLink.sort_order, PlatformLink.created_at
         )

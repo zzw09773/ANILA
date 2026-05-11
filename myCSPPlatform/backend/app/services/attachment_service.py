@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.attachment import Attachment
 from app.models.user import User
+from app.services.auth_service import is_admin_tier
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 
@@ -118,8 +119,8 @@ def get_attachment(db: Session, reference_id: str, user: User) -> tuple[Attachme
     att = db.query(Attachment).filter(Attachment.reference_id == reference_id).first()
     if not att:
         raise HTTPException(status_code=404, detail="找不到此附件")
-    # Only uploader or admin may download
-    if user.role != "admin" and att.uploaded_by != user.id:
+    # uploader or admin-tier (admin/owner) may download
+    if not is_admin_tier(user) and att.uploaded_by != user.id:
         raise HTTPException(status_code=403, detail="無權存取此附件")
     full_path = _storage_root() / att.storage_path
     if not full_path.is_file():

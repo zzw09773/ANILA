@@ -13,6 +13,7 @@ from app.models.agent import Agent, UserAgentPermission
 from app.models.model_registry import ModelRegistry
 from app.services import memory_service
 from app.services.api_key_service import check_model_permission, check_agent_permission
+from app.services.auth_service import is_admin_tier
 from app.services.proxy_service import build_default_anila_meta, proxy_request, proxy_stream
 
 logger = logging.getLogger(__name__)
@@ -310,7 +311,10 @@ def list_available_agents(
     """
     user = caller.user
 
-    if user.role == "admin":
+    # admin + owner 都看得到所有 approved agent;一般 user 必須有
+    # UserAgentPermission 顯式授權才看得到。先前漏掉 owner,讓 owner
+    # 在 ANILA UI 看到的 agent 清單可能跟 CSP UI (受同樣 bug 影響) 對不上。
+    if is_admin_tier(user):
         agents = db.query(Agent).filter(Agent.approval_status == "approved").all()
     else:
         agents = (

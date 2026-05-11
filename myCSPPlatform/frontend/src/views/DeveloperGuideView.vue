@@ -5,7 +5,7 @@
         <p class="page-head__eyebrow">developer · guide</p>
         <h1 class="page-head__title">打造 ANILA agent</h1>
         <p class="page-head__sub">
-          fork AgenticRAG · 寫你的工具 · 註冊 · 上線到 router
+          fork anila-agent · 包成 service · 註冊 · 上線到 router
         </p>
       </div>
     </header>
@@ -13,11 +13,11 @@
     <!-- TL;DR -->
     <TermBox title="tl;dr · 五步上線" pad="md">
       <ol class="tldr">
-        <li><code>git clone &lt;your-fork&gt;/AgenticRAG &amp;&amp; cd AgenticRAG</code></li>
-        <li><code>cp .env.example .env</code> · 填 <code>LLM_URL</code> / <code>EMBEDDING_URL</code> / <code>DATABASE_URL</code></li>
-        <li><code>docker compose up -d</code> · <code>curl :24786/health</code> → <code>{"status":"ok"}</code></li>
-        <li>加你自己的工具（<code>@tool</code> 裝飾器、Markdown skill、或外部 MCP server） · 把客製邏輯放到 <code>agentic_rag/tools/</code></li>
-        <li>到 <router-link to="/developer/agents">/developer/agents</router-link> 註冊 · 等管理員審核通過 · router 自動發現</li>
+        <li>從 <router-link to="/developer/agents">/developer/agents</router-link> 下載 template (anila-agent 0.2.0 subtree snapshot)</li>
+        <li><code>uv venv &amp;&amp; uv pip install -e '.[dev,pgvector]'</code> · <code>cp .env.example .env</code> · 填 <code>ANILA_BASE_URL</code> / <code>ANILA_API_KEY</code> / <code>ANILA_MODEL</code></li>
+        <li>選 retriever (Dummy → langchain pgvector → ANILA-native pgvector) · 加你自己的 <code>@anila_tool</code> · 跑 <code>anila</code> 驗 REPL</li>
+        <li>包一層 FastAPI 對外吐 <code>/health</code> + <code>/v1/chat/completions</code> + <code>/v1/models</code> (bridge openai-agents Runner ↔ OpenAI-compat SSE)</li>
+        <li>到 <router-link to="/developer/agents">/developer/agents</router-link> 註冊 · 等管理員審核通過 · 拿 bootstrap token 換 service token · router 自動發現</li>
       </ol>
     </TermBox>
 
@@ -25,16 +25,16 @@
     <TermBox title="目錄" pad="sm">
       <ul class="toc">
         <li><a href="#what-you-fork">你 fork 到的是什麼</a></li>
-        <li><a href="#tools">加工具 · @tool 裝飾器</a></li>
-        <li><a href="#middleware">middleware · trace / cost / guardrail / retry</a></li>
-        <li><a href="#advanced">進階 · coordinator · bg task · skills · mcp</a></li>
-        <li><a href="#agentic-loop">agentic loop · 中斷 / 任務板 / 後續提示（Sprint 9）</a></li>
-        <li><a href="#approvals-tools">敏感工具 · ASK / DENY / 人工授權（Sprint 11）</a></li>
-        <li><a href="#workspace">workspace 沙盒 · 檔案 / patch / shell（Sprint 12）</a></li>
-        <li><a href="#guardrails">guardrails · 輸入輸出資料閘道（Sprint 12）</a></li>
-        <li><a href="#runtime-config">runtime_config · 不重啟調整 agent（Sprint 13）</a></li>
+        <li><a href="#quickstart">本地 quickstart · REPL</a></li>
+        <li><a href="#retriever">retriever · 三種選擇</a></li>
+        <li><a href="#tools">加工具 · @anila_tool</a></li>
+        <li><a href="#hooks">hooks · 事件攔截</a></li>
+        <li><a href="#memory">memory · 長短期 + 自動抽取</a></li>
+        <li><a href="#fastapi">包 FastAPI service · 對外 OpenAI-compat</a></li>
+        <li><a href="#platform-primitives">anila-core 平台 primitives</a></li>
         <li><a href="#endpoints">agent 必須暴露的端點</a></li>
         <li><a href="#bootstrap">註冊 · bootstrap · service token</a></li>
+        <li><a href="#runtime-config">runtime_config · 不重啟調整</a></li>
         <li><a href="#testing">測試與品質閘門</a></li>
         <li><a href="#troubleshoot">疑難排解</a></li>
       </ul>
@@ -43,309 +43,368 @@
     <!-- What you fork -->
     <TermBox id="what-you-fork" title="你 fork 到的是什麼" pad="md">
       <p class="lead">
-        <strong>AgenticRAG</strong> 是 ANILA Phase 1 的官方 sub-agent 模板。
-        完全自包：對 ANILA 內部套件零依賴。
-        第三方開源套件（langchain、llama-index、sentence-transformers …）隨你用 — 只是別把 anila-* 內部套件拉進來。
-      </p>
-      <p>
-        Repo 內建一份 vendored 的 agent runtime 放在 <code>agentic_rag/runtime/framework/</code>
-        （47 個模組，涵蓋 Action / Agent / Runner / Middleware / StateMachine / Memory / Coordinator / BG&nbsp;Task / Skill / MCP），
-        還附上完整 RAG 管線（vector_search / keyword_search / read_document、階層式 chunker、含視覺的 ingestion、cross-encoder reranker）。
-      </p>
-      <p>
-        並存兩個端點：<code>/chat</code>（舊的 QueryEngine，7-stage turn loop）跟 <code>/agentic-chat</code>（新的 framework Runner）。
-        兩者吐相同的 SSE wire format。新 fork 應該瞄準 <code>/agentic-chat</code>。
-      </p>
-    </TermBox>
-
-    <!-- Tools -->
-    <TermBox id="tools" title="加工具 · @tool 裝飾器" pad="md">
-      <p>
-        <code>@tool</code> 裝飾器會從 Python type hints + Google 風格 docstring 的 <code>Args:</code> 區塊自動產生 JSON schema。
-        把函式丟到 <code>agentic_rag/tools/</code>（或任何模組）後，串到你的 Agent 的 <code>actions=</code> tuple 即可。
-      </p>
-      <pre class="code">from agentic_rag.runtime.framework import tool, ActionContext
-from typing import Annotated
-
-@tool
-async def get_weather(
-    ctx: ActionContext,
-    city: str,
-    units: Annotated[str, "celsius or fahrenheit"] = "celsius",
-) -&gt; dict:
-    """Look up current weather for a city.
-
-    Args:
-        city: City name (e.g. "Taipei").
-        units: Temperature unit.
-    """
-    # ... your retrieval / API logic here ...
-    return {"city": city, "temp": 24, "units": units}</pre>
-      <p class="hint">
-        框架會自動把回傳的 dict 包成 <code>ActionResult(output=dict)</code>；想表達失敗就 raise 或 <code>return ActionResult(error="...")</code>。
-        第一個參數必須是 <code>ctx</code> / <code>context</code> 或標註成 <code>ActionContext</code>。
-      </p>
-
-      <h4>串進 agent</h4>
-      <pre class="code">from agentic_rag.runtime.framework import Agent, Runner
-from agentic_rag.runtime.bridge import FrameworkProviderAdapter
-
-adapter = FrameworkProviderAdapter(my_existing_provider)
-agent = Agent(
-    name="weather-bot",
-    instructions="Use get_weather to answer weather questions.",
-    provider=adapter,
-    model="google/gemma4",
-    actions=(get_weather,),
-)
-result = await Runner().run(agent, "What's the weather in Taipei?")
-print(result.final_output)</pre>
-
-      <h4>RAG 工具（已內建）</h4>
-      <pre class="code">from agentic_rag.runtime.bridge import build_rag_agent
-
-agent = build_rag_agent(
-    name="rag-bot",
-    instructions="Answer questions using the search tool.",
-    provider=adapter,
-    model="google/gemma4",
-    store=my_pgvector_store,
-    embedder=my_embed_fn,
-    reranker=my_reranker,    # optional
-)
-# 自動註冊 vector_search / keyword_search / read_document。
-# 每筆結果都是 Citation（chunk_id / document_title / heading_path / page / confidence）。</pre>
-    </TermBox>
-
-    <!-- Middleware -->
-    <TermBox id="middleware" title="middleware · 6 個內建中件" pad="md">
-      <p>
-        Middleware 把每次 Action 呼叫包起來。Run-level middleware 包住 action-level middleware 再包住 handler。
-        順序很重要：最先註冊的 = 最外層（最先看到 input，最後看到 output）。
+        ANILA Phase 2 把 sub-agent 模板拆成「runtime」+「平台 primitives」兩塊獨立演進:
       </p>
       <table class="term-table">
         <thead>
-          <tr><th>middleware</th><th>做什麼</th><th>典型用途</th></tr>
+          <tr><th style="width: 160px">套件</th><th>用途</th><th>來源</th></tr>
         </thead>
         <tbody>
           <tr>
-            <td><code>TraceMiddleware</code></td>
-            <td>每個 action 開一個 span，記錄 input / output / 耗時</td>
-            <td>audit log；即時 tracing dashboard</td>
+            <td><code>anila-agent</code></td>
+            <td>
+              你 fork 的<strong>主體</strong>。基於 <code>openai-agents</code> SDK 的 runtime,加上
+              port 自 Claude Code 的 harness (memdir / hook / slash-command CLI)。
+              提供 retriever Protocol + 3 個內建後端 (Dummy / langchain pgvector / ANILA-native pgvector)、
+              <code>@anila_tool</code> 裝飾器、5 個 hook event。
+            </td>
+            <td>
+              <code>github.com/zzw09773/anila-agent</code> ·
+              CSP 內以 git subtree 收在 <code>./anila-agent</code> 並由 <code>/api/agents/template/download</code> 打包
+            </td>
           </tr>
           <tr>
-            <td><code>CostMiddleware</code></td>
-            <td>token 計數；選配 dollar 追蹤；budget gate</td>
-            <td>各 agent 的容量報表（ANILA 純本地，沒有美金成本要算）</td>
-          </tr>
-          <tr>
-            <td><code>GuardrailMiddleware</code></td>
-            <td>input / output 檢查；allow / deny / modify 決策</td>
-            <td>PII 遮罩；citation 強制；prompt-injection 防守</td>
-          </tr>
-          <tr>
-            <td><code>RetryMiddleware</code></td>
-            <td>對例外或 error result 做指數退避重試</td>
-            <td>不穩定的 reranker；vLLM 抖動回復</td>
-          </tr>
-          <tr>
-            <td><code>ShellHookMiddleware</code></td>
-            <td>action 前後 spawn shell 命令；用 stdin/stdout 走 JSON</td>
-            <td>企業 audit pipe；資安團隊維護的 deny-list</td>
-          </tr>
-          <tr>
-            <td><code>ToolOutputTrimmerMiddleware</code></td>
-            <td>限制 tool 輸出大小；超過門檻就替換成預覽</td>
-            <td>vector_search 回 50 個 chunk 時不要把 context window 灌爆</td>
+            <td><code>anila-core</code></td>
+            <td>
+              ANILA 平台特有的 primitive: <code>ToolDefinition</code> + permission / safety、
+              <code>Workspace</code> 沙盒 + caps、guardrails (PII/regex 遮罩、長度上限)、
+              <code>RuntimeConfigPoller</code> (跟 CSP 對拉 hot-reload 設定)、
+              人機互動工具 (<code>ask_user</code> / <code>plan_mode</code> / <code>todo_write</code>)。
+            </td>
+            <td>repo 內 <code>./anila-core</code>; agent 端 <code>pip install ./anila-core</code></td>
           </tr>
         </tbody>
       </table>
-
-      <h4>範例 · 建一個帶 trace + retry 的 runner</h4>
-      <pre class="code">from agentic_rag.runtime.framework import Runner
-from agentic_rag.runtime.framework.middleware import (
-    TraceMiddleware, InMemoryBackend, RetryMiddleware, RetryPolicy,
-)
-
-backend = InMemoryBackend()
-runner = Runner(middleware=[
-    TraceMiddleware(backend),
-    RetryMiddleware(
-        policy=RetryPolicy(max_attempts=3, initial_delay_seconds=0.25),
-        on_exceptions=(ConnectionError,),
-    ),
-])
-result = await runner.run(agent, "...")
-# backend.spans now holds one Span per action invocation.</pre>
-
-      <h4>citation guardrail · 強制答案 cite 來源</h4>
-      <pre class="code">from agentic_rag.runtime.bridge import enforce_citations
-
-result = await runner.run(agent, "what does the docs say about X?")
-verdict = enforce_citations(result, mode="warn")  # mode="block" 則會直接 raise
-# verdict.cited / verdict.matched / verdict.candidates</pre>
+      <p class="hint">
+        <strong>分工原則:</strong> anila-agent 在 ANILA repo 外可獨立使用 (對外開源、純 openai-agents 生態);
+        anila-core 是「跟 CSP 平台對話的協議層」,離開 ANILA 沒太大意義。
+        把客製邏輯放在你自己的 fork — 兩個依賴都別改,以後才能 <code>git subtree pull</code> / <code>pip install -U</code> 拿上游更新。
+      </p>
     </TermBox>
 
-    <!-- Advanced primitives -->
-    <TermBox id="advanced" title="進階 primitives" pad="md">
-      <h4>Coordinator · LLM 驅動的 sub-agent fan-out</h4>
+    <!-- Quickstart -->
+    <TermBox id="quickstart" title="本地 quickstart · REPL" pad="md">
       <p>
-        Spawn N 個平行的 sub-agent（read-only）或序列的（write-safe）。
-        Coordinator <em>agent</em> 本身就是個普通 Agent，只是它的 <code>actions=</code> 帶了 <code>spawn_worker</code> / <code>check_worker</code> / <code>wait_for_workers</code>。
+        anila-agent 本身是個 CLI tool — 沒有內建 HTTP server,可以先用 REPL 把 retriever / 工具 / hook 流程跑通,再去做 FastAPI 包裝。
       </p>
-      <pre class="code">from agentic_rag.runtime.framework import Coordinator, make_coordinator_actions
+      <pre class="code">cd anila-agent
+uv venv &amp;&amp; source .venv/bin/activate
+uv pip install -e '.[dev,pgvector]'   # pgvector extra 後面要用
 
-coord = Coordinator(workers={"verifier": verifier_agent, "summariser": summ_agent})
-coord_agent = Agent(
-    name="orchestrator",
-    instructions="Decompose the request. spawn_worker for each subtask. wait_for_workers. summarise.",
-    provider=adapter, model="google/gemma4",
-    actions=tuple(make_coordinator_actions(coord)),
-)</pre>
+cp .env.example .env
+# 編輯 .env:
+#   ANILA_BASE_URL=http://your-vllm:8000/v1
+#   ANILA_API_KEY=sk-local
+#   ANILA_MODEL=google/gemma4
 
-      <h4>BG_TASK · 長時間背景工作</h4>
+# 跑 REPL
+anila
+
+# 或一次性跑 prompt
+anila --prompt "what tools do you have?"</pre>
       <p>
-        給非 LLM 的批次工作用（ingest 一萬份 PDF、重建向量索引、批次推論）。
-        立刻回 handle；LLM 用 <code>check_bg_task</code> / <code>cancel_bg_task</code> 控制。
+        REPL 內的 slash command:
       </p>
-      <pre class="code">from agentic_rag.runtime.framework import (
-    Action, ActionKind, BgTaskRunner, make_bg_task_actions,
-)
+      <table class="term-table">
+        <thead><tr><th>command</th><th>效果</th></tr></thead>
+        <tbody>
+          <tr><td><code>/help</code></td><td>列出所有指令</td></tr>
+          <tr><td><code>/clear</code></td><td>清掉這個 session 的短期記憶</td></tr>
+          <tr><td><code>/memory list</code></td><td>顯示 MEMORY.md 索引</td></tr>
+          <tr><td><code>/memory scan</code></td><td>顯示完整的 memory file manifest</td></tr>
+          <tr><td><code>/memory extract</code></td><td>強制跑一次 auto extraction (前提是 <code>memory.yaml</code> 已開)</td></tr>
+          <tr><td><code>/model</code></td><td>顯示目前 active model</td></tr>
+          <tr><td><code>/cost</code></td><td>顯示這個 session 的 token / cost metrics</td></tr>
+          <tr><td><code>/exit</code></td><td>離開</td></tr>
+        </tbody>
+      </table>
+      <p class="hint">
+        要加自己的 slash command: 進 <code>anila_agent/cli/commands.py</code>。
+      </p>
+    </TermBox>
 
-async def ingest_corpus(ctx, write_progress):
-    for i, doc in enumerate(load_corpus()):
-        write_progress(f"processing {i}: {doc.path}\n")
-        await index(doc)
-    return {"docs_indexed": i + 1}
+    <!-- Retriever -->
+    <TermBox id="retriever" title="retriever · 三種選擇" pad="md">
+      <p class="lead">
+        <code>build_agent()</code> 啟動時會依環境變數自動掛上對應 retriever。
+        優先序 <strong>ANILA-native → langchain-postgres → DummyRetriever</strong>。
+        半套配置 (例如 <code>ANILA_COLLECTION_ID</code> 設了但 <code>PGVECTOR_URL</code> 沒設) 會大聲 raise,不會偷偷退回 Dummy。
+      </p>
 
-ingest_action = Action(
-    name="ingest_corpus", description="Bulk-ingest a corpus folder.",
-    kind=ActionKind.BG_TASK, handler=ingest_corpus,
-)
-bg_runner = BgTaskRunner(output_dir="/var/agent/bg")
-runner = Runner(bg_task_runner=bg_runner)
-agent = Agent(
-    name="ops", instructions="...", provider=adapter, model="google/gemma4",
-    actions=(ingest_action, *make_bg_task_actions(bg_runner)),
-)</pre>
-
-      <h4>Skills · Markdown frontmatter → tool</h4>
+      <h4>選項 A · DummyRetriever (預設)</h4>
       <p>
-        丟一個 <code>.md</code> 檔到 <code>~/.agentic-rag/skills/</code>；非工程師也能寫工具。
+        in-memory token-overlap,適合在你還沒接資料庫前先把 agent 流程驗通。
+        什麼都不設就是這個。
       </p>
+
+      <h4>選項 B · 通用 pgvector (langchain schema)</h4>
+      <p>
+        資料若是用 langchain 的 <code>PGVector</code> 灌進去的 (<code>langchain_pg_collection</code> +
+        <code>langchain_pg_embedding</code> 兩張表),設兩個 env 就好,零碼:
+      </p>
+      <pre class="code">PGVECTOR_URL=postgresql+psycopg2://user:pass@host:5432/db
+PGVECTOR_COLLECTION=my_docs
+
+# embed endpoint 預設 fallback 到 ANILA_BASE_URL / ANILA_API_KEY,
+# 不同就獨立指定:
+ANILA_EMBED_MODEL=text-embedding-3-small
+# ANILA_EMBED_BASE_URL=...
+# ANILA_EMBED_API_KEY=...</pre>
+
+      <h4>選項 C · ANILA 平台 pgvector</h4>
+      <p>
+        資料若灌在 ANILA 平台的 <code>ingestion_collections</code> + <code>document_chunks</code>
+        (halfvec + RLS via <code>anila.collection_id</code> GUC),用這個。
+        embedding 維度會從 <code>ingestion_collections.embedding_dim</code> 自動抓,
+        所以同一份 code 跑不同維度的 collection 都行。
+      </p>
+      <pre class="code">PGVECTOR_URL=postgresql://csp:csp@127.0.0.1:5433/csp
+ANILA_COLLECTION_ID=52
+ANILA_EMBED_MODEL=nvidia/NV-embed-V2
+ANILA_SSL_VERIFY=0   # 只在 embed endpoint 用自簽憑證時才設</pre>
+
+      <h4>選項 D · 自己實作 Retriever</h4>
+      <p>
+        Protocol 在 <code>anila_agent/retrieval/base.py</code>:
+      </p>
+      <pre class="code">from anila_agent.retrieval.base import Retriever
+from anila_agent.models.schemas import Document
+
+class MyRetriever:
+    @property
+    def name(self) -&gt; str:
+        return "mine"
+
+    async def search(self, query: str, k: int = 5) -&gt; list[Document]:
+        ...
+
+    async def fetch(self, doc_id: str) -&gt; Document | None:
+        ...</pre>
+      <p>建好之後在 agent 組裝前注入:</p>
+      <pre class="code">from anila_agent.tools.rag_tools import set_retriever
+set_retriever(MyRetriever())
+# 內建的 search_documents / read_document tool 會自動走它。
+# 完整範例:examples/rag_agent.py</pre>
+    </TermBox>
+
+    <!-- Tools -->
+    <TermBox id="tools" title="加工具 · @anila_tool" pad="md">
+      <p>
+        <code>@anila_tool</code> 包了 openai-agents 的 <code>@function_tool</code>,
+        多帶了 ANILA 的 metadata (<code>is_read_only</code> / <code>is_destructive</code> / <code>category</code>)
+        — 這些 metadata 之後在 CSP 上做 tool permission UI 用得到。
+        JSON schema 由 Python type hints + docstring 自動產生。
+      </p>
+      <pre class="code">from anila_agent.tools.base import anila_tool
+
+@anila_tool(is_read_only=True, category="domain")
+def employee_count(department: str) -&gt; int:
+    """Count active employees in a department.
+
+    Args:
+        department: Department name, e.g. "Engineering".
+    """
+    return _query_hr_db(department)</pre>
+
+      <h4>把工具註冊進 agent</h4>
+      <p>兩種方式擇一:</p>
+      <p><strong>1) 直接 import 到 agent assembly</strong> — 改 <code>anila_agent/core/agent.py</code> 或在 wrapper 端覆寫。</p>
+      <p><strong>2) 列在 <code>configs/tools.yaml</code></strong> — 不動程式:</p>
+      <pre class="code">builtin:
+  - mypkg.tools.employee_count
+  - mypkg.tools.list_open_tickets</pre>
+      <p class="hint">
+        完整可跑範例 → <code>examples/custom_tool.py</code>。
+      </p>
+    </TermBox>
+
+    <!-- Hooks -->
+    <TermBox id="hooks" title="hooks · 事件攔截" pad="md">
+      <p>
+        Hook 在 model 跟 tool 事件前後觸發,回 <code>HookOutput</code> 決定後續:
+        <code>decision="block"</code> (擋掉)、修改 input、注入 context、純觀察。
+      </p>
+      <pre class="code">from anila_agent.core.hooks import HookOutput, PreToolUseInput
+
+async def deny_writes(payload: PreToolUseInput) -&gt; HookOutput:
+    if payload.tool_name.startswith("write_"):
+        return HookOutput(decision="block", reason="read-only mode")
+    return HookOutput()</pre>
+      <p>在 <code>configs/tools.yaml</code> 註冊:</p>
+      <pre class="code">hooks:
+  pre_tool_use:
+    - { matcher: "write_.*", callback: mypkg.hooks.deny_writes }</pre>
+
+      <h4>可用事件</h4>
+      <table class="term-table">
+        <thead><tr><th>event</th><th>觸發時機</th><th>典型用途</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>pre_tool_use</code></td>
+            <td>tool 呼叫前</td>
+            <td>權限閘門、input redact、注入 context</td>
+          </tr>
+          <tr>
+            <td><code>post_tool_use</code></td>
+            <td>tool 回傳後</td>
+            <td>output 觀察、結果裁切、下一輪 context 注入</td>
+          </tr>
+          <tr>
+            <td><code>stop</code></td>
+            <td>agent 給出 final output 時</td>
+            <td>auto memory 抽取、稽核紀錄、cost 結算</td>
+          </tr>
+          <tr>
+            <td><code>session_start</code></td>
+            <td>session 建立時</td>
+            <td>從外部讀取使用者 profile、預載 memory</td>
+          </tr>
+          <tr>
+            <td><code>user_prompt_submit</code></td>
+            <td>每次使用者送 prompt 進來</td>
+            <td>prompt-injection 防守、PII 遮罩</td>
+          </tr>
+        </tbody>
+      </table>
+    </TermBox>
+
+    <!-- Memory -->
+    <TermBox id="memory" title="memory · 長短期 + 自動抽取" pad="md">
+      <h4>長期 memory (memdir)</h4>
+      <p>
+        檔案存在 <code>&lt;ANILA_HOME&gt;/memory/</code>。布局:
+      </p>
+      <pre class="code">memory/
+  MEMORY.md              ← 索引,上限 200 行 / 25 KB
+  user_role.md           ← topic file,帶 YAML frontmatter
+  feedback_testing.md
+  project_release.md</pre>
+      <p>每個 topic file:</p>
       <pre class="code">---
-name: summarise_pr
-description: Summarise a GitHub PR for the user.
-when_to_use: User asks "what's in this PR" or pastes a PR URL.
-input_schema:
-  type: object
-  properties:
-    url: {type: string, description: PR URL}
-  required: [url]
+name: short title
+description: 一行描述 · recall selector 拿來決定要不要回想
+type: user|feedback|project|reference
 ---
-You are summarising the GitHub pull request at {{ url }}.
 
-Step 1: fetch the PR diff.
-Step 2: identify the top three changes by impact.
-Step 3: write a 3-bullet summary the user can scan.</pre>
-      <pre class="code">from agentic_rag.runtime.framework import load_skills_from_dir, SkillRegistry
-
-skills = load_skills_from_dir("~/.agentic-rag/skills/")
-registry = SkillRegistry(skills)
-# 全部 skill：
-agent = Agent(actions=tuple(registry.all_actions()), ...)
-# 或按 query 篩選（省 prompt token）：
-relevant = registry.actions_for(user_query, limit=5)</pre>
-
-      <h4>MCP · 接第三方 MCP server</h4>
+free-form markdown 內容</pre>
       <p>
-        接 <code>mcp-server-filesystem</code>、<code>mcp-server-github</code>、<code>mcp-server-sentry</code>，或任何自製 stdio MCP server。
-        需要 <code>pip install 'agentic-rag[mcp]'</code>。
+        Recall 流程:掃目錄、把 manifest 丟給一個小 LLM call、回傳被選中的檔案內容。
+        架構直接 port 自 Claude Code 的 memdir。
       </p>
-      <pre class="code">from agentic_rag.runtime.framework.mcp import MCPClientPool, MCPServer
 
-pool = MCPClientPool([
-    MCPServer(name="fs", command="mcp-server-filesystem", args=["/data"]),
-    MCPServer(name="gh", command="mcp-server-github"),
-])
-async with pool:
-    agent = Agent(
-        name="ops", instructions="...", provider=adapter, model="google/gemma4",
-        actions=tuple(pool.all_actions()),  # tool names: fs__read_file, gh__list_prs, ...
-    )</pre>
+      <h4>自動抽取 (預設關閉)</h4>
+      <p>
+        要開的話編 <code>configs/memory.yaml</code>:
+      </p>
+      <pre class="code">auto_memory:
+  enabled: true
+  min_messages_between_runs: 4</pre>
+      <p>
+        開了之後每輪結束的 <code>stop</code> hook 會跑一次 extractor 的 side LLM call,
+        把候選 memory 寫成新檔案。關著就是「每輪 cost 可預期」。
+      </p>
+
+      <h4>短期 memory</h4>
+      <p>
+        SQLite-backed,走 openai-agents 的 <code>SQLiteSession</code>,
+        存在 <code>&lt;ANILA_HOME&gt;/sessions/anila.db</code>。
+        同個 <code>--session</code> ID 再進 REPL 就會延續上次對話。
+      </p>
     </TermBox>
 
-    <!-- Sprint 9 — agentic loop primitives -->
-    <TermBox id="agentic-loop" title="agentic loop · 中斷 / 任務板 / 後續提示（Sprint 9）" pad="md">
+    <!-- FastAPI wrapper -->
+    <TermBox id="fastapi" title="包 FastAPI service · 對外 OpenAI-compat" pad="md">
       <p class="lead">
-        Sprint 9 把 agent 從「一問一答」升級成「會問你、會記任務、會建議下一步」。
-        三組工具 + 三個 SSE 事件，前端的
-        <code>InterruptCard</code> / <code>TodoChecklist</code> / <code>FollowUpChips</code>
-        會自動渲染。
+        <strong>這是 anila-agent 沒幫你做的關鍵一步。</strong>
+        anila-agent 是 CLI / library — 要讓 CSP router 找得到,你得把
+        <code>build_agent()</code> + <code>AnilaRunner</code> 包進一個小 FastAPI app,
+        對外吐 OpenAI-compatible 的 endpoint。CSP 期待的三個端點都要實作 (細節看下一節)。
       </p>
+      <pre class="code">from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse, JSONResponse
 
-      <h4>ask_user · 暫停問使用者</h4>
-      <pre class="code">from anila_core.tools.ask_user import ask_user
-# Tool 回傳 InterruptItem(kind="ask_user")，QueryEngine 會 raise RunPaused，
-# /chat 的 SSE 流出 event: interrupt_requested 給前端，run loop 停在這裡。
-# 使用者透過 /v1/sessions/&lt;id&gt;/answer 把答案送回來，
-# resume_from_interrupt 會重啟 turn loop。
-result = await ask_user(
-    ctx,
-    question="哪個檔要刪？",
-    options=["a.txt", "b.txt", "都刪"],
-    multi_select=False,
-    allow_other=True,
-)</pre>
+from anila_agent.core.agent import build_agent
+from anila_agent.core.runner import AnilaRunner
 
-      <h4>plan_mode · 計畫先確認再執行</h4>
-      <pre class="code">from anila_core.tools.plan_mode import enter_plan_mode, exit_plan_mode
-# enter_plan_mode 把 ctx.plan_mode = True；之後所有
-# DESTRUCTIVE 工具自動被 router 擋下。
-# exit_plan_mode 帶著 plan markdown，會 InterruptItem(kind="plan")，
-# 前端 PlanCard 出來等使用者核准 / 拒絕。
-await enter_plan_mode(ctx)
-# ... 計畫期間只能做 READ_ONLY 探索 ...
-await exit_plan_mode(ctx, plan="1. 刪 a.txt\n2. 寫新 b.txt\n3. 跑測試")</pre>
+_agent = None
 
-      <h4>todo_write · 任務板</h4>
-      <pre class="code">from anila_core.tools.todo_write import todo_write
-# 寫進 ctx.todos 並 emit event: todos_updated，前端 TodoChecklist
-# 跟著重畫。狀態只能是 pending / in_progress / completed。
-await todo_write(ctx, todos=[
-    {"id": "t1", "content": "讀 README", "status": "completed"},
-    {"id": "t2", "content": "寫測試",   "status": "in_progress"},
-    {"id": "t3", "content": "submit PR", "status": "pending"},
-])</pre>
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _agent
+    _agent = build_agent()        # 讀 configs/ + env,掛 retriever / tools / hooks
+    yield
 
-      <h4>follow_ups · 自動產生後續提示</h4>
+app = FastAPI(lifespan=lifespan)
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+@app.get("/v1/models")
+async def list_models():
+    return {
+        "object": "list",
+        "data": [{"id": _agent.model, "object": "model", "owned_by": "anila"}],
+    }
+
+@app.post("/v1/chat/completions")
+async def chat_completions(req: Request):
+    body = await req.json()
+    user_msg = body["messages"][-1]["content"]
+    session_id = body.get("user") or body.get("session_id") or "anon"
+    stream = body.get("stream", True)
+
+    runner = AnilaRunner(_agent, session_id=session_id)
+
+    if not stream:
+        result = await runner.run(user_msg)
+        return JSONResponse(_as_openai_response(result, _agent.model))
+
+    async def sse():
+        async for delta in runner.stream(user_msg):
+            yield f"data: {_as_openai_chunk(delta, _agent.model)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(sse(), media_type="text/event-stream")</pre>
+      <p class="hint">
+        <code>_as_openai_response</code> / <code>_as_openai_chunk</code> 是你自己寫的 bridge
+        (把 AnilaRunner 的 event 轉成 OpenAI <code>chat.completion.chunk</code> 形狀)。
+        最小可工作版就只需要把 final text delta 包成 OpenAI <code>choices[0].delta.content</code>;
+        要更花俏的 tool-call 事件可後續再補。
+      </p>
       <p>
-        每輪對話後，<code>PromptSuggestion</code> post-turn hook 會丟出
-        <code>event: follow_ups</code>。前端 <code>FollowUpChips</code>
-        把 3 個建議渲染成可點 chip。要關掉就在 <code>create_app()</code>
-        時別註冊這個 hook。
+        Container 化建議 (跟 CSP entrypoint 對齊):
       </p>
-
-      <h4>resume 流程</h4>
-      <ol class="steps">
-        <li>agent 拋出 InterruptItem → SSE <code>event: interrupt_requested</code></li>
-        <li>前端鎖住輸入、顯示 <code>InterruptCard</code></li>
-        <li>使用者點選後，<code>POST /v1/sessions/&lt;sid&gt;/answer { interrupt_id, answer }</code> 走 Router → CSP → agent</li>
-        <li>agent <code>resume_from_interrupt</code> 重啟 turn loop，先 emit <code>event: resumed</code> 解鎖前端，再串接後續 deltas</li>
-      </ol>
+      <pre class="code">FROM python:3.12-slim
+WORKDIR /app
+COPY pyproject.toml .
+COPY anila_agent/ ./anila_agent/
+RUN pip install -e '.[pgvector]' fastapi uvicorn
+COPY configs/ ./configs/
+COPY app.py .
+ENV ANILA_HOME=/var/lib/anila-agent
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "24786"]</pre>
     </TermBox>
 
-    <!-- Sprint 11 — per-tool permissions -->
-    <TermBox id="approvals-tools" title="敏感工具 · ASK / DENY / 人工授權（Sprint 11）" pad="md">
+    <!-- Platform primitives -->
+    <TermBox id="platform-primitives" title="anila-core 平台 primitives" pad="md">
       <p class="lead">
-        每個 <code>ToolDefinition</code> 帶一個 <code>permission</code> 欄位
-        （<code>ALLOW</code> / <code>ASK</code> / <code>DENY</code>），
-        是 governance 閘門。<code>ASK</code> 會自動產生
-        <code>tool_approval</code> interrupt，使用者按授權鈕後重跑該 tool 並 bypass gate。
+        想要更深的 CSP 整合 (集中式 tool permission、workspace 沙盒、guardrails、不重啟調參) — 把
+        <code>anila-core</code> 裝進你的 fork:
+      </p>
+      <pre class="code">uv pip install -e /path/to/ANILA/anila-core
+# 或在 pyproject.toml 加: anila-core @ file:///path/to/ANILA/anila-core</pre>
+
+      <h4>tool permission · ALLOW / ASK / DENY</h4>
+      <p>
+        每個 <code>ToolDefinition</code> 帶 <code>permission</code> 跟 <code>safety</code>
+        兩個獨立欄位。<code>ASK</code> 在 wrapper 端會生 <code>tool_approval</code> 中斷,
+        等使用者授權後 bypass 那一次。<code>DENY</code> 直接拒。
       </p>
       <pre class="code">from anila_core.models.tool import ToolDefinition, ToolPermission, ToolSafety
 
-dangerous_tool = ToolDefinition(
+dangerous = ToolDefinition(
     name="exec_python",
     description="執行 Python script",
     input_schema={"type": "object", "properties": {"code": {"type": "string"}}},
@@ -353,19 +412,12 @@ dangerous_tool = ToolDefinition(
     permission=ToolPermission.ASK,   # 👈 預設要使用者授權
     implementation=run_python,
 )</pre>
-      <p class="hint">
-        plan_mode 是另一層獨立閘門：當 <code>ctx.plan_mode=True</code>，
-        所有 <code>safety=DESTRUCTIVE</code> 工具自動被擋，
-        不論 permission 設定。三層獨立組合：plan_mode 閘 / permission 閘 / guardrails。
-      </p>
-    </TermBox>
 
-    <!-- Sprint 12 — workspace + sandboxed tools -->
-    <TermBox id="workspace" title="workspace 沙盒 · 檔案 / patch / shell（Sprint 12）" pad="md">
-      <p class="lead">
+      <h4>workspace · 沙盒目錄 + caps</h4>
+      <p>
         <code>Workspace</code> 是個能力範圍化的暫存目錄。
-        所有 file / shell / python 工具都在 workspace 內執行，
-        路徑跳脫一律擋下。能力（<code>WorkspaceCaps</code>）控制讀 / 寫 / 網路 / 子 process / 大小上限。
+        file / shell / python 工具都在 workspace 內跑,路徑跳脫一律擋。
+        <code>WorkspaceCaps</code> 控制讀寫 / 網路 / subprocess / 大小上限 / 指令白名單。
       </p>
       <pre class="code">from anila_core.workspace import make_workspace
 from anila_core.workspace.caps import WorkspaceCaps
@@ -375,47 +427,22 @@ from anila_core.tools.apply_patch import apply_patch
 
 caps = WorkspaceCaps(
     fs_read=True, fs_write=True,
-    network=False,           # 子 process 看不到代理 env
+    network=False,             # 子 process 看不到代理 env
     exec_bash=True,
     command_allowlist=("ls", "cat", "grep", "rg"),
     max_exec_seconds=10,
     max_workspace_size_mb=50,
 )
 async with make_workspace("code-review", caps) as ws:
-    ctx.workspace = ws
-    # 註冊上面那些 tool 進 registry — 它們從 ctx.workspace 拿路徑
-    result = await runner.run(agent, "Review the diff")</pre>
+    # 把 ws 注進 hook 或工具的 context,
+    # file_read / file_write / exec_bash 從 context 拿路徑。
+    ...</pre>
 
-      <h4>檔案編輯 · V4A patch envelope</h4>
+      <h4>guardrails · 資料閘道</h4>
       <p>
-        <code>apply_patch</code> 接的是 V4A 格式（人讀的 hunks，不是 unified diff line numbers）—
-        LLM 寫起來比 unified diff 穩很多。
-      </p>
-      <pre class="code">*** Update File: src/foo.py
-@@ class Foo:
-@@     def bar(self):
--       return 1
-+       return 2
-
-*** Add File: src/baz.py
-+def baz():
-+    return "new"
-
-*** Delete File: src/old.py</pre>
-
-      <p class="hint">
-        資料分析 agent / 程式碼審查 agent / 檔案編輯 agent 的典型骨架：
-        裝 CSV / clone repo 進 workspace → 給對的 caps → 註冊對的 tool 子集 →
-        agent 在沙盒內動。Docker 還是硬隔離；workspace 是輕量第二層。
-      </p>
-    </TermBox>
-
-    <!-- Sprint 12 — tool guardrails -->
-    <TermBox id="guardrails" title="guardrails · 輸入輸出資料閘道（Sprint 12）" pad="md">
-      <p class="lead">
-        guardrails 跟 permission 是兩件事：permission 管「能不能跑」，
+        guardrails 跟 permission 是兩件事 — permission 管「能不能跑」,
         guardrails 管「資料能不能流」。
-        三組內建 + Protocol 介面讓你寫自訂的。
+        三組內建 (regex block / max length) + Protocol 介面讓你寫自訂的。
       </p>
       <pre class="code">from anila_core.engine.guardrails import (
     RegexBlockInput, RegexBlockOutput, MaxLengthOutput,
@@ -429,8 +456,11 @@ t = ToolDefinition(
     implementation=run_py,
     input_guardrails=[
         # 把疑似 API key 的 token 在送進工具前 redact 掉
-        RegexBlockInput(pattern=r"sk-[a-zA-Z0-9]+", mode="redact",
-                        replacement="[REDACTED]"),
+        RegexBlockInput(
+            pattern=r"sk-[a-zA-Z0-9]+",
+            mode="redact",
+            replacement="[REDACTED]",
+        ),
         # 看到 password=xxx 直接 reject
         RegexBlockInput(pattern=r"password=\S+", mode="reject"),
     ],
@@ -442,25 +472,128 @@ t = ToolDefinition(
     ],
 )</pre>
       <p class="hint">
-        <code>bypass_gates</code>（resume tool_approval 時用）會跳過 permission /
-        plan_mode 兩個閘門，但 <strong>guardrails 永遠跑</strong> ——
-        資料層的清洗跟人類授權無關。
+        <code>bypass_gates</code> (resume tool_approval 用) 會跳 permission /
+        plan_mode 兩道閘門,但 <strong>guardrails 永遠跑</strong> — 資料清洗跟人授權無關。
+      </p>
+
+      <h4>人機互動工具</h4>
+      <p>
+        <code>anila_core.tools.ask_user</code> / <code>plan_mode</code> /
+        <code>todo_write</code> 提供「暫停問人」「先確認再執行」「任務板」
+        三組工具。把它們 wrap 成 <code>@anila_tool</code> 即可:
+      </p>
+      <pre class="code">from anila_core.tools.ask_user import ask_user as core_ask_user
+from anila_agent.tools.base import anila_tool
+
+@anila_tool(category="meta", is_read_only=True)
+async def ask_user(question: str, options: list[str] | None = None) -&gt; str:
+    """Pause and ask the user a question.
+
+    Args:
+        question: What to ask.
+        options: Optional multiple-choice list.
+    """
+    return await core_ask_user(question=question, options=options or [])</pre>
+      <p class="hint">
+        anila-agent 0.2.0 目前還沒原生橋接這類「pause/resume」事件到外部 SSE — 你的 FastAPI wrapper 要自己決定
+        怎麼把 <code>InterruptItem</code> 流出去 (例如自訂 SSE event <code>interrupt_requested</code>,
+        前端的 <code>InterruptCard</code> / <code>TodoChecklist</code> / <code>PlanCard</code>
+        已備好)。
       </p>
     </TermBox>
 
-    <!-- Sprint 13 — runtime_config hot-reload -->
-    <TermBox id="runtime-config" title="runtime_config · 不重啟調整 agent（Sprint 13）" pad="md">
+    <!-- Endpoints -->
+    <TermBox id="endpoints" title="agent 必須暴露的端點" pad="md">
+      <p>
+        CSP router 期待這三個端點。前一節 (<a href="#fastapi">包 FastAPI service</a>) 的 boilerplate
+        已經把骨架寫好。
+      </p>
+      <table class="term-table">
+        <thead>
+          <tr><th style="width: 70px">method</th><th>path</th><th>auth</th><th>用途</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>GET</code></td><td><code>/health</code></td><td>public</td>
+            <td>discovery + health probe,回 <code>{"status":"ok"}</code></td>
+          </tr>
+          <tr>
+            <td><code>GET</code></td><td><code>/v1/models</code></td><td>s2s</td>
+            <td>列出可用的 model id (OpenAI-compat)</td>
+          </tr>
+          <tr>
+            <td><code>POST</code></td><td><code>/v1/chat/completions</code></td><td>s2s</td>
+            <td>主推論 (OpenAI-compat);預設走 SSE stream</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="hint">
+        s2s = service-to-service。兩個 auth header 並行驗:
+        平台側帶 <code>X-CSP-Service-Token</code>、
+        外部客戶端 (OpenWebUI 等) 用 <code>Authorization: Bearer ...</code>。
+        anila-agent 沒幫你驗,要在 wrapper 加 dependency。
+      </p>
+    </TermBox>
+
+    <!-- Bootstrap -->
+    <TermBox id="bootstrap" title="註冊 · bootstrap · service token" pad="md">
+      <ol class="steps">
+        <li>
+          到 <router-link to="/developer/agents">/developer/agents</router-link>
+          下載 template (按 <strong>download template</strong>),把 anila-agent + 你客製的工具裝箱
+        </li>
+        <li>
+          填好 agent 名稱 / endpoint URL / 底層模型,送出註冊 ·
+          狀態起始為 <TermBadge variant="warn">pending</TermBadge>
+        </li>
+        <li>
+          管理員 approve · 狀態翻成 <TermBadge variant="ok">approved</TermBadge>
+        </li>
+        <li>
+          管理員核發一次性的 <strong>bootstrap token</strong>
+          (<code>bsk-...</code>,15 分鐘 TTL)
+        </li>
+        <li>
+          在你 agent 的 <code>.env</code> 設好:
+          <pre class="code">CSP_URL=http://csp:8000
+ANILA_AGENT_ID=&lt;your-id&gt;
+ANILA_ENDPOINT_URL=http://&lt;your-host&gt;:24786
+CSP_BOOTSTRAP_TOKEN=bsk-XXXX-from-admin</pre>
+        </li>
+        <li>
+          第一次啟動時呼叫 CSP 的 <code>POST /api/agents/bootstrap</code>:
+          用 <code>bsk-</code> 換長期 <code>csk-...</code> service token,
+          寫到 <code>/var/lib/anila-agent/service_token.json</code> (mode 0600)
+        </li>
+        <li>
+          從 <code>.env</code> 拿掉 <code>CSP_BOOTSTRAP_TOKEN</code> ·
+          已經被消費掉了,CSP 會擋 replay
+        </li>
+        <li>
+          router 自動探測你的 <code>/health</code> · 開始派送流量
+        </li>
+      </ol>
+      <p class="hint">
+        anila-agent 0.2.0 沒內建 bootstrap CLI — 自己寫個 ~30 行的 Python 在 entrypoint 跑,
+        參考 CSP backend <code>POST /api/agents/bootstrap</code> 的 schema。
+        Service token rotation / 多 replica 共用 fleet token 的策略由你決定。
+      </p>
+    </TermBox>
+
+    <!-- runtime_config -->
+    <TermBox id="runtime-config" title="runtime_config · 不重啟調整 agent" pad="md">
       <p class="lead">
-        管理員在 CSP 上面改 permission / workspace caps / guardrails，
-        agent 程序每 30 秒輪詢
-        <code>GET /api/agents/me/runtime-config</code>，
+        管理員在 CSP 改 permission / workspace caps / guardrails,
+        agent 程序每 30 秒輪詢 <code>GET /api/agents/me/runtime-config</code>,
         下一輪自動套用。沒重啟、沒 redeploy。
       </p>
       <p>
-        agent 端要做的事：在 lifespan 啟動 <code>RuntimeConfigPoller</code>，
-        把它指向你建的 <code>ToolRegistry</code>。
+        agent 端要做的事:在 FastAPI <code>lifespan</code> 啟動
+        <code>RuntimeConfigPoller</code>,把它指向你的 <code>ToolRegistry</code>:
       </p>
-      <pre class="code">from anila_core.config import settings
+      <pre class="code">from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from anila_core.config import settings
 from anila_core.runtime_config import RuntimeConfigPoller
 from anila_core.workspace.caps import WorkspaceCaps
 
@@ -470,114 +603,47 @@ async def lifespan(app: FastAPI):
         csp_base_url=settings.csp_base_url,
         csp_service_token=settings.csp_service_token,
         registry=tool_registry,
-        base_workspace_caps=WorkspaceCaps(),  # 你 agent 的預設值
+        base_workspace_caps=WorkspaceCaps(),   # 你 agent 的預設值
         on_change=lambda snap, caps: workspace_factory.update_caps(caps),
         interval_seconds=30,
     )
-    await poller.start()       # 第一次 poll 是 inline，所以 lifespan 結束時 caps 已套好
+    await poller.start()       # 第一次 poll 是 inline,所以 lifespan 結束時 caps 已套好
     try:
         yield
     finally:
         await poller.stop()</pre>
       <p>
-        管理介面：到 <router-link to="/developer/agents">/developer/agents</router-link> →
-        點某個 agent 開 detail → <code>edit runtime config →</code>。
-        三個分頁：<strong>tool permissions</strong> /
+        管理介面 → <router-link to="/developer/agents">/developer/agents</router-link>
+        點 agent detail → <code>edit runtime config</code>。
+        三個分頁:<strong>tool permissions</strong> /
         <strong>workspace caps</strong> /
         <strong>guardrails</strong>。
         存檔後 agent 在 30 秒內套用。
       </p>
       <p class="hint">
-        ETag short-circuit：CSP 算出來的 hash 跟上次一樣就直接跳過 apply，
+        ETag short-circuit:CSP 算出來的 hash 跟上次一樣就直接跳過 apply,
         不會在每次 poll 都重建 guardrail 物件。
-        失敗（4xx / 5xx / 連線錯誤）不會清掉現行 snapshot，agent 維持上次成功的設定。
-      </p>
-    </TermBox>
-
-    <!-- Endpoints -->
-    <TermBox id="endpoints" title="agent 必須暴露的端點" pad="md">
-      <p>CSP router 會打這些端點。AgenticRAG 內的 <code>api.py</code> 已經實作好了。</p>
-      <table class="term-table">
-        <thead>
-          <tr><th style="width: 70px">method</th><th>path</th><th>auth</th><th>用途</th></tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><code>GET</code></td><td><code>/health</code></td><td>public</td>
-            <td>discovery + health probe，回 <code>{"status":"ok"}</code></td>
-          </tr>
-          <tr>
-            <td><code>GET</code></td><td><code>/v1/models</code></td><td>s2s</td>
-            <td>列出可用的 model id（OpenAI-compat）</td>
-          </tr>
-          <tr>
-            <td><code>POST</code></td><td><code>/v1/chat/completions</code></td><td>s2s</td>
-            <td>主推論（OpenAI-compat）；預設走 SSE stream</td>
-          </tr>
-          <tr>
-            <td><code>POST</code></td><td><code>/agentic-chat</code></td><td>s2s</td>
-            <td>framework Runner 的 SSE stream（更豐富的 tool-call 事件）</td>
-          </tr>
-          <tr>
-            <td><code>POST</code></td><td><code>/documents/upload</code></td><td>s2s</td>
-            <td>RAG 文件 ingestion；multipart/form-data</td>
-          </tr>
-          <tr>
-            <td><code>POST</code></td><td><code>/search</code></td><td>s2s</td>
-            <td>純檢索（不過 LLM）</td>
-          </tr>
-        </tbody>
-      </table>
-      <p class="hint">
-        s2s = service-to-service。兩個 auth header 並行：平台來的 <code>X-CSP-Service-Token</code>、直連客戶端（OpenWebUI 等）用的 <code>Authorization: Bearer ...</code>。
-      </p>
-    </TermBox>
-
-    <!-- Bootstrap -->
-    <TermBox id="bootstrap" title="註冊 · bootstrap · service token" pad="md">
-      <ol class="steps">
-        <li>
-          到 <router-link to="/developer/agents">/developer/agents</router-link> 註冊你的 agent ·
-          狀態起始為 <TermBadge variant="warn">pending</TermBadge>
-        </li>
-        <li>
-          管理員 approve · 狀態翻成 <TermBadge variant="ok">approved</TermBadge>
-        </li>
-        <li>
-          管理員核發一次性的 <strong>bootstrap token</strong>（<code>bsk-...</code>，15 分鐘 TTL）
-        </li>
-        <li>
-          在你 agent 的 <code>.env</code> 設好：
-          <pre class="code">CSP_URL=http://csp:8000
-ANILA_AGENT_ID=&lt;your-id&gt;
-ANILA_ENDPOINT_URL=http://&lt;your-host&gt;:24786
-CSP_BOOTSTRAP_TOKEN=bsk-XXXX-from-admin</pre>
-        </li>
-        <li>
-          第一次 <code>docker compose up -d</code> 時 entrypoint 會自動跑 bootstrap CLI：把 bsk 換成長期的 <code>csk-...</code> service token，寫到 <code>/var/lib/anila-agent/service_token.json</code>（mode 0600）
-        </li>
-        <li>
-          從 <code>.env</code> 拿掉 <code>CSP_BOOTSTRAP_TOKEN</code> · 已經被消費掉了，CSP 會擋 replay
-        </li>
-        <li>
-          router 自動探測你的 <code>/health</code> · 開始派送流量
-        </li>
-      </ol>
-      <p class="hint">
-        完整生命週期（rotation、多 replica K8s、退回 fleet 共用 <code>CSP_SERVICE_TOKEN</code>）：見 <code>AgenticRAG/docs/BOOTSTRAP_DEPLOYMENT.md</code>
+        失敗 (4xx / 5xx / 連線錯誤) 不會清掉現行 snapshot,agent 維持上次成功的設定。
       </p>
     </TermBox>
 
     <!-- Testing -->
     <TermBox id="testing" title="測試與品質閘門" pad="md">
-      <pre class="code">pip install -e '.[rag,dev]'
-pytest                                    # 632 tests
-pytest --cov=agentic_rag --cov-report=term-missing
-mypy src/agentic_rag/runtime/             # strict mode
-ruff check src/ tests/</pre>
+      <pre class="code">cd anila-agent
+uv pip install -e '.[dev,pgvector]'
+pytest                                  # 65 tests in 0.2.0
+pytest --cov=anila_agent --cov-report=term-missing
+mypy anila_agent/                       # strict mode
+ruff check anila_agent/ tests/</pre>
       <p>
-        Framework path 維持的品質基線：mypy strict + ruff clean + boundary test 確保不會漏進 anila-* 的硬依賴。
-        新工具請在 <code>tests/</code> 下加測試 — <code>tests/runtime/framework/test_schema_generator.py</code> 是 <code>@tool</code> 覆蓋率的好範本。
+        anila-agent 0.2.0 維持的品質基線:65 tests all green、harness 層 (memdir port / hook bridge /
+        retriever scoring) coverage 集中。
+        openai-agents primitive 不在這份 coverage 範圍 — 上游自己測。
+      </p>
+      <p class="hint">
+        新工具請在 <code>tests/</code> 下加測試 — <code>tests/test_retriever.py</code> 是
+        Protocol 覆蓋的好範本,<code>tests/test_pgvector_retriever.py</code> /
+        <code>test_anila_pgvector_retriever.py</code> 示範了兩個內建後端的 unit 測法。
       </p>
     </TermBox>
 
@@ -587,36 +653,51 @@ ruff check src/ tests/</pre>
         <thead><tr><th>症狀</th><th>可能原因 · 修法</th></tr></thead>
         <tbody>
           <tr>
-            <td>每個請求都回 <code>503</code></td>
-            <td><code>API_KEY</code> 沒設且 <code>API_DEV_MODE</code> 不是 <code>true</code> · 在 <code>.env</code> 設其中一個</td>
+            <td><code>anila</code> CLI 起來就 <code>FileNotFoundError: prompts/system.md</code></td>
+            <td>0.2.0 已修;舊版 <code>configs/agent.yaml</code> 指向相對路徑而 system.md 在 <code>anila_agent/prompts/</code> ·
+              <code>git subtree pull</code> 升到 0.2.0 即可</td>
           </tr>
           <tr>
-            <td>bootstrap CLI 噴 <code>token consumed</code></td>
-            <td>service-token state 檔已經存在 · 想重新 bootstrap 就刪掉 <code>/var/lib/anila-agent/service_token.json</code></td>
+            <td>啟動 raise <code>"PGVECTOR_URL set but PGVECTOR_COLLECTION missing"</code></td>
+            <td>0.2.0 對半套配置 fail loud (不再悄悄退回 Dummy) · 補齊兩個 env,
+              或兩個都拿掉走 Dummy</td>
           </tr>
           <tr>
-            <td>router 不派送流量到你的 agent</td>
-            <td>審核還是 <code>pending</code> · 管理員要去 <router-link to="/developer/agents">/developer/agents</router-link> 處理</td>
+            <td><code>search_documents</code> 都回空</td>
+            <td>collection 沒指派 · ingestion 還沒跑完 ·
+              embedding model 跟灌資料時用的不一致 ·
+              <code>ANILA_COLLECTION_ID</code> 指到空 collection</td>
           </tr>
           <tr>
-            <td>vector_search 都回空</td>
-            <td>collection 沒指派 · ingestion 還沒跑完 · embedding model 對不上（要跟 ingest 時用的一致）</td>
+            <td>vLLM endpoint 走自簽憑證連不上</td>
+            <td>設 <code>ANILA_SSL_VERIFY=0</code> ·
+              <strong>只在內網自簽情境用</strong>,公網一律別關</td>
           </tr>
           <tr>
-            <td>LLM 一直幻想出不存在的 tool name</td>
-            <td>schema 沒送到 model · 檢查 <code>agent.registry.tool_definitions()</code> 輸出跟 provider 的預期是否一致</td>
+            <td>memory 一直回空</td>
+            <td><code>&lt;ANILA_HOME&gt;/memory/MEMORY.md</code> 是空的 ·
+              手動加 topic file 或先讓 <code>auto_memory</code> 跑幾輪</td>
           </tr>
           <tr>
-            <td>pod 重啟後 memory extraction 大爆發</td>
-            <td>把 <code>CursorStore</code> 設定到 <code>MemoryExtractor</code> 上做持久化 · 見 <code>agentic_rag/memory/extraction_state.py</code></td>
+            <td>auto extraction 噴 token</td>
+            <td>調大 <code>memory.yaml</code> 的 <code>min_messages_between_runs</code>,
+              或乾脆把 <code>auto_memory.enabled</code> 設 <code>false</code> 改手動 <code>/memory extract</code></td>
           </tr>
           <tr>
-            <td>tool 輸出把 context window 灌爆</td>
-            <td>在 runner middleware 加一個 <code>ToolOutputTrimmerMiddleware(max_chars=2000)</code></td>
+            <td>CSP router 探不到你的 agent</td>
+            <td>審核還是 <code>pending</code> ·
+              管理員要到 <router-link to="/developer/agents">/developer/agents</router-link> approve ·
+              或 <code>/health</code> wrapper 沒實作 / 回非 200</td>
           </tr>
           <tr>
-            <td>取消訊號發出去但 run 沒停</td>
-            <td>handler 必須在 await 點檢查 <code>ctx.metadata["_bg_cancel_signal"].is_set()</code>；框架沒辦法強制中斷任意 CPU 迴圈</td>
+            <td>bootstrap 噴 <code>token consumed</code></td>
+            <td>service-token state 檔已經存在 · 想重新 bootstrap 就刪
+              <code>/var/lib/anila-agent/service_token.json</code></td>
+          </tr>
+          <tr>
+            <td>runtime_config 改了 agent 不動</td>
+            <td>poller 沒掛 (lifespan 沒啟動) · CSP service token 失效 ·
+              查 agent 端 log <code>RuntimeConfigPoller: 401/403</code></td>
           </tr>
         </tbody>
       </table>
@@ -625,10 +706,11 @@ ruff check src/ tests/</pre>
     <!-- Footer cross-link -->
     <TermBox title="後續步驟" pad="md">
       <ul class="next">
-        <li>註冊你的 agent → <router-link to="/developer/agents">/developer/agents</router-link></li>
+        <li>下載 template / 註冊 agent → <router-link to="/developer/agents">/developer/agents</router-link></li>
         <li>瀏覽知識庫 collection → <router-link to="/knowledge-collections">/knowledge-collections</router-link></li>
-        <li>更深入的文件在 <code>AgenticRAG/docs/</code> · <code>BOOTSTRAP_DEPLOYMENT.md</code> · <code>CSP_INTEGRATION.md</code></li>
-        <li>v0.1 milestone 變更紀錄：見 <code>AgenticRAG/README.md</code></li>
+        <li>anila-agent 上游 (含 CHANGELOG):
+          <code>github.com/zzw09773/anila-agent</code></li>
+        <li>本 repo 內 anila-agent subtree 更新指令見 ANILA <code>README.md</code> §「維護 anila-agent」</li>
       </ul>
     </TermBox>
   </div>

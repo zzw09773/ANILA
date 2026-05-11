@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.handoff import Handoff, Notification
 from app.models.user import User
+from app.services.auth_service import is_admin_tier
 
 
 # ── Handoffs ──────────────────────────────────────────────────────────────────
@@ -66,7 +67,7 @@ def resolve_handoff(
     handoff = db.query(Handoff).filter(Handoff.id == handoff_id).first()
     if not handoff:
         raise HTTPException(status_code=404, detail="找不到此交接請求")
-    if handoff.to_user_id != user.id and user.role != "admin":
+    if handoff.to_user_id != user.id and not is_admin_tier(user):
         raise HTTPException(status_code=403, detail="無權處理此交接請求")
     if handoff.status != "pending":
         raise HTTPException(status_code=409, detail=f"此交接請求已處理 (狀態: {handoff.status})")
@@ -100,7 +101,7 @@ def cancel_handoff(db: Session, handoff_id: int, user: User) -> Handoff:
     handoff = db.query(Handoff).filter(Handoff.id == handoff_id).first()
     if not handoff:
         raise HTTPException(status_code=404, detail="找不到此交接請求")
-    if handoff.from_user_id != user.id and user.role != "admin":
+    if handoff.from_user_id != user.id and not is_admin_tier(user):
         raise HTTPException(status_code=403, detail="無權取消此交接請求")
     if handoff.status != "pending":
         raise HTTPException(status_code=409, detail="只能取消 pending 狀態的交接請求")

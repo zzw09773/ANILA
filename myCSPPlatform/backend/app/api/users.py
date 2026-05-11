@@ -16,7 +16,12 @@ from app.schemas.user import (
     UserAllowedAgentsUpdate,
 )
 from app.services.audit_service import log_audit_event
-from app.services.auth_service import get_current_user, is_owner, require_admin
+from app.services.auth_service import (
+    get_current_user,
+    is_admin_tier,
+    is_owner,
+    require_admin,
+)
 from app.utils.security import hash_password
 
 router = APIRouter(prefix="/api/users", tags=["使用者管理"])
@@ -139,12 +144,15 @@ def update_user(
             db,
             update_data["department_id"],
         )
-    was_admin = user.role == "admin"
+    # admin / owner 都是 admin tier;捕捉「從 admin-tier 掉下去」的轉換,
+    # owner→admin 維持 admin-tier 不需要 cascade,admin→owner 是升級也不需要。
+    # 只在離開 admin-tier 時 (admin→user / developer 或 owner→user / developer)
+    # 才需要把 API key 權限收斂回 user allowlist 並讓舊 JWT 失效。
+    was_admin_tier = is_admin_tier(user)
     for field, value in update_data.items():
         setattr(user, field, value)
 
-    # admin → user 降級:cascade API key 權限到 user allowlist,並讓舊 JWT 失效
-    if was_admin and user.role != "admin":
+    if was_admin_tier and not is_admin_tier(user):
         allowed_ids = {m.id for m in user.allowed_models}
         _cascade_user_key_permissions(db, user, allowed_ids)
         user.token_version = (user.token_version or 0) + 1
@@ -194,7 +202,7 @@ def get_my_allowed_models(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if current_user.role == "admin":
+    if is_admin_tier(current_user):
         models = db.query(ModelRegistry).filter(ModelRegistry.is_active == True).all()
     else:
         models = current_user.allowed_models
@@ -238,9 +246,10 @@ def update_user_allowed_models(
     for mid in new_ids:
         db.add(UserModelPermission(user_id=user_id, model_id=mid))
 
-    # Cascade: remove revoked models from all this user's API keys (non-admin users only)
+    # Cascade: remove revoked models from all this user's API keys
+    # (admin-tier accounts skip — their keys bypass model permission rows).
     cascade_count = 0
-    if user.role != "admin":
+    if not is_admin_tier(user):
         cascade_count = _cascade_user_key_permissions(db, user, new_ids)
 
     db.commit()
