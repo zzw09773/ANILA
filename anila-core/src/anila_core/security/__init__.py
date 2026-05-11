@@ -15,6 +15,8 @@ from anila_core.security.credential_crypto import (
 )
 from anila_core.security.url_guard import (
     UnsafeEndpointError,
+    clear_trusted_host_providers,
+    register_trusted_host_provider,
     validate_outbound_url,
 )
 
@@ -23,4 +25,6 @@ __all__ = [
     "encrypt_credential",
     "UnsafeEndpointError",
     "validate_outbound_url",
+    "register_trusted_host_provider",
+    "clear_trusted_host_providers",
 ]

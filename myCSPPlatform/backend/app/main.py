@@ -75,6 +75,28 @@ async def lifespan(app: FastAPI):
     from app.services.auto_seed import auto_seed
     auto_seed()
 
+    # Trusted-host allow-list: backfill ANILA_TRUSTED_HOSTS env into the
+    # new DB table (idempotent on unique constraint), then register the
+    # cache provider with anila-core's SSRF guard so URL validation sees
+    # admin-managed hosts on top of the env fallback.
+    from app.database import SessionLocal as _SessionLocal
+    from app.services import trusted_host_service
+    _db = _SessionLocal()
+    try:
+        inserted = trusted_host_service.backfill_from_env(_db)
+        if inserted:
+            logging.getLogger(__name__).info(
+                "trusted_hosts: backfilled %d host(s) from ANILA_TRUSTED_HOSTS env",
+                inserted,
+            )
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "trusted_hosts: env backfill failed (continuing with env-only fallback)"
+        )
+    finally:
+        _db.close()
+    trusted_host_service.register_with_url_guard()
+
     # Start background tasks
     from app.services.health_checker import start_health_checker
     from app.services.usage_writer import start_usage_writer

@@ -198,6 +198,34 @@
         />
       </template>
     </TermModal>
+
+    <!-- Phase 2 — typed 400 confirm modal. Shows when backend rejects a
+         register/update because the hostname isn't in trusted_hosts AND
+         the failure is fixable (single-label / internal-zone, NOT
+         loopback/metadata). Owner can one-click promote + retry. -->
+    <TermModal
+      :visible="!!untrustedHostPrompt"
+      title="hostname 未在受信任清單"
+      width="540px"
+      @close="cancelTrustPrompt"
+    >
+      <div v-if="untrustedHostPrompt" class="trust-prompt">
+        <p class="trust-prompt__hint">{{ untrustedHostPrompt.hint }}</p>
+        <p class="trust-prompt__cta">
+          要把 <code>{{ untrustedHostPrompt.host }}</code> 加進 trusted_hosts 並重試嗎?
+          <br>
+          <span class="cell-meta">會寫一筆 audit log,事後可在 /trusted-hosts 移除。</span>
+        </p>
+      </div>
+      <template #footer>
+        <TermButton variant="ghost" @click="cancelTrustPrompt" label="cancel" />
+        <TermButton
+          variant="primary"
+          :label="`add ${untrustedHostPrompt?.host || ''} + retry`"
+          @click="confirmTrustAndRetry"
+        />
+      </template>
+    </TermModal>
   </div>
 </template>
 
@@ -279,6 +307,13 @@ const endpointFieldLocked = computed(() =>
   !!editingId.value && !authStore.isOwner,
 )
 
+// Phase 2 模型 stack 解耦 — SSRF guard 對 single-label / internal-zone
+// hostname 回 typed 400 (detail 是 dict 不是 string)。前端在 catch 偵測
+// 到 code === "untrusted_host" 時跳 confirm modal,owner 一鍵把該
+// hostname 加進 trusted_hosts 後重試 — 不必離開「register model」流程
+// 去切到另一個分頁手動操作。
+const untrustedHostPrompt = ref(null)   // { host, message, hint, retryPayload, retryMode }
+
 async function handleSubmit() {
   try {
     const payload = { ...form.value }
@@ -295,8 +330,73 @@ async function handleSubmit() {
     }
     showModal.value = false
   } catch (e) {
-    alert(e.response?.data?.detail || 'operation failed')
+    const detail = e.response?.data?.detail
+    // Typed 400 with code "untrusted_host" → show confirm modal so the
+    // owner can promote the host to trusted_hosts and retry without
+    // leaving this page. Plain-string detail (loopback / metadata /
+    // scheme failures) falls through to the existing alert path —
+    // those aren't fixable by adding to trust list.
+    if (
+      detail &&
+      typeof detail === 'object' &&
+      detail.code === 'untrusted_host' &&
+      detail.host &&
+      authStore.isOwner
+    ) {
+      const payload = { ...form.value }
+      if (payload.model_type !== 'agent') payload.base_model_id = null
+      if (endpointFieldLocked.value) delete payload.endpoint_url
+      untrustedHostPrompt.value = {
+        host: detail.host,
+        message: detail.message || '',
+        hint: detail.hint || '',
+        retryPayload: payload,
+        retryMode: editingId.value ? 'update' : 'create',
+        retryId: editingId.value,
+      }
+      return
+    }
+    const msg = typeof detail === 'string'
+      ? detail
+      : (detail?.message || 'operation failed')
+    alert(msg)
   }
+}
+
+async function confirmTrustAndRetry() {
+  const prompt = untrustedHostPrompt.value
+  if (!prompt) return
+  try {
+    // Lazy import so loading ModelsView for non-owner viewers doesn't
+    // even pull the trusted-hosts API client.
+    const { createTrustedHost } = await import('../api/trustedHosts')
+    await createTrustedHost({
+      host: prompt.host,
+      note: `auto-added via /models register on ${new Date().toISOString()}`,
+    })
+    // Retry the original submit. cache TTL is 30s but the service
+    // invalidates on mutation, so the retry should see the new host
+    // immediately on the same CSP worker. Cross-worker eventual
+    // consistency: at worst the admin sees the same error again and
+    // can retry once more.
+    const { retryPayload, retryMode, retryId } = prompt
+    if (retryMode === 'update') {
+      const { name, ...updateData } = retryPayload
+      await modelsStore.update(retryId, updateData)
+    } else {
+      await modelsStore.create(retryPayload)
+    }
+    untrustedHostPrompt.value = null
+    showModal.value = false
+  } catch (e) {
+    const detail = e.response?.data?.detail
+    const msg = typeof detail === 'string' ? detail : (detail?.message || 'retry failed')
+    alert(msg)
+  }
+}
+
+function cancelTrustPrompt() {
+  untrustedHostPrompt.value = null
 }
 
 async function handleHealthCheck(id) {
@@ -369,6 +469,14 @@ async function handlePurge(model) {
 }
 .internal-checkbox input[type="checkbox"] {
   cursor: pointer;
+}
+.trust-prompt { display: flex; flex-direction: column; gap: var(--gap-3); }
+.trust-prompt__hint { color: var(--c-fg-2); font-size: var(--t-sm); margin: 0; }
+.trust-prompt__cta { color: var(--c-fg-1); font-size: var(--t-sm); margin: 0; }
+.trust-prompt__cta code {
+  font-family: var(--font-mono); background: var(--c-bg);
+  border: var(--border-w) solid var(--c-border); padding: 1px 6px;
+  font-size: var(--t-2xs); color: var(--c-accent);
 }
 .cell-url {
   display: inline-block;

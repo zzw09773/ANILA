@@ -36,16 +36,38 @@ def _enforce_endpoint_url(url: str) -> None:
 
     Mirrors agents.py _enforce_endpoint_url. Same env-driven overrides
     apply (ANILA_ALLOW_PRIVATE_ENDPOINT for RFC1918, ANILA_ALLOW_HTTP_ENDPOINT
-    for http://, ANILA_TRUSTED_HOSTS comma-list for docker service-name
-    short-circuit). Previously model endpoints registered without any guard
-    so admins could point at internal services like csp-db; closing that
-    parity gap so all three places (agents / ingestion / models) share
+    for http://, ANILA_TRUSTED_HOSTS comma-list + DB-backed admin allow-list
+    via trusted_host_service). Previously model endpoints registered without
+    any guard so admins could point at internal services like csp-db; closing
+    that parity gap so all three places (agents / ingestion / models) share
     the same validator.
+
+    When the failure is fixable (single-label hostname or internal-zone
+    suffix — i.e. admin could legitimately want this host trusted), we
+    surface a *structured* detail dict instead of a plain message string,
+    so the frontend can render an actionable confirm modal ("Add
+    'foobar' to trusted hosts?") instead of just an opaque alert. Other
+    failure reasons (loopback / metadata / private IP) keep the plain
+    string detail — those aren't safe to bypass via the UI.
     """
     try:
         validate_outbound_url(url)
     except UnsafeEndpointError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if exc.fixable_by_trust_host:
+            detail = {
+                "code": "untrusted_host",
+                "host": exc.host,
+                "reason": exc.reason,
+                "message": str(exc),
+                "hint": (
+                    f"hostname {exc.host!r} 不在受信任清單。"
+                    f"若該主機在內部 docker network 上(例如 anila-models-net "
+                    f"內的推論服務),管理員可在 /trusted-hosts 加入後再試。"
+                ),
+            }
+        else:
+            detail = str(exc)
+        raise HTTPException(status_code=400, detail=detail) from exc
 
 
 def _build_response(model: ModelRegistry, *, caller: User | None = None) -> dict:

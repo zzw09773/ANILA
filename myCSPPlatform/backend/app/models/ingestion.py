@@ -28,11 +28,21 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    JSON,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, CHAR, JSONB
 from sqlalchemy.orm import relationship
 
 from app.database import Base
+
+
+# Production runs Postgres so JSONB stays as the canonical column type
+# (indexable + operator support). SQLite-backed pytest fixtures can't
+# compile JSONB → fall back to plain JSON; ARRAY → JSON list (read-only
+# convenience, test-time only). Same with_variant pattern as the other
+# ORM modules (message.py / agent.py / handoff.py / platform_link.py).
+JSONValue = JSON().with_variant(JSONB(), "postgresql")
+IntListValue = JSON().with_variant(ARRAY(Integer), "postgresql")
 
 
 class IngestionCollection(Base):
@@ -60,7 +70,7 @@ class IngestionCollection(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(200), nullable=False)
     description = Column(Text, nullable=True)
-    chunking_config = Column(JSONB, nullable=False)
+    chunking_config = Column(JSONValue, nullable=False)
     embedding_model = Column(String(200), nullable=False)
     embedding_dim = Column(Integer, nullable=False)
     status = Column(String(20), nullable=False, default="active")
@@ -153,13 +163,13 @@ class IngestionEvalRun(Base):
         index=True,
     )
     name = Column(String(200), nullable=False)
-    sample_document_ids = Column(ARRAY(Integer), nullable=False)
-    strategies_tried = Column(JSONB, nullable=False)
-    queries = Column(JSONB, nullable=False)
-    judge_llm_config = Column(JSONB, nullable=True)
+    sample_document_ids = Column(IntListValue, nullable=False)
+    strategies_tried = Column(JSONValue, nullable=False)
+    queries = Column(JSONValue, nullable=False)
+    judge_llm_config = Column(JSONValue, nullable=True)
     arq_job_id = Column(String(100), nullable=True, unique=True)
     status = Column(String(20), nullable=False, default="queued")
-    results = Column(JSONB, nullable=True)
+    results = Column(JSONValue, nullable=True)
     recommended_strategy = Column(String(64), nullable=True)
     error_code = Column(String(64), nullable=True)
     error_message = Column(Text, nullable=True)

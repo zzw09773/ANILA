@@ -85,6 +85,7 @@ const menuGroups = computed(() => {
         { path: '/platform-links', label: 'platform-links' },
         { path: '/service-access', label: 'service-access' },
         { path: '/service-clients', label: 'service-clients' },
+        { path: '/trusted-hosts', label: 'trusted-hosts' },
       ],
     })
   }

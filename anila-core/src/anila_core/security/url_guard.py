@@ -44,26 +44,74 @@ a resolvable name; far higher bar than `host=csp-db`.
 from __future__ import annotations
 
 import ipaddress
+import logging
 import os
 import socket
+from typing import Callable
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip() == "1"
 
 
-def _trusted_hosts() -> set[str]:
+def _env_trusted_hosts() -> set[str]:
     """Comma-separated allow-list from ``ANILA_TRUSTED_HOSTS``.
 
     Read fresh on every call so docker-compose env edits take effect
     without restarting the importer. Empty / unset → empty set →
-    no hosts bypass.
+    no hosts bypass. Acts as the bootstrap / fallback layer when no
+    DB-backed provider is registered (agent / worker contexts).
     """
     raw = os.environ.get("ANILA_TRUSTED_HOSTS", "").strip()
     if not raw:
         return set()
     return {h.strip().lower() for h in raw.split(",") if h.strip()}
+
+
+# Process-local list of dynamic trusted-host sources. CSP registers a
+# DB-backed cache at startup; agent / worker processes leave this empty
+# and rely on the env fallback. Providers are additive: the final
+# trusted-host set is the union of env + every provider.
+_trusted_host_providers: list[Callable[[], set[str]]] = []
+
+
+def register_trusted_host_provider(fn: Callable[[], set[str]]) -> None:
+    """Register a callable that returns extra trusted hostnames at call time.
+
+    Used by CSP to wire an admin-managed DB allow-list into the guard
+    without making anila-core depend on the platform schema. Provider
+    failures are swallowed (and logged) so a broken DB connection never
+    weakens security validation — fallback is env-only.
+    """
+    _trusted_host_providers.append(fn)
+
+
+def clear_trusted_host_providers() -> None:
+    """Reset registered providers. Test-only — avoids leakage between
+    monkeypatched fixtures."""
+    _trusted_host_providers.clear()
+
+
+def _trusted_hosts() -> set[str]:
+    result = _env_trusted_hosts()
+    for provider in _trusted_host_providers:
+        try:
+            extra = provider()
+        except Exception:
+            # A misbehaving provider must not break URL validation —
+            # security should fail closed (still validate against env),
+            # not fall apart. Log and move on.
+            logger.warning(
+                "trusted_host provider raised; falling back to env-only",
+                exc_info=True,
+            )
+            continue
+        if extra:
+            result = result | {h.lower() for h in extra if h}
+    return result
 
 
 # Hostnames that should never appear in a credential URL, even if they
@@ -90,8 +138,51 @@ _DENY_HOST_SUFFIXES: tuple[str, ...] = (
 )
 
 
+# Reason codes for typed error propagation. Frontend / API responses use
+# these to decide whether the failure is "admin can fix by adding to
+# trusted_hosts" (single-label / internal-zone) vs structural rejections
+# that should never be bypassed (loopback / metadata / link-local).
+REASON_EMPTY = "empty"
+REASON_NO_HOSTNAME = "no_hostname"
+REASON_SCHEME = "scheme"
+REASON_DENY_HOST = "deny_host"
+REASON_INTERNAL_ZONE = "internal_zone"
+REASON_UNSAFE_IP = "unsafe_ip"
+REASON_PRIVATE_IP = "private_ip"
+REASON_SINGLE_LABEL = "single_label"
+
+# Failure reasons that an admin can legitimately fix by adding the
+# hostname to the trusted-hosts allow-list. Loopback / metadata /
+# link-local are NEVER in here — they're outright dangerous.
+FIXABLE_BY_TRUST_HOST = frozenset({REASON_SINGLE_LABEL, REASON_INTERNAL_ZONE})
+
+
 class UnsafeEndpointError(ValueError):
-    """Raised when a user-supplied URL is unsafe for outbound calls."""
+    """Raised when a user-supplied URL is unsafe for outbound calls.
+
+    Carries structured attributes so callers (CSP API layer) can render
+    a typed 400 with actionable guidance ("add foobar to trusted hosts?")
+    instead of opaque message strings. ``str(exc)`` still returns the
+    human-readable message so legacy plain-string consumers keep working.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        host: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.host = host
+        self.reason = reason
+
+    @property
+    def fixable_by_trust_host(self) -> bool:
+        """True iff admin can plausibly fix by adding ``self.host`` to
+        ``trusted_hosts``. False for any structurally-unsafe URL (loopback,
+        metadata, etc.)."""
+        return self.reason in FIXABLE_BY_TRUST_HOST and bool(self.host)
 
 
 def _is_ip_literal(addr: str) -> bool:
@@ -147,7 +238,10 @@ def validate_outbound_url(url: str) -> None:
     framework error (HTTPException 400 in CSP, log + skip in worker).
     """
     if not url or not isinstance(url, str):
-        raise UnsafeEndpointError("endpoint_url must be a non-empty string")
+        raise UnsafeEndpointError(
+            "endpoint_url must be a non-empty string",
+            reason=REASON_EMPTY,
+        )
 
     # Read flags fresh on every call so test harnesses / docker-compose
     # env updates take effect without restarting the importer.
@@ -162,47 +256,60 @@ def validate_outbound_url(url: str) -> None:
         if not allow_http:
             raise UnsafeEndpointError(
                 "endpoint_url scheme must be 'https' "
-                "(set ANILA_ALLOW_HTTP_ENDPOINT=1 in dev to relax)"
+                "(set ANILA_ALLOW_HTTP_ENDPOINT=1 in dev to relax)",
+                reason=REASON_SCHEME,
             )
     else:
         raise UnsafeEndpointError(
             f"endpoint_url scheme {parsed.scheme!r} not allowed "
-            f"(use https://)"
+            f"(use https://)",
+            reason=REASON_SCHEME,
         )
 
     host = (parsed.hostname or "").lower()
     if not host:
-        raise UnsafeEndpointError("endpoint_url has no hostname")
+        raise UnsafeEndpointError(
+            "endpoint_url has no hostname",
+            reason=REASON_NO_HOSTNAME,
+        )
 
     # Admin-blessed hosts (docker service names in cross-stack networks,
     # etc.) skip every subsequent host check: deny list, internal-zone
     # suffixes, single-label, private/loopback IP rules, DNS resolution.
     # Scheme is already validated above. List is admin-managed via
-    # ANILA_TRUSTED_HOSTS in the platform compose env.
+    # env (ANILA_TRUSTED_HOSTS) ∪ DB-backed providers (CSP).
     if host in _trusted_hosts():
         return
 
     if host in _DENY_HOSTS:
         raise UnsafeEndpointError(
             f"endpoint_url host {host!r} is on the deny list "
-            f"(loopback / metadata / mDNS)"
+            f"(loopback / metadata / mDNS)",
+            host=host,
+            reason=REASON_DENY_HOST,
         )
 
     if any(host.endswith(suffix) for suffix in _DENY_HOST_SUFFIXES):
         raise UnsafeEndpointError(
-            f"endpoint_url host {host!r} is in an internal-only zone"
+            f"endpoint_url host {host!r} is in an internal-only zone",
+            host=host,
+            reason=REASON_INTERNAL_ZONE,
         )
 
     # IP literal: validate directly without DNS round-trip.
     if _is_always_unsafe_ip(host):
         raise UnsafeEndpointError(
             f"endpoint_url host {host!r} is a loopback / link-local / "
-            f"metadata / reserved IP"
+            f"metadata / reserved IP",
+            host=host,
+            reason=REASON_UNSAFE_IP,
         )
     if _is_private_ip(host) and not allow_private:
         raise UnsafeEndpointError(
             f"endpoint_url host {host!r} is a private (RFC 1918) IP "
-            f"(set ANILA_ALLOW_PRIVATE_ENDPOINT=1 in on-prem dev to relax)"
+            f"(set ANILA_ALLOW_PRIVATE_ENDPOINT=1 in on-prem dev to relax)",
+            host=host,
+            reason=REASON_PRIVATE_IP,
         )
 
     # Single-label hostnames (no dot, e.g. "csp-db", "redis", "router")
@@ -213,7 +320,9 @@ def validate_outbound_url(url: str) -> None:
         raise UnsafeEndpointError(
             f"endpoint_url host {host!r} is a single-label name "
             f"(typo / docker service name?). Use a fully-qualified "
-            f"public hostname."
+            f"public hostname.",
+            host=host,
+            reason=REASON_SINGLE_LABEL,
         )
 
     # Hostname: resolve and reject if any answer is unsafe. Same opt-in
@@ -234,11 +343,15 @@ def validate_outbound_url(url: str) -> None:
         if _is_always_unsafe_ip(addr):
             raise UnsafeEndpointError(
                 f"endpoint_url host {host!r} resolves to "
-                f"loopback / link-local / metadata address {addr!r}"
+                f"loopback / link-local / metadata address {addr!r}",
+                host=host,
+                reason=REASON_UNSAFE_IP,
             )
         if _is_private_ip(addr) and not allow_private:
             raise UnsafeEndpointError(
                 f"endpoint_url host {host!r} resolves to private "
                 f"(RFC 1918) address {addr!r} "
-                f"(set ANILA_ALLOW_PRIVATE_ENDPOINT=1 in on-prem dev)"
+                f"(set ANILA_ALLOW_PRIVATE_ENDPOINT=1 in on-prem dev)",
+                host=host,
+                reason=REASON_PRIVATE_IP,
             )

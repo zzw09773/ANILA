@@ -93,4 +93,54 @@ def test_enforce_raises_400_with_detail(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         _enforce_endpoint_url("http://gemma4:8000/v1")
     assert exc.value.status_code == 400
+    # scheme failure → plain string detail
     assert isinstance(exc.value.detail, str) and exc.value.detail
+
+
+# ── typed 400 for fixable failures (Phase 2) ───────────────────────────────────
+
+def test_fixable_single_label_returns_typed_400(monkeypatch):
+    """Single-label hostname (e.g. docker service name) failure → structured
+    detail dict so frontend can render '加進 trusted hosts?' confirm modal。"""
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.delenv("ANILA_TRUSTED_HOSTS", raising=False)
+    with pytest.raises(HTTPException) as exc:
+        _enforce_endpoint_url("http://foobar:8000/v1")
+    assert exc.value.status_code == 400
+    assert isinstance(exc.value.detail, dict)
+    assert exc.value.detail["code"] == "untrusted_host"
+    assert exc.value.detail["host"] == "foobar"
+    assert exc.value.detail["reason"] == "single_label"
+    assert "message" in exc.value.detail
+    assert "hint" in exc.value.detail
+
+
+def test_fixable_internal_zone_returns_typed_400(monkeypatch):
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.delenv("ANILA_TRUSTED_HOSTS", raising=False)
+    with pytest.raises(HTTPException) as exc:
+        _enforce_endpoint_url("http://api.svc.cluster.local/v1")
+    assert exc.value.status_code == 400
+    assert isinstance(exc.value.detail, dict)
+    assert exc.value.detail["host"] == "api.svc.cluster.local"
+    assert exc.value.detail["reason"] == "internal_zone"
+
+
+def test_loopback_NOT_fixable_returns_plain_string(monkeypatch):
+    """Loopback / localhost 屬不可 fix 的安全擋,detail 保持 plain string
+    避免前端誤渲染成 '加進 trusted hosts?' confirm modal。"""
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.delenv("ANILA_TRUSTED_HOSTS", raising=False)
+    with pytest.raises(HTTPException) as exc:
+        _enforce_endpoint_url("http://127.0.0.1:8000/v1")
+    assert exc.value.status_code == 400
+    assert isinstance(exc.value.detail, str)  # NOT a dict — frontend won't offer fix
+
+
+def test_metadata_address_NOT_fixable(monkeypatch):
+    """169.254.169.254 (cloud metadata) — 永遠擋,絕不該變 fixable。"""
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.delenv("ANILA_TRUSTED_HOSTS", raising=False)
+    with pytest.raises(HTTPException) as exc:
+        _enforce_endpoint_url("http://169.254.169.254/latest/")
+    assert isinstance(exc.value.detail, str)

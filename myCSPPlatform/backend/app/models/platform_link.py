@@ -1,7 +1,15 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Boolean, DateTime
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, JSON
 from sqlalchemy.dialects.postgresql import JSONB
 from app.database import Base
+
+
+# Production uses Postgres so the column is JSONB (indexable, operator
+# support). SQLite-backed pytest fixtures use Base.metadata.create_all
+# which doesn't know how to render JSONB — `with_variant` keeps the
+# Postgres semantics while falling back to plain JSON on SQLite so the
+# test suite can spin up an in-memory DB without compile errors.
+_REQUIRED_ROLES_TYPE = JSON().with_variant(JSONB(), "postgresql")
 
 
 class PlatformLink(Base):
@@ -20,11 +28,11 @@ class PlatformLink(Base):
     # (ANILA LM / codeserver / GitLab) leave this False so they require
     # an explicit ServiceAccessGrant. New rows default to False (private).
     is_public = Column(Boolean, nullable=False, default=False, server_default="false")
-    # JSONB array of role names. [] = everyone (default); ['admin'] = admin
+    # Array of role names. [] = everyone (default); ['admin'] = admin
     # only; ['admin','developer'] = either role passes the gate. Required-role
     # check is the cheap first filter before the per-user/per-department
-    # ServiceAccessGrant lookup.
+    # ServiceAccessGrant lookup. Postgres → JSONB; SQLite (tests) → JSON.
     required_roles = Column(
-        JSONB, nullable=False, default=list, server_default="[]"
+        _REQUIRED_ROLES_TYPE, nullable=False, default=list, server_default="[]"
     )
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

@@ -105,6 +105,15 @@ const routes = [
         component: () => import('../views/ServiceClientsView.vue'),
         meta: { requiresAdmin: true },
       },
+      // Phase 2 模型 stack 解耦 — SSRF guard allow-list (DB-driven 取代 env)。
+      // admin-tier 都看得到 (列表可見性 = 透明度),mutation 走 owner-only
+      // (RequireOwner) — UI 端只給 owner 看 +/remove 按鈕,後端 enforce。
+      {
+        path: 'trusted-hosts',
+        name: 'TrustedHosts',
+        component: () => import('../views/TrustedHostsView.vue'),
+        meta: { requiresAdmin: true },
+      },
       // Phase 2 Sprint 2 / Chunk H — Knowledge Collections inspector.
       // Developer-tier (any user with UserAgentPermission, plus admins).
       {
