@@ -12,7 +12,6 @@ the same OpenAI-compatible endpoint serves both main and side calls.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -118,7 +117,7 @@ class LongTermMemory:
         )
         try:
             result = await Runner.run(starting_agent=agent, input=user_msg, max_turns=1)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.warning("memory recall LLM call failed (%s); falling back to keyword overlap", e)
             return self._fallback_select(query, headers, k=k)
 
@@ -169,12 +168,3 @@ class LongTermMemory:
 
     def list_index(self) -> str:
         return self.store.truncate_index().content
-
-
-async def recall_async(*args: Any, **kwargs: Any) -> list[RecalledMemory]:
-    """Convenience for sync entry points."""
-    return await LongTermMemory(*args, **kwargs).recall("", k=0)
-
-
-def recall_sync(memory: LongTermMemory, query: str, *, k: int = 5) -> list[RecalledMemory]:
-    return asyncio.run(memory.recall(query, k=k))
