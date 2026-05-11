@@ -108,8 +108,11 @@ services:
       # 重新指向外網 hosted endpoint。auto_seed 會覆寫 DB 既有 row 的
       # endpoint_url,所以這條 env 是真實事實來源 — admin 透過 /models UI
       # 改完之後也要同步改這條 env (或 unset 它讓 auto_seed 跳過 update)。
+      # endpoint_url 是 base URL — proxy_service 會自己加 `/v1/chat/completions`
+      # 或 `/v1/embeddings`。**不要** 在 URL 結尾加 `/v1`,否則 proxy 會打到
+      # `/v1/v1/chat/completions` 404 → router 那邊看到 httpx RemoteProtocolError。
       AUTO_REGISTER_MODELS: >-
-        [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://gpt-oss-20b:8000/v1}","api_version":"v1","description":"On-prem local LLM (anila-models-net)"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://nv-embed-proxy:8000/v1}","api_version":"v1","description":"On-prem NV-embed-V2 via FastAPI shim (anila-models-net)"}]
+        [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://gpt-oss-20b:8000}","api_version":"v1","description":"On-prem local LLM (anila-models-net)"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://nv-embed-proxy:8000}","api_version":"v1","description":"On-prem NV-embed-V2 via FastAPI shim (anila-models-net)"}]
       AUTO_SEED_API_KEYS: >-
         [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY:-sk-test-user-api-key}","key_name":"smoke-user-dev-key","models":["${LOCAL_LLM_MODEL:-gpt-oss-20b}"]},
          {"username":"ingestion-worker","email":"ingestion-worker@anila.local","role":"system","key":"${INTERNAL_PLATFORM_API_KEY:-sk-internal-worker-changeme}","key_name":"ingestion-worker-system-key","models":["${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}"]}]
