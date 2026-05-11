@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [SemVer](https://semver.org/).
 
+## [0.2.1] — 2026-05-11
+
+### Changed
+- Cleared template-specific defaults so a fresh clone starts neutral:
+  - `configs/agent.yaml` `name`: `anila` → `my-agent` (this string is what
+    other agents see when this one is exposed via `Agent.as_tool()`).
+  - `anila_agent/prompts/system.md` and `prompts/agent.md` no longer carry
+    the `Anila` identity line; they ship as TODO-marked placeholders with
+    the generic RAG operating principles intact.
+  - `examples/rag_agent.py` seeded corpus changed from project-internal docs
+    to three domain-neutral example facts (astronomy / geography / physics).
+  - `.env.example` reorganised into Flavour A (langchain) / Flavour B (ANILA
+    platform) blocks with placeholder values throughout.
+  - `anila_pgvector.py` docstring + README Option B examples now use
+    `<host>` / `<port>` / `<collection_id>` placeholders instead of the
+    specific values from the development machine.
+
 ## [0.2.0] — 2026-05-11
 
 ### Added

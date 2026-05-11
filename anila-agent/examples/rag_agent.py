@@ -20,33 +20,32 @@ from anila_agent.utils.logging import configure
 
 
 def _seed_corpus() -> DummyRetriever:
+    """Tiny placeholder corpus. Replace with documents from your domain."""
     return DummyRetriever(
         [
             Document(
-                id="anila-overview",
+                id="doc-1",
                 text=(
-                    "Anila is an Agentic RAG starter built on the openai-agents SDK. "
-                    "It ports the harness patterns from Claude Code (long-term memdir, "
-                    "PreToolUse/PostToolUse/Stop hooks, slash commands) into Python."
+                    "Pluto was reclassified from a planet to a dwarf planet by the "
+                    "International Astronomical Union in 2006."
                 ),
-                metadata={"source": "internal/overview"},
+                metadata={"source": "example/astronomy"},
             ),
             Document(
-                id="anila-memory",
+                id="doc-2",
                 text=(
-                    "Long-term memory is file-backed: <memory_dir>/MEMORY.md plus topic "
-                    "files with YAML frontmatter (name, description, type). Recall scans "
-                    "the directory and asks a small LLM call to pick relevant files."
+                    "The Mariana Trench is the deepest known part of the world's "
+                    "oceans, reaching about 11,000 metres at the Challenger Deep."
                 ),
-                metadata={"source": "internal/memory"},
+                metadata={"source": "example/geography"},
             ),
             Document(
-                id="anila-hooks",
+                id="doc-3",
                 text=(
-                    "Hooks fire around tool calls. Each hook returns a HookOutput; the "
-                    "runner aggregates results, allowing block / approve / context-injection."
+                    "The speed of light in vacuum is exactly 299,792,458 metres "
+                    "per second by definition."
                 ),
-                metadata={"source": "internal/hooks"},
+                metadata={"source": "example/physics"},
             ),
         ]
     )
@@ -60,7 +59,7 @@ async def main() -> None:
     runner = AnilaRunner(assembled, session_id="example-rag")
 
     summary = await runner.send(
-        "Use the search tool to explain how Anila handles long-term memory."
+        "Use the search tool to answer: how deep is the Mariana Trench?"
     )
     print(summary.final_output)
 

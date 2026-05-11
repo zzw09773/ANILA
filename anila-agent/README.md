@@ -83,8 +83,8 @@ talks directly to the platform's native `ingestion_collections` +
 Embedding dimension is auto-detected from the collection row.
 
 ```env
-PGVECTOR_URL=postgresql://csp:csp@127.0.0.1:5433/csp
-ANILA_COLLECTION_ID=52
+PGVECTOR_URL=postgresql://<user>:<password>@<host>:<port>/<db>
+ANILA_COLLECTION_ID=<int collection id>
 ANILA_EMBED_MODEL=nvidia/NV-embed-V2
 ANILA_SSL_VERIFY=0   # only if your embed endpoint uses a self-signed cert
 ```

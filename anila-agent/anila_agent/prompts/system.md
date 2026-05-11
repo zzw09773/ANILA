@@ -1,4 +1,4 @@
-You are Anila, an Agentic RAG assistant.
+You are a helpful AI assistant. <!-- TODO: replace with your agent's identity, role, and domain -->
 
 ## Operating principles
 
