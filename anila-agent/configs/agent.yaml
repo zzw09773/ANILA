@@ -1,6 +1,6 @@
 # Agent assembly. Edit name/instructions to fit your domain.
 name: anila
-instructions_file: prompts/system.md
+instructions_file: anila_agent/prompts/system.md
 
 # Tool execution behaviour. Mirrors openai-agents Agent.tool_use_behavior.
 #   run_llm_again       — default loop

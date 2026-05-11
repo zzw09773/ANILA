@@ -11,10 +11,14 @@ from agents.models.interface import Model
 
 from anila_agent.core.events import EventBus
 from anila_agent.core.hooks import HookEvent, HookRegistry, HookSpec, specs_from_config
-from anila_agent.memory import open_session, summarizer as summarizer_module
+from anila_agent.memory import open_session
+from anila_agent.memory import summarizer as summarizer_module
 from anila_agent.memory.long_term import LongTermMemory
 from anila_agent.memory.store import MemdirStore
 from anila_agent.models.openai_compatible import build_model, build_model_settings
+from anila_agent.retrieval.anila_pgvector import from_env as _anila_pgvector_from_env
+from anila_agent.retrieval.pgvector import from_env as _pgvector_from_env
+from anila_agent.tools.rag_tools import set_retriever
 from anila_agent.tools.registry import load_tools
 from anila_agent.utils.config import AppConfig
 from anila_agent.utils.logging import get_logger
@@ -56,6 +60,13 @@ def build_agent(
     """
     model: Model = build_model(config.model)
     model_settings = build_model_settings(config.model)
+
+    # Prefer the ANILA-native retriever when ANILA_COLLECTION_ID is set;
+    # fall back to the langchain_postgres-based one for generic deployments.
+    retriever = _anila_pgvector_from_env() or _pgvector_from_env()
+    if retriever is not None:
+        set_retriever(retriever)
+        logger.info("retriever installed: %s", retriever.name)
 
     builtin_tools = load_tools(config.tools.builtin)
     all_tools = [*builtin_tools, *(extra_tools or [])]

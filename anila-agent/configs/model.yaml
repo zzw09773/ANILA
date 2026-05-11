@@ -11,4 +11,5 @@ api_key_env: ANILA_API_KEY
 # Sampling defaults. Anything you put here is passed through to ModelSettings.
 settings:
   temperature: 0.2
-  max_tokens: 4096
+  # gemma4 emits chain-of-thought before the final answer; give it room.
+  max_tokens: 1024
