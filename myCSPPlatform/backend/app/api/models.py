@@ -1,5 +1,6 @@
 import httpx
 from datetime import datetime, timezone
+from anila_core.security import UnsafeEndpointError, validate_outbound_url
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from app.database import get_db
@@ -20,9 +21,31 @@ from app.services.auth_service import (
 router = APIRouter(prefix="/api/models", tags=["模型管理"])
 
 # Sentinel returned to non-owner callers in place of the actual endpoint
-# URL. A literal sentinel (instead of None / empty string) is clearer in
-# logs and keeps the field's response_model type as a non-empty string.
+# URL. Two variants:
+#   <owner-only>  — generic redaction; URL is sensitive deployment topology
+#   <internal>    — additional hint that the model lives on internal docker
+#                   network and is unreachable from outside the platform stack
+# Owner viewers always see the real URL. Non-owners pick variant based on
+# the row's ``is_internal`` flag so logs/UI carry intent.
 ENDPOINT_REDACTED = "<owner-only>"
+ENDPOINT_INTERNAL = "<internal>"
+
+
+def _enforce_endpoint_url(url: str) -> None:
+    """SSRF guard parity with agents.py / ingestion credentials.
+
+    Mirrors agents.py _enforce_endpoint_url. Same env-driven overrides
+    apply (ANILA_ALLOW_PRIVATE_ENDPOINT for RFC1918, ANILA_ALLOW_HTTP_ENDPOINT
+    for http://, ANILA_TRUSTED_HOSTS comma-list for docker service-name
+    short-circuit). Previously model endpoints registered without any guard
+    so admins could point at internal services like csp-db; closing that
+    parity gap so all three places (agents / ingestion / models) share
+    the same validator.
+    """
+    try:
+        validate_outbound_url(url)
+    except UnsafeEndpointError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _build_response(model: ModelRegistry, *, caller: User | None = None) -> dict:
@@ -36,12 +59,23 @@ def _build_response(model: ModelRegistry, *, caller: User | None = None) -> dict
     we redact too — opt-in to surface by passing the caller explicitly.
     """
     show_endpoint = caller is not None and is_owner(caller)
+    is_internal = bool(getattr(model, "is_internal", False))
+    # Redaction sentinel picks the variant that conveys the most intent:
+    # internal models → <internal> (lives on anila-models-net, unreachable
+    # from outside the platform stack); external → <owner-only> (admin can
+    # see the row exists but not the deployment topology).
+    if show_endpoint:
+        endpoint = model.endpoint_url
+    elif is_internal:
+        endpoint = ENDPOINT_INTERNAL
+    else:
+        endpoint = ENDPOINT_REDACTED
     data = {
         "id": model.id,
         "name": model.name,
         "display_name": model.display_name,
         "model_type": model.model_type,
-        "endpoint_url": model.endpoint_url if show_endpoint else ENDPOINT_REDACTED,
+        "endpoint_url": endpoint,
         "api_version": model.api_version,
         "is_active": model.is_active,
         "is_router_primary": bool(model.is_router_primary),
@@ -51,6 +85,7 @@ def _build_response(model: ModelRegistry, *, caller: User | None = None) -> dict
         "context_window": model.context_window,
         "base_model_id": model.base_model_id,
         "base_model_name": model.base_model.display_name if model.base_model else None,
+        "is_internal": is_internal,
         "created_at": model.created_at,
         "updated_at": model.updated_at,
     }
@@ -87,6 +122,8 @@ def create_model(
     existing = db.query(ModelRegistry).filter(ModelRegistry.name == request.name).first()
     if existing:
         raise HTTPException(status_code=400, detail="模型名稱已存在")
+
+    _enforce_endpoint_url(request.endpoint_url)
 
     # Validate base_model_id if provided
     if request.base_model_id:
@@ -234,6 +271,9 @@ def update_model(
         raise HTTPException(status_code=404, detail="模型不存在")
 
     update_data = request.model_dump(exclude_unset=True)
+
+    if "endpoint_url" in update_data and update_data["endpoint_url"] is not None:
+        _enforce_endpoint_url(update_data["endpoint_url"])
 
     # Validate base_model_id if provided
     if "base_model_id" in update_data and update_data["base_model_id"]:

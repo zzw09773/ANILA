@@ -26,6 +26,13 @@ Policy (current):
 - Hostname literals matching the deny list (localhost, 169.254.169.254,
   *.internal, *.local) are blocked even before DNS resolution and are
   NOT affected by either flag.
+- ``ANILA_TRUSTED_HOSTS`` (comma-separated) is an explicit allow-list of
+  hostnames whose host checks (deny list, internal-zone suffixes,
+  single-label, private/loopback IP rules, DNS resolution) are skipped.
+  Scheme validation still applies. Use case: docker service names in
+  cross-stack networks (e.g. ``gemma4`` in ``anila-models-net``) where
+  the platform deliberately calls inference servers via internal DNS.
+  Only admins editing compose env can grow this list — not user-facing.
 
 The DNS check is best-effort and runs synchronously — endpoint URLs are
 registered rarely (once per BYO LLM key), not per-request, so the
@@ -44,6 +51,19 @@ from urllib.parse import urlparse
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip() == "1"
+
+
+def _trusted_hosts() -> set[str]:
+    """Comma-separated allow-list from ``ANILA_TRUSTED_HOSTS``.
+
+    Read fresh on every call so docker-compose env edits take effect
+    without restarting the importer. Empty / unset → empty set →
+    no hosts bypass.
+    """
+    raw = os.environ.get("ANILA_TRUSTED_HOSTS", "").strip()
+    if not raw:
+        return set()
+    return {h.strip().lower() for h in raw.split(",") if h.strip()}
 
 
 # Hostnames that should never appear in a credential URL, even if they
@@ -153,6 +173,14 @@ def validate_outbound_url(url: str) -> None:
     host = (parsed.hostname or "").lower()
     if not host:
         raise UnsafeEndpointError("endpoint_url has no hostname")
+
+    # Admin-blessed hosts (docker service names in cross-stack networks,
+    # etc.) skip every subsequent host check: deny list, internal-zone
+    # suffixes, single-label, private/loopback IP rules, DNS resolution.
+    # Scheme is already validated above. List is admin-managed via
+    # ANILA_TRUSTED_HOSTS in the platform compose env.
+    if host in _trusted_hosts():
+        return
 
     if host in _DENY_HOSTS:
         raise UnsafeEndpointError(

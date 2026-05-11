@@ -154,6 +154,17 @@ def _ensure_schema_backfills(bind: Engine) -> None:
         generic_ddl="ALTER TABLE model_registry ADD COLUMN base_model_id INTEGER",
     )
     _ensure_column(
+        bind, "model_registry", "is_internal",
+        postgres_ddl=(
+            "ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS is_internal "
+            "BOOLEAN NOT NULL DEFAULT FALSE"
+        ),
+        generic_ddl=(
+            "ALTER TABLE model_registry ADD COLUMN is_internal "
+            "BOOLEAN NOT NULL DEFAULT 0"
+        ),
+    )
+    _ensure_column(
         bind, "model_registry", "updated_at",
         postgres_ddl="ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NULL",
         generic_ddl="ALTER TABLE model_registry ADD COLUMN updated_at TIMESTAMP",

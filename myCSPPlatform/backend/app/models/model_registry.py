@@ -17,6 +17,11 @@ class ModelRegistry(Base):
     is_router_primary = Column(Boolean, nullable=False, default=False)
     health_status = Column(String(20), default="offline")  # 'online' / 'connecting' / 'offline'
     health_checked_at = Column(DateTime, nullable=True)
+    # Migration 0033: rows whose endpoint lives on the anila-models-net
+    # cross-stack docker network (e.g. ``http://gemma4:8000/v1``). Hint for
+    # _build_response sentinel + ModelsView lock indicator. Validation /
+    # network isolation is enforced elsewhere (SSRF guard + compose layout).
+    is_internal = Column(Boolean, nullable=False, default=False)
     description = Column(Text, nullable=True)
     context_window = Column(Integer, nullable=True)
 

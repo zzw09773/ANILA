@@ -41,14 +41,26 @@
               </span>
             </td>
             <td>
-              <div class="cell-strong">{{ model.display_name }}</div>
+              <div class="cell-strong">
+                <span
+                  v-if="model.is_internal"
+                  class="internal-lock"
+                  title="lives on anila-models-net internal docker network — no host port exposure"
+                >🔒</span>
+                {{ model.display_name }}
+              </div>
               <div class="cell-meta">{{ model.name }}</div>
               <div v-if="model.base_model_name" class="cell-base">↳ base: {{ model.base_model_name }}</div>
             </td>
             <td><TermBadge :tone="model.model_type">{{ model.model_type }}</TermBadge></td>
             <td>
               <span
-                v-if="model.endpoint_url === ENDPOINT_REDACTED"
+                v-if="model.endpoint_url === ENDPOINT_INTERNAL"
+                class="cell-meta cell-meta--internal"
+                title="endpoint lives on anila-models-net (cross-stack docker DNS) — owner can see the URL"
+              >🔒 internal</span>
+              <span
+                v-else-if="model.endpoint_url === ENDPOINT_REDACTED"
                 class="cell-meta"
                 title="endpoint URL is owner-only (deployment topology)"
               >🔒 owner-only</span>
@@ -149,8 +161,17 @@
             v-model="form.endpoint_url"
             class="term-input"
             :disabled="endpointFieldLocked"
-            :placeholder="endpointFieldLocked ? '— owner-only —' : 'http://gpu-server:8080'"
+            :placeholder="endpointFieldLocked ? '— owner-only —' : 'http://gemma4:8000/v1'"
           />
+        </TermField>
+        <TermField
+          label="internal"
+          hint="lives on anila-models-net (cross-stack docker DNS) — no host port exposure, owner-only URL"
+        >
+          <label class="internal-checkbox">
+            <input v-model="form.is_internal" type="checkbox" :disabled="endpointFieldLocked" />
+            <span>{{ form.is_internal ? 'internal · only reachable from platform stack' : 'external · on-prem LAN or public endpoint' }}</span>
+          </label>
         </TermField>
         <TermField label="description" optional>
           <textarea v-model="form.description" rows="2" class="term-textarea" />
@@ -196,6 +217,10 @@ const settingPrimaryId = ref(null)
 const defaultForm = () => ({
   name: '', display_name: '', model_type: 'llm', endpoint_url: '',
   api_version: 'v1', description: '', context_window: null, base_model_id: null,
+  // Default true matches backend ModelCreate schema — new registrations are
+  // expected to land on the anila-models-net cross-stack docker network.
+  // Admin can untick for an external on-prem LAN endpoint.
+  is_internal: true,
 })
 const form = ref(defaultForm())
 
@@ -218,9 +243,13 @@ function healthLabel(s) {
   return ({ online: 'online', connecting: 'connecting', offline: 'offline' })[s] || s || 'unknown'
 }
 
-// Owner-only sentinel returned by backend when endpoint_url is redacted.
-// Keep in sync with myCSPPlatform/backend/app/api/models.py::ENDPOINT_REDACTED.
+// Sentinels returned by backend when endpoint_url is redacted from non-owner
+// viewers. Keep in sync with myCSPPlatform/backend/app/api/models.py.
+//   <owner-only>  — generic redaction (external endpoint, owner-only)
+//   <internal>    — additional hint: row lives on anila-models-net,
+//                    unreachable from outside the platform stack
 const ENDPOINT_REDACTED = '<owner-only>'
+const ENDPOINT_INTERNAL = '<internal>'
 
 function openCreateModal() { editingId.value = null; form.value = defaultForm(); showModal.value = true }
 function openEditModal(model) {
@@ -229,12 +258,19 @@ function openEditModal(model) {
   // would PUT the literal "<owner-only>" string back to backend and
   // corrupt the registered endpoint. Non-owner admins see a placeholder
   // hint instead and the field is disabled.
-  const endpointUrl = model.endpoint_url === ENDPOINT_REDACTED ? '' : model.endpoint_url
+  // Both sentinels (<owner-only> / <internal>) must be stripped before
+  // populating the form — otherwise saving would PUT the literal string
+  // back. Non-owner admins see a placeholder + disabled field.
+  const isRedacted =
+    model.endpoint_url === ENDPOINT_REDACTED ||
+    model.endpoint_url === ENDPOINT_INTERNAL
+  const endpointUrl = isRedacted ? '' : model.endpoint_url
   form.value = {
     name: model.name, display_name: model.display_name,
     model_type: model.model_type, endpoint_url: endpointUrl,
     api_version: model.api_version, description: model.description || '',
     context_window: model.context_window, base_model_id: model.base_model_id || null,
+    is_internal: !!model.is_internal,
   }
   showModal.value = true
 }
@@ -313,7 +349,27 @@ async function handlePurge(model) {
 
 .cell-strong { color: var(--c-fg-1); font-weight: 500; }
 .cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }
+.cell-meta--internal { color: var(--c-ok, #2ea043); }
 .cell-base { color: var(--c-info); font-size: var(--t-2xs); margin-top: 2px; }
+.internal-lock {
+  display: inline-block;
+  margin-right: 4px;
+  font-size: 0.85em;
+  color: var(--c-ok, #2ea043);
+  cursor: help;
+}
+.internal-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--t-xs);
+  color: var(--c-fg-2);
+  cursor: pointer;
+  user-select: none;
+}
+.internal-checkbox input[type="checkbox"] {
+  cursor: pointer;
+}
 .cell-url {
   display: inline-block;
   max-width: 240px;

@@ -104,3 +104,66 @@ def test_no_hostname(monkeypatch):
     monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
     with pytest.raises(UnsafeEndpointError):
         validate_outbound_url("http:///path")
+
+
+# ── ANILA_TRUSTED_HOSTS allow-list (Phase 1 模型 stack 解耦) ────────────────
+
+
+def test_trusted_host_bypasses_single_label_block(monkeypatch):
+    """docker service name (single-label hostname) 預設被擋，
+    但 admin 在 ANILA_TRUSTED_HOSTS 列上就放行 — 這是 cross-stack
+    docker DNS 註冊端點 (e.g. http://gemma4:8000) 能進 model_registry
+    的唯一路徑。"""
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.delenv("ANILA_ALLOW_PRIVATE_ENDPOINT", raising=False)
+    # 沒設 trusted hosts → 仍被擋
+    monkeypatch.delenv("ANILA_TRUSTED_HOSTS", raising=False)
+    with pytest.raises(UnsafeEndpointError) as exc:
+        validate_outbound_url("http://gemma4:8000/v1")
+    assert "single-label" in str(exc.value)
+    # 設了 → 通過
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "gemma4,gpt-oss-20b,nv-embed-proxy")
+    validate_outbound_url("http://gemma4:8000/v1")
+    validate_outbound_url("http://gpt-oss-20b:8000/v1")
+    validate_outbound_url("http://nv-embed-proxy:8000/v1")
+
+
+def test_trusted_host_does_not_bypass_scheme(monkeypatch):
+    """Trusted host 僅繞過 host 檢查,scheme 仍受 ANILA_ALLOW_HTTP_ENDPOINT
+    管。Defense in depth — 接受 hostname 不等於接受任意 scheme。"""
+    monkeypatch.delenv("ANILA_ALLOW_HTTP_ENDPOINT", raising=False)
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "gemma4")
+    with pytest.raises(UnsafeEndpointError) as exc:
+        validate_outbound_url("http://gemma4:8000/v1")
+    assert "ANILA_ALLOW_HTTP_ENDPOINT" in str(exc.value)
+
+
+def test_trusted_host_is_case_insensitive(monkeypatch):
+    """hostname 比對一律 lowercase — admin 寫 GEMMA4 跟 gemma4 都該 work。"""
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "GEMMA4,Host.Docker.Internal")
+    validate_outbound_url("http://gemma4:8000/v1")
+    validate_outbound_url("http://HOST.DOCKER.INTERNAL:8000/v1")
+
+
+def test_trusted_host_empty_or_whitespace(monkeypatch):
+    """空字串 / 純空白 → 退化成「沒有 trusted host」,不該意外放行任何東西。"""
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    for raw in ("", "   ", ",,,", " , , "):
+        monkeypatch.setenv("ANILA_TRUSTED_HOSTS", raw)
+        with pytest.raises(UnsafeEndpointError):
+            validate_outbound_url("http://gemma4:8000/v1")
+
+
+def test_trusted_host_does_not_match_substring(monkeypatch):
+    """allow-list 比對是 exact host match,不是 substring。
+
+    驗法:用一個本來會被 ``.internal`` 後綴規則擋下的 host 當測試對象,
+    然後 TRUSTED_HOSTS 設成它的 substring。若 trust 是 substring match,
+    .internal 守門會被繞過 → 通過;若是 exact (預期) → 仍被擋。
+    """
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "emma")  # substring of gemma4.internal
+    with pytest.raises(UnsafeEndpointError) as exc:
+        validate_outbound_url("http://gemma4.internal/v1")
+    assert "internal-only zone" in str(exc.value)

@@ -11,6 +11,11 @@ class ModelCreate(BaseModel):
     description: str | None = None
     context_window: int | None = None
     base_model_id: int | None = None  # For agents: the underlying LLM model ID
+    # Default True: new model registrations are expected to live on the
+    # anila-models-net internal docker network (decoupled inference stack).
+    # Admin can untick for external on-prem LAN endpoints. DB column default
+    # (migration 0033) is False so historical rows aren't auto-flipped.
+    is_internal: bool = True
 
 
 class ModelUpdate(BaseModel):
@@ -22,6 +27,7 @@ class ModelUpdate(BaseModel):
     description: str | None = None
     context_window: int | None = None
     base_model_id: int | None = None
+    is_internal: bool | None = None
 
 
 class ModelResponse(BaseModel):
@@ -39,6 +45,7 @@ class ModelResponse(BaseModel):
     context_window: int | None
     base_model_id: int | None = None
     base_model_name: str | None = None
+    is_internal: bool = False
     created_at: datetime
     updated_at: datetime
 

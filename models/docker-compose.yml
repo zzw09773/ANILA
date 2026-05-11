@@ -1,0 +1,203 @@
+# Independent compose project for ANILA inference workloads.
+#
+# Goals:
+#   * Lifecycle decoupled from the platform stack (`docker compose -f
+#     docker-compose.yml restart csp` does NOT touch these containers)
+#   * No host port exposure — every service uses `expose:` (internal-only)
+#     so the host's external NICs cannot reach them; CSP talks via the
+#     shared external `anila-models-net` docker network DNS
+#   * Mirror the GPU layout previously deployed by
+#     /home/aia/c1147259/project/My-OpenAI-Frontend/docker-compose.migration.yml
+#     so the cutover is a stop-and-swap, not a redesign
+#
+# Bootstrap (one-time, on the host):
+#     docker network create anila-models-net
+#     docker compose -f docker-compose.yml restart csp   # CSP joins the net
+#
+# Day-to-day:
+#     docker compose -f models/docker-compose.yml up -d
+#     docker compose -f models/docker-compose.yml logs -f gemma4
+#     docker compose -f models/docker-compose.yml ps
+#     docker compose -f models/docker-compose.yml restart gemma4
+#     docker compose -f models/docker-compose.yml down            # 模型 only,平台不動
+#
+# Endpoint URLs registered in CSP model_registry (走 docker DNS,
+# host port 完全沒開):
+#     http://gpt-oss-20b:8000/v1
+#     http://gemma4:8000/v1
+#     http://nv-embed-proxy:8000/v1
+#
+# Project name "anila-models" 跟平台 "anila-platform" 不同,
+# `docker compose down` (在 repo 根目錄) 不會誤殺這邊。
+
+name: anila-models
+
+services:
+  # ── LLM 1: gpt-oss-20b on GPU 2 ────────────────────────────────────────────
+  # TensorRT-LLM OpenAI-compat server (port 8000 internal). Image / runtime
+  # config mirrors My-OpenAI-Frontend/docker-compose.migration.yml as of
+  # 2026-05-11 — change carefully and document in the runbook.
+  gpt-oss-20b:
+    image: tensorrt-llm-hf:1.3.0rc10
+    container_name: anila-model-gpt-oss-20b
+    environment:
+      TZ: Asia/Taipei
+      TIKTOKEN_ENCODINGS_BASE: /etc/encodings
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_DATASETS_OFFLINE: "1"
+    volumes:
+      - /home/aia/c1147259/project/Huggingface/gpt-oss-20b:/workspace/model/gpt-oss-20b
+      - /home/aia/c1147259/project/Docker/tensorrtllm-1.2.0rc5-openai-gpt-oss-20b/encodings:/etc/encodings/:ro
+      - /home/aia/c1147259/project/Docker/tensorrtllm-1.2.0rc5-openai-gpt-oss-20b:/workspace/src
+    working_dir: /workspace
+    expose:
+      - "8000"
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["2"]
+              capabilities: [gpu]
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    command: >
+      trtllm-serve /workspace/model/gpt-oss-20b
+        --extra_llm_api_options /workspace/src/gpt-oss-20b-throughput.yaml
+        --kv_cache_free_gpu_memory_fraction 0.5
+        --host 0.0.0.0
+        --port 8000
+    networks: [models]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/v1/models > /dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 8
+      start_period: 120s
+
+  # ── LLM 2: gemma-4-31B-it on GPU 3 ─────────────────────────────────────────
+  # vLLM OpenAI-compat server; ``served-model-name=gemma4`` so the CSP
+  # model_registry can register the row as ``gemma4`` and have the agent
+  # / router fan-out keep the same id everywhere.
+  gemma4:
+    image: vllm-gemma4:latest
+    container_name: anila-model-gemma4
+    environment:
+      TZ: Asia/Taipei
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_DATASETS_OFFLINE: "1"
+    volumes:
+      - /home/aia/c1147259/project/Huggingface/gemma-4-31B-it:/workspace/model/gemma-4-31B-it
+    working_dir: /workspace
+    expose:
+      - "8000"
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["3"]
+              capabilities: [gpu]
+    shm_size: 64g
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    command: >
+      --model /workspace/model/gemma-4-31B-it
+      --host 0.0.0.0
+      --port 8000
+      --tensor-parallel-size 1
+      --dtype bfloat16
+      --max-model-len 131072
+      --gpu-memory-utilization 0.92
+      --kv-cache-dtype fp8
+      --enable-prefix-caching
+      --served-model-name gemma4
+      --enable-auto-tool-choice
+      --tool-call-parser gemma4
+      --reasoning-parser gemma4
+      --default-chat-template-kwargs '{"enable_thinking": true}'
+      --override-generation-config '{"skip_special_tokens": false}'
+    networks: [models]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/v1/models > /dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 8
+      start_period: 120s
+
+  # ── Embedding backend: Triton on GPU 0 (no expose, fully internal) ─────────
+  # CSP doesn't speak Triton protocol — only the `nv-embed-proxy` sibling
+  # below talks to it via internal DNS. Triton therefore has neither
+  # `expose:` nor `ports:`; it's reachable only by container-to-container
+  # traffic inside the `anila-models-net` network.
+  nv-embed-triton:
+    image: tritonserver:25.04-nv-embed-v2
+    container_name: anila-model-nv-embed-triton
+    environment:
+      TZ: Asia/Taipei
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    volumes:
+      - /home/aia/c1147259/project/Huggingface/NV-Embed-v2:/workspace/model/NV-Embed-v2
+      - /home/aia/c1147259/project/Docker/tritonserver-25.04-nv-embed-v2/repository:/workspace/repository
+      - /home/aia/c1147259/project/Docker/tritonserver-25.04-nv-embed-v2:/workspace/src
+    working_dir: /workspace
+    # 沒 expose 也沒 ports — 完全 cluster-internal,讓 attack surface 更小
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+    command: >
+      tritonserver --model-repository=/workspace/repository
+                   --model-control-mode=poll
+                   --repository-poll-secs=1
+    networks: [models]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/v2/health/ready > /dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 8
+      start_period: 60s
+
+  # ── Embedding FastAPI shim (OpenAI /v1/embeddings front for Triton) ────────
+  # This is what CSP actually registers. Bridges OpenAI v1 embeddings shape
+  # to Triton's protocol via the internal `nv-embed-triton` hostname.
+  nv-embed-proxy:
+    image: embedding-proxy:migration
+    container_name: anila-model-nv-embed-proxy
+    build:
+      context: /home/aia/c1147259/project/My-OpenAI-Frontend/embedding_proxy
+    environment:
+      TZ: Asia/Taipei
+      TRITON_URL: http://nv-embed-triton:8000
+      MODEL_NAME: nv-embed-v2
+      REQUEST_TIMEOUT: "60"
+    expose:
+      - "8000"
+    depends_on:
+      nv-embed-triton:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [models]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/v1/models > /dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+networks:
+  models:
+    external: true
+    name: anila-models-net

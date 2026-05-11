@@ -45,8 +45,14 @@ services:
       # prefix to match the new context.
       context: .
       dockerfile: myCSPPlatform/docker/Dockerfile
-    ports:
-      - "8000:8000"
+    # CSP 不對 host 公開 port — 唯一外部入口是 nginx :443 (HTTPS + API key)。
+    # docker 內部 service-to-service (nginx / router / ingestion-worker /
+    # anilalm 等) 仍能透過 `http://csp:8000` 走內部 DNS 抵達,功能不受影響。
+    # debug 從容器內走:  docker compose exec csp curl ...
+    # 不再有「LAN 上其他電腦直接 http://172.16.120.35:8000」這條繞過 HTTPS
+    # 的路徑。
+    expose:
+      - "8000"
     environment:
       # Flush stdout/stderr immediately so `docker logs` shows request errors
       # without waiting for buffer fill.
@@ -75,6 +81,14 @@ services:
       # 兩個都保持 unset。
       ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-}"
       ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-}"
+      # Phase 1 模型 stack 解耦 — 把推論 service 搬到獨立 compose project
+      # (models/docker-compose.yml) 後,CSP 透過共用 docker network
+      # ``anila-models-net`` 走 service-name DNS 註冊端點 (e.g.
+      # ``http://gemma4:8000/v1``). 這類 single-label hostname 在 SSRF
+      # guard 預設被擋,allow-list 顯式列出受信任的 docker service names
+      # 讓註冊能過。新增模型 service 時把 name 加進這條 env (然後
+      # ``docker compose up -d csp`` 重啟生效)。
+      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,host.docker.internal}"
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "60"
       # Service-to-service credential: CSP injects this into downstream agent calls.
@@ -88,8 +102,14 @@ services:
       # service behind them — auto-seeding them caused 200/incomplete-
       # chunked-encoding when ANILALM tried to chat. Override per env if
       # you point at a different cluster.
+      # Phase 1 模型 stack 解耦後預設 URL 改為 docker DNS — 推論服務
+      # 由 models/docker-compose.yml 託管,csp 透過共用 anila-models-net
+      # 走 service-name DNS (gpt-oss-20b / nv-embed-proxy)。env override 可
+      # 重新指向外網 hosted endpoint。auto_seed 會覆寫 DB 既有 row 的
+      # endpoint_url,所以這條 env 是真實事實來源 — admin 透過 /models UI
+      # 改完之後也要同步改這條 env (或 unset 它讓 auto_seed 跳過 update)。
       AUTO_REGISTER_MODELS: >-
-        [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://172.16.120.35:7000}","api_version":"v1","description":"On-prem local LLM"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://host.docker.internal:7011/v1}","api_version":"v1","description":"On-prem NV-embed-V2 (or other OpenAI-compatible embedder)"}]
+        [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://gpt-oss-20b:8000/v1}","api_version":"v1","description":"On-prem local LLM (anila-models-net)"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://nv-embed-proxy:8000/v1}","api_version":"v1","description":"On-prem NV-embed-V2 via FastAPI shim (anila-models-net)"}]
       AUTO_SEED_API_KEYS: >-
         [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY:-sk-test-user-api-key}","key_name":"smoke-user-dev-key","models":["${LOCAL_LLM_MODEL:-gpt-oss-20b}"]},
          {"username":"ingestion-worker","email":"ingestion-worker@anila.local","role":"system","key":"${INTERNAL_PLATFORM_API_KEY:-sk-internal-worker-changeme}","key_name":"ingestion-worker-system-key","models":["${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}"]}]
@@ -136,6 +156,15 @@ services:
       # uses host.docker.internal). Linux containers don't see that name
       # by default; map to the bridge gateway.
       - "host.docker.internal:host-gateway"
+    networks:
+      # Default (anila-net) keeps the existing platform-internal service
+      # mesh — csp <-> csp-db / router / anila-ui / nginx etc. all live here.
+      - default
+      # Phase 1 模型 stack 解耦: csp joins the cross-project external network
+      # so it can resolve ``gemma4`` / ``gpt-oss-20b`` / ``nv-embed-proxy``
+      # (containers in `models/docker-compose.yml`) by docker DNS.
+      # Bootstrap once on the host:  ``docker network create anila-models-net``
+      - anila-models-net
     depends_on:
       csp-db:
         condition: service_healthy
@@ -237,8 +266,11 @@ services:
     build:
       context: .
       dockerfile: anila-core-router/Dockerfile
-    ports:
-      - "9000:9000"
+    # Router 不對 host 公開 port — 跟 csp 同樣只在 docker network 內可達。
+    # nginx 透過 `/router/*` location proxy 到 http://router:9000;外部
+    # client 永遠走 https://<host>/router/... 進來,沒裸 HTTP 旁門。
+    expose:
+      - "9000"
     environment:
       # Router calls the main LLM through CSP data plane.
       # Registered agents are optional and discovered dynamically from CSP.
@@ -527,6 +559,13 @@ services:
 networks:
   default:
     name: anila-net
+  # Cross-project network shared with `models/docker-compose.yml`. Declared
+  # external so neither compose project creates/destroys it — bootstrap once:
+  #   docker network create anila-models-net
+  # `docker compose down` on either project keeps the network intact.
+  anila-models-net:
+    external: true
+    name: anila-models-net
 
 volumes:
   csp-pgdata:
