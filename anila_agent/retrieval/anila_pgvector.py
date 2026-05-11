@@ -7,12 +7,12 @@ that was ingested through the ANILA platform's ingestion worker.
 
 One-liner config:
 
-    PGVECTOR_URL=postgresql://csp:csp@127.0.0.1:5433/csp
-    ANILA_COLLECTION_ID=52
-    ANILA_EMBED_BASE_URL=https://172.16.120.35/v1   # optional, falls back to ANILA_BASE_URL
-    ANILA_EMBED_API_KEY=sk-...                       # optional, falls back to ANILA_API_KEY
+    PGVECTOR_URL=postgresql://<user>:<password>@<host>:<port>/<db>
+    ANILA_COLLECTION_ID=<int collection id>
+    ANILA_EMBED_BASE_URL=https://your-embed-endpoint/v1   # optional, falls back to ANILA_BASE_URL
+    ANILA_EMBED_API_KEY=sk-...                            # optional, falls back to ANILA_API_KEY
     ANILA_EMBED_MODEL=nvidia/NV-embed-V2
-    ANILA_SSL_VERIFY=0                               # for self-signed certs
+    ANILA_SSL_VERIFY=0                                    # 1 by default; set 0 for self-signed certs
 
 Embedding dimension is auto-detected from `ingestion_collections.embedding_dim`
 on the first call; queries are truncated/padded to that width before search,

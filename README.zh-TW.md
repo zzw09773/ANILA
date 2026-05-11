@@ -77,8 +77,8 @@ ANILA_EMBED_MODEL=text-embedding-3-small
 **選項 B — ANILA 平台 schema，純環境變數（零程式碼）。** 一樣只設環境變數，但直接打平台的原生 `ingestion_collections` + `document_chunks` 表（halfvec + 透過 `anila.collection_id` GUC 做 RLS）。Embedding 維度會從 collection 那一列自動偵測。
 
 ```env
-PGVECTOR_URL=postgresql://csp:csp@127.0.0.1:5433/csp
-ANILA_COLLECTION_ID=52
+PGVECTOR_URL=postgresql://<user>:<password>@<host>:<port>/<db>
+ANILA_COLLECTION_ID=<int collection id>
 ANILA_EMBED_MODEL=nvidia/NV-embed-V2
 ANILA_SSL_VERIFY=0   # embed endpoint 是自簽憑證才需要
 ```

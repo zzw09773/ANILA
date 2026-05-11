@@ -1,5 +1,5 @@
 # Agent assembly. Edit name/instructions to fit your domain.
-name: anila
+name: my-agent
 instructions_file: anila_agent/prompts/system.md
 
 # Tool execution behaviour. Mirrors openai-agents Agent.tool_use_behavior.
