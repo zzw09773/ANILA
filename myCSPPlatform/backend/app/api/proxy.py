@@ -346,6 +346,47 @@ def list_available_agents(
     return JSONResponse({"object": "list", "data": data})
 
 
+@router.get("/v1/models")
+async def list_models_openai(
+    caller: Caller = Depends(get_caller),
+    db: Session = Depends(get_db),
+):
+    """OpenAI-compatible model discovery.
+
+    Mirrors ``GET https://api.openai.com/v1/models`` so off-the-shelf clients
+    (OpenWebUI, LangChain, official openai-python, LlamaIndex) can point at
+    ``https://<host>/v1`` with an API key and auto-discover usable models —
+    without our custom ``/api/models`` shape. Returns only models the caller
+    is permitted to use via ``check_model_permission`` (same gate as
+    ``/v1/chat/completions``), so the discovery list cannot be used to widen
+    a key's effective scope.
+    """
+    rows = (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.is_active.is_(True))
+        .order_by(ModelRegistry.id)
+        .all()
+    )
+    visible = [
+        m for m in rows
+        if check_model_permission(
+            db, user=caller.user, api_key_id=caller.api_key_id, model_id=m.id
+        )
+    ]
+    return JSONResponse({
+        "object": "list",
+        "data": [
+            {
+                "id": m.name,
+                "object": "model",
+                "created": int(m.created_at.timestamp()) if m.created_at else 0,
+                "owned_by": "anila",
+            }
+            for m in visible
+        ],
+    })
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(
     request: Request,
