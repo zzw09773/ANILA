@@ -79,10 +79,23 @@ services:
       retries: 8
       start_period: 120s
 
-  # ── LLM 2: gemma-4-31B-it on GPU 3 ─────────────────────────────────────────
+  # ── LLM 2: gemma-4-31B-it + MTP drafter on GPU 3 ───────────────────────────
   # vLLM OpenAI-compat server; ``served-model-name=gemma4`` so the CSP
-  # model_registry can register the row as ``gemma4`` and have the agent
-  # / router fan-out keep the same id everywhere.
+  # model_registry can register the row as ``gemma4`` and have the agent /
+  # router fan-out keep the same id everywhere.
+  #
+  # MTP (Multi-Token Prediction) speculative decoding — 2026-05-05 release:
+  #   * Google 發佈了 ``gemma-4-31B-it-assistant`` 小頭模型,跟 target 共用
+  #     KV cache,實測 1.7–2.2× 加速 (conversational > code)。
+  #   * 需要 vLLM ≥ 0.18 含 PR #41745 (Gemma4 MTP spec-decode 支援)。
+  #     若 ``vllm-gemma4:latest`` 是舊版,啟動會報 ``unknown speculative
+  #     method 'mtp'`` 直接退出 — rebuild image 升 vLLM 即可。
+  #   * Offline 模式 (HF_HUB_OFFLINE=1) 不能讓 vLLM 自己去 HF 抓 assistant,
+  #     一次性下載到本機:
+  #         huggingface-cli download google/gemma-4-31B-it-assistant \
+  #             --local-dir /home/aia/c1147259/project/Huggingface/gemma-4-31B-it-assistant
+  #   * num_speculative_tokens=4 是 31B 的甜蜜點 (官方 recipe);拉太大
+  #     reject rate 會升高,反而變慢。
   gemma4:
     image: vllm-gemma4:latest
     container_name: anila-model-gemma4
@@ -91,8 +104,13 @@ services:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
       HF_DATASETS_OFFLINE: "1"
+      # vLLM ≥0.21 預設啟用 CUDA graph memory profiler,會額外保留 ~0.92 GiB
+      # 並從 KV cache budget 扣掉。我們需要保留 131072 context, 改為關掉 profiler
+      # 把這 0.92 GiB 還給 KV cache (代價: 大 batch 動態擴 CUDA graph 時可能 OOM)。
+      VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: "0"
     volumes:
       - /home/aia/c1147259/project/Huggingface/gemma-4-31B-it:/workspace/model/gemma-4-31B-it
+      - /home/aia/c1147259/project/Huggingface/gemma-4-31B-it-assistant:/workspace/model/gemma-4-31B-it-assistant
     working_dir: /workspace
     expose:
       - "8000"
@@ -116,13 +134,14 @@ services:
       --tensor-parallel-size 1
       --dtype bfloat16
       --max-model-len 131072
-      --gpu-memory-utilization 0.92
+      --gpu-memory-utilization 0.97
       --kv-cache-dtype fp8
       --enable-prefix-caching
       --served-model-name gemma4
       --enable-auto-tool-choice
       --tool-call-parser gemma4
       --reasoning-parser gemma4
+      --speculative-config '{"method":"mtp","model":"/workspace/model/gemma-4-31B-it-assistant","num_speculative_tokens":2}'
       --default-chat-template-kwargs '{"enable_thinking": true}'
       --override-generation-config '{"skip_special_tokens": false}'
     networks: [models]
@@ -130,8 +149,8 @@ services:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/v1/models > /dev/null"]
       interval: 30s
       timeout: 10s
-      retries: 8
-      start_period: 120s
+      retries: 10
+      start_period: 180s
 
   # ── Embedding backend: Triton on GPU 0 (no expose, fully internal) ─────────
   # CSP doesn't speak Triton protocol — only the `nv-embed-proxy` sibling
