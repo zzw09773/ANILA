@@ -41,10 +41,11 @@
 - **部門管理** — 停用部門時自動解除成員綁定
 
 ### 認證整合
-- **本機帳號** — JWT（Access Token 15 min + Refresh Token 7 天，httpOnly cookie）
-- **OIDC / SSO** — Authorization Code Flow + PKCE (S256) + nonce + JWKS 驗 `id_token`；callback 完全用 cookie，**不再 mint 24h 短效 API Key**（Wave 2 / Sprint 6 X 後）
-- **LDAP**（已下線）— Sprint 5 X / migration 0021 移除欄位；對 `/api/auth/login` 帶 `auth_source=ldap` 直接回 400。SSO cutover 路線見 [`../docs/sso-migration.md`](../docs/sso-migration.md)
-- **Service-to-service**（Sprint 8 X / Phase A）— Agent / Router / Worker 不再共用單一 env-var token；改走 per-credential `agent_credentials` / `service_clients` table，admin 在 UI issue bootstrap → agent CLI 換 long-lived `csk-` token。詳見 [`../docs/runbooks/service-token-cutover.md`](../docs/runbooks/service-token-cutover.md)
+- **中科院憑證卡 (branch SSO,2026-05-15 上線)** — 內網 prod 唯一登入方式。使用者 PC 上的中華電信 HiPKI 本機元件 (`localhost:16888`,**PKCS#11** token API + HTTP wrapper) 處理 PIN + 卡片硬體簽章,輸出 **PKCS#7 (CMS)** 格式;backend parse PKCS#7 抽 `employee_id` / 姓名 / email,簽 cookie session。`REQUIRE_CARD_LOGIN_ONLY=true` 一開,本機帳密 / OIDC / 自助註冊 endpoints 全回 404。User provisioning:`CARD_INITIAL_OWNERS` env 內員工編號直接 owner+approved (bootstrap),其他人 pending → 完成註冊 (填 department) → admin 核准。前端 helper:[`frontend/src/api/caAuth.js`](./frontend/src/api/caAuth.js)。
+- **本機帳號** — JWT (Access 15 min + Refresh 7 天,httpOnly cookie)。`REQUIRE_CARD_LOGIN_ONLY=true` 時整條 endpoint 一律 404。
+- **OIDC / SSO** — Authorization Code Flow + PKCE (S256) + nonce + JWKS 驗 `id_token`;callback 完全用 cookie,**不再 mint 24h 短效 API Key** (Wave 2 / Sprint 6 X 後)。`REQUIRE_CARD_LOGIN_ONLY=true` 時 endpoint 一律 404,`/api/auth/providers` 也不再列出 OIDC providers。
+- **LDAP** (已下線) — Sprint 5 X / migration 0021 移除欄位;對 `/api/auth/login` 帶 `auth_source=ldap` 直接回 400。SSO cutover 路線見 [`../docs/sso-migration.md`](../docs/sso-migration.md)。
+- **Service-to-service** (Sprint 8 X / Phase A) — Agent / Router / Worker 不再共用單一 env-var token;改走 per-credential `agent_credentials` / `service_clients` table,admin 在 UI issue bootstrap → agent CLI 換 long-lived `csk-` token。詳見 [`../docs/runbooks/service-token-cutover.md`](../docs/runbooks/service-token-cutover.md)。
 
 ### 維運功能
 - **告警中心** — 系統異常告警，可 Ack / Resolve
@@ -373,17 +374,23 @@ AUTO_REGISTER_LINKS=[
 
 ### 認證 (`/api/auth`)
 
+> `REQUIRE_CARD_LOGIN_ONLY=true` (內網 prod) 時:`/login`、`/register`、`/oidc/*`、`PUT /password` 一律回 404,`/providers` 不再列 OIDC providers。下表的 `/card/*` 是內網唯一活路。
+
 | 方法 | 路徑 | 說明 |
 |------|------|------|
-| POST | `/api/auth/register` | 自助申請帳號（需管理員核准） |
-| POST | `/api/auth/login` | 本機 / LDAP 登入，取得 access + refresh token |
+| GET | `/api/auth/card/challenge` | branch SSO:取得一次性 challenge (JWT 包 nonce, aud=card-challenge, 2 min TTL) |
+| POST | `/api/auth/card/verify` | branch SSO:提交 PKCS#7 簽章 + challenge_token,backend parse 抽身分。回 200 + 種 cookie (成功) / 202 `pending_registration` (帶 registration_token) / 202 `pending_approval` |
+| POST | `/api/auth/card/complete-registration` | branch SSO:pending 使用者帶 `registration_token` + `department_id` 完成註冊,切到 pending_approval 等 admin 核准 |
+| GET | `/api/auth/card/registration/departments` | branch SSO:列 active department,給「完成註冊」表單 dropdown 用 |
+| POST | `/api/auth/register` | 自助申請帳號 (需管理員核准)。card-only mode 下 404 |
+| POST | `/api/auth/login` | 本機 / LDAP 登入,取得 access + refresh token。card-only mode 下 404 |
 | POST | `/api/auth/refresh` | 使用 refresh token 換發新 token |
 | POST | `/api/auth/logout` | 登出 — 清 httpOnly cookie + bump token_version 撤銷既存 access token |
 | GET | `/api/auth/me` | 取得當前使用者資訊 |
-| PUT | `/api/auth/password` | 修改自身密碼（舊 Token 同步作廢） |
-| GET | `/api/auth/providers` | 列出可用的公開 OIDC Provider |
-| GET | `/api/auth/oidc/{id}/start` | 取得 OIDC 授權跳轉 URL（含 PKCE state + nonce） |
-| GET | `/api/auth/oidc/{id}/callback` | OIDC Callback（瀏覽器重導，cookie-only；Wave 2 起不再回帶 API Key） |
+| PUT | `/api/auth/password` | 修改自身密碼 (舊 Token 同步作廢)。card-only mode 下 404 |
+| GET | `/api/auth/providers` | 列出可用的公開 OIDC Provider。card-only mode 下 OIDC 不列出 |
+| GET | `/api/auth/oidc/{id}/start` | 取得 OIDC 授權跳轉 URL (含 PKCE state + nonce)。card-only mode 下 404 |
+| GET | `/api/auth/oidc/{id}/callback` | OIDC Callback (瀏覽器重導,cookie-only;Wave 2 起不再回帶 API Key)。card-only mode 下 404 |
 
 ### 使用者管理 (`/api/users`) — 需 Admin
 

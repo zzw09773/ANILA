@@ -1,7 +1,14 @@
-# ANILA Platform — local integration stack. NOT for prod.
+# ANILA Platform — integration stack.
 #   docker-compose up -d
 # 模型推論 service 在 models/docker-compose.yml (project: anila-models),
 # 透過共用 external network ``anila-models-net`` 跨 project DNS。
+#
+# Prod initial mode 切換 (branch SSO):
+#   - 所有 secret env var 預設改成 ``${VAR:?must be set}``,缺 .env 直接 fail。
+#   - ANILA_ALLOW_DEV_SECRET 預設 0,任何 dev 預設值會被 startup_security 擋下。
+#   - codeserver / n8n / gitlab service 仍定義但 nginx route 改 deny,等手動解凍。
+# Dev 切換回去:把 .env 還原成 .env.dev.local 內容即可,所有 dev opt-in flag
+# 都被 .env 那邊重新賦值,compose 不再提供「dev 預設值」這個安全網。
 
 name: anila-platform
 
@@ -44,29 +51,34 @@ services:
       # 的 RLS 失效 (superuser 自動 bypass)。
       DATABASE_URL: postgresql://csp_app:csp@csp-db:5432/csp
       MIGRATION_DATABASE_URL: postgresql://csp:csp@csp-db:5432/csp
-      SECRET_KEY: ${CSP_SECRET_KEY:-dev-secret-key-change-in-prod}
-      # startup_security 對 dev 預設值的拒絕開關。prod 必須 unset。
-      ANILA_ALLOW_DEV_SECRET: "${ANILA_ALLOW_DEV_SECRET:-1}"
+      SECRET_KEY: ${CSP_SECRET_KEY:?CSP_SECRET_KEY must be set (32+ bytes hex)}
+      # startup_security 對 dev 預設值的拒絕開關。Prod 必須是 0 / unset。
+      # 預設改成 0 (不再 fallback 1) — 缺 .env 時直接 enforce prod 模式。
+      ANILA_ALLOW_DEV_SECRET: "${ANILA_ALLOW_DEV_SECRET:-0}"
       # url_guard 兩個 SSRF opt-in。loopback / link-local / cloud
-      # metadata / docker service name 永遠擋,不受 flag 影響。prod unset。
-      ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-}"
-      ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-}"
+      # metadata / docker service name 永遠擋,不受 flag 影響。Prod 不要 set。
+      ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-0}"
+      ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-0}"
       # SSRF allow-list — single-label docker service names 預設被擋,
       # 列進這條才能註冊。新增模型 service 要同步加進這個值並重啟 csp。
       ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,host.docker.internal}"
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "60"
       # CSP 對下游 agent 注入這個 header,downstream 用它認 CSP source。
-      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
+      # 跟 router service 必須同值,缺值直接 fail (避免 prod 部署誤用 dev token)。
+      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set}
       # endpoint_url 是 base URL,proxy_service 自己加 ``/v1/chat/completions``
       # 或 ``/v1/embeddings``。**不要**在 URL 結尾加 ``/v1``,否則拼成
       # ``/v1/v1/...`` → 404 → router 端 RemoteProtocolError。
       # auto_seed 會用這條覆寫 DB 既有 row,改完 /models UI 也要同步改。
       AUTO_REGISTER_MODELS: >-
         [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://gpt-oss-20b:8000}","api_version":"v1","description":"On-prem local LLM (anila-models-net)"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://nv-embed-proxy:8000}","api_version":"v1","description":"On-prem NV-embed-V2 via FastAPI shim (anila-models-net)"}]
+      # AUTO_SEED_API_KEYS: prod initial 模式只 seed ingestion-worker (系統內部
+      # 必需,讓 worker 能呼叫 csp /v1/embeddings)。smoke-user 是 e2e 測試用的
+      # 帳號,prod 不需要,已移除。要恢復就把舊 entry 加回來 (參考 .env.dev.local
+      # 同步區段或 git history)。
       AUTO_SEED_API_KEYS: >-
-        [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY:-sk-test-user-api-key}","key_name":"smoke-user-dev-key","models":["${LOCAL_LLM_MODEL:-gpt-oss-20b}"]},
-         {"username":"ingestion-worker","email":"ingestion-worker@anila.local","role":"system","key":"${INTERNAL_PLATFORM_API_KEY:-sk-internal-worker-changeme}","key_name":"ingestion-worker-system-key","models":["${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}"]}]
+        [{"username":"ingestion-worker","email":"ingestion-worker@anila.local","role":"system","key":"${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}","key_name":"ingestion-worker-system-key","models":["${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}"]}]
       # is_public / required_roles 互動:
       #   is_public=false → 走 allowlist (admin 手動授權)
       #   is_public=true  → required_roles 過得了的人都看得到
@@ -81,19 +93,15 @@ services:
         ]
       ANILA_TEMPLATE_DIR: /app/anila-template
       INGESTION_UPLOAD_DIR: /var/anila/ingestion-uploads
-      # branch SSO: 中科院憑證卡登入 (詳見 docs/card-login-strict-mode-runbook.md)。
-      # dev 預設值: card login 開、loose 驗證、不強制 card-only、無 OCSP。
-      # 內網 prod 改 .env 設 REQUIRE_CARD_LOGIN_ONLY=true、CARD_VERIFY_MODE=strict、
-      # CARD_CHECK_REVOCATION=true、NCSIST_CA_BUNDLE_PATH=<IT 配發 PEM>。
-      ENABLE_CARD_LOGIN: "${ENABLE_CARD_LOGIN:-false}"
-      CARD_VERIFY_MODE: "${CARD_VERIFY_MODE:-loose}"
-      REQUIRE_CARD_LOGIN_ONLY: "${REQUIRE_CARD_LOGIN_ONLY:-false}"
-      NCSIST_CA_BUNDLE_PATH: "${NCSIST_CA_BUNDLE_PATH:-}"
-      CARD_CHECK_REVOCATION: "${CARD_CHECK_REVOCATION:-false}"
-      # CARD_INITIAL_OWNERS: CSV 員工編號清單，列在裡面的第一次刷卡直接拿到
+      # branch SSO: 中科院憑證卡登入。Prod 強制 card-only,信任 HiPKI driver
+      # 處理 PIN/簽章,backend 只 parse PKCS#7 抽 employee_id。Dev 切回:改 .env
+      # 把 REQUIRE_CARD_LOGIN_ONLY 設 false 即可重開本機帳密。
+      ENABLE_CARD_LOGIN: "${ENABLE_CARD_LOGIN:-true}"
+      REQUIRE_CARD_LOGIN_ONLY: "${REQUIRE_CARD_LOGIN_ONLY:-true}"
+      # CARD_INITIAL_OWNERS: CSV 員工編號清單,列在裡面的第一次刷卡直接拿到
       # role=owner + is_approved=True (bootstrap)。其他人走 pending 流程。
-      # 範例: "1147259,1090868"
-      CARD_INITIAL_OWNERS: "${CARD_INITIAL_OWNERS:-}"
+      # Prod 缺值直接 fail,避免沒人能登入的 bricked 狀態。
+      CARD_INITIAL_OWNERS: "${CARD_INITIAL_OWNERS:?CARD_INITIAL_OWNERS must list at least one bootstrap owner employee_id}"
     volumes:
       # anila-agent subtree (github.com/zzw09773/anila-agent) — 模板下載端用。
       # 更新走 git subtree pull/push,見 README §"Updating anila-agent"。
@@ -144,15 +152,15 @@ services:
       # 經由 CSP /v1/embeddings 走 token_usage 計量,不直連模型。
       EMBEDDING_BASE_URL: http://csp:8000/v1
       EMBEDDING_MODEL: ${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}
-      EMBEDDING_API_KEY: ${INTERNAL_PLATFORM_API_KEY:-sk-internal-worker-changeme}
+      EMBEDDING_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
       EMBEDDING_DIM: "4000"
       UPLOAD_DIR: /var/anila/ingestion-uploads
       # judge 路徑要解 AES-encrypted credentials,cipher key 從 SECRET_KEY 派生,
       # **必須**跟 csp 同值,不然每次 judge decrypt 失敗會 silently skip。
-      SECRET_KEY: ${CSP_SECRET_KEY:-dev-secret-key-change-in-prod}
-      ANILA_ALLOW_DEV_SECRET: "${ANILA_ALLOW_DEV_SECRET:-1}"
-      ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-}"
-      ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-}"
+      SECRET_KEY: ${CSP_SECRET_KEY:?CSP_SECRET_KEY must be set (same value as csp)}
+      ANILA_ALLOW_DEV_SECRET: "${ANILA_ALLOW_DEV_SECRET:-0}"
+      ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-0}"
+      ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-0}"
       # VLM image captioning: ingest 時把 [[IMAGE:id]] placeholder 換成 caption
       # 才不會 chart/diagram 變成 [image] token 消失。走 csp /v1 proxy 為了計量。
       ENABLE_IMAGE_CAPTIONS: "${ENABLE_IMAGE_CAPTIONS:-true}"
@@ -185,7 +193,7 @@ services:
     environment:
       CSP_BASE_URL: http://csp:8000
       # 必須跟 csp 的 CSP_SERVICE_TOKEN 一致 — router 用它走 service-auth endpoint。
-      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
+      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set (same value as csp)}
       MODEL: ${LLM_MODEL:-gemma4}
     depends_on:
       csp:

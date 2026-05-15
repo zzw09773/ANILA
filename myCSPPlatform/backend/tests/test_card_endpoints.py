@@ -1,10 +1,10 @@
 """Integration tests for ``/api/auth/card/{challenge,verify}``.
 
 Pins the contract:
-- Endpoints回 404 當 ``settings.ENABLE_CARD_LOGIN=False``（預設）— prod
-  錯誤配置時假裝功能不存在，避免暴露 LOOSE mode 給外部探測。
+- Endpoints 回 404 當 ``settings.ENABLE_CARD_LOGIN=False`` (預設) — prod
+  錯誤配置時假裝功能不存在,避免暴露給外部探測。
 - ``GET /api/auth/card/challenge`` 回 JWT + 明文 nonce。
-- ``POST /api/auth/card/verify`` 接受 ``cht/`` mock 簽章（鄒惠翔測試卡），
+- ``POST /api/auth/card/verify`` 接受 ``cht/`` mock 簽章 (鄒惠翔測試卡),
   端到端建 User + 種 session cookie + ``/me`` 可拿。
 - 同一張卡第二次登入不會 create 重複 user。
 - email collision 與 challenge 過期 / 簽章不合法都被正確拒絕。
@@ -37,17 +37,15 @@ def card_login_enabled(monkeypatch):
     環境的實際 DX。Pending flow 測試另外用 ``card_login_pending_default``。
     """
     monkeypatch.setattr(settings, "ENABLE_CARD_LOGIN", True)
-    monkeypatch.setattr(settings, "CARD_VERIFY_MODE", "loose")
     monkeypatch.setattr(settings, "CARD_INITIAL_OWNERS", EXPECTED_EMP_ID)
 
 
 @pytest.fixture
 def card_login_pending_default(monkeypatch):
     """跟 ``card_login_enabled`` 一樣但 ``CARD_INITIAL_OWNERS`` 為空 —
-    所有人第一次刷卡都進 pending registration，給 pending flow 測試用。
+    所有人第一次刷卡都進 pending registration,給 pending flow 測試用。
     """
     monkeypatch.setattr(settings, "ENABLE_CARD_LOGIN", True)
-    monkeypatch.setattr(settings, "CARD_VERIFY_MODE", "loose")
     monkeypatch.setattr(settings, "CARD_INITIAL_OWNERS", "")
 
 
@@ -204,28 +202,6 @@ def test_email_collision_with_other_account_is_rejected(
     )
     assert resp.status_code == 400
     assert "已綁定其他帳號" in resp.json()["detail"]
-
-
-def test_strict_mode_raises_not_implemented_until_supported(
-    client: TestClient, card_login_enabled, monkeypatch
-):
-    """STRICT mode 目前 raise ``NotImplementedError``。
-
-    Pinning 這個行為的意義：升級 cryptography 補完 STRICT 之前，誰把
-    ``CARD_VERIFY_MODE=strict`` 開到 prod，request 會 500 而非偷偷降級
-    成 LOOSE — 確保「忘了實作」不會被靜默吸收。當 STRICT 實作完成後
-    這個 test 必須被更新成正向斷言。
-    """
-    monkeypatch.setattr(settings, "CARD_VERIFY_MODE", "strict")
-    ch = client.get("/api/auth/card/challenge").json()
-    with pytest.raises(NotImplementedError):
-        client.post(
-            "/api/auth/card/verify",
-            json={
-                "challenge_token": ch["challenge_token"],
-                "signature": MOCK_SIGNATURE_B64,
-            },
-        )
 
 
 # ── pending registration + approval flow (branch SSO B 方案) ──────────────────

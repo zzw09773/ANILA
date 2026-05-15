@@ -78,38 +78,27 @@ class Settings(BaseSettings):
     # Format: '[{"name":"n8n","url":"http://n8n:5678","icon":"workflow","description":"自動化工作流程"}]'
     AUTO_REGISTER_LINKS: str = ""
 
-    # 中科院憑證卡登入（branch: SSO）
-    # 院內 production 必須走憑證卡；dev/staging 透過 cht/ mock 容器模擬。
-    # ENABLE_CARD_LOGIN: 是否註冊 /api/auth/card/* endpoints。預設 False，
-    #   避免 prod 環境誤暴露 LOOSE mode；要啟用必須顯式 set true。
-    # CARD_VERIFY_MODE: 'loose' 信任 cht/ mock（dev 用）；'strict' 完整驗
-    #   chain + OCSP（prod 用，目前 STRICT impl pending cryptography>=43）。
-    # REQUIRE_CARD_LOGIN_ONLY: 中科院內網 production 設 True。一旦啟用：
+    # 中科院憑證卡登入 (branch: SSO)
+    # 內網 production:唯一登入方式 = 憑證卡 (中華電信 HiPKI 本機元件 + 中科院
+    # PKI 卡)。Trust chain 由使用者 PC + HiPKI driver + 卡片硬體建立,backend
+    # 收到 PKCS#7 即視為「持卡人 + PIN 驗過」,parse 抽 employee_id 即可。
+    # Dev:用 ``cht/`` mock 容器假裝 localhost:16888。
+    #
+    # ENABLE_CARD_LOGIN: 是否註冊 /api/auth/card/* endpoints。預設 False;prod
+    #   必須 set true (見 docker-compose.yml 預設)。
+    # REQUIRE_CARD_LOGIN_ONLY: 內網 production 必設 True。一旦啟用:
     #   - POST /api/auth/login (本機帳密) → 404
     #   - POST /api/auth/register (自助註冊) → 404
     #   - GET  /api/auth/oidc/{id}/{start,callback} → 404
     #   - /api/auth/providers 不再列出 OIDC providers
-    #   - 啟動時 assert ENABLE_CARD_LOGIN 同時也是 True，否則拒絕啟動
-    #     （避免「所有登入路都被鎖死」的 bricked 狀態）。
+    #   - 啟動時 assert ENABLE_CARD_LOGIN 同時 True,否則拒絕啟動 (避免
+    #     「所有登入路都被鎖死」的 bricked 狀態)。
+    # CARD_INITIAL_OWNERS: CSV 員工編號清單。列在裡面的第一次刷卡建為
+    #   ``role="owner"`` + ``is_approved=True``,**直接登入** (bootstrap)。
+    #   其他員工建為 ``role="user"`` + ``is_approved=False``,走 pending →
+    #   完成註冊 (填單位) → admin 核准 流程。範例:``"1147259,1090868"``。
     ENABLE_CARD_LOGIN: bool = False
-    CARD_VERIFY_MODE: str = "loose"
     REQUIRE_CARD_LOGIN_ONLY: bool = False
-    # STRICT mode 配套：
-    # - NCSIST_CA_BUNDLE_PATH: PEM bundle 路徑（含 CSPKI Root + Intermediate）。
-    #   空字串時 fallback 到 backend/data/ncsist-ca-bundle.pem（從 cht/ mock
-    #   抽出的 default，dev/staging 用）。Production 應指向 IT 配發版本。
-    # - CARD_CHECK_REVOCATION: 是否打 OCSP 撤銷檢查。Dev / 外網部署設 False
-    #   （ocsp.ncsist.org.tw 是內網 only domain）；內網 prod 才開 True。
-    NCSIST_CA_BUNDLE_PATH: str = ""
-    CARD_CHECK_REVOCATION: bool = False
-    # 卡片登入 user provisioning policy：
-    # - CARD_INITIAL_OWNERS: CSV 員工編號清單；列在裡面的人第一次刷卡會被
-    #   建立為 ``role="owner"`` + ``is_approved=True`` 的帳號，**直接登入**。
-    #   解決 bootstrap 問題（沒有第一個 owner 沒人能 approve 其他人）。
-    #   其他員工第一次刷卡建為 ``role="user"`` + ``is_approved=False``，
-    #   走「等待核准」流程：強制完成註冊 (填單位) → admin 介面審查 → 核准
-    #   後下次刷卡才能真正登入。
-    #   範例：``CARD_INITIAL_OWNERS=1147259,1090868``
     CARD_INITIAL_OWNERS: str = ""
 
     model_config = {"env_file": ".env", "extra": "ignore"}

@@ -27,12 +27,8 @@ arq==0.26.1
 # simplified Chinese so this is a quality lever, not a vanity fix.
 opencc-python-reimplemented==0.1.7
 
-# branch SSO: 中科院憑證卡登入 STRICT mode 用。
-# - asn1crypto: 解 PKCS#7 SignedData 取出 SignerInfo (cryptography 沒有
-#   高階 PKCS#7 verify API；issue pyca/cryptography#8059 還沒實作)。
-# - cryptography>=42: 取得 x509.verification.PolicyBuilder/ClientVerifier
-#   做 chain 驗證 + 內建的 cert validity period 檢查。LOOSE mode 既有
-#   功能跟 41.x 完全相容，升版只多獲不損失。
-# 上限 <45 是穩健 buffer；新版發布若 PKCS#7 verify 高階 API 落地可放寬。
-asn1crypto>=1.5,<2
+# branch SSO: 中科院憑證卡登入。
+# pkcs7.load_der_pkcs7_certificates() 從 36.0 起,SAN/extensions API 在 41+
+# 穩定。上限 <45 是穩健 buffer。python-jose[cryptography] 也會帶 cryptography,
+# 顯式釘版本讓 PKCS#7 API surface 有保證。
 cryptography>=42,<45

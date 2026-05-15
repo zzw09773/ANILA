@@ -5,35 +5,30 @@ import {
   authRequest,
   authRequestWithRefresh,
   authMultipart,
-  config,
   readCsrfCookie,
   refreshJwt,
 } from "./api.js";
-import { loginWithCard as runCardLogin } from "./card-login.js";
 
 // Wave 2: the SPA holds no tokens — JWT access/refresh live in httpOnly
 // cookies set by POST /api/auth/login. The only piece of auth state kept
 // in React memory is the probed user profile (from GET /api/auth/me) and
 // a best-effort CSRF token for submit-time echoing.
+//
+// 此 SPA 沒有自己的登入 UI:nginx 把 /login redirect 到 myCSPPlatform Vue
+// (LoginView.vue),那邊負責所有登入流程 (本機帳密 / OIDC / 中科院卡)。
+// 本檔只 expose `user` / `isAuthenticated` / `logout` 給 ProtectedRoute
+// 跟一般頁面用,login()/loginWithCard() 已移除 (death code,unreachable)。
 
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [authReady, setAuthReady] = useState(false);
-  const [providers, setProviders] = useState([]);
 
   useEffect(() => {
     let active = true;
 
     async function bootstrap() {
-      try {
-        const listedProviders = await authRequest("/api/auth/providers");
-        if (active) setProviders(listedProviders);
-      } catch {
-        if (active) setProviders([]);
-      }
-
       try {
         const me = await authRequest("/api/auth/me");
         if (!active) return;
@@ -59,33 +54,6 @@ export function AuthProvider({ children }) {
     };
   }, []);
 
-  async function login({ username, password, authSource = "local", providerId }) {
-    const payload = {
-      username,
-      password,
-      auth_source: authSource,
-      ...(providerId ? { provider_id: providerId } : {}),
-    };
-    await authRequest("/api/auth/login", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    const me = await authRequest("/api/auth/me");
-    setUser(me);
-    return me;
-  }
-
-  async function loginWithCard({ pin, componentOrigin } = {}) {
-    // Challenge → popup sign → verify (cookies set server-side) → fetch /me。
-    // 任一階段失敗 (no popup / PIN 錯 / 卡片簽不出 / verify 401) 都會 throw，
-    // 由 callsite UI 接住顯示 message。成功時 user 進 React state、navigate
-    // 由 callsite 決定（跟 login() 一致）。
-    await runCardLogin({ pin, componentOrigin });
-    const me = await authRequest("/api/auth/me");
-    setUser(me);
-    return me;
-  }
-
   async function logout() {
     // Best-effort server-side invalidation. If it fails (network), we still
     // drop local state so the UI immediately reflects the signed-out view.
@@ -103,10 +71,7 @@ export function AuthProvider({ children }) {
     () => ({
       user,
       authReady,
-      providers,
       isAuthenticated,
-      login,
-      loginWithCard,
       logout,
       // Callsites that previously relied on authRequest/authMultipart
       // continue to work; the new implementations in api.js use cookies.
@@ -118,7 +83,7 @@ export function AuthProvider({ children }) {
       // requests (none in the core flow, but keeps the surface parametric).
       getCsrfToken: readCsrfCookie,
     }),
-    [user, authReady, providers, isAuthenticated],
+    [user, authReady, isAuthenticated],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

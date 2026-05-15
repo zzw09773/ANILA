@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { login as loginApi, refreshTokenApi, getMe, logout as logoutApi } from '../api/auth'
-import { loginWithCard as runCardLogin } from '../api/cardLogin'
+import { loginWithCard as runCardLogin } from '../api/caAuth'
 
 // Sprint 5 X / H5: cookie-only auth store. Tokens 不再進 localStorage —
 // 認證狀態由 backend 設的 httpOnly cookie 決定，前端只記住目前登入的

@@ -178,7 +178,6 @@ src/
 ├── collab.jsx           # ShareDialog、HandoffMenu、TagEditor
 ├── trust.jsx            # CitationsDrawer、ConfidentialWatermark
 ├── multiagent.jsx       # ParallelCompareView（2-3 個 agent 並排比對）
-├── login.jsx            # Login 頁（本機 + OIDC）
 ├── tweaks.jsx           # 視覺微調 panel（storyboard）
 ├── main.jsx             # ReactDOM 掛載入口
 ├── markdown.jsx         # ReactMarkdown 包裝 + KaTeX / highlight.js 設定
@@ -254,20 +253,28 @@ docker compose up -d
 
 ## 開發備忘
 
-### 登入流程（Wave 2 / Sprint 7 X 後）
+### 登入流程 (branch SSO 後)
+
+**本 SPA 不自帶登入 UI**。nginx 把 `/login` 強制 redirect 到 myCSPPlatform Vue (`LoginView.vue`,port 443 + 4443 都會跳),所有登入流程 (本機帳密 / OIDC / 中科院憑證卡) 都在那邊處理。本 SPA `runtime/auth.jsx` 只負責:`useAuth()` context 暴露 `user` / `isAuthenticated` / `logout` 給 `ProtectedRoute` 用;`bootstrap()` 跑一次 `GET /api/auth/me` 還原 session (cookie 還在就拿到 user,失效就走 `RedirectToCspLogin` 跳出 SPA)。
 
 ```
-POST /api/auth/login          (credentials: include)
-  { username, password }
-    ↓
-  Set-Cookie: anila_access_token  (httpOnly, SameSite=Lax)
-              anila_refresh_token (httpOnly, SameSite=Lax)
-              anila_csrf          (NOT httpOnly — JS 讀來放 X-CSRF-Token)
-    ↓
-SPA 後續 /api/* 與 /v1/* 全用 cookie；POST/PUT/DELETE 自動帶 X-CSRF-Token。
+SPA 載入
+  ↓
+ProtectedRoute → useAuth().bootstrap()
+  ↓
+GET /api/auth/me  (cookie: anila_access_token)
+  ↓
+   ┌─ 200 → user state 填好,進 SPA
+   └─ 401 → 試 refresh,失敗則 window.location.assign("/login?next=...")
+              ↓
+            (nginx redirect 出 SPA → myCSPPlatform Vue LoginView)
+              ↓
+            登入完跨 port 帶 next 跳回 anila-ui
 ```
 
-SPA **不再** 持有任何 plaintext token 或 API Key — 完全沒有 localStorage / sessionStorage 寫入路徑。OIDC callback 也不再 mint 24h 短效 API Key（Wave 2 廢除）。
+登入後 cookie 三組:`anila_access_token` (httpOnly, SameSite=Lax)、`anila_refresh_token` (httpOnly)、`anila_csrf` (非 httpOnly,JS 讀來放 `X-CSRF-Token` header)。SPA **不再持有** 任何 plaintext token 或 API Key,沒有 localStorage / sessionStorage 寫入路徑。OIDC callback 也不再 mint 24h 短效 API Key (Wave 2 廢除)。
+
+**branch SSO 之後** 本 SPA 內既有的 `login.jsx` / `runtime/card-login.js` / `auth.jsx` 內的 `login()` + `loginWithCard()` 已刪除 (死碼:nginx redirect 後 React route 走不到)。要看實際登入 UI 跟 `caAuth.js` 卡片登入 helper,去 [`myCSPPlatform/frontend/`](../../myCSPPlatform/frontend/)。
 
 ### Token refresh
 

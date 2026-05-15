@@ -28,7 +28,6 @@ from tests.conftest import make_user
 def card_only_lockdown(monkeypatch):
     """Toggle the intranet lockdown for this test only."""
     monkeypatch.setattr(settings, "ENABLE_CARD_LOGIN", True)
-    monkeypatch.setattr(settings, "CARD_VERIFY_MODE", "loose")
     monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
 
 
@@ -140,7 +139,6 @@ def test_startup_assertion_passes_when_lockdown_off(monkeypatch):
 def test_startup_assertion_passes_when_both_flags_on(monkeypatch):
     monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
     monkeypatch.setattr(settings, "ENABLE_CARD_LOGIN", True)
-    monkeypatch.setattr(settings, "CARD_VERIFY_MODE", "strict")
     assert_intranet_lockdown_consistency()
 
 
@@ -150,13 +148,3 @@ def test_startup_assertion_rejects_inconsistent_config(monkeypatch):
     monkeypatch.setattr(settings, "ENABLE_CARD_LOGIN", False)
     with pytest.raises(RuntimeError, match="REQUIRE_CARD_LOGIN_ONLY"):
         assert_intranet_lockdown_consistency()
-
-
-def test_startup_warns_when_loose_in_card_only_mode(monkeypatch, caplog):
-    """REQUIRE_CARD_LOGIN_ONLY=True + LOOSE 只警告不擋 — 允許「先 loose 再 strict」演進。"""
-    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
-    monkeypatch.setattr(settings, "ENABLE_CARD_LOGIN", True)
-    monkeypatch.setattr(settings, "CARD_VERIFY_MODE", "loose")
-    with caplog.at_level("WARNING"):
-        assert_intranet_lockdown_consistency()  # 不 raise
-    assert any("loose" in rec.message.lower() for rec in caplog.records)

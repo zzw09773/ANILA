@@ -91,7 +91,41 @@
             <p class="login__hint" style="margin: 0 0 var(--gap-2);">
               請插入憑證卡，並確認本機元件運作中（<span style="font-family: var(--font-mono, monospace);">{{ cardComponentOrigin }}</span>）。
             </p>
-            <TermField label="pin">
+
+            <!-- Step 1: 偵測卡片 — 在輸入 PIN 前讓使用者確認自己的卡片 -->
+            <div v-if="!detectedCard" class="login__actions">
+              <TermButton
+                type="button"
+                variant="ghost"
+                :loading="detectLoading"
+                :label="detectLoading ? 'detecting' : 'detect card'"
+                @click="handleDetectCard"
+              />
+            </div>
+
+            <!-- Step 4: 顯示使用者資訊 (偵測成功後) -->
+            <div v-else class="login__msg" style="background: var(--c-surface-2); border-color: var(--c-border); color: var(--c-fg-2);">
+              <div style="flex: 1;">
+                <div style="margin-bottom: 4px;">
+                  <strong>{{ detectedCard.displayName }}</strong>
+                  <span style="color: var(--c-fg-3); margin-left: 8px;">
+                    員工編號 {{ detectedCard.employeeId }}
+                  </span>
+                </div>
+                <div style="font-size: var(--t-2xs); color: var(--c-fg-3);">
+                  {{ detectedCard.email || '(no email)' }} · card #{{ detectedCard.cardSN || 'n/a' }}
+                </div>
+              </div>
+              <button
+                type="button"
+                style="background: transparent; border: 0; color: var(--c-fg-3); cursor: pointer; font-size: var(--t-2xs);"
+                @click="resetDetectedCard"
+                title="重新偵測"
+              >×</button>
+            </div>
+
+            <!-- Step 2-3: PIN → 簽章 (只有偵測成功才開啟) -->
+            <TermField v-if="detectedCard" label="pin">
               <input
                 v-model="cardPin"
                 type="password"
@@ -100,6 +134,7 @@
                 class="term-input"
                 placeholder="6 位數字"
                 autocomplete="off"
+                autofocus
               />
             </TermField>
 
@@ -108,12 +143,14 @@
               <span>{{ cardError }}</span>
             </div>
 
-            <div class="login__actions">
+            <!-- Step 5: 提交 -->
+            <div v-if="detectedCard" class="login__actions">
               <TermButton
                 type="submit"
                 variant="primary"
                 :loading="cardLoading"
-                :label="cardLoading ? 'verifying' : 'card sign-in'"
+                :disabled="!cardPin"
+                :label="cardLoading ? 'verifying' : 'sign &amp; submit'"
               />
             </div>
           </form>
@@ -237,7 +274,12 @@ import {
   listPublicAuthProviders,
   register as registerApi,
 } from '../api/auth'
-import { CARD_COMPONENT_ORIGIN } from '../api/cardLogin'
+import {
+  CARD_COMPONENT_ORIGIN,
+  CardComponentNotInstalledError,
+  CardNotInsertedError,
+  detectCard,
+} from '../api/caAuth'
 import { useTheme } from '../composables/useTheme'
 import TermLogo from '../components/cli/TermLogo.vue'
 import TermBox from '../components/cli/TermBox.vue'
@@ -291,6 +333,9 @@ const cardPin = ref('')
 const cardError = ref('')
 const cardLoading = ref(false)
 const cardComponentOrigin = CARD_COMPONENT_ORIGIN
+// Step 1 (detect) 的結果。null = 還沒偵測;有值 = 顯示使用者資訊並開啟 PIN 欄。
+const detectedCard = ref(null)
+const detectLoading = ref(false)
 
 // Pending registration / approval state（首次刷卡未核准走的支線）
 const pending = ref(null)            // backend 回的 payload (employee_id, name, email, registration_token, ...)
@@ -384,8 +429,39 @@ async function handleLogin() {
   }
 }
 
+// Step 1: 偵測卡片 — popup → GetUserCert → 抽 cert claims 顯示。
+// 失敗 (沒卡、PIN 不需要、本機元件未啟動) 不污染 cardPin 流程,只清這層。
+async function handleDetectCard() {
+  cardError.value = ''
+  detectLoading.value = true
+  try {
+    detectedCard.value = await detectCard({ componentOrigin: cardComponentOrigin })
+  } catch (e) {
+    detectedCard.value = null
+    if (e instanceof CardComponentNotInstalledError) {
+      cardError.value = e.message
+    } else if (e instanceof CardNotInsertedError) {
+      cardError.value = '卡片未插入或本機元件無法讀取卡片,請插入卡片後重試。'
+    } else {
+      cardError.value = e?.message || '偵測卡片失敗'
+    }
+  } finally {
+    detectLoading.value = false
+  }
+}
+
+function resetDetectedCard() {
+  detectedCard.value = null
+  cardPin.value = ''
+  cardError.value = ''
+}
+
 async function handleCardLogin() {
   cardError.value = ''
+  if (!detectedCard.value) {
+    cardError.value = '請先點「detect card」偵測卡片'
+    return
+  }
   if (!cardPin.value) {
     cardError.value = '請輸入 PIN 碼'
     return
