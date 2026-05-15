@@ -2,7 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.agent import Agent, UserAgentPermission
+from app.models.alert import Alert
 from app.models.api_key import ApiKey, ApiKeyModelPermission
+from app.models.audit_log import AuditLog
 from app.models.department import Department
 from app.models.model_registry import ModelRegistry
 from app.models.user import User, UserModelPermission
@@ -358,3 +360,122 @@ def deactivate_user(
         commit=True,
     )
     return {"message": "使用者已停用"}
+
+
+@router.delete("/{user_id}/permanent")
+def hard_delete_user(
+    user_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """**永久刪除**使用者 (跟 ``DELETE /{user_id}`` 的 soft-deactivate 對照)。
+
+    跟 deactivate 的差別：
+
+    - deactivate：``is_active=False``，row 還在，audit / 對話歷史皆保留
+      原 actor 名，未來可由 admin reactivate。
+    - **permanent**：row 從 DB 移除，CASCADE FK 的相關資料（對話、私人記憶、
+      external identity、grant、permission）一起被刪；SET NULL FK
+      （audit log actor、handoff、attachment uploader）保留資料但失去 actor。
+      無法 undo，必須 admin 重新刷卡建立。
+
+    Safeguards:
+    - 不允許刪自己（會把系統變孤兒）
+    - 動 admin/owner 必須 owner 自己（``_ensure_owner_for_elevated``）
+    - 若 user 是某個 agent 的 owner，拒絕刪除（``agents.owner_user_id`` 是
+      ``nullable=False`` 又沒設 ondelete，硬刪會 IntegrityError；改要 admin
+      先轉移 agent 擁有權或刪該 agent）
+
+    Manual cleanup（FK 未設 ondelete 的 4 個 table）：
+    - ``api_keys`` + ``api_key_model_permissions``：一起刪（user 沒了 key 無意義）
+    - ``audit_logs.actor_user_id``：SET NULL（保留歷史紀錄）
+    - ``alerts.acknowledged_by_user_id``：SET NULL（保留歷史紀錄）
+
+    其餘 FK 在 model schema 已設 CASCADE 或 SET NULL，由 DB 自動處理。
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="使用者不存在")
+
+    if user.id == admin.id:
+        raise HTTPException(
+            status_code=400,
+            detail="無法刪除自己；如需停用請改用其他帳號操作。",
+        )
+
+    _ensure_owner_for_elevated(user.role, admin)
+
+    # Pre-flight：擁有 agent 的人不能直接硬刪
+    owned_agents = (
+        db.query(Agent.id, Agent.name)
+        .filter(Agent.owner_user_id == user.id)
+        .all()
+    )
+    if owned_agents:
+        names = ", ".join(f"{a.name} (id={a.id})" for a in owned_agents)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"使用者擁有 {len(owned_agents)} 個 agent：{names}。"
+                "請先轉移或刪除這些 agent 才能永久刪除使用者。"
+            ),
+        )
+
+    # 在刪除前 snapshot 資料給 audit log（user row 一旦刪掉就拿不到 username 等）
+    api_keys_count = (
+        db.query(ApiKey).filter(ApiKey.user_id == user.id).count()
+    )
+    snapshot = {
+        "username": user.username,
+        "email": user.email,
+        "role": user.role,
+        "department_id": user.department_id,
+        "api_keys": api_keys_count,
+    }
+
+    # Manual cleanup #1：api_keys + 其 model 權限
+    user_key_ids = [
+        k.id for k in db.query(ApiKey).filter(ApiKey.user_id == user.id).all()
+    ]
+    if user_key_ids:
+        db.query(ApiKeyModelPermission).filter(
+            ApiKeyModelPermission.api_key_id.in_(user_key_ids)
+        ).delete(synchronize_session=False)
+        db.query(ApiKey).filter(ApiKey.id.in_(user_key_ids)).delete(
+            synchronize_session=False
+        )
+
+    # Manual cleanup #2：audit_logs.actor_user_id → NULL（保留歷史）
+    db.query(AuditLog).filter(AuditLog.actor_user_id == user.id).update(
+        {"actor_user_id": None}, synchronize_session=False
+    )
+
+    # Manual cleanup #3：alerts.acknowledged_by_user_id → NULL
+    db.query(Alert).filter(Alert.acknowledged_by_user_id == user.id).update(
+        {"acknowledged_by_user_id": None}, synchronize_session=False
+    )
+
+    # Audit log 寫在 user.delete 之前（同個 transaction 內 flush）— 確保即使
+    # delete 失敗，刪除意圖也有紀錄；admin 才有資料可以 forensic。
+    log_audit_event(
+        db,
+        actor=admin,
+        action="hard_delete",
+        resource_type="user",
+        resource_id=user.id,
+        detail=(
+            f"永久刪除使用者「{snapshot['username']}」"
+            f" (role={snapshot['role']}, email={snapshot['email']}, "
+            f"dept_id={snapshot['department_id']}, "
+            f"刪除 {snapshot['api_keys']} 把 API key)"
+        ),
+        commit=False,
+    )
+
+    db.delete(user)
+    db.commit()
+
+    return {
+        "message": "使用者已永久刪除",
+        "snapshot": snapshot,
+    }

@@ -53,8 +53,14 @@ async def lifespan(app: FastAPI):
     # Sprint 5 X / M1: refuse to boot when known-dev defaults are still in
     # place (SECRET_KEY / admin / service token / DB password). Skipping
     # this check requires explicit ANILA_ALLOW_DEV_SECRET=1.
-    from app.services.startup_security import assert_no_dev_defaults
+    from app.services.startup_security import (
+        assert_intranet_lockdown_consistency,
+        assert_no_dev_defaults,
+    )
     assert_no_dev_defaults()
+    # Branch SSO: 確保 REQUIRE_CARD_LOGIN_ONLY 與 ENABLE_CARD_LOGIN 互相一致，
+    # 避免「政策設為卡片唯一但卡片功能沒開」的 bricked 狀態。
+    assert_intranet_lockdown_consistency()
 
     # Run Alembic migrations to bring schema to head.
     # Falls back to create_all if Alembic config is not found (e.g. in tests).

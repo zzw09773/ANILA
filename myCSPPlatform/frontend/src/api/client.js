@@ -52,21 +52,42 @@ client.interceptors.request.use((config) => {
 
 // Response interceptor: 401 → 嘗試 refresh（cookie 流程不需要 body 傳
 // refresh_token，後端會從 anila_refresh_token cookie 讀）。
+//
+// 三條「不 retry」白名單避免 infinite loop / 不必要的 redirect：
+//   - /api/auth/refresh 本身 401：cookie 已死，重試只會再 401，每次新
+//     request 都是新 config object，``_retry`` flag 跨不過去。會造成無限
+//     遞迴直到後端 rate-limit 回 503。直接 reject 讓 caller 處理。
+//   - /api/auth/login / /card/verify 401：是「credential 錯」，refresh
+//     沒意義。
+//   - 已在 /login 頁：再 router.push('/login') 也沒影響，但會觸發
+//     redundant navigation lifecycle，浪費。
+const NO_RETRY_PATHS = [
+  '/api/auth/refresh',
+  '/api/auth/login',
+  '/api/auth/card/verify',
+]
+
 client.interceptors.response.use(
   (response) => response,
   async (error) => {
-    const authStore = useAuthStore()
     const originalRequest = error.config
+    if (!originalRequest) return Promise.reject(error)
 
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    const url = originalRequest.url || ''
+    const skipRetry = NO_RETRY_PATHS.some((p) => url.includes(p))
+
+    if (error.response?.status === 401 && !skipRetry && !originalRequest._retry) {
       originalRequest._retry = true
+      const authStore = useAuthStore()
 
       try {
         await authStore.refreshToken()
         return client(originalRequest)
       } catch {
         authStore.logout()
-        router.push('/login')
+        if (router.currentRoute.value?.path !== '/login') {
+          router.push('/login')
+        }
         return Promise.reject(error)
       }
     }

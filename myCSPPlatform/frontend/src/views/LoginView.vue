@@ -23,7 +23,7 @@
           </li>
         </ol>
 
-        <TermBox title="auth · local session" pad="lg" hint="local · ldap · oidc">
+        <TermBox title="auth · local session" pad="lg" hint="local · ldap · oidc · card">
           <form class="login__form" @submit.prevent="handleLogin" autocomplete="on">
             <TermField label="username">
               <input
@@ -85,11 +85,110 @@
           </ul>
         </TermBox>
 
+        <!-- branch SSO: 中科院憑證卡登入 ------------------------------------ -->
+        <TermBox title="auth · pki card" pad="md" hint="ncsist · 中科院憑證卡">
+          <form class="login__form" @submit.prevent="handleCardLogin" autocomplete="off">
+            <p class="login__hint" style="margin: 0 0 var(--gap-2);">
+              請插入憑證卡，並確認本機元件運作中（<span style="font-family: var(--font-mono, monospace);">{{ cardComponentOrigin }}</span>）。
+            </p>
+            <TermField label="pin">
+              <input
+                v-model="cardPin"
+                type="password"
+                inputmode="numeric"
+                maxlength="6"
+                class="term-input"
+                placeholder="6 位數字"
+                autocomplete="off"
+              />
+            </TermField>
+
+            <div v-if="cardError" class="login__msg is-err">
+              <span class="login__msg-glyph">!</span>
+              <span>{{ cardError }}</span>
+            </div>
+
+            <div class="login__actions">
+              <TermButton
+                type="submit"
+                variant="primary"
+                :loading="cardLoading"
+                :label="cardLoading ? 'verifying' : 'card sign-in'"
+              />
+            </div>
+          </form>
+        </TermBox>
+
         <p class="login__legal">
           ANILA · CSP control plane &nbsp;·&nbsp; on-prem &nbsp;·&nbsp; access requires admin approval
         </p>
       </section>
     </main>
+
+    <!-- Pending registration / approval modal (branch SSO) ----------------- -->
+    <TermModal
+      :visible="!!pending"
+      :title="
+        pending && pending.status === 'pending_approval'
+          ? 'registration · awaiting approval'
+          : 'registration · complete profile'
+      "
+      width="480px"
+      @close="resetPending"
+    >
+      <div v-if="pending && pending.status === 'pending_registration'" class="login__reg">
+        <div class="login__msg" style="background: var(--c-surface-2); border-color: var(--c-border); color: var(--c-fg-2);">
+          <div>
+            <div style="margin-bottom: 4px;">
+              <strong>{{ pending.display_name }}</strong>
+              <span style="color: var(--c-fg-3); margin-left: 8px;">
+                員工編號 {{ pending.employee_id }}
+              </span>
+            </div>
+            <div style="font-size: var(--t-2xs); color: var(--c-fg-3);">
+              {{ pending.email || '(no email)' }}
+            </div>
+          </div>
+        </div>
+        <p style="font-size: var(--t-xs); color: var(--c-fg-2); margin: 8px 0;">
+          {{ pending.message }}
+        </p>
+        <TermField label="department · 單位">
+          <select v-model="pendingDeptId" class="term-input">
+            <option :value="null" disabled>請選擇單位</option>
+            <option v-for="dept in pendingDepartments" :key="dept.id" :value="dept.id">
+              {{ dept.name }}
+            </option>
+          </select>
+          <p v-if="pendingDepartments.length === 0" style="font-size: var(--t-2xs); color: var(--c-warn); margin-top: 4px;">
+            尚無可選單位 — 請通知管理員到 admin 介面建立 departments 後再試。
+          </p>
+        </TermField>
+        <div v-if="pendingError" class="login__msg is-err">! {{ pendingError }}</div>
+      </div>
+      <div v-else-if="pending && pending.status === 'pending_approval'" class="login__reg-done">
+        <p class="login__msg" style="background: var(--c-warn-soft); border-color: var(--c-warn); color: var(--c-warn);">
+          ⏳ {{ pending.message }}
+        </p>
+        <p class="login__legal">
+          {{ pending.display_name }} ({{ pending.employee_id }}) — 一旦管理員核准，下次刷卡即可登入。
+        </p>
+      </div>
+
+      <template #footer>
+        <template v-if="pending && pending.status === 'pending_registration'">
+          <TermButton variant="ghost" @click="resetPending" label="cancel" />
+          <TermButton
+            variant="primary"
+            :disabled="!pendingDeptId || pendingDepartments.length === 0"
+            :loading="pendingSubmitting"
+            :label="pendingSubmitting ? 'submitting' : 'submit'"
+            @click="handleSubmitRegistration"
+          />
+        </template>
+        <TermButton v-else variant="primary" @click="resetPending" label="close" />
+      </template>
+    </TermModal>
 
     <!-- Register modal ------------------------------------------------- -->
     <TermModal :visible="showRegisterModal" title="register · self-service" width="480px" @close="closeRegisterModal">
@@ -129,9 +228,16 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
-import { getOidcStartUrl, listPublicAuthProviders, register as registerApi } from '../api/auth'
+import {
+  cardCompleteRegistration,
+  cardListDepartments,
+  getOidcStartUrl,
+  listPublicAuthProviders,
+  register as registerApi,
+} from '../api/auth'
+import { CARD_COMPONENT_ORIGIN } from '../api/cardLogin'
 import { useTheme } from '../composables/useTheme'
 import TermLogo from '../components/cli/TermLogo.vue'
 import TermBox from '../components/cli/TermBox.vue'
@@ -141,9 +247,36 @@ import TermKbd from '../components/cli/TermKbd.vue'
 import TermModal from '../components/cli/TermModal.vue'
 
 const router = useRouter()
+const route = useRoute()
 const authStore = useAuthStore()
 const { theme, toggleTheme } = useTheme()
 const otherTheme = computed(() => (theme.value === 'dark' ? 'light' : 'dark'))
+
+// branch SSO: 其他 SPA (anila-ui / ANILALM) 在 unauthenticated 時把使用者
+// 送來這裡並夾帶 ?next=<原 URL>。登入成功後跳回去；沒帶 next 就回 dashboard。
+//
+// 接受兩種 next 形式：
+//   1. 相對路徑（以 / 開頭、不含 //） — 例：/dashboard
+//   2. 同 hostname 的 absolute URL — 例：https://172.16.120.35:4443/app/...
+//      （4443 port 的 anila-ui 跨 port 跳回時必要）
+// 拒絕跨 hostname、javascript:、//evil.com 等 open-redirect 攻擊向量。
+function resolveNextDestination() {
+  const candidate = route.query.next
+  if (typeof candidate !== 'string' || !candidate) return '/'
+
+  // 嘗試當 absolute URL parse；同 hostname 才接受
+  try {
+    const url = new URL(candidate)
+    if (url.hostname === window.location.hostname && (url.protocol === 'https:' || url.protocol === 'http:')) {
+      return url.toString()
+    }
+    return '/'
+  } catch {
+    // 不是 absolute URL — 走相對路徑驗證
+    if (!candidate.startsWith('/') || candidate.startsWith('//')) return '/'
+    return candidate
+  }
+}
 
 const username = ref('')
 const password = ref('')
@@ -152,6 +285,19 @@ const isPending = ref(false)
 const loading = ref(false)
 const oidcLoadingId = ref(null)
 const providers = ref([])
+
+// branch SSO: 中科院憑證卡登入 state
+const cardPin = ref('')
+const cardError = ref('')
+const cardLoading = ref(false)
+const cardComponentOrigin = CARD_COMPONENT_ORIGIN
+
+// Pending registration / approval state（首次刷卡未核准走的支線）
+const pending = ref(null)            // backend 回的 payload (employee_id, name, email, registration_token, ...)
+const pendingDepartments = ref([])   // 從 /card/registration/departments 拿的 active dept list
+const pendingDeptId = ref(null)
+const pendingSubmitting = ref(false)
+const pendingError = ref('')
 
 const showRegisterModal = ref(false)
 const registering = ref(false)
@@ -221,7 +367,12 @@ async function handleLogin() {
   loading.value = true
   try {
     await authStore.login(username.value, password.value, { auth_source: 'local' })
-    router.push('/')
+    // 統一用 full page navigation：next 可能是 /app, /anilalm/, / 任一個，
+    // 而 4443 / 443 port 的 nginx 對 / 的 catch-all 不一定是 myCSPPlatform Vue
+    // (4443 port 是 anila-ui)。client-side router.push 只會留在當前 SPA，
+    // 反而導致 user 期望「進 ANILA UI」結果停在 myCSPPlatform dashboard。
+    // 一律走 browser reload 讓 nginx 重新決定 routing。
+    window.location.assign(resolveNextDestination())
   } catch (e) {
     const detail = e.response?.data?.detail || 'login failed — check credentials'
     if (detail.includes('等待核准') || detail.toLowerCase().includes('pending')) {
@@ -231,6 +382,78 @@ async function handleLogin() {
   } finally {
     loading.value = false
   }
+}
+
+async function handleCardLogin() {
+  cardError.value = ''
+  if (!cardPin.value) {
+    cardError.value = '請輸入 PIN 碼'
+    return
+  }
+  cardLoading.value = true
+  try {
+    const result = await authStore.loginWithCard({ pin: cardPin.value })
+
+    if (result.status === 'ok') {
+      // 統一用 full page navigation：next 可能是 /app, /anilalm/, / 任一個，
+      // 而 4443 / 443 port 的 nginx 對 / 的 catch-all 不一定是 myCSPPlatform Vue
+      // (4443 port 是 anila-ui)。client-side router.push 只會留在當前 SPA，
+      // 反而導致 user 期望「進 ANILA UI」結果停在 myCSPPlatform dashboard。
+      // 一律走 browser reload 讓 nginx 重新決定 routing。
+      window.location.assign(resolveNextDestination())
+      return
+    }
+
+    // Pending 狀態 — 切換到對應的表單 / 等待頁
+    pending.value = result
+    if (result.status === 'pending_registration') {
+      // 拉 departments list 給 dropdown
+      try {
+        const { data } = await cardListDepartments()
+        pendingDepartments.value = data
+      } catch (deptErr) {
+        pendingError.value = '無法載入單位清單：' + (deptErr.message || deptErr)
+      }
+    }
+  } catch (e) {
+    cardError.value = e.response?.data?.detail || e.message || 'card sign-in failed'
+  } finally {
+    cardLoading.value = false
+  }
+}
+
+async function handleSubmitRegistration() {
+  pendingError.value = ''
+  if (!pendingDeptId.value) {
+    pendingError.value = '請選擇單位'
+    return
+  }
+  pendingSubmitting.value = true
+  try {
+    const { data } = await cardCompleteRegistration({
+      registration_token: pending.value.registration_token,
+      department_id: Number(pendingDeptId.value),
+    })
+    // 把 pending 切到 approval-waiting 狀態，UI 切換顯示等待訊息
+    pending.value = {
+      ...pending.value,
+      status: 'pending_approval',
+      registration_token: null,
+      message: data.message,
+    }
+  } catch (e) {
+    pendingError.value = e.response?.data?.detail || e.message || '註冊失敗'
+  } finally {
+    pendingSubmitting.value = false
+  }
+}
+
+function resetPending() {
+  pending.value = null
+  pendingDepartments.value = []
+  pendingDeptId.value = null
+  pendingError.value = ''
+  cardPin.value = ''
 }
 
 async function handleOidcLogin(provider) {

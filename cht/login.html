@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex justify-content-center align-items-center" style="min-height: 80vh;">
+    <div class="card auth-card p-4">
+        <h3 class="text-center mb-4">歡迎回來</h3>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        {% for category, message in messages %}
+        {# 使用 category 來自動切換顏色（例如 danger, success, info） #}
+        <div class="alert alert-{{ category if category else 'info' }} alert-dismissible fade show shadow-sm"
+            role="alert">
+            {{ message }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>
+        {% endfor %}
+        {% endif %}
+        {% endwith %}
+
+        <form method="POST">
+            <div class="mb-3">
+                <label class="form-label">請輸入 PIN 碼</label>
+                <input type="password" name="pin" id="pin" class="form-control" required>
+            </div>
+            <button type="button" class="btn btn-success w-100" onclick="checkPIN()">憑證卡登入</button>
+        </form>
+    </div>
+</div>
+
+<script>
+    let postTarget = null;
+    let timeoutId = null;
+
+    function setSignature(signature) {
+        const ret = JSON.parse(signature);
+        if (ret.ret_code === 0) {
+            console.log("pin is correct");
+            // 建立一個隱藏的欄位來傳遞 signature 給後端，並自動送出表單
+            let form = document.querySelector('form');
+            let sigInput = document.createElement('input');
+            sigInput.type = 'hidden';
+            sigInput.name = 'signature';
+            sigInput.value = ret.signature;
+            form.appendChild(sigInput);
+            form.submit();
+        } else {
+            console.log("pin 碼錯誤");
+        }
+    }
+
+    function checkPIN() {
+        console.log("call checkPIN");
+        postTarget = window.open("http://localhost:16888/popupForm", "簽章中", "height=200, width=200, left=100, top=20");
+        timeoutId = setTimeout(checkFinish, 3500);
+    }
+
+    function checkFinish() {
+        if (postTarget) {
+            console.log("postTarget close");
+            postTarget.close();
+            alert("尚未安裝元件");
+        }
+    }
+
+    function getTbsPackage() {
+        const tbsData = {};
+        tbsData["tbs"] = "TBS"; //encodeURIComponent(document.getElementById("tbs").value);
+        tbsData["tbsEncoding"] = "NONE"; //document.getElementById("tbsEncoding").value;
+        tbsData["hashAlgorithm"] = "SHA256"; //document.getElementById("hashAlgorithm").value;
+        tbsData["withCardSN"] = "false"; //document.getElementById("withCardSN").value;
+        tbsData["pin"] = document.getElementById("pin").value;
+        tbsData["nonce"] = "";  //document.getElementById("nonce").value;
+        tbsData["func"] = "MakeSignature";
+        tbsData["signatureType"] = "PKCS7";
+        return JSON.stringify(tbsData);
+    }
+
+    function receiveMessage(event) {
+        // check origin
+        if (event.origin != "http://localhost:16888")
+            return;
+        try {
+            const ret = JSON.parse(event.data);
+            if (ret.func) {
+                console.log(ret.func)
+                if (ret.func === "getTbs") {
+                    clearTimeout(timeoutId);
+                    postTarget.postMessage(getTbsPackage(), "*");
+                } else if (ret.func === "sign") {
+                    postTarget = null;
+                    clearTimeout(timeoutId);
+                    setSignature(event.data);
+                } else if (ret.func === "pkcs11info") {
+                    postTarget = null;
+                    setCertSubject(event.data);
+                }
+            }
+        } catch (e) {
+            console.log(e)
+        }
+    }
+
+    window.addEventListener("message", receiveMessage, false);
+</script>
+{% endblock %}

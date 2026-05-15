@@ -9,6 +9,7 @@ import {
   readCsrfCookie,
   refreshJwt,
 } from "./api.js";
+import { loginWithCard as runCardLogin } from "./card-login.js";
 
 // Wave 2: the SPA holds no tokens — JWT access/refresh live in httpOnly
 // cookies set by POST /api/auth/login. The only piece of auth state kept
@@ -74,6 +75,17 @@ export function AuthProvider({ children }) {
     return me;
   }
 
+  async function loginWithCard({ pin, componentOrigin } = {}) {
+    // Challenge → popup sign → verify (cookies set server-side) → fetch /me。
+    // 任一階段失敗 (no popup / PIN 錯 / 卡片簽不出 / verify 401) 都會 throw，
+    // 由 callsite UI 接住顯示 message。成功時 user 進 React state、navigate
+    // 由 callsite 決定（跟 login() 一致）。
+    await runCardLogin({ pin, componentOrigin });
+    const me = await authRequest("/api/auth/me");
+    setUser(me);
+    return me;
+  }
+
   async function logout() {
     // Best-effort server-side invalidation. If it fails (network), we still
     // drop local state so the UI immediately reflects the signed-out view.
@@ -94,6 +106,7 @@ export function AuthProvider({ children }) {
       providers,
       isAuthenticated,
       login,
+      loginWithCard,
       logout,
       // Callsites that previously relied on authRequest/authMultipart
       // continue to work; the new implementations in api.js use cookies.

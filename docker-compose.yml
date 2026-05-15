@@ -81,6 +81,19 @@ services:
         ]
       ANILA_TEMPLATE_DIR: /app/anila-template
       INGESTION_UPLOAD_DIR: /var/anila/ingestion-uploads
+      # branch SSO: 中科院憑證卡登入 (詳見 docs/card-login-strict-mode-runbook.md)。
+      # dev 預設值: card login 開、loose 驗證、不強制 card-only、無 OCSP。
+      # 內網 prod 改 .env 設 REQUIRE_CARD_LOGIN_ONLY=true、CARD_VERIFY_MODE=strict、
+      # CARD_CHECK_REVOCATION=true、NCSIST_CA_BUNDLE_PATH=<IT 配發 PEM>。
+      ENABLE_CARD_LOGIN: "${ENABLE_CARD_LOGIN:-false}"
+      CARD_VERIFY_MODE: "${CARD_VERIFY_MODE:-loose}"
+      REQUIRE_CARD_LOGIN_ONLY: "${REQUIRE_CARD_LOGIN_ONLY:-false}"
+      NCSIST_CA_BUNDLE_PATH: "${NCSIST_CA_BUNDLE_PATH:-}"
+      CARD_CHECK_REVOCATION: "${CARD_CHECK_REVOCATION:-false}"
+      # CARD_INITIAL_OWNERS: CSV 員工編號清單，列在裡面的第一次刷卡直接拿到
+      # role=owner + is_approved=True (bootstrap)。其他人走 pending 流程。
+      # 範例: "1147259,1090868"
+      CARD_INITIAL_OWNERS: "${CARD_INITIAL_OWNERS:-}"
     volumes:
       # anila-agent subtree (github.com/zzw09773/anila-agent) — 模板下載端用。
       # 更新走 git subtree pull/push,見 README §"Updating anila-agent"。
@@ -396,8 +409,8 @@ networks:
 volumes:
   csp-pgdata:
   redis-data:
-  # cold-stored — 對應上面 commented service。volume 名稱保留可以避免
-  # 解凍時 named volume 重生造成既有資料遺失 (compose 看到舊名就 reuse)。
+  # 下面三組對應 codeserver / n8n / gitlab service。一旦這些 service 解凍,
+  # 既有的 anila-platform_<name> volume 會被 compose reuse,資料不會重生。
   codeserver_config:
   n8n_data:
   gitlab_config:

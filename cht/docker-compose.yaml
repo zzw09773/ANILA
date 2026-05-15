@@ -1,0 +1,10 @@
+services:
+    api:
+        build: .
+        volumes:
+            - .:/workspace
+        working_dir: /workspace
+        command: python app.py
+        ports:
+            - "16888:16888"
+

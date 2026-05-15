@@ -38,9 +38,12 @@ class AuthProviderBase(BaseModel):
     @field_validator("provider_type")
     @classmethod
     def validate_provider_type(cls, value: str) -> str:
-        # LDAP 已自系統下線，僅保留 OIDC（後續會以完整 SSO 取代本地登入）。
-        if value != "oidc":
-            raise ValueError("provider_type 僅支援 oidc（LDAP 已停用）")
+        # LDAP 已自系統下線；中科院內網 production 走 ``card``，外部 demo
+        # 走 ``oidc``。其他值一律拒絕，避免 admin 誤建未支援的 provider。
+        if value not in {"oidc", "card"}:
+            raise ValueError(
+                "provider_type 僅支援 oidc | card（LDAP 已停用）"
+            )
         return value
 
 

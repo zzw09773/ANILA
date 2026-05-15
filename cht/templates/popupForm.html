@@ -1,0 +1,30 @@
+<script>
+    window.onload = function () {
+        window.opener.postMessage(JSON.stringify({func: "getTbs"}), "*");
+    };
+
+    window.addEventListener("message", function (event) {
+        try {
+            let tbsData = JSON.parse(event.data);
+            console.log("func", tbsData.func);
+            if (tbsData.func == "GetUserCert") {
+                ret_func = "pkcs11info";
+            }
+            if (tbsData.func == "MakeSignature") {
+                ret_func = "sign";
+            }
+            fetch(`/cht_api/${ret_func}`, {
+                method: "POST",
+                headers: {"Content-Type": "application/x-www-form-urlencoded"},
+                body: "tbsPackage=" + encodeURIComponent(JSON.stringify(tbsData))
+            })
+                .then(response => response.json())
+                .then(result => {
+                    window.opener.postMessage(JSON.stringify({func: ret_func, ...result}), event.origin);
+                    window.close();
+                });
+        } catch (err) {
+            console.error("error", err);
+        }
+    });
+</script>

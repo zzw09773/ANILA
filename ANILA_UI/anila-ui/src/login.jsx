@@ -18,9 +18,10 @@ import {
 
 export const LoginView = () => {
   const navigate = useNavigate();
-  const { login, providers } = useAuth();
+  const { login, loginWithCard, providers } = useAuth();
   const [username, setUsername] = useState("alice.chen");
   const [password, setPassword] = useState("demo-password");
+  const [pin, setPin] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -39,7 +40,12 @@ export const LoginView = () => {
     event.preventDefault();
     setError("");
 
-    if (method !== "oidc") {
+    if (method === "card") {
+      if (!pin) {
+        setError("請輸入 PIN 碼");
+        return;
+      }
+    } else if (method !== "oidc") {
       if (!username || !password) {
         setError("請輸入帳號與密碼");
         return;
@@ -61,6 +67,12 @@ export const LoginView = () => {
         }
         const payload = await response.json();
         window.location.assign(payload.authorization_url);
+        return;
+      }
+
+      if (method === "card") {
+        await loginWithCard({ pin });
+        navigate("/app", { replace: true });
         return;
       }
 
@@ -142,6 +154,7 @@ export const LoginView = () => {
               { id: "local", label: "本機帳號" },
               { id: "ldap",  label: "LDAP" },
               { id: "oidc",  label: "SSO" },
+              { id: "card",  label: "憑證卡" },
             ].map((t) => (
               <button key={t.id} type="button" onClick={() => setMethod(t.id)} style={{
                 flex: 1, padding: "6px 10px", fontSize: 12, fontWeight: 500,
@@ -154,7 +167,40 @@ export const LoginView = () => {
             ))}
           </div>
 
-          {method !== "oidc" ? (
+          {method === "card" ? (
+            <div style={{ display: "grid", gap: 12 }}>
+              <div style={{
+                padding: "10px 12px", border: "1px solid var(--border)",
+                borderRadius: "var(--radius)", background: "var(--bg-subtle)",
+                fontSize: 12, color: "var(--fg-muted)", lineHeight: 1.55,
+              }}>
+                請插入中科院憑證卡，並確認中華電信本機元件已啟動
+                （<span style={{ fontFamily: "var(--font-mono)" }}>
+                  {config.cardComponentOrigin}
+                </span>）。
+                點擊「憑證卡登入」後將跳出簽章視窗。
+              </div>
+              <Input label="PIN 碼" type="password"
+                inputMode="numeric" autoComplete="off" maxLength={6}
+                value={pin} onChange={(e) => setPin(e.target.value)}
+                placeholder="6 位數字"/>
+
+              {error && (
+                <div style={{
+                  fontSize: 12, color: "var(--danger)",
+                  background: "oklch(0.97 0.03 25)",
+                  border: "1px solid oklch(0.88 0.08 25)",
+                  padding: "8px 10px", borderRadius: "var(--radius)",
+                }}>{error}</div>
+              )}
+
+              <Button variant="primary" size="lg" type="submit" disabled={loading}
+                rightIcon={loading ? null : <IconArrowRight/>}
+                style={{ justifyContent: "center", marginTop: 4 }}>
+                {loading ? "驗證中…" : "憑證卡登入"}
+              </Button>
+            </div>
+          ) : method !== "oidc" ? (
             <div style={{ display: "grid", gap: 12 }}>
               <Input label="帳號" value={username} onChange={(e) => setUsername(e.target.value)}
                 leftIcon={<IconUser size={14}/>}

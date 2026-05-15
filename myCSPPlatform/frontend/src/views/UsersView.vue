@@ -111,12 +111,60 @@
                 <button v-else class="term-action" @click="handleToggleSsoOnly(user, false)">unlock-pw</button>
                 <span v-if="user.is_active && user.is_approved" class="row-actions__sep">·</span>
                 <button v-if="user.is_active && user.is_approved" class="term-action term-action--danger" @click="handleDeactivate(user)">deactivate</button>
+                <span v-if="!user.is_active" class="row-actions__sep">·</span>
+                <button v-if="!user.is_active" class="term-action" @click="handleActivate(user)" title="re-enable a deactivated user">activate</button>
+                <span class="row-actions__sep">·</span>
+                <button class="term-action term-action--danger" @click="openHardDeleteModal(user)" title="permanently delete user (irreversible)">delete</button>
               </div>
             </td>
           </tr>
         </tbody>
       </table>
     </TermBox>
+
+    <!-- Hard delete confirmation modal (branch SSO) ------------------- -->
+    <TermModal
+      :visible="showHardDeleteModal"
+      title="permanent delete · confirm"
+      width="520px"
+      @close="closeHardDeleteModal"
+    >
+      <div v-if="hardDeleteTarget" class="login__reg">
+        <div class="login__msg" style="background: var(--c-danger-soft); border-color: var(--c-danger); color: var(--c-danger);">
+          <strong>⚠ 此操作無法復原</strong>
+        </div>
+        <p style="font-size: var(--t-xs); color: var(--c-fg-2); line-height: 1.55;">
+          將永久刪除使用者 <strong>{{ hardDeleteTarget.username }}</strong>
+          ({{ hardDeleteTarget.role }})。
+        </p>
+        <ul style="font-size: var(--t-2xs); color: var(--c-fg-3); padding-left: 18px; margin: 0;">
+          <li>該使用者的 API keys 跟對話歷史會一起刪除</li>
+          <li>Audit log 內 actor 欄位會轉為 NULL，但記錄保留</li>
+          <li>若該使用者擁有 agent，刪除會被拒絕，請先處理 agent 擁有權</li>
+          <li>如僅需暫時停用，請改用「deactivate」</li>
+        </ul>
+        <TermField label="輸入使用者名稱以確認">
+          <input
+            v-model="hardDeleteConfirm"
+            class="term-input"
+            :placeholder="hardDeleteTarget.username"
+            autocomplete="off"
+          />
+        </TermField>
+        <div v-if="hardDeleteError" class="login__msg is-err">! {{ hardDeleteError }}</div>
+      </div>
+
+      <template #footer>
+        <TermButton variant="ghost" @click="closeHardDeleteModal" label="cancel" />
+        <TermButton
+          variant="danger"
+          :disabled="!hardDeleteConfirmed"
+          :loading="hardDeleting"
+          :label="hardDeleting ? 'deleting' : 'permanently delete'"
+          @click="handleHardDelete"
+        />
+      </template>
+    </TermModal>
 
     <!-- User edit/create modal --------------------------------------- -->
     <TermModal :visible="showModal" :title="editingId ? 'edit · user' : 'create · user'" width="520px" @close="showModal = false">
@@ -218,6 +266,7 @@ import {
   deactivateUser,
   getUserAllowedAgents,
   getUserAllowedModels,
+  hardDeleteUser,
   listUsers,
   resetUserPassword,
   updateUser,
@@ -386,6 +435,67 @@ async function handleDeactivate(user) {
     setFeedback('success', `deactivated '${user.username}'`)
     await fetchUsers()
   } catch (e) { setFeedback('error', e.response?.data?.detail || 'deactivate failed') }
+}
+
+// branch SSO: 重新啟用之前被 deactivate 的使用者。
+// Backend 沒有專屬 /activate endpoint — 直接 PUT 把 is_active 設 true 就好。
+// 注意：仍維持 is_approved 原狀。若使用者在 pending_approval 狀態下被 deactivate，
+// 啟用後仍然不能登入，要再 approve；UI 已用 approve 按鈕區隔兩種狀態。
+async function handleActivate(user) {
+  if (!window.confirm(`re-activate '${user.username}'?`)) return
+  try {
+    await updateUser(user.id, { is_active: true })
+    setFeedback('success', `activated '${user.username}'`)
+    await fetchUsers()
+  } catch (e) {
+    setFeedback('error', e.response?.data?.detail || 'activate failed')
+  }
+}
+
+// branch SSO: permanent (hard) delete with typed-confirmation modal — irreversible
+const showHardDeleteModal = ref(false)
+const hardDeleteTarget = ref(null)
+const hardDeleteConfirm = ref('')
+const hardDeleting = ref(false)
+const hardDeleteError = ref('')
+
+const hardDeleteConfirmed = computed(
+  () => !!hardDeleteTarget.value
+    && hardDeleteConfirm.value.trim() === hardDeleteTarget.value.username,
+)
+
+function openHardDeleteModal(user) {
+  hardDeleteTarget.value = user
+  hardDeleteConfirm.value = ''
+  hardDeleteError.value = ''
+  showHardDeleteModal.value = true
+}
+
+function closeHardDeleteModal() {
+  showHardDeleteModal.value = false
+  hardDeleteTarget.value = null
+  hardDeleteConfirm.value = ''
+  hardDeleteError.value = ''
+}
+
+async function handleHardDelete() {
+  if (!hardDeleteConfirmed.value) return
+  hardDeleting.value = true
+  hardDeleteError.value = ''
+  try {
+    const { data } = await hardDeleteUser(hardDeleteTarget.value.id)
+    setFeedback(
+      'success',
+      `permanently deleted '${hardDeleteTarget.value.username}'` +
+        (data?.snapshot?.api_keys ? ` (+ ${data.snapshot.api_keys} api keys)` : ''),
+    )
+    closeHardDeleteModal()
+    await fetchUsers()
+  } catch (e) {
+    hardDeleteError.value = e.response?.data?.detail || 'permanent delete failed'
+  } finally {
+    hardDeleting.value = false
+  }
 }
 async function handleToggleSsoOnly(user, disable) {
   const action = disable ? 'switch to sso-only' : 'unlock local password'

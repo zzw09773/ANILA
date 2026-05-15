@@ -17,10 +17,17 @@
 
 const CSP_BASE_URL = (import.meta.env.VITE_CSP_BASE_URL || "").replace(/\/$/, "");
 const ROUTER_BASE_URL = (import.meta.env.VITE_ROUTER_BASE_URL || "").replace(/\/$/, "");
+// 中華電信 HiPKI 本機元件 (CHT MCAv2 PKCS#11) 預設 origin。
+// 中科院內網 / dev 用 `cht/` mock 都跑在 localhost:16888；只有
+// 特殊內網部署需要覆寫時才設 VITE_CARD_COMPONENT_ORIGIN。
+const CARD_COMPONENT_ORIGIN = (
+  import.meta.env.VITE_CARD_COMPONENT_ORIGIN || "http://localhost:16888"
+).replace(/\/$/, "");
 
 export const config = {
   cspBaseUrl: CSP_BASE_URL,
   routerBaseUrl: ROUTER_BASE_URL,
+  cardComponentOrigin: CARD_COMPONENT_ORIGIN,
 };
 
 // Surface a clear boot-time error if the required base URLs weren't injected

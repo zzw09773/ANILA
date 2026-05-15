@@ -124,3 +124,32 @@ def assert_no_dev_defaults() -> None:
         f"請於 production 環境覆寫: {summary}. "
         "若僅做本機開發可暫時設 ANILA_ALLOW_DEV_SECRET=1。"
     )
+
+
+def assert_intranet_lockdown_consistency() -> None:
+    """Branch ``SSO``：``REQUIRE_CARD_LOGIN_ONLY`` 與其他 auth flag 的相容性。
+
+    中科院內網 production 政策是「**卡片登入是唯一活路**」 — 本機帳密、
+    OIDC、自助註冊全部禁用。要 enforce 這個政策，必須 ``ENABLE_CARD_LOGIN``
+    同時啟用，否則整個系統會處於「沒人能登入」的 bricked 狀態。
+
+    本檢查在 ``lifespan`` 啟動時跑；不通過直接拒絕啟動 — secure by default
+    at deployment time，比 runtime check 強。
+    """
+    if not settings.REQUIRE_CARD_LOGIN_ONLY:
+        return
+
+    if not settings.ENABLE_CARD_LOGIN:
+        raise RuntimeError(
+            "Refusing to start: REQUIRE_CARD_LOGIN_ONLY=True 但 "
+            "ENABLE_CARD_LOGIN=False — 將無人能登入。請同時啟用 "
+            "ENABLE_CARD_LOGIN=true，或關閉 REQUIRE_CARD_LOGIN_ONLY。"
+        )
+
+    if (settings.CARD_VERIFY_MODE or "").lower() == "loose":
+        # LOOSE mode 信任 cht/ mock — 不該在強制卡片登入的 production 出現。
+        # 不直接 raise（避免擋掉「先 loose 上線、補 strict」的演進）但給強警告。
+        logger.warning(
+            "[startup_security] REQUIRE_CARD_LOGIN_ONLY=True 但 "
+            "CARD_VERIFY_MODE='loose' — production 內網應改用 'strict'。"
+        )

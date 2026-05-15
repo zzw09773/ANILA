@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { login as loginApi, refreshTokenApi, getMe, logout as logoutApi } from '../api/auth'
+import { loginWithCard as runCardLogin } from '../api/cardLogin'
 
 // Sprint 5 X / H5: cookie-only auth store. Tokens 不再進 localStorage —
 // 認證狀態由 backend 設的 httpOnly cookie 決定，前端只記住目前登入的
@@ -30,6 +31,21 @@ export const useAuthStore = defineStore('auth', () => {
     // 後端 set cookies；body 仍帶 token 是給 SDK 用的，SPA 不再儲存。
     await loginApi(username, password, extra)
     await fetchUser()
+  }
+
+  // branch SSO: 中科院憑證卡登入。
+  // challenge → popup sign (中華電信本機元件) → verify (cookies 由 backend 種)。
+  // 回傳 ``runCardLogin`` 的 result：
+  //   { status: 'ok' } → 已登入，caller 應 fetchUser + redirect
+  //   { status: 'pending_registration', registration_token, ... } → 顯示填單位表單
+  //   { status: 'pending_approval', ... } → 顯示等待核准訊息
+  // 任一階段密碼學失敗 (PIN 錯、簽章錯) 仍然 throw，callsite UI 負責 catch。
+  async function loginWithCard({ pin, componentOrigin } = {}) {
+    const result = await runCardLogin({ pin, componentOrigin })
+    if (result.status === 'ok') {
+      await fetchUser()
+    }
+    return result
   }
 
   async function refreshToken() {
@@ -69,6 +85,7 @@ export const useAuthStore = defineStore('auth', () => {
     isAdmin,
     isDeveloper,
     login,
+    loginWithCard,
     refreshToken,
     fetchUser,
     logout,

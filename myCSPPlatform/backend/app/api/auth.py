@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from html import escape
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.middleware.cookies import (
@@ -11,8 +11,17 @@ from app.middleware.cookies import (
 )
 from app.models.api_key import ApiKey
 from app.models.auth_provider import AuthProvider
+from app.models.department import Department
 from app.models.model_registry import ModelRegistry
 from app.models.user import User
+from app.config import settings
+from app.schemas.card import (
+    CardChallengeResponse,
+    CardCompleteRegistrationRequest,
+    CardCompleteRegistrationResponse,
+    CardDepartmentOption,
+    CardVerifyRequest,
+)
 from app.schemas.user import (
     LoginRequest,
     TokenResponse,
@@ -32,6 +41,15 @@ from app.services.auth_service import (
     PENDING_APPROVAL_SENTINEL,
     LOCAL_PASSWORD_DISABLED_SENTINEL,
 )
+from app.services.card_auth import CardAuthError
+from app.services.card_auth_service import (
+    CardLoginRejected,
+    CardRegistrationTokenInvalid,
+    decode_registration_token,
+    issue_card_challenge,
+    issue_registration_token,
+    verify_card_and_resolve_user,
+)
 from app.services.external_auth_service import (
     authenticate_oidc_code,
     build_oidc_authorization_url,
@@ -42,6 +60,26 @@ from app.services.external_auth_service import (
 from app.utils.security import decode_token, hash_password, verify_password
 
 router = APIRouter(prefix="/api/auth", tags=["認證"])
+
+
+def _require_card_login_enabled() -> None:
+    """Endpoint guard：``ENABLE_CARD_LOGIN`` 未啟用時假裝 endpoint 不存在。
+
+    Pattern 對齊 OIDC：未啟用時回 404 而非 403，避免暴露功能 existence。
+    """
+    if not settings.ENABLE_CARD_LOGIN:
+        raise HTTPException(status_code=404)
+
+
+def _reject_when_card_only() -> None:
+    """Branch SSO lockdown：``REQUIRE_CARD_LOGIN_ONLY`` 時封閉非卡片登入路徑。
+
+    回 404 而非 403/410，讓非卡片 endpoint 在內網部署「看起來不存在」 —
+    跟 ``_require_card_login_enabled`` 對稱，外部探測無法區分「該功能本來
+    就沒做」還是「被政策關掉」。
+    """
+    if settings.REQUIRE_CARD_LOGIN_ONLY:
+        raise HTTPException(status_code=404)
 
 
 def _mint_sso_api_key(db: Session, user: User) -> str | None:
@@ -120,6 +158,12 @@ def _build_oidc_callback_html(
 
 @router.get("/providers", response_model=list[PublicAuthProviderResponse])
 def public_providers(db: Session = Depends(get_db)):
+    providers = list_public_auth_providers(db)
+    # Branch SSO：強制卡片登入時，不在 /providers 列出 OIDC providers，
+    # 讓 SPA 自然不顯示對應的 tab。已建立的 OIDC provider row 不刪除（admin
+    # 切回非鎖死模式時應該還能用）；純粹在邊界 hide 掉。
+    if settings.REQUIRE_CARD_LOGIN_ONLY:
+        providers = [p for p in providers if p.provider_type != "oidc"]
     return [
         {
             "id": provider.id,
@@ -127,7 +171,7 @@ def public_providers(db: Session = Depends(get_db)):
             "provider_type": provider.provider_type,
             "button_text": provider.button_text,
         }
-        for provider in list_public_auth_providers(db)
+        for provider in providers
     ]
 
 
@@ -137,6 +181,7 @@ async def start_oidc_login(
     next_path: str = "/",
     db: Session = Depends(get_db),
 ):
+    _reject_when_card_only()
     provider = (
         db.query(AuthProvider)
         .filter(
@@ -156,6 +201,7 @@ async def start_oidc_login(
 
 @router.post("/register", status_code=201)
 def register(request: RegisterRequest, http_request: Request, db: Session = Depends(get_db)):
+    _reject_when_card_only()
     existing = db.query(User).filter(User.username == request.username).first()
     if existing:
         raise HTTPException(status_code=400, detail="帳號已被使用")
@@ -208,6 +254,7 @@ def login(
     response: Response,
     db: Session = Depends(get_db),
 ):
+    _reject_when_card_only()
     ip_address = http_request.client.host if http_request.client else None
 
     if request.auth_source not in (None, "", "local"):
@@ -274,6 +321,7 @@ async def oidc_callback(
     state: str,
     db: Session = Depends(get_db),
 ):
+    _reject_when_card_only()
     provider = (
         db.query(AuthProvider)
         .filter(
@@ -329,6 +377,243 @@ async def oidc_callback(
             f"<html><body><h3>OIDC 登入失敗</h3><p>{escape(str(exc))}</p><a href='/login'>返回登入頁</a></body></html>",
             status_code=400,
         )
+
+
+@router.get("/card/challenge", response_model=CardChallengeResponse)
+def card_challenge() -> CardChallengeResponse:
+    """簽發一條 2 分鐘有效的卡片簽章 challenge。
+
+    Client 流程：
+      1. ``GET /api/auth/card/challenge`` → 拿到 ``{challenge_token, nonce, expires_in}``
+      2. 開 popup 跟本機 CHT 元件 (``localhost:16888``) 通訊，用 ``nonce`` 當
+         ``tbsPackage.tbs`` 簽章
+      3. ``POST /api/auth/card/verify`` 帶 ``{challenge_token, signature, card_serial}``
+
+    Endpoint 在 ``ENABLE_CARD_LOGIN=false`` 時回 404。
+    """
+    _require_card_login_enabled()
+    token, nonce, expires_in = issue_card_challenge()
+    return CardChallengeResponse(
+        challenge_token=token,
+        nonce=nonce,
+        expires_in=expires_in,
+    )
+
+
+@router.post("/card/verify")
+def card_verify(
+    request: CardVerifyRequest,
+    http_request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    """驗證憑證卡簽章並建立 session。
+
+    回應有三種形態（response_model 因此宣告 None；caller 用 ``status`` 欄位判別）：
+
+    1. **登入成功** — ``TokenResponse`` shape，HTTP 200，set-cookie 完成
+    2. **Pending registration** — ``CardPendingResponse`` shape，HTTP 202，
+       含 ``registration_token``；UI 應該渲染「完成註冊」表單。發生於：
+       (a) 第一次刷卡且不在 ``CARD_INITIAL_OWNERS`` 內，
+       (b) 已建帳號但 ``department_id IS NULL`` 且仍 ``is_approved=False``。
+    3. **Pending approval** — 同 shape 但無 ``registration_token``，HTTP 202；
+       UI 顯示「等待管理員核准」訊息。發生於：已填單位但 admin 未核准。
+
+    失敗對應：
+      - ``CardAuthError`` (簽章解析失敗 / cert 不合法) → ``401``
+      - ``CardLoginRejected`` (challenge 過期 / email 衝突 / 設定錯誤) → ``400``
+    """
+    _require_card_login_enabled()
+    ip_address = http_request.client.host if http_request.client else None
+
+    try:
+        user, claims = verify_card_and_resolve_user(
+            db,
+            signature_b64=request.signature,
+            challenge_token=request.challenge_token,
+            card_serial=request.card_serial,
+        )
+    except CardAuthError as exc:
+        log_audit_event(
+            db,
+            action="card_login",
+            resource_type="auth",
+            status="failure",
+            detail=f"憑證卡簽章驗證失敗: {exc}",
+            ip_address=ip_address,
+            commit=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"憑證卡驗證失敗: {exc}",
+        ) from exc
+    except CardLoginRejected as exc:
+        log_audit_event(
+            db,
+            action="card_login",
+            resource_type="auth",
+            status="failure",
+            detail=f"憑證卡登入拒絕: {exc}",
+            ip_address=ip_address,
+            commit=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    # ── Pending branch ───────────────────────────────────────────────────
+    if not user.is_approved:
+        if user.department_id is None:
+            # Pending registration: 還沒填單位 → 發 short-lived JWT 讓他完成
+            reg_token, expires_in = issue_registration_token(user.id)
+            payload = {
+                "status": "pending_registration",
+                "employee_id": claims.employee_id,
+                "display_name": claims.display_name,
+                "email": claims.email,
+                "registration_token": reg_token,
+                "expires_in": expires_in,
+                "message": "請完成註冊：選擇您所屬的單位後送出。",
+            }
+            audit_detail = (
+                f"卡片驗章通過但 pending_registration: "
+                f"employee_id={claims.employee_id} name={claims.display_name}"
+            )
+        else:
+            # Pending approval: 已填單位、等 admin 點頭
+            payload = {
+                "status": "pending_approval",
+                "employee_id": claims.employee_id,
+                "display_name": claims.display_name,
+                "email": claims.email,
+                "registration_token": None,
+                "expires_in": None,
+                "message": "註冊資料已記錄，請等待管理員核准。",
+            }
+            audit_detail = (
+                f"卡片驗章通過但 pending_approval: "
+                f"employee_id={claims.employee_id}"
+            )
+        log_audit_event(
+            db,
+            action="card_login",
+            resource_type="auth",
+            resource_id=user.id,
+            status="pending",
+            detail=audit_detail,
+            ip_address=ip_address,
+            commit=True,
+        )
+        return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=payload)
+
+    # ── Approved: 正常登入流程 ───────────────────────────────────────────
+    tokens = create_tokens(user)
+    _stamp_last_login(db, user)
+    log_audit_event(
+        db,
+        actor=user,
+        action="card_login",
+        resource_type="auth",
+        resource_id=user.id,
+        detail=(
+            f"憑證卡登入成功: employee_id={claims.employee_id} "
+            f"name={claims.display_name} card_sn={claims.card_serial or '-'}"
+        ),
+        ip_address=ip_address,
+        commit=True,
+    )
+    return _finalize_login(response, tokens)
+
+
+@router.get(
+    "/card/registration/departments",
+    response_model=list[CardDepartmentOption],
+)
+def card_registration_departments(db: Session = Depends(get_db)):
+    """列出可選的 active departments，給 pending 使用者「完成註冊」表單下拉用。
+
+    Public endpoint（不需要 cookie session）— 因為 pending 使用者本來就還沒
+    登入。只回 ``id`` + ``name``，避免暴露管理性 metadata。
+    """
+    _require_card_login_enabled()
+    rows = (
+        db.query(Department)
+        .filter(Department.is_active == True)  # noqa: E712
+        .order_by(Department.name)
+        .all()
+    )
+    return [CardDepartmentOption(id=d.id, name=d.name) for d in rows]
+
+
+@router.post(
+    "/card/complete-registration",
+    response_model=CardCompleteRegistrationResponse,
+)
+def card_complete_registration(
+    request: CardCompleteRegistrationRequest,
+    http_request: Request,
+    db: Session = Depends(get_db),
+):
+    """Pending 使用者完成註冊：填上 ``department_id``，狀態進到 pending_approval。
+
+    Auth：``registration_token`` JWT (audience=card-registration)，**不**靠
+    cookie session（pending 使用者根本沒 cookie）。
+
+    完成後不種 cookie、不發 access token — 使用者仍須等 admin 核准。下次
+    刷卡時 ``/card/verify`` 會直接回 ``pending_approval`` 訊息（不再要表單）。
+    """
+    _require_card_login_enabled()
+    ip_address = http_request.client.host if http_request.client else None
+
+    try:
+        user_id = decode_registration_token(request.registration_token)
+    except CardRegistrationTokenInvalid as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+        ) from exc
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        # token 對應的 user 被 admin 刪掉之類
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="使用者不存在")
+    if user.is_approved:
+        # 已核准的使用者不該走這條 endpoint
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="使用者已核准，無需重新完成註冊",
+        )
+
+    department = (
+        db.query(Department)
+        .filter(Department.id == request.department_id, Department.is_active == True)  # noqa: E712
+        .first()
+    )
+    if department is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"指定的 department_id={request.department_id} 不存在或已停用",
+        )
+
+    user.department_id = department.id
+    db.commit()
+    log_audit_event(
+        db,
+        actor=user,
+        action="card_registration",
+        resource_type="user",
+        resource_id=user.id,
+        detail=(
+            f"完成註冊：department_id={department.id} ({department.name})"
+        ),
+        ip_address=ip_address,
+        commit=True,
+    )
+    return CardCompleteRegistrationResponse(
+        status="pending_approval",
+        message="已記錄您的單位資訊，請等待管理員核准。",
+    )
 
 
 @router.post("/refresh", response_model=TokenResponse)
@@ -418,6 +703,10 @@ def change_password(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # Card-only deployments：本機帳密整套都不接受，change_password 自然也封閉。
+    # 卡片帳號的 hashed_password 是 unguessable random，使用者本來就提供
+    # 不出 current_password；這個 guard 是雙重保險 + 一致性。
+    _reject_when_card_only()
     if not verify_password(request.current_password, current_user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
