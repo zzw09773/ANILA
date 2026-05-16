@@ -44,7 +44,7 @@
 - **中科院憑證卡 (branch SSO,2026-05-15 上線)** — 內網 prod 唯一登入方式。使用者 PC 上的中華電信 HiPKI 本機元件 (`localhost:16888`,**PKCS#11** token API + HTTP wrapper) 處理 PIN + 卡片硬體簽章,輸出 **PKCS#7 (CMS)** 格式;backend parse PKCS#7 抽 `employee_id` / 姓名 / email,簽 cookie session。`REQUIRE_CARD_LOGIN_ONLY=true` 一開,本機帳密 / OIDC / 自助註冊 endpoints 全回 404。User provisioning:`CARD_INITIAL_OWNERS` env 內員工編號直接 owner+approved (bootstrap),其他人 pending → 完成註冊 (填 department) → admin 核准。前端 helper:[`frontend/src/api/caAuth.js`](./frontend/src/api/caAuth.js)。
 - **本機帳號** — JWT (Access 15 min + Refresh 7 天,httpOnly cookie)。`REQUIRE_CARD_LOGIN_ONLY=true` 時整條 endpoint 一律 404。
 - **OIDC / SSO** — Authorization Code Flow + PKCE (S256) + nonce + JWKS 驗 `id_token`;callback 完全用 cookie,**不再 mint 24h 短效 API Key** (Wave 2 / Sprint 6 X 後)。`REQUIRE_CARD_LOGIN_ONLY=true` 時 endpoint 一律 404,`/api/auth/providers` 也不再列出 OIDC providers。
-- **LDAP** (已下線) — Sprint 5 X / migration 0021 移除欄位;對 `/api/auth/login` 帶 `auth_source=ldap` 直接回 400。SSO cutover 路線見 [`../docs/sso-migration.md`](../docs/sso-migration.md)。
+- **LDAP** (已下線) — Sprint 5 X / migration 0021 移除欄位;對 `/api/auth/login` 帶 `auth_source=ldap` 直接回 400。SSO cutover 路線見 [`../docs/planning/sso-migration.md`](../docs/planning/sso-migration.md)。
 - **Service-to-service** (Sprint 8 X / Phase A) — Agent / Router / Worker 不再共用單一 env-var token;改走 per-credential `agent_credentials` / `service_clients` table,admin 在 UI issue bootstrap → agent CLI 換 long-lived `csk-` token。詳見 [`../docs/runbooks/service-token-cutover.md`](../docs/runbooks/service-token-cutover.md)。
 
 ### 維運功能

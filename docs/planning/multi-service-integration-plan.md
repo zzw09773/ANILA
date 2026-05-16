@@ -3,7 +3,7 @@
 **Status**: Draft for review
 **Date**: 2026-04-25
 **Author**: ANILA 平台團隊
-**Companion docs**: [`ingestion-platform-design.md`](./ingestion-platform-design.md) · [`anila-core-boundary.md`](./anila-core-boundary.md)
+**Companion docs**: [`ingestion-platform-design.md`](../architecture/ingestion-platform-design.md) · [`anila-core-boundary.md`](../architecture/anila-core-boundary.md)
 **Source of investigation**: `/home/aia/c1147259/project` 目錄實際 grep 結果
 
 ---
@@ -125,7 +125,7 @@ v0.5.4 把 codeserver 改 dedicated port 仍然爆炸，最後翻 [`/home/aia/c1
 |---|---|---|---|
 | 12 | Migration `0013` 一支搞定三表 | 拆成 **`0012`**（required_roles + service_access_grants + dev_db_credentials）+ **`0013`**（is_public column + grandfather backfill）| 寫的時候才發現現有最高 revision 是 0011（不是 0012），且 is_public 是後來才補的設計（v0.4 沒有），分兩支讓 migration history 反映真實的設計演進 |
 | 13 | PK 用 `BIGSERIAL` / `BIGINT` | PK 用 **`Integer` / `SERIAL`** | 既有 schema 全部用 Integer，跟著走；grant 數量級 < 10K，BIGINT 是過度設計 |
-| 14 | `required_roles TEXT[] DEFAULT NULL` | `required_roles JSONB DEFAULT '[]'::jsonb NOT NULL` | codebase 慣例（[`agent.py`](../myCSPPlatform/backend/app/models/agent.py)）已用 `JSONValue` pattern 處理 JSON-shaped data；JSONB 跟 TEXT[] 的查詢效能對 < 10 個元素的 array 沒差別 |
+| 14 | `required_roles TEXT[] DEFAULT NULL` | `required_roles JSONB DEFAULT '[]'::jsonb NOT NULL` | codebase 慣例（[`agent.py`](../../myCSPPlatform/backend/app/models/agent.py)）已用 `JSONValue` pattern 處理 JSON-shaped data；JSONB 跟 TEXT[] 的查詢效能對 < 10 個元素的 array 沒差別 |
 | 15 | `UNIQUE (user_id, link_id)` 純 unique | **partial unique `WHERE revoked_at IS NULL`** | 原版 unique 會擋「revoke 後 re-grant」（除非手動清 row）。partial unique 讓 revoked row 留作 audit trail，新 grant 不撞 unique |
 | 16 | 沒有 `is_public` column，algorithm 是「default-deny + role auto-pass」 | **新增 `is_public` BOOLEAN**（migration 0013）+ 演算法改成 5 步：`is_active → role gate → admin bypass → is_public → grant` | v0.4 設計的「`required_roles` 自動通過」語意有歧義（`['admin']` 是「只開放給 admin」還是「admin 自動通過」？）。改成乾淨的 5 步：`required_roles` 是**過濾 gate**（不通過直接 deny），`is_public` 是**通過判定**（通過則不需 grant）。詳見更新後的 §7.5.2 |
 | 17 | `dev_db_credentials.last_used_at` | `dev_db_credentials.reminder_sent_at` | `last_used_at` 需要 PG hooks（pg_stat_activity polling 或 login event trigger）才能填，工程量比預想大；`reminder_sent_at` 直接由 reminder cron 寫，idempotent（避免重複寄 email）。前者是「nice to know」、後者才是 lifecycle 必需。先做後者，前者等真的需要時補 |
@@ -169,7 +169,7 @@ v0.5.4 把 codeserver 改 dedicated port 仍然爆炸，最後翻 [`/home/aia/c1
 
 | # | 議題 | v0.1 立場 | v0.2 修訂 |
 |---|---|---|---|
-| 1 | Memory file 的定位 | 不明確 | **`memory/` module 留 anila-core；`MemoryFileStore` KEEP（dev mode）；Phase 3+ 補 `PostgresMemoryStore`（prod mode）**。詳見 §1.4 與 [`anila-core-boundary.md`](./anila-core-boundary.md) §2.3 |
+| 1 | Memory file 的定位 | 不明確 | **`memory/` module 留 anila-core；`MemoryFileStore` KEEP（dev mode）；Phase 3+ 補 `PostgresMemoryStore`（prod mode）**。詳見 §1.4 與 [`anila-core-boundary.md`](../architecture/anila-core-boundary.md) §2.3 |
 | 2 | ComfyUI 整合方式 | 註冊為 Model | **改為註冊為 Agent**。理由：ANILA 主介面是 chat 對話，Router 必須在 manifest 看到「會畫圖的 agent」才能自動分派；Model 介面只能透過 OpenAI SDK 顯式呼叫 model name 觸發。詳見 §4 |
 | 3 | ANILA LM 權限模式 | 平台連結卡片（無 access control）| **OIDC SSO + 模式 A 嚴格白名單**。`required_roles=NULL` + `service_access_grants` table，**支援 user-level 與 department-level grant 兩種**（部門 grant 一次蓋整批）。詳見 §6 與 §7.5 |
 | 4 | codeserver 部署位置 | 平台連結（外部跳轉）| **納入 ANILA monorepo `docker-compose.yml`** — 組裡沒獨立部署，要新增 service。詳見 §5 |
@@ -221,9 +221,9 @@ CSP 已有的 `AUTO_REGISTER_LINKS` 機制（範例見 `myCSPPlatform/README.md`
 | 本 doc | 相關 doc | 關聯點 |
 |---|---|---|
 | §4 ComfyUI 註冊為 Agent | `AgenticRAG/anila-agent.yaml` template | 走 agent 註冊流程 |
-| §5 codeserver DB credential | [`ingestion-platform-design.md`](./ingestion-platform-design.md) §3.3 RLS | per-dev credentials 自動 `SET LOCAL anila.agent_id` |
-| §6 ANILA LM agent 化 | [`anila-core-boundary.md`](./anila-core-boundary.md) | ANILA LM 9 種 artifact 對應 agent template fork pattern |
-| §1.4 Memory architecture | [`anila-core-boundary.md`](./anila-core-boundary.md) §2.3 | platform memory module 留 anila-core；MemoryFileStore 為 dev-mode impl |
+| §5 codeserver DB credential | [`ingestion-platform-design.md`](../architecture/ingestion-platform-design.md) §3.3 RLS | per-dev credentials 自動 `SET LOCAL anila.agent_id` |
+| §6 ANILA LM agent 化 | [`anila-core-boundary.md`](../architecture/anila-core-boundary.md) | ANILA LM 9 種 artifact 對應 agent template fork pattern |
+| §1.4 Memory architecture | [`anila-core-boundary.md`](../architecture/anila-core-boundary.md) §2.3 | platform memory module 留 anila-core；MemoryFileStore 為 dev-mode impl |
 
 ### 1.4 Memory ≠ Ingestion（澄清）
 
@@ -936,7 +936,7 @@ codeserver 在 ANILA 體系的角色 **不是 agent，也不是 model**：
 **問題**：mlsteam 上的 dev 寫 agent，需要 `DATABASE_URL` 連 ANILA postgres 寫 chunks。但是：
 - 不能給原始 superuser credentials（會洩漏）
 - 不能給 read-write 整個 cluster（會踩到別 agent 的 data）
-- 必須跟 [`ingestion-platform-design.md`](./ingestion-platform-design.md) §3.3 的 RLS 機制整合
+- 必須跟 [`ingestion-platform-design.md`](../architecture/ingestion-platform-design.md) §3.3 的 RLS 機制整合
 
 **解法**：CSP 提供 **per-developer scoped DB credentials**（短效）
 
@@ -1086,7 +1086,7 @@ async def remind_expiring_credentials():
         )
 ```
 
-**關鍵設計**：`ALTER ROLE ... SET anila.agent_id = N` — 這個 PG role 一登入就自動 set session var，**RLS policy 自動套用**，dev 寫的任何 query 都不可能看到別 agent 的 data。完全跟 [`ingestion-platform-design.md`](./ingestion-platform-design.md) §3.3 layer 2 對齊。
+**關鍵設計**：`ALTER ROLE ... SET anila.agent_id = N` — 這個 PG role 一登入就自動 set session var，**RLS policy 自動套用**，dev 寫的任何 query 都不可能看到別 agent 的 data。完全跟 [`ingestion-platform-design.md`](../architecture/ingestion-platform-design.md) §3.3 layer 2 對齊。
 
 **TTL 30d 的理由（v0.2 修訂）**：
 - 24h 太短：dev 每天要 issue 麻煩，倒逼大家把 credential 寫死在 config
@@ -1294,7 +1294,7 @@ ANILA LM 不會變成 template，它是**一個特殊的 agent 實例**（One of
 
 ### 7.1 完整註冊內容（v0.5.1 對齊實作 — Phase 1 Step 3 已落地）
 
-> **實作狀態**：✅ 5 筆 link seed 完成。權威 source 在 [`docker-compose.yml`](../docker-compose.yml) 的 `csp.environment.AUTO_REGISTER_LINKS`，對應 [`auto_seed.py`](../myCSPPlatform/backend/app/services/auto_seed.py) §5 邏輯。
+> **實作狀態**：✅ 5 筆 link seed 完成。權威 source 在 [`docker-compose.yml`](../../docker-compose.yml) 的 `csp.environment.AUTO_REGISTER_LINKS`，對應 [`auto_seed.py`](../../myCSPPlatform/backend/app/services/auto_seed.py) §5 邏輯。
 
 **設計重點：4 個內網服務全走 nginx 同源 path**（v0.5.1 修正 — `anilalm.internal:3100` / `codeserver.internal:8443` 那種內網 DN 是錯的，browser 進不去且觸發 Mixed Content 警告）。只有 MLSteam 是公網 service，保留絕對 FQDN。
 
@@ -1441,7 +1441,7 @@ ISO 42001 對 ANILA 的影響不只 GitLab。建議下一份 design doc：
 
 ### 7.5 Service Access Control（v0.2 新增，v0.5 對齊實作）
 
-> **實作狀態**：✅ Phase 1 Step 1+2+2.5 已落地。Migrations [`0012`](../myCSPPlatform/backend/migrations/versions/0012_add_service_access_control.py) + [`0013`](../myCSPPlatform/backend/migrations/versions/0013_add_platform_link_is_public.py)，service [`access_control.py`](../myCSPPlatform/backend/app/services/access_control.py)，router [`service_access_grants.py`](../myCSPPlatform/backend/app/api/service_access_grants.py)。本節以實際 schema / 演算法為準。
+> **實作狀態**：✅ Phase 1 Step 1+2+2.5 已落地。Migrations [`0012`](../../myCSPPlatform/backend/migrations/versions/0012_add_service_access_control.py) + [`0013`](../../myCSPPlatform/backend/migrations/versions/0013_add_platform_link_is_public.py)，service [`access_control.py`](../../myCSPPlatform/backend/app/services/access_control.py)，router [`service_access_grants.py`](../../myCSPPlatform/backend/app/api/service_access_grants.py)。本節以實際 schema / 演算法為準。
 
 #### 7.5.1 Schema（實作版）
 
@@ -1510,7 +1510,7 @@ UPDATE platform_links SET is_public = true;
 
 #### 7.5.2 Effective Access 演算法（實作版 — 5 步，v0.5.1 admin bypass 提前）
 
-權威實作：[`app/services/access_control.py`](../myCSPPlatform/backend/app/services/access_control.py)。語意改變請看 §0 v0.5 #16。
+權威實作：[`app/services/access_control.py`](../../myCSPPlatform/backend/app/services/access_control.py)。語意改變請看 §0 v0.5 #16。
 
 ```python
 def can_access_link(db, user, link) -> bool:
@@ -1747,4 +1747,4 @@ Week 10+   ─── 觀察期（ANILA LM agent 化 v0.6 取消，§11）
 
 ---
 
-**Last updated**: 2026-04-25 · **Companion docs**: [`ingestion-platform-design.md`](./ingestion-platform-design.md) · [`anila-core-boundary.md`](./anila-core-boundary.md)
+**Last updated**: 2026-04-25 · **Companion docs**: [`ingestion-platform-design.md`](../architecture/ingestion-platform-design.md) · [`anila-core-boundary.md`](../architecture/anila-core-boundary.md)

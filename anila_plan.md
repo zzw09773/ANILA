@@ -193,7 +193,7 @@ approved_by (FK users, nullable), approved_at, created_at
 
 ### 4. Onyx Future Module Plan（純文件，無 code）
 
-位置：`docs/onyx-application-plan.md`。目前 **只做文件，不排實作**；待相關單位 API 準備完成後，再回來啟動技術設計與整合。
+位置：`docs/archive/onyx-application-plan.md`。目前 **只做文件，不排實作**；待相關單位 API 準備完成後，再回來啟動技術設計與整合。
 
 文件需先收斂：
 
@@ -255,7 +255,7 @@ Codex 明確指出：未來若有數以十計的系統要串接，Onyx 的價值
 16. Smoke test：先驗證 `curl → Router → CSP → upstream LLM` 的 direct-answer 路徑；有註冊 agent 後，再驗證 `curl → Router → CSP → registered agent → CSP → upstream LLM` 的 dispatch 路徑
 
 ### Phase 4 — Onyx Future Module Plan（純文件）
-17. 寫 `docs/onyx-application-plan.md`
+17. 寫 `docs/archive/onyx-application-plan.md`
 18. 明確標註 Onyx 目前不進入開發排程，待各單位 API 完成後再重新開案
 
 ### Phase 5 — ANILA Runtime UI
@@ -335,7 +335,7 @@ curl -N -X POST http://localhost:9000/v1/chat/completions \
 
 ### Future Module Note
 - Onyx 相關驗證不列入近期 smoke test
-- 目前交付物僅包含 `docs/onyx-application-plan.md`
+- 目前交付物僅包含 `docs/archive/onyx-application-plan.md`
 - 待請假 / 簽核 / 其他內部系統 API ready 後，再定義實作驗證案例
 
 ### Phase 5 加測
@@ -375,5 +375,5 @@ curl -N -X POST http://localhost:9000/v1/chat/completions \
 | 新增 | `myCSPPlatform/frontend/src/views/DeveloperAgentsView.vue` | 2 |
 | 新建 | `anila-core-router/` | 3 |
 | 新建 (repo root integration compose) | `docker-compose.yml` | 3 |
-| 新建 (純文件) | `docs/onyx-application-plan.md` | 4 |
+| 新建 (純文件) | `docs/archive/onyx-application-plan.md` | 4 |
 | 新建 | `anila-ui/` | 5 |

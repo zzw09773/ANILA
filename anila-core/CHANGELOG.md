@@ -887,7 +887,7 @@ deleted. Sprint 1 ships:
 
 ### BREAKING
 
-Sprint 1 of the Phase 2 boundary cleanup ([anila-core-boundary spec](../docs/anila-core-boundary.md)) split the RAG-flavour runtime out of core. anila-core is now a strictly chat / agent / memory / dispatch runtime; everything RAG-flavour now lives in [AgenticRAG](../AgenticRAG/) (per-agent template) or, for the future centralised path, the [Ingestion Platform](../docs/ingestion-platform-design.md).
+Sprint 1 of the Phase 2 boundary cleanup ([anila-core-boundary spec](../docs/architecture/anila-core-boundary.md)) split the RAG-flavour runtime out of core. anila-core is now a strictly chat / agent / memory / dispatch runtime; everything RAG-flavour now lives in [AgenticRAG](../AgenticRAG/) (per-agent template) or, for the future centralised path, the [Ingestion Platform](../docs/architecture/ingestion-platform-design.md).
 
 #### Modules removed
 

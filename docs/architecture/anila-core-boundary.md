@@ -3,7 +3,7 @@
 **Status**: Ready for execution as part of Ingestion Platform Sprint 1
 **Date**: 2026-04-25
 **Parent doc**: [`ingestion-platform-design.md`](./ingestion-platform-design.md) §12
-**Sibling doc**: [`multi-service-integration-plan.md`](./multi-service-integration-plan.md) — 多服務整合計畫（含 codeserver dev credentials 與 RLS 整合，§5.3 引用本文件）
+**Sibling doc**: [`multi-service-integration-plan.md`](../planning/multi-service-integration-plan.md) — 多服務整合計畫（含 codeserver dev credentials 與 RLS 整合，§5.3 引用本文件）
 **Driver**: ANILA Ingestion Platform 中央化需要 anila-core 退回 pure runtime；同時 README 早就標記「Task 3 pending」
 
 ---

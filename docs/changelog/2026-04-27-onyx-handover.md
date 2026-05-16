@@ -15,7 +15,7 @@
 | `.git` size | 34 MB | 5.7 MB (**-83%**) |
 | `.gitignore` | — | 新增 `onyx/` 條目（避免未來誤 add）|
 | README handoff note | 無 | 加入 2026-04-27 條目 + 顯示已移出 |
-| Handover specs | `docs/onyx-application-plan.md` + `docs/onyx-target-system-api-spec.md` | 保留 |
+| Handover specs | `docs/archive/onyx-application-plan.md` + `docs/archive/onyx-target-system-api-spec.md` | 保留 |
 
 ---
 
@@ -109,4 +109,4 @@ git push origin pre-onyx-filter-repo-2026-04-27
 
 - [ ] **Force-push** to `github.com/zzw09773/ANILA.git` — 待 operator 在通知過 collaborator 後執行
 - [ ] **Delete backup tag** ~14 天後，確認沒有 rollback 需求：`git tag -d pre-onyx-filter-repo-2026-04-27`
-- [ ] **Notify agent team**：他們的 Onyx 程式碼專屬 repo URL 應記錄在 [`docs/onyx-application-plan.md`](../onyx-application-plan.md) 的 `## Repo location` section（如果還沒，補上）
+- [ ] **Notify agent team**：他們的 Onyx 程式碼專屬 repo URL 應記錄在 [`docs/archive/onyx-application-plan.md`](../archive/onyx-application-plan.md) 的 `## Repo location` section（如果還沒，補上）

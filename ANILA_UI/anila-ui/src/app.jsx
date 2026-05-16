@@ -1896,7 +1896,12 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                         ? "會自動分派給合適的 agent"
                         : `→ ${activeAgent?.name}`}
                       {" · 所有呼叫經 CSP · "}
-                      <span style={{ color: "var(--fg-muted)" }}>回應僅供參考</span>
+                      <span
+                        style={{ color: "var(--fg-muted)" }}
+                        title="本系統由大型語言模型(LLM)驅動,輸出內容可能包含錯誤或偏誤,僅供參考、不可作為唯一決策依據。完整 AI 政策見 docs/governance/ai-policy.md。"
+                      >
+                        AI 系統 · 內容僅供參考
+                      </span>
                     </div>
                   </div>
                 </div>

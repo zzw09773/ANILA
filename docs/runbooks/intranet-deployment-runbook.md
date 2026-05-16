@@ -3,7 +3,7 @@
 > **Owner**:你 (1147259)
 > **目標環境**:中科院內網,IP `10.53.100.12`
 > **更新**:2026-05-16
-> **配套檔**:[`.env.example`](../.env.example) / [`docker-compose.yml`](../docker-compose.yml) / [`scripts/build-and-export-for-intranet.sh`](../scripts/build-and-export-for-intranet.sh)
+> **配套檔**:[`.env.example`](../../.env.example) / [`docker-compose.yml`](../../docker-compose.yml) / [`scripts/build-and-export-for-intranet.sh`](../../scripts/build-and-export-for-intranet.sh)
 
 這份是「**今天從外網 dev 機 → 帶進內網一鍵跑起來**」的逐步操作手冊。任何一步看不懂或卡住,直接看「Troubleshooting」段。
 
@@ -346,12 +346,12 @@ docker compose restart csp
 
 ## 8. 重要文件 cross-reference
 
-- 整體架構:[`README.md`](../README.md) §安全設計要點 + §最近更新 (2026-05-15 entry)
-- 認證細節:[`myCSPPlatform/README.md`](../myCSPPlatform/README.md) §認證整合 + §API 端點一覽
-- caAuth.js 前端 helper:[`myCSPPlatform/frontend/src/api/caAuth.js`](../myCSPPlatform/frontend/src/api/caAuth.js)
-- backend 卡片驗證:[`myCSPPlatform/backend/app/services/card_auth.py`](../myCSPPlatform/backend/app/services/card_auth.py)
-- 啟動安全檢查:[`myCSPPlatform/backend/app/services/startup_security.py`](../myCSPPlatform/backend/app/services/startup_security.py)
-- mock 卡片元件:[`cht/`](../cht/) (僅 dev,內網用真 HiPKI)
+- 整體架構:[`README.md`](../../README.md) §安全設計要點 + §最近更新 (2026-05-15 entry)
+- 認證細節:[`myCSPPlatform/README.md`](../../myCSPPlatform/README.md) §認證整合 + §API 端點一覽
+- caAuth.js 前端 helper:[`myCSPPlatform/frontend/src/api/caAuth.js`](../../myCSPPlatform/frontend/src/api/caAuth.js)
+- backend 卡片驗證:[`myCSPPlatform/backend/app/services/card_auth.py`](../../myCSPPlatform/backend/app/services/card_auth.py)
+- 啟動安全檢查:[`myCSPPlatform/backend/app/services/startup_security.py`](../../myCSPPlatform/backend/app/services/startup_security.py)
+- mock 卡片元件:[`cht/`](../../cht/) (僅 dev,內網用真 HiPKI)
 
 ---
 
