@@ -42,11 +42,11 @@ def build_app(
     )
 
     @app.get("/health")
-    def health() -> dict[str, str]:
+    def _health() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.get("/v1/models")
-    def list_models() -> dict:
+    def _list_models() -> dict:
         return {
             "object": "list",
             "data": [
@@ -55,10 +55,10 @@ def build_app(
         }
 
     @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
-    async def chat_completions(req: ChatCompletionRequest) -> ChatCompletionResponse:
+    async def _chat_completions(req: ChatCompletionRequest) -> ChatCompletionResponse:
         try:
             return await handler.handle(req)
-        except Exception as exc:
+        except Exception:
             logger.exception("flux generation failed")
             raise HTTPException(status_code=502, detail="image generation failed")
 
