@@ -65,6 +65,11 @@ _KNOWN_DEFAULTS: dict[str, frozenset[str]] = {
     # 只需擋 .env.example 的「請填我」placeholder。空值不算 offender — compose
     # 階段就會 fail-fast,輪不到這裡判。
     "ANILA_HOST": _PROD_PLACEHOLDERS,
+    # CARD_INITIAL_OWNERS 同 ANILA_HOST:compose ${CARD_INITIAL_OWNERS:?} 已擋空值,
+    # 但 placeholder 字面 (`<your-employee-id,or-csv-list>`) 是非空字串會通過 compose,
+    # runtime ``_parse_initial_owners()`` 會解出兩個假員工編號,真實刷卡者不在
+    # set 內被當 pending → 沒人能 approve → bricked。這層擋在 startup 比 runtime 早。
+    "CARD_INITIAL_OWNERS": _PROD_PLACEHOLDERS,
 }
 
 
