@@ -66,7 +66,7 @@ services:
       ACCESS_TOKEN_EXPIRE_MINUTES: "60"
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
       AUTO_REGISTER_MODELS: >-
-        [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://gpt-oss-20b:8000}","api_version":"v1","description":"On-prem local LLM (anila-models-net)"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://nv-embed-proxy:8000}","api_version":"v1","description":"On-prem NV-embed-V2 via FastAPI shim (anila-models-net)"}]
+        [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://gpt-oss-20b:8000}","api_version":"v1","description":"On-prem local LLM (anila-models-net)"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://nv-embed-proxy:8000}","api_version":"v1","description":"On-prem NV-embed-V2 via FastAPI shim (anila-models-net)"},{"name":"image-generator","display_name":"圖像繪製","model_type":"agent","endpoint_url":"http://flux2-dev-agent:8000","api_version":"v1","description":"FLUX.2-dev image generation agent","description_for_router":"當使用者要求繪製、產生、設計、畫一張、給我一張圖、視覺化、想看看 XX 的樣子、想要看一張圖等等的時候使用。輸入是使用者的中文自然語言描述,不需要先翻譯,agent 內部會處理。"}]
       # Dev 用獨立 seed key，跟 prod sk-test-user-api-key 區隔開——避免你拿 dev key
       # 不小心打到 prod CSP，或反過來。
       AUTO_SEED_API_KEYS: >-
