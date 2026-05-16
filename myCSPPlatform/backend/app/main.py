@@ -2,7 +2,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -15,6 +15,8 @@ from app.api.attachments import router as attachments_router
 from app.api.handoffs import router as handoffs_router
 from app.api.public_share import router as public_share_router
 from app.middleware.csrf import CsrfMiddleware
+from app.models.user import User
+from app.services.auth_service import require_admin
 
 
 def _run_alembic_upgrade() -> None:
@@ -140,6 +142,10 @@ app = FastAPI(
     version=settings.APP_VERSION,
     docs_url=None,  # Disable default docs to use offline Swagger UI
     redoc_url=None,
+    # 預設 ``/openapi.json`` 是 unauth public,任何訪客都能拿到完整 API schema
+    # (含 admin endpoints 的 request body shape) 做 recon。設 None 關掉內建路由,
+    # 改用下方 admin-gated 版本。
+    openapi_url=None,
     lifespan=lifespan,
 )
 
@@ -178,13 +184,30 @@ if static_dir.exists():
 
 
 @app.get("/docs", include_in_schema=False)
-async def custom_swagger_ui():
+async def custom_swagger_ui(_admin: User = Depends(require_admin)):
+    """Offline Swagger UI — admin tier only (admin / owner)。
+
+    require_admin dependency 跑 side-effect:role 不符直接 raise 403。
+    瀏覽器要看 /docs 必須帶 valid session cookies + role in {admin, owner}。
+    Swagger UI 載入後會 fetch ``/openapi.json``,該路由同樣 admin-gated,
+    browser 帶 cookie 自然通過。
+    """
     return get_swagger_ui_html(
         openapi_url="/openapi.json",
         title=f"{settings.APP_NAME} - API 文件",
         swagger_js_url="/static/swagger-ui-bundle.js",
         swagger_css_url="/static/swagger-ui.css",
     )
+
+
+@app.get("/openapi.json", include_in_schema=False)
+async def custom_openapi(_admin: User = Depends(require_admin)):
+    """API schema — admin tier only。
+
+    替代 FastAPI 預設的 public ``/openapi.json``。未登入或非 admin tier 看到
+    403,擋住 recon 攻擊面(列舉 endpoints / request body shape)。
+    """
+    return app.openapi()
 
 
 @app.get("/health", tags=["health"])
