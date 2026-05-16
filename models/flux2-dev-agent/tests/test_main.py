@@ -75,3 +75,44 @@ def test_models_endpoint_lists_image_generator(client: TestClient):
     body = resp.json()
     ids = [m["id"] for m in body["data"]]
     assert "image-generator" in ids
+
+
+def test_chat_completions_returns_502_when_flux_fails(tmp_path: Path):
+    """Regression test: when the underlying flux/translator/store chain
+    raises, the endpoint must convert it to HTTP 502 (not 500 / not leak
+    the exception text into the response body).
+    """
+    translator = AsyncMock()
+    translator.translate.return_value = "x"
+
+    flux_client = AsyncMock()
+    flux_client.generate.side_effect = RuntimeError("simulated backend crash")
+
+    class _Ctx:
+        async def __aenter__(self):
+            return flux_client
+
+        async def __aexit__(self, *exc):
+            return None
+
+    app = build_app(
+        translator=translator,
+        flux_client_factory=lambda: _Ctx(),
+        image_store=ImageStore(local_dir=tmp_path, public_url_prefix="/uploads/flux"),
+        default_aspect_ratio="16:9",
+    )
+    client = TestClient(app)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "image-generator",
+            "messages": [{"role": "user", "content": "畫一張坦克"}],
+        },
+    )
+
+    assert resp.status_code == 502
+    body = resp.json()
+    assert body["detail"] == "image generation failed"
+    # Critical: the actual exception text MUST NOT appear in the response.
+    assert "simulated backend crash" not in str(body)
