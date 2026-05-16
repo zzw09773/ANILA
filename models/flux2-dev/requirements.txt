@@ -2,10 +2,13 @@ fastapi==0.115.5
 uvicorn[standard]==0.32.1
 pydantic==2.9.2
 # Inference deps (NOT pinned exact because we layer on top of a CUDA base image)
-torch==2.4.0
-diffusers>=0.32.0
-transformers>=4.46.0
-accelerate>=1.1.0
+torch==2.6.0
+# Pin diffusers >= 0.36 (FLUX.2-dev requires Flux2Pipeline added in 0.36.0.dev0)
+diffusers>=0.36.0,<0.40.0
+# Pin transformers <5 — transformers 5.x's moe.py uses torch.library.custom_op
+# signatures that torch 2.4.0 cannot infer (ValueError on import). 4.50.x works.
+transformers>=4.50.0,<5.0
+accelerate>=1.1.0,<2.0
 sentencepiece
 protobuf
 safetensors

@@ -293,7 +293,8 @@ services:
     restart: unless-stopped
     networks: [models]
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health > /dev/null"]
+      # Agent image is python:3.11-slim and has no curl in PATH. Use urllib.
+      test: ["CMD-SHELL", "python -c \"import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=5).status == 200 else 1)\""]
       interval: 30s
       timeout: 10s
       retries: 5

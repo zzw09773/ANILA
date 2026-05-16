@@ -126,6 +126,8 @@ runtime_logic/node_modules/
 # stays self-documenting for fresh checkouts.
 share/static/
 share/uploads/
+share-dev/static/
+share-dev/uploads/
 # code-server 的工作目錄（C3 收斂後，預設不再掛 repo root）。
 # 由 ops 自行決定要塞什麼進這個 sandbox；不 commit 內容。
 share/codeserver-sandbox/
