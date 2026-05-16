@@ -42,11 +42,11 @@ def build_app(
     )
 
     @app.get("/health")
-    def _health() -> dict[str, str]:
+    def _health() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]
         return {"status": "ok"}
 
     @app.get("/v1/models")
-    def _list_models() -> dict:
+    def _list_models() -> dict:  # pyright: ignore[reportUnusedFunction]
         return {
             "object": "list",
             "data": [
@@ -55,7 +55,7 @@ def build_app(
         }
 
     @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
-    async def _chat_completions(req: ChatCompletionRequest) -> ChatCompletionResponse:
+    async def _chat_completions(req: ChatCompletionRequest) -> ChatCompletionResponse:  # pyright: ignore[reportUnusedFunction]
         try:
             return await handler.handle(req)
         except Exception:
