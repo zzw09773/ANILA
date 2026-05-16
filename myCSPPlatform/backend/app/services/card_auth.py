@@ -41,11 +41,23 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
+import re
 from dataclasses import dataclass
 
 from cryptography import x509
 from cryptography.hazmat.primitives.serialization import pkcs7
 from cryptography.x509.oid import ExtensionOID, NameOID
+
+
+# 中科院員工編號:純數字,目前觀察到 7 digits (例:1147259、1090868);
+# 6/8/9 留邊界給歷史與未來 ID schema 變化。
+# 拒絕非數字字串是 defense-in-depth:即使內網 trust model 把 cert 信任邊界放
+# 在 client-side HiPKI,backend username 一旦被注入 'admin'/'../etc' 等字串,
+# 下游 ORM / audit log / role 判斷的攻擊面就被打開。
+#
+# 用 ``\A...\Z`` 而非 ``^...$`` — Python 預設模式 ``$`` 仍接受字串末端的 newline,
+# 嚴格結尾須用 ``\Z``,避免 "1147259\n" 之類意外通過。
+_EMPLOYEE_ID_RE = re.compile(r"\A\d{6,9}\Z")
 
 
 logger = logging.getLogger(__name__)
@@ -151,6 +163,12 @@ def _extract_claims(
     employee_id = _attr_or_none(cert, NameOID.SERIAL_NUMBER)
     if not employee_id:
         raise MissingClaimError("signer cert 缺 subject.serialNumber (員工編號)")
+    if not _EMPLOYEE_ID_RE.match(employee_id):
+        # 格式不符院內 schema — 拒絕當成合法身分。raise MissingClaimError 而非
+        # 另開 exception class,讓 endpoint 對映同一條 401 處理。
+        raise MissingClaimError(
+            f"signer cert.subject.serialNumber 格式不符員工編號規格: {employee_id!r}"
+        )
 
     display_name = _attr_or_none(cert, NameOID.COMMON_NAME)
     if not display_name:

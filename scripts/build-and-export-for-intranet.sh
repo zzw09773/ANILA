@@ -9,12 +9,16 @@
 #   bash scripts/build-and-export-for-intranet.sh [OUTPUT_DIR]
 #   OUTPUT_DIR 預設 /tmp/anila-images-export
 #
+# 環境變數:
+#   WITH_MODELS=1   把 4 個 model image 一起打包進 04-models.tar.gz。
+#                    預設 OFF — model image 太大 (45+GB) 通常走別的管道進內網。
+#
 # 輸出:
 #   $OUTPUT_DIR/
 #     ├── 01-anila-built.tar.gz      (csp / ui / lm / worker / router / pptx)
 #     ├── 02-base.tar.gz             (postgres / redis / nginx)
 #     ├── 03-cold.tar.gz             (codeserver / n8n / gitlab)
-#     ├── 04-models.tar.gz           (4 個 model image,若 host 上沒就跳過)
+#     ├── 04-models.tar.gz           (僅當 WITH_MODELS=1)
 #     ├── INTRANET-LOAD.sh           (內網端用的 import 腳本)
 #     └── MANIFEST.txt               (image 清單 + 大小,給 IT 對 checksum)
 #
@@ -87,35 +91,44 @@ docker save \
     gitlab/gitlab-ce:16.10.10-ce.0 \
   | gzip > "$OUTPUT_DIR/03-cold.tar.gz"
 
-# ── Phase 4: model image (可選) ──────────────────────────────────────────
-# Model images 由 models/docker-compose.yml 定義,通常事先 build 好放在
-# host 上。如果本機 docker image 找得到就 save,找不到就略過 (印警告)。
-echo "  • 04-models.tar.gz (optional — skipped if image missing)"
-MODEL_IMAGES=(
-    tensorrt-llm-hf:1.3.0rc10
-    vllm-gemma4:latest
-    tritonserver:25.04-nv-embed-v2
-    embedding-proxy:migration
-)
-EXISTING_MODELS=()
-for img in "${MODEL_IMAGES[@]}"; do
-    if docker image inspect "$img" >/dev/null 2>&1; then
-        EXISTING_MODELS+=("$img")
-    else
-        echo "    ⚠  missing on host, skip: $img"
-    fi
-done
+# ── Phase 4: model image (預設跳過,WITH_MODELS=1 啟用) ──────────────────
+# Model image 動輒 45+ GB (Triton + TensorRT-LLM + vLLM weights),通常走
+# 別的管道 (USB / 內部資料閘道) 進內網。預設不打包,需要時:
+#   WITH_MODELS=1 bash scripts/build-and-export-for-intranet.sh
+if [ "${WITH_MODELS:-0}" = "1" ]; then
+    echo "  • 04-models.tar.gz (WITH_MODELS=1)"
+    MODEL_IMAGES=(
+        tensorrt-llm-hf:1.3.0rc10
+        vllm-gemma4:latest
+        tritonserver:25.04-nv-embed-v2
+        embedding-proxy:migration
+    )
+    EXISTING_MODELS=()
+    for img in "${MODEL_IMAGES[@]}"; do
+        if docker image inspect "$img" >/dev/null 2>&1; then
+            EXISTING_MODELS+=("$img")
+        else
+            echo "    ⚠  missing on host, skip: $img"
+        fi
+    done
 
-if [ ${#EXISTING_MODELS[@]} -gt 0 ]; then
-    docker save "${EXISTING_MODELS[@]}" | gzip > "$OUTPUT_DIR/04-models.tar.gz"
-    echo "    ✓ Saved ${#EXISTING_MODELS[@]} model image(s)"
+    if [ ${#EXISTING_MODELS[@]} -gt 0 ]; then
+        docker save "${EXISTING_MODELS[@]}" | gzip > "$OUTPUT_DIR/04-models.tar.gz"
+        echo "    ✓ Saved ${#EXISTING_MODELS[@]} model image(s)"
+    else
+        echo "    (no model images found — 04-models.tar.gz not created)"
+    fi
 else
-    echo "    (no model images on host — 04-models.tar.gz not created)"
+    echo "  • 04-models.tar.gz — skipped (WITH_MODELS=0,model 走別的管道進內網)"
 fi
 echo
 
 # ── Phase 5: 寫 manifest + intranet import script ────────────────────────
 echo "▶ [4/5] Writing MANIFEST.txt + INTRANET-LOAD.sh..."
+
+# CHECKSUMS.sha256:純機器可讀格式 (相對路徑),供 INTRANET-LOAD.sh 內網端
+# `sha256sum -c` 自動驗檔用。MANIFEST.txt 內也保留一份人類可讀版,給 IT 對檔。
+( cd "$OUTPUT_DIR" && sha256sum *.tar.gz > CHECKSUMS.sha256 )
 
 {
     echo "ANILA Platform — Intranet Image Bundle"
@@ -128,18 +141,36 @@ echo "▶ [4/5] Writing MANIFEST.txt + INTRANET-LOAD.sh..."
     echo "── Image files ────────────────────────────────────────"
     ls -lh "$OUTPUT_DIR"/*.tar.gz 2>/dev/null
     echo
-    echo "── SHA256 checksum (IT 對檔用) ─────────────────────────"
-    sha256sum "$OUTPUT_DIR"/*.tar.gz
+    echo "── SHA256 checksum (IT 對檔用,機器驗檔請用 CHECKSUMS.sha256) ──"
+    cat "$OUTPUT_DIR/CHECKSUMS.sha256"
 } > "$OUTPUT_DIR/MANIFEST.txt"
 
 cat > "$OUTPUT_DIR/INTRANET-LOAD.sh" <<'EOF'
 #!/usr/bin/env bash
 # INTRANET-LOAD.sh — 內網端 docker load 用。執行前確認:
 #   1. docker 已裝且能跑 (docker info 不報錯)
-#   2. 跟此檔同目錄底下放著 01~04-*.tar.gz
+#   2. 跟此檔同目錄底下放著 01~04-*.tar.gz + CHECKSUMS.sha256
 #   3. /home/aia/c1147259/ANILA repo 已 clone 到內網機器 (帶 .env 進去)
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
+
+# ── SHA256 完整性檢查 (供應鏈防護) ──────────────────────────────────────
+# tar.gz 從外網機器經 USB / 內部閘道送進內網,任何中途竄改都可能塞後門進
+# image。`sha256sum -c` 比對 build 時計算的 hash,不通過就拒絕 load。
+if [ -f CHECKSUMS.sha256 ]; then
+    echo "── Verifying SHA256 checksums ──"
+    if ! sha256sum -c CHECKSUMS.sha256; then
+        echo
+        echo "✗ Checksum mismatch — tar.gz 與 build 時的 hash 不符,拒絕 load。"
+        echo "  可能原因:傳輸中損毀、或檔案被竄改。請重新從外網取得 bundle。"
+        exit 1
+    fi
+    echo "✓ All checksums verified."
+    echo
+else
+    echo "⚠ CHECKSUMS.sha256 不存在 — 略過完整性檢查 (不建議在 prod 用)"
+    echo
+fi
 
 echo "── Loading ANILA images into local docker ──"
 for tar in 01-anila-built.tar.gz 02-base.tar.gz 03-cold.tar.gz 04-models.tar.gz; do

@@ -12,11 +12,14 @@ Three cookies make up the Wave 2 session:
   echoes the value back as the ``X-CSRF-Token`` header on mutating
   requests (double-submit pattern, see ``middleware/csrf.py``).
 
-``samesite="lax"`` is used instead of ``strict`` because OIDC callbacks
-land from the IdP's origin (top-level navigation) and Strict would
-suppress the cookies on that initial arrival — breaking SSO. Lax still
-blocks the scariest CSRF shapes (cross-site POST) and the explicit CSRF
-token layer covers the rest.
+SameSite policy 條件式選擇 (見 ``_cookie_samesite``):
+- **card-only mode** (``REQUIRE_CARD_LOGIN_ONLY=true``,內網 prod):升 ``Strict``。
+  這個模式下沒有 OIDC top-level callback (endpoint 已 lockdown 404),Strict 不
+  會 break 任何 flow,反而連 cross-site GET navigation 都不帶 cookie,徹底擋
+  掉 CSRF surface。
+- **其他模式** (含 OIDC SSO / 本機帳密):維持 ``Lax``。OIDC callback 從 IdP
+  origin 經 top-level navigation 進來,Strict 會 suppress cookie 害 SSO 壞掉。
+  Lax 仍擋住 cross-site POST 這類最危險形狀,雙保險靠 CSRF token 那層。
 """
 
 from __future__ import annotations
@@ -40,6 +43,14 @@ def _cookie_secure() -> bool:
     return bool(settings.COOKIE_SECURE)
 
 
+def _cookie_samesite() -> str:
+    """``REQUIRE_CARD_LOGIN_ONLY`` 模式沒有 OIDC top-level callback 需求,
+    可升 SameSite=Strict 收緊 CSRF 防線;非 card-only mode (含 OIDC SSO)
+    維持 Lax 讓 IdP redirect 能帶回 cookie。
+    """
+    return "strict" if settings.REQUIRE_CARD_LOGIN_ONLY else "lax"
+
+
 def set_session_cookies(
     response: Response, *, access_token: str, refresh_token: str
 ) -> str:
@@ -58,7 +69,7 @@ def set_session_cookies(
         max_age=access_max_age,
         httponly=True,
         secure=_cookie_secure(),
-        samesite="lax",
+        samesite=_cookie_samesite(),
         path="/",
     )
     response.set_cookie(
@@ -67,7 +78,7 @@ def set_session_cookies(
         max_age=refresh_max_age,
         httponly=True,
         secure=_cookie_secure(),
-        samesite="lax",
+        samesite=_cookie_samesite(),
         path=REFRESH_COOKIE_PATH,
     )
 
@@ -78,7 +89,7 @@ def set_session_cookies(
         max_age=access_max_age,
         httponly=False,  # SPA must read this
         secure=_cookie_secure(),
-        samesite="lax",
+        samesite=_cookie_samesite(),
         path="/",
     )
     return csrf_token

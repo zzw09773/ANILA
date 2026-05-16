@@ -30,6 +30,21 @@ logger = logging.getLogger(__name__)
 # Known dev placeholders shipped in .env.example / docker-compose. Any
 # env-resolved value matching one of these — case-insensitive, stripped —
 # fails the startup check unless ANILA_ALLOW_DEV_SECRET=1.
+#
+# 兩類 placeholder:
+#   1. dev defaults (e.g. "dev-secret-key-change-in-prod") — 給 dev 一鍵跑用
+#   2. prod template placeholders (e.g. "<openssl rand -hex 32>") — .env.example
+#      的「請你 replace 我」標記。Ops 忘了 replace 時 startup 直接 fail,而不是
+#      用字面字串當 SECRET_KEY 跑起來。
+_PROD_PLACEHOLDERS = frozenset({
+    "<openssl rand -hex 32>",
+    "<openssl rand -base64 24>",
+    "<openssl rand -base64 32>",
+    "<sk-internal-<openssl rand -hex 24>>",
+    "<your-employee-id,or-csv-list>",
+    "<your-intranet-fqdn-or-ip>",
+})
+
 _KNOWN_DEFAULTS: dict[str, frozenset[str]] = {
     "SECRET_KEY": frozenset({
         "your-secret-key-change-this-in-production",
@@ -37,15 +52,19 @@ _KNOWN_DEFAULTS: dict[str, frozenset[str]] = {
         "change-me",
         "change_me",
         "secret",
-    }),
-    "ADMIN_PASSWORD": frozenset({"changeme", "password", "admin"}),
-    "CSP_SERVICE_TOKEN": frozenset({"dev-service-token", "changeme"}),
-    "DB_PASSWORD": frozenset({"csp_password", "csp", "postgres", "password"}),
+    }) | _PROD_PLACEHOLDERS,
+    "ADMIN_PASSWORD": frozenset({"changeme", "password", "admin"}) | _PROD_PLACEHOLDERS,
+    "CSP_SERVICE_TOKEN": frozenset({"dev-service-token", "changeme"}) | _PROD_PLACEHOLDERS,
+    "DB_PASSWORD": frozenset({"csp_password", "csp", "postgres", "password"}) | _PROD_PLACEHOLDERS,
     "INTERNAL_PLATFORM_API_KEY": frozenset({
         "sk-internal-worker-changeme",
         "sk-changeme",
-    }),
-    "CODESERVER_PASSWORD": frozenset({"changeme-codeserver", "changeme"}),
+    }) | _PROD_PLACEHOLDERS,
+    "CODESERVER_PASSWORD": frozenset({"changeme-codeserver", "changeme"}) | _PROD_PLACEHOLDERS,
+    # ANILA_HOST 沒有真正的 dev default (compose 端用 ${ANILA_HOST:?} 強制設值),
+    # 只需擋 .env.example 的「請填我」placeholder。空值不算 offender — compose
+    # 階段就會 fail-fast,輪不到這裡判。
+    "ANILA_HOST": _PROD_PLACEHOLDERS,
 }
 
 
