@@ -93,3 +93,50 @@ async def test_translator_falls_back_to_original_on_gemma_error():
 
     # Translation failed but we still got a usable string back.
     assert out == "原始輸入"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_translator_falls_back_on_malformed_response_shape():
+    """gemma4 returned 200 + valid JSON but wrong shape — must not crash,
+    must fall back to original input."""
+    respx.post("http://csp:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": []},  # empty choices → IndexError on choices[0]
+        )
+    )
+
+    translator = PromptTranslator(
+        csp_base_url="http://csp:8000",
+        csp_api_key="sk-test",
+        gemma_model="gemma4",
+        enabled=True,
+    )
+    out = await translator.translate("原始輸入")
+
+    assert out == "原始輸入"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_translator_falls_back_on_unexpected_choice_type():
+    """gemma4 returned a choice that isn't a dict — must not crash,
+    must fall back to original input. Regression test: prior except tuple
+    missed TypeError/AttributeError, violating the documented fallback policy."""
+    respx.post("http://csp:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": None}}]},  # None.strip() → AttributeError
+        )
+    )
+
+    translator = PromptTranslator(
+        csp_base_url="http://csp:8000",
+        csp_api_key="sk-test",
+        gemma_model="gemma4",
+        enabled=True,
+    )
+    out = await translator.translate("原始輸入")
+
+    assert out == "原始輸入"
