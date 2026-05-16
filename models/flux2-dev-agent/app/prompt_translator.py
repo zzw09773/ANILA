@@ -75,6 +75,6 @@ class PromptTranslator:
             data = resp.json()
             content = data["choices"][0]["message"]["content"].strip()
             return content or user_text
-        except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
-            logger.warning("prompt translation errored (%s); falling back to original", exc)
+        except Exception:
+            logger.exception("prompt translation errored; falling back to original")
             return user_text
