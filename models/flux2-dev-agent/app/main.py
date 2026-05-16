@@ -17,7 +17,7 @@ from typing import Callable
 
 from fastapi import FastAPI, HTTPException
 
-from .chat_handler import ChatHandler
+from .chat_handler import ChatHandler, _FluxClientCtxProto
 from .flux_client import FluxClient
 from .image_store import ImageStore
 from .prompt_translator import PromptTranslator
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 def build_app(
     *,
     translator,
-    flux_client_factory: Callable,
+    flux_client_factory: Callable[[], _FluxClientCtxProto],
     image_store: ImageStore,
     default_aspect_ratio: str,
 ) -> FastAPI:
@@ -60,7 +60,7 @@ def build_app(
             return await handler.handle(req)
         except Exception as exc:
             logger.exception("flux generation failed")
-            raise HTTPException(status_code=502, detail=f"image generation failed: {exc}")
+            raise HTTPException(status_code=502, detail="image generation failed")
 
     return app
 
@@ -75,6 +75,12 @@ def _build_from_env() -> FastAPI:
     public_prefix = os.environ.get("PUBLIC_URL_PREFIX", "/uploads/flux")
     aspect_ratio = os.environ.get("DEFAULT_ASPECT_RATIO", "16:9")
     flux_timeout = float(os.environ.get("FLUX_TIMEOUT_SECONDS", "180"))
+
+    if enable_translation and not csp_api_key:
+        logger.warning(
+            "ENABLE_PROMPT_TRANSLATION=1 but CSP_API_KEY is empty; "
+            "prompt translation is disabled. FLUX will receive raw user input."
+        )
 
     translator = PromptTranslator(
         csp_base_url=csp_base_url,
