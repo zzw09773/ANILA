@@ -216,6 +216,89 @@ services:
       retries: 5
       start_period: 30s
 
+  # ── Image generation: FLUX.2-dev on GPU 1 + GPU 2 ─────────────────────────
+  # bf16 dual-H100 via diffusers Flux2Pipeline (device_map="balanced").
+  # No host port — agent shim is the only client. Soldier-facing UX
+  # never sees this service directly; chat 走 router → DISPATCH:image-generator
+  # → CSP proxy → flux2-dev-agent → flux2-dev.
+  #
+  # License caveat: black-forest-labs/FLUX.2-dev is BFL Non-Commercial.
+  # Confirm authorization before enabling in production.
+  flux2-dev:
+    image: flux2-dev:bf16
+    container_name: anila-model-flux2-dev
+    build:
+      context: ./flux2-dev
+    environment:
+      TZ: Asia/Taipei
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      FLUX_MODEL_PATH: /workspace/model/FLUX.2-dev
+      FLUX_DEVICE_MAP: balanced
+      FLUX_NUM_STEPS: "28"
+      FLUX_GUIDANCE_SCALE: "3.5"
+    volumes:
+      - /home/aia/c1147259/project/Huggingface/FLUX.2-dev:/workspace/model/FLUX.2-dev:ro
+    expose:
+      - "8000"
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1", "2"]
+              capabilities: [gpu]
+    shm_size: 32g
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    networks: [models]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health > /dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 300s
+
+  # ── Image generation agent shim (OpenAI compat front for flux2-dev) ───────
+  # CSP registers THIS as the agent endpoint (model_type=agent). When
+  # gemma4 emits DISPATCH:image-generator:..., CSP forwards the request
+  # here. Shim handles prompt translation (zh→en via gemma4 callback)
+  # and image persistence; binds /share/flux from share-dev/uploads/flux.
+  flux2-dev-agent:
+    image: anila-flux-agent:latest
+    container_name: anila-model-flux2-dev-agent
+    build:
+      context: ./flux2-dev-agent
+    environment:
+      TZ: Asia/Taipei
+      FLUX_BACKEND_URL: http://flux2-dev:8000
+      CSP_BASE_URL: http://csp:8000
+      CSP_API_KEY: ${INTERNAL_PLATFORM_API_KEY_DEV:-sk-internal-worker-dev-changeme}
+      GEMMA_MODEL: gemma4
+      ENABLE_PROMPT_TRANSLATION: "1"
+      SHARE_DIR: /share/flux
+      PUBLIC_URL_PREFIX: /uploads/flux
+      DEFAULT_ASPECT_RATIO: "16:9"
+      FLUX_TIMEOUT_SECONDS: "240"
+    volumes:
+      - /home/aia/c1147259/ANILA/share-dev/uploads/flux:/share/flux
+    expose:
+      - "8000"
+    depends_on:
+      flux2-dev:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [models]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health > /dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
 networks:
   models:
     external: true
