@@ -1,5 +1,7 @@
 # Match the CUDA major.minor of the host driver (H100 typically 12.x).
-# pytorch 2.4 wheels target cu124.
+# pytorch 2.6 wheels target cu124. torch 2.4 cannot infer custom_op schemas
+# containing PEP 604 unions (e.g. `torch.Tensor | None`) which diffusers 0.38
+# and transformers >=5.x use; bumping to torch 2.6.0 fixes both import errors.
 FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
 
 ENV PYTHONUNBUFFERED=1 \
@@ -20,7 +22,7 @@ RUN ln -sf /usr/bin/python3.11 /usr/bin/python && \
 WORKDIR /workspace
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu124 torch==2.4.0 && \
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu124 torch==2.6.0 && \
     pip install --no-cache-dir -r requirements.txt
 
 COPY server.py .
