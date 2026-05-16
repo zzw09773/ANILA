@@ -15,6 +15,10 @@ export const resetUserPassword = (id, data) =>
 export const deactivateUser = (id) =>
   client.delete(`/api/users/${id}`)
 
+// Owner-only, irreversible. Backend rejects (409) if user owns any agent.
+export const purgeUser = (id) =>
+  client.delete(`/api/users/${id}/purge`)
+
 export const getMyAllowedModels = () =>
   client.get('/api/users/me/allowed-models')
 

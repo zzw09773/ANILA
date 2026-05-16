@@ -142,3 +142,4 @@ share/codeserver-sandbox/
 # stays tracked at docs/onyx-target-system-api-spec.md and
 # docs/onyx-application-plan.md.
 onyx/
+n8n_DATA

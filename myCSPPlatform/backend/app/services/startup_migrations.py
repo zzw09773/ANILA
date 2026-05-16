@@ -25,9 +25,7 @@ from app.database import SessionLocal, engine
 from app.models.api_key import ApiKey, ApiKeyModelPermission
 from app.models.alert import Alert
 from app.models.audit_log import AuditLog
-from app.models.auth_provider import AuthProvider
 from app.models.department import Department
-from app.models.external_identity import ExternalIdentity
 from app.models.model_registry import ModelRegistry
 from app.models.platform_link import PlatformLink
 from app.models.token_usage import TokenUsage
@@ -46,10 +44,8 @@ LEGACY_SQLITE_DEFAULTS = [
 # Tables migrated from SQLite, in FK-safe order.
 # Each entry: (sqlite_table, sqlalchemy_model)
 MIGRATION_ORDER = [
-    ("auth_providers", AuthProvider),
     ("departments", Department),
     ("users", User),
-    ("external_identities", ExternalIdentity),
     ("model_registry", ModelRegistry),
     ("platform_links", PlatformLink),
     ("alerts", Alert),
@@ -112,18 +108,6 @@ def _ensure_schema_backfills(bind: Engine) -> None:
         bind, "users", "updated_at",
         postgres_ddl="ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NULL",
         generic_ddl="ALTER TABLE users ADD COLUMN updated_at TIMESTAMP",
-    )
-    # Sprint 6 X / B2：local_password_disabled flag。defaults FALSE，所以
-    # 既有 row 載入後仍能用本機密碼登入；admin 切換才禁用。
-    _ensure_column(
-        bind, "users", "local_password_disabled",
-        postgres_ddl=(
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
-            "local_password_disabled BOOLEAN NOT NULL DEFAULT FALSE"
-        ),
-        generic_ddl=(
-            "ALTER TABLE users ADD COLUMN local_password_disabled BOOLEAN NOT NULL DEFAULT 0"
-        ),
     )
 
     # --- model_registry --------------------------------------------------
@@ -212,45 +196,6 @@ def _ensure_schema_backfills(bind: Engine) -> None:
         postgres_ddl="ALTER TABLE departments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NULL",
         generic_ddl="ALTER TABLE departments ADD COLUMN updated_at TIMESTAMP",
     )
-
-    # --- auth_providers (0001 baseline omitted the OIDC/LDAP columns) ---
-    for col_name, ddl_suffix in [
-        ("default_role", "VARCHAR(20) NOT NULL DEFAULT 'user'"),
-        ("button_text", "VARCHAR(100) NULL"),
-        ("auto_create_users", "BOOLEAN NULL DEFAULT TRUE"),
-        ("default_department_id", "INTEGER NULL"),
-        ("updated_at", "TIMESTAMP NULL"),
-        ("oidc_client_id", "VARCHAR(255) NULL"),
-        # client_secret 改 envelope（base64(nonce|tag|ct)），需更寬欄位
-        ("oidc_client_secret", "VARCHAR(2000) NULL"),
-        ("oidc_issuer_url", "VARCHAR(255) NULL"),
-        ("oidc_authorization_endpoint", "VARCHAR(255) NULL"),
-        ("oidc_token_endpoint", "VARCHAR(255) NULL"),
-        ("oidc_userinfo_endpoint", "VARCHAR(255) NULL"),
-        ("oidc_scopes", "VARCHAR(255) NULL"),
-        ("oidc_subject_claim", "VARCHAR(100) NULL"),
-        ("oidc_username_claim", "VARCHAR(100) NULL"),
-        ("oidc_email_claim", "VARCHAR(100) NULL"),
-        # ldap_* 欄位由 0021 migration 直接 DROP；這裡不再 ensure 它們存在。
-    ]:
-        _ensure_column(
-            bind, "auth_providers", col_name,
-            postgres_ddl=f"ALTER TABLE auth_providers ADD COLUMN IF NOT EXISTS {col_name} {ddl_suffix}",
-            generic_ddl=f"ALTER TABLE auth_providers ADD COLUMN {col_name} {ddl_suffix}",
-        )
-
-    # --- external_identities -------------------------------------------
-    for col_name, ddl_suffix in [
-        ("external_subject", "VARCHAR(255) NOT NULL DEFAULT ''"),
-        ("external_username", "VARCHAR(255) NULL"),
-        ("external_email", "VARCHAR(255) NULL"),
-        ("last_login_at", "TIMESTAMP NULL"),
-    ]:
-        _ensure_column(
-            bind, "external_identities", col_name,
-            postgres_ddl=f"ALTER TABLE external_identities ADD COLUMN IF NOT EXISTS {col_name} {ddl_suffix}",
-            generic_ddl=f"ALTER TABLE external_identities ADD COLUMN {col_name} {ddl_suffix}",
-        )
 
     # --- api_keys ------------------------------------------------------
     for col_name, ddl_suffix in [

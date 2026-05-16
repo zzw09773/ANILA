@@ -14,10 +14,8 @@ from app.models.alert import Alert
 from app.models.api_key import ApiKey, ApiKeyModelPermission
 from app.models.attachment import Attachment
 from app.models.audit_log import AuditLog
-from app.models.auth_provider import AuthProvider
 from app.models.conversation import Conversation
 from app.models.department import Department
-from app.models.external_identity import ExternalIdentity
 from app.models.handoff import Handoff
 from app.models.ingestion import (
     AgentLlmCredential,  # back-compat alias for UserLlmCredential
@@ -44,10 +42,8 @@ __all__ = [
     "ApiKeyModelPermission",
     "Attachment",
     "AuditLog",
-    "AuthProvider",
     "Conversation",
     "Department",
-    "ExternalIdentity",
     "AgentLlmCredential",
     "ConversationMemoryChunk",
     "Handoff",

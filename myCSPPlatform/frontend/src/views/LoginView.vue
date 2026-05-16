@@ -23,7 +23,7 @@
           </li>
         </ol>
 
-        <TermBox title="auth · local session" pad="lg" hint="local · ldap · oidc">
+        <TermBox title="auth · local session" pad="lg" hint="local">
           <form class="login__form" @submit.prevent="handleLogin" autocomplete="on">
             <TermField label="username">
               <input
@@ -58,46 +58,24 @@
             </div>
 
             <p class="login__hint">
-              <TermKbd>↵</TermKbd> submit · <TermKbd>Tab</TermKbd> field · <TermKbd>1</TermKbd>–<TermKbd>9</TermKbd> sso provider
+              <TermKbd>↵</TermKbd> submit · <TermKbd>Tab</TermKbd> field
             </p>
           </form>
         </TermBox>
 
-        <TermBox v-if="oidcProviders.length" title="auth · single sign-on" pad="md">
-          <ul class="login__sso">
-            <li
-              v-for="(provider, i) in oidcProviders"
-              :key="provider.id"
-              class="login__sso-row"
-            >
-              <span class="login__sso-key">[{{ i + 1 }}]</span>
-              <span class="login__sso-name">{{ provider.name }}</span>
-              <span class="login__sso-meta">oidc · {{ provider.button_text || `${provider.name} provider` }}</span>
-              <button
-                type="button"
-                class="login__sso-btn"
-                :disabled="oidcLoadingId === provider.id"
-                @click="handleOidcLogin(provider)"
-              >
-                {{ oidcLoadingId === provider.id ? 'redirecting…' : 'connect →' }}
-              </button>
-            </li>
-          </ul>
-        </TermBox>
-
         <p class="login__legal">
-          ANILA · CSP control plane &nbsp;·&nbsp; on-prem &nbsp;·&nbsp; access requires admin approval
+          ANILA · CSP control plane &nbsp;·&nbsp; on-prem &nbsp;·&nbsp; admin approval required after registration
         </p>
       </section>
     </main>
 
-    <!-- Register modal ------------------------------------------------- -->
-    <TermModal :visible="showRegisterModal" title="register · self-service" width="480px" @close="closeRegisterModal">
+    <!-- Register modal · admin-approved pending signup -->
+    <TermModal :visible="showRegisterModal" title="register · admin-approved" width="480px" @close="closeRegisterModal">
       <div v-if="!regSuccess" class="login__reg">
         <TermField label="username">
           <input v-model="reg.username" class="term-input" placeholder="e.g. j.smith" autocomplete="username" />
         </TermField>
-        <TermField label="email">
+        <TermField label="email" hint="optional">
           <input v-model="reg.email" type="email" class="term-input" placeholder="user@corp.example" autocomplete="email" />
         </TermField>
         <TermField label="password" hint="8+ chars · upper · lower · symbol">
@@ -131,7 +109,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
-import { getOidcStartUrl, listPublicAuthProviders, register as registerApi } from '../api/auth'
+import { register as registerApi } from '../api/auth'
 import { useTheme } from '../composables/useTheme'
 import TermLogo from '../components/cli/TermLogo.vue'
 import TermBox from '../components/cli/TermBox.vue'
@@ -150,8 +128,6 @@ const password = ref('')
 const error = ref('')
 const isPending = ref(false)
 const loading = ref(false)
-const oidcLoadingId = ref(null)
-const providers = ref([])
 
 const showRegisterModal = ref(false)
 const registering = ref(false)
@@ -159,8 +135,17 @@ const regError = ref('')
 const regSuccess = ref('')
 const reg = ref({ username: '', email: '', password: '' })
 
-// Stable boot sequence — purely cosmetic but reinforces the terminal frame.
-// Timestamps anchored to load to feel real instead of random.
+const SPECIAL_CHARS = '!@#$%^&*()_+-=[]{}|;:,.<>?/~`"\'\\'
+function hasSpecial(str) { return [...str].some(c => SPECIAL_CHARS.includes(c)) }
+
+const canRegister = computed(() =>
+  reg.value.username &&
+  reg.value.password.length >= 8 &&
+  /[A-Z]/.test(reg.value.password) &&
+  /[a-z]/.test(reg.value.password) &&
+  hasSpecial(reg.value.password)
+)
+
 const bootLines = ref([])
 const t0 = Date.now()
 function ts(offsetMs) {
@@ -169,81 +154,29 @@ function ts(offsetMs) {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
-const SPECIAL_CHARS = '!@#$%^&*()_+-=[]{}|;:,.<>?/~`"\'\\'
-function hasSpecial(str) { return [...str].some(c => SPECIAL_CHARS.includes(c)) }
-
-const canRegister = computed(() =>
-  reg.value.username &&
-  reg.value.email &&
-  reg.value.password.length >= 8 &&
-  /[A-Z]/.test(reg.value.password) &&
-  /[a-z]/.test(reg.value.password) &&
-  hasSpecial(reg.value.password)
-)
-
-const oidcProviders = computed(() =>
-  providers.value.filter(p => p.provider_type === 'oidc')
-)
-
-async function fetchProviders() {
-  try {
-    const { data } = await listPublicAuthProviders()
-    providers.value = data
-  } catch {
-    providers.value = []
-  }
-  // Patch the boot log with whatever the providers tell us is wired up.
+onMounted(() => {
   bootLines.value = [
     { ts: ts(0),   lvl: 'info', msg: 'ANILA · CSP control plane — booting tty/0' },
-    { ts: ts(40),  lvl: 'info', msg: 'loading auth providers...' },
-    { ts: ts(120), lvl: 'ok',   msg: `${providers.value.length} provider(s) registered` },
-    { ts: ts(180), lvl: 'info', msg: 'awaiting credentials' },
+    { ts: ts(40),  lvl: 'info', msg: 'local auth ready' },
+    { ts: ts(120), lvl: 'ok',   msg: 'awaiting credentials' },
   ]
-}
-
-onMounted(() => {
-  fetchProviders()
-  document.addEventListener('keydown', handleHotkey)
 })
-
-function handleHotkey(e) {
-  // Number keys trigger SSO providers when nothing else has focus on inputs.
-  if (e.target?.tagName === 'INPUT') return
-  const num = Number(e.key)
-  if (Number.isFinite(num) && num >= 1 && num <= oidcProviders.value.length) {
-    handleOidcLogin(oidcProviders.value[num - 1])
-  }
-}
 
 async function handleLogin() {
   error.value = ''
   isPending.value = false
   loading.value = true
   try {
-    await authStore.login(username.value, password.value, { auth_source: 'local' })
+    await authStore.login(username.value, password.value)
     router.push('/')
   } catch (e) {
     const detail = e.response?.data?.detail || 'login failed — check credentials'
-    if (detail.includes('等待核准') || detail.toLowerCase().includes('pending')) {
+    if (detail.includes('尚未開通') || detail.includes('等待核准') || detail.toLowerCase().includes('pending')) {
       isPending.value = true
     }
     error.value = detail
   } finally {
     loading.value = false
-  }
-}
-
-async function handleOidcLogin(provider) {
-  if (!provider) return
-  error.value = ''
-  isPending.value = false
-  oidcLoadingId.value = provider.id
-  try {
-    const { data } = await getOidcStartUrl(provider.id, '/')
-    window.location.href = data.authorization_url
-  } catch (e) {
-    error.value = e.response?.data?.detail || 'unable to start sso flow'
-    oidcLoadingId.value = null
   }
 }
 
@@ -253,6 +186,7 @@ function openRegisterModal() {
   regSuccess.value = ''
   showRegisterModal.value = true
 }
+
 function closeRegisterModal() {
   showRegisterModal.value = false
 }
@@ -261,7 +195,7 @@ async function handleRegister() {
   regError.value = ''
   registering.value = true
   try {
-    const { data } = await registerApi(reg.value.username, reg.value.email, reg.value.password)
+    const { data } = await registerApi(reg.value.username, reg.value.email || null, reg.value.password)
     regSuccess.value = data.message || 'registered — pending approval'
   } catch (e) {
     const detail = e.response?.data?.detail
@@ -385,38 +319,6 @@ async function handleRegister() {
 .login__msg.is-warn { color: var(--c-warn);   border-color: var(--c-warn);   background: var(--c-warn-soft); }
 .login__msg.is-ok   { color: var(--c-ok);     border-color: var(--c-ok);     background: var(--c-ok-soft); }
 .login__msg-glyph { font-weight: 600; }
-
-.login__sso {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-}
-.login__sso-row {
-  display: grid;
-  grid-template-columns: 28px 1fr auto auto;
-  align-items: center;
-  gap: var(--gap-3);
-  padding: var(--gap-2) 0;
-  border-top: var(--border-w) dashed var(--c-border);
-  font-size: var(--t-sm);
-}
-.login__sso-row:first-child { border-top: 0; }
-.login__sso-key { color: var(--c-fg-3); font-size: var(--t-xs); }
-.login__sso-name { color: var(--c-fg-1); font-weight: 500; }
-.login__sso-meta { color: var(--c-fg-3); font-size: var(--t-2xs); letter-spacing: 0.04em; }
-.login__sso-btn {
-  background: transparent;
-  color: var(--c-accent);
-  border: 0;
-  padding: 0;
-  font: inherit;
-  cursor: pointer;
-  font-size: var(--t-xs);
-}
-.login__sso-btn:hover { text-decoration: underline; }
-.login__sso-btn:disabled { color: var(--c-fg-3); cursor: not-allowed; }
 
 .login__legal {
   font-size: var(--t-2xs);

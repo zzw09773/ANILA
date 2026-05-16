@@ -9,9 +9,6 @@ encrypted at rest. This script reads every encrypted row, decrypts it
 Tables touched:
 
 - ``user_llm_credentials``: ``api_key_encrypted`` / ``_nonce`` / ``_tag``
-- ``auth_providers.oidc_client_secret``: ``enc::v1::`` envelope (the
-  envelope already encodes nonce + tag; we just round-trip
-  ``decode_oidc_client_secret`` → ``encode_oidc_client_secret``).
 
 Usage (inside the CSP container so SECRET_KEY is in env):
 
@@ -83,41 +80,6 @@ def _reencrypt_user_llm_credentials(db, *, apply: bool) -> tuple[int, int]:
     return total, migrated
 
 
-def _reencrypt_auth_providers(db, *, apply: bool) -> tuple[int, int]:
-    """Round-trip every ``auth_providers.oidc_client_secret`` envelope."""
-    from app.models.auth_provider import AuthProvider
-    from app.services.auth_provider_secret import (
-        decode_oidc_client_secret,
-        encode_oidc_client_secret,
-    )
-
-    before = legacy_fallback_count()
-    total = migrated = 0
-    rows = (
-        db.query(AuthProvider)
-        .filter(AuthProvider.oidc_client_secret.isnot(None))
-        .order_by(AuthProvider.id)
-        .all()
-    )
-    for row in rows:
-        total += 1
-        plaintext = decode_oidc_client_secret(row.oidc_client_secret)
-        if plaintext is None:
-            continue
-        if not apply:
-            # 仍要走 decrypt 以累積 legacy_fallback_count，但不寫 DB。
-            continue
-        row.oidc_client_secret = encode_oidc_client_secret(plaintext)
-    if apply:
-        db.commit()
-    migrated = legacy_fallback_count() - before
-    logger.info(
-        "auth_providers: %d rows scanned, %d migrated from v1 → v2",
-        total, migrated,
-    )
-    return total, migrated
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -134,14 +96,13 @@ def main() -> int:
     db = SessionLocal()
     try:
         u_total, u_migrated = _reencrypt_user_llm_credentials(db, apply=args.apply)
-        a_total, a_migrated = _reencrypt_auth_providers(db, apply=args.apply)
     finally:
         db.close()
 
     mode = "applied" if args.apply else "dry-run"
     logger.info(
         "[%s] total scanned=%d, v1→v2 migrated=%d",
-        mode, u_total + a_total, u_migrated + a_migrated,
+        mode, u_total, u_migrated,
     )
     return 0
 

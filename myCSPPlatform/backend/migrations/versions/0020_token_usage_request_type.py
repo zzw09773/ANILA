@@ -28,6 +28,18 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # Backfill ``request_timestamp`` if a previous deploy never got it.
+    # Migration 0001 baseline shipped ``token_usage`` with only ``created_at``;
+    # ``request_timestamp`` was added later via the SQLAlchemy model + the
+    # ``_ensure_schema_backfills`` startup hook. Fresh DBs (e.g. customer
+    # delivery clones) reach 0020 without ever having seen that backfill,
+    # so the index DDL below trips ``UndefinedColumn``. ``IF NOT EXISTS``
+    # is idempotent so live DBs that already have the column skip the ADD.
+    op.execute(
+        "ALTER TABLE token_usage ADD COLUMN IF NOT EXISTS request_timestamp "
+        "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP"
+    )
+
     op.add_column(
         "token_usage",
         sa.Column(

@@ -56,6 +56,7 @@
       <span><strong>{{ selectedUserIds.length }}</strong> selected · bulk ops dispatch existing endpoints sequentially</span>
       <div class="bulkbar__actions">
         <TermButton size="xs" @click="handleBulkApprove" label="bulk approve" />
+        <TermButton size="xs" @click="handleBulkReactivate" label="bulk reactivate" />
         <TermButton size="xs" variant="danger" @click="handleBulkDeactivate" label="bulk deactivate" />
         <TermButton size="xs" variant="ghost" @click="selectedUserIds = []" label="clear" />
       </div>
@@ -106,11 +107,18 @@
                 <button class="term-action" @click="openAllowedAgentsModal(user)">agents</button>
                 <span class="row-actions__sep">·</span>
                 <button class="term-action" @click="openResetPasswordModal(user)">reset-pw</button>
-                <span class="row-actions__sep">·</span>
-                <button v-if="!user.local_password_disabled" class="term-action" @click="handleToggleSsoOnly(user, true)" title="reject local password — sso-only">sso-only</button>
-                <button v-else class="term-action" @click="handleToggleSsoOnly(user, false)">unlock-pw</button>
-                <span v-if="user.is_active && user.is_approved" class="row-actions__sep">·</span>
-                <button v-if="user.is_active && user.is_approved" class="term-action term-action--danger" @click="handleDeactivate(user)">deactivate</button>
+                <template v-if="user.is_active && user.is_approved">
+                  <span class="row-actions__sep">·</span>
+                  <button class="term-action term-action--danger" @click="handleDeactivate(user)">deactivate</button>
+                </template>
+                <template v-if="!user.is_active">
+                  <span class="row-actions__sep">·</span>
+                  <button class="term-action" @click="handleReactivate(user)" title="重新啟用帳號 (API key 維持停用,須另外重發)">reactivate</button>
+                </template>
+                <template v-if="authStore.isOwner">
+                  <span class="row-actions__sep">·</span>
+                  <button class="term-action term-action--danger" @click="handlePurge(user)" title="完全刪除,不可復原">remove</button>
+                </template>
               </div>
             </td>
           </tr>
@@ -219,6 +227,7 @@ import {
   getUserAllowedAgents,
   getUserAllowedModels,
   listUsers,
+  purgeUser,
   resetUserPassword,
   updateUser,
   updateUserAllowedAgents,
@@ -387,14 +396,34 @@ async function handleDeactivate(user) {
     await fetchUsers()
   } catch (e) { setFeedback('error', e.response?.data?.detail || 'deactivate failed') }
 }
-async function handleToggleSsoOnly(user, disable) {
-  const action = disable ? 'switch to sso-only' : 'unlock local password'
-  if (!window.confirm(`${action} for '${user.username}'?`)) return
+async function handleReactivate(user) {
+  // 反轉 is_active=true。注意:之前 deactivate 連帶停掉的 API key 不會自動
+  // 重啟,admin 須自行決定是否重發 (避免疑似 compromise 的 key 復活)。
   try {
-    await updateUser(user.id, { local_password_disabled: disable })
-    setFeedback('success', disable ? `'${user.username}' is now sso-only` : `local-password unlocked for '${user.username}'`)
+    await updateUser(user.id, { is_active: true })
+    setFeedback('success', `reactivated '${user.username}' (API key 維持停用,如需請另外重發)`)
     await fetchUsers()
-  } catch (e) { setFeedback('error', e.response?.data?.detail || `${action} failed`) }
+  } catch (e) { setFeedback('error', e.response?.data?.detail || 'reactivate failed') }
+}
+async function handlePurge(user) {
+  // Typed-confirm: 必須輸入完整 username 才能 purge,避免誤觸點到「remove」誤刪。
+  // 國軍交付環境一旦 purge 不可逆,所以多一道輸入摩擦是值得的。
+  const typed = window.prompt(
+    `完全刪除使用者「${user.username}」?此動作不可復原。\n` +
+    `若確定,請輸入帳號名稱完整字串以確認:`
+  )
+  if (typed === null) return
+  if (typed !== user.username) {
+    setFeedback('error', '輸入不符,已取消')
+    return
+  }
+  try {
+    const { data } = await purgeUser(user.id)
+    setFeedback('success', data.message || `purged '${user.username}'`)
+    await fetchUsers()
+  } catch (e) {
+    setFeedback('error', e.response?.data?.detail || 'purge failed')
+  }
 }
 
 function toggleUserSelection(id, on) {
@@ -425,6 +454,15 @@ async function handleBulkDeactivate() {
   for (const u of targets) await deactivateUser(u.id)
   selectedUserIds.value = []
   setFeedback('success', `deactivated ${targets.length} users`)
+  await fetchUsers()
+}
+async function handleBulkReactivate() {
+  const targets = users.value.filter(u => selectedUserIds.value.includes(u.id) && !u.is_active)
+  if (!targets.length) { setFeedback('error', 'no inactive users in selection'); return }
+  if (!window.confirm(`reactivate ${targets.length} users? (API keys remain disabled)`)) return
+  for (const u of targets) await updateUser(u.id, { is_active: true })
+  selectedUserIds.value = []
+  setFeedback('success', `reactivated ${targets.length} users (API keys 須另外重發)`)
   await fetchUsers()
 }
 

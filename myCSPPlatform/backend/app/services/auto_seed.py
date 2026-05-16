@@ -82,18 +82,29 @@ def auto_seed():
     """Run on startup: create admin, auto-register models/agents, seed dev keys."""
     db = SessionLocal()
     try:
-        # 1. Ensure admin user exists
+        # 1. Ensure admin user exists.
+        #
+        # First-time bootstrap: seeded ADMIN_USERNAME is the platform
+        # operator → role="owner" so they can use require_owner-gated
+        # endpoints (purge user, edit raw audit fields, etc.) without
+        # needing a second admin to promote them. Without this, the
+        # whole owner tier is unreachable on a fresh deploy.
+        #
+        # Existing installs are NOT touched: the `if not admin` guard
+        # means deployments where admin already exists keep their
+        # current role; live stack admins stay at admin tier and can
+        # be promoted manually if/when needed.
         admin = db.query(User).filter(User.username == settings.ADMIN_USERNAME).first()
         if not admin:
             admin = User(
                 username=settings.ADMIN_USERNAME,
                 hashed_password=hash_password(settings.ADMIN_PASSWORD),
-                role="admin",
+                role="owner",
                 is_active=True,
             )
             db.add(admin)
             db.flush()
-            logger.info(f"已建立管理員帳號: {settings.ADMIN_USERNAME}")
+            logger.info(f"已建立 owner 帳號: {settings.ADMIN_USERNAME}")
 
         # 2. Auto-register models
         # Sources: AUTO_REGISTER_MODELS (JSON) + MODEL_*_HOST env vars

@@ -21,8 +21,13 @@ from app.services.auth_service import (
     is_admin_tier,
     is_owner,
     require_admin,
+    require_owner,
 )
 from app.utils.security import hash_password
+from sqlalchemy import update as sa_update
+from app.models.audit_log import AuditLog
+from app.models.alert import Alert
+from app.models.token_usage import TokenUsage
 
 router = APIRouter(prefix="/api/users", tags=["使用者管理"])
 
@@ -341,12 +346,29 @@ def deactivate_user(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    """Soft-delete a user. Also forces every credential path closed:
+
+    - ``user.is_active = False`` — flips the user-tier flag
+    - ``token_version`` bump — invalidates all outstanding JWTs
+    - bulk ``api_keys.is_active = False`` for every key owned by this
+      user — explicit, audit-traceable, and admin can see the keys
+      disabled on the user's row. Defense in depth: ``validate_api_key``
+      also rejects when ``user.is_active`` is false, so even if a future
+      code path forgets to flip the keys, the user can't call /v1/*.
+    """
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="使用者不存在")
     _ensure_owner_for_elevated(user.role, admin)
     user.is_active = False
     user.token_version = (user.token_version or 0) + 1
+
+    keys_disabled = (
+        db.query(ApiKey)
+        .filter(ApiKey.user_id == user.id, ApiKey.is_active == True)  # noqa: E712
+        .update({"is_active": False}, synchronize_session=False)
+    )
+
     db.commit()
     log_audit_event(
         db,
@@ -354,7 +376,100 @@ def deactivate_user(
         action="deactivate",
         resource_type="user",
         resource_id=user.id,
-        detail=f"停用使用者「{user.username}」",
+        detail=f"停用使用者「{user.username}」(連帶停用 {keys_disabled} 把 API key)",
         commit=True,
     )
-    return {"message": "使用者已停用"}
+    return {
+        "message": "使用者已停用",
+        "api_keys_disabled": keys_disabled,
+    }
+
+
+@router.delete("/{user_id}/purge")
+def purge_user(
+    user_id: int,
+    owner: User = Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    """Hard-delete a user. Owner-only, irreversible.
+
+    Distinguished from deactivate by being unrecoverable: the row is
+    removed from ``users`` and most referencing rows (conversations,
+    user_memory, dev_db_credentials, attachments, handoffs, service
+    access grants) follow via FK CASCADE.
+
+    Manual handling for FK columns that aren't CASCADE-able:
+    - ``audit_log.actor_user_id`` → set NULL so the audit trail survives
+      the purge but loses the actor pointer (history is preserved, the
+      identity behind it is not — this is what "right to erasure" + an
+      audit-keeper buys you).
+    - ``alert.acknowledged_by_user_id`` → set NULL (same rationale).
+    - ``api_keys`` → hard delete (they're useless without the user).
+    - ``token_usage`` → hard delete (loses per-user aggregate stats for
+      that user; aggregate by department / model is unaffected).
+
+    Hard refusal:
+    - If the user owns any agent (``agent.owner_user_id``, NOT NULL,
+      no ondelete) — admin must reassign or delete the agent first.
+
+    Self-purge is allowed (owner can purge themselves) but you really
+    shouldn't; that's a footgun for another sprint.
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="使用者不存在")
+
+    # Owner-purging-admin-or-owner is the intended use; the elevated check
+    # in deactivate_user is about preventing non-owner admins from touching
+    # admin/owner. Owner is unconstrained here by design.
+
+    owned_agents = (
+        db.query(Agent).filter(Agent.owner_user_id == user.id).count()
+    )
+    if owned_agents > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"使用者「{user.username}」仍是 {owned_agents} 個 agent 的 owner，"
+                "請先轉手或刪除這些 agent 後再 purge。"
+            ),
+        )
+
+    username = user.username  # capture before delete for audit log
+
+    # 1) NULL out audit / alert refs so history rows survive.
+    db.execute(
+        sa_update(AuditLog)
+        .where(AuditLog.actor_user_id == user.id)
+        .values(actor_user_id=None)
+    )
+    db.execute(
+        sa_update(Alert)
+        .where(Alert.acknowledged_by_user_id == user.id)
+        .values(acknowledged_by_user_id=None)
+    )
+
+    # 2) Hard delete rows whose FK is NOT NULL and not CASCADE.
+    db.query(TokenUsage).filter(TokenUsage.user_id == user.id).delete(
+        synchronize_session=False
+    )
+    db.query(ApiKey).filter(ApiKey.user_id == user.id).delete(
+        synchronize_session=False
+    )
+
+    # 3) Delete the user. SQLAlchemy/Postgres CASCADE handles conversations,
+    # user_memory, handoffs.messages, attachments, service_access_grants,
+    # dev_db_credentials, user_agent_permissions, user_model_permissions.
+    db.delete(user)
+    db.commit()
+
+    log_audit_event(
+        db,
+        actor=owner,
+        action="purge",
+        resource_type="user",
+        resource_id=user_id,
+        detail=f"完全刪除使用者「{username}」(id={user_id})",
+        commit=True,
+    )
+    return {"message": f"使用者「{username}」已完全刪除"}

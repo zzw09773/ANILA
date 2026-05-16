@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import router from '../router'
 import { login as loginApi, refreshTokenApi, getMe, logout as logoutApi } from '../api/auth'
 
 // Sprint 5 X / H5: cookie-only auth store. Tokens 不再進 localStorage —
@@ -26,9 +27,9 @@ export const useAuthStore = defineStore('auth', () => {
     || user.value?.role === 'owner',
   )
 
-  async function login(username, password, extra = {}) {
+  async function login(username, password) {
     // 後端 set cookies；body 仍帶 token 是給 SDK 用的，SPA 不再儲存。
-    await loginApi(username, password, extra)
+    await loginApi(username, password)
     await fetchUser()
   }
 
@@ -55,6 +56,12 @@ export const useAuthStore = defineStore('auth', () => {
       // 後端 logout 失敗也要清前端狀態，避免使用者卡在 ghost session。
     }
     user.value = null
+    // router.beforeEach 只在 navigation 時觸發；停在原頁不會自動跳。
+    // 直接 push 到 /login 才會清掉 ghost guest 狀態。replace=true 避免
+    // 使用者按瀏覽器「上一頁」回到登入前的 admin 頁面又看到 401 閃爍。
+    if (router.currentRoute.value.path !== '/login') {
+      router.replace('/login')
+    }
   }
 
   // 在第一次取用 store 時嘗試載入 /me：cookie 還在 → 自動還原 user；

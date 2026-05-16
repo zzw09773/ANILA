@@ -37,6 +37,8 @@
                 <span class="row-actions__sep">·</span>
                 <button v-if="link.is_active" class="term-action term-action--danger" @click="handleDeactivate(link)">deactivate</button>
                 <button v-else class="term-action" @click="handleReactivate(link)">reactivate</button>
+                <span class="row-actions__sep">·</span>
+                <button class="term-action term-action--danger" @click="handlePurge(link)" title="完全刪除,不可復原">remove</button>
               </div>
             </td>
           </tr>
@@ -106,7 +108,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { listPlatformLinks, createPlatformLink, updatePlatformLink, deletePlatformLink } from '../api/platformLinks'
+import { listPlatformLinks, createPlatformLink, updatePlatformLink, deactivatePlatformLink, purgePlatformLink } from '../api/platformLinks'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermSection } from '../components/cli'
 
 const links = ref([])
@@ -164,12 +166,26 @@ async function handleSubmit() {
 }
 async function handleDeactivate(link) {
   if (!confirm(`deactivate '${link.name}'?`)) return
-  try { await deletePlatformLink(link.id); await fetchLinks() }
+  try { await deactivatePlatformLink(link.id); await fetchLinks() }
   catch (e) { alert(e.response?.data?.detail || 'deactivate failed') }
 }
 async function handleReactivate(link) {
   try { await updatePlatformLink(link.id, { is_active: true }); await fetchLinks() }
   catch (e) { alert(e.response?.data?.detail || 'reactivate failed') }
+}
+async function handlePurge(link) {
+  // Typed-confirm: 必須輸入完整 link name 才能 purge,避免誤點 remove。
+  const typed = window.prompt(
+    `完全刪除連結「${link.name}」?此動作不可復原。\n` +
+    `若確定,請輸入連結名稱完整字串以確認:`
+  )
+  if (typed === null) return
+  if (typed !== link.name) {
+    alert('輸入不符,已取消')
+    return
+  }
+  try { await purgePlatformLink(link.id); await fetchLinks() }
+  catch (e) { alert(e.response?.data?.detail || 'purge failed') }
 }
 </script>
 

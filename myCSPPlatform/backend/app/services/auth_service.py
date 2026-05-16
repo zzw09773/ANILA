@@ -26,7 +26,6 @@ security = HTTPBearer(auto_error=False)
 
 
 PENDING_APPROVAL_SENTINEL = "PENDING_APPROVAL"
-LOCAL_PASSWORD_DISABLED_SENTINEL = "LOCAL_PASSWORD_DISABLED"
 
 
 def authenticate_user(db: Session, username: str, password: str) -> User | str | None:
@@ -35,8 +34,6 @@ def authenticate_user(db: Session, username: str, password: str) -> User | str |
     Returns:
         ``User`` on success.
         ``PENDING_APPROVAL_SENTINEL`` 若密碼正確但帳號未核准。
-        ``LOCAL_PASSWORD_DISABLED_SENTINEL`` 若使用者已切到 SSO-only
-            （Sprint 6 X / B2）— 本機密碼不再接受，需走 OIDC。
         ``None`` 任何其他失敗（找不到使用者 / 密碼錯 / 帳號停用）。
     """
     user = db.query(User).filter(User.username == username).first()
@@ -46,9 +43,6 @@ def authenticate_user(db: Session, username: str, password: str) -> User | str |
         return None
     if not getattr(user, "is_approved", True):
         return PENDING_APPROVAL_SENTINEL
-    # B2: SSO-only 切換 — 即便密碼正確也拒絕，引導使用者改走 OIDC。
-    if getattr(user, "local_password_disabled", False):
-        return LOCAL_PASSWORD_DISABLED_SENTINEL
     return user
 
 

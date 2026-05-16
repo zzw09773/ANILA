@@ -9,5 +9,15 @@ export const createPlatformLink = (data) =>
 export const updatePlatformLink = (id, data) =>
   client.put(`/api/platform-links/${id}`, data)
 
-export const deletePlatformLink = (id) =>
+// Soft delete — sets is_active=false, link can be revived by toggling is_active
+// back via the edit form. Admin-tier OK.
+export const deactivatePlatformLink = (id) =>
   client.delete(`/api/platform-links/${id}`)
+
+// Hard delete — row is removed; CASCADE drops service_access_grant rows
+// pointing at it. Irreversible.
+export const purgePlatformLink = (id) =>
+  client.delete(`/api/platform-links/${id}/purge`)
+
+// Back-compat alias for existing callsites.
+export const deletePlatformLink = deactivatePlatformLink

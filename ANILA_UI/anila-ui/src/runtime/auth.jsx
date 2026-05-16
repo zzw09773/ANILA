@@ -20,19 +20,11 @@ const AuthContext = createContext(null);
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [authReady, setAuthReady] = useState(false);
-  const [providers, setProviders] = useState([]);
 
   useEffect(() => {
     let active = true;
 
     async function bootstrap() {
-      try {
-        const listedProviders = await authRequest("/api/auth/providers");
-        if (active) setProviders(listedProviders);
-      } catch {
-        if (active) setProviders([]);
-      }
-
       try {
         const me = await authRequest("/api/auth/me");
         if (!active) return;
@@ -58,16 +50,10 @@ export function AuthProvider({ children }) {
     };
   }, []);
 
-  async function login({ username, password, authSource = "local", providerId }) {
-    const payload = {
-      username,
-      password,
-      auth_source: authSource,
-      ...(providerId ? { provider_id: providerId } : {}),
-    };
+  async function login({ username, password }) {
     await authRequest("/api/auth/login", {
       method: "POST",
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ username, password }),
     });
     const me = await authRequest("/api/auth/me");
     setUser(me);
@@ -91,7 +77,6 @@ export function AuthProvider({ children }) {
     () => ({
       user,
       authReady,
-      providers,
       isAuthenticated,
       login,
       logout,
@@ -105,7 +90,7 @@ export function AuthProvider({ children }) {
       // requests (none in the core flow, but keeps the surface parametric).
       getCsrfToken: readCsrfCookie,
     }),
-    [user, authReady, providers, isAuthenticated],
+    [user, authReady, isAuthenticated],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

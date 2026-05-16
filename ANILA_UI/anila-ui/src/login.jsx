@@ -1,11 +1,11 @@
 // Login view — CSP JWT auth via httpOnly cookie (Wave 2).
-// Users no longer paste an API Key here; the session is entirely server-
-// managed. SDK callers (curl / OpenAI SDK) still use API keys but get
-// them from the Settings → API Keys page after login, not at login time.
-import React, { useMemo, useState } from "react";
+//
+// Closed-deployment build (feature/no-sso): local username + password only.
+// LDAP / OIDC / SSO entry points are removed; accounts are provisioned by
+// an admin through CSP's user-management UI. No self-service signup.
+import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { config } from "./runtime/api.js";
 import { useAuth } from "./runtime/auth.jsx";
 import { Button, IconButton, Input } from "./components.jsx";
 import {
@@ -18,58 +18,25 @@ import {
 
 export const LoginView = () => {
   const navigate = useNavigate();
-  const { login, providers } = useAuth();
-  const [username, setUsername] = useState("alice.chen");
-  const [password, setPassword] = useState("demo-password");
+  const { login } = useAuth();
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [method, setMethod] = useState("local");
-
-  const oidcProviders = useMemo(
-    () => providers.filter((p) => p.provider_type === "oidc"),
-    [providers],
-  );
-  const ldapProviders = useMemo(
-    () => providers.filter((p) => p.provider_type === "ldap"),
-    [providers],
-  );
 
   async function submit(event) {
     event.preventDefault();
     setError("");
 
-    if (method !== "oidc") {
-      if (!username || !password) {
-        setError("請輸入帳號與密碼");
-        return;
-      }
+    if (!username || !password) {
+      setError("請輸入帳號與密碼");
+      return;
     }
 
     setLoading(true);
     try {
-      if (method === "oidc") {
-        const provider = oidcProviders[0];
-        if (!provider) {
-          throw new Error("目前沒有可用的 OIDC Provider");
-        }
-        const response = await fetch(
-          `${config.cspBaseUrl}/api/auth/oidc/${provider.id}/start?next_path=/app`,
-        );
-        if (!response.ok) {
-          throw new Error("無法啟動 OIDC 登入");
-        }
-        const payload = await response.json();
-        window.location.assign(payload.authorization_url);
-        return;
-      }
-
-      await login({
-        username,
-        password,
-        authSource: method,
-        providerId: method === "ldap" ? ldapProviders[0]?.id : undefined,
-      });
+      await login({ username, password });
       navigate("/app", { replace: true });
     } catch (submitError) {
       setError(submitError.message || "登入失敗");
@@ -132,82 +99,35 @@ export const LoginView = () => {
             使用 CSP 帳號登入即可開始對話。
           </div>
 
-          <div style={{
-            display: "flex", gap: 2,
-            background: "var(--bg-subtle)", padding: 3,
-            borderRadius: "var(--radius)", marginBottom: 20,
-            border: "1px solid var(--border)",
-          }}>
-            {[
-              { id: "local", label: "本機帳號" },
-              { id: "ldap",  label: "LDAP" },
-              { id: "oidc",  label: "SSO" },
-            ].map((t) => (
-              <button key={t.id} type="button" onClick={() => setMethod(t.id)} style={{
-                flex: 1, padding: "6px 10px", fontSize: 12, fontWeight: 500,
-                background: method === t.id ? "var(--bg-elev)" : "transparent",
-                border: "1px solid " + (method === t.id ? "var(--border)" : "transparent"),
-                borderRadius: 4,
-                color: method === t.id ? "var(--fg)" : "var(--fg-muted)",
-                cursor: "pointer",
-              }}>{t.label}</button>
-            ))}
-          </div>
+          <div style={{ display: "grid", gap: 12 }}>
+            <Input label="帳號" value={username} onChange={(e) => setUsername(e.target.value)}
+              leftIcon={<IconUser size={14}/>}
+              placeholder="username"
+              autoComplete="username"/>
+            <Input label="密碼" type={showPw ? "text" : "password"}
+              value={password} onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+              rightEl={
+                <IconButton type="button" onClick={() => setShowPw((s) => !s)}>
+                  {showPw ? <IconEyeOff/> : <IconEye/>}
+                </IconButton>
+              }/>
 
-          {method !== "oidc" ? (
-            <div style={{ display: "grid", gap: 12 }}>
-              <Input label="帳號" value={username} onChange={(e) => setUsername(e.target.value)}
-                leftIcon={<IconUser size={14}/>}
-                placeholder={method === "ldap" ? "corp\\username" : "username"}/>
-              <Input label="密碼" type={showPw ? "text" : "password"}
-                value={password} onChange={(e) => setPassword(e.target.value)}
-                rightEl={
-                  <IconButton type="button" onClick={() => setShowPw((s) => !s)}>
-                    {showPw ? <IconEyeOff/> : <IconEye/>}
-                  </IconButton>
-                }/>
-
-              {error && (
-                <div style={{
-                  fontSize: 12, color: "var(--danger)",
-                  background: "oklch(0.97 0.03 25)",
-                  border: "1px solid oklch(0.88 0.08 25)",
-                  padding: "8px 10px", borderRadius: "var(--radius)",
-                }}>{error}</div>
-              )}
-
-              <Button variant="primary" size="lg" type="submit" disabled={loading}
-                rightIcon={loading ? null : <IconArrowRight/>}
-                style={{ justifyContent: "center", marginTop: 4 }}>
-                {loading ? "驗證中…" : "進入 ANILA"}
-              </Button>
-            </div>
-          ) : (
-            <div>
+            {error && (
               <div style={{
-                padding: 16, border: "1px solid var(--border)",
-                borderRadius: "var(--radius)", background: "var(--bg-subtle)",
-                fontSize: 13, color: "var(--fg-muted)", marginBottom: 16,
-              }}>
-                將跳轉到企業 SSO 登入頁面。登入後 CSP 會回帶 access / refresh token，
-                再由控制面完成身分建立後導回 /app。
-              </div>
-              {error && (
-                <div style={{
-                  fontSize: 12, color: "var(--danger)",
-                  background: "oklch(0.97 0.03 25)",
-                  border: "1px solid oklch(0.88 0.08 25)",
-                  padding: "8px 10px", borderRadius: "var(--radius)",
-                  marginBottom: 12,
-                }}>{error}</div>
-              )}
-              <Button variant="primary" size="lg" type="submit" disabled={loading || oidcProviders.length === 0}
-                style={{ width: "100%", justifyContent: "center" }}
-                rightIcon={<IconArrowRight/>}>
-                {loading ? "導向中…" : oidcProviders.length === 0 ? "沒有可用的 SSO Provider" : "透過 SSO 登入"}
-              </Button>
-            </div>
-          )}
+                fontSize: 12, color: "var(--danger)",
+                background: "oklch(0.97 0.03 25)",
+                border: "1px solid oklch(0.88 0.08 25)",
+                padding: "8px 10px", borderRadius: "var(--radius)",
+              }}>{error}</div>
+            )}
+
+            <Button variant="primary" size="lg" type="submit" disabled={loading}
+              rightIcon={loading ? null : <IconArrowRight/>}
+              style={{ justifyContent: "center", marginTop: 4 }}>
+              {loading ? "驗證中…" : "進入 ANILA"}
+            </Button>
+          </div>
 
           <div style={{ marginTop: 24, fontSize: 11, color: "var(--fg-subtle)", display: "flex", justifyContent: "space-between" }}>
             <span>尚未有帳號？聯絡管理員</span>

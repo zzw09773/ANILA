@@ -58,12 +58,6 @@ const routes = [
         meta: { requiresAdmin: true },
       },
       {
-        path: 'auth-providers',
-        name: 'AuthProviders',
-        component: () => import('../views/AuthProvidersView.vue'),
-        meta: { requiresAdmin: true },
-      },
-      {
         path: 'platform-links',
         name: 'PlatformLinks',
         component: () => import('../views/PlatformLinksView.vue'),

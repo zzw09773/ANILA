@@ -105,4 +105,35 @@ def delete_link(
         detail=f"停用平台連結「{link.name}」",
         commit=True,
     )
-    return {"message": "連結已刪除"}
+    return {"message": "連結已停用"}
+
+
+@router.delete("/{link_id}/purge")
+def purge_link(
+    link_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Hard-delete a platform link, irreversible.
+
+    Lower stakes than user purge so this stays at admin tier (not owner-
+    only). ``service_access_grant.platform_link_id`` already has
+    ``ondelete=CASCADE`` so direct ``db.delete(link)`` collapses any
+    per-user grant rows pointing at it.
+    """
+    link = db.query(PlatformLink).filter(PlatformLink.id == link_id).first()
+    if not link:
+        raise HTTPException(status_code=404, detail="連結不存在")
+    name = link.name
+    db.delete(link)
+    db.commit()
+    log_audit_event(
+        db,
+        actor=admin,
+        action="purge",
+        resource_type="platform_link",
+        resource_id=link_id,
+        detail=f"完全刪除平台連結「{name}」",
+        commit=True,
+    )
+    return {"message": f"連結「{name}」已完全刪除"}
