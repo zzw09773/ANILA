@@ -853,6 +853,11 @@ const WHITESPACE_RATIO_WARN = 0.55
 const WHITESPACE_RATIO_CRIT = 0.7
 const TEXT_DENSITY_WARN = 50
 const OVERLAP_MIN_SQ_INCH = 0.1
+const GRID_COLS = 6
+const GRID_ROWS = 4
+const MAX_EMPTY_CELLS_WARN = 8 // 8/24 = 33% contiguous void
+const MAX_EMPTY_CELLS_CRIT = 12 // 12/24 = 50% contiguous void
+const BODY_Y_START_INCH = 0.84
 
 function extractShapesFromSlideXml(xml) {
   const shapes = []
@@ -892,8 +897,77 @@ function extractShapesFromSlideXml(xml) {
   return shapes
 }
 
+/**
+ * Detect localised empty regions that the global coveredArea metric misses.
+ *
+ * Splits the body area (below the 0.84-inch master header band) into a
+ * GRID_COLS × GRID_ROWS grid. A cell is "covered" if ANY shape overlaps it.
+ * Find the largest 4-connected empty region; large contiguous voids
+ * (> 8 cells = ~33% of the body) are the visual symptom users complain
+ * about even when total whitespace ratio is fine.
+ */
+function findLargestEmptyRegion(shapes) {
+  const bodyH = SLIDE_H_INCH - BODY_Y_START_INCH
+  const cellW = SLIDE_W_INCH / GRID_COLS
+  const cellH = bodyH / GRID_ROWS
+  const grid = Array.from({ length: GRID_ROWS }, () => Array(GRID_COLS).fill(0))
+  for (const s of shapes) {
+    if (s.y + s.h <= BODY_Y_START_INCH) continue // skip header band
+    const yEff = Math.max(s.y, BODY_Y_START_INCH)
+    const c1 = Math.max(0, Math.floor(s.x / cellW))
+    const c2 = Math.min(GRID_COLS - 1, Math.floor((s.x + s.w - 0.01) / cellW))
+    const r1 = Math.max(0, Math.floor((yEff - BODY_Y_START_INCH) / cellH))
+    const r2 = Math.min(
+      GRID_ROWS - 1,
+      Math.floor((s.y + s.h - 0.01 - BODY_Y_START_INCH) / cellH),
+    )
+    for (let r = r1; r <= r2; r++) {
+      for (let c = c1; c <= c2; c++) {
+        grid[r][c] = 1
+      }
+    }
+  }
+  // 4-connected flood fill to find largest empty region
+  const visited = Array.from({ length: GRID_ROWS }, () =>
+    Array(GRID_COLS).fill(false),
+  )
+  let maxRegion = 0
+  for (let r = 0; r < GRID_ROWS; r++) {
+    for (let c = 0; c < GRID_COLS; c++) {
+      if (grid[r][c] === 0 && !visited[r][c]) {
+        const stack = [[r, c]]
+        let size = 0
+        while (stack.length) {
+          const [rr, cc] = stack.pop()
+          if (rr < 0 || rr >= GRID_ROWS || cc < 0 || cc >= GRID_COLS) continue
+          if (visited[rr][cc] || grid[rr][cc] === 1) continue
+          visited[rr][cc] = true
+          size++
+          stack.push([rr + 1, cc], [rr - 1, cc], [rr, cc + 1], [rr, cc - 1])
+        }
+        if (size > maxRegion) maxRegion = size
+      }
+    }
+  }
+  return maxRegion
+}
+
 function analyseSlide(shapes) {
   const defects = []
+  const largestEmptyCells = findLargestEmptyRegion(shapes)
+  if (largestEmptyCells >= MAX_EMPTY_CELLS_CRIT) {
+    defects.push({
+      severity: 'critical',
+      kind: 'local_emptiness',
+      detail: `largest contiguous empty region = ${largestEmptyCells}/${GRID_COLS * GRID_ROWS} cells`,
+    })
+  } else if (largestEmptyCells >= MAX_EMPTY_CELLS_WARN) {
+    defects.push({
+      severity: 'warning',
+      kind: 'local_emptiness',
+      detail: `largest contiguous empty region = ${largestEmptyCells}/${GRID_COLS * GRID_ROWS} cells`,
+    })
+  }
   let coveredArea = 0
   for (const s of shapes) {
     const x1 = Math.max(0, s.x)
