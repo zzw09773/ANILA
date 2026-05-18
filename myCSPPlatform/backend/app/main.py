@@ -153,6 +153,29 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+@app.middleware("http")
+async def _request_access_log(request, call_next):
+    """Per-request access log → stdout so docker logs surfaces it.
+
+    Bypasses uvicorn.access (which has propagate=False and its own
+    StreamHandler that doesn't end up in docker logs in this setup).
+    Skips noisy /health to keep the log readable.
+    """
+    import time as _time
+    start = _time.monotonic()
+    response = await call_next(request)
+    if request.url.path not in ("/health",):
+        elapsed_ms = int((_time.monotonic() - start) * 1000)
+        logging.getLogger("csp.access").info(
+            "%s %s → %s %dms",
+            request.method,
+            request.url.path,
+            response.status_code,
+            elapsed_ms,
+        )
+    return response
+
 _allowed_origins = [
     origin.strip()
     for origin in (settings.ALLOWED_ORIGINS or "").split(",")
