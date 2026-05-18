@@ -10,18 +10,20 @@ what uvicorn imports.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
 from typing import Callable
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 
 from .chat_handler import ChatHandler, _FluxClientCtxProto
 from .flux_client import FluxClient
 from .image_store import ImageStore
 from .prompt_translator import PromptTranslator
-from .schemas import ChatCompletionRequest, ChatCompletionResponse
+from .schemas import ChatCompletionRequest
 
 logger = logging.getLogger(__name__)
 
@@ -54,13 +56,40 @@ def build_app(
             ],
         }
 
-    @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
-    async def _chat_completions(req: ChatCompletionRequest) -> ChatCompletionResponse:  # pyright: ignore[reportUnusedFunction]
+    @app.post("/v1/chat/completions")  # response_model removed — supports both JSON and SSE
+    async def _chat_completions(req: ChatCompletionRequest):  # pyright: ignore[reportUnusedFunction]
         try:
-            return await handler.handle(req)
+            response = await handler.handle(req)
         except Exception:
             logger.exception("flux generation failed")
             raise HTTPException(status_code=502, detail="image generation failed")
+
+        if not req.stream:
+            return response
+
+        # Streaming branch: emit one role chunk, one content chunk, one
+        # finish chunk, then [DONE]. The ANILA Router (anila-core-router)
+        # expects SSE when it dispatches a streaming request to an agent;
+        # returning JSON makes Router emit 0 content chunks back to the UI.
+        content = response.choices[0].message.content
+
+        def _chunk(delta: dict, finish_reason=None) -> str:
+            payload = {
+                "id": response.id,
+                "object": "chat.completion.chunk",
+                "created": response.created,
+                "model": response.model,
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+            }
+            return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+        async def _sse():
+            yield _chunk({"role": "assistant"})
+            yield _chunk({"content": content})
+            yield _chunk({}, finish_reason="stop")
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(_sse(), media_type="text/event-stream")
 
     return app
 

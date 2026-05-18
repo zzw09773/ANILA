@@ -116,3 +116,28 @@ def test_chat_completions_returns_502_when_flux_fails(tmp_path: Path):
     assert body["detail"] == "image generation failed"
     # Critical: the actual exception text MUST NOT appear in the response.
     assert "simulated backend crash" not in str(body)
+
+
+def test_chat_completions_streaming_emits_sse_with_content(client: TestClient):
+    """Regression test: when ``stream=True`` the endpoint must emit
+    SSE chunks including a delta.content with the markdown image. The
+    Router relies on this when dispatching a streaming request from
+    the UI; if we return JSON in stream mode the Router emits zero
+    content chunks back to the user and the chat shows empty.
+    """
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "image-generator",
+            "stream": True,
+            "messages": [{"role": "user", "content": "畫一張坦克"}],
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+
+    text = resp.text
+    # Must contain a delta.content with the markdown image
+    assert '"delta":{"content":' in text or '"delta": {"content":' in text
+    assert "![](" in text
+    assert text.rstrip().endswith("[DONE]")
