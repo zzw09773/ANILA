@@ -56,7 +56,7 @@ import json
 import logging
 import os
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -91,6 +91,9 @@ from app.services.auth_service import get_current_user
 from app.services.ingestion_pool import get_pool
 from app.services.proxy_service import proxy_request
 from app.services.studio_text_normalizer import normalize_spec
+
+if TYPE_CHECKING:
+    from app.services.flux_image_provider import FluxImageProvider
 
 router = APIRouter(prefix="/api/studio", tags=["Studio / Slides"])
 logger = logging.getLogger(__name__)
@@ -838,60 +841,89 @@ def _build_fallback_spec(
 # ── Step 7: render via the Node service ──────────────────────────────────
 
 
-def _hydrate_image_refs(
+def get_flux_provider() -> "FluxImageProvider | None":
+    """Returns a configured FluxImageProvider, or None if not set up.
+
+    Stub for Task 5; Task 6 will wire env vars and a process-singleton.
+    """
+    return None
+
+
+async def _hydrate_images(
     spec_dict: dict[str, Any],
     images_lookup: dict[str, dict[str, Any]],
     upload_dir: str,
+    *,
+    flux_provider: "FluxImageProvider | None" = None,
+    default_aspect: str = "16:9",
 ) -> dict[str, Any]:
-    """Resolve every Slide.image_ref into inline base64 PNG bytes.
+    """Resolve every Slide.image_ref OR image_prompt into inline base64 PNG.
 
-    The renderer is a separate Node service that doesn't have CSP
-    credentials or DB access, so we can't have it pull images by id at
-    render time. Instead CSP — which already trusts itself to the disk
-    — reads the bytes here and inlines them as a `image_data` field
-    (data URL) on the slide before POSTing the spec.
+    Order of precedence per slide:
+      1. image_ref present and resolvable → inline existing PNG.
+      2. image_ref present but unresolvable → drop, fall back to image_prompt if any.
+      3. image_prompt present and flux_provider available → generate via FLUX.
+      4. image_prompt present but flux_provider None or FLUX fails → drop, standard layout.
+      5. Neither set → leave untouched.
 
-    Falls back to dropping `image_ref` (renderer falls back to
-    `standard` layout) when:
-      * image_ref isn't in `images_lookup` (LLM hallucinated an id);
-      * the on-disk path has been GC'd / never existed;
-      * read failed mid-flight (rare, e.g. NFS hiccup).
-
-    Why the renderer can't just trust the LLM-emitted ref blindly:
-    a malicious or buggy generation could put an arbitrary string
-    there. We only follow refs that came out of `images_lookup`,
-    which itself is built from `_retrieve_images` over THIS user's
-    collection — so cross-collection access is impossible by
-    construction.
+    Failure modes for image_prompt path mirror those of image_ref:
+    drop the offending field, log warning, let the renderer's
+    image_focus → standard fallback take over.
     """
     import base64
 
     slides = spec_dict.get("slides") or []
     for slide in slides:
+        # Path 1: image_ref (existing behavior — unchanged)
         ref = slide.get("image_ref")
-        if not ref:
+        if ref:
+            meta = images_lookup.get(ref)
+            if not meta:
+                slide.pop("image_ref", None)
+                # If a fallback image_prompt is present, try that next
+            else:
+                try:
+                    abs_path = os.path.join(upload_dir, meta["storage_path"])
+                    with open(abs_path, "rb") as f:
+                        blob = f.read()
+                    mime = meta.get("mime") or "image/png"
+                    slide["image_data"] = (
+                        f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"
+                    )
+                    slide.pop("image_prompt", None)  # ref wins
+                    continue
+                except OSError as e:
+                    logger.warning(
+                        "Failed to hydrate image_ref=%s for storage_path=%s: %s — "
+                        "falling back to image_prompt if available.",
+                        ref, meta.get("storage_path"), e,
+                    )
+                    slide.pop("image_ref", None)
+
+        # Path 2: image_prompt → call FLUX
+        prompt = slide.get("image_prompt")
+        if not prompt:
             continue
-        meta = images_lookup.get(ref)
-        if not meta:
-            # LLM emitted an id we never offered. Strip silently —
-            # renderer's image_focus → standard fallback handles it.
-            slide.pop("image_ref", None)
+
+        if flux_provider is None:
+            # FLUX not configured for this deployment. Drop prompt silently.
+            slide.pop("image_prompt", None)
             continue
+
         try:
-            abs_path = os.path.join(upload_dir, meta["storage_path"])
-            with open(abs_path, "rb") as f:
-                blob = f.read()
-            mime = meta.get("mime") or "image/png"
+            png_bytes = await flux_provider.get_or_generate(prompt, default_aspect)
             slide["image_data"] = (
-                f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"
+                "data:image/png;base64,"
+                + base64.b64encode(png_bytes).decode("ascii")
             )
-        except OSError as e:
+        except Exception as e:
             logger.warning(
-                "Failed to hydrate image_ref=%s for storage_path=%s: %s — "
+                "FLUX generation failed for prompt=%r: %s — "
                 "slide will fall back to standard layout.",
-                ref, meta.get("storage_path"), e,
+                prompt[:80], e,
             )
-            slide.pop("image_ref", None)
+            slide.pop("image_prompt", None)
+
     return spec_dict
 
 
@@ -907,7 +939,7 @@ async def _render_pptx(
     `images_lookup` (optional) is the dict that drove the LLM's
     image-suggestion list, keyed by image_id. When provided, every
     Slide.image_ref gets hydrated into inline `image_data` bytes via
-    `_hydrate_image_refs` before the spec leaves the CSP boundary.
+    `_hydrate_images` before the spec leaves the CSP boundary.
     """
     spec_dict = spec.model_dump()
     if images_lookup:
@@ -918,7 +950,13 @@ async def _render_pptx(
         ingest_upload = os.getenv(
             "INGESTION_UPLOAD_DIR", "/var/anila/ingestion-uploads",
         )
-        spec_dict = _hydrate_image_refs(spec_dict, images_lookup, ingest_upload)
+        spec_dict = await _hydrate_images(
+            spec_dict,
+            images_lookup,
+            ingest_upload,
+            flux_provider=get_flux_provider(),
+            default_aspect="16:9",
+        )
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
