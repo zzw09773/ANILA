@@ -7,6 +7,8 @@ just builds a SlidesSpec and asserts on the returned violation list.
 """
 from __future__ import annotations
 
+import pytest
+
 from app.api.studio import _audit_layout_distribution
 from app.schemas.studio import SlidesSpec
 
@@ -112,3 +114,28 @@ def test_v4_not_flagged_if_layout_not_standard():
     })
     violations = _audit_layout_distribution(spec, chunks_text="")
     assert not any(v.kind == "V4" for v in violations)
+
+
+# Round 2 Patch E: lock in the v2 regression cases. The Round 1 keyword
+# list missed common technical-deck patterns ('架構', '拓撲', '方案' ...),
+# so slides like "Multi-Agent Supervisor 拓撲設計" weren't flagged as V4
+# candidates and never got rebalanced. The expanded ~40-keyword tuple
+# should now flag these.
+@pytest.mark.parametrize("title,bullets,expected_v4", [
+    ("Multi-Agent Supervisor 拓撲設計", ["a", "b", "c"], True),  # slide 13
+    ("Agentic Workflow:從檢索到推理", ["x", "y", "z"], True),  # slide 8
+    ("雙分支特徵融合解決方案", ["a", "b", "c"], True),  # slide 5 — "方案"
+    ("封面標題", ["a", "b", "c"], False),  # no enumeration keyword
+    ("拓撲", ["a", "b"], False),  # only 2 bullets, V4 requires >=3
+    ("三大核心能力", ["a", "b", "c"], True),  # original case still works
+    ("Generic Standard Slide", ["one", "two", "three"], False),  # no keyword
+])
+def test_v4_keyword_expansion(title, bullets, expected_v4):
+    spec = SlidesSpec(**{
+        "title": "T", "subtitle": "S",
+        "slides": [_slide(title, bullets=bullets)],
+        "theme": "navy_amber",
+    })
+    violations = _audit_layout_distribution(spec, chunks_text="")
+    v4s = [v for v in violations if v.kind == "V4"]
+    assert (len(v4s) > 0) == expected_v4

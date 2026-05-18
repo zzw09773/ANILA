@@ -1580,7 +1580,21 @@ LAYOUT_CONSECUTIVE_STANDARD_LIMIT = 3
 # for icon_rows — the LLM "described 3 things" but didn't reach for the
 # matching layout.
 _ENUMERATION_KEYWORDS = (
-    "三大", "步驟", "階段", "面向", "核心能力", "workflow", "pipeline",
+    # Numeric enumeration
+    "三大", "四大", "五大", "兩大", "三項", "三類",
+    # Process / sequence
+    "步驟", "階段", "流程", "歷程", "順序",
+    "workflow", "pipeline", "process",
+    # Structural enumeration
+    "面向", "層面", "維度", "方面",
+    # Architecture / topology (slide 13 case)
+    "架構", "拓撲", "拓樸", "結構", "設計", "佈局",
+    # Capability / function lists
+    "核心能力", "能力", "功能", "特性", "特徵",
+    # Strategy / approach
+    "策略", "方案", "模式", "機制", "方法",
+    # Comparison framing (space-padded vs to avoid 'previous' false matches)
+    "對比", "對照", " vs ", " vs.",
 )
 
 # V2: numeric-content regex. Matches percentages, big numbers, F1 scores,
