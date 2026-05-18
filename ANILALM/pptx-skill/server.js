@@ -283,22 +283,26 @@ function renderStatCallout(pres, s, p) {
       })
     }
   } else {
-    // ── Solo mode: vertical-centre the value+label block ──
-    // Content area runs ~1.0 → 6.9 inches. Centre point ≈ 3.95.
-    // Big number occupies the dead centre; label sits just below.
+    // ── Solo mode: vertical-centre value+label+supporting as one block ──
+    // Content area runs ~0.84 → 6.5 inches (above the takeaway footer).
+    // Block heights: value 2.4 + label 0.7 + supporting 1.0 = 4.1 inches
+    // plus 0.2 gaps = 4.5 inches total. Centre of (0.84, 6.5) is 3.67;
+    // block starts at y = 3.67 - 4.5/2 = 1.42. We round to y=2.0 to push
+    // visually slightly south of geometric centre (looks balanced after
+    // accounting for the title bar's heavy top weight).
     slide.addText(String(s.stat.value), {
-      x: 0.5, y: 1.4, w: 12.3, h: 2.6,
+      x: 0.5, y: 2.0, w: 12.3, h: 2.4,
       fontSize: 96, bold: true, color: p.accent,
       align: 'center', valign: 'middle', fontFace: FONT_FACE,
     })
     slide.addText(String(s.stat.label), {
-      x: 1.0, y: 4.0, w: 11.3, h: 0.7,
+      x: 1.0, y: 4.6, w: 11.3, h: 0.7,
       fontSize: 28, color: p.ink,
       align: 'center', valign: 'middle', fontFace: FONT_FACE,
     })
     if (s.stat.supporting) {
       slide.addText(String(s.stat.supporting), {
-        x: 1.0, y: 4.8, w: 11.3, h: 1.4,
+        x: 1.0, y: 5.4, w: 11.3, h: 1.0,
         fontSize: 16, color: p.muted, italic: true,
         align: 'center', valign: 'top', fontFace: FONT_FACE,
       })
