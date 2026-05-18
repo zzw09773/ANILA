@@ -601,7 +601,7 @@ app.post('/render', async (req, res) => {
       }
       titleSlide.addText('ANILA LM · 自動生成', {
         x: 1.0, y: 4.7, w: 11.7, h: 0.4,
-        fontSize: 12, color: p.muted, italic: true,
+        fontSize: 14, color: '1A1A1A', italic: false,
         align: 'left', fontFace: FONT_FACE,
       })
     }
