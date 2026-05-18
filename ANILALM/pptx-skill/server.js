@@ -203,7 +203,7 @@ function renderSectionBreak(pres, s, p) {
     slide.addText(String(bullets[0]), {
       x: 1.1, y: 4.4, w: 11.5, h: 0.6,
       fontSize: 20, color: p.accent,
-      align: 'left', italic: true, fontFace: FONT_FACE,
+      align: 'left', italic: false, fontFace: FONT_FACE,
     })
   }
   if (s.speaker_notes) slide.addNotes(String(s.speaker_notes))
