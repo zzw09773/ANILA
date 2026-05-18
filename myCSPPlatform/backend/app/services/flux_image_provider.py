@@ -20,8 +20,17 @@ Responsibilities:
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import httpx
+
+logger = logging.getLogger(__name__)
+
+
+class FluxBackendError(RuntimeError):
+    """flux2-dev returned non-200 or wrong content type."""
 
 
 @dataclass
@@ -46,3 +55,35 @@ class FluxImageProvider:
 
     def _cache_path(self, prompt: str, aspect_ratio: str) -> Path:
         return self.cache_dir / f"{self._cache_key(prompt, aspect_ratio)}.png"
+
+    async def get_or_generate(self, prompt: str, aspect_ratio: str) -> bytes:
+        """Return PNG bytes for (prompt, aspect_ratio). Cache hit → read
+        from disk; cache miss → call flux2-dev, write to cache, return.
+        """
+        cache_file = self._cache_path(prompt, aspect_ratio)
+        if cache_file.exists():
+            return cache_file.read_bytes()
+
+        png_bytes = await self._generate(prompt, aspect_ratio)
+
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_file.write_bytes(png_bytes)
+        return png_bytes
+
+    async def _generate(self, prompt: str, aspect_ratio: str) -> bytes:
+        """Call flux2-dev /generate; return PNG bytes."""
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            resp = await client.post(
+                f"{self.flux_url.rstrip('/')}/generate",
+                json={"prompt": prompt, "aspect_ratio": aspect_ratio},
+            )
+        if resp.status_code != 200:
+            raise FluxBackendError(
+                f"flux2-dev returned {resp.status_code}: {resp.text[:200]}"
+            )
+        ctype = resp.headers.get("content-type", "")
+        if not ctype.startswith("image/png"):
+            raise FluxBackendError(
+                f"flux2-dev unexpected content-type: {ctype!r}"
+            )
+        return resp.content
