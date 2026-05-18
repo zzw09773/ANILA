@@ -159,3 +159,104 @@ async def test_creates_cache_dir_if_missing(tmp_path):
     await p.get_or_generate("any", "16:9")
 
     assert target.is_dir()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_raises_flux_backend_error_on_non_200(tmp_path):
+    from app.services.flux_image_provider import FluxBackendError
+
+    respx.post("http://flux2-dev:8000/generate").mock(
+        return_value=httpx.Response(500, json={"detail": "OOM"})
+    )
+    p = FluxImageProvider(
+        flux_url="http://flux2-dev:8000",
+        cache_dir=tmp_path,
+        max_concurrent=4,
+    )
+    with pytest.raises(FluxBackendError, match="500"):
+        await p.get_or_generate("oom test", "16:9")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_raises_on_wrong_content_type(tmp_path):
+    from app.services.flux_image_provider import FluxBackendError
+
+    respx.post("http://flux2-dev:8000/generate").mock(
+        return_value=httpx.Response(200, content=b"not a png", headers={"content-type": "text/plain"})
+    )
+    p = FluxImageProvider(
+        flux_url="http://flux2-dev:8000",
+        cache_dir=tmp_path,
+        max_concurrent=4,
+    )
+    with pytest.raises(FluxBackendError, match="content-type"):
+        await p.get_or_generate("ct test", "16:9")
+
+
+@pytest.mark.asyncio
+async def test_semaphore_limits_concurrent_calls(tmp_path):
+    """N concurrent get_or_generate calls — at most max_concurrent
+    in flight at any point. Stubs flux2-dev with a slow handler
+    that records overlap."""
+    import asyncio
+
+    in_flight = 0
+    max_in_flight = 0
+    _PNG_LOCAL = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+    async def slow_handler(request):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.05)
+        in_flight -= 1
+        return httpx.Response(200, content=_PNG_LOCAL, headers={"content-type": "image/png"})
+
+    with respx.mock(base_url="http://flux2-dev:8000") as router:
+        router.post("/generate").mock(side_effect=slow_handler)
+
+        p = FluxImageProvider(
+            flux_url="http://flux2-dev:8000",
+            cache_dir=tmp_path,
+            max_concurrent=2,
+        )
+        # Launch 6 concurrent UNIQUE prompts (so cache always misses)
+        prompts = [f"prompt-{i}" for i in range(6)]
+        await asyncio.gather(*[p.get_or_generate(pr, "16:9") for pr in prompts])
+
+    assert max_in_flight <= 2, f"max_in_flight={max_in_flight}, expected <= 2"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_cache_failure_propagates(tmp_path):
+    """If flux fails on first call, error propagates and cache is not
+    populated — next call must retry."""
+    from app.services.flux_image_provider import FluxBackendError
+
+    # First call: 500
+    # Second call: 200
+    _PNG_LOCAL = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+    route = respx.post("http://flux2-dev:8000/generate").mock(
+        side_effect=[
+            httpx.Response(500, json={"detail": "warmup"}),
+            httpx.Response(200, content=_PNG_LOCAL, headers={"content-type": "image/png"}),
+        ]
+    )
+    p = FluxImageProvider(
+        flux_url="http://flux2-dev:8000",
+        cache_dir=tmp_path,
+        max_concurrent=4,
+    )
+
+    with pytest.raises(FluxBackendError):
+        await p.get_or_generate("retry test", "16:9")
+    # Cache should NOT exist after a failed call
+    assert not p._cache_path("retry test", "16:9").exists()
+
+    # Retry should succeed
+    out = await p.get_or_generate("retry test", "16:9")
+    assert out == _PNG_LOCAL
+    assert route.call_count == 2

@@ -19,6 +19,7 @@ Responsibilities:
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from dataclasses import dataclass, field
@@ -39,10 +40,11 @@ class FluxImageProvider:
     cache_dir: Path
     max_concurrent: int
     timeout_seconds: float = 180.0
-    _semaphore: object = field(default=None, init=False, repr=False)
+    _semaphore: asyncio.Semaphore | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.cache_dir = Path(self.cache_dir)
+        self._semaphore = asyncio.Semaphore(self.max_concurrent)
 
     def _cache_key(self, prompt: str, aspect_ratio: str) -> str:
         """SHA256 hex digest of prompt + aspect_ratio (NUL-joined to
@@ -71,19 +73,21 @@ class FluxImageProvider:
         return png_bytes
 
     async def _generate(self, prompt: str, aspect_ratio: str) -> bytes:
-        """Call flux2-dev /generate; return PNG bytes."""
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            resp = await client.post(
-                f"{self.flux_url.rstrip('/')}/generate",
-                json={"prompt": prompt, "aspect_ratio": aspect_ratio},
-            )
-        if resp.status_code != 200:
-            raise FluxBackendError(
-                f"flux2-dev returned {resp.status_code}: {resp.text[:200]}"
-            )
-        ctype = resp.headers.get("content-type", "")
-        if not ctype.startswith("image/png"):
-            raise FluxBackendError(
-                f"flux2-dev unexpected content-type: {ctype!r}"
-            )
-        return resp.content
+        """Call flux2-dev /generate (semaphore-limited); return PNG bytes."""
+        assert self._semaphore is not None  # set in __post_init__
+        async with self._semaphore:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                resp = await client.post(
+                    f"{self.flux_url.rstrip('/')}/generate",
+                    json={"prompt": prompt, "aspect_ratio": aspect_ratio},
+                )
+            if resp.status_code != 200:
+                raise FluxBackendError(
+                    f"flux2-dev returned {resp.status_code}: {resp.text[:200]}"
+                )
+            ctype = resp.headers.get("content-type", "")
+            if not ctype.startswith("image/png"):
+                raise FluxBackendError(
+                    f"flux2-dev unexpected content-type: {ctype!r}"
+                )
+            return resp.content
