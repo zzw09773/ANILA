@@ -1743,6 +1743,32 @@ def _audit_layout_distribution(
     return violations
 
 
+def _should_rebalance(violations: list[LayoutViolation]) -> bool:
+    """Decide whether to invoke the LLM rebalance pass.
+
+    Round 1 only fired on hard violations (V1, V2). Round 2 broadens this
+    because empirical data shows decks can pass V1 (standard ratio ≤ 60%)
+    yet still contain obvious icon_rows misses captured as V4.
+
+    Triggers (any one suffices):
+      - Any hard violation (V1 or V2) — original behaviour
+      - 2 or more V4 violations (enumeration title + standard layout)
+      - Total soft violations (V3 + V4) >= 3
+
+    Rationale for the V4 threshold: a single V4 candidate could be a
+    legitimate standard slide that happens to have an enumeration word
+    in its title; two or more is a pattern, not noise.
+    """
+    has_hard = any(v.severity == "hard" for v in violations)
+    if has_hard:
+        return True
+    v4_count = sum(1 for v in violations if v.kind == "V4")
+    if v4_count >= 2:
+        return True
+    soft_count = sum(1 for v in violations if v.severity == "soft")
+    return soft_count >= 3
+
+
 def _select_rebalance_candidates(
     violations: list[LayoutViolation],
 ) -> list[int]:
@@ -2118,8 +2144,7 @@ async def _run_pipeline(
                 str(c.get("content", "")) for c in chunks
             )
             violations = _audit_layout_distribution(spec, chunks_text=chunks_str)
-            hard_violations = [v for v in violations if v.severity == "hard"]
-            if hard_violations:
+            if _should_rebalance(violations):
                 await updater.set(step=JOB_STEP_REBALANCING)
                 try:
                     spec_dict = spec.model_dump(mode="json")

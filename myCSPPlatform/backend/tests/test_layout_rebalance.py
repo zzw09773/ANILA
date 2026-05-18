@@ -17,6 +17,7 @@ from app.api.studio import (
     LAYOUT_REBALANCE_MAX_CHANGES,
     LayoutViolation,
     _rebalance_layouts,
+    _should_rebalance,
 )
 
 
@@ -177,3 +178,38 @@ async def test_rebalance_logs_warning_when_v1_still_violated(mock_call, caplog):
         "V1" in rec.message and "still violates" in rec.message
         for rec in caplog.records
     ), f"expected V1-still-violates warning, got: {[r.message for r in caplog.records]}"
+
+
+# ── _should_rebalance — Round 2 Patch D trigger broadening ──
+
+
+def test_should_rebalance_fires_on_two_v4():
+    """Round 2: 2+ V4 violations should trigger rebalance even without V1/V2."""
+    violations = [
+        LayoutViolation(kind="V4", severity="soft", slide_indices=[3], detail=""),
+        LayoutViolation(kind="V4", severity="soft", slide_indices=[7], detail=""),
+    ]
+    assert _should_rebalance(violations) is True
+
+
+def test_should_not_rebalance_on_single_v4():
+    violations = [
+        LayoutViolation(kind="V4", severity="soft", slide_indices=[3], detail=""),
+    ]
+    assert _should_rebalance(violations) is False
+
+
+def test_should_rebalance_on_v1_alone():
+    violations = [
+        LayoutViolation(kind="V1", severity="hard", slide_indices=[0, 1, 2, 3, 4, 5], detail=""),
+    ]
+    assert _should_rebalance(violations) is True
+
+
+def test_should_rebalance_on_three_soft_total():
+    violations = [
+        LayoutViolation(kind="V3", severity="soft", slide_indices=[2], detail=""),
+        LayoutViolation(kind="V4", severity="soft", slide_indices=[5], detail=""),
+        LayoutViolation(kind="V3", severity="soft", slide_indices=[8], detail=""),
+    ]
+    assert _should_rebalance(violations) is True
