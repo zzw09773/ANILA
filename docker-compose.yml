@@ -81,6 +81,13 @@ services:
         ]
       ANILA_TEMPLATE_DIR: /app/anila-template
       INGESTION_UPLOAD_DIR: /var/anila/ingestion-uploads
+      # FLUX image-gen for ANILALM studio pptx pipeline — wires
+      # studio.image_provider.FluxImageProvider; empty BACKEND_URL
+      # would make get_flux_provider() return None (toggle OFF).
+      FLUX_BACKEND_URL: ${FLUX_BACKEND_URL:-http://flux2-dev:8000}
+      FLUX_MAX_CONCURRENT: "${FLUX_MAX_CONCURRENT:-4}"
+      FLUX_TIMEOUT_SECONDS: "${FLUX_TIMEOUT_SECONDS:-180}"
+      # FLUX_CACHE_DIR defaults to $INGESTION_UPLOAD_DIR/flux-cache
     volumes:
       # anila-agent subtree (github.com/zzw09773/anila-agent) — 模板下載端用。
       # 更新走 git subtree pull/push,見 README §"Updating anila-agent"。
