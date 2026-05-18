@@ -88,6 +88,7 @@ from app.schemas.studio import (
 )
 from app.services import studio_job_service as jobs
 from app.services.auth_service import get_current_user
+from app.services.geometric_qa import GeometricDefect, run_geometric_qa
 from app.services.ingestion_pool import get_pool
 from app.services.proxy_service import proxy_request
 from app.services.studio_text_normalizer import normalize_spec
@@ -1291,22 +1292,100 @@ async def _inspect_slide_visually(
     return defects
 
 
+def _geometric_to_visual(g: GeometricDefect) -> VisualDefect:
+    """Map a GeometricDefect into the VisualDefect shape the rest of the
+    pipeline already consumes. Vision-QA and geometric-QA defects are
+    indistinguishable downstream — the fix-and-rerender prompt is just
+    given a list of summaries to act on.
+    """
+    severity = g.severity if g.severity in ("critical", "warning", "info") else "warning"
+    summary = f"[geometric/{g.kind}] {g.detail}".strip()
+    return VisualDefect(
+        slide_index=g.slide_index,
+        severity=severity,
+        summary=summary[:500],
+    )
+
+
+def _merge_defects(
+    geometric: list[VisualDefect],
+    vision: list[VisualDefect],
+) -> list[VisualDefect]:
+    """Dedupe: when geometric and vision both flag the same slide with a
+    similar kind, keep the higher severity. Otherwise concatenate.
+
+    The dedupe key is (slide_index, "geometric"|"vision"-prefix) so we
+    don't accidentally collapse two genuinely different findings on the
+    same slide — only collapse near-duplicates from each source.
+    """
+    severity_rank = {"critical": 3, "warning": 2, "info": 1}
+    out: list[VisualDefect] = []
+    # Geometric is authoritative for layout — keep all of those.
+    out.extend(geometric)
+    # For vision defects, drop the ones that look redundant against a
+    # geometric defect of equal-or-higher severity on the same slide.
+    geometric_by_slide: dict[int, int] = {}
+    for d in geometric:
+        rank = severity_rank.get(d.severity, 0)
+        geometric_by_slide[d.slide_index] = max(
+            geometric_by_slide.get(d.slide_index, 0), rank,
+        )
+    for v in vision:
+        g_rank = geometric_by_slide.get(v.slide_index, 0)
+        v_rank = severity_rank.get(v.severity, 0)
+        if g_rank >= 3 and v_rank <= g_rank:
+            # Geometric already raised critical for this slide; vision
+            # commentary is unlikely to add actionable info on top.
+            continue
+        out.append(v)
+    return out
+
+
 async def _visual_qa(
     db: Session,
     user: User,
     pptx_path: str,
+    *,
+    pptx_bytes: bytes | None = None,
 ) -> list[VisualDefect]:
-    """Run vision QA on every slide of a rendered .pptx."""
+    """Run geometric + vision QA on every slide of a rendered .pptx.
+
+    Geometric QA runs first. If it flags `critical` defects on a slide,
+    we still run vision QA on the *other* slides (cheaper to short-circuit
+    only the slides we already know are broken). Best-effort: any error
+    in geometric QA yields empty defects and we fall back to vision-only.
+    """
+    # Geometric QA — deterministic, no vision tokens. Reads pptx bytes
+    # straight from the renderer; if we weren't handed them, skip it.
+    geom_defects: list[VisualDefect] = []
+    critical_slides: set[int] = set()
+    if pptx_bytes:
+        try:
+            raw = await run_geometric_qa(
+                pptx_bytes, renderer_url=RENDERER_BASE_URL,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Geometric QA raised unexpectedly: %s", e)
+            raw = []
+        geom_defects = [_geometric_to_visual(g) for g in raw]
+        critical_slides = {
+            d.slide_index for d in geom_defects if d.severity == "critical"
+        }
+
     pngs = await _capture_screenshots(pptx_path)
     if not pngs:
-        return []
+        return geom_defects
 
     # Sequential per-slide: gemma4 backend is single-tenant; concurrent
     # requests can starve each other on the GPU. Cap parallelism at 2 to
-    # halve wall-clock without overwhelming the model.
+    # halve wall-clock without overwhelming the model. Skip slides that
+    # geometric QA already marked critical — the fix-pass will handle
+    # them and burning vision tokens on a known-broken slide is wasteful.
     semaphore = asyncio.Semaphore(2)
 
     async def _one(idx: int, b: bytes) -> list[VisualDefect]:
+        if idx in critical_slides:
+            return []
         async with semaphore:
             return await _inspect_slide_visually(db, user, idx, b)
 
@@ -1314,10 +1393,10 @@ async def _visual_qa(
         *(_one(i, b) for i, b in enumerate(pngs)),
         return_exceptions=False,
     )
-    flat: list[VisualDefect] = []
+    vision_flat: list[VisualDefect] = []
     for r in results:
-        flat.extend(r)
-    return flat
+        vision_flat.extend(r)
+    return _merge_defects(geom_defects, vision_flat)
 
 
 async def _fix_spec_with_defects(
@@ -1482,7 +1561,9 @@ async def _run_pipeline(
                     step=JOB_STEP_QA,
                     qa_passes=qa_passes,
                 )
-                defects = await _visual_qa(db, user, pptx_path)
+                defects = await _visual_qa(
+                    db, user, pptx_path, pptx_bytes=pptx_bytes,
+                )
                 critical = [d for d in defects if d.severity == "critical"]
                 if not critical or qa_passes > VISUAL_QA_PASSES:
                     final_defects = defects

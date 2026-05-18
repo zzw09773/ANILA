@@ -23,6 +23,7 @@
 
 const express = require('express')
 const PptxGenJS = require('pptxgenjs')
+const JSZip = require('jszip')
 const { execFileSync } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
@@ -824,6 +825,191 @@ app.post('/screenshots', async (req, res) => {
     res
       .status(500)
       .json({ error: String((err && err.message) || 'screenshots failed') })
+  }
+})
+
+/**
+ * Deterministic geometric QA — Studio Fix 6.
+ *
+ * Parses each slide's XML and analyses shape coordinates so the pipeline
+ * can flag layout problems vision QA tends to miss (e.g. a 3-inch band
+ * of dead whitespace, or a shape extending past the slide edge). Cheap
+ * compared to the gemma4 vision pass, and catches the symptom-free
+ * issues that vision LLMs blandly approve.
+ *
+ * EMU primer: 914400 EMU = 1 inch. A 16:9 slide is 13.333" x 7.5", i.e.
+ * 12192000 x 6858000 EMU. We work in inches because the thresholds
+ * (overflow, density-per-sq-inch) are expressed in inches.
+ */
+const EMU_PER_INCH = 914400
+const SLIDE_W_INCH = 13.333
+const SLIDE_H_INCH = 7.5
+const SLIDE_AREA_INCH = SLIDE_W_INCH * SLIDE_H_INCH
+const WHITESPACE_RATIO_WARN = 0.55
+const WHITESPACE_RATIO_CRIT = 0.7
+const TEXT_DENSITY_WARN = 50
+const OVERLAP_MIN_SQ_INCH = 0.1
+
+function extractShapesFromSlideXml(xml) {
+  const shapes = []
+  const spRegex = /<p:sp\b[\s\S]*?<\/p:sp>/g
+  let m
+  while ((m = spRegex.exec(xml)) !== null) {
+    const block = m[0]
+    const off = block.match(/<a:off\s+x="(-?\d+)"\s+y="(-?\d+)"\s*\/>/)
+    const ext = block.match(/<a:ext\s+cx="(\d+)"\s+cy="(\d+)"\s*\/>/)
+    if (!off || !ext) continue
+    const xInch = Number(off[1]) / EMU_PER_INCH
+    const yInch = Number(off[2]) / EMU_PER_INCH
+    const wInch = Number(ext[1]) / EMU_PER_INCH
+    const hInch = Number(ext[2]) / EMU_PER_INCH
+    let textLen = 0
+    const textRegex = /<a:t[^>]*>([\s\S]*?)<\/a:t>/g
+    let t
+    while ((t = textRegex.exec(block)) !== null) {
+      textLen += t[1].length
+    }
+    shapes.push({ x: xInch, y: yInch, w: wInch, h: hInch, textLen })
+  }
+  const picRegex = /<p:pic\b[\s\S]*?<\/p:pic>/g
+  while ((m = picRegex.exec(xml)) !== null) {
+    const block = m[0]
+    const off = block.match(/<a:off\s+x="(-?\d+)"\s+y="(-?\d+)"\s*\/>/)
+    const ext = block.match(/<a:ext\s+cx="(\d+)"\s+cy="(\d+)"\s*\/>/)
+    if (!off || !ext) continue
+    shapes.push({
+      x: Number(off[1]) / EMU_PER_INCH,
+      y: Number(off[2]) / EMU_PER_INCH,
+      w: Number(ext[1]) / EMU_PER_INCH,
+      h: Number(ext[2]) / EMU_PER_INCH,
+      textLen: 0,
+    })
+  }
+  return shapes
+}
+
+function analyseSlide(shapes) {
+  const defects = []
+  let coveredArea = 0
+  for (const s of shapes) {
+    const x1 = Math.max(0, s.x)
+    const y1 = Math.max(0, s.y)
+    const x2 = Math.min(SLIDE_W_INCH, s.x + s.w)
+    const y2 = Math.min(SLIDE_H_INCH, s.y + s.h)
+    if (x2 > x1 && y2 > y1) {
+      coveredArea += (x2 - x1) * (y2 - y1)
+    }
+  }
+  const clampedCover = Math.min(coveredArea, SLIDE_AREA_INCH)
+  const wsRatio = (SLIDE_AREA_INCH - clampedCover) / SLIDE_AREA_INCH
+  if (wsRatio > WHITESPACE_RATIO_CRIT) {
+    defects.push({
+      severity: 'critical',
+      kind: 'whitespace',
+      detail: `ratio=${wsRatio.toFixed(2)} (>${WHITESPACE_RATIO_CRIT})`,
+    })
+  } else if (wsRatio > WHITESPACE_RATIO_WARN) {
+    defects.push({
+      severity: 'warning',
+      kind: 'whitespace',
+      detail: `ratio=${wsRatio.toFixed(2)} (>${WHITESPACE_RATIO_WARN})`,
+    })
+  }
+  for (const s of shapes) {
+    const right = s.x + s.w
+    const bottom = s.y + s.h
+    if (right > SLIDE_W_INCH + 0.01) {
+      defects.push({
+        severity: 'critical',
+        kind: 'overflow',
+        detail: `shape extends to ${right.toFixed(2)} inch (>${SLIDE_W_INCH})`,
+      })
+    } else if (bottom > SLIDE_H_INCH + 0.01) {
+      defects.push({
+        severity: 'critical',
+        kind: 'overflow',
+        detail: `shape extends to ${bottom.toFixed(2)} inch (>${SLIDE_H_INCH})`,
+      })
+    }
+  }
+  for (let i = 0; i < shapes.length; i++) {
+    for (let j = i + 1; j < shapes.length; j++) {
+      const a = shapes[i]
+      const b = shapes[j]
+      const ix1 = Math.max(a.x, b.x)
+      const iy1 = Math.max(a.y, b.y)
+      const ix2 = Math.min(a.x + a.w, b.x + b.w)
+      const iy2 = Math.min(a.y + a.h, b.y + b.h)
+      if (ix2 > ix1 && iy2 > iy1) {
+        const area = (ix2 - ix1) * (iy2 - iy1)
+        if (area > OVERLAP_MIN_SQ_INCH) {
+          defects.push({
+            severity: 'warning',
+            kind: 'overlap',
+            detail: `shapes ${i} and ${j} overlap ${area.toFixed(2)} sq inch`,
+          })
+        }
+      }
+    }
+  }
+  for (const s of shapes) {
+    if (s.textLen === 0) continue
+    const area = Math.max(0.01, s.w * s.h)
+    const density = s.textLen / area
+    if (density > TEXT_DENSITY_WARN) {
+      defects.push({
+        severity: 'warning',
+        kind: 'text_density',
+        detail: `density=${density.toFixed(1)} chars/sq inch (>${TEXT_DENSITY_WARN})`,
+      })
+    }
+  }
+  return defects
+}
+
+app.post('/qa-geometric', async (req, res) => {
+  try {
+    const { pptxBase64 } = req.body || {}
+    if (typeof pptxBase64 !== 'string' || pptxBase64.length === 0) {
+      return res.status(400).json({ error: 'pptxBase64 required' })
+    }
+    let zip
+    try {
+      zip = await JSZip.loadAsync(Buffer.from(pptxBase64, 'base64'))
+    } catch (e) {
+      return res
+        .status(400)
+        .json({ error: `invalid pptx (zip load failed): ${e.message}` })
+    }
+    const slideFiles = Object.keys(zip.files)
+      .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
+      .sort((a, b) => {
+        const ai = Number(a.match(/slide(\d+)\.xml$/)[1])
+        const bi = Number(b.match(/slide(\d+)\.xml$/)[1])
+        return ai - bi
+      })
+    const defects = []
+    for (let i = 0; i < slideFiles.length; i++) {
+      const name = slideFiles[i]
+      let xml
+      try {
+        xml = await zip.files[name].async('string')
+      } catch (e) {
+        console.warn(`[qa-geometric] failed to read ${name}: ${e.message}`)
+        continue
+      }
+      const shapes = extractShapesFromSlideXml(xml)
+      const slideDefects = analyseSlide(shapes)
+      for (const d of slideDefects) {
+        defects.push({ slide_index: i, ...d })
+      }
+    }
+    res.json({ defects })
+  } catch (err) {
+    console.error('[qa-geometric] error:', err)
+    res
+      .status(500)
+      .json({ error: String((err && err.message) || 'qa-geometric failed') })
   }
 })
 
