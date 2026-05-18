@@ -266,7 +266,7 @@ services:
   # CSP registers THIS as the agent endpoint (model_type=agent). When
   # gemma4 emits DISPATCH:image-generator:..., CSP forwards the request
   # here. Shim handles prompt translation (zh→en via gemma4 callback)
-  # and image persistence; binds /share/flux from share-dev/uploads/flux.
+  # and image persistence; binds /share/flux from share/uploads/flux.
   flux2-dev-agent:
     image: anila-flux-agent:latest
     container_name: anila-model-flux2-dev-agent
@@ -276,7 +276,8 @@ services:
       TZ: Asia/Taipei
       FLUX_BACKEND_URL: http://flux2-dev:8000
       CSP_BASE_URL: http://csp:8000
-      CSP_API_KEY: ${INTERNAL_PLATFORM_API_KEY_DEV:-sk-internal-worker-dev-changeme}
+      # Prod: 同 csp service,缺值 fail-loud (不要走 dev fallback)。
+      CSP_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
       GEMMA_MODEL: gemma4
       ENABLE_PROMPT_TRANSLATION: "1"
       SHARE_DIR: /share/flux
@@ -284,7 +285,7 @@ services:
       DEFAULT_ASPECT_RATIO: "16:9"
       FLUX_TIMEOUT_SECONDS: "240"
     volumes:
-      - /home/aia/c1147259/ANILA/share-dev/uploads/flux:/share/flux
+      - /home/aia/c1147259/ANILA/share/uploads/flux:/share/flux
     expose:
       - "8000"
     depends_on:
