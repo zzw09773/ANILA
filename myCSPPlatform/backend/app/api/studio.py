@@ -841,12 +841,56 @@ def _build_fallback_spec(
 # ── Step 7: render via the Node service ──────────────────────────────────
 
 
-def get_flux_provider() -> "FluxImageProvider | None":
-    """Returns a configured FluxImageProvider, or None if not set up.
+# Module-level singleton: built once on import (or on first call), held
+# until process exit. Shared semaphore inside ensures concurrency
+# limit holds across all slide-generation requests.
+_FLUX_PROVIDER: "FluxImageProvider | None" = None
+_FLUX_PROVIDER_INITIALISED = False
 
-    Stub for Task 5; Task 6 will wire env vars and a process-singleton.
+
+def get_flux_provider() -> "FluxImageProvider | None":
+    """Return the configured FluxImageProvider, or None if FLUX
+    integration is disabled in this deployment.
+
+    Configuration via env:
+      FLUX_BACKEND_URL       (required to enable; e.g. http://flux2-dev:8000)
+      FLUX_CACHE_DIR         (default: $INGESTION_UPLOAD_DIR/flux-cache)
+      FLUX_MAX_CONCURRENT    (default: 4)
+      FLUX_TIMEOUT_SECONDS   (default: 180)
     """
-    return None
+    global _FLUX_PROVIDER, _FLUX_PROVIDER_INITIALISED
+    if _FLUX_PROVIDER_INITIALISED:
+        return _FLUX_PROVIDER
+
+    flux_url = os.environ.get("FLUX_BACKEND_URL", "").strip()
+    if not flux_url:
+        _FLUX_PROVIDER_INITIALISED = True
+        return None
+
+    from app.services.flux_image_provider import FluxImageProvider
+
+    upload_dir = os.environ.get(
+        "INGESTION_UPLOAD_DIR", "/var/anila/ingestion-uploads"
+    )
+    cache_dir = os.environ.get(
+        "FLUX_CACHE_DIR", os.path.join(upload_dir, "flux-cache")
+    )
+    max_concurrent = int(os.environ.get("FLUX_MAX_CONCURRENT", "4"))
+    timeout = float(os.environ.get("FLUX_TIMEOUT_SECONDS", "180"))
+
+    from pathlib import Path
+    _FLUX_PROVIDER = FluxImageProvider(
+        flux_url=flux_url,
+        cache_dir=Path(cache_dir),
+        max_concurrent=max_concurrent,
+        timeout_seconds=timeout,
+    )
+    _FLUX_PROVIDER_INITIALISED = True
+    logger.info(
+        "FluxImageProvider wired: url=%s cache_dir=%s concurrent=%d",
+        flux_url, cache_dir, max_concurrent,
+    )
+    return _FLUX_PROVIDER
 
 
 async def _hydrate_images(
