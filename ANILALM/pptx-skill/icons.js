@@ -57,7 +57,19 @@ const HI2_INDEX = path.join(
 //     instead, hence no `growth` concept in the table
 //   - network maps to GlobeAlt only because the prompt restricts its
 //     use to "真的講國際" — generic "connection" is `integration`.
+//
+// Phase 6 (Fix 4): expanded from 33 generic concepts to 80+ entries
+// grouped by domain. The original 33 served generic decks fine, but
+// technical content (e.g. 工業視覺/ML 簡報) was forcing the LLM to
+// fallback-pick mismatched icons like `rocket` for "跨機臺泛化差" or
+// `sparkles` for "資料不平衡". The new domain groups give the LLM a
+// concrete vocabulary for industrial, ML/AI, system-architecture,
+// process/workflow, and outcome/impact concepts. The prompt in
+// api/studio.py groups these the same way and asks the LLM to pick
+// a domain first, then a concept from within that domain.
 const CONCEPT_MAP = Object.freeze({
+  // === Generic (Phase 5) ===========================================
+
   // 資料/運算
   data_storage: 'HiCircleStack',
   data_pipeline: 'HiArrowsRightLeft',
@@ -105,6 +117,65 @@ const CONCEPT_MAP = Object.freeze({
   document: 'HiDocumentText',
   book: 'HiBookOpen',
   learning: 'HiAcademicCap',
+
+  // === Industrial / Manufacturing (Phase 6 - Fix 4) ================
+  machine: 'HiCog8Tooth',
+  factory: 'HiBuildingOffice2',
+  sensor: 'HiSignal',
+  defect: 'HiExclamationCircle',
+  quality_control: 'HiCheckBadge',
+  calibration: 'HiAdjustmentsHorizontal',
+  anomaly: 'HiExclamationTriangle',
+  production_line: 'HiBuildingStorefront',
+  inspection: 'HiDocumentMagnifyingGlass',
+  yield_rate: 'HiChartPie',
+
+  // === ML / AI =====================================================
+  model: 'HiCpuChip',
+  training: 'HiAcademicCap',
+  inference: 'HiBolt',
+  embedding: 'HiCubeTransparent',
+  classification: 'HiSquares2X2',
+  regression: 'HiArrowTrendingUp',
+  overfitting: 'HiArrowsPointingIn',
+  generalization: 'HiArrowsPointingOut',
+  feature_extraction: 'HiBeaker',
+  imbalance: 'HiScale',
+  fine_tuning: 'HiWrenchScrewdriver',
+  agent: 'HiUserCircle',
+  reasoning: 'HiLightBulb',
+  retrieval: 'HiMagnifyingGlassCircle',
+  prompt: 'HiCommandLine',
+  evaluation: 'HiDocumentChartBar',
+  prediction: 'HiChartBarSquare',
+
+  // === System Architecture =========================================
+  supervisor: 'HiUserGroup',
+  worker: 'HiWrench',
+  orchestration: 'HiQueueList',
+  hierarchy: 'HiSquaresPlus',
+  vertical_split: 'HiViewColumns',
+  fanout: 'HiArrowsRightLeft',
+  pipeline_stage: 'HiQueueList',
+  module: 'HiCube',
+
+  // === Process / Workflow ==========================================
+  perception: 'HiEye',
+  cognition: 'HiCpuChip',
+  action: 'HiPlay',
+  step_one: 'HiNumberedList',
+  alert: 'HiBellAlert',
+  iteration: 'HiArrowPath',
+  decision: 'HiQuestionMarkCircle',
+  monitoring: 'HiChartBar',
+
+  // === Outcome / Impact ============================================
+  improvement: 'HiArrowTrendingUp',
+  reduction: 'HiArrowTrendingDown',
+  breakthrough: 'HiSparkles',
+  limitation: 'HiNoSymbol',
+  cost_saving: 'HiBanknotes',
+  risk: 'HiFire',
 })
 
 // Lazy-built map of icon name → GenIcon descriptor.

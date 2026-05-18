@@ -405,7 +405,9 @@ def _build_generation_prompt(
     Phase 3 expands the prompt with:
       * palette selection (4 options)
       * per-slide layout_kind (6 variants)
-      * icon_rows.concept whitelist (~30 keywords from a closed set)
+      * icon_rows.concept whitelist (80+ keywords grouped by domain;
+        the LLM is asked to pick a domain first, then a concept from
+        that domain — see Phase 6 Fix 4)
 
     The hard rule we communicate to the LLM is **bullets[] is always
     required** even when a non-standard layout_kind is chosen, because
@@ -462,20 +464,39 @@ def _build_generation_prompt(
             "重要：bullets 任何 layout 都要填（renderer 在 layout-specific 欄位",
             "缺漏時會回退用 bullets 渲染，不要省）。",
             "",
-            "── icon_rows.concept 必須從以下白名單挑（其他會被忽略不畫 icon）──",
-            "資料/運算: data_storage data_pipeline dataset automation",
-            "          integration deployment",
-            "人/角色:   user team customer",
-            "溝通:     chat email notification broadcast",
-            "分析/結果: insight metrics comparison search",
-            "時間:     schedule deadline history",
-            "品質/安全: security validation error success achievement",
-            "系統:     settings server cloud network",
-            "文件/學習: document book learning",
+            "── icon_rows.concept 必須從以下白名單挑（未列出的會 fallback",
+            "   為「不畫 icon」，所以不要自創；先想 domain，再從該 domain 挑）──",
+            "[generic 資料/運算] data_storage data_pipeline dataset",
+            "                automation integration deployment",
+            "[generic 人/角色]   user team customer",
+            "[generic 溝通]     chat email notification broadcast",
+            "[generic 分析/結果] insight metrics comparison search",
+            "[generic 時間]     schedule deadline history",
+            "[generic 品質/安全] security validation error success achievement",
+            "[generic 系統]     settings server cloud network",
+            "[generic 文件/學習] document book learning",
+            "[industrial 工業/製造] machine factory sensor defect",
+            "                  quality_control calibration anomaly",
+            "                  production_line inspection yield_rate",
+            "[ml_ai 機器學習]   model training inference embedding",
+            "                  classification regression overfitting",
+            "                  generalization feature_extraction imbalance",
+            "                  fine_tuning agent reasoning retrieval",
+            "                  prompt evaluation prediction",
+            "[system_arch 架構] supervisor worker orchestration",
+            "                  hierarchy vertical_split fanout",
+            "                  pipeline_stage module",
+            "[process 流程]    perception cognition action step_one",
+            "                  alert iteration decision monitoring",
+            "[outcome 結果]    improvement reduction breakthrough limitation",
+            "                  cost_saving risk",
             "",
             "icon 規則：",
+            "- **先選 domain，再從 domain 內挑 concept**：技術內容（ML/工業）",
+            "  從 ml_ai / industrial / system_arch / process / outcome 挑；",
+            "  一般商業/通用內容才從 generic 挑。",
             '- 同一張 icon_rows 的 concept 抽象層級要一致（全部「功能」或全部',
-            "  「角色」之類），不要混。",
+            "  「角色」之類），不要混。最好同 domain 內挑。",
             "- 不要硬套陳腔：success≠創新、network≠成長、achievement≠任何進步；",
             "  挑該行真正在表達的概念。",
             "",
