@@ -451,13 +451,16 @@ def _build_generation_prompt(
             '  "icon_rows"         3-5 個並列要點，每個有 icon；要附 icon_rows',
             "",
             "Layout-specific 物件（以下是欄位形狀，**不要把這些範例值複製到輸出**）：",
-            '  stat 形狀：{"value": "47%", "label": "...", "supporting": "..."}',
-            '             value 是大字數值；supporting 為選填細節。',
+            '  stat 形狀：{"value": "47%", "label": "...", "supporting": "..."',
+            '              , "baseline": "30%", "baseline_label": "..."}',
+            '             value 是大字數值；**supporting 必填 20-100 字脈絡**；',
+            '             baseline / baseline_label 為選填對照基準（有就觸發左右比較版型）。',
             '  quote 形狀：{"text": "...", "attribution": "..."}',
             '             attribution 為選填來源。',
-            '  columns 形狀：[{"heading": "...", "bullets": ["..."]},',
-            '                 {"heading": "...", "bullets": ["..."]}]',
+            '  columns 形狀：[{"heading": "...", "bullets": ["...", "...", "..."]},',
+            '                 {"heading": "...", "bullets": ["...", "...", "..."]}]',
             '             固定 2 個元素的陣列；多於 2 會被忽略、少於 2 會降級為 standard。',
+            '             **每欄 bullets 至少 3 條**（schema 強制；湊不到改 icon_rows）。',
             '  icon_rows 形狀：[{"concept": "...", "heading": "...", "description": "..."}]',
             '             3-5 個元素；concept 必須來自下方白名單。',
             "",
@@ -567,8 +570,18 @@ def _build_generation_prompt(
             "- **stat_callout**：文件含量化結果（百分比、實驗數值、KPI、提升幅度）",
             "  時，挑最關鍵的 1 個做 stat_callout。stat.value 是大字數字，",
             "  stat.label 是該數字代表什麼，stat.supporting 是補充細節。",
+            "  **必填 supporting：寫 20-100 字的數字脈絡**（baseline、樣本數、",
+            "  實驗條件、結果意義）；**不可只寫「重要突破」「顯著進步」這類空話**。",
+            "  若有對照基準，**強烈建議**填 stat.baseline + stat.baseline_label，",
+            "  renderer 會自動切成左右對比版型（baseline ← → value），視覺更有力。",
+            "  範例：{value:\"95%\", label:\"CT350 機臺鐵屑覆蓋率偵測率\",",
+            "         supporting:\"雙分支架構相比單分支 ResNet18 基準的 78%，提升 17 個百分點；",
+            "         測試集為 10 個機臺切換批次，N=2,400\",",
+            "         baseline:\"78%\", baseline_label:\"單分支基準\"}",
             "- **two_column**：內容天然有對照（before/after、本研究 vs 既有方法、",
             "  兩種模型架構比較）時用 1 張。columns 必須 **2 個元素**、各填 heading + bullets。",
+            "  **每欄至少 3 條 bullet**（schema 強制），讓兩欄視覺密度對稱、不留大片空白；",
+            "  若內容湊不到 3 條（例：對照只有 1-2 個維度），改用 icon_rows 或 standard。",
             "- **quote**：有名言、客戶證言、概念金句時用。",
             "- **icon_rows**：3-5 個並列要點各有 icon。concept 從白名單挑。",
             "- **image_focus**（Phase 5 新增）：文件原檔有相關插圖時用。例：",
@@ -744,10 +757,22 @@ async def _generate_validated_spec(
 
     last_err: ValidationError | ValueError | json.JSONDecodeError | None = None
     last_raw = raw
+    # Filenames used for the fallback `supporting` placeholder when the
+    # LLM under-fills a stat_callout. Passing the first chunk filename
+    # makes the autoplaced supporting line look at least vaguely
+    # attributable instead of "來源:documents".
+    chunk_filenames = [c.get("filename") for c in chunks if c.get("filename")]
     for attempt in range(SCHEMA_CORRECTION_PASSES + 1):
         try:
             extracted = _extract_json_object(raw)
-            return SlidesSpec.model_validate(_loads_lenient(extracted)), False
+            parsed = _loads_lenient(extracted)
+            # Studio Fix 3 (2026-05-18): saturation auto-correct.
+            # The schema now requires Stat.supporting (min 20 chars) and
+            # Column.bullets (min 3). LLMs frequently miss this on first
+            # try; rather than 422 we silently patch / demote and let the
+            # user see the deck. See `_saturate_spec_dict` for behaviour.
+            parsed = _saturate_spec_dict(parsed, chunk_filenames=chunk_filenames)
+            return SlidesSpec.model_validate(parsed), False
         except (ValidationError, ValueError, json.JSONDecodeError) as e:
             last_err = e
             last_raw = raw
@@ -797,6 +822,124 @@ async def _generate_validated_spec(
         last_raw[:500].replace("\n", "⏎"),
     )
     return _build_fallback_spec(collection_name, preset, str(last_err)[:300]), True
+
+
+def _saturate_spec_dict(
+    spec_dict: Any,
+    *,
+    chunk_filenames: list[str] | None = None,
+) -> Any:
+    """Studio Fix 3 pre-validation pass — patch under-filled layouts.
+
+    The schema (Stat.supporting min 20, Column.bullets min 3) is the
+    long-term floor we want LLM output to clear. But early in the rollout
+    gemma4 frequently misses one or the other; rather than 422-ing the
+    user we silently patch the offending slides and log a warning.
+
+    Two transforms, in order:
+
+    1. ``stat_callout`` slide whose ``stat.supporting`` is missing /
+       shorter than 20 chars → auto-fill a placeholder of the form
+       ``來源:<first chunk filename or 'documents'>``. This is meant to
+       be visually obvious so the user knows the LLM under-filled but
+       not catastrophic enough to refuse the deck.
+    2. ``two_column`` slide where ANY column has < 3 bullets → demote
+       the slide to ``standard`` layout, concatenate the columns' bullets
+       (heading: bullets...) into the slide's top-level bullets list,
+       and drop the columns payload. The renderer falls back to a normal
+       bullet list rather than a half-empty 2-up.
+
+    Both transforms log a warning so we can monitor LLM saturation rates.
+    Pure function — operates on a parsed dict in-place AND returns it.
+
+    Defensive: this function MUST NOT raise. Any dict shape we can't
+    interpret (missing 'slides' key, non-list slides, etc.) is left
+    untouched and Pydantic validation will produce its normal error.
+    """
+    if not isinstance(spec_dict, dict):
+        return spec_dict
+    slides = spec_dict.get("slides")
+    if not isinstance(slides, list):
+        return spec_dict
+
+    fallback_source = (
+        chunk_filenames[0] if chunk_filenames else "documents"
+    )
+
+    for slide in slides:
+        if not isinstance(slide, dict):
+            continue
+        layout = slide.get("layout_kind", "standard")
+
+        # Transform 1: stat_callout supporting auto-fill
+        if layout == "stat_callout":
+            stat = slide.get("stat")
+            if isinstance(stat, dict):
+                supporting = stat.get("supporting") or ""
+                if len(str(supporting)) < 20:
+                    title = slide.get("title", "<untitled>")
+                    placeholder = (
+                        f"來源:{fallback_source}（系統補填：LLM 未提供足夠脈絡，"
+                        f"請參考原文件取得 baseline、樣本數與實驗條件）"
+                    )
+                    stat["supporting"] = placeholder
+                    logger.warning(
+                        "Studio saturation: slide '%s' stat.supporting "
+                        "under-filled (%d chars), auto-filled placeholder "
+                        "referencing %s.",
+                        title, len(str(supporting)), fallback_source,
+                    )
+
+        # Transform 2: two_column with sparse columns → demote to standard
+        if layout == "two_column":
+            cols = slide.get("columns")
+            if isinstance(cols, list) and cols:
+                sparse = any(
+                    not isinstance(c, dict)
+                    or not isinstance(c.get("bullets"), list)
+                    or len(c["bullets"]) < 3
+                    for c in cols
+                )
+                if sparse:
+                    title = slide.get("title", "<untitled>")
+                    flattened: list[str] = []
+                    for c in cols:
+                        if not isinstance(c, dict):
+                            continue
+                        heading = str(c.get("heading") or "").strip()
+                        bullets = c.get("bullets") or []
+                        if not isinstance(bullets, list):
+                            continue
+                        for b in bullets:
+                            text = str(b).strip()
+                            if not text:
+                                continue
+                            prefix = f"{heading}：" if heading else ""
+                            flattened.append(f"{prefix}{text}")
+                    if flattened:
+                        # Merge with any existing bullets, dedupe-preserving order.
+                        existing = slide.get("bullets") or []
+                        if not isinstance(existing, list):
+                            existing = []
+                        merged: list[str] = []
+                        seen: set[str] = set()
+                        for item in list(existing) + flattened:
+                            s = str(item).strip()
+                            if s and s not in seen:
+                                merged.append(s)
+                                seen.add(s)
+                        # Schema cap is 8 bullets per slide.
+                        slide["bullets"] = merged[:8]
+                    slide["layout_kind"] = "standard"
+                    slide.pop("columns", None)
+                    logger.warning(
+                        "Studio saturation: slide '%s' two_column had "
+                        "sparse columns, demoted to standard with %d "
+                        "flattened bullets.",
+                        title, len(slide.get("bullets") or []),
+                    )
+
+    return spec_dict
 
 
 def _build_fallback_spec(

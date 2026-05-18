@@ -210,9 +210,22 @@ function renderSectionBreak(pres, s, p) {
 }
 
 /**
- * Stat callout — title bar + huge number + label below.
- * Uses palette.accent for the number to make it pop. Falls back to
- * standard if `slide.stat.value` is missing.
+ * Stat callout — title bar + huge number + label.
+ * Studio Fix 3 (2026-05-18): two visual modes.
+ *
+ *  - Comparison mode (when `stat.baseline` present): split content area
+ *    into left (small baseline + label) → arrow → right (big value + label).
+ *    Makes "78% → 95%" gains immediately legible without the user having
+ *    to parse a paragraph.
+ *  - Solo mode (default): vertical-center the value+label block in the
+ *    main content area, with `supporting` directly below the value.
+ *    Avoids the old layout's bottom-heavy whitespace problem.
+ *
+ * In both modes, `bullets[0]` (if present) becomes a small muted-colour
+ * footer "takeaway" near the slide bottom — typically a one-line so-what
+ * sentence so the slide doesn't end with raw numbers and no narrative.
+ *
+ * Falls back to standard if `stat.value` / `stat.label` are missing.
  */
 function renderStatCallout(pres, s, p) {
   if (!s.stat || !s.stat.value || !s.stat.label) {
@@ -225,27 +238,83 @@ function renderStatCallout(pres, s, p) {
     align: 'left', valign: 'middle',
     fontFace: FONT_FACE, margin: 0,
   })
-  // Big number — accent colour, 96pt, bold, centred. The "headline number"
-  // is the entire visual focus of this layout, hence the deliberate size.
-  slide.addText(String(s.stat.value), {
-    x: 0.5, y: 1.6, w: 12.3, h: 2.6,
-    fontSize: 96, bold: true, color: p.accent,
-    align: 'center', valign: 'middle', fontFace: FONT_FACE,
-  })
-  // Label — what the number means. 28pt is large enough to read from
-  // the back of a room without overshadowing the value above.
-  slide.addText(String(s.stat.label), {
-    x: 1.0, y: 4.5, w: 11.3, h: 0.8,
-    fontSize: 28, color: p.ink,
-    align: 'center', valign: 'middle', fontFace: FONT_FACE,
-  })
-  if (s.stat.supporting) {
-    slide.addText(String(s.stat.supporting), {
-      x: 1.0, y: 5.5, w: 11.3, h: 0.6,
-      fontSize: 16, color: p.muted, italic: true,
+
+  const hasBaseline = !!(s.stat.baseline && String(s.stat.baseline).trim())
+  const bullets = Array.isArray(s.bullets) ? s.bullets : []
+
+  if (hasBaseline) {
+    // ── Comparison mode: baseline ← arrow → value ──
+    // Left third = baseline (small), middle = arrow, right two-thirds =
+    // value (large). Vertical extent 1.4 → 5.0 so 'supporting' still
+    // has room below for the gain narrative.
+    const baselineLabel = String(s.stat.baseline_label || '基準').trim()
+    slide.addText(String(s.stat.baseline), {
+      x: 0.5, y: 1.6, w: 4.0, h: 2.4,
+      fontSize: 60, bold: true, color: p.muted,
+      align: 'center', valign: 'middle', fontFace: FONT_FACE,
+    })
+    slide.addText(baselineLabel, {
+      x: 0.5, y: 3.9, w: 4.0, h: 0.5,
+      fontSize: 16, color: p.muted,
+      align: 'center', valign: 'middle', fontFace: FONT_FACE,
+    })
+    // Arrow centre column — uses accent colour to direct the eye.
+    slide.addText('→', {
+      x: 4.5, y: 1.6, w: 1.3, h: 2.4,
+      fontSize: 72, bold: true, color: p.accent,
+      align: 'center', valign: 'middle', fontFace: FONT_FACE,
+    })
+    slide.addText(String(s.stat.value), {
+      x: 5.8, y: 1.4, w: 7.0, h: 2.8,
+      fontSize: 88, bold: true, color: p.accent,
+      align: 'center', valign: 'middle', fontFace: FONT_FACE,
+    })
+    slide.addText(String(s.stat.label), {
+      x: 5.8, y: 4.2, w: 7.0, h: 0.6,
+      fontSize: 22, color: p.ink,
+      align: 'center', valign: 'middle', fontFace: FONT_FACE,
+    })
+    if (s.stat.supporting) {
+      slide.addText(String(s.stat.supporting), {
+        x: 1.0, y: 5.0, w: 11.3, h: 1.2,
+        fontSize: 16, color: p.muted, italic: true,
+        align: 'center', valign: 'top', fontFace: FONT_FACE,
+      })
+    }
+  } else {
+    // ── Solo mode: vertical-centre the value+label block ──
+    // Content area runs ~1.0 → 6.9 inches. Centre point ≈ 3.95.
+    // Big number occupies the dead centre; label sits just below.
+    slide.addText(String(s.stat.value), {
+      x: 0.5, y: 1.4, w: 12.3, h: 2.6,
+      fontSize: 96, bold: true, color: p.accent,
+      align: 'center', valign: 'middle', fontFace: FONT_FACE,
+    })
+    slide.addText(String(s.stat.label), {
+      x: 1.0, y: 4.0, w: 11.3, h: 0.7,
+      fontSize: 28, color: p.ink,
+      align: 'center', valign: 'middle', fontFace: FONT_FACE,
+    })
+    if (s.stat.supporting) {
+      slide.addText(String(s.stat.supporting), {
+        x: 1.0, y: 4.8, w: 11.3, h: 1.4,
+        fontSize: 16, color: p.muted, italic: true,
+        align: 'center', valign: 'top', fontFace: FONT_FACE,
+      })
+    }
+  }
+
+  // Footer takeaway — bullets[0] (if any) as a small muted line near
+  // the bottom. Common pattern: "因此 X 可以做 Y" so the slide ends
+  // with a "so what" instead of raw figures.
+  if (bullets[0]) {
+    slide.addText(String(bullets[0]), {
+      x: 0.5, y: 6.5, w: 12.3, h: 0.5,
+      fontSize: 14, color: p.muted, italic: true,
       align: 'center', valign: 'middle', fontFace: FONT_FACE,
     })
   }
+
   if (s.speaker_notes) slide.addNotes(String(s.speaker_notes))
   return slide
 }
@@ -295,6 +364,13 @@ function renderQuote(pres, s, p) {
  * if the LLM gave us 1 column we render the bullets across both sides
  * as standard; if it gave us 3 we use the first 2.
  * Falls back to standard if `columns` is empty or malformed.
+ *
+ * Studio Fix 3 (2026-05-18): with the schema floor raising bullets to
+ * min 3 per column, density is enforced upstream. As a polish step, if
+ * a column is *short on text* (<= 3 bullets), we add a thin muted-colour
+ * divider at the bottom edge so both columns visually anchor at the
+ * same height even when content is sparse. Tall columns skip the
+ * divider so it doesn't crowd the last bullet.
  */
 function renderTwoColumn(pres, s, p) {
   if (!Array.isArray(s.columns) || s.columns.length < 2) {
@@ -341,6 +417,17 @@ function renderTwoColumn(pres, s, p) {
         paraSpaceAfter: 12, valign: 'top',
       },
     )
+    // Bottom anchor divider for short columns. Heuristic: 3 bullets
+    // roughly fills 2.5 inches at fontSize 18 with paraSpaceAfter 12,
+    // so anything <= 3 bullets benefits from a visual bottom edge to
+    // avoid the column looking like it floated up. Muted colour so it
+    // reads as a soft baseline, not a strong divider.
+    if (bullets.length <= 3) {
+      slide.addShape('rect', {
+        x, y: 6.85, w: COL_WIDTH, h: 0.015,
+        fill: { color: p.muted }, line: { type: 'none' },
+      })
+    }
   })
   if (s.speaker_notes) slide.addNotes(String(s.speaker_notes))
   return slide

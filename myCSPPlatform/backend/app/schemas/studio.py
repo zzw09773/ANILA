@@ -94,11 +94,19 @@ class Stat(BaseModel):
 
     `value` is intentionally a string (not a number) so the LLM can
     output "47%", "12K", "3.5×" without us having to model units.
+
+    Studio Fix 3 (2026-05-18): `supporting` is now mandatory with a 20-char
+    minimum so we stop accepting LLM filler like "重要突破" — the renderer
+    relies on a meaty supporting line to fill vertical space below the
+    big number. `baseline` / `baseline_label` are optional; when present
+    the renderer switches to a left-vs-right comparison layout.
     """
 
     value: str = Field(..., min_length=1, max_length=20)
     label: str = Field(..., min_length=1, max_length=120)
-    supporting: str | None = Field(default=None, max_length=200)
+    supporting: str = Field(..., min_length=20, max_length=200)
+    baseline: str | None = Field(default=None, max_length=20)
+    baseline_label: str | None = Field(default=None, max_length=60)
 
 
 class Quote(BaseModel):
@@ -109,10 +117,16 @@ class Quote(BaseModel):
 
 
 class Column(BaseModel):
-    """One side of a two_column layout."""
+    """One side of a two_column layout.
+
+    Studio Fix 3 (2026-05-18): `bullets` floor raised from 1 → 3 so the
+    LLM can't ship two-column slides with one bullet per side leaving
+    the layout 70% empty. Sparse columns are downgraded to `standard`
+    layout by the pre-validation pass in `app.api.studio`.
+    """
 
     heading: str = Field(..., min_length=1, max_length=120)
-    bullets: list[str] = Field(..., min_length=1, max_length=6)
+    bullets: list[str] = Field(..., min_length=3, max_length=6)
 
 
 class IconRow(BaseModel):
