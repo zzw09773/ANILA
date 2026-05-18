@@ -170,3 +170,4 @@ comm -12 \
 ## 變更紀錄
 
 - **2026-05-18** — Initial backlog 建立。盤點 prod ahead 9 commits、no-sso ahead 19 commits、兩邊衝突檔清單、永久 fork 清單。
+- **2026-05-18** — Phase 6: ANILALM × FLUX pptx integration completed (10 tasks, ~31 unit tests). New flow: LLM emits `Slide.image_prompt` for slides needing on-demand illustration; CSP's `_hydrate_images` calls `flux2-dev` directly via `FluxImageProvider` (SHA256-cached, semaphore-limited). Env-driven (set `FLUX_BACKEND_URL` to enable). Both `main` and `prod` have the code now.

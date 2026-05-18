@@ -694,3 +694,27 @@ myCSPPlatform/
 ---
 
 **Last updated**: 2026-05-03 (Sprint 13 — runtime_config + resume proxy) · **Role**: Control + Data Plane · **Authoritative for**: users · api_keys · models · agents · agent_credentials · agents.runtime_config · service_clients · token_usage · audit_logs
+
+## Generated illustrations (FLUX integration, Phase 6)
+
+Slides can request a freshly generated illustration via FLUX.2-dev when
+the knowledge base has no suitable existing image. The LLM may set
+`Slide.image_prompt` (English, 50–500 chars) on any slide that needs
+a visual. The CSP `_hydrate_images` step calls `flux2-dev` directly
+via `FluxImageProvider`, caches by SHA256(prompt + aspect_ratio), and
+inlines the resulting PNG as a base64 data URL in `image_data` —
+which is exactly the same shape that pre-existing `image_ref` produces,
+so the pptx-renderer needs no changes.
+
+**Env vars (CSP service):**
+- `FLUX_BACKEND_URL` (required to enable; e.g. `http://flux2-dev:8000`)
+- `FLUX_CACHE_DIR` (default: `$INGESTION_UPLOAD_DIR/flux-cache`)
+- `FLUX_MAX_CONCURRENT` (default: `4`)
+- `FLUX_TIMEOUT_SECONDS` (default: `180`)
+
+**Failure handling:** any FLUX backend error drops the prompt silently
+and the renderer falls back to standard layout — identical behavior to
+a missing `image_ref`.
+
+**Cache invalidation:** none. Prompts are content-addressed; to drop
+a cached image, delete the file under `$FLUX_CACHE_DIR`.
