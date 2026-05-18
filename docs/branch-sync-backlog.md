@@ -62,24 +62,24 @@ git log --oneline --all | grep '\[prod-only\]'
 
 | Commit | 類型 | 描述 | Status |
 |---|---|---|---|
-| `bf9983e` | flux | schemas | 🔄 進行中 |
-| `5ffe584` | flux | image_store | 🔄 進行中 |
-| `63d6f68` | flux | flux_client | 🔄 進行中 |
-| `943e24f` | flux | prompt_translator | 🔄 進行中 |
-| `56ff038` | flux fix | broaden translator fallback | 🔄 進行中 |
-| `870e5f8` | flux | chat_handler | 🔄 進行中 |
-| `357266f` | flux | FastAPI main | 🔄 進行中 |
-| `e5860f0` | flux fix | tighten main entrypoint hardening | 🔄 進行中 |
-| `396c7d5` | flux chore | silence pylance warnings | 🔄 進行中 |
-| `def7e0a` | flux chore | add pyright ignore | 🔄 進行中 |
-| `cae6ff5` | flux | flux2-dev-agent Dockerfile | 🔄 進行中 |
-| `ef686c0` | flux | flux2-dev server (FastAPI + injectable pipeline) | 🔄 進行中 |
-| `338b3b2` | flux | flux2-dev CUDA Dockerfile | 🔄 進行中 |
-| `0b97772` | flux | 加 service 到 `models/docker-compose.yml` | 🔄 進行中(此檔兩邊一樣) |
-| `fa3f3df` | flux | CSP 註冊 image-generator agent | ⚠️ **需要 adapt** — 原本改 `docker-compose-dev.yml`,prod 對應到 `docker-compose.yml` |
-| `ab69419` | flux fix | torch bump + healthcheck + e2e report | 🔄 進行中 |
-| `28ada1d` | flux fix | declarative CSP wiring(env JSON) | ⚠️ **需要 adapt** — 同 `fa3f3df` |
-| `6d79b71` | flux fix | emit SSE chunks when stream=true | 🔄 進行中 |
+| `bf9983e` | flux | schemas | ✅ 2026-05-18 cherry-picked to prod |
+| `5ffe584` | flux | image_store | ✅ 2026-05-18 cherry-picked to prod |
+| `63d6f68` | flux | flux_client | ✅ 2026-05-18 cherry-picked to prod |
+| `943e24f` | flux | prompt_translator | ✅ 2026-05-18 cherry-picked to prod |
+| `56ff038` | flux fix | broaden translator fallback | ✅ 2026-05-18 cherry-picked to prod |
+| `870e5f8` | flux | chat_handler | ✅ 2026-05-18 cherry-picked to prod |
+| `357266f` | flux | FastAPI main | ✅ 2026-05-18 cherry-picked to prod |
+| `e5860f0` | flux fix | tighten main entrypoint hardening | ✅ 2026-05-18 cherry-picked to prod |
+| `396c7d5` | flux chore | silence pylance warnings | ✅ 2026-05-18 cherry-picked to prod |
+| `def7e0a` | flux chore | add pyright ignore | ✅ 2026-05-18 cherry-picked to prod |
+| `cae6ff5` | flux | flux2-dev-agent Dockerfile | ✅ 2026-05-18 cherry-picked to prod |
+| `ef686c0` | flux | flux2-dev server (FastAPI + injectable pipeline) | ✅ 2026-05-18 cherry-picked to prod |
+| `338b3b2` | flux | flux2-dev CUDA Dockerfile | ✅ 2026-05-18 cherry-picked to prod |
+| `0b97772` | flux | 加 service 到 `models/docker-compose.yml` | ✅ 2026-05-18 cherry-picked to prod |
+| `fa3f3df` | flux | CSP 註冊 image-generator agent | ✅ 2026-05-18 adapted to prod's docker-compose.yml in commit `b35f36f` |
+| `ab69419` | flux fix | torch bump + healthcheck + e2e report | ✅ 2026-05-18 cherry-picked to prod |
+| `28ada1d` | flux fix | declarative CSP wiring(env JSON) | ✅ 2026-05-18 adapted to prod's docker-compose.yml in commit `b35f36f` |
+| `6d79b71` | flux fix | emit SSE chunks when stream=true | ✅ 2026-05-18 cherry-picked to prod |
 | `cbdee49` | no-sso-only | Refactor auth flow + remove SSO | 🟦 skip — 這個 commit 就是 no-sso 之所以為 no-sso |
 
 ⚠️ **adapt 的兩個 commit** 不能直接 cherry-pick,因為它們改的是 dev 專屬的 compose 檔。要在 prod 端手動寫等效改動到 `docker-compose.yml`,並注意:
@@ -170,3 +170,4 @@ comm -12 \
 ## 變更紀錄
 
 - **2026-05-18** — Initial backlog 建立。盤點 prod ahead 9 commits、no-sso ahead 19 commits、兩邊衝突檔清單、永久 fork 清單。
+- **2026-05-18** — FLUX integration ported from feature/no-sso to prod via cherry-pick (16 commits) + adaptation (2 commits manually ported to docker-compose.yml in `b35f36f`)。flux2-dev-agent 全部 27 個單元測試通過。
