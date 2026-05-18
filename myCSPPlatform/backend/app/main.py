@@ -56,6 +56,11 @@ def setup_logging():
 
     logging.getLogger().setLevel(logging.INFO)
 
+    # uvicorn ships with propagate=False on its access logger, so the
+    # per-request lines bypass the handlers above. Flip propagate back
+    # on so HTTP access lines also appear in docker logs.
+    logging.getLogger("uvicorn.access").propagate = True
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
