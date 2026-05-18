@@ -156,6 +156,14 @@ class Slide(BaseModel):
     # is the real safety net.
     image_ref: str | None = Field(default=None, max_length=64)
 
+    # Phase 6 (2026-05-18): English prompt that the LLM emits when it
+    # wants a freshly generated illustration (FLUX.2-dev). Mutually
+    # exclusive with image_ref by convention — if both are set, the
+    # hydration layer prefers image_ref. Length capped at 500 to avoid
+    # LLMs writing essays. Hydration silently drops on FLUX failure
+    # (same fallback as image_ref).
+    image_prompt: str | None = Field(default=None, max_length=500)
+
     @field_validator("title", "speaker_notes")
     @classmethod
     def _strip_whitespace(cls, v: str | None) -> str | None:
