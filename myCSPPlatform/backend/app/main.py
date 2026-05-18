@@ -1,4 +1,5 @@
 import logging
+import sys
 from logging.handlers import RotatingFileHandler
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -43,6 +44,16 @@ def setup_logging():
         logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     )
     logging.getLogger().addHandler(handler)
+
+    # Also emit to stdout so `docker logs` shows access logs + warnings/errors.
+    # Without this, RotatingFileHandler captures everything to /var/log only
+    # and operational debugging requires shell-into-container.
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    )
+    logging.getLogger().addHandler(stream_handler)
+
     logging.getLogger().setLevel(logging.INFO)
 
 
