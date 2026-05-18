@@ -549,11 +549,13 @@ def _build_generation_prompt(
             "**規則 6 / 若可用圖清單非空，必須至少 1 張 image_focus**：把「相關性",
             "  最高的那張」做 image_focus（layout_kind='image_focus' + 設 image_ref）。",
             "  論文 / 技術文件的圖（架構圖、實驗結果圖）幾乎都比文字描述更有說服力。",
-            "  **後備規則 / image_prompt**：若「可用圖」清單為空、或全部都不夠相關，",
-            "  但該 slide 主題明顯需要視覺輔助（地形示意、裝備外觀、流程示意、",
-            "  概念插畫等），可改設 layout_kind='image_focus' + image_prompt（**英文**，",
-            "  50-500 字，描述性，含主體 / 場景 / 構圖 / 風格），系統會即時用 FLUX",
-            "  生成插圖。**每張 slide 只能設 image_ref 或 image_prompt 其一，互斥**。",
+            "  **後備規則 / 即時生成（Studio Fix 2 拆兩種）**：若「可用圖」清單為空、",
+            "  或全部都不夠相關，但該 slide 主題明顯需要視覺輔助，依內容選一種模式：",
+            "    (A) 情境插畫、無文字 → image_kind='illustration' + image_prompt",
+            "        （英文 50-500 字，主體/場景/構圖/風格），走 FLUX。",
+            "    (B) 含 label 的圖示（架構/流程/ER）→ image_kind='diagram' + diagram_dot",
+            "        （Graphviz DOT，最多 3000 字），走 graphviz。**FLUX 畫不出可讀文字**。",
+            "  **每張 slide 只能設 image_ref / illustration / diagram 其一，三者互斥**。",
             "",
             "── 引用「圖片描述」段落（這是 deck 變具體的關鍵） ──",
             "下方檢索段落中可能含「圖片描述：...」的段落 — 那是文件原圖的",
@@ -592,10 +594,34 @@ def _build_generation_prompt(
             "  layout_kind='image_focus' 並把使用者訊息「可用圖」清單中相對應的",
             "  image_id 填到 Slide.image_ref。bullets 仍要寫 2-4 條，描述圖之外的",
             "  補充資訊；圖會佔投影片左半，bullets 在右半。一張圖只應出現在一張投影片。",
-            "  **後備 / image_prompt（Phase 6 新增）**：若「可用圖」清單為空或無合適現有圖，",
-            "  但該 slide 主題需要視覺輔助，可改設 image_prompt（**英文**描述，50-500 字，",
-            "  含主體 / 場景 / 構圖 / 風格）取代 image_ref，系統會即時用 FLUX 生成。",
-            "  image_ref 與 image_prompt **互斥**，一張 slide 只設其一；其他情況不要用 image_focus。",
+            "",
+            "  ── image_focus 兩種生成模式（Studio Fix 2，2026-05-18）──",
+            "  若可用圖清單為空或都不合用，可即時生成。**兩種模式擇一**：",
+            "",
+            "  (A) **illustration** — 情境插畫、概念意象、**無文字**的視覺輔助。",
+            "      設 image_kind='illustration' + image_prompt（**英文** 50-500 字，",
+            "      含主體 / 場景 / 構圖 / 風格）。走 FLUX.2-dev 即時生成。",
+            "      適合：主題情境（如「山地戰術部隊」「無人機巡邏」）、抽象概念、",
+            "      氣氛圖。**注意：FLUX 無法畫出可讀的文字**，所以不要叫它畫架構圖。",
+            "",
+            "  (B) **diagram** — 含 label 的圖示（架構圖、流程圖、Venn、決策樹、ER）。",
+            "      設 image_kind='diagram' + diagram_dot（**Graphviz DOT** 語法，",
+            "      最多 3000 字元）。走 graphviz `dot -Tpng` 渲染，label 清晰可讀。",
+            "      適合：系統架構圖、Multi-Agent 拓撲、資料流、實體關係、決策樹。",
+            "",
+            "      DOT 範例（Multi-Agent Supervisor 架構）：",
+            "        digraph G {",
+            "          rankdir=TB;",
+            "          fontname=\"Noto Sans CJK TC\";",
+            "          node [fontname=\"Noto Sans CJK TC\", shape=box, style=rounded];",
+            "          Supervisor -> \"Worker A\";",
+            "          Supervisor -> \"Worker B\";",
+            "          Supervisor -> \"Worker C\";",
+            "        }",
+            "",
+            "  **每張 slide 只能選一種模式**：image_ref / image_kind='illustration' /",
+            "  image_kind='diagram'，三者互斥。含 label 的圖示**一定走 diagram**，",
+            "  不要丟給 FLUX 畫，否則 label 會變亂碼。",
             "- **commit fully**：選了豐富版型就把欄位填好；不要半途而廢。",
             "- **layout_kind 拼寫精確**：'standard' / 'section_break' / 'stat_callout' /",
             "  'quote' / 'two_column' / 'icon_rows' / 'image_focus'。",
@@ -646,9 +672,10 @@ def _build_generation_prompt(
             "若某張投影片用以下任一張圖更具說服力，請設 layout_kind='image_focus' "
             "並把該行的 image_id 填到 Slide.image_ref。一張圖只應被一張投影片引用；"
             "若全部圖都不夠相關，請忽略這份清單、不要硬塞。"
-            "若該 slide 主題需要插圖、但此清單無合適現有圖，可改設 layout_kind='image_focus' "
-            "+ image_prompt（**英文**，50-500 字，描述主體 / 場景 / 構圖 / 風格）"
-            "請系統即時用 FLUX 生成。image_prompt 與 image_ref **互斥**，一張 slide 只設其一。"
+            "若該 slide 需要圖但此清單無合適現有圖，layout_kind='image_focus' 下兩種模式擇一："
+            "（A）image_kind='illustration' + image_prompt（英文 50-500 字描述，FLUX 即時生成情境插畫）；"
+            "（B）image_kind='diagram' + diagram_dot（Graphviz DOT，最多 3000 字，graphviz 渲染含 label 的架構/流程圖）。"
+            "image_ref / illustration / diagram 三者互斥，一張 slide 只設其一；含文字 label 的圖一律走 diagram。"
         )
         parts.append("")
         for i, im in enumerate(images, start=1):
@@ -1079,20 +1106,26 @@ async def _hydrate_images(
     flux_provider: "FluxImageProvider | None" = None,
     default_aspect: str = "16:9",
 ) -> dict[str, Any]:
-    """Resolve every Slide.image_ref OR image_prompt into inline base64 PNG.
+    """Resolve every Slide.image_ref / diagram_dot / image_prompt into inline base64 PNG.
 
-    Order of precedence per slide:
+    Order of precedence per slide (curated > deterministic > generative):
       1. image_ref present and resolvable → inline existing PNG.
-      2. image_ref present but unresolvable → drop, fall back to image_prompt if any.
-      3. image_prompt present and flux_provider available → generate via FLUX.
-      4. image_prompt present but flux_provider None or FLUX fails → drop, standard layout.
-      5. Neither set → leave untouched.
+      2. image_ref present but unresolvable → drop, fall back to next path.
+      3. image_kind='diagram' + diagram_dot → render via Graphviz `dot -Tpng`.
+      4. diagram render fails → drop diagram_dot/image_kind, fall back to next path.
+      5. image_prompt present and flux_provider available → generate via FLUX.
+      6. image_prompt present but flux_provider None or FLUX fails → drop, standard layout.
+      7. Nothing set → leave untouched.
 
-    Failure modes for image_prompt path mirror those of image_ref:
-    drop the offending field, log warning, let the renderer's
-    image_focus → standard fallback take over.
+    Failure modes mirror each other: drop the offending field, log warning,
+    let the renderer's image_focus → standard fallback take over. The
+    diagram path exists because FLUX.2-dev (diffusion) cannot render
+    legible text — labelled diagrams (architecture, flow, ER) get crisp
+    output via Graphviz instead.
     """
     import base64
+
+    from app.services.diagram_renderer import render_dot_to_png
 
     slides = spec_dict.get("slides") or []
     for slide in slides:
@@ -1112,17 +1145,48 @@ async def _hydrate_images(
                     slide["image_data"] = (
                         f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"
                     )
-                    slide.pop("image_prompt", None)  # ref wins
+                    # ref wins over both generative paths
+                    slide.pop("image_prompt", None)
+                    slide.pop("diagram_dot", None)
+                    slide.pop("image_kind", None)
                     continue
                 except OSError as e:
                     logger.warning(
                         "Failed to hydrate image_ref=%s for storage_path=%s: %s — "
-                        "falling back to image_prompt if available.",
+                        "falling back to diagram_dot / image_prompt if available.",
                         ref, meta.get("storage_path"), e,
                     )
                     slide.pop("image_ref", None)
 
-        # Path 2: image_prompt → call FLUX
+        # Path 2: diagram_dot → render via Graphviz
+        # Studio Fix 2 (2026-05-18): deterministic labelled diagrams.
+        # Wins over image_prompt because FLUX can't render text legibly.
+        dot = slide.get("diagram_dot")
+        if dot and slide.get("image_kind") == "diagram":
+            png_bytes = await render_dot_to_png(dot)
+            if png_bytes is not None:
+                slide["image_data"] = (
+                    "data:image/png;base64,"
+                    + base64.b64encode(png_bytes).decode("ascii")
+                )
+                # Diagram succeeded; drop any leftover prompt fields.
+                slide.pop("image_prompt", None)
+                slide.pop("diagram_dot", None)
+                slide.pop("image_kind", None)
+                continue
+            # Render failed — drop the diagram fields so the renderer's
+            # image_focus → standard fallback kicks in. (image_prompt is
+            # intentionally NOT tried here: the LLM decided this was a
+            # diagram, not an illustration; falling through to FLUX
+            # would put garbled-text output back on the slide.)
+            logger.warning(
+                "diagram_dot render failed — slide will fall back to standard layout."
+            )
+            slide.pop("diagram_dot", None)
+            slide.pop("image_kind", None)
+            continue
+
+        # Path 3: image_prompt → call FLUX
         prompt = slide.get("image_prompt")
         if not prompt:
             continue
@@ -1130,6 +1194,7 @@ async def _hydrate_images(
         if flux_provider is None:
             # FLUX not configured for this deployment. Drop prompt silently.
             slide.pop("image_prompt", None)
+            slide.pop("image_kind", None)
             continue
 
         try:
@@ -1145,6 +1210,7 @@ async def _hydrate_images(
                 prompt[:80], e,
             )
             slide.pop("image_prompt", None)
+            slide.pop("image_kind", None)
 
     return spec_dict
 

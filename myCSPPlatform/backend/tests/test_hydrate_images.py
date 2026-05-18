@@ -1,8 +1,8 @@
-"""_hydrate_images: resolve image_ref AND image_prompt into image_data."""
+"""_hydrate_images: resolve image_ref / diagram_dot / image_prompt into image_data."""
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -113,6 +113,80 @@ async def test_no_provider_skips_image_prompt(upload_dir, existing_image):
 
     s = result["slides"][0]
     assert "image_data" not in s
+
+
+@pytest.mark.asyncio
+async def test_diagram_dot_renders_via_graphviz(upload_dir, existing_image):
+    """Studio Fix 2: image_kind='diagram' + diagram_dot → inline PNG.
+
+    FLUX must NOT be called for diagram slides — diagrams need crisp
+    text labels that FLUX can't produce.
+    """
+    flux = AsyncMock()  # should remain uncalled
+
+    spec = {"slides": [{
+        "title": "Architecture",
+        "bullets": ["overview"],
+        "image_kind": "diagram",
+        "diagram_dot": "digraph G { A -> B }",
+    }]}
+
+    with patch(
+        "app.services.diagram_renderer.asyncio.create_subprocess_exec"
+    ) as mock_exec:
+        fake_proc = AsyncMock()
+        fake_proc.returncode = 0
+        fake_proc.communicate = AsyncMock(
+            return_value=(_PNG, b"")
+        )
+        mock_exec.return_value = fake_proc
+
+        result = await _hydrate_images(
+            spec, existing_image, str(upload_dir),
+            flux_provider=flux, default_aspect="16:9",
+        )
+
+    s = result["slides"][0]
+    assert "image_data" in s
+    assert s["image_data"].startswith("data:image/png;base64,")
+    # Diagram fields consumed (renderer doesn't see them, image_data won)
+    assert "diagram_dot" not in s
+    assert "image_kind" not in s
+    flux.get_or_generate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_diagram_render_failure_drops_dot(upload_dir, existing_image):
+    """When `dot` returns None (syntax error / missing binary / timeout),
+    drop diagram_dot + image_kind so renderer falls back to standard.
+
+    image_prompt is intentionally NOT tried as a fallback: the LLM
+    declared this a diagram, not an illustration; sending it to FLUX
+    would put garbled-text output back on the slide.
+    """
+    flux = AsyncMock()  # should remain uncalled
+
+    spec = {"slides": [{
+        "title": "Broken diagram",
+        "bullets": ["x"],
+        "image_kind": "diagram",
+        "diagram_dot": "digraph { bad syntax",
+    }]}
+
+    with patch(
+        "app.services.diagram_renderer.asyncio.create_subprocess_exec",
+        side_effect=FileNotFoundError("dot not installed"),
+    ):
+        result = await _hydrate_images(
+            spec, existing_image, str(upload_dir),
+            flux_provider=flux, default_aspect="16:9",
+        )
+
+    s = result["slides"][0]
+    assert "image_data" not in s
+    assert "diagram_dot" not in s
+    assert "image_kind" not in s
+    flux.get_or_generate.assert_not_called()
 
 
 @pytest.mark.asyncio

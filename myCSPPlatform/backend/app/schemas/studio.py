@@ -41,7 +41,7 @@ Two principles, applied at *every* schema level:
 """
 from __future__ import annotations
 
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -178,6 +178,24 @@ class Slide(BaseModel):
     # (same fallback as image_ref).
     image_prompt: str | None = Field(default=None, max_length=500)
 
+    # Studio Fix 2 (2026-05-18): split image_focus into two modes.
+    # `image_kind` is the *discriminator* the LLM emits to declare intent:
+    #
+    #   illustration → FLUX.2-dev path (image_prompt, atmospheric/concept art)
+    #   diagram      → Graphviz path   (diagram_dot, crisp labelled diagrams)
+    #
+    # FLUX is a diffusion model and can't render legible text in images
+    # (the "Geneeration / KIGDKED" garbage we saw on slide 9). When the
+    # LLM wants a labelled diagram (architecture, flow, ER), it writes
+    # Graphviz DOT and we render server-side via `dot -Tpng`.
+    #
+    # When image_kind is None the field is treated as "legacy / no
+    # intent declared" — image_prompt may still be present (the Phase 6
+    # path) without triggering validation; the hydration layer prefers
+    # image_ref > diagram_dot > image_prompt.
+    image_kind: Literal["illustration", "diagram"] | None = None
+    diagram_dot: str | None = Field(default=None, max_length=3000)
+
     @field_validator("title", "speaker_notes")
     @classmethod
     def _strip_whitespace(cls, v: str | None) -> str | None:
@@ -217,6 +235,40 @@ class Slide(BaseModel):
             if any(p.lower() in low for p in forbidden):
                 raise ValueError(f"bullet 含 placeholder 文字：{b!r}")
         return cleaned
+
+    @model_validator(mode="after")
+    def _check_image_kind_consistency(self) -> Self:
+        """Studio Fix 2 (2026-05-18): enforce illustration/diagram split.
+
+        Only fires when image_kind is explicitly declared. Legacy paths
+        (Phase 5 image_ref, Phase 6 bare image_prompt with no image_kind)
+        remain valid — the hydration layer keeps its existing priority.
+
+        Rules:
+          - image_kind="illustration" → must have image_prompt, no diagram_dot
+          - image_kind="diagram"      → must have diagram_dot, no image_prompt
+        """
+        if self.image_kind == "illustration":
+            if not self.image_prompt:
+                raise ValueError(
+                    "image_kind='illustration' 必須附帶 image_prompt"
+                )
+            if self.diagram_dot:
+                raise ValueError(
+                    "image_kind='illustration' 不可附帶 diagram_dot"
+                    "（請改用 image_kind='diagram'）"
+                )
+        elif self.image_kind == "diagram":
+            if not self.diagram_dot:
+                raise ValueError(
+                    "image_kind='diagram' 必須附帶 diagram_dot（Graphviz DOT）"
+                )
+            if self.image_prompt:
+                raise ValueError(
+                    "image_kind='diagram' 不可附帶 image_prompt"
+                    "（請改用 image_kind='illustration'）"
+                )
+        return self
 
 
 class SlidesSpec(BaseModel):
