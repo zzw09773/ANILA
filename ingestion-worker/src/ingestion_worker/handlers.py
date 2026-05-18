@@ -129,6 +129,52 @@ def _clean_caption(raw: str) -> str:
     return s
 
 
+def _is_uniform_color(
+    img_bytes: bytes,
+    *,
+    tolerance: int = 8,
+    sample_n: int = 100,
+) -> bool:
+    """Return True if the image is near-uniform color (max RGB range <= tolerance).
+
+    Skips this check for tiny images (< 100 pixels total) — icons are
+    intentionally small + low-variance and should NOT be filtered out
+    by this check.
+
+    Decode failure or empty input returns False (let downstream
+    decoder handle the actual error, don't pretend the image is
+    uniform when we couldn't read it).
+
+    Used to filter out PDF background rectangles before captioning +
+    persistence — they have no informational content but, if kept,
+    burn VLM tokens and pollute RAG retrieval.
+    """
+    if not img_bytes:
+        return False
+    try:
+        from PIL import Image  # local import to avoid Pillow at module load
+        import io
+        import random
+
+        with Image.open(io.BytesIO(img_bytes)) as img:
+            img = img.convert("RGB")
+            w, h = img.size
+            if w * h < 100:
+                return False
+            rng = random.Random(0)
+            pixels = [
+                img.getpixel((rng.randint(0, w - 1), rng.randint(0, h - 1)))
+                for _ in range(sample_n)
+            ]
+        rs = [p[0] for p in pixels]
+        gs = [p[1] for p in pixels]
+        bs = [p[2] for p in pixels]
+        max_range = max(max(rs) - min(rs), max(gs) - min(gs), max(bs) - min(bs))
+        return max_range <= tolerance
+    except Exception:
+        return False
+
+
 async def _persist_images(
     pool: Any,
     collection_id: int,
@@ -197,6 +243,19 @@ async def _persist_images(
             abs_path = os.path.join(upload_dir, rel_path)
             image_bytes = getattr(ref, "image_bytes", b"") or b""
             if not image_bytes:
+                continue
+            # Defensive filter: drop uniform-color images even if
+            # captioning was disabled / bypassed. Covers the path where
+            # ``settings.enable_image_captions`` is False but the PDF
+            # extractor still produced background-fill rectangles.
+            # Confirmed against doc 1: img_4fd6f21243.jpg (RGB(26,54,93)),
+            # img_d2e6cf287b.jpg and img_6cb40697ca.jpg (RGB(44,82,129)).
+            if _is_uniform_color(image_bytes):
+                logger.info(
+                    "Skipping persist for uniform-color image %s "
+                    "(doc %s) — likely PDF background fill",
+                    img_id, document_id,
+                )
                 continue
             with open(abs_path, "wb") as f:
                 f.write(image_bytes)
@@ -340,12 +399,29 @@ async def _caption_images_into(text: str, images: dict[str, Any]) -> str:
         # Skip oversized images at the application layer — VisionProvider
         # raises on max_image_bytes too but that surfaces as a generic
         # error log; a structured fallback caption is friendlier.
-        size = len(getattr(ref, "image_bytes", b"") or b"")
+        img_bytes = getattr(ref, "image_bytes", b"") or b""
+        size = len(img_bytes)
         if size > settings.vision_max_image_bytes:
             logger.warning(
                 "Image %s skipped: %d bytes > limit %d",
                 image_id, size, settings.vision_max_image_bytes,
             )
+            return image_id, ""
+        # Skip uniform-color images (PDF background fills, decorative
+        # solid bands). They get captioned as "一張純藍色的圖片" by the VLM,
+        # then persisted, then pollute RAG citations. Drop here so we
+        # also save the VLM API call. The empty caption returned makes
+        # _persist_images leave the placeholder alone so the chunker's
+        # IMAGE-leaf fallback turns the token into ``[image]``.
+        if _is_uniform_color(img_bytes):
+            logger.info(
+                "Image %s skipped: uniform color (likely PDF background)",
+                image_id,
+            )
+            try:
+                ref.caption = ""
+            except Exception:
+                pass
             return image_id, ""
         try:
             async with semaphore:
