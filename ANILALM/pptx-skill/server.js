@@ -97,6 +97,17 @@ fs.mkdirSync(TMP_ROOT, { recursive: true })
 const app = express()
 app.use(express.json({ limit: MAX_PAYLOAD }))
 
+// Request access log — written to stdout so `docker logs` shows
+// every /render / /screenshots call without needing nginx reverse-proxy logs.
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on("finish", () => {
+    const ms = Date.now() - start;
+    console.log(`${new Date().toISOString()} ${req.method} ${req.originalUrl} → ${res.statusCode} ${ms}ms`);
+  });
+  next();
+});
+
 app.get('/health', (_req, res) => res.type('text/plain').send('ok'))
 
 /**
