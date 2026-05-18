@@ -599,6 +599,14 @@ def _build_generation_prompt(
             "  ── image_focus 兩種生成模式（Studio Fix 2，2026-05-18）──",
             "  若可用圖清單為空或都不合用，可即時生成。**兩種模式擇一**：",
             "",
+            "  **自動規則 — 觸發 diagram path**：若 slide 的 title 含「架構、拓撲、",
+            "  拓樸、流程、Workflow、Pipeline、Topology」其中一個關鍵字，且該 slide",
+            "  主題自然需要視覺輔助（例如「Multi-Agent Supervisor 拓撲設計」、",
+            "  「Agentic Workflow 三階段」、「RAG 系統架構」），**必須**設",
+            "  layout_kind='image_focus' + image_kind='diagram' + diagram_dot",
+            "  （Graphviz DOT）。不要寫 image_prompt（FLUX 不會渲染文字 label，",
+            "  結果會是亂碼）。",
+            "",
             "  (A) **illustration** — 情境插畫、概念意象、**無文字**的視覺輔助。",
             "      設 image_kind='illustration' + image_prompt（**英文** 50-500 字，",
             "      含主體 / 場景 / 構圖 / 風格）。走 FLUX.2-dev 即時生成。",
@@ -1224,7 +1232,11 @@ async def _hydrate_images(
             # diagram, not an illustration; falling through to FLUX
             # would put garbled-text output back on the slide.)
             logger.warning(
-                "diagram_dot render failed — slide will fall back to standard layout."
+                "Studio diagram path: graphviz render returned None for slide '%s' "
+                "(dot binary missing? CJK font missing? syntax error?). Slide will "
+                "fall back to standard layout. Run scripts/diagnose-graphviz.sh "
+                "(Round 2 Patch G runbook) to identify root cause.",
+                slide.get("title", "<untitled>"),
             )
             slide.pop("diagram_dot", None)
             slide.pop("image_kind", None)
