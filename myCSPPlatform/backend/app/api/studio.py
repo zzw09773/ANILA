@@ -56,7 +56,8 @@ import json
 import logging
 import os
 import re
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -78,6 +79,7 @@ from app.schemas.studio import (
     JOB_STEP_FIXING,
     JOB_STEP_GENERATING,
     JOB_STEP_QA,
+    JOB_STEP_REBALANCING,
     JOB_STEP_RENDERING,
     JOB_STEP_RETRIEVING,
     GenerateSpecRequest,
@@ -1439,6 +1441,457 @@ async def _fix_spec_with_defects(
     return SlidesSpec.model_validate(_loads_lenient(extracted))
 
 
+# ── Studio Fix 1: layout post-validation + LLM rebalance pass ────────────
+#
+# The system prompt tells gemma4 "standard layout ≤ 60% of slides", but
+# attention is split between content writing and layout selection, so the
+# rule isn't actually enforced. Decks come back with 8-of-9 standard
+# slides, no stat_callout for clearly numeric content, and 3+ consecutive
+# bullet pages — visually flat. This module audits the produced spec
+# deterministically and (when hard rules fire) issues ONE focused LLM
+# call that only re-selects layout_kind on a small candidate set.
+#
+# Why not just bump temperature or rewrite the system prompt?
+# - Bumping temperature degrades JSON validity (we did this once already).
+# - Rewriting the prompt for the 9th time chases an asymptote — gemma4
+#   doesn't follow proportional rules under cognitive load.
+# Deterministic audit + surgical LLM fix is cheaper and more reliable.
+
+
+# Hard rule V1: standard layout proportion must not exceed this cap.
+LAYOUT_STANDARD_MAX_RATIO = 0.60
+
+# Soft rule V3: runs of this many or more consecutive standard slides
+# count as a "flat stretch" that hurts visual rhythm.
+LAYOUT_CONSECUTIVE_STANDARD_LIMIT = 3
+
+# V4: enumeration title keywords. When a slide title contains any of these
+# AND it has 3+ bullets AND layout_kind=standard, it's a textbook candidate
+# for icon_rows — the LLM "described 3 things" but didn't reach for the
+# matching layout.
+_ENUMERATION_KEYWORDS = (
+    "三大", "步驟", "階段", "面向", "核心能力", "workflow", "pipeline",
+)
+
+# V2: numeric-content regex. Matches percentages, big numbers, F1 scores,
+# and sample sizes (N=xxx). When chunks_text matches AND spec has zero
+# stat_callout slides, we missed a visual opportunity for a key statistic.
+_NUMERIC_CONTENT_RE = re.compile(
+    r"\d+(\.\d+)?\s*[%％]|\d{4,}|F1[-\s]?score|N\s*=\s*\d+",
+    re.IGNORECASE,
+)
+
+# Cap on LLM-proposed changes. The whole point of this pass is "surgical
+# layout-only edit" — letting the LLM rewrite half the deck defeats the
+# purpose and risks breaking content that the original generate-step got
+# right. 3 changes is enough to fix V1+V2 on a typical 9-slide deck.
+LAYOUT_REBALANCE_MAX_CHANGES = 3
+
+
+@dataclass(frozen=True)
+class LayoutViolation:
+    """One audit finding from `_audit_layout_distribution`.
+
+    Hard violations (V1, V2) trigger the rebalance LLM call. Soft
+    violations (V3, V4) are reported on candidates so the LLM has guidance
+    on WHICH slides to re-layout; firing alone they don't trigger a call.
+    """
+
+    kind: str  # "V1" | "V2" | "V3" | "V4"
+    severity: Literal["hard", "soft"]
+    slide_indices: list[int] = field(default_factory=list)
+    detail: str = ""
+
+
+def _audit_layout_distribution(
+    spec: SlidesSpec,
+    chunks_text: str,
+) -> list[LayoutViolation]:
+    """Deterministic audit of layout distribution on a validated SlidesSpec.
+
+    Pure function (no I/O, no LLM call). Walks the slides once and emits
+    violations per rule:
+
+    - V1 (hard): standard layout > 60% of slides.
+    - V2 (hard): chunks contain numeric content (percentages, F1-score,
+      N=xxx, big numbers) AND no slide uses `stat_callout`.
+    - V3 (soft): 3 or more consecutive `standard` slides. Each run becomes
+      its own violation, with the first slide of the run as the candidate
+      for re-layout.
+    - V4 (soft): slide title matches an enumeration keyword AND has 3+
+      bullets AND layout_kind is "standard". Each matching slide is its
+      own violation.
+
+    The caller decides whether to invoke `_rebalance_layouts` — typically
+    only when at least one HARD violation is present. Soft violations are
+    used to seed the candidate list for the LLM call.
+    """
+    violations: list[LayoutViolation] = []
+    slides = spec.slides
+    n = len(slides)
+    if n == 0:
+        return violations
+
+    # ── V1: standard layout proportion ──
+    standard_count = sum(1 for s in slides if s.layout_kind == "standard")
+    standard_ratio = standard_count / n
+    if standard_ratio > LAYOUT_STANDARD_MAX_RATIO:
+        violations.append(
+            LayoutViolation(
+                kind="V1",
+                severity="hard",
+                slide_indices=[
+                    i for i, s in enumerate(slides)
+                    if s.layout_kind == "standard"
+                ],
+                detail=(
+                    f"standard 比例 {standard_ratio:.0%} 超過上限 "
+                    f"{LAYOUT_STANDARD_MAX_RATIO:.0%}（{standard_count}/{n}）"
+                ),
+            )
+        )
+
+    # ── V2: numeric content without stat_callout ──
+    has_stat = any(s.layout_kind == "stat_callout" for s in slides)
+    if not has_stat and chunks_text and _NUMERIC_CONTENT_RE.search(chunks_text):
+        violations.append(
+            LayoutViolation(
+                kind="V2",
+                severity="hard",
+                slide_indices=[],  # no specific candidate; LLM picks
+                detail=(
+                    "Chunks 含關鍵數據（百分比/F1/N=…）但 spec 沒有任何 "
+                    "stat_callout 投影片"
+                ),
+            )
+        )
+
+    # ── V3: consecutive standard runs ──
+    run_start: int | None = None
+    run_len = 0
+    for i, s in enumerate(slides):
+        if s.layout_kind == "standard":
+            if run_start is None:
+                run_start = i
+                run_len = 1
+            else:
+                run_len += 1
+        else:
+            if run_start is not None and run_len >= LAYOUT_CONSECUTIVE_STANDARD_LIMIT:
+                violations.append(
+                    LayoutViolation(
+                        kind="V3",
+                        severity="soft",
+                        slide_indices=list(range(run_start, run_start + run_len)),
+                        detail=(
+                            f"連續 {run_len} 張 standard 投影片 "
+                            f"(slides {run_start}-{run_start + run_len - 1})"
+                        ),
+                    )
+                )
+            run_start = None
+            run_len = 0
+    # Trailing run at end of deck.
+    if run_start is not None and run_len >= LAYOUT_CONSECUTIVE_STANDARD_LIMIT:
+        violations.append(
+            LayoutViolation(
+                kind="V3",
+                severity="soft",
+                slide_indices=list(range(run_start, run_start + run_len)),
+                detail=(
+                    f"連續 {run_len} 張 standard 投影片 "
+                    f"(slides {run_start}-{run_start + run_len - 1})"
+                ),
+            )
+        )
+
+    # ── V4: enumeration title + 3+ bullets + standard layout ──
+    for i, s in enumerate(slides):
+        if s.layout_kind != "standard":
+            continue
+        if len(s.bullets) < 3:
+            continue
+        title_low = s.title.lower()
+        matched_kw = next(
+            (kw for kw in _ENUMERATION_KEYWORDS if kw.lower() in title_low),
+            None,
+        )
+        if matched_kw is not None:
+            violations.append(
+                LayoutViolation(
+                    kind="V4",
+                    severity="soft",
+                    slide_indices=[i],
+                    detail=(
+                        f"slide {i} 標題含列舉關鍵字 '{matched_kw}'、"
+                        f"{len(s.bullets)} 個 bullet、layout=standard"
+                        " — 建議改為 icon_rows"
+                    ),
+                )
+            )
+
+    return violations
+
+
+def _select_rebalance_candidates(
+    violations: list[LayoutViolation],
+) -> list[int]:
+    """Pick a focused candidate set of slide indices for the LLM to re-layout.
+
+    Strategy:
+    - All V4 slides (enumeration title + 3+ bullets + standard).
+    - First slide of each V3 run (1 representative per consecutive-standard
+      stretch — rebalancing that one slide breaks up the run).
+
+    Order: V4 first (most specific), then V3 starters, deduped.
+    """
+    seen: set[int] = set()
+    ordered: list[int] = []
+    for v in violations:
+        if v.kind == "V4":
+            for idx in v.slide_indices:
+                if idx not in seen:
+                    seen.add(idx)
+                    ordered.append(idx)
+    for v in violations:
+        if v.kind == "V3" and v.slide_indices:
+            first = v.slide_indices[0]
+            if first not in seen:
+                seen.add(first)
+                ordered.append(first)
+    return ordered
+
+
+def _build_rebalance_prompt(
+    spec_dict: dict[str, Any],
+    violations: list[LayoutViolation],
+    chunks_text: str,
+    candidates: list[int],
+) -> tuple[str, str]:
+    """Render the focused (system, user) prompt for the rebalance LLM call.
+
+    Compact view per slide — only the metadata the LLM needs to choose a
+    new layout_kind. Title and bullets are read-only context; the prompt
+    instructs the LLM to ONLY change layout_kind and the matching payload.
+    """
+    slides = spec_dict.get("slides", [])
+    compact_slides = [
+        {
+            "slide_index": i,
+            "title": s.get("title", ""),
+            "layout_kind": s.get("layout_kind", "standard"),
+            "bullet_count": len(s.get("bullets", []) or []),
+        }
+        for i, s in enumerate(slides)
+    ]
+    violation_lines = [
+        f"- {v.kind}（{v.severity}）：{v.detail}"
+        for v in violations
+    ]
+    system = (
+        "你是 ANILA LM 的版型重新平衡助手。輸入是一份已通過 schema 驗證的 "
+        "SlidesSpec，以及一份違反「版型分佈規則」的清單。\n\n"
+        "**唯一任務：** 只改變指定投影片的 layout_kind 與對應 payload "
+        "（icon_rows / stat / two_column 等），**絕對不要動 title、"
+        "bullets、speaker_notes**。\n\n"
+        "輸出 JSON 物件，只包含一個 `changes` 陣列；每個元素形如：\n"
+        '  {"slide_index": int, "new_layout_kind": str, '
+        '"new_payload": {...}}\n\n'
+        "規則：\n"
+        f"1. 最多輸出 {LAYOUT_REBALANCE_MAX_CHANGES} 個 change，挑最關鍵的。\n"
+        "2. new_layout_kind 只能是：standard / section_break / "
+        "stat_callout / quote / two_column / icon_rows。\n"
+        "3. 改成 icon_rows 時，new_payload 必須含 `icon_rows` 欄位，"
+        "至少 3 列、每列 {concept, heading, description}。\n"
+        "4. 改成 stat_callout 時，new_payload 必須含 `stat` 欄位，"
+        "{value, label, supporting(≥20字)}。\n"
+        "5. 改成 two_column 時，new_payload 必須含 `columns` 欄位，"
+        "2 個 column、每個至少 3 個 bullet。\n"
+        "6. 不要改的投影片直接不要出現在 changes 陣列。\n\n"
+        "輸出第一字 {、最後字 }、不可前言、不可代碼塊。"
+    )
+    # Trim chunks_text — we only need the LLM to see roughly what data is
+    # available, not the full retrieval payload.
+    chunks_preview = (chunks_text or "")[:1500]
+    user_msg = (
+        f"違規清單：\n" + "\n".join(violation_lines) + "\n\n"
+        f"建議優先重新選版的候選 slide_index：{candidates}\n\n"
+        f"目前各投影片版型概況：\n"
+        f"{json.dumps(compact_slides, ensure_ascii=False, indent=2)}\n\n"
+        f"原始素材摘要（前 1500 字）：\n{chunks_preview}"
+    )
+    return system, user_msg
+
+
+async def _call_llm_for_rebalance(
+    prompt: tuple[str, str],
+    *,
+    db: Session,
+    user: User,
+) -> dict[str, Any]:
+    """Thin wrapper around ``_call_llm_chat`` for the rebalance pass.
+
+    Extracted as its own helper so tests can mock the LLM round-trip
+    without standing up the full proxy / model registry. Returns the
+    parsed JSON dict (caller validates the `changes` shape).
+    """
+    system, user_msg = prompt
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user_msg},
+    ]
+    raw = await _call_llm_chat(
+        db, user, SLIDES_LLM_MODEL, messages, temperature=0.2,
+    )
+    extracted = _extract_json_object(raw)
+    parsed = _loads_lenient(extracted)
+    if not isinstance(parsed, dict):
+        raise ValueError("rebalance LLM did not return a JSON object")
+    return parsed
+
+
+# Payload field name keyed by layout_kind. When the LLM emits a change,
+# we read the matching key out of `new_payload` and write it on the slide
+# (also clearing the previous layout's payload to keep the spec clean).
+_LAYOUT_PAYLOAD_FIELDS = {
+    "standard": None,
+    "section_break": None,
+    "stat_callout": "stat",
+    "quote": "quote",
+    "two_column": "columns",
+    "icon_rows": "icon_rows",
+    "image_focus": None,
+}
+
+
+def _apply_rebalance_change(
+    spec_dict: dict[str, Any],
+    change: dict[str, Any],
+) -> bool:
+    """Apply one LLM change to spec_dict in place. Returns True on success.
+
+    Defensive: any malformed change (missing keys, out-of-range index,
+    unknown layout_kind) is logged and skipped — we never raise from
+    inside the apply loop because one bad change shouldn't tank the
+    whole rebalance pass.
+    """
+    try:
+        idx = int(change.get("slide_index", -1))
+    except (TypeError, ValueError):
+        logger.warning("rebalance: change missing slide_index: %r", change)
+        return False
+    new_layout = change.get("new_layout_kind", "").strip().lower().replace("-", "_")
+    new_payload = change.get("new_payload") or {}
+
+    slides = spec_dict.get("slides", [])
+    if not (0 <= idx < len(slides)):
+        logger.warning("rebalance: slide_index %s out of range", idx)
+        return False
+    if new_layout not in _LAYOUT_PAYLOAD_FIELDS:
+        logger.warning("rebalance: unknown layout_kind %r", new_layout)
+        return False
+
+    target = slides[idx]
+    target["layout_kind"] = new_layout
+
+    # Clear all layout-specific payload keys then set the new one. Keeping
+    # leftovers around is harmless (Pydantic ignores them on the wrong
+    # layout_kind) but makes the spec dict ambiguous to inspect.
+    for field_name in ("stat", "quote", "columns", "icon_rows"):
+        target.pop(field_name, None)
+
+    payload_field = _LAYOUT_PAYLOAD_FIELDS[new_layout]
+    if payload_field is not None:
+        # Accept either the named field nested in new_payload or
+        # new_payload itself being the payload object.
+        value = new_payload.get(payload_field, new_payload)
+        target[payload_field] = value
+    return True
+
+
+async def _rebalance_layouts(
+    spec_dict: dict[str, Any],
+    violations: list[LayoutViolation],
+    chunks_text: str,
+    *,
+    db: Session,
+    user: User,
+) -> dict[str, Any]:
+    """Run the focused LLM rebalance pass and return an updated spec_dict.
+
+    Contract:
+    - Caps applied changes at `LAYOUT_REBALANCE_MAX_CHANGES`.
+    - Re-validates the resulting spec via `SlidesSpec.model_validate`.
+      If validation fails, the original spec_dict is returned (caller
+      proceeds with the un-rebalanced spec, gracefully degrades).
+    - Re-audits after applying; if V1 STILL violates, logs a warning and
+      returns the (best-effort) rebalanced dict anyway. User prefers a
+      slightly-imperfect deck over a 502.
+    """
+    candidates = _select_rebalance_candidates(violations)
+    prompt = _build_rebalance_prompt(
+        spec_dict, violations, chunks_text, candidates,
+    )
+    try:
+        result = await _call_llm_for_rebalance(prompt, db=db, user=user)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("rebalance LLM call failed: %s", exc)
+        return spec_dict
+
+    raw_changes = result.get("changes")
+    if not isinstance(raw_changes, list):
+        logger.warning("rebalance: response missing `changes` list: %r", result)
+        return spec_dict
+
+    # Cap before applying — we don't even want to evaluate changes beyond
+    # the cap, in case a malformed-but-valid change in slot 4 wastes log
+    # noise.
+    capped = raw_changes[:LAYOUT_REBALANCE_MAX_CHANGES]
+    if len(raw_changes) > LAYOUT_REBALANCE_MAX_CHANGES:
+        logger.info(
+            "rebalance: capping %d proposed changes to %d",
+            len(raw_changes), LAYOUT_REBALANCE_MAX_CHANGES,
+        )
+
+    # Apply on a deep copy so a Pydantic-validation failure leaves the
+    # original spec_dict intact for the caller's fallback path.
+    candidate_dict = json.loads(json.dumps(spec_dict))
+    applied = 0
+    for change in capped:
+        if not isinstance(change, dict):
+            continue
+        if _apply_rebalance_change(candidate_dict, change):
+            applied += 1
+
+    if applied == 0:
+        logger.info("rebalance: no changes applied (LLM returned empty / invalid set)")
+        # Even with 0 applied changes, fall through to the post-audit so
+        # callers see the warning path consistently.
+
+    try:
+        new_spec = SlidesSpec.model_validate(candidate_dict)
+    except ValidationError as exc:
+        logger.warning(
+            "rebalance: post-apply spec validation failed (%s);"
+            " keeping original spec",
+            exc,
+        )
+        return spec_dict
+
+    # Re-audit. V1 STILL violated → log and continue. We deliberately
+    # don't raise — degrading gracefully is the explicit product choice.
+    post_violations = _audit_layout_distribution(new_spec, chunks_text)
+    if any(v.kind == "V1" for v in post_violations):
+        logger.warning(
+            "rebalance: V1 (standard > %d%%) still violates after %d changes"
+            " — proceeding with rebalanced spec anyway",
+            int(LAYOUT_STANDARD_MAX_RATIO * 100),
+            applied,
+        )
+
+    return new_spec.model_dump(mode="json")
+
+
 # ── Pipeline runner (used by the job manager) ────────────────────────────
 
 
@@ -1541,6 +1994,34 @@ async def _run_pipeline(
         # Surface the title early so the UI can show "鑄造中：<title>"
         # before render finishes.
         await updater.set(title=spec.title, slide_count=len(spec.slides))
+
+        # ── Step 6.7 / Studio Fix 1: layout audit + LLM rebalance ──
+        # Run the deterministic audit on the validated spec. If a HARD
+        # violation fires (standard > 60% / numeric content without
+        # stat_callout), make ONE focused LLM call to re-select layout
+        # on a small candidate set. Soft violations alone don't trigger.
+        # Skip the whole pass on the fallback deck (its job is "explain
+        # the failure", not "look good") and on skip_retrieval (no
+        # chunks_text to feed V2).
+        if not used_fallback:
+            chunks_str = "\n\n".join(
+                str(c.get("content", "")) for c in chunks
+            )
+            violations = _audit_layout_distribution(spec, chunks_text=chunks_str)
+            hard_violations = [v for v in violations if v.severity == "hard"]
+            if hard_violations:
+                await updater.set(step=JOB_STEP_REBALANCING)
+                try:
+                    spec_dict = spec.model_dump(mode="json")
+                    rebalanced = await _rebalance_layouts(
+                        spec_dict, violations, chunks_str, db=db, user=user,
+                    )
+                    spec = SlidesSpec.model_validate(rebalanced)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Rebalance failed: %s — proceeding with original spec",
+                        exc,
+                    )
 
         # ── Step 7: render ──
         await updater.set(step=JOB_STEP_RENDERING)

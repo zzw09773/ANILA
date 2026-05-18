@@ -336,6 +336,12 @@ class JobState(BaseModel):
 JOB_STEP_QUEUED = "queued"
 JOB_STEP_RETRIEVING = "retrieving"
 JOB_STEP_GENERATING = "generating"
+# Studio Fix 1 (2026-05-18): post-validation audit + LLM rebalance pass.
+# Inserted between `generating` and `rendering` so the UI can show
+# "鑄造中：版型重新平衡" when the audit detects standard-overuse / missing
+# stat_callout for numeric content. Skipped (transparent to UI) when no
+# hard violations fire.
+JOB_STEP_REBALANCING = "rebalancing"
 JOB_STEP_RENDERING = "rendering"
 JOB_STEP_QA = "qa"
 JOB_STEP_FIXING = "fixing"
