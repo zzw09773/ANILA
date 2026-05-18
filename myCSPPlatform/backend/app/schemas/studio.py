@@ -120,13 +120,22 @@ class Column(BaseModel):
     """One side of a two_column layout.
 
     Studio Fix 3 (2026-05-18): `bullets` floor raised from 1 → 3 so the
-    LLM can't ship two-column slides with one bullet per side leaving
-    the layout 70% empty. Sparse columns are downgraded to `standard`
-    layout by the pre-validation pass in `app.api.studio`.
+    LLM couldn't ship two-column slides with one bullet per side leaving
+    the layout 70% empty.
+
+    Round 2 Patch C (2026-05-18): floor dropped 3 → 2. Empirically the
+    "min 3" rule was too strict — legitimate technical comparisons
+    (e.g. v2 slide 5 "雙分支特徵融合": RGB 原圖 vs Tsallis Entropy)
+    frequently have exactly 2 clean distinguishing points per side, and
+    those slides were getting demoted to standard layout, losing the
+    side-by-side framing entirely. Sparse columns (<2 bullets each) are
+    now upgraded to `icon_rows` (preserving the parallel-concepts feel)
+    rather than flattened to `standard` — see `_saturate_spec_dict` in
+    `app.api.studio`.
     """
 
     heading: str = Field(..., min_length=1, max_length=120)
-    bullets: list[str] = Field(..., min_length=3, max_length=6)
+    bullets: list[str] = Field(..., min_length=2, max_length=6)
 
 
 class IconRow(BaseModel):

@@ -1,14 +1,19 @@
 """Studio Fix 3 — graceful degradation when LLM under-fills.
 
-The schema floor (Stat.supporting min 20, Column.bullets min 3) is
-strict, but in practice gemma4 misses one or the other on the first
-attempt. `_saturate_spec_dict` runs before Pydantic validation and:
+The schema floor (Stat.supporting min 20, Column.bullets min 2 after
+Round 2 Patch C) is strict, but in practice gemma4 misses one or the
+other on the first attempt. `_saturate_spec_dict` runs before
+Pydantic validation and:
 
   * Auto-fills `Stat.supporting` with a 來源:<filename> placeholder
     when missing or shorter than the 20-char floor.
-  * Demotes `two_column` slides with any column under 3 bullets to
-    `standard` layout, flattening the columns' bullets into the
-    slide's top-level bullets list.
+  * For `two_column` slides where any column has < 2 bullets:
+    upgrades to `icon_rows` (one row per column, heading from the
+    column heading, description from joined bullets) when every
+    column has a heading. If some columns lack a heading, falls back
+    to flattening into `standard` layout. (Round 2 Patch C: previously
+    we always flattened to standard, which lost the side-by-side
+    framing entirely.)
 
 The whole point is that the user never sees a 422 over either of these
 recoverable shapes. Both transforms log a warning so we can monitor.
@@ -109,7 +114,10 @@ def test_stat_fallback_when_no_chunk_filename() -> None:
 # ── two_column demotion ──────────────────────────────────────────────────
 
 
-def test_two_column_sparse_demoted_to_standard() -> None:
+def test_two_column_sparse_upgraded_to_icon_rows() -> None:
+    """Round 2 Patch C: sparse two_column with headings becomes
+    icon_rows (preserving the parallel-concepts framing) rather than
+    being flattened to standard. Trigger is <2 bullets in any column."""
     spec = {
         "slides": [
             {
@@ -117,7 +125,7 @@ def test_two_column_sparse_demoted_to_standard() -> None:
                 "title": "對照",
                 "layout_kind": "two_column",
                 "columns": [
-                    {"heading": "優點", "bullets": ["快"]},  # 1 bullet
+                    {"heading": "優點", "bullets": ["快"]},  # 1 bullet → triggers
                     {"heading": "缺點", "bullets": ["貴", "重"]},  # 2
                 ],
             }
@@ -125,24 +133,28 @@ def test_two_column_sparse_demoted_to_standard() -> None:
     }
     _saturate_spec_dict(spec)
     slide = spec["slides"][0]
-    assert slide["layout_kind"] == "standard"
+    assert slide["layout_kind"] == "icon_rows"
     assert "columns" not in slide
-    # Flattened bullets carry the heading prefix.
-    bullets_text = " ".join(slide["bullets"])
-    assert "優點：快" in bullets_text
-    assert "缺點：貴" in bullets_text
-    assert "缺點：重" in bullets_text
+    rows = slide["icon_rows"]
+    assert len(rows) == 2
+    assert rows[0]["heading"] == "優點"
+    assert rows[0]["description"] == "快"
+    assert rows[0]["concept"] == "comparison"
+    assert rows[1]["heading"] == "缺點"
+    assert rows[1]["description"] == "貴；重"
 
 
 def test_two_column_full_columns_left_untouched() -> None:
+    """Round 2 Patch C: 2-bullet columns are now schema-valid and the
+    saturation pass should not touch them."""
     spec = {
         "slides": [
             {
                 **_base_slide(),
                 "layout_kind": "two_column",
                 "columns": [
-                    {"heading": "A", "bullets": ["1", "2", "3"]},
-                    {"heading": "B", "bullets": ["4", "5", "6"]},
+                    {"heading": "A", "bullets": ["1", "2"]},
+                    {"heading": "B", "bullets": ["3", "4"]},
                 ],
             }
         ]
@@ -194,9 +206,12 @@ def test_saturated_under_filled_spec_validates_via_pydantic() -> None:
     assert validated.slides[1].layout_kind == "stat_callout"
     assert validated.slides[1].stat is not None
     assert "src.pdf" in validated.slides[1].stat.supporting
-    # two_column should have been demoted
-    assert validated.slides[2].layout_kind == "standard"
+    # Round 2 Patch C: two_column with headings + sparse bullets is
+    # upgraded to icon_rows, not flattened to standard.
+    assert validated.slides[2].layout_kind == "icon_rows"
     assert validated.slides[2].columns is None
+    assert validated.slides[2].icon_rows is not None
+    assert len(validated.slides[2].icon_rows) == 2
 
 
 # ── Defensive: malformed input doesn't raise ─────────────────────────────

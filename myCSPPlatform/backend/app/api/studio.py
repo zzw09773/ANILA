@@ -463,7 +463,8 @@ def _build_generation_prompt(
             '  columns 形狀：[{"heading": "...", "bullets": ["...", "...", "..."]},',
             '                 {"heading": "...", "bullets": ["...", "...", "..."]}]',
             '             固定 2 個元素的陣列；多於 2 會被忽略、少於 2 會降級為 standard。',
-            '             **每欄 bullets 至少 3 條**（schema 強制；湊不到改 icon_rows）。',
+            '             **每欄 bullets 2-3 條**（schema 最低 2 條；湊不到 2 條的對照結構,',
+            '             改用 icon_rows，保留並列感、視覺更輕）。',
             '  icon_rows 形狀：[{"concept": "...", "heading": "...", "description": "..."}]',
             '             3-5 個元素；concept 必須來自下方白名單。',
             "",
@@ -585,8 +586,8 @@ def _build_generation_prompt(
             "         baseline:\"78%\", baseline_label:\"單分支基準\"}",
             "- **two_column**：內容天然有對照（before/after、本研究 vs 既有方法、",
             "  兩種模型架構比較）時用 1 張。columns 必須 **2 個元素**、各填 heading + bullets。",
-            "  **每欄至少 3 條 bullet**（schema 強制），讓兩欄視覺密度對稱、不留大片空白；",
-            "  若內容湊不到 3 條（例：對照只有 1-2 個維度），改用 icon_rows 或 standard。",
+            "  **每欄 2-3 條 bullet**（schema 最低 2 條），讓兩欄視覺密度對稱、不留大片空白；",
+            "  湊不到 2 條的對照結構,改用 icon_rows（保留並列感、視覺更輕）。",
             "- **quote**：有名言、客戶證言、概念金句時用。",
             "- **icon_rows**：3-5 個並列要點各有 icon。concept 從白名單挑。",
             "- **image_focus**（Phase 5 新增）：文件原檔有相關插圖時用。例：",
@@ -873,11 +874,15 @@ def _saturate_spec_dict(
        ``來源:<first chunk filename or 'documents'>``. This is meant to
        be visually obvious so the user knows the LLM under-filled but
        not catastrophic enough to refuse the deck.
-    2. ``two_column`` slide where ANY column has < 3 bullets → demote
-       the slide to ``standard`` layout, concatenate the columns' bullets
-       (heading: bullets...) into the slide's top-level bullets list,
-       and drop the columns payload. The renderer falls back to a normal
-       bullet list rather than a half-empty 2-up.
+    2. ``two_column`` slide where ANY column has < 2 bullets → upgrade
+       to ``icon_rows`` layout: each column becomes one icon_row whose
+       heading comes from the column heading and description is the
+       joined bullets (separated by `；`). This preserves the
+       side-by-side / parallel-concepts framing of the original
+       two_column intent (Round 2 Patch C: previously we demoted to
+       ``standard`` which lost the parallel-concept signal entirely).
+       If we can't produce >= 2 icon_rows (e.g. heading missing), fall
+       back to the original standard-flatten path.
 
     Both transforms log a warning so we can monitor LLM saturation rates.
     Pure function — operates on a parsed dict in-place AND returns it.
@@ -920,18 +925,57 @@ def _saturate_spec_dict(
                         title, len(str(supporting)), fallback_source,
                     )
 
-        # Transform 2: two_column with sparse columns → demote to standard
+        # Transform 2: two_column with sparse columns → upgrade to icon_rows
+        # (Round 2 Patch C: was demote-to-standard, which lost the
+        # side-by-side framing entirely. icon_rows preserves the
+        # "N parallel concepts" shape. Trigger threshold also relaxed
+        # from <3 bullets to <2 bullets per column to match the schema
+        # floor drop in `app.schemas.studio.Column`.)
         if layout == "two_column":
             cols = slide.get("columns")
             if isinstance(cols, list) and cols:
                 sparse = any(
                     not isinstance(c, dict)
                     or not isinstance(c.get("bullets"), list)
-                    or len(c["bullets"]) < 3
+                    or len(c["bullets"]) < 2
                     for c in cols
                 )
                 if sparse:
                     title = slide.get("title", "<untitled>")
+                    new_rows: list[dict[str, str]] = []
+                    for c in cols:
+                        if not isinstance(c, dict):
+                            continue
+                        heading = str(c.get("heading") or "").strip()
+                        bullets = c.get("bullets") or []
+                        if not isinstance(bullets, list) or not heading:
+                            continue
+                        desc = "；".join(
+                            str(b).strip()
+                            for b in bullets
+                            if str(b).strip()
+                        )[:200]
+                        if not desc:
+                            continue
+                        new_rows.append({
+                            "concept": "comparison",
+                            "heading": heading,
+                            "description": desc,
+                        })
+                    if len(new_rows) >= 2:
+                        slide["layout_kind"] = "icon_rows"
+                        slide["icon_rows"] = new_rows
+                        slide.pop("columns", None)
+                        logger.warning(
+                            "Studio saturation: two_column slide '%s' "
+                            "upgraded to icon_rows (%d rows) due to "
+                            "sparse columns (<2 bullets each).",
+                            title, len(new_rows),
+                        )
+                        continue  # done with this slide
+                    # Fallback: can't form a coherent icon_rows set
+                    # (e.g. column heading missing). Use the original
+                    # standard-flatten path.
                     flattened: list[str] = []
                     for c in cols:
                         if not isinstance(c, dict):
@@ -964,8 +1008,8 @@ def _saturate_spec_dict(
                     slide.pop("columns", None)
                     logger.warning(
                         "Studio saturation: slide '%s' two_column had "
-                        "sparse columns, demoted to standard with %d "
-                        "flattened bullets.",
+                        "sparse columns and missing headings, fell back "
+                        "to standard with %d flattened bullets.",
                         title, len(slide.get("bullets") or []),
                     )
 

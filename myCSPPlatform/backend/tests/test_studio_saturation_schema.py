@@ -47,11 +47,18 @@ def test_stat_baseline_optional() -> None:
     assert s.baseline_label == "單分支基準"
 
 
-def test_column_requires_3_bullets() -> None:
-    """Schema floor raised 1 → 3 so two_column can't ship with empty
-    real estate."""
+def test_column_requires_2_bullets() -> None:
+    """Round 2 Patch C: schema floor dropped 3 → 2 so legitimate
+    2-bullet technical comparisons (e.g. v2 slide 5 雙分支特徵融合)
+    aren't penalised. 1-bullet columns still rejected."""
     with pytest.raises(ValidationError):
-        Column(heading="優點", bullets=["a", "b"])
+        Column(heading="優點", bullets=["a"])
+
+
+def test_column_with_2_bullets_ok() -> None:
+    """Round 2 Patch C: 2 bullets per column is now schema-valid."""
+    c = Column(heading="優點", bullets=["a", "b"])
+    assert len(c.bullets) == 2
 
 
 def test_column_with_3_bullets_ok() -> None:
