@@ -522,6 +522,11 @@ def _build_generation_prompt(
             "**規則 6 / 若可用圖清單非空，必須至少 1 張 image_focus**：把「相關性",
             "  最高的那張」做 image_focus（layout_kind='image_focus' + 設 image_ref）。",
             "  論文 / 技術文件的圖（架構圖、實驗結果圖）幾乎都比文字描述更有說服力。",
+            "  **後備規則 / image_prompt**：若「可用圖」清單為空、或全部都不夠相關，",
+            "  但該 slide 主題明顯需要視覺輔助（地形示意、裝備外觀、流程示意、",
+            "  概念插畫等），可改設 layout_kind='image_focus' + image_prompt（**英文**，",
+            "  50-500 字，描述性，含主體 / 場景 / 構圖 / 風格），系統會即時用 FLUX",
+            "  生成插圖。**每張 slide 只能設 image_ref 或 image_prompt 其一，互斥**。",
             "",
             "── 引用「圖片描述」段落（這是 deck 變具體的關鍵） ──",
             "下方檢索段落中可能含「圖片描述：...」的段落 — 那是文件原圖的",
@@ -549,8 +554,11 @@ def _build_generation_prompt(
             "  論文的 architecture diagram、實驗結果柱狀圖、流程圖。設",
             "  layout_kind='image_focus' 並把使用者訊息「可用圖」清單中相對應的",
             "  image_id 填到 Slide.image_ref。bullets 仍要寫 2-4 條，描述圖之外的",
-            "  補充資訊；圖會佔投影片左半，bullets 在右半。**沒可用圖（清單為空）",
-            "  就不要用 image_focus**。一張圖只應出現在一張投影片。",
+            "  補充資訊；圖會佔投影片左半，bullets 在右半。一張圖只應出現在一張投影片。",
+            "  **後備 / image_prompt（Phase 6 新增）**：若「可用圖」清單為空或無合適現有圖，",
+            "  但該 slide 主題需要視覺輔助，可改設 image_prompt（**英文**描述，50-500 字，",
+            "  含主體 / 場景 / 構圖 / 風格）取代 image_ref，系統會即時用 FLUX 生成。",
+            "  image_ref 與 image_prompt **互斥**，一張 slide 只設其一；其他情況不要用 image_focus。",
             "- **commit fully**：選了豐富版型就把欄位填好；不要半途而廢。",
             "- **layout_kind 拼寫精確**：'standard' / 'section_break' / 'stat_callout' /",
             "  'quote' / 'two_column' / 'icon_rows' / 'image_focus'。",
@@ -601,6 +609,9 @@ def _build_generation_prompt(
             "若某張投影片用以下任一張圖更具說服力，請設 layout_kind='image_focus' "
             "並把該行的 image_id 填到 Slide.image_ref。一張圖只應被一張投影片引用；"
             "若全部圖都不夠相關，請忽略這份清單、不要硬塞。"
+            "若該 slide 主題需要插圖、但此清單無合適現有圖，可改設 layout_kind='image_focus' "
+            "+ image_prompt（**英文**，50-500 字，描述主體 / 場景 / 構圖 / 風格）"
+            "請系統即時用 FLUX 生成。image_prompt 與 image_ref **互斥**，一張 slide 只設其一。"
         )
         parts.append("")
         for i, im in enumerate(images, start=1):
