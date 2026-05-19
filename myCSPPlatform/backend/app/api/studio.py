@@ -1923,6 +1923,19 @@ def _audit_layout_distribution(
             )
         )
 
+    if violations:
+        logger.info(
+            "[H-DIAG] audit found %d violations: %s",
+            len(violations),
+            [
+                f"{v.kind}({v.severity})@{v.slide_indices}"
+                for v in violations
+            ],
+        )
+        for v in violations:
+            logger.info("[H-DIAG]   %s: %s", v.kind, v.detail)
+    else:
+        logger.info("[H-DIAG] audit found no violations")
     return violations
 
 
@@ -1943,13 +1956,14 @@ def _should_rebalance(violations: list[LayoutViolation]) -> bool:
     in its title; two or more is a pattern, not noise.
     """
     has_hard = any(v.severity == "hard" for v in violations)
-    if has_hard:
-        return True
     v4_count = sum(1 for v in violations if v.kind == "V4")
-    if v4_count >= 2:
-        return True
     soft_count = sum(1 for v in violations if v.severity == "soft")
-    return soft_count >= 3
+    decision = has_hard or v4_count >= 2 or soft_count >= 3
+    logger.info(
+        "[H-DIAG] should_rebalance: hard=%s v4=%d soft=%d → %s",
+        has_hard, v4_count, soft_count, decision,
+    )
+    return decision
 
 
 def _select_rebalance_candidates(
@@ -2066,10 +2080,34 @@ async def _call_llm_for_rebalance(
     raw = await _call_llm_chat(
         db, user, SLIDES_LLM_MODEL, messages, temperature=0.2,
     )
-    extracted = _extract_json_object(raw)
-    parsed = _loads_lenient(extracted)
+    logger.info(
+        "[H-DIAG] rebalance LLM raw response (first 2KB): %s",
+        str(raw)[:2000],
+    )
+    try:
+        extracted = _extract_json_object(raw)
+        parsed = _loads_lenient(extracted)
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning("[H-DIAG] rebalance JSON parse failed: %s", exc)
+        raise
     if not isinstance(parsed, dict):
         raise ValueError("rebalance LLM did not return a JSON object")
+    changes = parsed.get("changes", [])
+    if isinstance(changes, list):
+        logger.info(
+            "[H-DIAG] rebalance proposed %d changes: %s",
+            len(changes),
+            [
+                f"slide{c.get('slide_index')}→{c.get('new_layout_kind')}"
+                for c in changes
+                if isinstance(c, dict)
+            ],
+        )
+    else:
+        logger.warning(
+            "[H-DIAG] rebalance parsed but `changes` is not a list: %r",
+            changes,
+        )
     return parsed
 
 
@@ -2101,20 +2139,32 @@ def _apply_rebalance_change(
     try:
         idx = int(change.get("slide_index", -1))
     except (TypeError, ValueError):
-        logger.warning("rebalance: change missing slide_index: %r", change)
+        logger.warning(
+            "[H-DIAG] change FAILED to apply (missing slide_index): %r",
+            change,
+        )
         return False
     new_layout = change.get("new_layout_kind", "").strip().lower().replace("-", "_")
     new_payload = change.get("new_payload") or {}
 
     slides = spec_dict.get("slides", [])
     if not (0 <= idx < len(slides)):
-        logger.warning("rebalance: slide_index %s out of range", idx)
+        logger.warning(
+            "[H-DIAG] change FAILED to apply (slide_index %s out of range)"
+            "\n  raw change: %r",
+            idx, change,
+        )
         return False
     if new_layout not in _LAYOUT_PAYLOAD_FIELDS:
-        logger.warning("rebalance: unknown layout_kind %r", new_layout)
+        logger.warning(
+            "[H-DIAG] change FAILED to apply (unknown layout_kind %r)"
+            "\n  raw change: %r",
+            new_layout, change,
+        )
         return False
 
     target = slides[idx]
+    old_layout = target.get("layout_kind", "standard")
     target["layout_kind"] = new_layout
 
     # Clear all layout-specific payload keys then set the new one. Keeping
@@ -2129,6 +2179,10 @@ def _apply_rebalance_change(
         # new_payload itself being the payload object.
         value = new_payload.get(payload_field, new_payload)
         target[payload_field] = value
+    logger.info(
+        "[H-DIAG] applied change to slide %d: %s → %s",
+        idx, old_layout, new_layout,
+    )
     return True
 
 
@@ -2154,6 +2208,10 @@ async def _rebalance_layouts(
     candidates = _select_rebalance_candidates(violations)
     prompt = _build_rebalance_prompt(
         spec_dict, violations, chunks_text, candidates,
+    )
+    logger.info(
+        "[H-DIAG] rebalance LLM call: prompt_len=%d, n_violations=%d",
+        len(prompt[0]) + len(prompt[1]), len(violations),
     )
     try:
         result = await _call_llm_for_rebalance(prompt, db=db, user=user)
@@ -2203,7 +2261,16 @@ async def _rebalance_layouts(
 
     # Re-audit. V1 STILL violated → log and continue. We deliberately
     # don't raise — degrading gracefully is the explicit product choice.
+    # Note: this call re-enters _audit_layout_distribution so position-1
+    # [H-DIAG] log will appear a second time in the trail. Time order in
+    # the log makes the post-rebalance pass obvious.
     post_violations = _audit_layout_distribution(new_spec, chunks_text)
+    post_v4 = [v for v in post_violations if v.kind == "V4"]
+    pre_v4_count = sum(1 for v in violations if v.kind == "V4")
+    logger.info(
+        "[H-DIAG] post-rebalance audit: %d V4 remain (was %d)",
+        len(post_v4), pre_v4_count,
+    )
     if any(v.kind == "V1" for v in post_violations):
         logger.warning(
             "rebalance: V1 (standard > %d%%) still violates after %d changes"
