@@ -324,6 +324,23 @@ function applyTitleBar(slide, title, theme) {
       })
       break
     }
+    case 'underline_only': {
+      // Academic-paper variant — flush-left title in the theme's serif
+      // face, no painted bar, with a thin muted rule beneath. Reads as
+      // a research-paper section heading rather than a corporate banner.
+      slide.addText(titleStr, {
+        x: 0.5, y: 0.3, w: 12.3, h: 0.5,
+        fontSize: fonts.titleSize.content,
+        color: p.titleText,
+        fontFace: fonts.title,
+        align: 'left', valign: 'middle', margin: 0,
+      })
+      slide.addShape('line', {
+        x: 0.5, y: 0.95, w: 12.3, h: 0,
+        line: { color: p.muted, width: 0.5 },
+      })
+      break
+    }
     case 'filled':
     default:
       // Legacy filled-bar title. The master already paints the bar
@@ -458,11 +475,15 @@ function renderSectionBreak(pres, s, theme) {
   // No master — full-bleed colour fill regardless of variant.
   const slide = pres.addSlide()
 
-  // Patch N.1: branch on theme.chrome.sectionBreak.
+  // Patch N.1/N.2: branch on theme.chrome.sectionBreak.
   //
   // `soft_centered` (warm_journal): cream bg, centered brown title,
   // muted brown subtitle. NO left accent strip — the slide reads as a
   // quiet pause rather than a coloured slab.
+  //
+  // `centered_minimal` (academic_paper): white bg, centered serif title,
+  // a short tan accent rule below, optional muted subtitle. Reads as a
+  // page break in a printed paper rather than a coloured banner.
   //
   // `side_strip` (corporate_navy + fallback): legacy filled bar bg
   // with white title and cinnamon accent strip on the left.
@@ -479,6 +500,30 @@ function renderSectionBreak(pres, s, theme) {
       slide.addText(String(bullets[0]), {
         x: 1.0, y: 4.4, w: 11.5, h: 0.6,
         fontSize: 20, color: p.muted,
+        align: 'center', italic: false,
+        fontFace: theme.fonts.body, margin: 0,
+      })
+    }
+  } else if (theme.chrome.sectionBreak === 'centered_minimal') {
+    slide.background = { color: theme.palette.bg }
+    slide.addText(titleStr, {
+      x: 1.0, y: 2.8, w: 11.5, h: 1.4,
+      fontSize: titleFont,
+      color: theme.palette.titleText,
+      align: 'center', valign: 'middle',
+      fontFace: theme.fonts.title,
+      margin: 0,
+    })
+    // Thin rule beneath the title — short and centred, evoking the
+    // separator lines in academic typesetting.
+    slide.addShape('line', {
+      x: 4.5, y: 4.4, w: 4.5, h: 0,
+      line: { color: theme.palette.accent, width: 0.75 },
+    })
+    if (bullets[0]) {
+      slide.addText(String(bullets[0]), {
+        x: 1.0, y: 4.7, w: 11.5, h: 0.5,
+        fontSize: 18, color: theme.palette.muted,
         align: 'center', italic: false,
         fontFace: theme.fonts.body, margin: 0,
       })
@@ -787,6 +832,8 @@ async function renderIconRows(pres, s, theme) {
       // versions, and gives the same "icon in a coloured circle" motif
       // SKILL.md recommends for contrast.
       const iconStyle = theme.iconTreatment.style
+      const iconX = ICON_X
+      const iconY = y + (rowH - iconBoxSize) / 2
       if (iconStyle === 'soft_filled') {
         // Larger glyph, no chrome. Centre the requested icon size inside
         // iconBoxSize so the heading/description text columns stay aligned.
@@ -794,15 +841,26 @@ async function renderIconRows(pres, s, theme) {
         const inset = (iconBoxSize - glyphSize) / 2
         slide.addImage({
           data: `data:image/png;base64,${iconPngs[i].toString('base64')}`,
-          x: ICON_X + inset,
-          y: y + (rowH - iconBoxSize) / 2 + inset,
+          x: iconX + inset,
+          y: iconY + inset,
           w: glyphSize,
           h: glyphSize,
+        })
+      } else if (iconStyle === 'monochrome_dot') {
+        // Academic-paper variant — drop the heroicon entirely and place
+        // a tiny muted dot where the legacy outline circle's centre would
+        // sit. Lets the heading + description text carry the visual weight
+        // (matches the "minimal chrome, serif typography" identity of the
+        // theme). 0.15" dot centred in the legacy 0.8" box → offset 0.325".
+        slide.addShape('ellipse', {
+          x: iconX + 0.325, y: iconY + 0.325, w: 0.15, h: 0.15,
+          fill: { color: theme.palette.muted },
+          line: { type: 'none' },
         })
       } else {
         // Legacy outline_circle treatment.
         slide.addShape('ellipse', {
-          x: ICON_X, y: y + (rowH - iconBoxSize) / 2,
+          x: iconX, y: iconY,
           w: iconBoxSize, h: iconBoxSize,
           fill: { color: 'FFFFFF' },
           line: { color: p.accent, width: 2 },
@@ -811,8 +869,8 @@ async function renderIconRows(pres, s, theme) {
         const inset = iconBoxSize * 0.18
         slide.addImage({
           data: `data:image/png;base64,${iconPngs[i].toString('base64')}`,
-          x: ICON_X + inset,
-          y: y + (rowH - iconBoxSize) / 2 + inset,
+          x: iconX + inset,
+          y: iconY + inset,
           w: iconBoxSize - inset * 2,
           h: iconBoxSize - inset * 2,
         })
