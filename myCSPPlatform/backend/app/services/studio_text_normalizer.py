@@ -136,6 +136,42 @@ _LATEX_BROKEN_CHAR_REPLACEMENTS = {
 _GENERIC_LATEX_RE = re.compile(r"\$([^\$\n]{1,80})\$")
 
 
+# Round 4 Patch Q: RAG citation markers at end of bullets.
+#
+# Pattern variants observed in production:
+#   "(參 [5])"       half-width parens, half-width brackets
+#   "（參 [5]）"     full-width parens, half-width brackets
+#   "(參 [12])"      multi-digit
+#   "( 參 [5] )"     with internal whitespace
+#   "(參考 [5])"     alternative wording
+#
+# These belong in speaker_notes (already populated by the LLM with chunk
+# reference info), not on the visible slide. Strip end-anchored occurrences
+# only — intra-text citations like "如 (參 [5]) 所述" are rare and harder
+# to safely auto-strip, so we leave them.
+_CITATION_RE = re.compile(
+    r"\s*[\(（]\s*參(?:考)?\s*[\[【]\s*\d+\s*[\]】]\s*[\)）]\s*$",
+)
+
+
+def strip_inline_citations(text: str | None) -> str | None:
+    """Remove RAG citation markers (e.g. '(參 [5])') from end of text.
+
+    Up to 3 consecutive end-anchored citation tokens are stripped (some
+    bullets cite multiple chunks: '...部署 (參 [5]) (參 [10])'). Idempotent.
+    Safe on empty / None input.
+    """
+    if not text:
+        return text
+    text = str(text)
+    for _ in range(3):
+        new = _CITATION_RE.sub("", text).rstrip()
+        if new == text:
+            break
+        text = new
+    return text
+
+
 def strip_latex(text: str | None) -> str | None:
     """Replace LaTeX math-mode strings with Unicode / plain equivalents.
 
@@ -168,17 +204,29 @@ def _get_converter() -> OpenCC:
     return OpenCC("s2twp")
 
 
-def _convert(text: str | None) -> str | None:
-    """Run a single string through LaTeX strip + OpenCC s2twp.
+def _convert(text: str | None, keep_citations: bool = False) -> str | None:
+    """Run a single string through citation strip + LaTeX strip + OpenCC s2twp.
 
-    Order matters: ``strip_latex`` runs first so downstream OpenCC and any
-    future regex transforms see plain Unicode rather than ``$\\rightarrow$``.
+    Order matters:
+      1. ``strip_inline_citations`` runs first (Round 4 Patch Q) so we
+         remove RAG bracket markers like ``(參 [5])`` from end of slide
+         text. Citation is end-anchored and doesn't interfere with LaTeX
+         anywhere — order between (1) and (2) is logically interchangeable
+         but we keep it deterministic.
+      2. ``strip_latex`` runs next so downstream OpenCC and any future
+         regex transforms see plain Unicode rather than ``$\\rightarrow$``.
+
+    ``keep_citations=True`` is used for ``speaker_notes`` only — the audit
+    trail (which chunk a bullet came from) MUST be preserved in notes
+    even though it's stripped from visible slide text.
 
     Empty strings stay empty (the converter would return "" too, but we
     short-circuit to skip the dict lookup).
     """
     if text is None or text == "":
         return text
+    if not keep_citations:
+        text = strip_inline_citations(text)  # Round 4 Patch Q: (參 [5]) → ""
     text = strip_latex(text)  # Round 3 Patch I: $\rightarrow$ → →
     converter = _get_converter()
     converted = converter.convert(text)
@@ -196,7 +244,10 @@ def _normalize_slide(slide: Slide) -> Slide:
     patch: dict[str, Any] = {
         "title": _convert(slide.title),
         "bullets": [_convert(b) or "" for b in slide.bullets],
-        "speaker_notes": _convert(slide.speaker_notes),
+        # Round 4 Patch Q: speaker_notes keeps RAG citations for audit trail
+        # (the LLM populates these with chunk references); only visible slide
+        # text gets citations stripped.
+        "speaker_notes": _convert(slide.speaker_notes, keep_citations=True),
     }
 
     if slide.stat is not None:
