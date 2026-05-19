@@ -1609,6 +1609,19 @@ _ENUMERATION_KEYWORDS = (
     "對比", "對照", " vs ", " vs.",
 )
 
+# Round 3 PRIMARY V4 signal: "label: description" bullet pattern.
+#
+# Matches CJK 2-6 char label + (half- or full-width) colon + non-empty tail.
+# Tuned conservatively: requires the label to be entirely CJK so bullets like
+# "Token 消耗降低" (mixed Latin) don't false-trigger.
+_LABEL_BULLET_RE = re.compile(
+    r"^\s*[一-鿿]{2,6}\s*[:：]\s*\S.*$",
+)
+
+# Fraction of bullets that must match _LABEL_BULLET_RE for the
+# content-pattern V4 path to fire. 0.7 = 3 of 4, or 2 of 3.
+_LABEL_PATTERN_THRESHOLD = 0.7
+
 # V2: numeric-content regex. Matches percentages, big numbers, F1 scores,
 # and sample sizes (N=xxx). When chunks_text matches AND spec has zero
 # stat_callout slides, we missed a visual opportunity for a key statistic.
@@ -1741,7 +1754,13 @@ def _audit_layout_distribution(
             )
         )
 
-    # ── V4: enumeration title + 3+ bullets + standard layout ──
+    # ── V4: enumeration title OR label-pattern bullets + 3+ bullets + standard ──
+    #
+    # Round 2 used title-keyword only. Round 3 adds a primary CONTENT signal:
+    # if ≥70% of bullets follow the "<CJK label>: <description>" shape, the
+    # slide is an icon_rows candidate regardless of title wording. Empirically
+    # this rescues slides like 「執行摘要」 whose title carries no keyword but
+    # whose bullets are textbook icon_rows material.
     for i, s in enumerate(slides):
         if s.layout_kind != "standard":
             continue
@@ -1752,19 +1771,37 @@ def _audit_layout_distribution(
             (kw for kw in _ENUMERATION_KEYWORDS if kw.lower() in title_low),
             None,
         )
-        if matched_kw is not None:
-            violations.append(
-                LayoutViolation(
-                    kind="V4",
-                    severity="soft",
-                    slide_indices=[i],
-                    detail=(
-                        f"slide {i} 標題含列舉關鍵字 '{matched_kw}'、"
-                        f"{len(s.bullets)} 個 bullet、layout=standard"
-                        " — 建議改為 icon_rows"
-                    ),
-                )
+        title_match = matched_kw is not None
+
+        # Round 3 primary signal: bullet content pattern.
+        pattern_matches = sum(
+            1 for b in s.bullets if _LABEL_BULLET_RE.match(str(b))
+        )
+        pattern_match = (
+            pattern_matches / len(s.bullets) >= _LABEL_PATTERN_THRESHOLD
+        )
+
+        if not (title_match or pattern_match):
+            continue
+
+        detail_bits = [
+            f"slide #{i}「{s.title}」: {len(s.bullets)} bullets, standard layout",
+        ]
+        if title_match:
+            detail_bits.append(f"title-keyword '{matched_kw}'")
+        if pattern_match:
+            detail_bits.append(
+                f"bullet-pattern {pattern_matches}/{len(s.bullets)}"
             )
+
+        violations.append(
+            LayoutViolation(
+                kind="V4",
+                severity="soft",
+                slide_indices=[i],
+                detail=", ".join(detail_bits),
+            )
+        )
 
     return violations
 

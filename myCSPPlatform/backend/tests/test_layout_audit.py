@@ -139,3 +139,68 @@ def test_v4_keyword_expansion(title, bullets, expected_v4):
     violations = _audit_layout_distribution(spec, chunks_text="")
     v4s = [v for v in violations if v.kind == "V4"]
     assert (len(v4s) > 0) == expected_v4
+
+
+# Round 3 Patch H: V4 fires on bullet CONTENT pattern, not just title.
+# Slides like 「執行摘要」 carry no enumeration keyword in the title but their
+# bullets follow the textbook "label: description" shape — exactly the
+# icon_rows-friendly material Round 2 was missing.
+@pytest.mark.parametrize("title,bullets,expected_v4", [
+    # ── Pure content-pattern hits (Round 3 new) ──
+    ("執行摘要", [
+        "高效能推理：掌握 TensorRT-LLM 並解決 C++ 對齊 Bug",
+        "技術突破：實作法律 Agentic RAG",
+        "合規治理：導入 ISO 42001",
+        "架構演進：提出基於 DDD 的垂直切分架構",
+    ], True),  # 4/4 label-pattern, no keyword
+    ("底層推理引擎除錯實踐", [
+        "問題：v1.2.0rc2 處理 Harmony 格式時導致服務崩潰",
+        "根因:透過 Git Bisect 定位為 C++ 記憶體對齊瑕疵",
+        "對策：降版至 v1.1.0rc5 並建立自動化回歸測試",
+        "價值：證明具備原始碼級別除錯能力",
+    ], True),
+
+    # ── Title-keyword hits (Round 2 behaviour preserved) ──
+    ("Multi-Agent Supervisor 拓撲設計", [
+        "Supervisor 統籌 Worker",
+        "Worker 執行專業任務",
+        "高度模組化",
+    ], True),
+
+    # ── Negative cases ──
+    ("執行摘要", [
+        "今年完成了多項工作",
+        "在推理上有顯著進展",
+        "下一步將擴大研究範圍",
+    ], False),  # no pattern, no keyword
+    ("封面標題", ["a", "b", "c"], False),
+    ("過程描述", ["經過調研後團隊決定採用 ReAct 框架"], False),  # only 1 bullet
+])
+def test_v4_content_pattern_and_keyword_paths(title, bullets, expected_v4):
+    spec = SlidesSpec(**{
+        "title": "T", "subtitle": "S",
+        "slides": [_slide(title, bullets=bullets)],
+        "theme": "navy_amber",
+    })
+    violations = _audit_layout_distribution(spec, chunks_text="")
+    v4s = [v for v in violations if v.kind == "V4"]
+    assert (len(v4s) > 0) == expected_v4
+
+
+def test_v4_pattern_threshold_70_percent():
+    """Bullets need ≥70% label-pattern match to trigger pure pattern path."""
+    spec = SlidesSpec(**{
+        "title": "T", "subtitle": "S",
+        "slides": [_slide(
+            "實作筆記",  # no V4 keyword
+            bullets=[
+                "前提：先 install 依賴",   # match
+                "步驟：跑 init 指令",      # match
+                "完成後就可以使用了",      # no match
+            ],
+        )],
+        "theme": "navy_amber",
+    })
+    violations = _audit_layout_distribution(spec, chunks_text="")
+    # 2/3 = 66% < 70% → no V4
+    assert not any(v.kind == "V4" for v in violations)
