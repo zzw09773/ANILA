@@ -455,6 +455,8 @@ def _build_generation_prompt(
             '  - 只有結論沒有過程、總頁數 ≤ 10、給 C-level 看',
             '    → executive_brief',
             '訊號衝突時取最強的；無明確訊號用 corporate_navy。',
+            '（注意：若 title 含「心得／反思／論文／募資」等明確 framing 詞，'
+            '後端會強制 override；你可不必額外處理。）',
             '整份簡報只能挑一個 theme；不要在 slides 內切換。',
             '',
             '（舊欄位名 palette 仍接受但已 deprecated，請用 theme。）',
@@ -1625,6 +1627,82 @@ _ENUMERATION_KEYWORDS = (
     "對比", "對照", " vs ", " vs.",
 )
 
+# ── Round 5 Patch U: deterministic title-keyword theme overrides ──
+#
+# LLM tone detection (Patch O) is non-deterministic at signal boundaries.
+# v4 picked warm_journal for "11月學習心得報告"; v5 picked corporate_navy
+# on essentially the same content because chunks lean technical and the
+# only warm_journal signal was the "心得" in the title.
+#
+# Architectural decision: title is the strongest author-intent signal —
+# the framing the author explicitly chose. When title contains an
+# unambiguous theme keyword, override the LLM's tone-based choice.
+#
+# Patterns are deliberately CONSERVATIVE (only high-confidence keywords).
+# Title with no match leaves the LLM's choice intact. This is opt-in
+# overriding, not blanket replacement.
+_THEME_TITLE_OVERRIDES: list[tuple[re.Pattern[str], str]] = [
+    # ── warm_journal: personal reflection framings ──
+    (re.compile(r"心得|反思|回顧|感想|札記|手記"), "warm_journal"),
+
+    # ── academic_paper: scholarly/conference framings ──
+    (re.compile(
+        r"論文|研究發表|期刊論文|workshop|conference paper|"
+        r"研討會|學會發表",
+        re.IGNORECASE,
+    ), "academic_paper"),
+
+    # ── startup_pitch: external pitch framings ──
+    (re.compile(
+        r"募資|產品發表|launch event|pitch deck|"
+        r"投資人簡報|demo day",
+        re.IGNORECASE,
+    ), "startup_pitch"),
+
+    # ── executive_brief: high-level briefing framings ──
+    (re.compile(
+        r"executive briefing|高層 review|主管 briefing|"
+        r"季度 review|半年檢討|年度檢討",
+        re.IGNORECASE,
+    ), "executive_brief"),
+]
+
+
+def _apply_theme_title_override(spec: SlidesSpec) -> SlidesSpec:
+    """Deterministic title-keyword override for theme selection.
+
+    Runs AFTER schema validation succeeds so ``spec.theme`` is always a
+    valid theme (either LLM-chosen or palette-derived). If ``spec.title``
+    matches a high-confidence keyword pattern, force the corresponding
+    theme.
+
+    Idempotent and pure: same input → same output, no I/O beyond logging.
+    No-op when title has no match (preserves LLM choice).
+    """
+    title = (spec.title or "").strip()
+    if not title:
+        return spec
+
+    for pattern, target_theme in _THEME_TITLE_OVERRIDES:
+        if pattern.search(title):
+            if spec.theme != target_theme:
+                logger.info(
+                    "Theme title-override: '%s' matched %r → "
+                    "switching theme %s → %s",
+                    title, pattern.pattern, spec.theme, target_theme,
+                )
+                spec.theme = target_theme
+            else:
+                logger.debug(
+                    "Theme title-override: '%s' matched %r, "
+                    "theme already %s (no-op)",
+                    title, pattern.pattern, target_theme,
+                )
+            return spec
+
+    return spec
+
+
 # Round 3 PRIMARY V4 signal: "label: description" bullet pattern.
 #
 # Matches CJK 2-6 char label + (half- or full-width) colon + non-empty tail.
@@ -2244,6 +2322,16 @@ async def _run_pipeline(
         # at request time, so we trust the value unconditionally here.
         if payload.theme_override:
             spec.theme = payload.theme_override
+        else:
+            # Round 5 Patch U: deterministic title-keyword override.
+            # Promotes title-based theme routing from a prompt-soft rule
+            # to a hard programmatic override. Runs AFTER LLM emits theme
+            # and AFTER theme_override (user wins over inference). Only
+            # fires when title matches a high-confidence keyword; no-op
+            # otherwise (preserves LLM choice). Must run before audit /
+            # rebalance / render so all downstream steps see the final
+            # theme.
+            spec = _apply_theme_title_override(spec)
         # Surface the title early so the UI can show "鑄造中：<title>"
         # before render finishes.
         await updater.set(title=spec.title, slide_count=len(spec.slides))
