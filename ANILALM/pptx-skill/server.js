@@ -1041,11 +1041,20 @@ async function renderIconRows(pres, s, theme) {
       // Unknown concept: small filled dot. Empty 0.8" outlined circles
       // read as "broken icon"; a small accent dot reads as intentional
       // minimalism. Log so future runs can mine unknowns for additions.
-      const dotSize = 0.1
+      //
+      // Patch T (Round 4): pin to a fixed FALLBACK_DOT_SIZE rather than
+      // anything derived from theme.iconTreatment.iconSize. warm_journal's
+      // soft_filled style sets iconSize=0.6" (calibrated for an actual
+      // heroicon glyph) — if the fallback ever scales with iconSize it
+      // renders as a giant 0.6" orange disc that looks like a "broken
+      // placeholder", defeating the point. Purpose of this dot is "small
+      // unknown-concept marker", so the size shouldn't track the heroicon
+      // calibration.
+      const FALLBACK_DOT_SIZE = 0.12
       slide.addShape('ellipse', {
-        x: ICON_X + (iconBoxSize - dotSize) / 2,
-        y: y + (rowH - iconBoxSize) / 2 + (iconBoxSize - dotSize) / 2,
-        w: dotSize, h: dotSize,
+        x: ICON_X + (iconBoxSize - FALLBACK_DOT_SIZE) / 2,
+        y: y + (rowH - iconBoxSize) / 2 + (iconBoxSize - FALLBACK_DOT_SIZE) / 2,
+        w: FALLBACK_DOT_SIZE, h: FALLBACK_DOT_SIZE,
         fill: { color: p.accent },
         line: { type: 'none' },
       })
