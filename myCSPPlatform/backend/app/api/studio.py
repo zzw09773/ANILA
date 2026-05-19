@@ -406,7 +406,7 @@ def _build_generation_prompt(
     """Compose (system, user) prompts for the slide-deck LLM call.
 
     Phase 3 expands the prompt with:
-      * palette selection (4 options)
+      * theme selection (5 options, tone-based; palette deprecated)
       * per-slide layout_kind (6 variants)
       * icon_rows.concept whitelist (80+ keywords grouped by domain;
         the LLM is asked to pick a domain first, then a concept from
@@ -436,12 +436,28 @@ def _build_generation_prompt(
             "",
             "── 頂層欄位 ──",
             'Required: title (string), slides (list).',
-            'Required: palette — 從以下挑一個（renderer 會落地成具體配色）：',
-            '  "navy_amber"        商務、技術、政策、一般用途（預設）',
-            '  "forest_moss"       永續、健康、教育、自然主題',
-            '  "charcoal_minimal"  嚴肅報告、財務、法規',
-            '  "coral_energy"      行銷、品牌、創意活力',
-            '整份簡報只能挑一個 palette；不要在 slides 內切換。',
+            'Required: theme — 依文件 tone 而非主題類別挑選：',
+            '  "corporate_navy"   嚴謹的技術／業務報告；給同事或主管看的工作產出（預設）',
+            '  "academic_paper"   研究發表、論文摘要、學術會議；多量化與引用',
+            '  "warm_journal"     第一人稱學習心得、回顧、softer 反思內容',
+            '  "executive_brief"  給高層的 briefing、結論導向、極簡、≤ 10 張',
+            '  "startup_pitch"    對外發表、產品介紹、需要視覺衝擊與情緒煽動',
+            '',
+            '選擇依據（在 chunks_text 中尋找這些 tone 訊號）：',
+            '  - 第一人稱主觀詞（我、我的、我們、心得、反思、學到、感受）',
+            '    → warm_journal',
+            '  - 量化結果（百分比、N=...、F1、p-value）+ 方法論 + 引用',
+            '    → academic_paper',
+            '  - 「問題 / 解法 / 價值」結構 + 中性語氣 + 技術細節',
+            '    → corporate_navy',
+            '  - 強 call-to-action、願景語言、產品名稱反覆出現',
+            '    → startup_pitch',
+            '  - 只有結論沒有過程、總頁數 ≤ 10、給 C-level 看',
+            '    → executive_brief',
+            '訊號衝突時取最強的；無明確訊號用 corporate_navy。',
+            '整份簡報只能挑一個 theme；不要在 slides 內切換。',
+            '',
+            '（舊欄位名 palette 仍接受但已 deprecated，請用 theme。）',
             "",
             "── 每張投影片欄位 ──",
             'Required: title, bullets (1-6 items), speaker_notes',
