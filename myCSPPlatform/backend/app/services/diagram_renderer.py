@@ -21,6 +21,11 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from app.services.studio_text_normalizer import (
+    strip_inline_citations,
+    strip_latex,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,7 +45,25 @@ async def render_dot_to_png(dot: str, *, timeout: float = 5.0) -> bytes | None:
     The 5-second default timeout matches the rest of the Studio
     pipeline's "don't block the request indefinitely" budget; complex
     DOT graphs may need to override.
+
+    Round 5 Patch S-fix: pre-process DOT text through the same
+    normalizer passes (``strip_inline_citations`` + ``strip_latex``)
+    that ``studio_text_normalizer.normalize_text`` applies to slide-
+    level fields (title, bullets, stat.*, column.*, icon_rows.*).
+    ``diagram_dot`` is a separate field and the LLM occasionally emits
+    LaTeX (``$\\rightarrow$``) or RAG citation markers (``(參 [5])``)
+    inside node labels; the JSON parser eats backslashes, leaving
+    residue like ``ightarrow`` that ends up rendered verbatim inside
+    graphviz boxes. Field-specific opt-in is the right architectural
+    choice — normalizers shouldn't sniff context.
     """
+    if dot:
+        # Order matches studio_text_normalizer._convert: citations first
+        # (end-anchored, doesn't interact with LaTeX); LaTeX second so
+        # downstream consumers see plain Unicode.
+        dot = strip_inline_citations(dot) or ""
+        dot = strip_latex(dot) or ""
+
     try:
         proc = await asyncio.create_subprocess_exec(
             _DOT_BINARY,
