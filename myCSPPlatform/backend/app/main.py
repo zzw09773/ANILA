@@ -32,6 +32,16 @@ def _run_alembic_upgrade() -> None:
 
 
 def setup_logging():
+    # Round 5 補:setup_logging 必須 idempotent。alembic.ini 含
+    # [loggers] section,_run_alembic_upgrade() 內部會觸發
+    # logging.fileConfig() 把既有 handler 全部 disable 並把 root
+    # level 降到 WARN。lifespan 在 alembic 之後會 re-call
+    # setup_logging 補回 handlers;若不先清舊 handlers,重 setup
+    # 時會殘留 disabled / duplicate handler,log 行會印兩次或全失。
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        root.removeHandler(h)
+
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
     handler = RotatingFileHandler(
@@ -81,6 +91,15 @@ async def lifespan(app: FastAPI):
             "Alembic upgrade failed, falling back to create_all: %s", exc
         )
         Base.metadata.create_all(bind=engine)
+
+    # Round 5 補:alembic.ini 的 [loggers] section 在 _run_alembic_upgrade
+    # 內部觸發 logging.fileConfig(),把 setup_logging 加的
+    # RotatingFileHandler + stdout StreamHandler 全部 disable、
+    # 並把 root logger level 降到 WARN。其結果是 alembic 之後
+    # 所有 logger.info(...)(含 R5 H-DIAG)寫不進 csp.log 也不上
+    # docker logs,debug 起來像幽靈。重 call setup_logging 把
+    # handler + level 補回(setup_logging 已改 idempotent)。
+    setup_logging()
 
     # Legacy SQLite migration + column backfills (kept for zero-downtime upgrades
     # from pre-Alembic deployments — safe to re-run, idempotent).
