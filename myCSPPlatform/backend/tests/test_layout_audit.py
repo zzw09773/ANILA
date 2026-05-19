@@ -37,7 +37,7 @@ def test_v1_standard_over_60pct():
                       {"concept": "success", "heading": "h", "description": "d"},
                       {"concept": "error", "heading": "h", "description": "d"},
                   ]) for i in range(2)],
-        "theme": "navy_amber",
+        "palette": "navy_amber",
     })
     violations = _audit_layout_distribution(spec, chunks_text="")
     hard_v1 = [v for v in violations if v.kind == "V1"]
@@ -49,7 +49,7 @@ def test_v2_missing_stat_for_numeric_content():
     spec = SlidesSpec(**{
         "title": "T", "subtitle": "S",
         "slides": [_slide("slide")],
-        "theme": "navy_amber",
+        "palette": "navy_amber",
     })
     chunks = "model achieved 95% accuracy on F1-score N=2400"
     violations = _audit_layout_distribution(spec, chunks_text=chunks)
@@ -68,7 +68,7 @@ def test_v2_not_flagged_if_stat_present():
                 "supporting": "雙分支架構相比單分支基準的 78%,N=2400",
             }),
         ],
-        "theme": "navy_amber",
+        "palette": "navy_amber",
     })
     violations = _audit_layout_distribution(spec, chunks_text="95% F1-score")
     assert not any(v.kind == "V2" for v in violations)
@@ -82,7 +82,7 @@ def test_v3_three_consecutive_standard():
                 "text": "a quote", "attribution": "someone",
             }),
         ],
-        "theme": "navy_amber",
+        "palette": "navy_amber",
     })
     violations = _audit_layout_distribution(spec, chunks_text="")
     v3 = [v for v in violations if v.kind == "V3"]
@@ -94,7 +94,7 @@ def test_v4_enumeration_keyword_with_standard_3plus_bullets():
     spec = SlidesSpec(**{
         "title": "T", "subtitle": "S",
         "slides": [_slide("三大核心能力", bullets=["a", "b", "c"])],
-        "theme": "navy_amber",
+        "palette": "navy_amber",
     })
     violations = _audit_layout_distribution(spec, chunks_text="")
     v4 = [v for v in violations if v.kind == "V4"]
@@ -110,7 +110,7 @@ def test_v4_not_flagged_if_layout_not_standard():
             {"concept": "success", "heading": "h", "description": "d"},
             {"concept": "error", "heading": "h", "description": "d"},
         ])],
-        "theme": "navy_amber",
+        "palette": "navy_amber",
     })
     violations = _audit_layout_distribution(spec, chunks_text="")
     assert not any(v.kind == "V4" for v in violations)
@@ -134,7 +134,7 @@ def test_v4_keyword_expansion(title, bullets, expected_v4):
     spec = SlidesSpec(**{
         "title": "T", "subtitle": "S",
         "slides": [_slide(title, bullets=bullets)],
-        "theme": "navy_amber",
+        "palette": "navy_amber",
     })
     violations = _audit_layout_distribution(spec, chunks_text="")
     v4s = [v for v in violations if v.kind == "V4"]
@@ -180,7 +180,7 @@ def test_v4_content_pattern_and_keyword_paths(title, bullets, expected_v4):
     spec = SlidesSpec(**{
         "title": "T", "subtitle": "S",
         "slides": [_slide(title, bullets=bullets)],
-        "theme": "navy_amber",
+        "palette": "navy_amber",
     })
     violations = _audit_layout_distribution(spec, chunks_text="")
     v4s = [v for v in violations if v.kind == "V4"]
@@ -199,7 +199,7 @@ def test_v4_pattern_threshold_70_percent():
                 "完成後就可以使用了",      # no match
             ],
         )],
-        "theme": "navy_amber",
+        "palette": "navy_amber",
     })
     violations = _audit_layout_distribution(spec, chunks_text="")
     # 2/3 = 66% < 70% → no V4

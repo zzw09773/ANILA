@@ -63,6 +63,31 @@ PALETTES: tuple[str, ...] = (
     "coral_energy",
 )
 
+# Round 3 Patch L: themes are the new top-level visual identity unit.
+# A theme bundles palette + typography + chrome + icon treatment + density.
+# The renderer (server.js) interprets theme.id and applies the bundle.
+#
+# Existing `palette` field is preserved as a deprecated alias — jobs that
+# set palette but not theme will resolve to the equivalent theme via
+# _PALETTE_TO_THEME below.
+THEMES: tuple[str, ...] = (
+    "corporate_navy",
+    "academic_paper",
+    "warm_journal",
+    "executive_brief",
+    "startup_pitch",
+)
+
+# Old palette → equivalent new theme. Used when a request specifies
+# palette without theme (legacy clients) so they keep working.
+_PALETTE_TO_THEME: dict[str, str] = {
+    "navy_amber": "corporate_navy",
+    "forest_moss": "warm_journal",
+    "charcoal_minimal": "academic_paper",
+    "coral_energy": "startup_pitch",
+    # NB: executive_brief has no direct palette ancestor — new theme.
+}
+
 LAYOUT_KINDS: tuple[str, ...] = (
     "standard",
     "section_break",
@@ -286,9 +311,38 @@ class SlidesSpec(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     slides: list[Slide] = Field(..., min_length=1, max_length=30)
 
-    # Phase 3: top-level palette. Default keeps existing decks visually
-    # identical to Phase 2 output.
-    palette: str = Field(default="navy_amber", max_length=40)
+    # Phase 3: top-level palette.
+    # DEPRECATED (Round 3 Patch L) — use `theme` instead. Kept for backwards
+    # compat. Resolved to equivalent theme via _PALETTE_TO_THEME if `theme`
+    # is unset (see `_resolve_theme_from_palette` below).
+    palette: str = Field(
+        default="navy_amber",
+        max_length=40,
+        description=(
+            "DEPRECATED — use `theme` instead. Kept for backwards compat. "
+            "Resolved to equivalent theme via _PALETTE_TO_THEME if `theme` "
+            "is unset."
+        ),
+    )
+
+    # Round 3 Patch L: theme is the new top-level visual identity unit.
+    # Bundles palette + typography + chrome + icon treatment + density.
+    # If None, resolves from the legacy `palette` field at validation time
+    # via `_resolve_theme_from_palette`.
+    theme: Literal[
+        "corporate_navy",
+        "academic_paper",
+        "warm_journal",
+        "executive_brief",
+        "startup_pitch",
+    ] | None = Field(
+        default=None,
+        description=(
+            "Visual identity bundle (Round 3 Patch L). Bundles palette + "
+            "typography + chrome + icon treatment + density. If None, "
+            "resolves from the legacy `palette` field at validation time."
+        ),
+    )
 
     @field_validator("title")
     @classmethod
@@ -310,6 +364,18 @@ class SlidesSpec(BaseModel):
         if normalised not in PALETTES:
             return "navy_amber"
         return normalised
+
+    @model_validator(mode="after")
+    def _resolve_theme_from_palette(self) -> Self:
+        """Round 3 Patch L: if theme is unset, derive from legacy palette.
+
+        Runs before `_check_unique_slide_titles` (validator order = declaration
+        order). Legacy clients that only set `palette` get a sensible `theme`
+        automatically; modern clients setting `theme` explicitly are unaffected.
+        """
+        if self.theme is None:
+            self.theme = _PALETTE_TO_THEME.get(self.palette, "corporate_navy")
+        return self
 
     @model_validator(mode="after")
     def _check_unique_slide_titles(self) -> Self:
