@@ -260,43 +260,74 @@ const LEGACY_PALETTE_TO_THEME = {
 
 // ── Chrome dispatch helpers ──────────────────────────────────────────
 //
-// applyTitleBar: called by every per-kind renderer that uses
-// `ANILA_BASE` master (i.e. everything except section_break).
+// createContentSlide / applyTitleBar work as a pair. Every per-kind
+// content renderer (everything except section_break) calls:
 //
-// IMPORTANT: the master already paints the filled bar rectangle
-// (`pres.defineSlideMaster` adds a coloured `rect` at y=0). The
-// per-kind renderers then `addText` a title string ON TOP of that bar.
-// `applyTitleBar('filled')` MUST mirror that addText call — it does NOT
-// re-paint the bar rectangle.
+//     const slide = createContentSlide(pres, theme)
+//     applyTitleBar(slide, s.title, theme)
 //
-// For variants reserved for Patches N.1-N.4 (underline_only, left_marker,
-// none, oversized_display) we currently fall back to `filled` so jobs
-// using those themes don't break before their full implementation lands.
+// createContentSlide decides whether to attach the `ANILA_BASE` master
+// (legacy `filled` titleBar — the master paints the coloured bar) or to
+// create a blank slide with the theme's bg colour (modern variants like
+// `left_marker` that don't want the painted bar).
+//
+// applyTitleBar then draws the title text (and any accent ornament such
+// as the left marker block) on top.
+//
+// IMPORTANT: corporate_navy MUST keep using the master so legacy decks
+// look pixel-identical to pre-Patch-M output.
+function createContentSlide(pres, theme) {
+  if (theme.chrome.titleBar === 'filled') {
+    // Legacy path — master paints filled bar + background.
+    return pres.addSlide({ masterName: 'ANILA_BASE' })
+  }
+  // Modern variants (left_marker, and N.2-N.4 reserved styles) — no
+  // painted bar; set the slide bg to the theme's bg colour so the deck
+  // gets its full identity (米白 for warm_journal, etc.).
+  const slide = pres.addSlide()
+  slide.background = { color: theme.palette.bg }
+  return slide
+}
+
+// applyTitleBar: dispatches on theme.chrome.titleBar.
+//
+// `filled` (corporate_navy): master already painted the bar — we only
+// draw the title text on top. Keeps legacy output identical.
+//
+// `left_marker` (warm_journal): 0.15"-wide accent block + brown title
+// text on cream bg (createContentSlide already set the bg).
+//
+// Variants reserved for Patches N.2-N.4 (underline_only, none,
+// oversized_display) fall back to the `filled` legacy text style for
+// now so jobs using those themes still render something visible.
 function applyTitleBar(slide, title, theme) {
   const p = theme.palette
   const fonts = theme.fonts
   const titleStr = String(title || '')
 
   switch (theme.chrome.titleBar) {
-    case 'filled':
-    default:
-      // Legacy filled-bar title. The master already paints the bar
-      // rectangle; we only draw the text on top of it.
+    case 'left_marker': {
+      // Warm-journal accent block — small cinnamon rectangle at the
+      // title's left edge. Stops well short of the slide edge so the
+      // cream bg can breathe.
+      slide.addShape('rect', {
+        x: 0.5, y: 0.3, w: 0.15, h: 0.5,
+        fill: { color: p.accent },
+        line: { type: 'none' },
+      })
       slide.addText(titleStr, {
-        x: 0.5, y: 0.1, w: 12.3, h: 0.6,
-        fontSize: fonts.titleSize.content, bold: true,
-        color: p.barText,
+        x: 0.8, y: 0.3, w: 12.0, h: 0.5,
+        fontSize: 22, bold: true,
+        color: p.titleText,
         align: 'left', valign: 'middle',
         fontFace: fonts.title, margin: 0,
       })
       break
-
-    case 'underline_only':
-    case 'left_marker':
-    case 'none':
-    case 'oversized_display':
-      // Reserved for Patches N.1-N.4. Fall back to filled for now so
-      // jobs using these themes still render something visible.
+    }
+    case 'filled':
+    default:
+      // Legacy filled-bar title. The master already paints the bar
+      // rectangle; we only draw the text on top of it.
       slide.addText(titleStr, {
         x: 0.5, y: 0.1, w: 12.3, h: 0.6,
         fontSize: fonts.titleSize.content, bold: true,
@@ -361,13 +392,8 @@ function renderStandard(pres, s, theme) {
   // unchanged in the body of the function. Renderer signature now takes
   // the full theme bundle.
   const p = theme.palette
-  const slide = pres.addSlide({ masterName: 'ANILA_BASE' })
-  slide.addText(String(s.title || 'Untitled'), {
-    x: 0.5, y: 0.1, w: 12.3, h: 0.6,
-    fontSize: 26, bold: true, color: p.barText,
-    align: 'left', valign: 'middle',
-    fontFace: FONT_FACE, margin: 0,
-  })
+  const slide = createContentSlide(pres, theme)
+  applyTitleBar(slide, s.title || 'Untitled', theme)
   const bullets = Array.isArray(s.bullets) ? s.bullets : []
   const n = bullets.length
   let bodyFontSize, bodyValign, bodyY, bodyH, paraSpaceAfter
@@ -426,32 +452,61 @@ function pickSectionTitleFont(title) {
  */
 function renderSectionBreak(pres, s, theme) {
   const p = theme.palette // Round 3 Patch M: legacy shim
-  // No master — full-bleed colour fill.
-  const slide = pres.addSlide()
-  slide.background = { color: p.bar }
-  // Decorative amber strip on the left edge — single visual motif
-  // shared with the cover slide.
-  slide.addShape('rect', {
-    x: 0.6, y: 1.6, w: 0.14, h: 4.2,
-    fill: { color: p.accent },
-    line: { type: 'none' },
-  })
+  const bullets = Array.isArray(s.bullets) ? s.bullets : []
   const titleStr = String(s.title || '')
   const titleFont = pickSectionTitleFont(titleStr)
-  slide.addText(titleStr, {
-    x: 1.1, y: 2.4, w: 11.5, h: 1.8,
-    fontSize: titleFont, bold: true, color: 'FFFFFF',
-    align: 'left', valign: 'middle', fontFace: FONT_FACE,
-  })
-  // Subtitle from bullets[0] if the LLM provided one — keeps the slide
-  // useful even when it's clearly just a transition.
-  const bullets = Array.isArray(s.bullets) ? s.bullets : []
-  if (bullets[0]) {
-    slide.addText(String(bullets[0]), {
-      x: 1.1, y: 4.4, w: 11.5, h: 0.6,
-      fontSize: 20, color: p.accent,
-      align: 'left', italic: false, fontFace: FONT_FACE,
+  // No master — full-bleed colour fill regardless of variant.
+  const slide = pres.addSlide()
+
+  // Patch N.1: branch on theme.chrome.sectionBreak.
+  //
+  // `soft_centered` (warm_journal): cream bg, centered brown title,
+  // muted brown subtitle. NO left accent strip — the slide reads as a
+  // quiet pause rather than a coloured slab.
+  //
+  // `side_strip` (corporate_navy + fallback): legacy filled bar bg
+  // with white title and cinnamon accent strip on the left.
+  if (theme.chrome.sectionBreak === 'soft_centered') {
+    slide.background = { color: p.bg }
+    slide.addText(titleStr, {
+      x: 1.0, y: 2.6, w: 11.5, h: 1.4,
+      fontSize: titleFont, bold: true,
+      color: p.titleText,
+      align: 'center', valign: 'middle',
+      fontFace: theme.fonts.title, margin: 0,
     })
+    if (bullets[0]) {
+      slide.addText(String(bullets[0]), {
+        x: 1.0, y: 4.4, w: 11.5, h: 0.6,
+        fontSize: 20, color: p.muted,
+        align: 'center', italic: false,
+        fontFace: theme.fonts.body, margin: 0,
+      })
+    }
+  } else {
+    // Legacy `side_strip` (corporate_navy + reserved variants).
+    slide.background = { color: p.bar }
+    // Decorative amber strip on the left edge — single visual motif
+    // shared with the cover slide.
+    slide.addShape('rect', {
+      x: 0.6, y: 1.6, w: 0.14, h: 4.2,
+      fill: { color: p.accent },
+      line: { type: 'none' },
+    })
+    slide.addText(titleStr, {
+      x: 1.1, y: 2.4, w: 11.5, h: 1.8,
+      fontSize: titleFont, bold: true, color: 'FFFFFF',
+      align: 'left', valign: 'middle', fontFace: FONT_FACE,
+    })
+    // Subtitle from bullets[0] if the LLM provided one — keeps the slide
+    // useful even when it's clearly just a transition.
+    if (bullets[0]) {
+      slide.addText(String(bullets[0]), {
+        x: 1.1, y: 4.4, w: 11.5, h: 0.6,
+        fontSize: 20, color: p.accent,
+        align: 'left', italic: false, fontFace: FONT_FACE,
+      })
+    }
   }
   if (s.speaker_notes) slide.addNotes(String(s.speaker_notes))
   return slide
@@ -480,13 +535,8 @@ function renderStatCallout(pres, s, theme) {
   if (!s.stat || !s.stat.value || !s.stat.label) {
     return renderStandard(pres, s, theme)
   }
-  const slide = pres.addSlide({ masterName: 'ANILA_BASE' })
-  slide.addText(String(s.title || ''), {
-    x: 0.5, y: 0.1, w: 12.3, h: 0.6,
-    fontSize: 26, bold: true, color: p.barText,
-    align: 'left', valign: 'middle',
-    fontFace: FONT_FACE, margin: 0,
-  })
+  const slide = createContentSlide(pres, theme)
+  applyTitleBar(slide, s.title, theme)
 
   const hasBaseline = !!(s.stat.baseline && String(s.stat.baseline).trim())
   const bullets = Array.isArray(s.bullets) ? s.bullets : []
@@ -581,13 +631,8 @@ function renderQuote(pres, s, theme) {
   if (!s.quote || !s.quote.text) {
     return renderStandard(pres, s, theme)
   }
-  const slide = pres.addSlide({ masterName: 'ANILA_BASE' })
-  slide.addText(String(s.title || ''), {
-    x: 0.5, y: 0.1, w: 12.3, h: 0.6,
-    fontSize: 26, bold: true, color: p.barText,
-    align: 'left', valign: 'middle',
-    fontFace: FONT_FACE, margin: 0,
-  })
+  const slide = createContentSlide(pres, theme)
+  applyTitleBar(slide, s.title, theme)
   // Oversized opening quote mark — accent colour, anchored top-left of
   // the body. The corresponding closing mark is omitted by design;
   // single-mark openers read more cleanly than balanced quotes when
@@ -632,13 +677,8 @@ function renderTwoColumn(pres, s, theme) {
     return renderStandard(pres, s, theme)
   }
   const cols = s.columns.slice(0, 2)
-  const slide = pres.addSlide({ masterName: 'ANILA_BASE' })
-  slide.addText(String(s.title || ''), {
-    x: 0.5, y: 0.1, w: 12.3, h: 0.6,
-    fontSize: 26, bold: true, color: p.barText,
-    align: 'left', valign: 'middle',
-    fontFace: FONT_FACE, margin: 0,
-  })
+  const slide = createContentSlide(pres, theme)
+  applyTitleBar(slide, s.title, theme)
   // Layout maths: slide width 13.33in; we use 0.5 left margin, 0.5
   // right margin, 0.4 between columns. Each column gets
   // (13.33 - 0.5*2 - 0.4) / 2 = 5.965in ≈ 5.95in.
@@ -703,13 +743,8 @@ async function renderIconRows(pres, s, theme) {
     return renderStandard(pres, s, theme)
   }
   const rows = s.icon_rows.slice(0, 5)
-  const slide = pres.addSlide({ masterName: 'ANILA_BASE' })
-  slide.addText(String(s.title || ''), {
-    x: 0.5, y: 0.1, w: 12.3, h: 0.6,
-    fontSize: 26, bold: true, color: p.barText,
-    align: 'left', valign: 'middle',
-    fontFace: FONT_FACE, margin: 0,
-  })
+  const slide = createContentSlide(pres, theme)
+  applyTitleBar(slide, s.title, theme)
 
   // Row layout: distribute available vertical space (1.05 → 6.9 = 5.85in)
   // among the rows with a small gap between rows. Icon size scales
@@ -735,8 +770,15 @@ async function renderIconRows(pres, s, theme) {
     const y = TOP + i * (rowH + GAP)
 
     if (iconPngs[i]) {
-      // Known concept: full treatment — white-fill circle with accent
-      // ring + heroicon glyph. Originally tried a tinted fill via
+      // Patch N.1: branch on theme.iconTreatment.style.
+      //
+      // `soft_filled` (warm_journal): NO outline circle — just the
+      // heroicon glyph, scaled larger (`iconTreatment.iconSize`) and
+      // directly tinted in the accent colour. Reads as a warm,
+      // hand-illustrated motif rather than a button.
+      //
+      // `outline_circle` (corporate_navy + fallback): white-fill circle
+      // + accent ring + glyph. Originally tried a tinted fill via
       // `${p.accent}22` (8-char hex with alpha), but pptxgenjs's
       // shape `fill.color` doesn't honour an alpha channel — the value
       // gets silently dropped or mis-parsed, which left rows without an
@@ -744,21 +786,37 @@ async function renderIconRows(pres, s, theme) {
       // accent ring is robust across pptxgenjs / LibreOffice / PowerPoint
       // versions, and gives the same "icon in a coloured circle" motif
       // SKILL.md recommends for contrast.
-      slide.addShape('ellipse', {
-        x: ICON_X, y: y + (rowH - iconBoxSize) / 2,
-        w: iconBoxSize, h: iconBoxSize,
-        fill: { color: 'FFFFFF' },
-        line: { color: p.accent, width: 2 },
-      })
-      // Inset 12% of the box so the glyph doesn't kiss the circle edge.
-      const inset = iconBoxSize * 0.18
-      slide.addImage({
-        data: `data:image/png;base64,${iconPngs[i].toString('base64')}`,
-        x: ICON_X + inset,
-        y: y + (rowH - iconBoxSize) / 2 + inset,
-        w: iconBoxSize - inset * 2,
-        h: iconBoxSize - inset * 2,
-      })
+      const iconStyle = theme.iconTreatment.style
+      if (iconStyle === 'soft_filled') {
+        // Larger glyph, no chrome. Centre the requested icon size inside
+        // iconBoxSize so the heading/description text columns stay aligned.
+        const glyphSize = Math.min(theme.iconTreatment.iconSize || 0.6, iconBoxSize)
+        const inset = (iconBoxSize - glyphSize) / 2
+        slide.addImage({
+          data: `data:image/png;base64,${iconPngs[i].toString('base64')}`,
+          x: ICON_X + inset,
+          y: y + (rowH - iconBoxSize) / 2 + inset,
+          w: glyphSize,
+          h: glyphSize,
+        })
+      } else {
+        // Legacy outline_circle treatment.
+        slide.addShape('ellipse', {
+          x: ICON_X, y: y + (rowH - iconBoxSize) / 2,
+          w: iconBoxSize, h: iconBoxSize,
+          fill: { color: 'FFFFFF' },
+          line: { color: p.accent, width: 2 },
+        })
+        // Inset 12% of the box so the glyph doesn't kiss the circle edge.
+        const inset = iconBoxSize * 0.18
+        slide.addImage({
+          data: `data:image/png;base64,${iconPngs[i].toString('base64')}`,
+          x: ICON_X + inset,
+          y: y + (rowH - iconBoxSize) / 2 + inset,
+          w: iconBoxSize - inset * 2,
+          h: iconBoxSize - inset * 2,
+        })
+      }
     } else {
       // Unknown concept: small filled dot. Empty 0.8" outlined circles
       // read as "broken icon"; a small accent dot reads as intentional
@@ -809,15 +867,10 @@ function renderImageFocus(pres, s, theme) {
   if (!s.image_data || typeof s.image_data !== 'string') {
     return renderStandard(pres, s, theme)
   }
-  const slide = pres.addSlide({ masterName: 'ANILA_BASE' })
+  const slide = createContentSlide(pres, theme)
 
   // Title bar — same as other layouts.
-  slide.addText(String(s.title || ''), {
-    x: 0.5, y: 0.1, w: 12.3, h: 0.6,
-    fontSize: 26, bold: true, color: p.barText,
-    align: 'left', valign: 'middle',
-    fontFace: FONT_FACE, margin: 0,
-  })
+  applyTitleBar(slide, s.title, theme)
 
   // Image box — left 50%. Slide width 13.33"; minus 0.5" left + 0.4"
   // gap → image gets 5.95" wide (mirrors two_column geometry so
