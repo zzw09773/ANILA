@@ -37,6 +37,7 @@ opencc-python-reimplemented 是純 Python 實作，不依賴系統 libopencc。
 from __future__ import annotations
 
 import logging
+import re
 from functools import lru_cache
 from typing import Any
 
@@ -54,6 +55,79 @@ from app.schemas.studio import (
 logger = logging.getLogger(__name__)
 
 
+# Round 3 Patch I — LaTeX math-mode strip
+#
+# gemma4 occasionally emits LaTeX (`$\rightarrow$`) instead of the Unicode
+# arrow (`→`) when reasoning about flows. The renderer prints LaTeX verbatim
+# because pptxgenjs has no math support; v3 slide 12 showed raw `$\rightarrow$`.
+# Catch common commands with an explicit table + a bounded generic fallback.
+_LATEX_REPLACEMENTS = {
+    # Arrows
+    r"\$\\rightarrow\$": "→",
+    r"\$\\leftarrow\$":  "←",
+    r"\$\\Rightarrow\$": "⇒",
+    r"\$\\Leftarrow\$":  "⇐",
+    r"\$\\leftrightarrow\$": "↔",
+    r"\$\\to\$":         "→",
+    r"\$\\gets\$":       "←",
+    r"\$\\mapsto\$":     "↦",
+    # Math operators
+    r"\$\\times\$":      "×",
+    r"\$\\div\$":        "÷",
+    r"\$\\pm\$":         "±",
+    r"\$\\approx\$":     "≈",
+    r"\$\\equiv\$":      "≡",
+    r"\$\\neq\$":        "≠",
+    r"\$\\geq\$":        "≥",
+    r"\$\\leq\$":        "≤",
+    r"\$\\sim\$":        "~",
+    r"\$\\cdot\$":       "·",
+    # Greek (common in ML papers)
+    r"\$\\alpha\$":      "α",
+    r"\$\\beta\$":       "β",
+    r"\$\\gamma\$":      "γ",
+    r"\$\\delta\$":      "δ",
+    r"\$\\epsilon\$":    "ε",
+    r"\$\\theta\$":      "θ",
+    r"\$\\lambda\$":     "λ",
+    r"\$\\mu\$":         "μ",
+    r"\$\\pi\$":         "π",
+    r"\$\\sigma\$":      "σ",
+    r"\$\\tau\$":        "τ",
+    r"\$\\phi\$":        "φ",
+    r"\$\\omega\$":      "ω",
+    r"\$\\Sigma\$":      "Σ",
+    r"\$\\Delta\$":      "Δ",
+    # Misc
+    r"\$\\infty\$":      "∞",
+    r"\$\\partial\$":    "∂",
+    r"\$\\nabla\$":      "∇",
+}
+
+# Generic fallback: strip dollar wrappers and keep inner. Bounded to avoid
+# eating wide swaths of text on mismatched dollars.
+_GENERIC_LATEX_RE = re.compile(r"\$([^\$\n]{1,80})\$")
+
+
+def strip_latex(text: str | None) -> str | None:
+    """Replace LaTeX math-mode strings with Unicode / plain equivalents.
+
+    gemma4 occasionally emits ``$\\rightarrow$`` instead of ``→`` when
+    reasoning about flows. The renderer prints LaTeX verbatim because
+    pptxgenjs has no math support. Catches common commands + a generic
+    fallback that strips bare dollar wrappers.
+
+    Pure function. Safe on empty / None input.
+    """
+    if not text:
+        return text
+    text = str(text)
+    for pattern, replacement in _LATEX_REPLACEMENTS.items():
+        text = re.sub(pattern, replacement, text)
+    text = _GENERIC_LATEX_RE.sub(r"\1", text)
+    return text
+
+
 # OpenCC instances are cheap to create but the dictionary load is ~30-50 ms.
 # Cache so repeated normalize() calls share one warm instance per process.
 @lru_cache(maxsize=1)
@@ -62,13 +136,17 @@ def _get_converter() -> OpenCC:
 
 
 def _convert(text: str | None) -> str | None:
-    """Run a single string through OpenCC s2twp; pass through None unchanged.
+    """Run a single string through LaTeX strip + OpenCC s2twp.
+
+    Order matters: ``strip_latex`` runs first so downstream OpenCC and any
+    future regex transforms see plain Unicode rather than ``$\\rightarrow$``.
 
     Empty strings stay empty (the converter would return "" too, but we
     short-circuit to skip the dict lookup).
     """
     if text is None or text == "":
         return text
+    text = strip_latex(text)  # Round 3 Patch I: $\rightarrow$ → →
     converter = _get_converter()
     converted = converter.convert(text)
     return converted
