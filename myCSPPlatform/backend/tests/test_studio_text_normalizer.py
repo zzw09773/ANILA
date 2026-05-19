@@ -36,3 +36,38 @@ def test_strip_latex_v3_slide12_regression():
 
 def test_strip_latex_greek_letters():
     assert strip_latex("$\\alpha$ + $\\beta$") == "α + β"
+
+
+def test_strip_latex_json_eaten_carriage_return():
+    """Round 4 regression for v4 slide 11. JSON parser turns \\r into CR
+    before strip_latex sees it."""
+    broken = "失敗 " + "$" + "\r" + "ightarrow$" + " 思考"
+    assert strip_latex(broken) == "失敗 → 思考"
+
+
+def test_strip_latex_json_eaten_tab():
+    broken = "A " + "$" + "\t" + "ightarrow$" + " B"
+    assert strip_latex(broken) == "A → B"
+
+
+def test_strip_latex_json_eaten_linefeed():
+    broken = "A " + "$" + "\n" + "ightarrow$" + " B"
+    assert strip_latex(broken) == "A → B"
+
+
+def test_strip_latex_handles_unclosed_broken_variant():
+    """LLM truncates mid-LaTeX — no closing $."""
+    broken = "失敗 " + "$" + "\r" + "ightarrow" + " 後續"
+    assert strip_latex(broken) == "失敗 → 後續"
+
+
+def test_strip_latex_literal_path_still_works():
+    """Patch I behaviour preserved for non-JSON paths (raw Python strings)."""
+    text = r"Observation $\rightarrow$ Thought"
+    assert strip_latex(text) == "Observation → Thought"
+
+
+def test_strip_latex_json_eaten_theta():
+    """\\theta in JSON → $<TAB>heta$ after parse."""
+    broken = "誤差 " + "$" + "\t" + "heta$"
+    assert strip_latex(broken) == "誤差 θ"

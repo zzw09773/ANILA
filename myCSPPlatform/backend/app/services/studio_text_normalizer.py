@@ -104,6 +104,33 @@ _LATEX_REPLACEMENTS = {
     r"\$\\nabla\$":      "∇",
 }
 
+# Round 4 Patch S: JSON-eaten control-char fallbacks.
+#
+# When gemma4 emits LaTeX like "$\rightarrow$" in JSON string content,
+# the JSON parser interprets `\r`, `\t`, `\n` as actual control chars
+# (CR/TAB/LF) BEFORE this normalizer sees the text. The literal-LaTeX
+# regex in _LATEX_REPLACEMENTS never matches because the backslash is
+# already gone. These string-level replacements catch the post-parse
+# residue.
+_LATEX_BROKEN_CHAR_REPLACEMENTS = {
+    # \r → CR (most common with $\rightarrow$ in JSON)
+    "$\rightarrow$": "→",   # CR between $ and "ightarrow"
+    "$\rightarrow":  "→",   # unclosed variant
+    # \t → TAB
+    "$\tightarrow$": "→",
+    "$\tightarrow":  "→",
+    # \n → LF
+    "$\nightarrow$": "→",
+    "$\nightarrow":  "→",
+    # \v, \f, \b — same family
+    "$\vightarrow$": "→",
+    "$\fightarrow$": "→",
+    "$\bightarrow$": "→",
+    # Backslash-eaten Greek letters
+    "$\theta$":     "θ",    # $ + TAB + "heta" + $
+    "$\nu$":        "ν",    # $ + LF + "u" + $
+}
+
 # Generic fallback: strip dollar wrappers and keep inner. Bounded to avoid
 # eating wide swaths of text on mismatched dollars.
 _GENERIC_LATEX_RE = re.compile(r"\$([^\$\n]{1,80})\$")
@@ -122,6 +149,12 @@ def strip_latex(text: str | None) -> str | None:
     if not text:
         return text
     text = str(text)
+    # Round 4 Patch S: handle JSON-eaten control chars FIRST. Literal
+    # string replacements because the broken characters are real
+    # CR/TAB/LF in the data.
+    for broken, fixed in _LATEX_BROKEN_CHAR_REPLACEMENTS.items():
+        text = text.replace(broken, fixed)
+    # Existing regex-based replacements (Round 3 Patch I).
     for pattern, replacement in _LATEX_REPLACEMENTS.items():
         text = re.sub(pattern, replacement, text)
     text = _GENERIC_LATEX_RE.sub(r"\1", text)
