@@ -2206,6 +2206,14 @@ async def _run_pipeline(
         # structural integrity check has already passed) and BEFORE render
         # / vision QA (so all downstream steps see clean Traditional Chinese).
         spec = normalize_spec(spec)
+        # Round 3 Patch P: apply theme_override after spec is validated.
+        # Bypasses LLM theme selection per the API request. Applied here
+        # (post-validation, pre-rebalance, pre-render) so all downstream
+        # steps — rebalance, render, vision QA — see the forced theme.
+        # Literal on the request schema already rejected invalid values
+        # at request time, so we trust the value unconditionally here.
+        if payload.theme_override:
+            spec.theme = payload.theme_override
         # Surface the title early so the UI can show "鑄造中：<title>"
         # before render finishes.
         await updater.set(title=spec.title, slide_count=len(spec.slides))

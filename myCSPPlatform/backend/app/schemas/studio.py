@@ -409,6 +409,27 @@ class GenerateSpecRequest(BaseModel):
     # Knob to skip retrieval entirely if the user explicitly wants
     # "just use general knowledge". Default false (always retrieve).
     skip_retrieval: bool = False
+    # Round 3 Patch P: API-side bypass of LLM theme selection.
+    # When set to a valid THEMES value, the pipeline overwrites
+    # spec.theme with this value AFTER Pydantic validation but BEFORE
+    # render — operators / advanced users who know the audience better
+    # than the LLM can force a specific visual identity. Literal keeps
+    # invalid values out at request time (422), instead of silently
+    # being ignored mid-pipeline.
+    theme_override: Literal[
+        "corporate_navy",
+        "academic_paper",
+        "warm_journal",
+        "executive_brief",
+        "startup_pitch",
+    ] | None = Field(
+        default=None,
+        description=(
+            "If set, bypasses LLM theme selection and forces this theme. "
+            "Useful when the user knows the audience better than the LLM. "
+            "Must be one of THEMES; invalid values rejected by Literal."
+        ),
+    )
 
 
 class VisualDefect(BaseModel):
