@@ -93,6 +93,227 @@ const PALETTES = {
 // can resolve to a Simplified-Chinese variant for 繁體 strings.
 const FONT_FACE = 'Noto Sans CJK TC'
 
+// ── Round 3 Patch M: theme bundles ────────────────────────────────────
+//
+// Themes are complete visual identity bundles. Each bundles palette +
+// typography + chrome + iconTreatment + density. Renderers dispatch on
+// theme.chrome.titleBar etc. to decide what to draw.
+//
+// corporate_navy MUST be visually equivalent to legacy navy_amber palette
+// — schema-layer _PALETTE_TO_THEME maps navy_amber → corporate_navy and
+// existing decks rendered against navy_amber must still look identical.
+//
+// Patch M is SCAFFOLDING ONLY: chrome variants beyond `filled` (legacy)
+// fall back to the legacy filled behaviour. Patches N.1-N.4 will wire
+// up the actual visual differentiation for the other 4 themes.
+const THEMES = {
+  corporate_navy: {
+    id: 'corporate_navy',
+    palette: {
+      bar: '1E2761', accent: 'F4B740',
+      titleText: '1E2761', barText: 'FFFFFF',
+      ink: '1A1A1A', muted: '5C6470', bg: 'FFFFFF',
+    },
+    fonts: {
+      title: 'Noto Sans CJK TC',
+      body: 'Noto Sans CJK TC',
+      titleWeight: 'bold',
+      titleSize: { content: 26, section: 56, cover: 56 },
+      bodySize: { default: 18, dense: 16, spacious: 20 },
+    },
+    chrome: {
+      titleBar: 'filled',
+      sectionBreak: 'side_strip',
+      accentMotif: 'yellow_underline',
+    },
+    iconTreatment: {
+      style: 'outline_circle',
+      circleSize: 0.8,
+      iconSize: 0.4,
+      strokeWidth: 2,
+    },
+    density: 'comfortable',
+  },
+
+  academic_paper: {
+    id: 'academic_paper',
+    palette: {
+      bar: 'FFFFFF', accent: 'A0826D',
+      titleText: '212121', barText: '212121',
+      ink: '212121', muted: '70757A', bg: 'FFFFFF',
+    },
+    fonts: {
+      title: 'Noto Serif CJK TC',
+      body: 'Noto Serif CJK TC',
+      titleWeight: 'normal',
+      titleSize: { content: 24, section: 48, cover: 56 },
+      bodySize: { default: 16, dense: 14, spacious: 18 },
+    },
+    chrome: {
+      titleBar: 'underline_only',
+      sectionBreak: 'centered_minimal',
+      accentMotif: 'none',
+    },
+    iconTreatment: {
+      style: 'monochrome_dot',
+      circleSize: 0,
+      iconSize: 0.15,
+    },
+    density: 'dense',
+  },
+
+  warm_journal: {
+    id: 'warm_journal',
+    palette: {
+      bar: 'FFF8F0', accent: 'D2691E',
+      titleText: '4A3429', barText: '4A3429',
+      ink: '4A3429', muted: '7D6857', bg: 'FFFCF7',
+    },
+    fonts: {
+      title: 'Noto Sans CJK TC',
+      body: 'Noto Sans CJK TC',
+      titleWeight: 'semibold',
+      titleSize: { content: 26, section: 52, cover: 56 },
+      bodySize: { default: 18, dense: 16, spacious: 20 },
+    },
+    chrome: {
+      titleBar: 'left_marker',
+      sectionBreak: 'soft_centered',
+      accentMotif: 'soft_highlight',
+    },
+    iconTreatment: {
+      style: 'soft_filled',
+      circleSize: 0,
+      iconSize: 0.6,
+    },
+    density: 'comfortable',
+  },
+
+  executive_brief: {
+    id: 'executive_brief',
+    palette: {
+      bar: 'FFFFFF', accent: '1A1A1A',
+      titleText: '1A1A1A', barText: '1A1A1A',
+      ink: '1A1A1A', muted: '8E8E93', bg: 'FFFFFF',
+    },
+    fonts: {
+      title: 'Noto Sans CJK TC',
+      body: 'Noto Sans CJK TC',
+      titleWeight: 'medium',
+      titleSize: { content: 22, section: 44, cover: 48 },
+      bodySize: { default: 18, dense: 16, spacious: 22 },
+    },
+    chrome: {
+      titleBar: 'none',
+      sectionBreak: 'numbered_minimal',
+      accentMotif: 'none',
+    },
+    iconTreatment: {
+      style: 'minimal_dot',
+      circleSize: 0,
+      iconSize: 0.1,
+    },
+    density: 'spacious',
+  },
+
+  startup_pitch: {
+    id: 'startup_pitch',
+    palette: {
+      bar: '2F3C7E', accent: 'F96167',
+      titleText: '2F3C7E', barText: 'FFFFFF',
+      ink: '1A1A1A', muted: '5C6470', bg: 'FFFFFF',
+    },
+    fonts: {
+      title: 'Noto Sans CJK TC',
+      body: 'Noto Sans CJK TC',
+      titleWeight: 'black',
+      titleSize: { content: 32, section: 72, cover: 96 },
+      bodySize: { default: 20, dense: 18, spacious: 24 },
+    },
+    chrome: {
+      titleBar: 'oversized_display',
+      sectionBreak: 'full_bleed_number',
+      accentMotif: 'highlight_pill',
+    },
+    iconTreatment: {
+      style: 'filled_pill',
+      circleSize: 0.9,
+      iconSize: 0.5,
+    },
+    density: 'comfortable',
+  },
+}
+
+function getTheme(name) {
+  return THEMES[name] || THEMES.corporate_navy
+}
+
+// Legacy palette name → theme name. Lets callers that still send
+// `palette` (tests, ops scripts, decks pre-Patch L) resolve to the
+// closest theme. Schema-layer _PALETTE_TO_THEME mirrors this map.
+const LEGACY_PALETTE_TO_THEME = {
+  navy_amber: 'corporate_navy',
+  forest_moss: 'warm_journal',
+  charcoal_minimal: 'academic_paper',
+  coral_energy: 'startup_pitch',
+}
+
+// ── Chrome dispatch helpers ──────────────────────────────────────────
+//
+// applyTitleBar: called by every per-kind renderer that uses
+// `ANILA_BASE` master (i.e. everything except section_break).
+//
+// IMPORTANT: the master already paints the filled bar rectangle
+// (`pres.defineSlideMaster` adds a coloured `rect` at y=0). The
+// per-kind renderers then `addText` a title string ON TOP of that bar.
+// `applyTitleBar('filled')` MUST mirror that addText call — it does NOT
+// re-paint the bar rectangle.
+//
+// For variants reserved for Patches N.1-N.4 (underline_only, left_marker,
+// none, oversized_display) we currently fall back to `filled` so jobs
+// using those themes don't break before their full implementation lands.
+function applyTitleBar(slide, title, theme) {
+  const p = theme.palette
+  const fonts = theme.fonts
+  const titleStr = String(title || '')
+
+  switch (theme.chrome.titleBar) {
+    case 'filled':
+    default:
+      // Legacy filled-bar title. The master already paints the bar
+      // rectangle; we only draw the text on top of it.
+      slide.addText(titleStr, {
+        x: 0.5, y: 0.1, w: 12.3, h: 0.6,
+        fontSize: fonts.titleSize.content, bold: true,
+        color: p.barText,
+        align: 'left', valign: 'middle',
+        fontFace: fonts.title, margin: 0,
+      })
+      break
+
+    case 'underline_only':
+    case 'left_marker':
+    case 'none':
+    case 'oversized_display':
+      // Reserved for Patches N.1-N.4. Fall back to filled for now so
+      // jobs using these themes still render something visible.
+      slide.addText(titleStr, {
+        x: 0.5, y: 0.1, w: 12.3, h: 0.6,
+        fontSize: fonts.titleSize.content, bold: true,
+        color: p.barText,
+        align: 'left', valign: 'middle',
+        fontFace: fonts.title, margin: 0,
+      })
+      break
+  }
+}
+
+// Reserved for variants; Patches N.1-N.4 implement specifics. For now
+// returns theme.iconTreatment for callers to consult.
+function getIconTreatment(theme) {
+  return theme.iconTreatment
+}
+
 fs.mkdirSync(TMP_ROOT, { recursive: true })
 
 const app = express()
@@ -135,7 +356,11 @@ app.get('/health', (_req, res) => res.type('text/plain').send('ok'))
  * Bullet font size scales with bullet count so a 3-bullet slide isn't
  * tiny floating text and a 7-bullet slide doesn't overflow.
  */
-function renderStandard(pres, s, p) {
+function renderStandard(pres, s, theme) {
+  // Round 3 Patch M: legacy shim — keep p.bar / p.accent / etc. working
+  // unchanged in the body of the function. Renderer signature now takes
+  // the full theme bundle.
+  const p = theme.palette
   const slide = pres.addSlide({ masterName: 'ANILA_BASE' })
   slide.addText(String(s.title || 'Untitled'), {
     x: 0.5, y: 0.1, w: 12.3, h: 0.6,
@@ -199,7 +424,8 @@ function pickSectionTitleFont(title) {
  * title. Skips the master so there's no header bar (the entire slide
  * BECOMES the bar). Uses bullets[0] as a subtitle if provided.
  */
-function renderSectionBreak(pres, s, p) {
+function renderSectionBreak(pres, s, theme) {
+  const p = theme.palette // Round 3 Patch M: legacy shim
   // No master — full-bleed colour fill.
   const slide = pres.addSlide()
   slide.background = { color: p.bar }
@@ -249,9 +475,10 @@ function renderSectionBreak(pres, s, p) {
  *
  * Falls back to standard if `stat.value` / `stat.label` are missing.
  */
-function renderStatCallout(pres, s, p) {
+function renderStatCallout(pres, s, theme) {
+  const p = theme.palette // Round 3 Patch M: legacy shim
   if (!s.stat || !s.stat.value || !s.stat.label) {
-    return renderStandard(pres, s, p)
+    return renderStandard(pres, s, theme)
   }
   const slide = pres.addSlide({ masterName: 'ANILA_BASE' })
   slide.addText(String(s.title || ''), {
@@ -349,9 +576,10 @@ function renderStatCallout(pres, s, p) {
  * Pull-quote — large italic body with optional attribution. Falls back
  * to standard if `slide.quote.text` is missing.
  */
-function renderQuote(pres, s, p) {
+function renderQuote(pres, s, theme) {
+  const p = theme.palette // Round 3 Patch M: legacy shim
   if (!s.quote || !s.quote.text) {
-    return renderStandard(pres, s, p)
+    return renderStandard(pres, s, theme)
   }
   const slide = pres.addSlide({ masterName: 'ANILA_BASE' })
   slide.addText(String(s.title || ''), {
@@ -398,9 +626,10 @@ function renderQuote(pres, s, p) {
  * same height even when content is sparse. Tall columns skip the
  * divider so it doesn't crowd the last bullet.
  */
-function renderTwoColumn(pres, s, p) {
+function renderTwoColumn(pres, s, theme) {
+  const p = theme.palette // Round 3 Patch M: legacy shim
   if (!Array.isArray(s.columns) || s.columns.length < 2) {
-    return renderStandard(pres, s, p)
+    return renderStandard(pres, s, theme)
   }
   const cols = s.columns.slice(0, 2)
   const slide = pres.addSlide({ masterName: 'ANILA_BASE' })
@@ -468,9 +697,10 @@ function renderTwoColumn(pres, s, p) {
  * description take the full row width. We don't drop the row, since
  * silently dropping LLM content is worse than a row missing a glyph.
  */
-async function renderIconRows(pres, s, p) {
+async function renderIconRows(pres, s, theme) {
+  const p = theme.palette // Round 3 Patch M: legacy shim
   if (!Array.isArray(s.icon_rows) || s.icon_rows.length === 0) {
-    return renderStandard(pres, s, p)
+    return renderStandard(pres, s, theme)
   }
   const rows = s.icon_rows.slice(0, 5)
   const slide = pres.addSlide({ masterName: 'ANILA_BASE' })
@@ -574,9 +804,10 @@ async function renderIconRows(pres, s, p) {
  * pass the box bounds and rely on pptxgenjs's `sizing.type='contain'`
  * for that behaviour.
  */
-function renderImageFocus(pres, s, p) {
+function renderImageFocus(pres, s, theme) {
+  const p = theme.palette // Round 3 Patch M: legacy shim
   if (!s.image_data || typeof s.image_data !== 'string') {
-    return renderStandard(pres, s, p)
+    return renderStandard(pres, s, theme)
   }
   const slide = pres.addSlide({ masterName: 'ANILA_BASE' })
 
@@ -634,16 +865,16 @@ function renderImageFocus(pres, s, p) {
  * kinds fall back to `renderStandard`. Async so callers can `await` it
  * uniformly even though only icon_rows is actually async.
  */
-async function renderSlideByKind(pres, s, p) {
+async function renderSlideByKind(pres, s, theme) {
   const kind = String(s.layout_kind || 'standard')
   switch (kind) {
-    case 'section_break': return renderSectionBreak(pres, s, p)
-    case 'stat_callout':  return renderStatCallout(pres, s, p)
-    case 'quote':         return renderQuote(pres, s, p)
-    case 'two_column':    return renderTwoColumn(pres, s, p)
-    case 'icon_rows':     return await renderIconRows(pres, s, p)
-    case 'image_focus':   return renderImageFocus(pres, s, p)
-    default:              return renderStandard(pres, s, p)
+    case 'section_break': return renderSectionBreak(pres, s, theme)
+    case 'stat_callout':  return renderStatCallout(pres, s, theme)
+    case 'quote':         return renderQuote(pres, s, theme)
+    case 'two_column':    return renderTwoColumn(pres, s, theme)
+    case 'icon_rows':     return await renderIconRows(pres, s, theme)
+    case 'image_focus':   return renderImageFocus(pres, s, theme)
+    default:              return renderStandard(pres, s, theme)
   }
 }
 
@@ -662,9 +893,24 @@ app.post('/render', async (req, res) => {
       })
     }
 
-    // Resolve palette — schema already normalises but defence in depth.
-    const paletteName = PALETTES[spec.palette] ? spec.palette : 'navy_amber'
-    const p = PALETTES[paletteName]
+    // Round 3 Patch M: theme is the new identity unit, palette is legacy.
+    // CSP-layer schema validator (_resolve_theme_from_palette) translates
+    // palette → theme before sending to renderer, so we should see
+    // `spec.theme` for jobs post-Patch L. Direct renderer callers (tests,
+    // ops scripts) may still send `spec.palette` — we map those via
+    // LEGACY_PALETTE_TO_THEME so they keep working.
+    //
+    // Resolution priority: spec.theme → legacy spec.palette → default.
+    let themeName = 'corporate_navy'
+    if (spec.theme && THEMES[spec.theme]) {
+      themeName = spec.theme
+    } else if (spec.palette && LEGACY_PALETTE_TO_THEME[spec.palette]) {
+      themeName = LEGACY_PALETTE_TO_THEME[spec.palette]
+    }
+    const theme = getTheme(themeName)
+    // `p` alias for legacy code paths within this handler (master
+    // definition, cover slide) that still reference palette role slots.
+    const p = theme.palette
 
     const pres = new PptxGenJS()
     pres.layout = 'LAYOUT_WIDE' // 13.33 × 7.5 inch (16:9)
@@ -737,7 +983,7 @@ app.post('/render', async (req, res) => {
     // pptxgenjs's internal slide ordering deterministic (Promise.all
     // would race on shared internal state).
     for (const s of spec.slides) {
-      await renderSlideByKind(pres, s, p)
+      await renderSlideByKind(pres, s, theme)
     }
 
     const jobId = `${Date.now().toString(36)}-${Math.random()
