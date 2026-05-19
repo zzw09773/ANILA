@@ -176,6 +176,25 @@ function renderStandard(pres, s, p) {
 }
 
 /**
+ * Pick a section-break title fontSize that fits 11.5" width without
+ * producing orphan-line breaks. Calibrated for Noto Sans CJK TC bold.
+ *
+ * Empirical: at 56pt bold ~12 CJK chars/line, 44pt ~16, 36pt ~20, 28pt ~26.
+ * Latin chars are narrower; we weight CJK as 1.0 and Latin/digit as 0.55.
+ */
+function pickSectionTitleFont(title) {
+  if (!title) return 56
+  let weighted = 0
+  for (const ch of String(title)) {
+    weighted += /[一-鿿　-〿]/.test(ch) ? 1.0 : 0.55
+  }
+  if (weighted <= 12) return 56
+  if (weighted <= 16) return 44
+  if (weighted <= 20) return 36
+  return 28
+}
+
+/**
  * Section break — full-bleed coloured background with centred large
  * title. Skips the master so there's no header bar (the entire slide
  * BECOMES the bar). Uses bullets[0] as a subtitle if provided.
@@ -191,9 +210,11 @@ function renderSectionBreak(pres, s, p) {
     fill: { color: p.accent },
     line: { type: 'none' },
   })
-  slide.addText(String(s.title || ''), {
+  const titleStr = String(s.title || '')
+  const titleFont = pickSectionTitleFont(titleStr)
+  slide.addText(titleStr, {
     x: 1.1, y: 2.4, w: 11.5, h: 1.8,
-    fontSize: 56, bold: true, color: 'FFFFFF',
+    fontSize: titleFont, bold: true, color: 'FFFFFF',
     align: 'left', valign: 'middle', fontFace: FONT_FACE,
   })
   // Subtitle from bullets[0] if the LLM provided one — keeps the slide
