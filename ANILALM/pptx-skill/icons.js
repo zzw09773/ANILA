@@ -176,6 +176,60 @@ const CONCEPT_MAP = Object.freeze({
   limitation: 'HiNoSymbol',
   cost_saving: 'HiBanknotes',
   risk: 'HiFire',
+
+  // === Round 3 additions (v3 fallout) ===
+
+  // Architecture / decoupling
+  decoupling: 'HiArrowsPointingOut',
+  coupling: 'HiArrowsPointingIn',
+  modularity: 'HiSquares2X2',
+  orthogonality: 'HiViewfinderCircle',
+  layering: 'HiBars3',
+
+  // Observability / monitoring
+  observability: 'HiEye',
+  monitoring: 'HiEye',
+  logging: 'HiDocumentText',
+  tracing: 'HiArrowsRightLeft',
+  metrics: 'HiChartBar',
+
+  // Compliance / governance
+  compliance: 'HiShieldCheck',
+  audit: 'HiClipboardDocumentCheck',
+  policy: 'HiDocumentMagnifyingGlass',
+  governance: 'HiUserGroup',
+  transparency: 'HiEye',
+
+  // Performance / debugging
+  debugging: 'HiBugAnt',
+  performance: 'HiBolt',
+  optimization: 'HiAdjustmentsHorizontal',
+  latency: 'HiClock',
+  throughput: 'HiArrowTrendingUp',
+
+  // RAG / retrieval
+  retrieval: 'HiMagnifyingGlassCircle',
+  ranking: 'HiBars3BottomRight',
+  reranking: 'HiArrowsUpDown',
+  hierarchy: 'HiQueueList',
+
+  // ── Generic Chinese-language concepts (LLM emits these directly) ──
+  // gemma4 often writes Chinese concept names. Catch them without
+  // forcing a translation step.
+  '架構解耦': 'HiArrowsPointingOut',
+  '可觀測性': 'HiEye',
+  '合規自動化': 'HiShieldCheck',
+  '效能調優': 'HiBolt',
+  '記憶體對齊': 'HiCubeTransparent',
+  '推理引擎': 'HiCpuChip',
+  '容器化部署': 'HiCloudArrowUp',
+  '硬體調優': 'HiAdjustmentsHorizontal',
+  '穩定性驗證': 'HiCheckBadge',
+  '階層式索引': 'HiQueueList',
+  '迴圈推理': 'HiArrowPath',
+  '兩階段檢索': 'HiBars3',
+  '思維鏈': 'HiSparkles',
+  '可稽核': 'HiClipboardDocumentCheck',
 })
 
 // Lazy-built map of icon name → GenIcon descriptor.

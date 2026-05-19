@@ -483,21 +483,22 @@ async function renderIconRows(pres, s, p) {
   rows.forEach((r, i) => {
     const y = TOP + i * (rowH + GAP)
 
-    // White-fill circle with an accent ring. Originally tried a tinted
-    // fill via `${p.accent}22` (8-char hex with alpha), but pptxgenjs's
-    // shape `fill.color` doesn't honour an alpha channel — the value
-    // gets silently dropped or mis-parsed, which left rows without an
-    // icon image showing a black ellipse interior. White fill + 2pt
-    // accent ring is robust across pptxgenjs / LibreOffice / PowerPoint
-    // versions, and gives the same "icon in a coloured circle" motif
-    // SKILL.md recommends for contrast.
-    slide.addShape('ellipse', {
-      x: ICON_X, y: y + (rowH - iconBoxSize) / 2,
-      w: iconBoxSize, h: iconBoxSize,
-      fill: { color: 'FFFFFF' },
-      line: { color: p.accent, width: 2 },
-    })
     if (iconPngs[i]) {
+      // Known concept: full treatment — white-fill circle with accent
+      // ring + heroicon glyph. Originally tried a tinted fill via
+      // `${p.accent}22` (8-char hex with alpha), but pptxgenjs's
+      // shape `fill.color` doesn't honour an alpha channel — the value
+      // gets silently dropped or mis-parsed, which left rows without an
+      // icon image showing a black ellipse interior. White fill + 2pt
+      // accent ring is robust across pptxgenjs / LibreOffice / PowerPoint
+      // versions, and gives the same "icon in a coloured circle" motif
+      // SKILL.md recommends for contrast.
+      slide.addShape('ellipse', {
+        x: ICON_X, y: y + (rowH - iconBoxSize) / 2,
+        w: iconBoxSize, h: iconBoxSize,
+        fill: { color: 'FFFFFF' },
+        line: { color: p.accent, width: 2 },
+      })
       // Inset 12% of the box so the glyph doesn't kiss the circle edge.
       const inset = iconBoxSize * 0.18
       slide.addImage({
@@ -507,6 +508,19 @@ async function renderIconRows(pres, s, p) {
         w: iconBoxSize - inset * 2,
         h: iconBoxSize - inset * 2,
       })
+    } else {
+      // Unknown concept: small filled dot. Empty 0.8" outlined circles
+      // read as "broken icon"; a small accent dot reads as intentional
+      // minimalism. Log so future runs can mine unknowns for additions.
+      const dotSize = 0.1
+      slide.addShape('ellipse', {
+        x: ICON_X + (iconBoxSize - dotSize) / 2,
+        y: y + (rowH - iconBoxSize) / 2 + (iconBoxSize - dotSize) / 2,
+        w: dotSize, h: dotSize,
+        fill: { color: p.accent },
+        line: { type: 'none' },
+      })
+      console.warn(`[icon_rows] unknown concept "${r.concept}" — drew dot`)
     }
     // Heading — top half of the row text area.
     slide.addText(String(r.heading || ''), {
