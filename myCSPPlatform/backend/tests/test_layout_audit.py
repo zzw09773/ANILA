@@ -204,3 +204,97 @@ def test_v4_pattern_threshold_70_percent():
     violations = _audit_layout_distribution(spec, chunks_text="")
     # 2/3 = 66% < 70% → no V4
     assert not any(v.kind == "V4" for v in violations)
+
+
+# ── Round 4 Patch R: image_focus disguise detection ──
+#
+# The LLM learned to dodge the V4 audit (which only checked
+# layout_kind == "standard") by emitting layout_kind="image_focus" with
+# image_kind="illustration" and no real image. The audit must catch
+# this disguise too, while still exempting real diagrams (image_kind=
+# "diagram" with diagram_dot) and real Phase 5 images (image_ref set).
+
+
+def test_v4_audit_catches_illustration_disguise():
+    """image_focus + illustration + no image_ref + 3+ bullets → flagged.
+
+    The disguise: layout_kind=image_focus but image_kind=illustration with
+    only image_prompt (no image_ref, no diagram_dot) — visually this still
+    becomes a text-heavy paragraph block with an empty image frame.
+    """
+    spec = SlidesSpec(**{
+        "title": "T", "subtitle": "S",
+        "slides": [_slide(
+            "敏捷開發的核心原則",
+            layout="image_focus",
+            bullets=[
+                "個人與互動勝過流程與工具",
+                "可用軟體勝過完整文件",
+                "客戶協作勝過契約協商",
+                "回應變更勝過遵循計畫",
+            ],
+            image_kind="illustration",
+            image_prompt="four pillars representing the agile manifesto",
+        )],
+        "palette": "navy_amber",
+    })
+    violations = _audit_layout_distribution(spec, chunks_text="")
+    v4 = [v for v in violations if v.kind == "V4"]
+    assert len(v4) == 1
+    assert 0 in v4[0].slide_indices
+    assert "image_focus_disguise" in v4[0].detail.lower() or "disguise" in v4[0].detail.lower()
+
+
+def test_v4_audit_exempts_real_diagram():
+    """image_focus + diagram + diagram_dot present → NEVER flagged.
+
+    A real Graphviz diagram is exactly the visual asset image_focus is
+    designed for; the audit must leave it alone.
+    """
+    spec = SlidesSpec(**{
+        "title": "敏捷開發的核心原則",
+        "subtitle": "S",
+        "slides": [_slide(
+            "敏捷開發的核心原則",
+            layout="image_focus",
+            bullets=[
+                "個人與互動勝過流程與工具",
+                "可用軟體勝過完整文件",
+                "客戶協作勝過契約協商",
+                "回應變更勝過遵循計畫",
+            ],
+            image_kind="diagram",
+            diagram_dot="digraph G { a -> b; b -> c; c -> d; }",
+        )],
+        "palette": "navy_amber",
+    })
+    violations = _audit_layout_distribution(spec, chunks_text="")
+    assert not any(v.kind == "V4" for v in violations)
+
+
+def test_v4_audit_exempts_real_image_ref():
+    """image_focus + illustration + image_ref present → NEVER flagged.
+
+    image_ref set means a Phase 5 ingestion image (or hydrated FLUX
+    output) is bound to this slide — the frame will actually contain a
+    real image, so the disguise check should not fire.
+    """
+    spec = SlidesSpec(**{
+        "title": "T", "subtitle": "S",
+        "slides": [_slide(
+            "敏捷開發的核心原則",
+            layout="image_focus",
+            bullets=[
+                "個人與互動勝過流程與工具",
+                "可用軟體勝過完整文件",
+                "客戶協作勝過契約協商",
+                "回應變更勝過遵循計畫",
+            ],
+            image_kind="illustration",
+            image_prompt="four pillars representing the agile manifesto",
+            image_ref="flux_generated_abc123",
+        )],
+        "palette": "navy_amber",
+    })
+    violations = _audit_layout_distribution(spec, chunks_text="")
+    assert not any(v.kind == "V4" for v in violations)

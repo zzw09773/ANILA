@@ -1770,15 +1770,35 @@ def _audit_layout_distribution(
             )
         )
 
-    # ── V4: enumeration title OR label-pattern bullets + 3+ bullets + standard ──
+    # ── V4: enumeration title OR label-pattern bullets + 3+ bullets ──
     #
     # Round 2 used title-keyword only. Round 3 adds a primary CONTENT signal:
     # if ≥70% of bullets follow the "<CJK label>: <description>" shape, the
     # slide is an icon_rows candidate regardless of title wording. Empirically
     # this rescues slides like 「執行摘要」 whose title carries no keyword but
     # whose bullets are textbook icon_rows material.
+    #
+    # Round 4 Patch R: the LLM learned to dodge V4 by emitting
+    # layout_kind="image_focus" with image_kind="illustration" and no real
+    # image — visually identical to the standard-with-bullets case the
+    # audit was meant to catch. Treat that disguise as an audit candidate
+    # too. Real diagrams (diagram_dot present) and real images (image_ref
+    # present) remain exempt because they actually carry a visual asset.
     for i, s in enumerate(slides):
-        if s.layout_kind != "standard":
+        is_disguise = False
+        if s.layout_kind == "standard":
+            pass  # original V4 path
+        elif (
+            s.layout_kind == "image_focus"
+            and getattr(s, "image_kind", None) == "illustration"
+            and not getattr(s, "image_ref", None)
+            and not getattr(s, "diagram_dot", None)
+        ):
+            # Fake image_focus: claims to be image-led but has no real
+            # image bound. Audit it with the same content rules as
+            # standard so it gets rebalanced into icon_rows / etc.
+            is_disguise = True
+        else:
             continue
         if len(s.bullets) < 3:
             continue
@@ -1797,11 +1817,17 @@ def _audit_layout_distribution(
             pattern_matches / len(s.bullets) >= _LABEL_PATTERN_THRESHOLD
         )
 
-        if not (title_match or pattern_match):
+        # Disguise slides bypass the title/pattern gate — the LLM has
+        # already declared intent to dodge the audit, so the layout
+        # itself is the violation regardless of bullet shape.
+        if not (title_match or pattern_match or is_disguise):
             continue
 
+        layout_marker = (
+            "image_focus_disguise" if is_disguise else "standard layout"
+        )
         detail_bits = [
-            f"slide #{i}「{s.title}」: {len(s.bullets)} bullets, standard layout",
+            f"slide #{i}「{s.title}」: {len(s.bullets)} bullets, {layout_marker}",
         ]
         if title_match:
             detail_bits.append(f"title-keyword '{matched_kw}'")
@@ -1922,7 +1948,11 @@ def _build_rebalance_prompt(
         "{value, label, supporting(≥20字)}。\n"
         "5. 改成 two_column 時，new_payload 必須含 `columns` 欄位，"
         "2 個 column、每個至少 3 個 bullet。\n"
-        "6. 不要改的投影片直接不要出現在 changes 陣列。\n\n"
+        "6. 若違規 detail 含 `image_focus_disguise`（layout_kind=image_focus 但"
+        "沒有 image_ref/diagram_dot 的偽裝）：必改成 icon_rows，把 bullets 轉成"
+        " 3-4 列 {concept, heading, description}（concept 用英文），同時"
+        "清掉 image_kind/image_ref/image_prompt/diagram_dot，保留 speaker_notes。\n"
+        "7. 不要改的投影片直接不要出現在 changes 陣列。\n\n"
         "輸出第一字 {、最後字 }、不可前言、不可代碼塊。"
     )
     # Trim chunks_text — we only need the LLM to see roughly what data is
