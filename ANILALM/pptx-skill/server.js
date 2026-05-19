@@ -341,6 +341,36 @@ function applyTitleBar(slide, title, theme) {
       })
       break
     }
+    case 'none': {
+      // Executive-brief variant — no bar, no rule. Title sits flush
+      // at slide top in muted text, letting the slide body do the
+      // heavy lifting. Reads as a clean memo header.
+      slide.addText(titleStr, {
+        x: 0.5, y: 0.4, w: 12.3, h: 0.4,
+        fontSize: fonts.titleSize.content,
+        color: p.muted,
+        fontFace: fonts.title,
+        align: 'left', valign: 'middle', margin: 0,
+      })
+      break
+    }
+    case 'oversized_display': {
+      // Startup-pitch variant — massive content-slide title with a
+      // thin accent underline. ~32pt × 1.0" height (vs 26pt × 0.6"
+      // for filled) gives the deck pitch-deck flair.
+      slide.addText(titleStr, {
+        x: 0.5, y: 0.2, w: 12.3, h: 1.0,
+        fontSize: fonts.titleSize.content, bold: true,
+        color: p.titleText,
+        fontFace: fonts.title,
+        align: 'left', valign: 'middle', margin: 0,
+      })
+      slide.addShape('line', {
+        x: 0.5, y: 1.3, w: 4.0, h: 0,
+        line: { color: p.accent, width: 3 },
+      })
+      break
+    }
     case 'filled':
     default:
       // Legacy filled-bar title. The master already paints the bar
@@ -527,6 +557,110 @@ function renderSectionBreak(pres, s, theme) {
         align: 'center', italic: false,
         fontFace: theme.fonts.body, margin: 0,
       })
+    }
+  } else if (theme.chrome.sectionBreak === 'numbered_minimal') {
+    // Executive-brief variant — white bg, huge light-weight accent
+    // number on the left, thin section title on the right. Extracts
+    // the chapter number from common patterns ("第N章", "Chapter N",
+    // "Part N", "N.") via regex; falls back to a centred title-only
+    // layout if no number is found.
+    slide.background = { color: theme.palette.bg }
+    const numMatch = titleStr.match(/第\s*([一二三四五六七八九十0-9]+)\s*章|Chapter\s+(\d+)|Part\s+(\d+)|^(\d+)[\.：:]/i)
+    const numberStr = numMatch
+      ? (numMatch[1] || numMatch[2] || numMatch[3] || numMatch[4] || '')
+      : ''
+    const restStr = titleStr.replace(/第\s*[一二三四五六七八九十0-9]+\s*章[:：]?\s*|Chapter\s+\d+[:：]?\s*|Part\s+\d+[:：]?\s*|^\d+[\.：:]\s*/i, '').trim() || titleStr
+    if (numberStr) {
+      slide.addText(numberStr, {
+        x: 0.5, y: 1.8, w: 5.5, h: 4.0,
+        fontSize: 200, bold: false,
+        color: theme.palette.accent,
+        align: 'right', valign: 'middle',
+        fontFace: theme.fonts.title, margin: 0,
+      })
+      slide.addText(restStr, {
+        x: 6.3, y: 2.6, w: 6.5, h: 2.0,
+        fontSize: 36,
+        color: theme.palette.titleText,
+        align: 'left', valign: 'middle',
+        fontFace: theme.fonts.title, margin: 0,
+      })
+      if (bullets[0]) {
+        slide.addText(String(bullets[0]), {
+          x: 6.3, y: 4.8, w: 6.5, h: 0.6,
+          fontSize: 16, color: theme.palette.muted,
+          align: 'left', italic: false,
+          fontFace: theme.fonts.body, margin: 0,
+        })
+      }
+    } else {
+      // Fallback: no number pattern — just render the title centred
+      // so the slide still reads as a minimalist break.
+      slide.addText(restStr, {
+        x: 1.0, y: 2.8, w: 11.5, h: 1.4,
+        fontSize: titleFont,
+        color: theme.palette.titleText,
+        align: 'center', valign: 'middle',
+        fontFace: theme.fonts.title, margin: 0,
+      })
+      if (bullets[0]) {
+        slide.addText(String(bullets[0]), {
+          x: 1.0, y: 4.4, w: 11.5, h: 0.6,
+          fontSize: 18, color: theme.palette.muted,
+          align: 'center', italic: false,
+          fontFace: theme.fonts.body, margin: 0,
+        })
+      }
+    }
+  } else if (theme.chrome.sectionBreak === 'full_bleed_number') {
+    // Startup-pitch variant — full-bleed navy bg, massive coral
+    // chapter number filling the left half, white section title on
+    // the right. High-impact pitch-deck aesthetic.
+    slide.background = { color: theme.palette.bar }
+    const numMatch = titleStr.match(/第\s*([一二三四五六七八九十0-9]+)\s*章|Chapter\s+(\d+)|Part\s+(\d+)|^(\d+)[\.：:]/i)
+    const numberStr = numMatch
+      ? (numMatch[1] || numMatch[2] || numMatch[3] || numMatch[4] || '')
+      : ''
+    const restStr = titleStr.replace(/第\s*[一二三四五六七八九十0-9]+\s*章[:：]?\s*|Chapter\s+\d+[:：]?\s*|Part\s+\d+[:：]?\s*|^\d+[\.：:]\s*/i, '').trim() || titleStr
+    if (numberStr) {
+      slide.addText(numberStr, {
+        x: 0.5, y: 1.0, w: 6.0, h: 5.5,
+        fontSize: 240, bold: true,
+        color: theme.palette.accent,
+        align: 'center', valign: 'middle',
+        fontFace: theme.fonts.title, margin: 0,
+      })
+      slide.addText(restStr, {
+        x: 6.8, y: 2.5, w: 6.0, h: 2.5,
+        fontSize: 48, bold: true,
+        color: 'FFFFFF',
+        align: 'left', valign: 'middle',
+        fontFace: theme.fonts.title, margin: 0,
+      })
+      if (bullets[0]) {
+        slide.addText(String(bullets[0]), {
+          x: 6.8, y: 5.2, w: 6.0, h: 0.6,
+          fontSize: 20, color: 'FFFFFF', italic: false,
+          fontFace: theme.fonts.body, margin: 0,
+        })
+      }
+    } else {
+      // Fallback: no number — centre the title in white over navy.
+      slide.addText(restStr, {
+        x: 1.0, y: 2.6, w: 11.5, h: 1.8,
+        fontSize: titleFont, bold: true,
+        color: 'FFFFFF',
+        align: 'center', valign: 'middle',
+        fontFace: theme.fonts.title, margin: 0,
+      })
+      if (bullets[0]) {
+        slide.addText(String(bullets[0]), {
+          x: 1.0, y: 4.6, w: 11.5, h: 0.6,
+          fontSize: 20, color: theme.palette.accent,
+          align: 'center', italic: false,
+          fontFace: theme.fonts.body, margin: 0,
+        })
+      }
     }
   } else {
     // Legacy `side_strip` (corporate_navy + reserved variants).
@@ -857,6 +991,34 @@ async function renderIconRows(pres, s, theme) {
           fill: { color: theme.palette.muted },
           line: { type: 'none' },
         })
+      } else if (iconStyle === 'minimal_dot') {
+        // Executive-brief variant — even smaller dot than monochrome_dot
+        // (0.10" vs 0.15"), no surrounding circle, no heroicon. Pure
+        // typography emphasis; the dot is just a quiet bullet marker.
+        slide.addShape('ellipse', {
+          x: iconX + 0.35, y: iconY + 0.35, w: 0.1, h: 0.1,
+          fill: { color: theme.palette.muted },
+          line: { type: 'none' },
+        })
+      } else if (iconStyle === 'filled_pill') {
+        // Startup-pitch variant — filled coral circle with the heroicon
+        // glyph centred on top. Visual "pill" for high-impact pitch
+        // decks. Caveat: the renderer does not currently support per-image
+        // colour override, so the heroicon retains its native (accent)
+        // colour — which means accent-on-accent over the coral fill. Still
+        // reads as a confident filled pill; ideal white-on-coral requires
+        // future icon tinting work.
+        slide.addShape('ellipse', {
+          x: iconX, y: iconY, w: 0.9, h: 0.9,
+          fill: { color: theme.palette.accent },
+          line: { type: 'none' },
+        })
+        if (iconPngs[i]) {
+          slide.addImage({
+            data: `data:image/png;base64,${iconPngs[i].toString('base64')}`,
+            x: iconX + 0.225, y: iconY + 0.225, w: 0.45, h: 0.45,
+          })
+        }
       } else {
         // Legacy outline_circle treatment.
         slide.addShape('ellipse', {
