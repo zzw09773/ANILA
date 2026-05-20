@@ -941,8 +941,15 @@ async function renderIconRows(pres, s, theme) {
   // Render every icon's PNG concurrently — they're independent and
   // sharp + the SVG path are CPU-light, so ~5 parallel awaits cost
   // ~the same wall-clock as one. Promise.all preserves array order.
+  // Patch BB: filled_pill (startup_pitch) lays the glyph ON the
+  // accent-filled circle — glyph and fill would be the same colour and
+  // the icon disappears. Force white glyphs for that style. Every other
+  // style tints the glyph in accent over a white / cream / transparent
+  // background, where accent reads fine — keep those unchanged.
+  const glyphColor =
+    theme.iconTreatment.style === 'filled_pill' ? '#FFFFFF' : `#${p.accent}`
   const iconPngs = await Promise.all(
-    rows.map((r) => renderIconPng(r.concept, { color: `#${p.accent}`, size: 256 })),
+    rows.map((r) => renderIconPng(r.concept, { color: glyphColor, size: 256 })),
   )
 
   rows.forEach((r, i) => {
@@ -1001,13 +1008,10 @@ async function renderIconRows(pres, s, theme) {
           line: { type: 'none' },
         })
       } else if (iconStyle === 'filled_pill') {
-        // Startup-pitch variant — filled coral circle with the heroicon
-        // glyph centred on top. Visual "pill" for high-impact pitch
-        // decks. Caveat: the renderer does not currently support per-image
-        // colour override, so the heroicon retains its native (accent)
-        // colour — which means accent-on-accent over the coral fill. Still
-        // reads as a confident filled pill; ideal white-on-coral requires
-        // future icon tinting work.
+        // Startup-pitch variant — accent-filled circle with a WHITE
+        // heroicon glyph on top. glyphColor is forced to #FFFFFF above for
+        // this style (Patch BB), giving the white-on-coral "pill" the
+        // pitch deck wants. High-impact, high-contrast.
         slide.addShape('ellipse', {
           x: iconX, y: iconY, w: 0.9, h: 0.9,
           fill: { color: theme.palette.accent },
