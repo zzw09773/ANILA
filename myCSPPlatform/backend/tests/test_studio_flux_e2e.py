@@ -4,12 +4,23 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 
+import base64
+
 import httpx
 import pytest
 import respx
 
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+_PNG_B64 = base64.b64encode(_PNG).decode("ascii")
+
+
+def _flux_json() -> httpx.Response:
+    """Contract-3.2 JSON response (one PNG candidate)."""
+    return httpx.Response(
+        200,
+        json={"images": [_PNG_B64], "seed": 0, "meta": {"steps": 28}},
+    )
 
 
 @pytest.mark.asyncio
@@ -23,9 +34,7 @@ async def test_full_pipeline_with_image_prompt(monkeypatch, tmp_path):
     import app.api.studio as studio
     importlib.reload(studio)
 
-    respx.post("http://flux2-dev:8000/generate").mock(
-        return_value=httpx.Response(200, content=_PNG, headers={"content-type": "image/png"})
-    )
+    respx.post("http://flux2-dev:8000/generate").mock(return_value=_flux_json())
 
     spec = {"slides": [
         {"title": "Mountain Patrol", "bullets": ["a", "b"],
@@ -59,7 +68,7 @@ async def test_three_slides_share_one_cache_entry(monkeypatch, tmp_path):
     importlib.reload(studio)
 
     route = respx.post("http://flux2-dev:8000/generate").mock(
-        return_value=httpx.Response(200, content=_PNG, headers={"content-type": "image/png"})
+        return_value=_flux_json()
     )
 
     same_prompt = "A repeating banner illustration for section dividers"

@@ -241,6 +241,12 @@ class JobUpdater:
     def __init__(self, job_id: str) -> None:
         self._job_id = job_id
 
+    @property
+    def job_id(self) -> str:
+        """Public read of the job id this updater is bound to. Used by the
+        pipeline to derive the deterministic FLUX deck seed."""
+        return self._job_id
+
     async def set(
         self,
         *,

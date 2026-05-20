@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -773,6 +774,38 @@ async def _call_llm_chat(
         ) from e
 
 
+class _StudioLLMAdapter:
+    """Adapts ``_call_llm_chat`` to the ``complete(system, user)`` interface
+    the FLUX prompt rewriter (Layer A) expects.
+
+    The rewriter is deliberately decoupled from CSP internals (DB session,
+    ModelRegistry, usage metering) — it only needs "give me one completion
+    for this system+user pair". This thin wrapper binds the db/user/model
+    context so rewriter calls still flow through ``proxy_request`` and land
+    in the same token-usage dashboards as every other Studio LLM call.
+    """
+
+    def __init__(self, db: Session, user: User, model_name: str = SLIDES_LLM_MODEL) -> None:
+        self._db = db
+        self._user = user
+        self._model_name = model_name
+
+    async def complete(self, *, system: str, user: str) -> str:
+        return await _call_llm_chat(
+            self._db,
+            self._user,
+            self._model_name,
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            # Low temp: the rewriter wants a stable, deterministic visual
+            # description, not creative variance (variance comes from the
+            # FLUX seed, not the prompt).
+            temperature=0.2,
+        )
+
+
 # ── Step 5+6: generate + validate (with one correction pass) ─────────────
 
 
@@ -1175,6 +1208,8 @@ async def _hydrate_images(
     *,
     flux_provider: "FluxImageProvider | None" = None,
     default_aspect: str = "16:9",
+    deck_base_seed: int | None = None,
+    llm: "_StudioLLMAdapter | None" = None,
 ) -> dict[str, Any]:
     """Resolve every Slide.image_ref / diagram_dot / image_prompt into inline base64 PNG.
 
@@ -1183,6 +1218,12 @@ async def _hydrate_images(
       2. image_ref present but unresolvable → drop, fall back to next path.
       3. image_kind='diagram' + diagram_dot → render via Graphviz `dot -Tpng`.
       4. diagram render fails → drop diagram_dot/image_kind, fall back to next path.
+      4b. FLUX Stage 1 cover hero: when this slide is the cover (index 0 or
+          layout_kind=="cover") and the rewriter + flux_provider + seed are
+          available, derive a house-styled FLUX prompt from title+bullets
+          and generate a 16:9 hero. This sits ABOVE the legacy image_prompt
+          path so a cover gets a deterministic, rewriter-controlled image
+          rather than whatever raw prompt the LLM may have stuffed in.
       5. image_prompt present and flux_provider available → generate via FLUX.
       6. image_prompt present but flux_provider None or FLUX fails → drop, standard layout.
       7. Nothing set → leave untouched.
@@ -1192,13 +1233,20 @@ async def _hydrate_images(
     diagram path exists because FLUX.2-dev (diffusion) cannot render
     legible text — labelled diagrams (architecture, flow, ER) get crisp
     output via Graphviz instead.
+
+    `deck_base_seed` + `llm` enable the Stage 1 cover-hero path; when either
+    is None the function behaves exactly as before (the legacy image_ref /
+    diagram / image_prompt paths only).
     """
     import base64
 
+    from app.schemas.studio import ImageUseCase
     from app.services.diagram_renderer import render_dot_to_png
+    from app.services.flux_prompt_rewriter import derive_flux_prompt
+    from app.services.flux_style import get_style_descriptor
 
     slides = spec_dict.get("slides") or []
-    for slide in slides:
+    for idx, slide in enumerate(slides):
         # Path 1: image_ref (existing behavior — unchanged)
         ref = slide.get("image_ref")
         if ref:
@@ -1260,7 +1308,77 @@ async def _hydrate_images(
             slide.pop("image_kind", None)
             continue
 
-        # Path 3: image_prompt → call FLUX
+        # Path 4b: FLUX Stage 1 cover hero.
+        # Only the cover (slide index 0 or layout_kind=="cover") goes
+        # through the Layer A rewriter in Stage 1. Requires the full FLUX
+        # toolchain to be wired (provider + per-deck seed + llm adapter);
+        # if any is missing we fall through to the legacy paths untouched.
+        is_cover = idx == 0 or slide.get("layout_kind") == "cover"
+        if (
+            is_cover
+            and flux_provider is not None
+            and deck_base_seed is not None
+            and llm is not None
+        ):
+            style = get_style_descriptor(brand_id=None)
+            try:
+                flux_prompt = await derive_flux_prompt(
+                    title=slide.get("title", ""),
+                    bullets=slide.get("bullets", []),
+                    use_case=ImageUseCase.COVER_HERO,
+                    style=style,
+                    llm=llm,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "FLUX cover-hero rewriter failed for slide '%s': %s — "
+                    "falling back to legacy image path.",
+                    slide.get("title", "<untitled>"), e,
+                )
+                flux_prompt = None
+
+            if flux_prompt:  # None → rewriter said USE_GRAPHVIZ (or stripped
+                #             to empty); a cover shouldn't be structural, but
+                #             guard anyway and fall through.
+                # Deterministic seed: same job_id → same deck_base_seed → same
+                # cover seed → identical image (Stage 1 acceptance #2).
+                cover_seed = deck_base_seed + idx
+                try:
+                    results = await flux_provider.get_or_generate(
+                        flux_prompt,
+                        use_case=ImageUseCase.COVER_HERO,
+                        seed=cover_seed,
+                        style_id=style.style_id,
+                        num_candidates=1,
+                    )
+                    img = results[0]
+                    slide["image_data"] = (
+                        "data:image/png;base64,"
+                        + base64.b64encode(img.png_bytes).decode("ascii")
+                    )
+                    slide["image_gen_meta"] = {
+                        "use_case": ImageUseCase.COVER_HERO.value,
+                        "flux_prompt": flux_prompt,
+                        "seed": img.seed,
+                        "style_id": style.style_id,
+                    }
+                    # Cover hero won — drop any leftover legacy prompt fields
+                    # so the renderer doesn't double-handle this slide.
+                    slide.pop("image_prompt", None)
+                    slide.pop("image_kind", None)
+                    continue
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "FLUX cover-hero generation failed for slide '%s': %s — "
+                        "falling back to legacy image path.",
+                        slide.get("title", "<untitled>"), e,
+                    )
+                    # Fall through to legacy paths below.
+
+        # Path 3: image_prompt → call FLUX (legacy path, untouched in intent;
+        # only the provider call is updated to the new contract-3.4 signature
+        # since the old positional API no longer exists). Non-cover slides
+        # with an LLM-supplied image_prompt still take this route.
         prompt = slide.get("image_prompt")
         if not prompt:
             continue
@@ -1272,10 +1390,20 @@ async def _hydrate_images(
             continue
 
         try:
-            png_bytes = await flux_provider.get_or_generate(prompt, default_aspect)
+            # Legacy prompts have no use_case declared; treat them as content
+            # illustrations (4:3). Seed is deterministic per slide when a
+            # deck seed is available, else 0 (cache still keys on it).
+            legacy_seed = (deck_base_seed + idx) if deck_base_seed is not None else 0
+            results = await flux_provider.get_or_generate(
+                prompt,
+                use_case=ImageUseCase.CONTENT_ILLUSTRATION,
+                seed=legacy_seed,
+                num_candidates=1,
+            )
+            img = results[0]
             slide["image_data"] = (
                 "data:image/png;base64,"
-                + base64.b64encode(png_bytes).decode("ascii")
+                + base64.b64encode(img.png_bytes).decode("ascii")
             )
         except Exception as e:
             logger.warning(
@@ -1292,6 +1420,9 @@ async def _hydrate_images(
 async def _render_pptx(
     spec: SlidesSpec,
     images_lookup: dict[str, dict[str, Any]] | None = None,
+    *,
+    deck_base_seed: int | None = None,
+    llm: "_StudioLLMAdapter | None" = None,
 ) -> tuple[bytes, str]:
     """POST spec → renderer → (pptx bytes, server-side path).
 
@@ -1302,9 +1433,21 @@ async def _render_pptx(
     image-suggestion list, keyed by image_id. When provided, every
     Slide.image_ref gets hydrated into inline `image_data` bytes via
     `_hydrate_images` before the spec leaves the CSP boundary.
+
+    `deck_base_seed` + `llm` (FLUX Stage 1) enable the cover-hero generation
+    path inside `_hydrate_images`. They are threaded from the job pipeline
+    (deck_base_seed = sha256(job_id)).
     """
     spec_dict = spec.model_dump()
-    if images_lookup:
+    flux_provider = get_flux_provider()
+    # Hydrate when there are curated images to resolve OR when the FLUX
+    # cover-hero path is fully wired (provider + seed + llm). The latter
+    # matters for text-only knowledge bases: no retrieved images means an
+    # empty images_lookup, but a cover hero should still be generated.
+    cover_hero_ready = (
+        flux_provider is not None and deck_base_seed is not None and llm is not None
+    )
+    if images_lookup or cover_hero_ready:
         # Worker writes to share/uploads/ingestion via INGESTION_UPLOAD_DIR;
         # CSP mounts the same directory at the same path (see compose).
         # storage_path on the row is relative to that root, so we just
@@ -1314,10 +1457,12 @@ async def _render_pptx(
         )
         spec_dict = await _hydrate_images(
             spec_dict,
-            images_lookup,
+            images_lookup or {},
             ingest_upload,
-            flux_provider=get_flux_provider(),
+            flux_provider=flux_provider,
             default_aspect="16:9",
+            deck_base_seed=deck_base_seed,
+            llm=llm,
         )
 
     async with httpx.AsyncClient(timeout=60.0) as client:
@@ -2340,6 +2485,16 @@ async def _run_pipeline(
             raise RuntimeError(f"user {user_id} disappeared mid-job")
         coll = _require_collection_access(db, user, payload.collection_id)
 
+        # FLUX Stage 1 (4.2): deterministic per-deck seed derived once from
+        # the job_id, so re-running the same job yields the same images.
+        # Per-slide seed = deck_base_seed + slide_index (computed in
+        # _hydrate_images). The llm adapter lets the rewriter (Layer A)
+        # reuse the same proxy/usage path as every other Studio LLM call.
+        deck_base_seed = int(
+            hashlib.sha256(updater.job_id.encode()).hexdigest()[:8], 16
+        )
+        flux_llm = _StudioLLMAdapter(db, user, SLIDES_LLM_MODEL)
+
         # ── Step 3: retrieval ──
         await updater.set(step=JOB_STEP_RETRIEVING)
         seed_query = " · ".join(
@@ -2466,7 +2621,9 @@ async def _run_pipeline(
 
         # ── Step 7: render ──
         await updater.set(step=JOB_STEP_RENDERING)
-        pptx_bytes, pptx_path = await _render_pptx(spec, images_lookup)
+        pptx_bytes, pptx_path = await _render_pptx(
+            spec, images_lookup, deck_base_seed=deck_base_seed, llm=flux_llm,
+        )
 
         # ── Step 8: vision QA + (optional) one fix-and-rerender ──
         # Skip vision QA entirely when serving the fallback deck. The
@@ -2504,7 +2661,10 @@ async def _run_pipeline(
                     title=spec.title,
                     slide_count=len(spec.slides),
                 )
-                pptx_bytes, pptx_path = await _render_pptx(spec, images_lookup)
+                pptx_bytes, pptx_path = await _render_pptx(
+                    spec, images_lookup,
+                    deck_base_seed=deck_base_seed, llm=flux_llm,
+                )
 
         # ── Step 9: terminal "done" — pptx_bytes is the artifact ──
         await updater.mark_done(
