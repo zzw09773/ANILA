@@ -41,7 +41,7 @@ Two principles, applied at *every* schema level:
 """
 from __future__ import annotations
 
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -62,6 +62,31 @@ PALETTES: tuple[str, ...] = (
     "charcoal_minimal",
     "coral_energy",
 )
+
+# Round 3 Patch L: themes are the new top-level visual identity unit.
+# A theme bundles palette + typography + chrome + icon treatment + density.
+# The renderer (server.js) interprets theme.id and applies the bundle.
+#
+# Existing `palette` field is preserved as a deprecated alias — jobs that
+# set palette but not theme will resolve to the equivalent theme via
+# _PALETTE_TO_THEME below.
+THEMES: tuple[str, ...] = (
+    "corporate_navy",
+    "academic_paper",
+    "warm_journal",
+    "executive_brief",
+    "startup_pitch",
+)
+
+# Old palette → equivalent new theme. Used when a request specifies
+# palette without theme (legacy clients) so they keep working.
+_PALETTE_TO_THEME: dict[str, str] = {
+    "navy_amber": "corporate_navy",
+    "forest_moss": "warm_journal",
+    "charcoal_minimal": "academic_paper",
+    "coral_energy": "startup_pitch",
+    # NB: executive_brief has no direct palette ancestor — new theme.
+}
 
 LAYOUT_KINDS: tuple[str, ...] = (
     "standard",
@@ -94,11 +119,19 @@ class Stat(BaseModel):
 
     `value` is intentionally a string (not a number) so the LLM can
     output "47%", "12K", "3.5×" without us having to model units.
+
+    Studio Fix 3 (2026-05-18): `supporting` is now mandatory with a 20-char
+    minimum so we stop accepting LLM filler like "重要突破" — the renderer
+    relies on a meaty supporting line to fill vertical space below the
+    big number. `baseline` / `baseline_label` are optional; when present
+    the renderer switches to a left-vs-right comparison layout.
     """
 
     value: str = Field(..., min_length=1, max_length=20)
     label: str = Field(..., min_length=1, max_length=120)
-    supporting: str | None = Field(default=None, max_length=200)
+    supporting: str = Field(..., min_length=20, max_length=200)
+    baseline: str | None = Field(default=None, max_length=20)
+    baseline_label: str | None = Field(default=None, max_length=60)
 
 
 class Quote(BaseModel):
@@ -109,10 +142,25 @@ class Quote(BaseModel):
 
 
 class Column(BaseModel):
-    """One side of a two_column layout."""
+    """One side of a two_column layout.
+
+    Studio Fix 3 (2026-05-18): `bullets` floor raised from 1 → 3 so the
+    LLM couldn't ship two-column slides with one bullet per side leaving
+    the layout 70% empty.
+
+    Round 2 Patch C (2026-05-18): floor dropped 3 → 2. Empirically the
+    "min 3" rule was too strict — legitimate technical comparisons
+    (e.g. v2 slide 5 "雙分支特徵融合": RGB 原圖 vs Tsallis Entropy)
+    frequently have exactly 2 clean distinguishing points per side, and
+    those slides were getting demoted to standard layout, losing the
+    side-by-side framing entirely. Sparse columns (<2 bullets each) are
+    now upgraded to `icon_rows` (preserving the parallel-concepts feel)
+    rather than flattened to `standard` — see `_saturate_spec_dict` in
+    `app.api.studio`.
+    """
 
     heading: str = Field(..., min_length=1, max_length=120)
-    bullets: list[str] = Field(..., min_length=1, max_length=6)
+    bullets: list[str] = Field(..., min_length=2, max_length=6)
 
 
 class IconRow(BaseModel):
@@ -164,6 +212,24 @@ class Slide(BaseModel):
     # (same fallback as image_ref).
     image_prompt: str | None = Field(default=None, max_length=500)
 
+    # Studio Fix 2 (2026-05-18): split image_focus into two modes.
+    # `image_kind` is the *discriminator* the LLM emits to declare intent:
+    #
+    #   illustration → FLUX.2-dev path (image_prompt, atmospheric/concept art)
+    #   diagram      → Graphviz path   (diagram_dot, crisp labelled diagrams)
+    #
+    # FLUX is a diffusion model and can't render legible text in images
+    # (the "Geneeration / KIGDKED" garbage we saw on slide 9). When the
+    # LLM wants a labelled diagram (architecture, flow, ER), it writes
+    # Graphviz DOT and we render server-side via `dot -Tpng`.
+    #
+    # When image_kind is None the field is treated as "legacy / no
+    # intent declared" — image_prompt may still be present (the Phase 6
+    # path) without triggering validation; the hydration layer prefers
+    # image_ref > diagram_dot > image_prompt.
+    image_kind: Literal["illustration", "diagram"] | None = None
+    diagram_dot: str | None = Field(default=None, max_length=3000)
+
     @field_validator("title", "speaker_notes")
     @classmethod
     def _strip_whitespace(cls, v: str | None) -> str | None:
@@ -204,6 +270,40 @@ class Slide(BaseModel):
                 raise ValueError(f"bullet 含 placeholder 文字：{b!r}")
         return cleaned
 
+    @model_validator(mode="after")
+    def _check_image_kind_consistency(self) -> Self:
+        """Studio Fix 2 (2026-05-18): enforce illustration/diagram split.
+
+        Only fires when image_kind is explicitly declared. Legacy paths
+        (Phase 5 image_ref, Phase 6 bare image_prompt with no image_kind)
+        remain valid — the hydration layer keeps its existing priority.
+
+        Rules:
+          - image_kind="illustration" → must have image_prompt, no diagram_dot
+          - image_kind="diagram"      → must have diagram_dot, no image_prompt
+        """
+        if self.image_kind == "illustration":
+            if not self.image_prompt:
+                raise ValueError(
+                    "image_kind='illustration' 必須附帶 image_prompt"
+                )
+            if self.diagram_dot:
+                raise ValueError(
+                    "image_kind='illustration' 不可附帶 diagram_dot"
+                    "（請改用 image_kind='diagram'）"
+                )
+        elif self.image_kind == "diagram":
+            if not self.diagram_dot:
+                raise ValueError(
+                    "image_kind='diagram' 必須附帶 diagram_dot（Graphviz DOT）"
+                )
+            if self.image_prompt:
+                raise ValueError(
+                    "image_kind='diagram' 不可附帶 image_prompt"
+                    "（請改用 image_kind='illustration'）"
+                )
+        return self
+
 
 class SlidesSpec(BaseModel):
     """Top-level slide deck spec — what the LLM emits, what the renderer reads."""
@@ -211,9 +311,38 @@ class SlidesSpec(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     slides: list[Slide] = Field(..., min_length=1, max_length=30)
 
-    # Phase 3: top-level palette. Default keeps existing decks visually
-    # identical to Phase 2 output.
-    palette: str = Field(default="navy_amber", max_length=40)
+    # Phase 3: top-level palette.
+    # DEPRECATED (Round 3 Patch L) — use `theme` instead. Kept for backwards
+    # compat. Resolved to equivalent theme via _PALETTE_TO_THEME if `theme`
+    # is unset (see `_resolve_theme_from_palette` below).
+    palette: str = Field(
+        default="navy_amber",
+        max_length=40,
+        description=(
+            "DEPRECATED — use `theme` instead. Kept for backwards compat. "
+            "Resolved to equivalent theme via _PALETTE_TO_THEME if `theme` "
+            "is unset."
+        ),
+    )
+
+    # Round 3 Patch L: theme is the new top-level visual identity unit.
+    # Bundles palette + typography + chrome + icon treatment + density.
+    # If None, resolves from the legacy `palette` field at validation time
+    # via `_resolve_theme_from_palette`.
+    theme: Literal[
+        "corporate_navy",
+        "academic_paper",
+        "warm_journal",
+        "executive_brief",
+        "startup_pitch",
+    ] | None = Field(
+        default=None,
+        description=(
+            "Visual identity bundle (Round 3 Patch L). Bundles palette + "
+            "typography + chrome + icon treatment + density. If None, "
+            "resolves from the legacy `palette` field at validation time."
+        ),
+    )
 
     @field_validator("title")
     @classmethod
@@ -235,6 +364,18 @@ class SlidesSpec(BaseModel):
         if normalised not in PALETTES:
             return "navy_amber"
         return normalised
+
+    @model_validator(mode="after")
+    def _resolve_theme_from_palette(self) -> Self:
+        """Round 3 Patch L: if theme is unset, derive from legacy palette.
+
+        Runs before `_check_unique_slide_titles` (validator order = declaration
+        order). Legacy clients that only set `palette` get a sensible `theme`
+        automatically; modern clients setting `theme` explicitly are unaffected.
+        """
+        if self.theme is None:
+            self.theme = _PALETTE_TO_THEME.get(self.palette, "corporate_navy")
+        return self
 
     @model_validator(mode="after")
     def _check_unique_slide_titles(self) -> Self:
@@ -268,6 +409,27 @@ class GenerateSpecRequest(BaseModel):
     # Knob to skip retrieval entirely if the user explicitly wants
     # "just use general knowledge". Default false (always retrieve).
     skip_retrieval: bool = False
+    # Round 3 Patch P: API-side bypass of LLM theme selection.
+    # When set to a valid THEMES value, the pipeline overwrites
+    # spec.theme with this value AFTER Pydantic validation but BEFORE
+    # render — operators / advanced users who know the audience better
+    # than the LLM can force a specific visual identity. Literal keeps
+    # invalid values out at request time (422), instead of silently
+    # being ignored mid-pipeline.
+    theme_override: Literal[
+        "corporate_navy",
+        "academic_paper",
+        "warm_journal",
+        "executive_brief",
+        "startup_pitch",
+    ] | None = Field(
+        default=None,
+        description=(
+            "If set, bypasses LLM theme selection and forces this theme. "
+            "Useful when the user knows the audience better than the LLM. "
+            "Must be one of THEMES; invalid values rejected by Literal."
+        ),
+    )
 
 
 class VisualDefect(BaseModel):
@@ -322,6 +484,12 @@ class JobState(BaseModel):
 JOB_STEP_QUEUED = "queued"
 JOB_STEP_RETRIEVING = "retrieving"
 JOB_STEP_GENERATING = "generating"
+# Studio Fix 1 (2026-05-18): post-validation audit + LLM rebalance pass.
+# Inserted between `generating` and `rendering` so the UI can show
+# "鑄造中：版型重新平衡" when the audit detects standard-overuse / missing
+# stat_callout for numeric content. Skipped (transparent to UI) when no
+# hard violations fire.
+JOB_STEP_REBALANCING = "rebalancing"
 JOB_STEP_RENDERING = "rendering"
 JOB_STEP_QA = "qa"
 JOB_STEP_FIXING = "fixing"

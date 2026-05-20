@@ -56,7 +56,8 @@ import json
 import logging
 import os
 import re
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -78,6 +79,7 @@ from app.schemas.studio import (
     JOB_STEP_FIXING,
     JOB_STEP_GENERATING,
     JOB_STEP_QA,
+    JOB_STEP_REBALANCING,
     JOB_STEP_RENDERING,
     JOB_STEP_RETRIEVING,
     GenerateSpecRequest,
@@ -88,6 +90,7 @@ from app.schemas.studio import (
 )
 from app.services import studio_job_service as jobs
 from app.services.auth_service import get_current_user
+from app.services.geometric_qa import GeometricDefect, run_geometric_qa
 from app.services.ingestion_pool import get_pool
 from app.services.proxy_service import proxy_request
 from app.services.studio_text_normalizer import normalize_spec
@@ -403,9 +406,11 @@ def _build_generation_prompt(
     """Compose (system, user) prompts for the slide-deck LLM call.
 
     Phase 3 expands the prompt with:
-      * palette selection (4 options)
+      * theme selection (5 options, tone-based; palette deprecated)
       * per-slide layout_kind (6 variants)
-      * icon_rows.concept whitelist (~30 keywords from a closed set)
+      * icon_rows.concept whitelist (80+ keywords grouped by domain;
+        the LLM is asked to pick a domain first, then a concept from
+        that domain — see Phase 6 Fix 4)
 
     The hard rule we communicate to the LLM is **bullets[] is always
     required** even when a non-standard layout_kind is chosen, because
@@ -431,12 +436,30 @@ def _build_generation_prompt(
             "",
             "── 頂層欄位 ──",
             'Required: title (string), slides (list).',
-            'Required: palette — 從以下挑一個（renderer 會落地成具體配色）：',
-            '  "navy_amber"        商務、技術、政策、一般用途（預設）',
-            '  "forest_moss"       永續、健康、教育、自然主題',
-            '  "charcoal_minimal"  嚴肅報告、財務、法規',
-            '  "coral_energy"      行銷、品牌、創意活力',
-            '整份簡報只能挑一個 palette；不要在 slides 內切換。',
+            'Required: theme — 依文件 tone 而非主題類別挑選：',
+            '  "corporate_navy"   嚴謹的技術／業務報告；給同事或主管看的工作產出（預設）',
+            '  "academic_paper"   研究發表、論文摘要、學術會議；多量化與引用',
+            '  "warm_journal"     第一人稱學習心得、回顧、softer 反思內容',
+            '  "executive_brief"  給高層的 briefing、結論導向、極簡、≤ 10 張',
+            '  "startup_pitch"    對外發表、產品介紹、需要視覺衝擊與情緒煽動',
+            '',
+            '選擇依據（在 chunks_text 中尋找這些 tone 訊號）：',
+            '  - 第一人稱主觀詞（我、我的、我們、心得、反思、學到、感受）',
+            '    → warm_journal',
+            '  - 量化結果（百分比、N=...、F1、p-value）+ 方法論 + 引用',
+            '    → academic_paper',
+            '  - 「問題 / 解法 / 價值」結構 + 中性語氣 + 技術細節',
+            '    → corporate_navy',
+            '  - 強 call-to-action、願景語言、產品名稱反覆出現',
+            '    → startup_pitch',
+            '  - 只有結論沒有過程、總頁數 ≤ 10、給 C-level 看',
+            '    → executive_brief',
+            '訊號衝突時取最強的；無明確訊號用 corporate_navy。',
+            '（注意：若 title 含「心得／反思／論文／募資」等明確 framing 詞，'
+            '後端會強制 override；你可不必額外處理。）',
+            '整份簡報只能挑一個 theme；不要在 slides 內切換。',
+            '',
+            '（舊欄位名 palette 仍接受但已 deprecated，請用 theme。）',
             "",
             "── 每張投影片欄位 ──",
             'Required: title, bullets (1-6 items), speaker_notes',
@@ -449,33 +472,56 @@ def _build_generation_prompt(
             '  "icon_rows"         3-5 個並列要點，每個有 icon；要附 icon_rows',
             "",
             "Layout-specific 物件（以下是欄位形狀，**不要把這些範例值複製到輸出**）：",
-            '  stat 形狀：{"value": "47%", "label": "...", "supporting": "..."}',
-            '             value 是大字數值；supporting 為選填細節。',
+            '  stat 形狀：{"value": "47%", "label": "...", "supporting": "..."',
+            '              , "baseline": "30%", "baseline_label": "..."}',
+            '             value 是大字數值；**supporting 必填 20-100 字脈絡**；',
+            '             baseline / baseline_label 為選填對照基準（有就觸發左右比較版型）。',
             '  quote 形狀：{"text": "...", "attribution": "..."}',
             '             attribution 為選填來源。',
-            '  columns 形狀：[{"heading": "...", "bullets": ["..."]},',
-            '                 {"heading": "...", "bullets": ["..."]}]',
+            '  columns 形狀：[{"heading": "...", "bullets": ["...", "...", "..."]},',
+            '                 {"heading": "...", "bullets": ["...", "...", "..."]}]',
             '             固定 2 個元素的陣列；多於 2 會被忽略、少於 2 會降級為 standard。',
+            '             **每欄 bullets 2-3 條**（schema 最低 2 條；湊不到 2 條的對照結構,',
+            '             改用 icon_rows，保留並列感、視覺更輕）。',
             '  icon_rows 形狀：[{"concept": "...", "heading": "...", "description": "..."}]',
             '             3-5 個元素；concept 必須來自下方白名單。',
             "",
             "重要：bullets 任何 layout 都要填（renderer 在 layout-specific 欄位",
             "缺漏時會回退用 bullets 渲染，不要省）。",
             "",
-            "── icon_rows.concept 必須從以下白名單挑（其他會被忽略不畫 icon）──",
-            "資料/運算: data_storage data_pipeline dataset automation",
-            "          integration deployment",
-            "人/角色:   user team customer",
-            "溝通:     chat email notification broadcast",
-            "分析/結果: insight metrics comparison search",
-            "時間:     schedule deadline history",
-            "品質/安全: security validation error success achievement",
-            "系統:     settings server cloud network",
-            "文件/學習: document book learning",
+            "── icon_rows.concept 必須從以下白名單挑（未列出的會 fallback",
+            "   為「不畫 icon」，所以不要自創；先想 domain，再從該 domain 挑）──",
+            "[generic 資料/運算] data_storage data_pipeline dataset",
+            "                automation integration deployment",
+            "[generic 人/角色]   user team customer",
+            "[generic 溝通]     chat email notification broadcast",
+            "[generic 分析/結果] insight metrics comparison search",
+            "[generic 時間]     schedule deadline history",
+            "[generic 品質/安全] security validation error success achievement",
+            "[generic 系統]     settings server cloud network",
+            "[generic 文件/學習] document book learning",
+            "[industrial 工業/製造] machine factory sensor defect",
+            "                  quality_control calibration anomaly",
+            "                  production_line inspection yield_rate",
+            "[ml_ai 機器學習]   model training inference embedding",
+            "                  classification regression overfitting",
+            "                  generalization feature_extraction imbalance",
+            "                  fine_tuning agent reasoning retrieval",
+            "                  prompt evaluation prediction",
+            "[system_arch 架構] supervisor worker orchestration",
+            "                  hierarchy vertical_split fanout",
+            "                  pipeline_stage module",
+            "[process 流程]    perception cognition action step_one",
+            "                  alert iteration decision monitoring",
+            "[outcome 結果]    improvement reduction breakthrough limitation",
+            "                  cost_saving risk",
             "",
             "icon 規則：",
+            "- **先選 domain，再從 domain 內挑 concept**：技術內容（ML/工業）",
+            "  從 ml_ai / industrial / system_arch / process / outcome 挑；",
+            "  一般商業/通用內容才從 generic 挑。",
             '- 同一張 icon_rows 的 concept 抽象層級要一致（全部「功能」或全部',
-            "  「角色」之類），不要混。",
+            "  「角色」之類），不要混。最好同 domain 內挑。",
             "- 不要硬套陳腔：success≠創新、network≠成長、achievement≠任何進步；",
             "  挑該行真正在表達的概念。",
             "",
@@ -522,11 +568,13 @@ def _build_generation_prompt(
             "**規則 6 / 若可用圖清單非空，必須至少 1 張 image_focus**：把「相關性",
             "  最高的那張」做 image_focus（layout_kind='image_focus' + 設 image_ref）。",
             "  論文 / 技術文件的圖（架構圖、實驗結果圖）幾乎都比文字描述更有說服力。",
-            "  **後備規則 / image_prompt**：若「可用圖」清單為空、或全部都不夠相關，",
-            "  但該 slide 主題明顯需要視覺輔助（地形示意、裝備外觀、流程示意、",
-            "  概念插畫等），可改設 layout_kind='image_focus' + image_prompt（**英文**，",
-            "  50-500 字，描述性，含主體 / 場景 / 構圖 / 風格），系統會即時用 FLUX",
-            "  生成插圖。**每張 slide 只能設 image_ref 或 image_prompt 其一，互斥**。",
+            "  **後備規則 / 即時生成（Studio Fix 2 拆兩種）**：若「可用圖」清單為空、",
+            "  或全部都不夠相關，但該 slide 主題明顯需要視覺輔助，依內容選一種模式：",
+            "    (A) 情境插畫、無文字 → image_kind='illustration' + image_prompt",
+            "        （英文 50-500 字，主體/場景/構圖/風格），走 FLUX。",
+            "    (B) 含 label 的圖示（架構/流程/ER）→ image_kind='diagram' + diagram_dot",
+            "        （Graphviz DOT，最多 3000 字），走 graphviz。**FLUX 畫不出可讀文字**。",
+            "  **每張 slide 只能設 image_ref / illustration / diagram 其一，三者互斥**。",
             "",
             "── 引用「圖片描述」段落（這是 deck 變具體的關鍵） ──",
             "下方檢索段落中可能含「圖片描述：...」的段落 — 那是文件原圖的",
@@ -546,8 +594,18 @@ def _build_generation_prompt(
             "- **stat_callout**：文件含量化結果（百分比、實驗數值、KPI、提升幅度）",
             "  時，挑最關鍵的 1 個做 stat_callout。stat.value 是大字數字，",
             "  stat.label 是該數字代表什麼，stat.supporting 是補充細節。",
+            "  **必填 supporting：寫 20-100 字的數字脈絡**（baseline、樣本數、",
+            "  實驗條件、結果意義）；**不可只寫「重要突破」「顯著進步」這類空話**。",
+            "  若有對照基準，**強烈建議**填 stat.baseline + stat.baseline_label，",
+            "  renderer 會自動切成左右對比版型（baseline ← → value），視覺更有力。",
+            "  範例：{value:\"95%\", label:\"CT350 機臺鐵屑覆蓋率偵測率\",",
+            "         supporting:\"雙分支架構相比單分支 ResNet18 基準的 78%，提升 17 個百分點；",
+            "         測試集為 10 個機臺切換批次，N=2,400\",",
+            "         baseline:\"78%\", baseline_label:\"單分支基準\"}",
             "- **two_column**：內容天然有對照（before/after、本研究 vs 既有方法、",
             "  兩種模型架構比較）時用 1 張。columns 必須 **2 個元素**、各填 heading + bullets。",
+            "  **每欄 2-3 條 bullet**（schema 最低 2 條），讓兩欄視覺密度對稱、不留大片空白；",
+            "  湊不到 2 條的對照結構,改用 icon_rows（保留並列感、視覺更輕）。",
             "- **quote**：有名言、客戶證言、概念金句時用。",
             "- **icon_rows**：3-5 個並列要點各有 icon。concept 從白名單挑。",
             "- **image_focus**（Phase 5 新增）：文件原檔有相關插圖時用。例：",
@@ -555,10 +613,42 @@ def _build_generation_prompt(
             "  layout_kind='image_focus' 並把使用者訊息「可用圖」清單中相對應的",
             "  image_id 填到 Slide.image_ref。bullets 仍要寫 2-4 條，描述圖之外的",
             "  補充資訊；圖會佔投影片左半，bullets 在右半。一張圖只應出現在一張投影片。",
-            "  **後備 / image_prompt（Phase 6 新增）**：若「可用圖」清單為空或無合適現有圖，",
-            "  但該 slide 主題需要視覺輔助，可改設 image_prompt（**英文**描述，50-500 字，",
-            "  含主體 / 場景 / 構圖 / 風格）取代 image_ref，系統會即時用 FLUX 生成。",
-            "  image_ref 與 image_prompt **互斥**，一張 slide 只設其一；其他情況不要用 image_focus。",
+            "",
+            "  ── image_focus 兩種生成模式（Studio Fix 2，2026-05-18）──",
+            "  若可用圖清單為空或都不合用，可即時生成。**兩種模式擇一**：",
+            "",
+            "  **自動規則 — 觸發 diagram path**：若 slide 的 title 含「架構、拓撲、",
+            "  拓樸、流程、Workflow、Pipeline、Topology」其中一個關鍵字，且該 slide",
+            "  主題自然需要視覺輔助（例如「Multi-Agent Supervisor 拓撲設計」、",
+            "  「Agentic Workflow 三階段」、「RAG 系統架構」），**必須**設",
+            "  layout_kind='image_focus' + image_kind='diagram' + diagram_dot",
+            "  （Graphviz DOT）。不要寫 image_prompt（FLUX 不會渲染文字 label，",
+            "  結果會是亂碼）。",
+            "",
+            "  (A) **illustration** — 情境插畫、概念意象、**無文字**的視覺輔助。",
+            "      設 image_kind='illustration' + image_prompt（**英文** 50-500 字，",
+            "      含主體 / 場景 / 構圖 / 風格）。走 FLUX.2-dev 即時生成。",
+            "      適合：主題情境（如「山地戰術部隊」「無人機巡邏」）、抽象概念、",
+            "      氣氛圖。**注意：FLUX 無法畫出可讀的文字**，所以不要叫它畫架構圖。",
+            "",
+            "  (B) **diagram** — 含 label 的圖示（架構圖、流程圖、Venn、決策樹、ER）。",
+            "      設 image_kind='diagram' + diagram_dot（**Graphviz DOT** 語法，",
+            "      最多 3000 字元）。走 graphviz `dot -Tpng` 渲染，label 清晰可讀。",
+            "      適合：系統架構圖、Multi-Agent 拓撲、資料流、實體關係、決策樹。",
+            "",
+            "      DOT 範例（Multi-Agent Supervisor 架構）：",
+            "        digraph G {",
+            "          rankdir=TB;",
+            "          fontname=\"Noto Sans CJK TC\";",
+            "          node [fontname=\"Noto Sans CJK TC\", shape=box, style=rounded];",
+            "          Supervisor -> \"Worker A\";",
+            "          Supervisor -> \"Worker B\";",
+            "          Supervisor -> \"Worker C\";",
+            "        }",
+            "",
+            "  **每張 slide 只能選一種模式**：image_ref / image_kind='illustration' /",
+            "  image_kind='diagram'，三者互斥。含 label 的圖示**一定走 diagram**，",
+            "  不要丟給 FLUX 畫，否則 label 會變亂碼。",
             "- **commit fully**：選了豐富版型就把欄位填好；不要半途而廢。",
             "- **layout_kind 拼寫精確**：'standard' / 'section_break' / 'stat_callout' /",
             "  'quote' / 'two_column' / 'icon_rows' / 'image_focus'。",
@@ -609,9 +699,10 @@ def _build_generation_prompt(
             "若某張投影片用以下任一張圖更具說服力，請設 layout_kind='image_focus' "
             "並把該行的 image_id 填到 Slide.image_ref。一張圖只應被一張投影片引用；"
             "若全部圖都不夠相關，請忽略這份清單、不要硬塞。"
-            "若該 slide 主題需要插圖、但此清單無合適現有圖，可改設 layout_kind='image_focus' "
-            "+ image_prompt（**英文**，50-500 字，描述主體 / 場景 / 構圖 / 風格）"
-            "請系統即時用 FLUX 生成。image_prompt 與 image_ref **互斥**，一張 slide 只設其一。"
+            "若該 slide 需要圖但此清單無合適現有圖，layout_kind='image_focus' 下兩種模式擇一："
+            "（A）image_kind='illustration' + image_prompt（英文 50-500 字描述，FLUX 即時生成情境插畫）；"
+            "（B）image_kind='diagram' + diagram_dot（Graphviz DOT，最多 3000 字，graphviz 渲染含 label 的架構/流程圖）。"
+            "image_ref / illustration / diagram 三者互斥，一張 slide 只設其一；含文字 label 的圖一律走 diagram。"
         )
         parts.append("")
         for i, im in enumerate(images, start=1):
@@ -723,10 +814,22 @@ async def _generate_validated_spec(
 
     last_err: ValidationError | ValueError | json.JSONDecodeError | None = None
     last_raw = raw
+    # Filenames used for the fallback `supporting` placeholder when the
+    # LLM under-fills a stat_callout. Passing the first chunk filename
+    # makes the autoplaced supporting line look at least vaguely
+    # attributable instead of "來源:documents".
+    chunk_filenames = [c.get("filename") for c in chunks if c.get("filename")]
     for attempt in range(SCHEMA_CORRECTION_PASSES + 1):
         try:
             extracted = _extract_json_object(raw)
-            return SlidesSpec.model_validate(_loads_lenient(extracted)), False
+            parsed = _loads_lenient(extracted)
+            # Studio Fix 3 (2026-05-18): saturation auto-correct.
+            # The schema now requires Stat.supporting (min 20 chars) and
+            # Column.bullets (min 3). LLMs frequently miss this on first
+            # try; rather than 422 we silently patch / demote and let the
+            # user see the deck. See `_saturate_spec_dict` for behaviour.
+            parsed = _saturate_spec_dict(parsed, chunk_filenames=chunk_filenames)
+            return SlidesSpec.model_validate(parsed), False
         except (ValidationError, ValueError, json.JSONDecodeError) as e:
             last_err = e
             last_raw = raw
@@ -776,6 +879,167 @@ async def _generate_validated_spec(
         last_raw[:500].replace("\n", "⏎"),
     )
     return _build_fallback_spec(collection_name, preset, str(last_err)[:300]), True
+
+
+def _saturate_spec_dict(
+    spec_dict: Any,
+    *,
+    chunk_filenames: list[str] | None = None,
+) -> Any:
+    """Studio Fix 3 pre-validation pass — patch under-filled layouts.
+
+    The schema (Stat.supporting min 20, Column.bullets min 3) is the
+    long-term floor we want LLM output to clear. But early in the rollout
+    gemma4 frequently misses one or the other; rather than 422-ing the
+    user we silently patch the offending slides and log a warning.
+
+    Two transforms, in order:
+
+    1. ``stat_callout`` slide whose ``stat.supporting`` is missing /
+       shorter than 20 chars → auto-fill a placeholder of the form
+       ``來源:<first chunk filename or 'documents'>``. This is meant to
+       be visually obvious so the user knows the LLM under-filled but
+       not catastrophic enough to refuse the deck.
+    2. ``two_column`` slide where ANY column has < 2 bullets → upgrade
+       to ``icon_rows`` layout: each column becomes one icon_row whose
+       heading comes from the column heading and description is the
+       joined bullets (separated by `；`). This preserves the
+       side-by-side / parallel-concepts framing of the original
+       two_column intent (Round 2 Patch C: previously we demoted to
+       ``standard`` which lost the parallel-concept signal entirely).
+       If we can't produce >= 2 icon_rows (e.g. heading missing), fall
+       back to the original standard-flatten path.
+
+    Both transforms log a warning so we can monitor LLM saturation rates.
+    Pure function — operates on a parsed dict in-place AND returns it.
+
+    Defensive: this function MUST NOT raise. Any dict shape we can't
+    interpret (missing 'slides' key, non-list slides, etc.) is left
+    untouched and Pydantic validation will produce its normal error.
+    """
+    if not isinstance(spec_dict, dict):
+        return spec_dict
+    slides = spec_dict.get("slides")
+    if not isinstance(slides, list):
+        return spec_dict
+
+    fallback_source = (
+        chunk_filenames[0] if chunk_filenames else "documents"
+    )
+
+    for slide in slides:
+        if not isinstance(slide, dict):
+            continue
+        layout = slide.get("layout_kind", "standard")
+
+        # Transform 1: stat_callout supporting auto-fill
+        if layout == "stat_callout":
+            stat = slide.get("stat")
+            if isinstance(stat, dict):
+                supporting = stat.get("supporting") or ""
+                if len(str(supporting)) < 20:
+                    title = slide.get("title", "<untitled>")
+                    placeholder = (
+                        f"來源:{fallback_source}（系統補填：LLM 未提供足夠脈絡，"
+                        f"請參考原文件取得 baseline、樣本數與實驗條件）"
+                    )
+                    stat["supporting"] = placeholder
+                    logger.warning(
+                        "Studio saturation: slide '%s' stat.supporting "
+                        "under-filled (%d chars), auto-filled placeholder "
+                        "referencing %s.",
+                        title, len(str(supporting)), fallback_source,
+                    )
+
+        # Transform 2: two_column with sparse columns → upgrade to icon_rows
+        # (Round 2 Patch C: was demote-to-standard, which lost the
+        # side-by-side framing entirely. icon_rows preserves the
+        # "N parallel concepts" shape. Trigger threshold also relaxed
+        # from <3 bullets to <2 bullets per column to match the schema
+        # floor drop in `app.schemas.studio.Column`.)
+        if layout == "two_column":
+            cols = slide.get("columns")
+            if isinstance(cols, list) and cols:
+                sparse = any(
+                    not isinstance(c, dict)
+                    or not isinstance(c.get("bullets"), list)
+                    or len(c["bullets"]) < 2
+                    for c in cols
+                )
+                if sparse:
+                    title = slide.get("title", "<untitled>")
+                    new_rows: list[dict[str, str]] = []
+                    for c in cols:
+                        if not isinstance(c, dict):
+                            continue
+                        heading = str(c.get("heading") or "").strip()
+                        bullets = c.get("bullets") or []
+                        if not isinstance(bullets, list) or not heading:
+                            continue
+                        desc = "；".join(
+                            str(b).strip()
+                            for b in bullets
+                            if str(b).strip()
+                        )[:200]
+                        if not desc:
+                            continue
+                        new_rows.append({
+                            "concept": "comparison",
+                            "heading": heading,
+                            "description": desc,
+                        })
+                    if len(new_rows) >= 2:
+                        slide["layout_kind"] = "icon_rows"
+                        slide["icon_rows"] = new_rows
+                        slide.pop("columns", None)
+                        logger.warning(
+                            "Studio saturation: two_column slide '%s' "
+                            "upgraded to icon_rows (%d rows) due to "
+                            "sparse columns (<2 bullets each).",
+                            title, len(new_rows),
+                        )
+                        continue  # done with this slide
+                    # Fallback: can't form a coherent icon_rows set
+                    # (e.g. column heading missing). Use the original
+                    # standard-flatten path.
+                    flattened: list[str] = []
+                    for c in cols:
+                        if not isinstance(c, dict):
+                            continue
+                        heading = str(c.get("heading") or "").strip()
+                        bullets = c.get("bullets") or []
+                        if not isinstance(bullets, list):
+                            continue
+                        for b in bullets:
+                            text = str(b).strip()
+                            if not text:
+                                continue
+                            prefix = f"{heading}：" if heading else ""
+                            flattened.append(f"{prefix}{text}")
+                    if flattened:
+                        # Merge with any existing bullets, dedupe-preserving order.
+                        existing = slide.get("bullets") or []
+                        if not isinstance(existing, list):
+                            existing = []
+                        merged: list[str] = []
+                        seen: set[str] = set()
+                        for item in list(existing) + flattened:
+                            s = str(item).strip()
+                            if s and s not in seen:
+                                merged.append(s)
+                                seen.add(s)
+                        # Schema cap is 8 bullets per slide.
+                        slide["bullets"] = merged[:8]
+                    slide["layout_kind"] = "standard"
+                    slide.pop("columns", None)
+                    logger.warning(
+                        "Studio saturation: slide '%s' two_column had "
+                        "sparse columns and missing headings, fell back "
+                        "to standard with %d flattened bullets.",
+                        title, len(slide.get("bullets") or []),
+                    )
+
+    return spec_dict
 
 
 def _build_fallback_spec(
@@ -912,20 +1176,26 @@ async def _hydrate_images(
     flux_provider: "FluxImageProvider | None" = None,
     default_aspect: str = "16:9",
 ) -> dict[str, Any]:
-    """Resolve every Slide.image_ref OR image_prompt into inline base64 PNG.
+    """Resolve every Slide.image_ref / diagram_dot / image_prompt into inline base64 PNG.
 
-    Order of precedence per slide:
+    Order of precedence per slide (curated > deterministic > generative):
       1. image_ref present and resolvable → inline existing PNG.
-      2. image_ref present but unresolvable → drop, fall back to image_prompt if any.
-      3. image_prompt present and flux_provider available → generate via FLUX.
-      4. image_prompt present but flux_provider None or FLUX fails → drop, standard layout.
-      5. Neither set → leave untouched.
+      2. image_ref present but unresolvable → drop, fall back to next path.
+      3. image_kind='diagram' + diagram_dot → render via Graphviz `dot -Tpng`.
+      4. diagram render fails → drop diagram_dot/image_kind, fall back to next path.
+      5. image_prompt present and flux_provider available → generate via FLUX.
+      6. image_prompt present but flux_provider None or FLUX fails → drop, standard layout.
+      7. Nothing set → leave untouched.
 
-    Failure modes for image_prompt path mirror those of image_ref:
-    drop the offending field, log warning, let the renderer's
-    image_focus → standard fallback take over.
+    Failure modes mirror each other: drop the offending field, log warning,
+    let the renderer's image_focus → standard fallback take over. The
+    diagram path exists because FLUX.2-dev (diffusion) cannot render
+    legible text — labelled diagrams (architecture, flow, ER) get crisp
+    output via Graphviz instead.
     """
     import base64
+
+    from app.services.diagram_renderer import render_dot_to_png
 
     slides = spec_dict.get("slides") or []
     for slide in slides:
@@ -945,17 +1215,52 @@ async def _hydrate_images(
                     slide["image_data"] = (
                         f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"
                     )
-                    slide.pop("image_prompt", None)  # ref wins
+                    # ref wins over both generative paths
+                    slide.pop("image_prompt", None)
+                    slide.pop("diagram_dot", None)
+                    slide.pop("image_kind", None)
                     continue
                 except OSError as e:
                     logger.warning(
                         "Failed to hydrate image_ref=%s for storage_path=%s: %s — "
-                        "falling back to image_prompt if available.",
+                        "falling back to diagram_dot / image_prompt if available.",
                         ref, meta.get("storage_path"), e,
                     )
                     slide.pop("image_ref", None)
 
-        # Path 2: image_prompt → call FLUX
+        # Path 2: diagram_dot → render via Graphviz
+        # Studio Fix 2 (2026-05-18): deterministic labelled diagrams.
+        # Wins over image_prompt because FLUX can't render text legibly.
+        dot = slide.get("diagram_dot")
+        if dot and slide.get("image_kind") == "diagram":
+            png_bytes = await render_dot_to_png(dot)
+            if png_bytes is not None:
+                slide["image_data"] = (
+                    "data:image/png;base64,"
+                    + base64.b64encode(png_bytes).decode("ascii")
+                )
+                # Diagram succeeded; drop any leftover prompt fields.
+                slide.pop("image_prompt", None)
+                slide.pop("diagram_dot", None)
+                slide.pop("image_kind", None)
+                continue
+            # Render failed — drop the diagram fields so the renderer's
+            # image_focus → standard fallback kicks in. (image_prompt is
+            # intentionally NOT tried here: the LLM decided this was a
+            # diagram, not an illustration; falling through to FLUX
+            # would put garbled-text output back on the slide.)
+            logger.warning(
+                "Studio diagram path: graphviz render returned None for slide '%s' "
+                "(dot binary missing? CJK font missing? syntax error?). Slide will "
+                "fall back to standard layout. Run scripts/diagnose-graphviz.sh "
+                "(Round 2 Patch G runbook) to identify root cause.",
+                slide.get("title", "<untitled>"),
+            )
+            slide.pop("diagram_dot", None)
+            slide.pop("image_kind", None)
+            continue
+
+        # Path 3: image_prompt → call FLUX
         prompt = slide.get("image_prompt")
         if not prompt:
             continue
@@ -963,6 +1268,7 @@ async def _hydrate_images(
         if flux_provider is None:
             # FLUX not configured for this deployment. Drop prompt silently.
             slide.pop("image_prompt", None)
+            slide.pop("image_kind", None)
             continue
 
         try:
@@ -978,6 +1284,7 @@ async def _hydrate_images(
                 prompt[:80], e,
             )
             slide.pop("image_prompt", None)
+            slide.pop("image_kind", None)
 
     return spec_dict
 
@@ -1127,22 +1434,100 @@ async def _inspect_slide_visually(
     return defects
 
 
+def _geometric_to_visual(g: GeometricDefect) -> VisualDefect:
+    """Map a GeometricDefect into the VisualDefect shape the rest of the
+    pipeline already consumes. Vision-QA and geometric-QA defects are
+    indistinguishable downstream — the fix-and-rerender prompt is just
+    given a list of summaries to act on.
+    """
+    severity = g.severity if g.severity in ("critical", "warning", "info") else "warning"
+    summary = f"[geometric/{g.kind}] {g.detail}".strip()
+    return VisualDefect(
+        slide_index=g.slide_index,
+        severity=severity,
+        summary=summary[:500],
+    )
+
+
+def _merge_defects(
+    geometric: list[VisualDefect],
+    vision: list[VisualDefect],
+) -> list[VisualDefect]:
+    """Dedupe: when geometric and vision both flag the same slide with a
+    similar kind, keep the higher severity. Otherwise concatenate.
+
+    The dedupe key is (slide_index, "geometric"|"vision"-prefix) so we
+    don't accidentally collapse two genuinely different findings on the
+    same slide — only collapse near-duplicates from each source.
+    """
+    severity_rank = {"critical": 3, "warning": 2, "info": 1}
+    out: list[VisualDefect] = []
+    # Geometric is authoritative for layout — keep all of those.
+    out.extend(geometric)
+    # For vision defects, drop the ones that look redundant against a
+    # geometric defect of equal-or-higher severity on the same slide.
+    geometric_by_slide: dict[int, int] = {}
+    for d in geometric:
+        rank = severity_rank.get(d.severity, 0)
+        geometric_by_slide[d.slide_index] = max(
+            geometric_by_slide.get(d.slide_index, 0), rank,
+        )
+    for v in vision:
+        g_rank = geometric_by_slide.get(v.slide_index, 0)
+        v_rank = severity_rank.get(v.severity, 0)
+        if g_rank >= 3 and v_rank <= g_rank:
+            # Geometric already raised critical for this slide; vision
+            # commentary is unlikely to add actionable info on top.
+            continue
+        out.append(v)
+    return out
+
+
 async def _visual_qa(
     db: Session,
     user: User,
     pptx_path: str,
+    *,
+    pptx_bytes: bytes | None = None,
 ) -> list[VisualDefect]:
-    """Run vision QA on every slide of a rendered .pptx."""
+    """Run geometric + vision QA on every slide of a rendered .pptx.
+
+    Geometric QA runs first. If it flags `critical` defects on a slide,
+    we still run vision QA on the *other* slides (cheaper to short-circuit
+    only the slides we already know are broken). Best-effort: any error
+    in geometric QA yields empty defects and we fall back to vision-only.
+    """
+    # Geometric QA — deterministic, no vision tokens. Reads pptx bytes
+    # straight from the renderer; if we weren't handed them, skip it.
+    geom_defects: list[VisualDefect] = []
+    critical_slides: set[int] = set()
+    if pptx_bytes:
+        try:
+            raw = await run_geometric_qa(
+                pptx_bytes, renderer_url=RENDERER_BASE_URL,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Geometric QA raised unexpectedly: %s", e)
+            raw = []
+        geom_defects = [_geometric_to_visual(g) for g in raw]
+        critical_slides = {
+            d.slide_index for d in geom_defects if d.severity == "critical"
+        }
+
     pngs = await _capture_screenshots(pptx_path)
     if not pngs:
-        return []
+        return geom_defects
 
     # Sequential per-slide: gemma4 backend is single-tenant; concurrent
     # requests can starve each other on the GPU. Cap parallelism at 2 to
-    # halve wall-clock without overwhelming the model.
+    # halve wall-clock without overwhelming the model. Skip slides that
+    # geometric QA already marked critical — the fix-pass will handle
+    # them and burning vision tokens on a known-broken slide is wasteful.
     semaphore = asyncio.Semaphore(2)
 
     async def _one(idx: int, b: bytes) -> list[VisualDefect]:
+        if idx in critical_slides:
+            return []
         async with semaphore:
             return await _inspect_slide_visually(db, user, idx, b)
 
@@ -1150,10 +1535,10 @@ async def _visual_qa(
         *(_one(i, b) for i, b in enumerate(pngs)),
         return_exceptions=False,
     )
-    flat: list[VisualDefect] = []
+    vision_flat: list[VisualDefect] = []
     for r in results:
-        flat.extend(r)
-    return flat
+        vision_flat.extend(r)
+    return _merge_defects(geom_defects, vision_flat)
 
 
 async def _fix_spec_with_defects(
@@ -1194,6 +1579,741 @@ async def _fix_spec_with_defects(
     )
     extracted = _extract_json_object(raw)
     return SlidesSpec.model_validate(_loads_lenient(extracted))
+
+
+# ── Studio Fix 1: layout post-validation + LLM rebalance pass ────────────
+#
+# The system prompt tells gemma4 "standard layout ≤ 60% of slides", but
+# attention is split between content writing and layout selection, so the
+# rule isn't actually enforced. Decks come back with 8-of-9 standard
+# slides, no stat_callout for clearly numeric content, and 3+ consecutive
+# bullet pages — visually flat. This module audits the produced spec
+# deterministically and (when hard rules fire) issues ONE focused LLM
+# call that only re-selects layout_kind on a small candidate set.
+#
+# Why not just bump temperature or rewrite the system prompt?
+# - Bumping temperature degrades JSON validity (we did this once already).
+# - Rewriting the prompt for the 9th time chases an asymptote — gemma4
+#   doesn't follow proportional rules under cognitive load.
+# Deterministic audit + surgical LLM fix is cheaper and more reliable.
+
+
+# Hard rule V1: standard layout proportion must not exceed this cap.
+LAYOUT_STANDARD_MAX_RATIO = 0.60
+
+# Soft rule V3: runs of this many or more consecutive standard slides
+# count as a "flat stretch" that hurts visual rhythm.
+LAYOUT_CONSECUTIVE_STANDARD_LIMIT = 3
+
+# V4: enumeration title keywords. When a slide title contains any of these
+# AND it has 3+ bullets AND layout_kind=standard, it's a textbook candidate
+# for icon_rows — the LLM "described 3 things" but didn't reach for the
+# matching layout.
+_ENUMERATION_KEYWORDS = (
+    # Numeric enumeration
+    "三大", "四大", "五大", "兩大", "三項", "三類",
+    # Process / sequence
+    "步驟", "階段", "流程", "歷程", "順序",
+    "workflow", "pipeline", "process",
+    # Structural enumeration
+    "面向", "層面", "維度", "方面",
+    # Architecture / topology (slide 13 case)
+    "架構", "拓撲", "拓樸", "結構", "設計", "佈局",
+    # Capability / function lists
+    "核心能力", "能力", "功能", "特性", "特徵",
+    # Strategy / approach
+    "策略", "方案", "模式", "機制", "方法",
+    # Comparison framing (space-padded vs to avoid 'previous' false matches)
+    "對比", "對照", " vs ", " vs.",
+)
+
+# ── Round 5 Patch U: deterministic title-keyword theme overrides ──
+#
+# LLM tone detection (Patch O) is non-deterministic at signal boundaries.
+# v4 picked warm_journal for "11月學習心得報告"; v5 picked corporate_navy
+# on essentially the same content because chunks lean technical and the
+# only warm_journal signal was the "心得" in the title.
+#
+# Architectural decision: title is the strongest author-intent signal —
+# the framing the author explicitly chose. When title contains an
+# unambiguous theme keyword, override the LLM's tone-based choice.
+#
+# Patterns are deliberately CONSERVATIVE (only high-confidence keywords).
+# Title with no match leaves the LLM's choice intact. This is opt-in
+# overriding, not blanket replacement.
+_THEME_TITLE_OVERRIDES: list[tuple[re.Pattern[str], str]] = [
+    # ── warm_journal: personal reflection framings ──
+    (re.compile(r"心得|反思|回顧|感想|札記|手記"), "warm_journal"),
+
+    # ── academic_paper: scholarly/conference framings ──
+    (re.compile(
+        r"論文|研究發表|期刊論文|workshop|conference paper|"
+        r"研討會|學會發表",
+        re.IGNORECASE,
+    ), "academic_paper"),
+
+    # ── startup_pitch: external pitch framings ──
+    (re.compile(
+        r"募資|產品發表|launch event|pitch deck|"
+        r"投資人簡報|demo day",
+        re.IGNORECASE,
+    ), "startup_pitch"),
+
+    # ── executive_brief: high-level briefing framings ──
+    (re.compile(
+        r"executive briefing|高層 review|主管 briefing|"
+        r"季度 review|半年檢討|年度檢討",
+        re.IGNORECASE,
+    ), "executive_brief"),
+]
+
+
+def _apply_theme_title_override(spec: SlidesSpec) -> SlidesSpec:
+    """Deterministic title-keyword override for theme selection.
+
+    Runs AFTER schema validation succeeds so ``spec.theme`` is always a
+    valid theme (either LLM-chosen or palette-derived). If ``spec.title``
+    matches a high-confidence keyword pattern, force the corresponding
+    theme.
+
+    Idempotent and pure: same input → same output, no I/O beyond logging.
+    No-op when title has no match (preserves LLM choice).
+    """
+    title = (spec.title or "").strip()
+    if not title:
+        return spec
+
+    for pattern, target_theme in _THEME_TITLE_OVERRIDES:
+        if pattern.search(title):
+            if spec.theme != target_theme:
+                logger.info(
+                    "Theme title-override: '%s' matched %r → "
+                    "switching theme %s → %s",
+                    title, pattern.pattern, spec.theme, target_theme,
+                )
+                spec.theme = target_theme
+            else:
+                logger.debug(
+                    "Theme title-override: '%s' matched %r, "
+                    "theme already %s (no-op)",
+                    title, pattern.pattern, target_theme,
+                )
+            return spec
+
+    return spec
+
+
+# Round 3 PRIMARY V4 signal: "label: description" bullet pattern.
+#
+# Matches CJK 2-6 char label + (half- or full-width) colon + non-empty tail.
+# Tuned conservatively: requires the label to be entirely CJK so bullets like
+# "Token 消耗降低" (mixed Latin) don't false-trigger.
+_LABEL_BULLET_RE = re.compile(
+    r"^\s*[一-鿿]{2,6}\s*[:：]\s*\S.*$",
+)
+
+# Fraction of bullets that must match _LABEL_BULLET_RE for the
+# content-pattern V4 path to fire. 0.7 = 3 of 4, or 2 of 3.
+_LABEL_PATTERN_THRESHOLD = 0.7
+
+# V2: numeric-content regex. Matches percentages, big numbers, F1 scores,
+# and sample sizes (N=xxx). When chunks_text matches AND spec has zero
+# stat_callout slides, we missed a visual opportunity for a key statistic.
+_NUMERIC_CONTENT_RE = re.compile(
+    r"\d+(\.\d+)?\s*[%％]|\d{4,}|F1[-\s]?score|N\s*=\s*\d+",
+    re.IGNORECASE,
+)
+
+# Cap on LLM-proposed changes. The whole point of this pass is "surgical
+# layout-only edit" — letting the LLM rewrite half the deck defeats the
+# purpose and risks breaking content that the original generate-step got
+# right. 3 changes is enough to fix V1+V2 on a typical 9-slide deck.
+LAYOUT_REBALANCE_MAX_CHANGES = 3
+
+
+@dataclass(frozen=True)
+class LayoutViolation:
+    """One audit finding from `_audit_layout_distribution`.
+
+    Hard violations (V1, V2) trigger the rebalance LLM call. Soft
+    violations (V3, V4) are reported on candidates so the LLM has guidance
+    on WHICH slides to re-layout; firing alone they don't trigger a call.
+    """
+
+    kind: str  # "V1" | "V2" | "V3" | "V4_CONTENT" | "V4_TITLE"
+    severity: Literal["hard", "soft", "hint"]
+    slide_indices: list[int] = field(default_factory=list)
+    detail: str = ""
+
+
+def _audit_layout_distribution(
+    spec: SlidesSpec,
+    chunks_text: str,
+) -> list[LayoutViolation]:
+    """Deterministic audit of layout distribution on a validated SlidesSpec.
+
+    Pure function (no I/O, no LLM call). Walks the slides once and emits
+    violations per rule:
+
+    - V1 (hard): standard layout > 60% of slides.
+    - V2 (hard): chunks contain numeric content (percentages, F1-score,
+      N=xxx, big numbers) AND no slide uses `stat_callout`.
+    - V3 (soft): 3 or more consecutive `standard` slides. Each run becomes
+      its own violation, with the first slide of the run as the candidate
+      for re-layout.
+    - V4 (soft): slide title matches an enumeration keyword AND has 3+
+      bullets AND layout_kind is "standard". Each matching slide is its
+      own violation.
+
+    The caller decides whether to invoke `_rebalance_layouts` — typically
+    only when at least one HARD violation is present. Soft violations are
+    used to seed the candidate list for the LLM call.
+    """
+    violations: list[LayoutViolation] = []
+    slides = spec.slides
+    n = len(slides)
+    if n == 0:
+        return violations
+
+    # ── V1: standard layout proportion ──
+    standard_count = sum(1 for s in slides if s.layout_kind == "standard")
+    standard_ratio = standard_count / n
+    if standard_ratio > LAYOUT_STANDARD_MAX_RATIO:
+        violations.append(
+            LayoutViolation(
+                kind="V1",
+                severity="hard",
+                slide_indices=[
+                    i for i, s in enumerate(slides)
+                    if s.layout_kind == "standard"
+                ],
+                detail=(
+                    f"standard 比例 {standard_ratio:.0%} 超過上限 "
+                    f"{LAYOUT_STANDARD_MAX_RATIO:.0%}（{standard_count}/{n}）"
+                ),
+            )
+        )
+
+    # ── V2: numeric content without stat_callout ──
+    has_stat = any(s.layout_kind == "stat_callout" for s in slides)
+    if not has_stat and chunks_text and _NUMERIC_CONTENT_RE.search(chunks_text):
+        violations.append(
+            LayoutViolation(
+                kind="V2",
+                severity="hard",
+                slide_indices=[],  # no specific candidate; LLM picks
+                detail=(
+                    "Chunks 含關鍵數據（百分比/F1/N=…）但 spec 沒有任何 "
+                    "stat_callout 投影片"
+                ),
+            )
+        )
+
+    # ── V3: consecutive standard runs ──
+    run_start: int | None = None
+    run_len = 0
+    for i, s in enumerate(slides):
+        if s.layout_kind == "standard":
+            if run_start is None:
+                run_start = i
+                run_len = 1
+            else:
+                run_len += 1
+        else:
+            if run_start is not None and run_len >= LAYOUT_CONSECUTIVE_STANDARD_LIMIT:
+                violations.append(
+                    LayoutViolation(
+                        kind="V3",
+                        severity="soft",
+                        slide_indices=list(range(run_start, run_start + run_len)),
+                        detail=(
+                            f"連續 {run_len} 張 standard 投影片 "
+                            f"(slides {run_start}-{run_start + run_len - 1})"
+                        ),
+                    )
+                )
+            run_start = None
+            run_len = 0
+    # Trailing run at end of deck.
+    if run_start is not None and run_len >= LAYOUT_CONSECUTIVE_STANDARD_LIMIT:
+        violations.append(
+            LayoutViolation(
+                kind="V3",
+                severity="soft",
+                slide_indices=list(range(run_start, run_start + run_len)),
+                detail=(
+                    f"連續 {run_len} 張 standard 投影片 "
+                    f"(slides {run_start}-{run_start + run_len - 1})"
+                ),
+            )
+        )
+
+    # ── V4: enumeration title OR label-pattern bullets + 3+ bullets ──
+    #
+    # Round 2 used title-keyword only. Round 3 adds a primary CONTENT signal:
+    # if ≥70% of bullets follow the "<CJK label>: <description>" shape, the
+    # slide is an icon_rows candidate regardless of title wording. Empirically
+    # this rescues slides like 「執行摘要」 whose title carries no keyword but
+    # whose bullets are textbook icon_rows material.
+    #
+    # Round 4 Patch R: the LLM learned to dodge V4 by emitting
+    # layout_kind="image_focus" with image_kind="illustration" and no real
+    # image — visually identical to the standard-with-bullets case the
+    # audit was meant to catch. Treat that disguise as an audit candidate
+    # too. Real diagrams (diagram_dot present) and real images (image_ref
+    # present) remain exempt because they actually carry a visual asset.
+    for i, s in enumerate(slides):
+        is_disguise = False
+        if s.layout_kind == "standard":
+            pass  # original V4 path
+        elif (
+            s.layout_kind == "image_focus"
+            and getattr(s, "image_kind", None) == "illustration"
+            and not getattr(s, "image_ref", None)
+            and not getattr(s, "diagram_dot", None)
+        ):
+            # Fake image_focus: claims to be image-led but has no real
+            # image bound. Audit it with the same content rules as
+            # standard so it gets rebalanced into icon_rows / etc.
+            is_disguise = True
+        else:
+            continue
+        if len(s.bullets) < 3:
+            continue
+        title_low = s.title.lower()
+        matched_kw = next(
+            (kw for kw in _ENUMERATION_KEYWORDS if kw.lower() in title_low),
+            None,
+        )
+        title_match = matched_kw is not None
+
+        # Round 3 primary signal: bullet content pattern.
+        pattern_matches = sum(
+            1 for b in s.bullets if _LABEL_BULLET_RE.match(str(b))
+        )
+        pattern_match = (
+            pattern_matches / len(s.bullets) >= _LABEL_PATTERN_THRESHOLD
+        )
+
+        # Disguise slides bypass the title/pattern gate — the LLM has
+        # already declared intent to dodge the audit, so the layout
+        # itself is the violation regardless of bullet shape.
+        if not (title_match or pattern_match or is_disguise):
+            continue
+
+        # Round 6 Patch V: split V4 by signal strength so the audit's
+        # judgement aligns with what the rebalance LLM can actually act on.
+        #   - STRONG (V4_CONTENT, soft): bullets ARE label:description, or the
+        #     slide is an image_focus disguise. Mechanically convertible to
+        #     icon_rows → actionable → triggers rebalance.
+        #   - WEAK (V4_TITLE, hint): title merely contains an enumeration
+        #     keyword but the bullets are flowing narrative. Forcing icon_rows
+        #     would mean fabricating headings, so the LLM correctly refuses.
+        #     Logged for observability but never actioned.
+        # When both signals fire, content-pattern dominates (strong wins).
+        layout_marker = (
+            "image_focus_disguise" if is_disguise else "standard layout"
+        )
+        base_detail = (
+            f"slide #{i}「{s.title}」: {len(s.bullets)} bullets, {layout_marker}"
+        )
+
+        if pattern_match or is_disguise:
+            detail = base_detail
+            if pattern_match:
+                detail += f", bullet-pattern {pattern_matches}/{len(s.bullets)}"
+            if title_match:
+                detail += f", title-keyword '{matched_kw}'"
+            violations.append(
+                LayoutViolation(
+                    kind="V4_CONTENT",
+                    severity="soft",
+                    slide_indices=[i],
+                    detail=detail,
+                )
+            )
+        else:
+            # title_match only → weak hint.
+            violations.append(
+                LayoutViolation(
+                    kind="V4_TITLE",
+                    severity="hint",
+                    slide_indices=[i],
+                    detail=f"{base_detail}, title-keyword '{matched_kw}' (hint only)",
+                )
+            )
+
+    if violations:
+        logger.info(
+            "[H-DIAG] audit found %d violations: %s",
+            len(violations),
+            [
+                f"{v.kind}({v.severity})@{v.slide_indices}"
+                for v in violations
+            ],
+        )
+        for v in violations:
+            logger.info("[H-DIAG]   %s: %s", v.kind, v.detail)
+    else:
+        logger.info("[H-DIAG] audit found no violations")
+    return violations
+
+
+def _should_rebalance(violations: list[LayoutViolation]) -> bool:
+    """Decide whether to invoke the LLM rebalance pass.
+
+    Round 1 only fired on hard violations (V1, V2). Round 2 broadened this
+    on a count of soft V4. Round 6 Patch V re-aligns the trigger with the
+    split V4 signal:
+
+    Triggers (any one suffices):
+      - Any hard violation (V1 or V2) — original behaviour
+      - 1 or more V4_CONTENT violations — a single bullet-pattern (or
+        disguise) slide is an obvious icon_rows candidate worth fixing.
+
+    V4_TITLE violations are HINTS only: the title carries an enumeration
+    keyword but the bullets are flowing narrative, so the LLM correctly
+    refuses to restructure. They never trigger a rebalance call (the old
+    `v4_count >= 2` / `soft_count >= 3` thresholds caused false-positive
+    "rebalance failed" trails when the LLM rightly skipped such slides).
+    """
+    has_hard = any(v.severity == "hard" for v in violations)
+    content_v4 = sum(1 for v in violations if v.kind == "V4_CONTENT")
+    decision = has_hard or content_v4 >= 1
+    logger.info(
+        "[H-DIAG] should_rebalance: hard=%s v4_content=%d → %s",
+        has_hard, content_v4, decision,
+    )
+    return decision
+
+
+def _select_rebalance_candidates(
+    violations: list[LayoutViolation],
+) -> list[int]:
+    """Pick a focused candidate set of slide indices for the LLM to re-layout.
+
+    Strategy:
+    - All V4_CONTENT slides (label-pattern bullets / disguise — actionable).
+      V4_TITLE hints are excluded: the LLM would only decline them.
+    - First slide of each V3 run (1 representative per consecutive-standard
+      stretch — rebalancing that one slide breaks up the run).
+
+    Order: V4_CONTENT first (most specific), then V3 starters, deduped.
+    """
+    seen: set[int] = set()
+    ordered: list[int] = []
+    for v in violations:
+        if v.kind == "V4_CONTENT":
+            for idx in v.slide_indices:
+                if idx not in seen:
+                    seen.add(idx)
+                    ordered.append(idx)
+    for v in violations:
+        if v.kind == "V3" and v.slide_indices:
+            first = v.slide_indices[0]
+            if first not in seen:
+                seen.add(first)
+                ordered.append(first)
+    return ordered
+
+
+def _build_rebalance_prompt(
+    spec_dict: dict[str, Any],
+    violations: list[LayoutViolation],
+    chunks_text: str,
+    candidates: list[int],
+) -> tuple[str, str]:
+    """Render the focused (system, user) prompt for the rebalance LLM call.
+
+    Compact view per slide — only the metadata the LLM needs to choose a
+    new layout_kind. Title and bullets are read-only context; the prompt
+    instructs the LLM to ONLY change layout_kind and the matching payload.
+    """
+    slides = spec_dict.get("slides", [])
+    compact_slides = [
+        {
+            "slide_index": i,
+            "title": s.get("title", ""),
+            "layout_kind": s.get("layout_kind", "standard"),
+            "bullet_count": len(s.get("bullets", []) or []),
+        }
+        for i, s in enumerate(slides)
+    ]
+    violation_lines = [
+        f"- {v.kind}（{v.severity}）：{v.detail}"
+        for v in violations
+    ]
+    system = (
+        "你是 ANILA LM 的版型重新平衡助手。輸入是一份已通過 schema 驗證的 "
+        "SlidesSpec，以及一份違反「版型分佈規則」的清單。\n\n"
+        "**唯一任務：** 只改變指定投影片的 layout_kind 與對應 payload "
+        "（icon_rows / stat / two_column 等），**絕對不要動 title、"
+        "bullets、speaker_notes**。\n\n"
+        "輸出 JSON 物件，只包含一個 `changes` 陣列；每個元素形如：\n"
+        '  {"slide_index": int, "new_layout_kind": str, '
+        '"new_payload": {...}}\n\n'
+        "規則：\n"
+        f"1. 最多輸出 {LAYOUT_REBALANCE_MAX_CHANGES} 個 change，挑最關鍵的。\n"
+        "2. new_layout_kind 只能是：standard / section_break / "
+        "stat_callout / quote / two_column / icon_rows。\n"
+        "3. 改成 icon_rows 時，new_payload 必須含 `icon_rows` 欄位，"
+        "至少 3 列、每列 {concept, heading, description}。\n"
+        "4. 改成 stat_callout 時，new_payload 必須含 `stat` 欄位，"
+        "{value, label, supporting(≥20字)}。\n"
+        "5. 改成 two_column 時，new_payload 必須含 `columns` 欄位，"
+        "2 個 column、每個至少 3 個 bullet。\n"
+        "6. 若違規 detail 含 `image_focus_disguise`（layout_kind=image_focus 但"
+        "沒有 image_ref/diagram_dot 的偽裝）：必改成 icon_rows，把 bullets 轉成"
+        " 3-4 列 {concept, heading, description}（concept 用英文），同時"
+        "清掉 image_kind/image_ref/image_prompt/diagram_dot，保留 speaker_notes。\n"
+        "7. 不要改的投影片直接不要出現在 changes 陣列。\n\n"
+        "輸出第一字 {、最後字 }、不可前言、不可代碼塊。"
+    )
+    # Trim chunks_text — we only need the LLM to see roughly what data is
+    # available, not the full retrieval payload.
+    chunks_preview = (chunks_text or "")[:1500]
+    user_msg = (
+        f"違規清單：\n" + "\n".join(violation_lines) + "\n\n"
+        f"建議優先重新選版的候選 slide_index：{candidates}\n\n"
+        f"目前各投影片版型概況：\n"
+        f"{json.dumps(compact_slides, ensure_ascii=False, indent=2)}\n\n"
+        f"原始素材摘要（前 1500 字）：\n{chunks_preview}"
+    )
+    return system, user_msg
+
+
+async def _call_llm_for_rebalance(
+    prompt: tuple[str, str],
+    *,
+    db: Session,
+    user: User,
+) -> dict[str, Any]:
+    """Thin wrapper around ``_call_llm_chat`` for the rebalance pass.
+
+    Extracted as its own helper so tests can mock the LLM round-trip
+    without standing up the full proxy / model registry. Returns the
+    parsed JSON dict (caller validates the `changes` shape).
+    """
+    system, user_msg = prompt
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user_msg},
+    ]
+    raw = await _call_llm_chat(
+        db, user, SLIDES_LLM_MODEL, messages, temperature=0.2,
+    )
+    logger.info(
+        "[H-DIAG] rebalance LLM raw response (first 2KB): %s",
+        str(raw)[:2000],
+    )
+    try:
+        extracted = _extract_json_object(raw)
+        parsed = _loads_lenient(extracted)
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning("[H-DIAG] rebalance JSON parse failed: %s", exc)
+        raise
+    if not isinstance(parsed, dict):
+        raise ValueError("rebalance LLM did not return a JSON object")
+    changes = parsed.get("changes", [])
+    if isinstance(changes, list):
+        logger.info(
+            "[H-DIAG] rebalance proposed %d changes: %s",
+            len(changes),
+            [
+                f"slide{c.get('slide_index')}→{c.get('new_layout_kind')}"
+                for c in changes
+                if isinstance(c, dict)
+            ],
+        )
+    else:
+        logger.warning(
+            "[H-DIAG] rebalance parsed but `changes` is not a list: %r",
+            changes,
+        )
+    return parsed
+
+
+# Payload field name keyed by layout_kind. When the LLM emits a change,
+# we read the matching key out of `new_payload` and write it on the slide
+# (also clearing the previous layout's payload to keep the spec clean).
+_LAYOUT_PAYLOAD_FIELDS = {
+    "standard": None,
+    "section_break": None,
+    "stat_callout": "stat",
+    "quote": "quote",
+    "two_column": "columns",
+    "icon_rows": "icon_rows",
+    "image_focus": None,
+}
+
+
+def _apply_rebalance_change(
+    spec_dict: dict[str, Any],
+    change: dict[str, Any],
+) -> bool:
+    """Apply one LLM change to spec_dict in place. Returns True on success.
+
+    Defensive: any malformed change (missing keys, out-of-range index,
+    unknown layout_kind) is logged and skipped — we never raise from
+    inside the apply loop because one bad change shouldn't tank the
+    whole rebalance pass.
+    """
+    try:
+        idx = int(change.get("slide_index", -1))
+    except (TypeError, ValueError):
+        logger.warning(
+            "[H-DIAG] change FAILED to apply (missing slide_index): %r",
+            change,
+        )
+        return False
+    new_layout = change.get("new_layout_kind", "").strip().lower().replace("-", "_")
+    new_payload = change.get("new_payload") or {}
+
+    slides = spec_dict.get("slides", [])
+    if not (0 <= idx < len(slides)):
+        logger.warning(
+            "[H-DIAG] change FAILED to apply (slide_index %s out of range)"
+            "\n  raw change: %r",
+            idx, change,
+        )
+        return False
+    if new_layout not in _LAYOUT_PAYLOAD_FIELDS:
+        logger.warning(
+            "[H-DIAG] change FAILED to apply (unknown layout_kind %r)"
+            "\n  raw change: %r",
+            new_layout, change,
+        )
+        return False
+
+    target = slides[idx]
+    old_layout = target.get("layout_kind", "standard")
+    target["layout_kind"] = new_layout
+
+    # Clear all layout-specific payload keys then set the new one. Keeping
+    # leftovers around is harmless (Pydantic ignores them on the wrong
+    # layout_kind) but makes the spec dict ambiguous to inspect.
+    for field_name in ("stat", "quote", "columns", "icon_rows"):
+        target.pop(field_name, None)
+
+    payload_field = _LAYOUT_PAYLOAD_FIELDS[new_layout]
+    if payload_field is not None:
+        # Accept either the named field nested in new_payload or
+        # new_payload itself being the payload object.
+        value = new_payload.get(payload_field, new_payload)
+        target[payload_field] = value
+    logger.info(
+        "[H-DIAG] applied change to slide %d: %s → %s",
+        idx, old_layout, new_layout,
+    )
+    return True
+
+
+async def _rebalance_layouts(
+    spec_dict: dict[str, Any],
+    violations: list[LayoutViolation],
+    chunks_text: str,
+    *,
+    db: Session,
+    user: User,
+) -> dict[str, Any]:
+    """Run the focused LLM rebalance pass and return an updated spec_dict.
+
+    Contract:
+    - Caps applied changes at `LAYOUT_REBALANCE_MAX_CHANGES`.
+    - Re-validates the resulting spec via `SlidesSpec.model_validate`.
+      If validation fails, the original spec_dict is returned (caller
+      proceeds with the un-rebalanced spec, gracefully degrades).
+    - Re-audits after applying; if V1 STILL violates, logs a warning and
+      returns the (best-effort) rebalanced dict anyway. User prefers a
+      slightly-imperfect deck over a 502.
+    """
+    # Round 6 Patch V: hint violations (V4_TITLE) are informational only.
+    # Listing them in the prompt just makes the LLM waste tokens explaining
+    # why it won't restructure flowing-narrative bullets. Drop them, and if
+    # nothing actionable remains, skip the LLM call entirely.
+    actionable = [v for v in violations if v.severity != "hint"]
+    if not actionable:
+        logger.info(
+            "[H-DIAG] rebalance skipped: only hint violations present"
+        )
+        return spec_dict
+
+    candidates = _select_rebalance_candidates(actionable)
+    prompt = _build_rebalance_prompt(
+        spec_dict, actionable, chunks_text, candidates,
+    )
+    logger.info(
+        "[H-DIAG] rebalance LLM call: prompt_len=%d, n_actionable=%d",
+        len(prompt[0]) + len(prompt[1]), len(actionable),
+    )
+    try:
+        result = await _call_llm_for_rebalance(prompt, db=db, user=user)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("rebalance LLM call failed: %s", exc)
+        return spec_dict
+
+    raw_changes = result.get("changes")
+    if not isinstance(raw_changes, list):
+        logger.warning("rebalance: response missing `changes` list: %r", result)
+        return spec_dict
+
+    # Cap before applying — we don't even want to evaluate changes beyond
+    # the cap, in case a malformed-but-valid change in slot 4 wastes log
+    # noise.
+    capped = raw_changes[:LAYOUT_REBALANCE_MAX_CHANGES]
+    if len(raw_changes) > LAYOUT_REBALANCE_MAX_CHANGES:
+        logger.info(
+            "rebalance: capping %d proposed changes to %d",
+            len(raw_changes), LAYOUT_REBALANCE_MAX_CHANGES,
+        )
+
+    # Apply on a deep copy so a Pydantic-validation failure leaves the
+    # original spec_dict intact for the caller's fallback path.
+    candidate_dict = json.loads(json.dumps(spec_dict))
+    applied = 0
+    for change in capped:
+        if not isinstance(change, dict):
+            continue
+        if _apply_rebalance_change(candidate_dict, change):
+            applied += 1
+
+    if applied == 0:
+        logger.info("rebalance: no changes applied (LLM returned empty / invalid set)")
+        # Even with 0 applied changes, fall through to the post-audit so
+        # callers see the warning path consistently.
+
+    try:
+        new_spec = SlidesSpec.model_validate(candidate_dict)
+    except ValidationError as exc:
+        logger.warning(
+            "rebalance: post-apply spec validation failed (%s);"
+            " keeping original spec",
+            exc,
+        )
+        return spec_dict
+
+    # Re-audit. V1 STILL violated → log and continue. We deliberately
+    # don't raise — degrading gracefully is the explicit product choice.
+    # Note: this call re-enters _audit_layout_distribution so position-1
+    # [H-DIAG] log will appear a second time in the trail. Time order in
+    # the log makes the post-rebalance pass obvious.
+    post_violations = _audit_layout_distribution(new_spec, chunks_text)
+    pre_content = sum(1 for v in violations if v.kind == "V4_CONTENT")
+    post_content = sum(1 for v in post_violations if v.kind == "V4_CONTENT")
+    post_hint = sum(1 for v in post_violations if v.kind == "V4_TITLE")
+    logger.info(
+        "[H-DIAG] post-rebalance audit: V4_CONTENT %d→%d, V4_TITLE %d (hints)",
+        pre_content, post_content, post_hint,
+    )
+    if any(v.kind == "V1" for v in post_violations):
+        logger.warning(
+            "rebalance: V1 (standard > %d%%) still violates after %d changes"
+            " — proceeding with rebalanced spec anyway",
+            int(LAYOUT_STANDARD_MAX_RATIO * 100),
+            applied,
+        )
+
+    return new_spec.model_dump(mode="json")
 
 
 # ── Pipeline runner (used by the job manager) ────────────────────────────
@@ -1295,9 +2415,54 @@ async def _run_pipeline(
         # structural integrity check has already passed) and BEFORE render
         # / vision QA (so all downstream steps see clean Traditional Chinese).
         spec = normalize_spec(spec)
+        # Round 3 Patch P: apply theme_override after spec is validated.
+        # Bypasses LLM theme selection per the API request. Applied here
+        # (post-validation, pre-rebalance, pre-render) so all downstream
+        # steps — rebalance, render, vision QA — see the forced theme.
+        # Literal on the request schema already rejected invalid values
+        # at request time, so we trust the value unconditionally here.
+        if payload.theme_override:
+            spec.theme = payload.theme_override
+        else:
+            # Round 5 Patch U: deterministic title-keyword override.
+            # Promotes title-based theme routing from a prompt-soft rule
+            # to a hard programmatic override. Runs AFTER LLM emits theme
+            # and AFTER theme_override (user wins over inference). Only
+            # fires when title matches a high-confidence keyword; no-op
+            # otherwise (preserves LLM choice). Must run before audit /
+            # rebalance / render so all downstream steps see the final
+            # theme.
+            spec = _apply_theme_title_override(spec)
         # Surface the title early so the UI can show "鑄造中：<title>"
         # before render finishes.
         await updater.set(title=spec.title, slide_count=len(spec.slides))
+
+        # ── Step 6.7 / Studio Fix 1: layout audit + LLM rebalance ──
+        # Run the deterministic audit on the validated spec. If a HARD
+        # violation fires (standard > 60% / numeric content without
+        # stat_callout), make ONE focused LLM call to re-select layout
+        # on a small candidate set. Soft violations alone don't trigger.
+        # Skip the whole pass on the fallback deck (its job is "explain
+        # the failure", not "look good") and on skip_retrieval (no
+        # chunks_text to feed V2).
+        if not used_fallback:
+            chunks_str = "\n\n".join(
+                str(c.get("content", "")) for c in chunks
+            )
+            violations = _audit_layout_distribution(spec, chunks_text=chunks_str)
+            if _should_rebalance(violations):
+                await updater.set(step=JOB_STEP_REBALANCING)
+                try:
+                    spec_dict = spec.model_dump(mode="json")
+                    rebalanced = await _rebalance_layouts(
+                        spec_dict, violations, chunks_str, db=db, user=user,
+                    )
+                    spec = SlidesSpec.model_validate(rebalanced)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Rebalance failed: %s — proceeding with original spec",
+                        exc,
+                    )
 
         # ── Step 7: render ──
         await updater.set(step=JOB_STEP_RENDERING)
@@ -1318,7 +2483,9 @@ async def _run_pipeline(
                     step=JOB_STEP_QA,
                     qa_passes=qa_passes,
                 )
-                defects = await _visual_qa(db, user, pptx_path)
+                defects = await _visual_qa(
+                    db, user, pptx_path, pptx_bytes=pptx_bytes,
+                )
                 critical = [d for d in defects if d.severity == "critical"]
                 if not critical or qa_passes > VISUAL_QA_PASSES:
                     final_defects = defects

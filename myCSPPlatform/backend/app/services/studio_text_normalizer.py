@@ -37,6 +37,7 @@ opencc-python-reimplemented 是純 Python 實作，不依賴系統 libopencc。
 from __future__ import annotations
 
 import logging
+import re
 from functools import lru_cache
 from typing import Any
 
@@ -54,6 +55,148 @@ from app.schemas.studio import (
 logger = logging.getLogger(__name__)
 
 
+# Round 3 Patch I — LaTeX math-mode strip
+#
+# gemma4 occasionally emits LaTeX (`$\rightarrow$`) instead of the Unicode
+# arrow (`→`) when reasoning about flows. The renderer prints LaTeX verbatim
+# because pptxgenjs has no math support; v3 slide 12 showed raw `$\rightarrow$`.
+# Catch common commands with an explicit table + a bounded generic fallback.
+_LATEX_REPLACEMENTS = {
+    # Arrows
+    r"\$\\rightarrow\$": "→",
+    r"\$\\leftarrow\$":  "←",
+    r"\$\\Rightarrow\$": "⇒",
+    r"\$\\Leftarrow\$":  "⇐",
+    r"\$\\leftrightarrow\$": "↔",
+    r"\$\\to\$":         "→",
+    r"\$\\gets\$":       "←",
+    r"\$\\mapsto\$":     "↦",
+    # Math operators
+    r"\$\\times\$":      "×",
+    r"\$\\div\$":        "÷",
+    r"\$\\pm\$":         "±",
+    r"\$\\approx\$":     "≈",
+    r"\$\\equiv\$":      "≡",
+    r"\$\\neq\$":        "≠",
+    r"\$\\geq\$":        "≥",
+    r"\$\\leq\$":        "≤",
+    r"\$\\sim\$":        "~",
+    r"\$\\cdot\$":       "·",
+    # Greek (common in ML papers)
+    r"\$\\alpha\$":      "α",
+    r"\$\\beta\$":       "β",
+    r"\$\\gamma\$":      "γ",
+    r"\$\\delta\$":      "δ",
+    r"\$\\epsilon\$":    "ε",
+    r"\$\\theta\$":      "θ",
+    r"\$\\lambda\$":     "λ",
+    r"\$\\mu\$":         "μ",
+    r"\$\\pi\$":         "π",
+    r"\$\\sigma\$":      "σ",
+    r"\$\\tau\$":        "τ",
+    r"\$\\phi\$":        "φ",
+    r"\$\\omega\$":      "ω",
+    r"\$\\Sigma\$":      "Σ",
+    r"\$\\Delta\$":      "Δ",
+    # Misc
+    r"\$\\infty\$":      "∞",
+    r"\$\\partial\$":    "∂",
+    r"\$\\nabla\$":      "∇",
+}
+
+# Round 4 Patch S: JSON-eaten control-char fallbacks.
+#
+# When gemma4 emits LaTeX like "$\rightarrow$" in JSON string content,
+# the JSON parser interprets `\r`, `\t`, `\n` as actual control chars
+# (CR/TAB/LF) BEFORE this normalizer sees the text. The literal-LaTeX
+# regex in _LATEX_REPLACEMENTS never matches because the backslash is
+# already gone. These string-level replacements catch the post-parse
+# residue.
+_LATEX_BROKEN_CHAR_REPLACEMENTS = {
+    # \r → CR (most common with $\rightarrow$ in JSON)
+    "$\rightarrow$": "→",   # CR between $ and "ightarrow"
+    "$\rightarrow":  "→",   # unclosed variant
+    # \t → TAB
+    "$\tightarrow$": "→",
+    "$\tightarrow":  "→",
+    # \n → LF
+    "$\nightarrow$": "→",
+    "$\nightarrow":  "→",
+    # \v, \f, \b — same family
+    "$\vightarrow$": "→",
+    "$\fightarrow$": "→",
+    "$\bightarrow$": "→",
+    # Backslash-eaten Greek letters
+    "$\theta$":     "θ",    # $ + TAB + "heta" + $
+    "$\nu$":        "ν",    # $ + LF + "u" + $
+}
+
+# Generic fallback: strip dollar wrappers and keep inner. Bounded to avoid
+# eating wide swaths of text on mismatched dollars.
+_GENERIC_LATEX_RE = re.compile(r"\$([^\$\n]{1,80})\$")
+
+
+# Round 4 Patch Q: RAG citation markers at end of bullets.
+#
+# Pattern variants observed in production:
+#   "(參 [5])"       half-width parens, half-width brackets
+#   "（參 [5]）"     full-width parens, half-width brackets
+#   "(參 [12])"      multi-digit
+#   "( 參 [5] )"     with internal whitespace
+#   "(參考 [5])"     alternative wording
+#
+# These belong in speaker_notes (already populated by the LLM with chunk
+# reference info), not on the visible slide. Strip end-anchored occurrences
+# only — intra-text citations like "如 (參 [5]) 所述" are rare and harder
+# to safely auto-strip, so we leave them.
+_CITATION_RE = re.compile(
+    r"\s*[\(（]\s*參(?:考)?\s*[\[【]\s*\d+\s*[\]】]\s*[\)）]\s*$",
+)
+
+
+def strip_inline_citations(text: str | None) -> str | None:
+    """Remove RAG citation markers (e.g. '(參 [5])') from end of text.
+
+    Up to 3 consecutive end-anchored citation tokens are stripped (some
+    bullets cite multiple chunks: '...部署 (參 [5]) (參 [10])'). Idempotent.
+    Safe on empty / None input.
+    """
+    if not text:
+        return text
+    text = str(text)
+    for _ in range(3):
+        new = _CITATION_RE.sub("", text).rstrip()
+        if new == text:
+            break
+        text = new
+    return text
+
+
+def strip_latex(text: str | None) -> str | None:
+    """Replace LaTeX math-mode strings with Unicode / plain equivalents.
+
+    gemma4 occasionally emits ``$\\rightarrow$`` instead of ``→`` when
+    reasoning about flows. The renderer prints LaTeX verbatim because
+    pptxgenjs has no math support. Catches common commands + a generic
+    fallback that strips bare dollar wrappers.
+
+    Pure function. Safe on empty / None input.
+    """
+    if not text:
+        return text
+    text = str(text)
+    # Round 4 Patch S: handle JSON-eaten control chars FIRST. Literal
+    # string replacements because the broken characters are real
+    # CR/TAB/LF in the data.
+    for broken, fixed in _LATEX_BROKEN_CHAR_REPLACEMENTS.items():
+        text = text.replace(broken, fixed)
+    # Existing regex-based replacements (Round 3 Patch I).
+    for pattern, replacement in _LATEX_REPLACEMENTS.items():
+        text = re.sub(pattern, replacement, text)
+    text = _GENERIC_LATEX_RE.sub(r"\1", text)
+    return text
+
+
 # OpenCC instances are cheap to create but the dictionary load is ~30-50 ms.
 # Cache so repeated normalize() calls share one warm instance per process.
 @lru_cache(maxsize=1)
@@ -61,14 +204,30 @@ def _get_converter() -> OpenCC:
     return OpenCC("s2twp")
 
 
-def _convert(text: str | None) -> str | None:
-    """Run a single string through OpenCC s2twp; pass through None unchanged.
+def _convert(text: str | None, keep_citations: bool = False) -> str | None:
+    """Run a single string through citation strip + LaTeX strip + OpenCC s2twp.
+
+    Order matters:
+      1. ``strip_inline_citations`` runs first (Round 4 Patch Q) so we
+         remove RAG bracket markers like ``(參 [5])`` from end of slide
+         text. Citation is end-anchored and doesn't interfere with LaTeX
+         anywhere — order between (1) and (2) is logically interchangeable
+         but we keep it deterministic.
+      2. ``strip_latex`` runs next so downstream OpenCC and any future
+         regex transforms see plain Unicode rather than ``$\\rightarrow$``.
+
+    ``keep_citations=True`` is used for ``speaker_notes`` only — the audit
+    trail (which chunk a bullet came from) MUST be preserved in notes
+    even though it's stripped from visible slide text.
 
     Empty strings stay empty (the converter would return "" too, but we
     short-circuit to skip the dict lookup).
     """
     if text is None or text == "":
         return text
+    if not keep_citations:
+        text = strip_inline_citations(text)  # Round 4 Patch Q: (參 [5]) → ""
+    text = strip_latex(text)  # Round 3 Patch I: $\rightarrow$ → →
     converter = _get_converter()
     converted = converter.convert(text)
     return converted
@@ -85,7 +244,10 @@ def _normalize_slide(slide: Slide) -> Slide:
     patch: dict[str, Any] = {
         "title": _convert(slide.title),
         "bullets": [_convert(b) or "" for b in slide.bullets],
-        "speaker_notes": _convert(slide.speaker_notes),
+        # Round 4 Patch Q: speaker_notes keeps RAG citations for audit trail
+        # (the LLM populates these with chunk references); only visible slide
+        # text gets citations stripped.
+        "speaker_notes": _convert(slide.speaker_notes, keep_citations=True),
     }
 
     if slide.stat is not None:
