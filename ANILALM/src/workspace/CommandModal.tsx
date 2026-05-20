@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTheme } from '../theme/ThemeContext'
 import { useWorkspaceStore } from '../store/workspace'
 import { useArtifactStore } from '../store/artifacts'
@@ -9,6 +9,7 @@ import { generateReport, generateSlides } from '../studio/generators'
 import { createSlidesJob } from '../api/studio'
 import { explainError } from '../api/client'
 import { ThemePicker } from './ThemePicker'
+import { StudioWizard } from './StudioWizard'
 import type { ThemeId } from '../studio/themes'
 import type { SlidesArtifact, StudioArtifact } from '../types'
 
@@ -61,6 +62,16 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
   const [extra, setExtra] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  // Wizard (Phase B) vs picker (Phase A) for the theme step. Default to
+  // wizard so first-time users get the lowest-friction guided flow;
+  // remember the user's last choice across sessions.
+  const [mode, setMode] = useState<'wizard' | 'picker'>(
+    () => (localStorage.getItem('studio.theme-mode') as 'wizard' | 'picker') ?? 'wizard'
+  )
+
+  useEffect(() => {
+    localStorage.setItem('studio.theme-mode', mode)
+  }, [mode])
 
   const presets = format ? PRESETS[format.k] ?? [] : []
   const isSupported = format?.k === 'report' || format?.k === 'slides'
@@ -80,6 +91,24 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
     setThemeId('auto')
     setExtra('')
     setErr(null)
+  }
+
+  // Wizard finished: adopt the recommended theme, fold the (≤2) implicit
+  // B.4 instructions into whatever the user already typed without
+  // clobbering it, then advance to the supplementary-instructions step.
+  const onWizardComplete = (id: ThemeId, wizardExtra: string[]) => {
+    setThemeId(id)
+    if (wizardExtra.length > 0) {
+      setExtra((prev) => {
+        const existing = prev.trim()
+        // Skip lines that are already present so re-running the wizard
+        // doesn't duplicate them.
+        const additions = wizardExtra.filter((line) => !existing.includes(line))
+        if (additions.length === 0) return prev
+        return existing ? `${existing}\n${additions.join('\n')}` : additions.join('\n')
+      })
+    }
+    setStep(extraStep)
   }
 
   const close = () => {
@@ -342,10 +371,53 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
             >
               02 · 選擇視覺風格
             </div>
-            <div style={{ fontSize: 11.5, color: t.textMuted, lineHeight: 1.55, marginBottom: 12 }}>
-              選「自動偵測」由系統依文件 title 與內容判斷；或直接挑一個你想要的風格。
+            {/* Wizard / picker mode toggle */}
+            <div
+              style={{
+                display: 'inline-flex',
+                gap: 2,
+                padding: 2,
+                borderRadius: 8,
+                background: t.surface2,
+                border: `1px solid ${t.border}`,
+                marginBottom: 12,
+              }}
+            >
+              {(['wizard', 'picker'] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setMode(m)}
+                  aria-pressed={mode === m}
+                  style={{
+                    padding: '5px 12px',
+                    borderRadius: 6,
+                    border: 'none',
+                    background: mode === m ? t.accent : 'transparent',
+                    color: mode === m ? '#fff' : t.textMuted,
+                    fontSize: 12,
+                    fontWeight: 500,
+                    cursor: 'pointer',
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  {m === 'wizard' ? '精靈模式' : '進階模式'}
+                </button>
+              ))}
             </div>
-            <ThemePicker selected={themeId} onSelect={setThemeId} />
+            {mode === 'wizard' ? (
+              <StudioWizard
+                onComplete={onWizardComplete}
+                onManualPick={() => setMode('picker')}
+              />
+            ) : (
+              <>
+                <div style={{ fontSize: 11.5, color: t.textMuted, lineHeight: 1.55, marginBottom: 12 }}>
+                  選「自動偵測」由系統依文件 title 與內容判斷；或直接挑一個你想要的風格。
+                </div>
+                <ThemePicker selected={themeId} onSelect={setThemeId} />
+              </>
+            )}
           </>
         ) : (
           <>
@@ -480,7 +552,10 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
                   上一步
                 </button>
               )}
-              {step < extraStep && (
+              {/* Hide the generic "繼續" on the theme step while the wizard
+                  is active — the wizard drives its own advancement via
+                  onComplete. The picker still needs this button. */}
+              {step < extraStep && !(isSlides && step === themeStep && mode === 'wizard') && (
                 <button
                   onClick={() => setStep(step + 1)}
                   style={{
