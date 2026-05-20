@@ -55,7 +55,7 @@ def _baseline_violations() -> list[LayoutViolation]:
             detail="standard 比例 100% 超過上限 60%（2/2）",
         ),
         LayoutViolation(
-            kind="V4",
+            kind="V4_CONTENT",
             severity="soft",
             slide_indices=[0],
             detail="slide 0 標題含列舉關鍵字 '三大'、3 個 bullet、layout=standard",
@@ -184,17 +184,18 @@ async def test_rebalance_logs_warning_when_v1_still_violated(mock_call, caplog):
 
 
 def test_should_rebalance_fires_on_two_v4():
-    """Round 2: 2+ V4 violations should trigger rebalance even without V1/V2."""
+    """Round 6: V4_CONTENT violations trigger rebalance even without V1/V2."""
     violations = [
-        LayoutViolation(kind="V4", severity="soft", slide_indices=[3], detail=""),
-        LayoutViolation(kind="V4", severity="soft", slide_indices=[7], detail=""),
+        LayoutViolation(kind="V4_CONTENT", severity="soft", slide_indices=[3], detail=""),
+        LayoutViolation(kind="V4_CONTENT", severity="soft", slide_indices=[7], detail=""),
     ]
     assert _should_rebalance(violations) is True
 
 
-def test_should_not_rebalance_on_single_v4():
+def test_should_not_rebalance_on_single_title_hint():
+    """Round 6: a lone V4_TITLE hint is never actionable → no rebalance."""
     violations = [
-        LayoutViolation(kind="V4", severity="soft", slide_indices=[3], detail=""),
+        LayoutViolation(kind="V4_TITLE", severity="hint", slide_indices=[3], detail=""),
     ]
     assert _should_rebalance(violations) is False
 
@@ -206,10 +207,14 @@ def test_should_rebalance_on_v1_alone():
     assert _should_rebalance(violations) is True
 
 
-def test_should_rebalance_on_three_soft_total():
+def test_should_not_rebalance_on_soft_v3_and_title_hints():
+    """Round 6: V3 runs + V4_TITLE hints carry no actionable signal → no call.
+
+    The old `soft_count >= 3` trigger is gone; only V4_CONTENT or hard fire.
+    """
     violations = [
         LayoutViolation(kind="V3", severity="soft", slide_indices=[2], detail=""),
-        LayoutViolation(kind="V4", severity="soft", slide_indices=[5], detail=""),
+        LayoutViolation(kind="V4_TITLE", severity="hint", slide_indices=[5], detail=""),
         LayoutViolation(kind="V3", severity="soft", slide_indices=[8], detail=""),
     ]
-    assert _should_rebalance(violations) is True
+    assert _should_rebalance(violations) is False

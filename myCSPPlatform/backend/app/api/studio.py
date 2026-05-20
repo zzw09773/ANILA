@@ -1740,8 +1740,8 @@ class LayoutViolation:
     on WHICH slides to re-layout; firing alone they don't trigger a call.
     """
 
-    kind: str  # "V1" | "V2" | "V3" | "V4"
-    severity: Literal["hard", "soft"]
+    kind: str  # "V1" | "V2" | "V3" | "V4_CONTENT" | "V4_TITLE"
+    severity: Literal["hard", "soft", "hint"]
     slide_indices: list[int] = field(default_factory=list)
     detail: str = ""
 
@@ -1901,27 +1901,47 @@ def _audit_layout_distribution(
         if not (title_match or pattern_match or is_disguise):
             continue
 
+        # Round 6 Patch V: split V4 by signal strength so the audit's
+        # judgement aligns with what the rebalance LLM can actually act on.
+        #   - STRONG (V4_CONTENT, soft): bullets ARE label:description, or the
+        #     slide is an image_focus disguise. Mechanically convertible to
+        #     icon_rows → actionable → triggers rebalance.
+        #   - WEAK (V4_TITLE, hint): title merely contains an enumeration
+        #     keyword but the bullets are flowing narrative. Forcing icon_rows
+        #     would mean fabricating headings, so the LLM correctly refuses.
+        #     Logged for observability but never actioned.
+        # When both signals fire, content-pattern dominates (strong wins).
         layout_marker = (
             "image_focus_disguise" if is_disguise else "standard layout"
         )
-        detail_bits = [
-            f"slide #{i}「{s.title}」: {len(s.bullets)} bullets, {layout_marker}",
-        ]
-        if title_match:
-            detail_bits.append(f"title-keyword '{matched_kw}'")
-        if pattern_match:
-            detail_bits.append(
-                f"bullet-pattern {pattern_matches}/{len(s.bullets)}"
-            )
-
-        violations.append(
-            LayoutViolation(
-                kind="V4",
-                severity="soft",
-                slide_indices=[i],
-                detail=", ".join(detail_bits),
-            )
+        base_detail = (
+            f"slide #{i}「{s.title}」: {len(s.bullets)} bullets, {layout_marker}"
         )
+
+        if pattern_match or is_disguise:
+            detail = base_detail
+            if pattern_match:
+                detail += f", bullet-pattern {pattern_matches}/{len(s.bullets)}"
+            if title_match:
+                detail += f", title-keyword '{matched_kw}'"
+            violations.append(
+                LayoutViolation(
+                    kind="V4_CONTENT",
+                    severity="soft",
+                    slide_indices=[i],
+                    detail=detail,
+                )
+            )
+        else:
+            # title_match only → weak hint.
+            violations.append(
+                LayoutViolation(
+                    kind="V4_TITLE",
+                    severity="hint",
+                    slide_indices=[i],
+                    detail=f"{base_detail}, title-keyword '{matched_kw}' (hint only)",
+                )
+            )
 
     if violations:
         logger.info(
@@ -1942,26 +1962,27 @@ def _audit_layout_distribution(
 def _should_rebalance(violations: list[LayoutViolation]) -> bool:
     """Decide whether to invoke the LLM rebalance pass.
 
-    Round 1 only fired on hard violations (V1, V2). Round 2 broadens this
-    because empirical data shows decks can pass V1 (standard ratio ≤ 60%)
-    yet still contain obvious icon_rows misses captured as V4.
+    Round 1 only fired on hard violations (V1, V2). Round 2 broadened this
+    on a count of soft V4. Round 6 Patch V re-aligns the trigger with the
+    split V4 signal:
 
     Triggers (any one suffices):
       - Any hard violation (V1 or V2) — original behaviour
-      - 2 or more V4 violations (enumeration title + standard layout)
-      - Total soft violations (V3 + V4) >= 3
+      - 1 or more V4_CONTENT violations — a single bullet-pattern (or
+        disguise) slide is an obvious icon_rows candidate worth fixing.
 
-    Rationale for the V4 threshold: a single V4 candidate could be a
-    legitimate standard slide that happens to have an enumeration word
-    in its title; two or more is a pattern, not noise.
+    V4_TITLE violations are HINTS only: the title carries an enumeration
+    keyword but the bullets are flowing narrative, so the LLM correctly
+    refuses to restructure. They never trigger a rebalance call (the old
+    `v4_count >= 2` / `soft_count >= 3` thresholds caused false-positive
+    "rebalance failed" trails when the LLM rightly skipped such slides).
     """
     has_hard = any(v.severity == "hard" for v in violations)
-    v4_count = sum(1 for v in violations if v.kind == "V4")
-    soft_count = sum(1 for v in violations if v.severity == "soft")
-    decision = has_hard or v4_count >= 2 or soft_count >= 3
+    content_v4 = sum(1 for v in violations if v.kind == "V4_CONTENT")
+    decision = has_hard or content_v4 >= 1
     logger.info(
-        "[H-DIAG] should_rebalance: hard=%s v4=%d soft=%d → %s",
-        has_hard, v4_count, soft_count, decision,
+        "[H-DIAG] should_rebalance: hard=%s v4_content=%d → %s",
+        has_hard, content_v4, decision,
     )
     return decision
 
@@ -1972,16 +1993,17 @@ def _select_rebalance_candidates(
     """Pick a focused candidate set of slide indices for the LLM to re-layout.
 
     Strategy:
-    - All V4 slides (enumeration title + 3+ bullets + standard).
+    - All V4_CONTENT slides (label-pattern bullets / disguise — actionable).
+      V4_TITLE hints are excluded: the LLM would only decline them.
     - First slide of each V3 run (1 representative per consecutive-standard
       stretch — rebalancing that one slide breaks up the run).
 
-    Order: V4 first (most specific), then V3 starters, deduped.
+    Order: V4_CONTENT first (most specific), then V3 starters, deduped.
     """
     seen: set[int] = set()
     ordered: list[int] = []
     for v in violations:
-        if v.kind == "V4":
+        if v.kind == "V4_CONTENT":
             for idx in v.slide_indices:
                 if idx not in seen:
                     seen.add(idx)
@@ -2205,13 +2227,24 @@ async def _rebalance_layouts(
       returns the (best-effort) rebalanced dict anyway. User prefers a
       slightly-imperfect deck over a 502.
     """
-    candidates = _select_rebalance_candidates(violations)
+    # Round 6 Patch V: hint violations (V4_TITLE) are informational only.
+    # Listing them in the prompt just makes the LLM waste tokens explaining
+    # why it won't restructure flowing-narrative bullets. Drop them, and if
+    # nothing actionable remains, skip the LLM call entirely.
+    actionable = [v for v in violations if v.severity != "hint"]
+    if not actionable:
+        logger.info(
+            "[H-DIAG] rebalance skipped: only hint violations present"
+        )
+        return spec_dict
+
+    candidates = _select_rebalance_candidates(actionable)
     prompt = _build_rebalance_prompt(
-        spec_dict, violations, chunks_text, candidates,
+        spec_dict, actionable, chunks_text, candidates,
     )
     logger.info(
-        "[H-DIAG] rebalance LLM call: prompt_len=%d, n_violations=%d",
-        len(prompt[0]) + len(prompt[1]), len(violations),
+        "[H-DIAG] rebalance LLM call: prompt_len=%d, n_actionable=%d",
+        len(prompt[0]) + len(prompt[1]), len(actionable),
     )
     try:
         result = await _call_llm_for_rebalance(prompt, db=db, user=user)
@@ -2265,11 +2298,12 @@ async def _rebalance_layouts(
     # [H-DIAG] log will appear a second time in the trail. Time order in
     # the log makes the post-rebalance pass obvious.
     post_violations = _audit_layout_distribution(new_spec, chunks_text)
-    post_v4 = [v for v in post_violations if v.kind == "V4"]
-    pre_v4_count = sum(1 for v in violations if v.kind == "V4")
+    pre_content = sum(1 for v in violations if v.kind == "V4_CONTENT")
+    post_content = sum(1 for v in post_violations if v.kind == "V4_CONTENT")
+    post_hint = sum(1 for v in post_violations if v.kind == "V4_TITLE")
     logger.info(
-        "[H-DIAG] post-rebalance audit: %d V4 remain (was %d)",
-        len(post_v4), pre_v4_count,
+        "[H-DIAG] post-rebalance audit: V4_CONTENT %d→%d, V4_TITLE %d (hints)",
+        pre_content, post_content, post_hint,
     )
     if any(v.kind == "V1" for v in post_violations):
         logger.warning(

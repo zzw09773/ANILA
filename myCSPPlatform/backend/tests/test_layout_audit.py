@@ -1,4 +1,4 @@
-"""_audit_layout_distribution — detect V1/V2/V3/V4 violations.
+"""_audit_layout_distribution — detect V1/V2/V3/V4_CONTENT/V4_TITLE.
 
 These are pure-logic unit tests over the deterministic audit step that
 Studio Fix 1 inserts between schema validation and rendering. The
@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-from app.api.studio import _audit_layout_distribution
+from app.api.studio import (
+    LayoutViolation,
+    _audit_layout_distribution,
+    _should_rebalance,
+)
 from app.schemas.studio import SlidesSpec
 
 
@@ -91,15 +95,17 @@ def test_v3_three_consecutive_standard():
 
 
 def test_v4_enumeration_keyword_with_standard_3plus_bullets():
+    # Title-keyword only (bullets a/b/c are NOT label-pattern) → V4_TITLE hint.
     spec = SlidesSpec(**{
         "title": "T", "subtitle": "S",
         "slides": [_slide("三大核心能力", bullets=["a", "b", "c"])],
         "palette": "navy_amber",
     })
     violations = _audit_layout_distribution(spec, chunks_text="")
-    v4 = [v for v in violations if v.kind == "V4"]
+    v4 = [v for v in violations if v.kind == "V4_TITLE"]
     assert len(v4) == 1
     assert 0 in v4[0].slide_indices
+    assert v4[0].severity == "hint"
 
 
 def test_v4_not_flagged_if_layout_not_standard():
@@ -113,7 +119,7 @@ def test_v4_not_flagged_if_layout_not_standard():
         "palette": "navy_amber",
     })
     violations = _audit_layout_distribution(spec, chunks_text="")
-    assert not any(v.kind == "V4" for v in violations)
+    assert not any(v.kind in ("V4_CONTENT", "V4_TITLE") for v in violations)
 
 
 # Round 2 Patch E: lock in the v2 regression cases. The Round 1 keyword
@@ -137,7 +143,9 @@ def test_v4_keyword_expansion(title, bullets, expected_v4):
         "palette": "navy_amber",
     })
     violations = _audit_layout_distribution(spec, chunks_text="")
-    v4s = [v for v in violations if v.kind == "V4"]
+    # These are title-keyword cases (bullets are not label-pattern), so they
+    # surface as V4_TITLE hints, not V4_CONTENT.
+    v4s = [v for v in violations if v.kind in ("V4_CONTENT", "V4_TITLE")]
     assert (len(v4s) > 0) == expected_v4
 
 
@@ -183,7 +191,7 @@ def test_v4_content_pattern_and_keyword_paths(title, bullets, expected_v4):
         "palette": "navy_amber",
     })
     violations = _audit_layout_distribution(spec, chunks_text="")
-    v4s = [v for v in violations if v.kind == "V4"]
+    v4s = [v for v in violations if v.kind in ("V4_CONTENT", "V4_TITLE")]
     assert (len(v4s) > 0) == expected_v4
 
 
@@ -202,8 +210,8 @@ def test_v4_pattern_threshold_70_percent():
         "palette": "navy_amber",
     })
     violations = _audit_layout_distribution(spec, chunks_text="")
-    # 2/3 = 66% < 70% → no V4
-    assert not any(v.kind == "V4" for v in violations)
+    # 2/3 = 66% < 70% → no V4 (and title has no keyword either)
+    assert not any(v.kind in ("V4_CONTENT", "V4_TITLE") for v in violations)
 
 
 # ── Round 4 Patch R: image_focus disguise detection ──
@@ -239,7 +247,8 @@ def test_v4_audit_catches_illustration_disguise():
         "palette": "navy_amber",
     })
     violations = _audit_layout_distribution(spec, chunks_text="")
-    v4 = [v for v in violations if v.kind == "V4"]
+    # Disguise is a strong signal → classified as V4_CONTENT (actionable).
+    v4 = [v for v in violations if v.kind == "V4_CONTENT"]
     assert len(v4) == 1
     assert 0 in v4[0].slide_indices
     assert "image_focus_disguise" in v4[0].detail.lower() or "disguise" in v4[0].detail.lower()
@@ -269,7 +278,7 @@ def test_v4_audit_exempts_real_diagram():
         "palette": "navy_amber",
     })
     violations = _audit_layout_distribution(spec, chunks_text="")
-    assert not any(v.kind == "V4" for v in violations)
+    assert not any(v.kind in ("V4_CONTENT", "V4_TITLE") for v in violations)
 
 
 def test_v4_audit_exempts_real_image_ref():
@@ -297,4 +306,108 @@ def test_v4_audit_exempts_real_image_ref():
         "palette": "navy_amber",
     })
     violations = _audit_layout_distribution(spec, chunks_text="")
-    assert not any(v.kind == "V4" for v in violations)
+    assert not any(v.kind in ("V4_CONTENT", "V4_TITLE") for v in violations)
+
+
+# ── Round 6 Patch V: split V4 into V4_CONTENT (strong) / V4_TITLE (hint) ──
+#
+# Production [H-DIAG] trail (Job j_de1d67dac..., 2026-05-20) proved the
+# audit conflated two signals of very different strength:
+#   - bullets ARE label:description  → mechanically convertible → rebalance
+#   - title merely contains '架構/流程/設計' but bullets are flowing prose →
+#     LLM correctly refuses → should NOT be counted as a failure.
+# These tests lock in the split.
+
+
+def test_v4_content_fires_on_pure_label_pattern():
+    """Bullets all label:description, title has NO keyword → V4_CONTENT only."""
+    spec = SlidesSpec(**{
+        "title": "T", "subtitle": "S",
+        "slides": [_slide(
+            "TensorRT-LLM 崩潰問題分析",  # no enumeration keyword
+            bullets=[
+                "問題：v1.2.0rc2 處理 Harmony 格式時導致服務崩潰",
+                "根因：透過 Git Bisect 定位為 C++ 記憶體對齊瑕疵",
+                "對策：降版至 v1.1.0rc5 並建立自動化回歸測試",
+                "價值：證明具備原始碼級別除錯能力",
+            ],
+        )],
+        "palette": "navy_amber",
+    })
+    violations = _audit_layout_distribution(spec, chunks_text="")
+    content = [v for v in violations if v.kind == "V4_CONTENT"]
+    title = [v for v in violations if v.kind == "V4_TITLE"]
+    assert len(content) == 1
+    assert len(title) == 0
+    assert content[0].severity == "soft"
+
+
+def test_v4_title_fires_as_hint_only():
+    """Title contains '架構' but bullets are flowing narrative → V4_TITLE hint.
+
+    This is the slide-14 production case: forcing icon_rows here would mean
+    fabricating headings, so it must be a non-actionable hint.
+    """
+    spec = SlidesSpec(**{
+        "title": "T", "subtitle": "S",
+        "slides": [_slide(
+            "未來架構觀察與建議",  # '架構' keyword
+            bullets=[
+                "我們認為未來的系統會朝向更鬆耦合的方向演進",
+                "在持續觀察產業趨勢後團隊決定逐步導入服務化",
+                "下一步將擴大研究範圍並評估長期維運成本",
+            ],
+        )],
+        "palette": "navy_amber",
+    })
+    violations = _audit_layout_distribution(spec, chunks_text="")
+    content = [v for v in violations if v.kind == "V4_CONTENT"]
+    title = [v for v in violations if v.kind == "V4_TITLE"]
+    assert len(content) == 0
+    assert len(title) == 1
+    assert title[0].severity == "hint"
+
+
+def test_should_rebalance_only_on_content_or_hard():
+    """Pure V4_TITLE hint → no rebalance; a V4_CONTENT → rebalance."""
+    hints_only = [
+        LayoutViolation(kind="V4_TITLE", severity="hint", slide_indices=[14], detail=""),
+    ]
+    assert _should_rebalance(hints_only) is False
+
+    with_content = [
+        LayoutViolation(kind="V4_TITLE", severity="hint", slide_indices=[14], detail=""),
+        LayoutViolation(kind="V4_CONTENT", severity="soft", slide_indices=[9], detail=""),
+    ]
+    assert _should_rebalance(with_content) is True
+
+
+def test_v4_content_threshold_is_one():
+    """A single V4_CONTENT is enough to trigger rebalance (threshold 2→1)."""
+    violations = [
+        LayoutViolation(kind="V4_CONTENT", severity="soft", slide_indices=[9], detail=""),
+    ]
+    assert _should_rebalance(violations) is True
+
+
+def test_v4_both_signals_classified_as_content():
+    """title-keyword AND bullet-pattern both fire → V4_CONTENT, not V4_TITLE.
+
+    Content-pattern is the dominant kind (strong wins).
+    """
+    spec = SlidesSpec(**{
+        "title": "T", "subtitle": "S",
+        "slides": [_slide(
+            "三大核心能力",  # enumeration keyword
+            bullets=[
+                "高效能推理：掌握 TensorRT-LLM",
+                "技術突破：實作法律 Agentic RAG",
+                "合規治理：導入 ISO 42001",
+            ],
+        )],
+        "palette": "navy_amber",
+    })
+    violations = _audit_layout_distribution(spec, chunks_text="")
+    kinds = [v.kind for v in violations]
+    assert "V4_CONTENT" in kinds
+    assert "V4_TITLE" not in kinds
