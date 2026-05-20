@@ -8,6 +8,8 @@ import { Spinner } from '../components/Spinner'
 import { generateReport, generateSlides } from '../studio/generators'
 import { createSlidesJob } from '../api/studio'
 import { explainError } from '../api/client'
+import { ThemePicker } from './ThemePicker'
+import type { ThemeId } from '../studio/themes'
 import type { SlidesArtifact, StudioArtifact } from '../types'
 
 export interface FormatSpec {
@@ -55,16 +57,27 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
 
   const [step, setStep] = useState(0)
   const [selected, setSelected] = useState(0)
+  const [themeId, setThemeId] = useState<ThemeId>('auto')
   const [extra, setExtra] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
   const presets = format ? PRESETS[format.k] ?? [] : []
   const isSupported = format?.k === 'report' || format?.k === 'slides'
+  // Slides gets an extra "theme picker" step between preset and extra
+  // instructions, so its flow has 3 steps (0=preset, 1=theme, 2=extra).
+  // Report has no visual theme concept → 2 steps (0=preset, 1=extra).
+  const isSlides = format?.k === 'slides'
+  const totalSteps = isSlides ? 3 : 2
+  // The "補充指示" textarea is always the final step; the theme step is
+  // only the middle step on the slides path.
+  const extraStep = isSlides ? 2 : 1
+  const themeStep = 1
 
   const reset = () => {
     setStep(0)
     setSelected(0)
+    setThemeId('auto')
     setExtra('')
     setErr(null)
   }
@@ -114,11 +127,15 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
           collectionId: collection.id,
           preset: presetName,
           extraInstructions: extra.trim() || undefined,
+          themeOverride: themeId === 'auto' ? undefined : themeId,
         })
         const artifact: SlidesArtifact = {
           id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
           kind: 'slides',
           collectionId: collection.id,
+          // Record the chosen theme so the sidebar can badge the deck.
+          // undefined for auto → no badge (matches backend auto path).
+          theme: themeId === 'auto' ? undefined : themeId,
           // Title and slide_count aren't known yet; the polling effect
           // will fill these in as soon as the LLM finishes step 4-5.
           // Use a placeholder so the timeline card has something to
@@ -177,7 +194,7 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
         </div>
         <div style={{ fontSize: 13, fontWeight: 500, color: t.text }}>建立 {format.l}</div>
         {isSupported && (
-          <span style={{ fontSize: 11, color: t.textSubtle }}>· 步驟 {step + 1} / 2</span>
+          <span style={{ fontSize: 11, color: t.textSubtle }}>· 步驟 {step + 1} / {totalSteps}</span>
         )}
         <button
           onClick={close}
@@ -311,6 +328,25 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
               ))}
             </div>
           </>
+        ) : isSlides && step === themeStep ? (
+          <>
+            <div
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                color: t.textMuted,
+                textTransform: 'uppercase',
+                letterSpacing: 1,
+                marginBottom: 10,
+              }}
+            >
+              02 · 選擇視覺風格
+            </div>
+            <div style={{ fontSize: 11.5, color: t.textMuted, lineHeight: 1.55, marginBottom: 12 }}>
+              選「自動偵測」由系統依文件 title 與內容判斷；或直接挑一個你想要的風格。
+            </div>
+            <ThemePicker selected={themeId} onSelect={setThemeId} />
+          </>
         ) : (
           <>
             <div
@@ -323,7 +359,7 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
                 marginBottom: 10,
               }}
             >
-              02 · 補充指示（可略過）
+              {isSlides ? '03' : '02'} · 補充指示（可略過）
             </div>
             <textarea
               value={extra}
@@ -411,7 +447,7 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
         {isSupported ? (
           <>
             <div style={{ display: 'flex', gap: 4 }}>
-              {[0, 1].map((i) => (
+              {Array.from({ length: totalSteps }, (_, i) => (
                 <div
                   key={i}
                   style={{
@@ -427,7 +463,7 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
             <div style={{ display: 'flex', gap: 8 }}>
               {step > 0 && (
                 <button
-                  onClick={() => setStep(0)}
+                  onClick={() => setStep(step - 1)}
                   disabled={busy}
                   style={{
                     padding: '7px 14px',
@@ -444,9 +480,9 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
                   上一步
                 </button>
               )}
-              {step === 0 && (
+              {step < extraStep && (
                 <button
-                  onClick={() => setStep(1)}
+                  onClick={() => setStep(step + 1)}
                   style={{
                     padding: '7px 16px',
                     borderRadius: 8,
@@ -466,7 +502,7 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
                   繼續 <Icon name="arrowR" size={11} stroke="#fff" />
                 </button>
               )}
-              {step === 1 && (
+              {step === extraStep && (
                 <button
                   onClick={() => void submit()}
                   disabled={busy}

@@ -7,6 +7,7 @@ import { Spinner } from '../components/Spinner'
 import { CommandModal, type FormatSpec } from './CommandModal'
 import { ArtifactViewer } from './ArtifactViewer'
 import type { SlidesArtifact, StudioArtifact } from '../types'
+import { findTheme, type ThemeId } from '../studio/themes'
 import { timeAgo } from '../utils/format'
 import {
   downloadSlidesJobPptx,
@@ -615,6 +616,20 @@ export function WSStudio() {
                           >
                             {kindLabel}
                           </div>
+                          {a.kind === 'slides' && a.theme && (
+                            <div
+                              style={{
+                                padding: '2px 7px',
+                                borderRadius: 4,
+                                background: t.chipBg,
+                                color: t.textMuted,
+                                fontSize: 10,
+                                fontWeight: 600,
+                              }}
+                            >
+                              {findTheme(a.theme as ThemeId).name}
+                            </div>
+                          )}
                           {isPending && (
                             <span
                               style={{
