@@ -2,22 +2,34 @@
 
 Endpoints:
   GET  /health                                  → {"status": "ok"}
-  POST /generate {prompt, aspect_ratio}         → image/png bytes
+  POST /generate {prompt, aspect_ratio, ...}    → GenerateResponse (JSON)
 
 The pipeline is constructed once at module import and injected into
 ``build_app``. Tests pass a mock pipeline so we never load the real
 weights outside of production runs.
+
+Contract note (ANILA Studio FLUX Stage 1, spec 3.2): /generate returns
+JSON (base64 PNG list + audit meta), NOT raw image/png bytes. The list
+form is intentional even for N=1 so Stage 2's N-candidate gate does not
+force a response-type rewrite. Model-agnostic — same contract applies to
+flux2-dev and klein-4B.
 """
 from __future__ import annotations
 
+import base64
 import io
 import logging
 import os
+import random
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+try:  # torch is only present in the GPU runtime, not in syntax/CI envs.
+    import torch  # type: ignore
+except Exception:  # pragma: no cover - torch absent in dev/test
+    torch = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +39,23 @@ _ASPECT_RATIOS: dict[str, tuple[int, int]] = {
     "9:16": (768, 1408),
     "4:3": (1216, 896),
     "3:4": (896, 1216),
+    "3:1": (1536, 512),  # section band letterbox (≤0.8MP, FLUX stable zone)
 }
 
 
 class GenerateRequest(BaseModel):
     prompt: str
-    aspect_ratio: Literal["1:1", "16:9", "9:16", "4:3", "3:4"] = "16:9"
+    aspect_ratio: Literal["1:1", "16:9", "9:16", "4:3", "3:4", "3:1"] = "16:9"
+    seed: int | None = None
+    num_candidates: int = Field(default=1, ge=1, le=4)
+    num_inference_steps: int | None = None
+    guidance_scale: float | None = None
+
+
+class GenerateResponse(BaseModel):
+    images: list[str]  # base64 PNG, len == num_candidates
+    seed: int  # actual seed used (resolved real value when random, for audit)
+    meta: dict  # {steps, guidance, width, height, model_sha}
 
 
 def build_app(*, pipeline: Any) -> FastAPI:
@@ -42,25 +65,55 @@ def build_app(*, pipeline: Any) -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.post("/generate")
-    def generate(req: GenerateRequest) -> Response:
+    @app.post("/generate", response_model=GenerateResponse)
+    def generate(req: GenerateRequest) -> GenerateResponse:
         width, height = _ASPECT_RATIOS[req.aspect_ratio]
+        steps = req.num_inference_steps or int(os.environ.get("FLUX_NUM_STEPS", "28"))
+        guidance = req.guidance_scale or float(
+            os.environ.get("FLUX_GUIDANCE_SCALE", "4.0")
+        )
+        # Resolve a concrete base seed even when the caller passes None, so
+        # the value can be echoed back for audit / reproducibility.
+        base_seed = req.seed if req.seed is not None else random.randint(0, 2**32 - 1)
+
+        imgs_b64: list[str] = []
         try:
-            out = pipeline(
-                prompt=req.prompt,
-                width=width,
-                height=height,
-                num_inference_steps=int(os.environ.get("FLUX_NUM_STEPS", "28")),
-                guidance_scale=float(os.environ.get("FLUX_GUIDANCE_SCALE", "3.5")),
-            )
+            for i in range(req.num_candidates):
+                # CPU generator: pipeline uses device_map="balanced" (weights
+                # sharded across GPUs), so a fixed cuda device is unsafe. A CPU
+                # generator gives deterministic, device-independent seeding.
+                generator = None
+                if torch is not None:
+                    generator = torch.Generator(device="cpu").manual_seed(
+                        base_seed + i
+                    )
+                out = pipeline(
+                    prompt=req.prompt,
+                    width=width,
+                    height=height,
+                    num_inference_steps=steps,
+                    guidance_scale=guidance,
+                    generator=generator,
+                )
+                img = out.images[0]
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                imgs_b64.append(base64.b64encode(buf.getvalue()).decode("ascii"))
         except Exception as exc:
             logger.exception("flux inference failed")
             raise HTTPException(status_code=500, detail=f"inference failed: {exc}")
 
-        img = out.images[0]
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return Response(content=buf.getvalue(), media_type="image/png")
+        return GenerateResponse(
+            images=imgs_b64,
+            seed=base_seed,
+            meta={
+                "steps": steps,
+                "guidance": guidance,
+                "width": width,
+                "height": height,
+                "model_sha": os.environ.get("FLUX_MODEL_SHA", ""),
+            },
+        )
 
     return app
 
