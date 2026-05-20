@@ -42,6 +42,18 @@ def setup_logging():
     for h in list(root.handlers):
         root.removeHandler(h)
 
+    # Round 5 補(再強化):fileConfig 不只清 root handlers,還會把
+    # 跑 fileConfig 那一刻 Logger.manager.loggerDict 內**所有已存在
+    # 的 named logger** 的 `.disabled` 屬性設成 True(這是
+    # disable_existing_loggers=True 的真實效果,跟 root handlers 是兩
+    # 件事)。top-level import 在 alembic 之前發生的 logger(像
+    # `app.api.studio`)會被廢;後續 lifespan-time 才 import 的(像
+    # `app.services.health_checker`)沒事——所以 access log 看得到
+    # 但 H-DIAG 看不到。逐一 reset disabled=False 才完整還原。
+    for logger_obj in list(logging.Logger.manager.loggerDict.values()):
+        if isinstance(logger_obj, logging.Logger):
+            logger_obj.disabled = False
+
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
     handler = RotatingFileHandler(
