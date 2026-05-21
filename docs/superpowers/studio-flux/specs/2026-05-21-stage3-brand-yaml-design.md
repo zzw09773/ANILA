@@ -6,7 +6,7 @@
 
 **Date:** 2026-05-21
 **Branch:** feature/studio-flux
-**Spec context:** `docs/superpowers/plans/ANILA_Studio_FLUX_Spec.md` §6（Stage 3 — Style Consistency）、§3.6（StyleDescriptor 鎖定合約）
+**Spec context:** `docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md` §6（Stage 3 — Style Consistency）、§3.6（StyleDescriptor 鎖定合約）
 **Status:** 設計已核准，待寫實作計畫
 
 ---

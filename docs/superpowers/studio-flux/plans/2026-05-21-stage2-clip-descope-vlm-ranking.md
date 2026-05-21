@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, FastAPI, pytest + pytest-asyncio, numpy。backend venv：`myCSPPlatform/backend/.venv`。
 
-**Spec:** `docs/superpowers/specs/2026-05-21-stage2-clip-descope-vlm-ranking-design.md`
+**Spec:** `docs/superpowers/studio-flux/specs/2026-05-21-stage2-clip-descope-vlm-ranking-design.md`
 
 ---
 
