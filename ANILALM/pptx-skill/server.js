@@ -1237,6 +1237,30 @@ app.post('/render', async (req, res) => {
     const firstIsCover = spec.slides[0]?.layout_kind === 'section_break'
     if (!firstIsCover) {
       const titleSlide = pres.addSlide({ masterName: 'ANILA_BASE' })
+
+      // FLUX Stage 1 cover hero: the backend hydrates a 16:9 COVER_HERO
+      // image into spec.slides[0].image_data. Render it full-bleed behind
+      // the title with a dark scrim so the title stays legible over
+      // arbitrary imagery; fall back to the plain text cover when absent.
+      const heroData = spec.slides[0]?.image_data
+      const hasHero =
+        typeof heroData === 'string' && heroData.startsWith('data:image/')
+      if (hasHero) {
+        titleSlide.addImage({
+          data: heroData,
+          x: 0, y: 0, w: 13.33, h: 7.5,
+          sizing: { type: 'cover', w: 13.33, h: 7.5 },
+        })
+        titleSlide.addShape('rect', {
+          x: 0, y: 0, w: 13.33, h: 7.5,
+          fill: { color: '000000', transparency: 55 },
+          line: { type: 'none' },
+        })
+      }
+      const coverTitleColor = hasHero ? 'FFFFFF' : p.titleText
+      const coverMutedColor = hasHero ? 'F0F0F0' : p.muted
+      const coverFootColor = hasHero ? 'F0F0F0' : '1A1A1A'
+
       titleSlide.addShape('rect', {
         x: 0.6, y: 2.0, w: 0.14, h: 3.5,
         fill: { color: p.accent },
@@ -1244,19 +1268,19 @@ app.post('/render', async (req, res) => {
       })
       titleSlide.addText(String(spec.title), {
         x: 1.0, y: 2.1, w: 11.7, h: 1.8,
-        fontSize: 50, bold: true, color: p.titleText,
+        fontSize: 50, bold: true, color: coverTitleColor,
         align: 'left', valign: 'middle', fontFace: FONT_FACE,
       })
       if (spec.slides.length > 1) {
         titleSlide.addText(`共 ${spec.slides.length} 張投影片`, {
           x: 1.0, y: 4.0, w: 11.7, h: 0.5,
-          fontSize: 16, color: p.muted,
+          fontSize: 16, color: coverMutedColor,
           align: 'left', fontFace: FONT_FACE,
         })
       }
       titleSlide.addText('ANILA LM · 自動生成', {
         x: 1.0, y: 4.7, w: 11.7, h: 0.4,
-        fontSize: 14, color: '1A1A1A', italic: false,
+        fontSize: 14, color: coverFootColor, italic: false,
         align: 'left', fontFace: FONT_FACE,
       })
     }
