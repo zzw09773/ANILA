@@ -2869,6 +2869,7 @@ async def _run_pipeline(
                 pptx_bytes, pptx_path = await _render_pptx(
                     spec, images_lookup,
                     deck_base_seed=deck_base_seed, llm=flux_llm,
+                    deck_style=deck_style,
                 )
 
         # ── Step 9: terminal "done" — pptx_bytes is the artifact ──
