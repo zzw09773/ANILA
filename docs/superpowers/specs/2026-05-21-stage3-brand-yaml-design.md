@@ -1,5 +1,9 @@
 # Stage 3 — brand.yaml 多品牌風格（依部門）
 
+> ⚠️ **SUPERSEDED (2026-05-21)**：此「依部門 + brand.yaml」方案已放棄（ops 維護設定檔太複雜）。
+> 改採「依專案內容自動推斷風格」，見 `2026-05-21-stage3-content-inferred-style-design.md`。
+> 本檔僅留作決策軌跡。
+
 **Date:** 2026-05-21
 **Branch:** feature/studio-flux
 **Spec context:** `docs/superpowers/plans/ANILA_Studio_FLUX_Spec.md` §6（Stage 3 — Style Consistency）、§3.6（StyleDescriptor 鎖定合約）
