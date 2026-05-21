@@ -144,6 +144,15 @@ RENDERER_BASE_URL = "http://pptx-renderer:7100"
 SLIDES_LLM_MODEL = "gemma4"
 VISION_LLM_MODEL = "gemma4"
 
+# Stage 2 (Layer C): how many extra times to regenerate a slide's image
+# when every candidate fails the quality gate. attempt 0 + MAX_RETRIES more.
+FLUX_GATE_MAX_RETRIES = 3
+# Candidates generated per attempt (spec 5: N=2).
+FLUX_GATE_NUM_CANDIDATES = 2
+# Seed stride between retry attempts so each attempt explores a different
+# region of latent space (attempt k uses base_seed + k*1024).
+FLUX_GATE_SEED_STRIDE = 1024
+
 
 # ── JSON extraction (mirrors ANILALM's frontend extractJsonObject) ─────────
 
@@ -806,6 +815,71 @@ class _StudioLLMAdapter:
         )
 
 
+class _Gemma4VlmGate:
+    """gemma4-backed VLM for the Stage 2 quality gate (Layer C).
+
+    gemma4 is already deployed and multimodal; ``_inspect_slide_visually``
+    above proves the OpenAI vision message shape (``image_url`` with a
+    ``data:image/png;base64,...`` URL) reaches it through
+    ``_call_llm_chat`` -> ``proxy_request``. This adapter reuses that exact
+    path for the gate's semantic + text check, so no separate VLM is
+    deployed (per the confirmed Stage 2 premise).
+
+    Exposes ``async check(png_bytes, *, concept) -> dict`` — the Vlm
+    Protocol the gate expects.
+    """
+
+    def __init__(self, db: Session, user: User, model_name: str = VISION_LLM_MODEL) -> None:
+        self._db = db
+        self._user = user
+        self._model_name = model_name
+
+    async def check(self, png_bytes: bytes, *, concept: str) -> dict:
+        b64 = base64.b64encode(png_bytes).decode("ascii")
+        data_url = f"data:image/png;base64,{b64}"
+        system_prompt = (
+            "You are an image quality gate for slide illustrations. "
+            "Answer with JSON only — first char {, last char }, no ```json "
+            "fence, no preamble."
+        )
+        user_text = (
+            f"Does this image depict an abstract, text-free illustration of: "
+            f"{concept}?\n"
+            "Does it contain ANY letters, characters, digits, logos, or "
+            "readable signage?\n"
+            'Answer JSON only: {"match": bool, "has_text": bool, '
+            '"reason": "<short>"}'
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_text},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            },
+        ]
+        raw = await _call_llm_chat(
+            self._db, self._user, self._model_name, messages, temperature=0.1,
+        )
+        try:
+            parsed = json.loads(_extract_json_object(raw))
+        except (ValueError, json.JSONDecodeError):
+            # Unparseable verdict — fail CLOSED for the gate (treat as a
+            # reject) so a flaky VLM response doesn't slip an unverified
+            # image through. The retry loop / fallback handles it.
+            logger.warning(
+                "VLM gate returned unparseable response; treating as reject."
+            )
+            return {"match": False, "has_text": True, "reason": "unparseable"}
+        return {
+            "match": bool(parsed.get("match")),
+            "has_text": bool(parsed.get("has_text")),
+            "reason": str(parsed.get("reason", "")),
+        }
+
+
 # ── Step 5+6: generate + validate (with one correction pass) ─────────────
 
 
@@ -1201,6 +1275,62 @@ def get_flux_provider() -> "FluxImageProvider | None":
     return _FLUX_PROVIDER
 
 
+async def _gated_generate(
+    flux_provider: "FluxImageProvider",
+    prompt: str,
+    *,
+    use_case: "ImageUseCase",
+    seed: int,
+    style_id: str,
+    concept_en: str,
+    vlm: "_Gemma4VlmGate",
+) -> tuple["GeneratedImage | None", int]:
+    """Stage 2 retry loop (spec 5.2): generate N candidates, run the quality
+    gate, retry with a fresh seed on total failure.
+
+    Returns ``(accepted_image_or_None, retry_count)``. ``retry_count`` is
+    the number of EXTRA attempts beyond the first (0 = accepted first try).
+
+    A cache hit short-circuits the whole loop: a previously gate-accepted
+    image for this (prompt, use_case, seed, style) tuple is returned as-is
+    so a job re-run is deterministic and free.
+    """
+    from app.services.flux_quality_gate import gate_candidates, stub_clip_scorer
+
+    cached = flux_provider.cached_image(
+        prompt, use_case=use_case, seed=seed, style_id=style_id,
+    )
+    if cached is not None:
+        return cached, 0
+
+    for attempt in range(FLUX_GATE_MAX_RETRIES + 1):
+        attempt_seed = seed + attempt * FLUX_GATE_SEED_STRIDE
+        candidates = await flux_provider.generate_candidates(
+            prompt,
+            use_case=use_case,
+            seed=attempt_seed,
+            num_candidates=FLUX_GATE_NUM_CANDIDATES,
+        )
+        best = await gate_candidates(
+            candidates,
+            flux_prompt=prompt,
+            concept_en=concept_en,
+            # CLIP gate is pass-through until clip-vit is deployed (stub
+            # returns a fixed high score). TODO(stage2): inject a real
+            # CLIPScore-backed scorer here once deployed.
+            clip_scorer=stub_clip_scorer,
+            vlm=vlm,
+        )
+        if best is not None:
+            # Persist under the per-slide (deterministic) seed, not the
+            # per-attempt retry seed, so a re-run hits the cache.
+            flux_provider.persist_chosen(
+                best, prompt=prompt, use_case=use_case, seed=seed, style_id=style_id,
+            )
+            return best, attempt
+    return None, FLUX_GATE_MAX_RETRIES
+
+
 async def _hydrate_images(
     spec_dict: dict[str, Any],
     images_lookup: dict[str, dict[str, Any]],
@@ -1343,37 +1473,74 @@ async def _hydrate_images(
                 # Deterministic seed: same job_id → same deck_base_seed → same
                 # cover seed → identical image (Stage 1 acceptance #2).
                 cover_seed = deck_base_seed + idx
+                # Stage 2 (Layer C): N candidates + 3-gate quality gate +
+                # retry. The gate's VLM is gemma4, reached through the same
+                # vision path as _inspect_slide_visually; build it from the
+                # llm adapter's db/user so no new call-site args are needed.
+                vlm = _Gemma4VlmGate(llm._db, llm._user)
                 try:
-                    results = await flux_provider.get_or_generate(
+                    best, retry_count = await _gated_generate(
+                        flux_provider,
                         flux_prompt,
                         use_case=ImageUseCase.COVER_HERO,
                         seed=cover_seed,
                         style_id=style.style_id,
-                        num_candidates=1,
+                        # The rewriter prompt is the abstract English visual
+                        # description; use it as the concept the VLM verifies.
+                        concept_en=flux_prompt,
+                        vlm=vlm,
                     )
-                    img = results[0]
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "FLUX cover-hero gated generation errored for slide "
+                        "'%s': %s — falling back to legacy image path.",
+                        slide.get("title", "<untitled>"), e,
+                    )
+                    best, retry_count = None, FLUX_GATE_MAX_RETRIES
+
+                if best is not None:
                     slide["image_data"] = (
                         "data:image/png;base64,"
-                        + base64.b64encode(img.png_bytes).decode("ascii")
+                        + base64.b64encode(best.png_bytes).decode("ascii")
                     )
                     slide["image_gen_meta"] = {
                         "use_case": ImageUseCase.COVER_HERO.value,
                         "flux_prompt": flux_prompt,
-                        "seed": img.seed,
+                        "seed": best.seed,
                         "style_id": style.style_id,
+                        "clip_score": best.clip_score,
+                        "vlm_verdict": best.vlm_verdict,
+                        "retry_count": retry_count,
                     }
                     # Cover hero won — drop any leftover legacy prompt fields
                     # so the renderer doesn't double-handle this slide.
                     slide.pop("image_prompt", None)
                     slide.pop("image_kind", None)
                     continue
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "FLUX cover-hero generation failed for slide '%s': %s — "
-                        "falling back to legacy image path.",
-                        slide.get("title", "<untitled>"), e,
-                    )
-                    # Fall through to legacy paths below.
+
+                # Stage 2 fallback (spec 5.3): every candidate across all
+                # retries failed the gate. For COVER_HERO we use the brand's
+                # solid/gradient theme background and put NO image on the
+                # slide — leaving image_data unset means the renderer styles
+                # the cover with its theme palette (pre-FLUX behaviour). We
+                # also drop the legacy prompt fields so a garbled fallback
+                # image is never substituted in.
+                logger.warning(
+                    "FLUX cover-hero gate rejected all candidates for slide "
+                    "'%s' after %d retries — using solid theme cover (no image).",
+                    slide.get("title", "<untitled>"), retry_count,
+                )
+                slide["image_gen_meta"] = {
+                    "use_case": ImageUseCase.COVER_HERO.value,
+                    "flux_prompt": flux_prompt,
+                    "style_id": style.style_id,
+                    "retry_count": retry_count,
+                    "fallback": "solid_theme_cover",
+                }
+                slide.pop("image_prompt", None)
+                slide.pop("image_kind", None)
+                slide.pop("diagram_dot", None)
+                continue
 
         # Path 3: image_prompt → call FLUX (legacy path, untouched in intent;
         # only the provider call is updated to the new contract-3.4 signature

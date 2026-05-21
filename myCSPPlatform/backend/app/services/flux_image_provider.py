@@ -169,6 +169,84 @@ class FluxImageProvider:
 
         return candidates
 
+    # ── Candidate generation for the Stage 2 gate (no cache) ──────────────
+    async def generate_candidates(
+        self,
+        prompt: str,
+        *,
+        use_case: ImageUseCase,
+        seed: int,
+        num_candidates: int = 2,
+        steps: int | None = None,
+        guidance: float | None = None,
+    ) -> list[GeneratedImage]:
+        """Generate N fresh candidates WITHOUT touching the cache.
+
+        Stage 2 (Layer C) architecture choice B: the provider stays a pure
+        FLUX HTTP client and does NOT run the quality gate (the gate needs
+        the gemma4 VLM client, which lives in api/studio.py with the DB /
+        auth / proxy context). The hydration layer drives the retry loop —
+        each attempt calls this with a different seed, gates the candidates,
+        and persists the winner via ``persist_chosen`` once one is accepted.
+
+        Candidates come back ``accepted=False`` (the gate decides).
+        """
+        aspect_ratio = _USE_CASE_ASPECT[use_case]
+        images, actual_seed = await self._generate(
+            prompt,
+            aspect_ratio=aspect_ratio,
+            seed=seed,
+            num_candidates=num_candidates,
+            steps=steps,
+            guidance=guidance,
+        )
+        return [
+            GeneratedImage(png_bytes=png, seed=actual_seed, accepted=False)
+            for png in images
+        ]
+
+    def persist_chosen(
+        self,
+        chosen: GeneratedImage,
+        *,
+        prompt: str,
+        use_case: ImageUseCase,
+        seed: int,
+        style_id: str = "default",
+        steps: int | None = None,
+        guidance: float | None = None,
+    ) -> None:
+        """Cache the gate-accepted candidate under the contract-3.3 key.
+
+        Keyed on the REQUESTED seed (the deterministic per-slide seed), not
+        on any per-attempt retry seed, so a re-run of the same job hits the
+        cache and returns the same chosen image (Stage 1 acceptance #2).
+        """
+        aspect_ratio = _USE_CASE_ASPECT[use_case]
+        key = self._cache_key(prompt, aspect_ratio, seed, style_id, steps, guidance)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._cache_path(key).write_bytes(chosen.png_bytes)
+
+    def cached_image(
+        self,
+        prompt: str,
+        *,
+        use_case: ImageUseCase,
+        seed: int,
+        style_id: str = "default",
+        steps: int | None = None,
+        guidance: float | None = None,
+    ) -> GeneratedImage | None:
+        """Return the cached gate-accepted image for this key, or None."""
+        aspect_ratio = _USE_CASE_ASPECT[use_case]
+        key = self._cache_key(prompt, aspect_ratio, seed, style_id, steps, guidance)
+        cache_file = self._cache_path(key)
+        if cache_file.exists():
+            return GeneratedImage(
+                png_bytes=cache_file.read_bytes(), seed=seed, accepted=True
+            )
+        return None
+
     # ── FLUX service call (contract 3.2 JSON) ─────────────────────────────
     async def _generate(
         self,
