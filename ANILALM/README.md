@@ -1,138 +1,176 @@
-# ANILA LM
+# ANILA LM (ANILALM)
 
-研究筆記風格的知識庫前端，串接 myCSPPlatform 後端做認證、ingestion、對話與 LLM proxy。
+> AI 學習內容生成子專案：研究筆記風格的知識庫前端，加上一個獨立的 `pptx-renderer` 微服務，把投影片規格（deck spec）轉成 `.pptx`。
 
-## 為何這個專案存在
+## 簡介 / Overview
 
-`/home/aia/c1147259/ANILA` 已經有一整套後端：myCSPPlatform 提供 auth + ingestion +
-conversations + OpenAI 相容 `/v1` proxy；anila-core 提供 chunking / embedding；
-ingestion-worker 跑非同步索引。但缺一個面向研究人員、能夠把「文件 → 對話 → 產出」一站
-打通的整合介面。
+**ANILALM** 是 `/home/aia/c1147259/ANILA` 底下的子專案，提供面向研究人員的「文件 → 對話 → 產出」一站式介面：上傳 PDF / 文件 → 建知識庫 → 對話查詢 → 直接生成深度報告與簡報草稿。它本身是一支 SPA（單頁應用），串接 myCSPPlatform 後端做認證、ingestion、對話與 LLM proxy。
 
-ANILA LM 就是這層皮——上傳 PDF / 文件 → 建知識庫 → 對話查詢 → 直接生成深度報告 / 簡報草稿。
+子專案內含兩個獨立的執行單元：
 
-## 技術選擇
+1. **頂層 ANILALM app** — Vite + React + TypeScript 的前端，build 成靜態檔由 nginx 服務。
+2. **`pptx-skill/`（pptx-renderer 服務）** — 一支獨立的 Node 服務（`server.js`），用 Express + pptxgenjs 把 deck spec 渲染成 `.pptx`。它在 docker network 上以 `pptx-renderer` 服務名、port `7100` 對外，提供三個端點：
+   - `POST /render` — 收 `{ spec }`，回傳 `.pptx` 二進位（octet-stream）。
+   - `POST /screenshots` — 收 `.pptx`（base64 或 server 端路徑），用 LibreOffice headless 轉 PDF、再用 Poppler 轉 PNG，回傳每張投影片的影像，供 vision QA 使用。
+   - `POST /qa-geometric` — 對渲染出的投影片做幾何排版檢查（偵測重疊、最大空白區塊等）。
+   - `GET /health` — 回 `ok`。
 
-| 模組 | 選擇 | 理由 |
-| --- | --- | --- |
-| Build | Vite 6 + React 18 + TypeScript | 跟 `myCSPPlatform/frontend`（Vue + Vite）並列，避免 CDN-React 原型走不下去 |
-| 路由 | react-router-dom v6 | `BrowserRouter` + 巢狀 Outlet 守衛 |
-| 狀態 | Zustand（auth / workspace / artifacts） | Pinia 是 Vue 專用，Zustand 等價且 React 友善 |
-| HTTP | axios + 攔截器 | 跟 CSP 前端相同 pattern，token refresh on 401 |
-| Markdown | marked + DOMPurify | LLM 輸出仍是 untrusted，雙層防 XSS |
-| 圖示 | inline SVG（自製集合） | 0 套件、Tree-shake 友善 |
+> 兩者目的不同：前端是使用者介面，`pptx-renderer` 是被後端呼叫的渲染引擎；前端本身不直接打 renderer。
 
-## 後端依賴
+## 架構與技術棧 / Architecture & Stack
 
-ANILALM 直接打 myCSPPlatform 的 endpoint：
+### 頂層 ANILALM app（前端）
 
-| Endpoint | 用途 |
+來自 `package.json`：
+
+| 模組 | 選擇 |
 | --- | --- |
-| `POST /api/auth/login`、`/refresh`、`/me`、`/logout`、`/register` | 帳號流程 |
-| `GET/POST/PATCH/DELETE /api/ingestion/collections[/:id]` | 知識庫 CRUD |
-| `GET/POST /api/ingestion/collections/:id/documents` | 文件上傳與列表 |
-| `GET /api/ingestion/jobs/:id/stream` | 上傳後的索引進度（SSE） |
-| `GET /api/conversations`, `POST /api/conversations/:id/messages` | 對話與訊息持久化 |
-| `POST /v1/chat/completions` | LLM 對話與 Studio 生成（OpenAI 相容） |
+| Build | Vite 6 + React 18 + TypeScript 5.7 |
+| 路由 | react-router-dom v6（`BrowserRouter` + 巢狀 Outlet 守衛） |
+| 狀態 | Zustand（auth / workspace / artifacts） |
+| HTTP | axios + 攔截器（401 token refresh、`withCredentials`） |
+| Markdown | marked + DOMPurify（LLM 輸出視為 untrusted，雙層防 XSS） |
+| 圖示 | inline SVG（自製集合，0 套件） |
 
-JWT 同時對 `/api` 與 `/v1` 都通——因為 CSP 後端的 `get_caller` middleware 把
-JWT bearer 跟 `sk-*` API key 統一處理；前端不需要再額外請使用者管理 API key。
+npm scripts：`dev`（vite）、`build`（`tsc -b && vite build`）、`preview`、`typecheck`。
 
-## 資料夾結構
+Runtime image（頂層 `Dockerfile`）：multi-stage，`node:22-alpine` build → `nginx:1.27-alpine` 服務 `dist/`。`BASE_PATH` build-arg 預設 `/anilalm/`，對應 ANILA reverse proxy 後的部署路徑。
+
+### pptx-skill / pptx-renderer 服務
+
+來自 `pptx-skill/package.json`：
+
+| 相依 | 用途 |
+| --- | --- |
+| `express` ^5 | HTTP server |
+| `pptxgenjs` ^3.12 | 產生 `.pptx` |
+| `sharp` ^0.33 | 影像處理 |
+| `react` / `react-dom` / `react-icons` | icon 解析（`icons.js` 把概念名轉成 Heroicons PNG） |
+
+`pptx-skill/Dockerfile` 用 `node:22-bookworm-slim`（非 alpine），額外裝 `libreoffice-core` / `libreoffice-impress`（`.pptx → PDF`）、`poppler-utils`（PDF → PNG）、`fonts-noto-cjk`（CJK 字型，避免中文變成方框）、`tini`（PID-1 reaper，讓 SIGTERM 正確傳到 soffice 子行程）。`node_modules` 是 vendored（`npm ci --omit=dev`），為了 air-gap build。預設 `PORT=7100`、`PPTX_TMP_DIR=/var/anila/pptx-out`。
+
+`server.js` 設計上 schema-light：CSP 後端會先做 Pydantic 驗證，spec 進到 renderer 時已結構合法；renderer 只檢查 payload 大小（`MAX_PAYLOAD=10mb`）、投影片數上限（`MAX_SLIDES=60`）、以及 `/screenshots` 的路徑（防 traversal）。
+
+## 目錄結構 / Layout
 
 ```
 ANILALM/
-├── _design/                         # 舊原型（Figma-canvas + 1929-line HTML）保留作設計參考
-├── index.html                       # Vite 入口
-├── package.json                     # 直接依賴：react / axios / zustand / marked / dompurify / react-router
-├── vite.config.ts                   # /api、/v1、/v2 proxy 到 VITE_CSP_BACKEND
+├── package.json                # 前端：react / axios / zustand / marked / dompurify / react-router
+├── Dockerfile                  # 前端 image：Vite build → nginx
+├── vite.config.ts              # /api、/v1、/v2 proxy 到 VITE_CSP_BACKEND
+├── index.html                  # Vite 入口
+├── docker/                     # nginx.conf 等部署設定
+├── _design/                    # 舊原型（single-file HTML + Figma artboard）保留作設計參考，不參與 build
 ├── src/
-│   ├── main.tsx                     # createRoot + 副作用 import store/auth（綁定攔截器）
-│   ├── App.tsx                      # ThemeProvider + BrowserRouter + 路由表
-│   ├── types.ts                     # 後端 schema 的 TS 對應
-│   ├── theme/
-│   │   ├── tokens.ts                # 雙主題色 token
-│   │   └── ThemeContext.tsx         # provider + localStorage 持久化
-│   ├── components/                  # Icon / ThemeSwitch / Field / Modal / Spinner / MarkdownPreview / EmptyState / Cite
-│   ├── api/                         # axios client + auth/collections/documents/jobs/conversations/chat
-│   ├── store/
-│   │   ├── auth.ts                  # JWT 持久化 + 自動 401 刷新
-│   │   ├── workspace.ts             # 當前知識庫 / docs / conversations
-│   │   └── artifacts.ts             # Studio 產出（localStorage 持久化，MVP）
-│   ├── routes/
-│   │   ├── ProtectedRoute.tsx       # 未登入 → /login，附帶 fromPath
-│   │   ├── LoginPage.tsx
-│   │   ├── DashboardPage.tsx        # /api/ingestion/collections + 釘選（前端）
-│   │   └── WorkspacePage.tsx        # 載入 collection + docs + conversations
-│   ├── workspace/
-│   │   ├── WSSidebar.tsx            # 文件上傳、對話列表
-│   │   ├── WSChat.tsx               # /v1/chat/completions 串流 + /api/conversations 持久化
-│   │   ├── WSStudio.tsx             # 製作台 + 已完成 timeline
-│   │   ├── CommandModal.tsx         # 2 步驟風格選擇與生成
-│   │   ├── ArtifactViewer.tsx       # Markdown 報告 / 投影片瀏覽
-│   │   └── useJobStream.ts          # 自動訂閱所有 in-flight job 的 SSE
-│   ├── studio/
-│   │   └── generators.ts            # generateReport / generateSlides（呼叫 /v1/chat/completions）
-│   └── utils/format.ts              # bytes / 相對時間 / 根據 id 配色
-└── tsconfig*.json
+│   ├── main.tsx / App.tsx      # createRoot + ThemeProvider + BrowserRouter
+│   ├── api/                    # axios client + auth/collections/documents/jobs/conversations/chat
+│   ├── store/                  # auth.ts / workspace.ts / artifacts.ts (Zustand)
+│   ├── routes/                 # ProtectedRoute / LoginPage / DashboardPage / WorkspacePage
+│   ├── workspace/              # WSSidebar / WSChat / WSStudio / CommandModal / ArtifactViewer / useJobStream
+│   ├── studio/generators.ts    # generateReport / generateSlides（呼叫 /v1/chat/completions）
+│   ├── theme/                  # tokens.ts + ThemeContext.tsx
+│   ├── components/             # Icon / ThemeSwitch / Field / Modal / MarkdownPreview ...
+│   └── utils/format.ts
+└── pptx-skill/                 # ── 獨立的 pptx-renderer 服務 ──
+    ├── server.js               # Express app：/render /screenshots /qa-geometric /health（port 7100）
+    ├── icons.js                # 概念名 → Heroicons PNG 解析器（server.js 啟動時必需）
+    ├── package.json            # vendored runtime deps（express / pptxgenjs / sharp / react-icons）
+    ├── Dockerfile              # node:22-bookworm-slim + LibreOffice + Poppler + Noto CJK + tini
+    ├── SKILL.md / pptxgenjs.md / editing.md   # skill 文件與 pptxgenjs 參考
+    ├── scripts/                # 操作員可在容器內執行的 helper 腳本
+    └── tests/                  # smoke 測試
+        ├── test_image_focus_render.js   # 對 live renderer 驗證 image_focus 會嵌圖、standard 不會
+        └── test_local_emptiness.js      # inline 驗證 findLargestEmptyRegion 的空白區塊判定
 ```
 
-## 開發
+## 啟動與部署 / Setup & Run
+
+### 前端（開發模式）
 
 ```bash
 cd /home/aia/c1147259/ANILA/ANILALM
-npm install                       # 已執行；node_modules 已就緒
+npm install                       # node_modules 已就緒
 cp .env.example .env              # 視需要改 VITE_CSP_BACKEND / VITE_DEFAULT_CHAT_MODEL
 npm run dev                       # http://localhost:5174
 ```
 
-預設 dev server 會把 `/api`、`/v1`、`/v2` proxy 到 `http://localhost:8000`
-（也就是 myCSPPlatform 的 backend）。請先確認 backend 已起：
+dev server 會把 `/api`、`/v1`、`/v2` proxy 到 `VITE_CSP_BACKEND`（預設 `http://localhost:8000`，即 myCSPPlatform backend）。請先確認 backend 已起：
 
 ```bash
-cd /home/aia/c1147259/ANILA/myCSPPlatform/backend
-docker compose up -d              # 或對應的啟動方式
 curl -sf http://localhost:8000/health
 ```
 
-## 重要設計決策
+### pptx-renderer 服務（容器）
 
-### 1. JWT 同時走 `/api` 跟 `/v1`
-不需要前端再產生 API Key。axios 攔截器把 access_token 當作 Bearer 加上去，CSP
-後端的 `get_caller` middleware 會自動辨識為 JWT。
+`pptx-renderer` 在 repo 根的 `docker-compose-dev.yml` 中定義為一個 service：
 
-### 2. SSE Job Progress 仰賴 cookie session
-`EventSource` 不能設 Authorization header，所以 SSE 倚賴 `_finalize_login` 在登入時
-種下的 cookie。axios 也是 `withCredentials: true`，所以 cookie 一直在 scope 內。
+- `build.context: ANILALM/pptx-skill`
+- `expose: "7100"` — 只在 docker network 內（無 host port mapping），由 CSP 後端以服務名 `pptx-renderer:7100` 連線。
+- healthcheck 打 `http://127.0.0.1:7100/health`。
 
-### 3. RAG 還沒接，目前是「檔名 + 通用知識」模式
-CSP 後端目前沒有 `/api/ingestion/search`（語義搜尋）endpoint。Chat 的 system prompt 會
-列出已索引文件的檔名 + 段數，明確告訴模型「片段內容尚未注入」，要回答時就用通用知識
-回答並提醒使用者貼段落進對話。等後端有 search endpoint 之後改 `WSChat.buildSystemPrompt`
-與 `studio/generators.ts` 的 `summariseSources` 即可升級為真 RAG。
+從 repo 根啟動：
 
-### 4. Studio 9 種輸出，MVP 只開「深度報告」與「簡報」
-其餘 7 種（podcast / video / mindmap / flashcards / quiz / infographic / datatable）在
-`WSStudio` 顯示但點擊會跳出 "Coming soon" 提示。後端對應路徑（TTS / 影片合成等）就緒後
-解鎖即可——`CommandModal` 已預留 2 步驟流程。
+```bash
+cd /home/aia/c1147259/ANILA
+docker compose -f docker-compose-dev.yml up -d pptx-renderer
+```
 
-### 5. Pinned 與 Studio artifacts 都先存 localStorage
-釘選（pin）與 Studio 產出目前都是 client-side。後端如果之後新增
-`user_collection_preferences` 與 `studio_artifacts` 兩張表，把
-`store/artifacts.ts` / `DashboardPage.tsx` 的 localStorage 替換成 axios 即可，零 UI 改動。
+本機跑（不經 compose）：
 
-## 已知限制 / 後續
+```bash
+cd /home/aia/c1147259/ANILA/ANILALM/pptx-skill
+node server.js                    # listening on :7100
+```
 
-- 沒有 RAG 真檢索；對話會明確告知模型片段未注入。
-- Studio 產出存 localStorage；換瀏覽器/裝置看不到歷史。
-- 沒有檔案分享 / 多人共用知識庫（CSP 的 `collection_access_grants` 還沒實作）。
-- 沒有 zip 批次上傳 UI（後端 `/documents/zip` endpoint 已有，但 MVP 沒接）。
-- 沒有 doc preview（後端 `/documents/:id/blob` 可下載，後續可加 PDF preview iframe）。
-- 沒有 conversation 分類 / 機密標記 UI（後端 `/classify` endpoint 已有）。
-- 沒有 e2e 測試；smoke 測試僅靠 `npm run build`。
+### 跑 smoke 測試
 
-## 與舊原型的關係
+`test_image_focus_render.js` 需要一個正在運行的 renderer（它走完整 PptxGenJS pipeline，不能 inline）。預設打 `http://localhost:7100`，可用 `RENDERER_URL` 覆寫：
 
-`_design/` 目錄保留了一份 1929 行的 single-file HTML prototype（`prototype.html`）
-與 5 個 Figma-canvas 用的 artboard JSX。它們是這次 redesign 的設計依據，但不再
-參與 build——所有 production 邏輯都在 `src/`。
+```bash
+cd /home/aia/c1147259/ANILA/ANILALM/pptx-skill
+node server.js &                                   # 或用運行中的容器
+node tests/test_image_focus_render.js
+RENDERER_URL=http://pptx-renderer:7100 node tests/test_image_focus_render.js
+```
+
+`test_local_emptiness.js` 把 `findLargestEmptyRegion` inline 一份，不需 server：
+
+```bash
+node tests/test_local_emptiness.js
+```
+
+> 注意：`test_local_emptiness.js` 內含一份 `server.js` 函式的副本（因為 `server.js` 一被 import 就會啟 listener）。若 `server.js` 的實作改了，需同步更新這份副本。
+
+## 與其他服務的關係 / Integration
+
+`pptx-renderer` 不被前端直接呼叫，而是被 **myCSPPlatform backend 的 studio 模組** 呼叫（`myCSPPlatform/backend/app/api/studio.py`，常數 `RENDERER_BASE_URL = "http://pptx-renderer:7100"`）：
+
+1. CSP 收到 Studio 生成簡報的請求後，先由 LLM 產出 deck spec（每張投影片有 `title` / `bullets` / `layout_kind` 等）。
+2. spec 中標記為 `image_focus` 的投影片，其 `image_ref` 會被 hydrate 成 inline `image_data`（bytes）後才送渲染——studio FLUX 即時生成的情境插畫，就是在這一步被注入 spec。
+3. CSP `POST {RENDERER_BASE_URL}/render` 帶 `{ spec }`，拿回 `.pptx` bytes。
+4. 後續若要做 vision / 幾何 QA，CSP 再呼叫 `POST /screenshots`（拿 PNG）與 `POST /qa-geometric`。
+
+關於 `image_focus` 的渲染行為（由 `test_image_focus_render.js` 守護）：只有 `image_focus` layout 會把 `image_data` 畫上去；`standard` / `stat_callout` / `quote` / `two_column` / `icon_rows` 都會忽略 `image_data`。
+
+> 重用性：因為 renderer 是獨立 HTTP 服務，任何未來的 caller（n8n workflow node、CLI、bot 等）都可以打同一個 `/render` 端點，而 CSP 容器維持 Python-only、不需內嵌 Node + LibreOffice。
+
+## 相關文件 / Related docs
+
+studio FLUX 圖像生成的合約與分階段規格（路徑相對於本檔）：
+
+- [`../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md`](../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md) — Studio FLUX 主規格（多階段合約、元件盤點）。
+- `../docs/superpowers/studio-flux/specs/` — 分階段設計文件：
+  - `2026-05-21-stage2-clip-descope-vlm-ranking-design.md`
+  - `2026-05-21-stage3-brand-yaml-design.md`
+  - `2026-05-21-stage3-content-inferred-style-design.md`
+  - `2026-05-21-stage4-illustration-routing-design.md`
+- `../docs/superpowers/studio-flux/plans/` — 分階段實作計畫：
+  - `2026-05-21-stage2-clip-descope-vlm-ranking.md`
+  - `2026-05-21-stage3-content-inferred-style.md`
+  - `2026-05-21-stage4-illustration-routing.md`
+
+另見 `pptx-skill/SKILL.md` 與 `pptx-skill/pptxgenjs.md`（renderer 內部的 skill 與 pptxgenjs 參考）。
+
+---
+
+> English mirror: [README.en.md](./README.en.md)
