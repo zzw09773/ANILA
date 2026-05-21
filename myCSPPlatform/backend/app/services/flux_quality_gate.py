@@ -170,13 +170,18 @@ async def gate_candidates(
 
 
 # ── Striping / barcode detector (pure CV) ──────────────────────────────────
-def _has_striping_artifact(
+def striping_energy(
     png_bytes: bytes,
     *,
     flat_region_frac: float = FLAT_REGION_FRAC,
-    hf_energy_thresh: float = HF_ENERGY_THRESH,
-) -> bool:
-    """Detect barcode/striping artifacts in the flattest region of an image.
+) -> float | None:
+    """Return the median high-freq energy of the flattest region, or ``None``
+    if the image cannot be decoded.
+
+    This is the raw metric the striping gate thresholds on; exposed (public)
+    so calibration tooling can inspect the *distribution* of the metric over
+    a labelled image set, not just the gate's pass/fail boolean. The gate
+    (``_has_striping_artifact``) is just this value compared to a threshold.
 
     Strategy (spec 5.1): a clean diffusion image has a smooth background;
     striping/barcode artifacts inject a strong high-frequency band even
@@ -185,21 +190,20 @@ def _has_striping_artifact(
       2. split into 16x16 blocks, take the lowest-variance ``flat_region_frac``
          of them (the smooth background),
       3. for each, measure normalized high-frequency FFT energy,
-      4. flag if the median flat-region HF energy exceeds the threshold.
+      4. return the median flat-region HF energy.
 
-    Fail-open: if the image cannot be decoded (unsupported PNG variant,
-    truncated bytes) we return ``False`` — the striping gate must never be
-    the reason a perfectly good image is dropped on a decode quirk; the
-    VLM and CLIP gates still apply.
+    Returns ``None`` (rather than 0.0) when the image cannot be decoded or is
+    too small, so callers can distinguish "measured a smooth image" from
+    "could not measure". The gate treats ``None`` as fail-open (not striping).
     """
     gray = _decode_png_to_gray(png_bytes)
     if gray is None or gray.size == 0:
-        return False
+        return None
 
     h, w = gray.shape
     block = 16
     if h < block or w < block:
-        return False
+        return None
 
     nby, nbx = h // block, w // block
     blocks = []
@@ -211,7 +215,7 @@ def _has_striping_artifact(
             variances.append(float(np.var(blk)))
 
     if not blocks:
-        return False
+        return None
 
     variances_arr = np.asarray(variances)
     n_flat = max(1, int(len(blocks) * flat_region_frac))
@@ -219,9 +223,29 @@ def _has_striping_artifact(
 
     energies = [_hf_energy(blocks[i]) for i in flat_idx]
     if not energies:
-        return False
-    median_hf = float(np.median(energies))
-    return median_hf > hf_energy_thresh
+        return None
+    return float(np.median(energies))
+
+
+def _has_striping_artifact(
+    png_bytes: bytes,
+    *,
+    flat_region_frac: float = FLAT_REGION_FRAC,
+    hf_energy_thresh: float = HF_ENERGY_THRESH,
+) -> bool:
+    """Detect barcode/striping artifacts in the flattest region of an image.
+
+    Thin wrapper over ``striping_energy``: flag when the measured median
+    flat-region HF energy exceeds ``hf_energy_thresh``.
+
+    Fail-open: if the image cannot be decoded (unsupported PNG variant,
+    truncated bytes, too small) ``striping_energy`` returns ``None`` and we
+    return ``False`` — the striping gate must never be the reason a perfectly
+    good image is dropped on a decode quirk; the VLM and CLIP gates still
+    apply.
+    """
+    e = striping_energy(png_bytes, flat_region_frac=flat_region_frac)
+    return e is not None and e > hf_energy_thresh
 
 
 def _hf_energy(block: np.ndarray) -> float:

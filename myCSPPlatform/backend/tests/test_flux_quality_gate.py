@@ -22,9 +22,11 @@ import pytest
 from app.services.flux_image_provider import GeneratedImage
 from app.services.flux_quality_gate import (
     CLIP_THRESHOLD,
+    HF_ENERGY_THRESH,
     _decode_png_to_gray,
     _has_striping_artifact,
     gate_candidates,
+    striping_energy,
     stub_clip_scorer,
 )
 
@@ -92,6 +94,34 @@ def test_striping_check_flags_stripes():
 def test_striping_check_fails_open_on_bad_bytes():
     # Undecodable -> must NOT flag (fail open; other gates still apply).
     assert _has_striping_artifact(b"\x89PNG\r\n\x1a\ngarbage") is False
+
+
+# ── striping_energy (raw calibration metric) ────────────────────────────────
+def test_striping_energy_returns_float_low_on_solid():
+    # A flat solid image has near-zero high-frequency energy.
+    e = striping_energy(_solid_png())
+    assert isinstance(e, float)
+    assert e <= HF_ENERGY_THRESH
+
+
+def test_striping_energy_high_on_stripes():
+    # A barcode-like striped image has high HF energy, above the gate value.
+    e = striping_energy(_striped_png())
+    assert isinstance(e, float)
+    assert e > HF_ENERGY_THRESH
+
+
+def test_striping_energy_none_on_undecodable():
+    # Distinguish "could not measure" (None) from a measured 0.0.
+    assert striping_energy(b"not a png") is None
+
+
+def test_has_striping_artifact_consistent_with_energy():
+    # Behaviour equivalence: the bool gate is exactly energy > threshold.
+    for png in (_solid_png(), _striped_png()):
+        e = striping_energy(png)
+        expected = e is not None and e > HF_ENERGY_THRESH
+        assert _has_striping_artifact(png) is expected
 
 
 # ── mock VLM ────────────────────────────────────────────────────────────────
