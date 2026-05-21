@@ -1346,6 +1346,18 @@ async def _gated_generate(
     return None, FLUX_GATE_MAX_RETRIES
 
 
+def _infer_image_use_case(idx: int, slide: dict) -> "ImageUseCase":
+    """Map a slide to its FLUX use_case. Order matters: idx 0 / layout 'cover'
+    is the hero even when also tagged section_break."""
+    from app.schemas.studio import ImageUseCase
+
+    if idx == 0 or slide.get("layout_kind") == "cover":
+        return ImageUseCase.COVER_HERO
+    if slide.get("layout_kind") == "section_break":
+        return ImageUseCase.SECTION_BAND
+    return ImageUseCase.CONTENT_ILLUSTRATION
+
+
 async def _hydrate_images(
     spec_dict: dict[str, Any],
     images_lookup: dict[str, dict[str, Any]],
