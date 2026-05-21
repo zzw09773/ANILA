@@ -21,13 +21,11 @@ import pytest
 
 from app.services.flux_image_provider import GeneratedImage
 from app.services.flux_quality_gate import (
-    CLIP_THRESHOLD,
     HF_ENERGY_THRESH,
     _decode_png_to_gray,
     _has_striping_artifact,
     gate_candidates,
     striping_energy,
-    stub_clip_scorer,
 )
 
 
@@ -135,107 +133,71 @@ class _MockVlm:
         return dict(self._verdict)
 
 
+class _QueueVlm:
+    """Returns a different verdict per call, in order — for ranking tests."""
+
+    def __init__(self, verdicts: list[dict]) -> None:
+        self._q = list(verdicts)
+        self.calls = 0
+
+    async def check(self, png_bytes: bytes, *, concept: str) -> dict:  # noqa: ARG002
+        self.calls += 1
+        return dict(self._q.pop(0))
+
+
 def _candidate() -> GeneratedImage:
     return GeneratedImage(png_bytes=_solid_png(), seed=1, accepted=False)
 
 
 # ── gate_candidates ─────────────────────────────────────────────────────────
 @pytest.mark.asyncio
-async def test_gate_all_pass_picks_highest_clip():
+async def test_gate_all_pass_picks_highest_vlm_score():
     c_low = _candidate()
     c_high = _candidate()
-
-    def scorer(png, prompt):  # noqa: ANN001, ARG001
-        # First call -> low, second -> high (map by call order).
-        return scorer._queue.pop(0)
-
-    scorer._queue = [30.0, 90.0]
-    vlm = _MockVlm({"match": True, "has_text": False, "reason": "ok"})
-
+    vlm = _QueueVlm([
+        {"match": True, "has_text": False, "score": 0.3, "reason": "ok"},
+        {"match": True, "has_text": False, "score": 0.9, "reason": "ok"},
+    ])
     best = await gate_candidates(
         [c_low, c_high],
-        flux_prompt="abstract teal swirl",
         concept_en="abstract teal swirl",
-        clip_scorer=scorer,
         vlm=vlm,
     )
     assert best is not None
-    assert best.clip_score == 90.0
+    assert best is c_high
+    assert best.vlm_verdict["score"] == 0.9
     assert best.accepted is True
+    # CLIP de-scoped: clip_score never set.
+    assert best.clip_score is None
 
 
 @pytest.mark.asyncio
 async def test_gate_rejects_has_text():
-    vlm = _MockVlm({"match": True, "has_text": True, "reason": "logo"})
-    best = await gate_candidates(
-        [_candidate()],
-        flux_prompt="p",
-        concept_en="c",
-        clip_scorer=stub_clip_scorer,
-        vlm=vlm,
-    )
+    vlm = _MockVlm({"match": True, "has_text": True, "score": 0.8, "reason": "logo"})
+    best = await gate_candidates([_candidate()], concept_en="c", vlm=vlm)
     assert best is None
 
 
 @pytest.mark.asyncio
 async def test_gate_rejects_no_match():
-    vlm = _MockVlm({"match": False, "has_text": False, "reason": "off-concept"})
-    best = await gate_candidates(
-        [_candidate()],
-        flux_prompt="p",
-        concept_en="c",
-        clip_scorer=stub_clip_scorer,
-        vlm=vlm,
-    )
+    vlm = _MockVlm({"match": False, "has_text": False, "score": 0.1})
+    best = await gate_candidates([_candidate()], concept_en="c", vlm=vlm)
     assert best is None
-
-
-@pytest.mark.asyncio
-async def test_gate_rejects_low_clip_before_vlm():
-    vlm = _MockVlm({"match": True, "has_text": False})
-
-    def low_scorer(png, prompt):  # noqa: ANN001, ARG001
-        return CLIP_THRESHOLD - 1.0
-
-    best = await gate_candidates(
-        [_candidate()],
-        flux_prompt="p",
-        concept_en="c",
-        clip_scorer=low_scorer,
-        vlm=vlm,
-    )
-    assert best is None
-    # CLIP gate short-circuits before the VLM round-trip.
-    assert vlm.calls == 0
 
 
 @pytest.mark.asyncio
 async def test_gate_rejects_striping_before_vlm():
     striped = GeneratedImage(png_bytes=_striped_png(), seed=1, accepted=False)
-    vlm = _MockVlm({"match": True, "has_text": False})
-    best = await gate_candidates(
-        [striped],
-        flux_prompt="p",
-        concept_en="c",
-        clip_scorer=stub_clip_scorer,  # passes CLIP
-        vlm=vlm,
-    )
+    vlm = _MockVlm({"match": True, "has_text": False, "score": 1.0})
+    best = await gate_candidates([striped], concept_en="c", vlm=vlm)
     assert best is None
-    assert vlm.calls == 0  # striping gate is before VLM
+    assert vlm.calls == 0  # striping gate is before VLM (short-circuits)
 
 
 @pytest.mark.asyncio
 async def test_gate_empty_candidates_returns_none():
     best = await gate_candidates(
-        [],
-        flux_prompt="p",
-        concept_en="c",
-        clip_scorer=stub_clip_scorer,
-        vlm=_MockVlm({"match": True, "has_text": False}),
+        [], concept_en="c",
+        vlm=_MockVlm({"match": True, "has_text": False, "score": 1.0}),
     )
     assert best is None
-
-
-@pytest.mark.asyncio
-async def test_stub_clip_scorer_passes_threshold():
-    assert stub_clip_scorer(_solid_png(), "anything") >= CLIP_THRESHOLD

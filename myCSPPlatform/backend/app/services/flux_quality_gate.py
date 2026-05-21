@@ -1,35 +1,33 @@
 """FLUX quality gate — Layer C (Stage 2).
 
 The "把關 (gatekeeper)" that Stage 1 deliberately left as pass-through.
-Given N candidate images from the FLUX service, run three independent
+Given N candidate images from the FLUX service, run two independent
 gates and return the single best accepted candidate (or ``None`` when all
 candidates fail, so the caller can retry or fall back).
 
-Three gates (spec 5.1), cheapest-first so a clear reject short-circuits
+Two gates (spec 5.5), cheapest-first so a clear reject short-circuits
 before paying for the VLM round-trip:
 
-  1. CLIPScore(image, prompt) >= ``CLIP_THRESHOLD``
-     CV/embedding gate. clip-vit is NOT deployed yet, so the scorer is an
-     INJECTED callable (``clip_scorer(png_bytes, prompt) -> float``). Stage 2
-     ships with ``stub_clip_scorer`` returning a fixed high score so this
-     gate is pass-through until a real scorer is wired. See TODO below.
-
-  2. striping / barcode artifact check (``_has_striping_artifact``)
+  1. striping / barcode artifact check (``_has_striping_artifact``)
      Pure-CV (numpy + a tiny stdlib PNG decoder). VLMs do not reliably see
      pixel-level striping, so this is a separate detector. Threshold needs
      Stage 2 calibration (see TODO).
 
-  3. VLM semantic + text check
+  2. VLM semantic + text check
      Asks the (already-deployed, multimodal) gemma4 whether the image is an
      abstract, text-free illustration of the concept. The VLM is an INJECTED
      object exposing ``async check(png_bytes, *, concept) -> dict`` so this
      module stays decoupled from the CSP DB/auth/proxy plumbing that lives
      in api/studio.py.
 
-The gate mutates each candidate's ``clip_score`` / ``vlm_verdict`` /
-``accepted`` audit fields in place (the GeneratedImage dataclass reserved
-them in Stage 1) so the hydration layer can record them in
-``image_gen_meta`` regardless of accept/reject.
+CLIP was de-scoped (design 2026-05-21): clip-vit is NOT deployed and the
+stub was always pass-through. ``GeneratedImage.clip_score`` is kept None
+for audit-schema stability (spec 3.5) — do NOT remove that field.
+
+The gate mutates each candidate's ``vlm_verdict`` / ``accepted`` audit
+fields in place (the GeneratedImage dataclass reserved them in Stage 1)
+so the hydration layer can record them in ``image_gen_meta`` regardless
+of accept/reject.
 """
 from __future__ import annotations
 
@@ -46,15 +44,6 @@ logger = logging.getLogger(__name__)
 
 
 # ── Calibration constants (spec 5.5) ──────────────────────────────────────
-# Strong image/text matches sit at CLIP cosine ~0.27-0.35; torchmetrics
-# CLIPScore scales x100, so the spec's initial value is 27. Until a real
-# scorer is deployed the stub returns a fixed high score, so this threshold
-# does not actually block anything yet.
-#
-# TODO(stage2-calibration): hand-label 50 slides good/bad and set this from
-# the ROC curve once a real CLIP scorer is deployed.
-CLIP_THRESHOLD: float = 27.0
-
 # FFT high-frequency energy threshold for the striping/barcode detector,
 # measured on the flattest (lowest-variance) region of the image. A clean
 # smooth background has near-zero high-frequency energy; striping/barcode
@@ -75,12 +64,6 @@ FLAT_REGION_FRAC: float = 0.3
 
 
 # ── Injected-dependency contracts ─────────────────────────────────────────
-class ClipScorer(Protocol):
-    """``clip_scorer(png_bytes, prompt) -> float`` (torchmetrics scale x100)."""
-
-    def __call__(self, png_bytes: bytes, prompt: str) -> float: ...
-
-
 class Vlm(Protocol):
     """Multimodal model wrapper (gemma4 in production).
 
@@ -91,34 +74,20 @@ class Vlm(Protocol):
     async def check(self, png_bytes: bytes, *, concept: str) -> dict: ...
 
 
-def stub_clip_scorer(png_bytes: bytes, prompt: str) -> float:  # noqa: ARG001
-    """Pass-through CLIP scorer used until clip-vit is deployed.
-
-    Returns a fixed score safely above ``CLIP_THRESHOLD`` so the CLIP gate
-    never rejects a candidate in Stage 2. The audit field still gets a
-    value so downstream meta logging shows a (placeholder) number.
-
-    TODO(stage2): replace with a real scorer backed by
-    ``openai/clip-vit-base-patch16`` (torchmetrics CLIPScore), or a
-    multilingual SigLIP if scoring the original Chinese concept directly.
-    """
-    return 100.0
-
-
 # ── The gate ───────────────────────────────────────────────────────────────
 async def gate_candidates(
     candidates: list[GeneratedImage],
     *,
-    flux_prompt: str,
     concept_en: str,
-    clip_scorer: ClipScorer,
     vlm: Vlm,
 ) -> GeneratedImage | None:
     """Return the best accepted candidate, or ``None`` if all fail.
 
-    Each candidate runs CLIP -> striping -> VLM, cheapest-first. The first
-    failing gate skips the candidate (no later gate runs for it). Accepted
-    candidates are ranked by ``clip_score`` and the highest wins.
+    Each candidate runs striping -> VLM, cheapest-first: a pixel-level
+    striping artifact short-circuits before the VLM round-trip. Accepted
+    candidates are ranked by the VLM's 0-1 quality ``score`` and the highest
+    wins. CLIP was de-scoped (see spec 2026-05-21 design); ``clip_score`` is
+    left None for audit-schema stability.
     """
     scored: list[GeneratedImage] = []
     for c in candidates:
@@ -126,24 +95,12 @@ async def gate_candidates(
         # stale verdict.
         c.accepted = False
 
-        # Gate 1: CLIPScore (stub pass-through until clip-vit deployed).
-        try:
-            c.clip_score = float(clip_scorer(c.png_bytes, flux_prompt))
-        except Exception as e:  # noqa: BLE001
-            logger.warning("CLIP scorer raised, skipping candidate: %s", e)
-            continue
-        if c.clip_score < CLIP_THRESHOLD:
-            logger.info(
-                "Gate reject (CLIP): score=%.2f < %.2f", c.clip_score, CLIP_THRESHOLD
-            )
-            continue
-
-        # Gate 2: striping / barcode artifact (pure CV).
+        # Gate 1: striping / barcode artifact (pure CV, cheapest — first).
         if _has_striping_artifact(c.png_bytes):
             logger.info("Gate reject (striping artifact detected)")
             continue
 
-        # Gate 3: VLM semantic + text check.
+        # Gate 2: VLM semantic + text check (also yields the 0-1 rank score).
         try:
             verdict = await vlm.check(c.png_bytes, concept=concept_en)
         except Exception as e:  # noqa: BLE001
@@ -156,10 +113,7 @@ async def gate_candidates(
 
         c.accepted = True
         scored.append(c)
-        logger.info(
-            "[gate] candidate accepted: clip=%.1f vlm=%s",
-            c.clip_score or 0.0, c.vlm_verdict,
-        )
+        logger.info("[gate] candidate accepted: vlm=%s", c.vlm_verdict)
 
     if not scored:
         logger.info(
@@ -167,10 +121,11 @@ async def gate_candidates(
             len(candidates), concept_en[:50],
         )
         return None
-    best = max(scored, key=lambda x: (x.clip_score or 0.0))
+    best = max(scored, key=lambda x: float((x.vlm_verdict or {}).get("score", 0.0)))
     logger.info(
-        "[gate] %d/%d accepted; best clip=%.1f",
-        len(scored), len(candidates), best.clip_score or 0.0,
+        "[gate] %d/%d accepted; best vlm score=%.2f",
+        len(scored), len(candidates),
+        float((best.vlm_verdict or {}).get("score", 0.0)),
     )
     return best
 

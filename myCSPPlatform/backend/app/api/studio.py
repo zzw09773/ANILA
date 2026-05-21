@@ -1303,7 +1303,7 @@ async def _gated_generate(
     image for this (prompt, use_case, seed, style) tuple is returned as-is
     so a job re-run is deterministic and free.
     """
-    from app.services.flux_quality_gate import gate_candidates, stub_clip_scorer
+    from app.services.flux_quality_gate import gate_candidates
 
     cached = flux_provider.cached_image(
         prompt, use_case=use_case, seed=seed, style_id=style_id,
@@ -1321,12 +1321,7 @@ async def _gated_generate(
         )
         best = await gate_candidates(
             candidates,
-            flux_prompt=prompt,
             concept_en=concept_en,
-            # CLIP gate is pass-through until clip-vit is deployed (stub
-            # returns a fixed high score). TODO(stage2): inject a real
-            # CLIPScore-backed scorer here once deployed.
-            clip_scorer=stub_clip_scorer,
             vlm=vlm,
         )
         if best is not None:
