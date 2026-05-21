@@ -156,6 +156,10 @@ FLUX_GATE_SEED_STRIDE = 1024
 # illustration slides take the theme/text fallback instead of spending GPU.
 # Protects against runaway latency on decks with many section breaks.
 MAX_GENERATED_IMAGES_PER_DECK = 15
+# A content slide only earns an illustration (and an image_focus layout) when
+# it's sparse enough that "image-led, text-supporting" reads well. Denser
+# slides keep their text-only standard layout (the image would crowd them).
+CONTENT_ILLUSTRATION_MAX_BULLETS = 3
 
 
 # ── JSON extraction (mirrors ANILALM's frontend extractJsonObject) ─────────
@@ -1515,6 +1519,7 @@ async def _hydrate_images(
     """
     import base64
 
+    from app.schemas.studio import ImageUseCase
     from app.services.diagram_renderer import render_dot_to_png
 
     slides = spec_dict.get("slides") or []
@@ -1599,6 +1604,16 @@ async def _hydrate_images(
             # Order matters: compute use_case BEFORE the cap check (the cap
             # fallback needs it).
             use_case = _infer_image_use_case(idx, slide)
+            # Density gate: the renderer only shows a content illustration on an
+            # image_focus (image-led) layout. A bullet-heavy content slide would
+            # be crowded by that, so it keeps its text-only standard layout and
+            # skips generation entirely (no GPU spent, doesn't count toward cap).
+            if (
+                use_case is ImageUseCase.CONTENT_ILLUSTRATION
+                and len(slide.get("bullets") or []) > CONTENT_ILLUSTRATION_MAX_BULLETS
+            ):
+                _apply_illustration_fallback(slide, use_case)
+                continue
             if generated_count >= MAX_GENERATED_IMAGES_PER_DECK:
                 logger.warning(
                     "per-deck image cap %d reached; slide %d (%s) -> fallback",
@@ -1616,7 +1631,13 @@ async def _hydrate_images(
                 deck_base_seed=deck_base_seed,
                 llm=llm,
             )
-            if not ok:
+            if ok:
+                # Content illustration only renders on an image_focus layout;
+                # cover/section bands render full-bleed via renderSectionBreak
+                # and must keep their layout.
+                if use_case is ImageUseCase.CONTENT_ILLUSTRATION:
+                    slide["layout_kind"] = "image_focus"
+            else:
                 _apply_illustration_fallback(slide, use_case)
             continue
         if wants_illustration and slide.get("image_prompt"):

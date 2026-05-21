@@ -204,3 +204,64 @@ async def test_routing_per_deck_cap(monkeypatch):
     assert len(calls) == MAX_GENERATED_IMAGES_PER_DECK
     capped = out["slides"][MAX_GENERATED_IMAGES_PER_DECK]
     assert capped["image_gen_meta"]["fallback"] == "text_only"
+
+
+@pytest.mark.asyncio
+async def test_routing_content_sparse_becomes_image_focus(monkeypatch):
+    async def _spy(slide, *, idx, use_case, **kw):
+        return True
+    monkeypatch.setattr(studio_mod, "_generate_slide_illustration", _spy)
+
+    slides = [
+        {"title": "Cover", "bullets": ["x"], "layout_kind": "section_break"},      # idx0 HERO
+        {"title": "C", "bullets": ["a", "b"], "layout_kind": "standard",
+         "image_prompt": "p"},                                                      # idx1 CONTENT, sparse
+    ]
+    out = await studio_mod._hydrate_images(
+        {"slides": slides}, {}, "/tmp",
+        flux_provider=object(), deck_base_seed=1000, llm=object(),
+    )
+    # CONTENT success → converted so renderImageFocus will show the image.
+    assert out["slides"][1]["layout_kind"] == "image_focus"
+    # HERO must NOT be converted — it renders full-bleed via renderSectionBreak.
+    assert out["slides"][0]["layout_kind"] == "section_break"
+
+
+@pytest.mark.asyncio
+async def test_routing_content_dense_skips_generation(monkeypatch):
+    calls = []
+
+    async def _spy(slide, *, idx, use_case, **kw):
+        calls.append(idx)
+        return True
+    monkeypatch.setattr(studio_mod, "_generate_slide_illustration", _spy)
+
+    slides = [
+        {"title": "Cover", "bullets": ["x"], "layout_kind": "section_break"},      # idx0 HERO
+        {"title": "Dense", "bullets": ["a", "b", "c", "d"], "layout_kind": "standard",
+         "image_prompt": "p"},                                                      # idx1 CONTENT, dense
+    ]
+    out = await studio_mod._hydrate_images(
+        {"slides": slides}, {}, "/tmp",
+        flux_provider=object(), deck_base_seed=1000, llm=object(),
+    )
+    assert calls == [0]  # dense CONTENT skipped — helper not called for idx1
+    assert out["slides"][1]["image_gen_meta"]["fallback"] == "text_only"
+    assert out["slides"][1]["layout_kind"] == "standard"  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_routing_band_not_converted_to_image_focus(monkeypatch):
+    async def _spy(slide, *, idx, use_case, **kw):
+        return True
+    monkeypatch.setattr(studio_mod, "_generate_slide_illustration", _spy)
+
+    slides = [
+        {"title": "Cover", "bullets": ["x"], "layout_kind": "section_break"},      # idx0 HERO
+        {"title": "Sec", "bullets": ["x"], "layout_kind": "section_break"},        # idx1 BAND
+    ]
+    out = await studio_mod._hydrate_images(
+        {"slides": slides}, {}, "/tmp",
+        flux_provider=object(), deck_base_seed=1000, llm=object(),
+    )
+    assert out["slides"][1]["layout_kind"] == "section_break"  # BAND stays full-bleed
