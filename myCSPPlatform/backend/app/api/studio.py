@@ -1327,7 +1327,19 @@ async def _gated_generate(
             flux_provider.persist_chosen(
                 best, prompt=prompt, use_case=use_case, seed=seed, style_id=style_id,
             )
+            logger.info(
+                "[gate] accepted on attempt %d/%d (use_case=%s)",
+                attempt, FLUX_GATE_MAX_RETRIES, use_case.value,
+            )
             return best, attempt
+        logger.info(
+            "[gate] attempt %d/%d rejected all %d candidates, retrying fresh seed",
+            attempt, FLUX_GATE_MAX_RETRIES, FLUX_GATE_NUM_CANDIDATES,
+        )
+    logger.warning(
+        "[gate] all %d attempts exhausted (use_case=%s) — fallback to no image",
+        FLUX_GATE_MAX_RETRIES + 1, use_case.value,
+    )
     return None, FLUX_GATE_MAX_RETRIES
 
 

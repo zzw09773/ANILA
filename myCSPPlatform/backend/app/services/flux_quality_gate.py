@@ -150,10 +150,23 @@ async def gate_candidates(
 
         c.accepted = True
         scored.append(c)
+        logger.info(
+            "[gate] candidate accepted: clip=%.1f vlm=%s",
+            c.clip_score or 0.0, c.vlm_verdict,
+        )
 
     if not scored:
+        logger.info(
+            "[gate] all %d candidate(s) rejected for concept=%r",
+            len(candidates), concept_en[:50],
+        )
         return None
-    return max(scored, key=lambda x: (x.clip_score or 0.0))
+    best = max(scored, key=lambda x: (x.clip_score or 0.0))
+    logger.info(
+        "[gate] %d/%d accepted; best clip=%.1f",
+        len(scored), len(candidates), best.clip_score or 0.0,
+    )
+    return best
 
 
 # ── Striping / barcode detector (pure CV) ──────────────────────────────────
