@@ -519,11 +519,31 @@ function renderSectionBreak(pres, s, theme) {
       x: 0, y: 0, w: 13.33, h: 7.5,
       sizing: { type: 'cover', w: 13.33, h: 7.5 },
     })
+    // Full-bleed base scrim — unify tone, keep imagery visible.
     heroSlide.addShape('rect', {
       x: 0, y: 0, w: 13.33, h: 7.5,
-      fill: { color: '000000', transparency: 55 },
+      fill: { color: '000000', transparency: 58 },
       line: { type: 'none' },
     })
+    // Title-band gradient scrim. pptxgenjs 3.x has no native gradient
+    // fill, so stack rects of decreasing transparency to fake a soft
+    // vertical darkening centred on the title band. This GUARANTEES the
+    // white title stays legible no matter how bright FLUX rendered that
+    // region — the imagery's luminance is uncontrolled and a single flat
+    // scrim left the title marginal over bright areas (e.g. fuselage +
+    // clouds). Outer→inner so the centre (behind the title) is darkest
+    // and the edges feather out.
+    for (const band of [
+      { y: 1.7, h: 3.8, transparency: 52 },
+      { y: 2.2, h: 2.8, transparency: 42 },
+      { y: 2.6, h: 2.0, transparency: 34 },
+    ]) {
+      heroSlide.addShape('rect', {
+        x: 0, y: band.y, w: 13.33, h: band.h,
+        fill: { color: '000000', transparency: band.transparency },
+        line: { type: 'none' },
+      })
+    }
     heroSlide.addText(titleStr, {
       x: 1.0, y: 2.6, w: 11.3, h: 1.6,
       fontSize: titleFont, bold: true, color: 'FFFFFF',
