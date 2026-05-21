@@ -1314,6 +1314,14 @@ async def _hydrate_images(
         # toolchain to be wired (provider + per-deck seed + llm adapter);
         # if any is missing we fall through to the legacy paths untouched.
         is_cover = idx == 0 or slide.get("layout_kind") == "cover"
+        if is_cover:
+            logger.info(
+                "[H-DIAG] cover candidate slide %d '%s': layout_kind=%r | "
+                "flux_provider=%s deck_base_seed=%s llm=%s",
+                idx, str(slide.get("title", ""))[:30], slide.get("layout_kind"),
+                flux_provider is not None, deck_base_seed is not None,
+                llm is not None,
+            )
         if (
             is_cover
             and flux_provider is not None
@@ -1337,6 +1345,12 @@ async def _hydrate_images(
                 )
                 flux_prompt = None
 
+            logger.info(
+                "[H-DIAG] cover rewriter slide %d: flux_prompt=%s",
+                idx,
+                (str(flux_prompt)[:80] + "…") if flux_prompt
+                else "None (USE_GRAPHVIZ / empty → fall through)",
+            )
             if flux_prompt:  # None → rewriter said USE_GRAPHVIZ (or stripped
                 #             to empty); a cover shouldn't be structural, but
                 #             guard anyway and fall through.
@@ -1362,6 +1376,11 @@ async def _hydrate_images(
                         "seed": img.seed,
                         "style_id": style.style_id,
                     }
+                    logger.info(
+                        "[H-DIAG] cover hero SET on slide %d: image_data=%d bytes, "
+                        "seed=%s — renderer should show this as hero",
+                        idx, len(img.png_bytes), img.seed,
+                    )
                     # Cover hero won — drop any leftover legacy prompt fields
                     # so the renderer doesn't double-handle this slide.
                     slide.pop("image_prompt", None)
@@ -1404,6 +1423,11 @@ async def _hydrate_images(
             slide["image_data"] = (
                 "data:image/png;base64,"
                 + base64.b64encode(img.png_bytes).decode("ascii")
+            )
+            logger.info(
+                "[H-DIAG] legacy image_prompt slide %d → content_illustration, "
+                "image_data=%d bytes (layout_kind=%r)",
+                idx, len(img.png_bytes), slide.get("layout_kind"),
             )
         except Exception as e:
             logger.warning(
