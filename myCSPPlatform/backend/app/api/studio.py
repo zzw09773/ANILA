@@ -1384,6 +1384,93 @@ def _apply_illustration_fallback(slide: dict, use_case: "ImageUseCase") -> None:
     slide.pop("diagram_dot", None)
 
 
+async def _generate_slide_illustration(
+    slide: dict,
+    *,
+    idx: int,
+    use_case: "ImageUseCase",
+    deck_style: "StyleDescriptor | None",
+    flux_provider: "FluxImageProvider",
+    deck_base_seed: int,
+    llm: "_StudioLLMAdapter",
+) -> bool:
+    """Rewrite → gate → write image. Returns True iff an image was placed.
+
+    On any failure (rewriter raised / USE_GRAPHVIZ / gate raised / all
+    candidates rejected) returns False WITHOUT writing fallback meta — the
+    caller invokes _apply_illustration_fallback. ``concept_en`` keeps the
+    Stage 1 convention (the whole flux_prompt); the slide's own image_prompt
+    is intentionally ignored (decision A) — title+bullets drive the rewriter.
+    """
+    from app.services.flux_prompt_rewriter import derive_flux_prompt
+    from app.services.flux_style import get_style_descriptor
+
+    style = deck_style or get_style_descriptor()
+    title = slide.get("title", "")
+    try:
+        flux_prompt = await derive_flux_prompt(
+            title=title,
+            bullets=slide.get("bullets", []),
+            use_case=use_case,
+            style=style,
+            llm=llm,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "FLUX rewriter failed for slide '%s' (%s): %s",
+            title or "<untitled>", use_case.value, e,
+        )
+        return False
+    if not flux_prompt:  # USE_GRAPHVIZ or stripped empty
+        logger.info(
+            "FLUX rewriter returned no prompt for slide '%s' (%s) — fallback.",
+            title or "<untitled>", use_case.value,
+        )
+        return False
+
+    seed = deck_base_seed + idx
+    vlm = _Gemma4VlmGate(llm._db, llm._user)
+    try:
+        best, retry_count = await _gated_generate(
+            flux_provider,
+            flux_prompt,
+            use_case=use_case,
+            seed=seed,
+            style_id=style.style_id,
+            concept_en=flux_prompt,
+            vlm=vlm,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "FLUX gated generation errored for slide '%s' (%s): %s",
+            title or "<untitled>", use_case.value, e,
+        )
+        return False
+    if best is None:
+        logger.warning(
+            "FLUX gate rejected all candidates for slide '%s' (%s) after %d "
+            "retries — fallback.", title or "<untitled>", use_case.value, retry_count,
+        )
+        return False
+
+    slide["image_data"] = (
+        "data:image/png;base64," + base64.b64encode(best.png_bytes).decode("ascii")
+    )
+    slide["image_gen_meta"] = {
+        "use_case": use_case.value,
+        "flux_prompt": flux_prompt,
+        "seed": best.seed,
+        "style_id": style.style_id,
+        "clip_score": best.clip_score,
+        "vlm_verdict": best.vlm_verdict,
+        "retry_count": retry_count,
+    }
+    slide.pop("image_prompt", None)
+    slide.pop("image_kind", None)
+    slide.pop("diagram_dot", None)
+    return True
+
+
 async def _hydrate_images(
     spec_dict: dict[str, Any],
     images_lookup: dict[str, dict[str, Any]],

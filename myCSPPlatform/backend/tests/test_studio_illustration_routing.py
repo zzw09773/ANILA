@@ -52,3 +52,103 @@ def test_fallback_content_label():
     _apply_illustration_fallback(slide, ImageUseCase.CONTENT_ILLUSTRATION)
     assert slide["image_gen_meta"]["fallback"] == "text_only"
     assert "diagram_dot" not in slide
+
+
+import app.api.studio as studio_mod
+from app.services.flux_image_provider import GeneratedImage
+
+
+class _StubVlm:
+    def __init__(self, *a, **k):  # accepts _Gemma4VlmGate(db, user) shape
+        pass
+
+
+class _StubLLM:
+    _db = None
+    _user = None
+
+
+def _patch_vlm(monkeypatch):
+    monkeypatch.setattr(studio_mod, "_Gemma4VlmGate", _StubVlm)
+
+
+def _patch_rewriter(monkeypatch, returns):
+    async def _fake(*, title, bullets, use_case, style, llm):
+        _fake.seen = {"title": title, "bullets": bullets, "use_case": use_case}
+        return returns
+    monkeypatch.setattr(
+        "app.services.flux_prompt_rewriter.derive_flux_prompt", _fake
+    )
+    return _fake
+
+
+@pytest.mark.asyncio
+async def test_helper_success_sets_image_and_meta(monkeypatch):
+    _patch_vlm(monkeypatch)
+    _patch_rewriter(monkeypatch, "a calm teal abstract scene")
+    accepted = GeneratedImage(png_bytes=b"\x89PNGfake", seed=1007, accepted=True)
+    accepted.vlm_verdict = {"match": True, "has_text": False, "score": 0.9}
+
+    async def _fake_gate(provider, prompt, *, use_case, seed, style_id, concept_en, vlm):
+        return accepted, 0
+    monkeypatch.setattr(studio_mod, "_gated_generate", _fake_gate)
+
+    slide = {"title": "Resilience", "bullets": ["a", "b"], "image_prompt": "IGNORED"}
+    ok = await studio_mod._generate_slide_illustration(
+        slide, idx=7, use_case=ImageUseCase.CONTENT_ILLUSTRATION,
+        deck_style=None, flux_provider=object(), deck_base_seed=1000, llm=_StubLLM(),
+    )
+    assert ok is True
+    assert slide["image_data"].startswith("data:image/png;base64,")
+    assert slide["image_gen_meta"]["use_case"] == "content_illustration"
+    assert slide["image_gen_meta"]["vlm_verdict"]["score"] == 0.9
+
+
+@pytest.mark.asyncio
+async def test_helper_uses_title_bullets_not_image_prompt(monkeypatch):
+    _patch_vlm(monkeypatch)
+    fake = _patch_rewriter(monkeypatch, "scene")
+    accepted = GeneratedImage(png_bytes=b"x", seed=1, accepted=True)
+    accepted.vlm_verdict = {"match": True, "has_text": False, "score": 1.0}
+
+    async def _fake_gate(provider, prompt, *, use_case, seed, style_id, concept_en, vlm):
+        return accepted, 0
+    monkeypatch.setattr(studio_mod, "_gated_generate", _fake_gate)
+
+    slide = {"title": "T", "bullets": ["x"], "image_prompt": "DO NOT USE"}
+    await studio_mod._generate_slide_illustration(
+        slide, idx=1, use_case=ImageUseCase.CONTENT_ILLUSTRATION,
+        deck_style=None, flux_provider=object(), deck_base_seed=1000, llm=_StubLLM(),
+    )
+    assert fake.seen["title"] == "T"
+    assert fake.seen["bullets"] == ["x"]
+
+
+@pytest.mark.asyncio
+async def test_helper_rewriter_none_returns_false(monkeypatch):
+    _patch_vlm(monkeypatch)
+    _patch_rewriter(monkeypatch, None)  # USE_GRAPHVIZ / stripped empty
+    slide = {"title": "T", "bullets": ["x"]}
+    ok = await studio_mod._generate_slide_illustration(
+        slide, idx=1, use_case=ImageUseCase.CONTENT_ILLUSTRATION,
+        deck_style=None, flux_provider=object(), deck_base_seed=1000, llm=_StubLLM(),
+    )
+    assert ok is False
+    assert "image_data" not in slide
+
+
+@pytest.mark.asyncio
+async def test_helper_gate_reject_returns_false(monkeypatch):
+    _patch_vlm(monkeypatch)
+    _patch_rewriter(monkeypatch, "scene")
+
+    async def _fake_gate(provider, prompt, *, use_case, seed, style_id, concept_en, vlm):
+        return None, 3
+    monkeypatch.setattr(studio_mod, "_gated_generate", _fake_gate)
+    slide = {"title": "T", "bullets": ["x"]}
+    ok = await studio_mod._generate_slide_illustration(
+        slide, idx=1, use_case=ImageUseCase.CONTENT_ILLUSTRATION,
+        deck_style=None, flux_provider=object(), deck_base_seed=1000, llm=_StubLLM(),
+    )
+    assert ok is False
+    assert "image_data" not in slide
