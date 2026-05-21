@@ -1274,13 +1274,6 @@ app.post('/render', async (req, res) => {
     // and skip the auto-generated cover, otherwise we'd have two
     // section-break-looking slides back to back.
     const firstIsCover = spec.slides[0]?.layout_kind === 'section_break'
-    console.log(
-      `[H-DIAG] cover: slides[0].layout_kind=${spec.slides[0]?.layout_kind} ` +
-      `firstIsCover=${firstIsCover}` +
-      (firstIsCover
-        ? ' → SKIP prepended titleSlide; slides[0] renders via renderSectionBreak (does NOT read image_data → hero lost)'
-        : ' → prepend titleSlide (reads slides[0].image_data for hero)'),
-    )
     if (!firstIsCover) {
       const titleSlide = pres.addSlide({ masterName: 'ANILA_BASE' })
 
@@ -1291,10 +1284,6 @@ app.post('/render', async (req, res) => {
       const heroData = spec.slides[0]?.image_data
       const hasHero =
         typeof heroData === 'string' && heroData.startsWith('data:image/')
-      console.log(
-        `[H-DIAG] cover titleSlide: slides[0].image_data type=${typeof heroData} ` +
-        `len=${typeof heroData === 'string' ? heroData.length : 0} hasHero=${hasHero}`,
-      )
       if (hasHero) {
         titleSlide.addImage({
           data: heroData,
