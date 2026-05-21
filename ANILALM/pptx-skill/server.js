@@ -502,6 +502,45 @@ function renderSectionBreak(pres, s, theme) {
   const bullets = Array.isArray(s.bullets) ? s.bullets : []
   const titleStr = String(s.title || '')
   const titleFont = pickSectionTitleFont(titleStr)
+
+  // FLUX cover hero: when the backend hydrated a hero image into this
+  // slide (the cover is commonly marked layout_kind="section_break", so
+  // the cover-hero image_data lands here rather than on the prepended
+  // titleSlide; also future Stage 4 section bands), render it full-bleed
+  // with a dark scrim + white centred title. Independent early-return
+  // path so the existing colour-slab chrome variants stay untouched.
+  const heroData = s.image_data
+  const hasHero =
+    typeof heroData === 'string' && heroData.startsWith('data:image/')
+  if (hasHero) {
+    const heroSlide = pres.addSlide()
+    heroSlide.addImage({
+      data: heroData,
+      x: 0, y: 0, w: 13.33, h: 7.5,
+      sizing: { type: 'cover', w: 13.33, h: 7.5 },
+    })
+    heroSlide.addShape('rect', {
+      x: 0, y: 0, w: 13.33, h: 7.5,
+      fill: { color: '000000', transparency: 55 },
+      line: { type: 'none' },
+    })
+    heroSlide.addText(titleStr, {
+      x: 1.0, y: 2.6, w: 11.3, h: 1.6,
+      fontSize: titleFont, bold: true, color: 'FFFFFF',
+      align: 'center', valign: 'middle',
+      fontFace: theme.fonts.title, margin: 0,
+    })
+    if (bullets[0]) {
+      heroSlide.addText(String(bullets[0]), {
+        x: 1.0, y: 4.4, w: 11.3, h: 0.6,
+        fontSize: 20, color: 'F0F0F0',
+        align: 'center', italic: false,
+        fontFace: theme.fonts.body, margin: 0,
+      })
+    }
+    return
+  }
+
   // No master — full-bleed colour fill regardless of variant.
   const slide = pres.addSlide()
 
