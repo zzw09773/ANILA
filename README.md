@@ -22,7 +22,7 @@ ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key�
 
 > **唯一的規劃文件（single source of truth）**：[`anila_plan.md`](./anila_plan.md)。
 >
-> **Onyx 已搬離本 repo**（2026-04-27）：原本 `onyx/` 是 upstream clone，現由 agent 開發團隊在他們自己的 repo 維護。我方僅保留 handover 文件 [`docs/onyx-target-system-api-spec.md`](./docs/onyx-target-system-api-spec.md) 與 [`docs/onyx-application-plan.md`](./docs/onyx-application-plan.md)。完整變更原因見 [`docs/changelog/2026-04-27-onyx-handover.md`](./docs/changelog/2026-04-27-onyx-handover.md)。需要 Onyx 原始碼請 `git clone` 對方專案。
+> **Onyx 已搬離本 repo**（2026-04-27）：原本 `onyx/` 是 upstream clone，現由 agent 開發團隊在他們自己的 repo 維護。我方僅保留 handover 文件 [`docs/onyx/onyx-target-system-api-spec.md`](./docs/onyx/onyx-target-system-api-spec.md) 與 [`docs/onyx/onyx-application-plan.md`](./docs/onyx/onyx-application-plan.md)。完整變更原因見 [`docs/changelog/2026-04-27-onyx-handover.md`](./docs/changelog/2026-04-27-onyx-handover.md)。需要 Onyx 原始碼請 `git clone` 對方專案。
 
 ---
 
@@ -427,8 +427,10 @@ ANILA/
 │   │   ├── legacy-agent-bootstrap.md     # Tier 0/1/2 + Python/Go/Node 範例
 │   │   └── rotate-tls-cert.md
 │   ├── changelog/
-│   ├── sso-migration.md
-│   ├── sprint-7x-plan.md
+│   ├── platform/
+│   │   └── sso-migration.md
+│   ├── planning/
+│   │   └── sprint-7x-plan.md
 │   └── ...
 ├── scripts/
 │   ├── reencrypt-credentials.py          # PBKDF2 v1→v2 一次性 re-encrypt
@@ -475,7 +477,7 @@ ANILA/
 | `ANILA_PUBLIC_CSP_BASE_URL` | UI build | 瀏覽器用來打 CSP 的對外 URL |
 | `ANILA_PUBLIC_ROUTER_BASE_URL` | UI build | 瀏覽器用來打 Router 的對外 URL |
 
-> 完整範本見 [`.env.example`](./.env.example)；變更歷史見 [`docs/sso-migration.md`](./docs/sso-migration.md)、[`docs/sprint-7x-plan.md`](./docs/sprint-7x-plan.md)。
+> 完整範本見 [`.env.example`](./.env.example)；變更歷史見 [`docs/platform/sso-migration.md`](./docs/platform/sso-migration.md)、[`docs/planning/sprint-7x-plan.md`](./docs/planning/sprint-7x-plan.md)。
 
 ---
 
@@ -487,7 +489,7 @@ ANILA/
 - **SPA 認證（Wave 2 + Sprint 7 X）**：瀏覽器 session 完全走 **httpOnly cookie**（`anila_access_token` / `anila_refresh_token` / 非 httpOnly 的 `anila_csrf`）。SPA 完全不持有 API Key — anila-ui 7 X 已下架所有 ApiKey 輸入 UI、Settings 的「API Key」tab、header 的 `sk-…` dropdown，避免使用者誤填造成洩漏。CSRF 用 **double-submit cookie pattern**，middleware 對 cookie 認證的 POST/PUT/DELETE 用 `hmac.compare_digest` 檢查 `X-CSRF-Token` header。帶 `Authorization: Bearer` 的 SDK / curl 路徑豁免 CSRF 檢查（非 browser-originated）。
 - **雙軌認證**：`/v1/chat/completions` 及其他 `/v1/*` 資料面由 `Caller` dependency 同時接受 JWT（SPA path）與 `sk-*` API Key（SDK path），兩者都歸屬到同一個 `user_id`；僅 API Key 路徑會填 `token_usage.api_key_id`，JWT 路徑落入「Web UI」bucket。
 - **OIDC SSO**（Sprint 5 X / 6 X）：authorization request 帶 PKCE (S256) + nonce；callback 必驗 `id_token` 簽章（透過 IdP 的 JWKS）+ iss / aud / azp / exp / nonce + 確認 `id_token.sub == userinfo.sub`。`alg=none` 一律拒絕。`email_verified=true` 強制；email 衝突時不自動合併（避免被 IdP 接管 admin），raise 給 admin 手動處理。`next_path` 經 `sanitize_next_path` 白名單（必須 `/` 開頭、第二字元不能是 `/` 或 `\`、無 CRLF、≤200 字）擋 open-redirect。OIDC `client_secret` 改 AES-256-GCM envelope 儲存（`enc::v1::` 前綴），API 回應一律 mask 為 `***`。
-- **本地登入逐步退場**：`users.local_password_disabled` flag（migration `0022`，預設 False）讓 admin 對個別使用者切 SSO-only；切換後密碼正確也回 403。完整 SSO cutover 三階段見 [`docs/sso-migration.md`](./docs/sso-migration.md)。**LDAP 已自系統下線**（Sprint 5 X），全部欄位由 migration `0021` DROP；`/api/auth/login` 對 `auth_source=ldap` 直接回 400。
+- **本地登入逐步退場**：`users.local_password_disabled` flag（migration `0022`，預設 False）讓 admin 對個別使用者切 SSO-only；切換後密碼正確也回 403。完整 SSO cutover 三階段見 [`docs/platform/sso-migration.md`](./docs/platform/sso-migration.md)。**LDAP 已自系統下線**（Sprint 5 X），全部欄位由 migration `0021` DROP；`/api/auth/login` 對 `auth_source=ldap` 直接回 400。
 - **Credential 加密**：`anila_core.security.credential_crypto` 用 AES-256-GCM；KDF 為 PBKDF2-HMAC-SHA256 600k iter（OWASP 2024）。寫一律新 key；讀失敗自動 fallback 100k legacy key 並計數 — 既有 v1 row 持續可用，等 `scripts/reencrypt-credentials.py` 跑完統一升 v2。`SECRET_KEY` 為 dev 預設值且 `ANILA_ALLOW_DEV_SECRET≠1` 時 raise。
 - **SSRF guard**：`anila_core.security.url_guard.validate_outbound_url` 集中 deny-list（loopback / private / link-local / cloud-metadata / docker service name / `*.internal` / `*.local` 等），對 user-supplied `endpoint_url` 一律驗證。Agent register / update + 使用者 LLM credential + **model registry** 都接此 guard;agent endpoint 變更時 `approval_status` 自動退回 `pending` 強制 admin 重新核可。Phase 2 後 allow-list 由 admin 透過 `/trusted-hosts` UI 管理 (DB-backed),`ANILA_TRUSTED_HOSTS` env 降格為 bootstrap fallback (給 agent / worker 等不接 CSP DB 的 process 用)。Provider hook (`register_trusted_host_provider`) 設計成 fail-safe — DB 抖時 cache 返回 last good snapshot 不 raise,env 永遠 enforce。**Fixable** 失敗 (single-label hostname / `.internal` zone) backend 回 typed 400 dict 給前端跳 inline confirm modal;**non-fixable** (loopback / metadata / link-local / private IP) 仍 plain string 拒絕,絕不能用「加進 trusted_hosts」繞過。
 - **模型 stack 與平台 lifecycle 解耦**:Phase 1 把推論模型搬到獨立 `models/docker-compose.yml` (project `anila-models`),走 `expose:` 不對 host 開埠,CSP 透過共用 external network `anila-models-net` 走 docker DNS。平台 `docker compose restart csp` 不碰模型;反之亦然。`nv-embed-triton` (Triton 協定 backend) 連 `expose:` 都不開,只在 network 內讓 `nv-embed-proxy` (FastAPI shim) 看到。`csp` / `router` 服務本身也拿掉 host port (`8000` / `9000`),只在 docker network 內可達,**外部入口縮成 nginx `:443` 一條,強制 HTTPS + API Key 雙重門**。`model_registry.is_internal` (migration 0033) 標記哪些 endpoint 在內部 docker DNS;non-owner viewer 看到 `<internal>` 而非 `<owner-only>` sentinel。
@@ -597,14 +599,14 @@ Phase 2 of the inference-stack decoupling work. 把 `ANILA_TRUSTED_HOSTS` 從 en
 
 ### Sprint 7 X — anila-ui API Key UI 下架（2026-04-27）
 
-Wave 2 cookie 流程後 SPA 完全不持有 key，但 anila-ui 仍保留「Settings → API Key tab」、header 的 `sk-…` dropdown、chat menu 的「API Key」項目 — 全部是 dead code（`apiKey = ""` hardcoded、`updateApiKey` no-op）。比沒有 UI 更危險，使用者填入 production key 後會看到「✓ 已儲存」假成功訊息，可能從 dev tools / autofill / 截圖洩漏。本輪一次性移除 ApiKeyPopover / ApiKeyTab / maskApiKey / 對應 icon imports，並把 `streamChatCompletion` 的 legacy `apiKey` parameter 一併拿掉。Bundle 驗證 0 個 ApiKey 字串殘留。同 sprint 寫了 [`docs/sprint-7x-plan.md`](./docs/sprint-7x-plan.md) 規劃 8 X 工作（帳號合併工具、break-glass admin、`LOCAL_LOGIN_DISABLED` flag），未上線階段不做 dashboard / bulk tool 等 premature 工作。對應 commit：`0b8509e` / `0b22f54`。
+Wave 2 cookie 流程後 SPA 完全不持有 key，但 anila-ui 仍保留「Settings → API Key tab」、header 的 `sk-…` dropdown、chat menu 的「API Key」項目 — 全部是 dead code（`apiKey = ""` hardcoded、`updateApiKey` no-op）。比沒有 UI 更危險，使用者填入 production key 後會看到「✓ 已儲存」假成功訊息，可能從 dev tools / autofill / 截圖洩漏。本輪一次性移除 ApiKeyPopover / ApiKeyTab / maskApiKey / 對應 icon imports，並把 `streamChatCompletion` 的 legacy `apiKey` parameter 一併拿掉。Bundle 驗證 0 個 ApiKey 字串殘留。同 sprint 寫了 [`docs/planning/sprint-7x-plan.md`](./docs/planning/sprint-7x-plan.md) 規劃 8 X 工作（帳號合併工具、break-glass admin、`LOCAL_LOGIN_DISABLED` flag），未上線階段不做 dashboard / bulk tool 等 premature 工作。對應 commit：`0b8509e` / `0b22f54`。
 
 ### Sprint 6 X — 資安修補尾巴 + SSO 地基（2026-04-27）
 
 Sprint 5 X 審查的尾巴清乾淨，並把 SSO 取代本地登入的地基鋪好（**本地登入仍可用，預設不切換**）。
 
 - **Track A**：Alembic `0021` DROP `auth_providers.ldap_*` 欄位；PBKDF2 升 600k 並提供 v1→v2 雙 key 過渡 + `scripts/reencrypt-credentials.py` 一次性 re-encrypt 工具；OIDC 加 PKCE (S256) + nonce + `id_token` JWKS 驗簽；`startup_security` 寫成 pytest（順手修 `offenders` 永遠不被 raise 的 bug）；TLS 重簽 script `scripts/reissue-tls-cert.sh` + 歷史改寫 runbook。
-- **Track B**：`users.local_password_disabled` flag（migration `0022`，預設 False）讓 admin 切 SSO-only；OIDC `next_path` 集中 sanitize 擋 open-redirect；`docs/sso-migration.md` 寫 cutover 三階段路線。
+- **Track B**：`users.local_password_disabled` flag（migration `0022`，預設 False）讓 admin 切 SSO-only；OIDC `next_path` 集中 sanitize 擋 open-redirect；`docs/platform/sso-migration.md` 寫 cutover 三階段路線。
 - **驗證**：32 個新 pytest 全 pass；E2E 確認 SSO-only 切換後本地登入回 403、LDAP path 回 400、6 個 nginx 安全 header 全到位。對應 commit：`e29316e`。
 
 ### Sprint 5 X — 全面資安審查 + 修補（2026-04-27）
@@ -624,7 +626,7 @@ Sprint 5 X 審查的尾巴清乾淨，並把 SSO 取代本地登入的地基鋪�
 - ⚠️ 所有 collaborator 需 `git fetch && git reset --hard origin/<branch>` 同步新 history
 - 安全 backup tag：`pre-onyx-filter-repo-2026-04-27`（本地保留 14 天後可刪）
 - 完整變更原因 + 操作步驟：[`docs/changelog/2026-04-27-onyx-handover.md`](./docs/changelog/2026-04-27-onyx-handover.md)
-- 規格 handover 文件留下：[`docs/onyx-target-system-api-spec.md`](./docs/onyx-target-system-api-spec.md)、[`docs/onyx-application-plan.md`](./docs/onyx-application-plan.md)
+- 規格 handover 文件留下：[`docs/onyx/onyx-target-system-api-spec.md`](./docs/onyx/onyx-target-system-api-spec.md)、[`docs/onyx/onyx-application-plan.md`](./docs/onyx/onyx-application-plan.md)
 
 ### AgenticRAG 升格為官方 RAG Agent Template（2026-04-24）
 
@@ -677,4 +679,4 @@ Sprint 5 X 審查的尾巴清乾淨，並把 SSO 取代本地登入的地基鋪�
 
 ---
 
-**Last updated**: 2026-05-11（DB-driven trusted_hosts + typed 400 confirm modal + JSONB-on-SQLite 解凍）· **Maintainers**: ANILA 平台團隊 · **Single source of truth**: [`anila_plan.md`](./anila_plan.md) · **記憶層設計**：[`docs/briefing/anila-memory-layer-rfc.md`](./docs/briefing/anila-memory-layer-rfc.md) · **資安／SSO 規劃**：[`docs/sso-migration.md`](./docs/sso-migration.md)、[`docs/sprint-7x-plan.md`](./docs/sprint-7x-plan.md)、[`docs/runbooks/rotate-tls-cert.md`](./docs/runbooks/rotate-tls-cert.md) · **Service-token cutover**：[`docs/runbooks/service-token-cutover.md`](./docs/runbooks/service-token-cutover.md) · [`docs/runbooks/legacy-agent-bootstrap.md`](./docs/runbooks/legacy-agent-bootstrap.md)
+**Last updated**: 2026-05-11（DB-driven trusted_hosts + typed 400 confirm modal + JSONB-on-SQLite 解凍）· **Maintainers**: ANILA 平台團隊 · **Single source of truth**: [`anila_plan.md`](./anila_plan.md) · **記憶層設計**：[`docs/briefing/anila-memory-layer-rfc.md`](./docs/briefing/anila-memory-layer-rfc.md) · **資安／SSO 規劃**：[`docs/platform/sso-migration.md`](./docs/platform/sso-migration.md)、[`docs/planning/sprint-7x-plan.md`](./docs/planning/sprint-7x-plan.md)、[`docs/runbooks/rotate-tls-cert.md`](./docs/runbooks/rotate-tls-cert.md) · **Service-token cutover**：[`docs/runbooks/service-token-cutover.md`](./docs/runbooks/service-token-cutover.md) · [`docs/runbooks/legacy-agent-bootstrap.md`](./docs/runbooks/legacy-agent-bootstrap.md)

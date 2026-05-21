@@ -1,6 +1,6 @@
 """Unified configuration for anila-core (chat / agent runtime only).
 
-Sprint 1 boundary cleanup (anila-core-boundary.md §2.3) removed the
+Sprint 1 boundary cleanup (docs/anila-core/anila-core-boundary.md §2.3) removed the
 RAG-specific fields:
 
     embedding_*       (moved to AgenticRAG template)

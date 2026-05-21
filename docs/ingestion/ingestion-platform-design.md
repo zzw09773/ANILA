@@ -6,8 +6,8 @@
 **Reviewers**: (待指派)
 **Target delivery**: 3 × 2-week sprints after sign-off
 **See also**:
-- [`anila-core-boundary.md`](./anila-core-boundary.md) — anila-core 瘦身 Task 3 詳細清單，與本文件 §12 同步
-- [`multi-service-integration-plan.md`](./multi-service-integration-plan.md) — 組內既有服務（ANILA LM / ComfyUI / codeserver / n8n / gitlab）整合進 ANILA 的計畫，與本平台 sprint 排程交織
+- [`anila-core-boundary.md`](../anila-core/anila-core-boundary.md) — anila-core 瘦身 Task 3 詳細清單，與本文件 §12 同步
+- [`multi-service-integration-plan.md`](../platform/multi-service-integration-plan.md) — 組內既有服務（ANILA LM / ComfyUI / codeserver / n8n / gitlab）整合進 ANILA 的計畫，與本平台 sprint 排程交織
 
 ---
 
@@ -59,7 +59,7 @@ Sprint 1（Chunks A–G，commits `567bd9c` → `e9e913a`）實際實作後發�
 | 1 | 安全邊界要真正「不可繞過」 | 一個 `AgentScopedPgVectorStore` enforcement 點 | **4 層強制**（schema NOT NULL → Postgres RLS → code single entry → pytest random workload）。見 §3.3 |
 | 2 | Evaluator 成本與吞吐 | 估算 ~$30/run 但無治理 | 加 **Fast/Standard/Deep 三段式 + per-agent 互斥 + platform budget gate + result cache + local judge 強烈推薦**。見 §6.5 |
 | 3 | 狀態機 / 重試 | 抽象的 retry policy | 加完整 **Error Taxonomy**（4 大類 12 個 code，禁止 `E_UNKNOWN`，`E_PG_RLS_VIOLATION` 觸發告警）。見 §8.1 |
-| 4 | anila-core 邊界（避免雙軌）| 方案 B：anila-core 改為 client SDK | **方案 A++：直接刪除 anila-core 內 ingestion**。事實調查發現 anila-core/ingestion/ 只有 tests 引用、production 無 caller，刪了零風險。見 §13 與 [`anila-core-boundary.md`](./anila-core-boundary.md) |
+| 4 | anila-core 邊界（避免雙軌）| 方案 B：anila-core 改為 client SDK | **方案 A++：直接刪除 anila-core 內 ingestion**。事實調查發現 anila-core/ingestion/ 只有 tests 引用、production 無 caller，刪了零風險。見 §13 與 [`anila-core-boundary.md`](../anila-core/anila-core-boundary.md) |
 
 並加入：
 - **§1.4 現況真實 footprint**（grep 結果，非敘述）
@@ -153,7 +153,7 @@ Sprint 1（Chunks A–G，commits `567bd9c` → `e9e913a`）實際實作後發�
 **三個關鍵事實**：
 
 1. **ingestion 是 「template 自用」、不是「平台共享」** — 每個 fork AgenticRAG 的 agent 都帶一份完整 ingestion，dev 自己跑 `index_documents.py` 餵資料。**目前完全沒有跨 agent 的共用機制。**
-2. **anila-core 的 ingestion 是死 code** — README 寫「Task 3 pending」要搬走，事實上 AgenticRAG 已有完整且更豐富版本，差「正式刪除 anila-core 那份」。詳見 [`anila-core-boundary.md`](./anila-core-boundary.md)
+2. **anila-core 的 ingestion 是死 code** — README 寫「Task 3 pending」要搬走，事實上 AgenticRAG 已有完整且更豐富版本，差「正式刪除 anila-core 那份」。詳見 [`anila-core-boundary.md`](../anila-core/anila-core-boundary.md)
 3. **chat 路徑跟 ingestion 解耦** — `api.py` 只用 normalize + tokenize_zh（query 處理），不碰 IngestionService / parsers / chunker / ocr。設計新平台時可以暫時不動 chat 路徑（除了 retrieval 補上 `agent_id` scope）。
 
 **對本 design 的影響**：
@@ -175,7 +175,7 @@ Sprint 1（Chunks A–G，commits `567bd9c` → `e9e913a`）實際實作後發�
 | 程式入口 | `agentic_rag.ingestion.*`（搬走後）| `anila_core.memory.*`（留在 anila-core）|
 | Schema | `document_chunks` table | `MEMORY.md` 索引 + 個別 `.md` files |
 
-詳細討論見 [`multi-service-integration-plan.md`](./multi-service-integration-plan.md) §1.4。**本 doc 設計範圍不包含 platform memory**；memory module 的演進（補 `PostgresMemoryStore`、未來可能的 central memory service）走獨立 design doc。
+詳細討論見 [`multi-service-integration-plan.md`](../platform/multi-service-integration-plan.md) §1.4。**本 doc 設計範圍不包含 platform memory**；memory module 的演進（補 `PostgresMemoryStore`、未來可能的 central memory service）走獨立 design doc。
 
 ---
 
@@ -465,7 +465,7 @@ migration 0014 把以上三條同包進去。docker-compose 拆兩條 env：
 
 #### Layer 3 — Code：刪除舊路徑、單一入口
 
-- 把 `anila_core.api.{documents,search}.py` 與 `anila_core.tools.create_*_tool` 的 RAG-specific 部分**直接刪除**（見 §13、§3.4 與 [`anila-core-boundary.md`](./anila-core-boundary.md)）
+- 把 `anila_core.api.{documents,search}.py` 與 `anila_core.tools.create_*_tool` 的 RAG-specific 部分**直接刪除**（見 §13、§3.4 與 [`anila-core-boundary.md`](../anila-core/anila-core-boundary.md)）
 - AgenticRAG 內 `api.py` 的 inline `_vector_search` / `_keyword_search` SQL **改走新的 SDK**
 - pgvector_store constructor 強制 `agent_id: int`（拒絕 None / Optional）：
   ```python
@@ -1310,7 +1310,7 @@ class IngestionError(Exception):
 | **拔掉** | `app_factory.py` 內的 RAG-specific wiring（IngestionService / VisionProvider / HierarchicalChunker / RagPreprocessor） | 低（要驗證 router-only 部署仍可起） |
 | **保留** | Protocol 定義（`storage/ports.py`）+ pure runtime 模組（engine / coordinator / compact / memory / context / registry / router / tools.dispatch_tool / providers.{base,openai_compat,csp_platform,mock}）| — |
 
-詳細邊界與判定原則見 **[`anila-core-boundary.md`](./anila-core-boundary.md)**。
+詳細邊界與判定原則見 **[`anila-core-boundary.md`](../anila-core/anila-core-boundary.md)**。
 
 ### 13.3 與 ingestion platform sprint 編排的耦合
 
@@ -1354,4 +1354,4 @@ Sprint 1 結束時的目標狀態：
 
 ---
 
-**Last updated**: 2026-04-25 (v0.2) · **Next review**: Sprint 1 kickoff · **Companion doc**: [`anila-core-boundary.md`](./anila-core-boundary.md)
+**Last updated**: 2026-04-25 (v0.2) · **Next review**: Sprint 1 kickoff · **Companion doc**: [`anila-core-boundary.md`](../anila-core/anila-core-boundary.md)

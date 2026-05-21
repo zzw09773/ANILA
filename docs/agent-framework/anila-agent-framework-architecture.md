@@ -3,7 +3,7 @@
 > **Status**: design spec, awaiting review
 > **Date**: 2026-05-02
 > **Authors**: synthesis of patterns from `runtime_logic/openai-agents-python` (MIT) and `runtime_logic/claude-code-src` (reference)
-> **Supersedes**: `docs/anila-agent-framework-porting-decisions.md` (still useful as a source-by-source reference, but the v0.1 implementation follows this architecture, not a verbatim port).
+> **Supersedes**: `docs/agent-framework/anila-agent-framework-porting-decisions.md` (still useful as a source-by-source reference, but the v0.1 implementation follows this architecture, not a verbatim port).
 
 ---
 
@@ -510,10 +510,10 @@ Three quick decisions:
 | 3 | Action / Middleware as final names? | **Action** + **Middleware** (no synonyms) |
 
 After you answer, I'll:
-- Update `docs/anila-agent-framework-porting-decisions.md` to note it's superseded
-- Rewrite `docs/agenticrag-phase1-plan.md` with the new sprint structure
+- Update `docs/agent-framework/anila-agent-framework-porting-decisions.md` to note it's superseded
+- Rewrite `docs/agenticrag/agenticrag-phase1-plan.md` with the new sprint structure
 - Resume Sprint 1 stage B with clean implementation
 
 ---
 
-**Last updated**: 2026-05-02 (v2 — permission removed, user_skill removed, 5 primitives) · **Total framework v0.1 size estimate**: ~3,400 LOC · **Read alongside**: `docs/runtime-logic-openai-agents-deep-dive.md`, `docs/anila-agent-framework-porting-decisions.md` (now reference material, not the plan)
+**Last updated**: 2026-05-02 (v2 — permission removed, user_skill removed, 5 primitives) · **Total framework v0.1 size estimate**: ~3,400 LOC · **Read alongside**: `docs/agent-framework/runtime-logic-openai-agents-deep-dive.md`, `docs/agent-framework/anila-agent-framework-porting-decisions.md` (now reference material, not the plan)

@@ -141,7 +141,7 @@ share/codeserver-sandbox/
 # Onyx upstream clone — handed off to the agent dev team for ongoing
 # maintenance. Their code, their repo. Kept on disk for local reference
 # but not under our version control. The handover spec we owe them
-# stays tracked at docs/onyx-target-system-api-spec.md and
-# docs/onyx-application-plan.md.
+# stays tracked at docs/onyx/onyx-target-system-api-spec.md and
+# docs/onyx/onyx-application-plan.md.
 onyx/
 n8n_DATA

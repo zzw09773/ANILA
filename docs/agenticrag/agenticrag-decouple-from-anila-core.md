@@ -155,7 +155,7 @@ python -m agentic_rag.cli bootstrap --csp-url "$CSP_URL" --bootstrap-token "$BOO
 **LOC**: +180 (含 `__init__.py` / `__main__.py` boilerplate)。
 
 **Drift 風險管理**：
-- 在 `docs/csp-agent-bootstrap-protocol.md`（Phase 0.5 產出）freeze wire contract
+- 在 `docs/agent-framework/csp-agent-bootstrap-protocol.md`（Phase 0.5 產出）freeze wire contract
 - AgenticRAG 跟 anila-core 兩份 CLI 實作改 protocol 時都要同步；測試覆蓋兩份
 
 ### 5. Dockerfile 移除 anila-core build 步驟

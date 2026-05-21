@@ -1,4 +1,4 @@
-"""Chunking plug-in layer (docs/ingestion-platform-design.md §5).
+"""Chunking plug-in layer (docs/ingestion/ingestion-platform-design.md §5).
 
 Public surface:
 

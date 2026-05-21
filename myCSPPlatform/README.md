@@ -43,7 +43,7 @@
 ### 認證整合
 - **本機帳號** — JWT（Access Token 15 min + Refresh Token 7 天，httpOnly cookie）
 - **OIDC / SSO** — Authorization Code Flow + PKCE (S256) + nonce + JWKS 驗 `id_token`；callback 完全用 cookie，**不再 mint 24h 短效 API Key**（Wave 2 / Sprint 6 X 後）
-- **LDAP**（已下線）— Sprint 5 X / migration 0021 移除欄位；對 `/api/auth/login` 帶 `auth_source=ldap` 直接回 400。SSO cutover 路線見 [`../docs/sso-migration.md`](../docs/sso-migration.md)
+- **LDAP**（已下線）— Sprint 5 X / migration 0021 移除欄位；對 `/api/auth/login` 帶 `auth_source=ldap` 直接回 400。SSO cutover 路線見 [`../docs/platform/sso-migration.md`](../docs/platform/sso-migration.md)
 - **Service-to-service**（Sprint 8 X / Phase A）— Agent / Router / Worker 不再共用單一 env-var token；改走 per-credential `agent_credentials` / `service_clients` table，admin 在 UI issue bootstrap → agent CLI 換 long-lived `csk-` token。詳見 [`../docs/runbooks/service-token-cutover.md`](../docs/runbooks/service-token-cutover.md)
 
 ### 維運功能

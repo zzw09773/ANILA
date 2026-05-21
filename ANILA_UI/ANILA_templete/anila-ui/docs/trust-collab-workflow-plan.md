@@ -253,7 +253,7 @@ user 遇到問題時能提供 ID 給管理員查 CSP audit log；不干擾日常
 
 ## 11. Onyx Workflow Future Module — Runtime UX Plan
 
-> 對應 `docs/onyx-application-plan.md`，這裡定義當 Onyx 就緒時，ANILA UI 該如何呈現 workflow 類對話。
+> 對應 `docs/onyx/onyx-application-plan.md`，這裡定義當 Onyx 就緒時，ANILA UI 該如何呈現 workflow 類對話。
 
 ### 情境
 user 輸入「我要請下週三一天假」。Router 判斷屬 workflow 類，dispatch 給 Onyx。Onyx 回傳的不再是純文字，而是 **結構化 workflow state**。
