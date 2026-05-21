@@ -64,7 +64,7 @@ class GeneratedImage:
 
     png_bytes: bytes
     seed: int
-    clip_score: float | None = None  # Stage 2 fills
+    clip_score: float | None = None  # always None: CLIP de-scoped (2026-05-21); kept for audit schema (spec 3.5)
     vlm_verdict: dict | None = None  # Stage 2 fills
     accepted: bool = True  # Stage 2 gate result
 
