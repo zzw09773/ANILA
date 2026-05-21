@@ -61,8 +61,14 @@ CLIP_THRESHOLD: float = 27.0
 # artifacts inject a strong high-frequency band even in an otherwise flat
 # region.
 #
-# TODO(stage2-calibration): tune on the same 50-slide calibration set.
-HF_ENERGY_THRESH: float = 0.06
+# Calibrated 2026-05-21 on a 50-image FLUX set (scripts/calibrate_striping.py):
+# good images measured median=0.574 / p95=0.861 flat-region HF energy, so the
+# previous 0.06 was ~14x too low and false-rejected the vast majority of clean
+# images. Set to good-p95 (0.861): keeps ~95% of good images. The metric did
+# NOT separate the labelled-bad set (those failed for non-striping reasons), so
+# this is a "don't kill good images" floor — the VLM/CLIP gates remain the
+# semantic backstop for the failure modes striping_energy cannot see.
+HF_ENERGY_THRESH: float = 0.861
 
 # Fraction of the image (by 16x16 block variance) treated as "flat region".
 FLAT_REGION_FRAC: float = 0.3
