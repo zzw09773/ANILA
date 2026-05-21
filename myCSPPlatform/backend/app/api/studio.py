@@ -847,8 +847,10 @@ class _Gemma4VlmGate:
             f"{concept}?\n"
             "Does it contain ANY letters, characters, digits, logos, or "
             "readable signage?\n"
+            "Also rate 0.0-1.0 how cleanly and aptly it depicts the concept "
+            "(1.0 = excellent, on-concept, no text or artifacts).\n"
             'Answer JSON only: {"match": bool, "has_text": bool, '
-            '"reason": "<short>"}'
+            '"score": <0.0-1.0>, "reason": "<short>"}'
         )
         messages = [
             {"role": "system", "content": system_prompt},
@@ -872,10 +874,16 @@ class _Gemma4VlmGate:
             logger.warning(
                 "VLM gate returned unparseable response; treating as reject."
             )
-            return {"match": False, "has_text": True, "reason": "unparseable"}
+            return {"match": False, "has_text": True, "score": 0.0, "reason": "unparseable"}
+        score_raw = parsed.get("score", 0.0)
+        try:
+            score = max(0.0, min(1.0, float(score_raw)))
+        except (TypeError, ValueError):
+            score = 0.0
         return {
             "match": bool(parsed.get("match")),
             "has_text": bool(parsed.get("has_text")),
+            "score": score,
             "reason": str(parsed.get("reason", "")),
         }
 
