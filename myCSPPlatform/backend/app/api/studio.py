@@ -1355,6 +1355,7 @@ async def _hydrate_images(
     default_aspect: str = "16:9",
     deck_base_seed: int | None = None,
     llm: "_StudioLLMAdapter | None" = None,
+    deck_style: "StyleDescriptor | None" = None,
 ) -> dict[str, Any]:
     """Resolve every Slide.image_ref / diagram_dot / image_prompt into inline base64 PNG.
 
@@ -1388,7 +1389,7 @@ async def _hydrate_images(
     from app.schemas.studio import ImageUseCase
     from app.services.diagram_renderer import render_dot_to_png
     from app.services.flux_prompt_rewriter import derive_flux_prompt
-    from app.services.flux_style import get_style_descriptor
+    from app.services.flux_style import get_style_descriptor, StyleDescriptor
 
     slides = spec_dict.get("slides") or []
     for idx, slide in enumerate(slides):
@@ -1465,7 +1466,7 @@ async def _hydrate_images(
             and deck_base_seed is not None
             and llm is not None
         ):
-            style = get_style_descriptor(brand_id=None)
+            style = deck_style or get_style_descriptor()
             try:
                 flux_prompt = await derive_flux_prompt(
                     title=slide.get("title", ""),
@@ -1605,6 +1606,7 @@ async def _render_pptx(
     *,
     deck_base_seed: int | None = None,
     llm: "_StudioLLMAdapter | None" = None,
+    deck_style: "StyleDescriptor | None" = None,
 ) -> tuple[bytes, str]:
     """POST spec → renderer → (pptx bytes, server-side path).
 
@@ -1645,6 +1647,7 @@ async def _render_pptx(
             default_aspect="16:9",
             deck_base_seed=deck_base_seed,
             llm=llm,
+            deck_style=deck_style,
         )
 
     async with httpx.AsyncClient(timeout=60.0) as client:
