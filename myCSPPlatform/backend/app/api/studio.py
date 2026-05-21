@@ -152,6 +152,10 @@ FLUX_GATE_NUM_CANDIDATES = 2
 # Seed stride between retry attempts so each attempt explores a different
 # region of latent space (attempt k uses base_seed + k*1024).
 FLUX_GATE_SEED_STRIDE = 1024
+# Stage 4: hard ceiling on generated images per deck. Beyond this, remaining
+# illustration slides take the theme/text fallback instead of spending GPU.
+# Protects against runaway latency on decks with many section breaks.
+MAX_GENERATED_IMAGES_PER_DECK = 15
 
 
 # ── JSON extraction (mirrors ANILALM's frontend extractJsonObject) ─────────
@@ -1511,12 +1515,10 @@ async def _hydrate_images(
     """
     import base64
 
-    from app.schemas.studio import ImageUseCase
     from app.services.diagram_renderer import render_dot_to_png
-    from app.services.flux_prompt_rewriter import derive_flux_prompt
-    from app.services.flux_style import get_style_descriptor, StyleDescriptor
 
     slides = spec_dict.get("slides") or []
+    generated_count = 0
     for idx, slide in enumerate(slides):
         # Path 1: image_ref (existing behavior — unchanged)
         ref = slide.get("image_ref")
@@ -1579,146 +1581,47 @@ async def _hydrate_images(
             slide.pop("image_kind", None)
             continue
 
-        # Path 4b: FLUX Stage 1 cover hero.
-        # Only the cover (slide index 0 or layout_kind=="cover") goes
-        # through the Layer A rewriter in Stage 1. Requires the full FLUX
-        # toolchain to be wired (provider + per-deck seed + llm adapter);
-        # if any is missing we fall through to the legacy paths untouched.
-        is_cover = idx == 0 or slide.get("layout_kind") == "cover"
-        if (
-            is_cover
-            and flux_provider is not None
+        # Path 4: FLUX illustration — cover hero / section band / content,
+        # all through the same rewriter + deck_style + quality gate. Replaces
+        # the Stage 1 cover-only block and the legacy image_prompt Path 3.
+        wants_illustration = (
+            idx == 0
+            or slide.get("layout_kind") in ("cover", "section_break")
+            or slide.get("image_kind") == "illustration"
+            or bool(slide.get("image_prompt"))
+        )
+        toolchain_ready = (
+            flux_provider is not None
             and deck_base_seed is not None
             and llm is not None
-        ):
-            style = deck_style or get_style_descriptor()
-            try:
-                flux_prompt = await derive_flux_prompt(
-                    title=slide.get("title", ""),
-                    bullets=slide.get("bullets", []),
-                    use_case=ImageUseCase.COVER_HERO,
-                    style=style,
-                    llm=llm,
-                )
-            except Exception as e:  # noqa: BLE001
+        )
+        if wants_illustration and toolchain_ready:
+            # Order matters: compute use_case BEFORE the cap check (the cap
+            # fallback needs it).
+            use_case = _infer_image_use_case(idx, slide)
+            if generated_count >= MAX_GENERATED_IMAGES_PER_DECK:
                 logger.warning(
-                    "FLUX cover-hero rewriter failed for slide '%s': %s — "
-                    "falling back to legacy image path.",
-                    slide.get("title", "<untitled>"), e,
+                    "per-deck image cap %d reached; slide %d (%s) -> fallback",
+                    MAX_GENERATED_IMAGES_PER_DECK, idx, use_case.value,
                 )
-                flux_prompt = None
-
-            if flux_prompt:  # None → rewriter said USE_GRAPHVIZ (or stripped
-                #             to empty); a cover shouldn't be structural, but
-                #             guard anyway and fall through.
-                # Deterministic seed: same job_id → same deck_base_seed → same
-                # cover seed → identical image (Stage 1 acceptance #2).
-                cover_seed = deck_base_seed + idx
-                # Stage 2 (Layer C): N candidates + 3-gate quality gate +
-                # retry. The gate's VLM is gemma4, reached through the same
-                # vision path as _inspect_slide_visually; build it from the
-                # llm adapter's db/user so no new call-site args are needed.
-                vlm = _Gemma4VlmGate(llm._db, llm._user)
-                try:
-                    best, retry_count = await _gated_generate(
-                        flux_provider,
-                        flux_prompt,
-                        use_case=ImageUseCase.COVER_HERO,
-                        seed=cover_seed,
-                        style_id=style.style_id,
-                        # The rewriter prompt is the abstract English visual
-                        # description; use it as the concept the VLM verifies.
-                        concept_en=flux_prompt,
-                        vlm=vlm,
-                    )
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "FLUX cover-hero gated generation errored for slide "
-                        "'%s': %s — falling back to legacy image path.",
-                        slide.get("title", "<untitled>"), e,
-                    )
-                    best, retry_count = None, FLUX_GATE_MAX_RETRIES
-
-                if best is not None:
-                    slide["image_data"] = (
-                        "data:image/png;base64,"
-                        + base64.b64encode(best.png_bytes).decode("ascii")
-                    )
-                    slide["image_gen_meta"] = {
-                        "use_case": ImageUseCase.COVER_HERO.value,
-                        "flux_prompt": flux_prompt,
-                        "seed": best.seed,
-                        "style_id": style.style_id,
-                        "clip_score": best.clip_score,
-                        "vlm_verdict": best.vlm_verdict,
-                        "retry_count": retry_count,
-                    }
-                    # Cover hero won — drop any leftover legacy prompt fields
-                    # so the renderer doesn't double-handle this slide.
-                    slide.pop("image_prompt", None)
-                    slide.pop("image_kind", None)
-                    continue
-
-                # Stage 2 fallback (spec 5.3): every candidate across all
-                # retries failed the gate. For COVER_HERO we use the brand's
-                # solid/gradient theme background and put NO image on the
-                # slide — leaving image_data unset means the renderer styles
-                # the cover with its theme palette (pre-FLUX behaviour). We
-                # also drop the legacy prompt fields so a garbled fallback
-                # image is never substituted in.
-                logger.warning(
-                    "FLUX cover-hero gate rejected all candidates for slide "
-                    "'%s' after %d retries — using solid theme cover (no image).",
-                    slide.get("title", "<untitled>"), retry_count,
-                )
-                slide["image_gen_meta"] = {
-                    "use_case": ImageUseCase.COVER_HERO.value,
-                    "flux_prompt": flux_prompt,
-                    "style_id": style.style_id,
-                    "retry_count": retry_count,
-                    "fallback": "solid_theme_cover",
-                }
-                slide.pop("image_prompt", None)
-                slide.pop("image_kind", None)
-                slide.pop("diagram_dot", None)
+                _apply_illustration_fallback(slide, use_case)
                 continue
-
-        # Path 3: image_prompt → call FLUX (legacy path, untouched in intent;
-        # only the provider call is updated to the new contract-3.4 signature
-        # since the old positional API no longer exists). Non-cover slides
-        # with an LLM-supplied image_prompt still take this route.
-        prompt = slide.get("image_prompt")
-        if not prompt:
+            generated_count += 1
+            ok = await _generate_slide_illustration(
+                slide,
+                idx=idx,
+                use_case=use_case,
+                deck_style=deck_style,
+                flux_provider=flux_provider,
+                deck_base_seed=deck_base_seed,
+                llm=llm,
+            )
+            if not ok:
+                _apply_illustration_fallback(slide, use_case)
             continue
-
-        if flux_provider is None:
-            # FLUX not configured for this deployment. Drop prompt silently.
-            slide.pop("image_prompt", None)
-            slide.pop("image_kind", None)
-            continue
-
-        try:
-            # Legacy prompts have no use_case declared; treat them as content
-            # illustrations (4:3). Seed is deterministic per slide when a
-            # deck seed is available, else 0 (cache still keys on it).
-            legacy_seed = (deck_base_seed + idx) if deck_base_seed is not None else 0
-            results = await flux_provider.get_or_generate(
-                prompt,
-                use_case=ImageUseCase.CONTENT_ILLUSTRATION,
-                seed=legacy_seed,
-                num_candidates=1,
-            )
-            img = results[0]
-            slide["image_data"] = (
-                "data:image/png;base64,"
-                + base64.b64encode(img.png_bytes).decode("ascii")
-            )
-        except Exception as e:
-            logger.warning(
-                "FLUX generation failed for prompt=%r: %s — "
-                "slide will fall back to standard layout.",
-                prompt[:80], e,
-            )
+        if wants_illustration and slide.get("image_prompt"):
+            # FLUX toolchain not wired for this deployment but a legacy prompt
+            # is present: drop it so the renderer doesn't act on an unused field.
             slide.pop("image_prompt", None)
             slide.pop("image_kind", None)
 

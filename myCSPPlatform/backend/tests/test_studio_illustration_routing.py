@@ -152,3 +152,55 @@ async def test_helper_gate_reject_returns_false(monkeypatch):
     )
     assert ok is False
     assert "image_data" not in slide
+
+
+@pytest.mark.asyncio
+async def test_routing_triggers_only_illustration_slides(monkeypatch):
+    calls = []
+
+    async def _spy(slide, *, idx, use_case, **kw):
+        calls.append((idx, use_case))
+        return True
+    monkeypatch.setattr(studio_mod, "_generate_slide_illustration", _spy)
+
+    slides = [
+        {"title": "Cover", "bullets": ["x"], "layout_kind": "section_break"},     # idx0 → HERO
+        {"title": "Plain", "bullets": ["x"], "layout_kind": "standard"},          # no marker → skip
+        {"title": "Sec", "bullets": ["x"], "layout_kind": "section_break"},       # idx2 → BAND
+        {"title": "Ill", "bullets": ["x"], "layout_kind": "standard",
+         "image_prompt": "p"},                                                    # idx3 → CONTENT
+    ]
+    out = await studio_mod._hydrate_images(
+        {"slides": slides}, {}, "/tmp",
+        flux_provider=object(), deck_base_seed=1000, llm=object(),
+    )
+    assert [c[0] for c in calls] == [0, 2, 3]  # plain slide skipped
+    assert calls[0][1] is ImageUseCase.COVER_HERO
+    assert calls[1][1] is ImageUseCase.SECTION_BAND
+    assert calls[2][1] is ImageUseCase.CONTENT_ILLUSTRATION
+
+
+@pytest.mark.asyncio
+async def test_routing_per_deck_cap(monkeypatch):
+    from app.api.studio import MAX_GENERATED_IMAGES_PER_DECK
+
+    calls = []
+
+    async def _spy(slide, *, idx, use_case, **kw):
+        calls.append(idx)
+        return True
+    monkeypatch.setattr(studio_mod, "_generate_slide_illustration", _spy)
+
+    n = MAX_GENERATED_IMAGES_PER_DECK + 5
+    slides = [
+        {"title": f"S{i}", "bullets": ["x"], "layout_kind": "standard",
+         "image_prompt": "p"}
+        for i in range(n)
+    ]
+    out = await studio_mod._hydrate_images(
+        {"slides": slides}, {}, "/tmp",
+        flux_provider=object(), deck_base_seed=1000, llm=object(),
+    )
+    assert len(calls) == MAX_GENERATED_IMAGES_PER_DECK
+    capped = out["slides"][MAX_GENERATED_IMAGES_PER_DECK]
+    assert capped["image_gen_meta"]["fallback"] == "text_only"
