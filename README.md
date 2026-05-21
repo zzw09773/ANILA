@@ -421,17 +421,22 @@ ANILA/
 ├── ANILALM/              # 知識庫 + Studio SPA（Vite + React + TS）
 │   └── pptx-skill/       # Node.js + pptxgenjs；Studio 簡報合成服務
 ├── runtime_logic/        # TS runtime 參考材料（gitignored；只追蹤 README）
-├── docs/
-│   ├── runbooks/
-│   │   ├── service-token-cutover.md      # Sprint 8 X cutover stage 0–4
-│   │   ├── legacy-agent-bootstrap.md     # Tier 0/1/2 + Python/Go/Node 範例
-│   │   └── rotate-tls-cert.md
-│   ├── changelog/
-│   ├── platform/
-│   │   └── sso-migration.md
-│   ├── planning/
-│   │   └── sprint-7x-plan.md
-│   └── ...
+├── models/               # 推論模型獨立 compose（project: anila-models）：
+│                         # flux2-dev（FLUX.2-dev /generate）+ flux2-dev-agent（agent shim）
+├── docs/                 # 依主題分組，每組可含設計/規格文件
+│   ├── agent-framework/  # agent runtime 架構、移植決策、openai-agents 深入
+│   ├── agenticrag/       # AgenticRAG 解耦 / 增強 / Phase 1 計畫
+│   ├── anila-core/       # anila-core 邊界、runtime 設計
+│   ├── ingestion/        # ingestion 平台設計、parent-child RAG
+│   ├── onyx/             # onyx 應用計畫 / 目標系統 API spec
+│   ├── platform/         # 多服務整合、SSO migration
+│   ├── planning/         # branch-sync backlog、sprint 計畫
+│   ├── guides/           # developer guide
+│   ├── runbooks/         # 維運手冊（token cutover / TLS / legacy bootstrap）
+│   ├── changelog/        # 交接 / 變更紀錄
+│   ├── briefing/         # 簡報 / RFC
+│   └── superpowers/
+│       └── studio-flux/  # FLUX 圖像生成 spec / plans / history（Stage 1-4）
 ├── scripts/
 │   ├── reencrypt-credentials.py          # PBKDF2 v1→v2 一次性 re-encrypt
 │   ├── reissue-tls-cert.sh
@@ -443,6 +448,8 @@ ANILA/
 ├── anila_plan.md         # 單一事實來源：決策、Wave 計畫、架構
 └── README.md             # 本檔
 ```
+
+> 每個子專案（`myCSPPlatform` / `anila-core` / `anila-core-router` / `anila-agent` / `ANILALM` / `ANILA_UI/anila-ui` / `ingestion-worker` / `models` / `runtime_logic`）目錄下均含 `README.md`（繁中為主）+ `README.en.md`（English mirror），各自說明用途、架構、啟動與整合。
 
 ---
 
@@ -633,7 +640,7 @@ Sprint 5 X 審查的尾巴清乾淨，並把 SSO 取代本地登入的地基鋪�
 - 舊的極簡 `anila-rag-sample`（627-line proxy）與獨立 repo `github.com/zzw09773/AgenticRAG`（framework 身份）合併為 **ANILA 平台官方 RAG agent template**
 - 完整 framework（65 個 src 模組、23 支測試、tool-driven RAG、Hybrid Search、mxbai cross-encoder reranker、CJK tokenizer、Docling parser、vision pipeline、L1-L3 compact）搬進 monorepo
 - 新增 `CspServiceTokenMiddleware` 雙路徑載入（優先 `anila-core` canonical → fallback 本地 in-package copy），保證獨立部署也能跑
-- 新增 [`AgenticRAG/anila-agent.yaml`](./AgenticRAG/anila-agent.yaml)（CSP 註冊 manifest）與 [`AgenticRAG/docs/CSP_INTEGRATION.md`](./AgenticRAG/docs/CSP_INTEGRATION.md)（三種註冊方式、s2s auth、trusted user headers、多租戶檢索 patterns）
+- 新增 `AgenticRAG/anila-agent.yaml`（CSP 註冊 manifest）與 `AgenticRAG/docs/CSP_INTEGRATION.md`（三種註冊方式、s2s auth、trusted user headers、多租戶檢索 patterns）（註：`AgenticRAG/` 後由 `anila-agent/` subtree 取代，見下方 2026-05-11 條目；上述路徑為當時的歷史位置）
 - `github.com/zzw09773/AgenticRAG` 已歸檔（`isArchived=true`），README 改為 notice 指向本 monorepo
 - 對應 commits：`c4bf85a` / `9d5b052` / `59f05f6`
 
