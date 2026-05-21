@@ -94,8 +94,15 @@ wants_illustration = is_cover or is_band or is_content
 
 FLUX 工具鏈就緒（`flux_provider is not None and deck_base_seed is not None and llm is not None`）且 `wants_illustration`：
 ```python
-# 順序釘死：先算 use_case（上限 fallback 也要用到它），再檢查上限。
+# 順序釘死：先算 use_case（後續多處用到），再 CONTENT 密度門檻 → 上限 → 生成。
 use_case = _infer_image_use_case(idx, slide)
+# CONTENT 密度門檻：renderer 只在 image_focus 版面顯示內文插圖，而 image_focus
+# 是「圖主文輔」半版版面，bullets 太多會擠壞。bullets > 上限的 CONTENT 直接走
+# fallback（純文字 standard）、不生圖、不佔額度。HERO/BAND 不受此限（全幅）。
+if (use_case is ImageUseCase.CONTENT_ILLUSTRATION
+        and len(slide.get("bullets") or []) > CONTENT_ILLUSTRATION_MAX_BULLETS):
+    _apply_illustration_fallback(slide, use_case)
+    continue
 if generated_count >= MAX_GENERATED_IMAGES_PER_DECK:
     # 上限保護：長尾走 fallback（不呼叫 helper、不耗 GPU）
     logger.warning("per-deck image cap %d reached; slide %d (%s) → fallback",
@@ -106,11 +113,19 @@ generated_count += 1   # 計「已進入生成」的張數（不論成功與否�
 ok = await _generate_slide_illustration(slide, idx=idx, use_case=use_case,
         deck_style=deck_style, flux_provider=flux_provider,
         deck_base_seed=deck_base_seed, llm=llm)
-if not ok:
+if ok:
+    # CONTENT 成功 → 轉 image_focus 版面，讓 renderer 既有 renderImageFocus 顯示
+    # 該圖（standard 等版面不會渲染 image_data）。HERO/BAND 維持原版面（走
+    # renderSectionBreak 全幅），不可改。
+    if use_case is ImageUseCase.CONTENT_ILLUSTRATION:
+        slide["layout_kind"] = "image_focus"
+else:
     _apply_illustration_fallback(slide, use_case)
 continue
 ```
 `generated_count` 在迴圈外初始化為 0。**`use_case` 必須在上限檢查之前算好**（否則 fallback 取用未定義的 use_case → NameError/舊值）。HERO（idx 0）最先處理，必生得到；上限保護長尾 BAND/CONTENT。
+
+**renderer 顯示前提（為何要轉 image_focus）**：server.js 只有 `renderSectionBreak`（section_break/cover，全幅）與 `renderImageFocus`（image_focus，定位圖）會渲染 slide 的 `image_data`；`standard`/`stat_callout`/`quote`/`two_column`/`icon_rows` 一律忽略 `image_data`。故 CONTENT 插圖成功後必須把版面轉成 `image_focus`（`image_focus` 已在 `LAYOUT_KINDS` 內、合法），否則生出的圖不會顯示。HERO 走封面/section_break、BAND 走 section_break，皆由 `renderSectionBreak` 全幅顯示，不需轉版面。
 
 `deck_style` 透過 `_hydrate_images` 既有 `deck_style` 參數（Stage 3 已加）取得。
 
@@ -120,8 +135,9 @@ continue
 
 ```python
 MAX_GENERATED_IMAGES_PER_DECK = 15
+CONTENT_ILLUSTRATION_MAX_BULLETS = 3   # CONTENT 超過此 bullets 數不轉 image_focus、走純文字
 ```
-- 計數語意：每**進入** `_generate_slide_illustration`（即實際耗 GPU 嘗試）就 +1，不論最終接受或 fallback。
+- 計數語意：每**進入** `_generate_slide_illustration`（即實際耗 GPU 嘗試）就 +1，不論最終接受或 fallback。CONTENT 因密度門檻被擋下的（未生成）不計數。
 - 達上限後，後續本該生圖的 slide 直接走 `_apply_illustration_fallback`（不呼叫 helper）。
 - 目的：防 production 失控（spec §7.5 的 ≤10 分/deck 是目標非保證；大量章節扉頁×N=2×重試最壞會遠超）。HERO + 前段一定生得到，長尾退主題底不傷大雅。
 
@@ -141,9 +157,9 @@ MAX_GENERATED_IMAGES_PER_DECK = 15
 
 ## 7. renderer（server.js）
 
-`renderSectionBreak`（server.js ~500）已對有 `image_data` 的 section_break slide 做「圖全幅 + 標題漸層遮罩」。BAND（3:1）圖由 provider 依 `SECTION_BAND` use_case 產出，renderer 直接套用既有全幅邏輯。
+**修正（2026-05-21 實測）**：renderer 只在兩種版面渲染 slide 的 `image_data`：`renderSectionBreak`（section_break/cover，全幅）與 `renderImageFocus`（image_focus，定位圖）；其餘版面忽略 `image_data`。原先「renderer 零改動」假設**錯誤** —— CONTENT 插圖落在 `standard` 等版面會被丟棄。
 
-**本階段對 server.js 預期零改動**；實作時驗證一份含 BAND 的 deck 在 renderer 正常顯示即可。若驗證發現 3:1 圖在版面上需微調，另記為小修正、不擴大範圍。
+對策（不動 Node）：CONTENT 插圖成功後由後端把 `layout_kind` 轉 `image_focus`（見 §4），借既有 `renderImageFocus` 顯示。HERO/BAND 仍走 `renderSectionBreak` 全幅，server.js **本階段不改**。實作時驗證含 BAND（section_break）與 CONTENT（轉 image_focus）的 deck 都正常顯示。
 
 ---
 
@@ -176,7 +192,12 @@ routing / 上限（以小型 spec_dict + mock 跑 `_hydrate_images` 或抽出的
 10. section_break slide 自動被視為 wants_illustration（BAND）。
 11. 有 `image_prompt` 的內文 slide → wants_illustration（CONTENT），且 helper 收到的是 rewriter 結果、非原 image_prompt。
 
-server.js band 顯示由 §10 實機驗收涵蓋，不寫 Node 單元測試。
+CONTENT 密度門檻 / image_focus 轉換：
+12. CONTENT slide、bullets ≤ 3、helper 成功 → 該 slide `layout_kind` 變 `"image_focus"`。
+13. CONTENT slide、bullets > 3（`> CONTENT_ILLUSTRATION_MAX_BULLETS`）→ helper **未被呼叫**（spy 斷言）、走 fallback（`text_only`）、`layout_kind` 不變。
+14. HERO / BAND 成功 → `layout_kind` **不被**改成 `image_focus`（維持原版面）。
+
+server.js band/image_focus 顯示由 §10 實機驗收涵蓋，不寫 Node 單元測試。
 
 ---
 
