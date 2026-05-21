@@ -69,6 +69,7 @@ async def _generate_slide_illustration(
 3. `flux_prompt is None`（rewriter 回 USE_GRAPHVIZ 或被清空）→ 不生圖，回 `False`（呼叫端走 fallback）。
 4. `seed = deck_base_seed + idx`；`vlm = _Gemma4VlmGate(llm._db, llm._user)`。
 5. `best, retry_count = await _gated_generate(flux_provider, flux_prompt, use_case=use_case, seed=seed, style_id=style.style_id, concept_en=flux_prompt, vlm=vlm)`（try/except → best=None）。
+   - **`concept_en` 維持 Stage 1 既有做法（傳整串 `flux_prompt`）**。已知取捨：flux_prompt 含風格詞，VLM 的 match 語意會被稍微稀釋；但封面（Stage 1）即此做法且實測語意對齊良好，故沿用、保持一致。**本階段不調整 VLM concept 粒度**；若驗收發現 CONTENT 語意對齊明顯變差，另開項目處理（例如讓 rewriter 額外回一個英文概念短語）——**不要在本階段自作主張改 concept_en**。
 6. `best is not None` → 寫 `slide["image_data"]`（base64 PNG）+ `slide["image_gen_meta"]`（use_case/flux_prompt/seed/style_id/clip_score/vlm_verdict/retry_count）+ `pop` 掉 `image_prompt`/`image_kind`/`diagram_dot`，回 `True`。
 7. 否則寫 fallback 的 `image_gen_meta`（含 `fallback` 標記）、回 `False`。
 
@@ -79,6 +80,8 @@ async def _generate_slide_illustration(
 ## 4. routing 改寫（`_hydrate_images` 迴圈）
 
 Path 1（`image_ref` 既有圖）、Path 2（`diagram_dot`→graphviz）**優先序與行為不變**（curated > diagram > generative）。
+
+**互斥鏈（釘死）**：Path 1/2 成功放圖後即 `continue` 跳出當圈，**不會** fall through 到下面的 `wants_illustration` 判定。只有 Path 1/2 皆未命中（或命中後失敗 fallthrough）的 slide 才評估 `wants_illustration`。這是既有 `_hydrate_images` 的 if-continue 鏈結構——沿用，不要改成平行判斷。
 
 之後，計算該 slide 是否要插圖（**決策 A 的觸發訊號**）：
 ```python
@@ -91,13 +94,14 @@ wants_illustration = is_cover or is_band or is_content
 
 FLUX 工具鏈就緒（`flux_provider is not None and deck_base_seed is not None and llm is not None`）且 `wants_illustration`：
 ```python
+# 順序釘死：先算 use_case（上限 fallback 也要用到它），再檢查上限。
+use_case = _infer_image_use_case(idx, slide)
 if generated_count >= MAX_GENERATED_IMAGES_PER_DECK:
-    # 上限保護：長尾走 fallback
+    # 上限保護：長尾走 fallback（不呼叫 helper、不耗 GPU）
     logger.warning("per-deck image cap %d reached; slide %d (%s) → fallback",
                    MAX_GENERATED_IMAGES_PER_DECK, idx, use_case.value)
     _apply_illustration_fallback(slide, use_case)
     continue
-use_case = _infer_image_use_case(idx, slide)
 generated_count += 1   # 計「已進入生成」的張數（不論成功與否）
 ok = await _generate_slide_illustration(slide, idx=idx, use_case=use_case,
         deck_style=deck_style, flux_provider=flux_provider,
@@ -106,7 +110,7 @@ if not ok:
     _apply_illustration_fallback(slide, use_case)
 continue
 ```
-`generated_count` 在迴圈外初始化為 0。HERO（idx 0）最先處理，必生得到；上限保護長尾 BAND/CONTENT。
+`generated_count` 在迴圈外初始化為 0。**`use_case` 必須在上限檢查之前算好**（否則 fallback 取用未定義的 use_case → NameError/舊值）。HERO（idx 0）最先處理，必生得到；上限保護長尾 BAND/CONTENT。
 
 `deck_style` 透過 `_hydrate_images` 既有 `deck_style` 參數（Stage 3 已加）取得。
 
