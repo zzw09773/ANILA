@@ -19,7 +19,12 @@ with Stage 1 cached PNGs.
 """
 from __future__ import annotations
 
+import hashlib
+import logging
 from dataclasses import dataclass
+from typing import Protocol
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -64,3 +69,75 @@ def get_style_descriptor(brand_id: str | None = None) -> StyleDescriptor:
     Stage 3: will read brand.yaml keyed by brand_id.
     """
     return _DEFAULT_STYLE
+
+
+# ── Stage 3: content-inferred deck style ───────────────────────────────────
+_STYLE_SYSTEM = """\
+You are an art director. Given a presentation's title and a sample of its
+source content, output ONE concise visual house-style descriptor for the
+deck's slide illustrations: palette, illustration/render style, lighting,
+mood, and composition. 12-40 words. Output ONLY the style phrase — no
+preamble, no explanation, no quotes, no sentences describing the topic.
+The illustrations must contain no text or letters.
+"""
+
+# Positive "no text" guard. FLUX is guidance-distilled and ignores negative
+# prompts, so this must ride inside the positive suffix. Appended whenever the
+# LLM's free-form style omits it.
+_NO_TEXT_GUARD = "no text, no letters, no symbols, no signage"
+
+_MAX_CONTENT_SAMPLE = 1500  # chars of source content fed to the LLM: keep it cheap
+_MAX_SUFFIX_LEN = 400
+_MIN_SUFFIX_LEN = 10
+
+
+class _LLMCompleter(Protocol):
+    """Minimal LLM contract: one completion. (Same shape as the rewriter's.)"""
+
+    async def complete(self, *, system: str, user: str) -> str: ...
+
+
+def _hash8(s: str) -> str:
+    return hashlib.sha1(s.encode("utf-8")).hexdigest()[:8]
+
+
+def _normalize_suffix(text: str) -> str:
+    """Collapse all whitespace (incl. newlines) to single spaces, trim, cap."""
+    collapsed = " ".join(text.split())
+    return collapsed[:_MAX_SUFFIX_LEN].strip()
+
+
+async def infer_deck_style(
+    *,
+    title: str,
+    content_sample: str,
+    llm: _LLMCompleter,
+) -> StyleDescriptor:
+    """Infer one house style for the whole deck from its title + content.
+
+    Free-form: the LLM writes a style phrase; we normalize it, guarantee the
+    no-text guard, and derive a stable ``style_id`` from the suffix hash so the
+    FLUX provider cache (contract 3.3) is deterministic for the same style.
+
+    Any failure (LLM error, empty/too-short output) degrades to
+    ``_DEFAULT_STYLE`` — style inference must never break a job.
+    """
+    sample = (content_sample or "")[:_MAX_CONTENT_SAMPLE]
+    user = f"TITLE: {title}\nCONTENT:\n{sample}"
+    try:
+        raw = await llm.complete(system=_STYLE_SYSTEM, user=user)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Style inference LLM call failed: %s — using default", e)
+        return _DEFAULT_STYLE
+
+    suffix = _normalize_suffix(raw or "")
+    if len(suffix) < _MIN_SUFFIX_LEN:
+        logger.warning(
+            "Style inference produced too-short suffix %r — using default", suffix
+        )
+        return _DEFAULT_STYLE
+
+    if "no text" not in suffix.lower():
+        suffix = f"{suffix}, {_NO_TEXT_GUARD}"
+
+    return StyleDescriptor(style_id=f"auto-{_hash8(suffix)}", suffix=suffix)
