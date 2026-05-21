@@ -2804,10 +2804,30 @@ async def _run_pipeline(
                         exc,
                     )
 
+        # ── Stage 3: infer the deck's visual house style from its content,
+        # once per deck, so every slide shares one visual language. Only when
+        # the FLUX cover-hero path will actually run; failure degrades to the
+        # default style inside infer_deck_style.
+        deck_style = None
+        if get_flux_provider() is not None and deck_base_seed is not None:
+            from app.services.flux_style import infer_deck_style
+
+            style_sample = spec.title or ""
+            if chunks:
+                style_sample += "\n" + "\n\n".join(
+                    str(c.get("content", "")) for c in chunks
+                )
+            deck_style = await infer_deck_style(
+                title=spec.title or "",
+                content_sample=style_sample,
+                llm=flux_llm,
+            )
+
         # ── Step 7: render ──
         await updater.set(step=JOB_STEP_RENDERING)
         pptx_bytes, pptx_path = await _render_pptx(
             spec, images_lookup, deck_base_seed=deck_base_seed, llm=flux_llm,
+            deck_style=deck_style,
         )
 
         # ── Step 8: vision QA + (optional) one fix-and-rerender ──
