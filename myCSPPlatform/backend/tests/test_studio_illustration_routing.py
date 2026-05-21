@@ -26,3 +26,29 @@ def test_use_case_section_break_is_band():
 
 def test_use_case_default_is_content():
     assert _infer_image_use_case(4, {"layout_kind": "standard"}) is ImageUseCase.CONTENT_ILLUSTRATION
+
+
+from app.api.studio import _apply_illustration_fallback
+
+
+def test_fallback_hero_label_and_drops_image():
+    slide = {"image_data": "x", "image_prompt": "p", "image_kind": "illustration"}
+    _apply_illustration_fallback(slide, ImageUseCase.COVER_HERO)
+    assert slide["image_gen_meta"]["fallback"] == "solid_theme_cover"
+    assert slide["image_gen_meta"]["use_case"] == "cover_hero"
+    assert "image_data" not in slide
+    assert "image_prompt" not in slide
+    assert "image_kind" not in slide
+
+
+def test_fallback_band_label():
+    slide = {}
+    _apply_illustration_fallback(slide, ImageUseCase.SECTION_BAND)
+    assert slide["image_gen_meta"]["fallback"] == "theme_section_break"
+
+
+def test_fallback_content_label():
+    slide = {"diagram_dot": "d"}
+    _apply_illustration_fallback(slide, ImageUseCase.CONTENT_ILLUSTRATION)
+    assert slide["image_gen_meta"]["fallback"] == "text_only"
+    assert "diagram_dot" not in slide

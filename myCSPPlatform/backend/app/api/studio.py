@@ -1358,6 +1358,32 @@ def _infer_image_use_case(idx: int, slide: dict) -> "ImageUseCase":
     return ImageUseCase.CONTENT_ILLUSTRATION
 
 
+def _apply_illustration_fallback(slide: dict, use_case: "ImageUseCase") -> None:
+    """No usable image for this slide: drop image fields so the renderer
+    degrades (theme cover / theme section break / text-only standard layout),
+    and record the fallback in image_gen_meta. Never sets image_data.
+
+    This is the single fallback writer — the generation helper returns False
+    without writing meta, and the routing calls this for both gate-failure and
+    the per-deck cap.
+    """
+    from app.schemas.studio import ImageUseCase
+
+    label = {
+        ImageUseCase.COVER_HERO: "solid_theme_cover",
+        ImageUseCase.SECTION_BAND: "theme_section_break",
+        ImageUseCase.CONTENT_ILLUSTRATION: "text_only",
+    }[use_case]
+    meta = slide.get("image_gen_meta") or {}
+    meta.setdefault("use_case", use_case.value)
+    meta["fallback"] = label
+    slide["image_gen_meta"] = meta
+    slide.pop("image_data", None)
+    slide.pop("image_prompt", None)
+    slide.pop("image_kind", None)
+    slide.pop("diagram_dot", None)
+
+
 async def _hydrate_images(
     spec_dict: dict[str, Any],
     images_lookup: dict[str, dict[str, Any]],
