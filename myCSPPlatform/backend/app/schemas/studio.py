@@ -41,9 +41,28 @@ Two principles, applied at *every* schema level:
 """
 from __future__ import annotations
 
+from enum import Enum
 from typing import Literal, Self
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+# ── FLUX image use-case (Stage 1 locked contract 3.1) ─────────────────────
+#
+# `ImageUseCase` is the cross-stage knob that decides aspect ratio, prompt
+# style, and whether a use-case is even wired into hydration yet. It is a
+# string-valued Enum so it serialises cleanly into `image_gen_meta` (3.5)
+# and into the FLUX provider cache key, and so the renderer / frontend can
+# switch on the plain string value without mirroring a Python enum.
+#
+# Stage 1 only ENABLES `COVER_HERO` in the hydration layer; SECTION_BAND
+# and CONTENT_ILLUSTRATION are defined here (and understood by the provider
+# aspect map in flux_image_provider.py) so Stage 2-4 only fill behaviour,
+# never reshape this contract.
+class ImageUseCase(str, Enum):
+    COVER_HERO = "cover_hero"  # 封面背景意象，16:9 全幅
+    SECTION_BAND = "section_band"  # 章節扉頁裝飾帶，3:1 letterbox
+    CONTENT_ILLUSTRATION = "content_illustration"  # 內容頁概念插圖，4:3
 
 
 # ── Palette / layout enums ────────────────────────────────────────────────
@@ -229,6 +248,23 @@ class Slide(BaseModel):
     # image_ref > diagram_dot > image_prompt.
     image_kind: Literal["illustration", "diagram"] | None = None
     diagram_dot: str | None = Field(default=None, max_length=3000)
+
+    # FLUX Stage 1 locked contract 3.5: audit trail back-filled by the
+    # hydration layer after a FLUX image is generated. Powers the audit
+    # table write, the frontend "重新生成這張圖" button (Stage 4), and
+    # cache debugging. Stays None on slides that don't go through the
+    # FLUX rewriter path (image_ref / diagram / legacy image_prompt).
+    #
+    # Shape (all keys optional; Stage 1 fills the first four, Stage 2 the
+    # gate-related ones):
+    #   { use_case, flux_prompt, seed, style_id, steps, guidance,
+    #     clip_score, vlm_verdict, retry_count, model_sha, image_sha }
+    #
+    # Kept as a free-form dict (not a sub-model) on purpose: it is an
+    # append-only audit blob, and forcing every Stage 2-4 field to be
+    # declared here would make the schema the bottleneck the cross-stage
+    # contracts are designed to avoid.
+    image_gen_meta: dict | None = Field(default=None)
 
     @field_validator("title", "speaker_notes")
     @classmethod

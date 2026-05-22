@@ -93,6 +93,17 @@ const PALETTES = {
 // can resolve to a Simplified-Chinese variant for 繁體 strings.
 const FONT_FACE = 'Noto Sans CJK TC'
 
+// Layered title-band scrim for full-bleed hero/section images. pptxgenjs 3.x
+// has no native gradient fill, so we stack rects of decreasing transparency to
+// fake a soft vertical darkening centred on the title band — GUARANTEES the
+// white title stays legible no matter how bright the FLUX imagery is.
+// Shared by the cover title slide and renderSectionBreak.
+const GRADIENT_BANDS = [
+  { y: 1.7, h: 3.8, transparency: 52 },
+  { y: 2.2, h: 2.8, transparency: 42 },
+  { y: 2.6, h: 2.0, transparency: 34 },
+]
+
 // ── Round 3 Patch M: theme bundles ────────────────────────────────────
 //
 // Themes are complete visual identity bundles. Each bundles palette +
@@ -502,6 +513,56 @@ function renderSectionBreak(pres, s, theme) {
   const bullets = Array.isArray(s.bullets) ? s.bullets : []
   const titleStr = String(s.title || '')
   const titleFont = pickSectionTitleFont(titleStr)
+
+  // FLUX cover hero: when the backend hydrated a hero image into this
+  // slide (the cover is commonly marked layout_kind="section_break", so
+  // the cover-hero image_data lands here rather than on the prepended
+  // titleSlide; also future Stage 4 section bands), render it full-bleed
+  // with a dark scrim + white centred title. Independent early-return
+  // path so the existing colour-slab chrome variants stay untouched.
+  const heroData = s.image_data
+  const hasHero =
+    typeof heroData === 'string' && heroData.startsWith('data:image/')
+  if (hasHero) {
+    const heroSlide = pres.addSlide()
+    heroSlide.addImage({
+      data: heroData,
+      x: 0, y: 0, w: 13.33, h: 7.5,
+      sizing: { type: 'cover', w: 13.33, h: 7.5 },
+    })
+    // Full-bleed base scrim — unify tone, keep imagery visible.
+    heroSlide.addShape('rect', {
+      x: 0, y: 0, w: 13.33, h: 7.5,
+      fill: { color: '000000', transparency: 58 },
+      line: { type: 'none' },
+    })
+    // Title-band gradient scrim (shared GRADIENT_BANDS): outer→inner layered
+    // rects so the centre behind the title is darkest and the edges feather
+    // out, guaranteeing legibility over arbitrary FLUX imagery.
+    for (const band of GRADIENT_BANDS) {
+      heroSlide.addShape('rect', {
+        x: 0, y: band.y, w: 13.33, h: band.h,
+        fill: { color: '000000', transparency: band.transparency },
+        line: { type: 'none' },
+      })
+    }
+    heroSlide.addText(titleStr, {
+      x: 1.0, y: 2.6, w: 11.3, h: 1.6,
+      fontSize: titleFont, bold: true, color: 'FFFFFF',
+      align: 'center', valign: 'middle',
+      fontFace: theme.fonts.title, margin: 0,
+    })
+    if (bullets[0]) {
+      heroSlide.addText(String(bullets[0]), {
+        x: 1.0, y: 4.4, w: 11.3, h: 0.6,
+        fontSize: 20, color: 'F0F0F0',
+        align: 'center', italic: false,
+        fontFace: theme.fonts.body, margin: 0,
+      })
+    }
+    return
+  }
+
   // No master — full-bleed colour fill regardless of variant.
   const slide = pres.addSlide()
 
@@ -941,8 +1002,15 @@ async function renderIconRows(pres, s, theme) {
   // Render every icon's PNG concurrently — they're independent and
   // sharp + the SVG path are CPU-light, so ~5 parallel awaits cost
   // ~the same wall-clock as one. Promise.all preserves array order.
+  // Patch BB: filled_pill (startup_pitch) lays the glyph ON the
+  // accent-filled circle — glyph and fill would be the same colour and
+  // the icon disappears. Force white glyphs for that style. Every other
+  // style tints the glyph in accent over a white / cream / transparent
+  // background, where accent reads fine — keep those unchanged.
+  const glyphColor =
+    theme.iconTreatment.style === 'filled_pill' ? '#FFFFFF' : `#${p.accent}`
   const iconPngs = await Promise.all(
-    rows.map((r) => renderIconPng(r.concept, { color: `#${p.accent}`, size: 256 })),
+    rows.map((r) => renderIconPng(r.concept, { color: glyphColor, size: 256 })),
   )
 
   rows.forEach((r, i) => {
@@ -1001,13 +1069,10 @@ async function renderIconRows(pres, s, theme) {
           line: { type: 'none' },
         })
       } else if (iconStyle === 'filled_pill') {
-        // Startup-pitch variant — filled coral circle with the heroicon
-        // glyph centred on top. Visual "pill" for high-impact pitch
-        // decks. Caveat: the renderer does not currently support per-image
-        // colour override, so the heroicon retains its native (accent)
-        // colour — which means accent-on-accent over the coral fill. Still
-        // reads as a confident filled pill; ideal white-on-coral requires
-        // future icon tinting work.
+        // Startup-pitch variant — accent-filled circle with a WHITE
+        // heroicon glyph on top. glyphColor is forced to #FFFFFF above for
+        // this style (Patch BB), giving the white-on-coral "pill" the
+        // pitch deck wants. High-impact, high-contrast.
         slide.addShape('ellipse', {
           x: iconX, y: iconY, w: 0.9, h: 0.9,
           fill: { color: theme.palette.accent },
@@ -1237,6 +1302,42 @@ app.post('/render', async (req, res) => {
     const firstIsCover = spec.slides[0]?.layout_kind === 'section_break'
     if (!firstIsCover) {
       const titleSlide = pres.addSlide({ masterName: 'ANILA_BASE' })
+
+      // FLUX cover hero: the backend hydrates a 16:9 COVER_HERO image into
+      // spec.slides[0].image_data. Promote it to a full-bleed background ONLY
+      // when it is an actual cover hero (image_gen_meta.use_case === 'cover_hero')
+      // — a curated image_ref or a Graphviz diagram that happens to sit on the
+      // first slide also sets image_data but must NOT become the title bg.
+      // Layered scrim (same as renderSectionBreak) keeps the title legible over
+      // arbitrary imagery; fall back to the plain text cover when absent.
+      const heroData = spec.slides[0]?.image_data
+      const hasHero =
+        typeof heroData === 'string' &&
+        heroData.startsWith('data:image/') &&
+        spec.slides[0]?.image_gen_meta?.use_case === 'cover_hero'
+      if (hasHero) {
+        titleSlide.addImage({
+          data: heroData,
+          x: 0, y: 0, w: 13.33, h: 7.5,
+          sizing: { type: 'cover', w: 13.33, h: 7.5 },
+        })
+        titleSlide.addShape('rect', {
+          x: 0, y: 0, w: 13.33, h: 7.5,
+          fill: { color: '000000', transparency: 58 },
+          line: { type: 'none' },
+        })
+        for (const band of GRADIENT_BANDS) {
+          titleSlide.addShape('rect', {
+            x: 0, y: band.y, w: 13.33, h: band.h,
+            fill: { color: '000000', transparency: band.transparency },
+            line: { type: 'none' },
+          })
+        }
+      }
+      const coverTitleColor = hasHero ? 'FFFFFF' : p.titleText
+      const coverMutedColor = hasHero ? 'F0F0F0' : p.muted
+      const coverFootColor = hasHero ? 'F0F0F0' : '1A1A1A'
+
       titleSlide.addShape('rect', {
         x: 0.6, y: 2.0, w: 0.14, h: 3.5,
         fill: { color: p.accent },
@@ -1244,19 +1345,19 @@ app.post('/render', async (req, res) => {
       })
       titleSlide.addText(String(spec.title), {
         x: 1.0, y: 2.1, w: 11.7, h: 1.8,
-        fontSize: 50, bold: true, color: p.titleText,
+        fontSize: 50, bold: true, color: coverTitleColor,
         align: 'left', valign: 'middle', fontFace: FONT_FACE,
       })
       if (spec.slides.length > 1) {
         titleSlide.addText(`共 ${spec.slides.length} 張投影片`, {
           x: 1.0, y: 4.0, w: 11.7, h: 0.5,
-          fontSize: 16, color: p.muted,
+          fontSize: 16, color: coverMutedColor,
           align: 'left', fontFace: FONT_FACE,
         })
       }
       titleSlide.addText('ANILA LM · 自動生成', {
         x: 1.0, y: 4.7, w: 11.7, h: 0.4,
-        fontSize: 14, color: '1A1A1A', italic: false,
+        fontSize: 14, color: coverFootColor, italic: false,
         align: 'left', fontFace: FONT_FACE,
       })
     }

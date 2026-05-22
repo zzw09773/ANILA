@@ -1,6 +1,6 @@
 """Ingestion platform foundation: collections / documents / chunks / jobs + RLS.
 
-Sprint 1 of the Phase 2 ingestion platform (docs/ingestion-platform-design.md
+Sprint 1 of the Phase 2 ingestion platform (docs/ingestion/ingestion-platform-design.md
 §3.1–§3.3). This migration replaces AgenticRAG's runtime-`CREATE TABLE`
 self-bootstrap (which used `(user_id, project_id)` legacy scoping) with a
 proper alembic-managed schema scoped on `agent_id`.

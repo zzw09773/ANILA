@@ -1444,7 +1444,7 @@ git commit -m "test(studio): e2e for FLUX image_prompt hydration pipeline"
 
 **Files:**
 - Create or modify: `myCSPPlatform/README.md` (add a FLUX-image-gen section)
-- Modify: `docs/branch-sync-backlog.md`
+- Modify: `docs/planning/branch-sync-backlog.md`
 
 - [ ] **Step 10.1: Add README section**
 
@@ -1479,7 +1479,7 @@ a cached image, delete the file under `$FLUX_CACHE_DIR`.
 
 - [ ] **Step 10.2: Update branch sync backlog**
 
-Edit `docs/branch-sync-backlog.md`. Under "變更紀錄" add a line:
+Edit `docs/planning/branch-sync-backlog.md`. Under "變更紀錄" add a line:
 
 ```markdown
 - **2026-05-18** — Phase 6: ANILALM × FLUX pptx integration plan written (`docs/superpowers/plans/2026-05-18-anilalm-flux-pptx-integration.md`). 10 tasks, ~31 unit tests. Implementation pending.
@@ -1488,7 +1488,7 @@ Edit `docs/branch-sync-backlog.md`. Under "變更紀錄" add a line:
 - [ ] **Step 10.3: Commit**
 
 ```bash
-git add myCSPPlatform/README.md docs/branch-sync-backlog.md
+git add myCSPPlatform/README.md docs/planning/branch-sync-backlog.md
 git commit -m "[both] docs(studio): FLUX image_prompt deployment notes + backlog update"
 ```
 

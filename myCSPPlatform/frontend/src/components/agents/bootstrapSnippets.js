@@ -6,7 +6,7 @@
 // curl from a shell each get a tailored copy that already has their
 // agent_id + endpoint_url + bsk- pre-filled.
 //
-// Wire-contract reference: docs/csp-agent-bootstrap-protocol.md.
+// Wire-contract reference: docs/agent-framework/csp-agent-bootstrap-protocol.md.
 // Any change here must keep the body shape ({ bootstrap_token, endpoint_url })
 // identical to the agentic_rag.cli.bootstrap implementation, otherwise
 // the dev's copy-pasted code won't match what the bundled CLI does.

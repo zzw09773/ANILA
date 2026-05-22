@@ -3,7 +3,7 @@
 **Status**: Draft for review
 **Date**: 2026-04-25
 **Author**: ANILA 平台團隊
-**Companion docs**: [`ingestion-platform-design.md`](./ingestion-platform-design.md) · [`anila-core-boundary.md`](./anila-core-boundary.md)
+**Companion docs**: [`ingestion-platform-design.md`](../ingestion/ingestion-platform-design.md) · [`anila-core-boundary.md`](../anila-core/anila-core-boundary.md)
 **Source of investigation**: `/home/aia/c1147259/project` 目錄實際 grep 結果
 
 ---
@@ -169,7 +169,7 @@ v0.5.4 把 codeserver 改 dedicated port 仍然爆炸，最後翻 [`/home/aia/c1
 
 | # | 議題 | v0.1 立場 | v0.2 修訂 |
 |---|---|---|---|
-| 1 | Memory file 的定位 | 不明確 | **`memory/` module 留 anila-core；`MemoryFileStore` KEEP（dev mode）；Phase 3+ 補 `PostgresMemoryStore`（prod mode）**。詳見 §1.4 與 [`anila-core-boundary.md`](./anila-core-boundary.md) §2.3 |
+| 1 | Memory file 的定位 | 不明確 | **`memory/` module 留 anila-core；`MemoryFileStore` KEEP（dev mode）；Phase 3+ 補 `PostgresMemoryStore`（prod mode）**。詳見 §1.4 與 [`anila-core-boundary.md`](../anila-core/anila-core-boundary.md) §2.3 |
 | 2 | ComfyUI 整合方式 | 註冊為 Model | **改為註冊為 Agent**。理由：ANILA 主介面是 chat 對話，Router 必須在 manifest 看到「會畫圖的 agent」才能自動分派；Model 介面只能透過 OpenAI SDK 顯式呼叫 model name 觸發。詳見 §4 |
 | 3 | ANILA LM 權限模式 | 平台連結卡片（無 access control）| **OIDC SSO + 模式 A 嚴格白名單**。`required_roles=NULL` + `service_access_grants` table，**支援 user-level 與 department-level grant 兩種**（部門 grant 一次蓋整批）。詳見 §6 與 §7.5 |
 | 4 | codeserver 部署位置 | 平台連結（外部跳轉）| **納入 ANILA monorepo `docker-compose.yml`** — 組裡沒獨立部署，要新增 service。詳見 §5 |
@@ -221,9 +221,9 @@ CSP 已有的 `AUTO_REGISTER_LINKS` 機制（範例見 `myCSPPlatform/README.md`
 | 本 doc | 相關 doc | 關聯點 |
 |---|---|---|
 | §4 ComfyUI 註冊為 Agent | `AgenticRAG/anila-agent.yaml` template | 走 agent 註冊流程 |
-| §5 codeserver DB credential | [`ingestion-platform-design.md`](./ingestion-platform-design.md) §3.3 RLS | per-dev credentials 自動 `SET LOCAL anila.agent_id` |
-| §6 ANILA LM agent 化 | [`anila-core-boundary.md`](./anila-core-boundary.md) | ANILA LM 9 種 artifact 對應 agent template fork pattern |
-| §1.4 Memory architecture | [`anila-core-boundary.md`](./anila-core-boundary.md) §2.3 | platform memory module 留 anila-core；MemoryFileStore 為 dev-mode impl |
+| §5 codeserver DB credential | [`ingestion-platform-design.md`](../ingestion/ingestion-platform-design.md) §3.3 RLS | per-dev credentials 自動 `SET LOCAL anila.agent_id` |
+| §6 ANILA LM agent 化 | [`anila-core-boundary.md`](../anila-core/anila-core-boundary.md) | ANILA LM 9 種 artifact 對應 agent template fork pattern |
+| §1.4 Memory architecture | [`anila-core-boundary.md`](../anila-core/anila-core-boundary.md) §2.3 | platform memory module 留 anila-core；MemoryFileStore 為 dev-mode impl |
 
 ### 1.4 Memory ≠ Ingestion（澄清）
 
@@ -936,7 +936,7 @@ codeserver 在 ANILA 體系的角色 **不是 agent，也不是 model**：
 **問題**：mlsteam 上的 dev 寫 agent，需要 `DATABASE_URL` 連 ANILA postgres 寫 chunks。但是：
 - 不能給原始 superuser credentials（會洩漏）
 - 不能給 read-write 整個 cluster（會踩到別 agent 的 data）
-- 必須跟 [`ingestion-platform-design.md`](./ingestion-platform-design.md) §3.3 的 RLS 機制整合
+- 必須跟 [`ingestion-platform-design.md`](../ingestion/ingestion-platform-design.md) §3.3 的 RLS 機制整合
 
 **解法**：CSP 提供 **per-developer scoped DB credentials**（短效）
 
@@ -1086,7 +1086,7 @@ async def remind_expiring_credentials():
         )
 ```
 
-**關鍵設計**：`ALTER ROLE ... SET anila.agent_id = N` — 這個 PG role 一登入就自動 set session var，**RLS policy 自動套用**，dev 寫的任何 query 都不可能看到別 agent 的 data。完全跟 [`ingestion-platform-design.md`](./ingestion-platform-design.md) §3.3 layer 2 對齊。
+**關鍵設計**：`ALTER ROLE ... SET anila.agent_id = N` — 這個 PG role 一登入就自動 set session var，**RLS policy 自動套用**，dev 寫的任何 query 都不可能看到別 agent 的 data。完全跟 [`ingestion-platform-design.md`](../ingestion/ingestion-platform-design.md) §3.3 layer 2 對齊。
 
 **TTL 30d 的理由（v0.2 修訂）**：
 - 24h 太短：dev 每天要 issue 麻煩，倒逼大家把 credential 寫死在 config
@@ -1747,4 +1747,4 @@ Week 10+   ─── 觀察期（ANILA LM agent 化 v0.6 取消，§11）
 
 ---
 
-**Last updated**: 2026-04-25 · **Companion docs**: [`ingestion-platform-design.md`](./ingestion-platform-design.md) · [`anila-core-boundary.md`](./anila-core-boundary.md)
+**Last updated**: 2026-04-25 · **Companion docs**: [`ingestion-platform-design.md`](../ingestion/ingestion-platform-design.md) · [`anila-core-boundary.md`](../anila-core/anila-core-boundary.md)

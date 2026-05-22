@@ -169,6 +169,8 @@ export interface ReportArtifact extends ArtifactBase {
 
 export interface SlidesArtifact extends ArtifactBase {
   kind: 'slides'
+  /** Theme ID used; undefined when auto. For sidebar display + retry. */
+  theme?: string
   /** May be empty while pending; fills in once the job completes. */
   slides: { title: string; bullets: string[]; speakerNotes?: string }[]
   /** Populated once vision QA finishes. */

@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -142,6 +143,23 @@ RENDERER_BASE_URL = "http://pptx-renderer:7100"
 # default is enough.
 SLIDES_LLM_MODEL = "gemma4"
 VISION_LLM_MODEL = "gemma4"
+
+# Stage 2 (Layer C): how many extra times to regenerate a slide's image
+# when every candidate fails the quality gate. attempt 0 + MAX_RETRIES more.
+FLUX_GATE_MAX_RETRIES = 3
+# Candidates generated per attempt (spec 5: N=2).
+FLUX_GATE_NUM_CANDIDATES = 2
+# Seed stride between retry attempts so each attempt explores a different
+# region of latent space (attempt k uses base_seed + k*1024).
+FLUX_GATE_SEED_STRIDE = 1024
+# Stage 4: hard ceiling on generated images per deck. Beyond this, remaining
+# illustration slides take the theme/text fallback instead of spending GPU.
+# Protects against runaway latency on decks with many section breaks.
+MAX_GENERATED_IMAGES_PER_DECK = 15
+# A content slide only earns an illustration (and an image_focus layout) when
+# it's sparse enough that "image-led, text-supporting" reads well. Denser
+# slides keep their text-only standard layout (the image would crowd them).
+CONTENT_ILLUSTRATION_MAX_BULLETS = 3
 
 
 # ── JSON extraction (mirrors ANILALM's frontend extractJsonObject) ─────────
@@ -773,6 +791,111 @@ async def _call_llm_chat(
         ) from e
 
 
+class _StudioLLMAdapter:
+    """Adapts ``_call_llm_chat`` to the ``complete(system, user)`` interface
+    the FLUX prompt rewriter (Layer A) expects.
+
+    The rewriter is deliberately decoupled from CSP internals (DB session,
+    ModelRegistry, usage metering) — it only needs "give me one completion
+    for this system+user pair". This thin wrapper binds the db/user/model
+    context so rewriter calls still flow through ``proxy_request`` and land
+    in the same token-usage dashboards as every other Studio LLM call.
+    """
+
+    def __init__(self, db: Session, user: User, model_name: str = SLIDES_LLM_MODEL) -> None:
+        self._db = db
+        self._user = user
+        self._model_name = model_name
+
+    async def complete(self, *, system: str, user: str) -> str:
+        return await _call_llm_chat(
+            self._db,
+            self._user,
+            self._model_name,
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            # Low temp: the rewriter wants a stable, deterministic visual
+            # description, not creative variance (variance comes from the
+            # FLUX seed, not the prompt).
+            temperature=0.2,
+        )
+
+
+class _Gemma4VlmGate:
+    """gemma4-backed VLM for the Stage 2 quality gate (Layer C).
+
+    gemma4 is already deployed and multimodal; ``_inspect_slide_visually``
+    above proves the OpenAI vision message shape (``image_url`` with a
+    ``data:image/png;base64,...`` URL) reaches it through
+    ``_call_llm_chat`` -> ``proxy_request``. This adapter reuses that exact
+    path for the gate's semantic + text check, so no separate VLM is
+    deployed (per the confirmed Stage 2 premise).
+
+    Exposes ``async check(png_bytes, *, concept) -> dict`` — the Vlm
+    Protocol the gate expects.
+    """
+
+    def __init__(self, db: Session, user: User, model_name: str = VISION_LLM_MODEL) -> None:
+        self._db = db
+        self._user = user
+        self._model_name = model_name
+
+    async def check(self, png_bytes: bytes, *, concept: str) -> dict:
+        b64 = base64.b64encode(png_bytes).decode("ascii")
+        data_url = f"data:image/png;base64,{b64}"
+        system_prompt = (
+            "You are an image quality gate for slide illustrations. "
+            "Answer with JSON only — first char {, last char }, no ```json "
+            "fence, no preamble."
+        )
+        user_text = (
+            f"Does this image depict an abstract, text-free illustration of: "
+            f"{concept}?\n"
+            "Does it contain ANY letters, characters, digits, logos, or "
+            "readable signage?\n"
+            "Also rate 0.0-1.0 how cleanly and aptly it depicts the concept "
+            "(1.0 = excellent, on-concept, no text or artifacts).\n"
+            'Answer JSON only: {"match": bool, "has_text": bool, '
+            '"score": <0.0-1.0>, "reason": "<short>"}'
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_text},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            },
+        ]
+        raw = await _call_llm_chat(
+            self._db, self._user, self._model_name, messages, temperature=0.1,
+        )
+        try:
+            parsed = json.loads(_extract_json_object(raw))
+        except (ValueError, json.JSONDecodeError):
+            # Unparseable verdict — fail CLOSED for the gate (treat as a
+            # reject) so a flaky VLM response doesn't slip an unverified
+            # image through. The retry loop / fallback handles it.
+            logger.warning(
+                "VLM gate returned unparseable response; treating as reject."
+            )
+            return {"match": False, "has_text": True, "score": 0.0, "reason": "unparseable"}
+        score_raw = parsed.get("score", 0.0)
+        try:
+            score = max(0.0, min(1.0, float(score_raw)))
+        except (TypeError, ValueError):
+            score = 0.0
+        return {
+            "match": bool(parsed.get("match")),
+            "has_text": bool(parsed.get("has_text")),
+            "score": score,
+            "reason": str(parsed.get("reason", "")),
+        }
+
+
 # ── Step 5+6: generate + validate (with one correction pass) ─────────────
 
 
@@ -1168,6 +1291,194 @@ def get_flux_provider() -> "FluxImageProvider | None":
     return _FLUX_PROVIDER
 
 
+async def _gated_generate(
+    flux_provider: "FluxImageProvider",
+    prompt: str,
+    *,
+    use_case: "ImageUseCase",
+    seed: int,
+    style_id: str,
+    concept_en: str,
+    vlm: "_Gemma4VlmGate",
+) -> tuple["GeneratedImage | None", int]:
+    """Stage 2 retry loop (spec 5.2): generate N candidates, run the quality
+    gate, retry with a fresh seed on total failure.
+
+    Returns ``(accepted_image_or_None, retry_count)``. ``retry_count`` is
+    the number of EXTRA attempts beyond the first (0 = accepted first try).
+
+    A cache hit short-circuits the whole loop: a previously gate-accepted
+    image for this (prompt, use_case, seed, style) tuple is returned as-is
+    so a job re-run is deterministic and free.
+    """
+    from app.services.flux_quality_gate import gate_candidates
+
+    cached = flux_provider.cached_image(
+        prompt, use_case=use_case, seed=seed, style_id=style_id,
+    )
+    if cached is not None:
+        return cached, 0
+
+    for attempt in range(FLUX_GATE_MAX_RETRIES + 1):
+        attempt_seed = seed + attempt * FLUX_GATE_SEED_STRIDE
+        candidates = await flux_provider.generate_candidates(
+            prompt,
+            use_case=use_case,
+            seed=attempt_seed,
+            num_candidates=FLUX_GATE_NUM_CANDIDATES,
+        )
+        best = await gate_candidates(
+            candidates,
+            concept_en=concept_en,
+            vlm=vlm,
+        )
+        if best is not None:
+            # Persist under the per-slide (deterministic) seed, not the
+            # per-attempt retry seed, so a re-run hits the cache.
+            flux_provider.persist_chosen(
+                best, prompt=prompt, use_case=use_case, seed=seed, style_id=style_id,
+            )
+            logger.info(
+                "[gate] accepted on attempt %d/%d (use_case=%s)",
+                attempt, FLUX_GATE_MAX_RETRIES, use_case.value,
+            )
+            return best, attempt
+        logger.info(
+            "[gate] attempt %d/%d rejected all %d candidates, retrying fresh seed",
+            attempt, FLUX_GATE_MAX_RETRIES, FLUX_GATE_NUM_CANDIDATES,
+        )
+    logger.warning(
+        "[gate] all %d attempts exhausted (use_case=%s) — fallback to no image",
+        FLUX_GATE_MAX_RETRIES + 1, use_case.value,
+    )
+    return None, FLUX_GATE_MAX_RETRIES
+
+
+def _infer_image_use_case(idx: int, slide: dict) -> "ImageUseCase":
+    """Map a slide to its FLUX use_case. Order matters: idx 0 / layout 'cover'
+    is the hero even when also tagged section_break."""
+    from app.schemas.studio import ImageUseCase
+
+    if idx == 0 or slide.get("layout_kind") == "cover":
+        return ImageUseCase.COVER_HERO
+    if slide.get("layout_kind") == "section_break":
+        return ImageUseCase.SECTION_BAND
+    return ImageUseCase.CONTENT_ILLUSTRATION
+
+
+def _apply_illustration_fallback(slide: dict, use_case: "ImageUseCase") -> None:
+    """No usable image for this slide: drop image fields so the renderer
+    degrades (theme cover / theme section break / text-only standard layout),
+    and record the fallback in image_gen_meta. Never sets image_data.
+
+    This is the single fallback writer — the generation helper returns False
+    without writing meta, and the routing calls this for both gate-failure and
+    the per-deck cap.
+    """
+    from app.schemas.studio import ImageUseCase
+
+    label = {
+        ImageUseCase.COVER_HERO: "solid_theme_cover",
+        ImageUseCase.SECTION_BAND: "theme_section_break",
+        ImageUseCase.CONTENT_ILLUSTRATION: "text_only",
+    }[use_case]
+    meta = slide.get("image_gen_meta") or {}
+    meta.setdefault("use_case", use_case.value)
+    meta["fallback"] = label
+    slide["image_gen_meta"] = meta
+    slide.pop("image_data", None)
+    slide.pop("image_prompt", None)
+    slide.pop("image_kind", None)
+    slide.pop("diagram_dot", None)
+
+
+async def _generate_slide_illustration(
+    slide: dict,
+    *,
+    idx: int,
+    use_case: "ImageUseCase",
+    deck_style: "StyleDescriptor | None",
+    flux_provider: "FluxImageProvider",
+    deck_base_seed: int,
+    llm: "_StudioLLMAdapter",
+) -> bool:
+    """Rewrite → gate → write image. Returns True iff an image was placed.
+
+    On any failure (rewriter raised / USE_GRAPHVIZ / gate raised / all
+    candidates rejected) returns False WITHOUT writing fallback meta — the
+    caller invokes _apply_illustration_fallback. ``concept_en`` keeps the
+    Stage 1 convention (the whole flux_prompt); the slide's own image_prompt
+    is intentionally ignored (decision A) — title+bullets drive the rewriter.
+    """
+    from app.services.flux_prompt_rewriter import derive_flux_prompt
+    from app.services.flux_style import get_style_descriptor
+
+    style = deck_style or get_style_descriptor()
+    title = slide.get("title", "")
+    try:
+        flux_prompt = await derive_flux_prompt(
+            title=title,
+            bullets=slide.get("bullets", []),
+            use_case=use_case,
+            style=style,
+            llm=llm,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "FLUX rewriter failed for slide '%s' (%s): %s",
+            title or "<untitled>", use_case.value, e,
+        )
+        return False
+    if not flux_prompt:  # USE_GRAPHVIZ or stripped empty
+        logger.info(
+            "FLUX rewriter returned no prompt for slide '%s' (%s) — fallback.",
+            title or "<untitled>", use_case.value,
+        )
+        return False
+
+    seed = deck_base_seed + idx
+    vlm = _Gemma4VlmGate(llm._db, llm._user)
+    try:
+        best, retry_count = await _gated_generate(
+            flux_provider,
+            flux_prompt,
+            use_case=use_case,
+            seed=seed,
+            style_id=style.style_id,
+            concept_en=flux_prompt,
+            vlm=vlm,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "FLUX gated generation errored for slide '%s' (%s): %s",
+            title or "<untitled>", use_case.value, e,
+        )
+        return False
+    if best is None:
+        logger.warning(
+            "FLUX gate rejected all candidates for slide '%s' (%s) after %d "
+            "retries — fallback.", title or "<untitled>", use_case.value, retry_count,
+        )
+        return False
+
+    slide["image_data"] = (
+        "data:image/png;base64," + base64.b64encode(best.png_bytes).decode("ascii")
+    )
+    slide["image_gen_meta"] = {
+        "use_case": use_case.value,
+        "flux_prompt": flux_prompt,
+        "seed": best.seed,
+        "style_id": style.style_id,
+        "clip_score": best.clip_score,
+        "vlm_verdict": best.vlm_verdict,
+        "retry_count": retry_count,
+    }
+    slide.pop("image_prompt", None)
+    slide.pop("image_kind", None)
+    slide.pop("diagram_dot", None)
+    return True
+
+
 async def _hydrate_images(
     spec_dict: dict[str, Any],
     images_lookup: dict[str, dict[str, Any]],
@@ -1175,6 +1486,9 @@ async def _hydrate_images(
     *,
     flux_provider: "FluxImageProvider | None" = None,
     default_aspect: str = "16:9",
+    deck_base_seed: int | None = None,
+    llm: "_StudioLLMAdapter | None" = None,
+    deck_style: "StyleDescriptor | None" = None,
 ) -> dict[str, Any]:
     """Resolve every Slide.image_ref / diagram_dot / image_prompt into inline base64 PNG.
 
@@ -1183,6 +1497,12 @@ async def _hydrate_images(
       2. image_ref present but unresolvable → drop, fall back to next path.
       3. image_kind='diagram' + diagram_dot → render via Graphviz `dot -Tpng`.
       4. diagram render fails → drop diagram_dot/image_kind, fall back to next path.
+      4b. FLUX Stage 1 cover hero: when this slide is the cover (index 0 or
+          layout_kind=="cover") and the rewriter + flux_provider + seed are
+          available, derive a house-styled FLUX prompt from title+bullets
+          and generate a 16:9 hero. This sits ABOVE the legacy image_prompt
+          path so a cover gets a deterministic, rewriter-controlled image
+          rather than whatever raw prompt the LLM may have stuffed in.
       5. image_prompt present and flux_provider available → generate via FLUX.
       6. image_prompt present but flux_provider None or FLUX fails → drop, standard layout.
       7. Nothing set → leave untouched.
@@ -1192,13 +1512,19 @@ async def _hydrate_images(
     diagram path exists because FLUX.2-dev (diffusion) cannot render
     legible text — labelled diagrams (architecture, flow, ER) get crisp
     output via Graphviz instead.
+
+    `deck_base_seed` + `llm` enable the Stage 1 cover-hero path; when either
+    is None the function behaves exactly as before (the legacy image_ref /
+    diagram / image_prompt paths only).
     """
     import base64
 
+    from app.schemas.studio import ImageUseCase
     from app.services.diagram_renderer import render_dot_to_png
 
     slides = spec_dict.get("slides") or []
-    for slide in slides:
+    generated_count = 0
+    for idx, slide in enumerate(slides):
         # Path 1: image_ref (existing behavior — unchanged)
         ref = slide.get("image_ref")
         if ref:
@@ -1260,29 +1586,63 @@ async def _hydrate_images(
             slide.pop("image_kind", None)
             continue
 
-        # Path 3: image_prompt → call FLUX
-        prompt = slide.get("image_prompt")
-        if not prompt:
-            continue
-
-        if flux_provider is None:
-            # FLUX not configured for this deployment. Drop prompt silently.
-            slide.pop("image_prompt", None)
-            slide.pop("image_kind", None)
-            continue
-
-        try:
-            png_bytes = await flux_provider.get_or_generate(prompt, default_aspect)
-            slide["image_data"] = (
-                "data:image/png;base64,"
-                + base64.b64encode(png_bytes).decode("ascii")
+        # Path 4: FLUX illustration — cover hero / section band / content,
+        # all through the same rewriter + deck_style + quality gate. Replaces
+        # the Stage 1 cover-only block and the legacy image_prompt Path 3.
+        wants_illustration = (
+            idx == 0
+            or slide.get("layout_kind") in ("cover", "section_break")
+            or slide.get("image_kind") == "illustration"
+            or bool(slide.get("image_prompt"))
+        )
+        toolchain_ready = (
+            flux_provider is not None
+            and deck_base_seed is not None
+            and llm is not None
+        )
+        if wants_illustration and toolchain_ready:
+            # Order matters: compute use_case BEFORE the cap check (the cap
+            # fallback needs it).
+            use_case = _infer_image_use_case(idx, slide)
+            # Density gate: the renderer only shows a content illustration on an
+            # image_focus (image-led) layout. A bullet-heavy content slide would
+            # be crowded by that, so it keeps its text-only standard layout and
+            # skips generation entirely (no GPU spent, doesn't count toward cap).
+            if (
+                use_case is ImageUseCase.CONTENT_ILLUSTRATION
+                and len(slide.get("bullets") or []) > CONTENT_ILLUSTRATION_MAX_BULLETS
+            ):
+                _apply_illustration_fallback(slide, use_case)
+                continue
+            if generated_count >= MAX_GENERATED_IMAGES_PER_DECK:
+                logger.warning(
+                    "per-deck image cap %d reached; slide %d (%s) -> fallback",
+                    MAX_GENERATED_IMAGES_PER_DECK, idx, use_case.value,
+                )
+                _apply_illustration_fallback(slide, use_case)
+                continue
+            generated_count += 1
+            ok = await _generate_slide_illustration(
+                slide,
+                idx=idx,
+                use_case=use_case,
+                deck_style=deck_style,
+                flux_provider=flux_provider,
+                deck_base_seed=deck_base_seed,
+                llm=llm,
             )
-        except Exception as e:
-            logger.warning(
-                "FLUX generation failed for prompt=%r: %s — "
-                "slide will fall back to standard layout.",
-                prompt[:80], e,
-            )
+            if ok:
+                # Content illustration only renders on an image_focus layout;
+                # cover/section bands render full-bleed via renderSectionBreak
+                # and must keep their layout.
+                if use_case is ImageUseCase.CONTENT_ILLUSTRATION:
+                    slide["layout_kind"] = "image_focus"
+            else:
+                _apply_illustration_fallback(slide, use_case)
+            continue
+        if wants_illustration and slide.get("image_prompt"):
+            # FLUX toolchain not wired for this deployment but a legacy prompt
+            # is present: drop it so the renderer doesn't act on an unused field.
             slide.pop("image_prompt", None)
             slide.pop("image_kind", None)
 
@@ -1292,6 +1652,10 @@ async def _hydrate_images(
 async def _render_pptx(
     spec: SlidesSpec,
     images_lookup: dict[str, dict[str, Any]] | None = None,
+    *,
+    deck_base_seed: int | None = None,
+    llm: "_StudioLLMAdapter | None" = None,
+    deck_style: "StyleDescriptor | None" = None,
 ) -> tuple[bytes, str]:
     """POST spec → renderer → (pptx bytes, server-side path).
 
@@ -1302,9 +1666,21 @@ async def _render_pptx(
     image-suggestion list, keyed by image_id. When provided, every
     Slide.image_ref gets hydrated into inline `image_data` bytes via
     `_hydrate_images` before the spec leaves the CSP boundary.
+
+    `deck_base_seed` + `llm` (FLUX Stage 1) enable the cover-hero generation
+    path inside `_hydrate_images`. They are threaded from the job pipeline
+    (deck_base_seed = sha256(job_id)).
     """
     spec_dict = spec.model_dump()
-    if images_lookup:
+    flux_provider = get_flux_provider()
+    # Hydrate when there are curated images to resolve OR when the FLUX
+    # cover-hero path is fully wired (provider + seed + llm). The latter
+    # matters for text-only knowledge bases: no retrieved images means an
+    # empty images_lookup, but a cover hero should still be generated.
+    cover_hero_ready = (
+        flux_provider is not None and deck_base_seed is not None and llm is not None
+    )
+    if images_lookup or cover_hero_ready:
         # Worker writes to share/uploads/ingestion via INGESTION_UPLOAD_DIR;
         # CSP mounts the same directory at the same path (see compose).
         # storage_path on the row is relative to that root, so we just
@@ -1314,10 +1690,13 @@ async def _render_pptx(
         )
         spec_dict = await _hydrate_images(
             spec_dict,
-            images_lookup,
+            images_lookup or {},
             ingest_upload,
-            flux_provider=get_flux_provider(),
+            flux_provider=flux_provider,
             default_aspect="16:9",
+            deck_base_seed=deck_base_seed,
+            llm=llm,
+            deck_style=deck_style,
         )
 
     async with httpx.AsyncClient(timeout=60.0) as client:
@@ -2340,6 +2719,16 @@ async def _run_pipeline(
             raise RuntimeError(f"user {user_id} disappeared mid-job")
         coll = _require_collection_access(db, user, payload.collection_id)
 
+        # FLUX Stage 1 (4.2): deterministic per-deck seed derived once from
+        # the job_id, so re-running the same job yields the same images.
+        # Per-slide seed = deck_base_seed + slide_index (computed in
+        # _hydrate_images). The llm adapter lets the rewriter (Layer A)
+        # reuse the same proxy/usage path as every other Studio LLM call.
+        deck_base_seed = int(
+            hashlib.sha256(updater.job_id.encode()).hexdigest()[:8], 16
+        )
+        flux_llm = _StudioLLMAdapter(db, user, SLIDES_LLM_MODEL)
+
         # ── Step 3: retrieval ──
         await updater.set(step=JOB_STEP_RETRIEVING)
         seed_query = " · ".join(
@@ -2464,9 +2853,31 @@ async def _run_pipeline(
                         exc,
                     )
 
+        # ── Stage 3: infer the deck's visual house style from its content,
+        # once per deck, so every slide shares one visual language. Only when
+        # the FLUX cover-hero path will actually run; failure degrades to the
+        # default style inside infer_deck_style.
+        deck_style = None
+        if get_flux_provider() is not None and deck_base_seed is not None:
+            from app.services.flux_style import infer_deck_style
+
+            style_sample = spec.title or ""
+            if chunks:
+                style_sample += "\n" + "\n\n".join(
+                    str(c.get("content", "")) for c in chunks
+                )
+            deck_style = await infer_deck_style(
+                title=spec.title or "",
+                content_sample=style_sample,
+                llm=flux_llm,
+            )
+
         # ── Step 7: render ──
         await updater.set(step=JOB_STEP_RENDERING)
-        pptx_bytes, pptx_path = await _render_pptx(spec, images_lookup)
+        pptx_bytes, pptx_path = await _render_pptx(
+            spec, images_lookup, deck_base_seed=deck_base_seed, llm=flux_llm,
+            deck_style=deck_style,
+        )
 
         # ── Step 8: vision QA + (optional) one fix-and-rerender ──
         # Skip vision QA entirely when serving the fallback deck. The
@@ -2504,7 +2915,11 @@ async def _run_pipeline(
                     title=spec.title,
                     slide_count=len(spec.slides),
                 )
-                pptx_bytes, pptx_path = await _render_pptx(spec, images_lookup)
+                pptx_bytes, pptx_path = await _render_pptx(
+                    spec, images_lookup,
+                    deck_base_seed=deck_base_seed, llm=flux_llm,
+                    deck_style=deck_style,
+                )
 
         # ── Step 9: terminal "done" — pptx_bytes is the artifact ──
         await updater.mark_done(

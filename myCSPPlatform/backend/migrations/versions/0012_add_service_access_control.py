@@ -1,6 +1,6 @@
 """Service access control: required_roles + service_access_grants + dev_db_credentials.
 
-Backs the multi-service integration plan (docs/multi-service-integration-plan.md
+Backs the multi-service integration plan (docs/platform/multi-service-integration-plan.md
 §7.5 + §10.2). Three new pieces of state:
 
 1. ``platform_links.required_roles`` — JSONB array of role names. Empty array

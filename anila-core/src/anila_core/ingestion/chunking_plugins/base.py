@@ -1,4 +1,4 @@
-"""Chunker plug-in interface (docs/ingestion-platform-design.md §5.1).
+"""Chunker plug-in interface (docs/ingestion/ingestion-platform-design.md §5.1).
 
 Two public types:
 

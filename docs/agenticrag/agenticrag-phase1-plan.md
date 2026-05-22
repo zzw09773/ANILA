@@ -3,7 +3,7 @@
 > **Status**: revised plan, ready to execute
 > **Date**: 2026-05-02
 > **v2 changes**: rewritten to follow the synthesis architecture (not the port plan). 5 primitives, 4 sprints v0.1.
-> **Reads alongside**: `docs/anila-agent-framework-architecture.md` (canonical architecture spec)
+> **Reads alongside**: `docs/agent-framework/anila-agent-framework-architecture.md` (canonical architecture spec)
 
 ---
 
@@ -182,4 +182,4 @@ What changed during stage A:
 
 ---
 
-**Last updated**: 2026-05-02 (v2) · **v0.1 estimate**: ~3,400 LOC + RAG demos in 4 sprints (~8 weeks) · **Architecture spec**: `docs/anila-agent-framework-architecture.md`
+**Last updated**: 2026-05-02 (v2) · **v0.1 estimate**: ~3,400 LOC + RAG demos in 4 sprints (~8 weeks) · **Architecture spec**: `docs/agent-framework/anila-agent-framework-architecture.md`
