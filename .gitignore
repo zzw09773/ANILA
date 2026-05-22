@@ -145,3 +145,6 @@ share/codeserver-sandbox/
 # docs/onyx/onyx-application-plan.md.
 onyx/
 n8n_DATA
+
+# 產出物：生成的簡報不入庫
+*.pptx

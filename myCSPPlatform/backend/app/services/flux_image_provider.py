@@ -112,6 +112,10 @@ class FluxImageProvider:
     def _cache_path(self, key: str) -> Path:
         return self.cache_dir / f"{key}.png"
 
+    def _seed_sidecar_path(self, key: str) -> Path:
+        """Sidecar holding the actual accepted seed for a cached image."""
+        return self.cache_dir / f"{key}.seed"
+
     # ── Public API (contract 3.4) ─────────────────────────────────────────
     async def get_or_generate(
         self,
@@ -226,6 +230,11 @@ class FluxImageProvider:
         key = self._cache_key(prompt, aspect_ratio, seed, style_id, steps, guidance)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._cache_path(key).write_bytes(chosen.png_bytes)
+        # Sidecar records the seed that ACTUALLY produced the accepted image
+        # (may be a retry-shifted seed != the requested deterministic seed), so
+        # cache hits report a reproducible seed in image_gen_meta rather than
+        # the request key's seed.
+        self._seed_sidecar_path(key).write_text(str(chosen.seed), encoding="utf-8")
 
     def cached_image(
         self,
@@ -242,8 +251,17 @@ class FluxImageProvider:
         key = self._cache_key(prompt, aspect_ratio, seed, style_id, steps, guidance)
         cache_file = self._cache_path(key)
         if cache_file.exists():
+            # Prefer the actual accepted seed from the sidecar; fall back to the
+            # requested seed for caches written before the sidecar existed.
+            actual_seed = seed
+            sidecar = self._seed_sidecar_path(key)
+            if sidecar.exists():
+                try:
+                    actual_seed = int(sidecar.read_text(encoding="utf-8").strip())
+                except (ValueError, OSError):
+                    actual_seed = seed
             return GeneratedImage(
-                png_bytes=cache_file.read_bytes(), seed=seed, accepted=True
+                png_bytes=cache_file.read_bytes(), seed=actual_seed, accepted=True
             )
         return None
 

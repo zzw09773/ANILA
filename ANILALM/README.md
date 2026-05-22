@@ -4,7 +4,7 @@
 
 ## 簡介 / Overview
 
-**ANILALM** 是 `/home/aia/c1147259/ANILA` 底下的子專案，提供面向研究人員的「文件 → 對話 → 產出」一站式介面：上傳 PDF / 文件 → 建知識庫 → 對話查詢 → 直接生成深度報告與簡報草稿。它本身是一支 SPA（單頁應用），串接 myCSPPlatform 後端做認證、ingestion、對話與 LLM proxy。
+**ANILALM** 是 `<project_root>` 底下的子專案，提供面向研究人員的「文件 → 對話 → 產出」一站式介面：上傳 PDF / 文件 → 建知識庫 → 對話查詢 → 直接生成深度報告與簡報草稿。它本身是一支 SPA（單頁應用），串接 myCSPPlatform 後端做認證、ingestion、對話與 LLM proxy。
 
 子專案內含兩個獨立的執行單元：
 
@@ -88,7 +88,7 @@ ANILALM/
 ### 前端（開發模式）
 
 ```bash
-cd /home/aia/c1147259/ANILA/ANILALM
+cd <project_root>/ANILALM
 npm install                       # node_modules 已就緒
 cp .env.example .env              # 視需要改 VITE_CSP_BACKEND / VITE_DEFAULT_CHAT_MODEL
 npm run dev                       # http://localhost:5174
@@ -111,14 +111,14 @@ curl -sf http://localhost:8000/health
 從 repo 根啟動：
 
 ```bash
-cd /home/aia/c1147259/ANILA
+cd <project_root>
 docker compose -f docker-compose-dev.yml up -d pptx-renderer
 ```
 
 本機跑（不經 compose）：
 
 ```bash
-cd /home/aia/c1147259/ANILA/ANILALM/pptx-skill
+cd <project_root>/ANILALM/pptx-skill
 node server.js                    # listening on :7100
 ```
 
@@ -127,7 +127,7 @@ node server.js                    # listening on :7100
 `test_image_focus_render.js` 需要一個正在運行的 renderer（它走完整 PptxGenJS pipeline，不能 inline）。預設打 `http://localhost:7100`，可用 `RENDERER_URL` 覆寫：
 
 ```bash
-cd /home/aia/c1147259/ANILA/ANILALM/pptx-skill
+cd <project_root>/ANILALM/pptx-skill
 node server.js &                                   # 或用運行中的容器
 node tests/test_image_focus_render.js
 RENDERER_URL=http://pptx-renderer:7100 node tests/test_image_focus_render.js

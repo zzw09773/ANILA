@@ -4,7 +4,7 @@
 
 ## Overview
 
-**ANILALM** is a sub-project under `/home/aia/c1147259/ANILA`. It gives researchers a one-stop "document → conversation → output" interface: upload PDFs / documents → build a knowledge base → query via chat → generate deep reports and slide-deck drafts directly. It is a SPA (single-page application) that talks to the myCSPPlatform backend for auth, ingestion, conversations, and an LLM proxy.
+**ANILALM** is a sub-project under `<project_root>`. It gives researchers a one-stop "document → conversation → output" interface: upload PDFs / documents → build a knowledge base → query via chat → generate deep reports and slide-deck drafts directly. It is a SPA (single-page application) that talks to the myCSPPlatform backend for auth, ingestion, conversations, and an LLM proxy.
 
 The sub-project contains two independent runnable units:
 
@@ -88,7 +88,7 @@ ANILALM/
 ### Frontend (dev mode)
 
 ```bash
-cd /home/aia/c1147259/ANILA/ANILALM
+cd <project_root>/ANILALM
 npm install                       # node_modules already present
 cp .env.example .env              # edit VITE_CSP_BACKEND / VITE_DEFAULT_CHAT_MODEL as needed
 npm run dev                       # http://localhost:5174
@@ -111,14 +111,14 @@ curl -sf http://localhost:8000/health
 Start it from the repo root:
 
 ```bash
-cd /home/aia/c1147259/ANILA
+cd <project_root>
 docker compose -f docker-compose-dev.yml up -d pptx-renderer
 ```
 
 Run locally (without compose):
 
 ```bash
-cd /home/aia/c1147259/ANILA/ANILALM/pptx-skill
+cd <project_root>/ANILALM/pptx-skill
 node server.js                    # listening on :7100
 ```
 
@@ -127,7 +127,7 @@ node server.js                    # listening on :7100
 `test_image_focus_render.js` needs a running renderer (it exercises the full PptxGenJS pipeline and cannot inline the function under test). It defaults to `http://localhost:7100`; override with `RENDERER_URL`:
 
 ```bash
-cd /home/aia/c1147259/ANILA/ANILALM/pptx-skill
+cd <project_root>/ANILALM/pptx-skill
 node server.js &                                   # or use the running container
 node tests/test_image_focus_render.js
 RENDERER_URL=http://pptx-renderer:7100 node tests/test_image_focus_render.js

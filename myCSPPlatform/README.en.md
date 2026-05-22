@@ -130,7 +130,7 @@ myCSPPlatform/
 In the dev stack CSP is the `csp` service, started **from the repo root** via `docker-compose-dev.yml`:
 
 ```bash
-# From the repo root (/home/aia/c1147259/ANILA)
+# From the repo root (<project_root>)
 docker compose -f docker-compose-dev.yml up -d --build csp
 ```
 

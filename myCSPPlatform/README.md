@@ -130,7 +130,7 @@ myCSPPlatform/
 CSP 在 dev stack 裡是 `csp` 服務，**從 repo 根目錄**用 `docker-compose-dev.yml` 啟動：
 
 ```bash
-# 從 repo 根目錄（/home/aia/c1147259/ANILA）
+# 從 repo 根目錄（<project_root>）
 docker compose -f docker-compose-dev.yml up -d --build csp
 ```
 

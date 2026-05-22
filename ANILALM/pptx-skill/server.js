@@ -93,6 +93,17 @@ const PALETTES = {
 // can resolve to a Simplified-Chinese variant for 繁體 strings.
 const FONT_FACE = 'Noto Sans CJK TC'
 
+// Layered title-band scrim for full-bleed hero/section images. pptxgenjs 3.x
+// has no native gradient fill, so we stack rects of decreasing transparency to
+// fake a soft vertical darkening centred on the title band — GUARANTEES the
+// white title stays legible no matter how bright the FLUX imagery is.
+// Shared by the cover title slide and renderSectionBreak.
+const GRADIENT_BANDS = [
+  { y: 1.7, h: 3.8, transparency: 52 },
+  { y: 2.2, h: 2.8, transparency: 42 },
+  { y: 2.6, h: 2.0, transparency: 34 },
+]
+
 // ── Round 3 Patch M: theme bundles ────────────────────────────────────
 //
 // Themes are complete visual identity bundles. Each bundles palette +
@@ -525,19 +536,10 @@ function renderSectionBreak(pres, s, theme) {
       fill: { color: '000000', transparency: 58 },
       line: { type: 'none' },
     })
-    // Title-band gradient scrim. pptxgenjs 3.x has no native gradient
-    // fill, so stack rects of decreasing transparency to fake a soft
-    // vertical darkening centred on the title band. This GUARANTEES the
-    // white title stays legible no matter how bright FLUX rendered that
-    // region — the imagery's luminance is uncontrolled and a single flat
-    // scrim left the title marginal over bright areas (e.g. fuselage +
-    // clouds). Outer→inner so the centre (behind the title) is darkest
-    // and the edges feather out.
-    for (const band of [
-      { y: 1.7, h: 3.8, transparency: 52 },
-      { y: 2.2, h: 2.8, transparency: 42 },
-      { y: 2.6, h: 2.0, transparency: 34 },
-    ]) {
+    // Title-band gradient scrim (shared GRADIENT_BANDS): outer→inner layered
+    // rects so the centre behind the title is darkest and the edges feather
+    // out, guaranteeing legibility over arbitrary FLUX imagery.
+    for (const band of GRADIENT_BANDS) {
       heroSlide.addShape('rect', {
         x: 0, y: band.y, w: 13.33, h: band.h,
         fill: { color: '000000', transparency: band.transparency },
@@ -1301,13 +1303,18 @@ app.post('/render', async (req, res) => {
     if (!firstIsCover) {
       const titleSlide = pres.addSlide({ masterName: 'ANILA_BASE' })
 
-      // FLUX Stage 1 cover hero: the backend hydrates a 16:9 COVER_HERO
-      // image into spec.slides[0].image_data. Render it full-bleed behind
-      // the title with a dark scrim so the title stays legible over
+      // FLUX cover hero: the backend hydrates a 16:9 COVER_HERO image into
+      // spec.slides[0].image_data. Promote it to a full-bleed background ONLY
+      // when it is an actual cover hero (image_gen_meta.use_case === 'cover_hero')
+      // — a curated image_ref or a Graphviz diagram that happens to sit on the
+      // first slide also sets image_data but must NOT become the title bg.
+      // Layered scrim (same as renderSectionBreak) keeps the title legible over
       // arbitrary imagery; fall back to the plain text cover when absent.
       const heroData = spec.slides[0]?.image_data
       const hasHero =
-        typeof heroData === 'string' && heroData.startsWith('data:image/')
+        typeof heroData === 'string' &&
+        heroData.startsWith('data:image/') &&
+        spec.slides[0]?.image_gen_meta?.use_case === 'cover_hero'
       if (hasHero) {
         titleSlide.addImage({
           data: heroData,
@@ -1316,9 +1323,16 @@ app.post('/render', async (req, res) => {
         })
         titleSlide.addShape('rect', {
           x: 0, y: 0, w: 13.33, h: 7.5,
-          fill: { color: '000000', transparency: 55 },
+          fill: { color: '000000', transparency: 58 },
           line: { type: 'none' },
         })
+        for (const band of GRADIENT_BANDS) {
+          titleSlide.addShape('rect', {
+            x: 0, y: band.y, w: 13.33, h: band.h,
+            fill: { color: '000000', transparency: band.transparency },
+            line: { type: 'none' },
+          })
+        }
       }
       const coverTitleColor = hasHero ? 'FFFFFF' : p.titleText
       const coverMutedColor = hasHero ? 'F0F0F0' : p.muted
