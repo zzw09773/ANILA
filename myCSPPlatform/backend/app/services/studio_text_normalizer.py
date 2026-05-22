@@ -150,7 +150,10 @@ _GENERIC_LATEX_RE = re.compile(r"\$([^\$\n]{1,80})\$")
 # only — intra-text citations like "如 (參 [5]) 所述" are rare and harder
 # to safely auto-strip, so we leave them.
 _CITATION_RE = re.compile(
-    r"\s*[\(（]\s*參(?:考)?\s*[\[【]\s*\d+\s*[\]】]\s*[\)）]\s*$",
+    r"\s*[\(（]\s*參(?:考)?\s*"
+    r"[\[【]\s*\d+\s*[\]】]"                    # 第一個 [N]
+    r"(?:\s*,\s*[\[【]\s*\d+\s*[\]】])*"         # Round CC: 後續可選的 , [M], [O]...
+    r"\s*[\)）]\s*$",
 )
 
 

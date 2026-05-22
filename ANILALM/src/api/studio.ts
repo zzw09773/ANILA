@@ -51,6 +51,13 @@ export interface CreateSlidesJobInput {
   extraInstructions?: string
   /** Skip RAG retrieval; let the LLM free-write. */
   skipRetrieval?: boolean
+  /**
+   * Force a specific visual theme. When set, bypasses backend's tone
+   * detection and title-keyword override (Patch O + U). Send undefined
+   * to use auto selection. Valid: corporate_navy | academic_paper |
+   * warm_journal | executive_brief | startup_pitch.
+   */
+  themeOverride?: string
 }
 
 const PPTX_MIME =
@@ -88,6 +95,7 @@ export async function createSlidesJob(
       preset: input.preset,
       extra_instructions: input.extraInstructions,
       skip_retrieval: input.skipRetrieval ?? false,
+      theme_override: input.themeOverride, // undefined → JSON omits the key
     }),
   })
   return readJsonOrThrow<JobStatus>(res, 'createJob')

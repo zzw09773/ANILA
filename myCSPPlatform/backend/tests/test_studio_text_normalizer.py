@@ -123,3 +123,29 @@ def test_strip_citation_v4_journal_regression():
     input_text = "完成 gpt-oss-20b 與 NV-Embed-v2 之容器化部署，針對 GH200 進行記憶體調優 (參 [5])"
     expected = "完成 gpt-oss-20b 與 NV-Embed-v2 之容器化部署，針對 GH200 進行記憶體調優"
     assert strip_inline_citations(input_text) == expected
+
+
+def test_strip_citation_multi_number_single_group():
+    """Round CC: '(參 [1], [8])' — comma-separated numbers in ONE group."""
+    assert strip_inline_citations("外資賣超 (參 [1], [8])") == "外資賣超"
+    assert strip_inline_citations("三重 (參 [1], [8], [12])") == "三重"
+
+
+def test_strip_citation_multi_number_full_width():
+    assert strip_inline_citations("全形（參 [3], [5]）") == "全形"
+
+
+def test_strip_citation_single_still_works():
+    """Patch Q behaviour preserved."""
+    assert strip_inline_citations("單一 (參 [5])") == "單一"
+
+
+def test_strip_citation_separate_groups_still_works():
+    """The existing 3x loop handles separate groups; CC handles within-group."""
+    assert strip_inline_citations("分開 (參 [5]) (參 [10])") == "分開"
+
+
+def test_strip_citation_intra_text_multi_still_preserved():
+    """Multi-number must not make intra-text stripping over-eager."""
+    txt = "如 (參 [1], [8]) 所述，結論成立"
+    assert strip_inline_citations(txt) == "如 (參 [1], [8]) 所述，結論成立"
