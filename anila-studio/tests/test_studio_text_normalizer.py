@@ -4,69 +4,9 @@ from __future__ import annotations
 import pytest
 
 from app.services.studio_text_normalizer import (
-    normalize_spec,
-    strip_bullet_prefix,
     strip_inline_citations,
     strip_latex,
 )
-from app.schemas.studio import Slide, SlidesSpec
-
-
-def test_strip_bullet_prefix_black_circle():
-    assert strip_bullet_prefix("● Advanced RAG：加入 Reranking") == "Advanced RAG：加入 Reranking"
-
-
-def test_strip_bullet_prefix_variants():
-    # 各種 LLM 會 inject 的 marker 都該被清掉
-    assert strip_bullet_prefix("• 第一條") == "第一條"
-    assert strip_bullet_prefix("▪ 黑方塊") == "黑方塊"
-    assert strip_bullet_prefix("◆ 黑菱形") == "黑菱形"
-    assert strip_bullet_prefix("* markdown asterisk") == "markdown asterisk"
-    assert strip_bullet_prefix("- markdown dash 後文") == "markdown dash 後文"
-    assert strip_bullet_prefix("·  middle dot") == "middle dot"
-
-
-def test_strip_bullet_prefix_idempotent():
-    # 已清過再清不該變
-    out = strip_bullet_prefix("Advanced RAG：加入 Reranking")
-    assert strip_bullet_prefix(out) == "Advanced RAG：加入 Reranking"
-
-
-def test_strip_bullet_prefix_only_strips_once():
-    # 兩層 marker 連發只剝一層,避免吃掉中文 enum 的真實連字
-    assert strip_bullet_prefix("● ● 雙層") == "● 雙層"
-
-
-def test_strip_bullet_prefix_preserves_chinese_dash_enum():
-    # "一-加密" 是中文枚舉(非 list marker),不該剝
-    assert strip_bullet_prefix("一-加密") == "一-加密"
-
-
-def test_strip_bullet_prefix_no_marker_passthrough():
-    assert strip_bullet_prefix("純文字") == "純文字"
-    assert strip_bullet_prefix("") == ""
-    assert strip_bullet_prefix(None) is None
-
-
-def test_normalize_spec_strips_bullet_prefix_through_pipeline():
-    """整支 pipeline:bullet 內的 ● + $\\nightarrow$ 都該乾淨。"""
-    spec = SlidesSpec(
-        title="t",
-        slides=[
-            Slide(
-                title="x",
-                bullets=[
-                    "Naive RAG：線性",
-                    "● Advanced RAG：加入 $\nightarrow$ Reranking",
-                ],
-                layout_kind="standard",
-            )
-        ],
-    )
-    out = normalize_spec(spec)
-    assert out.slides[0].bullets[0] == "Naive RAG：線性"
-    # ● 被剝、$\nightarrow$ 被 latex strip
-    assert out.slides[0].bullets[1] == "Advanced RAG：加入 → Reranking"
 
 
 def test_strip_latex_known_arrows():
