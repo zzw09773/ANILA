@@ -16,7 +16,7 @@
 除了上述「平台治理」職能，CSP 也承載兩條應用管線：
 
 - **Ingestion 知識庫** — 文件上傳 → 切塊 → embedding → pgvector 檢索（RAG）。CSP 透過 `arq` 把 ingest 工作丟進 Redis 佇列，由獨立的 `ingestion-worker` container 消化。
-- **Studio / ANILALM 簡報生成** — 由 LLM 產生投影片大綱，CSP 端組裝 `.pptx`，並可內嵌 FLUX 生成圖片（`image-generator` agent）與 Graphviz 流程圖。
+- ~~**Studio / ANILALM 簡報生成**~~ — **已抽出至 [`anila-studio`](../anila-studio/) 獨立 service**(2026-05-23 / PR #12)。CSP 端只保留它需要的 contract endpoint:`/api/ingestion/.../search` + `/images/search` + `/images/{id}/blob` + `/.well-known/jwks.json` + `/api/auth/revocations` + Redis token-revoke publisher。詳見 [`docs/superpowers/anila-studio/extraction-decision.md`](../docs/superpowers/anila-studio/extraction-decision.md)。
 
 > 在整個 ANILA 系統中，CSP 是「真相來源」（authoritative store）：Router、Worker、UI 都向它要使用者身分、API Key、模型 / Agent manifest 與用量資料。平台整體定位見 repo 根目錄 [`../README.md`](../README.md) 與 [`../anila_plan.md`](../anila_plan.md)。
 

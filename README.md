@@ -8,7 +8,8 @@ ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key�
 
 | 子專案 | 角色 | 預設 Port |
 |---|---|---|
-| [`myCSPPlatform`](./myCSPPlatform/) | **CSP**（Control & Data Plane）— 使用者 / API Key / 模型 / Agent 註冊 / 對話 / 附件 / 分享 / 交接 / 審計 / Studio (PPTX & 報告) / Ingestion (Knowledge Collections + Evaluator) / OpenAI 相容代理 | `:8000` |
+| [`myCSPPlatform`](./myCSPPlatform/) | **CSP**（Control & Data Plane）— 使用者 / API Key / 模型 / Agent 註冊 / 對話 / 附件 / 分享 / 交接 / 審計 / Ingestion (Knowledge Collections + Evaluator) / OpenAI 相容代理 / JWKS / token revocation publisher | `:8000` |
+| [`anila-studio`](./anila-studio/) | **Studio service** — Deck 生成(RAG + LLM 大綱 + FLUX 圖像 + PPTX);抽自 csp(見 [extraction-decision](./docs/superpowers/anila-studio/extraction-decision.md))。HTTP-only 對 csp,本地驗 JWT(JWKS)+ Redis pub/sub revocation | `:8100`（internal） |
 | [`anila-core`](./anila-core/) | **Runtime foundation（SDK）** — Python agent runtime 基座（api / registry / engine / tools / providers / storage / **memory（short_term + long_term + backends + clients）**／ compact / cli / **security** / ingestion 共用 chunking_plugins）。Router 與所有 agent 共用 | — |
 | [`anila-core-router`](./anila-core-router/) | **Router** — OpenAI 相容分派器；依請求自動路由到註冊的 Agent；Sprint 8 X 起以 `service_clients.router-primary` per-credential token 走 s2s | `:9000` |
 | [`anila-agent`](./anila-agent/) | **官方 sub-agent 模板**（git subtree from [`zzw09773/anila-agent`](https://github.com/zzw09773/anila-agent)）— 基於 openai-agents SDK + LiteLLM，移植 Claude Code 的 memdir 長期記憶、hook 介面、slash-command CLI。開發者 fork 上游 repo 當起點，ANILA 透過 subtree 同步本地 copy；CSP 把這個目錄當 template 提供下載 | `:24786`（獨立執行時） |
@@ -35,12 +36,16 @@ flowchart TB
 
     subgraph spas["前端（皆經 nginx 對外）"]
         anila_ui["anila-ui<br/>對話 · 分享 · 交接 · Developer Console"]
-        anilalm["ANILALM<br/>知識庫 · Studio · 簡報生成"]
+        anilalm["ANILALM<br/>知識庫 · Studio 入口"]
     end
 
     subgraph csp["myCSPPlatform (internal only)"]
-        csp_ctrl["Control Plane /api/*<br/>cookie / JWT · users · api_keys · models<br/>agents · conversations · shares · handoffs<br/>audit · alerts · ingestion · studio · trusted-hosts"]
+        csp_ctrl["Control Plane /api/*<br/>cookie / JWT · users · api_keys · models<br/>agents · conversations · shares · handoffs<br/>audit · alerts · ingestion · trusted-hosts<br/>JWKS / token revocation publisher"]
         csp_data["Data Plane /v1/*<br/>sk- API Key · chat/completions<br/>· embeddings · /v1/agents manifest"]
+    end
+
+    subgraph studio["anila-studio :8100 (internal only)"]
+        studio_api["/api/studio/slides/jobs<br/>RAG + LLM + FLUX + PPTX 生 deck<br/>HTTP 對 csp · 本地 RS256 + JWKS verify"]
     end
 
     subgraph router["ANILA Router (internal only)"]
@@ -71,6 +76,7 @@ flowchart TB
     nginx --> csp_ctrl
     nginx --> csp_data
     nginx --> router_core
+    nginx --> studio_api
 
     csp_data -.->|model=anila-router| router_core
     router_core -->|GET /v1/agents · service_clients token| csp_data
@@ -83,7 +89,11 @@ flowchart TB
     redis --> worker
     worker --> db
     worker -.->|/v1/embeddings · /v1/chat completions| csp_data
-    csp_ctrl -.->|Studio 渲染 trigger| pptx
+    studio_api -.->|/api/ingestion/.../search<br/>/api/proxy/v1/chat/completions<br/>/.well-known/jwks.json| csp_ctrl
+    studio_api -.->|/api/ingestion/images/{id}/blob| csp_ctrl
+    studio_api -.->|FLUX 生圖| llm
+    studio_api -.->|/render PPTX| pptx
+    redis -.->|anila:auth:token-revoke pub/sub| studio_api
     agents -.CSP proxy.-> llm
 
     classDef plane fill:#fef3c7,stroke:#d97706
