@@ -24,6 +24,10 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from app.api.studio import router as studio_router
+from app.api.reports import router as reports_router
+from app.api.mindmaps import router as mindmaps_router
+from app.api.infographics import router as infographics_router
+from app.api.datatables import router as datatables_router
 from app.config import settings
 from app.services import jwks_client, revocation_cache as revocation_cache_mod
 
@@ -59,6 +63,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(studio_router)
+# 4 種新 artifact kind(對應前端製作台 menu 內已 implemented + 3 個 comingSoon 轉正)
+app.include_router(reports_router)
+app.include_router(mindmaps_router)
+app.include_router(infographics_router)
+app.include_router(datatables_router)
 
 
 @app.get("/health")

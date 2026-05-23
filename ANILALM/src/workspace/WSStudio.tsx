@@ -12,8 +12,49 @@ import { timeAgo } from '../utils/format'
 import {
   downloadSlidesJobPptx,
   getSlidesJobStatus,
+  getReportJobStatus,
+  getMindmapJobStatus,
+  getInfographicJobStatus,
+  getDatatableJobStatus,
   stepLabel,
 } from '../api/studio'
+
+// Dispatch:每種 artifact kind 用對應的 status getter。回傳的 status 已 narrow
+// 過,呼叫端只關注幾個共通欄位(state / step / title / error / download_urls)。
+type GenericJobStatus = {
+  state: 'pending' | 'running' | 'done' | 'failed' | 'cancelled'
+  step?: string | null
+  title?: string | null
+  error?: string | null
+  download_urls?: Record<string, string> | null
+  // 各 kind 特有的 metadata
+  defects?: unknown
+  qa_passes?: number | null
+  references_count?: number | null
+  sections_count?: number | null
+  node_count?: number | null
+  chart_count?: number | null
+  row_count?: number | null
+  column_count?: number | null
+}
+
+async function fetchJobStatus(
+  kind: StudioArtifact['kind'],
+  jobId: string,
+): Promise<GenericJobStatus> {
+  switch (kind) {
+    case 'slides':
+      return (await getSlidesJobStatus(jobId)) as unknown as GenericJobStatus
+    case 'report':
+      return (await getReportJobStatus(jobId)) as unknown as GenericJobStatus
+    case 'mindmap':
+      return (await getMindmapJobStatus(jobId)) as unknown as GenericJobStatus
+    case 'infographic':
+      return (await getInfographicJobStatus(jobId)) as unknown as GenericJobStatus
+    case 'datatable':
+      return (await getDatatableJobStatus(jobId)) as unknown as GenericJobStatus
+  }
+}
 
 const FORMATS: FormatSpec[] = [
   {
@@ -38,8 +79,7 @@ const FORMATS: FormatSpec[] = [
     i: 'git',
     c: '#3DD68C',
     cat: 'visual',
-    hint: '可展開分支',
-    comingSoon: true,
+    hint: 'SVG · 任務拆解 / SOP',
   },
   {
     k: 'infographic',
@@ -47,8 +87,7 @@ const FORMATS: FormatSpec[] = [
     i: 'chart',
     c: '#5BC0EB',
     cat: 'visual',
-    hint: '數據可視化',
-    comingSoon: true,
+    hint: 'HTML + PDF · 含 chart',
   },
   {
     k: 'datatable',
@@ -56,8 +95,7 @@ const FORMATS: FormatSpec[] = [
     i: 'table',
     c: '#3DD68C',
     cat: 'doc',
-    hint: '結構化整理',
-    comingSoon: true,
+    hint: 'XLSX / CSV / HTML',
   },
 ]
 
@@ -128,9 +166,10 @@ export function WSStudio() {
     const list = byCollection[collection.id] ?? EMPTY_ARTIFACTS
     const collectionId = collection.id
 
-    const pendingSlides = list.filter(
-      (a): a is SlidesArtifact =>
-        a.kind === 'slides' && a.state === 'pending' && Boolean(a.jobId),
+    // 對所有 kind 收集 pending(原本只 slides)── 5 種都走同 polling loop。
+    const pendingArtifacts = list.filter(
+      (a): a is StudioArtifact =>
+        a.state === 'pending' && Boolean(a.jobId),
     )
 
     // Tear down pollers whose artifact is no longer pending or got
@@ -138,7 +177,7 @@ export function WSStudio() {
     // cleanup) means the active set always matches the current artifact
     // list, with no risk of leaked intervals after `remove`.
     for (const [jobId, timerId] of pollersRef.current.entries()) {
-      const stillPending = pendingSlides.some((a) => a.jobId === jobId)
+      const stillPending = pendingArtifacts.some((a) => a.jobId === jobId)
       if (!stillPending) {
         clearInterval(timerId)
         pollersRef.current.delete(jobId)
@@ -146,41 +185,59 @@ export function WSStudio() {
     }
 
     // Spin up pollers for any newly-pending artifacts.
-    for (const artifact of pendingSlides) {
+    for (const artifact of pendingArtifacts) {
       const jobId = artifact.jobId!
       if (pollersRef.current.has(jobId)) continue
+      const kind = artifact.kind
 
       const tick = async (): Promise<void> => {
         try {
-          const status = await getSlidesJobStatus(jobId)
+          const status = await fetchJobStatus(kind, jobId)
 
-          // Mid-flight progress patches: keep the artifact's title and
-          // step in sync so the timeline card renders accurate
-          // progress text.
           if (status.state === 'running' || status.state === 'pending') {
             updateArtifact(collectionId, artifact.id, {
-              step: status.step,
+              step: status.step ?? null,
               ...(status.title ? { title: status.title } : {}),
             })
             return
           }
 
           if (status.state === 'done') {
-            updateArtifact(collectionId, artifact.id, {
+            // 共通的 done patch + kind 特有 metadata
+            const patch: Record<string, unknown> = {
               state: 'done',
-              step: status.step,
+              step: status.step ?? null,
               title: status.title ?? artifact.title,
-              defects: status.defects,
-              qaPasses: status.qa_passes,
-            })
-            // Stop polling FIRST so a slow download doesn't trigger
-            // duplicate ticks that would each try to download.
+            }
+            if (status.download_urls) {
+              patch.downloadUrls = status.download_urls
+            }
+            if (kind === 'slides') {
+              patch.defects = status.defects
+              patch.qaPasses = status.qa_passes
+            } else if (kind === 'report') {
+              patch.sectionsCount = status.sections_count
+              patch.referencesCount = status.references_count
+            } else if (kind === 'mindmap') {
+              patch.nodeCount = status.node_count
+            } else if (kind === 'infographic') {
+              patch.chartCount = status.chart_count
+            } else if (kind === 'datatable') {
+              patch.rowCount = status.row_count
+              patch.columnCount = status.column_count
+            }
+            updateArtifact(collectionId, artifact.id, patch)
+            // Stop polling FIRST so any side-effect doesn't get
+            // re-triggered.
             const timerId = pollersRef.current.get(jobId)
             if (timerId !== undefined) {
               clearInterval(timerId)
               pollersRef.current.delete(jobId)
             }
-            if (!downloadedRef.current.has(jobId)) {
+            // Slides 是「單一 .pptx 檔」── 自動觸發 download(維持原行為);
+            // 其他 4 種有多格式可下載,使用者在 ArtifactViewer 內選擇,
+            // 不自動下載。
+            if (kind === 'slides' && !downloadedRef.current.has(jobId)) {
               downloadedRef.current.add(jobId)
               try {
                 await downloadSlidesJobPptx(
@@ -188,10 +245,7 @@ export function WSStudio() {
                   status.title ?? '簡報',
                 )
               } catch (downloadErr) {
-                // Non-fatal — the artifact is still marked done and
-                // the user can re-trigger the download from the
-                // timeline / viewer. Log so we can see frequency in
-                // browser devtools.
+                // Non-fatal — artifact 仍 done,使用者可從 viewer 重觸發
                 // eslint-disable-next-line no-console
                 console.warn('[studio] auto-download failed:', downloadErr)
               }
@@ -206,8 +260,8 @@ export function WSStudio() {
               error:
                 status.error ??
                 (status.state === 'cancelled'
-                  ? '鑄造已取消'
-                  : '鑄造失敗，請重試。'),
+                  ? '已取消'
+                  : '生成失敗,請重試。'),
             })
             const timerId = pollersRef.current.get(jobId)
             if (timerId !== undefined) {
@@ -217,10 +271,7 @@ export function WSStudio() {
             return
           }
         } catch (err) {
-          // Network blip: keep polling; only give up after the next
-          // tick still fails. We don't proactively mark the artifact
-          // failed because transient 502s during a deploy shouldn't
-          // poison a real in-flight job.
+          // Network blip: keep polling
           // eslint-disable-next-line no-console
           console.warn('[studio] poll tick failed:', err)
         }
@@ -528,8 +579,15 @@ export function WSStudio() {
                     // store per-slide JSON in the timeline, so even
                     // though `slides.length` is 0 the file is real.
                     meta = '已完成 · 點擊下載'
+                  } else if (a.kind === 'report') {
+                    // Legacy v1 stored full markdown; v2 (backend job)
+                    // lands `downloadUrls` instead. Show length when
+                    // markdown is present, else generic done text.
+                    meta = a.markdown
+                      ? `${a.markdown.length} 字`
+                      : '已完成 · 點擊下載'
                   } else {
-                    meta = `${a.markdown.length} 字`
+                    meta = '已完成 · 點擊下載'
                   }
                   // Border colour shifts on terminal failure to make
                   // the row visually distinct from successful rows.

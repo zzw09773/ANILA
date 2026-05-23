@@ -5,7 +5,13 @@ import { useArtifactStore } from '../store/artifacts'
 import { Modal } from '../components/Modal'
 import { Icon, type IconName } from '../components/Icon'
 import { Spinner } from '../components/Spinner'
-import { generateReport, generateSlides } from '../studio/generators'
+import {
+  generateReport,
+  generateSlides,
+  generateMindmap,
+  generateInfographic,
+  generateDatatable,
+} from '../studio/generators'
 import { createSlidesJob } from '../api/studio'
 import { explainError } from '../api/client'
 import { ThemePicker } from './ThemePicker'
@@ -52,6 +58,58 @@ const PRESETS: Record<string, Preset[]> = {
     { l: 'Lightning Talk', d: '5 張投影片濃縮版' },
     { l: '教學投影片', d: '概念 + 範例 + 練習' },
   ],
+  mindmap: [
+    { l: '概念樹', d: '從根概念展開子概念與相關項目', tag: '推薦' },
+    { l: '任務拆解', d: 'WBS 結構;任務 → 子任務 → 步驟' },
+    { l: 'SOP 流程', d: '線性流程圖,從觸發到完成' },
+    { l: '組織關係', d: '人/單位/角色之間的關係圖' },
+  ],
+  infographic: [
+    { l: '任務 Dashboard', d: '關鍵指標 + 進度 + 比較', tag: '推薦' },
+    { l: '數據簡報', d: '從文件抽具體數字 + chart' },
+    { l: '比較矩陣', d: '並排對照 X vs Y 的特徵' },
+    { l: '時間軸總覽', d: '從早到晚事件列表 + 視覺強調' },
+  ],
+  datatable: [
+    { l: '關鍵指標彙整', d: '從文件抽 KPI / 數字到表格', tag: '推薦' },
+    { l: '實體屬性表', d: '各對象的多欄位屬性對照' },
+    { l: '時間軸表', d: '日期 / 事件 / 變化 三欄' },
+    { l: '並排比較', d: '對照 X vs Y(同欄位橫向比較)' },
+  ],
+}
+
+// Preset 中文 label → backend enum 對應(送 backend 時用)
+const PRESET_ENUM_MAP: Record<string, Record<string, string>> = {
+  report: {
+    深度技術綜述: 'deep_tech_review',
+    重點摘要: 'key_summary',
+    教學講義: 'teaching_handout',
+    對外溝通文件: 'external_comms',
+  },
+  mindmap: {
+    概念樹: 'concept_tree',
+    任務拆解: 'task_breakdown',
+    SOP流程: 'sop_flow',
+    'SOP 流程': 'sop_flow',
+    組織關係: 'org_relationships',
+  },
+  infographic: {
+    '任務 Dashboard': 'mission_dashboard',
+    任務Dashboard: 'mission_dashboard',
+    數據簡報: 'stats_brief',
+    比較矩陣: 'comparison_matrix',
+    時間軸總覽: 'timeline_overview',
+  },
+  datatable: {
+    關鍵指標彙整: 'key_figures',
+    實體屬性表: 'entity_attributes',
+    時間軸表: 'timeline_table',
+    並排比較: 'comparison_table',
+  },
+}
+
+export function presetEnumFor(kind: string, label: string): string {
+  return PRESET_ENUM_MAP[kind]?.[label] ?? label
 }
 
 export function CommandModal({ open, onClose, onGenerated, format }: CommandModalProps) {
@@ -78,14 +136,13 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
   }, [mode])
 
   const presets = format ? PRESETS[format.k] ?? [] : []
+  // 5 種 artifact 都已實作(report v2 backend + slides + mindmap + infographic + datatable)
   const isSupported = format?.k === 'report' || format?.k === 'slides'
-  // Slides gets an extra "theme picker" step between preset and extra
-  // instructions, so its flow has 3 steps (0=preset, 1=theme, 2=extra).
-  // Report has no visual theme concept → 2 steps (0=preset, 1=extra).
+    || format?.k === 'mindmap' || format?.k === 'infographic' || format?.k === 'datatable'
+  // 只有 slides 有「視覺主題」概念,需要多一個 theme picker step。
+  // 其他 4 種 artifact 沒視覺主題,直接 preset → 補充指示(2 steps)。
   const isSlides = format?.k === 'slides'
   const totalSteps = isSlides ? 3 : 2
-  // The "補充指示" textarea is always the final step; the theme step is
-  // only the middle step on the slides path.
   const extraStep = isSlides ? 2 : 1
   const themeStep = 1
 
@@ -128,12 +185,39 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
     try {
       const presetName = presets[selected]?.l ?? '預設'
       if (format.k === 'report') {
-        // Report path is sync: LLM emits Markdown, generateReport
-        // already adds the artifact to the store and resolves once
-        // generation completes. We can keep this awaited — the modal
-        // already shows a spinner while the user waits 30-90 s for
-        // markdown.
+        // Report v2 是 backend job(同 mindmap / infographic / datatable
+        // pattern):POST /api/reports/jobs → pending → WSStudio polling 接手。
         const artifact = await generateReport({
+          collection,
+          docs: indexedDocs,
+          preset: presetName,
+          extraInstructions: extra.trim() || undefined,
+        })
+        onGenerated(artifact)
+        reset()
+        onClose()
+      } else if (format.k === 'mindmap') {
+        const artifact = await generateMindmap({
+          collection,
+          docs: indexedDocs,
+          preset: presetName,
+          extraInstructions: extra.trim() || undefined,
+        })
+        onGenerated(artifact)
+        reset()
+        onClose()
+      } else if (format.k === 'infographic') {
+        const artifact = await generateInfographic({
+          collection,
+          docs: indexedDocs,
+          preset: presetName,
+          extraInstructions: extra.trim() || undefined,
+        })
+        onGenerated(artifact)
+        reset()
+        onClose()
+      } else if (format.k === 'datatable') {
+        const artifact = await generateDatatable({
           collection,
           docs: indexedDocs,
           preset: presetName,

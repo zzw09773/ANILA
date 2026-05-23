@@ -1,12 +1,55 @@
 import { chatComplete } from '../api/chat'
 import { searchCollection, type SearchHit } from '../api/search'
 import { useArtifactStore } from '../store/artifacts'
+import {
+  createReportJob,
+  createMindmapJob,
+  createInfographicJob,
+  createDatatableJob,
+} from '../api/studio'
 import type {
   Collection,
+  DatatableArtifact,
+  InfographicArtifact,
   IngestionDocument,
+  MindmapArtifact,
   ReportArtifact,
   SlidesArtifact,
 } from '../types'
+
+// Preset 中文 label → backend enum string mapping。跟 CommandModal 的對齊。
+const PRESET_ENUM: Record<string, Record<string, string>> = {
+  report: {
+    深度技術綜述: 'deep_tech_review',
+    重點摘要: 'key_summary',
+    教學講義: 'teaching_handout',
+    對外溝通文件: 'external_comms',
+  },
+  mindmap: {
+    概念樹: 'concept_tree',
+    任務拆解: 'task_breakdown',
+    'SOP 流程': 'sop_flow',
+    SOP流程: 'sop_flow',
+    組織關係: 'org_relationships',
+  },
+  infographic: {
+    '任務 Dashboard': 'mission_dashboard',
+    任務Dashboard: 'mission_dashboard',
+    數據簡報: 'stats_brief',
+    比較矩陣: 'comparison_matrix',
+    時間軸總覽: 'timeline_overview',
+  },
+  datatable: {
+    關鍵指標彙整: 'key_figures',
+    實體屬性表: 'entity_attributes',
+    時間軸表: 'timeline_table',
+    並排比較: 'comparison_table',
+  },
+}
+
+function presetEnum(kind: keyof typeof PRESET_ENUM, label: string): string {
+  return PRESET_ENUM[kind]?.[label] ?? label
+}
 
 const DEFAULT_MODEL =
   (import.meta.env.VITE_DEFAULT_CHAT_MODEL as string | undefined) ?? 'gpt-4o-mini'
@@ -173,59 +216,36 @@ const REPORT_PRESET_HINTS: Record<string, string> = {
   '對外溝通文件': '客觀中立、避免內部專有名詞，假設讀者為非技術背景。',
 }
 
+/**
+ * Report v2:呼叫 anila-studio backend `/api/reports/jobs`,得 pending job,
+ * 推進 artifactStore;由 WSStudio 的 polling effect 持續更新 state。
+ *
+ * legacy v1 函式簽名保留(回傳 ReportArtifact),但內容由 backend pipeline
+ * 產出(HTML / PDF / DOCX 三檔在 backend 落地,artifact.downloadUrls 帶回)。
+ */
 export async function generateReport({
   collection,
   docs,
   preset,
   extraInstructions,
 }: GenerateReportInput): Promise<ReportArtifact> {
-  const presetHint = REPORT_PRESET_HINTS[preset] ?? ''
-  const hits = await retrieveContext(collection, preset, extraInstructions)
-  const system = [
-    ZHTW_DIRECTIVE,
-    '',
-    '你是 ANILA LM 的深度報告生成器。請輸出純 Markdown（不要包在 ```markdown 代碼塊內）。',
-    '結構規範：',
-    '- 第一行使用 # 標題',
-    '- 接著一段 100-200 字的 TL;DR（粗體前置「TL;DR：」）',
-    '- 至少 3 個 ## 段落，每段含 ### 子標題、列點與必要說明',
-    '- 末段 ## 引用與限制：列出文件來源、本報告的限制',
-    presetHint && `風格：${presetHint}`,
-    '',
-    '若下方使用者訊息提供了已檢索到的段落，請僅以這些段落為事實依據，',
-    '在 Markdown 內以 [N] 形式引用，並在末段「## 引用與限制」中列出 N 對應的檔名。',
-  ]
-    .filter(Boolean)
-    .join('\n')
-
-  const user = [
-    `知識庫名稱：${collection.name}`,
-    `風格 preset：${preset}`,
-    summariseSources(docs, hits),
-    extraInstructions ? `\n使用者補充指示：\n${extraInstructions}` : '',
-  ]
-    .filter(Boolean)
-    .join('\n')
-
-  const markdown = await chatComplete({
-    model: DEFAULT_MODEL,
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ],
-    temperature: 0.3,
+  const status = await createReportJob({
+    collectionId: collection.id,
+    preset: presetEnum('report', preset) as never,
+    extraInstructions,
+    documentIds: docs.map((d) => d.id),
   })
-
-  const titleMatch = markdown.match(/^#\s+(.+)$/m)
   const artifact: ReportArtifact = {
     id: newId(),
     kind: 'report',
     collectionId: collection.id,
-    title: (titleMatch?.[1] ?? `${collection.name} · 深度報告`).trim(),
+    title: status.title ?? `${collection.name} · 深度報告`,
     preset,
-    markdown: markdown.trim(),
     sourceCount: docs.length,
     createdAt: new Date().toISOString(),
+    state: 'pending',
+    jobId: status.job_id,
+    step: status.step ?? null,
   }
   useArtifactStore.getState().add(artifact)
   return artifact
@@ -332,6 +352,123 @@ export async function generateSlides({
     slides,
     sourceCount: docs.length,
     createdAt: new Date().toISOString(),
+  }
+  useArtifactStore.getState().add(artifact)
+  return artifact
+}
+
+// ── Mindmap / Infographic / Datatable ─────────────────────────────────
+//
+// 三種都走相同 pattern:呼叫 backend create*Job → pending artifact 推進
+// store → WSStudio polling effect 接手狀態更新。
+// 沒前端 LLM call(完全 backend 處理)。
+
+export interface GenerateMindmapInput {
+  collection: Collection
+  docs: IngestionDocument[]
+  preset: string
+  extraInstructions?: string
+  maxDepth?: number
+}
+
+export async function generateMindmap({
+  collection,
+  docs,
+  preset,
+  extraInstructions,
+  maxDepth,
+}: GenerateMindmapInput): Promise<MindmapArtifact> {
+  const status = await createMindmapJob({
+    collectionId: collection.id,
+    preset: presetEnum('mindmap', preset) as never,
+    extraInstructions,
+    documentIds: docs.map((d) => d.id),
+    maxDepth,
+  })
+  const artifact: MindmapArtifact = {
+    id: newId(),
+    kind: 'mindmap',
+    collectionId: collection.id,
+    title: status.title ?? `${collection.name} · 心智圖`,
+    preset,
+    sourceCount: docs.length,
+    createdAt: new Date().toISOString(),
+    state: 'pending',
+    jobId: status.job_id,
+    step: status.step ?? null,
+  }
+  useArtifactStore.getState().add(artifact)
+  return artifact
+}
+
+export interface GenerateInfographicInput {
+  collection: Collection
+  docs: IngestionDocument[]
+  preset: string
+  extraInstructions?: string
+}
+
+export async function generateInfographic({
+  collection,
+  docs,
+  preset,
+  extraInstructions,
+}: GenerateInfographicInput): Promise<InfographicArtifact> {
+  const status = await createInfographicJob({
+    collectionId: collection.id,
+    preset: presetEnum('infographic', preset) as never,
+    extraInstructions,
+    documentIds: docs.map((d) => d.id),
+  })
+  const artifact: InfographicArtifact = {
+    id: newId(),
+    kind: 'infographic',
+    collectionId: collection.id,
+    title: status.title ?? `${collection.name} · 資訊圖表`,
+    preset,
+    sourceCount: docs.length,
+    createdAt: new Date().toISOString(),
+    state: 'pending',
+    jobId: status.job_id,
+    step: status.step ?? null,
+  }
+  useArtifactStore.getState().add(artifact)
+  return artifact
+}
+
+export interface GenerateDatatableInput {
+  collection: Collection
+  docs: IngestionDocument[]
+  preset: string
+  extraInstructions?: string
+  targetColumns?: string[]
+}
+
+export async function generateDatatable({
+  collection,
+  docs,
+  preset,
+  extraInstructions,
+  targetColumns,
+}: GenerateDatatableInput): Promise<DatatableArtifact> {
+  const status = await createDatatableJob({
+    collectionId: collection.id,
+    preset: presetEnum('datatable', preset) as never,
+    extraInstructions,
+    documentIds: docs.map((d) => d.id),
+    targetColumns,
+  })
+  const artifact: DatatableArtifact = {
+    id: newId(),
+    kind: 'datatable',
+    collectionId: collection.id,
+    title: status.title ?? `${collection.name} · 資料表`,
+    preset,
+    sourceCount: docs.length,
+    createdAt: new Date().toISOString(),
+    state: 'pending',
+    jobId: status.job_id,
+    step: status.step ?? null,
   }
   useArtifactStore.getState().add(artifact)
   return artifact
