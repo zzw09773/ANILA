@@ -171,7 +171,7 @@ async def test_routing_triggers_only_illustration_slides(monkeypatch):
          "image_prompt": "p"},                                                    # idx3 → CONTENT
     ]
     out = await studio_mod._hydrate_images(
-        {"slides": slides}, {}, "/tmp",
+        {"slides": slides}, {}, bearer="test-bearer",
         flux_provider=object(), deck_base_seed=1000, llm=object(),
     )
     assert [c[0] for c in calls] == [0, 2, 3]  # plain slide skipped
@@ -198,7 +198,7 @@ async def test_routing_per_deck_cap(monkeypatch):
         for i in range(n)
     ]
     out = await studio_mod._hydrate_images(
-        {"slides": slides}, {}, "/tmp",
+        {"slides": slides}, {}, bearer="test-bearer",
         flux_provider=object(), deck_base_seed=1000, llm=object(),
     )
     assert len(calls) == MAX_GENERATED_IMAGES_PER_DECK
@@ -218,7 +218,7 @@ async def test_routing_content_sparse_becomes_image_focus(monkeypatch):
          "image_prompt": "p"},                                                      # idx1 CONTENT, sparse
     ]
     out = await studio_mod._hydrate_images(
-        {"slides": slides}, {}, "/tmp",
+        {"slides": slides}, {}, bearer="test-bearer",
         flux_provider=object(), deck_base_seed=1000, llm=object(),
     )
     # CONTENT success → converted so renderImageFocus will show the image.
@@ -242,7 +242,7 @@ async def test_routing_content_dense_skips_generation(monkeypatch):
          "image_prompt": "p"},                                                      # idx1 CONTENT, dense
     ]
     out = await studio_mod._hydrate_images(
-        {"slides": slides}, {}, "/tmp",
+        {"slides": slides}, {}, bearer="test-bearer",
         flux_provider=object(), deck_base_seed=1000, llm=object(),
     )
     assert calls == [0]  # dense CONTENT skipped — helper not called for idx1
@@ -261,7 +261,7 @@ async def test_routing_band_not_converted_to_image_focus(monkeypatch):
         {"title": "Sec", "bullets": ["x"], "layout_kind": "section_break"},        # idx1 BAND
     ]
     out = await studio_mod._hydrate_images(
-        {"slides": slides}, {}, "/tmp",
+        {"slides": slides}, {}, bearer="test-bearer",
         flux_provider=object(), deck_base_seed=1000, llm=object(),
     )
     assert out["slides"][1]["layout_kind"] == "section_break"  # BAND stays full-bleed
