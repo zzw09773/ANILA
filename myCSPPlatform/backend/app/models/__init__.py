@@ -29,6 +29,7 @@ from app.models.message import Message
 from app.models.model_registry import ModelRegistry
 from app.models.platform_link import PlatformLink
 from app.models.service_client import ServiceClient
+from app.models.token_revocation import TokenRevocation
 from app.models.token_usage import TokenUsage
 from app.models.user import User, UserModelPermission
 from app.models.user_memory import ConversationMemoryChunk, UserFact
@@ -55,6 +56,7 @@ __all__ = [
     "ModelRegistry",
     "PlatformLink",
     "ServiceClient",
+    "TokenRevocation",
     "TokenUsage",
     "User",
     "UserAgentPermission",
