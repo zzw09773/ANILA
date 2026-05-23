@@ -104,6 +104,42 @@ const GRADIENT_BANDS = [
   { y: 2.6, h: 2.0, transparency: 34 },
 ]
 
+// ── Hierarchical bullet markers ──────────────────────────────────────
+// Wire format stays list[str]; level is encoded as a leading Unicode
+// marker that the renderer parses + strips so the visible text doesn't
+// double up with pptxgenjs's own bullet rendering.
+//
+//   level 0 → ● U+25CF (default; no prefix needed for back-compat)
+//   level 1 → ◦ U+25E6 (sub-point, indent 1)
+//   level 2 → ▪ U+25AA (sub-sub-point, indent 2)
+//
+// Accept a couple of common visual synonyms for each level so an LLM
+// that emits ○ instead of ◦ still gets the right hierarchy.
+const BULLET_LEVEL_MARKERS = [
+  { prefix: ['●', '・'],        code: '25CF', indent: 0 },
+  { prefix: ['◦', '○', '◯'],    code: '25E6', indent: 1 },
+  { prefix: ['▪', '■', '▫'],    code: '25AA', indent: 2 },
+]
+
+function parseBulletHierarchy(raw) {
+  const text = String(raw)
+  for (const m of BULLET_LEVEL_MARKERS) {
+    for (const p of m.prefix) {
+      // Accept `<marker> ` or `<marker>` followed by whitespace.
+      if (text.startsWith(p + ' ') || text.startsWith(p + ' ') ||
+          text.startsWith(p + '\t')) {
+        return { text: text.slice(p.length).trimStart(), code: m.code,
+                 indent: m.indent }
+      }
+      if (text === p) {
+        return { text: '', code: m.code, indent: m.indent }
+      }
+    }
+  }
+  // No marker → default level 0 with ● (back-compat with legacy specs).
+  return { text, code: '25CF', indent: 0 }
+}
+
 // ── Round 3 Patch M: theme bundles ────────────────────────────────────
 //
 // Themes are complete visual identity bundles. Each bundles palette +
@@ -463,17 +499,23 @@ function renderStandard(pres, s, theme) {
     bodyFontSize = 20; bodyValign = 'top'; bodyY = 1.1; bodyH = 5.8; paraSpaceAfter = 10
   }
   slide.addText(
-    bullets.map((b) => ({
-      text: String(b),
-      options: {
-        // pptxgenjs treats `{type, code}` as mutually exclusive — passing
-        // both results in neither being rendered (silent fail). `code`
-        // alone with the unicode for BLACK CIRCLE gives us a clean dot
-        // bullet that LibreOffice and PowerPoint both honour.
-        bullet: { code: '25CF' },
-        color: p.ink,
-      },
-    })),
+    bullets.map((b) => {
+      const parsed = parseBulletHierarchy(b)
+      return {
+        text: parsed.text,
+        options: {
+          // pptxgenjs treats `{type, code}` as mutually exclusive — passing
+          // both results in neither being rendered (silent fail). `code`
+          // alone with the unicode for the level's marker gives us a clean
+          // dot bullet that LibreOffice and PowerPoint both honour.
+          bullet: { code: parsed.code },
+          // pptxgenjs honours per-paragraph indentLevel (separate from the
+          // outer addText indentLevel) and indents proportionally.
+          indentLevel: parsed.indent,
+          color: p.ink,
+        },
+      }
+    }),
     {
       x: 0.9, y: bodyY, w: 11.5, h: bodyH,
       fontSize: bodyFontSize, color: p.ink, fontFace: FONT_FACE,
