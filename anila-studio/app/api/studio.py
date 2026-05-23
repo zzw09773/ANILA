@@ -723,45 +723,55 @@ def _build_generation_prompt(
 
 
 async def _call_llm_chat(
-    user: "CurrentUserIdentity",
+    bearer: str,
     model_name: str,
     messages: list[dict[str, Any]],
     *,
     temperature: float = 0.4,
     max_tokens: int | None = None,
 ) -> str:
-    """Invoke ``/v1/chat/completions`` via the in-process proxy.
+    """Invoke csp's ``/api/proxy/v1/chat/completions`` and return content.
 
-    Returns the assistant content string. Going through ``proxy_request``
-    rather than direct httpx keeps usage metering (token_usage table) in
-    place — Studio calls show up in the same dashboards as user chat.
+    The csp proxy owns the ``model_registry`` lookup, the upstream
+    routing decision (vLLM / Ollama / external), token-usage metering,
+    and per-department billing. anila-studio's role here is to pass
+    the model name + messages and the caller's bearer; csp does the
+    rest — usage rows still appear in the same dashboards as user chat
+    because the bearer carries the same identity claims.
+
+    Returns the assistant ``content`` string. Raises:
+      * ``HTTPException(502)`` when csp returns an unexpected shape;
+      * ``HTTPException(401/403/404)`` when csp surfaces a typed
+        ``CspClientError`` subclass (token expired, no access, model
+        not registered).
     """
-    model = (
-        db.query(ModelRegistry).filter(ModelRegistry.name == model_name).first()
-    )
-    if model is None or not model.is_active:
+    try:
+        response = await proxy_chat_completions(
+            model=model_name,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            bearer=bearer,
+        )
+    except CspNotFoundError as exc:
+        # csp's proxy returns 404 when the requested model_name is not
+        # in model_registry — preserve the 503 surfaced by the legacy
+        # implementation so existing callers / dashboards don't see a
+        # status-code regression.
         raise HTTPException(
             status_code=503,
             detail=f"Studio LLM '{model_name}' not registered or inactive.",
-        )
+        ) from exc
+    except CspUnauthorizedError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except CspForbiddenError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (CspServerError, CspClientError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"csp proxy failed for model '{model_name}': {exc}",
+        ) from exc
 
-    body: dict[str, Any] = {
-        "model": model_name,
-        "messages": messages,
-        "temperature": temperature,
-        "stream": False,
-    }
-    if max_tokens:
-        body["max_tokens"] = max_tokens
-
-    response = await proxy_request(
-        model=model,
-        api_key_id=None,
-        user_id=user.id,
-        department_id=user.department_id,
-        request_body=body,
-        endpoint_path="/v1/chat/completions",
-    )
     try:
         return str(response["choices"][0]["message"]["content"])
     except (KeyError, IndexError, TypeError) as e:
@@ -775,20 +785,21 @@ class _StudioLLMAdapter:
     """Adapts ``_call_llm_chat`` to the ``complete(system, user)`` interface
     the FLUX prompt rewriter (Layer A) expects.
 
-    The rewriter is deliberately decoupled from CSP internals (DB session,
-    ModelRegistry, usage metering) — it only needs "give me one completion
-    for this system+user pair". This thin wrapper binds the db/user/model
-    context so rewriter calls still flow through ``proxy_request`` and land
-    in the same token-usage dashboards as every other Studio LLM call.
+    The rewriter is deliberately decoupled from CSP internals
+    (ModelRegistry, usage metering) — it only needs "give me one completion
+    for this system+user pair". This thin wrapper binds the bearer+model
+    context so rewriter calls still flow through csp's
+    ``/api/proxy/v1/chat/completions`` and land in the same token-usage
+    dashboards as every other Studio LLM call.
     """
 
-    def __init__(self, user: "CurrentUserIdentity", model_name: str = SLIDES_LLM_MODEL) -> None:
-        self._user = user
+    def __init__(self, bearer: str, model_name: str = SLIDES_LLM_MODEL) -> None:
+        self._bearer = bearer
         self._model_name = model_name
 
     async def complete(self, *, system: str, user: str) -> str:
         return await _call_llm_chat(
-            self._user,
+            self._bearer,
             self._model_name,
             [
                 {"role": "system", "content": system},
@@ -807,16 +818,16 @@ class _Gemma4VlmGate:
     gemma4 is already deployed and multimodal; ``_inspect_slide_visually``
     above proves the OpenAI vision message shape (``image_url`` with a
     ``data:image/png;base64,...`` URL) reaches it through
-    ``_call_llm_chat`` -> ``proxy_request``. This adapter reuses that exact
-    path for the gate's semantic + text check, so no separate VLM is
-    deployed (per the confirmed Stage 2 premise).
+    ``_call_llm_chat`` -> csp proxy. This adapter reuses that exact path
+    for the gate's semantic + text check, so no separate VLM is deployed
+    (per the confirmed Stage 2 premise).
 
     Exposes ``async check(png_bytes, *, concept) -> dict`` — the Vlm
     Protocol the gate expects.
     """
 
-    def __init__(self, user: "CurrentUserIdentity", model_name: str = VISION_LLM_MODEL) -> None:
-        self._user = user
+    def __init__(self, bearer: str, model_name: str = VISION_LLM_MODEL) -> None:
+        self._bearer = bearer
         self._model_name = model_name
 
     async def check(self, png_bytes: bytes, *, concept: str) -> dict:
@@ -848,7 +859,7 @@ class _Gemma4VlmGate:
             },
         ]
         raw = await _call_llm_chat(
-            self._user, self._model_name, messages, temperature=0.1,
+            self._bearer, self._model_name, messages, temperature=0.1,
         )
         try:
             parsed = json.loads(_extract_json_object(raw))
@@ -877,7 +888,7 @@ class _Gemma4VlmGate:
 
 
 async def _generate_validated_spec(
-    user: "CurrentUserIdentity",
+    bearer: str,
     collection_name: str,
     preset: str,
     extra_instructions: str | None,
@@ -908,7 +919,7 @@ async def _generate_validated_spec(
     # actually USE the section_break / stat_callout / two_column knobs
     # we're describing in the prompt.
     raw = await _call_llm_chat(
-        db, user, SLIDES_LLM_MODEL, messages, temperature=0.3,
+        bearer, SLIDES_LLM_MODEL, messages, temperature=0.3,
     )
 
     last_err: ValidationError | ValueError | json.JSONDecodeError | None = None
@@ -962,7 +973,7 @@ async def _generate_validated_spec(
                 }
             )
             raw = await _call_llm_chat(
-                db, user, SLIDES_LLM_MODEL, messages, temperature=0.2,
+                bearer, SLIDES_LLM_MODEL, messages, temperature=0.2,
             )
 
     # Both attempts failed. Per the research file (compass_artifact §F /
@@ -1721,7 +1732,7 @@ async def _capture_screenshots(pptx_path: str) -> list[bytes]:
 
 
 async def _inspect_slide_visually(
-    user: "CurrentUserIdentity",
+    bearer: str,
     slide_index: int,
     png_bytes: bytes,
 ) -> list[VisualDefect]:
@@ -1756,7 +1767,7 @@ async def _inspect_slide_visually(
         },
     ]
     raw = await _call_llm_chat(
-        db, user, VISION_LLM_MODEL, messages, temperature=0.1,
+        bearer, VISION_LLM_MODEL, messages, temperature=0.1,
     )
 
     try:
@@ -1838,7 +1849,7 @@ def _merge_defects(
 
 
 async def _visual_qa(
-    user: "CurrentUserIdentity",
+    bearer: str,
     pptx_path: str,
     *,
     pptx_bytes: bytes | None = None,
@@ -1882,7 +1893,7 @@ async def _visual_qa(
         if idx in critical_slides:
             return []
         async with semaphore:
-            return await _inspect_slide_visually(db, user, idx, b)
+            return await _inspect_slide_visually(bearer, idx, b)
 
     results = await asyncio.gather(
         *(_one(i, b) for i, b in enumerate(pngs)),
@@ -1895,7 +1906,7 @@ async def _visual_qa(
 
 
 async def _fix_spec_with_defects(
-    user: "CurrentUserIdentity",
+    bearer: str,
     current_spec: SlidesSpec,
     defects: list[VisualDefect],
 ) -> SlidesSpec:
@@ -1927,7 +1938,7 @@ async def _fix_spec_with_defects(
         {"role": "user", "content": user_msg},
     ]
     raw = await _call_llm_chat(
-        db, user, SLIDES_LLM_MODEL, messages, temperature=0.2,
+        bearer, SLIDES_LLM_MODEL, messages, temperature=0.2,
     )
     extracted = _extract_json_object(raw)
     return SlidesSpec.model_validate(_loads_lenient(extracted))
@@ -2437,13 +2448,13 @@ def _build_rebalance_prompt(
 async def _call_llm_for_rebalance(
     prompt: tuple[str, str],
     *,
-    user: "CurrentUserIdentity",
+    bearer: str,
 ) -> dict[str, Any]:
     """Thin wrapper around ``_call_llm_chat`` for the rebalance pass.
 
     Extracted as its own helper so tests can mock the LLM round-trip
-    without standing up the full proxy / model registry. Returns the
-    parsed JSON dict (caller validates the `changes` shape).
+    without standing up the full csp proxy / model registry. Returns
+    the parsed JSON dict (caller validates the `changes` shape).
     """
     system, user_msg = prompt
     messages = [
@@ -2451,7 +2462,7 @@ async def _call_llm_for_rebalance(
         {"role": "user", "content": user_msg},
     ]
     raw = await _call_llm_chat(
-        db, user, SLIDES_LLM_MODEL, messages, temperature=0.2,
+        bearer, SLIDES_LLM_MODEL, messages, temperature=0.2,
     )
     logger.info(
         "[H-DIAG] rebalance LLM raw response (first 2KB): %s",
@@ -2564,7 +2575,7 @@ async def _rebalance_layouts(
     violations: list[LayoutViolation],
     chunks_text: str,
     *,
-    user: "CurrentUserIdentity",
+    bearer: str,
 ) -> dict[str, Any]:
     """Run the focused LLM rebalance pass and return an updated spec_dict.
 
@@ -2597,7 +2608,7 @@ async def _rebalance_layouts(
         len(prompt[0]) + len(prompt[1]), len(actionable),
     )
     try:
-        result = await _call_llm_for_rebalance(prompt, db=db, user=user)
+        result = await _call_llm_for_rebalance(prompt, bearer=bearer)
     except Exception as exc:  # noqa: BLE001
         logger.warning("rebalance LLM call failed: %s", exc)
         return spec_dict
@@ -2696,7 +2707,7 @@ async def _run_pipeline(
         deck_base_seed = int(
             hashlib.sha256(updater.job_id.encode()).hexdigest()[:8], 16
         )
-        flux_llm = _StudioLLMAdapter(db, user, SLIDES_LLM_MODEL)
+        flux_llm = _StudioLLMAdapter(bearer, SLIDES_LLM_MODEL)
 
         # ── Step 3: retrieval ──
         await updater.set(step=JOB_STEP_RETRIEVING)
@@ -2757,8 +2768,7 @@ async def _run_pipeline(
         # ── Steps 4-6: LLM → JSON → SlidesSpec ──
         await updater.set(step=JOB_STEP_GENERATING)
         spec, used_fallback = await _generate_validated_spec(
-            db,
-            user,
+            bearer,
             coll.name,
             payload.preset,
             payload.extra_instructions,
@@ -2813,7 +2823,7 @@ async def _run_pipeline(
                 try:
                     spec_dict = spec.model_dump(mode="json")
                     rebalanced = await _rebalance_layouts(
-                        spec_dict, violations, chunks_str, db=db, user=user,
+                        spec_dict, violations, chunks_str, bearer=bearer,
                     )
                     spec = SlidesSpec.model_validate(rebalanced)
                 except Exception as exc:  # noqa: BLE001
@@ -2864,7 +2874,7 @@ async def _run_pipeline(
                     qa_passes=qa_passes,
                 )
                 defects = await _visual_qa(
-                    db, user, pptx_path, pptx_bytes=pptx_bytes,
+                    bearer, pptx_path, pptx_bytes=pptx_bytes,
                 )
                 critical = [d for d in defects if d.severity == "critical"]
                 if not critical or qa_passes > VISUAL_QA_PASSES:
@@ -2874,7 +2884,7 @@ async def _run_pipeline(
                 # ask the LLM to revise, re-render, re-QA.
                 await updater.set(step=JOB_STEP_FIXING)
                 try:
-                    spec = await _fix_spec_with_defects(db, user, spec, critical)
+                    spec = await _fix_spec_with_defects(bearer, spec, critical)
                 except (ValueError, ValidationError, json.JSONDecodeError) as e:
                     logger.warning("Studio defect-fix LLM call failed: %s", e)
                     final_defects = defects
