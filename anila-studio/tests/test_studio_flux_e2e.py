@@ -36,10 +36,9 @@ def _flux_json() -> httpx.Response:
 
 class _StubLLM:
     """Minimal stand-in for _StudioLLMAdapter. The rewriter only needs to be
-    passed through; the VLM gate constructor reads ``_db`` / ``_user``."""
+    passed through; the VLM gate constructor reads ``_bearer``."""
 
-    _db = None
-    _user = None
+    _bearer = "stub-bearer"
 
 
 class _PassVlm:

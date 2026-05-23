@@ -64,8 +64,7 @@ class _StubVlm:
 
 
 class _StubLLM:
-    _db = None
-    _user = None
+    _bearer = "stub-bearer"
 
 
 def _patch_vlm(monkeypatch):

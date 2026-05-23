@@ -1424,7 +1424,7 @@ async def _generate_slide_illustration(
         return False
 
     seed = deck_base_seed + idx
-    vlm = _Gemma4VlmGate(llm._db, llm._user)
+    vlm = _Gemma4VlmGate(llm._bearer)
     try:
         best, retry_count = await _gated_generate(
             flux_provider,
