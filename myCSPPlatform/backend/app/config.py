@@ -12,10 +12,28 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql://csp:csp_password@localhost:5432/csp"
 
     # JWT
+    # SECRET_KEY 在 RS256 cutover 後不再用於 access/refresh JWT 簽發,
+    # 但保留供 startup_security guard 與 credential_crypto 等模組使用。
     SECRET_KEY: str = "your-secret-key-change-this-in-production"
-    ALGORITHM: str = "HS256"
+    ALGORITHM: str = "HS256"  # Legacy; access/refresh tokens use RS256 now.
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
+
+    # RS256 asymmetric signing material. Private key is PKCS#8 PEM,
+    # public key is SPKI PEM. JWKS endpoint serves the public key under
+    # ``kid = JWT_KID`` so anila-studio (and any future verifier) can
+    # validate CSP-signed JWTs without sharing a symmetric secret.
+    #
+    # Paths are resolved relative to the backend working directory
+    # (where uvicorn / pytest is launched). For docker the volume mount
+    # places ``/app/secrets/`` so the defaults Just Work.
+    JWT_PRIVATE_KEY_PATH: str = "secrets/jwt-private.pem"
+    JWT_PUBLIC_KEY_PATH: str = "secrets/jwt-public.pem"
+    JWT_KID: str = "anila-v1"
+    # When True the JWT module will auto-generate a keypair at the
+    # configured paths if missing. Dev / test only — production must
+    # provision keys out-of-band so ``kid`` rotation is explicit.
+    ALLOW_AUTO_KEYGEN: bool = False
 
     # Admin Account
     ADMIN_USERNAME: str = "admin"

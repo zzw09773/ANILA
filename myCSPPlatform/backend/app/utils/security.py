@@ -1,7 +1,49 @@
+"""Password hashing + JWT signing/verification utilities.
+
+Sprint 9 / anila-studio extraction: JWT algorithm switched from
+symmetric HS256 to asymmetric RS256. CSP holds the private key (PKCS#8
+PEM at ``settings.JWT_PRIVATE_KEY_PATH``) and signs access/refresh
+tokens; anila-studio (and any future downstream verifier) fetches the
+matching public key from ``GET /.well-known/jwks.json`` and verifies
+locally — no shared secret crosses the trust boundary.
+
+Cutover notes:
+
+* No HS256 fallback. Existing tokens issued under HS256 are invalidated
+  on deploy; users re-authenticate once.
+* ``ALGORITHM`` constant is hard-coded to ``"RS256"``. ``settings.ALGORITHM``
+  is no longer consulted here (kept on Settings for legacy / observability).
+* ``settings.SECRET_KEY`` is NOT used for JWT in the RS256 path. It is
+  retained only because ``startup_security`` / ``credential_crypto`` /
+  audit logging still depend on it for non-JWT purposes.
+* ``jwt.decode`` is always called with an explicit ``algorithms=["RS256"]``
+  allowlist, so a token with ``alg=none`` or ``alg=HS256`` is rejected
+  before the verifier ever touches the key — eliminating the classic
+  algorithm-confusion attack against systems that previously accepted HS256.
+* JWT header carries ``kid`` so the verifier can pick the right public
+  key from JWKS. ``kid`` must match ``settings.JWT_KID`` to validate;
+  tokens with missing or unknown ``kid`` are rejected.
+"""
+from __future__ import annotations
+
+import logging
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
-from passlib.context import CryptContext
+from functools import lru_cache
+from pathlib import Path
+
 from jose import jwt, JWTError
+from passlib.context import CryptContext
+
 from app.config import settings
+
+
+logger = logging.getLogger(__name__)
+
+
+ALGORITHM: str = "RS256"
+
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -14,13 +56,167 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
 
+# ── Key loading ────────────────────────────────────────────────────────────────
+
+class JwtKeyLoadError(RuntimeError):
+    """Raised at import time when the configured PEM file is missing
+    and ``ALLOW_AUTO_KEYGEN`` is False. Surfaces a clear actionable
+    message so operators know exactly which step they skipped."""
+
+
+def _resolve_key_path(raw: str) -> Path:
+    """Resolve a (possibly relative) configured PEM path.
+
+    Settings ship with relative defaults (``secrets/jwt-private.pem``)
+    so docker mount points stay short and obvious. We resolve against
+    the current working directory at import time — uvicorn and pytest
+    both run from the backend root so this lines up. Absolute paths
+    pass through unchanged.
+    """
+    path = Path(raw)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path
+
+
+def _auto_generate_keypair(private_path: Path, public_path: Path) -> None:
+    """Invoke ``scripts/generate-jwt-keypair.py`` to produce a fresh pair.
+
+    Only reachable when ``settings.ALLOW_AUTO_KEYGEN`` is True (dev /
+    test). The subprocess approach keeps the keygen logic in one place
+    and avoids importing the script's main() into runtime — the script
+    has its own arg parser and exit codes we don't need here.
+    """
+    script_path = (
+        Path(__file__).resolve().parent.parent.parent
+        / "scripts"
+        / "generate-jwt-keypair.py"
+    )
+    if not script_path.exists():
+        raise JwtKeyLoadError(
+            f"auto-keygen requested but script not found at {script_path}"
+        )
+    private_path.parent.mkdir(parents=True, exist_ok=True)
+    public_path.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script_path),
+            "--output-dir",
+            str(private_path.parent),
+            "--force",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise JwtKeyLoadError(
+            "auto-keygen failed: "
+            f"{result.stderr.strip() or result.stdout.strip()}"
+        )
+    # The script writes ``jwt-private.pem`` / ``jwt-public.pem`` —
+    # rename if the caller asked for non-default filenames.
+    expected_priv = private_path.parent / "jwt-private.pem"
+    expected_pub = public_path.parent / "jwt-public.pem"
+    if expected_priv != private_path and expected_priv.exists():
+        expected_priv.rename(private_path)
+    if expected_pub != public_path and expected_pub.exists():
+        expected_pub.rename(public_path)
+
+
+def _load_pem(path: Path, *, label: str) -> bytes:
+    if not path.exists():
+        raise JwtKeyLoadError(
+            f"JWT {label} key not found at {path}. "
+            f"Generate one with `python scripts/generate-jwt-keypair.py` "
+            f"or set ALLOW_AUTO_KEYGEN=true for dev environments."
+        )
+    return path.read_bytes()
+
+
+@lru_cache(maxsize=1)
+def _load_keys() -> tuple[bytes, bytes]:
+    """Read PEM files lazily on first use.
+
+    Lazy load (vs module-import time) lets tests monkeypatch
+    ``settings.JWT_PRIVATE_KEY_PATH`` before the first sign/verify call.
+    The ``lru_cache`` ensures we hit the disk exactly once per process.
+    Tests that need to swap keys mid-run call ``_load_keys.cache_clear()``.
+    """
+    private_path = _resolve_key_path(settings.JWT_PRIVATE_KEY_PATH)
+    public_path = _resolve_key_path(settings.JWT_PUBLIC_KEY_PATH)
+
+    missing = not (private_path.exists() and public_path.exists())
+    if missing and settings.ALLOW_AUTO_KEYGEN:
+        logger.warning(
+            "[security] JWT keypair missing — auto-generating at %s / %s "
+            "(ALLOW_AUTO_KEYGEN=True). Do NOT use this code path in production.",
+            private_path,
+            public_path,
+        )
+        _auto_generate_keypair(private_path, public_path)
+
+    private_pem = _load_pem(private_path, label="private")
+    public_pem = _load_pem(public_path, label="public")
+    return private_pem, public_pem
+
+
+def get_private_key() -> bytes:
+    """Return the RS256 signing key (PKCS#8 PEM bytes)."""
+    private_pem, _ = _load_keys()
+    return private_pem
+
+
+def get_public_key() -> bytes:
+    """Return the RS256 verification key (SPKI PEM bytes).
+
+    Exposed so the JWKS endpoint can serialise the public modulus
+    without re-reading from disk.
+    """
+    _, public_pem = _load_keys()
+    return public_pem
+
+
+def _public_key_for_kid(kid: str | None) -> bytes | None:
+    """Resolve a JWT ``kid`` header value to the matching public key.
+
+    Today we host exactly one active key (``settings.JWT_KID``). Future
+    rotations (``anila-v2`` etc.) drop in here without touching the
+    rest of the verify path. A missing or unknown ``kid`` returns None
+    so the verifier can reject the token deterministically.
+    """
+    if not kid:
+        return None
+    if kid == settings.JWT_KID:
+        return get_public_key()
+    return None
+
+
+# ── Token signing ─────────────────────────────────────────────────────────────
+
+def _jwt_headers() -> dict:
+    """Headers attached to every CSP-signed JWT.
+
+    The ``kid`` lets downstream verifiers pick the right JWKS entry.
+    ``typ`` follows RFC 7519 §5.1 so generic JWT tooling treats the
+    payload correctly.
+    """
+    return {"kid": settings.JWT_KID, "typ": "JWT"}
+
+
 def create_access_token(data: dict) -> str:
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(
         minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
     )
     to_encode.update({"exp": expire, "type": "access"})
-    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return jwt.encode(
+        to_encode,
+        get_private_key(),
+        algorithm=ALGORITHM,
+        headers=_jwt_headers(),
+    )
 
 
 def create_refresh_token(data: dict) -> str:
@@ -29,14 +225,70 @@ def create_refresh_token(data: dict) -> str:
         days=settings.REFRESH_TOKEN_EXPIRE_DAYS
     )
     to_encode.update({"exp": expire, "type": "refresh"})
-    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return jwt.encode(
+        to_encode,
+        get_private_key(),
+        algorithm=ALGORITHM,
+        headers=_jwt_headers(),
+    )
 
+
+# ── Token verification ────────────────────────────────────────────────────────
 
 def decode_token(token: str) -> dict | None:
+    """Verify ``token`` and return its claims, or None on any failure.
+
+    Defence-in-depth:
+
+    1. Reject the token outright if its header is malformed or its
+       ``kid`` is missing/unknown — refusing to look up a key means the
+       generic verify path never has a chance to mis-fire.
+    2. Call ``jwt.decode`` with an explicit ``algorithms=["RS256"]``
+       allowlist so ``alg=none`` and ``alg=HS256`` are rejected before
+       any key material is touched (algorithm-confusion defence).
+    3. Any ``JWTError`` (expired, bad signature, claim mismatch, …)
+       returns None — callers raise the user-facing 401 themselves.
+    """
     try:
-        payload = jwt.decode(
-            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
-        )
-        return payload
+        header = jwt.get_unverified_header(token)
     except JWTError:
         return None
+    kid = header.get("kid")
+    public_key = _public_key_for_kid(kid)
+    if public_key is None:
+        return None
+    try:
+        return jwt.decode(
+            token,
+            public_key,
+            algorithms=[ALGORITHM],
+        )
+    except JWTError:
+        return None
+
+
+def verify_token(token: str) -> dict | None:
+    """Alias for ``decode_token`` — kept so callers reading the name
+    understand the intent without surprising them on rename. Both go
+    through the same RS256 verify path."""
+    return decode_token(token)
+
+
+def get_kid() -> str:
+    """Active signing key id — exposed for the JWKS endpoint."""
+    return settings.JWT_KID
+
+
+__all__ = [
+    "ALGORITHM",
+    "JwtKeyLoadError",
+    "create_access_token",
+    "create_refresh_token",
+    "decode_token",
+    "get_kid",
+    "get_private_key",
+    "get_public_key",
+    "hash_password",
+    "verify_password",
+    "verify_token",
+]
