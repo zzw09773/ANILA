@@ -1,12 +1,24 @@
 FROM python:3.11-slim AS base
 
-# Graphviz CLI is used by diagram_renderer (subprocess `dot -Tpng`); the
-# Python `graphviz` package is just a wrapper, the binary must exist.
+# System binaries the runtime needs:
+# - graphviz (subprocess `dot -Tpng/svg`): diagram_renderer + mindmap_renderer
+# - pandoc: HTML → DOCX for report artifacts (pypandoc shells out to it)
+# - playwright chromium dependencies: libs the headless browser needs at run-time
+#   for HTML → PDF rendering (NSS, X-something, fonts, etc.)
+# - fonts-noto-cjk: CJK glyph coverage for matplotlib chart labels +
+#   PDF render output (報告 / 資訊圖表 內文常含 CJK)
+# - curl + ca-certificates: health probe + TLS to csp
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       graphviz \
+      pandoc \
       curl \
       ca-certificates \
+      fonts-noto-cjk \
+      libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+      libxkbcommon0 libatspi2.0-0 libx11-6 libxcomposite1 libxdamage1 \
+      libxext6 libxfixes3 libxrandr2 libgbm1 libcairo2 libpango-1.0-0 \
+      libasound2 libdrm2 libxshmfence1 \
  && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONUNBUFFERED=1 \
@@ -25,7 +37,10 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY app/ ./app/
 RUN pip install --upgrade pip && \
-    pip install --no-cache-dir .
+    pip install --no-cache-dir . && \
+    # Playwright chromium binary 必須在 pip 之後另外裝。
+    # --with-deps 已在 apt 階段裝完(slim image 沒帶);這裡只下 chromium。
+    playwright install chromium
 
 # Run as non-root for defence-in-depth
 RUN useradd --create-home --uid 10001 anila \
