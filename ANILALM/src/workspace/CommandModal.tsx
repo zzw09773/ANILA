@@ -14,11 +14,15 @@ import type { ThemeId } from '../studio/themes'
 import type { SlidesArtifact, StudioArtifact } from '../types'
 
 export interface FormatSpec {
-  k: 'report' | 'slides' | 'podcast' | 'mindmap' | 'flashcards' | 'quiz' | 'infographic' | 'datatable' | 'video'
+  // 製作台支援的 artifact kind。原本含 podcast / video / flashcards / quiz
+  // 等 9 種,但內部部署場景(國軍 / 中科院)不需要那 4 種(air-gapped 音/影
+  // 模型無解、軍方考核 SOP 不交給 AI、抽認卡是消費級個人學習文化),
+  // 已從製作台移除。
+  k: 'report' | 'slides' | 'mindmap' | 'infographic' | 'datatable'
   l: string
   i: IconName
   c: string
-  cat: 'audio' | 'visual' | 'study' | 'doc'
+  cat: 'visual' | 'doc'
   hint: string
   comingSoon?: boolean
 }

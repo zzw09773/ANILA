@@ -33,48 +33,12 @@ const FORMATS: FormatSpec[] = [
     hint: '結構化投影片',
   },
   {
-    k: 'podcast',
-    l: '語音摘要',
-    i: 'mic',
-    c: '#FF8FAB',
-    cat: 'audio',
-    hint: '兩位主持人對談',
-    comingSoon: true,
-  },
-  {
-    k: 'video',
-    l: '影片腳本',
-    i: 'video',
-    c: '#5BC0EB',
-    cat: 'visual',
-    hint: '含分鏡與旁白',
-    comingSoon: true,
-  },
-  {
     k: 'mindmap',
     l: '心智圖',
     i: 'git',
     c: '#3DD68C',
     cat: 'visual',
     hint: '可展開分支',
-    comingSoon: true,
-  },
-  {
-    k: 'flashcards',
-    l: '抽認卡',
-    i: 'flash',
-    c: '#C792EA',
-    cat: 'study',
-    hint: '間隔複習',
-    comingSoon: true,
-  },
-  {
-    k: 'quiz',
-    l: '測驗',
-    i: 'quiz',
-    c: '#FF6B6B',
-    cat: 'study',
-    hint: '選擇 + 申論',
     comingSoon: true,
   },
   {
@@ -97,11 +61,11 @@ const FORMATS: FormatSpec[] = [
   },
 ]
 
+// 砍掉 audio + study category(對應的 podcast / flashcards / quiz 在內部
+// 部署場景不適用,連同 video 一起從製作台移除)。
 const CATEGORIES = [
   { k: 'all', l: '全部', c: 'currentColor' },
-  { k: 'audio', l: '聲音', c: '#FF8FAB' },
   { k: 'visual', l: '視覺', c: '#7C7BFF' },
-  { k: 'study', l: '學習', c: '#3DD68C' },
   { k: 'doc', l: '文件', c: '#F4B740' },
 ] as const
 
