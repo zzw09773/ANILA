@@ -2703,227 +2703,224 @@ async def _run_pipeline(
 ) -> None:
     """Executes steps 3-9 and pushes state transitions to the updater.
 
-    Runs INSIDE the asyncio task spawned by the job manager. After the
-    HTTP extraction, this thread owns its own context — the caller's
-    request scope (and its bearer token) is captured once at POST time
-    and threaded through every csp_client call so authorisation /
-    quota / billing land on the right user.
+    Runs INSIDE the asyncio task spawned by the job manager. The caller's
+    bearer token is captured once at POST time and threaded through every
+    csp_client call so authorisation / quota / billing land on the right
+    user. anila-studio holds no DB session of its own — every piece of
+    state lives upstream (csp owns the row data; csp's proxy owns the LLM
+    token usage rows).
     """
-    try:
-        user = identity  # TODO commit I: rename all `user` callsites to `identity`
-        coll = await get_collection(payload.collection_id, bearer=bearer)
+    coll = await get_collection(payload.collection_id, bearer=bearer)
 
-        # FLUX Stage 1 (4.2): deterministic per-deck seed derived once from
-        # the job_id, so re-running the same job yields the same images.
-        # Per-slide seed = deck_base_seed + slide_index (computed in
-        # _hydrate_images). The llm adapter lets the rewriter (Layer A)
-        # reuse the same proxy/usage path as every other Studio LLM call.
-        deck_base_seed = int(
-            hashlib.sha256(updater.job_id.encode()).hexdigest()[:8], 16
+    # FLUX Stage 1 (4.2): deterministic per-deck seed derived once from
+    # the job_id, so re-running the same job yields the same images.
+    # Per-slide seed = deck_base_seed + slide_index (computed in
+    # _hydrate_images). The llm adapter lets the rewriter (Layer A)
+    # reuse the same proxy/usage path as every other Studio LLM call.
+    deck_base_seed = int(
+        hashlib.sha256(updater.job_id.encode()).hexdigest()[:8], 16
+    )
+    flux_llm = _StudioLLMAdapter(bearer, SLIDES_LLM_MODEL)
+
+    # ── Step 3: retrieval ──
+    await updater.set(step=JOB_STEP_RETRIEVING)
+    seed_query = " · ".join(
+        [coll.name, payload.preset]
+        + (
+            [payload.extra_instructions.strip()]
+            if payload.extra_instructions
+            else []
         )
-        flux_llm = _StudioLLMAdapter(bearer, SLIDES_LLM_MODEL)
-
-        # ── Step 3: retrieval ──
-        await updater.set(step=JOB_STEP_RETRIEVING)
-        seed_query = " · ".join(
-            [coll.name, payload.preset]
-            + (
-                [payload.extra_instructions.strip()]
-                if payload.extra_instructions
-                else []
+    )
+    chunks: list[dict[str, Any]] = []
+    images: list[dict[str, Any]] = []
+    if not payload.skip_retrieval:
+        try:
+            chunks = await _retrieve_chunks(
+                bearer, payload.collection_id, seed_query,
             )
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001
+            # Retrieval is best-effort — see commentary on the
+            # original sync endpoint. Continue without context.
+            logger.warning(
+                "Studio retrieval failed (%s); generating without context.", e,
+            )
+        # Phase 5: image vector search runs alongside chunk search
+        # so the LLM gets both kinds of context in one prompt. Empty
+        # list when the collection has no images at all (text-only
+        # knowledge base) — the prompt skip-emits the section.
+        try:
+            images = await _retrieve_images(
+                bearer, payload.collection_id, seed_query,
+            )
+            if images:
+                logger.info(
+                    "Studio retrieved %d images for deck '%s'",
+                    len(images), payload.preset,
+                )
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "Studio image retrieval failed (%s); proceeding "
+                "without image suggestions.",
+                e,
+            )
+
+    # Build the lookup the renderer-side hydration needs. Keyed by
+    # image_id so `Slide.image_ref` resolves in O(1) without re-
+    # querying the DB during render. Only images actually surfaced
+    # to the LLM are eligible — this is also the security boundary
+    # for "user can't reference cross-collection images".
+    images_lookup: dict[str, dict[str, Any]] = {
+        im["image_id"]: im for im in images
+    }
+
+    # ── Steps 4-6: LLM → JSON → SlidesSpec ──
+    await updater.set(step=JOB_STEP_GENERATING)
+    spec, used_fallback = await _generate_validated_spec(
+        bearer,
+        coll.name,
+        payload.preset,
+        payload.extra_instructions,
+        chunks,
+        images=images,
+    )
+    # ── Step 6.5: zh-CN → zh-TW post-processing ──
+    # Gemma 4 leaks simplified-Chinese phrasing into 繁體 output (研究第
+    # 33-39 行有量化證據). The system prompt fights this with an explicit
+    # mapping table, but enforcement isn't 100% — we run OpenCC s2twp as
+    # a deterministic safety net AFTER spec validate (so the LLM-emitted
+    # structural integrity check has already passed) and BEFORE render
+    # / vision QA (so all downstream steps see clean Traditional Chinese).
+    spec = normalize_spec(spec)
+    # Round 3 Patch P: apply theme_override after spec is validated.
+    # Bypasses LLM theme selection per the API request. Applied here
+    # (post-validation, pre-rebalance, pre-render) so all downstream
+    # steps — rebalance, render, vision QA — see the forced theme.
+    # Literal on the request schema already rejected invalid values
+    # at request time, so we trust the value unconditionally here.
+    if payload.theme_override:
+        spec.theme = payload.theme_override
+    else:
+        # Round 5 Patch U: deterministic title-keyword override.
+        # Promotes title-based theme routing from a prompt-soft rule
+        # to a hard programmatic override. Runs AFTER LLM emits theme
+        # and AFTER theme_override (user wins over inference). Only
+        # fires when title matches a high-confidence keyword; no-op
+        # otherwise (preserves LLM choice). Must run before audit /
+        # rebalance / render so all downstream steps see the final
+        # theme.
+        spec = _apply_theme_title_override(spec)
+    # Surface the title early so the UI can show "鑄造中：<title>"
+    # before render finishes.
+    await updater.set(title=spec.title, slide_count=len(spec.slides))
+
+    # ── Step 6.7 / Studio Fix 1: layout audit + LLM rebalance ──
+    # Run the deterministic audit on the validated spec. If a HARD
+    # violation fires (standard > 60% / numeric content without
+    # stat_callout), make ONE focused LLM call to re-select layout
+    # on a small candidate set. Soft violations alone don't trigger.
+    # Skip the whole pass on the fallback deck (its job is "explain
+    # the failure", not "look good") and on skip_retrieval (no
+    # chunks_text to feed V2).
+    if not used_fallback:
+        chunks_str = "\n\n".join(
+            str(c.get("content", "")) for c in chunks
         )
-        chunks: list[dict[str, Any]] = []
-        images: list[dict[str, Any]] = []
-        if not payload.skip_retrieval:
+        violations = _audit_layout_distribution(spec, chunks_text=chunks_str)
+        if _should_rebalance(violations):
+            await updater.set(step=JOB_STEP_REBALANCING)
             try:
-                chunks = await _retrieve_chunks(
-                    bearer, payload.collection_id, seed_query,
+                spec_dict = spec.model_dump(mode="json")
+                rebalanced = await _rebalance_layouts(
+                    spec_dict, violations, chunks_str, bearer=bearer,
                 )
-            except HTTPException:
-                raise
-            except Exception as e:  # noqa: BLE001
-                # Retrieval is best-effort — see commentary on the
-                # original sync endpoint. Continue without context.
+                spec = SlidesSpec.model_validate(rebalanced)
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "Studio retrieval failed (%s); generating without context.", e,
-                )
-            # Phase 5: image vector search runs alongside chunk search
-            # so the LLM gets both kinds of context in one prompt. Empty
-            # list when the collection has no images at all (text-only
-            # knowledge base) — the prompt skip-emits the section.
-            try:
-                images = await _retrieve_images(
-                    bearer, payload.collection_id, seed_query,
-                )
-                if images:
-                    logger.info(
-                        "Studio retrieved %d images for deck '%s'",
-                        len(images), payload.preset,
-                    )
-            except HTTPException:
-                raise
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "Studio image retrieval failed (%s); proceeding "
-                    "without image suggestions.",
-                    e,
+                    "Rebalance failed: %s — proceeding with original spec",
+                    exc,
                 )
 
-        # Build the lookup the renderer-side hydration needs. Keyed by
-        # image_id so `Slide.image_ref` resolves in O(1) without re-
-        # querying the DB during render. Only images actually surfaced
-        # to the LLM are eligible — this is also the security boundary
-        # for "user can't reference cross-collection images".
-        images_lookup: dict[str, dict[str, Any]] = {
-            im["image_id"]: im for im in images
-        }
+    # ── Stage 3: infer the deck's visual house style from its content,
+    # once per deck, so every slide shares one visual language. Only when
+    # the FLUX cover-hero path will actually run; failure degrades to the
+    # default style inside infer_deck_style.
+    deck_style = None
+    if get_flux_provider() is not None and deck_base_seed is not None:
+        from app.services.flux_style import infer_deck_style
 
-        # ── Steps 4-6: LLM → JSON → SlidesSpec ──
-        await updater.set(step=JOB_STEP_GENERATING)
-        spec, used_fallback = await _generate_validated_spec(
-            bearer,
-            coll.name,
-            payload.preset,
-            payload.extra_instructions,
-            chunks,
-            images=images,
-        )
-        # ── Step 6.5: zh-CN → zh-TW post-processing ──
-        # Gemma 4 leaks simplified-Chinese phrasing into 繁體 output (研究第
-        # 33-39 行有量化證據). The system prompt fights this with an explicit
-        # mapping table, but enforcement isn't 100% — we run OpenCC s2twp as
-        # a deterministic safety net AFTER spec validate (so the LLM-emitted
-        # structural integrity check has already passed) and BEFORE render
-        # / vision QA (so all downstream steps see clean Traditional Chinese).
-        spec = normalize_spec(spec)
-        # Round 3 Patch P: apply theme_override after spec is validated.
-        # Bypasses LLM theme selection per the API request. Applied here
-        # (post-validation, pre-rebalance, pre-render) so all downstream
-        # steps — rebalance, render, vision QA — see the forced theme.
-        # Literal on the request schema already rejected invalid values
-        # at request time, so we trust the value unconditionally here.
-        if payload.theme_override:
-            spec.theme = payload.theme_override
-        else:
-            # Round 5 Patch U: deterministic title-keyword override.
-            # Promotes title-based theme routing from a prompt-soft rule
-            # to a hard programmatic override. Runs AFTER LLM emits theme
-            # and AFTER theme_override (user wins over inference). Only
-            # fires when title matches a high-confidence keyword; no-op
-            # otherwise (preserves LLM choice). Must run before audit /
-            # rebalance / render so all downstream steps see the final
-            # theme.
-            spec = _apply_theme_title_override(spec)
-        # Surface the title early so the UI can show "鑄造中：<title>"
-        # before render finishes.
-        await updater.set(title=spec.title, slide_count=len(spec.slides))
-
-        # ── Step 6.7 / Studio Fix 1: layout audit + LLM rebalance ──
-        # Run the deterministic audit on the validated spec. If a HARD
-        # violation fires (standard > 60% / numeric content without
-        # stat_callout), make ONE focused LLM call to re-select layout
-        # on a small candidate set. Soft violations alone don't trigger.
-        # Skip the whole pass on the fallback deck (its job is "explain
-        # the failure", not "look good") and on skip_retrieval (no
-        # chunks_text to feed V2).
-        if not used_fallback:
-            chunks_str = "\n\n".join(
+        style_sample = spec.title or ""
+        if chunks:
+            style_sample += "\n" + "\n\n".join(
                 str(c.get("content", "")) for c in chunks
             )
-            violations = _audit_layout_distribution(spec, chunks_text=chunks_str)
-            if _should_rebalance(violations):
-                await updater.set(step=JOB_STEP_REBALANCING)
-                try:
-                    spec_dict = spec.model_dump(mode="json")
-                    rebalanced = await _rebalance_layouts(
-                        spec_dict, violations, chunks_str, bearer=bearer,
-                    )
-                    spec = SlidesSpec.model_validate(rebalanced)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "Rebalance failed: %s — proceeding with original spec",
-                        exc,
-                    )
+        deck_style = await infer_deck_style(
+            title=spec.title or "",
+            content_sample=style_sample,
+            llm=flux_llm,
+        )
 
-        # ── Stage 3: infer the deck's visual house style from its content,
-        # once per deck, so every slide shares one visual language. Only when
-        # the FLUX cover-hero path will actually run; failure degrades to the
-        # default style inside infer_deck_style.
-        deck_style = None
-        if get_flux_provider() is not None and deck_base_seed is not None:
-            from app.services.flux_style import infer_deck_style
+    # ── Step 7: render ──
+    await updater.set(step=JOB_STEP_RENDERING)
+    pptx_bytes, pptx_path = await _render_pptx(
+        spec, images_lookup, bearer=bearer,
+        deck_base_seed=deck_base_seed, llm=flux_llm,
+        deck_style=deck_style,
+    )
 
-            style_sample = spec.title or ""
-            if chunks:
-                style_sample += "\n" + "\n\n".join(
-                    str(c.get("content", "")) for c in chunks
-                )
-            deck_style = await infer_deck_style(
-                title=spec.title or "",
-                content_sample=style_sample,
-                llm=flux_llm,
+    # ── Step 8: vision QA + (optional) one fix-and-rerender ──
+    # Skip vision QA entirely when serving the fallback deck. The
+    # fallback is a deliberately minimal "what went wrong" template
+    # — putting it through QA risks the VLM flagging it as too
+    # sparse, triggering a fix-and-rerender that calls the same
+    # already-broken LLM again. Better to ship the fallback as-is.
+    final_defects: list[VisualDefect] = []
+    qa_passes = 0
+    if pptx_path and not used_fallback:
+        for _ in range(VISUAL_QA_PASSES + 1):
+            qa_passes += 1
+            await updater.set(
+                step=JOB_STEP_QA,
+                qa_passes=qa_passes,
+            )
+            defects = await _visual_qa(
+                bearer, pptx_path, pptx_bytes=pptx_bytes,
+            )
+            critical = [d for d in defects if d.severity == "critical"]
+            if not critical or qa_passes > VISUAL_QA_PASSES:
+                final_defects = defects
+                break
+            # Critical defects exist AND we still have a fix budget —
+            # ask the LLM to revise, re-render, re-QA.
+            await updater.set(step=JOB_STEP_FIXING)
+            try:
+                spec = await _fix_spec_with_defects(bearer, spec, critical)
+            except (ValueError, ValidationError, json.JSONDecodeError) as e:
+                logger.warning("Studio defect-fix LLM call failed: %s", e)
+                final_defects = defects
+                break
+            await updater.set(
+                step=JOB_STEP_RENDERING,
+                title=spec.title,
+                slide_count=len(spec.slides),
+            )
+            pptx_bytes, pptx_path = await _render_pptx(
+                spec, images_lookup, bearer=bearer,
+                deck_base_seed=deck_base_seed, llm=flux_llm,
+                deck_style=deck_style,
             )
 
-        # ── Step 7: render ──
-        await updater.set(step=JOB_STEP_RENDERING)
-        pptx_bytes, pptx_path = await _render_pptx(
-            spec, images_lookup, bearer=bearer,
-            deck_base_seed=deck_base_seed, llm=flux_llm,
-            deck_style=deck_style,
-        )
-
-        # ── Step 8: vision QA + (optional) one fix-and-rerender ──
-        # Skip vision QA entirely when serving the fallback deck. The
-        # fallback is a deliberately minimal "what went wrong" template
-        # — putting it through QA risks the VLM flagging it as too
-        # sparse, triggering a fix-and-rerender that calls the same
-        # already-broken LLM again. Better to ship the fallback as-is.
-        final_defects: list[VisualDefect] = []
-        qa_passes = 0
-        if pptx_path and not used_fallback:
-            for _ in range(VISUAL_QA_PASSES + 1):
-                qa_passes += 1
-                await updater.set(
-                    step=JOB_STEP_QA,
-                    qa_passes=qa_passes,
-                )
-                defects = await _visual_qa(
-                    bearer, pptx_path, pptx_bytes=pptx_bytes,
-                )
-                critical = [d for d in defects if d.severity == "critical"]
-                if not critical or qa_passes > VISUAL_QA_PASSES:
-                    final_defects = defects
-                    break
-                # Critical defects exist AND we still have a fix budget —
-                # ask the LLM to revise, re-render, re-QA.
-                await updater.set(step=JOB_STEP_FIXING)
-                try:
-                    spec = await _fix_spec_with_defects(bearer, spec, critical)
-                except (ValueError, ValidationError, json.JSONDecodeError) as e:
-                    logger.warning("Studio defect-fix LLM call failed: %s", e)
-                    final_defects = defects
-                    break
-                await updater.set(
-                    step=JOB_STEP_RENDERING,
-                    title=spec.title,
-                    slide_count=len(spec.slides),
-                )
-                pptx_bytes, pptx_path = await _render_pptx(
-                    spec, images_lookup, bearer=bearer,
-                    deck_base_seed=deck_base_seed, llm=flux_llm,
-                    deck_style=deck_style,
-                )
-
-        # ── Step 9: terminal "done" — pptx_bytes is the artifact ──
-        await updater.mark_done(
-            spec=spec,
-            pptx_bytes=pptx_bytes,
-            defects=final_defects,
-            qa_passes=qa_passes,
-        )
-    finally:
-        db.close()
+    # ── Step 9: terminal "done" — pptx_bytes is the artifact ──
+    await updater.mark_done(
+        spec=spec,
+        pptx_bytes=pptx_bytes,
+        defects=final_defects,
+        qa_passes=qa_passes,
+    )
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────
