@@ -10,8 +10,8 @@ Lifecycle:
 - ``200 {"status":"ok","ready":true,...}`` once both dependencies are ready
 - ``503 {"status":"degraded","ready":false,...}`` if either is not
 
-Wave 3 (Phase 3) will mount the studio router; this skeleton only carries
-the lifecycle + health surface.
+Phase 3 wires the studio router (``/api/studio/...``); the lifecycle +
+health surface itself remains unchanged.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from app.api.studio import router as studio_router
 from app.config import settings
 from app.services import jwks_client, revocation_cache as revocation_cache_mod
 
@@ -57,6 +58,7 @@ app = FastAPI(
     version=settings.APP_VERSION,
     lifespan=lifespan,
 )
+app.include_router(studio_router)
 
 
 @app.get("/health")
