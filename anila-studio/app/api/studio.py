@@ -1239,7 +1239,7 @@ def get_flux_provider() -> "FluxImageProvider | None":
 
     Configuration via env:
       FLUX_BACKEND_URL       (required to enable; e.g. http://flux2-dev:8000)
-      FLUX_CACHE_DIR         (default: $INGESTION_UPLOAD_DIR/flux-cache)
+      FLUX_CACHE_DIR         (default: /var/anila/anila-studio-flux-cache)
       FLUX_MAX_CONCURRENT    (default: 4)
       FLUX_TIMEOUT_SECONDS   (default: 180)
     """
@@ -1254,11 +1254,10 @@ def get_flux_provider() -> "FluxImageProvider | None":
 
     from app.services.flux_image_provider import FluxImageProvider
 
-    upload_dir = os.environ.get(
-        "INGESTION_UPLOAD_DIR", "/var/anila/ingestion-uploads"
-    )
+    # anila-studio 自己的 cache volume — 不借 csp 的 INGESTION_UPLOAD_DIR
+    # (那是 csp 內 ingestion 上傳目錄,anila-studio container 沒掛/沒權限)。
     cache_dir = os.environ.get(
-        "FLUX_CACHE_DIR", os.path.join(upload_dir, "flux-cache")
+        "FLUX_CACHE_DIR", "/var/anila/anila-studio-flux-cache"
     )
     max_concurrent = int(os.environ.get("FLUX_MAX_CONCURRENT", "4"))
     timeout = float(os.environ.get("FLUX_TIMEOUT_SECONDS", "180"))

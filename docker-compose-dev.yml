@@ -215,6 +215,10 @@ services:
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
       FLUX_BACKEND_URL: http://flux2-dev:8000
+      # 對齊 volume mount 路徑。studio.py 內讀 os.environ["FLUX_CACHE_DIR"],
+      # 預設 fallback 是 csp 的 /var/anila/ingestion-uploads/flux-cache,在
+      # anila-studio container 內不存在/沒權限,所以這條 env 必須顯式設。
+      FLUX_CACHE_DIR: /var/anila/anila-studio-flux-cache
       RENDERER_BASE_URL: http://pptx-renderer:7100
       JWT_KID: anila-v1
       LOG_LEVEL: INFO
