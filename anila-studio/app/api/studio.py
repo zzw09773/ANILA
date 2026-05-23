@@ -79,10 +79,7 @@ from app.schemas.studio import (
     VisualDefect,
 )
 from app.services import studio_job_service as jobs
-from app.services.auth_service import get_current_user
 from app.services.geometric_qa import GeometricDefect, run_geometric_qa
-from app.services.ingestion_pool import get_pool
-from app.services.proxy_service import proxy_request
 from app.services.studio_text_normalizer import normalize_spec
 
 if TYPE_CHECKING:
