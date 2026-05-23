@@ -24,6 +24,8 @@ dependencies = [
   "cachetools>=5.3",
   # 簡體 → 繁體轉換 (studio_text_normalizer)
   "opencc-python-reimplemented>=0.1.7",
+  # flux_quality_gate FFT analysis for striping detection
+  "numpy>=1.26",
   # PPTX 生成路徑用,留給後續 phase 搬程式時即可 import
   # NOTE: python-pptx 不會用到 (PPTX 由 pptx-renderer Node service 渲染)
   # 但 diagram_renderer 用 Graphviz CLI subprocess,Docker 內裝 apt graphviz
