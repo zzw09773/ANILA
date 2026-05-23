@@ -6,6 +6,24 @@ import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios'
 // store here directly because the store imports api modules that import
 // this file — circular. The adapter pattern keeps the dep graph clean.
 
+/**
+ * Base URL for the anila-studio service.
+ *
+ * Studio (`/api/studio/*`) is its own FastAPI process — separate from
+ * the CSP backend that serves `/api/auth`, `/api/chat`, etc. In local
+ * dev we let the Vite proxy in `vite.config.ts` route `/api/studio` to
+ * `http://localhost:8100`, so the default empty string is correct.
+ * Production builds are usually served same-origin behind an nginx
+ * reverse proxy that does the same routing. Only set this env var when
+ * the SPA needs to call studio cross-origin (staging boxes,
+ * preview deploys, etc.).
+ *
+ * Note: this constant is consumed by `src/api/studio.ts`. Other API
+ * modules continue to use empty-string baseURL via the shared `client`
+ * axios instance — csp traffic must NOT be rerouted here.
+ */
+export const STUDIO_BASE_URL: string = import.meta.env.VITE_STUDIO_BASE_URL ?? ''
+
 interface AuthAdapter {
   getAccessToken(): string | null
   refresh(): Promise<string | null>
