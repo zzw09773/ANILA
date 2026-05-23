@@ -730,7 +730,7 @@ async def _call_llm_chat(
     temperature: float = 0.4,
     max_tokens: int | None = None,
 ) -> str:
-    """Invoke csp's ``/api/proxy/v1/chat/completions`` and return content.
+    """Invoke csp's ``/v1/chat/completions`` and return content.
 
     The csp proxy owns the ``model_registry`` lookup, the upstream
     routing decision (vLLM / Ollama / external), token-usage metering,
@@ -789,7 +789,7 @@ class _StudioLLMAdapter:
     (ModelRegistry, usage metering) — it only needs "give me one completion
     for this system+user pair". This thin wrapper binds the bearer+model
     context so rewriter calls still flow through csp's
-    ``/api/proxy/v1/chat/completions`` and land in the same token-usage
+    ``/v1/chat/completions`` and land in the same token-usage
     dashboards as every other Studio LLM call.
     """
 

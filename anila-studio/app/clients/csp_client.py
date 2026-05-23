@@ -443,7 +443,11 @@ async def proxy_chat_completions(
     response_format: dict | None = None,
     bearer: str,
 ) -> dict:
-    """``POST /api/proxy/v1/chat/completions``.
+    """``POST /v1/chat/completions``.
+
+    csp 的 proxy router 沒額外 prefix (`api_router.include_router(proxy_router)`
+    + `proxy.py` 的 `router = APIRouter(tags=...)` 無 prefix),所以實際路徑是
+    ``/v1/chat/completions`` 而不是 ``/api/proxy/v1/chat/completions``。
 
     Returns the full upstream JSON dict so callers can pick the fields
     they want — csp passes through OpenAI's ``choices`` / ``usage``
@@ -455,7 +459,7 @@ async def proxy_chat_completions(
     ``None`` and are omitted from the request body when not provided,
     so we don't override OpenAI defaults at the proxy boundary.
     """
-    url = f"{settings.CSP_BASE_URL}/api/proxy/v1/chat/completions"
+    url = f"{settings.CSP_BASE_URL}/v1/chat/completions"
     body: dict[str, Any] = {"model": model, "messages": messages}
     if temperature is not None:
         body["temperature"] = temperature

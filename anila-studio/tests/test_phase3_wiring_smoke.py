@@ -4,7 +4,7 @@ Verifies that the studio pipeline's three external touch points reach
 the right HTTP destinations after the csp/backend extraction:
 
 1. RAG → csp ``/api/ingestion/collections/{id}/search``
-2. LLM → csp ``/api/proxy/v1/chat/completions``
+2. LLM → csp ``/v1/chat/completions``
 3. PPTX → ``RENDERER_BASE_URL/render``
 
 These are NOT full e2e (the complete pipeline takes ~60s real wall-clock
@@ -143,13 +143,13 @@ async def test_rag_wiring_calls_csp_search():
 
 @pytest.mark.asyncio
 async def test_llm_wiring_calls_csp_proxy():
-    """``_call_llm_chat`` must reach csp's ``/api/proxy/v1/chat/completions``
+    """``_call_llm_chat`` must reach csp's ``/v1/chat/completions``
     endpoint and forward the model name + messages verbatim. The legacy
     direct-to-vLLM path is gone — every studio LLM call is csp-fronted
     so usage metering / billing land on the right user.
     """
     with respx.mock(assert_all_called=True, base_url=_CSP) as mock:
-        proxy_route = mock.post("/api/proxy/v1/chat/completions").mock(
+        proxy_route = mock.post("/v1/chat/completions").mock(
             return_value=httpx.Response(200, json=_proxy_chat_payload()),
         )
 

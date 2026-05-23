@@ -323,7 +323,7 @@ async def test_proxy_chat_completions_happy() -> None:
         # csp adds billing metadata; client must pass through unchanged.
         "anila_billing": {"cost_usd": 0.00012},
     }
-    respx.post(f"{BASE}/api/proxy/v1/chat/completions").mock(
+    respx.post(f"{BASE}/v1/chat/completions").mock(
         return_value=httpx.Response(200, json=upstream_payload)
     )
 
@@ -342,7 +342,7 @@ async def test_proxy_chat_completions_happy() -> None:
 
 @respx.mock
 async def test_proxy_chat_completions_401_raises_unauthorized_no_retry() -> None:
-    route = respx.post(f"{BASE}/api/proxy/v1/chat/completions").mock(
+    route = respx.post(f"{BASE}/v1/chat/completions").mock(
         return_value=httpx.Response(401, json={"detail": "token expired"})
     )
 
@@ -361,7 +361,7 @@ async def test_proxy_chat_completions_401_raises_unauthorized_no_retry() -> None
 async def test_proxy_chat_completions_optional_fields_omitted_when_none() -> None:
     """temperature / max_tokens / response_format=None should be dropped
     from the request body so we don't override OpenAI defaults."""
-    route = respx.post(f"{BASE}/api/proxy/v1/chat/completions").mock(
+    route = respx.post(f"{BASE}/v1/chat/completions").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -476,7 +476,7 @@ async def test_bearer_header_always_forwarded() -> None:
                 200, content=b"x", headers={"content-type": "image/jpeg"}
             )
         ),
-        respx.post(f"{BASE}/api/proxy/v1/chat/completions").mock(
+        respx.post(f"{BASE}/v1/chat/completions").mock(
             return_value=httpx.Response(
                 200,
                 json={"id": "x", "object": "chat.completion", "choices": []},
