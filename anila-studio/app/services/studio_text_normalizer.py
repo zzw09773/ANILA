@@ -157,6 +157,39 @@ _CITATION_RE = re.compile(
 )
 
 
+_BULLET_PREFIX_RE = re.compile(
+    # Strip leading bullet markers (and any whitespace before/after) that
+    # the LLM prepends inside list items. pptxgenjs / layout-specific
+    # renderers add bullet markers themselves based on ``layout_kind``,
+    # so leaving the LLM's literal ●/• in the text doubles the marker.
+    #
+    # Symbols observed in production:
+    #   ● U+25CF BLACK CIRCLE
+    #   • U+2022 BULLET
+    #   ▪ U+25AA BLACK SMALL SQUARE
+    #   ◆ U+25C6 BLACK DIAMOND
+    #   ◇ U+25C7 WHITE DIAMOND
+    #   ▶ U+25B6 BLACK RIGHT-POINTING TRIANGLE
+    #   ▸ U+25B8 BLACK RIGHT-POINTING SMALL TRIANGLE
+    #   *   markdown ASCII bullet
+    #   -   markdown ASCII dash
+    #   ·   middle dot
+    r"^\s*[●•▪◆◇▶▸*\-·]+\s+",
+)
+
+
+def strip_bullet_prefix(text: str | None) -> str | None:
+    """Remove leading bullet markers the LLM injects into bullet items.
+
+    Idempotent. Safe on empty / None input. Only strips ONE leading marker
+    group (we don't want to eat the first "real" hyphen of a Chinese-style
+    enumeration like '一-加密').
+    """
+    if not text:
+        return text
+    return _BULLET_PREFIX_RE.sub("", str(text), count=1)
+
+
 def strip_inline_citations(text: str | None) -> str | None:
     """Remove RAG citation markers (e.g. '(參 [5])') from end of text.
 
@@ -236,6 +269,19 @@ def _convert(text: str | None, keep_citations: bool = False) -> str | None:
     return converted
 
 
+def _normalize_bullet(text: str | None, keep_citations: bool = False) -> str | None:
+    """Bullet-specific normalization: strip leading LLM-injected bullet
+    markers BEFORE running the standard citation / LaTeX / OpenCC chain.
+
+    Run on every entry in ``slide.bullets`` so pptxgenjs's own bullet
+    marker (added by layout) isn't doubled with a literal ●/•.
+    """
+    if text is None or text == "":
+        return text
+    text = strip_bullet_prefix(text)
+    return _convert(text, keep_citations=keep_citations)
+
+
 def _normalize_slide(slide: Slide) -> Slide:
     """Return a NEW Slide with every string field s2twp-normalised.
 
@@ -246,7 +292,10 @@ def _normalize_slide(slide: Slide) -> Slide:
     """
     patch: dict[str, Any] = {
         "title": _convert(slide.title),
-        "bullets": [_convert(b) or "" for b in slide.bullets],
+        # bullets 走 _normalize_bullet,先 strip 開頭的 ●/• 等 LLM
+        # 自己加的符號(production 觀察 slide 2/6 有 "● Advanced RAG"
+        # 跟「真的 bullet marker」重複)。
+        "bullets": [_normalize_bullet(b) or "" for b in slide.bullets],
         # Round 4 Patch Q: speaker_notes keeps RAG citations for audit trail
         # (the LLM populates these with chunk references); only visible slide
         # text gets citations stripped.

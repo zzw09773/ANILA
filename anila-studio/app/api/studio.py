@@ -2838,6 +2838,11 @@ async def _run_pipeline(
                     spec_dict, violations, chunks_str, bearer=bearer,
                 )
                 spec = SlidesSpec.model_validate(rebalanced)
+                # Rebalance 透過 LLM 重生 bullets,新內容會帶 LaTeX 控制字元
+                # (e.g. $\nightarrow$)跟簡體字。必須再過 normalize_spec
+                # 才能 render,否則先前的 strip_latex / s2twp / 引用清理
+                # 全部白做(production 觀察到 $\nightarrow$ 8 處殘留即此因)。
+                spec = normalize_spec(spec)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "Rebalance failed: %s — proceeding with original spec",
