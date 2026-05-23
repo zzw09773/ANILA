@@ -64,15 +64,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
-from sqlalchemy.orm import Session
 
-from anila_core.storage.adapters.pgvector_store import (
-    CollectionScopedPgVectorStore,
-)
-
-from app.api.ingestion.collections import _require_collection_access
-from app.api.ingestion.search import _embed_query
-from app.database import get_db, SessionLocal
 from app.models.ingestion import IngestionDocument
 from app.models.model_registry import ModelRegistry
 from app.models.user import User
@@ -257,7 +249,6 @@ def _loads_lenient(text: str) -> Any:
 
 
 async def _retrieve_chunks(
-    db: Session,
     user: User,
     collection_id: int,
     seed_query: str,
@@ -312,7 +303,6 @@ def _build_chunk_dicts(hits, filenames):  # noqa: ANN001 — internal
 
 
 async def _retrieve_images(
-    db: Session,
     user: User,
     collection_id: int,
     seed_query: str,
@@ -742,7 +732,6 @@ def _build_generation_prompt(
 
 
 async def _call_llm_chat(
-    db: Session,
     user: User,
     model_name: str,
     messages: list[dict[str, Any]],
@@ -802,14 +791,12 @@ class _StudioLLMAdapter:
     in the same token-usage dashboards as every other Studio LLM call.
     """
 
-    def __init__(self, db: Session, user: User, model_name: str = SLIDES_LLM_MODEL) -> None:
-        self._db = db
+    def __init__(self, user: User, model_name: str = SLIDES_LLM_MODEL) -> None:
         self._user = user
         self._model_name = model_name
 
     async def complete(self, *, system: str, user: str) -> str:
         return await _call_llm_chat(
-            self._db,
             self._user,
             self._model_name,
             [
@@ -837,8 +824,7 @@ class _Gemma4VlmGate:
     Protocol the gate expects.
     """
 
-    def __init__(self, db: Session, user: User, model_name: str = VISION_LLM_MODEL) -> None:
-        self._db = db
+    def __init__(self, user: User, model_name: str = VISION_LLM_MODEL) -> None:
         self._user = user
         self._model_name = model_name
 
@@ -871,7 +857,7 @@ class _Gemma4VlmGate:
             },
         ]
         raw = await _call_llm_chat(
-            self._db, self._user, self._model_name, messages, temperature=0.1,
+            self._user, self._model_name, messages, temperature=0.1,
         )
         try:
             parsed = json.loads(_extract_json_object(raw))
@@ -900,7 +886,6 @@ class _Gemma4VlmGate:
 
 
 async def _generate_validated_spec(
-    db: Session,
     user: User,
     collection_name: str,
     preset: str,
@@ -1745,7 +1730,6 @@ async def _capture_screenshots(pptx_path: str) -> list[bytes]:
 
 
 async def _inspect_slide_visually(
-    db: Session,
     user: User,
     slide_index: int,
     png_bytes: bytes,
@@ -1863,7 +1847,6 @@ def _merge_defects(
 
 
 async def _visual_qa(
-    db: Session,
     user: User,
     pptx_path: str,
     *,
@@ -1921,7 +1904,6 @@ async def _visual_qa(
 
 
 async def _fix_spec_with_defects(
-    db: Session,
     user: User,
     current_spec: SlidesSpec,
     defects: list[VisualDefect],
@@ -2464,7 +2446,6 @@ def _build_rebalance_prompt(
 async def _call_llm_for_rebalance(
     prompt: tuple[str, str],
     *,
-    db: Session,
     user: User,
 ) -> dict[str, Any]:
     """Thin wrapper around ``_call_llm_chat`` for the rebalance pass.
@@ -2592,7 +2573,6 @@ async def _rebalance_layouts(
     violations: list[LayoutViolation],
     chunks_text: str,
     *,
-    db: Session,
     user: User,
 ) -> dict[str, Any]:
     """Run the focused LLM rebalance pass and return an updated spec_dict.
