@@ -263,53 +263,61 @@ def _loads_lenient(text: str) -> Any:
 
 
 async def _retrieve_chunks(
-    user: "CurrentUserIdentity",
+    bearer: str,
     collection_id: int,
     seed_query: str,
 ) -> list[dict[str, Any]]:
-    """Top-K relevant chunks for the seed_query, with filename joined in.
+    """Top-K relevant chunks for the seed_query, fetched via csp HTTP.
 
-    Returns a list of dicts (not the full SearchHit objects from
-    anila_core) so the prompt-building code stays decoupled from the
-    storage layer's representation.
+    csp owns the embedding model + pgvector index; we just call its
+    ``/api/ingestion/collections/{id}/search`` endpoint and project the
+    returned hits into the dict shape the prompt builder expects.
+
+    Returns ``[]`` when:
+      * the collection is archived (csp returns its meta but Studio
+        treats archived as "no retrieval");
+      * csp returns an empty result set;
+      * csp surfaces ``CspNotFoundError`` (already-deleted collection).
+
+    Raises:
+      * ``CspForbiddenError`` (caller already 403'd in the POST handler;
+        if we re-hit it here it's a TOCTOU race — surface as 403).
+      * ``CspUnauthorizedError`` (token expired mid-job — surface as 401
+        so the SPA refreshes and retries).
+      * ``CspServerError`` (transient csp outage; caller catches this
+        and degrades to "no retrieval" mode).
     """
-    coll = _require_collection_access(db, user, collection_id)
+    coll = await get_collection(collection_id, bearer=bearer)
     if coll.status != "active":
         # Studio over an archived collection is an unusual ask; treat as
         # zero hits and let the prompt fall through to "no context" mode.
         return []
 
-    q_vec = await _embed_query(
-        db, user, coll.embedding_model, coll.embedding_dim, seed_query,
-    )
-
-    pool = get_pool()
-    store = CollectionScopedPgVectorStore(pool, collection_id=coll.id)
-    hits = await store.similarity_search(
-        query_embedding=q_vec,
+    hits = await search_chunks(
+        collection_id,
+        seed_query,
         top_k=STUDIO_TOP_K,
         min_score=STUDIO_MIN_SCORE,
+        bearer=bearer,
     )
-    if not hits:
-        return []
-
-    doc_ids = {h.chunk.document_id for h in hits}
-    rows = (
-        db.query(IngestionDocument.id, IngestionDocument.filename)
-        .filter(IngestionDocument.id.in_(doc_ids))
-        .all()
-    )
-    filenames = {r.id: r.filename for r in rows}
-
-    return _build_chunk_dicts(hits, filenames)
+    return _build_chunk_dicts(hits)
 
 
-def _build_chunk_dicts(hits, filenames):  # noqa: ANN001 — internal
+def _build_chunk_dicts(hits: list["ChunkHit"]) -> list[dict[str, Any]]:
+    """Project ``ChunkHit`` dataclasses into the dict shape callers expect.
+
+    The original csp implementation joined filenames out of
+    ``ingestion_documents`` separately; the new csp HTTP endpoint
+    embeds ``filename`` on every hit, so the join here is a no-op.
+    Content is truncated client-side to ``STUDIO_CONTENT_LIMIT_CHARS``
+    to keep the prompt budget bounded even if csp returned larger
+    chunks than the studio target.
+    """
     return [
         {
-            "filename": filenames.get(h.chunk.document_id, "<unknown>"),
-            "chunk_key": h.chunk.chunk_key,
-            "content": h.chunk.content[:STUDIO_CONTENT_LIMIT_CHARS],
+            "filename": h.filename or "<unknown>",
+            "chunk_key": h.chunk_key,
+            "content": h.content[:STUDIO_CONTENT_LIMIT_CHARS],
             "score": float(h.score),
         }
         for h in hits
@@ -2736,7 +2744,7 @@ async def _run_pipeline(
         if not payload.skip_retrieval:
             try:
                 chunks = await _retrieve_chunks(
-                    db, user, payload.collection_id, seed_query,
+                    bearer, payload.collection_id, seed_query,
                 )
             except HTTPException:
                 raise
