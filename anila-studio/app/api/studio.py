@@ -65,6 +65,26 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
+from app.auth import (
+    CurrentUserIdentity,
+    get_bearer_token,
+    get_current_user_identity,
+)
+from app.clients.csp_client import (
+    ChunkHit,
+    CollectionMeta,
+    CspClientError,
+    CspForbiddenError,
+    CspNotFoundError,
+    CspServerError,
+    CspUnauthorizedError,
+    ImageHit,
+    fetch_image_blob,
+    get_collection,
+    proxy_chat_completions,
+    search_chunks,
+    search_images,
+)
 from app.schemas.studio import (
     JOB_STEP_FIXING,
     JOB_STEP_GENERATING,
@@ -2674,24 +2694,22 @@ async def _rebalance_layouts(
 
 async def _run_pipeline(
     *,
-    user_id: int,
+    identity: "CurrentUserIdentity",
+    bearer: str,
     payload: GenerateSpecRequest,
     updater: jobs.JobUpdater,
 ) -> None:
     """Executes steps 3-9 and pushes state transitions to the updater.
 
-    Runs INSIDE the asyncio task spawned by the job manager. Owns its own
-    DB session because the request-scoped session from FastAPI's
-    Depends(get_db) is closed by the time the POST handler returns.
-    Re-resolving the User and collection inside this session keeps the
-    ORM objects attached.
+    Runs INSIDE the asyncio task spawned by the job manager. After the
+    HTTP extraction, this thread owns its own context — the caller's
+    request scope (and its bearer token) is captured once at POST time
+    and threaded through every csp_client call so authorisation /
+    quota / billing land on the right user.
     """
-    db = SessionLocal()
     try:
-        user = db.query(User).filter(User.id == user_id).first()
-        if user is None:
-            raise RuntimeError(f"user {user_id} disappeared mid-job")
-        coll = _require_collection_access(db, user, payload.collection_id)
+        user = identity  # TODO commit I: rename all `user` callsites to `identity`
+        coll = await get_collection(payload.collection_id, bearer=bearer)
 
         # FLUX Stage 1 (4.2): deterministic per-deck seed derived once from
         # the job_id, so re-running the same job yields the same images.
@@ -2916,8 +2934,8 @@ async def _run_pipeline(
 )
 async def create_slides_job(
     payload: GenerateSpecRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    identity: CurrentUserIdentity = Depends(get_current_user_identity),
+    bearer: str = Depends(get_bearer_token),
 ) -> JobStatus:
     """Register a slide-deck generation job and return its initial status.
 
@@ -2928,15 +2946,27 @@ async def create_slides_job(
     """
     # Authorize collection access up-front so the user gets a synchronous
     # 403/404 instead of an opaque "failed" job seconds later.
-    _require_collection_access(db, current_user, payload.collection_id)
+    # csp_client.get_collection raises CspForbiddenError / CspNotFoundError
+    # which propagate to HTTP 403 / 404 (mapped by FastAPI exception
+    # handlers on the anila-studio side).
+    try:
+        await get_collection(payload.collection_id, bearer=bearer)
+    except CspNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CspForbiddenError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except CspUnauthorizedError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except (CspServerError, CspClientError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     async def _runner(updater: jobs.JobUpdater) -> None:
         await _run_pipeline(
-            user_id=current_user.id, payload=payload, updater=updater,
+            identity=identity, bearer=bearer, payload=payload, updater=updater,
         )
 
     record = await jobs.create_job(
-        user_id=current_user.id,
+        user_id=identity.id,
         collection_id=payload.collection_id,
         runner=_runner,
     )
@@ -2946,10 +2976,10 @@ async def create_slides_job(
 @router.get("/slides/jobs/{job_id}", response_model=JobStatus)
 async def get_slides_job(
     job_id: str,
-    current_user: User = Depends(get_current_user),
+    identity: CurrentUserIdentity = Depends(get_current_user_identity),
 ) -> JobStatus:
     """Cheap polling endpoint. Returns the current JobStatus or 404."""
-    rec = jobs.get_user_job(job_id, current_user.id)
+    rec = jobs.get_user_job(job_id, identity.id)
     if rec is None:
         # 404 covers both "doesn't exist" and "exists but belongs to
         # someone else" — the latter must NEVER leak to a different user.
@@ -2974,14 +3004,14 @@ async def get_slides_job(
 )
 async def get_slides_job_pptx(
     job_id: str,
-    current_user: User = Depends(get_current_user),
+    identity: CurrentUserIdentity = Depends(get_current_user_identity),
 ) -> StreamingResponse:
     """Stream the rendered .pptx for a completed job.
 
     Returns 404 for unknown/cross-user jobs, 409 if the job is still
     running, and 410 if it has been failed/cancelled.
     """
-    rec = jobs.get_user_job(job_id, current_user.id)
+    rec = jobs.get_user_job(job_id, identity.id)
     if rec is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
     if rec.state in ("pending", "running"):
@@ -3038,14 +3068,14 @@ async def get_slides_job_pptx(
 @router.delete("/slides/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def cancel_slides_job(
     job_id: str,
-    current_user: User = Depends(get_current_user),
+    identity: CurrentUserIdentity = Depends(get_current_user_identity),
 ) -> Response:
     """Cancel an in-flight job. No-op if already terminal."""
-    cancelled = await jobs.cancel_job(job_id, current_user.id)
+    cancelled = await jobs.cancel_job(job_id, identity.id)
     if not cancelled:
         # Either not yours / not found / already terminal — all fine; the
         # client doesn't need to distinguish for "delete my row" UX.
-        rec = jobs.get_user_job(job_id, current_user.id)
+        rec = jobs.get_user_job(job_id, identity.id)
         if rec is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.",
