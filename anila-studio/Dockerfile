@@ -46,7 +46,12 @@ RUN pip install --upgrade pip && \
 RUN useradd --create-home --uid 10001 anila \
  && chown -R anila:anila /app \
  && mkdir -p /var/anila/anila-studio-flux-cache \
- && chown anila:anila /var/anila/anila-studio-flux-cache
+ && chown anila:anila /var/anila/anila-studio-flux-cache \
+ # ARTIFACTS_DIR 由 docker-compose 以 named volume mount,初次 mount 是
+ # root:root → anila uid 10001 寫不進。預先 mkdir + chown 確保 volume
+ # owner 對齊(named volume 在 first mount 時會 inherit dir owner)。
+ && mkdir -p /var/anila/anila-studio-artifacts \
+ && chown anila:anila /var/anila/anila-studio-artifacts
 USER anila
 
 EXPOSE 8100
