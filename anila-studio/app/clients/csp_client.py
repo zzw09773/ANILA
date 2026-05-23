@@ -139,6 +139,19 @@ def _default_timeout() -> httpx.Timeout:
     )
 
 
+def _llm_timeout() -> httpx.Timeout:
+    """Long-running timeout for csp /v1/chat/completions.
+
+    csp's own httpx.Timeout for the LLM upstream is 120s; if we cap below
+    that the deck pipeline 502s on every gemma4 cold-start. See
+    ``settings.INTERNAL_LLM_TIMEOUT_SECONDS``.
+    """
+    return httpx.Timeout(
+        timeout=settings.INTERNAL_LLM_TIMEOUT_SECONDS,
+        connect=settings.INTERNAL_TIMEOUT_CONNECT,
+    )
+
+
 def _auth_headers(bearer: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {bearer}"}
 
@@ -183,6 +196,7 @@ async def _request(
     bearer: str,
     json_body: dict[str, Any] | None = None,
     stream: bool = False,
+    timeout_override: httpx.Timeout | None = None,
 ) -> httpx.Response:
     """Issue an HTTP request with retry on 5xx and transport errors.
 
@@ -195,9 +209,13 @@ async def _request(
     ``_BACKOFFS[attempt]`` then retry, up to ``_MAX_ATTEMPTS`` total
     attempts. 4xx → ``_raise_for_4xx`` immediately (no retry — a 401
     will not heal by waiting).
+
+    ``timeout_override`` lets long-running paths (LLM proxy) carry a
+    larger budget without affecting the default for short ingestion /
+    JWKS / image-blob calls.
     """
     headers = _auth_headers(bearer)
-    timeout = _default_timeout()
+    timeout = timeout_override if timeout_override is not None else _default_timeout()
 
     for attempt in range(_MAX_ATTEMPTS):
         try:
@@ -468,5 +486,11 @@ async def proxy_chat_completions(
     if response_format is not None:
         body["response_format"] = response_format
 
-    response = await _request("POST", url, bearer=bearer, json_body=body)
+    response = await _request(
+        "POST",
+        url,
+        bearer=bearer,
+        json_body=body,
+        timeout_override=_llm_timeout(),
+    )
     return response.json()
