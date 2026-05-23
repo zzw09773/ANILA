@@ -1469,8 +1469,8 @@ async def _generate_slide_illustration(
 async def _hydrate_images(
     spec_dict: dict[str, Any],
     images_lookup: dict[str, dict[str, Any]],
-    upload_dir: str,
     *,
+    bearer: str,
     flux_provider: "FluxImageProvider | None" = None,
     default_aspect: str = "16:9",
     deck_base_seed: int | None = None,
@@ -1480,7 +1480,9 @@ async def _hydrate_images(
     """Resolve every Slide.image_ref / diagram_dot / image_prompt into inline base64 PNG.
 
     Order of precedence per slide (curated > deterministic > generative):
-      1. image_ref present and resolvable → inline existing PNG.
+      1. image_ref present and resolvable → inline existing PNG (fetched
+         from csp's ``/api/ingestion/images/{id}/blob`` endpoint, so we
+         no longer need a shared ``upload_dir`` mount).
       2. image_ref present but unresolvable → drop, fall back to next path.
       3. image_kind='diagram' + diagram_dot → render via Graphviz `dot -Tpng`.
       4. diagram render fails → drop diagram_dot/image_kind, fall back to next path.
@@ -1502,7 +1504,9 @@ async def _hydrate_images(
 
     `deck_base_seed` + `llm` enable the Stage 1 cover-hero path; when either
     is None the function behaves exactly as before (the legacy image_ref /
-    diagram / image_prompt paths only).
+    diagram / image_prompt paths only). ``bearer`` is required even when
+    no ``image_ref`` slides exist because the FLUX rewriter / VLM gate
+    eventually flow through csp's proxy as well.
     """
     import base64
 
@@ -1512,7 +1516,7 @@ async def _hydrate_images(
     slides = spec_dict.get("slides") or []
     generated_count = 0
     for idx, slide in enumerate(slides):
-        # Path 1: image_ref (existing behavior — unchanged)
+        # Path 1: image_ref → resolve via csp_client.fetch_image_blob
         ref = slide.get("image_ref")
         if ref:
             meta = images_lookup.get(ref)
@@ -1521,10 +1525,10 @@ async def _hydrate_images(
                 # If a fallback image_prompt is present, try that next
             else:
                 try:
-                    abs_path = os.path.join(upload_dir, meta["storage_path"])
-                    with open(abs_path, "rb") as f:
-                        blob = f.read()
-                    mime = meta.get("mime") or "image/png"
+                    blob, fetched_mime = await fetch_image_blob(
+                        int(meta["image_id"]), bearer=bearer,
+                    )
+                    mime = meta.get("mime") or fetched_mime or "image/png"
                     slide["image_data"] = (
                         f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"
                     )
@@ -1533,11 +1537,25 @@ async def _hydrate_images(
                     slide.pop("diagram_dot", None)
                     slide.pop("image_kind", None)
                     continue
-                except OSError as e:
+                except (CspNotFoundError, CspForbiddenError) as e:
+                    # csp lost the row (storage purged) or the bearer no
+                    # longer has access — surface the same warning pattern
+                    # the old OSError branch used and degrade to the next
+                    # image-resolution path.
                     logger.warning(
-                        "Failed to hydrate image_ref=%s for storage_path=%s: %s — "
+                        "Failed to hydrate image_ref=%s via csp blob fetch: %s — "
                         "falling back to diagram_dot / image_prompt if available.",
-                        ref, meta.get("storage_path"), e,
+                        ref, e,
+                    )
+                    slide.pop("image_ref", None)
+                except (CspServerError, CspClientError) as e:
+                    # Transient csp outage — log and fall through so the
+                    # deck still renders with whatever fallback path the
+                    # slide has next.
+                    logger.warning(
+                        "csp blob fetch failed for image_ref=%s: %s — "
+                        "falling back to diagram_dot / image_prompt if available.",
+                        ref, e,
                     )
                     slide.pop("image_ref", None)
 
@@ -1640,6 +1658,7 @@ async def _render_pptx(
     spec: SlidesSpec,
     images_lookup: dict[str, dict[str, Any]] | None = None,
     *,
+    bearer: str,
     deck_base_seed: int | None = None,
     llm: "_StudioLLMAdapter | None" = None,
     deck_style: "StyleDescriptor | None" = None,
@@ -1652,7 +1671,9 @@ async def _render_pptx(
     `images_lookup` (optional) is the dict that drove the LLM's
     image-suggestion list, keyed by image_id. When provided, every
     Slide.image_ref gets hydrated into inline `image_data` bytes via
-    `_hydrate_images` before the spec leaves the CSP boundary.
+    `_hydrate_images` before the spec leaves the anila-studio boundary.
+    Hydration now pulls bytes from csp via ``fetch_image_blob`` rather
+    than a shared filesystem mount, so ``bearer`` is required.
 
     `deck_base_seed` + `llm` (FLUX Stage 1) enable the cover-hero generation
     path inside `_hydrate_images`. They are threaded from the job pipeline
@@ -1668,17 +1689,10 @@ async def _render_pptx(
         flux_provider is not None and deck_base_seed is not None and llm is not None
     )
     if images_lookup or cover_hero_ready:
-        # Worker writes to share/uploads/ingestion via INGESTION_UPLOAD_DIR;
-        # CSP mounts the same directory at the same path (see compose).
-        # storage_path on the row is relative to that root, so we just
-        # join here.
-        ingest_upload = os.getenv(
-            "INGESTION_UPLOAD_DIR", "/var/anila/ingestion-uploads",
-        )
         spec_dict = await _hydrate_images(
             spec_dict,
             images_lookup or {},
-            ingest_upload,
+            bearer=bearer,
             flux_provider=flux_provider,
             default_aspect="16:9",
             deck_base_seed=deck_base_seed,
@@ -2854,7 +2868,8 @@ async def _run_pipeline(
         # ── Step 7: render ──
         await updater.set(step=JOB_STEP_RENDERING)
         pptx_bytes, pptx_path = await _render_pptx(
-            spec, images_lookup, deck_base_seed=deck_base_seed, llm=flux_llm,
+            spec, images_lookup, bearer=bearer,
+            deck_base_seed=deck_base_seed, llm=flux_llm,
             deck_style=deck_style,
         )
 
@@ -2895,7 +2910,7 @@ async def _run_pipeline(
                     slide_count=len(spec.slides),
                 )
                 pptx_bytes, pptx_path = await _render_pptx(
-                    spec, images_lookup,
+                    spec, images_lookup, bearer=bearer,
                     deck_base_seed=deck_base_seed, llm=flux_llm,
                     deck_style=deck_style,
                 )
