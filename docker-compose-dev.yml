@@ -196,6 +196,44 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # ── anila-studio (Studio extraction Phase 2 skeleton) ───────────────────
+  # The deck generation service (FLUX images + RAG + PPTX) extracted out of
+  # csp. Reads JWKS + token revocation events from csp via HTTP/Redis so
+  # cross-service auth works without sharing private keys.
+  anila-studio:
+    build:
+      context: anila-studio
+      dockerfile: Dockerfile
+    expose:
+      - "8100"
+    environment:
+      CSP_BASE_URL: http://csp:8000
+      REDIS_URL: redis://redis:6379/0
+      REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
+      FLUX_BACKEND_URL: http://flux2-dev:8000
+      RENDERER_BASE_URL: http://pptx-renderer:7100
+      JWT_KID: anila-v1
+      LOG_LEVEL: INFO
+    depends_on:
+      csp:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      pptx-renderer:
+        condition: service_healthy
+    volumes:
+      - anila-studio-flux-cache-dev:/var/anila/anila-studio-flux-cache
+    networks:
+      - default
+      - anila-models-net  # flux2-dev sits here
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8100/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    restart: unless-stopped
+
   # ── ANILA LM (no-SSO 版本，從 feature/no-sso branch build) ───────────────
   anilalm:
     build:
@@ -286,3 +324,4 @@ networks:
 volumes:
   csp-pgdata-dev:
   redis-data-dev:
+  anila-studio-flux-cache-dev:
