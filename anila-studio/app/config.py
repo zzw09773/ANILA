@@ -45,11 +45,13 @@ class Settings(BaseSettings):
     # HTTP timeouts for csp_client.
     INTERNAL_TIMEOUT_SECONDS: float = 30.0
     INTERNAL_TIMEOUT_CONNECT: float = 5.0
-    # LLM proxy via csp /v1/chat/completions is long-running (gemma4 cold
-    # start + multi-K token generation easily ~60s). csp itself sets
-    # LLM_TIMEOUT=120 internally, anila-studio outer timeout must cover
-    # that + safety margin or every Studio deck pipeline 502s.
-    INTERNAL_LLM_TIMEOUT_SECONDS: float = 180.0
+    # LLM proxy via csp /v1/chat/completions is long-running. Studio deck
+    # generation prompts can hit 10K+ input tokens (RAG chunks + spec
+    # schema + hierarchy bullet examples + theme rules) and emit 2-5K
+    # output tokens. Observed gemma4 wall-clock: 60-240s per call.
+    # csp itself defaults LLM_TIMEOUT=120 internally — production stack
+    # must override that env to ≥300 alongside this setting.
+    INTERNAL_LLM_TIMEOUT_SECONDS: float = 300.0
 
     # FLUX cache dir — local volume on the anila-studio container.
     FLUX_CACHE_DIR: str = "/var/anila/anila-studio-flux-cache"

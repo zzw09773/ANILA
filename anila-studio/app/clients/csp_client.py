@@ -197,6 +197,7 @@ async def _request(
     json_body: dict[str, Any] | None = None,
     stream: bool = False,
     timeout_override: httpx.Timeout | None = None,
+    max_attempts_override: int | None = None,
 ) -> httpx.Response:
     """Issue an HTTP request with retry on 5xx and transport errors.
 
@@ -213,11 +214,18 @@ async def _request(
     ``timeout_override`` lets long-running paths (LLM proxy) carry a
     larger budget without affecting the default for short ingestion /
     JWKS / image-blob calls.
+
+    ``max_attempts_override`` lets LLM-proxy callers opt out of the
+    aggressive retry behaviour. A 300s ReadTimeout on gemma4 never heals
+    by waiting 0.5+1+2s and retrying — it just burns 4 × timeout wall
+    clock before failing. LLM callers should pass ``max_attempts_override=1``
+    (no retry, fail-fast).
     """
     headers = _auth_headers(bearer)
     timeout = timeout_override if timeout_override is not None else _default_timeout()
+    max_attempts = max_attempts_override if max_attempts_override is not None else _MAX_ATTEMPTS
 
-    for attempt in range(_MAX_ATTEMPTS):
+    for attempt in range(max_attempts):
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 if stream:
@@ -240,7 +248,7 @@ async def _request(
 
             # ── 5xx → maybe retry ────────────────────────────────
             if response.status_code >= 500:
-                if attempt + 1 >= _MAX_ATTEMPTS:
+                if attempt + 1 >= max_attempts:
                     raise CspServerError(
                         f"csp returned {response.status_code} after "
                         f"{attempt + 1} attempts on {method} {url}: "
@@ -251,7 +259,7 @@ async def _request(
                     "csp_client retry %d/%d on %s %s after status=%d "
                     "(sleeping %.1fs)",
                     attempt + 1,
-                    _MAX_ATTEMPTS - 1,
+                    max_attempts - 1,
                     method,
                     url,
                     response.status_code,
@@ -272,7 +280,7 @@ async def _request(
             httpx.NetworkError,
             httpx.RemoteProtocolError,
         ) as exc:
-            if attempt + 1 >= _MAX_ATTEMPTS:
+            if attempt + 1 >= max_attempts:
                 logger.warning(
                     "csp_client transport error after %d attempts on %s %s: %s",
                     attempt + 1,
@@ -288,7 +296,7 @@ async def _request(
                 "csp_client retry %d/%d on %s %s after transport error "
                 "(sleeping %.1fs): %s",
                 attempt + 1,
-                _MAX_ATTEMPTS - 1,
+                max_attempts - 1,
                 method,
                 url,
                 backoff,
@@ -492,5 +500,9 @@ async def proxy_chat_completions(
         bearer=bearer,
         json_body=body,
         timeout_override=_llm_timeout(),
+        # ReadTimeout 不會自己好,retry 4 次只是把總等待時間從 300s 變
+        # 1200s 然後一樣失敗。LLM 路徑單次嘗試,失敗就 fail-fast(caller
+        # 在 _generate_validated_spec 已有 fallback deck 保底)。
+        max_attempts_override=1,
     )
     return response.json()
