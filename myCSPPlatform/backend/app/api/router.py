@@ -13,7 +13,6 @@ from app.api.platform_links import router as platform_links_router
 from app.api.proxy import router as proxy_router
 from app.api.service_access_grants import router as service_access_grants_router
 from app.api.service_clients import router as service_clients_router
-from app.api.studio import router as studio_router
 from app.api.trusted_hosts import router as trusted_hosts_router
 from app.api.ingestion import (
     collections_router as ingestion_collections_router,
@@ -50,7 +49,6 @@ api_router.include_router(ingestion_jobs_router)
 api_router.include_router(ingestion_preview_router)
 api_router.include_router(ingestion_search_router)
 api_router.include_router(ingestion_image_blob_router)
-api_router.include_router(studio_router)
 api_router.include_router(trusted_hosts_router)
 api_router.include_router(proxy_router)
 # JWKS (RFC 7517) public key endpoint for cross-service JWT verification.
