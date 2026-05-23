@@ -325,81 +325,50 @@ def _build_chunk_dicts(hits: list["ChunkHit"]) -> list[dict[str, Any]]:
 
 
 async def _retrieve_images(
-    user: "CurrentUserIdentity",
+    bearer: str,
     collection_id: int,
     seed_query: str,
 ) -> list[dict[str, Any]]:
     """Top-K relevant ingestion_images rows for the deck topic.
 
-    Phase 5. Mirrors ``_retrieve_chunks`` but searches the
-    ``ingestion_images`` vector index instead of ``document_chunks``.
-    Returns a list of dicts the prompt builder can splat into the
-    "可用圖" section, plus the renderer's CSP-side helper can hydrate
-    by ``image_id`` to inline the actual PNG bytes.
+    Phase 5. Mirrors ``_retrieve_chunks`` but calls csp's
+    ``/api/ingestion/collections/{id}/images/search`` endpoint instead
+    of the chunk-search route. Returns a list of dicts the prompt
+    builder can splat into the "可用圖" section; the renderer-side
+    hydration step (``_hydrate_images``) resolves ``image_id`` to PNG
+    bytes via ``csp_client.fetch_image_blob``.
 
     Empty list when:
       * collection has no images at all (text-only knowledge base);
       * embedder returned an empty vector;
-      * pgvector match scores are all below threshold.
+      * pgvector match scores are all below threshold;
+      * collection is archived (csp returns meta but Studio treats
+        archived as "no retrieval").
     """
-    coll = _require_collection_access(db, user, collection_id)
+    coll = await get_collection(collection_id, bearer=bearer)
     if coll.status != "active":
         return []
 
-    q_vec = await _embed_query(
-        db, user, coll.embedding_model, coll.embedding_dim, seed_query,
+    hits = await search_images(
+        collection_id,
+        seed_query,
+        top_k=STUDIO_IMAGE_TOP_K,
+        min_score=STUDIO_IMAGE_MIN_SCORE,
+        bearer=bearer,
     )
-    if not q_vec:
-        return []
-
-    pool = get_pool()
-    # Wrap with HalfVector — the same codec PgPool registers on every
-    # connection. Passing a Python string + ::halfvec cast fails
-    # because halfvec's text-input parser misreads the leading `[`
-    # ("could not convert string to float"). HalfVector ships the
-    # right binary wire format directly.
-    from pgvector import HalfVector
-
-    q_value = HalfVector(q_vec)
-
-    # halfvec uses cosine distance; pgvector returns 0 = identical, so
-    # similarity = 1 - distance. Filter on distance < (1 - min_score).
-    max_dist = 1.0 - STUDIO_IMAGE_MIN_SCORE
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT
-                i.image_id,
-                i.document_id,
-                i.page,
-                i.storage_path,
-                i.mime,
-                i.caption,
-                d.filename,
-                (i.embedding <=> $2) AS dist
-            FROM ingestion_images i
-            JOIN ingestion_documents d ON d.id = i.document_id
-            WHERE i.collection_id = $1
-              AND i.embedding IS NOT NULL
-              AND (i.embedding <=> $2) < $3
-            ORDER BY i.embedding <=> $2
-            LIMIT $4
-            """,
-            collection_id, q_value, max_dist, STUDIO_IMAGE_TOP_K,
-        )
 
     return [
         {
-            "image_id": r["image_id"],
-            "document_id": r["document_id"],
-            "page": r["page"],
-            "storage_path": r["storage_path"],
-            "mime": r["mime"],
-            "caption": (r["caption"] or "").strip(),
-            "filename": r["filename"],
-            "score": float(1.0 - r["dist"]),
+            "image_id": h.image_id,
+            "document_id": h.document_id,
+            "page": h.page,
+            "storage_path": h.storage_path,
+            "mime": h.mime,
+            "caption": (h.caption or "").strip(),
+            "filename": h.filename,
+            "score": float(h.score),
         }
-        for r in rows
+        for h in hits
     ]
 
 
@@ -2760,7 +2729,7 @@ async def _run_pipeline(
             # knowledge base) — the prompt skip-emits the section.
             try:
                 images = await _retrieve_images(
-                    db, user, payload.collection_id, seed_query,
+                    bearer, payload.collection_id, seed_query,
                 )
                 if images:
                     logger.info(
