@@ -16,21 +16,16 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Install Python deps first (Docker layer cache friendliness)
+# Install Python deps from pyproject.toml (single source of truth) — adding
+# a new runtime dep only needs a one-line change there, no Dockerfile drift.
+# setuptools needs the package source to compute metadata; we COPY app/
+# before pip install. [project.optional-dependencies.dev] (pytest / respx /
+# fakeredis) stay out of the runtime image because we install `.` not
+# `.[dev]`.
 COPY pyproject.toml ./
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir \
-        "fastapi>=0.110,<1.0" \
-        "uvicorn[standard]>=0.27" \
-        "httpx>=0.27,<1.0" \
-        "python-jose[cryptography]>=3.3" \
-        "pydantic>=2.6,<3.0" \
-        "pydantic-settings>=2.2,<3.0" \
-        "redis>=5.0" \
-        "cachetools>=5.3" \
-        "opencc-python-reimplemented>=0.1.7"
-
 COPY app/ ./app/
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir .
 
 # Run as non-root for defence-in-depth
 RUN useradd --create-home --uid 10001 anila \
