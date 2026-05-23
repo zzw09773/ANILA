@@ -143,12 +143,12 @@ node tests/test_local_emptiness.js
 
 ## 與其他服務的關係 / Integration
 
-`pptx-renderer` 不被前端直接呼叫，而是被 **myCSPPlatform backend 的 studio 模組** 呼叫（`myCSPPlatform/backend/app/api/studio.py`，常數 `RENDERER_BASE_URL = "http://pptx-renderer:7100"`）：
+`pptx-renderer` 不被前端直接呼叫，而是被 **[`anila-studio`](../anila-studio/) service** 呼叫(2026-05-23 從 csp 抽出,PR #12,見 [`extraction-decision`](../docs/superpowers/anila-studio/extraction-decision.md))。前端走 `STUDIO_BASE_URL`(env var `VITE_STUDIO_BASE_URL`,nginx reverse-proxy or vite dev proxy):
 
-1. CSP 收到 Studio 生成簡報的請求後，先由 LLM 產出 deck spec（每張投影片有 `title` / `bullets` / `layout_kind` 等）。
-2. spec 中標記為 `image_focus` 的投影片，其 `image_ref` 會被 hydrate 成 inline `image_data`（bytes）後才送渲染——studio FLUX 即時生成的情境插畫，就是在這一步被注入 spec。
-3. CSP `POST {RENDERER_BASE_URL}/render` 帶 `{ spec }`，拿回 `.pptx` bytes。
-4. 後續若要做 vision / 幾何 QA，CSP 再呼叫 `POST /screenshots`（拿 PNG）與 `POST /qa-geometric`。
+1. anila-studio 收到 Studio 生成簡報的請求後,先由 csp `/api/proxy/v1/chat/completions` 路徑跑 LLM 產出 deck spec(每張投影片有 `title` / `bullets` / `layout_kind` 等)。
+2. spec 中標記為 `image_focus` 的投影片,其 `image_ref` 會被 hydrate 成 inline `image_data`(bytes)後才送渲染 ── studio FLUX 即時生成的情境插畫,就是在這一步被注入 spec。anila-studio 透過 `GET /api/ingestion/images/{id}/blob`(csp HTTP)取得原始 image bytes。
+3. anila-studio `POST {RENDERER_BASE_URL}/render` 帶 `{ spec }`,拿回 `.pptx` bytes。
+4. 後續若要做 vision / 幾何 QA,anila-studio 再呼叫 `POST /screenshots`(拿 PNG)與 `POST /qa-geometric`。
 
 關於 `image_focus` 的渲染行為（由 `test_image_focus_render.js` 守護）：只有 `image_focus` layout 會把 `image_data` 畫上去；`standard` / `stat_callout` / `quote` / `two_column` / `icon_rows` 都會忽略 `image_data`。
 

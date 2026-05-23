@@ -85,8 +85,7 @@ async def test_rebalance_applies_changes_to_spec(mock_call):
         _baseline_spec_dict(),
         _baseline_violations(),
         chunks_text="some chunks",
-        db=None,  # mocked LLM path doesn't touch the DB
-        user=None,
+        bearer="test-bearer",  # mocked LLM path doesn't hit csp proxy
     )
 
     # Slide 0 should now be icon_rows with the LLM-supplied payload.
@@ -142,7 +141,7 @@ async def test_rebalance_respects_max_changes(mock_call):
     ]
 
     result = await _rebalance_layouts(
-        spec_dict, violations, chunks_text="", db=None, user=None,
+        spec_dict, violations, chunks_text="", bearer="test-bearer",
     )
 
     # First LAYOUT_REBALANCE_MAX_CHANGES slides switched to icon_rows; the
@@ -166,8 +165,7 @@ async def test_rebalance_logs_warning_when_v1_still_violated(mock_call, caplog):
             _baseline_spec_dict(),
             _baseline_violations(),
             chunks_text="",
-            db=None,
-            user=None,
+            bearer="test-bearer",
         )
 
     # No exception, returns a usable spec_dict.

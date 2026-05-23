@@ -36,10 +36,9 @@ def _flux_json() -> httpx.Response:
 
 class _StubLLM:
     """Minimal stand-in for _StudioLLMAdapter. The rewriter only needs to be
-    passed through; the VLM gate constructor reads ``_db`` / ``_user``."""
+    passed through; the VLM gate constructor reads ``_bearer``."""
 
-    _db = None
-    _user = None
+    _bearer = "stub-bearer"
 
 
 class _PassVlm:
@@ -89,7 +88,7 @@ async def test_stage4_cover_and_content_illustration(monkeypatch, tmp_path):
     ]}
 
     result = await studio._hydrate_images(
-        spec, {}, str(tmp_path / "uploads"),
+        spec, {}, bearer="test-bearer",
         flux_provider=studio.get_flux_provider(),
         default_aspect="16:9",
         deck_base_seed=1000,
@@ -138,7 +137,7 @@ async def test_stage4_rerun_hits_cache(monkeypatch, tmp_path):
         ]}
 
     first = await studio._hydrate_images(
-        _spec(), {}, str(tmp_path / "u"),
+        _spec(), {}, bearer="test-bearer",
         flux_provider=provider, default_aspect="16:9",
         deck_base_seed=2000, llm=_StubLLM(),
     )
@@ -147,7 +146,7 @@ async def test_stage4_rerun_hits_cache(monkeypatch, tmp_path):
     assert calls_after_first >= 1
 
     second = await studio._hydrate_images(
-        _spec(), {}, str(tmp_path / "u"),
+        _spec(), {}, bearer="test-bearer",
         flux_provider=provider, default_aspect="16:9",
         deck_base_seed=2000, llm=_StubLLM(),
     )
@@ -179,7 +178,7 @@ async def test_stage4_flux_failure_falls_back_silently(monkeypatch, tmp_path):
     ]}
 
     result = await studio._hydrate_images(
-        spec, {}, str(tmp_path / "u"),
+        spec, {}, bearer="test-bearer",
         flux_provider=studio.get_flux_provider(),
         default_aspect="16:9",
         deck_base_seed=3000,

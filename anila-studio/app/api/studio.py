@@ -64,18 +64,27 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
-from sqlalchemy.orm import Session
 
-from anila_core.storage.adapters.pgvector_store import (
-    CollectionScopedPgVectorStore,
+from app.auth import (
+    CurrentUserIdentity,
+    get_bearer_token,
+    get_current_user_identity,
 )
-
-from app.api.ingestion.collections import _require_collection_access
-from app.api.ingestion.search import _embed_query
-from app.database import get_db, SessionLocal
-from app.models.ingestion import IngestionDocument
-from app.models.model_registry import ModelRegistry
-from app.models.user import User
+from app.clients.csp_client import (
+    ChunkHit,
+    CollectionMeta,
+    CspClientError,
+    CspForbiddenError,
+    CspNotFoundError,
+    CspServerError,
+    CspUnauthorizedError,
+    ImageHit,
+    fetch_image_blob,
+    get_collection,
+    proxy_chat_completions,
+    search_chunks,
+    search_images,
+)
 from app.schemas.studio import (
     JOB_STEP_FIXING,
     JOB_STEP_GENERATING,
@@ -90,10 +99,7 @@ from app.schemas.studio import (
     VisualDefect,
 )
 from app.services import studio_job_service as jobs
-from app.services.auth_service import get_current_user
 from app.services.geometric_qa import GeometricDefect, run_geometric_qa
-from app.services.ingestion_pool import get_pool
-from app.services.proxy_service import proxy_request
 from app.services.studio_text_normalizer import normalize_spec
 
 if TYPE_CHECKING:
@@ -257,54 +263,61 @@ def _loads_lenient(text: str) -> Any:
 
 
 async def _retrieve_chunks(
-    db: Session,
-    user: User,
+    bearer: str,
     collection_id: int,
     seed_query: str,
 ) -> list[dict[str, Any]]:
-    """Top-K relevant chunks for the seed_query, with filename joined in.
+    """Top-K relevant chunks for the seed_query, fetched via csp HTTP.
 
-    Returns a list of dicts (not the full SearchHit objects from
-    anila_core) so the prompt-building code stays decoupled from the
-    storage layer's representation.
+    csp owns the embedding model + pgvector index; we just call its
+    ``/api/ingestion/collections/{id}/search`` endpoint and project the
+    returned hits into the dict shape the prompt builder expects.
+
+    Returns ``[]`` when:
+      * the collection is archived (csp returns its meta but Studio
+        treats archived as "no retrieval");
+      * csp returns an empty result set;
+      * csp surfaces ``CspNotFoundError`` (already-deleted collection).
+
+    Raises:
+      * ``CspForbiddenError`` (caller already 403'd in the POST handler;
+        if we re-hit it here it's a TOCTOU race — surface as 403).
+      * ``CspUnauthorizedError`` (token expired mid-job — surface as 401
+        so the SPA refreshes and retries).
+      * ``CspServerError`` (transient csp outage; caller catches this
+        and degrades to "no retrieval" mode).
     """
-    coll = _require_collection_access(db, user, collection_id)
+    coll = await get_collection(collection_id, bearer=bearer)
     if coll.status != "active":
         # Studio over an archived collection is an unusual ask; treat as
         # zero hits and let the prompt fall through to "no context" mode.
         return []
 
-    q_vec = await _embed_query(
-        db, user, coll.embedding_model, coll.embedding_dim, seed_query,
-    )
-
-    pool = get_pool()
-    store = CollectionScopedPgVectorStore(pool, collection_id=coll.id)
-    hits = await store.similarity_search(
-        query_embedding=q_vec,
+    hits = await search_chunks(
+        collection_id,
+        seed_query,
         top_k=STUDIO_TOP_K,
         min_score=STUDIO_MIN_SCORE,
+        bearer=bearer,
     )
-    if not hits:
-        return []
-
-    doc_ids = {h.chunk.document_id for h in hits}
-    rows = (
-        db.query(IngestionDocument.id, IngestionDocument.filename)
-        .filter(IngestionDocument.id.in_(doc_ids))
-        .all()
-    )
-    filenames = {r.id: r.filename for r in rows}
-
-    return _build_chunk_dicts(hits, filenames)
+    return _build_chunk_dicts(hits)
 
 
-def _build_chunk_dicts(hits, filenames):  # noqa: ANN001 — internal
+def _build_chunk_dicts(hits: list["ChunkHit"]) -> list[dict[str, Any]]:
+    """Project ``ChunkHit`` dataclasses into the dict shape callers expect.
+
+    The original csp implementation joined filenames out of
+    ``ingestion_documents`` separately; the new csp HTTP endpoint
+    embeds ``filename`` on every hit, so the join here is a no-op.
+    Content is truncated client-side to ``STUDIO_CONTENT_LIMIT_CHARS``
+    to keep the prompt budget bounded even if csp returned larger
+    chunks than the studio target.
+    """
     return [
         {
-            "filename": filenames.get(h.chunk.document_id, "<unknown>"),
-            "chunk_key": h.chunk.chunk_key,
-            "content": h.chunk.content[:STUDIO_CONTENT_LIMIT_CHARS],
+            "filename": h.filename or "<unknown>",
+            "chunk_key": h.chunk_key,
+            "content": h.content[:STUDIO_CONTENT_LIMIT_CHARS],
             "score": float(h.score),
         }
         for h in hits
@@ -312,82 +325,50 @@ def _build_chunk_dicts(hits, filenames):  # noqa: ANN001 — internal
 
 
 async def _retrieve_images(
-    db: Session,
-    user: User,
+    bearer: str,
     collection_id: int,
     seed_query: str,
 ) -> list[dict[str, Any]]:
     """Top-K relevant ingestion_images rows for the deck topic.
 
-    Phase 5. Mirrors ``_retrieve_chunks`` but searches the
-    ``ingestion_images`` vector index instead of ``document_chunks``.
-    Returns a list of dicts the prompt builder can splat into the
-    "可用圖" section, plus the renderer's CSP-side helper can hydrate
-    by ``image_id`` to inline the actual PNG bytes.
+    Phase 5. Mirrors ``_retrieve_chunks`` but calls csp's
+    ``/api/ingestion/collections/{id}/images/search`` endpoint instead
+    of the chunk-search route. Returns a list of dicts the prompt
+    builder can splat into the "可用圖" section; the renderer-side
+    hydration step (``_hydrate_images``) resolves ``image_id`` to PNG
+    bytes via ``csp_client.fetch_image_blob``.
 
     Empty list when:
       * collection has no images at all (text-only knowledge base);
       * embedder returned an empty vector;
-      * pgvector match scores are all below threshold.
+      * pgvector match scores are all below threshold;
+      * collection is archived (csp returns meta but Studio treats
+        archived as "no retrieval").
     """
-    coll = _require_collection_access(db, user, collection_id)
+    coll = await get_collection(collection_id, bearer=bearer)
     if coll.status != "active":
         return []
 
-    q_vec = await _embed_query(
-        db, user, coll.embedding_model, coll.embedding_dim, seed_query,
+    hits = await search_images(
+        collection_id,
+        seed_query,
+        top_k=STUDIO_IMAGE_TOP_K,
+        min_score=STUDIO_IMAGE_MIN_SCORE,
+        bearer=bearer,
     )
-    if not q_vec:
-        return []
-
-    pool = get_pool()
-    # Wrap with HalfVector — the same codec PgPool registers on every
-    # connection. Passing a Python string + ::halfvec cast fails
-    # because halfvec's text-input parser misreads the leading `[`
-    # ("could not convert string to float"). HalfVector ships the
-    # right binary wire format directly.
-    from pgvector import HalfVector
-
-    q_value = HalfVector(q_vec)
-
-    # halfvec uses cosine distance; pgvector returns 0 = identical, so
-    # similarity = 1 - distance. Filter on distance < (1 - min_score).
-    max_dist = 1.0 - STUDIO_IMAGE_MIN_SCORE
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT
-                i.image_id,
-                i.document_id,
-                i.page,
-                i.storage_path,
-                i.mime,
-                i.caption,
-                d.filename,
-                (i.embedding <=> $2) AS dist
-            FROM ingestion_images i
-            JOIN ingestion_documents d ON d.id = i.document_id
-            WHERE i.collection_id = $1
-              AND i.embedding IS NOT NULL
-              AND (i.embedding <=> $2) < $3
-            ORDER BY i.embedding <=> $2
-            LIMIT $4
-            """,
-            collection_id, q_value, max_dist, STUDIO_IMAGE_TOP_K,
-        )
 
     return [
         {
-            "image_id": r["image_id"],
-            "document_id": r["document_id"],
-            "page": r["page"],
-            "storage_path": r["storage_path"],
-            "mime": r["mime"],
-            "caption": (r["caption"] or "").strip(),
-            "filename": r["filename"],
-            "score": float(1.0 - r["dist"]),
+            "image_id": h.image_id,
+            "document_id": h.document_id,
+            "page": h.page,
+            "storage_path": h.storage_path,
+            "mime": h.mime,
+            "caption": (h.caption or "").strip(),
+            "filename": h.filename,
+            "score": float(h.score),
         }
-        for r in rows
+        for h in hits
     ]
 
 
@@ -506,6 +487,22 @@ def _build_generation_prompt(
             "",
             "重要：bullets 任何 layout 都要填（renderer 在 layout-specific 欄位",
             "缺漏時會回退用 bullets 渲染，不要省）。",
+            "",
+            "bullets 階層標記(standard / two_column 在 renderer 解析,其他 layout 忽略):",
+            "  每個 bullet 開頭可加 Unicode marker 表示縮排階層,marker 跟內文中間 1 個空白。",
+            "  marker 會被 renderer 剝掉(不雙重符號),並換成正確 indent + dot:",
+            "    ● level 0 主要點(預設,沒 marker 也視為 level 0)",
+            "    ◦ level 1 子點(縮排,父點下方延伸)",
+            "    ▪ level 2 子子點(更深縮排,通常別用超過 2 層)",
+            "  使用時機:當條目間自然有「主-從」關係(主項列舉 → 各項展開),用階層讓視覺",
+            "  讀者一眼看出結構。沒從屬時所有條目維持 level 0,不要硬塞階層湊深度。",
+            "  範例(bullets list 欄位的字串值):",
+            '    "● Advanced RAG: hybrid retrieval + reranking"',
+            '    "◦ BM25 + dense 加權"',
+            '    "◦ Cross-encoder rerank top-100"',
+            '    "● Agentic RAG: 動態決定檢索時機"',
+            '    "◦ Router node 評估必要性"',
+            "  schema 仍是 list[str](不是 nested),只是 renderer 看 leading marker 決定 indent。",
             "",
             "── icon_rows.concept 必須從以下白名單挑（未列出的會 fallback",
             "   為「不畫 icon」，所以不要自創；先想 domain，再從該 domain 挑）──",
@@ -742,46 +739,55 @@ def _build_generation_prompt(
 
 
 async def _call_llm_chat(
-    db: Session,
-    user: User,
+    bearer: str,
     model_name: str,
     messages: list[dict[str, Any]],
     *,
     temperature: float = 0.4,
     max_tokens: int | None = None,
 ) -> str:
-    """Invoke ``/v1/chat/completions`` via the in-process proxy.
+    """Invoke csp's ``/v1/chat/completions`` and return content.
 
-    Returns the assistant content string. Going through ``proxy_request``
-    rather than direct httpx keeps usage metering (token_usage table) in
-    place — Studio calls show up in the same dashboards as user chat.
+    The csp proxy owns the ``model_registry`` lookup, the upstream
+    routing decision (vLLM / Ollama / external), token-usage metering,
+    and per-department billing. anila-studio's role here is to pass
+    the model name + messages and the caller's bearer; csp does the
+    rest — usage rows still appear in the same dashboards as user chat
+    because the bearer carries the same identity claims.
+
+    Returns the assistant ``content`` string. Raises:
+      * ``HTTPException(502)`` when csp returns an unexpected shape;
+      * ``HTTPException(401/403/404)`` when csp surfaces a typed
+        ``CspClientError`` subclass (token expired, no access, model
+        not registered).
     """
-    model = (
-        db.query(ModelRegistry).filter(ModelRegistry.name == model_name).first()
-    )
-    if model is None or not model.is_active:
+    try:
+        response = await proxy_chat_completions(
+            model=model_name,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            bearer=bearer,
+        )
+    except CspNotFoundError as exc:
+        # csp's proxy returns 404 when the requested model_name is not
+        # in model_registry — preserve the 503 surfaced by the legacy
+        # implementation so existing callers / dashboards don't see a
+        # status-code regression.
         raise HTTPException(
             status_code=503,
             detail=f"Studio LLM '{model_name}' not registered or inactive.",
-        )
+        ) from exc
+    except CspUnauthorizedError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except CspForbiddenError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (CspServerError, CspClientError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"csp proxy failed for model '{model_name}': {exc}",
+        ) from exc
 
-    body: dict[str, Any] = {
-        "model": model_name,
-        "messages": messages,
-        "temperature": temperature,
-        "stream": False,
-    }
-    if max_tokens:
-        body["max_tokens"] = max_tokens
-
-    response = await proxy_request(
-        model=model,
-        api_key_id=None,
-        user_id=user.id,
-        department_id=user.department_id,
-        request_body=body,
-        endpoint_path="/v1/chat/completions",
-    )
     try:
         return str(response["choices"][0]["message"]["content"])
     except (KeyError, IndexError, TypeError) as e:
@@ -795,22 +801,21 @@ class _StudioLLMAdapter:
     """Adapts ``_call_llm_chat`` to the ``complete(system, user)`` interface
     the FLUX prompt rewriter (Layer A) expects.
 
-    The rewriter is deliberately decoupled from CSP internals (DB session,
-    ModelRegistry, usage metering) — it only needs "give me one completion
-    for this system+user pair". This thin wrapper binds the db/user/model
-    context so rewriter calls still flow through ``proxy_request`` and land
-    in the same token-usage dashboards as every other Studio LLM call.
+    The rewriter is deliberately decoupled from CSP internals
+    (ModelRegistry, usage metering) — it only needs "give me one completion
+    for this system+user pair". This thin wrapper binds the bearer+model
+    context so rewriter calls still flow through csp's
+    ``/v1/chat/completions`` and land in the same token-usage
+    dashboards as every other Studio LLM call.
     """
 
-    def __init__(self, db: Session, user: User, model_name: str = SLIDES_LLM_MODEL) -> None:
-        self._db = db
-        self._user = user
+    def __init__(self, bearer: str, model_name: str = SLIDES_LLM_MODEL) -> None:
+        self._bearer = bearer
         self._model_name = model_name
 
     async def complete(self, *, system: str, user: str) -> str:
         return await _call_llm_chat(
-            self._db,
-            self._user,
+            self._bearer,
             self._model_name,
             [
                 {"role": "system", "content": system},
@@ -829,17 +834,16 @@ class _Gemma4VlmGate:
     gemma4 is already deployed and multimodal; ``_inspect_slide_visually``
     above proves the OpenAI vision message shape (``image_url`` with a
     ``data:image/png;base64,...`` URL) reaches it through
-    ``_call_llm_chat`` -> ``proxy_request``. This adapter reuses that exact
-    path for the gate's semantic + text check, so no separate VLM is
-    deployed (per the confirmed Stage 2 premise).
+    ``_call_llm_chat`` -> csp proxy. This adapter reuses that exact path
+    for the gate's semantic + text check, so no separate VLM is deployed
+    (per the confirmed Stage 2 premise).
 
     Exposes ``async check(png_bytes, *, concept) -> dict`` — the Vlm
     Protocol the gate expects.
     """
 
-    def __init__(self, db: Session, user: User, model_name: str = VISION_LLM_MODEL) -> None:
-        self._db = db
-        self._user = user
+    def __init__(self, bearer: str, model_name: str = VISION_LLM_MODEL) -> None:
+        self._bearer = bearer
         self._model_name = model_name
 
     async def check(self, png_bytes: bytes, *, concept: str) -> dict:
@@ -871,7 +875,7 @@ class _Gemma4VlmGate:
             },
         ]
         raw = await _call_llm_chat(
-            self._db, self._user, self._model_name, messages, temperature=0.1,
+            self._bearer, self._model_name, messages, temperature=0.1,
         )
         try:
             parsed = json.loads(_extract_json_object(raw))
@@ -900,8 +904,7 @@ class _Gemma4VlmGate:
 
 
 async def _generate_validated_spec(
-    db: Session,
-    user: User,
+    bearer: str,
     collection_name: str,
     preset: str,
     extra_instructions: str | None,
@@ -932,7 +935,7 @@ async def _generate_validated_spec(
     # actually USE the section_break / stat_callout / two_column knobs
     # we're describing in the prompt.
     raw = await _call_llm_chat(
-        db, user, SLIDES_LLM_MODEL, messages, temperature=0.3,
+        bearer, SLIDES_LLM_MODEL, messages, temperature=0.3,
     )
 
     last_err: ValidationError | ValueError | json.JSONDecodeError | None = None
@@ -986,7 +989,7 @@ async def _generate_validated_spec(
                 }
             )
             raw = await _call_llm_chat(
-                db, user, SLIDES_LLM_MODEL, messages, temperature=0.2,
+                bearer, SLIDES_LLM_MODEL, messages, temperature=0.2,
             )
 
     # Both attempts failed. Per the research file (compass_artifact §F /
@@ -1252,7 +1255,7 @@ def get_flux_provider() -> "FluxImageProvider | None":
 
     Configuration via env:
       FLUX_BACKEND_URL       (required to enable; e.g. http://flux2-dev:8000)
-      FLUX_CACHE_DIR         (default: $INGESTION_UPLOAD_DIR/flux-cache)
+      FLUX_CACHE_DIR         (default: /var/anila/anila-studio-flux-cache)
       FLUX_MAX_CONCURRENT    (default: 4)
       FLUX_TIMEOUT_SECONDS   (default: 180)
     """
@@ -1267,11 +1270,10 @@ def get_flux_provider() -> "FluxImageProvider | None":
 
     from app.services.flux_image_provider import FluxImageProvider
 
-    upload_dir = os.environ.get(
-        "INGESTION_UPLOAD_DIR", "/var/anila/ingestion-uploads"
-    )
+    # anila-studio 自己的 cache volume — 不借 csp 的 INGESTION_UPLOAD_DIR
+    # (那是 csp 內 ingestion 上傳目錄,anila-studio container 沒掛/沒權限)。
     cache_dir = os.environ.get(
-        "FLUX_CACHE_DIR", os.path.join(upload_dir, "flux-cache")
+        "FLUX_CACHE_DIR", "/var/anila/anila-studio-flux-cache"
     )
     max_concurrent = int(os.environ.get("FLUX_MAX_CONCURRENT", "4"))
     timeout = float(os.environ.get("FLUX_TIMEOUT_SECONDS", "180"))
@@ -1437,7 +1439,7 @@ async def _generate_slide_illustration(
         return False
 
     seed = deck_base_seed + idx
-    vlm = _Gemma4VlmGate(llm._db, llm._user)
+    vlm = _Gemma4VlmGate(llm._bearer)
     try:
         best, retry_count = await _gated_generate(
             flux_provider,
@@ -1482,8 +1484,8 @@ async def _generate_slide_illustration(
 async def _hydrate_images(
     spec_dict: dict[str, Any],
     images_lookup: dict[str, dict[str, Any]],
-    upload_dir: str,
     *,
+    bearer: str,
     flux_provider: "FluxImageProvider | None" = None,
     default_aspect: str = "16:9",
     deck_base_seed: int | None = None,
@@ -1493,7 +1495,9 @@ async def _hydrate_images(
     """Resolve every Slide.image_ref / diagram_dot / image_prompt into inline base64 PNG.
 
     Order of precedence per slide (curated > deterministic > generative):
-      1. image_ref present and resolvable → inline existing PNG.
+      1. image_ref present and resolvable → inline existing PNG (fetched
+         from csp's ``/api/ingestion/images/{id}/blob`` endpoint, so we
+         no longer need a shared ``upload_dir`` mount).
       2. image_ref present but unresolvable → drop, fall back to next path.
       3. image_kind='diagram' + diagram_dot → render via Graphviz `dot -Tpng`.
       4. diagram render fails → drop diagram_dot/image_kind, fall back to next path.
@@ -1515,7 +1519,9 @@ async def _hydrate_images(
 
     `deck_base_seed` + `llm` enable the Stage 1 cover-hero path; when either
     is None the function behaves exactly as before (the legacy image_ref /
-    diagram / image_prompt paths only).
+    diagram / image_prompt paths only). ``bearer`` is required even when
+    no ``image_ref`` slides exist because the FLUX rewriter / VLM gate
+    eventually flow through csp's proxy as well.
     """
     import base64
 
@@ -1525,7 +1531,7 @@ async def _hydrate_images(
     slides = spec_dict.get("slides") or []
     generated_count = 0
     for idx, slide in enumerate(slides):
-        # Path 1: image_ref (existing behavior — unchanged)
+        # Path 1: image_ref → resolve via csp_client.fetch_image_blob
         ref = slide.get("image_ref")
         if ref:
             meta = images_lookup.get(ref)
@@ -1534,10 +1540,10 @@ async def _hydrate_images(
                 # If a fallback image_prompt is present, try that next
             else:
                 try:
-                    abs_path = os.path.join(upload_dir, meta["storage_path"])
-                    with open(abs_path, "rb") as f:
-                        blob = f.read()
-                    mime = meta.get("mime") or "image/png"
+                    blob, fetched_mime = await fetch_image_blob(
+                        int(meta["image_id"]), bearer=bearer,
+                    )
+                    mime = meta.get("mime") or fetched_mime or "image/png"
                     slide["image_data"] = (
                         f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"
                     )
@@ -1546,11 +1552,25 @@ async def _hydrate_images(
                     slide.pop("diagram_dot", None)
                     slide.pop("image_kind", None)
                     continue
-                except OSError as e:
+                except (CspNotFoundError, CspForbiddenError) as e:
+                    # csp lost the row (storage purged) or the bearer no
+                    # longer has access — surface the same warning pattern
+                    # the old OSError branch used and degrade to the next
+                    # image-resolution path.
                     logger.warning(
-                        "Failed to hydrate image_ref=%s for storage_path=%s: %s — "
+                        "Failed to hydrate image_ref=%s via csp blob fetch: %s — "
                         "falling back to diagram_dot / image_prompt if available.",
-                        ref, meta.get("storage_path"), e,
+                        ref, e,
+                    )
+                    slide.pop("image_ref", None)
+                except (CspServerError, CspClientError) as e:
+                    # Transient csp outage — log and fall through so the
+                    # deck still renders with whatever fallback path the
+                    # slide has next.
+                    logger.warning(
+                        "csp blob fetch failed for image_ref=%s: %s — "
+                        "falling back to diagram_dot / image_prompt if available.",
+                        ref, e,
                     )
                     slide.pop("image_ref", None)
 
@@ -1653,6 +1673,7 @@ async def _render_pptx(
     spec: SlidesSpec,
     images_lookup: dict[str, dict[str, Any]] | None = None,
     *,
+    bearer: str,
     deck_base_seed: int | None = None,
     llm: "_StudioLLMAdapter | None" = None,
     deck_style: "StyleDescriptor | None" = None,
@@ -1665,7 +1686,9 @@ async def _render_pptx(
     `images_lookup` (optional) is the dict that drove the LLM's
     image-suggestion list, keyed by image_id. When provided, every
     Slide.image_ref gets hydrated into inline `image_data` bytes via
-    `_hydrate_images` before the spec leaves the CSP boundary.
+    `_hydrate_images` before the spec leaves the anila-studio boundary.
+    Hydration now pulls bytes from csp via ``fetch_image_blob`` rather
+    than a shared filesystem mount, so ``bearer`` is required.
 
     `deck_base_seed` + `llm` (FLUX Stage 1) enable the cover-hero generation
     path inside `_hydrate_images`. They are threaded from the job pipeline
@@ -1681,17 +1704,10 @@ async def _render_pptx(
         flux_provider is not None and deck_base_seed is not None and llm is not None
     )
     if images_lookup or cover_hero_ready:
-        # Worker writes to share/uploads/ingestion via INGESTION_UPLOAD_DIR;
-        # CSP mounts the same directory at the same path (see compose).
-        # storage_path on the row is relative to that root, so we just
-        # join here.
-        ingest_upload = os.getenv(
-            "INGESTION_UPLOAD_DIR", "/var/anila/ingestion-uploads",
-        )
         spec_dict = await _hydrate_images(
             spec_dict,
             images_lookup or {},
-            ingest_upload,
+            bearer=bearer,
             flux_provider=flux_provider,
             default_aspect="16:9",
             deck_base_seed=deck_base_seed,
@@ -1745,8 +1761,7 @@ async def _capture_screenshots(pptx_path: str) -> list[bytes]:
 
 
 async def _inspect_slide_visually(
-    db: Session,
-    user: User,
+    bearer: str,
     slide_index: int,
     png_bytes: bytes,
 ) -> list[VisualDefect]:
@@ -1781,7 +1796,7 @@ async def _inspect_slide_visually(
         },
     ]
     raw = await _call_llm_chat(
-        db, user, VISION_LLM_MODEL, messages, temperature=0.1,
+        bearer, VISION_LLM_MODEL, messages, temperature=0.1,
     )
 
     try:
@@ -1863,8 +1878,7 @@ def _merge_defects(
 
 
 async def _visual_qa(
-    db: Session,
-    user: User,
+    bearer: str,
     pptx_path: str,
     *,
     pptx_bytes: bytes | None = None,
@@ -1908,7 +1922,7 @@ async def _visual_qa(
         if idx in critical_slides:
             return []
         async with semaphore:
-            return await _inspect_slide_visually(db, user, idx, b)
+            return await _inspect_slide_visually(bearer, idx, b)
 
     results = await asyncio.gather(
         *(_one(i, b) for i, b in enumerate(pngs)),
@@ -1921,8 +1935,7 @@ async def _visual_qa(
 
 
 async def _fix_spec_with_defects(
-    db: Session,
-    user: User,
+    bearer: str,
     current_spec: SlidesSpec,
     defects: list[VisualDefect],
 ) -> SlidesSpec:
@@ -1954,7 +1967,7 @@ async def _fix_spec_with_defects(
         {"role": "user", "content": user_msg},
     ]
     raw = await _call_llm_chat(
-        db, user, SLIDES_LLM_MODEL, messages, temperature=0.2,
+        bearer, SLIDES_LLM_MODEL, messages, temperature=0.2,
     )
     extracted = _extract_json_object(raw)
     return SlidesSpec.model_validate(_loads_lenient(extracted))
@@ -2464,14 +2477,13 @@ def _build_rebalance_prompt(
 async def _call_llm_for_rebalance(
     prompt: tuple[str, str],
     *,
-    db: Session,
-    user: User,
+    bearer: str,
 ) -> dict[str, Any]:
     """Thin wrapper around ``_call_llm_chat`` for the rebalance pass.
 
     Extracted as its own helper so tests can mock the LLM round-trip
-    without standing up the full proxy / model registry. Returns the
-    parsed JSON dict (caller validates the `changes` shape).
+    without standing up the full csp proxy / model registry. Returns
+    the parsed JSON dict (caller validates the `changes` shape).
     """
     system, user_msg = prompt
     messages = [
@@ -2479,7 +2491,7 @@ async def _call_llm_for_rebalance(
         {"role": "user", "content": user_msg},
     ]
     raw = await _call_llm_chat(
-        db, user, SLIDES_LLM_MODEL, messages, temperature=0.2,
+        bearer, SLIDES_LLM_MODEL, messages, temperature=0.2,
     )
     logger.info(
         "[H-DIAG] rebalance LLM raw response (first 2KB): %s",
@@ -2592,8 +2604,7 @@ async def _rebalance_layouts(
     violations: list[LayoutViolation],
     chunks_text: str,
     *,
-    db: Session,
-    user: User,
+    bearer: str,
 ) -> dict[str, Any]:
     """Run the focused LLM rebalance pass and return an updated spec_dict.
 
@@ -2626,7 +2637,7 @@ async def _rebalance_layouts(
         len(prompt[0]) + len(prompt[1]), len(actionable),
     )
     try:
-        result = await _call_llm_for_rebalance(prompt, db=db, user=user)
+        result = await _call_llm_for_rebalance(prompt, bearer=bearer)
     except Exception as exc:  # noqa: BLE001
         logger.warning("rebalance LLM call failed: %s", exc)
         return spec_dict
@@ -2700,236 +2711,236 @@ async def _rebalance_layouts(
 
 async def _run_pipeline(
     *,
-    user_id: int,
+    identity: "CurrentUserIdentity",
+    bearer: str,
     payload: GenerateSpecRequest,
     updater: jobs.JobUpdater,
 ) -> None:
     """Executes steps 3-9 and pushes state transitions to the updater.
 
-    Runs INSIDE the asyncio task spawned by the job manager. Owns its own
-    DB session because the request-scoped session from FastAPI's
-    Depends(get_db) is closed by the time the POST handler returns.
-    Re-resolving the User and collection inside this session keeps the
-    ORM objects attached.
+    Runs INSIDE the asyncio task spawned by the job manager. The caller's
+    bearer token is captured once at POST time and threaded through every
+    csp_client call so authorisation / quota / billing land on the right
+    user. anila-studio holds no DB session of its own — every piece of
+    state lives upstream (csp owns the row data; csp's proxy owns the LLM
+    token usage rows).
     """
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.id == user_id).first()
-        if user is None:
-            raise RuntimeError(f"user {user_id} disappeared mid-job")
-        coll = _require_collection_access(db, user, payload.collection_id)
+    coll = await get_collection(payload.collection_id, bearer=bearer)
 
-        # FLUX Stage 1 (4.2): deterministic per-deck seed derived once from
-        # the job_id, so re-running the same job yields the same images.
-        # Per-slide seed = deck_base_seed + slide_index (computed in
-        # _hydrate_images). The llm adapter lets the rewriter (Layer A)
-        # reuse the same proxy/usage path as every other Studio LLM call.
-        deck_base_seed = int(
-            hashlib.sha256(updater.job_id.encode()).hexdigest()[:8], 16
+    # FLUX Stage 1 (4.2): deterministic per-deck seed derived once from
+    # the job_id, so re-running the same job yields the same images.
+    # Per-slide seed = deck_base_seed + slide_index (computed in
+    # _hydrate_images). The llm adapter lets the rewriter (Layer A)
+    # reuse the same proxy/usage path as every other Studio LLM call.
+    deck_base_seed = int(
+        hashlib.sha256(updater.job_id.encode()).hexdigest()[:8], 16
+    )
+    flux_llm = _StudioLLMAdapter(bearer, SLIDES_LLM_MODEL)
+
+    # ── Step 3: retrieval ──
+    await updater.set(step=JOB_STEP_RETRIEVING)
+    seed_query = " · ".join(
+        [coll.name, payload.preset]
+        + (
+            [payload.extra_instructions.strip()]
+            if payload.extra_instructions
+            else []
         )
-        flux_llm = _StudioLLMAdapter(db, user, SLIDES_LLM_MODEL)
-
-        # ── Step 3: retrieval ──
-        await updater.set(step=JOB_STEP_RETRIEVING)
-        seed_query = " · ".join(
-            [coll.name, payload.preset]
-            + (
-                [payload.extra_instructions.strip()]
-                if payload.extra_instructions
-                else []
+    )
+    chunks: list[dict[str, Any]] = []
+    images: list[dict[str, Any]] = []
+    if not payload.skip_retrieval:
+        try:
+            chunks = await _retrieve_chunks(
+                bearer, payload.collection_id, seed_query,
             )
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001
+            # Retrieval is best-effort — see commentary on the
+            # original sync endpoint. Continue without context.
+            logger.warning(
+                "Studio retrieval failed (%s); generating without context.", e,
+            )
+        # Phase 5: image vector search runs alongside chunk search
+        # so the LLM gets both kinds of context in one prompt. Empty
+        # list when the collection has no images at all (text-only
+        # knowledge base) — the prompt skip-emits the section.
+        try:
+            images = await _retrieve_images(
+                bearer, payload.collection_id, seed_query,
+            )
+            if images:
+                logger.info(
+                    "Studio retrieved %d images for deck '%s'",
+                    len(images), payload.preset,
+                )
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "Studio image retrieval failed (%s); proceeding "
+                "without image suggestions.",
+                e,
+            )
+
+    # Build the lookup the renderer-side hydration needs. Keyed by
+    # image_id so `Slide.image_ref` resolves in O(1) without re-
+    # querying the DB during render. Only images actually surfaced
+    # to the LLM are eligible — this is also the security boundary
+    # for "user can't reference cross-collection images".
+    images_lookup: dict[str, dict[str, Any]] = {
+        im["image_id"]: im for im in images
+    }
+
+    # ── Steps 4-6: LLM → JSON → SlidesSpec ──
+    await updater.set(step=JOB_STEP_GENERATING)
+    spec, used_fallback = await _generate_validated_spec(
+        bearer,
+        coll.name,
+        payload.preset,
+        payload.extra_instructions,
+        chunks,
+        images=images,
+    )
+    # ── Step 6.5: zh-CN → zh-TW post-processing ──
+    # Gemma 4 leaks simplified-Chinese phrasing into 繁體 output (研究第
+    # 33-39 行有量化證據). The system prompt fights this with an explicit
+    # mapping table, but enforcement isn't 100% — we run OpenCC s2twp as
+    # a deterministic safety net AFTER spec validate (so the LLM-emitted
+    # structural integrity check has already passed) and BEFORE render
+    # / vision QA (so all downstream steps see clean Traditional Chinese).
+    spec = normalize_spec(spec)
+    # Round 3 Patch P: apply theme_override after spec is validated.
+    # Bypasses LLM theme selection per the API request. Applied here
+    # (post-validation, pre-rebalance, pre-render) so all downstream
+    # steps — rebalance, render, vision QA — see the forced theme.
+    # Literal on the request schema already rejected invalid values
+    # at request time, so we trust the value unconditionally here.
+    if payload.theme_override:
+        spec.theme = payload.theme_override
+    else:
+        # Round 5 Patch U: deterministic title-keyword override.
+        # Promotes title-based theme routing from a prompt-soft rule
+        # to a hard programmatic override. Runs AFTER LLM emits theme
+        # and AFTER theme_override (user wins over inference). Only
+        # fires when title matches a high-confidence keyword; no-op
+        # otherwise (preserves LLM choice). Must run before audit /
+        # rebalance / render so all downstream steps see the final
+        # theme.
+        spec = _apply_theme_title_override(spec)
+    # Surface the title early so the UI can show "鑄造中：<title>"
+    # before render finishes.
+    await updater.set(title=spec.title, slide_count=len(spec.slides))
+
+    # ── Step 6.7 / Studio Fix 1: layout audit + LLM rebalance ──
+    # Run the deterministic audit on the validated spec. If a HARD
+    # violation fires (standard > 60% / numeric content without
+    # stat_callout), make ONE focused LLM call to re-select layout
+    # on a small candidate set. Soft violations alone don't trigger.
+    # Skip the whole pass on the fallback deck (its job is "explain
+    # the failure", not "look good") and on skip_retrieval (no
+    # chunks_text to feed V2).
+    if not used_fallback:
+        chunks_str = "\n\n".join(
+            str(c.get("content", "")) for c in chunks
         )
-        chunks: list[dict[str, Any]] = []
-        images: list[dict[str, Any]] = []
-        if not payload.skip_retrieval:
+        violations = _audit_layout_distribution(spec, chunks_text=chunks_str)
+        if _should_rebalance(violations):
+            await updater.set(step=JOB_STEP_REBALANCING)
             try:
-                chunks = await _retrieve_chunks(
-                    db, user, payload.collection_id, seed_query,
+                spec_dict = spec.model_dump(mode="json")
+                rebalanced = await _rebalance_layouts(
+                    spec_dict, violations, chunks_str, bearer=bearer,
                 )
-            except HTTPException:
-                raise
-            except Exception as e:  # noqa: BLE001
-                # Retrieval is best-effort — see commentary on the
-                # original sync endpoint. Continue without context.
+                spec = SlidesSpec.model_validate(rebalanced)
+                # Rebalance 透過 LLM 重生 bullets,新內容會帶 LaTeX 控制字元
+                # (e.g. $\nightarrow$)跟簡體字。必須再過 normalize_spec
+                # 才能 render,否則先前的 strip_latex / s2twp / 引用清理
+                # 全部白做(production 觀察到 $\nightarrow$ 8 處殘留即此因)。
+                spec = normalize_spec(spec)
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "Studio retrieval failed (%s); generating without context.", e,
-                )
-            # Phase 5: image vector search runs alongside chunk search
-            # so the LLM gets both kinds of context in one prompt. Empty
-            # list when the collection has no images at all (text-only
-            # knowledge base) — the prompt skip-emits the section.
-            try:
-                images = await _retrieve_images(
-                    db, user, payload.collection_id, seed_query,
-                )
-                if images:
-                    logger.info(
-                        "Studio retrieved %d images for deck '%s'",
-                        len(images), payload.preset,
-                    )
-            except HTTPException:
-                raise
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "Studio image retrieval failed (%s); proceeding "
-                    "without image suggestions.",
-                    e,
+                    "Rebalance failed: %s — proceeding with original spec",
+                    exc,
                 )
 
-        # Build the lookup the renderer-side hydration needs. Keyed by
-        # image_id so `Slide.image_ref` resolves in O(1) without re-
-        # querying the DB during render. Only images actually surfaced
-        # to the LLM are eligible — this is also the security boundary
-        # for "user can't reference cross-collection images".
-        images_lookup: dict[str, dict[str, Any]] = {
-            im["image_id"]: im for im in images
-        }
+    # ── Stage 3: infer the deck's visual house style from its content,
+    # once per deck, so every slide shares one visual language. Only when
+    # the FLUX cover-hero path will actually run; failure degrades to the
+    # default style inside infer_deck_style.
+    deck_style = None
+    if get_flux_provider() is not None and deck_base_seed is not None:
+        from app.services.flux_style import infer_deck_style
 
-        # ── Steps 4-6: LLM → JSON → SlidesSpec ──
-        await updater.set(step=JOB_STEP_GENERATING)
-        spec, used_fallback = await _generate_validated_spec(
-            db,
-            user,
-            coll.name,
-            payload.preset,
-            payload.extra_instructions,
-            chunks,
-            images=images,
-        )
-        # ── Step 6.5: zh-CN → zh-TW post-processing ──
-        # Gemma 4 leaks simplified-Chinese phrasing into 繁體 output (研究第
-        # 33-39 行有量化證據). The system prompt fights this with an explicit
-        # mapping table, but enforcement isn't 100% — we run OpenCC s2twp as
-        # a deterministic safety net AFTER spec validate (so the LLM-emitted
-        # structural integrity check has already passed) and BEFORE render
-        # / vision QA (so all downstream steps see clean Traditional Chinese).
-        spec = normalize_spec(spec)
-        # Round 3 Patch P: apply theme_override after spec is validated.
-        # Bypasses LLM theme selection per the API request. Applied here
-        # (post-validation, pre-rebalance, pre-render) so all downstream
-        # steps — rebalance, render, vision QA — see the forced theme.
-        # Literal on the request schema already rejected invalid values
-        # at request time, so we trust the value unconditionally here.
-        if payload.theme_override:
-            spec.theme = payload.theme_override
-        else:
-            # Round 5 Patch U: deterministic title-keyword override.
-            # Promotes title-based theme routing from a prompt-soft rule
-            # to a hard programmatic override. Runs AFTER LLM emits theme
-            # and AFTER theme_override (user wins over inference). Only
-            # fires when title matches a high-confidence keyword; no-op
-            # otherwise (preserves LLM choice). Must run before audit /
-            # rebalance / render so all downstream steps see the final
-            # theme.
-            spec = _apply_theme_title_override(spec)
-        # Surface the title early so the UI can show "鑄造中：<title>"
-        # before render finishes.
-        await updater.set(title=spec.title, slide_count=len(spec.slides))
-
-        # ── Step 6.7 / Studio Fix 1: layout audit + LLM rebalance ──
-        # Run the deterministic audit on the validated spec. If a HARD
-        # violation fires (standard > 60% / numeric content without
-        # stat_callout), make ONE focused LLM call to re-select layout
-        # on a small candidate set. Soft violations alone don't trigger.
-        # Skip the whole pass on the fallback deck (its job is "explain
-        # the failure", not "look good") and on skip_retrieval (no
-        # chunks_text to feed V2).
-        if not used_fallback:
-            chunks_str = "\n\n".join(
+        style_sample = spec.title or ""
+        if chunks:
+            style_sample += "\n" + "\n\n".join(
                 str(c.get("content", "")) for c in chunks
             )
-            violations = _audit_layout_distribution(spec, chunks_text=chunks_str)
-            if _should_rebalance(violations):
-                await updater.set(step=JOB_STEP_REBALANCING)
-                try:
-                    spec_dict = spec.model_dump(mode="json")
-                    rebalanced = await _rebalance_layouts(
-                        spec_dict, violations, chunks_str, db=db, user=user,
-                    )
-                    spec = SlidesSpec.model_validate(rebalanced)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "Rebalance failed: %s — proceeding with original spec",
-                        exc,
-                    )
+        deck_style = await infer_deck_style(
+            title=spec.title or "",
+            content_sample=style_sample,
+            llm=flux_llm,
+        )
 
-        # ── Stage 3: infer the deck's visual house style from its content,
-        # once per deck, so every slide shares one visual language. Only when
-        # the FLUX cover-hero path will actually run; failure degrades to the
-        # default style inside infer_deck_style.
-        deck_style = None
-        if get_flux_provider() is not None and deck_base_seed is not None:
-            from app.services.flux_style import infer_deck_style
+    # ── Step 7: render ──
+    await updater.set(step=JOB_STEP_RENDERING)
+    pptx_bytes, pptx_path = await _render_pptx(
+        spec, images_lookup, bearer=bearer,
+        deck_base_seed=deck_base_seed, llm=flux_llm,
+        deck_style=deck_style,
+    )
 
-            style_sample = spec.title or ""
-            if chunks:
-                style_sample += "\n" + "\n\n".join(
-                    str(c.get("content", "")) for c in chunks
-                )
-            deck_style = await infer_deck_style(
-                title=spec.title or "",
-                content_sample=style_sample,
-                llm=flux_llm,
+    # ── Step 8: vision QA + (optional) one fix-and-rerender ──
+    # Skip vision QA entirely when serving the fallback deck. The
+    # fallback is a deliberately minimal "what went wrong" template
+    # — putting it through QA risks the VLM flagging it as too
+    # sparse, triggering a fix-and-rerender that calls the same
+    # already-broken LLM again. Better to ship the fallback as-is.
+    final_defects: list[VisualDefect] = []
+    qa_passes = 0
+    if pptx_path and not used_fallback:
+        for _ in range(VISUAL_QA_PASSES + 1):
+            qa_passes += 1
+            await updater.set(
+                step=JOB_STEP_QA,
+                qa_passes=qa_passes,
+            )
+            defects = await _visual_qa(
+                bearer, pptx_path, pptx_bytes=pptx_bytes,
+            )
+            critical = [d for d in defects if d.severity == "critical"]
+            if not critical or qa_passes > VISUAL_QA_PASSES:
+                final_defects = defects
+                break
+            # Critical defects exist AND we still have a fix budget —
+            # ask the LLM to revise, re-render, re-QA.
+            await updater.set(step=JOB_STEP_FIXING)
+            try:
+                spec = await _fix_spec_with_defects(bearer, spec, critical)
+            except (ValueError, ValidationError, json.JSONDecodeError) as e:
+                logger.warning("Studio defect-fix LLM call failed: %s", e)
+                final_defects = defects
+                break
+            await updater.set(
+                step=JOB_STEP_RENDERING,
+                title=spec.title,
+                slide_count=len(spec.slides),
+            )
+            pptx_bytes, pptx_path = await _render_pptx(
+                spec, images_lookup, bearer=bearer,
+                deck_base_seed=deck_base_seed, llm=flux_llm,
+                deck_style=deck_style,
             )
 
-        # ── Step 7: render ──
-        await updater.set(step=JOB_STEP_RENDERING)
-        pptx_bytes, pptx_path = await _render_pptx(
-            spec, images_lookup, deck_base_seed=deck_base_seed, llm=flux_llm,
-            deck_style=deck_style,
-        )
-
-        # ── Step 8: vision QA + (optional) one fix-and-rerender ──
-        # Skip vision QA entirely when serving the fallback deck. The
-        # fallback is a deliberately minimal "what went wrong" template
-        # — putting it through QA risks the VLM flagging it as too
-        # sparse, triggering a fix-and-rerender that calls the same
-        # already-broken LLM again. Better to ship the fallback as-is.
-        final_defects: list[VisualDefect] = []
-        qa_passes = 0
-        if pptx_path and not used_fallback:
-            for _ in range(VISUAL_QA_PASSES + 1):
-                qa_passes += 1
-                await updater.set(
-                    step=JOB_STEP_QA,
-                    qa_passes=qa_passes,
-                )
-                defects = await _visual_qa(
-                    db, user, pptx_path, pptx_bytes=pptx_bytes,
-                )
-                critical = [d for d in defects if d.severity == "critical"]
-                if not critical or qa_passes > VISUAL_QA_PASSES:
-                    final_defects = defects
-                    break
-                # Critical defects exist AND we still have a fix budget —
-                # ask the LLM to revise, re-render, re-QA.
-                await updater.set(step=JOB_STEP_FIXING)
-                try:
-                    spec = await _fix_spec_with_defects(db, user, spec, critical)
-                except (ValueError, ValidationError, json.JSONDecodeError) as e:
-                    logger.warning("Studio defect-fix LLM call failed: %s", e)
-                    final_defects = defects
-                    break
-                await updater.set(
-                    step=JOB_STEP_RENDERING,
-                    title=spec.title,
-                    slide_count=len(spec.slides),
-                )
-                pptx_bytes, pptx_path = await _render_pptx(
-                    spec, images_lookup,
-                    deck_base_seed=deck_base_seed, llm=flux_llm,
-                    deck_style=deck_style,
-                )
-
-        # ── Step 9: terminal "done" — pptx_bytes is the artifact ──
-        await updater.mark_done(
-            spec=spec,
-            pptx_bytes=pptx_bytes,
-            defects=final_defects,
-            qa_passes=qa_passes,
-        )
-    finally:
-        db.close()
+    # ── Step 9: terminal "done" — pptx_bytes is the artifact ──
+    await updater.mark_done(
+        spec=spec,
+        pptx_bytes=pptx_bytes,
+        defects=final_defects,
+        qa_passes=qa_passes,
+    )
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────
@@ -2942,8 +2953,8 @@ async def _run_pipeline(
 )
 async def create_slides_job(
     payload: GenerateSpecRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    identity: CurrentUserIdentity = Depends(get_current_user_identity),
+    bearer: str = Depends(get_bearer_token),
 ) -> JobStatus:
     """Register a slide-deck generation job and return its initial status.
 
@@ -2954,15 +2965,27 @@ async def create_slides_job(
     """
     # Authorize collection access up-front so the user gets a synchronous
     # 403/404 instead of an opaque "failed" job seconds later.
-    _require_collection_access(db, current_user, payload.collection_id)
+    # csp_client.get_collection raises CspForbiddenError / CspNotFoundError
+    # which propagate to HTTP 403 / 404 (mapped by FastAPI exception
+    # handlers on the anila-studio side).
+    try:
+        await get_collection(payload.collection_id, bearer=bearer)
+    except CspNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CspForbiddenError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except CspUnauthorizedError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except (CspServerError, CspClientError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     async def _runner(updater: jobs.JobUpdater) -> None:
         await _run_pipeline(
-            user_id=current_user.id, payload=payload, updater=updater,
+            identity=identity, bearer=bearer, payload=payload, updater=updater,
         )
 
     record = await jobs.create_job(
-        user_id=current_user.id,
+        user_id=identity.id,
         collection_id=payload.collection_id,
         runner=_runner,
     )
@@ -2972,10 +2995,10 @@ async def create_slides_job(
 @router.get("/slides/jobs/{job_id}", response_model=JobStatus)
 async def get_slides_job(
     job_id: str,
-    current_user: User = Depends(get_current_user),
+    identity: CurrentUserIdentity = Depends(get_current_user_identity),
 ) -> JobStatus:
     """Cheap polling endpoint. Returns the current JobStatus or 404."""
-    rec = jobs.get_user_job(job_id, current_user.id)
+    rec = jobs.get_user_job(job_id, identity.id)
     if rec is None:
         # 404 covers both "doesn't exist" and "exists but belongs to
         # someone else" — the latter must NEVER leak to a different user.
@@ -3000,14 +3023,14 @@ async def get_slides_job(
 )
 async def get_slides_job_pptx(
     job_id: str,
-    current_user: User = Depends(get_current_user),
+    identity: CurrentUserIdentity = Depends(get_current_user_identity),
 ) -> StreamingResponse:
     """Stream the rendered .pptx for a completed job.
 
     Returns 404 for unknown/cross-user jobs, 409 if the job is still
     running, and 410 if it has been failed/cancelled.
     """
-    rec = jobs.get_user_job(job_id, current_user.id)
+    rec = jobs.get_user_job(job_id, identity.id)
     if rec is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
     if rec.state in ("pending", "running"):
@@ -3064,14 +3087,14 @@ async def get_slides_job_pptx(
 @router.delete("/slides/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def cancel_slides_job(
     job_id: str,
-    current_user: User = Depends(get_current_user),
+    identity: CurrentUserIdentity = Depends(get_current_user_identity),
 ) -> Response:
     """Cancel an in-flight job. No-op if already terminal."""
-    cancelled = await jobs.cancel_job(job_id, current_user.id)
+    cancelled = await jobs.cancel_job(job_id, identity.id)
     if not cancelled:
         # Either not yours / not found / already terminal — all fine; the
         # client doesn't need to distinguish for "delete my row" UX.
-        rec = jobs.get_user_job(job_id, current_user.id)
+        rec = jobs.get_user_job(job_id, identity.id)
         if rec is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.",

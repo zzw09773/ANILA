@@ -57,6 +57,10 @@ services:
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
       REFRESH_TOKEN_EXPIRE_DAYS: "${REFRESH_TOKEN_EXPIRE_DAYS:-30}"
+      # LLM proxy upstream timeout — Studio deck 生成的 prompt 可達 10K+
+      # tokens,gemma4 處理 wall-clock 達 240s 級。default 120 太緊 → csp
+      # 自己 mid-stream timeout 把連線關掉 → anila-studio 觀察到 ReadTimeout。
+      LLM_TIMEOUT: "${LLM_TIMEOUT:-300}"
       # CSP 對下游 agent 注入這個 header,downstream 用它認 CSP source。
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
       # endpoint_url 是 base URL,proxy_service 自己加 ``/v1/chat/completions``
@@ -247,6 +251,52 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # ── anila-studio (Studio extraction Phase 2 skeleton) ───────────────────
+  # Deck generation service extracted out of csp/backend. Reads JWKS +
+  # token revocation events from csp via HTTP/Redis so cross-service auth
+  # works without sharing the private signing key.
+  anila-studio:
+    build:
+      context: anila-studio
+      dockerfile: Dockerfile
+    expose:
+      - "8100"
+    environment:
+      CSP_BASE_URL: http://csp:8000
+      # 跟 csp 共用同一把 service-to-service token,讓 cold-start sync
+      # /api/auth/revocations 能透過 X-CSP-Service-Token header 通過
+      # csp 的 verify_service_token。對齊 router / ingestion-worker 的 pattern。
+      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
+      REDIS_URL: redis://redis:6379/0
+      REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
+      FLUX_BACKEND_URL: http://flux2-dev:8000
+      # 對齊 volume mount 路徑。studio.py 內讀 os.environ["FLUX_CACHE_DIR"],
+      # 預設 fallback 是 csp 的 /var/anila/ingestion-uploads/flux-cache,在
+      # anila-studio container 內不存在/沒權限,所以這條 env 必須顯式設。
+      FLUX_CACHE_DIR: /var/anila/anila-studio-flux-cache
+      RENDERER_BASE_URL: http://pptx-renderer:7100
+      JWT_KID: anila-v1
+      LOG_LEVEL: INFO
+    depends_on:
+      csp:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      pptx-renderer:
+        condition: service_healthy
+    volumes:
+      - anila-studio-flux-cache:/var/anila/anila-studio-flux-cache
+    networks:
+      - default
+      - anila-models-net  # flux2-dev sits here
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8100/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    restart: unless-stopped
+
   # ── ANILA LM (Vite/React SPA at /anilalm/) ──────────────────────────────
   anilalm:
     build:
@@ -404,6 +454,7 @@ networks:
 volumes:
   csp-pgdata:
   redis-data:
+  anila-studio-flux-cache:
   # cold-stored — 對應上面 commented service。volume 名稱保留可以避免
   # 解凍時 named volume 重生造成既有資料遺失 (compose 看到舊名就 reuse)。
   codeserver_config:

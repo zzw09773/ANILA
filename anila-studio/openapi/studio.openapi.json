@@ -1,0 +1,543 @@
+{
+  "components": {
+    "schemas": {
+      "GenerateSpecRequest": {
+        "description": "Input to ``/api/studio/slides/generate-spec``.",
+        "properties": {
+          "collection_id": {
+            "minimum": 1.0,
+            "title": "Collection Id",
+            "type": "integer"
+          },
+          "extra_instructions": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extra Instructions"
+          },
+          "preset": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Preset",
+            "type": "string"
+          },
+          "skip_retrieval": {
+            "default": false,
+            "title": "Skip Retrieval",
+            "type": "boolean"
+          },
+          "theme_override": {
+            "anyOf": [
+              {
+                "enum": [
+                  "corporate_navy",
+                  "academic_paper",
+                  "warm_journal",
+                  "executive_brief",
+                  "startup_pitch"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "If set, bypasses LLM theme selection and forces this theme. Useful when the user knows the audience better than the LLM. Must be one of THEMES; invalid values rejected by Literal.",
+            "title": "Theme Override"
+          }
+        },
+        "required": [
+          "collection_id",
+          "preset"
+        ],
+        "title": "GenerateSpecRequest",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "JobStatus": {
+        "description": "Polling response for a Studio job. Body is JSON, header-buffer-safe.",
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "defects": {
+            "items": {
+              "$ref": "#/components/schemas/VisualDefect"
+            },
+            "title": "Defects",
+            "type": "array"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "qa_passes": {
+            "default": 0,
+            "title": "Qa Passes",
+            "type": "integer"
+          },
+          "slide_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slide Count"
+          },
+          "state": {
+            "pattern": "^(pending|running|done|failed|cancelled)$",
+            "title": "State",
+            "type": "string"
+          },
+          "step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "state",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "JobStatus",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "VisualDefect": {
+        "description": "One issue spotted by the vision QA pass on a rendered slide.",
+        "properties": {
+          "severity": {
+            "pattern": "^(critical|warning|info)$",
+            "title": "Severity",
+            "type": "string"
+          },
+          "slide_index": {
+            "description": "0-indexed slide that has the defect",
+            "minimum": 0.0,
+            "title": "Slide Index",
+            "type": "integer"
+          },
+          "summary": {
+            "maxLength": 500,
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slide_index",
+          "severity",
+          "summary"
+        ],
+        "title": "VisualDefect",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "anila-studio",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/studio/slides/jobs": {
+      "post": {
+        "description": "Register a slide-deck generation job and return its initial status.\n\nReturns immediately (HTTP 202) with state=\"pending\" and a job_id.\nThe pipeline runs on an asyncio.Task in the background; clients poll\nGET /jobs/{id} for state transitions and GET /jobs/{id}/pptx for the\nbinary once state=\"done\".",
+        "operationId": "create_slides_job_api_studio_slides_jobs_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "anila_access_token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Anila Access Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateSpecRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Slides Job",
+        "tags": [
+          "Studio / Slides"
+        ]
+      }
+    },
+    "/api/studio/slides/jobs/{job_id}": {
+      "delete": {
+        "description": "Cancel an in-flight job. No-op if already terminal.",
+        "operationId": "cancel_slides_job_api_studio_slides_jobs__job_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "anila_access_token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Anila Access Token"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Slides Job",
+        "tags": [
+          "Studio / Slides"
+        ]
+      },
+      "get": {
+        "description": "Cheap polling endpoint. Returns the current JobStatus or 404.",
+        "operationId": "get_slides_job_api_studio_slides_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "anila_access_token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Anila Access Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Slides Job",
+        "tags": [
+          "Studio / Slides"
+        ]
+      }
+    },
+    "/api/studio/slides/jobs/{job_id}/pptx": {
+      "get": {
+        "description": "Stream the rendered .pptx for a completed job.\n\nReturns 404 for unknown/cross-user jobs, 409 if the job is still\nrunning, and 410 if it has been failed/cancelled.",
+        "operationId": "get_slides_job_pptx_api_studio_slides_jobs__job_id__pptx_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "anila_access_token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Anila Access Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/vnd.openxmlformats-officedocument.presentationml.presentation": {}
+            },
+            "description": "Generated .pptx file"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Slides Job Pptx",
+        "tags": [
+          "Studio / Slides"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "description": "Liveness + readiness gate.\n\n``revocation_cache.ready`` flips to False if Redis disconnects; the\n/health endpoint reports 503 in that window so k8s readiness probes\npull the pod out of the load balancer until it recovers.\n\njwks_client does not expose ``ready`` directly (it has a fallback\nto lazy-fetch on first verify) but its cold-start happens in lifespan\nso by the time we serve traffic it has at least one key cached.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
+      }
+    }
+  }
+}

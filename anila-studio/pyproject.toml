@@ -1,0 +1,54 @@
+[project]
+name = "anila-studio"
+version = "0.1.0"
+description = "ANILA Studio service — RAG-driven slide deck generation with FLUX image candidates, extracted from myCSPPlatform/backend."
+requires-python = ">=3.11"
+authors = [
+  { name = "ANILA Platform" },
+]
+
+dependencies = [
+  # Web framework
+  "fastapi>=0.110,<1.0",
+  "uvicorn[standard]>=0.27",
+  # HTTP client → csp / flux2-dev / pptx-renderer
+  "httpx>=0.27,<1.0",
+  # JWT verify (asymmetric RS256, JWKS)
+  "python-jose[cryptography]>=3.3",
+  # Pydantic settings
+  "pydantic>=2.6,<3.0",
+  "pydantic-settings>=2.2,<3.0",
+  # Redis pub/sub for cross-service token revocation
+  "redis>=5.0",
+  # TTL cache for revocation_cache
+  "cachetools>=5.3",
+  # 簡體 → 繁體轉換 (studio_text_normalizer)
+  "opencc-python-reimplemented>=0.1.7",
+  # flux_quality_gate FFT analysis for striping detection
+  "numpy>=1.26",
+  # PPTX 生成路徑用,留給後續 phase 搬程式時即可 import
+  # NOTE: python-pptx 不會用到 (PPTX 由 pptx-renderer Node service 渲染)
+  # 但 diagram_renderer 用 Graphviz CLI subprocess,Docker 內裝 apt graphviz
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "respx>=0.21",          # httpx mock for csp_client tests
+  "fakeredis>=2.20",      # in-memory Redis for revocation_cache tests
+  "freezegun>=1.4",       # time travel for TTL tests
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra"

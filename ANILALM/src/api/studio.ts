@@ -1,6 +1,14 @@
 import { useAuthStore } from '../store/auth'
+import { STUDIO_BASE_URL } from './client'
+import type { components } from './studio-types.gen'
 
-// Studio backend (CSP) endpoints — job-based async pipeline.
+// Studio (anila-studio) endpoints — job-based async pipeline.
+//
+// As of the anila-studio extraction the slide-deck endpoints live in
+// their own FastAPI process (`/api/studio/*`) instead of the monolithic
+// CSP backend. We route through STUDIO_BASE_URL so a single env var can
+// flip the SPA between vite proxy (dev) / same-origin nginx (prod) /
+// cross-origin (staging).
 //
 // The original /slides/generate endpoint was a synchronous blob streamer
 // that held the connection open for 60-180 s and stuffed metadata into
@@ -19,31 +27,38 @@ import { useAuthStore } from '../store/auth'
 // surfaced in the timeline), so we expose primitive operations and let
 // WSStudio manage the loop in a useEffect.
 
-export interface VisualDefect {
-  slide_index: number
-  severity: 'critical' | 'warning' | 'info'
-  summary: string
-}
-
+// ── Types re-exported from the generated OpenAPI schema ────────────
+// The generated schema gives us pure `string` for `JobStatus.state`
+// (FastAPI exports the regex pattern, not an enum). We keep a separate
+// `JobState` union here so callers retain narrowing power while staying
+// in sync with the backend pattern `^(pending|running|done|failed|cancelled)$`.
+// If you add a new state on the backend, update both places.
 export type JobState = 'pending' | 'running' | 'done' | 'failed' | 'cancelled'
 
-export interface JobStatus {
-  job_id: string
+/**
+ * VisualDefect comes straight from the generated schema. `severity` is
+ * a free string on the wire; callers that want union narrowing should
+ * cast at the consumption site.
+ */
+export type VisualDefect = components['schemas']['VisualDefect']
+
+/**
+ * JobStatus wraps the generated row with two adjustments:
+ *   1. Tighten `state` to a string-literal union so `switch (state)` works.
+ *   2. Promote `defects` to required (the backend always returns an array,
+ *      even if empty — the schema marks it optional because pydantic uses
+ *      `default_factory=list`). Callers iterating `status.defects.map(...)`
+ *      should not have to null-check.
+ */
+export type JobStatus = Omit<
+  components['schemas']['JobStatus'],
+  'state' | 'defects'
+> & {
   state: JobState
-  /** Free-form step label — "queued"|"retrieving"|"generating"|"rendering"|"qa"|"fixing"|"done". */
-  step: string | null
-  /** Populated once LLM has named the deck (before render finishes). */
-  title: string | null
-  /** Populated once render succeeds. */
-  slide_count: number | null
   defects: VisualDefect[]
-  qa_passes: number
-  /** Only set when state="failed". User-safe string, no traceback. */
-  error: string | null
-  /** ISO 8601. */
-  created_at: string
-  updated_at: string
 }
+
+export type GenerateSpecRequest = components['schemas']['GenerateSpecRequest']
 
 export interface CreateSlidesJobInput {
   collectionId: number
@@ -57,7 +72,7 @@ export interface CreateSlidesJobInput {
    * to use auto selection. Valid: corporate_navy | academic_paper |
    * warm_journal | executive_brief | startup_pitch.
    */
-  themeOverride?: string
+  themeOverride?: GenerateSpecRequest['theme_override']
 }
 
 const PPTX_MIME =
@@ -68,12 +83,36 @@ function authHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
-async function readJsonOrThrow<T>(res: Response, op: string): Promise<T> {
+/** Resolve a studio-relative path against STUDIO_BASE_URL. */
+function studioUrl(path: string): string {
+  return `${STUDIO_BASE_URL}${path}`
+}
+
+/**
+ * Normalise the raw OpenAPI shape into the locally-tightened JobStatus.
+ * The backend always emits a defects array, but the schema marks it
+ * optional because of pydantic `default_factory=list`; we coalesce
+ * here so callers can rely on a real array. We also assert the state
+ * string into the JobState union — at this point the backend already
+ * validated the value against its regex.
+ */
+function toJobStatus(raw: components['schemas']['JobStatus']): JobStatus {
+  return {
+    ...raw,
+    state: raw.state as JobState,
+    defects: raw.defects ?? [],
+  }
+}
+
+async function readJsonOrThrow(
+  res: Response,
+  op: string,
+): Promise<components['schemas']['JobStatus']> {
   if (!res.ok) {
     const txt = await res.text().catch(() => '')
     throw new Error(`Studio ${op} ${res.status}: ${txt || res.statusText}`)
   }
-  return (await res.json()) as T
+  return (await res.json()) as components['schemas']['JobStatus']
 }
 
 /**
@@ -84,39 +123,43 @@ async function readJsonOrThrow<T>(res: Response, op: string): Promise<T> {
 export async function createSlidesJob(
   input: CreateSlidesJobInput,
 ): Promise<JobStatus> {
-  const res = await fetch('/api/studio/slides/jobs', {
+  const body: GenerateSpecRequest = {
+    collection_id: input.collectionId,
+    preset: input.preset,
+    extra_instructions: input.extraInstructions,
+    skip_retrieval: input.skipRetrieval ?? false,
+    theme_override: input.themeOverride, // undefined → JSON omits the key
+  }
+  const res = await fetch(studioUrl('/api/studio/slides/jobs'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       ...authHeaders(),
     },
-    body: JSON.stringify({
-      collection_id: input.collectionId,
-      preset: input.preset,
-      extra_instructions: input.extraInstructions,
-      skip_retrieval: input.skipRetrieval ?? false,
-      theme_override: input.themeOverride, // undefined → JSON omits the key
-    }),
+    body: JSON.stringify(body),
   })
-  return readJsonOrThrow<JobStatus>(res, 'createJob')
+  return toJobStatus(await readJsonOrThrow(res, 'createJob'))
 }
 
 /**
  * Poll the job's current status. 404 is mapped to a JobStatus with
  * state="failed" because that's how WSStudio will react anyway — the
- * job got evicted from the in-memory manager (CSP restart, eviction,
- * etc.) and the artifact should mark itself failed so the user can
- * retry.
+ * job got evicted from the in-memory manager (anila-studio restart,
+ * eviction, etc.) and the artifact should mark itself failed so the
+ * user can retry.
  */
 export async function getSlidesJobStatus(
   jobId: string,
   signal?: AbortSignal,
 ): Promise<JobStatus> {
-  const res = await fetch(`/api/studio/slides/jobs/${encodeURIComponent(jobId)}`, {
-    method: 'GET',
-    headers: { ...authHeaders() },
-    signal,
-  })
+  const res = await fetch(
+    studioUrl(`/api/studio/slides/jobs/${encodeURIComponent(jobId)}`),
+    {
+      method: 'GET',
+      headers: { ...authHeaders() },
+      signal,
+    },
+  )
   if (res.status === 404) {
     return {
       job_id: jobId,
@@ -131,7 +174,7 @@ export async function getSlidesJobStatus(
       updated_at: new Date().toISOString(),
     }
   }
-  return readJsonOrThrow<JobStatus>(res, 'getStatus')
+  return toJobStatus(await readJsonOrThrow(res, 'getStatus'))
 }
 
 /**
@@ -144,7 +187,7 @@ export async function downloadSlidesJobPptx(
   filenameStem: string,
 ): Promise<void> {
   const res = await fetch(
-    `/api/studio/slides/jobs/${encodeURIComponent(jobId)}/pptx`,
+    studioUrl(`/api/studio/slides/jobs/${encodeURIComponent(jobId)}/pptx`),
     {
       method: 'GET',
       headers: { ...authHeaders() },
@@ -179,7 +222,7 @@ export async function downloadSlidesJobPptx(
  */
 export async function cancelSlidesJob(jobId: string): Promise<void> {
   const res = await fetch(
-    `/api/studio/slides/jobs/${encodeURIComponent(jobId)}`,
+    studioUrl(`/api/studio/slides/jobs/${encodeURIComponent(jobId)}`),
     {
       method: 'DELETE',
       headers: { ...authHeaders() },
