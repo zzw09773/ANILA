@@ -1,6 +1,6 @@
 """Add ``agent_llm_credentials`` for dev-supplied judge / external LLMs.
 
-Phase 2 Sprint 3 (docs/ingestion-platform-design.md §3.1, §6.5). Devs
+Phase 2 Sprint 3 (docs/ingestion/ingestion-platform-design.md §3.1, §6.5). Devs
 running the Chunking Evaluator may bring their own LLM endpoint (e.g.
 their own OpenAI key, a private gpt-4o-mini, or a co-located vLLM) to
 serve as judge in LLM-as-judge scoring. Storing the key in the

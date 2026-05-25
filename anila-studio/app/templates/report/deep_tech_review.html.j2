@@ -1,0 +1,35 @@
+{# DEEP_TECH_REVIEW: serious academic / technical voice.
+
+   Visual cues:
+   - serif typography (Noto Serif CJK / Times New Roman),
+   - dark slate + navy accent,
+   - sections continuously numbered (1, 2, 3 ...; 1.1, 1.2 ...),
+   - tighter line-height for information density.
+#}
+{% extends "report/base.html.j2" %}
+{% block document_class %}preset-deep-tech-review{% endblock %}
+{% block style_overrides %}
+  body {
+    font-family: "Noto Serif CJK TC", "Noto Serif TC", "Source Han Serif TC",
+                 "Times New Roman", serif;
+    color: #181c20;
+    line-height: 1.65;
+    font-size: 11.5pt;
+  }
+  h1.report-title {
+    border-bottom: 3px double #1a2a3c;
+    color: #1a2a3c;
+  }
+  h2.section-heading {
+    color: #1a2a3c;
+    border-bottom: 1px solid #1a2a3c;
+    padding-bottom: 1mm;
+  }
+  h3.section-heading { color: #2a3c52; }
+  .tldr {
+    background: #f0f3f7;
+    border-left-color: #1a2a3c;
+  }
+  .tldr .tldr-label { color: #1a2a3c; }
+  .references-list { font-family: "Noto Sans CJK TC", sans-serif; }
+{% endblock %}

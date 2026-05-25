@@ -6,9 +6,31 @@ from pydantic import BaseModel, field_validator
 # L3: role 改 Literal 而非任意字串，避免 admin 不慎把 role 設為「typo」字串。
 # system 是 ingestion-worker 之類的內部帳號（auto_seed 會用到），不對外開放
 # 由 admin 介面手動指派。
-# owner 是 0032 加的最高層 — 由 require_owner 把關 admin 帳號變更、auth
-# provider 編輯、purge、audit log 敏感欄位、model endpoint URL。
+# owner 是 0032 加的最高層 — 由 require_owner 把關 admin 帳號變更、purge、
+# audit log 敏感欄位、model endpoint URL。
 UserRole = Literal["owner", "admin", "developer", "user", "system"]
+
+
+_PASSWORD_SPECIAL_CHARS = "!@#$%^&*()_+-=[]{}|;:,.<>?/~`\"'\\"
+
+
+def _validate_password_strength(value: str) -> str:
+    """Closed-deployment password policy: 8+ chars, mixed case, symbol.
+
+    Shared between every endpoint that accepts a new/changed password
+    (admin user creation, self-service password change, admin reset).
+    No-SSO build has no self-service signup, so this is the *only* place
+    weak passwords could enter the system — keep the bar high.
+    """
+    if len(value) < 8:
+        raise ValueError("密碼至少需要 8 個字元")
+    if not any(c.isupper() for c in value):
+        raise ValueError("密碼需包含至少一個大寫字母")
+    if not any(c.islower() for c in value):
+        raise ValueError("密碼需包含至少一個小寫字母")
+    if not any(c in _PASSWORD_SPECIAL_CHARS for c in value):
+        raise ValueError("密碼需包含至少一個特殊符號")
+    return value
 
 
 class UserBase(BaseModel):
@@ -21,15 +43,17 @@ class UserCreate(UserBase):
     password: str
     department_id: int | None = None
 
+    @field_validator("password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        return _validate_password_strength(v)
+
 
 class UserUpdate(BaseModel):
     email: str | None = None
     role: UserRole | None = None
     department_id: int | None = None
     is_active: bool | None = None
-    # Sprint 6 X / B2：admin 可切到 SSO-only。預設不變更（None）；
-    # True = 拒絕此使用者用本機密碼登入；False = 允許。
-    local_password_disabled: bool | None = None
 
 
 class UserResponse(UserBase):
@@ -38,7 +62,6 @@ class UserResponse(UserBase):
     department_name: str | None = None
     is_active: bool
     is_approved: bool = True
-    local_password_disabled: bool = False
     last_login_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
@@ -49,8 +72,6 @@ class UserResponse(UserBase):
 class LoginRequest(BaseModel):
     username: str
     password: str
-    auth_source: str = "local"
-    provider_id: int | None = None
 
 
 class TokenResponse(BaseModel):
@@ -63,36 +84,42 @@ class TokenResponse(BaseModel):
     csrf_token: str | None = None
 
 
-class RefreshRequest(BaseModel):
-    refresh_token: str
-
-
 class PasswordChangeRequest(BaseModel):
     current_password: str
     new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        return _validate_password_strength(v)
 
 
 class AdminResetPassword(BaseModel):
     new_password: str
 
+    @field_validator("new_password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        return _validate_password_strength(v)
+
 
 class RegisterRequest(BaseModel):
+    """Self-service signup payload.
+
+    Closed-deployment policy: registered users land in ``is_approved=False``
+    so they can NOT log in until an admin flips the flag on the user-
+    management page. ``authenticate_user`` returns
+    ``PENDING_APPROVAL_SENTINEL`` for those rows and the login endpoint
+    surfaces "等待核准中" without leaking the account state.
+    """
     username: str
-    email: str
+    email: str | None = None
     password: str
 
     @field_validator("password")
     @classmethod
     def password_strength(cls, v: str) -> str:
-        if len(v) < 8:
-            raise ValueError("密碼至少需要 8 個字元")
-        if not any(c.isupper() for c in v):
-            raise ValueError("密碼需包含至少一個大寫字母")
-        if not any(c.islower() for c in v):
-            raise ValueError("密碼需包含至少一個小寫字母")
-        if not any(c in '!@#$%^&*()_+-=[]{}|;:,.<>?/~`"\'\\' for c in v):
-            raise ValueError("密碼需包含至少一個特殊符號")
-        return v
+        return _validate_password_strength(v)
 
 
 class AllowedModelItem(BaseModel):

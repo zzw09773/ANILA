@@ -17,9 +17,8 @@ B-tree key. Anyone with DB read access already has the master key and
 can decrypt the envelope, so leaking the hash adds no information.
 
 Format reuse:
-    Same ``enc::v1::`` prefix and base64-urlsafe layout as
-    ``auth_provider_secret.encode_oidc_client_secret``. Means a single
-    audit / re-encrypt script can sweep both columns later.
+    ``enc::v1::`` prefix + base64-urlsafe layout — a standardised envelope
+    format shared by every encrypted-at-rest credential column in the DB.
 
 Token plaintext format:
     Bootstrap tokens   →  ``bsk-<43-chars>``  (admin-issued, single-use)

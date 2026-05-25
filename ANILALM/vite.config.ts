@@ -12,6 +12,7 @@ import react from '@vitejs/plugin-react'
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '')
   const cspBackend = env.VITE_CSP_BACKEND || 'http://localhost:8000'
+  const anilaStudio = env.VITE_ANILA_STUDIO_BACKEND || 'http://localhost:8100'
   const rawBase = env.BASE_PATH || env.VITE_BASE_PATH || '/'
   // Normalise: must start AND end with a slash (Vite contract).
   const base =
@@ -22,7 +23,12 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5174,
       strictPort: false,
+      // Order matters: Vite's http-proxy walks the proxy table in
+      // insertion order, so the more specific `/api/studio` must come
+      // before the generic `/api` catch-all (otherwise studio traffic
+      // gets forwarded to csp).
       proxy: {
+        '/api/studio': { target: anilaStudio, changeOrigin: true },
         '/api': { target: cspBackend, changeOrigin: true },
         '/v1': { target: cspBackend, changeOrigin: true },
         '/v2': { target: cspBackend, changeOrigin: true },

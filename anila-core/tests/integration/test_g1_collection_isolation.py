@@ -1,6 +1,6 @@
 """Sprint 1 Gate G1 (Sprint 4 rebase) — random workload, zero leakage.
 
-Per docs/ingestion-platform-design.md §3.3 Layer 4:
+Per docs/ingestion/ingestion-platform-design.md §3.3 Layer 4:
 
     Create 5 collections, each ingests N chunks. Run M random queries
     from each collection's perspective. Every chunk in every result

@@ -62,7 +62,7 @@ const props = defineProps({
   agentId:      { type: Number,  required: true },
   endpointUrl:  { type: String,  required: true },
   bsk:          { type: String,  default: '' },
-  docsUrl:      { type: String,  default: '/docs/csp-agent-bootstrap-protocol.md' },
+  docsUrl:      { type: String,  default: '/docs/agent-framework/csp-agent-bootstrap-protocol.md' },
 })
 
 const active = ref('agenticRagFork')

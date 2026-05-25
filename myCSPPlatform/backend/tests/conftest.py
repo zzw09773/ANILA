@@ -22,6 +22,9 @@ os.environ.setdefault("AUTO_REGISTER_MODELS", "")
 os.environ.setdefault("AUTO_REGISTER_AGENTS", "")
 os.environ.setdefault("AUTO_SEED_API_KEYS", "")
 os.environ.setdefault("AUTO_REGISTER_LINKS", "")
+# JWT keys: auto-generate dev RSA pair if missing, so CI / fresh clones
+# don't have to manually run scripts/generate-jwt-keypair.py first.
+os.environ.setdefault("ALLOW_AUTO_KEYGEN", "true")
 
 from app.database import Base, get_db
 from app.main import app

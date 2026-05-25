@@ -1,6 +1,6 @@
 """LLM-as-judge scoring for the Chunking Evaluator.
 
-Sprint 5 / Chunk X. Per docs/ingestion-platform-design.md §6.5:
+Sprint 5 / Chunk X. Per docs/ingestion/ingestion-platform-design.md §6.5:
 
     Hit@1 / Hit@5 / MRR are pure retrieval metrics — they only ask
     "did we surface the right doc?". They don't ask "is the chunk

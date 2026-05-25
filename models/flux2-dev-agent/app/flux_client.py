@@ -1,11 +1,15 @@
 """HTTP client for the flux2-dev inference backend.
 
 The backend is internal to the ``anila-models-net`` docker network
-and reachable as ``http://flux2-dev:8000``. It accepts a JSON body
-``{prompt, aspect_ratio}`` and returns ``image/png`` bytes.
+and reachable as ``http://flux2-dev:8000``. As of Studio FLUX Stage 1
+(spec 3.2) ``/generate`` accepts ``{prompt, aspect_ratio, seed?,
+num_candidates?, ...}`` and returns JSON ``{images: [base64 PNG], seed,
+meta}``. This shim only needs one image, so it decodes the first
+candidate back to PNG bytes.
 """
 from __future__ import annotations
 
+import base64
 from typing import Optional
 
 import httpx
@@ -41,8 +45,16 @@ class FluxClient:
         if resp.status_code != 200:
             raise FluxBackendError(f"flux backend returned {resp.status_code}: {resp.text[:200]}")
 
-        ctype = resp.headers.get("content-type", "")
-        if not ctype.startswith("image/png"):
-            raise FluxBackendError(f"unexpected content-type from flux backend: {ctype!r}")
-
-        return resp.content
+        # Stage 1 contract: JSON {images: [base64 PNG], seed, meta}.
+        try:
+            data = resp.json()
+        except Exception as exc:
+            raise FluxBackendError(
+                f"flux backend returned non-JSON body: {resp.text[:200]}"
+            ) from exc
+        images = data.get("images")
+        if not images:
+            raise FluxBackendError(
+                f"flux backend returned no images: {str(data)[:200]}"
+            )
+        return base64.b64decode(images[0])

@@ -3,7 +3,8 @@
 // LLMs commonly emit LaTeX in the `\[ ... \]` / `\( ... \)` escape form rather
 // than the `$$ ... $$` / `$ ... $` dollar form that `remark-math` expects.
 // We rewrite the escape form to dollars before the markdown parser runs.
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -226,6 +227,108 @@ function Table({ children, ...props }) {
   );
 }
 
+// Lightbox: full-screen overlay 顯示放大的圖片。點背景 / 按 Esc / 點 ✕ 關閉。
+// 用 createPortal 跳出 markdown 容器,避免父層 transform/overflow 影響 fixed 定位。
+function ImageLightbox({ src, alt, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    // body 滾動鎖,避免背景跟著滾。
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [onClose]);
+
+  return createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={alt || "圖片預覽"}
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0, 0, 0, 0.85)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 9999,
+        cursor: "zoom-out",
+        padding: 24,
+      }}
+    >
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+        aria-label="關閉預覽"
+        style={{
+          position: "absolute",
+          top: 16,
+          right: 20,
+          width: 36,
+          height: 36,
+          borderRadius: "50%",
+          border: "1px solid rgba(255,255,255,0.3)",
+          background: "rgba(0,0,0,0.4)",
+          color: "#fff",
+          fontSize: 20,
+          lineHeight: 1,
+          cursor: "pointer",
+        }}
+      >
+        ×
+      </button>
+      <img
+        src={src}
+        alt={alt || ""}
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          maxWidth: "92vw",
+          maxHeight: "92vh",
+          objectFit: "contain",
+          borderRadius: 8,
+          boxShadow: "0 12px 40px rgba(0,0,0,0.6)",
+          cursor: "default",
+        }}
+      />
+    </div>,
+    document.body,
+  );
+}
+
+// 訊息區內的 markdown 圖片:置中顯示 + 點擊開 lightbox。
+// 須是 module-level component,react-markdown 才能維持 useState 跨 re-render。
+function MarkdownImage({ node, src, alt, ...rest }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span style={{ display: "block", textAlign: "center", margin: "10px 0" }}>
+      <img
+        src={src}
+        alt={alt || ""}
+        {...rest}
+        onClick={() => setOpen(true)}
+        style={{
+          display: "inline-block",
+          maxWidth: "min(100%, 520px)",
+          height: "auto",
+          borderRadius: 8,
+          border: "1px solid var(--border)",
+          cursor: "zoom-in",
+        }}
+      />
+      {open && <ImageLightbox src={src} alt={alt} onClose={() => setOpen(false)} />}
+    </span>
+  );
+}
+
 // Component overrides for react-markdown.
 //
 // Block-level margin/spacing lives in the global `.anila-msg-body …` rules
@@ -302,6 +405,9 @@ const components = {
   a: ({ node, ...props }) => (
     <a style={{ color: "var(--accent)" }} target="_blank" rel="noopener noreferrer" {...props} />
   ),
+  // 生成的圖片(image-generator agent 回傳的 markdown `![](data:image/...)`
+  // / 上傳預覽 / 其他 image)在訊息區塊中央顯示,點擊放大檢視。
+  img: MarkdownImage,
   hr: () => (
     <hr style={{ border: "none", borderTop: "1px solid var(--border)", margin: "10px 0" }} />
   ),

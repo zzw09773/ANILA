@@ -1,6 +1,6 @@
 """Structured ingestion error taxonomy.
 
-Per docs/ingestion-platform-design.md §8.1, every failure path inside the
+Per docs/ingestion/ingestion-platform-design.md §8.1, every failure path inside the
 ingestion pipeline is wrapped into a stable error code so:
 
 - The worker's retry policy is decided by ``retryable`` (not by guessing

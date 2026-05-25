@@ -7,6 +7,7 @@ from typing import AsyncIterator
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
+from app.config import settings
 from app.database import get_db
 from app.middleware.caller import Caller, get_caller
 from app.models.agent import Agent, UserAgentPermission
@@ -527,7 +528,7 @@ async def chat_completions(
         headers = _build_downstream_headers(user.id, user_email, target_agent_id=agent.id)
         started_at = time.time()
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
+            async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
                 resp = await client.post(target, json=body, headers=headers)
                 resp.raise_for_status()
                 # SSE-only agents (e.g. asrd) ignore ``stream: false`` and
@@ -675,7 +676,7 @@ async def resume_agent_session(
 
     async def _passthrough_stream():
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=float(settings.LLM_TIMEOUT)) as client:
                 async with client.stream(
                     "POST", target, json=body, headers=headers,
                 ) as resp:

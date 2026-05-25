@@ -2326,7 +2326,7 @@ function SettingsModal({
             <div style={{ fontSize: 13 }}>
               <div style={{ marginBottom: 4 }}><b>{user?.username}</b></div>
               <div style={{ color: "var(--fg-muted)", fontSize: 12 }}>
-                role: {user?.role || "user"} · auth: {user?.auth_source || "csp"}
+                role: {user?.role || "user"}
               </div>
             </div>
           )}

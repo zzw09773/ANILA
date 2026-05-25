@@ -1,6 +1,6 @@
 """``/api/ingestion/eval-runs`` — Chunking Evaluator orchestration.
 
-Sprint 3 first cut. Per docs/ingestion-platform-design.md §6 the
+Sprint 3 first cut. Per docs/ingestion/ingestion-platform-design.md §6 the
 evaluator is the platform's "what's the best chunking strategy for
 this corpus?" answer. Dev provides:
 

@@ -3,6 +3,7 @@ load real 80GB weights in CI/dev.
 """
 from __future__ import annotations
 
+import base64
 from io import BytesIO
 
 from fastapi.testclient import TestClient
@@ -39,13 +40,21 @@ def test_health_ok():
     assert r.status_code == 200
 
 
-def test_generate_returns_png():
+def test_generate_returns_json_with_images():
+    # Stage 1 (spec 3.2): /generate now returns JSON {images, seed, meta},
+    # not raw image/png — even for N=1, always a list.
     client, captured = _make_client()
-    r = client.post("/generate", json={"prompt": "test", "aspect_ratio": "1:1"})
+    r = client.post(
+        "/generate", json={"prompt": "test", "aspect_ratio": "1:1", "seed": 42}
+    )
     assert r.status_code == 200
-    assert r.headers["content-type"].startswith("image/png")
-    img = Image.open(BytesIO(r.content))
+    assert r.headers["content-type"].startswith("application/json")
+    data = r.json()
+    assert isinstance(data["images"], list) and len(data["images"]) == 1
+    img = Image.open(BytesIO(base64.b64decode(data["images"][0])))
     assert img.format == "PNG"
+    assert data["seed"] == 42
+    assert "steps" in data["meta"] and "guidance" in data["meta"]
 
 
 def test_generate_passes_prompt_to_pipeline():
@@ -72,3 +81,33 @@ def test_generate_rejects_unknown_aspect_ratio():
     client, _ = _make_client()
     r = client.post("/generate", json={"prompt": "x", "aspect_ratio": "47:11"})
     assert r.status_code == 422
+
+
+def test_generate_multiple_candidates():
+    # Stage 1 returns list[1]; Stage 2 wants N — verify N candidates now.
+    client, captured = _make_client()
+    r = client.post(
+        "/generate",
+        json={"prompt": "x", "aspect_ratio": "1:1", "seed": 7, "num_candidates": 2},
+    )
+    assert r.status_code == 200
+    assert len(r.json()["images"]) == 2
+    assert len(captured) == 2  # pipeline invoked once per candidate
+
+
+def test_generate_echoes_explicit_seed():
+    # Explicit seed must round-trip for deterministic re-generation + audit.
+    client, _ = _make_client()
+    r = client.post(
+        "/generate", json={"prompt": "x", "aspect_ratio": "1:1", "seed": 12345}
+    )
+    assert r.json()["seed"] == 12345
+
+
+def test_generate_supports_section_band_3to1():
+    # 3:1 letterbox (1536x512) added for SECTION_BAND use case.
+    client, captured = _make_client()
+    r = client.post("/generate", json={"prompt": "x", "aspect_ratio": "3:1", "seed": 1})
+    assert r.status_code == 200
+    band = captured[0]
+    assert band["width"] > band["height"] * 2  # letterbox

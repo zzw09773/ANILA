@@ -3,10 +3,16 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# graphviz + fonts-noto-cjk: Studio Fix 2 (2026-05-18) — `dot -Tpng`
+# renders Slide.diagram_dot for image_kind='diagram'. Noto CJK font is
+# required so DOT graphs with Traditional Chinese labels (e.g. node
+# names "監督代理") render without tofu boxes.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
     curl \
+    graphviz \
+    fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
