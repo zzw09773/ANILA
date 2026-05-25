@@ -468,6 +468,24 @@ async def _run_pipeline(
             }
             for h in hits
         ]
+        # Diagnostic log:後續看 backend log 就能判斷「空表」是 retrieval 0 hit
+        # 還是 LLM 看 chunks 後判定無資料。 production 觀察到使用者選了不匹配
+        # 的 collection(RAG 技術文件去抽華航 KPI),這條 log 直接告訴 ops。
+        if chunks:
+            avg_len = sum(len(c["content"]) for c in chunks) / len(chunks)
+            empty_count = sum(1 for c in chunks if len(c["content"]) < 50)
+            logger.info(
+                "Datatable retrieval: collection=%s(id=%s) seed_query=%r hits=%d "
+                "avg_content_len=%.0f empty_chunks=%d/%d",
+                coll.name, payload.collection_id, seed_query[:80],
+                len(chunks), avg_len, empty_count, len(chunks),
+            )
+        else:
+            logger.warning(
+                "Datatable retrieval returned 0 hits: collection=%s(id=%s) "
+                "seed_query=%r min_score=%s — LLM will produce empty table.",
+                coll.name, payload.collection_id, seed_query[:80], MIN_SCORE,
+            )
     except Exception as exc:  # noqa: BLE001 — retrieval is best-effort
         logger.warning(
             "Datatable retrieval failed (%s); generating without context.", exc,
