@@ -255,7 +255,291 @@ export function stepLabel(step: string | null): string {
       return '修正瑕疵'
     case 'done':
       return '完成'
+    // ── 4 種新 artifact 的 step ──
+    case 'outlining':
+      return '生成大綱'
+    case 'drafting':
+      return '撰寫內容'
+    case 'render_html':
+      return '渲染 HTML'
+    case 'render_pdf':
+      return '匯出 PDF'
+    case 'render_docx':
+      return '匯出 DOCX'
+    case 'render_svg':
+      return '渲染心智圖'
+    case 'render_chart':
+      return '繪製圖表'
+    case 'export_xlsx':
+      return '匯出 Excel'
+    case 'export_csv':
+      return '匯出 CSV'
     default:
       return '處理中'
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Generic artifact-job client(Report / Mindmap / Infographic / Datatable)
+//
+// 這 4 種 artifact 走完全同 pattern 的 job lifecycle:
+//   POST /api/{kind}/jobs                       → 202 + status
+//   GET  /api/{kind}/jobs/{job_id}              → status (poll)
+//   GET  /api/{kind}/jobs/{job_id}/download/{fmt}  → file
+//   DELETE /api/{kind}/jobs/{job_id}            → 204
+//
+// 共用 generic helper 避免 4 份重複程式碼。每種 kind 只需 export 4 個
+// thin wrapper 包對應的 type。
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * 4 種新 artifact 共用的 JobStatus shape(白色名單欄位由各 backend 自己決定,
+ * 這裡只 narrow `state` 跟給 `downloadUrls` 一個固定 key)。
+ */
+export type ArtifactJobStatus = {
+  job_id: string
+  state: JobState
+  step?: string | null
+  title?: string | null
+  error?: string | null
+  download_urls?: Record<string, string> | null
+  created_at?: string
+  updated_at?: string
+  // 各 backend 額外 metadata(看 OpenAPI / types.gen.ts 對應)
+  [key: string]: unknown
+}
+
+async function _readJobJson<T>(res: Response, op: string): Promise<T> {
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '')
+    throw new Error(`${op} ${res.status}: ${txt || res.statusText}`)
+  }
+  return (await res.json()) as T
+}
+
+async function _createArtifactJob<TBody, TStatus>(
+  kindPath: string,
+  body: TBody,
+): Promise<TStatus> {
+  const res = await fetch(studioUrl(`/api/${kindPath}/jobs`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(body),
+  })
+  return _readJobJson<TStatus>(res, `${kindPath} create`)
+}
+
+async function _getArtifactJobStatus<TStatus>(
+  kindPath: string,
+  jobId: string,
+): Promise<TStatus> {
+  const res = await fetch(
+    studioUrl(`/api/${kindPath}/jobs/${encodeURIComponent(jobId)}`),
+    { headers: { ...authHeaders() } },
+  )
+  if (res.status === 404) {
+    return {
+      job_id: jobId,
+      state: 'failed',
+      error: '任務不存在或已過期(可能因服務重啟而被清除)',
+    } as unknown as TStatus
+  }
+  return _readJobJson<TStatus>(res, `${kindPath} status`)
+}
+
+async function _cancelArtifactJob(
+  kindPath: string,
+  jobId: string,
+): Promise<void> {
+  const res = await fetch(
+    studioUrl(`/api/${kindPath}/jobs/${encodeURIComponent(jobId)}`),
+    { method: 'DELETE', headers: { ...authHeaders() } },
+  )
+  if (!res.ok && res.status !== 404) {
+    const txt = await res.text().catch(() => '')
+    throw new Error(`${kindPath} cancel ${res.status}: ${txt || res.statusText}`)
+  }
+}
+
+async function _downloadArtifact(
+  kindPath: string,
+  jobId: string,
+  fmt: string,
+  filenameStem: string,
+): Promise<void> {
+  const res = await fetch(
+    studioUrl(
+      `/api/${kindPath}/jobs/${encodeURIComponent(jobId)}/download/${encodeURIComponent(fmt)}`,
+    ),
+    { headers: { ...authHeaders() } },
+  )
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '')
+    throw new Error(
+      `${kindPath} download(${fmt}) ${res.status}: ${txt || res.statusText}`,
+    )
+  }
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${filenameStem || kindPath}.${fmt}`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
+}
+
+// ── Report ─────────────────────────────────────────────────────────
+
+export interface CreateReportJobInput {
+  collectionId: number
+  preset: components['schemas']['ReportPreset']
+  extraInstructions?: string
+  documentIds?: number[]
+  topK?: number
+}
+
+export type ReportJobStatus = components['schemas']['ReportJobStatus']
+
+export async function createReportJob(
+  input: CreateReportJobInput,
+): Promise<ReportJobStatus> {
+  return _createArtifactJob<unknown, ReportJobStatus>('reports', {
+    collection_id: input.collectionId,
+    preset: input.preset,
+    extra_instructions: input.extraInstructions,
+    document_ids: input.documentIds,
+    top_k: input.topK ?? 12,
+  })
+}
+
+export const getReportJobStatus = (jobId: string) =>
+  _getArtifactJobStatus<ReportJobStatus>('reports', jobId)
+
+export const cancelReportJob = (jobId: string) =>
+  _cancelArtifactJob('reports', jobId)
+
+export const downloadReportArtifact = (
+  jobId: string,
+  fmt: 'html' | 'pdf' | 'docx',
+  filenameStem: string,
+) => _downloadArtifact('reports', jobId, fmt, filenameStem)
+
+// ── Mindmap ────────────────────────────────────────────────────────
+
+export interface CreateMindmapJobInput {
+  collectionId: number
+  preset: components['schemas']['MindmapPreset']
+  seedQuery?: string
+  extraInstructions?: string
+  documentIds?: number[]
+  maxDepth?: number
+  topK?: number
+}
+
+export type MindmapJobStatus = components['schemas']['MindmapJobStatus']
+
+export async function createMindmapJob(
+  input: CreateMindmapJobInput,
+): Promise<MindmapJobStatus> {
+  return _createArtifactJob<unknown, MindmapJobStatus>('mindmaps', {
+    collection_id: input.collectionId,
+    preset: input.preset,
+    seed_query: input.seedQuery,
+    extra_instructions: input.extraInstructions,
+    document_ids: input.documentIds,
+    max_depth: input.maxDepth ?? 3,
+    top_k: input.topK ?? 8,
+  })
+}
+
+export const getMindmapJobStatus = (jobId: string) =>
+  _getArtifactJobStatus<MindmapJobStatus>('mindmaps', jobId)
+
+export const cancelMindmapJob = (jobId: string) =>
+  _cancelArtifactJob('mindmaps', jobId)
+
+export const downloadMindmapArtifact = (
+  jobId: string,
+  fmt: 'svg' | 'dot',
+  filenameStem: string,
+) => _downloadArtifact('mindmaps', jobId, fmt, filenameStem)
+
+// ── Infographic ────────────────────────────────────────────────────
+
+export interface CreateInfographicJobInput {
+  collectionId: number
+  preset: components['schemas']['InfographicPreset']
+  seedQuery?: string
+  extraInstructions?: string
+  documentIds?: number[]
+  topK?: number
+}
+
+export type InfographicJobStatus = components['schemas']['InfographicJobStatus']
+
+export async function createInfographicJob(
+  input: CreateInfographicJobInput,
+): Promise<InfographicJobStatus> {
+  return _createArtifactJob<unknown, InfographicJobStatus>('infographics', {
+    collection_id: input.collectionId,
+    preset: input.preset,
+    seed_query: input.seedQuery,
+    extra_instructions: input.extraInstructions,
+    document_ids: input.documentIds,
+    top_k: input.topK ?? 12,
+  })
+}
+
+export const getInfographicJobStatus = (jobId: string) =>
+  _getArtifactJobStatus<InfographicJobStatus>('infographics', jobId)
+
+export const cancelInfographicJob = (jobId: string) =>
+  _cancelArtifactJob('infographics', jobId)
+
+export const downloadInfographicArtifact = (
+  jobId: string,
+  fmt: 'html' | 'pdf',
+  filenameStem: string,
+) => _downloadArtifact('infographics', jobId, fmt, filenameStem)
+
+// ── Datatable ──────────────────────────────────────────────────────
+
+export interface CreateDatatableJobInput {
+  collectionId: number
+  preset: components['schemas']['DatatablePreset']
+  seedQuery?: string
+  extraInstructions?: string
+  documentIds?: number[]
+  targetColumns?: string[]
+  topK?: number
+}
+
+export type DatatableJobStatus = components['schemas']['DatatableJobStatus']
+
+export async function createDatatableJob(
+  input: CreateDatatableJobInput,
+): Promise<DatatableJobStatus> {
+  return _createArtifactJob<unknown, DatatableJobStatus>('datatables', {
+    collection_id: input.collectionId,
+    preset: input.preset,
+    seed_query: input.seedQuery,
+    extra_instructions: input.extraInstructions,
+    document_ids: input.documentIds,
+    target_columns: input.targetColumns,
+    top_k: input.topK ?? 15,
+  })
+}
+
+export const getDatatableJobStatus = (jobId: string) =>
+  _getArtifactJobStatus<DatatableJobStatus>('datatables', jobId)
+
+export const cancelDatatableJob = (jobId: string) =>
+  _cancelArtifactJob('datatables', jobId)
+
+export const downloadDatatableArtifact = (
+  jobId: string,
+  fmt: 'html' | 'csv' | 'xlsx',
+  filenameStem: string,
+) => _downloadArtifact('datatables', jobId, fmt, filenameStem)

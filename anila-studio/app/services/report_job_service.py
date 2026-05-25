@@ -1,0 +1,301 @@
+"""In-memory job manager for the Report (deep report) pipeline.
+
+## Why a separate module from studio_job_service?
+
+- The two pipelines have different state shapes. Slide jobs carry
+  ``pptx_bytes`` + ``defects`` + ``qa_passes``; report jobs carry
+  ``preset`` + ``sections_count`` + ``references_count`` +
+  ``download_urls``.
+- Coupling them would force every future addition to one pipeline to
+  consider the other. The Phase 0 plan is explicit that report is a
+  parallel, independent subsystem.
+- The two ``_jobs`` registries do not collide (different module globals)
+  so user-level rate limits stay per-pipeline (a user can have 8 slide
+  jobs *and* 10 report jobs in flight, by design).
+
+## Concurrency model
+
+Identical to studio_job_service:
+- ``asyncio.Lock`` around the registry,
+- new ``ReportJobRecord`` per state transition (immutability),
+- one ``asyncio.Task`` per job, cancellable via ``cancel_job``.
+
+If the process restarts mid-job:
+- The task is gone.
+- Subsequent GETs for that job_id return 404.
+- The frontend artifact, which tracks state via polling, sees 404 →
+  marks itself "failed" with a retry message.
+
+This is the same contract documented in studio_job_service.py — see
+that file for the longer reasoning.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import secrets
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
+from typing import Any, Awaitable, Callable
+
+from app.schemas.report import (
+    JOB_STEP_DONE,
+    JOB_STEP_QUEUED,
+    ReportJobStatus,
+    ReportPreset,
+    ReportSpec,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# Cap on simultaneously stored report jobs PER USER. Reports are heavier
+# than slides (HTML + PDF + DOCX = ~1-2 MB on disk per job) so we don't
+# want a runaway accumulation, but the spec sets the limit at 10 — slightly
+# higher than slides (8) because users tend to iterate report instructions
+# more than deck content.
+MAX_JOBS_PER_USER = 10
+
+# Jobs older than this age get reaped. Cleanup runs lazily on every state
+# mutation; no background sweeper task.
+STALE_AGE_SECONDS = 60 * 60  # 1 hour
+
+
+@dataclass(frozen=True)
+class ReportJobRecord:
+    """Frozen snapshot of a Report job's state.
+
+    Same immutability contract as JobRecord in studio_job_service: every
+    state transition produces a new dataclass via ``dataclasses.replace``
+    so concurrent readers never observe a torn write.
+    """
+
+    job_id: str
+    user_id: int
+    collection_id: int
+    state: str  # pending | running | done | failed | cancelled
+    step: str | None
+    title: str | None
+    preset: ReportPreset | None
+    sections_count: int | None
+    references_count: int | None
+    error: str | None
+    download_urls: dict[str, str] | None
+    created_at: datetime
+    updated_at: datetime
+    # Loose handle to the spawned task — kept so cancel_job can call
+    # task.cancel() without a separate side-table. Excluded from public
+    # status views.
+    task: asyncio.Task[Any] | None = field(default=None, compare=False, repr=False)
+
+    def to_status(self) -> ReportJobStatus:
+        """Project the record into the API-visible ReportJobStatus."""
+        return ReportJobStatus(
+            job_id=self.job_id,
+            state=self.state,  # type: ignore[arg-type]
+            step=self.step,
+            title=self.title,
+            preset=self.preset,
+            sections_count=self.sections_count,
+            references_count=self.references_count,
+            error=self.error,
+            download_urls=self.download_urls,
+            created_at=self.created_at,
+            updated_at=self.updated_at,
+        )
+
+
+# Single process-wide registry. Module-level so all imports share it.
+_jobs: dict[str, ReportJobRecord] = {}
+_lock = asyncio.Lock()
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _new_job_id() -> str:
+    # Prefix ``r_`` so logs/operators can distinguish from slide jobs (``j_``).
+    return f"r_{secrets.token_hex(16)}"
+
+
+def _evict_user_overflow(user_id: int) -> None:
+    """Trim a user's jobs to MAX_JOBS_PER_USER, oldest-first."""
+    user_jobs = [j for j in _jobs.values() if j.user_id == user_id]
+    if len(user_jobs) <= MAX_JOBS_PER_USER:
+        return
+    user_jobs.sort(key=lambda j: j.created_at)
+    for j in user_jobs[: len(user_jobs) - MAX_JOBS_PER_USER]:
+        _jobs.pop(j.job_id, None)
+
+
+def _prune_stale() -> None:
+    """Drop jobs older than STALE_AGE_SECONDS regardless of user/state."""
+    cutoff = _now().timestamp() - STALE_AGE_SECONDS
+    stale = [jid for jid, j in _jobs.items() if j.created_at.timestamp() < cutoff]
+    for jid in stale:
+        _jobs.pop(jid, None)
+
+
+async def create_job(
+    *,
+    user_id: int,
+    collection_id: int,
+    preset: ReportPreset,
+    runner: Callable[["ReportJobUpdater"], Awaitable[None]],
+) -> ReportJobRecord:
+    """Register a new report job and spawn its pipeline task.
+
+    ``runner`` is the pipeline coroutine factory; it receives a
+    ``ReportJobUpdater`` so it can push state transitions without
+    depending on this module's private dict directly.
+
+    Returns the initial record (state="pending") so the endpoint can
+    return its job_id immediately.
+    """
+    async with _lock:
+        _prune_stale()
+        job_id = _new_job_id()
+        now = _now()
+        record = ReportJobRecord(
+            job_id=job_id,
+            user_id=user_id,
+            collection_id=collection_id,
+            state="pending",
+            step=JOB_STEP_QUEUED,
+            title=None,
+            preset=preset,
+            sections_count=None,
+            references_count=None,
+            error=None,
+            download_urls=None,
+            created_at=now,
+            updated_at=now,
+        )
+        _jobs[job_id] = record
+        _evict_user_overflow(user_id)
+
+    updater = ReportJobUpdater(job_id=job_id)
+
+    async def _wrapped() -> None:
+        try:
+            await updater.set(state="running")
+            await runner(updater)
+        except asyncio.CancelledError:
+            await updater.set(state="cancelled", step=None, error="使用者取消")
+            raise
+        except Exception as e:  # noqa: BLE001 — runner can raise anything
+            logger.exception("Report job %s failed", job_id)
+            await updater.set(state="failed", step=None, error=str(e)[:500])
+
+    task = asyncio.create_task(_wrapped(), name=f"report-job-{job_id}")
+
+    async with _lock:
+        current = _jobs.get(job_id)
+        if current is not None:
+            _jobs[job_id] = replace(current, task=task)
+
+    return record
+
+
+def get_job(job_id: str) -> ReportJobRecord | None:
+    """Fetch a job by id, or None if missing/evicted."""
+    return _jobs.get(job_id)
+
+
+def get_user_job(job_id: str, user_id: int) -> ReportJobRecord | None:
+    """Like get_job, but returns None for cross-user access (acts as 404)."""
+    rec = _jobs.get(job_id)
+    if rec is None or rec.user_id != user_id:
+        return None
+    return rec
+
+
+async def cancel_job(job_id: str, user_id: int) -> bool:
+    """Attempt to cancel an in-flight job. Returns True if cancelled."""
+    rec = get_user_job(job_id, user_id)
+    if rec is None or rec.state in ("done", "failed", "cancelled"):
+        return False
+    if rec.task is not None and not rec.task.done():
+        rec.task.cancel()
+    return True
+
+
+# ── Updater (passed into the runner closure) ──────────────────────────────
+
+
+class ReportJobUpdater:
+    """Narrow API the pipeline runner uses to push state transitions.
+
+    Mirrors studio_job_service.JobUpdater. Every update writes a NEW
+    ReportJobRecord so readers via get_job never observe half-mutated
+    state.
+    """
+
+    def __init__(self, job_id: str) -> None:
+        self._job_id = job_id
+
+    @property
+    def job_id(self) -> str:
+        """Public read of the job id. Useful for the runner to derive
+        artifact filenames deterministically."""
+        return self._job_id
+
+    async def set(
+        self,
+        *,
+        state: str | None = None,
+        step: str | None = None,
+        title: str | None = None,
+        preset: ReportPreset | None = None,
+        sections_count: int | None = None,
+        references_count: int | None = None,
+        error: str | None = None,
+        download_urls: dict[str, str] | None = None,
+    ) -> None:
+        """Patch fields on the current record. Only specified fields are
+        updated; pass None (the default) to leave a field as-is.
+
+        Once a field is set it cannot be cleared back to None via this
+        method — same monotonic state-machine contract as JobUpdater.
+        """
+        async with _lock:
+            current = _jobs.get(self._job_id)
+            if current is None:
+                # Job was evicted while the runner was still going.
+                return
+            patch: dict[str, Any] = {"updated_at": _now()}
+            if state is not None:
+                patch["state"] = state
+            if step is not None:
+                patch["step"] = step
+            if title is not None:
+                patch["title"] = title
+            if preset is not None:
+                patch["preset"] = preset
+            if sections_count is not None:
+                patch["sections_count"] = sections_count
+            if references_count is not None:
+                patch["references_count"] = references_count
+            if error is not None:
+                patch["error"] = error
+            if download_urls is not None:
+                patch["download_urls"] = download_urls
+            _jobs[self._job_id] = replace(current, **patch)
+
+    async def mark_done(
+        self,
+        *,
+        spec: ReportSpec,
+        download_urls: dict[str, str],
+    ) -> None:
+        """Convenience: write the terminal "done" state in one call."""
+        await self.set(
+            state="done",
+            step=JOB_STEP_DONE,
+            title=spec.title,
+            preset=spec.preset,
+            sections_count=len(spec.sections),
+            references_count=len(spec.references),
+            download_urls=download_urls,
+        )

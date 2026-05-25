@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     # FLUX cache dir — local volume on the anila-studio container.
     FLUX_CACHE_DIR: str = "/var/anila/anila-studio-flux-cache"
 
+    # Persistence root for non-PPTX artifacts (report HTML/PDF/DOCX, mindmap
+    # SVG, infographic HTML/PNG, datatable CSV/XLSX/HTML). Each job writes
+    # {job_id}.{ext} here; download endpoints read back from this dir.
+    ARTIFACTS_DIR: str = "/var/anila/anila-studio-artifacts"
+
     # Behavioural toggles
     # In tests / dev we may want JWKS cache to refresh faster; default 1hr.
     JWKS_REFRESH_SECONDS: int = 3600

@@ -274,6 +274,9 @@ services:
       # 預設 fallback 是 csp 的 /var/anila/ingestion-uploads/flux-cache,在
       # anila-studio container 內不存在/沒權限,所以這條 env 必須顯式設。
       FLUX_CACHE_DIR: /var/anila/anila-studio-flux-cache
+      # report / mindmap / infographic / datatable 4 種 artifact 的持久化目錄。
+      # 每個 job 落地 {job_id}.{html,pdf,docx,svg,csv,xlsx}, 24h 後 prune。
+      ARTIFACTS_DIR: /var/anila/anila-studio-artifacts
       RENDERER_BASE_URL: http://pptx-renderer:7100
       JWT_KID: anila-v1
       LOG_LEVEL: INFO
@@ -286,6 +289,7 @@ services:
         condition: service_healthy
     volumes:
       - anila-studio-flux-cache:/var/anila/anila-studio-flux-cache
+      - anila-studio-artifacts:/var/anila/anila-studio-artifacts
     networks:
       - default
       - anila-models-net  # flux2-dev sits here
@@ -455,6 +459,7 @@ volumes:
   csp-pgdata:
   redis-data:
   anila-studio-flux-cache:
+  anila-studio-artifacts:
   # cold-stored — 對應上面 commented service。volume 名稱保留可以避免
   # 解凍時 named volume 重生造成既有資料遺失 (compose 看到舊名就 reuse)。
   codeserver_config:

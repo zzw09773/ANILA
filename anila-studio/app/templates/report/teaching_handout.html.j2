@@ -1,0 +1,47 @@
+{# TEACHING_HANDOUT: textbook-style classroom material.
+
+   Visual cues:
+   - 1.5 line-height for readability,
+   - decorated callout boxes (範例 / 練習) controlled by CSS classes that
+     the LLM can emit via fenced markdown headers (e.g. `### 📚 範例` or
+     `### ✏️ 練習`) — handled by the renderer's markdown→html pass which
+     surfaces those into our visible markup unchanged.
+#}
+{% extends "report/base.html.j2" %}
+{% block document_class %}preset-teaching-handout{% endblock %}
+{% block style_overrides %}
+  body {
+    font-family: "Noto Sans CJK TC", "Noto Sans TC", sans-serif;
+    line-height: 1.85;
+    font-size: 12pt;
+    color: #2c2620;
+  }
+  h1.report-title {
+    color: #6b3a0f;
+    border-bottom-color: #6b3a0f;
+  }
+  h2.section-heading {
+    color: #6b3a0f;
+    padding: 2mm 0 2mm 4mm;
+    border-left: 4px solid #d39651;
+  }
+  h3.section-heading { color: #8a4a14; }
+  .tldr {
+    background: #fbf3e6;
+    border-left-color: #d39651;
+  }
+  .tldr .tldr-label { color: #6b3a0f; }
+  .section-body p { margin-bottom: 3mm; }
+  /* Pedagogical callouts. The drafting prompt instructs the LLM to mark
+     example / practice subsections with the prefixes below; the renderer
+     surfaces them as <h3>/<h4> with these emoji preserved, then this CSS
+     boxes them. */
+  h3.section-heading:has(+ .section-body) {
+    /* Visual breathing — not parsed selectors are no-op in browsers
+       that don't support :has, no harm. */
+  }
+{% endblock %}
+{% block section_decorations %}
+  <!-- Teaching handout has no extra global decorations; per-section
+       formatting is encoded into the heading text itself. -->
+{% endblock %}
