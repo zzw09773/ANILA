@@ -67,9 +67,18 @@ logger = logging.getLogger(__name__)
 #    render,雖風格不對但**字看得出來**,比豆腐好。
 from matplotlib import font_manager as _fm  # noqa: E402
 
+# Register Noto Sans CJK TC 獨立 single-face OTF(Dockerfile build 階段
+# wget 下來)。優先順序:
+#   1. /usr/share/fonts/opentype/noto-tc/NotoSansCJKtc-{Regular,Bold}.otf
+#      ── Google Noto 官方 TC single-face,matplotlib 對 OTF 認得完整,
+#      typography 是真正的台灣字形。
+#   2. /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+#      ── debian fonts-noto-cjk 套件,matplotlib 對 .ttc 只 register 首個
+#      face(JP)。fallback 保底,中文還能 render 只是 typography 偏日文。
 for _candidate in (
+    "/usr/share/fonts/opentype/noto-tc/NotoSansCJKtc-Regular.otf",
+    "/usr/share/fonts/opentype/noto-tc/NotoSansCJKtc-Bold.otf",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/opentype/noto/NotoSansCJK.ttc",
 ):
     try:
         _fm.fontManager.addfont(_candidate)
@@ -77,9 +86,9 @@ for _candidate in (
         continue
 
 matplotlib.rcParams["font.sans-serif"] = [
-    "Noto Sans CJK TC",
+    "Noto Sans CJK TC",   # 真正 TC face(Dockerfile wget 進來的 single-face OTF)
     "Noto Sans CJK SC",
-    "Noto Sans CJK JP",
+    "Noto Sans CJK JP",   # fallback:.ttc 首個 face,字看得到但日文 typography
     "Noto Sans",
     "sans-serif",
 ]
