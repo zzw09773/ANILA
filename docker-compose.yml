@@ -281,8 +281,9 @@ services:
       CSP_BASE_URL: http://csp:8000
       # 跟 csp 共用同一把 service-to-service token,讓 cold-start sync
       # /api/auth/revocations 能透過 X-CSP-Service-Token header 通過
-      # csp 的 verify_service_token。對齊 router / ingestion-worker 的 pattern。
-      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
+      # csp 的 verify_service_token。對齊 csp / router / ingestion-worker
+      # 的 prod fail-loud convention(缺值直接停,不走 dev fallback)。
+      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set (same value as csp)}
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
       FLUX_BACKEND_URL: http://flux2-dev:8000
