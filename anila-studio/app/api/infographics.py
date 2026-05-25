@@ -243,9 +243,19 @@ def _build_generation_prompt(
             "4. **使用台灣繁體中文**，用詞符合台灣本土慣用語。",
             "5. 每個 chart 都要有意義 — 別放陳設用的長條圖。",
             "",
-            "若使用者訊息提供了檢索段落，請以那些段落為事實依據；",
-            "若段落空白，根據 collection 名稱+使用者指示寫一個保守的草稿，",
-            "並在 takeaway 中暗示「本草稿未取得文件支撐」。",
+            "── chunks 與使用者主題的關係(很重要,常見錯誤點)──",
+            "若 chunks 提供「文字內容」但跟使用者指示的主題明顯不符",
+            "(e.g. chunks 是 RAG 技術文件,使用者要『華航 (2610) KPI』),",
+            "嚴禁以下兩種行為:",
+            "  a) **嚴禁編造 title 反映使用者主題** —— title 必須反映 chunks",
+            "     真實內容(`Collection 名稱 · 主題摘要`),不要寫成「華航 KPI 報告」",
+            "     之類使用者投射但 chunks 沒佐證的標題。",
+            "  b) **嚴禁說「檔案只有檔名」** —— chunks 有實際內容,你看了發現",
+            "     跟 user 主題無關,要直接說「本知識庫內容與『XXX』主題不符」,",
+            "     在 takeaway 明示。",
+            "",
+            "若段落完全空白(retrieval 0 hits),根據 collection 名稱+使用者",
+            "指示寫一個保守的草稿,並在 takeaway 中暗示「本草稿未取得文件支撐」。",
         ]
     )
 
@@ -533,6 +543,23 @@ async def _run_pipeline(
             top_k=payload.top_k,
             document_ids=payload.document_ids,
         )
+        # Diagnostic 同 datatable:空表 / 無 chart 通常是 LLM 看 chunks
+        # 後判定無資料,先從 log 直接判斷是 retrieval 還是 LLM 端問題。
+        if chunks:
+            avg_len = sum(len(c.get("content", "")) for c in chunks) / len(chunks)
+            empty_count = sum(1 for c in chunks if len(c.get("content", "")) < 50)
+            logger.info(
+                "Infographic retrieval: collection=%s(id=%s) seed_query=%r "
+                "hits=%d avg_content_len=%.0f empty_chunks=%d/%d",
+                coll.name, payload.collection_id, seed_query[:80],
+                len(chunks), avg_len, empty_count, len(chunks),
+            )
+        else:
+            logger.warning(
+                "Infographic retrieval returned 0 hits: collection=%s(id=%s) "
+                "seed_query=%r — LLM will produce empty spec.",
+                coll.name, payload.collection_id, seed_query[:80],
+            )
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001
