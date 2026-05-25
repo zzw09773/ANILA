@@ -1,6 +1,6 @@
 import csv
 import io
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, literal_column, text
 from sqlalchemy.orm import Session
 from app.models.department import Department
@@ -8,6 +8,28 @@ from app.models.token_usage import TokenUsage
 from app.models.model_registry import ModelRegistry
 from app.models.user import User
 from app.utils.time_helpers import get_time_range
+
+
+# 台北 = UTC+8。csp 部署在台灣 / 國軍 / 中科院,使用者在報表期望看
+# UTC+8 顯示;DB 內 request_timestamp 是 UTC(server_default=now() AT TIME
+# ZONE 'UTC')。在這層做轉換,而不是在前端 — 因為 CSV 是直接下載給 Excel
+# / 第三方工具用,沒前端 JS 處理機會。
+_TPE_TZ = timezone(timedelta(hours=8))
+
+
+def _to_tpe_iso(dt: datetime | None) -> str:
+    """Render `datetime` as `YYYY-MM-DDTHH:MM:SS+08:00` in Asia/Taipei.
+
+    DB column timezone awareness varies (server_default=now() with
+    PostgreSQL gives UTC-aware;舊 row 可能 naive)。對 naive datetime
+    我們**假設它是 UTC**(這是 csp 既有的 convention)── pin 一致行為,
+    避免一些 row 跑 8 小時、一些跑 0 小時的混淆。
+    """
+    if dt is None:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(_TPE_TZ).isoformat()
 
 
 def _get_model_ids_by_type(db: Session, model_type: str) -> list[int]:
@@ -401,7 +423,7 @@ def export_usage_csv(
     for row in rows:
         writer.writerow(
             [
-                row.request_timestamp.isoformat() if row.request_timestamp else "",
+                _to_tpe_iso(row.request_timestamp),
                 row.username,
                 row.department_name or "",
                 row.model_name,
@@ -547,7 +569,8 @@ def get_agent_usage(
 
     series = [
         {
-            "timestamp": r.bucket.isoformat() if r.bucket else None,
+            # chart 的 bucket 對齊匯出 CSV,同樣輸出 Asia/Taipei 時區。
+            "timestamp": _to_tpe_iso(r.bucket) or None,
             "total_tokens": int(r.total_tokens or 0),
             "total_requests": int(r.total_requests or 0),
             "avg_duration_ms": float(r.avg_duration_ms) if r.avg_duration_ms else None,
