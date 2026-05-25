@@ -334,12 +334,9 @@ async def _generate_validated_spec(
             extracted = _extract_json_object(raw)
             parsed = _loads_lenient(extracted)
             spec = DatatableSpec.model_validate(parsed)
-            # Defensive: the spec is structurally valid but the LLM
-            # might have emitted zero useful rows (all cells null). The
-            # schema accepts that — runner-level check below treats it
-            # as failed.
-            if not spec.rows:
-                raise ValueError("LLM 回傳了 0 列 — 視為失敗")
+            # 0 rows 是 prompt 教 LLM 的「主題不符」合法 fallback ──
+            # 不視為失敗;exporter 三格式(HTML / CSV / XLSX)都已支援
+            # 0 rows + notes 的乾淨輸出。schema 也已 `min_length=0`。
             return spec
         except (ValidationError, ValueError, json.JSONDecodeError) as exc:
             last_err = exc
