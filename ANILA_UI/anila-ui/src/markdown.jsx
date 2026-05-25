@@ -304,20 +304,22 @@ const components = {
   ),
   // 生成的圖片(image-generator agent 回傳的 markdown `![](data:image/...)`
   // / 上傳預覽 / 其他 image)預設 ReactMarkdown 用裸 <img>,inline-block
-  // 靠左對齊,顯示位置奇怪。改 display:block + margin:auto 讓圖片在訊息
-  // 區塊內水平置中;max-width:100% 避免圖過寬撐爆對話框。
+  // 靠左對齊。包一層 text-align:center 的 wrapper 才能真正水平置中
+  // (光靠 img margin:auto 在圖片填滿容器寬度時沒有剩餘空間可置中),
+  // 同時 cap 圖片 maxWidth 在 520px,避免大圖把訊息區塊撐到滿版。
   img: ({ node, ...props }) => (
-    <img
-      style={{
-        display: "block",
-        maxWidth: "100%",
-        height: "auto",
-        margin: "10px auto",
-        borderRadius: 8,
-        border: "1px solid var(--border)",
-      }}
-      {...props}
-    />
+    <span style={{ display: "block", textAlign: "center", margin: "10px 0" }}>
+      <img
+        style={{
+          display: "inline-block",
+          maxWidth: "min(100%, 520px)",
+          height: "auto",
+          borderRadius: 8,
+          border: "1px solid var(--border)",
+        }}
+        {...props}
+      />
+    </span>
   ),
   hr: () => (
     <hr style={{ border: "none", borderTop: "1px solid var(--border)", margin: "10px 0" }} />
