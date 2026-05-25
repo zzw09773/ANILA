@@ -24,7 +24,11 @@ RUN apt-get update \
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    # Playwright 預設裝 chromium 在 $HOME/.cache/ms-playwright,但 Dockerfile
+    # build 階段是 root,runtime 切 USER anila 後找 /home/anila/.cache 找不到。
+    # 改用 system-wide path,build 時 download,runtime 任何 user 都讀同一份。
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 
 WORKDIR /app
 
@@ -40,7 +44,11 @@ RUN pip install --upgrade pip && \
     pip install --no-cache-dir . && \
     # Playwright chromium binary 必須在 pip 之後另外裝。
     # --with-deps 已在 apt 階段裝完(slim image 沒帶);這裡只下 chromium。
-    playwright install chromium
+    # PLAYWRIGHT_BROWSERS_PATH 已設 /opt/playwright-browsers,install 會
+    # 把 binary + symlinks 放這裡,任何 user 跑 process 都讀同一份。
+    mkdir -p /opt/playwright-browsers && \
+    playwright install chromium && \
+    chmod -R a+rX /opt/playwright-browsers
 
 # Run as non-root for defence-in-depth
 RUN useradd --create-home --uid 10001 anila \
