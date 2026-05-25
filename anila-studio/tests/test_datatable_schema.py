@@ -197,9 +197,18 @@ def test_spec_rejects_too_many_columns():
         DatatableSpec(**_valid_spec_args(columns=cols))
 
 
-def test_spec_rejects_zero_rows():
-    with pytest.raises(ValidationError):
-        DatatableSpec(**_valid_spec_args(rows=[]))
+def test_spec_accepts_zero_rows_for_topic_mismatch_fallback():
+    """0 rows 是 LLM 對「chunks 主題不符」的正確 fallback ── prompt 教 LLM
+    給空 rows + notes 寫「主題不符」,所以 schema 必須允許 0 rows,不要
+    在 spec validate 階段就拒收(否則 retry 用盡反而走更糟的 fallback)。"""
+    spec = DatatableSpec(
+        **_valid_spec_args(
+            rows=[],
+            notes="本知識庫內容與『華航 KPI』主題不符,無法抽取對應指標。",
+        )
+    )
+    assert spec.rows == []
+    assert spec.notes is not None
 
 
 def test_spec_rejects_over_200_rows():

@@ -130,7 +130,10 @@ class DatatableSpec(BaseModel):
     subtitle: str | None = Field(default=None, max_length=300)
     preset: DatatablePreset
     columns: list[DataColumn] = Field(..., min_length=2, max_length=10)
-    rows: list[DataRow] = Field(..., min_length=1, max_length=200)
+    # 允許 0 rows:LLM 看到 chunks 跟 user 指示主題不符時,被 prompt 指示
+    # 「rows 留空、在 notes 寫主題不符」── schema 必須相容此 fallback,
+    # 否則 spec 驗證失敗反覆 retry 也走不出來(SCHEMA_CORRECTION_PASSES 用盡)。
+    rows: list[DataRow] = Field(..., min_length=0, max_length=200)
     notes: str | None = Field(default=None, max_length=1000)
 
     @field_validator("title")
