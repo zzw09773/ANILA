@@ -53,12 +53,36 @@ logger = logging.getLogger(__name__)
 
 # ── matplotlib runtime config ──────────────────────────────────────────────
 
-# Tell matplotlib to use Noto Sans CJK TC for any sans rendering. The
-# Dockerfile installs `fonts-noto-cjk`; this only takes effect if the
-# font actually exists in fontconfig. Falls back to sans-serif (which
-# would tofu CJK glyphs) — production deploy is in docker where the
-# font is guaranteed present, but local test hosts may not have it.
-matplotlib.rcParams["font.sans-serif"] = ["Noto Sans CJK TC", "sans-serif"]
+# Noto Sans CJK 在 fonts-noto-cjk 是 .ttc(TrueType Collection)── 內含
+# JP / SC / TC / HK / KR 5 個 face。**matplotlib font_manager 對 .ttc 只
+# 自動 register 第一個 face**(=JP),所以單純設 rcParams="Noto Sans CJK TC"
+# 是找不到的 → fall back DejaVu Sans → 中文豆腐。
+#
+# 修法兩步:
+# 1. 用 font_manager.fontManager.addfont() 把 .ttc 路徑顯式 register,
+#    這會把所有 face 都加進來,包含 TC。
+# 2. rcParams 列 TC + SC + JP 多個保底:萬一 TC face register 失敗
+#    (e.g. local test host 沒 fonts-noto-cjk),退到 JP/SC ── JP face
+#    內含 CJK Unified Ideographs 區段,大部分中文字會用日文字型 typography
+#    render,雖風格不對但**字看得出來**,比豆腐好。
+from matplotlib import font_manager as _fm  # noqa: E402
+
+for _candidate in (
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK.ttc",
+):
+    try:
+        _fm.fontManager.addfont(_candidate)
+    except (OSError, FileNotFoundError):
+        continue
+
+matplotlib.rcParams["font.sans-serif"] = [
+    "Noto Sans CJK TC",
+    "Noto Sans CJK SC",
+    "Noto Sans CJK JP",
+    "Noto Sans",
+    "sans-serif",
+]
 matplotlib.rcParams["axes.unicode_minus"] = False
 
 # Quieten matplotlib's "Glyph X missing from font(s) DejaVu Sans"
