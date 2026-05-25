@@ -14,6 +14,20 @@ RUN npm run build
 FROM python:3.11-slim
 WORKDIR /app
 
+# graphviz + fonts-noto-cjk: Studio Fix 2 (2026-05-18). CSP shells out
+# to `dot -Tpng` from app.services.diagram_renderer to render
+# Slide.diagram_dot when image_kind='diagram'. Noto CJK is required
+# so DOT graphs with Traditional Chinese node labels render glyphs
+# instead of tofu boxes.
+#
+# Round 2 fix-up (2026-05-19): originally landed in the wrong
+# Dockerfile (myCSPPlatform/backend/Dockerfile is dead — compose
+# uses THIS file via dockerfile: myCSPPlatform/docker/Dockerfile).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    graphviz \
+    fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install anila-core first (changes less often than backend code, so
 # layer caching survives most builds). The package brings asyncpg +
 # pgvector + the AgentScopedPgVectorStore the inspector uses, and the

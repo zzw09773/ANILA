@@ -3,7 +3,6 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { useTheme } from '../theme/ThemeContext'
 import { useAuthStore } from '../store/auth'
 import { explainError } from '../api/client'
-import { register as registerApi } from '../api/auth'
 
 // Terminal / CLI aesthetic — direct port of the LoginTerminal variant in
 // _design/prototype.html. The UX rationale (and why we kept it instead of
@@ -11,11 +10,9 @@ import { register as registerApi } from '../api/auth'
 // in terminals, and the mono layout doubles as a soft brand cue ("this is
 // a power tool, not a consumer chat-bot").
 //
-// Behaviour vs. the prototype:
-//   - submit() now hits CSP /api/auth/login (real auth) instead of setTimeout.
-//   - register tab POSTs /api/auth/register, then bounces back to login tab.
-//   - error rendering is pulled from explainError() so backend ``detail``
-//     strings (LDAP failures, account-pending, etc.) surface verbatim.
+// Closed-deployment build: only local username + password is supported.
+// All accounts must be provisioned by an admin via /api/admin/users on the
+// CSP backend — no self-service register, no SSO/OIDC entrypoints.
 
 const MONO = `ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace`
 
@@ -33,13 +30,10 @@ export function LoginPage() {
   const login = useAuthStore((s) => s.login)
   const accessToken = useAuthStore((s) => s.accessToken)
 
-  const [tab, setTab] = useState<'login' | 'register'>('login')
   const [u, setU] = useState('')
   const [p, setP] = useState('')
-  const [email, setEmail] = useState('')
-  const [focused, setFocused] = useState<'u' | 'p' | 'e'>('u')
+  const [focused, setFocused] = useState<'u' | 'p'>('u')
   const [err, setErr] = useState<string | null>(null)
-  const [info, setInfo] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [time, setTime] = useState(() => new Date())
 
@@ -69,7 +63,6 @@ export function LoginPage() {
   const submit = async (e: FormEvent) => {
     e.preventDefault()
     setErr(null)
-    setInfo(null)
     if (!u.trim() || u.length < 3) {
       setErr('username 至少 3 個字元')
       return
@@ -81,20 +74,14 @@ export function LoginPage() {
 
     setLoading(true)
     try {
-      if (tab === 'register') {
-        await registerApi(u, email, p)
-        setInfo('註冊已送出，等候 admin 核准後即可登入。')
-        setTab('login')
-      } else {
-        await login(u, p)
-        // The accessToken-watching effect above will navigate; we still
-        // call navigate here as a fallback for the case where login()
-        // resolved but the effect's render hasn't run yet (rare but
-        // observable on slow devices). The ref prevents double-fire.
-        if (!navigatedRef.current) {
-          navigatedRef.current = true
-          navigate(fromPathRef.current, { replace: true })
-        }
+      await login(u, p)
+      // The accessToken-watching effect above will navigate; we still
+      // call navigate here as a fallback for the case where login()
+      // resolved but the effect's render hasn't run yet (rare but
+      // observable on slow devices). The ref prevents double-fire.
+      if (!navigatedRef.current) {
+        navigatedRef.current = true
+        navigate(fromPathRef.current, { replace: true })
       }
     } catch (anyErr) {
       setErr(explainError(anyErr))
@@ -226,51 +213,15 @@ export function LoginPage() {
 
           <div style={{ marginTop: 28 }}>
             <span style={{ color: dim }}>$</span>{' '}
-            <span style={{ color: ink }}>auth {tab} --help</span>
+            <span style={{ color: ink }}>auth login --help</span>
             <div style={{ color: dim, marginTop: 4, paddingLeft: 14, fontSize: 12 }}>
-              username 長度 ≥ 3，password 長度 ≥ 6
-              {tab === 'register' && '；email 可空，admin 核准後生效'}
+              username 長度 ≥ 3，password 長度 ≥ 6 · 帳號由 admin 開立
             </div>
-          </div>
-
-          {/* Tab switcher — minimal */}
-          <div style={{ marginTop: 24, display: 'flex', gap: 0 }}>
-            {(
-              [
-                ['login', '登入'],
-                ['register', '註冊'],
-              ] as const
-            ).map(([k, l], i) => (
-              <button
-                key={k}
-                type="button"
-                onClick={() => {
-                  setTab(k)
-                  setErr(null)
-                  setInfo(null)
-                }}
-                style={{
-                  padding: '6px 14px',
-                  border: 'none',
-                  cursor: 'pointer',
-                  fontFamily: MONO,
-                  background: 'transparent',
-                  color: tab === k ? accent : dim,
-                  fontSize: 12.5,
-                  fontWeight: tab === k ? 600 : 400,
-                  borderBottom: `2px solid ${tab === k ? accent : 'transparent'}`,
-                  transition: 'all 150ms',
-                }}
-              >
-                <span style={{ opacity: 0.5, marginRight: 6 }}>0{i + 1}</span>
-                {l}
-              </button>
-            ))}
           </div>
 
           <form
             onSubmit={submit}
-            style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 4 }}
+            style={{ marginTop: 24, display: 'flex', flexDirection: 'column', gap: 4 }}
           >
             <TerminalField
               id="term-u"
@@ -285,23 +236,6 @@ export function LoginPage() {
               dim={dim}
               disabled={loading}
             />
-
-            {tab === 'register' && (
-              <TerminalField
-                id="term-e"
-                label="email"
-                value={email}
-                onChange={setEmail}
-                placeholder="you@example.com"
-                focused={focused === 'e'}
-                onFocus={() => setFocused('e')}
-                accent={accent}
-                ink={ink}
-                dim={dim}
-                type="email"
-                disabled={loading}
-              />
-            )}
 
             <TerminalField
               id="term-p"
@@ -331,22 +265,6 @@ export function LoginPage() {
                 }}
               >
                 <span style={{ color: danger }}>[error]</span> {err}
-              </div>
-            )}
-
-            {info && (
-              <div
-                style={{
-                  marginTop: 10,
-                  padding: '8px 10px',
-                  borderLeft: `2px solid ${ok}`,
-                  background:
-                    theme === 'dark' ? 'rgba(61,214,140,0.08)' : 'rgba(43,182,115,0.06)',
-                  color: ok,
-                  fontSize: 12.5,
-                }}
-              >
-                <span>[info]</span> {info}
               </div>
             )}
 
@@ -381,9 +299,7 @@ export function LoginPage() {
                   letterSpacing: 0.3,
                 }}
               >
-                {loading
-                  ? '[ ⠼ 驗證中... ]'
-                  : `[ ↵ ${tab === 'login' ? 'execute login' : 'execute register'} ]`}
+                {loading ? '[ ⠼ 驗證中... ]' : '[ ↵ execute login ]'}
               </button>
               <span style={{ fontSize: 11.5, color: dim }}>
                 按{' '}

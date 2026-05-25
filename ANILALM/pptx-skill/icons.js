@@ -57,7 +57,19 @@ const HI2_INDEX = path.join(
 //     instead, hence no `growth` concept in the table
 //   - network maps to GlobeAlt only because the prompt restricts its
 //     use to "真的講國際" — generic "connection" is `integration`.
+//
+// Phase 6 (Fix 4): expanded from 33 generic concepts to 80+ entries
+// grouped by domain. The original 33 served generic decks fine, but
+// technical content (e.g. 工業視覺/ML 簡報) was forcing the LLM to
+// fallback-pick mismatched icons like `rocket` for "跨機臺泛化差" or
+// `sparkles` for "資料不平衡". The new domain groups give the LLM a
+// concrete vocabulary for industrial, ML/AI, system-architecture,
+// process/workflow, and outcome/impact concepts. The prompt in
+// api/studio.py groups these the same way and asks the LLM to pick
+// a domain first, then a concept from within that domain.
 const CONCEPT_MAP = Object.freeze({
+  // === Generic (Phase 5) ===========================================
+
   // 資料/運算
   data_storage: 'HiCircleStack',
   data_pipeline: 'HiArrowsRightLeft',
@@ -105,6 +117,119 @@ const CONCEPT_MAP = Object.freeze({
   document: 'HiDocumentText',
   book: 'HiBookOpen',
   learning: 'HiAcademicCap',
+
+  // === Industrial / Manufacturing (Phase 6 - Fix 4) ================
+  machine: 'HiCog8Tooth',
+  factory: 'HiBuildingOffice2',
+  sensor: 'HiSignal',
+  defect: 'HiExclamationCircle',
+  quality_control: 'HiCheckBadge',
+  calibration: 'HiAdjustmentsHorizontal',
+  anomaly: 'HiExclamationTriangle',
+  production_line: 'HiBuildingStorefront',
+  inspection: 'HiDocumentMagnifyingGlass',
+  yield_rate: 'HiChartPie',
+
+  // === ML / AI =====================================================
+  model: 'HiCpuChip',
+  training: 'HiAcademicCap',
+  inference: 'HiBolt',
+  embedding: 'HiCubeTransparent',
+  classification: 'HiSquares2X2',
+  regression: 'HiArrowTrendingUp',
+  overfitting: 'HiArrowsPointingIn',
+  generalization: 'HiArrowsPointingOut',
+  feature_extraction: 'HiBeaker',
+  imbalance: 'HiScale',
+  fine_tuning: 'HiWrenchScrewdriver',
+  agent: 'HiUserCircle',
+  reasoning: 'HiLightBulb',
+  retrieval: 'HiMagnifyingGlassCircle',
+  prompt: 'HiCommandLine',
+  evaluation: 'HiDocumentChartBar',
+  prediction: 'HiChartBarSquare',
+
+  // === System Architecture =========================================
+  supervisor: 'HiUserGroup',
+  worker: 'HiWrench',
+  orchestration: 'HiQueueList',
+  hierarchy: 'HiSquaresPlus',
+  vertical_split: 'HiViewColumns',
+  fanout: 'HiArrowsRightLeft',
+  pipeline_stage: 'HiQueueList',
+  module: 'HiCube',
+
+  // === Process / Workflow ==========================================
+  perception: 'HiEye',
+  cognition: 'HiCpuChip',
+  action: 'HiPlay',
+  step_one: 'HiNumberedList',
+  alert: 'HiBellAlert',
+  iteration: 'HiArrowPath',
+  decision: 'HiQuestionMarkCircle',
+  monitoring: 'HiChartBar',
+
+  // === Outcome / Impact ============================================
+  improvement: 'HiArrowTrendingUp',
+  reduction: 'HiArrowTrendingDown',
+  breakthrough: 'HiSparkles',
+  limitation: 'HiNoSymbol',
+  cost_saving: 'HiBanknotes',
+  risk: 'HiFire',
+
+  // === Round 3 additions (v3 fallout) ===
+
+  // Architecture / decoupling
+  decoupling: 'HiArrowsPointingOut',
+  coupling: 'HiArrowsPointingIn',
+  modularity: 'HiSquares2X2',
+  orthogonality: 'HiViewfinderCircle',
+  layering: 'HiBars3',
+
+  // Observability / monitoring
+  observability: 'HiEye',
+  monitoring: 'HiEye',
+  logging: 'HiDocumentText',
+  tracing: 'HiArrowsRightLeft',
+  metrics: 'HiChartBar',
+
+  // Compliance / governance
+  compliance: 'HiShieldCheck',
+  audit: 'HiClipboardDocumentCheck',
+  policy: 'HiDocumentMagnifyingGlass',
+  governance: 'HiUserGroup',
+  transparency: 'HiEye',
+
+  // Performance / debugging
+  debugging: 'HiBugAnt',
+  performance: 'HiBolt',
+  optimization: 'HiAdjustmentsHorizontal',
+  latency: 'HiClock',
+  throughput: 'HiArrowTrendingUp',
+
+  // RAG / retrieval
+  retrieval: 'HiMagnifyingGlassCircle',
+  ranking: 'HiBars3BottomRight',
+  reranking: 'HiArrowsUpDown',
+  hierarchy: 'HiQueueList',
+
+  // ── Generic Chinese-language concepts (LLM emits these directly) ──
+  // gemma4 often writes Chinese concept names. Catch them without
+  // forcing a translation step.
+  '架構解耦': 'HiArrowsPointingOut',
+  '可觀測性': 'HiEye',
+  '合規自動化': 'HiShieldCheck',
+  '效能調優': 'HiBolt',
+  '記憶體對齊': 'HiCubeTransparent',
+  '推理引擎': 'HiCpuChip',
+  '容器化部署': 'HiCloudArrowUp',
+  '硬體調優': 'HiAdjustmentsHorizontal',
+  '穩定性驗證': 'HiCheckBadge',
+  '階層式索引': 'HiQueueList',
+  '迴圈推理': 'HiArrowPath',
+  '兩階段檢索': 'HiBars3',
+  '思維鏈': 'HiSparkles',
+  '可稽核': 'HiClipboardDocumentCheck',
 })
 
 // Lazy-built map of icon name → GenIcon descriptor.

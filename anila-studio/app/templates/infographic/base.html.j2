@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+{# Self-contained infographic HTML.
+
+   Contracts assumed by Renderer:
+   - ``spec``            : InfographicSpec
+   - ``encoded_charts``  : dict[int, str]  ── chart_index → base64 PNG
+   - ``preset_class``    : str             ── e.g. 'preset-mission_dashboard'
+
+   Section visibility is data-driven (not preset-driven): if a list is
+   empty the wrapping <section> is skipped entirely so the layout
+   collapses cleanly. Preset only nudges CSS accents (header colour,
+   stat grid density).
+#}
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <title>{{ spec.title }}</title>
+  <style>
+    /* Use system CJK-capable stack so Playwright headless chromium
+       inside the docker container falls back to Noto Sans CJK TC
+       (installed via fonts-noto-cjk) when available. */
+    html, body {
+      margin: 0;
+      padding: 0;
+      font-family: "Noto Sans CJK TC", "Noto Sans TC", "PingFang TC",
+                   "Microsoft JhengHei", sans-serif;
+      background: #f8fafc;
+      color: #1f2937;
+      line-height: 1.5;
+    }
+    body {
+      padding: 32px 40px;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    .infographic-header {
+      border-bottom: 4px solid #1f4e8a;
+      margin-bottom: 28px;
+      padding-bottom: 18px;
+    }
+    .infographic-header h1 {
+      margin: 0;
+      font-size: 32px;
+      color: #102a52;
+    }
+    .infographic-header .subtitle {
+      margin-top: 6px;
+      color: #4b5563;
+      font-size: 16px;
+    }
+
+    /* Preset accents ─ subtle so the data still leads. */
+    body.preset-mission_dashboard .infographic-header { border-bottom-color: #1f4e8a; }
+    body.preset-stats_brief        .infographic-header { border-bottom-color: #3a8bce; }
+    body.preset-comparison_matrix  .infographic-header { border-bottom-color: #8e44ad; }
+    body.preset-timeline_overview  .infographic-header { border-bottom-color: #16a085; }
+
+    section.infographic-section {
+      margin-top: 28px;
+    }
+    section.infographic-section h2 {
+      font-size: 20px;
+      margin: 0 0 14px;
+      color: #102a52;
+      border-left: 6px solid #f0a500;
+      padding-left: 10px;
+    }
+
+    /* ── Stats grid ── */
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px;
+    }
+    .stat-card {
+      background: white;
+      padding: 18px;
+      border-radius: 10px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+      border-top: 4px solid #1f4e8a;
+    }
+    .stat-card .value {
+      font-size: 30px;
+      font-weight: 700;
+      color: #102a52;
+    }
+    .stat-card .label {
+      margin-top: 6px;
+      font-size: 13px;
+      color: #4b5563;
+    }
+    .stat-card .delta {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .stat-card .delta.up   { background: #d1fae5; color: #047857; }
+    .stat-card .delta.down { background: #fee2e2; color: #b91c1c; }
+    .stat-card .delta.flat { background: #e5e7eb; color: #374151; }
+
+    /* ── Charts ── */
+    .chart-list {
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+    .chart-block {
+      background: white;
+      padding: 16px;
+      border-radius: 10px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    }
+    .chart-block img {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    .chart-caption {
+      margin-top: 6px;
+      font-size: 12px;
+      color: #6b7280;
+      text-align: center;
+    }
+
+    /* ── Comparison matrix ── */
+    .comparison-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: white;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    }
+    .comparison-table th,
+    .comparison-table td {
+      padding: 12px 14px;
+      text-align: left;
+      border-bottom: 1px solid #e5e7eb;
+      font-size: 14px;
+    }
+    .comparison-table th {
+      background: #1f4e8a;
+      color: white;
+      font-weight: 600;
+    }
+    .comparison-table tr:last-child td { border-bottom: none; }
+    .comparison-table tr:nth-child(even) td { background: #f8fafc; }
+
+    /* ── Timeline ── */
+    .timeline {
+      position: relative;
+      padding: 8px 0 8px 0;
+    }
+    .timeline::before {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 0; bottom: 0;
+      width: 2px;
+      background: #cbd5e1;
+      transform: translateX(-50%);
+    }
+    .timeline-event {
+      display: flex;
+      align-items: flex-start;
+      width: 100%;
+      margin: 16px 0;
+    }
+    .timeline-event:nth-child(odd) { flex-direction: row; }
+    .timeline-event:nth-child(even) { flex-direction: row-reverse; }
+    .timeline-event .timeline-content {
+      width: 45%;
+      background: white;
+      padding: 14px 16px;
+      border-radius: 10px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    }
+    .timeline-event .timeline-dot {
+      width: 10%;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding-top: 14px;
+    }
+    .timeline-event .timeline-dot::after {
+      content: "";
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #f0a500;
+      border: 3px solid white;
+      box-shadow: 0 0 0 2px #cbd5e1;
+    }
+    .timeline-event .timeline-spacer { width: 45%; }
+    .timeline-event .timeline-date {
+      font-weight: 600;
+      color: #1f4e8a;
+      font-size: 14px;
+      margin-bottom: 4px;
+    }
+    .timeline-event .timeline-title {
+      font-weight: 600;
+      font-size: 15px;
+    }
+    .timeline-event .timeline-desc {
+      margin-top: 6px;
+      color: #4b5563;
+      font-size: 13px;
+    }
+
+    /* ── Takeaway ── */
+    .takeaway {
+      margin-top: 36px;
+      padding: 22px 26px;
+      background: linear-gradient(135deg, #1f4e8a 0%, #3a8bce 100%);
+      color: white;
+      border-radius: 12px;
+      font-size: 18px;
+      font-weight: 500;
+      line-height: 1.55;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+    }
+    .takeaway::before {
+      content: "結論 · ";
+      font-weight: 700;
+      letter-spacing: 1px;
+      color: #f0a500;
+    }
+
+    /* Print / PDF tweaks — Playwright honours @media print when calling
+       page.pdf(). Background already explicit via colors so we mainly
+       just relax max-width so A4 fits cleanly. */
+    @media print {
+      body {
+        background: white;
+        padding: 20px 24px;
+      }
+      .chart-block, .stat-card, .comparison-table, .timeline-event .timeline-content {
+        box-shadow: none;
+        border: 1px solid #e5e7eb;
+      }
+    }
+  </style>
+</head>
+<body class="{{ preset_class }}">
+  <header class="infographic-header">
+    <h1>{{ spec.title }}</h1>
+    {% if spec.subtitle %}
+      <div class="subtitle">{{ spec.subtitle }}</div>
+    {% endif %}
+  </header>
+
+  {% if spec.stats %}
+  <section class="infographic-section stats">
+    <h2>關鍵指標</h2>
+    <div class="stat-grid">
+      {% for stat in spec.stats %}
+        {# Delta class chosen by the leading +/- char so renderer
+           doesn't need to know about percent-vs-multiplier formats. #}
+        {% set delta_class = 'flat' %}
+        {% if stat.delta %}
+          {% if stat.delta.startswith('+') %}{% set delta_class = 'up' %}
+          {% elif stat.delta.startswith('-') %}{% set delta_class = 'down' %}
+          {% endif %}
+        {% endif %}
+        <div class="stat-card">
+          <div class="value">{{ stat.value }}</div>
+          <div class="label">{{ stat.label }}</div>
+          {% if stat.delta %}
+            <div class="delta {{ delta_class }}">{{ stat.delta }}</div>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% if spec.charts %}
+  <section class="infographic-section charts">
+    <h2>圖表分析</h2>
+    <div class="chart-list">
+      {% for chart in spec.charts %}
+        <div class="chart-block">
+          {% if loop.index0 in encoded_charts %}
+            <img alt="{{ chart.title }}"
+                 src="data:image/png;base64,{{ encoded_charts[loop.index0] }}" />
+          {% endif %}
+          <div class="chart-caption">{{ chart.title }}</div>
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% if spec.comparison %}
+  <section class="infographic-section comparison">
+    <h2>比較矩陣</h2>
+    <table class="comparison-table">
+      <thead>
+        <tr>
+          <th>項目</th>
+          {# Use first row's column count as the table width; rows with
+             fewer columns get empty <td>'s appended for visual alignment. #}
+          {% set n_cols = spec.comparison[0].columns | length %}
+          {% for i in range(n_cols) %}
+            <th>欄位 {{ i + 1 }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in spec.comparison %}
+          <tr>
+            <td><strong>{{ row.label }}</strong></td>
+            {% for i in range(n_cols) %}
+              <td>{{ row.columns[i] if i < (row.columns | length) else '' }}</td>
+            {% endfor %}
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  {% if spec.timeline %}
+  <section class="infographic-section timeline-section">
+    <h2>時間軸</h2>
+    <div class="timeline">
+      {% for event in spec.timeline %}
+        <div class="timeline-event">
+          <div class="timeline-content">
+            <div class="timeline-date">{{ event.date }}</div>
+            <div class="timeline-title">{{ event.title }}</div>
+            {% if event.description %}
+              <div class="timeline-desc">{{ event.description }}</div>
+            {% endif %}
+          </div>
+          <div class="timeline-dot"></div>
+          <div class="timeline-spacer"></div>
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  <div class="takeaway">{{ spec.takeaway }}</div>
+</body>
+</html>

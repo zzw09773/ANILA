@@ -1,21 +1,34 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTheme } from '../theme/ThemeContext'
 import { useWorkspaceStore } from '../store/workspace'
 import { useArtifactStore } from '../store/artifacts'
 import { Modal } from '../components/Modal'
 import { Icon, type IconName } from '../components/Icon'
 import { Spinner } from '../components/Spinner'
-import { generateReport, generateSlides } from '../studio/generators'
+import {
+  generateReport,
+  generateSlides,
+  generateMindmap,
+  generateInfographic,
+  generateDatatable,
+} from '../studio/generators'
 import { createSlidesJob } from '../api/studio'
 import { explainError } from '../api/client'
+import { ThemePicker } from './ThemePicker'
+import { StudioWizard } from './StudioWizard'
+import type { ThemeId } from '../studio/themes'
 import type { SlidesArtifact, StudioArtifact } from '../types'
 
 export interface FormatSpec {
-  k: 'report' | 'slides' | 'podcast' | 'mindmap' | 'flashcards' | 'quiz' | 'infographic' | 'datatable' | 'video'
+  // 製作台支援的 artifact kind。原本含 podcast / video / flashcards / quiz
+  // 等 9 種,但內部部署場景(國軍 / 中科院)不需要那 4 種(air-gapped 音/影
+  // 模型無解、軍方考核 SOP 不交給 AI、抽認卡是消費級個人學習文化),
+  // 已從製作台移除。
+  k: 'report' | 'slides' | 'mindmap' | 'infographic' | 'datatable'
   l: string
   i: IconName
   c: string
-  cat: 'audio' | 'visual' | 'study' | 'doc'
+  cat: 'visual' | 'doc'
   hint: string
   comingSoon?: boolean
 }
@@ -45,6 +58,58 @@ const PRESETS: Record<string, Preset[]> = {
     { l: 'Lightning Talk', d: '5 張投影片濃縮版' },
     { l: '教學投影片', d: '概念 + 範例 + 練習' },
   ],
+  mindmap: [
+    { l: '概念樹', d: '從根概念展開子概念與相關項目', tag: '推薦' },
+    { l: '任務拆解', d: 'WBS 結構;任務 → 子任務 → 步驟' },
+    { l: 'SOP 流程', d: '線性流程圖,從觸發到完成' },
+    { l: '組織關係', d: '人/單位/角色之間的關係圖' },
+  ],
+  infographic: [
+    { l: '任務 Dashboard', d: '關鍵指標 + 進度 + 比較', tag: '推薦' },
+    { l: '數據簡報', d: '從文件抽具體數字 + chart' },
+    { l: '比較矩陣', d: '並排對照 X vs Y 的特徵' },
+    { l: '時間軸總覽', d: '從早到晚事件列表 + 視覺強調' },
+  ],
+  datatable: [
+    { l: '關鍵指標彙整', d: '從文件抽 KPI / 數字到表格', tag: '推薦' },
+    { l: '實體屬性表', d: '各對象的多欄位屬性對照' },
+    { l: '時間軸表', d: '日期 / 事件 / 變化 三欄' },
+    { l: '並排比較', d: '對照 X vs Y(同欄位橫向比較)' },
+  ],
+}
+
+// Preset 中文 label → backend enum 對應(送 backend 時用)
+const PRESET_ENUM_MAP: Record<string, Record<string, string>> = {
+  report: {
+    深度技術綜述: 'deep_tech_review',
+    重點摘要: 'key_summary',
+    教學講義: 'teaching_handout',
+    對外溝通文件: 'external_comms',
+  },
+  mindmap: {
+    概念樹: 'concept_tree',
+    任務拆解: 'task_breakdown',
+    SOP流程: 'sop_flow',
+    'SOP 流程': 'sop_flow',
+    組織關係: 'org_relationships',
+  },
+  infographic: {
+    '任務 Dashboard': 'mission_dashboard',
+    任務Dashboard: 'mission_dashboard',
+    數據簡報: 'stats_brief',
+    比較矩陣: 'comparison_matrix',
+    時間軸總覽: 'timeline_overview',
+  },
+  datatable: {
+    關鍵指標彙整: 'key_figures',
+    實體屬性表: 'entity_attributes',
+    時間軸表: 'timeline_table',
+    並排比較: 'comparison_table',
+  },
+}
+
+export function presetEnumFor(kind: string, label: string): string {
+  return PRESET_ENUM_MAP[kind]?.[label] ?? label
 }
 
 export function CommandModal({ open, onClose, onGenerated, format }: CommandModalProps) {
@@ -55,18 +120,56 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
 
   const [step, setStep] = useState(0)
   const [selected, setSelected] = useState(0)
+  const [themeId, setThemeId] = useState<ThemeId>('auto')
   const [extra, setExtra] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  // Wizard (Phase B) vs picker (Phase A) for the theme step. Default to
+  // wizard so first-time users get the lowest-friction guided flow;
+  // remember the user's last choice across sessions.
+  const [mode, setMode] = useState<'wizard' | 'picker'>(
+    () => (localStorage.getItem('studio.theme-mode') as 'wizard' | 'picker') ?? 'wizard'
+  )
+
+  useEffect(() => {
+    localStorage.setItem('studio.theme-mode', mode)
+  }, [mode])
 
   const presets = format ? PRESETS[format.k] ?? [] : []
+  // 5 種 artifact 都已實作(report v2 backend + slides + mindmap + infographic + datatable)
   const isSupported = format?.k === 'report' || format?.k === 'slides'
+    || format?.k === 'mindmap' || format?.k === 'infographic' || format?.k === 'datatable'
+  // 只有 slides 有「視覺主題」概念,需要多一個 theme picker step。
+  // 其他 4 種 artifact 沒視覺主題,直接 preset → 補充指示(2 steps)。
+  const isSlides = format?.k === 'slides'
+  const totalSteps = isSlides ? 3 : 2
+  const extraStep = isSlides ? 2 : 1
+  const themeStep = 1
 
   const reset = () => {
     setStep(0)
     setSelected(0)
+    setThemeId('auto')
     setExtra('')
     setErr(null)
+  }
+
+  // Wizard finished: adopt the recommended theme, fold the (≤2) implicit
+  // B.4 instructions into whatever the user already typed without
+  // clobbering it, then advance to the supplementary-instructions step.
+  const onWizardComplete = (id: ThemeId, wizardExtra: string[]) => {
+    setThemeId(id)
+    if (wizardExtra.length > 0) {
+      setExtra((prev) => {
+        const existing = prev.trim()
+        // Skip lines that are already present so re-running the wizard
+        // doesn't duplicate them.
+        const additions = wizardExtra.filter((line) => !existing.includes(line))
+        if (additions.length === 0) return prev
+        return existing ? `${existing}\n${additions.join('\n')}` : additions.join('\n')
+      })
+    }
+    setStep(extraStep)
   }
 
   const close = () => {
@@ -82,12 +185,39 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
     try {
       const presetName = presets[selected]?.l ?? '預設'
       if (format.k === 'report') {
-        // Report path is sync: LLM emits Markdown, generateReport
-        // already adds the artifact to the store and resolves once
-        // generation completes. We can keep this awaited — the modal
-        // already shows a spinner while the user waits 30-90 s for
-        // markdown.
+        // Report v2 是 backend job(同 mindmap / infographic / datatable
+        // pattern):POST /api/reports/jobs → pending → WSStudio polling 接手。
         const artifact = await generateReport({
+          collection,
+          docs: indexedDocs,
+          preset: presetName,
+          extraInstructions: extra.trim() || undefined,
+        })
+        onGenerated(artifact)
+        reset()
+        onClose()
+      } else if (format.k === 'mindmap') {
+        const artifact = await generateMindmap({
+          collection,
+          docs: indexedDocs,
+          preset: presetName,
+          extraInstructions: extra.trim() || undefined,
+        })
+        onGenerated(artifact)
+        reset()
+        onClose()
+      } else if (format.k === 'infographic') {
+        const artifact = await generateInfographic({
+          collection,
+          docs: indexedDocs,
+          preset: presetName,
+          extraInstructions: extra.trim() || undefined,
+        })
+        onGenerated(artifact)
+        reset()
+        onClose()
+      } else if (format.k === 'datatable') {
+        const artifact = await generateDatatable({
           collection,
           docs: indexedDocs,
           preset: presetName,
@@ -114,11 +244,15 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
           collectionId: collection.id,
           preset: presetName,
           extraInstructions: extra.trim() || undefined,
+          themeOverride: themeId === 'auto' ? undefined : themeId,
         })
         const artifact: SlidesArtifact = {
           id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
           kind: 'slides',
           collectionId: collection.id,
+          // Record the chosen theme so the sidebar can badge the deck.
+          // undefined for auto → no badge (matches backend auto path).
+          theme: themeId === 'auto' ? undefined : themeId,
           // Title and slide_count aren't known yet; the polling effect
           // will fill these in as soon as the LLM finishes step 4-5.
           // Use a placeholder so the timeline card has something to
@@ -177,7 +311,7 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
         </div>
         <div style={{ fontSize: 13, fontWeight: 500, color: t.text }}>建立 {format.l}</div>
         {isSupported && (
-          <span style={{ fontSize: 11, color: t.textSubtle }}>· 步驟 {step + 1} / 2</span>
+          <span style={{ fontSize: 11, color: t.textSubtle }}>· 步驟 {step + 1} / {totalSteps}</span>
         )}
         <button
           onClick={close}
@@ -311,6 +445,68 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
               ))}
             </div>
           </>
+        ) : isSlides && step === themeStep ? (
+          <>
+            <div
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                color: t.textMuted,
+                textTransform: 'uppercase',
+                letterSpacing: 1,
+                marginBottom: 10,
+              }}
+            >
+              02 · 選擇視覺風格
+            </div>
+            {/* Wizard / picker mode toggle */}
+            <div
+              style={{
+                display: 'inline-flex',
+                gap: 2,
+                padding: 2,
+                borderRadius: 8,
+                background: t.surface2,
+                border: `1px solid ${t.border}`,
+                marginBottom: 12,
+              }}
+            >
+              {(['wizard', 'picker'] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setMode(m)}
+                  aria-pressed={mode === m}
+                  style={{
+                    padding: '5px 12px',
+                    borderRadius: 6,
+                    border: 'none',
+                    background: mode === m ? t.accent : 'transparent',
+                    color: mode === m ? '#fff' : t.textMuted,
+                    fontSize: 12,
+                    fontWeight: 500,
+                    cursor: 'pointer',
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  {m === 'wizard' ? '精靈模式' : '進階模式'}
+                </button>
+              ))}
+            </div>
+            {mode === 'wizard' ? (
+              <StudioWizard
+                onComplete={onWizardComplete}
+                onManualPick={() => setMode('picker')}
+              />
+            ) : (
+              <>
+                <div style={{ fontSize: 11.5, color: t.textMuted, lineHeight: 1.55, marginBottom: 12 }}>
+                  選「自動偵測」由系統依文件 title 與內容判斷；或直接挑一個你想要的風格。
+                </div>
+                <ThemePicker selected={themeId} onSelect={setThemeId} />
+              </>
+            )}
+          </>
         ) : (
           <>
             <div
@@ -323,7 +519,7 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
                 marginBottom: 10,
               }}
             >
-              02 · 補充指示（可略過）
+              {isSlides ? '03' : '02'} · 補充指示（可略過）
             </div>
             <textarea
               value={extra}
@@ -411,7 +607,7 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
         {isSupported ? (
           <>
             <div style={{ display: 'flex', gap: 4 }}>
-              {[0, 1].map((i) => (
+              {Array.from({ length: totalSteps }, (_, i) => (
                 <div
                   key={i}
                   style={{
@@ -427,7 +623,7 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
             <div style={{ display: 'flex', gap: 8 }}>
               {step > 0 && (
                 <button
-                  onClick={() => setStep(0)}
+                  onClick={() => setStep(step - 1)}
                   disabled={busy}
                   style={{
                     padding: '7px 14px',
@@ -444,9 +640,12 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
                   上一步
                 </button>
               )}
-              {step === 0 && (
+              {/* Hide the generic "繼續" on the theme step while the wizard
+                  is active — the wizard drives its own advancement via
+                  onComplete. The picker still needs this button. */}
+              {step < extraStep && !(isSlides && step === themeStep && mode === 'wizard') && (
                 <button
-                  onClick={() => setStep(1)}
+                  onClick={() => setStep(step + 1)}
                   style={{
                     padding: '7px 16px',
                     borderRadius: 8,
@@ -466,7 +665,7 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
                   繼續 <Icon name="arrowR" size={11} stroke="#fff" />
                 </button>
               )}
-              {step === 1 && (
+              {step === extraStep && (
                 <button
                   onClick={() => void submit()}
                   disabled={busy}

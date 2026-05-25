@@ -50,7 +50,16 @@ def create_api_key(
 
 
 def validate_api_key(db: Session, raw_key: str) -> ApiKey | None:
-    """Validate an API key and return the ApiKey object if valid."""
+    """Validate an API key and return the ApiKey object if valid.
+
+    Defense-in-depth: also rejects when the owning user is inactive.
+    Without this gate, deactivating a user via admin UI would invalidate
+    their JWTs (via token_version bump) but leave any ``sk-*`` API keys
+    fully working — meaning they could keep calling ``/v1/*`` until an
+    admin manually disabled every key. Tying validity to ``user.is_active``
+    closes that gap even if a future deactivate path forgets to disable
+    the keys explicitly.
+    """
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
     api_key = db.query(ApiKey).filter(ApiKey.key_hash == key_hash).first()
 
@@ -59,6 +68,8 @@ def validate_api_key(db: Session, raw_key: str) -> ApiKey | None:
     if not api_key.is_active:
         return None
     if api_key.expires_at and api_key.expires_at < datetime.now(timezone.utc):
+        return None
+    if api_key.user is None or not api_key.user.is_active:
         return None
 
     # Update last_used_at

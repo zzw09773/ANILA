@@ -11,7 +11,7 @@ partial unique index over active grants (``revoked_at IS NULL``) lets us
 re-grant after a revoke without manual cleanup.
 
 See ``migrations/versions/0012_add_service_access_control.py`` for the schema
-and ``docs/multi-service-integration-plan.md`` §7.5 for the access-decision
+and ``docs/platform/multi-service-integration-plan.md`` §7.5 for the access-decision
 algorithm this table powers.
 """
 

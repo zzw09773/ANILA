@@ -25,10 +25,8 @@ import app.models.alert           # noqa: F401
 import app.models.api_key         # noqa: F401
 import app.models.agent           # noqa: F401
 import app.models.audit_log       # noqa: F401
-import app.models.auth_provider   # noqa: F401
 import app.models.department      # noqa: F401
 import app.models.dev_db_credential  # noqa: F401
-import app.models.external_identity  # noqa: F401
 import app.models.model_registry  # noqa: F401
 import app.models.attachment       # noqa: F401
 import app.models.conversation     # noqa: F401

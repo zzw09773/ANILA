@@ -1,4 +1,4 @@
-"""Collection-scoped pgvector store (docs/ingestion-platform-design.md §3.3 Layer 3).
+"""Collection-scoped pgvector store (docs/ingestion/ingestion-platform-design.md §3.3 Layer 3).
 
 Sprint 4 refactor renamed this class from ``AgentScopedPgVectorStore``
 when the platform's ownership model moved from agent-scoped collections

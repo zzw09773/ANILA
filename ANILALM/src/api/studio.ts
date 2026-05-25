@@ -1,6 +1,14 @@
 import { useAuthStore } from '../store/auth'
+import { STUDIO_BASE_URL } from './client'
+import type { components } from './studio-types.gen'
 
-// Studio backend (CSP) endpoints — job-based async pipeline.
+// Studio (anila-studio) endpoints — job-based async pipeline.
+//
+// As of the anila-studio extraction the slide-deck endpoints live in
+// their own FastAPI process (`/api/studio/*`) instead of the monolithic
+// CSP backend. We route through STUDIO_BASE_URL so a single env var can
+// flip the SPA between vite proxy (dev) / same-origin nginx (prod) /
+// cross-origin (staging).
 //
 // The original /slides/generate endpoint was a synchronous blob streamer
 // that held the connection open for 60-180 s and stuffed metadata into
@@ -19,31 +27,38 @@ import { useAuthStore } from '../store/auth'
 // surfaced in the timeline), so we expose primitive operations and let
 // WSStudio manage the loop in a useEffect.
 
-export interface VisualDefect {
-  slide_index: number
-  severity: 'critical' | 'warning' | 'info'
-  summary: string
-}
-
+// ── Types re-exported from the generated OpenAPI schema ────────────
+// The generated schema gives us pure `string` for `JobStatus.state`
+// (FastAPI exports the regex pattern, not an enum). We keep a separate
+// `JobState` union here so callers retain narrowing power while staying
+// in sync with the backend pattern `^(pending|running|done|failed|cancelled)$`.
+// If you add a new state on the backend, update both places.
 export type JobState = 'pending' | 'running' | 'done' | 'failed' | 'cancelled'
 
-export interface JobStatus {
-  job_id: string
+/**
+ * VisualDefect comes straight from the generated schema. `severity` is
+ * a free string on the wire; callers that want union narrowing should
+ * cast at the consumption site.
+ */
+export type VisualDefect = components['schemas']['VisualDefect']
+
+/**
+ * JobStatus wraps the generated row with two adjustments:
+ *   1. Tighten `state` to a string-literal union so `switch (state)` works.
+ *   2. Promote `defects` to required (the backend always returns an array,
+ *      even if empty — the schema marks it optional because pydantic uses
+ *      `default_factory=list`). Callers iterating `status.defects.map(...)`
+ *      should not have to null-check.
+ */
+export type JobStatus = Omit<
+  components['schemas']['JobStatus'],
+  'state' | 'defects'
+> & {
   state: JobState
-  /** Free-form step label — "queued"|"retrieving"|"generating"|"rendering"|"qa"|"fixing"|"done". */
-  step: string | null
-  /** Populated once LLM has named the deck (before render finishes). */
-  title: string | null
-  /** Populated once render succeeds. */
-  slide_count: number | null
   defects: VisualDefect[]
-  qa_passes: number
-  /** Only set when state="failed". User-safe string, no traceback. */
-  error: string | null
-  /** ISO 8601. */
-  created_at: string
-  updated_at: string
 }
+
+export type GenerateSpecRequest = components['schemas']['GenerateSpecRequest']
 
 export interface CreateSlidesJobInput {
   collectionId: number
@@ -51,6 +66,13 @@ export interface CreateSlidesJobInput {
   extraInstructions?: string
   /** Skip RAG retrieval; let the LLM free-write. */
   skipRetrieval?: boolean
+  /**
+   * Force a specific visual theme. When set, bypasses backend's tone
+   * detection and title-keyword override (Patch O + U). Send undefined
+   * to use auto selection. Valid: corporate_navy | academic_paper |
+   * warm_journal | executive_brief | startup_pitch.
+   */
+  themeOverride?: GenerateSpecRequest['theme_override']
 }
 
 const PPTX_MIME =
@@ -61,12 +83,36 @@ function authHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
-async function readJsonOrThrow<T>(res: Response, op: string): Promise<T> {
+/** Resolve a studio-relative path against STUDIO_BASE_URL. */
+function studioUrl(path: string): string {
+  return `${STUDIO_BASE_URL}${path}`
+}
+
+/**
+ * Normalise the raw OpenAPI shape into the locally-tightened JobStatus.
+ * The backend always emits a defects array, but the schema marks it
+ * optional because of pydantic `default_factory=list`; we coalesce
+ * here so callers can rely on a real array. We also assert the state
+ * string into the JobState union — at this point the backend already
+ * validated the value against its regex.
+ */
+function toJobStatus(raw: components['schemas']['JobStatus']): JobStatus {
+  return {
+    ...raw,
+    state: raw.state as JobState,
+    defects: raw.defects ?? [],
+  }
+}
+
+async function readJsonOrThrow(
+  res: Response,
+  op: string,
+): Promise<components['schemas']['JobStatus']> {
   if (!res.ok) {
     const txt = await res.text().catch(() => '')
     throw new Error(`Studio ${op} ${res.status}: ${txt || res.statusText}`)
   }
-  return (await res.json()) as T
+  return (await res.json()) as components['schemas']['JobStatus']
 }
 
 /**
@@ -77,38 +123,43 @@ async function readJsonOrThrow<T>(res: Response, op: string): Promise<T> {
 export async function createSlidesJob(
   input: CreateSlidesJobInput,
 ): Promise<JobStatus> {
-  const res = await fetch('/api/studio/slides/jobs', {
+  const body: GenerateSpecRequest = {
+    collection_id: input.collectionId,
+    preset: input.preset,
+    extra_instructions: input.extraInstructions,
+    skip_retrieval: input.skipRetrieval ?? false,
+    theme_override: input.themeOverride, // undefined → JSON omits the key
+  }
+  const res = await fetch(studioUrl('/api/studio/slides/jobs'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       ...authHeaders(),
     },
-    body: JSON.stringify({
-      collection_id: input.collectionId,
-      preset: input.preset,
-      extra_instructions: input.extraInstructions,
-      skip_retrieval: input.skipRetrieval ?? false,
-    }),
+    body: JSON.stringify(body),
   })
-  return readJsonOrThrow<JobStatus>(res, 'createJob')
+  return toJobStatus(await readJsonOrThrow(res, 'createJob'))
 }
 
 /**
  * Poll the job's current status. 404 is mapped to a JobStatus with
  * state="failed" because that's how WSStudio will react anyway — the
- * job got evicted from the in-memory manager (CSP restart, eviction,
- * etc.) and the artifact should mark itself failed so the user can
- * retry.
+ * job got evicted from the in-memory manager (anila-studio restart,
+ * eviction, etc.) and the artifact should mark itself failed so the
+ * user can retry.
  */
 export async function getSlidesJobStatus(
   jobId: string,
   signal?: AbortSignal,
 ): Promise<JobStatus> {
-  const res = await fetch(`/api/studio/slides/jobs/${encodeURIComponent(jobId)}`, {
-    method: 'GET',
-    headers: { ...authHeaders() },
-    signal,
-  })
+  const res = await fetch(
+    studioUrl(`/api/studio/slides/jobs/${encodeURIComponent(jobId)}`),
+    {
+      method: 'GET',
+      headers: { ...authHeaders() },
+      signal,
+    },
+  )
   if (res.status === 404) {
     return {
       job_id: jobId,
@@ -123,7 +174,7 @@ export async function getSlidesJobStatus(
       updated_at: new Date().toISOString(),
     }
   }
-  return readJsonOrThrow<JobStatus>(res, 'getStatus')
+  return toJobStatus(await readJsonOrThrow(res, 'getStatus'))
 }
 
 /**
@@ -136,7 +187,7 @@ export async function downloadSlidesJobPptx(
   filenameStem: string,
 ): Promise<void> {
   const res = await fetch(
-    `/api/studio/slides/jobs/${encodeURIComponent(jobId)}/pptx`,
+    studioUrl(`/api/studio/slides/jobs/${encodeURIComponent(jobId)}/pptx`),
     {
       method: 'GET',
       headers: { ...authHeaders() },
@@ -171,7 +222,7 @@ export async function downloadSlidesJobPptx(
  */
 export async function cancelSlidesJob(jobId: string): Promise<void> {
   const res = await fetch(
-    `/api/studio/slides/jobs/${encodeURIComponent(jobId)}`,
+    studioUrl(`/api/studio/slides/jobs/${encodeURIComponent(jobId)}`),
     {
       method: 'DELETE',
       headers: { ...authHeaders() },
@@ -204,7 +255,291 @@ export function stepLabel(step: string | null): string {
       return '修正瑕疵'
     case 'done':
       return '完成'
+    // ── 4 種新 artifact 的 step ──
+    case 'outlining':
+      return '生成大綱'
+    case 'drafting':
+      return '撰寫內容'
+    case 'render_html':
+      return '渲染 HTML'
+    case 'render_pdf':
+      return '匯出 PDF'
+    case 'render_docx':
+      return '匯出 DOCX'
+    case 'render_svg':
+      return '渲染心智圖'
+    case 'render_chart':
+      return '繪製圖表'
+    case 'export_xlsx':
+      return '匯出 Excel'
+    case 'export_csv':
+      return '匯出 CSV'
     default:
       return '處理中'
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Generic artifact-job client(Report / Mindmap / Infographic / Datatable)
+//
+// 這 4 種 artifact 走完全同 pattern 的 job lifecycle:
+//   POST /api/{kind}/jobs                       → 202 + status
+//   GET  /api/{kind}/jobs/{job_id}              → status (poll)
+//   GET  /api/{kind}/jobs/{job_id}/download/{fmt}  → file
+//   DELETE /api/{kind}/jobs/{job_id}            → 204
+//
+// 共用 generic helper 避免 4 份重複程式碼。每種 kind 只需 export 4 個
+// thin wrapper 包對應的 type。
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * 4 種新 artifact 共用的 JobStatus shape(白色名單欄位由各 backend 自己決定,
+ * 這裡只 narrow `state` 跟給 `downloadUrls` 一個固定 key)。
+ */
+export type ArtifactJobStatus = {
+  job_id: string
+  state: JobState
+  step?: string | null
+  title?: string | null
+  error?: string | null
+  download_urls?: Record<string, string> | null
+  created_at?: string
+  updated_at?: string
+  // 各 backend 額外 metadata(看 OpenAPI / types.gen.ts 對應)
+  [key: string]: unknown
+}
+
+async function _readJobJson<T>(res: Response, op: string): Promise<T> {
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '')
+    throw new Error(`${op} ${res.status}: ${txt || res.statusText}`)
+  }
+  return (await res.json()) as T
+}
+
+async function _createArtifactJob<TBody, TStatus>(
+  kindPath: string,
+  body: TBody,
+): Promise<TStatus> {
+  const res = await fetch(studioUrl(`/api/${kindPath}/jobs`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(body),
+  })
+  return _readJobJson<TStatus>(res, `${kindPath} create`)
+}
+
+async function _getArtifactJobStatus<TStatus>(
+  kindPath: string,
+  jobId: string,
+): Promise<TStatus> {
+  const res = await fetch(
+    studioUrl(`/api/${kindPath}/jobs/${encodeURIComponent(jobId)}`),
+    { headers: { ...authHeaders() } },
+  )
+  if (res.status === 404) {
+    return {
+      job_id: jobId,
+      state: 'failed',
+      error: '任務不存在或已過期(可能因服務重啟而被清除)',
+    } as unknown as TStatus
+  }
+  return _readJobJson<TStatus>(res, `${kindPath} status`)
+}
+
+async function _cancelArtifactJob(
+  kindPath: string,
+  jobId: string,
+): Promise<void> {
+  const res = await fetch(
+    studioUrl(`/api/${kindPath}/jobs/${encodeURIComponent(jobId)}`),
+    { method: 'DELETE', headers: { ...authHeaders() } },
+  )
+  if (!res.ok && res.status !== 404) {
+    const txt = await res.text().catch(() => '')
+    throw new Error(`${kindPath} cancel ${res.status}: ${txt || res.statusText}`)
+  }
+}
+
+async function _downloadArtifact(
+  kindPath: string,
+  jobId: string,
+  fmt: string,
+  filenameStem: string,
+): Promise<void> {
+  const res = await fetch(
+    studioUrl(
+      `/api/${kindPath}/jobs/${encodeURIComponent(jobId)}/download/${encodeURIComponent(fmt)}`,
+    ),
+    { headers: { ...authHeaders() } },
+  )
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '')
+    throw new Error(
+      `${kindPath} download(${fmt}) ${res.status}: ${txt || res.statusText}`,
+    )
+  }
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${filenameStem || kindPath}.${fmt}`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
+}
+
+// ── Report ─────────────────────────────────────────────────────────
+
+export interface CreateReportJobInput {
+  collectionId: number
+  preset: components['schemas']['ReportPreset']
+  extraInstructions?: string
+  documentIds?: number[]
+  topK?: number
+}
+
+export type ReportJobStatus = components['schemas']['ReportJobStatus']
+
+export async function createReportJob(
+  input: CreateReportJobInput,
+): Promise<ReportJobStatus> {
+  return _createArtifactJob<unknown, ReportJobStatus>('reports', {
+    collection_id: input.collectionId,
+    preset: input.preset,
+    extra_instructions: input.extraInstructions,
+    document_ids: input.documentIds,
+    top_k: input.topK ?? 12,
+  })
+}
+
+export const getReportJobStatus = (jobId: string) =>
+  _getArtifactJobStatus<ReportJobStatus>('reports', jobId)
+
+export const cancelReportJob = (jobId: string) =>
+  _cancelArtifactJob('reports', jobId)
+
+export const downloadReportArtifact = (
+  jobId: string,
+  fmt: 'html' | 'pdf' | 'docx',
+  filenameStem: string,
+) => _downloadArtifact('reports', jobId, fmt, filenameStem)
+
+// ── Mindmap ────────────────────────────────────────────────────────
+
+export interface CreateMindmapJobInput {
+  collectionId: number
+  preset: components['schemas']['MindmapPreset']
+  seedQuery?: string
+  extraInstructions?: string
+  documentIds?: number[]
+  maxDepth?: number
+  topK?: number
+}
+
+export type MindmapJobStatus = components['schemas']['MindmapJobStatus']
+
+export async function createMindmapJob(
+  input: CreateMindmapJobInput,
+): Promise<MindmapJobStatus> {
+  return _createArtifactJob<unknown, MindmapJobStatus>('mindmaps', {
+    collection_id: input.collectionId,
+    preset: input.preset,
+    seed_query: input.seedQuery,
+    extra_instructions: input.extraInstructions,
+    document_ids: input.documentIds,
+    max_depth: input.maxDepth ?? 3,
+    top_k: input.topK ?? 8,
+  })
+}
+
+export const getMindmapJobStatus = (jobId: string) =>
+  _getArtifactJobStatus<MindmapJobStatus>('mindmaps', jobId)
+
+export const cancelMindmapJob = (jobId: string) =>
+  _cancelArtifactJob('mindmaps', jobId)
+
+export const downloadMindmapArtifact = (
+  jobId: string,
+  fmt: 'svg' | 'dot',
+  filenameStem: string,
+) => _downloadArtifact('mindmaps', jobId, fmt, filenameStem)
+
+// ── Infographic ────────────────────────────────────────────────────
+
+export interface CreateInfographicJobInput {
+  collectionId: number
+  preset: components['schemas']['InfographicPreset']
+  seedQuery?: string
+  extraInstructions?: string
+  documentIds?: number[]
+  topK?: number
+}
+
+export type InfographicJobStatus = components['schemas']['InfographicJobStatus']
+
+export async function createInfographicJob(
+  input: CreateInfographicJobInput,
+): Promise<InfographicJobStatus> {
+  return _createArtifactJob<unknown, InfographicJobStatus>('infographics', {
+    collection_id: input.collectionId,
+    preset: input.preset,
+    seed_query: input.seedQuery,
+    extra_instructions: input.extraInstructions,
+    document_ids: input.documentIds,
+    top_k: input.topK ?? 12,
+  })
+}
+
+export const getInfographicJobStatus = (jobId: string) =>
+  _getArtifactJobStatus<InfographicJobStatus>('infographics', jobId)
+
+export const cancelInfographicJob = (jobId: string) =>
+  _cancelArtifactJob('infographics', jobId)
+
+export const downloadInfographicArtifact = (
+  jobId: string,
+  fmt: 'html' | 'pdf',
+  filenameStem: string,
+) => _downloadArtifact('infographics', jobId, fmt, filenameStem)
+
+// ── Datatable ──────────────────────────────────────────────────────
+
+export interface CreateDatatableJobInput {
+  collectionId: number
+  preset: components['schemas']['DatatablePreset']
+  seedQuery?: string
+  extraInstructions?: string
+  documentIds?: number[]
+  targetColumns?: string[]
+  topK?: number
+}
+
+export type DatatableJobStatus = components['schemas']['DatatableJobStatus']
+
+export async function createDatatableJob(
+  input: CreateDatatableJobInput,
+): Promise<DatatableJobStatus> {
+  return _createArtifactJob<unknown, DatatableJobStatus>('datatables', {
+    collection_id: input.collectionId,
+    preset: input.preset,
+    seed_query: input.seedQuery,
+    extra_instructions: input.extraInstructions,
+    document_ids: input.documentIds,
+    target_columns: input.targetColumns,
+    top_k: input.topK ?? 15,
+  })
+}
+
+export const getDatatableJobStatus = (jobId: string) =>
+  _getArtifactJobStatus<DatatableJobStatus>('datatables', jobId)
+
+export const cancelDatatableJob = (jobId: string) =>
+  _cancelArtifactJob('datatables', jobId)
+
+export const downloadDatatableArtifact = (
+  jobId: string,
+  fmt: 'html' | 'csv' | 'xlsx',
+  filenameStem: string,
+) => _downloadArtifact('datatables', jobId, fmt, filenameStem)

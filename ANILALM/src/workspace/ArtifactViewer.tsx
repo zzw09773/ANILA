@@ -3,7 +3,20 @@ import { useTheme } from '../theme/ThemeContext'
 import { Modal } from '../components/Modal'
 import { Icon } from '../components/Icon'
 import { MarkdownPreview } from '../components/MarkdownPreview'
-import type { StudioArtifact } from '../types'
+import type {
+  DatatableArtifact,
+  InfographicArtifact,
+  MindmapArtifact,
+  ReportArtifact,
+  SlidesArtifact,
+  StudioArtifact,
+} from '../types'
+import {
+  downloadReportArtifact,
+  downloadMindmapArtifact,
+  downloadInfographicArtifact,
+  downloadDatatableArtifact,
+} from '../api/studio'
 
 interface ArtifactViewerProps {
   open: boolean
@@ -11,9 +24,22 @@ interface ArtifactViewerProps {
   artifact: StudioArtifact | null
 }
 
+const KIND_META: Record<
+  StudioArtifact['kind'],
+  { label: string; icon: 'file' | 'deck' | 'git' | 'chart' | 'table' }
+> = {
+  report: { label: '深度報告', icon: 'file' },
+  slides: { label: '簡報', icon: 'deck' },
+  mindmap: { label: '心智圖', icon: 'git' },
+  infographic: { label: '資訊圖表', icon: 'chart' },
+  datatable: { label: '資料表', icon: 'table' },
+}
+
 export function ArtifactViewer({ open, onClose, artifact }: ArtifactViewerProps) {
   const { t } = useTheme()
   if (!artifact) return null
+
+  const meta = KIND_META[artifact.kind]
 
   return (
     <Modal open={open} onClose={onClose} width={900}>
@@ -37,11 +63,7 @@ export function ArtifactViewer({ open, onClose, artifact }: ArtifactViewerProps)
             placeItems: 'center',
           }}
         >
-          <Icon
-            name={artifact.kind === 'report' ? 'file' : 'deck'}
-            size={13}
-            stroke={t.accent}
-          />
+          <Icon name={meta.icon} size={13} stroke={t.accent} />
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div
@@ -56,47 +78,222 @@ export function ArtifactViewer({ open, onClose, artifact }: ArtifactViewerProps)
             {artifact.title}
           </div>
           <div style={{ fontSize: 11, color: t.textSubtle }}>
-            {artifact.kind === 'report' ? '深度報告' : '簡報'} · {artifact.preset} ·{' '}
-            {artifact.sourceCount} 份來源
+            {meta.label} · {artifact.preset} · {artifact.sourceCount} 份來源
           </div>
         </div>
-        {artifact.kind === 'report' && (
-          <button
-            onClick={() => downloadAs(`${artifact.title}.md`, artifact.markdown, 'text/markdown')}
-            title="下載 .md"
-            style={iconBtnStyle(t)}
-          >
-            <Icon name="upload" size={13} stroke={t.textMuted} />
-          </button>
-        )}
-        {artifact.kind === 'slides' && (
-          <button
-            onClick={() => downloadAs(`${artifact.title}.json`, JSON.stringify(artifact, null, 2), 'application/json')}
-            title="下載 .json"
-            style={iconBtnStyle(t)}
-          >
-            <Icon name="upload" size={13} stroke={t.textMuted} />
-          </button>
-        )}
-        <button
-          onClick={onClose}
-          style={iconBtnStyle(t)}
-          title="關閉"
-        >
+        <ArtifactHeaderActions artifact={artifact} />
+        <button onClick={onClose} style={iconBtnStyle(t)} title="關閉">
           <Icon name="x" size={13} stroke={t.textMuted} />
         </button>
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: 22 }}>
-        {artifact.kind === 'report' ? (
-          <MarkdownPreview markdown={artifact.markdown} />
-        ) : (
-          <SlidesViewer slides={artifact.slides} />
-        )}
+        <ArtifactBody artifact={artifact} />
       </div>
     </Modal>
   )
 }
+
+// ── Header buttons (per-kind 下載) ────────────────────────────────
+
+function ArtifactHeaderActions({ artifact }: { artifact: StudioArtifact }) {
+  const { t } = useTheme()
+  switch (artifact.kind) {
+    case 'report':
+      return <ReportHeaderActions artifact={artifact} />
+    case 'slides':
+      return (
+        <button
+          onClick={() =>
+            downloadAs(
+              `${artifact.title}.json`,
+              JSON.stringify(artifact, null, 2),
+              'application/json',
+            )
+          }
+          title="下載 .json"
+          style={iconBtnStyle(t)}
+        >
+          <Icon name="upload" size={13} stroke={t.textMuted} />
+        </button>
+      )
+    case 'mindmap':
+      return <MindmapHeaderActions artifact={artifact} />
+    case 'infographic':
+      return <InfographicHeaderActions artifact={artifact} />
+    case 'datatable':
+      return <DatatableHeaderActions artifact={artifact} />
+  }
+}
+
+function ReportHeaderActions({ artifact }: { artifact: ReportArtifact }) {
+  const { t } = useTheme()
+  if (artifact.jobId && artifact.downloadUrls) {
+    return (
+      <>
+        {(['html', 'pdf', 'docx'] as const).map((fmt) =>
+          artifact.downloadUrls?.[fmt] ? (
+            <button
+              key={fmt}
+              onClick={() => downloadReportArtifact(artifact.jobId!, fmt, artifact.title)}
+              title={`下載 ${fmt.toUpperCase()}`}
+              style={fmtBtnStyle(t)}
+            >
+              {fmt.toUpperCase()}
+            </button>
+          ) : null,
+        )}
+      </>
+    )
+  }
+  // Legacy v1 markdown-only report
+  if (artifact.markdown) {
+    return (
+      <button
+        onClick={() =>
+          downloadAs(`${artifact.title}.md`, artifact.markdown!, 'text/markdown')
+        }
+        title="下載 .md"
+        style={iconBtnStyle(t)}
+      >
+        <Icon name="upload" size={13} stroke={t.textMuted} />
+      </button>
+    )
+  }
+  return null
+}
+
+function MindmapHeaderActions({ artifact }: { artifact: MindmapArtifact }) {
+  const { t } = useTheme()
+  if (!artifact.jobId || !artifact.downloadUrls) return null
+  return (
+    <>
+      {(['svg', 'dot'] as const).map((fmt) =>
+        artifact.downloadUrls?.[fmt] ? (
+          <button
+            key={fmt}
+            onClick={() => downloadMindmapArtifact(artifact.jobId!, fmt, artifact.title)}
+            title={`下載 ${fmt.toUpperCase()}`}
+            style={fmtBtnStyle(t)}
+          >
+            {fmt.toUpperCase()}
+          </button>
+        ) : null,
+      )}
+    </>
+  )
+}
+
+function InfographicHeaderActions({ artifact }: { artifact: InfographicArtifact }) {
+  const { t } = useTheme()
+  if (!artifact.jobId || !artifact.downloadUrls) return null
+  return (
+    <>
+      {(['html', 'pdf'] as const).map((fmt) =>
+        artifact.downloadUrls?.[fmt] ? (
+          <button
+            key={fmt}
+            onClick={() =>
+              downloadInfographicArtifact(artifact.jobId!, fmt, artifact.title)
+            }
+            title={`下載 ${fmt.toUpperCase()}`}
+            style={fmtBtnStyle(t)}
+          >
+            {fmt.toUpperCase()}
+          </button>
+        ) : null,
+      )}
+    </>
+  )
+}
+
+function DatatableHeaderActions({ artifact }: { artifact: DatatableArtifact }) {
+  const { t } = useTheme()
+  if (!artifact.jobId || !artifact.downloadUrls) return null
+  return (
+    <>
+      {(['xlsx', 'csv', 'html'] as const).map((fmt) =>
+        artifact.downloadUrls?.[fmt] ? (
+          <button
+            key={fmt}
+            onClick={() =>
+              downloadDatatableArtifact(artifact.jobId!, fmt, artifact.title)
+            }
+            title={`下載 ${fmt.toUpperCase()}`}
+            style={fmtBtnStyle(t)}
+          >
+            {fmt.toUpperCase()}
+          </button>
+        ) : null,
+      )}
+    </>
+  )
+}
+
+// ── Body (per-kind viewer) ─────────────────────────────────────────
+
+function ArtifactBody({ artifact }: { artifact: StudioArtifact }) {
+  switch (artifact.kind) {
+    case 'report':
+      return <ReportBody artifact={artifact} />
+    case 'slides':
+      return <SlidesViewer slides={(artifact as SlidesArtifact).slides} />
+    case 'mindmap':
+      return <ArtifactPendingOrDone artifact={artifact} formatHint="SVG / DOT" />
+    case 'infographic':
+      return <ArtifactPendingOrDone artifact={artifact} formatHint="HTML / PDF" />
+    case 'datatable':
+      return <ArtifactPendingOrDone artifact={artifact} formatHint="HTML / CSV / XLSX" />
+  }
+}
+
+function ReportBody({ artifact }: { artifact: ReportArtifact }) {
+  // Legacy v1 markdown
+  if (artifact.markdown) {
+    return <MarkdownPreview markdown={artifact.markdown} />
+  }
+  return <ArtifactPendingOrDone artifact={artifact} formatHint="HTML / PDF / DOCX" />
+}
+
+function ArtifactPendingOrDone({
+  artifact,
+  formatHint,
+}: {
+  artifact: StudioArtifact
+  formatHint: string
+}) {
+  const { t } = useTheme()
+  const state = artifact.state ?? 'done'
+  if (state === 'pending') {
+    return (
+      <div style={{ padding: '40px 0', textAlign: 'center', color: t.textMuted }}>
+        <div style={{ fontSize: 14, marginBottom: 6 }}>正在生成中…</div>
+        <div style={{ fontSize: 12 }}>
+          {artifact.step ? `階段:${artifact.step}` : '請稍候,完成後即可下載'}
+        </div>
+      </div>
+    )
+  }
+  if (state === 'failed') {
+    return (
+      <div style={{ padding: '40px 0', textAlign: 'center', color: t.danger }}>
+        <div style={{ fontSize: 14, marginBottom: 6 }}>生成失敗</div>
+        <div style={{ fontSize: 12 }}>{artifact.error || '請重試或更換參數'}</div>
+      </div>
+    )
+  }
+  return (
+    <div style={{ padding: '40px 0', textAlign: 'center' }}>
+      <Icon name="check" size={32} stroke={t.accent} />
+      <div style={{ fontSize: 14, marginTop: 12, color: t.text }}>生成完成</div>
+      <div style={{ fontSize: 12, marginTop: 4, color: t.textMuted }}>
+        從右上角下載 {formatHint}
+      </div>
+    </div>
+  )
+}
+
+// ── Existing helpers ───────────────────────────────────────────────
 
 function iconBtnStyle(t: ReturnType<typeof useTheme>['t']) {
   return {
@@ -109,6 +306,22 @@ function iconBtnStyle(t: ReturnType<typeof useTheme>['t']) {
     placeItems: 'center' as const,
     cursor: 'pointer' as const,
     color: t.textMuted,
+  }
+}
+
+function fmtBtnStyle(t: ReturnType<typeof useTheme>['t']) {
+  return {
+    height: 28,
+    padding: '0 10px',
+    borderRadius: 7,
+    border: `1px solid ${t.border}`,
+    background: t.surface,
+    color: t.textMuted,
+    fontSize: 11,
+    fontWeight: 600,
+    letterSpacing: 0.5,
+    cursor: 'pointer' as const,
+    fontFamily: 'inherit',
   }
 }
 
@@ -138,7 +351,6 @@ function SlidesViewer({ slides }: { slides: Slide[] }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {/* Slide canvas */}
       <div
         style={{
           aspectRatio: '16 / 9',
@@ -170,7 +382,6 @@ function SlidesViewer({ slides }: { slides: Slide[] }) {
         </ul>
       </div>
 
-      {/* Controls */}
       <div
         style={{
           display: 'flex',
@@ -223,7 +434,6 @@ function SlidesViewer({ slides }: { slides: Slide[] }) {
         </button>
       </div>
 
-      {/* Speaker notes */}
       {slide.speakerNotes && (
         <div
           style={{

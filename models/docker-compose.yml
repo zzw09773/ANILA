@@ -276,7 +276,7 @@ services:
       TZ: Asia/Taipei
       FLUX_BACKEND_URL: http://flux2-dev:8000
       CSP_BASE_URL: http://csp:8000
-      # Prod: 同 csp service,缺值 fail-loud (不要走 dev fallback)。
+      # Prod: 同 csp service,缺值 fail-loud(不要走 dev fallback)。
       CSP_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
       GEMMA_MODEL: gemma4
       ENABLE_PROMPT_TRANSLATION: "1"

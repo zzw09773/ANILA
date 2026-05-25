@@ -126,7 +126,7 @@ export interface Citation {
 
 // ── Studio artifacts (client-side only for MVP) ───────────────────────
 
-export type ArtifactKind = 'report' | 'slides'
+export type ArtifactKind = 'report' | 'slides' | 'mindmap' | 'infographic' | 'datatable'
 
 /**
  * Lifecycle of an artifact.
@@ -162,13 +162,28 @@ interface ArtifactBase {
   error?: string | null
 }
 
+/**
+ * Report 從 v2(backend pipeline)開始改用 job-based async flow:
+ * - kind='report' artifact 透過 anila-studio /api/reports/jobs 觸發
+ * - state='pending' 時 polling 取 status,完成後 backend 產出 html/pdf/docx 三檔
+ * - downloadUrls 是相對 path,需配合 axios baseURL(STUDIO_BASE_URL)使用
+ * - markdown 欄位保留以相容 legacy localStorage row,但新流程不再寫入
+ */
 export interface ReportArtifact extends ArtifactBase {
   kind: 'report'
-  markdown: string
+  /** Legacy v1(前端 sync LLM)留下的 markdown,新 backend job 不寫入。 */
+  markdown?: string
+  /** v2 backend job 完成後填入:{ html, pdf, docx } */
+  downloadUrls?: { html?: string; pdf?: string; docx?: string }
+  /** v2 job-level metadata */
+  sectionsCount?: number
+  referencesCount?: number
 }
 
 export interface SlidesArtifact extends ArtifactBase {
   kind: 'slides'
+  /** Theme ID used; undefined when auto. For sidebar display + retry. */
+  theme?: string
   /** May be empty while pending; fills in once the job completes. */
   slides: { title: string; bullets: string[]; speakerNotes?: string }[]
   /** Populated once vision QA finishes. */
@@ -176,4 +191,31 @@ export interface SlidesArtifact extends ArtifactBase {
   qaPasses?: number
 }
 
-export type StudioArtifact = ReportArtifact | SlidesArtifact
+export interface MindmapArtifact extends ArtifactBase {
+  kind: 'mindmap'
+  /** Backend job 完成後填入:{ svg, dot } */
+  downloadUrls?: { svg?: string; dot?: string }
+  nodeCount?: number
+}
+
+export interface InfographicArtifact extends ArtifactBase {
+  kind: 'infographic'
+  /** Backend job 完成後填入:{ html, pdf } */
+  downloadUrls?: { html?: string; pdf?: string }
+  chartCount?: number
+}
+
+export interface DatatableArtifact extends ArtifactBase {
+  kind: 'datatable'
+  /** Backend job 完成後填入:{ html, csv, xlsx } */
+  downloadUrls?: { html?: string; csv?: string; xlsx?: string }
+  rowCount?: number
+  columnCount?: number
+}
+
+export type StudioArtifact =
+  | ReportArtifact
+  | SlidesArtifact
+  | MindmapArtifact
+  | InfographicArtifact
+  | DatatableArtifact

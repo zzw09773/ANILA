@@ -1,6 +1,6 @@
 """Add ``ingestion_eval_runs`` for the Chunking Evaluator (§3.1, §6).
 
-Per docs/ingestion-platform-design.md §6: dev uploads sample documents
+Per docs/ingestion/ingestion-platform-design.md §6: dev uploads sample documents
 + a list of (query, expected_doc_id) pairs, picks N strategies, and
 the evaluator scores each strategy by Hit@1 / Hit@5 / MRR. The eval
 run row carries the input set + the computed results JSONB so the

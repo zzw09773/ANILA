@@ -14,10 +14,8 @@ from app.models.alert import Alert
 from app.models.api_key import ApiKey, ApiKeyModelPermission
 from app.models.attachment import Attachment
 from app.models.audit_log import AuditLog
-from app.models.auth_provider import AuthProvider
 from app.models.conversation import Conversation
 from app.models.department import Department
-from app.models.external_identity import ExternalIdentity
 from app.models.handoff import Handoff
 from app.models.ingestion import (
     AgentLlmCredential,  # back-compat alias for UserLlmCredential
@@ -31,6 +29,7 @@ from app.models.message import Message
 from app.models.model_registry import ModelRegistry
 from app.models.platform_link import PlatformLink
 from app.models.service_client import ServiceClient
+from app.models.token_revocation import TokenRevocation
 from app.models.token_usage import TokenUsage
 from app.models.user import User, UserModelPermission
 from app.models.user_memory import ConversationMemoryChunk, UserFact
@@ -44,10 +43,8 @@ __all__ = [
     "ApiKeyModelPermission",
     "Attachment",
     "AuditLog",
-    "AuthProvider",
     "Conversation",
     "Department",
-    "ExternalIdentity",
     "AgentLlmCredential",
     "ConversationMemoryChunk",
     "Handoff",
@@ -59,6 +56,7 @@ __all__ = [
     "ModelRegistry",
     "PlatformLink",
     "ServiceClient",
+    "TokenRevocation",
     "TokenUsage",
     "User",
     "UserAgentPermission",

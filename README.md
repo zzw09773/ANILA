@@ -8,7 +8,8 @@ ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key�
 
 | 子專案 | 角色 | 預設 Port |
 |---|---|---|
-| [`myCSPPlatform`](./myCSPPlatform/) | **CSP**（Control & Data Plane）— 使用者 / API Key / 模型 / Agent 註冊 / 對話 / 附件 / 分享 / 交接 / 審計 / Studio (PPTX & 報告) / Ingestion (Knowledge Collections + Evaluator) / OpenAI 相容代理 | `:8000` |
+| [`myCSPPlatform`](./myCSPPlatform/) | **CSP**（Control & Data Plane）— 使用者 / API Key / 模型 / Agent 註冊 / 對話 / 附件 / 分享 / 交接 / 審計 / Ingestion (Knowledge Collections + Evaluator) / OpenAI 相容代理 / JWKS / token revocation publisher | `:8000` |
+| [`anila-studio`](./anila-studio/) | **Studio service** — Deck 生成(RAG + LLM 大綱 + FLUX 圖像 + PPTX);抽自 csp(見 [extraction-decision](./docs/superpowers/anila-studio/extraction-decision.md))。HTTP-only 對 csp,本地驗 JWT(JWKS)+ Redis pub/sub revocation | `:8100`（internal） |
 | [`anila-core`](./anila-core/) | **Runtime foundation（SDK）** — Python agent runtime 基座（api / registry / engine / tools / providers / storage / **memory（short_term + long_term + backends + clients）**／ compact / cli / **security** / ingestion 共用 chunking_plugins）。Router 與所有 agent 共用 | — |
 | [`anila-core-router`](./anila-core-router/) | **Router** — OpenAI 相容分派器；依請求自動路由到註冊的 Agent；Sprint 8 X 起以 `service_clients.router-primary` per-credential token 走 s2s | `:9000` |
 | [`anila-agent`](./anila-agent/) | **官方 sub-agent 模板**（git subtree from [`zzw09773/anila-agent`](https://github.com/zzw09773/anila-agent)）— 基於 openai-agents SDK + LiteLLM，移植 Claude Code 的 memdir 長期記憶、hook 介面、slash-command CLI。開發者 fork 上游 repo 當起點，ANILA 透過 subtree 同步本地 copy；CSP 把這個目錄當 template 提供下載 | `:24786`（獨立執行時） |
@@ -22,7 +23,7 @@ ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key�
 
 > **唯一的規劃文件（single source of truth）**：[`anila_plan.md`](./anila_plan.md)。
 >
-> **Onyx 已搬離本 repo**（2026-04-27）：原本 `onyx/` 是 upstream clone，現由 agent 開發團隊在他們自己的 repo 維護。我方僅保留 handover 文件 [`docs/archive/onyx-target-system-api-spec.md`](./docs/archive/onyx-target-system-api-spec.md) 與 [`docs/archive/onyx-application-plan.md`](./docs/archive/onyx-application-plan.md)。完整變更原因見 [`docs/changelog/2026-04-27-onyx-handover.md`](./docs/changelog/2026-04-27-onyx-handover.md)。需要 Onyx 原始碼請 `git clone` 對方專案。
+> **Onyx 已搬離本 repo**（2026-04-27）：原本 `onyx/` 是 upstream clone，現由 agent 開發團隊在他們自己的 repo 維護。我方僅保留 handover 文件 [`docs/onyx/onyx-target-system-api-spec.md`](./docs/onyx/onyx-target-system-api-spec.md) 與 [`docs/onyx/onyx-application-plan.md`](./docs/onyx/onyx-application-plan.md)。完整變更原因見 [`docs/changelog/2026-04-27-onyx-handover.md`](./docs/changelog/2026-04-27-onyx-handover.md)。需要 Onyx 原始碼請 `git clone` 對方專案。
 
 ---
 
@@ -35,12 +36,16 @@ flowchart TB
 
     subgraph spas["前端（皆經 nginx 對外）"]
         anila_ui["anila-ui<br/>對話 · 分享 · 交接 · Developer Console"]
-        anilalm["ANILALM<br/>知識庫 · Studio · 簡報生成"]
+        anilalm["ANILALM<br/>知識庫 · Studio 入口"]
     end
 
     subgraph csp["myCSPPlatform (internal only)"]
-        csp_ctrl["Control Plane /api/*<br/>cookie / JWT · users · api_keys · models<br/>agents · conversations · shares · handoffs<br/>audit · alerts · ingestion · studio · trusted-hosts"]
+        csp_ctrl["Control Plane /api/*<br/>cookie / JWT · users · api_keys · models<br/>agents · conversations · shares · handoffs<br/>audit · alerts · ingestion · trusted-hosts<br/>JWKS / token revocation publisher"]
         csp_data["Data Plane /v1/*<br/>sk- API Key · chat/completions<br/>· embeddings · /v1/agents manifest"]
+    end
+
+    subgraph studio["anila-studio :8100 (internal only)"]
+        studio_api["/api/studio/slides/jobs<br/>RAG + LLM + FLUX + PPTX 生 deck<br/>HTTP 對 csp · 本地 RS256 + JWKS verify"]
     end
 
     subgraph router["ANILA Router (internal only)"]
@@ -71,6 +76,7 @@ flowchart TB
     nginx --> csp_ctrl
     nginx --> csp_data
     nginx --> router_core
+    nginx --> studio_api
 
     csp_data -.->|model=anila-router| router_core
     router_core -->|GET /v1/agents · service_clients token| csp_data
@@ -83,7 +89,11 @@ flowchart TB
     redis --> worker
     worker --> db
     worker -.->|/v1/embeddings · /v1/chat completions| csp_data
-    csp_ctrl -.->|Studio 渲染 trigger| pptx
+    studio_api -.->|/api/ingestion/.../search<br/>/api/proxy/v1/chat/completions<br/>/.well-known/jwks.json| csp_ctrl
+    studio_api -.->|/api/ingestion/images/{id}/blob| csp_ctrl
+    studio_api -.->|FLUX 生圖| llm
+    studio_api -.->|/render PPTX| pptx
+    redis -.->|anila:auth:token-revoke pub/sub| studio_api
     agents -.CSP proxy.-> llm
 
     classDef plane fill:#fef3c7,stroke:#d97706
@@ -446,15 +456,22 @@ ANILA/
 ├── ANILALM/              # 知識庫 + Studio SPA（Vite + React + TS）
 │   └── pptx-skill/       # Node.js + pptxgenjs；Studio 簡報合成服務
 ├── runtime_logic/        # TS runtime 參考材料（gitignored；只追蹤 README）
-├── docs/
-│   ├── runbooks/
-│   │   ├── service-token-cutover.md      # Sprint 8 X cutover stage 0–4
-│   │   ├── legacy-agent-bootstrap.md     # Tier 0/1/2 + Python/Go/Node 範例
-│   │   └── rotate-tls-cert.md
-│   ├── changelog/
-│   ├── sso-migration.md
-│   ├── sprint-7x-plan.md
-│   └── ...
+├── models/               # 推論模型獨立 compose（project: anila-models）：
+│                         # flux2-dev（FLUX.2-dev /generate）+ flux2-dev-agent（agent shim）
+├── docs/                 # 依主題分組，每組可含設計/規格文件
+│   ├── agent-framework/  # agent runtime 架構、移植決策、openai-agents 深入
+│   ├── agenticrag/       # AgenticRAG 解耦 / 增強 / Phase 1 計畫
+│   ├── anila-core/       # anila-core 邊界、runtime 設計
+│   ├── ingestion/        # ingestion 平台設計、parent-child RAG
+│   ├── onyx/             # onyx 應用計畫 / 目標系統 API spec
+│   ├── platform/         # 多服務整合、SSO migration
+│   ├── planning/         # branch-sync backlog、sprint 計畫
+│   ├── guides/           # developer guide
+│   ├── runbooks/         # 維運手冊（token cutover / TLS / legacy bootstrap）
+│   ├── changelog/        # 交接 / 變更紀錄
+│   ├── briefing/         # 簡報 / RFC
+│   └── superpowers/
+│       └── studio-flux/  # FLUX 圖像生成 spec / plans / history（Stage 1-4）
 ├── scripts/
 │   ├── reencrypt-credentials.py          # PBKDF2 v1→v2 一次性 re-encrypt
 │   ├── reissue-tls-cert.sh
@@ -466,6 +483,8 @@ ANILA/
 ├── anila_plan.md         # 單一事實來源：決策、Wave 計畫、架構
 └── README.md             # 本檔
 ```
+
+> 每個子專案（`myCSPPlatform` / `anila-core` / `anila-core-router` / `anila-agent` / `ANILALM` / `ANILA_UI/anila-ui` / `ingestion-worker` / `models` / `runtime_logic`）目錄下均含 `README.md`（繁中為主）+ `README.en.md`（English mirror），各自說明用途、架構、啟動與整合。
 
 ---
 
@@ -504,7 +523,7 @@ ANILA/
 | `ANILA_PUBLIC_CSP_BASE_URL` | UI build | 瀏覽器用來打 CSP 的對外 URL |
 | `ANILA_PUBLIC_ROUTER_BASE_URL` | UI build | 瀏覽器用來打 Router 的對外 URL |
 
-> 完整範本見 [`.env.example`](./.env.example)；變更歷史見 [`docs/planning/sso-migration.md`](./docs/planning/sso-migration.md)、[`docs/planning/sprint-7x-plan.md`](./docs/planning/sprint-7x-plan.md)。
+> 完整範本見 [`.env.example`](./.env.example)；變更歷史見 [`docs/platform/sso-migration.md`](./docs/platform/sso-migration.md)、[`docs/planning/sprint-7x-plan.md`](./docs/planning/sprint-7x-plan.md)。
 
 ---
 
@@ -516,8 +535,7 @@ ANILA/
 - **SPA 認證（Wave 2 + Sprint 7 X）**：瀏覽器 session 完全走 **httpOnly cookie**（`anila_access_token` / `anila_refresh_token` / 非 httpOnly 的 `anila_csrf`）。SPA 完全不持有 API Key — anila-ui 7 X 已下架所有 ApiKey 輸入 UI、Settings 的「API Key」tab、header 的 `sk-…` dropdown，避免使用者誤填造成洩漏。CSRF 用 **double-submit cookie pattern**，middleware 對 cookie 認證的 POST/PUT/DELETE 用 `hmac.compare_digest` 檢查 `X-CSRF-Token` header。帶 `Authorization: Bearer` 的 SDK / curl 路徑豁免 CSRF 檢查（非 browser-originated）。
 - **雙軌認證**：`/v1/chat/completions` 及其他 `/v1/*` 資料面由 `Caller` dependency 同時接受 JWT（SPA path）與 `sk-*` API Key（SDK path），兩者都歸屬到同一個 `user_id`；僅 API Key 路徑會填 `token_usage.api_key_id`，JWT 路徑落入「Web UI」bucket。
 - **OIDC SSO**（Sprint 5 X / 6 X）：authorization request 帶 PKCE (S256) + nonce；callback 必驗 `id_token` 簽章（透過 IdP 的 JWKS）+ iss / aud / azp / exp / nonce + 確認 `id_token.sub == userinfo.sub`。`alg=none` 一律拒絕。`email_verified=true` 強制；email 衝突時不自動合併（避免被 IdP 接管 admin），raise 給 admin 手動處理。`next_path` 經 `sanitize_next_path` 白名單（必須 `/` 開頭、第二字元不能是 `/` 或 `\`、無 CRLF、≤200 字）擋 open-redirect。OIDC `client_secret` 改 AES-256-GCM envelope 儲存（`enc::v1::` 前綴），API 回應一律 mask 為 `***`。
-- **本地登入逐步退場**：`users.local_password_disabled` flag（migration `0022`，預設 False）讓 admin 對個別使用者切 SSO-only；切換後密碼正確也回 403。完整 SSO cutover 三階段見 [`docs/planning/sso-migration.md`](./docs/planning/sso-migration.md)。**LDAP 已自系統下線**（Sprint 5 X），全部欄位由 migration `0021` DROP；`/api/auth/login` 對 `auth_source=ldap` 直接回 400。
-- **中科院憑證卡登入(branch SSO,2026-05-15 上線)**:內網 prod 唯一登入方式。兩個 PKCS 標準分工:**使用者 PC 上的中華電信 HiPKI 本機元件** (`localhost:16888`,實作 **PKCS#11** token API 並包成 HTTP wrapper 讓瀏覽器可達) 用實體卡 + PIN 完成簽章運算,輸出 **PKCS#7 (CMS) 格式**;backend 收到 PKCS#7 後 parse 抽 `employee_id` (X.509 `subject.serialNumber`) / 姓名 / email。Server 不重複驗鏈也不打 OCSP — 信任邊界在 PC + 卡片硬體 + 一次性 challenge nonce + httpOnly cookie session。`REQUIRE_CARD_LOGIN_ONLY=true` 一開,本機帳密 / OIDC / 自助註冊 endpoints 全回 404;`startup_security.assert_intranet_lockdown_consistency()` 強制 `ENABLE_CARD_LOGIN=true` 同步啟用避免 bricked。User provisioning:`CARD_INITIAL_OWNERS` env 內員工編號直接拿 owner+approved (bootstrap),其他人走 pending → 完成註冊 (填 department) → admin 核准。前端 popup 協議對齊 [`cht/templates/popupForm.html`](./cht/templates/popupForm.html);可重用 helper 在 [`myCSPPlatform/frontend/src/api/caAuth.js`](./myCSPPlatform/frontend/src/api/caAuth.js)。
+- **本地登入逐步退場**：`users.local_password_disabled` flag（migration `0022`，預設 False）讓 admin 對個別使用者切 SSO-only；切換後密碼正確也回 403。完整 SSO cutover 三階段見 [`docs/platform/sso-migration.md`](./docs/platform/sso-migration.md)。**LDAP 已自系統下線**（Sprint 5 X），全部欄位由 migration `0021` DROP；`/api/auth/login` 對 `auth_source=ldap` 直接回 400。
 - **Credential 加密**：`anila_core.security.credential_crypto` 用 AES-256-GCM；KDF 為 PBKDF2-HMAC-SHA256 600k iter（OWASP 2024）。寫一律新 key；讀失敗自動 fallback 100k legacy key 並計數 — 既有 v1 row 持續可用，等 `scripts/reencrypt-credentials.py` 跑完統一升 v2。`SECRET_KEY` 為 dev 預設值且 `ANILA_ALLOW_DEV_SECRET≠1` 時 raise。
 - **SSRF guard**：`anila_core.security.url_guard.validate_outbound_url` 集中 deny-list（loopback / private / link-local / cloud-metadata / docker service name / `*.internal` / `*.local` 等），對 user-supplied `endpoint_url` 一律驗證。Agent register / update + 使用者 LLM credential + **model registry** 都接此 guard;agent endpoint 變更時 `approval_status` 自動退回 `pending` 強制 admin 重新核可。Phase 2 後 allow-list 由 admin 透過 `/trusted-hosts` UI 管理 (DB-backed),`ANILA_TRUSTED_HOSTS` env 降格為 bootstrap fallback (給 agent / worker 等不接 CSP DB 的 process 用)。Provider hook (`register_trusted_host_provider`) 設計成 fail-safe — DB 抖時 cache 返回 last good snapshot 不 raise,env 永遠 enforce。**Fixable** 失敗 (single-label hostname / `.internal` zone) backend 回 typed 400 dict 給前端跳 inline confirm modal;**non-fixable** (loopback / metadata / link-local / private IP) 仍 plain string 拒絕,絕不能用「加進 trusted_hosts」繞過。
 - **模型 stack 與平台 lifecycle 解耦**:Phase 1 把推論模型搬到獨立 `models/docker-compose.yml` (project `anila-models`),走 `expose:` 不對 host 開埠,CSP 透過共用 external network `anila-models-net` 走 docker DNS。平台 `docker compose restart csp` 不碰模型;反之亦然。`nv-embed-triton` (Triton 協定 backend) 連 `expose:` 都不開,只在 network 內讓 `nv-embed-proxy` (FastAPI shim) 看到。`csp` / `router` 服務本身也拿掉 host port (`8000` / `9000`),只在 docker network 內可達,**外部入口縮成 nginx `:443` 一條,強制 HTTPS + API Key 雙重門**。`model_registry.is_internal` (migration 0033) 標記哪些 endpoint 在內部 docker DNS;non-owner viewer 看到 `<internal>` 而非 `<owner-only>` sentinel。
@@ -672,7 +690,7 @@ Wave 2 cookie 流程後 SPA 完全不持有 key，但 anila-ui 仍保留「Setti
 Sprint 5 X 審查的尾巴清乾淨，並把 SSO 取代本地登入的地基鋪好（**本地登入仍可用，預設不切換**）。
 
 - **Track A**：Alembic `0021` DROP `auth_providers.ldap_*` 欄位；PBKDF2 升 600k 並提供 v1→v2 雙 key 過渡 + `scripts/reencrypt-credentials.py` 一次性 re-encrypt 工具；OIDC 加 PKCE (S256) + nonce + `id_token` JWKS 驗簽；`startup_security` 寫成 pytest（順手修 `offenders` 永遠不被 raise 的 bug）；TLS 重簽 script `scripts/reissue-tls-cert.sh` + 歷史改寫 runbook。
-- **Track B**：`users.local_password_disabled` flag（migration `0022`，預設 False）讓 admin 切 SSO-only；OIDC `next_path` 集中 sanitize 擋 open-redirect；`docs/planning/sso-migration.md` 寫 cutover 三階段路線。
+- **Track B**：`users.local_password_disabled` flag（migration `0022`，預設 False）讓 admin 切 SSO-only；OIDC `next_path` 集中 sanitize 擋 open-redirect；`docs/platform/sso-migration.md` 寫 cutover 三階段路線。
 - **驗證**：32 個新 pytest 全 pass；E2E 確認 SSO-only 切換後本地登入回 403、LDAP path 回 400、6 個 nginx 安全 header 全到位。對應 commit：`e29316e`。
 
 ### Sprint 5 X — 全面資安審查 + 修補（2026-04-27）
@@ -692,14 +710,14 @@ Sprint 5 X 審查的尾巴清乾淨，並把 SSO 取代本地登入的地基鋪�
 - ⚠️ 所有 collaborator 需 `git fetch && git reset --hard origin/<branch>` 同步新 history
 - 安全 backup tag：`pre-onyx-filter-repo-2026-04-27`（本地保留 14 天後可刪）
 - 完整變更原因 + 操作步驟：[`docs/changelog/2026-04-27-onyx-handover.md`](./docs/changelog/2026-04-27-onyx-handover.md)
-- 規格 handover 文件留下：[`docs/archive/onyx-target-system-api-spec.md`](./docs/archive/onyx-target-system-api-spec.md)、[`docs/archive/onyx-application-plan.md`](./docs/archive/onyx-application-plan.md)
+- 規格 handover 文件留下：[`docs/onyx/onyx-target-system-api-spec.md`](./docs/onyx/onyx-target-system-api-spec.md)、[`docs/onyx/onyx-application-plan.md`](./docs/onyx/onyx-application-plan.md)
 
 ### AgenticRAG 升格為官方 RAG Agent Template（2026-04-24）
 
 - 舊的極簡 `anila-rag-sample`（627-line proxy）與獨立 repo `github.com/zzw09773/AgenticRAG`（framework 身份）合併為 **ANILA 平台官方 RAG agent template**
 - 完整 framework（65 個 src 模組、23 支測試、tool-driven RAG、Hybrid Search、mxbai cross-encoder reranker、CJK tokenizer、Docling parser、vision pipeline、L1-L3 compact）搬進 monorepo
 - 新增 `CspServiceTokenMiddleware` 雙路徑載入（優先 `anila-core` canonical → fallback 本地 in-package copy），保證獨立部署也能跑
-- 新增 [`AgenticRAG/anila-agent.yaml`](./AgenticRAG/anila-agent.yaml)（CSP 註冊 manifest）與 [`AgenticRAG/docs/CSP_INTEGRATION.md`](./AgenticRAG/docs/CSP_INTEGRATION.md)（三種註冊方式、s2s auth、trusted user headers、多租戶檢索 patterns）
+- 新增 `AgenticRAG/anila-agent.yaml`（CSP 註冊 manifest）與 `AgenticRAG/docs/CSP_INTEGRATION.md`（三種註冊方式、s2s auth、trusted user headers、多租戶檢索 patterns）（註：`AgenticRAG/` 後由 `anila-agent/` subtree 取代，見下方 2026-05-11 條目；上述路徑為當時的歷史位置）
 - `github.com/zzw09773/AgenticRAG` 已歸檔（`isArchived=true`），README 改為 notice 指向本 monorepo
 - 對應 commits：`c4bf85a` / `9d5b052` / `59f05f6`
 
@@ -745,4 +763,4 @@ Sprint 5 X 審查的尾巴清乾淨，並把 SSO 取代本地登入的地基鋪�
 
 ---
 
-**Last updated**: 2026-05-16 (ISO/IEC 42001:2023 治理文件首版 + docs/ 主題化重整) · **Maintainers**: ANILA 平台團隊 · **Single source of truth**: [`anila_plan.md`](./anila_plan.md) · **文件索引**:[`docs/README.md`](./docs/README.md) · **AI 治理**:[`docs/governance/iso-42001-compliance.md`](./docs/governance/iso-42001-compliance.md) · **記憶層設計**:[`docs/briefing/anila-memory-layer-rfc.md`](./docs/briefing/anila-memory-layer-rfc.md) · **資安/SSO 規劃**:[`docs/planning/sso-migration.md`](./docs/planning/sso-migration.md)、[`docs/planning/sprint-7x-plan.md`](./docs/planning/sprint-7x-plan.md)、[`docs/runbooks/rotate-tls-cert.md`](./docs/runbooks/rotate-tls-cert.md) · **Service-token cutover**:[`docs/runbooks/service-token-cutover.md`](./docs/runbooks/service-token-cutover.md) · [`docs/runbooks/legacy-agent-bootstrap.md`](./docs/runbooks/legacy-agent-bootstrap.md) · **內網部署**:[`scripts/build-and-export-for-intranet.sh`](./scripts/build-and-export-for-intranet.sh)
+**Last updated**: 2026-05-11（DB-driven trusted_hosts + typed 400 confirm modal + JSONB-on-SQLite 解凍）· **Maintainers**: ANILA 平台團隊 · **Single source of truth**: [`anila_plan.md`](./anila_plan.md) · **記憶層設計**：[`docs/briefing/anila-memory-layer-rfc.md`](./docs/briefing/anila-memory-layer-rfc.md) · **資安／SSO 規劃**：[`docs/platform/sso-migration.md`](./docs/platform/sso-migration.md)、[`docs/planning/sprint-7x-plan.md`](./docs/planning/sprint-7x-plan.md)、[`docs/runbooks/rotate-tls-cert.md`](./docs/runbooks/rotate-tls-cert.md) · **Service-token cutover**：[`docs/runbooks/service-token-cutover.md`](./docs/runbooks/service-token-cutover.md) · [`docs/runbooks/legacy-agent-bootstrap.md`](./docs/runbooks/legacy-agent-bootstrap.md)

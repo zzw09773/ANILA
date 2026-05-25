@@ -1,309 +1,164 @@
 # anila-core-router
 
-**ANILA Router** — OpenAI 相容的自動分派服務。薄殼部署入口，實作在 [`anila-core/src/anila_core/api/router_server.py`](../anila-core/src/anila_core/api/router_server.py)。
+**ANILA Router** — OpenAI 相容的請求自動分派服務。它是一層薄殼部署入口（`main.py`），實際分派邏輯實作在 [`anila-core`](../anila-core/README.md) SDK 的 `anila_core.api.router_server`。在 dev stack 裡它以服務名 `router` 出現。
 
-對外暴露一個 pseudo-agent `anila-router`：client 把 `model` 欄位設成 `anila-router`，Router 會：
-
-1. 從 CSP `/v1/agents` 動態撈 agent manifest（含 `requires_encryption`），cache 起來。
-2. 用 caller 的 API Key 打主 LLM，讓主 LLM 判斷要不要分派到某個 agent。
-3. 若決定分派，轉發到 agent 的 `endpoint_url`，並把 agent 的 SSE stream **逐 chunk** 回傳給 caller。
-4. 若 agent `requires_encryption`，在 SSE meta 標 `classified=true`，讓上游（CSP + UI）整段對話 one-way latch 為 classified。
-
-> 定位：Router 是「用 ANILA Core runtime foundation 組一個分派服務」的範例實作，不是 core 本身。CSP 才是平台的權威 control + data plane。
+> 中文為主要版本；英文鏡像見 [README.en.md](./README.en.md)。技術名詞、指令、程式碼一律保留英文。
 
 ---
 
-## 整體運作
+## 簡介 / Overview
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant C as Client
-    participant R as Router
-    participant CSP as CSP
-    participant LLM as MainLLM
-    participant A as Agent
+Router 對外暴露一個 OpenAI 相容的 `POST /v1/chat/completions`，並提供一個 pseudo-model `anila-router`。其運作（依 `main.py` 與 `router_server` 程式確認）：
 
-    C->>R: POST /v1/chat/completions (model=anila-router)
-    R->>CSP: GET /v1/agents (caller API key)
-    CSP-->>R: agents manifest (含 requires_encryption)
-    Note over R: RemoteAgentRegistry caches agents<br/>/health 暴露 last_refresh_error
+- Client 把 request body 的 `model` 設成 `anila-router` 即觸發自動分派；其他 `model` 值會直接 forward 到 CSP，不經分派邏輯。
+- Router 從 CSP 的 `GET /v1/agents` 動態撈 agent manifest（含 `requires_encryption`）並 cache，再以 caller 的 API Key 呼叫主路由 LLM，由主 LLM 判斷是否要分派給某個 agent（例如 dev stack 內註冊的 `image-generator` 繪圖 agent）。
+- 若決定分派，request 會被轉發到該 agent 的 `endpoint_url`，agent 的 SSE stream 逐 chunk 回傳給 caller。
+- 主路由模型由 CSP 在 runtime 決定：`main.py` 每 60 秒從 CSP `GET /api/models/router-primary` 拉目前指定的主 LLM 名稱。當 CSP 沒有設定主路由模型時，middleware 會把 `/v1/chat/completions` 擋成 **503**，避免 silent fall-back 到錯誤 upstream。
 
-    R->>LLM: POST /v1/chat/completions via CSP
-    LLM-->>R: tool_call or direct answer
-
-    alt MainLLM 說「分派到 agent X」
-        R->>A: 轉發 request (CSP_SERVICE_TOKEN s2s)
-        Note over R,A: 若 agent.requires_encryption<br/>meta.classified=true
-        A-->>R: SSE stream
-        R-->>C: SSE stream + meta.classified?
-    else 直接回答（無分派）
-        R-->>C: SSE stream forward MainLLM
-    end
-
-    Note over R: Agent outage（timeout / 5xx / connect）<br/>不 500 給 client；meta 標 agent_error
-```
-
-<details>
-<summary>📄 ASCII 版本（離線 / email / 舊 Markdown renderer）</summary>
-
-```
-┌────────────┐
-│  Client    │  POST /v1/chat/completions
-│  (UI /     │  Authorization: Bearer sk-...
-│  OpenAI    │  body.model = "anila-router"
-│  SDK)      │
-└─────┬──────┘
-      │
-      ▼
-┌───────────────────────────────────────────────────────────┐
-│                 anila-core-router (:9000)                 │
-│                                                           │
-│   ┌──────────────────────────────────────────────────┐    │
-│   │ RemoteAgentRegistry                              │    │
-│   │  - cache agents from CSP /v1/agents              │    │
-│   │  - 定期 refresh；/health 回報 last_refresh_error │    │
-│   └────────────────────┬─────────────────────────────┘    │
-│                        │                                  │
-│                        ▼                                  │
-│   ┌──────────────────────────────────────────────────┐    │
-│   │ router_server.chat_completions                   │    │
-│   │  1. 取訊息 + agents manifest                      │    │
-│   │  2. 呼叫主 LLM（透過 CSP /v1/chat/completions）   │    │
-│   │  3. 判斷是否需要分派：                             │    │
-│   │     - 否 → 直接 SSE forward LLM 回應               │    │
-│   │     - 是 → 分派到 agent endpoint_url              │    │
-│   │  4. 若 agent.requires_encryption：                │    │
-│   │     meta.classified = true                       │    │
-│   │  5. 逐 chunk forward agent SSE 給 caller          │    │
-│   │  6. Agent outage → structured error trace，        │    │
-│   │     不 500                                        │    │
-│   └──────────────────────────────────────────────────┘    │
-└────────┬────────────────────────────────┬─────────────────┘
-         │                                │
-         │                                │
-         ▼                                ▼
-┌──────────────────────┐         ┌──────────────────────────┐
-│  CSP (:8000)         │         │  Agent endpoint          │
-│  /v1/agents          │         │  (註冊在 CSP 的 agent)    │
-│  /v1/chat/completions│         │  - 用 CSP_SERVICE_TOKEN  │
-│                      │         │    驗 s2s                 │
-└──────────────────────┘         └──────────────────────────┘
-```
-
-</details>
+> 定位：Router 是「用 ANILA Core runtime foundation 組一個分派服務」的部署範例，不是 core 本身。CSP（myCSPPlatform）才是平台權威的 control + data plane。
 
 ---
 
-## 啟動方式
+## 架構與技術棧 / Architecture & Stack
 
-### 方式 1：repo 根 compose（推薦）
+| 項目 | 內容（依 Dockerfile + 原始碼確認） |
+|---|---|
+| 語言 | Python 3.11（`python:3.11-slim`） |
+| Web 框架 | FastAPI，由 `anila_core.api.router_server.create_router_app()` 建立 app |
+| ASGI server | `uvicorn`（`uvicorn main:app --host 0.0.0.0 --port 9000`） |
+| HTTP client | `httpx`（非同步，呼叫 CSP / agent） |
+| 核心相依 | `anila-core` SDK（純 runtime 安裝，**不含** `[rag]` extras）+ `pydantic-settings` |
+| Port | `9000` |
+
+`main.py` 並非 1 行薄殼，它在 app factory 之外額外負責：
+
+1. **主路由模型 TTL refresh**（`_refresh_primary` / `_ensure_primary`，60s TTL）+ `/v1/chat/completions` 的 503 gate middleware。
+2. **Service token 三段式解析**（`_load_service_token` / `_self_bootstrap` / `_initialise_token_source`）：state file → `CSP_BOOTSTRAP_TOKEN` 自動 bootstrap → `CSP_SERVICE_TOKEN` legacy env，啟動 log 會明示走哪條。
+3. **CSP 回 401/403 時 hot-reload state file 一次** 後重試（admin 在 CSP 輪替 router-primary credential 後零停機）。
+
+---
+
+## 目錄結構 / Layout
+
+```
+anila-core-router/
+├── main.py        # 部署 entrypoint：create_router_app() + 主路由模型 TTL refresh
+│                  # + service-token state-file 三段式解析 + /router/primary-status debug endpoint
+├── Dockerfile     # Multi-stage build；build context 須為 repo 根（會 COPY anila-core/）
+├── README.md      # 本檔（繁中主要版本）
+└── README.en.md   # 英文鏡像
+
+# 實際分派邏輯不在本目錄，而在 anila-core SDK：
+anila-core/src/anila_core/api/router_server.py   # create_router_app() + 分派 / SSE forward
+```
+
+---
+
+## 啟動與部署 / Setup & Run
+
+### 方式 1：repo 根 dev compose（推薦）
+
+Router 的 image 由本目錄的 `Dockerfile` build，並以服務名 `router` 跑在 `docker-compose-dev.yml`：
+
+```yaml
+# docker-compose-dev.yml（節錄，實際值請以檔案為準）
+router:
+  build:
+    context: .
+    dockerfile: anila-core-router/Dockerfile
+  expose:
+    - "9000"
+  environment:
+    CSP_BASE_URL: http://csp:8000
+    CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
+    MODEL: ${LLM_MODEL:-gemma4}
+  depends_on:
+    csp:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD-SHELL", "curl -sf http://localhost:9000/health || exit 1"]
+```
 
 ```bash
 # 於 repo 根
-docker compose up -d
-# Router: http://localhost:9000
+docker compose -f docker-compose-dev.yml up -d router
 ```
 
-Compose 會自動依賴 `csp` healthy 之後才起 `router`。
+注意：在 dev compose 中 `router` 只用 `expose: 9000`（**沒有** host port mapping）；UI 透過 `/router` 反向代理對外提供（見 UI 的 `VITE_ROUTER_BASE_URL` 預設 `/router`）。Router 會等 `csp` healthy 後才啟動。
 
-### 方式 2：單機 uvicorn
+### 方式 2：自行 build image
 
-需先裝 `anila-core` SDK（從 monorepo 來源安裝，不需要 RAG extras）：
-
-```bash
-pip install -e "../anila-core"
-
-export CSP_BASE_URL=http://localhost:8000
-export MODEL=gpt-4o-mini      # 或你實際的主模型名
-
-uvicorn main:app --host 0.0.0.0 --port 9000 --log-level info
-```
-
-### 方式 3：自行 build Docker image
-
-build context 需設為 repo 根（因為 Dockerfile 會 COPY `anila-core/` 進去）：
+build context 須為 repo 根（Dockerfile 會 `COPY anila-core/` 進去）：
 
 ```bash
 # 於 repo 根
 docker build -f anila-core-router/Dockerfile -t anila-core-router .
 docker run -p 9000:9000 \
   -e CSP_BASE_URL=http://csp:8000 \
-  -e MODEL=gpt-4o-mini \
+  -e CSP_SERVICE_TOKEN=dev-service-token \
   anila-core-router
 ```
 
----
+### 方式 3：單機 uvicorn（開發）
 
-## 環境變數
+需先安裝 `anila-core` SDK（純 runtime，不需 RAG extras）：
+
+```bash
+pip install -e "../anila-core"
+export CSP_BASE_URL=http://localhost:8000
+uvicorn main:app --host 0.0.0.0 --port 9000 --log-level info
+```
+
+### 環境變數（依 `main.py` 確認）
 
 | 變數 | 說明 | 預設 |
 |---|---|---|
-| `CSP_BASE_URL` | myCSPPlatform 基底 URL（容器內網址） | **必填** |
-| `MODEL` | （已過時）— Sprint 8 X 之後 Router 從 CSP `/api/models/router-primary` runtime 拉，env var 會被 startup 覆蓋。保留為歷史相容 | `gpt-4o-mini` |
-| `CSP_BOOTSTRAP_TOKEN` | （Sprint 8 X / Phase C）首次啟動的 bootstrap token；entrypoint 會把它寫進 state file。後續輪替由 admin 在 CSP UI 觸發 | `""` |
-| `CSP_SERVICE_TOKEN` | Legacy fleet-shared shared-secret；state file 不存在時的 fallback。建議 cutover 完成後從 env 移除 | `""` |
-| `ANILA_ROUTER_STATE_DIR` | 持久化 service token 的目錄；至少需 `/var/lib/anila-router` 等可寫入的 volume mount | `/var/lib/anila-router` |
+| `CSP_BASE_URL` | CSP（myCSPPlatform）基底 URL；容器內為 `http://csp:8000` | `http://csp:8000` |
+| `CSP_BOOTSTRAP_TOKEN` | 首次啟動的 bootstrap token；entrypoint 會寫進 state file | `""` |
+| `CSP_SERVICE_TOKEN` | Legacy fleet-shared shared-secret；state file 不存在時 fallback | `""` |
+| `ANILA_ROUTER_STATE_DIR` | 持久化 service token 的目錄 | `/var/lib/anila-router` |
+| `MODEL` | （已過時）Router 改從 CSP `/api/models/router-primary` runtime 拉，啟動後會被覆蓋；保留作歷史相容 | — |
 
-> Router **不**需要自己的 user API Key：它用 caller（UI / OpenAI SDK）的 Bearer API Key 回打 CSP data plane。這代表 caller 看得到的 agent 跟 Router 分派得出去的 agent 完全同步於該 API Key 的 allowed_models。
->
-> Service token（Router→CSP 內部端點如 `/api/models/router-primary`）走 3-priority resolution：state file → bootstrap → legacy env。詳見下面「程式結構」。
-
----
-
-## 主要端點
-
-### `POST /v1/chat/completions`
-
-OpenAI 相容介面，把 `model` 設為 `anila-router` 即觸發自動分派：
-
-```bash
-curl -N -X POST http://localhost:9000/v1/chat/completions \
-  -H "Authorization: Bearer sk-your-api-key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "anila-router",
-    "messages": [{"role": "user", "content": "幫我查陸海空軍懲罰法第 8 條"}],
-    "stream": true
-  }'
-```
-
-其他 `model` 值（例如 `llama3-70b`）會直接 forward 到 CSP，不經分派邏輯。
-
-### `GET /health`
-
-```json
-{
-  "status": "ok",
-  "cached_agents": 3,
-  "last_refresh_error": null,
-  "last_refresh_at": "2026-04-30T11:22:33+00:00"
-}
-```
-
-- `cached_agents` — RemoteAgentRegistry 目前快取了幾個 agent。
-- `last_refresh_error` — 最近一次從 CSP 撈 agent 清單的錯誤（成功為 `null`）。若長時間非 null，代表 `CSP_BASE_URL` 或 API Key 不對，或 CSP 沒起來。
-- `last_refresh_at` — RemoteAgentRegistry 最後成功 refresh 的 ISO timestamp（除錯排查用）。
-
-### `GET /v1/models`
-
-OpenAI 相容；列出 Router 對外暴露的 pseudo-model（`anila-router`）。讓 OpenWebUI / SDK 的 model picker 看得到 Router。
-
-### `GET /router/primary-status` *(internal / debug)*
-
-```json
-{
-  "name": "google/gemma4",
-  "fetched_at": 1714478400.123,
-  "error": null,
-  "ttl_seconds": 60,
-  "service_token_source": "state_file",
-  "csp_base_url": "http://csp:8000",
-  "state_file": "/var/lib/anila-router/service_token.json"
-}
-```
-
-`service_token_source` ∈ `state_file` / `bootstrap` / `legacy_env` / `none` — 讓 ops 一眼看出 Router 的 s2s token 是哪條路徑載入的。
+> Router **不**持有自己的 user API Key：它用 caller（UI / OpenAI SDK）的 Bearer API Key 回打 CSP data plane，因此 caller 看得到的 agent 與 Router 能分派的 agent 同步於該 API Key 的權限。
+> Service token（Router→CSP 內部端點如 `/api/models/router-primary`）才走上述三段式解析。
 
 ---
 
-## 程式結構
+## 與其他服務的關係 / Integration
 
 ```
-anila-core-router/
-├── main.py        # ~280 行：app factory + 主路由模型 TTL refresh
-│                  #         + service-token state-file 管理
-│                  #         + /router/primary-status debug endpoint
-├── Dockerfile     # Multi-stage；build context 需為 repo 根
-└── README.md      # 本檔
-
-# 實際實作的核心在 anila-core：
-anila-core/src/anila_core/api/
-├── router_server.py              # create_router_app() + 分派邏輯
-├── middleware/auth.py            # CspServiceTokenMiddleware (legacy)
-│                                 # + RotatingServiceTokenMiddleware (Sprint 8 X)
-└── ...
-
-anila-core/src/anila_core/registry/
-└── remote_agent_manifest.py      # RemoteAgentRegistry（CSP /v1/agents 快取）
-
-anila-core/src/anila_core/tools/
-└── dispatch_tool.py              # agent 分派（含 timeout / 5xx 降級）
+Client (UI / OpenAI SDK)
+   │  POST /v1/chat/completions  (model=anila-router, Bearer sk-...)
+   ▼
+router (:9000)
+   ├── GET /v1/agents              ──▶ CSP (CSP_BASE_URL)   取 agent manifest
+   ├── GET /api/models/router-primary ─▶ CSP   取主路由 LLM（X-CSP-Service-Token）
+   ├── POST /v1/chat/completions   ──▶ CSP   呼叫主 LLM 判斷是否分派
+   └── 分派 → agent endpoint_url   ──▶ 例：image-generator → http://flux2-dev-agent:8000
 ```
 
-`main.py` 不是 3 行的薄殼 — Sprint 8 X 後額外負責三件事：
-
-1. **主路由模型 TTL refresh** — `_refresh_primary` 從 CSP `/api/models/router-primary` 拉目前指定的主 LLM 名稱，60s TTL；中間層 middleware 在沒有主路由模型時把 `/v1/chat/completions` 503，避免 silent fall-back 到錯誤 endpoint
-2. **Service token 3-priority 載入** — startup 時先試 `${ANILA_ROUTER_STATE_DIR}/service_token.json` → 試 `CSP_BOOTSTRAP_TOKEN` 自動 bootstrap → 退回 `CSP_SERVICE_TOKEN` legacy。startup log 會明示走了哪條
-3. **CSP 拒絕 service token 時 hot-reload state file 一次** — admin 在 CSP UI 對 router-primary credential 點 rotate 後，Router 會在下一次 refresh 撞到 401 → 自動重讀 state file → 用新 token 重試。零停機
-
-`build_app(mode="router")` 的更激進薄殼化路線見 `anila_plan.md` Wave E。
+- **CSP（`CSP_BASE_URL`）**：Router 所有上游互動都經由 CSP — 撈 agent 清單、解析主路由模型、呼叫主 LLM。Router→CSP 的內部端點以 `X-CSP-Service-Token` header 認證（token 來源見三段式解析）。
+- **Agents**：dev stack 透過 CSP 註冊 `image-generator`（FLUX.2-dev 繪圖 agent，`endpoint_url: http://flux2-dev-agent:8000`）。主 LLM 判斷需要繪圖時，Router 把 request 分派給該 agent 並 forward 其 SSE stream。
+- **`/v1/agents` dispatch**：caller 能分派出去的 agent，等於該 caller API Key 在 CSP 的 allowed agents — Router 不放大權限。
 
 ---
 
-## 錯誤處理（Wave B 強化）
+## 相關文件 / Related docs
 
-| 情境 | 行為 |
-|---|---|
-| Agent timeout / 5xx | 不把 500 丟給 caller；記 trace step、SSE meta 標 `agent_error`、回友善訊息 |
-| Agent connect error | 同上；Registry 下次 refresh 會把該 agent 標為 unavailable |
-| CSP `/v1/agents` 抓失敗 | `RemoteAgentRegistry` 紀錄 `last_refresh_error`；分派時 fallback 為 "Router 直接回答" |
-| Middleware import 失敗 | **Fail-fast**（raise），**絕不** silent fallback 成 no-op |
-
----
-
-## 相關文件
+（以下路徑皆已確認存在）
 
 - 平台整體：[repo 根 README](../README.md)
+- 多服務整合計畫（含 Router 角色）：[`docs/platform/multi-service-integration-plan.md`](../docs/platform/multi-service-integration-plan.md)
+- Agent framework 架構：[`docs/agent-framework/anila-agent-framework-architecture.md`](../docs/agent-framework/anila-agent-framework-architecture.md)
+- Agent runtime 深入（含 Router 互動）：[`docs/agent-framework/runtime-logic-openai-agents-deep-dive.md`](../docs/agent-framework/runtime-logic-openai-agents-deep-dive.md)
 - Runtime foundation（SDK）：[`anila-core/README.md`](../anila-core/README.md)
-- **官方 RAG agent template**：[`AgenticRAG/README.md`](../AgenticRAG/README.md)
 - CSP 平台：[`myCSPPlatform/README.md`](../myCSPPlatform/README.md)
 - UI：[`ANILA_UI/anila-ui/README.md`](../ANILA_UI/anila-ui/README.md)
-- 路線圖與決策：[`anila_plan.md`](../anila_plan.md)
 
----
-
-## Release Notes
-
-### 2026-05-03 — Sprint 13: typed-event pass-through + resume proxy
-
-對應 anila-core **v0.12.0**。Router 從「只認得自己 emit 的 anila.* 事件」升級成「會 forward agent 的 typed events」，並新增使用者可達的 resume endpoint。
-
-- **`_stream_agent_sse` 改寫成正規 SSE parser**：之前 `event:` header 被忽略，agent 用 template 格式（`event: anila.meta\ndata: {...}\n\n`）emit 的 meta 整個漏掉；Sprint 9-12 加的 typed events（`interrupt_requested` / `resumed` / `todos_updated` / `follow_ups` / `tool_call_started` / `tool_call_finished` / `usage_update` / `memory_saved` / `compact_triggered` / `agent_summary` / `task_notification`）也全部漏。新版 parser 認 header、把 `anila.*` 命名的 event 原封 forward、把白名單裡的 typed events rename 成 `anila.<name>` 統一輸出。
-- **Session-owner 持久化**：新 `session_owners` SQLite 表（與 `session_items` / `session_interrupts` 同檔），每次 dispatch 都寫 `(session_id, agent_id)`。涵蓋所有 dispatch 路徑（single-shot streaming / single-shot non-streaming / multi-turn 兩種 helper 的每一輪）。
-- **新 endpoint `POST /v1/sessions/{sid}/answer`**：使用者面 UI 只知道 Router URL；這個 endpoint 從 `session_owners` 查擁有該 session 的 agent，再透過 CSP 的新 `POST /v1/agents/{a}/sessions/{sid}/answer` proxy 把 `{interrupt_id, answer}` payload 轉到 agent 的 `/sessions/{id}/answer`。回應同樣是 SSE，先 emit Router 自己的 `anila.resumed`，再原封 pass-through agent 的 stream。Header 帶 `X-Anila-Owner-Agent` 讓 UI 顯示「Resume on <agent>」。
-- **`GET /v1/sessions/{sid}/state` 擴充**：新增 `owner_agent_id` 欄位。
-- **測試**：`tests/test_router_sse_passthrough.py`（16）、`tests/test_router_resume_proxy.py`（6）、`tests/test_session_owner.py`（5）、`tests/test_e2e_ask_user_resume.py`（1 — 完整 Router → CSP → agent 串流）。
-- 限制：multi-turn 路徑會 update owner 為「最後一個 dispatch 的 agent」。如果 user 在中間某個 agent 的 interrupt 拋出後立刻 resume，會 land 在最後那個 agent 上 —— 邊界 case，文件先記著。
-
-### 2026-04-24 — AgenticRAG template 同步
-
-- Cross-reference 敘述更新：`AgenticRAG` 從「sample」改稱「**官方 RAG agent template**」。
-- 與 AgenticRAG 的 `CspServiceTokenMiddleware` 載入順序一致：Router 自己也是從 `anila-core/api/middleware/auth.py` 載 CSP middleware，確保跨服務的 s2s 安全邏輯是單一實作。
-
-### Wave B — 錯誤處理硬化（2026-03）
-
-- `RemoteAgentRegistry` 暴露 `last_refresh_error` 到 `/health`（之前 silent fail）
-- Agent outage (timeout / 5xx / connect error) **不** 500 給 caller；改 SSE meta 標 `agent_error`，回友善訊息
-- Middleware import 失敗 **fail-fast**；絕不 silent fallback 成 no-op
-
-### Wave A — 初版（2026-02）
-
-- `main.py = create_router_app()` 薄殼；所有分派邏輯住在 `anila-core/src/anila_core/api/router_server.py`
-- Dockerfile multi-stage build（context 需為 repo 根，會 COPY `anila-core/`）
-- `/v1/agents` 快取 + classified latch 傳播
-- Router **不**持有自己的 API Key，一律用 caller bearer 回打 CSP（caller 權限 = Router 分派權限）
-
-### Wave E 待辦
-
-- Router mode 收斂進 `anila-core.app_factory.build_app(mode="router")`，讓 `main.py` 變 1 行
+> 注意：舊版 README 連結的 `AgenticRAG/README.md` 已不在 repo 根（目前僅 `docs/agenticrag/` 留有文件），故此處不再列出。
 
 ---
 
 ## License
 
 見 repo 根 [`LICENSE`](../LICENSE)。
-
----
-
-**Last updated**: 2026-05-03 (Sprint 13 — typed-event pass-through + resume proxy) · **Depends on**: `anila-core` ≥ v0.12.0 (no `[rag]` extras) · **Talks to**: `myCSPPlatform` + 已註冊 agents

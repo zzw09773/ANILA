@@ -12,6 +12,7 @@ from app.schemas.token_usage import (
 )
 from app.services.auth_service import get_current_user, is_admin_tier, require_admin
 from app.services.usage_service import (
+    _to_tpe_iso,
     export_usage_csv,
     get_agent_usage,
     get_chart_data,
@@ -220,7 +221,9 @@ def legacy_token_stats(
         "count_24h": _count_since(timedelta(hours=24)),
         "count_7d": _count_since(timedelta(days=7)),
         "count_30d": _count_since(timedelta(days=30)),
-        "last_seen_at": last.isoformat() if last else None,
+        # legacy-token-stats 的 last_seen_at 對齊匯出 CSV 跟 chart 同樣
+        # Asia/Taipei 時區(UI / Excel 顯示時不再 -8h 偏差)。
+        "last_seen_at": _to_tpe_iso(last) or None,
     }
 
 

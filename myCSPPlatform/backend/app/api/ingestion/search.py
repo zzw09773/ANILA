@@ -100,6 +100,52 @@ class SearchResponse(BaseModel):
     results: list[SearchHitOut]
 
 
+class ImageSearchRequest(BaseModel):
+    """Studio-extraction (Phase 1) image search request.
+
+    Defaults differ from text ``SearchRequest`` (top_k=8, min_score=0)
+    because the consumer (anila-studio) hydrates a deck-level image
+    candidate set and wants a slightly broader sweep than chat hits.
+    """
+
+    query: str = Field(..., min_length=1, max_length=4000, description="自然語言查詢")
+    top_k: int = Field(
+        default=8,
+        ge=1,
+        le=50,
+        description="回傳前 N 張最相似的圖片",
+    )
+    min_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="cosine 相似度最低門檻 (0=不過濾)",
+    )
+
+
+class ImageHitOut(BaseModel):
+    """One image hit with hydration metadata. ``image_id`` is the
+    ``ingestion_images.id`` (BIGSERIAL PK) — globally unique and
+    addressable via ``GET /api/ingestion/images/{image_id}/blob``.
+    """
+
+    image_id: int
+    document_id: int
+    page: int | None
+    storage_path: str
+    mime: str
+    caption: str | None
+    filename: str
+    score: float = Field(..., description="cosine similarity in [0, 1]; higher = closer")
+
+
+class ImageSearchResponse(BaseModel):
+    query: str
+    embedding_model: str
+    embedding_dim: int
+    results: list[ImageHitOut]
+
+
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
@@ -281,5 +327,125 @@ async def search_collection(
                 chunk_level=getattr(h.chunk, "chunk_level", 0) or 0,
             )
             for h in hits
+        ],
+    )
+
+
+# ── Image search ────────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/api/ingestion/collections/{collection_id}/images/search",
+    response_model=ImageSearchResponse,
+)
+async def search_collection_images(
+    collection_id: int,
+    payload: ImageSearchRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ImageSearchResponse:
+    """Semantic top-K retrieval over a collection's ``ingestion_images`` rows.
+
+    Phase 1 of the anila-studio extraction: this endpoint replaces the
+    in-process ``app.api.studio._retrieve_images`` helper so the studio
+    sub-service can pull image hits over HTTP instead of binding to the
+    csp-db pgvector layer directly.
+
+    Auth: same as chunk search — admin OR collection owner. Future
+    sharing flows (collection_access_grants) plug into
+    ``_require_collection_access``.
+
+    Returns ``results=[]`` (not an error) when:
+      - the collection has zero indexed images (text-only KB),
+      - the embedder returned an empty vector,
+      - no rows beat the ``min_score`` threshold.
+    """
+    coll = _require_collection_access(db, current_user, collection_id)
+
+    if coll.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Collection {collection_id} is {coll.status}; reactivate before search.",
+        )
+
+    q_vec = await _embed_query(
+        db,
+        current_user,
+        coll.embedding_model,
+        coll.embedding_dim,
+        payload.query,
+    )
+    if not q_vec:
+        return ImageSearchResponse(
+            query=payload.query,
+            embedding_model=coll.embedding_model,
+            embedding_dim=coll.embedding_dim,
+            results=[],
+        )
+
+    try:
+        pool = get_pool()
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+    # Wrap with HalfVector — the same codec PgPool registers on every
+    # connection. Passing a Python string + ::halfvec cast fails because
+    # halfvec's text-input parser misreads the leading `[`. HalfVector
+    # ships the right binary wire format directly. Mirrors the path in
+    # ``studio._retrieve_images``.
+    from pgvector import HalfVector
+
+    q_value = HalfVector(q_vec)
+
+    # halfvec uses cosine distance; pgvector returns 0 = identical, so
+    # similarity = 1 - distance. Filter on distance < (1 - min_score).
+    max_dist = 1.0 - payload.min_score
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                i.id AS pk_id,
+                i.image_id,
+                i.document_id,
+                i.page,
+                i.storage_path,
+                i.mime,
+                i.caption,
+                d.filename,
+                (i.embedding <=> $2) AS dist
+            FROM ingestion_images i
+            JOIN ingestion_documents d ON d.id = i.document_id
+            WHERE i.collection_id = $1
+              AND i.embedding IS NOT NULL
+              AND (i.embedding <=> $2) < $3
+            ORDER BY i.embedding <=> $2
+            LIMIT $4
+            """,
+            collection_id, q_value, max_dist, payload.top_k,
+        )
+
+    return ImageSearchResponse(
+        query=payload.query,
+        embedding_model=coll.embedding_model,
+        embedding_dim=coll.embedding_dim,
+        results=[
+            ImageHitOut(
+                # Expose the table PK (BIGSERIAL) as image_id so the
+                # blob endpoint can address rows uniquely. The TEXT
+                # ``image_id`` column is only unique per document and
+                # is not surfaced — callers should not rely on it.
+                image_id=int(r["pk_id"]),
+                document_id=int(r["document_id"]),
+                page=r["page"],
+                storage_path=str(r["storage_path"]),
+                mime=str(r["mime"]),
+                caption=(r["caption"] or None),
+                filename=str(r["filename"]),
+                score=float(1.0 - r["dist"]),
+            )
+            for r in rows
         ],
     )

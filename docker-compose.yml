@@ -63,7 +63,12 @@ services:
       # 列進這條才能註冊。新增模型 service 要同步加進這個值並重啟 csp。
       ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,host.docker.internal}"
       ALGORITHM: HS256
-      ACCESS_TOKEN_EXPIRE_MINUTES: "60"
+      ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
+      REFRESH_TOKEN_EXPIRE_DAYS: "${REFRESH_TOKEN_EXPIRE_DAYS:-30}"
+      # LLM proxy upstream timeout — Studio deck 生成的 prompt 可達 10K+
+      # tokens,gemma4 處理 wall-clock 達 240s 級。default 120 太緊 → csp
+      # 自己 mid-stream timeout 把連線關掉 → anila-studio 觀察到 ReadTimeout。
+      LLM_TIMEOUT: "${LLM_TIMEOUT:-300}"
       # CSP 對下游 agent 注入這個 header,downstream 用它認 CSP source。
       # 跟 router service 必須同值,缺值直接 fail (避免 prod 部署誤用 dev token)。
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set}
@@ -97,15 +102,13 @@ services:
         ]
       ANILA_TEMPLATE_DIR: /app/anila-template
       INGESTION_UPLOAD_DIR: /var/anila/ingestion-uploads
-      # branch SSO: 中科院憑證卡登入。Prod 強制 card-only,信任 HiPKI driver
-      # 處理 PIN/簽章,backend 只 parse PKCS#7 抽 employee_id。Dev 切回:改 .env
-      # 把 REQUIRE_CARD_LOGIN_ONLY 設 false 即可重開本機帳密。
-      ENABLE_CARD_LOGIN: "${ENABLE_CARD_LOGIN:-true}"
-      REQUIRE_CARD_LOGIN_ONLY: "${REQUIRE_CARD_LOGIN_ONLY:-true}"
-      # CARD_INITIAL_OWNERS: CSV 員工編號清單,列在裡面的第一次刷卡直接拿到
-      # role=owner + is_approved=True (bootstrap)。其他人走 pending 流程。
-      # Prod 缺值直接 fail,避免沒人能登入的 bricked 狀態。
-      CARD_INITIAL_OWNERS: "${CARD_INITIAL_OWNERS:?CARD_INITIAL_OWNERS must list at least one bootstrap owner employee_id}"
+      # FLUX image-gen for ANILALM studio pptx pipeline — wires
+      # studio.image_provider.FluxImageProvider; empty BACKEND_URL
+      # would make get_flux_provider() return None (toggle OFF).
+      FLUX_BACKEND_URL: ${FLUX_BACKEND_URL:-http://flux2-dev:8000}
+      FLUX_MAX_CONCURRENT: "${FLUX_MAX_CONCURRENT:-4}"
+      FLUX_TIMEOUT_SECONDS: "${FLUX_TIMEOUT_SECONDS:-180}"
+      # FLUX_CACHE_DIR defaults to $INGESTION_UPLOAD_DIR/flux-cache
     volumes:
       # anila-agent subtree (github.com/zzw09773/anila-agent) — 模板下載端用。
       # 更新走 git subtree pull/push,見 README §"Updating anila-agent"。
@@ -258,6 +261,57 @@ services:
     healthcheck:
       # bookworm-slim 沒 curl/wget,用 node 自帶 http。
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:7100/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    restart: unless-stopped
+
+  # ── anila-studio (Studio extraction Phase 2 skeleton) ───────────────────
+  # Deck generation service extracted out of csp/backend. Reads JWKS +
+  # token revocation events from csp via HTTP/Redis so cross-service auth
+  # works without sharing the private signing key.
+  anila-studio:
+    build:
+      context: anila-studio
+      dockerfile: Dockerfile
+    expose:
+      - "8100"
+    environment:
+      CSP_BASE_URL: http://csp:8000
+      # 跟 csp 共用同一把 service-to-service token,讓 cold-start sync
+      # /api/auth/revocations 能透過 X-CSP-Service-Token header 通過
+      # csp 的 verify_service_token。對齊 csp / router / ingestion-worker
+      # 的 prod fail-loud convention(缺值直接停,不走 dev fallback)。
+      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set (same value as csp)}
+      REDIS_URL: redis://redis:6379/0
+      REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
+      FLUX_BACKEND_URL: http://flux2-dev:8000
+      # 對齊 volume mount 路徑。studio.py 內讀 os.environ["FLUX_CACHE_DIR"],
+      # 預設 fallback 是 csp 的 /var/anila/ingestion-uploads/flux-cache,在
+      # anila-studio container 內不存在/沒權限,所以這條 env 必須顯式設。
+      FLUX_CACHE_DIR: /var/anila/anila-studio-flux-cache
+      # report / mindmap / infographic / datatable 4 種 artifact 的持久化目錄。
+      # 每個 job 落地 {job_id}.{html,pdf,docx,svg,csv,xlsx}, 24h 後 prune。
+      ARTIFACTS_DIR: /var/anila/anila-studio-artifacts
+      RENDERER_BASE_URL: http://pptx-renderer:7100
+      JWT_KID: anila-v1
+      LOG_LEVEL: INFO
+    depends_on:
+      csp:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      pptx-renderer:
+        condition: service_healthy
+    volumes:
+      - anila-studio-flux-cache:/var/anila/anila-studio-flux-cache
+      - anila-studio-artifacts:/var/anila/anila-studio-artifacts
+    networks:
+      - default
+      - anila-models-net  # flux2-dev sits here
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8100/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 6
@@ -421,8 +475,10 @@ networks:
 volumes:
   csp-pgdata:
   redis-data:
-  # 下面三組對應 codeserver / n8n / gitlab service。一旦這些 service 解凍,
-  # 既有的 anila-platform_<name> volume 會被 compose reuse,資料不會重生。
+  anila-studio-flux-cache:
+  anila-studio-artifacts:
+  # cold-stored — 對應上面 commented service。volume 名稱保留可以避免
+  # 解凍時 named volume 重生造成既有資料遺失 (compose 看到舊名就 reuse)。
   codeserver_config:
   n8n_data:
   gitlab_config:

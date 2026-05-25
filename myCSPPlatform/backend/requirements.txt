@@ -34,9 +34,6 @@ arq==0.26.1
 # simplified Chinese so this is a quality lever, not a vanity fix.
 opencc-python-reimplemented==0.1.7
 
-# branch SSO: 中科院憑證卡登入。
-# pkcs7.load_der_pkcs7_certificates() 從 36.0 起,SAN/extensions API 在 41+
-# 穩定。原 <45 上限是早期 buffer,但 CVE-2026-26007 / CVE-2026-34073 分別在
-# 46.0.5 / 46.0.6 修復,必須鬆綁。pkcs7 API 從 44 → 46 公開 surface 未變,
-# card_auth.py 不需要 code 改動。
-cryptography>=46.0.6,<49
+# Phase 6 — FLUX image generation tests
+respx==0.22.0
+pytest-asyncio==0.24.0

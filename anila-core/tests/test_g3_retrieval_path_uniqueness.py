@@ -1,6 +1,6 @@
 """Sprint 1 Gate G3 — single retrieval entry point.
 
-Per docs/ingestion-platform-design.md §9 G3:
+Per docs/ingestion/ingestion-platform-design.md §9 G3:
 
     grep -rnE "(FROM|INSERT INTO|UPDATE|DELETE FROM|...) document_chunks"
     --include="*.py" anila-core AgenticRAG ingestion-worker
