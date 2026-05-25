@@ -35,12 +35,20 @@ from app.services.report_job_service import ReportJobUpdater
 
 
 def _chunk(i: int) -> ChunkHit:
+    # Content 至少 50 字以匹配 runner 內過濾短 chunks(markdown `---` /
+    # 標題殘餘等)的 threshold。保留既有的 `视频测试` 簡體字片段
+    # (這是 OpenCC 簡→繁 converter 測試樣本,**故意**保留),其餘
+    # 文字一律繁體中文。
     return ChunkHit(
         chunk_id=i,
         document_id=100 + i,
         filename=f"doc_{i}.pdf",
         chunk_key=f"k_{i}",
-        content=f"chunk content {i} 视频测试",  # simplified Chinese to verify OpenCC
+        content=(
+            f"chunk content {i} 视频测试。"  # 簡體片段:OpenCC test fixture,故意保留
+            f"第 {i} 段是模擬實際從 collection 取出的 chunk 內容,"
+            f"需要足夠長度才能通過 chunking artifact 過濾門檻。"
+        ),
         score=0.9 - i * 0.05,
         metadata={},
         parent_chunk_id=None,

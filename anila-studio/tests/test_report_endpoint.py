@@ -56,7 +56,13 @@ def _fake_chunks(n: int = 5) -> list[ChunkHit]:
             document_id=100 + i,
             filename=f"doc_{i}.pdf",
             chunk_key=f"k_{i}",
-            content=f"這是第 {i} 段測試內容，用於驗證 RAG retrieval 與 outline。",
+            # 至少 50 字以通過 runner 內過濾 markdown 短 chunks
+            # (`---` / 標題殘餘等)的 threshold。
+            content=(
+                f"第 {i} 段是模擬從 collection 取出的 RAG retrieval 結果,"
+                f"用來驗證 outline 與 drafting 兩階段 pipeline 都能正常運作。"
+                f"段落需要夠長才能通過 chunking artifact 過濾門檻。"
+            ),
             score=0.9 - i * 0.05,
             metadata={},
             parent_chunk_id=None,

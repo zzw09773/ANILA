@@ -88,8 +88,22 @@ INFOGRAPHIC_LLM_MODEL = "gemma4"
 
 # Bounded so a single chunk-pull doesn't blow the prompt context. Each
 # chunk ~800 chars → top_k=12 ≈ 9.6 KB context; well within gemma4 256K.
-INFOGRAPHIC_MIN_SCORE = 0.25
+INFOGRAPHIC_MIN_SCORE = 0.0
 INFOGRAPHIC_CONTENT_LIMIT_CHARS = 1500
+# Markdown horizontal rule `---` / isolated headers / empty paragraph
+# chunks beat real KPI tables under semantically-weak seed queries.
+# Drop anything below this length before LLM context build.
+INFOGRAPHIC_MIN_CHUNK_CONTENT_CHARS = 50
+
+# Short Chinese phrase per preset for seed_query enrichment.
+# 原 seed_query 是 ``coll.name + extra_instructions``,對中文 collection
+# 在 preset 沒映射的情況很弱。
+_INFOGRAPHIC_SEED_PHRASES: dict[str, str] = {
+    "mission_dashboard": "任務 dashboard 指標 進度 比較",
+    "stats_brief": "數據 統計 數字 KPI 趨勢",
+    "comparison_matrix": "比較 對照 對比 矩陣",
+    "timeline_overview": "時間軸 事件 進度 變化",
+}
 
 # JSON correction pass count — 1 retry mirrors the slide side. Two
 # failures in a row almost always mean the model is hallucinating
@@ -510,6 +524,8 @@ async def _retrieve_chunks(
             "score": float(h.score),
         }
         for h in hits
+        # 過濾 markdown chunking artifact / 空白 chunks(production 觀察)
+        if len((h.content or "").strip()) >= INFOGRAPHIC_MIN_CHUNK_CONTENT_CHARS
     ]
 
 
@@ -531,9 +547,19 @@ async def _run_pipeline(
 
     # Step 1: retrieve
     await updater.set(step=JOB_STEP_RETRIEVING)
-    seed_query = payload.seed_query or coll.name
-    if payload.extra_instructions:
-        seed_query = f"{seed_query} · {payload.extra_instructions.strip()}"
+    # seed_query 預設 coll.name 對中文 collection 語意太弱。補 preset
+    # 中文 phrase(類比 datatable 的 _PRESET_SEED_PHRASES 修法),讓搜尋
+    # 更可能命中跟 preset 主題相關的 chunks。
+    if payload.seed_query and payload.seed_query.strip():
+        seed_query = payload.seed_query.strip()
+    else:
+        parts = [coll.name]
+        phrase = _INFOGRAPHIC_SEED_PHRASES.get(payload.preset.value)
+        if phrase:
+            parts.append(phrase)
+        if payload.extra_instructions:
+            parts.append(payload.extra_instructions.strip())
+        seed_query = " · ".join(parts)
 
     try:
         chunks = await _retrieve_chunks(

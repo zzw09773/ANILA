@@ -83,10 +83,27 @@ router = APIRouter(prefix="/api/datatables", tags=["datatables"])
 DATATABLE_LLM_MODEL = "gemma4"
 # Same retrieval threshold as slides — chunks below this score are usually
 # unrelated and just dilute the prompt budget.
-MIN_SCORE = 0.25
+MIN_SCORE = 0.0
+# Anything below this content length is treated as a chunking artifact
+# (markdown horizontal rules ``---``, isolated headers, empty paragraphs)
+# and dropped before LLM context build. Production observed lun collection
+# returning hits with content="---" beating real KPI tables under
+# semantically-weak seed queries; filtering here is cheap insurance.
+MIN_CHUNK_CONTENT_CHARS = 50
 # Cap on context per chunk; bigger chunks get truncated client-side so the
 # LLM doesn't run out of context window with a single dense chunk.
 CONTENT_LIMIT_CHARS = 1500
+# Short Chinese phrase per preset, used to flesh out the auto seed_query
+# when the caller doesn't provide one. English enum values like
+# ``key_figures`` carry weak similarity to Chinese-language collections;
+# these phrases score >0.7 against documents that actually contain
+# extractable rows for the preset.
+_PRESET_SEED_PHRASES: dict[DatatablePreset, str] = {
+    DatatablePreset.KEY_FIGURES: "關鍵指標 數值 KPI 統計 比率",
+    DatatablePreset.ENTITY_ATTRIBUTES: "屬性 規格 特徵 比較 對照",
+    DatatablePreset.TIMELINE_TABLE: "時間軸 日期 事件 進度 變化",
+    DatatablePreset.COMPARISON_TABLE: "比較 對照 對比 差異 優劣",
+}
 # One correction pass on validation failure — same heuristic as slides
 # (third attempt has ~64% blind-spot rate per the research file). If two
 # tries fail we surface as job state="failed" since there's no obvious
@@ -450,14 +467,19 @@ async def _run_pipeline(
 
     # ── retrieve ──
     await updater.set(step=JOB_STEP_RETRIEVING)
-    seed_query = (payload.seed_query or "").strip() or " · ".join(
-        [coll.name, payload.preset.value]
-        + (
-            [payload.extra_instructions.strip()]
-            if payload.extra_instructions
-            else []
-        )
-    )
+    # 預設 seed_query 改用中文 preset phrase + collection.name + extra_instructions。
+    # 原版「coll.name · key_figures」對中文文件語意太弱(production 觀察 lun
+    # collection 真實華航內容被排在 markdown `---` chunks 之後)。
+    if payload.seed_query and payload.seed_query.strip():
+        seed_query = payload.seed_query.strip()
+    else:
+        parts = [
+            coll.name,
+            _PRESET_SEED_PHRASES.get(payload.preset, payload.preset.value),
+        ]
+        if payload.extra_instructions:
+            parts.append(payload.extra_instructions.strip())
+        seed_query = " · ".join(parts)
     chunks: list[dict[str, Any]] = []
     try:
         hits = await search_chunks(
@@ -476,6 +498,9 @@ async def _run_pipeline(
                 "score": float(h.score),
             }
             for h in hits
+            # 過濾掉 markdown chunking artifact(`---` / 空白 / 標題殘餘 / 等)。
+            # 真實 KPI 數值/表格通常 >50 字;短 chunks 是雜訊。
+            if len((h.content or "").strip()) >= MIN_CHUNK_CONTENT_CHARS
         ]
         # Diagnostic log:後續看 backend log 就能判斷「空表」是 retrieval 0 hit
         # 還是 LLM 看 chunks 後判定無資料。 production 觀察到使用者選了不匹配

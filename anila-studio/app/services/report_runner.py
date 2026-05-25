@@ -475,10 +475,15 @@ async def run_report_pipeline(
     except CspClientError as exc:
         raise RuntimeError(f"檢索失敗: {exc}") from exc
 
+    # 過濾掉太短的 chunks(markdown horizontal rule `---` / 空段落 /
+    # 標題殘餘等 chunking artifact)。production 觀察 lun collection 真實
+    # 華航財報 chunks 被 markdown `---` chunks 壓在後面,filter 後乾淨。
+    chunks = [c for c in chunks if len((c.content or "").strip()) >= 50]
+
     if not chunks:
         raise RuntimeError(
             "在指定的 collection 中找不到相關內容，無法產生報告。"
-            "請確認 collection 已成功索引，或調整 extra_instructions。"
+            "請確認 collection 已成功索引,或調整 extra_instructions。"
         )
 
     references = _build_references(chunks)
