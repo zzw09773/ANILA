@@ -557,8 +557,24 @@ export function WSStudio() {
               />
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {artifacts.map((a) => {
-                  const colour = a.kind === 'report' ? '#F4B740' : '#7C7BFF'
-                  const kindLabel = a.kind === 'report' ? '深度報告' : '簡報'
+                  // 5 種 kind 各自的 timeline 顏色 + 標籤(對齊上方
+                  // FORMATS 內的 c / l 設定,避免雙處維護)。
+                  const KIND_COLOUR: Record<typeof a.kind, string> = {
+                    report: '#F4B740',
+                    slides: '#7C7BFF',
+                    mindmap: '#3DD68C',
+                    infographic: '#5BC0EB',
+                    datatable: '#3DD68C',
+                  }
+                  const KIND_LABEL: Record<typeof a.kind, string> = {
+                    report: '深度報告',
+                    slides: '簡報',
+                    mindmap: '心智圖',
+                    infographic: '資訊圖表',
+                    datatable: '資料表',
+                  }
+                  const colour = KIND_COLOUR[a.kind]
+                  const kindLabel = KIND_LABEL[a.kind]
                   // `state` is undefined on legacy localStorage rows;
                   // treat absence as "done" so old report artifacts
                   // keep behaving the same.
