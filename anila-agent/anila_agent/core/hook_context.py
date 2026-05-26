@@ -37,6 +37,7 @@ hook 的人有個直接的型別簽章可用。
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import time
 import uuid
@@ -211,6 +212,10 @@ class SessionContext:
         started_at: session 開始時間。
         ended_at: session 結束時間,結束前為 None。
         metadata: session 範圍 user metadata。
+        message_queue: P1-4 trigger 注入 agent 的訊息佇列。trigger callback
+            內呼叫 :meth:`queue_message` 把訊息塞進來,agent loop 下次 turn
+            開始時 ``message_queue.get_nowait()`` 拉出來 prepend 給 LLM。
+            預設為空 asyncio.Queue。
     """
 
     session_id: str
@@ -218,6 +223,9 @@ class SessionContext:
     started_at: float = field(default_factory=time.time)
     ended_at: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    message_queue: asyncio.Queue[dict[str, Any]] = field(
+        default_factory=asyncio.Queue, repr=False
+    )
 
     # ---- 生命週期 --------------------------------------------------------
 
@@ -232,6 +240,56 @@ class SessionContext:
         if self.ended_at is None:
             return None
         return self.ended_at - self.started_at
+
+    # ---- P1-4 trigger 注入訊息 -----------------------------------------
+
+    def queue_message(
+        self,
+        content: str,
+        *,
+        role: str = "system",
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """把一則訊息塞進 session message queue,給 agent 下次 turn 帶入。
+
+        典型呼叫者:P1-4 Trigger callback,例如 PeriodicTrigger 偵測到
+        vLLM 異常後呼叫 ``ctx.session.queue_message("[health] vllm down")``。
+
+        實作上使用 :meth:`asyncio.Queue.put_nowait`,因為 trigger callback
+        在 agent loop 同一個 event loop 內、queue 沒有 maxsize 限制,所以
+        理論上 put_nowait 不會丟例外。若 user 自行加 maxsize 並滿了,
+        ``put_nowait`` 會丟 ``QueueFull``,呼叫端要自行處理。
+
+        Args:
+            content: 訊息內容。
+            role: chat role,預設 ``"system"`` (trigger 來源訊息通常標 system)。
+            metadata: 額外 metadata (例如 trigger 名稱 / timestamp)。
+
+        Returns:
+            None。queue 內容格式為
+            ``{"role": role, "content": content, "metadata": metadata}``。
+        """
+        self.message_queue.put_nowait(
+            {
+                "role": role,
+                "content": content,
+                "metadata": dict(metadata) if metadata else {},
+            }
+        )
+
+    def drain_messages(self) -> list[dict[str, Any]]:
+        """把目前 queue 內所有訊息一次拉光,回傳 list (FIFO 順序)。
+
+        agent runner 在 turn 開始前呼叫,把這批訊息 prepend 給 LLM 看到。
+        非阻塞:queue 空就回空 list。
+        """
+        drained: list[dict[str, Any]] = []
+        while True:
+            try:
+                drained.append(self.message_queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        return drained
 
     # ---- 子層 builder ---------------------------------------------------
 

@@ -30,7 +30,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Generic, Protocol, TypeVar, overload, runtime_checkable
 
+from anila_agent.core.events import EventBus
 from anila_agent.core.guardrails import GuardrailTripwireTriggered
+from anila_agent.core.hooks import HookRegistry, fire_guardrail_tripwire
 
 TContext = TypeVar("TContext")
 
@@ -237,6 +239,43 @@ class ToolInputGuardrail(Generic[TContext]):
             )
         return result
 
+    async def aenforce(
+        self,
+        ctx: TContext | Any,
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        hook_registry: HookRegistry | None = None,
+        event_bus: EventBus | None = None,
+    ) -> ToolGuardrailResult:
+        """P1-17 async 版本 ``enforce``:在 raise tripwire 之前 fire ``GUARDRAIL_TRIPWIRE`` hook。
+
+        runtime 預期路徑(async runner):用本 method 取代 ``enforce``,並注入
+        hook_registry + event_bus 以啟用 audit。``hook_registry=None`` 時行為等同 ``enforce``。
+        Hook 不會阻止 tripwire raise(fail-closed)。
+        """
+        result = await self.run(ctx, tool_name, args)
+        if result.behavior is ToolGuardrailBehavior.BLOCK:
+            info: dict[str, Any] = {
+                "tool_name": tool_name,
+                "stage": "input",
+                **result.output_info,
+            }
+            # P1-17 — raise 前 fire GUARDRAIL_TRIPWIRE,供 audit / alerting。
+            await fire_guardrail_tripwire(
+                hook_registry,
+                event_bus,
+                guardrail_name=self.name,
+                stage="input",
+                tool_name=tool_name,
+                info=info,
+            )
+            raise GuardrailTripwireTriggered(
+                guardrail_name=self.name,
+                info=info,
+            )
+        return result
+
 
 @dataclass
 class ToolOutputGuardrail(Generic[TContext]):
@@ -301,6 +340,40 @@ class ToolOutputGuardrail(Generic[TContext]):
                     "stage": "output",
                     **outcome.output_info,
                 },
+            )
+        return outcome
+
+    async def aenforce(
+        self,
+        ctx: TContext | Any,
+        tool_name: str,
+        result: Any,
+        *,
+        hook_registry: HookRegistry | None = None,
+        event_bus: EventBus | None = None,
+    ) -> ToolGuardrailResult:
+        """P1-17 async 版本 ``enforce``:raise tripwire 前 fire ``GUARDRAIL_TRIPWIRE`` hook。
+
+        與 ``ToolInputGuardrail.aenforce`` 對稱。``stage`` 標記為 ``"output"``。
+        """
+        outcome = await self.run(ctx, tool_name, result)
+        if outcome.behavior is ToolGuardrailBehavior.BLOCK:
+            info: dict[str, Any] = {
+                "tool_name": tool_name,
+                "stage": "output",
+                **outcome.output_info,
+            }
+            await fire_guardrail_tripwire(
+                hook_registry,
+                event_bus,
+                guardrail_name=self.name,
+                stage="output",
+                tool_name=tool_name,
+                info=info,
+            )
+            raise GuardrailTripwireTriggered(
+                guardrail_name=self.name,
+                info=info,
             )
         return outcome
 
