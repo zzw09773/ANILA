@@ -28,6 +28,7 @@ from agents import Agent, AgentHooks, RunContextWrapper, RunHooks, Tool
 from agents.items import ModelResponse, TResponseInputItem
 
 from anila_agent.core.events import EventBus
+from anila_agent.core.hook_flavors import HookABC
 from anila_agent.models.schemas import HookOutput
 
 
@@ -107,15 +108,19 @@ HookCallback = Callable[[Any], "HookOutput | Awaitable[HookOutput]"]
 
 @dataclass(frozen=True)
 class HookSpec:
-    """Declarative hook registration.
+    """Declarative hook registration。
 
-    matcher: regex applied to the tool name (PreToolUse/PostToolUse) or "*"
-             (event-level events). "*" or empty matches everything.
-    callback: sync or async callable returning HookOutput.
+    matcher：regex 配 tool name（PreToolUse / PostToolUse），或填 "*" / 空字串 / ".*"
+             代表全配（event-level 事件）。
+    callback：可以是 sync / async callable（向後相容），也可以直接是 `HookABC` instance
+              （P0-4 起支援 command / http / prompt flavor）。
+
+    注意：dataclass 用 `frozen=True`，註冊後不應再就地改 callback；要新增 hook 請另建一個
+    `HookSpec` 用 `HookRegistry.register(...)`。
     """
 
     event: HookEvent
-    callback: HookCallback
+    callback: HookCallback | HookABC
     matcher: str = ".*"
 
 
@@ -130,15 +135,38 @@ class _AggregatedHookResult:
 
 
 class HookRegistry:
-    """Holds hook specs and resolves which fire for an event."""
+    """保存 hook spec 並依事件 / tool name 找出該觸發的 hook chain。
+
+    P0-4 起：
+        - 同一個 `(event, matcher)` 可掛多個 hook（chain），順序為註冊順序，
+          逐一執行，任一 hook 回 block 或 abort 就停（見 `fire(...)`）。
+        - 支援用 `register_hook(event, hook, matcher)` 直接掛 `HookABC` instance（含
+          CommandHook / HttpHook / PromptHook），不必自己組 `HookSpec`。
+        - 支援 decorator factory：`@registry.pre_tool_use("Bash.*")` 等寫法，
+          對齊 antigravity SDK 的 `@pre_turn` / `@post_tool_call`。
+    """
 
     def __init__(self, specs: Sequence[HookSpec] = ()) -> None:
         self._specs: list[HookSpec] = list(specs)
 
     def register(self, spec: HookSpec) -> None:
+        """加入一筆 `HookSpec`。chain 順序即註冊順序。"""
         self._specs.append(spec)
 
+    def register_hook(
+        self,
+        event: HookEvent,
+        hook: HookCallback | HookABC,
+        *,
+        matcher: str = ".*",
+    ) -> HookSpec:
+        """便利 API：直接掛 callable 或 `HookABC` instance；回傳建立的 `HookSpec`。"""
+        spec = HookSpec(event=event, callback=hook, matcher=matcher)
+        self._specs.append(spec)
+        return spec
+
     def specs_for(self, event: HookEvent, tool_name: str | None = None) -> list[HookSpec]:
+        """找出對應 event + tool name 的 hook chain；保留註冊順序。"""
         import re
 
         out: list[HookSpec] = []
@@ -152,16 +180,125 @@ class HookRegistry:
                 if re.fullmatch(spec.matcher, tool_name):
                     out.append(spec)
             except re.error:
-                # Malformed regex from config — fall back to literal match.
+                # 設定檔 regex 寫壞了，退回字面比對。
                 if spec.matcher == tool_name:
                     out.append(spec)
         return out
 
+    # ------------------------------------------------------------------
+    # Decorator factory — 對齊 antigravity SDK 的 `@pre_turn` / `@post_tool_call`
+    # ------------------------------------------------------------------
 
-async def _invoke(callback: HookCallback, payload: Any) -> HookOutput:
-    result = callback(payload)
-    if inspect.isawaitable(result):
-        result = await result
+    def _decorator_for(
+        self, event: HookEvent
+    ) -> Callable[..., Callable[[HookCallback], HookCallback]]:
+        """產生對應 event 的 decorator factory。
+
+        允許兩種寫法：
+            @registry.pre_tool_use         # 不帶括號 — 套用 default matcher ".*"
+            def cb(payload): ...
+
+            @registry.pre_tool_use("Bash.*")   # 帶 matcher
+            def cb(payload): ...
+        """
+
+        def factory(*args: Any, **kwargs: Any) -> Any:
+            # 不帶括號：第一個 arg 直接是 callback
+            if len(args) == 1 and callable(args[0]) and not isinstance(args[0], HookABC):
+                cb = args[0]
+                self.register(HookSpec(event=event, callback=cb))
+                return cb
+            matcher = kwargs.get("matcher") or (args[0] if args else ".*")
+
+            def _wrap(cb: HookCallback) -> HookCallback:
+                self.register(HookSpec(event=event, callback=cb, matcher=matcher))
+                return cb
+
+            return _wrap
+
+        factory.__name__ = f"register_{event.value}"
+        factory.__doc__ = (
+            f"Decorator：把 callback 註冊為 `{event.value}` hook。"
+            "可選 `matcher` 位置參數設定 tool name regex。"
+        )
+        return factory
+
+    @property
+    def pre_tool_use(
+        self,
+    ) -> Callable[..., Callable[[HookCallback], HookCallback]]:
+        """Decorator：註冊 `PreToolUse` hook。"""
+        return self._decorator_for(HookEvent.PRE_TOOL_USE)
+
+    @property
+    def post_tool_use(
+        self,
+    ) -> Callable[..., Callable[[HookCallback], HookCallback]]:
+        """Decorator：註冊 `PostToolUse` hook。"""
+        return self._decorator_for(HookEvent.POST_TOOL_USE)
+
+    @property
+    def stop(self) -> Callable[..., Callable[[HookCallback], HookCallback]]:
+        """Decorator：註冊 `Stop` hook。"""
+        return self._decorator_for(HookEvent.STOP)
+
+    @property
+    def session_start(
+        self,
+    ) -> Callable[..., Callable[[HookCallback], HookCallback]]:
+        """Decorator：註冊 `SessionStart` hook。"""
+        return self._decorator_for(HookEvent.SESSION_START)
+
+    @property
+    def user_prompt_submit(
+        self,
+    ) -> Callable[..., Callable[[HookCallback], HookCallback]]:
+        """Decorator：註冊 `UserPromptSubmit` hook。"""
+        return self._decorator_for(HookEvent.USER_PROMPT_SUBMIT)
+
+    @property
+    def permission_request(
+        self,
+    ) -> Callable[..., Callable[[HookCallback], HookCallback]]:
+        """Decorator：註冊 `PermissionRequest` hook。"""
+        return self._decorator_for(HookEvent.PERMISSION_REQUEST)
+
+    @property
+    def agent_start(
+        self,
+    ) -> Callable[..., Callable[[HookCallback], HookCallback]]:
+        """Decorator：註冊 `AgentStart` hook。"""
+        return self._decorator_for(HookEvent.AGENT_START)
+
+    @property
+    def agent_end(
+        self,
+    ) -> Callable[..., Callable[[HookCallback], HookCallback]]:
+        """Decorator：註冊 `AgentEnd` hook。"""
+        return self._decorator_for(HookEvent.AGENT_END)
+
+    @property
+    def handoff(
+        self,
+    ) -> Callable[..., Callable[[HookCallback], HookCallback]]:
+        """Decorator：註冊 `Handoff` hook。"""
+        return self._decorator_for(HookEvent.HANDOFF)
+
+
+async def _invoke(callback: HookCallback | HookABC, payload: Any) -> HookOutput:
+    """執行單一 hook callback，回傳 `HookOutput`。
+
+    `callback` 可為下列三種之一：
+        - `HookABC` instance：呼叫其 `run(payload)`（含 CommandHook / HttpHook / PromptHook）。
+        - sync callable：直接呼叫並期待回傳 `HookOutput`。
+        - async callable / coroutine：await 結果。
+    """
+    if isinstance(callback, HookABC):
+        result: Any = await callback.run(payload)
+    else:
+        result = callback(payload)
+        if inspect.isawaitable(result):
+            result = await result
     if not isinstance(result, HookOutput):
         raise TypeError(
             f"hook callback {getattr(callback, '__qualname__', callback)} returned "
@@ -178,7 +315,14 @@ async def fire(
     tool_name: str | None = None,
     bus: EventBus | None = None,
 ) -> _AggregatedHookResult:
-    """Run every matching hook and aggregate results."""
+    """執行 hook chain 並聚合結果。
+
+    Chain 行為（P0-4）：
+        - 依註冊順序執行。
+        - 任一 hook 回 `block` 或 `continue_=False` → 立即停止（後續 hook 不執行）。
+        - `additional_context` 跨 hook 取聯集。
+        - `updated_input` 採 last-writer-wins。
+    """
     agg = _AggregatedHookResult()
     contexts: list[str] = []
     for spec in registry.specs_for(event, tool_name):
@@ -191,16 +335,18 @@ async def fire(
                 tool_name=tool_name,
                 decision=out.decision,
             )
-        if out.continue_ is False:
-            agg.abort = True
-            agg.stop_reason = out.stop_reason or out.reason
-        if out.decision == "block":
-            agg.block = True
-            agg.reason = out.reason
         if out.additional_context:
             contexts.append(out.additional_context)
         if out.updated_input is not None:
             agg.updated_input = dict(out.updated_input)
+        if out.continue_ is False:
+            agg.abort = True
+            agg.stop_reason = out.stop_reason or out.reason
+            break  # chain 早停 — abort 比 block 更強
+        if out.decision == "block":
+            agg.block = True
+            agg.reason = out.reason
+            break  # chain 早停 — 已經 block 就不必再跑後面 hook
     if contexts:
         agg.additional_contexts = contexts
     return agg
