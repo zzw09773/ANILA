@@ -47,6 +47,12 @@ from agents import Agent, FunctionTool, Runner
 from agents.tool_context import ToolContext
 
 from anila_agent.core.context import AnilaToolContext
+from anila_agent.core.events import EventBus
+from anila_agent.core.hooks import (
+    HookRegistry,
+    fire_subagent_dispatch_end,
+    fire_subagent_dispatch_start,
+)
 from anila_agent.core.prompt_cache import (
     DEFAULT_PREFIX_MESSAGE_COUNT,
     Message,
@@ -122,6 +128,10 @@ class AgentTool:
     timeout_seconds: float = DEFAULT_SUBAGENT_TIMEOUT_SECONDS
     runner: SubAgentRunner | None = None
     tool: FunctionTool | None = None
+    # P1-17 — 注入 hook registry + event bus 供 SUBAGENT_DISPATCH_* event 用;
+    # 兩者皆 optional,None 時 dispatch 不 fire hook(向後相容)。
+    hook_registry: HookRegistry | None = None
+    event_bus: EventBus | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +283,8 @@ def make_agent_tool(
     timeout_seconds: float = DEFAULT_SUBAGENT_TIMEOUT_SECONDS,
     runner: SubAgentRunner | None = None,
     tracer: Tracer | None = None,
+    hook_registry: HookRegistry | None = None,
+    event_bus: EventBus | None = None,
 ) -> AgentTool:
     """把 sub-agent 包成一個 :class:`AgentTool` spec(內含 FunctionTool 可用實體)。
 
@@ -292,6 +304,10 @@ def make_agent_tool(
         runner: 注入點 — 改用自訂 callable 跑 sub-agent;預設走 ``Runner.run``。
         tracer: 若提供則整個 dispatch 包一層 span(``agent_tool.dispatch.<sub_agent.name>``);
             未提供則不做 tracing。
+        hook_registry: P1-17 — 若提供,dispatch 前後 fire
+            ``SUBAGENT_DISPATCH_START`` / ``SUBAGENT_DISPATCH_END`` event。
+            未提供則 dispatch 不 fire hook(向後相容)。
+        event_bus: P1-17 — 搭配 hook_registry 用,把 hook 事件也送進 event bus。
 
     Returns:
         :class:`AgentTool` — 內含已組好的 ``tool`` (FunctionTool),可加入 registry。
@@ -311,6 +327,8 @@ def make_agent_tool(
         fork_point=fork_point,
         timeout_seconds=timeout_seconds,
         runner=resolved_runner,
+        hook_registry=hook_registry,
+        event_bus=event_bus,
     )
 
     async def _on_invoke_tool(ctx: ToolContext[Any], input_json: str) -> str:
@@ -435,23 +453,52 @@ async def _dispatch_sub_agent(
     if sub_anila_ctx is not None:
         span_attributes["agent_tool.sub_agent_name"] = sub_anila_ctx.agent_name
 
+    # P1-17 — dispatch 前 fire SUBAGENT_DISPATCH_START hook(若有 registry)。
+    parent_agent_name = parent_anila_ctx.agent_name if parent_anila_ctx is not None else ""
+    await fire_subagent_dispatch_start(
+        spec.hook_registry,
+        spec.event_bus,
+        parent_agent=parent_agent_name,
+        sub_agent=sub_agent.name,
+        tool_name=spec.name,
+        sub_tool_call_id=sub_tool_call_id,
+        prompt=sub_input,
+    )
+
     if tracer is not None:
         with tracer.start_span(span_name, attributes=span_attributes) as span:
-            return await _execute_dispatch(_run_with_timeout, sub_agent.name, span)
+            output, error = await _execute_dispatch(_run_with_timeout, sub_agent.name, span)
+    else:
+        output, error = await _execute_dispatch(_run_with_timeout, sub_agent.name, span=None)
 
-    # tracer = None:跑但不開 span。
-    return await _execute_dispatch(_run_with_timeout, sub_agent.name, span=None)
+    # P1-17 — dispatch 後 fire SUBAGENT_DISPATCH_END hook(成功或失敗都會 fire)。
+    await fire_subagent_dispatch_end(
+        spec.hook_registry,
+        spec.event_bus,
+        parent_agent=parent_agent_name,
+        sub_agent=sub_agent.name,
+        tool_name=spec.name,
+        sub_tool_call_id=sub_tool_call_id,
+        output=output,
+        error=error,
+    )
+    return output
 
 
 async def _execute_dispatch(
     run_coro_factory: Callable[[], Awaitable[Any]],
     sub_agent_name: str,
     span: Any | None,
-) -> str:
+) -> tuple[str, str | None]:
     """實際呼叫 sub-agent runner 並把例外攔截轉 error JSON。
 
     ``span`` 為 :class:`anila_agent.tracing.Span` 或 None;有 span 時把 error 詳情
     寫進 span attributes 並設 status='error',方便 tracing 後端撈出原因。
+
+    Returns:
+        ``(output_str, error_summary)``:成功時 ``error_summary`` 為 None;
+        timeout / exception 時 ``output_str`` 為 error JSON、``error_summary`` 為錯誤摘要。
+        P1-17 起把 error 摘要回傳給 caller 以便 fire SUBAGENT_DISPATCH_END hook。
     """
     try:
         result = await run_coro_factory()
@@ -460,19 +507,19 @@ async def _execute_dispatch(
         if span is not None:
             span.status = "error"
             span.error = msg
-        return _error_json(msg)
+        return _error_json(msg), msg
     except Exception as exc:
         msg = f"sub-agent {sub_agent_name} failed: {type(exc).__name__}: {exc}"
         if span is not None:
             span.status = "error"
             span.error = msg
-        return _error_json(msg)
+        return _error_json(msg), msg
 
     # sub-agent final_output 可能是 str / dict / dataclass — 統一字串化給 parent。
     output_str = result if isinstance(result, str) else str(result)
     if span is not None:
         span.attributes["agent_tool.output_chars"] = len(output_str)
-    return output_str
+    return output_str, None
 
 
 def _extract_anila_context(ctx: ToolContext[Any]) -> AnilaToolContext | None:
@@ -538,6 +585,8 @@ def register_agent_as_tool(
     timeout_seconds: float = DEFAULT_SUBAGENT_TIMEOUT_SECONDS,
     runner: SubAgentRunner | None = None,
     tracer: Tracer | None = None,
+    hook_registry: HookRegistry | None = None,
+    event_bus: EventBus | None = None,
 ) -> AgentTool:
     """方便 helper:把 sub-agent 包成 AgentTool 並 add 進 registry 一次完成。
 
@@ -558,6 +607,8 @@ def register_agent_as_tool(
         timeout_seconds=timeout_seconds,
         runner=runner,
         tracer=tracer,
+        hook_registry=hook_registry,
+        event_bus=event_bus,
     )
     assert spec.tool is not None  # make_agent_tool 一定有設;assert 給 type checker 看
     registry.add(spec.tool)
