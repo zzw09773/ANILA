@@ -2,9 +2,16 @@
 # ============================================================================
 # deploy-prod.sh
 # ----------------------------------------------------------------------------
-# ANILA Prod 內網部署腳本(中科院內部署用)
+# ANILA Prod 部署腳本(支援 2026-05-26 重構後的 3 條 prod branch)
+#
+# 接受的 prod branch:
+#   - prod-intranet-card   中科院內網 + PKI 自然人憑證卡 (SSO + card auth fork)
+#   - prod-public-passwd   對外網 + 純帳密 (main + 外網 hardening)
+#   - prod-military-passwd 國軍交付 + 純帳密 (main + military spec)
 #
 # 用法:
+#   git checkout <prod-branch> && git pull
+#   set -a; source /path/to/<branch>.env; set +a
 #   bash scripts/deploy-prod.sh [SUBCOMMAND]
 #
 # SUBCOMMAND:
@@ -65,14 +72,29 @@ section() {
 }
 
 # ── Pre-flight: 環境 ──────────────────────────────────────────────────────
+# 接受的 prod branch 清單(2026-05-26 重構後從 1 條變 3 條)。
+# 防呆:在 main / dev-* / feature/* 上跑這腳本會被擋掉。
+_PROD_BRANCHES=(prod-intranet-card prod-public-passwd prod-military-passwd)
+
 check_branch() {
   local branch
   branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-  if [[ "$branch" != "prod" ]]; then
-    err "目前在 '$branch' 分支,prod 部署必須切到 prod"
-    fatal "請執行: git checkout prod && git pull origin prod"
+  local matched=0
+  for b in "${_PROD_BRANCHES[@]}"; do
+    [[ "$branch" == "$b" ]] && matched=1 && break
+  done
+  if (( matched == 0 )); then
+    err "目前在 '$branch' 分支,prod 部署必須切到下列其中一條:"
+    for b in "${_PROD_BRANCHES[@]}"; do err "  - $b"; done
+    fatal "請執行: git checkout <branch> && git pull origin <branch>"
   fi
-  ok "git branch = prod"
+  ok "git branch = $branch"
+  # 對應分支特性簡述,讓 user 確認沒切錯
+  case "$branch" in
+    prod-intranet-card)   ok "  特性: 中科院內網 + PKI 自然人憑證卡(SSO + card auth fork)" ;;
+    prod-public-passwd)   ok "  特性: 對外網 + 純帳密(main + 外網 hardening)" ;;
+    prod-military-passwd) ok "  特性: 國軍交付 + 純帳密(main + military spec)" ;;
+  esac
 }
 
 check_docker() {

@@ -1,17 +1,23 @@
-# ANILA 平台(prod 分支 — 中科院內網部署版)
+# ANILA 平台(prod-intranet-card 分支 — 中科院內網部署版)
 
 > **Runtime-first、On-prem 多 Agent 平台。** 三個服務、一個落地 LLM,docker compose 一鍵啟動。
 >
-> ⚠️ **你正在看 `prod` 分支**(中科院內網部署版)。跟 `main`(國軍交付版)的主要差異:
+> ⚠️ **你正在看 `prod-intranet-card` 分支**(中科院內網 + 自然人憑證卡)。2026-05-26 起 ANILA 切成 5 條長期分支:
 >
-> | 範疇 | `prod` 分支 | `main` 分支 |
-> |---|---|---|
-> | 認證 | SSO (OIDC) + 中科院 PKI 自然人憑證卡 + 本機帳密(fallback) | 純帳密 |
-> | env 模式 | fail-loud(`${VAR:?must be set}`,缺值 container 不起來) | dev fallback(`${VAR:-dev-...}`) |
-> | docs | 多 `docs/governance/`(ISO/IEC 42001 治理)、`docs/runbooks/`、`docs/branch-sync-backlog.md` | 無這些 prod-only docs |
-> | 部署腳本 | `scripts/deploy-prod.sh` + `scripts/build-and-export-for-intranet.sh` | 僅 `docker compose up` |
+> | Branch | 部署對象 | 認證 | 來源 |
+> |---|---|---|---|
+> | **`main`** | 開發 SSOT(default) | 純帳密 | — |
+> | **`prod-intranet-card`** ← *你在這* | 中科院內網 prod | SSO + 中科院 PKI 卡 | main + auth/SSO/card fork |
+> | `prod-public-passwd` | 對外網 prod | 純帳密 | main + 外網 hardening |
+> | `prod-military-passwd` | 國軍交付 prod | 純帳密 | main + military spec |
+> | `dev-public` | 對外網 dev | 純帳密 | main + dev tooling |
+> | `dev-military` | 國軍 dev | 純帳密 | main + military 客製 |
 >
-> 兩條分支會定期 sync(`main → prod` 走 PR + 手動處理 fork 區),完整同步策略見 [`docs/branch-sync-backlog.md`](./docs/branch-sync-backlog.md)。**改 prod 的 auth/SSO/card 相關檔不要往 main 推**;其他改動應該優先進 main,再 sync 回 prod。
+> **`main` 是 SSOT** — 新 feature 一律先進 main,再 sync 進 4 條 downstream。downstream 之間互不 sync。完整 fork 區清單 + sync SOP 見 [`docs/branch-sync-backlog.md`](./docs/branch-sync-backlog.md)。
+>
+> 這個分支(prod-intranet-card)是**唯一**含 SSO/card auth fork 的;**改 SSO/card 相關檔不要往 main 或其他 downstream 推**。其他改動(anila-studio / ANILA_UI / docs / 一般 bugfix)優先進 main,再 sync 進 5 條 downstream。
+>
+> Backup tag(branch restructure 之前):`pre-branch-restructure-2026-05-26` 指向當時的 prod HEAD。
 
 ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key、對外以 OpenAI 相容介面提供推論、讓開發者基於樣板複製出自己的 Agent 並註冊進來、讓終端使用者透過統一 UI 與所有 Agent 對話，並以「主 LLM 未加密 → 遇到加密 agent 整段對話升級為加密」的單向閂鎖（one-way latch）處理敏感資料。
 
