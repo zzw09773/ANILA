@@ -11,6 +11,13 @@ from anila_agent.core.agent_tool import (
     make_agent_tool,
     register_agent_as_tool,
 )
+from anila_agent.core.concurrency import (
+    ToolCall,
+    ToolInvoker,
+    ToolResult,
+    partition_tool_calls,
+    run_tool_calls,
+)
 from anila_agent.core.context import (
     AnilaToolContext,
     FileStateCache,
@@ -44,6 +51,15 @@ from anila_agent.core.hook_taxonomy import (
     PipelineResult,
     TransformHook,
 )
+from anila_agent.core.permission_grammar import (
+    EffectStr,
+    PermissionRule,
+    PermissionRuleSyntaxError,
+    load_policy_engine_from_yaml,
+    parse_permission_rule,
+    parse_permission_rules,
+    policy_rule_from_yaml_item,
+)
 from anila_agent.core.policy import (
     PolicyDecision,
     PolicyEffect,
@@ -54,6 +70,17 @@ from anila_agent.core.policy import (
     policy_to_tool_input_guardrail,
     read_only,
     workspace_only,
+)
+from anila_agent.core.token_budget import (
+    DEFAULT_PTL_PATTERNS,
+    BudgetExceeded,
+    BudgetTracker,
+    ContinuationStrategy,
+    HardCallback,
+    PTLRetry,
+    SoftCallback,
+    TruncateCallback,
+    with_budget,
 )
 
 __all__ = [
@@ -70,6 +97,12 @@ __all__ = [
     "FileStateCache",
     "FileStateEntry",
     "WorkspaceEscapeError",
+    # P1-2 concurrency partition
+    "ToolCall",
+    "ToolInvoker",
+    "ToolResult",
+    "partition_tool_calls",
+    "run_tool_calls",
     # P0-4 hook flavors
     "CommandHook",
     "HookABC",
@@ -104,4 +137,22 @@ __all__ = [
     "policy_to_tool_input_guardrail",
     "read_only",
     "workspace_only",
+    # P1-9 token budget continuation
+    "DEFAULT_PTL_PATTERNS",
+    "BudgetExceeded",
+    "BudgetTracker",
+    "ContinuationStrategy",
+    "HardCallback",
+    "PTLRetry",
+    "SoftCallback",
+    "TruncateCallback",
+    "with_budget",
+    # P1-16 permission rule mini DSL
+    "EffectStr",
+    "PermissionRule",
+    "PermissionRuleSyntaxError",
+    "load_policy_engine_from_yaml",
+    "parse_permission_rule",
+    "parse_permission_rules",
+    "policy_rule_from_yaml_item",
 ]
