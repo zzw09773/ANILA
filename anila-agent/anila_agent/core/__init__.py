@@ -35,6 +35,12 @@ from anila_agent.core.context import (
     FileStateEntry,
     WorkspaceEscapeError,
 )
+from anila_agent.core.coordinator import (
+    CoordinatorMessage,
+    CoordinatorNotification,
+    format_coordinator_messages,
+    parse_coordinator_messages,
+)
 from anila_agent.core.guardrails import (
     GuardrailResult,
     GuardrailTripwireTriggered,
@@ -91,6 +97,16 @@ from anila_agent.core.prompt_cache import (
     build_subagent_prefix,
     compute_prefix_hash,
     is_in_fork_child,
+)
+from anila_agent.core.stop_hook import (
+    KeywordStopHook,
+    MaxIterationsStopHook,
+    OutputLengthStopHook,
+    StopHook,
+    StopHookCallable,
+    StopHookDecision,
+    StopHookEntry,
+    fire_stop_hook_chain,
 )
 from anila_agent.core.streaming import (
     AgentUpdatedStreamEvent,
@@ -212,6 +228,15 @@ __all__ = [
     "RunItemType",
     "StreamChunk",
     "StreamEvent",
+    # P1-14 stop hook prevent-continuation
+    "KeywordStopHook",
+    "MaxIterationsStopHook",
+    "OutputLengthStopHook",
+    "StopHook",
+    "StopHookCallable",
+    "StopHookDecision",
+    "StopHookEntry",
+    "fire_stop_hook_chain",
     # P1-16 permission rule mini DSL
     "EffectStr",
     "PermissionRule",
@@ -220,6 +245,11 @@ __all__ = [
     "parse_permission_rule",
     "parse_permission_rules",
     "policy_rule_from_yaml_item",
+    # P1-13 coordinatorMode XML notification
+    "CoordinatorMessage",
+    "CoordinatorNotification",
+    "format_coordinator_messages",
+    "parse_coordinator_messages",
     # P1-1 forkSubagent byte-identical prefix
     "DEFAULT_PREFIX_MESSAGE_COUNT",
     "FORK_BOILERPLATE_TAG",
