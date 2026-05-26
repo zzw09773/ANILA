@@ -44,6 +44,15 @@ from anila_agent.core.hook_taxonomy import (
     PipelineResult,
     TransformHook,
 )
+from anila_agent.core.permission_grammar import (
+    EffectStr,
+    PermissionRule,
+    PermissionRuleSyntaxError,
+    load_policy_engine_from_yaml,
+    parse_permission_rule,
+    parse_permission_rules,
+    policy_rule_from_yaml_item,
+)
 from anila_agent.core.policy import (
     PolicyDecision,
     PolicyEffect,
@@ -104,4 +113,12 @@ __all__ = [
     "policy_to_tool_input_guardrail",
     "read_only",
     "workspace_only",
+    # P1-16 permission rule mini DSL
+    "EffectStr",
+    "PermissionRule",
+    "PermissionRuleSyntaxError",
+    "load_policy_engine_from_yaml",
+    "parse_permission_rule",
+    "parse_permission_rules",
+    "policy_rule_from_yaml_item",
 ]
