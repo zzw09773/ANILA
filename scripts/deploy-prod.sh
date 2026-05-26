@@ -106,17 +106,22 @@ check_docker() {
 }
 
 check_env() {
-  # 必要 env(沒設就停)
-  local required=(CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY SECRET_KEY)
+  # 必要 env(沒設就停)。CSP_SECRET_KEY / SECRET_KEY 擇一即可
+  # (docker-compose.yml 內 csp service 看的是 CSP_SECRET_KEY)。
+  local required=(CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY)
   local missing=()
   for v in "${required[@]}"; do
     if [[ -z "${!v:-}" ]]; then
       missing+=("$v")
-    elif [[ "${!v}" =~ (dev|changeme|placeholder|example) ]]; then
+    elif [[ "${!v}" =~ (changeme|placeholder|example) ]]; then
       err "$v 看起來是 dev/sample 值: '${!v:0:30}...' — prod 部署請換成真正的 secret"
       missing+=("$v")
     fi
   done
+  # CSP_SECRET_KEY / SECRET_KEY 擇一
+  if [[ -z "${CSP_SECRET_KEY:-}" ]] && [[ -z "${SECRET_KEY:-}" ]]; then
+    missing+=(CSP_SECRET_KEY)
+  fi
   if (( ${#missing[@]} > 0 )); then
     fatal "缺少或 dev 值的必要 env: ${missing[*]}
        export 它們後重跑,或載入你的 prod .env:
