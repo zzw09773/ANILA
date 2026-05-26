@@ -1,0 +1,18 @@
+# MCP filesystem server (stdio transport)
+#
+# 跑 anthropic 官方 @modelcontextprotocol/server-filesystem,讓 agent 可以讀寫
+# 指定的 sandbox 目錄。需先安裝 Node.js + npx;啟動命令會在 agent run 時被
+# subprocess spawn。
+#
+# 安全提醒:
+# - args 第二段為 server 允許存取的根目錄。請改成你實際的 sandbox path,不要直接給整個 ``/``。
+# - 動態註冊出來的 tool name 為 ``mcp__filesystem__<tool>``,例如 ``mcp__filesystem__read_file``。
+
+servers:
+  - name: filesystem
+    transport: stdio
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-filesystem"
+      - "/tmp/anila-mcp-sandbox"
