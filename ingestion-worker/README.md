@@ -2,6 +2,8 @@
 
 > ANILA 文件攝取（ingestion）的非同步 worker：負責 parse → chunk → embed → index 一份文件，並提供 chunking 策略評估（evaluator）。
 
+> 📌 **此檔屬 `prod` 分支(中科院內網部署版)**。worker 內容與 main 一致(非 fork 區);prod 部署時 `INTERNAL_PLATFORM_API_KEY` 走 fail-loud env。
+
 ## 簡介 / Overview
 
 `ingestion-worker` 是 ANILA 攝取管線（ingestion pipeline）的背景處理服務。它本身**不是 HTTP API**，而是一個以 [Arq](https://arq-docs.helpmanual.io/)（Redis 為後端的 async job queue）驅動的 worker process。CSP backend 把上傳後的文件丟成 job 進佇列，worker 取出後執行完整的攝取流程：
@@ -117,3 +119,7 @@ ruff check src tests              # line-length=100, target py311
 - [`docs/ingestion/ingestion-platform-design.md`](../docs/ingestion/ingestion-platform-design.md) — 攝取平台整體設計（含 evaluator §6.5 的 LLM-as-judge 規格）。
 - [`docs/ingestion/parent-child-rag-design.md`](../docs/ingestion/parent-child-rag-design.md) — parent / leaf 雙層 chunk 與 parent-child RAG 設計。
 - [`docs/anila-core/anila-core-boundary.md`](../docs/anila-core/anila-core-boundary.md) — `anila-core` 共用 SDK 的職責邊界（parser / chunker / store / 安全工具皆來自此）。
+
+---
+
+**Last updated**: 2026-05-26(同步 PR #16 + 加 prod banner;worker 內容與 main 一致)

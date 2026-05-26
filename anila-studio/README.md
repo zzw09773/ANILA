@@ -2,6 +2,8 @@
 
 > [English version](README.en.md) · 此檔為中文主版
 
+> 📌 **此檔屬 `prod` 分支(中科院內網部署版)**。anila-studio cold-start 會去 csp `/api/auth/revocations` 同步 token revocation cache,prod 的 `myCSPPlatform/backend/app/api/auth.py` 必須既有 SSO/card endpoints **又有** main 帶來的 `GET /api/auth/revocations`(這是 PR #16 sync 時踩雷的點,已在 2026-05-26 補回)。
+
 從 `myCSPPlatform/backend` 抽出來的 **簡報生成服務**:RAG 找你之前上傳的文件 → LLM 生大綱 → FLUX 生插圖 → PPTX 渲染。
 
 ## 為什麼獨立
@@ -154,3 +156,7 @@ cd ../ANILALM && npm run gen:studio-types
 - Phase 6:E2E 驗收(user 觸發)── 見 `docs/superpowers/anila-studio/plans/2026-05-23-e2e-runbook.md`
 - Phase 7:csp 端刪 27 個 dead 檔
 - Phase 8:本檔案
+
+---
+
+**Last updated**: 2026-05-26(同步 PR #16 + 加 prod banner;cold-start dep 與 csp `/api/auth/revocations` 的關係寫進 banner)

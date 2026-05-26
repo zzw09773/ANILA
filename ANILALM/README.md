@@ -2,6 +2,8 @@
 
 > AI 學習內容生成子專案：研究筆記風格的知識庫前端，加上一個獨立的 `pptx-renderer` 微服務，把投影片規格（deck spec）轉成 `.pptx`。
 
+> 📌 **此檔屬 `prod` 分支(中科院內網部署版)**。製作台後端 4 種 artifact pipeline (report / mindmap / infographic / datatable) 已抽到 [`anila-studio`](../anila-studio/) — ANILALM 透過 nginx 路由 `/api/studio/`、`/api/{reports,mindmaps,infographics,datatables}/` 接過去,**前端模組無變動**。
+
 ## 簡介 / Overview
 
 **ANILALM** 是 `<project_root>` 底下的子專案，提供面向研究人員的「文件 → 對話 → 產出」一站式介面：上傳 PDF / 文件 → 建知識庫 → 對話查詢 → 直接生成深度報告與簡報草稿。它本身是一支 SPA（單頁應用），串接 myCSPPlatform 後端做認證、ingestion、對話與 LLM proxy。
@@ -174,3 +176,5 @@ studio FLUX 圖像生成的合約與分階段規格（路徑相對於本檔）�
 ---
 
 > English mirror: [README.en.md](./README.en.md)
+>
+> **Last updated**: 2026-05-26(同步 PR #16 + Phase Z 4 種 artifact pipeline 抽到 anila-studio + 加 prod banner)

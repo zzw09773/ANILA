@@ -4,6 +4,8 @@
 
 > English mirror: [`README.en.md`](./README.en.md)
 
+> 📌 **此檔屬 `prod` 分支(中科院內網部署版)**。reference snapshots gitignored,兩條分支內容一致。
+
 ---
 
 ## 簡介 / Overview
@@ -118,3 +120,5 @@
 ---
 
 **Status**: 兩份 source tree gitignored；repo 只追蹤 `README.md` 與 `README.en.md`。
+
+**Last updated**: 2026-05-26(同步 PR #16 + 加 prod banner)

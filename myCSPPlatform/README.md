@@ -4,6 +4,8 @@
 
 > English version: [`README.en.md`](./README.en.md)
 
+> 📌 **此檔屬 `prod` 分支(中科院內網部署版)**。比 main 多 SSO (OIDC) endpoint + 中科院 PKI 自然人憑證卡登入(`/api/auth/card/*`)+ `users.local_password_disabled` 切 SSO-only + `GET /api/auth/revocations`(anila-studio cold-start sync 用)。永久 fork 區清單見 [`../docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)。
+
 ---
 
 ## 簡介 / Overview
@@ -221,4 +223,6 @@ curl http://localhost/v1/chat/completions \
 
 ---
 
-**Role**: Control + Data Plane · **Authoritative for**: users · api_keys · models · agents · service_clients · token_usage · audit_logs · ingestion 知識庫 · Studio 簡報生成
+**Role**: Control + Data Plane · **Authoritative for**: users · api_keys · models · agents · service_clients · token_usage · audit_logs · ingestion 知識庫 · ~~Studio 簡報生成~~(已抽到 anila-studio,csp 端只保留 contract endpoint)
+
+**Last updated**: 2026-05-26(同步 PR #16 fork 區補課 + 加 prod banner)

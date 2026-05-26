@@ -4,6 +4,8 @@
 
 > 中文為主、英文鏡像見 [`README.en.md`](./README.en.md)。技術名詞、指令、程式碼一律維持英文。
 
+> 📌 **此檔屬 `prod` 分支(中科院內網部署版)**。`models/docker-compose.yml` 內 flux2-dev-agent 的 `CSP_API_KEY` / `volumes` 已對齊 prod 慣例(`${INTERNAL_PLATFORM_API_KEY:?must be set}` + `/share/uploads/flux`,不走 `_DEV` fallback 或 `share-dev/`)。
+
 ---
 
 ## 簡介 / Overview
@@ -186,3 +188,7 @@ GPU / 資源配置（取自 compose）：
 - `FLUX.2-klein-9B` 與 dev 同為 Non-Commercial，不解決授權問題。
 
 compose 內 `flux2-dev` 服務上方亦有對應 caveat 註解：啟用 production 前先確認授權。
+
+---
+
+**Last updated**: 2026-05-26(同步 PR #16 + 加 prod banner;compose 已從 dev fallback 改回 prod fail-loud)

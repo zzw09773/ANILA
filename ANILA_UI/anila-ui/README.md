@@ -4,6 +4,8 @@
 
 > English version: [`README.en.md`](./README.en.md)
 
+> 📌 **此檔屬 `prod` 分支(中科院內網部署版)**。`src/login.jsx` 在 prod 已刪除(改走 myCSPPlatform Vue `LoginView.vue` 統一憑證卡 / SSO / 帳密入口);`src/runtime/auth.jsx` 走 SSO 流程(main 分支為純帳密)。Markdown 圖片 ([`src/markdown.jsx`](./src/markdown.jsx)) 已加 `MarkdownImage` + `ImageLightbox`,點圖開全螢幕預覽(PR #15)。永久 fork 區清單見 [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)。
+
 ---
 
 ## 簡介 / Overview
@@ -159,3 +161,5 @@ docker compose up -d            # 一併拉起 csp-db / csp / redis / router / a
 ---
 
 **Framework**: React + Vite · **Talks to**: CSP (`/api/*` + `/v1/*` cookie) + Router (`/v1/*` cookie, `model=anila-router`) — both fronted by `nginx`.
+
+**Last updated**: 2026-05-26(同步 PR #15 lightbox + PR #16 fork 區 + 加 prod banner)

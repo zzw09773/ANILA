@@ -4,6 +4,8 @@
 
 > 中文為主要版本；英文鏡像見 [README.en.md](./README.en.md)。技術名詞、指令、程式碼一律保留英文。
 
+> 📌 **此檔屬 `prod` 分支(中科院內網部署版)**。Router 內容與 main 一致(非 fork 區);prod 部署時 `CSP_SERVICE_TOKEN` 走 fail-loud env(不能用 dev fallback)。
+
 ---
 
 ## 簡介 / Overview
@@ -162,3 +164,7 @@ router (:9000)
 ## License
 
 見 repo 根 [`LICENSE`](../LICENSE)。
+
+---
+
+**Last updated**: 2026-05-26(同步 PR #16 + 加 prod banner;Router 內容與 main 一致)

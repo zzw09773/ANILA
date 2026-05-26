@@ -4,6 +4,8 @@
 
 **繁體中文** · [English](README.en.md)
 
+> 📌 **此檔屬 `prod` 分支(中科院內網部署版)**。anila-agent 本身是 sub-agent 模板,跟 prod 部署模式無耦合。內容與 main 一致。
+
 ## 簡介 / Overview
 
 `anila-agent` 是一個可以 clone 下來就開跑的 Agentic RAG 樣板專案。runtime 以 [openai-agents SDK](https://github.com/openai/openai-agents-python) 為基礎，harness 工程則整套從 Claude Code 移植而來。
@@ -243,3 +245,7 @@ pytest
 ## License
 
 Apache-2.0，見 [`LICENSE`](LICENSE)。
+
+---
+
+**Last updated**: 2026-05-26(同步 PR #16 + 加 prod banner;subtree 內容與 main 一致)

@@ -2,6 +2,8 @@
 
 **ANILA Core** — Python agent runtime foundation（SDK）。ANILA 平台所有 agent 與 Router 共用的 in-process runtime 基座，外加被整個後端 fleet 共用的 shared infrastructure。
 
+> 📌 **此檔屬 `prod` 分支(中科院內網部署版)**。anila-core SDK 內容與 main 一致(非 fork 區)。
+
 ---
 
 ## 簡介 / Overview
@@ -206,3 +208,7 @@ anila-core 對外提供的能力面向：
 - 平台總覽：[`../README.md`](../README.md)
 
 > 注意：`pyproject.toml` 標示 v0.14.0（`[rag]` extra 已恢復），而 `CHANGELOG.md` 最新條目為 v0.13.0；以 `pyproject.toml` 為版本與 extras 的權威來源。
+
+---
+
+**Last updated**: 2026-05-26(同步 PR #16 + 加 prod banner;SDK 內容與 main 一致)
