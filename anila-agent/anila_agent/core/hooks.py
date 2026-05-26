@@ -1,17 +1,20 @@
-"""Hook surface ported from claude-code-src `types/hooks.ts`.
+"""Hook surface ported from claude-code-src `types/hooks.ts`。
 
-We expose six events:
+公開的事件如下：
 
-    PreToolUse     — fires before a tool executes; can rewrite input or block.
-    PostToolUse    — fires after a tool completes; can inject context for the next turn.
-    Stop           — fires when the agent produces a final output.
-    SessionStart   — fires once per session, before the first turn.
-    UserPromptSubmit — fires when the user submits a new message in the REPL.
-    PermissionRequest — fires when a tool call needs explicit approval.
+    PreToolUse        — 工具執行前觸發；可改寫輸入或封鎖該次呼叫。
+    PostToolUse       — 工具執行後觸發；可注入下一輪要附加的 context。
+    Stop              — Agent 產出最終輸出時觸發。
+    SessionStart      — 每個 session 開始前觸發一次。
+    UserPromptSubmit  — 使用者在 REPL 送出新訊息時觸發。
+    PermissionRequest — 工具呼叫需要顯式核可時觸發。
+    AgentStart        — Agent 被執行前觸發（每次目前 Agent 切換都會觸發一次）。
+    AgentEnd          — Agent 產生輸出時觸發；等同 Stop，但保留為獨立事件以利區分。
+    Handoff           — 控制權從一個 Agent 交接到另一個時觸發。
 
-These are bridged onto openai-agents `RunHooks` lifecycle callbacks. Hook callbacks return
-a `HookOutput`; the runner aggregates them per event with last-writer-wins for `updated_input`
-and union semantics for `additional_context`.
+以上事件會橋接到 openai-agents 的 `RunHooks` lifecycle callback。Hook callback 必須回傳
+`HookOutput`；runner 會依事件聚合結果，`updated_input` 採 last-writer-wins、
+`additional_context` 採聯集語意。
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Awaitable, Callable, Iterable, Sequence
 
-from agents import Agent, RunContextWrapper, RunHooks, Tool
+from agents import Agent, AgentHooks, RunContextWrapper, RunHooks, Tool
 from agents.items import ModelResponse, TResponseInputItem
 
 from anila_agent.core.events import EventBus
@@ -35,6 +38,9 @@ class HookEvent(str, Enum):
     SESSION_START = "SessionStart"
     USER_PROMPT_SUBMIT = "UserPromptSubmit"
     PERMISSION_REQUEST = "PermissionRequest"
+    AGENT_START = "AgentStart"
+    AGENT_END = "AgentEnd"
+    HANDOFF = "Handoff"
 
 
 @dataclass(frozen=True)
@@ -71,6 +77,29 @@ class SessionStartInput:
 class UserPromptSubmitInput:
     prompt: str
     session_id: str
+
+
+@dataclass(frozen=True)
+class AgentStartInput:
+    """`AgentStart` hook 的 payload — 每次目前 Agent 切換到該 Agent 都會帶。"""
+
+    agent_name: str
+
+
+@dataclass(frozen=True)
+class AgentEndInput:
+    """`AgentEnd` hook 的 payload — Agent 產生最終輸出時帶（含當下輸出值）。"""
+
+    agent_name: str
+    output: Any
+
+
+@dataclass(frozen=True)
+class HandoffInput:
+    """`Handoff` hook 的 payload — 兩個 Agent 名稱在交接當下帶。"""
+
+    from_agent: str
+    to_agent: str
 
 
 HookCallback = Callable[[Any], "HookOutput | Awaitable[HookOutput]"]
@@ -178,15 +207,17 @@ async def fire(
 
 
 class AnilaRunHooks(RunHooks[Any]):
-    """Bridge openai-agents lifecycle callbacks into Anila hook events.
+    """把 openai-agents 的 lifecycle callback 橋接到 Anila hook 事件系統。
 
-    The runner instantiates this with the registry and event bus, then passes it to Runner.run.
-    Each lifecycle callback is translated:
+    Runner 用 registry + event bus 建構此物件後傳入 `Runner.run`，
+    各 lifecycle callback 對應到的 Anila 事件如下：
 
+        on_agent_start -> AgentStart
+        on_agent_end   -> AgentEnd + Stop（兩者皆觸發）
+        on_handoff     -> Handoff
         on_tool_start  -> PreToolUse
         on_tool_end    -> PostToolUse
-        on_agent_end   -> Stop
-        on_llm_*       -> emitted to the event bus (no hook event by default)
+        on_llm_*       -> 僅發送到 event bus，預設不對應到 hook 事件
     """
 
     def __init__(
@@ -204,6 +235,27 @@ class AnilaRunHooks(RunHooks[Any]):
     @property
     def turns(self) -> int:
         return self._turns
+
+    async def on_agent_start(
+        self,
+        context: Any,
+        agent: Agent[Any],
+    ) -> None:
+        """Agent 被執行前觸發，每次目前 Agent 切換時都會呼叫一次。"""
+        payload = AgentStartInput(agent_name=agent.name)
+        self._bus.emit("agent_started", agent=agent.name)
+        await fire(self._registry, HookEvent.AGENT_START, payload, bus=self._bus)
+
+    async def on_handoff(
+        self,
+        context: RunContextWrapper[Any],
+        from_agent: Agent[Any],
+        to_agent: Agent[Any],
+    ) -> None:
+        """Agent 控制權交接時觸發；payload 帶來源與目標 Agent 名稱。"""
+        payload = HandoffInput(from_agent=from_agent.name, to_agent=to_agent.name)
+        self._bus.emit("handoff", from_agent=from_agent.name, to_agent=to_agent.name)
+        await fire(self._registry, HookEvent.HANDOFF, payload, bus=self._bus)
 
     async def on_llm_start(
         self,
@@ -283,9 +335,90 @@ class AnilaRunHooks(RunHooks[Any]):
         agent: Agent[Any],
         output: Any,
     ) -> None:
-        payload = StopInput(agent_name=agent.name, final_output=output, turns_used=self._turns)
+        """Agent 產生最終輸出時觸發；同時 fire `AgentEnd` 與 `Stop`（向後相容）。"""
+        stop_payload = StopInput(
+            agent_name=agent.name, final_output=output, turns_used=self._turns
+        )
+        end_payload = AgentEndInput(agent_name=agent.name, output=output)
         self._bus.emit("turn_ended", agent=agent.name, turns=self._turns)
-        await fire(self._registry, HookEvent.STOP, payload, bus=self._bus)
+        await fire(self._registry, HookEvent.AGENT_END, end_payload, bus=self._bus)
+        await fire(self._registry, HookEvent.STOP, stop_payload, bus=self._bus)
+
+
+class AnilaAgentHooks(AgentHooks[Any]):
+    """Per-agent lifecycle hook 抽象。
+
+    用法：把實例設到 `agent.hooks`，可只對該 Agent 觀察事件，
+    與全域 `AnilaRunHooks` 並存（兩層皆會收到 callback）。
+
+    所有 callback 預設 no-op；subclass 只覆寫需要的 method 即可。
+    建構時可選擇傳入 `EventBus` 把 per-agent 事件也送進事件流。
+    """
+
+    def __init__(self, *, bus: EventBus | None = None) -> None:
+        self._bus = bus
+
+    async def on_start(self, context: Any, agent: Agent[Any]) -> None:
+        """目前 Agent 切換到本 Agent 之前觸發。"""
+        if self._bus is not None:
+            self._bus.emit("agent_hooks_started", agent=agent.name)
+
+    async def on_end(self, context: Any, agent: Agent[Any], output: Any) -> None:
+        """本 Agent 產生最終輸出時觸發。"""
+        if self._bus is not None:
+            self._bus.emit("agent_hooks_ended", agent=agent.name)
+
+    async def on_handoff(
+        self,
+        context: RunContextWrapper[Any],
+        agent: Agent[Any],
+        source: Agent[Any],
+    ) -> None:
+        """另一個 Agent 把控制權交給本 Agent 時觸發；`source` 是來源 Agent。"""
+        if self._bus is not None:
+            self._bus.emit("agent_hooks_handoff", agent=agent.name, source=source.name)
+
+    async def on_tool_start(
+        self,
+        context: RunContextWrapper[Any],
+        agent: Agent[Any],
+        tool: Tool,
+    ) -> None:
+        """本 Agent 即將執行 tool 之前觸發。"""
+        if self._bus is not None:
+            self._bus.emit("agent_hooks_tool_started", agent=agent.name, tool=tool.name)
+
+    async def on_tool_end(
+        self,
+        context: RunContextWrapper[Any],
+        agent: Agent[Any],
+        tool: Tool,
+        result: str,
+    ) -> None:
+        """本 Agent 的 tool 執行完成後觸發。"""
+        if self._bus is not None:
+            self._bus.emit("agent_hooks_tool_ended", agent=agent.name, tool=tool.name)
+
+    async def on_llm_start(
+        self,
+        context: RunContextWrapper[Any],
+        agent: Agent[Any],
+        system_prompt: str | None,
+        input_items: list[TResponseInputItem],
+    ) -> None:
+        """本 Agent 即將呼叫 LLM 之前觸發。"""
+        if self._bus is not None:
+            self._bus.emit("agent_hooks_llm_started", agent=agent.name)
+
+    async def on_llm_end(
+        self,
+        context: RunContextWrapper[Any],
+        agent: Agent[Any],
+        response: ModelResponse,
+    ) -> None:
+        """本 Agent 收到 LLM 回覆後觸發。"""
+        if self._bus is not None:
+            self._bus.emit("agent_hooks_llm_ended", agent=agent.name)
 
 
 def _extract_tool_call(context: Any) -> tuple[dict[str, Any], str | None]:
