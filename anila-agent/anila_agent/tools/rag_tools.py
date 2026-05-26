@@ -30,16 +30,20 @@ def get_retriever() -> Retriever:
     return _retriever
 
 
-@anila_tool(is_read_only=True, category="retrieval")
+@anila_tool(
+    is_read_only=True,
+    category="retrieval",
+    cost_estimate="low",
+)
 async def search_documents(query: str, k: int = 5) -> list[dict[str, Any]]:
-    """Search the configured corpus.
+    """檢索已設定的語料庫。
 
     Args:
-        query: Natural-language query.
-        k: Maximum number of results (1–20). Defaults to 5.
+        query: 自然語言查詢字串。
+        k: 最大回傳數(1–20),預設 5。
 
     Returns:
-        A list of {id, text, score, metadata} dicts ordered by descending relevance.
+        依相關度遞減排序的 {id, text, score, metadata} dict list。
     """
     bounded_k = max(1, min(int(k), 20))
     docs = await _retriever.search(query, bounded_k)
@@ -54,12 +58,16 @@ async def search_documents(query: str, k: int = 5) -> list[dict[str, Any]]:
     ]
 
 
-@anila_tool(is_read_only=True, category="retrieval")
+@anila_tool(
+    is_read_only=True,
+    category="retrieval",
+    cost_estimate="free",
+)
 async def read_document(doc_id: str) -> dict[str, Any] | None:
-    """Fetch the full text of a document by ID.
+    """以 ID 取得單篇文件的完整內容。
 
-    Use this after `search_documents` to get the unabridged content.
-    Returns None when the ID does not exist.
+    通常在 `search_documents` 之後使用,取得未截斷的全文。
+    ID 不存在時回傳 None。
     """
     doc = await _retriever.fetch(doc_id)
     if doc is None:
