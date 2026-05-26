@@ -2,6 +2,15 @@
 
 from __future__ import annotations
 
+from anila_agent.core.agent_tool import (
+    DEFAULT_SUBAGENT_TIMEOUT_SECONDS,
+    AgentTool,
+    PrefixStrategy,
+    SubAgentRunner,
+    get_agent_tool_spec,
+    make_agent_tool,
+    register_agent_as_tool,
+)
 from anila_agent.core.context import (
     AnilaToolContext,
     FileStateCache,
@@ -35,8 +44,27 @@ from anila_agent.core.hook_taxonomy import (
     PipelineResult,
     TransformHook,
 )
+from anila_agent.core.policy import (
+    PolicyDecision,
+    PolicyEffect,
+    PolicyEngine,
+    PolicyRule,
+    allow_all_except,
+    deny_all,
+    policy_to_tool_input_guardrail,
+    read_only,
+    workspace_only,
+)
 
 __all__ = [
+    # P0-8 agent tool
+    "AgentTool",
+    "DEFAULT_SUBAGENT_TIMEOUT_SECONDS",
+    "PrefixStrategy",
+    "SubAgentRunner",
+    "get_agent_tool_spec",
+    "make_agent_tool",
+    "register_agent_as_tool",
     # P0-3 context
     "AnilaToolContext",
     "FileStateCache",
@@ -66,4 +94,14 @@ __all__ = [
     "OutputGuardrailProtocol",
     "input_guardrail",
     "output_guardrail",
+    # P0-7 policy DSL
+    "PolicyDecision",
+    "PolicyEffect",
+    "PolicyEngine",
+    "PolicyRule",
+    "allow_all_except",
+    "deny_all",
+    "policy_to_tool_input_guardrail",
+    "read_only",
+    "workspace_only",
 ]
