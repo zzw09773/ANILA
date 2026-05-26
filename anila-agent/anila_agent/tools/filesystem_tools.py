@@ -36,16 +36,20 @@ def _resolve_within_workdir(path: str) -> Path:
     return candidate
 
 
-@anila_tool(is_read_only=True, category="filesystem")
+@anila_tool(
+    is_read_only=True,
+    category="filesystem",
+    cost_estimate="free",
+)
 def read_file(path: str, max_bytes: int = 32_000) -> str:
-    """Read a UTF-8 text file relative to the configured workdir.
+    """讀取 workdir 內的 UTF-8 文字檔。
 
     Args:
-        path: File path; relative paths resolve against the workdir.
-        max_bytes: Truncate after this many bytes. Default 32KB.
+        path: 檔案路徑;相對路徑會解析至 workdir 底下。
+        max_bytes: 截斷上限,預設 32KB。
 
     Returns:
-        The file content as text. Truncation is marked at the end.
+        檔案內容;若超過 max_bytes 會在尾端標註 truncated。
     """
     target = _resolve_within_workdir(path)
     raw = target.read_bytes()
@@ -54,12 +58,16 @@ def read_file(path: str, max_bytes: int = 32_000) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-@anila_tool(is_read_only=True, category="filesystem")
+@anila_tool(
+    is_read_only=True,
+    category="filesystem",
+    cost_estimate="free",
+)
 def list_dir(path: str = ".", max_entries: int = 200) -> list[dict[str, str]]:
-    """List a directory relative to the workdir.
+    """列出 workdir 內的目錄。
 
-    Returns up to `max_entries` items as {name, kind} dicts where kind is
-    'file' or 'dir'. Symlinks are reported as the kind they point at.
+    最多回傳 `max_entries` 筆 {name, kind} dict;kind 為 'file' 或 'dir'。
+    Symlink 以其指向目標的 kind 標示。
     """
     target = _resolve_within_workdir(path)
     if not target.is_dir():
