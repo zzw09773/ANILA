@@ -8,6 +8,16 @@ from anila_agent.core.context import (
     FileStateEntry,
     WorkspaceEscapeError,
 )
+from anila_agent.core.guardrails import (
+    GuardrailResult,
+    GuardrailTripwireTriggered,
+    InputGuardrail,
+    InputGuardrailProtocol,
+    OutputGuardrail,
+    OutputGuardrailProtocol,
+    input_guardrail,
+    output_guardrail,
+)
 from anila_agent.core.hook_flavors import (
     CommandHook,
     HookABC,
@@ -27,22 +37,33 @@ from anila_agent.core.hook_taxonomy import (
 )
 
 __all__ = [
+    # P0-3 context
     "AnilaToolContext",
-    "CommandHook",
     "FileStateCache",
     "FileStateEntry",
+    "WorkspaceEscapeError",
+    # P0-4 hook flavors
+    "CommandHook",
     "HookABC",
     "HookFlavor",
     "HttpHook",
     "PromptHook",
     "PythonHook",
-    "WorkspaceEscapeError",
-    # P0-5 Hook 三類強型別分類
+    # P0-5 hook taxonomy
+    "DecideHook",
     "Decision",
     "DecisionVerdict",
-    "InspectHook",
-    "DecideHook",
-    "TransformHook",
     "HookExecutor",
+    "InspectHook",
     "PipelineResult",
+    "TransformHook",
+    # P0-6 guardrails
+    "GuardrailResult",
+    "GuardrailTripwireTriggered",
+    "InputGuardrail",
+    "InputGuardrailProtocol",
+    "OutputGuardrail",
+    "OutputGuardrailProtocol",
+    "input_guardrail",
+    "output_guardrail",
 ]
