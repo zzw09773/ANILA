@@ -50,6 +50,8 @@ from pathlib import Path
 from typing import Any
 
 from anila_agent.core.context import AnilaToolContext
+from anila_agent.core.events import EventBus
+from anila_agent.core.hooks import HookRegistry, fire_policy_deny
 from anila_agent.tools.guardrails import (
     ToolGuardrailResult,
     ToolInputGuardrail,
@@ -354,6 +356,33 @@ class PolicyEngine:
                 )
         # default open
         return PolicyDecision.allow()
+
+    async def aevaluate(
+        self,
+        ctx: Any,
+        tool_name: str,
+        args: dict[str, Any] | None = None,
+        *,
+        hook_registry: HookRegistry | None = None,
+        event_bus: EventBus | None = None,
+    ) -> PolicyDecision:
+        """P1-17 async 版本 ``evaluate``:DENY / DISABLE 時 fire ``POLICY_DENY`` hook。
+
+        行為跟 ``evaluate`` 一致(回相同 :class:`PolicyDecision`),差別只在多了
+        hook fire 點。``hook_registry=None`` 時退化為等同於 ``evaluate``。
+        Hook 不影響 decision,只是觀察點(audit / alerting)。
+        """
+        decision = self.evaluate(ctx, tool_name, args)
+        if decision.effect in (PolicyEffect.DENY, PolicyEffect.DISABLE):
+            await fire_policy_deny(
+                hook_registry,
+                event_bus,
+                tool_name=tool_name,
+                rule_name=decision.rule_name,
+                effect=decision.effect.value,
+                reason=decision.reason,
+            )
+        return decision
 
     # ---- YAML 載入(可選) -----------------------------------------------
 

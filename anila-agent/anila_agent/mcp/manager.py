@@ -29,6 +29,12 @@ import yaml
 from agents import FunctionTool
 
 from anila_agent.core.events import EventBus
+from anila_agent.core.hooks import (
+    HookRegistry,
+    fire_mcp_server_connect,
+    fire_mcp_server_disconnect,
+    fire_mcp_tool_call,
+)
 from anila_agent.mcp.server import (
     MCPServer,
     MCPServerSse,
@@ -89,6 +95,9 @@ class MCPServerManager:
     registry: ToolRegistry
     event_bus: EventBus | None = None
     tracer: Tracer | None = None
+    # P1-17 — 注入 hook registry,connect/disconnect/call_tool 時 fire MCP_* event。
+    # None 時不 fire(向後相容,維持原 P1-5 行為)。
+    hook_registry: HookRegistry | None = None
 
     def __post_init__(self) -> None:
         self._entries: dict[str, _RegisteredEntry] = {}
@@ -165,10 +174,23 @@ class MCPServerManager:
         tool_name: str,
         args: dict[str, Any],
     ) -> Any:
-        """呼叫指定 server 的指定 tool。P0-9 tracing span 在這層包好。"""
+        """呼叫指定 server 的指定 tool。P0-9 tracing span 在這層包好。
+
+        P1-17 — 呼叫前 fire ``MCP_TOOL_CALL`` hook,供 per-server 額外 audit / quota
+        / approval。Hook 即使 block 也不會阻止 tool call(本層保持薄,擋 tool 請走
+        P0-6/P0-7 guardrail / policy)。
+        """
         if server_name not in self._entries:
             raise KeyError(f"MCP server {server_name!r} not registered")
         server = self._entries[server_name].server
+        # P1-17 — fire MCP_TOOL_CALL,讓 hook 觀察每次 MCP tool 呼叫。
+        await fire_mcp_tool_call(
+            self.hook_registry,
+            self.event_bus,
+            server_name=server_name,
+            tool_name=tool_name,
+            args=args,
+        )
         if self.tracer is not None:
             with self.tracer.start_span(
                 f"mcp.call.{server_name}.{tool_name}",
@@ -187,6 +209,12 @@ class MCPServerManager:
         if self.event_bus is not None:
             self.event_bus.emit("mcp_server_connect", server=server.name)
         await self._fire_lifecycle(self._on_connect, server.name)
+        # P1-17 — 廣播為 hook event,讓 audit / capability advertisement 能掛上來。
+        await fire_mcp_server_connect(
+            self.hook_registry,
+            self.event_bus,
+            server_name=server.name,
+        )
         # 拉一次 tool list 並註冊到 registry。
         try:
             tools = await server.list_tools()
@@ -212,6 +240,12 @@ class MCPServerManager:
         if self.event_bus is not None:
             self.event_bus.emit("mcp_server_disconnect", server=server.name)
         await self._fire_lifecycle(self._on_disconnect, server.name)
+        # P1-17 — 即使 disconnect 失敗也 fire(失敗已被 swallow 成 log),確保 audit 對齊。
+        await fire_mcp_server_disconnect(
+            self.hook_registry,
+            self.event_bus,
+            server_name=server.name,
+        )
 
     async def _fire_lifecycle(
         self,

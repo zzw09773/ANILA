@@ -51,6 +51,11 @@ from anila_agent.core.hooks import (
     StopInput,
     fire,
 )
+from anila_agent.core.stop_hook import (
+    StopHookDecision,
+    StopHookEntry,
+    fire_stop_hook_chain,
+)
 from anila_agent.tracing import Tracer
 
 logger = logging.getLogger(__name__)
@@ -190,6 +195,7 @@ class AnilaStreamRunner:
         *,
         tracer: Tracer | None = None,
         default_agent_name: str = "root",
+        stop_hooks: list[StopHookEntry] | None = None,
     ) -> None:
         """初始化 runner。
 
@@ -199,11 +205,30 @@ class AnilaStreamRunner:
             tracer: P0-9 tracer — runner 對整個 run 開 trace、tool / agent 開 span。
                 預設為 ``None`` 代表不開 trace(測試或不需要觀測時用)。
             default_agent_name: 若 chunk 沒帶 agent name 時的預設值。
+            stop_hooks: P1-14 stop hook chain — 在 yield ``final_output`` 之前 fire;
+                若任一 hook 回 ``prevent_continuation=True``,runner 改為 yield 一個
+                ``RunItemStreamEvent(item_type="message", ...)`` 帶上 ``inject_message``,
+                **不 yield final_output**。預設 ``None`` 代表不啟用 stop hook chain。
         """
         self._registry = registry
         self._bus = bus
         self._tracer = tracer
         self._default_agent_name = default_agent_name
+        self._stop_hooks: list[StopHookEntry] = list(stop_hooks or [])
+
+    def register_stop_hook(self, hook: StopHookEntry) -> StopHookEntry:
+        """註冊 stop hook(`StopHook` instance 或 callable)。
+
+        順序即註冊順序;final_output yield 之前依序執行,任一回
+        ``prevent_continuation=True`` 立刻 early-exit。回傳 hook 本身。
+        """
+        self._stop_hooks.append(hook)
+        return hook
+
+    @property
+    def stop_hooks(self) -> tuple[StopHookEntry, ...]:
+        """目前註冊的 stop hook tuple(供測試 / debug 觀察用)。"""
+        return tuple(self._stop_hooks)
 
     async def run_streamed(
         self,
@@ -433,7 +458,39 @@ class AnilaStreamRunner:
                 bus=self._bus,
             )
 
+            # P1-14 stop hook chain — 在 yield final_output 前介入。若任一 hook
+            # 回 prevent_continuation=True,改 yield 一條 inject_message,**不 yield
+            # final_output**。真實 SDK 整合 (P1-11) 時 consumer 拿到 inject_message
+            # 後可以塞回 LLM 開下一輪 stream;單測情境只需驗證沒有 final_output 即可。
+            stop_ctx: dict[str, Any] = {
+                "agent": current_agent,
+                "iteration": 0,
+            }
+            decision: StopHookDecision = await fire_stop_hook_chain(
+                self._stop_hooks, stop_ctx, final_output
+            )
             self._bus.emit("stream_ended", agent=current_agent)
+            if decision.prevent_continuation:
+                self._bus.emit(
+                    "stop_hook_prevented_continuation",
+                    agent=current_agent,
+                    reason=decision.reason,
+                    inject_message=decision.inject_message,
+                )
+                inject = decision.inject_message or (
+                    decision.reason or "Stop hook prevented continuation"
+                )
+                yield RunItemStreamEvent(
+                    item_type="message",
+                    item={
+                        "text": inject,
+                        "agent": current_agent,
+                        "role": "system",
+                        "stop_hook_prevented": True,
+                        "reason": decision.reason,
+                    },
+                )
+                return
 
             yield RunItemStreamEvent(
                 item_type="final_output",
