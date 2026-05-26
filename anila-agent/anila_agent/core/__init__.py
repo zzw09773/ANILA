@@ -8,10 +8,24 @@ from anila_agent.core.context import (
     FileStateEntry,
     WorkspaceEscapeError,
 )
+from anila_agent.core.hook_flavors import (
+    CommandHook,
+    HookABC,
+    HookFlavor,
+    HttpHook,
+    PromptHook,
+    PythonHook,
+)
 
 __all__ = [
     "AnilaToolContext",
+    "CommandHook",
     "FileStateCache",
     "FileStateEntry",
+    "HookABC",
+    "HookFlavor",
+    "HttpHook",
+    "PromptHook",
+    "PythonHook",
     "WorkspaceEscapeError",
 ]
