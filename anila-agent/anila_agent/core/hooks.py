@@ -33,6 +33,16 @@ from anila_agent.models.schemas import HookOutput
 
 
 class HookEvent(str, Enum):
+    """Hook 事件列舉 — 對應 claude-code-src `types/hooks.ts:50-166` 的 hookEventName。
+
+    P0-1 / P0-4 階段先收 9 個基礎 lifecycle event;P1-17 補上 sub-agent / MCP /
+    compaction / guardrail / policy / stop-hook 等 detail event,讓 hook 可以
+    觀察 multi-agent 工作流(對齊 deep-dive doc §4.13)。
+
+    新加的 event 不會破壞既有 hook chain — 沒掛這些事件的 hook 仍 no-op,
+    fire 點透過 ``HookRegistry.specs_for`` 過濾,空 chain 直接回 ``allow``。
+    """
+
     PRE_TOOL_USE = "PreToolUse"
     POST_TOOL_USE = "PostToolUse"
     STOP = "Stop"
@@ -42,6 +52,24 @@ class HookEvent(str, Enum):
     AGENT_START = "AgentStart"
     AGENT_END = "AgentEnd"
     HANDOFF = "Handoff"
+    # P1-17 — sub-agent dispatch lifecycle(對應 P0-8 AgentTool)
+    SUBAGENT_DISPATCH_START = "SubagentDispatchStart"
+    SUBAGENT_DISPATCH_END = "SubagentDispatchEnd"
+    # P1-17 — MCP server lifecycle(對應 P1-5 MCPServerManager)
+    MCP_SERVER_CONNECT = "McpServerConnect"
+    MCP_SERVER_DISCONNECT = "McpServerDisconnect"
+    MCP_TOOL_CALL = "McpToolCall"
+    # P1-17 — compaction lifecycle(對應 P1-6 CompactingSession)
+    COMPACTION_START = "CompactionStart"
+    COMPACTION_END = "CompactionEnd"
+    # P1-17 — trigger fired(對應 P1-4 / P1-14 trigger / stop-hook 系統)
+    TRIGGER_FIRE = "TriggerFire"
+    # P1-17 — guardrail tripwire(對應 P0-6 GuardrailTripwireTriggered)
+    GUARDRAIL_TRIPWIRE = "GuardrailTripwire"
+    # P1-17 — policy DENY(對應 P0-7 PolicyEngine.evaluate)
+    POLICY_DENY = "PolicyDeny"
+    # P1-17 — stop hook 阻止 agent 結束(對應 P1-14 stop-hook prevent-continuation)
+    STOP_HOOK_PREVENT = "StopHookPrevent"
 
 
 @dataclass(frozen=True)
@@ -101,6 +129,164 @@ class HandoffInput:
 
     from_agent: str
     to_agent: str
+
+
+# ---------------------------------------------------------------------------
+# P1-17 — sub-agent / MCP / compaction / guardrail / policy / stop-hook payload
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SubagentDispatchStartInput:
+    """`SubagentDispatchStart` hook 的 payload。
+
+    Fire 時機:parent agent 呼叫 sub-agent tool,即將開始實際 dispatch 時。
+    可在 hook 內加 log / metric / cost guard,也可 block(回 ``decision="block"``)
+    來提前阻止 sub-agent run。
+    """
+
+    parent_agent: str
+    sub_agent: str
+    tool_name: str
+    sub_tool_call_id: str
+    prompt: str
+
+
+@dataclass(frozen=True)
+class SubagentDispatchEndInput:
+    """`SubagentDispatchEnd` hook 的 payload。
+
+    Fire 時機:sub-agent dispatch 結束(成功或 error / timeout 都會 fire)。
+    ``error`` 為 None 時代表成功,否則為錯誤摘要字串。
+    ``output`` 為 sub-agent final output 字串化(error 時為錯誤 JSON 字串)。
+    """
+
+    parent_agent: str
+    sub_agent: str
+    tool_name: str
+    sub_tool_call_id: str
+    output: str
+    error: str | None
+
+
+@dataclass(frozen=True)
+class McpServerConnectInput:
+    """`McpServerConnect` hook 的 payload。
+
+    Fire 時機:MCP server 成功 connect 並 emit ``mcp_server_connect`` event 後。
+    可用於 audit / capability advertisement。
+    """
+
+    server_name: str
+
+
+@dataclass(frozen=True)
+class McpServerDisconnectInput:
+    """`McpServerDisconnect` hook 的 payload。
+
+    Fire 時機:MCP server disconnect 流程完成(無論 underlying disconnect 成功
+    或失敗;失敗會被 swallow log,hook 仍會 fire 讓 audit 能對齊)。
+    """
+
+    server_name: str
+
+
+@dataclass(frozen=True)
+class McpToolCallInput:
+    """`McpToolCall` hook 的 payload。
+
+    Fire 時機:``MCPServerManager.call_tool`` 即將呼叫對應 server tool 之前。
+    可在這層做 per-server 額外 logging / quota / approval。
+    """
+
+    server_name: str
+    tool_name: str
+    args: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CompactionStartInput:
+    """`CompactionStart` hook 的 payload。
+
+    Fire 時機:``CompactingSession.get_items`` 在 compact loop 前,
+    對外宣告 compaction batch 即將開始。``compactors`` 是即將套用的 compactor name 序列。
+    """
+
+    session_id: str
+    compactors: tuple[str, ...]
+    before_messages: int
+
+
+@dataclass(frozen=True)
+class CompactionEndInput:
+    """`CompactionEnd` hook 的 payload。
+
+    Fire 時機:``CompactingSession.get_items`` compact loop 全部跑完,
+    輸出 raw → compacted 後。可在 hook 觀測 token 縮減比例。
+    """
+
+    session_id: str
+    compactors: tuple[str, ...]
+    before_messages: int
+    after_messages: int
+    messages_dropped: int
+
+
+@dataclass(frozen=True)
+class TriggerFireInput:
+    """`TriggerFire` hook 的 payload。
+
+    Fire 時機:trigger 系統(P1-4)觸發某條 trigger;``source`` 描述
+    來源(例如 ``"file_watch"`` / ``"cron"`` / ``"webhook"``)。
+    本 P1-17 提供 payload schema,實際 fire 點留待 P1-4 trigger 模組接上。
+    """
+
+    trigger_name: str
+    source: str
+    details: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class GuardrailTripwireInput:
+    """`GuardrailTripwire` hook 的 payload。
+
+    Fire 時機:`ToolInputGuardrail.enforce` / `ToolOutputGuardrail.enforce`
+    判定為 BLOCK 並即將 raise `GuardrailTripwireTriggered` 之前。
+    Hook 可在此做 audit / alerting;**注意**:hook 即使 block 也不會阻止
+    tripwire 本身 raise(tripwire 是 fail-closed 安全機制)。
+    """
+
+    guardrail_name: str
+    stage: str  # "input" / "output"
+    tool_name: str | None
+    info: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PolicyDenyInput:
+    """`PolicyDeny` hook 的 payload。
+
+    Fire 時機:`PolicyEngine.evaluate` 回傳 effect=DENY/DISABLE 時。
+    Hook 可加 audit;**注意**:hook 不影響 PolicyDecision 本身,只是觀察點。
+    """
+
+    tool_name: str
+    rule_name: str | None
+    effect: str  # "deny" / "disable"
+    reason: str | None
+
+
+@dataclass(frozen=True)
+class StopHookPreventInput:
+    """`StopHookPrevent` hook 的 payload。
+
+    Fire 時機:stop-hook(P1-14)決定阻止 agent 結束、要求繼續再跑一輪時。
+    本 P1-17 提供 payload schema,實際 fire 點留待 P1-14 stop-hook prevent-continuation 接上。
+    """
+
+    agent_name: str
+    reason: str
+    turns_used: int
 
 
 HookCallback = Callable[[Any], "HookOutput | Awaitable[HookOutput]"]
@@ -283,6 +469,87 @@ class HookRegistry:
     ) -> Callable[..., Callable[[HookCallback], HookCallback]]:
         """Decorator：註冊 `Handoff` hook。"""
         return self._decorator_for(HookEvent.HANDOFF)
+
+    # ------------------------------------------------------------------
+    # P1-17 decorator factories
+    # ------------------------------------------------------------------
+
+    @property
+    def subagent_dispatch_start(
+        self,
+    ) -> Callable[..., Callable[[HookCallback], HookCallback]]:
+        """Decorator：註冊 `SubagentDispatchStart` hook。"""
+        return self._decorator_for(HookEvent.SUBAGENT_DISPATCH_START)
+
+    @property
+    def subagent_dispatch_end(
+        self,
+    ) -> Callable[..., Callable[[HookCallback], HookCallback]]:
+        """Decorator：註冊 `SubagentDispatchEnd` hook。"""
+        return self._decorator_for(HookEvent.SUBAGENT_DISPATCH_END)
+
+    @property
+    def mcp_server_connect(
+        self,
+    ) -> Callable[..., Callable[[HookCallback], HookCallback]]:
+        """Decorator：註冊 `McpServerConnect` hook。"""
+        return self._decorator_for(HookEvent.MCP_SERVER_CONNECT)
+
+    @property
+    def mcp_server_disconnect(
+        self,
+    ) -> Callable[..., Callable[[HookCallback], HookCallback]]:
+        """Decorator：註冊 `McpServerDisconnect` hook。"""
+        return self._decorator_for(HookEvent.MCP_SERVER_DISCONNECT)
+
+    @property
+    def mcp_tool_call(
+        self,
+    ) -> Callable[..., Callable[[HookCallback], HookCallback]]:
+        """Decorator：註冊 `McpToolCall` hook。"""
+        return self._decorator_for(HookEvent.MCP_TOOL_CALL)
+
+    @property
+    def compaction_start(
+        self,
+    ) -> Callable[..., Callable[[HookCallback], HookCallback]]:
+        """Decorator：註冊 `CompactionStart` hook。"""
+        return self._decorator_for(HookEvent.COMPACTION_START)
+
+    @property
+    def compaction_end(
+        self,
+    ) -> Callable[..., Callable[[HookCallback], HookCallback]]:
+        """Decorator：註冊 `CompactionEnd` hook。"""
+        return self._decorator_for(HookEvent.COMPACTION_END)
+
+    @property
+    def trigger_fire(
+        self,
+    ) -> Callable[..., Callable[[HookCallback], HookCallback]]:
+        """Decorator：註冊 `TriggerFire` hook。"""
+        return self._decorator_for(HookEvent.TRIGGER_FIRE)
+
+    @property
+    def guardrail_tripwire(
+        self,
+    ) -> Callable[..., Callable[[HookCallback], HookCallback]]:
+        """Decorator：註冊 `GuardrailTripwire` hook。"""
+        return self._decorator_for(HookEvent.GUARDRAIL_TRIPWIRE)
+
+    @property
+    def policy_deny(
+        self,
+    ) -> Callable[..., Callable[[HookCallback], HookCallback]]:
+        """Decorator：註冊 `PolicyDeny` hook。"""
+        return self._decorator_for(HookEvent.POLICY_DENY)
+
+    @property
+    def stop_hook_prevent(
+        self,
+    ) -> Callable[..., Callable[[HookCallback], HookCallback]]:
+        """Decorator：註冊 `StopHookPrevent` hook。"""
+        return self._decorator_for(HookEvent.STOP_HOOK_PREVENT)
 
 
 async def _invoke(callback: HookCallback | HookABC, payload: Any) -> HookOutput:
@@ -603,6 +870,283 @@ def fire_user_prompt_submit(
         registry,
         HookEvent.USER_PROMPT_SUBMIT,
         UserPromptSubmitInput(prompt=prompt, session_id=session_id),
+        bus=bus,
+    )
+
+
+# ---------------------------------------------------------------------------
+# P1-17 — fire helper:封裝常用 fire 點,避免每個 caller 都重組 payload。
+#
+# 設計重點:
+# - 全部都接 `registry: HookRegistry | None`,None 時直接 no-op 回 awaitable;
+#   理由是 module 內(`agent_tool` / `mcp.manager` / `memory.compaction`)的
+#   既有呼叫方並非總是有 registry,需要 fail-soft 才能保持 backward compat。
+# - bus 也 optional 同因。
+# - 全部回 `Awaitable[_AggregatedHookResult | None]`,caller 可依需要 await。
+# ---------------------------------------------------------------------------
+
+
+async def _noop_aggregated() -> _AggregatedHookResult | None:
+    """fail-soft no-op:registry 為 None 時直接回 None 不 fire 任何 hook。"""
+    return None
+
+
+def fire_subagent_dispatch_start(
+    registry: HookRegistry | None,
+    bus: EventBus | None,
+    *,
+    parent_agent: str,
+    sub_agent: str,
+    tool_name: str,
+    sub_tool_call_id: str,
+    prompt: str,
+) -> Awaitable[_AggregatedHookResult | None]:
+    """Fire `SubagentDispatchStart`:parent agent dispatch sub-agent 之前觸發。"""
+    if registry is None:
+        return _noop_aggregated()
+    return fire(
+        registry,
+        HookEvent.SUBAGENT_DISPATCH_START,
+        SubagentDispatchStartInput(
+            parent_agent=parent_agent,
+            sub_agent=sub_agent,
+            tool_name=tool_name,
+            sub_tool_call_id=sub_tool_call_id,
+            prompt=prompt,
+        ),
+        bus=bus,
+    )
+
+
+def fire_subagent_dispatch_end(
+    registry: HookRegistry | None,
+    bus: EventBus | None,
+    *,
+    parent_agent: str,
+    sub_agent: str,
+    tool_name: str,
+    sub_tool_call_id: str,
+    output: str,
+    error: str | None,
+) -> Awaitable[_AggregatedHookResult | None]:
+    """Fire `SubagentDispatchEnd`:sub-agent dispatch 結束(成功或失敗)後觸發。"""
+    if registry is None:
+        return _noop_aggregated()
+    return fire(
+        registry,
+        HookEvent.SUBAGENT_DISPATCH_END,
+        SubagentDispatchEndInput(
+            parent_agent=parent_agent,
+            sub_agent=sub_agent,
+            tool_name=tool_name,
+            sub_tool_call_id=sub_tool_call_id,
+            output=output,
+            error=error,
+        ),
+        bus=bus,
+    )
+
+
+def fire_mcp_server_connect(
+    registry: HookRegistry | None,
+    bus: EventBus | None,
+    *,
+    server_name: str,
+) -> Awaitable[_AggregatedHookResult | None]:
+    """Fire `McpServerConnect`:MCP server connect 完成後觸發。"""
+    if registry is None:
+        return _noop_aggregated()
+    return fire(
+        registry,
+        HookEvent.MCP_SERVER_CONNECT,
+        McpServerConnectInput(server_name=server_name),
+        bus=bus,
+    )
+
+
+def fire_mcp_server_disconnect(
+    registry: HookRegistry | None,
+    bus: EventBus | None,
+    *,
+    server_name: str,
+) -> Awaitable[_AggregatedHookResult | None]:
+    """Fire `McpServerDisconnect`:MCP server disconnect 完成後觸發。"""
+    if registry is None:
+        return _noop_aggregated()
+    return fire(
+        registry,
+        HookEvent.MCP_SERVER_DISCONNECT,
+        McpServerDisconnectInput(server_name=server_name),
+        bus=bus,
+    )
+
+
+def fire_mcp_tool_call(
+    registry: HookRegistry | None,
+    bus: EventBus | None,
+    *,
+    server_name: str,
+    tool_name: str,
+    args: dict[str, Any],
+) -> Awaitable[_AggregatedHookResult | None]:
+    """Fire `McpToolCall`:MCP tool 即將被呼叫之前觸發。"""
+    if registry is None:
+        return _noop_aggregated()
+    return fire(
+        registry,
+        HookEvent.MCP_TOOL_CALL,
+        McpToolCallInput(server_name=server_name, tool_name=tool_name, args=dict(args)),
+        bus=bus,
+    )
+
+
+def fire_compaction_start(
+    registry: HookRegistry | None,
+    bus: EventBus | None,
+    *,
+    session_id: str,
+    compactors: Sequence[str],
+    before_messages: int,
+) -> Awaitable[_AggregatedHookResult | None]:
+    """Fire `CompactionStart`:compaction 即將開始之前觸發。"""
+    if registry is None:
+        return _noop_aggregated()
+    return fire(
+        registry,
+        HookEvent.COMPACTION_START,
+        CompactionStartInput(
+            session_id=session_id,
+            compactors=tuple(compactors),
+            before_messages=before_messages,
+        ),
+        bus=bus,
+    )
+
+
+def fire_compaction_end(
+    registry: HookRegistry | None,
+    bus: EventBus | None,
+    *,
+    session_id: str,
+    compactors: Sequence[str],
+    before_messages: int,
+    after_messages: int,
+) -> Awaitable[_AggregatedHookResult | None]:
+    """Fire `CompactionEnd`:compaction 完成後觸發。"""
+    if registry is None:
+        return _noop_aggregated()
+    return fire(
+        registry,
+        HookEvent.COMPACTION_END,
+        CompactionEndInput(
+            session_id=session_id,
+            compactors=tuple(compactors),
+            before_messages=before_messages,
+            after_messages=after_messages,
+            messages_dropped=max(0, before_messages - after_messages),
+        ),
+        bus=bus,
+    )
+
+
+def fire_trigger_fire(
+    registry: HookRegistry | None,
+    bus: EventBus | None,
+    *,
+    trigger_name: str,
+    source: str,
+    details: dict[str, Any] | None = None,
+) -> Awaitable[_AggregatedHookResult | None]:
+    """Fire `TriggerFire`:trigger 系統 (P1-4) 觸發某條 trigger 時呼叫。"""
+    if registry is None:
+        return _noop_aggregated()
+    return fire(
+        registry,
+        HookEvent.TRIGGER_FIRE,
+        TriggerFireInput(
+            trigger_name=trigger_name,
+            source=source,
+            details=dict(details) if details else {},
+        ),
+        bus=bus,
+    )
+
+
+def fire_guardrail_tripwire(
+    registry: HookRegistry | None,
+    bus: EventBus | None,
+    *,
+    guardrail_name: str,
+    stage: str,
+    tool_name: str | None,
+    info: dict[str, Any] | None = None,
+) -> Awaitable[_AggregatedHookResult | None]:
+    """Fire `GuardrailTripwire`:guardrail tripwire 觸發、即將 raise 之前呼叫。
+
+    Hook 不會阻止 tripwire 本身的 raise(fail-closed 安全機制),只做 audit。
+    """
+    if registry is None:
+        return _noop_aggregated()
+    return fire(
+        registry,
+        HookEvent.GUARDRAIL_TRIPWIRE,
+        GuardrailTripwireInput(
+            guardrail_name=guardrail_name,
+            stage=stage,
+            tool_name=tool_name,
+            info=dict(info) if info else {},
+        ),
+        bus=bus,
+    )
+
+
+def fire_policy_deny(
+    registry: HookRegistry | None,
+    bus: EventBus | None,
+    *,
+    tool_name: str,
+    rule_name: str | None,
+    effect: str,
+    reason: str | None,
+) -> Awaitable[_AggregatedHookResult | None]:
+    """Fire `PolicyDeny`:PolicyEngine.evaluate 回 DENY / DISABLE 時呼叫。
+
+    Hook 不影響 PolicyDecision 本身,只是觀察點。
+    """
+    if registry is None:
+        return _noop_aggregated()
+    return fire(
+        registry,
+        HookEvent.POLICY_DENY,
+        PolicyDenyInput(
+            tool_name=tool_name,
+            rule_name=rule_name,
+            effect=effect,
+            reason=reason,
+        ),
+        bus=bus,
+    )
+
+
+def fire_stop_hook_prevent(
+    registry: HookRegistry | None,
+    bus: EventBus | None,
+    *,
+    agent_name: str,
+    reason: str,
+    turns_used: int,
+) -> Awaitable[_AggregatedHookResult | None]:
+    """Fire `StopHookPrevent`:stop-hook (P1-14) 阻止 agent 結束時呼叫。"""
+    if registry is None:
+        return _noop_aggregated()
+    return fire(
+        registry,
+        HookEvent.STOP_HOOK_PREVENT,
+        StopHookPreventInput(
+            agent_name=agent_name,
+            reason=reason,
+            turns_used=turns_used,
+        ),
         bus=bus,
     )
 
