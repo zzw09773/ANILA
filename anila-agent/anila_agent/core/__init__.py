@@ -35,6 +35,12 @@ from anila_agent.core.context import (
     FileStateEntry,
     WorkspaceEscapeError,
 )
+from anila_agent.core.coordinator import (
+    CoordinatorMessage,
+    CoordinatorNotification,
+    format_coordinator_messages,
+    parse_coordinator_messages,
+)
 from anila_agent.core.guardrails import (
     GuardrailResult,
     GuardrailTripwireTriggered,
@@ -220,6 +226,11 @@ __all__ = [
     "parse_permission_rule",
     "parse_permission_rules",
     "policy_rule_from_yaml_item",
+    # P1-13 coordinatorMode XML notification
+    "CoordinatorMessage",
+    "CoordinatorNotification",
+    "format_coordinator_messages",
+    "parse_coordinator_messages",
     # P1-1 forkSubagent byte-identical prefix
     "DEFAULT_PREFIX_MESSAGE_COUNT",
     "FORK_BOILERPLATE_TAG",
