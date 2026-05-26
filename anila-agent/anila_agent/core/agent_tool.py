@@ -17,16 +17,21 @@
 兩者剛好在 parent agent 的角度形成「呼叫 vs 棄場」對立。本 P0-8 只做 sub-routine
 那條;handoff 走 P1 階段另開。
 
-prefix_strategy 欄位(``"share"`` / ``"fork"``)是給 P1-1 prompt-cache fork 留的
-hook:
+prefix_strategy 欄位(``"share"`` / ``"fork"``)在 P1-1 已實作真實 prompt-cache
+prefix 行為:
 
-* ``"share"``(預設):sub-agent 沿用 parent 的 instructions / context 前綴,讓
-  upstream LLM provider 的 prompt cache 可以命中相同前綴。
-* ``"fork"``:sub-agent 從 scratch 起跑(獨立 instructions / 不繼承前綴),適合
-  需要乾淨上下文的子任務。
+* ``"share"``(預設):sub-agent 沿用 parent 整段 conversation 前綴,只在尾巴
+  追加輕量 sub instruction。**最積極的 prompt cache 命中**,適合需要看 parent
+  context 才知道接力做什麼的子任務(例如同一段研究的後續細項)。
+* ``"fork"``:sub-agent 從 parent message 前 K 條(預設
+  :data:`anila_agent.core.prompt_cache.DEFAULT_PREFIX_MESSAGE_COUNT`)切斷,
+  尾巴接 fork boilerplate(``<fork-subagent-boilerplate>``)。前綴與 parent
+  byte-identical → vLLM ``--enable-prefix-caching`` 命中;sub instruction
+  不同 → child 內容差異化。
 
-P0-8 本身只負責記錄欄位、傳給 sub-agent runner,**不做完整的 prompt-cache 命中
-驗證**;P1-1 階段再補上 fork 子 agent 共享 prefix 的 byte-identical 行為。
+prefix bytes 採 deterministic JSON 序列化(``sort_keys=True`` + 固定
+separators),確保同樣 parent messages → 同樣 bytes → 同樣 SHA-256 hash →
+vLLM prefix cache 同一個 slot。詳見 :mod:`anila_agent.core.prompt_cache`。
 """
 
 from __future__ import annotations
@@ -42,6 +47,12 @@ from agents import Agent, FunctionTool, Runner
 from agents.tool_context import ToolContext
 
 from anila_agent.core.context import AnilaToolContext
+from anila_agent.core.prompt_cache import (
+    DEFAULT_PREFIX_MESSAGE_COUNT,
+    Message,
+    SubagentPrefix,
+    build_subagent_prefix,
+)
 from anila_agent.tools.base import ToolMetadata
 from anila_agent.tracing import Tracer
 
@@ -91,7 +102,10 @@ class AgentTool:
         name: tool 名稱(LLM 看到的)。預設為 ``f"call_{sub_agent.name}"``。
         description: tool 描述,給 LLM 判斷何時呼叫。
         metadata: ToolMetadata — 預設 cost=high、非唯讀、非 concurrency safe。
-        prefix_strategy: ``"share"`` / ``"fork"``;P0-8 僅記錄,P1-1 才真正改 prefix 行為。
+        prefix_strategy: ``"share"`` / ``"fork"``;見 module docstring 對兩種策略的說明。
+        fork_point: ``"fork"`` 策略下截斷 parent message 的 index。None 則
+            用 :data:`anila_agent.core.prompt_cache.DEFAULT_PREFIX_MESSAGE_COUNT`;
+            ``"share"`` 策略下此欄位被忽略。
         timeout_seconds: sub-agent 跑超時就 fail-fast。預設 ``DEFAULT_SUBAGENT_TIMEOUT_SECONDS``。
         runner: 注入點 — 由本欄位指定的 callable 來實際跑 sub-agent;預設用
             ``agents.Runner.run``。測試以 ``AsyncMock`` 或自寫 dummy runner 取代。
@@ -104,6 +118,7 @@ class AgentTool:
     description: str
     metadata: ToolMetadata = field(default_factory=lambda: _DEFAULT_AGENT_TOOL_METADATA)
     prefix_strategy: PrefixStrategy = "share"
+    fork_point: int | None = None
     timeout_seconds: float = DEFAULT_SUBAGENT_TIMEOUT_SECONDS
     runner: SubAgentRunner | None = None
     tool: FunctionTool | None = None
@@ -254,6 +269,7 @@ def make_agent_tool(
     description: str | None = None,
     metadata: ToolMetadata | None = None,
     prefix_strategy: PrefixStrategy = "share",
+    fork_point: int | None = None,
     timeout_seconds: float = DEFAULT_SUBAGENT_TIMEOUT_SECONDS,
     runner: SubAgentRunner | None = None,
     tracer: Tracer | None = None,
@@ -267,8 +283,10 @@ def make_agent_tool(
         name: tool 名稱(LLM 看到的);預設 ``f"call_{sub_agent.name}"``。
         description: tool 描述;預設由 sub_agent.instructions 推導前 ~100 字。
         metadata: ToolMetadata;預設 cost=high / category=agent / 非唯讀。
-        prefix_strategy: ``"share"`` / ``"fork"``;P0-8 僅記錄、傳遞,真正 prompt-cache
-            fork 行為等 P1-1 補完。
+        prefix_strategy: ``"share"`` / ``"fork"``;見 module docstring 對兩種策略的說明。
+        fork_point: ``"fork"`` 策略下截斷 parent message 的 index;None 則
+            用 :data:`anila_agent.core.prompt_cache.DEFAULT_PREFIX_MESSAGE_COUNT`。
+            ``"share"`` 策略下此參數被忽略。
         timeout_seconds: sub-agent 跑超時就回 error JSON。預設
             ``DEFAULT_SUBAGENT_TIMEOUT_SECONDS``(300s)。
         runner: 注入點 — 改用自訂 callable 跑 sub-agent;預設走 ``Runner.run``。
@@ -290,6 +308,7 @@ def make_agent_tool(
         description=resolved_description,
         metadata=resolved_metadata,
         prefix_strategy=prefix_strategy,
+        fork_point=fork_point,
         timeout_seconds=timeout_seconds,
         runner=resolved_runner,
     )
@@ -360,6 +379,8 @@ async def _dispatch_sub_agent(
     if not isinstance(prompt, str) or not prompt.strip():
         return _error_json("missing or empty 'prompt' argument")
 
+    # 給 sub-agent runner 看的「pure prompt」(legacy 字串組合);prompt-cache
+    # 友善的 message list 由 ``build_subagent_prefix`` 另外組,寫進 span 即可。
     sub_input = _compose_sub_agent_input(prompt, context_summary)
 
     # 2. 建 sub-context(若 parent ctx.context 是 AnilaToolContext)
@@ -374,6 +395,17 @@ async def _dispatch_sub_agent(
     else:
         # parent 沒給 AnilaToolContext 也允許跑(向後相容用),但 sub_anila_ctx 為 None。
         sub_anila_ctx = None
+
+    # 2.5 P1-1 — 算 prompt-cache prefix(從 parent ctx.metadata 取 parent_messages,
+    # 若呼叫端沒給就用空 list;空 list 仍可產生 deterministic hash,代表
+    # 「沒 parent history」的 baseline cache slot)。
+    parent_messages = _extract_parent_messages(parent_anila_ctx)
+    prefix_info: SubagentPrefix = build_subagent_prefix(
+        parent_messages,
+        strategy=spec.prefix_strategy,
+        directive=sub_input,
+        fork_point=spec.fork_point,
+    )
 
     # 3. 跑 sub-agent — 包 trace span(若有 tracer);錯誤一律轉 error JSON。
     runner = spec.runner if spec.runner is not None else _default_sub_agent_runner
@@ -391,6 +423,11 @@ async def _dispatch_sub_agent(
         "agent_tool.prefix_strategy": spec.prefix_strategy,
         "agent_tool.timeout_seconds": spec.timeout_seconds,
         "agent_tool.sub_tool_call_id": sub_tool_call_id,
+        # P1-1 — prompt-cache prefix 資訊(供 trace 後端統計 cache 命中率)
+        "prompt_cache.strategy": prefix_info.strategy,
+        "prompt_cache.prefix_hash": prefix_info.prefix_hash,
+        "prompt_cache.prefix_messages": prefix_info.prefix_message_count,
+        "prompt_cache.prefix_bytes": len(prefix_info.prefix_bytes),
     }
     if parent_anila_ctx is not None:
         span_attributes["agent_tool.parent_agent"] = parent_anila_ctx.agent_name
@@ -450,6 +487,35 @@ def _extract_anila_context(ctx: ToolContext[Any]) -> AnilaToolContext | None:
     return None
 
 
+# P1-1 — parent context 上若有 ``parent_messages`` 就拿來算 prompt-cache prefix。
+# 為了與既有 AnilaToolContext 介面相容(不改 schema),改放在 ``metadata`` 內,
+# 由呼叫端按需注入;沒給就 fallback 空 list。
+_PARENT_MESSAGES_METADATA_KEY: str = "parent_messages"
+
+
+def _extract_parent_messages(parent_anila_ctx: AnilaToolContext | None) -> list[Message]:
+    """從 parent context 的 metadata 取出 parent_messages 供 prefix hash 用。
+
+    呼叫端若想啟用 prompt-cache prefix,需在 parent ``AnilaToolContext.metadata``
+    放入 ``"parent_messages": [...]``。若沒提供或型別不對,回空 list(仍可
+    產 deterministic hash,代表「無 parent history」baseline)。
+
+    Args:
+        parent_anila_ctx: parent :class:`AnilaToolContext` 或 None。
+
+    Returns:
+        parent message list(可能為空)。dict items only — 非 dict 會被略掉
+        以免污染 deterministic 序列化。
+    """
+    if parent_anila_ctx is None:
+        return []
+    raw = parent_anila_ctx.metadata.get(_PARENT_MESSAGES_METADATA_KEY)
+    if not isinstance(raw, list):
+        return []
+    # 只接受 dict-like message。其他型別跳過,確保 deterministic 序列化不爆掉。
+    return [m for m in raw if isinstance(m, dict)]
+
+
 def _error_json(message: str) -> str:
     """把錯誤訊息序列化為 ``{"error": ...}`` JSON 字串。"""
     return json.dumps({"error": message}, ensure_ascii=False)
@@ -468,6 +534,7 @@ def register_agent_as_tool(
     description: str | None = None,
     metadata: ToolMetadata | None = None,
     prefix_strategy: PrefixStrategy = "share",
+    fork_point: int | None = None,
     timeout_seconds: float = DEFAULT_SUBAGENT_TIMEOUT_SECONDS,
     runner: SubAgentRunner | None = None,
     tracer: Tracer | None = None,
@@ -487,6 +554,7 @@ def register_agent_as_tool(
         description=description,
         metadata=metadata,
         prefix_strategy=prefix_strategy,
+        fork_point=fork_point,
         timeout_seconds=timeout_seconds,
         runner=runner,
         tracer=tracer,

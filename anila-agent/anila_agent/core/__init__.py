@@ -18,6 +18,17 @@ from anila_agent.core.concurrency import (
     partition_tool_calls,
     run_tool_calls,
 )
+from anila_agent.core.cost_tracker import (
+    DEFAULT_MODEL_PRICINGS,
+    SPAN_ATTR_COMPLETION_TOKENS,
+    SPAN_ATTR_COST_USD,
+    SPAN_ATTR_MODEL,
+    SPAN_ATTR_PROMPT_TOKENS,
+    CostTracker,
+    ModelPricing,
+    PricingRegistry,
+    inject_span_attributes,
+)
 from anila_agent.core.context import (
     AnilaToolContext,
     FileStateCache,
@@ -33,6 +44,13 @@ from anila_agent.core.guardrails import (
     OutputGuardrailProtocol,
     input_guardrail,
     output_guardrail,
+)
+from anila_agent.core.hook_context import (
+    AnyHookCtx,
+    HookContext,
+    OperationContext,
+    SessionContext,
+    TurnContext,
 )
 from anila_agent.core.hook_flavors import (
     CommandHook,
@@ -59,6 +77,29 @@ from anila_agent.core.permission_grammar import (
     parse_permission_rule,
     parse_permission_rules,
     policy_rule_from_yaml_item,
+)
+from anila_agent.core.prompt_cache import (
+    DEFAULT_PREFIX_MESSAGE_COUNT,
+    FORK_BOILERPLATE_TAG,
+    FORK_DIRECTIVE_PREFIX,
+    SHARE_INSTRUCTION_PREFIX,
+    Message,
+    PrefixStrategyName,
+    SubagentPrefix,
+    build_fork_directive_message,
+    build_share_directive_message,
+    build_subagent_prefix,
+    compute_prefix_hash,
+    is_in_fork_child,
+)
+from anila_agent.core.streaming import (
+    AgentUpdatedStreamEvent,
+    AnilaStreamRunner,
+    RawResponseEvent,
+    RunItemStreamEvent,
+    RunItemType,
+    StreamChunk,
+    StreamEvent,
 )
 from anila_agent.core.policy import (
     PolicyDecision,
@@ -97,12 +138,28 @@ __all__ = [
     "FileStateCache",
     "FileStateEntry",
     "WorkspaceEscapeError",
+    # P1-3 hook context 三層 scope
+    "AnyHookCtx",
+    "HookContext",
+    "OperationContext",
+    "SessionContext",
+    "TurnContext",
     # P1-2 concurrency partition
     "ToolCall",
     "ToolInvoker",
     "ToolResult",
     "partition_tool_calls",
     "run_tool_calls",
+    # P1-15 cost tracker + USD pricing
+    "CostTracker",
+    "DEFAULT_MODEL_PRICINGS",
+    "ModelPricing",
+    "PricingRegistry",
+    "SPAN_ATTR_COMPLETION_TOKENS",
+    "SPAN_ATTR_COST_USD",
+    "SPAN_ATTR_MODEL",
+    "SPAN_ATTR_PROMPT_TOKENS",
+    "inject_span_attributes",
     # P0-4 hook flavors
     "CommandHook",
     "HookABC",
@@ -147,6 +204,14 @@ __all__ = [
     "SoftCallback",
     "TruncateCallback",
     "with_budget",
+    # P1-7 streaming
+    "AgentUpdatedStreamEvent",
+    "AnilaStreamRunner",
+    "RawResponseEvent",
+    "RunItemStreamEvent",
+    "RunItemType",
+    "StreamChunk",
+    "StreamEvent",
     # P1-16 permission rule mini DSL
     "EffectStr",
     "PermissionRule",
@@ -155,4 +220,17 @@ __all__ = [
     "parse_permission_rule",
     "parse_permission_rules",
     "policy_rule_from_yaml_item",
+    # P1-1 forkSubagent byte-identical prefix
+    "DEFAULT_PREFIX_MESSAGE_COUNT",
+    "FORK_BOILERPLATE_TAG",
+    "FORK_DIRECTIVE_PREFIX",
+    "SHARE_INSTRUCTION_PREFIX",
+    "Message",
+    "PrefixStrategyName",
+    "SubagentPrefix",
+    "build_fork_directive_message",
+    "build_share_directive_message",
+    "build_subagent_prefix",
+    "compute_prefix_hash",
+    "is_in_fork_child",
 ]
