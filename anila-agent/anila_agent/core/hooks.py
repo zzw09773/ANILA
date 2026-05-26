@@ -29,6 +29,13 @@ from agents.items import ModelResponse, TResponseInputItem
 
 from anila_agent.core.events import EventBus
 from anila_agent.core.hook_flavors import HookABC
+from anila_agent.core.stop_hook import (
+    StopHook,
+    StopHookCallable,
+    StopHookDecision,
+    StopHookEntry,
+    fire_stop_hook_chain,
+)
 from anila_agent.models.schemas import HookOutput
 
 
@@ -377,10 +384,67 @@ class AnilaRunHooks(RunHooks[Any]):
         self._bus = bus
         self._agent_name = agent_name
         self._turns = 0
+        # P1-14 — stop hook chain;與 P0-1 `HookEvent.STOP` 不同層次:
+        # `HookEvent.STOP` 只 observation (回 HookOutput),這條 chain 才能
+        # `prevent_continuation` 影響主 loop 是否結束。
+        self._stop_hooks: list[StopHookEntry] = []
 
     @property
     def turns(self) -> int:
         return self._turns
+
+    # ------------------------------------------------------------------
+    # P1-14 stop hook chain — prevent-continuation
+    # ------------------------------------------------------------------
+
+    def register_stop_hook(self, hook: StopHookEntry) -> StopHookEntry:
+        """註冊一個 stop hook(`StopHook` instance 或 callable)。
+
+        順序即註冊順序;`fire_stop_hooks(...)` 在任一 hook 回
+        ``prevent_continuation=True`` 時立刻 early-exit,後續 hook 不執行。
+        回傳 hook 本身,方便鏈式呼叫或 decorator 寫法。
+        """
+        self._stop_hooks.append(hook)
+        return hook
+
+    @property
+    def stop_hooks(self) -> tuple[StopHookEntry, ...]:
+        """目前註冊的 stop hook tuple(供測試 / debug 觀察用)。"""
+        return tuple(self._stop_hooks)
+
+    async def fire_stop_hooks(
+        self, ctx: Any, agent_output: Any
+    ) -> StopHookDecision:
+        """跑整條 stop hook chain,回 `StopHookDecision`。
+
+        Args:
+            ctx: 帶給每個 stop hook 的 execution context(iteration 計數、
+                session metadata 等;呼叫端自行決定具體型別)。
+            agent_output: 本輪 agent 產生的 output。
+
+        Returns:
+            * 任一 hook 回 ``prevent_continuation=True`` → return 該 decision(chain early-exit)。
+            * 全部過(含 chain 為空)→ return ``StopHookDecision.allow()``。
+
+        Side effect:
+            把 hook 結果 emit 到 event bus(``stop_hook_fired``),
+            decision 為 ``prevent`` 時額外 emit ``stop_hook_prevented_continuation``。
+        """
+        decision = await fire_stop_hook_chain(
+            self._stop_hooks, ctx, agent_output
+        )
+        self._bus.emit(
+            "stop_hook_fired",
+            prevent=decision.prevent_continuation,
+            reason=decision.reason,
+        )
+        if decision.prevent_continuation:
+            self._bus.emit(
+                "stop_hook_prevented_continuation",
+                reason=decision.reason,
+                inject_message=decision.inject_message,
+            )
+        return decision
 
     async def on_agent_start(
         self,

@@ -98,6 +98,16 @@ from anila_agent.core.prompt_cache import (
     compute_prefix_hash,
     is_in_fork_child,
 )
+from anila_agent.core.stop_hook import (
+    KeywordStopHook,
+    MaxIterationsStopHook,
+    OutputLengthStopHook,
+    StopHook,
+    StopHookCallable,
+    StopHookDecision,
+    StopHookEntry,
+    fire_stop_hook_chain,
+)
 from anila_agent.core.streaming import (
     AgentUpdatedStreamEvent,
     AnilaStreamRunner,
@@ -218,6 +228,15 @@ __all__ = [
     "RunItemType",
     "StreamChunk",
     "StreamEvent",
+    # P1-14 stop hook prevent-continuation
+    "KeywordStopHook",
+    "MaxIterationsStopHook",
+    "OutputLengthStopHook",
+    "StopHook",
+    "StopHookCallable",
+    "StopHookDecision",
+    "StopHookEntry",
+    "fire_stop_hook_chain",
     # P1-16 permission rule mini DSL
     "EffectStr",
     "PermissionRule",
