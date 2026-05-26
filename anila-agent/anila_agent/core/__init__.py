@@ -60,6 +60,20 @@ from anila_agent.core.permission_grammar import (
     parse_permission_rules,
     policy_rule_from_yaml_item,
 )
+from anila_agent.core.prompt_cache import (
+    DEFAULT_PREFIX_MESSAGE_COUNT,
+    FORK_BOILERPLATE_TAG,
+    FORK_DIRECTIVE_PREFIX,
+    SHARE_INSTRUCTION_PREFIX,
+    Message,
+    PrefixStrategyName,
+    SubagentPrefix,
+    build_fork_directive_message,
+    build_share_directive_message,
+    build_subagent_prefix,
+    compute_prefix_hash,
+    is_in_fork_child,
+)
 from anila_agent.core.policy import (
     PolicyDecision,
     PolicyEffect,
@@ -155,4 +169,17 @@ __all__ = [
     "parse_permission_rule",
     "parse_permission_rules",
     "policy_rule_from_yaml_item",
+    # P1-1 forkSubagent byte-identical prefix
+    "DEFAULT_PREFIX_MESSAGE_COUNT",
+    "FORK_BOILERPLATE_TAG",
+    "FORK_DIRECTIVE_PREFIX",
+    "SHARE_INSTRUCTION_PREFIX",
+    "Message",
+    "PrefixStrategyName",
+    "SubagentPrefix",
+    "build_fork_directive_message",
+    "build_share_directive_message",
+    "build_subagent_prefix",
+    "compute_prefix_hash",
+    "is_in_fork_child",
 ]
