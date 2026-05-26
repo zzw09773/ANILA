@@ -62,6 +62,17 @@ from anila_agent.core.policy import (
     read_only,
     workspace_only,
 )
+from anila_agent.core.token_budget import (
+    DEFAULT_PTL_PATTERNS,
+    BudgetExceeded,
+    BudgetTracker,
+    ContinuationStrategy,
+    HardCallback,
+    PTLRetry,
+    SoftCallback,
+    TruncateCallback,
+    with_budget,
+)
 
 __all__ = [
     # P0-8 agent tool
@@ -117,4 +128,14 @@ __all__ = [
     "policy_to_tool_input_guardrail",
     "read_only",
     "workspace_only",
+    # P1-9 token budget continuation
+    "DEFAULT_PTL_PATTERNS",
+    "BudgetExceeded",
+    "BudgetTracker",
+    "ContinuationStrategy",
+    "HardCallback",
+    "PTLRetry",
+    "SoftCallback",
+    "TruncateCallback",
+    "with_budget",
 ]
