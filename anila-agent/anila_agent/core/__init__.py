@@ -2,6 +2,15 @@
 
 from __future__ import annotations
 
+from anila_agent.core.agent_tool import (
+    DEFAULT_SUBAGENT_TIMEOUT_SECONDS,
+    AgentTool,
+    PrefixStrategy,
+    SubAgentRunner,
+    get_agent_tool_spec,
+    make_agent_tool,
+    register_agent_as_tool,
+)
 from anila_agent.core.context import (
     AnilaToolContext,
     FileStateCache,
@@ -48,6 +57,14 @@ from anila_agent.core.policy import (
 )
 
 __all__ = [
+    # P0-8 agent tool
+    "AgentTool",
+    "DEFAULT_SUBAGENT_TIMEOUT_SECONDS",
+    "PrefixStrategy",
+    "SubAgentRunner",
+    "get_agent_tool_spec",
+    "make_agent_tool",
+    "register_agent_as_tool",
     # P0-3 context
     "AnilaToolContext",
     "FileStateCache",
