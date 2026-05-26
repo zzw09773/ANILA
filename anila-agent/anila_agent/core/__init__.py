@@ -16,6 +16,15 @@ from anila_agent.core.hook_flavors import (
     PromptHook,
     PythonHook,
 )
+from anila_agent.core.hook_taxonomy import (
+    DecideHook,
+    Decision,
+    DecisionVerdict,
+    HookExecutor,
+    InspectHook,
+    PipelineResult,
+    TransformHook,
+)
 
 __all__ = [
     "AnilaToolContext",
@@ -28,4 +37,12 @@ __all__ = [
     "PromptHook",
     "PythonHook",
     "WorkspaceEscapeError",
+    # P0-5 Hook 三類強型別分類
+    "Decision",
+    "DecisionVerdict",
+    "InspectHook",
+    "DecideHook",
+    "TransformHook",
+    "HookExecutor",
+    "PipelineResult",
 ]
