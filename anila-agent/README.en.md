@@ -4,6 +4,8 @@
 
 [繁體中文](README.md) · **English**
 
+> 📌 **This file is on the `prod` branch (NCSIST intranet deployment).** anila-agent is a sub-agent template — not coupled to prod deployment mode. Contents identical to main.
+
 ## 簡介 / Overview
 
 `anila-agent` is an Agentic RAG starter project you can clone and run. The runtime is built on the [openai-agents SDK](https://github.com/openai/openai-agents-python), with the harness engineering ported wholesale from Claude Code.
@@ -243,3 +245,7 @@ Coverage is intentionally focused on the harness layer (memdir port, hook bridge
 ## License
 
 Apache-2.0. See [`LICENSE`](LICENSE).
+
+---
+
+**Last updated**: 2026-05-26 (sync PR #16 + add prod banner; subtree contents identical to main)

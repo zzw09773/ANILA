@@ -2,6 +2,8 @@
 
 **ANILA Core** — Python agent runtime foundation (SDK). The in-process runtime base shared by every ANILA agent and the Router, plus the shared infrastructure consumed by the whole backend fleet.
 
+> 📌 **This file is on the `prod` branch (NCSIST intranet deployment).** SDK contents identical to main (not in the fork zone).
+
 ---
 
 ## Overview
@@ -206,3 +208,7 @@ Capabilities anila-core provides outward:
 - Platform overview: [`../README.md`](../README.md)
 
 > Note: `pyproject.toml` declares v0.14.0 (the `[rag]` extra has been restored), while the latest `CHANGELOG.md` entry is v0.13.0; treat `pyproject.toml` as the authoritative source for version and extras.
+
+---
+
+**Last updated**: 2026-05-26 (sync PR #16 + add prod banner; SDK contents identical to main)

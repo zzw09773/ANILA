@@ -4,6 +4,8 @@
 
 > 繁體中文 primary: [`README.md`](./README.md)
 
+> 📌 **This file is on the `prod` branch (NCSIST intranet deployment).** Reference snapshots are gitignored; identical between branches.
+
 ---
 
 ## Overview / 簡介
@@ -118,3 +120,5 @@ Together the two references cover two dimensions:
 ---
 
 **Status**: both source trees are gitignored; the repo tracks only `README.md` and `README.en.md`.
+
+**Last updated**: 2026-05-26 (sync PR #16 + add prod banner)

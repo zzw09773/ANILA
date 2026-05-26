@@ -4,6 +4,8 @@
 
 > The Traditional Chinese version is primary: [README.md](./README.md). Technical terms, commands, and code stay in English in both versions.
 
+> 📌 **This file is on the `prod` branch (NCSIST intranet deployment).** Router contents identical to main (not in the fork zone); on prod, `CSP_SERVICE_TOKEN` is fail-loud (no dev fallback).
+
 ---
 
 ## Overview / 簡介
@@ -162,3 +164,7 @@ router (:9000)
 ## License
 
 See the repo-root [`LICENSE`](../LICENSE).
+
+---
+
+**Last updated**: 2026-05-26 (sync PR #16 + add prod banner; Router contents identical to main)

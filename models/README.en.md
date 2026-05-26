@@ -4,6 +4,8 @@
 
 > English mirror of [`README.md`](./README.md) (Traditional Chinese primary).
 
+> 📌 **This file is on the `prod` branch (NCSIST intranet deployment).** `models/docker-compose.yml`'s flux2-dev-agent has `CSP_API_KEY` / `volumes` aligned with prod conventions (`${INTERNAL_PLATFORM_API_KEY:?must be set}` + `/share/uploads/flux`, no `_DEV` fallback or `share-dev/`).
+
 ---
 
 ## Overview
@@ -186,3 +188,7 @@ Per spec §9:
 - `FLUX.2-klein-9B` shares the same Non-Commercial license as dev and does not resolve the issue.
 
 The `flux2-dev` service in compose carries a matching caveat comment: confirm authorization before enabling in production.
+
+---
+
+**Last updated**: 2026-05-26 (sync PR #16 + add prod banner; compose flipped from dev fallback back to prod fail-loud)

@@ -2,6 +2,8 @@
 
 > AI learning-content generation sub-project: a research-notes-style knowledge-base frontend, plus a standalone `pptx-renderer` microservice that turns a slide-deck spec into `.pptx`.
 
+> 📌 **This file is on the `prod` branch (NCSIST intranet deployment).** The Studio backend's 4 artifact pipelines (report / mindmap / infographic / datatable) have been extracted to [`anila-studio`](../anila-studio/) — ANILALM reaches them via nginx routes `/api/studio/` and `/api/{reports,mindmaps,infographics,datatables}/`. **No frontend module changes**.
+
 ## Overview
 
 **ANILALM** is a sub-project under `<project_root>`. It gives researchers a one-stop "document → conversation → output" interface: upload PDFs / documents → build a knowledge base → query via chat → generate deep reports and slide-deck drafts directly. It is a SPA (single-page application) that talks to the myCSPPlatform backend for auth, ingestion, conversations, and an LLM proxy.
@@ -174,3 +176,5 @@ See also `pptx-skill/SKILL.md` and `pptx-skill/pptxgenjs.md` (the renderer's int
 ---
 
 > 繁體中文版本：[README.md](./README.md)
+>
+> **Last updated**: 2026-05-26 (sync PR #16 + Phase Z 4-artifact pipeline extracted to anila-studio + add prod banner)

@@ -2,6 +2,8 @@
 
 > ANILA's async document-ingestion worker: runs parse → chunk → embed → index for a single document, and provides chunking-strategy evaluation (evaluator).
 
+> 📌 **This file is on the `prod` branch (NCSIST intranet deployment).** Worker contents identical to main (not in the fork zone); on prod, `INTERNAL_PLATFORM_API_KEY` is fail-loud.
+
 ## Overview
 
 `ingestion-worker` is the background processor of the ANILA ingestion pipeline. It is **not an HTTP API**; it is a worker process driven by [Arq](https://arq-docs.helpmanual.io/) (a Redis-backed async job queue). The CSP backend enqueues an uploaded document as a job; the worker dequeues it and runs the full ingestion flow:
@@ -117,3 +119,7 @@ ruff check src tests              # line-length=100, target py311
 - [`docs/ingestion/ingestion-platform-design.md`](../docs/ingestion/ingestion-platform-design.md) — overall ingestion-platform design (including the evaluator §6.5 LLM-as-judge spec).
 - [`docs/ingestion/parent-child-rag-design.md`](../docs/ingestion/parent-child-rag-design.md) — parent / leaf two-tier chunking and parent-child RAG design.
 - [`docs/anila-core/anila-core-boundary.md`](../docs/anila-core/anila-core-boundary.md) — responsibility boundary of the `anila-core` shared SDK (parser / chunker / store / security helpers all originate here).
+
+---
+
+**Last updated**: 2026-05-26 (sync PR #16 + add prod banner; worker contents identical to main)

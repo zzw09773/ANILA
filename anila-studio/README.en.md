@@ -2,6 +2,8 @@
 
 > [中文版](README.md) is the canonical source · this is the English summary
 
+> 📌 **This file is on the `prod` branch (NCSIST intranet deployment).** anila-studio's cold-start sync hits csp's `/api/auth/revocations`; prod's `myCSPPlatform/backend/app/api/auth.py` must therefore carry both the SSO/card endpoints **and** main's `GET /api/auth/revocations` (the trap that bit us during PR #16 sync — restored 2026-05-26).
+
 The **deck generation service** extracted from `myCSPPlatform/backend`: RAG over your uploaded documents → LLM outline → FLUX images → PPTX render.
 
 ## Why standalone
@@ -84,3 +86,7 @@ cd ANILALM && npm run gen:studio-types
 - ADR:`docs/superpowers/anila-studio/extraction-decision.md`
 - E2E runbook:`docs/superpowers/anila-studio/plans/2026-05-23-e2e-runbook.md`
 - Baseline:`anila-studio/MIGRATION_BASELINE.md`
+
+---
+
+**Last updated**: 2026-05-26 (sync PR #16 + add prod banner; cold-start dep on csp `/api/auth/revocations` documented in banner)

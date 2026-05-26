@@ -4,6 +4,8 @@
 
 > 繁體中文版本：[`README.md`](./README.md)
 
+> 📌 **This file is on the `prod` branch (NCSIST intranet deployment).** Relative to `main`, prod additionally has SSO (OIDC) endpoints + NCSIST PKI smart-card login (`/api/auth/card/*`) + the `users.local_password_disabled` flag for SSO-only switching + `GET /api/auth/revocations` (consumed by anila-studio's cold-start sync). Permanent fork-zone list: see [`../docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md).
+
 ---
 
 ## Overview
@@ -221,4 +223,6 @@ All paths below are verified to exist (docs were reorganized into topic folders)
 
 ---
 
-**Role**: Control + Data Plane · **Authoritative for**: users · api_keys · models · agents · service_clients · token_usage · audit_logs · ingestion knowledge base · Studio slide generation
+**Role**: Control + Data Plane · **Authoritative for**: users · api_keys · models · agents · service_clients · token_usage · audit_logs · ingestion knowledge base · ~~Studio slide generation~~ (extracted to anila-studio; only contract endpoints remain in csp)
+
+**Last updated**: 2026-05-26 (sync PR #16 fork-zone follow-up + add prod banner)

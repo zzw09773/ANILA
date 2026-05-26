@@ -4,6 +4,8 @@
 
 > 繁體中文版本：[`README.md`](./README.md)
 
+> 📌 **This file is on the `prod` branch (NCSIST intranet deployment).** `src/login.jsx` has been deleted on prod (users go through myCSPPlatform's Vue `LoginView.vue` — the unified entry for smart-card / SSO / password); `src/runtime/auth.jsx` runs the SSO flow (main has the plain password-only flow). Markdown images in [`src/markdown.jsx`](./src/markdown.jsx) have a `MarkdownImage` + `ImageLightbox` component pair that opens a fullscreen preview on click (PR #15). Permanent fork-zone list: see [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md).
+
 ---
 
 ## Overview
@@ -159,3 +161,5 @@ Key backend endpoints: `GET/POST /api/conversations` (incl. `{id}` plus `/messag
 ---
 
 **Framework**: React + Vite · **Talks to**: CSP (`/api/*` + `/v1/*` cookie) + Router (`/v1/*` cookie, `model=anila-router`) — both fronted by `nginx`.
+
+**Last updated**: 2026-05-26 (sync PR #15 lightbox + PR #16 fork-zone follow-up + add prod banner)
