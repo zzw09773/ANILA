@@ -11,6 +11,13 @@ from anila_agent.core.agent_tool import (
     make_agent_tool,
     register_agent_as_tool,
 )
+from anila_agent.core.concurrency import (
+    ToolCall,
+    ToolInvoker,
+    ToolResult,
+    partition_tool_calls,
+    run_tool_calls,
+)
 from anila_agent.core.context import (
     AnilaToolContext,
     FileStateCache,
@@ -70,6 +77,12 @@ __all__ = [
     "FileStateCache",
     "FileStateEntry",
     "WorkspaceEscapeError",
+    # P1-2 concurrency partition
+    "ToolCall",
+    "ToolInvoker",
+    "ToolResult",
+    "partition_tool_calls",
+    "run_tool_calls",
     # P0-4 hook flavors
     "CommandHook",
     "HookABC",
