@@ -33,6 +33,12 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from anila_agent.core.events import EventBus
+from anila_agent.core.hooks import (
+    HookRegistry,
+    fire_compaction_end,
+    fire_compaction_start,
+)
 from anila_agent.tracing import Tracer
 
 logger = logging.getLogger(__name__)
@@ -430,6 +436,10 @@ class CompactingSession:
     compactors: list[CompactorABC] = field(default_factory=list)
     strategy: CompactStrategy = "pre_send"
     tracer: Tracer | None = None
+    # P1-17 — 注入 hook registry,compact loop 前後 fire COMPACTION_START / END。
+    # 兩者皆 None 時不 fire(向後相容)。
+    hook_registry: HookRegistry | None = None
+    event_bus: EventBus | None = None
 
     # 觀測用:最近一次每個 compactor 跑出來的 stats(供測試與 debug)。
     last_stats: list[CompactionStats] = field(default_factory=list)
@@ -453,8 +463,29 @@ class CompactingSession:
         # 直接 cast 成 Message。
         messages: list[Message] = [dict(m) if isinstance(m, dict) else m for m in raw]
 
+        # P1-17 — compact loop 前 fire COMPACTION_START hook(若 registry 在)。
+        compactor_names = tuple(c.name for c in self.compactors)
+        before_messages = len(messages)
+        await fire_compaction_start(
+            self.hook_registry,
+            self.event_bus,
+            session_id=self.session_id,
+            compactors=compactor_names,
+            before_messages=before_messages,
+        )
+
         for compactor in self.compactors:
             messages = self._run_with_tracing(compactor, messages)
+
+        # P1-17 — compact loop 後 fire COMPACTION_END hook,帶 dropped 統計。
+        await fire_compaction_end(
+            self.hook_registry,
+            self.event_bus,
+            session_id=self.session_id,
+            compactors=compactor_names,
+            before_messages=before_messages,
+            after_messages=len(messages),
+        )
 
         return messages
 
