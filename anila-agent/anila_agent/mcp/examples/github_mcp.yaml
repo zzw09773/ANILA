@@ -1,0 +1,16 @@
+# MCP GitHub server (streamable HTTP transport)
+#
+# 接 GitHub 官方 MCP endpoint。需要在 ``GITHUB_PAT`` 環境變數放 Personal Access
+# Token,且 yaml 載入前由呼叫端做字串展開(本套件刻意不在 loader 做 env 展開,
+# 以維持 loader 為純函式)。
+#
+# tool 動態註冊名稱:``mcp__github__<tool>``,例如 ``mcp__github__list_repositories``。
+
+servers:
+  - name: github
+    transport: http
+    url: https://api.githubcopilot.com/mcp/
+    headers:
+      Authorization: "Bearer ${GITHUB_PAT}"
+      Accept: "application/json"
+    timeout: 60.0
