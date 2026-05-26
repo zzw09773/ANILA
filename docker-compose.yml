@@ -79,7 +79,6 @@ services:
       AUTO_REGISTER_LINKS: >-
         [
           {"name":"ANILA LM","url":"/anilalm","icon":"book-open","description":"AI 學習內容生成（podcast / slides / mind map / quiz / report）","sort_order":1,"is_public":false,"required_roles":[]},
-          {"name":"Code Server","url":"/codeserver","icon":"code","description":"Browser VS Code — agent 開發整合入口","sort_order":2,"is_public":false,"required_roles":["admin"]},
           {"name":"n8n 工作流程","url":"/n8n","icon":"workflow","description":"自動化工作流程平台 — 排程任務、跨服務串接","sort_order":3,"is_public":true,"required_roles":["developer"]},
           {"name":"GitLab","url":"/gitlab","icon":"git-branch","description":"Git server — agent 程式碼與 issue tracking（ISO 42001 合規必備）","sort_order":4,"is_public":true,"required_roles":["developer"]},
           {"name":"MLSteam","url":"https://aiops.ai.ncsist.org.tw:4443/","icon":"cpu","description":"MLOps 平台 — agent 訓練與部署","sort_order":5,"is_public":true,"required_roles":["developer"]}
@@ -344,40 +343,6 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # ── code-server (cold-stored) ───────────────────────────────────────────
-  # Browser-based VS Code,reachable via /codeserver subpath through nginx.
-  # 用 codercom 上游而非 lscr.io/linuxserver fork — 後者多一層 s6-overlay
-  # 會破 subpath 部署 (workspace fs provider 註冊失敗)。
-  # 解凍前的 TODO:把 PASSWORD 換掉,SSO 接好後改 nginx auth_request 驗 CSP JWT。
-  codeserver:
-    image: codercom/code-server:latest
-    # 1001:1001 對齊 host 'aia' UID,避免容器內存檔 EACCES。
-    user: "${UID:-1001}:${GID:-1001}"
-    environment:
-      TZ: Asia/Taipei
-      # startup_security 拒絕 dev 預設 `changeme-codeserver`,prod 必設真值。
-      PASSWORD: ${CODESERVER_PASSWORD:?CODESERVER_PASSWORD must be set}
-    volumes:
-      - codeserver_config:/home/coder/.config
-      # 不要掛 repo root — 會把 .env / 私鑰 / credentials 全部暴露給拿到
-      # 密碼的人。CODESERVER_WORKSPACE 必須指非機密目錄。
-      - ${CODESERVER_WORKSPACE:?CODESERVER_WORKSPACE must point to a non-secret-bearing directory}:/home/coder/workspace
-    working_dir: /home/coder/workspace
-    expose:
-      - "8080"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 6
-      start_period: 30s
-    restart: unless-stopped
-
-  # ── n8n workflow automation (cold-stored) ───────────────────────────────
-  # Subpath /n8n。重要 hardening (不要回退):
-  #   - NODE_TLS_REJECT_UNAUTHORIZED 預設 1。要連自簽 endpoint 逐節點設
-  #     self-signed CA,**不要**全域關 TLS 驗證 (歷史教訓)。
-  #   - Code Node 模組白名單寫死,避免變成任意 require() 的 RCE 平台。
   n8n:
     image: n8nio/n8n:1.98.2
     # 用 image 內建 'node' user (UID 1000),不要 override user — n8n 首次
