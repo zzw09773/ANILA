@@ -34,6 +34,13 @@ from anila_agent.core.guardrails import (
     input_guardrail,
     output_guardrail,
 )
+from anila_agent.core.hook_context import (
+    AnyHookCtx,
+    HookContext,
+    OperationContext,
+    SessionContext,
+    TurnContext,
+)
 from anila_agent.core.hook_flavors import (
     CommandHook,
     HookABC,
@@ -97,6 +104,12 @@ __all__ = [
     "FileStateCache",
     "FileStateEntry",
     "WorkspaceEscapeError",
+    # P1-3 hook context 三層 scope
+    "AnyHookCtx",
+    "HookContext",
+    "OperationContext",
+    "SessionContext",
+    "TurnContext",
     # P1-2 concurrency partition
     "ToolCall",
     "ToolInvoker",
