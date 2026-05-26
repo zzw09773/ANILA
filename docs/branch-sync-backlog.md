@@ -93,11 +93,23 @@ git log --oneline --all | grep '\[prod-only\]'
 
 這些檔在兩條 branch 上已演進成不同的最終樣貌,**接受它們從此是不同的檔**,不要嘗試合併:
 
-| 檔案 | prod 樣貌 | no-sso 樣貌 |
+| 檔案 | prod 樣貌 | main 樣貌 |
 |---|---|---|
-| `myCSPPlatform/backend/app/api/auth.py` | 含 SSO endpoint + card auth | SSO 全砍,僅 username/password |
+| `myCSPPlatform/backend/app/api/auth.py` | 含 SSO/OIDC endpoint + card auth + revocations | 純帳密 + revocations (anila-studio dep) |
 | `myCSPPlatform/backend/app/api/users.py` | 含 card-related user 操作 | 簡化版 |
+| `myCSPPlatform/backend/app/api/auth_providers.py` | 存在(SSO admin) | 已刪除 |
+| `myCSPPlatform/backend/app/models/user.py` | 多 `local_password_disabled` Column (SSO-only 切換) | 無此欄位 |
+| `myCSPPlatform/backend/app/models/auth_provider.py` | 存在 | 已刪除 |
+| `myCSPPlatform/backend/app/models/external_identity.py` | 存在 | 已刪除 |
+| `myCSPPlatform/backend/app/schemas/user.py` | 多 `RefreshRequest` + `local_password_disabled` field | 多 `_validate_password_strength` validator |
 | `myCSPPlatform/backend/app/schemas/auth_provider.py` | 存在 | 已刪除 |
+| `myCSPPlatform/backend/app/schemas/card.py` | 存在 | 已刪除 |
+| `myCSPPlatform/backend/app/services/auth_service.py` | 多 `LOCAL_PASSWORD_DISABLED_SENTINEL` + SSO-only reject 邏輯 | 純帳密 |
+| `myCSPPlatform/backend/app/services/external_auth_service.py` | 存在(OIDC flow) | 已刪除 |
+| `myCSPPlatform/backend/app/services/auth_provider_secret.py` | 存在(envelope encryption) | 已刪除 |
+| `myCSPPlatform/backend/app/services/card_auth.py` | 存在 | 已刪除 |
+| `myCSPPlatform/backend/app/services/card_auth_service.py` | 存在 | 已刪除 |
+| `myCSPPlatform/backend/app/api/router.py` | 多 mount `auth_providers_router` | 無此 line |
 | `myCSPPlatform/frontend/src/views/LoginView.vue` | 自然人憑證 + SSO 入口 | 純帳密表單 |
 | `myCSPPlatform/frontend/src/views/AuthProvidersView.vue` | 存在 | 已刪除 |
 | `myCSPPlatform/frontend/src/views/UsersView.vue` | 含 SSO 帳號管理 | 簡化版 |
@@ -107,6 +119,15 @@ git log --oneline --all | grep '\[prod-only\]'
 | `ANILA_UI/anila-ui/src/app.jsx` | 含 SSO 路由 | 已簡化 |
 | `ANILA_UI/anila-ui/src/login.jsx` | 已刪除(改走 LoginView.vue) | 仍存在 |
 | `ANILA_UI/anila-ui/src/runtime/auth.jsx` | SSO 流程 | 帳密流程 |
+
+⚠️ **2026-05-26 補課**:PR #16 (main→prod sync) 漏列下面 6 個 fork 區檔案,
+csp 啟動連環 ImportError。靠 deploy 過程逐個排查補回。下次 sync 前先用
+`git diff origin/prod -- myCSPPlatform/backend/app/{api,models,schemas,services}` 全表 audit:
+- `app/api/auth_providers.py`
+- `app/models/{user,auth_provider,external_identity}.py`
+- `app/schemas/user.py`
+- `app/services/{auth_service,external_auth_service,auth_provider_secret}.py`
+- 還要記得 prod 的 `auth.py` 既要含 SSO/card,**又要含 main 加的 `/api/auth/revocations` endpoint**(anila-studio cold-start sync 依賴)
 
 **例外 — 雙邊都要修的緊急情境**:
 - CVE / SQL injection / XSS / 鑑權繞過 → 兩邊各自手寫一次修補,不靠 cherry-pick
