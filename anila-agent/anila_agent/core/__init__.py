@@ -18,6 +18,17 @@ from anila_agent.core.concurrency import (
     partition_tool_calls,
     run_tool_calls,
 )
+from anila_agent.core.cost_tracker import (
+    DEFAULT_MODEL_PRICINGS,
+    SPAN_ATTR_COMPLETION_TOKENS,
+    SPAN_ATTR_COST_USD,
+    SPAN_ATTR_MODEL,
+    SPAN_ATTR_PROMPT_TOKENS,
+    CostTracker,
+    ModelPricing,
+    PricingRegistry,
+    inject_span_attributes,
+)
 from anila_agent.core.context import (
     AnilaToolContext,
     FileStateCache,
@@ -103,6 +114,16 @@ __all__ = [
     "ToolResult",
     "partition_tool_calls",
     "run_tool_calls",
+    # P1-15 cost tracker + USD pricing
+    "CostTracker",
+    "DEFAULT_MODEL_PRICINGS",
+    "ModelPricing",
+    "PricingRegistry",
+    "SPAN_ATTR_COMPLETION_TOKENS",
+    "SPAN_ATTR_COST_USD",
+    "SPAN_ATTR_MODEL",
+    "SPAN_ATTR_PROMPT_TOKENS",
+    "inject_span_attributes",
     # P0-4 hook flavors
     "CommandHook",
     "HookABC",
