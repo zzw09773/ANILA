@@ -71,4 +71,4 @@ docs/governance/
 
 ---
 
-**Last updated**: 2026-05-16 · **Owner**: ANILA 平台團隊
+**Last updated**: 2026-05-26(同步 prod 部署現況,內容未變動)· **Owner**: ANILA 平台團隊

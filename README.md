@@ -1,6 +1,17 @@
-# ANILA 平台
+# ANILA 平台(prod 分支 — 中科院內網部署版)
 
-> **Runtime-first、On-prem 多 Agent 平台。** 三個服務、一個落地 LLM，docker compose 一鍵啟動。
+> **Runtime-first、On-prem 多 Agent 平台。** 三個服務、一個落地 LLM,docker compose 一鍵啟動。
+>
+> ⚠️ **你正在看 `prod` 分支**(中科院內網部署版)。跟 `main`(國軍交付版)的主要差異:
+>
+> | 範疇 | `prod` 分支 | `main` 分支 |
+> |---|---|---|
+> | 認證 | SSO (OIDC) + 中科院 PKI 自然人憑證卡 + 本機帳密(fallback) | 純帳密 |
+> | env 模式 | fail-loud(`${VAR:?must be set}`,缺值 container 不起來) | dev fallback(`${VAR:-dev-...}`) |
+> | docs | 多 `docs/governance/`(ISO/IEC 42001 治理)、`docs/runbooks/`、`docs/branch-sync-backlog.md` | 無這些 prod-only docs |
+> | 部署腳本 | `scripts/deploy-prod.sh` + `scripts/build-and-export-for-intranet.sh` | 僅 `docker compose up` |
+>
+> 兩條分支會定期 sync(`main → prod` 走 PR + 手動處理 fork 區),完整同步策略見 [`docs/branch-sync-backlog.md`](./docs/branch-sync-backlog.md)。**改 prod 的 auth/SSO/card 相關檔不要往 main 推**;其他改動應該優先進 main,再 sync 回 prod。
 
 ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key、對外以 OpenAI 相容介面提供推論、讓開發者基於樣板複製出自己的 Agent 並註冊進來、讓終端使用者透過統一 UI 與所有 Agent 對話，並以「主 LLM 未加密 → 遇到加密 agent 整段對話升級為加密」的單向閂鎖（one-way latch）處理敏感資料。
 
@@ -170,9 +181,65 @@ flowchart TB
 
 ---
 
-## 快速開始（compose 一鍵啟動）
+## 內網快速部署(prod 主流程)
 
-### 1. 準備落地（on-prem）LLM
+中科院內網部署一律走 `scripts/deploy-prod.sh`,**不直接打 `docker compose up`**。腳本內含 pre-flight 檢查(branch / docker / env / network / models stack),避免在 main 上跑、避免 dev fallback 值偷渡上線、避免漏起模型 stack 就 build app stack。
+
+```bash
+# 0. 確認你在 prod 分支
+git checkout prod && git pull origin prod
+
+# 1. 載入 prod 環境變數(secret 從你的 prod .env 來,不要 commit 進 repo)
+set -a; source /path/to/prod.env; set +a
+
+# 2. 一鍵部署 (preflight + build + up + wait healthy + verify)
+bash scripts/deploy-prod.sh
+```
+
+`scripts/deploy-prod.sh` 子指令:
+
+| 指令 | 用途 |
+|---|---|
+| `deploy`(預設)| preflight + build + up + 等 healthy + verify |
+| `preflight` | 只跑檢查,不動 stack |
+| `up` | docker compose up -d(不 rebuild) |
+| `down` | 停 stack,保留 named volumes(db / redis / gitlab 資料不丟) |
+| `restart` | down + up |
+| `rebuild <svc>` | 改某個 service 後單獨 rebuild + restart(如 `rebuild csp`)|
+| `status` | 列所有 service health + 模型 stack health |
+| `logs <svc>` | tail -f single service logs |
+| `verify` | 跑 endpoint smoke test(含 `/api/auth/revocations` 通不通)|
+
+Pre-flight 檢查項目(每項 fail 即停):
+1. 目前 git branch 是 `prod`(防止在 main 上跑這腳本)
+2. docker daemon + compose v2 可用
+3. 必要 env(`CSP_SERVICE_TOKEN` / `INTERNAL_PLATFORM_API_KEY` / `SECRET_KEY`)非空、非 `dev/changeme/placeholder` 值
+4. `anila-models-net` external network 存在
+5. 必要模型服務(`gemma4` / `nv-embed-proxy` / `flux2-dev-agent`)healthy
+6. `share/uploads/flux` 目錄存在(flux2-dev-agent 寫圖檔用)
+
+> **更早一步:離線打包**(外網→內網)
+>
+> 中科院機房無外網,要先在有外網的開發機把所有 image 打包成 `.tar.gz`,再帶進內網 `docker load`:
+>
+> ```bash
+> # 外網:
+> bash scripts/build-and-export-for-intranet.sh
+> # → /tmp/anila-images-export/{01-anila-built,02-base,03-cold,04-models}.tar.gz + INTRANET-LOAD.sh
+>
+> # 內網(複製 export 目錄 + repo 進來):
+> bash /path/to/INTRANET-LOAD.sh        # docker load 全部 image
+> cd /path/to/anila-repo
+> docker network create anila-models-net     # 第一次需要
+> docker compose -f models/docker-compose.yml up -d   # 起模型 stack(獨立 lifecycle)
+> bash scripts/deploy-prod.sh                # 起 app stack
+> ```
+
+---
+
+## 開發者:本地 dev 啟動(不走部署腳本)
+
+### 1. 準備落地(on-prem)LLM
 
 ANILA **不含雲端 LLM fallback，也不做 token/request quota**。把 `LOCAL_LLM_BASE_URL` 指向任何 OpenAI 相容 endpoint 即可：
 
@@ -229,34 +296,23 @@ curl -N -X POST http://localhost:9000/v1/chat/completions \
 
 會看到 SSE chunk 從 `落地 LLM → CSP → Router → 你的終端` 逐段吐出。若已註冊 agent 且主 LLM 判定該分派，Router 會把 agent 自身的 SSE stream 即時 forward 回來。
 
-### 5. 內網 (offline) 部署 — build & export 工作流
-
-中科院內網無外網連線、不能 `pip install` / `npm install` / `docker pull`。完整離線部署 = **外網一鍵打包,內網一鍵 load**:
+### 5. 服務不健康時的排查路徑
 
 ```bash
-# 在外網有網路的開發機:
-bash scripts/build-and-export-for-intranet.sh
-# → /tmp/anila-images-export/
-#   01-anila-built.tar.gz   (csp / ingestion-worker / router / anilalm / anila-ui / pptx-renderer)
-#   02-base.tar.gz          (pgvector / redis / nginx)
-#   03-cold.tar.gz          (codeserver / n8n / gitlab)
-#   04-models.tar.gz        (gpt-oss-20b / gemma4 / nv-embed-triton / nv-embed-proxy,host 沒就跳過)
-#   INTRANET-LOAD.sh        (內網端一鍵 import)
-#   MANIFEST.txt            (sha256 checksum + git commit,給 IT 對檔用)
-
-# 把整個 /tmp/anila-images-export/ + repo 帶進內網 (隨身碟 / 內部閘道)
-# 內網端:
-bash /path/to/INTRANET-LOAD.sh
-cd /path/to/anila-repo
-docker network create anila-models-net   # 第一次需要
-docker compose up -d --no-build           # --no-build 是關鍵,跳過 build 階段
+bash scripts/deploy-prod.sh status              # 哪個 service 不 healthy?
+bash scripts/deploy-prod.sh logs <service>      # 看那個 service 最新 logs
+bash scripts/deploy-prod.sh rebuild <service>   # 改完 source 後單獨重 build
+bash scripts/deploy-prod.sh verify              # 跑完整 endpoint smoke test
 ```
 
-`--no-build` flag 讓 compose 即使 `build:` block 存在也跳過,直接用 image cache。Prod `.env` 必須先準備好 (`CSP_SECRET_KEY` / `CSP_SERVICE_TOKEN` / `INTERNAL_PLATFORM_API_KEY` / `CODESERVER_PASSWORD` / `ANILA_FUNCTIONS_*` 都要真實值,不然 `${VAR:?must be set}` 會 fail-fast)。完整內網模式說明見 §安全設計要點 內 **中科院憑證卡登入** + §環境變數速查 **`REQUIRE_CARD_LOGIN_ONLY`**。
+常見問題:
+- **csp ModuleNotFoundError**:多半是 fork 區 sync 漏 — 用 `git diff origin/prod -- myCSPPlatform/backend/app/{api,models,schemas,services}/` 對照 [`docs/branch-sync-backlog.md`](./docs/branch-sync-backlog.md) 「永久 fork 區」清單。
+- **anila-studio cold-start JSONDecodeError**:csp 缺 `/api/auth/revocations` endpoint。確認 `myCSPPlatform/backend/app/api/auth.py` 有 `TOKEN_REVOCATION_RETENTION_DAYS` + `list_revocations` 兩個 symbol。
+- **fail-loud env 缺值**:`${VAR:?must be set}` 表示這條 env 必設,不能省。所有 prod 必設 env 見上面 pre-flight 第 3 條。
 
 ---
 
-## 本地開發（不使用 Docker）
+## 本地開發(不使用 Docker)
 
 每個服務可獨立跑，各讀自己的 env（詳見各子專案 README）：
 
@@ -576,6 +632,31 @@ ANILA 對齊 ISO/IEC 42001:2023(AI Management System)的治理文件集中在 [`
 
 ## 最近更新
 
+### 2026-05-26 — main → prod 一次性同步(204 commits)+ 部署腳本
+
+PR #16 把 main 累積 8 個月、共 204 個 commit 一次性 sync 進 prod,讓 prod = main + (auth/SSO/card-auth fork + prod-only hardening/docs)。同步策略是 `git merge -X theirs` 偏向 main,再手動處理 fork 區 + docs 大量 rename。
+
+帶進來的主要功能:
+- **anila-studio 從 csp 抽出獨立服務**(PR #12 / 14): JWT RS256 + JWKS + Redis pub/sub revocation,加 `/api/studio/` 路由
+- **4 種新 artifact pipeline**(Phase Z): report(HTML/PDF/DOCX)/ mindmap(LLM→DOT→SVG)/ infographic(HTML+chart+PDF,繁體 Noto CJK)/ datatable(HTML/CSV/XLSX)
+- **studio 品質強化 6 輪**(theme override / FLUX 4 階段整合 / Layer C 品質閘 / pptx-renderer 4 個 theme)
+- **PR #15 兩個 bugfix**: csp usage CSV 時區 UTC+8 + ANILA_UI 生成圖片置中 + 點擊 lightbox
+
+Fork 區處理:
+- 保 prod 的 9 個 frontend 檔(`auth.py` / `users.py` / `LoginView.vue` / `UsersView.vue` / `auth.js` / `users.js` / `stores/auth.js` / `runtime/auth.jsx` / `schemas/auth_provider.py`)
+- 部署過程連環 ImportError 補回 6 個漏列的 fork 區檔: `app/models/{user,auth_provider,external_identity}.py` / `app/schemas/user.py` / `app/services/{auth_service,external_auth_service,auth_provider_secret}.py` / `app/api/auth_providers.py`
+- prod 的 `auth.py` 既保 SSO + card endpoints,又額外 port main 加的 `GET /api/auth/revocations` endpoint(anila-studio cold-start dep)
+- Compose 把 main 偷渡進來的 dev fallback 改回 prod fail-loud(`CSP_SERVICE_TOKEN` / `INTERNAL_PLATFORM_API_KEY`)+ volume 從 `share-dev/` 改回 `share/`
+
+新增的部署腳本 [`scripts/deploy-prod.sh`](./scripts/deploy-prod.sh):
+- 8 個 subcommand (`deploy` / `preflight` / `up` / `down` / `restart` / `rebuild <svc>` / `status` / `logs <svc>` / `verify`)
+- Pre-flight 自動檢查 branch / docker / env(防 dev fallback 上線)/ network / models stack / 必要目錄
+- Verify 階段確認 anila-studio → csp `/api/auth/revocations` 通,這是這次踩雷後納入 smoke test
+
+下次 main → prod sync 前的 audit checklist 寫在 [`docs/branch-sync-backlog.md`](./docs/branch-sync-backlog.md) §「永久 fork 區」,有 22 個 fork 區檔案登記在案。
+
+對應 commits: PR #16 (`88bce2f` merge)+ `25a68ab` (fork 區補課)+ `3de7c1f` (deploy-prod.sh)。
+
 ### 2026-05-15 — branch SSO 收尾:中科院憑證卡登入上線 + prod 內網模式
 
 把 sprint 5 X / 6 X 鋪的「SSO 取代本地登入」地基真的接到中科院 PKI 卡。內網 prod 從此**只剩**憑證卡這條路;本機帳密 / OIDC / 自助註冊 endpoints 在 `REQUIRE_CARD_LOGIN_ONLY=true` 下統一回 404。LOOSE / STRICT 雙模式設計初衷是「先 loose 上線、補 strict」,實際盤完發現 trust chain 完全靠使用者 PC 端的 HiPKI driver + 硬體卡 + PIN 建立 (backend 從來沒對 localhost:16888 通訊),所以**砍掉 STRICT 路徑** + 移除 CA bundle / OCSP / asn1crypto / `cryptography.x509.verification` 等相關依賴。整套程式碼瘦身了一輪。
@@ -763,4 +844,4 @@ Sprint 5 X 審查的尾巴清乾淨，並把 SSO 取代本地登入的地基鋪�
 
 ---
 
-**Last updated**: 2026-05-11（DB-driven trusted_hosts + typed 400 confirm modal + JSONB-on-SQLite 解凍）· **Maintainers**: ANILA 平台團隊 · **Single source of truth**: [`anila_plan.md`](./anila_plan.md) · **記憶層設計**：[`docs/briefing/anila-memory-layer-rfc.md`](./docs/briefing/anila-memory-layer-rfc.md) · **資安／SSO 規劃**：[`docs/platform/sso-migration.md`](./docs/platform/sso-migration.md)、[`docs/planning/sprint-7x-plan.md`](./docs/planning/sprint-7x-plan.md)、[`docs/runbooks/rotate-tls-cert.md`](./docs/runbooks/rotate-tls-cert.md) · **Service-token cutover**：[`docs/runbooks/service-token-cutover.md`](./docs/runbooks/service-token-cutover.md) · [`docs/runbooks/legacy-agent-bootstrap.md`](./docs/runbooks/legacy-agent-bootstrap.md)
+**Last updated**: 2026-05-26（main → prod sync 204 commits + deploy-prod.sh + fork 區補課）· **Maintainers**: ANILA 平台團隊 · **分支同步策略**：[`docs/branch-sync-backlog.md`](./docs/branch-sync-backlog.md) · **部署腳本**：[`scripts/deploy-prod.sh`](./scripts/deploy-prod.sh) · **Single source of truth**: [`anila_plan.md`](./anila_plan.md) · **記憶層設計**：[`docs/briefing/anila-memory-layer-rfc.md`](./docs/briefing/anila-memory-layer-rfc.md) · **資安／SSO 規劃**：[`docs/platform/sso-migration.md`](./docs/platform/sso-migration.md)、[`docs/planning/sprint-7x-plan.md`](./docs/planning/sprint-7x-plan.md)、[`docs/runbooks/rotate-tls-cert.md`](./docs/runbooks/rotate-tls-cert.md) · **Service-token cutover**：[`docs/runbooks/service-token-cutover.md`](./docs/runbooks/service-token-cutover.md) · [`docs/runbooks/legacy-agent-bootstrap.md`](./docs/runbooks/legacy-agent-bootstrap.md)
