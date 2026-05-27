@@ -7,10 +7,17 @@ from anila_agent.cli.approval_repl import (
     ReplResult,
     run_approval_repl,
 )
+from anila_agent.cli.draw_graph_cli import (
+    build_stub_agent,
+)
+from anila_agent.cli.draw_graph_cli import (
+    main as draw_graph_cli_main,
+)
 
 __all__ = [
-    # P1-8 HITL approval REPL
     "InputProvider",
     "ReplResult",
+    "build_stub_agent",
+    "draw_graph_cli_main",
     "run_approval_repl",
 ]
