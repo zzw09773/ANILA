@@ -98,6 +98,14 @@ from anila_agent.core.prompt_cache import (
     compute_prefix_hash,
     is_in_fork_child,
 )
+from anila_agent.core.run_state import (
+    HITLController,
+    JsonFileStateStore,
+    PauseReason,
+    RunState,
+    RunStatus,
+    pause_streaming_if_needed,
+)
 from anila_agent.core.stop_hook import (
     KeywordStopHook,
     MaxIterationsStopHook,
@@ -263,4 +271,11 @@ __all__ = [
     "build_subagent_prefix",
     "compute_prefix_hash",
     "is_in_fork_child",
+    # P1-8 RunState HITL pause/resume + tool approval
+    "HITLController",
+    "JsonFileStateStore",
+    "PauseReason",
+    "RunState",
+    "RunStatus",
+    "pause_streaming_if_needed",
 ]
