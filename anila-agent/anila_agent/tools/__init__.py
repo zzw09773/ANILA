@@ -5,6 +5,16 @@ from anila_agent.tools.base import (
     anila_tool,
     get_metadata,
 )
+from anila_agent.tools.file_index import (
+    DEFAULT_EXCLUDE_PATTERNS,
+    FIND_FILE_TOOL_NAME,
+    ContextResolver,
+    FileIndex,
+    FileMatch,
+    build_find_file_tool,
+    fuzzy_search,
+    register_file_index_tools,
+)
 from anila_agent.tools.guardrails import (
     ToolGuardrailBehavior,
     ToolGuardrailResult,
@@ -34,9 +44,14 @@ from anila_agent.tools.tool_search import (
 
 __all__ = [
     "ACTIVATE_TOOL_NAME",
+    "DEFAULT_EXCLUDE_PATTERNS",
+    "FIND_FILE_TOOL_NAME",
     "TOOL_SEARCH_TOOL_NAME",
     "AnilaTool",
+    "ContextResolver",
     "CostEstimate",
+    "FileIndex",
+    "FileMatch",
     "SessionResolver",
     "ToolGuardrailBehavior",
     "ToolGuardrailResult",
@@ -48,11 +63,14 @@ __all__ = [
     "ToolRegistry",
     "ToolSearchResult",
     "anila_tool",
+    "build_find_file_tool",
     "build_meta_tools",
     "format_search_results",
+    "fuzzy_search",
     "get_metadata",
     "load_tools",
     "make_static_session_resolver",
+    "register_file_index_tools",
     "register_meta_tools",
     "reset_active_deferred",
     "search_deferred",
