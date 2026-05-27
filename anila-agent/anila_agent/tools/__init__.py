@@ -15,11 +15,29 @@ from anila_agent.tools.guardrails import (
     tool_input_guardrail,
     tool_output_guardrail,
 )
-from anila_agent.tools.registry import ToolRegistry, load_tools
+from anila_agent.tools.registry import (
+    ToolRegistry,
+    load_tools,
+    reset_active_deferred,
+)
+from anila_agent.tools.tool_search import (
+    ACTIVATE_TOOL_NAME,
+    TOOL_SEARCH_TOOL_NAME,
+    SessionResolver,
+    ToolSearchResult,
+    build_meta_tools,
+    format_search_results,
+    make_static_session_resolver,
+    register_meta_tools,
+    search_deferred,
+)
 
 __all__ = [
+    "ACTIVATE_TOOL_NAME",
+    "TOOL_SEARCH_TOOL_NAME",
     "AnilaTool",
     "CostEstimate",
+    "SessionResolver",
     "ToolGuardrailBehavior",
     "ToolGuardrailResult",
     "ToolInputGuardrail",
@@ -28,9 +46,16 @@ __all__ = [
     "ToolOutputGuardrail",
     "ToolOutputGuardrailProtocol",
     "ToolRegistry",
+    "ToolSearchResult",
     "anila_tool",
+    "build_meta_tools",
+    "format_search_results",
     "get_metadata",
     "load_tools",
+    "make_static_session_resolver",
+    "register_meta_tools",
+    "reset_active_deferred",
+    "search_deferred",
     "tool_input_guardrail",
     "tool_output_guardrail",
 ]

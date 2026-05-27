@@ -2,7 +2,7 @@
 
 __version__ = "0.1.0"
 
-from anila_agent import mcp, runtime, tracing, triggers
+from anila_agent import mcp, providers, runtime, tracing, triggers
 from anila_agent.core.agent import build_agent
 from anila_agent.core.events import Event, EventBus
 from anila_agent.core.hook_flavors import (
@@ -42,6 +42,7 @@ __all__ = [
     "StopInput",
     "build_agent",
     "mcp",
+    "providers",
     "runtime",
     "tracing",
     "triggers",

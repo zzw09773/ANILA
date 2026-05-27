@@ -34,22 +34,30 @@ from anila_agent.mcp.manager import (
     load_mcp_servers_from_yaml,
 )
 from anila_agent.mcp.server import (
+    MCPConnectionLostError,
+    MCPRetryExhaustedError,
     MCPServer,
     MCPServerSse,
     MCPServerStdio,
     MCPServerStreamableHttp,
+    MCPTimeoutError,
     MCPTool,
     MCPTransportError,
+    TransportConfig,
 )
 
 __all__ = [
+    "MCPConnectionLostError",
+    "MCPRetryExhaustedError",
     "MCPServer",
     "MCPServerManager",
     "MCPServerSse",
     "MCPServerStdio",
     "MCPServerStreamableHttp",
+    "MCPTimeoutError",
     "MCPTool",
     "MCPTransportError",
+    "TransportConfig",
     "build_function_tool_from_mcp",
     "load_mcp_servers_from_yaml",
 ]
