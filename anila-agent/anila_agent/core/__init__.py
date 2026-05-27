@@ -123,6 +123,7 @@ from anila_agent.core.policy import (
     PolicyEngine,
     PolicyRule,
     allow_all_except,
+    apply_policy_to_system_context,
     deny_all,
     policy_to_tool_input_guardrail,
     read_only,
@@ -200,12 +201,13 @@ __all__ = [
     "OutputGuardrailProtocol",
     "input_guardrail",
     "output_guardrail",
-    # P0-7 policy DSL
+    # P0-7 policy DSL + P1-19 disable vs deny prompt filter
     "PolicyDecision",
     "PolicyEffect",
     "PolicyEngine",
     "PolicyRule",
     "allow_all_except",
+    "apply_policy_to_system_context",
     "deny_all",
     "policy_to_tool_input_guardrail",
     "read_only",
