@@ -124,6 +124,13 @@ from anila_agent.core.run_state import (
     RunStatus,
     pause_streaming_if_needed,
 )
+from anila_agent.core.task_manager import (
+    DEFAULT_TASK_TIMEOUT_SECONDS,
+    OnCompleteCallback,
+    Task,
+    TaskManager,
+    TaskState,
+)
 from anila_agent.core.stop_hook import (
     KeywordStopHook,
     MaxIterationsStopHook,
@@ -291,4 +298,10 @@ __all__ = [
     "RunState",
     "RunStatus",
     "pause_streaming_if_needed",
+    # P2-12 background task lifecycle
+    "DEFAULT_TASK_TIMEOUT_SECONDS",
+    "OnCompleteCallback",
+    "Task",
+    "TaskManager",
+    "TaskState",
 ]
