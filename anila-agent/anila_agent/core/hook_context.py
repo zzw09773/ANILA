@@ -216,6 +216,13 @@ class SessionContext:
             內呼叫 :meth:`queue_message` 把訊息塞進來,agent loop 下次 turn
             開始時 ``message_queue.get_nowait()`` 拉出來 prepend 給 LLM。
             預設為空 asyncio.Queue。
+        current_query_id: P2-9 — 當前 active 的 user query 識別碼。一個
+            「user query」單位內所有 span 共用,讓 tracing JSONL 後續可
+            依此欄位聚合「這個 user 問題觸發了多少 LLM call」。透過
+            :meth:`start_query` / :meth:`end_query` context manager
+            (或對應 helper)自動 set/clear,通常不直接賦值。
+        query_started_at: 當前 query 的開始時間(epoch seconds);無 active
+            query 時為 None。供 SLA / latency 分析使用。
     """
 
     session_id: str
@@ -226,6 +233,9 @@ class SessionContext:
     message_queue: asyncio.Queue[dict[str, Any]] = field(
         default_factory=asyncio.Queue, repr=False
     )
+    # P2-9 queryTracking:目前 active 的 user query。
+    current_query_id: str | None = None
+    query_started_at: float | None = None
 
     # ---- 生命週期 --------------------------------------------------------
 
@@ -290,6 +300,74 @@ class SessionContext:
             except asyncio.QueueEmpty:
                 break
         return drained
+
+    # ---- P2-9 queryTracking --------------------------------------------
+
+    @contextlib.contextmanager
+    def start_query(
+        self,
+        *,
+        query_id: str | None = None,
+        tracer: Any = None,
+    ) -> Iterator[str]:
+        """以 context manager 開啟一個 user query scope,結束自動清除。
+
+        P2-9:一個「user query」單位內所有由 :class:`anila_agent.tracing.Tracer`
+        建出的 span 會自動繼承這個 ``query_id``。典型用法是在 user 送出 prompt
+        前 wrap 整個 agent run:
+
+        ```python
+        with session.start_query(tracer=tracer) as qid:
+            await runner.run(agent, user_input, session=session)
+        ```
+
+        若不傳 ``tracer`` 也安全,只更新 SessionContext 本身的
+        ``current_query_id`` 欄位,讓 hook / app 程式碼可讀。但 Tracer
+        thread-local 不會 sync,span 的 ``query_id`` 仍為 None。
+
+        Args:
+            query_id: 自訂 id;不給就生 uuid4。
+            tracer: 可選 :class:`anila_agent.tracing.Tracer`;傳入則同步把
+                query_id push 進 tracer thread-local,讓 span 也能繼承。
+                這裡刻意用 ``Any`` 而非具體 type 是為了避免 circular import
+                (``hook_context`` 是底層模組,``tracing`` 也底層)。
+
+        Yields:
+            str: 已 set 的 query_id。
+        """
+        qid = query_id or uuid.uuid4().hex
+        # 防呆:不允許在已有 active query 內再開新 query(會破壞 id 一致性)。
+        if self.current_query_id is not None:
+            raise RuntimeError(
+                f"start_query nested in active query {self.current_query_id!r}; "
+                "end_query / exit the outer context first"
+            )
+
+        prev_tracer_qid: str | None = None
+        if tracer is not None:
+            prev_tracer_qid = tracer.current_query_id
+            tracer.set_current_query_id(qid)
+        self.current_query_id = qid
+        self.query_started_at = time.time()
+        try:
+            yield qid
+        finally:
+            self.current_query_id = None
+            self.query_started_at = None
+            if tracer is not None:
+                # 還原(若 caller 在某種奇怪情境下有外層 query_id 也救得回來)。
+                tracer.set_current_query_id(prev_tracer_qid)
+
+    def end_query(self, *, tracer: Any = None) -> None:
+        """手動結束當前 query(若呼叫端不想用 context manager)。
+
+        若無 active query,no-op。``tracer`` 同 :meth:`start_query` 的處理 —
+        若有傳就把 tracer thread-local 的 query_id 清掉。
+        """
+        self.current_query_id = None
+        self.query_started_at = None
+        if tracer is not None:
+            tracer.set_current_query_id(None)
 
     # ---- 子層 builder ---------------------------------------------------
 
