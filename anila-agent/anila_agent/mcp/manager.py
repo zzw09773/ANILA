@@ -41,6 +41,7 @@ from anila_agent.mcp.server import (
     MCPServerStdio,
     MCPServerStreamableHttp,
     MCPTool,
+    TransportConfig,
 )
 from anila_agent.tools.base import ToolMetadata, _attach_metadata
 from anila_agent.tools.registry import ToolRegistry
@@ -348,12 +349,49 @@ def load_mcp_servers_from_yaml(path: str | Path) -> list[MCPServer]:
     return out
 
 
+def _build_transport_config(
+    server_name: str, raw: Any
+) -> TransportConfig | None:
+    """從 yaml ``transport_config`` 區段建 :class:`TransportConfig`。
+
+    None / 空 → 回 None,呼叫端會用 server class 的預設;非 dict 則 raise。
+    支援欄位: ``connect_timeout`` / ``request_timeout`` / ``idle_timeout`` /
+    ``max_retries`` / ``retry_backoff_seconds`` / ``heartbeat_interval``。
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"MCP server {server_name!r}: 'transport_config' must be a mapping"
+        )
+    kwargs: dict[str, Any] = {}
+    if "connect_timeout" in raw:
+        kwargs["connect_timeout"] = float(raw["connect_timeout"])
+    if "request_timeout" in raw:
+        kwargs["request_timeout"] = float(raw["request_timeout"])
+    if "idle_timeout" in raw:
+        kwargs["idle_timeout"] = float(raw["idle_timeout"])
+    if "max_retries" in raw:
+        kwargs["max_retries"] = int(raw["max_retries"])
+    if "retry_backoff_seconds" in raw:
+        kwargs["retry_backoff_seconds"] = float(raw["retry_backoff_seconds"])
+    if "heartbeat_interval" in raw:
+        v = raw["heartbeat_interval"]
+        kwargs["heartbeat_interval"] = float(v) if v is not None else None
+    return TransportConfig(**kwargs)
+
+
 def _build_server_from_yaml_entry(entry: dict[str, Any]) -> MCPServer:
-    """依 yaml entry 的 ``transport`` 欄位分派到正確的 server class。"""
+    """依 yaml entry 的 ``transport`` 欄位分派到正確的 server class。
+
+    P1-12 — 支援可選的 ``transport_config`` 區段,內容對應
+    :class:`TransportConfig` 欄位。
+    """
     name = str(entry.get("name") or "")
     if not name:
         raise ValueError(f"MCP server entry missing 'name': {entry!r}")
     transport = str(entry.get("transport") or "").lower()
+    transport_config = _build_transport_config(name, entry.get("transport_config"))
 
     if transport == "stdio":
         command = str(entry.get("command") or "")
@@ -374,6 +412,7 @@ def _build_server_from_yaml_entry(entry: dict[str, Any]) -> MCPServer:
             args=[str(a) for a in args_raw],
             env=env_typed,
             cwd=str(entry["cwd"]) if entry.get("cwd") else None,
+            transport_config=transport_config,
         )
 
     if transport == "sse":
@@ -386,6 +425,7 @@ def _build_server_from_yaml_entry(entry: dict[str, Any]) -> MCPServer:
             url=url,
             headers={str(k): str(v) for k, v in headers_raw.items()},
             timeout=float(entry.get("timeout") or 30.0),
+            transport_config=transport_config,
         )
 
     if transport == "http":
@@ -398,6 +438,7 @@ def _build_server_from_yaml_entry(entry: dict[str, Any]) -> MCPServer:
             url=url,
             headers={str(k): str(v) for k, v in headers_raw.items()},
             timeout=float(entry.get("timeout") or 30.0),
+            transport_config=transport_config,
         )
 
     raise ValueError(
