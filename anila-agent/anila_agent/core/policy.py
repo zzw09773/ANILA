@@ -1,6 +1,6 @@
 """Policy DSL — 把 tool 控管從「寫 callback」升級成「列宣告」。
 
-本模組對應 enhancement roadmap P0-7:把上游 antigravity SDK
+本模組對應 enhancement roadmap P0-7 / P1-19:把上游 antigravity SDK
 `hooks/policy.py` 的 Policy DSL 拉一層抽象在 P0-6 guardrail 之上,
 讓開發者用 declarative rule 設定「哪些 tool 在什麼 ctx 下 allow /
 deny / disable」。
@@ -12,6 +12,44 @@ deny / disable」。
   - ``ALLOW``  — 通過,tool 照常執行。
   - ``DENY``   — 拒絕,attempt 一個 tool call 但回拒絕訊息給 LLM(模型還看得到 tool)。
   - ``DISABLE``— 連讓 LLM 看到 tool 都不要(供 capability filter 用,比 DENY 更強)。
+
+# DENY vs DISABLE 二維工具控管(P1-19)
+
+兩者語意截然不同,**請依場景挑對的 effect**:
+
++---------+--------------------------+--------------------------+
+| effect  | tool 在 prompt 內可見?  | tool call 時被擋?       |
++=========+==========================+==========================+
+| ALLOW   | 是                       | 否                       |
++---------+--------------------------+--------------------------+
+| DENY    | **是**                   | **是(回拒絕訊息)**     |
++---------+--------------------------+--------------------------+
+| DISABLE | **否(整個移除)**       | **是(訊息 fallback)**  |
++---------+--------------------------+--------------------------+
+
+* **DENY** 適合 LLM「應該知道有這 tool 但目前情境下不能用」的場景,例如
+  read-only mode 下的 ``shell.run`` ── LLM 看到 tool list 後能解釋
+  「我沒辦法執行 shell」,user 體驗較佳。
+
+* **DISABLE** 適合「LLM 完全不該知道這 tool 存在」的場景,例如
+  prod 環境隱藏 dev-only 工具、根據 user 權限動態移除 admin tool ──
+  LLM 不會嘗試呼叫,也不會在解釋中提及不存在的工具,避免 prompt
+  injection 借由 tool 名稱誘導模型。
+
+* **執行面實作**:
+  - DENY 由 :class:`PolicyEngine.evaluate` 在 tool call 時 short-circuit,
+    走 :func:`policy_to_tool_input_guardrail` 適配進 P0-6 guardrail chain。
+  - DISABLE 由 :meth:`PolicyEngine.filter_tool_descriptions` 在組
+    prompt **之前** 把 tool 從 list 移除;若 LLM 仍嘗試 call(理論上
+    不會,因為它不知道),最後仍會 fallback 成 BLOCK,維持縱深防禦。
+
+* **快速 wire 進 P1-10 prompt builder**:
+
+      from anila_agent.core.policy import apply_policy_to_system_context
+
+      apply_policy_to_system_context(system_builder, engine, tool_list, ctx)
+      # 內部:engine.filter_tool_descriptions(tool_list, ctx)
+      # 再:system_builder.add_tool_description(filtered)
 
 * **優先級**:`PolicyRule.priority`(int,**高 → 低** 排序評估)。
   同 priority 內維持「先註冊先評估」(stable sort)。第一個 match 的 rule
@@ -36,6 +74,35 @@ deny / disable」。
 * **YAML 載入**(可選):`PolicyEngine.from_yaml()` 接 5 branch 部署 — 每個
   branch 可有自己 policy yaml(prod-public-passwd 嚴格、dev-public 寬鬆)。
 
+  典型 YAML 同時用 DENY / DISABLE 的範例(對齊 prod-internal 嚴控 branch)::
+
+      rules:
+        # admin-only tool 在非 admin session 整個移除,LLM 看不到
+        - name: hide_admin_tools
+          tool_pattern: "admin\\..*"
+          effect: disable
+          priority: 1000
+          reason: "admin tools hidden in user session"
+
+        # destructive shell tool 保留可見,但 call 時擋,讓 LLM 知道為何不能用
+        - name: deny_shell_in_readonly
+          tool_pattern: "shell.run"
+          effect: deny
+          priority: 900
+          reason: "shell execution denied in read-only mode"
+
+        # 一般 read tool 全部放行
+        - name: allow_read_tools
+          tool_pattern: "read_.*"
+          effect: allow
+          priority: 500
+
+        # default-deny fallback
+        - name: deny_all_fallback
+          effect: deny
+          priority: 0
+          reason: "default-deny posture"
+
 本檔僅依賴 std lib + 既有 P0-3 / P0-6(及可選 pyyaml),不引入 openai-agents
 與 antigravity,以維持單元可測。
 """
@@ -43,11 +110,14 @@ deny / disable」。
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from anila_agent.prompts.prompt_builder import SystemContextBuilder
 
 from anila_agent.core.context import AnilaToolContext
 from anila_agent.core.events import EventBus
@@ -383,6 +453,58 @@ class PolicyEngine:
                 reason=decision.reason,
             )
         return decision
+
+    # ---- DISABLE-層 prompt filter(P1-19) -------------------------------
+
+    def filter_tool_descriptions(
+        self,
+        tool_list: Iterable[Any],
+        ctx: Any,
+    ) -> list[Any]:
+        """把 LLM 看不到的 (DISABLE) tool 從 prompt-時 tool list 移除。
+
+        這是 P1-19 「DENY vs DISABLE 二維工具控管」的 prompt-level 行為:
+
+        * 對每個 tool 用空 args(``{}``)evaluate;tool 名稱取自:
+          - 物件有 ``.name`` 屬性(常見:``ToolDescriptor``、``FunctionTool``)。
+          - 否則若為 ``Mapping`` 取 ``["name"]``。
+          - 否則 ``str(tool)`` fallback。
+        * effect 為 ``DISABLE`` → **不**收進回傳 list(LLM 連看都看不到)。
+        * effect 為 ``DENY`` / ``ALLOW`` → 保留(LLM 仍可看到 tool 描述)。
+
+        為什麼空 args?組 prompt 時根本還沒有具體 call args,只能用 ctx +
+        tool_name 兩維判定。如果你的 DISABLE rule 寫了會依賴 args 的
+        ``condition``,在 prompt 階段那個 condition 會跑在空 dict 上 ——
+        請把 args-依賴的判定改用 DENY effect,讓它在 call 時擋。
+
+        Args:
+            tool_list: 任何形態的 tool list(``ToolDescriptor`` / dict /
+                openai-agents ``FunctionTool`` 等);只要有 ``.name`` 屬性
+                或 ``name`` key 都吃。
+            ctx: 評估 ctx,通常為 :class:`AnilaToolContext`。
+
+        Returns:
+            移除 DISABLE 後的 tool list(保留原物件,順序不變)。
+
+        Example::
+
+            engine = PolicyEngine()
+            engine.add_rule(PolicyRule(
+                name="hide_admin",
+                tool_pattern="admin.*",
+                effect=PolicyEffect.DISABLE,
+            ))
+            visible = engine.filter_tool_descriptions(all_tools, ctx)
+            # admin_panel 等會被移除,LLM 看不到
+        """
+        filtered: list[Any] = []
+        for tool in tool_list:
+            tool_name = _extract_tool_name(tool)
+            decision = self.evaluate(ctx, tool_name, {})
+            if decision.effect is PolicyEffect.DISABLE:
+                continue
+            filtered.append(tool)
+        return filtered
 
     # ---- YAML 載入(可選) -----------------------------------------------
 
@@ -847,6 +969,78 @@ def policy_to_tool_input_guardrail(
     return ToolInputGuardrail(guardrail_function=_adapter, name=name)
 
 
+# ---------------------------------------------------------------------------
+# P1-19 helper:DISABLE-層 prompt filter + 與 P1-10 SystemContextBuilder 整合
+# ---------------------------------------------------------------------------
+
+
+def _extract_tool_name(tool: Any) -> str:
+    """從任意 tool 物件抽出 name。
+
+    支援三種形態:
+
+    1. 有 ``.name`` 屬性(``ToolDescriptor`` / openai-agents ``FunctionTool``
+       / 任何 namedtuple-like)。
+    2. ``Mapping`` 含 ``"name"`` key(YAML / JSON 載入的 raw dict)。
+    3. fallback 為 ``str(tool)``,但這通常是錯用 API。
+    """
+    name = getattr(tool, "name", None)
+    if isinstance(name, str) and name:
+        return name
+    if isinstance(tool, dict) and isinstance(tool.get("name"), str):
+        return tool["name"]
+    return str(tool)
+
+
+def apply_policy_to_system_context(
+    builder: SystemContextBuilder,
+    policy_engine: PolicyEngine,
+    tool_list: Iterable[Any],
+    ctx: Any,
+) -> list[Any]:
+    """把 ``tool_list`` 經 policy filter 後直接灌進 P1-10 system context。
+
+    一行整合 P1-19 的 DISABLE filter 與 P1-10 的
+    :meth:`SystemContextBuilder.add_tool_description`:
+
+    1. ``policy_engine.filter_tool_descriptions(tool_list, ctx)`` 移除 DISABLE。
+    2. 把剩餘 tool 灌進 ``builder.add_tool_description(filtered)``。
+
+    為什麼放在 ``core.policy`` 而不是 ``prompts/``:
+        prompts 子模組刻意 **不依賴** core(避免雙向耦合);policy → prompts
+        的單向依賴在 :data:`TYPE_CHECKING` block 內 lazy import,執行時不
+        引發 cycle。
+
+    Args:
+        builder: 已建立的 :class:`SystemContextBuilder`,本 helper 會
+            mutate(call ``add_tool_description``)。
+        policy_engine: 設好 rule 的 :class:`PolicyEngine`。
+        tool_list: 完整 tool list(含可能被 DISABLE 移掉的)。
+        ctx: 評估 ctx,通常為 :class:`AnilaToolContext`。
+
+    Returns:
+        實際塞進 builder 的 filter 後 tool list(方便 caller 觀察 / log)。
+
+    Example::
+
+        engine = PolicyEngine()
+        engine.add_rule(PolicyRule(
+            name="hide_admin",
+            tool_pattern="admin_panel",
+            effect=PolicyEffect.DISABLE,
+            reason="admin tools hidden in user session",
+        ))
+
+        builder = SystemContextBuilder()
+        builder.add_role("You are the ANILA assistant.")
+        apply_policy_to_system_context(builder, engine, all_tools, ctx)
+        # builder.build() 出來的 prompt 不會有 admin_panel 描述
+    """
+    filtered = policy_engine.filter_tool_descriptions(tool_list, ctx)
+    builder.add_tool_description(filtered)
+    return filtered
+
+
 __all__ = [
     # 結構
     "PolicyDecision",
@@ -860,4 +1054,6 @@ __all__ = [
     "workspace_only",
     # adapter
     "policy_to_tool_input_guardrail",
+    # P1-19 prompt-level filter integration
+    "apply_policy_to_system_context",
 ]

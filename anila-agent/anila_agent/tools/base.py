@@ -47,6 +47,10 @@ class ToolMetadata:
             可拒絕在 offline / sandbox 環境執行。
         category: tool 分類字串(例如 "filesystem" / "retrieval" / "compute"),供
             registry 過濾與 UI 分組使用。
+        is_deferred: P1-18 deferred tool 標記。`True` 代表 tool 預設「不放進 prompt」,
+            只有 LLM 透過 ``tool_search`` meta-tool 找到並 ``activate_tool`` 啟用後
+            才會出現在 active list。對應 claude-code-src `Tool.shouldDefer`。
+            MCP-provided tool 預設值為 True(對應 `Tool.isMcp`),其他 tool 預設 False。
         requires_confirmation: 保留欄位 — 舊版 alias,與 `requires_approval` 語意相同。
             為避免破壞既有呼叫端,兩個欄位都保留。新 code 請優先使用 `requires_approval`。
     """
@@ -58,6 +62,7 @@ class ToolMetadata:
     requires_approval: bool = False
     is_open_world: bool = False
     category: str = "general"
+    is_deferred: bool = False
     # 舊欄位,保留以維持向後相容(P0-2 前的呼叫端會傳這個 keyword)。
     requires_confirmation: bool = False
 
@@ -100,6 +105,7 @@ def anila_tool(
     requires_approval: bool = False,
     is_open_world: bool = False,
     category: str = "general",
+    is_deferred: bool = False,
     requires_confirmation: bool = False,
     **function_tool_kwargs: Any,
 ) -> Callable[[Callable[..., Any]], FunctionTool]:
@@ -118,6 +124,8 @@ def anila_tool(
         requires_approval: 是否需 user approval。
         is_open_world: 是否需對外網路。
         category: tool 分類。
+        is_deferred: P1-18 deferred 標記;True 代表此 tool 預設不放進 prompt,
+            由 ``tool_search`` / ``activate_tool`` 動態啟用。
         requires_confirmation: 舊欄位 alias,與 `requires_approval` 等義。
         **function_tool_kwargs: 透傳給 openai-agents `function_tool`(例如
             `name_override` / `description_override`)。
@@ -137,6 +145,7 @@ def anila_tool(
                 requires_approval=requires_approval,
                 is_open_world=is_open_world,
                 category=category,
+                is_deferred=is_deferred,
                 requires_confirmation=requires_confirmation,
             ),
         )
@@ -179,6 +188,7 @@ class AnilaTool:
         requires_approval: bool = False,
         is_open_world: bool = False,
         category: str = "general",
+        is_deferred: bool = False,
         requires_confirmation: bool = False,
         name: str | None = None,
         description: str | None = None,
@@ -194,6 +204,7 @@ class AnilaTool:
                 requires_approval=requires_approval,
                 is_open_world=is_open_world,
                 category=category,
+                is_deferred=is_deferred,
                 requires_confirmation=requires_confirmation,
             ),
             name=name,
