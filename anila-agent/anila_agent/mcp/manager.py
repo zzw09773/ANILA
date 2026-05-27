@@ -50,6 +50,15 @@ logger = logging.getLogger(__name__)
 
 
 # MCP-provided tool 的預設 metadata — 套到每個動態註冊的 tool 上。
+#
+# P1-18:MCP tool 預設 ``is_deferred=True``,對應 claude-code-src 的
+# ``isDeferredTool(tool)`` 將 ``tool.isMcp === true`` 視為 defer 條件。
+# 理由:single MCP server 可能 expose 50+ tools,把全部 schema 一次塞進 system
+# prompt 對 input token 是災難。透過 ``tool_search`` + ``activate_tool`` 動態啟用
+# 才是 scaling 的關鍵。
+#
+# 呼叫端若想強制 MCP tool 一啟動就 active(例如測試 / 已知 small server),可在
+# :meth:`MCPServerManager._connect_one` 註冊 tool 後手動 ``registry.deferred_names.discard``。
 _MCP_TOOL_METADATA = ToolMetadata(
     is_read_only=False,
     is_destructive=False,
@@ -57,6 +66,7 @@ _MCP_TOOL_METADATA = ToolMetadata(
     requires_approval=False,
     is_open_world=True,
     category="mcp",
+    is_deferred=True,
 )
 
 # Lifecycle callback alias。
@@ -229,8 +239,10 @@ class MCPServerManager:
 
     async def _disconnect_one(self, entry: _RegisteredEntry) -> None:
         # 先 unregister tool,避免外面 race。
+        # P1-18 — 同時清掉 deferred_names 內的紀錄,避免 server 重連時殘留。
         for tool_name in entry.tool_names:
             self.registry.tools.pop(tool_name, None)
+            self.registry.deferred_names.discard(tool_name)
         entry.tool_names.clear()
         server = entry.server
         try:
