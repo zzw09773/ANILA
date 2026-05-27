@@ -16,11 +16,17 @@ concurrency partitioner 都能基於 tool 屬性決策。
 from __future__ import annotations
 
 import functools
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from agents import FunctionTool, function_tool
+
+if TYPE_CHECKING:
+    from anila_agent.tools.guardrails import (
+        ToolInputGuardrail,
+        ToolOutputGuardrail,
+    )
 
 # 粗略成本標記。`None` 代表未標註,呼叫端應視為「未知」。
 CostEstimate = Literal["free", "low", "medium", "high"]
@@ -78,10 +84,31 @@ class ToolMetadata:
 
 
 _METADATA_ATTR = "__anila_metadata__"
+_INPUT_GUARDRAILS_ATTR = "__anila_input_guardrails__"
+_OUTPUT_GUARDRAILS_ATTR = "__anila_output_guardrails__"
 
 
 def _attach_metadata(tool: FunctionTool, metadata: ToolMetadata) -> FunctionTool:
     setattr(tool, _METADATA_ATTR, metadata)
+    return tool
+
+
+def _attach_guardrails(
+    tool: FunctionTool,
+    *,
+    input_guardrails: Sequence[ToolInputGuardrail[Any]] | None,
+    output_guardrails: Sequence[ToolOutputGuardrail[Any]] | None,
+) -> FunctionTool:
+    """把 P2-4 tool-level guardrail chain 黏到 FunctionTool 物件上。
+
+    採 attach 模式(不動 upstream FunctionTool dataclass field),維持與 P0-2 metadata
+    一致的設計;呼叫端透過 ``get_tool_guardrails(tool)`` / ``get_tool_input_guardrails(tool)``
+    取出 chain。``None`` 與空 list 視為「未掛任何 guardrail」,等同舊行為。
+    """
+    if input_guardrails:
+        setattr(tool, _INPUT_GUARDRAILS_ATTR, list(input_guardrails))
+    if output_guardrails:
+        setattr(tool, _OUTPUT_GUARDRAILS_ATTR, list(output_guardrails))
     return tool
 
 
@@ -96,6 +123,29 @@ def get_metadata(tool: FunctionTool | Any) -> ToolMetadata:
     return ToolMetadata()
 
 
+def get_tool_input_guardrails(
+    tool: FunctionTool | Any,
+) -> list[ToolInputGuardrail[Any]]:
+    """回傳 tool-level input guardrail chain;未宣告者回傳空 list。
+
+    P2-4 新增;用於 runner / executor 在 tool call 前依序執行 guardrail。
+    """
+    chain = getattr(tool, _INPUT_GUARDRAILS_ATTR, None)
+    if isinstance(chain, list):
+        return list(chain)
+    return []
+
+
+def get_tool_output_guardrails(
+    tool: FunctionTool | Any,
+) -> list[ToolOutputGuardrail[Any]]:
+    """回傳 tool-level output guardrail chain;未宣告者回傳空 list。"""
+    chain = getattr(tool, _OUTPUT_GUARDRAILS_ATTR, None)
+    if isinstance(chain, list):
+        return list(chain)
+    return []
+
+
 def anila_tool(
     *,
     is_read_only: bool = False,
@@ -107,6 +157,8 @@ def anila_tool(
     category: str = "general",
     is_deferred: bool = False,
     requires_confirmation: bool = False,
+    input_guardrails: Sequence[ToolInputGuardrail[Any]] | None = None,
+    output_guardrails: Sequence[ToolOutputGuardrail[Any]] | None = None,
     **function_tool_kwargs: Any,
 ) -> Callable[[Callable[..., Any]], FunctionTool]:
     """`@function_tool` + Anila metadata 的裝飾器。
@@ -115,6 +167,11 @@ def anila_tool(
 
         @anila_tool(is_read_only=True, category="retrieval", cost_estimate="low")
         def search_documents(query: str, k: int = 5) -> list[dict]: ...
+
+        @anila_tool(
+            input_guardrails=[LengthLimitInputGuardrail(max_chars=5000)],
+        )
+        def write_file(path: str, content: str) -> str: ...
 
     Args:
         is_read_only: 唯讀 tool 標記。
@@ -127,6 +184,11 @@ def anila_tool(
         is_deferred: P1-18 deferred 標記;True 代表此 tool 預設不放進 prompt,
             由 ``tool_search`` / ``activate_tool`` 動態啟用。
         requires_confirmation: 舊欄位 alias,與 `requires_approval` 等義。
+        input_guardrails: P2-4 — 掛在此 tool 上的 input guardrail chain。tool 被 invoke
+            前 runner 依序執行,任一 BLOCK → raise tripwire;REPLACE_CONTENT → 改 args 繼續。
+            空 list / None 等同未掛(向後相容)。
+        output_guardrails: P2-4 — 掛在此 tool 上的 output guardrail chain。tool 回傳後
+            runner 依序執行,語意與 input chain 對稱。
         **function_tool_kwargs: 透傳給 openai-agents `function_tool`(例如
             `name_override` / `description_override`)。
     """
@@ -135,7 +197,7 @@ def anila_tool(
         wrapped = function_tool(**function_tool_kwargs)(fn)
         if not isinstance(wrapped, FunctionTool):
             raise TypeError("function_tool did not return a FunctionTool")
-        return _attach_metadata(
+        _attach_metadata(
             wrapped,
             ToolMetadata(
                 is_read_only=is_read_only,
@@ -149,6 +211,12 @@ def anila_tool(
                 requires_confirmation=requires_confirmation,
             ),
         )
+        _attach_guardrails(
+            wrapped,
+            input_guardrails=input_guardrails,
+            output_guardrails=output_guardrails,
+        )
+        return wrapped
 
     return decorator
 
@@ -164,6 +232,9 @@ class AnilaTool:
     metadata: ToolMetadata = field(default_factory=ToolMetadata)
     name: str | None = None
     description: str | None = None
+    # P2-4 — tool-level guardrail chain。空 list 等同未掛(向後相容)。
+    input_guardrails: list[ToolInputGuardrail[Any]] = field(default_factory=list)
+    output_guardrails: list[ToolOutputGuardrail[Any]] = field(default_factory=list)
 
     def build(self) -> FunctionTool:
         kwargs: dict[str, Any] = {}
@@ -174,7 +245,13 @@ class AnilaTool:
         wrapped = function_tool(**kwargs)(self.fn)
         if not isinstance(wrapped, FunctionTool):
             raise TypeError("function_tool did not return a FunctionTool")
-        return _attach_metadata(wrapped, self.metadata)
+        _attach_metadata(wrapped, self.metadata)
+        _attach_guardrails(
+            wrapped,
+            input_guardrails=self.input_guardrails,
+            output_guardrails=self.output_guardrails,
+        )
+        return wrapped
 
     @classmethod
     def from_function(
@@ -192,6 +269,8 @@ class AnilaTool:
         requires_confirmation: bool = False,
         name: str | None = None,
         description: str | None = None,
+        input_guardrails: Sequence[ToolInputGuardrail[Any]] | None = None,
+        output_guardrails: Sequence[ToolOutputGuardrail[Any]] | None = None,
     ) -> FunctionTool:
         """以 keyword 直接組 metadata 並包成 FunctionTool。"""
         return cls(
@@ -209,6 +288,8 @@ class AnilaTool:
             ),
             name=name,
             description=description,
+            input_guardrails=list(input_guardrails) if input_guardrails else [],
+            output_guardrails=list(output_guardrails) if output_guardrails else [],
         ).build()
 
 
