@@ -98,6 +98,14 @@ from anila_agent.core.prompt_cache import (
     compute_prefix_hash,
     is_in_fork_child,
 )
+from anila_agent.core.run_state import (
+    HITLController,
+    JsonFileStateStore,
+    PauseReason,
+    RunState,
+    RunStatus,
+    pause_streaming_if_needed,
+)
 from anila_agent.core.stop_hook import (
     KeywordStopHook,
     MaxIterationsStopHook,
@@ -123,6 +131,7 @@ from anila_agent.core.policy import (
     PolicyEngine,
     PolicyRule,
     allow_all_except,
+    apply_policy_to_system_context,
     deny_all,
     policy_to_tool_input_guardrail,
     read_only,
@@ -200,12 +209,13 @@ __all__ = [
     "OutputGuardrailProtocol",
     "input_guardrail",
     "output_guardrail",
-    # P0-7 policy DSL
+    # P0-7 policy DSL + P1-19 disable vs deny prompt filter
     "PolicyDecision",
     "PolicyEffect",
     "PolicyEngine",
     "PolicyRule",
     "allow_all_except",
+    "apply_policy_to_system_context",
     "deny_all",
     "policy_to_tool_input_guardrail",
     "read_only",
@@ -263,4 +273,11 @@ __all__ = [
     "build_subagent_prefix",
     "compute_prefix_hash",
     "is_in_fork_child",
+    # P1-8 RunState HITL pause/resume + tool approval
+    "HITLController",
+    "JsonFileStateStore",
+    "PauseReason",
+    "RunState",
+    "RunStatus",
+    "pause_streaming_if_needed",
 ]
