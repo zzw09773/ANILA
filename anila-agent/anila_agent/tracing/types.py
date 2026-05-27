@@ -38,12 +38,24 @@ class Trace:
     context manager 時填入。對齊 OTel 觀念,trace 為一條 workflow 的根節點,
     底下可掛多個 :class:`Span`(由 ``parent_span_id`` 自然連成 DAG)。
 
+    P2-9 補上 multi-agent 多層 dispatch 追蹤欄位(``chain_id`` /
+    ``parent_trace_id`` / ``depth``),讓 agent A → call agent B → call agent C
+    的 chain 可以被聚合查詢。新增欄位均有 default 值,維持與 P0-9 既有
+    callsite 的 backward compat。
+
     Attributes:
         trace_id: 此 trace 的全域唯一識別碼(UUID hex)。
         name: 人類可讀的 workflow 名稱,例如 ``"agent.run"``。
         start_time: trace 起始時間(進入 context manager 時填入)。
         end_time: trace 結束時間;進行中時為 ``None``。
         metadata: 自訂中繼資料(如 group_id、user_id 等)。
+        chain_id: 同一 user request 觸發的所有 trace 共用的 chain 識別碼,
+            跨 trace boundary;root trace 若未明確指定會由 :class:`Tracer`
+            自動以 ``trace_id`` 當作 chain 起點。``None`` 表示這個 trace
+            尚未被歸入任何 chain。
+        parent_trace_id: 上一層 agent 的 trace id;root 為 ``None``。
+        depth: 在 chain 內的深度,0 為 root agent,1 為 sub-agent,
+            2 為 sub-sub-agent...。
     """
 
     trace_id: str = field(default_factory=_new_uuid)
@@ -51,12 +63,17 @@ class Trace:
     start_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     end_time: datetime | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    chain_id: str | None = None
+    parent_trace_id: str | None = None
+    depth: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         """序列化為 dict(供 processor 寫 JSONL 或上傳 backend)。
 
         為避免下游程式碼解析 ``datetime`` 物件出錯,時間欄位以 ISO 8601 字串
-        呈現(``end_time`` 若為 None 則保留 None)。
+        呈現(``end_time`` 若為 None 則保留 None)。``chain_id`` /
+        ``parent_trace_id`` / ``depth`` 為 P2-9 新增欄位,即使為 ``None``
+        / 0 仍會輸出,方便下游聚合 query。
         """
         return {
             "object": "trace",
@@ -65,6 +82,9 @@ class Trace:
             "start_time": self.start_time.isoformat(),
             "end_time": self.end_time.isoformat() if self.end_time else None,
             "metadata": dict(self.metadata),
+            "chain_id": self.chain_id,
+            "parent_trace_id": self.parent_trace_id,
+            "depth": self.depth,
         }
 
 
@@ -87,6 +107,11 @@ class Span:
         attributes: 自訂屬性(對齊 OTel semantic conventions 命名)。
         status: span 狀態 — ``"in_progress"`` / ``"ok"`` / ``"error"``。
         error: 當 ``status == "error"`` 時的錯誤描述;否則為 None。
+        chain_id: 從 parent :class:`Trace` 繼承的 chain 識別碼,方便聚合 query
+            同 chain 內所有 span;P2-9 新增欄位,預設 ``None``。
+        query_id: 一個「user query」單位內所有 span 共用的識別碼,由
+            :class:`anila_agent.core.hook_context.SessionContext.start_query`
+            設定到 thread-local 後由 :class:`Tracer` 自動寫入;P2-9 新增欄位。
     """
 
     span_id: str = field(default_factory=_new_uuid)
@@ -98,9 +123,15 @@ class Span:
     attributes: dict[str, Any] = field(default_factory=dict)
     status: SpanStatus = "in_progress"
     error: str | None = None
+    chain_id: str | None = None
+    query_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """序列化為 dict(供 processor 寫 JSONL 或上傳 backend)。"""
+        """序列化為 dict(供 processor 寫 JSONL 或上傳 backend)。
+
+        ``chain_id`` / ``query_id`` 為 P2-9 新增欄位,即使為 ``None`` 仍會
+        輸出,方便下游 query。
+        """
         return {
             "object": "span",
             "span_id": self.span_id,
@@ -112,4 +143,6 @@ class Span:
             "attributes": dict(self.attributes),
             "status": self.status,
             "error": self.error,
+            "chain_id": self.chain_id,
+            "query_id": self.query_id,
         }
