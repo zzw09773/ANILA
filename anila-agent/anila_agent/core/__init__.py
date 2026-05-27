@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from anila_agent.core.agent_as_tool import (
+    as_tool,
+    as_tool_full,
+    disable_anila_as_tool_method,
+    enable_anila_as_tool_method,
+)
 from anila_agent.core.agent_tool import (
     DEFAULT_SUBAGENT_TIMEOUT_SECONDS,
     AgentTool,
@@ -18,17 +24,6 @@ from anila_agent.core.concurrency import (
     partition_tool_calls,
     run_tool_calls,
 )
-from anila_agent.core.cost_tracker import (
-    DEFAULT_MODEL_PRICINGS,
-    SPAN_ATTR_COMPLETION_TOKENS,
-    SPAN_ATTR_COST_USD,
-    SPAN_ATTR_MODEL,
-    SPAN_ATTR_PROMPT_TOKENS,
-    CostTracker,
-    ModelPricing,
-    PricingRegistry,
-    inject_span_attributes,
-)
 from anila_agent.core.context import (
     AnilaToolContext,
     FileStateCache,
@@ -40,6 +35,17 @@ from anila_agent.core.coordinator import (
     CoordinatorNotification,
     format_coordinator_messages,
     parse_coordinator_messages,
+)
+from anila_agent.core.cost_tracker import (
+    DEFAULT_MODEL_PRICINGS,
+    SPAN_ATTR_COMPLETION_TOKENS,
+    SPAN_ATTR_COST_USD,
+    SPAN_ATTR_MODEL,
+    SPAN_ATTR_PROMPT_TOKENS,
+    CostTracker,
+    ModelPricing,
+    PricingRegistry,
+    inject_span_attributes,
 )
 from anila_agent.core.guardrails import (
     GuardrailResult,
@@ -84,6 +90,18 @@ from anila_agent.core.permission_grammar import (
     parse_permission_rules,
     policy_rule_from_yaml_item,
 )
+from anila_agent.core.policy import (
+    PolicyDecision,
+    PolicyEffect,
+    PolicyEngine,
+    PolicyRule,
+    allow_all_except,
+    apply_policy_to_system_context,
+    deny_all,
+    policy_to_tool_input_guardrail,
+    read_only,
+    workspace_only,
+)
 from anila_agent.core.prompt_cache import (
     DEFAULT_PREFIX_MESSAGE_COUNT,
     FORK_BOILERPLATE_TAG,
@@ -125,18 +143,6 @@ from anila_agent.core.streaming import (
     StreamChunk,
     StreamEvent,
 )
-from anila_agent.core.policy import (
-    PolicyDecision,
-    PolicyEffect,
-    PolicyEngine,
-    PolicyRule,
-    allow_all_except,
-    apply_policy_to_system_context,
-    deny_all,
-    policy_to_tool_input_guardrail,
-    read_only,
-    workspace_only,
-)
 from anila_agent.core.token_budget import (
     DEFAULT_PTL_PATTERNS,
     BudgetExceeded,
@@ -158,6 +164,11 @@ __all__ = [
     "get_agent_tool_spec",
     "make_agent_tool",
     "register_agent_as_tool",
+    # P2-1 Agent.as_tool shorthand (對齊 openai-agents Agent.as_tool API shape)
+    "as_tool",
+    "as_tool_full",
+    "disable_anila_as_tool_method",
+    "enable_anila_as_tool_method",
     # P0-3 context
     "AnilaToolContext",
     "FileStateCache",
