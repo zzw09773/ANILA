@@ -20,6 +20,17 @@ from anila_agent.tools.registry import (
     load_tools,
     reset_active_deferred,
 )
+from anila_agent.tools.task import (
+    DEFAULT_WAIT_TIMEOUT_SECONDS,
+    MAX_WAIT_TIMEOUT_SECONDS,
+    TASK_START_TOOL_NAME,
+    TASK_STATUS_TOOL_NAME,
+    TASK_WAIT_TOOL_NAME,
+    build_task_meta_tools,
+    get_registered_task_types,
+    register_task_type,
+    unregister_task_type,
+)
 from anila_agent.tools.tool_search import (
     ACTIVATE_TOOL_NAME,
     TOOL_SEARCH_TOOL_NAME,
@@ -34,6 +45,11 @@ from anila_agent.tools.tool_search import (
 
 __all__ = [
     "ACTIVATE_TOOL_NAME",
+    "DEFAULT_WAIT_TIMEOUT_SECONDS",
+    "MAX_WAIT_TIMEOUT_SECONDS",
+    "TASK_START_TOOL_NAME",
+    "TASK_STATUS_TOOL_NAME",
+    "TASK_WAIT_TOOL_NAME",
     "TOOL_SEARCH_TOOL_NAME",
     "AnilaTool",
     "CostEstimate",
@@ -49,13 +65,17 @@ __all__ = [
     "ToolSearchResult",
     "anila_tool",
     "build_meta_tools",
+    "build_task_meta_tools",
     "format_search_results",
     "get_metadata",
+    "get_registered_task_types",
     "load_tools",
     "make_static_session_resolver",
     "register_meta_tools",
+    "register_task_type",
     "reset_active_deferred",
     "search_deferred",
     "tool_input_guardrail",
     "tool_output_guardrail",
+    "unregister_task_type",
 ]
