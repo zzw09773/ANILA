@@ -37,7 +37,10 @@ export const Button = ({ variant = "default", size = "md", children, leftIcon, r
 
 // Icon-only button
 export const IconButton = ({ children, active, title, className = "", ...rest }) => (
-  <button {...rest} title={title} className={className} style={{
+  // a11y: icon-only buttons need a programmatic accessible name. `title` alone
+  // is an unreliable AT label, so mirror it into aria-label (caller can still
+  // override aria-label via ...rest). One change names every IconButton.
+  <button aria-label={title} {...rest} title={title} className={className} style={{
     display: "inline-flex", alignItems: "center", justifyContent: "center",
     width: 30, height: 30,
     background: active ? "var(--bg-subtle)" : "transparent",

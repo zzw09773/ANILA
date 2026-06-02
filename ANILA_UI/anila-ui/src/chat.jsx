@@ -1109,6 +1109,7 @@ export const Composer = ({
 
         <button
           onClick={submit}
+          aria-label="送出"
           disabled={disabled || (!text.trim() && atts.length === 0)}
           style={{
             display: "inline-flex", alignItems: "center", justifyContent: "center",
