@@ -44,6 +44,7 @@ export function DashboardPage() {
   const [search, setSearch] = useState('')
   const [pinned, setPinned] = useState<Set<number>>(() => loadPinned())
   const [createOpen, setCreateOpen] = useState(false)
+  const [pendingDelete, setPendingDelete] = useState<number | null>(null)
 
   const reload = useCallback(async () => {
     setErr(null)
@@ -94,13 +95,18 @@ export function DashboardPage() {
     navigate(`/c/${c.id}`)
   }
 
-  const onDelete = async (id: number) => {
-    if (!confirm('刪除這個知識庫？所有文件與向量都會跟著被清掉。')) return
+  // Destructive delete now routes through an in-app Modal (set pendingDelete)
+  // instead of native confirm(); errors surface via the inline err banner
+  // instead of native alert() — consistent with the app's design language.
+  const confirmDelete = async () => {
+    if (pendingDelete === null) return
+    const id = pendingDelete
+    setPendingDelete(null)
     try {
       await deleteCollection(id)
       setCollections((prev) => prev.filter((c) => c.id !== id))
     } catch (e) {
-      alert(explainError(e))
+      setErr(explainError(e))
     }
   }
 
@@ -392,7 +398,7 @@ export function DashboardPage() {
                 pinned={pinned.has(c.id)}
                 onOpen={() => navigate(`/c/${c.id}`)}
                 onTogglePin={() => togglePin(c.id)}
-                onDelete={() => onDelete(c.id)}
+                onDelete={() => setPendingDelete(c.id)}
               />
             ))}
           </div>
@@ -404,6 +410,51 @@ export function DashboardPage() {
         onClose={() => setCreateOpen(false)}
         onCreated={onCreated}
       />
+
+      <Modal
+        open={pendingDelete !== null}
+        onClose={() => setPendingDelete(null)}
+        ariaLabel="刪除知識庫確認"
+        width={420}
+      >
+        <div style={{ padding: 22 }}>
+          <div style={{ fontSize: 15, fontWeight: 600, color: t.text, marginBottom: 8 }}>
+            刪除這個知識庫？
+          </div>
+          <div style={{ fontSize: 13, color: t.textMuted, lineHeight: 1.5, marginBottom: 18 }}>
+            所有文件與向量都會跟著被清掉,無法復原。
+          </div>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <button
+              onClick={() => setPendingDelete(null)}
+              style={{
+                padding: '8px 14px',
+                borderRadius: 8,
+                border: `1px solid ${t.border}`,
+                background: 'transparent',
+                color: t.textMuted,
+                cursor: 'pointer',
+              }}
+            >
+              取消
+            </button>
+            <button
+              onClick={() => void confirmDelete()}
+              style={{
+                padding: '8px 14px',
+                borderRadius: 8,
+                border: 'none',
+                background: t.danger,
+                color: '#fff',
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              刪除
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

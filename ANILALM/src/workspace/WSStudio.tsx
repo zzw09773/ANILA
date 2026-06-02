@@ -16,6 +16,11 @@ import {
   getMindmapJobStatus,
   getInfographicJobStatus,
   getDatatableJobStatus,
+  cancelSlidesJob,
+  cancelReportJob,
+  cancelMindmapJob,
+  cancelInfographicJob,
+  cancelDatatableJob,
   stepLabel,
 } from '../api/studio'
 
@@ -53,6 +58,28 @@ async function fetchJobStatus(
       return (await getInfographicJobStatus(jobId)) as unknown as GenericJobStatus
     case 'datatable':
       return (await getDatatableJobStatus(jobId)) as unknown as GenericJobStatus
+  }
+}
+
+// Cancel dispatch — mirror of fetchJobStatus. await+return discards each
+// cancel*Job's response type so the dispatch stays Promise<void>.
+async function cancelJob(kind: StudioArtifact['kind'], jobId: string): Promise<void> {
+  switch (kind) {
+    case 'slides':
+      await cancelSlidesJob(jobId)
+      return
+    case 'report':
+      await cancelReportJob(jobId)
+      return
+    case 'mindmap':
+      await cancelMindmapJob(jobId)
+      return
+    case 'infographic':
+      await cancelInfographicJob(jobId)
+      return
+    case 'datatable':
+      await cancelDatatableJob(jobId)
+      return
   }
 }
 
@@ -684,6 +711,35 @@ export function WSStudio() {
                               <Spinner size={9} color={t.accent} />
                               鑄造中
                             </span>
+                          )}
+                          {isPending && a.jobId && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                const jid = a.jobId!
+                                void cancelJob(a.kind, jid)
+                                  .then(() =>
+                                    updateArtifact(collectionId, a.id, {
+                                      state: 'cancelled',
+                                      error: '已取消',
+                                    }),
+                                  )
+                                  .catch(() => undefined)
+                              }}
+                              style={{
+                                marginLeft: 6,
+                                padding: '2px 8px',
+                                fontSize: 10,
+                                fontWeight: 600,
+                                borderRadius: 4,
+                                border: `1px solid ${t.border}`,
+                                background: 'transparent',
+                                color: t.textMuted,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              取消
+                            </button>
                           )}
                           {isFailed && (
                             <span
