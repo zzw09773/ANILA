@@ -42,6 +42,7 @@ export function WSSidebar() {
 
   const fileRef = useRef<HTMLInputElement | null>(null)
   const [uploading, setUploading] = useState(false)
+  const [uploadPct, setUploadPct] = useState(0)
 
   const onPickFiles = () => fileRef.current?.click()
 
@@ -53,11 +54,14 @@ export function WSSidebar() {
     setUploading(true)
     for (const file of files) {
       try {
+        setUploadPct(0)
         // Backend returns just DocumentResponse; the numeric job id used
         // by /api/ingestion/jobs/:id/stream lives on the detail row, so
         // we follow up with getDocument(). If the detail call fails we
         // still keep the doc visible — SSE subscription just won't bind.
-        const { data: doc } = await uploadDocument(collection.id, file, () => undefined)
+        const { data: doc } = await uploadDocument(collection.id, file, (frac) =>
+          setUploadPct(Math.round(frac * 100)),
+        )
         upsertDoc(doc)
         setUploadFraction(doc.id, undefined)
         try {
@@ -248,7 +252,7 @@ export function WSSidebar() {
         >
           {uploading ? (
             <>
-              <Spinner size={12} /> 上傳中...
+              <Spinner size={12} /> 上傳中 {uploadPct > 0 && uploadPct < 100 ? `${uploadPct}%` : '...'}
             </>
           ) : (
             <>
