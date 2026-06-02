@@ -716,11 +716,16 @@ export function WSStudio() {
                             <button
                               onClick={(e) => {
                                 e.stopPropagation()
+                                if (!collection) return
                                 const jid = a.jobId!
+                                const cid = collection.id
                                 void cancelJob(a.kind, jid)
                                   .then(() =>
-                                    updateArtifact(collectionId, a.id, {
-                                      state: 'cancelled',
+                                    // Mirror the poller's mapping: ArtifactState
+                                    // has no 'cancelled', so a cancel lands as
+                                    // 'failed' with the 已取消 reason.
+                                    updateArtifact(cid, a.id, {
+                                      state: 'failed',
                                       error: '已取消',
                                     }),
                                   )
