@@ -128,6 +128,7 @@ def create_credential(
 
     log_audit_event(
         db,
+        commit=True,
         actor=current_user,
         action="user_llm_credential_create",
         resource_type="user_llm_credential",
@@ -185,6 +186,7 @@ def update_credential(
         db.refresh(cred)
         log_audit_event(
             db,
+            commit=True,
             actor=current_user,
             action="user_llm_credential_update",
             resource_type="user_llm_credential",
@@ -210,6 +212,7 @@ def delete_credential(
     db.commit()
     log_audit_event(
         db,
+        commit=True,
         actor=current_user,
         action="user_llm_credential_delete",
         resource_type="user_llm_credential",

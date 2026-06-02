@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse
@@ -219,11 +220,25 @@ app.add_middleware(
     # covers local development (Vite dev server on :5173, nginx on :80/443,
     # direct anila-ui container on :3001). Production must override via
     # ALLOWED_ORIGINS env.
-    allow_origins=_allowed_origins or ["*"],
+    # No "*" fallback: an empty/misconfigured ALLOWED_ORIGINS denies all
+    # cross-origin requests (same-origin SPA via nginx still works) rather
+    # than silently opening the API to any origin.
+    allow_origins=_allowed_origins,
     allow_credentials=bool(_allowed_origins),
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Incoming Host-header allow-list. Default "*" is a no-op (non-breaking);
+# operators pin ALLOWED_HOSTS in prod to block Host-header injection.
+_allowed_hosts = [
+    h.strip() for h in (settings.ALLOWED_HOSTS or "*").split(",") if h.strip()
+] or ["*"]
+if _allowed_hosts != ["*"]:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts)
+    logging.getLogger("csp").info(
+        "TrustedHostMiddleware enabled for %d host(s)", len(_allowed_hosts)
+    )
 
 # CSRF protection for cookie-authenticated mutating requests. Runs after
 # CORS so preflight OPTIONS responses are generated without the check.
