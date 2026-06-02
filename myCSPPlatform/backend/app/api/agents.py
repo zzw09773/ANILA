@@ -858,20 +858,27 @@ def issue_static_credential(
     agent_id: int,
     payload: IssueStaticRequest,
     request: Request,
-    admin: User = Depends(require_admin),
+    current_user: User = Depends(_require_developer_or_admin),
     db: Session = Depends(get_db),
 ):
-    """Phase F (Tier 0): admin direct-issues a credential without bootstrap.
+    """Owner (or admin) direct-issues a service token (``csk-``), no bootstrap.
 
-    For agents that cannot run the bootstrap CLI — third-party,
-    non-Python, or rapid cutover from the old fleet-shared env var.
-    No automatic rotation; admin must rotate periodically.
+    Skips the two-step ``bsk-`` → ``csk-`` bootstrap exchange: the agent
+    owner mints one long-lived ``csk-`` directly and pastes it into the
+    agent once — no bootstrap token to obtain, exchange, or swap out.
+
+    The approval gate is unchanged: a ``pending`` agent still isn't routed
+    until an admin approves it, so issuing a token early grants no routing.
+    A non-admin may only issue for an agent they own. No automatic
+    rotation; rotate periodically via the rotate endpoint.
     """
     agent = _resolve_agent(db, agent_id)
+    if not is_admin_tier(current_user) and agent.owner_user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="無權限為此 Agent 發行憑證")
     cred, plaintext = agent_credential_service.issue_static_credential(
         db,
         agent=agent,
-        issuer=admin,
+        issuer=current_user,
         label=payload.label,
     )
     db.commit()
