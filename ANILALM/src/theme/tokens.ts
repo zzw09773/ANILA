@@ -34,9 +34,12 @@ export const TOKENS: Record<ThemeName, ThemeTokens> = {
     borderStrong: '#323844',
     text: '#E8EAED',
     textMuted: '#9AA3AE',
-    textSubtle: '#6B7280',
-    accent: '#7C7BFF',
-    accentHover: '#8E8DFF',
+    // WCAG AA: lighten on dark bg so 10.5–11px secondary text reaches ≥4.5:1.
+    textSubtle: '#828A96',
+    // WCAG AA: darkened from #7C7BFF so white button text on accent reaches
+    // ≥4.5:1 for normal-size text in dark theme.
+    accent: '#6361E0',
+    accentHover: '#7674F0',
     accentSoft: 'rgba(124,123,255,0.14)',
     accentBorder: 'rgba(124,123,255,0.32)',
     success: '#3DD68C',
@@ -53,7 +56,8 @@ export const TOKENS: Record<ThemeName, ThemeTokens> = {
     borderStrong: '#D4D2CB',
     text: '#1A1A1A',
     textMuted: '#5C6470',
-    textSubtle: '#8B919C',
+    // WCAG AA: darken on light bg so 10.5–11px secondary text reaches ≥4.5:1.
+    textSubtle: '#6B7280',
     accent: '#5957E8',
     accentHover: '#4A48D6',
     accentSoft: 'rgba(89,87,232,0.10)',

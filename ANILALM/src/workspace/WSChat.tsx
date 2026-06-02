@@ -397,7 +397,9 @@ export function WSChat({ flex }: WSChatProps) {
   ])
 
   const onComposerKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+    // Chat convention: Enter sends, Shift+Enter inserts a newline.
+    // (⌘/Ctrl+Enter kept for muscle memory.)
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
       void send()
     }
@@ -511,6 +513,7 @@ export function WSChat({ flex }: WSChatProps) {
 
           {err && (
             <div
+              role="alert"
               style={{
                 padding: '10px 14px',
                 borderRadius: 10,

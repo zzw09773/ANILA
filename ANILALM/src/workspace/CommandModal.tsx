@@ -347,11 +347,10 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
           >
             <Icon name="sparkle" size={32} stroke={t.accent} />
             <div style={{ fontSize: 14, fontWeight: 500, marginTop: 10, color: t.text }}>
-              {format.l} 還在路上
+              {format.l} 尚未開放
             </div>
             <div style={{ fontSize: 12, marginTop: 6 }}>
-              MVP 只支援「深度報告」與「簡報」兩種輸出。其餘類型會在後端對應 endpoint
-              （TTS / 影片合成等）就緒後解鎖。
+              此輸出類型尚未開放;待後端對應 endpoint 就緒後解鎖。
             </div>
           </div>
         ) : step === 0 ? (
@@ -579,6 +578,7 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
 
         {err && (
           <div
+            role="alert"
             style={{
               marginTop: 14,
               padding: '10px 12px',

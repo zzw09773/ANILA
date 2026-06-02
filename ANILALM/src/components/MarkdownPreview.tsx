@@ -5,6 +5,16 @@ import { useTheme } from '../theme/ThemeContext'
 
 marked.setOptions({ gfm: true, breaks: true })
 
+// Harden links in rendered markdown: assistant/LLM output links open in a new
+// tab and drop opener/referrer so they can't reverse-tab-nab or leak the URL.
+// Registered once at module load (DOMPurify hooks are global).
+DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+  if (node.tagName === 'A') {
+    node.setAttribute('target', '_blank')
+    node.setAttribute('rel', 'noopener noreferrer nofollow')
+  }
+})
+
 interface MarkdownPreviewProps {
   markdown: string
   maxHeight?: number | string
@@ -22,6 +32,7 @@ export function MarkdownPreview({ markdown, maxHeight }: MarkdownPreviewProps) {
       USE_PROFILES: { html: true },
       FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form'],
       FORBID_ATTR: ['onerror', 'onload', 'onclick'],
+      ADD_ATTR: ['target', 'rel'],
     })
   }, [markdown])
 

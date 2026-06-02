@@ -137,7 +137,9 @@ export function WSStudio() {
   const removeArtifact = useArtifactStore((s) => s.remove)
   const updateArtifact = useArtifactStore((s) => s.update)
 
-  const [filter, setFilter] = useState<'all' | 'audio' | 'visual' | 'study' | 'doc'>('all')
+  // Match the rendered CATEGORIES (all/visual/doc); 'audio'/'study' were
+  // dropped from the UI so they no longer belong in the filter type.
+  const [filter, setFilter] = useState<'all' | 'visual' | 'doc'>('all')
   const [modalFormat, setModalFormat] = useState<FormatSpec | null>(null)
   const [viewing, setViewing] = useState<StudioArtifact | null>(null)
 

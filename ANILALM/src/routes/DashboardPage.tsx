@@ -293,6 +293,7 @@ export function DashboardPage() {
 
         {err && (
           <div
+            role="alert"
             style={{
               marginBottom: 18,
               padding: '10px 14px',
