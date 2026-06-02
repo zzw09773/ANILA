@@ -1788,14 +1788,22 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         </div>
 
         {runtimeError && (
-          <div style={{
+          <div role="alert" aria-live="assertive" style={{
             padding: "8px 18px",
             background: "oklch(0.97 0.03 25)",
             borderBottom: "1px solid oklch(0.88 0.08 25)",
             color: "var(--danger)",
             fontSize: 12, fontFamily: "var(--font-mono)",
+            display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
           }}>
-            {runtimeError}
+            <span>{runtimeError}</span>
+            <button
+              onClick={() => setRuntimeError("")}
+              aria-label="關閉錯誤訊息"
+              style={{ background: "none", border: "none", color: "var(--danger)", cursor: "pointer", fontSize: 14, lineHeight: 1, padding: 2 }}
+            >
+              ✕
+            </button>
           </div>
         )}
 
