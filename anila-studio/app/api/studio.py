@@ -100,6 +100,10 @@ from app.schemas.studio import (
 )
 from app.services import studio_job_service as jobs
 from app.services.geometric_qa import GeometricDefect, run_geometric_qa
+from app.services.llm_json import (
+    extract_json_object as _extract_json_object,
+    loads_lenient as _loads_lenient,
+)
 from app.services.studio_text_normalizer import normalize_spec
 
 if TYPE_CHECKING:
@@ -168,95 +172,9 @@ MAX_GENERATED_IMAGES_PER_DECK = 15
 CONTENT_ILLUSTRATION_MAX_BULLETS = 3
 
 
-# ── JSON extraction (mirrors ANILALM's frontend extractJsonObject) ─────────
-
-
-_THINK_BLOCK_RE = re.compile(
-    r"<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE,
-)
-
-
-def _extract_json_object(raw: str) -> str:
-    """Slice the *last* balanced JSON object out of a noisy LLM response.
-
-    Why "last balanced" and not "first { to last }":
-      - gemma4 / qwen / oss models often emit a "thought" preamble that
-        contains literal JSON examples like ``{"title": "..."}`` — the
-        naive ``find('{')`` lands inside that example, the naive
-        ``rfind('}')`` lands at the end of the real answer, and the slice
-        glues two unrelated regions together.
-      - Walking braces from the end finds the FINAL top-level ``{...}``
-        which is virtually always the actual answer (LLMs put their
-        decision at the end, after reasoning).
-
-    Implementation: skip ``<think>``/```` ``` `` blocks first to remove
-    the most common forms of structured noise, then scan from the right
-    counting brace nesting until we hit depth 0.
-    """
-    de_thought = _THINK_BLOCK_RE.sub("", raw)
-    no_fences = (
-        de_thought.replace("```json", "")
-        .replace("```JSON", "")
-        .replace("```", "")
-        .strip()
-    )
-
-    end = no_fences.rfind("}")
-    if end == -1:
-        raise ValueError(
-            f"Model response contained no closing brace. First 80: "
-            f"{raw[:80]!r}".replace("\n", "⏎")
-        )
-
-    # Walk leftward from the closing brace, counting nesting. We respect
-    # JSON string delimiters so braces inside `"..."` don't fool the
-    # depth counter. Escape sequences (\\, \") are handled with a
-    # one-position lookahead.
-    depth = 0
-    in_string = False
-    i = end
-    while i >= 0:
-        ch = no_fences[i]
-        if in_string:
-            if ch == '"' and (i == 0 or no_fences[i - 1] != "\\"):
-                in_string = False
-        else:
-            if ch == '"':
-                in_string = True
-            elif ch == "}":
-                depth += 1
-            elif ch == "{":
-                depth -= 1
-                if depth == 0:
-                    return no_fences[i : end + 1]
-        i -= 1
-    raise ValueError(
-        f"Model response had unbalanced braces. First 80: "
-        f"{raw[:80]!r}".replace("\n", "⏎")
-    )
-
-
-def _loads_lenient(text: str) -> Any:
-    """``json.loads`` plus a one-shot single-quote-to-double-quote repair.
-
-    gemma4 (and friends) sometimes emit Python-dict-style output:
-        {'title': "x", 'slides': []}
-    which strict ``json.loads`` rejects (line 1 col 2 error). The repair
-    only flips quote characters that look like JSON delimiters
-    (preceded by ``[``, ``{``, ``,``, ``:`` or whitespace) so apostrophes
-    inside values aren't accidentally converted. If even that fails,
-    we let json.JSONDecodeError propagate so the correction pass can
-    re-prompt.
-    """
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    # Replace `'` only at delimiter positions. Limited regex pass:
-    # opening `'` after [{,:\s, closing `'` before ]},:\s.
-    repaired = re.sub(r"(?<=[\[\{,:\s])'", '"', text)
-    repaired = re.sub(r"'(?=[\]\},:\s]|$)", '"', repaired)
-    return json.loads(repaired)
+# ── JSON extraction → moved to app/services/llm_json.py (god-module split) ──
+# _extract_json_object / _loads_lenient are imported above (aliased to keep
+# the call sites in this module unchanged).
 
 
 # ── Step 3: retrieval ─────────────────────────────────────────────────────
