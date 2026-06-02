@@ -246,6 +246,7 @@ async def upload_document(
 
     log_audit_event(
         db,
+        commit=True,
         actor=current_user,
         action="ingestion_document_upload",
         resource_type="ingestion_document",
@@ -473,6 +474,7 @@ async def upload_zip(
 
     log_audit_event(
         db,
+        commit=True,
         actor=current_user,
         action="ingestion_document_upload_zip",
         resource_type="ingestion_collection",
@@ -635,6 +637,7 @@ def delete_document(
 
     log_audit_event(
         db,
+        commit=True,
         actor=current_user,
         action="ingestion_document_delete",
         resource_type="ingestion_document",

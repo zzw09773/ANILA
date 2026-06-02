@@ -68,6 +68,13 @@ class Settings(BaseSettings):
     # be an explicit list in any deployment that uses the cookie flow.
     ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:3001,http://localhost:80,http://localhost,https://localhost,https://localhost:4443"
 
+    # Incoming Host-header allow-list (anti Host-header-injection /
+    # cache-poisoning). Comma-separated hostnames; "*" disables the check
+    # (default, non-breaking). Production should pin this to the real
+    # ingress host(s), e.g. "anila.ncsist.org.tw,172.16.120.35". Distinct
+    # from ANILA_TRUSTED_HOSTS, which is the *outgoing* SSRF allow-list.
+    ALLOWED_HOSTS: str = "*"
+
     # Mark session cookies as Secure (HTTPS-only). Defaults to True; set
     # to False in local HTTP dev / test harnesses where cookies must
     # traverse http:// (the TestClient, a bare dev loop without nginx,
