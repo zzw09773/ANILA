@@ -11,6 +11,7 @@ import {
 } from '../api/conversations'
 import { explainError } from '../api/client'
 import { Icon } from '../components/Icon'
+import { Modal } from '../components/Modal'
 import { Spinner } from '../components/Spinner'
 import { formatBytes, shortName, timeAgo } from '../utils/format'
 
@@ -43,6 +44,13 @@ export function WSSidebar() {
   const fileRef = useRef<HTMLInputElement | null>(null)
   const [uploading, setUploading] = useState(false)
   const [uploadPct, setUploadPct] = useState(0)
+  // #7: native alert()/confirm() replaced with an inline banner + in-app
+  // confirm Modals, matching DashboardPage's design language.
+  const [err, setErr] = useState<string | null>(null)
+  const [pendingDeleteDoc, setPendingDeleteDoc] = useState<
+    { id: number; filename: string } | null
+  >(null)
+  const [pendingDeleteConv, setPendingDeleteConv] = useState<number | null>(null)
 
   const onPickFiles = () => fileRef.current?.click()
 
@@ -73,7 +81,7 @@ export function WSSidebar() {
           // best-effort; user still sees the doc, just no live progress
         }
       } catch (err) {
-        alert(`${file.name}: ${explainError(err)}`)
+        setErr(`${file.name}: ${explainError(err)}`)
       }
     }
     setUploading(false)
@@ -93,29 +101,34 @@ export function WSSidebar() {
       setActiveConversationId(data.id)
       navigate(`/c/${collection.id}/conv/${data.id}`)
     } catch (err) {
-      alert(explainError(err))
+      setErr(explainError(err))
     }
   }
 
-  const onDeleteDoc = async (docId: number, filename: string) => {
-    if (!confirm(`刪除「${filename}」？這份文件的 chunks 跟向量會一起被清掉，無法復原。`)) {
-      return
-    }
+  // Delete now routes through an in-app confirm Modal (set pending*) instead of
+  // native confirm(); errors surface via the inline `err` banner. The trash
+  // buttons set the pending target; confirmDelete* run the actual delete.
+  const confirmDeleteDoc = async () => {
+    const target = pendingDeleteDoc
+    setPendingDeleteDoc(null)
+    if (!target) return
     // Optimistic remove — backend cascade-deletes chunks/jobs and unlinks
     // the blob if no other doc references the same sha256. Restore the
     // row on failure so the user knows it's still on disk.
-    const snapshot = useWorkspaceStore.getState().docs.find((d) => d.doc.id === docId)
-    removeDoc(docId)
+    const snapshot = useWorkspaceStore.getState().docs.find((d) => d.doc.id === target.id)
+    removeDoc(target.id)
     try {
-      await deleteDocument(docId)
+      await deleteDocument(target.id)
     } catch (err) {
       if (snapshot) upsertDoc(snapshot.doc, snapshot.jobId)
-      alert(explainError(err))
+      setErr(explainError(err))
     }
   }
 
-  const onDeleteConv = async (id: number) => {
-    if (!confirm('刪除這個對話？')) return
+  const confirmDeleteConv = async () => {
+    const id = pendingDeleteConv
+    setPendingDeleteConv(null)
+    if (id === null) return
     try {
       await deleteConversation(id)
       removeConversation(id)
@@ -123,7 +136,7 @@ export function WSSidebar() {
         navigate(`/c/${collection.id}`)
       }
     } catch (err) {
-      alert(explainError(err))
+      setErr(explainError(err))
     }
   }
 
@@ -198,6 +211,44 @@ export function WSSidebar() {
           </div>
         </div>
       </div>
+
+      {/* Error banner (#7: replaces native alert) */}
+      {err && (
+        <div
+          role="alert"
+          style={{
+            margin: '10px 12px 0',
+            padding: '8px 10px',
+            borderRadius: 8,
+            background: `${t.danger}22`,
+            color: t.danger,
+            fontSize: 12,
+            border: `1px solid ${t.danger}33`,
+            display: 'flex',
+            gap: 8,
+            alignItems: 'flex-start',
+          }}
+        >
+          <Icon name="alert" size={14} stroke={t.danger} />
+          <span style={{ flex: 1, minWidth: 0, wordBreak: 'break-word' }}>{err}</span>
+          <button
+            onClick={() => setErr(null)}
+            title="關閉"
+            aria-label="關閉錯誤訊息"
+            style={{
+              border: 'none',
+              background: 'transparent',
+              color: t.danger,
+              cursor: 'pointer',
+              padding: 0,
+              lineHeight: 1,
+              fontSize: 15,
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {/* Documents */}
       <div style={{ padding: '14px 16px 8px' }}>
@@ -384,7 +435,7 @@ export function WSSidebar() {
                 <button
                   onClick={(e) => {
                     e.stopPropagation()
-                    void onDeleteDoc(d.doc.id, d.doc.filename)
+                    setPendingDeleteDoc({ id: d.doc.id, filename: d.doc.filename })
                   }}
                   title="刪除文件"
                   // Hidden by default, revealed on row hover via the
@@ -532,7 +583,7 @@ export function WSSidebar() {
                 <button
                   onClick={(e) => {
                     e.stopPropagation()
-                    void onDeleteConv(c.id)
+                    setPendingDeleteConv(c.id)
                   }}
                   title="刪除"
                   style={{
@@ -602,6 +653,98 @@ export function WSSidebar() {
           <Icon name="logout" size={13} stroke={t.textMuted} />
         </button>
       </div>
+
+      {/* #7: delete-document confirm (replaces native confirm) */}
+      <Modal
+        open={pendingDeleteDoc !== null}
+        onClose={() => setPendingDeleteDoc(null)}
+        ariaLabel="刪除文件確認"
+        width={400}
+      >
+        <div style={{ padding: 22 }}>
+          <div style={{ fontSize: 15, fontWeight: 600, color: t.text, marginBottom: 8 }}>
+            刪除這份文件？
+          </div>
+          <div style={{ fontSize: 13, color: t.textMuted, lineHeight: 1.5, marginBottom: 18 }}>
+            「{pendingDeleteDoc?.filename}」的 chunks 跟向量會一起被清掉,無法復原。
+          </div>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <button
+              onClick={() => setPendingDeleteDoc(null)}
+              style={{
+                padding: '8px 14px',
+                borderRadius: 8,
+                border: `1px solid ${t.border}`,
+                background: 'transparent',
+                color: t.textMuted,
+                cursor: 'pointer',
+              }}
+            >
+              取消
+            </button>
+            <button
+              onClick={() => void confirmDeleteDoc()}
+              style={{
+                padding: '8px 14px',
+                borderRadius: 8,
+                border: 'none',
+                background: t.danger,
+                color: '#fff',
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              刪除
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* #7: delete-conversation confirm (replaces native confirm) */}
+      <Modal
+        open={pendingDeleteConv !== null}
+        onClose={() => setPendingDeleteConv(null)}
+        ariaLabel="刪除對話確認"
+        width={400}
+      >
+        <div style={{ padding: 22 }}>
+          <div style={{ fontSize: 15, fontWeight: 600, color: t.text, marginBottom: 8 }}>
+            刪除這個對話？
+          </div>
+          <div style={{ fontSize: 13, color: t.textMuted, lineHeight: 1.5, marginBottom: 18 }}>
+            這個對話的訊息紀錄會被移除,無法復原。
+          </div>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <button
+              onClick={() => setPendingDeleteConv(null)}
+              style={{
+                padding: '8px 14px',
+                borderRadius: 8,
+                border: `1px solid ${t.border}`,
+                background: 'transparent',
+                color: t.textMuted,
+                cursor: 'pointer',
+              }}
+            >
+              取消
+            </button>
+            <button
+              onClick={() => void confirmDeleteConv()}
+              style={{
+                padding: '8px 14px',
+                borderRadius: 8,
+                border: 'none',
+                background: t.danger,
+                color: '#fff',
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              刪除
+            </button>
+          </div>
+        </div>
+      </Modal>
     </aside>
   )
 }
