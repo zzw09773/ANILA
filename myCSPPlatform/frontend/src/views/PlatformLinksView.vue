@@ -110,7 +110,9 @@
 import { ref, onMounted } from 'vue'
 import { listPlatformLinks, createPlatformLink, updatePlatformLink, deactivatePlatformLink, purgePlatformLink } from '../api/platformLinks'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermSection } from '../components/cli'
+import { useDialog } from '../composables/useDialog'
 
+const { confirm, toast } = useDialog()
 const links = ref([])
 const showModal = ref(false)
 const editingId = ref(null)
@@ -162,30 +164,28 @@ async function handleSubmit() {
     else await createPlatformLink(payload)
     showModal.value = false
     await fetchLinks()
-  } catch (e) { alert(e.response?.data?.detail || 'save failed') }
+  } catch (e) { toast(e.response?.data?.detail || 'save failed', { tone: 'error' }) }
 }
 async function handleDeactivate(link) {
-  if (!confirm(`deactivate '${link.name}'?`)) return
+  if (!(await confirm({ message: `deactivate '${link.name}'?`, confirmText: 'deactivate', danger: true }))) return
   try { await deactivatePlatformLink(link.id); await fetchLinks() }
-  catch (e) { alert(e.response?.data?.detail || 'deactivate failed') }
+  catch (e) { toast(e.response?.data?.detail || 'deactivate failed', { tone: 'error' }) }
 }
 async function handleReactivate(link) {
   try { await updatePlatformLink(link.id, { is_active: true }); await fetchLinks() }
-  catch (e) { alert(e.response?.data?.detail || 'reactivate failed') }
+  catch (e) { toast(e.response?.data?.detail || 'reactivate failed', { tone: 'error' }) }
 }
 async function handlePurge(link) {
   // Typed-confirm: 必須輸入完整 link name 才能 purge,避免誤點 remove。
-  const typed = window.prompt(
-    `完全刪除連結「${link.name}」?此動作不可復原。\n` +
-    `若確定,請輸入連結名稱完整字串以確認:`
-  )
-  if (typed === null) return
-  if (typed !== link.name) {
-    alert('輸入不符,已取消')
-    return
-  }
+  if (!(await confirm({
+    title: '完全刪除連結',
+    message: `完全刪除連結「${link.name}」?此動作不可復原。`,
+    requireText: link.name,
+    confirmText: '刪除',
+    danger: true,
+  }))) return
   try { await purgePlatformLink(link.id); await fetchLinks() }
-  catch (e) { alert(e.response?.data?.detail || 'purge failed') }
+  catch (e) { toast(e.response?.data?.detail || 'purge failed', { tone: 'error' }) }
 }
 </script>
 

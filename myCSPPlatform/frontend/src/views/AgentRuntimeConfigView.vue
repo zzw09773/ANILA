@@ -223,7 +223,9 @@ import {
 import {
   TermBox, TermButton, TermBadge, TermField, TermSection,
 } from '../components/cli'
+import { useDialog } from '../composables/useDialog'
 
+const { confirm } = useDialog()
 const route = useRoute()
 const router = useRouter()
 
@@ -429,7 +431,7 @@ async function handleSave() {
 }
 
 async function handleClear() {
-  if (!confirm('Clear runtime_config override? Agent will revert to compiled-in defaults.')) return
+  if (!(await confirm({ message: 'Clear runtime_config override? Agent will revert to compiled-in defaults.', confirmText: 'Clear', danger: true }))) return
   saving.value = true
   feedback.value = { type: 'success', message: '' }
   try {

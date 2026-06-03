@@ -112,7 +112,9 @@ import { useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { listCollections, createCollection, updateCollection, deleteCollection } from '../api/ingestionCollections'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal } from '../components/cli'
+import { useDialog } from '../composables/useDialog'
 
+const { confirm } = useDialog()
 const authStore = useAuthStore()
 const route = useRoute()
 const isAdmin = computed(() => authStore.isAdmin)
@@ -219,7 +221,7 @@ async function restoreCollection(c) {
   catch (e) { error.value = `restore failed: ${e.response?.data?.detail || e.message}` }
 }
 async function confirmDelete(c) {
-  if (!confirm(`delete '${c.name}'? CASCADE removes ${c.document_count} docs and ${c.chunk_count} chunks.`)) return
+  if (!(await confirm({ message: `delete '${c.name}'? CASCADE removes ${c.document_count} docs and ${c.chunk_count} chunks.`, danger: true }))) return
   try { await deleteCollection(c.id); await loadCollections() }
   catch (e) { error.value = `delete failed: ${e.response?.data?.detail || e.message}` }
 }

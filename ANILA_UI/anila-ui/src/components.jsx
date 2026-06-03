@@ -37,7 +37,10 @@ export const Button = ({ variant = "default", size = "md", children, leftIcon, r
 
 // Icon-only button
 export const IconButton = ({ children, active, title, className = "", ...rest }) => (
-  <button {...rest} title={title} className={className} style={{
+  // a11y: icon-only buttons need a programmatic accessible name. `title` alone
+  // is an unreliable AT label, so mirror it into aria-label (caller can still
+  // override aria-label via ...rest). One change names every IconButton.
+  <button aria-label={title} {...rest} title={title} className={className} style={{
     display: "inline-flex", alignItems: "center", justifyContent: "center",
     width: 30, height: 30,
     background: active ? "var(--bg-subtle)" : "transparent",
@@ -214,12 +217,31 @@ export const MenuItem = ({ children, leftIcon, rightIcon, active, onClick, class
 );
 
 // Modal
+const MODAL_FOCUSABLE =
+  'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
+
 export const Modal = ({ open, onClose, title, subtitle, children, width = 480 }) => {
+  const panelRef = useRef(null);
   useEffect(() => {
     if (!open) return;
-    const h = (e) => { if (e.key === "Escape") onClose(); };
+    // a11y: remember prior focus, move focus into the dialog, trap Tab, and
+    // restore focus on close so keyboard/AT users aren't dropped to <body>.
+    const prevFocus = document.activeElement;
+    const panel = panelRef.current;
+    const initial = panel?.querySelectorAll(MODAL_FOCUSABLE);
+    (initial && initial.length ? initial[0] : panel)?.focus();
+    const h = (e) => {
+      if (e.key === "Escape") { onClose(); return; }
+      if (e.key === "Tab" && panel) {
+        const f = panel.querySelectorAll(MODAL_FOCUSABLE);
+        if (!f.length) { e.preventDefault(); return; }
+        const first = f[0], last = f[f.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    };
     window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
+    return () => { window.removeEventListener("keydown", h); prevFocus?.focus?.(); };
   }, [open, onClose]);
   if (!open) return null;
   return (
@@ -229,7 +251,8 @@ export const Modal = ({ open, onClose, title, subtitle, children, width = 480 })
       display: "flex", alignItems: "center", justifyContent: "center",
       padding: 20,
     }}>
-      <div onClick={e => e.stopPropagation()} style={{
+      <div ref={panelRef} role="dialog" aria-modal="true" aria-label={typeof title === "string" ? title : "對話框"} tabIndex={-1} onClick={e => e.stopPropagation()} style={{
+        outline: "none",
         background: "var(--bg-elev)",
         border: "1px solid var(--border)",
         borderRadius: "var(--radius-lg)",

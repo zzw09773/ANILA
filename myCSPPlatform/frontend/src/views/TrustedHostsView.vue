@@ -115,7 +115,9 @@ import { useAuthStore } from '../stores/auth'
 import {
   TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal,
 } from '../components/cli'
+import { useDialog } from '../composables/useDialog'
 
+const { confirm } = useDialog()
 const authStore = useAuthStore()
 
 const hosts = ref([])
@@ -175,7 +177,7 @@ async function handleSubmit() {
 }
 
 async function handleDelete(host) {
-  if (!confirm(`移除受信任 host「${host.host}」?`)) return
+  if (!(await confirm({ message: `移除受信任 host「${host.host}」?`, danger: true }))) return
   busyId.value = host.id
   try {
     await deleteTrustedHost(host.id)
