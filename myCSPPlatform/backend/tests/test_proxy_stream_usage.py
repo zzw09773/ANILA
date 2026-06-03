@@ -4,7 +4,18 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from app.services import proxy_service
+
+
+@pytest.fixture(autouse=True)
+def _allow_mock_llm_endpoint(monkeypatch):
+    """proxy_stream now runs a call-time SSRF guard (#117 TOCTOU). The mock
+    target ``http://mock-llm`` is single-label + http, so it only passes the
+    guard with the dev allowances set (trusted host + http opt-in)."""
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "mock-llm")
 
 
 class _FakeStreamResponse:

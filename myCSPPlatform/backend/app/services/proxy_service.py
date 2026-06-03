@@ -9,6 +9,7 @@ from threading import Lock
 from typing import AsyncIterator, Optional
 from fastapi import HTTPException
 import httpx
+from anila_core.security import UnsafeEndpointError, validate_outbound_url
 from app.config import settings
 from app.database import SessionLocal
 from app.models.model_registry import ModelRegistry
@@ -383,6 +384,26 @@ def _aggregate_sse_to_chat_completion(sse_text: str, model_name: str) -> dict:
     }
 
 
+def _guard_outbound(url: str) -> None:
+    """Call-time SSRF re-validation before forwarding to a stored endpoint URL.
+
+    Agent / model ``endpoint_url`` is validated at registration, but DNS
+    rebinding (TOCTOU) can change what the host resolves to between then and
+    the actual forward. Re-run the central guard at call time. Trusted internal
+    hosts (``ANILA_TRUSTED_HOSTS``) short-circuit before any DNS lookup, so this
+    is cheap on the proxy hot path; only untrusted BYO endpoints pay a
+    resolution. Translates the typed guard error into a 502 — the upstream
+    endpoint is unsafe to reach.
+    """
+    try:
+        validate_outbound_url(url)
+    except UnsafeEndpointError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"上游端點未通過出向安全驗證: {exc}",
+        ) from exc
+
+
 async def proxy_request(
     model: ModelRegistry,
     api_key_id: int,
@@ -431,6 +452,9 @@ async def proxy_request(
         target_url = f"{base_url}/v2/embeddings"
     else:
         target_url = f"{base_url}{endpoint_path}"
+
+    # Call-time SSRF re-validation (TOCTOU / DNS-rebinding defense).
+    _guard_outbound(target_url)
 
     last_error = None
     start_time = time.time()
@@ -599,6 +623,9 @@ async def proxy_stream(
     forwards all SSE chunks verbatim to the caller. If usage is missing,
     performs a server-side token estimate from request/response text.
     """
+    # Call-time SSRF re-validation (TOCTOU / DNS-rebinding defense).
+    _guard_outbound(target_url)
+
     headers = (
         _build_downstream_headers(
             user_id, user_email, target_agent_id=target_agent_id
