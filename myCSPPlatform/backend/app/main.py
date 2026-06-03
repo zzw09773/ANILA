@@ -182,6 +182,11 @@ app = FastAPI(
     version=settings.APP_VERSION,
     docs_url=None,  # Disable default docs to use offline Swagger UI
     redoc_url=None,
+    # OpenAPI schema is unauthenticated; gate it behind ENABLE_API_DOCS so
+    # prod (default off) doesn't leak the API surface. None disables the
+    # /openapi.json route entirely, which also makes the custom /docs below
+    # (registered only when enabled) have nothing to render.
+    openapi_url="/openapi.json" if settings.ENABLE_API_DOCS else None,
     lifespan=lifespan,
 )
 
@@ -256,14 +261,18 @@ if static_dir.exists():
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 
-@app.get("/docs", include_in_schema=False)
-async def custom_swagger_ui():
-    return get_swagger_ui_html(
-        openapi_url="/openapi.json",
-        title=f"{settings.APP_NAME} - API 文件",
-        swagger_js_url="/static/swagger-ui-bundle.js",
-        swagger_css_url="/static/swagger-ui.css",
-    )
+# Custom offline Swagger UI — registered only when API docs are enabled
+# (ENABLE_API_DOCS). With docs off the route is absent (404), matching the
+# disabled /openapi.json above.
+if settings.ENABLE_API_DOCS:
+    @app.get("/docs", include_in_schema=False)
+    async def custom_swagger_ui():
+        return get_swagger_ui_html(
+            openapi_url="/openapi.json",
+            title=f"{settings.APP_NAME} - API 文件",
+            swagger_js_url="/static/swagger-ui-bundle.js",
+            swagger_css_url="/static/swagger-ui.css",
+        )
 
 
 @app.get("/health", tags=["health"])
