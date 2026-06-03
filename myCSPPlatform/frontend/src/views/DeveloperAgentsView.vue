@@ -335,7 +335,11 @@ def employee_count(department: str) -&gt; int:
         </ol>
 
         <!-- Sprint 8 X / Phase A — service token management ------------ -->
-        <template v-if="authStore.isAdmin">
+        <!-- Owner-or-admin (canEditAgent): the agent owner may self-issue a
+             static csk- and see its one-time plaintext. bootstrap / rotate /
+             revoke / credential listing stay admin-only (backend authz), so
+             those controls below remain gated on authStore.isAdmin. -->
+        <template v-if="canEditAgent(detailAgent)">
           <TermSection title="service token" />
 
           <!-- One-shot plaintext display: only shown right after a
@@ -383,17 +387,23 @@ def employee_count(department: str) -&gt; int:
           </div>
 
           <div class="row-actions" style="margin-bottom: 8px;">
-            <button class="term-action" :disabled="credentialBusyId === -1" @click="handleIssueBootstrap">
-              {{ credentialBusyId === -1 ? 'issuing…' : 'issue bootstrap (bsk-)' }}
-            </button>
-            <span class="row-actions__sep">·</span>
+            <template v-if="authStore.isAdmin">
+              <button class="term-action" :disabled="credentialBusyId === -1" @click="handleIssueBootstrap">
+                {{ credentialBusyId === -1 ? 'issuing…' : 'issue bootstrap (bsk-)' }}
+              </button>
+              <span class="row-actions__sep">·</span>
+            </template>
             <button class="term-action" :disabled="credentialBusyId === -2" @click="openIssueStaticModal">
               {{ credentialBusyId === -2 ? 'issuing…' : 'issue static (csk-)' }}
             </button>
-            <span class="row-actions__sep">·</span>
-            <button class="term-action" @click="refreshDetailCredentials">refresh</button>
+            <template v-if="authStore.isAdmin">
+              <span class="row-actions__sep">·</span>
+              <button class="term-action" @click="refreshDetailCredentials">refresh</button>
+            </template>
           </div>
 
+          <!-- credential listing + rotate/revoke are admin-only (backend authz) -->
+          <template v-if="authStore.isAdmin">
           <TermEmpty v-if="!credentialsLoading && detailCredentials.length === 0" message="no credentials yet — issue a bootstrap or static token to start" />
           <table v-else class="cred-table">
             <thead>
@@ -443,6 +453,7 @@ def employee_count(department: str) -&gt; int:
               </tr>
             </tbody>
           </table>
+          </template>
         </template>
       </div>
       <template #footer>
@@ -700,7 +711,9 @@ async function handleIssueStatic() {
     }
     setFeedback('success', 'service token issued — copy now, it will not be shown again')
     showIssueStaticModal.value = false
-    await refreshDetailCredentials()
+    // Listing credentials is admin-only (backend authz); an owner has already
+    // got the one-time plaintext from the banner above, so skip the refresh.
+    if (authStore.isAdmin) await refreshDetailCredentials()
   } catch (e) {
     setFeedback('error', e.response?.data?.detail || 'failed to issue static token')
   } finally {
