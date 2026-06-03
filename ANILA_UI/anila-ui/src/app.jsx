@@ -68,6 +68,7 @@ import {
   Modal,
   Dropdown,
 } from "./components.jsx";
+import { useConfirm, useToast } from "./confirm.jsx";
 import {
   AnilaGlyph,
   IconColumns,
@@ -231,6 +232,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   // first guard triggers, which crashes the whole App after login.
   const { authRequest, multipartRequest, isAuthenticated } = useAuth();
   const logoutAndRedirect = useLogoutRedirect();
+  const confirm = useConfirm();
 
   // --- agents / conversations / messages ---
   const [agents, setAgents] = useState([ROUTER_AGENT]);
@@ -679,7 +681,12 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   async function handleDeleteConv(convId) {
     const target = conversations.find((c) => c.id === convId);
     if (!target) return;
-    if (!window.confirm(`確定要刪除「${target.title}」？此動作無法復原。`)) return;
+    if (!(await confirm({
+      title: "刪除對話",
+      message: `確定要刪除「${target.title}」？此動作無法復原。`,
+      confirmText: "刪除",
+      tone: "danger",
+    }))) return;
     const prev = conversations;
     setConversations((cs) => cs.filter((c) => c.id !== convId));
     if (selectedConvId === convId) {
@@ -2036,6 +2043,8 @@ function EmptyState({ agent, agents, onPick, loading }) {
 //   - Per-chunk delete (cascade via conversation delete is fine)
 //   - Search / filter (volume is small)
 function MemoryTab({ authRequest }) {
+  const confirm = useConfirm();
+  const toast = useToast();
   const [factsState, setFactsState] = useState({ loading: true, error: null, facts: [], total: 0 });
   const [chunksState, setChunksState] = useState({
     loading: true, error: null, items: [],
@@ -2073,38 +2082,52 @@ function MemoryTab({ authRequest }) {
   }, [reload]);
 
   const onDeleteFact = async (id, key) => {
-    if (!window.confirm(`刪除事實「${key}」？此動作無法復原。`)) return;
+    if (!(await confirm({
+      title: "刪除事實",
+      message: `刪除事實「${key}」？此動作無法復原。`,
+      confirmText: "刪除",
+      tone: "danger",
+    }))) return;
     try {
       await apiDeleteMemoryFact(authRequest, id);
       await reload();
     } catch (err) {
-      window.alert(err?.message || "刪除失敗");
+      toast(err?.message || "刪除失敗", { tone: "error" });
     }
   };
 
   const onClearFacts = async () => {
     if (factsState.total === 0) return;
-    if (!window.confirm(`清空全部 ${factsState.total} 筆事實？此動作無法復原。`)) return;
+    if (!(await confirm({
+      title: "清空事實",
+      message: `清空全部 ${factsState.total} 筆事實？此動作無法復原。`,
+      confirmText: "清空",
+      tone: "danger",
+    }))) return;
     try {
       await apiClearMemoryFacts(authRequest);
       await reload();
     } catch (err) {
-      window.alert(err?.message || "清空失敗");
+      toast(err?.message || "清空失敗", { tone: "error" });
     }
   };
 
   const onClearChunks = async () => {
     if (chunksState.total === 0) return;
-    if (!window.confirm(
-      `清空全部 ${chunksState.total} 段對話片段？\n` +
-      `這會抹除跨對話語意檢索的記憶（已記住的事實不受影響）。\n` +
-      `此動作無法復原。`
-    )) return;
+    if (!(await confirm({
+      title: "清空對話片段",
+      message:
+        `清空全部 ${chunksState.total} 段對話片段？\n` +
+        `這會抹除跨對話語意檢索的記憶（已記住的事實不受影響）。\n` +
+        `此動作無法復原。`,
+      confirmText: "清空",
+      tone: "danger",
+    }))) return;
     try {
       await apiClearMemoryChunks(authRequest);
       await reload();
     } catch (err) {
-      window.alert(err?.message || "清空失敗");
+      toast(err?.message || "清空失敗", { tone: "error" });
     }
   };
 
