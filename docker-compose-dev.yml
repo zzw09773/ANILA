@@ -61,9 +61,17 @@ services:
       ANILA_ALLOW_DEV_SECRET: "1"
       # Dev keeps Swagger /docs + /openapi.json on (prod default off, S-117).
       ENABLE_API_DOCS: "true"
-      ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-}"
-      ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-}"
-      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,host.docker.internal}"
+      # Dev-only relax (S-117 URL guard): dev runs every model/agent on
+      # docker-internal http endpoints (e.g. http://flux2-dev-agent:8000), so
+      # register + health-check would otherwise fail "scheme must be https".
+      # Hardcoded "1" overrides .env (which keeps 0); prod compose still reads
+      # .env=0 → stays strict (https + no private).
+      ANILA_ALLOW_HTTP_ENDPOINT: "1"
+      ANILA_ALLOW_PRIVATE_ENDPOINT: "1"
+      # flux2-dev-agent added: the image-generator agent + image model use this
+      # docker service name (single-label), which the URL guard blocks unless
+      # trusted (ALLOW_PRIVATE does NOT bypass the single-label check).
+      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,host.docker.internal}"
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
       REFRESH_TOKEN_EXPIRE_DAYS: "${REFRESH_TOKEN_EXPIRE_DAYS:-30}"
@@ -144,8 +152,13 @@ services:
       UPLOAD_DIR: /var/anila/ingestion-uploads
       SECRET_KEY: ${CSP_SECRET_KEY:-dev-secret-key-change-in-prod}
       ANILA_ALLOW_DEV_SECRET: "1"
-      ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-}"
-      ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-}"
+      # Dev-only relax (S-117 URL guard): dev runs every model/agent on
+      # docker-internal http endpoints (e.g. http://flux2-dev-agent:8000), so
+      # register + health-check would otherwise fail "scheme must be https".
+      # Hardcoded "1" overrides .env (which keeps 0); prod compose still reads
+      # .env=0 → stays strict (https + no private).
+      ANILA_ALLOW_HTTP_ENDPOINT: "1"
+      ANILA_ALLOW_PRIVATE_ENDPOINT: "1"
       ENABLE_IMAGE_CAPTIONS: "${ENABLE_IMAGE_CAPTIONS:-true}"
       VISION_URL: "${VISION_URL:-http://csp:8000/v1}"
       VISION_MODEL: "${VISION_MODEL:-gemma4}"
