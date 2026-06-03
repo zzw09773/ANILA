@@ -320,29 +320,41 @@ async def _persist_images(
     from pgvector import HalfVector
 
     inserted = 0
-    async with pool.acquire() as conn:
+    # Outer transaction so the SET LOCAL GUC takes effect (SET LOCAL is
+    # txn-scoped) and is confined to this acquire — it never leaks to the next
+    # pooled user. ingestion_images is FORCE-RLS (migration 0037): the INSERT
+    # policy (WITH CHECK reuses the collection_id USING expr) only accepts rows
+    # whose collection_id matches anila.collection_id, so we scope it here.
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute(
+            f"SET LOCAL anila.collection_id = {int(collection_id)}"
+        )
         for i, row in enumerate(rows):
             emb = embeddings[i] if embeddings is not None else None
             emb_value = HalfVector(emb) if emb is not None else None
             try:
-                await conn.execute(
-                    """
-                    INSERT INTO ingestion_images
-                        (collection_id, document_id, image_id, page,
-                         storage_path, mime, alt_text, caption,
-                         bytes_size, embedding)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                    ON CONFLICT (document_id, image_id) DO UPDATE
-                       SET caption     = EXCLUDED.caption,
-                           storage_path= EXCLUDED.storage_path,
-                           bytes_size  = EXCLUDED.bytes_size,
-                           embedding   = EXCLUDED.embedding,
-                           updated_at  = CURRENT_TIMESTAMP
-                    """,
-                    collection_id, document_id, row["image_id"], row["page"],
-                    row["storage_path"], row["mime"], row["alt_text"],
-                    row["caption"], row["bytes_size"], emb_value,
-                )
+                # Savepoint per row: a single bad row rolls back to here rather
+                # than aborting the whole batch (preserves the prior best-effort
+                # continue-on-error behaviour now that we're inside a txn).
+                async with conn.transaction():
+                    await conn.execute(
+                        """
+                        INSERT INTO ingestion_images
+                            (collection_id, document_id, image_id, page,
+                             storage_path, mime, alt_text, caption,
+                             bytes_size, embedding)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                        ON CONFLICT (document_id, image_id) DO UPDATE
+                           SET caption     = EXCLUDED.caption,
+                               storage_path= EXCLUDED.storage_path,
+                               bytes_size  = EXCLUDED.bytes_size,
+                               embedding   = EXCLUDED.embedding,
+                               updated_at  = CURRENT_TIMESTAMP
+                        """,
+                        collection_id, document_id, row["image_id"], row["page"],
+                        row["storage_path"], row["mime"], row["alt_text"],
+                        row["caption"], row["bytes_size"], emb_value,
+                    )
                 inserted += 1
             except Exception as e:  # noqa: BLE001
                 logger.warning(
