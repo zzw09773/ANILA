@@ -39,7 +39,7 @@ class CspHttpRetriever:
     def __init__(
         self,
         *,
-        base_url: str,
+        csp_base_url: str,
         collection_id: int,
         api_key: str,
         min_score: float = _DEFAULT_MIN_SCORE,
@@ -52,11 +52,11 @@ class CspHttpRetriever:
             )
         if collection_id <= 0:
             raise ValueError(f"collection_id must be > 0, got {collection_id}")
-        if not base_url:
-            raise ValueError("base_url must be a non-empty CSP origin")
+        if not csp_base_url:
+            raise ValueError("csp_base_url must be a non-empty CSP origin")
         if not api_key:
             raise ValueError("api_key must be a non-empty CSP API key")
-        self._base_url = base_url.rstrip("/")
+        self._base_url = csp_base_url.rstrip("/")
         self._collection_id = collection_id
         self._api_key = api_key
         self._min_score = min_score
@@ -162,7 +162,7 @@ def from_env() -> CspHttpRetriever | None:
     verify_ssl = verify_raw not in ("0", "false", "no", "off")
 
     return CspHttpRetriever(
-        base_url=base,
+        csp_base_url=base,
         collection_id=cid,
         api_key=api_key,
         min_score=min_score,

@@ -72,7 +72,7 @@ _HIT = {
 
 async def test_search_maps_hits_to_documents(monkeypatch):
     _patch_httpx(monkeypatch, {"results": [_HIT]})
-    r = CspHttpRetriever(base_url="https://csp.test", collection_id=5, api_key="sk-x")
+    r = CspHttpRetriever(csp_base_url="https://csp.test", collection_id=5, api_key="sk-x")
     docs = await r.search("q", k=3)
     assert len(docs) == 1
     d = docs[0]
@@ -86,7 +86,7 @@ async def test_search_maps_hits_to_documents(monkeypatch):
 async def test_search_request_shape(monkeypatch):
     cap = _patch_httpx(monkeypatch, {"results": []})
     r = CspHttpRetriever(
-        base_url="https://csp.test/", collection_id=9, api_key="sk-key", min_score=0.4
+        csp_base_url="https://csp.test/", collection_id=9, api_key="sk-key", min_score=0.4
     )
     await r.search("hello", k=7)
     assert cap["url"] == "https://csp.test/api/ingestion/collections/9/search"
@@ -96,23 +96,23 @@ async def test_search_request_shape(monkeypatch):
 
 async def test_search_empty_results(monkeypatch):
     _patch_httpx(monkeypatch, {"results": []})
-    r = CspHttpRetriever(base_url="https://csp.test", collection_id=5, api_key="sk-x")
+    r = CspHttpRetriever(csp_base_url="https://csp.test", collection_id=5, api_key="sk-x")
     assert await r.search("q") == []
 
 
 async def test_search_missing_results_key(monkeypatch):
     _patch_httpx(monkeypatch, {"query": "q"})  # no 'results'
-    r = CspHttpRetriever(base_url="https://csp.test", collection_id=5, api_key="sk-x")
+    r = CspHttpRetriever(csp_base_url="https://csp.test", collection_id=5, api_key="sk-x")
     assert await r.search("q") == []
 
 
 async def test_fetch_returns_none():
-    r = CspHttpRetriever(base_url="https://csp.test", collection_id=5, api_key="sk-x")
+    r = CspHttpRetriever(csp_base_url="https://csp.test", collection_id=5, api_key="sk-x")
     assert await r.fetch("42") is None
 
 
 def test_name_and_metadata():
-    r = CspHttpRetriever(base_url="https://csp.test", collection_id=5, api_key="sk-x")
+    r = CspHttpRetriever(csp_base_url="https://csp.test", collection_id=5, api_key="sk-x")
     assert r.name == "csp-http:collection=5"
     assert r.metadata == {
         "backend": "csp-http", "collection_id": 5, "base_url": "https://csp.test",
@@ -125,12 +125,12 @@ def test_name_and_metadata():
 @pytest.mark.parametrize("bad", [0, -1, True])
 def test_invalid_collection_id_raises(bad):
     with pytest.raises(ValueError):
-        CspHttpRetriever(base_url="https://csp.test", collection_id=bad, api_key="k")
+        CspHttpRetriever(csp_base_url="https://csp.test", collection_id=bad, api_key="k")
 
 
 def test_empty_api_key_raises():
     with pytest.raises(ValueError):
-        CspHttpRetriever(base_url="https://csp.test", collection_id=1, api_key="")
+        CspHttpRetriever(csp_base_url="https://csp.test", collection_id=1, api_key="")
 
 
 # ── from_env ─────────────────────────────────────────────────────────────────
@@ -188,7 +188,7 @@ def test_from_env_non_int_collection_raises(monkeypatch):
 def test_protocol_compliance():
     from anila_agent.retrieval.base import Retriever
     assert isinstance(
-        CspHttpRetriever(base_url="https://csp.test", collection_id=1, api_key="k"),
+        CspHttpRetriever(csp_base_url="https://csp.test", collection_id=1, api_key="k"),
         Retriever,
     )
 
