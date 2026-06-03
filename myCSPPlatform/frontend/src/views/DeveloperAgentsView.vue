@@ -906,14 +906,25 @@ function finishRegister() {
 }
 
 // env snippet pre-filled for the new agent's .env (S-Q1 one-key model).
+// CSP_BASE_URL: the browser origin (e.g. localhost) is the ADMIN's view, not
+// necessarily where the agent host can reach CSP — the agent usually runs on a
+// different machine. So when the origin is loopback (or unknown) we emit a
+// placeholder + comment instead of a misleading localhost value.
 const newAgentEnvSnippet = computed(() => {
   const a = registeredAgent.value
   if (!a) return ''
-  const lines = [
-    `CSP_BASE_URL=${cspUrl}`,
-    `ANILA_AGENT_NAME=${a.name}`,
-    `CSP_SERVICE_TOKEN=${newAgentCsk.value || '<paste the csk- shown above>'}`,
-  ]
+  const origin = cspUrl || ''
+  const isLoopback = !origin || /localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0/.test(origin)
+  const lines = []
+  if (isLoopback) {
+    lines.push('# CSP_BASE_URL: set to the CSP host reachable FROM the agent machine')
+    lines.push('# (the agent rarely shares a host with CSP — do NOT use localhost)')
+    lines.push('CSP_BASE_URL=https://<csp-host-reachable-from-agent>')
+  } else {
+    lines.push(`CSP_BASE_URL=${origin}`)
+  }
+  lines.push(`ANILA_AGENT_NAME=${a.name}`)
+  lines.push(`CSP_SERVICE_TOKEN=${newAgentCsk.value || '<paste the csk- shown above>'}`)
   if (a.bound_collection_id) lines.push(`ANILA_COLLECTION_ID=${a.bound_collection_id}`)
   return lines.join('\n')
 })
