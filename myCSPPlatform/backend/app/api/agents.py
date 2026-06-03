@@ -550,6 +550,22 @@ async def trigger_agent_health_check(
         raise HTTPException(status_code=404, detail="Agent 不存在")
 
     ip = _client_ip(request)
+    # Call-time SSRF guard — refuse to probe an endpoint that fails outbound
+    # validation (TOCTOU / DNS-rebinding defense), even for an admin ping.
+    try:
+        validate_outbound_url(agent.endpoint_url)
+    except UnsafeEndpointError as exc:
+        agent.health_status = "unhealthy"
+        db.commit()
+        log_audit_event(
+            db, actor=admin, action="health_check",
+            resource_type="agent", resource_id=agent.id,
+            status="failure",
+            detail=f"健康檢查拒絕: 端點未通過出向安全驗證 ({exc})",
+            ip_address=ip,
+            commit=True,
+        )
+        return {"status": "unhealthy", "detail": f"端點未通過出向安全驗證: {exc}"}
     probe_paths = ["/health", "/v1/models", "/"]
     try:
         async with httpx.AsyncClient(timeout=10) as client:
