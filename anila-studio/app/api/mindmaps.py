@@ -79,20 +79,18 @@ from app.services.mindmap_renderer import (
     render_svg,
     spec_to_dot,
 )
+# JSON-extraction helpers from the canonical module (god-module split dedup);
+# SLIDES_LLM_MODEL / call_llm_chat from their home modules — mindmaps no longer
+# reaches into app.api.studio's internals.
+from app.services.llm_json import (
+    extract_json_object as _extract_json_object,
+    loads_lenient as _loads_lenient,
+)
+from app.services.studio_config import SLIDES_LLM_MODEL
+from app.services.studio_llm import call_llm_chat as _call_llm_chat
 from app.services.studio_text_normalizer import (
     strip_inline_citations,
     strip_latex,
-)
-
-# We reuse the JSON-extraction helpers from the slides module so we don't
-# duplicate the brace-walking / single-quote-repair logic. They're stable
-# module-level helpers, not part of the slides pipeline state — safe to
-# import.
-from app.api.studio import (
-    SLIDES_LLM_MODEL,
-    _call_llm_chat,
-    _extract_json_object,
-    _loads_lenient,
 )
 
 logger = logging.getLogger(__name__)
