@@ -146,7 +146,9 @@ import { useAuthStore } from '../stores/auth'
 import { listModels } from '../api/models'
 import { getMyAllowedModels } from '../api/users'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermConfirm } from '../components/cli'
+import { useDialog } from '../composables/useDialog'
 
+const { toast } = useDialog()
 const keysStore = useApiKeysStore()
 const authStore = useAuthStore()
 
@@ -217,7 +219,7 @@ async function handleCreate() {
     hasCopied.value = false
     newKey.value = { name: '', model_ids: [], expires_at: '' }
   } catch (e) {
-    alert(e.response?.data?.detail || 'create failed')
+    toast(e.response?.data?.detail || 'create failed', { tone: 'error' })
   } finally {
     creating.value = false
   }
@@ -266,7 +268,7 @@ async function handleRegenerate() {
     copied.value = false
     hasCopied.value = false
   } catch (e) {
-    alert(e.response?.data?.detail || 'regen failed')
+    toast(e.response?.data?.detail || 'regen failed', { tone: 'error' })
   } finally {
     regenerateTarget.value = null
   }

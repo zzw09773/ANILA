@@ -138,7 +138,9 @@ import {
   rotateServiceClient,
 } from '../api/serviceClients'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal } from '../components/cli'
+import { useDialog } from '../composables/useDialog'
 
+const { confirm } = useDialog()
 const clients = ref([])
 const busyId = ref(null)
 const feedback = ref({ type: 'success', message: '' })
@@ -209,7 +211,7 @@ async function handleCreate() {
 }
 
 async function handleRotate(c) {
-  if (!confirm(`輪替「${c.client_name}」？舊 token 仍可用 24h。`)) return
+  if (!(await confirm({ message: `輪替「${c.client_name}」？舊 token 仍可用 24h。`, confirmText: '輪替' }))) return
   busyId.value = c.id
   try {
     const data = await rotateServiceClient(c.id)
@@ -230,7 +232,7 @@ async function handleRotate(c) {
 }
 
 async function handleRevoke(c) {
-  if (!confirm(`立即吊銷「${c.client_name}」？無 grace。`)) return
+  if (!(await confirm({ message: `立即吊銷「${c.client_name}」？無 grace。`, confirmText: '吊銷', danger: true }))) return
   busyId.value = c.id
   try {
     await revokeServiceClient(c.id)

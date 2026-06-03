@@ -495,6 +495,7 @@ import {
 } from '../api/agentCredentials'
 import { listModels } from '../api/models'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, TermSection } from '../components/cli'
+import { useDialog } from '../composables/useDialog'
 import BootstrapHowToTabs from '../components/agents/BootstrapHowToTabs.vue'
 
 // CSP base URL the snippets should reference. Derived from the
@@ -504,6 +505,7 @@ import BootstrapHowToTabs from '../components/agents/BootstrapHowToTabs.vue'
 // different origin from the SPA.
 const cspUrl = import.meta.env?.VITE_CSP_BASE_URL || (typeof window !== 'undefined' ? window.location.origin : '')
 
+const { confirm } = useDialog()
 const authStore = useAuthStore()
 
 const agents = ref([])
@@ -654,7 +656,7 @@ async function copyToClipboard(text) {
 
 async function handleIssueBootstrap() {
   if (!detailAgent.value) return
-  if (!confirm(`為「${detailAgent.value.name}」核發新的 bootstrap token？\n\n舊 bootstrap（若存在）會立即失效。`)) return
+  if (!(await confirm({ message: `為「${detailAgent.value.name}」核發新的 bootstrap token？\n\n舊 bootstrap（若存在）會立即失效。`, confirmText: '核發', danger: true }))) return
   credentialBusyId.value = -1
   try {
     const data = await issueBootstrapToken(detailAgent.value.id)
@@ -708,7 +710,7 @@ async function handleIssueStatic() {
 
 async function handleRotateCredential(credential) {
   if (!detailAgent.value) return
-  if (!confirm(`輪替 credential id=${credential.id}？舊 token 仍可用 24h（grace window）。`)) return
+  if (!(await confirm({ message: `輪替 credential id=${credential.id}？舊 token 仍可用 24h（grace window）。`, confirmText: '輪替' }))) return
   credentialBusyId.value = credential.id
   try {
     const data = await rotateAgentCredential(detailAgent.value.id, credential.id)
@@ -733,7 +735,7 @@ async function handleRotateCredential(credential) {
 
 async function handleRevokeCredential(credential) {
   if (!detailAgent.value) return
-  if (!confirm(`立即吊銷 credential id=${credential.id}？無 grace window。`)) return
+  if (!(await confirm({ message: `立即吊銷 credential id=${credential.id}？無 grace window。`, confirmText: '吊銷', danger: true }))) return
   credentialBusyId.value = credential.id
   try {
     await revokeAgentCredential(detailAgent.value.id, credential.id)
@@ -824,7 +826,7 @@ async function handleApprove(agent) {
 async function handleToggleEncryption(agent) {
   if (!agent || encryptionBusyId.value === agent.id) return
   const next = !agent.requires_encryption
-  if (next && !window.confirm(`enable forced encryption for '${agent.name}'? all conversations through it lock to encrypted mode — irreversible per conversation.`)) return
+  if (next && !(await confirm({ message: `enable forced encryption for '${agent.name}'? all conversations through it lock to encrypted mode — irreversible per conversation.`, confirmText: 'enable', danger: true }))) return
   encryptionBusyId.value = agent.id
   try {
     const { data } = await setAgentEncryption(agent.id, next)
@@ -852,7 +854,7 @@ async function handleHealthCheck(agent) {
 
 async function handleDeleteAgent(agent) {
   if (!agent || deletingId.value === agent.id) return
-  if (!window.confirm(`delete '${agent.name}'? non-reversible · live references will break.`)) return
+  if (!(await confirm({ message: `delete '${agent.name}'? non-reversible · live references will break.`, confirmText: 'delete', danger: true }))) return
   deletingId.value = agent.id
   try {
     await deleteAgent(agent.id)
