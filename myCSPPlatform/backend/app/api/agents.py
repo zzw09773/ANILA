@@ -71,6 +71,11 @@ class AgentRegisterRequest(BaseModel):
     # Without this the dashboard's per-model breakdown has phantom
     # "agent X" traffic with no underlying model behind it.
     base_model_id: int = Field(..., description="必須指定底層模型 ID")
+    # RAG agents: the single collection this agent's csk- may search (S-Q1).
+    # Optional — omit for non-RAG agents. Validated against owner access.
+    collection_id: int | None = Field(
+        default=None, description="RAG agent 綁定的 collection（其 csk- 僅能搜這一個）"
+    )
     capabilities: dict | None = None
     input_schema: dict | None = None
 
@@ -85,6 +90,7 @@ class AgentResponse(BaseModel):
     description_for_router: str
     base_model_id: int | None = None
     base_model_name: str | None = None
+    bound_collection_id: int | None = None
     capabilities: dict | None = None
     health_status: str
     approval_status: str
@@ -139,6 +145,7 @@ def _serialize_agent(agent: Agent) -> dict:
         "description_for_router": agent.description_for_router,
         "base_model_id": agent.base_model_id,
         "base_model_name": base.display_name if base else None,
+        "bound_collection_id": getattr(agent, "bound_collection_id", None),
         "capabilities": agent.capabilities,
         "health_status": normalized,
         "approval_status": agent.approval_status,
@@ -261,6 +268,13 @@ def register_agent(
             detail=f"底層模型「{base.display_name}」已停用，請挑選已啟用的模型",
         )
 
+    # RAG agents: bind a single collection the agent's csk- may search.
+    # Validate the registering owner actually has access to it (admin or
+    # owner) so an agent can't be bound to a collection its owner can't see.
+    if request.collection_id is not None:
+        from app.api.ingestion.collections import _require_collection_access
+        _require_collection_access(db, current_user, request.collection_id)
+
     agent = Agent(
         name=request.name,
         owner_user_id=current_user.id,
@@ -268,6 +282,7 @@ def register_agent(
         api_version=request.api_version,
         description_for_router=request.description_for_router,
         base_model_id=request.base_model_id,
+        bound_collection_id=request.collection_id,
         capabilities=request.capabilities,
         input_schema=request.input_schema,
         approval_status="pending",

@@ -26,7 +26,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from dataclasses import dataclass
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -44,6 +47,66 @@ from app.services.ingestion_pool import get_pool
 from app.services.proxy_service import proxy_request
 
 router = APIRouter(tags=["Ingestion / Search"])
+
+_search_bearer = HTTPBearer(auto_error=False)
+
+
+@dataclass
+class SearchPrincipal:
+    """Effective principal for a search request.
+
+    ``user`` is the identity we authorise against (for an agent csk- it is the
+    agent's OWNER). ``agent`` is set only when the caller authenticated with an
+    agent service token; the endpoint then hard-scopes it to
+    ``agent.bound_collection_id`` (S-Q1, least privilege).
+    """
+
+    user: User
+    agent: "object | None" = None
+
+
+def resolve_search_principal(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_search_bearer),
+    db: Session = Depends(get_db),
+) -> SearchPrincipal:
+    """Search auth accepting EITHER a user (JWT/sk-/cookie) OR an agent csk-.
+
+    csk- path (S-Q1): one credential now serves both inbound Router→agent auth
+    and outbound RAG search. The token resolves to its agent; the effective
+    user becomes the agent's owner; the endpoint enforces the bound collection.
+    """
+    token = credentials.credentials if (credentials and credentials.credentials) else None
+    if token and token.startswith("csk-"):
+        from app.models.agent import Agent
+        from app.services import agent_credential_service
+
+        identity = agent_credential_service.verify_service_token(db, token=token)
+        if not identity or identity.kind != "agent" or not identity.agent_id:
+            raise HTTPException(status_code=401, detail="無效的 service token")
+        agent = db.query(Agent).filter(Agent.id == identity.agent_id).first()
+        if agent is None:
+            raise HTTPException(status_code=401, detail="service token 對應的 agent 不存在")
+        owner = db.query(User).filter(User.id == agent.owner_user_id).first()
+        if owner is None:
+            raise HTTPException(status_code=401, detail="agent owner 不存在")
+        return SearchPrincipal(user=owner, agent=agent)
+
+    # User path — delegate to the existing resolver (Authorization header / sk- /
+    # httpOnly cookie). Raises 401 when no valid user credential is present.
+    user = get_current_user(request, credentials, db)
+    return SearchPrincipal(user=user, agent=None)
+
+
+def _enforce_agent_collection_scope(principal: SearchPrincipal, collection_id: int) -> None:
+    """For the agent csk- path, reject any collection that isn't the agent's
+    single bound collection. No-op for user principals."""
+    agent = principal.agent
+    if agent is not None and getattr(agent, "bound_collection_id", None) != collection_id:
+        raise HTTPException(
+            status_code=403,
+            detail="此 agent 的憑證無權搜尋該 collection（僅限其綁定的 collection）",
+        )
 
 
 # ── Schemas ─────────────────────────────────────────────────────────────────
@@ -239,14 +302,17 @@ async def search_collection(
     collection_id: int,
     payload: SearchRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    principal: SearchPrincipal = Depends(resolve_search_principal),
 ) -> SearchResponse:
     """Semantic top-K retrieval over one collection's chunks.
 
-    Auth: ``_require_collection_access`` — admin or owner. Sharing across
-    users is a future ``collection_access_grants`` feature; for now the
-    same gate as document upload / chunk inspect.
+    Auth: ``_require_collection_access`` — admin or owner. An agent csk-
+    authenticates as its owner but is additionally hard-scoped to its single
+    ``bound_collection_id`` (S-Q1). Cross-user sharing is a future
+    ``collection_access_grants`` feature.
     """
+    _enforce_agent_collection_scope(principal, collection_id)
+    current_user = principal.user
     coll = _require_collection_access(db, current_user, collection_id)
 
     if coll.status != "active":
@@ -342,7 +408,7 @@ async def search_collection_images(
     collection_id: int,
     payload: ImageSearchRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    principal: SearchPrincipal = Depends(resolve_search_principal),
 ) -> ImageSearchResponse:
     """Semantic top-K retrieval over a collection's ``ingestion_images`` rows.
 
@@ -360,6 +426,8 @@ async def search_collection_images(
       - the embedder returned an empty vector,
       - no rows beat the ``min_score`` threshold.
     """
+    _enforce_agent_collection_scope(principal, collection_id)
+    current_user = principal.user
     coll = _require_collection_access(db, current_user, collection_id)
 
     if coll.status != "active":
