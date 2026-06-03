@@ -18,13 +18,15 @@
 
 ## ⏸️ 延後(無法安全一次做完,附原因與計畫)
 
-### ingestion_images 無 RLS(MEDIUM → 實為 defense-in-depth)
+### ingestion_images 無 RLS(MEDIUM → 實為 defense-in-depth)— ✅ code 完成(2026-06-03,部署待 user)
 - **修正 finding 框架**:image search endpoint **有** `_require_collection_access`(`search.py:363`),隔離是「endpoint 授權 + WHERE collection_id」雙層,非 finding 說的「僅 WHERE」。RLS 是 defense-in-depth,非補開放漏洞。
-- **為何不一次做**:啟 RLS 需跨三路徑協調,盲做會在下次部署弄壞:
-  1. `search.py:406` image search 用 `pool.acquire()` 原始連線,**無 `SET LOCAL anila.collection_id`** → 啟 RLS 後查詢全回空。
-  2. ingestion-worker 用 `csp_app`(NOBYPASSRLS)`INSERT INTO ingestion_images`(`handlers.py:330`)→ FORCE RLS 後 INSERT 需設 GUC 或加 WITH CHECK policy。
-  3. `image_blob.py:91` 是 by-PK 查詢(先讀列才知 collection_id)→ RLS 下雞生蛋:沒 GUC 讀不到列、要讀列才知 collection_id。
-- **計畫**:① 寫 migration(ENABLE+FORCE RLS + policy keyed on `anila.collection_id`,鏡像 `0019`)② search.py 改走 txn + `SET LOCAL` ③ worker INSERT 設 GUC ④ blob 端改帶 collection_id 參數或專用授權路徑 ⑤ 整合測試 image search/blob/ingest 後才部署。
+- **已做**(分支 `security/ingestion-images-rls`,跨三路徑):
+  1. **migration 0037**:ENABLE+FORCE RLS + `FOR ALL USING(collection_id = anila.collection_id GUC)` policy(鏡像 0019;INSERT 沿用 USING 當 WITH CHECK)+ 窄 `SECURITY DEFINER` resolver `ingestion_image_collection_id(id)`(只回 collection_id)解 blob by-PK 雞生蛋。
+  2. **search.py image search**:txn + `SET LOCAL anila.collection_id`(原 WHERE 保留為 belt-and-suspenders)。
+  3. **ingestion-worker `_persist_images`**:txn + SET LOCAL + 逐列 savepoint(保留 best-effort continue-on-error)。
+  4. **image_blob.py by-PK**:SECURITY DEFINER resolver 取 collection_id → `_require_collection_access` 把關 → set GUC 後在 RLS 下讀;dialect-guard(RLS 僅 Postgres,SQLite 測試走直讀)。
+- **已驗證**(對 dev Postgres):`test_ingestion_images_rls_pg.py`(Postgres-gated,SQLite skip)—— GUC scoping、跨 collection INSERT 被 42501 擋(RLS WITH CHECK 非 23514)、resolver 繞 FORCE RLS。既有 SQLite 契約測試保持綠。
+- **部署待 user**:RLS 是 defense-in-depth;部署前請對 staging Postgres 跑完整 image search/blob/ingest 整合套件(SQLite 無法驗 RLS)。
 
 ### SSRF guard 僅 create/update 時驗、非呼叫時驗(LOW/MED, TOCTOU)
 - `url_guard` 在 endpoint_url create/update 時驗證,儲存後到呼叫間可被 DNS-rebinding。
