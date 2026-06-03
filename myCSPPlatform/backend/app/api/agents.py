@@ -690,6 +690,7 @@ def delete_agent(
 from app.models.agent_credential import AgentCredential
 from app.services import agent_credential_service
 from app.services.proxy_service import invalidate_agent_token_cache
+from app.services.service_token_envelope import decode_service_token_envelope
 
 
 # ---- Schemas ---------------------------------------------------------------
@@ -921,6 +922,92 @@ def issue_static_credential(
         issued_at=cred.service_token_issued_at,
         label=cred.label,
     )
+
+
+class TestConnectionResponse(BaseModel):
+    reachable: bool
+    # None = could not determine (endpoint unreachable).
+    token_accepted: bool | None = None
+    status_code: int | None = None
+    detail: str
+
+
+@router.post("/{agent_id}/test-connection", response_model=TestConnectionResponse)
+async def test_agent_connection(
+    agent_id: int,
+    request: Request,
+    current_user: User = Depends(_require_developer_or_admin),
+    db: Session = Depends(get_db),
+):
+    """Probe the agent endpoint with its OWN csk- to confirm the operator wired
+    ``CSP_SERVICE_TOKEN`` into the agent's .env (S-Q3). Owner-or-admin.
+
+    Sends an empty ``messages`` body so the agent's inbound token check fires
+    *before* any LLM work: 401 → the agent rejected our csk- (missing/wrong in
+    .env); anything else (e.g. 400 "no user message") → token accepted, .env
+    correctly wired. Connection error / timeout → unreachable.
+    """
+    agent = _resolve_agent(db, agent_id)
+    if not is_admin_tier(current_user) and agent.owner_user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="無權限測試此 Agent")
+
+    # Call-time SSRF guard (TOCTOU / DNS-rebinding), same as health-check.
+    try:
+        validate_outbound_url(agent.endpoint_url)
+    except UnsafeEndpointError as exc:
+        raise HTTPException(status_code=400, detail=f"端點未通過出向安全驗證: {exc}")
+
+    # The token the Router would present == the agent's most-recent active csk-.
+    # CSP holds the encrypted envelope and can decrypt it (master key in env).
+    cred = (
+        db.query(AgentCredential)
+        .filter(
+            AgentCredential.agent_id == agent.id,
+            AgentCredential.is_active.is_(True),
+        )
+        .order_by(AgentCredential.service_token_issued_at.desc())
+        .first()
+    )
+    if cred is None:
+        raise HTTPException(
+            status_code=409,
+            detail="此 Agent 尚無有效憑證,請先核發 csk- 再測試連線",
+        )
+    token = decode_service_token_envelope(cred.service_token_envelope) or ""
+
+    ip = _client_ip(request)
+    url = f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions"
+    body = {"model": agent.name, "messages": [], "stream": False}
+    headers = {"X-CSP-Service-Token": token}
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            resp = await client.post(url, json=body, headers=headers)
+        accepted = resp.status_code != 401
+        detail = (
+            "端點接受了該 csk-(agent .env 的 CSP_SERVICE_TOKEN 配對正確)"
+            if accepted
+            else "端點以 401 拒絕該 csk-(agent .env 未設或不符)"
+        )
+        log_audit_event(
+            db, actor=current_user, action="test_connection",
+            resource_type="agent", resource_id=agent.id,
+            status="success" if accepted else "failure",
+            detail=f"測試連線 → HTTP {resp.status_code}", ip_address=ip, commit=True,
+        )
+        return TestConnectionResponse(
+            reachable=True, token_accepted=accepted,
+            status_code=resp.status_code, detail=detail,
+        )
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError) as exc:
+        log_audit_event(
+            db, actor=current_user, action="test_connection",
+            resource_type="agent", resource_id=agent.id, status="failure",
+            detail=f"測試連線無法連線: {exc}", ip_address=ip, commit=True,
+        )
+        return TestConnectionResponse(
+            reachable=False, token_accepted=None,
+            detail=f"無法連線到 agent 端點: {exc}",
+        )
 
 
 @router.get("/{agent_id}/credentials", response_model=list[CredentialResponse])
