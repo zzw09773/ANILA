@@ -403,7 +403,12 @@ async def search_collection_images(
     # halfvec uses cosine distance; pgvector returns 0 = identical, so
     # similarity = 1 - distance. Filter on distance < (1 - min_score).
     max_dist = 1.0 - payload.min_score
-    async with pool.acquire() as conn:
+    async with pool.acquire() as conn, conn.transaction():
+        # RLS: ingestion_images is FORCE-RLS (migration 0037); scope this
+        # connection to the collection so the policy returns its rows. SET LOCAL
+        # is txn-scoped, so it never leaks to the next pooled user. The explicit
+        # WHERE i.collection_id = $1 below stays as belt-and-suspenders.
+        await conn.execute(f"SET LOCAL anila.collection_id = {int(collection_id)}")
         rows = await conn.fetch(
             """
             SELECT
