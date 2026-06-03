@@ -26,19 +26,24 @@
   3. `image_blob.py:91` 是 by-PK 查詢(先讀列才知 collection_id)→ RLS 下雞生蛋:沒 GUC 讀不到列、要讀列才知 collection_id。
 - **計畫**:① 寫 migration(ENABLE+FORCE RLS + policy keyed on `anila.collection_id`,鏡像 `0019`)② search.py 改走 txn + `SET LOCAL` ③ worker INSERT 設 GUC ④ blob 端改帶 collection_id 參數或專用授權路徑 ⑤ 整合測試 image search/blob/ingest 後才部署。
 
-### SSRF guard 僅 create/update 時驗、非呼叫時驗(LOW/MED, TOCTOU)
+### SSRF guard 僅 create/update 時驗、非呼叫時驗(LOW/MED, TOCTOU)— ✅ 已修(2026-06-03)
 - `url_guard` 在 endpoint_url create/update 時驗證,儲存後到呼叫間可被 DNS-rebinding。
-- **計畫**:在 proxy dispatch 呼叫前對 resolved IP 再驗一次;需注意別影響正常 agent dispatch 效能,需測。
+- **已做**:`proxy_service._guard_outbound()` 在 proxy_request / proxy_stream 呼叫前重驗 resolved target_url;proxy.py agent 直轉/answer stream、health_checker、agents/models 健康探測同樣呼叫時重驗。trusted hosts 走 fast-path(無 DNS),hot path 成本近零。見 commit "re-validate outbound URLs at call time"。
 
 ### ANILA_TRUSTED_HOSTS 含 host.docker.internal(MEDIUM, 設定)
 - `docker-compose.yml:56` 預設含 `host.docker.internal`,擴大 SSRF 出向允許面。
 - **建議(非程式)**:prod 移除該預設;但需先確認沒有 agent/model endpoint 依賴 host 服務。屬部署設定,建議你評估後調整。
 
-### Swagger /docs + /openapi.json 無 auth(INFO)
-- `main.py:244` 自訂 `/docs` + 預設 `/openapi.json` 無認證,洩漏 API surface。
-- **計畫**:加 `ENABLE_API_DOCS` 設定(prod 設 False → `openapi_url=None` 連帶關 docs),或將 `/docs` 掛 auth 依賴。INFO 級,低優先。
+### Swagger /docs + /openapi.json 無 auth(INFO)— ✅ 已修(2026-06-03)
+- `main.py` 自訂 `/docs` + 預設 `/openapi.json` 無認證,洩漏 API surface。
+- **已做**:加 `ENABLE_API_DOCS` 設定(預設 False = secure-by-default);prod 關閉 `openapi_url` 與自訂 `/docs` 路由,docker-compose-dev.yml 設 `ENABLE_API_DOCS=true` 保留 dev docs。見 commit "gate Swagger /docs + /openapi.json"。
 
-### audit log 系統性遺失(S2 延伸)
-- 全 codebase 74 個 `log_audit_event` 僅 9 帶 commit=True;本次只修 ingestion 10 站。
-- **為何不全改預設**:`auth.py:130` 等是「audit→後續才 commit」模式,翻全域預設會提前 commit 半成品交易。其餘 ~55 站需逐站分析其交易邊界。
-- **計畫**:逐站歸類(post-commit→return = 加 commit=True;mid-txn = 不動),或重構 audit 走獨立 session 確保durability。
+### audit log 系統性遺失(S2 延伸)— ✅ 已解決(2026-06-03 逐站複核)
+- 原估「~55 站待補」為 doc 撰寫時快照。dev-public 的 #110 merge 後已大幅收斂。
+- **複核現況**(security/p2-deferred-117，off dev-public):csp backend 共 **77 個 `log_audit_event` 呼叫,64 帶 commit=True**,僅 12 個 commit=False(audit_service.py:7 為定義不計)。
+- 這 12 個 commit=False **全部已原子落地** —— 每個呼叫端在 log 後都有 `db.commit()`:
+  - `alerts.py` 77/101(ack/resolve)→ commit 85/109
+  - `service_clients.py` 176/217(create/rotate)→ commit 186/226；rotate/revoke 經 service 由 endpoint commit 251/273
+  - `agent_credential_service.py` 8 站(issue_bootstrap/consume_bootstrap×2/issue_static/rotate_agent/rotate_service_client/revoke_agent/revoke_service_client)→ 服務層 `db.flush()`,呼叫端 `agents.py`/`service_clients.py` endpoint commit(821/858/893/949/976、251/273)
+  - `auth.py` login/安全審計皆已 `commit=True`(137/160/183/204/287/329/379)——doc 原文「auth.py:130 是延後 commit 模式」已過時。
+- **結論:不需補 commit**。這 12 站是「服務層 flush + 端點 commit」的**正確原子模式**;若硬加 commit=True 反會破壞 atomicity(在服務層提前 commit credential 寫入,與端點交易拆開)。S2 audit durability 視為已達成。
