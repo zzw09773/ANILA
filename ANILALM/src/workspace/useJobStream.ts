@@ -34,7 +34,15 @@ export function useJobStream() {
               .catch(() => undefined)
           }
         },
-        () => undefined,
+        () => {
+          // SSE dropped (EventSource can't carry our Bearer token, so a
+          // missing/expired cookie session kills the stream silently).
+          // Recover the latest status with a one-shot Bearer-authed fetch
+          // instead of freezing the row on a stale in-flight status.
+          void getDocument(d.doc.id)
+            .then((res) => upsertDoc(res.data, res.data.latest_job_id ?? jobId))
+            .catch(() => undefined)
+        },
       )
       handles.push(handle)
     }
