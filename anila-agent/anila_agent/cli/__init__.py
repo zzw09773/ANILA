@@ -7,6 +7,19 @@ from anila_agent.cli.approval_repl import (
     ReplResult,
     run_approval_repl,
 )
+from anila_agent.cli.builtin_commands import (
+    build_default_registry,
+    cmd_budget,
+    cmd_clear,
+    cmd_cost,
+    cmd_find,
+    cmd_graph,
+    cmd_memory,
+    cmd_task,
+    cmd_tools,
+    cmd_trace,
+    register_builtin_commands,
+)
 from anila_agent.cli.demo_agents import (
     DemoAgent,
     echo_agent_stream,
@@ -24,6 +37,17 @@ from anila_agent.cli.run_demo_loop import (
     AsyncInputProvider,
     run_demo_loop,
     run_demo_loop_async,
+)
+from anila_agent.cli.slash_commands import (
+    SlashCommand,
+    SlashCommandContext,
+    SlashCommandRegistry,
+    default_registry,
+    dispatch,
+    is_slash_command,
+    parse_slash_line,
+    reset_default_registry,
+    slash_command,
 )
 
 __all__ = [
@@ -43,4 +67,26 @@ __all__ = [
     "run_demo_loop",
     "run_demo_loop_async",
     "weather_agent_stream",
+    # P2-10 slash command framework
+    "SlashCommand",
+    "SlashCommandContext",
+    "SlashCommandRegistry",
+    "default_registry",
+    "dispatch",
+    "is_slash_command",
+    "parse_slash_line",
+    "reset_default_registry",
+    "slash_command",
+    # P2-10 built-in commands
+    "build_default_registry",
+    "cmd_budget",
+    "cmd_clear",
+    "cmd_cost",
+    "cmd_find",
+    "cmd_graph",
+    "cmd_memory",
+    "cmd_task",
+    "cmd_tools",
+    "cmd_trace",
+    "register_builtin_commands",
 ]
