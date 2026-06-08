@@ -440,6 +440,13 @@ class CompactingSession:
     # 兩者皆 None 時不 fire(向後相容)。
     hook_registry: HookRegistry | None = None
     event_bus: EventBus | None = None
+    # P2-5 — optional callback,每跑完一個 compactor 都會帶 CompactionStats 進來。
+    # 設計成 callable 而非直接相依 ConversationIndex,避免 memory.compaction 反
+    # 過來 import memory.conversation_index;呼叫端用 partial / lambda 把
+    # ``ConversationIndex.record_compaction`` 接上即可。
+    # 簽章:``(stats: CompactionStats) -> None``。例外被 swallow + log,
+    # 不破壞 compaction read path。
+    index_callback: Callable[[CompactionStats], None] | None = None
 
     # 觀測用:最近一次每個 compactor 跑出來的 stats(供測試與 debug)。
     last_stats: list[CompactionStats] = field(default_factory=list)
@@ -527,6 +534,15 @@ class CompactingSession:
             stats.after_tokens,
             stats.messages_dropped,
         )
+
+        # P2-5 — 通知外部 ConversationIndex(若有)。callback 例外不影響主流程,
+        # 用 logger.exception 留 trace 給 ops 觀察,但不傳染壞 compact loop。
+        if self.index_callback is not None:
+            try:
+                self.index_callback(stats)
+            except Exception:
+                logger.exception("compaction index_callback failed (swallowed)")
+
         return compacted
 
 

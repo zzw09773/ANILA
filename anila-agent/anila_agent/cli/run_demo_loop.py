@@ -50,6 +50,12 @@ from anila_agent.cli.demo_agents import (
     list_demo_agents,
     weather_agent_stream,
 )
+from anila_agent.cli.slash_commands import (
+    SlashCommandContext,
+    SlashCommandRegistry,
+    dispatch as slash_dispatch,
+    is_slash_command,
+)
 from anila_agent.cli.stream_renderer import render_stream
 from anila_agent.core.cost_tracker import CostTracker, PricingRegistry
 from anila_agent.core.events import EventBus
@@ -194,6 +200,8 @@ async def run_demo_loop_async(
     tracer: Tracer | None = None,
     max_turns: int = 1000,
     prompt: str = " > ",
+    slash_registry: SlashCommandRegistry | None = None,
+    slash_context: SlashCommandContext | None = None,
 ) -> dict[str, Any]:
     """跑 streaming demo REPL(async 版本)。
 
@@ -232,6 +240,12 @@ async def run_demo_loop_async(
         tracer: 自訂 tracer;預設新建一個 vanilla :class:`Tracer`。
         max_turns: 防呆上限,避免 stub input 無窮 yield 同字串時 loop 不結束。
         prompt: 顯示給 user 的 prompt 字串,預設 ``" > "``(對齊上游)。
+        slash_registry: 可選 P2-10 :class:`SlashCommandRegistry`。若提供,
+            user input 以 ``/`` 開頭時不丟給 agent,改由本 registry dispatch,
+            輸出印到 ``console`` 後直接進下一輪。``None`` 時行為與舊版一致。
+        slash_context: 與 ``slash_registry`` 搭配的 :class:`SlashCommandContext`;
+            若未提供且 ``slash_registry`` 有給,會自動建一個只塞
+            ``cost_tracker`` / ``tracer`` 的最小 ctx。
 
     Returns:
         ``{"turns": int, "cost_usd": float, "tracker": CostTracker}`` — 結束時
@@ -247,6 +261,14 @@ async def run_demo_loop_async(
         bus=EventBus(),
         tracer=used_tracer,
     )
+
+    # P2-10:若 caller 給了 registry 但沒 ctx,自動湊一份最小 ctx。
+    effective_slash_ctx: SlashCommandContext | None = slash_context
+    if slash_registry is not None and effective_slash_ctx is None:
+        effective_slash_ctx = SlashCommandContext(
+            cost_tracker=tracker,
+            tracer=used_tracer,
+        )
 
     turn_count = 0
     out.print(
@@ -269,6 +291,18 @@ async def run_demo_loop_async(
             continue
         if stripped.lower() in stop_words:
             break
+
+        # P2-10:slash command 短路 — 不丟給 agent,直接 dispatch 印結果。
+        if slash_registry is not None and is_slash_command(stripped):
+            assert effective_slash_ctx is not None  # 上面保證一定有
+            slash_out = await slash_dispatch(
+                stripped,
+                effective_slash_ctx,
+                registry=slash_registry,
+            )
+            if slash_out is not None:
+                out.print(Text(slash_out))
+            continue
 
         # 每輪開一個 trace(P0-9)— 用 metadata 帶 user input 摘要。
         with used_tracer.start_trace(
@@ -318,6 +352,8 @@ def run_demo_loop(
     tracer: Tracer | None = None,
     max_turns: int = 1000,
     prompt: str = " > ",
+    slash_registry: SlashCommandRegistry | None = None,
+    slash_context: SlashCommandContext | None = None,
 ) -> dict[str, Any]:
     """同步版 :func:`run_demo_loop_async` — 內部用 ``asyncio.run`` 跑。
 
@@ -335,6 +371,8 @@ def run_demo_loop(
             tracer=tracer,
             max_turns=max_turns,
             prompt=prompt,
+            slash_registry=slash_registry,
+            slash_context=slash_context,
         )
     )
 
