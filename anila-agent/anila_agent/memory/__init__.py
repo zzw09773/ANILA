@@ -34,6 +34,11 @@ from anila_agent.memory.signature_blocks import (
     strip_signature_blocks,
     strip_signature_from_block,
 )
+from anila_agent.memory.conversation_index import (
+    CompactionRecord,
+    ConversationIndex,
+    TurnRecord,
+)
 from anila_agent.memory.long_term import LongTermMemory, MemoryHeader, MemoryType
 from anila_agent.memory.session_memory import (
     JsonFileSessionMemoryStore,
@@ -56,8 +61,10 @@ __all__ = [
     "AutoDreamer",
     "CompactStrategy",
     "CompactingSession",
+    "CompactionRecord",
     "CompactionStats",
     "CompactorABC",
+    "ConversationIndex",
     "JsonFileSessionMemoryStore",
     "LlmCaller",
     "LlmSummaryCompactor",
@@ -72,6 +79,7 @@ __all__ = [
     "SessionMemoryStore",
     "SnipCompactor",
     "SummaryFn",
+    "TurnRecord",
     "compute_conversation_hash",
     "estimate_total_tokens",
     "extract_boundaries",

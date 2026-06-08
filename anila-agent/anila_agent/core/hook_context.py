@@ -43,9 +43,15 @@ import time
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from anila_agent.core.context import AnilaToolContext
+
+if TYPE_CHECKING:
+    # 避免 runtime cycle:memory.conversation_index 屬於 P2-5,介於 memory 與
+    # core 之間。core 不能在 import 階段就抓 memory 物件(memory 反向 depend
+    # core),所以僅在型別檢查階段 import,實際欄位用字串型別宣告。
+    from anila_agent.memory.conversation_index import ConversationIndex
 
 # ---------------------------------------------------------------------------
 # OperationContext (最內層 scope)
@@ -223,6 +229,11 @@ class SessionContext:
             (或對應 helper)自動 set/clear,通常不直接賦值。
         query_started_at: 當前 query 的開始時間(epoch seconds);無 active
             query 時為 None。供 SLA / latency 分析使用。
+        conversation_index: P2-5 — 可選的 conversation 層級索引,紀錄 turn /
+            compaction 事件序列。不需要追蹤的 caller 留 ``None`` 即可,完全
+            不付出開銷;欲啟用可在 session 建立時帶
+            ``conversation_index=ConversationIndex()``。``start_turn`` 會自
+            動把對應的 ``TurnRecord`` 寫入 / 結束時 finalize。
     """
 
     session_id: str
@@ -236,6 +247,9 @@ class SessionContext:
     # P2-9 queryTracking:目前 active 的 user query。
     current_query_id: str | None = None
     query_started_at: float | None = None
+    # P2-5 ConversationIndex(optional)。型別用 Any 避免 runtime cycle,
+    # 公開 API 請見 :class:`anila_agent.memory.conversation_index.ConversationIndex`。
+    conversation_index: ConversationIndex | None = None
 
     # ---- 生命週期 --------------------------------------------------------
 
@@ -398,10 +412,30 @@ class SessionContext:
             session=self,
         )
         self._turn_history.append(turn)
+
+        # P2-5 — 若有掛 ConversationIndex,自動 record start / finalize 流程。
+        # 為了不破壞 P1-3 既有 caller(不在意 index),caller 自己負責 index
+        # 一致性:duplicate turn_index 在 start 階段 swallow ValueError;
+        # finalize 階段如果沒對應 record 就 swallow KeyError。
+        if self.conversation_index is not None:
+            with contextlib.suppress(ValueError):
+                self.conversation_index.start_turn(
+                    turn_id=turn.turn_id,
+                    turn_index=turn.turn_index,
+                    started_at=turn.started_at,
+                    metadata=turn.metadata,
+                )
+
         try:
             yield turn
         finally:
             turn.mark_ended()
+            if self.conversation_index is not None:
+                with contextlib.suppress(KeyError):
+                    self.conversation_index.finalize_turn(
+                        turn_index=turn.turn_index,
+                        ended_at=turn.ended_at,
+                    )
 
     # ---- 內部紀錄 --------------------------------------------------------
 
