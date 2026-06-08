@@ -400,20 +400,27 @@ class RevocationCache:
                 delay = min(delay * 2, self._reconnect_max_delay)
 
     async def _consume_until_error(self) -> None:
-        """Drive ``pubsub.listen()`` until it raises or we get told to
-        stop. Any exception propagates to ``_run_subscriber`` for the
-        reconnect machinery.
+        """Pump pub/sub messages until a real connection error or stop.
+
+        Uses ``get_message(timeout=...)`` rather than ``listen()``: an idle
+        interval (no revocation event — the normal case) returns ``None`` so
+        we just loop, and idleness never looks like a disconnect. A genuine
+        connection failure still raises, propagating to ``_run_subscriber``
+        for reconnect. This stops the cache from flapping ``_ready=False``
+        (and 503-ing auth) merely because no token was revoked for a while —
+        the previous ``listen()`` blocking read surfaced idle read-timeouts
+        as disconnects.
         """
         assert self._pubsub is not None, "subscriber started before pubsub open"
-        async for message in self._pubsub.listen():
-            if self._stopping.is_set():
-                return
+        while not self._stopping.is_set():
+            message = await self._pubsub.get_message(
+                ignore_subscribe_messages=True, timeout=1.0
+            )
             if message is None:
+                # Idle tick (no message within the timeout) — not an error.
                 continue
-            msg_type = message.get("type")
-            if msg_type != "message":
-                # subscribe / unsubscribe confirmations and the like
-                # — ignore.
+            if message.get("type") != "message":
+                # subscribe / unsubscribe confirmations and the like — ignore.
                 continue
             self._handle_message(message.get("data"))
 
