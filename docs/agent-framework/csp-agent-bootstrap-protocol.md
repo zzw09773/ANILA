@@ -5,6 +5,15 @@
 > **Purpose**: 定義跨語言、跨實作的 agent 入會協定，並規畫 CSP dev 頁面強化以支援自寫 agent / legacy migration。
 > **Audience**: 任何要寫 / fork agent 接 CSP 平台的 dev — Python / Node / Go / 其他。
 
+> **Status update（2026-06-08）**：**預設上手路徑已改為直發 `csk-`** —— 開發者(agent owner)
+> 從 `/developer/agents` 的 **register 兩步精靈**自助核發**一把** `csk-`,貼進 `.env` 的
+> `CSP_SERVICE_TOKEN`,按 test-connection 驗證即可(見 `docs/guides/developer-guide.md`)。
+> 本文的 **bsk-→csk- bootstrap 交換**(Part 1)現定位為 **admin-only / 選配**路徑,用於「長期
+> 金鑰全程不經人手、機器端自己換領」的場景;機制仍凍結有效。**一把金鑰(S-Q1)**:這把
+> `csk-` 同時是入向驗證憑證(Router→agent)與出向 RAG 搜尋憑證,搜尋範圍由 CSP 限在 agent
+> 註冊時綁定的單一 collection(`agents.bound_collection_id`,最小權限)。Part 3 的 Phase 0.5
+> 工作項目多數已落地。
+
 ---
 
 ## Part 1 — Protocol Spec（wire-level contract）
@@ -74,11 +83,21 @@ Errors:
 
 ### Endpoint：csk- 使用方式
 
-每個對 CSP 的呼叫帶 header：
+Router→agent 派工時由 CSP 帶 header(agent 比對 `.env` 的 `CSP_SERVICE_TOKEN`)：
 
 ```
 X-CSP-Service-Token: csk-YYYYYYYYYY
 ```
+
+agent→CSP 的 RAG 搜尋(`POST /api/ingestion/collections/{id}/search`)則用**同一把** csk-:
+
+```
+Authorization: Bearer csk-YYYYYYYYYY
+```
+
+CSP 會把這把 csk- 解析成其 agent→owner 身分,並**硬限只能搜該 agent 綁定的單一 collection**
+(`agents.bound_collection_id`);搜其他 collection → 403。這就是「一把金鑰」:不再需要獨立的
+`CSP_SEARCH_TOKEN`(未設時 fallback 這把 csk-)。
 
 ### Endpoint：csk- rotation
 
@@ -89,13 +108,14 @@ X-CSP-Service-Token: csk-YYYYYYYYYY
 
 **自寫 agent 沒 RotatingServiceTokenMiddleware 怎麼辦**：admin 手動觸發 + agent 重啟 + 重新跑一次 bootstrap 流程；或實作自己的 file watcher。
 
-### Endpoint：static credential（非 bootstrap path）
+### Endpoint：static credential（**預設上手路徑**，no bsk-）
 
-某些 agent 跑不起 bootstrap CLI（純 bash / 預先封包好的第三方），可以走：
+直接核發一把 `csk-`,跳過 bsk-→csk- 兩步。**這是現在的預設**(register 兩步精靈 Step 2 用
+的就是它);只有「長期金鑰全程不經人手」的場景才回頭走 bsk- bootstrap。
 
 ```
 POST {csp_url}/api/agents/{agent_id}/credentials/issue-static
-  (admin auth required, no bsk- needed)
+  (owner-or-admin: 非 admin 只能為自己擁有的 agent 發)
 
 Response 200:
   {
@@ -106,7 +126,12 @@ Response 200:
   }
 ```
 
-⚠️ **沒有 endpoint_url verification**，所以 csk- 一旦洩漏可被任何 holder 用。**Admin 必須週期性手動 rotate**。優先走 bsk- 流程，static 是 fallback。
+驗證 .env 是否配上 → `POST /api/agents/{agent_id}/test-connection`(owner-or-admin;CSP 帶這把
+csk- 探打 agent 的 `/v1/chat/completions`,回 `token_accepted`)。
+
+⚠️ **沒有 endpoint_url verification**(不像 bsk- 交換會綁 endpoint),csk- 一旦洩漏可被任何
+holder 用,且 approval gate 不變(pending agent 核准前不 routing)。**請週期性走 detail 的
+rotate**。需要交換時綁 endpoint 的強保證,才走 bsk- 流程。
 
 ---
 
