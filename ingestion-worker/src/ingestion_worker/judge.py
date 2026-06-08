@@ -208,6 +208,11 @@ async def score_one(
 
     m = _SCORE_RE.match(text or "")
     if m is None:
-        logger.info("judge returned unparseable text %r — score skipped", text[:40])
+        # `text` can be JSON null (content: null) — guard the slice so a
+        # null content degrades to the soft-failure None path instead of
+        # raising TypeError on ``None[:40]``.
+        logger.info(
+            "judge returned unparseable text %r — score skipped", (text or "")[:40]
+        )
         return None
     return int(m.group(1))

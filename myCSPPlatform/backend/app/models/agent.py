@@ -39,6 +39,12 @@ class Agent(Base):
     base_model_id = Column(
         Integer, ForeignKey("model_registry.id", ondelete="SET NULL"), nullable=True
     )
+    # RAG agents: the single collection this agent's csk- is allowed to search
+    # (S-Q1, least-privilege). NULL = non-RAG agent (no collection search at
+    # all). The agent acts as its owner but is hard-scoped to this one id.
+    bound_collection_id = Column(
+        Integer, ForeignKey("ingestion_collections.id", ondelete="SET NULL"), nullable=True
+    )
     endpoint_url = Column(String(500), nullable=False)
     api_version = Column(String(20), nullable=False, default="v1")
     description_for_router = Column(Text, nullable=False, default="")

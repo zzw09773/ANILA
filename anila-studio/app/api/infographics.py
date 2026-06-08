@@ -30,7 +30,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -73,6 +72,10 @@ from app.services.infographic_renderer import (
     render_html,
     render_pdf,
 )
+from app.services.llm_json import (
+    extract_json_object as _extract_json_object,
+    loads_lenient as _loads_lenient,
+)
 from app.services.studio_text_normalizer import strip_inline_citations, strip_latex
 
 logger = logging.getLogger(__name__)
@@ -111,68 +114,10 @@ _INFOGRAPHIC_SEED_PHRASES: dict[str, str] = {
 SCHEMA_CORRECTION_PASSES = 1
 
 
-# ── JSON extraction (same shape as studio.py) ──────────────────────────────
-
-_THINK_BLOCK_RE = re.compile(
-    r"<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE,
-)
-
-
-def _extract_json_object(raw: str) -> str:
-    """Slice the *last* balanced JSON object from a noisy LLM response.
-
-    Identical shape to the slide pipeline's helper. Duplicated rather
-    than imported to keep this module free of cross-module dependencies
-    on internal helpers in ``app.api.studio``.
-    """
-    de_thought = _THINK_BLOCK_RE.sub("", raw)
-    no_fences = (
-        de_thought.replace("```json", "")
-        .replace("```JSON", "")
-        .replace("```", "")
-        .strip()
-    )
-
-    end = no_fences.rfind("}")
-    if end == -1:
-        raise ValueError(
-            f"Model response contained no closing brace. First 80: "
-            f"{raw[:80]!r}".replace("\n", "⏎")
-        )
-
-    depth = 0
-    in_string = False
-    i = end
-    while i >= 0:
-        ch = no_fences[i]
-        if in_string:
-            if ch == '"' and (i == 0 or no_fences[i - 1] != "\\"):
-                in_string = False
-        else:
-            if ch == '"':
-                in_string = True
-            elif ch == "}":
-                depth += 1
-            elif ch == "{":
-                depth -= 1
-                if depth == 0:
-                    return no_fences[i : end + 1]
-        i -= 1
-    raise ValueError(
-        f"Model response had unbalanced braces. First 80: "
-        f"{raw[:80]!r}".replace("\n", "⏎")
-    )
-
-
-def _loads_lenient(text: str) -> Any:
-    """``json.loads`` with a one-shot single-quote-to-double-quote repair."""
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    repaired = re.sub(r"(?<=[\[\{,:\s])'", '"', text)
-    repaired = re.sub(r"'(?=[\]\},:\s]|$)", '"', repaired)
-    return json.loads(repaired)
+# ── JSON extraction → canonical app/services/llm_json (dedup) ─────────────────
+# _extract_json_object / _loads_lenient are imported above (aliased). This
+# module's copy was byte-for-byte identical to the canonical version, so the
+# convergence is a pure dedup with no behaviour change.
 
 
 # ── Prompt construction ────────────────────────────────────────────────────

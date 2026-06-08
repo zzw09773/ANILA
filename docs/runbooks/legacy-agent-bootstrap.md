@@ -12,6 +12,13 @@ caller's `agent_id`. The differences below are only about how the
 token gets onto the agent host and how it stays current under
 rotation.
 
+> **Current state (2026-06-08).** The default way to get a `csk-` is now the
+> `/developer/agents` **register wizard** — the owner self-issues one directly
+> (owner-or-admin, no bsk- exchange) and verifies with `test-connection`. That
+> same `csk-` is also the agent's RAG-search credential, scoped server-side to
+> the agent's bound collection (one key, least privilege). The tiers below
+> still apply for how the token is delivered/rotated on non-template agents.
+
 ---
 
 ## Decision tree

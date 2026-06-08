@@ -3,6 +3,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 import httpx
+from anila_core.security import UnsafeEndpointError, validate_outbound_url
 from app.database import SessionLocal
 from app.models.model_registry import ModelRegistry
 from app.models.agent import Agent
@@ -16,6 +17,17 @@ async def check_model_health(model_id: int, endpoint_url: str) -> str:
     """Check a single model endpoint. Returns 'online', 'connecting', or 'offline'."""
     base_url = endpoint_url.rstrip("/")
     health_paths = ["/health", "/v1/models", "/"]
+
+    # Call-time SSRF guard: never probe an endpoint that fails outbound
+    # validation (TOCTOU / DNS-rebinding defense). Treat as offline.
+    try:
+        validate_outbound_url(base_url)
+    except UnsafeEndpointError as exc:
+        logger.warning(
+            "health check skipped for model_id=%s — unsafe endpoint (%s)",
+            model_id, exc,
+        )
+        return "offline"
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
