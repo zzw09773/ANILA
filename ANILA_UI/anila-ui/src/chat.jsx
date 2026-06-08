@@ -15,6 +15,7 @@ import {
   Kbd,
   MenuItem,
 } from "./components.jsx";
+import { useConfirm, useToast } from "./confirm.jsx";
 import {
   AnilaGlyph,
   IconAt,
@@ -719,6 +720,7 @@ export const Composer = ({
   footer,
   onUpload,
 }) => {
+  const toast = useToast();
   const [text, setText] = useState(initialValue);
   const [atts, setAtts] = useState([]);
   const [uploadError, setUploadError] = useState("");
@@ -794,7 +796,7 @@ export const Composer = ({
     const v = text.trim();
     if (!v && atts.length === 0) return;
     if (mode === "block" && piiHits.length > 0) {
-      alert("偵測到敏感資訊，管理員已設定為阻擋送出。請清除後再試。");
+      toast("偵測到敏感資訊，管理員已設定為阻擋送出。請清除後再試。", { tone: "error" });
       return;
     }
     onSend(v, atts, {
@@ -1109,6 +1111,7 @@ export const Composer = ({
 
         <button
           onClick={submit}
+          aria-label="送出"
           disabled={disabled || (!text.trim() && atts.length === 0)}
           style={{
             display: "inline-flex", alignItems: "center", justifyContent: "center",
@@ -1149,6 +1152,7 @@ export const Sidebar = ({
   onRenameConv,
   onDeleteConv,
 }) => {
+  const confirm = useConfirm();
   const [tab, setTab] = useState("chats");
   const [query, setQuery] = useState("");
   const [newFolderOpen, setNewFolderOpen] = useState(false);
@@ -1281,12 +1285,12 @@ export const Sidebar = ({
                   {deletable && (
                     <button
                       title={`刪除「${f.name}」資料夾（連同內部對話）`}
-                      onClick={() => {
+                      onClick={async () => {
                         const count = conversations.filter((c) => c.folder === f.id).length;
                         const msg = count > 0
                           ? `確定刪除「${f.name}」？資料夾內的 ${count} 則對話也會一併移除（後端紀錄不受影響）。`
                           : `確定刪除「${f.name}」？`;
-                        if (typeof window !== "undefined" && !window.confirm(msg)) return;
+                        if (!(await confirm({ title: "刪除資料夾", message: msg, confirmText: "刪除", tone: "danger" }))) return;
                         onDeleteFolder(f.id);
                       }}
                       style={{

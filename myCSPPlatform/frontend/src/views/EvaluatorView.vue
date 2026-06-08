@@ -247,7 +247,9 @@ import { listDocuments } from '../api/ingestionDocuments'
 import { createEvalRun, listEvalRuns } from '../api/ingestionEvalRuns'
 import { createLlmCredential, deleteLlmCredential, listLlmCredentials } from '../api/ingestionLlmCredentials'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty } from '../components/cli'
+import { useDialog } from '../composables/useDialog'
 
+const { confirm } = useDialog()
 const route = useRoute()
 const collectionId = ref(Number(route.params.id))
 
@@ -310,7 +312,7 @@ async function onCreateCredential() {
   } finally { creatingCredential.value = false }
 }
 async function onDeleteCredential(id) {
-  if (!window.confirm('delete this credential? non-reversible · key is not retrievable.')) return
+  if (!(await confirm({ message: 'delete this credential? non-reversible · key is not retrievable.', confirmText: 'delete', danger: true }))) return
   deletingCredentialId.value = id
   try {
     await deleteLlmCredential(id)

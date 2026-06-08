@@ -9,7 +9,7 @@
     <transition name="term-modal">
       <div v-if="visible" class="term-modal" @keydown.esc="onEscape" tabindex="-1" ref="root">
         <div class="term-modal__overlay" @click="onOverlay" />
-        <div class="term-modal__dialog" :style="dialogStyle" role="dialog" aria-modal="true">
+        <div class="term-modal__dialog" :style="dialogStyle" role="dialog" aria-modal="true" :aria-label="title || '對話框'">
           <header class="term-modal__head">
             <span class="term-modal__corner">┌</span>
             <span class="term-modal__title">{{ title }}</span>
@@ -29,7 +29,7 @@
 </template>
 
 <script setup>
-import { computed, watch, ref, onUnmounted } from 'vue'
+import { computed, watch, ref, onUnmounted, nextTick } from 'vue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -46,13 +46,45 @@ const dialogStyle = computed(() => ({ maxWidth: props.width }))
 function onOverlay() { if (props.dismissible) emit('close') }
 function onEscape() { if (props.dismissible) emit('close') }
 
+// a11y: focus trap + focus restoration. Without this, keyboard/AT users can
+// Tab out of the dialog into the page behind it, and focus is lost to <body>
+// when it closes.
+const FOCUSABLE =
+  'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])'
+let prevFocus = null
+
+function onKeydown(e) {
+  if (e.key !== 'Tab' || !root.value) return
+  const f = root.value.querySelectorAll(FOCUSABLE)
+  if (!f.length) { e.preventDefault(); return }
+  const first = f[0]
+  const last = f[f.length - 1]
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+}
+
 watch(() => props.visible, (open) => {
   if (typeof document === 'undefined') return
   document.body.style.overflow = open ? 'hidden' : ''
+  if (open) {
+    prevFocus = document.activeElement
+    nextTick(() => {
+      const f = root.value?.querySelectorAll(FOCUSABLE)
+      ;(f && f.length ? f[0] : root.value)?.focus()
+    })
+    document.addEventListener('keydown', onKeydown)
+  } else {
+    document.removeEventListener('keydown', onKeydown)
+    prevFocus?.focus?.()
+    prevFocus = null
+  }
 }, { immediate: true })
 
 onUnmounted(() => {
-  if (typeof document !== 'undefined') document.body.style.overflow = ''
+  if (typeof document !== 'undefined') {
+    document.body.style.overflow = ''
+    document.removeEventListener('keydown', onKeydown)
+  }
 })
 </script>
 

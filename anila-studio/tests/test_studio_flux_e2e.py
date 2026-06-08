@@ -56,12 +56,17 @@ async def _fake_rewriter(*, title, bullets, use_case, style, llm):  # noqa: ANN0
     return f"clean abstract editorial illustration of {title}"
 
 
-def _wire_stage4(monkeypatch, studio) -> None:
-    """Stub the two LLM-backed dependencies the gate/rewriter need."""
+def _wire_stage4(monkeypatch, render_mod) -> None:
+    """Stub the two LLM-backed dependencies the gate/rewriter need.
+
+    The VLM gate is monkeypatched on app.services.studio_render (where the
+    render pipeline now resolves it after the god-module split), not on
+    app.api.studio.
+    """
     monkeypatch.setattr(
         "app.services.flux_prompt_rewriter.derive_flux_prompt", _fake_rewriter
     )
-    monkeypatch.setattr(studio, "_Gemma4VlmGate", _PassVlm)
+    monkeypatch.setattr(render_mod, "_Gemma4VlmGate", _PassVlm)
 
 
 @pytest.mark.asyncio
@@ -76,8 +81,12 @@ async def test_stage4_cover_and_content_illustration(monkeypatch, tmp_path):
     monkeypatch.setenv("INGESTION_UPLOAD_DIR", str(tmp_path / "uploads"))
 
     import app.api.studio as studio
+    import app.services.studio_render as render_mod
+    # The FLUX provider singleton moved to studio_render (god-module split);
+    # reload it (not studio) to reset the cached provider for fresh env vars.
+    importlib.reload(render_mod)
     importlib.reload(studio)
-    _wire_stage4(monkeypatch, studio)
+    _wire_stage4(monkeypatch, render_mod)
 
     respx.post("http://flux2-dev:8000/generate").mock(return_value=_flux_json())
 
@@ -121,8 +130,12 @@ async def test_stage4_rerun_hits_cache(monkeypatch, tmp_path):
     monkeypatch.setenv("INGESTION_UPLOAD_DIR", str(tmp_path / "u"))
 
     import app.api.studio as studio
+    import app.services.studio_render as render_mod
+    # The FLUX provider singleton moved to studio_render (god-module split);
+    # reload it (not studio) to reset the cached provider for fresh env vars.
+    importlib.reload(render_mod)
     importlib.reload(studio)
-    _wire_stage4(monkeypatch, studio)
+    _wire_stage4(monkeypatch, render_mod)
 
     route = respx.post("http://flux2-dev:8000/generate").mock(
         return_value=_flux_json()
@@ -165,8 +178,12 @@ async def test_stage4_flux_failure_falls_back_silently(monkeypatch, tmp_path):
     monkeypatch.setenv("INGESTION_UPLOAD_DIR", str(tmp_path / "u"))
 
     import app.api.studio as studio
+    import app.services.studio_render as render_mod
+    # The FLUX provider singleton moved to studio_render (god-module split);
+    # reload it (not studio) to reset the cached provider for fresh env vars.
+    importlib.reload(render_mod)
     importlib.reload(studio)
-    _wire_stage4(monkeypatch, studio)
+    _wire_stage4(monkeypatch, render_mod)
 
     respx.post("http://flux2-dev:8000/generate").mock(
         return_value=httpx.Response(503, json={"detail": "model loading"})

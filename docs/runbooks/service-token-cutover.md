@@ -9,6 +9,14 @@ The cutover is staged. Each stage is reversible until you hit step 5
 env-var alive for a full release window so a zero-pressure rollback is
 always possible.
 
+> **Current state (2026-06-08).** Per-agent credentials are now the default:
+> an agent owner self-issues a single `csk-` via the `/developer/agents`
+> register wizard (no bsk- exchange needed) and verifies wiring with
+> `test-connection`. That one `csk-` also authorises the agent's RAG search
+> (scoped to its bound collection) — no separate search token. The ops steps
+> below (moving OFF the legacy fleet-shared env var) are unchanged; see
+> `docs/guides/developer-guide.md` for the dev-side flow.
+
 ---
 
 ## Stage 0 — Verify the migration deployed

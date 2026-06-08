@@ -519,7 +519,12 @@ async def chat_completions(
         import httpx
         from fastapi import HTTPException as _HTTPException
         target = f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions"
-        from app.services.proxy_service import _build_downstream_headers, _aggregate_sse_to_chat_completion
+        from app.services.proxy_service import (
+            _aggregate_sse_to_chat_completion,
+            _build_downstream_headers,
+            _guard_outbound,
+        )
+        _guard_outbound(target)  # call-time SSRF re-validation (TOCTOU defense)
         # Phase G: also pass target_agent_id so the per-agent token + cache
         # path applies to non-streaming calls. usage_writer attribution for
         # this branch is still TODO — non-streaming agent forwards don't
@@ -667,7 +672,8 @@ async def resume_agent_session(
     target = (
         f"{agent.endpoint_url.rstrip('/')}/sessions/{session_id}/answer"
     )
-    from app.services.proxy_service import _build_downstream_headers
+    from app.services.proxy_service import _build_downstream_headers, _guard_outbound
+    _guard_outbound(target)  # call-time SSRF re-validation (TOCTOU defense)
     headers = _build_downstream_headers(
         user.id, user.email, target_agent_id=agent.id,
     )

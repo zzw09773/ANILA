@@ -18,6 +18,7 @@ traceable.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -36,6 +37,7 @@ from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user, is_admin_tier
 
 router = APIRouter(tags=["Ingestion / Collections"])
+logger = logging.getLogger(__name__)
 
 
 # ── Authorisation helper ────────────────────────────────────────────────────
@@ -122,14 +124,18 @@ def create_collection(
         db.commit()
     except IntegrityError as e:
         db.rollback()
+        # Log the raw driver error server-side; never leak schema / constraint
+        # details (e.orig) to the API client.
+        logger.warning("collection create IntegrityError: %s", e.orig)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Collection creation failed: {e.orig}",
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Collection creation failed: a collection with these attributes may already exist.",
         ) from e
     db.refresh(coll)
 
     log_audit_event(
         db,
+        commit=True,
         actor=current_user,
         action="ingestion_collection_create",
         resource_type="ingestion_collection",
@@ -226,14 +232,16 @@ def update_collection(
         db.commit()
     except IntegrityError as e:
         db.rollback()
+        logger.warning("collection update IntegrityError: %s", e.orig)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Update failed: {e.orig}",
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Collection update failed: the change conflicts with an existing collection.",
         ) from e
     db.refresh(coll)
 
     log_audit_event(
         db,
+        commit=True,
         actor=current_user,
         action="ingestion_collection_update",
         resource_type="ingestion_collection",
@@ -266,6 +274,7 @@ def delete_collection(
     db.commit()
     log_audit_event(
         db,
+        commit=True,
         actor=current_user,
         action="ingestion_collection_delete",
         resource_type="ingestion_collection",

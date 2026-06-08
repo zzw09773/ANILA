@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.api.studio import _apply_theme_title_override
+from app.services.studio_layout import _apply_theme_title_override
 from app.schemas.studio import Slide, SlidesSpec
 
 

@@ -62,8 +62,13 @@ Router 只會碰你的 agent 這幾條路徑，其他都可以自己加。
 | `GET` | `/v1/models` | 回報可用模型 ID（OpenAI-compat） | s2s token |
 | `POST` | `/v1/chat/completions` | 主要推論端點 | s2s token |
 
-驗證用 `X-CSP-Service-Token` header，由 `CspServiceTokenMiddleware` 處理；
-`CSP_SERVICE_TOKEN` 為空時等於 dev mode（不驗）。
+驗證用 `X-CSP-Service-Token` header（Router 派工時帶 agent 自己的 `csk-`，agent 比對
+`.env` 的 `CSP_SERVICE_TOKEN`）。**安全預設 fail-closed**：`CSP_SERVICE_TOKEN` 為空時
+agent 會**拒絕所有派工**（401），不會默默放行；僅本機 dev 可設
+`ANILA_ALLOW_NO_SERVICE_TOKEN=1` 暫時略過驗證。
+
+> 一把金鑰：同一把 `csk-` 也是 agent 打 CSP RAG search 的憑證（`CSP_SEARCH_TOKEN`
+> 未設時 fallback 它），CSP 會把搜尋範圍限在該 agent 註冊時綁定的 collection。
 
 ### 3.1 `/health` 輸出格式
 
@@ -160,22 +165,34 @@ data: [DONE]
 
 ## 4. 在 Agent Console 註冊
 
-到 `/developer/agents` 按「註冊 Agent」，填：
+到 `/developer/agents` 按 **register** 進**兩步精靈**。
+
+**Step 1 — 填 agent 細節：**
 
 | 欄位 | 必填 | 範例 | 備註 |
 |---|---|---|---|
 | `name` | ✅ | `hr-policy-agent` | 全平台唯一，建議 `kebab-case` |
 | `endpoint_url` | ✅ | `http://10.0.1.20:24786` | 必須 `http://` 或 `https://`，Router 可達 |
 | `description_for_router` | ✅（≥24 字元） | `處理員工手冊、請假規定、薪酬結構等 HR 法規查詢。` | 自然語言；Router 用這段做 agent 選擇 |
+| `base_model_id` | ✅ | `4` | CSP Model Registry 中**已啟用**的底層 LLM/VLM；用量歸戶用 |
+| `collection_id`（RAG collection） | ❌ | `5` | 綁定後這個 agent 的 `csk-` **只能搜這一個** collection（最小權限）；非 RAG agent 留空 |
 | `api_version` | ❌（預設 `v1`） | `v1` | 目前 Router 只認得 `v1` |
 
-後端 schema（`myCSPPlatform/backend/app/api/agents.py:43`）還接受兩個可選欄位，UI 目前沒露出、但 API 有支援：
-
-- `capabilities`: JSON dict，自由 metadata（能力標籤、tag、可處理領域…）。
-- `input_schema`: JSON Schema，描述你的 agent 期待的輸入結構。
-- `base_model_id`: 整數，指向 CSP Model Registry 中已註冊的底層 LLM。
+API 另接受 `capabilities`（JSON dict 自由 metadata）與 `input_schema`（JSON Schema），UI 沒露出。
 
 送出後 agent 進入 `approval_status = "pending"`，`health_status = "unknown"`。
+
+**Step 2 — 領一把 `csk-` 並驗證：**
+
+1. 按 **issue service token (csk-)** → 一次性顯示 `csk-...`（關掉就看不到，先複製）。
+2. 精靈給你**預填好的 `.env` 片段**（`CSP_BASE_URL` / `ANILA_AGENT_NAME` / `CSP_SERVICE_TOKEN` /
+   綁了 collection 的話還有 `ANILA_COLLECTION_ID`）。⚠️ `CSP_BASE_URL` 要填 **agent 那端可達的
+   CSP host，不是 localhost**。
+3. 貼進 agent `.env`、啟動 agent，回精靈按 **test connection** → CSP 帶這把 csk- 探打你的
+   `/v1/chat/completions`，✅ = `.env` 配對正確。
+
+> 一把金鑰：這把 `csk-` 同時是入向驗證憑證（Router→agent）與出向 RAG 搜尋憑證。舊 agent
+> 專案(尚未在此 CSP 註冊的)也走同一條精靈,不必區分新舊。
 
 ---
 
@@ -196,7 +213,7 @@ data: [DONE]
 | `Endpoint 必須是 http 或 https URL` | 前端 L486 檢查；補上 scheme。 |
 | `Router 描述至少需要 24 個字元` | 寫清楚這個 agent 處理什麼領域、什麼格式的問題。 |
 | 註冊成功但 health 一直 `unhealthy` | CSP backend 連不到你的 host/port；檢查防火牆、Docker 網段、`endpoint_url` 是否是 CSP 能解析到的位址（不是 `localhost`）。 |
-| 核准後 Router 叫不到 | `X-CSP-Service-Token` 驗證失敗；`.env` 的 `CSP_SERVICE_TOKEN` 要跟 CSP 發的一致；留空則只能跑 dev mode。 |
+| 核准後 Router 叫不到 / `test connection` 顯示 `✗ 401` | `.env` 的 `CSP_SERVICE_TOKEN` 沒設或跟核發的 `csk-` 不符；重貼 register 精靈給的片段（忘了發就從 detail 重發一把）。留空 = fail-closed 全拒（除非 dev 設 `ANILA_ALLOW_NO_SERVICE_TOKEN=1`）。 |
 | 串流回覆卡住 | 檢查 `Content-Type: text/event-stream`、`[DONE]` 結尾、proxy/nginx buffering 要關掉（`X-Accel-Buffering: no`）。 |
 
 ---

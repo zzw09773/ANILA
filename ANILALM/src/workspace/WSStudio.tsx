@@ -16,6 +16,11 @@ import {
   getMindmapJobStatus,
   getInfographicJobStatus,
   getDatatableJobStatus,
+  cancelSlidesJob,
+  cancelReportJob,
+  cancelMindmapJob,
+  cancelInfographicJob,
+  cancelDatatableJob,
   stepLabel,
 } from '../api/studio'
 
@@ -53,6 +58,28 @@ async function fetchJobStatus(
       return (await getInfographicJobStatus(jobId)) as unknown as GenericJobStatus
     case 'datatable':
       return (await getDatatableJobStatus(jobId)) as unknown as GenericJobStatus
+  }
+}
+
+// Cancel dispatch — mirror of fetchJobStatus. await+return discards each
+// cancel*Job's response type so the dispatch stays Promise<void>.
+async function cancelJob(kind: StudioArtifact['kind'], jobId: string): Promise<void> {
+  switch (kind) {
+    case 'slides':
+      await cancelSlidesJob(jobId)
+      return
+    case 'report':
+      await cancelReportJob(jobId)
+      return
+    case 'mindmap':
+      await cancelMindmapJob(jobId)
+      return
+    case 'infographic':
+      await cancelInfographicJob(jobId)
+      return
+    case 'datatable':
+      await cancelDatatableJob(jobId)
+      return
   }
 }
 
@@ -137,7 +164,9 @@ export function WSStudio() {
   const removeArtifact = useArtifactStore((s) => s.remove)
   const updateArtifact = useArtifactStore((s) => s.update)
 
-  const [filter, setFilter] = useState<'all' | 'audio' | 'visual' | 'study' | 'doc'>('all')
+  // Match the rendered CATEGORIES (all/visual/doc); 'audio'/'study' were
+  // dropped from the UI so they no longer belong in the filter type.
+  const [filter, setFilter] = useState<'all' | 'visual' | 'doc'>('all')
   const [modalFormat, setModalFormat] = useState<FormatSpec | null>(null)
   const [viewing, setViewing] = useState<StudioArtifact | null>(null)
 
@@ -682,6 +711,40 @@ export function WSStudio() {
                               <Spinner size={9} color={t.accent} />
                               鑄造中
                             </span>
+                          )}
+                          {isPending && a.jobId && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                if (!collection) return
+                                const jid = a.jobId!
+                                const cid = collection.id
+                                void cancelJob(a.kind, jid)
+                                  .then(() =>
+                                    // Mirror the poller's mapping: ArtifactState
+                                    // has no 'cancelled', so a cancel lands as
+                                    // 'failed' with the 已取消 reason.
+                                    updateArtifact(cid, a.id, {
+                                      state: 'failed',
+                                      error: '已取消',
+                                    }),
+                                  )
+                                  .catch(() => undefined)
+                              }}
+                              style={{
+                                marginLeft: 6,
+                                padding: '2px 8px',
+                                fontSize: 10,
+                                fontWeight: 600,
+                                borderRadius: 4,
+                                border: `1px solid ${t.border}`,
+                                background: 'transparent',
+                                color: t.textMuted,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              取消
+                            </button>
                           )}
                           {isFailed && (
                             <span

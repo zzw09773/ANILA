@@ -112,6 +112,9 @@ import { listGrants, createGrant, revokeGrant } from '../api/serviceAccessGrants
 import { listUsers } from '../api/users'
 import { listDepartments } from '../api/departments'
 import { TermBadge, TermButton, TermEmpty, TermModal } from '../components/cli'
+import { useDialog } from '../composables/useDialog'
+
+const { confirm, toast } = useDialog()
 
 const links = ref([])
 const grants = ref([])
@@ -208,9 +211,9 @@ async function submitGrant() {
   } finally { grantModalSubmitting.value = false }
 }
 async function handleRevoke(g) {
-  if (!confirm(`revoke grant for ${targetLabel(g)}?`)) return
+  if (!(await confirm({ message: `revoke grant for ${targetLabel(g)}?`, danger: true }))) return
   try { await revokeGrant(g.id); await loadAll() }
-  catch (e) { alert(e.response?.data?.detail || 'revoke failed') }
+  catch (e) { toast(e.response?.data?.detail || 'revoke failed', { tone: 'error' }) }
 }
 </script>
 

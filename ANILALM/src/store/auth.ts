@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
-import { bindAuthAdapter } from '../api/client'
+import { bindAuthAdapter, explainError } from '../api/client'
 import { getMe, login as loginApi, logoutApi, refreshToken as refreshApi } from '../api/auth'
 import type { UserMe } from '../types'
 
@@ -39,7 +39,10 @@ export const useAuthStore = create<AuthState>()(
           })
           await get().fetchMe()
         } catch (err) {
-          set({ status: 'error', error: err instanceof Error ? err.message : String(err) })
+          // explainError → same backend-derived message the UI shows, so any
+          // consumer of state.error gets consistent text (not axios's generic
+          // "Request failed with status code 401").
+          set({ status: 'error', error: explainError(err) })
           throw err
         }
       },
