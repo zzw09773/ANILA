@@ -71,6 +71,11 @@ class AgentRegisterRequest(BaseModel):
     # Without this the dashboard's per-model breakdown has phantom
     # "agent X" traffic with no underlying model behind it.
     base_model_id: int = Field(..., description="必須指定底層模型 ID")
+    # RAG agents: the single collection this agent's csk- may search (S-Q1).
+    # Optional — omit for non-RAG agents. Validated against owner access.
+    collection_id: int | None = Field(
+        default=None, description="RAG agent 綁定的 collection（其 csk- 僅能搜這一個）"
+    )
     capabilities: dict | None = None
     input_schema: dict | None = None
 
@@ -85,6 +90,7 @@ class AgentResponse(BaseModel):
     description_for_router: str
     base_model_id: int | None = None
     base_model_name: str | None = None
+    bound_collection_id: int | None = None
     capabilities: dict | None = None
     health_status: str
     approval_status: str
@@ -139,6 +145,7 @@ def _serialize_agent(agent: Agent) -> dict:
         "description_for_router": agent.description_for_router,
         "base_model_id": agent.base_model_id,
         "base_model_name": base.display_name if base else None,
+        "bound_collection_id": getattr(agent, "bound_collection_id", None),
         "capabilities": agent.capabilities,
         "health_status": normalized,
         "approval_status": agent.approval_status,
@@ -261,6 +268,13 @@ def register_agent(
             detail=f"底層模型「{base.display_name}」已停用，請挑選已啟用的模型",
         )
 
+    # RAG agents: bind a single collection the agent's csk- may search.
+    # Validate the registering owner actually has access to it (admin or
+    # owner) so an agent can't be bound to a collection its owner can't see.
+    if request.collection_id is not None:
+        from app.api.ingestion.collections import _require_collection_access
+        _require_collection_access(db, current_user, request.collection_id)
+
     agent = Agent(
         name=request.name,
         owner_user_id=current_user.id,
@@ -268,6 +282,7 @@ def register_agent(
         api_version=request.api_version,
         description_for_router=request.description_for_router,
         base_model_id=request.base_model_id,
+        bound_collection_id=request.collection_id,
         capabilities=request.capabilities,
         input_schema=request.input_schema,
         approval_status="pending",
@@ -550,6 +565,22 @@ async def trigger_agent_health_check(
         raise HTTPException(status_code=404, detail="Agent 不存在")
 
     ip = _client_ip(request)
+    # Call-time SSRF guard — refuse to probe an endpoint that fails outbound
+    # validation (TOCTOU / DNS-rebinding defense), even for an admin ping.
+    try:
+        validate_outbound_url(agent.endpoint_url)
+    except UnsafeEndpointError as exc:
+        agent.health_status = "unhealthy"
+        db.commit()
+        log_audit_event(
+            db, actor=admin, action="health_check",
+            resource_type="agent", resource_id=agent.id,
+            status="failure",
+            detail=f"健康檢查拒絕: 端點未通過出向安全驗證 ({exc})",
+            ip_address=ip,
+            commit=True,
+        )
+        return {"status": "unhealthy", "detail": f"端點未通過出向安全驗證: {exc}"}
     probe_paths = ["/health", "/v1/models", "/"]
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -659,6 +690,7 @@ def delete_agent(
 from app.models.agent_credential import AgentCredential
 from app.services import agent_credential_service
 from app.services.proxy_service import invalidate_agent_token_cache
+from app.services.service_token_envelope import decode_service_token_envelope
 
 
 # ---- Schemas ---------------------------------------------------------------
@@ -858,20 +890,27 @@ def issue_static_credential(
     agent_id: int,
     payload: IssueStaticRequest,
     request: Request,
-    admin: User = Depends(require_admin),
+    current_user: User = Depends(_require_developer_or_admin),
     db: Session = Depends(get_db),
 ):
-    """Phase F (Tier 0): admin direct-issues a credential without bootstrap.
+    """Owner (or admin) direct-issues a service token (``csk-``), no bootstrap.
 
-    For agents that cannot run the bootstrap CLI — third-party,
-    non-Python, or rapid cutover from the old fleet-shared env var.
-    No automatic rotation; admin must rotate periodically.
+    Skips the two-step ``bsk-`` → ``csk-`` bootstrap exchange: the agent
+    owner mints one long-lived ``csk-`` directly and pastes it into the
+    agent once — no bootstrap token to obtain, exchange, or swap out.
+
+    The approval gate is unchanged: a ``pending`` agent still isn't routed
+    until an admin approves it, so issuing a token early grants no routing.
+    A non-admin may only issue for an agent they own. No automatic
+    rotation; rotate periodically via the rotate endpoint.
     """
     agent = _resolve_agent(db, agent_id)
+    if not is_admin_tier(current_user) and agent.owner_user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="無權限為此 Agent 發行憑證")
     cred, plaintext = agent_credential_service.issue_static_credential(
         db,
         agent=agent,
-        issuer=admin,
+        issuer=current_user,
         label=payload.label,
     )
     db.commit()
@@ -883,6 +922,92 @@ def issue_static_credential(
         issued_at=cred.service_token_issued_at,
         label=cred.label,
     )
+
+
+class TestConnectionResponse(BaseModel):
+    reachable: bool
+    # None = could not determine (endpoint unreachable).
+    token_accepted: bool | None = None
+    status_code: int | None = None
+    detail: str
+
+
+@router.post("/{agent_id}/test-connection", response_model=TestConnectionResponse)
+async def test_agent_connection(
+    agent_id: int,
+    request: Request,
+    current_user: User = Depends(_require_developer_or_admin),
+    db: Session = Depends(get_db),
+):
+    """Probe the agent endpoint with its OWN csk- to confirm the operator wired
+    ``CSP_SERVICE_TOKEN`` into the agent's .env (S-Q3). Owner-or-admin.
+
+    Sends an empty ``messages`` body so the agent's inbound token check fires
+    *before* any LLM work: 401 → the agent rejected our csk- (missing/wrong in
+    .env); anything else (e.g. 400 "no user message") → token accepted, .env
+    correctly wired. Connection error / timeout → unreachable.
+    """
+    agent = _resolve_agent(db, agent_id)
+    if not is_admin_tier(current_user) and agent.owner_user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="無權限測試此 Agent")
+
+    # Call-time SSRF guard (TOCTOU / DNS-rebinding), same as health-check.
+    try:
+        validate_outbound_url(agent.endpoint_url)
+    except UnsafeEndpointError as exc:
+        raise HTTPException(status_code=400, detail=f"端點未通過出向安全驗證: {exc}")
+
+    # The token the Router would present == the agent's most-recent active csk-.
+    # CSP holds the encrypted envelope and can decrypt it (master key in env).
+    cred = (
+        db.query(AgentCredential)
+        .filter(
+            AgentCredential.agent_id == agent.id,
+            AgentCredential.is_active.is_(True),
+        )
+        .order_by(AgentCredential.service_token_issued_at.desc())
+        .first()
+    )
+    if cred is None:
+        raise HTTPException(
+            status_code=409,
+            detail="此 Agent 尚無有效憑證,請先核發 csk- 再測試連線",
+        )
+    token = decode_service_token_envelope(cred.service_token_envelope) or ""
+
+    ip = _client_ip(request)
+    url = f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions"
+    body = {"model": agent.name, "messages": [], "stream": False}
+    headers = {"X-CSP-Service-Token": token}
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            resp = await client.post(url, json=body, headers=headers)
+        accepted = resp.status_code != 401
+        detail = (
+            "端點接受了該 csk-(agent .env 的 CSP_SERVICE_TOKEN 配對正確)"
+            if accepted
+            else "端點以 401 拒絕該 csk-(agent .env 未設或不符)"
+        )
+        log_audit_event(
+            db, actor=current_user, action="test_connection",
+            resource_type="agent", resource_id=agent.id,
+            status="success" if accepted else "failure",
+            detail=f"測試連線 → HTTP {resp.status_code}", ip_address=ip, commit=True,
+        )
+        return TestConnectionResponse(
+            reachable=True, token_accepted=accepted,
+            status_code=resp.status_code, detail=detail,
+        )
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError) as exc:
+        log_audit_event(
+            db, actor=current_user, action="test_connection",
+            resource_type="agent", resource_id=agent.id, status="failure",
+            detail=f"測試連線無法連線: {exc}", ip_address=ip, commit=True,
+        )
+        return TestConnectionResponse(
+            reachable=False, token_accepted=None,
+            detail=f"無法連線到 agent 端點: {exc}",
+        )
 
 
 @router.get("/{agent_id}/credentials", response_model=list[CredentialResponse])

@@ -11,6 +11,7 @@ in openai-agents; AnilaRunner adds:
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,6 +26,30 @@ from anila_agent.core.hooks import (
 from anila_agent.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+# gemma's native tool-call tokens. Captured live from gemma-4-31B-it (vLLM):
+#   <|tool_call>call:get_weather{city: '台北'}<tool_call|>
+# Note the ASYMMETRIC delimiters (``<|tool_call>`` open, ``<tool_call|>`` close)
+# and that several blocks can be emitted back-to-back. When the serving stack's
+# tool-call parser misses this (observed intermittently), the raw block lands in
+# the assistant content / final_output instead of being executed as a tool call.
+# Match up to the close token OR end-of-string (the block can be truncated by
+# max_tokens). DOTALL so multi-line arg payloads are covered.
+_LEAKED_TOOL_CALL_RE = re.compile(r"<\|tool_call>.*?(?:<tool_call\|>|$)", re.DOTALL)
+
+
+def _strip_leaked_tool_calls(text: str) -> tuple[str, int]:
+    """Strip gemma-native tool-call tokens that leaked into model content.
+
+    Returns ``(cleaned_text, num_blocks_removed)``. When blocks were removed the
+    result is whitespace-stripped so a content that was *only* a leaked call
+    collapses to "" rather than leaving stray newlines.
+    """
+    cleaned, n = _LEAKED_TOOL_CALL_RE.subn("", text)
+    if n:
+        cleaned = cleaned.strip()
+    return cleaned, n
 
 
 @dataclass(frozen=True)
@@ -100,8 +125,20 @@ class AnilaRunner:
                 abort_reason=str(e),
             )
 
+        final_output = result.final_output
+        if isinstance(final_output, str):
+            final_output, leaked = _strip_leaked_tool_calls(final_output)
+            if leaked:
+                logger.warning(
+                    "stripped %d leaked tool-call token block(s) from "
+                    "final_output — the model emitted gemma-native "
+                    "<|tool_call> tokens that the harness did not parse as a "
+                    "tool call (check the serving tool-call parser config)",
+                    leaked,
+                )
+
         return RunSummary(
-            final_output=result.final_output,
+            final_output=final_output,
             turns_used=hooks.turns,
             aborted=False,
             abort_reason=None,

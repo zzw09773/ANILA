@@ -397,7 +397,9 @@ export function WSChat({ flex }: WSChatProps) {
   ])
 
   const onComposerKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+    // Chat convention: Enter sends, Shift+Enter inserts a newline.
+    // (⌘/Ctrl+Enter kept for muscle memory.)
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
       void send()
     }
@@ -511,6 +513,7 @@ export function WSChat({ flex }: WSChatProps) {
 
           {err && (
             <div
+              role="alert"
               style={{
                 padding: '10px 14px',
                 borderRadius: 10,
@@ -629,6 +632,26 @@ export function WSChat({ flex }: WSChatProps) {
 
 function ChatBubble({ row }: { row: ChatRow }) {
   const { t } = useTheme()
+  // #3: clicking a [N] marker in the answer scrolls to + flashes the matching
+  // citation card (scoped to this bubble so duplicate [1]s across messages
+  // don't collide). Hooks run unconditionally — declared before the user-row
+  // early return below.
+  const bubbleRef = useRef<HTMLDivElement>(null)
+  const onCitationClick = useCallback(
+    (n: number) => {
+      const card = bubbleRef.current?.querySelector<HTMLElement>(
+        `[data-cite-index="${n}"]`,
+      )
+      if (!card) return
+      card.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      const prev = card.style.boxShadow
+      card.style.boxShadow = `0 0 0 2px ${t.accent}`
+      window.setTimeout(() => {
+        card.style.boxShadow = prev
+      }, 1500)
+    },
+    [t.accent],
+  )
   if (row.role === 'user') {
     return (
       <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
@@ -667,13 +690,17 @@ function ChatBubble({ row }: { row: ChatRow }) {
       >
         <Icon name="sparkle" size={14} stroke={t.accent} />
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div ref={bubbleRef} style={{ flex: 1, minWidth: 0 }}>
         {row.streaming && row.content === '' ? (
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', color: t.textMuted }}>
             <Spinner size={12} /> 檢索 + 思考中...
           </div>
         ) : (
-          <MarkdownPreview markdown={row.content} />
+          <MarkdownPreview
+            markdown={row.content}
+            citationCount={row.citations?.length ?? 0}
+            onCitationClick={onCitationClick}
+          />
         )}
         {row.citations && row.citations.length > 0 && (
           <CitationStrip citations={row.citations} />
@@ -706,6 +733,7 @@ function CitationStrip({ citations }: { citations: Citation[] }) {
           return (
             <button
               key={c.chunk_id}
+              data-cite-index={c.index}
               onClick={() => setOpen(isOpen ? null : c.index)}
               style={{
                 padding: '8px 11px',

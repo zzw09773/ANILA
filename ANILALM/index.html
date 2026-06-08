@@ -54,6 +54,16 @@
       @keyframes spin {
         to { transform: rotate(360deg); }
       }
+      /* Respect users who ask for less motion (vestibular safety / a11y):
+         near-eliminate the pulse/fadeIn/slideUp/spin animations + transitions. */
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+          scroll-behavior: auto !important;
+        }
+      }
       ::-webkit-scrollbar {
         width: 8px;
         height: 8px;

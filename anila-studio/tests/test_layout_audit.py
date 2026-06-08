@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.api.studio import (
+from app.services.studio_layout import (
     LayoutViolation,
     _audit_layout_distribution,
     _should_rebalance,

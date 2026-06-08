@@ -167,7 +167,7 @@ cp .env.example .env   # 至少改 SECRET_KEY 與 ADMIN_PASSWORD
 | `MIGRATION_DATABASE_URL` | `postgresql://csp:csp@csp-db:5432/csp` | migration 用較高權限帳號 |
 | `SECRET_KEY` | `dev-secret-key-change-in-prod` | JWT 簽署密鑰，**正式環境務必修改** |
 | `ALGORITHM` / `ACCESS_TOKEN_EXPIRE_MINUTES` | `HS256` / `60` | JWT 設定 |
-| `CSP_SERVICE_TOKEN` | `dev-service-token` | service-to-service 共用 token（dev） |
+| `CSP_SERVICE_TOKEN` | `dev-service-token` | legacy fleet-shared s2s token（fallback）；每支 agent 現走自己的 `csk-`（register 精靈核發、CSP 驗證），見 `docs/guides/developer-guide.md` |
 | `REDIS_URL` | `redis://redis:6379` | arq ingestion 佇列 |
 | `INGESTION_UPLOAD_DIR` | `/var/anila/ingestion-uploads` | 上傳檔暫存目錄 |
 | `AUTO_REGISTER_MODELS` / `AUTO_REGISTER_AGENTS` | 見 compose | 啟動時宣告式註冊模型 / agent |

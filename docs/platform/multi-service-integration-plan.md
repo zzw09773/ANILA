@@ -1597,6 +1597,19 @@ await audit_log(
 )
 ```
 
+#### 7.5.5 Agent service-token（csk-）搜尋存取（2026-06-08 新增）
+
+§7.5.1–7.5.4 管的是**使用者 / 部門 → platform-link** 的存取(`service_access_grants`)。
+另一條獨立的存取決策是 **agent 的 csk- 對知識庫的 RAG 搜尋**:
+
+- 一把 `csk-` 同時做入向驗證(Router→agent)與出向 RAG 搜尋(`POST /api/ingestion/
+  collections/{id}/search`,帶 `Authorization: Bearer csk-`)。
+- **存取規則(最小權限)**:csk- 解析成 agent→owner 身分,且**硬限只能搜該 agent 註冊時
+  綁定的單一 collection**(`agents.bound_collection_id`);其他 collection 一律 403。owner
+  仍須對該 collection 有權(`_require_collection_access`)。
+- 實作:migration 0038 加欄位、`app/api/ingestion/search.py` 的 `resolve_search_principal`
+  + `_enforce_agent_collection_scope`;agent 端設定見 `docs/guides/developer-guide.md`。
+
 ---
 
 ## 8. Phase 1 立即可做（v0.4 更新）

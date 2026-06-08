@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useTheme } from '../theme/ThemeContext'
 import { useWorkspaceStore } from '../store/workspace'
 import { getCollection } from '../api/collections'
-import { listDocuments } from '../api/documents'
+import { listDocuments, getDocument } from '../api/documents'
 import { listConversations } from '../api/conversations'
 import { explainError } from '../api/client'
 import { Spinner } from '../components/Spinner'
@@ -25,6 +25,7 @@ export function WorkspacePage() {
   const setConversations = useWorkspaceStore((s) => s.setConversations)
   const setActiveConversationId = useWorkspaceStore((s) => s.setActiveConversationId)
   const reset = useWorkspaceStore((s) => s.reset)
+  const upsertDoc = useWorkspaceStore((s) => s.upsertDoc)
   const studioOpen = useWorkspaceStore((s) => s.studioOpen)
 
   const [loading, setLoading] = useState(true)
@@ -75,6 +76,32 @@ export function WorkspacePage() {
       cancelled = true
     }
   }, [collectionId, reset, setCollection, setConversations, setDocs])
+
+  // Polling fallback for docs stuck in a non-terminal status with no job
+  // stream. Live progress normally rides useJobStream's SSE, but a doc loaded
+  // on mount has no jobId (only fresh uploads set one), so a still-processing
+  // doc would otherwise show a stale status forever. Poll getDocument until it
+  // reaches a terminal status or exposes latest_job_id (then the SSE takes
+  // over and the doc drops out of this filter). getState() reads fresh docs so
+  // the interval needn't depend on (and churn with) the docs array.
+  useEffect(() => {
+    const NON_TERMINAL = new Set(['pending', 'parsing', 'chunking', 'embedding', 'queued'])
+    const tick = async () => {
+      const targets = useWorkspaceStore
+        .getState()
+        .docs.filter((d) => d.jobId === undefined && NON_TERMINAL.has(d.doc.status))
+      for (const d of targets) {
+        try {
+          const res = await getDocument(d.doc.id)
+          upsertDoc(res.data, res.data.latest_job_id ?? undefined)
+        } catch {
+          // transient (network / auth blip) — retry on the next tick
+        }
+      }
+    }
+    const interval = window.setInterval(tick, 4000)
+    return () => window.clearInterval(interval)
+  }, [collectionId, upsertDoc])
 
   // Sync active conversation when URL changes.
   useEffect(() => {

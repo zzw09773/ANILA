@@ -55,6 +55,7 @@ def test_fallback_content_label():
 
 
 import app.api.studio as studio_mod
+import app.services.studio_render as render_mod
 from app.services.flux_image_provider import GeneratedImage
 
 
@@ -68,7 +69,7 @@ class _StubLLM:
 
 
 def _patch_vlm(monkeypatch):
-    monkeypatch.setattr(studio_mod, "_Gemma4VlmGate", _StubVlm)
+    monkeypatch.setattr(render_mod, "_Gemma4VlmGate", _StubVlm)
 
 
 def _patch_rewriter(monkeypatch, returns):
@@ -90,7 +91,7 @@ async def test_helper_success_sets_image_and_meta(monkeypatch):
 
     async def _fake_gate(provider, prompt, *, use_case, seed, style_id, concept_en, vlm):
         return accepted, 0
-    monkeypatch.setattr(studio_mod, "_gated_generate", _fake_gate)
+    monkeypatch.setattr(render_mod, "_gated_generate", _fake_gate)
 
     slide = {"title": "Resilience", "bullets": ["a", "b"], "image_prompt": "IGNORED"}
     ok = await studio_mod._generate_slide_illustration(
@@ -112,7 +113,7 @@ async def test_helper_uses_title_bullets_not_image_prompt(monkeypatch):
 
     async def _fake_gate(provider, prompt, *, use_case, seed, style_id, concept_en, vlm):
         return accepted, 0
-    monkeypatch.setattr(studio_mod, "_gated_generate", _fake_gate)
+    monkeypatch.setattr(render_mod, "_gated_generate", _fake_gate)
 
     slide = {"title": "T", "bullets": ["x"], "image_prompt": "DO NOT USE"}
     await studio_mod._generate_slide_illustration(
@@ -143,7 +144,7 @@ async def test_helper_gate_reject_returns_false(monkeypatch):
 
     async def _fake_gate(provider, prompt, *, use_case, seed, style_id, concept_en, vlm):
         return None, 3
-    monkeypatch.setattr(studio_mod, "_gated_generate", _fake_gate)
+    monkeypatch.setattr(render_mod, "_gated_generate", _fake_gate)
     slide = {"title": "T", "bullets": ["x"]}
     ok = await studio_mod._generate_slide_illustration(
         slide, idx=1, use_case=ImageUseCase.CONTENT_ILLUSTRATION,
@@ -160,7 +161,7 @@ async def test_routing_triggers_only_illustration_slides(monkeypatch):
     async def _spy(slide, *, idx, use_case, **kw):
         calls.append((idx, use_case))
         return True
-    monkeypatch.setattr(studio_mod, "_generate_slide_illustration", _spy)
+    monkeypatch.setattr(render_mod, "_generate_slide_illustration", _spy)
 
     slides = [
         {"title": "Cover", "bullets": ["x"], "layout_kind": "section_break"},     # idx0 → HERO
@@ -181,14 +182,14 @@ async def test_routing_triggers_only_illustration_slides(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_routing_per_deck_cap(monkeypatch):
-    from app.api.studio import MAX_GENERATED_IMAGES_PER_DECK
+    from app.services.studio_config import MAX_GENERATED_IMAGES_PER_DECK
 
     calls = []
 
     async def _spy(slide, *, idx, use_case, **kw):
         calls.append(idx)
         return True
-    monkeypatch.setattr(studio_mod, "_generate_slide_illustration", _spy)
+    monkeypatch.setattr(render_mod, "_generate_slide_illustration", _spy)
 
     n = MAX_GENERATED_IMAGES_PER_DECK + 5
     slides = [
@@ -209,7 +210,7 @@ async def test_routing_per_deck_cap(monkeypatch):
 async def test_routing_content_sparse_becomes_image_focus(monkeypatch):
     async def _spy(slide, *, idx, use_case, **kw):
         return True
-    monkeypatch.setattr(studio_mod, "_generate_slide_illustration", _spy)
+    monkeypatch.setattr(render_mod, "_generate_slide_illustration", _spy)
 
     slides = [
         {"title": "Cover", "bullets": ["x"], "layout_kind": "section_break"},      # idx0 HERO
@@ -233,7 +234,7 @@ async def test_routing_content_dense_skips_generation(monkeypatch):
     async def _spy(slide, *, idx, use_case, **kw):
         calls.append(idx)
         return True
-    monkeypatch.setattr(studio_mod, "_generate_slide_illustration", _spy)
+    monkeypatch.setattr(render_mod, "_generate_slide_illustration", _spy)
 
     slides = [
         {"title": "Cover", "bullets": ["x"], "layout_kind": "section_break"},      # idx0 HERO
@@ -253,7 +254,7 @@ async def test_routing_content_dense_skips_generation(monkeypatch):
 async def test_routing_band_not_converted_to_image_focus(monkeypatch):
     async def _spy(slide, *, idx, use_case, **kw):
         return True
-    monkeypatch.setattr(studio_mod, "_generate_slide_illustration", _spy)
+    monkeypatch.setattr(render_mod, "_generate_slide_illustration", _spy)
 
     slides = [
         {"title": "Cover", "bullets": ["x"], "layout_kind": "section_break"},      # idx0 HERO

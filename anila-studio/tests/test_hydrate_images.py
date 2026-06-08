@@ -4,7 +4,8 @@ Phase 4 (2026-05-23) — adapted from csp baseline for anila-studio:
 - `upload_dir` positional argument removed; `bearer` keyword required.
 - `image_ref` resolution now flows through ``csp_client.fetch_image_blob``
   (HTTP) rather than reading from a shared upload_dir mount. Tests patch
-  ``app.api.studio.fetch_image_blob`` to inject deterministic bytes.
+  ``app.services.studio_render.fetch_image_blob`` (where _hydrate_images now
+  lives after the god-module split) to inject deterministic bytes.
 - ``images_lookup`` shape: ``{image_id_str: {"image_id": int, "mime": str}}``
   (the studio module casts ``meta["image_id"]`` to ``int`` before calling
   ``fetch_image_blob``).
@@ -47,7 +48,7 @@ def fetch_blob_mock():
     Yields the mock so individual tests can assert on call args if needed.
     """
     with patch(
-        "app.api.studio.fetch_image_blob",
+        "app.services.studio_render.fetch_image_blob",
         new=AsyncMock(return_value=(_PNG, "image/png")),
     ) as m:
         yield m
