@@ -72,3 +72,13 @@ export async function rotateAgentCredential(agentId, credentialId, graceSeconds 
 export async function revokeAgentCredential(agentId, credentialId) {
   await client.delete(`/api/agents/${agentId}/credentials/${credentialId}`)
 }
+
+/**
+ * Probe the agent endpoint with its own csk- to confirm the operator wired
+ * CSP_SERVICE_TOKEN into the agent's .env (S-Q3).
+ * @returns {Promise<{ reachable: boolean, token_accepted: boolean|null, status_code: number|null, detail: string }>}
+ */
+export async function testAgentConnection(agentId) {
+  const { data } = await client.post(`/api/agents/${agentId}/test-connection`, {})
+  return data
+}

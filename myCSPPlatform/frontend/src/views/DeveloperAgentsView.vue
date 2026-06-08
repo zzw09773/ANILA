@@ -193,9 +193,15 @@ def employee_count(department: str) -&gt; int:
       </table>
     </TermBox>
 
-    <!-- Register modal ----------------------------------------------- -->
-    <TermModal :visible="showRegisterModal" title="register · agent" width="640px" @close="showRegisterModal = false">
-      <div class="form-grid">
+    <!-- Register wizard: step 1 = details, step 2 = provision csk- + verify -->
+    <TermModal
+      :visible="showRegisterModal"
+      :title="registerStep === 1 ? 'register · agent (1/2)' : `provision key · ${registeredAgent?.name || ''} (2/2)`"
+      width="640px"
+      @close="finishRegister"
+    >
+      <!-- ── STEP 1 — details ────────────────────────────────────────── -->
+      <div v-if="registerStep === 1" class="form-grid">
         <TermField label="name" hint="immutable identifier · letters, digits, dashes" :error="formErrors.name">
           <input v-model="form.name" class="term-input" placeholder="hr-policy-agent" />
         </TermField>
@@ -218,6 +224,14 @@ def employee_count(department: str) -&gt; int:
             </select>
           </TermField>
         </div>
+        <TermField label="RAG collection (optional)" hint="bind ONE collection this agent's csk- may search · leave empty for non-RAG agents">
+          <select v-model.number="form.collection_id" class="term-select">
+            <option :value="null">— none (non-RAG) —</option>
+            <option v-for="c in collections" :key="c.id" :value="c.id">
+              {{ c.name }} (#{{ c.id }})
+            </option>
+          </select>
+        </TermField>
 
         <TermSection title="pre-flight checklist" />
         <ul class="check">
@@ -228,9 +242,63 @@ def employee_count(department: str) -&gt; int:
           <li class="is-pending">○ <code>GET /health</code> + <code>POST /v1/chat/completions</code> implemented (manual check)</li>
         </ul>
       </div>
+
+      <!-- ── STEP 2 — provision the single csk- + verify ─────────────── -->
+      <div v-else class="form-grid">
+        <p class="cell-meta">
+          agent <strong>{{ registeredAgent?.name }}</strong> (#{{ registeredAgent?.id }}) registered ·
+          <TermBadge variant="warn" dot>pending</TermBadge> admin review.
+        </p>
+
+        <div v-if="!newAgentCsk">
+          <p class="cell-meta">
+            Issue this agent's single service token (<code>csk-</code>). It authenticates the
+            Router→agent dispatch, and (when a collection is bound) the agent's RAG search —
+            one key for both.
+          </p>
+          <TermButton
+            variant="primary" :loading="issuingNew" :disabled="issuingNew"
+            label="issue service token (csk-)" @click="handleIssueForNew"
+          />
+        </div>
+
+        <div v-else>
+          <div class="secret-banner secret-banner--csk">
+            <div class="secret-banner__head">
+              <span class="cell-strong">service token (csk-)</span>
+              <span class="cell-meta">copy now — will not be shown again</span>
+            </div>
+            <div class="secret-banner__body">
+              <code class="secret-banner__token">{{ newAgentCsk }}</code>
+              <TermButton size="sm" variant="ghost" @click="copyToClipboard(newAgentCsk)" label="copy" />
+            </div>
+          </div>
+
+          <TermSection title="agent .env" />
+          <pre class="env-snippet">{{ newAgentEnvSnippet }}</pre>
+          <TermButton size="sm" variant="ghost" @click="copyToClipboard(newAgentEnvSnippet)" label="copy .env" />
+
+          <TermSection title="verify connection" />
+          <p class="cell-meta">
+            Paste the <code>.env</code> above into your agent and start it, then test that it
+            accepted the token (proves <code>CSP_SERVICE_TOKEN</code> is wired correctly).
+          </p>
+          <TermButton
+            variant="default" :loading="testing" :disabled="testing"
+            label="test connection" @click="handleTestConnection"
+          />
+          <div v-if="testResult" class="test-result" :class="testResult.token_accepted ? 'test-result--ok' : 'test-result--bad'">
+            {{ testResult.token_accepted ? '✅' : '✗' }} {{ testResult.detail }}
+          </div>
+        </div>
+      </div>
+
       <template #footer>
-        <TermButton variant="ghost" @click="showRegisterModal = false" label="cancel" />
-        <TermButton variant="primary" :loading="registering" :disabled="registering" :label="registering ? 'submitting' : 'submit'" @click="handleRegister" />
+        <template v-if="registerStep === 1">
+          <TermButton variant="ghost" @click="finishRegister" label="cancel" />
+          <TermButton variant="primary" :loading="registering" :disabled="registering" :label="registering ? 'submitting' : 'register →'" @click="handleRegister" />
+        </template>
+        <TermButton v-else variant="primary" @click="finishRegister" label="done" />
       </template>
     </TermModal>
 
@@ -335,7 +403,11 @@ def employee_count(department: str) -&gt; int:
         </ol>
 
         <!-- Sprint 8 X / Phase A — service token management ------------ -->
-        <template v-if="authStore.isAdmin">
+        <!-- Owner-or-admin (canEditAgent): the agent owner may self-issue a
+             static csk- and see its one-time plaintext. bootstrap / rotate /
+             revoke / credential listing stay admin-only (backend authz), so
+             those controls below remain gated on authStore.isAdmin. -->
+        <template v-if="canEditAgent(detailAgent)">
           <TermSection title="service token" />
 
           <!-- One-shot plaintext display: only shown right after a
@@ -383,17 +455,23 @@ def employee_count(department: str) -&gt; int:
           </div>
 
           <div class="row-actions" style="margin-bottom: 8px;">
-            <button class="term-action" :disabled="credentialBusyId === -1" @click="handleIssueBootstrap">
-              {{ credentialBusyId === -1 ? 'issuing…' : 'issue bootstrap (bsk-)' }}
-            </button>
-            <span class="row-actions__sep">·</span>
+            <template v-if="authStore.isAdmin">
+              <button class="term-action" :disabled="credentialBusyId === -1" @click="handleIssueBootstrap">
+                {{ credentialBusyId === -1 ? 'issuing…' : 'issue bootstrap (bsk-)' }}
+              </button>
+              <span class="row-actions__sep">·</span>
+            </template>
             <button class="term-action" :disabled="credentialBusyId === -2" @click="openIssueStaticModal">
               {{ credentialBusyId === -2 ? 'issuing…' : 'issue static (csk-)' }}
             </button>
-            <span class="row-actions__sep">·</span>
-            <button class="term-action" @click="refreshDetailCredentials">refresh</button>
+            <template v-if="authStore.isAdmin">
+              <span class="row-actions__sep">·</span>
+              <button class="term-action" @click="refreshDetailCredentials">refresh</button>
+            </template>
           </div>
 
+          <!-- credential listing + rotate/revoke are admin-only (backend authz) -->
+          <template v-if="authStore.isAdmin">
           <TermEmpty v-if="!credentialsLoading && detailCredentials.length === 0" message="no credentials yet — issue a bootstrap or static token to start" />
           <table v-else class="cred-table">
             <thead>
@@ -443,6 +521,7 @@ def employee_count(department: str) -&gt; int:
               </tr>
             </tbody>
           </table>
+          </template>
         </template>
       </div>
       <template #footer>
@@ -492,9 +571,12 @@ import {
   listAgentCredentials,
   revokeAgentCredential,
   rotateAgentCredential,
+  testAgentConnection,
 } from '../api/agentCredentials'
+import { listCollections } from '../api/ingestionCollections'
 import { listModels } from '../api/models'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, TermSection } from '../components/cli'
+import { useDialog } from '../composables/useDialog'
 import BootstrapHowToTabs from '../components/agents/BootstrapHowToTabs.vue'
 
 // CSP base URL the snippets should reference. Derived from the
@@ -504,6 +586,7 @@ import BootstrapHowToTabs from '../components/agents/BootstrapHowToTabs.vue'
 // different origin from the SPA.
 const cspUrl = import.meta.env?.VITE_CSP_BASE_URL || (typeof window !== 'undefined' ? window.location.origin : '')
 
+const { confirm } = useDialog()
 const authStore = useAuthStore()
 
 const agents = ref([])
@@ -536,8 +619,16 @@ const issuedSecret = ref(null) // { kind: 'bsk'|'csk', value, meta?, ttlExpiresA
 const showIssueStaticModal = ref(false)
 const staticLabel = ref('')
 const filters = ref({ query: '', approval: 'all', health: 'all', sort: 'newest' })
-const form = ref({ name: '', endpoint_url: '', description_for_router: '', api_version: 'v1', base_model_id: null })
+const form = ref({ name: '', endpoint_url: '', description_for_router: '', api_version: 'v1', base_model_id: null, collection_id: null })
 const formErrors = ref({})
+// Register wizard: step 1 = details form, step 2 = provision the csk- + verify.
+const registerStep = ref(1)
+const registeredAgent = ref(null) // { id, name, bound_collection_id }
+const newAgentCsk = ref('')       // one-time plaintext csk- for the new agent
+const issuingNew = ref(false)
+const collections = ref([])       // owner's collections, for the optional RAG bind
+const testResult = ref(null)      // { reachable, token_accepted, detail }
+const testing = ref(false)
 const availableModels = ref([])
 const baseModelOptions = computed(() =>
   availableModels.value.filter(m => m.is_active && (m.model_type === 'llm' || m.model_type === 'vlm'))
@@ -582,8 +673,12 @@ function setFeedback(type, message) {
 }
 
 function resetForm() {
-  form.value = { name: '', endpoint_url: '', description_for_router: '', api_version: 'v1', base_model_id: null }
+  form.value = { name: '', endpoint_url: '', description_for_router: '', api_version: 'v1', base_model_id: null, collection_id: null }
   formErrors.value = {}
+  registerStep.value = 1
+  registeredAgent.value = null
+  newAgentCsk.value = ''
+  testResult.value = null
 }
 
 function validateForm() {
@@ -608,7 +703,16 @@ async function fetchAvailableModels() {
 }
 onMounted(async () => { await Promise.all([fetchAgents(), fetchAvailableModels()]) })
 
-function openRegisterModal() { resetForm(); showRegisterModal.value = true }
+async function openRegisterModal() {
+  resetForm()
+  showRegisterModal.value = true
+  // Load the caller's collections for the optional RAG bind dropdown. Best
+  // effort — a failure just leaves the dropdown empty (binding stays optional).
+  try {
+    const { data } = await listCollections()
+    collections.value = Array.isArray(data) ? data : (data?.items || [])
+  } catch { collections.value = [] }
+}
 
 async function openDetailModal(agent) {
   try { const { data } = await getAgent(agent.id); detailAgent.value = data }
@@ -654,7 +758,7 @@ async function copyToClipboard(text) {
 
 async function handleIssueBootstrap() {
   if (!detailAgent.value) return
-  if (!confirm(`為「${detailAgent.value.name}」核發新的 bootstrap token？\n\n舊 bootstrap（若存在）會立即失效。`)) return
+  if (!(await confirm({ message: `為「${detailAgent.value.name}」核發新的 bootstrap token？\n\n舊 bootstrap（若存在）會立即失效。`, confirmText: '核發', danger: true }))) return
   credentialBusyId.value = -1
   try {
     const data = await issueBootstrapToken(detailAgent.value.id)
@@ -698,7 +802,9 @@ async function handleIssueStatic() {
     }
     setFeedback('success', 'service token issued — copy now, it will not be shown again')
     showIssueStaticModal.value = false
-    await refreshDetailCredentials()
+    // Listing credentials is admin-only (backend authz); an owner has already
+    // got the one-time plaintext from the banner above, so skip the refresh.
+    if (authStore.isAdmin) await refreshDetailCredentials()
   } catch (e) {
     setFeedback('error', e.response?.data?.detail || 'failed to issue static token')
   } finally {
@@ -708,7 +814,7 @@ async function handleIssueStatic() {
 
 async function handleRotateCredential(credential) {
   if (!detailAgent.value) return
-  if (!confirm(`輪替 credential id=${credential.id}？舊 token 仍可用 24h（grace window）。`)) return
+  if (!(await confirm({ message: `輪替 credential id=${credential.id}？舊 token 仍可用 24h（grace window）。`, confirmText: '輪替' }))) return
   credentialBusyId.value = credential.id
   try {
     const data = await rotateAgentCredential(detailAgent.value.id, credential.id)
@@ -733,7 +839,7 @@ async function handleRotateCredential(credential) {
 
 async function handleRevokeCredential(credential) {
   if (!detailAgent.value) return
-  if (!confirm(`立即吊銷 credential id=${credential.id}？無 grace window。`)) return
+  if (!(await confirm({ message: `立即吊銷 credential id=${credential.id}？無 grace window。`, confirmText: '吊銷', danger: true }))) return
   credentialBusyId.value = credential.id
   try {
     await revokeAgentCredential(detailAgent.value.id, credential.id)
@@ -753,18 +859,75 @@ async function handleRegister() {
   if (!validateForm()) return
   registering.value = true
   try {
-    await registerAgent({
+    const resp = await registerAgent({
       ...form.value,
       name: form.value.name.trim(),
       endpoint_url: form.value.endpoint_url.trim(),
       description_for_router: form.value.description_for_router.trim(),
+      collection_id: form.value.collection_id || null,
     })
-    showRegisterModal.value = false
-    setFeedback('success', 'agent submitted · pending admin review')
+    // Advance to step 2 (provision key) instead of closing — one onboarding
+    // flow: register → issue csk- → paste into .env → verify (S-Q2/Q3).
+    registeredAgent.value = resp.data
+    registerStep.value = 2
+    setFeedback('success', 'agent registered · pending admin review — now provision its key')
     await fetchAgents()
   } catch (e) { setFeedback('error', e.response?.data?.detail || 'register failed') }
   finally { registering.value = false }
 }
+
+async function handleIssueForNew() {
+  if (!registeredAgent.value) return
+  issuingNew.value = true
+  try {
+    const data = await issueStaticCredential(registeredAgent.value.id, null)
+    newAgentCsk.value = data.service_token
+    setFeedback('success', 'service token issued — copy now, it will not be shown again')
+  } catch (e) { setFeedback('error', e.response?.data?.detail || 'failed to issue token') }
+  finally { issuingNew.value = false }
+}
+
+async function handleTestConnection() {
+  if (!registeredAgent.value) return
+  testing.value = true
+  testResult.value = null
+  try {
+    testResult.value = await testAgentConnection(registeredAgent.value.id)
+  } catch (e) {
+    testResult.value = {
+      reachable: false, token_accepted: null,
+      detail: e.response?.data?.detail || 'test failed',
+    }
+  } finally { testing.value = false }
+}
+
+function finishRegister() {
+  showRegisterModal.value = false
+}
+
+// env snippet pre-filled for the new agent's .env (S-Q1 one-key model).
+// CSP_BASE_URL: the browser origin (e.g. localhost) is the ADMIN's view, not
+// necessarily where the agent host can reach CSP — the agent usually runs on a
+// different machine. So when the origin is loopback (or unknown) we emit a
+// placeholder + comment instead of a misleading localhost value.
+const newAgentEnvSnippet = computed(() => {
+  const a = registeredAgent.value
+  if (!a) return ''
+  const origin = cspUrl || ''
+  const isLoopback = !origin || /localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0/.test(origin)
+  const lines = []
+  if (isLoopback) {
+    lines.push('# CSP_BASE_URL: set to the CSP host reachable FROM the agent machine')
+    lines.push('# (the agent rarely shares a host with CSP — do NOT use localhost)')
+    lines.push('CSP_BASE_URL=https://<csp-host-reachable-from-agent>')
+  } else {
+    lines.push(`CSP_BASE_URL=${origin}`)
+  }
+  lines.push(`ANILA_AGENT_NAME=${a.name}`)
+  lines.push(`CSP_SERVICE_TOKEN=${newAgentCsk.value || '<paste the csk- shown above>'}`)
+  if (a.bound_collection_id) lines.push(`ANILA_COLLECTION_ID=${a.bound_collection_id}`)
+  return lines.join('\n')
+})
 
 function canEditAgent(agent) {
   if (!agent) return false
@@ -824,7 +987,7 @@ async function handleApprove(agent) {
 async function handleToggleEncryption(agent) {
   if (!agent || encryptionBusyId.value === agent.id) return
   const next = !agent.requires_encryption
-  if (next && !window.confirm(`enable forced encryption for '${agent.name}'? all conversations through it lock to encrypted mode — irreversible per conversation.`)) return
+  if (next && !(await confirm({ message: `enable forced encryption for '${agent.name}'? all conversations through it lock to encrypted mode — irreversible per conversation.`, confirmText: 'enable', danger: true }))) return
   encryptionBusyId.value = agent.id
   try {
     const { data } = await setAgentEncryption(agent.id, next)
@@ -852,7 +1015,7 @@ async function handleHealthCheck(agent) {
 
 async function handleDeleteAgent(agent) {
   if (!agent || deletingId.value === agent.id) return
-  if (!window.confirm(`delete '${agent.name}'? non-reversible · live references will break.`)) return
+  if (!(await confirm({ message: `delete '${agent.name}'? non-reversible · live references will break.`, confirmText: 'delete', danger: true }))) return
   deletingId.value = agent.id
   try {
     await deleteAgent(agent.id)
@@ -1087,4 +1250,29 @@ function buildStatusHistory(agent) {
 }
 .cred-table td { padding: 6px; border-bottom: 1px solid var(--c-divider); vertical-align: middle; }
 .cred-table tr.is-revoked td { opacity: 0.5; }
+
+.env-snippet {
+  background: var(--c-bg-1, #000);
+  border: 1px solid var(--c-divider);
+  border-radius: var(--r-sharp);
+  padding: 8px 10px;
+  margin: 6px 0;
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: all;
+  color: var(--c-fg-1);
+}
+.test-result {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: var(--r-sharp);
+  border: 1px solid var(--c-divider);
+  font-size: var(--t-2xs);
+  line-height: 1.5;
+}
+.test-result--ok { border-color: var(--c-ok); color: var(--c-ok); }
+.test-result--bad { border-color: var(--c-danger); color: var(--c-danger); }
 </style>

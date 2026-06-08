@@ -68,7 +68,9 @@
 import { ref, onMounted } from 'vue'
 import { listDepartments, createDepartment, updateDepartment, deactivateDepartment } from '../api/departments'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal } from '../components/cli'
+import { useDialog } from '../composables/useDialog'
 
+const { confirm, toast } = useDialog()
 const departments = ref([])
 const showModal = ref(false)
 const editingId = ref(null)
@@ -96,11 +98,11 @@ async function handleSubmit() {
     showModal.value = false
     await fetchDepartments()
   } catch (e) {
-    alert(e.response?.data?.detail || 'operation failed')
+    toast(e.response?.data?.detail || 'operation failed', { tone: 'error' })
   } finally { saving.value = false }
 }
 async function handleDeactivate(d) {
-  if (!confirm(`deactivate '${d.name}'? bound users will be detached.`)) return
+  if (!(await confirm({ message: `deactivate '${d.name}'? bound users will be detached.`, danger: true }))) return
   await deactivateDepartment(d.id)
   await fetchDepartments()
 }

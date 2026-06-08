@@ -234,7 +234,9 @@ import { ref, computed, onMounted } from 'vue'
 import { useModelsStore } from '../stores/models'
 import { useAuthStore } from '../stores/auth'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, TermDot } from '../components/cli'
+import { useDialog } from '../composables/useDialog'
 
+const { confirm, toast } = useDialog()
 const modelsStore = useModelsStore()
 const authStore = useAuthStore()
 const showModal = ref(false)
@@ -359,7 +361,7 @@ async function handleSubmit() {
     const msg = typeof detail === 'string'
       ? detail
       : (detail?.message || 'operation failed')
-    alert(msg)
+    toast(msg, { tone: 'error' })
   }
 }
 
@@ -391,7 +393,7 @@ async function confirmTrustAndRetry() {
   } catch (e) {
     const detail = e.response?.data?.detail
     const msg = typeof detail === 'string' ? detail : (detail?.message || 'retry failed')
-    alert(msg)
+    toast(msg, { tone: 'error' })
   }
 }
 
@@ -401,37 +403,37 @@ function cancelTrustPrompt() {
 
 async function handleHealthCheck(id) {
   const result = await modelsStore.checkHealth(id)
-  alert(`health probe → ${result.status}\n${result.detail}`)
+  toast(`health probe → ${result.status}\n${result.detail}`, { tone: result.status === 'healthy' ? 'success' : 'error' })
 }
 
 async function handleSetPrimary(id) {
   settingPrimaryId.value = id
   try { await modelsStore.setPrimary(id) }
-  catch (e) { alert(e.response?.data?.detail || 'pin failed') }
+  catch (e) { toast(e.response?.data?.detail || 'pin failed', { tone: 'error' }) }
   finally { settingPrimaryId.value = null }
 }
 async function handleUnsetPrimary(id) {
-  if (!confirm('unpin primary? ANILA Router will have no primary LLM until you pin a new one.')) return
+  if (!(await confirm({ message: 'unpin primary? ANILA Router will have no primary LLM until you pin a new one.', confirmText: 'unpin', danger: true }))) return
   settingPrimaryId.value = id
   try { await modelsStore.unsetPrimary(id) }
-  catch (e) { alert(e.response?.data?.detail || 'unpin failed') }
+  catch (e) { toast(e.response?.data?.detail || 'unpin failed', { tone: 'error' }) }
   finally { settingPrimaryId.value = null }
 }
 async function handleDeactivate(id) {
-  if (confirm('deactivate this model? you can re-activate it later via the activate button on this row.')) {
+  if (await confirm({ message: 'deactivate this model? you can re-activate it later via the activate button on this row.', confirmText: 'deactivate', danger: true })) {
     await modelsStore.remove(id)
   }
 }
 async function handleActivate(id) {
   try { await modelsStore.activate(id) }
-  catch (e) { alert(e.response?.data?.detail || 'activate failed') }
+  catch (e) { toast(e.response?.data?.detail || 'activate failed', { tone: 'error' }) }
 }
 async function handlePurge(model) {
   if (!model || purgingId.value === model.id) return
-  if (!window.confirm(`hard-delete '${model.display_name}'? non-reversible. rejected if usage records or other models reference it.`)) return
+  if (!(await confirm({ message: `hard-delete '${model.display_name}'? non-reversible. rejected if usage records or other models reference it.`, confirmText: 'hard-delete', danger: true }))) return
   purgingId.value = model.id
   try { await modelsStore.purge(model.id) }
-  catch (e) { alert(e.response?.data?.detail || 'purge failed') }
+  catch (e) { toast(e.response?.data?.detail || 'purge failed', { tone: 'error' }) }
   finally { purgingId.value = null }
 }
 </script>

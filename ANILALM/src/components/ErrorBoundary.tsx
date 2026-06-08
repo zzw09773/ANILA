@@ -85,7 +85,10 @@ export class ErrorBoundary extends Component<Props, State> {
             <button
               onClick={() => {
                 localStorage.clear()
-                window.location.replace('/anilalm/')
+                // Use the configured base path (same source App.tsx derives
+                // the router basename from) so recovery works under any deploy
+                // mount point, not just /anilalm/.
+                window.location.replace(import.meta.env.BASE_URL || '/')
               }}
               style={{
                 marginTop: 14,

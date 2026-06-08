@@ -7,6 +7,10 @@ class Settings(BaseSettings):
     APP_NAME: str = "CSP Platform"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = False
+    # Swagger UI (/docs) + OpenAPI schema (/openapi.json) exposure. These have
+    # no auth and leak the full API surface, so they are OFF by default
+    # (secure-by-default); dev environments opt in via ENABLE_API_DOCS=true.
+    ENABLE_API_DOCS: bool = False
 
     # Database
     DATABASE_URL: str = "postgresql://csp:csp_password@localhost:5432/csp"
@@ -67,6 +71,13 @@ class Settings(BaseSettings):
     # Wildcard "*" is not allowed together with credentials, so this must
     # be an explicit list in any deployment that uses the cookie flow.
     ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:3001,http://localhost:80,http://localhost,https://localhost,https://localhost:4443"
+
+    # Incoming Host-header allow-list (anti Host-header-injection /
+    # cache-poisoning). Comma-separated hostnames; "*" disables the check
+    # (default, non-breaking). Production should pin this to the real
+    # ingress host(s), e.g. "anila.ncsist.org.tw,172.16.120.35". Distinct
+    # from ANILA_TRUSTED_HOSTS, which is the *outgoing* SSRF allow-list.
+    ALLOWED_HOSTS: str = "*"
 
     # Mark session cookies as Secure (HTTPS-only). Defaults to True; set
     # to False in local HTTP dev / test harnesses where cookies must

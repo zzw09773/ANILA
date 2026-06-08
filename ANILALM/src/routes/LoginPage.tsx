@@ -254,6 +254,7 @@ export function LoginPage() {
 
             {err && (
               <div
+                role="alert"
                 style={{
                   marginTop: 10,
                   padding: '8px 10px',
@@ -386,9 +387,13 @@ function TerminalField({
       <span style={{ color: focused ? accent : dim, width: 12 }}>
         {focused ? '▸' : ' '}
       </span>
-      <span style={{ color: dim, minWidth: 80 }}>{label}:</span>
+      <label htmlFor={id} style={{ color: dim, minWidth: 80, cursor: 'text' }}>
+        {label}:
+      </label>
       <input
         id={id}
+        name={id}
+        aria-label={label}
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}

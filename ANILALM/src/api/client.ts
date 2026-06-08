@@ -44,10 +44,29 @@ export const client = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
+const CSRF_COOKIE = 'anila_csrf'
+const MUTATING_METHODS = new Set(['post', 'put', 'patch', 'delete'])
+
+function readCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null
+  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`))
+  return match ? decodeURIComponent(match[1]) : null
+}
+
 client.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const token = adapter?.getAccessToken()
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
+  }
+  // Double-submit CSRF: when there's no Bearer (e.g. the in-memory access token
+  // expired/cleared but the httpOnly session cookie lingers), CSP's CSRF
+  // middleware requires X-CSRF-Token to match the non-httpOnly `anila_csrf`
+  // cookie on mutating requests. Bearer requests are CSRF-exempt server-side,
+  // so sending it always is harmless. Fixes logout 403 after token expiry.
+  const method = (config.method ?? 'get').toLowerCase()
+  if (MUTATING_METHODS.has(method)) {
+    const csrf = readCookie(CSRF_COOKIE)
+    if (csrf) config.headers['X-CSRF-Token'] = csrf
   }
   return config
 })

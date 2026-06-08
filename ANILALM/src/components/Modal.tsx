@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useTheme } from '../theme/ThemeContext'
 
 interface ModalProps {
@@ -7,18 +7,54 @@ interface ModalProps {
   onClose: () => void
   children: ReactNode
   width?: number
+  /** Accessible name for the dialog (screen readers announce this). */
+  ariaLabel?: string
 }
 
-export function Modal({ open, onClose, children, width = 460 }: ModalProps) {
+const FOCUSABLE =
+  'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])'
+
+export function Modal({ open, onClose, children, width = 460, ariaLabel = '對話框' }: ModalProps) {
   const { theme, t } = useTheme()
+  const panelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!open) return
-    const k = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+    // Remember what had focus so we can restore it when the dialog closes
+    // (a11y: focus must not be lost to <body> after a modal dismisses).
+    const prevFocus = document.activeElement as HTMLElement | null
+    const panel = panelRef.current
+    const initial = panel?.querySelectorAll<HTMLElement>(FOCUSABLE)
+    ;(initial && initial.length ? initial[0] : panel)?.focus()
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose()
+        return
+      }
+      // Focus trap: keep Tab cycling inside the dialog.
+      if (e.key === 'Tab' && panel) {
+        const f = panel.querySelectorAll<HTMLElement>(FOCUSABLE)
+        if (!f.length) {
+          e.preventDefault()
+          return
+        }
+        const first = f[0]
+        const last = f[f.length - 1]
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault()
+          last.focus()
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault()
+          first.focus()
+        }
+      }
     }
-    document.addEventListener('keydown', k)
-    return () => document.removeEventListener('keydown', k)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      prevFocus?.focus?.()
+    }
   }, [open, onClose])
 
   if (!open) return null
@@ -38,6 +74,11 @@ export function Modal({ open, onClose, children, width = 460 }: ModalProps) {
       }}
     >
       <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={ariaLabel}
+        tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
         style={{
           width,
@@ -47,6 +88,7 @@ export function Modal({ open, onClose, children, width = 460 }: ModalProps) {
           border: `1px solid ${t.border}`,
           borderRadius: 14,
           overflow: 'hidden',
+          outline: 'none',
           display: 'flex',
           flexDirection: 'column',
           boxShadow:

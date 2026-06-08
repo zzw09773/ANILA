@@ -16,6 +16,7 @@ import {
 
 import App from "./app.jsx";
 import { AuthProvider, useAuth } from "./runtime/auth.jsx";
+import { ConfirmProvider } from "./confirm.jsx";
 
 function BootScreen({ label = "啟動中…" }) {
   return (
@@ -82,7 +83,9 @@ ReactDOM.createRoot(container).render(
   <React.StrictMode>
     <BrowserRouter>
       <AuthProvider>
-        <RootRoutes />
+        <ConfirmProvider>
+          <RootRoutes />
+        </ConfirmProvider>
       </AuthProvider>
     </BrowserRouter>
   </React.StrictMode>,

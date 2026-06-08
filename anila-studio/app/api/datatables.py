@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +67,10 @@ from app.schemas.datatable import (
 )
 from app.services import datatable_job_service as jobs
 from app.services.datatable_exporter import to_csv, to_html, to_xlsx
+from app.services.llm_json import (
+    extract_json_object as _extract_json_object,
+    loads_lenient as _loads_lenient,
+)
 from app.services.studio_text_normalizer import strip_latex
 
 
@@ -223,57 +226,13 @@ def _build_prompt(
     return system, user
 
 
-# ── JSON extraction (matches studio.py shape) ─────────────────────────────
-
-
-_THINK_BLOCK_RE = re.compile(
-    r"<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE,
-)
-
-
-def _extract_json_object(raw: str) -> str:
-    """Slice the last balanced JSON object out of a noisy LLM response.
-
-    Same algorithm as ``app.api.studio._extract_json_object`` — kept
-    inlined here so the datatable module is self-contained (no leak
-    into the slides pipeline's internal helpers).
-    """
-    de_thought = _THINK_BLOCK_RE.sub("", raw)
-    no_fences = (
-        de_thought.replace("```json", "")
-        .replace("```JSON", "")
-        .replace("```", "")
-    )
-    depth = 0
-    end = -1
-    start = -1
-    # Scan from the right counting brace nesting.
-    for i in range(len(no_fences) - 1, -1, -1):
-        ch = no_fences[i]
-        if ch == "}":
-            if depth == 0:
-                end = i
-            depth += 1
-        elif ch == "{":
-            depth -= 1
-            if depth == 0 and end != -1:
-                start = i
-                break
-    if start == -1 or end == -1:
-        # Fall through — let json.loads raise a clean error.
-        return no_fences.strip()
-    return no_fences[start : end + 1]
-
-
-def _loads_lenient(text: str) -> Any:
-    """``json.loads`` with single-quote-to-double-quote repair."""
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    repaired = re.sub(r"(?<=[\[\{,:\s])'", '"', text)
-    repaired = re.sub(r"'(?=[\]\},:\s]|$)", '"', repaired)
-    return json.loads(repaired)
+# ── JSON extraction → canonical app/services/llm_json (dedup) ─────────────────
+# _extract_json_object / _loads_lenient are imported above (aliased). This
+# module used to carry its own copy; converged onto the canonical version,
+# which adds string-aware brace matching (braces inside JSON string values no
+# longer fool the depth counter). The runner's
+# `except (ValidationError, ValueError, json.JSONDecodeError)` already covers
+# the canonical's ValueError contract.
 
 
 # ── LLM helper ────────────────────────────────────────────────────────────
