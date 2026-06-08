@@ -84,29 +84,67 @@ def get_image_blob(
             be alarming for a deterministic infra mismatch we can't
             recover from at the HTTP layer.
     """
-    row = db.execute(
-        text(
-            """
-            SELECT id, collection_id, storage_path, mime
-            FROM ingestion_images
-            WHERE id = :id
-            """
-        ),
-        {"id": image_id},
-    ).first()
+    # ingestion_images is FORCE-RLS on Postgres (migration 0037). This is a
+    # by-PK lookup, so we can't read the row to learn its collection before the
+    # GUC is set (chicken-and-egg). On Postgres: resolve the collection via the
+    # SECURITY DEFINER helper (returns only collection_id, bypassing RLS),
+    # enforce ownership, set the txn-local GUC, then read the sensitive columns
+    # under RLS. RLS is a Postgres feature; on other backends (e.g. the SQLite
+    # test DB) there is no row security, so a single scoped read is correct.
+    is_postgres = db.get_bind().dialect.name == "postgresql"
+    if is_postgres:
+        collection_id = db.execute(
+            text("SELECT ingestion_image_collection_id(:id)"),
+            {"id": image_id},
+        ).scalar()
+        if collection_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Image {image_id} not found",
+            )
+        collection_id = int(collection_id)
 
-    if row is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Image {image_id} not found",
+        # Real access gate (RLS below is defence-in-depth). Raises 403/404.
+        _require_collection_access(db, current_user, collection_id)
+
+        # Scope the connection, then read the row under RLS. set_config(...,
+        # is_local => true) is txn-scoped → never leaks to the next pooled user.
+        db.execute(
+            text("SELECT set_config('anila.collection_id', :cid, true)"),
+            {"cid": str(collection_id)},
         )
-
-    collection_id = int(row.collection_id)
-    storage_path = str(row.storage_path)
-    mime = str(row.mime) if row.mime else "image/png"
-
-    # Authorise via the parent collection. Raises 403/404 from inside.
-    _require_collection_access(db, current_user, collection_id)
+        row = db.execute(
+            text("SELECT storage_path, mime FROM ingestion_images WHERE id = :id"),
+            {"id": image_id},
+        ).first()
+        if row is None:
+            # Resolver found it but the RLS-scoped read didn't — guard the edge.
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Image {image_id} blob unavailable",
+            )
+        storage_path = str(row.storage_path)
+        mime = str(row.mime) if row.mime else "image/png"
+    else:
+        row = db.execute(
+            text(
+                """
+                SELECT collection_id, storage_path, mime
+                FROM ingestion_images
+                WHERE id = :id
+                """
+            ),
+            {"id": image_id},
+        ).first()
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Image {image_id} not found",
+            )
+        collection_id = int(row.collection_id)
+        _require_collection_access(db, current_user, collection_id)
+        storage_path = str(row.storage_path)
+        mime = str(row.mime) if row.mime else "image/png"
 
     upload_root = os.environ.get(
         "INGESTION_UPLOAD_DIR", "/var/anila/ingestion-uploads",

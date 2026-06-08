@@ -235,7 +235,9 @@ import {
 } from '../api/users'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat } from '../components/cli'
 import { useAuthStore } from '../stores/auth'
+import { useDialog } from '../composables/useDialog'
 
+const { confirm } = useDialog()
 const authStore = useAuthStore()
 
 const users = ref([])
@@ -389,7 +391,7 @@ async function handleApprove(user) {
   } catch (e) { setFeedback('error', e.response?.data?.detail || 'approve failed') }
 }
 async function handleDeactivate(user) {
-  if (!window.confirm(`deactivate '${user.username}'?`)) return
+  if (!(await confirm({ message: `deactivate '${user.username}'?`, confirmText: 'deactivate', danger: true }))) return
   try {
     await deactivateUser(user.id)
     setFeedback('success', `deactivated '${user.username}'`)
@@ -408,15 +410,13 @@ async function handleReactivate(user) {
 async function handlePurge(user) {
   // Typed-confirm: 必須輸入完整 username 才能 purge,避免誤觸點到「remove」誤刪。
   // 國軍交付環境一旦 purge 不可逆,所以多一道輸入摩擦是值得的。
-  const typed = window.prompt(
-    `完全刪除使用者「${user.username}」?此動作不可復原。\n` +
-    `若確定,請輸入帳號名稱完整字串以確認:`
-  )
-  if (typed === null) return
-  if (typed !== user.username) {
-    setFeedback('error', '輸入不符,已取消')
-    return
-  }
+  if (!(await confirm({
+    title: '完全刪除使用者',
+    message: `完全刪除使用者「${user.username}」?此動作不可復原。`,
+    requireText: user.username,
+    confirmText: '刪除',
+    danger: true,
+  }))) return
   try {
     const { data } = await purgeUser(user.id)
     setFeedback('success', data.message || `purged '${user.username}'`)
@@ -450,7 +450,7 @@ async function handleBulkApprove() {
 async function handleBulkDeactivate() {
   const targets = users.value.filter(u => selectedUserIds.value.includes(u.id) && u.is_active && u.is_approved)
   if (!targets.length) { setFeedback('error', 'no active users in selection'); return }
-  if (!window.confirm(`deactivate ${targets.length} users?`)) return
+  if (!(await confirm({ message: `deactivate ${targets.length} users?`, confirmText: 'deactivate', danger: true }))) return
   for (const u of targets) await deactivateUser(u.id)
   selectedUserIds.value = []
   setFeedback('success', `deactivated ${targets.length} users`)
@@ -459,7 +459,7 @@ async function handleBulkDeactivate() {
 async function handleBulkReactivate() {
   const targets = users.value.filter(u => selectedUserIds.value.includes(u.id) && !u.is_active)
   if (!targets.length) { setFeedback('error', 'no inactive users in selection'); return }
-  if (!window.confirm(`reactivate ${targets.length} users? (API keys remain disabled)`)) return
+  if (!(await confirm({ message: `reactivate ${targets.length} users? (API keys remain disabled)`, confirmText: 'reactivate' }))) return
   for (const u of targets) await updateUser(u.id, { is_active: true })
   selectedUserIds.value = []
   setFeedback('success', `reactivated ${targets.length} users (API keys 須另外重發)`)

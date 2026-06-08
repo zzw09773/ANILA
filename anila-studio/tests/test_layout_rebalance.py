@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.api.studio import (
+from app.services.studio_layout import (
     LAYOUT_REBALANCE_MAX_CHANGES,
     LayoutViolation,
     _rebalance_layouts,
@@ -64,7 +64,7 @@ def _baseline_violations() -> list[LayoutViolation]:
 
 
 @pytest.mark.asyncio
-@patch("app.api.studio._call_llm_for_rebalance", new_callable=AsyncMock)
+@patch("app.services.studio_layout._call_llm_for_rebalance", new_callable=AsyncMock)
 async def test_rebalance_applies_changes_to_spec(mock_call):
     """LLM returns {changes: [...]}; rebalance mutates spec accordingly."""
     mock_call.return_value = {
@@ -98,7 +98,7 @@ async def test_rebalance_applies_changes_to_spec(mock_call):
 
 
 @pytest.mark.asyncio
-@patch("app.api.studio._call_llm_for_rebalance", new_callable=AsyncMock)
+@patch("app.services.studio_layout._call_llm_for_rebalance", new_callable=AsyncMock)
 async def test_rebalance_respects_max_changes(mock_call):
     """LLM returns 10 changes; only first 3 applied."""
     # Build a spec_dict with 10 standard slides so each LLM-proposed change
@@ -154,7 +154,7 @@ async def test_rebalance_respects_max_changes(mock_call):
 
 
 @pytest.mark.asyncio
-@patch("app.api.studio._call_llm_for_rebalance", new_callable=AsyncMock)
+@patch("app.services.studio_layout._call_llm_for_rebalance", new_callable=AsyncMock)
 async def test_rebalance_logs_warning_when_v1_still_violated(mock_call, caplog):
     """If LLM's changes don't fix V1, log warning and continue (don't 502)."""
     # Return zero changes — V1 (100% standard) will remain after the pass.

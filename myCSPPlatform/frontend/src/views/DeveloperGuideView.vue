@@ -17,7 +17,7 @@
         <li><code>uv venv &amp;&amp; uv pip install -e '.[dev,pgvector]'</code> · <code>cp .env.example .env</code> · 填 <code>ANILA_BASE_URL</code> / <code>ANILA_API_KEY</code> / <code>ANILA_MODEL</code></li>
         <li>選 retriever (Dummy → langchain pgvector → ANILA-native pgvector) · 加你自己的 <code>@anila_tool</code> · 跑 <code>anila</code> 驗 REPL</li>
         <li>包一層 FastAPI 對外吐 <code>/health</code> + <code>/v1/chat/completions</code> + <code>/v1/models</code> (bridge openai-agents Runner ↔ OpenAI-compat SSE)</li>
-        <li>到 <router-link to="/developer/agents">/developer/agents</router-link> 註冊 · 等管理員審核通過 · 拿 bootstrap token 換 service token · router 自動發現</li>
+        <li>到 <router-link to="/developer/agents">/developer/agents</router-link> 用 <strong>register 兩步精靈</strong>註冊 → 自助核發一把 <code>csk-</code> service token → 填進 agent <code>.env</code> 的 <code>CSP_SERVICE_TOKEN</code> → 按 <strong>test connection</strong> 驗證 → 等管理員審核 · router 自動發現</li>
       </ol>
     </TermBox>
 
@@ -33,7 +33,7 @@
         <li><a href="#fastapi">包 FastAPI service · 對外 OpenAI-compat</a></li>
         <li><a href="#platform-primitives">anila-core 平台 primitives</a></li>
         <li><a href="#endpoints">agent 必須暴露的端點</a></li>
-        <li><a href="#bootstrap">註冊 · bootstrap · service token</a></li>
+        <li><a href="#bootstrap">註冊 · 一把 csk- · 驗證連線</a></li>
         <li><a href="#runtime-config">runtime_config · 不重啟調整</a></li>
         <li><a href="#testing">測試與品質閘門</a></li>
         <li><a href="#troubleshoot">疑難排解</a></li>
@@ -536,47 +536,54 @@ async def ask_user(question: str, options: list[str] | None = None) -&gt; str:
     </TermBox>
 
     <!-- Bootstrap -->
-    <TermBox id="bootstrap" title="註冊 · bootstrap · service token" pad="md">
+    <TermBox id="bootstrap" title="註冊 · 一把 csk- · 驗證連線" pad="md">
+      <p class="lead">
+        一把金鑰搞定:agent 只需要一把 <code>csk-</code> service token。它同時 ①驗證
+        Router→agent 的派工(Router 帶 <code>X-CSP-Service-Token</code>,agent 比對 .env)、
+        ②(若有綁 collection)授權 agent 的 RAG 搜尋。<strong>不需要</strong>再做
+        bsk-→csk- 兩步 bootstrap 換領。
+      </p>
       <ol class="steps">
         <li>
           到 <router-link to="/developer/agents">/developer/agents</router-link>
-          下載 template (按 <strong>download template</strong>),把 anila-agent + 你客製的工具裝箱
+          按 <strong>download template</strong> 下載 template,把 anila-agent + 你客製的工具裝箱
         </li>
         <li>
-          填好 agent 名稱 / endpoint URL / 底層模型,送出註冊 ·
-          狀態起始為 <TermBadge variant="warn">pending</TermBadge>
+          按 <strong>register</strong> 進兩步精靈 · <strong>Step 1</strong> 填 agent 名稱 /
+          endpoint URL / 底層模型,選填 <strong>RAG collection</strong>(綁定後這把 csk- 才能搜該
+          collection,最小權限)· 送出後狀態為 <TermBadge variant="warn">pending</TermBadge>
         </li>
         <li>
-          管理員 approve · 狀態翻成 <TermBadge variant="ok">approved</TermBadge>
+          <strong>Step 2</strong> 按 <strong>issue service token (csk-)</strong> → 一次性顯示
+          <code>csk-...</code>(關掉就看不到了,先複製)· 精靈會給你預填好的 <code>.env</code> 片段
         </li>
         <li>
-          管理員核發一次性的 <strong>bootstrap token</strong>
-          (<code>bsk-...</code>,15 分鐘 TTL)
+          把片段貼進 agent 的 <code>.env</code>(<code>CSP_BASE_URL</code> 請填
+          <strong>agent 那台機器可達的 CSP host</strong>,別用 localhost):
+          <pre class="code">CSP_BASE_URL=https://&lt;csp-host-reachable-from-agent&gt;
+ANILA_AGENT_NAME=&lt;your-agent-name&gt;
+CSP_SERVICE_TOKEN=csk-XXXX
+ANILA_COLLECTION_ID=&lt;綁定的 collection,若有&gt;</pre>
         </li>
         <li>
-          在你 agent 的 <code>.env</code> 設好:
-          <pre class="code">CSP_URL=http://csp:8000
-ANILA_AGENT_ID=&lt;your-id&gt;
-ANILA_ENDPOINT_URL=http://&lt;your-host&gt;:24786
-CSP_BOOTSTRAP_TOKEN=bsk-XXXX-from-admin</pre>
+          啟動 agent,回精靈按 <strong>test connection</strong> → CSP 會帶這把 csk- 探打你的
+          <code>/v1/chat/completions</code>,回 <TermBadge variant="ok">✅</TermBadge> 代表
+          <code>.env</code> 配對正確(<TermBadge variant="danger">✗</TermBadge> = 未設/不符/連不到)
         </li>
         <li>
-          第一次啟動時呼叫 CSP 的 <code>POST /api/agents/bootstrap</code>:
-          用 <code>bsk-</code> 換長期 <code>csk-...</code> service token,
-          寫到 <code>/var/lib/anila-agent/service_token.json</code> (mode 0600)
-        </li>
-        <li>
-          從 <code>.env</code> 拿掉 <code>CSP_BOOTSTRAP_TOKEN</code> ·
-          已經被消費掉了,CSP 會擋 replay
-        </li>
-        <li>
-          router 自動探測你的 <code>/health</code> · 開始派送流量
+          管理員 approve · 狀態翻 <TermBadge variant="ok">approved</TermBadge> ·
+          router 自動探測 <code>/health</code> 後開始派送流量
         </li>
       </ol>
       <p class="hint">
-        anila-agent 0.2.0 沒內建 bootstrap CLI — 自己寫個 ~30 行的 Python 在 entrypoint 跑,
-        參考 CSP backend <code>POST /api/agents/bootstrap</code> 的 schema。
-        Service token rotation / 多 replica 共用 fleet token 的策略由你決定。
+        <strong>安全預設(fail-closed):</strong><code>CSP_SERVICE_TOKEN</code> 沒設時 agent 樣板
+        會<strong>拒絕</strong>所有派工(401),不會默默放行 · 僅本機 dev 可設
+        <code>ANILA_ALLOW_NO_SERVICE_TOKEN=1</code> 暫時略過驗證。
+      </p>
+      <p class="hint">
+        需要長期金鑰全程不經人手(機器端自己換領)的場景,才走 admin-only 的 bsk-→csk-
+        bootstrap 路徑 — 見 <code>docs/agent-framework/csp-agent-bootstrap-protocol.md</code> 與
+        <code>docs/runbooks/legacy-agent-bootstrap.md</code>。token 輪替走 detail 的 rotate。
       </p>
     </TermBox>
 
@@ -690,9 +697,9 @@ ruff check anila_agent/ tests/</pre>
               或 <code>/health</code> wrapper 沒實作 / 回非 200</td>
           </tr>
           <tr>
-            <td>bootstrap 噴 <code>token consumed</code></td>
-            <td>service-token state 檔已經存在 · 想重新 bootstrap 就刪
-              <code>/var/lib/anila-agent/service_token.json</code></td>
+            <td><strong>test connection</strong> 顯示 <code>✗ 401</code></td>
+            <td>agent <code>.env</code> 的 <code>CSP_SERVICE_TOKEN</code> 沒設或跟核發的
+              <code>csk-</code> 不符 · 重貼精靈給的片段;若忘了發,從 detail 重發一把再貼</td>
           </tr>
           <tr>
             <td>runtime_config 改了 agent 不動</td>

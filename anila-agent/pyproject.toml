@@ -25,6 +25,14 @@ pgvector = [
     "psycopg[binary]>=3.1,<4",
 ]
 
+# Serving extra — for the OpenAI-compatible HTTP wrapper that lets the CSP
+# Router dispatch to an agent (see examples/service_wrapper.py). Core
+# anila-agent is a CLI/library and does not require these.
+serving = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+]
+
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

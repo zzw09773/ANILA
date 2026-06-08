@@ -17,6 +17,8 @@ from anila_agent.memory.long_term import LongTermMemory
 from anila_agent.memory.store import MemdirStore
 from anila_agent.models.openai_compatible import build_model, build_model_settings
 from anila_agent.retrieval.anila_pgvector import from_env as _anila_pgvector_from_env
+from anila_agent.retrieval.base import Retriever
+from anila_agent.retrieval.csp_http import from_env as _csp_http_from_env
 from anila_agent.retrieval.pgvector import from_env as _pgvector_from_env
 from anila_agent.tools.rag_tools import set_retriever
 from anila_agent.tools.registry import load_tools
@@ -49,6 +51,7 @@ def build_agent(
     session_id: str = "default",
     extra_tools: list[Any] | None = None,
     extra_hooks: list[HookSpec] | None = None,
+    retriever: Retriever | None = None,
 ) -> AssembledAgent:
     """Construct the full agent graph from configuration.
 
@@ -57,13 +60,26 @@ def build_agent(
         session_id: Short-term session key. Identical IDs resume the same conversation.
         extra_tools: FunctionTools to add on top of those declared in `tools.yaml`.
         extra_hooks: HookSpecs added on top of `tools.yaml` declarations.
+        retriever: Escape hatch (H1/H2) — inject a custom `Retriever`
+            (e.g. ``CspHttpRetriever``) instead of the env-detected default.
+            When ``None`` the env-based resolution runs as before.
     """
     model: Model = build_model(config.model)
     model_settings = build_model_settings(config.model)
 
-    # Prefer the ANILA-native retriever when ANILA_COLLECTION_ID is set;
-    # fall back to the langchain_postgres-based one for generic deployments.
-    retriever = _anila_pgvector_from_env() or _pgvector_from_env()
+    # Retriever resolution order:
+    #   1. explicit `retriever=` arg — escape hatch for callers wiring a custom
+    #      backend (e.g. CspHttpRetriever) without env vars;
+    #   2. CSP HTTP search API when ANILA_CSP_BASE_URL + ANILA_COLLECTION_ID set
+    #      (agent only needs a CSP key, no DB access);
+    #   3. ANILA-native pgvector when ANILA_COLLECTION_ID + PGVECTOR_URL set;
+    #   4. langchain_postgres-based flavour for generic deployments.
+    if retriever is None:
+        retriever = (
+            _csp_http_from_env()
+            or _anila_pgvector_from_env()
+            or _pgvector_from_env()
+        )
     if retriever is not None:
         set_retriever(retriever)
         logger.info("retriever installed: %s", retriever.name)

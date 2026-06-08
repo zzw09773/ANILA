@@ -91,7 +91,9 @@
 import { ref, onMounted } from 'vue'
 import { acknowledgeAlert, getAlertSummary, listAlerts, resolveAlert } from '../api/alerts'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermDot } from '../components/cli'
+import { useDialog } from '../composables/useDialog'
 
+const { toast } = useDialog()
 const alerts = ref([])
 const summary = ref({ open_count: 0, acknowledged_count: 0, resolved_count: 0, high_count: 0 })
 const filters = ref({ status: '', severity: '', category: '' })
@@ -118,11 +120,11 @@ onMounted(fetchData)
 
 async function handleAck(alert) {
   try { await acknowledgeAlert(alert.id); await fetchData() }
-  catch (e) { window.alert(e.response?.data?.detail || 'ack failed') }
+  catch (e) { toast(e.response?.data?.detail || 'ack failed', { tone: 'error' }) }
 }
 async function handleResolve(alert) {
   try { await resolveAlert(alert.id); await fetchData() }
-  catch (e) { window.alert(e.response?.data?.detail || 'resolve failed') }
+  catch (e) { toast(e.response?.data?.detail || 'resolve failed', { tone: 'error' }) }
 }
 
 function severityStatus(s) {

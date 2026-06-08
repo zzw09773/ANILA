@@ -3,6 +3,17 @@ from anila_agent.memory.auto_dream import (
     AutoDreamer,
     LlmCaller,
 )
+from anila_agent.memory.compact_boundary import (
+    BOUNDARY_CONTENT_PREFIX,
+    BOUNDARY_ROLE,
+    BOUNDARY_TYPE,
+    AutoCompactBoundary,
+    extract_boundaries,
+    insert_boundary,
+    is_boundary_message,
+    split_by_boundaries,
+    strip_boundaries,
+)
 from anila_agent.memory.compaction import (
     CompactingSession,
     CompactionStats,
@@ -14,6 +25,14 @@ from anila_agent.memory.compaction import (
     SnipCompactor,
     SummaryFn,
     estimate_total_tokens,
+)
+from anila_agent.memory.signature_blocks import (
+    DROPPABLE_BLOCK_TYPES,
+    SIGNATURE_FIELDS,
+    has_signature,
+    is_droppable_block,
+    strip_signature_blocks,
+    strip_signature_from_block,
 )
 from anila_agent.memory.long_term import LongTermMemory, MemoryHeader, MemoryType
 from anila_agent.memory.session_memory import (
@@ -27,7 +46,13 @@ from anila_agent.memory.short_term import open_session
 from anila_agent.memory.store import MemdirStore
 
 __all__ = [
+    "BOUNDARY_CONTENT_PREFIX",
+    "BOUNDARY_ROLE",
+    "BOUNDARY_TYPE",
     "DREAM_PROMPT_TEMPLATE",
+    "DROPPABLE_BLOCK_TYPES",
+    "SIGNATURE_FIELDS",
+    "AutoCompactBoundary",
     "AutoDreamer",
     "CompactStrategy",
     "CompactingSession",
@@ -49,5 +74,14 @@ __all__ = [
     "SummaryFn",
     "compute_conversation_hash",
     "estimate_total_tokens",
+    "extract_boundaries",
+    "has_signature",
+    "insert_boundary",
+    "is_boundary_message",
+    "is_droppable_block",
     "open_session",
+    "split_by_boundaries",
+    "strip_boundaries",
+    "strip_signature_blocks",
+    "strip_signature_from_block",
 ]

@@ -233,6 +233,7 @@ async def create_eval_run(
 
     log_audit_event(
         db,
+        commit=True,
         actor=current_user,
         action="ingestion_eval_run_create",
         resource_type="ingestion_eval_run",
