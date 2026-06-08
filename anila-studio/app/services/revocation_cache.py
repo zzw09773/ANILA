@@ -206,7 +206,17 @@ class RevocationCache:
         # Step 1: build the Redis client. We delegate to a module-level
         # ``_from_url`` alias so tests can patch it; ``redis.asyncio``'s
         # own ``from_url`` is what we forward to in production.
-        self._redis = _from_url(settings.REDIS_URL, decode_responses=True)
+        # Long-lived pub/sub: enable periodic PING + TCP keepalive so an idle
+        # subscriber connection isn't silently torn down. Without this an idle
+        # read could time out / drop, flipping ``_ready=False`` and 503-ing auth
+        # until the reconnect+resync completes. Keeps fail-closed semantics
+        # intact while removing the spurious idle-disconnect flapping.
+        self._redis = _from_url(
+            settings.REDIS_URL,
+            decode_responses=True,
+            health_check_interval=30,
+            socket_keepalive=True,
+        )
 
         # Step 2: cold-start sync. Any HTTP error escapes — main.py /
         # the lifespan owner is the one that decides what to do.
@@ -491,7 +501,17 @@ class RevocationCache:
                 pass
             self._redis = None
 
-        self._redis = _from_url(settings.REDIS_URL, decode_responses=True)
+        # Long-lived pub/sub: enable periodic PING + TCP keepalive so an idle
+        # subscriber connection isn't silently torn down. Without this an idle
+        # read could time out / drop, flipping ``_ready=False`` and 503-ing auth
+        # until the reconnect+resync completes. Keeps fail-closed semantics
+        # intact while removing the spurious idle-disconnect flapping.
+        self._redis = _from_url(
+            settings.REDIS_URL,
+            decode_responses=True,
+            health_check_interval=30,
+            socket_keepalive=True,
+        )
         # Cold-start replay BEFORE re-subscribing so we close any gap
         # that opened during the outage. Order matters: if we
         # subscribed first, a brand new revocation could arrive

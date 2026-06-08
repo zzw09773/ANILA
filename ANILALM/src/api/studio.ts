@@ -78,9 +78,26 @@ export interface CreateSlidesJobInput {
 const PPTX_MIME =
   'application/vnd.openxmlformats-officedocument.presentationml.presentation'
 
-function authHeaders(): Record<string, string> {
-  const token = useAuthStore.getState().accessToken
-  return token ? { Authorization: `Bearer ${token}` } : {}
+/**
+ * fetch wrapper for studio calls. Injects the Bearer access token and —
+ * mirroring the shared axios `client` interceptor — refreshes once on 401
+ * and retries. studio.ts uses raw fetch (streaming/binary) so it does NOT
+ * go through `client`; without this, an expired token surfaced as a stuck
+ * studio-only 401 while the rest of the app silently auto-refreshed.
+ */
+async function studioFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const baseHeaders = (init.headers ?? {}) as Record<string, string>
+  const send = (token: string | null): Promise<Response> =>
+    fetch(input, {
+      ...init,
+      headers: token ? { ...baseHeaders, Authorization: `Bearer ${token}` } : baseHeaders,
+    })
+  let res = await send(useAuthStore.getState().accessToken)
+  if (res.status === 401) {
+    const fresh = await useAuthStore.getState().refresh().catch(() => null)
+    if (fresh) res = await send(fresh)
+  }
+  return res
 }
 
 /** Resolve a studio-relative path against STUDIO_BASE_URL. */
@@ -130,11 +147,10 @@ export async function createSlidesJob(
     skip_retrieval: input.skipRetrieval ?? false,
     theme_override: input.themeOverride, // undefined → JSON omits the key
   }
-  const res = await fetch(studioUrl('/api/studio/slides/jobs'), {
+  const res = await studioFetch(studioUrl('/api/studio/slides/jobs'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...authHeaders(),
     },
     body: JSON.stringify(body),
   })
@@ -152,11 +168,11 @@ export async function getSlidesJobStatus(
   jobId: string,
   signal?: AbortSignal,
 ): Promise<JobStatus> {
-  const res = await fetch(
+  const res = await studioFetch(
     studioUrl(`/api/studio/slides/jobs/${encodeURIComponent(jobId)}`),
     {
       method: 'GET',
-      headers: { ...authHeaders() },
+      headers: {},
       signal,
     },
   )
@@ -186,11 +202,11 @@ export async function downloadSlidesJobPptx(
   jobId: string,
   filenameStem: string,
 ): Promise<void> {
-  const res = await fetch(
+  const res = await studioFetch(
     studioUrl(`/api/studio/slides/jobs/${encodeURIComponent(jobId)}/pptx`),
     {
       method: 'GET',
-      headers: { ...authHeaders() },
+      headers: {},
     },
   )
   if (!res.ok) {
@@ -221,11 +237,11 @@ export async function downloadSlidesJobPptx(
  * as "already gone" which is fine for the UI's purposes.
  */
 export async function cancelSlidesJob(jobId: string): Promise<void> {
-  const res = await fetch(
+  const res = await studioFetch(
     studioUrl(`/api/studio/slides/jobs/${encodeURIComponent(jobId)}`),
     {
       method: 'DELETE',
-      headers: { ...authHeaders() },
+      headers: {},
     },
   )
   if (!res.ok && res.status !== 404) {
@@ -321,9 +337,9 @@ async function _createArtifactJob<TBody, TStatus>(
   kindPath: string,
   body: TBody,
 ): Promise<TStatus> {
-  const res = await fetch(studioUrl(`/api/${kindPath}/jobs`), {
+  const res = await studioFetch(studioUrl(`/api/${kindPath}/jobs`), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
   return _readJobJson<TStatus>(res, `${kindPath} create`)
@@ -333,9 +349,9 @@ async function _getArtifactJobStatus<TStatus>(
   kindPath: string,
   jobId: string,
 ): Promise<TStatus> {
-  const res = await fetch(
+  const res = await studioFetch(
     studioUrl(`/api/${kindPath}/jobs/${encodeURIComponent(jobId)}`),
-    { headers: { ...authHeaders() } },
+    { headers: {} },
   )
   if (res.status === 404) {
     return {
@@ -351,9 +367,9 @@ async function _cancelArtifactJob(
   kindPath: string,
   jobId: string,
 ): Promise<void> {
-  const res = await fetch(
+  const res = await studioFetch(
     studioUrl(`/api/${kindPath}/jobs/${encodeURIComponent(jobId)}`),
-    { method: 'DELETE', headers: { ...authHeaders() } },
+    { method: 'DELETE', headers: {} },
   )
   if (!res.ok && res.status !== 404) {
     const txt = await res.text().catch(() => '')
@@ -367,11 +383,11 @@ async function _downloadArtifact(
   fmt: string,
   filenameStem: string,
 ): Promise<void> {
-  const res = await fetch(
+  const res = await studioFetch(
     studioUrl(
       `/api/${kindPath}/jobs/${encodeURIComponent(jobId)}/download/${encodeURIComponent(fmt)}`,
     ),
-    { headers: { ...authHeaders() } },
+    { headers: {} },
   )
   if (!res.ok) {
     const txt = await res.text().catch(() => '')
