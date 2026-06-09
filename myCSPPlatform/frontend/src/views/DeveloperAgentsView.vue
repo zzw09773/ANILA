@@ -27,8 +27,7 @@
       <div v-if="showGuide" class="guide">
         <p class="guide__lead">
           Phase 2 ships <strong>anila-agent</strong> (openai-agents runtime + Claude-Code-style harness) as the official sub-agent template.
-          Fork it, add tools, wrap in FastAPI, register. Full walkthrough on the
-          <router-link to="/developer/guide" class="guide__link">developer guide page →</router-link>
+          Fork it, add tools, wrap in FastAPI, register. Steps below.
         </p>
         <ol class="guide__list">
           <li>
@@ -57,7 +56,7 @@ def employee_count(department: str) -&gt; int:
           <li>
             <span class="guide__step">02b</span>
             <div>
-              <p><strong>wrap in FastAPI</strong> · anila-agent is CLI/library, not a service. Add a thin wrapper exposing <code>/health</code> + <code>/v1/chat/completions</code> + <code>/v1/models</code> bridging <code>AnilaRunner</code> ↔ OpenAI-compat SSE. Boilerplate on the dev guide page.</p>
+              <p><strong>wrap in FastAPI</strong> · anila-agent is CLI/library, not a service. Add a thin wrapper exposing <code>/health</code> + <code>/v1/chat/completions</code> + <code>/v1/models</code> bridging <code>AnilaRunner</code> ↔ OpenAI-compat SSE.</p>
             </div>
           </li>
           <li>

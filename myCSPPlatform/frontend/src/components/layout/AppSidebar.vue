@@ -66,7 +66,6 @@ const menuGroups = computed(() => {
     groups.push({
       label: 'developer',
       items: [
-        { path: '/developer/guide', label: 'guide' },
         { path: '/developer/agents', label: 'agents' },
         { path: '/knowledge-collections', label: 'collections' },
       ],
