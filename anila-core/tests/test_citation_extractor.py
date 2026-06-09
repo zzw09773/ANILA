@@ -151,6 +151,35 @@ def test_real_name_starting_with_self_ref_char_kept():
     assert c.article == "第3條"
 
 
+def test_numeral_self_reference_dropped():
+    # "前二項規定" / "前三條" — self-reference with a numeral, must be filtered.
+    for txt in ("準用前二項規定。", "依前三條辦理。", "適用本二款規定。"):
+        assert extract_citations(txt) == [], txt
+
+
+def test_generic_determiner_names_dropped():
+    # "其他法" / "相關規定" are generic, not citable documents.
+    for txt in ("依其他法辦理。", "準用相關規定。", "依前述辦法辦理。"):
+        assert extract_citations(txt) == [], txt
+
+
+def test_clause_fragment_tails_dropped():
+    # "民法之規定" / "…或法" are clause fragments, not names.
+    assert extract_citations("準用民法之規定辦理。") == []
+    assert extract_citations("依本法得繼受原行政處分所涉權利或法辦理。") == []
+
+
+def test_standalone_generic_dropped():
+    assert extract_citations("悉依法律規定辦理。") == []
+
+
+def test_compound_name_with_and_kept():
+    # real names DO use 及 / 與 — must NOT be treated as a fragment.
+    c = _one("依個人資料保護及管理辦法第三條辦理。")
+    assert c.target_title == "個人資料保護及管理辦法"
+    assert c.article == "第3條"
+
+
 def test_parent_law_reference_still_extracted():
     # the explicit parent-law citation in a 施行細則 is a real cross-doc edge.
     c = _one("本細則依公司獎懲辦法訂定。")
