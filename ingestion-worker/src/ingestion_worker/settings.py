@@ -155,6 +155,107 @@ class WorkerSettings(BaseSettings):
         ),
     )
 
+    # ── LLM-based relation extraction (document-relations Phase 2 / B) ──
+    #
+    # The regex citation_extractor (Phase 1 / A) only catches explicitly
+    # written citations ("依○○法第X條"). The LLM extractor adds recall for
+    # implicit / paraphrased relations and naming variants. It reads the
+    # parsed text + the collection's document list and returns edges that
+    # point DIRECTLY at a dst_document_id (the LLM picks from the list), so
+    # no fragile name-matching is needed for these edges.
+    #
+    # Same shape as the VLM path: both flags must be on (enable + url). Edges
+    # land in document_relations with source='llm' + a confidence, coexisting
+    # with rule/manual rows (UNIQUE includes source). Endpoint conventions
+    # match embeddings/vision: ``relation_llm_url`` is the OpenAI-compatible
+    # base URL (no /chat/completions suffix), CSP /v1 proxy by default so
+    # token usage is metered via the ingestion-worker system key.
+    enable_relation_llm: bool = Field(
+        default=True,
+        description=(
+            "Master switch for LLM relation extraction. False skips it "
+            "entirely (regex/manual edges still work)."
+        ),
+    )
+    relation_llm_url: str = Field(
+        default="",
+        description=(
+            "OpenAI-compatible chat endpoint base URL (no /chat/completions "
+            "suffix). Empty disables LLM extraction even when "
+            "enable_relation_llm=True — the safe default."
+        ),
+    )
+    relation_llm_model: str = Field(
+        default="gemma4",
+        description="Chat model identifier passed in the completions body.",
+    )
+    relation_llm_api_key: str = Field(
+        default="not-set",
+        description="Bearer token; reuses the internal platform API key.",
+    )
+    relation_llm_verify_ssl: bool = Field(
+        default=False,
+        description="Verify TLS (dev CSP nginx uses a self-signed cert).",
+    )
+    relation_llm_timeout_seconds: float = Field(
+        default=120.0,
+        description="Per-document relation-extraction LLM timeout.",
+    )
+    relation_llm_max_chars: int = Field(
+        default=12000,
+        description=(
+            "Max source-text chars sent to the LLM (head of the document). "
+            "Bounds prompt cost; citations cluster near the top of ROC regs."
+        ),
+    )
+    relation_llm_max_candidates: int = Field(
+        default=200,
+        description=(
+            "Max sibling documents listed for the LLM to pick a dst from. "
+            "Beyond this the prompt is skipped (logged) — large collections "
+            "need a retrieval pre-filter, a later phase."
+        ),
+    )
+
+    # ── Embedding-based topic-similarity edges (document-relations / C) ──
+    #
+    # A different KIND of edge from citations: pure vector similarity between
+    # document-level centroids (avg of leaf-chunk embeddings). Surfaces docs
+    # that are topically related even with NO explicit citation. Written as
+    # source='similarity', relation_type='relates', confidence=cosine.
+    #
+    # Same-domain corpora cluster TIGHTLY (legal/ops docs all score 0.95+),
+    # so an absolute threshold would fully connect the graph. We instead take
+    # each document's top-K nearest neighbours (sparsity comes from K, the
+    # floor only screens out genuinely off-topic docs). Recomputed collection-
+    # wide on each ingest / reresolve (a new doc shifts everyone's neighbours).
+    enable_similarity_edges: bool = Field(
+        default=True,
+        description="Master switch for embedding topic-similarity edges.",
+    )
+    similarity_top_k: int = Field(
+        default=3,
+        ge=1,
+        le=20,
+        description="Each document links to its K nearest sibling documents.",
+    )
+    similarity_min: float = Field(
+        default=0.75,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Cosine floor — screens out off-topic docs only; the real sparsity "
+            "comes from top_k (same-domain corpora all score very high)."
+        ),
+    )
+    similarity_max_docs: int = Field(
+        default=500,
+        description=(
+            "Skip the O(N^2) recompute when a collection exceeds this many "
+            "documents (logged) — a later phase adds an ANN pre-filter."
+        ),
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

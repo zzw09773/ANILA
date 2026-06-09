@@ -21,7 +21,10 @@ from sqlalchemy import (
     BigInteger,
     Column,
     DateTime,
+    Float,
     ForeignKey,
+    ForeignKeyConstraint,
+    Index,
     Integer,
     LargeBinary,
     SmallInteger,
@@ -29,6 +32,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     JSON,
+    func,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, CHAR, JSONB
 from sqlalchemy.orm import relationship
@@ -117,6 +121,13 @@ class IngestionDocument(Base):
         UniqueConstraint(
             "collection_id", "sha256", name="uq_documents_collection_sha256"
         ),
+        # Composite UNIQUE so document_relations can hang a composite FK on
+        # (collection_id, id) — that FK is what enforces same-collection edges
+        # at the DB layer (migration 0039, codex #1). Mirrors the migration so
+        # the SQLite create_all test path produces a valid FK target.
+        UniqueConstraint(
+            "collection_id", "id", name="uq_ingestion_documents_collection_id_id"
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -126,6 +137,12 @@ class IngestionDocument(Base):
         nullable=False,
     )
     filename = Column(String(500), nullable=False)
+    # Human-facing regulation name + its normalized form (NFKC, brackets/space
+    # stripped). ``normalized_title`` is the join key citation resolution uses to
+    # match a ``target_title`` back to a document; ``filename`` alone is useless
+    # for ROC regs that are named by date / 字號 (migration 0039).
+    title = Column(String(500), nullable=True)
+    normalized_title = Column(String(500), nullable=True)
     sha256 = Column(CHAR(64), nullable=False)
     mime_type = Column(String(200), nullable=True)
     bytes = Column(BigInteger, nullable=True)
@@ -265,3 +282,71 @@ class IngestionJob(Base):
     )
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
+
+
+class DocumentRelation(Base):
+    """A directed edge between documents in the same collection.
+
+    The shared substrate for cross-document relations (design v2 §3): both
+    A (rule/manual edges from the regex citation extractor or a human) and a
+    future B (LLM/GraphRAG edges) write the SAME table, distinguished by
+    ``source`` (rule / manual / llm) and graded by ``confidence``. Retrieval
+    expands along edges once, regardless of who authored them.
+
+    Resolution is order-independent (design v2 §7): an edge is recorded with
+    ``target_ref`` (the normalized "title [+ article]" the source text cited)
+    even before the target document exists; ``dst_document_id`` is back-filled
+    when a matching ``normalized_title`` is later ingested, and nulled again on
+    SET NULL if that target is deleted. ``target_ref`` is the durable key.
+
+    ``dst_chunk_id`` is reserved for Phase 1.5 (chunk-level edges); it carries
+    no FK yet. No ORM ``relationship()`` is declared back to IngestionDocument
+    on purpose: ``collection_id`` participates in both the src and dst composite
+    FKs, which would make a relationship overlap-ambiguous — the API layer
+    queries edges explicitly instead.
+    """
+
+    __tablename__ = "document_relations"
+    __table_args__ = (
+        # same-collection enforced at the DB layer via composite FK (codex #1)
+        ForeignKeyConstraint(
+            ["collection_id", "src_document_id"],
+            ["ingestion_documents.collection_id", "ingestion_documents.id"],
+            ondelete="CASCADE",
+            name="fk_docrel_src",
+        ),
+        ForeignKeyConstraint(
+            ["collection_id", "dst_document_id"],
+            ["ingestion_documents.collection_id", "ingestion_documents.id"],
+            ondelete="SET NULL",
+            name="fk_docrel_dst",
+        ),
+        # rule / manual / llm can coexist for the same logical edge (codex #9)
+        UniqueConstraint(
+            "collection_id",
+            "src_document_id",
+            "target_ref",
+            "relation_type",
+            "source",
+            name="uq_document_relations_edge",
+        ),
+        Index("ix_document_relations_src", "collection_id", "src_document_id"),
+        Index("ix_document_relations_dst", "collection_id", "dst_document_id"),
+        Index("ix_document_relations_target", "collection_id", "target_ref"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    collection_id = Column(Integer, nullable=False)
+    src_document_id = Column(Integer, nullable=False)
+    dst_document_id = Column(Integer, nullable=True)
+    dst_chunk_id = Column(Integer, nullable=True)  # Phase 1.5 reserved, no FK
+    target_ref = Column(String(500), nullable=False)
+    relation_type = Column(String(20), nullable=False)
+    confidence = Column(Float, nullable=False, server_default="1.0", default=1.0)
+    source = Column(String(10), nullable=False)  # rule / manual / llm
+    extractor_run_id = Column(String(40), nullable=True)
+    evidence = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_by_user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )

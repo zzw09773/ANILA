@@ -74,3 +74,20 @@ async def enqueue_evaluator_run(eval_run_id: int) -> str:
             "Arq returned no job — possible duplicate id collision."
         )
     return job.job_id
+
+
+async def enqueue_reresolve_relations(collection_id: int) -> str:
+    """Enqueue a ``reresolve_collection_relations`` job (document-relations §8).
+
+    The worker re-parses every document in the collection, re-extracts rule
+    citation edges (delete-then-insert, manual untouched) and reconciles. The
+    API has already run the synchronous reconcile; this refreshes the '重抽'
+    half asynchronously.
+    """
+    pool = await _get_pool()
+    job = await pool.enqueue_job("reresolve_collection_relations", collection_id)
+    if job is None:
+        raise RuntimeError(
+            "Arq returned no job — possible duplicate id collision."
+        )
+    return job.job_id
