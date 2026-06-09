@@ -144,6 +144,10 @@ def auto_seed():
                             api_version=m.get("api_version", "v1"),
                             description=m.get("description", ""),
                             context_window=m.get("context_window"),
+                            # Set only at creation (fresh DB) so a deploy works
+                            # out-of-box; never overridden on restart, so an
+                            # admin's later /models primary change persists.
+                            is_router_primary=m.get("is_router_primary", False),
                         )
                         db.add(model)
                         logger.info(f"自動註冊模型: {m['name']} -> {m['endpoint_url']}")
