@@ -12,9 +12,9 @@ to Sprint 2 alongside the worker.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # ── Chunking config ─────────────────────────────────────────────────────────
@@ -118,3 +118,92 @@ class CollectionResponse(BaseModel):
     created_by: int
     created_at: datetime
     updated_at: datetime
+
+
+# ── Document relations (cross-document edges, design v2 §3/§8) ───────────────
+
+# The 6 edge types the citation extractor classifies (design v2 §5). ``relates``
+# is the catch-all when a regulation name is cited with no directional cue.
+RelationType = Literal[
+    "based_on", "amends", "supersedes", "cites", "supplements", "relates"
+]
+# Who authored the edge. ``rule`` = regex citation extractor, ``manual`` = a
+# human via the API, ``llm`` = LLM extractor (Phase 2), ``similarity`` =
+# embedding topic-similarity (C track). All coexist in one table; the UNIQUE
+# key includes ``source`` (codex #9).
+RelationSource = Literal["rule", "manual", "llm", "similarity"]
+
+
+class DocumentRelationCreate(BaseModel):
+    """Payload to ``POST /api/ingestion/collections/{id}/relations`` — a manual
+    edge (``source='manual'``).
+
+    The edge always starts at ``src_document_id`` (an existing document in the
+    collection) and points at either a concrete ``dst_document_id`` OR an
+    unresolved ``target_ref`` string (a regulation name not yet uploaded).
+    At least one of the two must be supplied; if both are, ``dst_document_id``
+    wins and ``target_ref`` is recorded for provenance.
+    """
+
+    src_document_id: int = Field(..., description="Edge origin; must be in this collection.")
+    relation_type: RelationType
+    dst_document_id: int | None = Field(
+        default=None, description="Resolved target document in the same collection."
+    )
+    target_ref: str | None = Field(
+        default=None,
+        max_length=500,
+        description="Unresolved target name [+article]; back-filled to dst later.",
+    )
+    evidence: str | None = Field(
+        default=None, max_length=2000, description="Optional human note / cited sentence."
+    )
+
+    @model_validator(mode="after")
+    def _require_a_target(self) -> "DocumentRelationCreate":
+        if self.dst_document_id is None and not (self.target_ref and self.target_ref.strip()):
+            raise ValueError("one of dst_document_id or target_ref is required")
+        return self
+
+
+class DocumentRelationResponse(BaseModel):
+    """Row projection for the relations tab / API list.
+
+    Carries enough to render ``src → type → dst|target_ref`` with the
+    unresolved (``dst_document_id is None``) and ``ambiguous`` cases flagged.
+    ``src_title`` / ``dst_title`` / ``ambiguous`` are enriched by the API layer
+    (joins + a target-collision check), not stored columns — defaults keep this
+    schema usable straight from a bare ORM row.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    collection_id: int
+    src_document_id: int
+    dst_document_id: int | None
+    dst_chunk_id: int | None
+    target_ref: str
+    relation_type: RelationType
+    confidence: float
+    source: RelationSource
+    extractor_run_id: str | None
+    evidence: str | None
+    created_at: datetime | None
+    created_by_user_id: int | None
+
+    # API-enriched, non-persisted niceties (default so ORM validation works).
+    src_title: str | None = None
+    dst_title: str | None = None
+    resolved: bool = False
+    ambiguous: bool = False
+
+
+class ReresolveResponse(BaseModel):
+    """Result of ``POST .../relations:reresolve`` — counts after a re-extract
+    + reconciliation pass over the collection (design v2 §7)."""
+
+    rule_edges_extracted: int = 0
+    resolved: int = 0
+    unresolved: int = 0
+    ambiguous: int = 0

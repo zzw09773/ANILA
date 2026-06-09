@@ -23,6 +23,7 @@ from app.api.ingestion import (
     image_blob_router as ingestion_image_blob_router,
     jobs_router as ingestion_jobs_router,
     preview_router as ingestion_preview_router,
+    relations_router as ingestion_relations_router,
     search_router as ingestion_search_router,
 )
 from app.api.jwks import router as jwks_router
@@ -49,6 +50,7 @@ api_router.include_router(ingestion_documents_router)
 api_router.include_router(ingestion_eval_runs_router)
 api_router.include_router(ingestion_jobs_router)
 api_router.include_router(ingestion_preview_router)
+api_router.include_router(ingestion_relations_router)
 api_router.include_router(ingestion_search_router)
 api_router.include_router(ingestion_image_blob_router)
 api_router.include_router(trusted_hosts_router)
