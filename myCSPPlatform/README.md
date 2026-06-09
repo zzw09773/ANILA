@@ -16,9 +16,8 @@
 除了上述「平台治理」職能，CSP 也承載兩條應用管線：
 
 - **Ingestion 知識庫** — 文件上傳 → 切塊 → embedding → pgvector 檢索（RAG）。CSP 透過 `arq` 把 ingest 工作丟進 Redis 佇列，由獨立的 `ingestion-worker` container 消化。
-- ~~**Studio / ANILALM 簡報生成**~~ — **已抽出至 [`anila-studio`](../anila-studio/) 獨立 service**(2026-05-23 / PR #12)。CSP 端只保留它需要的 contract endpoint:`/api/ingestion/.../search` + `/images/search` + `/images/{id}/blob` + `/.well-known/jwks.json` + `/api/auth/revocations` + Redis token-revoke publisher。詳見 [`docs/superpowers/anila-studio/extraction-decision.md`](../docs/superpowers/anila-studio/extraction-decision.md)。
 
-> 在整個 ANILA 系統中，CSP 是「真相來源」（authoritative store）：Router、Worker、UI 都向它要使用者身分、API Key、模型 / Agent manifest 與用量資料。平台整體定位見 repo 根目錄 [`../README.md`](../README.md) 與 [`../anila_plan.md`](../anila_plan.md)。
+> 在整個 ANILA 系統中，CSP 是「真相來源」（authoritative store）：Router、Worker、UI 都向它要使用者身分、API Key、模型 / Agent manifest 與用量資料。平台整體定位見 repo 根目錄 [`../README.md`](../README.md)。
 
 ---
 
@@ -55,9 +54,7 @@
 | 認證 | python-jose（JWT, HS256）· passlib[bcrypt] |
 | HTTP client | httpx（代理下游模型 / agent） |
 | 佇列 | arq（把 ingestion 工作丟進 Redis） |
-| 文字後處理 | opencc-python-reimplemented（簡→繁 + 台灣用語，Studio 用） |
-| 圖像 / 圖表 | FLUX backend（HTTP）· Graphviz `dot`（系統套件，渲染 `Slide.diagram_dot`） |
-| 測試 | pytest · pytest-asyncio · respx（mock FLUX backend） |
+| 測試 | pytest · pytest-asyncio · respx |
 
 完整套件見 [`backend/requirements.txt`](./backend/requirements.txt)。後端容器額外安裝 `graphviz` 與 `fonts-noto-cjk`，讓含繁體中文標籤的 DOT 圖能正常渲染（見 [`backend/Dockerfile`](./backend/Dockerfile)）。
 
@@ -92,18 +89,16 @@ myCSPPlatform/
 │   │   │   ├── conversations.py attachments.py public_share.py handoffs.py
 │   │   │   ├── memory.py          # /api/memory 使用者記憶
 │   │   │   ├── service_clients.py service_access_grants.py trusted_hosts.py
-│   │   │   ├── studio.py          # /api/studio 簡報生成
 │   │   │   └── ingestion/         # 知識庫 RAG：documents/jobs/search/...
 │   │   ├── models/                # SQLAlchemy ORM（users, api_key, model_registry,
 │   │   │                          #   agent, ingestion, token_usage, audit_log, ...）
 │   │   ├── schemas/               # Pydantic schema
 │   │   ├── services/              # auth/proxy/health_checker/usage_writer/auto_seed
-│   │   │                          #   ingestion_queue, studio_job_service,
-│   │   │                          #   flux_image_provider, diagram_renderer, ...
+│   │   │                          #   ingestion_queue, ...
 │   │   ├── middleware/api_key_auth.py
 │   │   └── utils/
 │   ├── migrations/                # Alembic 版本
-│   ├── tests/                     # pytest（含 FLUX / agent credential / cookie auth）
+│   ├── tests/                     # pytest（含 agent credential / cookie auth）
 │   ├── requirements.txt
 │   └── Dockerfile                 # python:3.11-slim + graphviz + noto-cjk
 ├── frontend/
@@ -134,7 +129,7 @@ CSP 在 dev stack 裡是 `csp` 服務，**從 repo 根目錄**用 `docker-compos
 docker compose -f docker-compose-dev.yml up -d --build csp
 ```
 
-dev stack 同時包含 `csp-db`（pgvector/pg16）、`redis`、`ingestion-worker`、`router`、`pptx-renderer`、`anilalm`、`anila-ui`、`nginx` 等服務。CSP 連到兩個 network：`default`（stack 內部）與 `anila-models-net`（external，用來打 `gemma4` / `gpt-oss-20b` / `nv-embed-proxy` / `flux2-dev`）。
+dev stack 同時包含 `csp-db`（pgvector/pg16）、`redis`、`ingestion-worker`、`router`、`anila-ui`、`nginx` 等服務。CSP 連到兩個 network：`default`（stack 內部）與 `anila-models-net`（external，用來打 `gemma4` / `gpt-oss-20b` / `nv-embed-proxy`）。
 
 > 第一次啟動若 `anila-models-net` 不存在：`docker network create anila-models-net`。
 
@@ -172,11 +167,7 @@ cp .env.example .env   # 至少改 SECRET_KEY 與 ADMIN_PASSWORD
 | `INGESTION_UPLOAD_DIR` | `/var/anila/ingestion-uploads` | 上傳檔暫存目錄 |
 | `AUTO_REGISTER_MODELS` / `AUTO_REGISTER_AGENTS` | 見 compose | 啟動時宣告式註冊模型 / agent |
 | `AUTO_SEED_API_KEYS` | 見 compose | 啟動時建立種子使用者 + `sk-` key |
-| `FLUX_BACKEND_URL` | `http://flux2-dev:8000` | 啟用 FLUX 圖像；空字串 = 關閉 |
-| `FLUX_MAX_CONCURRENT` / `FLUX_TIMEOUT_SECONDS` | `4` / `180` | FLUX 並發 / 逾時 |
 | `ANILA_TRUSTED_HOSTS` | `gemma4,gpt-oss-20b,nv-embed-proxy,host.docker.internal` | 允許代理的下游 host |
-
-> `FLUX_CACHE_DIR` 未設時預設為 `$INGESTION_UPLOAD_DIR/flux-cache`；FLUX 圖以 `SHA256(prompt + aspect_ratio)` 內容定址快取。
 
 ---
 
@@ -189,10 +180,8 @@ cp .env.example .env   # 至少改 SECRET_KEY 與 ADMIN_PASSWORD
 | **ingestion-worker** | 獨立 container，消化 ingest 工作（切塊 / embedding / 寫 pgvector） |
 | **gemma4 / gpt-oss-20b**（LLM） | 經 `anila-models-net` 由 `/v1/chat/completions` 代理；gemma4 為 Router primary |
 | **nv-embed-proxy**（Embedding） | `/v1/embeddings`、`/v2/embeddings` 代理目標；Ingestion 也用它做 embedding |
-| **flux2-dev / flux2-dev-agent**（FLUX 圖像） | `image-generator` agent；Studio 簡報的 `_hydrate_images` 直接呼叫產圖並內嵌 |
 | **router**（anila-core-router） | 向 CSP 拉 `/v1/agents` manifest 做分派；以 service token 認證 |
-| **pptx-renderer** | Studio 管線把組好的投影片資料交給它渲染最終 `.pptx` |
-| **anilalm / anila-ui** | 前端應用，透過 CSP 的 `/api/*`（管理 / 對話）與 `/v1/*`（推論）溝通 |
+| **anila-ui** | 前端應用，透過 CSP 的 `/api/*`（管理 / 對話）與 `/v1/*`（推論）溝通 |
 
 代理使用範例（OpenAI 相容）：
 
@@ -213,12 +202,9 @@ curl http://localhost/v1/chat/completions \
 
 - Ingestion 平台設計：[`../docs/ingestion/ingestion-platform-design.md`](../docs/ingestion/ingestion-platform-design.md)
 - Parent-child RAG 設計：[`../docs/ingestion/parent-child-rag-design.md`](../docs/ingestion/parent-child-rag-design.md)
-- 多服務整合計畫：[`../docs/platform/multi-service-integration-plan.md`](../docs/platform/multi-service-integration-plan.md)
-- SSO 遷移：[`../docs/platform/sso-migration.md`](../docs/platform/sso-migration.md)
 - Service-token cutover runbook：[`../docs/runbooks/service-token-cutover.md`](../docs/runbooks/service-token-cutover.md)
-- Studio / FLUX 規格：[`../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md`](../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md)
-- 平台整體：[`../README.md`](../README.md) · 路線圖：[`../anila_plan.md`](../anila_plan.md)
+- 平台整體：[`../README.md`](../README.md)
 
 ---
 
-**Role**: Control + Data Plane · **Authoritative for**: users · api_keys · models · agents · service_clients · token_usage · audit_logs · ingestion 知識庫 · Studio 簡報生成
+**Role**: Control + Data Plane · **Authoritative for**: users · api_keys · models · agents · service_clients · token_usage · audit_logs · ingestion 知識庫

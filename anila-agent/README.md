@@ -237,7 +237,6 @@ pytest
 ## 相關文件 / Related docs
 
 - [`../docs/agent-framework/anila-agent-framework-architecture.md`](../docs/agent-framework/anila-agent-framework-architecture.md) — 框架架構（綜合設計，canonical）
-- [`../docs/agent-framework/anila-agent-framework-porting-decisions.md`](../docs/agent-framework/anila-agent-framework-porting-decisions.md) — 移植決策（已 SUPERSEDED，仍可作各上游子系統的逐源參考）
 - 版本歷程見 [CHANGELOG.md](CHANGELOG.md)。
 
 ## License

@@ -111,7 +111,7 @@ def as_tool(
     Note:
         本 function 跟 :func:`make_agent_tool` 行為**完全等價**(只是 surface 較小)。
         詳見 :mod:`anila_agent.core.agent_tool` module docstring 對 sub-routine pattern
-        的完整說明,以及 ``docs/agent-tool-vs-as-tool.md`` 對兩條路徑的決策對照。
+        的完整說明與兩條路徑的決策對照。
     """
     return make_agent_tool(
         sub_agent,

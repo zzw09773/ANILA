@@ -7,7 +7,6 @@
 **Target delivery**: 3 × 2-week sprints after sign-off
 **See also**:
 - [`anila-core-boundary.md`](../anila-core/anila-core-boundary.md) — anila-core 瘦身 Task 3 詳細清單，與本文件 §12 同步
-- [`multi-service-integration-plan.md`](../platform/multi-service-integration-plan.md) — 組內既有服務（ANILA LM / ComfyUI / codeserver / n8n / gitlab）整合進 ANILA 的計畫，與本平台 sprint 排程交織
 
 ---
 
@@ -175,7 +174,7 @@ Sprint 1（Chunks A–G，commits `567bd9c` → `e9e913a`）實際實作後發�
 | 程式入口 | `agentic_rag.ingestion.*`（搬走後）| `anila_core.memory.*`（留在 anila-core）|
 | Schema | `document_chunks` table | `MEMORY.md` 索引 + 個別 `.md` files |
 
-詳細討論見 [`multi-service-integration-plan.md`](../platform/multi-service-integration-plan.md) §1.4。**本 doc 設計範圍不包含 platform memory**；memory module 的演進（補 `PostgresMemoryStore`、未來可能的 central memory service）走獨立 design doc。
+**本 doc 設計範圍不包含 platform memory**；memory module 的演進（補 `PostgresMemoryStore`、未來可能的 central memory service）走獨立 design doc。
 
 ---
 
@@ -573,7 +572,7 @@ Authorization: Bearer <jwt>
 {
   "agent_id": 42,
   "name": "legal-regulations",
-  "description": "陸海空軍懲罰法、國軍要則",
+  "description": "員工請假管理辦法、差勤表",
   "chunking_config": {
     "strategy": "hierarchical",
     "params": { "max_leaf_tokens": 1024, "overlap_tokens": 64 }
@@ -1008,7 +1007,7 @@ UI 行為：dev 沒有 local credential 時才預設 GPT-4，並顯示「💡 Ti
 ╟───────────────────────────────────────────────────────────────────╢
 ║ ┌─────────────────────────────────────────────────────────────┐   ║
 ║ │ 📚 legal-regulations                                        │   ║
-║ │    陸海空軍懲罰法、國軍要則                                  │   ║
+║ │    員工請假管理辦法、差勤表                                  │   ║
 ║ │    34 docs · 2,981 chunks · 147 MB                          │   ║
 ║ │    Strategy: hierarchical (1024/64)                          │   ║
 ║ │    [Upload] [Evaluate] [Reindex] [Settings] [Delete]        │   ║

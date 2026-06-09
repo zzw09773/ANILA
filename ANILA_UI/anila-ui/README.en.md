@@ -15,7 +15,7 @@
 - Agent selection, side-by-side comparison, and share / handoff / attachment collaboration.
 - Visualizing the typed SSE events the backend emits (trace, interrupt, todos, tool call, spans, etc.).
 
-For overall platform architecture, compose startup, and environment variables, see the repo-root [`README.md`](../../README.md) and the roadmap [`anila_plan.md`](../../anila_plan.md); this file focuses on the UI sub-project itself.
+For overall platform architecture, compose startup, and environment variables, see the repo-root [`README.md`](../../README.md); this file focuses on the UI sub-project itself.
 
 ---
 
@@ -45,7 +45,6 @@ anila-ui/
 ├── Dockerfile              # Multi-stage: node:22 build → nginx:1.27 serve
 ├── .env.example            # VITE_* env var template
 ├── docker/nginx.conf       # Runtime-stage nginx SPA config (incl. /health)
-├── docs/                   # Sub-project progress notes (restore-ui-progress.md)
 ├── e2e/                    # E2E notes (README.md)
 └── src/
     ├── main.jsx            # ReactDOM mount entry
@@ -149,7 +148,7 @@ Key backend endpoints: `GET/POST /api/conversations` (incl. `{id}` plus `/messag
 
 ## Related docs
 
-- Platform overview: [`../../README.md`](../../README.md), roadmap [`../../anila_plan.md`](../../anila_plan.md)
+- Platform overview: [`../../README.md`](../../README.md)
 - CSP (this UI's backend): [`../../myCSPPlatform/README.md`](../../myCSPPlatform/README.md)
 - Router (implements the `anila-router` pseudo-agent): [`../../anila-core-router/README.md`](../../anila-core-router/README.md)
 - Agent template (dispatchable by this UI): [`../../anila-agent/README.md`](../../anila-agent/README.md)

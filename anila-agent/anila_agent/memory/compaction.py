@@ -2,10 +2,8 @@
 
 長對話超過 LLM context window 時,需在送 model 前「壓縮」較舊的 message。本
 模組提供三種策略 + 一個 ``Session`` decorator,對齊 openai-agents 的
-``CompactingSession`` 想法(`templete/openai-agents-python/src/agents/memory/
-openai_responses_compaction_session.py`)與 claude-code 的 microcompact /
-autoCompact / snip 分層(`docs/agent-framework/claude-code-src-deep-dive.md`
-§4.12)。
+``CompactingSession`` 想法與 claude-code 的 microcompact /
+autoCompact / snip 分層想法。
 
 設計重點
 --------

@@ -25,8 +25,7 @@ automatic open access just because a link exists. The role gate is the
 cheap pre-filter; the grant check is the authoritative per-user /
 per-department opt-in.
 
-See docs/platform/multi-service-integration-plan.md §7.5 for the design rationale and
-the migrations 0012_add_service_access_control.py + 0013_add_platform_link_is_public.py
+See migrations 0012_add_service_access_control.py + 0013_add_platform_link_is_public.py
 for the underlying schema.
 """
 

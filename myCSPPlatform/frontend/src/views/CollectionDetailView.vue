@@ -16,9 +16,9 @@
 
     <div v-if="loadError" class="feedback is-err">! {{ loadError }}</div>
 
-    <TermBox v-if="collection" title="upload · ingest" pad="md" hint="text / md / pdf / docx · ≤ 50 MB single · ≤ 500 MB / 200 files zip">
+    <TermBox v-if="collection" title="upload · ingest" pad="md" hint="僅限 Markdown（.md）· ≤ 50 MB single · ≤ 500 MB / 200 files zip">
       <div class="upload" @drop.prevent="onDrop" @dragover.prevent>
-        <input ref="fileInput" type="file" accept=".txt,.md,.markdown,.pdf,.docx,.doc,.odt,.rtf,text/plain,text/markdown,application/pdf" @change="onFilePicked" style="display:none" />
+        <input ref="fileInput" type="file" accept=".md,.markdown,text/markdown" @change="onFilePicked" style="display:none" />
         <input ref="zipInput" type="file" accept=".zip,application/zip" @change="onZipPicked" style="display:none" />
         <TermButton variant="primary" :disabled="uploading" :loading="uploading" :label="uploading ? `uploading… ${Math.round(progress * 100)}%` : '+ single file'" @click="$refs.fileInput.click()" />
         <TermButton :disabled="uploading" label="+ zip · multi-file" @click="$refs.zipInput.click()" />

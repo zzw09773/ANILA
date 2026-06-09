@@ -1,6 +1,6 @@
 // One-way latch helpers for the classification flag.
 //
-// Security invariant (Wave B / anila_plan.md §Decision):
+// Security invariant (Wave B):
 // Once any of these observers report classified:
 //   - the conversation's prior classified flag
 //   - the resolved agent's requiresEncryption

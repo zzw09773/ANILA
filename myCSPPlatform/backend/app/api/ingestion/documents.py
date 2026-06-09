@@ -159,6 +159,20 @@ def _persist_blob(content: bytes, sha256: str) -> str:
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
 
+# Ingestion accepts Markdown (.md / .markdown) sources only.
+_ALLOWED_UPLOAD_EXTS = (".md", ".markdown")
+
+
+def _reject_non_markdown(filename: str | None) -> None:
+    """Reject any upload whose filename is not .md / .markdown."""
+    name = (filename or "").lower()
+    if not name.endswith(_ALLOWED_UPLOAD_EXTS):
+        raise HTTPException(
+            status_code=400,
+            detail="此版本僅支援 Markdown（.md / .markdown）檔案上傳。",
+        )
+
+
 @router.post(
     "/api/ingestion/collections/{collection_id}/documents",
     response_model=DocumentResponse,
@@ -177,6 +191,9 @@ async def upload_document(
     to watch status transitions.
     """
     coll = _resolve_collection(db, current_user, collection_id)
+
+    # Only Markdown sources are accepted.
+    _reject_non_markdown(file.filename)
 
     # Read fully into memory — Sprint 1 caps uploads at 50 MB so this is
     # fine; Sprint 2 streaming upload will spool to disk in chunks.
@@ -325,11 +342,14 @@ async def upload_zip(
         raise HTTPException(status_code=400, detail=f"Not a valid zip: {e}") from e
 
     # Filter to actual file entries; reject anything that smells dodgy.
+    # Only Markdown (.md / .markdown) members are ingested;
+    # any other file type in the zip is silently skipped.
     members = [
         m for m in zf.infolist()
         if not m.is_dir()
         and not m.filename.startswith("__MACOSX/")
         and not os.path.basename(m.filename).startswith(".")
+        and m.filename.lower().endswith(_ALLOWED_UPLOAD_EXTS)
     ]
     if len(members) > 200:
         raise HTTPException(

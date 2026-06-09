@@ -101,7 +101,7 @@ Together the two references cover two dimensions:
 - Platform overview: [`../README.md`](../README.md)
 - Python runtime (porting destination): [`../anila-core/README.md`](../anila-core/README.md)
 - `openai-agents-python` deep dive (12 subsystems dissected + P0–P2 starting files): [`../docs/agent-framework/runtime-logic-openai-agents-deep-dive.md`](../docs/agent-framework/runtime-logic-openai-agents-deep-dive.md)
-- Agent framework architecture & porting decisions: [`../docs/agent-framework/anila-agent-framework-architecture.md`](../docs/agent-framework/anila-agent-framework-architecture.md), [`../docs/agent-framework/anila-agent-framework-porting-decisions.md`](../docs/agent-framework/anila-agent-framework-porting-decisions.md)
+- Agent framework architecture: [`../docs/agent-framework/anila-agent-framework-architecture.md`](../docs/agent-framework/anila-agent-framework-architecture.md)
 - Parent-child RAG design: [`../docs/ingestion/parent-child-rag-design.md`](../docs/ingestion/parent-child-rag-design.md)
 - Service-token cutover plan: [`../docs/runbooks/service-token-cutover.md`](../docs/runbooks/service-token-cutover.md)
 

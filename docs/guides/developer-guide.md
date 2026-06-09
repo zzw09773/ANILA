@@ -251,4 +251,3 @@ Output 面向 Router 的格式一樣是 OpenAI-compat SSE，tool call 的中間�
 - Agent ORM：`myCSPPlatform/backend/app/models/agent.py`
 - 樣板：`AgenticRAG/`（`README.md`、`api.py`、`index_documents.py`）
 - Runtime foundation：`anila-core/`
-- 平台藍圖：`anila_plan.md`

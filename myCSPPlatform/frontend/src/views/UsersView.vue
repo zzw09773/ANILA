@@ -409,7 +409,7 @@ async function handleReactivate(user) {
 }
 async function handlePurge(user) {
   // Typed-confirm: 必須輸入完整 username 才能 purge,避免誤觸點到「remove」誤刪。
-  // 國軍交付環境一旦 purge 不可逆,所以多一道輸入摩擦是值得的。
+  // 一旦 purge 不可逆,所以多一道輸入摩擦是值得的。
   if (!(await confirm({
     title: '完全刪除使用者',
     message: `完全刪除使用者「${user.username}」?此動作不可復原。`,

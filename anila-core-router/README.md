@@ -11,7 +11,7 @@
 Router 對外暴露一個 OpenAI 相容的 `POST /v1/chat/completions`，並提供一個 pseudo-model `anila-router`。其運作（依 `main.py` 與 `router_server` 程式確認）：
 
 - Client 把 request body 的 `model` 設成 `anila-router` 即觸發自動分派；其他 `model` 值會直接 forward 到 CSP，不經分派邏輯。
-- Router 從 CSP 的 `GET /v1/agents` 動態撈 agent manifest（含 `requires_encryption`）並 cache，再以 caller 的 API Key 呼叫主路由 LLM，由主 LLM 判斷是否要分派給某個 agent（例如 dev stack 內註冊的 `image-generator` 繪圖 agent）。
+- Router 從 CSP 的 `GET /v1/agents` 動態撈 agent manifest（含 `requires_encryption`）並 cache，再以 caller 的 API Key 呼叫主路由 LLM，由主 LLM 判斷是否要分派給某個 agent。
 - 若決定分派，request 會被轉發到該 agent 的 `endpoint_url`，agent 的 SSE stream 逐 chunk 回傳給 caller。
 - 主路由模型由 CSP 在 runtime 決定：`main.py` 每 60 秒從 CSP `GET /api/models/router-primary` 拉目前指定的主 LLM 名稱。當 CSP 沒有設定主路由模型時，middleware 會把 `/v1/chat/completions` 擋成 **503**，避免 silent fall-back 到錯誤 upstream。
 
@@ -134,11 +134,11 @@ router (:9000)
    ├── GET /v1/agents              ──▶ CSP (CSP_BASE_URL)   取 agent manifest
    ├── GET /api/models/router-primary ─▶ CSP   取主路由 LLM（X-CSP-Service-Token）
    ├── POST /v1/chat/completions   ──▶ CSP   呼叫主 LLM 判斷是否分派
-   └── 分派 → agent endpoint_url   ──▶ 例：image-generator → http://flux2-dev-agent:8000
+   └── 分派 → agent endpoint_url   ──▶ 例：已註冊 agent → http://<agent-service>:<port>
 ```
 
 - **CSP（`CSP_BASE_URL`）**：Router 所有上游互動都經由 CSP — 撈 agent 清單、解析主路由模型、呼叫主 LLM。Router→CSP 的內部端點以 `X-CSP-Service-Token` header 認證（token 來源見三段式解析）。
-- **Agents**：dev stack 透過 CSP 註冊 `image-generator`（FLUX.2-dev 繪圖 agent，`endpoint_url: http://flux2-dev-agent:8000`）。主 LLM 判斷需要繪圖時，Router 把 request 分派給該 agent 並 forward 其 SSE stream。
+- **Agents**：開發者把自訂 agent 透過 CSP 註冊（每個 agent 有自己的 `endpoint_url`）。主 LLM 判斷需要某 agent 時，Router 把 request 分派給該 agent 並 forward 其 SSE stream。
 - **`/v1/agents` dispatch**：caller 能分派出去的 agent，等於該 caller API Key 在 CSP 的 allowed agents — Router 不放大權限。
 
 ---
@@ -148,7 +148,6 @@ router (:9000)
 （以下路徑皆已確認存在）
 
 - 平台整體：[repo 根 README](../README.md)
-- 多服務整合計畫（含 Router 角色）：[`docs/platform/multi-service-integration-plan.md`](../docs/platform/multi-service-integration-plan.md)
 - Agent framework 架構：[`docs/agent-framework/anila-agent-framework-architecture.md`](../docs/agent-framework/anila-agent-framework-architecture.md)
 - Agent runtime 深入（含 Router 互動）：[`docs/agent-framework/runtime-logic-openai-agents-deep-dive.md`](../docs/agent-framework/runtime-logic-openai-agents-deep-dive.md)
 - Runtime foundation（SDK）：[`anila-core/README.md`](../anila-core/README.md)

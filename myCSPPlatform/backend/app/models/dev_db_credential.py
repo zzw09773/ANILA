@@ -9,9 +9,8 @@ The TTL (default 30 days) keeps long-lived credentials from drifting into
 fires the 7-day-before-expiry reminder using ``reminder_sent_at`` to ensure
 each credential is reminded exactly once.
 
-See ``migrations/versions/0012_add_service_access_control.py`` for the schema
-and ``docs/platform/multi-service-integration-plan.md`` §10.2 for the full lifecycle
-(issue → reminder → auto-revoke → DROP ROLE).
+See ``migrations/versions/0012_add_service_access_control.py`` for the schema.
+The full lifecycle is issue → reminder → auto-revoke → DROP ROLE.
 """
 
 from datetime import datetime, timezone

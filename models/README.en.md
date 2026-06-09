@@ -1,82 +1,70 @@
-# ANILA models — FLUX image-generation model services
+# ANILA models — inference model services (LLM + Embedding)
 
-> ANILA's local FLUX.2-dev image-generation model services (air-gapped, internal-network only).
+> ANILA's local inference model services (air-gapped, internal-network only): two OpenAI-compatible LLMs + one embedding pipeline.
 
-> English mirror of [`README.md`](./README.md) (Traditional Chinese primary).
+> Chinese is primary; this English mirror is [`README.md`](./README.md). Technical terms, commands, and code stay in English.
 
 ---
 
 ## Overview
 
-`models/` is a standalone compose project (`name: anila-models`) whose lifecycle is decoupled from the platform stack; it hosts ANILA's inference workloads. Two services relate to image generation:
+`models/` is a standalone compose project (`name: anila-models`) decoupled from the platform stack's lifecycle, hosting ANILA's inference workloads. Every service uses `expose:` only (internal); **no host ports** are opened. CSP reaches them over the shared external docker network `anila-models-net` via DNS.
 
-- **`flux2-dev`** — the FLUX.2-dev text-to-image inference service. A minimal HTTP server (`server.py`) wrapping `diffusers`' `Flux2Pipeline`, exposing `POST /generate`. It takes `prompt / aspect_ratio / seed / ...` and returns JSON (a base64 PNG list + audit meta).
-- **`flux2-dev-agent`** — the agent wrapper (OpenAI `/v1/chat/completions` compatible). The platform's router / CSP forwards image-generation requests here; it handles prompt translation (zh→en via gemma4), calls `flux2-dev`, persists the produced PNG to a share volume, and returns a Markdown image link to the frontend.
+| Service | Role | Backend | GPU | CSP-registered endpoint |
+|---------|------|---------|-----|-------------------------|
+| **`gpt-oss-20b`** | LLM | TensorRT-LLM (OpenAI-compatible server) | GPU 2 | `http://gpt-oss-20b:8000/v1` |
+| **`gemma4`** | LLM (Router primary) | vLLM + MTP speculative decoding | GPU 3 | `http://gemma4:8000/v1` |
+| **`nv-embed-triton`** | Embedding inference backend | Triton (its own protocol, **fully internal**) | GPU 0 | (not connected directly, see below) |
+| **`nv-embed-proxy`** | Embedding OpenAI-compatible front | FastAPI shim → Triton | none | `http://nv-embed-proxy:8000/v1` |
 
-How they relate (data flow):
-
-```
-user chat → router → DISPATCH:image-generator
-         → CSP proxy → flux2-dev-agent  (OpenAI chat compatible)
-                         → (prompt translation via gemma4)
-                         → flux2-dev  POST /generate  (FLUX inference)
-                         → persist PNG to /share/flux
-                         ← Markdown image link
-```
-
-Soldier-facing UX never sees `flux2-dev` directly; only the agent shim is its client.
+> Of the host's 4 GPUs, 3 are used (GPU 0 / 2 / 3); GPU 1 is reserved for scale-out. `nv-embed-triton` speaks Triton's own protocol, not OpenAI v1, so CSP **never connects to it directly** — only its sibling `nv-embed-proxy` reaches it via internal DNS. Triton therefore opens neither `expose:` nor `ports:`; container-to-container traffic only.
 
 ---
 
 ## Architecture & Stack
 
-### flux2-dev (inference service)
-
-- **Language/framework**: Python 3.11, FastAPI + uvicorn.
-- **Inference backend**: `diffusers`' `Flux2Pipeline` (`diffusers>=0.36,<0.40`), `transformers>=4.50,<5.0`, `accelerate`.
-- **Precision & multi-GPU**: `torch_dtype=torch.bfloat16` (BF16), `device_map="balanced"` (weights sharded across GPUs).
-- **Base image**: `nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04`, `torch==2.6.0` (cu124 wheel).
-- **Offline**: `HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1`; weights are mounted read-only into the container, no HF access.
-
-`POST /generate` contract (per spec §3.2, model-agnostic, shared by flux2-dev and klein-4B):
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `prompt` | `str` | required |
-| `aspect_ratio` | `Literal["1:1","16:9","9:16","4:3","3:4","3:1"]` | default `16:9` |
-| `seed` | `int \| None` | `None` = random (resolved value echoed back for audit) |
-| `num_candidates` | `int (1–4)` | default `1`; response is always a list |
-| `num_inference_steps` | `int \| None` | `None` = env `FLUX_NUM_STEPS` (default 28) |
-| `guidance_scale` | `float \| None` | `None` = env `FLUX_GUIDANCE_SCALE` (default 4.0) |
-
-`GenerateResponse`:
-
-```json
-{
-  "images": ["<base64 PNG>", "..."],
-  "seed": 123456,
-  "meta": {"steps": 28, "guidance": 4.0, "width": 1408, "height": 768, "model_sha": ""}
-}
+```
+        CSP /v1/* proxy  (token_usage metering)
+                 │  docker DNS (anila-models-net)
+     ┌───────────┼───────────────────────┐
+     ▼           ▼                        ▼
+ gpt-oss-20b   gemma4                nv-embed-proxy  (OpenAI /v1/embeddings)
+ (TRT-LLM)     (vLLM + MTP)               │ Triton protocol
+  GPU 2         GPU 3                      ▼
+                                     nv-embed-triton  (no expose, internal-only)
+                                          GPU 0
 ```
 
-Design notes:
+### gpt-oss-20b (LLM, TensorRT-LLM)
 
-- **Always returns list[str]** (even when `num_candidates=1`), so Stage 2's N-candidate gate does not force a response-type rewrite.
-- Each aspect ratio maps to a fixed resolution (`_ASPECT_RATIOS`), including a `3:1` section-band letterbox (≤0.8MP, FLUX stable zone).
-- Seeding uses a **CPU generator** (`torch.Generator(device="cpu")`): because `device_map="balanced"` shards weights across GPUs, a fixed cuda device is unsafe; a CPU generator gives deterministic, device-independent seeding.
-- `GET /health` → `{"status": "ok"}`.
-- `FLUX_SKIP_LOAD=1` uses a stub pipeline (no real weights, no GPU) for integration smoke tests.
+- **Image**: `tensorrt-llm-hf:1.3.0rc10`; `trtllm-serve` exposes the OpenAI-compatible `/v1/*`.
+- **GPU / resources**: `device_ids: ["2"]`, `ipc: host`, `memlock: -1`.
+- **Offline**: `HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1` / `HF_DATASETS_OFFLINE=1`; weights are volume-mounted, never fetched from HF.
+- **Launch args**: `--extra_llm_api_options .../gpt-oss-20b-throughput.yaml`, `--kv_cache_free_gpu_memory_fraction 0.5`, `--port 8000`.
+- **Healthcheck**: `GET /v1/models` (`start_period: 120s`).
 
-### flux2-dev-agent (agent wrapper)
+### gemma4 (LLM, vLLM + MTP)
 
-- **Language/framework**: Python 3.11, FastAPI + uvicorn, httpx (async).
-- **Base image**: `python:3.11-slim` (no GPU, no curl; healthcheck uses urllib).
-- **Endpoints**: `GET /health`, `GET /v1/models` (returns `image-generator`), `POST /v1/chat/completions` (supports both JSON and SSE streaming).
-- **Four collaborators**:
-  - `prompt_translator.py` — calls `gemma4` through the CSP proxy to rewrite casual Chinese into a FLUX-friendly English prompt; on any error it **falls back to the original text** (partial degradation beats total failure).
-  - `flux_client.py` — calls `flux2-dev`'s `/generate` and decodes the first candidate to PNG bytes.
-  - `image_store.py` — validates the PNG magic bytes, writes to the share volume, returns the public URL.
-  - `chat_handler.py` — wires the above three together and assembles an OpenAI-shaped `ChatCompletionResponse` whose content is `已為您繪製：\n\n![](url)`.
+- **Image**: `vllm-gemma4:latest`; `--served-model-name gemma4` keeps the same id across CSP `model_registry`, Router, and agent fan-out.
+- **Model**: `gemma-4-31B-it`, `--max-model-len 131072`, `--dtype bfloat16`, `--kv-cache-dtype fp8`, `--gpu-memory-utilization 0.97`, `--enable-prefix-caching`.
+- **MTP speculative decoding**: `--speculative-config '{"method":"mtp","model":".../gemma-4-31B-it-assistant","num_speculative_tokens":2}'`; the small draft head shares the target's KV cache, measured 1.7–2.2× speedup (conversational > code). Needs vLLM ≥ 0.18 (with the Gemma4 MTP spec-decode PR); older builds exit with `unknown speculative method 'mtp'`. The assistant draft model must be downloaded offline to the host once.
+- **tool / reasoning**: `--enable-auto-tool-choice`, `--tool-call-parser gemma4`, `--reasoning-parser gemma4`, `--default-chat-template-kwargs '{"enable_thinking": true}'`.
+- **GPU / resources**: `device_ids: ["3"]`, `shm_size: 64g`, `ipc: host`.
+- **Healthcheck**: `GET /v1/models` (`start_period: 180s`).
+
+### nv-embed-triton (embedding backend, Triton)
+
+- **Image**: `tritonserver:25.04-nv-embed-v2`, model `NV-Embed-v2`.
+- **GPU**: `device_ids: ["0"]`; `--model-control-mode=poll --repository-poll-secs=1`.
+- **Network**: **no `expose:` and no `ports:`** — only `nv-embed-proxy` reaches it via docker DNS inside `anila-models-net`, minimizing attack surface.
+- **Healthcheck**: `GET /v2/health/ready` (Triton protocol).
+
+### nv-embed-proxy (embedding OpenAI-compatible front)
+
+- **Image**: `embedding-proxy:migration` (FastAPI shim). Bridges the OpenAI `/v1/embeddings` shape to Triton. **This is the embedding endpoint CSP actually registers.**
+- **Env**: `TRITON_URL=http://nv-embed-triton:8000`, `MODEL_NAME=nv-embed-v2`, `REQUEST_TIMEOUT=60`.
+- **Dependency**: `depends_on: nv-embed-triton (service_healthy)`; no GPU.
+- **Healthcheck**: `GET /v1/models` (`start_period: 30s`).
 
 ---
 
@@ -84,105 +72,73 @@ Design notes:
 
 ```
 models/
-├── docker-compose.yml          # anila-models compose project (LLM/embedding/FLUX services)
-├── flux2-dev/                  # FLUX.2-dev inference service
-│   ├── Dockerfile              # CUDA 12.4 base + torch 2.6 + diffusers
-│   ├── requirements.txt        # fastapi / diffusers / transformers / accelerate ...
-│   ├── pyproject.toml          # tests inject a mock pipeline, no GPU stack needed
-│   ├── server.py               # build_app + /generate + /health + pipeline loading
-│   └── tests/                  # pytest (test_server.py, conftest.py)
-└── flux2-dev-agent/            # agent wrapper (OpenAI compatible)
-    ├── Dockerfile              # python:3.11-slim
-    ├── requirements.txt        # fastapi / httpx / pydantic / python-multipart
-    ├── pyproject.toml
-    ├── app/
-    │   ├── main.py             # build_app + endpoints (/health, /v1/models, /v1/chat/completions)
-    │   ├── schemas.py          # OpenAI chat-compatible pydantic models
-    │   ├── prompt_translator.py
-    │   ├── flux_client.py
-    │   ├── image_store.py
-    │   └── chat_handler.py
-    └── tests/                  # pytest (pytest-asyncio + respx)
+├── docker-compose.yml   # anila-models compose project (the 4 services above)
+├── README.md
+└── README.en.md
 ```
 
-> Note: the same `docker-compose.yml` also defines non-image services (`gpt-oss-20b`, `gemma4`, `nv-embed-triton`, `nv-embed-proxy`). This document focuses on the two FLUX services.
+> Model weights, the Triton repository, TensorRT engines, etc. are volume-mounted from **absolute host paths** (`/home/aia/c1147259/project/Huggingface/...`, `.../Docker/...`), not stored in the repo; migrate or fix the compose paths when moving hosts.
 
 ---
 
 ## Setup & Run
 
-These services run via `models/docker-compose.yml`. Every service uses `expose:` (internal-only) and opens **no host port**; external NICs cannot reach them, and CSP connects via DNS on the shared external docker network `anila-models-net`.
-
 One-time bootstrap (on the host):
 
 ```bash
+# 1. create the cross-project external network
 docker network create anila-models-net
-docker compose -f docker-compose.yml restart csp   # CSP joins the net
+
+# 2. the platform csp container already declares this network — restart it once to actually join
+docker compose -f docker-compose.yml restart csp
 ```
 
 Day-to-day:
 
 ```bash
 docker compose -f models/docker-compose.yml up -d
-docker compose -f models/docker-compose.yml logs -f flux2-dev
 docker compose -f models/docker-compose.yml ps
-docker compose -f models/docker-compose.yml restart flux2-dev-agent
-docker compose -f models/docker-compose.yml down          # models only; platform untouched
+docker compose -f models/docker-compose.yml logs -f gemma4
+docker compose -f models/docker-compose.yml restart gemma4
+docker compose -f models/docker-compose.yml down          # models only; the platform is untouched
 ```
 
-GPU / resource config (from compose):
+GPU / resource layout (from compose):
 
-- `flux2-dev`: GPU `["1","2"]`, `shm_size: 32g`, `ipc: host`, healthcheck hits `/health` (`start_period: 300s`).
-- `flux2-dev-agent`: no GPU, `depends_on: flux2-dev (service_healthy)`.
-
-Key environment variables:
-
-| Service | Variable | Default / value | Notes |
-|---------|----------|-----------------|-------|
-| flux2-dev | `FLUX_MODEL_PATH` | `/workspace/model/FLUX.2-dev` | weights path |
-| flux2-dev | `FLUX_DEVICE_MAP` | `balanced` | multi-GPU sharding |
-| flux2-dev | `FLUX_NUM_STEPS` | `28` | default inference steps |
-| flux2-dev | `FLUX_GUIDANCE_SCALE` | `3.5` (compose) / `4.0` (code fallback) | default guidance |
-| flux2-dev | `HF_HUB_OFFLINE` / `TRANSFORMERS_OFFLINE` | `1` | air-gapped |
-| flux2-dev-agent | `FLUX_BACKEND_URL` | `http://flux2-dev:8000` | inference backend |
-| flux2-dev-agent | `CSP_BASE_URL` / `CSP_API_KEY` | `http://csp:8000` / env | translation callback via CSP |
-| flux2-dev-agent | `GEMMA_MODEL` | `gemma4` | LLM used for translation |
-| flux2-dev-agent | `ENABLE_PROMPT_TRANSLATION` | `1` | disable to send raw input |
-| flux2-dev-agent | `SHARE_DIR` / `PUBLIC_URL_PREFIX` | `/share/flux` / `/uploads/flux` | persist path & public URL |
-| flux2-dev-agent | `DEFAULT_ASPECT_RATIO` | `16:9` | default aspect ratio |
-| flux2-dev-agent | `FLUX_TIMEOUT_SECONDS` | `240` | backend call timeout |
-
-**Air-gapped weight handling**: FLUX.2-dev weights are mounted read-only into the container
-(`/home/aia/c1147259/project/Huggingface/FLUX.2-dev:/workspace/model/FLUX.2-dev:ro`)
-together with `HF_HUB_OFFLINE=1`, so the container never fetches weights over the network.
-
-`flux2-dev-agent` binds the host's `share-dev/uploads/flux` to the container's `/share/flux`; the same directory is served by nginx under `/uploads/flux/` (the frontend image links point here).
+| Service | GPU | Notes |
+|---------|-----|-------|
+| `gpt-oss-20b` | 2 | TensorRT-LLM, `ipc: host`, kv_cache 0.5 |
+| `gemma4` | 3 | vLLM + MTP, large `shm_size`, max-model-len 131072 |
+| `nv-embed-triton` | 0 | Triton, no expose (internal-only) |
+| `nv-embed-proxy` | — | FastAPI shim, `depends_on` triton |
 
 ---
 
 ## Integration
 
-- When gemma4 emits `DISPATCH:image-generator:...`, the platform router has the **CSP proxy** forward the request to `flux2-dev-agent` (CSP's `model_registry` registers the agent as `model_type=agent`).
-- `flux2-dev-agent` calls `flux2-dev`'s `/generate` directly via `FLUX_BACKEND_URL`; CSP's studio can also reach `flux2-dev` along the same path.
-- All three share the external docker network `anila-models-net`, reachable only via container-to-container DNS; no host port is opened.
-- Translation callback: the agent calls CSP's `/v1/chat/completions` (model=`gemma4`) via `CSP_BASE_URL` + `CSP_API_KEY` to rewrite the user's casual request into an English prompt.
+- **CSP**: register the three endpoints (`http://gpt-oss-20b:8000/v1`, `http://gemma4:8000/v1`, `http://nv-embed-proxy:8000/v1`) into `model_registry` via the `/models` UI or `AUTO_REGISTER_MODELS`, marking them `is_internal`. CSP's `/v1/chat/completions` / `/v1/embeddings` proxy routes to these endpoints and meters `token_usage`.
+- **Router**: the primary routing LLM defaults to `gemma4`.
+- **ingestion-worker**: embeds chunks through CSP `/v1/embeddings` (i.e. `nv-embed-proxy`).
+- All three share the external docker network `anila-models-net`, reachable only container-to-container; no host ports are opened.
 
----
+### End-to-end connectivity check
 
-## Related docs
+```bash
+# from an external host (or the host shell) everything should be refused (no host ports)
+curl http://<host-LAN-IP>:8000/v1/models     # connection refused
 
-- FLUX spec: [`docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md`](../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md) (existence verified).
-  - §3.2 defines the `/generate` contract (this service implements it).
-  - §9 covers the licensing caveats.
+# from inside the CSP container, via docker DNS, should be 200
+docker compose exec csp curl http://gpt-oss-20b:8000/v1/models
+docker compose exec csp curl http://gemma4:8000/v1/models
+docker compose exec csp curl http://nv-embed-proxy:8000/v1/models
+```
 
 ---
 
 ## Licensing note
 
-Per spec §9:
+Each model carries its own upstream license; confirm terms with legal before internal commercial use:
 
-- **`black-forest-labs/FLUX.2-dev` is a BFL Non-Commercial License**; internal commercial use is a grey area — **get legal confirmation before going to production** on whether an "internal company tool" falls within the license.
-- **`FLUX.2-klein-4B` is Apache-2.0**, the cleanest local alternative (slightly lower quality, lower latency). If legal deems dev-version internal commercial use questionable, **switch the primary model to klein-4B**.
-- `FLUX.2-klein-9B` shares the same Non-Commercial license as dev and does not resolve the issue.
-
-The `flux2-dev` service in compose carries a matching caveat comment: confirm authorization before enabling in production.
+- **`gpt-oss-20b`**: OpenAI gpt-oss, Apache-2.0.
+- **`gemma-4-31B-it`**: Google Gemma Terms of Use (not a standard OSI license; review the terms).
+- **`NV-Embed-v2`**: NVIDIA license (includes non-commercial terms) — internal commercial use is a grey area; get legal confirmation before production.

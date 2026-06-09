@@ -119,15 +119,6 @@ runtime_logic/src/
 runtime_logic/vendor/
 runtime_logic/node_modules/
 
-# ── anila-agent/templete (reference SDK source snapshots — only .zip tracked) ─
-# Three upstream SDK source snapshots packaged as zip in anila-agent/templete/
-# (synced from zzw09773/anila-agent subtree). Developers unzip locally to read
-# patterns + port logic into anila-agent/anila_agent/, but the unzipped trees
-# stay out of git. Same model as runtime_logic/ above.
-anila-agent/templete/claude-code-src/
-anila-agent/templete/openai-agents-python/
-anila-agent/templete/antigravity-sdk-python/
-
 # ── runtime data: n8n workflow assets / uploads ───────────────────────────────
 # Static templates (e.g. fina./) and user uploads served by nginx at /static
 # and /uploads. These are workflow-specific runtime data, not source code —
@@ -147,11 +138,8 @@ share/codeserver-sandbox/
 *.observer.lock
 
 
-# Onyx upstream clone — handed off to the agent dev team for ongoing
-# maintenance. Their code, their repo. Kept on disk for local reference
-# but not under our version control. The handover spec we owe them
-# stays tracked at docs/onyx/onyx-target-system-api-spec.md and
-# docs/onyx/onyx-application-plan.md.
+# Onyx upstream clone — kept on disk for local reference only, not under
+# our version control.
 onyx/
 n8n_DATA
 

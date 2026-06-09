@@ -15,7 +15,7 @@
 - agent 選擇、並排比對、分享 / 交接 / 附件等協作操作。
 - 把後端送來的 typed SSE 事件（trace、interrupt、todos、tool call、spans 等）視覺化。
 
-平台整體架構、compose 啟動、環境變數，請見 repo 根 [`README.md`](../../README.md) 與路線圖 [`anila_plan.md`](../../anila_plan.md)；本檔聚焦 UI 子專案本身。
+平台整體架構、compose 啟動、環境變數，請見 repo 根 [`README.md`](../../README.md)；本檔聚焦 UI 子專案本身。
 
 ---
 
@@ -45,7 +45,6 @@ anila-ui/
 ├── Dockerfile              # 多階段：node:22 build → nginx:1.27 serve
 ├── .env.example            # VITE_* 環境變數範本
 ├── docker/nginx.conf       # runtime 階段的 nginx SPA 設定（含 /health）
-├── docs/                   # 子專案進度筆記（restore-ui-progress.md）
 ├── e2e/                    # E2E 說明（README.md）
 └── src/
     ├── main.jsx            # ReactDOM 掛載入口
@@ -149,7 +148,7 @@ docker compose up -d            # 一併拉起 csp-db / csp / redis / router / a
 
 ## 相關文件 / Related docs
 
-- 平台整體：[`../../README.md`](../../README.md)、路線圖 [`../../anila_plan.md`](../../anila_plan.md)
+- 平台整體：[`../../README.md`](../../README.md)
 - CSP（本 UI 的 backend）：[`../../myCSPPlatform/README.md`](../../myCSPPlatform/README.md)
 - Router（`anila-router` pseudo-agent 實作端）：[`../../anila-core-router/README.md`](../../anila-core-router/README.md)
 - Agent template（可被本 UI 分派）：[`../../anila-agent/README.md`](../../anila-agent/README.md)

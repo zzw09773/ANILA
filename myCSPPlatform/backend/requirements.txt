@@ -16,17 +16,6 @@ psycopg2-binary==2.9.10
 # alone gives us create_pool + enqueue_job; no extra redis client needed.
 arq==0.26.1
 
-# Studio Phase 3 X: OpenCC for simplified→traditional+TW-localized
-# post-processing. Pure-Python reimplementation chosen over the C++
-# binding so the container stays air-gapped-friendly (no libopencc
-# system library to ship). The s2twp.json config converts simplified
-# Chinese to Traditional with Taiwan-region lexicon (軟件→軟體,
-# 視頻→影片, 激光→鐳射, 默認→預設, 數據→資料, 網絡→網路, etc.).
-# Used in app/services/studio_text_normalizer.py to clean LLM output
-# before it lands in the .pptx — Gemma 4 trains predominantly on
-# simplified Chinese so this is a quality lever, not a vanity fix.
-opencc-python-reimplemented==0.1.7
-
-# Phase 6 — FLUX image generation tests
+# Test deps (async + HTTP mocking)
 respx==0.22.0
 pytest-asyncio==0.24.0

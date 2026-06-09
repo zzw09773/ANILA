@@ -16,9 +16,8 @@
 Beyond platform governance, CSP also hosts two application pipelines:
 
 - **Ingestion knowledge base** — document upload → chunking → embedding → pgvector retrieval (RAG). CSP enqueues ingest jobs into Redis via `arq`; a separate `ingestion-worker` container consumes them.
-- **Studio / ANILALM slide generation** — an LLM produces a slide outline, CSP assembles the `.pptx`, optionally embedding FLUX-generated images (the `image-generator` agent) and Graphviz flow diagrams.
 
-> Within the wider ANILA system, CSP is the authoritative store: the Router, Worker and UI all ask it for user identity, API keys, the model / agent manifest, and usage data. For the platform as a whole see the repo root [`../README.md`](../README.md) and [`../anila_plan.md`](../anila_plan.md).
+> Within the wider ANILA system, CSP is the authoritative store: the Router, Worker and UI all ask it for user identity, API keys, the model / agent manifest, and usage data. For the platform as a whole see the repo root [`../README.md`](../README.md).
 
 ---
 
@@ -55,9 +54,7 @@ Beyond platform governance, CSP also hosts two application pipelines:
 | Auth | python-jose (JWT, HS256) · passlib[bcrypt] |
 | HTTP client | httpx (proxies downstream models / agents) |
 | Queue | arq (enqueues ingestion jobs into Redis) |
-| Text post-processing | opencc-python-reimplemented (Simplified→Traditional + Taiwan lexicon, used by Studio) |
-| Image / diagram | FLUX backend (HTTP) · Graphviz `dot` (system package, renders `Slide.diagram_dot`) |
-| Testing | pytest · pytest-asyncio · respx (mocks the FLUX backend) |
+| Testing | pytest · pytest-asyncio · respx |
 
 Full dependency list in [`backend/requirements.txt`](./backend/requirements.txt). The backend container additionally installs `graphviz` and `fonts-noto-cjk` so DOT graphs with Traditional Chinese labels render correctly (see [`backend/Dockerfile`](./backend/Dockerfile)).
 
@@ -92,18 +89,16 @@ myCSPPlatform/
 │   │   │   ├── conversations.py attachments.py public_share.py handoffs.py
 │   │   │   ├── memory.py          # /api/memory user memory
 │   │   │   ├── service_clients.py service_access_grants.py trusted_hosts.py
-│   │   │   ├── studio.py          # /api/studio slide generation
 │   │   │   └── ingestion/         # knowledge-base RAG: documents/jobs/search/...
 │   │   ├── models/                # SQLAlchemy ORM (users, api_key, model_registry,
 │   │   │                          #   agent, ingestion, token_usage, audit_log, ...)
 │   │   ├── schemas/               # Pydantic schemas
 │   │   ├── services/              # auth/proxy/health_checker/usage_writer/auto_seed
-│   │   │                          #   ingestion_queue, studio_job_service,
-│   │   │                          #   flux_image_provider, diagram_renderer, ...
+│   │   │                          #   ingestion_queue, ...
 │   │   ├── middleware/api_key_auth.py
 │   │   └── utils/
 │   ├── migrations/                # Alembic versions
-│   ├── tests/                     # pytest (incl. FLUX / agent credential / cookie auth)
+│   ├── tests/                     # pytest (incl. agent credential / cookie auth)
 │   ├── requirements.txt
 │   └── Dockerfile                 # python:3.11-slim + graphviz + noto-cjk
 ├── frontend/
@@ -134,7 +129,7 @@ In the dev stack CSP is the `csp` service, started **from the repo root** via `d
 docker compose -f docker-compose-dev.yml up -d --build csp
 ```
 
-The dev stack also includes `csp-db` (pgvector/pg16), `redis`, `ingestion-worker`, `router`, `pptx-renderer`, `anilalm`, `anila-ui`, `nginx`, etc. CSP joins two networks: `default` (intra-stack) and `anila-models-net` (external, used to reach `gemma4` / `gpt-oss-20b` / `nv-embed-proxy` / `flux2-dev`).
+The dev stack also includes `csp-db` (pgvector/pg16), `redis`, `ingestion-worker`, `router`, `anila-ui`, `nginx`, etc. CSP joins two networks: `default` (intra-stack) and `anila-models-net` (external, used to reach `gemma4` / `gpt-oss-20b` / `nv-embed-proxy`).
 
 > On first launch if `anila-models-net` does not exist: `docker network create anila-models-net`.
 
@@ -172,11 +167,8 @@ cp .env.example .env   # at minimum change SECRET_KEY and ADMIN_PASSWORD
 | `INGESTION_UPLOAD_DIR` | `/var/anila/ingestion-uploads` | Upload staging directory |
 | `AUTO_REGISTER_MODELS` / `AUTO_REGISTER_AGENTS` | see compose | Declarative model / agent registration at startup |
 | `AUTO_SEED_API_KEYS` | see compose | Seed users + `sk-` keys created at startup |
-| `FLUX_BACKEND_URL` | `http://flux2-dev:8000` | Enables FLUX images; empty string = off |
-| `FLUX_MAX_CONCURRENT` / `FLUX_TIMEOUT_SECONDS` | `4` / `180` | FLUX concurrency / timeout |
 | `ANILA_TRUSTED_HOSTS` | `gemma4,gpt-oss-20b,nv-embed-proxy,host.docker.internal` | Allowed downstream proxy hosts |
 
-> When unset, `FLUX_CACHE_DIR` defaults to `$INGESTION_UPLOAD_DIR/flux-cache`; FLUX images are content-addressed by `SHA256(prompt + aspect_ratio)`.
 
 ---
 
@@ -189,10 +181,8 @@ cp .env.example .env   # at minimum change SECRET_KEY and ADMIN_PASSWORD
 | **ingestion-worker** | Separate container that processes ingest jobs (chunking / embedding / writing pgvector) |
 | **gemma4 / gpt-oss-20b** (LLM) | Proxied via `anila-models-net` through `/v1/chat/completions`; gemma4 is the Router primary |
 | **nv-embed-proxy** (Embedding) | Target of `/v1/embeddings`, `/v2/embeddings`; also used by Ingestion for embeddings |
-| **flux2-dev / flux2-dev-agent** (FLUX images) | The `image-generator` agent; Studio's `_hydrate_images` calls it directly and inlines the result |
 | **router** (anila-core-router) | Pulls the `/v1/agents` manifest from CSP for dispatch; authenticates with a service token |
-| **pptx-renderer** | The Studio pipeline hands assembled slide data to it for final `.pptx` rendering |
-| **anilalm / anila-ui** | Frontend apps that talk to CSP via `/api/*` (management / chat) and `/v1/*` (inference) |
+| **anila-ui** | Frontend app that talks to CSP via `/api/*` (management / chat) and `/v1/*` (inference) |
 
 OpenAI-compatible proxy example:
 
@@ -213,12 +203,9 @@ All paths below are verified to exist (docs were reorganized into topic folders)
 
 - Ingestion platform design: [`../docs/ingestion/ingestion-platform-design.md`](../docs/ingestion/ingestion-platform-design.md)
 - Parent-child RAG design: [`../docs/ingestion/parent-child-rag-design.md`](../docs/ingestion/parent-child-rag-design.md)
-- Multi-service integration plan: [`../docs/platform/multi-service-integration-plan.md`](../docs/platform/multi-service-integration-plan.md)
-- SSO migration: [`../docs/platform/sso-migration.md`](../docs/platform/sso-migration.md)
 - Service-token cutover runbook: [`../docs/runbooks/service-token-cutover.md`](../docs/runbooks/service-token-cutover.md)
-- Studio / FLUX spec: [`../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md`](../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md)
-- Platform overview: [`../README.md`](../README.md) · Roadmap: [`../anila_plan.md`](../anila_plan.md)
+- Platform overview: [`../README.md`](../README.md)
 
 ---
 
-**Role**: Control + Data Plane · **Authoritative for**: users · api_keys · models · agents · service_clients · token_usage · audit_logs · ingestion knowledge base · Studio slide generation
+**Role**: Control + Data Plane · **Authoritative for**: users · api_keys · models · agents · service_clients · token_usage · audit_logs · ingestion knowledge base

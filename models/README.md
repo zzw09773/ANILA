@@ -1,6 +1,6 @@
-# ANILA models — FLUX 圖像生成模型服務
+# ANILA models — 推論模型服務（LLM + Embedding）
 
-> ANILA 平台的本地 FLUX.2-dev 圖像生成模型服務（air-gapped、僅內網可達）。
+> ANILA 平台的本地推論模型服務（air-gapped、僅內網可達）：兩個 OpenAI 相容 LLM + 一條 embedding 管線。
 
 > 中文為主、英文鏡像見 [`README.en.md`](./README.en.md)。技術名詞、指令、程式碼一律維持英文。
 
@@ -8,75 +8,63 @@
 
 ## 簡介 / Overview
 
-`models/` 是與平台 stack 生命週期解耦的獨立 compose project（`name: anila-models`），收容 ANILA 的推論工作負載。其中與圖像生成相關的有兩個服務：
+`models/` 是與平台 stack 生命週期解耦的獨立 compose project（`name: anila-models`），收容 ANILA 的推論工作負載。所有服務只用 `expose:`（內網），**不對 host 開 port**；CSP 透過共用的 external docker network `anila-models-net` 以 DNS 連接。
 
-- **`flux2-dev`** — FLUX.2-dev 文生圖推論服務。以 `diffusers` 的 `Flux2Pipeline` 包成一個極簡 HTTP server（`server.py`），對外提供 `POST /generate`。輸入 `prompt / aspect_ratio / seed / ...`，回傳 JSON（base64 PNG list + audit meta）。
-- **`flux2-dev-agent`** — agent 包裝層（OpenAI `/v1/chat/completions` 相容）。平台的 router / CSP 把圖像生成請求轉送到這裡；它負責 prompt 翻譯（zh→en，透過 gemma4）、呼叫 `flux2-dev`、把產出的 PNG 落地到 share volume，再以 Markdown 圖片連結回給前端。
+| 服務 | 角色 | 後端 | GPU | CSP 註冊 endpoint |
+|------|------|------|-----|-------------------|
+| **`gpt-oss-20b`** | LLM | TensorRT-LLM（OpenAI 相容 server） | GPU 2 | `http://gpt-oss-20b:8000/v1` |
+| **`gemma4`** | LLM（Router primary） | vLLM + MTP speculative decoding | GPU 3 | `http://gemma4:8000/v1` |
+| **`nv-embed-triton`** | Embedding 推論後端 | Triton（自家協定，**完全內網**） | GPU 0 | （不直連，見下） |
+| **`nv-embed-proxy`** | Embedding OpenAI 相容前端 | FastAPI shim → Triton | 無 | `http://nv-embed-proxy:8000/v1` |
 
-兩者關係（資料流）：
-
-```
-使用者聊天 → router → DISPATCH:image-generator
-          → CSP proxy → flux2-dev-agent  (OpenAI chat 相容)
-                          → (prompt 翻譯 via gemma4)
-                          → flux2-dev  POST /generate  (FLUX 推論)
-                          → 落地 PNG 到 /share/flux
-                          ← Markdown 圖片連結
-```
-
-前端 UX 不會直接看到 `flux2-dev`；只有 agent shim 是它的 client。
+> 同主機 4 張 GPU 用其中 3 張（GPU 0 / 2 / 3），GPU 1 保留作 scale-out。`nv-embed-triton` 講 Triton 自家協定不是 OpenAI v1，CSP **從不直接連**它 — 只有同 network 的 `nv-embed-proxy` 透過 docker DNS 找它；因此 Triton 連 `expose:` 都不開，container-to-container only。
 
 ---
 
 ## 架構與技術棧 / Architecture & Stack
 
-### flux2-dev（推論服務）
-
-- **語言/框架**：Python 3.11、FastAPI + uvicorn。
-- **推論後端**：`diffusers` 的 `Flux2Pipeline`（`diffusers>=0.36,<0.40`）、`transformers>=4.50,<5.0`、`accelerate`。
-- **精度與多卡**：`torch_dtype=torch.bfloat16`（BF16），`device_map="balanced"`（權重分片到多張 GPU）。
-- **基底映像**：`nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04`，`torch==2.6.0`（cu124 wheel）。
-- **離線**：`HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1`，權重以唯讀 volume mount 進容器，不連 HF。
-
-`POST /generate` 合約（對應 spec §3.2，model-agnostic，flux2-dev 與 klein-4B 共用）：
-
-| 欄位 | 型別 | 說明 |
-|------|------|------|
-| `prompt` | `str` | 必填 |
-| `aspect_ratio` | `Literal["1:1","16:9","9:16","4:3","3:4","3:1"]` | 預設 `16:9` |
-| `seed` | `int \| None` | `None` = 隨機（回傳實際值供 audit） |
-| `num_candidates` | `int (1–4)` | 預設 `1`，回傳一律為 list |
-| `num_inference_steps` | `int \| None` | `None` = env `FLUX_NUM_STEPS`（預設 28） |
-| `guidance_scale` | `float \| None` | `None` = env `FLUX_GUIDANCE_SCALE`（預設 4.0） |
-
-回傳 `GenerateResponse`：
-
-```json
-{
-  "images": ["<base64 PNG>", "..."],
-  "seed": 123456,
-  "meta": {"steps": 28, "guidance": 4.0, "width": 1408, "height": 768, "model_sha": ""}
-}
+```
+        CSP /v1/* proxy  (token_usage 計量)
+                 │  docker DNS (anila-models-net)
+     ┌───────────┼───────────────────────┐
+     ▼           ▼                        ▼
+ gpt-oss-20b   gemma4                nv-embed-proxy  (OpenAI /v1/embeddings)
+ (TRT-LLM)     (vLLM + MTP)               │ Triton 協定
+  GPU 2         GPU 3                      ▼
+                                     nv-embed-triton  (無 expose,純內網)
+                                          GPU 0
 ```
 
-設計重點：
+### gpt-oss-20b（LLM，TensorRT-LLM）
 
-- **一律回 list[str]**（即使 `num_candidates=1`），避免 Stage 2 的 N 候選 gate 改寫回傳型別。
-- aspect ratio 對應固定解析度（`_ASPECT_RATIOS`），含 `3:1` section band letterbox（≤0.8MP，FLUX 穩定區）。
-- seed 使用 **CPU generator**（`torch.Generator(device="cpu")`），因 `device_map="balanced"` 權重跨卡，固定 cuda device 不安全；CPU generator 給確定性、與裝置無關的種子。
-- `GET /health` → `{"status": "ok"}`。
-- `FLUX_SKIP_LOAD=1` 走 stub pipeline（不載真權重、無需 GPU），供整合 smoke test。
+- **映像**：`tensorrt-llm-hf:1.3.0rc10`，`trtllm-serve` 提供 OpenAI 相容 `/v1/*`。
+- **GPU / 資源**：`device_ids: ["2"]`、`ipc: host`、`memlock: -1`。
+- **離線**：`HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1` / `HF_DATASETS_OFFLINE=1`，權重以 volume mount，不連 HF。
+- **啟動參數**：`--extra_llm_api_options .../gpt-oss-20b-throughput.yaml`、`--kv_cache_free_gpu_memory_fraction 0.5`、`--port 8000`。
+- **健康檢查**：`GET /v1/models`（`start_period: 120s`）。
 
-### flux2-dev-agent（agent 包裝層）
+### gemma4（LLM，vLLM + MTP）
 
-- **語言/框架**：Python 3.11、FastAPI + uvicorn、httpx（非同步）。
-- **基底映像**：`python:3.11-slim`（無 GPU、無 curl，healthcheck 用 urllib）。
-- **對外端點**：`GET /health`、`GET /v1/models`（回 `image-generator`）、`POST /v1/chat/completions`（支援 JSON 與 SSE streaming）。
-- **四個協作元件**：
-  - `prompt_translator.py` — 透過 CSP proxy 呼叫 `gemma4` 把口語中文改寫成 FLUX 友善英文 prompt；任何錯誤都 **fallback 原文**（部分降級優於完全失敗）。
-  - `flux_client.py` — 呼叫 `flux2-dev` 的 `/generate`，解出第一張候選 PNG bytes。
-  - `image_store.py` — 校驗 PNG magic bytes、寫入 share volume、回傳 public URL。
-  - `chat_handler.py` — 串接以上三者，組出 OpenAI 形狀的 `ChatCompletionResponse`，content 為 `已為您繪製：\n\n![](url)`。
+- **映像**：`vllm-gemma4:latest`；`--served-model-name gemma4` 讓 CSP `model_registry`、Router、agent fan-out 全程同一個 id。
+- **模型**：`gemma-4-31B-it`，`--max-model-len 131072`、`--dtype bfloat16`、`--kv-cache-dtype fp8`、`--gpu-memory-utilization 0.97`、`--enable-prefix-caching`。
+- **MTP speculative decoding**：`--speculative-config '{"method":"mtp","model":".../gemma-4-31B-it-assistant","num_speculative_tokens":2}'`，跟 target 共用 KV cache，實測 1.7–2.2× 加速（conversational > code）。需要 vLLM ≥ 0.18（含 Gemma4 MTP spec-decode PR）；舊版會報 `unknown speculative method 'mtp'` 退出。assistant 小頭模型需一次性離線下載到本機。
+- **tool / reasoning**：`--enable-auto-tool-choice`、`--tool-call-parser gemma4`、`--reasoning-parser gemma4`、`--default-chat-template-kwargs '{"enable_thinking": true}'`。
+- **GPU / 資源**：`device_ids: ["3"]`、`shm_size: 64g`、`ipc: host`。
+- **健康檢查**：`GET /v1/models`（`start_period: 180s`）。
+
+### nv-embed-triton（Embedding 後端，Triton）
+
+- **映像**：`tritonserver:25.04-nv-embed-v2`，model `NV-Embed-v2`。
+- **GPU**：`device_ids: ["0"]`；`--model-control-mode=poll --repository-poll-secs=1`。
+- **網路**：**沒有 `expose:` 也沒有 `ports:`** — 只在 `anila-models-net` 內讓 `nv-embed-proxy` 透過 docker DNS 找到，attack surface 最小。
+- **健康檢查**：`GET /v2/health/ready`（Triton 協定）。
+
+### nv-embed-proxy（Embedding OpenAI 相容前端）
+
+- **映像**：`embedding-proxy:migration`（FastAPI shim）。把 OpenAI `/v1/embeddings` 形狀橋接到 Triton。**這才是 CSP 實際註冊的 embedding endpoint。**
+- **環境**：`TRITON_URL=http://nv-embed-triton:8000`、`MODEL_NAME=nv-embed-v2`、`REQUEST_TIMEOUT=60`。
+- **依賴**：`depends_on: nv-embed-triton (service_healthy)`；無 GPU。
+- **健康檢查**：`GET /v1/models`（`start_period: 30s`）。
 
 ---
 
@@ -84,105 +72,73 @@
 
 ```
 models/
-├── docker-compose.yml          # anila-models compose project（含 LLM/embedding/FLUX 服務）
-├── flux2-dev/                  # FLUX.2-dev 推論服務
-│   ├── Dockerfile              # CUDA 12.4 base + torch 2.6 + diffusers
-│   ├── requirements.txt        # fastapi / diffusers / transformers / accelerate ...
-│   ├── pyproject.toml          # 測試以 mock pipeline 注入，不需 GPU stack
-│   ├── server.py               # build_app + /generate + /health + pipeline 載入
-│   └── tests/                  # pytest（test_server.py, conftest.py）
-└── flux2-dev-agent/            # agent 包裝層（OpenAI 相容）
-    ├── Dockerfile              # python:3.11-slim
-    ├── requirements.txt        # fastapi / httpx / pydantic / python-multipart
-    ├── pyproject.toml
-    ├── app/
-    │   ├── main.py             # build_app + 端點（/health, /v1/models, /v1/chat/completions）
-    │   ├── schemas.py          # OpenAI chat 相容 pydantic models
-    │   ├── prompt_translator.py
-    │   ├── flux_client.py
-    │   ├── image_store.py
-    │   └── chat_handler.py
-    └── tests/                  # pytest（pytest-asyncio + respx）
+├── docker-compose.yml   # anila-models compose project（上述 4 個服務）
+├── README.md
+└── README.en.md
 ```
 
-> 註：同一個 `docker-compose.yml` 還定義了 `gpt-oss-20b`、`gemma4`、`nv-embed-triton`、`nv-embed-proxy` 等非圖像服務，本文件僅聚焦 FLUX 兩個服務。
+> 模型權重、Triton repository、TensorRT engine 等都以**主機絕對路徑** volume mount 進容器（`/home/aia/c1147259/project/Huggingface/...`、`.../Docker/...`），不在 repo 內；換 host 時記得遷移或修 compose 內的路徑。
 
 ---
 
 ## 啟動與部署 / Setup & Run
 
-這些服務透過 `models/docker-compose.yml` 啟動。所有服務只用 `expose:`（內網），**不開 host port**；外部 NIC 無法直接連到，CSP 走共用的 external docker network `anila-models-net` 以 DNS 連接。
-
 一次性 bootstrap（host 上）：
 
 ```bash
+# 1. 建 cross-project external network
 docker network create anila-models-net
-docker compose -f docker-compose.yml restart csp   # CSP 加入該網路
+
+# 2. 平台 csp 容器已宣告加入此 network — 重啟一次讓它真的進去
+docker compose -f docker-compose.yml restart csp
 ```
 
 日常操作：
 
 ```bash
 docker compose -f models/docker-compose.yml up -d
-docker compose -f models/docker-compose.yml logs -f flux2-dev
 docker compose -f models/docker-compose.yml ps
-docker compose -f models/docker-compose.yml restart flux2-dev-agent
+docker compose -f models/docker-compose.yml logs -f gemma4
+docker compose -f models/docker-compose.yml restart gemma4
 docker compose -f models/docker-compose.yml down          # 只動模型,平台不受影響
 ```
 
 GPU / 資源配置（取自 compose）：
 
-- `flux2-dev`：GPU `["1","2"]`、`shm_size: 32g`、`ipc: host`、healthcheck 打 `/health`（`start_period: 300s`）。
-- `flux2-dev-agent`：無 GPU，`depends_on: flux2-dev (service_healthy)`。
-
-關鍵環境變數：
-
-| 服務 | 變數 | 預設 / 值 | 說明 |
-|------|------|-----------|------|
-| flux2-dev | `FLUX_MODEL_PATH` | `/workspace/model/FLUX.2-dev` | 權重路徑 |
-| flux2-dev | `FLUX_DEVICE_MAP` | `balanced` | 多卡分片 |
-| flux2-dev | `FLUX_NUM_STEPS` | `28` | inference steps 預設 |
-| flux2-dev | `FLUX_GUIDANCE_SCALE` | `3.5`（compose）/ `4.0`（程式碼 fallback） | guidance 預設 |
-| flux2-dev | `HF_HUB_OFFLINE` / `TRANSFORMERS_OFFLINE` | `1` | air-gapped |
-| flux2-dev-agent | `FLUX_BACKEND_URL` | `http://flux2-dev:8000` | 後端推論服務 |
-| flux2-dev-agent | `CSP_BASE_URL` / `CSP_API_KEY` | `http://csp:8000` / env | 翻譯 callback 走 CSP |
-| flux2-dev-agent | `GEMMA_MODEL` | `gemma4` | 翻譯用 LLM |
-| flux2-dev-agent | `ENABLE_PROMPT_TRANSLATION` | `1` | 關閉則直送原文 |
-| flux2-dev-agent | `SHARE_DIR` / `PUBLIC_URL_PREFIX` | `/share/flux` / `/uploads/flux` | 落地路徑與對外 URL |
-| flux2-dev-agent | `DEFAULT_ASPECT_RATIO` | `16:9` | 預設長寬比 |
-| flux2-dev-agent | `FLUX_TIMEOUT_SECONDS` | `240` | 呼叫後端逾時 |
-
-**Air-gapped 權重處理**：FLUX.2-dev 權重以唯讀 volume mount 進容器
-（`/home/aia/c1147259/project/Huggingface/FLUX.2-dev:/workspace/model/FLUX.2-dev:ro`），
-搭配 `HF_HUB_OFFLINE=1`，容器不會連外抓權重。
-
-`flux2-dev-agent` 把 host 的 `share-dev/uploads/flux` bind 到容器 `/share/flux`；此目錄同時由 nginx 在 `/uploads/flux/` 對外服務（前端圖片連結即指向此）。
+| 服務 | GPU | 重點 |
+|------|-----|------|
+| `gpt-oss-20b` | 2 | TensorRT-LLM、`ipc: host`、kv_cache 0.5 |
+| `gemma4` | 3 | vLLM + MTP、`shm_size: 32g`+、max-model-len 131072 |
+| `nv-embed-triton` | 0 | Triton、無 expose（純內網） |
+| `nv-embed-proxy` | — | FastAPI shim，`depends_on` triton |
 
 ---
 
 ## 與其他服務的關係 / Integration
 
-- 平台 router 在 gemma4 發出 `DISPATCH:image-generator:...` 時，由 **CSP proxy** 把請求轉送到 `flux2-dev-agent`（CSP `model_registry` 把 agent 註冊為 `model_type=agent`）。
-- `flux2-dev-agent` 透過 `FLUX_BACKEND_URL` 直連 `flux2-dev` 的 `/generate`；CSP 的 studio 也可循同一路徑直接打 `flux2-dev`。
+- **CSP**：在 `/models` UI 或 `AUTO_REGISTER_MODELS` 把三條 endpoint（`http://gpt-oss-20b:8000/v1`、`http://gemma4:8000/v1`、`http://nv-embed-proxy:8000/v1`）註冊進 `model_registry`，標 `is_internal`。CSP 的 `/v1/chat/completions` / `/v1/embeddings` proxy 走這些 endpoint 並計量 `token_usage`。
+- **Router**：主路由 LLM 預設 `gemma4`。
+- **ingestion-worker**：embedding 經 CSP `/v1/embeddings`（亦即 `nv-embed-proxy`）做 chunk 向量化。
 - 三者共用 external docker network `anila-models-net`，僅 container-to-container DNS 可達；host port 完全沒開。
-- 翻譯 callback：agent 透過 `CSP_BASE_URL` + `CSP_API_KEY` 呼叫 CSP 的 `/v1/chat/completions`（model=`gemma4`），把使用者口語改寫成英文 prompt。
 
----
+### 端到端連線驗證
 
-## 相關文件 / Related docs
+```bash
+# 從外網主機（或主機 shell）打應該全部 refused（沒開 host port）
+curl http://<本機-LAN-IP>:8000/v1/models     # connection refused
 
-- FLUX 規格：[`docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md`](../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md)（已確認存在）。
-  - §3.2 定義 `/generate` 合約（本服務據此實作）。
-  - §9 為授權雷區。
+# 從 CSP container 內走 docker DNS 應該 200
+docker compose exec csp curl http://gpt-oss-20b:8000/v1/models
+docker compose exec csp curl http://gemma4:8000/v1/models
+docker compose exec csp curl http://nv-embed-proxy:8000/v1/models
+```
 
 ---
 
 ## 授權注意 / Licensing note
 
-依 spec §9：
+各模型沿用其上游授權，內部商用前請法務確認：
 
-- **`black-forest-labs/FLUX.2-dev` 為 BFL Non-Commercial License**，內部商用屬灰色地帶——**開工 / 上 production 前請法務確認**「公司內部工具」是否落在授權範圍。
-- **`FLUX.2-klein-4B` 為 Apache-2.0**，是法律上最乾淨的本地替代（畫質略降、延遲更低）。若法務認定 dev 版內部商用有疑慮，**主力應換 klein-4B**。
-- `FLUX.2-klein-9B` 與 dev 同為 Non-Commercial，不解決授權問題。
-
-compose 內 `flux2-dev` 服務上方亦有對應 caveat 註解：啟用 production 前先確認授權。
+- **`gpt-oss-20b`**：OpenAI gpt-oss，Apache-2.0。
+- **`gemma-4-31B-it`**：Google Gemma Terms of Use（非標準 OSI 授權，使用前確認條款）。
+- **`NV-Embed-v2`**：NVIDIA 授權（含非商業條款）—— 內部商用屬灰色地帶，上 production 前請法務確認。

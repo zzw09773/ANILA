@@ -1,29 +1,22 @@
 # ANILA 平台
 
-> **Runtime-first、On-prem 多 Agent 平台。** 三個服務、一個落地 LLM，docker compose 一鍵啟動。
+> **Runtime-first、On-prem 多 Agent 平台。** docker compose 一鍵啟動。
 
 ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key、對外以 OpenAI 相容介面提供推論、讓開發者基於樣板複製出自己的 Agent 並註冊進來、讓終端使用者透過統一 UI 與所有 Agent 對話，並以「主 LLM 未加密 → 遇到加密 agent 整段對話升級為加密」的單向閂鎖（one-way latch）處理敏感資料。
 
-平台層內建**使用者記憶**：每輪對話自動萃取個人事實 + embed 訊息片段，下次對話自動帶入，跨 agent 共享；agent 也可透過 service token 呼叫 `/api/memory/users/{id}/facts` 主動讀取使用者背景做個人化（route 3，[`docs/briefing/anila-memory-layer-rfc.md`](./docs/briefing/anila-memory-layer-rfc.md)）。
+平台層內建**使用者記憶**：每輪對話自動萃取個人事實 + embed 訊息片段，下次對話自動帶入，跨 agent 共享；agent 也可透過 service token 呼叫 `/api/memory/users/{id}/facts` 主動讀取使用者背景做個人化。
 
 | 子專案 | 角色 | 預設 Port |
 |---|---|---|
 | [`myCSPPlatform`](./myCSPPlatform/) | **CSP**（Control & Data Plane）— 使用者 / API Key / 模型 / Agent 註冊 / 對話 / 附件 / 分享 / 交接 / 審計 / Ingestion (Knowledge Collections + Evaluator) / OpenAI 相容代理 / JWKS / token revocation publisher | `:8000` |
-| [`anila-studio`](./anila-studio/) | **Studio service** — Deck 生成(RAG + LLM 大綱 + FLUX 圖像 + PPTX);抽自 csp(見 [extraction-decision](./docs/superpowers/anila-studio/extraction-decision.md))。HTTP-only 對 csp,本地驗 JWT(JWKS)+ Redis pub/sub revocation | `:8100`（internal） |
 | [`anila-core`](./anila-core/) | **Runtime foundation（SDK）** — Python agent runtime 基座（api / registry / engine / tools / providers / storage / **memory（short_term + long_term + backends + clients）**／ compact / cli / **security** / ingestion 共用 chunking_plugins）。Router 與所有 agent 共用 | — |
 | [`anila-core-router`](./anila-core-router/) | **Router** — OpenAI 相容分派器；依請求自動路由到註冊的 Agent；Sprint 8 X 起以 `service_clients.router-primary` per-credential token 走 s2s | `:9000` |
 | [`anila-agent`](./anila-agent/) | **官方 sub-agent 模板**（git subtree from [`zzw09773/anila-agent`](https://github.com/zzw09773/anila-agent)）— 基於 openai-agents SDK + LiteLLM，移植 Claude Code 的 memdir 長期記憶、hook 介面、slash-command CLI。開發者 fork 上游 repo 當起點，ANILA 透過 subtree 同步本地 copy；CSP 把這個目錄當 template 提供下載 | `:24786`（獨立執行時） |
 | [`ingestion-worker`](./ingestion-worker/) | **Async pipeline worker** — Arq + Redis backbone；CSP 推 job 進 queue 後 worker 解析 → 分塊 → embed → 寫 pgvector，並跑 Chunking Evaluator 的 LLM-as-judge | （無 host port） |
 | [`ANILA_UI/anila-ui`](./ANILA_UI/anila-ui/) | **Chat Runtime UI** — React 聊天介面，cookie + SSE，串 CSP 與 Router；經由 nginx 對外（dev 直跑 `:5173`） | nginx 前 |
-| [`ANILALM`](./ANILALM/) | **Knowledge-base 前端 + Studio** — Vite + React + TS SPA；CSP `/api/ingestion/*` + `/api/conversations/*` + Studio 入口；mount 在 nginx `/anilalm/` 子路徑 | nginx 前 |
-| [`ANILALM/pptx-skill`](./ANILALM/pptx-skill/) | **PPTX render service** — Node.js + pptxgenjs；Studio 生簡報的後端；CSP 透過 internal network 觸發 | `:7100`（internal） |
-| **`nginx`**（compose service） | 對外閘道；同源 reverse-proxy `/api`、`/v1`、`/router`、`/anilalm/`、`/static`、`/uploads`；6 個安全 header（HSTS / CSP / Permissions-Policy / Referrer-Policy / X-Frame-Options / X-Content-Type-Options） | `:80` / `:443` / `:4443` |
+| **`nginx`**（compose service） | 對外閘道；同源 reverse-proxy `/api`、`/v1`、`/router`、`/static`、`/uploads`；6 個安全 header（HSTS / CSP / Permissions-Policy / Referrer-Policy / X-Frame-Options / X-Content-Type-Options） | `:80` / `:443` / `:4443` |
 | **`redis`**（compose service） | ingestion-worker 的 queue backing store；不對外暴露 | （無 host port） |
 | [`runtime_logic`](./runtime_logic/) | **TS Runtime 參考材料**（READ-ONLY）— 用來對照移植到 `anila-core` 的 agent runtime 設計原本；原始碼 gitignored | — |
-
-> **唯一的規劃文件（single source of truth）**：[`anila_plan.md`](./anila_plan.md)。
->
-> **Onyx 已搬離本 repo**（2026-04-27）：原本 `onyx/` 是 upstream clone，現由 agent 開發團隊在他們自己的 repo 維護。我方僅保留 handover 文件 [`docs/onyx/onyx-target-system-api-spec.md`](./docs/onyx/onyx-target-system-api-spec.md) 與 [`docs/onyx/onyx-application-plan.md`](./docs/onyx/onyx-application-plan.md)。完整變更原因見 [`docs/changelog/2026-04-27-onyx-handover.md`](./docs/changelog/2026-04-27-onyx-handover.md)。需要 Onyx 原始碼請 `git clone` 對方專案。
 
 ---
 
@@ -36,16 +29,11 @@ flowchart TB
 
     subgraph spas["前端（皆經 nginx 對外）"]
         anila_ui["anila-ui<br/>對話 · 分享 · 交接 · Developer Console"]
-        anilalm["ANILALM<br/>知識庫 · Studio 入口"]
     end
 
     subgraph csp["myCSPPlatform (internal only)"]
         csp_ctrl["Control Plane /api/*<br/>cookie / JWT · users · api_keys · models<br/>agents · conversations · shares · handoffs<br/>audit · alerts · ingestion · trusted-hosts<br/>JWKS / token revocation publisher"]
         csp_data["Data Plane /v1/*<br/>sk- API Key · chat/completions<br/>· embeddings · /v1/agents manifest"]
-    end
-
-    subgraph studio["anila-studio :8100 (internal only)"]
-        studio_api["/api/studio/slides/jobs<br/>RAG + LLM + FLUX + PPTX 生 deck<br/>HTTP 對 csp · 本地 RS256 + JWKS verify"]
     end
 
     subgraph router["ANILA Router (internal only)"]
@@ -66,17 +54,14 @@ flowchart TB
         llm["LLM / Embedding services<br/>vLLM · TensorRT-LLM · Triton + FastAPI shim<br/>internal-only (no host ports)<br/>跨 stack 走 anila-models-net docker DNS"]
     end
 
-    pptx["pptx-renderer :7100<br/>Studio 簡報合成"]
     db[("PostgreSQL + pgvector<br/>csp schema")]
 
     users -->|瀏覽器 cookie| nginx
     users -->|OpenAI SDK sk-*| nginx
     nginx --> anila_ui
-    nginx --> anilalm
     nginx --> csp_ctrl
     nginx --> csp_data
     nginx --> router_core
-    nginx --> studio_api
 
     csp_data -.->|model=anila-router| router_core
     router_core -->|GET /v1/agents · service_clients token| csp_data
@@ -89,11 +74,6 @@ flowchart TB
     redis --> worker
     worker --> db
     worker -.->|/v1/embeddings · /v1/chat completions| csp_data
-    studio_api -.->|/api/ingestion/.../search<br/>/api/proxy/v1/chat/completions<br/>/.well-known/jwks.json| csp_ctrl
-    studio_api -.->|/api/ingestion/images/{id}/blob| csp_ctrl
-    studio_api -.->|FLUX 生圖| llm
-    studio_api -.->|/render PPTX| pptx
-    redis -.->|anila:auth:token-revoke pub/sub| studio_api
     agents -.CSP proxy.-> llm
 
     classDef plane fill:#fef3c7,stroke:#d97706
@@ -110,20 +90,19 @@ flowchart TB
         ┌──────────────────────────────────────┐
         │  nginx :80 / :443 / :4443             │
         │  reverse-proxy + 6 安全 header        │
-        └─┬──────────┬─────────┬─────────┬─────┘
-          │          │         │         │
-          ▼          ▼         ▼         ▼
-        anila-ui  ANILALM    CSP        Router
-        (SPA chat) (KB+Studio) :8000     :9000
-                              (internal) (internal)
+        └─┬──────────┬─────────┬─────┘
+          │          │         │
+          ▼          ▼         ▼
+        anila-ui    CSP        Router
+        (SPA chat)  :8000      :9000
+                    (internal) (internal)
         /api/*  cookie/JWT      │         │
         /v1/*   cookie/sk-      │         │
                                 │         │
                     ┌───────────┴────┐    │
                     │  Control plane │    │ /v1/chat/completions
                     │  Data plane    │◀───┘    model=anila-router
-                    │  Studio API    │   per-agent service token
-                    │  /api/ingestion│         │
+                    │  /api/ingestion│   per-agent service token
                     └─────┬──────────┘         │
                           │ enqueue            ▼
                           ▼              已註冊 Agent
@@ -141,8 +120,6 @@ flowchart TB
                                      (models/docker-compose.yml
                                       anila-models-net,
                                       internal docker DNS only)
-
-  Studio 簡報生成：CSP 內部呼叫 pptx-renderer :7100 (internal)
 ```
 
 </details>
@@ -204,7 +181,7 @@ docker compose up -d
 | `INTERNAL_PLATFORM_API_KEY` | ingestion-worker 系統帳號 API Key |
 | `LOCAL_LLM_BASE_URL` / `LOCAL_LLM_MODEL` | 落地 LLM endpoint（OpenAI 相容）|
 
-啟動順序（由 healthcheck 串接）：`csp-db` → `csp` + `redis` → `ingestion-worker` → `router` → `anila-ui` + `anilalm` + `pptx-renderer` → `nginx`（最後對外閘道）。首次啟動約 30 秒（含 alembic migration 至 `0029` + 自動 seed smoke 使用者與 API Key）。
+啟動順序（由 healthcheck 串接）：`csp-db` → `csp` + `redis` → `ingestion-worker` → `router` → `anila-ui` → `nginx`（最後對外閘道）。首次啟動約 30 秒（含 alembic migration + 自動 seed smoke 使用者與 API Key）。
 
 > **正式環境**：把 `.env` 移除 `ANILA_ALLOW_DEV_SECRET=1`，所有 dev 預設值（`SECRET_KEY=dev-secret-key-change-in-prod` / `ADMIN_PASSWORD=changeme` / `CSP_SERVICE_TOKEN=dev-service-token` / `DB_PASSWORD=csp_password` / `INTERNAL_PLATFORM_API_KEY=sk-internal-worker-changeme` / `CODESERVER_PASSWORD=changeme-codeserver`）都會被 `app/services/startup_security.py` 拒絕，container 直接開不起來，避免無聲帶 dev secret 上線。
 
@@ -419,7 +396,7 @@ env (`ANILA_TRUSTED_HOSTS`) 仍是 anila-core 預設 fallback,給 agent / worker
 ```
 ANILA/
 ├── myCSPPlatform/        # CSP：FastAPI + SQLAlchemy + Alembic + Vue 管理 UI
-│                         # 含 Studio (PPTX/報告) + Ingestion (KB) + Evaluator
+│                         # 含 Ingestion (KB) + Evaluator
 ├── anila-core/           # Runtime foundation（SDK）：api / registry / engine /
 │                         # tools / providers / storage / memory / compact / cli /
 │                         # security / ingestion 共用 chunking_plugins
@@ -428,38 +405,27 @@ ANILA/
 ├── anila-agent/          # 官方 sub-agent template（git subtree；上游：zzw09773/anila-agent）
 ├── ingestion-worker/     # Arq async pipeline worker（Redis backbone）
 ├── ANILA_UI/anila-ui/    # React 對話 SPA
-├── ANILALM/              # 知識庫 + Studio SPA（Vite + React + TS）
-│   └── pptx-skill/       # Node.js + pptxgenjs；Studio 簡報合成服務
 ├── runtime_logic/        # TS runtime 參考材料（gitignored；只追蹤 README）
 ├── models/               # 推論模型獨立 compose（project: anila-models）：
-│                         # flux2-dev（FLUX.2-dev /generate）+ flux2-dev-agent（agent shim）
+│                         # gpt-oss-20b（LLM）+ NV-embed-V2（embedding）
 ├── docs/                 # 依主題分組，每組可含設計/規格文件
-│   ├── agent-framework/  # agent runtime 架構、移植決策、openai-agents 深入
-│   ├── agenticrag/       # AgenticRAG 解耦 / 增強 / Phase 1 計畫
+│   ├── agent-framework/  # agent runtime 架構、csp-agent bootstrap 協定
 │   ├── anila-core/       # anila-core 邊界、runtime 設計
 │   ├── ingestion/        # ingestion 平台設計、parent-child RAG
-│   ├── onyx/             # onyx 應用計畫 / 目標系統 API spec
-│   ├── platform/         # 多服務整合、SSO migration
-│   ├── planning/         # branch-sync backlog、sprint 計畫
 │   ├── guides/           # developer guide
-│   ├── runbooks/         # 維運手冊（token cutover / TLS / legacy bootstrap）
-│   ├── changelog/        # 交接 / 變更紀錄
-│   ├── briefing/         # 簡報 / RFC
-│   └── superpowers/
-│       └── studio-flux/  # FLUX 圖像生成 spec / plans / history（Stage 1-4）
+│   └── runbooks/         # 維運手冊（token cutover / TLS / legacy bootstrap）
 ├── scripts/
 │   ├── reencrypt-credentials.py          # PBKDF2 v1→v2 一次性 re-encrypt
 │   ├── reissue-tls-cert.sh
 │   └── phase1-e2e.sh
 ├── share/                # nginx 對外 /static、/uploads 後備（gitignored data）
-├── docker-compose.yml    # 9 active services（csp-db / csp / redis /
-│                         # ingestion-worker / router / nginx / pptx-renderer /
-│                         # anilalm / anila-ui）+ 3 commented (codeserver / n8n / gitlab)
-├── anila_plan.md         # 單一事實來源：決策、Wave 計畫、架構
+├── docker-compose.yml    # active services（csp-db / csp / redis /
+│                         # ingestion-worker / router / nginx / anila-ui）
+│                         # + codeserver / n8n / gitlab
 └── README.md             # 本檔
 ```
 
-> 每個子專案（`myCSPPlatform` / `anila-core` / `anila-core-router` / `anila-agent` / `ANILALM` / `ANILA_UI/anila-ui` / `ingestion-worker` / `models` / `runtime_logic`）目錄下均含 `README.md`（繁中為主）+ `README.en.md`（English mirror），各自說明用途、架構、啟動與整合。
+> 每個子專案（`myCSPPlatform` / `anila-core` / `anila-core-router` / `anila-agent` / `ANILA_UI/anila-ui` / `ingestion-worker` / `models` / `runtime_logic`）目錄下均含 `README.md`（繁中為主）+ `README.en.md`（English mirror），各自說明用途、架構、啟動與整合。
 
 ---
 
@@ -494,7 +460,7 @@ ANILA/
 | `ANILA_PUBLIC_CSP_BASE_URL` | UI build | 瀏覽器用來打 CSP 的對外 URL |
 | `ANILA_PUBLIC_ROUTER_BASE_URL` | UI build | 瀏覽器用來打 Router 的對外 URL |
 
-> 完整範本見 [`.env.example`](./.env.example)；變更歷史見 [`docs/platform/sso-migration.md`](./docs/platform/sso-migration.md)、[`docs/planning/sprint-7x-plan.md`](./docs/planning/sprint-7x-plan.md)。
+> 完整範本見 [`.env.example`](./.env.example)。
 
 ---
 
@@ -506,7 +472,7 @@ ANILA/
 - **SPA 認證（Wave 2 + Sprint 7 X）**：瀏覽器 session 完全走 **httpOnly cookie**（`anila_access_token` / `anila_refresh_token` / 非 httpOnly 的 `anila_csrf`）。SPA 完全不持有 API Key — anila-ui 7 X 已下架所有 ApiKey 輸入 UI、Settings 的「API Key」tab、header 的 `sk-…` dropdown，避免使用者誤填造成洩漏。CSRF 用 **double-submit cookie pattern**，middleware 對 cookie 認證的 POST/PUT/DELETE 用 `hmac.compare_digest` 檢查 `X-CSRF-Token` header。帶 `Authorization: Bearer` 的 SDK / curl 路徑豁免 CSRF 檢查（非 browser-originated）。
 - **雙軌認證**：`/v1/chat/completions` 及其他 `/v1/*` 資料面由 `Caller` dependency 同時接受 JWT（SPA path）與 `sk-*` API Key（SDK path），兩者都歸屬到同一個 `user_id`；僅 API Key 路徑會填 `token_usage.api_key_id`，JWT 路徑落入「Web UI」bucket。
 - **OIDC SSO**（Sprint 5 X / 6 X）：authorization request 帶 PKCE (S256) + nonce；callback 必驗 `id_token` 簽章（透過 IdP 的 JWKS）+ iss / aud / azp / exp / nonce + 確認 `id_token.sub == userinfo.sub`。`alg=none` 一律拒絕。`email_verified=true` 強制；email 衝突時不自動合併（避免被 IdP 接管 admin），raise 給 admin 手動處理。`next_path` 經 `sanitize_next_path` 白名單（必須 `/` 開頭、第二字元不能是 `/` 或 `\`、無 CRLF、≤200 字）擋 open-redirect。OIDC `client_secret` 改 AES-256-GCM envelope 儲存（`enc::v1::` 前綴），API 回應一律 mask 為 `***`。
-- **本地登入逐步退場**：`users.local_password_disabled` flag（migration `0022`，預設 False）讓 admin 對個別使用者切 SSO-only；切換後密碼正確也回 403。完整 SSO cutover 三階段見 [`docs/platform/sso-migration.md`](./docs/platform/sso-migration.md)。**LDAP 已自系統下線**（Sprint 5 X），全部欄位由 migration `0021` DROP；`/api/auth/login` 對 `auth_source=ldap` 直接回 400。
+- **本地登入逐步退場**：`users.local_password_disabled` flag（migration `0022`，預設 False）讓 admin 對個別使用者切 SSO-only；切換後密碼正確也回 403。**LDAP 已自系統下線**（Sprint 5 X），全部欄位由 migration `0021` DROP；`/api/auth/login` 對 `auth_source=ldap` 直接回 400。
 - **Credential 加密**：`anila_core.security.credential_crypto` 用 AES-256-GCM；KDF 為 PBKDF2-HMAC-SHA256 600k iter（OWASP 2024）。寫一律新 key；讀失敗自動 fallback 100k legacy key 並計數 — 既有 v1 row 持續可用，等 `scripts/reencrypt-credentials.py` 跑完統一升 v2。`SECRET_KEY` 為 dev 預設值且 `ANILA_ALLOW_DEV_SECRET≠1` 時 raise。
 - **SSRF guard**：`anila_core.security.url_guard.validate_outbound_url` 集中 deny-list（loopback / private / link-local / cloud-metadata / docker service name / `*.internal` / `*.local` 等），對 user-supplied `endpoint_url` 一律驗證。Agent register / update + 使用者 LLM credential + **model registry** 都接此 guard;agent endpoint 變更時 `approval_status` 自動退回 `pending` 強制 admin 重新核可。Phase 2 後 allow-list 由 admin 透過 `/trusted-hosts` UI 管理 (DB-backed),`ANILA_TRUSTED_HOSTS` env 降格為 bootstrap fallback (給 agent / worker 等不接 CSP DB 的 process 用)。Provider hook (`register_trusted_host_provider`) 設計成 fail-safe — DB 抖時 cache 返回 last good snapshot 不 raise,env 永遠 enforce。**Fixable** 失敗 (single-label hostname / `.internal` zone) backend 回 typed 400 dict 給前端跳 inline confirm modal;**non-fixable** (loopback / metadata / link-local / private IP) 仍 plain string 拒絕,絕不能用「加進 trusted_hosts」繞過。
 - **模型 stack 與平台 lifecycle 解耦**:Phase 1 把推論模型搬到獨立 `models/docker-compose.yml` (project `anila-models`),走 `expose:` 不對 host 開埠,CSP 透過共用 external network `anila-models-net` 走 docker DNS。平台 `docker compose restart csp` 不碰模型;反之亦然。`nv-embed-triton` (Triton 協定 backend) 連 `expose:` 都不開,只在 network 內讓 `nv-embed-proxy` (FastAPI shim) 看到。`csp` / `router` 服務本身也拿掉 host port (`8000` / `9000`),只在 docker network 內可達,**外部入口縮成 nginx `:443` 一條,強制 HTTPS + API Key 雙重門**。`model_registry.is_internal` (migration 0033) 標記哪些 endpoint 在內部 docker DNS;non-owner viewer 看到 `<internal>` 而非 `<owner-only>` sentinel。
@@ -521,179 +487,10 @@ ANILA/
 
 ---
 
-## 最近更新
-
-### 2026-05-11 — DB-driven trusted_hosts + typed 400 confirm modal + JSONB-on-SQLite 解凍
-
-Phase 2 of the inference-stack decoupling work. 把 `ANILA_TRUSTED_HOSTS` 從 env-only allow-list 升格成「DB-backed + 30s TTL cache + audit log + UI 管理頁」,並順手把既有「JSONB 在 SQLite 測試環境 compile 失敗」這個壓著 13 個既有測試的 infra debt 一併收掉。
-
-- **`trusted_hosts` 表 (migration 0034)** + ORM (`models/trusted_host.py`) + schema (`schemas/trusted_host.py`)。columns: `host UNIQUE / note / created_by_user_id / created_at`。Backfill helper (`trusted_host_service.backfill_from_env`) 在 CSP boot 時把 env 內容 idempotent 灌進來 — env 不消失,降格成 anila-core 預設 fallback (給 agent / worker 場景用)。
-- **`trusted_host_service`** 提供 in-memory set + 30s TTL cache,mutation 後立即 invalidate;DB 失敗時 fail-safe 返回 last good snapshot 而不 raise (SSRF guard 是熱路徑,DB 抖就 break model registration 太脆弱)。`register_with_url_guard()` 在 startup 把 cache 灌進 [`anila_core.security.register_trusted_host_provider`](./anila-core/src/anila_core/security/url_guard.py),guard 收 env ∪ provider 的 union。
-- **`/api/trusted-hosts` CRUD** (`api/trusted_hosts.py`): GET admin-tier (透明度),POST / DELETE owner-only (loosen guard 才算 platform-altering)。每筆 mutation 寫 `audit_log` (`trusted_host.create` / `.delete`)。
-- **anila-core url_guard 結構化異常**: `UnsafeEndpointError` 加 `host` / `reason` / `fixable_by_trust_host` 屬性 + `REASON_*` constants。`fixable_by_trust_host=True` 只對 `single_label` + `internal_zone` 兩個 reason (loopback / metadata / link-local / private IP / scheme 失敗都 False — 絕不能被 trusted_hosts 繞過)。`str(exc)` 維持人類可讀訊息,legacy plain-string consumer 不受影響。
-- **`/api/models` typed 400**: `_enforce_endpoint_url` 收到 fixable 異常時 detail 改回 structured dict `{code:"untrusted_host", host, reason, message, hint}`,non-fixable 維持 plain string。
-- **ModelsView confirm modal**: 註冊模型時遇到 untrusted_host 直接 inline confirm「add X + retry」,owner 一鍵加 trusted_host + 立即 retry,不必離開 /models 切到 /trusted-hosts 手動操作。non-owner 走 alert (因為他們本來就不能加 trusted_host)。
-- **TrustedHostsView 管理頁** + sidebar 連結 (admin 群組內) + router meta `requiresAdmin` (mutation 由後端 enforce owner-only)。
-- **JSONB-on-SQLite 解凍**: `platform_link.required_roles` 跟 `ingestion.*` 的 JSONB / ARRAY 全改成 `JSON().with_variant(JSONB, "postgresql")` pattern。13 個既有 test (`test_template_download.py` 等) 跟著從 erroring 變 runnable。
-- **測試**: 新增 `test_url_guard_providers.py` (12)、`test_trusted_host_service.py` (15)、`test_models_ssrf.py` 加 typed 400 cases (4)、總共 **79 個 backend test all green**。
-- 對應 commits: 待 commit (整合進 models-decouple 大 PR)。
-
-### 2026-05-11 — 推論模型 stack 解耦 + SSRF guard parity + is_internal flag
-
-把推論模型從平台 `docker-compose.yml` 抽出來,落地到獨立的 [`models/docker-compose.yml`](./models/docker-compose.yml) (project name `anila-models`)。平台 `docker compose restart csp` 不會碰模型,反之亦然;模型只 `expose:` 內部 port 不對 host 開,CSP 透過共用 external network `anila-models-net` 走 docker 內部 DNS (`http://gemma4:8000/v1`) 連線。同主機 4 張 GPU 中用 3 張:`gpt-oss-20b` (GPU 2 / TensorRT-LLM)、`gemma4` (GPU 3 / vLLM)、`nv-embed-triton` (GPU 0 / Triton,完全 cluster-internal) + `nv-embed-proxy` (FastAPI shim,無 GPU)。詳細操作見 §「維護 models stack」。
-
-- **`models/docker-compose.yml`** (新檔): 4 個 service / 不同 project name (`anila-models`) / 共用 external network / GPU 透過 `device_ids` 顯式綁。HF cache + Triton repository 路徑沿用 my-openai-frontend 既有絕對路徑,搬遷期可快速回滾舊 compose。
-- **SSRF guard parity** ([anila-core/src/anila_core/security/url_guard.py](./anila-core/src/anila_core/security/url_guard.py)): 新增 `ANILA_TRUSTED_HOSTS` env-driven allow-list,以「scheme 校驗後、所有 host 校驗前」short-circuit 放行 admin-blessed docker service names。`agents.py` / `credentials.py` 已有 guard,**model_registry 之前完全沒守 — 一併補上 parity**(`api/models.py::_enforce_endpoint_url` 在 create / update 路徑都呼叫)。新加 6 個 url_guard test (trusted hosts 行為 + exact-match / case-insensitive / 空白容錯) + 8 個 models SSRF unit test + 7 個 is_internal sentinel test,46 個全綠。
-- **`is_internal` flag** (migration 0033 + ORM + schemas + UI): model_registry 加 boolean column,API 註冊預設 true (新模型都在 anila-models-net),非 owner viewer 看 endpoint 從 `<owner-only>` 切到 `<internal>` sentinel,UI 列表名稱旁有綠色 🔒。歷史 row 保持 false 由 admin 手動勾起。Schema migration + `startup_migrations._ensure_schema_backfills` 雙重 idempotent。
-- **CSP env 配置** ([docker-compose.yml](./docker-compose.yml)): csp service 加 `anila-models-net` 進 `networks:`、env 加 `ANILA_TRUSTED_HOSTS` 預設值 `gpt-oss-20b,gemma4,nv-embed-proxy,host.docker.internal`(最後一個保留 backward compat 給既有 7011 embedding-proxy 註冊)。`extra_hosts: host.docker.internal:host-gateway` 既有,不動。
-- **Cutover 流程** (手動,在 plan + README §「維護 models stack」):  1) `docker network create anila-models-net` 2) `docker compose up -d csp` 3) 停舊 stack (`docker compose -f /home/aia/c1147259/project/My-OpenAI-Frontend/docker-compose.migration.yml down`) 4) `docker compose -f models/docker-compose.yml up -d` 5) CSP `/models` UI 把 3 條 endpoint 從 LAN IP 改成 docker service DNS + 勾 internal。
-- 對應 commits: 待 commit (`feat(models): decouple inference stack into separate compose project + is_internal flag + SSRF guard parity`)
-
-### 2026-05-11 — anila-agent subtree + owner-tier RBAC 全面修補 + Phase 2 guide
-
-把 sub-agent 模板從 vendored AgenticRAG 切到 anila-agent subtree（升到 **0.2.1**），順手把 migration `0032` 加 owner role 後遺漏的 RBAC 漏網之魚一次掃完，Developer Guide 重寫對齊新 runtime 架構。
-
-- **anila-agent subtree（取代 AgenticRAG）**：舊 `AgenticRAG/` 是 monorepo 內 vendored OpenAI Agents SDK + 自家 framework (47 個 runtime 模組)；改為 git subtree 從 `github.com/zzw09773/anila-agent` 拉。雙向同步、不是 submodule（新人 `git clone ANILA` 就拿到全部內容）。upstream 為「openai-agents runtime + Claude-Code-style memdir 長期記憶 + 5 個 hook event + 3 個 retriever 後端（Dummy / langchain pgvector / ANILA-native pgvector）」。CSP `/api/agents/template/download` 改 zip `./anila-agent/`，走 `ANILA_TEMPLATE_DIR` env + read-only docker mount，subtree pull 不需 rebuild CSP。維護指令見 §「維護 anila-agent」。
-- **owner-tier RBAC 全面修補**：新 helper `auth_service.is_admin_tier(user) -> bool`（沿用 `_ADMIN_TIER_ROLES = ("admin", "owner")`），把「admin 看全部 / 管全部」的閘門收斂在單點。14 個檔共 28 處 `role == "admin"` / `role != "admin"` 一律換成 `is_admin_tier(user)`：`agents.py` / `proxy.py` / `users.py` / `platform_links.py` / `api_keys.py` / `usage.py` / `ingestion/{collections,credentials}.py` + service 層 `access_control` / `api_key_service` / `conversation_service` / `handoff_service` / `attachment_service`。修掉症狀「CSP UI 只列 owner 註冊的 2 個 agent，但 ANILA UI 透過 `UserAgentPermission` JOIN 看到 3 個」(資源沒被刪，只是被 CSP UI 藏起來)。`users.py` 的 admin 降級偵測同步改成 `was_admin_tier` — 避免 owner → admin 被誤判降級。
-- **DeveloperGuideView 整份重寫**（對齊 anila-agent 0.2.x）：砍掉舊 AgenticRAG vendored framework 章節（TraceMiddleware / Coordinator / BgTaskRunner / Skills loader / MCP / enforce_citations — 已不存在於 anila-agent）。重寫 retriever 三選、`@anila_tool` 裝飾器、5 個 hook event、memdir 長期記憶 + SQLiteSession 短期 + auto extraction。**新增「包 FastAPI service」段** — anila-agent 是 CLI/library 不是 service，開發者必須自包一層 OpenAI-compat HTTP wrapper 才能讓 CSP router 找到；guide 給 bridge boilerplate。保留 anila-core 平台 primitives（ToolDefinition + permission / workspace + caps / guardrails / RuntimeConfigPoller / ask_user + plan_mode + todo_write）、bootstrap / service token 流程、runtime_config 三分頁。
-- **bug 修補**：`_require_developer_or_admin` 加 `owner` — owner 不再被擋 403（download template / register agent / runtime config 編輯）；`_TEMPLATE_DIR` fallback path `AgenticRAG/` → `anila-agent/`（容器內靠 env 蓋過，影響的是本地 dev）；models.py purge / endpoint_url 編輯端點 owner-only；ANILA UI 加 window-focus 重抓 `/v1/agents` 並做 15 秒節流 — 管理員在 CSP 改 agent 後使用者切回 ANILA UI 自動同步，不用 hard refresh。
-- **anila-agent 0.2.1 內容**：upstream cleanup pass — `configs/agent.yaml` `name` 從 `anila` → `my-agent`、prompts/system.md + agent.md 拿掉 `Anila` identity 行改成 TODO 佔位符、`examples/rag_agent.py` seeded corpus 換成天文/地理/物理三條中性事實、`.env.example` 重組成 Flavour A (langchain) / Flavour B (ANILA platform) 兩塊、`anila_pgvector.py` docstring 用 `<host>` / `<port>` / `<collection_id>` 佔位符。讓 CSP template download 吐給開發者的 baseline 不再帶 ANILA 內部 hardcoded 字串。
-- 對應 commits：`36861b9` / `1be1c4b` / `5495385`（subtree 引入）+ `09f0b1c`（0.2.0 pull）+ `9ab4a2c`（0.2.1 pull）+ 待 commit（RBAC sweep + guide 重寫 + 上述 bug fix）。
-
-### Sprint 14 — Unified user-tenant memory layer（route 3，2026-05-04）
-
-把「平台對使用者的長期記憶」做成第一類功能，跨對話 / 跨 agent / 跨 UI 共享。對應 anila-core **v0.13.0** + CSP migration **0030 / 0031**。
-
-- **使用者記憶（CSP P1）**：每輪對話結束後背景跑事實萃取（key/value）+ 訊息向量化（halfvec(4000)），下次任何對話自動帶入相關記憶。Schema 兩張新表：`user_facts`（事實，per-user）+ `conversation_memory_chunks`（embedding，pgvector HNSW）。proxy 層在 LLM 呼叫前後注入 / 持久化，全程 graceful — 萃取或 embed 失敗不影響聊天本身。
-- **管理 UI（CSP P2）**：ANILA_UI 設定面板加「**記憶**」tab — 列出已記住的事實（key/value/confidence）、刪除單筆、整批清空；對話片段索引 roll-up + 最近預覽。所有操作呼叫 `/api/memory/{facts,chunks}`，scoped to current user（GDPR / 個資法 surface）。
-- **加密繼承閂鎖（CSP P3）**：採 Bell-LaPadula「no write down」— 任何對話只要透過記憶引用了原本加密來源的片段，就一次性 latch 為 classified 並標 `classification_inherited=true`。前端依 inherited vs originally classified 顯示不同色鎖頭 + 警示橫幅。Migration `0031` 加 `conversations.classification_inherited` 欄位。
-- **anila-core 重組**：`memory/` 收成 `short_term/`（Session Protocol + adapters）+ `long_term/`（DTOs / extraction / embedding / adapter Protocol + `backends/{filesystem,postgres}` + `clients/`）+ `compact/` 三層 taxonomy。所有舊 import 路徑保留 shim。
-- **跨租戶 agent → user 記憶讀取（route 3 Phase 3）**：CSP 加 `GET /api/memory/users/{user_id}/facts`，吃 agent service token (csk-)，audit-logged。anila-core 提供 `HttpUserFactReader` 客戶端 + `CallerContext` FastAPI dependency + `make_user_memory_reader` factory；agent 收到 CSP-forwarded 請求時自動拿到 user_id + token + reader，三行內就能讀使用者背景做個人化。`AgentContext.caller` 透過 `create_subagent_context` 傳給 sub-agents，讓多層 agent 服務同一使用者時記憶共享。
-- **設計文件**：[`docs/briefing/anila-memory-layer-rfc.md`](./docs/briefing/anila-memory-layer-rfc.md) — 為什麼選路線 3（anila-core 擁有語意 + CSP 物理託管）、phase 拆解、與舊 memdir 的關係。
-- **測試**：anila-core **655 pass**（+17 new）；CSP `test_memory_service.py` **8 pass**；端到端：simulated agent 透過完整 anila-core stack 拿到 smoke-user 的 fact，audit row 寫入確認。
-- 完整 changelog：[`anila-core/CHANGELOG.md`](./anila-core/CHANGELOG.md) v0.13.0 區塊。
-
-### Sprint 13 — Router resume + agent runtime hot-reload（2026-05-03）
-
-把 Sprint 9-12 累積的 agent 互動原語跨層串到底：Router 認得 typed agent events、能代理 resume，agent 的 tool permission / workspace caps / guardrails 可在不重啟的情況下被改。對應 anila-core **v0.12.0**、CSP migration **0029**。
-
-- **Router**（`anila-core/src/anila_core/api/router_server.py`）：`_stream_agent_sse` 重寫成正規 SSE parser（之前 `event:` header 一律被丟），把 Sprint 9-12 typed events（`interrupt_requested` / `resumed` / `todos_updated` / `follow_ups` / `tool_call_*`）統一 rename 成 `anila.*` 命名空間後 forward 給上層。新 endpoint `POST /v1/sessions/{sid}/answer` 讓使用者 UI 可以 resume 之前暫停的 turn — Router 從 `session_owners` 表查到擁有該 session 的 agent，再把 user 的 answer 透過 CSP forward 過去。
-- **CSP**：migration `0029` 新 `agents.runtime_config` JSONB 欄位 + 3 個新 endpoint（owner/admin GET/PATCH + agent service-token 自取的 `me/runtime-config`）+ 新 resume proxy endpoint `POST /v1/agents/{a}/sessions/{sid}/answer`。新 admin view `AgentRuntimeConfigView.vue` 三段式編輯器（tool permissions / workspace caps / guardrails）。
-- **anila-core**：`anila_core.runtime_config` 子套件 — `parse → apply → poller`。Agent 啟動時 inline 拉一次（lifespan 結束前 caps 已套好），之後每 30 秒 ETag-cached 增量。`apply_runtime_config` 動 `ToolRegistry`：swap allow/deny lists、flip per-tool `permission` 旗標、安裝 guardrail instance（標 `_runtime_marker` 不汙染 code-defined guardrails）。
-- **ANILA_UI**：`runtime/sse.js` 加 `dispatchSseEvent` + 7 個新 callback；`runtime/api.js` 加 `getSessionState` / `submitSessionAnswer`；新元件 `agentic.jsx`（`InterruptCard` / `TodoChecklist` / `FollowUpChips` / `PausedBadge`）、`toolExecution.jsx`（Terminal / Diff / FileTree renderer）、`spanTree.jsx` dev-only viewer。
-- **CSP UI**：`DeveloperGuideView` 新增 5 個中文章節（agentic loop / per-tool ASK / workspace / guardrails / runtime_config）。
-- **classified latch 補洞**：`agent_as_tool` 之前不會把被諮詢的加密 agent 之 classified 旗標 propagate 回主 agent — 補了 `AgentContext.classified_latch`，dispatch 前用 manifest flag fail-closed flip，dispatch 後再以 response meta 雙重防線。template 內建讀 latch 並 OR 進 `anila_meta.classified`。
-- **測試**：anila-core **624 pass / 5 pre-existing fails**（CJK Windows console + 老 mock，自 Sprint 12 起就在）；ANILA_UI **120 pass**。Net new: 24 runtime-config + 16 SSE pass-through + 7 classified-latch propagation + 6 resume proxy + 5 owner persistence + 60 ANILA_UI 元件測試。
-- 完整 changelog：[`anila-core/CHANGELOG.md`](./anila-core/CHANGELOG.md) v0.12.0 區塊。
-
-### Sprint 9-12 — agentic loop primitives（anila-core internal，2026-05-02 ~ 03）
-
-四 sprint 在 `anila-core` 內擴增 agent runtime 能力，**未碰其他子專案**（Sprint 13 才把這些能力暴露到 UI / 管理面）：
-
-| Sprint | 子系統 | 主要功能 |
-|---|---|---|
-| 9 | session / interrupts / todo board | `SqliteSession` adapter、`InterruptItem` + `RunPaused` + `resume_from_interrupt`、`ask_user` / `enter_plan_mode` + `exit_plan_mode` / `todo_write` 工具、`PromptSuggestion` post-turn hook |
-| 10 | handoff + multi-turn dispatch | `HandoffRequest` 與 filters（NoFilter / LastNFilter / SummaryFilter）、`agent_as_tool` factory、Router 多輪 dispatch（`anila_multi_turn` opt-in）、`X-Anila-Session-Id` header |
-| 11 | tracing + per-tool permission | `Span/Tracer/SpanProcessor/TracingHooks`、`RunHooks` 9-hook lifecycle、per-tool `ALLOW`/`ASK`/`DENY`（ASK 自動產生 `tool_approval` interrupt）、`bypass_gates` resume 路徑 |
-| 12 | workspace + sandboxed tools + guardrails | `Workspace` + `WorkspaceCaps`（capability-scoped temp dir + `safe_path`）、`tools.{files,shell,apply_patch}`（V4A patch envelope）、`engine.guardrails`（`InputGuardrail`/`OutputGuardrail` Protocol + `RegexBlock` / `MaxLengthOutput` 內建） |
-
-詳見 [`anila-core/CHANGELOG.md`](./anila-core/CHANGELOG.md) 的 v0.8.0 / 0.9.0 / 0.10.0 / 0.11.0 區塊。
-
-### Sprint 8 X — Service-token bootstrap-then-provision + caller attribution（2026-05-01）
-
-整支 fleet 從共用 env-var `CSP_SERVICE_TOKEN` 升級為 per-credential 系統，dev 視角依然只貼 1 條 token，但內部支援 issue / rotate / revoke / 24h grace 與 audit attribution。
-
-- **Schema** (`migration 0027`)：新增 `agent_credentials`（1:N per agent；`enc::v1::` AES-GCM envelope + sha256 lookup hash + 24h previous-token grace）、`service_clients`（router / worker / admin-tool）、agents 加 4 個 bootstrap 欄位、token_usage 加 `caller_agent_id` / `caller_client_id` + 2 個 partial index。Backfill 既有 `CSP_SERVICE_TOKEN` 進每個 approved agent 與 router-primary，標 `is_legacy=true`。
-- **CSP backend**：12 個新 endpoints（issue-bootstrap / bootstrap / issue-static / list / rotate / revoke / credentials/me + service_clients CRUD）；`auth_service.verify_service_token` 改 DB-backed + env-var fallback + audit；`proxy_service` 加 5-min in-memory token cache + 把 `target_agent_id` / `caller_agent_id` / `caller_client_id` thread 進 outgoing header + usage_writer。`usage_service` 新增 4 種 caller-attribution rollup（top-agents / by-base-model / by-client / agents/{id}）。
-- **anila-core**：`!=` → `hmac.compare_digest`；新 `RotatingServiceTokenMiddleware`（state file 載入 + env-var fallback + 單次 hot-reload after 401 / 403）；新 CLI `anila-core agent bootstrap`（bsk- 換 csk- 並寫 state file mode 0600）。
-- **Router**：3-priority startup（state file → CSP_BOOTSTRAP_TOKEN auto-bootstrap → legacy `CSP_SERVICE_TOKEN`），`/router/primary-status` debug endpoint 暴露 `service_token_source`。
-- **AgenticRAG**：Dockerfile + entrypoint 自動跑 bootstrap；docker-compose named volume `anila-agent-state` 持久化 csk-；新文件 `BOOTSTRAP_DEPLOYMENT.md`（含 K8s StatefulSet + per-pod PVC + recovery 場景）。
-- **CSP frontend**：`DeveloperAgentsView` detail modal 加完整 service-token 管理（issue bootstrap / issue static / rotate / revoke + secret banner + cred table）；新 `ServiceClientsView`（admin only，路由 `/service-clients`，sidebar 新行）；`UsageView` 加 top-agents + by-base-model 兩張卡；`DashboardView` 加 cutover 進度 widget（`legacy-token-stats`）+ top-5 agents 卡；`AuditLogsView` 加 7 個 service_token event-type quick filter。
-- **Phase F — Tier 0 / 1 / 2** 文件：`docs/runbooks/legacy-agent-bootstrap.md`（決策樹 + Python / Go / Node.js reference impl）、`docs/runbooks/service-token-cutover.md`（4 stages，stage 2 拆 2a AgenticRAG / 2b legacy / 2c Router）。
-- **Phase K — Classified latch reload-escape hotfix**：`runtime/classifyRetryQueue.js` 取代 fire-and-forget；`POST /api/conversations/:id/declassify` endpoint 與 service method 一起拔除（違反 README 多次強調的 one-way latch invariant）。
-- **測試**：anila-core middleware 16 / 16 通過；ANILA UI classifyRetryQueue 11 / 11 通過；CSP 新增 `test_agent_credentials.py`（pure-helper 部分通過；DB 部分需 Postgres，與既有 test 一致）。
-- 對應 commits：`4c20ea6` / `5a820ca` / `9c8a6b6` / `4eaad46`。完整 cutover 流程見 [`docs/runbooks/service-token-cutover.md`](./docs/runbooks/service-token-cutover.md)。
-
-### Sprint 7 X — anila-ui API Key UI 下架（2026-04-27）
-
-Wave 2 cookie 流程後 SPA 完全不持有 key，但 anila-ui 仍保留「Settings → API Key tab」、header 的 `sk-…` dropdown、chat menu 的「API Key」項目 — 全部是 dead code（`apiKey = ""` hardcoded、`updateApiKey` no-op）。比沒有 UI 更危險，使用者填入 production key 後會看到「✓ 已儲存」假成功訊息，可能從 dev tools / autofill / 截圖洩漏。本輪一次性移除 ApiKeyPopover / ApiKeyTab / maskApiKey / 對應 icon imports，並把 `streamChatCompletion` 的 legacy `apiKey` parameter 一併拿掉。Bundle 驗證 0 個 ApiKey 字串殘留。同 sprint 寫了 [`docs/planning/sprint-7x-plan.md`](./docs/planning/sprint-7x-plan.md) 規劃 8 X 工作（帳號合併工具、break-glass admin、`LOCAL_LOGIN_DISABLED` flag），未上線階段不做 dashboard / bulk tool 等 premature 工作。對應 commit：`0b8509e` / `0b22f54`。
-
-### Sprint 6 X — 資安修補尾巴 + SSO 地基（2026-04-27）
-
-Sprint 5 X 審查的尾巴清乾淨，並把 SSO 取代本地登入的地基鋪好（**本地登入仍可用，預設不切換**）。
-
-- **Track A**：Alembic `0021` DROP `auth_providers.ldap_*` 欄位；PBKDF2 升 600k 並提供 v1→v2 雙 key 過渡 + `scripts/reencrypt-credentials.py` 一次性 re-encrypt 工具；OIDC 加 PKCE (S256) + nonce + `id_token` JWKS 驗簽；`startup_security` 寫成 pytest（順手修 `offenders` 永遠不被 raise 的 bug）；TLS 重簽 script `scripts/reissue-tls-cert.sh` + 歷史改寫 runbook。
-- **Track B**：`users.local_password_disabled` flag（migration `0022`，預設 False）讓 admin 切 SSO-only；OIDC `next_path` 集中 sanitize 擋 open-redirect；`docs/platform/sso-migration.md` 寫 cutover 三階段路線。
-- **驗證**：32 個新 pytest 全 pass；E2E 確認 SSO-only 切換後本地登入回 403、LDAP path 回 400、6 個 nginx 安全 header 全到位。對應 commit：`e29316e`。
-
-### Sprint 5 X — 全面資安審查 + 修補（2026-04-27）
-
-對整個 repo 做 Critical / High / Medium / Low 分級審查與修補：
-
-- **Critical**：移除 git 追蹤的 TLS 私鑰；n8n 全域關閉 TLS 驗證 + 開放任意 require → 收斂預設；code-server 強制 `:?required` password / workspace。
-- **High**：OIDC `client_secret` 改 AES-GCM envelope 加密儲存 + API 回應 mask；OIDC 強制 `email_verified` 並停用 email-only 帳號合併（防 IdP-mixup admin 接管）；AgenticRAG middleware fail-closed + `hmac.compare_digest`；agent register / update 接 SSRF guard + 端點變更重置 approval；SPA 切 httpOnly cookie + CSRF（前端 stop writing localStorage）；**LDAP 完整移除**（後端 service / API / schema / 前端表單全清）。
-- **Medium / Low**：startup_security 預設值阻擋；zip 上傳 1 GB 累計上限 + 檔名消毒；CSRF middleware constant-time；nginx 補 HSTS / CSP / Permissions-Policy；SPA fallback 路徑遍歷修補；`role` 改 `Literal`；附件改 allow-list；antiword `--` 分隔符；PBKDF2 註記升級條件（在 6 X 完成）。對應 commit：`143f89e` / `d2c74ca`。
-
-### Onyx upstream 移出 monorepo（2026-04-27）
-
-- 原本 `onyx/` 是 4690 個檔（61 MB）的 upstream clone，混在本 repo 已造成 diff/blame/search 雜訊
-- agent 開發團隊明確要在他們自家 repo 維護 → 此 repo 不再追 Onyx 程式碼
-- 走 `git filter-repo --invert-paths --path onyx/` 從**全 history** 清除（包括所有 branches）
-- 結果：`.git` 從 34 MB 縮到 5.7 MB（-83%）、新 clone / fetch 速度顯著改善
-- ⚠️ 所有 collaborator 需 `git fetch && git reset --hard origin/<branch>` 同步新 history
-- 安全 backup tag：`pre-onyx-filter-repo-2026-04-27`（本地保留 14 天後可刪）
-- 完整變更原因 + 操作步驟：[`docs/changelog/2026-04-27-onyx-handover.md`](./docs/changelog/2026-04-27-onyx-handover.md)
-- 規格 handover 文件留下：[`docs/onyx/onyx-target-system-api-spec.md`](./docs/onyx/onyx-target-system-api-spec.md)、[`docs/onyx/onyx-application-plan.md`](./docs/onyx/onyx-application-plan.md)
-
-### AgenticRAG 升格為官方 RAG Agent Template（2026-04-24）
-
-- 舊的極簡 `anila-rag-sample`（627-line proxy）與獨立 repo `github.com/zzw09773/AgenticRAG`（framework 身份）合併為 **ANILA 平台官方 RAG agent template**
-- 完整 framework（65 個 src 模組、23 支測試、tool-driven RAG、Hybrid Search、mxbai cross-encoder reranker、CJK tokenizer、Docling parser、vision pipeline、L1-L3 compact）搬進 monorepo
-- 新增 `CspServiceTokenMiddleware` 雙路徑載入（優先 `anila-core` canonical → fallback 本地 in-package copy），保證獨立部署也能跑
-- 新增 `AgenticRAG/anila-agent.yaml`（CSP 註冊 manifest）與 `AgenticRAG/docs/CSP_INTEGRATION.md`（三種註冊方式、s2s auth、trusted user headers、多租戶檢索 patterns）（註：`AgenticRAG/` 後由 `anila-agent/` subtree 取代，見下方 2026-05-11 條目；上述路徑為當時的歷史位置）
-- `github.com/zzw09773/AgenticRAG` 已歸檔（`isArchived=true`），README 改為 notice 指向本 monorepo
-- 對應 commits：`c4bf85a` / `9d5b052` / `59f05f6`
-
-### Auth / Session 重構
-
-- **Wave 1**：`/v1/*` 新增 `Caller` dependency，同時接受 JWT 與 API Key；`token_usage.api_key_id` 改為 `nullable`（migration `0010`），JWT 流量分桶到 dashboard 的 `web_ui_requests`。
-- **Wave 2**：SPA 移除 localStorage JWT 與 sessionStorage API Key，完全改走 httpOnly cookie + CSRF；新增 `POST /api/auth/logout`；OIDC callback 不再發 short-lived API Key。
-- `users.last_login_at`（migration `0011`）+ audit IP 一致性補齊。
-
-### Agent Console 強化
-
-- `PUT /api/agents/{id}` — owner / admin 可自行編輯 endpoint / description / capabilities / api_version / base_model_id；**刪除仍 admin 限定**，避免孤兒紀錄。
-- `base_model_id` **註冊時必填**（原本 optional），並驗證指向 active 的 model_registry row。`AgentResponse` 增加 `base_model_name` / `owner_username` / `capabilities` 欄位。
-- `health_status` 在 API 回傳前 normalize（`online` → `healthy`、`offline` → `unhealthy`），統一 dashboard 統計。
-- 新增 `POST /api/agents/{id}/health-check` 主動檢查端點。
-
-### UI（ANILA Runtime）
-
-- Chat bubble 重設計：Claude.ai-style flat rounded，Assistant 無頭列框、工具列 hover-reveal、ReasoningSummary 合併 routing trace + thinking 成單行 ghost row。
-- Conversation sidebar：title 兩行 clamp 而非截斷；dropdown 改用 `position: fixed` 避開 overflow 切斷；搜尋框 `×` clear button + Esc；tag 搜尋 + 同義詞展開（`特休` 可找到 `年假` / `HR`）。
-- Composer：`@` autocomplete 下拉實際可用 agent；paste 時優先 `text/*` 避免文字被 browser fallback 截圖當圖片附件。
-- EmptyState 改為單卡「ANILA 可以做什麼？」，prompt 由實際 agent 清單動態產出（不再有假 agent 卡片）。
-- Router 系統 prompt 新增「ambiguous → clarify」規則；`_normalize_clarify_bullets` 後處理器把 inline `·` 分隔的候選 agent 轉成 markdown bullet。
-
-### Admin UX 修復
-
-- API Key 建立：前後端 trim 非空 + 至少一 model + `canCreate` disable button。
-- Agent 詳情：Owner 顯示 `admin (ID: 1)`；`capabilities` 空時改顯示「尚未設定」。
-- Usage chart legend 不再蓋住 x 軸標籤（`containLabel: true` + grid.bottom 留白）。
-- Markdown numbered list 密度對齊 OpenWebUI（移除 inline style 與 `white-space: pre-wrap` 繼承）。
-- 對話標題 LLM 重複輸出（`AA` pattern）自動 collapse；placeholder 白名單擋 Router fallback 文字汙染 title。
-
-### 測試覆蓋
-
-- 前端 vitest：69 tests（新增 `messageMeta` / `titleClean` / `searchSynonyms`）
-- 後端 pytest：80+ tests。Sprint 6 X 新增 `test_startup_security`（7）/ `test_next_path_sanitize`（16）/ `test_oidc_pkce_nonce`（3）/ `test_local_password_disabled`（6）共 32 個資安回歸測試。
-
----
-
 ## 授權
 
-見 [`LICENSE`](./LICENSE)。Onyx 原 upstream 程式碼已於 2026-04-27 搬離本 repo（詳見上方說明），其原授權由 agent 開發團隊在他們自己的 repo 維護。
+見 [`LICENSE`](./LICENSE)。
 
 ---
 
-**Last updated**: 2026-05-11（DB-driven trusted_hosts + typed 400 confirm modal + JSONB-on-SQLite 解凍）· **Maintainers**: ANILA 平台團隊 · **Single source of truth**: [`anila_plan.md`](./anila_plan.md) · **記憶層設計**：[`docs/briefing/anila-memory-layer-rfc.md`](./docs/briefing/anila-memory-layer-rfc.md) · **資安／SSO 規劃**：[`docs/platform/sso-migration.md`](./docs/platform/sso-migration.md)、[`docs/planning/sprint-7x-plan.md`](./docs/planning/sprint-7x-plan.md)、[`docs/runbooks/rotate-tls-cert.md`](./docs/runbooks/rotate-tls-cert.md) · **Service-token cutover**：[`docs/runbooks/service-token-cutover.md`](./docs/runbooks/service-token-cutover.md) · [`docs/runbooks/legacy-agent-bootstrap.md`](./docs/runbooks/legacy-agent-bootstrap.md)
+**Maintainers**: ANILA 平台團隊 · **維運手冊**：[`docs/runbooks/service-token-cutover.md`](./docs/runbooks/service-token-cutover.md)、[`docs/runbooks/rotate-tls-cert.md`](./docs/runbooks/rotate-tls-cert.md)、[`docs/runbooks/legacy-agent-bootstrap.md`](./docs/runbooks/legacy-agent-bootstrap.md)

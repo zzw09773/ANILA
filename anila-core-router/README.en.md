@@ -11,7 +11,7 @@
 The Router exposes an OpenAI-compatible `POST /v1/chat/completions` plus a pseudo-model `anila-router`. Its behaviour (confirmed against `main.py` and `router_server`):
 
 - A client sets the request body `model` to `anila-router` to trigger automatic dispatch; any other `model` value is forwarded straight to CSP without going through the dispatch logic.
-- The Router pulls the agent manifest (including `requires_encryption`) from CSP's `GET /v1/agents` and caches it, then calls the primary routing LLM using the caller's API key so the primary LLM can decide whether to dispatch to an agent (e.g. the `image-generator` drawing agent registered in the dev stack).
+- The Router pulls the agent manifest (including `requires_encryption`) from CSP's `GET /v1/agents` and caches it, then calls the primary routing LLM using the caller's API key so the primary LLM can decide whether to dispatch to an agent.
 - When dispatch is chosen, the request is forwarded to that agent's `endpoint_url`, and the agent's SSE stream is forwarded chunk-by-chunk back to the caller.
 - The primary routing model is resolved by CSP at runtime: `main.py` fetches the currently designated primary LLM name from CSP `GET /api/models/router-primary` every 60 seconds. When CSP has no primary routing model configured, the middleware gates `/v1/chat/completions` with a **503** rather than silently falling back to the wrong upstream.
 
@@ -134,11 +134,11 @@ router (:9000)
    ├── GET /v1/agents               ──▶ CSP (CSP_BASE_URL)   fetch agent manifest
    ├── GET /api/models/router-primary ─▶ CSP   resolve primary routing LLM (X-CSP-Service-Token)
    ├── POST /v1/chat/completions    ──▶ CSP   call primary LLM to decide dispatch
-   └── dispatch → agent endpoint_url ─▶ e.g. image-generator → http://flux2-dev-agent:8000
+   └── dispatch → agent endpoint_url ─▶ e.g. a registered agent → http://<agent-service>:<port>
 ```
 
 - **CSP (`CSP_BASE_URL`)**: all upstream interaction goes through CSP — fetching the agent list, resolving the primary routing model, and calling the primary LLM. Router→CSP internal endpoints authenticate with an `X-CSP-Service-Token` header (token source per the three-tier resolution).
-- **Agents**: the dev stack registers `image-generator` via CSP (the FLUX.2-dev drawing agent, `endpoint_url: http://flux2-dev-agent:8000`). When the primary LLM decides a drawing is needed, the Router dispatches the request to that agent and forwards its SSE stream.
+- **Agents**: developers register their custom agents via CSP (each agent has its own `endpoint_url`). When the primary LLM decides an agent is needed, the Router dispatches the request to that agent and forwards its SSE stream.
 - **`/v1/agents` dispatch**: the agents a caller can dispatch to equal that caller's API key's allowed agents in CSP — the Router does not amplify permissions.
 
 ---
@@ -148,7 +148,6 @@ router (:9000)
 (All paths below are verified to exist.)
 
 - Platform overview: [repo-root README](../README.md)
-- Multi-service integration plan (covers the Router's role): [`docs/platform/multi-service-integration-plan.md`](../docs/platform/multi-service-integration-plan.md)
 - Agent framework architecture: [`docs/agent-framework/anila-agent-framework-architecture.md`](../docs/agent-framework/anila-agent-framework-architecture.md)
 - Agent runtime deep dive (covers Router interaction): [`docs/agent-framework/runtime-logic-openai-agents-deep-dive.md`](../docs/agent-framework/runtime-logic-openai-agents-deep-dive.md)
 - Runtime foundation (SDK): [`anila-core/README.md`](../anila-core/README.md)

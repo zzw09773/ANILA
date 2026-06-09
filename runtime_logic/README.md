@@ -101,7 +101,7 @@
 - 平台總覽：[`../README.md`](../README.md)
 - Python runtime（移植目的地）：[`../anila-core/README.md`](../anila-core/README.md)
 - `openai-agents-python` 深入分析（12 條 subsystem 拆解 + P0–P2 起點檔）：[`../docs/agent-framework/runtime-logic-openai-agents-deep-dive.md`](../docs/agent-framework/runtime-logic-openai-agents-deep-dive.md)
-- Agent framework 架構與移植決策：[`../docs/agent-framework/anila-agent-framework-architecture.md`](../docs/agent-framework/anila-agent-framework-architecture.md)、[`../docs/agent-framework/anila-agent-framework-porting-decisions.md`](../docs/agent-framework/anila-agent-framework-porting-decisions.md)
+- Agent framework 架構：[`../docs/agent-framework/anila-agent-framework-architecture.md`](../docs/agent-framework/anila-agent-framework-architecture.md)
 - Parent-child RAG design：[`../docs/ingestion/parent-child-rag-design.md`](../docs/ingestion/parent-child-rag-design.md)
 - Service-token cutover plan：[`../docs/runbooks/service-token-cutover.md`](../docs/runbooks/service-token-cutover.md)
 

@@ -12,10 +12,10 @@
     </header>
 
     <!-- Step 1: upload ------------------------------------------------- -->
-    <TermBox v-if="!result" title="step 1 · upload one document" pad="md" hint="≤ 10 MB · txt / md / pdf / docx / odt / rtf / 圖片">
+    <TermBox v-if="!result" title="step 1 · upload one document" pad="md" hint="≤ 10 MB · 僅限 Markdown（.md）">
       <div class="upload" @drop.prevent="onDrop" @dragover.prevent>
         <input ref="fileInput" type="file"
-               accept=".txt,.md,.markdown,.pdf,.docx,.doc,.odt,.rtf,.png,.jpg,.jpeg,.webp,.gif,.bmp,text/plain,text/markdown,application/pdf"
+               accept=".md,.markdown,text/markdown"
                @change="onFilePicked" style="display:none" />
         <TermButton variant="primary" :disabled="loading" :loading="loading"
                     :label="loading ? `running ${runningSec}s…` : '+ choose file'"

@@ -237,7 +237,6 @@ Coverage is intentionally focused on the harness layer (memdir port, hook bridge
 ## 相關文件 / Related docs
 
 - [`../docs/agent-framework/anila-agent-framework-architecture.md`](../docs/agent-framework/anila-agent-framework-architecture.md) — framework architecture (synthesis design, canonical)
-- [`../docs/agent-framework/anila-agent-framework-porting-decisions.md`](../docs/agent-framework/anila-agent-framework-porting-decisions.md) — porting decisions (SUPERSEDED, still useful as a source-by-source reference for each upstream subsystem)
 - See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## License

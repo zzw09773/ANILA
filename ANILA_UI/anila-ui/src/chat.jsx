@@ -1,5 +1,5 @@
 // Chat view — main ANILA runtime UI (trust + multi-agent + collab)
-// ESM port of ANILA_templete/anila-ui/src/chat.jsx, with backend-driven classification:
+// Chat view with backend-driven classification:
 // no user-controlled "lock/unlock" icons here.
 
 import React, { useState, useMemo, useRef, useEffect } from "react";

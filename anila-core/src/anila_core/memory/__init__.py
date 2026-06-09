@@ -1,7 +1,6 @@
 """anila-core memory module — short-term + long-term memory primitives.
 
-Restructured under route 3 of the anila-memory-layer-rfc into a
-clear taxonomy:
+Restructured into a clear taxonomy:
 
 * :mod:`anila_core.memory.short_term` — within-conversation working
   state (Session Protocol + in-memory / sqlite adapters).
