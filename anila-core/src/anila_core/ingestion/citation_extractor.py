@@ -114,13 +114,40 @@ _CITATION_RE = re.compile(
     rf"(?P<name>(?:(?!第)[一-鿿]){{2,28}}?(?:{_NAME_SUFFIX}))"
     rf"\s*[」》]?\s*(?P<art>{_ART})?"
 )
-# Self / relative references ("本法" "本章" "前項" "該辦法" …) are NOT other
-# documents — they point inside the current one. Drop names that begin with a
-# self-reference token + a structural noun. Deliberately narrow: a real name
-# like "前瞻基礎建設特別條例" (前+瞻) is NOT matched (瞻 ∉ the noun set).
+# ── Noise filters (dropped before a Citation is emitted) ──────────────────────
+# These screen out captures that ARE NOT another document — self/relative
+# references and sentence fragments that merely end in a reg-type word. Tuned
+# to observed false positives; kept narrow to avoid dropping real names.
+#
+# 1. Self / relative reference + a structural noun ("本法" "本章" "前項" "該辦法").
+#    Allows an optional numeral so "前二項" / "前三條" are caught too. A real name
+#    like "前瞻基礎建設特別條例" (前+瞻) is NOT matched (瞻 ∉ the noun set).
+_NUM_RUN = r"[0-9〇零一二三四五六七八九十百千兩廿卅]{0,3}"
 _SELF_REF_RE = re.compile(
-    r"^(?:本|該|同|前)(?:法|律|條|章|節|項|款|目|則|細則|辦法|規則|規定|條例|要點|準則|綱要|計畫)"
+    rf"^(?:本|該|同|前){_NUM_RUN}(?:法|律|條|章|節|項|款|目|則|編|類|細則|辦法|規則|規定|條例|要點|準則|綱要|計畫)"
 )
+# 2. Generic determiner prefixes — "其他法" / "相關規定" / "前述辦法" are not names.
+#    No real regulation starts with these.
+_GENERIC_PREFIX_RE = re.compile(r"^(?:其他|相關|前述|上開|上述|前揭|各該|該等)")
+# 3. Fragment tails: "民法之規定" / "…權利或法" — a possessive/disjunctive 之|或
+#    immediately before the type word means a clause, not a name. NOT 及|與|暨
+#    (real names use those: "個人資料保護及管理辦法").
+_FRAGMENT_TAIL_RE = re.compile(r"(?:之|或)(?:法|律|規定|規則|規範|辦法|條例|要點|準則|綱要|計畫)$")
+# 4. Standalone generics.
+_GENERIC_NAMES = {"法律規定", "法律", "規定", "辦法", "規則"}
+
+
+def _is_noise_name(name: str) -> bool:
+    """True if a captured name is a self-reference / generic / fragment, not a
+    citable other document (design §5: avoid self-references + clause fragments)."""
+    return (
+        bool(_SELF_REF_RE.match(name))
+        or bool(_GENERIC_PREFIX_RE.match(name))
+        or bool(_FRAGMENT_TAIL_RE.search(name))
+        or name in _GENERIC_NAMES
+    )
+
+
 _SENT_DELIMS = set("。；;！？!?\n")
 
 
@@ -178,9 +205,10 @@ def extract_citations(
     for m in _CITATION_RE.finditer(text):
         rel = _CUE_TO_TYPE[m.group("cue")]
         raw_name = m.group("name")
-        # "本法 / 本章 / 前項 / 該辦法 …" reference the current document, not a
-        # citable other one — skip (design §5: avoid self-references).
-        if _SELF_REF_RE.match(raw_name):
+        # Drop self-references ("本法/前二項/該辦法"), generic determiners
+        # ("其他法/相關規定") and clause fragments ("民法之規定/…或法") — none are
+        # citable other documents (design §5).
+        if _is_noise_name(raw_name):
             continue
         title = normalize_title(raw_name)
         if not title:
