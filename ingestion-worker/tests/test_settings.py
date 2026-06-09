@@ -163,6 +163,18 @@ def test_all_defaults_at_once(clean_env):
         "vision_concurrency": 4,
         "vision_timeout_seconds": 60.0,
         "vision_max_image_bytes": 8 * 1024 * 1024,
+        "enable_relation_llm": True,
+        "relation_llm_url": "",
+        "relation_llm_model": "gemma4",
+        "relation_llm_api_key": "not-set",
+        "relation_llm_verify_ssl": False,
+        "relation_llm_timeout_seconds": 120.0,
+        "relation_llm_max_chars": 12000,
+        "relation_llm_max_candidates": 200,
+        "enable_similarity_edges": True,
+        "similarity_top_k": 3,
+        "similarity_min": 0.75,
+        "similarity_max_docs": 500,
     }
 
 

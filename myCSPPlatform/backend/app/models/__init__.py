@@ -19,6 +19,7 @@ from app.models.department import Department
 from app.models.handoff import Handoff
 from app.models.ingestion import (
     AgentLlmCredential,  # back-compat alias for UserLlmCredential
+    DocumentRelation,
     IngestionCollection,
     IngestionDocument,
     IngestionEvalRun,
@@ -47,6 +48,7 @@ __all__ = [
     "Department",
     "AgentLlmCredential",
     "ConversationMemoryChunk",
+    "DocumentRelation",
     "Handoff",
     "IngestionCollection",
     "IngestionDocument",

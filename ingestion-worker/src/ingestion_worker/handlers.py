@@ -825,6 +825,86 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         await _bump_collection_counters(
             pool, collection_id, document_count_delta=1, chunk_count_delta=total_chunks
         )
+
+        # 6. Cross-document relations (best-effort — design v2 §5/§6). The
+        #    parsed text only exists here, so we extract citations + deposit
+        #    rule edges + reconcile the collection now. A failure must NOT fail
+        #    ingest: the chunks are already indexed and relations are an
+        #    additive retrieval aid, not a correctness requirement.
+        try:
+            from ingestion_worker.relations import extract_and_resolve
+
+            rel = await extract_and_resolve(
+                pool,
+                collection_id=collection_id,
+                document_id=document_id,
+                text=text,
+                run_id=(arq_job_id or f"ingest-{document_id}")[:40],
+            )
+            if rel["extracted"]:
+                logger.info(
+                    "doc %s: %d citation edge(s) extracted, %d resolved",
+                    document_id, rel["extracted"], rel["resolved"],
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "Relation extraction failed for doc %s: %s — chunks are "
+                "indexed; cross-document links will be missing for this doc.",
+                document_id, e,
+            )
+
+        # 6b. LLM relation extraction (document-relations Phase 2 / B). Reads
+        #     the text + sibling doc list and writes source='llm' edges that
+        #     point directly at a dst_document_id. Also best-effort + gated;
+        #     coexists with the regex (rule) edges.
+        try:
+            from ingestion_worker.settings import settings as _settings
+            from ingestion_worker.llm_relations import extract_and_resolve_llm
+
+            llm_rel = await extract_and_resolve_llm(
+                pool,
+                collection_id=collection_id,
+                document_id=document_id,
+                text=text,
+                run_id=(arq_job_id or f"ingest-{document_id}")[:40],
+                settings=_settings,
+            )
+            if llm_rel["extracted"]:
+                logger.info(
+                    "doc %s: %d LLM relation edge(s) extracted",
+                    document_id, llm_rel["extracted"],
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "LLM relation extraction failed for doc %s: %s — chunks are "
+                "indexed; rule edges (if any) are unaffected.",
+                document_id, e,
+            )
+
+        # 6c. Topic-similarity edges (document-relations / C). Pure-vector
+        #     relations recomputed collection-wide (a new doc shifts everyone's
+        #     nearest neighbours). Best-effort + gated.
+        try:
+            from ingestion_worker.settings import settings as _settings
+            from ingestion_worker.similarity_relations import recompute_similarity_edges
+
+            sim = await recompute_similarity_edges(
+                pool,
+                collection_id=collection_id,
+                run_id=(arq_job_id or f"ingest-{document_id}")[:40],
+                settings=_settings,
+            )
+            if sim["edges"]:
+                logger.info(
+                    "collection %s: %d similarity edge(s) (after doc %s)",
+                    collection_id, sim["edges"], document_id,
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "Similarity edge recompute failed for collection %s: %s",
+                collection_id, e,
+            )
+
         await _update_job(
             pool, arq_job_id, status="succeeded", succeeded=True,
             progress_pct=100,
@@ -866,3 +946,100 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         )
         await _record_job_failure(pool, arq_job_id, wrapped)
         raise
+
+
+async def reresolve_collection_relations(
+    ctx: dict[str, Any], collection_id: int
+) -> dict[str, Any]:
+    """Re-extract + reconcile cross-document relations for a whole collection
+    (document-relations §8 ``:reresolve``).
+
+    Re-parses every indexed document's blob, re-extracts rule citation edges
+    (delete-then-insert per doc, ``manual`` untouched) and reconciles dst
+    resolution. The API has already run the synchronous reconcile; this is the
+    asynchronous '重抽' half. A per-document parse failure is skipped (its old
+    rule edges simply remain) — the whole job never fails for one bad blob.
+    """
+    pool: PgPool = ctx["pool"]
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, filename, mime_type, storage_path "
+            "FROM ingestion_documents WHERE collection_id = $1 AND status = 'indexed'",
+            collection_id,
+        )
+
+    docs: list[tuple[int, str]] = []
+    for r in rows:
+        sp = r["storage_path"]
+        if not sp or not os.path.exists(sp):
+            continue
+        try:
+            with open(sp, "rb") as f:
+                blob = f.read()
+            text, _meta, _images = extract_text(r["filename"], blob, r["mime_type"])
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "reresolve: parse failed for doc %s (%s) — keeping its old "
+                "rule edges: %s", r["id"], r["filename"], e,
+            )
+            continue
+        docs.append((r["id"], text))
+
+    from ingestion_worker.relations import reresolve_collection_edges
+
+    result = await reresolve_collection_edges(
+        pool,
+        collection_id=collection_id,
+        docs=docs,
+        run_id=f"reresolve-{collection_id}"[:40],
+    )
+
+    # Refresh LLM (source='llm') edges per document too — gated; best-effort
+    # per doc so one failure doesn't abort the whole reresolve.
+    from ingestion_worker.settings import settings as _settings
+    from ingestion_worker.llm_relations import extract_and_resolve_llm
+
+    llm_extracted = 0
+    for doc_id, doc_text in docs:
+        try:
+            r = await extract_and_resolve_llm(
+                pool,
+                collection_id=collection_id,
+                document_id=doc_id,
+                text=doc_text,
+                run_id=f"reresolve-{collection_id}"[:40],
+                settings=_settings,
+            )
+            llm_extracted += r["extracted"]
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "reresolve: LLM extraction failed for doc %s: %s", doc_id, e
+            )
+
+    # Recompute topic-similarity edges once for the whole collection.
+    sim_edges = 0
+    try:
+        from ingestion_worker.similarity_relations import recompute_similarity_edges
+
+        sim = await recompute_similarity_edges(
+            pool,
+            collection_id=collection_id,
+            run_id=f"reresolve-{collection_id}"[:40],
+            settings=_settings,
+        )
+        sim_edges = sim["edges"]
+    except Exception as e:  # noqa: BLE001
+        logger.warning("reresolve: similarity recompute failed: %s", e)
+
+    logger.info(
+        "reresolve collection %s: %d docs, %d rule edges, %d resolved, %d llm, %d similarity",
+        collection_id, len(docs), result["extracted"], result["resolved"],
+        llm_extracted, sim_edges,
+    )
+    return {
+        "collection_id": collection_id,
+        "documents": len(docs),
+        "llm_extracted": llm_extracted,
+        "similarity_edges": sim_edges,
+        **result,
+    }

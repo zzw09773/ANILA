@@ -166,6 +166,19 @@ services:
       VISION_VERIFY_SSL: "${VISION_VERIFY_SSL:-false}"
       VISION_CONCURRENCY: "${VISION_CONCURRENCY:-4}"
       VISION_TIMEOUT_SECONDS: "${VISION_TIMEOUT_SECONDS:-60}"
+      # LLM relation extraction (document-relations Phase 2 / B). Goes through
+      # the CSP /v1 proxy → Router → gemma4, metered via the worker system key.
+      ENABLE_RELATION_LLM: "${ENABLE_RELATION_LLM:-true}"
+      RELATION_LLM_URL: "${RELATION_LLM_URL:-http://csp:8000/v1}"
+      RELATION_LLM_MODEL: "${RELATION_LLM_MODEL:-gemma4}"
+      RELATION_LLM_API_KEY: ${INTERNAL_PLATFORM_API_KEY_DEV:-sk-internal-worker-dev-changeme}
+      RELATION_LLM_VERIFY_SSL: "${RELATION_LLM_VERIFY_SSL:-false}"
+      RELATION_LLM_TIMEOUT_SECONDS: "${RELATION_LLM_TIMEOUT_SECONDS:-120}"
+      # Embedding topic-similarity edges (document-relations / C). Uses the
+      # existing document_chunks vectors — no extra model call.
+      ENABLE_SIMILARITY_EDGES: "${ENABLE_SIMILARITY_EDGES:-true}"
+      SIMILARITY_TOP_K: "${SIMILARITY_TOP_K:-3}"
+      SIMILARITY_MIN: "${SIMILARITY_MIN:-0.75}"
       PYTHONUNBUFFERED: "1"
     volumes:
       - ./share-dev/uploads/ingestion:/var/anila/ingestion-uploads

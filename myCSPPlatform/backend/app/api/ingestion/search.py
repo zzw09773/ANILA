@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from anila_core.storage.adapters.pgvector_store import (
@@ -39,12 +40,13 @@ from anila_core.storage.adapters.pgvector_store import (
 
 from app.api.ingestion.collections import _require_collection_access
 from app.database import get_db
-from app.models.ingestion import IngestionDocument
+from app.models.ingestion import DocumentRelation, IngestionDocument
 from app.models.model_registry import ModelRegistry
 from app.models.user import User
 from app.services.auth_service import get_current_user
 from app.services.ingestion_pool import get_pool
 from app.services.proxy_service import proxy_request
+from app.services.relation_resolver import scope_collection_rls
 
 router = APIRouter(tags=["Ingestion / Search"])
 
@@ -133,6 +135,31 @@ class SearchRequest(BaseModel):
             "前端如要做 'in this doc' 之類的範圍縮限會用到。"
         ),
     )
+    # ── Cross-document relation expansion (design v2 §7) — all opt-in, B/C ──────
+    expand_relations: bool = Field(
+        default=False,
+        description=(
+            "沿 document_relations 邊做 1-hop 展開：主 top-k 命中的文件若有關聯"
+            "(母法/補充/修正…),把關聯文件的代表片段一併帶回 `related`。"
+            "預設關閉,向後相容。"
+        ),
+    )
+    relation_types: list[str] | None = Field(
+        default=None,
+        description="僅展開這些 relation_type(None=全部);如 ['based_on','supplements']。",
+    )
+    max_related: int = Field(
+        default=5,
+        ge=0,
+        le=50,
+        description="`related` 最多回傳幾份關聯文件(0=不展開)。",
+    )
+    min_relation_confidence: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="只展開 confidence ≥ 此值的邊(rule=1.0、llm 可能較低)。",
+    )
 
 
 class SearchHitOut(BaseModel):
@@ -156,11 +183,43 @@ class SearchHitOut(BaseModel):
     chunk_level: int = 0
 
 
+class RelatedHit(BaseModel):
+    """A document reached by a 1-hop relation edge from a main top-k hit
+    (design v2 §7). Additive context for the RAG agent — never replaces the
+    primary ``results``."""
+
+    document_id: int
+    filename: str
+    title: str | None = None
+    relation_type: str = Field(..., description="based_on / amends / supersedes / cites / supplements / relates")
+    target_ref: str = Field(..., description="the cited regulation name [+article] on the edge")
+    source: str = Field(..., description="edge author: rule / manual / llm")
+    direction: str = Field(
+        ...,
+        description=(
+            "'outgoing' = a main-hit document points AT this one (e.g. cites it); "
+            "'incoming' = this document points at a main-hit document."
+        ),
+    )
+    via_document_id: int = Field(..., description="the main-hit document on the other end of the edge")
+    confidence: float = 1.0
+    # representative chunk from the related document (best match for the query;
+    # None if the related doc has no indexed leaf chunk yet)
+    chunk_id: int | None = None
+    chunk_key: str | None = None
+    content: str | None = None
+    score: float | None = None
+
+
 class SearchResponse(BaseModel):
     query: str
     embedding_model: str
     embedding_dim: int
     results: list[SearchHitOut]
+    related: list[RelatedHit] = Field(
+        default_factory=list,
+        description="1-hop relation expansion (empty unless expand_relations=True).",
+    )
 
 
 class ImageSearchRequest(BaseModel):
@@ -291,6 +350,112 @@ async def _embed_query(
     return [float(x) for x in raw_vector[:embedding_dim]]
 
 
+async def _expand_relations(
+    db: Session,
+    store: "CollectionScopedPgVectorStore",
+    *,
+    collection_id: int,
+    main_doc_ids: set[int],
+    query_vec: list[float],
+    payload: "SearchRequest",
+) -> list[RelatedHit]:
+    """1-hop relation expansion over ``document_relations`` (design v2 §7).
+
+    For the set ``D`` of documents the main top-k hit, find resolved edges with
+    one end in ``D`` (``relation_type`` / ``confidence`` filtered), take the
+    OTHER end as a related document, and fetch its single best chunk for the
+    query via ``similarity_search_per_document`` (one batched query, not N
+    scans). Highest-confidence edges win the ``max_related`` cap.
+    """
+    if not main_doc_ids or payload.max_related <= 0:
+        return []
+
+    # csp_app + FORCE-RLS: scope this transaction so the policy yields rows.
+    scope_collection_rls(db, collection_id)
+
+    q = (
+        db.query(DocumentRelation)
+        .filter(
+            DocumentRelation.collection_id == collection_id,
+            DocumentRelation.dst_document_id.isnot(None),  # only resolved edges expand
+            DocumentRelation.confidence >= payload.min_relation_confidence,
+            or_(
+                DocumentRelation.src_document_id.in_(main_doc_ids),
+                DocumentRelation.dst_document_id.in_(main_doc_ids),
+            ),
+        )
+        .order_by(DocumentRelation.confidence.desc(), DocumentRelation.id)
+    )
+    if payload.relation_types:
+        q = q.filter(DocumentRelation.relation_type.in_(payload.relation_types))
+
+    # First edge per related document wins (already confidence-ordered). Cap.
+    picked: dict[int, DocumentRelation] = {}
+    direction: dict[int, str] = {}
+    via: dict[int, int] = {}
+    for e in q.all():
+        if e.src_document_id in main_doc_ids and e.dst_document_id not in main_doc_ids:
+            rel_doc, edge_dir, edge_via = e.dst_document_id, "outgoing", e.src_document_id
+        elif e.dst_document_id in main_doc_ids and e.src_document_id not in main_doc_ids:
+            rel_doc, edge_dir, edge_via = e.src_document_id, "incoming", e.dst_document_id
+        elif e.src_document_id in main_doc_ids and e.dst_document_id in main_doc_ids:
+            # both ends already surfaced by the main search — still note the link
+            rel_doc, edge_dir, edge_via = e.dst_document_id, "outgoing", e.src_document_id
+        else:
+            continue
+        if rel_doc in picked:
+            continue
+        picked[rel_doc] = e
+        direction[rel_doc] = edge_dir
+        via[rel_doc] = edge_via
+        if len(picked) >= payload.max_related:
+            break
+
+    related_doc_ids = list(picked)
+    if not related_doc_ids:
+        return []
+
+    # One representative chunk per related document (batched, RANK-partitioned).
+    rep: dict[int, Any] = {}
+    for h in await store.similarity_search_per_document(
+        query_embedding=query_vec, document_ids=related_doc_ids, k=1, min_score=0.0
+    ):
+        rep.setdefault(h.chunk.document_id, h)
+
+    meta_rows = (
+        db.query(
+            IngestionDocument.id, IngestionDocument.filename, IngestionDocument.title
+        )
+        .filter(IngestionDocument.id.in_(related_doc_ids))
+        .all()
+    )
+    meta = {r.id: (r.filename, r.title) for r in meta_rows}
+
+    out: list[RelatedHit] = []
+    for rel_doc in related_doc_ids:
+        e = picked[rel_doc]
+        fn, title = meta.get(rel_doc, ("<unknown>", None))
+        h = rep.get(rel_doc)
+        out.append(
+            RelatedHit(
+                document_id=rel_doc,
+                filename=fn,
+                title=title,
+                relation_type=e.relation_type,
+                target_ref=e.target_ref,
+                source=e.source,
+                direction=direction[rel_doc],
+                via_document_id=via[rel_doc],
+                confidence=e.confidence,
+                chunk_id=h.chunk.id if h else None,
+                chunk_key=h.chunk.chunk_key if h else None,
+                content=h.chunk.content if h else None,
+                score=h.score if h else None,
+            )
+        )
+    return out
+
+
 # ── Endpoint ────────────────────────────────────────────────────────────────
 
 
@@ -370,10 +535,22 @@ async def search_collection(
     )
     filenames = {r.id: r.filename for r in rows}
 
+    related: list[RelatedHit] = []
+    if payload.expand_relations:
+        related = await _expand_relations(
+            db,
+            store,
+            collection_id=coll.id,
+            main_doc_ids=doc_ids,
+            query_vec=query_vec,
+            payload=payload,
+        )
+
     return SearchResponse(
         query=payload.query,
         embedding_model=coll.embedding_model,
         embedding_dim=coll.embedding_dim,
+        related=related,
         results=[
             SearchHitOut(
                 chunk_id=h.chunk.id,
