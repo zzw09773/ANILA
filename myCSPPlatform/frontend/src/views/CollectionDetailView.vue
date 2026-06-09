@@ -127,6 +127,84 @@
         </template>
       </TermBox>
     </section>
+
+    <!-- Cross-document relations ------------------------------------- -->
+    <TermBox
+      v-if="collection"
+      :title="`relations · ${relations.length}`"
+      pad="md"
+      hint="cross-document links · 母法 / 補充 / 修正 / 引用 · rule=auto, manual=human"
+    >
+      <div class="rel-bar">
+        <div class="rel-toggle">
+          <button :class="['rel-toggle__btn', { 'is-on': relView === 'table' }]" @click="relView = 'table'">表格</button>
+          <button :class="['rel-toggle__btn', { 'is-on': relView === 'graph' }]" @click="relView = 'graph'">圖</button>
+        </div>
+        <TermButton
+          :loading="reresolving"
+          :disabled="reresolving"
+          :label="reresolving ? 'reconciling…' : '↻ reresolve · re-scan + re-extract'"
+          @click="doReresolve"
+        />
+        <span v-if="relMsg" class="cell-meta">{{ relMsg }}</span>
+      </div>
+
+      <!-- manual add -->
+      <form class="rel-add" @submit.prevent="doCreateRelation">
+        <select v-model.number="newRel.src_document_id" required class="rel-input">
+          <option :value="0" disabled>src document…</option>
+          <option v-for="d in documents" :key="`s${d.id}`" :value="d.id">{{ d.title || d.filename }}</option>
+        </select>
+        <select v-model="newRel.relation_type" class="rel-input rel-input--type">
+          <option v-for="t in RELATION_TYPES" :key="t" :value="t">{{ t }}</option>
+        </select>
+        <select v-model.number="newRel.dst_document_id" class="rel-input">
+          <option :value="0">dst document… (or name →)</option>
+          <option v-for="d in documents" :key="`d${d.id}`" :value="d.id">{{ d.title || d.filename }}</option>
+        </select>
+        <input
+          v-model.trim="newRel.target_ref"
+          class="rel-input"
+          placeholder="…or free-text target name"
+          :disabled="!!newRel.dst_document_id"
+        />
+        <TermButton type="submit" variant="primary" :disabled="creating || !newRel.src_document_id" label="+ add" />
+      </form>
+      <div v-if="relError" class="feedback is-err" style="margin-top: var(--gap-2);">! {{ relError }}</div>
+
+      <div v-if="loadingRels" class="loading">loading…</div>
+      <TermEmpty v-else-if="relations.length === 0" message="no relations yet · upload linked docs or add one above" />
+      <RelationGraph v-else-if="relView === 'graph'" :relations="relations" :documents="documents" />
+      <table v-else class="rel-table">
+        <thead>
+          <tr><th>src</th><th>type</th><th>target</th><th>source</th><th>evidence</th><th></th></tr>
+        </thead>
+        <tbody>
+          <tr v-for="r in relations" :key="r.id" :class="{ 'rel--unresolved': !r.resolved }">
+            <td class="rel-doc">{{ r.src_title || `#${r.src_document_id}` }}</td>
+            <td><TermBadge variant="">{{ r.relation_type }}</TermBadge></td>
+            <td class="rel-doc">
+              <span v-if="r.resolved">{{ r.dst_title || `#${r.dst_document_id}` }}</span>
+              <span v-else class="rel-target">
+                {{ r.target_ref }}
+                <TermBadge v-if="r.ambiguous" variant="warn">ambiguous</TermBadge>
+                <TermBadge v-else variant="danger">unresolved</TermBadge>
+              </span>
+            </td>
+            <td><TermBadge :variant="r.source === 'manual' ? 'ok' : ''">{{ r.source }}</TermBadge></td>
+            <td class="rel-ev" :title="r.evidence || ''">{{ r.evidence || '—' }}</td>
+            <td>
+              <button
+                v-if="r.source === 'manual'"
+                class="term-btn term-btn--xs"
+                :disabled="deletingId === r.id"
+                @click="doDeleteRelation(r)"
+              >[ del ]</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </TermBox>
   </div>
 </template>
 
@@ -135,8 +213,10 @@ import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { getCollection } from '../api/ingestionCollections'
 import { listDocuments, uploadDocument, uploadZip, listDocumentChunks, documentBlobUrl, getChunkEmbeddingDebug } from '../api/ingestionDocuments'
+import { listRelations, createRelation, deleteRelation, reresolveRelations } from '../api/ingestionRelations'
 import { streamJob } from '../api/ingestionJobs'
 import { TermBox, TermButton, TermBadge, TermEmpty, TermModal } from '../components/cli'
+import RelationGraph from '../components/RelationGraph.vue'
 
 const route = useRoute()
 const collectionId = ref(Number(route.params.id))
@@ -159,6 +239,18 @@ const showVectorDebug = ref(false)
 const vecDebug = ref({})
 const vecLoading = ref({})
 
+// ── Cross-document relations ───────────────────────────────────────────────
+const RELATION_TYPES = ['based_on', 'amends', 'supersedes', 'cites', 'supplements', 'relates']
+const relView = ref('table')
+const relations = ref([])
+const loadingRels = ref(false)
+const relError = ref('')
+const relMsg = ref('')
+const creating = ref(false)
+const reresolving = ref(false)
+const deletingId = ref(null)
+const newRel = ref({ src_document_id: 0, relation_type: 'cites', dst_document_id: 0, target_ref: '', evidence: '' })
+
 let pollTimer = null
 let sseHandle = null
 const TERMINAL = new Set(['indexed', 'failed', 'cancelled'])
@@ -175,6 +267,7 @@ async function loadAll() {
     return
   }
   await loadDocs()
+  await loadRelations()
   startPolling()
 }
 async function loadDocs() {
@@ -266,6 +359,58 @@ async function doZipUpload(file) {
     await loadDocs()
   } catch (e) { uploadError.value = e.response?.data?.detail || e.message }
   finally { uploading.value = false; progress.value = 0 }
+}
+
+async function loadRelations() {
+  loadingRels.value = true
+  relError.value = ''
+  try {
+    const { data } = await listRelations(collectionId.value)
+    relations.value = data
+  } catch (e) {
+    relError.value = `relations load failed: ${e.response?.data?.detail || e.message}`
+  } finally { loadingRels.value = false }
+}
+
+async function doCreateRelation() {
+  if (!newRel.value.src_document_id) return
+  creating.value = true; relError.value = ''; relMsg.value = ''
+  try {
+    const payload = {
+      src_document_id: newRel.value.src_document_id,
+      relation_type: newRel.value.relation_type,
+    }
+    if (newRel.value.dst_document_id) payload.dst_document_id = newRel.value.dst_document_id
+    else if (newRel.value.target_ref) payload.target_ref = newRel.value.target_ref
+    else { relError.value = 'pick a dst document or type a target name'; creating.value = false; return }
+    if (newRel.value.evidence) payload.evidence = newRel.value.evidence
+    await createRelation(collectionId.value, payload)
+    newRel.value = { src_document_id: 0, relation_type: 'cites', dst_document_id: 0, target_ref: '', evidence: '' }
+    await loadRelations()
+  } catch (e) {
+    relError.value = e.response?.data?.detail || e.message
+  } finally { creating.value = false }
+}
+
+async function doDeleteRelation(r) {
+  deletingId.value = r.id; relError.value = ''
+  try {
+    await deleteRelation(r.id, collectionId.value)
+    await loadRelations()
+  } catch (e) {
+    relError.value = e.response?.data?.detail || e.message
+  } finally { deletingId.value = null }
+}
+
+async function doReresolve() {
+  reresolving.value = true; relError.value = ''; relMsg.value = ''
+  try {
+    const { data } = await reresolveRelations(collectionId.value)
+    relMsg.value = `reconciled · ${data.resolved} resolved · ${data.unresolved} unresolved · ${data.ambiguous} ambiguous · re-extract queued`
+    await loadRelations()
+  } catch (e) {
+    relError.value = e.response?.data?.detail || e.message
+  } finally { reresolving.value = false }
 }
 
 async function loadVectorDebug(chunkId) {
@@ -393,4 +538,39 @@ function zipBadgeVariant(s) {
 }
 .vec__stats { display: flex; gap: var(--gap-3); flex-wrap: wrap; font-size: var(--t-xs); color: var(--c-fg-2); }
 .vec__stats b { color: var(--c-fg-3); font-weight: 500; margin-right: 4px; }
+
+/* Relations */
+.rel-bar { display: flex; align-items: center; gap: var(--gap-2); flex-wrap: wrap; margin-bottom: var(--gap-3); }
+.rel-toggle { display: inline-flex; border: var(--border-w) solid var(--c-border); }
+.rel-toggle__btn {
+  font: inherit; font-size: var(--t-2xs); color: var(--c-fg-3);
+  background: var(--c-bg); border: 0; padding: 3px var(--gap-2); cursor: pointer;
+}
+.rel-toggle__btn + .rel-toggle__btn { border-left: var(--border-w) solid var(--c-border); }
+.rel-toggle__btn.is-on { background: var(--c-accent-soft); color: var(--c-accent); }
+.rel-add {
+  display: flex; gap: var(--gap-2); flex-wrap: wrap; align-items: center;
+  padding-bottom: var(--gap-3); border-bottom: var(--border-w) dashed var(--c-border); margin-bottom: var(--gap-3);
+}
+.rel-input {
+  font-size: var(--t-sm); font-family: var(--font-mono); color: var(--c-fg-1);
+  background: var(--c-bg); border: var(--border-w) solid var(--c-border); padding: 4px var(--gap-2);
+  min-width: 160px;
+}
+.rel-input--type { min-width: 110px; }
+.rel-input:disabled { opacity: 0.5; }
+
+.rel-table { width: 100%; border-collapse: collapse; font-size: var(--t-sm); }
+.rel-table th {
+  text-align: left; font-size: var(--t-2xs); text-transform: uppercase; letter-spacing: var(--tracking-caps);
+  color: var(--c-fg-3); font-weight: 500; padding: var(--gap-1) var(--gap-2); border-bottom: var(--border-w) solid var(--c-border);
+}
+.rel-table td { padding: var(--gap-1) var(--gap-2); border-bottom: var(--border-w) dashed var(--c-border); vertical-align: top; }
+.rel-table tr.rel--unresolved { background: var(--c-danger-soft); }
+.rel-doc { color: var(--c-fg-1); word-break: break-all; max-width: 220px; }
+.rel-target { display: inline-flex; align-items: center; gap: 6px; color: var(--c-fg-2); }
+.rel-ev {
+  color: var(--c-fg-3); font-size: var(--t-2xs); max-width: 260px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 </style>

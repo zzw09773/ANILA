@@ -236,6 +236,56 @@ class CollectionScopedPgVectorStore:
             await self._attach_parent_content(conn, hits)
         return hits
 
+    async def similarity_search_per_document(
+        self,
+        query_embedding: list[float],
+        document_ids: list[int],
+        k: int = 1,
+        min_score: float = 0.0,
+    ) -> list[SearchHit]:
+        """Top-``k`` leaf chunks **per document** for a doc-id set, in ONE query.
+
+        Relation expansion (design v2 §7): once the main top-k surfaces a set of
+        related documents, fetch each related document's best chunk(s) to drop
+        into context — WITHOUT N separate full scans, and WITHOUT losing a
+        target chunk that simply isn't in the global top-k (the failure mode of
+        post-filtering the main results).
+
+        ``RANK() OVER (PARTITION BY document_id ORDER BY <=>)`` ranks chunks
+        within each document independently; the outer ``rnk <= k`` keeps the top
+        ``k`` of each. Ties share a rank (RANK, not ROW_NUMBER), so a document
+        with two equally-close chunks at k=1 returns both — acceptable for a
+        retrieval aid. RLS auto-scopes to this collection.
+        """
+        if k <= 0 or not document_ids:
+            return []
+
+        q = HalfVector(query_embedding)
+        sql = """
+            WITH ranked AS (
+                SELECT id, collection_id, document_id, chunk_key,
+                       content, metadata, token_count, created_at,
+                       parent_chunk_id, chunk_type, chunk_level,
+                       1 - (embedding <=> $1) AS score,
+                       RANK() OVER (
+                           PARTITION BY document_id
+                           ORDER BY embedding <=> $1
+                       ) AS rnk
+                  FROM document_chunks
+                 WHERE chunk_type = 'leaf'
+                   AND document_id = ANY($2::bigint[])
+                   AND 1 - (embedding <=> $1) >= $3
+            )
+            SELECT * FROM ranked
+             WHERE rnk <= $4
+             ORDER BY document_id, rnk
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, q, document_ids, min_score, k)
+            hits = [self._row_to_search_hit(r) for r in rows]
+            await self._attach_parent_content(conn, hits)
+        return hits
+
     async def add_parent_chunks(
         self,
         document_id: int,
