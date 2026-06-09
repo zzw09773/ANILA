@@ -78,6 +78,7 @@ services:
       #   admin 永遠 bypass
       AUTO_REGISTER_LINKS: >-
         [
+          {"name":"ANILA UI","url":"/app","icon":"message-square","description":"對話介面 — 與所有 agent 對話","sort_order":1,"is_public":true,"required_roles":[]},
           {"name":"Code Server","url":"/codeserver","icon":"code","description":"Browser VS Code — agent 開發整合入口","sort_order":2,"is_public":false,"required_roles":["admin"]},
           {"name":"n8n 工作流程","url":"/n8n","icon":"workflow","description":"自動化工作流程平台 — 排程任務、跨服務串接","sort_order":3,"is_public":true,"required_roles":["developer"]},
           {"name":"GitLab","url":"/gitlab","icon":"git-branch","description":"Git server — agent 程式碼與 issue tracking（ISO 42001 合規必備）","sort_order":4,"is_public":true,"required_roles":["developer"]},
@@ -198,7 +199,6 @@ services:
     ports:
       - "${NGINX_HTTP_PORT:-80}:80"
       - "${NGINX_HTTPS_PORT:-443}:443"
-      - "${ANILA_UI_HTTPS_PORT:-4443}:4443"
     volumes:
       - ./myCSPPlatform/docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./myCSPPlatform/docker/certs:/etc/nginx/certs:ro

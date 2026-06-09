@@ -84,6 +84,10 @@ services:
       AUTO_SEED_API_KEYS: >-
         [{"username":"smoke-user","email":"smoke-user@example.com","role":"user","key":"${SMOKE_USER_API_KEY_DEV:-sk-test-dev-user-api-key}","key_name":"smoke-user-dev-key","models":["${LOCAL_LLM_MODEL:-gpt-oss-20b}","gemma4"]},
          {"username":"ingestion-worker","email":"ingestion-worker@anila.local","role":"system","key":"${INTERNAL_PLATFORM_API_KEY_DEV:-sk-internal-worker-dev-changeme}","key_name":"ingestion-worker-system-key","models":["${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}"]}]
+      AUTO_REGISTER_LINKS: >-
+        [
+          {"name":"ANILA UI","url":"/app","icon":"message-square","description":"對話介面 — 與所有 agent 對話","sort_order":1,"is_public":true,"required_roles":[]}
+        ]
       ANILA_TEMPLATE_DIR: /app/anila-template
       INGESTION_UPLOAD_DIR: /var/anila/ingestion-uploads
     volumes:
@@ -212,7 +216,6 @@ services:
     ports:
       - "${NGINX_HTTP_PORT_DEV:-8080}:80"
       - "${NGINX_HTTPS_PORT_DEV:-8443}:443"
-      - "${ANILA_UI_HTTPS_PORT_DEV:-9443}:4443"
     volumes:
       - ./myCSPPlatform/docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./myCSPPlatform/docker/certs:/etc/nginx/certs:ro

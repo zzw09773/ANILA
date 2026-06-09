@@ -48,7 +48,7 @@ function RedirectIfAuthed({ children }) {
   }
 
   if (isAuthenticated) {
-    return <Navigate to="/app" replace />;
+    return <Navigate to="/" replace />;
   }
 
   return children;
@@ -66,14 +66,13 @@ function RootRoutes() {
         }
       />
       <Route
-        path="/app/*"
+        path="/*"
         element={
           <RequireAuth>
             <App />
           </RequireAuth>
         }
       />
-      <Route path="*" element={<Navigate to="/app" replace />} />
     </Routes>
   );
 }
@@ -85,7 +84,7 @@ if (!container) {
 
 ReactDOM.createRoot(container).render(
   <React.StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename="/app">
       <AuthProvider>
         <ConfirmProvider>
           <RootRoutes />

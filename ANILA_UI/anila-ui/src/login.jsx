@@ -37,7 +37,7 @@ export const LoginView = () => {
     setLoading(true);
     try {
       await login({ username, password });
-      navigate("/app", { replace: true });
+      navigate("/", { replace: true });
     } catch (submitError) {
       setError(submitError.message || "登入失敗");
     } finally {
