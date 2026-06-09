@@ -26,6 +26,7 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
+    Form,
     HTTPException,
     Query,
     Response,
@@ -37,6 +38,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from anila_core.ingestion.citation_extractor import normalize_title
 from anila_core.storage.adapters.pg_pool import PgPool
 from anila_core.storage.adapters.pgvector_store import CollectionScopedPgVectorStore
 
@@ -98,12 +100,41 @@ def _sanitize_archive_filename(raw: str, *, preserve_folder_structure: bool) -> 
     return name[:512]
 
 
+def _derive_title(filename: str, explicit: str | None = None) -> tuple[str | None, str | None]:
+    """Pick a document ``title`` + its ``normalized_title`` for citation resolution.
+
+    Phase 1 of document-relations: citation targets resolve by matching a
+    cited regulation name against ``ingestion_documents.normalized_title``, so
+    every document needs a best-effort title. Source priority:
+
+    1. ``explicit`` — the uploader knows the real regulation name (the most
+       reliable source per design §13; ROC regs are often named by 字號 inside
+       the file but the human knows the canonical name).
+    2. filename stem — strip the extension and any path; a deterministic
+       fallback so the column is never null.
+
+    The worker (task #40) may later refine ``title`` from a parsed first
+    heading. Returns ``(title, normalized_title)``; ``normalized_title`` is the
+    durable join key (NFKC + brackets/whitespace stripped).
+    """
+    raw = (explicit or "").strip()
+    if not raw:
+        base = os.path.basename(filename or "")
+        raw = os.path.splitext(base)[0].strip()
+    if not raw:
+        return None, None
+    title = raw[:500]
+    return title, (normalize_title(title) or None)
+
+
 class DocumentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     collection_id: int
     filename: str
+    title: str | None = None
+    normalized_title: str | None = None
     sha256: str
     mime_type: str | None
     bytes: int | None
@@ -167,6 +198,13 @@ def _persist_blob(content: bytes, sha256: str) -> str:
 async def upload_document(
     collection_id: int,
     file: UploadFile = File(...),
+    title: str | None = Form(
+        default=None,
+        description=(
+            "Optional canonical regulation/document name used to resolve "
+            "cross-document citation targets. Falls back to the filename stem."
+        ),
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> DocumentResponse:
@@ -193,12 +231,16 @@ async def upload_document(
     sha256 = hashlib.sha256(content).hexdigest()
     storage_path = _persist_blob(content, sha256)
 
+    doc_title, doc_norm_title = _derive_title(file.filename or "", title)
+
     # Insert the document row. Uniqueness on (collection_id, sha256) gives
     # us cheap content-level dedup — re-uploading the same file just
     # returns the existing row.
     doc = IngestionDocument(
         collection_id=collection_id,
         filename=file.filename or sha256,
+        title=doc_title,
+        normalized_title=doc_norm_title,
         sha256=sha256,
         mime_type=file.content_type,
         bytes=size,
@@ -419,9 +461,12 @@ async def upload_zip(
         import mimetypes
         mime, _ = mimetypes.guess_type(out_name)
 
+        member_title, member_norm_title = _derive_title(out_name)
         doc = IngestionDocument(
             collection_id=collection_id,
             filename=out_name,
+            title=member_title,
+            normalized_title=member_norm_title,
             sha256=sha256,
             mime_type=mime,
             bytes=size,

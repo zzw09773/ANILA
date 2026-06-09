@@ -18,6 +18,7 @@ from app.api.ingestion.eval_runs import router as eval_runs_router
 from app.api.ingestion.image_blob import router as image_blob_router
 from app.api.ingestion.jobs import router as jobs_router
 from app.api.ingestion.preview import router as preview_router
+from app.api.ingestion.relations import router as relations_router
 from app.api.ingestion.search import router as search_router
 
 __all__ = [
@@ -28,5 +29,6 @@ __all__ = [
     "image_blob_router",
     "jobs_router",
     "preview_router",
+    "relations_router",
     "search_router",
 ]
