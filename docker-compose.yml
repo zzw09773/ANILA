@@ -79,10 +79,7 @@ services:
       AUTO_REGISTER_LINKS: >-
         [
           {"name":"ANILA UI","url":"/app","icon":"message-square","description":"對話介面 — 與所有 agent 對話","sort_order":1,"is_public":true,"required_roles":[]},
-          {"name":"Code Server","url":"/codeserver","icon":"code","description":"Browser VS Code — agent 開發整合入口","sort_order":2,"is_public":false,"required_roles":["admin"]},
-          {"name":"n8n 工作流程","url":"/n8n","icon":"workflow","description":"自動化工作流程平台 — 排程任務、跨服務串接","sort_order":3,"is_public":true,"required_roles":["developer"]},
-          {"name":"GitLab","url":"/gitlab","icon":"git-branch","description":"Git server — agent 程式碼與 issue tracking（ISO 42001 合規必備）","sort_order":4,"is_public":true,"required_roles":["developer"]},
-          {"name":"MLSteam","url":"https://aiops.ai.ncsist.org.tw:4443/","icon":"cpu","description":"MLOps 平台 — agent 訓練與部署","sort_order":5,"is_public":true,"required_roles":["developer"]}
+          {"name":"Code Server","url":"/codeserver","icon":"code","description":"Browser VS Code — 平台維護工具","sort_order":2,"is_public":false,"required_roles":["admin"]}
         ]
       ANILA_TEMPLATE_DIR: /app/anila-template
       INGESTION_UPLOAD_DIR: /var/anila/ingestion-uploads
@@ -154,6 +151,18 @@ services:
       VISION_VERIFY_SSL: "${VISION_VERIFY_SSL:-false}"
       VISION_CONCURRENCY: "${VISION_CONCURRENCY:-4}"
       VISION_TIMEOUT_SECONDS: "${VISION_TIMEOUT_SECONDS:-60}"
+      # 跨文件關聯的 LLM 抽取(source=llm):走 csp /v1 proxy 計量。模型用本
+      # stack 註冊的 LLM (預設 gpt-oss-20b)。關閉只要設 ENABLE_RELATION_LLM=false。
+      ENABLE_RELATION_LLM: "${ENABLE_RELATION_LLM:-true}"
+      RELATION_LLM_URL: "${RELATION_LLM_URL:-http://csp:8000/v1}"
+      RELATION_LLM_MODEL: "${RELATION_LLM_MODEL:-${LOCAL_LLM_MODEL:-gpt-oss-20b}}"
+      RELATION_LLM_API_KEY: ${INTERNAL_PLATFORM_API_KEY:-sk-internal-worker-changeme}
+      RELATION_LLM_VERIFY_SSL: "${RELATION_LLM_VERIFY_SSL:-false}"
+      RELATION_LLM_TIMEOUT_SECONDS: "${RELATION_LLM_TIMEOUT_SECONDS:-120}"
+      # embedding 主題相似邊(source=similarity):用既有 chunk 向量,無額外模型呼叫。
+      ENABLE_SIMILARITY_EDGES: "${ENABLE_SIMILARITY_EDGES:-true}"
+      SIMILARITY_TOP_K: "${SIMILARITY_TOP_K:-3}"
+      SIMILARITY_MIN: "${SIMILARITY_MIN:-0.75}"
       PYTHONUNBUFFERED: "1"
     volumes:
       - ./share/uploads/ingestion:/var/anila/ingestion-uploads
@@ -247,11 +256,12 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # ── code-server (cold-stored) ───────────────────────────────────────────
-  # Browser-based VS Code,reachable via /codeserver subpath through nginx.
+  # ── code-server (平台維護工具,admin-only link card) ─────────────────────
+  # Browser-based VS Code,reachable via /codeserver subpath through nginx。
+  # 留在交付 stack 供現場維護/除錯;一般使用者看不到入口 (link card admin-only)。
   # 用 codercom 上游而非 lscr.io/linuxserver fork — 後者多一層 s6-overlay
   # 會破 subpath 部署 (workspace fs provider 註冊失敗)。
-  # 解凍前的 TODO:把 PASSWORD 換掉,SSO 接好後改 nginx auth_request 驗 CSP JWT。
+  # 部署時必設 CODESERVER_PASSWORD (.env),沒設 compose 會直接報錯。
   codeserver:
     image: codercom/code-server:latest
     # 1001:1001 對齊 host 'aia' UID,避免容器內存檔 EACCES。
@@ -276,79 +286,6 @@ services:
       start_period: 30s
     restart: unless-stopped
 
-  # ── n8n workflow automation (cold-stored) ───────────────────────────────
-  # Subpath /n8n。重要 hardening (不要回退):
-  #   - NODE_TLS_REJECT_UNAUTHORIZED 預設 1。要連自簽 endpoint 逐節點設
-  #     self-signed CA,**不要**全域關 TLS 驗證 (歷史教訓)。
-  #   - Code Node 模組白名單寫死,避免變成任意 require() 的 RCE 平台。
-  n8n:
-    image: n8nio/n8n:1.98.2
-    # 用 image 內建 'node' user (UID 1000),不要 override user — n8n 首次
-    # 開機 HOME 對不上會 mkdir /.n8n EACCES。
-    environment:
-      TZ: Asia/Taipei
-      N8N_PATH: /n8n/
-      N8N_HOST: ${ANILA_HOST:-172.16.120.35}
-      N8N_PROTOCOL: https
-      WEBHOOK_URL: ${N8N_WEBHOOK_URL:-https://172.16.120.35/n8n/}
-      NODE_TLS_REJECT_UNAUTHORIZED: "${N8N_TLS_REJECT_UNAUTHORIZED:-1}"
-      # 後面 nginx 已是 HTTPS,n8n 自己看到 HTTP 所以 cookie 標非 secure 才能登入。
-      N8N_SECURE_COOKIE: "false"
-      NODE_FUNCTION_ALLOW_EXTERNAL: "${N8N_NODE_FUNCTION_ALLOW_EXTERNAL:-axios,lodash,dayjs}"
-      NODE_FUNCTION_ALLOW_BUILTIN: "${N8N_NODE_FUNCTION_ALLOW_BUILTIN:-crypto,url}"
-      N8N_DIAGNOSTICS_ENABLED: "false"
-    volumes:
-      - n8n_data:/home/node/.n8n
-    expose:
-      - "5678"
-    healthcheck:
-      # /healthz 在引擎 root,不受 N8N_PATH 影響。
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz >/dev/null || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 6
-      start_period: 60s
-    restart: unless-stopped
-
-  # ── GitLab CE (cold-stored) ─────────────────────────────────────────────
-  # Subpath /gitlab via Workhorse:external_url 讓 GitLab 把所有 absolute link
-  # 渲染在 subpath 下,內建 nginx disable 讓外面 ANILA nginx 接 8181。
-  # 首次開機 reconfigure ~5-10 分鐘,start_period 600s 是必要的。
-  # Initial root password 在容器內 /etc/gitlab/initial_root_password,首次登入要輪換。
-  gitlab:
-    image: gitlab/gitlab-ce:16.10.10-ce.0
-    hostname: gitlab.anila.internal
-    environment:
-      GITLAB_OMNIBUS_CONFIG: |
-        external_url 'https://${ANILA_HOST:-172.16.120.35:4443}/gitlab'
-        nginx['enable'] = false
-        gitlab_workhorse['listen_network'] = "tcp"
-        gitlab_workhorse['listen_addr'] = "0.0.0.0:8181"
-        gitlab_rails['time_zone'] = 'Asia/Taipei'
-        # 內網部署 — admin 發帳號,不開 self sign-up。
-        gitlab_rails['gitlab_signup_enabled'] = false
-        # 省記憶體 — Prometheus + Alertmanager 不啟用。
-        prometheus['enable'] = false
-        alertmanager['enable'] = false
-    volumes:
-      - gitlab_config:/etc/gitlab
-      - gitlab_logs:/var/log/gitlab
-      - gitlab_data:/var/opt/gitlab
-    expose:
-      - "8181"   # Workhorse for ANILA nginx
-      - "22"     # SSH for git push/pull (not host-exposed yet)
-    shm_size: 256m
-    healthcheck:
-      # /-/health 預設只開 127/8 的 monitoring_whitelist,從外部 monitor 看不到。
-      # /users/sign_in 不需 auth,Puma 起來就 200,正好當 readiness probe。
-      # /gitlab prefix 必要,因為 external_url 設 subpath 後 Workhorse 預期所有 URL 都帶。
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8181/gitlab/users/sign_in || exit 1"]
-      interval: 60s
-      timeout: 10s
-      retries: 5
-      start_period: 600s
-    restart: unless-stopped
-
 networks:
   default:
     name: anila-net
@@ -361,10 +298,4 @@ networks:
 volumes:
   csp-pgdata:
   redis-data:
-  # cold-stored — 對應上面 commented service。volume 名稱保留可以避免
-  # 解凍時 named volume 重生造成既有資料遺失 (compose 看到舊名就 reuse)。
   codeserver_config:
-  n8n_data:
-  gitlab_config:
-  gitlab_logs:
-  gitlab_data:

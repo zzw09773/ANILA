@@ -114,20 +114,15 @@ const segmentMap = {
   '/models': '/models',
   '/usage': '/usage',
   '/users': '/admin/users',
-  '/departments': '/admin/departments',
   '/alerts': '/admin/alerts',
   '/audit-logs': '/admin/audit',
   '/platform-links': '/admin/platform-links',
-  '/service-access': '/admin/service-access',
-  '/developer/agents': '/dev/agents',
   '/knowledge-collections': '/dev/collections',
 }
 const currentSegment = computed(() => {
   if (segmentMap[route.path]) return segmentMap[route.path]
   if (route.path.startsWith('/knowledge-collections/')) {
-    return route.path.endsWith('/evaluator')
-      ? '/dev/collections/evaluator'
-      : '/dev/collections/detail'
+    return '/dev/collections/detail'
   }
   return route.path
 })

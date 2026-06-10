@@ -8,15 +8,9 @@
           first-class rag store · agent backend mounts via <code>RAG_COLLECTION_ID=&lt;id&gt;</code>
         </p>
       </div>
-      <!-- Sprint 8 X / chunking-preview Phase 3 — preview-then-pick
-           is the canonical create flow. Users upload a representative
-           doc, compare every strategy's chunks side-by-side, then
-           pick. The old "instant dropdown" form is reachable via the
-           wizard's "skip preview" link for power users who already
-           know which strategy they want. -->
-      <router-link :to="{ name: 'ChunkingPreview' }" custom v-slot="{ navigate }">
-        <TermButton variant="primary" label="+ new collection" @click="navigate" />
-      </router-link>
+      <!-- Trial build: the chunking-preview wizard is not shipped, so create
+           opens the inline form (name + strategy dropdown) directly. -->
+      <TermButton variant="primary" label="+ new collection" @click="creating = true" />
     </header>
 
     <TermBox title="filter" pad="sm">
@@ -64,8 +58,6 @@
 
         <footer class="cc__foot">
           <router-link :to="{ name: 'CollectionDetail', params: { id: c.id } }" class="term-action">→ inspector</router-link>
-          <span class="cc__sep">·</span>
-          <router-link :to="{ name: 'Evaluator', params: { id: c.id } }" class="term-action">→ evaluator</router-link>
           <span class="cc__sep">·</span>
           <button v-if="c.status === 'active'" class="term-action" @click="archiveCollection(c)">archive</button>
           <button v-else class="term-action" @click="restoreCollection(c)">restore</button>

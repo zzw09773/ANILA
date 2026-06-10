@@ -40,12 +40,6 @@ const routes = [
         meta: { requiresAdmin: true },
       },
       {
-        path: 'departments',
-        name: 'Departments',
-        component: () => import('../views/DepartmentsView.vue'),
-        meta: { requiresAdmin: true },
-      },
-      {
         path: 'alerts',
         name: 'Alerts',
         component: () => import('../views/AlertsView.vue'),
@@ -62,26 +56,6 @@ const routes = [
         name: 'PlatformLinks',
         component: () => import('../views/PlatformLinksView.vue'),
         meta: { requiresAdmin: true },
-      },
-      {
-        path: 'service-access',
-        name: 'ServiceAccess',
-        component: () => import('../views/ServiceAccessView.vue'),
-        meta: { requiresAdmin: true },
-      },
-      {
-        path: 'developer/agents',
-        name: 'DeveloperAgents',
-        component: () => import('../views/DeveloperAgentsView.vue'),
-        meta: { requiresDeveloper: true },
-      },
-      // Sprint 13 PR C1 — per-agent runtime knobs (tool permissions /
-      // workspace caps / guardrails). Owner of the agent OR admin.
-      {
-        path: 'developer/agents/:id/runtime-config',
-        name: 'AgentRuntimeConfig',
-        component: () => import('../views/AgentRuntimeConfigView.vue'),
-        meta: { requiresDeveloper: true },
       },
       // Sprint 8 X / Phase E — service_clients (Router / worker / admin tool)
       // service-token management. Admin-only.
@@ -108,26 +82,10 @@ const routes = [
         component: () => import('../views/KnowledgeCollectionsView.vue'),
         meta: { requiresDeveloper: true },
       },
-      // Sprint 8 X / chunking-preview Phase 3 — interactive strategy
-      // comparison wizard. Users land here from KnowledgeCollections
-      // "+ compare strategies first" CTA.
-      {
-        path: 'knowledge-collections/preview',
-        name: 'ChunkingPreview',
-        component: () => import('../views/ChunkingPreviewView.vue'),
-        meta: { requiresDeveloper: true },
-      },
       {
         path: 'knowledge-collections/:id',
         name: 'CollectionDetail',
         component: () => import('../views/CollectionDetailView.vue'),
-        meta: { requiresDeveloper: true },
-      },
-      {
-        // Sprint 3 Chunk N — Chunking Evaluator wizard + results.
-        path: 'knowledge-collections/:id/evaluator',
-        name: 'Evaluator',
-        component: () => import('../views/EvaluatorView.vue'),
         meta: { requiresDeveloper: true },
       },
     ],

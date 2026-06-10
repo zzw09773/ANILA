@@ -52,7 +52,6 @@
           <router-link to="/api-keys" class="ops__link">→ provision api-key</router-link>
           <router-link to="/models" class="ops__link">→ inspect models</router-link>
           <router-link to="/usage" class="ops__link">→ usage analytics</router-link>
-          <router-link v-if="authStore.isDeveloper" to="/developer/agents" class="ops__link">→ register agent</router-link>
           <router-link v-if="authStore.isAdmin" to="/audit-logs" class="ops__link">→ audit log</router-link>
         </div>
       </TermBox>

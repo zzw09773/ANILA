@@ -66,7 +66,6 @@ const menuGroups = computed(() => {
     groups.push({
       label: 'developer',
       items: [
-        { path: '/developer/agents', label: 'agents' },
         { path: '/knowledge-collections', label: 'collections' },
       ],
     })
@@ -77,11 +76,9 @@ const menuGroups = computed(() => {
       label: 'admin',
       items: [
         { path: '/users', label: 'users' },
-        { path: '/departments', label: 'departments' },
         { path: '/alerts', label: 'alerts' },
         { path: '/audit-logs', label: 'audit-log' },
         { path: '/platform-links', label: 'platform-links' },
-        { path: '/service-access', label: 'service-access' },
         { path: '/service-clients', label: 'service-clients' },
         { path: '/trusted-hosts', label: 'trusted-hosts' },
       ],
