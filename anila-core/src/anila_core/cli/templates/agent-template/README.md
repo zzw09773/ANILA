@@ -31,7 +31,7 @@ optional RAG collection). Step 2 issues this agent's single `csk-` service token
 and shows a pre-filled `.env` snippet; paste `CSP_SERVICE_TOKEN=csk-...` into your
 `.env`, start the agent, then click **test connection** to confirm the token is
 wired (CSP probes your endpoint with the csk-). See
-`docs/guides/developer-guide.md`.
+the platform admin console.
 
 CLI alternative (same registration, no wizard):
 

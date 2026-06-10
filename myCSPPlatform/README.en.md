@@ -162,7 +162,7 @@ cp .env.example .env   # at minimum change SECRET_KEY and ADMIN_PASSWORD
 | `MIGRATION_DATABASE_URL` | `postgresql://csp:csp@csp-db:5432/csp` | Higher-privilege account for migrations |
 | `SECRET_KEY` | `dev-secret-key-change-in-prod` | JWT signing key — **must change in production** |
 | `ALGORITHM` / `ACCESS_TOKEN_EXPIRE_MINUTES` | `HS256` / `60` | JWT settings |
-| `CSP_SERVICE_TOKEN` | `dev-service-token` | Legacy fleet-shared s2s token (fallback); each agent now uses its own `csk-` (issued by the register wizard, verified by CSP) — see `docs/guides/developer-guide.md` |
+| `CSP_SERVICE_TOKEN` | `dev-service-token` | Legacy fleet-shared s2s token (fallback); each agent now uses its own `csk-` (verified by CSP) |
 | `REDIS_URL` | `redis://redis:6379` | arq ingestion queue |
 | `INGESTION_UPLOAD_DIR` | `/var/anila/ingestion-uploads` | Upload staging directory |
 | `AUTO_REGISTER_MODELS` / `AUTO_REGISTER_AGENTS` | see compose | Declarative model / agent registration at startup |

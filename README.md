@@ -16,7 +16,6 @@ ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key�
 | [`ANILA_UI/anila-ui`](./ANILA_UI/anila-ui/) | **Chat Runtime UI** — React 聊天介面，cookie + SSE，串 CSP 與 Router；經由 nginx 對外（dev 直跑 `:5173`） | nginx 前 |
 | **`nginx`**（compose service） | 對外閘道；同源 reverse-proxy `/api`、`/v1`、`/router`、`/static`、`/uploads`；6 個安全 header（HSTS / CSP / Permissions-Policy / Referrer-Policy / X-Frame-Options / X-Content-Type-Options） | `:80` / `:443` / `:4443` |
 | **`redis`**（compose service） | ingestion-worker 的 queue backing store；不對外暴露 | （無 host port） |
-| [`runtime_logic`](./runtime_logic/) | **TS Runtime 參考材料**（READ-ONLY）— 用來對照移植到 `anila-core` 的 agent runtime 設計原本；原始碼 gitignored | — |
 
 ---
 
@@ -405,19 +404,16 @@ ANILA/
 ├── anila-agent/          # 官方 sub-agent template（git subtree；上游：zzw09773/anila-agent）
 ├── ingestion-worker/     # Arq async pipeline worker（Redis backbone）
 ├── ANILA_UI/anila-ui/    # React 對話 SPA
-├── runtime_logic/        # TS runtime 參考材料（gitignored；只追蹤 README）
 ├── models/               # 推論模型獨立 compose（project: anila-models）：
 │                         # gpt-oss-20b（LLM）+ NV-embed-V2（embedding）
 ├── docs/                 # 依主題分組，每組可含設計/規格文件
 │   ├── agent-framework/  # agent runtime 架構、csp-agent bootstrap 協定
 │   ├── anila-core/       # anila-core 邊界、runtime 設計
 │   ├── ingestion/        # ingestion 平台設計、parent-child RAG
-│   ├── guides/           # developer guide
 │   └── runbooks/         # 維運手冊（token cutover / TLS / legacy bootstrap）
 ├── scripts/
 │   ├── reencrypt-credentials.py          # PBKDF2 v1→v2 一次性 re-encrypt
-│   ├── reissue-tls-cert.sh
-│   └── phase1-e2e.sh
+│   └── reissue-tls-cert.sh
 ├── share/                # nginx 對外 /static、/uploads 後備（gitignored data）
 ├── docker-compose.yml    # active services（csp-db / csp / redis /
 │                         # ingestion-worker / router / nginx / anila-ui）
@@ -425,7 +421,7 @@ ANILA/
 └── README.md             # 本檔
 ```
 
-> 每個子專案（`myCSPPlatform` / `anila-core` / `anila-core-router` / `anila-agent` / `ANILA_UI/anila-ui` / `ingestion-worker` / `models` / `runtime_logic`）目錄下均含 `README.md`（繁中為主）+ `README.en.md`（English mirror），各自說明用途、架構、啟動與整合。
+> 每個子專案（`myCSPPlatform` / `anila-core` / `anila-core-router` / `anila-agent` / `ANILA_UI/anila-ui` / `ingestion-worker` / `models`）目錄下均含 `README.md`（繁中為主）+ `README.en.md`（English mirror），各自說明用途、架構、啟動與整合。
 
 ---
 

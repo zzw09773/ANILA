@@ -2,7 +2,7 @@
 
 > **Status**: design spec, awaiting review
 > **Date**: 2026-05-02
-> **Authors**: synthesis of patterns from `runtime_logic/openai-agents-python` (MIT) and `runtime_logic/claude-code-src` (reference)
+> **Authors**: synthesis of patterns from openai-agents-python (MIT) and other production agent runtimes
 
 ---
 
@@ -511,4 +511,4 @@ Three quick decisions:
 
 ---
 
-**Last updated**: 2026-05-02 (v2 — permission removed, user_skill removed, 5 primitives) · **Total framework v0.1 size estimate**: ~3,400 LOC · **Read alongside**: `docs/agent-framework/runtime-logic-openai-agents-deep-dive.md`
+**Last updated**: 2026-05-02 (v2 — permission removed, user_skill removed, 5 primitives) · **Total framework v0.1 size estimate**: ~3,400 LOC

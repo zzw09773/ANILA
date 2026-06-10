@@ -595,8 +595,8 @@ also lands here.
 
 ## v0.8.0 (2026-05-02) — Sprint 9 · Web 對話 protocol
 
-Vendored five primitives from `runtime_logic/` (Claude Code +
-openai-agents-python) that turn an anila-core agent into a Claude.ai-
+Vendored five primitives adapted from production agent-runtime
+references (incl. openai-agents-python) that turn an anila-core agent into a Claude.ai-
 style chat partner. No CLI / TUI surface — every interaction is shaped
 to be rendered by a web frontend.
 

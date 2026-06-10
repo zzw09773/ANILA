@@ -149,7 +149,6 @@ router (:9000)
 
 - 平台整體：[repo 根 README](../README.md)
 - Agent framework 架構：[`docs/agent-framework/anila-agent-framework-architecture.md`](../docs/agent-framework/anila-agent-framework-architecture.md)
-- Agent runtime 深入（含 Router 互動）：[`docs/agent-framework/runtime-logic-openai-agents-deep-dive.md`](../docs/agent-framework/runtime-logic-openai-agents-deep-dive.md)
 - Runtime foundation（SDK）：[`anila-core/README.md`](../anila-core/README.md)
 - CSP 平台：[`myCSPPlatform/README.md`](../myCSPPlatform/README.md)
 - UI：[`ANILA_UI/anila-ui/README.md`](../ANILA_UI/anila-ui/README.md)

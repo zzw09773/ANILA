@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     # Incoming Host-header allow-list (anti Host-header-injection /
     # cache-poisoning). Comma-separated hostnames; "*" disables the check
     # (default, non-breaking). Production should pin this to the real
-    # ingress host(s), e.g. "anila.ncsist.org.tw,172.16.120.35". Distinct
+    # ingress host(s), e.g. "anila.example.org,10.0.0.5". Distinct
     # from ANILA_TRUSTED_HOSTS, which is the *outgoing* SSRF allow-list.
     ALLOWED_HOSTS: str = "*"
 

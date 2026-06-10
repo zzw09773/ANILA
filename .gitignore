@@ -133,6 +133,14 @@ share-dev/uploads/
 share/codeserver-sandbox/
 
 # ── Misc dev tooling ──────────────────────────────────────────────────────────
+# Local dev-stack compose + scratch dirs — kept on disk for local work,
+# not part of the delivered tree.
+docker-compose-dev.yml
+share-dev/
+runtime_logic/
+scraps/
+n8n_DATA/
+*.code-workspace
 # Observer / loop process locks
 .observer.lock
 *.observer.lock

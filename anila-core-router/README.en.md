@@ -149,7 +149,6 @@ router (:9000)
 
 - Platform overview: [repo-root README](../README.md)
 - Agent framework architecture: [`docs/agent-framework/anila-agent-framework-architecture.md`](../docs/agent-framework/anila-agent-framework-architecture.md)
-- Agent runtime deep dive (covers Router interaction): [`docs/agent-framework/runtime-logic-openai-agents-deep-dive.md`](../docs/agent-framework/runtime-logic-openai-agents-deep-dive.md)
 - Runtime foundation (SDK): [`anila-core/README.md`](../anila-core/README.md)
 - CSP platform: [`myCSPPlatform/README.md`](../myCSPPlatform/README.md)
 - UI: [`ANILA_UI/anila-ui/README.md`](../ANILA_UI/anila-ui/README.md)

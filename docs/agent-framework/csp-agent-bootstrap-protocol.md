@@ -7,7 +7,7 @@
 
 > **Status update（2026-06-08）**：**預設上手路徑已改為直發 `csk-`** —— 開發者(agent owner)
 > 從 `/developer/agents` 的 **register 兩步精靈**自助核發**一把** `csk-`,貼進 `.env` 的
-> `CSP_SERVICE_TOKEN`,按 test-connection 驗證即可(見 `docs/guides/developer-guide.md`)。
+> `CSP_SERVICE_TOKEN`,按 test-connection 驗證即可。
 > 本文的 **bsk-→csk- bootstrap 交換**(Part 1)現定位為 **admin-only / 選配**路徑,用於「長期
 > 金鑰全程不經人手、機器端自己換領」的場景;機制仍凍結有效。**一把金鑰(S-Q1)**:這把
 > `csk-` 同時是入向驗證憑證(Router→agent)與出向 RAG 搜尋憑證,搜尋範圍由 CSP 限在 agent

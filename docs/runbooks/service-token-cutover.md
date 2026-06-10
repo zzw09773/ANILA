@@ -15,7 +15,7 @@ always possible.
 > `test-connection`. That one `csk-` also authorises the agent's RAG search
 > (scoped to its bound collection) — no separate search token. The ops steps
 > below (moving OFF the legacy fleet-shared env var) are unchanged; see
-> `docs/guides/developer-guide.md` for the dev-side flow.
+> the in-app register flow for the dev side.
 
 ---
 
