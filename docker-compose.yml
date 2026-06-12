@@ -1,6 +1,6 @@
 # ANILA Platform — integration stack.
 #   docker-compose up -d
-# 模型推論 service 在 models/docker-compose.yml (project: anila-models),
+# 模型推論 service 在 models/inference/docker-compose.yml (project: anila-models),
 # 透過共用 external network ``anila-models-net`` 跨 project DNS。
 #
 # Prod initial mode 切換 (branch SSO):
@@ -21,7 +21,10 @@ services:
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: csp
-      POSTGRES_PASSWORD: csp
+      # 只在 volume 首次初始化時生效;既有 csp-pgdata volume 改這個值不會
+      # 改掉資料庫內的密碼 (要 ALTER ROLE)。prod 模式下 startup_security
+      # 黑名單擋 'csp' / 'csp_password' 等 dev 值。
+      POSTGRES_PASSWORD: ${CSP_DB_PASSWORD:?CSP_DB_PASSWORD must be set (postgres superuser password)}
       POSTGRES_DB: csp
     # 只開 loopback,host 上的 integration test 拿得到,LAN 摸不到。
     ports:
@@ -49,9 +52,17 @@ services:
       # 兩條 DB URL 拆開:csp_app 是 RLS-enforced 的 runtime role,
       # csp 是只給 migration 用的 superuser。混用會讓 document_chunks
       # 的 RLS 失效 (superuser 自動 bypass)。
-      DATABASE_URL: postgresql://csp_app:csp@csp-db:5432/csp
-      MIGRATION_DATABASE_URL: postgresql://csp:csp@csp-db:5432/csp
+      DATABASE_URL: postgresql://csp_app:${CSP_APP_DB_PASSWORD:?CSP_APP_DB_PASSWORD must be set (csp_app runtime role password)}@csp-db:5432/csp
+      MIGRATION_DATABASE_URL: postgresql://csp:${CSP_DB_PASSWORD:?CSP_DB_PASSWORD must be set (same as csp-db POSTGRES_PASSWORD)}@csp-db:5432/csp
+      # migration 0014 在 fresh DB 建 csp_app role 時讀這個值當 role 密碼;
+      # 既有 DB 的 role 已存在,改值要自己 ALTER ROLE csp_app PASSWORD。
+      # 密碼用 hex 生成 (openssl rand -hex),避免 URL 特殊字元要 escape。
+      CSP_APP_DB_PASSWORD: ${CSP_APP_DB_PASSWORD}
       SECRET_KEY: ${CSP_SECRET_KEY:?CSP_SECRET_KEY must be set (32+ bytes hex)}
+      # auto_seed 初始 admin 帳號密碼。prod 模式 (ANILA_ALLOW_DEV_SECRET=0)
+      # 下 startup_security 黑名單擋 changeme/password/admin 與 placeholder,
+      # 不傳進容器則 config.py 預設 'changeme' 直接 RuntimeError 拒啟。
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set (initial admin password)}
       # startup_security 對 dev 預設值的拒絕開關。Prod 必須是 0 / unset。
       # 預設改成 0 (不再 fallback 1) — 缺 .env 時直接 enforce prod 模式。
       ANILA_ALLOW_DEV_SECRET: "${ANILA_ALLOW_DEV_SECRET:-0}"
@@ -72,16 +83,31 @@ services:
       # CSP 對下游 agent 注入這個 header,downstream 用它認 CSP source。
       # 跟 router service 必須同值,缺值直接 fail (避免 prod 部署誤用 dev token)。
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set}
+      # ── branch SSO:中科院憑證卡登入 (prod-intranet-card fork 區) ─────────
+      # ⚠ fork 區:main→prod sync 時不可拿 main 版 compose 整檔覆蓋 —
+      # 6fcbdce (PR #16) 曾把這段蓋掉,內網就沒有刷卡登入了 (P0 迴歸)。
+      # 預設值 = 內網 prod (card-only)。dev 降級在 .env 設兩個 false。
+      # strict/CA/OCSP 已在 f01288e 移除 — PIN + 卡片簽章由使用者 PC 的
+      # HiPKI 元件 (localhost:16888) 處理,backend 只解 PKCS#7 抽 employee_id。
+      ENABLE_CARD_LOGIN: "${ENABLE_CARD_LOGIN:-true}"
+      REQUIRE_CARD_LOGIN_ONLY: "${REQUIRE_CARD_LOGIN_ONLY:-true}"
+      # CSV 員工編號;列入者首刷直接建 owner + is_approved (bootstrap),其餘
+      # 走 pending → admin 核准。缺值 fail-fast;.env.example 的 placeholder
+      # 字面由 startup_security 在啟動時擋 (避免 bricked:沒人能 approve)。
+      CARD_INITIAL_OWNERS: ${CARD_INITIAL_OWNERS:?CARD_INITIAL_OWNERS must be set (CSV employee ids, include yourself)}
       # endpoint_url 是 base URL,proxy_service 自己加 ``/v1/chat/completions``
       # 或 ``/v1/embeddings``。**不要**在 URL 結尾加 ``/v1``,否則拼成
       # ``/v1/v1/...`` → 404 → router 端 RemoteProtocolError。
       # auto_seed 會用這條覆寫 DB 既有 row,改完 /models UI 也要同步改。
       AUTO_REGISTER_MODELS: >-
-        [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://gpt-oss-20b:8000}","api_version":"v1","description":"On-prem local LLM (anila-models-net)"},{"name":"gemma4","display_name":"gemma4","model_type":"llm","endpoint_url":"http://gemma4:8000","api_version":"v1","description":"On-prem gemma4 vLLM (anila-models-net) — Router primary"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://nv-embed-proxy:8000}","api_version":"v1","description":"On-prem NV-embed-V2 via FastAPI shim (anila-models-net)"},{"name":"image-generator","display_name":"圖像繪製","model_type":"agent","endpoint_url":"http://flux2-dev-agent:8000","api_version":"v1","description":"FLUX.2-dev image generation agent","description_for_router":"當使用者要求繪製、產生、設計、畫一張、給我一張圖、視覺化、想看看 XX 的樣子、想要看一張圖等等的時候使用。輸入是使用者的中文自然語言描述,不需要先翻譯,agent 內部會處理。"}]
+        [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://gpt-oss-20b:8000}","api_version":"v1","description":"On-prem local LLM (anila-models-net)"},{"name":"gemma4","display_name":"gemma4","model_type":"llm","endpoint_url":"${GEMMA4_BASE_URL-http://gemma4:8000}","api_version":"v1","description":"On-prem gemma4 vLLM — Router primary"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://nv-embed-proxy:8000}","api_version":"v1","description":"On-prem NV-embed-V2 via FastAPI shim (anila-models-net)"},{"name":"image-generator","display_name":"圖像繪製","model_type":"agent","endpoint_url":"${FLUX_AGENT_BASE_URL-http://flux2-dev-agent:8000}","api_version":"v1","description":"FLUX.2-dev image generation agent","description_for_router":"當使用者要求繪製、產生、設計、畫一張、給我一張圖、視覺化、想看看 XX 的樣子、想要看一張圖等等的時候使用。輸入是使用者的中文自然語言描述,不需要先翻譯,agent 內部會處理。"}]
       # Phase G：agents 表的 declarative 來源(不同於 model_registry,後者是 catalog;
       # agents 表才是 Router /v1/agents 與 DISPATCH 路徑會 join 的權限源)。
+      # FLUX_AGENT_BASE_URL 用 `${VAR-default}` (無冒號):「沒設」→ 同主機
+      # docker DNS 預設;「設成空字串」→ auto_seed 跳過該 entry (內網無 FLUX
+      # 時用這招停用繪圖 agent,避免註冊一個打不通的 dead agent 給 Router)。
       AUTO_REGISTER_AGENTS: >-
-        [{"name":"image-generator","endpoint_url":"http://flux2-dev-agent:8000","api_version":"v1","description_for_router":"當使用者要求繪製、產生、設計、畫一張、給我一張圖、視覺化、想看看 XX 的樣子、想要看一張圖等等的時候使用。輸入是使用者的中文自然語言描述,不需要先翻譯,agent 內部會處理。","health_status":"healthy","approval_status":"approved"}]
+        [{"name":"image-generator","endpoint_url":"${FLUX_AGENT_BASE_URL-http://flux2-dev-agent:8000}","api_version":"v1","description_for_router":"當使用者要求繪製、產生、設計、畫一張、給我一張圖、視覺化、想看看 XX 的樣子、想要看一張圖等等的時候使用。輸入是使用者的中文自然語言描述,不需要先翻譯,agent 內部會處理。","health_status":"healthy","approval_status":"approved"}]
       # AUTO_SEED_API_KEYS: prod initial 模式只 seed ingestion-worker (系統內部
       # 必需,讓 worker 能呼叫 csp /v1/embeddings)。smoke-user 是 e2e 測試用的
       # 帳號,prod 不需要,已移除。要恢復就把舊 entry 加回來 (參考 .env.dev.local
@@ -94,18 +120,32 @@ services:
       #   admin 永遠 bypass
       AUTO_REGISTER_LINKS: >-
         [
-          {"name":"ANILA LM","url":"/anilalm","icon":"book-open","description":"AI 學習內容生成（podcast / slides / mind map / quiz / report）","sort_order":1,"is_public":false,"required_roles":[]},
-          {"name":"Code Server","url":"/codeserver","icon":"code","description":"Browser VS Code — agent 開發整合入口","sort_order":2,"is_public":false,"required_roles":["admin"]},
-          {"name":"n8n 工作流程","url":"/n8n","icon":"workflow","description":"自動化工作流程平台 — 排程任務、跨服務串接","sort_order":3,"is_public":true,"required_roles":["developer"]},
-          {"name":"GitLab","url":"/gitlab","icon":"git-branch","description":"Git server — agent 程式碼與 issue tracking（ISO 42001 合規必備）","sort_order":4,"is_public":true,"required_roles":["developer"]},
-          {"name":"MLSteam","url":"https://aiops.ai.ncsist.org.tw:4443/","icon":"cpu","description":"MLOps 平台 — agent 訓練與部署","sort_order":5,"is_public":true,"required_roles":["developer"]}
+          {"name":"ANILA","url":"/anila","icon":"message-square","description":"AI 對話入口 — Router 自動分派最合適的 agent 處理查詢","sort_order":1,"is_public":false,"required_roles":[]},
+          {"name":"ANILA LM","url":"/anilalm","icon":"book-open","description":"AI 學習內容生成（podcast / slides / mind map / quiz / report）","sort_order":2,"is_public":false,"required_roles":[]},
+          {"name":"Code Server","url":"/codeserver","icon":"code","description":"Browser VS Code — agent 開發整合入口","sort_order":3,"is_public":false,"required_roles":["admin"]},
+          {"name":"n8n 工作流程","url":"/n8n","icon":"workflow","description":"自動化工作流程平台 — 排程任務、跨服務串接","sort_order":4,"is_public":true,"required_roles":["developer"]},
+          {"name":"GitLab","url":"/gitlab","icon":"git-branch","description":"Git server — agent 程式碼與 issue tracking（ISO 42001 合規必備）","sort_order":5,"is_public":true,"required_roles":["developer"]},
+          {"name":"MLSteam","url":"https://aiops.ai.ncsist.org.tw:4443/","icon":"cpu","description":"MLOps 平台 — agent 訓練與部署","sort_order":6,"is_public":true,"required_roles":["developer"]}
         ]
       ANILA_TEMPLATE_DIR: /app/anila-template
       INGESTION_UPLOAD_DIR: /var/anila/ingestion-uploads
+      # 出向 https 的 CA 信任 (內網模型主機 10.53.100.12 走 https,憑證通常
+      # 是內部 CA / 自簽 — 不在 certifi 預設信任鏈內,httpx 會
+      # CERTIFICATE_VERIFY_FAILED)。把 IT 給的 PEM 放 ./share/pki/ 並在
+      # .env 設 ANILA_MODEL_CA_FILE=/etc/anila/pki/<file>.pem。
+      # 沒設 (空值) = 維持 httpx 預設 certifi 行為 (CPython 對空/不存在的
+      # SSL_CERT_FILE 會 fallback 系統預設,無副作用)。
+      SSL_CERT_FILE: ${ANILA_MODEL_CA_FILE-}
+      # 內網模型 gateway (10.53.100.12 My-OpenAI-Frontend) 的 /v1 要
+      # Authorization: Bearer。proxy_service 只對 model 呼叫注入,agent
+      # dispatch 不帶。空值 = 不注入 (同主機裸 vLLM 不需要)。
+      MODEL_GATEWAY_API_KEY: ${MODEL_GATEWAY_API_KEY-}
       # FLUX image-gen for ANILALM studio pptx pipeline — wires
       # studio.image_provider.FluxImageProvider; empty BACKEND_URL
       # would make get_flux_provider() return None (toggle OFF).
-      FLUX_BACKEND_URL: ${FLUX_BACKEND_URL:-http://flux2-dev:8000}
+      # `${VAR-default}` 無冒號:設成空字串 → get_flux_provider() 回 None
+      # (toggle OFF,內網無 FLUX 時整個圖像 pipeline 乾淨停用)。
+      FLUX_BACKEND_URL: ${FLUX_BACKEND_URL-http://flux2-dev:8000}
       FLUX_MAX_CONCURRENT: "${FLUX_MAX_CONCURRENT:-4}"
       FLUX_TIMEOUT_SECONDS: "${FLUX_TIMEOUT_SECONDS:-180}"
       # FLUX_CACHE_DIR defaults to $INGESTION_UPLOAD_DIR/flux-cache
@@ -115,13 +155,15 @@ services:
       - ./anila-agent:/app/anila-template:ro
       # 跟 ingestion-worker 共用 inode,不走拷貝。
       - ./share/uploads/ingestion:/var/anila/ingestion-uploads
+      # 內網模型 https 的內部 CA PEM 放這裡 (見上 SSL_CERT_FILE)。
+      - ./share/pki:/etc/anila/pki:ro
     extra_hosts:
       # csp 從這條 reach on-host service (e.g. host port 上的 embedding 後備)。
       - "host.docker.internal:host-gateway"
     networks:
       - default
       # 跨 project 的 external network — 解 ``gemma4`` / ``gpt-oss-20b`` /
-      # ``nv-embed-proxy`` (在 models/docker-compose.yml)。bootstrap 一次:
+      # ``nv-embed-proxy`` (在 models/inference/docker-compose.yml)。bootstrap 一次:
       #   docker network create anila-models-net
       - anila-models-net
     depends_on:
@@ -154,7 +196,7 @@ services:
       context: .
       dockerfile: ingestion-worker/Dockerfile
     environment:
-      DATABASE_URL: postgresql://csp_app:csp@csp-db:5432/csp
+      DATABASE_URL: postgresql://csp_app:${CSP_APP_DB_PASSWORD:?CSP_APP_DB_PASSWORD must be set (same value as csp)}@csp-db:5432/csp
       REDIS_URL: redis://redis:6379
       # 經由 CSP /v1/embeddings 走 token_usage 計量,不直連模型。
       EMBEDDING_BASE_URL: http://csp:8000/v1
@@ -173,7 +215,8 @@ services:
       ENABLE_IMAGE_CAPTIONS: "${ENABLE_IMAGE_CAPTIONS:-true}"
       VISION_URL: "${VISION_URL:-http://csp:8000/v1}"
       VISION_MODEL: "${VISION_MODEL:-gemma4}"
-      VISION_API_KEY: ${INTERNAL_PLATFORM_API_KEY:-sk-internal-worker-changeme}
+      # 對齊 EMBEDDING_API_KEY 的 fail-loud convention — 不留 changeme fallback。
+      VISION_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
       VISION_VERIFY_SSL: "${VISION_VERIFY_SSL:-false}"
       VISION_CONCURRENCY: "${VISION_CONCURRENCY:-4}"
       VISION_TIMEOUT_SECONDS: "${VISION_TIMEOUT_SECONDS:-60}"
@@ -286,7 +329,8 @@ services:
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set (same value as csp)}
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
-      FLUX_BACKEND_URL: http://flux2-dev:8000
+      # 跟 csp 同一個 toggle:空字串 → studio 圖像生成停用 (內網無 FLUX)。
+      FLUX_BACKEND_URL: ${FLUX_BACKEND_URL-http://flux2-dev:8000}
       # 對齊 volume mount 路徑。studio.py 內讀 os.environ["FLUX_CACHE_DIR"],
       # 預設 fallback 是 csp 的 /var/anila/ingestion-uploads/flux-cache,在
       # anila-studio container 內不存在/沒權限,所以這條 env 必須顯式設。
@@ -346,6 +390,9 @@ services:
         # 空字串 → SPA 用相對 URL,所有請求 same-origin (clipboard secure context)。
         VITE_CSP_BASE_URL: ${ANILA_PUBLIC_CSP_BASE_URL-}
         VITE_ROUTER_BASE_URL: ${ANILA_PUBLIC_ROUTER_BASE_URL:-/router}
+        # 同源 subpath(2026-06-11 B 案):443 的 /anila/,SSO cookie 自然共用。
+        # 本機 dev 直跑 vite 時不受影響(無此 env = '/')。
+        BASE_PATH: ${ANILA_UI_BASE_PATH:-/anila/}
     expose:
       - "80"
     depends_on:
@@ -466,7 +513,7 @@ services:
 networks:
   default:
     name: anila-net
-  # 跟 models/docker-compose.yml 共用。external → 兩個 project 任一個 down
+  # 跟 models/inference/docker-compose.yml 共用。external → 兩個 project 任一個 down
   # 都不會刪掉它。bootstrap:  docker network create anila-models-net
   anila-models-net:
     external: true
