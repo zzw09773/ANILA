@@ -65,12 +65,30 @@ from anila_core.memory.long_term import (
     truncate_embedding,
 )
 
+from anila_core.security import UnsafeEndpointError, validate_outbound_url
+
 from app.database import SessionLocal
 from app.models.model_registry import ModelRegistry
 from app.models.user_memory import ConversationMemoryChunk, UserFact
 from app.services.proxy_service import _apply_gateway_auth
 
 logger = logging.getLogger(__name__)
+
+
+def _guard_outbound(url: str) -> None:
+    """Call-time SSRF re-validation for memory's *direct* (non-proxy) outbound
+    calls. The endpoint comes from the admin-seeded ``model_registry``, but DNS
+    rebinding (TOCTOU) can still move the host between registration and use, and
+    ``_embed`` forwards ``MODEL_GATEWAY_API_KEY`` — re-run the central guard so a
+    poisoned registry row can't turn this into a blind-SSRF key-leak. Raises
+    ``RuntimeError`` so the existing fail-closed callers skip the call.
+    """
+    try:
+        validate_outbound_url(url)
+    except UnsafeEndpointError as exc:
+        raise RuntimeError(
+            f"memory outbound endpoint failed SSRF guard: {exc}"
+        ) from exc
 
 
 # ── Tunables (env-overridable, CSP-deployment specific) ──────────────────────
@@ -135,6 +153,9 @@ async def _embed(db: Session, text_input: str) -> list[float]:
     # proxy_service 的正規化:沒帶版本段就補 /v1。
     if not base_url.endswith(("/v1", "/v2")):
         base_url = f"{base_url}/v1"
+    # SSRF re-validation BEFORE attaching the gateway key — never send the
+    # bearer token to a host that fails the outbound guard.
+    _guard_outbound(base_url)
     # 內網 gateway 拓撲下 /v1 全路由要 Bearer(MODEL_GATEWAY_API_KEY);
     # 本機 proxy 模式 key 為空 = no-op。直呼叫繞過 CSP proxy 層,要自帶。
     headers = _apply_gateway_auth({})
@@ -321,9 +342,11 @@ async def _extract_facts(db: Session, conversation_text: str) -> list[dict[str, 
 
     try:
         base_url = _resolve_endpoint(db, _LLM_MODEL_NAME, "llm")
+        _guard_outbound(base_url)
     except RuntimeError:
         logger.warning(
-            "memory_service: LLM model %r not in registry — fact extraction disabled",
+            "memory_service: LLM model %r unavailable or failed SSRF guard — "
+            "fact extraction disabled",
             _LLM_MODEL_NAME,
         )
         return []

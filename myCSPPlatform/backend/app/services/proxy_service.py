@@ -501,7 +501,9 @@ async def proxy_request(
             duration_ms = int((time.time() - start_time) * 1000)
 
             if response.status_code >= 500:
-                last_error = f"後端回應 {response.status_code}: {response.text[:200]}"
+                # Full upstream body stays server-side only; the client gets a
+                # generic message so internal errors / stack traces never leak.
+                last_error = f"後端回應 {response.status_code}: {response.text[:500]}"
                 if attempt < settings.PROXY_MAX_RETRIES - 1:
                     delay = settings.PROXY_RETRY_BASE_DELAY * (2 ** attempt)
                     logger.warning(
@@ -510,13 +512,32 @@ async def proxy_request(
                     )
                     await asyncio.sleep(delay)
                     continue
-                raise HTTPException(status_code=502, detail=f"模型服務錯誤: {last_error}")
+                logger.error("模型 %s 上游 5xx: %s", model.name, last_error)
+                raise HTTPException(status_code=502, detail="模型服務暫時不可用")
 
             if response.status_code >= 400:
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail=response.json() if response.headers.get("content-type", "").startswith("application/json") else response.text[:500],
+                # Log the full upstream body server-side; forward only a
+                # sanitized message (OpenAI-shape error.message when present),
+                # never the raw text/JSON which can leak internal detail.
+                logger.warning(
+                    "模型 %s 上游 %s: %s",
+                    model.name,
+                    response.status_code,
+                    response.text[:500],
                 )
+                detail = f"模型服務拒絕請求 (HTTP {response.status_code})"
+                try:
+                    body = response.json()
+                    msg = (
+                        body.get("error", {}).get("message")
+                        if isinstance(body, dict)
+                        else None
+                    )
+                    if isinstance(msg, str) and msg:
+                        detail = msg[:300]
+                except Exception:
+                    pass
+                raise HTTPException(status_code=response.status_code, detail=detail)
 
             # Fallback: upstream returned SSE despite our non-stream request
             # (some agents — e.g. asrd — only speak streaming). Aggregate the

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -70,16 +70,24 @@ class MessageOut(BaseModel):
     model_config = {"from_attributes": True, "populate_by_name": True}
 
 
+# Upper bound on a single message body. ~500KB ≈ 125k tokens — far above any
+# legit completion or paste, but stops an authenticated insider from amplifying
+# writes into multi-MB rows.
+_MAX_MSG_CHARS = 500_000
+
+
 class MessageRatingUpdate(BaseModel):
     rating: Optional[str] = Field(None, pattern="^(up|down)$")
     # Structured feedback (optional, usually accompanies a 'down' rating).
     # Air-gapped deployments rely on this as the main model-quality signal.
     comment: Optional[str] = Field(None, max_length=2000)
-    reasons: Optional[list[str]] = None
+    reasons: Optional[list[Annotated[str, Field(max_length=200)]]] = Field(
+        None, max_length=20
+    )
 
 
 class MessageEdit(BaseModel):
-    content: str = Field(..., min_length=1)
+    content: str = Field(..., min_length=1, max_length=_MAX_MSG_CHARS)
 
 
 class MessageUpdate(BaseModel):
@@ -87,7 +95,7 @@ class MessageUpdate(BaseModel):
 
     Only the supplied fields are written; ``None`` leaves them untouched.
     """
-    content: Optional[str] = None
+    content: Optional[str] = Field(None, max_length=_MAX_MSG_CHARS)
     trace_id: Optional[str] = None
     latency_ms: Optional[int] = None
     model_name: Optional[str] = None
@@ -123,7 +131,7 @@ class ConversationDetail(ConversationOut):
 
 class MessageAppend(BaseModel):
     role: str = Field(..., pattern="^(user|assistant|system|tool)$")
-    content: str
+    content: str = Field(..., max_length=_MAX_MSG_CHARS)
     trace_id: Optional[str] = None
     latency_ms: Optional[int] = None
     model_name: Optional[str] = None
