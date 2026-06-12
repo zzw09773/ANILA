@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.agent import Agent, UserAgentPermission
@@ -499,19 +499,32 @@ def get_my_ui_settings(
 
 
 @router.put("/me/ui-settings")
-def put_my_ui_settings(
-    payload: dict = Body(...),
+async def put_my_ui_settings(
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # The whole blob is replaced (client owns the shape). Cap size so a buggy
-    # client can't bloat the row; 256KB is far above any real prefs payload.
+    # The whole blob is replaced (client owns the shape). Cap size BEFORE
+    # json-parsing so an oversized body is rejected without building a giant
+    # Python object in memory; 256KB is far above any real prefs payload.
     import json as _json
-    settings = payload.get("ui_settings", payload)
+
+    _MAX = 256 * 1024
+    cl = request.headers.get("content-length")
+    if cl is not None and cl.isdigit() and int(cl) > _MAX:
+        raise HTTPException(status_code=413, detail="ui_settings 過大")
+    raw = await request.body()
+    if len(raw) > _MAX:
+        raise HTTPException(status_code=413, detail="ui_settings 過大")
+    try:
+        payload = _json.loads(raw or b"{}")
+    except _json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="ui_settings 必須是合法 JSON")
+    settings = (
+        payload.get("ui_settings", payload) if isinstance(payload, dict) else payload
+    )
     if not isinstance(settings, dict):
         raise HTTPException(status_code=400, detail="ui_settings 必須是物件")
-    if len(_json.dumps(settings)) > 256 * 1024:
-        raise HTTPException(status_code=413, detail="ui_settings 過大")
     current_user.ui_settings = settings
     db.commit()
     return {"ui_settings": current_user.ui_settings}
