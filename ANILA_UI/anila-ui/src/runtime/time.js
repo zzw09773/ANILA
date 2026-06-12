@@ -17,3 +17,18 @@ export function relativeLabel(when) {
   if (months < 12) return `${months} 個月前`;
   return `${Math.floor(months / 12)} 年前`;
 }
+
+// Coarse bucket for grouping the conversation sidebar (今天 / 昨天 / 前 7 天 /
+// 更早). Pass ISO or epoch; falls back to "更早" on unparseable input.
+export function timeBucket(when) {
+  if (when == null) return "更早";
+  const then = typeof when === "number" ? when : new Date(when).getTime();
+  if (Number.isNaN(then)) return "更早";
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const dayMs = 86400000;
+  if (then >= startOfToday) return "今天";
+  if (then >= startOfToday - dayMs) return "昨天";
+  if (then >= startOfToday - 7 * dayMs) return "前 7 天";
+  return "更早";
+}

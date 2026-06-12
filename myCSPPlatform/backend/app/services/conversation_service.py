@@ -237,6 +237,8 @@ def set_message_rating(
     message_id: int,
     user: User,
     rating: Optional[str],
+    comment: Optional[str] = None,
+    reasons: Optional[list] = None,
 ) -> Message:
     """Record thumbs-up/down feedback on an assistant message.
 
@@ -256,6 +258,17 @@ def set_message_rating(
     if msg.role != "assistant":
         raise HTTPException(status_code=400, detail="僅助理訊息可評分")
     msg.rating = rating
+    # Structured feedback rides in metadata_['feedback']. air-gap 環境下這是
+    # 平台團隊評估模型品質的主要訊號。清除評分時一併清掉回饋。
+    meta = dict(msg.metadata_ or {})
+    if rating is None:
+        meta.pop("feedback", None)
+    elif comment or reasons:
+        meta["feedback"] = {
+            "comment": (comment or "").strip() or None,
+            "reasons": reasons or [],
+        }
+    msg.metadata_ = meta or None
     db.commit()
     db.refresh(msg)
     return msg

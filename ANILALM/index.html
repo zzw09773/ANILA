@@ -39,6 +39,15 @@
       textarea {
         font-family: inherit;
       }
+      /* Keyboard-only focus ring (a11y). ANILALM consumes JS tokens inline
+         rather than CSS vars, so the accent color is a literal here; #6361E0
+         reads on both the dark (#0b0d10) and light (#fafaf7) surfaces.
+         :focus-visible fires on keyboard nav only — mouse aesthetics intact. */
+      :focus-visible {
+        outline: 2px solid #6361e0 !important;
+        outline-offset: 1px;
+        border-radius: 4px;
+      }
       @keyframes pulse {
         0%, 100% { opacity: 1; }
         50% { opacity: 0.4; }

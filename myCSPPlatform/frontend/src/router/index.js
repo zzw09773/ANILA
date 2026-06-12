@@ -52,6 +52,12 @@ const routes = [
         meta: { requiresAdmin: true },
       },
       {
+        path: 'banners',
+        name: 'Banners',
+        component: () => import('../views/BannersView.vue'),
+        meta: { requiresAdmin: true },
+      },
+      {
         path: 'audit-logs',
         name: 'AuditLogs',
         component: () => import('../views/AuditLogsView.vue'),

@@ -72,6 +72,10 @@ class MessageOut(BaseModel):
 
 class MessageRatingUpdate(BaseModel):
     rating: Optional[str] = Field(None, pattern="^(up|down)$")
+    # Structured feedback (optional, usually accompanies a 'down' rating).
+    # Air-gapped deployments rely on this as the main model-quality signal.
+    comment: Optional[str] = Field(None, max_length=2000)
+    reasons: Optional[list[str]] = None
 
 
 class MessageEdit(BaseModel):
@@ -230,6 +234,65 @@ def create_conversation(
     )
 
 
+class ConversationSearchHit(ConversationOut):
+    # First matching message excerpt, for the search results list.
+    snippet: Optional[str] = None
+
+
+@router.get("/search", response_model=list[ConversationSearchHit])
+def search_conversations(
+    q: str = Query(..., min_length=1, max_length=200),
+    limit: int = Query(30, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Full-text-ish search over the caller's own conversations — matches the
+    title AND message content (ILIKE substring, which handles Chinese without a
+    CJK tokenizer; pg_trgm GIN index makes it fast). Defined BEFORE /{conv_id}
+    so 'search' isn't shadowed by the int path param.
+
+    Classified conversations are matched by title only — their message bodies
+    are not exposed through search results (snippet stays None) so encrypted
+    content doesn't leak into the sidebar.
+    """
+    like = f"%{q}%"
+    # Conversations of this user whose title matches, OR which contain a
+    # matching message. distinct on conversation id, newest first.
+    matched_ids = (
+        db.query(Conversation.id)
+        .outerjoin(Message, Message.conversation_id == Conversation.id)
+        .filter(Conversation.user_id == current_user.id)
+        .filter((Conversation.title.ilike(like)) | (Message.content.ilike(like)))
+        .distinct()
+        .limit(limit)
+        .subquery()
+    )
+    convs = (
+        db.query(Conversation)
+        .filter(Conversation.id.in_(matched_ids))
+        .order_by(Conversation.updated_at.desc())
+        .all()
+    )
+    hits: list[dict] = []
+    for c in convs:
+        snippet = None
+        if not c.classified:
+            msg = (
+                db.query(Message)
+                .filter(Message.conversation_id == c.id, Message.content.ilike(like))
+                .order_by(Message.id)
+                .first()
+            )
+            if msg and msg.content:
+                idx = msg.content.lower().find(q.lower())
+                start = max(0, idx - 20)
+                snippet = ("…" if start > 0 else "") + msg.content[start:start + 80].strip()
+        data = ConversationOut.model_validate(c).model_dump()
+        data["snippet"] = snippet
+        hits.append(data)
+    return hits
+
+
 @router.get("/{conv_id}", response_model=ConversationDetail)
 def get_conversation(
     conv_id: int,
@@ -290,8 +353,12 @@ def set_message_rating(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Record thumbs-up/down on an assistant message, or clear with rating=null."""
-    return svc.set_message_rating(db, conv_id, message_id, current_user, body.rating)
+    """Record thumbs-up/down on an assistant message, or clear with rating=null.
+    Optionally attaches structured feedback (comment + reason chips)."""
+    return svc.set_message_rating(
+        db, conv_id, message_id, current_user, body.rating,
+        comment=body.comment, reasons=body.reasons,
+    )
 
 
 @router.put("/{conv_id}/messages/{message_id}", response_model=MessageOut)

@@ -7,7 +7,7 @@
 <template>
   <Teleport to="body">
     <transition name="term-modal">
-      <div v-if="visible" class="term-modal" @keydown.esc="onEscape" tabindex="-1" ref="root">
+      <div v-if="visible" class="term-modal" :class="{ 'term-modal--elevated': elevated }" @keydown.esc="onEscape" tabindex="-1" ref="root">
         <div class="term-modal__overlay" @click="onOverlay" />
         <div class="term-modal__dialog" :style="dialogStyle" role="dialog" aria-modal="true" :aria-label="title || '對話框'">
           <header class="term-modal__head">
@@ -37,6 +37,9 @@ const props = defineProps({
   width: { type: String, default: '520px' },
   dismissible: { type: Boolean, default: true },
   flush: { type: Boolean, default: false },
+  // 提升層級:從另一個 modal 內觸發的 confirm / dialog 要蓋在那個 modal 上面。
+  // 一般 modal z-index 60,elevated 用 80 確保在其上。
+  elevated: { type: Boolean, default: false },
 })
 const emit = defineEmits(['close'])
 
@@ -98,6 +101,11 @@ onUnmounted(() => {
   justify-content: center;
   padding: var(--gap-6);
 }
+/* confirm / dialog 從另一個 modal 內彈出時要在它之上(否則同 z-index 60,
+   後掛載的那個 modal 會蓋住 confirm — agent 加密確認就是這個 bug)。 */
+.term-modal--elevated {
+  z-index: 80;
+}
 .term-modal__overlay {
   position: absolute;
   inset: 0;
@@ -112,7 +120,7 @@ onUnmounted(() => {
   border-radius: var(--r-sharp);
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - var(--gap-12));
+  max-height: calc(100dvh - var(--gap-12));
 }
 
 .term-modal__head {

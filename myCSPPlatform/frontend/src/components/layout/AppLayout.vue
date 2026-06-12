@@ -25,7 +25,7 @@ import AppStatusBar from './AppStatusBar.vue'
 .shell {
   display: grid;
   grid-template-rows: var(--shell-topbar-h) 1fr var(--shell-statusbar-h);
-  height: 100vh;
+  height: 100dvh;
   background: var(--c-bg);
   color: var(--c-fg-1);
 }

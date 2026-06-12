@@ -75,6 +75,11 @@ export async function streamChatCompletion({
   onSpans,
   onSessionId,
   onUnknownEvent,
+  // Continue Response:回應被 max_tokens 截斷(finish_reason==='length')時回報。
+  onFinishReason,
+  // Stop generation:呼叫端傳入 AbortController.signal;abort() 即中止串流。
+  // 已累積文字保留(onText 已即時寫入),中止不視為錯誤(回傳累積值)。
+  signal,
 }) {
   // Sprint 7 X follow-up：SPA 完全走 httpOnly cookie + double-submit CSRF。
   // `apiKey` parameter 已移除，避免讓呼叫端誤以為前端可以管理 key（dead
@@ -99,6 +104,7 @@ export async function streamChatCompletion({
     method: "POST",
     credentials: "include",
     headers,
+    signal,
     body: JSON.stringify({ ...payload, stream: true }),
   });
 
@@ -127,7 +133,15 @@ export async function streamChatCompletion({
   let accumulatedText = "";
 
   while (true) {
-    const { done, value } = await reader.read();
+    let chunk;
+    try {
+      chunk = await reader.read();
+    } catch (err) {
+      // 使用者按 Stop → reader.read() 拋 AbortError;吞掉並保留已累積文字。
+      if (err?.name === "AbortError" || signal?.aborted) break;
+      throw err;
+    }
+    const { done, value } = chunk;
     if (done) {
       break;
     }
@@ -150,6 +164,7 @@ export async function streamChatCompletion({
         onToolCallFinished,
         onSpans,
         onUnknownEvent,
+        onFinishReason,
         accumulator: {
           get: () => accumulatedText,
           add: (delta) => {
@@ -254,6 +269,12 @@ export function dispatchSseEvent(event, callbacks) {
   if (delta) {
     callbacks.accumulator.add(delta);
     callbacks.onText?.(callbacks.accumulator.get());
+  }
+  // Continue Response:回應被 max_tokens 截斷時 finish_reason==='length'。
+  // 回報給呼叫端,讓 UI 決定要不要顯示「繼續」鈕(僅純文字回合)。
+  const finishReason = chunk.choices?.[0]?.finish_reason;
+  if (finishReason) {
+    callbacks.onFinishReason?.(finishReason);
   }
 }
 
