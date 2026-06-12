@@ -10,6 +10,9 @@ alembic==1.14.1
 pydantic-settings==2.7.1
 # python-jose 3.4.0 修復 PYSEC-2024-232 / PYSEC-2024-233 (JWT 相關)。3.5.0 為最新。
 python-jose[cryptography]==3.5.0
+# asn1crypto:純 Python ASN.1/CMS 解析,卡片登入 PKCS#7 簽章驗證用
+# (cryptography 41 無 CMS verify API)。air-gap 友善(純 wheel,無編譯)。
+asn1crypto==1.5.1
 passlib[bcrypt]==1.7.4
 # passlib 1.7.4 still probes bcrypt.__about__.__version__, which was removed in bcrypt 4.1+
 bcrypt==4.0.1

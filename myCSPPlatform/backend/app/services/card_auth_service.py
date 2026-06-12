@@ -172,13 +172,14 @@ def verify_card_and_resolve_user(
         CardAuthError: PKCS#7 解析失敗 (→ HTTP 401)。
         CardLoginRejected: challenge 無效、或 email 與既有帳號衝突。
     """
-    # 解 challenge 驗 nonce 還活著;value 目前不傳給下游 (verify_pkcs7_signature
-    # 不需要 expected_tbs),保留 decode 是為了:(a) 反 replay (token 過期就拒);
-    # (b) 確保流程兩段呼叫對應同一次 challenge。
-    decode_card_challenge(challenge_token)
+    # 解 challenge 取出 nonce:(a) token 過期就拒 (反 replay 第一道);(b) nonce
+    # 往下傳給 verify_pkcs7_signature 當 expected eContent,綁定「這次簽章就是對
+    # 這次 challenge」(反 replay 第二道,真正的密碼學綁定)。
+    nonce = decode_card_challenge(challenge_token)
 
     claims = verify_pkcs7_signature(
         signature_b64=signature_b64,
+        expected_nonce=nonce,
         card_serial=card_serial,
     )
 

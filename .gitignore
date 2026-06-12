@@ -74,6 +74,9 @@ lerna-debug.log*
 .env.*.local
 *.pem
 *.key
+# 例外:卡片登入的 CSPKI CA bundle 是「公開憑證」(root + 中繼,非私鑰),
+# 是 server 端驗卡的信任錨,必須隨碼一起交付。
+!myCSPPlatform/backend/app/services/cspki_ca_bundle.pem
 
 # ── IDE / 編輯器 ─────────────────────────────────────────────────────────────
 .idea/
