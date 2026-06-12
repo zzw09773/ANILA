@@ -136,6 +136,78 @@ function CopyButton({ getText, style }) {
   );
 }
 
+// Extract raw source text from a hast code node (its text children).
+function codeNodeText(codeNode) {
+  if (!codeNode?.children) return "";
+  return codeNode.children
+    .filter((c) => c.type === "text")
+    .map((c) => c.value)
+    .join("");
+}
+
+// Small stable hash → deterministic mermaid render id per source.
+function hashString(s) {
+  let h = 0;
+  for (let i = 0; i < (s || "").length; i++) {
+    h = (h << 5) - h + s.charCodeAt(i);
+    h |= 0;
+  }
+  return h;
+}
+
+// Mermaid lazy loader — keeps the ~2.8MB lib in its own chunk; only fetched
+// when a diagram renders (offline: bundled at build, no CDN).
+let _mermaidPromise = null;
+function loadMermaid() {
+  if (!_mermaidPromise) {
+    _mermaidPromise = import("mermaid").then((m) => {
+      const mermaid = m.default || m;
+      mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });
+      return mermaid;
+    });
+  }
+  return _mermaidPromise;
+}
+
+function MermaidDiagram({ source }) {
+  const [svg, setSvg] = useState("");
+  const [err, setErr] = useState("");
+  const idRef = useRef(`mmd-${Math.abs(hashString(source))}`);
+  useEffect(() => {
+    let alive = true;
+    setErr("");
+    loadMermaid()
+      .then((mermaid) => mermaid.render(idRef.current, source))
+      .then(({ svg }) => { if (alive) setSvg(svg); })
+      .catch((e) => { if (alive) setErr(e?.message || "圖表渲染失敗"); });
+    return () => { alive = false; };
+  }, [source]);
+  if (err) {
+    return (
+      <pre style={{
+        background: "var(--bg-subtle)", border: "1px solid var(--danger)",
+        borderRadius: "var(--radius)", padding: "10px 12px", fontSize: 12.5,
+        overflowX: "auto", margin: "8px 0",
+      }}>{`mermaid 錯誤：${err}\n\n${source}`}</pre>
+    );
+  }
+  // XSS note: the SVG is mermaid's own output rendered under
+  // securityLevel:"strict", which sanitises via mermaid's bundled DOMPurify
+  // and disables htmlLabels / click handlers / script injection. The diagram
+  // source is LLM text, so strict mode is the required defence — do NOT relax
+  // securityLevel. The placeholder fallback is a static literal.
+  return (
+    <div
+      style={{
+        background: "var(--bg-subtle)", border: "1px solid var(--border)",
+        borderRadius: "var(--radius)", padding: 12, margin: "8px 0",
+        overflowX: "auto", textAlign: "center",
+      }}
+      dangerouslySetInnerHTML={{ __html: svg || "<span style='color:var(--fg-subtle);font-size:12px'>圖表載入中…</span>" }}
+    />
+  );
+}
+
 // ── Code block: language label + syntax highlight (via rehype-highlight) +
 //    copy button. rehype-highlight has already injected <span class="hljs-…">
 //    children on the <code>, so the CSS theme takes over visually.
@@ -147,6 +219,10 @@ function CodeBlock({ node, children, ...props }) {
     ? classes.find((c) => typeof c === "string" && c.startsWith("language-"))
     : "";
   const lang = langClass ? String(langClass).replace("language-", "") : "";
+  // Mermaid:用圖表渲染取代程式碼區塊。
+  if (lang === "mermaid") {
+    return <MermaidDiagram source={codeNodeText(codeNode)} />;
+  }
   return (
     <div style={{ position: "relative", margin: "8px 0" }}>
       {lang && (

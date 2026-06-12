@@ -80,6 +80,7 @@ const menuGroups = computed(() => {
         { path: '/users', label: 'users' },
         { path: '/departments', label: 'departments' },
         { path: '/alerts', label: 'alerts' },
+        { path: '/banners', label: 'banners' },
         { path: '/audit-logs', label: 'audit-log' },
         { path: '/platform-links', label: 'platform-links' },
         { path: '/service-access', label: 'service-access' },
