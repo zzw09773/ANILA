@@ -319,10 +319,24 @@ def auto_seed():
                     username = item["username"]
                     user = db.query(User).filter(User.username == username).first()
                     if user is None:
+                        seed_pw = item.get("password")
+                        if not seed_pw:
+                            # Fail closed: never silently default to a known
+                            # password ("changeme"). Mint a random one the
+                            # operator must reset out-of-band — log that it
+                            # happened, never the value.
+                            import secrets as _secrets
+
+                            seed_pw = _secrets.token_urlsafe(24)
+                            logger.warning(
+                                "seed 使用者 %s 未提供密碼，已產生隨機密碼 — "
+                                "請於使用前重設",
+                                username,
+                            )
                         user = User(
                             username=username,
                             email=item.get("email"),
-                            hashed_password=hash_password(item.get("password", "changeme")),
+                            hashed_password=hash_password(seed_pw),
                             role=item.get("role", "user"),
                             is_active=True,
                             is_approved=True,
