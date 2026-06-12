@@ -154,6 +154,10 @@ def _reject_when_card_only() -> None:
     回 404 而非 403/410，讓非卡片 endpoint 在內網部署「看起來不存在」 —
     跟 ``_require_card_login_enabled`` 對稱，外部探測無法區分「該功能本來
     就沒做」還是「被政策關掉」。
+
+    註:``/login`` 與 ``PUT /password`` 不走這個 helper — 它們有 **owner
+    例外**(break-glass 帳密通道,2026-06-11),gate 寫在各自端點內,
+    失敗姿態同樣是 404。
     """
     if settings.REQUIRE_CARD_LOGIN_ONLY:
         raise HTTPException(status_code=404)
@@ -331,10 +335,17 @@ def login(
     response: Response,
     db: Session = Depends(get_db),
 ):
-    _reject_when_card_only()
+    # Branch SSO lockdown:``REQUIRE_CARD_LOGIN_ONLY`` 時帳密登入僅保留給
+    # **owner**(break-glass 管理通道,2026-06-11 拍板)。posture 與
+    # ``_reject_when_card_only`` 一致:非 owner 的所有結果 — 帳密錯、待核准、
+    # 甚至帳密完全正確 — 一律回與「功能不存在」相同的 404,讓外部探測無法
+    # 區分「密碼錯 / 權限不足 / 端點關閉」;只有 owner 完整登入成功會放行。
+    card_only = settings.REQUIRE_CARD_LOGIN_ONLY
     ip_address = http_request.client.host if http_request.client else None
 
     if request.auth_source not in (None, "", "local"):
+        if card_only:
+            raise HTTPException(status_code=404)
         # LDAP 已自系統移除（將以 SSO 取代），僅保留本地登入 + OIDC callback。
         raise HTTPException(
             status_code=400,
@@ -352,11 +363,15 @@ def login(
             ip_address=ip_address,
             commit=True,
         )
+        if card_only:
+            raise HTTPException(status_code=404)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="帳號或密碼錯誤",
         )
     if result is PENDING_APPROVAL_SENTINEL:
+        if card_only:
+            raise HTTPException(status_code=404)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="等待核准中，請通知 admin",
@@ -372,10 +387,25 @@ def login(
             ip_address=ip_address,
             commit=True,
         )
+        if card_only:
+            raise HTTPException(status_code=404)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="此帳號已切換為 SSO 登入；請改用單一登入按鈕。",
         )
+    if card_only and result.role != "owner":
+        # 帳密「正確」但非 owner — 這代表持有效憑證者試圖繞過卡片通道,
+        # 比單純密碼錯誤更值得留痕;audit 記明原因後仍回 404 維持姿態。
+        log_audit_event(
+            db,
+            action="login",
+            resource_type="auth",
+            status="failure",
+            detail=f"card-only 模式下非 owner 嘗試帳密登入(憑證有效): {request.username}",
+            ip_address=ip_address,
+            commit=True,
+        )
+        raise HTTPException(status_code=404)
     tokens = create_tokens(result)
     _stamp_last_login(db, result)
     log_audit_event(
@@ -780,10 +810,12 @@ def change_password(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # Card-only deployments：本機帳密整套都不接受，change_password 自然也封閉。
-    # 卡片帳號的 hashed_password 是 unguessable random，使用者本來就提供
-    # 不出 current_password；這個 guard 是雙重保險 + 一致性。
-    _reject_when_card_only()
+    # Card-only deployments：本機帳密僅 owner 保留(break-glass,與 /login 的
+    # owner 例外對齊)— owner 能登入就必須能輪換密碼。其他帳號的
+    # hashed_password 是 unguessable random,本來就提供不出 current_password,
+    # 對他們維持 404 姿態。
+    if settings.REQUIRE_CARD_LOGIN_ONLY and current_user.role != "owner":
+        raise HTTPException(status_code=404)
     if not verify_password(request.current_password, current_user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

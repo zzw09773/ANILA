@@ -10,12 +10,21 @@
 #   OUTPUT_DIR 預設 /tmp/anila-images-export
 #
 # 環境變數:
-#   WITH_MODELS=1   把 4 個 model image 一起打包進 04-models.tar.gz。
-#                    預設 OFF — model image 太大 (45+GB) 通常走別的管道進內網。
+#   WITH_MODELS=1   把 model image 一起打包進 04-models.tar.gz。
+#                    預設 OFF — image 數十 GB,確定內網要本機跑模型才開。
+#   WITH_WEIGHTS=1  把 HF 權重打包成 05-weights-<name>.tar (無壓縮 —
+#                    safetensors 壓不動,gzip 數百 GB 純耗時)。
+#                    內網無下載通道,權重只能從這裡帶。
+#   WEIGHTS_LIST    要打包的權重目錄名 (空白分隔),預設內網需要的最小集:
+#                    "FLUX.2-dev gemma-4-31B-it gemma-4-31B-it-assistant"
+#                    (gemma-4-31B-it-assistant 是 MTP 投機解碼的 draft model,
+#                    跑 gemma4 必帶;gpt-oss/NV-Embed 預設不帶 — aiagent2
+#                    gateway 已服務,要重複部署再自行加進清單)
+#   ANILA_HF_DIR    權重來源目錄 (default /home/aia/c1147259/project/Huggingface)
 #
 # 輸出:
 #   $OUTPUT_DIR/
-#     ├── 01-anila-built.tar.gz      (csp / ui / lm / worker / router / pptx)
+#     ├── 01-anila-built.tar.gz      (csp / ui / lm / worker / router / pptx / studio)
 #     ├── 02-base.tar.gz             (postgres / redis / nginx)
 #     ├── 03-cold.tar.gz             (codeserver / n8n / gitlab)
 #     ├── 04-models.tar.gz           (僅當 WITH_MODELS=1)
@@ -40,9 +49,9 @@ echo "  Output: $OUTPUT_DIR"
 echo "============================================================"
 echo
 
-# ── Phase 1: build 6 個自家 image ──────────────────────────────────────────
-echo "▶ [1/5] Building 6 self-built images via docker compose..."
-docker compose build csp ingestion-worker router anilalm anila-ui pptx-renderer
+# ── Phase 1: build 7 個自家 image ──────────────────────────────────────────
+echo "▶ [1/5] Building 7 self-built images via docker compose..."
+docker compose build csp ingestion-worker router anilalm anila-ui pptx-renderer anila-studio
 echo "✓ Built."
 echo
 
@@ -75,6 +84,7 @@ docker save \
     anila-platform-anilalm \
     anila-platform-anila-ui \
     anila-platform-pptx-renderer \
+    anila-platform-anila-studio \
   | gzip > "$OUTPUT_DIR/01-anila-built.tar.gz"
 
 echo "  • 02-base.tar.gz"
@@ -97,11 +107,16 @@ docker save \
 #   WITH_MODELS=1 bash scripts/build-and-export-for-intranet.sh
 if [ "${WITH_MODELS:-0}" = "1" ]; then
     echo "  • 04-models.tar.gz (WITH_MODELS=1)"
+    # 內網拓撲備註 (2026-06):gpt-oss/nv-embed 已由 aiagent2 gateway 服務,
+    # image 通常不必帶;優先帶 FLUX (獨家繪圖) + gemma4 (VLM captions)。
+    # 權重 (~295GB) 不打包 — 內網下載通道直接抓 HuggingFace。
     MODEL_IMAGES=(
         tensorrt-llm-hf:1.3.0rc10
         vllm-gemma4:latest
         tritonserver:25.04-nv-embed-v2
         embedding-proxy:migration
+        flux2-dev:bf16
+        anila-flux-agent:latest
     )
     EXISTING_MODELS=()
     for img in "${MODEL_IMAGES[@]}"; do
@@ -123,12 +138,32 @@ else
 fi
 echo
 
+# ── Phase 4b: HF 權重 (預設跳過,WITH_WEIGHTS=1 啟用) ─────────────────────
+# 內網沒有對外下載通道 — 權重只能在外網抓好再轉進去。無壓縮 tar:
+# safetensors 已是高熵格式,gzip 換不到體積只換到小時級的 CPU 時間。
+if [ "${WITH_WEIGHTS:-0}" = "1" ]; then
+    HF_DIR="${ANILA_HF_DIR:-/home/aia/c1147259/project/Huggingface}"
+    WEIGHTS_LIST="${WEIGHTS_LIST:-FLUX.2-dev gemma-4-31B-it gemma-4-31B-it-assistant}"
+    echo "  • 05-weights-*.tar (WITH_WEIGHTS=1,來源 $HF_DIR)"
+    for w in $WEIGHTS_LIST; do
+        if [ -d "$HF_DIR/$w" ]; then
+            echo "    - $w ($(du -sh "$HF_DIR/$w" | cut -f1))"
+            tar -cf "$OUTPUT_DIR/05-weights-${w}.tar" -C "$HF_DIR" "$w"
+        else
+            echo "    ⚠  missing, skip: $HF_DIR/$w"
+        fi
+    done
+else
+    echo "  • 05-weights-*.tar — skipped (WITH_WEIGHTS=0)"
+fi
+echo
+
 # ── Phase 5: 寫 manifest + intranet import script ────────────────────────
 echo "▶ [4/5] Writing MANIFEST.txt + INTRANET-LOAD.sh..."
 
 # CHECKSUMS.sha256:純機器可讀格式 (相對路徑),供 INTRANET-LOAD.sh 內網端
 # `sha256sum -c` 自動驗檔用。MANIFEST.txt 內也保留一份人類可讀版,給 IT 對檔。
-( cd "$OUTPUT_DIR" && sha256sum *.tar.gz > CHECKSUMS.sha256 )
+( cd "$OUTPUT_DIR" && shopt -s nullglob && sha256sum *.tar.gz *.tar > CHECKSUMS.sha256 )
 
 {
     echo "ANILA Platform — Intranet Image Bundle"
@@ -182,6 +217,23 @@ for tar in 01-anila-built.tar.gz 02-base.tar.gz 03-cold.tar.gz 04-models.tar.gz;
     fi
 done
 echo
+
+# ── HF 權重 (05-weights-*.tar,WITH_WEIGHTS=1 打包時才有) ────────────────
+# 解到 ANILA_HF_DIR — 慣例是 <repo>/models/model (models/inference/
+# docker-compose.yml 的權重掛載預設)。先 export ANILA_HF_DIR=<repo>/models/model
+# 再跑本腳本;放別處就之後在 .env 設同一個值。
+HF_DIR="${ANILA_HF_DIR:-/home/aia/c1147259/project/Huggingface}"
+shopt -s nullglob
+WEIGHT_TARS=(05-weights-*.tar)
+if [ ${#WEIGHT_TARS[@]} -gt 0 ]; then
+    echo "── Extracting model weights → $HF_DIR ──"
+    mkdir -p "$HF_DIR"
+    for tar in "${WEIGHT_TARS[@]}"; do
+        echo "▶ $tar"
+        tar -xf "$tar" -C "$HF_DIR"
+    done
+    echo
+fi
 echo "── Verifying ──"
 docker images | grep -E "anila-platform|pgvector|redis|nginx|code-server|n8n|gitlab|tensorrt-llm-hf|vllm-gemma4|tritonserver|embedding-proxy" || true
 echo

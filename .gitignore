@@ -157,3 +157,7 @@ n8n_DATA
 
 # 產出物：生成的簡報不入庫
 *.pptx
+
+# ── 模型權重 (models/model = ANILA_HF_DIR 預設;權重數百 GB 不入 git) ────
+models/model/*
+!models/model/.gitkeep

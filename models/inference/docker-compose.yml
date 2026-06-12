@@ -14,12 +14,21 @@
 #     docker network create anila-models-net
 #     docker compose -f docker-compose.yml restart csp   # CSP joins the net
 #
-# Day-to-day:
-#     docker compose -f models/docker-compose.yml up -d
-#     docker compose -f models/docker-compose.yml logs -f gemma4
-#     docker compose -f models/docker-compose.yml ps
-#     docker compose -f models/docker-compose.yml restart gemma4
-#     docker compose -f models/docker-compose.yml down            # 模型 only,平台不動
+# 目錄佈局 (2026-06-10 重組):
+#     models/model/      權重 (ANILA_HF_DIR 預設指這;dev 機放 symlink 也通)
+#     models/inference/  本檔 + build context + src/ (trtllm/triton/proxy 設定)
+#
+# Day-to-day (建議用 scripts/model-serve.sh,它會自動 source .env):
+#     bash scripts/model-serve.sh up            # 起預設組
+#     bash scripts/model-serve.sh up gemma4     # 起單一服務
+#     bash scripts/model-serve.sh status|logs gemma4|down
+# 等價的裸 compose 指令:
+#     docker compose -f models/inference/docker-compose.yml up -d ...
+#
+# Profiles:
+#     (無 profile)        試用機現役組:gpt-oss-20b / gemma4 / nv-embed / flux
+#     --profile intranet  內網 H100 新增組:gemma-4-26b-a4b / gemma-4-12b /
+#                         gpt-oss-120b (generic vLLM image,權重走 ANILA_HF_DIR)
 #
 # Endpoint URLs registered in CSP model_registry (走 docker DNS,
 # host port 完全沒開):
@@ -47,9 +56,12 @@ services:
       TRANSFORMERS_OFFLINE: "1"
       HF_DATASETS_OFFLINE: "1"
     volumes:
-      - /home/aia/c1147259/project/Huggingface/gpt-oss-20b:/workspace/model/gpt-oss-20b
-      - /home/aia/c1147259/project/Docker/tensorrtllm-1.2.0rc5-openai-gpt-oss-20b/encodings:/etc/encodings/:ro
-      - /home/aia/c1147259/project/Docker/tensorrtllm-1.2.0rc5-openai-gpt-oss-20b:/workspace/src
+      # 權重 / 設定檔目錄可用 env 覆寫 (路徑不同時設 ANILA_HF_DIR /
+      # ANILA_MODELSRC_DIR);預設 = repo 內慣例位置 models/model 與
+      # models/inference/src (相對本 compose 檔解析)。
+      - ${ANILA_HF_DIR:-../model}/gpt-oss-20b:/workspace/model/gpt-oss-20b
+      - ${ANILA_MODELSRC_DIR:-./src}/tensorrtllm-1.2.0rc5-openai-gpt-oss-20b/encodings:/etc/encodings/:ro
+      - ${ANILA_MODELSRC_DIR:-./src}/tensorrtllm-1.2.0rc5-openai-gpt-oss-20b:/workspace/src
     working_dir: /workspace
     expose:
       - "8000"
@@ -91,9 +103,9 @@ services:
   #     若 ``vllm-gemma4:latest`` 是舊版,啟動會報 ``unknown speculative
   #     method 'mtp'`` 直接退出 — rebuild image 升 vLLM 即可。
   #   * Offline 模式 (HF_HUB_OFFLINE=1) 不能讓 vLLM 自己去 HF 抓 assistant,
-  #     一次性下載到本機:
-  #         huggingface-cli download google/gemma-4-31B-it-assistant \
-  #             --local-dir /home/aia/c1147259/project/Huggingface/gemma-4-31B-it-assistant
+  #     一次性下載到本機 (放 ANILA_HF_DIR,預設 models/model/):
+  #         hf download google/gemma-4-31B-it-assistant \
+  #             --local-dir models/model/gemma-4-31B-it-assistant
   #   * num_speculative_tokens=4 是 31B 的甜蜜點 (官方 recipe);拉太大
   #     reject rate 會升高,反而變慢。
   gemma4:
@@ -109,8 +121,10 @@ services:
       # 把這 0.92 GiB 還給 KV cache (代價: 大 batch 動態擴 CUDA graph 時可能 OOM)。
       VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: "0"
     volumes:
-      - /home/aia/c1147259/project/Huggingface/gemma-4-31B-it:/workspace/model/gemma-4-31B-it
-      - /home/aia/c1147259/project/Huggingface/gemma-4-31B-it-assistant:/workspace/model/gemma-4-31B-it-assistant
+      # assistant = MTP 投機解碼的 draft model (--speculative-config 指向它),
+      # 跟主模型一樣是必帶的權重,缺了 vLLM 用這份設定起不來。
+      - ${ANILA_HF_DIR:-../model}/gemma-4-31B-it:/workspace/model/gemma-4-31B-it
+      - ${ANILA_HF_DIR:-../model}/gemma-4-31B-it-assistant:/workspace/model/gemma-4-31B-it-assistant
     working_dir: /workspace
     expose:
       - "8000"
@@ -164,9 +178,9 @@ services:
       TZ: Asia/Taipei
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
     volumes:
-      - /home/aia/c1147259/project/Huggingface/NV-Embed-v2:/workspace/model/NV-Embed-v2
-      - /home/aia/c1147259/project/Docker/tritonserver-25.04-nv-embed-v2/repository:/workspace/repository
-      - /home/aia/c1147259/project/Docker/tritonserver-25.04-nv-embed-v2:/workspace/src
+      - ${ANILA_HF_DIR:-../model}/NV-Embed-v2:/workspace/model/NV-Embed-v2
+      - ${ANILA_MODELSRC_DIR:-./src}/tritonserver-25.04-nv-embed-v2/repository:/workspace/repository
+      - ${ANILA_MODELSRC_DIR:-./src}/tritonserver-25.04-nv-embed-v2:/workspace/src
     working_dir: /workspace
     # 沒 expose 也沒 ports — 完全 cluster-internal,讓 attack surface 更小
     restart: unless-stopped
@@ -196,7 +210,9 @@ services:
     image: embedding-proxy:migration
     container_name: anila-model-nv-embed-proxy
     build:
-      context: /home/aia/c1147259/project/My-OpenAI-Frontend/embedding_proxy
+      # 已 vendor 進 repo (原始出處 My-OpenAI-Frontend/embedding_proxy),
+      # 內網無外部依賴即可 rebuild。
+      context: ./src/embedding_proxy
     environment:
       TZ: Asia/Taipei
       TRITON_URL: http://nv-embed-triton:8000
@@ -210,7 +226,10 @@ services:
     restart: unless-stopped
     networks: [models]
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/v1/models > /dev/null"]
+      # embedding-proxy image 沒有 curl — 之前用 curl 導致 exit 127,
+      # 「unhealthy 四週」其實是誤報(R2 演練 2026-06-11 查明,服務一直正常)。
+      # 照 flux2-dev-agent 的 python urllib 寫法。
+      test: ["CMD-SHELL", "python -c \"import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/v1/models', timeout=5).status == 200 else 1)\""]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -238,7 +257,7 @@ services:
       FLUX_NUM_STEPS: "28"
       FLUX_GUIDANCE_SCALE: "3.5"
     volumes:
-      - /home/aia/c1147259/project/Huggingface/FLUX.2-dev:/workspace/model/FLUX.2-dev:ro
+      - ${ANILA_HF_DIR:-../model}/FLUX.2-dev:/workspace/model/FLUX.2-dev:ro
     expose:
       - "8000"
     restart: unless-stopped
@@ -285,7 +304,9 @@ services:
       DEFAULT_ASPECT_RATIO: "16:9"
       FLUX_TIMEOUT_SECONDS: "240"
     volumes:
-      - /home/aia/c1147259/ANILA/share/uploads/flux:/share/flux
+      # 相對路徑以本 compose 檔所在目錄 (models/inference/) 解析 →
+      # repo 一起搬就通,不用再釘 host 絕對路徑。
+      - ../../share/uploads/flux:/share/flux
     expose:
       - "8000"
     depends_on:
@@ -300,6 +321,126 @@ services:
       timeout: 10s
       retries: 5
       start_period: 20s
+
+  # ════════════════════════════════════════════════════════════════════════
+  # 內網 H100 新增組 (profile: intranet) — 2026-06 模型清單
+  # 統一用 generic vLLM image (toolkit 帶進去的 v0.22.1-cu129),權重從
+  # ANILA_HF_DIR 掛。GPU 編號用 env 覆寫對應內網主機的實際配置。
+  # 起法: bash scripts/model-serve.sh up intranet
+  # ════════════════════════════════════════════════════════════════════════
+
+  # ── gemma-4-26B-A4B (MoE, ~48G bf16, 單卡) ────────────────────────────────
+  gemma-4-26b-a4b:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.22.1-cu129-ubuntu2404}
+    container_name: anila-model-gemma-4-26b-a4b
+    profiles: ["intranet"]
+    environment:
+      TZ: Asia/Taipei
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_DATASETS_OFFLINE: "1"
+    volumes:
+      - ${ANILA_HF_DIR:-../model}/gemma-4-26B-A4B:/workspace/model/gemma-4-26B-A4B:ro
+    expose:
+      - "8000"
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GEMMA_A4B_GPU:-1}"]
+              capabilities: [gpu]
+    shm_size: 32g
+    ipc: host
+    command: >
+      --model /workspace/model/gemma-4-26B-A4B
+      --host 0.0.0.0 --port 8000
+      --served-model-name gemma-4-26B-A4B
+      --kv-cache-dtype fp8
+      --enable-prefix-caching
+    networks: [models]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/v1/models > /dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+
+  # ── gemma-4-12B (~22G bf16, 單卡) ─────────────────────────────────────────
+  gemma-4-12b:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.22.1-cu129-ubuntu2404}
+    container_name: anila-model-gemma-4-12b
+    profiles: ["intranet"]
+    environment:
+      TZ: Asia/Taipei
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_DATASETS_OFFLINE: "1"
+    volumes:
+      - ${ANILA_HF_DIR:-../model}/gemma-4-12B:/workspace/model/gemma-4-12B:ro
+    expose:
+      - "8000"
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GEMMA_12B_GPU:-2}"]
+              capabilities: [gpu]
+    shm_size: 16g
+    ipc: host
+    command: >
+      --model /workspace/model/gemma-4-12B
+      --host 0.0.0.0 --port 8000
+      --served-model-name gemma-4-12B
+      --kv-cache-dtype fp8
+      --enable-prefix-caching
+    networks: [models]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/v1/models > /dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+  # ── gpt-oss-120b (原生 MXFP4 ~63G, 單卡;vLLM 在 Hopper 有 MXFP4 kernel) ──
+  gpt-oss-120b:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.22.1-cu129-ubuntu2404}
+    container_name: anila-model-gpt-oss-120b
+    profiles: ["intranet"]
+    environment:
+      TZ: Asia/Taipei
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_DATASETS_OFFLINE: "1"
+    volumes:
+      - ${ANILA_HF_DIR:-../model}/gpt-oss-120b:/workspace/model/gpt-oss-120b:ro
+    expose:
+      - "8000"
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPT_OSS_120B_GPU:-3}"]
+              capabilities: [gpu]
+    shm_size: 32g
+    ipc: host
+    command: >
+      --model /workspace/model/gpt-oss-120b
+      --host 0.0.0.0 --port 8000
+      --served-model-name gpt-oss-120b
+      --enable-prefix-caching
+    networks: [models]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/v1/models > /dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
 
 networks:
   models:

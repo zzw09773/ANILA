@@ -1,87 +1,232 @@
-# 內網部署 Runbook (branch SSO)
+# 內網部署 Runbook (prod-intranet-card)
 
 > **Owner**:你 (1147259)
-> **目標環境**:中科院內網,IP `10.53.100.12`
-> **更新**:2026-05-16
-> **配套檔**:[`.env.example`](../../.env.example) / [`docker-compose.yml`](../../docker-compose.yml) / [`scripts/build-and-export-for-intranet.sh`](../../scripts/build-and-export-for-intranet.sh)
+> **目標環境**:中科院內網,平台主機 `10.53.100.15`,對外名稱 **`https://anila.ai.ncsist.org.tw`**
+> **模型來源**:`https://aiagent2.ai.ncsist.org.tw` (=10.53.100.12,My-OpenAI-Frontend gateway,模型容器不開 port)
+> **更新**:2026-06-10 (取代 2026-05-16 版 — 拓撲、憑證、gateway 認證全數改版)
+> **配套檔**:[`.env.example`](../../.env.example) / [`docker-compose.yml`](../../docker-compose.yml) / [`scripts/build-and-export-for-intranet.sh`](../../scripts/build-and-export-for-intranet.sh) / [`scripts/deploy-prod.sh`](../../scripts/deploy-prod.sh)
 
-這份是「**今天從外網 dev 機 → 帶進內網一鍵跑起來**」的逐步操作手冊。任何一步看不懂或卡住,直接看「Troubleshooting」段。
+這份是「**從外網 dev 機 → 帶進內網一鍵跑起來**」的逐步操作手冊。卡住直接看「Troubleshooting」段。
 
 ---
 
 ## 0. 架構摘要 (一頁懂)
 
 ```
-員工 PC                                   內網 Server (10.53.100.12)
-─────────────────                         ─────────────────────────
-[實體卡 + 讀卡機]                         
-   ↑↓ ISO-7816 APDU                      
-[HiPKI 本機元件]                          
- (PKCS#11 over HTTP @localhost:16888)    
-   ↑↓ HTTP                                
-[瀏覽器 popup → main page]               
-   ↑↓ HTTPS (TLS, IT-issued cert)        
-                            ─────→        nginx :443 / :4443
-                                              ↓
-                                          csp (FastAPI)
-                                              ├─ /api/auth/card/* (PKCS#7 verify)
-                                              ├─ /api/* (control plane)
-                                              ├─ /v1/* (data plane → router → models)
-                                              └─ Vue SPA serve /login + admin UI
-                                              ↓
-                                          postgres + redis + ingestion-worker
+員工 PC                         平台主機 (10.53.100.15)              模型主機 (10.53.100.12)
+─────────────────               anila.ai.ncsist.org.tw               aiagent2.ai.ncsist.org.tw
+[實體卡 + 讀卡機]               ─────────────────────────            ─────────────────────────
+   ↑↓ ISO-7816 APDU
+[HiPKI 本機元件]
+ (localhost:16888)
+   ↑↓ HTTP
+[瀏覽器 popup → main]
+   ↑↓ HTTPS (wildcard cert)
+                    ──────→     nginx :443
+                                    ↓
+                                csp (FastAPI)
+                                 ├─ /api/auth/card/* (PKCS#7)
+                                 ├─ /api/* (control plane)
+                                 └─ /v1/*  ── Bearer key ──→  nginx :443 /v1 (正式憑證)
+                                    ↓                              ↓
+                                postgres + redis                backend → gpt-oss-20b
+                                + ingestion-worker                        nv-embed-v2 …
 ```
 
-**Trust 邊界**:使用者 PC 上的卡片硬體 + PIN + HiPKI driver。Backend 收到 PKCS#7 簽章,parse 抽 employee_id 就完成驗證,**不再驗鏈也不打 OCSP** (內網 ocsp.ncsist.org.tw 不可達且非必要)。
+**Trust 邊界**:
+- 入向:卡片硬體 + PIN + HiPKI。Backend 解 PKCS#7 抽 employee_id,不驗鏈不打 OCSP。
+- 出向:csp → 模型 gateway 走 https (NCSIST CA 驗證) + `MODEL_GATEWAY_API_KEY` (Bearer)。
+  key 只注入 model 呼叫,agent dispatch 不帶 (`proxy_service._apply_gateway_auth`)。
 
 ---
 
 ## 1. Phase 0:外網準備 (在這台 dev 機跑)
 
-### 1.1 確認跟 IT 拿到的東西
+### 1.1 前置確認清單
 
-| 項目 | 狀態 | 備註 |
+| 項目 | 取得方式 | 備註 |
 |---|---|---|
-| TLS cert + key (CN/SAN 含 `10.53.100.12`) | ⏳ 等 IT | `server.crt` + `server.key`,放進 `myCSPPlatform/docker/certs/` |
-| 內網 DNS 是否解析 anila / 平台 hostname | ⏳ 待確認 | 沒有也沒差,直接用 IP |
-| HiPKI 元件已預載到所有員工 PC | ⏳ 待確認 | 你裝的版本相同即可 (`localhost:16888` 要能回應) |
-| LLM service (gpt-oss-20b / gemma4) 在內網由誰提供 | ⏳ 待確認 | 我們的 model stack 走別的管道進內網 |
+| 內網 DNS A record `anila.ai.ncsist.org.tw → 10.53.100.15` | 請 IT 加 | 沒配好前過渡用 IP 連 (有憑證警告,預期) |
+| `*.ai.ncsist.org.tw` wildcard 憑證 + 私鑰 | **已持有** — `server.pfx` (空密碼,2029 到期) | 抽取指令見 §2.2;⚠ pfx 空密碼放 repo 是冒充風險,進場後改妥善保管 |
+| NCSIST root CA PEM (給 csp 信任 aiagent2) | `http://repository.ncsist.org.tw/certs/NCSISTCA.cer` (內網可達;leaf AIA 欄位寫的官方下載點) | 備案:公司 PC 憑證存放區匯出「中科院憑證管理中心 - G1」 |
+| 模型 gateway API key | 在 aiagent2 (My-OpenAI-Frontend) 管理介面簽發一把 ANILA 專用 key | 填 `MODEL_GATEWAY_API_KEY`;獨立一把方便撤銷/歸戶 |
+| HiPKI 元件預載到員工 PC | 確認 `localhost:16888` 可回應 | |
 
-### 1.2 Build + 打包 image
+### 1.2 Build + 打包
 
 ```bash
 cd /home/aia/c1147259/ANILA
 
-# 跑打包腳本 (預設不打包 model image,model 走別管道)
+# 基本款 (純 gateway 架構,平台主機不跑模型):
 bash scripts/build-and-export-for-intranet.sh
+
+# 要在內網本機跑模型 (FLUX 繪圖 / gemma4) 就連 image + 權重一起:
+WITH_MODELS=1 WITH_WEIGHTS=1 bash scripts/build-and-export-for-intranet.sh
 ```
 
-預期產出 (在 `/tmp/anila-images-export/`):
+預期產出 (`/tmp/anila-images-export/`):
 
 ```
-01-anila-built.tar.gz   ~1.5GB  (csp / ingestion-worker / router / anilalm / anila-ui / pptx-renderer)
-02-base.tar.gz          ~0.4GB  (pgvector / redis / nginx)
-03-cold.tar.gz          ~5GB    (codeserver / n8n / gitlab — 暫時 nginx 鎖死但保留)
-INTRANET-LOAD.sh                (內網一鍵 import script)
-MANIFEST.txt                    (sha256 checksum + git commit,給 IT 對檔)
+01-anila-built.tar.gz       (csp / ingestion-worker / router / anilalm / anila-ui / pptx-renderer)
+02-base.tar.gz              (pgvector / redis / nginx)
+03-cold.tar.gz              (codeserver / n8n / gitlab — nginx 鎖死但保留)
+04-models.tar.gz            (WITH_MODELS=1:含 flux2-dev / anila-flux-agent / vllm-gemma4 等,數十 GB)
+05-weights-*.tar            (WITH_WEIGHTS=1:預設 FLUX.2-dev 166G + gemma4 59G + assistant 0.9G)
+INTRANET-LOAD.sh            (內網一鍵 import,含 sha256 驗檔 + 權重解壓)
+MANIFEST.txt / CHECKSUMS.sha256
 ```
 
-> Model image 暫時不打包,需要時跑 `WITH_MODELS=1 bash scripts/build-and-export-for-intranet.sh` 即可加上 `04-models.tar.gz`。
+> **權重只能從這裡帶** — 內網無對外下載通道。image 同理 (本地客製 build,
+> registry 拉不到)。
+>
+> **MTP 注意**:gemma4 的 `--speculative-config` 用 MTP 投機解碼,draft model
+> `gemma-4-31B-it-assistant` (927MB) 是**必帶**權重 — 缺了 vLLM 直接起不來。
 
-### 1.3 (內網生成更乾淨) 4 個 secret 怎麼生
+### 1.2b 完整模型清單下載與 Google Drive 轉入 (2026-06-10 拍板,12 repo ≈ 2469 GiB)
 
-到內網 server 上跑:
+> **轉入通道定案 (2026-06-10):Google Drive,無轉移碟** — 單檔上限 50G。
+> 格式用 tar+split 切塊 (`scripts/pack-chunks.sh` / 內網端 `unpack-chunks.sh`),
+> **不用 zip**(壓不動 safetensors、不能串流重組)、**不把權重塞 docker image**
+> (load 要雙倍空間、壞一塊整包重傳)。chunk 45GiB:「50G」按十進位解讀時
+> 48GiB 會超限。失敗域 = 單一 chunk;內網端 cat|tar 串流解壓不吃雙倍磁碟。
+>
+> **Google Drive 兩個硬限制**:
+> 1. **上傳 750GB/帳號/天**(Google 硬上限,rclone 撞到會被 403)— 全清單+
+>    本機既有+toolkit+平台 image 合計 ≈ 2.9 TiB,撐滿 quota 也要 ≥4 天。
+>    → 按批次傳:批次 A(進場必要)先,B200 期貨之後分天補。
+> 2. **Drive 總容量**:免費 15GB 不可能;2TB 方案也裝不下全量一次到位。
+>    若收件端可分多次收:傳一批 → 收走確認 → 刪 Drive → 下一批,Drive 只需
+>    容得下單批。**⚠ 待確認:內網收件是一次性還是可多次**(「通道只開一次」
+>    是轉移碟時代的假設,Drive 模式下要重新跟管道方確認)。
+>
+> 上傳工具用 **rclone**(續傳、checksum 比對、撞日上限自動停);45G 大檔走
+> 網頁拖拉容易斷且無校驗,不建議。
+
+**批次 A(進場必要,≈ 0.8 TB ≈ 1~1.5 天 quota)**:平台 image tar.gz(§1.2)
++ 本機既有權重(gemma-4-31B-it 59G + assistant 0.9G + NV-Embed-v2 30G +
+FLUX.2-dev 166G)+ 需下載的 H100 運行模型(gemma-4-12B 22G + 26B-A4B 48G +
+gpt-oss-120b 182G)+ toolkit ~100G(超日上限就順延隔天)。
+
+**批次 B(B200 期貨等,≈ 2.3 TB,之後分天傳)**:Maverick bf16/w4a16/FP8、
+Mistral ×2、Scout-Instruct bf16、klein-4B、E4B,加本機既有的 gpt-oss-20b 39G、
+Scout-Instruct-FP8 104G。
+
+**逐模型 pipeline (本機只剩 ~1.3TB,不能全下完再切)**:
+下載 model i → pack-chunks → rclone 上傳 → 確認後刪本地 → model i+1。
+
+```bash
+# 1. 下載單一模型到本機暫存 (腳本內 MODELS 順序已按批次優先序排好):
+bash scripts/download-intranet-models.sh /data/staging/hf
+#    (支援中斷續傳/重跑跳過已完成;gated repo 403 → 去 HF 網頁按同意再跑)
+
+# 2. 切塊 (每模型一組 chunk + manifest):
+bash scripts/pack-chunks.sh /data/staging/hf/gemma-4-26B-A4B /data/staging/chunks
+#    本機既有的權重直接從 project/Huggingface 打包,不經下載:
+bash scripts/pack-chunks.sh /home/aia/c1147259/project/Huggingface/gemma-4-31B-it /data/staging/chunks
+#    Maverick bf16 (748G) 專用 — 邊打包邊刪來源,峰值空間減半 (刪了不能重來,
+#    chunks 落地驗過再上傳):
+REMOVE_SOURCE=1 bash scripts/pack-chunks.sh /data/staging/hf/Llama-4-Maverick-17B-128E-Instruct /data/staging/chunks
+
+# 3. rclone 上傳 (撞到 750GB 日上限自動停,隔天重跑同指令續傳):
+rclone copy /data/staging/chunks gdrive:anila-intranet/chunks \
+  --transfers 4 --drive-chunk-size 256M --drive-stop-on-upload-limit --progress
+rclone check /data/staging/chunks gdrive:anila-intranet/chunks
+#    check 過了才刪本地 chunks + 暫存權重,繼續下一個模型。
+
+# 4. 工具鏈 (llm-compressor wheelhouse + 校準資料集 + 推論伺服器 ×3,~80-100G):
+bash scripts/download-intranet-toolkit.sh /data/staging/toolkit
+#    image tar.gz >45G 的用 pack-chunks 檔案模式切塊再上傳。
+#    這包讓內網日後能自給自足:B200 換裝後從 bf16 母本離線壓 NVFP4、
+#    新模型用通用推論伺服器跑 (現有 model image 都是綁單一模型的客製品)。
+#    推論伺服器版本 (2026-06-10 查核的穩定版,皆支援 Hopper+Blackwell):
+#      vLLM    v0.22.1  → vllm/vllm-openai:v0.22.1-cu129-ubuntu2404 (22.9G)
+#      Triton  2.69.0   → nvcr.io/nvidia/tritonserver:26.05-py3
+#      TRT-LLM 1.2.1    → nvcr.io/nvidia/tensorrt-llm/release:1.2.1
+#        (1.3.0 仍在 RC;現役 gpt-oss 的 1.3.0rc10 image 照舊帶,新部署用 1.2.1)
+
+# 內網端 (該模型 chunk 到齊後;manifest 逐塊驗 hash 揪壞包,只重傳那包):
+bash scripts/unpack-chunks.sh /transfer/gemma-4-26B-A4B.manifest.sha256 models/model
+```
+
+> 空間帳:除 Maverick 外最大單模型 388G(Maverick-FP8) → 峰值 388(權重)+
+> 388(chunks)=776G < 1.3TB ✓。Maverick bf16 748G 用 REMOVE_SOURCE=1 →
+> 峰值 ~793G ✓。
+
+清單 (12 repo,**instruct 定案 2026-06-10**):Llama-4 Maverick bf16(748G)+
+w4a16(201G,H100 用)+FP8(388G,B200 用)/Scout-**Instruct**(202G)、gemma-4
+26B-A4B/E4B/12B(48/15/22G)、gpt-oss-120b(182G)、Mistral-Medium-3.5(249G)/
+Small-4(225G)、FLUX.2-dev(165G,本機已有)/klein-4B(22G)。
+**gemma-4-31B-it(58G)本機已有不下載**,直接 pack-chunks 上傳。
+
+> **量化策略** (H100 現在 / B200 未來):
+> - **H100 階段只跑 31B / 26B-A4B / 12B / gpt-oss-120b / nv-embed-v2 —
+>   全部原生單卡放得下,不需要任何量化**;KV cache 開 FP8 即可。
+> - 其餘 (Maverick / Scout / Mistral ×2) 等 B200:bf16 母本是萬用源頭,
+>   B200 上可 vLLM 動態 FP8 (`--quantization fp8`,免離線壓),或用
+>   toolkit 在內網離線壓 NVFP4 (見下);Maverick 直接用帶進去的官方 FP8。
+> - H100 跑不了 NVFP4 (Blackwell 硬體格式),現在帶 NVFP4 checkpoint 沒意義。
+
+#### 內網離線壓 NVFP4 (B200 換裝後)
+
+工具與腳本都在 bundle 裡,無網路全程可跑:
+
+```bash
+# 1. 量化環境 (帶進去的 vLLM 容器內,或同版 python):
+pip install --no-index --find-links=/path/to/toolkit/wheelhouse llmcompressor datasets
+
+# 2. 壓 (HF_HUB_OFFLINE 等離線開關腳本內建;1 張 GPU + CPU RAM ≳ 模型 bf16×1.2):
+python3 scripts/intranet-quantize-nvfp4.py \
+  --model $ANILA_HF_DIR/Mistral-Medium-3.5-128B \
+  --out   $ANILA_HF_DIR/Mistral-Medium-3.5-128B-NVFP4 \
+  --calib /path/to/toolkit/calib-datasets/Open-Platypus
+
+# 3. 驗:vllm serve <out> 起得來 + 對話一輪
+```
+
+> ⚠ **進場前必做 rehearsal**:在外網用 gemma-4-E4B (15G) 把「wheelhouse
+> 安裝 → 量化腳本 → vLLM 載入結果」整條跑一遍 — llm-compressor API 各版
+> 略有差異,別讓第一次執行發生在沒有網路救援的內網。
+> RAM 注意:Maverick (748G) 要 ~1TB RAM 主機才壓得動;Mistral 兩隻沒問題。
+>
+> 少量權重 (≤幾百 GB) 仍可用 §1.2 的 `WITH_WEIGHTS=1` tar 流程。
+
+### 1.2c 進內網前本地演練 (R0–R2,2026-06-10 拍板)
+
+進場前在 dev 機把「打包 → 切塊 → (通道) → 解包 → load → 啟動」整條走一遍。
+範圍 = 現行 ANILA stack(兩包:①平台 image tar.gz ②models/model 權重+推論
+伺服器 image),超大模型不參與演練。
+
+| 階段 | 內容 | 前置條件 |
+|------|------|----------|
+| **R0** | 5 組權重 pack-chunks + 6 個模型 image → `04-models.tar.gz`(pigz)→ 切塊;全部 unpack 回來 `diff -r` 逐 byte 比對 | 無(純檔案系統+`docker save`,不碰 running stack)|
+| **R1** | `build-and-export-for-intranet.sh` 出 01–03 tar.gz + INTRANET-LOAD.sh | ⚠ build 會重指 `anila-platform-*` tag(與 dev stack 同名)— 排進維護時段;正式包等 codex 複核+commit 後重出 |
+| **R2** | 空機模擬:停 dev stack → INTRANET-LOAD.sh(sha256+load)→ `ANILA_HF_DIR=<staging>/rehearsal-hf` 起 models stack + `deploy-prod.sh` → §3 驗收清單 → 還原 dev stack(checkout trial-military 重 build) | ⚠ 需重開機修 NVIDIA driver mismatch(host NVML 掛了,新 GPU 容器起不來);維護時段 user 排 |
+
+```bash
+# R0 (背景跑,log 看進度):
+bash /home/aia/c1147259/intranet-staging/rehearsal-r0.sh \
+  > /home/aia/c1147259/intranet-staging/rehearsal-r0.log 2>&1 &
+# 產出: intranet-staging/chunks/(上傳 Drive 的轉移物)
+#       intranet-staging/rehearsal-hf/(R2 的 ANILA_HF_DIR,演練完可刪)
+```
+
+> R2 過了,同一套 chunks + bundle 直接上傳 Drive — 演練品即交付品
+> (平台 01–03 例外:codex 複核後從乾淨 commit 重 build 重打包)。
+
+### 1.3 Secret 生成 (建議到內網主機上跑)
 
 ```bash
 echo "CSP_SECRET_KEY=$(openssl rand -hex 32)"
 echo "CSP_SERVICE_TOKEN=$(openssl rand -hex 32)"
 echo "INTERNAL_PLATFORM_API_KEY=sk-internal-$(openssl rand -hex 24)"
+echo "ADMIN_PASSWORD=$(openssl rand -base64 24)"
+echo "CSP_DB_PASSWORD=$(openssl rand -hex 32)"
+echo "CSP_APP_DB_PASSWORD=$(openssl rand -hex 32)"
 echo "CODESERVER_PASSWORD=$(openssl rand -base64 24)"
 ```
 
-把這 4 條輸出**直接複製到密碼管理器**,等下填進內網的 `.env`。
-
-> 為什麼要在內網生成而不是外網?外網 entropy + bash history + 你的 dev 環境都可能殘留;內網 server 是乾淨環境。但這只是建議,用我外網生的也不會破。
+輸出直接進密碼管理器。**不要沿用試用機 .env 的值。**
+(DB 兩把用 hex 是必要的 — 會嵌進 DATABASE_URL,避免特殊字元。)
 
 ---
 
@@ -89,113 +234,179 @@ echo "CODESERVER_PASSWORD=$(openssl rand -base64 24)"
 
 ### 2.1 帶進內網的東西
 
-1. 整個 ANILA repo (USB / 內部閘道)
+1. 整個 ANILA repo (`prod-intranet-card` checkout)
 2. `/tmp/anila-images-export/` 整個資料夾
-3. IT 給的 TLS cert (`server.crt` + `server.key`)
-4. 4 個 secret (你密碼管理器內的)
+3. `server.pfx` (wildcard 憑證+key;在 My-OpenAI-Frontend repo 的 `nginx/cert/`,內網 .12 上也有同一份)
+4. 7 個 secret (密碼管理器)
 
-### 2.2 內網 server 上的初始化
+### 2.2 內網主機 (.15) 初始化
 
 ```bash
-# 1. 把 repo 解壓到 /opt/anila (或你想要的路徑)
-cd /opt/anila
+cd /opt/anila   # repo 解壓處
 
-# 2. TLS cert 放好,key 改 mode 600
-cp /path/to/server.crt myCSPPlatform/docker/certs/server.crt
-cp /path/to/server.key myCSPPlatform/docker/certs/server.key
+# 1. TLS:從 pfx 抽 wildcard 憑證+私鑰 (pfx 密碼為空,直接 Enter / -passin pass:)
+openssl pkcs12 -in /path/to/server.pfx -clcerts -nokeys -legacy -passin pass: \
+  | openssl x509 > myCSPPlatform/docker/certs/server.crt
+openssl pkcs12 -in /path/to/server.pfx -nocerts -noenc -legacy -passin pass: \
+  | openssl pkey > myCSPPlatform/docker/certs/server.key
 chmod 600 myCSPPlatform/docker/certs/server.key
+# 驗:subject 應為 CN=*.ai.ncsist.org.tw
+openssl x509 -in myCSPPlatform/docker/certs/server.crt -noout -subject -dates
 
-# 3. 編 .env (見下方範本)
+# 2. CA:下載 NCSIST CA → 轉 PEM → 放 share/pki/
+mkdir -p share/pki
+curl -o /tmp/NCSISTCA.cer http://repository.ncsist.org.tw/certs/NCSISTCA.cer
+openssl x509 -inform der -in /tmp/NCSISTCA.cer -out share/pki/model-ca.pem \
+  || cp /tmp/NCSISTCA.cer share/pki/model-ca.pem   # 已是 PEM 就直接用
+# 驗:host 端先確認信任鏈成立再交給容器
+curl --cacert share/pki/model-ca.pem https://aiagent2.ai.ncsist.org.tw/health
+
+# 3. .env
 cp .env.example .env
-nano .env   # 把 4 個 secret + ANILA_HOST + CARD_INITIAL_OWNERS 填進去
+nano .env   # 填 7 個 secret + MODEL_GATEWAY_API_KEY + CARD_INITIAL_OWNERS
+            # 並打開 ANILA_MODEL_CA_FILE=/etc/anila/pki/model-ca.pem
 
-# 4. 建 cross-project external network (一次性)
-docker network create anila-models-net
-
-# 5. import 全部 image
-cd /tmp/anila-images-export
-bash INTRANET-LOAD.sh
+# 4. import image (內含 sha256 驗檔 + 提示建 anila-models-net)
+cd /tmp/anila-images-export && bash INTRANET-LOAD.sh
 ```
 
-### 2.3 `.env` 完整範本 (內網版)
+### 2.2b 模型主機 (.12) 確認 + API key 簽發 (有 admin,SSH 上去跑)
+
+內網 .12 與外網複刻版同構(user 確認 2026-06-10):nginx **443**=webui+`/v1`、
+**7000**=http API(`/v1`+`/apikey`)、**16888**=openwebui。`/user/login` 不經
+nginx,直打 backend 容器(內部 port 3000)。
 
 ```bash
-# ── 啟動安全檢查:全部關 (prod) ────────────────────────────────────────
-ANILA_ALLOW_DEV_SECRET=0
-ANILA_ALLOW_HTTP_ENDPOINT=0
+# A. 盤點:port 與容器(預期 443 / 7000 / 16888)
+docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}'
+sudo ss -tlnp | grep -E ':(443|7000)\b'
+
+# B. 模型 ID 精確大小寫 — 照抄進 ANILA .env (預期 openai/gpt-oss-20b、
+#    nvidia/nv-embed-v2;ANILA 預設的 NV-embed-V2 大小寫不同,一定要對)
+curl -s http://localhost:7000/v1/models | python3 -m json.tool
+
+# C. 簽 API key (= ANILA 的 MODEL_GATEWAY_API_KEY)
+BACK=$(docker ps --format '{{.Names}}' | grep -iE 'openai.*frontend' | head -1)
+BIP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$BACK")
+TOKEN=$(curl -s -X POST "http://$BIP:3000/user/login" \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  --data-urlencode 'username=<gateway管理帳號>' --data-urlencode 'password=<密碼>' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+curl -s -X POST "http://$BIP:3000/apikey" -H "Authorization: Bearer $TOKEN" \
+  | python3 -m json.tool        # ← 整串 key 進密碼管理器
+# (host 連不到容器 IP 的備案:docker exec "$BACK" 在容器內 curl localhost:3000)
+
+# D. 用 key 走 ANILA 實際路徑驗證 (443 + Bearer)
+KEY=<上一步的key>
+curl -sk https://localhost/v1/models -H "Authorization: Bearer $KEY" | head -c 300; echo
+curl -sk https://localhost/v1/chat/completions -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"openai/gpt-oss-20b","messages":[{"role":"user","content":"ping"}],"max_tokens":8}'
+curl -sk https://localhost/v1/embeddings -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"nvidia/nv-embed-v2","input":"ping"}' | head -c 300; echo
+
+# E. CA chain (§2.2 的官方下載點不通時的備案:從 gateway 自己抓)
+openssl s_client -connect localhost:443 -showcerts </dev/null 2>/dev/null \
+  | awk '/BEGIN CERT/,/END CERT/' > /tmp/gw-chain.pem
+openssl crl2pkcs7 -nocrl -certfile /tmp/gw-chain.pem \
+  | openssl pkcs7 -print_certs -noout   # 看幾張、issuer;leaf 以外的就是 chain
+```
+
+D 全綠 = port/key/模型 ID/TLS 四件事一次確認完。F(FQDN 解析)要在 .15 上
+跑:`getent hosts aiagent2.ai.ncsist.org.tw`(見 §3.3)。
+
+### 2.3 `.env` 關鍵值速查 (完整範本見 `.env.example`,已是內網拓撲)
+
+```bash
+ANILA_ALLOW_DEV_SECRET=0          # prod 模式,dev 預設值一律拒啟
+ANILA_ALLOW_HTTP_ENDPOINT=0       # 模型走 https,不用開
 ANILA_ALLOW_PRIVATE_ENDPOINT=0
+ANILA_TRUSTED_HOSTS=aiagent2.ai.ncsist.org.tw   # FQDN 解到私網 IP,要點名放行
 
-# ── 4 個必填 secret (在內網生成,用 openssl rand) ──────────────────────
-CSP_SECRET_KEY=<paste from password manager>
-CSP_SERVICE_TOKEN=<paste from password manager>
-INTERNAL_PLATFORM_API_KEY=sk-internal-<paste from password manager>
-CODESERVER_PASSWORD=<paste from password manager>
-
-# ── 內網 hostname / IP ─────────────────────────────────────────────────
-ANILA_HOST=10.53.100.12
-
-# ── code-server 工作目錄 (一定要設,compose required) ──────────────────
-CODESERVER_WORKSPACE=./share/codeserver-sandbox
-
-# ── branch SSO: 中科院憑證卡登入 ───────────────────────────────────────
+ANILA_HOST=anila.ai.ncsist.org.tw
 ENABLE_CARD_LOGIN=true
 REQUIRE_CARD_LOGIN_ONLY=true
-CARD_INITIAL_OWNERS=1147259    # 你的真實員工編號;要加同事改 "1147259,xxx,yyy"
+CARD_INITIAL_OWNERS=1147259       # 你的員工編號;加同事用 CSV
 
-# ── (可選) model endpoint 覆寫 ────────────────────────────────────────
-# 如果內網用 IT 的 LLM service,改這條指過去:
-# LOCAL_LLM_BASE_URL=http://<intranet-llm-host>:<port>
-# LOCAL_LLM_MODEL=<model-name>
-# LOCAL_EMBEDDING_BASE_URL=http://<intranet-embed-host>:<port>
-# LOCAL_EMBEDDING_MODEL=<embed-model-name>
+ANILA_REMOTE_MODELS=1             # deploy-prod.sh preflight 改 curl 遠端探測
+LOCAL_LLM_MODEL=openai/gpt-oss-20b              # gateway 的 RESPONSE_ID,大小寫敏感
+LOCAL_LLM_BASE_URL=https://aiagent2.ai.ncsist.org.tw
+LOCAL_EMBEDDING_MODEL=nvidia/nv-embed-v2        # ≠ 預設 nvidia/NV-embed-V2!
+LOCAL_EMBEDDING_BASE_URL=https://aiagent2.ai.ncsist.org.tw
+MODEL_GATEWAY_API_KEY=<在 aiagent2 平台簽發>
+ANILA_MODEL_CA_FILE=/etc/anila/pki/model-ca.pem
 
-# 沿用我們的 model stack 就不必設 — compose 預設指 docker DNS
-# (gpt-oss-20b:8000 / nv-embed-proxy:8000 透過 anila-models-net)
+GEMMA4_BASE_URL=                  # 空 = 內網無 gemma4,auto_seed 跳過
+LLM_MODEL=openai/gpt-oss-20b      # Router primary
+ANILALM_DEFAULT_CHAT_MODEL=openai/gpt-oss-20b
+FLUX_AGENT_BASE_URL=              # 空 = 無 FLUX,繪圖 agent 不註冊
+FLUX_BACKEND_URL=                 # 空 = studio 圖像 pipeline 停用
+ENABLE_IMAGE_CAPTIONS=false       # 內網無 VLM,文件圖片以 [image] 處理
 ```
 
 ---
 
 ## 3. Phase 2:首次 boot + 驗證
 
-### 3.1 啟動
+### 3.1 Preflight + 啟動
 
 ```bash
 cd /opt/anila
-docker compose up -d --no-build
-# --no-build 是關鍵:image 都已 import,跳過 build 階段直接用 cache
+set -a; source .env; set +a
+bash scripts/deploy-prod.sh preflight   # 遠端模型模式:自動建 anila-models-net
+                                        # + curl 探測 gateway (帶 Bearer key)
+docker compose up -d --no-build         # image 已 load,跳過 build
 ```
 
-### 3.2 預期看到的事
+### 3.1b 本機模型要過 url_guard (R2 演練教訓,2026-06-11)
+
+> **純 gateway 模式(模型全在 aiagent2 https 後面)跳過本節,flag 維持 0。**
+> 跑本機模型/混合模式(§4.5)時,`http://單label容器名:8000` 端點會被
+> S-117 url_guard 擋 — 症狀:**registry 全 offline + `/v1/embeddings` 等
+> 資料面 7ms 即回 502**,health_checker log 出現 `unsafe endpoint`。
+> 放行需要**兩件事都做**(guard 設計:scheme 檢查獨立於 trusted,
+> trusted 只繞 host 檢查):
+> 1. `.env` 設 `ANILA_ALLOW_HTTP_ENDPOINT=1`(容器間裸 http 的 on-prem
+>    例外,url_guard 註解明文支持;`ALLOW_PRIVATE` 維持 0)
+> 2. owner 把容器名加進 trusted-hosts(單 label 名過不了 host 檢查):
 
 ```bash
-# 看每個 service 是否健康
-docker compose ps
-
-# 預期 status 都是 "Up X seconds (healthy)" 或 "Up X seconds"
-# 例外:gitlab 啟動 ~10 分鐘 (initial reconfigure)
+# owner 登入(卡片,或 break-glass 帳密)拿 token 後:
+for h in nv-embed-proxy gemma4 gpt-oss-20b flux2-dev-agent; do
+  curl -sk -X POST https://localhost/api/trusted-hosts \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d "{\"host\":\"$h\",\"note\":\"本機模型容器\"}"
+done
+# 等下一輪 health check (~60s) → /models 頁應全轉 online
+# 驗收:R2 實測此組態下 registry 4/4 online、embedding 經 csp 200 (4096 維)
 ```
 
-### 3.3 startup_security 一定要過
+### 3.2 startup_security 一定要過
 
 ```bash
 docker compose logs csp 2>&1 | grep -E "startup_security|RuntimeError|Refusing"
 ```
 
-| 看到的 log | 意義 | 處理 |
-|---|---|---|
-| 沒輸出 | 一切正常 | 繼續下一步 |
-| `Refusing to start: 下列環境變數仍為 dev 預設值: SECRET_KEY` | secret 沒換成真值 | 把 .env 那條改成 `openssl rand` 出來的值 |
-| `Refusing to start: REQUIRE_CARD_LOGIN_ONLY=True 但 ENABLE_CARD_LOGIN=False` | env flag 不一致 | 把 ENABLE_CARD_LOGIN 改 true |
-| `required variable XXX is missing` | .env 漏了 secret | docker compose 階段就 fail,根本進不去 startup_security |
+| 看到的 log | 處理 |
+|---|---|
+| 沒輸出 | 正常,繼續 |
+| `Refusing to start: ... dev 預設值: SECRET_KEY/ADMIN_PASSWORD/DB_PASSWORD...` | 對應 secret 沒換真值 (§1.3 重生) |
+| `REQUIRE_CARD_LOGIN_ONLY=True 但 ENABLE_CARD_LOGIN=False` | 兩個 flag 要一致 |
+| compose 階段 `required variable XXX is missing` | .env 漏填,csp 根本沒起 |
 
-### 3.4 健康檢查
+### 3.3 健康檢查 + 模型鏈路
 
 ```bash
-# 從 server 自己打 (應該 200)
-curl -k https://localhost/health
-
-# 從外網打 (應該 connection refused — 內網 only)
-# 從 LAN 裡的另一台機器打 https://10.53.100.12/login (應該回 HTML 登入頁)
+curl -k https://localhost/health                       # 200
+docker compose ps                                       # 全部 healthy
+# 模型 e2e (在 host,key 換真值):
+curl --cacert share/pki/model-ca.pem \
+  -H "Authorization: Bearer $MODEL_GATEWAY_API_KEY" \
+  https://aiagent2.ai.ncsist.org.tw/v1/models           # 應列出 openai/gpt-oss-20b 等
+# csp 容器內 DNS 解析確認:
+docker compose exec csp python -c "import socket; print(socket.gethostbyname('aiagent2.ai.ncsist.org.tw'))"
+# 解不到 → compose csp 加 extra_hosts: "aiagent2.ai.ncsist.org.tw:10.53.100.12"
 ```
 
 ---
@@ -204,93 +415,80 @@ curl -k https://localhost/health
 
 ### 4.1 你的卡片登入
 
-1. 用瀏覽器打 `https://10.53.100.12/login`
-2. 應該只看到「auth · pki card」這一個區塊 (本機帳密 / OIDC 都被 lockdown)
-3. 點 **「detect card」** → popup 短暫開啟讀 PKCS#11 → 顯示「**鄒惠翔 員工編號 1147259**」之類資訊
-4. 輸 PIN → 點 **「sign & submit」** → popup 短暫開啟做簽章 → 進入平台
-5. 因為 `CARD_INITIAL_OWNERS=1147259`,你會直接以 `role=owner` + `is_approved=True` 登入
+1. 瀏覽器打 `https://anila.ai.ncsist.org.tw/login` — **不應有任何憑證警告** (有 = cert 沒換到 wildcard 或 DNS 沒生效)
+2. 只看到「auth · pki card」區塊 (本機帳密 / OIDC 已 lockdown)
+3. detect card → 顯示姓名/員編 → 輸 PIN → sign & submit
+4. `CARD_INITIAL_OWNERS` 內的員編直接以 `role=owner` 進入
 
 ### 4.2 預先建立 departments
 
-進 `https://10.53.100.12/departments`,建你會用到的單位:
-- 例:「資通所人工智慧組」、「資通所軟體工程組」、「○○組」
+`/departments` 建好單位 — 同事首刷的「完成註冊」表單要從 dropdown 選,沒建會是空的。
 
-> 為什麼要先建?同事第一次刷卡會跳「完成註冊」表單,要從 dropdown 選單位。沒先建 dropdown 會空。
+### 4.3 確認 model 註冊
 
-### 4.3 確認 model 註冊成功
+`/models` 應看到 **`openai/gpt-oss-20b`** (LLM) + **`nvidia/nv-embed-v2`** (embedding),健康綠。
+**不應**看到 gemma4 或 image-generator (空 endpoint 已被 auto_seed 跳過;出現 = .env 沒設空)。
 
-進 `https://10.53.100.12/models`,應該看到:
-- `gpt-oss-20b` (LLM)
-- `nvidia/NV-embed-V2` (embedding)
+### 4.4 端到端驗收
 
-兩條 health check 應該綠 (前提:model stack 已啟動且 IT 已部署 LLM service)。
+1. 對話:新會話用 gpt-oss-20b 問一題,串流正常、token 用量有記錄
+2. RAG:上傳一份 PDF → ingestion 完成 → 引用查詢命中 (走 nv-embed-v2)
+3. 同事流程:首刷 → pending → `/users` approve → 二刷進入
 
-如果紅,看下面 Troubleshooting。
+---
 
-### 4.4 通知同事可以開始用
+## 4.5 (選配) 本機模型混合模式 — FLUX 繪圖 / gemma4 回歸
 
-同事的操作:
-1. 把 HiPKI 元件裝好 (確認 `localhost:16888` 可達)
-2. 插卡進讀卡機
-3. 開瀏覽器到 `https://10.53.100.12/login`
-4. detect card → 看到自己的姓名 → 輸 PIN → sign & submit
-5. 第一次會跳「完成註冊」表單,選自己的單位 → 送出 → 看到「等待管理員核准」
-6. 你進 `/users` 看到 pending user → 點 approve
-7. 同事下次刷卡就能真的進來
+**前提:平台主機有 GPU**(FLUX 要 2 張、gemma4 要 1 張,見 `models/inference/docker-compose.yml`
+的 `device_ids`,依內網主機 GPU 配置調整)。
+
+架構:LLM/embedding 繼續走 aiagent2 gateway,FLUX(+gemma4)在本機跑。
+
+```bash
+# 1. 權重放 <repo>/models/model (= ANILA_HF_DIR 預設;INTRANET-LOAD/rsync
+#    的目的地指這裡)。放別處就在 .env 設 ANILA_HF_DIR。
+
+# 2. 起模型 stack (獨立 compose project;腳本會自動 source .env + 建 network)
+cd /opt/anila
+bash scripts/model-serve.sh up flux2-dev flux2-dev-agent  # 要 gemma4 就加上
+# 內網 H100 完整組 (gemma4/A4B/12B/120B/nv-embed) 一鍵:
+# bash scripts/model-serve.sh up intranet
+
+# 3. 平台 .env 把對應變數從「空字串」改回「不設」(刪掉或註解),
+#    讓 compose 預設的 docker DNS 名生效:
+#    FLUX_AGENT_BASE_URL=   → 刪除該行 (恢復 http://flux2-dev-agent:8000)
+#    FLUX_BACKEND_URL=      → 刪除該行 (恢復 http://flux2-dev:8000)
+#    GEMMA4_BASE_URL=       → 跑了 gemma4 才刪;同時可開回:
+#    ENABLE_IMAGE_CAPTIONS=true + VISION_MODEL=gemma4 (圖表進 RAG)
+
+# 4. 重建平台 csp 讓 auto_seed 重新註冊
+cd /opt/anila && docker compose up -d csp
+# /models 應出現 image-generator (圖像繪製);對話輸入「畫一張…」驗證 dispatch
+```
 
 ---
 
 ## 5. Phase 4:後續維運
 
-### 5.1 解凍 codeserver / n8n / gitlab (時機到了再做)
+### 5.1 解凍 codeserver / n8n / gitlab
 
-預設 nginx 對 `/codeserver`、`/n8n`、`/gitlab/` 三個 location 都 `return 404`。要解凍:
+nginx 對 `/codeserver` `/n8n` `/gitlab/` 預設 `return 404`。解凍 = 把該 location 的那一行 `return 404;` 刪掉 → `docker compose restart nginx`。
 
-```bash
-# 編 nginx.conf,找到這 6 個 location block (port 443 + 4443 各 3 個)
-nano myCSPPlatform/docker/nginx.conf
+### 5.2 TLS cert rotation
 
-# 每個 location 內第一行就是:
-#   return 404;
-#
-# 把那行**單獨刪掉一行**即可,下方原 proxy_pass 設定都已備齊。
+wildcard 憑證 2029 到期;換發後同 §2.2 步驟 1 重抽,`docker compose restart nginx`。
+NCSIST CA 換代時同步更新 `share/pki/model-ca.pem` 並 `docker compose restart csp`。
 
-# 重啟 nginx
-docker compose restart nginx
-```
-
-### 5.2 TLS cert rotation (cert 過期或換新)
+### 5.3 Postgres backup
 
 ```bash
-cp /path/to/new-server.crt myCSPPlatform/docker/certs/server.crt
-cp /path/to/new-server.key myCSPPlatform/docker/certs/server.key
-chmod 600 myCSPPlatform/docker/certs/server.key
-docker compose restart nginx
-```
-
-### 5.3 Postgres backup (建議排程)
-
-```bash
-# 週期備份
 docker exec anila-platform-csp-db-1 pg_dump -U csp csp | gzip > /backup/anila-$(date +%Y%m%d).sql.gz
-
-# 還原 (緊急時)
-gunzip -c /backup/anila-YYYYMMDD.sql.gz | docker exec -i anila-platform-csp-db-1 psql -U csp csp
 ```
 
-### 5.4 加新員工到 CARD_INITIAL_OWNERS (升 owner)
+### 5.4 加 owner / 模型 gateway key 輪替
 
-```bash
-# 編 .env
-nano .env
-# 改成:
-CARD_INITIAL_OWNERS=1147259,1234567,7654321
-
-# 重啟 csp
-docker compose restart csp
-```
-
-> 這個機制只對「**新刷卡的人**」生效;已經有帳號的同事改 owner 要在 `/users` UI 改。
+- 新 owner:改 `CARD_INITIAL_OWNERS` (只對新刷卡者生效) 或 `/users` UI 改既有帳號
+- gateway key 輪替:aiagent2 重簽 → 改 `.env` `MODEL_GATEWAY_API_KEY` → `docker compose up -d csp`
 
 ---
 
@@ -300,59 +498,66 @@ docker compose restart csp
 
 | 症狀 | 原因 | 處理 |
 |---|---|---|
-| `docker compose up` 直接報 `required variable XXX is missing` | .env 缺 secret | 看哪個 var 缺,填進 .env |
-| csp container 啟動後立刻 exit | startup_security raise | `docker compose logs csp` 看 RuntimeError 訊息 |
-| nginx 啟動失敗 `cannot load certificate` | TLS cert 沒放好或路徑錯 | 確認 `myCSPPlatform/docker/certs/server.crt` + `server.key` 都在 |
+| compose 報 `required variable XXX is missing` | .env 漏 secret | 補填 |
+| csp 立刻 exit | startup_security raise | `logs csp` 看 RuntimeError |
+| csp 無限重啟 exit 3、log **零錯誤**只有 alembic fallback WARN | alembic 鏈斷 → create_all fallback → migration 才會建的東西(如 0014 的 `csp_app` role)沒生出來 → lifespan 連 DB 死 (pg scram 對不存在 role 也回 `password authentication failed`) | 別被 fallback 騙;`docker logs csp \| grep -i alembic` 找斷鏈原因。R2 演練(2026-06-11)就靠這個抓到重複 0035 與 schema 漂移 → 修法=刪殘留 migration + 0040 對齊 |
+| codeserver `EACCES /home/coder/.config` 重啟循環 | compose 把它跑成 `user: ${UID:-1001}`(host 使用者),但 fresh volume 初始化繼承 image 的 coder=1000 → uid 對不上 | 冷服務不擋驗收;修:`docker run --rm -v <project>_codeserver_config:/m alpine chown -R 1001:1001 /m && docker restart <codeserver容器>`(uid 跟著 compose 的 user: 值走) |
+| nginx `cannot load certificate` | cert 沒放好 | 確認 `certs/server.{crt,key}` + key mode 600 |
 
-### 6.2 卡片登入失敗
-
-| 症狀 | 可能原因 | 處理 |
-|---|---|---|
-| 點 detect card 跳「尚未安裝中華電信本機元件」 | HiPKI 沒裝 / 沒跑 / port 不是 16888 | 員工 PC 確認 HiPKI 元件在跑 (`curl localhost:16888/popupForm` 應回 HTML) |
-| detect 成功但 sign & submit 跳「PIN 錯誤或卡片驗證失敗」 | PIN 真的錯 / 卡片硬體故障 | 重新插卡、再試 PIN |
-| 登入後立刻 redirect 回 /login | cookie 沒種好 / TLS cert hostname mismatch | 看 browser devtools cookie tab + console |
-| 「卡片未插入或本機元件無法讀取卡片」 | 沒插卡或讀卡機有問題 | 確認讀卡機亮綠燈、卡片正確插入 |
-
-### 6.3 同事登入後 stuck 在 pending
+### 6.1b GPU 容器 error 803 (driver 升級後)
 
 | 症狀 | 原因 | 處理 |
 |---|---|---|
-| 「請選擇單位」但 dropdown 是空的 | 沒有 active department | admin 進 `/departments` 建單位 |
-| 提交「完成註冊」後一直 loading | registration_token 過期 (15 min TTL) | 同事重新刷卡 |
-| 你在 `/users` 看不到 pending 同事 | filter 把 inactive 篩掉了 | 確認 filter 包含 "Pending" 狀態 |
+| 全部 GPU 容器 `CUDA error 803: unsupported display driver / cuda driver combination`,host `nvidia-smi` 卻正常 | driver 升級後舊版 userspace 庫殘留(不屬任何套件),container toolkit 注入到舊檔 | `dpkg -S /usr/lib/x86_64-linux-gnu/libcuda.so.<舊版號>` 查無歸屬即孤兒 → `sudo find /usr/lib/x86_64-linux-gnu -name '*<舊版號>*' -delete && sudo ldconfig` |
+| 清完孤兒庫後新容器 create 直接炸 `failed to fulfil mount request` | CDI spec 是開機時舊狀態生成的快取 | `sudo nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml` |
+| 修完 toolkit 後容器照樣 803 | 既有容器的 mount spec 在 create 時就固定了 | `docker start` 沒用,必須 **recreate**(`compose up -d --force-recreate`) |
+| 模型容器 healthy 但推論才炸 GPU 錯 | lazy-load 服務(如 FLUX)health check 不碰 CUDA | healthy ≠ GPU 可用,進場驗收一定要打一次真推論 |
 
-### 6.4 LLM 不通
+### 6.2 模型不通 (本次新拓撲最常見)
 
 | 症狀 | 原因 | 處理 |
 |---|---|---|
-| `/models` 健康檢查紅 | model service 沒起 / endpoint URL 錯 | 確認 model stack 跑了:`docker ps grep -E "gpt-oss|gemma4"` |
-| 對話 streaming 卡住 | router 連不到 csp / 反之 | 看 `docker compose logs router \| tail -50` |
-| `503 Service Unavailable` | csp 沒 healthy | 看 `docker compose ps` 看 csp 狀態 |
+| `CERTIFICATE_VERIFY_FAILED` | CA 沒掛好 | §2.2 步驟 2 重做;確認 `.env` 開了 `ANILA_MODEL_CA_FILE` 且檔案在 `share/pki/` |
+| hostname mismatch | BASE_URL 用了 IP | 一律用 `https://aiagent2.ai.ncsist.org.tw` |
+| `401/403` | gateway key 沒帶到 / 失效 | 確認 `MODEL_GATEWAY_API_KEY` 已設並重建 csp;在 aiagent2 平台確認 key 有效 |
+| `404` model not found | model 名大小寫錯 | 必須 `openai/gpt-oss-20b` / `nvidia/nv-embed-v2` (gateway RESPONSE_ID) |
+| DNS 解不到 aiagent2 | 容器 DNS 沒繼承到 | compose csp `extra_hosts` 釘 `10.53.100.12` |
+| url_guard 擋 (`private IP`) | trusted 沒設 | `ANILA_TRUSTED_HOSTS=aiagent2.ai.ncsist.org.tw` |
+
+### 6.3 卡片登入失敗
+
+| 症狀 | 原因 | 處理 |
+|---|---|---|
+| 「尚未安裝中華電信本機元件」 | HiPKI 沒跑 | 員工 PC `curl localhost:16888/popupForm` 應回 HTML |
+| sign & submit 後 PIN 錯誤 | PIN / 卡片 | 重插卡再試 |
+| 登入後彈回 /login | cookie / cert hostname | 用 FQDN 連;devtools 看 cookie |
+
+### 6.4 同事 stuck 在 pending
+
+| 症狀 | 處理 |
+|---|---|
+| 「請選擇單位」dropdown 空 | admin 先建 `/departments` |
+| 完成註冊一直 loading | registration_token 15min 過期,重新刷卡 |
+| `/users` 看不到 pending | filter 包含 Pending 狀態 |
 
 ---
 
-## 7. 給 IT 的問題清單
+## 7. 給 IT / aiagent2 管理側的清單
 
-如果有什麼搞不定要 escalate,這幾條先確認:
-
-1. **TLS cert SAN 包含 `10.53.100.12`** (跟未來可能的 hostname)
-2. **HiPKI 元件版本** 是否所有員工 PC 都是同一版,且 listen `localhost:16888`
-3. **內網 firewall 規則** 允許 `:443` `:4443` (如果 anila-ui port 4443 也要對外的話)
-4. **LLM service** 是用我們的 model stack 還是 IT 既有的?如果 IT 既有,給我們 endpoint URL + auth method
-5. **Backup / log shipping** 公司有統一 log aggregation 嗎?需要的話我加 logging driver
-6. **新員工的卡片發放流程** — 要不要 hook 到我們的 pending-approval 流程
+1. **DNS**:`anila.ai.ncsist.org.tw → 10.53.100.15` A record
+2. **gateway API key**:在 aiagent2 簽發 ANILA 專用一把
+3. **NCSIST CA**:確認 `repository.ncsist.org.tw/certs/NCSISTCA.cer` 內網可達 (不行就從公司 PC 匯出)
+4. **防火牆**:.15 的 443 對員工網段開;.15 → .12 的 443 互通
+5. **HiPKI 元件**:員工 PC 版本一致,listen `localhost:16888`
+6. **wildcard pfx 保管**:空密碼 pfx 不入 repo / 共用碟;評估是否通報憑證中心
 
 ---
 
-## 8. 重要文件 cross-reference
+## 8. Cross-reference
 
-- 整體架構:[`README.md`](../../README.md) §安全設計要點 + §最近更新 (2026-05-15 entry)
-- 認證細節:[`myCSPPlatform/README.md`](../../myCSPPlatform/README.md) §認證整合 + §API 端點一覽
-- caAuth.js 前端 helper:[`myCSPPlatform/frontend/src/api/caAuth.js`](../../myCSPPlatform/frontend/src/api/caAuth.js)
-- backend 卡片驗證:[`myCSPPlatform/backend/app/services/card_auth.py`](../../myCSPPlatform/backend/app/services/card_auth.py)
-- 啟動安全檢查:[`myCSPPlatform/backend/app/services/startup_security.py`](../../myCSPPlatform/backend/app/services/startup_security.py)
+- 出向 gateway key 注入:[`proxy_service._apply_gateway_auth`](../../myCSPPlatform/backend/app/services/proxy_service.py) + [`tests/test_gateway_auth.py`](../../myCSPPlatform/backend/tests/test_gateway_auth.py)
+- 空 endpoint = 停用:[`auto_seed.py`](../../myCSPPlatform/backend/app/services/auto_seed.py)
+- 啟動安全檢查:[`startup_security.py`](../../myCSPPlatform/backend/app/services/startup_security.py)
+- backend 卡片驗證:[`card_auth.py`](../../myCSPPlatform/backend/app/services/card_auth.py)
+- 部署腳本 (含 `ANILA_REMOTE_MODELS=1` 遠端模型模式):[`scripts/deploy-prod.sh`](../../scripts/deploy-prod.sh)
 - mock 卡片元件:[`cht/`](../../cht/) (僅 dev,內網用真 HiPKI)
-
----
-
-**有事直接看上面 troubleshooting 表;表內沒有的找架構摘要 (§0) 推一下哪一層出問題。**

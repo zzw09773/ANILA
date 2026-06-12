@@ -1,0 +1,204 @@
+{
+  "request_throughput": {
+    "unit": "requests/sec",
+    "avg": 6.383141918341639
+  },
+  "request_latency": {
+    "unit": "ms",
+    "avg": 9260.09485279,
+    "p1": 2912.93170865,
+    "p5": 4642.913199899999,
+    "p10": 5607.9061073,
+    "p25": 7541.358072499999,
+    "p50": 10062.3661495,
+    "p75": 11354.56456875,
+    "p90": 11900.7910788,
+    "p95": 12142.54149175,
+    "p99": 12398.40324519,
+    "min": 2783.530952,
+    "max": 12443.790804,
+    "std": 2524.8275535692824
+  },
+  "request_count": {
+    "unit": "count",
+    "avg": 100.0
+  },
+  "time_to_first_token": {
+    "unit": "ms",
+    "avg": 9260.09485279,
+    "p1": 2912.93170865,
+    "p5": 4642.913199899999,
+    "p10": 5607.9061073,
+    "p25": 7541.358072499999,
+    "p50": 10062.3661495,
+    "p75": 11354.56456875,
+    "p90": 11900.7910788,
+    "p95": 12142.54149175,
+    "p99": 12398.40324519,
+    "min": 2783.530952,
+    "max": 12443.790804,
+    "std": 2524.8275535692824
+  },
+  "output_token_throughput": {
+    "unit": "tokens/sec",
+    "avg": 1012.4301396681674
+  },
+  "output_sequence_length": {
+    "unit": "tokens",
+    "avg": 158.61,
+    "p1": 51.5,
+    "p5": 58.95,
+    "p10": 64.0,
+    "p25": 84.75,
+    "p50": 194.5,
+    "p75": 227.0,
+    "p90": 232.0,
+    "p95": 232.0,
+    "p99": 238.0,
+    "min": 2.0,
+    "max": 238.0,
+    "std": 70.1150333380795
+  },
+  "input_sequence_length": {
+    "unit": "tokens",
+    "avg": 128.0,
+    "p1": 128.0,
+    "p5": 128.0,
+    "p10": 128.0,
+    "p25": 128.0,
+    "p50": 128.0,
+    "p75": 128.0,
+    "p90": 128.0,
+    "p95": 128.0,
+    "p99": 128.0,
+    "min": 128.0,
+    "max": 128.0,
+    "std": 0.0
+  },
+  "input_config": {
+    "model_names": [
+      "gpt-oss-20b"
+    ],
+    "subcommand": "profile",
+    "verbose": false,
+    "template_filename": "genai_perf_config.yaml",
+    "analyze": {
+      "sweep_parameters": {
+        "concurrency": {
+          "min": 1,
+          "max": 1024
+        }
+      }
+    },
+    "endpoint": {
+      "model_selection_strategy": "round_robin",
+      "backend": "tensorrtllm",
+      "custom": "v1/chat/completions",
+      "type": "chat",
+      "streaming": false,
+      "server_metrics_urls": [
+        "http://localhost:9400/metrics"
+      ],
+      "url": "localhost:8000",
+      "grpc_method": "",
+      "service_kind": "openai",
+      "output_format": "openai_chat_completions"
+    },
+    "perf_analyzer": {
+      "path": "perf_analyzer",
+      "verbose": false,
+      "stimulus": {
+        "request_rate": 20.0
+      },
+      "stability_percentage": 999.0,
+      "measurement": {
+        "mode": "request_count",
+        "num": 100
+      },
+      "warmup_request_count": 0
+    },
+    "input": {
+      "batch_size": 1,
+      "extra": {
+        "max_tokens": 256,
+        "temperature": 0.7
+      },
+      "goodput": "",
+      "header": "",
+      "file": "",
+      "num_dataset_entries": 100,
+      "random_seed": 123,
+      "audio": {
+        "batch_size": 1,
+        "length": {
+          "mean": 0,
+          "stddev": 0
+        },
+        "format": "wav",
+        "depths": [
+          16
+        ],
+        "sample_rates": [
+          16
+        ],
+        "num_channels": 1
+      },
+      "image": {
+        "width": {
+          "mean": 0,
+          "stddev": 0
+        },
+        "height": {
+          "mean": 0,
+          "stddev": 0
+        },
+        "batch_size": 1,
+        "format": "png"
+      },
+      "output_tokens": {
+        "mean": 128,
+        "deterministic": false,
+        "stddev": 0
+      },
+      "synthetic_tokens": {
+        "mean": 128,
+        "stddev": 0
+      },
+      "prefix_prompt": {
+        "num": 0,
+        "length": 100
+      },
+      "sessions": {
+        "num": 0,
+        "turns": {
+          "mean": 1,
+          "stddev": 0
+        },
+        "turn_delay": {
+          "mean": 0,
+          "ratio": 1.0,
+          "stddev": 0
+        }
+      },
+      "prompt_source": "synthetic",
+      "synthetic_files": [],
+      "payload_file": ""
+    },
+    "output": {
+      "artifact_directory": "request_rate_results/rate20_20251211_053835",
+      "checkpoint_directory": "checkpoint",
+      "profile_export_file": "profile_export.json",
+      "generate_plots": false,
+      "enable_checkpointing": false
+    },
+    "tokenizer": {
+      "name": "/workspace/model/gpt-oss-20b",
+      "revision": "main",
+      "trust_remote_code": false,
+      "_enable_debug_logging": true
+    },
+    "process": {
+      "input_path": "aggregated"
+    }
+  }
+}

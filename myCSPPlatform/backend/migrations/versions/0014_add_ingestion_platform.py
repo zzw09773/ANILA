@@ -46,6 +46,7 @@ Create Date: 2026-04-25
 
 from __future__ import annotations
 
+import os
 from typing import Sequence, Union
 
 import sqlalchemy as sa
@@ -100,12 +101,20 @@ def upgrade() -> None:
     # Idempotent: ``DO`` block tolerates re-run on a DB where the role
     # already exists (alembic re-applies after `downgrade()` would otherwise
     # fail on ``CREATE ROLE`` collision).
+    #
+    # Password 來自 ``CSP_APP_DB_PASSWORD`` env (docker-compose 傳入) — fresh
+    # DB 初始化時生效;既有 DB 的 role 已存在會走 IF NOT EXISTS 跳過,改密碼
+    # 要手動 ``ALTER ROLE csp_app PASSWORD``。Fallback 'csp' 僅供本機 dev;
+    # prod 模式由 startup_security 的 DB_PASSWORD 黑名單擋下 (它驗的是
+    # DATABASE_URL 內的同一個值)。單引號 doubling 防壞字串;慣例密碼是
+    # openssl hex,本來就不含引號。
+    csp_app_password = (os.environ.get("CSP_APP_DB_PASSWORD") or "csp").replace("'", "''")
     op.execute(
-        """
+        f"""
         DO $$
         BEGIN
             IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'csp_app') THEN
-                CREATE ROLE csp_app LOGIN PASSWORD 'csp'
+                CREATE ROLE csp_app LOGIN PASSWORD '{csp_app_password}'
                     NOBYPASSRLS NOSUPERUSER NOCREATEDB NOCREATEROLE;
             END IF;
         END

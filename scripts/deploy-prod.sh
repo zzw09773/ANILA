@@ -36,6 +36,8 @@
 #   LOCAL_LLM_MODEL / LOCAL_LLM_BASE_URL
 #   LOCAL_EMBEDDING_MODEL / LOCAL_EMBEDDING_BASE_URL
 #   ANILA_TRUSTED_HOSTS
+#   ANILA_REMOTE_MODELS=1   模型在別台主機 (如內網 10.53.100.12):跳過本機
+#                           model container 檢查,改 curl *_BASE_URL 探測
 #
 # 前置條件(腳本會自動 check):
 #   1. 現在 git branch 是 `prod`(避免不小心在 main 上跑)
@@ -132,11 +134,52 @@ check_env() {
 }
 
 check_models_stack() {
+  # ── 遠端模型模式 (內網拓撲:模型在 10.53.100.12,平台在 10.53.100.15) ──
+  # ANILA_REMOTE_MODELS=1 → 本機沒有 models stack:跳過本機 container
+  # health,改 curl .env 給的 *_BASE_URL。compose 仍引用 external network
+  # anila-models-net (缺了 up 會失敗),這裡順手建一個空的。
+  if [[ "${ANILA_REMOTE_MODELS:-0}" == "1" ]]; then
+    if ! docker network inspect anila-models-net >/dev/null 2>&1; then
+      log "遠端模型模式:建立空的 anila-models-net (compose external 引用需要)"
+      docker network create anila-models-net >/dev/null
+    fi
+    ok "anila-models-net network 存在 (remote-models mode)"
+
+    local probes=()
+    [[ -n "${GEMMA4_BASE_URL:-}" ]] && probes+=("gemma4|${GEMMA4_BASE_URL}")
+    [[ -n "${LOCAL_LLM_BASE_URL:-}" ]] && probes+=("local-llm|${LOCAL_LLM_BASE_URL}")
+    [[ -n "${LOCAL_EMBEDDING_BASE_URL:-}" ]] && probes+=("embedding|${LOCAL_EMBEDDING_BASE_URL}")
+    if (( ${#probes[@]} == 0 )); then
+      warn "遠端模型模式但 GEMMA4/LOCAL_LLM/LOCAL_EMBEDDING_BASE_URL 都沒設 — chat/embedding 會打不到模型"
+      return
+    fi
+    # gateway 的 /v1 要 Bearer key (My-OpenAI-Frontend);有設就帶上,
+    # 沒設時 401 也會被當探測失敗 — 屬正確行為 (key 沒發就是還沒就緒)。
+    local auth_args=()
+    [[ -n "${MODEL_GATEWAY_API_KEY:-}" ]] && auth_args=(-H "Authorization: Bearer ${MODEL_GATEWAY_API_KEY}")
+    local degraded=0 p name url
+    for p in "${probes[@]}"; do
+      name="${p%%|*}"; url="${p#*|}"
+      # vLLM / OpenAI-compatible server 都有 /v1/models;5s timeout 夠內網用。
+      # -k:這裡只測可達性,內部 CA 的信任鏈由容器內 SSL_CERT_FILE 處理
+      # (見 .env 的 ANILA_MODEL_CA_FILE),host 端 curl 不用裝 CA。
+      if curl -sfk -m 5 ${auth_args[@]+"${auth_args[@]}"} "${url%/}/v1/models" >/dev/null 2>&1; then
+        ok "$name: $url 可達"
+      else
+        warn "$name: $url 探測失敗 (服務沒起 / port 不對 / 防火牆擋)"
+        degraded=1
+      fi
+    done
+    (( degraded > 0 )) && warn "部分遠端模型不可達,csp 仍可起來但對應功能會失敗"
+    return
+  fi
+
   if ! docker network inspect anila-models-net >/dev/null 2>&1; then
     err "anila-models-net network 不存在"
     fatal "請先起模型 stack:
-       cd models && docker compose up -d
-       (確認 gemma4 / flux2-dev / flux2-dev-agent / nv-embed-proxy 都 healthy)"
+       bash scripts/model-serve.sh up trial
+       (確認 gemma4 / flux2-dev / flux2-dev-agent / nv-embed-proxy 都 healthy)
+       模型在別台主機的內網部署 → export ANILA_REMOTE_MODELS=1 重跑"
   fi
   ok "anila-models-net network 存在"
 
@@ -160,7 +203,8 @@ check_models_stack() {
 }
 
 check_dirs() {
-  local dirs=(share/uploads/flux)
+  # share/pki:內網模型 https 的內部 CA PEM 放置處 (csp 掛 /etc/anila/pki)。
+  local dirs=(share/uploads/flux share/pki)
   for d in "${dirs[@]}"; do
     if [[ ! -d "$d" ]]; then
       log "建立缺漏目錄: $d"

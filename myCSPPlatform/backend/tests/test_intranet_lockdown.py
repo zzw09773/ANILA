@@ -3,11 +3,13 @@
 Pins the contract:
 - 預設 ``REQUIRE_CARD_LOGIN_ONLY=False`` → 既有 endpoint 行為不變。
 - ``REQUIRE_CARD_LOGIN_ONLY=True`` 時：
-  - ``POST /api/auth/login``       → 404
+  - ``POST /api/auth/login``       → 404;**例外:owner 帳密正確可登入**
+    (break-glass,2026-06-11)— 其他所有結果(密碼錯/非 owner 憑證有效/
+    待核准)一律 404,姿態不可區分
   - ``POST /api/auth/register``    → 404
   - ``GET  /api/auth/oidc/{id}/start`` → 404
   - ``GET  /api/auth/oidc/{id}/callback`` → 404
-  - ``PUT  /api/auth/password``    → 404
+  - ``PUT  /api/auth/password``    → 404;**例外:owner 可輪換密碼**
   - ``GET  /api/auth/providers``   → 不再列出 OIDC providers
 - Startup 一致性：``REQUIRE_CARD_LOGIN_ONLY=True`` 但
   ``ENABLE_CARD_LOGIN=False`` → ``RuntimeError``。
@@ -53,7 +55,9 @@ def test_register_returns_404_when_locked_down(
         json={
             "username": "newbie",
             "email": "n@example.com",
-            "password": "x" * 12,
+            # 要過得了 RegisterRequest 的密碼強度驗證,404 gate 的斷言才有效
+            # (弱密碼會在進 endpoint 前就 422,測不到 lockdown)。
+            "password": "Xx1!aaaaAAAA22",
         },
     )
     assert resp.status_code == 404
@@ -108,8 +112,85 @@ def test_providers_endpoint_hides_oidc_when_locked_down(
     assert resp.status_code == 200
     names = {p["name"] for p in resp.json()}
     assert "hidden-oidc" not in names
-    # card provider 應該還能看到
-    assert "visible-card" in names
+    # 設計演進後 list_public_auth_providers 只回 oidc 型 — card 登入區塊由
+    # LoginView 無條件渲染,不靠 provider row 驅動;card-only 下清單應為空。
+    assert names == set()
+
+
+# ── owner break-glass(2026-06-11):card-only 下帳密登入僅限 owner ────────────
+
+
+def test_owner_password_login_allowed_when_locked_down(
+    client: TestClient, db, card_only_lockdown
+):
+    """owner 是 break-glass 例外:card-only 下帳密正確仍可登入。"""
+    make_user(db, username="boss", role="owner")
+    resp = client.post(
+        "/api/auth/login",
+        json={"username": "boss", "password": "password"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["access_token"]
+
+
+def test_owner_wrong_password_returns_404_when_locked_down(
+    client: TestClient, db, card_only_lockdown
+):
+    """失敗姿態統一:owner 密碼錯也回 404,不可與非 owner / 端點關閉區分。"""
+    make_user(db, username="boss", role="owner")
+    resp = client.post(
+        "/api/auth/login",
+        json={"username": "boss", "password": "wrong-password"},
+    )
+    assert resp.status_code == 404
+
+
+def test_nonowner_valid_credentials_return_404_when_locked_down(
+    client: TestClient, db, card_only_lockdown
+):
+    """非 owner 連「帳密完全正確」都拿 404 — owner 例外不外溢到其他角色。"""
+    make_user(db, username="staffer", role="user")
+    resp = client.post(
+        "/api/auth/login",
+        json={"username": "staffer", "password": "password"},
+    )
+    assert resp.status_code == 404
+
+
+def test_change_password_owner_allowed_when_locked_down(
+    client: TestClient, db, card_only_lockdown
+):
+    """owner 能登入就必須能輪換密碼(與 /login 例外對齊)。"""
+    make_user(db, username="boss", role="owner")
+    token = client.post(
+        "/api/auth/login",
+        json={"username": "boss", "password": "password"},
+    ).json()["access_token"]
+    resp = client.put(
+        "/api/auth/password",
+        json={"current_password": "password", "new_password": "n3w-Passw0rd!xyz"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+
+
+def test_change_password_nonowner_returns_404_when_locked_down(
+    client: TestClient, db, monkeypatch
+):
+    """非 owner 帶有效 token 改密碼仍 404(token 先在 lockdown OFF 時取得)。"""
+    make_user(db, username="staffer2", role="user")
+    token = client.post(
+        "/api/auth/login",
+        json={"username": "staffer2", "password": "password"},
+    ).json()["access_token"]
+    monkeypatch.setattr(settings, "ENABLE_CARD_LOGIN", True)
+    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+    resp = client.put(
+        "/api/auth/password",
+        json={"current_password": "password", "new_password": "n3w-Passw0rd!xyz"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 404
 
 
 # ── disabled-by-default sanity ─────────────────────────────────────────────────
