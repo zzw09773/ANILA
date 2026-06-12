@@ -7,8 +7,14 @@
 
 :root {
   /* Type ---------------------------------------------------------------- */
-  --font-mono: "JetBrains Mono", "JetBrains Mono Variable", "IBM Plex Mono",
-    "SF Mono", "Cascadia Mono", "Roboto Mono", "Menlo", monospace;
+  /* Air-gapped intranet: external font CDNs are blocked by the outer nginx
+     CSP (font-src 'self' data:), so JetBrains Mono can't be downloaded.
+     Lead with ui-monospace + system monos (matches ANILA UI / ANILALM's
+     air-gap-aware stacks); "JetBrains Mono" stays as a preference for any
+     host that already ships it. The Google Fonts @import that used to sit
+     in main.css was a guaranteed CSP-violation + dead request on intranet. */
+  --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Mono",
+    "IBM Plex Mono", "Roboto Mono", "Menlo", "Consolas", monospace;
   --font-feat: "ss02" on, "ss19" on, "zero" on, "calt" off, "liga" off;
 
   --t-2xs: 10px;

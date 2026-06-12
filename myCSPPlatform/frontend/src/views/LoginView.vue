@@ -208,7 +208,7 @@ async function handleRegister() {
 
 <style scoped>
 .login {
-  min-height: 100vh;
+  min-height: 100dvh;
   background: var(--c-bg);
   display: grid;
   grid-template-rows: var(--shell-topbar-h) 1fr;

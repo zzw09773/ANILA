@@ -68,6 +68,7 @@ from anila_core.memory.long_term import (
 from app.database import SessionLocal
 from app.models.model_registry import ModelRegistry
 from app.models.user_memory import ConversationMemoryChunk, UserFact
+from app.services.proxy_service import _apply_gateway_auth
 
 logger = logging.getLogger(__name__)
 
@@ -128,10 +129,20 @@ async def _embed(db: Session, text_input: str) -> list[float]:
     deliberate non-goal in P1 (revisit if it shows up as cost noise).
     """
     base_url = _resolve_endpoint(db, _EMBED_MODEL_NAME, "embedding")
+    # registry 的 endpoint_url 兩種慣例都存在:帶 /v1 結尾(舊 AUTO_REGISTER)
+    # 或裸 host(auto_seed,如 http://nv-embed-proxy:8000)— R2 演練實測裸
+    # host 會拼成 <host>/embeddings → 上游 404 → 使用者看到 502。比照
+    # proxy_service 的正規化:沒帶版本段就補 /v1。
+    if not base_url.endswith(("/v1", "/v2")):
+        base_url = f"{base_url}/v1"
+    # 內網 gateway 拓撲下 /v1 全路由要 Bearer(MODEL_GATEWAY_API_KEY);
+    # 本機 proxy 模式 key 為空 = no-op。直呼叫繞過 CSP proxy 層,要自帶。
+    headers = _apply_gateway_auth({})
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         r = await client.post(
             f"{base_url}/embeddings",
             json={"model": _EMBED_MODEL_NAME, "input": [text_input]},
+            headers=headers,
         )
         r.raise_for_status()
     data = r.json()

@@ -193,6 +193,52 @@
         <button class="term-action" @click="addGuard('output')">+ output guardrail</button>
       </TermBox>
 
+      <TermBox title="functions" pad="md">
+        <p class="hint" style="margin-bottom: 8px;">
+          功能 — 在 ANILA 對話介面跟此 agent 對話時提供給使用者。純宣告式設定，
+          不執行任何程式碼。新增功能類型(kind)由前端 renderer 決定，未來可擴充。
+        </p>
+        <div v-if="fnError" class="feedback is-err" style="margin-bottom: 8px;">
+          <span>!</span><span>{{ fnError }}</span>
+        </div>
+        <ul v-if="functions.length" class="prompt-list">
+          <li v-for="f in functions" :key="f.id" class="prompt-row">
+            <div class="prompt-row__main">
+              <div class="prompt-row__label">
+                <TermBadge :variant="f.kind === 'preset_prompt' ? 'info' : 'warn'">{{ FUNCTION_KIND_LABEL[f.kind] || f.kind }}</TermBadge>
+                {{ f.label }}
+              </div>
+              <div class="prompt-row__text">{{ f.config.text || f.config.template || '' }}</div>
+            </div>
+            <TermButton :disabled="fnBusy" label="delete" @click="handleDeleteFunction(f)" />
+          </li>
+        </ul>
+        <p v-else class="hint" style="margin-bottom: 8px;">尚未設定任何功能。</p>
+
+        <div class="prompt-add">
+          <TermField label="kind">
+            <select v-model="newFn.kind" class="term-input">
+              <option value="preset_prompt">預設提示詞 — 點清單填入輸入框</option>
+              <option value="prompt_action">回應動作 — 對回覆套模板送出 ({content})</option>
+            </select>
+          </TermField>
+          <TermField label="label">
+            <input v-model="newFn.label" class="term-input" placeholder="撰寫週報 / 翻譯成英文" maxlength="120" />
+          </TermField>
+          <TermField :label="newFn.kind === 'preset_prompt' ? 'prompt text' : 'template ({content} = 回覆內容)'">
+            <textarea v-model="newFn.body" class="term-textarea" rows="3"
+              :placeholder="newFn.kind === 'preset_prompt' ? '請幫我把以下工作項目整理成一份正式週報：' : '請把以下內容翻譯成英文：\n\n{content}'"></textarea>
+          </TermField>
+          <TermField v-if="newFn.kind === 'preset_prompt'" label="autosend (選填,直接送出而非填入)">
+            <input type="checkbox" v-model="newFn.autosend" />
+          </TermField>
+          <div class="row-actions">
+            <TermButton variant="primary" :disabled="fnBusy || !newFn.label.trim() || !newFn.body.trim()"
+              :loading="fnBusy" label="add function" @click="handleAddFunction" />
+          </div>
+        </div>
+      </TermBox>
+
       <TermBox title="actions" pad="md">
         <div v-if="parseError" class="feedback is-err" style="margin-bottom: 8px;">
           <span>!</span><span>{{ parseError }}</span>
@@ -219,7 +265,15 @@ import {
   getAgent,
   getAgentRuntimeConfig,
   setAgentRuntimeConfig,
+  listAgentFunctions,
+  createAgentFunction,
+  deleteAgentFunction,
 } from '../api/agents'
+
+const FUNCTION_KIND_LABEL = {
+  preset_prompt: '預設提示詞',
+  prompt_action: '回應動作',
+}
 import {
   TermBox, TermButton, TermBadge, TermField, TermSection,
 } from '../components/cli'
@@ -237,6 +291,65 @@ const parseError = ref('')
 const feedback = ref({ type: 'success', message: '' })
 const lastSavedAt = ref('')
 const initialConfig = ref(null) // raw object as last fetched
+
+// Per-agent functions (2026-06-11, extensible)
+const functions = ref([])
+const fnError = ref('')
+const fnBusy = ref(false)
+const newFn = ref({ kind: 'preset_prompt', label: '', body: '', autosend: false })
+
+async function loadFunctions() {
+  try {
+    const { data } = await listAgentFunctions(agentId.value)
+    functions.value = Array.isArray(data) ? data : []
+  } catch (e) {
+    fnError.value = e?.response?.data?.detail || '載入功能失敗'
+  }
+}
+
+// 把 kind + body/autosend 組成後端的 config。新增 kind 時在這裡擴充。
+function buildFunctionConfig(fn) {
+  if (fn.kind === 'preset_prompt') return { text: fn.body, autosend: !!fn.autosend }
+  if (fn.kind === 'prompt_action') return { template: fn.body }
+  return {}
+}
+
+async function handleAddFunction() {
+  const label = newFn.value.label.trim()
+  const body = newFn.value.body.trim()
+  if (!label || !body) return
+  fnBusy.value = true
+  fnError.value = ''
+  try {
+    await createAgentFunction(agentId.value, {
+      kind: newFn.value.kind,
+      label,
+      config: buildFunctionConfig({ ...newFn.value, body }),
+      sort_order: functions.value.length,
+    })
+    newFn.value = { kind: newFn.value.kind, label: '', body: '', autosend: false }
+    await loadFunctions()
+  } catch (e) {
+    fnError.value = e?.response?.data?.detail || '新增失敗'
+  } finally {
+    fnBusy.value = false
+  }
+}
+
+async function handleDeleteFunction(f) {
+  const ok = await confirm({ title: '刪除功能', message: `確定刪除「${f.label}」？` })
+  if (!ok) return
+  fnBusy.value = true
+  fnError.value = ''
+  try {
+    await deleteAgentFunction(agentId.value, f.id)
+    await loadFunctions()
+  } catch (e) {
+    fnError.value = e?.response?.data?.detail || '刪除失敗'
+  } finally {
+    fnBusy.value = false
+  }
+}
 
 const permsForm = ref({
   allow_list_csv: '',
@@ -455,7 +568,10 @@ function goBack() {
   router.push({ name: 'DeveloperAgents' })
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  await loadFunctions()
+})
 </script>
 
 <style scoped>
@@ -507,6 +623,38 @@ onMounted(load)
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+.prompt-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.prompt-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius, 6px);
+}
+.prompt-row__label {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.prompt-row__text {
+  font-size: var(--t-xs, 12px);
+  color: var(--c-fg-mute);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.prompt-add {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .term-action {
   background: transparent;

@@ -86,6 +86,26 @@
   input, textarea { font-family: inherit; }
   ::selection { background: var(--accent-soft); color: var(--fg); }
 
+  /* Keyboard-only focus ring (a11y). Many inline-styled inputs set
+     `outline: none` for the mouse aesthetic; :focus-visible only fires on
+     keyboard navigation, so this restores a visible focus indicator for
+     keyboard users without affecting mouse interaction. !important is the
+     standard escape hatch to win over those inline outline:none values. */
+  :focus-visible {
+    outline: 2px solid var(--accent) !important;
+    outline-offset: 1px;
+    border-radius: var(--radius-sm);
+  }
+  /* Respect reduced-motion requests (vestibular safety / a11y). */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
   /* Scrollbar — slim */
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -186,7 +206,7 @@
 
   .boot-screen {
     display: flex; align-items: center; justify-content: center;
-    height: 100vh; color: var(--fg-muted);
+    height: 100dvh; color: var(--fg-muted);
     font-family: var(--font-mono); font-size: 13px;
   }
 </style>
