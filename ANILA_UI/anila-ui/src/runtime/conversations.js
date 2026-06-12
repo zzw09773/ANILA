@@ -75,10 +75,15 @@ export function appendMessage(authRequest, convId, payload) {
 }
 
 // Record thumbs-up/down feedback. rating = "up" | "down" | null (null clears).
-export function rateMessage(authRequest, convId, messageId, rating) {
+export function rateMessage(authRequest, convId, messageId, rating, feedback = null) {
+  const payload = { rating };
+  if (feedback) {
+    if (feedback.comment) payload.comment = feedback.comment;
+    if (feedback.reasons) payload.reasons = feedback.reasons;
+  }
   return authRequest(`/api/conversations/${convId}/messages/${messageId}/rating`, {
     method: "PUT",
-    body: JSON.stringify({ rating }),
+    body: JSON.stringify(payload),
   });
 }
 
@@ -182,4 +187,36 @@ export function rejectHandoff(authRequest, handoffId) {
 
 export function cancelHandoff(authRequest, handoffId) {
   return authRequest(`/api/handoffs/${handoffId}/cancel`, { method: "POST" });
+}
+
+// Per-agent functions (2026-06-11, extensible). Developer-designed in the
+// CSP console; the chat UI renders them for the active agent by kind. agentRef
+// is the agent NAME on the data plane (e.g. "image-generator"). Read-only.
+export function listAgentFunctions(authRequest, agentRef) {
+  return authRequest(`/api/agents/${agentRef}/functions`, { method: "GET" });
+}
+
+// Server-synced UI settings (2026-06-12). Per-user folders/stars/tweaks stored
+// in CSP (users.ui_settings) instead of browser localStorage, so they follow
+// the user across shared PKI-card workstations.
+export function getUiSettings(authRequest) {
+  return authRequest("/api/users/me/ui-settings", { method: "GET" });
+}
+export function putUiSettings(authRequest, uiSettings) {
+  return authRequest("/api/users/me/ui-settings", {
+    method: "PUT",
+    body: JSON.stringify({ ui_settings: uiSettings }),
+  });
+}
+
+// Full-text search over the user's conversations (title + message content,
+// server-side ILIKE). Returns conversations with an optional snippet.
+export function searchConversations(authRequest, q, { limit = 30 } = {}) {
+  const qs = new URLSearchParams({ q, limit: String(limit) }).toString();
+  return authRequest(`/api/conversations/search?${qs}`, { method: "GET" });
+}
+
+// Admin announcement banners shown at the top of the chat UI.
+export function listActiveBanners(authRequest) {
+  return authRequest("/api/banners/active", { method: "GET" });
 }

@@ -42,3 +42,17 @@ export const getAgentRuntimeConfig = (id) =>
 
 export const setAgentRuntimeConfig = (id, runtime_config) =>
   client.patch(`/api/agents/${id}/runtime-config`, { runtime_config })
+
+// Per-agent functions (2026-06-11, extensible) — developer-designed,
+// surfaced in the ANILA chat UI for the active agent. kind + config.
+export const listAgentFunctions = (ref) =>
+  client.get(`/api/agents/${ref}/functions`)
+
+export const createAgentFunction = (ref, data) =>
+  client.post(`/api/agents/${ref}/functions`, data)
+
+export const updateAgentFunction = (ref, fid, data) =>
+  client.put(`/api/agents/${ref}/functions/${fid}`, data)
+
+export const deleteAgentFunction = (ref, fid) =>
+  client.delete(`/api/agents/${ref}/functions/${fid}`)

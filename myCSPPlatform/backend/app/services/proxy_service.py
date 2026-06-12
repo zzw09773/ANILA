@@ -146,6 +146,21 @@ def _build_downstream_headers(
     return headers
 
 
+def _apply_gateway_auth(headers: dict) -> dict:
+    """注入出向模型 gateway 的 API key (in-place,並回傳同一 dict)。
+
+    ``MODEL_GATEWAY_API_KEY`` 非空才動作 — 內網拓撲下模型在
+    10.53.100.12 的 My-OpenAI-Frontend gateway 後面,/v1 全路由要
+    ``Authorization: Bearer``。呼叫端負責 scope:只用在 model 呼叫,
+    agent dispatch 不帶 (key 不該外流給第三方 agent)。
+    不覆蓋既有 Authorization。
+    """
+    key = (settings.MODEL_GATEWAY_API_KEY or "").strip()
+    if key and "Authorization" not in headers:
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
+
+
 def _flatten_content(content) -> str:
     """Best-effort flattening of OpenAI-compatible message content."""
     if content is None:
@@ -286,6 +301,7 @@ def build_default_anila_meta(
     detail: str,
     latency_ms: int | None = None,
     classified: bool = False,
+    usage: dict | None = None,
 ) -> dict:
     """Build an anila_meta skeleton used when the downstream omits one.
 
@@ -311,6 +327,9 @@ def build_default_anila_meta(
         "follow_ups": [],
         "latency_ms": latency_ms,
         "classified": bool(classified),
+        # Token usage so the chat UI can show per-message token counts. Omitted
+        # (None) when unknown; the client only renders when present.
+        "usage": usage,
     }
 
 
@@ -466,6 +485,9 @@ async def proxy_request(
         if inject_identity
         else {"Content-Type": "application/json"}
     )
+    # gateway key 只給 model 呼叫;agent dispatch (model_type='agent') 不帶。
+    if model.model_type != "agent":
+        _apply_gateway_auth(req_headers)
 
     for attempt in range(settings.PROXY_MAX_RETRIES):
         try:
@@ -633,6 +655,9 @@ async def proxy_stream(
         if inject_identity
         else {"Content-Type": "application/json"}
     )
+    # gateway key 只給 model 串流;agent 串流 (target_agent_id 非 None) 不帶。
+    if target_agent_id is None:
+        _apply_gateway_auth(headers)
     # Force stream_options so the downstream sends usage in last chunk
     body = {**request_body, "stream": True,
             "stream_options": {"include_usage": True}}
@@ -746,6 +771,11 @@ async def proxy_stream(
                 detail=f"Proxy stream -> {target_url}",
                 latency_ms=duration_ms,
                 classified=requires_encryption,
+                usage={
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                },
             ),
             ensure_ascii=False,
         ) + "\n\n"

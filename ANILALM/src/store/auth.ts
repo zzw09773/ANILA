@@ -8,7 +8,13 @@ interface AuthState {
   accessToken: string | null
   refreshToken: string | null
   user: UserMe | null
-  status: 'idle' | 'loading' | 'authed' | 'error'
+  // 'idle'     = 初始,尚未探測 session
+  // 'checking' = 正在用 cookie 探測 /api/auth/me(跨 app SSO 接手)
+  // 'loading'  = 帳密登入進行中
+  // 'authed'   = 已驗證
+  // 'unauth'   = 已探測但未登入 → ProtectedRoute 會導去 CSP /login
+  // 'error'    = 帳密登入失敗(登入頁顯示訊息)
+  status: 'idle' | 'loading' | 'checking' | 'authed' | 'unauth' | 'error'
   error: string | null
 
   login: (username: string, password: string) => Promise<void>
@@ -55,7 +61,7 @@ export const useAuthStore = create<AuthState>()(
           set({ accessToken: data.access_token, refreshToken: data.refresh_token })
           return data.access_token
         } catch {
-          set({ accessToken: null, refreshToken: null, user: null, status: 'idle' })
+          set({ accessToken: null, refreshToken: null, user: null, status: 'unauth' })
           return null
         }
       },
@@ -65,7 +71,7 @@ export const useAuthStore = create<AuthState>()(
           const { data } = await getMe()
           set({ user: data, status: 'authed' })
         } catch {
-          set({ accessToken: null, refreshToken: null, user: null, status: 'idle' })
+          set({ accessToken: null, refreshToken: null, user: null, status: 'unauth' })
         }
       },
 
@@ -78,15 +84,20 @@ export const useAuthStore = create<AuthState>()(
           accessToken: null,
           refreshToken: null,
           user: null,
-          status: 'idle',
+          status: 'unauth',
           error: null,
         })
       },
 
       hydrate: async () => {
-        if (get().accessToken && !get().user) {
-          await get().fetchMe()
-        }
+        // Cookie-first session pickup. CSP 登入設 httpOnly anila_access_token
+        // cookie 在 path '/'(host-scoped,同源這個 SPA 也帶得到);getMe() 靠
+        // client 的 withCredentials 把 cookie 送出。所以**無條件**探測 —
+        // 即使本地 localStorage 沒 token(跨 app SSO:user 在 CSP 登入後直接
+        // 進來這頁)。探測前先標 'checking',ProtectedRoute 會等結果再決定,
+        // 不會在 cookie 還沒驗完就把人踢回 /login。
+        set({ status: 'checking' })
+        await get().fetchMe()
       },
     }),
     {

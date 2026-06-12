@@ -9,6 +9,7 @@
     :visible="s.confirm.open"
     :title="s.confirm.title"
     width="460px"
+    elevated
     @close="settle(false)"
   >
     <p class="term-confirm__msg">{{ s.confirm.message }}</p>

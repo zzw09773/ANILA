@@ -1,5 +1,4 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
 
 import {
   authRequest,
@@ -105,10 +104,13 @@ export function useAuth() {
 }
 
 export function useLogoutRedirect() {
-  const navigate = useNavigate();
   const { logout } = useAuth();
   return async () => {
     await logout();
-    navigate("/login", { replace: true });
+    // /login 是 myCSPPlatform 的 LoginView,不在本 SPA 路由表內 — 必須整頁
+    // 跳轉(同 main.jsx RequireAuth 的做法)。原本的 navigate("/login") 只會
+    // 在 SPA 內導去不存在的路由;basename=/anila 之後更會變 /anila/login。
+    const loginOrigin = `${window.location.protocol}//${window.location.hostname}`;
+    window.location.assign(`${loginOrigin}/login`);
   };
 }
