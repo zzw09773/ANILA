@@ -3,10 +3,36 @@
 > **Owner**:你 (1147259)
 > **目標環境**:中科院內網,平台主機 `10.53.100.15`,對外名稱 **`https://anila.ai.ncsist.org.tw`**
 > **模型來源**:`https://aiagent2.ai.ncsist.org.tw` (=10.53.100.12,My-OpenAI-Frontend gateway,模型容器不開 port)
-> **更新**:2026-06-10 (取代 2026-05-16 版 — 拓撲、憑證、gateway 認證全數改版)
+> **更新**:2026-06-12 (**V1.0.0**,git tag `v1.0.0`) — 卡登改真驗證、安全 hardening、
+>   migration 0040 修補、版號定版。前一版 2026-06-10。
 > **配套檔**:[`.env.example`](../../.env.example) / [`docker-compose.yml`](../../docker-compose.yml) / [`scripts/build-and-export-for-intranet.sh`](../../scripts/build-and-export-for-intranet.sh) / [`scripts/deploy-prod.sh`](../../scripts/deploy-prod.sh)
 
 這份是「**從外網 dev 機 → 帶進內網一鍵跑起來**」的逐步操作手冊。卡住直接看「Troubleshooting」段。
+
+---
+
+## V1.0.0 重要變更 (2026-06-12,部署前必讀)
+
+1. **必須「重新打包」image**:之前 export 的 tar 是舊碼。V1.0.0 多了卡登真驗證、
+   8 項安全 hardening、CA bundle、`asn1crypto` 依賴、0040 migration 修補 →
+   **務必以 `prod-intranet-card`(tag v1.0.0) 重跑 build-and-export** 再帶進內網。
+2. **卡登變「真驗證」**:不再只是解析 PKCS#7。現在驗 CMS 簽章 + 驗憑證鏈到釘死的
+   中科院 **CSPKI CA** + 綁 nonce。CA bundle(`myCSPPlatform/backend/app/services/
+   cspki_ca_bundle.pem`)**已 commit 隨碼附帶**,不用手動下載。**這跟 §2.2 的
+   `share/pki/model-ca.pem` 是兩個不同 CA**:後者是「對 https 模型 gateway 的 TLS
+   信任」,前者是「驗卡片簽章的信任錨」。`asn1crypto` 已在 requirements,build 時
+   自動進 csp image。
+3. **`CARD_DEV_SKIP_NONCE_BINDING` 內網一律不可設**:那是 dev 用固定 mock(簽不出
+   新 nonce)測試才開的旗標。內網用實體卡 → 全 nonce 綁定,別設這個。
+4. **migration 0040 已修**:之前 fresh DB 跑 `0001→0045` 會卡在 0040(對無 SSO
+   分支 `ALTER TABLE auth_providers` 表不存在直接炸)→ csp crash-loop。已改成表不
+   存在就 no-op。**沒有這個修補,內網首次部署的 DB 會壞**(本版已含)。
+5. **內網 `.env` 維持 strict**:`ANILA_ALLOW_DEV_SECRET=0`、`ANILA_ALLOW_HTTP_ENDPOINT=0`
+   (模型走 https gateway)、真密碼。**別把外網 dev 機放寬過的 `.env` 帶進內網。**
+6. **第一版 gateway-only**:模型走 .12 gateway,不跑本地模型/權重。`.env.example` 已配:
+   `LLM_MODEL=openai/gpt-oss-20b`、embedding `nvidia/nv-embed-v2`、`GEMMA4_BASE_URL=`/
+   `FLUX_AGENT_BASE_URL=` 留空(auto_seed 自動跳過,不需本地權重)。**你只需在 .12 簽
+   發後填 `MODEL_GATEWAY_API_KEY`**。權重日後到了再開 gemma4/flux 即可,架構不變。
 
 ---
 
@@ -34,7 +60,9 @@
 ```
 
 **Trust 邊界**:
-- 入向:卡片硬體 + PIN + HiPKI。Backend 解 PKCS#7 抽 employee_id,不驗鏈不打 OCSP。
+- 入向:卡片硬體 + PIN + HiPKI 簽出 PKCS#7。**Backend 真驗證**(V1.0.0 起):驗 CMS
+  簽章 → 驗鏈到釘死的中科院 CSPKI CA(`cspki_ca_bundle.pem` 內建)→ 綁 nonce,過了
+  才抽 `serialNumber`(員工編號)。不打 OCSP/CRL(離職靠實體回收 + `is_active`)。
 - 出向:csp → 模型 gateway 走 https (NCSIST CA 驗證) + `MODEL_GATEWAY_API_KEY` (Bearer)。
   key 只注入 model 呼叫,agent dispatch 不帶 (`proxy_service._apply_gateway_auth`)。
 
