@@ -23,3 +23,9 @@
 *.key
 *.key.bak
 *.pem
+# Rotated-out material from reissue-tls-cert.sh is renamed with a
+# `.revoked-<timestamp>` suffix, which slipped past the *.key/*.crt globs
+# above and got committed once. Catch every rotated artifact explicitly.
+*.revoked-*
+*.crt.revoked-*
+*.key.revoked-*
