@@ -1,6 +1,7 @@
 """Conversation persistence and share-link service."""
 from __future__ import annotations
 
+import json
 import secrets
 from datetime import datetime, timezone
 from typing import Optional
@@ -13,6 +14,26 @@ from app.models.conversation import Conversation, ConversationShare
 from app.models.message import Message
 from app.models.user import User
 from app.services.auth_service import is_admin_tier
+
+
+# Client-supplied message metadata is an opaque dict persisted verbatim
+# (trace_id, latency, model/agent name, structured feedback). Cap its
+# serialized size so an authenticated insider can't bloat a row; 64KB is far
+# above any legitimate metadata payload.
+_MAX_METADATA_BYTES = 64 * 1024
+
+
+def _check_metadata_size(metadata: Optional[dict]) -> None:
+    if metadata is None:
+        return
+    try:
+        size = len(json.dumps(metadata, ensure_ascii=False).encode("utf-8"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400, detail="metadata 不是合法的 JSON 物件"
+        ) from exc
+    if size > _MAX_METADATA_BYTES:
+        raise HTTPException(status_code=413, detail="metadata 過大")
 
 
 # ── Conversation CRUD ─────────────────────────────────────────────────────────
@@ -126,6 +147,7 @@ def append_message(
     agent_name: Optional[str] = None,
     metadata: Optional[dict] = None,
 ) -> Message:
+    _check_metadata_size(metadata)
     conv = get_conversation(db, conv_id, user)
     msg = Message(
         conversation_id=conv.id,
@@ -224,6 +246,7 @@ def update_message_content(
     if agent_name is not None:
         msg.agent_name = agent_name
     if metadata is not None:
+        _check_metadata_size(metadata)
         msg.metadata_ = metadata
     conv.updated_at = datetime.now(timezone.utc)
     db.commit()
