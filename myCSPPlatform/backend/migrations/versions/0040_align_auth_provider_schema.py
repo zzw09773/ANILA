@@ -20,6 +20,7 @@ Revises: 0039
 
 from typing import Sequence, Union
 
+import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0040"
@@ -54,27 +55,40 @@ EXTERNAL_IDENTITY_COLUMNS = [
 
 
 def upgrade() -> None:
-    for col, ddl in AUTH_PROVIDER_COLUMNS:
-        op.execute(f"ALTER TABLE auth_providers ADD COLUMN IF NOT EXISTS {col} {ddl}")
+    # 無 SSO 的分支(main / dev / prod-public / prod-military-passwd)整個移除了
+    # auth_providers / external_identities 兩張表的 model,故這兩張表根本不存在。
+    # ``ALTER TABLE`` 的 ``IF NOT EXISTS`` 只護欄位、不護表 → 表不存在會直接炸,
+    # 整條 migration 鏈卡住(R2 內網升級 / prod-public 啟動都會死)。先探測表存在
+    # 與否,不存在就整段 no-op。有 SSO 的 prod-intranet-card 行為不變。
+    existing_tables = set(sa.inspect(op.get_bind()).get_table_names())
 
-    # FK / index 沒有 IF NOT EXISTS 語法 → DO-block guard
-    op.execute(
-        """
-        DO $$ BEGIN
-            IF NOT EXISTS (SELECT 1 FROM pg_constraint
-                           WHERE conname = 'auth_providers_default_department_id_fkey') THEN
-                ALTER TABLE auth_providers
-                    ADD CONSTRAINT auth_providers_default_department_id_fkey
-                    FOREIGN KEY (default_department_id)
-                    REFERENCES departments(id) ON DELETE SET NULL;
-            END IF;
-        END $$
-        """
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_auth_providers_provider_type "
-        "ON auth_providers (provider_type)"
-    )
+    if "auth_providers" in existing_tables:
+        for col, ddl in AUTH_PROVIDER_COLUMNS:
+            op.execute(
+                f"ALTER TABLE auth_providers ADD COLUMN IF NOT EXISTS {col} {ddl}"
+            )
+
+        # FK / index 沒有 IF NOT EXISTS 語法 → DO-block guard
+        op.execute(
+            """
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                               WHERE conname = 'auth_providers_default_department_id_fkey') THEN
+                    ALTER TABLE auth_providers
+                        ADD CONSTRAINT auth_providers_default_department_id_fkey
+                        FOREIGN KEY (default_department_id)
+                        REFERENCES departments(id) ON DELETE SET NULL;
+                END IF;
+            END $$
+            """
+        )
+        op.execute(
+            "CREATE INDEX IF NOT EXISTS ix_auth_providers_provider_type "
+            "ON auth_providers (provider_type)"
+        )
+
+    if "external_identities" not in existing_tables:
+        return
 
     for col, ddl in EXTERNAL_IDENTITY_COLUMNS:
         op.execute(f"ALTER TABLE external_identities ADD COLUMN IF NOT EXISTS {col} {ddl}")
