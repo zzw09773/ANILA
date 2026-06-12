@@ -116,7 +116,7 @@ export function WorkspacePage() {
     return (
       <div
         style={{
-          height: '100vh',
+          height: '100dvh',
           display: 'grid',
           placeItems: 'center',
           background: t.bg,
@@ -133,7 +133,7 @@ export function WorkspacePage() {
     return (
       <div
         style={{
-          height: '100vh',
+          height: '100dvh',
           display: 'grid',
           placeItems: 'center',
           background: t.bg,
@@ -189,7 +189,7 @@ export function WorkspacePage() {
   return (
     <div
       style={{
-        height: '100vh',
+        height: '100dvh',
         background: t.bg,
         color: t.text,
         display: 'flex',

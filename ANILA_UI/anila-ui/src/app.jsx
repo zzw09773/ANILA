@@ -50,9 +50,16 @@ import {
   updateMessage as apiUpdateMessage,
   classifyConversation as apiClassifyConversation,
   createShare as apiCreateShare,
+  listShares as apiListShares,
+  revokeShare as apiRevokeShare,
   buildShareUrl,
   uploadAttachment as apiUploadAttachment,
   createHandoff as apiCreateHandoff,
+  listAgentFunctions as apiListAgentFunctions,
+  getUiSettings,
+  putUiSettings,
+  searchConversations,
+  listActiveBanners as apiListActiveBanners,
 } from "./runtime/conversations.js";
 
 import {
@@ -81,6 +88,7 @@ import {
   IconShare,
   IconShield,
   IconSpark,
+  IconGift,
   IconSun,
   IconTrash,
   IconUser,
@@ -93,6 +101,8 @@ import {
 import { ParallelCompareView } from "./multiagent.jsx";
 import { HandoffMenu, ShareDialog } from "./collab.jsx";
 import { TweaksPanel } from "./tweaks.jsx";
+import { ChangelogModal, CHANGELOG_VERSION } from "./changelog.jsx";
+import { BannerBar } from "./banners.jsx";
 
 // ---- Router pseudo-agent ----------------------------------------------------
 const ROUTER_AGENT = Object.freeze({
@@ -280,6 +290,25 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     }
   });
 
+  // Server-synced settings:後端是 source of truth(共用工作站下使用者的資料夾
+  // 不會殘留在瀏覽器給下一個人看到)。掛載時抓後端覆寫;之後變動 debounce 存回。
+  // localStorage 仍寫(離線/載入前的暫存),但後端值優先。
+  const uiSettingsLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let alive = true;
+    getUiSettings(authRequest)
+      .then((res) => {
+        const s = res?.ui_settings || {};
+        if (alive && Array.isArray(s.folders) && s.folders.length > 0) {
+          setFolders(s.folders.filter((f) => f && typeof f.id === "string" && typeof f.name === "string"));
+        }
+      })
+      .catch(() => { /* 後端無設定 → 維持 localStorage 值 */ })
+      .finally(() => { uiSettingsLoadedRef.current = true; });
+    return () => { alive = false; };
+  }, [isAuthenticated, authRequest]);
+
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
@@ -287,7 +316,46 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     } catch {
       /* quota / private mode — fall back silently */
     }
-  }, [folders]);
+    // 載入後才回存後端(避免用初始 localStorage 值蓋掉後端真值)。debounce。
+    if (!uiSettingsLoadedRef.current || !isAuthenticated) return;
+    const t = setTimeout(() => {
+      putUiSettings(authRequest, { folders }).catch(() => { /* best-effort */ });
+    }, 600);
+    return () => clearTimeout(t);
+  }, [folders, isAuthenticated, authRequest]);
+
+  // 匯出對話為 JSON / Markdown(純前端,離線可用)。未載入的對話先抓訊息。
+  const exportConversation = useCallback(async (convId, format) => {
+    const conv = conversations.find((c) => c.id === convId);
+    let msgs = messagesByConv[convId];
+    if (!msgs || msgs.length === 0) {
+      try {
+        const detail = await apiGetConversation(authRequest, convId);
+        msgs = (detail.messages || []).map((m) => ({ role: m.role, text: m.content }));
+      } catch { msgs = []; }
+    }
+    const title = conv?.title || "對話";
+    let content; let mime; let ext;
+    if (format === "markdown") {
+      const lines = [`# ${title}`, ""];
+      for (const m of msgs) {
+        if (!m.text) continue;
+        lines.push(m.role === "user" ? "## 使用者" : "## ANILA");
+        lines.push("", m.text, "");
+      }
+      content = lines.join("\n"); mime = "text/markdown"; ext = "md";
+    } else {
+      content = JSON.stringify({ title, messages: msgs.map((m) => ({ role: m.role, content: m.text })) }, null, 2);
+      mime = "application/json"; ext = "json";
+    }
+    const blob = new Blob([content], { type: `${mime};charset=utf-8` });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${title.replace(/[^\w一-鿿 -]/g, "_").slice(0, 40)}.${ext}`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }, [conversations, messagesByConv, authRequest]);
 
   const createFolder = useCallback((rawName) => {
     const name = (rawName || "").trim();
@@ -324,6 +392,53 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
 
   const scrollRef = useRef(null);
 
+  // 管理員公告 banner:登入後抓 active,使用者關閉後 localStorage 記住。
+  const [banners, setBanners] = useState([]);
+  const [dismissedBanners, setDismissedBanners] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem("anila-dismissed-banners") || "[]")); }
+    catch { return new Set(); }
+  });
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let alive = true;
+    apiListActiveBanners(authRequest)
+      .then((rows) => { if (alive) setBanners(Array.isArray(rows) ? rows : []); })
+      .catch(() => { if (alive) setBanners([]); });
+    return () => { alive = false; };
+  }, [isAuthenticated, authRequest]);
+  const visibleBanners = banners.filter((b) => !dismissedBanners.has(b.id));
+  const dismissBanner = useCallback((id) => {
+    setDismissedBanners((prev) => {
+      const next = new Set(prev); next.add(id);
+      try { localStorage.setItem("anila-dismissed-banners", JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  }, []);
+
+  // Changelog「新功能」modal:未看過最新版時頂列鈕顯示小紅點。
+  const [changelogOpen, setChangelogOpen] = useState(false);
+  const [changelogUnseen, setChangelogUnseen] = useState(() => {
+    try { return localStorage.getItem("anila-changelog-seen") !== CHANGELOG_VERSION; }
+    catch { return false; }
+  });
+
+  // Stop generation:每個進行中的串流對應一個 AbortController,以 convId 為鍵。
+  // streamWithAbort 包住串流呼叫管理生命週期;stopStreaming 中止指定對話。
+  const streamAbortRef = useRef(new Map());
+  async function streamWithAbort(convId, opts) {
+    const controller = new AbortController();
+    streamAbortRef.current.set(convId, controller);
+    try {
+      return await streamChatCompletion({ ...opts, signal: controller.signal });
+    } finally {
+      streamAbortRef.current.delete(convId);
+    }
+  }
+  function stopStreaming(convId) {
+    const controller = streamAbortRef.current.get(convId);
+    if (controller) controller.abort();
+  }
+
   const selectedConv = useMemo(
     () => conversations.find((c) => c.id === selectedConvId) || null,
     [conversations, selectedConvId],
@@ -334,6 +449,33 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   const activeAgent = useMemo(
     () => agents.find((a) => a.id === selectedAgentId) || ROUTER_AGENT,
     [agents, selectedAgentId],
+  );
+
+  // Per-agent preset prompts(開發者在 CSP 設計):切換到某個真 agent 時抓它的
+  // 預設提示詞清單,顯示在 composer。Router 是虛擬 agent、沒有 id,不抓。
+  // 切到某 agent 時抓它的 functions(可擴充框架:kind+config)。selectedAgentId
+  // 在資料面是 agent NAME;Router 是虛擬 agent 沒有 functions。後端以 id-or-name
+  // 解析,直接把 name 當 ref 傳。functions 依 kind 分流給不同 UI(renderer registry)。
+  const [agentFunctions, setAgentFunctions] = useState([]);
+  useEffect(() => {
+    if (!selectedAgentId || selectedAgentId === ROUTER_AGENT.id) {
+      setAgentFunctions([]);
+      return;
+    }
+    let alive = true;
+    apiListAgentFunctions(authRequest, selectedAgentId)
+      .then((rows) => { if (alive) setAgentFunctions(Array.isArray(rows) ? rows : []); })
+      .catch(() => { if (alive) setAgentFunctions([]); });
+    return () => { alive = false; };
+  }, [selectedAgentId, authRequest]);
+  // Renderer registry split:preset_prompt → composer picker、prompt_action → 訊息鈕。
+  const presetPrompts = useMemo(
+    () => agentFunctions.filter((f) => f.kind === "preset_prompt"),
+    [agentFunctions],
+  );
+  const promptActionFns = useMemo(
+    () => agentFunctions.filter((f) => f.kind === "prompt_action"),
+    [agentFunctions],
   );
   const activeEncryptionRequired = Boolean(activeAgent?.requiresEncryption);
   const directAgents = useMemo(
@@ -818,13 +960,17 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     const accumulatedTrace = [];
     let accumulatedReasoning = "";
     try {
-      await streamChatCompletion({
+      await streamWithAbort(convId, {
         url: `${baseUrl}/v1/chat/completions`,
         payload,
         conversationId: typeof convId === "number" ? convId : undefined,
         onText: (acc) => {
           finalText = acc;
           updateMsg(convId, assistantId, { text: acc });
+        },
+        onFinishReason: (reason) => {
+          // Continue Response:截斷標記存到訊息,UI 才知道要不要顯示「繼續」鈕。
+          updateMsg(convId, assistantId, { finishReason: reason });
         },
         onTrace: (step) => {
           accumulatedTrace.push(step);
@@ -944,6 +1090,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       handoffChain: meta.handoff_chain || [],
       followUps: meta.follow_ups || [],
       latencyMs: meta.latency_ms,
+      usage: meta.usage || null,
       classified: meta.classified,
       reasoning: meta.reasoning || null,
       routedAgentId: meta.handoff_chain?.at?.(-1)?.agent_id || agentId,
@@ -1046,13 +1193,17 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     const accumulatedTrace = [];
     let accumulatedReasoning = "";
     try {
-      await streamChatCompletion({
+      await streamWithAbort(convId, {
         url: `${baseUrl}/v1/chat/completions`,
         payload,
         conversationId: typeof convId === "number" ? convId : undefined,
         onText: (acc) => {
           finalText = acc;
           updateMsg(convId, assistantId, { text: acc });
+        },
+        onFinishReason: (reason) => {
+          // Continue Response:截斷標記存到訊息,UI 才知道要不要顯示「繼續」鈕。
+          updateMsg(convId, assistantId, { finishReason: reason });
         },
         onTrace: (step) => {
           accumulatedTrace.push(step);
@@ -1145,7 +1296,78 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   // and re-runs the chat call, replacing the assistant message's text /
   // trace in place. Caller API key permissions and routing target are
   // inherited from the original turn.
-  async function regenerateMessage(assistantMsg) {
+  // Message Actions(回應動作鈕,kind='prompt_action'):正/倒讚旁的一鍵動作。
+  // 動作宣告式 {label, config.template},template 內 {content} 換成該則回覆
+  // 全文,組好後當新使用者訊息送出。**不執行任意腳本**(air-gap 軍方不開
+  // client eval)。來源優先序:該 agent 的 prompt_action functions(開發者在
+  // CSP 設計) > 沒設時用下方通用預設,所以一定有翻譯/摘要/公文可用。
+  const DEFAULT_MESSAGE_ACTIONS = [
+    { id: "translate-en", label: "翻譯成英文", config: { template: "請把以下內容翻譯成英文，只輸出譯文：\n\n{content}" } },
+    { id: "summarize", label: "摘要重點", config: { template: "請把以下內容摘要成條列重點：\n\n{content}" } },
+    { id: "official", label: "改寫成公文", config: { template: "請把以下內容改寫成正式公文格式：\n\n{content}" } },
+  ];
+  const messageActions = promptActionFns.length > 0 ? promptActionFns : DEFAULT_MESSAGE_ACTIONS;
+
+  function runMessageAction(msg, action) {
+    const template = action?.config?.template || action?.template;
+    if (!template || !msg?.text) return;
+    const prompt = template.replace(/\{content\}/g, msg.text);
+    sendMessage(prompt, [], {});
+  }
+
+  // Continue Response:回應被 max_tokens 截斷(finishReason==='length')時,
+  // 把已生內容當 assistant 上文 + 一句「請接續」當 user turn 重新串流,新內容
+  // **附加**到同一則訊息(非取代)。只做 Router/文字回合(分派 agent 的釘定需
+  // 後端 session-pin,user 拍板先只做這條);圖像 agent 回合不會有 length 截斷。
+  async function continueMessage(assistantMsg) {
+    if (!isAuthenticated) { setRuntimeError("尚未登入，請重新登入後再試。"); return; }
+    const convId = assistantMsg.conversationId;
+    const msgs = messagesByConv[convId] || [];
+    const idx = msgs.findIndex((m) => m.id === assistantMsg.id);
+    if (idx < 0) return;
+    const existing = assistantMsg.text || "";
+    const effectiveTarget = assistantMsg.routedAgentId || selectedAgentId;
+    const baseUrl = effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
+    // history 含截斷的這則 assistant + 一句續寫指示。buildMessageHistory 會把
+    // 截斷訊息(已非 streaming)當 assistant role 帶上。
+    const payload = {
+      model: effectiveTarget,
+      messages: buildMessageHistory(
+        msgs.slice(0, idx + 1),
+        "請接續上文，直接從中斷處往下寫，不要重複已經寫過的內容。",
+        [],
+      ),
+    };
+    updateMsg(convId, assistantMsg.id, { streaming: true, finishReason: null });
+    const ctrl = streamAbortRef.current.get(convId) || null;
+    try {
+      const controller = new AbortController();
+      streamAbortRef.current.set(convId, controller);
+      let appended = "";
+      await streamChatCompletion({
+        url: `${baseUrl}/v1/chat/completions`,
+        payload,
+        conversationId: typeof convId === "number" ? convId : undefined,
+        signal: controller.signal,
+        onText: (acc) => {
+          appended = acc;
+          // 接在原文後(若原文未以空白結尾補一個空格,避免黏字)。
+          const joiner = existing && !/\s$/.test(existing) ? " " : "";
+          updateMsg(convId, assistantMsg.id, { text: existing + joiner + acc });
+        },
+        onFinishReason: (reason) => updateMsg(convId, assistantMsg.id, { finishReason: reason }),
+      });
+    } catch (err) {
+      setRuntimeError(err?.message || "續寫失敗");
+    } finally {
+      streamAbortRef.current.delete(convId);
+      updateMsg(convId, assistantMsg.id, { streaming: false });
+    }
+  }
+
+  // steer:guided regenerate 的調整指令(更詳細/更簡潔/換個說法/自由文字);
+  // 空 = 盲目重試(原行為)。non-empty 時附加到使用者原文後重新生成。
+  async function regenerateMessage(assistantMsg, steer = "") {
     if (!isAuthenticated) {
       setRuntimeError("尚未登入，請重新登入後再試。");
       return;
@@ -1177,9 +1399,12 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     const effectiveTarget = assistantMsg.routedAgentId || selectedAgentId;
     const baseUrl =
       effectiveTarget === ROUTER_AGENT.id ? config.routerBaseUrl : config.cspBaseUrl;
+    const steeredUserText = steer
+      ? `${prevUser.text}\n\n（重新回答時請依此調整：${steer}）`
+      : prevUser.text;
     const payload = {
       model: effectiveTarget,
-      messages: buildMessageHistory(msgs.slice(0, userIdx), prevUser.text, prevUser.attachments || []),
+      messages: buildMessageHistory(msgs.slice(0, userIdx), steeredUserText, prevUser.attachments || []),
     };
 
     // Snapshot the current top-level fields into revisions[] so the user can
@@ -1235,7 +1460,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     let finalText = "";
     let finalMeta = null;
     try {
-      await streamChatCompletion({
+      await streamWithAbort(convId, {
         url: `${baseUrl}/v1/chat/completions`,
         payload,
         conversationId: typeof convId === "number" ? convId : undefined,
@@ -1381,7 +1606,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   // Optimistically toggles rating locally for instant feedback, then PUTs to
   // the CSP rating endpoint. On failure the optimistic value is rolled back
   // so the UI never drifts from persisted state.
-  async function handleRate(targetMsg, nextRating) {
+  async function handleRate(targetMsg, nextRating, feedback = null) {
     const convId = targetMsg.conversationId;
     const prevRating = targetMsg.rating ?? null;
     updateMsg(convId, targetMsg.id, { rating: nextRating });
@@ -1391,7 +1616,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       return;
     }
     try {
-      await apiRateMessage(authRequest, convId, targetMsg.dbId, nextRating);
+      await apiRateMessage(authRequest, convId, targetMsg.dbId, nextRating, feedback);
     } catch (err) {
       updateMsg(convId, targetMsg.id, { rating: prevRating });
       setRuntimeError(err.message || "反饋儲存失敗");
@@ -1449,7 +1674,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         }));
 
         try {
-          await streamChatCompletion({
+          await streamWithAbort(col.id, {
             url: `${config.cspBaseUrl}/v1/chat/completions`,
             payload: {
               model: col.agentId,
@@ -1627,7 +1852,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
 
   // ---- render: classified watermark + top bar + messages + composer ----
   return (
-    <div style={{ display: "flex", height: "100vh", background: "var(--bg)", position: "relative" }}>
+    <div style={{ display: "flex", height: "100dvh", background: "var(--bg)", position: "relative" }}>
       {isClassified && (
         <ConfidentialWatermark
           userEmail={user?.email || user?.username}
@@ -1654,6 +1879,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       )}
       <Sidebar
         conversations={conversations}
+        onServerSearch={(q) => searchConversations(authRequest, q)}
+        onExportConv={exportConversation}
         selectedConvId={selectedConvId}
         onSelectConv={(id) => {
           setSelectedConvId(id);
@@ -1682,6 +1909,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       />
 
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+        <BannerBar banners={visibleBanners} onDismiss={dismissBanner} />
         <div style={{
           display: "flex", alignItems: "center", gap: 10,
           padding: "10px 18px",
@@ -1792,6 +2020,17 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
           <IconButton title="Tweaks" onClick={() => setTweaksOpen((o) => !o)} active={tweaksOpen}>
             <IconSpark />
           </IconButton>
+          <span style={{ position: "relative", display: "inline-flex" }}>
+            <IconButton title="新功能" onClick={() => { setChangelogOpen(true); try { localStorage.setItem("anila-changelog-seen", CHANGELOG_VERSION); } catch {} setChangelogUnseen(false); }}>
+              <IconGift />
+            </IconButton>
+            {changelogUnseen && (
+              <span style={{
+                position: "absolute", top: 4, right: 4, width: 7, height: 7,
+                borderRadius: "50%", background: "var(--accent)", pointerEvents: "none",
+              }} />
+            )}
+          </span>
         </div>
 
         {runtimeError && (
@@ -1857,6 +2096,9 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                           onSwitchRevision={switchRevision}
                           onOpenCitation={onOpenCitation}
                           onPickFollowUp={(q) => sendMessage(q, [], {})}
+                          messageActions={messageActions}
+                          onAction={runMessageAction}
+                          onContinue={continueMessage}
                         />
                       ))
                     )}
@@ -1889,6 +2131,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                     <Composer
                       onSend={sendMessage}
                       agents={agents}
+                      conversationId={selectedConvId}
+                      presetPrompts={presetPrompts}
+                      streaming={currentMsgs.some((m) => m.streaming)}
+                      onStop={() => stopStreaming(selectedConvId)}
                       placeholder="問 ANILA 任何事情，或用 @agent 指定 agent · Shift+Enter 換行"
                       footer={
                         selectedAgentId === ROUTER_AGENT.id
@@ -1946,6 +2192,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         authRequest={authRequest}
       />
 
+      <ChangelogModal open={changelogOpen} onClose={() => setChangelogOpen(false)} />
+
       <TweaksPanel
         open={tweaksOpen}
         onClose={() => setTweaksOpen(false)}
@@ -1969,6 +2217,12 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
           });
           return { ...share, url: buildShareUrl(share.token) };
         }}
+        onListShares={() =>
+          (typeof selectedConvId === "number")
+            ? apiListShares(authRequest, selectedConvId)
+            : Promise.resolve([])
+        }
+        onRevokeShare={(shareId) => apiRevokeShare(authRequest, selectedConvId, shareId)}
       />
     </div>
   );

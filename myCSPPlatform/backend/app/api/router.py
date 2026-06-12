@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 from app.api.agents import router as agents_router
+from app.api.banners import router as banners_router
 from app.api.auth import router as auth_router
 from app.api.auth_providers import router as auth_providers_router
 from app.api.api_keys import router as api_keys_router
@@ -44,6 +45,7 @@ api_router.include_router(platform_links_router)
 api_router.include_router(service_access_grants_router)
 api_router.include_router(service_clients_router)
 api_router.include_router(agents_router)
+api_router.include_router(banners_router)
 api_router.include_router(ingestion_collections_router)
 api_router.include_router(ingestion_credentials_router)
 api_router.include_router(ingestion_documents_router)

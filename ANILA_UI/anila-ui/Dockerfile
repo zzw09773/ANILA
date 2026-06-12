@@ -4,9 +4,13 @@ WORKDIR /app
 
 ARG VITE_CSP_BASE_URL=http://localhost:8000
 ARG VITE_ROUTER_BASE_URL=http://localhost:9000
+# Serving prefix — 正式部署 '/anila/'(443 同源 subpath,SSO cookie 自然共用);
+# 不傳 = '/'(本機 dev 直跑)。
+ARG BASE_PATH=/
 
 ENV VITE_CSP_BASE_URL=${VITE_CSP_BASE_URL}
 ENV VITE_ROUTER_BASE_URL=${VITE_ROUTER_BASE_URL}
+ENV BASE_PATH=${BASE_PATH}
 
 COPY package.json package-lock.json* ./
 # Use `npm install` (not `npm ci`) so package.json edits pull new deps without

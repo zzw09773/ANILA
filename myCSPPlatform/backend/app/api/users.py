@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.agent import Agent, UserAgentPermission
@@ -479,3 +479,39 @@ def hard_delete_user(
         "message": "使用者已永久刪除",
         "snapshot": snapshot,
     }
+
+
+# ============================================================================
+# Server-synced UI settings (2026-06-12)
+# ----------------------------------------------------------------------------
+# The ANILA chat UI persists per-user prefs (folders / stars / tweaks) here
+# instead of browser localStorage, so they follow the user across shared
+# PKI-card workstations and don't leak between users on the same browser.
+# Opaque JSON blob owned by the client; the server just stores/returns it.
+# ============================================================================
+
+
+@router.get("/me/ui-settings")
+def get_my_ui_settings(
+    current_user: User = Depends(get_current_user),
+):
+    return {"ui_settings": current_user.ui_settings or {}}
+
+
+@router.put("/me/ui-settings")
+def put_my_ui_settings(
+    payload: dict = Body(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # The whole blob is replaced (client owns the shape). Cap size so a buggy
+    # client can't bloat the row; 256KB is far above any real prefs payload.
+    import json as _json
+    settings = payload.get("ui_settings", payload)
+    if not isinstance(settings, dict):
+        raise HTTPException(status_code=400, detail="ui_settings 必須是物件")
+    if len(_json.dumps(settings)) > 256 * 1024:
+        raise HTTPException(status_code=413, detail="ui_settings 過大")
+    current_user.ui_settings = settings
+    db.commit()
+    return {"ui_settings": current_user.ui_settings}
