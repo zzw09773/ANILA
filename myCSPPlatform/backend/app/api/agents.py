@@ -1226,6 +1226,22 @@ def _require_function_editor(agent: Agent, user: User) -> None:
         raise HTTPException(status_code=403, detail="無權限編輯此 Agent 的功能")
 
 
+def _require_function_reader(agent: Agent, user: User, db: Session) -> None:
+    """Read access to an agent's functions: admin, the owner, or a user
+    permitted to USE the agent. Mirrors the dispatch-time permission
+    (``check_agent_permission``) so the chat UI for a permitted user still
+    works, while a caller with no relationship to the agent gets an
+    indistinguishable 404 — closing both the over-exposure and the
+    agent-name enumeration oracle (a name lookup no longer reveals existence).
+    """
+    if is_admin_tier(user) or agent.owner_user_id == user.id:
+        return
+    from app.services.api_key_service import check_agent_permission
+
+    if not check_agent_permission(db, user=user, api_key_id=None, agent_id=agent.id):
+        raise HTTPException(status_code=404, detail="Agent 不存在")
+
+
 def _validate_kind(kind: str) -> None:
     if kind not in _FUNCTION_KINDS:
         raise HTTPException(
@@ -1240,9 +1256,10 @@ def list_agent_functions(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """List an agent's functions (any authenticated user — the chat UI
-    renders these for whoever can use the agent)."""
+    """List an agent's functions (admin / owner / a user permitted to use the
+    agent — the chat UI renders these for whoever can use the agent)."""
     agent = _agent_or_404(agent_ref, db)
+    _require_function_reader(agent, current_user, db)
     rows = (
         db.query(AgentFunction)
         .filter(AgentFunction.agent_id == agent.id)

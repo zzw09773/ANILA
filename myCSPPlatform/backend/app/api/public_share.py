@@ -4,10 +4,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import get_db
 from app.services.conversation_service import get_share_by_token
 
@@ -43,20 +44,27 @@ def get_shared_conversation(
     db: Session = Depends(get_db),
 ):
     """Return a read-only view of a shared conversation. No auth required."""
+    if not settings.ENABLE_PUBLIC_SHARE:
+        # Air-gapped / card-only deployments disable the unauthenticated share
+        # surface entirely. 404 (not 403) so its existence can't be probed.
+        raise HTTPException(status_code=404, detail="Not Found")
+
     share = get_share_by_token(db, token)
     conv = share.conversation
 
+    # Never expose classified conversation content OR its title publicly
+    # (belt + suspenders): a 256-bit token is still an unauthenticated surface,
+    # so a classified conversation leaks nothing — not even the title.
+    classified = bool(conv.classified)
     messages: list[PublicMessageOut] = []
-    for msg in conv.messages:
-        # Never expose classified conversation content publicly (belt + suspenders)
-        if conv.classified:
-            break
-        messages.append(PublicMessageOut.model_validate(msg))
+    if not classified:
+        for msg in conv.messages:
+            messages.append(PublicMessageOut.model_validate(msg))
 
     return PublicShareOut(
         share_token=token,
         conversation_id=conv.id,
-        conversation_title=conv.title,
+        conversation_title="（機密對話）" if classified else conv.title,
         mode=share.mode,
         allow_fork=share.allow_fork,
         expires_at=share.expires_at,
