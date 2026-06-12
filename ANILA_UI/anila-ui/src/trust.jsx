@@ -289,10 +289,11 @@ export const FollowUpSuggestions = ({ suggestions, confidence, onPick }) => {
 };
 
 // ---- Audit watermark ----
-export const AuditWatermark = ({ traceId, conversationId, latencyMs, timestamp }) => {
+export const AuditWatermark = ({ traceId, conversationId, latencyMs, timestamp, usage }) => {
   const [copied, setCopied] = useState(false);
   if (!traceId) return null;
-  const fullText = `trace: ${traceId} · conv: ${conversationId || "—"} · ${timestamp || "—"} · ${latencyMs || "—"}ms`;
+  const tokenTotal = usage?.total_tokens || 0;
+  const fullText = `trace: ${traceId} · conv: ${conversationId || "—"} · ${timestamp || "—"} · ${latencyMs || "—"}ms${tokenTotal ? ` · ${tokenTotal} tokens` : ""}`;
 
   const copy = () => {
     navigator.clipboard?.writeText(fullText);
@@ -317,6 +318,7 @@ export const AuditWatermark = ({ traceId, conversationId, latencyMs, timestamp }
       <span style={{ opacity: 0.5 }}>·</span>
       {conversationId && <><span>conv: {String(conversationId).slice(0, 10)}</span><span style={{ opacity: 0.5 }}>·</span></>}
       {latencyMs != null && <><span>{latencyMs}ms</span><span style={{ opacity: 0.5 }}>·</span></>}
+      {tokenTotal > 0 && <><span title={`prompt ${usage.prompt_tokens || 0} · completion ${usage.completion_tokens || 0}`}>{tokenTotal} tokens</span><span style={{ opacity: 0.5 }}>·</span></>}
       <span style={{ color: copied ? "var(--success)" : "var(--fg-subtle)" }}>
         {copied ? "✓ copied" : "copy"}
       </span>

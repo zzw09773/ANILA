@@ -125,6 +125,22 @@ def auto_seed():
             else:
                 logger.debug(f"模型 {em['name']} 已在 JSON 配置中，跳過 env var 版本")
 
+        # 空 endpoint_url = 該 entry 顯式停用。compose 對 optional service
+        # (如 FLUX) 用 `${VAR-default}`,內網沒部署時 .env 設空字串就會走到
+        # 這裡 — 跳過不註冊,避免 seed 出打不通的 dead endpoint 給 Router。
+        disabled_models = [
+            m.get("name", "?") for m in models_config
+            if not str(m.get("endpoint_url") or "").strip()
+        ]
+        if disabled_models:
+            logger.info(
+                f"模型 entry 空 endpoint_url 視為停用,跳過: {', '.join(disabled_models)}"
+            )
+            models_config = [
+                m for m in models_config
+                if str(m.get("endpoint_url") or "").strip()
+            ]
+
         if models_config:
             try:
 
@@ -210,6 +226,19 @@ def auto_seed():
         if settings.AUTO_REGISTER_AGENTS:
             try:
                 agents_config = json.loads(settings.AUTO_REGISTER_AGENTS)
+                # 同上面 models 的規則:空 endpoint_url = 停用,跳過。
+                disabled_agents = [
+                    a.get("name", "?") for a in agents_config
+                    if not str(a.get("endpoint_url") or "").strip()
+                ]
+                if disabled_agents:
+                    logger.info(
+                        f"Agent entry 空 endpoint_url 視為停用,跳過: {', '.join(disabled_agents)}"
+                    )
+                    agents_config = [
+                        a for a in agents_config
+                        if str(a.get("endpoint_url") or "").strip()
+                    ]
                 for item in agents_config:
                     existing = db.query(Agent).filter(Agent.name == item["name"]).first()
 

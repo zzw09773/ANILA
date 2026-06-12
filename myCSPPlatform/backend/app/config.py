@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     EMBEDDING_TIMEOUT: int = 30
     LLM_TIMEOUT: int = 120
 
+    # 出向模型 gateway 的 API key (選配,預設空 = 不注入,行為不變)。
+    # 內網拓撲下模型不直連 — 走 10.53.100.12 My-OpenAI-Frontend 的
+    # https /v1 gateway,該 gateway 的 /v1 全路由要 Authorization: Bearer。
+    # 只注入 model 呼叫 (llm/vlm/embedding);agent dispatch 不帶,
+    # 避免 key 外流給第三方 agent。
+    MODEL_GATEWAY_API_KEY: str = ""
+
     # Proxy Retry
     PROXY_MAX_RETRIES: int = 3
     PROXY_RETRY_BASE_DELAY: float = 0.5

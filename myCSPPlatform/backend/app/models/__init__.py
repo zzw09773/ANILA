@@ -10,10 +10,12 @@ actual dependency resolution once every class is registered.
 
 from app.models.agent import Agent, ApiKeyAgentPermission, UserAgentPermission
 from app.models.agent_credential import AgentCredential
+from app.models.agent_prompt import AgentFunction, AgentPrompt
 from app.models.alert import Alert
 from app.models.api_key import ApiKey, ApiKeyModelPermission
 from app.models.attachment import Attachment
 from app.models.audit_log import AuditLog
+from app.models.banner import Banner
 from app.models.conversation import Conversation
 from app.models.department import Department
 from app.models.handoff import Handoff
@@ -38,12 +40,15 @@ from app.models.user_memory import ConversationMemoryChunk, UserFact
 __all__ = [
     "Agent",
     "AgentCredential",
+    "AgentFunction",
+    "AgentPrompt",
     "Alert",
     "ApiKey",
     "ApiKeyAgentPermission",
     "ApiKeyModelPermission",
     "Attachment",
     "AuditLog",
+    "Banner",
     "Conversation",
     "Department",
     "AgentLlmCredential",

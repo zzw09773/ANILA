@@ -1,5 +1,5 @@
 // Collaboration: share dialog, handoff-to menu, tag/folder editor (ESM)
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { IconShield, IconLink, IconX, IconCheck, IconStar, IconFolder } from "./icons.jsx";
 import { Button, Modal, MenuItem, Divider, Input } from "./components.jsx";
 
@@ -16,7 +16,7 @@ function ttlToExpiresAt(ttlKey) {
 // `onCreateShare({ mode, allowFork, expiresAt })` is expected to return a
 // promise resolving to `{ url, token, ... }`. The dialog stays UI-only and
 // delegates persistence to the caller.
-export const ShareDialog = ({ open, onClose, conversation, user, onCreateShare }) => {
+export const ShareDialog = ({ open, onClose, conversation, user, onCreateShare, onListShares, onRevokeShare }) => {
   const [ttl, setTtl] = useState("24h");
   const [scope, setScope] = useState("org");
   const [allowFork, setAllowFork] = useState(true);
@@ -24,6 +24,27 @@ export const ShareDialog = ({ open, onClose, conversation, user, onCreateShare }
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // 既有分享管理:開啟時列出此對話已建立的分享連結,可逐一撤銷。
+  const [existingShares, setExistingShares] = useState([]);
+
+  useEffect(() => {
+    if (!open || typeof onListShares !== "function") { setExistingShares([]); return; }
+    let alive = true;
+    onListShares()
+      .then((rows) => { if (alive) setExistingShares(Array.isArray(rows) ? rows : []); })
+      .catch(() => { if (alive) setExistingShares([]); });
+    return () => { alive = false; };
+  }, [open, onListShares, linkCreated]);
+
+  const revoke = async (shareId) => {
+    if (typeof onRevokeShare !== "function") return;
+    try {
+      await onRevokeShare(shareId);
+      setExistingShares((prev) => prev.filter((s) => s.id !== shareId));
+    } catch (err) {
+      setError(err?.message || "撤銷失敗");
+    }
+  };
 
   if (!open) return null;
 
@@ -143,6 +164,27 @@ export const ShareDialog = ({ open, onClose, conversation, user, onCreateShare }
             <Button size="sm" variant="primary" onClick={copyLink}>
               {copied ? "✓ 已複製" : "複製"}
             </Button>
+          </div>
+        )}
+
+        {existingShares.length > 0 && (
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6 }}>已建立的分享連結</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {existingShares.map((s) => (
+                <div key={s.id} style={{
+                  display: "flex", alignItems: "center", gap: 8,
+                  padding: "6px 8px", background: "var(--bg-subtle)",
+                  border: "1px solid var(--border)", borderRadius: "var(--radius)",
+                  fontSize: 12,
+                }}>
+                  <span style={{ flex: 1, fontFamily: "var(--font-mono)", color: "var(--fg-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {(s.token || "").slice(0, 16)}… · {s.mode === "fork" ? "可複製" : "唯讀"} · {s.view_count || 0} 次瀏覽
+                  </span>
+                  <Button size="sm" onClick={() => revoke(s.id)}>撤銷</Button>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>

@@ -42,6 +42,9 @@ export const IconSpark     = (p) => <Icon {...p}><path d="M12 3v4M12 17v4M3 12h4
 export const IconTerminal  = (p) => <Icon {...p}><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></Icon>;
 export const IconPanelR    = (p) => <Icon {...p}><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></Icon>;
 export const IconCopy      = (p) => <Icon {...p}><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></Icon>;
+export const IconStop      = (p) => <Icon {...p}><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></Icon>;
+export const IconPrompts   = (p) => <Icon {...p}><path d="M4 6h16M4 12h16M4 18h10"/></Icon>;
+export const IconGift      = (p) => <Icon {...p}><rect x="3" y="8" width="18" height="4"/><path d="M12 8v13M5 12v9h14v-9M12 8C12 8 10 3 7.5 4.5 5 6 8 8 12 8zM12 8s2-5 4.5-3.5C19 6 16 8 12 8z"/></Icon>;
 export const IconThumbUp   = (p) => <Icon {...p}><path d="M7 22V11M2 13v7a2 2 0 0 0 2 2h3V11H4a2 2 0 0 0-2 2zM15 5.88L14 10h5.83a2 2 0 0 1 2 2.28l-1.17 8A2 2 0 0 1 18.66 22H7V11l3.55-8.11A3 3 0 0 1 13 2h0a2 2 0 0 1 2 2z"/></Icon>;
 export const IconThumbDn   = (p) => (
   <svg xmlns="http://www.w3.org/2000/svg" width={p.size||16} height={p.size||16} viewBox="0 0 24 24"

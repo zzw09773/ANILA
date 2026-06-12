@@ -3,7 +3,7 @@
 // no user-controlled "lock/unlock" icons here.
 
 import React, { useState, useMemo, useRef, useEffect } from "react";
-import { relativeLabel } from "./runtime/time.js";
+import { relativeLabel, timeBucket } from "./runtime/time.js";
 import { matchFuzzy } from "./runtime/searchSynonyms.js";
 import { MarkdownView, extractThinkTags } from "./markdown.jsx";
 
@@ -43,6 +43,8 @@ import {
   IconRoute,
   IconSearch,
   IconSend,
+  IconStop,
+  IconPrompts,
   IconSettings,
   IconSpark,
   IconTrash,
@@ -236,11 +238,30 @@ export const MessageBubble = ({
   onSwitchRevision,
   onOpenCitation,
   onPickFollowUp,
+  messageActions = [],
+  onAction,
+  onContinue,
 }) => {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(msg.text || "");
+  // Guided regenerate 的自管小選單狀態。
+  const [regenOpen, setRegenOpen] = useState(false);
+  const [steerText, setSteerText] = useState("");
+  // 結構化回饋(倒讚後出現的原因 chips + 評語)。
+  const [fbReasons, setFbReasons] = useState([]);
+  const [fbComment, setFbComment] = useState("");
+  const [fbSent, setFbSent] = useState(false);
   const routedAgent = agents.find((a) => a.id === msg.routedAgentId);
+
+  // 點選單外部即關閉 guided regenerate(自管選單沒有 Dropdown 的內建處理)。
+  useEffect(() => {
+    if (!regenOpen) return;
+    const close = () => setRegenOpen(false);
+    // 延後一個 tick 再掛,避免開啟的那一次點擊立刻關掉。
+    const t = setTimeout(() => document.addEventListener("click", close), 0);
+    return () => { clearTimeout(t); document.removeEventListener("click", close); };
+  }, [regenOpen]);
 
   if (msg.role === "user") {
     const canEdit = !classified && typeof onEditUser === "function";
@@ -505,6 +526,25 @@ export const MessageBubble = ({
         );
       })()}
 
+      {/* Continue Response:回應被 max_tokens 截斷時(finishReason==='length')顯示
+          「繼續」鈕,點擊接續往下寫。長 context 是 ANILA 賣點,長答案易撞上限。 */}
+      {!msg.streaming && msg.finishReason === "length" && typeof onContinue === "function" && (
+        <button
+          onClick={() => onContinue(msg)}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 6, marginTop: 8,
+            padding: "6px 12px", fontSize: 13,
+            background: "var(--bg-subtle)", color: "var(--fg)",
+            border: "1px solid var(--border-strong)", borderRadius: "var(--radius)",
+            cursor: "pointer",
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-elev)")}
+          onMouseLeave={(e) => (e.currentTarget.style.background = "var(--bg-subtle)")}
+        >
+          <IconRefresh size={13} /> 繼續產生（回應被長度上限截斷）
+        </button>
+      )}
+
       {!msg.streaming && (
         <FollowUpSuggestions
           suggestions={msg.followUps}
@@ -552,14 +592,66 @@ export const MessageBubble = ({
               <IconLock />
             </IconButton>
           )}
-          <IconButton
-            title={isStreaming ? "回應產生中…" : "重新產生"}
-            onClick={() => !isStreaming && onRegenerate?.(msg)}
-            disabled={isStreaming}
-            style={isStreaming ? { opacity: 0.4, cursor: "not-allowed" } : undefined}
-          >
-            <IconRefresh />
-          </IconButton>
+          <span style={{ position: "relative", display: "inline-flex" }}>
+            <IconButton
+              title={isStreaming ? "回應產生中…" : "重新產生（可選調整方向）"}
+              onClick={(e) => { e?.stopPropagation?.(); if (!isStreaming) setRegenOpen((o) => !o); }}
+              disabled={isStreaming}
+              active={regenOpen}
+              style={isStreaming ? { opacity: 0.4, cursor: "not-allowed" } : undefined}
+            >
+              <IconRefresh />
+            </IconButton>
+            {regenOpen && !isStreaming && (
+              <div
+                role="menu"
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  position: "absolute", bottom: "calc(100% + 4px)", left: 0, zIndex: 50,
+                  width: 220, background: "var(--bg-elev)", border: "1px solid var(--border)",
+                  borderRadius: "var(--radius)", boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+                  padding: 4, display: "flex", flexDirection: "column", gap: 2,
+                }}
+              >
+                {[
+                  { label: "重試（不調整）", steer: "" },
+                  { label: "更詳細", steer: "更詳細、補充更多說明與例子" },
+                  { label: "更簡潔", steer: "更簡潔、只保留重點" },
+                  { label: "換個說法", steer: "換一種說法重新表達" },
+                ].map((opt) => (
+                  <button
+                    key={opt.label}
+                    onClick={() => { setRegenOpen(false); onRegenerate?.(msg, opt.steer); }}
+                    style={{
+                      textAlign: "left", padding: "6px 8px", fontSize: 13, color: "var(--fg)",
+                      background: "transparent", border: "none", borderRadius: 4, cursor: "pointer",
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-subtle)")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                  >{opt.label}</button>
+                ))}
+                <div style={{ display: "flex", gap: 4, padding: "4px 4px 2px", borderTop: "1px solid var(--border)" }}>
+                  <input
+                    value={steerText}
+                    onChange={(e) => setSteerText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.nativeEvent?.isComposing && steerText.trim()) {
+                        setRegenOpen(false);
+                        const s = steerText.trim();
+                        setSteerText("");
+                        onRegenerate?.(msg, s);
+                      }
+                    }}
+                    placeholder="自訂調整…"
+                    style={{
+                      flex: 1, fontSize: 12, padding: "4px 6px", color: "var(--fg)",
+                      background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 4,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+          </span>
           <IconButton
             title={rating === "up" ? "取消標記" : "標記為有用"}
             onClick={() => onRate?.(msg, rating === "up" ? null : "up")}
@@ -576,6 +668,28 @@ export const MessageBubble = ({
           >
             <IconThumbDn />
           </IconButton>
+
+          {/* Message Actions(自訂動作鈕):正/倒讚旁的一鍵動作。動作宣告式由
+              host 在 tweaks.messageActions 設定(預設:翻譯/摘要/改寫公文)。
+              機密對話禁止(動作會把內容當新訊息送出,等同外流路徑)。 */}
+          {!classified && Array.isArray(messageActions) && messageActions.length > 0 &&
+            messageActions.map((action) => (
+              <button
+                key={action.id}
+                title={action.title || action.label}
+                onClick={() => onAction?.(msg, action)}
+                disabled={isStreaming}
+                style={{
+                  fontSize: 12, padding: "2px 8px", height: 24,
+                  color: "var(--fg-muted)", background: "transparent",
+                  border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
+                  cursor: isStreaming ? "not-allowed" : "pointer",
+                  opacity: isStreaming ? 0.4 : 1, whiteSpace: "nowrap",
+                }}
+                onMouseEnter={(e) => { if (!isStreaming) { e.currentTarget.style.background = "var(--bg-subtle)"; e.currentTarget.style.color = "var(--fg)"; } }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--fg-muted)"; }}
+              >{action.label}</button>
+            ))}
           {Array.isArray(msg.revisions) && msg.revisions.length > 1 && (() => {
             const total = msg.revisions.length;
             const current = typeof msg.activeRev === "number" ? msg.activeRev : total - 1;
@@ -634,8 +748,63 @@ export const MessageBubble = ({
             conversationId={conversationId}
             latencyMs={msg.latencyMs}
             timestamp={msg.timestamp}
+            usage={msg.usage}
           />
         </div>
+      )}
+
+      {/* 結構化回饋:倒讚後出現原因 chips + 評語。air-gap 下這是模型品質的主要
+          訊號。機密對話不收集(內容不外傳)。送出後收合顯示已送出。 */}
+      {!msg.streaming && msg.rating === "down" && !classified && typeof onRate === "function" && (
+        fbSent ? (
+          <div style={{ marginTop: 6, fontSize: 12, color: "var(--success)" }}>✓ 感謝回饋</div>
+        ) : (
+          <div style={{
+            marginTop: 8, padding: 10, background: "var(--bg-subtle)",
+            border: "1px solid var(--border)", borderRadius: "var(--radius)",
+          }}>
+            <div style={{ fontSize: 12, color: "var(--fg-muted)", marginBottom: 6 }}>哪裡需要改進？（選填）</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+              {["資訊不正確", "未遵循指示", "引用錯誤", "離題", "其他"].map((r) => {
+                const on = fbReasons.includes(r);
+                return (
+                  <button
+                    key={r}
+                    onClick={() => setFbReasons((prev) => on ? prev.filter((x) => x !== r) : [...prev, r])}
+                    style={{
+                      fontSize: 12, padding: "3px 10px", borderRadius: 999,
+                      background: on ? "var(--accent)" : "transparent",
+                      color: on ? "var(--accent-fg)" : "var(--fg-muted)",
+                      border: "1px solid " + (on ? "var(--accent)" : "var(--border)"),
+                      cursor: "pointer",
+                    }}
+                  >{r}</button>
+                );
+              })}
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <input
+                value={fbComment}
+                onChange={(e) => setFbComment(e.target.value)}
+                placeholder="補充說明（選填）"
+                style={{
+                  flex: 1, fontSize: 12, padding: "5px 8px", color: "var(--fg)",
+                  background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 4,
+                }}
+              />
+              <button
+                onClick={() => {
+                  onRate(msg, "down", { comment: fbComment.trim(), reasons: fbReasons });
+                  setFbSent(true);
+                }}
+                style={{
+                  fontSize: 12, padding: "5px 12px", background: "var(--accent)",
+                  color: "var(--accent-fg)", border: "none", borderRadius: 4, cursor: "pointer",
+                }}
+              >送出</button>
+            </div>
+          </div>
+        )
       )}
     </div>
   );
@@ -719,9 +888,30 @@ export const Composer = ({
   placeholder,
   footer,
   onUpload,
+  // Stop generation:對話串流中時送出鈕變停止鈕。
+  streaming = false,
+  onStop,
+  // Per-chat draft:以 conversationId 為鍵把未送出的草稿存 sessionStorage。
+  conversationId,
+  // Per-agent preset prompts(開發者在 CSP 設計):點清單把提示詞填入輸入框。
+  presetPrompts = [],
 }) => {
   const toast = useToast();
-  const [text, setText] = useState(initialValue);
+  const [promptsOpen, setPromptsOpen] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  useEffect(() => {
+    if (!promptsOpen) return;
+    const close = () => setPromptsOpen(false);
+    const t = setTimeout(() => document.addEventListener("click", close), 0);
+    return () => { clearTimeout(t); document.removeEventListener("click", close); };
+  }, [promptsOpen]);
+  const draftKey = conversationId != null ? `anila-draft:${conversationId}` : null;
+  const [text, setText] = useState(() => {
+    if (draftKey && typeof sessionStorage !== "undefined") {
+      return sessionStorage.getItem(draftKey) || initialValue;
+    }
+    return initialValue;
+  });
   const [atts, setAtts] = useState([]);
   const [uploadError, setUploadError] = useState("");
   const [caret, setCaret] = useState(0);
@@ -762,6 +952,24 @@ export const Composer = ({
     // always starts from the top of the current match set.
     setMentionIdx(0);
   }, [mentionQuery, mentionCandidates.length]);
+
+  // Per-chat draft:切換對話時載入該對話的草稿(打到一半的長報告不會遺失)。
+  useEffect(() => {
+    if (!draftKey || typeof sessionStorage === "undefined") return;
+    setText(sessionStorage.getItem(draftKey) || "");
+    // 切換對話只在 conversationId 變動時觸發,故僅依賴 draftKey。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey]);
+
+  // 草稿存檔:text 變動時 debounce 寫回 sessionStorage(空字串則清掉)。
+  useEffect(() => {
+    if (!draftKey || typeof sessionStorage === "undefined") return;
+    const t = setTimeout(() => {
+      if (text) sessionStorage.setItem(draftKey, text);
+      else sessionStorage.removeItem(draftKey);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [text, draftKey]);
 
   const insertMention = (agent) => {
     if (!agent || mentionQuery === null) return;
@@ -805,10 +1013,16 @@ export const Composer = ({
     });
     setText("");
     setAtts([]);
+    if (draftKey && typeof sessionStorage !== "undefined") sessionStorage.removeItem(draftKey);
     setTimeout(autosize, 0);
   };
 
   const onKey = (e) => {
+    // CJK IME guard:注音/拼音組字中按 Enter 是「確認候選字」,不是送出/選 mention。
+    // 缺這個檢查,每個 zh-TW 使用者打字途中按 Enter 都會誤送半截訊息(回報的 bug)。
+    // isComposing 是標準訊號;keyCode 229 是部分瀏覽器組字中的 fallback。
+    const composing = e.nativeEvent?.isComposing || e.keyCode === 229;
+
     // Mention menu captures arrows + Enter + Escape when it's active so
     // typing `@ra` → ↓ → Enter picks "rag-agent" instead of sending.
     if (mentionQuery !== null && mentionCandidates.length > 0) {
@@ -822,7 +1036,7 @@ export const Composer = ({
         setMentionIdx((i) => (i - 1 + mentionCandidates.length) % mentionCandidates.length);
         return;
       }
-      if (e.key === "Enter" && !e.shiftKey) {
+      if (e.key === "Enter" && !e.shiftKey && !composing) {
         e.preventDefault();
         insertMention(mentionCandidates[mentionIdx]);
         return;
@@ -839,7 +1053,7 @@ export const Composer = ({
         return;
       }
     }
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !composing) {
       e.preventDefault();
       submit();
     }
@@ -903,13 +1117,37 @@ export const Composer = ({
   };
 
   return (
-    <div style={{
-      position: "relative",
-      background: "var(--bg-elev)",
-      border: "1px solid var(--border-strong)",
-      borderRadius: "var(--radius-lg)",
-      boxShadow: "0 2px 8px -4px oklch(0.10 0 0 / 0.08)",
-    }}>
+    <div
+      onDragOver={(e) => { e.preventDefault(); if (!dragOver) setDragOver(true); }}
+      onDragLeave={(e) => {
+        // 只在真的離開外框時關閉(子元素間移動會觸發 dragleave)。
+        if (e.currentTarget.contains(e.relatedTarget)) return;
+        setDragOver(false);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragOver(false);
+        const files = Array.from(e.dataTransfer?.files || []);
+        if (files.length) onFiles(files);
+      }}
+      style={{
+        position: "relative",
+        background: "var(--bg-elev)",
+        border: "1px solid " + (dragOver ? "var(--accent)" : "var(--border-strong)"),
+        borderRadius: "var(--radius-lg)",
+        boxShadow: "0 2px 8px -4px oklch(0.10 0 0 / 0.08)",
+      }}>
+      {dragOver && (
+        <div style={{
+          position: "absolute", inset: 0, zIndex: 90,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          background: "var(--accent-soft)", borderRadius: "var(--radius-lg)",
+          border: "2px dashed var(--accent)", pointerEvents: "none",
+          color: "var(--accent)", fontSize: 14, fontWeight: 600,
+        }}>
+          放開以附加檔案
+        </div>
+      )}
       <RedactionHint hits={piiHits} mode={mode} onChangeMode={setMode} />
 
       {mentionParse.explicitAgents.length > 0 && (
@@ -1099,6 +1337,73 @@ export const Composer = ({
           <IconAt />
         </IconButton>
 
+        {/* Per-agent preset prompts(開發者在 CSP 設計):點開清單,選一個填入輸入框。
+            只有當前 agent 有設定預設提示詞時才顯示。 */}
+        {Array.isArray(presetPrompts) && presetPrompts.length > 0 && (
+          <span style={{ position: "relative", display: "inline-flex" }}>
+            <IconButton
+              title="預設提示詞"
+              active={promptsOpen}
+              onClick={(e) => { e?.stopPropagation?.(); setPromptsOpen((o) => !o); }}
+            >
+              <IconPrompts />
+            </IconButton>
+            {promptsOpen && (
+              <div
+                role="menu"
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  position: "absolute", bottom: "calc(100% + 6px)", left: 0, zIndex: 80,
+                  width: 320, maxHeight: 320, overflowY: "auto",
+                  background: "var(--bg-elev)", border: "1px solid var(--border)",
+                  borderRadius: "var(--radius)", boxShadow: "0 12px 32px -8px oklch(0.10 0 0 / 0.18)",
+                  padding: 4,
+                }}
+              >
+                <div style={{
+                  padding: "4px 8px", fontSize: 10, color: "var(--fg-subtle)",
+                  fontFamily: "var(--font-mono)", letterSpacing: 0.4,
+                }}>預設提示詞 · 點選填入</div>
+                {presetPrompts.map((p) => {
+                  const body = p.config?.text || "";
+                  return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => {
+                      setPromptsOpen(false);
+                      // autosend:直接送出;否則填入輸入框讓使用者編輯。
+                      if (p.config?.autosend && body.trim()) {
+                        onSend(body, [], { piiHits: mode === "mask" ? detectPII(body) : [], explicitAgents: mentionParse.explicitAgents });
+                        setText("");
+                      } else {
+                        setText(body);
+                        setTimeout(() => { taRef.current?.focus(); autosize(); }, 0);
+                      }
+                    }}
+                    style={{
+                      display: "block", width: "100%", textAlign: "left",
+                      padding: "8px 8px", background: "transparent", border: "none",
+                      borderRadius: 4, cursor: "pointer", color: "var(--fg)",
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-subtle)")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                  >
+                    <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 2 }}>
+                      {p.label}{p.config?.autosend ? <span style={{ fontSize: 10, color: "var(--fg-subtle)", marginLeft: 6 }}>↵ 直接送出</span> : null}
+                    </div>
+                    <div style={{
+                      fontSize: 11, color: "var(--fg-subtle)",
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    }}>{body}</div>
+                  </button>
+                  );
+                })}
+              </div>
+            )}
+          </span>
+        )}
+
         <div style={{ flex: 1, fontSize: 11, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)", paddingLeft: 6 }}>
           {text.length > 0 && `${text.length} 字`}
           {piiHits.length > 0 && <span style={{ color: "var(--warn)", marginLeft: 6 }}>· {piiHits.length} PII</span>}
@@ -1106,25 +1411,42 @@ export const Composer = ({
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--fg-subtle)" }}>
-          <Kbd>Enter</Kbd> <span>送出</span>
+          <Kbd>Enter</Kbd> <span>{streaming ? "產生中" : "送出"}</span>
         </div>
 
-        <button
-          onClick={submit}
-          aria-label="送出"
-          disabled={disabled || (!text.trim() && atts.length === 0)}
-          style={{
-            display: "inline-flex", alignItems: "center", justifyContent: "center",
-            width: 32, height: 32,
-            background: (text.trim() || atts.length) ? "var(--accent)" : "var(--bg-subtle)",
-            color: (text.trim() || atts.length) ? "var(--accent-fg)" : "var(--fg-subtle)",
-            border: "none", borderRadius: "var(--radius)",
-            cursor: (text.trim() || atts.length) ? "pointer" : "not-allowed",
-            marginLeft: 4,
-          }}
-        >
-          <IconSend size={15} />
-        </button>
+        {streaming ? (
+          <button
+            onClick={() => onStop?.()}
+            aria-label="停止產生"
+            title="停止產生"
+            style={{
+              display: "inline-flex", alignItems: "center", justifyContent: "center",
+              width: 32, height: 32,
+              background: "var(--danger)", color: "#fff",
+              border: "none", borderRadius: "var(--radius)",
+              cursor: "pointer", marginLeft: 4,
+            }}
+          >
+            <IconStop size={15} />
+          </button>
+        ) : (
+          <button
+            onClick={submit}
+            aria-label="送出"
+            disabled={disabled || (!text.trim() && atts.length === 0)}
+            style={{
+              display: "inline-flex", alignItems: "center", justifyContent: "center",
+              width: 32, height: 32,
+              background: (text.trim() || atts.length) ? "var(--accent)" : "var(--bg-subtle)",
+              color: (text.trim() || atts.length) ? "var(--accent-fg)" : "var(--fg-subtle)",
+              border: "none", borderRadius: "var(--radius)",
+              cursor: (text.trim() || atts.length) ? "pointer" : "not-allowed",
+              marginLeft: 4,
+            }}
+          >
+            <IconSend size={15} />
+          </button>
+        )}
       </div>
     </div>
   );
@@ -1151,12 +1473,33 @@ export const Sidebar = ({
   onOpenTagEditor,
   onRenameConv,
   onDeleteConv,
+  onServerSearch,
+  onExportConv,
 }) => {
   const confirm = useConfirm();
   const [tab, setTab] = useState("chats");
   const [query, setQuery] = useState("");
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
+
+  // 伺服器端全文搜尋:client 端只比對 title/tag,搜不到訊息內文。query 非空且
+  // 非 tag: 搜尋時,debounce 打後端 /search(比對內文),把命中但本地清單沒有的
+  // 對話補進來(附 snippet)。
+  const [serverHits, setServerHits] = useState([]);
+  useEffect(() => {
+    const q = query.trim();
+    if (!q || q.startsWith("tag:") || typeof onServerSearch !== "function") {
+      setServerHits([]);
+      return;
+    }
+    let alive = true;
+    const t = setTimeout(() => {
+      onServerSearch(q)
+        .then((rows) => { if (alive) setServerHits(Array.isArray(rows) ? rows : []); })
+        .catch(() => { if (alive) setServerHits([]); });
+    }, 300);
+    return () => { alive = false; clearTimeout(t); };
+  }, [query, onServerSearch]);
 
   // Tick every 30s so "剛剛 → 1 分鐘前 → ..." actually progresses while the
   // tab stays open. One interval per mounted Sidebar — negligible cost.
@@ -1417,10 +1760,39 @@ export const Sidebar = ({
                 沒有符合的對話
               </div>
             )}
-            {filtered.map((c) => {
+            {(() => {
+              // 合併伺服器全文搜尋命中(本地清單沒有的舊對話),映射成側欄列形狀。
+              const localIds = new Set(filtered.map((c) => c.id));
+              const extraFromServer = serverHits
+                .filter((h) => !localIds.has(h.id) && !conversations.some((c) => c.id === h.id))
+                .map((h) => ({
+                  id: h.id, title: h.title, agentId: h.agent_id,
+                  updatedAt: h.updated_at, createdAt: h.created_at,
+                  classified: h.classified, snippet: h.snippet,
+                }));
+              // 時間分組:依 updatedAt 降冪排序,bucket 變動時插入標頭
+              // (今天/昨天/前 7 天/更早)。star/folder 篩選後維持時間序。
+              const sorted = [...filtered, ...extraFromServer].sort((a, b) => {
+                const ta = new Date(a.updatedAt || a.createdAt || 0).getTime();
+                const tb = new Date(b.updatedAt || b.createdAt || 0).getTime();
+                return tb - ta;
+              });
+              let lastBucket = null;
+              return sorted.map((c) => {
               const agent = agents.find((a) => a.id === c.agent || a.id === c.agentId);
+              const bucket = timeBucket(c.updatedAt || c.createdAt);
+              const showHeader = bucket !== lastBucket;
+              lastBucket = bucket;
               return (
-                <div key={c.id} style={{ position: "relative" }}>
+                <React.Fragment key={c.id}>
+                {showHeader && (
+                  <div style={{
+                    padding: "10px 10px 4px", fontSize: 10, fontWeight: 600,
+                    color: "var(--fg-subtle)", fontFamily: "var(--font-mono)",
+                    letterSpacing: 0.5, textTransform: "uppercase",
+                  }}>{bucket}</div>
+                )}
+                <div style={{ position: "relative" }}>
                   <button onClick={() => onSelectConv(c.id)} style={{
                     display: "block", width: "100%",
                     padding: "8px 10px", marginBottom: 1,
@@ -1512,6 +1884,12 @@ export const Sidebar = ({
                               if (next !== null) onRenameConv?.(c.id, next);
                             }}
                           >重新命名</MenuItem>
+                          {onExportConv && !c.classified && (
+                            <>
+                              <MenuItem onClick={() => { close(); onExportConv(c.id, "markdown"); }}>匯出 Markdown</MenuItem>
+                              <MenuItem onClick={() => { close(); onExportConv(c.id, "json"); }}>匯出 JSON</MenuItem>
+                            </>
+                          )}
                           <MenuItem
                             leftIcon={<IconTrash size={12} style={{ color: "var(--danger)" }} />}
                             onClick={() => {
@@ -1526,8 +1904,10 @@ export const Sidebar = ({
                     </Dropdown>
                   </div>
                 </div>
+                </React.Fragment>
               );
-            })}
+              });
+            })()}
           </div>
         </>
       ) : (
