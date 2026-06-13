@@ -35,7 +35,7 @@ Router 對外暴露 OpenAI 相容的 `POST /v1/chat/completions`，並提供 pse
 `main.py` 不只是薄殼，它在 app factory 之外額外負責：
 
 1. **主路由模型 TTL refresh**（`_refresh_primary` / `_ensure_primary`，60s TTL）+ `/v1/chat/completions` 的 503 gate middleware。
-2. **Service token 三段式解析**（`_load_service_token` / `_self_bootstrap` / `_initialise_token_source`）：state file → `CSP_BOOTSTRAP_TOKEN` 自動 bootstrap → `CSP_SERVICE_TOKEN` legacy env，啟動 log 明示走哪條。
+2. **Service token 三段式解析**（`_load_service_token` / `_self_bootstrap` / `_initialise_token_source`）：實際優先序為 **state file → `CSP_SERVICE_TOKEN`（legacy env，在 `_load_service_token` 內）→ `CSP_BOOTSTRAP_TOKEN`（bootstrap，僅前兩者皆空才走）**，啟動 log 明示走哪條。注意 `_self_bootstrap` 在目前版本是 **v1 pass-through**：把 env 值寫進 state file（mode 0600），**不做 HTTP 交換**。
 3. **CSP 回 401/403 時 hot-reload state file 一次** 後重試（admin 在 CSP 輪替 router-primary credential 後零停機）。
 
 ---
@@ -90,10 +90,11 @@ uvicorn main:app --host 0.0.0.0 --port 9000 --log-level info
 | `CSP_BASE_URL` | CSP 基底 URL；容器內為 `http://csp:8000` | `http://csp:8000` |
 | `CSP_BOOTSTRAP_TOKEN` | 首次啟動 bootstrap token；entrypoint 寫進 state file | `""` |
 | `CSP_SERVICE_TOKEN` | legacy fleet-shared shared-secret；state file 不存在時 fallback | `""` |
-| `ANILA_ROUTER_STATE_DIR` | 持久化 service token 的目錄 | `/var/lib/anila-router` |
-| `MODEL` | （已過時）改從 CSP `/api/models/router-primary` runtime 拉，啟動後被覆蓋 | — |
+| `ANILA_ROUTER_STATE_DIR` | 持久化 service token 的目錄（state file `service_token.json`，mode 0600） | `/var/lib/anila-router` |
 
-> Router **不**持有自己的 user API Key：它用 caller（UI / OpenAI SDK）的 Bearer API Key 回打 CSP data plane，因此 caller 看得到的 agent 與 Router 能分派的 agent 同步於該 API Key 的權限。Service token（Router→CSP 內部端點如 `/api/models/router-primary`）才走三段式解析。
+> `main.py` 只讀上述四個 env，**不讀 `MODEL`**（主路由模型完全由 CSP `/api/models/router-primary` runtime 決定）。主路由模型每 **60 秒**（`PRIMARY_TTL_SECONDS=60`）lazy refresh，無背景 timer：startup 觸發一次，之後由 `/v1/chat/completions` 的 gate middleware 在過期時觸發。`main.py` 對 CSP 只發一個呼叫 `GET /api/models/router-primary`（帶 `X-CSP-Service-Token`）；`GET /v1/agents`、`POST /v1/chat/completions`、agent dispatch + SSE forward 都在 SDK `router_server.py`。
+>
+> Router **不**持有自己的 user API Key：它用 caller（UI / OpenAI SDK）的 Bearer API Key 回打 CSP data plane，因此 caller 看得到的 agent 與 Router 能分派的 agent 同步於該 API Key 的權限。
 
 ---
 
