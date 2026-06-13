@@ -76,6 +76,7 @@ anila-core/
     │
     ├── ──── Pillar 1 · agent runtime ────
     ├── api/                  # server / router_server（create_router_app）+ events
+    │   ├── session_owner.py · caller_context.py   # resume 用 session→agent 表 + Phase-3 CallerContext
     │   └── middleware/auth.py   # CSP service-token + rotating token
     ├── engine/               # query_engine（多階段 turn loop）+ budget_tracker
     │                         #   + approvals / guardrails / handoff / lifecycle
@@ -83,7 +84,7 @@ anila-core/
     ├── router/               # tool_router（ToolRegistry、plan-mode / permission gate）
     ├── tools/                # dispatch · ask_user · plan_mode · todo_write
     │                         #   · agent_as_tool · files · shell · apply_patch
-    ├── providers/            # base · openai_compat · cspplatform_provider · vision · mock
+    ├── providers/            # base · openai_compat · cspplatform_provider · vision · mock · embedding_mock
     ├── memory/               # short_term/（Session Protocol + in_memory / sqlite）
     │                         # long_term/（adapter · embedding · extraction
     │                         #   · backends/{filesystem,postgres} · clients）
@@ -101,8 +102,8 @@ anila-core/
     └── ──── Pillar 2 · shared infrastructure ────
         ├── security/         # credential_crypto（AES-GCM + PBKDF2）+ url_guard（SSRF）
         ├── storage/          # ports.py（Protocol）+ adapters/（pg_pool · pgvector_store ...）
-        └── ingestion/        # errors（IngestionError taxonomy）· parser_registry
-            │                 #   · parsers · docling_parser · ocr
+        └── ingestion/        # errors（IngestionError taxonomy）· parser_registry · parsers
+            │                 #   · docling_parser · ocr · citation_extractor · relation_resolution
             └── chunking_plugins/  # base · registry（@register_chunker）· builtins
 ```
 
@@ -181,4 +182,4 @@ pytest -m integration        # 需 live pgvector + RLS database
 - 官方 RAG agent template：[`../anila-agent/README.md`](../anila-agent/README.md) · Router 薄殼：[`../anila-core-router/README.md`](../anila-core-router/README.md)
 - 平台總覽：[`../README.md`](../README.md) · 分支策略：[`../docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)
 
-> 版本以 `pyproject.toml`（v0.14.0，`[rag]` extra 已恢復）為權威；`CHANGELOG.md` 最新條目為 v0.13.0。
+> 版本以 `pyproject.toml`（v0.14.0，`[rag]` extra 已恢復）為權威；`CHANGELOG.md` 最新條目為 v0.13.0。⚠️ 已知不一致：`src/anila_core/__init__.py` 的 `__version__` 仍寫死 `"0.7.0"`（程式碼 bug，非 README）；以程式設計方式讀 `anila_core.__version__` 會拿到舊值。CLI template 的 `requirements.txt` 也仍 pin `anila-core>=0.1.0`。

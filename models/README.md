@@ -119,7 +119,9 @@ GPU / 資源（取自 compose）：`flux2-dev` GPU `["1","2"]`、`shm_size: 32g`
 | flux2-dev-agent | `CSP_BASE_URL` / `CSP_API_KEY` | `http://csp:8000` / env | 翻譯 callback 走 CSP |
 | flux2-dev-agent | `GEMMA_MODEL` / `ENABLE_PROMPT_TRANSLATION` | `gemma4` / `1` | 翻譯用 LLM / 關閉則直送原文 |
 | flux2-dev-agent | `SHARE_DIR` / `PUBLIC_URL_PREFIX` | `/share/flux` / `/uploads/flux` | 落地路徑與對外 URL |
-| flux2-dev-agent | `DEFAULT_ASPECT_RATIO` / `FLUX_TIMEOUT_SECONDS` | `16:9` / `240` | 預設長寬比 / 後端逾時 |
+| flux2-dev-agent | `DEFAULT_ASPECT_RATIO` / `FLUX_TIMEOUT_SECONDS` | `16:9` / `240`（程式碼 fallback `180`，compose 蓋成 240） | 預設長寬比 / 後端逾時 |
+
+> 另：`flux2-dev` 還有 `FLUX_MODEL_SHA`（預設 `""`，寫進 `meta.model_sha`）與 `FLUX_SKIP_LOAD=1`（走 stub pipeline、不載權重、無需 GPU，供整合 smoke test）；`FLUX_MAX_CONCURRENT`(4) 由上層 csp/studio 控、不在本服務。compose 中 `flux2-dev` 綁 GPU `["1","2"]`、`gpt-oss-20b` 綁 `["2"]`——兩者共用 GPU 2，部署時留意顯存。
 
 **Air-gapped 權重**：FLUX.2-dev 權重以唯讀 volume mount（`.../FLUX.2-dev:/workspace/model/FLUX.2-dev:ro`）+ `HF_HUB_OFFLINE=1`，容器不連外抓權重。`flux2-dev-agent` 把 host 的 `share-dev/uploads/flux` bind 到 `/share/flux`；nginx 在 `/uploads/flux/` 對外服務（前端圖片連結指向此）。
 

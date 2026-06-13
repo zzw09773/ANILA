@@ -1,27 +1,25 @@
 # ANILA LM (ANILALM)
 
-> Knowledge-base frontend + Studio entry: a research-notes-style SPA, plus a standalone `pptx-renderer` microservice that turns a deck spec into `.pptx`.
+> Knowledge-base frontend + Studio entry: a research-notes-style SPA (Vite + React + TS), plus a standalone `pptx-renderer` (pptx-skill) microservice that renders a deck spec into `.pptx`.
 
 > 中文版本：[README.md](./README.md)
 
-> 🌿 **Branch note**: This subproject exists on `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`. **The `trial-military` slim build does not include it** (knowledge-base management SPA and Studio deck generation removed). See the root [`README.md`](../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md).
+> 🌿 **Branch note**: This subproject exists on `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`. **The `trial-military` slim build does not include it.** See the root [`README.md`](../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md).
 
 ---
 
 ## Overview
 
-**ANILALM** offers researchers a one-stop "documents → conversation → output" interface: upload PDFs / documents → build a knowledge base → query by conversation → generate in-depth reports and slide drafts. It is an SPA wiring into myCSPPlatform for auth, ingestion, conversations and LLM proxy, with deck generation going through [`anila-studio`](../anila-studio/).
+**ANILALM** offers a one-stop "documents → conversation → output" interface: upload → build a knowledge base → query by conversation → generate in-depth reports and multiple artifacts. It is an SPA wiring into myCSPPlatform for auth / ingestion / conversations / LLM proxy, with artifact generation going through [`anila-studio`](../anila-studio/) (five kinds: slides / reports / mindmaps / infographics / datatables). It mounts at the nginx `/anilalm/` subpath.
 
 It contains two independent execution units:
 
-1. **The top-level ANILALM app** — a Vite + React + TypeScript frontend, built to static files served by nginx, mounted at the nginx `/anilalm/` subpath.
-2. **`pptx-skill/` (the pptx-renderer service)** — a standalone Node service (`server.js`) using Express + pptxgenjs to render a deck spec into `.pptx`. On the docker network it is reachable as `pptx-renderer:7100`, with endpoints:
-   - `POST /render` — takes `{ spec }`, returns the `.pptx` binary (octet-stream).
-   - `POST /screenshots` — takes a `.pptx` (base64 or server path), LibreOffice headless → PDF → Poppler → PNG, returning per-slide images for vision QA.
-   - `POST /qa-geometric` — geometric layout checks on rendered slides (overlap, largest empty region).
-   - `GET /health` — returns `ok`.
-
-> The frontend never calls the renderer directly; the renderer is called by anila-studio.
+1. **The top-level ANILALM app** (package `anilalm` v1.0.0) — a Vite + React + TS frontend.
+2. **`pptx-skill/` (the pptx-renderer service)** (package `anilalm-pptx-skill` v0.1.0) — a standalone Node/Express service (`server.js`) using pptxgenjs + headless LibreOffice + Poppler to render a deck spec into `.pptx`. On the docker network it is reachable as `pptx-renderer:7100`, **called server-to-server by anila-studio; the frontend never calls it directly**. Endpoints:
+   - `GET /health` → `ok`
+   - `POST /render` — body `{ spec }`, returns the `.pptx` binary (with `X-Pptx-Job-Id` / `X-Pptx-Path` headers; empty `spec.slides` → 400, over `MAX_SLIDES` → 413)
+   - `POST /screenshots` — body `{ pptxPath }` or `{ pptxBase64 }` (path must be under TMP_ROOT, anti-traversal); soffice→PDF→pdftoppm(`-r 96`)→PNG, returns `{ images:[{index,mime,base64}] }`
+   - `POST /qa-geometric` — body `{ pptxBase64 }`; JSZip unzip + slide XML parse, returns `{ defects:[{slide_index,severity,kind,detail}] }`
 
 ---
 
@@ -29,27 +27,30 @@ It contains two independent execution units:
 
 ### Top-level ANILALM app (frontend)
 
-| Module | Choice |
+| Module | Version (`package.json`) |
 | --- | --- |
-| Build | Vite 6 + React 18 + TypeScript 5.7 |
-| Routing | react-router-dom v6 (`BrowserRouter` + nested Outlet guards) |
-| State | Zustand (auth / workspace / artifacts) |
-| HTTP | axios + interceptors (401 token refresh, `withCredentials`) |
-| Markdown | marked + DOMPurify (LLM output treated as untrusted; two-layer XSS defense) |
+| Build | Vite 6.0.5 + React 18.3.1 + TypeScript 5.7.2 |
+| Routing | react-router-dom 6.28.0 (`BrowserRouter` + nested Outlet guards) |
+| State | Zustand 5.0.2 (auth / workspace / artifacts) |
+| HTTP | axios 1.7.9 + interceptors (401 token refresh, `withCredentials`) |
+| Markdown | marked 14.1.3 + DOMPurify 3.2.3 (LLM output treated as untrusted; two-layer XSS defense) |
+| Type codegen | openapi-typescript 7.13.0 (dev) |
 | Icons | inline SVG (custom set, 0 packages) |
 
-npm scripts: `dev` (vite), `build` (`tsc -b && vite build`), `preview`, `typecheck`, `gen:studio-types`. Runtime image (top-level `Dockerfile`): multi-stage, `node:22-alpine` build → `nginx:1.27-alpine` serving `dist/`; `BASE_PATH` build-arg defaults to `/anilalm/`.
+Scripts: `dev` (vite) / `build` (`tsc -b && vite build`) / `preview` / `typecheck` / `gen:studio-types` (`bash scripts/gen-studio-types.sh`, runs `openapi-typescript` against `../anila-studio/openapi/studio.openapi.json` → `src/api/studio-types.gen.ts`). Runtime image: `node:22-alpine` build (`npm install`) → `nginx:1.27-alpine` serving `dist/`; `ARG BASE_PATH=/anilalm/`, `ARG VITE_DEFAULT_CHAT_MODEL=gpt-4o-mini`; `EXPOSE 80`, healthcheck wget `/health`.
 
 ### pptx-skill / pptx-renderer service
 
-| Dependency | Use |
+| Dependency | Version |
 | --- | --- |
-| `express` ^5 | HTTP server |
-| `pptxgenjs` ^3.12 | generates `.pptx` |
-| `sharp` ^0.33 | image processing |
-| `react` / `react-dom` / `react-icons` | icon resolution (`icons.js` maps concept names to Heroicons PNGs) |
+| `express` | ^5.2.1 |
+| `pptxgenjs` | ^3.12.0 |
+| `sharp` | ^0.33.5 |
+| `react` / `react-dom` / `react-icons` | ^18.3.1 / ^18.3.1 / ^5.4.0 (`icons.js` concept name → Heroicons PNG) |
 
-`pptx-skill/Dockerfile` uses `node:22-bookworm-slim` (not alpine) and adds `libreoffice-core` / `libreoffice-impress` (`.pptx → PDF`), `poppler-utils` (PDF → PNG), `fonts-noto-cjk` (CJK fonts), and `tini` (PID-1 reaper so SIGTERM reaches the soffice child). `node_modules` is vendored (`npm ci --omit=dev`, air-gap build). Defaults `PORT=7100`, `PPTX_TMP_DIR=/var/anila/pptx-out`. `server.js` is schema-light (CSP has already done Pydantic validation); it only checks payload size (`MAX_PAYLOAD=10mb`), slide count (`MAX_SLIDES=60`), and the `/screenshots` path (anti-traversal).
+> `jszip` (used by `/qa-geometric`) is `require`d but not listed in `package.json`; it resolves via the lockfile / transitively.
+
+`Dockerfile`: base `node:22-bookworm-slim` (not alpine), using **`npm ci --omit=dev`** (not a vendored COPY). apt packages: `libreoffice-core` / `libreoffice-impress` (`.pptx → PDF`), `poppler-utils` (PDF → PNG), `fonts-noto-cjk` + **`fonts-noto-cjk-extra`**, `tini` (PID-1 reaper so SIGTERM reaches soffice), `ca-certificates`. ENV `PORT=7100`, `PPTX_TMP_DIR=/var/anila/pptx-out` (the `server.js` code fallback is `/tmp/pptx-out`). `MAX_PAYLOAD=10mb`, `MAX_SLIDES=60`. `server.js` is schema-light (CSP already did Pydantic validation); it only checks payload size / slide count / `/screenshots` path.
 
 ---
 
@@ -57,28 +58,30 @@ npm scripts: `dev` (vite), `build` (`tsc -b && vite build`), `preview`, `typeche
 
 ```
 ANILALM/
-├── package.json                # frontend: react / axios / zustand / marked / dompurify / react-router
-├── Dockerfile                  # frontend image: Vite build → nginx
-├── vite.config.ts              # /api, /v1, /v2 proxy to VITE_CSP_BACKEND
-├── index.html
-├── docker/                     # nginx.conf and deployment config
-├── _design/                    # old prototypes (kept for design reference, not built)
+├── package.json                # anilalm v1.0.0: react / axios / zustand / marked / dompurify / react-router
+├── Dockerfile                  # frontend image: node:22-alpine (npm install) → nginx
+├── vite.config.ts              # /api, /v1, /v2 → VITE_CSP_BACKEND; /api/studio → VITE_ANILA_STUDIO_BACKEND
+├── tsconfig*.json · index.html · docker/(nginx.conf) · _design/ · scripts/gen-studio-types.sh
 ├── src/
-│   ├── main.tsx / App.tsx      # createRoot + ThemeProvider + BrowserRouter
-│   ├── api/                    # axios client + auth/collections/documents/jobs/conversations/chat/studio
+│   ├── main.tsx / App.tsx / types.ts / vite-env.d.ts
+│   ├── api/                    # client.ts(axios + STUDIO_BASE_URL) · auth · chat · collections ·
+│   │                           #   conversations · documents · jobs · search · studio · studio-types.gen.ts
 │   ├── store/                  # auth.ts / workspace.ts / artifacts.ts (Zustand)
 │   ├── routes/                 # ProtectedRoute / LoginPage / DashboardPage / WorkspacePage
-│   ├── workspace/              # WSSidebar / WSChat / WSStudio / CommandModal / ArtifactViewer / useJobStream
-│   ├── studio/generators.ts    # generateReport / generateSlides
-│   ├── theme/ · components/ · utils/format.ts
+│   ├── workspace/              # WSSidebar / WSChat / WSStudio / CommandModal / ArtifactViewer /
+│   │                           #   StudioWizard / ThemePicker / useJobStream
+│   ├── studio/                 # generators.ts / themeMapping.ts / themes.ts
+│   ├── theme/                  # ThemeContext.tsx / tokens.ts
+│   ├── components/             # ErrorBoundary / Field / Icon / MarkdownPreview / Modal / Spinner / ThemeSwitch
+│   └── utils/format.ts
 └── pptx-skill/                 # ── standalone pptx-renderer service ──
     ├── server.js               # Express: /render /screenshots /qa-geometric /health (port 7100)
-    ├── icons.js                # concept name → Heroicons PNG resolver
-    ├── package.json            # vendored runtime deps
-    ├── Dockerfile              # node:22-bookworm-slim + LibreOffice + Poppler + Noto CJK + tini
+    ├── icons.js · package.json (anilalm-pptx-skill v0.1.0)
+    ├── Dockerfile              # node:22-bookworm-slim + npm ci + LibreOffice + Poppler + Noto CJK(+extra) + tini
     ├── SKILL.md / pptxgenjs.md / editing.md
-    ├── scripts/
-    └── tests/                  # smoke tests (test_image_focus_render.js / test_local_emptiness.js)
+    ├── scripts/                # Python helpers (add_slide / clean / thumbnail + office/)
+    └── tests/                  # 4 files: test_cover_hero_guard / test_hierarchy_bullets /
+                                #   test_image_focus_render / test_local_emptiness
 ```
 
 ---
@@ -90,15 +93,15 @@ ANILALM/
 ```bash
 cd ANILALM
 npm install
-cp .env.example .env              # adjust VITE_CSP_BACKEND / VITE_DEFAULT_CHAT_MODEL as needed
+cp .env.example .env              # adjust VITE_CSP_BACKEND / VITE_ANILA_STUDIO_BACKEND / VITE_DEFAULT_CHAT_MODEL
 npm run dev                       # http://localhost:5174
 ```
 
-The dev server proxies `/api`, `/v1`, `/v2` to `VITE_CSP_BACKEND` (default `http://localhost:8000`). Ensure the backend is up first: `curl -sf http://localhost:8000/health`.
+The dev server proxies `/api`, `/v1`, `/v2` to `VITE_CSP_BACKEND` (default `http://localhost:8000`) and `/api/studio` to `VITE_ANILA_STUDIO_BACKEND` (default `http://localhost:8100`). Ensure the backend is up: `curl -sf http://localhost:8000/health`.
 
 ### pptx-renderer service (container)
 
-`pptx-renderer` is defined in the repo-root `docker-compose-dev.yml`: `build.context: ANILALM/pptx-skill`, `expose: "7100"` (no host port; reached by anila-studio as `pptx-renderer:7100`), healthcheck `http://127.0.0.1:7100/health`.
+Defined in the repo-root `docker-compose-dev.yml`: `build.context: ANILALM/pptx-skill`, `expose: "7100"` (no host port; reached by anila-studio as `pptx-renderer:7100`), healthcheck `http://127.0.0.1:7100/health`.
 
 ```bash
 cd <repo_root> && docker compose -f docker-compose-dev.yml up -d pptx-renderer
@@ -109,34 +112,39 @@ cd <repo_root> && docker compose -f docker-compose-dev.yml up -d pptx-renderer
 
 ```bash
 cd ANILALM/pptx-skill
-node server.js &                                   # or a running container
-node tests/test_image_focus_render.js              # needs a live renderer (full PptxGenJS pipeline)
-RENDERER_URL=http://pptx-renderer:7100 node tests/test_image_focus_render.js
-node tests/test_local_emptiness.js                 # inlines findLargestEmptyRegion, no server needed
+node tests/test_image_focus_render.js        # needs a live renderer; RENDERER_URL can override
+node tests/test_local_emptiness.js           # inline, no server needed
 ```
 
-> `test_local_emptiness.js` embeds a copy of a `server.js` function (importing server.js would start a listener); if `server.js` changes, update the copy.
+---
+
+## Environment variables
+
+| Variable | Default | Notes |
+|---|---|---|
+| `VITE_CSP_BACKEND` | `http://localhost:8000` | dev proxy: `/api`, `/v1`, `/v2` (CSP) |
+| `VITE_ANILA_STUDIO_BACKEND` | `http://localhost:8100` | dev proxy: `/api/studio/*` (anila-studio) |
+| `VITE_STUDIO_BASE_URL` | `""` | browser-visible anila-studio base (`src/api/client.ts`); empty = vite proxy / same-origin nginx |
+| `VITE_DEFAULT_CHAT_MODEL` | `gpt-4o-mini` | default chat model (`src/studio/generators.ts` + Dockerfile ARG) |
+| `BASE_PATH` | `/anilalm/` (Dockerfile ARG; commented in `.env.example`) | SPA URL prefix; `vite.config.ts` reads `BASE_PATH \|\| VITE_BASE_PATH \|\| '/'` |
 
 ---
 
 ## Integration
 
-`pptx-renderer` is not called by the frontend; it is called by the **[`anila-studio`](../anila-studio/) service** (extracted from csp on 2026-05-23, PR #12). The frontend points at anila-studio via `VITE_STUDIO_BASE_URL`:
+The frontend talks only to **CSP** (`/api`, `/v1`, `/v2`) and **anila-studio** (`/api/studio/*` and `/api/{reports,mindmaps,infographics,datatables}/*`); `pptx-renderer` is called server-to-server by **anila-studio** (there is no renderer reference anywhere in the frontend `src/`). The frontend reaches studio via `VITE_STUDIO_BASE_URL` (`studioFetch` in `src/api/studio.ts`).
 
-1. After receiving a deck-generation request, anila-studio first runs an LLM via csp `/api/proxy/v1/chat/completions` to produce a deck spec (each slide has `title` / `bullets` / `layout_kind` etc.).
-2. Slides marked `image_focus` have their `image_ref` hydrated into inline `image_data` (bytes) before rendering — studio FLUX's just-in-time illustrations are injected here; anila-studio fetches raw image bytes via `GET /api/ingestion/images/{id}/blob`.
-3. anila-studio `POST {RENDERER_BASE_URL}/render` with `{ spec }`, getting back `.pptx` bytes.
-4. For vision / geometric QA it then calls `POST /screenshots` (PNGs) and `POST /qa-geometric`.
+All artifacts are async-job: `POST /api/{kind}/jobs` (slides returns 202 + JobStatus) → poll `GET …/{id}` → `GET …/{id}/download/{fmt}` (slides uses `/pptx`) → `DELETE …/{id}` to cancel. Slides' `generateSlides` also does a frontend `chatComplete` to draft a JSON spec; report/mindmap/infographic/datatable are pure backend jobs.
 
-`image_focus` render behaviour (guarded by `test_image_focus_render.js`): only the `image_focus` layout draws `image_data`; `standard` / `stat_callout` / `quote` / `two_column` / `icon_rows` all ignore it.
+`image_focus` rendering (`server.js`): the `image_focus` layout draws `image_data` left, bullets right; `standard` / `stat_callout` / `quote` / `two_column` / `icon_rows` ignore `image_data`. Exceptions: `section_break` and the auto-prepended cover (`image_gen_meta.use_case==='cover_hero'`) consume `image_data` as a full-bleed hero.
 
-> Reusability: since the renderer is a standalone HTTP service, any future caller (n8n node, CLI, bot) can hit the same `/render`, and the CSP container stays Python-only with no embedded Node + LibreOffice.
+> Reusability: the renderer is a standalone HTTP service, so any future caller (n8n / CLI / bot) can hit the same `/render`, keeping the CSP container Python-only.
 
 ---
 
 ## Related docs
 
-- Studio FLUX spec: [`../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md`](../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md) (multi-stage contract, component inventory)
+- Studio FLUX spec: [`../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md`](../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md)
 - Stage designs / plans: `../docs/superpowers/studio-flux/specs/`, `../docs/superpowers/studio-flux/plans/`
 - anila-studio service: [`../anila-studio/README.md`](../anila-studio/README.md)
 - Platform: [`../README.md`](../README.md) · Branch strategy: [`../docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)
