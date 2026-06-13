@@ -35,7 +35,7 @@ The Router exposes an OpenAI-compatible `POST /v1/chat/completions` and provides
 `main.py` is more than a thin shell; beyond the app factory it also handles:
 
 1. **Primary routing model TTL refresh** (`_refresh_primary` / `_ensure_primary`, 60s TTL) + the 503 gate middleware on `/v1/chat/completions`.
-2. **Three-tier service-token resolution** (`_load_service_token` / `_self_bootstrap` / `_initialise_token_source`): state file → `CSP_BOOTSTRAP_TOKEN` auto-bootstrap → `CSP_SERVICE_TOKEN` legacy env; startup logs make explicit which path was taken.
+2. **Three-tier service-token resolution** (`_load_service_token` / `_self_bootstrap` / `_initialise_token_source`): the actual precedence is **state file → `CSP_SERVICE_TOKEN` (legacy env, inside `_load_service_token`) → `CSP_BOOTSTRAP_TOKEN` (bootstrap, only reached when both are empty)**; startup logs make explicit which path was taken. Note that in the current version `_self_bootstrap` is a **v1 pass-through**: it writes the env value into the state file (mode 0600) and does **no HTTP exchange**.
 3. **Hot-reload of the state file once on CSP 401/403** then retry (zero downtime after an admin rotates the router-primary credential in CSP).
 
 ---
@@ -90,10 +90,11 @@ uvicorn main:app --host 0.0.0.0 --port 9000 --log-level info
 | `CSP_BASE_URL` | CSP base URL; `http://csp:8000` inside containers | `http://csp:8000` |
 | `CSP_BOOTSTRAP_TOKEN` | first-start bootstrap token; entrypoint writes it into the state file | `""` |
 | `CSP_SERVICE_TOKEN` | legacy fleet-shared shared-secret; fallback when no state file | `""` |
-| `ANILA_ROUTER_STATE_DIR` | directory persisting the service token | `/var/lib/anila-router` |
-| `MODEL` | (deprecated) Router now pulls from CSP `/api/models/router-primary` at runtime, overwritten after startup | — |
+| `ANILA_ROUTER_STATE_DIR` | directory persisting the service token (state file `service_token.json`, mode 0600) | `/var/lib/anila-router` |
 
-> The Router holds **no** user API key of its own: it calls back to the CSP data plane with the caller's (UI / OpenAI SDK) Bearer API key, so the agents a caller can see equal the agents the Router can dispatch to. Only the service token (Router→CSP internal endpoints like `/api/models/router-primary`) uses the three-tier resolution.
+> `main.py` reads only the four env vars above and **does NOT read `MODEL`** (the primary routing model is decided entirely by CSP `/api/models/router-primary` at runtime). The primary model is refreshed lazily every **60s** (`PRIMARY_TTL_SECONDS=60`) with no background timer: triggered once at startup, then by the `/v1/chat/completions` gate middleware when stale. `main.py` makes exactly one CSP call, `GET /api/models/router-primary` (with `X-CSP-Service-Token`); `GET /v1/agents`, `POST /v1/chat/completions`, and agent dispatch + SSE forward all live in the SDK `router_server.py`.
+>
+> The Router holds **no** user API key of its own: it calls back to the CSP data plane with the caller's (UI / OpenAI SDK) Bearer API key, so the agents a caller can see equal the agents the Router can dispatch to.
 
 ---
 
