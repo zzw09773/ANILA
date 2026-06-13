@@ -119,7 +119,9 @@ Key environment variables:
 | flux2-dev-agent | `CSP_BASE_URL` / `CSP_API_KEY` | `http://csp:8000` / env | translation callback via CSP |
 | flux2-dev-agent | `GEMMA_MODEL` / `ENABLE_PROMPT_TRANSLATION` | `gemma4` / `1` | translation LLM / off = send original |
 | flux2-dev-agent | `SHARE_DIR` / `PUBLIC_URL_PREFIX` | `/share/flux` / `/uploads/flux` | landing path & public URL |
-| flux2-dev-agent | `DEFAULT_ASPECT_RATIO` / `FLUX_TIMEOUT_SECONDS` | `16:9` / `240` | default aspect ratio / backend timeout |
+| flux2-dev-agent | `DEFAULT_ASPECT_RATIO` / `FLUX_TIMEOUT_SECONDS` | `16:9` / `240` (code fallback `180`, compose overrides to 240) | default aspect ratio / backend timeout |
+
+> Also: `flux2-dev` has `FLUX_MODEL_SHA` (default `""`, written into `meta.model_sha`) and `FLUX_SKIP_LOAD=1` (stub pipeline — no weights, no GPU — for integration smoke tests); `FLUX_MAX_CONCURRENT`(4) is controlled by the upstream csp/studio, not this service. In compose, `flux2-dev` is bound to GPUs `["1","2"]` and `gpt-oss-20b` to `["2"]` — they share GPU 2, so watch VRAM when deploying.
 
 **Air-gapped weights**: FLUX.2-dev weights are mounted read-only (`.../FLUX.2-dev:/workspace/model/FLUX.2-dev:ro`) with `HF_HUB_OFFLINE=1`, so the container never fetches weights externally. `flux2-dev-agent` binds the host `share-dev/uploads/flux` to `/share/flux`; nginx serves it at `/uploads/flux/` (frontend image links point there).
 
