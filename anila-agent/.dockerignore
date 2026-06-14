@@ -1,0 +1,40 @@
+# build context 精簡：把 host 端不該進 image 的東西擋在 daemon 之外。
+# 尤其 .venv（host 的 Python ABI 不一定相容）與 .git/快取會讓 context 暴增。
+.venv
+venv
+.git
+.gitignore
+.gitattributes
+__pycache__
+**/__pycache__
+*.py[cod]
+*.egg-info
+.eggs
+build
+dist
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+
+# 執行期狀態（session / memdir），絕不進 image
+.anila
+.env
+*.log
+
+# 離線輪檔包：image 改走「外網 build」，不需要也不該帶進 context
+offline/wheelhouse
+
+# 文件 / 打包產物 / 參考樣板：runtime 不需要
+# （*.tar / *.tar.gz 是 docker save 產物——若不擋，COPY . /app 會把 image 包進自己）
+*.zip
+*.tar.gz
+*.tar
+REBUILD_PLAN.md
+CHANGELOG.md
+anila-agent_new
+anila-agent_new.zip
+
+# 測試只在 CI / 本機跑，不進 runtime image
+tests
