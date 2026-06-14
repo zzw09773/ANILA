@@ -5,6 +5,11 @@ HNSW index, RLS via `anila.collection_id` GUC). Use this — instead of the
 langchain_postgres-based `pgvector.py` — when retrieving from a collection
 that was ingested through the ANILA platform's ingestion worker.
 
+PLATFORM CONTRACT: the SQL shape here (halfvec text-cast + explicit `::halfvec`,
+`SET LOCAL anila.collection_id` for RLS, `chunk_type = 'leaf'` filter,
+embedding_dim auto-detect) must match what the ingestion worker writes. Do not
+change without coordinating with the platform schema.
+
 One-liner config:
 
     PGVECTOR_URL=postgresql://<user>:<password>@<host>:<port>/<db>
@@ -13,10 +18,6 @@ One-liner config:
     ANILA_EMBED_API_KEY=sk-...                            # optional, falls back to ANILA_API_KEY
     ANILA_EMBED_MODEL=nvidia/NV-embed-V2
     ANILA_SSL_VERIFY=0                                    # 1 by default; set 0 for self-signed certs
-
-Embedding dimension is auto-detected from `ingestion_collections.embedding_dim`
-on the first call; queries are truncated/padded to that width before search,
-matching the halfvec column shape.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ import os
 import re
 from typing import Any
 
-from anila_agent.models.schemas import Document
+from anila_agent.retrieval.schemas import Document
 
 
 def _parse_metadata(value: Any) -> dict[str, Any]:
@@ -151,9 +152,7 @@ class AnilaPgVectorRetriever:
         pool = await self._ensure_pool()
         async with pool.acquire() as conn, conn.transaction():
             # f-string is safe: __init__ enforces positive int.
-            await conn.execute(
-                f"SET LOCAL anila.collection_id = {self._collection_id}"
-            )
+            await conn.execute(f"SET LOCAL anila.collection_id = {self._collection_id}")
             rows = await conn.fetch(
                 """
                     SELECT id, document_id, chunk_key, content, metadata,
@@ -193,36 +192,27 @@ class AnilaPgVectorRetriever:
 def from_env() -> AnilaPgVectorRetriever | None:
     """Build from env. Returns None when not configured.
 
-    Required: PGVECTOR_URL + ANILA_COLLECTION_ID.
-    Embedding endpoint falls back to ANILA_BASE_URL / ANILA_API_KEY when the
-    embed-specific vars are unset (typical when chat + embed share an endpoint).
+    Required: PGVECTOR_URL + ANILA_COLLECTION_ID. ANILA_COLLECTION_ID is the
+    activation signal — when it is set but PGVECTOR_URL is missing we RAISE
+    (a partial config is a deployment mistake, surfaced loudly, not silently
+    swallowed). Embedding endpoint falls back to ANILA_BASE_URL / ANILA_API_KEY.
     """
-    # ANILA_COLLECTION_ID is the activation signal — without it, this retriever
-    # opts out so the caller can fall through to the langchain_postgres flavour
-    # (or DummyRetriever) without any noise.
     cid_raw = os.environ.get("ANILA_COLLECTION_ID")
     if not cid_raw:
         return None
     try:
         cid = int(cid_raw)
     except ValueError as e:
-        raise ValueError(
-            f"ANILA_COLLECTION_ID must be an int, got {cid_raw!r}"
-        ) from e
+        raise ValueError(f"ANILA_COLLECTION_ID must be an int, got {cid_raw!r}") from e
 
     url = os.environ.get("PGVECTOR_URL")
     if not url:
         raise ValueError(
-            "ANILA_COLLECTION_ID is set but PGVECTOR_URL is missing. "
-            "Set both or unset both."
+            "ANILA_COLLECTION_ID is set but PGVECTOR_URL is missing. Set both or unset both."
         )
 
-    embed_base = (
-        os.environ.get("ANILA_EMBED_BASE_URL") or os.environ.get("ANILA_BASE_URL")
-    )
-    embed_key = (
-        os.environ.get("ANILA_EMBED_API_KEY") or os.environ.get("ANILA_API_KEY")
-    )
+    embed_base = os.environ.get("ANILA_EMBED_BASE_URL") or os.environ.get("ANILA_BASE_URL")
+    embed_key = os.environ.get("ANILA_EMBED_API_KEY") or os.environ.get("ANILA_API_KEY")
     embed_model = os.environ.get("ANILA_EMBED_MODEL", "nvidia/NV-embed-V2")
     if not embed_base:
         raise ValueError(

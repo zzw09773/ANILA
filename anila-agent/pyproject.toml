@@ -1,37 +1,40 @@
 [project]
 name = "anila-agent"
-version = "0.2.1"
-description = "Agentic RAG starter built on openai-agents with a Claude-Code-inspired harness"
+version = "1.0.0"
+description = "Agentic RAG starter on the OpenAI Agents SDK, hardened for air-gapped ANILA intranet deployment"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "ANILA" }]
 dependencies = [
-    "openai-agents[litellm]>=0.3.0",
+    # Runtime base. Pinned exactly: RunState/HITL persistence is bound to the
+    # SDK schema version, and the 0.3->0.17 surface change is large. See REBUILD_PLAN.md.
+    "openai-agents==0.17.5",
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
+    "httpx>=0.27",
     "prompt-toolkit>=3.0",
     "rich>=13.0",
 ]
 
 [project.optional-dependencies]
-# Wire the built-in RAG tools to a pgvector collection. Activated automatically
-# when PGVECTOR_URL + PGVECTOR_COLLECTION env vars are set; otherwise unused.
-# langchain-postgres pre-1.0 may break across minor versions — pinned tightly.
-pgvector = [
-    "langchain-postgres>=0.0.15,<0.1",
-    "langchain-openai>=1.0,<2",
-    "psycopg[binary]>=3.1,<4",
-]
+# OpenAI-compatible HTTP wrapper so the CSP Router can dispatch to this agent.
+serving = ["fastapi>=0.110", "uvicorn>=0.27"]
 
-# Serving extra — for the OpenAI-compatible HTTP wrapper that lets the CSP
-# Router dispatch to an agent (see examples/service_wrapper.py). Core
-# anila-agent is a CLI/library and does not require these.
-serving = [
-    "fastapi>=0.110",
-    "uvicorn>=0.27",
-]
+# ANILA-native pgvector retriever (ingestion_collections + document_chunks, halfvec + RLS).
+pgvector = ["asyncpg>=0.29"]
+
+# CSP platform HTTP retriever.
+csp = ["httpx>=0.27"]
+
+# OPT-IN only. The air-gapped default path uses the direct AsyncOpenAI provider
+# and never installs LiteLLM. Enable only when unified routing/cost is needed.
+litellm = ["openai-agents[litellm]==0.17.5"]
+
+# MLSteam / notebook 開發環境：MLSteam 的 Lab 會在 image 內 exec `jupyter`，
+# custom image 必須自帶。裝在與 anila_agent 同一個 env，kernel 才 import 得到。
+jupyter = ["jupyterlab>=4.0", "notebook>=7.0", "ipykernel>=6.29"]
 
 dev = [
     "pytest>=8.0",
@@ -57,15 +60,17 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
-ignore = ["E501"]
+# E501：行長交給 formatter；RUF001-003：本專案註解/字串刻意使用繁體中文全形標點，
+# ambiguous-unicode 防呆是針對英文 homoglyph，對 CJK 內容為誤報。
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 markers = [
-    "unit: unit tests",
-    "integration: integration tests",
+    "unit: unit tests (no network)",
+    "live: hits a live OpenAI-compatible endpoint (ANILA_BASE_URL)",
 ]
 
 [tool.mypy]

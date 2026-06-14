@@ -1,4 +1,10 @@
-"""pgvector retriever via langchain_postgres. One-line config:
+"""pgvector retriever via langchain_postgres (generic, non-ANILA-native flavour).
+
+Use this when your data was ingested through langchain (collection lives in
+`langchain_pg_collection` + `langchain_pg_embedding`). For ANILA-platform
+ingested collections use :mod:`anila_agent.retrieval.anila_pgvector` instead.
+
+One-line config:
 
     PGVECTOR_URL=postgresql+psycopg2://user:pass@host:port/db
     PGVECTOR_COLLECTION=collection_name
@@ -6,9 +12,9 @@
     ANILA_EMBED_BASE_URL=https://...                # optional, falls back to ANILA_BASE_URL
     ANILA_EMBED_API_KEY=sk-...                      # optional, falls back to ANILA_API_KEY
 
-`langchain-postgres` and `langchain-openai` are imported lazily so the rest
-of the starter runs without them. If `PGVECTOR_URL` is set but the packages
-are missing, `from_env()` raises with the install command.
+`langchain-postgres` and `langchain-openai` are imported lazily so the rest of
+the starter runs without them. If `PGVECTOR_URL` is set but the packages are
+missing, `from_env()` raises with the install command.
 """
 
 from __future__ import annotations
@@ -16,7 +22,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from anila_agent.models.schemas import Document
+from anila_agent.retrieval.schemas import Document
 
 
 class PgVectorRetriever:
@@ -37,7 +43,7 @@ class PgVectorRetriever:
         except ImportError as e:
             raise ImportError(
                 "PgVectorRetriever requires langchain-postgres + langchain-openai. "
-                "Install with: uv pip install langchain-postgres langchain-openai psycopg[binary]"
+                "Install with: pip install langchain-postgres langchain-openai psycopg[binary]"
             ) from e
 
         embeddings = OpenAIEmbeddings(
@@ -82,16 +88,14 @@ class PgVectorRetriever:
         return out
 
     async def fetch(self, doc_id: str) -> Document | None:
-        # Chunks are the unit of retrieval; the search hit already carries
-        # the full content. Return None so the agent uses search results directly.
+        # Search hits already carry full content; no separate fetch path.
         return None
 
 
 def from_env() -> PgVectorRetriever | None:
-    """Build a PgVectorRetriever from environment variables.
+    """Build from env. Returns None when `PGVECTOR_URL` is unset.
 
-    Returns None when `PGVECTOR_URL` is unset (caller stays on DummyRetriever).
-    Raises when the URL is set but the collection name is missing — silent
+    Raises when the URL is set but the collection name is missing — a silent
     fallback would mask a deployment mistake.
     """
     url = os.environ.get("PGVECTOR_URL")
@@ -100,17 +104,12 @@ def from_env() -> PgVectorRetriever | None:
     collection = os.environ.get("PGVECTOR_COLLECTION")
     if not collection:
         raise ValueError(
-            "PGVECTOR_URL is set but PGVECTOR_COLLECTION is missing. "
-            "Set both or unset both."
+            "PGVECTOR_URL is set but PGVECTOR_COLLECTION is missing. Set both or unset both."
         )
     return PgVectorRetriever(
         url=url,
         collection=collection,
         embed_model=os.environ.get("ANILA_EMBED_MODEL", "text-embedding-3-small"),
-        embed_base_url=(
-            os.environ.get("ANILA_EMBED_BASE_URL") or os.environ.get("ANILA_BASE_URL")
-        ),
-        embed_api_key=(
-            os.environ.get("ANILA_EMBED_API_KEY") or os.environ.get("ANILA_API_KEY")
-        ),
+        embed_base_url=(os.environ.get("ANILA_EMBED_BASE_URL") or os.environ.get("ANILA_BASE_URL")),
+        embed_api_key=(os.environ.get("ANILA_EMBED_API_KEY") or os.environ.get("ANILA_API_KEY")),
     )

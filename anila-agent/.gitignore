@@ -17,13 +17,22 @@ venv/
 .coverage
 htmlcov/
 
-# Anila state
+# Anila local state
 .anila/
 
-# IDE
+# 離線輪檔包（由 build-wheelhouse.sh 產生；不入庫，帶進內網時隨附）
+offline/wheelhouse/
+
+# Docker image 匯出檔（docker save 產生；build 產物，搬內網用，不入庫）
+*.tar.gz
+*.tar
+
+# 參考素材（重建用，非樣板本體；不入庫）
+anila-agent_new/
+anila-agent_new.zip
+
+# IDE / OS
 .vscode/
 .idea/
-
-# OS
 .DS_Store
 Thumbs.db

@@ -1,68 +1,59 @@
-"""In-memory starter retriever. Replace this with your real backend.
+"""零基建的記憶體內 retriever —— clone-and-run 預設。
 
-Scoring is naive: case-insensitive token-overlap count. The point is to make
-the template runnable end-to-end without a vector store.
+以 token 重疊度排序，無外部相依。換成真實後端前，讓樣板「下載即可跑」。
+與真實 retriever 不同，``fetch`` 確實能依 id 取回（因為語料在記憶體內）。
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
-from typing import Any
 
-from anila_agent.models.schemas import Document
-from anila_agent.retrieval.base import Retriever
+from anila_agent.retrieval.schemas import Document
 
-_TOKEN_RE = re.compile(r"\w+", flags=re.UNICODE)
+_TOKEN = re.compile(r"\w+", re.UNICODE)
+
+# 預設樣本語料（zh-TW）。換上自己的 retriever 後即可移除。
+_DEFAULT_CORPUS: list[tuple[str, str]] = [
+    ("doc-anila-overview", "ANILA 是中科院內網的 air-gapped AI 平台，提供 RAG 問答、文件管理與影像生成。"),
+    ("doc-rag", "Agentic RAG 讓 agent 自行決定何時檢索、檢索什麼，並以引用接地回答。"),
+    ("doc-airgap", "air-gapped 部署不連外網：模型走本地 vLLM OpenAI-compatible 端點，無外部 CDN。"),
+    ("doc-template", "anila-agent 是可下載的官方樣板，填上 retriever 與 prompt 即可成為你的 agent。"),
+]
 
 
 def _tokens(text: str) -> set[str]:
-    return {m.group(0).lower() for m in _TOKEN_RE.finditer(text)}
+    return {t.lower() for t in _TOKEN.findall(text)}
 
 
-class DummyRetriever(Retriever):
-    """A list of documents, scored by token overlap with the query."""
+class DummyRetriever:
+    """token 重疊度檢索；僅供開發與示範。"""
 
-    def __init__(self, docs: Iterable[Document | dict[str, Any]] = ()) -> None:
-        self._docs: dict[str, Document] = {}
-        for d in docs:
-            doc = d if isinstance(d, Document) else Document.model_validate(d)
-            self._docs[doc.id] = doc
+    name = "dummy"
 
-    @property
-    def name(self) -> str:
-        return "dummy"
+    def __init__(self, corpus: list[tuple[str, str]] | None = None) -> None:
+        self._docs: dict[str, str] = dict(corpus if corpus is not None else _DEFAULT_CORPUS)
 
     @property
-    def metadata(self) -> dict[str, Any]:
-        return {"size": len(self._docs)}
-
-    def add(self, doc: Document | dict[str, Any]) -> None:
-        d = doc if isinstance(doc, Document) else Document.model_validate(doc)
-        self._docs[d.id] = d
+    def metadata(self) -> dict:
+        return {"backend": "dummy", "size": len(self._docs)}
 
     async def search(self, query: str, k: int = 5) -> list[Document]:
-        q_tokens = _tokens(query)
-        if not q_tokens:
+        q = _tokens(query)
+        if not q:
             return []
-        scored: list[tuple[float, Document]] = []
-        for doc in self._docs.values():
-            doc_tokens = _tokens(doc.text)
-            overlap = len(q_tokens & doc_tokens)
-            if overlap == 0:
-                continue
-            score = overlap / max(len(q_tokens), 1)
-            scored.append(
-                (
-                    score,
-                    Document(id=doc.id, text=doc.text, score=score, metadata=doc.metadata),
-                )
-            )
-        scored.sort(key=lambda pair: pair[0], reverse=True)
-        return [doc for _, doc in scored[:k]]
+        scored: list[tuple[float, str, str]] = []
+        for doc_id, text in self._docs.items():
+            overlap = len(q & _tokens(text))
+            if overlap:
+                scored.append((overlap / len(q), doc_id, text))
+        scored.sort(key=lambda r: r[0], reverse=True)
+        return [
+            Document(id=doc_id, text=text, score=score, metadata={"backend": "dummy"})
+            for score, doc_id, text in scored[: max(k, 0)]
+        ]
 
     async def fetch(self, doc_id: str) -> Document | None:
-        doc = self._docs.get(doc_id)
-        if doc is None:
+        text = self._docs.get(doc_id)
+        if text is None:
             return None
-        return Document(id=doc.id, text=doc.text, metadata=doc.metadata)
+        return Document(id=doc_id, text=text, metadata={"backend": "dummy"})
