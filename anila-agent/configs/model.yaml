@@ -1,15 +1,16 @@
-# Model resolution. All fields can be overridden by environment variables
-# (ANILA_BASE_URL / ANILA_API_KEY / ANILA_MODEL).
+# 模型設定。環境變數（ANILA_BASE_URL / ANILA_MODEL / ANILA_API_KEY）會覆寫這裡。
 #
-# Backed by openai-agents.extensions.models.litellm_model.LitellmModel,
-# which speaks any OpenAI-compatible endpoint.
+# 內網現況：預設 LLM = gpt-oss-20b（gemma4 尚未到位）。
+# vLLM / OpenAI-compatible 端點；api_key 對 vLLM 無作用，填 EMPTY 即可。
 
-model: gpt-4o-mini
-base_url: http://localhost:8000/v1
+base_url: http://gpt-oss-20b:8000/v1
+model: gpt-oss-20b
 api_key_env: ANILA_API_KEY
 
-# Sampling defaults. Anything you put here is passed through to ModelSettings.
+# 只套用 allowlist 內的 key（temperature/top_p/max_tokens/tool_choice/
+# parallel_tool_calls/frequency_penalty/presence_penalty）；未知 key 靜默丟棄。
+# 注意：gpt-oss/gemma4 皆為 reasoning 模型，max_tokens 會被夾到 >= 512 下限，
+# 避免推理把預算耗光、content 被截斷成空。
 settings:
-  temperature: 0.2
-  # gemma4 emits chain-of-thought before the final answer; give it room.
+  temperature: 0.3
   max_tokens: 1024
