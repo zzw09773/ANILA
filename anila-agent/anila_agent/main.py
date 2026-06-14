@@ -1,56 +1,35 @@
-"""CLI entry point. `python -m anila_agent.main` or `anila` after install."""
+"""CLI 進入點：載入設定 → 建構 agent → 跑 REPL。"""
 
 from __future__ import annotations
 
-import argparse
-import sys
+import asyncio
+import contextlib
+import logging
 
-from anila_agent.cli.app import main_sync
-from anila_agent.core.agent import build_agent
-from anila_agent.core.runner import AnilaRunner
-from anila_agent.utils.config import load_config
-from anila_agent.utils.logging import configure
+from dotenv import load_dotenv
+
+from anila_agent.config import load_config
+from anila_agent.runtime.agent_factory import build_agent
 
 
-def _parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="anila", description="Anila Agentic RAG CLI")
-    parser.add_argument(
-        "--session",
-        default="default",
-        help="Session ID. Reusing the same ID resumes the conversation.",
+def main() -> None:
+    load_dotenv()
+    cfg = load_config()
+    logging.basicConfig(
+        level=getattr(logging, cfg.log_level, logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    parser.add_argument(
-        "--config-dir",
-        default="configs",
-        help="Path to config directory. Defaults to <project>/configs.",
-    )
-    parser.add_argument(
-        "--prompt",
-        help="One-shot mode: send this prompt, print the result, exit.",
-    )
-    return parser.parse_args(argv)
+    assembled = build_agent(cfg)
 
+    # 延遲匯入：讓 import anila_agent.main 不必拉 prompt_toolkit/rich（測試友善）。
+    from anila_agent.cli.app import repl
+    from anila_agent.memory.session import build_session
 
-def main(argv: list[str] | None = None) -> int:
-    configure()
-    args = _parse_args(argv or sys.argv[1:])
-    config = load_config(args.config_dir)
-    assembled = build_agent(config, session_id=args.session)
-    runner = AnilaRunner(assembled, session_id=args.session)
+    chat_session = build_session(cfg, session_id="cli")
 
-    if args.prompt:
-        import asyncio
-
-        summary = asyncio.run(runner.send(args.prompt))
-        if summary.aborted:
-            print(f"aborted: {summary.abort_reason}", file=sys.stderr)
-            return 1
-        print(summary.final_output if summary.final_output is not None else "")
-        return 0
-
-    main_sync(runner, config)
-    return 0
+    with contextlib.suppress(KeyboardInterrupt):
+        asyncio.run(repl(assembled, chat_session, cfg))
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

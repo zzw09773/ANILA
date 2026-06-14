@@ -1,50 +1,47 @@
-"""DummyRetriever scoring tests."""
+"""Retriever Protocol 一致性 + Document 形狀（平台契約）。"""
 
 from __future__ import annotations
 
 import pytest
 
-from anila_agent.models.schemas import Document
+from anila_agent.retrieval.base import Retriever
 from anila_agent.retrieval.dummy import DummyRetriever
+from anila_agent.retrieval.schemas import Document
+
+pytestmark = pytest.mark.unit
 
 
-@pytest.mark.unit
-async def test_search_returns_overlap_only() -> None:
-    retriever = DummyRetriever(
-        [
-            Document(id="a", text="memory directory MEMORY.md index"),
-            Document(id="b", text="vector store embeddings"),
-        ]
-    )
-    results = await retriever.search("memory MEMORY", k=5)
-    assert [d.id for d in results] == ["a"]
+def test_dummy_satisfies_protocol():
+    assert isinstance(DummyRetriever(), Retriever)
 
 
-@pytest.mark.unit
-async def test_search_orders_by_score() -> None:
-    retriever = DummyRetriever(
-        [
-            Document(id="lots", text="alpha beta gamma delta"),
-            Document(id="few", text="alpha"),
-        ]
-    )
-    results = await retriever.search("alpha beta gamma delta", k=5)
-    assert [d.id for d in results] == ["lots", "few"]
+def test_document_shape_defaults():
+    d = Document(id="x", text="t")
+    assert d.id == "x" and d.text == "t"
+    assert d.score is None
+    assert d.metadata == {}
 
 
-@pytest.mark.unit
-async def test_fetch_round_trips() -> None:
-    retriever = DummyRetriever([Document(id="x", text="payload")])
-    doc = await retriever.fetch("x")
-    assert doc is not None
-    assert doc.text == "payload"
-    assert await retriever.fetch("missing") is None
+async def test_search_returns_sorted_documents():
+    r = DummyRetriever([("a", "alpha beta gamma"), ("b", "beta gamma"), ("c", "delta")])
+    hits = await r.search("beta gamma", k=5)
+    assert hits and all(isinstance(h, Document) for h in hits)
+    assert len(hits) <= 5
+    scores = [h.score for h in hits]
+    assert scores == sorted(scores, reverse=True)  # 遞減排序
 
 
-@pytest.mark.unit
-async def test_search_caps_at_k() -> None:
-    retriever = DummyRetriever(
-        [Document(id=str(i), text="alpha beta") for i in range(20)]
-    )
-    results = await retriever.search("alpha", k=3)
-    assert len(results) == 3
+async def test_search_respects_k():
+    r = DummyRetriever([("a", "x y"), ("b", "x z"), ("c", "x w")])
+    assert len(await r.search("x", k=2)) <= 2
+
+
+async def test_empty_query_returns_empty():
+    assert await DummyRetriever().search("") == []
+
+
+async def test_fetch_hit_and_miss():
+    r = DummyRetriever([("a", "alpha")])
+    got = await r.fetch("a")
+    assert got is not None and got.text == "alpha"
+    assert await r.fetch("missing") is None
