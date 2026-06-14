@@ -6,7 +6,8 @@
 # Prod initial mode 切換 (branch SSO):
 #   - 所有 secret env var 預設改成 ``${VAR:?must be set}``,缺 .env 直接 fail。
 #   - ANILA_ALLOW_DEV_SECRET 預設 0,任何 dev 預設值會被 startup_security 擋下。
-#   - codeserver / n8n / gitlab service 仍定義但 nginx route 改 deny,等手動解凍。
+#   - codeserver / n8n / gitlab:內網維護/自動化/合規(ISO 42001)都需要,均已啟用
+#     (nginx route 2026-06-11 解凍);codeserver 掛 repo root 維護平台(機密已遮蔽)。
 # Dev 切換回去:把 .env 還原成 .env.dev.local 內容即可,所有 dev opt-in flag
 # 都被 .env 那邊重新賦值,compose 不再提供「dev 預設值」這個安全網。
 
@@ -423,9 +424,15 @@ services:
       PASSWORD: ${CODESERVER_PASSWORD:?CODESERVER_PASSWORD must be set}
     volumes:
       - codeserver_config:/home/coder/.config
-      # 不要掛 repo root — 會把 .env / 私鑰 / credentials 全部暴露給拿到
-      # 密碼的人。CODESERVER_WORKSPACE 必須指非機密目錄。
-      - ${CODESERVER_WORKSPACE:?CODESERVER_WORKSPACE must point to a non-secret-bearing directory}:/home/coder/workspace
+      # codeserver = 內網維護 ANILA 平台用 → 掛整個 repo 源碼
+      # (CODESERVER_WORKSPACE 預設 '.' = repo root,見 .env.example)。
+      # repo 根有機密(.env 的 JWT/DB 密碼、server.key 的 TLS 私鑰),用 /dev/null
+      # 把這兩個遮蔽掉,避免拿到 codeserver 密碼的人讀到(軍方 air-gap 防護)。
+      # 其餘(server.crt、CA bundle、share/pki)是公開資料,可見無妨。
+      # ⚠ 改了 CODESERVER_WORKSPACE 就要相應調整 / 移除下面兩條遮蔽。
+      - ${CODESERVER_WORKSPACE:-.}:/home/coder/workspace
+      - /dev/null:/home/coder/workspace/.env:ro
+      - /dev/null:/home/coder/workspace/myCSPPlatform/docker/certs/server.key:ro
     working_dir: /home/coder/workspace
     expose:
       - "8080"
