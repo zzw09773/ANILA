@@ -34,6 +34,14 @@
    `FLUX_AGENT_BASE_URL=` 留空(auto_seed 自動跳過,不需本地權重)。**你只需在 .12 簽
    發後填 `MODEL_GATEWAY_API_KEY`**。權重日後到了再開 gemma4/flux 即可,架構不變。
 
+> **一條龍部署 (推薦)**:不想逐步跑 §2.2–§2.3,直接在 prod-intranet-card repo 根目錄:
+> ```bash
+> bash scripts/intranet-deploy.sh [image包資料夾]
+> ```
+> 互動式跑完 **TLS 抽取 → 模型 CA → 產 .env(自動生 secret + 問 gateway key / owner 工號)
+> → load image → up → 驗證**。重跑安全(偵測既有 .env 預設保留 secret,不重生 DB 密碼)。
+> 底下 §2.2–§2.3 是它每一步的詳解 / 手動備援。
+
 ---
 
 ## 0. 架構摘要 (一頁懂)
