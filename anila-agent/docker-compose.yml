@@ -1,0 +1,15 @@
+# 外網本機開發：`docker compose up --build` 起一個掛了本 repo 的 JupyterLab。
+#
+# 這顆 image 是「環境」（套件 + jupyter，無源碼）；compose 把當前 repo 掛進
+# /home/anila/work，讓你在本機 Lab 直接改源碼。MLSteam 部署不走這支——是上傳
+# image、由 MLSteam 自己建 Lab（見 DOCKER.md）。
+services:
+  anila-agent:
+    build: .
+    image: anila-agent:1.0.0
+    command: ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser"]
+    ports:
+      - "8888:8888"
+    volumes:
+      - .:/home/anila/work        # 本 repo（源碼 + configs）掛進 workspace
+    working_dir: /home/anila/work

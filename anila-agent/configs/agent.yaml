@@ -1,14 +1,3 @@
-# Agent assembly. Edit name/instructions to fit your domain.
-name: my-agent
-instructions_file: anila_agent/prompts/system.md
-
-# Tool execution behaviour. Mirrors openai-agents Agent.tool_use_behavior.
-#   run_llm_again       — default loop
-#   stop_on_first_tool  — first tool result is the final output
-tool_use_behavior: run_llm_again
-
-# Hard cap on the agent loop. Surfaces as a stop reason.
-max_turns: 20
-
-# Permission mode for tool gating: default | acceptAll | denyDestructive
-permission_mode: default
+# agent 設定。env（ANILA_AGENT_NAME / ANILA_MAX_TURNS）覆寫這裡。
+name: ANILA Agent
+max_turns: 10
