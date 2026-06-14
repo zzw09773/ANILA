@@ -1,0 +1,16 @@
+# 工具政策（deny-all 預設 + 明列 allow 唯讀工具）。
+#
+# 軍用/air-gap 強化：未匹配的工具呼叫一律拒絕。能力(read_only/write/admin)由
+# configs/tools.yaml 宣告；write/admin 工具必須在下方 rules 明確指名，否則 agent
+# 建構時 raise（fail-closed 啟動守衛）。
+#
+# 優先序：Specific Deny > Specific Ask > Specific Allow >
+#         Wildcard Deny > Wildcard Ask > Wildcard Allow > default
+
+default: deny
+allow_read_only: true   # 自動 allow 能力表中 read_only 的工具（search_documents/read_document）
+
+rules: []
+  # 範例（需要時取消註解並調整）：
+  # - { effect: ask_user, tool: ingest_document, reason: "寫入需人工確認" }
+  # - { effect: deny,     tool: purge_collection, reason: "禁止刪庫" }

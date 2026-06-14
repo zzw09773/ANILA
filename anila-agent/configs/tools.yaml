@@ -1,21 +1,10 @@
-# Tool wiring. Built-in tools are loaded by qualified name; custom tools
-# can be registered via tools/registry.py.
+# 工具能力表（唯一真相來源）：name → read_only | write | admin。
+#
+# SDK 的 @function_tool 沒有 is_read_only 欄位，工具能力在此宣告。
+# P2 的政策（configs/policy.yaml）以此判定 deny-all 下允許哪些工具執行。
+# 未登錄的工具 fail-closed 視為 admin（最受限）。
 
-builtin:
-  - anila_agent.tools.rag_tools.search_documents
-  - anila_agent.tools.rag_tools.read_document
-  - anila_agent.tools.filesystem_tools.read_file
-  - anila_agent.tools.filesystem_tools.list_dir
-
-# Hooks fire around tool calls. Each entry is a qualified callable returning
-# a HookResult. Match by tool name regex (use ".*" to match all).
-hooks:
-  pre_tool_use: []
-  post_tool_use: []
-  stop:
-    # Auto-extraction is registered here when memory.yaml.auto_memory.enabled is true.
-    # The runner reads the flag and inserts the hook automatically.
-    - { matcher: ".*", callback: anila_agent.memory.summarizer.extract_on_stop, when: auto_memory }
-
-# MCP servers. Add entries in the openai-agents MCP format.
-mcp_servers: []
+capabilities:
+  search_documents: read_only
+  read_document: read_only
+  search_memory: read_only

@@ -4,10 +4,15 @@ Unlike :mod:`anila_agent.retrieval.anila_pgvector` (direct Postgres) this goes
 through CSP's authenticated ``POST /api/ingestion/collections/{id}/search``
 endpoint. An agent therefore needs only a CSP API key — no Postgres
 credentials and no network path to the database. CSP enforces collection
-access (admin or owner), embeds the query with the collection's configured
-model, and applies RLS, so the agent stays fully decoupled from storage and
-embedding details. This is the recommended built-in retriever for agents that
-already authenticate to CSP.
+access, embeds the query with the collection's configured model, and applies
+RLS, so the agent stays fully decoupled from storage. This is the recommended
+built-in retriever for agents that already authenticate to CSP.
+
+PLATFORM CONTRACT: the request shape (``{query, top_k, min_score}``, Bearer
+auth, the ``/api/ingestion/collections/{id}/search`` path on the CSP origin —
+NOT the /v1 proxy base) and the response field names
+(``chunk_id/content/score/chunk_key/document_id/filename/metadata``) are owned
+by the CSP API. Keep them in sync with CSP.
 
 One-liner config:
 
@@ -23,7 +28,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from anila_agent.models.schemas import Document
+from anila_agent.retrieval.schemas import Document
 
 _DEFAULT_MIN_SCORE = 0.25
 
@@ -47,9 +52,7 @@ class CspHttpRetriever:
         timeout: float = 30.0,
     ) -> None:
         if not isinstance(collection_id, int) or isinstance(collection_id, bool):
-            raise ValueError(
-                f"collection_id must be int, got {type(collection_id).__name__}"
-            )
+            raise ValueError(f"collection_id must be int, got {type(collection_id).__name__}")
         if collection_id <= 0:
             raise ValueError(f"collection_id must be > 0, got {collection_id}")
         if not csp_base_url:
@@ -77,25 +80,16 @@ class CspHttpRetriever:
 
     @property
     def _search_url(self) -> str:
-        return (
-            f"{self._base_url}/api/ingestion/collections/"
-            f"{self._collection_id}/search"
-        )
+        return f"{self._base_url}/api/ingestion/collections/{self._collection_id}/search"
 
     async def search(self, query: str, k: int = 5) -> list[Document]:
         import httpx
 
-        async with httpx.AsyncClient(
-            verify=self._verify_ssl, timeout=self._timeout
-        ) as client:
+        async with httpx.AsyncClient(verify=self._verify_ssl, timeout=self._timeout) as client:
             response = await client.post(
                 self._search_url,
                 headers={"Authorization": f"Bearer {self._api_key}"},
-                json={
-                    "query": query,
-                    "top_k": k,
-                    "min_score": self._min_score,
-                },
+                json={"query": query, "top_k": k, "min_score": self._min_score},
             )
             response.raise_for_status()
             payload = response.json()
@@ -121,8 +115,7 @@ class CspHttpRetriever:
         return documents
 
     async def fetch(self, doc_id: str) -> Document | None:
-        # Chunks already carry full content from search; no separate fetch path
-        # (mirrors AnilaPgVectorRetriever).
+        # Chunks already carry full content from search; no separate fetch path.
         return None
 
 
@@ -132,8 +125,7 @@ def from_env() -> CspHttpRetriever | None:
     Activation requires BOTH ``ANILA_CSP_BASE_URL`` and ``ANILA_COLLECTION_ID``
     — the base-url gate keeps this distinct from the direct-pgvector retriever
     (which activates on ``ANILA_COLLECTION_ID`` + ``PGVECTOR_URL``). The API key
-    falls back to ``ANILA_API_KEY`` when ``ANILA_CSP_API_KEY`` is unset (common
-    when chat + retrieval share one key).
+    falls back to ``ANILA_API_KEY`` when ``ANILA_CSP_API_KEY`` is unset.
     """
     base = os.environ.get("ANILA_CSP_BASE_URL")
     cid_raw = os.environ.get("ANILA_COLLECTION_ID")
@@ -142,9 +134,7 @@ def from_env() -> CspHttpRetriever | None:
     try:
         cid = int(cid_raw)
     except ValueError as e:
-        raise ValueError(
-            f"ANILA_COLLECTION_ID must be an int, got {cid_raw!r}"
-        ) from e
+        raise ValueError(f"ANILA_COLLECTION_ID must be an int, got {cid_raw!r}") from e
 
     api_key = os.environ.get("ANILA_CSP_API_KEY") or os.environ.get("ANILA_API_KEY")
     if not api_key:
