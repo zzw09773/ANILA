@@ -81,10 +81,18 @@ fi
 if [ "$DO_TLS" = 1 ]; then
   PFX="$(ask 'server.pfx 路徑')"; [ -f "$PFX" ] || die "找不到 $PFX"
   PFXPW="$(asksecret 'pfx 密碼 (空就直接 Enter)')"
-  openssl pkcs12 -in "$PFX" -clcerts -nokeys  -legacy -passin "pass:$PFXPW" | openssl x509 > "$CRT" || die "抽 server.crt 失敗"
-  openssl pkcs12 -in "$PFX" -nocerts  -noenc   -legacy -passin "pass:$PFXPW" | openssl pkey  > "$KEY" || die "抽 server.key 失敗"
+  # server.crt 抽 fullchain:leaf(client cert)在前 + pfx 內所有中繼 CA,瀏覽器才能
+  # 驗完整鏈(只放 leaf 在缺中繼的環境會跳「憑證不受信任」)。sed 只留 PEM 區塊,
+  # 去掉 openssl 的 Bag Attributes 雜訊。
+  {
+    openssl pkcs12 -in "$PFX" -clcerts -nokeys -legacy -passin "pass:$PFXPW" 2>/dev/null
+    openssl pkcs12 -in "$PFX" -cacerts -nokeys -legacy -passin "pass:$PFXPW" 2>/dev/null
+  } | sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' > "$CRT"
+  [ -s "$CRT" ] && grep -q 'BEGIN CERTIFICATE' "$CRT" || die "抽 server.crt 失敗(pfx 路徑/密碼?)"
+  openssl pkcs12 -in "$PFX" -nocerts -noenc -legacy -passin "pass:$PFXPW" 2>/dev/null | openssl pkey > "$KEY" || die "抽 server.key 失敗"
   chmod 600 "$KEY"
-  ok "TLS 憑證抽取完成"
+  _ncert=$(grep -c 'BEGIN CERTIFICATE' "$CRT")
+  ok "TLS 憑證抽取完成(fullchain $_ncert 張:leaf + $((_ncert - 1)) 中繼)"
 fi
 echo "    $(openssl x509 -in "$CRT" -noout -subject -enddate 2>/dev/null | tr '\n' ' ')"
 openssl x509 -in "$CRT" -noout -subject 2>/dev/null | grep -q 'ai.ncsist.org.tw' \
