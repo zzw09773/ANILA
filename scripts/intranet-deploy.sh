@@ -123,16 +123,25 @@ else
   cp .env.example .env; ok "由 .env.example 建立 .env"
 fi
 
+# 預設值來源(選用):image 包裡的 intranet-defaults.env(刻意不進 git,實體隨包帶入
+# air-gap)。提供 ADMIN_PASSWORD / CODESERVER_PASSWORD / CARD_INITIAL_OWNERS /
+# GITLAB_ROOT_PASSWORD 等;沒提供的 secret 一律 openssl 隨機生成。
+DEFAULTS="$BUNDLE/intranet-defaults.env"
+if [ -f "$DEFAULTS" ]; then set -a; . "$DEFAULTS"; set +a; ok "已套用 $DEFAULTS 的預設值"; fi
+
 if [ "$REGEN" = 1 ]; then
-  info "  自動生成 secret (openssl rand)"
-  set_env CSP_SECRET_KEY            "$(openssl rand -hex 32)"
-  set_env CSP_SERVICE_TOKEN         "$(openssl rand -hex 32)"
-  set_env INTERNAL_PLATFORM_API_KEY "sk-internal-$(openssl rand -hex 24)"
-  set_env ADMIN_PASSWORD            "$(openssl rand -base64 24)"
-  set_env CSP_DB_PASSWORD           "$(openssl rand -hex 32)"
-  set_env CSP_APP_DB_PASSWORD       "$(openssl rand -hex 32)"
-  set_env CODESERVER_PASSWORD       "$(openssl rand -base64 24)"
+  info "  secret:有預設用預設,否則 openssl 隨機生成"
+  set_env CSP_SECRET_KEY            "${CSP_SECRET_KEY:-$(openssl rand -hex 32)}"
+  set_env CSP_SERVICE_TOKEN         "${CSP_SERVICE_TOKEN:-$(openssl rand -hex 32)}"
+  set_env INTERNAL_PLATFORM_API_KEY "${INTERNAL_PLATFORM_API_KEY:-sk-internal-$(openssl rand -hex 24)}"
+  set_env ADMIN_PASSWORD            "${ADMIN_PASSWORD:-$(openssl rand -base64 24)}"
+  set_env CSP_DB_PASSWORD           "${CSP_DB_PASSWORD:-$(openssl rand -hex 32)}"
+  set_env CSP_APP_DB_PASSWORD       "${CSP_APP_DB_PASSWORD:-$(openssl rand -hex 32)}"
+  set_env CODESERVER_PASSWORD       "${CODESERVER_PASSWORD:-$(openssl rand -base64 24)}"
 fi
+# gitlab root 初始密碼(若 defaults 提供;compose 用 GITLAB_ROOT_PASSWORD env 帶入,
+# 只在 gitlab 首次 reconfigure 生效)。
+[ -n "${GITLAB_ROOT_PASSWORD:-}" ] && set_env GITLAB_ROOT_PASSWORD "$GITLAB_ROOT_PASSWORD"
 
 # 內網 strict 模式 + 卡片登入 + 模型 CA 路徑(每次都確保正確)
 set_env ANILA_ALLOW_DEV_SECRET      0
@@ -143,7 +152,7 @@ set_env REQUIRE_CARD_LOGIN_ONLY     true
 set_env ANILA_MODEL_CA_FILE         /etc/anila/pki/model-ca.pem
 
 echo
-CIO="$(ask 'CARD_INITIAL_OWNERS — owner 員工編號 (CSV,含你自己,例 1147259,1090868)' "$(get_env CARD_INITIAL_OWNERS)")"
+CIO="$(ask 'CARD_INITIAL_OWNERS — owner 員工編號 (CSV,含你自己,例 1147259,1090868)' "${CARD_INITIAL_OWNERS:-$(get_env CARD_INITIAL_OWNERS)}")"
 [ -n "$CIO" ] || die "CARD_INITIAL_OWNERS 不能空(否則沒人是 owner,進不了管理)"
 set_env CARD_INITIAL_OWNERS "$CIO"
 
