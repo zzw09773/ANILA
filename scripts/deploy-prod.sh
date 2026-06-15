@@ -181,12 +181,28 @@ cmd_preflight() {
   log "Pre-flight 全部通過"
 }
 
+# JWT 簽章金鑰：prod 模式 ALLOW_AUTO_KEYGEN=false 不自動生 → 缺這把 csp 的
+# /.well-known/jwks.json 回 500、登入發不了 access token、anila-studio crash-loop。
+# docker-compose.yml 以 ./secrets mount 進 csp /app/secrets；compose up 前確保存在。
+ensure_jwt_keypair() {
+  mkdir -p secrets
+  if [[ ! -f secrets/jwt-private.pem || ! -f secrets/jwt-public.pem ]]; then
+    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out secrets/jwt-private.pem 2>/dev/null
+    openssl pkey -in secrets/jwt-private.pem -pubout -out secrets/jwt-public.pem 2>/dev/null
+    chmod 600 secrets/jwt-private.pem
+    echo "✓ 已產生 JWT 簽章 keypair (secrets/jwt-{private,public}.pem)"
+  fi
+}
+
 # ── Subcommand: deploy ─────────────────────────────────────────────────────
 cmd_deploy() {
   cmd_preflight
 
   section "Build images (csp / router / ingestion-worker / pptx-renderer / anila-studio / anilalm / anila-ui)"
   docker compose build
+
+  section "JWT 簽章金鑰"
+  ensure_jwt_keypair
 
   section "Bring up the stack"
   docker compose up -d
@@ -198,6 +214,7 @@ cmd_deploy() {
 # ── Subcommand: up / down / restart ────────────────────────────────────────
 cmd_up() {
   check_branch; check_docker; check_env
+  ensure_jwt_keypair
   section "docker compose up -d"
   docker compose up -d
   cmd_wait_healthy
