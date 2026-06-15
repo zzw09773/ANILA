@@ -33,14 +33,30 @@
    `LLM_MODEL=openai/gpt-oss-20b`、embedding `nvidia/nv-embed-v2`、`GEMMA4_BASE_URL=`/
    `FLUX_AGENT_BASE_URL=` 留空(auto_seed 自動跳過,不需本地權重)。**你只需在 .12 簽
    發後填 `MODEL_GATEWAY_API_KEY`**。權重日後到了再開 gemma4/flux 即可,架構不變。
+7. **JWT 簽章金鑰(2026-06-15 live 預演抓到)**:csp 用 RSA 私鑰簽登入 access token
+   並對 anila-studio 等發 JWKS。prod 模式 `ALLOW_AUTO_KEYGEN=false` **不自動生**;
+   缺這把 → csp `/.well-known/jwks.json` 回 500、**登入發不了 token、anila-studio
+   crash-loop**。**已修**:`intranet-deploy.sh` 步驟 `[4b]` 會用 csp image 跑
+   `scripts/generate-jwt-keypair.py` 產 `secrets/jwt-{private,public}.pem`,compose
+   以 `:ro` mount 進 csp `/app/secrets`(`./secrets` 在 host,recreate 不失效;
+   `*.pem` 已被 .gitignore 擋,不進公開 repo)。手動 `docker compose up` 而沒先跑
+   腳本的話,記得自己先產這把 key。
 
 > **一條龍部署 (推薦)**:不想逐步跑 §2.2–§2.3,直接在 prod-intranet-card repo 根目錄:
 > ```bash
 > bash scripts/intranet-deploy.sh [image包資料夾]
 > ```
 > 互動式跑完 **TLS 抽取 → 模型 CA → 產 .env(自動生 secret + 問 gateway key / owner 工號)
-> → load image → up → 驗證**。重跑安全(偵測既有 .env 預設保留 secret,不重生 DB 密碼)。
+> → load image → JWT 金鑰 → up → 驗證**。重跑安全(偵測既有 .env 預設保留 secret,不重生 DB 密碼)。
 > 底下 §2.2–§2.3 是它每一步的詳解 / 手動備援。
+
+> **部署後兩件營運必做(live 預演 critic 抓到):**
+> 1. **首登 bootstrap**:owner(工號 `1147259`,插卡直接登入)登入後**要先建 department**,
+>    否則同仁卡片註冊時「完成註冊」的單位下拉是空的、卡在註冊。先建單位再請大家註冊。
+> 2. **break-glass(讀卡機/HiPKI 掛掉時的後路)**:card-only 模式關掉了帳密登入,若 go-live
+>    當天讀卡機或 HiPKI(`localhost:16888`)故障會**全員進不去**。應急:`.env` 暫設
+>    `REQUIRE_CARD_LOGIN_ONLY=false` → `docker compose up -d csp`,用 owner 帳密
+>    (admin 密碼)break-glass 進去處理,修好讀卡環境後改回 `true` 再 recreate csp。
 
 ---
 

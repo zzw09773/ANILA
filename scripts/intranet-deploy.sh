@@ -100,7 +100,9 @@ openssl x509 -in "$CRT" -noout -subject 2>/dev/null | grep -q 'ai.ncsist.org.tw'
 
 # ── 2. 模型 gateway 出向 CA ───────────────────────────────────────────────
 info "[2/7] 模型 gateway CA (對 https://aiagent2.ai.ncsist.org.tw 的出向 TLS 信任)"
-mkdir -p share/pki
+# share/* 是 nginx(static)、csp + ingestion-worker(uploads)的 bind-mount 來源;
+# 先建好,否則 docker 會以 root 自動建空目錄(權限/擁有者錯亂)。
+mkdir -p share/pki share/static share/uploads/ingestion
 MCA=share/pki/model-ca.pem
 if [ -f "$MCA" ]; then
   ok "已有 $MCA"
@@ -171,6 +173,9 @@ set_env ANILA_ALLOW_PRIVATE_ENDPOINT 0
 set_env ENABLE_CARD_LOGIN           true
 set_env REQUIRE_CARD_LOGIN_ONLY     true
 set_env ANILA_MODEL_CA_FILE         /etc/anila/pki/model-ca.pem
+# codeserver workspace:下方必填檢查需要它;.env.example 預設 `.`(repo root),
+# 這裡兜底,避免 .env.example 被改動後必填檢查直接 die。
+[ -n "$(get_env CODESERVER_WORKSPACE)" ] || set_env CODESERVER_WORKSPACE .
 
 echo
 # owner 是最高權限種子帳號。不讓「被竄改的 bundle 預設 + 一個 Enter」就生效:
@@ -211,6 +216,22 @@ fi
 # ── 4. load image ────────────────────────────────────────────────────────
 info "[4/7] load image (SHA256 驗檔 + re-tag anila-intranet-* → anila-platform-*)"
 bash "$BUNDLE/INTRANET-LOAD.sh"
+
+# ── 4b. JWT 簽章金鑰 ───────────────────────────────────────────────────────
+# csp 用這把 RSA 私鑰簽登入 access token,並對 anila-studio 等服務發 JWKS 公鑰。
+# prod 模式 ALLOW_AUTO_KEYGEN=false → 不自動生;缺這把:csp /.well-known/jwks.json
+# 回 500、登入發不了 token、anila-studio 啟動 crash-loop。compose 以 :ro 把 ./secrets
+# mount 進 csp:/app/secrets。必須在 [6] up 之前產好。需 csp image(故排在 load 之後)。
+info "[4b/7] JWT 簽章金鑰 (secrets/jwt-private.pem)"
+mkdir -p secrets
+if [ -f secrets/jwt-private.pem ] && [ -f secrets/jwt-public.pem ]; then
+  ok "已有 JWT keypair (重跑沿用,token 不失效)"
+else
+  docker run --rm -v "$PWD/secrets:/out" --entrypoint python anila-platform-csp:latest \
+    /app/scripts/generate-jwt-keypair.py --output-dir /out \
+    && ok "已產生 JWT keypair (RSA-2048 / RS256 / PKCS#8)" \
+    || die "JWT keypair 產生失敗 (csp image 在? scripts/generate-jwt-keypair.py 在?)"
+fi
 
 # ── 5. network ───────────────────────────────────────────────────────────
 info "[5/7] docker network anila-models-net"

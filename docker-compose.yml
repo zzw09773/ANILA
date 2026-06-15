@@ -158,6 +158,11 @@ services:
       - ./share/uploads/ingestion:/var/anila/ingestion-uploads
       # 內網模型 https 的內部 CA PEM 放這裡 (見上 SSL_CERT_FILE)。
       - ./share/pki:/etc/anila/pki:ro
+      # JWT 簽章金鑰 (csp 簽 access token + 對 studio 發 JWKS)。prod 模式
+      # (ALLOW_AUTO_KEYGEN=false) 不自動生 → 缺這把 csp /.well-known/jwks.json
+      # 回 500、登入發不了 token、anila-studio 起不來。由 intranet-deploy.sh 的
+      # [4b] 步驟用 csp image 跑 scripts/generate-jwt-keypair.py 產到 ./secrets。
+      - ./secrets:/app/secrets:ro
     extra_hosts:
       # csp 從這條 reach on-host service (e.g. host port 上的 embedding 後備)。
       - "host.docker.internal:host-gateway"
