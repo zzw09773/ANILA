@@ -185,11 +185,16 @@ cmd_preflight() {
 # /.well-known/jwks.json 回 500、登入發不了 access token、anila-studio crash-loop。
 # docker-compose.yml 以 ./secrets mount 進 csp /app/secrets；compose up 前確保存在。
 ensure_jwt_keypair() {
-  mkdir -p secrets
+  mkdir -p -m 700 secrets   # secrets 目錄不可 world-listable
   if [[ ! -f secrets/jwt-private.pem || ! -f secrets/jwt-public.pem ]]; then
-    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out secrets/jwt-private.pem 2>/dev/null
-    openssl pkey -in secrets/jwt-private.pem -pubout -out secrets/jwt-public.pem 2>/dev/null
+    # umask 077 子 shell:私鑰「建立當下」即 0600,消除 chmod 前的 TOCTOU 暴露窗。
+    (
+      umask 077
+      openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out secrets/jwt-private.pem
+      openssl pkey -in secrets/jwt-private.pem -pubout -out secrets/jwt-public.pem
+    )
     chmod 600 secrets/jwt-private.pem
+    chmod 644 secrets/jwt-public.pem   # 公鑰可讀
     echo "✓ 已產生 JWT 簽章 keypair (secrets/jwt-{private,public}.pem)"
   fi
 }
