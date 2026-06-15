@@ -1353,3 +1353,38 @@ def delete_agent_function(
         raise HTTPException(status_code=404, detail="功能不存在")
     db.delete(fn)
     db.commit()
+
+
+# ── system prompt 產生器（開發者 guide 頁用）─────────────────────────────────
+class SystemPromptSuggestRequest(BaseModel):
+    collection_id: int = Field(..., ge=1)
+    ideas: str = Field(..., min_length=1, max_length=4000)
+
+
+class SystemPromptSuggestResponse(BaseModel):
+    system_prompt: str
+
+
+@router.post("/system-prompt/suggest", response_model=SystemPromptSuggestResponse)
+async def suggest_system_prompt(
+    payload: SystemPromptSuggestRequest,
+    current_user: User = Depends(_require_developer_or_admin),
+    db: Session = Depends(get_db),
+):
+    """dev：選 collection + 輸入構想 → 抽該 collection 文件 grounding → LLM 產生領域 system prompt。
+
+    產出供 dev 貼進 anila-agent ``prompts/system.md``，或前端再存成該 agent 的 preset_prompt。
+    """
+    from app.services.prompt_gen_service import generate_system_prompt
+
+    try:
+        text = await generate_system_prompt(
+            db, payload.collection_id, payload.ideas, current_user
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return SystemPromptSuggestResponse(system_prompt=text)
