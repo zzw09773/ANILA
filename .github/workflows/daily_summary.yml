@@ -1,0 +1,49 @@
+name: 每日工作彙整
+
+on:
+  schedule:
+    # 每天 04:00 台北時間 = UTC 20:00（前一天）
+    - cron: '0 20 * * *'
+  # 允許在 GitHub Actions 介面手動觸發（測試用）
+  workflow_dispatch:
+
+jobs:
+  daily-summary:
+    name: 彙整前日工作並輸出 Google 文件
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read   # 讀取 repo 內容即可
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run daily summary script
+        env:
+          # GITHUB_TOKEN 由 Actions 自動提供，用於跨 repo 查詢請升級為 PAT
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          GOOGLE_CLIENT_ID:     ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+        run: python scripts/daily_summary.py
+
+      - name: Print Google Doc URL
+        run: |
+          echo "📄 今日工作日報連結："
+          cat doc_url.txt
+
+      - name: Upload doc URL as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-doc-url-${{ github.run_id }}
+          path: doc_url.txt
+          retention-days: 30
