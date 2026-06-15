@@ -101,8 +101,9 @@ services:
       # JWT 簽章金鑰 (csp 簽 access token + 對 studio 發 JWKS)。prod 模式
       # ALLOW_AUTO_KEYGEN=false 不自動生 → 缺這把 csp /.well-known/jwks.json 回
       # 500、登入發不了 token、anila-studio 起不來。deploy-prod.sh 的 ensure_jwt_keypair
-      # 會在 up 前產到 ./secrets。RW（非 :ro）→ 放寬模式 auto-keygen 也能寫。
-      - ./secrets:/app/secrets
+      # 會在 up 前產到 ./secrets。:ro → csp 只讀、不能竄改簽章金鑰
+      # (部署/recreate 前務必先跑 deploy-prod.sh 或手動產 key)。
+      - ./secrets:/app/secrets:ro
     extra_hosts:
       # csp 從這條 reach on-host service (e.g. host port 上的 embedding 後備)。
       - "host.docker.internal:host-gateway"
