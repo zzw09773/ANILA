@@ -1,0 +1,50 @@
+# 每日工作彙整 — 每日 04:00 台北時間自動執行
+# 需在 repo Settings → Secrets and variables → Actions 設定以下 Secrets：
+#   ANTHROPIC_API_KEY    — Anthropic API 金鑰
+#   GH_PAT               — GitHub Personal Access Token（repo 讀取權限）
+#   GOOGLE_CLIENT_ID     — Google OAuth 用戶端 ID
+#   GOOGLE_CLIENT_SECRET — Google OAuth 用戶端密鑰
+#   GOOGLE_REFRESH_TOKEN — Google OAuth Refresh Token（執行 get_google_token.py 取得）
+#   GDOC_FOLDER_ID       — （選填）Google Drive 資料夾 ID，彙整文件存放位置
+
+name: 每日工作彙整
+
+on:
+  schedule:
+    - cron: '0 20 * * *'  # 20:00 UTC = 04:00 台北時間（UTC+8）
+  workflow_dispatch:
+    inputs:
+      date_override:
+        description: '指定日期 (YYYY-MM-DD)，留空則使用昨日台北時間'
+        required: false
+        type: string
+
+jobs:
+  daily-summary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: scripts/daily_summary_requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r scripts/daily_summary_requirements.txt
+
+      - name: Generate daily summary
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GDOC_FOLDER_ID: ${{ secrets.GDOC_FOLDER_ID }}
+          DATE_OVERRIDE: ${{ inputs.date_override }}
+        run: python scripts/daily_summary.py
