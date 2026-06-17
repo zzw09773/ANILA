@@ -36,7 +36,7 @@ scripts：`dev`（vite）/ `build`（vite build）/ `preview` / `test`（vitest 
 anila-ui/
 ├── index.html · vite.config.js · vitest.setup.js
 ├── Dockerfile              # 多階段：node:22-alpine build（npm install）→ nginx:1.27-alpine serve
-├── .env.example · docker/nginx.conf · docs/ · e2e/
+├── .env.example · docker/nginx.conf · docs/ · e2e/   # e2e/ 僅存歷史 README（Functions v1 stack 已整個移除，無 spec、無 playwright 依賴）
 └── src/
     ├── main.jsx            # ReactDOM 入口；BrowserRouter(basename=import.meta.env.BASE_URL)
     │                       #   + AuthProvider + ConfirmProvider；/login、/app/*(RequireAuth)
@@ -65,6 +65,8 @@ anila-ui/
 ```
 
 > 測試在 **`src/__tests__/`**（非 `runtime/__tests__/`）。
+>
+> ⚠️ `e2e/README.md` 為**過時殘留**：它描述的 Functions v1 Playwright stack（`functions.spec.js`、sandbox/egress compose、`http://localhost:3001`）已被移除；本子專案目前**無 Playwright E2E**，請勿照該檔執行。
 
 ---
 
@@ -87,6 +89,14 @@ docker run -p 8080:80 anila-runtime-ui
 ```
 
 > 本子專案 `Dockerfile` 的 build-arg 預設為 `VITE_CSP_BASE_URL=http://localhost:8000`、`VITE_ROUTER_BASE_URL=http://localhost:9000`、`BASE_PATH=/`。repo 根 compose 會以 override 把它們設成 same-origin / `/router` 並由主 nginx 反向代理對外（預設 `https://localhost:4443/`）。
+
+### 測試
+
+```bash
+npm test          # vitest run，跑 src/__tests__/ 的 10 個單元測試（runtime 純邏輯 + 少數元件）
+```
+
+僅有 Vitest 單元測試；本子專案目前無 E2E（見上方 layout 對 `e2e/` 的註記）。
 
 ---
 

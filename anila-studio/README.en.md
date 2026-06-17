@@ -42,12 +42,12 @@ anila-studio/
 │   ├── api/                # studio.py reports.py mindmaps.py infographics.py datatables.py
 │   ├── clients/csp_client.py    # wraps the csp HTTP API
 │   ├── schemas/            # studio.py report.py mindmap.py infographic.py datatable.py
-│   ├── services/           # 29 modules (grouped below)
+│   ├── services/           # 26 modules (grouped below)
 │   └── templates/          # infographic/base.html.j2 + report/*.html.j2
 └── tests/                  # 40 test files, ~451 test functions
 ```
 
-`services/` groups (29 modules):
+`services/` groups (26 modules):
 - **Slide pipeline**: `studio_config` / `studio_retrieval` / `studio_llm` / `studio_render` / `studio_vision_qa` / `studio_layout` / `studio_job_service` / `studio_text_normalizer` (Simplified→Traditional s2twp + cleanup) / `llm_json` (lenient JSON parsing).
 - **FLUX imaging**: `flux_image_provider` / `flux_prompt_rewriter` / `flux_quality_gate` (VLM ranking + FFT striping) / `flux_style` / `diagram_renderer` (Graphviz dot→PNG) / `geometric_qa`.
 - **Auth / infra**: `jwks_client` (fetch csp JWKS + cache) / `revocation_cache` (Redis pub/sub + cold-start, fail-closed).
@@ -137,7 +137,7 @@ cd ../ANILALM && npm run gen:studio-types
 
 - csp's `JWT_PRIVATE_KEY_PATH` must exist (pre-generated via csp `scripts/generate-jwt-keypair.py` or Vault-injected); anila-studio needs no private key, only reachable csp `/.well-known/jwks.json`.
 - anila-studio fails fast on startup if csp `/api/auth/revocations` is unreachable.
-- `ALLOW_AUTO_KEYGEN` is dev/test only.
+- `ALLOW_AUTO_KEYGEN` (**csp-side** knob; anila-studio's own code has no such variable) is dev/test only.
 
 ---
 

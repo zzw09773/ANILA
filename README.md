@@ -2,7 +2,9 @@
 
 > **Runtime-first、On-prem 多 Agent 平台。** 三個核心服務、一個落地 LLM，docker compose 一鍵啟動。
 
-> 🌐 **你正在看 `prod-public-passwd` 分支**(對外網 prod，純帳密)。= `main` + 外網 hardening，**移除全部 dev tooling**(code-server / n8n / GitLab)。
+> 🌐 **你正在看 `prod-public-passwd` 分支**(對外網 prod，純帳密)。= `main` + 外網 hardening，**移除 code-server**(對外不暴露 browser-in-IDE)。
+>
+> ⚠️ **注意**：n8n / GitLab 目前**仍保留於本分支**(compose 服務 + nginx `/n8n`、`/gitlab` 路由)。要貫徹「最小對外面」須另行移除——見下方 hardening 清單。
 >
 > | Branch | 部署對象 | 認證 | 定位 |
 > |---|---|---|---|
@@ -28,7 +30,7 @@ ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key�
 |---|---|
 | **部署對象** | 對外網（public-facing）正式環境 |
 | **認證** | 純帳密（本地登入）；**無** SSO / card auth fork |
-| **與 main 差異** | `docker-compose.yml` + `nginx.conf` **移除 code-server / n8n dev tooling 區段**（對外環境不暴露開發工具）；其餘對齊 main |
+| **與 main 差異** | `docker-compose.yml` + `nginx.conf` **移除 code-server**（對外不暴露 browser-in-IDE）；**n8n / GitLab 仍保留**，視部署需求自行移除；其餘對齊 main |
 | **hardening 取向** | 外網威脅模型：CSP 嚴一級、rate-limit / WAF-ready、最小對外攻擊面 |
 | **同步** | 從 main sync；本分支 fork 區只有「移除 dev tooling」 |
 
@@ -44,10 +46,11 @@ ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key�
 | [`ingestion-worker`](./ingestion-worker/) | **Async pipeline worker** — Arq + Redis；parse → chunk → embed → pgvector + Chunking Evaluator | （無 host port） |
 | [`ANILA_UI/anila-ui`](./ANILA_UI/anila-ui/) | **Chat Runtime UI** — React，cookie + SSE | nginx 前 |
 | [`ANILALM`](./ANILALM/) | **Knowledge-base + Studio SPA**；mount 在 nginx `/anilalm/` | nginx 前 |
-| **`nginx`** | 對外閘道；同源 reverse-proxy `/api`、`/v1`、`/router`、`/anilalm/`；6 個安全 header | `:443` / `:4443` |
+| **`nginx`** | 對外閘道；同源 reverse-proxy `/api`、`/v1`、`/router`、`/anilalm/`；7 個安全 header | `:443` / `:4443` |
 | **`redis`** | ingestion-worker queue + token-revoke pub/sub | （無 host port） |
 
-> ⛔ 相對 `main`：**不含** `/codeserver`、`/n8n` 路由與對應 compose 服務。
+> ⛔ 相對 `main`：**已移除** `codeserver` 服務與 `/codeserver` 路由。
+> ⚠️ `n8n` / `gitlab` 服務與 `/n8n`、`/gitlab` 路由**尚未移除**（仍在 `docker-compose.yml` 與 `myCSPPlatform/docker/nginx.conf`），對外網部署前請評估。
 
 > **唯一規劃文件**：[`anila_plan.md`](./anila_plan.md)。
 
@@ -93,6 +96,35 @@ flowchart TB
 
 ---
 
+## 介面預覽
+
+> 以下截圖取自運行中的 ANILA 平台（`prod-public-passwd` stack）：CSP 控制台（`:443`）、anila-ui 對話前端（`:4443`）、ANILALM 知識庫（`/anilalm/`）。
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/login.png" alt="統一登入"><br><sub><b>統一登入</b>｜RS256 JWT + httpOnly cookie，CSRF double-submit</sub></td>
+    <td width="50%"><img src="docs/assets/screenshots/dashboard.png" alt="CSP 控制台總覽"><br><sub><b>CSP 控制台總覽</b>｜24h 用量 / 吞吐 / Top agents / legacy-token cutover 監控</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/models.png" alt="模型 / API Key 管理"><br><sub><b>模型 / API Key 管理</b>｜統一註冊 LLM / Embedding / Agent endpoint</sub></td>
+    <td><img src="docs/assets/screenshots/agents.png" alt="Agent 註冊與核准"><br><sub><b>Agent 註冊與核准</b>｜逐 agent 強制加密（classified latch 來源）</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/knowledge-collections.png" alt="知識庫 Collections"><br><sub><b>知識庫 Collections</b>｜文件 → chunk → embed → pgvector 檢索（RAG）</sub></td>
+    <td><img src="docs/assets/screenshots/developer-guide.png" alt="開發者上手指南"><br><sub><b>開發者上手指南</b>｜對準 MLSteam 工作流的 agent 建置教學</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/chat-ui.png" alt="anila-ui 對話前端"><br><sub><b>anila-ui 對話前端</b>｜<code>anila-router</code> 自動分派、分享、交接</sub></td>
+    <td><img src="docs/assets/screenshots/anilalm.png" alt="ANILALM 知識庫 + Studio"><br><sub><b>ANILALM 知識庫 + Studio</b>｜文件 → 對話 → 簡報 / 報告 / 心智圖 等 artifact</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/audit-logs.png" alt="審計日誌"><br><sub><b>審計日誌</b>｜所有 admin 操作自動寫 <code>audit_logs</code></sub></td>
+    <td><img src="docs/assets/screenshots/classified-latch.png" alt="Classified 單向閂鎖"><br><sub><b>Classified 單向閂鎖</b>｜遇加密 agent 整段對話升級加密，無降級路徑</sub></td>
+  </tr>
+</table>
+
+---
+
 ## 快速開始 / 部署
 
 ### 正式部署（建議走部署腳本）
@@ -135,9 +167,10 @@ curl https://<your-domain>/router/health # Router
 
 - [ ] **HSTS 已啟用**且憑證已切到**非自簽**（HSTS 啟用前務必確認，否則自簽會把使用者鎖在錯誤憑證）。
 - [ ] `ANILA_ALLOW_DEV_SECRET` **未設**；`SECRET_KEY` / `ADMIN_PASSWORD` / `CSP_SERVICE_TOKEN` / DB password / `INTERNAL_PLATFORM_API_KEY` 全為真值。
-- [ ] **dev tooling 不存在**：確認 compose 無 `codeserver` / `n8n` 服務、nginx 無 `/codeserver` / `/n8n` 路由（本分支已移除）。
+- [ ] **code-server 已移除**：確認 compose 無 `codeserver` 服務、nginx 無 `/codeserver` 路由（本分支已移除）。
+- [ ] **評估 n8n / GitLab 對外暴露**：本分支**仍保留** `n8n` / `gitlab`（compose 服務 + nginx `/n8n`、`/gitlab` 路由 + `developer` 角色導覽連結）。對外網若不需要，移除對應 compose 服務、nginx `location` 與 `AUTO_REGISTER_LINKS` 連結。
 - [ ] CSP / Router **無 host port**，外部只能經 nginx `:443`。
-- [ ] 6 個 nginx 安全 header 全到位（HSTS / CSP / Permissions-Policy / Referrer-Policy / X-Frame-Options / X-Content-Type-Options）。
+- [ ] 7 個 nginx 安全 header 全到位（HSTS / CSP / Permissions-Policy / Referrer-Policy / X-Frame-Options / X-Content-Type-Options / X-XSS-Protection）。
 - [ ] 模型 stack（`models/docker-compose.yml`）走 `expose:` 不對 host 開埠，只在 `anila-models-net` 內可達。
 - [ ] SSRF guard allow-list（`/trusted-hosts`）只含必要的內部 docker service name。
 
@@ -183,7 +216,7 @@ docker compose -f models/docker-compose.yml up -d            # 起模型 stack�
 - **SPA 認證**：httpOnly cookie + CSRF double-submit；SPA 不持有 API Key。SDK `Bearer` 路徑豁免 CSRF。
 - **Credential 加密**：AES-256-GCM + PBKDF2 600k；SSRF guard 把關所有 user-supplied endpoint（loopback / metadata 永不可繞過）。
 - **啟動安全檢查**：`startup_security` 在 prod 拒絕 dev 預設值。
-- **nginx 6 安全 header** + 上傳 allow-list + zip 1 GB 解壓上限 + 路徑遍歷防護。
+- **nginx 7 安全 header** + 上傳 allow-list + zip 1 GB 解壓上限 + 路徑遍歷防護。
 - **審計日誌**：所有 admin 操作自動寫 `audit_logs`。
 
 ---
