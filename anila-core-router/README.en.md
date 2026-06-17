@@ -12,7 +12,7 @@
 
 The Router exposes an OpenAI-compatible `POST /v1/chat/completions` and provides a pseudo-model `anila-router`. Behaviour (confirmed against `main.py` and `router_server`):
 
-- A client sets the request body `model` to `anila-router` to trigger automatic dispatch; any other `model` value is forwarded straight to CSP without dispatch.
+- A client sets the request body `model` to `anila-router` to route traffic here. In practice `chat_completions` (`router_server.py`) **does not inspect the `model` field**: regardless of its value, every request runs the full dispatch flow (fetch agents → call the primary LLM → let that LLM decide whether to dispatch). `anila-router` is just an advertised pseudo-model (`GET /v1/models`).
 - The Router pulls the agent manifest (incl. `requires_encryption`) from CSP `GET /v1/agents` and caches it, then calls the primary routing LLM with the caller's API key; that LLM decides whether to dispatch to an agent (e.g. an `image-generator` drawing agent).
 - On dispatch the request is forwarded to that agent's `endpoint_url`; the agent's SSE stream is forwarded chunk by chunk to the caller.
 - The primary routing model is decided by CSP at runtime: `main.py` pulls the current primary LLM from CSP `GET /api/models/router-primary` every 60s. When CSP has no primary set, the middleware blocks `/v1/chat/completions` with a **503**, avoiding a silent fall-back to the wrong upstream.
@@ -64,6 +64,7 @@ The Router image is built from this directory's `Dockerfile` and runs as service
 ```bash
 # from repo root
 docker compose -f docker-compose-dev.yml up -d router   # dev
+docker compose -f docker-compose.yml     up -d router   # prod (repo-root default compose, also runs as service router)
 ```
 
 In compose `router` only uses `expose: 9000` (**no** host port); the UI exposes it via the `/router` reverse proxy (see the UI's `VITE_ROUTER_BASE_URL` default `/router`). The Router waits for `csp` to be healthy first.
@@ -92,7 +93,7 @@ uvicorn main:app --host 0.0.0.0 --port 9000 --log-level info
 | `CSP_SERVICE_TOKEN` | legacy fleet-shared shared-secret; fallback when no state file | `""` |
 | `ANILA_ROUTER_STATE_DIR` | directory persisting the service token (state file `service_token.json`, mode 0600) | `/var/lib/anila-router` |
 
-> `main.py` reads only the four env vars above and **does NOT read `MODEL`** (the primary routing model is decided entirely by CSP `/api/models/router-primary` at runtime). The primary model is refreshed lazily every **60s** (`PRIMARY_TTL_SECONDS=60`) with no background timer: triggered once at startup, then by the `/v1/chat/completions` gate middleware when stale. `main.py` makes exactly one CSP call, `GET /api/models/router-primary` (with `X-CSP-Service-Token`); `GET /v1/agents`, `POST /v1/chat/completions`, and agent dispatch + SSE forward all live in the SDK `router_server.py`.
+> `main.py` reads only the four env vars above and **does NOT read `MODEL`** (the primary routing model is decided entirely by CSP `/api/models/router-primary` at runtime; the compose `router` service still carries `MODEL: ${LLM_MODEL:-gemma4}`, but `main.py` never reads it — a vestigial env var with no effect). The primary model is refreshed lazily every **60s** (`PRIMARY_TTL_SECONDS=60`) with no background timer: triggered once at startup, then by the `/v1/chat/completions` gate middleware when stale. `main.py` makes exactly one CSP call, `GET /api/models/router-primary` (with `X-CSP-Service-Token`); `GET /v1/agents`, `POST /v1/chat/completions`, and agent dispatch + SSE forward all live in the SDK `router_server.py`.
 >
 > The Router holds **no** user API key of its own: it calls back to the CSP data plane with the caller's (UI / OpenAI SDK) Bearer API key, so the agents a caller can see equal the agents the Router can dispatch to.
 

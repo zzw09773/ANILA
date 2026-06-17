@@ -42,7 +42,7 @@ ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key�
 | [`anila-agent`](./anila-agent/) | **官方 sub-agent 模板**（git subtree；上游 [`zzw09773/anila-agent`](https://github.com/zzw09773/anila-agent)） | `:24786`（獨立執行時） |
 | [`ingestion-worker`](./ingestion-worker/) | **Async pipeline worker** — Arq + Redis；parse → chunk → embed → pgvector + Chunking Evaluator | （無 host port） |
 | [`ANILA_UI/anila-ui`](./ANILA_UI/anila-ui/) | **Chat Runtime UI** — React 聊天介面，cookie + SSE | nginx 前 |
-| **`nginx`** | 對外閘道；同源 reverse-proxy `/api`、`/v1`、`/router`、`/static`、`/uploads`；6 個安全 header | `:80` / `:443` / `:4443` |
+| **`nginx`** | 對外閘道；同源 reverse-proxy `/api`、`/v1`、`/router`、`/static`、`/uploads`；7 個安全 header | `:80` / `:443` / `:4443` |
 | **`redis`** | ingestion-worker queue backing store；不對外暴露 | （無 host port） |
 
 > ⛔ 相對 `main`：**不含** `anila-studio`、`ANILALM`、`pptx-skill`、FLUX 簡報，以及多個進階管理頁。
@@ -56,7 +56,7 @@ ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key�
 ```mermaid
 flowchart TB
     users["🧑‍💻 展示使用者 / Agent 開發者"]
-    nginx["nginx :80 / :443<br/>同源 reverse-proxy + 6 安全 header"]
+    nginx["nginx :80 / :443<br/>同源 reverse-proxy + 7 安全 header"]
 
     subgraph spas["前端"]
         anila_ui["anila-ui<br/>對話 · 分享 · 交接"]
@@ -86,6 +86,30 @@ flowchart TB
 ```
 
 **核心資料流**：UI POST `/v1/chat/completions`（`model=anila-router`）→ Router 取 agent manifest + 問主 LLM 是否分派 → 必要時轉發 agent → SSE 逐 chunk forward 回 UI；agent `requires_encryption` 時對話永久閂鎖加密（one-way latch）。
+
+---
+
+## 介面預覽
+
+> 以下截圖取自運行中的 ANILA 平台：CSP 控制台（`:443`）與 anila-ui 對話前端（`:4443`）。本精簡分支不含 ANILALM 知識庫 SPA、Studio 與部分進階管理頁，故未列入。
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/login.png" alt="統一登入"><br><sub><b>統一登入</b>｜RS256 JWT + httpOnly cookie，CSRF double-submit</sub></td>
+    <td width="50%"><img src="docs/assets/screenshots/dashboard.png" alt="CSP 控制台總覽"><br><sub><b>CSP 控制台總覽</b>｜24h 用量 / 吞吐 / Top agents 監控</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/models.png" alt="模型 / API Key 管理"><br><sub><b>模型 / API Key 管理</b>｜統一註冊 LLM / Embedding / Agent endpoint</sub></td>
+    <td><img src="docs/assets/screenshots/knowledge-collections.png" alt="知識庫 Collections"><br><sub><b>知識庫 Collections（RAG）</b>｜文件 → chunk → embed → pgvector 檢索</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/chat-ui.png" alt="anila-ui 對話前端"><br><sub><b>anila-ui 對話前端</b>｜<code>anila-router</code> 自動分派、分享、交接</sub></td>
+    <td><img src="docs/assets/screenshots/audit-logs.png" alt="審計日誌"><br><sub><b>審計日誌</b>｜所有 admin 操作自動寫 <code>audit_logs</code></sub></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/assets/screenshots/classified-latch.png" alt="Classified 單向閂鎖"><br><sub><b>Classified 單向閂鎖</b>｜遇加密 agent 整段對話升級加密，無降級路徑</sub></td>
+  </tr>
+</table>
 
 ---
 
@@ -151,7 +175,7 @@ docker compose -f models/docker-compose.yml restart <model>  # 重啟單一模�
 - **SPA 認證**：httpOnly cookie + CSRF double-submit；SPA 不持有 API Key。
 - **Credential 加密**：AES-256-GCM + PBKDF2 600k；SSRF guard 把關所有 user-supplied endpoint。
 - **啟動安全檢查**：`startup_security` 在正式環境拒絕 dev 預設值。
-- **nginx 6 安全 header** + 上傳 allow-list + 審計日誌。
+- **nginx 7 安全 header** + 上傳 allow-list + 審計日誌。
 
 ---
 
