@@ -28,7 +28,7 @@ ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key�
 
 - **角色**：single source of truth。功能開發、bugfix、文件一律先落在這裡。
 - **認證**：純帳密（本地登入）。`main` **不含** SSO / 自然人憑證卡 fork — 那是 `prod-intranet-card` 專屬。
-- **dev tooling**：`docker-compose.yml` 內含 code-server / n8n / GitLab 三個服務的**冷藏（commented-out）**定義，預設不啟動。`dev-*` 分支會解凍、`prod-*` 分支會移除。
+- **dev tooling**：`docker-compose.yml` 內含 code-server / n8n / GitLab 三個服務，**目前為 active 定義**（無 `profiles:` 閘控 → `docker compose up` 會一併啟動；code-server 以 `CODESERVER_PASSWORD:?` 強制設密）。`dev-*` 分支保留；各 `prod-*` 分支依其 hardening 取向移除部分（見各分支 README）。
 - **同步方向**：`main` → downstream。downstream catch-up 用 `git merge origin/main`（content conflict 偏 `-X theirs`）。SOP 見 [`docs/branch-sync-backlog.md`](./docs/branch-sync-backlog.md)。
 - **commit 標籤**：跨分支的 commit 用前綴標記分流（`[card-only]` / `[public-only]` / `[military-only]` / `[dev-only]` / `[security-all]`）。無標籤的 commit 預設四條 downstream 都該 sync。
 
@@ -43,7 +43,7 @@ ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key�
 | [`ANILA_UI/anila-ui`](./ANILA_UI/anila-ui/) | **Chat Runtime UI** — React 聊天介面，cookie + SSE，串 CSP 與 Router | nginx 前 |
 | [`ANILALM`](./ANILALM/) | **Knowledge-base 前端 + Studio** — Vite + React + TS SPA；mount 在 nginx `/anilalm/` 子路徑 | nginx 前 |
 | [`ANILALM/pptx-skill`](./ANILALM/pptx-skill/) | **PPTX render service** — Node.js + pptxgenjs；Studio 生簡報的後端 | `:7100`（internal） |
-| **`nginx`**（compose service） | 對外閘道；同源 reverse-proxy `/api`、`/v1`、`/router`、`/anilalm/`、`/static`、`/uploads`；6 個安全 header | `:80` / `:443` / `:4443` |
+| **`nginx`**（compose service） | 對外閘道；同源 reverse-proxy `/api`、`/v1`、`/router`、`/anilalm/`、`/static`、`/uploads`；7 個安全 header | `:80` / `:443` / `:4443` |
 | **`redis`**（compose service） | ingestion-worker 的 queue backing store；不對外暴露 | （無 host port） |
 | [`runtime_logic`](./runtime_logic/) | **TS Runtime 參考材料**（READ-ONLY）；原始碼 gitignored | — |
 
@@ -56,7 +56,7 @@ ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key�
 ```mermaid
 flowchart TB
     users["🧑‍💻 使用者 / Agent 開發者"]
-    nginx["nginx :80 / :443 / :4443<br/>同源 reverse-proxy + 6 個安全 header"]
+    nginx["nginx :80 / :443 / :4443<br/>同源 reverse-proxy + 7 個安全 header"]
 
     subgraph spas["前端（皆經 nginx 對外）"]
         anila_ui["anila-ui<br/>對話 · 分享 · 交接 · Developer Console"]
@@ -126,6 +126,35 @@ flowchart TB
        SSE 逐 chunk forward 回 UI；若 agent requires_encryption 則 meta 標 classified=true
   └─ UI 收到 classified=true → 對話永久閂鎖為加密模式（one-way latch，不可降級）
 ```
+
+---
+
+## 介面預覽
+
+> 以下截圖取自運行中的 ANILA 平台：CSP 控制台（`:443`）、anila-ui 對話前端（`:4443`）、ANILALM 知識庫（`/anilalm/`）。
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/login.png" alt="統一登入"><br><sub><b>統一登入</b>｜RS256 JWT + httpOnly cookie，CSRF double-submit</sub></td>
+    <td width="50%"><img src="docs/assets/screenshots/dashboard.png" alt="CSP 控制台總覽"><br><sub><b>CSP 控制台總覽</b>｜24h 用量 / 吞吐 / Top agents / legacy-token cutover 監控</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/models.png" alt="模型 / API Key 管理"><br><sub><b>模型 / API Key 管理</b>｜統一註冊 LLM / Embedding / Agent endpoint</sub></td>
+    <td><img src="docs/assets/screenshots/agents.png" alt="Agent 註冊與核准"><br><sub><b>Agent 註冊與核准</b>｜逐 agent 強制加密（classified latch 來源）</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/knowledge-collections.png" alt="知識庫 Collections"><br><sub><b>知識庫 Collections</b>｜文件 → chunk → embed → pgvector 檢索（RAG）</sub></td>
+    <td><img src="docs/assets/screenshots/developer-guide.png" alt="開發者上手指南"><br><sub><b>開發者上手指南</b>｜對準 MLSteam 工作流的 agent 建置教學</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/chat-ui.png" alt="anila-ui 對話前端"><br><sub><b>anila-ui 對話前端</b>｜<code>anila-router</code> 自動分派、分享、交接</sub></td>
+    <td><img src="docs/assets/screenshots/anilalm.png" alt="ANILALM 知識庫 + Studio"><br><sub><b>ANILALM 知識庫 + Studio</b>｜文件 → 對話 → 簡報 / 報告 / 心智圖 等 artifact</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/audit-logs.png" alt="審計日誌"><br><sub><b>審計日誌</b>｜所有 admin 操作自動寫 <code>audit_logs</code></sub></td>
+    <td><img src="docs/assets/screenshots/classified-latch.png" alt="Classified 單向閂鎖"><br><sub><b>Classified 單向閂鎖</b>｜遇加密 agent 整段對話升級加密，無降級路徑</sub></td>
+  </tr>
+</table>
 
 ---
 
@@ -240,7 +269,7 @@ docker compose -f models/docker-compose.yml restart gemma4    # 重啟單一模�
 - **Credential 加密**：AES-256-GCM + PBKDF2-HMAC-SHA256 600k iter（OWASP 2024）；v1→v2 雙 key 過渡 + `scripts/reencrypt-credentials.py`。
 - **SSRF guard**：`anila_core.security.url_guard.validate_outbound_url` 對所有 user-supplied endpoint 把關（loopback / private / metadata / docker single-label 等）；allow-list 由 `/trusted-hosts` UI（DB-backed）管理，loopback / metadata 永不可被繞過。
 - **啟動安全檢查**：`startup_security.assert_no_dev_defaults()` 在正式環境拒絕已知 dev 預設值，container 直接開不起來。
-- **Nginx 6 安全 header**：HSTS / CSP / Permissions-Policy / Referrer-Policy / X-Frame-Options / X-Content-Type-Options。
+- **Nginx 7 安全 header**：HSTS / CSP / Permissions-Policy / Referrer-Policy / X-Frame-Options / X-Content-Type-Options / X-XSS-Protection。
 - **上傳 / 路徑防護**：附件 allow-list、zip 1 GB 累計解壓上限 + filename sanitize、SPA fallback 路徑遍歷防護。
 - **審計日誌**：所有 admin 管理操作自動寫 `audit_logs`，IP 從 `X-Forwarded-For` / `request.client.host` 填入。
 
@@ -261,7 +290,7 @@ ANILA/
 ├── models/               # 推論模型獨立 compose（project: anila-models）
 ├── docs/                 # 設計 / 規格 / runbook / changelog / branch-sync-backlog
 ├── scripts/              # reencrypt-credentials / reissue-tls-cert / phase1-e2e 等
-├── docker-compose.yml    # 9 active services + 3 cold-stored（codeserver / n8n / gitlab，commented）
+├── docker-compose.yml    # 含 codeserver / n8n / gitlab（目前為 active 定義、非 commented；見「本分支定位」dev tooling 說明）
 ├── anila_plan.md         # 單一事實來源
 └── README.md             # 本檔
 ```

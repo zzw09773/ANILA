@@ -64,11 +64,17 @@ CLI 指令：`/help`、`/memory [查詢]`、`/style`、`/clear`、`/deep-researc
 
 ```bash
 make install            # 已含 [serving]
+make serve              # python app.py（先 load .env，再起 :8200）
+# 或明確指定：
 uvicorn anila_agent.serving.service_wrapper:app --host 0.0.0.0 --port 8200
 ```
 
 CSP Router 以 `X-CSP-Service-Token`（csk-）派工；驗過才信 `X-ANILA-User-*`。未設
 `CSP_SERVICE_TOKEN` 時 fail-closed 拒絕（本地測試設 `ANILA_ALLOW_NO_SERVICE_TOKEN=1`）。
+
+## Docker / MLSteam 環境映像
+
+搬進 air-gap 內網的另一條路：build 一顆「環境」image（套件 + JupyterLab，無源碼），上傳 MLSteam 由其建 Lab；源碼從 workspace clone。`make docker-build` / `make docker-save`（存 tar）/ `make docker-run`（本機起 JupyterLab，:8888）。完整流程見 [DOCKER.md](DOCKER.md)。
 
 ## air-gapped 離線安裝
 

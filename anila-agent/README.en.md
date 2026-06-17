@@ -48,6 +48,32 @@ ANILA_SSL_VERIFY=1     # set 0 for self-signed intranet certs
 
 With no retriever configured it uses the built-in `DummyRetriever` (in-memory, zero infra).
 
+Enable differentiators (opt-in):
+
+```ini
+ANILA_MEMORY=1                 # long-term memory memdir (needs an embed endpoint)
+ANILA_EMBED_BASE_URL=http://nv-embed-proxy:8000/v1
+ANILA_CITED=1                  # inline source citations
+ANILA_OUTPUT_STYLE=zh-tw-formal
+```
+
+CLI commands: `/help`, `/memory [query]`, `/style`, `/clear`, `/deep-research <question>`, `/<command from configs/commands>`.
+
+## Serving (CSP dispatch)
+
+```bash
+make install            # already includes [serving]
+make serve              # python app.py (loads .env, then serves on :8200)
+# or explicitly:
+uvicorn anila_agent.serving.service_wrapper:app --host 0.0.0.0 --port 8200
+```
+
+The CSP Router dispatches with `X-CSP-Service-Token` (`csk-`); only after it verifies does it trust `X-ANILA-User-*`. With `CSP_SERVICE_TOKEN` unset it fails closed and rejects (for local testing set `ANILA_ALLOW_NO_SERVICE_TOKEN=1`).
+
+## Docker / MLSteam image
+
+Alternative path into an air-gapped intranet: build an "environment" image (packages + JupyterLab, no source), upload it to MLSteam and let it spin up a Lab; the source is cloned into the workspace. `make docker-build` / `make docker-save` (writes a tar) / `make docker-run` (JupyterLab locally on :8888). Full flow: see [DOCKER.md](DOCKER.md).
+
 ## Air-gapped offline install
 
 `openai-agents` pulls a full dependency tree. For a true air-gap, use the offline
