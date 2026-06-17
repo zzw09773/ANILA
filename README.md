@@ -46,7 +46,7 @@ ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key�
 | [`ingestion-worker`](./ingestion-worker/) | **Async pipeline worker** — Arq + Redis；parse → chunk → embed → pgvector + Chunking Evaluator | （無 host port） |
 | [`ANILA_UI/anila-ui`](./ANILA_UI/anila-ui/) | **Chat Runtime UI** — React；含 card 登入畫面（LoginView） | nginx 前 |
 | [`ANILALM`](./ANILALM/) | **Knowledge-base + Studio SPA**；mount 在 nginx `/anilalm/` | nginx 前 |
-| **`nginx`** | 對外閘道；**Host allowlist + 內網 hardening**；6 個安全 header | `:443` / `:4443` |
+| **`nginx`** | 對外閘道；**Host allowlist + 內網 hardening**；7 個安全 header | `:443` / `:4443` |
 | **`redis`** | ingestion-worker queue + token-revoke pub/sub | （無 host port） |
 
 > **唯一規劃文件**：[`anila_plan.md`](./anila_plan.md)。**AI 治理**：[`docs/governance/iso-42001-compliance.md`](./docs/governance/iso-42001-compliance.md)。
@@ -59,7 +59,7 @@ ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key�
 flowchart TB
     users["🧑‍💻 內網使用者（持卡）/ Agent 開發者"]
     card["中華電信 HiPKI 本機讀卡元件<br/>VITE_CARD_COMPONENT_ORIGIN"]
-    nginx["nginx :443 / :4443<br/>Host allowlist + 6 安全 header"]
+    nginx["nginx :443 / :4443<br/>Host allowlist + 7 安全 header"]
 
     subgraph spas["前端"]
         anila_ui["anila-ui<br/>card LoginView · 對話 · 分享"]
@@ -93,6 +93,34 @@ flowchart TB
     classDef plane fill:#fef3c7,stroke:#d97706
     class csp_ctrl,csp_data,csp_auth plane
 ```
+
+---
+
+## 介面預覽
+
+> 以下截圖取自運行中的 ANILA 平台 CSP 控制台、anila-ui 對話前端與 ANILALM 知識庫。本分支登入為中科院自然人憑證卡（PKCS#7/CMS 驗章），與截圖環境的帳密登入不同，故登入畫面未列入。
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/dashboard.png" alt="CSP 控制台總覽"><br><sub><b>CSP 控制台總覽</b>｜24h 用量 / 吞吐 / Top agents / legacy-token cutover 監控</sub></td>
+    <td width="50%"><img src="docs/assets/screenshots/models.png" alt="模型 / API Key 管理"><br><sub><b>模型 / API Key 管理</b>｜統一註冊 LLM / Embedding / Agent endpoint</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/agents.png" alt="Agent 註冊與核准"><br><sub><b>Agent 註冊與核准</b>｜逐 agent 強制加密（classified latch 來源）</sub></td>
+    <td><img src="docs/assets/screenshots/knowledge-collections.png" alt="知識庫 Collections"><br><sub><b>知識庫 Collections</b>｜文件 → chunk → embed → pgvector 檢索（RAG）</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/developer-guide.png" alt="開發者上手指南"><br><sub><b>開發者上手指南</b>｜對準 MLSteam 工作流的 agent 建置教學</sub></td>
+    <td><img src="docs/assets/screenshots/chat-ui.png" alt="anila-ui 對話前端"><br><sub><b>anila-ui 對話前端</b>｜<code>anila-router</code> 自動分派、分享、交接</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/anilalm.png" alt="ANILALM 知識庫 + Studio"><br><sub><b>ANILALM 知識庫 + Studio</b>｜文件 → 對話 → 簡報 / 報告 / 心智圖 等 artifact</sub></td>
+    <td><img src="docs/assets/screenshots/audit-logs.png" alt="審計日誌"><br><sub><b>審計日誌</b>｜所有 admin 操作自動寫 <code>audit_logs</code></sub></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/assets/screenshots/classified-latch.png" alt="Classified 單向閂鎖"><br><sub><b>Classified 單向閂鎖</b>｜遇加密 agent 整段對話升級加密，無降級路徑</sub></td>
+  </tr>
+</table>
 
 ---
 

@@ -45,7 +45,7 @@ Scripts: `dev` (vite) / `build` (`tsc -b && vite build`) / `preview` / `typechec
 | --- | --- |
 | `express` | ^5.2.1 |
 | `pptxgenjs` | ^3.12.0 |
-| `sharp` | ^0.33.5 |
+| `sharp` | ^0.33.5 (raster handling for the Heroicons PNGs loaded by `icons.js`) |
 | `react` / `react-dom` / `react-icons` | ^18.3.1 / ^18.3.1 / ^5.4.0 (`icons.js` concept name → Heroicons PNG) |
 
 > `jszip` (used by `/qa-geometric`) is `require`d but not listed in `package.json`; it resolves via the lockfile / transitively.
@@ -107,6 +107,8 @@ Defined in the repo-root `docker-compose-dev.yml`: `build.context: ANILALM/pptx-
 cd <repo_root> && docker compose -f docker-compose-dev.yml up -d pptx-renderer
 # or locally: cd ANILALM/pptx-skill && node server.js   # :7100
 ```
+
+> The production stack (`docker-compose.yml`, not `-dev`) also manages both `pptx-renderer` and `anilalm` (anila-studio connects via `RENDERER_BASE_URL=http://pptx-renderer:7100`); just drop the `-f docker-compose-dev.yml` flag to target the default compose.
 
 ### Smoke tests
 

@@ -36,7 +36,7 @@ Scripts: `dev` (vite) / `build` (vite build) / `preview` / `test` (vitest run). 
 anila-ui/
 ├── index.html · vite.config.js · vitest.setup.js
 ├── Dockerfile              # multi-stage: node:22-alpine build (npm install) → nginx:1.27-alpine serve
-├── .env.example · docker/nginx.conf · docs/ · e2e/
+├── .env.example · docker/nginx.conf · docs/ · e2e/   # e2e/ holds only a legacy README (the Functions v1 stack was fully removed — no spec, no Playwright dep)
 └── src/
     ├── main.jsx            # ReactDOM entry; BrowserRouter(basename=import.meta.env.BASE_URL)
     │                       #   + AuthProvider + ConfirmProvider; /login, /app/*(RequireAuth)
@@ -65,6 +65,8 @@ anila-ui/
 ```
 
 > Tests live in **`src/__tests__/`** (not `runtime/__tests__/`).
+>
+> ⚠️ `e2e/README.md` is **stale**: the Functions v1 Playwright stack it describes (`functions.spec.js`, sandbox/egress compose, `http://localhost:3001`) was removed. There is currently **no Playwright E2E** in this subproject — do not follow that file.
 
 ---
 
@@ -87,6 +89,14 @@ docker run -p 8080:80 anila-runtime-ui
 ```
 
 > This subproject's `Dockerfile` build-arg defaults are `VITE_CSP_BASE_URL=http://localhost:8000`, `VITE_ROUTER_BASE_URL=http://localhost:9000`, `BASE_PATH=/`. The repo-root compose overrides them to same-origin / `/router` and fronts the UI via the main nginx (default `https://localhost:4443/`).
+
+### Testing
+
+```bash
+npm test          # vitest run — the 10 unit tests under src/__tests__/ (runtime pure logic + a few components)
+```
+
+Vitest unit tests only; there is currently no E2E in this subproject (see the `e2e/` note in the layout above).
 
 ---
 

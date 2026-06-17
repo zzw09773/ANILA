@@ -85,6 +85,8 @@ models/
 ```
 
 > The same `docker-compose.yml` also defines non-image services `gpt-oss-20b` / `gemma4` / `nv-embed-triton` / `nv-embed-proxy`; this document focuses on the two FLUX services.
+>
+> `models/` also contains `inference/` (local build context & load-test logs for the TensorRT-LLM / Triton images) and `model/` (HuggingFace weight symlinks); both are git-untracked, out of FLUX scope, and not covered here.
 
 ---
 
@@ -124,6 +126,22 @@ Key environment variables:
 > Also: `flux2-dev` has `FLUX_MODEL_SHA` (default `""`, written into `meta.model_sha`) and `FLUX_SKIP_LOAD=1` (stub pipeline — no weights, no GPU — for integration smoke tests); `FLUX_MAX_CONCURRENT`(4) is controlled by the upstream csp/studio, not this service. In compose, `flux2-dev` is bound to GPUs `["1","2"]` and `gpt-oss-20b` to `["2"]` — they share GPU 2, so watch VRAM when deploying.
 
 **Air-gapped weights**: FLUX.2-dev weights are mounted read-only (`.../FLUX.2-dev:/workspace/model/FLUX.2-dev:ro`) with `HF_HUB_OFFLINE=1`, so the container never fetches weights externally. `flux2-dev-agent` binds the host `share-dev/uploads/flux` to `/share/flux`; nginx serves it at `/uploads/flux/` (frontend image links point there).
+
+---
+
+## Testing
+
+Both services ship a pytest suite that needs **no GPU** (mock pipeline injected / respx-stubbed HTTP), runnable straight on a dev box:
+
+```bash
+# flux2-dev (conftest sets FLUX_SKIP_LOAD=1 — no weights loaded)
+cd models/flux2-dev       && pip install -e '.[test]' && pytest
+
+# flux2-dev-agent (pytest-asyncio + respx; asyncio_mode=auto)
+cd models/flux2-dev-agent && pip install -e '.[test]' && pytest
+```
+
+> Pinned test deps live in each `pyproject.toml` under `[project.optional-dependencies].test`; torch / diffusers are **not** in test deps, so CI/dev never installs the GPU stack.
 
 ---
 

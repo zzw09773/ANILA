@@ -59,7 +59,7 @@ CSP also carries one application pipeline and fronts one extracted service:
 | HTTP client | httpx 0.28.1 (proxies downstream models / agents) |
 | Queue | arq 0.26.1 (ingestion / eval / relation-reresolve to Redis) + Redis pub/sub (token revoke) |
 | Text post-processing | opencc-python-reimplemented 0.1.7 |
-| Tests | pytest · pytest-asyncio 0.24.0 · respx 0.22.0 (~40 test files) |
+| Tests | pytest · pytest-asyncio 0.24.0 · respx 0.22.0 (~32 test files) |
 
 > The container uses `docker/Dockerfile` (multi-stage, incl. `anila-core[rag]`); system packages `gcc` / `libpq-dev` / `curl` / `graphviz` / `fonts-noto-cjk`. `backend/Dockerfile` is dead (compose uses `docker/Dockerfile`). **JWT signing is RS256**: `ALGORITHM=HS256` is a legacy setting, unused for access/refresh.
 
@@ -72,7 +72,7 @@ CSP also carries one application pipeline and fronts one extracted service:
 | HTTP / charts | axios 1.7.9 · ECharts 5.5.1 + vue-echarts 7.0.3 · **cytoscape 3.34.0** (`RelationGraph.vue`) |
 | Styling | Tailwind 3.4.17 + PostCSS 8.4.49 |
 
-A pure SPA admin console (29 views: dashboard / API keys / models / users / usage / developer agents / trusted-hosts / relation graph), served as static files by Nginx.
+A pure SPA admin console (21 views: dashboard / API keys / models / users / usage / developer agents / trusted-hosts / relation graph), served as static files by Nginx.
 
 ---
 
@@ -92,17 +92,17 @@ myCSPPlatform/
 │   │   ├── models/            # 23 ORM files (user / agent / model_registry / ingestion /
 │   │   │                      #   token_usage / audit_log / banner / department / ...)
 │   │   ├── schemas/
-│   │   ├── services/          # 25 services (auth / proxy / health_checker / usage_writer /
+│   │   ├── services/          # 26 services (auth / proxy / health_checker / usage_writer /
 │   │   │                      #   auto_seed / startup_security / ingestion_queue /
 │   │   │                      #   trusted_host / token_revocation_publisher / agent_credential ...)
 │   │   ├── middleware/        # api_key_auth · caller · cookies · csrf
 │   │   └── utils/             # security.py (RS256 JWT + JWKS keys) · time_helpers.py
 │   ├── migrations/versions/   # Alembic 0001..0045
-│   ├── tests/                 # ~40 pytest files
+│   ├── tests/                 # ~32 pytest files
 │   ├── scripts/generate-jwt-keypair.py
 │   ├── requirements.txt
 │   └── Dockerfile             # dead (compose uses docker/Dockerfile)
-├── frontend/                  # Vue 3 SPA (src/views ×29 · components/cli design system)
+├── frontend/                  # Vue 3 SPA (src/views ×21 · components/cli design system)
 ├── docker/                    # Dockerfile (the real one) · docker-compose.yml (standalone csp+nginx+postgres) · nginx.conf
 ├── scripts/init_db.py · start.sh · .env.example
 └── README.md / README.en.md

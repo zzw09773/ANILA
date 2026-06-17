@@ -12,7 +12,7 @@
 
 Router 對外暴露 OpenAI 相容的 `POST /v1/chat/completions`，並提供 pseudo-model `anila-router`。運作（依 `main.py` 與 `router_server` 確認）：
 
-- Client 把 request body 的 `model` 設成 `anila-router` 即觸發自動分派；其他 `model` 值直接 forward 到 CSP，不經分派。
+- Client 把 request body 的 `model` 設成 `anila-router` 以把流量導到本服務。實作上 `chat_completions`（`router_server.py`）**不檢查 `model` 欄位**：不論 `model` 值為何，每個 request 一律走完整分派流程（撈 agent → 呼叫主 LLM → 由主 LLM 判斷是否分派）。`anila-router` 只是對外公告（`GET /v1/models`）用的 pseudo-model。
 - Router 從 CSP `GET /v1/agents` 動態撈 agent manifest（含 `requires_encryption`）並 cache，再以 caller 的 API Key 呼叫主路由 LLM，由主 LLM 判斷是否分派給某個 agent（例如 `image-generator` 繪圖 agent）。
 - 若決定分派，request 轉發到該 agent 的 `endpoint_url`，agent 的 SSE stream 逐 chunk 回傳給 caller。
 - 主路由模型由 CSP 在 runtime 決定：`main.py` 每 60 秒從 CSP `GET /api/models/router-primary` 拉目前指定的主 LLM。CSP 未設主路由模型時，middleware 把 `/v1/chat/completions` 擋成 **503**，避免 silent fall-back 到錯誤 upstream。
@@ -64,6 +64,7 @@ Router image 由本目錄 `Dockerfile` build，以服務名 `router` 跑：
 ```bash
 # 於 repo 根
 docker compose -f docker-compose-dev.yml up -d router   # dev
+docker compose -f docker-compose.yml     up -d router   # prod（repo 根預設 compose，同樣以服務名 router 跑）
 ```
 
 compose 中 `router` 只用 `expose: 9000`（**沒有** host port），UI 透過 `/router` 反向代理對外（見 UI 的 `VITE_ROUTER_BASE_URL` 預設 `/router`）。Router 等 `csp` healthy 後才啟動。
@@ -92,7 +93,7 @@ uvicorn main:app --host 0.0.0.0 --port 9000 --log-level info
 | `CSP_SERVICE_TOKEN` | legacy fleet-shared shared-secret；state file 不存在時 fallback | `""` |
 | `ANILA_ROUTER_STATE_DIR` | 持久化 service token 的目錄（state file `service_token.json`，mode 0600） | `/var/lib/anila-router` |
 
-> `main.py` 只讀上述四個 env，**不讀 `MODEL`**（主路由模型完全由 CSP `/api/models/router-primary` runtime 決定）。主路由模型每 **60 秒**（`PRIMARY_TTL_SECONDS=60`）lazy refresh，無背景 timer：startup 觸發一次，之後由 `/v1/chat/completions` 的 gate middleware 在過期時觸發。`main.py` 對 CSP 只發一個呼叫 `GET /api/models/router-primary`（帶 `X-CSP-Service-Token`）；`GET /v1/agents`、`POST /v1/chat/completions`、agent dispatch + SSE forward 都在 SDK `router_server.py`。
+> `main.py` 只讀上述四個 env，**不讀 `MODEL`**（主路由模型完全由 CSP `/api/models/router-primary` runtime 決定；compose 的 `router` 服務雖仍帶 `MODEL: ${LLM_MODEL:-gemma4}`，但 `main.py` 不讀它，純屬殘留 env，不影響行為）。主路由模型每 **60 秒**（`PRIMARY_TTL_SECONDS=60`）lazy refresh，無背景 timer：startup 觸發一次，之後由 `/v1/chat/completions` 的 gate middleware 在過期時觸發。`main.py` 對 CSP 只發一個呼叫 `GET /api/models/router-primary`（帶 `X-CSP-Service-Token`）；`GET /v1/agents`、`POST /v1/chat/completions`、agent dispatch + SSE forward 都在 SDK `router_server.py`。
 >
 > Router **不**持有自己的 user API Key：它用 caller（UI / OpenAI SDK）的 Bearer API Key 回打 CSP data plane，因此 caller 看得到的 agent 與 Router 能分派的 agent 同步於該 API Key 的權限。
 

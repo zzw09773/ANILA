@@ -45,7 +45,7 @@ scripts：`dev`（vite）/ `build`（`tsc -b && vite build`）/ `preview` / `typ
 | --- | --- |
 | `express` | ^5.2.1 |
 | `pptxgenjs` | ^3.12.0 |
-| `sharp` | ^0.33.5 |
+| `sharp` | ^0.33.5（`icons.js` 載入 / 處理 Heroicons PNG 點陣圖） |
 | `react` / `react-dom` / `react-icons` | ^18.3.1 / ^18.3.1 / ^5.4.0（`icons.js` 概念名→Heroicons PNG） |
 
 > `jszip`（`/qa-geometric` 用）為 `require` 但未列在 `package.json`，靠 lockfile / 傳遞相依解析。
@@ -107,6 +107,8 @@ dev server 把 `/api`、`/v1`、`/v2` proxy 到 `VITE_CSP_BACKEND`（預設 `htt
 cd <repo_root> && docker compose -f docker-compose-dev.yml up -d pptx-renderer
 # 或本機：cd ANILALM/pptx-skill && node server.js   # :7100
 ```
+
+> 正式環境（`docker-compose.yml`，非 `-dev`）同樣納管 `pptx-renderer` 與 `anilalm` 兩個 service（`anila-studio` 以 `RENDERER_BASE_URL=http://pptx-renderer:7100` 連線）；把 `-f docker-compose-dev.yml` 換成預設 compose 即可。
 
 ### smoke 測試
 
