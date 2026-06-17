@@ -85,6 +85,8 @@ models/
 ```
 
 > 同一 `docker-compose.yml` 還定義 `gpt-oss-20b` / `gemma4` / `nv-embed-triton` / `nv-embed-proxy` 等非圖像服務，本文件僅聚焦 FLUX 兩個服務。
+>
+> `models/` 下另有 `inference/`（TensorRT-LLM / Triton 的本地建置脈絡與壓測 log）與 `model/`（HuggingFace 權重 symlink），兩者 git 未追蹤、不屬 FLUX 範圍，本文件不展開。
 
 ---
 
@@ -124,6 +126,22 @@ GPU / 資源（取自 compose）：`flux2-dev` GPU `["1","2"]`、`shm_size: 32g`
 > 另：`flux2-dev` 還有 `FLUX_MODEL_SHA`（預設 `""`，寫進 `meta.model_sha`）與 `FLUX_SKIP_LOAD=1`（走 stub pipeline、不載權重、無需 GPU，供整合 smoke test）；`FLUX_MAX_CONCURRENT`(4) 由上層 csp/studio 控、不在本服務。compose 中 `flux2-dev` 綁 GPU `["1","2"]`、`gpt-oss-20b` 綁 `["2"]`——兩者共用 GPU 2，部署時留意顯存。
 
 **Air-gapped 權重**：FLUX.2-dev 權重以唯讀 volume mount（`.../FLUX.2-dev:/workspace/model/FLUX.2-dev:ro`）+ `HF_HUB_OFFLINE=1`，容器不連外抓權重。`flux2-dev-agent` 把 host 的 `share-dev/uploads/flux` bind 到 `/share/flux`；nginx 在 `/uploads/flux/` 對外服務（前端圖片連結指向此）。
+
+---
+
+## 測試
+
+兩個服務皆有 pytest 套件，**完全不需 GPU**（mock pipeline 注入 / respx 攔截 HTTP），可在 dev box 直接跑：
+
+```bash
+# flux2-dev（conftest 自動設 FLUX_SKIP_LOAD=1，不載權重）
+cd models/flux2-dev       && pip install -e '.[test]' && pytest
+
+# flux2-dev-agent（pytest-asyncio + respx；asyncio_mode=auto）
+cd models/flux2-dev-agent && pip install -e '.[test]' && pytest
+```
+
+> 測試相依（pinned）見各自 `pyproject.toml` 的 `[project.optional-dependencies].test`；torch / diffusers **不在** test deps，CI/dev 不必裝 GPU stack。
 
 ---
 

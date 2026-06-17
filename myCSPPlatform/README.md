@@ -59,7 +59,7 @@ CSP 另承載一條應用管線並對接一個已抽離的服務：
 | HTTP client | httpx 0.28.1（代理下游模型 / agent） |
 | 佇列 | arq 0.26.1（ingestion / eval / relation-reresolve 推進 Redis）+ Redis pub/sub（token revoke） |
 | 文字後處理 | opencc-python-reimplemented 0.1.7 |
-| 測試 | pytest · pytest-asyncio 0.24.0 · respx 0.22.0（約 40 個測試檔） |
+| 測試 | pytest · pytest-asyncio 0.24.0 · respx 0.22.0（約 32 個測試檔） |
 
 > 容器走 `docker/Dockerfile`（multi-stage，含 `anila-core[rag]`），system 套件 `gcc` / `libpq-dev` / `curl` / `graphviz` / `fonts-noto-cjk`。`backend/Dockerfile` 已 dead（compose 用 `docker/Dockerfile`）。**JWT 簽署為 RS256**：`ALGORITHM=HS256` 設定為 legacy、不再用於 access/refresh。
 
@@ -72,7 +72,7 @@ CSP 另承載一條應用管線並對接一個已抽離的服務：
 | HTTP / 圖表 | axios 1.7.9 · ECharts 5.5.1 + vue-echarts 7.0.3 · **cytoscape 3.34.0**（`RelationGraph.vue` 關係圖） |
 | 樣式 | Tailwind 3.4.17 + PostCSS 8.4.49 |
 
-純 SPA 管理介面（29 個 view：dashboard / API Key / 模型 / 使用者 / 用量 / Developer agents / trusted-hosts / 關係圖等），由 Nginx 提供靜態檔。
+純 SPA 管理介面（21 個 view：dashboard / API Key / 模型 / 使用者 / 用量 / Developer agents / trusted-hosts / 關係圖等），由 Nginx 提供靜態檔。
 
 ---
 
@@ -93,17 +93,17 @@ myCSPPlatform/
 │   │   ├── models/            # 23 個 ORM 檔（user / agent / model_registry / ingestion /
 │   │   │                      #   token_usage / audit_log / banner / department / ...）
 │   │   ├── schemas/
-│   │   ├── services/          # 25 個 service（auth / proxy / health_checker / usage_writer /
+│   │   ├── services/          # 26 個 service（auth / proxy / health_checker / usage_writer /
 │   │   │                      #   auto_seed / startup_security / ingestion_queue /
 │   │   │                      #   trusted_host / token_revocation_publisher / agent_credential ...）
 │   │   ├── middleware/        # api_key_auth · caller · cookies · csrf
 │   │   └── utils/             # security.py（RS256 JWT + JWKS keys）· time_helpers.py
 │   ├── migrations/versions/   # Alembic 0001..0045
-│   ├── tests/                 # ~40 pytest 檔
+│   ├── tests/                 # ~32 pytest 檔
 │   ├── scripts/generate-jwt-keypair.py
 │   ├── requirements.txt
 │   └── Dockerfile             # dead（compose 用 docker/Dockerfile）
-├── frontend/                  # Vue 3 SPA（src/views 29 個 · components/cli 設計系統）
+├── frontend/                  # Vue 3 SPA（src/views 21 個 · components/cli 設計系統）
 ├── docker/                    # Dockerfile（真正用的）· docker-compose.yml（單獨 csp+nginx+postgres）· nginx.conf
 ├── scripts/init_db.py · start.sh · .env.example
 └── README.md / README.en.md

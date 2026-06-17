@@ -20,6 +20,14 @@
 2. **`evaluate_strategies`** — 對樣本文件 + 查詢比較多個 chunking 策略的檢索品質（Hit@1 / Hit@5 / MRR，選用 LLM-as-judge `judge_avg` 1–3 分），寫回 `recommended_strategy` 與 `results`。
 3. **`reresolve_collection_relations`** — collection 級「重抽關係」：重新 parse 每份 `indexed` 文件、重跑 rule / LLM / similarity 邊（per-doc parse 失敗則跳過）。
 
+每個 job function 都吃單一參數（CSP 以 `pool.enqueue_job(<name>, <arg>)` enqueue，見 `myCSPPlatform/backend/app/services/ingestion_queue.py`）：
+
+```text
+ingest_document(document_id)                    # 攝取一份文件
+evaluate_strategies(eval_run_id)                # 評估一個 eval run
+reresolve_collection_relations(collection_id)   # 重抽整個 collection 的關係
+```
+
 Arq `WorkerSettings`：`max_tries=3`、`job_timeout=300s`、`keep_result=3600s`。
 
 ---
