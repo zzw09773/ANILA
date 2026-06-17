@@ -44,7 +44,7 @@ ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key�
 | [`ingestion-worker`](./ingestion-worker/) | **Async pipeline worker** — Arq + Redis | （無 host port） |
 | [`ANILA_UI/anila-ui`](./ANILA_UI/anila-ui/) | **Chat Runtime UI** — React | nginx 前 |
 | [`ANILALM`](./ANILALM/) | **Knowledge-base + Studio SPA** | nginx 前 |
-| **`nginx`** | 對外閘道；6 個安全 header | `:80` / `:443` / `:4443` |
+| **`nginx`** | 對外閘道；7 個安全 header | `:80` / `:443` / `:4443` |
 | **`redis`** | ingestion-worker queue + token-revoke pub/sub | （無 host port） |
 
 > ⛔ 相對 `main` / `dev-public`：對齊 military 交付樣態，**移除** n8n / GitLab / code-server dev tooling。
@@ -58,7 +58,7 @@ ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key�
 ```mermaid
 flowchart TB
     devs["🧑‍💻 國軍環境開發 / 測試者"]
-    nginx["nginx :80 / :443<br/>6 安全 header"]
+    nginx["nginx :80 / :443<br/>7 安全 header"]
 
     subgraph spas["前端"]
         anila_ui["anila-ui"]
@@ -90,6 +90,35 @@ flowchart TB
 ```
 
 **核心資料流**：UI POST `/v1/chat/completions`（`model=anila-router`）→ Router 取 agent manifest + 問主 LLM 是否分派 → 必要時轉發 agent → SSE forward 回 UI；agent `requires_encryption` 時對話永久閂鎖加密。
+
+---
+
+## 介面預覽
+
+> 以下截圖取自運行中的 ANILA 平台：CSP 控制台（`:443`）、anila-ui 對話前端（`:4443`）、ANILALM 知識庫（`/anilalm/`）。
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/login.png" alt="統一登入"><br><sub><b>統一登入</b>｜RS256 JWT + httpOnly cookie，CSRF double-submit</sub></td>
+    <td width="50%"><img src="docs/assets/screenshots/dashboard.png" alt="CSP 控制台總覽"><br><sub><b>CSP 控制台總覽</b>｜24h 用量 / 吞吐 / Top agents / legacy-token cutover 監控</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/models.png" alt="模型 / API Key 管理"><br><sub><b>模型 / API Key 管理</b>｜統一註冊 LLM / Embedding / Agent endpoint</sub></td>
+    <td><img src="docs/assets/screenshots/agents.png" alt="Agent 註冊與核准"><br><sub><b>Agent 註冊與核准</b>｜逐 agent 強制加密（classified latch 來源）</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/knowledge-collections.png" alt="知識庫 Collections"><br><sub><b>知識庫 Collections</b>｜文件 → chunk → embed → pgvector 檢索（RAG）</sub></td>
+    <td><img src="docs/assets/screenshots/developer-guide.png" alt="開發者上手指南"><br><sub><b>開發者上手指南</b>｜對準 MLSteam 工作流的 agent 建置教學</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/chat-ui.png" alt="anila-ui 對話前端"><br><sub><b>anila-ui 對話前端</b>｜<code>anila-router</code> 自動分派、分享、交接</sub></td>
+    <td><img src="docs/assets/screenshots/anilalm.png" alt="ANILALM 知識庫 + Studio"><br><sub><b>ANILALM 知識庫 + Studio</b>｜文件 → 對話 → 簡報 / 報告 / 心智圖 等 artifact</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/audit-logs.png" alt="審計日誌"><br><sub><b>審計日誌</b>｜所有 admin 操作自動寫 <code>audit_logs</code></sub></td>
+    <td><img src="docs/assets/screenshots/classified-latch.png" alt="Classified 單向閂鎖"><br><sub><b>Classified 單向閂鎖</b>｜遇加密 agent 整段對話升級加密，無降級路徑</sub></td>
+  </tr>
+</table>
 
 ---
 
@@ -142,7 +171,7 @@ docker compose -f models/docker-compose.yml up -d             # 起模型 stack�
 ## 安全設計要點
 
 - **dev 取向**：`ANILA_ALLOW_DEV_SECRET=1` 時 dev 預設值不擋。**國軍交付正式請用 `prod-military-passwd`**。
-- 平台核心安全機制（與 main 同）：Classified 單向閂鎖、httpOnly cookie + CSRF、AES-256-GCM credential 加密 + PBKDF2 600k、SSRF guard、nginx 6 安全 header、上傳 allow-list、審計日誌。
+- 平台核心安全機制（與 main 同）：Classified 單向閂鎖、httpOnly cookie + CSRF、AES-256-GCM credential 加密 + PBKDF2 600k、SSRF guard、nginx 7 安全 header、上傳 allow-list、審計日誌。
 - 已對齊 military 交付樣態移除對外 dev tooling，降低與 prod-military 的漂移。
 
 ---

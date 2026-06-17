@@ -11,10 +11,17 @@ share/
 ├── static/    # served at /static/*  (read-only)
 │   ├── fina./           ← finance / data-quality form HTML templates that
 │   │                      n8n workflows fetch by URL
-│   ├── icons/           ← service icons (mlsteam.png / gitlab.png / ...)
+│   ├── icons/           ← service icons (mlsteam.png / gitlab.png / ...); brought in
+│   │                      from the prod source by the "Migrating" step below, empty initially
 │   └── ...              ← any other static assets the workflows reference
-└── uploads/   # served at /uploads/* (read-write)
-    └── document/        ← user-uploaded source documents (embeddings input, etc.)
+├── uploads/   # served at /uploads/* (read-write)
+│   ├── ingestion/      ← raw upload blobs + parse artifacts from CSP; mounted as the
+│   │                     ingestion-worker UPLOAD_DIR (/var/anila/ingestion-uploads);
+│   │                     captioned images land in anila-images/<doc_id>/
+│   ├── flux/           ← FLUX image-generation output cache
+│   └── mock_11406/     ← finance sample xlsx test data
+├── pki/                # certificate / key material (runtime; contents git-ignored)
+└── codeserver-sandbox/ # code-server sandbox workspace (git-ignored; only .gitkeep kept)
 ```
 
 ## Ownership
@@ -23,6 +30,10 @@ share/
   Drop new templates / icons in via `cp` from the host shell.
 - `uploads/` is `:rw` mounted — n8n / other services can write here. Don't
   put anything you can't afford to lose; back up out-of-band.
+
+nginx (`myCSPPlatform/docker/nginx.conf`) serves these: `/static/` uses `try_files =404`
+with `expires 1y, immutable`; `/uploads/` uses `expires 1h`. Missing assets return 404
+(no SPA fallback).
 
 ## Migrating from My-OpenAI-Frontend
 
