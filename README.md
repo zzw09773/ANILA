@@ -2,7 +2,9 @@
 
 > **Runtime-first、On-prem 多 Agent 平台。** 三個核心服務、一個落地 LLM，docker compose 一鍵啟動。
 
-> 🪖 **你正在看 `prod-military-passwd` 分支**(國軍交付 prod，純帳密)。= `main` + military spec，**移除 n8n / GitLab / code-server dev tooling**，面向 air-gapped 交付。
+> 🪖 **你正在看 `prod-military-passwd` 分支**(國軍交付 prod，純帳密)。= `main` + military spec，**移除 n8n / GitLab dev tooling**，面向 air-gapped 交付。
+>
+> ⚠️ **注意**：code-server 目前**仍保留於本分支**（compose 服務 + nginx `/codeserver` 路由 + admin 導覽連結）。要貫徹「無 dev tooling」交付樣態須另行移除——見下方 hardening 清單。
 >
 > | Branch | 部署對象 | 認證 | 定位 |
 > |---|---|---|---|
@@ -28,7 +30,7 @@ ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key�
 |---|---|
 | **部署對象** | 國軍交付環境（air-gapped，無外網） |
 | **認證** | 純帳密（本地登入）；**無** SSO / card auth fork |
-| **與 main 差異** | `docker-compose.yml` + `nginx.conf` **移除 n8n / GitLab / code-server**（交付環境不含外部開發工具）；保留 military spec 客製空間 |
+| **與 main 差異** | `docker-compose.yml` + `nginx.conf` **移除 n8n / GitLab**（交付環境減少外部開發工具）；**code-server 仍保留**，視交付需求自行移除；保留 military spec 客製空間 |
 | **military spec** | air-gap config / 離線部署 / FLUX 啟用與否依交付規格定（詳見交付文件與 [`docs/branch-sync-backlog.md`](./docs/branch-sync-backlog.md) 「military-only」fork 區） |
 | **同步** | 從 main sync；`[military-only]` commit 不進 main |
 
@@ -44,10 +46,11 @@ ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key�
 | [`ingestion-worker`](./ingestion-worker/) | **Async pipeline worker** — Arq + Redis | （無 host port） |
 | [`ANILA_UI/anila-ui`](./ANILA_UI/anila-ui/) | **Chat Runtime UI** — React | nginx 前 |
 | [`ANILALM`](./ANILALM/) | **Knowledge-base + Studio SPA** | nginx 前 |
-| **`nginx`** | 對外閘道；強制 HTTPS；6 個安全 header | `:443` / `:4443` |
+| **`nginx`** | 對外閘道；強制 HTTPS；7 個安全 header | `:443` / `:4443` |
 | **`redis`** | ingestion-worker queue + token-revoke pub/sub | （無 host port） |
 
-> ⛔ 相對 `main`：**不含** `/n8n`、`/gitlab`、`/codeserver` 路由與對應 compose 服務。
+> ⛔ 相對 `main`：**已移除** `/n8n`、`/gitlab` 路由與對應 compose 服務。
+> ⚠️ `code-server` 服務與 `/codeserver` 路由**尚未移除**（仍在 `docker-compose.yml` 與 `myCSPPlatform/docker/nginx.conf`）。
 
 > **唯一規劃文件**：[`anila_plan.md`](./anila_plan.md)。
 
@@ -58,7 +61,7 @@ ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key�
 ```mermaid
 flowchart TB
     users["🧑‍💻 交付環境使用者（帳密）/ OpenAI SDK"]
-    nginx["nginx :443<br/>強制 HTTPS · 6 安全 header"]
+    nginx["nginx :443<br/>強制 HTTPS · 7 安全 header"]
 
     subgraph spas["前端"]
         anila_ui["anila-ui<br/>對話 · 分享 · 交接"]
@@ -90,6 +93,35 @@ flowchart TB
 ```
 
 **核心資料流**：UI POST `/v1/chat/completions`（`model=anila-router`）→ Router 取 agent manifest + 問主 LLM 是否分派 → 必要時轉發 agent → SSE forward 回 UI；agent `requires_encryption` 時對話永久閂鎖加密。
+
+---
+
+## 介面預覽
+
+> 以下截圖取自運行中的 ANILA 平台：CSP 控制台（`:443`）、anila-ui 對話前端（`:4443`）、ANILALM 知識庫（`/anilalm/`）。
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/login.png" alt="統一登入"><br><sub><b>統一登入</b>｜RS256 JWT + httpOnly cookie，CSRF double-submit</sub></td>
+    <td width="50%"><img src="docs/assets/screenshots/dashboard.png" alt="CSP 控制台總覽"><br><sub><b>CSP 控制台總覽</b>｜24h 用量 / 吞吐 / Top agents / legacy-token cutover 監控</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/models.png" alt="模型 / API Key 管理"><br><sub><b>模型 / API Key 管理</b>｜統一註冊 LLM / Embedding / Agent endpoint</sub></td>
+    <td><img src="docs/assets/screenshots/agents.png" alt="Agent 註冊與核准"><br><sub><b>Agent 註冊與核准</b>｜逐 agent 強制加密（classified latch 來源）</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/knowledge-collections.png" alt="知識庫 Collections"><br><sub><b>知識庫 Collections</b>｜文件 → chunk → embed → pgvector 檢索（RAG）</sub></td>
+    <td><img src="docs/assets/screenshots/developer-guide.png" alt="開發者上手指南"><br><sub><b>開發者上手指南</b>｜對準 MLSteam 工作流的 agent 建置教學</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/chat-ui.png" alt="anila-ui 對話前端"><br><sub><b>anila-ui 對話前端</b>｜<code>anila-router</code> 自動分派、分享、交接</sub></td>
+    <td><img src="docs/assets/screenshots/anilalm.png" alt="ANILALM 知識庫 + Studio"><br><sub><b>ANILALM 知識庫 + Studio</b>｜文件 → 對話 → 簡報 / 報告 / 心智圖 等 artifact</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/audit-logs.png" alt="審計日誌"><br><sub><b>審計日誌</b>｜所有 admin 操作自動寫 <code>audit_logs</code></sub></td>
+    <td><img src="docs/assets/screenshots/classified-latch.png" alt="Classified 單向閂鎖"><br><sub><b>Classified 單向閂鎖</b>｜遇加密 agent 整段對話升級加密，無降級路徑</sub></td>
+  </tr>
+</table>
 
 ---
 
@@ -127,10 +159,11 @@ curl https://<交付主機>/router/health   # Router
 ## 交付環境 hardening 檢查清單
 
 - [ ] **air-gap 確認**：無對外網路出口；所有相依 image / 模型權重已離線帶入。
-- [ ] **dev tooling 不存在**：compose 無 `n8n` / `gitlab` / `codeserver`、nginx 無對應路由（本分支已移除）。
+- [ ] **n8n / GitLab 已移除**：compose 無 `n8n` / `gitlab`、nginx 無 `/n8n` / `/gitlab` 路由（本分支已移除）。
+- [ ] **評估 code-server 對外暴露**：本分支**仍保留** `codeserver`（compose 服務 + nginx `/codeserver` + admin 導覽連結）。air-gapped 交付若不需要，移除對應 compose 服務、nginx `location` 與 `AUTO_REGISTER_LINKS` 連結。
 - [ ] `ANILA_ALLOW_DEV_SECRET` **未設**；所有 secret 為交付規格指定的真值。
 - [ ] CSP / Router / 模型 stack **無 host port**，外部只能經 nginx `:443`。
-- [ ] 憑證為交付規格指定（非自簽）後再開 HSTS；6 個 nginx 安全 header 全到位。
+- [ ] 憑證為交付規格指定（非自簽）後再開 HSTS；7 個 nginx 安全 header 全到位。
 - [ ] military spec 客製項（air-gap config / FLUX 啟用與否）依交付文件確認。
 - [ ] SSRF guard allow-list 只含必要內部 docker service name。
 
@@ -167,19 +200,19 @@ docker compose -f models/docker-compose.yml up -d            # 起模型 stack�
 ## 安全設計要點
 
 - **On-prem runtime-first + air-gap**：LLM 流量全進交付環境內落地 endpoint，無雲端 fallback、無外部出口。
-- **最小攻擊面**：CSP / Router / 模型 stack 無 host port；對外只開 nginx `:443`，**無任何 dev tooling**。
+- **最小攻擊面**：CSP / Router / 模型 stack 無 host port；對外只開 nginx `:443`。**dev tooling 僅餘 code-server**（n8n / GitLab 已移除，code-server 待評估移除）。
 - **Classified 單向閂鎖**：CSP + Router + UI 三層鎖 classified，UI 無降級路徑，持久化到 DB。
 - **SPA 認證**：httpOnly cookie + CSRF double-submit；SPA 不持有 API Key。
 - **Credential 加密**：AES-256-GCM + PBKDF2 600k；SSRF guard 把關所有 user-supplied endpoint（loopback / metadata 永不可繞過）。
 - **啟動安全檢查**：`startup_security` 在 prod 拒絕 dev 預設值。
-- **nginx 6 安全 header** + 上傳 allow-list + zip 解壓上限 + 路徑遍歷防護。
+- **nginx 7 安全 header** + 上傳 allow-list + zip 解壓上限 + 路徑遍歷防護。
 - **審計日誌**：所有 admin 操作自動寫 `audit_logs`。
 
 ---
 
 ## 分支與同步
 
-- 本分支 = `main` + military spec（移除 dev tooling）。**不含 SSO/card auth**。
+- 本分支 = `main` + military spec（移除 n8n / GitLab；code-server 待移除）。**不含 SSO/card auth**。
 - 從 main sync：`git merge origin/main -X theirs`，再確認 dev tooling 區段沒被 merge 回來、保留 military-only 客製。
 - `[military-only]` 標籤的 commit 只進 `prod-military-passwd` / `dev-military` 兩條。
 - 完整 SOP：[`docs/branch-sync-backlog.md`](./docs/branch-sync-backlog.md)。

@@ -42,12 +42,12 @@ anila-studio/
 │   ├── api/                # studio.py reports.py mindmaps.py infographics.py datatables.py
 │   ├── clients/csp_client.py    # 包 csp HTTP API
 │   ├── schemas/            # studio.py report.py mindmap.py infographic.py datatable.py
-│   ├── services/           # 29 模組（見下方分組）
+│   ├── services/           # 26 模組（見下方分組）
 │   └── templates/          # infographic/base.html.j2 + report/*.html.j2
 └── tests/                  # 40 個 test 檔，約 451 個 test function
 ```
 
-`services/` 分組（29 個）：
+`services/` 分組（26 個）：
 - **Slide 管線**：`studio_config` / `studio_retrieval` / `studio_llm` / `studio_render` / `studio_vision_qa` / `studio_layout` / `studio_job_service` / `studio_text_normalizer`（簡轉繁 s2twp + 清理）/ `llm_json`（lenient JSON 解析）。
 - **FLUX 生圖**：`flux_image_provider` / `flux_prompt_rewriter` / `flux_quality_gate`（VLM ranking + FFT striping）/ `flux_style` / `diagram_renderer`（Graphviz dot→PNG）/ `geometric_qa`。
 - **Auth / infra**：`jwks_client`（拉 csp JWKS + cache）/ `revocation_cache`（Redis pub/sub + cold-start，fail-closed）。
@@ -137,7 +137,7 @@ cd ../ANILALM && npm run gen:studio-types
 
 - csp 端 `JWT_PRIVATE_KEY_PATH` 必須存在（csp `scripts/generate-jwt-keypair.py` 預生或 Vault 注入）；anila-studio 不需 private key，只需 csp `/.well-known/jwks.json` 可達。
 - anila-studio 啟動會 fail-fast 若 csp `/api/auth/revocations` 不可達。
-- `ALLOW_AUTO_KEYGEN` 僅 dev/test。
+- `ALLOW_AUTO_KEYGEN`（**csp 端**旋鈕，anila-studio 程式碼內無此變數）僅 dev/test。
 
 ---
 

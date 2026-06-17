@@ -20,6 +20,14 @@
 2. **`evaluate_strategies`** — compares retrieval quality of multiple chunking strategies (Hit@1 / Hit@5 / MRR, optional LLM-as-judge `judge_avg` 1–3) over sample docs + queries, writing back `recommended_strategy` and `results`.
 3. **`reresolve_collection_relations`** — collection-level relation re-extraction: re-parse every `indexed` doc, re-run rule / LLM / similarity edges (per-doc parse failures skipped).
 
+Each job function takes a single argument (CSP enqueues via `pool.enqueue_job(<name>, <arg>)`, see `myCSPPlatform/backend/app/services/ingestion_queue.py`):
+
+```text
+ingest_document(document_id)                    # ingest one document
+evaluate_strategies(eval_run_id)                # evaluate one eval run
+reresolve_collection_relations(collection_id)   # re-extract a whole collection's relations
+```
+
 Arq `WorkerSettings`: `max_tries=3`, `job_timeout=300s`, `keep_result=3600s`.
 
 ---

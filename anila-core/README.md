@@ -142,13 +142,21 @@ uvicorn main:app --host 0.0.0.0 --port 9000
 from anila_core.engine.query_engine import QueryConfig, QueryEngine
 from anila_core.providers.openai_compat import OpenAICompatProvider
 from anila_core.router.tool_router import ToolRegistry
-from anila_core.models.message import UserMessage
+from anila_core.models.message import StreamDelta, UserMessage
 
 provider = OpenAICompatProvider(base_url="http://csp:8000/v1", api_key="sk-...")
 engine = QueryEngine(provider=provider, tool_registry=ToolRegistry(), config=QueryConfig())
-async for delta in engine.run_stream([UserMessage(content="say hi")]):
-    print(delta)
+
+async def on_delta(delta: StreamDelta) -> None:
+    if delta.type == "text" and delta.text:
+        print(delta.text, end="", flush=True)
+
+# run() 跑完整輪迴並回傳 TurnResult；串流 delta 透過 on_stream_delta callback 送出
+result = await engine.run([UserMessage(content="say hi")], on_stream_delta=on_delta)
+print(result.stop_reason, result.turn_count)
 ```
+
+> ⚠️ QueryEngine **沒有** `run_stream()`；入口是 `await engine.run(messages, on_stream_delta=...)`（見 [`e2e_smoke.py`](./e2e_smoke.py)）。
 
 ### scaffold 新 agent + 測試
 
