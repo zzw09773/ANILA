@@ -21,6 +21,14 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# System tools that parsers shell out to:
+#   - antiword: legacy .doc (binary Word) → text, used by anila_core's
+#     DocParser. Without it, .doc uploads fail at parse time with
+#     "antiword is required for .doc parsing".
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends antiword \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install in dependency order. anila-core changes less often than
 # worker code, so its layer stays cached on most rebuilds.
 COPY anila-core /tmp/anila-core
