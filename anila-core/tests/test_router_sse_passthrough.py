@@ -68,6 +68,20 @@ async def test_plain_openai_delta_stream_yields_content() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_openai_message_stream_yields_content() -> None:
+    """Some registered agents send complete assistant messages inside SSE."""
+    body = (
+        'data: {"choices":[{"message":{"role":"assistant","content":"hello from agent"}}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+    respx.post(CSP_URL).mock(return_value=_sse_response(body))
+    events = await _collect("a", "q")
+    assert [e["type"] for e in events] == ["content", "done"]
+    assert events[0]["content"] == "hello from agent"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_legacy_anila_meta_field_in_chunk() -> None:
     """Old agents embedded ``anila_meta`` directly in the OpenAI chunk envelope."""
     body = (
