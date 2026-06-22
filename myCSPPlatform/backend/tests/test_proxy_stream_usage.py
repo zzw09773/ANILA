@@ -99,6 +99,47 @@ def test_proxy_stream_estimates_usage_when_missing(monkeypatch):
     assert any("event: anila.meta" in chunk for chunk in chunks)
 
 
+def test_proxy_stream_estimates_usage_from_message_content(monkeypatch):
+    recorded: list[dict] = []
+    lines = [
+        'data: {"choices":[{"index":0,"message":{"role":"assistant","content":"Hello from agent"},"finish_reason":"stop"}]}',
+        "",
+        "data: [DONE]",
+        "",
+    ]
+
+    monkeypatch.setattr(
+        proxy_service.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: _FakeAsyncClient(lines, *args, **kwargs),
+    )
+
+    async def fake_enqueue_usage(**kwargs):
+        recorded.append(kwargs)
+
+    monkeypatch.setattr(proxy_service, "enqueue_usage", fake_enqueue_usage)
+
+    async def run():
+        async for _chunk in proxy_service.proxy_stream(
+            target_url="http://mock-llm/v1/chat/completions",
+            api_key_id=1,
+            user_id=2,
+            department_id=None,
+            usage_model_id=3,
+            request_body={
+                "model": "google/gemma4",
+                "messages": [{"role": "user", "content": "Say hello"}],
+                "stream": True,
+            },
+            model_name="google/gemma4",
+        ):
+            pass
+
+    asyncio.run(run())
+    assert recorded
+    assert recorded[0]["completion_tokens"] > 0
+
+
 def test_proxy_stream_prefers_upstream_usage(monkeypatch):
     recorded: list[dict] = []
     lines = [
@@ -147,6 +188,10 @@ def test_proxy_stream_prefers_upstream_usage(monkeypatch):
         "completion_tokens": 7,
         "total_tokens": 18,
         "request_duration_ms": recorded[0]["request_duration_ms"],
+        "conversation_id": None,
+        "trace_id": None,
+        "caller_agent_id": None,
+        "caller_client_id": None,
     }]
 
 
