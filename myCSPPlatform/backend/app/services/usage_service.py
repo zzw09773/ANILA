@@ -435,7 +435,9 @@ def export_usage_csv(
             ]
         )
 
-    return output.getvalue()
+    # UTF-8 BOM:Excel 開 CSV 預設用系統編碼(台灣 Windows = Big5/CP950),
+    # 沒 BOM 中文表頭/內容會亂碼。前置 U+FEFF 讓 Excel 辨識成 UTF-8。
+    return chr(0xFEFF) + output.getvalue()
 
 
 # ---------------------------------------------------------------------------

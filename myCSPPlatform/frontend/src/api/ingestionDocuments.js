@@ -10,6 +10,11 @@ export const listDocuments = (collectionId, params) =>
 export const getDocument = (documentId) =>
   client.get(`/api/ingestion/documents/${documentId}`)
 
+// 重新嵌入(通常用於 parse/embedding 失敗、卡在 status='failed' 的檔):
+// 後端重設 status='pending' 並 re-enqueue ingest job,不必重傳。
+export const reprocessDocument = (documentId) =>
+  client.post(`/api/ingestion/documents/${documentId}/reprocess`)
+
 /**
  * Upload one file to a collection. Returns 202 Accepted with the
  * pending document row; the worker indexes it asynchronously.

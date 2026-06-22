@@ -18,9 +18,9 @@
 
     <TermBox v-if="collection" title="upload · ingest" pad="md" hint="text / md / pdf / docx · ≤ 50 MB single · ≤ 500 MB / 200 files zip">
       <div class="upload" @drop.prevent="onDrop" @dragover.prevent>
-        <input ref="fileInput" type="file" accept=".txt,.md,.markdown,.pdf,.docx,.doc,.odt,.rtf,text/plain,text/markdown,application/pdf" @change="onFilePicked" style="display:none" />
+        <input ref="fileInput" type="file" multiple accept=".txt,.md,.markdown,.pdf,.docx,.doc,.odt,.rtf,.json,.html,.htm,text/plain,text/markdown,application/pdf,application/json,text/html" @change="onFilePicked" style="display:none" />
         <input ref="zipInput" type="file" accept=".zip,application/zip" @change="onZipPicked" style="display:none" />
-        <TermButton variant="primary" :disabled="uploading" :loading="uploading" :label="uploading ? `uploading… ${Math.round(progress * 100)}%` : '+ single file'" @click="$refs.fileInput.click()" />
+        <TermButton variant="primary" :disabled="uploading" :loading="uploading" :label="uploading ? `uploading… ${Math.round(progress * 100)}%` : '+ 檔案(可多選)'" @click="$refs.fileInput.click()" />
         <TermButton :disabled="uploading" label="+ zip · multi-file" @click="$refs.zipInput.click()" />
         <label class="upload__toggle">
           <input type="checkbox" v-model="preserveFolderStructure" />
@@ -73,6 +73,12 @@
             </div>
             <div class="cell-meta tnum">{{ humanBytes(d.bytes) }} · {{ d.chunk_count }} chunks · sha {{ d.sha256.slice(0, 8) }}…</div>
             <div v-if="d.error_message" class="doc__err">! {{ d.error_message }}</div>
+            <button
+              v-if="d.status === 'failed'"
+              class="term-action doc__reembed"
+              :disabled="reprocessingId === d.id"
+              @click.stop="doReprocess(d)"
+            >↻ {{ reprocessingId === d.id ? '重新嵌入中…' : '重新嵌入' }}</button>
           </li>
         </ul>
       </TermBox>
@@ -212,7 +218,7 @@
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { getCollection } from '../api/ingestionCollections'
-import { listDocuments, uploadDocument, uploadZip, listDocumentChunks, documentBlobUrl, getChunkEmbeddingDebug } from '../api/ingestionDocuments'
+import { listDocuments, uploadDocument, uploadZip, listDocumentChunks, documentBlobUrl, getChunkEmbeddingDebug, reprocessDocument } from '../api/ingestionDocuments'
 import { listRelations, createRelation, deleteRelation, reresolveRelations } from '../api/ingestionRelations'
 import { streamJob } from '../api/ingestionJobs'
 import { TermBox, TermButton, TermBadge, TermEmpty, TermModal } from '../components/cli'
@@ -232,6 +238,7 @@ const loadingChunks = ref(false)
 const uploading = ref(false)
 const progress = ref(0)
 const uploadError = ref('')
+const reprocessingId = ref(null)
 const preserveFolderStructure = ref(false)
 const zipResult = ref(null)
 
@@ -338,18 +345,28 @@ async function loadChunks(docId) {
   } finally { loadingChunks.value = false }
 }
 
-async function onFilePicked(e) { const f = e.target.files?.[0]; if (f) await doUpload(f); e.target.value = '' }
+async function onFilePicked(e) { const fs = [...(e.target.files || [])]; if (fs.length) await doUploadMany(fs); e.target.value = '' }
 async function onZipPicked(e) { const f = e.target.files?.[0]; if (f) await doZipUpload(f); e.target.value = '' }
 async function onDrop(e) {
-  const f = e.dataTransfer?.files?.[0]; if (!f) return
-  if (f.name.toLowerCase().endsWith('.zip')) await doZipUpload(f)
-  else await doUpload(f)
+  const fs = [...(e.dataTransfer?.files || [])]; if (!fs.length) return
+  const zips = fs.filter(f => f.name.toLowerCase().endsWith('.zip'))
+  const plain = fs.filter(f => !f.name.toLowerCase().endsWith('.zip'))
+  if (plain.length) await doUploadMany(plain)
+  for (const z of zips) await doZipUpload(z)
 }
-async function doUpload(file) {
-  uploading.value = true; progress.value = 0; uploadError.value = ''
-  try { await uploadDocument(collectionId.value, file, p => { progress.value = p }); await loadDocs() }
-  catch (e) { uploadError.value = e.response?.data?.detail || e.message }
-  finally { uploading.value = false; progress.value = 0 }
+// 免壓縮多檔上傳:逐檔序列上傳(避免一次塞爆、進度可讀),收集各檔錯誤,最後整批刷新一次。
+async function doUploadMany(files) {
+  uploading.value = true; uploadError.value = ''
+  const errs = []
+  try {
+    for (const file of files) {
+      progress.value = 0
+      try { await uploadDocument(collectionId.value, file, p => { progress.value = p }) }
+      catch (e) { errs.push(`${file.name}: ${e.response?.data?.detail || e.message}`) }
+    }
+    if (errs.length) uploadError.value = errs.join('\n')
+    await loadDocs()
+  } finally { uploading.value = false; progress.value = 0 }
 }
 async function doZipUpload(file) {
   uploading.value = true; progress.value = 0; uploadError.value = ''; zipResult.value = null
@@ -359,6 +376,14 @@ async function doZipUpload(file) {
     await loadDocs()
   } catch (e) { uploadError.value = e.response?.data?.detail || e.message }
   finally { uploading.value = false; progress.value = 0 }
+}
+// 重新嵌入失敗的文件:呼叫後端 re-enqueue,成功後刷新清單(狀態回 pending → processing)。
+async function doReprocess(d) {
+  if (reprocessingId.value) return
+  reprocessingId.value = d.id
+  try { await reprocessDocument(d.id); await loadDocs() }
+  catch (e) { uploadError.value = e.response?.data?.detail || e.message }
+  finally { reprocessingId.value = null }
 }
 
 async function loadRelations() {
