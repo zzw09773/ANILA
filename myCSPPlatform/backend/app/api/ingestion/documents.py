@@ -74,6 +74,40 @@ _ZIP_MAX_TOTAL_BYTES = 1 * 1024 * 1024 * 1024  # 1 GB
 _FILENAME_BAD_CHARS = ("\x00", "\r", "\n")
 
 
+def _zip_member_name(member: zipfile.ZipInfo) -> str:
+    """還原 zip 內檔名的正確編碼。
+
+    ``zipfile`` 對「沒設 UTF-8 旗標(general-purpose bit 11 / 0x800)」的 entry
+    一律用 CP437 解檔名;但 Windows 內建壓縮存的中文檔名其實是 CP950/Big5(或
+    GBK)→ 被 CP437 解成亂碼。偵測到無 UTF-8 旗標時,把字串還原成原始 bytes 再用
+    台灣常見編碼重解。單檔上傳沒這問題(檔名來自 multipart,本來就 UTF-8)。
+    """
+    import os
+
+    name = member.filename
+    if member.flag_bits & 0x800:
+        return name  # entry 已標 UTF-8,zipfile 解對了
+    try:
+        raw = name.encode("cp437")
+    except UnicodeEncodeError:
+        return name  # 不是 CP437 能表示的,維持原樣
+    # 純 ASCII 檔名在 CP437/CP950/UTF-8 下位元組相同,zipfile 本來就解對 → 別動,
+    # 避免把合法 ASCII 名誤判成需要轉碼。
+    if all(b < 0x80 for b in raw):
+        return name
+    # 非 UTF-8 旗標 + 含非 ASCII bytes → 多半是本地碼頁存的 CJK 檔名被 zipfile 用
+    # CP437 誤解。台灣內網優先 CP950(Big5 是其子集);可由 ANILA_ZIP_FILENAME_ENC
+    # 覆寫(例如 gbk)。⚠ 啟發式:各 CJK 碼頁 byte 範圍重疊,"decode 成功" 不保證
+    # 100% 正確,但對單一語系內網是合理預設。
+    encs = [e for e in (os.getenv("ANILA_ZIP_FILENAME_ENC"), "cp950", "gbk") if e]
+    for enc in encs:
+        try:
+            return raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return name
+
+
 def _sanitize_archive_filename(raw: str, *, preserve_folder_structure: bool) -> str:
     """Return a safe ``filename`` for documents pulled from an uploaded zip.
 
@@ -303,6 +337,93 @@ async def upload_document(
     return DocumentResponse.model_validate(doc)
 
 
+@router.post(
+    "/api/ingestion/documents/{document_id}/reprocess",
+    response_model=DocumentResponse,
+)
+async def reprocess_document(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> DocumentResponse:
+    """重新嵌入既有 document(通常是 parse/embedding 失敗、卡在 status='failed' 的)。
+
+    失敗檔原本沒有重試入口,而 (collection_id, sha256) unique 也擋住重傳同一個檔
+    → 資料卡死。這個端點讓 owner/admin 對既有 row 直接 re-enqueue ingest job,不必
+    重傳;重設 status='pending' 並清掉上次的 error_message。進行中的檔拒絕重塞,
+    避免同一檔並行兩個 job。
+    """
+    doc = db.get(IngestionDocument, document_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    # 透過所屬 collection 做存取控管(與上傳走同一條授權路徑)。
+    _resolve_collection(db, current_user, doc.collection_id)
+    # 只允許重試「失敗」的檔 — 其餘狀態各有正常流程,避免重複塞 job。
+    if doc.status != "failed":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only failed documents can be reprocessed (current: {doc.status})",
+        )
+    # 原子狀態轉移:conditional UPDATE failed→pending,只有真的搶到(rowcount==1)
+    # 才往下 enqueue,擋住兩個並行請求同時 re-enqueue 同一份文件(競態 + 重複 job)。
+    claimed = (
+        db.query(IngestionDocument)
+        .filter(
+            IngestionDocument.id == document_id,
+            IngestionDocument.status == "failed",
+        )
+        .update(
+            {"status": "pending", "error_message": None},
+            synchronize_session=False,
+        )
+    )
+    db.commit()
+    if claimed != 1:
+        raise HTTPException(
+            status_code=409, detail="Document is no longer in a failed state"
+        )
+
+    # enqueue 失敗就把狀態退回 failed,避免文件卡在「pending 但沒有 job」的死角。
+    try:
+        arq_job_id = await enqueue_ingest_document(document_id)
+    except Exception:
+        db.query(IngestionDocument).filter(
+            IngestionDocument.id == document_id
+        ).update({"status": "failed"}, synchronize_session=False)
+        db.commit()
+        raise HTTPException(
+            status_code=502,
+            detail="Failed to enqueue ingest job; document left as failed",
+        )
+    job = IngestionJob(
+        arq_job_id=arq_job_id,
+        collection_id=doc.collection_id,
+        document_id=document_id,
+        job_type="ingest",
+        status="queued",
+        progress_pct=0,
+        enqueued_by=current_user.id,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(doc)
+
+    log_audit_event(
+        db,
+        commit=True,
+        actor=current_user,
+        action="ingestion_document_reprocess",
+        resource_type="ingestion_document",
+        resource_id=doc.id,
+        metadata={
+            "collection_id": doc.collection_id,
+            "filename": doc.filename,
+            "arq_job_id": arq_job_id,
+        },
+    )
+    return DocumentResponse.model_validate(doc)
+
+
 class ZipUploadResult(BaseModel):
     """Per-file outcome of a multi-file zip upload."""
 
@@ -386,7 +507,8 @@ async def upload_zip(
 
     for member in members:
         # Choose the document filename based on preserve_folder_structure.
-        in_zip_path = member.filename
+        # 先還原檔名編碼(zip 內非 UTF-8 旗標的中文檔名會被 CP437 解成亂碼)。
+        in_zip_path = _zip_member_name(member)
         out_name = _sanitize_archive_filename(
             in_zip_path,
             preserve_folder_structure=preserve_folder_structure,
