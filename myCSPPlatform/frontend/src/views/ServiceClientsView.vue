@@ -284,9 +284,15 @@ async function handleRevoke(c) {
 .secret-banner__body { display: flex; gap: 8px; }
 .secret-banner__token {
   flex: 1; font-family: var(--font-mono); font-size: var(--t-sm);
-  background: var(--c-bg-1, #000); padding: 6px 8px;
+  background: var(--c-surface-1); color: var(--c-fg-1);
+  border: var(--border-w) solid var(--c-border-strong);
+  padding: 6px 8px;
   word-break: break-all; user-select: all;
 }
 .secret-banner__meta { margin: 8px 0 0; padding-left: 1.2em; color: var(--c-fg-2); font-size: var(--t-3xs); }
-.secret-banner__meta code { background: var(--c-bg-1, #000); padding: 1px 4px; }
+.secret-banner__meta code {
+  background: var(--c-surface-1); color: var(--c-fg-1);
+  border: var(--border-w) solid var(--c-border);
+  padding: 1px 4px;
+}
 </style>
