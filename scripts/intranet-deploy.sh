@@ -104,19 +104,22 @@ info "[2/7] 模型 gateway CA (對 https://aiagent2.ai.ncsist.org.tw 的出向 T
 # 先建好,否則 docker 會以 root 自動建空目錄(權限/擁有者錯亂)。
 mkdir -p share/pki share/static share/uploads/ingestion
 MCA=share/pki/model-ca.pem
+# 內網模型 gateway 走 *.ai.ncsist.org.tw,憑證由中科院 CSPKI 簽發
+# (CSPKI Root CA G1 → 中科院憑證管理中心 G1 → leaf)。中科院整套 PKI 同一條根:
+# PKI 卡與內網伺服器憑證皆 CSPKI 簽。repo 內 cspki_ca_bundle.pem 是「卡片登入驗章」
+# 釘死的同一套信任錨(Root + 中繼),正好就是這條鏈 → 直接當 model-ca,csp 即可
+# 信任 .12 gateway 的 https。免下載、免跟 IT 要,離線就有。
+CSPKI_BUNDLE=myCSPPlatform/backend/app/services/cspki_ca_bundle.pem
 if [ -f "$MCA" ]; then
-  ok "已有 $MCA"
+  ok "已有 $MCA (沿用,不覆蓋)"
+elif [ -f "$CSPKI_BUNDLE" ]; then
+  cp "$CSPKI_BUNDLE" "$MCA"
+  ok "model-ca.pem ← CSPKI bundle (Root CA G1 + 中科院憑證管理中心;內網 https 同一套 CA)"
 else
-  echo "    試從內網 NCSIST repo 下載 NCSISTCA.cer ..."
-  if curl -fsS -o /tmp/NCSISTCA.cer http://repository.ncsist.org.tw/certs/NCSISTCA.cer 2>/dev/null; then
-    openssl x509 -inform der -in /tmp/NCSISTCA.cer -out "$MCA" 2>/dev/null || cp /tmp/NCSISTCA.cer "$MCA"
-    ok "取得 model-ca.pem"
-  else
-    warn "NCSIST repo 連不到"
-    P="$(ask 'model CA PEM 路徑 (IT 給的;留空則稍後手動放 share/pki/model-ca.pem)')"
-    if [ -n "$P" ] && [ -f "$P" ]; then cp "$P" "$MCA"; ok "已複製 model-ca.pem"
-    else warn "略過 — 部署前務必把 model CA 放到 $MCA,否則 csp 連 gateway 會 TLS 失敗"; fi
-  fi
+  warn "找不到 $CSPKI_BUNDLE — 改由 IT 提供"
+  P="$(ask 'model CA PEM 路徑 (IT 給的;留空則稍後手動放 share/pki/model-ca.pem)')"
+  if [ -n "$P" ] && [ -f "$P" ]; then cp "$P" "$MCA"; ok "已複製 model-ca.pem"
+  else warn "略過 — 部署前務必把 model CA 放到 $MCA,否則 csp 連 gateway 會 TLS 失敗"; fi
 fi
 
 # ── 3. .env ──────────────────────────────────────────────────────────────
@@ -172,7 +175,15 @@ set_env ANILA_ALLOW_HTTP_ENDPOINT   0
 set_env ANILA_ALLOW_PRIVATE_ENDPOINT 0
 set_env ENABLE_CARD_LOGIN           true
 set_env REQUIRE_CARD_LOGIN_ONLY     true
-set_env ANILA_MODEL_CA_FILE         /etc/anila/pki/model-ca.pem
+# 只在 model-ca.pem 真的有憑證時才指過去。ANILA_MODEL_CA_FILE → csp 的 SSL_CERT_FILE,
+# 而 SSL_CERT_FILE 是「取代」整個系統信任庫(非疊加):指到空/壞檔 → csp 所有出向 https
+# 全 CERTIFICATE_VERIFY_FAILED(連 agent 都連不上)。空字串則 fallback 系統 CA,無副作用。
+if [ -s "$MCA" ] && grep -q 'BEGIN CERTIFICATE' "$MCA" 2>/dev/null; then
+  set_env ANILA_MODEL_CA_FILE       /etc/anila/pki/model-ca.pem
+else
+  set_env ANILA_MODEL_CA_FILE       ""
+  warn "model-ca.pem 無有效憑證 → 暫不設 ANILA_MODEL_CA_FILE(csp 用系統 CA);補好 CA 再 up -d csp"
+fi
 # codeserver workspace:下方必填檢查需要它;.env.example 預設 `.`(repo root),
 # 這裡兜底,避免 .env.example 被改動後必填檢查直接 die。
 [ -n "$(get_env CODESERVER_WORKSPACE)" ] || set_env CODESERVER_WORKSPACE .

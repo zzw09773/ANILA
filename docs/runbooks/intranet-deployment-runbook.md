@@ -18,9 +18,10 @@
    **務必以 `prod-intranet-card`(tag v1.0.0) 重跑 build-and-export** 再帶進內網。
 2. **卡登變「真驗證」**:不再只是解析 PKCS#7。現在驗 CMS 簽章 + 驗憑證鏈到釘死的
    中科院 **CSPKI CA** + 綁 nonce。CA bundle(`myCSPPlatform/backend/app/services/
-   cspki_ca_bundle.pem`)**已 commit 隨碼附帶**,不用手動下載。**這跟 §2.2 的
-   `share/pki/model-ca.pem` 是兩個不同 CA**:後者是「對 https 模型 gateway 的 TLS
-   信任」,前者是「驗卡片簽章的信任錨」。`asn1crypto` 已在 requirements,build 時
+   cspki_ca_bundle.pem`)**已 commit 隨碼附帶**,不用手動下載。**它跟 §2.2 的
+   `share/pki/model-ca.pem` 其實是「同一套 CSPKI CA」、只是用途不同**:後者驗「https
+   模型 gateway 的 TLS」,前者驗「卡片簽章」——內網 PKI 卡與伺服器憑證都由 CSPKI 簽,
+   所以 `[2/7]` 直接拿這個 bundle 當 model-ca(免下載、離線即有)。`asn1crypto` 已在 requirements,build 時
    自動進 csp image。
 3. **`CARD_DEV_SKIP_NONCE_BINDING` 內網一律不可設**:那是 dev 用固定 mock(簽不出
    新 nonce)測試才開的旗標。內網用實體卡 → 全 nonce 綁定,別設這個。
@@ -87,7 +88,7 @@
 - 入向:卡片硬體 + PIN + HiPKI 簽出 PKCS#7。**Backend 真驗證**(V1.0.0 起):驗 CMS
   簽章 → 驗鏈到釘死的中科院 CSPKI CA(`cspki_ca_bundle.pem` 內建)→ 綁 nonce,過了
   才抽 `serialNumber`(員工編號)。不打 OCSP/CRL(離職靠實體回收 + `is_active`)。
-- 出向:csp → 模型 gateway 走 https (NCSIST CA 驗證) + `MODEL_GATEWAY_API_KEY` (Bearer)。
+- 出向:csp → 模型 gateway 走 https (CSPKI CA 驗證,`model-ca.pem`) + `MODEL_GATEWAY_API_KEY` (Bearer)。
   key 只注入 model 呼叫,agent dispatch 不帶 (`proxy_service._apply_gateway_auth`)。
 
 ---
@@ -100,7 +101,7 @@
 |---|---|---|
 | 內網 DNS A record `anila.ai.ncsist.org.tw → 10.53.100.15` | 請 IT 加 | 沒配好前過渡用 IP 連 (有憑證警告,預期) |
 | `*.ai.ncsist.org.tw` wildcard 憑證 + 私鑰 | **已持有** — `server.pfx` (空密碼,2029 到期) | 抽取指令見 §2.2;⚠ pfx 空密碼放 repo 是冒充風險,進場後改妥善保管 |
-| NCSIST root CA PEM (給 csp 信任 aiagent2) | `http://repository.ncsist.org.tw/certs/NCSISTCA.cer` (內網可達;leaf AIA 欄位寫的官方下載點) | 備案:公司 PC 憑證存放區匯出「中科院憑證管理中心 - G1」 |
+| model gateway 出向 CA (給 csp 信任 aiagent2) | **已隨碼附帶** — `cspki_ca_bundle.pem`(CSPKI Root CA G1 + 中科院憑證管理中心);`[2/7]` 自動套用 | 內網 https 與卡片登入同一套 CSPKI CA → 免下載/免跟 IT 要 |
 | 模型 gateway API key | 在 aiagent2 (My-OpenAI-Frontend) 管理介面簽發一把 ANILA 專用 key | 填 `MODEL_GATEWAY_API_KEY`;獨立一把方便撤銷/歸戶 |
 | HiPKI 元件預載到員工 PC | 確認 `localhost:16888` 可回應 | |
 
@@ -305,13 +306,13 @@ chmod 600 myCSPPlatform/docker/certs/server.key
 # 驗:subject 應為 CN=*.ai.ncsist.org.tw
 openssl x509 -in myCSPPlatform/docker/certs/server.crt -noout -subject -dates
 
-# 2. CA:下載 NCSIST CA → 轉 PEM → 放 share/pki/
+# 2. CA:預設用 repo 內 CSPKI bundle(內網模型 https 與卡片登入「同一套」CSPKI CA)。
+#    intranet-deploy.sh [2/7] 會自動 cp;手動等同下行(不必再下載 NCSISTCA):
 mkdir -p share/pki
-curl -o /tmp/NCSISTCA.cer http://repository.ncsist.org.tw/certs/NCSISTCA.cer
-openssl x509 -inform der -in /tmp/NCSISTCA.cer -out share/pki/model-ca.pem \
-  || cp /tmp/NCSISTCA.cer share/pki/model-ca.pem   # 已是 PEM 就直接用
-# 驗:host 端先確認信任鏈成立再交給容器
-curl --cacert share/pki/model-ca.pem https://aiagent2.ai.ncsist.org.tw/health
+cp myCSPPlatform/backend/app/services/cspki_ca_bundle.pem share/pki/model-ca.pem
+# 驗:host 端先確認信任鏈成立(verify return code: 0)再交給容器
+echo | openssl s_client -connect 10.53.100.12:443 -servername aiagent2.ai.ncsist.org.tw \
+  -CAfile share/pki/model-ca.pem 2>/dev/null | grep 'verify return code'
 
 # 3. .env
 cp .env.example .env
