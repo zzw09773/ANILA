@@ -265,17 +265,56 @@ export function dispatchSseEvent(event, callbacks) {
     return; // malformed — drop
   }
   callbacks.onJson?.(chunk);
-  const delta = chunk.choices?.[0]?.delta?.content || "";
-  if (delta) {
-    callbacks.accumulator.add(delta);
+  const choice = getFirstChoice(chunk);
+  const text = extractChoiceText(choice);
+  if (text) {
+    callbacks.accumulator.add(text);
     callbacks.onText?.(callbacks.accumulator.get());
   }
   // Continue Response:回應被 max_tokens 截斷時 finish_reason==='length'。
   // 回報給呼叫端,讓 UI 決定要不要顯示「繼續」鈕(僅純文字回合)。
-  const finishReason = chunk.choices?.[0]?.finish_reason;
+  const finishReason = choice?.finish_reason;
   if (finishReason) {
     callbacks.onFinishReason?.(finishReason);
   }
+}
+
+
+function getFirstChoice(chunk) {
+  if (Array.isArray(chunk?.choices)) {
+    return chunk.choices[0];
+  }
+  if (Array.isArray(chunk?.choice)) {
+    return chunk.choice[0];
+  }
+  return chunk?.choice || null;
+}
+
+
+function extractChoiceText(choice) {
+  if (!choice || typeof choice !== "object") return "";
+  const delta = choice.delta && typeof choice.delta === "object" ? choice.delta : null;
+  const message = choice.message && typeof choice.message === "object" ? choice.message : null;
+  return (
+    flattenContent(delta?.content) ||
+    flattenContent(message?.content) ||
+    flattenContent(choice.text)
+  );
+}
+
+
+function flattenContent(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (part && typeof part === "object") {
+        return part.text || part.content || "";
+      }
+      return "";
+    })
+    .join("");
 }
 
 

@@ -1881,6 +1881,52 @@ _AGENT_PASSTHROUGH_EVENTS: frozenset[str] = frozenset({
 })
 
 
+def _openai_choices(chunk: dict[str, Any]) -> list[Any]:
+    choices = chunk.get("choices")
+    if isinstance(choices, list):
+        return choices
+    choice = chunk.get("choice")
+    if isinstance(choice, list):
+        return choice
+    if isinstance(choice, dict):
+        return [choice]
+    return []
+
+
+def _flatten_openai_content(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, list):
+        return ""
+    parts: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            parts.append(item)
+        elif isinstance(item, dict):
+            text = item.get("text") or item.get("content")
+            if isinstance(text, str):
+                parts.append(text)
+    return "".join(parts)
+
+
+def _extract_openai_stream_content(chunk: dict[str, Any]) -> str:
+    for choice in _openai_choices(chunk):
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+        message = (
+            choice.get("message") if isinstance(choice.get("message"), dict) else {}
+        )
+        content = (
+            _flatten_openai_content(delta.get("content"))
+            or _flatten_openai_content(message.get("content"))
+            or _flatten_openai_content(choice.get("text"))
+        )
+        if content:
+            return content
+    return ""
+
+
 async def _stream_agent_sse(
     agent_id: str,
     query: str,
@@ -1975,11 +2021,9 @@ async def _stream_agent_sse(
             return None
         if isinstance(chunk, dict) and chunk.get("anila_meta"):
             return {"type": "meta", "anila_meta": chunk["anila_meta"]}
-        try:
-            delta = chunk["choices"][0].get("delta", {}) or {}
-        except (KeyError, IndexError, TypeError):
+        if not isinstance(chunk, dict):
             return None
-        content_piece = delta.get("content") or ""
+        content_piece = _extract_openai_stream_content(chunk)
         if content_piece:
             return {"type": "content", "content": content_piece}
         return None
