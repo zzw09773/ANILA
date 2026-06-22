@@ -1,0 +1,223 @@
+# ANILA 專案級 Codex 指示
+
+> 最後更新: 2026-06-22
+>
+> 本檔是 ANILA repo 的專案級工作規範。全域 `AGENTS.md` 仍適用；若與本檔衝突，以本檔為準。回覆一律使用繁體中文與台灣用語。
+
+## 0. 任務定位
+
+- 這是多服務 monorepo，不是單一前後端專案。動手前先確認你要改的是哪個服務、哪條分支、哪個部署目標。
+- 不要只讀 README。至少要讀相關程式碼入口、compose、Dockerfile、測試、設定與 branch 檔案。
+- 預設不要 commit/push；除非 user 明確要求。
+- 目前 repo 原本沒有專案層 `AGENTS.md`。此檔建立後，後續 agent 必須先讀本檔再動手。
+
+## 1. 必讀脈絡
+
+動手前依任務範圍讀下列檔案：
+
+- 整體與分支: `README.md`, `docs/branch-sync-backlog.md`
+- 主 stack: `docker-compose.yml`
+- dev stack: `docker-compose-dev.yml`
+- 模型 stack: `models/docker-compose.yml`
+- nginx 入口: `myCSPPlatform/docker/nginx.conf`
+- prod 部署: `scripts/deploy-prod.sh`
+- CSP backend: `myCSPPlatform/backend/app/main.py`, `myCSPPlatform/backend/app/config.py`
+- Router: `anila-core-router/main.py`, `anila-core/src/anila_core/api/router_server.py`
+- Ingestion: `ingestion-worker/src/ingestion_worker/main.py`, `ingestion-worker/src/ingestion_worker/settings.py`
+- Agent template: `anila-agent/app.py`, `anila-agent/anila_agent/config.py`, `anila-agent/Makefile`
+- Studio: `anila-studio/app/main.py`, `anila-studio/pyproject.toml`
+- UI: `ANILA_UI/anila-ui/package.json`, `ANILALM/package.json`, `myCSPPlatform/frontend/package.json`
+
+## 2. 專案地圖
+
+| 路徑 | 角色 | 技術 / 注意事項 |
+|---|---|---|
+| `myCSPPlatform` | CSP control plane + data plane | FastAPI + SQLAlchemy/Alembic + PostgreSQL/pgvector + Redis；權威管理 users/API keys/models/agents/conversations/ingestion/usage/JWKS/revocation；Vue 管理前端在 `frontend/`。 |
+| `anila-core` | 共用 Python runtime library | agent runtime、Router app factory、tools、memory、SSRF guard、credential crypto、pgvector store、ingestion/parser primitives。不是常駐服務。 |
+| `anila-core-router` | OpenAI-compatible Router 部署 wrapper | 實際 app 由 `anila_core.api.router_server.create_router_app()` 產生；負責 primary model refresh、agent dispatch、SSE passthrough、多輪 session/resume。 |
+| `anila-agent` | 官方 agent starter/template | OpenAI Agents SDK 型 runtime；可 CLI 或 FastAPI service wrapper；root compose 以唯讀模板掛進 CSP。 |
+| `ingestion-worker` | Arq background worker | parse -> image caption -> chunk -> embed -> pgvector -> rule/LLM/similarity relations；無 HTTP port。 |
+| `anila-studio` | artifact 生成服務 | FastAPI；不共用 CSP DB，透過 HTTP/JWKS/Redis 與 CSP 協作；處理 slides/reports/mindmaps/infographics/datatables。 |
+| `ANILALM` | knowledge-base + Studio SPA | React/TS/Vite；另有 `pptx-skill` Node renderer，前端不直接打 renderer，由 `anila-studio` server-to-server 呼叫。 |
+| `ANILA_UI/anila-ui` | runtime chat UI | React/Vite；cookie + CSRF；串 CSP `/api`, `/v1` 與 Router `/router`。 |
+| `models` | 獨立模型 stack | `anila-models` compose；LLM/embedding/FLUX/image-agent shim 走 external network `anila-models-net`，不開 host port。 |
+| `runtime_logic` | 參考資料 | reference-only；gitignored source tree 不能當 runtime import 或 deployment source。 |
+
+## 3. 分支模型
+
+`main` 是 SSOT。通用 feature、bugfix、docs、測試先進 `main`，再同步 downstream。downstream 之間不要互相 merge；需要跨分支修補時，先進 `main`，再分別 port。
+
+| Branch | 定位 | 維護重點 |
+|---|---|---|
+| `main` | 開發 SSOT | 所有通用變更來源。 |
+| `dev-public` | 對外網 dev | 目前接近 `main`，保留 dev/public 說明。 |
+| `prod-public-passwd` | 對外網 prod，純帳密 | 目前所在分支。必須維持 code-server 移除；`n8n` / `gitlab` 仍存在，外網部署前若不需要要移除 compose service、nginx location 與導覽 link。 |
+| `dev-military` | 國軍 dev，純帳密 | 目前移除 code-server / n8n / GitLab；同步時避免 dev tooling 回流。 |
+| `prod-military-passwd` | 國軍 prod，純帳密 | 目前移除 n8n / GitLab；code-server 是否保留須由交付規格明確決定。 |
+| `prod-intranet-card` | 中科院內網 prod，SSO + 自然人憑證卡 | 唯一 card/SSO fork；不得用 `main` wholesale merge 覆蓋 auth/card 檔案。 |
+| `trial-military` | 國軍 trial / 展示精簡版 | 刪減型分支；只挑選式 port 核心修補，不做整批 merge。 |
+| `feature/document-relations` | 已被 `main` 包含的舊 feature | 可視為已合併封存，不當新工作來源。 |
+
+分支操作規則：
+
+- 分析分支差異時不要 checkout 擾動工作樹；用 `git show <ref>:path`, `git diff`, `git log`, `git cherry` 直接比較 refs。
+- ahead/behind 與 commit count 會誤導。多條 downstream 有語意相同但 SHA 不同的 commit；同步前同時看檔案差異與 cherry 狀態。
+- 同步前至少跑：
+  - `git status --short --branch`
+  - `git diff --name-status origin/main...<branch>`
+  - `git diff --stat origin/main...<branch>`
+  - `git log --oneline --no-merges origin/main..<branch>`
+  - `git cherry -v origin/main <branch>`
+- commit 標籤維持既有規則：`[card-only]`, `[public-only]`, `[military-only]`, `[dev-only]`, `[security-all]`。
+- `prod-intranet-card` 的 SSO/card 永久 fork 熱區包含 `myCSPPlatform/backend/app/api/auth.py`, `users.py`, `auth_providers.py`, `models/user.py`, `services/card_auth*.py`, `services/external_auth_service.py`, `schemas/card.py`, `frontend/src/views/LoginView.vue`, `AuthProvidersView.vue`, nginx card/Host allowlist 設定等。
+
+建議同步順序：
+
+1. `main` 先完成通用修補與驗證。
+2. `dev-public`。
+3. `prod-public-passwd`，確認 code-server 沒回來，並檢查 n8n/GitLab 暴露策略。
+4. `dev-military`。
+5. `prod-military-passwd`。
+6. `prod-intranet-card` 手動 port，保留 card/SSO fork。
+7. `trial-military` 挑選式 port，只帶安全與核心 bugfix。
+
+## 4. Compose / 部署規則
+
+- root `docker-compose.yml` 是完整 stack，project `anila-platform`。對外入口只有 nginx：`80`, `443`, `4443`；CSP/Router/model 不應直接開 host port。DB 只綁 loopback `127.0.0.1:5433:5432`。
+- `docker-compose-dev.yml` 是隔離 dev stack，project `anila-platform-dev`：nginx `8080/8443/9443`、DB `127.0.0.1:5533`、`share-dev/`、`*-dev` volumes、`anila-dev-net`。不要混用 live volumes/ports。
+- `models/docker-compose.yml` 是獨立模型 stack，project `anila-models`。第一次先建立 external network：
+  ```bash
+  docker network create anila-models-net
+  ```
+- 模型 stack lifecycle 獨立，先起 models，再起平台：
+  ```bash
+  docker compose -f models/docker-compose.yml up -d
+  docker compose up -d --build
+  ```
+- root compose 沒有 `env_file:`；Compose 會自動讀根目錄 `.env` 做 `${...}` interpolation。不要把 `.env` 或任何 secret commit。
+- `.env`、compose、build args 或 mounted config 變更後，用 `docker compose up -d` recreate；不要只 `docker restart`。
+- CSP 正式 image 使用 `myCSPPlatform/docker/Dockerfile`。`myCSPPlatform/backend/Dockerfile` 是 dead/legacy，不要改成部署目標。
+- prod 部署優先走：
+  ```bash
+  bash scripts/deploy-prod.sh preflight
+  bash scripts/deploy-prod.sh deploy
+  ```
+  不要跳過 preflight、JWT keypair、health 與 endpoint smoke verify。
+- nginx 路由重點：
+  - `443`: CSP/Vue 管理平台、`/api`, `/v1`, `/v2`, `/anilalm`, `/n8n`, `/gitlab`
+  - `4443`: ANILA runtime UI
+  - `/api/(studio|reports|mindmaps|infographics|datatables)/`: `anila-studio`
+  - `/router/`: Router，會 strip prefix
+
+## 5. 資料流與契約
+
+Chat / Router / Agent：
+
+- 使用者或 SDK 打 `/v1/chat/completions`。
+- CSP data plane 驗 `sk-*` API key 或 JWT/cookie。
+- `model=anila-router` 時交給 Router。
+- Router 從 CSP `/v1/agents` 取 agent manifest，主 LLM 回一般答案或 `DISPATCH:<agent_id>:<query>`。
+- dispatch 透過 CSP proxy 呼叫 agent endpoint；streaming 要保留 OpenAI `data:` 與 named `event:`，並轉成 `anila.*` 事件給前端。
+- 改 `anila-core/src/anila_core/api/router_server.py` 時，必跑 Router streaming/resume/session owner 相關測試。
+
+Ingestion / RAG：
+
+- CSP 建 ingestion job 並 enqueue Redis/Arq。
+- `ingestion-worker` 讀上傳檔，parser 抽文字與圖片。
+- VLM caption 可把 `[[IMAGE:id]]` 替換為圖片描述。
+- chunker 產 parent/leaf chunks。
+- leaf chunk 呼叫 embedding，寫入 pgvector。
+- rule/LLM/similarity relations 是 best-effort；檔案 `indexed` 不代表 relation graph 一定完成。
+- runtime DB 必須用 `csp_app` role；migration 才能用 superuser。用 superuser 跑 runtime 查詢會繞過 RLS。
+- pgvector/collection 存取需維持 collection scope，例如 `SET LOCAL anila.collection_id`；不得用方便查詢破壞隔離。
+- Embedding 契約目前是 `halfvec(4000)`。NV-Embed 原生 4096 維由 worker 裁切到 4000；換模型要同步 migration、worker、retriever 與測試。
+
+Studio / Artifact：
+
+- `anila-studio` 不共用 CSP DB；透過 CSP HTTP contract、JWKS、Redis revocation cache 協作。
+- revocation cache 未 ready 時應 fail-closed，不要改成放行。
+- 改 `anila-studio` API schema 後，先匯出 OpenAPI，再更新 ANILALM types：
+  ```bash
+  cd anila-studio && python scripts/export-openapi.py
+  cd ../ANILALM && npm run gen:studio-types
+  ```
+
+Image generation：
+
+- Router dispatch `image-generator` -> CSP proxy -> `flux2-dev-agent` -> `flux2-dev /generate`。
+- `flux2-dev-agent` 本身無 auth，必須只放在內網/CSP 後面，不得直接對外。
+- FLUX.2-dev README 標示 Non-Commercial license；production 前需法務確認。
+
+## 6. Auth / Security
+
+- CSP cookie flow：`anila_access_token` httpOnly path `/`、`anila_refresh_token` httpOnly path `/api/auth/refresh`、`anila_csrf` 非 httpOnly path `/`。Cookie-auth mutating request 必須帶 `X-CSRF-Token`；Bearer `Authorization` 路徑才可跳過 CSRF。
+- CSP JWT 已切 RS256；JWKS 在 `/.well-known/jwks.json`。`anila-studio` 只驗 public key，不共享私鑰。
+- Data plane `/v1/*` 接受 `sk-*` API key 或 JWT/cookie。Router/agent/service 另有 `csk-*`, `bsk-*`, service clients 與 legacy `CSP_SERVICE_TOKEN` fallback。
+- `ANILA_UI/anila-ui` 已偏 cookie-only；`ANILALM/src/store/auth.ts` 仍有 localStorage token + Bearer 注入，屬安全債，改 auth 時需一併收斂。
+- prod 不可設 `ANILA_ALLOW_DEV_SECRET=1`，不可使用 `dev-secret-key-change-in-prod`, `dev-service-token`, `changeme`, `sk-internal-worker-changeme` 等 fallback。
+- 不得提交 `.env`, `secrets/`, JWT private key, API key, `.pem`, `.key`, 內部憑證私鑰。`myCSPPlatform/backend/secrets/.gitignore` 可追蹤，但 key 檔不可追蹤。
+- 所有 user-supplied endpoint 維持 SSRF guard。新增模型或 agent docker service name 時，同步 `ANILA_TRUSTED_HOSTS` 或 trusted-hosts UI；不要用全域放寬取代 allow-list。
+- nginx CSP header 目前仍含 `'unsafe-inline'` / `'unsafe-eval'`。若要收斂，要先實測 React/Vue/markdown/mermaid 與 Studio artifact 不破。
+
+## 7. 測試與驗證矩陣
+
+不要只看 health 200。SPA catch-all 可能對不存在路由回 `200 text/html`，驗證時要看真實使用路徑、Content-Type、正式 HTTP API 與認證。
+
+| 範圍 | 指令 / 方法 |
+|---|---|
+| `anila-agent` | `cd anila-agent && make install && make test && make lint`；live endpoint 才跑 `make test-live`。 |
+| `anila-core` | `cd anila-core && pip install -e '.[dev,rag]' && pytest`；DB/RLS 類另跑 `pytest -m integration`；品質跑 `ruff check src tests`, `mypy src`。 |
+| `ingestion-worker` | `cd ingestion-worker && pip install -e '../anila-core[rag]' -e '.[dev]' && pytest && ruff check src tests`。 |
+| `myCSPPlatform/backend` | `cd myCSPPlatform/backend && python -m pytest`；schema/API 改動要驗 Alembic startup。 |
+| `myCSPPlatform/frontend` | `cd myCSPPlatform/frontend && npm run build`。 |
+| `ANILA_UI/anila-ui` | `cd ANILA_UI/anila-ui && npm test && npm run build`。目前 `e2e/README.md` 是過時殘留，沒有可靠 Playwright spec。 |
+| `ANILALM` | `cd ANILALM && npm run typecheck && npm run build`；schema 變更後先 `npm run gen:studio-types`。 |
+| `ANILALM/pptx-skill` | 沒有 npm scripts；用手動 `node tests/test_*.js` 類測試。注意 `server.js` 直接 `require("jszip")`，但 package 未直接列 `jszip`，目前仰賴 transitive dependency。 |
+| `anila-studio` | `cd anila-studio && pip install -e '.[dev]' && pytest`。 |
+| `models/flux2-dev` | `cd models/flux2-dev && pip install -e '.[test]' && pytest`；測試用 mock pipeline，不載大型權重。 |
+| `models/flux2-dev-agent` | `cd models/flux2-dev-agent && pip install -e '.[test]' && pytest`。 |
+| 整合 stack | `docker compose -f docker-compose-dev.yml up -d --build` 或 root `docker compose up -d --build`；再測 `/api/health`, `/router/health`, login, `/v1/chat/completions`, agent dispatch, ingestion upload -> search。 |
+| prod | `bash scripts/deploy-prod.sh preflight`, `bash scripts/deploy-prod.sh deploy`, `bash scripts/deploy-prod.sh verify`。 |
+
+端到端驗證至少覆蓋：
+
+- 前端能登入並取得 CSRF/cookie。
+- `/v1/chat/completions` 可用正式 API key 或 cookie/JWT 路徑呼叫。
+- `anila-router` 能正常回一般答案與 dispatch agent。
+- ingestion 從上傳、job、worker、pgvector 到 search 都跑通。
+- Studio artifact 至少跑一條代表性 job，確認 `anila-studio`、`pptx-renderer`、CSP auth/revocation 互通。
+- Docker 服務與模型服務健康，且沒有新 import error / ModuleNotFoundError。
+
+## 8. 已知雷區 / 待確認事項
+
+- `prod-public-passwd` 已移除 code-server，但 `n8n` / `gitlab` 仍在 compose 與 nginx 對外。外網部署若不需要，必須移除 service、nginx location 與 `AUTO_REGISTER_LINKS`。
+- `scripts/phase1-e2e.sh` 仍測 `/codeserver/`，對目前 `prod-public-passwd` 是過時殘留，不可當 prod 驗證依據。
+- `ANILA_UI/anila-ui` 的 `BASE_PATH` / nginx `/anila/` routing 曾被 README 提到，但 root/dev compose 主要只傳 CSP/Router build args。重建 UI 前先確認資產路徑。
+- `models/flux2-dev-agent` volume 目前偏向 `share-dev/uploads/flux`，但 prod deploy 腳本檢查 `share/uploads/flux`。prod 啟用 image-generator 前確認落地路徑與 nginx `/uploads/flux` 一致。
+- Router state 預設 `/var/lib/anila-router`；若使用 state-file/bootstrap token，要確認容器 user、volume 與權限，避免寫檔失敗。
+- `.doc` parser 可能依賴系統 `antiword`；若 worker image 沒裝會失敗。
+- `RotatingServiceTokenMiddleware` / service-token fallback 不可在 production 放行空 token；改動時要明確 fail-closed。
+
+## 9. 寫碼規則
+
+- 小改動維持小範圍；不要順手重構整個 monorepo。
+- schema 改動必須有 Alembic migration，並考慮既有資料與 branch fork。
+- API 邊界用 Pydantic/schema 驗證；SQL 參數化；HTML/markdown 輸出要淨化；錯誤訊息不得洩漏 secret。
+- 新增 endpoint 要檢查 authn/authz、CSRF/Bearer 例外、rate limit、audit log 是否需要。
+- 改 Router streaming/dispatch/resume/session owner 必補 focused tests。
+- 改 ingestion parser/chunker/embedding/relations 要補 unit tests；牽涉 pgvector/RLS 時加 integration tests。
+- 改前端要跑 `npm run build`，不要只跑 `tsc` 或 dev server。
+- 改 `anila-studio` contract 要同步 OpenAPI/types 與 ANILALM 呼叫端。
+- 修改 compose/env/nginx 後，要用 recreate 驗證，不以 `docker restart` 作為套用設定的證據。
+
+## 10. 交付前 checklist
+
+- [ ] 已讀本檔與相關子專案程式碼，不只 README。
+- [ ] 已確認目前 branch 與目標分支，沒有誤改 downstream fork 區。
+- [ ] 無 `.env`、key、token、JWT private key、憑證私鑰被加入 git。
+- [ ] prod 路徑沒有 dev fallback secret 或 `ANILA_ALLOW_DEV_SECRET=1`。
+- [ ] DB runtime 使用 `csp_app`，migration 才用 superuser。
+- [ ] 新增模型/agent endpoint 已處理 SSRF allow-list。
+- [ ] 有對應測試；不能跑的測試要如實說明原因。
+- [ ] 端到端驗證走正式 HTTP API + auth，不直連 DB 假裝完成。
+- [ ] 回報包含：改了什麼、為什麼、怎麼驗、剩餘風險。
