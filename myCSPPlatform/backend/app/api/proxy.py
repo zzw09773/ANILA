@@ -232,11 +232,38 @@ async def _tee_stream_capture_assistant(
     the memory writer can persist the turn.
     """
     import json
+
+    def _choices(chunk: dict) -> list:
+        choices = chunk.get("choices")
+        if isinstance(choices, list):
+            return choices
+        choice = chunk.get("choice")
+        if isinstance(choice, list):
+            return choice
+        if isinstance(choice, dict):
+            return [choice]
+        return []
+
+    def _content(value) -> str:
+        if isinstance(value, str):
+            return value
+        if not isinstance(value, list):
+            return ""
+        out: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                out.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+                if isinstance(text, str):
+                    out.append(text)
+        return "".join(out)
+
     parts: list[str] = []
     try:
         async for block in upstream:
             # SSE block format: "event: foo\ndata: {...}\n\n" — extract
-            # the data payload and pull "delta.content" if present.
+            # the data payload and pull assistant-visible text if present.
             for line in block.split("\n"):
                 if not line.startswith("data:"):
                     continue
@@ -247,12 +274,19 @@ async def _tee_stream_capture_assistant(
                     chunk = json.loads(payload)
                 except json.JSONDecodeError:
                     continue
-                # OpenAI streaming format
-                choices = chunk.get("choices") or []
-                for c in choices:
-                    delta = c.get("delta") or {}
-                    txt = delta.get("content")
-                    if isinstance(txt, str) and txt:
+                # OpenAI streaming format plus registered agents that send
+                # complete assistant messages inside SSE frames.
+                for c in _choices(chunk):
+                    if not isinstance(c, dict):
+                        continue
+                    delta = c.get("delta") if isinstance(c.get("delta"), dict) else {}
+                    message = (
+                        c.get("message") if isinstance(c.get("message"), dict) else {}
+                    )
+                    txt = _content(delta.get("content")) or _content(
+                        message.get("content")
+                    )
+                    if txt:
                         parts.append(txt)
             yield block
     finally:

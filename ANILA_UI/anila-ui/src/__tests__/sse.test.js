@@ -283,6 +283,21 @@ describe("dispatchSseEvent", () => {
     expect(onJson).toHaveBeenCalledTimes(2);
   });
 
+  it("accepts streamed chunks that put assistant text in message.content", () => {
+    const onText = vi.fn();
+    const acc = makeAccumulator();
+    dispatchSseEvent(
+      {
+        event: "message",
+        data: '{"choices":[{"message":{"role":"assistant","content":"hello from agent"}}]}',
+        raw: "",
+      },
+      { onText, accumulator: acc },
+    );
+    expect(acc.snapshot()).toBe("hello from agent");
+    expect(onText).toHaveBeenCalledWith("hello from agent");
+  });
+
   it("ignores [DONE] terminator", () => {
     const onText = vi.fn();
     dispatchSseEvent(
