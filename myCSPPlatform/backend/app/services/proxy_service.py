@@ -241,14 +241,33 @@ def _extract_response_text(result: dict) -> str:
 def _extract_stream_text(chunk: dict) -> str:
     """Extract text/reasoning/tool-call deltas from a streaming chunk."""
     parts: list[str] = []
-    for choice in chunk.get("choices", []) or []:
+    choices = chunk.get("choices")
+    if not isinstance(choices, list):
+        choice = chunk.get("choice")
+        if isinstance(choice, list):
+            choices = choice
+        elif isinstance(choice, dict):
+            choices = [choice]
+        else:
+            choices = []
+    for choice in choices:
         if not isinstance(choice, dict):
             continue
         delta = choice.get("delta") or {}
         if not isinstance(delta, dict):
-            continue
-        for key in ("content", "reasoning", "reasoning_content"):
-            value = delta.get(key)
+            delta = {}
+        message = choice.get("message") or {}
+        if not isinstance(message, dict):
+            message = {}
+        content = (
+            _flatten_content(delta.get("content"))
+            or _flatten_content(message.get("content"))
+            or _flatten_content(choice.get("text"))
+        )
+        if content:
+            parts.append(content)
+        for key in ("reasoning", "reasoning_content"):
+            value = delta.get(key) or message.get(key)
             if value:
                 parts.append(str(value))
         for tool_call in delta.get("tool_calls", []) or []:
