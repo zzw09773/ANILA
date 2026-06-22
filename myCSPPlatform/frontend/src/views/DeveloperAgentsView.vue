@@ -1220,13 +1220,17 @@ function buildStatusHistory(agent) {
 .secret-banner__token {
   flex: 1;
   font-family: var(--font-mono); font-size: var(--t-sm);
-  background: var(--c-bg-1, #000); padding: 4px 6px;
+  background: var(--c-surface-1); color: var(--c-fg-1);
+  border: var(--border-w) solid var(--c-border-strong);
+  padding: 4px 6px;
   word-break: break-all; user-select: all;
 }
 .secret-banner__meta { margin: 6px 0 0; padding-left: 1.2em; color: var(--c-fg-2); }
 .secret-banner__meta li { line-height: 1.5; }
 .secret-banner__meta code {
-  background: var(--c-bg-1, #000); padding: 1px 4px; font-size: var(--t-3xs);
+  background: var(--c-surface-1); color: var(--c-fg-1);
+  border: var(--border-w) solid var(--c-border);
+  padding: 1px 4px; font-size: var(--t-3xs);
 }
 
 .secret-banner__howto { margin-top: 12px; }
