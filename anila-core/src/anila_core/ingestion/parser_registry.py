@@ -109,6 +109,103 @@ class MarkdownParser:
         )
 
 
+class JsonParser:
+    """Parser for .json files — pretty-print so keys/values stay searchable."""
+
+    def parse(self, file_path: str) -> ParsedDocument:
+        import json
+
+        path = Path(file_path)
+        raw = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            content = json.dumps(json.loads(raw), ensure_ascii=False, indent=2)
+        except (ValueError, TypeError):
+            content = raw  # 非合法 JSON → 當純文字收
+        return ParsedDocument(
+            content=content,
+            metadata={"title": path.stem},
+            source_path=file_path,
+            format="json",
+        )
+
+
+class HtmlParser:
+    """Parser for .html/.htm — stdlib tag-strip → text(不依賴 docling)。
+
+    保留 <title> 當標題、丟掉 <script>/<style>、收斂空白。版面感知的 HTML
+    (表格/圖片)需要 docling(``DOC_PARSER=docling``);這是永遠可用的原生
+    fallback,讓 .html 上傳在預設 native 模式下也能解析。
+    """
+
+    def parse(self, file_path: str) -> ParsedDocument:
+        import re
+        from html.parser import HTMLParser as _HTMLParser
+
+        # 跳過「不可見/非內容」子樹 —— 不只 script/style,還有 template、noscript、
+        # head,以及帶 hidden / aria-hidden / display:none 的元素。否則 HTML 裡藏的
+        # 不可見文字會被抽進 RAG context → prompt injection / knowledge poisoning。
+        SKIP_TAGS = frozenset({"script", "style", "template", "noscript", "head"})
+        VOID = frozenset({
+            "br", "img", "input", "hr", "meta", "link", "area", "base",
+            "col", "embed", "source", "track", "wbr",
+        })
+        BLOCK = frozenset({"p", "br", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5"})
+
+        class _Extract(_HTMLParser):
+            def __init__(self) -> None:
+                super().__init__(convert_charrefs=True)
+                self.parts: list[str] = []
+                self.title = ""
+                self._skip: list[str] = []  # 被跳過子樹的標籤堆疊
+                self._in_title = False
+
+            def handle_starttag(self, tag, attrs):
+                if tag == "title":
+                    self._in_title = True
+                    return
+                attrd = {k.lower(): (v or "") for k, v in attrs}
+                hidden = (
+                    "hidden" in attrd
+                    or attrd.get("aria-hidden") == "true"
+                    or "display:none" in attrd.get("style", "").replace(" ", "").lower()
+                )
+                if tag in SKIP_TAGS or hidden:
+                    if tag not in VOID:  # void 元素無對應 end tag,不入堆疊
+                        self._skip.append(tag)
+                    return
+                if self._skip:
+                    return
+                if tag in BLOCK:
+                    self.parts.append("\n")
+
+            def handle_endtag(self, tag):
+                if tag == "title":
+                    self._in_title = False
+                elif self._skip and self._skip[-1] == tag:
+                    self._skip.pop()
+
+            def handle_data(self, data):
+                if self._in_title:
+                    self.title += data  # title 即使在被跳過的 <head> 內也要抓
+                    return
+                if self._skip:
+                    return
+                self.parts.append(data)
+
+        path = Path(file_path)
+        raw = path.read_text(encoding="utf-8", errors="replace")
+        ex = _Extract()
+        ex.feed(raw)
+        text = re.sub(r"[ \t]+", " ", "".join(ex.parts))
+        text = re.sub(r"\n[ \t]*\n[ \t]*", "\n\n", text).strip()
+        return ParsedDocument(
+            content=text,
+            metadata={"title": ex.title.strip() or path.stem},
+            source_path=file_path,
+            format="html",
+        )
+
+
 class RtfParser:
     """Parser for .rtf files using striprtf (pure Python, no system deps)."""
 
@@ -523,6 +620,9 @@ class ParserRegistry:
     _PARSERS: dict[str, DocumentParser] = {
         ".txt": PlainTextParser(),
         ".md": MarkdownParser(),
+        ".json": JsonParser(),
+        ".html": HtmlParser(),
+        ".htm": HtmlParser(),
         ".rtf": RtfParser(),
         ".pdf": PdfParser(),
         ".docx": DocxParser(),
