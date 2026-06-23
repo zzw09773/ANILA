@@ -28,7 +28,6 @@ original memdir) and ``postgres`` (contract-only; concrete impl in
 CSP).
 """
 from .adapter import MemoryAdapter
-from .clients import HttpUserFactReader, UserFactReadError, make_user_memory_reader
 from .embedding import (
     DEFAULT_EMBED_MODEL,
     EMBED_DIM,
@@ -51,14 +50,11 @@ __all__ = [
     "EMBED_DIM",
     "EMBED_NATIVE_DIM",
     "EXTRACTION_SYSTEM_PROMPT",
-    "HttpUserFactReader",
     "MemoryAdapter",
     "MemoryReadResult",
     "RetrievedChunk",
     "UserFactDTO",
-    "UserFactReadError",
     "format_transcript_for_extraction",
-    "make_user_memory_reader",
     "parse_extraction_response",
     "truncate_embedding",
 ]

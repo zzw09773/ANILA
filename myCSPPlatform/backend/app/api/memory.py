@@ -30,8 +30,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.user import User
 from app.models.user_memory import ConversationMemoryChunk, UserFact
-from app.services import agent_credential_service, audit_service
-from app.services.auth_service import get_current_user, verify_service_token
+from app.services.auth_service import get_current_user
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
@@ -237,85 +236,3 @@ def clear_chunks(
     return DeleteResponse(deleted=int(deleted))
 
 
-# ── Cross-tenant: agent reading user facts ───────────────────────────────────
-#
-# Phase 3 of the route-3 anila-memory layer. An agent serving a user
-# sometimes needs to read that user's stable facts (name, role,
-# preferences) so its responses stay consistent across conversations
-# even when CSP-side prompt injection isn't enough.
-#
-# Auth model: agent service token (X-CSP-Service-Token header,
-# verified against agent_credentials). The agent's identity is
-# resolved server-side; the URL-path ``user_id`` says *which user's
-# facts* the agent wants. There is intentionally NO endpoint for
-# write / delete via service token — extraction only flows through
-# the existing post-turn pipeline.
-#
-# The current policy is "any active agent token can read any user's
-# facts". Tighter scoping (e.g. require an open conversation between
-# agent and user) is left to a future iteration when stateful policy
-# checks become worth the latency. Every cross-tenant read writes an
-# audit row so admins can detect abuse retrospectively.
-
-
-@router.get("/users/{user_id}/facts", response_model=FactListResponse)
-def list_user_facts_for_agent(
-    user_id: int,
-    db: Session = Depends(get_db),
-    identity: agent_credential_service.CallerIdentity | None = Depends(
-        verify_service_token
-    ),
-):
-    """Read another user's facts via agent service token.
-
-    Returns the same shape as the user-facing :func:`list_facts`.
-    401 on missing / invalid token. 403 when the caller is not an
-    agent (the legacy CSP_SERVICE_TOKEN env or a service_clients
-    row that isn't agent-scoped). 404 on a non-existent user_id so
-    the response shape stays uniform with other ``users/{id}`` paths.
-    """
-    if identity is None:
-        raise HTTPException(
-            status_code=401,
-            detail="Missing or invalid service token",
-        )
-    if identity.kind != "agent" or identity.agent_id is None:
-        raise HTTPException(
-            status_code=403,
-            detail="此 endpoint 僅接受 agent service token",
-        )
-
-    user_exists = (
-        db.query(User.id).filter(User.id == user_id).first() is not None
-    )
-    if not user_exists:
-        raise HTTPException(status_code=404, detail="User 不存在")
-
-    rows = (
-        db.query(UserFact)
-        .filter(UserFact.user_id == user_id)
-        .order_by(UserFact.updated_at.desc())
-        .all()
-    )
-
-    audit_service.log_audit_event(
-        db,
-        action="memory.cross_tenant.read_user_facts",
-        resource_type="user_facts",
-        resource_id=str(user_id),
-        detail=(
-            f"agent_id={identity.agent_id} read {len(rows)} fact(s) "
-            f"for user_id={user_id}"
-        ),
-        metadata={
-            "agent_id": identity.agent_id,
-            "user_id": user_id,
-            "fact_count": len(rows),
-        },
-        commit=True,
-    )
-
-    return FactListResponse(
-        total=len(rows),
-        facts=[FactResponse.model_validate(r) for r in rows],
-    )

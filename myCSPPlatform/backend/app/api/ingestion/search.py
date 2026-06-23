@@ -45,7 +45,7 @@ from app.models.model_registry import ModelRegistry
 from app.models.user import User
 from app.services.auth_service import get_current_user
 from app.services.ingestion_pool import get_pool
-from app.services.proxy_service import proxy_request
+from app.services.proxy_service import downstream_identity, proxy_request
 from app.services.relation_resolver import scope_collection_rls
 
 router = APIRouter(tags=["Ingestion / Search"])
@@ -317,6 +317,7 @@ async def _embed_query(
         model=model,
         api_key_id=None,  # SPA caller; usage attributes to user, no key
         user_id=user.id,
+        user_identity=downstream_identity(user),
         department_id=user.department_id,
         request_body=body,
         endpoint_path="/v1/embeddings",

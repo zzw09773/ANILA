@@ -15,7 +15,12 @@ from app.models.model_registry import ModelRegistry
 from app.services import memory_service
 from app.services.api_key_service import check_model_permission, check_agent_permission
 from app.services.auth_service import is_admin_tier
-from app.services.proxy_service import build_default_anila_meta, proxy_request, proxy_stream
+from app.services.proxy_service import (
+    build_default_anila_meta,
+    downstream_identity,
+    proxy_request,
+    proxy_stream,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -437,6 +442,10 @@ async def chat_completions(
     user = caller.user
     department_id = user.department_id
     user_email = user.email
+    # 員編 forwarded as the downstream wire identity (None for non-card
+    # accounts → identity header omitted, never forged; the request still
+    # proceeds). user.id (PK) is still used for usage rows.
+    user_identity = downstream_identity(user)
 
     # Audit fields from optional client headers
     conversation_id: str | None = request.headers.get("X-ANILA-Conversation-Id")
@@ -514,7 +523,7 @@ async def chat_completions(
                 usage_model_id=agent.id,
                 request_body=body,
                 user_email=user_email,
-                inject_identity=True,
+                user_identity=user_identity,
                 model_name=agent.name,
                 conversation_id=conversation_id,
                 trace_id=trace_id,
@@ -555,7 +564,7 @@ async def chat_completions(
         target = f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions"
         from app.services.proxy_service import (
             _aggregate_sse_to_chat_completion,
-            _build_downstream_headers,
+            build_agent_headers,
             _guard_outbound,
         )
         _guard_outbound(target)  # call-time SSRF re-validation (TOCTOU defense)
@@ -564,7 +573,7 @@ async def chat_completions(
         # this branch is still TODO — non-streaming agent forwards don't
         # currently emit a token_usage row at all (orthogonal pre-existing
         # gap, tracked in Sprint 9 X follow-ups).
-        headers = _build_downstream_headers(user.id, user_email, target_agent_id=agent.id)
+        headers = build_agent_headers(user_identity, user_email, target_agent_id=agent.id)
         started_at = time.time()
         try:
             async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
@@ -626,7 +635,7 @@ async def chat_completions(
             usage_model_id=model.id,
             request_body=body,
             user_email=user_email,
-            inject_identity=False,
+            user_identity=user_identity,
             model_name=model.name,
             conversation_id=conversation_id,
             trace_id=trace_id,
@@ -651,6 +660,7 @@ async def chat_completions(
         model=model,
         api_key_id=caller.api_key_id,
         user_id=user.id,
+        user_identity=user_identity,
         department_id=department_id,
         request_body=body,
         endpoint_path="/v1/chat/completions",
@@ -706,10 +716,10 @@ async def resume_agent_session(
     target = (
         f"{agent.endpoint_url.rstrip('/')}/sessions/{session_id}/answer"
     )
-    from app.services.proxy_service import _build_downstream_headers, _guard_outbound
+    from app.services.proxy_service import build_agent_headers, _guard_outbound
     _guard_outbound(target)  # call-time SSRF re-validation (TOCTOU defense)
-    headers = _build_downstream_headers(
-        user.id, user.email, target_agent_id=agent.id,
+    headers = build_agent_headers(
+        downstream_identity(user), user.email, target_agent_id=agent.id,
     )
 
     import httpx
@@ -767,6 +777,7 @@ async def embeddings_v1(
         model=model,
         api_key_id=caller.api_key_id,
         user_id=caller.user.id,
+        user_identity=downstream_identity(caller.user),
         department_id=caller.user.department_id,
         request_body=body,
         endpoint_path="/v1/embeddings",
@@ -789,6 +800,7 @@ async def embeddings_v2(
         model=model,
         api_key_id=caller.api_key_id,
         user_id=caller.user.id,
+        user_identity=downstream_identity(caller.user),
         department_id=caller.user.department_id,
         request_body=body,
         endpoint_path="/v2/embeddings",

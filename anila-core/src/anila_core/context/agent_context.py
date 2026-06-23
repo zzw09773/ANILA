@@ -81,8 +81,7 @@ class AgentContext:
     Populated by ``api.caller_context.extract_caller_context`` before
     the engine starts. Carries the calling user's id + the agent's
     own service token, which together let the agent call back into
-    CSP for cross-tenant reads (notably user memory facts via
-    :func:`anila_core.memory.long_term.clients.make_user_memory_reader`).
+    CSP on the user's behalf (e.g. collection-scoped RAG search).
 
     None when the request didn't come through CSP (dev / test
     curl). Agent code should None-check before using identity-bound

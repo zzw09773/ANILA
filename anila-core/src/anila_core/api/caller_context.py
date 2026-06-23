@@ -6,7 +6,9 @@ CSP's :func:`_build_downstream_headers` (in
 an agent. They carry the bits an agent needs to interact with
 platform services on the calling user's behalf:
 
-* ``X-ANILA-User-Id`` — which user the agent is serving.
+* ``X-ANILA-User-Id`` — which user the agent is serving (the
+  employee ID / 員編 on the card-login intranet branch; an opaque
+  stable string identifier, NOT a numeric DB primary key).
 * ``X-ANILA-User-Email`` — convenience for audit / logging.
 * ``X-CSP-Service-Token`` — the agent's own service credential
   (``csk-...``). Agent uses this to call back into CSP for
@@ -46,7 +48,7 @@ class CallerContext:
     that depends on a particular field MUST None-check before use.
     """
 
-    user_id: Optional[int] = None
+    user_id: Optional[str] = None
     user_email: Optional[str] = None
     user_groups: Optional[str] = None
     service_token: Optional[str] = None
@@ -58,15 +60,20 @@ class CallerContext:
     @property
     def has_user(self) -> bool:
         """True when there's enough identity to attribute work."""
-        return self.user_id is not None
+        return bool((self.user_id or "").strip())
 
     @property
     def has_callback_credentials(self) -> bool:
-        """True when the agent has what it needs to call back into CSP."""
+        """True when the agent has what it needs to call back into CSP.
+
+        All three fields use stripped truthiness so a blank / whitespace
+        header (e.g. ``X-CSP-Service-Token: ``) can't slip a half-built
+        reader past the gate.
+        """
         return (
-            self.service_token is not None
-            and self.csp_base_url is not None
-            and self.user_id is not None
+            bool((self.service_token or "").strip())
+            and bool((self.csp_base_url or "").strip())
+            and bool((self.user_id or "").strip())
         )
 
 
@@ -86,17 +93,14 @@ def extract_caller_context(
 
     Parsing rules:
 
-    * ``X-ANILA-User-Id`` is forwarded as a string by httpx; we
-      parse to int and tolerate junk by leaving ``user_id=None``
-      (agents shouldn't crash because a malformed header reached
-      them — they should degrade to "no user attribution").
+    * ``X-ANILA-User-Id`` carries the employee ID (員編) on the
+      card-login intranet branch — an opaque, stable string
+      identifier, NOT a numeric DB primary key. We keep it as a
+      stripped string; blank / whitespace-only headers degrade to
+      ``user_id=None`` ("no user attribution"). Downstream CSP
+      callbacks resolve this identifier to a user server-side.
     """
-    user_id: Optional[int] = None
-    if x_anila_user_id:
-        try:
-            user_id = int(x_anila_user_id)
-        except ValueError:
-            user_id = None
+    user_id: Optional[str] = (x_anila_user_id or "").strip() or None
 
     csp_base_url = os.environ.get(_DEFAULT_BASE_URL_ENV)
     if csp_base_url:

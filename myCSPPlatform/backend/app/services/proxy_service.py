@@ -119,30 +119,79 @@ def _resolve_outgoing_service_token(target_agent_id: Optional[int]) -> Optional[
     return None
 
 
-def _build_downstream_headers(
-    user_id: int,
+# 員編 shape (X.509 subject.serialNumber): 6–9 digits. Mirrors
+# card_auth._EMPLOYEE_ID_RE — kept local to avoid importing a private name.
+_EMPLOYEE_ID_RE = re.compile(r"\A\d{6,9}\Z")
+
+
+def downstream_identity(user) -> Optional[str]:
+    """Wire identity (員編) forwarded downstream as ``X-ANILA-User-Id``.
+
+    On the card-login branch ``user.username`` IS the employee ID. We
+    forward it only when it matches the 員編 shape; non-card accounts
+    (e.g. admin) return ``None``. Callers then OMIT the identity header —
+    we never forge a bogus identity (e.g. ``"admin"``) downstream. This is
+    fail-SAFE, not request-blocking: the chat/embedding call still proceeds
+    (admin can use chat), just with no downstream user attribution.
+    """
+    username = getattr(user, "username", None)
+    if username and _EMPLOYEE_ID_RE.match(username):
+        return username
+    return None
+
+
+def build_agent_headers(
+    user_identity: Optional[str],
     user_email: Optional[str] = None,
     user_groups: Optional[str] = None,
     target_agent_id: Optional[int] = None,
 ) -> dict:
-    """Build service credential + identity headers for downstream agents.
+    """Build service-credential + identity headers for downstream AGENTS.
 
-    Sprint 8 X: ``target_agent_id`` is the registered ``agents.id`` if
-    we're forwarding to an agent (vs a raw model). When set, we prefer
-    the per-agent token from ``agent_credentials``; falls back to the
-    legacy env-var token when no DB credential exists yet for that
-    agent. Both paths emit the same ``X-CSP-Service-Token`` header on
-    the wire — agents don't need to know the source changed.
+    Carries the full identity set (員編 + email + groups) plus the agent
+    service token. ``X-ANILA-User-Id`` is the **employee ID (員編)**, a
+    string forwarded verbatim; it is OMITTED when ``user_identity`` is
+    falsy so non-card accounts (e.g. admin) send NO identity rather than a
+    forged one. The call still proceeds — the agent simply has no user
+    attribution (it still receives the service token).
+
+    Sprint 8 X: ``target_agent_id`` is the registered ``agents.id``. When
+    set, we prefer the per-agent token from ``agent_credentials``; falls
+    back to the legacy env-var token when no DB credential exists yet.
+
+    AGENTS ONLY. Never use this for the model gateway — it must not
+    receive ``X-CSP-Service-Token`` (use ``build_model_gateway_headers``).
     """
     headers: dict = {"Content-Type": "application/json"}
     token = _resolve_outgoing_service_token(target_agent_id)
     if token:
         headers["X-CSP-Service-Token"] = token
-    headers["X-ANILA-User-Id"] = str(user_id)
+    if user_identity:
+        headers["X-ANILA-User-Id"] = user_identity
     if user_email:
         headers["X-ANILA-User-Email"] = user_email
     if user_groups:
         headers["X-ANILA-User-Groups"] = user_groups
+    return headers
+
+
+def build_model_gateway_headers(user_identity: Optional[str]) -> dict:
+    """Build headers for an LLM / embedding model gateway (.12) call.
+
+    Carries ONLY the employee ID (員編) in ``X-ANILA-User-Id`` for
+    traceability. Deliberately omits BOTH ``X-CSP-Service-Token`` (the
+    model gateway must never receive CSP's service credential) and
+    ``X-ANILA-User-Email`` / ``-Groups`` (no end-user PII into model
+    prompt logs). The gateway bearer key is layered on separately by
+    ``_apply_gateway_auth`` at the call site.
+
+    ``X-ANILA-User-Id`` is omitted when ``user_identity`` is falsy
+    (non-card accounts send no identity rather than a forged one; the
+    model call still proceeds).
+    """
+    headers: dict = {"Content-Type": "application/json"}
+    if user_identity:
+        headers["X-ANILA-User-Id"] = user_identity
     return headers
 
 
@@ -450,7 +499,7 @@ async def proxy_request(
     request_body: dict,
     endpoint_path: str,
     user_email: Optional[str] = None,
-    inject_identity: bool = False,
+    user_identity: Optional[str] = None,
     conversation_id: Optional[str] = None,
     trace_id: Optional[str] = None,
     requires_encryption: bool = False,
@@ -497,13 +546,16 @@ async def proxy_request(
     last_error = None
     start_time = time.time()
 
-    req_headers = (
-        _build_downstream_headers(
-            user_id, user_email, target_agent_id=target_agent_id
+    # ``user_id`` (DB PK) is for usage attribution only; the wire identity
+    # is ``user_identity`` (員編). Builder chosen by DESTINATION (not a caller
+    # flag) so the model gateway can never receive the CSP service token:
+    # agent → full identity + token; model/embedding → 員編-only.
+    if model.model_type == "agent":
+        req_headers = build_agent_headers(
+            user_identity, user_email, target_agent_id=target_agent_id
         )
-        if inject_identity
-        else {"Content-Type": "application/json"}
-    )
+    else:
+        req_headers = build_model_gateway_headers(user_identity)
     # gateway key 只給 model 呼叫;agent dispatch (model_type='agent') 不帶。
     if model.model_type != "agent":
         _apply_gateway_auth(req_headers)
@@ -670,7 +722,7 @@ async def proxy_stream(
     usage_model_id: int,
     request_body: dict,
     user_email: Optional[str] = None,
-    inject_identity: bool = False,
+    user_identity: Optional[str] = None,
     model_name: str | None = None,
     conversation_id: Optional[str] = None,
     trace_id: Optional[str] = None,
@@ -688,13 +740,16 @@ async def proxy_stream(
     # Call-time SSRF re-validation (TOCTOU / DNS-rebinding defense).
     _guard_outbound(target_url)
 
-    headers = (
-        _build_downstream_headers(
-            user_id, user_email, target_agent_id=target_agent_id
+    # ``user_id`` (DB PK) is for usage attribution only; ``user_identity``
+    # (員編) is the wire identity. Builder chosen by DESTINATION
+    # (target_agent_id) — never a caller flag — so the model gateway can
+    # never receive the CSP service token.
+    if target_agent_id is not None:
+        headers = build_agent_headers(
+            user_identity, user_email, target_agent_id=target_agent_id
         )
-        if inject_identity
-        else {"Content-Type": "application/json"}
-    )
+    else:
+        headers = build_model_gateway_headers(user_identity)
     # gateway key 只給 model 串流;agent 串流 (target_agent_id 非 None) 不帶。
     if target_agent_id is None:
         _apply_gateway_auth(headers)

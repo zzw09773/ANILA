@@ -4,10 +4,13 @@ Covers:
 
 * :func:`extract_caller_context` parses the CSP-set ``X-ANILA-*`` /
   ``X-CSP-*`` headers into a typed :class:`CallerContext`.
-* :func:`make_user_memory_reader` returns ``None`` on missing
-  fields and a working :class:`HttpUserFactReader` when complete.
 * :func:`create_subagent_context` propagates ``caller`` so a
   subagent serves the same user as its parent.
+
+Identity note: ``X-ANILA-User-Id`` carries the employee ID (員編) on
+the card-login intranet branch — an opaque, stable *string* (NOT a DB
+primary key). These tests pin that string contract: non-numeric
+identities are kept verbatim; only blank / whitespace degrades to None.
 """
 from __future__ import annotations
 
@@ -22,18 +25,16 @@ from anila_core.context.agent_context import (
     AgentContext,
     create_subagent_context,
 )
-from anila_core.memory.long_term import (
-    HttpUserFactReader,
-    make_user_memory_reader,
-)
 
 
 # ── CallerContext semantics ──────────────────────────────────────────────────
 
 
 def test_caller_context_has_user_requires_user_id():
-    assert CallerContext(user_id=42).has_user is True
+    assert CallerContext(user_id="1147259").has_user is True
     assert CallerContext().has_user is False
+    # 員編 is a string now; blank / whitespace-only is "no identity".
+    assert CallerContext(user_id="").has_user is False
 
 
 def test_caller_context_has_callback_credentials_requires_three_fields():
@@ -41,15 +42,26 @@ def test_caller_context_has_callback_credentials_requires_three_fields():
     Pin so a refactor that quietly relaxes the check (e.g. forgets
     csp_base_url) doesn't make the factory fall over with KeyError."""
     full = CallerContext(
-        user_id=1,
+        user_id="1147259",
         service_token="csk-x",
         csp_base_url="http://csp:8000",
     )
     assert full.has_callback_credentials is True
 
-    assert CallerContext(user_id=1, service_token="csk-x").has_callback_credentials is False
-    assert CallerContext(user_id=1, csp_base_url="http://csp:8000").has_callback_credentials is False
+    assert CallerContext(user_id="1147259", service_token="csk-x").has_callback_credentials is False
+    assert CallerContext(user_id="1147259", csp_base_url="http://csp:8000").has_callback_credentials is False
     assert CallerContext(service_token="csk-x", csp_base_url="http://csp:8000").has_callback_credentials is False
+    # Blank / whitespace fields must not satisfy the callback gate (would
+    # otherwise build a reader that calls /users//facts or auths with "").
+    assert CallerContext(
+        user_id="", service_token="csk-x", csp_base_url="http://csp:8000"
+    ).has_callback_credentials is False
+    assert CallerContext(
+        user_id="1147259", service_token="   ", csp_base_url="http://csp:8000"
+    ).has_callback_credentials is False
+    assert CallerContext(
+        user_id="1147259", service_token="csk-x", csp_base_url="   "
+    ).has_callback_credentials is False
 
 
 # ── extract_caller_context FastAPI dependency ────────────────────────────────
@@ -77,13 +89,13 @@ def test_extract_caller_context_parses_full_header_set(monkeypatch):
     resp = client.get(
         "/echo",
         headers={
-            "X-ANILA-User-Id": "42",
+            "X-ANILA-User-Id": "1147259",
             "X-ANILA-User-Email": "alice@example.com",
             "X-CSP-Service-Token": "csk-test",
         },
     )
     body = resp.json()
-    assert body["user_id"] == 42
+    assert body["user_id"] == "1147259"  # 員編 kept as string, not int-coerced
     assert body["user_email"] == "alice@example.com"
     assert body["service_token"] == "csk-test"
     assert body["csp_base_url"] == "http://csp:8000"  # trailing slash stripped
@@ -101,51 +113,16 @@ def test_extract_caller_context_tolerates_missing_headers(monkeypatch):
     assert body["has_callback_credentials"] is False
 
 
-def test_extract_caller_context_treats_garbage_user_id_as_none(monkeypatch):
-    """A malformed header shouldn't crash the request — agent
-    code degrades to "no user attribution" rather than 500."""
+def test_extract_caller_context_keeps_non_numeric_identity(monkeypatch):
+    """X-ANILA-User-Id now carries the employee ID (員編) — an opaque
+    string. Non-numeric identities (e.g. the admin account) are kept
+    verbatim; only blank / whitespace-only degrades to None. (Previously
+    the header was int-coerced and non-numeric values became None.)"""
     monkeypatch.setenv("ANILA_CSP_BASE_URL", "http://csp:8000")
     client = TestClient(_make_test_app())
-    resp = client.get("/echo", headers={"X-ANILA-User-Id": "not-an-int"})
-    assert resp.json()["user_id"] is None
-
-
-# ── make_user_memory_reader factory ──────────────────────────────────────────
-
-
-def test_make_user_memory_reader_returns_none_when_caller_missing():
-    assert make_user_memory_reader(None) is None
-
-
-def test_make_user_memory_reader_returns_none_on_partial_credentials():
-    """Same gate as has_callback_credentials — pin separately so the
-    factory doesn't drift away from CallerContext's contract."""
-    partial = CallerContext(user_id=42)  # no token, no base url
-    assert make_user_memory_reader(partial) is None
-
-
-def test_make_user_memory_reader_returns_reader_when_complete():
-    full = CallerContext(
-        user_id=42,
-        service_token="csk-x",
-        csp_base_url="http://csp:8000",
-    )
-    reader = make_user_memory_reader(full)
-    assert isinstance(reader, HttpUserFactReader)
-
-
-def test_make_user_memory_reader_threads_timeout_kwarg():
-    """The agent runtime overrides timeout for low-latency budgets;
-    pin that the kwarg actually reaches the constructor."""
-    full = CallerContext(
-        user_id=42,
-        service_token="csk-x",
-        csp_base_url="http://csp:8000",
-    )
-    reader = make_user_memory_reader(full, timeout_seconds=1.5)
-    # _timeout is private but stable — the assertion docs the
-    # contract for callers tuning the read-path latency budget.
-    assert reader is not None and reader._timeout == 1.5  # type: ignore[union-attr]
+    assert client.get("/echo", headers={"X-ANILA-User-Id": "admin"}).json()["user_id"] == "admin"
+    assert client.get("/echo", headers={"X-ANILA-User-Id": "1147259"}).json()["user_id"] == "1147259"
+    assert client.get("/echo", headers={"X-ANILA-User-Id": "   "}).json()["user_id"] is None
 
 
 # ── AgentContext.caller propagation through subagent fork ────────────────────
@@ -156,7 +133,7 @@ def test_subagent_inherits_caller_from_parent():
     must propagate the immutable caller bundle so the subagent
     can call back into CSP for memory reads on the same user."""
     parent_caller = CallerContext(
-        user_id=42,
+        user_id="1147259",
         service_token="csk-x",
         csp_base_url="http://csp:8000",
     )
