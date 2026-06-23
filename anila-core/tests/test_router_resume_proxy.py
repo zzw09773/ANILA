@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 import pytest_asyncio
 import respx
 from fastapi.testclient import TestClient
@@ -25,6 +26,19 @@ from anila_core.api.router_server import create_router_app
 from anila_core.api.session_owner import get_session_owner
 from anila_core.config import settings
 from anila_core.memory import close_all_connections
+
+
+@pytest.fixture(autouse=True)
+def _disable_recompose(monkeypatch):
+    """Reply re-composition is an orthogonal personalization pass with its own
+    tests; stub it to a passthrough so these dispatch-behaviour tests don't see
+    its extra recompose LLM call."""
+    import anila_core.api.router_server as _rs
+
+    async def _passthrough(agent_reply, caller_api_key, *, forwarded_headers=None):
+        return agent_reply, "skipped"
+
+    monkeypatch.setattr(_rs, "_recompose_reply", _passthrough)
 
 
 CSP_BASE = settings.csp_base_url
