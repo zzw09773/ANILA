@@ -271,16 +271,30 @@ def get_user_facts(db: Session, user_id: int) -> list[UserFact]:
 
 
 def _format_block(facts: list[UserFact], chunks: list[RetrievedChunk]) -> str | None:
-    """Compose the markdown block prepended to system prompts."""
+    """Compose the markdown block prepended to system prompts.
+
+    ``preference.*`` facts get their own ``### 使用者偏好`` section so the
+    routing LLM and the Router's personalization layer can find the user's
+    stable preferences in the CSP-injected memory.
+    """
     if not facts and not chunks:
         return None
 
+    prefs = [f for f in facts if f.key.startswith("preference.")]
+    others = [f for f in facts if not f.key.startswith("preference.")]
+
     lines: list[str] = ["## 使用者背景與過往脈絡"]
 
-    if facts:
+    if prefs:
+        lines.append("")
+        lines.append("### 使用者偏好")
+        for f in prefs:
+            lines.append(f"- **{f.key}**: {f.value}")
+
+    if others:
         lines.append("")
         lines.append("### 已知事實")
-        for f in facts:
+        for f in others:
             lines.append(f"- **{f.key}**: {f.value}")
 
     if chunks:
