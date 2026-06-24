@@ -691,7 +691,6 @@ def delete_agent(
 from app.models.agent_credential import AgentCredential
 from app.services import agent_credential_service
 from app.services.proxy_service import invalidate_agent_token_cache
-from app.services.service_token_envelope import decode_service_token_envelope
 
 
 # ---- Schemas ---------------------------------------------------------------
@@ -958,23 +957,18 @@ async def test_agent_connection(
     except UnsafeEndpointError as exc:
         raise HTTPException(status_code=400, detail=f"端點未通過出向安全驗證: {exc}")
 
-    # The token the Router would present == the agent's most-recent active csk-.
-    # CSP holds the encrypted envelope and can decrypt it (master key in env).
-    cred = (
-        db.query(AgentCredential)
-        .filter(
-            AgentCredential.agent_id == agent.id,
-            AgentCredential.is_active.is_(True),
-        )
-        .order_by(AgentCredential.service_token_issued_at.desc())
-        .first()
+    # The token the Router would present == whatever
+    # get_active_plaintext_for_agent selects for outbound dispatch. Reuse it
+    # so the probe tests the SAME credential CSP actually sends (consistent
+    # ordering, incl. after a rotate of a non-latest credential — Nit#2).
+    token = agent_credential_service.get_active_plaintext_for_agent(
+        db, agent_id=agent.id
     )
-    if cred is None:
+    if not token:
         raise HTTPException(
             status_code=409,
             detail="此 Agent 尚無有效憑證,請先核發 csk- 再測試連線",
         )
-    token = decode_service_token_envelope(cred.service_token_envelope) or ""
 
     ip = _client_ip(request)
     url = f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions"

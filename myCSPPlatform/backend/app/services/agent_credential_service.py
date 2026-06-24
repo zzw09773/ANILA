@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from app.models.agent import Agent
@@ -578,11 +578,16 @@ def revoke_service_client(
 def get_active_plaintext_for_agent(
     db: Session, *, agent_id: int
 ) -> Optional[str]:
-    """Return the plaintext token for the most recently issued active
-    credential of an agent, or ``None`` if no active credential exists.
+    """Return the plaintext token for the most recently issued-OR-rotated
+    active credential of an agent, or ``None`` if no active credential
+    exists.
 
     Multi-replica deployments may have several active credentials per
-    agent — pick the most recent one. Outgoing CSP→agent calls only
+    agent — pick the most recent one, ordered by
+    ``coalesce(rotated_at, issued_at)`` so a freshly *rotated* credential
+    (whose ``issued_at`` is unchanged) becomes the dispatched token. That
+    keeps a fail-closed agent guard installed with the rotated csk- in
+    sync with what CSP actually presents. Outgoing CSP→agent calls only
     need ONE valid token; the agent verifies it on its side.
     """
     cred = (
@@ -591,7 +596,13 @@ def get_active_plaintext_for_agent(
             AgentCredential.agent_id == agent_id,
             AgentCredential.is_active.is_(True),
         )
-        .order_by(AgentCredential.service_token_issued_at.desc())
+        .order_by(
+            func.coalesce(
+                AgentCredential.service_token_rotated_at,
+                AgentCredential.service_token_issued_at,
+            ).desc(),
+            AgentCredential.id.desc(),  # deterministic tie-break (mirrors UI badge)
+        )
         .first()
     )
     if cred is None:
