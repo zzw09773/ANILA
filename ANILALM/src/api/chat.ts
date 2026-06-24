@@ -9,6 +9,7 @@
 // directly — the axios interceptor isn't on the path here.
 
 import { useAuthStore } from '../store/auth'
+import { csrfHeader } from './client'
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -50,6 +51,7 @@ export async function chatComplete(req: ChatRequest): Promise<string> {
     headers: {
       'Content-Type': 'application/json',
       ...authHeaders(),
+      ...csrfHeader(),
       ...tracingHeaders(req),
     },
     body: JSON.stringify({
@@ -87,6 +89,7 @@ export async function chatStream(
     headers: {
       'Content-Type': 'application/json',
       ...authHeaders(),
+      ...csrfHeader(),
       ...tracingHeaders(req),
     },
     body: JSON.stringify({
