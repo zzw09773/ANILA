@@ -278,6 +278,12 @@ def employee_count(department: str) -&gt; int:
           <pre class="env-snippet">{{ newAgentEnvSnippet }}</pre>
           <TermButton size="sm" variant="ghost" @click="copyToClipboard(newAgentEnvSnippet)" label="copy .env" />
 
+          <TermSection title="inbound guard + RAG usage（非模板 agent）" />
+          <AgentGuardPanel
+            :csk="newAgentCsk"
+            :collection-id="registeredAgentCollectionId"
+          />
+
           <TermSection title="verify connection" />
           <p class="cell-meta">
             Paste the <code>.env</code> above into your agent and start it, then test that it
@@ -437,8 +443,8 @@ def employee_count(department: str) -&gt; int:
 
             <!-- Phase 0.5 — collapsible "how to use" with per-language
                  snippets pre-filled with this agent's bsk- + ids.
-                 Only shown for bsk- since the csk- path differs (admin
-                 hand-installs the token; no exchange flow). -->
+                 bsk- uses this per-language exchange how-to; the csk-
+                 path has its own guard block below. -->
             <details
               v-if="issuedSecret.kind === 'bsk' && issuedSecret.meta"
               class="secret-banner__howto"
@@ -450,6 +456,21 @@ def employee_count(department: str) -&gt; int:
                 :agent-id="issuedSecret.meta.agent_id"
                 :endpoint-url="issuedSecret.meta.endpoint_url"
                 :bsk="issuedSecret.value"
+              />
+            </details>
+
+            <!-- csk- direct-issue / rotate: non-template agents need the
+                 inbound guard (anila_core isn't pip-installable) + (when a
+                 collection is bound) the outbound RAG usage. -->
+            <details
+              v-if="issuedSecret.kind === 'csk' && issuedSecret.meta"
+              class="secret-banner__howto"
+              open
+            >
+              <summary class="secret-banner__howto-summary">非模板 agent？如何接上這把 csk- →</summary>
+              <AgentGuardPanel
+                :csk="issuedSecret.value"
+                :collection-id="detailAgentCollectionId"
               />
             </details>
           </div>
@@ -497,6 +518,12 @@ def employee_count(department: str) -&gt; int:
                   <TermBadge :variant="c.is_active ? '' : 'danger'" dot>
                     {{ c.is_active ? 'active' : 'revoked' }}
                   </TermBadge>
+                  <TermBadge
+                    v-if="c.id === dispatchedCredentialId"
+                    variant="warn"
+                    style="margin-left: 6px;"
+                    title="CSP 派送此 agent 時用這把 csk-；fail-closed 守門碼要對應這把"
+                  >CSP 派送中</TermBadge>
                 </td>
                 <td class="cell-meta tnum">{{ formatDate(c.issued_at) }}</td>
                 <td class="cell-meta tnum">{{ c.rotated_at ? formatDate(c.rotated_at) : '—' }}</td>
@@ -578,6 +605,7 @@ import { listModels } from '../api/models'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, TermSection } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 import BootstrapHowToTabs from '../components/agents/BootstrapHowToTabs.vue'
+import AgentGuardPanel from '../components/agents/AgentGuardPanel.vue'
 
 // CSP base URL the snippets should reference. Derived from the
 // browser origin so the dev's copy-pasted code targets whatever host
@@ -626,6 +654,39 @@ const registerStep = ref(1)
 const registeredAgent = ref(null) // { id, name, bound_collection_id }
 const newAgentCsk = ref('')       // one-time plaintext csk- for the new agent
 const issuingNew = ref(false)
+// Bound collection id for the csk- guard panel's outbound-RAG snippet.
+// undefined (→ panel hides the RAG block) when the agent has no bound
+// collection or the payload doesn't carry it.
+const detailAgentCollectionId = computed(() =>
+  typeof detailAgent.value?.bound_collection_id === 'number'
+    ? detailAgent.value.bound_collection_id
+    : undefined
+)
+const registeredAgentCollectionId = computed(() =>
+  typeof registeredAgent.value?.bound_collection_id === 'number'
+    ? registeredAgent.value.bound_collection_id
+    : undefined
+)
+// Which active credential CSP actually dispatches as X-CSP-Service-Token:
+// the most recently issued-OR-rotated active one — mirrors the backend's
+// get_active_plaintext_for_agent ordering (coalesce(rotated_at, issued_at),
+// Nit#2). Surfaced so operators with multiple active credentials know which
+// csk- a fail-closed guard must match. null when no active credential.
+const dispatchedCredentialId = computed(() => {
+  let best = null
+  let bestTs = -Infinity
+  for (const c of detailCredentials.value) {
+    if (!c.is_active) continue
+    const ts = new Date(c.rotated_at || c.issued_at).getTime()
+    if (!Number.isFinite(ts)) continue
+    // Tie-break by id (mirrors backend `, id DESC`) so badge == dispatch.
+    if (ts > bestTs || (ts === bestTs && c.id > best)) {
+      bestTs = ts
+      best = c.id
+    }
+  }
+  return best
+})
 const collections = ref([])       // owner's collections, for the optional RAG bind
 const testResult = ref(null)      // { reachable, token_accepted, detail }
 const testing = ref(false)
