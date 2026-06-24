@@ -53,6 +53,15 @@ function readCookie(name: string): string | null {
   return match ? decodeURIComponent(match[1]) : null
 }
 
+// Double-submit CSRF header for mutating cookie-auth requests. Exported so
+// the streaming chat path (api/chat.ts) — which bypasses this axios client —
+// can attach the same header. Empty when the cookie is absent (e.g. pure
+// Bearer flows, which are CSRF-exempt server-side anyway).
+export function csrfHeader(): Record<string, string> {
+  const csrf = readCookie(CSRF_COOKIE)
+  return csrf ? { 'X-CSRF-Token': csrf } : {}
+}
+
 client.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const token = adapter?.getAccessToken()
   if (token) {
