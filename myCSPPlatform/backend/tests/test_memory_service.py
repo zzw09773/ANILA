@@ -200,3 +200,48 @@ async def test_inject_memory_prepends_to_existing_system_message(monkeypatch):
     assert "client-side rules go here" in body["messages"][0]["content"]
     # User message untouched.
     assert body["messages"][1] == {"role": "user", "content": "hello"}
+
+
+# ── _resolve_extraction_target (fact-extraction model fallback) ───────────────
+
+
+def _add_llm(db, name, url):
+    from app.models.model_registry import ModelRegistry
+
+    db.add(
+        ModelRegistry(
+            name=name,
+            display_name=name,
+            model_type="llm",
+            endpoint_url=url,
+            is_active=True,
+        )
+    )
+    db.commit()
+
+
+def test_resolve_extraction_target_prefers_configured_model(db, monkeypatch):
+    """When MEMORY_LLM_MODEL is a registered active LLM, use it verbatim."""
+    _add_llm(db, "gemma4", "http://gemma:8000")
+    _add_llm(db, "openai/gpt-oss-20b", "http://gpt:8000")
+    monkeypatch.setattr(memory_service, "_LLM_MODEL_NAME", "gemma4")
+    assert memory_service._resolve_extraction_target(db) == (
+        "gemma4",
+        "http://gemma:8000",
+    )
+
+
+def test_resolve_extraction_target_falls_back_to_available_llm(db, monkeypatch):
+    """Air-gap case: configured gemma4 isn't registered (only gpt-oss is) →
+    extraction falls back to the available LLM instead of disabling itself.
+    """
+    _add_llm(db, "openai/gpt-oss-20b", "http://gpt:8000/")  # note trailing slash
+    monkeypatch.setattr(memory_service, "_LLM_MODEL_NAME", "gemma4")
+    target = memory_service._resolve_extraction_target(db)
+    assert target == ("openai/gpt-oss-20b", "http://gpt:8000")  # rstripped
+
+
+def test_resolve_extraction_target_none_when_no_active_llm(db, monkeypatch):
+    """No active LLM at all → None (caller disables extraction, logs)."""
+    monkeypatch.setattr(memory_service, "_LLM_MODEL_NAME", "gemma4")
+    assert memory_service._resolve_extraction_target(db) is None
