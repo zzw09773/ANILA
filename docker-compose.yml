@@ -333,6 +333,9 @@ services:
         # 空字串 → SPA 用相對 URL,所有請求 same-origin (clipboard secure context)。
         VITE_CSP_BASE_URL: ${ANILA_PUBLIC_CSP_BASE_URL-}
         VITE_ROUTER_BASE_URL: ${ANILA_PUBLIC_ROUTER_BASE_URL:-/router}
+        # ANILA UI 服在 443 的 /anila 子路徑 → Vite base='/anila/'。容器內
+        # nginx(ANILA_UI/anila-ui/docker/nginx.conf)已 alias-map /anila/。
+        BASE_PATH: ${ANILA_UI_BASE_PATH:-/anila/}
     expose:
       - "80"
     depends_on:
