@@ -134,6 +134,40 @@ def _resolve_endpoint(db: Session, model_name: str, model_type: str) -> str:
     return row.endpoint_url.rstrip("/")
 
 
+def _resolve_extraction_target(db: Session) -> tuple[str, str] | None:
+    """Resolve ``(model_name, base_url)`` for fact extraction.
+
+    Prefers the configured ``MEMORY_LLM_MODEL``. When that name isn't a
+    registered active LLM — e.g. an air-gapped deployment that overrode the
+    primary LLM to gpt-oss but left ``MEMORY_LLM_MODEL`` at the ``gemma4``
+    default — fall back to the first active LLM in the registry so
+    extraction follows whatever the deployment actually serves instead of
+    silently disabling itself. Returns ``None`` only when no active LLM is
+    registered at all.
+    """
+    try:
+        return _LLM_MODEL_NAME, _resolve_endpoint(db, _LLM_MODEL_NAME, "llm")
+    except RuntimeError:
+        pass
+
+    fallback: ModelRegistry | None = (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.model_type == "llm", ModelRegistry.is_active.is_(True))
+        .order_by(ModelRegistry.id)
+        .first()
+    )
+    if fallback is None:
+        return None
+    logger.warning(
+        "memory_service: MEMORY_LLM_MODEL=%r is not a registered active LLM — "
+        "falling back to %r for fact extraction. Set MEMORY_LLM_MODEL to a "
+        "registered model name to silence this.",
+        _LLM_MODEL_NAME,
+        fallback.name,
+    )
+    return fallback.name, fallback.endpoint_url.rstrip("/")
+
+
 # ── Embedding ─────────────────────────────────────────────────────────────────
 
 
@@ -354,19 +388,25 @@ async def _extract_facts(db: Session, conversation_text: str) -> list[dict[str, 
     if len(conversation_text.strip()) < _EXTRACT_MIN_CHARS:
         return []
 
+    target = _resolve_extraction_target(db)
+    if target is None:
+        logger.warning(
+            "memory_service: no active LLM registered — fact extraction disabled"
+        )
+        return []
+    model_name, base_url = target
     try:
-        base_url = _resolve_endpoint(db, _LLM_MODEL_NAME, "llm")
         _guard_outbound(base_url)
     except RuntimeError:
         logger.warning(
-            "memory_service: LLM model %r unavailable or failed SSRF guard — "
+            "memory_service: extraction endpoint failed SSRF guard (%s) — "
             "fact extraction disabled",
-            _LLM_MODEL_NAME,
+            base_url,
         )
         return []
 
     payload = {
-        "model": _LLM_MODEL_NAME,
+        "model": model_name,
         "messages": [
             {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
             {"role": "user", "content": conversation_text},
