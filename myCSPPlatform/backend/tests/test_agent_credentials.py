@@ -320,6 +320,94 @@ def test_rotation_grace_expiry(db):
 
 
 # ---------------------------------------------------------------------------
+# Outgoing dispatch credential selection (Nit#2 治本).
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_prefers_most_recently_changed_credential(db):
+    """CSP dispatches the most recently issued-OR-rotated active credential.
+
+    Rotating an older-issued credential must make IT the dispatched token.
+    Otherwise a fail-closed agent guard installed with the freshly-rotated
+    csk- would reject CSP — which would still be presenting the other,
+    newer-*issued* credential. Selection therefore orders by
+    ``coalesce(rotated_at, issued_at)``, not ``issued_at`` alone.
+    """
+    admin = make_user(db, username="adminRot", role="admin")
+    owner = make_user(db, username="ownerRot")
+    agent = make_agent(db, owner=owner, name="rag-rot", approval_status="approved")
+
+    cred_a, _csk_a = agent_credential_service.issue_static_credential(
+        db, agent=agent, issuer=admin, label="A"
+    )
+    cred_b, csk_b = agent_credential_service.issue_static_credential(
+        db, agent=agent, issuer=admin, label="B"
+    )
+    db.commit()
+
+    # Pin deterministic timestamps: A issued before B, neither rotated yet.
+    now = datetime.now(timezone.utc)
+    cred_a.service_token_issued_at = now - timedelta(hours=2)
+    cred_a.service_token_rotated_at = None
+    cred_b.service_token_issued_at = now - timedelta(hours=1)
+    cred_b.service_token_rotated_at = None
+    db.commit()
+
+    # Baseline: B (newer issued_at) is the dispatched credential.
+    assert (
+        agent_credential_service.get_active_plaintext_for_agent(db, agent_id=agent.id)
+        == csk_b
+    )
+
+    # Rotate the OLDER credential A → its rotated_at = now (> B's issued_at),
+    # so A becomes the most-recently-changed active credential.
+    new_csk_a = agent_credential_service.rotate_agent_credential(
+        db, credential=cred_a, actor=admin, grace=timedelta(hours=1)
+    )
+    db.commit()
+
+    assert (
+        agent_credential_service.get_active_plaintext_for_agent(db, agent_id=agent.id)
+        == new_csk_a
+    )
+
+
+def test_dispatch_tie_breaks_deterministically_on_credential_id(db):
+    """On identical effective timestamps, dispatch is deterministic: highest id.
+
+    Mirrors the frontend badge's id tie-break so the two layers always agree
+    on which credential CSP presents (otherwise the fail-closed guard the
+    operator installs could target a different credential than CSP sends).
+    """
+    admin = make_user(db, username="adminTie", role="admin")
+    owner = make_user(db, username="ownerTie")
+    agent = make_agent(db, owner=owner, name="rag-tie", approval_status="approved")
+
+    cred_a, _csk_a = agent_credential_service.issue_static_credential(
+        db, agent=agent, issuer=admin, label="A"
+    )
+    cred_b, csk_b = agent_credential_service.issue_static_credential(
+        db, agent=agent, issuer=admin, label="B"
+    )
+    db.commit()
+
+    # Identical effective timestamps (neither rotated) → tie on coalesce().
+    same = datetime.now(timezone.utc) - timedelta(hours=1)
+    cred_a.service_token_issued_at = same
+    cred_a.service_token_rotated_at = None
+    cred_b.service_token_issued_at = same
+    cred_b.service_token_rotated_at = None
+    db.commit()
+
+    # B was issued second → higher id → wins the tie deterministically.
+    assert cred_b.id > cred_a.id
+    assert (
+        agent_credential_service.get_active_plaintext_for_agent(db, agent_id=agent.id)
+        == csk_b
+    )
+
+
+# ---------------------------------------------------------------------------
 # Service clients (Router-class).
 # ---------------------------------------------------------------------------
 
