@@ -82,9 +82,13 @@ if (!container) {
   throw new Error("#root element not found in index.html");
 }
 
+// BASE_URL 來自 Vite 的 base 設定:本機 dev 是 '/',正式部署(ANILA 反向
+// proxy 同源 subpath)是 '/anila/'。React Router 的 basename 不要尾斜線。
+const ROUTER_BASENAME = import.meta.env.BASE_URL.replace(/\/$/, "") || undefined;
+
 ReactDOM.createRoot(container).render(
   <React.StrictMode>
-    <BrowserRouter basename="/app">
+    <BrowserRouter basename={ROUTER_BASENAME}>
       <AuthProvider>
         <ConfirmProvider>
           <RootRoutes />
