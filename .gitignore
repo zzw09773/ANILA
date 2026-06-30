@@ -72,6 +72,7 @@ lerna-debug.log*
 .env
 .env.local
 .env.*.local
+.env.bak*
 *.pem
 *.key
 
