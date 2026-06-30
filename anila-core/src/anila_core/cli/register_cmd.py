@@ -128,8 +128,16 @@ def _register(csp_url: str, token: str, manifest: dict[str, Any]) -> dict[str, A
         "description_for_router": manifest["description_for_router"],
         "api_version": manifest.get("api_version", "v1"),
     }
-    if manifest.get("base_model"):
-        payload["base_model_name"] = manifest["base_model"]
+    # The register API requires base_model_id:int. Accept an explicit id, else
+    # resolve the human-readable base_model name → id via the model registry.
+    if manifest.get("base_model_id") is not None:
+        payload["base_model_id"] = int(manifest["base_model_id"])
+    elif manifest.get("base_model"):
+        payload["base_model_id"] = _resolve_base_model_id(
+            csp_url, token, str(manifest["base_model"])
+        )
+    if manifest.get("collection_id") is not None:
+        payload["collection_id"] = int(manifest["collection_id"])
     if manifest.get("capabilities"):
         payload["capabilities"] = manifest["capabilities"]
     if manifest.get("input_schema"):
@@ -151,6 +159,39 @@ def _register(csp_url: str, token: str, manifest: dict[str, Any]) -> dict[str, A
     except httpx.RequestError as e:
         print(f"error: cannot reach CSP at {csp_url} — {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def _resolve_base_model_id(csp_url: str, token: str, name: str) -> int:
+    """Resolve a human-readable model name to the registry id the register
+    API requires (``base_model_id: int``). Matches the manifest's ``base_model``
+    against each model's ``name`` or ``display_name`` from GET /api/models.
+    """
+    try:
+        resp = httpx.get(
+            f"{csp_url}/api/models",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        models = resp.json()
+    except httpx.HTTPStatusError as e:
+        detail = _extract_detail(e.response)
+        print(f"error: could not list models — {detail}", file=sys.stderr)
+        sys.exit(1)
+    except httpx.RequestError as e:
+        print(f"error: cannot reach CSP at {csp_url} — {e}", file=sys.stderr)
+        sys.exit(1)
+
+    for m in models:
+        if m.get("name") == name or m.get("display_name") == name:
+            return int(m["id"])
+
+    available = ", ".join(str(m.get("name") or m.get("display_name")) for m in models) or "(none)"
+    print(
+        f"error: base_model '{name}' not found on CSP. Available models: {available}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 def _extract_detail(response: httpx.Response) -> str:

@@ -71,6 +71,47 @@ class TestRegisterHTTP:
         )
         assert result["id"] == 7
 
+    def test_register_resolves_base_model_name_to_id(self, monkeypatch: pytest.MonkeyPatch):
+        """The register API requires base_model_id:int. When the manifest gives a
+        human-readable base_model name, the CLI must resolve it via GET /api/models
+        and send base_model_id (NOT base_model_name → which 422s)."""
+        def fake_get(url, headers, timeout):
+            assert url == "http://csp/api/models"
+            assert headers["Authorization"] == "Bearer jwt-token"
+            return httpx.Response(
+                200,
+                json=[
+                    {"id": 3, "name": "gpt-oss-20b", "display_name": "GPT-OSS 20B"},
+                    {"id": 5, "name": "nv-embed", "display_name": "NV-Embed"},
+                ],
+                request=httpx.Request("GET", url),
+            )
+
+        captured: dict = {}
+
+        def fake_post(url, json, headers, timeout):
+            captured["payload"] = json
+            return httpx.Response(
+                200,
+                json={"id": 7, "name": "hr-agent", "approval_status": "pending"},
+                request=httpx.Request("POST", url),
+            )
+
+        monkeypatch.setattr(httpx, "get", fake_get)
+        monkeypatch.setattr(httpx, "post", fake_post)
+        register_cmd._register(
+            "http://csp",
+            "jwt-token",
+            {
+                "name": "hr-agent",
+                "endpoint_url": "http://agent:9100",
+                "description_for_router": "desc",
+                "base_model": "gpt-oss-20b",
+            },
+        )
+        assert captured["payload"].get("base_model_id") == 3
+        assert "base_model_name" not in captured["payload"]
+
     def test_register_http_error_exits(self, monkeypatch: pytest.MonkeyPatch, capsys):
         def fake_post(url, json, headers, timeout):
             return httpx.Response(
