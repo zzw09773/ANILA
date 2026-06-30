@@ -16,6 +16,7 @@ from app.services import memory_service
 from app.services.api_key_service import check_model_permission, check_agent_permission
 from app.services.auth_service import is_admin_tier
 from app.services.proxy_service import build_default_anila_meta, proxy_request, proxy_stream
+from app.services.usage_writer import enqueue_usage
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,60 @@ def _coerce_conversation_id(raw: str | None) -> int | None:
         return int(raw)
     except (TypeError, ValueError):
         return None
+
+
+async def _enqueue_agent_dispatch_usage(
+    *,
+    api_key_id: int | None,
+    user_id: int,
+    department_id: int | None,
+    agent_id: int,
+    agent_name: str,
+    payload: dict,
+    request_body: dict,
+    duration_ms: int,
+    conversation_id: str | None,
+    trace_id: str | None,
+) -> None:
+    """Write a token_usage row for a NON-streaming agent dispatch.
+
+    The streaming agent path attributes usage via ``proxy_stream``; the
+    non-stream agent forward previously emitted no row at all, so
+    ``stream:false`` agent traffic was silently under-counted. Mirror
+    ``proxy_request``'s usage extraction/estimation and attribute to the
+    agent (``model_id`` + ``caller_agent_id`` = agent id) so the same
+    "top-agents" / "by-base-model" dashboards roll up correctly.
+    """
+    usage = (payload or {}).get("usage") or {}
+    prompt_tokens = usage.get("prompt_tokens", 0)
+    completion_tokens = usage.get("completion_tokens", 0)
+    total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
+    if not usage:
+        from app.services.proxy_service import (
+            _estimate_token_count,
+            _serialize_request_for_usage,
+        )
+        prompt_tokens = _estimate_token_count(
+            agent_name, _serialize_request_for_usage(request_body)
+        )
+        completion_tokens = _estimate_token_count(
+            agent_name, _extract_assistant_text(payload)
+        )
+        total_tokens = prompt_tokens + completion_tokens
+    await enqueue_usage(
+        api_key_id=api_key_id,
+        user_id=user_id,
+        department_id=department_id,
+        model_id=agent_id,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        request_duration_ms=duration_ms,
+        conversation_id=conversation_id,
+        trace_id=trace_id,
+        request_type="chat",
+        caller_agent_id=agent_id,
+    )
 
 
 def _latch_agent_classification(db: Session, conversation_id: int, user_id: int) -> None:
@@ -608,6 +663,26 @@ async def chat_completions(
                     assistant_message=assistant_text,
                     is_encrypted=agent_requires_encryption,
                 )
+                # P-3: non-streaming agent dispatch usage — the streaming path
+                # writes a token_usage row via proxy_stream; mirror it here so
+                # stream:false agent traffic is attributed (was a silent gap).
+                try:
+                    await _enqueue_agent_dispatch_usage(
+                        api_key_id=caller.api_key_id,
+                        user_id=user.id,
+                        department_id=department_id,
+                        agent_id=agent.id,
+                        agent_name=agent.name,
+                        payload=payload,
+                        request_body=body,
+                        duration_ms=int((time.time() - started_at) * 1000),
+                        conversation_id=conversation_id,
+                        trace_id=trace_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "agent dispatch usage enqueue failed agent_id=%s", agent.id
+                    )
                 return payload
         except httpx.HTTPStatusError as e:
             raise _HTTPException(status_code=e.response.status_code, detail=str(e))
