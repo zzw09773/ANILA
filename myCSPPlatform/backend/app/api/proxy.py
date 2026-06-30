@@ -37,12 +37,16 @@ def _coerce_conversation_id(raw: str | None) -> int | None:
         return None
 
 
-def _latch_agent_classification(db: Session, conversation_id: int) -> None:
+def _latch_agent_classification(db: Session, conversation_id: int, user_id: int) -> None:
     """Persist conversations.classified=true when the routed agent has
     ``requires_encryption=true``. Idempotent — no-ops on rows already
     classified. Distinct from ``_latch_inherited_classification`` in that
     it leaves ``classification_inherited=FALSE`` (the source is the
     agent's own policy, not memory inheritance).
+
+    Owner-scoped: only latches when ``conversation_id`` belongs to
+    ``user_id`` (the authenticated caller) — a client cannot classify
+    another user's conversation via X-ANILA-Conversation-Id (IDOR guard).
 
     Without this latch the classified flag only lived on the SSE
     ``anila_meta`` payload — front-ends could latch the in-memory
@@ -57,15 +61,16 @@ def _latch_agent_classification(db: Session, conversation_id: int) -> None:
                SET classified = TRUE,
                    classified_at = COALESCE(classified_at, CURRENT_TIMESTAMP)
              WHERE id = :conv_id
+               AND user_id = :user_id
                AND classified = FALSE
             """
         ),
-        {"conv_id": conversation_id},
+        {"conv_id": conversation_id, "user_id": user_id},
     )
     db.commit()
 
 
-def _latch_inherited_classification(db: Session, conversation_id: int) -> None:
+def _latch_inherited_classification(db: Session, conversation_id: int, user_id: int) -> None:
     """Mark the conversation as classified-via-inheritance, one-shot.
 
     Idempotent — calling twice on the same row is a no-op (the WHERE
@@ -81,6 +86,10 @@ def _latch_inherited_classification(db: Session, conversation_id: int) -> None:
     cleaner design would model classification as an event log rather
     than a snapshot, but a single boolean + timestamp is enough for
     P3's UI needs and avoids a much larger schema migration.
+
+    Owner-scoped: only latches when ``conversation_id`` belongs to
+    ``user_id`` (the authenticated caller) — a client cannot classify
+    another user's conversation via X-ANILA-Conversation-Id (IDOR guard).
     """
     from sqlalchemy import text as sql_text
     db.execute(
@@ -91,10 +100,11 @@ def _latch_inherited_classification(db: Session, conversation_id: int) -> None:
                    classification_inherited = TRUE,
                    classified_at = COALESCE(classified_at, CURRENT_TIMESTAMP)
              WHERE id = :conv_id
+               AND user_id = :user_id
                AND classification_inherited = FALSE
             """
         ),
-        {"conv_id": conversation_id},
+        {"conv_id": conversation_id, "user_id": user_id},
     )
     db.commit()
 
@@ -466,7 +476,7 @@ async def chat_completions(
         and memory_read.encryption_inherited
     ):
         try:
-            _latch_inherited_classification(db, conv_id_int)
+            _latch_inherited_classification(db, conv_id_int, user.id)
         except Exception:
             logger.exception(
                 "memory_service: classification latch failed conv_id=%s",
@@ -499,7 +509,7 @@ async def chat_completions(
         # encrypted mode.
         if agent_requires_encryption and conv_id_int is not None:
             try:
-                _latch_agent_classification(db, conv_id_int)
+                _latch_agent_classification(db, conv_id_int, user.id)
             except Exception:
                 logger.exception(
                     "agent classification latch failed conv_id=%s",
