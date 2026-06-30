@@ -45,7 +45,7 @@ CSP 是地基（大家都打它）；**anila-core 與 ANILA UI 是同一條 SSE 
 - **R-SEC-1** `.env.bak.*` 進 `.gitignore`（PUBLIC repo 祕密外洩，最便宜先做）
 - **R-SEC-2** 分類 latch IDOR（共用碼，**main 起 → cherry-pick 全分支**）
 - **R-SEC-3** `CARD_DEV_SKIP_NONCE_BINDING` prod fail-fast guard
-- **R-SEC-4** `deploy-prod.sh` preflight 補內網必填 env + `docker compose config`
+- ~~**R-SEC-4** deploy-prod.sh preflight~~ → **改列 §4 deploy-gate（非 card v1 主幹）**。釐清：`deploy-prod.sh` 是 public/military 用；**card 兩支並存不刪**（intranet-deploy.sh 一次性建置 + deploy-prod.sh 日常維運 status/logs/restart/.12 遠端模型）。
 - **R-SEC-5** `.12` gateway smoke 納 deploy gate（DNS/extra_hosts + TLS verify + /v1/models）
 - 補**非串流 dispatch usage 記帳**（usage 歸戶洞）
 - CSP search **server 端備好 `expand_relations`**（R-WIRE-1 後端側）
@@ -103,6 +103,7 @@ composer faceted 過濾、query 精修 chips、regenerate-and-compare、對話�
 4. 文件生命週期/留存；品質擁有權下放（collection owner golden-question）。
 5. `anila-tokens` 三前端共用 design-token（含 a11y/高對比）。
 6. agent fleet 治理/可觀測（**註**：規則目前全 agent-local、平台無中央政策控制面，自主 vs 治理取捨）；Phase 7 productionization；cross-branch parity CI；版本化發布物 + air-gap release SOP。
+7. **`deploy-prod.sh` 自動生成祕密（public/military）**：缺就 `openssl rand` 生成 + persist `.env`（冪等），比照 `intranet-deploy.sh`；**card 不需要**（intranet-deploy 已生成）。共用碼、**main 起**。
 
 ---
 
