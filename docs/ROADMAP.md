@@ -29,7 +29,7 @@ ANILA 是**雙產品組合**（如 Google 的 Gemini 與 NotebookLM：共用模�
 - [ ] **ANILA UI 信任可見**：串流 + **可點引用** + 來源面板 + **跑了哪個 agent/工具**（ToolWidget）+ **真 confidence**
 - [ ] **預設 grounded**：答案帶來源（agent RAG）+ 關聯來源
 - [ ] **usage 全歸戶**（補非串流 dispatch 洞）
-- [ ] **資安 gate 關好**（R-SEC-1~5）
+- [ ] **資安 gate 關好**（R-SEC-1~3 ✅ 已散全分支；R-SEC-4/5 → §4 deferred，非 v1 阻擋）
 - [ ] **真模型端到端 smoke 綠**
 
 > 這條主幹**幾乎全是「接線 + 可靠性 + 資安」，不是新功能**——東西大多建好了。這就是收斂。
@@ -46,7 +46,7 @@ CSP 是地基（大家都打它）；**anila-core 與 ANILA UI 是同一條 SSE 
 - **R-SEC-2** 分類 latch IDOR（共用碼，**main 起 → cherry-pick 全分支**）
 - **R-SEC-3** `CARD_DEV_SKIP_NONCE_BINDING` prod fail-fast guard
 - ~~**R-SEC-4** deploy-prod.sh preflight~~ → **改列 §4 deploy-gate（非 card v1 主幹）**。釐清：`deploy-prod.sh` 是 public/military 用；**card 兩支並存不刪**（intranet-deploy.sh 一次性建置 + deploy-prod.sh 日常維運 status/logs/restart/.12 遠端模型）。
-- **R-SEC-5** `.12` gateway smoke 納 deploy gate（DNS/extra_hosts + TLS verify + /v1/models）
+- ~~**R-SEC-5** `.12` gateway smoke 納 deploy gate~~ → **改列 §4 deferred（韌性/回歸守衛，非 v1 阻擋）**。`.12` 上次內網部署後**已連通**，此項不是「修好 `.12`」而是「下次 `.12` 壞掉時、部署前先擋」；現無功能缺口，故延後。
 - 補**非串流 dispatch usage 記帳**（usage 歸戶洞）
 - CSP search **server 端備好 `expand_relations`**（R-WIRE-1 後端側）
 - registry / approve / **`/v1/agents` list** 打磨；**修 `register` CLI 422**（送 `base_model_id`）
@@ -104,6 +104,7 @@ composer faceted 過濾、query 精修 chips、regenerate-and-compare、對話�
 5. `anila-tokens` 三前端共用 design-token（含 a11y/高對比）。
 6. agent fleet 治理/可觀測（**註**：規則目前全 agent-local、平台無中央政策控制面，自主 vs 治理取捨）；Phase 7 productionization；cross-branch parity CI；版本化發布物 + air-gap release SOP。
 7. **`deploy-prod.sh` 自動生成祕密（public/military）**：缺就 `openssl rand` 生成 + persist `.env`（冪等），比照 `intranet-deploy.sh`；**card 不需要**（intranet-deploy 已生成）。共用碼、**main 起**。
+8. **R-SEC-5 `.12` gateway smoke deploy-gate**（deferred；韌性/回歸守衛）：部署前對 `.12` 三道檢查——DNS/extra_hosts 解析（FQDN 非 IP）+ CSPKI TLS verify 到自簽 root + 帶 `MODEL_GATEWAY_API_KEY` 打 `/v1/models`——做成會擋部署的 preflight，接住「重跑 `intranet-deploy.sh` 重設 `ANILA_MODEL_CA_FILE`/旗標 → `.12` 信任靜默破掉」這類回歸。`deploy-prod.sh` 已有 `ANILA_REMOTE_MODELS=1` 探測可收斂。**`.12` 現已連通、無功能缺口**，待 gateway API key 正式簽發後一併補並在 `.12` 環境真驗三道綠。
 
 ---
 
