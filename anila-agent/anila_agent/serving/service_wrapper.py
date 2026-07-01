@@ -25,8 +25,10 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import Any
 
+from agents import MaxTurnsExceeded
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from openai.types.responses import ResponseTextDeltaEvent
@@ -176,6 +178,16 @@ def _chunk(
     return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
 
 
+def _terminal_event(reason: str, detail: str | None = None) -> str:
+    """typed-terminal SSE frame (frozen contract §6). The Router forwards this
+    ``anila.*`` event verbatim (its ``_with_terminal`` wrapper won't add a
+    duplicate) → the ANILA UI renders a '為何停' badge."""
+    payload: dict[str, Any] = {"reason": reason}
+    if detail:
+        payload["detail"] = detail
+    return "event: anila.terminal\ndata: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+
+
 async def _sse_stream(
     assembled: Any, user_prompt: str, hooks: AuditHooks
 ) -> AsyncIterator[str]:
@@ -200,6 +212,26 @@ async def _sse_stream(
             ):
                 parts.append(event.data.delta)
                 yield _chunk(cid, created, delta={"content": event.data.delta})
+    except MaxTurnsExceeded:
+        # max-turns remediation (SDK path): the agent didn't converge within
+        # max_turns (known gpt-oss failure). Force ONE final answer with tools
+        # disabled so the user gets real text instead of an empty response, and
+        # emit anila.terminal{max_turns} so the Router → ANILA UI shows why.
+        logger.warning("agent hit max_turns; forcing a tools-off final answer")
+        if assembled is not None:
+            try:
+                forced = await run_once(
+                    replace(assembled, agent=assembled.agent.clone(tools=[])),
+                    user_prompt,
+                    max_turns=1,
+                )
+                forced_text = getattr(forced, "final_output", None) or ""
+                if forced_text:
+                    parts.append(forced_text)
+                    yield _chunk(cid, created, delta={"content": forced_text})
+            except Exception:
+                logger.exception("forced final answer failed")
+        yield _terminal_event("max_turns")
     except Exception:
         # 串流中途失敗：headers 已送出、status 無法再改，記錄後乾淨收尾。
         logger.exception("streaming run failed mid-flight")

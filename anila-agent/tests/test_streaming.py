@@ -129,6 +129,45 @@ async def test_stream_error_mid_flight_closes_cleanly(monkeypatch):
     assert saw_done is True
 
 
+async def test_max_turns_forces_final_answer_and_terminal(monkeypatch):
+    """SDK path max-turns remediation: MaxTurnsExceeded → a forced tools-off
+    final answer (not empty) + emit event: anila.terminal {reason:max_turns}
+    (the Router forwards it → ANILA UI '為何停' badge)."""
+    from agents import MaxTurnsExceeded
+
+    from anila_agent.runtime.agent_factory import AssembledAgent
+
+    class _MaxTurns:
+        context_wrapper = _FakeCtx()
+
+        async def stream_events(self):
+            raise MaxTurnsExceeded("hit max turns")
+            yield  # pragma: no cover — force async-generator type
+
+    monkeypatch.setattr(service_wrapper, "run_streamed", lambda *a, **k: _MaxTurns())
+
+    class _Forced:
+        final_output = "彙整後的最終答案"
+
+    async def _fake_run_once(assembled, user_prompt, **k):
+        return _Forced()
+
+    monkeypatch.setattr(service_wrapper, "run_once", _fake_run_once)
+
+    class _Agent:
+        def clone(self, **k):
+            return self
+
+    assembled = AssembledAgent(agent=_Agent(), context=None, max_turns=3)
+    sse = await _collect(service_wrapper._sse_stream(assembled, "q", hooks=None))
+
+    content, _finish, _usage, saw_done = _parse_like_router(sse)
+    assert "彙整後的最終答案" in content  # forced answer, not empty
+    assert "event: anila.terminal" in sse
+    assert '"reason": "max_turns"' in sse
+    assert saw_done is True
+
+
 # ---- HTTP 端點層（TestClient）：證明 branch + content-type + auth 守衛 ----
 
 
