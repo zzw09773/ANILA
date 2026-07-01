@@ -113,8 +113,8 @@ Router dispatch 時 `_merge_anila_meta` 會在 `handoff_chain` 前插一筆 `{ag
 {"reason":"completed｜max_turns｜aborted｜budget｜length｜error","detail":"<str>?"}
 ```
 - Router 在 `[DONE]` 前 emit（一回合一個）：正常=`completed`；撞回合/預算上限=`max_turns`/`budget`；使用者中止=`aborted`；上游錯=`error`；`max_tokens` 截斷=`length`。
-- **producer 狀態**：shape 已凍結於本契約；**emit 尚未實作 → Stage 3**（現況：正常結束只有 chunk `finish_reason:"stop"`；agent 錯誤走 `anila.trace status=error`（§5），無結構化終止）。
-- **consumer 狀態**：`sse.js` 要加 `onTerminal` dispatch、bubble render「為何停」badge（消費端唯一要新增的一塊；亦屬 Stage 3/4 接線）。
+- **producer 狀態**：✅ **已實作**（`feat/stage3-typed-terminal`）——`_with_terminal` wrapper 在全 5 個串流出口 emit：預設 `completed`，dispatch agent 錯誤 emit `error`。⬜ 剩 `aborted`（需 honor abort）、`max_turns`（需 query_engine 補救）、`budget`——**gated 於 anila-core Phase 2 keystone 重構**。
+- **consumer 狀態**：✅ **已實作**——`sse.js` `onTerminal` dispatch、`app.jsx` 存 `msg.terminal`、`chat.jsx` bubble render「為何停」badge（`completed`/`length` 靜默，`length` 走既有「繼續」鈕）。
 
 ---
 

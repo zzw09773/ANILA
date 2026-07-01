@@ -56,12 +56,13 @@ CSP 是地基（大家都打它）；**anila-core 與 ANILA UI 是同一條 SSE 
 - `anila.terminal` 的 **emit（Router）+ onTerminal（UI）屬 Stage 3/4 接線**：shape 已凍、producer 待實作。
 
 ### Stage 3 — anila-core Router 可靠性（產生 UI 要渲染的事件）
-- **max-turns 強制收尾**（tool_choice='none' 要模型收尾，別空答）
-- **honor abort**（`abort_signal` + FastAPI `is_disconnected`）
-- **`_api_call` bounded retry/backoff** + 分離 connect/read/total timeout
-- **typed-terminal** 進 SSE；確保上面那些事件**真的被 emit**
-- **multi-hop dispatch 帶 context**（`context_messages`/`handoff_meta`）
-- ↳ 細節見 `anila-core/ROADMAP.md` Phase 1/3（這幾項現在做；其餘引擎工作凍結）
+> ⚠ **關鍵：可靠性項目被 keystone 重構 gated**。`anila-core/ROADMAP.md` 明列——abort/max-turns/retry 需先做 **Phase 2 keystone**（3 個 inline httpx `router_server.py:1191/1775/1914/2150` → `CSPPlatformProvider`，`next/L`），才能在 `query_engine.py` turn loop 動 abort/max-turns。**此為多 session 大工程，非一輪可完成。** typed-terminal 是唯一在 SSE 層、不被 gated 的項目。
+- ~~**typed-terminal** 進 SSE~~ ✅ **done**（`feat/stage3-typed-terminal`）：`event: anila.terminal {reason,detail?}` Router 全出口 emit（`_with_terminal` wrapper，`completed`；dispatch 錯誤 `error`）+ ANILA UI `onTerminal`+「為何停」badge。TDD 綠、零 regression。**剩 reason**：`aborted`(需 honor abort)、`max_turns`(需 query_engine 補救)。
+- ⬜ **honor abort**（`AgentContext.abort()` 已存在但 `query_engine.py:148-256` turn loop 從不檢查 + FastAPI `is_disconnected`）— **需 Phase 2**
+- ⬜ **max-turns 強制收尾**（`query_engine.py:233-235` 偵測到不補救；加 forced final-answer turn tool_choice='none'）— **需 Phase 2**
+- ⬜ **`_api_call` bounded retry/backoff** + 分離 connect/read/total timeout（provider 層）— **需 Phase 2**
+- ⬜ **multi-hop dispatch 帶 context**（`context_messages`/`handoff_meta`）— Phase 4，可與上並行
+- ↳ 細節與依賴序見 `anila-core/ROADMAP.md` Phase 2/3
 
 ### Stage 4 — Router/agent **emit** ⟷ ANILA UI bind（**UI bind ✅ 已完成，2026-07-01 實測**；缺的全在生產端 emit）
 > **實測**：ANILA UI（`ANILA_UI/anila-ui`）是**接好線、在等資料的消費者**——`runtime/sse.js` 全解析、`app.jsx:applyMeta` 把 `meta.{citations,confidence,handoff_chain,usage,follow_ups,reasoning}` 全套用、`trust.jsx` 元件全建好（`CitationsDrawer`/inline `[N]`/`ConfidenceChip`/`FollowUps`/`AuditWatermark`/`HandoffTimeline`）。**UI 端幾乎無工可做；缺口全在「Router/agent 有沒有把資料放進 `anila.meta`」。** Stage 4 因此收斂成「生產端 emit」，UI 只剩 typed-terminal 一小塊 render。
