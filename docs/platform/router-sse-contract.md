@@ -1,6 +1,6 @@
 # Router ⟷ ANILA UI — SSE 事件契約（FROZEN, ANILA v1）
 
-> **狀態：FROZEN（凍結）for ANILA v1。** 這是 Router 與 ANILA UI 的**唯一接縫契約**，兩端 lockstep。
+> **狀態：FROZEN（凍結）for ANILA v1**（2026-07-01 對碼驗證 + review 通過；typed-terminal 採方案 A 獨立 `anila.terminal` 事件）。這是 Router 與 ANILA UI 的**唯一接縫契約**，兩端 lockstep。
 > **Producer** = anila-core Router（`anila-core/src/anila_core/api/router_server.py`）。
 > **Consumer** = ANILA UI（`ANILA_UI/anila-ui/src/runtime/sse.js` + `app.jsx:applyMeta` + `trust.jsx`）。
 > 本檔記錄「**已實作於兩端**」的 de-facto 契約（2026-07-01 對碼盤點）＋ reserved/缺口。改契約要同時改兩端並更新本檔（見文末流程）。
@@ -107,15 +107,14 @@ Router dispatch 時 `_merge_anila_meta` 會在 `handoff_chain` 前插一筆 `{ag
 | **usage（串流）** | 串流 usage 歸零 | 補真 token 計數 |
 | **typed-terminal** | 只有 `finish_reason`（stop｜length） | **Stage 3**：Router emit 結構化終止；UI 補 render「為何停」（唯一真 UI 缺口） |
 
-### typed-terminal 事件定義（**提案，待 review**；Stage 3 emit）
-新增獨立事件 `event: anila.terminal`（**不動** OpenAI chunk 的 `finish_reason`，避免破壞 OpenAI 相容層）：
+### typed-terminal 事件定義（**✅ 已定：方案 A — 獨立事件**，2026-07-01 拍板；Stage 3 emit）
+新增獨立事件 `event: anila.terminal`（**不動** OpenAI chunk 的 `finish_reason`，不污染 OpenAI 相容層）：
 ```json
 {"reason":"completed｜max_turns｜aborted｜budget｜length｜error","detail":"<str>?"}
 ```
-- Router 串流結束前 emit：正常=`completed`；撞回合/預算上限=`max_turns`/`budget`；使用者中止=`aborted`；上游錯=`error`；`max_tokens` 截斷=`length`。
-- **現況**：正常結束只有 chunk `finish_reason:"stop"`；agent 錯誤走 `anila.trace status=error`（§5），無結構化終止。
-- **UI 端**：`sse.js` 加 `onTerminal`、bubble render「為何停」badge（消費端唯一要新增的一塊）。
-- ⚠ **待拍板**：獨立 `anila.terminal` 事件 **vs** 擴充 chunk `finish_reason` 語彙。建議**獨立事件**（不碰 OpenAI 相容層）。
+- Router 在 `[DONE]` 前 emit（一回合一個）：正常=`completed`；撞回合/預算上限=`max_turns`/`budget`；使用者中止=`aborted`；上游錯=`error`；`max_tokens` 截斷=`length`。
+- **producer 狀態**：shape 已凍結於本契約；**emit 尚未實作 → Stage 3**（現況：正常結束只有 chunk `finish_reason:"stop"`；agent 錯誤走 `anila.trace status=error`（§5），無結構化終止）。
+- **consumer 狀態**：`sse.js` 要加 `onTerminal` dispatch、bubble render「為何停」badge（消費端唯一要新增的一塊；亦屬 Stage 3/4 接線）。
 
 ---
 

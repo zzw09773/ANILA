@@ -51,9 +51,9 @@ CSP 是地基（大家都打它）；**anila-core 與 ANILA UI 是同一條 SSE 
 - ~~CSP search server 端 `expand_relations`（R-WIRE-1 **後端**）~~ ✅ done（`fccf430`）。⚠ **agent 端消費未做**（`CspHttpRetriever` 不送/不讀 `related`）→ 併 **Stage 4「關聯來源」垂直切片**（對凍好的契約 + UI 一起做）。
 - ~~**修 `register` CLI 422**（送 `base_model_id`）~~ ✅ done。**剩一項**：`/v1/agents` list 打磨（餵 UI agent picker）— 狀態待 B 確認。
 
-### Stage 2 — 凍結 SSE 契約（Router ⟷ UI 的接縫）📝 **草稿，待 review（尚未凍結）**
-- 契約 doc [`docs/platform/router-sse-contract.md`](platform/router-sse-contract.md) 已寫，並**對碼驗證修正**（2026-07-01）：修掉「passthrough=無 producer」的錯（轉發路徑是活的、`anila.resumed` Router 真有 emit `router_server.py:1187`）；補 typed-terminal 提案 shape。
-- **尚未凍結 = Stage 2 未完成**。凍結條件：① user review 這份契約 ② 拍板 `typed-terminal` 用**獨立 `anila.terminal` 事件** vs 擴充 chunk `finish_reason`（提案傾向獨立事件）。拍板後才 mark done。
+### Stage 2 — 凍結 SSE 契約（Router ⟷ UI 的接縫）✅ **完成，契約已凍結**（2026-07-01 review 通過）
+- 契約 [`docs/platform/router-sse-contract.md`](platform/router-sse-contract.md)：對碼驗證修正（passthrough 是活路徑、`anila.resumed` 有 emit `router_server.py:1187`）＋ typed-terminal **採方案 A**（獨立 `event: anila.terminal {reason,detail?}`，不碰 OpenAI `finish_reason`）。兩端 lockstep，改契約走契約文末流程。
+- `anila.terminal` 的 **emit（Router）+ onTerminal（UI）屬 Stage 3/4 接線**：shape 已凍、producer 待實作。
 
 ### Stage 3 — anila-core Router 可靠性（產生 UI 要渲染的事件）
 - **max-turns 強制收尾**（tool_choice='none' 要模型收尾，別空答）
