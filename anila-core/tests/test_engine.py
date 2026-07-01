@@ -184,6 +184,25 @@ class TestQueryEngineBasicTurn:
         assert "彙整後的最終答案" in combined
 
     @pytest.mark.asyncio
+    async def test_forced_final_turn_disables_tools(self) -> None:
+        """The forced final turn MUST call the provider with no tools (that is the
+        whole point of force_no_tools — the model can't request another tool so it
+        produces text). Verify against the provider's recorded requests."""
+        script = [
+            ScriptedResponse(
+                tool_calls=[ScriptedToolCall(name="echo", input={"text": "x"})],
+                finish_reason="tool_use",
+            )
+        ] * 2
+        script.append(ScriptedResponse(text="final"))
+        engine, provider = make_engine(script, tools=[make_echo_tool()], max_turns=2)
+        await engine.run([UserMessage(content="start")])
+
+        reqs = provider.requests
+        assert reqs[0].tools != []  # normal turns DO offer tools
+        assert reqs[-1].tools == []  # the forced final turn offers none
+
+    @pytest.mark.asyncio
     async def test_usage_accumulated(self) -> None:
         from anila_core.models.message import Usage
         script = [

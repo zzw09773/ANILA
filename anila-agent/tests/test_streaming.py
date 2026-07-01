@@ -127,6 +127,9 @@ async def test_stream_error_mid_flight_closes_cleanly(monkeypatch):
     assert content == "partial"
     assert finish == "stop"
     assert saw_done is True
+    # 且發出 error terminal，讓 Router→UI 顯示「為何停」而非誤標 completed。
+    assert "event: anila.terminal" in sse
+    assert '"reason": "error"' in sse
 
 
 async def test_max_turns_forces_final_answer_and_terminal(monkeypatch):

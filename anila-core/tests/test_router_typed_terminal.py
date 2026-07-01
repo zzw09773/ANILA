@@ -60,6 +60,14 @@ def test_stream_emits_terminal_completed_before_done(monkeypatch):
     monkeypatch.setattr(RemoteAgentRegistry, "get", fake_get)
     monkeypatch.setattr(router_server, "_call_llm_non_stream", fake_call_llm)
 
+    # Mock the streaming LLM too so the direct-answer path is a clean success
+    # (no error trace) — otherwise _stream_llm_sse hits a real backend, errors,
+    # and the turn is correctly labelled `error`, not `completed`.
+    async def fake_stream_llm(*args, **kwargs):
+        yield {"type": "content", "content": "直接回答內容"}
+
+    monkeypatch.setattr(router_server, "_stream_llm_sse", fake_stream_llm)
+
     with client.stream(
         "POST",
         "/v1/chat/completions",
@@ -77,6 +85,69 @@ def test_stream_emits_terminal_completed_before_done(monkeypatch):
     assert '"reason": "completed"' in body
     # terminal must precede [DONE]
     assert body.index("event: anila.terminal") < body.index("data: [DONE]")
+
+
+def test_with_terminal_handles_resume_style_single_newline_done():
+    """The resume passthrough re-emits agent SSE via httpx aiter_lines(), which
+    strips SSE terminators — so `[DONE]` arrives as ``data: [DONE]\\n`` (one
+    newline) + a separate ``\\n``. The wrapper must STILL inject exactly one
+    terminal (frozen contract §6: one per turn), not miss it on an exact match."""
+    async def gen():
+        yield router_server._make_chunk("hi", "anila-router")
+        yield "data: [DONE]\n"   # resume-style single-newline DONE frame
+        yield "\n"               # trailing blank line as its own frame
+
+    async def collect():
+        return [frame async for frame in router_server._with_terminal(gen())]
+
+    body = "".join(asyncio.run(collect()))
+    assert body.count("event: anila.terminal") == 1
+    assert '"reason": "completed"' in body
+    assert body.index("event: anila.terminal") < body.index("data: [DONE]")
+
+
+def test_with_terminal_marks_error_on_real_error_trace():
+    """A real turn error (non-registry anila.trace status=error — LLM outage /
+    agent failure / route-miss) reaching [DONE] with no pre-emitted terminal must
+    be labelled `error`, not the `completed` default — else the UI shows a genuine
+    failure as a normal answer (review root-cause 1)."""
+    async def gen():
+        yield router_server._make_event(
+            "anila.trace",
+            router_server._make_trace_step("direct", "LLM 無法回應", "boom", status="error"),
+        )
+        yield router_server._make_chunk("（LLM 暫時無法回應）", "anila-router")
+        yield "data: [DONE]\n\n"
+
+    async def collect():
+        return [frame async for frame in router_server._with_terminal(gen())]
+
+    body = "".join(asyncio.run(collect()))
+    assert body.count("event: anila.terminal") == 1
+    assert '"reason": "error"' in body
+    assert '"reason": "completed"' not in body
+
+
+def test_with_terminal_ignores_nonfatal_registry_error_trace():
+    """The non-fatal registry-refresh warning (kind=registry, status=error) must
+    NOT flip the terminal to `error` — the turn still completed normally. Guards
+    the false-positive that made the earlier trace-scan approach wrong."""
+    async def gen():
+        yield router_server._make_event(
+            "anila.trace",
+            router_server._make_trace_step(
+                "registry", "同步 agent 清單", "refresh failed", status="error"
+            ),
+        )
+        yield router_server._make_chunk("正常答案", "anila-router")
+        yield "data: [DONE]\n\n"
+
+    async def collect():
+        return [frame async for frame in router_server._with_terminal(gen())]
+
+    body = "".join(asyncio.run(collect()))
+    assert '"reason": "completed"' in body
+    assert '"reason": "error"' not in body
 
 
 def test_with_terminal_does_not_duplicate_preemitted_terminal():

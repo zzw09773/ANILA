@@ -234,7 +234,9 @@ async def _sse_stream(
         yield _terminal_event("max_turns")
     except Exception:
         # 串流中途失敗：headers 已送出、status 無法再改，記錄後乾淨收尾。
+        # 發 error terminal，讓 Router→ANILA UI 顯示「為何停」而非誤標 completed。
         logger.exception("streaming run failed mid-flight")
+        yield _terminal_event("error")
 
     usage_obj = getattr(getattr(result, "context_wrapper", None), "usage", None)
     usage_payload: dict[str, int] | None = None

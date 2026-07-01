@@ -292,14 +292,30 @@ async def _with_terminal(inner: AsyncIterator[str]) -> AsyncIterator[str]:
     exits override the reason — those overrides land in follow-up cycles.
     """
     saw_terminal = False
+    had_error = False
     async for frame in inner:
-        if frame == "data: [DONE]\n\n":
+        # Lenient [DONE] match: the resume passthrough re-emits agent SSE via
+        # httpx aiter_lines() which strips terminators, so [DONE] can arrive as
+        # ``data: [DONE]\n`` (one newline). Match on the stripped payload so the
+        # terminal is injected on every exit, not just the ``\n\n`` framed ones.
+        if frame.strip() == "data: [DONE]":
             if not saw_terminal:
-                yield _make_terminal("completed")
+                yield _make_terminal("error" if had_error else "completed")
             yield frame
             continue
-        if frame.startswith("event: anila.terminal"):
+        s = frame.strip()
+        if s.startswith("event: anila.terminal"):
             saw_terminal = True
+        elif (
+            s.startswith("event: anila.trace")
+            and '"status": "error"' in frame
+            and '"kind": "registry"' not in frame
+        ):
+            # A real turn error (LLM outage / agent failure / route-miss) reached
+            # [DONE] without pre-emitting a terminal — attribute ``error``, not
+            # the ``completed`` default. The non-fatal registry-refresh warning is
+            # the one error trace that does NOT mean the turn failed, so exclude it.
+            had_error = True
         yield frame
 
 
