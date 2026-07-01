@@ -894,6 +894,10 @@ def create_router_app(
                 final_meta_for_event = {**final_meta, "trace": []}
                 yield _make_event("anila.meta", final_meta_for_event)
                 yield _make_chunk("", "anila-router", finish="stop")
+                # typed-terminal: a dispatched agent that errored gets an
+                # explicit `error` reason; _with_terminal won't duplicate it.
+                if had_error:
+                    yield _make_terminal("error")
                 yield "data: [DONE]\n\n"
                 logger.info(
                     "Router dispatch done (agent=%s, error=%s, len=%d)",

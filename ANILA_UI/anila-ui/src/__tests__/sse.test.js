@@ -112,6 +112,15 @@ describe("dispatchSseEvent", () => {
     expect(onMeta).toHaveBeenCalledWith({ trace_id: "abc" });
   });
 
+  it("routes anila.terminal to onTerminal (typed-terminal, contract §6)", () => {
+    const onTerminal = vi.fn();
+    dispatchSseEvent(
+      { event: "anila.terminal", data: '{"reason":"max_turns"}', raw: "" },
+      { onTerminal, accumulator: makeAccumulator() },
+    );
+    expect(onTerminal).toHaveBeenCalledWith({ reason: "max_turns" });
+  });
+
   it("extracts the delta string for anila.reasoning", () => {
     const onReasoning = vi.fn();
     dispatchSseEvent(

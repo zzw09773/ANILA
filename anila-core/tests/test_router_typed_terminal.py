@@ -12,6 +12,7 @@ This first slice covers the helper + the primary direct-answer streaming exit
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from fastapi.testclient import TestClient
@@ -76,3 +77,21 @@ def test_stream_emits_terminal_completed_before_done(monkeypatch):
     assert '"reason": "completed"' in body
     # terminal must precede [DONE]
     assert body.index("event: anila.terminal") < body.index("data: [DONE]")
+
+
+def test_with_terminal_does_not_duplicate_preemitted_terminal():
+    """A generator that pre-emits its own anila.terminal (e.g. `error` on an
+    agent failure) must NOT also get a `completed` from the wrapper — the
+    override path that error/aborted/max_turns reasons rely on."""
+    async def gen():
+        yield router_server._make_chunk("hi", "anila-router")
+        yield router_server._make_terminal("error")
+        yield "data: [DONE]\n\n"
+
+    async def collect():
+        return [frame async for frame in router_server._with_terminal(gen())]
+
+    body = "".join(asyncio.run(collect()))
+    assert body.count("event: anila.terminal") == 1
+    assert '"reason": "error"' in body
+    assert '"reason": "completed"' not in body

@@ -79,6 +79,9 @@ export async function streamChatCompletion({
   onSpans,
   onSessionId,
   onUnknownEvent,
+  // typed-terminal (contract §6): {reason, detail?} — 為何停(completed｜
+  // max_turns｜aborted｜budget｜length｜error)，一回合一次，在 [DONE] 前。
+  onTerminal,
   // Continue Response:回應被 max_tokens 截斷(finish_reason==='length')時回報。
   onFinishReason,
   // Stop generation:呼叫端傳入 AbortController.signal;abort() 即中止串流。
@@ -168,6 +171,7 @@ export async function streamChatCompletion({
         onToolCallFinished,
         onSpans,
         onUnknownEvent,
+        onTerminal,
         onFinishReason,
         accumulator: {
           get: () => accumulatedText,
@@ -249,6 +253,13 @@ export function dispatchSseEvent(event, callbacks) {
   }
   if (event.event === "anila.spans") {
     safeJsonInvoke(event.data, callbacks.onSpans, "anila.spans");
+    return;
+  }
+
+  // Typed-terminal (frozen contract §6, option A): {reason, detail?} emitted
+  // once right before [DONE] so the UI can render *why* an answer stopped.
+  if (event.event === "anila.terminal") {
+    safeJsonInvoke(event.data, callbacks.onTerminal, "anila.terminal");
     return;
   }
 

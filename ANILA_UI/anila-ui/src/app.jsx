@@ -972,6 +972,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
           // Continue Response:截斷標記存到訊息,UI 才知道要不要顯示「繼續」鈕。
           updateMsg(convId, assistantId, { finishReason: reason });
         },
+        onTerminal: (payload) => {
+          // typed-terminal(contract §6):存「為何停」讓 bubble render badge。
+          updateMsg(convId, assistantId, { terminal: payload });
+        },
         onTrace: (step) => {
           accumulatedTrace.push(step);
           setMessagesByConv((prev) => ({
@@ -1204,6 +1208,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         onFinishReason: (reason) => {
           // Continue Response:截斷標記存到訊息,UI 才知道要不要顯示「繼續」鈕。
           updateMsg(convId, assistantId, { finishReason: reason });
+        },
+        onTerminal: (payload) => {
+          // typed-terminal(contract §6):存「為何停」讓 bubble render badge。
+          updateMsg(convId, assistantId, { terminal: payload });
         },
         onTrace: (step) => {
           accumulatedTrace.push(step);

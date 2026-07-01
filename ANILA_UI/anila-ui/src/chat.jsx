@@ -545,6 +545,28 @@ export const MessageBubble = ({
         </button>
       )}
 
+      {/* typed-terminal（contract §6）：非正常結束時顯示「為何停」badge。
+          completed=正常不顯示；length 已由上面「繼續」鈕處理。 */}
+      {!msg.streaming && msg.terminal?.reason &&
+        !["completed", "length"].includes(msg.terminal.reason) && (
+        <div
+          title={msg.terminal.detail || ""}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 5, marginTop: 8,
+            padding: "2px 9px", fontSize: 11, fontFamily: "var(--font-mono)",
+            background: "var(--bg-subtle)", color: "var(--fg-muted)",
+            border: "1px dashed var(--border-strong)", borderRadius: 999,
+          }}
+        >
+          {{
+            max_turns: "⚠ 已達推理回合上限，回答可能未完成",
+            budget: "⚠ 已達預算上限，回答可能未完成",
+            aborted: "⏹ 已中止",
+            error: "⚠ 產生時發生錯誤",
+          }[msg.terminal.reason] || `⚠ 結束原因：${msg.terminal.reason}`}
+        </div>
+      )}
+
       {!msg.streaming && (
         <FollowUpSuggestions
           suggestions={msg.followUps}
