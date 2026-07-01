@@ -19,6 +19,13 @@
 - 記憶事實抽取在 `MEMORY_LLM_MODEL` 未註冊時 fallback 到第一個可用 registry LLM（air-gap 韌性）(`f3ce4d9`, 2026-06-24)
 - SSE 串流對 complete-message agents 的 robust content extraction (`ca5c040`)
 - credential dispatch 取最近 issued-or-rotated 的有效憑證 (`0c6639c`)
+- **P-3** 非串流 agent dispatch 補 `token_usage` 記帳（`stream:false` 流量原本靜默漏計）(`f0d5a12`，散全 7 分支)
+- `register` CLI 送 `base_model_id`（解析自 `base_model` 名，非 `base_model_name`），修開發者 on-ramp 422 (`4d57bc0`，散全分支)
+
+### Security
+- **R-SEC-1** `.env.bak*` 納入 `.gitignore`（intranet-deploy 祕密備份不進 PUBLIC repo）(`f4e3163`)
+- **R-SEC-2** 分類 latch owner-scope（`WHERE … AND user_id`），堵跨使用者 IDOR——client 不能用 `X-ANILA-Conversation-Id` 分類他人對話 (`ae161a8`，散全 7 分支)
+- **R-SEC-3** `CARD_DEV_SKIP_NONCE_BINDING` 非 dev 環境即 fail-fast，防卡登 nonce 綁定被誤關 (`f5cf04a`，card)
 
 ---
 

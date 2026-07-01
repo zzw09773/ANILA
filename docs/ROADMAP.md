@@ -41,15 +41,15 @@ ANILA 是**雙產品組合**（如 Google 的 Gemini 與 NotebookLM：共用模�
 依賴堆疊（實測呼叫圖）：**ANILA UI ──/router SSE──▶ anila-core(Router) ──CSP_BASE_URL──▶ CSP（LLM/dispatch/search）**。
 CSP 是地基（大家都打它）；**anila-core 與 ANILA UI 是同一條 SSE 契約的兩端**，要成對做。
 
-### Stage 1 — CSP 地基補洞（資料面先可信；多半已建好）
-- **R-SEC-1** `.env.bak.*` 進 `.gitignore`（PUBLIC repo 祕密外洩，最便宜先做）
-- **R-SEC-2** 分類 latch IDOR（共用碼，**main 起 → cherry-pick 全分支**）
-- **R-SEC-3** `CARD_DEV_SKIP_NONCE_BINDING` prod fail-fast guard
-- ~~**R-SEC-4** deploy-prod.sh preflight~~ → **改列 §4 deploy-gate（非 card v1 主幹）**。釐清：`deploy-prod.sh` 是 public/military 用；**card 兩支並存不刪**（intranet-deploy.sh 一次性建置 + deploy-prod.sh 日常維運 status/logs/restart/.12 遠端模型）。
-- ~~**R-SEC-5** `.12` gateway smoke 納 deploy gate~~ → **改列 §4 deferred（韌性/回歸守衛，非 v1 阻擋）**。`.12` 上次內網部署後**已連通**，此項不是「修好 `.12`」而是「下次 `.12` 壞掉時、部署前先擋」；現無功能缺口，故延後。
-- 補**非串流 dispatch usage 記帳**（usage 歸戶洞）
-- CSP search **server 端備好 `expand_relations`**（R-WIRE-1 後端側）
-- registry / approve / **`/v1/agents` list** 打磨；**修 `register` CLI 422**（送 `base_model_id`）
+### Stage 1 — CSP 地基補洞（✅ **實質完成**，2026-06-30 → 已完成項見 CHANGELOG）
+- ~~**R-SEC-1** `.env.bak*` 進 `.gitignore`~~ ✅ done
+- ~~**R-SEC-2** 分類 latch IDOR（共用碼 main 起 → 全分支）~~ ✅ done（散全 7 分支）
+- ~~**R-SEC-3** `CARD_DEV_SKIP_NONCE_BINDING` prod fail-fast guard~~ ✅ done（card）
+- ~~**R-SEC-4** deploy-prod.sh preflight~~ → **§4 deploy-gate（非 card v1 主幹）**：`deploy-prod.sh` 是 public/military 用；card 兩支並存不刪（intranet-deploy 建置 + deploy-prod 維運）。
+- ~~**R-SEC-5** `.12` gateway smoke 納 deploy gate~~ → **§4 deferred**：`.12` 已連通，此為韌性/回歸守衛，非 v1 阻擋。
+- ~~補**非串流 dispatch usage 記帳**（P-3）~~ ✅ done（全分支）
+- ~~CSP search server 端 `expand_relations`（R-WIRE-1 **後端**）~~ ✅ done（`fccf430`）。⚠ **agent 端消費未做**（`CspHttpRetriever` 不送/不讀 `related`）→ 併 **Stage 4「關聯來源」垂直切片**（對凍好的契約 + UI 一起做）。
+- ~~**修 `register` CLI 422**（送 `base_model_id`）~~ ✅ done。**剩一項**：`/v1/agents` list 打磨（餵 UI agent picker）— 狀態待 B 確認。
 
 ### Stage 2 — 凍結 SSE 契約（Router ⟷ UI 的接縫）
 - 定義並凍結 `/router/v1/chat/completions` 事件 shapes：`answer delta` / `tool_call_started·finished` / `citation{doc_id,chunk}` / `confidence` / `typed-terminal`(completed｜max_turns｜aborted｜budget｜length｜error) / `usage`。**兩邊照這份契約 lockstep。**
