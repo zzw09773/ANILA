@@ -231,6 +231,17 @@ class QueryEngine:
 
             # Stage 6: limit_check
             if turn_count >= self._config.max_turns:
+                # MaxTurns remediation: the model didn't converge on a final
+                # answer within max_turns (a known gpt-oss failure mode). Force
+                # ONE final turn with tools disabled so the user gets a real
+                # text answer from the accumulated context instead of an empty
+                # tool-call-only response (the "MaxTurns 死路"). Not counted as
+                # a normal turn, so turn_count stays <= max_turns.
+                final_msg, final_usage, _ = await self._api_call(
+                    history, on_stream_delta=on_stream_delta, force_no_tools=True,
+                )
+                history = history + [final_msg]
+                total_usage = total_usage.add(final_usage)
                 stop_reason = "max_turns"
                 break
 
@@ -297,9 +308,15 @@ class QueryEngine:
         self,
         history: list[Message],
         on_stream_delta: Optional[Callable] = None,
+        force_no_tools: bool = False,
     ) -> tuple[AssistantMessage, Usage, str]:
-        """Stage 2: call the provider and collect the response."""
-        tool_schemas = self._tools.openai_schemas(self._config.tool_names)
+        """Stage 2: call the provider and collect the response.
+
+        ``force_no_tools`` disables tool schemas for this call — the max-turns
+        remediation uses it to force a final text answer (with no tools on
+        offer the model must produce content instead of another tool call).
+        """
+        tool_schemas = [] if force_no_tools else self._tools.openai_schemas(self._config.tool_names)
 
         request = ProviderRequest(
             model=self._config.model,

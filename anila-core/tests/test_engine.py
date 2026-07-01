@@ -165,6 +165,25 @@ class TestQueryEngineBasicTurn:
         assert result.stop_reason == "max_turns"
 
     @pytest.mark.asyncio
+    async def test_max_turns_forces_final_answer(self) -> None:
+        """MaxTurns remediation: when the loop hits max_turns still wanting
+        tools (a known gpt-oss non-convergence), a forced final turn with tools
+        disabled must yield a real text answer instead of an empty
+        tool-call-only response (the 'MaxTurns 死路')."""
+        script = [
+            ScriptedResponse(
+                tool_calls=[ScriptedToolCall(name="echo", input={"text": "x"})],
+                finish_reason="tool_use",
+            )
+        ] * 3  # exactly max_turns tool-call turns — never converges on its own
+        script.append(ScriptedResponse(text="彙整後的最終答案"))  # the forced turn
+        engine, provider = make_engine(script, tools=[make_echo_tool()], max_turns=3)
+        result = await engine.run([UserMessage(content="start")])
+        assert result.stop_reason == "max_turns"
+        combined = " ".join(str(getattr(m, "content", "")) for m in result.messages)
+        assert "彙整後的最終答案" in combined
+
+    @pytest.mark.asyncio
     async def test_usage_accumulated(self) -> None:
         from anila_core.models.message import Usage
         script = [
