@@ -266,6 +266,43 @@ def _make_event(event: str, payload: dict[str, Any]) -> str:
     return f"event: {event}\n" + "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
 
 
+def _make_terminal(reason: str, detail: str | None = None) -> str:
+    """Emit the typed-terminal SSE frame (``event: anila.terminal``).
+
+    Per the frozen SSE contract (docs/platform/router-sse-contract.md §6,
+    option A): one per turn, right before ``[DONE]``, so the ANILA UI can
+    render *why* an answer stopped without polluting the OpenAI-compat chunk
+    ``finish_reason``. ``reason`` ∈
+    {completed, max_turns, aborted, budget, length, error}.
+    """
+    payload: dict[str, Any] = {"reason": reason}
+    if detail:
+        payload["detail"] = detail
+    return _make_event("anila.terminal", payload)
+
+
+async def _with_terminal(inner: AsyncIterator[str]) -> AsyncIterator[str]:
+    """Wrap a Router SSE generator so exactly one ``event: anila.terminal`` is
+    emitted immediately before its terminal ``[DONE]`` (frozen contract §6, A).
+
+    Default reason is ``completed``. A generator that ends abnormally may
+    **pre-emit** its own ``anila.terminal`` (e.g. ``error`` / ``max_turns`` /
+    ``aborted``) before ``[DONE]``; the wrapper sees it and does NOT add a
+    duplicate. This keeps the common path zero-touch while letting specific
+    exits override the reason — those overrides land in follow-up cycles.
+    """
+    saw_terminal = False
+    async for frame in inner:
+        if frame == "data: [DONE]\n\n":
+            if not saw_terminal:
+                yield _make_terminal("completed")
+            yield frame
+            continue
+        if frame.startswith("event: anila.terminal"):
+            saw_terminal = True
+        yield frame
+
+
 def _make_full_response(content: str, model: str, anila_meta: dict[str, Any] | None = None) -> dict:
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
@@ -619,7 +656,7 @@ def create_router_app(
                     await _pin_owner(session_id, agent_id)
 
                 return StreamingResponse(
-                    _router_streaming_multi_turn(
+                    _with_terminal(_router_streaming_multi_turn(
                         caller_api_key=caller_api_key,
                         forwarded_headers=anila_headers,
                         routing_messages=routing_messages,
@@ -630,7 +667,7 @@ def create_router_app(
                         session_id=session_id,
                         max_iterations=max_iterations,
                         pin_owner=_pin_owner_cb,
-                    ),
+                    )),
                     media_type="text/event-stream",
                     headers={
                         "Cache-Control": "no-cache",
@@ -642,7 +679,7 @@ def create_router_app(
                 await _pin_owner(session_id, agent_id_inner)
 
             return StreamingResponse(
-                _router_streaming(
+                _with_terminal(_router_streaming(
                     caller_api_key=caller_api_key,
                     routing_messages=routing_messages,
                     user_messages=messages,
@@ -653,7 +690,7 @@ def create_router_app(
                     session=sess,
                     pin_owner=_pin_owner_cb_single,
                     forwarded_headers=anila_headers,
-                ),
+                )),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -864,7 +901,7 @@ def create_router_app(
                 )
 
             return StreamingResponse(
-                _event_stream(),
+                _with_terminal(_event_stream()),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -1043,7 +1080,7 @@ def create_router_app(
             if session_id:
                 headers["X-Anila-Session-Id"] = session_id
             return StreamingResponse(
-                _event_stream(),
+                _with_terminal(_event_stream()),
                 media_type="text/event-stream",
                 headers=headers,
             )
@@ -1239,7 +1276,7 @@ def create_router_app(
                 yield "data: [DONE]\n\n"
 
         return StreamingResponse(
-            _stream_resume(),
+            _with_terminal(_stream_resume()),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
