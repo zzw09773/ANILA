@@ -62,13 +62,16 @@ CSP 是地基（大家都打它）；**anila-core 與 ANILA UI 是同一條 SSE 
 - **multi-hop dispatch 帶 context**（`context_messages`/`handoff_meta`）
 - ↳ 細節見 `anila-core/ROADMAP.md` Phase 1/3（這幾項現在做；其餘引擎工作凍結）
 
-### Stage 4 — Router emit ⟷ ANILA UI bind（垂直信任切片，一個功能一刀）
-- **on-ramp**：register → 出現在 ANILA UI 可用清單
-- **agent picker（雙模式）**：沿用現行——可**靠 Router 自動路由**、也可**手動選 agent**；`/v1/agents` 餵清單、打磨切換 UX
-- ~~**R-WIRE-2** ToolWidget 接 SSE（Router 已 emit）~~ → **descoped 至 v2**。**更正**：Router **並未** emit tool_call——passthrough frozenset 雖收錄 `tool_call_started/finished`、`sse.js` 也備好 callback，但**無 ANILA agent 產生它**（源頭是空的）。ANILA 是**派送制**非工具制，「跑了哪個 agent」已由 dispatch/handoff 呈現。tool widget 待 v2 真有 tool 源再做（見 §3c）。
-- **R-WIRE-3** confidence 真算（檢索分數）+ UI 渲染（`ConfidenceChip` 目前收 None）
-- **R-WIRE-4** parent_content「展開段落」+ **可點引用** + 來源面板
-- **R-WIRE-1**（client）：答案顯示「相關來源」
+### Stage 4 — Router/agent **emit** ⟷ ANILA UI bind（**UI bind ✅ 已完成，2026-07-01 實測**；缺的全在生產端 emit）
+> **實測**：ANILA UI（`ANILA_UI/anila-ui`）是**接好線、在等資料的消費者**——`runtime/sse.js` 全解析、`app.jsx:applyMeta` 把 `meta.{citations,confidence,handoff_chain,usage,follow_ups,reasoning}` 全套用、`trust.jsx` 元件全建好（`CitationsDrawer`/inline `[N]`/`ConfidenceChip`/`FollowUps`/`AuditWatermark`/`HandoffTimeline`）。**UI 端幾乎無工可做；缺口全在「Router/agent 有沒有把資料放進 `anila.meta`」。** Stage 4 因此收斂成「生產端 emit」，UI 只剩 typed-terminal 一小塊 render。
+- **on-ramp**：register → 出現在 ANILA UI 可用清單（UI ✅；驗 `/v1/agents` 餵清單）
+- **agent picker（雙模式）**：UI ✅（picker 已在）；剩打磨切換 UX
+- ~~**R-WIRE-2** ToolWidget 接 SSE（Router 已 emit）~~ → **descoped 至 v2**。Router **並未** emit tool_call（passthrough frozenset + `sse.js` callback 皆懸空無 producer）；ANILA 派送制，「跑了哪個 agent」已由 dispatch/handoff 呈現（見 §3c）。
+- **R-WIRE-3 confidence**：**UI ✅**（`ConfidenceChip`+低信心追問已建、現全黑收 `None`）→ **缺生產端**：算 confidence（檢索分數→high/med/low）放進 `meta.confidence`
+- **R-WIRE-4 引用/來源**：**UI ✅**（`CitationsDrawer`/inline `[N]` 已建並 wire）→ **缺生產端**：agent RAG 填 `meta.citations`（+parent_content 展開段落）
+- **R-WIRE-1 關聯來源**：**UI ✅**（同一條來源面板）→ **缺**：agent 端 `CspHttpRetriever` 送 `expand_relations`、把 `related` 映成 citations
+- **usage 浮水印**：**UI ✅**（`AuditWatermark` 顯示 trace/usage）→ **缺生產端**：串流 usage 真值（現歸零）
+- **typed-terminal**：**唯一真 UI 缺口**——`onFinishReason` 只認 `length`→續寫；要 render「為何停」（max_turns/error/aborted/budget）+ Router 先 emit 結構化終止（Stage 3）
 
 ### Stage 5 — 真模型端到端 smoke（= done）
 - 全鏈在 `.12` / gpt-oss 跑通：register→approve→ANILA UI 問→Router 直答/派送→grounded 串流答（引用+dispatch可見+confidence）+ usage 歸戶 + SSE 逐塊。
