@@ -1,7 +1,8 @@
 # ANILA Roadmap
 
 > **唯一前瞻路線圖。** 已完成見 [`CHANGELOG.md`](../CHANGELOG.md)；引擎內部見 [`../anila-core/ROADMAP.md`](../anila-core/ROADMAP.md)。
-> 更新 2026-06-30。**本檔已從「功能菜單」收斂成「一條有順序的 ANILA v1 主幹 + 凍結清單」**（2026-06-30 與 user 對齊產品定位後重排）。
+> 更新 2026-07-01。**本檔已從「功能菜單」收斂成「一條有順序的 ANILA v1 主幹 + 凍結清單」**（2026-06-30 與 user 對齊產品定位後重排；2026-07-01 標註 Stage 1–4 進度）。
+> ⚠ §0 產品定位另有一份 Codex 主導的「產品核心重新定位」設計在**獨立分支**進行中（proposal 見 `docs/product/anila-product-convergence-design.md`），可能修訂 §0（尤其「雙產品 vs 單一入口」）；在其定案前，本檔 §0 為當前 SSOT。
 
 ---
 
@@ -23,16 +24,16 @@ ANILA 是**雙產品組合**（如 Google 的 Gemini 與 NotebookLM：共用模�
 
 > 一個開發者 clone 模板建好 agent → 註冊、admin 核准 → 它出現在 ANILA UI → user 在 ANILA UI 問問題（**可靠 Router 自動路由，也可自己選 agent**，沿用現行雙模式）→ Router 直答或派給對的 agent → agent 對綁定 collection 做 RAG → **有來源、可信的答案串流回 ANILA UI**（看得到引用 + 跑了哪個 agent/工具）→ 且在真實內網模型（.12 / gpt-oss）上穩定、資安 gate 關好。
 
-驗收清單（= 做完）：
-- [ ] **開發者 on-ramp 通**：clone → `register`（不再 422）→ approve → **出現在 ANILA UI 可用 agent 清單**
-- [ ] **Router 路由可靠**：直答 + dispatch 都行；**無 MaxTurns 死路**（強制收尾）；abort + retry；multi-hop **帶 context**
-- [ ] **ANILA UI 信任可見**：串流 + **可點引用** + 來源面板 + **跑了哪個 agent**（dispatch/handoff）+ **真 confidence**（「哪個**工具**」ToolWidget → **descoped 至 v2**：ANILA 是派送制、無 tool 事件源，見 §3c）
-- [ ] **預設 grounded**：答案帶來源（agent RAG）+ 關聯來源
-- [ ] **usage 全歸戶**（補非串流 dispatch 洞）
+驗收清單（= 做完；**2026-07-01 進度標註**，各項細節見 §2 對應 Stage）：
+- [ ] **開發者 on-ramp 通**：clone → `register`（✅ 不再 422）→ approve → **出現在 ANILA UI 可用 agent 清單**（UI picker ✅；剩驗 `/v1/agents` 餵清單）
+- [ ] **Router 路由可靠**：直答 + dispatch 都行；**無 MaxTurns 死路**（✅ 強制收尾 done）；**abort**（⬜ 非 gated、下一刀候選）+ **retry**（⬜ 真需 Phase 2 重構）；multi-hop **帶 context**（⬜ Phase 4）
+- [ ] **ANILA UI 信任可見**：串流 ✅ + 可點引用 ✅UI + 來源面板 ✅UI + 跑了哪個 agent（handoff ✅）+ 真 confidence（UI ✅、待生產端算）+ typed-terminal「為何停」（✅ Router+UI）→ **UI 全建好，缺口全在生產端 emit**（tool ToolWidget → v2、派送制，見 §3c）
+- [ ] **預設 grounded**：答案帶來源（⬜ agent RAG 待填 `meta.citations`）+ 關聯來源（⬜ agent 端 `expand_relations` 待接）
+- [ ] **usage 全歸戶**：✅ 非串流 dispatch 洞（P-3）；⬜ 串流 usage 真值
 - [ ] **資安 gate 關好**（R-SEC-1~3 ✅ 已散全分支；R-SEC-4/5 → §4 deferred，非 v1 阻擋）
-- [ ] **真模型端到端 smoke 綠**
+- [ ] **真模型端到端 smoke 綠**（⬜ Stage 5）
 
-> 這條主幹**幾乎全是「接線 + 可靠性 + 資安」，不是新功能**——東西大多建好了。這就是收斂。
+> 這條主幹**幾乎全是「接線 + 可靠性 + 資安」，不是新功能**——東西大多建好了。這就是收斂。**進度概覽**：Stage 1 ✅、Stage 2 ✅（契約凍結）、Stage 3 進行中（typed-terminal ✅ + max-turns ✅；abort/retry/multi-hop ⬜）、Stage 4 UI bind ✅（缺生產端 emit）、Stage 5 ⬜。
 
 ---
 
@@ -49,11 +50,11 @@ CSP 是地基（大家都打它）；**anila-core 與 ANILA UI 是同一條 SSE 
 - ~~**R-SEC-5** `.12` gateway smoke 納 deploy gate~~ → **§4 deferred**：`.12` 已連通，此為韌性/回歸守衛，非 v1 阻擋。
 - ~~補**非串流 dispatch usage 記帳**（P-3）~~ ✅ done（全分支）
 - ~~CSP search server 端 `expand_relations`（R-WIRE-1 **後端**）~~ ✅ done（`fccf430`）。⚠ **agent 端消費未做**（`CspHttpRetriever` 不送/不讀 `related`）→ 併 **Stage 4「關聯來源」垂直切片**（對凍好的契約 + UI 一起做）。
-- ~~**修 `register` CLI 422**（送 `base_model_id`）~~ ✅ done。**剩一項**：`/v1/agents` list 打磨（餵 UI agent picker）— 狀態待 B 確認。
+- ~~**修 `register` CLI 422**（送 `base_model_id`）~~ ✅ done。**剩一項**：`/v1/agents` list 打磨（餵 UI agent picker）— 見 Stage 4 on-ramp（UI picker 已在，剩驗端點餵清單）。
 
 ### Stage 2 — 凍結 SSE 契約（Router ⟷ UI 的接縫）✅ **完成，契約已凍結**（2026-07-01 review 通過）
 - 契約 [`docs/platform/router-sse-contract.md`](platform/router-sse-contract.md)：對碼驗證修正（passthrough 是活路徑、`anila.resumed` 有 emit `router_server.py:1187`）＋ typed-terminal **採方案 A**（獨立 `event: anila.terminal {reason,detail?}`，不碰 OpenAI `finish_reason`）。兩端 lockstep，改契約走契約文末流程。
-- `anila.terminal` 的 **emit（Router）+ onTerminal（UI）屬 Stage 3/4 接線**：shape 已凍、producer 待實作。
+- `anila.terminal` 的 emit（Router）+ onTerminal（UI）已於 **Stage 3 實作**（見下）；契約 shape 凍結不變。
 
 ### Stage 3 — anila-core Router 可靠性（產生 UI 要渲染的事件）
 > **更正（2026-07-01 code-first 驗證）**：`anila-core/ROADMAP.md` 把 abort/max-turns/retry 都標「需 Phase 2 keystone」是**保守的**——實查 `query_engine.py` 後,**max-turns 補救 + honor abort 是 turn-loop 邏輯、不被 provider 重構 gated**;只有 **retry** 真的要 Phase 2（3 個 inline httpx `1232/1816/1955/2197` → 既有 `CSPPlatformProvider`，`next/L`）。
@@ -73,7 +74,7 @@ CSP 是地基（大家都打它）；**anila-core 與 ANILA UI 是同一條 SSE 
 - **R-WIRE-4 引用/來源**：**UI ✅**（`CitationsDrawer`/inline `[N]` 已建並 wire）→ **缺生產端**：agent RAG 填 `meta.citations`（+parent_content 展開段落）
 - **R-WIRE-1 關聯來源**：**UI ✅**（同一條來源面板）→ **缺**：agent 端 `CspHttpRetriever` 送 `expand_relations`、把 `related` 映成 citations
 - **usage 浮水印**：**UI ✅**（`AuditWatermark` 顯示 trace/usage）→ **缺生產端**：串流 usage 真值（現歸零）
-- **typed-terminal**：**唯一真 UI 缺口**——`onFinishReason` 只認 `length`→續寫；要 render「為何停」（max_turns/error/aborted/budget）+ Router 先 emit 結構化終止（Stage 3）
+- ~~**typed-terminal**~~ ✅ **done**（Stage 3）：`sse.js` `onTerminal` + `chat.jsx`「為何停」badge（max_turns/error/aborted/budget）；Router 全出口 emit `anila.terminal`。**剩 wiring**：engine `stop_reason=max_turns`/abort → Router 對應 reason。
 
 ### Stage 5 — 真模型端到端 smoke（= done）
 - 全鏈在 `.12` / gpt-oss 跑通：register→approve→ANILA UI 問→Router 直答/派送→grounded 串流答（引用+dispatch可見+confidence）+ usage 歸戶 + SSE 逐塊。
@@ -128,4 +129,4 @@ composer faceted 過濾、query 精修 chips、regenerate-and-compare、對話�
 - 保留（非 roadmap 作業檔）：`docs/planning/sprint-7x-plan.md`、`branch-sync-backlog`（待刷新）。
 - IC-7（codeserver/n8n/gitlab dev-tool ingress 策略 + runbook doc-drift）**暫緩**，待 user 拍板。
 
-*依據：card 雙稽核 + 功能/UIUX 多 lens 發想 + anila-core/anila-agent 機制盤點 + 與 user 對齊雙產品定位（ANILA=主核心先 done）。前瞻 TODO；已完成見 `CHANGELOG.md`。*
+*依據：card 雙稽核 + 功能/UIUX 多 lens 發想 + anila-core/anila-agent 機制盤點 + 與 user 對齊雙產品定位（ANILA=主核心先 done）。2026-07-01：對碼盤點各 Stage 實況（Stage 1 ✅ / 2 ✅ 契約凍結 / 3 typed-terminal+max-turns ✅ / 4 UI bind ✅）+ code-first 更正可靠性 gating。前瞻 TODO；已完成見 `CHANGELOG.md`。*
