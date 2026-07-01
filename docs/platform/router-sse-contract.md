@@ -82,15 +82,19 @@ Router dispatch 時 `_merge_anila_meta` 會在 `handoff_chain` 前插一筆 `{ag
 
 ---
 
-## 5. RESERVED / LATENT（v2 — 有 scaffold、**無 producer**，勿當 live）
+## 5. PASSTHROUGH / 條件性事件（**路徑是活的**，但 ANILA v1 一般不觸發）
 
-以下 `sse.js` 已備 parser + callback、Router passthrough frozenset（`_AGENT_PASSTHROUGH_EVENTS`）已收錄，但 **ANILA v1 無 producer emit**（見 [ROADMAP §3c](../ROADMAP.md)）：
+> **更正（2026-07-01 對碼）**：這些**不是「完全無 producer」**——轉發/emit 路徑是活的，只是 ANILA v1 的 agent 通常不送。勿當「一定會來」，也勿假設「永遠不來」。`sse.js` 兩端 parser/callback 皆備。
 
-- `anila.tool_call_started` / `anila.tool_call_finished` — ANILA 是**派送制**（Router 直答 or `DISPATCH:` 呼叫一個 agent），無 tool 事件源。A/B（agent-emit vs Router function-calling）決策封存 v2。
-- `anila.spans` — OTel-style trace tree。
-- `anila.todos_updated` / `anila.interrupt_requested` / `anila.resumed` — Sprint-13 agent 互動事件（`streamSessionAnswer` resume 流程備好、無 v1 producer）。
+- **Agent passthrough**（`router_server.py:826`：agent 串流中送的事件，除 `anila.meta`（會被 merge）、`anila.trace`（即時轉發）外，**其餘一律 `_make_event` 原樣轉發**）——**agent 有送才出現**：
+  - `anila.tool_call_started` / `anila.tool_call_finished` — ANILA 派送制、v1 agent 不送（A/B 決策封存 v2，見 [ROADMAP §3c](../ROADMAP.md)）。
+  - `anila.spans` — OTel-style trace tree，同理。
+  - `anila.todos_updated` — 同理。
+- **Resume / pause 流程**（端點 `POST /v1/sessions/{id}/answer`，`streamSessionAnswer`）：
+  - `anila.interrupt_requested` — agent 暫停（ask_user / plan / tool_approval）時經 passthrough 送。
+  - `anila.resumed` — **Router 在 resume 端點真的 emit**（`router_server.py:1187`）。整條 pause-resume 機制是活的，只是**要 agent 真的 interrupt 才會走到**。
 
-**規則**：勿為這些事件建 UI widget，直到真有 producer（v2）。它們保留在契約中作為**有意的預留線**。
+**規則**：勿為這些「建主動 UI widget」直到 ANILA agent 真的會送（v2）。但它們是**有意保留的活路徑**，不是死碼。（agent 錯誤現況：走 `anila.trace status=error` + friendly chunk（`router_server.py:833`），**非**結構化終止——見 §6 typed-terminal。）
 
 ---
 
@@ -101,7 +105,17 @@ Router dispatch 時 `_merge_anila_meta` 會在 `handoff_chain` 前插一筆 `{ag
 | **confidence** | Router 送 `None`；`ConfidenceChip` 全黑 | Stage 3 / agent：檢索分數 → `{level,score,reasons}` |
 | **citations** | 直答空；agent 需填 `meta.citations` | agent RAG（+ R-WIRE-1 `related`→citations） |
 | **usage（串流）** | 串流 usage 歸零 | 補真 token 計數 |
-| **typed-terminal** | 只有 `finish_reason`（stop｜length） | **Stage 3**：Router emit 結構化終止（`completed｜max_turns｜aborted｜budget｜length｜error`）；UI 補 render「為何停」（唯一真 UI 缺口） |
+| **typed-terminal** | 只有 `finish_reason`（stop｜length） | **Stage 3**：Router emit 結構化終止；UI 補 render「為何停」（唯一真 UI 缺口） |
+
+### typed-terminal 事件定義（**提案，待 review**；Stage 3 emit）
+新增獨立事件 `event: anila.terminal`（**不動** OpenAI chunk 的 `finish_reason`，避免破壞 OpenAI 相容層）：
+```json
+{"reason":"completed｜max_turns｜aborted｜budget｜length｜error","detail":"<str>?"}
+```
+- Router 串流結束前 emit：正常=`completed`；撞回合/預算上限=`max_turns`/`budget`；使用者中止=`aborted`；上游錯=`error`；`max_tokens` 截斷=`length`。
+- **現況**：正常結束只有 chunk `finish_reason:"stop"`；agent 錯誤走 `anila.trace status=error`（§5），無結構化終止。
+- **UI 端**：`sse.js` 加 `onTerminal`、bubble render「為何停」badge（消費端唯一要新增的一塊）。
+- ⚠ **待拍板**：獨立 `anila.terminal` 事件 **vs** 擴充 chunk `finish_reason` 語彙。建議**獨立事件**（不碰 OpenAI 相容層）。
 
 ---
 
