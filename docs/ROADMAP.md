@@ -26,7 +26,7 @@ ANILA 是**雙產品組合**（如 Google 的 Gemini 與 NotebookLM：共用模�
 驗收清單（= 做完）：
 - [ ] **開發者 on-ramp 通**：clone → `register`（不再 422）→ approve → **出現在 ANILA UI 可用 agent 清單**
 - [ ] **Router 路由可靠**：直答 + dispatch 都行；**無 MaxTurns 死路**（強制收尾）；abort + retry；multi-hop **帶 context**
-- [ ] **ANILA UI 信任可見**：串流 + **可點引用** + 來源面板 + **跑了哪個 agent/工具**（ToolWidget）+ **真 confidence**
+- [ ] **ANILA UI 信任可見**：串流 + **可點引用** + 來源面板 + **跑了哪個 agent**（dispatch/handoff）+ **真 confidence**（「哪個**工具**」ToolWidget → **descoped 至 v2**：ANILA 是派送制、無 tool 事件源，見 §3c）
 - [ ] **預設 grounded**：答案帶來源（agent RAG）+ 關聯來源
 - [ ] **usage 全歸戶**（補非串流 dispatch 洞）
 - [ ] **資安 gate 關好**（R-SEC-1~3 ✅ 已散全分支；R-SEC-4/5 → §4 deferred，非 v1 阻擋）
@@ -52,7 +52,7 @@ CSP 是地基（大家都打它）；**anila-core 與 ANILA UI 是同一條 SSE 
 - ~~**修 `register` CLI 422**（送 `base_model_id`）~~ ✅ done。**剩一項**：`/v1/agents` list 打磨（餵 UI agent picker）— 狀態待 B 確認。
 
 ### Stage 2 — 凍結 SSE 契約（Router ⟷ UI 的接縫）
-- 定義並凍結 `/router/v1/chat/completions` 事件 shapes：`answer delta` / `tool_call_started·finished` / `citation{doc_id,chunk}` / `confidence` / `typed-terminal`(completed｜max_turns｜aborted｜budget｜length｜error) / `usage`。**兩邊照這份契約 lockstep。**
+- 定義並凍結 `/router/v1/chat/completions` 事件 shapes：`answer delta` / `citation{doc_id,chunk}` / `confidence` / `typed-terminal`(completed｜max_turns｜aborted｜budget｜length｜error) / `usage`。`tool_call_started·finished` **列 reserved/latent**（passthrough 管線在，但 ANILA 無 producer；派送制，見 §3c）。**兩邊照這份契約 lockstep。**
 
 ### Stage 3 — anila-core Router 可靠性（產生 UI 要渲染的事件）
 - **max-turns 強制收尾**（tool_choice='none' 要模型收尾，別空答）
@@ -65,13 +65,13 @@ CSP 是地基（大家都打它）；**anila-core 與 ANILA UI 是同一條 SSE 
 ### Stage 4 — Router emit ⟷ ANILA UI bind（垂直信任切片，一個功能一刀）
 - **on-ramp**：register → 出現在 ANILA UI 可用清單
 - **agent picker（雙模式）**：沿用現行——可**靠 Router 自動路由**、也可**手動選 agent**；`/v1/agents` 餵清單、打磨切換 UX
-- **R-WIRE-2** ToolWidget 接 SSE（Router 已 emit，`app.jsx` 綁上）
+- ~~**R-WIRE-2** ToolWidget 接 SSE（Router 已 emit）~~ → **descoped 至 v2**。**更正**：Router **並未** emit tool_call——passthrough frozenset 雖收錄 `tool_call_started/finished`、`sse.js` 也備好 callback，但**無 ANILA agent 產生它**（源頭是空的）。ANILA 是**派送制**非工具制，「跑了哪個 agent」已由 dispatch/handoff 呈現。tool widget 待 v2 真有 tool 源再做（見 §3c）。
 - **R-WIRE-3** confidence 真算（檢索分數）+ UI 渲染（`ConfidenceChip` 目前收 None）
 - **R-WIRE-4** parent_content「展開段落」+ **可點引用** + 來源面板
 - **R-WIRE-1**（client）：答案顯示「相關來源」
 
 ### Stage 5 — 真模型端到端 smoke（= done）
-- 全鏈在 `.12` / gpt-oss 跑通：register→approve→ANILA UI 問→Router 直答/派送→grounded 串流答（引用+ToolWidget+confidence）+ usage 歸戶 + SSE 逐塊。
+- 全鏈在 `.12` / gpt-oss 跑通：register→approve→ANILA UI 問→Router 直答/派送→grounded 串流答（引用+dispatch可見+confidence）+ usage 歸戶 + SSE 逐塊。
 
 ### ✅ 已定：agent 選擇 = 兩者都要（沿用現行）
 - ANILA UI 保留**雙模式**：可**靠 Router 自動路由**，也可 **user 自己選 agent**（OpenWebUI 式 picker）。
@@ -92,6 +92,8 @@ CSP 是地基（大家都打它）；**anila-core 與 ANILA UI 是同一條 SSE 
 
 ### 3c. ANILA v2 / 之後（仍是 ANILA、但非 v1 阻擋）
 composer faceted 過濾、query 精修 chips、regenerate-and-compare、對話整理（資料夾/釘選/封存）、dispatch 決策 ribbon、對話一鍵變 Studio、排程 agent、核可式 agent run、agent 範本清單 + 從 collection 建 agent 精靈、grounded answer mode / 檢索診斷。
+
+**Tool 能力（reserved／A-B 決策封存至 v2）**：ANILA v1 是**派送制**（Router 直答 or `DISPATCH:` 呼叫**一個** agent，文字標記 `_DISPATCH_RE` 非 function-calling），**無 tool_call**。未來若要 tool 能力，兩條路——**A**：tool 留在 agent 內，agent emit `anila.tool_call_*` → Router 轉發 → UI 顯示；**B**：Router 自己 function-calling（更貼 Gemini 式助理，但架構轉向較大）。**現在不選**——UI 端要渲染的 tool 事件形狀兩者相同，故 passthrough 管線（router `_AGENT_PASSTHROUGH_EVENTS` + `sse.js` `onToolCall*`）**保留並標 reserved**，v2 真做 tool 時再定 A/B。（同批 Sprint 13 scaffolded 但無 producer 的還有 spans/todos/interrupt 等，一併屬 v2。）
 
 ---
 

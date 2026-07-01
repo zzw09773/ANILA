@@ -1989,6 +1989,12 @@ _AGENT_PASSTHROUGH_EVENTS: frozenset[str] = frozenset({
     "resumed",
     "todos_updated",
     "follow_ups",
+    # RESERVED/LATENT: no ANILA agent emits tool_call_* today. ANILA is
+    # dispatch-based (Router direct-answers or DISPATCH:es to ONE agent via the
+    # _DISPATCH_RE text marker), NOT tool/function-calling. These stay in the
+    # passthrough allowlist as a conduit for a future where agents emit tool
+    # events (or the Router gains function-calling) — see docs/ROADMAP.md §3c.
+    # Do NOT assume a live ToolWidget: the source is empty until v2.
     "tool_call_started",
     "tool_call_finished",
     "usage_update",

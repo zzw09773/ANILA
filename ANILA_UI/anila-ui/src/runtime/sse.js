@@ -70,6 +70,10 @@ export async function streamChatCompletion({
   onResumed,
   onTodos,
   onFollowUps,
+  // RESERVED/LATENT: no producer emits anila.tool_call_* yet — ANILA is
+  // dispatch-based (see docs/ROADMAP.md §3c). Parser is wired end-to-end but
+  // app.jsx passes no callbacks; do NOT build a ToolWidget until a real
+  // tool-event source exists (agent-emit or Router function-calling, v2).
   onToolCallStarted,
   onToolCallFinished,
   onSpans,
