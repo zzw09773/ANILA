@@ -5,11 +5,33 @@ Split verbatim from the former single-module ``app/api/agents.py``
 live here.
 """
 from fastapi import Depends, HTTPException, Request
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.models.agent import Agent
 from app.models.user import User
+from app.schemas.contracts.agents import AgentManifest
 from app.services.auth_service import get_current_user
+
+
+def validate_agent_manifest(payload: dict) -> dict:
+    """Validate a submitted Agent manifest against the doc 05 §4 contract.
+
+    Fail-closed: unknown fields / wrong types / invalid enum values (e.g. a
+    non-五級 classification) raise ``422`` with a zh-TW detail. Returns the
+    normalized manifest dict (JSON-mode) suitable for ``Agent.manifest_json``.
+    """
+    try:
+        manifest = AgentManifest.model_validate(payload)
+    except ValidationError as exc:
+        first = exc.errors()[0] if exc.errors() else {}
+        loc = ".".join(str(p) for p in first.get("loc", ())) or "(root)"
+        msg = first.get("msg", "格式不符")
+        raise HTTPException(
+            status_code=422,
+            detail=f"Agent manifest 驗證失敗:欄位「{loc}」{msg}",
+        ) from exc
+    return manifest.model_dump(mode="json")
 
 
 def _require_developer_or_admin(current_user: User = Depends(get_current_user)) -> User:

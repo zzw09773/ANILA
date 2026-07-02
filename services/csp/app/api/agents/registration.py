@@ -23,7 +23,16 @@ from app.services.auth_service import (
     require_admin,
 )
 
-from app.api.agents._common import _client_ip, _require_developer_or_admin
+from app.api.agents._common import (
+    _client_ip,
+    _require_developer_or_admin,
+    validate_agent_manifest,
+)
+from app.schemas.contracts.agents import (
+    REGISTER_DEFAULT_APPROVAL,
+    ApprovalStatus,
+    RuntimeType,
+)
 
 
 def _enforce_endpoint_url(url: str) -> None:
@@ -81,6 +90,13 @@ class AgentRegisterRequest(BaseModel):
     )
     capabilities: dict | None = None
     input_schema: dict | None = None
+    # doc 05 §3 runtime_type(5 值;預設 openai_compatible_agent = 現況 endpoint proxy)。
+    runtime_type: RuntimeType = RuntimeType.OPENAI_COMPATIBLE_AGENT
+    # doc 05 §4 optional manifest —— 提供則 fail-closed 驗證(422)並留存 manifest_json。
+    manifest: dict | None = None
+    # doc 06 Phase 1 shadow registration:True → approval_status=draft(盤點暫存);
+    # 預設 False = 現況行為(落地 pending_connection_test,第一關 = 連線測試)。
+    shadow: bool = False
 
 
 class AgentResponse(BaseModel):
@@ -98,6 +114,15 @@ class AgentResponse(BaseModel):
     health_status: str
     approval_status: str
     requires_encryption: bool = False
+    # doc 05 §3/§4/§6 registry-upgrade fields (Slice 5a). Optional so existing
+    # consumers keep working; surfaced for the developer/admin registry UI.
+    runtime_type: str | None = None
+    agent_version: str | None = None
+    audit_level: str | None = None
+    classification_ceiling: str | None = None
+    default_classification_level: str | None = None
+    manifest_json: dict | None = None
+    trace_test_passed_at: datetime | None = None
     # Sprint 13 PR A3 — admin-editable runtime knobs (tool permissions,
     # workspace caps, guardrails). NULL means "agent uses code defaults".
     runtime_config: dict | None = None
@@ -142,6 +167,15 @@ def _serialize_agent(agent: Agent) -> dict:
         "health_status": normalized,
         "approval_status": agent.approval_status,
         "requires_encryption": bool(getattr(agent, "requires_encryption", False)),
+        "runtime_type": getattr(agent, "runtime_type", None),
+        "agent_version": getattr(agent, "agent_version", None),
+        "audit_level": getattr(agent, "audit_level", None),
+        "classification_ceiling": getattr(agent, "classification_ceiling", None),
+        "default_classification_level": getattr(
+            agent, "default_classification_level", None
+        ),
+        "manifest_json": getattr(agent, "manifest_json", None),
+        "trace_test_passed_at": getattr(agent, "trace_test_passed_at", None),
         "runtime_config": getattr(agent, "runtime_config", None),
         "created_at": agent.created_at,
     }
@@ -160,6 +194,8 @@ class AgentUpdateRequest(BaseModel):
     base_model_id: int | None = None
     capabilities: dict | None = None
     input_schema: dict | None = None
+    # doc 05 §4 — replace the stored manifest snapshot (validated fail-closed).
+    manifest: dict | None = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -241,6 +277,21 @@ def register_agent(
         from app.api.ingestion.collections import _require_collection_access
         _require_collection_access(db, current_user, request.collection_id)
 
+    # doc 05 §4 — optional manifest is validated fail-closed (422) and the
+    # normalized snapshot is stored so the registry has the formal schema
+    # (not just the loose ``capabilities`` blob).
+    manifest_json = (
+        validate_agent_manifest(request.manifest)
+        if request.manifest is not None
+        else None
+    )
+
+    # doc 06 Phase 1: shadow inventory rows land as ``draft``; the normal path
+    # lands at the first gate (pending_connection_test = 現況 pending 等價)。
+    approval_status = (
+        ApprovalStatus.DRAFT.value if request.shadow else REGISTER_DEFAULT_APPROVAL
+    )
+
     agent = Agent(
         name=request.name,
         owner_user_id=current_user.id,
@@ -251,7 +302,9 @@ def register_agent(
         bound_collection_id=request.collection_id,
         capabilities=request.capabilities,
         input_schema=request.input_schema,
-        approval_status="pending",
+        runtime_type=request.runtime_type.value,
+        manifest_json=manifest_json,
+        approval_status=approval_status,
     )
     db.add(agent)
     db.commit()
@@ -319,6 +372,15 @@ def update_agent(
     if not patch:
         raise HTTPException(status_code=400, detail="沒有提供要更新的欄位")
 
+    # doc 05 §4 — a submitted manifest is validated fail-closed (422) and
+    # mapped onto ``manifest_json`` (the ``manifest`` request field is not a
+    # column). Explicit ``null`` clears the stored snapshot.
+    if "manifest" in patch:
+        raw_manifest = patch.pop("manifest")
+        patch["manifest_json"] = (
+            validate_agent_manifest(raw_manifest) if raw_manifest is not None else None
+        )
+
     # SSRF guard — endpoint_url 變更時重新驗證；同時把 approval_status 退回
     # pending，避免 owner 把已核可 agent 的 endpoint 改到內網（H4）。
     endpoint_changed = (
@@ -356,13 +418,19 @@ def update_agent(
         return _serialize_agent(agent)
 
     # 任何端點變更都會強制重新核可，避免「核可一次後 owner 改成內網」的
-    # bypass。admin 變更自己的 agent 也一樣 — 規則一致才好稽核。
-    reapproval_required = endpoint_changed and agent.approval_status == "approved"
+    # bypass。admin 變更自己的 agent 也一樣 — 規則一致才好稽核。doc 05 §6:
+    # 端點換過後,舊的 Full Trace 落章作廢 —— 清 trace_test_passed_at/report,
+    # 退回第一關 pending_connection_test,重新走 connection→trace→review。
+    reapproval_required = (
+        endpoint_changed and agent.approval_status == ApprovalStatus.APPROVED.value
+    )
     if reapproval_required:
-        agent.approval_status = "pending"
+        agent.approval_status = REGISTER_DEFAULT_APPROVAL
         agent.approved_by = None
         agent.approved_at = None
-        changed.append("approval_status->pending")
+        agent.trace_test_passed_at = None
+        agent.trace_test_report = None
+        changed.append("approval_status->pending_connection_test")
 
     db.commit()
     db.refresh(agent)

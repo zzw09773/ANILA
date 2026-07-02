@@ -1,0 +1,2 @@
+openwebui_name,owner,department,current_endpoint,runtime,model_usage,tools,data_sources,sensitivity,migration_level
+legacy-openwebui-risk-agent,王小明,風險分析組,http://ml-lab.internal:8080/risk,Pipe,gpt-oss-20b,document_search;table_reader,risk-collection,機密,L3

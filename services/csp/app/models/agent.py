@@ -35,6 +35,10 @@ class Agent(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False, unique=True, index=True)
     owner_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    # doc 05 §3 owner_department_id?(可選;SET NULL 保留 agent 於部門刪除後)。
+    owner_department_id = Column(
+        Integer, ForeignKey("departments.id", ondelete="SET NULL"), nullable=True
+    )
     # Which base LLM this agent relies on (informational, nullable)
     base_model_id = Column(
         Integer, ForeignKey("model_registry.id", ondelete="SET NULL"), nullable=True
@@ -46,14 +50,54 @@ class Agent(Base):
         Integer, ForeignKey("ingestion_collections.id", ondelete="SET NULL"), nullable=True
     )
     endpoint_url = Column(String(500), nullable=False)
+    # doc 05 §3 optional manifest / healthcheck URLs(GET /.well-known/anila-agent.json
+    # 與 GET /health;nullable —— endpoint_url 之外的可選探點)。
+    manifest_url = Column(String(500), nullable=True)
+    healthcheck_url = Column(String(500), nullable=True)
     api_version = Column(String(20), nullable=False, default="v1")
+    # doc 05 §3/§4 agent semver(manifest.version;§13「尚未存在」欄位逐字名
+    # agent_version,對映 manifest 欄位 version)。
+    agent_version = Column(String(40), nullable=True)
+    # doc 05 §3 runtime_type 5 值(開放 String,contracts.agents.RuntimeType 把關);
+    # 現況(有 endpoint_url)backfill = openai_compatible_agent(r1_0004)。
+    runtime_type = Column(
+        String(40),
+        nullable=False,
+        default="openai_compatible_agent",
+        server_default="openai_compatible_agent",
+    )
     description_for_router = Column(Text, nullable=False, default="")
+    # doc 05 §3 supported_task_types: string[] / output_schema / allowed_tool_ids: string[]。
+    supported_task_types = Column(JSONValue, nullable=True)
     input_schema = Column(JSONValue, nullable=True)
+    output_schema = Column(JSONValue, nullable=True)
+    allowed_tool_ids = Column(JSONValue, nullable=True)
     capabilities = Column(JSONValue, nullable=True)
+    # doc 05 §4 驗過的 manifest 快照(capabilities JSON → formal manifest schema,
+    # doc 05 §12 Refactor);manifest_url = 來源、manifest_json = 驗證後留存。
+    manifest_json = Column(JSONValue, nullable=True)
+    # doc 05 §4 trace.callback_mode(sse_and_post 等;開放 String,契約層把關)。
+    trace_callback_mode = Column(String(20), nullable=True)
     # health_status: unknown / healthy / unhealthy
     health_status = Column(String(20), nullable=False, default="unknown")
-    # approval_status: pending / approved / rejected
-    approval_status = Column(String(20), nullable=False, default="pending")
+    # approval_status(doc 05 §3,7 值):draft / pending_connection_test /
+    # pending_trace_test / pending_security_review / approved / rejected / disabled。
+    # 現況三值由 r1_0004 backfill(pending → pending_connection_test)。註冊落地
+    # 預設 = pending_connection_test(現況 pending 的七值等價,第一關 = 連線測試)。
+    approval_status = Column(
+        String(30), nullable=False, default="pending_connection_test"
+    )
+    # doc 05 §2 v1 policy:approved Agent 必為 full_trace(approval blocker)。
+    audit_level = Column(
+        String(20), nullable=False, default="full_trace", server_default="full_trace"
+    )
+    # doc 05 §3/§11 classification_ceiling:分類上限(NULL = 無上限);
+    # 執行時 effective_task_level <= ceiling 才允許 dispatch。
+    classification_ceiling = Column(String(20), nullable=True)
+    # doc 05 §6 Full Trace 是 approval blocker:trace-test 全過才落章。
+    # trace_test_passed_at 非空 + approval_status=pending_security_review 才可 approve。
+    trace_test_passed_at = Column(DateTime, nullable=True)
+    trace_test_report = Column(JSONValue, nullable=True)
     # When true, runtime must treat every conversation routed to this agent as
     # classified / encrypted. Set by admin in the control panel.
     requires_encryption = Column(Boolean, nullable=False, default=False, server_default="false")

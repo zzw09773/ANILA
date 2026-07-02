@@ -101,6 +101,7 @@ from app.api.agents.functions import (
 )
 from app.api.agents.health import (
     TestConnectionResponse,
+    run_agent_trace_test,
     test_agent_connection,
     trigger_agent_health_check,
 )
@@ -234,6 +235,7 @@ __all__ = [
     "TestConnectionResponse",
     "trigger_agent_health_check",
     "test_agent_connection",
+    "run_agent_trace_test",
     # functions (prompts) + system prompt suggest
     "_FUNCTION_KINDS",
     "AgentFunctionCreate",

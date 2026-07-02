@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 from tests.conftest import make_user, make_agent, login
 
 
@@ -58,9 +57,17 @@ class TestAgentRegistration:
         assert resp.status_code == 400
 
     def test_admin_can_approve(self, client, db):
+        from datetime import datetime, timezone
+
         dev = make_user(db, username="dev3", role="developer")
         admin = make_user(db, username="admin3", role="admin")
         agent = make_agent(db, dev, name="pending-agent")
+        # Slice 5a: approve is now blocked until Full Trace passed. Put the
+        # agent at the security-review gate with a trace-test stamp so this
+        # legacy happy-path stays green under the new 7-value state machine.
+        agent.approval_status = "pending_security_review"
+        agent.trace_test_passed_at = datetime.now(timezone.utc)
+        db.commit()
         token = login(client, "admin3")
 
         resp = client.post(

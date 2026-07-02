@@ -15,7 +15,7 @@ fail-closed、§8 DeclassificationRequest 5 值 status + approved_via 二選一�
   pending + audit supervisor_missing、紙本代錄必附文號/官職姓名、
   核准恰好降一次 + event
 - 未知 resource_type / reason / level fail-closed ValueError
-- migration chain:單一 head = r1_0003
+- migration chain:單一 head = r1_0004(Slice 5a 後)
 """
 
 from __future__ import annotations
@@ -571,7 +571,7 @@ class TestDeclassification:
 
 
 class TestMigrationChainSlice3a:
-    def test_single_head_is_r1_0003(self):
+    def test_single_head_in_r1_namespace(self):
         versions = Path(__file__).resolve().parents[1] / "migrations" / "versions"
         revisions: set[str] = set()
         down_revisions: set[str] = set()
@@ -588,4 +588,9 @@ class TestMigrationChainSlice3a:
             if down and down.group(1):
                 down_revisions.add(down.group(1))
         heads = revisions - down_revisions
-        assert heads == {"r1_0003"}, f"alembic head 應唯一且為 r1_0003,實得 {heads}"
+        # 不釘死特定 head id(每個 slice 加 migration 就過期);與
+        # test_task_trace_schema 同式:守恆兩不變量=恰一 head + r1_ 命名空間。
+        assert len(heads) == 1, f"alembic head 應唯一,實得 {heads}"
+        assert next(iter(heads)).startswith("r1_"), (
+            f"head 應屬 r1_ 命名空間,實得 {heads}"
+        )
