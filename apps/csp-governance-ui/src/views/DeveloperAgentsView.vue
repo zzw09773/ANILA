@@ -99,9 +99,7 @@ def employee_count(department: str) -&gt; int:
         <TermField label="approval">
           <select v-model="filters.approval" class="term-select">
             <option value="all">all</option>
-            <option value="pending">pending</option>
-            <option value="approved">approved</option>
-            <option value="rejected">rejected</option>
+            <option v-for="s in approvalFilterOptions" :key="s" :value="s">{{ approvalLabel(s) }}</option>
           </select>
         </TermField>
         <TermField label="health">
@@ -137,11 +135,12 @@ def employee_count(department: str) -&gt; int:
           <tr>
             <th>name</th>
             <th>endpoint</th>
-            <th>router description</th>
+            <th style="width: 140px">型別 / 版本</th>
+            <th style="width: 90px">分類上限</th>
             <th style="width: 100px">health</th>
-            <th style="width: 110px">approval</th>
-            <th style="width: 100px">enc</th>
-            <th style="width: 14%">created</th>
+            <th style="width: 120px">審批狀態</th>
+            <th style="width: 90px">enc</th>
+            <th style="width: 13%">created</th>
             <th>ops</th>
           </tr>
         </thead>
@@ -155,10 +154,14 @@ def employee_count(department: str) -&gt; int:
               <code class="cell-url" :title="agent.endpoint_url">{{ agent.endpoint_url }}</code>
             </td>
             <td>
-              <div class="cell-desc" :title="agent.description_for_router">{{ agent.description_for_router }}</div>
+              <div class="cell-strong" style="font-family: var(--font-mono); font-size: var(--t-2xs);">{{ agent.runtime_type || '—' }}</div>
+              <div class="cell-meta">{{ agent.version || '—' }}</div>
+            </td>
+            <td>
+              <span class="cell-meta">{{ agent.classification_ceiling || '—' }}</span>
             </td>
             <td><TermBadge :variant="healthVariant(agent.health_status)" dot>{{ agent.health_status }}</TermBadge></td>
-            <td><TermBadge :variant="approvalVariant(agent.approval_status)" dot>{{ agent.approval_status }}</TermBadge></td>
+            <td><TermBadge :variant="approvalVariant(agent.approval_status)" dot>{{ approvalLabel(agent.approval_status) }}</TermBadge></td>
             <td>
               <TermBadge :variant="agent.requires_encryption ? 'danger' : ''">
                 {{ agent.requires_encryption ? 'forced' : 'normal' }}
@@ -174,9 +177,15 @@ def employee_count(department: str) -&gt; int:
                 <button v-if="authStore.isAdmin" class="term-action" :disabled="healthCheckingId === agent.id" @click="handleHealthCheck(agent)">
                   {{ healthCheckingId === agent.id ? 'probe…' : 'probe' }}
                 </button>
-                <template v-if="authStore.isAdmin && agent.approval_status === 'pending'">
+                <template v-if="authStore.isAdmin && isPendingReview(agent.approval_status)">
                   <span class="row-actions__sep">·</span>
-                  <button class="term-action" @click="handleApprove(agent)">approve</button>
+                  <span :title="!agent.trace_test_passed_at ? '須先通過軌跡測試' : ''">
+                    <button
+                      class="term-action"
+                      :disabled="!isApprovable(agent.approval_status, agent.trace_test_passed_at)"
+                      @click="handleApprove(agent)"
+                    >approve</button>
+                  </span>
                   <span class="row-actions__sep">·</span>
                   <button class="term-action term-action--danger" @click="openRejectModal(agent)">reject</button>
                 </template>
@@ -233,6 +242,31 @@ def employee_count(department: str) -&gt; int:
           </select>
         </TermField>
 
+        <TermSection title="治理設定 · governance" />
+        <div class="form-row-2">
+          <TermField label="runtime 型別" :hint="runtimeTypeHint">
+            <select v-model="form.runtime_type" class="term-select">
+              <option v-for="o in RUNTIME_TYPE_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </select>
+          </TermField>
+          <TermField label="分類上限" hint="此 agent 可處理的最高分類等級；留白＝無上限">
+            <select v-model="form.classification_ceiling" class="term-select">
+              <option :value="null">— 無上限 —</option>
+              <option v-for="lv in CLASSIFICATION_LEVELS" :key="lv" :value="lv">{{ lv }}</option>
+            </select>
+          </TermField>
+        </div>
+        <TermField label="版本" hint="agent 版本字串，例如 1.0.0（選填）">
+          <input v-model="form.version" class="term-input" placeholder="1.0.0" />
+        </TermField>
+        <label class="draft-check">
+          <input type="checkbox" v-model="form.draft" />
+          <span>
+            <span class="draft-check__title">以草稿建立（shadow registration）</span>
+            <span class="draft-check__hint">先以「草稿」狀態影子註冊，暫不進入審批佇列；適合遷移既有 agent 時先建檔、稍後再補測試與審查。</span>
+          </span>
+        </label>
+
         <TermSection title="pre-flight checklist" />
         <ul class="check">
           <li :class="form.name ? 'is-ok' : 'is-pending'">{{ form.name ? '●' : '○' }} agent name set</li>
@@ -247,7 +281,8 @@ def employee_count(department: str) -&gt; int:
       <div v-else class="form-grid">
         <p class="cell-meta">
           agent <strong>{{ registeredAgent?.name }}</strong> (#{{ registeredAgent?.id }}) registered ·
-          <TermBadge variant="warn" dot>pending</TermBadge> admin review.
+          <TermBadge :variant="approvalVariant(registeredAgent?.approval_status)" dot>{{ approvalLabel(registeredAgent?.approval_status) }}</TermBadge>
+          {{ registeredAgent?.approval_status === 'draft' ? '（草稿，未進入審批佇列）' : 'admin review.' }}
         </p>
 
         <div v-if="!newAgentCsk">
@@ -350,8 +385,14 @@ def employee_count(department: str) -&gt; int:
         <dl class="detail__list">
           <div><dt>endpoint</dt><dd><code>{{ detailAgent.endpoint_url }}</code></dd></div>
           <div><dt>api version</dt><dd>{{ detailAgent.api_version || 'v1' }}</dd></div>
+          <div><dt>runtime 型別</dt><dd><code>{{ detailAgent.runtime_type || '—' }}</code></dd></div>
+          <div><dt>版本</dt><dd>{{ detailAgent.version || '—' }}</dd></div>
+          <div><dt>分類上限</dt><dd>{{ detailAgent.classification_ceiling || '—' }}</dd></div>
           <div><dt>health</dt><dd>{{ detailAgent.health_status }}</dd></div>
-          <div><dt>approval</dt><dd>{{ detailAgent.approval_status }}</dd></div>
+          <div>
+            <dt>審批狀態</dt>
+            <dd><TermBadge :variant="approvalVariant(detailAgent.approval_status)" dot>{{ approvalLabel(detailAgent.approval_status) }}</TermBadge></dd>
+          </div>
           <div><dt>created</dt><dd class="tnum">{{ formatDate(detailAgent.created_at) }}</dd></div>
           <div><dt>owner</dt><dd>{{ ownerDisplay(detailAgent) }}</dd></div>
           <div><dt>base model</dt><dd>{{ detailAgent.base_model_id || '—' }}</dd></div>
@@ -376,6 +417,42 @@ def employee_count(department: str) -&gt; int:
 
         <TermSection title="router description" />
         <p class="detail__desc">{{ detailAgent.description_for_router || '—' }}</p>
+
+        <!-- Slice 5b — 軌跡測試（Full Trace 審批關卡）。admin 執行測試 → 逐項
+             pass/fail 報告 → 通過後才可核准。 -->
+        <template v-if="authStore.isAdmin">
+          <TermSection title="軌跡測試 · full trace" />
+          <p class="cell-meta">
+            正式核准前必須通過軌跡測試。測試會對 agent 發出一次帶追蹤的請求，逐項檢查 span 回報。
+          </p>
+          <p class="trace-status" :class="detailAgent.trace_test_passed_at ? 'is-ok' : 'is-pending'">
+            {{ detailAgent.trace_test_passed_at
+                ? `✓ 已於 ${formatDate(detailAgent.trace_test_passed_at)} 通過軌跡測試`
+                : '○ 尚未通過軌跡測試' }}
+          </p>
+          <div class="row-actions" style="margin: 8px 0;">
+            <TermButton
+              size="xs" variant="default" :loading="traceTesting" :disabled="traceTesting"
+              :label="traceTesting ? '測試中' : '執行軌跡測試'" @click="handleTraceTest"
+            />
+            <template v-if="isPendingReview(detailAgent.approval_status)">
+              <span :title="!detailAgent.trace_test_passed_at ? '須先通過軌跡測試' : ''">
+                <TermButton
+                  size="xs" variant="primary" :disabled="!detailIsApprovable"
+                  label="核准" @click="handleApprove(detailAgent)"
+                />
+              </span>
+              <TermButton size="xs" variant="ghost" label="駁回" @click="openRejectModal(detailAgent)" />
+            </template>
+          </div>
+          <ul v-if="traceReport.length" class="trace-report">
+            <li v-for="(item, i) in traceReport" :key="i" :class="item.passed ? 'is-ok' : 'is-bad'">
+              <span class="trace-report__mark">{{ item.passed ? '✓' : '✗' }}</span>
+              <span class="trace-report__name">{{ item.name }}</span>
+              <span v-if="item.detail" class="trace-report__detail">{{ item.detail }}</span>
+            </li>
+          </ul>
+        </template>
 
         <TermSection title="capabilities" />
         <pre v-if="hasCapabilities(detailAgent)" class="detail__pre">{{ prettyJson(detailAgent.capabilities) }}</pre>
@@ -590,8 +667,12 @@ import { computed, onMounted, ref } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import {
   approveAgent, deleteAgent, downloadTemplate, getAgent, listMyAgents,
-  registerAgent, rejectAgent, setAgentEncryption, triggerAgentHealthCheck, updateAgent,
+  registerAgent, rejectAgent, setAgentEncryption, traceTestAgent,
+  triggerAgentHealthCheck, updateAgent,
 } from '../api/agents'
+import {
+  APPROVAL_STATUSES, approvalLabel, approvalVariant, isApprovable, isPendingReview,
+} from '../utils/approvalStatus'
 import {
   issueBootstrapToken,
   issueStaticCredential,
@@ -647,8 +728,35 @@ const issuedSecret = ref(null) // { kind: 'bsk'|'csk', value, meta?, ttlExpiresA
 const showIssueStaticModal = ref(false)
 const staticLabel = ref('')
 const filters = ref({ query: '', approval: 'all', health: 'all', sort: 'newest' })
-const form = ref({ name: '', endpoint_url: '', description_for_router: '', api_version: 'v1', base_model_id: null, collection_id: null })
+const form = ref({
+  name: '', endpoint_url: '', description_for_router: '', api_version: 'v1',
+  base_model_id: null, collection_id: null,
+  // Slice 5b — 新增治理欄位
+  runtime_type: 'openai_compatible_agent', classification_ceiling: null, version: '', draft: false,
+})
 const formErrors = ref({})
+
+// Slice 5b — 篩選下拉可選的七值審批狀態（含 all）。
+const approvalFilterOptions = APPROVAL_STATUSES
+
+// runtime_type 五選一（doc 05 §3）；值為機器 token（保留英文），helper 繁中說明。
+const RUNTIME_TYPE_OPTIONS = [
+  { value: 'anila_agent', label: 'anila_agent', hint: '官方 anila-agent 樣板（openai-agents runtime）' },
+  { value: 'langchain', label: 'langchain', hint: 'LangChain / LangGraph 服務' },
+  { value: 'openwebui_pipe_compatible', label: 'openwebui_pipe_compatible', hint: '相容 OpenWebUI pipe 介面的既有 agent' },
+  { value: 'openai_compatible_agent', label: 'openai_compatible_agent', hint: 'OpenAI 相容 /v1/chat/completions（預設）' },
+  { value: 'custom_http', label: 'custom_http', hint: '自訂 HTTP 介面（需自行對齊契約）' },
+]
+
+// 分類上限五級（doc 08）；null = 無上限。由低到高排序。
+const CLASSIFICATION_LEVELS = ['無機密', '營業秘密', '機密', '極機密', '絕對機密']
+
+const runtimeTypeHint = computed(() =>
+  RUNTIME_TYPE_OPTIONS.find(o => o.value === form.value.runtime_type)?.hint || '')
+
+// ── Slice 5b — 軌跡測試（Full Trace 審批關卡）────────────────────────────────
+const traceTesting = ref(false)
+const traceReport = ref([]) // 正規化後的逐項 [{ name, passed, detail }]
 // Register wizard: step 1 = details form, step 2 = provision the csk- + verify.
 const registerStep = ref(1)
 const registeredAgent = ref(null) // { id, name, bound_collection_id }
@@ -695,7 +803,7 @@ const baseModelOptions = computed(() =>
   availableModels.value.filter(m => m.is_active && (m.model_type === 'llm' || m.model_type === 'vlm'))
 )
 
-const pendingCount = computed(() => agents.value.filter(a => a.approval_status === 'pending').length)
+const pendingCount = computed(() => agents.value.filter(a => isPendingReview(a.approval_status)).length)
 const approvedCount = computed(() => agents.value.filter(a => a.approval_status === 'approved').length)
 const healthyCount = computed(() => agents.value.filter(a => a.health_status === 'healthy' || a.health_status === 'online').length)
 
@@ -722,7 +830,7 @@ const filteredAgents = computed(() => {
   next = [...next].sort((l, r) => {
     if (filters.value.sort === 'name') return (l.name || '').localeCompare(r.name || '')
     if (filters.value.sort === 'oldest') return new Date(l.created_at) - new Date(r.created_at)
-    if (filters.value.sort === 'approval') return (l.approval_status === 'pending' ? -1 : 1) - (r.approval_status === 'pending' ? -1 : 1)
+    if (filters.value.sort === 'approval') return (isPendingReview(l.approval_status) ? -1 : 1) - (isPendingReview(r.approval_status) ? -1 : 1)
     return new Date(r.created_at) - new Date(l.created_at)
   })
   return next
@@ -734,7 +842,11 @@ function setFeedback(type, message) {
 }
 
 function resetForm() {
-  form.value = { name: '', endpoint_url: '', description_for_router: '', api_version: 'v1', base_model_id: null, collection_id: null }
+  form.value = {
+    name: '', endpoint_url: '', description_for_router: '', api_version: 'v1',
+    base_model_id: null, collection_id: null,
+    runtime_type: 'openai_compatible_agent', classification_ceiling: null, version: '', draft: false,
+  }
   formErrors.value = {}
   registerStep.value = 1
   registeredAgent.value = null
@@ -778,10 +890,57 @@ async function openRegisterModal() {
 async function openDetailModal(agent) {
   try { const { data } = await getAgent(agent.id); detailAgent.value = data }
   catch { detailAgent.value = agent }
+  // 帶出上次的軌跡測試報告（若後端已存 trace_test_report）。
+  traceReport.value = normalizeTraceReport(detailAgent.value?.trace_test_report)
   showDetailModal.value = true
   // Lazy-load credentials only when admin opens the modal — avoids
   // hitting the endpoint for non-admin viewers.
   if (authStore.isAdmin) await refreshDetailCredentials()
+}
+
+// 是否可核准（狀態待審查 + 已通過軌跡測試）。row action 與 detail 共用。
+const detailIsApprovable = computed(() =>
+  isApprovable(detailAgent.value?.approval_status, detailAgent.value?.trace_test_passed_at))
+
+// 後端 trace_test_report 形狀未定，防禦性正規化為 [{ name, passed, detail }]。
+// 兼容陣列或 { items|checks|results: [...] }；每項的 pass 旗標容忍多種鍵名。
+function normalizeTraceReport(report) {
+  if (!report) return []
+  const items = Array.isArray(report)
+    ? report
+    : (report.items || report.checks || report.results || [])
+  if (!Array.isArray(items)) return []
+  return items.map((it, i) => ({
+    name: it.name || it.check || it.label || `檢查項目 ${i + 1}`,
+    passed: it.passed ?? it.pass ?? (it.status === 'pass' || it.status === 'ok'),
+    detail: it.detail || it.message || it.reason || '',
+  }))
+}
+
+async function handleTraceTest() {
+  if (!detailAgent.value || traceTesting.value) return
+  traceTesting.value = true
+  try {
+    const { data } = await traceTestAgent(detailAgent.value.id)
+    const report = data?.trace_test_report || data?.report || data
+    traceReport.value = normalizeTraceReport(report)
+    const passedAt = data?.trace_test_passed_at || report?.passed_at || null
+    // 同步 detail 與列表列，讓 approve 閘門即時解鎖。
+    detailAgent.value = { ...detailAgent.value, trace_test_report: report, trace_test_passed_at: passedAt }
+    const idx = agents.value.findIndex(a => a.id === detailAgent.value.id)
+    if (idx >= 0) agents.value[idx] = { ...agents.value[idx], trace_test_passed_at: passedAt }
+    const allPass = traceReport.value.length > 0 && traceReport.value.every(r => r.passed)
+    setFeedback(allPass ? 'success' : 'error',
+      allPass ? '軌跡測試通過' : '軌跡測試完成，但有項目未通過，請檢視報告')
+  } catch (e) {
+    // 4xx（含 409）→ 繁中錯誤 toast；若後端仍附帶報告則一併呈現。
+    if (e.response?.data?.trace_test_report || e.response?.data?.report) {
+      traceReport.value = normalizeTraceReport(e.response.data.trace_test_report || e.response.data.report)
+    }
+    setFeedback('error', e.response?.data?.detail || '軌跡測試失敗，請稍後再試')
+  } finally {
+    traceTesting.value = false
+  }
 }
 
 async function refreshDetailCredentials() {
@@ -805,6 +964,7 @@ function closeDetailModal() {
   showDetailModal.value = false
   detailAgent.value = null
   detailCredentials.value = []
+  traceReport.value = []
   clearIssuedSecret()
 }
 
@@ -926,6 +1086,11 @@ async function handleRegister() {
       endpoint_url: form.value.endpoint_url.trim(),
       description_for_router: form.value.description_for_router.trim(),
       collection_id: form.value.collection_id || null,
+      // Slice 5b — 治理欄位；空值送 null（無上限 / 未填版本），draft 對應 5a 影子註冊參數。
+      runtime_type: form.value.runtime_type || 'openai_compatible_agent',
+      classification_ceiling: form.value.classification_ceiling || null,
+      version: form.value.version.trim() || null,
+      draft: form.value.draft,
     })
     // Advance to step 2 (provision key) instead of closing — one onboarding
     // flow: register → issue csk- → paste into .env → verify (S-Q2/Q3).
@@ -1041,8 +1206,20 @@ async function handleUpdateAgent() {
 }
 
 async function handleApprove(agent) {
-  try { await approveAgent(agent.id); setFeedback('success', `approved '${agent.name}'`); await fetchAgents() }
-  catch (e) { setFeedback('error', e.response?.data?.detail || 'approve failed') }
+  try {
+    await approveAgent(agent.id)
+    setFeedback('success', `已核准「${agent.name}」`)
+    await fetchAgents()
+    syncDetailFromList(agent.id)
+  }
+  catch (e) { setFeedback('error', e.response?.data?.detail || '核准失敗，請確認已通過軌跡測試') }
+}
+
+// 核准／駁回後把最新狀態同步回開啟中的 detail modal（若操作對象就是它）。
+function syncDetailFromList(id) {
+  if (!detailAgent.value || detailAgent.value.id !== id) return
+  const fresh = agents.value.find(a => a.id === id)
+  if (fresh) detailAgent.value = { ...detailAgent.value, ...fresh }
 }
 
 async function handleToggleEncryption(agent) {
@@ -1089,11 +1266,13 @@ async function handleDeleteAgent(agent) {
 
 async function handleReject() {
   try {
-    await rejectAgent(rejectTarget.value.id, rejectReason.value.trim())
-    setFeedback('success', `rejected '${rejectTarget.value.name}'`)
+    const rejectedId = rejectTarget.value.id
+    await rejectAgent(rejectedId, rejectReason.value.trim())
+    setFeedback('success', `已駁回「${rejectTarget.value.name}」`)
     closeRejectModal()
     await fetchAgents()
-  } catch (e) { setFeedback('error', e.response?.data?.detail || 'reject failed') }
+    syncDetailFromList(rejectedId)
+  } catch (e) { setFeedback('error', e.response?.data?.detail || '駁回失敗') }
 }
 
 async function handleDownloadTemplate() {
@@ -1109,9 +1288,6 @@ async function handleDownloadTemplate() {
   } catch (e) { setFeedback('error', e.response?.data?.detail || 'download failed') }
 }
 
-function approvalVariant(s) {
-  return ({ pending: 'warn', approved: 'ok', rejected: 'danger' })[s] || ''
-}
 function healthVariant(s) {
   if (s === 'healthy' || s === 'online') return 'ok'
   if (s === 'unhealthy' || s === 'offline') return 'danger'
@@ -1340,4 +1516,29 @@ function buildStatusHistory(agent) {
 }
 .test-result--ok { border-color: var(--c-ok); color: var(--c-ok); }
 .test-result--bad { border-color: var(--c-danger); color: var(--c-danger); }
+
+/* Slice 5b — shadow-registration checkbox */
+.draft-check {
+  display: flex; gap: var(--gap-2); align-items: flex-start;
+  font-size: var(--t-2xs); color: var(--c-fg-2); cursor: pointer;
+  border: var(--border-w) solid var(--c-border);
+  padding: var(--gap-2) var(--gap-3); background: var(--c-bg);
+}
+.draft-check input { margin-top: 2px; flex-shrink: 0; }
+.draft-check__title { display: block; color: var(--c-fg-1); font-weight: 500; }
+.draft-check__hint { display: block; color: var(--c-fg-3); margin-top: 2px; line-height: 1.5; }
+
+/* Slice 5b — trace-test status line + per-item pass/fail report */
+.trace-status { font-size: var(--t-xs); margin: 4px 0 0; }
+.trace-status.is-ok { color: var(--c-ok); }
+.trace-status.is-pending { color: var(--c-fg-3); }
+.trace-report { list-style: none; padding: 0; margin: 8px 0 0; display: flex; flex-direction: column; gap: 4px; }
+.trace-report li {
+  display: grid; grid-template-columns: 16px auto 1fr; gap: 6px; align-items: baseline;
+  font-size: var(--t-2xs); padding: 4px 6px; border: var(--border-w) solid var(--c-border);
+}
+.trace-report li.is-ok { color: var(--c-fg-1); }
+.trace-report li.is-bad { color: var(--c-danger); border-color: var(--c-danger); background: var(--c-danger-soft); }
+.trace-report__mark { font-weight: 700; }
+.trace-report__detail { color: var(--c-fg-3); }
 </style>

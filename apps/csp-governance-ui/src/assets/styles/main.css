@@ -337,6 +337,8 @@
   .term-badge--danger  { color: var(--c-danger); border-color: var(--c-danger); background: var(--c-danger-soft); }
   .term-badge--info    { color: var(--c-info);   border-color: var(--c-info);   background: var(--c-info-soft); }
   .term-badge--accent  { color: var(--c-accent); border-color: var(--c-accent); background: var(--c-accent-soft); }
+  /* Slice 5b — 已停用 agent 的暗灰 badge，與 draft 的中性 default 區隔開來。 */
+  .term-badge--muted   { color: var(--c-fg-mute); border-color: var(--c-border); background: transparent; opacity: 0.75; }
   .term-badge--llm     { color: var(--c-llm);    border-color: var(--c-llm); }
   .term-badge--vlm     { color: var(--c-vlm);    border-color: var(--c-vlm); }
   .term-badge--embedding,
