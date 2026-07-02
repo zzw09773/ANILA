@@ -28,6 +28,8 @@ from app.api.ingestion import (
     search_router as ingestion_search_router,
 )
 from app.api.jwks import router as jwks_router
+from app.modules.policy import router as policy_decisions_router
+from app.modules.tasks import router as tasks_router
 
 api_router = APIRouter()
 
@@ -56,6 +58,8 @@ api_router.include_router(ingestion_relations_router)
 api_router.include_router(ingestion_search_router)
 api_router.include_router(ingestion_image_blob_router)
 api_router.include_router(trusted_hosts_router)
+api_router.include_router(tasks_router)
+api_router.include_router(policy_decisions_router)
 api_router.include_router(proxy_router)
 # JWKS (RFC 7517) public key endpoint for cross-service JWT verification.
 # Mounted at the application level so it sits at /.well-known/jwks.json
