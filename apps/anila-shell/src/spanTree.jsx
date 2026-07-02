@@ -16,6 +16,8 @@
 
 import React, { useState } from "react";
 
+import { fetchTrace as defaultFetchTrace } from "./runtime/traces.js";
+
 
 /**
  * Render a span tree alongside an assistant message. Returns nothing
@@ -273,4 +275,208 @@ export function isDevModeEnabled() {
     // ignore — non-vite env
   }
   return false;
+}
+
+
+// ---------------------------------------------------------------------
+// Slice 4d — flat persisted trace → SpanTreeViewer tree shape.
+// ---------------------------------------------------------------------
+
+/**
+ * Parse a span timestamp — ISO-8601 string per the Trace Span Schema, or a
+ * numeric epoch — into milliseconds. Returns null when unparseable.
+ */
+function toMillis(value) {
+  if (value == null) return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+
+function spanDurationMs(span) {
+  const start = toMillis(span.started_at);
+  const end = toMillis(span.ended_at);
+  if (start == null || end == null) return null;
+  const delta = end - start;
+  return delta >= 0 ? delta : null;
+}
+
+
+function spanError(span, attributes) {
+  if (span.status !== "error" || !attributes) return null;
+  const candidate =
+    attributes.error || attributes.error_message || attributes["exception.message"];
+  return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
+}
+
+
+function toTreeNode(span) {
+  const attributes =
+    span.attributes && typeof span.attributes === "object" ? span.attributes : undefined;
+  const node = {
+    span_id: span.span_id,
+    name: span.name,
+    kind: span.span_type,
+    status: span.status || "unset",
+    children: [],
+  };
+  const durationMs = spanDurationMs(span);
+  if (durationMs != null) node.duration_ms = durationMs;
+  if (attributes) node.attributes = attributes;
+  const error = spanError(span, attributes);
+  if (error) node.error = error;
+  return node;
+}
+
+
+/**
+ * Convert a flat, backend-shaped span list
+ * (`{span_id, parent_span_id, span_type, name, started_at, ended_at,
+ *   status, attributes, producer}`) into the recursive tree shape that
+ * `SpanTreeViewer` renders (`{span_id, name, kind, status, duration_ms,
+ *  attributes, error?, children:[...]}`).
+ *
+ * Rules:
+ *   * ordering — stable, ascending by `started_at`; undated spans keep
+ *     their input order and sort last.
+ *   * orphan parents — a span whose `parent_span_id` points at a span not
+ *     present in the list is promoted to a root (never dropped).
+ *   * a span with no `parent_span_id` (or self-referential) is a root.
+ *
+ * Pure — no side effects. Safe on non-arrays (returns []).
+ *
+ * @param {Array<object>} spans
+ * @returns {Array<object>} top-level tree nodes
+ */
+export function spansToTree(spans) {
+  if (!Array.isArray(spans) || spans.length === 0) return [];
+
+  // Stable sort by started_at; unparseable timestamps sort last but keep
+  // their relative input order (index tiebreak).
+  const ordered = spans
+    .map((span, index) => ({ span, index }))
+    .sort((a, b) => {
+      const ka = toMillis(a.span?.started_at);
+      const kb = toMillis(b.span?.started_at);
+      if (ka == null && kb == null) return a.index - b.index;
+      if (ka == null) return 1;
+      if (kb == null) return -1;
+      if (ka !== kb) return ka - kb;
+      return a.index - b.index;
+    })
+    .map((entry) => entry.span);
+
+  const nodeById = new Map();
+  for (const span of ordered) {
+    if (span == null || span.span_id == null) continue;
+    nodeById.set(span.span_id, toTreeNode(span));
+  }
+
+  const roots = [];
+  for (const span of ordered) {
+    if (span == null || span.span_id == null) continue;
+    const node = nodeById.get(span.span_id);
+    const parentId = span.parent_span_id;
+    const parent =
+      parentId != null && parentId !== span.span_id ? nodeById.get(parentId) : null;
+    if (parent) {
+      parent.children.push(node);
+    } else {
+      // No parent, self-parent, or orphan (parent not in list) → root.
+      roots.push(node);
+    }
+  }
+  return roots;
+}
+
+
+/**
+ * Slice 4d — Trace Explorer affordance.
+ *
+ * Renders a 「檢視軌跡」 control for a conversation that owns a
+ * `taskTraceId`. On click it fetches the persisted trace, converts the
+ * flat span list into the tree `SpanTreeViewer` renders, and shows it.
+ * If live `anila.spans` already streamed a flat span list into the active
+ * message, pass it as `liveSpans` — it renders immediately and is REPLACED
+ * (simple swap, no merge) by the persisted spans on click.
+ *
+ * Failure / 404 / empty → inline muted 「尚無軌跡資料」 notice; never throws.
+ *
+ * @param {object} props
+ * @param {string|null} [props.traceId] - the conversation's taskTraceId
+ * @param {Array<object>|null} [props.liveSpans] - flat spans from live SSE
+ * @param {(id: string) => Promise<{spans: Array<object>}|null>} [props.fetchTrace]
+ */
+export function TraceExplorer({ traceId, liveSpans = null, fetchTrace = defaultFetchTrace }) {
+  const [tree, setTree] = useState(() =>
+    Array.isArray(liveSpans) ? spansToTree(liveSpans) : [],
+  );
+  const [status, setStatus] = useState("idle"); // idle | loading | ready | empty
+  const [loading, setLoading] = useState(false);
+
+  if (!traceId) return null;
+
+  async function loadPersisted() {
+    if (loading) return;
+    setLoading(true);
+    let data = null;
+    try {
+      data = await fetchTrace(traceId);
+    } finally {
+      setLoading(false);
+    }
+    const spans = data && Array.isArray(data.spans) ? data.spans : null;
+    if (!spans || spans.length === 0) {
+      setTree([]);
+      setStatus("empty");
+      return;
+    }
+    setTree(spansToTree(spans));
+    setStatus("ready");
+  }
+
+  const hasTree = Array.isArray(tree) && tree.length > 0;
+
+  return (
+    <div style={{ margin: "8px 0" }}>
+      <button
+        type="button"
+        onClick={loadPersisted}
+        disabled={loading}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "4px 9px",
+          background: "var(--bg-subtle)",
+          border: "1px solid var(--border)",
+          borderRadius: 999,
+          fontSize: 11,
+          color: "var(--fg-muted)",
+          fontFamily: "var(--font-mono)",
+          cursor: loading ? "default" : "pointer",
+        }}
+      >
+        🔍 {loading ? "載入軌跡中…" : "檢視軌跡"}
+      </button>
+      {status === "empty" && !hasTree && (
+        <div
+          style={{
+            marginTop: 6,
+            fontSize: 11,
+            color: "var(--fg-muted)",
+            fontFamily: "var(--font-mono)",
+          }}
+        >
+          尚無軌跡資料
+        </div>
+      )}
+      {hasTree && (
+        <div style={{ marginTop: 4 }}>
+          <SpanTreeViewer tree={tree} devOnly={false} />
+        </div>
+      )}
+    </div>
+  );
 }

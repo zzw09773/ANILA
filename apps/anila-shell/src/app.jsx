@@ -105,6 +105,7 @@ import { HandoffMenu, ShareDialog } from "./collab.jsx";
 import { TweaksPanel } from "./tweaks.jsx";
 import { ChangelogModal, CHANGELOG_VERSION } from "./changelog.jsx";
 import { BannerBar } from "./banners.jsx";
+import { TraceExplorer } from "./spanTree.jsx";
 
 // ---- Router pseudo-agent ----------------------------------------------------
 const ROUTER_AGENT = Object.freeze({
@@ -2140,6 +2141,17 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                           onContinue={continueMessage}
                         />
                       ))
+                    )}
+                    {/* Slice 4d — Trace Explorer:對話有 taskTraceId 時提供
+                        「檢視軌跡」,取持久化 trace 並以 SpanTreeViewer 呈現。
+                        live anila.spans(若已串入最新訊息)先顯示,點擊後被
+                        持久化 spans 取代(simple replace)。 */}
+                    {selectedConv?.taskTraceId && (
+                      <TraceExplorer
+                        key={selectedConv.taskTraceId}
+                        traceId={selectedConv.taskTraceId}
+                        liveSpans={latestAssistantMessage?.spans || null}
+                      />
                     )}
                   </div>
                 </div>
