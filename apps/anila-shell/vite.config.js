@@ -10,6 +10,16 @@ const base = (rawBase.startsWith("/") ? rawBase : `/${rawBase}`).replace(/\/?$/,
 export default defineConfig({
   base,
   plugins: [react()],
+  // Dev-only：本機開發時把控制面 (/api)、資料面 (/v1) 與嵌入 (/v2) 反向
+  // 代理到本機 CSP／mock 後端，做到同源請求（cookie + CSRF 自動帶）。
+  // 慣例對齊 csp-governance-ui/vite.config.js。僅影響 `vite dev`，不進 build。
+  server: {
+    proxy: {
+      "/api": { target: "http://localhost:8000", changeOrigin: true },
+      "/v1": { target: "http://localhost:8000", changeOrigin: true },
+      "/v2": { target: "http://localhost:8000", changeOrigin: true },
+    },
+  },
   test: {
     environment: "jsdom",
     setupFiles: "./vitest.setup.js",
