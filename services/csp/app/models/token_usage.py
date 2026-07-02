@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Index
+from sqlalchemy import Boolean, Column, Integer, String, DateTime, ForeignKey, Index
 from app.database import Base
 
 
@@ -50,6 +50,20 @@ class TokenUsage(Base):
         Integer, ForeignKey("service_clients.id", ondelete="SET NULL"), nullable=True
     )
 
+    # Slice 2b-C (migration r1_0002) — task linkage:
+    #   * ``task_id`` — set when the /v1 call carried a valid
+    #     X-ANILA-Task-Id; usage 歸戶到 task (doc 04 AC10). SET NULL keeps
+    #     the usage history when a task is deleted.
+    #   * ``legacy_runtime_call`` — true for /v1 chat calls WITHOUT a task
+    #     (doc 10 Slice 2 Done: 舊流量相容但標記). Non-chat writers
+    #     (embedding / judge / ingestion) stay false.
+    task_id = Column(
+        Integer, ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    legacy_runtime_call = Column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
     __table_args__ = (
         Index("idx_usage_user_time", "user_id", "request_timestamp"),
         Index("idx_usage_department_time", "department_id", "request_timestamp"),
@@ -68,5 +82,12 @@ class TokenUsage(Base):
             "idx_token_usage_caller_client",
             "caller_client_id",
             postgresql_where=caller_client_id.isnot(None),
+        ),
+        # Partial for the same reason as the caller_* indexes — legacy rows
+        # dominate and carry NULL task_id.
+        Index(
+            "ix_token_usage_task_id",
+            "task_id",
+            postgresql_where=task_id.isnot(None),
         ),
     )

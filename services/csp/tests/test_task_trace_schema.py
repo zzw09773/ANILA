@@ -12,7 +12,7 @@ agent span type,Slice 4 才收斂為封閉 enum)、09(span event schema)。
 - 唯一性:tasks.trace_id、trace_spans (trace_id, span_id)
 - 契約 enum:Task 狀態機 round-trip、PolicyDecision 九動作、決策三值
 - classification_level 新列預設 = 無機密
-- migration chain:恰好一個 alembic head,且為 r1_0001(純文字解析,免 DB)
+- migration chain:恰好一個 alembic head,且屬 r1_ 命名空間(純文字解析,免 DB)
 """
 
 from __future__ import annotations
@@ -388,7 +388,7 @@ class TestContracts:
 
 
 class TestMigrationChain:
-    def test_single_head_is_r1_0001(self):
+    def test_single_head_in_r1_namespace(self):
         versions = Path(__file__).resolve().parents[1] / "migrations" / "versions"
         revisions: dict[str, str] = {}
         down_revisions: set[str] = set()
@@ -408,4 +408,9 @@ class TestMigrationChain:
             if down and down.group(1):
                 down_revisions.add(down.group(1))
         heads = set(revisions) - down_revisions
-        assert heads == {"r1_0001"}, f"alembic head 應唯一且為 r1_0001,實得 {heads}"
+        # 不釘死特定 head id(每加一個 migration 就過期);守住兩個不變量:
+        # 恰一個 head + head 屬本分支 r1_ 命名空間(避免與 main 系撞號)。
+        assert len(heads) == 1, f"alembic head 應唯一,實得 {heads}"
+        assert next(iter(heads)).startswith("r1_"), (
+            f"head 應屬 r1_ 命名空間,實得 {heads}"
+        )

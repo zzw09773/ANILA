@@ -1,11 +1,66 @@
 """Usage serialization + token estimation helpers for the CSP proxy.
 
 Split verbatim out of ``app/services/proxy_service.py`` (Doc-10 Slice 1,
-behavior-preserving refactor).
+behavior-preserving refactor). Slice 2b-C adds the task-linked enqueue
+variant (``enqueue_usage_task_linked``).
 """
 import json
 import math
 import re
+from datetime import datetime, timezone
+
+
+async def enqueue_usage_task_linked(
+    api_key_id: int | None,
+    user_id: int,
+    department_id: int | None,
+    model_id: int,
+    prompt_tokens: int,
+    completion_tokens: int,
+    total_tokens: int,
+    request_duration_ms: int | None = None,
+    conversation_id: str | None = None,
+    trace_id: str | None = None,
+    request_type: str = "chat",
+    caller_agent_id: int | None = None,
+    caller_client_id: int | None = None,
+    task_id: int | None = None,
+    legacy_runtime_call: bool = False,
+):
+    """Task-aware variant of ``usage_writer.enqueue_usage`` (Slice 2b-C).
+
+    Mirrors the writer's payload shape field-for-field and rides the SAME
+    async queue / flush loop, adding the two task-link columns
+    (migration r1_0002):
+
+    - ``task_id`` — set when the /v1 call carried a valid
+      ``X-ANILA-Task-Id`` (usage 歸戶到 task, doc 04 AC10).
+    - ``legacy_runtime_call`` — true for /v1 chat calls WITHOUT a task
+      (doc 10 Slice 2 Done: 舊流量相容但標記).
+
+    Kept beside the proxy (not in ``usage_writer``) so the legacy enqueue
+    path — and every non-proxy caller of it — stays byte-identical.
+    """
+    from app.services.usage_writer import get_usage_queue
+
+    await get_usage_queue().put({
+        "api_key_id": api_key_id,
+        "user_id": user_id,
+        "department_id": department_id,
+        "model_id": model_id,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "request_timestamp": datetime.now(timezone.utc),
+        "request_duration_ms": request_duration_ms,
+        "conversation_id": conversation_id,
+        "trace_id": trace_id,
+        "request_type": request_type,
+        "caller_agent_id": caller_agent_id,
+        "caller_client_id": caller_client_id,
+        "task_id": task_id,
+        "legacy_runtime_call": bool(legacy_runtime_call),
+    })
 
 def _flatten_content(content) -> str:
     """Best-effort flattening of OpenAI-compatible message content."""

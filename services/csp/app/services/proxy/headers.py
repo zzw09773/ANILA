@@ -134,6 +134,8 @@ def build_agent_headers(
     user_email: Optional[str] = None,
     user_groups: Optional[str] = None,
     target_agent_id: Optional[int] = None,
+    task_id: Optional[str] = None,
+    trace_id: Optional[str] = None,
 ) -> dict:
     """Build service-credential + identity headers for downstream AGENTS.
 
@@ -148,6 +150,12 @@ def build_agent_headers(
     set, we prefer the per-agent token from ``agent_credentials``; falls
     back to the legacy env-var token when no DB credential exists yet.
 
+    Slice 2b-C (doc 05 §4 dispatch contract): ``task_id`` / ``trace_id``
+    ride as ``X-ANILA-Task-Id`` / ``X-ANILA-Trace-Id`` when the call
+    belongs to a Task; both come from the task row and are omitted for
+    legacy (task-less) traffic. AGENT dispatch only — doc 04 §3/AC5
+    forbids task/trace headers toward the model gateway.
+
     AGENTS ONLY. Never use this for the model gateway — it must not
     receive ``X-CSP-Service-Token`` (use ``build_model_gateway_headers``).
     """
@@ -161,6 +169,10 @@ def build_agent_headers(
         headers["X-ANILA-User-Email"] = user_email
     if user_groups:
         headers["X-ANILA-User-Groups"] = user_groups
+    if task_id:
+        headers["X-ANILA-Task-Id"] = str(task_id)
+    if trace_id:
+        headers["X-ANILA-Trace-Id"] = str(trace_id)
     return headers
 
 

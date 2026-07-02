@@ -23,11 +23,13 @@ from app.services.proxy.headers import (
     build_model_gateway_headers,
 )
 from app.services.proxy.sse import _aggregate_sse_to_chat_completion, _parse_sse_block
+from app.services.proxy.task_link import finalize_task_run
 from app.services.proxy.usage import (
     _estimate_token_count,
     _extract_response_text,
     _extract_stream_text,
     _serialize_request_for_usage,
+    enqueue_usage_task_linked,
 )
 from app.services.usage_writer import enqueue_usage
 
@@ -79,7 +81,7 @@ def build_default_anila_meta(
     }
 
 
-async def proxy_request(
+async def _proxy_request_impl(
     model: ModelRegistry,
     api_key_id: int,
     user_id: int,
@@ -94,6 +96,9 @@ async def proxy_request(
     target_agent_id: Optional[int] = None,
     caller_agent_id: Optional[int] = None,
     caller_client_id: Optional[int] = None,
+    task_id: Optional[int] = None,
+    task_trace_id: Optional[str] = None,
+    legacy_runtime_call: bool = False,
 ) -> dict:
     """Forward request to model backend with exponential backoff retry.
 
@@ -102,6 +107,12 @@ async def proxy_request(
     explicit ``X-Anila-Request-Type: judge`` header is set upstream, else
     'chat'. The classification rides into ``token_usage`` for split-by-kind
     dashboards.
+
+    Slice 2b-C: ``task_id`` / ``task_trace_id`` ride onto AGENT dispatch
+    headers only (doc 05 §4; doc 04 AC5 forbids them toward the model
+    gateway) and into the usage row; ``legacy_runtime_call`` marks task-less
+    /v1 chat traffic. Run finalization lives in the ``proxy_request``
+    wrapper.
     """
     timeout = _get_timeout(model.model_type)
     base_url = model.endpoint_url.rstrip("/")
@@ -140,9 +151,15 @@ async def proxy_request(
     # agent → full identity + token; model/embedding → 員編-only.
     if model.model_type == "agent":
         req_headers = build_agent_headers(
-            user_identity, user_email, target_agent_id=target_agent_id
+            user_identity,
+            user_email,
+            target_agent_id=target_agent_id,
+            task_id=task_id,
+            trace_id=task_trace_id,
         )
     else:
+        # Doc 04 §3/AC5: model gateway gets Bearer key + 員編 ONLY — no
+        # task / trace headers, structurally (builder has no such params).
         req_headers = build_model_gateway_headers(user_identity)
     # gateway key 只給 model 呼叫;agent dispatch (model_type='agent') 不帶。
     if model.model_type != "agent":
@@ -245,21 +262,43 @@ async def proxy_request(
             # Sprint 5 / Chunk W: ``request_type`` flows from the
             # endpoint-path classification at the top of this function so
             # embedding rows get tagged distinct from chat rows.
-            await enqueue_usage(
-                api_key_id=api_key_id,
-                user_id=user_id,
-                department_id=department_id,
-                model_id=model.id,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_tokens=total_tokens,
-                request_duration_ms=duration_ms,
-                conversation_id=conversation_id,
-                trace_id=trace_id,
-                request_type=request_type,
-                caller_agent_id=caller_agent_id,
-                caller_client_id=caller_client_id,
-            )
+            # Slice 2b-C: task-linked / legacy-marked /v1 chat rows go
+            # through the task-aware variant; every other caller keeps the
+            # byte-identical legacy enqueue path.
+            if task_id is not None or legacy_runtime_call:
+                await enqueue_usage_task_linked(
+                    api_key_id=api_key_id,
+                    user_id=user_id,
+                    department_id=department_id,
+                    model_id=model.id,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    request_duration_ms=duration_ms,
+                    conversation_id=conversation_id,
+                    trace_id=trace_id,
+                    request_type=request_type,
+                    caller_agent_id=caller_agent_id,
+                    caller_client_id=caller_client_id,
+                    task_id=task_id,
+                    legacy_runtime_call=legacy_runtime_call,
+                )
+            else:
+                await enqueue_usage(
+                    api_key_id=api_key_id,
+                    user_id=user_id,
+                    department_id=department_id,
+                    model_id=model.id,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    request_duration_ms=duration_ms,
+                    conversation_id=conversation_id,
+                    trace_id=trace_id,
+                    request_type=request_type,
+                    caller_agent_id=caller_agent_id,
+                    caller_client_id=caller_client_id,
+                )
 
             return result
 
@@ -302,7 +341,69 @@ async def proxy_request(
     )
 
 
-async def proxy_stream(
+async def proxy_request(
+    model: ModelRegistry,
+    api_key_id: int,
+    user_id: int,
+    department_id: int | None,
+    request_body: dict,
+    endpoint_path: str,
+    user_email: Optional[str] = None,
+    user_identity: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    trace_id: Optional[str] = None,
+    requires_encryption: bool = False,
+    target_agent_id: Optional[int] = None,
+    caller_agent_id: Optional[int] = None,
+    caller_client_id: Optional[int] = None,
+    task_id: Optional[int] = None,
+    task_trace_id: Optional[str] = None,
+    task_run_id: Optional[int] = None,
+    legacy_runtime_call: bool = False,
+) -> dict:
+    """Public entrypoint — ``_proxy_request_impl`` plus Slice 2b-C TaskRun
+    finalization: when the call belongs to a Task (``task_run_id`` set),
+    the run is marked completed on success / failed on any HTTP error
+    (including SSRF-guard rejections and exhausted retries). No-op — and
+    byte-identical behavior — for legacy task-less callers.
+    """
+    try:
+        result = await _proxy_request_impl(
+            model=model,
+            api_key_id=api_key_id,
+            user_id=user_id,
+            department_id=department_id,
+            request_body=request_body,
+            endpoint_path=endpoint_path,
+            user_email=user_email,
+            user_identity=user_identity,
+            conversation_id=conversation_id,
+            trace_id=trace_id,
+            requires_encryption=requires_encryption,
+            target_agent_id=target_agent_id,
+            caller_agent_id=caller_agent_id,
+            caller_client_id=caller_client_id,
+            task_id=task_id,
+            task_trace_id=task_trace_id,
+            legacy_runtime_call=legacy_runtime_call,
+        )
+    except HTTPException as exc:
+        if task_run_id is not None:
+            finalize_task_run(
+                task_run_id,
+                "failed",
+                error={
+                    "code": f"http_{exc.status_code}",
+                    "message": str(exc.detail),
+                },
+            )
+        raise
+    if task_run_id is not None:
+        finalize_task_run(task_run_id, "completed")
+    return result
+
+
+async def _proxy_stream_impl(
     target_url: str,
     api_key_id: int,
     user_id: int,
@@ -318,12 +419,20 @@ async def proxy_stream(
     target_agent_id: Optional[int] = None,
     caller_agent_id: Optional[int] = None,
     caller_client_id: Optional[int] = None,
+    task_id: Optional[int] = None,
+    task_trace_id: Optional[str] = None,
+    legacy_runtime_call: bool = False,
 ) -> AsyncIterator[str]:
     """Stream SSE response from a downstream backend through CSP proxy.
 
     Intercepts the final usage chunk to record token consumption, then
     forwards all SSE chunks verbatim to the caller. If usage is missing,
     performs a server-side token estimate from request/response text.
+
+    Slice 2b-C: ``task_id`` / ``task_trace_id`` ride onto AGENT dispatch
+    headers only (doc 05 §4; doc 04 AC5 forbids them toward the model
+    gateway) and into the usage row; ``legacy_runtime_call`` marks task-less
+    /v1 chat traffic. Run finalization lives in the ``proxy_stream`` wrapper.
     """
     # Call-time SSRF re-validation (TOCTOU / DNS-rebinding defense).
     _guard_outbound(target_url)
@@ -334,9 +443,15 @@ async def proxy_stream(
     # never receive the CSP service token.
     if target_agent_id is not None:
         headers = build_agent_headers(
-            user_identity, user_email, target_agent_id=target_agent_id
+            user_identity,
+            user_email,
+            target_agent_id=target_agent_id,
+            task_id=task_id,
+            trace_id=task_trace_id,
         )
     else:
+        # Doc 04 §3/AC5: model gateway gets Bearer key + 員編 ONLY — no
+        # task / trace headers, structurally (builder has no such params).
         headers = build_model_gateway_headers(user_identity)
     # gateway key 只給 model 串流;agent 串流 (target_agent_id 非 None) 不帶。
     if target_agent_id is None:
@@ -465,17 +580,104 @@ async def proxy_stream(
     if pending_done_block:
         yield pending_done_block
     if total_tokens > 0:
-        await enqueue_usage(
+        # Slice 2b-C: task-linked / legacy-marked /v1 chat rows go through
+        # the task-aware variant; every other caller keeps the
+        # byte-identical legacy enqueue path.
+        if task_id is not None or legacy_runtime_call:
+            await enqueue_usage_task_linked(
+                api_key_id=api_key_id,
+                user_id=user_id,
+                department_id=department_id,
+                model_id=usage_model_id,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                request_duration_ms=duration_ms,
+                conversation_id=conversation_id,
+                trace_id=trace_id,
+                caller_agent_id=caller_agent_id,
+                caller_client_id=caller_client_id,
+                task_id=task_id,
+                legacy_runtime_call=legacy_runtime_call,
+            )
+        else:
+            await enqueue_usage(
+                api_key_id=api_key_id,
+                user_id=user_id,
+                department_id=department_id,
+                model_id=usage_model_id,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                request_duration_ms=duration_ms,
+                conversation_id=conversation_id,
+                trace_id=trace_id,
+                caller_agent_id=caller_agent_id,
+                caller_client_id=caller_client_id,
+            )
+
+
+async def proxy_stream(
+    target_url: str,
+    api_key_id: int,
+    user_id: int,
+    department_id: int | None,
+    usage_model_id: int,
+    request_body: dict,
+    user_email: Optional[str] = None,
+    user_identity: Optional[str] = None,
+    model_name: str | None = None,
+    conversation_id: Optional[str] = None,
+    trace_id: Optional[str] = None,
+    requires_encryption: bool = False,
+    target_agent_id: Optional[int] = None,
+    caller_agent_id: Optional[int] = None,
+    caller_client_id: Optional[int] = None,
+    task_id: Optional[int] = None,
+    task_trace_id: Optional[str] = None,
+    task_run_id: Optional[int] = None,
+    legacy_runtime_call: bool = False,
+) -> AsyncIterator[str]:
+    """Public entrypoint — ``_proxy_stream_impl`` plus Slice 2b-C TaskRun
+    finalization. The stream drains AFTER the request handler returns, so
+    the terminal run state is recorded here: completed on normal
+    exhaustion, failed on HTTP errors / aborts (incl. client disconnects —
+    the ``finally`` runs on ``GeneratorExit`` too, so no run is left
+    dangling in ``running``). No-op — and byte-identical behavior — for
+    legacy task-less callers (``task_run_id is None``).
+    """
+    status = "completed"
+    error: dict | None = None
+    try:
+        async for chunk in _proxy_stream_impl(
+            target_url=target_url,
             api_key_id=api_key_id,
             user_id=user_id,
             department_id=department_id,
-            model_id=usage_model_id,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
-            request_duration_ms=duration_ms,
+            usage_model_id=usage_model_id,
+            request_body=request_body,
+            user_email=user_email,
+            user_identity=user_identity,
+            model_name=model_name,
             conversation_id=conversation_id,
             trace_id=trace_id,
+            requires_encryption=requires_encryption,
+            target_agent_id=target_agent_id,
             caller_agent_id=caller_agent_id,
             caller_client_id=caller_client_id,
-        )
+            task_id=task_id,
+            task_trace_id=task_trace_id,
+            legacy_runtime_call=legacy_runtime_call,
+        ):
+            yield chunk
+    except HTTPException as exc:
+        status = "failed"
+        error = {"code": f"http_{exc.status_code}", "message": str(exc.detail)}
+        raise
+    except BaseException as exc:  # GeneratorExit / CancelledError included
+        status = "failed"
+        error = {"code": "stream_aborted", "message": type(exc).__name__}
+        raise
+    finally:
+        if task_run_id is not None:
+            finalize_task_run(task_run_id, status, error=error)

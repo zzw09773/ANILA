@@ -15,6 +15,7 @@ from app.models.model_registry import ModelRegistry
 from app.services import memory_service
 from app.services.api_key_service import check_model_permission, check_agent_permission
 from app.services.auth_service import is_admin_tier
+from app.services.proxy.task_link import begin_task_run, finalize_task_run
 from app.services.proxy_service import (
     build_default_anila_meta,
     downstream_identity,
@@ -514,6 +515,21 @@ async def chat_completions(
                     "agent classification latch failed conv_id=%s",
                     conv_id_int,
                 )
+        # Slice 2b-C: optional X-ANILA-Task-Id — validate access, record
+        # the task.run PolicyDecision and open a TaskRun BEFORE dispatch.
+        # None → legacy traffic (usage row marked legacy_runtime_call).
+        task_ctx = begin_task_run(
+            db,
+            caller=caller,
+            request_headers=request.headers,
+            dispatch_target="agent",
+            resource_type="agent",
+            resource_id=str(agent.id),
+        )
+        # Usage attribution: inbound X-ANILA-Trace-Id wins (legacy
+        # contract); a task-linked call without one falls back to the
+        # task row's trace id (doc 04 AC10 歸戶).
+        usage_trace_id = trace_id or (task_ctx.trace_id if task_ctx else None)
         if stream:
             upstream = proxy_stream(
                 target_url=f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions",
@@ -526,7 +542,7 @@ async def chat_completions(
                 user_identity=user_identity,
                 model_name=agent.name,
                 conversation_id=conversation_id,
-                trace_id=trace_id,
+                trace_id=usage_trace_id,
                 requires_encryption=agent_requires_encryption,
                 # Sprint 8 X / Phase G — caller attribution.
                 #   target_agent_id  → proxy_service picks the per-agent
@@ -539,6 +555,11 @@ async def chat_completions(
                 #                      dashboards can rollup correctly.
                 target_agent_id=agent.id,
                 caller_agent_id=agent.id,
+                # Slice 2b-C — task linkage (headers + usage + run finish).
+                task_id=task_ctx.task_id if task_ctx else None,
+                task_trace_id=task_ctx.trace_id if task_ctx else None,
+                task_run_id=task_ctx.task_run_id if task_ctx else None,
+                legacy_runtime_call=task_ctx is None,
             )
             # Tee the SSE so we can capture the final assistant text and
             # schedule the memory writer once the stream drains.
@@ -573,7 +594,14 @@ async def chat_completions(
         # this branch is still TODO — non-streaming agent forwards don't
         # currently emit a token_usage row at all (orthogonal pre-existing
         # gap, tracked in Sprint 9 X follow-ups).
-        headers = build_agent_headers(user_identity, user_email, target_agent_id=agent.id)
+        headers = build_agent_headers(
+            user_identity,
+            user_email,
+            target_agent_id=agent.id,
+            # Slice 2b-C (doc 05 §4): task/trace ids ride on agent dispatch.
+            task_id=task_ctx.task_id if task_ctx else None,
+            trace_id=task_ctx.trace_id if task_ctx else None,
+        )
         started_at = time.time()
         try:
             async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
@@ -607,10 +635,29 @@ async def chat_completions(
                     assistant_message=assistant_text,
                     is_encrypted=agent_requires_encryption,
                 )
+                # Slice 2b-C: run finished. (This branch still writes no
+                # usage row — orthogonal pre-existing gap, see above.)
+                if task_ctx is not None:
+                    finalize_task_run(task_ctx.task_run_id, "completed")
                 return payload
         except httpx.HTTPStatusError as e:
+            if task_ctx is not None:
+                finalize_task_run(
+                    task_ctx.task_run_id,
+                    "failed",
+                    error={
+                        "code": f"http_{e.response.status_code}",
+                        "message": str(e),
+                    },
+                )
             raise _HTTPException(status_code=e.response.status_code, detail=str(e))
         except Exception as e:
+            if task_ctx is not None:
+                finalize_task_run(
+                    task_ctx.task_run_id,
+                    "failed",
+                    error={"code": "agent_call_failed", "message": str(e)},
+                )
             raise _HTTPException(status_code=502, detail=f"Agent 呼叫失敗: {e}")
 
     model = _resolve_model(db, caller, model_name)
@@ -621,6 +668,19 @@ async def chat_completions(
     # Inheritance: if memory injected encrypted material, latch this
     # direct-LLM call as encrypted too (matches agent path semantics).
     inherited_encryption = bool(memory_read and memory_read.encryption_inherited)
+    # Slice 2b-C: optional X-ANILA-Task-Id — same wiring as the agent
+    # branch, dispatch_target/resource_type = "model". Outbound headers to
+    # the model gateway stay minimal (doc 04 §3/AC5) — the task ids below
+    # only reach the usage row + run lifecycle, never the gateway headers.
+    task_ctx = begin_task_run(
+        db,
+        caller=caller,
+        request_headers=request.headers,
+        dispatch_target="model",
+        resource_type="model",
+        resource_id=str(model.id),
+    )
+    usage_trace_id = trace_id or (task_ctx.trace_id if task_ctx else None)
     if stream:
         target_url = (
             f"{model.endpoint_url.rstrip('/')}/v2/chat/completions"
@@ -638,8 +698,12 @@ async def chat_completions(
             user_identity=user_identity,
             model_name=model.name,
             conversation_id=conversation_id,
-            trace_id=trace_id,
+            trace_id=usage_trace_id,
             requires_encryption=inherited_encryption,
+            task_id=task_ctx.task_id if task_ctx else None,
+            task_trace_id=task_ctx.trace_id if task_ctx else None,
+            task_run_id=task_ctx.task_run_id if task_ctx else None,
+            legacy_runtime_call=task_ctx is None,
         )
         teed = _tee_stream_capture_assistant(
             upstream,
@@ -665,8 +729,12 @@ async def chat_completions(
         request_body=body,
         endpoint_path="/v1/chat/completions",
         conversation_id=conversation_id,
-        trace_id=trace_id,
+        trace_id=usage_trace_id,
         requires_encryption=inherited_encryption,
+        task_id=task_ctx.task_id if task_ctx else None,
+        task_trace_id=task_ctx.trace_id if task_ctx else None,
+        task_run_id=task_ctx.task_run_id if task_ctx else None,
+        legacy_runtime_call=task_ctx is None,
     )
     assistant_text = _extract_assistant_text(payload)
     _schedule_memory_write(
