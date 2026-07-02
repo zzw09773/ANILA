@@ -251,7 +251,7 @@ export const Modal = ({ open, onClose, title, subtitle, children, width = 480 })
       display: "flex", alignItems: "center", justifyContent: "center",
       padding: 20,
     }}>
-      <div ref={panelRef} role="dialog" aria-modal="true" aria-label={typeof title === "string" ? title : "對話框"} tabIndex={-1} onClick={e => e.stopPropagation()} style={{
+      <div ref={panelRef} role="dialog" aria-modal="true" aria-label={typeof title === "string" ? title : "對話方塊"} tabIndex={-1} onClick={e => e.stopPropagation()} style={{
         outline: "none",
         background: "var(--bg-elev)",
         border: "1px solid var(--border)",

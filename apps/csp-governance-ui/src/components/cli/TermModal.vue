@@ -9,7 +9,7 @@
     <transition name="term-modal">
       <div v-if="visible" class="term-modal" :class="{ 'term-modal--elevated': elevated }" @keydown.esc="onEscape" tabindex="-1" ref="root">
         <div class="term-modal__overlay" @click="onOverlay" />
-        <div class="term-modal__dialog" :style="dialogStyle" role="dialog" aria-modal="true" :aria-label="title || '對話框'">
+        <div class="term-modal__dialog" :style="dialogStyle" role="dialog" aria-modal="true" :aria-label="title || '對話方塊'">
           <header class="term-modal__head">
             <span class="term-modal__corner">┌</span>
             <span class="term-modal__title">{{ title }}</span>

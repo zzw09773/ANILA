@@ -14,7 +14,7 @@ interface ModalProps {
 const FOCUSABLE =
   'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])'
 
-export function Modal({ open, onClose, children, width = 460, ariaLabel = '對話框' }: ModalProps) {
+export function Modal({ open, onClose, children, width = 460, ariaLabel = '對話方塊' }: ModalProps) {
   const { theme, t } = useTheme()
   const panelRef = useRef<HTMLDivElement>(null)
 

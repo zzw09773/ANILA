@@ -2066,7 +2066,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
           </IconButton>
 
           {/* Sprint 7 X follow-up：API Key dropdown 已下線。SPA 用 cookie
-              流程，使用者沒有也不該管理 key；SDK 用戶仍可從 control
+              流程，使用者沒有也不該管理 key；SDK 使用者仍可從 control
               plane 取得 sk-* 並用 Authorization header 呼叫。 */}
 
           <IconButton title="重新載入 agent" onClick={() => void refreshAgents()} disabled={loadingAgents}>

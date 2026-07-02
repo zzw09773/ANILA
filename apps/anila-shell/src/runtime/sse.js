@@ -87,7 +87,7 @@ export async function streamChatCompletion({
 }) {
   // Sprint 7 X follow-up：SPA 完全走 httpOnly cookie + double-submit CSRF。
   // `apiKey` parameter 已移除，避免讓呼叫端誤以為前端可以管理 key（dead
-  // 路徑也是攻擊面）。SDK / curl 用戶請改打 ``apiKeyRequest`` 或自己組
+  // 路徑也是攻擊面）。SDK / curl 使用者請改打 ``apiKeyRequest`` 或自己組
   // Authorization header — 那不會經過此函式。
   const headers = { "Content-Type": "application/json" };
   if (typeof document !== "undefined") {

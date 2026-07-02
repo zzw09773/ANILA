@@ -391,7 +391,7 @@ def confirm_classification_authority(
     if row.granted_by_user_id == confirmer.id:
         raise HTTPException(
             status_code=403,
-            detail="登錄人不得確認自己登錄的權責指派(雙人控制)",
+            detail="建立權責指派者不得確認自己建立的指派(雙人控制)",
         )
     row.confirmed_by_user_id = confirmer.id
     row.is_active = True
