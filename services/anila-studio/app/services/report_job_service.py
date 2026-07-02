@@ -38,6 +38,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
+from app.config import settings
 from app.schemas.report import (
     JOB_STEP_DONE,
     JOB_STEP_QUEUED,
@@ -45,6 +46,8 @@ from app.schemas.report import (
     ReportPreset,
     ReportSpec,
 )
+from app.services import job_lifecycle
+from app.services.job_lifecycle import ArtifactInfo, JobReportContext
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +86,9 @@ class ReportJobRecord:
     download_urls: dict[str, str] | None
     created_at: datetime
     updated_at: datetime
+    # Slice 8b: control-plane passthrough, back-filled after artifact register.
+    artifact_id: str | None = None
+    classification_level: str | None = None
     # Loose handle to the spawned task — kept so cancel_job can call
     # task.cancel() without a separate side-table. Excluded from public
     # status views.
@@ -100,6 +106,8 @@ class ReportJobRecord:
             references_count=self.references_count,
             error=self.error,
             download_urls=self.download_urls,
+            artifact_id=self.artifact_id,
+            classification_level=self.classification_level,
             created_at=self.created_at,
             updated_at=self.updated_at,
         )
@@ -143,12 +151,16 @@ async def create_job(
     collection_id: int,
     preset: ReportPreset,
     runner: Callable[["ReportJobUpdater"], Awaitable[None]],
+    report_ctx: JobReportContext | None = None,
 ) -> ReportJobRecord:
     """Register a new report job and spawn its pipeline task.
 
     ``runner`` is the pipeline coroutine factory; it receives a
     ``ReportJobUpdater`` so it can push state transitions without
     depending on this module's private dict directly.
+
+    ``report_ctx`` (Slice 8b) carries durable persistence + CSP reporting
+    + trace spans; None skips that layer (the pipeline still runs).
 
     Returns the initial record (state="pending") so the endpoint can
     return its job_id immediately.
@@ -175,7 +187,9 @@ async def create_job(
         _jobs[job_id] = record
         _evict_user_overflow(user_id)
 
-    updater = ReportJobUpdater(job_id=job_id)
+    await job_lifecycle.on_create(record, report_ctx)
+
+    updater = ReportJobUpdater(job_id=job_id, ctx=report_ctx)
 
     async def _wrapped() -> None:
         try:
@@ -221,6 +235,32 @@ async def cancel_job(job_id: str, user_id: int) -> bool:
     return True
 
 
+def artifact_info(rec: ReportJobRecord) -> ArtifactInfo:
+    """Slice 8b describe hook — report primary output is the PDF on disk.
+
+    Reports write HTML/PDF/DOCX to ``{ARTIFACTS_DIR}/{job_id}.{fmt}``; the
+    PDF is the primary. Bytes live on disk (not in memory) so we skip the
+    content hash (``primary_bytes=None``) — hashing a multi-MB PDF is not
+    "cheap".
+    """
+    storage_ref = (
+        f"{settings.ARTIFACTS_DIR}/{rec.job_id}.pdf"
+        if rec.state == "done"
+        else None
+    )
+    return ArtifactInfo(
+        artifact_type="report",
+        title=rec.title,
+        storage_ref=storage_ref,
+        primary_bytes=None,
+        result_metadata={
+            "sections_count": rec.sections_count,
+            "references_count": rec.references_count,
+            "download_urls": rec.download_urls,
+        },
+    )
+
+
 # ── Updater (passed into the runner closure) ──────────────────────────────
 
 
@@ -232,8 +272,9 @@ class ReportJobUpdater:
     state.
     """
 
-    def __init__(self, job_id: str) -> None:
+    def __init__(self, job_id: str, ctx: JobReportContext | None = None) -> None:
         self._job_id = job_id
+        self._ctx = ctx
 
     @property
     def job_id(self) -> str:
@@ -252,6 +293,8 @@ class ReportJobUpdater:
         references_count: int | None = None,
         error: str | None = None,
         download_urls: dict[str, str] | None = None,
+        artifact_id: str | None = None,
+        classification_level: str | None = None,
     ) -> None:
         """Patch fields on the current record. Only specified fields are
         updated; pass None (the default) to leave a field as-is.
@@ -281,7 +324,13 @@ class ReportJobUpdater:
                 patch["error"] = error
             if download_urls is not None:
                 patch["download_urls"] = download_urls
-            _jobs[self._job_id] = replace(current, **patch)
+            if artifact_id is not None:
+                patch["artifact_id"] = artifact_id
+            if classification_level is not None:
+                patch["classification_level"] = classification_level
+            new_record = replace(current, **patch)
+            _jobs[self._job_id] = new_record
+        await job_lifecycle.on_transition(new_record, self._ctx, self)
 
     async def mark_done(
         self,

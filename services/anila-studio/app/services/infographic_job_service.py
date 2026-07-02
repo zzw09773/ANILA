@@ -34,6 +34,8 @@ from app.schemas.infographic import (
     JOB_STEP_DONE,
     JOB_STEP_QUEUED,
 )
+from app.services import job_lifecycle
+from app.services.job_lifecycle import ArtifactInfo, JobReportContext
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +66,9 @@ class InfographicJobRecord:
     pdf_path: str | None
     created_at: datetime
     updated_at: datetime
+    # Slice 8b: control-plane passthrough, back-filled after artifact register.
+    artifact_id: str | None = None
+    classification_level: str | None = None
     task: asyncio.Task[Any] | None = field(default=None, compare=False, repr=False)
 
     def to_status(self) -> InfographicJobStatus:
@@ -89,6 +94,8 @@ class InfographicJobRecord:
             chart_count=self.chart_count,
             error=self.error,
             download_urls=download_urls,
+            artifact_id=self.artifact_id,
+            classification_level=self.classification_level,
             created_at=self.created_at,
             updated_at=self.updated_at,
         )
@@ -132,8 +139,13 @@ async def create_job(
     collection_id: int,
     preset: InfographicPreset,
     runner: Callable[["InfographicJobUpdater"], Awaitable[None]],
+    report_ctx: JobReportContext | None = None,
 ) -> InfographicJobRecord:
-    """Register a new infographic job and spawn its pipeline task."""
+    """Register a new infographic job and spawn its pipeline task.
+
+    ``report_ctx`` (Slice 8b) carries durable persistence + CSP reporting
+    + trace spans; None skips that layer (the pipeline still runs).
+    """
     async with _lock:
         _prune_stale()
         job_id = _new_job_id()
@@ -156,7 +168,9 @@ async def create_job(
         _jobs[job_id] = record
         _evict_user_overflow(user_id)
 
-    updater = InfographicJobUpdater(job_id=job_id)
+    await job_lifecycle.on_create(record, report_ctx)
+
+    updater = InfographicJobUpdater(job_id=job_id, ctx=report_ctx)
 
     async def _wrapped() -> None:
         try:
@@ -225,6 +239,22 @@ async def delete_job(job_id: str, user_id: int) -> bool:
     return True
 
 
+def artifact_info(rec: InfographicJobRecord) -> ArtifactInfo:
+    """Slice 8b describe hook — infographic primary output is the PDF.
+
+    HTML + PDF land on disk under ARTIFACTS_DIR; the PDF is the primary
+    downloadable. Bytes live on disk (not memory) so the content hash is
+    skipped (not "cheap").
+    """
+    return ArtifactInfo(
+        artifact_type="infographic",
+        title=rec.title,
+        storage_ref=rec.pdf_path or rec.html_path,
+        primary_bytes=None,
+        result_metadata={"chart_count": rec.chart_count},
+    )
+
+
 # ── Updater ────────────────────────────────────────────────────────────────
 
 
@@ -236,8 +266,9 @@ class InfographicJobUpdater:
     so readers never observe a torn write.
     """
 
-    def __init__(self, job_id: str) -> None:
+    def __init__(self, job_id: str, ctx: JobReportContext | None = None) -> None:
         self._job_id = job_id
+        self._ctx = ctx
 
     @property
     def job_id(self) -> str:
@@ -253,6 +284,8 @@ class InfographicJobUpdater:
         error: str | None = None,
         html_path: str | None = None,
         pdf_path: str | None = None,
+        artifact_id: str | None = None,
+        classification_level: str | None = None,
     ) -> None:
         async with _lock:
             current = _jobs.get(self._job_id)
@@ -273,7 +306,13 @@ class InfographicJobUpdater:
                 patch["html_path"] = html_path
             if pdf_path is not None:
                 patch["pdf_path"] = pdf_path
-            _jobs[self._job_id] = replace(current, **patch)
+            if artifact_id is not None:
+                patch["artifact_id"] = artifact_id
+            if classification_level is not None:
+                patch["classification_level"] = classification_level
+            new_record = replace(current, **patch)
+            _jobs[self._job_id] = new_record
+        await job_lifecycle.on_transition(new_record, self._ctx, self)
 
     async def mark_done(
         self,

@@ -87,7 +87,7 @@
           "Studio / Slides"
         ],
         "summary": "Get Slides Job",
-        "description": "Cheap polling endpoint. Returns the current JobStatus or 404.",
+        "description": "Cheap polling endpoint. Returns the current JobStatus or 404.\n\nRead-through: if the in-memory record is gone (studio restarted, or\nthe job was evicted from the cache) we fall back to the durable job\nstore so a pre-restart job can still answer status queries.",
         "operationId": "get_slides_job_api_studio_slides_jobs__job_id__get",
         "parameters": [
           {
@@ -375,7 +375,7 @@
           "Studio / Reports"
         ],
         "summary": "Get Report Job",
-        "description": "Cheap polling endpoint. Returns the current status or 404.\n\n404 covers both \"doesn't exist\" and \"exists but belongs to someone\nelse\" — never leak cross-user existence.",
+        "description": "Cheap polling endpoint. Returns the current status or 404.\n\n404 covers both \"doesn't exist\" and \"exists but belongs to someone\nelse\" — never leak cross-user existence. Read-through to the durable\njob store when the in-memory record is gone (studio restart / eviction).",
         "operationId": "get_report_job_api_reports_jobs__job_id__get",
         "parameters": [
           {
@@ -682,7 +682,7 @@
           "Studio / Mindmaps"
         ],
         "summary": "Get Mindmap Job",
-        "description": "Cheap polling endpoint. Returns the current MindmapJobStatus or 404.",
+        "description": "Cheap polling endpoint. Returns the current MindmapJobStatus or 404.\n\nRead-through to the durable job store when the in-memory record is\ngone (studio restart / eviction).",
         "operationId": "get_mindmap_job_api_mindmaps_jobs__job_id__get",
         "parameters": [
           {
@@ -1280,7 +1280,7 @@
           "datatables"
         ],
         "summary": "Get Datatable Job",
-        "description": "Polling endpoint — returns the current DatatableJobStatus or 404.\n\nCross-user access returns 404 (NOT 403) so the existence of a job\ndoesn't leak via status code differentiation.",
+        "description": "Polling endpoint — returns the current DatatableJobStatus or 404.\n\nCross-user access returns 404 (NOT 403) so the existence of a job\ndoesn't leak via status code differentiation. Read-through to the\ndurable job store when the in-memory record is gone (restart / eviction).",
         "operationId": "get_datatable_job_api_datatables_jobs__job_id__get",
         "parameters": [
           {
@@ -1613,6 +1613,28 @@
             ],
             "title": "Download Urls"
           },
+          "artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Id"
+          },
+          "classification_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classification Level"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -1717,6 +1739,42 @@
             "minimum": 1.0,
             "title": "Top K",
             "default": 15
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "source_snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Snapshot Id"
+          },
+          "trace_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Id"
           }
         },
         "type": "object",
@@ -1781,6 +1839,42 @@
             "minimum": 1.0,
             "title": "Top K",
             "default": 12
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "source_snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Snapshot Id"
+          },
+          "trace_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Id"
           }
         },
         "type": "object",
@@ -1851,6 +1945,42 @@
             "minimum": 1.0,
             "title": "Top K",
             "default": 8
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "source_snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Snapshot Id"
+          },
+          "trace_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Id"
           }
         },
         "type": "object",
@@ -1905,6 +2035,42 @@
             "minimum": 1.0,
             "title": "Top K",
             "default": 12
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "source_snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Snapshot Id"
+          },
+          "trace_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Id"
           }
         },
         "type": "object",
@@ -1944,6 +2110,42 @@
             "type": "boolean",
             "title": "Skip Retrieval",
             "default": false
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "source_snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Snapshot Id"
+          },
+          "trace_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Id"
           },
           "theme_override": {
             "anyOf": [
@@ -2071,6 +2273,28 @@
             ],
             "title": "Download Urls"
           },
+          "artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Id"
+          },
+          "classification_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classification Level"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -2169,6 +2393,28 @@
               }
             ],
             "title": "Error"
+          },
+          "artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Id"
+          },
+          "classification_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classification Level"
           },
           "created_at": {
             "type": "string",
@@ -2273,6 +2519,28 @@
               }
             ],
             "title": "Download Urls"
+          },
+          "artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Id"
+          },
+          "classification_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classification Level"
           },
           "created_at": {
             "type": "string",
@@ -2402,6 +2670,28 @@
             ],
             "title": "Download Urls",
             "description": "{'html': ..., 'pdf': ..., 'docx': ...} — relative API paths, not absolute URLs. Frontend axios prepends its base URL."
+          },
+          "artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Id"
+          },
+          "classification_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classification Level"
           },
           "created_at": {
             "type": "string",

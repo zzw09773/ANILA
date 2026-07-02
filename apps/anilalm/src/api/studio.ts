@@ -1,6 +1,23 @@
 import { useAuthStore } from '../store/auth'
 import { STUDIO_BASE_URL } from './client'
+import type { TaskBinding } from './tasks'
 import type { components } from './studio-types.gen'
+
+// Slice 8b: optional CSP task binding threaded into every studio job body.
+// The generated schema now carries the matching optional fields, so these
+// are type-safe passthroughs; omitting the binding sends no keys (undefined
+// → JSON.stringify drops them).
+function bindingFields(binding?: TaskBinding): {
+  task_id?: string
+  source_snapshot_id?: string
+  trace_id?: string
+} {
+  return {
+    task_id: binding?.taskId,
+    source_snapshot_id: binding?.sourceSnapshotId,
+    trace_id: binding?.traceId,
+  }
+}
 
 // Studio (anila-studio) endpoints — job-based async pipeline.
 //
@@ -73,6 +90,8 @@ export interface CreateSlidesJobInput {
    * warm_journal | executive_brief | startup_pitch.
    */
   themeOverride?: GenerateSpecRequest['theme_override']
+  /** Slice 8b: optional CSP task binding for governance reporting. */
+  binding?: TaskBinding
 }
 
 const PPTX_MIME =
@@ -146,6 +165,7 @@ export async function createSlidesJob(
     extra_instructions: input.extraInstructions,
     skip_retrieval: input.skipRetrieval ?? false,
     theme_override: input.themeOverride, // undefined → JSON omits the key
+    ...bindingFields(input.binding),
   }
   const res = await studioFetch(studioUrl('/api/studio/slides/jobs'), {
     method: 'POST',
@@ -414,6 +434,8 @@ export interface CreateReportJobInput {
   extraInstructions?: string
   documentIds?: number[]
   topK?: number
+  /** Slice 8b: optional CSP task binding for governance reporting. */
+  binding?: TaskBinding
 }
 
 export type ReportJobStatus = components['schemas']['ReportJobStatus']
@@ -427,6 +449,7 @@ export async function createReportJob(
     extra_instructions: input.extraInstructions,
     document_ids: input.documentIds,
     top_k: input.topK ?? 12,
+    ...bindingFields(input.binding),
   })
 }
 
@@ -452,6 +475,8 @@ export interface CreateMindmapJobInput {
   documentIds?: number[]
   maxDepth?: number
   topK?: number
+  /** Slice 8b: optional CSP task binding for governance reporting. */
+  binding?: TaskBinding
 }
 
 export type MindmapJobStatus = components['schemas']['MindmapJobStatus']
@@ -467,6 +492,7 @@ export async function createMindmapJob(
     document_ids: input.documentIds,
     max_depth: input.maxDepth ?? 3,
     top_k: input.topK ?? 8,
+    ...bindingFields(input.binding),
   })
 }
 
@@ -491,6 +517,8 @@ export interface CreateInfographicJobInput {
   extraInstructions?: string
   documentIds?: number[]
   topK?: number
+  /** Slice 8b: optional CSP task binding for governance reporting. */
+  binding?: TaskBinding
 }
 
 export type InfographicJobStatus = components['schemas']['InfographicJobStatus']
@@ -505,6 +533,7 @@ export async function createInfographicJob(
     extra_instructions: input.extraInstructions,
     document_ids: input.documentIds,
     top_k: input.topK ?? 12,
+    ...bindingFields(input.binding),
   })
 }
 
@@ -530,6 +559,8 @@ export interface CreateDatatableJobInput {
   documentIds?: number[]
   targetColumns?: string[]
   topK?: number
+  /** Slice 8b: optional CSP task binding for governance reporting. */
+  binding?: TaskBinding
 }
 
 export type DatatableJobStatus = components['schemas']['DatatableJobStatus']
@@ -545,6 +576,7 @@ export async function createDatatableJob(
     document_ids: input.documentIds,
     target_columns: input.targetColumns,
     top_k: input.topK ?? 15,
+    ...bindingFields(input.binding),
   })
 }
 

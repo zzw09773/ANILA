@@ -30,6 +30,7 @@ from app.api.infographics import router as infographics_router
 from app.api.datatables import router as datatables_router
 from app.config import settings
 from app.services import jwks_client, revocation_cache as revocation_cache_mod
+from app.services.job_store import get_job_store
 
 
 logger = logging.getLogger(__name__)
@@ -47,11 +48,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await jwks_client.start(app)
     revocation_cache = revocation_cache_mod.get_revocation_cache()
     await revocation_cache.start(app)
+    # Durable job store (Slice 8b) — best-effort: a Redis outage degrades
+    # jobs to in-memory only (restart-survival lost) but does NOT block
+    # startup, unlike the revocation cache which is fail-closed.
+    job_store = get_job_store()
+    await job_store.start(app)
     logger.info("[%s] startup complete; serving traffic", settings.APP_NAME)
     try:
         yield
     finally:
         logger.info("[%s] shutdown: stopping background tasks", settings.APP_NAME)
+        await job_store.stop(app)
         await revocation_cache.stop(app)
         await jwks_client.stop(app)
         logger.info("[%s] shutdown complete", settings.APP_NAME)

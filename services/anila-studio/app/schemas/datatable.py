@@ -195,6 +195,10 @@ class GenerateDatatableRequest(BaseModel):
         ),
     )
     top_k: int = Field(default=15, ge=1, le=40)
+    # Slice 8b: optional ALM task binding (governance passthrough only).
+    task_id: str | None = Field(default=None, max_length=64)
+    source_snapshot_id: str | None = Field(default=None, max_length=64)
+    trace_id: str | None = Field(default=None, max_length=64)
 
 
 class DatatableJobStatus(BaseModel):
@@ -213,6 +217,9 @@ class DatatableJobStatus(BaseModel):
     #   "csv"  → /api/datatables/jobs/{id}/download/csv
     #   "xlsx" → /api/datatables/jobs/{id}/download/xlsx
     download_urls: dict[str, str] | None = None
+    # Slice 8b: CSP artifact passthrough — set once the artifact registers.
+    artifact_id: str | None = None
+    classification_level: str | None = None
     created_at: datetime
     updated_at: datetime
 

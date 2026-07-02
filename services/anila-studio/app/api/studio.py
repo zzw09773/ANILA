@@ -88,6 +88,7 @@ from app.schemas.studio import (
     SlidesSpec,
     VisualDefect,
 )
+from app.services import job_lifecycle
 from app.services import studio_job_service as jobs
 from app.services.llm_json import (
     extract_json_object as _extract_json_object,
@@ -795,10 +796,22 @@ async def create_slides_job(
             identity=identity, bearer=bearer, payload=payload, updater=updater,
         )
 
+    report_ctx = job_lifecycle.make_context(
+        artifact_type="slides",
+        owner_user_id=identity.id,
+        requester=identity.username or str(identity.id),
+        bearer=bearer,
+        collection_id=payload.collection_id,
+        describe=jobs.artifact_info,
+        task_id=payload.task_id,
+        source_snapshot_id=payload.source_snapshot_id,
+        trace_id=payload.trace_id,
+    )
     record = await jobs.create_job(
         user_id=identity.id,
         collection_id=payload.collection_id,
         runner=_runner,
+        report_ctx=report_ctx,
     )
     return record.to_status()
 
@@ -807,17 +820,25 @@ async def create_slides_job(
 async def get_slides_job(
     job_id: str,
     identity: CurrentUserIdentity = Depends(get_current_user_identity),
-) -> JobStatus:
-    """Cheap polling endpoint. Returns the current JobStatus or 404."""
+) -> JobStatus | dict:
+    """Cheap polling endpoint. Returns the current JobStatus or 404.
+
+    Read-through: if the in-memory record is gone (studio restarted, or
+    the job was evicted from the cache) we fall back to the durable job
+    store so a pre-restart job can still answer status queries.
+    """
     rec = jobs.get_user_job(job_id, identity.id)
-    if rec is None:
-        # 404 covers both "doesn't exist" and "exists but belongs to
-        # someone else" — the latter must NEVER leak to a different user.
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Job not found (unknown id, evicted, or not yours).",
-        )
-    return rec.to_status()
+    if rec is not None:
+        return rec.to_status()
+    persisted = await job_lifecycle.read_status(job_id, identity.id)
+    if persisted is not None:
+        return persisted
+    # 404 covers both "doesn't exist" and "exists but belongs to
+    # someone else" — the latter must NEVER leak to a different user.
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Job not found (unknown id, evicted, or not yours).",
+    )
 
 
 @router.get(

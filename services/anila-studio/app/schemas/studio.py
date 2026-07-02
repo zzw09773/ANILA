@@ -445,6 +445,14 @@ class GenerateSpecRequest(BaseModel):
     # Knob to skip retrieval entirely if the user explicitly wants
     # "just use general knowledge". Default false (always retrieve).
     skip_retrieval: bool = False
+    # ── Slice 8b: optional ALM task binding ──
+    # ALM creates a CSP Task before launching generation and threads its
+    # ids here so studio can report the artifact-job / artifact / trace
+    # against the right task. All optional and purely for governance
+    # passthrough — omitting them never changes generation behaviour.
+    task_id: str | None = Field(default=None, max_length=64)
+    source_snapshot_id: str | None = Field(default=None, max_length=64)
+    trace_id: str | None = Field(default=None, max_length=64)
     # Round 3 Patch P: API-side bypass of LLM theme selection.
     # When set to a valid THEMES value, the pipeline overwrites
     # spec.theme with this value AFTER Pydantic validation but BEFORE
@@ -554,6 +562,10 @@ class JobStatus(BaseModel):
     # Failure mode — only populated on state="failed". Plain string,
     # already user-safe (no traceback bytes).
     error: str | None = None
+    # Slice 8b: control-plane passthrough — populated once the produced
+    # artifact is registered on CSP (POST /v1/artifacts). Absent until then.
+    artifact_id: str | None = None
+    classification_level: str | None = None
     # ISO 8601 timestamps so the UI can show "鑄造中 1m 30s" style age.
     created_at: str
     updated_at: str

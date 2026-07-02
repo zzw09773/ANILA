@@ -66,6 +66,7 @@ from app.schemas.datatable import (
     GenerateDatatableRequest,
 )
 from app.services import datatable_job_service as jobs
+from app.services import job_lifecycle
 from app.services.datatable_exporter import to_csv, to_html, to_xlsx
 from app.services.llm_json import (
     extract_json_object as _extract_json_object,
@@ -577,10 +578,22 @@ async def create_datatable_job(
     async def _runner(updater: jobs.DatatableJobUpdater) -> None:
         await _run_pipeline(bearer=bearer, payload=payload, updater=updater)
 
+    report_ctx = job_lifecycle.make_context(
+        artifact_type="datatable",
+        owner_user_id=identity.id,
+        requester=identity.username or str(identity.id),
+        bearer=bearer,
+        collection_id=payload.collection_id,
+        describe=jobs.artifact_info,
+        task_id=payload.task_id,
+        source_snapshot_id=payload.source_snapshot_id,
+        trace_id=payload.trace_id,
+    )
     record = await jobs.create_job(
         user_id=identity.id,
         collection_id=payload.collection_id,
         runner=_runner,
+        report_ctx=report_ctx,
     )
     return record.to_status()
 
@@ -589,19 +602,23 @@ async def create_datatable_job(
 async def get_datatable_job(
     job_id: str,
     identity: CurrentUserIdentity = Depends(get_current_user_identity),
-) -> DatatableJobStatus:
+) -> DatatableJobStatus | dict:
     """Polling endpoint — returns the current DatatableJobStatus or 404.
 
     Cross-user access returns 404 (NOT 403) so the existence of a job
-    doesn't leak via status code differentiation.
+    doesn't leak via status code differentiation. Read-through to the
+    durable job store when the in-memory record is gone (restart / eviction).
     """
     rec = jobs.get_user_job(job_id, identity.id)
-    if rec is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Job not found (unknown id, evicted, or not yours).",
-        )
-    return rec.to_status()
+    if rec is not None:
+        return rec.to_status()
+    persisted = await job_lifecycle.read_status(job_id, identity.id)
+    if persisted is not None:
+        return persisted
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Job not found (unknown id, evicted, or not yours).",
+    )
 
 
 @router.get("/jobs/{job_id}/download/{fmt}")

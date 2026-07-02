@@ -24,7 +24,10 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
+from app.config import settings
 from app.schemas.mindmap import MindmapJobStatus, MindmapPreset
+from app.services import job_lifecycle
+from app.services.job_lifecycle import ArtifactInfo, JobReportContext
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +84,9 @@ class MindmapJobRecord:
     dot_source: str | None
     created_at: datetime
     updated_at: datetime
+    # Slice 8b: control-plane passthrough, back-filled after artifact register.
+    artifact_id: str | None = None
+    classification_level: str | None = None
     task: asyncio.Task[Any] | None = field(default=None, compare=False, repr=False)
 
     def to_status(self) -> MindmapJobStatus:
@@ -106,6 +112,8 @@ class MindmapJobRecord:
             node_count=self.node_count,
             error=self.error,
             download_urls=download_urls,
+            artifact_id=self.artifact_id,
+            classification_level=self.classification_level,
             created_at=self.created_at,
             updated_at=self.updated_at,
         )
@@ -152,8 +160,12 @@ async def create_job(
     collection_id: int,
     preset: MindmapPreset,
     runner: Callable[["MindmapJobUpdater"], Awaitable[None]],
+    report_ctx: JobReportContext | None = None,
 ) -> MindmapJobRecord:
     """Register a new mindmap job and spawn its pipeline task.
+
+    ``report_ctx`` (Slice 8b) carries durable persistence + CSP reporting
+    + trace spans; None skips that layer (the pipeline still runs).
 
     Returns the initial record (state="pending") so the endpoint can
     return its job_id to the SPA immediately; the real work runs on the
@@ -181,7 +193,9 @@ async def create_job(
         _jobs[job_id] = record
         _evict_user_overflow(user_id)
 
-    updater = MindmapJobUpdater(job_id=job_id)
+    await job_lifecycle.on_create(record, report_ctx)
+
+    updater = MindmapJobUpdater(job_id=job_id, ctx=report_ctx)
 
     async def _wrapped() -> None:
         try:
@@ -236,6 +250,26 @@ def _reset_for_tests() -> None:
     _jobs.clear()
 
 
+def artifact_info(rec: MindmapJobRecord) -> ArtifactInfo:
+    """Slice 8b describe hook — mindmap primary output is the SVG.
+
+    The SVG bytes are held in memory (``svg_bytes``) AND written to
+    ``{ARTIFACTS_DIR}/{job_id}.svg``; the in-memory bytes make the content
+    hash cheap.
+    """
+    return ArtifactInfo(
+        artifact_type="mindmap",
+        title=rec.title,
+        storage_ref=(
+            f"{settings.ARTIFACTS_DIR}/{rec.job_id}.svg"
+            if rec.svg_bytes is not None
+            else None
+        ),
+        primary_bytes=rec.svg_bytes,
+        result_metadata={"node_count": rec.node_count},
+    )
+
+
 # ── Updater (passed into the runner closure) ──────────────────────────────
 
 
@@ -247,8 +281,9 @@ class MindmapJobUpdater:
     seeing the dict via ``get_job`` never observe a half-mutated state.
     """
 
-    def __init__(self, job_id: str) -> None:
+    def __init__(self, job_id: str, ctx: JobReportContext | None = None) -> None:
         self._job_id = job_id
+        self._ctx = ctx
 
     @property
     def job_id(self) -> str:
@@ -264,6 +299,8 @@ class MindmapJobUpdater:
         error: str | None = None,
         svg_bytes: bytes | None = None,
         dot_source: str | None = None,
+        artifact_id: str | None = None,
+        classification_level: str | None = None,
     ) -> None:
         """Patch fields on the current record. Only specified fields
         update; passing None (the default) leaves a field as-is.
@@ -293,7 +330,13 @@ class MindmapJobUpdater:
                 patch["svg_bytes"] = svg_bytes
             if dot_source is not None:
                 patch["dot_source"] = dot_source
-            _jobs[self._job_id] = replace(current, **patch)
+            if artifact_id is not None:
+                patch["artifact_id"] = artifact_id
+            if classification_level is not None:
+                patch["classification_level"] = classification_level
+            new_record = replace(current, **patch)
+            _jobs[self._job_id] = new_record
+        await job_lifecycle.on_transition(new_record, self._ctx, self)
 
     async def mark_done(
         self,

@@ -177,6 +177,10 @@ class GenerateReportRequest(BaseModel):
         description="optional list to restrict retrieval to specific docs",
     )
     top_k: int = Field(default=12, ge=1, le=30)
+    # Slice 8b: optional ALM task binding (governance passthrough only).
+    task_id: str | None = Field(default=None, max_length=64)
+    source_snapshot_id: str | None = Field(default=None, max_length=64)
+    trace_id: str | None = Field(default=None, max_length=64)
 
 
 class ReportJobStatus(BaseModel):
@@ -202,6 +206,9 @@ class ReportJobStatus(BaseModel):
             "not absolute URLs. Frontend axios prepends its base URL."
         ),
     )
+    # Slice 8b: CSP artifact passthrough — set once the artifact registers.
+    artifact_id: str | None = None
+    classification_level: str | None = None
     created_at: datetime
     updated_at: datetime
 

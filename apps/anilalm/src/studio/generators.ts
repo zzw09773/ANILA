@@ -7,6 +7,7 @@ import {
   createInfographicJob,
   createDatatableJob,
 } from '../api/studio'
+import { createArtifactTask } from '../api/tasks'
 import type {
   Collection,
   DatatableArtifact,
@@ -229,11 +230,18 @@ export async function generateReport({
   preset,
   extraInstructions,
 }: GenerateReportInput): Promise<ReportArtifact> {
+  // Slice 8b: bind a CSP Task before launching (degrades to null on failure).
+  const binding = await createArtifactTask({
+    title: `${collection.name} · 深度報告`,
+    outputType: 'report',
+    collectionIds: [collection.id],
+  })
   const status = await createReportJob({
     collectionId: collection.id,
     preset: presetEnum('report', preset) as never,
     extraInstructions,
     documentIds: docs.map((d) => d.id),
+    binding: binding ?? undefined,
   })
   const artifact: ReportArtifact = {
     id: newId(),
@@ -378,12 +386,18 @@ export async function generateMindmap({
   extraInstructions,
   maxDepth,
 }: GenerateMindmapInput): Promise<MindmapArtifact> {
+  const binding = await createArtifactTask({
+    title: `${collection.name} · 心智圖`,
+    outputType: 'mindmap',
+    collectionIds: [collection.id],
+  })
   const status = await createMindmapJob({
     collectionId: collection.id,
     preset: presetEnum('mindmap', preset) as never,
     extraInstructions,
     documentIds: docs.map((d) => d.id),
     maxDepth,
+    binding: binding ?? undefined,
   })
   const artifact: MindmapArtifact = {
     id: newId(),
@@ -414,11 +428,17 @@ export async function generateInfographic({
   preset,
   extraInstructions,
 }: GenerateInfographicInput): Promise<InfographicArtifact> {
+  const binding = await createArtifactTask({
+    title: `${collection.name} · 資訊圖表`,
+    outputType: 'infographic',
+    collectionIds: [collection.id],
+  })
   const status = await createInfographicJob({
     collectionId: collection.id,
     preset: presetEnum('infographic', preset) as never,
     extraInstructions,
     documentIds: docs.map((d) => d.id),
+    binding: binding ?? undefined,
   })
   const artifact: InfographicArtifact = {
     id: newId(),
@@ -451,12 +471,18 @@ export async function generateDatatable({
   extraInstructions,
   targetColumns,
 }: GenerateDatatableInput): Promise<DatatableArtifact> {
+  const binding = await createArtifactTask({
+    title: `${collection.name} · 資料表`,
+    outputType: 'datatable',
+    collectionIds: [collection.id],
+  })
   const status = await createDatatableJob({
     collectionId: collection.id,
     preset: presetEnum('datatable', preset) as never,
     extraInstructions,
     documentIds: docs.map((d) => d.id),
     targetColumns,
+    binding: binding ?? undefined,
   })
   const artifact: DatatableArtifact = {
     id: newId(),

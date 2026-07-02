@@ -131,6 +131,10 @@ class GenerateInfographicRequest(BaseModel):
     extra_instructions: str | None = Field(default=None, max_length=2000)
     document_ids: list[int] | None = None
     top_k: int = Field(default=12, ge=1, le=30)
+    # Slice 8b: optional ALM task binding (governance passthrough only).
+    task_id: str | None = Field(default=None, max_length=64)
+    source_snapshot_id: str | None = Field(default=None, max_length=64)
+    trace_id: str | None = Field(default=None, max_length=64)
 
 
 class InfographicJobStatus(BaseModel):
@@ -146,6 +150,9 @@ class InfographicJobStatus(BaseModel):
     # 兩個 download endpoint 的相對路徑 ── 前端拼上 host 即可直接 GET。
     # None 直到 state == "done" 才填上。
     download_urls: dict[str, str] | None = None
+    # Slice 8b: CSP artifact passthrough — set once the artifact registers.
+    artifact_id: str | None = None
+    classification_level: str | None = None
     created_at: datetime
     updated_at: datetime
 

@@ -13,6 +13,7 @@ import {
   generateDatatable,
 } from '../studio/generators'
 import { createSlidesJob } from '../api/studio'
+import { createArtifactTask } from '../api/tasks'
 import { explainError } from '../api/client'
 import { ThemePicker } from './ThemePicker'
 import { StudioWizard } from './StudioWizard'
@@ -240,11 +241,18 @@ export function CommandModal({ open, onClose, onGenerated, format }: CommandModa
         //
         // No download or completion handling lives in this modal
         // anymore — that's strictly WSStudio's responsibility now.
+        // Slice 8b: bind a CSP Task before launching (degrades to null).
+        const binding = await createArtifactTask({
+          title: `${collection.name} · 簡報`,
+          outputType: 'slides',
+          collectionIds: [collection.id],
+        })
         const job = await createSlidesJob({
           collectionId: collection.id,
           preset: presetName,
           extraInstructions: extra.trim() || undefined,
           themeOverride: themeId === 'auto' ? undefined : themeId,
+          binding: binding ?? undefined,
         })
         const artifact: SlidesArtifact = {
           id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,

@@ -45,6 +45,8 @@ from app.schemas.studio import (
     SlidesSpec,
     VisualDefect,
 )
+from app.services import job_lifecycle
+from app.services.job_lifecycle import ArtifactInfo, JobReportContext
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +86,10 @@ class JobRecord:
     pptx_bytes: bytes | None
     created_at: datetime
     updated_at: datetime
+    # Slice 8b: control-plane passthrough, back-filled after the produced
+    # artifact is registered on CSP. None until then.
+    artifact_id: str | None = None
+    classification_level: str | None = None
     # Loose handle to the spawned task — kept so `cancel_job` can call
     # task.cancel() without a separate side-table. Excluded from public
     # status views.
@@ -100,6 +106,8 @@ class JobRecord:
             defects=list(self.defects),
             qa_passes=self.qa_passes,
             error=self.error,
+            artifact_id=self.artifact_id,
+            classification_level=self.classification_level,
             created_at=self.created_at.isoformat(),
             updated_at=self.updated_at.isoformat(),
         )
@@ -146,6 +154,7 @@ async def create_job(
     user_id: int,
     collection_id: int,
     runner: Callable[["JobUpdater"], Awaitable[None]],
+    report_ctx: JobReportContext | None = None,
 ) -> JobRecord:
     """Register a new job and spawn its pipeline task.
 
@@ -153,6 +162,11 @@ async def create_job(
     so it can push state transitions without depending on this module's
     private dict directly. The endpoint layer wires runner = a closure
     over (db, user, payload) that calls into studio.py helpers.
+
+    `report_ctx` (Slice 8b) carries the cross-cutting concerns — durable
+    persistence, CSP artifact-job/artifact reporting, trace spans. It is
+    None for callers that don't opt in (the pipeline still runs; only the
+    reporting/persistence layer is skipped).
 
     Returns the initial JobRecord (state="pending") so the endpoint can
     immediately return its job_id to the client. The real work runs on
@@ -180,7 +194,10 @@ async def create_job(
         _jobs[job_id] = record
         _evict_user_overflow(user_id)
 
-    updater = JobUpdater(job_id=job_id)
+    # Persist + report the freshly-created job (best-effort; no-op without ctx).
+    await job_lifecycle.on_create(record, report_ctx)
+
+    updater = JobUpdater(job_id=job_id, ctx=report_ctx)
 
     async def _wrapped() -> None:
         try:
@@ -227,6 +244,30 @@ async def cancel_job(job_id: str, user_id: int) -> bool:
     return True
 
 
+def artifact_info(rec: JobRecord) -> ArtifactInfo:
+    """Slice 8b describe hook — maps a slide record to its artifact shape.
+
+    The deck bytes live in memory (``pptx_bytes``), so ``storage_ref`` is
+    the logical download path and ``primary_bytes`` is the pptx itself
+    (cheap to sha256). Populated only once the pipeline reaches "done".
+    """
+    return ArtifactInfo(
+        artifact_type="slides",
+        title=rec.title,
+        storage_ref=(
+            f"/api/studio/slides/jobs/{rec.job_id}/pptx"
+            if rec.pptx_bytes is not None
+            else None
+        ),
+        primary_bytes=rec.pptx_bytes,
+        result_metadata={
+            "slide_count": rec.slide_count,
+            "qa_passes": rec.qa_passes,
+            "defect_count": len(rec.defects),
+        },
+    )
+
+
 # ── Updater (passed into the runner closure) ──────────────────────────────
 
 
@@ -238,8 +279,9 @@ class JobUpdater:
     seeing the dict via `get_job` never observe a half-mutated state.
     """
 
-    def __init__(self, job_id: str) -> None:
+    def __init__(self, job_id: str, ctx: JobReportContext | None = None) -> None:
         self._job_id = job_id
+        self._ctx = ctx
 
     @property
     def job_id(self) -> str:
@@ -258,6 +300,8 @@ class JobUpdater:
         qa_passes: int | None = None,
         error: str | None = None,
         pptx_bytes: bytes | None = None,
+        artifact_id: str | None = None,
+        classification_level: str | None = None,
     ) -> None:
         """Patch fields on the current JobRecord. Only specified fields
         are updated; pass None (the default) to leave a field as-is.
@@ -291,7 +335,15 @@ class JobUpdater:
                 patch["error"] = error
             if pptx_bytes is not None:
                 patch["pptx_bytes"] = pptx_bytes
-            _jobs[self._job_id] = replace(current, **patch)
+            if artifact_id is not None:
+                patch["artifact_id"] = artifact_id
+            if classification_level is not None:
+                patch["classification_level"] = classification_level
+            new_record = replace(current, **patch)
+            _jobs[self._job_id] = new_record
+        # Cross-cutting persistence + reporting outside the lock (network I/O
+        # must not serialise the pipeline). No-op when ctx is None.
+        await job_lifecycle.on_transition(new_record, self._ctx, self)
 
     async def mark_done(
         self,

@@ -39,6 +39,10 @@ export interface paths {
         /**
          * Get Slides Job
          * @description Cheap polling endpoint. Returns the current JobStatus or 404.
+         *
+         *     Read-through: if the in-memory record is gone (studio restarted, or
+         *     the job was evicted from the cache) we fall back to the durable job
+         *     store so a pre-restart job can still answer status queries.
          */
         get: operations["get_slides_job_api_studio_slides_jobs__job_id__get"];
         put?: never;
@@ -115,7 +119,8 @@ export interface paths {
          * @description Cheap polling endpoint. Returns the current status or 404.
          *
          *     404 covers both "doesn't exist" and "exists but belongs to someone
-         *     else" — never leak cross-user existence.
+         *     else" — never leak cross-user existence. Read-through to the durable
+         *     job store when the in-memory record is gone (studio restart / eviction).
          */
         get: operations["get_report_job_api_reports_jobs__job_id__get"];
         put?: never;
@@ -197,6 +202,9 @@ export interface paths {
         /**
          * Get Mindmap Job
          * @description Cheap polling endpoint. Returns the current MindmapJobStatus or 404.
+         *
+         *     Read-through to the durable job store when the in-memory record is
+         *     gone (studio restart / eviction).
          */
         get: operations["get_mindmap_job_api_mindmaps_jobs__job_id__get"];
         put?: never;
@@ -334,7 +342,8 @@ export interface paths {
          * @description Polling endpoint — returns the current DatatableJobStatus or 404.
          *
          *     Cross-user access returns 404 (NOT 403) so the existence of a job
-         *     doesn't leak via status code differentiation.
+         *     doesn't leak via status code differentiation. Read-through to the
+         *     durable job store when the in-memory record is gone (restart / eviction).
          */
         get: operations["get_datatable_job_api_datatables_jobs__job_id__get"];
         put?: never;
@@ -439,6 +448,10 @@ export interface components {
             download_urls?: {
                 [key: string]: string;
             } | null;
+            /** Artifact Id */
+            artifact_id?: string | null;
+            /** Classification Level */
+            classification_level?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -489,6 +502,12 @@ export interface components {
              * @default 15
              */
             top_k: number;
+            /** Task Id */
+            task_id?: string | null;
+            /** Source Snapshot Id */
+            source_snapshot_id?: string | null;
+            /** Trace Id */
+            trace_id?: string | null;
         };
         /**
          * GenerateInfographicRequest
@@ -512,6 +531,12 @@ export interface components {
              * @default 12
              */
             top_k: number;
+            /** Task Id */
+            task_id?: string | null;
+            /** Source Snapshot Id */
+            source_snapshot_id?: string | null;
+            /** Trace Id */
+            trace_id?: string | null;
         };
         /**
          * GenerateMindmapRequest
@@ -543,6 +568,12 @@ export interface components {
              * @default 8
              */
             top_k: number;
+            /** Task Id */
+            task_id?: string | null;
+            /** Source Snapshot Id */
+            source_snapshot_id?: string | null;
+            /** Trace Id */
+            trace_id?: string | null;
         };
         /**
          * GenerateReportRequest
@@ -567,6 +598,12 @@ export interface components {
              * @default 12
              */
             top_k: number;
+            /** Task Id */
+            task_id?: string | null;
+            /** Source Snapshot Id */
+            source_snapshot_id?: string | null;
+            /** Trace Id */
+            trace_id?: string | null;
         };
         /**
          * GenerateSpecRequest
@@ -584,6 +621,12 @@ export interface components {
              * @default false
              */
             skip_retrieval: boolean;
+            /** Task Id */
+            task_id?: string | null;
+            /** Source Snapshot Id */
+            source_snapshot_id?: string | null;
+            /** Trace Id */
+            trace_id?: string | null;
             /**
              * Theme Override
              * @description If set, bypasses LLM theme selection and forces this theme. Useful when the user knows the audience better than the LLM. Must be one of THEMES; invalid values rejected by Literal.
@@ -620,6 +663,10 @@ export interface components {
             download_urls?: {
                 [key: string]: string;
             } | null;
+            /** Artifact Id */
+            artifact_id?: string | null;
+            /** Classification Level */
+            classification_level?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -665,6 +712,10 @@ export interface components {
             qa_passes: number;
             /** Error */
             error?: string | null;
+            /** Artifact Id */
+            artifact_id?: string | null;
+            /** Classification Level */
+            classification_level?: string | null;
             /** Created At */
             created_at: string;
             /** Updated At */
@@ -700,6 +751,10 @@ export interface components {
             download_urls?: {
                 [key: string]: string;
             } | null;
+            /** Artifact Id */
+            artifact_id?: string | null;
+            /** Classification Level */
+            classification_level?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -755,6 +810,10 @@ export interface components {
             download_urls?: {
                 [key: string]: string;
             } | null;
+            /** Artifact Id */
+            artifact_id?: string | null;
+            /** Classification Level */
+            classification_level?: string | null;
             /**
              * Created At
              * Format: date-time

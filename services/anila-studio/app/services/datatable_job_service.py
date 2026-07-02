@@ -32,6 +32,8 @@ from app.schemas.datatable import (
     DatatableJobStatus,
     DatatablePreset,
 )
+from app.services import job_lifecycle
+from app.services.job_lifecycle import ArtifactInfo, JobReportContext
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +67,9 @@ class DatatableJobRecord:
     artifact_paths: dict[str, Path]
     created_at: datetime
     updated_at: datetime
+    # Slice 8b: control-plane passthrough, back-filled after artifact register.
+    artifact_id: str | None = None
+    classification_level: str | None = None
     task: asyncio.Task[Any] | None = field(default=None, compare=False, repr=False)
 
     def to_status(self) -> DatatableJobStatus:
@@ -91,6 +96,8 @@ class DatatableJobRecord:
             column_count=self.column_count,
             error=self.error,
             download_urls=download_urls,
+            artifact_id=self.artifact_id,
+            classification_level=self.classification_level,
             created_at=self.created_at,
             updated_at=self.updated_at,
         )
@@ -157,12 +164,16 @@ async def create_job(
     user_id: int,
     collection_id: int,
     runner: Callable[["DatatableJobUpdater"], Awaitable[None]],
+    report_ctx: JobReportContext | None = None,
 ) -> DatatableJobRecord:
     """Register a new datatable job and spawn its pipeline task.
 
     `runner` is a coroutine factory taking a `DatatableJobUpdater`. Same
     contract as slides' job manager — the runner pushes state transitions
     through the updater, never touches this module's internals directly.
+
+    ``report_ctx`` (Slice 8b) carries durable persistence + CSP reporting
+    + trace spans; None skips that layer (the pipeline still runs).
     """
     async with _lock:
         _prune_stale()
@@ -186,7 +197,9 @@ async def create_job(
         _jobs[job_id] = record
         _evict_user_overflow(user_id)
 
-    updater = DatatableJobUpdater(job_id=job_id)
+    await job_lifecycle.on_create(record, report_ctx)
+
+    updater = DatatableJobUpdater(job_id=job_id, ctx=report_ctx)
 
     async def _wrapped() -> None:
         try:
@@ -247,6 +260,26 @@ async def delete_job(job_id: str, user_id: int) -> bool:
     return True
 
 
+def artifact_info(rec: DatatableJobRecord) -> ArtifactInfo:
+    """Slice 8b describe hook — datatable primary output is the XLSX.
+
+    Three formats (HTML/CSV/XLSX) land on disk under ARTIFACTS_DIR; XLSX is
+    the primary downloadable (HTML fallback). Bytes are on disk so the
+    content hash is skipped.
+    """
+    primary = rec.artifact_paths.get("xlsx") or rec.artifact_paths.get("html")
+    return ArtifactInfo(
+        artifact_type="datatable",
+        title=rec.title,
+        storage_ref=(str(primary) if primary is not None else None),
+        primary_bytes=None,
+        result_metadata={
+            "row_count": rec.row_count,
+            "column_count": rec.column_count,
+        },
+    )
+
+
 # ── Updater (passed into the runner closure) ──────────────────────────────
 
 
@@ -257,8 +290,9 @@ class DatatableJobUpdater:
     `preset`, `row_count`, `column_count`, `artifact_paths`.
     """
 
-    def __init__(self, job_id: str) -> None:
+    def __init__(self, job_id: str, ctx: JobReportContext | None = None) -> None:
         self._job_id = job_id
+        self._ctx = ctx
 
     @property
     def job_id(self) -> str:
@@ -275,6 +309,8 @@ class DatatableJobUpdater:
         column_count: int | None = None,
         error: str | None = None,
         artifact_paths: dict[str, Path] | None = None,
+        artifact_id: str | None = None,
+        classification_level: str | None = None,
     ) -> None:
         async with _lock:
             current = _jobs.get(self._job_id)
@@ -297,7 +333,13 @@ class DatatableJobUpdater:
                 patch["error"] = error
             if artifact_paths is not None:
                 patch["artifact_paths"] = dict(artifact_paths)
-            _jobs[self._job_id] = replace(current, **patch)
+            if artifact_id is not None:
+                patch["artifact_id"] = artifact_id
+            if classification_level is not None:
+                patch["classification_level"] = classification_level
+            new_record = replace(current, **patch)
+            _jobs[self._job_id] = new_record
+        await job_lifecycle.on_transition(new_record, self._ctx, self)
 
     async def mark_done(
         self,

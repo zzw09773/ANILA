@@ -67,6 +67,24 @@ class Settings(BaseSettings):
     # Revocation cache TTL (matches csp /api/auth/revocations retention).
     REVOCATION_CACHE_TTL_SECONDS: int = 30 * 24 * 3600
 
+    # ── Durable job store (Slice 8b) ─────────────────────────────────────
+    # The five artifact pipelines used to hold job state purely in process
+    # memory, so a studio restart lost every in-flight job (doc 02 failure
+    # model: "Studio restart → job 不應丟失"). We persist job metadata to
+    # the SAME Redis instance the revocation cache uses (doc 02 §1 topology
+    # lists Redis as "queue + revocation + jobs"). Keys are prefixed and
+    # carry a generous TTL so restarts can still answer status queries.
+    JOB_STORE_KEY_PREFIX: str = "anila-studio:jobs:"
+    JOB_STORE_TTL_SECONDS: int = 7 * 24 * 3600  # 7 days
+
+    # ── CSP artifact-job / artifact reporting (Slice 8b) ─────────────────
+    # When enabled, each job create → POST {csp}/v1/artifact-jobs, terminal
+    # states → PATCH, and persisted artifacts → POST {csp}/v1/artifacts.
+    # All fire-and-forget (retry-once, log-not-raise): CSP being down must
+    # never break generation. Toggle off to fully silence the outbound
+    # reporting (spans included) in constrained environments.
+    STUDIO_ARTIFACT_REPORTING: bool = True
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 

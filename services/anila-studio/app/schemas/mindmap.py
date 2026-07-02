@@ -145,6 +145,10 @@ class GenerateMindmapRequest(BaseModel):
     document_ids: list[int] | None = None
     max_depth: int = Field(default=3, ge=1, le=5)
     top_k: int = Field(default=8, ge=1, le=20)
+    # Slice 8b: optional ALM task binding (governance passthrough only).
+    task_id: str | None = Field(default=None, max_length=64)
+    source_snapshot_id: str | None = Field(default=None, max_length=64)
+    trace_id: str | None = Field(default=None, max_length=64)
 
 
 class MindmapJobStatus(BaseModel):
@@ -167,5 +171,8 @@ class MindmapJobStatus(BaseModel):
     node_count: int | None = None
     error: str | None = None
     download_urls: dict[str, str] | None = None
+    # Slice 8b: CSP artifact passthrough — set once the artifact registers.
+    artifact_id: str | None = None
+    classification_level: str | None = None
     created_at: datetime
     updated_at: datetime
