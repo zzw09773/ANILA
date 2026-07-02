@@ -36,6 +36,44 @@ export function appendClassifiedTag(tags) {
   return list.includes("classified") ? list : [...list, "classified"];
 }
 
+// Five-level classification labels (zh-TW), low → high. Single source of truth
+// for the level badge; mirrors the backend ClassificationLevel contract
+// (services/csp/app/schemas/contracts/classification.py). The floor level
+// 無機密 never gets a badge — it is the un-classified default.
+export const CLASSIFICATION_LEVELS = [
+  "無機密",
+  "營業秘密",
+  "機密",
+  "極機密",
+  "絕對機密",
+];
+
+const CLASSIFICATION_FLOOR = "無機密";
+
+/**
+ * Decide the zh-TW level label to render as a badge for a conversation, or
+ * null when nothing extra should show.
+ *
+ * Defensive by design: `classification_level` (snake_case from the backend
+ * payload) / `classificationLevel` (mapped camelCase) is added by the
+ * multi-level classification work (Slice 3). When the field is ABSENT — older
+ * payloads that only carry the boolean `classified` latch — this returns null
+ * so the caller falls back to the existing boolean indicator unchanged. The
+ * floor level 無機密 and any unrecognised value also return null (fail toward
+ * the boolean fallback rather than rendering an unknown badge).
+ *
+ * @param {{classification_level?: string, classificationLevel?: string}} conversation
+ * @returns {string|null}
+ */
+export function classificationLevelBadge(conversation) {
+  const level =
+    conversation?.classificationLevel ?? conversation?.classification_level;
+  if (typeof level !== "string") return null;
+  const trimmed = level.trim();
+  if (!trimmed || trimmed === CLASSIFICATION_FLOOR) return null;
+  return CLASSIFICATION_LEVELS.includes(trimmed) ? trimmed : null;
+}
+
 /**
  * Pure reducer used by `applyMeta`: given the previous conversation and the
  * new meta payload, return the updated conversation object — or the original

@@ -1,8 +1,9 @@
 // Trust & transparency components (ESM)
 import React, { useState } from "react";
-import { IconBook, IconX, IconExternal, IconShield, IconGauge } from "./icons.jsx";
+import { IconBook, IconX, IconExternal, IconShield, IconGauge, IconLock } from "./icons.jsx";
 import { IconButton } from "./components.jsx";
 import { renderWithRedaction } from "./data.jsx";
+import { classificationLevelBadge } from "./runtime/classified.js";
 
 // ---- Inline citation [N] ----
 export const CitationInline = ({ n, citation, onOpen }) => (
@@ -338,6 +339,33 @@ export const ClassifiedCorner = () => (
     borderBottomLeftRadius: 4,
   }}>CONFIDENTIAL</div>
 );
+
+// Multi-level classification badge (Slice 3c). Renders the zh-TW level text in
+// the SAME pill style family as the existing "加密模式" indicator, next to it.
+// Returns null (renders nothing) when the conversation has no elevated level —
+// either the field is absent (boolean-only latch payload) or it is the floor
+// 無機密. The boolean 加密模式 indicator is rendered independently by app.jsx,
+// so this badge is purely additive.
+export const ClassificationLevelBadge = ({ conversation }) => {
+  const label = classificationLevelBadge(conversation);
+  if (!label) return null;
+  return (
+    <span
+      title={`此對話分類等級：${label}`}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 4,
+        padding: "3px 9px",
+        background: "oklch(0.95 0.02 25 / 0.4)",
+        border: "1px solid var(--danger)",
+        borderRadius: 999,
+        fontSize: 11, fontFamily: "var(--font-mono)",
+        color: "var(--danger)",
+      }}
+    >
+      <IconLock size={11} /> {label}
+    </span>
+  );
+};
 
 export const ConfidentialWatermark = ({ userEmail, traceId }) => (
   <div aria-hidden="true" style={{

@@ -63,6 +63,13 @@ const routes = [
         component: () => import('../views/AuditLogsView.vue'),
         meta: { requiresAdmin: true },
       },
+      // doc 08 §15 — 機敏分類盤點(Classification Inventory Before Cutover)。
+      {
+        path: 'classification-inventory',
+        name: 'ClassificationInventory',
+        component: () => import('../views/ClassificationInventoryView.vue'),
+        meta: { requiresAdmin: true },
+      },
       {
         path: 'platform-links',
         name: 'PlatformLinks',

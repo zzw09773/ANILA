@@ -82,6 +82,7 @@ const menuGroups = computed(() => {
         { path: '/alerts', label: 'alerts' },
         { path: '/banners', label: 'banners' },
         { path: '/audit-logs', label: 'audit-log' },
+        { path: '/classification-inventory', label: '分類盤點' },
         { path: '/platform-links', label: 'platform-links' },
         { path: '/service-access', label: 'service-access' },
         { path: '/service-clients', label: 'service-clients' },

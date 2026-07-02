@@ -98,6 +98,7 @@ import { BUILTIN_FOLDER_IDS, DEFAULT_FOLDERS } from "./data.jsx";
 import {
   CitationsDrawer,
   ConfidentialWatermark,
+  ClassificationLevelBadge,
 } from "./trust.jsx";
 import { ParallelCompareView } from "./multiagent.jsx";
 import { HandoffMenu, ShareDialog } from "./collab.jsx";
@@ -621,6 +622,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       // or admin-set classification. Drives the warning banner copy
       // and the (lighter-weight) lock icon variant on the sidebar.
       classificationInherited: Boolean(serverRow.classification_inherited),
+      // Slice 3c: five-level classification label (added by the multi-level
+      // classification backend). Absent on boolean-only payloads → the level
+      // badge simply renders nothing; the boolean latch above is unaffected.
+      classificationLevel: serverRow.classification_level,
       updatedAt: serverRow.updated_at || serverRow.created_at || nowIso(),
     };
   }
@@ -1982,6 +1987,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                   <IconLock size={11} /> 加密模式
                 </span>
               )}
+              <ClassificationLevelBadge conversation={selectedConv} />
               <Dropdown align="right" width={260} trigger={() => (
                 <IconButton title="交接 handoff"><IconNodes size={14} /></IconButton>
               )}>

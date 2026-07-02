@@ -28,6 +28,7 @@ from app.api.ingestion import (
     search_router as ingestion_search_router,
 )
 from app.api.jwks import router as jwks_router
+from app.api.classification_inventory import router as classification_inventory_router
 from app.modules.policy import router as policy_decisions_router
 from app.modules.tasks import router as tasks_router
 
@@ -65,3 +66,5 @@ api_router.include_router(proxy_router)
 # Mounted at the application level so it sits at /.well-known/jwks.json
 # rather than under the /api/* prefix.
 api_router.include_router(jwks_router)
+# 機敏分類盤點(doc 08 §15 Classification Inventory Before Cutover;admin/owner)。
+api_router.include_router(classification_inventory_router)
