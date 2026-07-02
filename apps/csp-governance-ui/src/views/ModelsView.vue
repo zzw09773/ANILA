@@ -13,18 +13,19 @@
 
     <div class="kpi-row">
       <TermStat label="models · total" :value="modelsStore.models.length" />
-      <TermStat label="online" :value="onlineCount" tone="accent" />
-      <TermStat label="connecting" :value="connectingCount" />
-      <TermStat label="offline" :value="offlineCount" :tone="offlineCount ? 'danger' : 'default'" />
+      <TermStat label="healthy" :value="healthyCount" tone="accent" />
+      <TermStat label="degraded" :value="degradedCount" :tone="degradedCount ? 'warn' : 'default'" />
+      <TermStat label="unhealthy" :value="unhealthyCount" :tone="unhealthyCount ? 'danger' : 'default'" />
     </div>
 
     <TermBox :title="`registry · ${modelsStore.models.length}`" hint="health-checked every 60s" pad="none" flush>
       <table class="term-table">
         <thead>
           <tr>
-            <th style="width: 60px">health</th>
+            <th style="width: 96px">health</th>
             <th>name</th>
             <th style="width: 100px">type</th>
+            <th style="width: 92px">分類上限</th>
             <th>endpoint</th>
             <th style="width: 80px">api</th>
             <th style="width: 80px">active</th>
@@ -35,10 +36,8 @@
         <tbody>
           <tr v-for="model in modelsStore.models" :key="model.id">
             <td>
-              <span class="health">
-                <TermDot :status="healthStatus(model.health_status)" :title="healthLabel(model.health_status)" />
-                <span class="health__txt">{{ healthLabel(model.health_status) }}</span>
-              </span>
+              <TermBadge :variant="healthVariant(model.health_status)" dot>{{ healthLabel(model.health_status) }}</TermBadge>
+              <div v-if="testResults[model.id]?.latencyLabel" class="cell-meta cell-latency">{{ testResults[model.id].latencyLabel }}</div>
             </td>
             <td>
               <div class="cell-strong">
@@ -51,8 +50,19 @@
               </div>
               <div class="cell-meta">{{ model.name }}</div>
               <div v-if="model.base_model_name" class="cell-base">↳ base: {{ model.base_model_name }}</div>
+              <div class="cell-caps">
+                <TermBadge v-if="model.protocol" variant="" class="cap-chip">{{ protocolLabel(model.protocol) }}</TermBadge>
+                <TermBadge v-for="cap in capabilityChips(model)" :key="cap" variant="info" class="cap-chip">{{ cap }}</TermBadge>
+                <span class="cap-key" :class="model.has_api_key ? 'cap-key--set' : 'cap-key--global'">
+                  {{ model.has_api_key ? '已設定模型金鑰' : '使用全域金鑰' }}
+                </span>
+              </div>
             </td>
             <td><TermBadge :tone="model.model_type">{{ model.model_type }}</TermBadge></td>
+            <td>
+              <span v-if="classificationCeilingLabel(model.classification_ceiling) === '無上限'" class="cell-meta">無上限</span>
+              <TermBadge v-else variant="accent">{{ classificationCeilingLabel(model.classification_ceiling) }}</TermBadge>
+            </td>
             <td>
               <span
                 v-if="model.endpoint_url === ENDPOINT_INTERNAL"
@@ -83,6 +93,13 @@
                 <button class="term-action" @click="openEditModal(model)">edit</button>
                 <span class="row-actions__sep">·</span>
                 <button class="term-action" @click="handleHealthCheck(model.id)">probe</button>
+                <span class="row-actions__sep">·</span>
+                <button
+                  class="term-action"
+                  :disabled="testingId === model.id"
+                  title="主動探測此端點連線並回報五態健康與延遲"
+                  @click="handleTest(model)"
+                >{{ testingId === model.id ? '測試中…' : '測試連線' }}</button>
                 <span v-if="model.model_type === 'llm' && !model.is_router_primary" class="row-actions__sep">·</span>
                 <button
                   v-if="model.model_type === 'llm' && !model.is_router_primary"
@@ -126,7 +143,7 @@
             </td>
           </tr>
           <tr v-if="modelsStore.models.length === 0">
-            <td :colspan="authStore.isAdmin ? 8 : 7"><TermEmpty message="no models registered · register one to enable /v1/* proxy" /></td>
+            <td :colspan="authStore.isAdmin ? 9 : 8"><TermEmpty message="no models registered · register one to enable /v1/* proxy" /></td>
           </tr>
         </tbody>
       </table>
@@ -172,6 +189,32 @@
             <input v-model="form.is_internal" type="checkbox" :disabled="endpointFieldLocked" />
             <span>{{ form.is_internal ? 'internal · only reachable from platform stack' : 'external · on-prem LAN or public endpoint' }}</span>
           </label>
+        </TermField>
+        <div class="form-row-2">
+          <TermField label="協定 · protocol" hint="端點所講的 wire protocol">
+            <select v-model="form.protocol" class="term-select">
+              <option v-for="p in PROTOCOL_OPTIONS" :key="p.value" :value="p.value">{{ p.label }}</option>
+            </select>
+          </TermField>
+          <TermField label="分類上限" hint="可承接的最高分類；留空＝無上限">
+            <select v-model="form.classification_ceiling" class="term-select">
+              <option :value="null">— 無上限 —</option>
+              <option v-for="lvl in CLASSIFICATION_LEVELS" :key="lvl" :value="lvl">{{ lvl }}</option>
+            </select>
+          </TermField>
+        </div>
+        <TermField
+          label="模型金鑰 · api key"
+          optional
+          hint="僅寫入,不會回顯;留空=沿用現值或全域金鑰"
+        >
+          <input
+            v-model="form.api_key"
+            type="password"
+            autocomplete="new-password"
+            class="term-input"
+            placeholder="Bearer 金鑰(留空＝沿用現值/全域)"
+          />
         </TermField>
         <TermField label="description" optional>
           <textarea v-model="form.description" rows="2" class="term-textarea" />
@@ -233,8 +276,9 @@
 import { ref, computed, onMounted } from 'vue'
 import { useModelsStore } from '../stores/models'
 import { useAuthStore } from '../stores/auth'
-import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat, TermDot } from '../components/cli'
+import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermStat } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
+import { healthLabel, healthVariant, normalizeHealth } from '../utils/healthStatus'
 
 const { confirm, toast } = useDialog()
 const modelsStore = useModelsStore()
@@ -243,6 +287,41 @@ const showModal = ref(false)
 const editingId = ref(null)
 const purgingId = ref(null)
 const settingPrimaryId = ref(null)
+// Slice 6b — 每列一個「測試連線」狀態：testingId 顯示 spinner；
+// testResults[id] 快取最近一次探測的延遲標籤（五態 badge 由 refetch 後的
+// health_status 反映）。
+const testingId = ref(null)
+const testResults = ref({})
+
+// doc 04 §2 protocol 列舉。label 為繁中；未知值以原字串回退顯示（防禦 6a）。
+const PROTOCOL_OPTIONS = [
+  { value: 'openai_compatible', label: 'OpenAI 相容' },
+  { value: 'custom_adapter', label: '自訂轉接' },
+]
+const PROTOCOL_LABELS = Object.fromEntries(PROTOCOL_OPTIONS.map(p => [p.value, p.label]))
+
+// doc 08 五級分類（無機密 < 營業秘密 < 機密 < 極機密 < 絕對機密）。
+const CLASSIFICATION_LEVELS = ['無機密', '營業秘密', '機密', '極機密', '絕對機密']
+
+// supports_* → 能力晶片繁中標籤。缺欄位（6a 未落地）時該晶片不顯示。
+const CAPABILITY_LABELS = {
+  supports_streaming: '串流',
+  supports_json_schema: '結構化輸出',
+  supports_tools: '工具呼叫',
+}
+
+function protocolLabel(p) {
+  if (!p) return '—'
+  return PROTOCOL_LABELS[p] || p
+}
+function classificationCeilingLabel(c) {
+  return c || '無上限'
+}
+function capabilityChips(model) {
+  return Object.entries(CAPABILITY_LABELS)
+    .filter(([key]) => model[key])
+    .map(([, label]) => label)
+}
 
 const defaultForm = () => ({
   name: '', display_name: '', model_type: 'llm', endpoint_url: '',
@@ -251,6 +330,9 @@ const defaultForm = () => ({
   // expected to land on the anila-models-net cross-stack docker network.
   // Admin can untick for an external on-prem LAN endpoint.
   is_internal: true,
+  // Slice 6b — model gateway governance。protocol 預設 openai_compatible;
+  // classification_ceiling null = 無上限;api_key 為 write-only（留空不覆蓋）。
+  protocol: 'openai_compatible', classification_ceiling: null, api_key: '',
 })
 const form = ref(defaultForm())
 
@@ -260,18 +342,12 @@ const baseModelOptions = computed(() =>
   )
 )
 
-const onlineCount = computed(() => modelsStore.models.filter(m => m.health_status === 'online').length)
-const connectingCount = computed(() => modelsStore.models.filter(m => m.health_status === 'connecting').length)
-const offlineCount = computed(() => modelsStore.models.filter(m => m.health_status === 'offline').length)
+// KPI 以正規化五態計數，兼容舊值（online/connecting/offline）與新值。
+const healthyCount = computed(() => modelsStore.models.filter(m => normalizeHealth(m.health_status) === 'healthy').length)
+const degradedCount = computed(() => modelsStore.models.filter(m => normalizeHealth(m.health_status) === 'degraded').length)
+const unhealthyCount = computed(() => modelsStore.models.filter(m => normalizeHealth(m.health_status) === 'unhealthy').length)
 
 onMounted(() => modelsStore.fetchModels())
-
-function healthStatus(s) {
-  return ({ online: 'ok', connecting: 'warn', offline: 'danger' })[s] || 'idle'
-}
-function healthLabel(s) {
-  return ({ online: 'online', connecting: 'connecting', offline: 'offline' })[s] || s || 'unknown'
-}
 
 // Sentinels returned by backend when endpoint_url is redacted from non-owner
 // viewers. Keep in sync with services/csp/app/api/models.py.
@@ -301,6 +377,11 @@ function openEditModal(model) {
     api_version: model.api_version, description: model.description || '',
     context_window: model.context_window, base_model_id: model.base_model_id || null,
     is_internal: !!model.is_internal,
+    // 防禦性：6a 未落地時欄位可能為 undefined，給合理預設。api_key 為 write-only,
+    // 永不從後端回顯（後端也不回傳明文金鑰），故一律留空。
+    protocol: model.protocol || 'openai_compatible',
+    classification_ceiling: model.classification_ceiling ?? null,
+    api_key: '',
   }
   showModal.value = true
 }
@@ -316,14 +397,23 @@ const endpointFieldLocked = computed(() =>
 // 去切到另一個分頁手動操作。
 const untrustedHostPrompt = ref(null)   // { host, message, hint, retryPayload, retryMode }
 
+// 由 form 組出送出 payload — register / update / trust-retry 三處共用，
+// 避免治理欄位（api_key write-only、base_model_id、locked endpoint）漏處理。
+function buildModelPayload() {
+  const payload = { ...form.value }
+  if (payload.model_type !== 'agent') payload.base_model_id = null
+  // Don't ship endpoint_url back when the field was locked (admin editing a
+  // row whose URL they couldn't see). Backend would accept the empty string
+  // and overwrite the real endpoint with junk.
+  if (endpointFieldLocked.value) delete payload.endpoint_url
+  // api_key 為 write-only：留空 = 沿用現值或全域金鑰,絕不送空字串把既有金鑰清掉。
+  if (!payload.api_key) delete payload.api_key
+  return payload
+}
+
 async function handleSubmit() {
   try {
-    const payload = { ...form.value }
-    if (payload.model_type !== 'agent') payload.base_model_id = null
-    // Don't ship endpoint_url back when the field was locked (admin
-    // editing a row whose URL they couldn't see). Backend would accept
-    // the empty string and overwrite the real endpoint with junk.
-    if (endpointFieldLocked.value) delete payload.endpoint_url
+    const payload = buildModelPayload()
     if (editingId.value) {
       const { name, ...updateData } = payload
       await modelsStore.update(editingId.value, updateData)
@@ -345,9 +435,7 @@ async function handleSubmit() {
       detail.host &&
       authStore.isOwner
     ) {
-      const payload = { ...form.value }
-      if (payload.model_type !== 'agent') payload.base_model_id = null
-      if (endpointFieldLocked.value) delete payload.endpoint_url
+      const payload = buildModelPayload()
       untrustedHostPrompt.value = {
         host: detail.host,
         message: detail.message || '',
@@ -404,6 +492,31 @@ function cancelTrustPrompt() {
 async function handleHealthCheck(id) {
   const result = await modelsStore.checkHealth(id)
   toast(`health probe → ${result.status}\n${result.detail}`, { tone: result.status === 'healthy' ? 'success' : 'error' })
+}
+
+// Slice 6b — 主動探測連線。POST /test → 五態 + 延遲。防禦性讀取欄位
+// （health_status / status、latency_ms / latencyMs），並依五態決定 toast 語氣。
+async function handleTest(model) {
+  if (testingId.value === model.id) return
+  testingId.value = model.id
+  try {
+    const result = await modelsStore.test(model.id)
+    const status = result?.health_status ?? result?.status
+    const latency = result?.latency_ms ?? result?.latencyMs ?? null
+    testResults.value = {
+      ...testResults.value,
+      [model.id]: { latencyLabel: latency != null ? `延遲 ${latency} ms` : '' },
+    }
+    const ok = normalizeHealth(status) === 'healthy'
+    const latencyTxt = latency != null ? `（${latency} ms）` : ''
+    toast(`測試連線 → ${healthLabel(status)}${latencyTxt}`, { tone: ok ? 'success' : 'error' })
+  } catch (e) {
+    const detail = e.response?.data?.detail
+    const msg = typeof detail === 'string' ? detail : (detail?.message || '測試連線失敗')
+    toast(msg, { tone: 'error' })
+  } finally {
+    testingId.value = null
+  }
 }
 
 async function handleSetPrimary(id) {
@@ -494,8 +607,22 @@ async function handlePurge(model) {
   padding: 1px 6px;
 }
 
-.health { display: inline-flex; align-items: center; gap: 6px; }
-.health__txt { font-size: var(--t-2xs); color: var(--c-fg-3); text-transform: lowercase; }
+.cell-latency { margin-top: 3px; }
+
+/* Slice 6b — 治理能力晶片 + 模型金鑰指示（name cell meta）。 */
+.cell-caps { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+.cap-chip { font-size: var(--t-2xs); }
+.cap-key {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--t-2xs);
+  letter-spacing: 0.02em;
+  padding: 1px 6px;
+  border: var(--border-w) solid var(--c-border);
+  border-radius: var(--r-soft);
+}
+.cap-key--set { color: var(--c-ok, #2ea043); border-color: var(--c-ok, #2ea043); background: var(--c-ok-soft); }
+.cap-key--global { color: var(--c-fg-3); }
 
 .primary-pill {
   display: inline-flex;

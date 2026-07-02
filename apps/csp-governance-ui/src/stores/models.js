@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import {
   listModels, createModel, updateModel, deleteModel, activateModel, purgeModel, triggerHealthCheck,
-  setRouterPrimary, unsetRouterPrimary,
+  setRouterPrimary, unsetRouterPrimary, testModelConnection,
 } from '../api/models'
 
 export const useModelsStore = defineStore('models', () => {
@@ -50,6 +50,14 @@ export const useModelsStore = defineStore('models', () => {
     return data
   }
 
+  // Slice 6b — 主動探測。回傳 { health_status, latency_ms }，並 refetch
+  // 讓列表的五態 badge 反映最新結果。
+  async function test(id) {
+    const { data } = await testModelConnection(id)
+    await fetchModels()
+    return data
+  }
+
   async function setPrimary(id) {
     await setRouterPrimary(id)
     await fetchModels()
@@ -61,7 +69,7 @@ export const useModelsStore = defineStore('models', () => {
   }
 
   return {
-    models, loading, fetchModels, create, update, remove, activate, purge, checkHealth,
+    models, loading, fetchModels, create, update, remove, activate, purge, checkHealth, test,
     setPrimary, unsetPrimary,
   }
 })
