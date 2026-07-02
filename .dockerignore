@@ -1,0 +1,14 @@
+.git
+**/node_modules
+**/.venv
+share/
+share-dev/
+secrets/
+models/model/
+n8n_DATA/
+onyx/
+scraps/
+docs/
+cht/
+runtime_logic/
+*.log

@@ -1,13 +1,13 @@
-# Build context is repo root (set in docker-compose.yml). Dockerfile
-# paths are repo-relative — myCSPPlatform/* for everything historical,
-# anila-core/ for the central SDK that the inspector endpoints need.
+# Build context is repo root (set in compose). Dockerfile paths are
+# repo-relative — services/csp + apps/csp-governance-ui for the app,
+# packages/anila-core for the central SDK the inspector endpoints need.
 #
 # Stage 1: Build frontend
 FROM node:22-alpine AS frontend-build
 WORKDIR /build
-COPY myCSPPlatform/frontend/package.json myCSPPlatform/frontend/package-lock.json* ./
+COPY apps/csp-governance-ui/package.json apps/csp-governance-ui/package-lock.json* ./
 RUN npm install
-COPY myCSPPlatform/frontend/ ./
+COPY apps/csp-governance-ui/ ./
 RUN npm run build
 
 # Stage 2: Production
@@ -21,8 +21,8 @@ WORKDIR /app
 # instead of tofu boxes.
 #
 # Round 2 fix-up (2026-05-19): originally landed in the wrong
-# Dockerfile (myCSPPlatform/backend/Dockerfile is dead — compose
-# uses THIS file via dockerfile: myCSPPlatform/docker/Dockerfile).
+# Dockerfile (services/csp/Dockerfile is dead — compose uses THIS
+# file via dockerfile: infra/docker/csp.Dockerfile).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     graphviz \
     fonts-noto-cjk \
@@ -39,21 +39,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # AgenticRAG/ in this branch is a pure starter template — production
 # code (CSP, ingestion-worker, evaluator) imports parsers/vision from
 # anila_core.* directly and does NOT install AgenticRAG at runtime.
-COPY anila-core /tmp/anila-core
+COPY packages/anila-core /tmp/anila-core
 RUN pip install --no-cache-dir '/tmp/anila-core[rag]'
 
 # Install Python dependencies (CSP-specific)
-COPY myCSPPlatform/backend/requirements.txt ./
+COPY services/csp/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy backend code
-COPY myCSPPlatform/backend/ ./
+# Copy backend code (includes scripts/: generate-jwt-keypair.py + init_db.py
+# land in /app/scripts — no separate scripts COPY needed since §17.1 folded
+# myCSPPlatform/scripts/ into services/csp/scripts/)
+COPY services/csp/ ./
 
 # Copy built frontend
 COPY --from=frontend-build /build/dist /app/frontend-dist
 
-# Copy scripts and data directory
-COPY myCSPPlatform/scripts/ /app/scripts/
 RUN mkdir -p /app/logs
 
 # Download Swagger UI static files for offline use

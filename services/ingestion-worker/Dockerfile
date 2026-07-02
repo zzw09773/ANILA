@@ -31,10 +31,10 @@ RUN apt-get update \
 
 # Install in dependency order. anila-core changes less often than
 # worker code, so its layer stays cached on most rebuilds.
-COPY anila-core /tmp/anila-core
+COPY packages/anila-core /tmp/anila-core
 RUN pip install '/tmp/anila-core[rag]'
 
-COPY ingestion-worker /tmp/ingestion-worker
+COPY services/ingestion-worker /tmp/ingestion-worker
 RUN pip install /tmp/ingestion-worker
 
 # Default upload dir — overridden by env / volume mount in compose.
