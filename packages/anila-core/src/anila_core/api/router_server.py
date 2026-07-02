@@ -14,7 +14,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -44,6 +46,71 @@ from ..tools.dispatch_tool import dispatch_to_agent_response
 from .session_owner import get_session_owner, set_session_owner
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Full Trace Protocol (doc-05 §6 / doc-09 §10) — producer wiring.
+#
+# Tracing is *opt-in* and *additive*: with ``ANILA_TRACE_ENDPOINT`` unset the
+# factory returns ``None`` and every traced code path becomes a no-op, so the
+# router behaves byte-identically to before. When set, spans are shipped to
+# the CSP callback endpoint via a shared background ``TraceExporter`` AND
+# mirrored into the ``anila.spans`` SSE event.
+#
+# ``ANILA_TRACE_ENDPOINT`` value:
+#   * a bare flag (``1``/``true``/``on``/``yes``/``default``) → use the CSP
+#     base the router already knows (``settings.csp_base_url``);
+#   * any other value → treated as an explicit trace base URL.
+# Auth reuses the router's CSP service-token mechanics (``X-CSP-Service-Token``);
+# the token is read lazily from ``ANILA_TRACE_TOKEN`` or
+# ``settings.csp_service_token``.
+# ---------------------------------------------------------------------------
+_TRACE_EXPORTER: Any = None
+_TRACE_EXPORTER_LOCK = threading.Lock()
+
+
+def _trace_endpoint_base() -> str | None:
+    raw = (os.environ.get("ANILA_TRACE_ENDPOINT") or "").strip()
+    if not raw:
+        return None
+    if raw.lower() in {"1", "true", "on", "yes", "default"}:
+        return settings.csp_base_url
+    return raw
+
+
+def _get_trace_exporter() -> Any:
+    """Return the process-wide ``TraceExporter``, or ``None`` when disabled."""
+    global _TRACE_EXPORTER
+    base = _trace_endpoint_base()
+    if base is None:
+        return None
+    if _TRACE_EXPORTER is None:
+        with _TRACE_EXPORTER_LOCK:
+            if _TRACE_EXPORTER is None:
+                from ..tracing.sdk import TraceExporter
+
+                _TRACE_EXPORTER = TraceExporter(
+                    base,
+                    token_provider=lambda: (
+                        os.environ.get("ANILA_TRACE_TOKEN")
+                        or settings.csp_service_token
+                    ),
+                    producer="anila-router",
+                )
+    return _TRACE_EXPORTER
+
+
+def _make_trace_session(trace_id: str | None) -> Any:
+    """Build a per-request ``TraceSession`` for ``trace_id`` (``None`` = off)."""
+    if not trace_id:
+        return None
+    exporter = _get_trace_exporter()
+    if exporter is None:
+        return None
+    from ..tracing.sdk import TraceSession
+
+    return TraceSession(exporter, trace_id, producer="anila-router")
+
 
 _ROUTER_SYSTEM_TEMPLATE = """\
 You are ANILA Router, an intelligent query dispatcher.
@@ -541,6 +608,16 @@ def create_router_app(
             if k.lower().startswith("x-anila-")
         }
 
+        # Full Trace Protocol: pick up the inbound correlation id (CSP forwards
+        # ``X-ANILA-Trace-Id``; OpenAI-style callers may put it in
+        # ``metadata.trace_id``). ``trace_session`` is ``None`` when tracing is
+        # unconfigured (``ANILA_TRACE_ENDPOINT`` unset) → the router is a no-op.
+        _inbound_trace_id = (
+            request.headers.get("X-ANILA-Trace-Id")
+            or (body.get("metadata") or {}).get("trace_id")
+        )
+        trace_session = _make_trace_session(_inbound_trace_id)
+
         # Sprint 10 PR 3: Router-side Session. Accept either standard
         # ``session_id`` (so OpenAI clients can pass it as an extension
         # field) or our prefixed ``anila_session_id``. Auto-generate
@@ -653,6 +730,7 @@ def create_router_app(
                     session=sess,
                     pin_owner=_pin_owner_cb_single,
                     forwarded_headers=anila_headers,
+                    trace_session=trace_session,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -874,6 +952,25 @@ def create_router_app(
             )
 
         # Non-streaming dispatch path: aggregate via safe dispatch.
+        # Full Trace Protocol: record the router dispatch-decision span and the
+        # downstream agent-call span (no-op when tracing is unconfigured).
+        _decision_span = _downstream_span = None
+        if trace_session is not None:
+            _decision_span = trace_session.open(
+                "agent.run.finished",
+                "router.dispatch",
+                attributes={
+                    "chosen_agent": agent_id,
+                    "dispatch_reason": "llm_dispatch",
+                    "target_kind": "agent",
+                },
+            )
+            _downstream_span = trace_session.open(
+                "agent.model_call.finished",
+                f"router.downstream:{agent_id}",
+                parent_span_id=_decision_span.span_id,
+                attributes={"target": agent_id, "streaming": False},
+            )
         agent_response = await _dispatch_safe(
             agent_id,
             query,
@@ -881,6 +978,11 @@ def create_router_app(
             stream=False,
             session_id=session_id,
         )
+        if trace_session is not None and _downstream_span is not None:
+            if agent_response["error"]:
+                _downstream_span.set_error(agent_response["error"])
+            trace_session.close(_downstream_span)
+            trace_session.close(_decision_span)
         if agent_response["error"]:
             base_trace.append(
                 _make_trace_step(
@@ -2240,6 +2342,7 @@ async def _router_streaming(
     session: Session | None = None,
     pin_owner: PinOwnerFn = None,
     forwarded_headers: dict[str, str] | None = None,
+    trace_session: Any = None,
 ) -> AsyncIterator[str]:
     """Router's streaming endpoint (plan C).
 
@@ -2491,6 +2594,27 @@ async def _router_streaming(
     if pin_owner is not None:
         await pin_owner(agent_id)
 
+    # Full Trace Protocol: dispatch-decision + downstream-call spans for the
+    # streaming path. Mirrored into an ``anila.spans`` SSE event after the
+    # agent stream completes (no-op when tracing is unconfigured).
+    _decision_span = _downstream_span = None
+    if trace_session is not None:
+        _decision_span = trace_session.open(
+            "agent.run.finished",
+            "router.dispatch",
+            attributes={
+                "chosen_agent": agent_id,
+                "dispatch_reason": "llm_dispatch",
+                "target_kind": "agent",
+            },
+        )
+        _downstream_span = trace_session.open(
+            "agent.model_call.finished",
+            f"router.downstream:{agent_id}",
+            parent_span_id=_decision_span.span_id,
+            attributes={"target": agent_id, "streaming": True},
+        )
+
     downstream_meta: dict[str, Any] | None = None
     # Buffer content for memory re-composition unless the agent is classified
     # (known upfront from the manifest) — classified replies stream verbatim in
@@ -2521,6 +2645,8 @@ async def _router_streaming(
                 continue
             yield _make_event(ev_name, ev_payload)
         elif kind == "error":
+            if _downstream_span is not None:
+                _downstream_span.set_error(event.get("error") or event.get("detail"))
             yield _make_event(
                 "anila.trace",
                 _make_trace_step(
@@ -2566,6 +2692,16 @@ async def _router_streaming(
                     )
             async for chunk in _emit_soft_chunks(aggregated):
                 yield chunk
+
+    # Full Trace Protocol: close the dispatch spans and mirror them into the
+    # ``anila.spans`` SSE event (doc-09 §10 / doc-05 §6). The event carries the
+    # exact span dicts also shipped to the CSP callback endpoint.
+    if trace_session is not None and _downstream_span is not None:
+        downstream_dict = trace_session.close(_downstream_span)
+        decision_dict = trace_session.close(_decision_span)
+        yield _make_event(
+            "anila.spans", {"spans": [decision_dict, downstream_dict]}
+        )
 
     final_meta = _merge_anila_meta(
         base_trace

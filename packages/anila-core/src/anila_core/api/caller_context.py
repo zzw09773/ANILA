@@ -56,6 +56,11 @@ class CallerContext:
     # here so the user_memory_reader factory can construct an httpx
     # client without re-reading env on every call.
     csp_base_url: Optional[str] = None
+    # Full-Trace Protocol correlation (doc-05 §5/§6). CSP forwards these
+    # inbound so the router/agent can attribute spans to the originating
+    # task + trace. Optional — absent on non-traced (legacy) requests.
+    trace_id: Optional[str] = None
+    task_id: Optional[str] = None
 
     @property
     def has_user(self) -> bool:
@@ -83,6 +88,8 @@ def extract_caller_context(
     x_anila_user_email: Optional[str] = Header(default=None, alias="X-ANILA-User-Email"),
     x_anila_user_groups: Optional[str] = Header(default=None, alias="X-ANILA-User-Groups"),
     x_csp_service_token: Optional[str] = Header(default=None, alias="X-CSP-Service-Token"),
+    x_anila_trace_id: Optional[str] = Header(default=None, alias="X-ANILA-Trace-Id"),
+    x_anila_task_id: Optional[str] = Header(default=None, alias="X-ANILA-Task-Id"),
 ) -> CallerContext:
     """FastAPI dependency. Read the CSP-forwarded identity headers.
 
@@ -112,6 +119,8 @@ def extract_caller_context(
         user_groups=x_anila_user_groups or None,
         service_token=x_csp_service_token or None,
         csp_base_url=csp_base_url,
+        trace_id=(x_anila_trace_id or "").strip() or None,
+        task_id=(x_anila_task_id or "").strip() or None,
     )
     # Stash so background tasks / context-bound subagents can
     # recover the same instance without re-parsing.
