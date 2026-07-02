@@ -10,9 +10,6 @@ build/
 venv/
 env/
 
-# Node
-node_modules/
-frontend/dist/
 
 # Database
 *.sql.bak
@@ -35,5 +32,6 @@ Thumbs.db
 logs/
 *.log
 
-# Docker
-docker/data/
+# Runtime data
+data/*
+!data/.gitkeep

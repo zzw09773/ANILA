@@ -1,5 +1,5 @@
 # ── ANILA 主 repo 的 .gitignore ──────────────────────────────────────────────
-# 子專案 (myCSPPlatform / AgenticRAG / anila-core / ANILA_UI / onyx) 各自的
+# 子專案 (services/csp / packages/anila-core / apps/* / onyx) 各自的
 # .gitignore 仍生效；此檔處理跨專案共通的忽略規則。
 
 # ── Python ───────────────────────────────────────────────────────────────────
@@ -76,7 +76,7 @@ lerna-debug.log*
 *.key
 # 例外:卡片登入的 CSPKI CA bundle 是「公開憑證」(root + 中繼,非私鑰),
 # 是 server 端驗卡的信任錨,必須隨碼一起交付。
-!myCSPPlatform/backend/app/services/cspki_ca_bundle.pem
+!services/csp/app/services/cspki_ca_bundle.pem
 
 # ── IDE / 編輯器 ─────────────────────────────────────────────────────────────
 .idea/
@@ -122,14 +122,14 @@ runtime_logic/src/
 runtime_logic/vendor/
 runtime_logic/node_modules/
 
-# ── anila-agent/templete (reference SDK source snapshots — only .zip tracked) ─
-# Three upstream SDK source snapshots packaged as zip in anila-agent/templete/
-# (synced from zzw09773/anila-agent subtree). Developers unzip locally to read
-# patterns + port logic into anila-agent/anila_agent/, but the unzipped trees
+# ── packages/anila-agent/templete (reference SDK snapshots — only .zip tracked) ─
+# Three upstream SDK source snapshots packaged as zip in packages/anila-agent/
+# templete/ (synced from zzw09773/anila-agent subtree). Developers unzip locally
+# to read patterns + port logic into anila_agent/, but the unzipped trees
 # stay out of git. Same model as runtime_logic/ above.
-anila-agent/templete/claude-code-src/
-anila-agent/templete/openai-agents-python/
-anila-agent/templete/antigravity-sdk-python/
+packages/anila-agent/templete/claude-code-src/
+packages/anila-agent/templete/openai-agents-python/
+packages/anila-agent/templete/antigravity-sdk-python/
 
 # ── runtime data: n8n workflow assets / uploads ───────────────────────────────
 # Static templates (e.g. fina./) and user uploads served by nginx at /static
