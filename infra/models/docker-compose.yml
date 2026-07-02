@@ -1,8 +1,8 @@
 # Independent compose project for ANILA inference workloads.
 #
 # Goals:
-#   * Lifecycle decoupled from the platform stack (`docker compose -f
-#     docker-compose.yml restart csp` does NOT touch these containers)
+#   * Lifecycle decoupled from the platform stack (repo 根 `docker compose
+#     restart csp` 經 root shim compose.yaml,does NOT touch these containers)
 #   * No host port exposure — every service uses `expose:` (internal-only)
 #     so the host's external NICs cannot reach them; CSP talks via the
 #     shared external `anila-models-net` docker network DNS
@@ -12,18 +12,18 @@
 #
 # Bootstrap (one-time, on the host):
 #     docker network create anila-models-net
-#     docker compose -f docker-compose.yml restart csp   # CSP joins the net
+#     docker compose restart csp   # CSP joins the net (repo 根,經 root shim)
 #
-# 目錄佈局 (2026-06-10 重組):
-#     models/model/      權重 (ANILA_HF_DIR 預設指這;dev 機放 symlink 也通)
-#     models/inference/  本檔 + build context + src/ (trtllm/triton/proxy 設定)
+# 目錄佈局 (2026-07 §17.1 重組):
+#     models/model/      權重 (ANILA_HF_DIR 預設指這;dev 機放 symlink 也通,不搬)
+#     infra/models/      本檔 + src/ (trtllm/triton/proxy 設定)
 #
-# Day-to-day (建議用 scripts/model-serve.sh,它會自動 source .env):
-#     bash scripts/model-serve.sh up            # 起預設組
-#     bash scripts/model-serve.sh up gemma4     # 起單一服務
-#     bash scripts/model-serve.sh status|logs gemma4|down
+# Day-to-day (建議用 infra/deployment/intranet/model-serve.sh,它會自動 source .env):
+#     bash infra/deployment/intranet/model-serve.sh up            # 起預設組
+#     bash infra/deployment/intranet/model-serve.sh up gemma4     # 起單一服務
+#     bash infra/deployment/intranet/model-serve.sh status|logs gemma4|down
 # 等價的裸 compose 指令:
-#     docker compose -f models/inference/docker-compose.yml up -d ...
+#     docker compose -f infra/models/docker-compose.yml up -d ...
 #
 # Profiles:
 #     (無 profile)        試用機現役組:gpt-oss-20b / gemma4 / nv-embed / flux
@@ -58,8 +58,8 @@ services:
     volumes:
       # 權重 / 設定檔目錄可用 env 覆寫 (路徑不同時設 ANILA_HF_DIR /
       # ANILA_MODELSRC_DIR);預設 = repo 內慣例位置 models/model 與
-      # models/inference/src (相對本 compose 檔解析)。
-      - ${ANILA_HF_DIR:-../model}/gpt-oss-20b:/workspace/model/gpt-oss-20b
+      # infra/models/src (相對本 compose 檔解析)。
+      - ${ANILA_HF_DIR:-../../models/model}/gpt-oss-20b:/workspace/model/gpt-oss-20b
       - ${ANILA_MODELSRC_DIR:-./src}/tensorrtllm-1.2.0rc5-openai-gpt-oss-20b/encodings:/etc/encodings/:ro
       - ${ANILA_MODELSRC_DIR:-./src}/tensorrtllm-1.2.0rc5-openai-gpt-oss-20b:/workspace/src
     working_dir: /workspace
@@ -123,8 +123,8 @@ services:
     volumes:
       # assistant = MTP 投機解碼的 draft model (--speculative-config 指向它),
       # 跟主模型一樣是必帶的權重,缺了 vLLM 用這份設定起不來。
-      - ${ANILA_HF_DIR:-../model}/gemma-4-31B-it:/workspace/model/gemma-4-31B-it
-      - ${ANILA_HF_DIR:-../model}/gemma-4-31B-it-assistant:/workspace/model/gemma-4-31B-it-assistant
+      - ${ANILA_HF_DIR:-../../models/model}/gemma-4-31B-it:/workspace/model/gemma-4-31B-it
+      - ${ANILA_HF_DIR:-../../models/model}/gemma-4-31B-it-assistant:/workspace/model/gemma-4-31B-it-assistant
     working_dir: /workspace
     expose:
       - "8000"
@@ -178,7 +178,7 @@ services:
       TZ: Asia/Taipei
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
     volumes:
-      - ${ANILA_HF_DIR:-../model}/NV-Embed-v2:/workspace/model/NV-Embed-v2
+      - ${ANILA_HF_DIR:-../../models/model}/NV-Embed-v2:/workspace/model/NV-Embed-v2
       - ${ANILA_MODELSRC_DIR:-./src}/tritonserver-25.04-nv-embed-v2/repository:/workspace/repository
       - ${ANILA_MODELSRC_DIR:-./src}/tritonserver-25.04-nv-embed-v2:/workspace/src
     working_dir: /workspace
@@ -247,7 +247,7 @@ services:
     image: flux2-dev:bf16
     container_name: anila-model-flux2-dev
     build:
-      context: ./flux2-dev
+      context: ../../services/flux2-dev
     environment:
       TZ: Asia/Taipei
       HF_HUB_OFFLINE: "1"
@@ -257,7 +257,7 @@ services:
       FLUX_NUM_STEPS: "28"
       FLUX_GUIDANCE_SCALE: "3.5"
     volumes:
-      - ${ANILA_HF_DIR:-../model}/FLUX.2-dev:/workspace/model/FLUX.2-dev:ro
+      - ${ANILA_HF_DIR:-../../models/model}/FLUX.2-dev:/workspace/model/FLUX.2-dev:ro
     expose:
       - "8000"
     restart: unless-stopped
@@ -290,7 +290,7 @@ services:
     image: anila-flux-agent:latest
     container_name: anila-model-flux2-dev-agent
     build:
-      context: ./flux2-dev-agent
+      context: ../../services/flux2-dev-agent
     environment:
       TZ: Asia/Taipei
       FLUX_BACKEND_URL: http://flux2-dev:8000
@@ -304,7 +304,7 @@ services:
       DEFAULT_ASPECT_RATIO: "16:9"
       FLUX_TIMEOUT_SECONDS: "240"
     volumes:
-      # 相對路徑以本 compose 檔所在目錄 (models/inference/) 解析 →
+      # 相對路徑以本 compose 檔所在目錄 (infra/models/) 解析 →
       # repo 一起搬就通,不用再釘 host 絕對路徑。
       - ../../share/uploads/flux:/share/flux
     expose:
@@ -326,7 +326,7 @@ services:
   # 內網 H100 新增組 (profile: intranet) — 2026-06 模型清單
   # 統一用 generic vLLM image (toolkit 帶進去的 v0.22.1-cu129),權重從
   # ANILA_HF_DIR 掛。GPU 編號用 env 覆寫對應內網主機的實際配置。
-  # 起法: bash scripts/model-serve.sh up intranet
+  # 起法: bash infra/deployment/intranet/model-serve.sh up intranet
   # ════════════════════════════════════════════════════════════════════════
 
   # ── gemma-4-26B-A4B (MoE, ~48G bf16, 單卡) ────────────────────────────────
@@ -340,7 +340,7 @@ services:
       TRANSFORMERS_OFFLINE: "1"
       HF_DATASETS_OFFLINE: "1"
     volumes:
-      - ${ANILA_HF_DIR:-../model}/gemma-4-26B-A4B:/workspace/model/gemma-4-26B-A4B:ro
+      - ${ANILA_HF_DIR:-../../models/model}/gemma-4-26B-A4B:/workspace/model/gemma-4-26B-A4B:ro
     expose:
       - "8000"
     restart: unless-stopped
@@ -378,7 +378,7 @@ services:
       TRANSFORMERS_OFFLINE: "1"
       HF_DATASETS_OFFLINE: "1"
     volumes:
-      - ${ANILA_HF_DIR:-../model}/gemma-4-12B:/workspace/model/gemma-4-12B:ro
+      - ${ANILA_HF_DIR:-../../models/model}/gemma-4-12B:/workspace/model/gemma-4-12B:ro
     expose:
       - "8000"
     restart: unless-stopped
@@ -416,7 +416,7 @@ services:
       TRANSFORMERS_OFFLINE: "1"
       HF_DATASETS_OFFLINE: "1"
     volumes:
-      - ${ANILA_HF_DIR:-../model}/gpt-oss-120b:/workspace/model/gpt-oss-120b:ro
+      - ${ANILA_HF_DIR:-../../models/model}/gpt-oss-120b:/workspace/model/gpt-oss-120b:ro
     expose:
       - "8000"
     restart: unless-stopped

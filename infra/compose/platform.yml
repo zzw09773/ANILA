@@ -1,6 +1,6 @@
 # ANILA Platform — integration stack.
 #   docker-compose up -d
-# 模型推論 service 在 models/inference/docker-compose.yml (project: anila-models),
+# 模型推論 service 在 infra/models/docker-compose.yml (project: anila-models),
 # 透過共用 external network ``anila-models-net`` 跨 project DNS。
 #
 # Prod initial mode 切換 (branch SSO):
@@ -42,8 +42,8 @@ services:
   # ── CSP (Control + Data Plane :8000) ────────────────────────────────────
   csp:
     build:
-      context: .
-      dockerfile: myCSPPlatform/docker/Dockerfile
+      context: ../..
+      dockerfile: infra/docker/csp.Dockerfile
     # 不對 host 開 port — 外部入口只有 nginx :443 (HTTPS + API key)。
     # 容器內 service-to-service 用 ``http://csp:8000`` 走 docker DNS。
     expose:
@@ -156,25 +156,26 @@ services:
       FLUX_TIMEOUT_SECONDS: "${FLUX_TIMEOUT_SECONDS:-180}"
       # FLUX_CACHE_DIR defaults to $INGESTION_UPLOAD_DIR/flux-cache
     volumes:
-      # anila-agent subtree (github.com/zzw09773/anila-agent) — 模板下載端用。
+      # packages/anila-agent subtree (github.com/zzw09773/anila-agent) — 模板下載端用。
       # 更新走 git subtree pull/push,見 README §"Updating anila-agent"。
-      - ./anila-agent:/app/anila-template:ro
+      - ../../packages/anila-agent:/app/anila-template:ro
       # 跟 ingestion-worker 共用 inode,不走拷貝。
-      - ./share/uploads/ingestion:/var/anila/ingestion-uploads
+      - ../../share/uploads/ingestion:/var/anila/ingestion-uploads
       # 內網模型 https 的內部 CA PEM 放這裡 (見上 SSL_CERT_FILE)。
-      - ./share/pki:/etc/anila/pki:ro
+      - ../../share/pki:/etc/anila/pki:ro
       # JWT 簽章金鑰 (csp 簽 access token + 對 studio 發 JWKS)。prod 模式
       # (ALLOW_AUTO_KEYGEN=false) 不自動生 → 缺這把 csp /.well-known/jwks.json
-      # 回 500、登入發不了 token、anila-studio 起不來。由 intranet-deploy.sh 的
-      # [4b] 步驟用 csp image 跑 scripts/generate-jwt-keypair.py 產到 ./secrets。
-      - ./secrets:/app/secrets:ro
+      # 回 500、登入發不了 token、anila-studio 起不來。由 infra/deployment/intranet/
+      # intranet-deploy.sh 的 [4b] 步驟用 csp image 跑 scripts/generate-jwt-keypair.py
+      # 產到 repo 根 ./secrets。
+      - ../../secrets:/app/secrets:ro
     extra_hosts:
       # csp 從這條 reach on-host service (e.g. host port 上的 embedding 後備)。
       - "host.docker.internal:host-gateway"
     networks:
       - default
       # 跨 project 的 external network — 解 ``gemma4`` / ``gpt-oss-20b`` /
-      # ``nv-embed-proxy`` (在 models/inference/docker-compose.yml)。bootstrap 一次:
+      # ``nv-embed-proxy`` (在 infra/models/docker-compose.yml)。bootstrap 一次:
       #   docker network create anila-models-net
       - anila-models-net
     depends_on:
@@ -204,8 +205,8 @@ services:
   # ── ingestion-worker (parse → chunk → embed → pgvector) ─────────────────
   ingestion-worker:
     build:
-      context: .
-      dockerfile: ingestion-worker/Dockerfile
+      context: ../..
+      dockerfile: services/ingestion-worker/Dockerfile
     environment:
       DATABASE_URL: postgresql://csp_app:${CSP_APP_DB_PASSWORD:?CSP_APP_DB_PASSWORD must be set (same value as csp)}@csp-db:5432/csp
       REDIS_URL: redis://redis:6379
@@ -233,7 +234,7 @@ services:
       VISION_TIMEOUT_SECONDS: "${VISION_TIMEOUT_SECONDS:-60}"
       PYTHONUNBUFFERED: "1"
     volumes:
-      - ./share/uploads/ingestion:/var/anila/ingestion-uploads
+      - ../../share/uploads/ingestion:/var/anila/ingestion-uploads
     depends_on:
       csp-db:
         condition: service_healthy
@@ -246,8 +247,8 @@ services:
   # ── Router (anila-core-router :9000) ────────────────────────────────────
   router:
     build:
-      context: .
-      dockerfile: anila-core-router/Dockerfile
+      context: ../..
+      dockerfile: services/anila-core-router/Dockerfile
     # 不對 host 開 port — 外部走 nginx /router/* → router:9000。
     expose:
       - "9000"
@@ -278,10 +279,10 @@ services:
       - "${NGINX_HTTPS_PORT:-443}:443"
       - "${ANILA_UI_HTTPS_PORT:-4443}:4443"
     volumes:
-      - ./myCSPPlatform/docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./myCSPPlatform/docker/certs:/etc/nginx/certs:ro
-      - ./share/static:/usr/share/nginx/share-files/static:ro
-      - ./share/uploads:/usr/share/nginx/share-files/uploads:rw
+      - ../../infra/nginx/anila.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../../infra/nginx/certs:/etc/nginx/certs:ro
+      - ../../share/static:/usr/share/nginx/share-files/static:ro
+      - ../../share/uploads:/usr/share/nginx/share-files/uploads:rw
     depends_on:
       # `restart: true` (compose 2.17+): upstream rebuild 後 nginx 跟著 restart,
       # 不然 nginx.conf 的 static upstream block 把舊 IP 釘死 → 502。
@@ -308,7 +309,7 @@ services:
   # ── pptx-renderer (Node + LibreOffice for slide / vision-QA screenshots) ─
   pptx-renderer:
     build:
-      context: ANILALM/pptx-skill
+      context: ../../services/pptx-renderer
       dockerfile: Dockerfile
     expose:
       - "7100"
@@ -327,7 +328,7 @@ services:
   # works without sharing the private signing key.
   anila-studio:
     build:
-      context: anila-studio
+      context: ../../services/anila-studio
       dockerfile: Dockerfile
     expose:
       - "8100"
@@ -376,7 +377,7 @@ services:
   # ── ANILA LM (Vite/React SPA at /anilalm/) ──────────────────────────────
   anilalm:
     build:
-      context: ANILALM
+      context: ../../apps/anilalm
       args:
         BASE_PATH: ${ANILALM_BASE_PATH:-/anilalm/}
         VITE_DEFAULT_CHAT_MODEL: ${ANILALM_DEFAULT_CHAT_MODEL:-gemma4}
@@ -396,7 +397,7 @@ services:
   # ── ANILA UI (admin SPA, same-origin via nginx) ─────────────────────────
   anila-ui:
     build:
-      context: ANILA_UI/anila-ui
+      context: ../../apps/anila-shell
       args:
         # 空字串 → SPA 用相對 URL,所有請求 same-origin (clipboard secure context)。
         VITE_CSP_BASE_URL: ${ANILA_PUBLIC_CSP_BASE_URL-}
@@ -435,14 +436,14 @@ services:
     volumes:
       - codeserver_config:/home/coder/.config
       # codeserver = 內網維護 ANILA 平台用 → 掛整個 repo 源碼
-      # (CODESERVER_WORKSPACE 預設 '.' = repo root,見 .env.example)。
+      # (CODESERVER_WORKSPACE 預設 '../..' = repo root,見 .env.example)。
       # repo 根有機密(.env 的 JWT/DB 密碼、server.key 的 TLS 私鑰),用 /dev/null
       # 把這兩個遮蔽掉,避免拿到 codeserver 密碼的人讀到(軍方 air-gap 防護)。
       # 其餘(server.crt、CA bundle、share/pki)是公開資料,可見無妨。
       # ⚠ 改了 CODESERVER_WORKSPACE 就要相應調整 / 移除下面兩條遮蔽。
-      - ${CODESERVER_WORKSPACE:-.}:/home/coder/workspace
+      - ${CODESERVER_WORKSPACE:-../..}:/home/coder/workspace
       - /dev/null:/home/coder/workspace/.env:ro
-      - /dev/null:/home/coder/workspace/myCSPPlatform/docker/certs/server.key:ro
+      - /dev/null:/home/coder/workspace/infra/nginx/certs/server.key:ro
     working_dir: /home/coder/workspace
     expose:
       - "8080"
@@ -534,7 +535,7 @@ services:
 networks:
   default:
     name: anila-net
-  # 跟 models/inference/docker-compose.yml 共用。external → 兩個 project 任一個 down
+  # 跟 infra/models/docker-compose.yml 共用。external → 兩個 project 任一個 down
   # 都不會刪掉它。bootstrap:  docker network create anila-models-net
   anila-models-net:
     external: true
