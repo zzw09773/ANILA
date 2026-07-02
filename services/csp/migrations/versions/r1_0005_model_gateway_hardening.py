@@ -76,6 +76,30 @@ _HEALTH_DOWNGRADE_SQL = (
 
 
 def upgrade() -> None:
+    # ── 0. 冪等補齊 health 欄(修 Alembic 鏈缺漏) ────────────────────────────────
+    # health_status / health_checked_at 一直由 ORM(models/model_registry.py)宣告,
+    # 但從無任何 migration 建立它們 —— 走過 startup ``Base.metadata.create_all``
+    # fallback 的既有部署 DB 有這兩欄,乾淨 Alembic-only DB 卻沒有(doc 10 §17.3
+    # 警告的 schema 漂移)。本 migration 的 health 值映射 UPDATE 需要它們,故先用
+    # inspector 冪等補建:既有 DB 跳過、乾淨 DB 建欄。downgrade 不 DROP(見下)。
+    _insp = sa.inspect(op.get_bind())
+    _mr_cols = {c["name"] for c in _insp.get_columns("model_registry")}
+    if "health_status" not in _mr_cols:
+        op.add_column(
+            "model_registry",
+            sa.Column(
+                "health_status",
+                sa.String(length=20),
+                nullable=False,
+                server_default="unknown",
+            ),
+        )
+    if "health_checked_at" not in _mr_cols:
+        op.add_column(
+            "model_registry",
+            sa.Column("health_checked_at", sa.DateTime(timezone=True), nullable=True),
+        )
+
     # ── 1. doc 04 §2 目標 schema 新欄 ──────────────────────────────────────────
     op.add_column(
         "model_registry",

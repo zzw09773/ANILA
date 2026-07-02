@@ -42,6 +42,35 @@ _EMPTY_LIST = sa.text("'[]'")
 
 
 def upgrade() -> None:
+    # ── 0. 冪等補齊 platform_links 缺漏欄(修 Alembic 鏈漂移) ────────────────────
+    # icon / sort_order / required_roles 由 ORM(models/platform_link.py)宣告,卻
+    # 從無 migration 建立(0001 只建 id/name/url/description/is_active/created_at,
+    # 0013 補 is_public)。走過 startup create_all fallback 的既有 DB 有這些欄,
+    # 乾淨 Alembic-only DB 沒有 → 下方 backfill_registered_services 讀 link.icon
+    # 等會 UndefinedColumn。inspector 冪等補建:既有 DB 跳過、乾淨 DB 建欄。
+    # (與 r1_0005 補 model_registry.health_* 同源;doc 10 §17.3 預警的漂移。)
+    _insp = sa.inspect(op.get_bind())
+    _pl_cols = {c["name"] for c in _insp.get_columns("platform_links")}
+    if "icon" not in _pl_cols:
+        op.add_column(
+            "platform_links", sa.Column("icon", sa.String(length=50), nullable=True)
+        )
+    if "sort_order" not in _pl_cols:
+        op.add_column(
+            "platform_links",
+            sa.Column("sort_order", sa.Integer(), nullable=True, server_default="0"),
+        )
+    if "required_roles" not in _pl_cols:
+        op.add_column(
+            "platform_links",
+            sa.Column(
+                "required_roles",
+                sa.JSON().with_variant(postgresql.JSONB(), "postgresql"),
+                nullable=False,
+                server_default="[]",
+            ),
+        )
+
     # ── registered_services (33 doc fields + sort_order) ─────────────────────
     op.create_table(
         "registered_services",
