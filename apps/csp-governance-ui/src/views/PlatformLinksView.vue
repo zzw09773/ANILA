@@ -3,22 +3,25 @@
     <header class="page-head">
       <div>
         <p class="page-head__eyebrow">admin · platform</p>
-        <h1 class="page-head__title">platform-links</h1>
-        <p class="page-head__sub">external tooling shown on dashboard · per-link role gate + grant whitelist</p>
+        <h1 class="page-head__title">service-registry</h1>
+        <p class="page-head__sub">
+          註冊 GUI 服務 · 每服務角色閘門 + 授權白名單 · 啟動模式 / 分類上限 / 服務管理員委派
+          <span v-if="!registryMode" class="compat-note">· 相容模式（platform_links）</span>
+        </p>
       </div>
-      <TermButton variant="primary" @click="openCreateModal" label="add link" />
+      <TermButton variant="primary" @click="openCreateModal" label="新增服務" />
     </header>
 
     <div v-if="pageError" class="feedback is-err">! {{ pageError }}</div>
 
-    <TermBox :title="`links · ${links.length}`" pad="none" flush>
+    <TermBox :title="`services · ${links.length}`" pad="none" flush>
       <table class="term-table">
         <thead>
           <tr>
             <th>name</th>
             <th>url</th>
-            <th style="width: 80px" class="num">order</th>
-            <th style="width: 100px">status</th>
+            <th style="width: 22%">registry</th>
+            <th style="width: 90px">status</th>
             <th style="width: 14%">ops</th>
           </tr>
         </thead>
@@ -26,60 +29,93 @@
           <tr v-for="link in links" :key="link.id">
             <td>
               <div class="cell-strong">{{ link.name }}</div>
-              <div class="cell-meta">{{ link.description || 'no description' }}</div>
+              <div class="cell-meta">{{ link.description || '無描述' }}</div>
             </td>
-            <td><code class="cell-url" :title="link.url">{{ link.url }}</code></td>
-            <td class="num tnum">{{ link.sort_order }}</td>
-            <td><TermBadge :variant="link.is_active ? 'ok' : 'danger'" dot>{{ link.is_active ? 'active' : 'inactive' }}</TermBadge></td>
+            <td><code class="cell-url" :title="serviceUrl(link)">{{ serviceUrl(link) }}</code></td>
+            <td>
+              <div class="reg-tags">
+                <TermBadge variant="accent">{{ launchModeLabel(link.launch_mode) }}</TermBadge>
+                <TermBadge :variant="configSourceBadge(link).variant" :title="configSourceBadge(link).locked ? '由部署環境播種：多數欄位唯讀' : 'UI 為唯一事實來源'">
+                  {{ configSourceBadge(link).label }}
+                </TermBadge>
+                <TermBadge v-if="link.classification_ceiling" variant="danger" dot>{{ link.classification_ceiling }}</TermBadge>
+                <span v-if="(link.service_admin_user_ids || []).length" class="reg-admins" title="服務管理員（委派）">
+                  管理員 {{ link.service_admin_user_ids.length }}
+                </span>
+              </div>
+            </td>
+            <td><TermBadge :variant="link.is_active ? 'ok' : 'danger'" dot>{{ link.is_active ? '啟用' : '停用' }}</TermBadge></td>
             <td>
               <div class="row-actions">
-                <button class="term-action" @click="openEditModal(link)">edit</button>
+                <button class="term-action" @click="openEditModal(link)">編輯</button>
                 <span class="row-actions__sep">·</span>
-                <button v-if="link.is_active" class="term-action term-action--danger" @click="handleDeactivate(link)">deactivate</button>
-                <button v-else class="term-action" @click="handleReactivate(link)">reactivate</button>
+                <button v-if="link.is_active" class="term-action term-action--danger" @click="handleDeactivate(link)">停用</button>
+                <button v-else class="term-action" @click="handleReactivate(link)">啟用</button>
                 <span class="row-actions__sep">·</span>
-                <button class="term-action term-action--danger" @click="handlePurge(link)" title="完全刪除,不可復原">remove</button>
+                <button class="term-action term-action--danger" @click="handlePurge(link)" title="完全刪除,不可復原">刪除</button>
               </div>
             </td>
           </tr>
           <tr v-if="links.length === 0">
-            <td colspan="5"><TermEmpty message="no platform links · add one to surface external tools on the dashboard" /></td>
+            <td colspan="5"><TermEmpty message="尚無註冊服務 · 新增一個以在儀表板顯示外部工具入口" /></td>
           </tr>
         </tbody>
       </table>
     </TermBox>
 
-    <TermModal :visible="showModal" :title="editingId ? 'edit · link' : 'add · link'" width="540px" @close="showModal = false">
+    <TermModal :visible="showModal" :title="editingId ? '編輯 · 服務' : '新增 · 服務'" width="600px" @close="showModal = false">
       <div class="form-grid">
-        <TermField label="name">
-          <input v-model="form.name" class="term-input" />
+        <div v-if="editingLocked" class="feedback is-lock">
+          🔒 此服務由部署環境（環境種子）播種。多數欄位唯讀，僅 {{ stickyEditableFields(editingService).join(' · ') }} 可由管理員覆寫。
+        </div>
+
+        <TermField label="名稱">
+          <input v-model="form.name" class="term-input" :disabled="locked('name')" />
         </TermField>
         <TermField label="url">
-          <input v-model="form.url" class="term-input" placeholder="https://…" />
+          <input v-model="form.url" class="term-input" placeholder="https://…" :disabled="locked('url')" />
         </TermField>
         <div class="form-row-2">
           <TermField label="icon" hint="workflow · git · notebook · chat · monitor · database · api · docs · cpu">
-            <input v-model="form.icon" class="term-input" placeholder="workflow" />
+            <input v-model="form.icon" class="term-input" placeholder="workflow" :disabled="locked('icon')" />
           </TermField>
-          <TermField label="sort order">
-            <input v-model.number="form.sort_order" type="number" class="term-input" />
+          <TermField label="排序">
+            <input v-model.number="form.sort_order" type="number" class="term-input" :disabled="locked('sort_order')" />
           </TermField>
         </div>
-        <TermField label="description" optional>
-          <textarea v-model="form.description" rows="2" class="term-textarea" />
+        <TermField label="描述" optional>
+          <textarea v-model="form.description" rows="2" class="term-textarea" :disabled="locked('description')" />
         </TermField>
 
-        <TermSection title="access control" />
+        <TermSection v-if="registryMode" title="啟動與整合" />
+        <div v-if="registryMode" class="form-row-2">
+          <TermField label="啟動模式" hint="新分頁：另開視窗 · 內嵌 iframe：站內覆蓋層開啟">
+            <select v-model="form.launch_mode" class="term-input" :disabled="locked('launch_mode')">
+              <option v-for="m in LAUNCH_MODES" :key="m.value" :value="m.value">{{ m.label }}</option>
+            </select>
+          </TermField>
+          <TermField label="分類上限" hint="此服務可承載的最高機敏等級">
+            <select v-model="form.classification_ceiling" class="term-input" :disabled="locked('classification_ceiling')">
+              <option value="">未設定</option>
+              <option v-for="c in CLASSIFICATION_LEVELS" :key="c" :value="c">{{ c }}</option>
+            </select>
+          </TermField>
+        </div>
+        <TermField v-if="registryMode" label="健康檢查 url" hint="用於探測服務可用性" optional>
+          <input v-model="form.healthcheck_url" class="term-input" placeholder="https://…/healthz" :disabled="locked('healthcheck_url')" />
+        </TermField>
+
+        <TermSection title="存取控制" />
 
         <label class="form-toggle">
-          <input v-model="form.is_public" type="checkbox" />
+          <input v-model="form.is_public" type="checkbox" :disabled="locked('is_public')" />
           <span>
-            <span class="form-toggle__title">public</span>
-            <span class="form-toggle__hint">any user passing the role gate can see this · no individual grant required</span>
+            <span class="form-toggle__title">公開</span>
+            <span class="form-toggle__hint">任何通過角色閘門的使用者皆可見 · 不需個別授權</span>
           </span>
         </label>
 
-        <TermField label="required roles" hint="empty = open gate · admin always passes">
+        <TermField label="必要角色" hint="留空 = 開放閘門 · admin 一律通過">
           <div class="role-grid">
             <label
               v-for="role in availableRoles"
@@ -91,35 +127,164 @@
                 type="checkbox"
                 :value="role"
                 :checked="form.required_roles.includes(role)"
+                :disabled="locked('required_roles')"
                 @change="toggleRole(role)"
               />
               <span>{{ role }}</span>
             </label>
           </div>
         </TermField>
+
+        <TermField v-if="registryMode" label="服務管理員" hint="委派給指定使用者管理此服務（授權下放，非排他；平台 admin/owner 仍可管理）">
+          <div class="admin-chips" v-if="adminChips.length">
+            <span v-for="u in adminChips" :key="u.id" class="admin-chip">
+              {{ u.username }}
+              <button type="button" class="admin-chip__x" :disabled="locked('service_admin_user_ids')" @click="toggleAdmin(u.id)" aria-label="移除">×</button>
+            </span>
+          </div>
+          <input
+            v-model="adminFilter"
+            class="term-input"
+            placeholder="搜尋使用者 · 帳號 / email"
+            :disabled="locked('service_admin_user_ids')"
+            style="margin-top: var(--gap-2);"
+          />
+          <div class="picker term-box term-box--inset" style="margin-top: var(--gap-2);">
+            <button
+              v-for="u in filteredUsers"
+              :key="u.id"
+              type="button"
+              class="picker__row"
+              :class="{ 'is-on': isAdminSelected(u.id) }"
+              :disabled="locked('service_admin_user_ids')"
+              @click="toggleAdmin(u.id)"
+            >
+              <span class="picker__main">
+                <span class="cell-strong">{{ u.username }}</span>
+                <span class="cell-meta">{{ u.role }}{{ u.department_name ? ` · ${u.department_name}` : '' }}</span>
+              </span>
+              <span v-if="isAdminSelected(u.id)" class="picker__check">✓</span>
+              <span v-else-if="u.email" class="cell-meta">{{ u.email }}</span>
+            </button>
+            <TermEmpty v-if="filteredUsers.length === 0" :message="users.length === 0 ? '無使用者資料' : '無符合的使用者'" />
+          </div>
+        </TermField>
+
+        <template v-if="editingId && registryMode && auditSupported">
+          <TermSection title="稽核回呼" />
+          <table v-if="auditCallbacks.length" class="term-table">
+            <thead>
+              <tr>
+                <th style="width: 30%">event</th>
+                <th>actor</th>
+                <th style="width: 30%">時間</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(cb, i) in auditCallbacks" :key="cb.id ?? i">
+                <td class="cell-strong">{{ cb.event_type || '—' }}</td>
+                <td class="cell-meta">{{ cb.actor?.employee_id || cb.employee_id || '—' }}</td>
+                <td class="cell-meta tnum">{{ formatDate(cb.timestamp || cb.created_at) }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <TermEmpty v-else message="尚無稽核回呼紀錄" />
+        </template>
       </div>
       <template #footer>
-        <TermButton variant="ghost" @click="showModal = false" label="cancel" />
-        <TermButton variant="primary" :disabled="!form.name.trim() || !form.url.trim()" :label="editingId ? 'update' : 'create'" @click="handleSubmit" />
+        <TermButton variant="ghost" @click="showModal = false" label="取消" />
+        <TermButton variant="primary" :disabled="!form.name.trim() || !form.url.trim()" :label="editingId ? '更新' : '建立'" @click="handleSubmit" />
       </template>
     </TermModal>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
-import { listPlatformLinks, createPlatformLink, updatePlatformLink, deactivatePlatformLink, purgePlatformLink } from '../api/platformLinks'
+import { ref, computed, onMounted } from 'vue'
+import {
+  listPlatformLinks, createPlatformLink, updatePlatformLink,
+  deactivatePlatformLink, purgePlatformLink,
+} from '../api/platformLinks'
+import {
+  listServices, createService, updateService,
+  deactivateService, purgeService, listServiceAuditCallbacks,
+} from '../api/services'
+import { listUsers } from '../api/users'
+import {
+  LAUNCH_MODES, CLASSIFICATION_LEVELS, launchModeLabel, configSourceBadge,
+  stickyEditableFields, isFieldLocked, normalizeService,
+} from '../utils/serviceRegistry'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermSection } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
 
 const { confirm, toast } = useDialog()
 const links = ref([])
+const users = ref([])
 const showModal = ref(false)
 const editingId = ref(null)
-const form = ref({ name: '', url: '', icon: '', description: '', sort_order: 0, is_public: false, required_roles: [] })
+const editingService = ref(null)
+const registryMode = ref(true)
 const pageError = ref('')
 
+// 稽核回呼 feature-check：端點未實作（404）時整段隱藏。
+const auditSupported = ref(false)
+const auditCallbacks = ref([])
+
+const adminFilter = ref('')
+
+function emptyForm() {
+  return {
+    name: '', url: '', icon: '', description: '', sort_order: 0,
+    is_public: false, required_roles: [],
+    launch_mode: 'new_tab', classification_ceiling: '', healthcheck_url: '',
+    service_admin_user_ids: [],
+  }
+}
+const form = ref(emptyForm())
+
 const availableRoles = ['admin', 'developer', 'user']
+
+function serviceUrl(link) {
+  return link.url || link.entry_url || ''
+}
+
+// env_seeded 服務的欄位鎖定：僅在編輯既有 env_seeded 列時生效。
+const editingLocked = computed(() =>
+  !!editingService.value && configSourceBadgeLocked(editingService.value),
+)
+function configSourceBadgeLocked(svc) {
+  return configSourceBadge(svc).locked
+}
+function locked(field) {
+  if (!editingId.value || !editingService.value) return false
+  return isFieldLocked(editingService.value, field)
+}
+
+const userById = computed(() => {
+  const m = new Map()
+  for (const u of users.value) m.set(u.id, u)
+  return m
+})
+const adminChips = computed(() =>
+  (form.value.service_admin_user_ids || [])
+    .map((id) => userById.value.get(id) || { id, username: `user#${id}`, role: '' }),
+)
+const filteredUsers = computed(() => {
+  const q = adminFilter.value.trim().toLowerCase()
+  if (!q) return users.value
+  return users.value.filter(
+    (u) => u.username.toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q),
+  )
+})
+function isAdminSelected(id) {
+  return (form.value.service_admin_user_ids || []).includes(id)
+}
+function toggleAdmin(id) {
+  const list = form.value.service_admin_user_ids
+  const idx = list.indexOf(id)
+  if (idx >= 0) list.splice(idx, 1)
+  else list.push(id)
+}
 
 function toggleRole(role) {
   const idx = form.value.required_roles.indexOf(role)
@@ -127,65 +292,165 @@ function toggleRole(role) {
   else form.value.required_roles.push(role)
 }
 
+function formatDate(s) {
+  return s ? new Date(s).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }) : '—'
+}
+
 async function fetchLinks() {
   pageError.value = ''
   try {
-    const { data } = await listPlatformLinks({ include_inactive: true })
-    links.value = data
+    // 優先走 registered_services；7a 尚未上線時退回 legacy platform_links。
+    let data
+    try {
+      const res = await listServices({ include_inactive: true })
+      data = res.data
+      registryMode.value = true
+    } catch (e) {
+      if (e.response?.status === 404) {
+        const res = await listPlatformLinks({ include_inactive: true })
+        data = res.data
+        registryMode.value = false
+      } else {
+        throw e
+      }
+    }
+    links.value = (Array.isArray(data) ? data : (data?.services || data?.data || [])).map(normalizeService)
   } catch (e) {
-    pageError.value = e.response?.data?.detail || 'failed to load links'
+    pageError.value = e.response?.data?.detail || '載入服務清單失敗'
   }
 }
-onMounted(fetchLinks)
+
+async function fetchUsers() {
+  try {
+    const { data } = await listUsers()
+    users.value = Array.isArray(data) ? data : []
+  } catch {
+    users.value = [] // best-effort：picker 無資料時顯示空狀態，不阻斷主流程。
+  }
+}
+
+onMounted(() => {
+  fetchLinks()
+  fetchUsers()
+})
 
 function openCreateModal() {
   editingId.value = null
-  form.value = { name: '', url: '', icon: '', description: '', sort_order: 0, is_public: false, required_roles: [] }
+  editingService.value = null
+  auditSupported.value = false
+  auditCallbacks.value = []
+  adminFilter.value = ''
+  form.value = emptyForm()
   showModal.value = true
 }
+
 function openEditModal(link) {
   editingId.value = link.id
+  editingService.value = link
+  adminFilter.value = ''
   form.value = {
-    name: link.name, url: link.url, icon: link.icon || '',
-    description: link.description || '', sort_order: link.sort_order || 0,
-    is_public: !!link.is_public, required_roles: Array.isArray(link.required_roles) ? [...link.required_roles] : [],
+    name: link.name,
+    url: serviceUrl(link),
+    icon: link.icon || '',
+    description: link.description || '',
+    sort_order: link.sort_order || 0,
+    is_public: !!link.is_public,
+    required_roles: Array.isArray(link.required_roles) ? [...link.required_roles] : [],
+    launch_mode: link.launch_mode === 'iframe' ? 'iframe' : 'new_tab',
+    classification_ceiling: link.classification_ceiling || '',
+    healthcheck_url: link.healthcheck_url || '',
+    service_admin_user_ids: Array.isArray(link.service_admin_user_ids) ? [...link.service_admin_user_ids] : [],
   }
   showModal.value = true
+  if (registryMode.value) loadAuditCallbacks(link.id)
 }
-async function handleSubmit() {
-  const payload = {
-    name: form.value.name.trim(), url: form.value.url.trim(),
-    icon: form.value.icon.trim() || null, description: form.value.description.trim() || null,
-    sort_order: form.value.sort_order || 0,
-    is_public: !!form.value.is_public, required_roles: form.value.required_roles,
-  }
+
+async function loadAuditCallbacks(id) {
+  auditSupported.value = false
+  auditCallbacks.value = []
   try {
-    if (editingId.value) await updatePlatformLink(editingId.value, payload)
-    else await createPlatformLink(payload)
+    const { data } = await listServiceAuditCallbacks(id, { limit: 10 })
+    auditCallbacks.value = Array.isArray(data) ? data : (data?.items || data?.callbacks || [])
+    auditSupported.value = true
+  } catch {
+    // 404（端點未實作）或其他錯誤 → 整段隱藏，不干擾服務編輯。
+    auditSupported.value = false
+  }
+}
+
+function buildPayload() {
+  const base = {
+    name: form.value.name.trim(),
+    url: form.value.url.trim(),
+    icon: form.value.icon.trim() || null,
+    description: form.value.description.trim() || null,
+    sort_order: form.value.sort_order || 0,
+    is_public: !!form.value.is_public,
+    required_roles: form.value.required_roles,
+  }
+  if (!registryMode.value) return base
+  return {
+    ...base,
+    launch_mode: form.value.launch_mode,
+    classification_ceiling: form.value.classification_ceiling || null,
+    healthcheck_url: form.value.healthcheck_url.trim() || null,
+    service_admin_user_ids: form.value.service_admin_user_ids,
+  }
+}
+
+async function handleSubmit() {
+  const payload = buildPayload()
+  try {
+    if (registryMode.value) {
+      if (editingId.value) await updateService(editingId.value, payload)
+      else await createService(payload)
+    } else {
+      if (editingId.value) await updatePlatformLink(editingId.value, payload)
+      else await createPlatformLink(payload)
+    }
     showModal.value = false
     await fetchLinks()
-  } catch (e) { toast(e.response?.data?.detail || 'save failed', { tone: 'error' }) }
+  } catch (e) {
+    toast(e.response?.data?.detail || '儲存失敗', { tone: 'error' })
+  }
 }
+
 async function handleDeactivate(link) {
-  if (!(await confirm({ message: `deactivate '${link.name}'?`, confirmText: 'deactivate', danger: true }))) return
-  try { await deactivatePlatformLink(link.id); await fetchLinks() }
-  catch (e) { toast(e.response?.data?.detail || 'deactivate failed', { tone: 'error' }) }
+  if (!(await confirm({ message: `停用「${link.name}」?`, confirmText: '停用', danger: true }))) return
+  try {
+    await (registryMode.value ? deactivateService(link.id) : deactivatePlatformLink(link.id))
+    await fetchLinks()
+  } catch (e) {
+    toast(e.response?.data?.detail || '停用失敗', { tone: 'error' })
+  }
 }
+
 async function handleReactivate(link) {
-  try { await updatePlatformLink(link.id, { is_active: true }); await fetchLinks() }
-  catch (e) { toast(e.response?.data?.detail || 'reactivate failed', { tone: 'error' }) }
+  try {
+    await (registryMode.value
+      ? updateService(link.id, { is_active: true })
+      : updatePlatformLink(link.id, { is_active: true }))
+    await fetchLinks()
+  } catch (e) {
+    toast(e.response?.data?.detail || '啟用失敗', { tone: 'error' })
+  }
 }
+
 async function handlePurge(link) {
-  // Typed-confirm: 必須輸入完整 link name 才能 purge,避免誤點 remove。
+  // Typed-confirm: 必須輸入完整服務名稱才能刪除,避免誤點。
   if (!(await confirm({
-    title: '完全刪除連結',
-    message: `完全刪除連結「${link.name}」?此動作不可復原。`,
+    title: '完全刪除服務',
+    message: `完全刪除服務「${link.name}」?此動作不可復原。`,
     requireText: link.name,
     confirmText: '刪除',
     danger: true,
   }))) return
-  try { await purgePlatformLink(link.id); await fetchLinks() }
-  catch (e) { toast(e.response?.data?.detail || 'purge failed', { tone: 'error' }) }
+  try {
+    await (registryMode.value ? purgeService(link.id) : purgePlatformLink(link.id))
+    await fetchLinks()
+  } catch (e) {
+    toast(e.response?.data?.detail || '刪除失敗', { tone: 'error' })
+  }
 }
 </script>
 
@@ -195,15 +460,17 @@ async function handlePurge(link) {
 .page-head__eyebrow { font-size: var(--t-2xs); letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--c-fg-3); }
 .page-head__title { font-size: var(--t-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin: 4px 0 2px; }
 .page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }
+.compat-note { color: var(--c-warn); }
 
 .feedback { font-size: var(--t-xs); padding: var(--gap-2) var(--gap-3); border: var(--border-w) solid; }
 .feedback.is-err { color: var(--c-danger); border-color: var(--c-danger); background: var(--c-danger-soft); }
+.feedback.is-lock { color: var(--c-warn); border-color: var(--c-warn); background: var(--c-warn-soft, transparent); }
 
 .cell-strong { color: var(--c-fg-1); font-weight: 500; }
 .cell-meta { color: var(--c-fg-3); font-size: var(--t-2xs); }
 .cell-url {
   display: inline-block;
-  max-width: 360px;
+  max-width: 320px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -213,6 +480,17 @@ async function handlePurge(link) {
   background: var(--c-bg);
   border: var(--border-w) solid var(--c-border);
   padding: 1px 6px;
+}
+.reg-tags { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.reg-admins {
+  font-size: var(--t-2xs);
+  font-family: var(--font-mono);
+  color: var(--c-fg-3);
+  border: var(--border-w) solid var(--c-border-strong);
+  padding: 0 6px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
 }
 .row-actions { display: inline-flex; gap: 6px; align-items: center; font-size: var(--t-xs); }
 .row-actions__sep { color: var(--c-border-strong); }
@@ -251,4 +529,50 @@ async function handlePurge(link) {
   background: var(--c-accent-soft);
 }
 .role-chip input { accent-color: var(--c-accent); }
+
+.admin-chips { display: flex; flex-wrap: wrap; gap: var(--gap-2); }
+.admin-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  border: var(--border-w) solid var(--c-accent);
+  color: var(--c-accent);
+  background: var(--c-accent-soft);
+  font-size: var(--t-2xs);
+  font-family: var(--font-mono);
+}
+.admin-chip__x {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font-size: var(--t-sm);
+  line-height: 1;
+  padding: 0 2px;
+}
+.picker { max-height: 220px; overflow-y: auto; padding: 0; }
+.picker__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: var(--gap-2) var(--gap-3);
+  background: transparent;
+  border: 0;
+  border-bottom: var(--border-w) solid var(--c-border);
+  text-align: left;
+  font: inherit;
+  color: var(--c-fg-1);
+  cursor: pointer;
+}
+.picker__row:last-child { border-bottom: 0; }
+.picker__row:hover { background: var(--c-row-hover); }
+.picker__row.is-on { background: var(--c-accent-soft); }
+.picker__row:disabled { opacity: 0.5; cursor: not-allowed; }
+.picker__main { display: flex; flex-direction: column; gap: 2px; }
+.picker__check { color: var(--c-accent); font-weight: 600; }
+
+.term-input:disabled,
+.term-textarea:disabled { opacity: 0.55; cursor: not-allowed; }
 </style>

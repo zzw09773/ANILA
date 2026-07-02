@@ -80,6 +80,7 @@ import { useConfirm, useToast } from "./confirm.jsx";
 import {
   AnilaGlyph,
   IconColumns,
+  IconGrid,
   IconHistory,
   IconLock,
   IconMoon,
@@ -106,6 +107,7 @@ import { TweaksPanel } from "./tweaks.jsx";
 import { ChangelogModal, CHANGELOG_VERSION } from "./changelog.jsx";
 import { BannerBar } from "./banners.jsx";
 import { TraceExplorer } from "./spanTree.jsx";
+import { ServicesPanel } from "./services.jsx";
 
 // ---- Router pseudo-agent ----------------------------------------------------
 const ROUTER_AGENT = Object.freeze({
@@ -246,6 +248,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   const { authRequest, multipartRequest, isAuthenticated } = useAuth();
   const logoutAndRedirect = useLogoutRedirect();
   const confirm = useConfirm();
+  const toast = useToast();
 
   // --- agents / conversations / messages ---
   const [agents, setAgents] = useState([ROUTER_AGENT]);
@@ -275,6 +278,8 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState("general");
   const [shareOpen, setShareOpen] = useState(false);
+  // 專案入口（Service Platform）overlay。
+  const [servicesOpen, setServicesOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [folder, setFolder] = useState("all");
 
@@ -1935,6 +1940,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
           setSettingsOpen(true);
         }}
         onOpenAgentBrowser={() => {}}
+        onOpenServices={() => setServicesOpen(true)}
         collapsed={collapsed}
         onToggleCollapsed={() => setCollapsed((c) => !c)}
         folder={folder}
@@ -2046,6 +2052,10 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
 
           <IconButton title="重新載入 agent" onClick={() => void refreshAgents()} disabled={loadingAgents}>
             <IconRefresh size={14} />
+          </IconButton>
+
+          <IconButton title="專案入口" onClick={() => setServicesOpen(true)} active={servicesOpen}>
+            <IconGrid />
           </IconButton>
 
           <IconButton title="設定" onClick={() => { setSettingsTab("general"); setSettingsOpen(true); }}>
@@ -2274,6 +2284,13 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
             : Promise.resolve([])
         }
         onRevokeShare={(shareId) => apiRevokeShare(authRequest, selectedConvId, shareId)}
+      />
+
+      <ServicesPanel
+        open={servicesOpen}
+        onClose={() => setServicesOpen(false)}
+        request={authRequest}
+        toast={toast}
       />
     </div>
   );
