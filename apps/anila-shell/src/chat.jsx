@@ -67,6 +67,7 @@ import {
 } from "./trust.jsx";
 import { HandoffTimeline, parseMentions } from "./multiagent.jsx";
 import { TagEditor } from "./collab.jsx";
+import { ShellNav } from "./shellNav.jsx";
 
 // ---- Trace Row + Routing Trace ----
 export const TraceRow = ({ event, active, done }) => (
@@ -1462,6 +1463,7 @@ export const Sidebar = ({
   agents,
   onOpenAgentBrowser,
   onOpenServices,
+  onTaskCenter,
   user,
   onLogout,
   onOpenSettings,
@@ -1540,7 +1542,9 @@ export const Sidebar = ({
         <IconButton onClick={onToggleCollapsed} title="展開側邊"><IconChevRight /></IconButton>
         <IconButton onClick={onNewChat} title="新對話"><IconPlus /></IconButton>
         <IconButton onClick={onOpenAgentBrowser} title="Agents"><IconGrid /></IconButton>
-        <IconButton onClick={onOpenServices} title="專案入口"><IconExternal /></IconButton>
+        <Divider />
+        {/* ANILA Shell 四大入口 + admin-gated 治理中心（含 專案入口）。 */}
+        <ShellNav collapsed user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} />
         <div style={{ flex: 1 }} />
         <IconButton onClick={onOpenSettings} title="設定"><IconSettings /></IconButton>
       </div>
@@ -1576,6 +1580,11 @@ export const Sidebar = ({
           <span style={{ fontSize: 10, color: "var(--fg-subtle)", fontFamily: "var(--font-mono)" }}>⌘K</span>
         </button>
       </div>
+
+      {/* ANILA Shell 主導覽：任務中心 / 我的知識庫 / 產出中心 / 專案入口
+          （+ admin 才顯示的 治理中心）。doc 00 §2 唯一產品入口 / doc 10 §11。 */}
+      <ShellNav user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} />
+      <div style={{ height: 1, background: "var(--border)", margin: "2px 10px 8px" }} />
 
       <div style={{ padding: "0 10px", display: "flex", gap: 2, marginBottom: 8 }}>
         {[

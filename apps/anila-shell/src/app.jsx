@@ -108,6 +108,7 @@ import { ChangelogModal, CHANGELOG_VERSION } from "./changelog.jsx";
 import { BannerBar } from "./banners.jsx";
 import { TraceExplorer } from "./spanTree.jsx";
 import { ServicesPanel } from "./services.jsx";
+import { originHref } from "./shellNav.jsx";
 
 // ---- Router pseudo-agent ----------------------------------------------------
 const ROUTER_AGENT = Object.freeze({
@@ -1941,6 +1942,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         }}
         onOpenAgentBrowser={() => {}}
         onOpenServices={() => setServicesOpen(true)}
+        onTaskCenter={() => setServicesOpen(false)}
         collapsed={collapsed}
         onToggleCollapsed={() => setCollapsed((c) => !c)}
         folder={folder}
@@ -1995,6 +1997,23 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                 </span>
               )}
               <ClassificationLevelBadge conversation={selectedConv} />
+              {/* Slice 9a — Task result 可轉 artifact（doc 10 §11）：對話已建立
+                  Task 時，提供薄連結深連到知識 SPA 的 Studio 面，帶 taskId
+                  query 讓 ALM 承接；不在 shell 內另建 Studio 啟動器。 */}
+              {selectedConv?.taskId != null && (
+                <a
+                  href={originHref(`/anilalm?taskId=${encodeURIComponent(selectedConv.taskId)}`)}
+                  title="將此任務結果轉為產出（Studio / artifact）"
+                  style={{
+                    display: "inline-flex", alignItems: "center", gap: 5,
+                    padding: "4px 10px", fontSize: 12, fontWeight: 500,
+                    background: "var(--bg-elev)", border: "1px solid var(--border)",
+                    borderRadius: "var(--radius)", color: "var(--fg)", textDecoration: "none",
+                  }}
+                >
+                  <IconSpark size={13} /> 產出
+                </a>
+              )}
               <Dropdown align="right" width={260} trigger={() => (
                 <IconButton title="交接 handoff"><IconNodes size={14} /></IconButton>
               )}>
