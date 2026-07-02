@@ -74,6 +74,29 @@ uvicorn anila_agent.serving.service_wrapper:app --host 0.0.0.0 --port 8200
 CSP Router 以 `X-CSP-Service-Token`（csk-）派工；驗過才信 `X-ANILA-User-*`。未設
 `CSP_SERVICE_TOKEN` 時 fail-closed 拒絕（本地測試設 `ANILA_ALLOW_NO_SERVICE_TOKEN=1`）。
 
+## Full Trace（doc-05 §6，正式 L3 approval blocker）
+
+本範本內建 `anila_agent/tracing.py`，示範 CSP 要求的完整 span 集，**衍生 agent 照抄即可**。
+CSP dispatch 帶 `X-ANILA-Trace-Id` 時自動啟用：把 `agent.run/step/model_call/tool_call/`
+`retrieval/output/error` spans 批次（≤256/批）callback `POST {CSP}/v1/traces/{trace_id}/spans`，
+憑證重用 agent 自己的 csk-（與 RAG 出向同一把）。**無 trace header 或無 endpoint → 完全停用、
+零行為變化**；ship 失敗一律 drop-and-log，絕不讓 agent 掛掉。
+
+自訂工具要保留 Full Trace，只需沿用既有接線，無需改工具本身：
+
+- **模型/工具 span**：`service_wrapper` 已把 `AuditHooks` 包進 `TracingRunHooks`，
+  openai-agents 的 `on_llm_*` / `on_tool_*` 事件會自動轉成 span——新增 `@function_tool`
+  不必額外加碼，工具呼叫自動被追蹤。
+- **檢索 span**：檢索走 `TracingRetriever`（包住 retriever），`search()` 前後自動送
+  `agent.retrieval` span（含 `collection_ids`/`chunk_ids`/`top_k`）；換你自己的 retriever
+  一樣包一層即可。
+- **自訂子區段**：工具內若有想單獨追蹤的步驟，注入 emitter 後用
+  `async with emitter.span("agent.tool_call", "my_step", attributes={...}) as sp: ...`，
+  它會自動巢狀在當前 span 下（`sp.attributes[...]` 可補收尾屬性）。
+
+env：`ANILA_TRACE_ENDPOINT`（預設 = `CSP_BASE_URL`）、`ANILA_TRACE_ENABLED`（預設 1）、
+`ANILA_CLASSIFICATION_LEVEL`（隨 run/output span 帶出，滿足 doc-06 §6 分類等級必備項）。
+
 ## Docker / MLSteam 環境映像
 
 搬進 air-gap 內網的另一條路：build 一顆「環境」image（套件 + JupyterLab，無源碼），上傳 MLSteam 由其建 Lab；源碼從 workspace clone。`make docker-build` / `make docker-save`（存 tar）/ `make docker-run`（本機起 JupyterLab，:8888）。完整流程見 [DOCKER.md](DOCKER.md)。
