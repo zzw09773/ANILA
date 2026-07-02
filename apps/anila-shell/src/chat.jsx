@@ -26,6 +26,7 @@ import {
   IconChevUp,
   IconCheck,
   IconCopy,
+  IconExternal,
   IconFile,
   IconFolder,
   IconGrid,
@@ -1460,6 +1461,7 @@ export const Sidebar = ({
   onNewChat,
   agents,
   onOpenAgentBrowser,
+  onOpenServices,
   user,
   onLogout,
   onOpenSettings,
@@ -1538,6 +1540,7 @@ export const Sidebar = ({
         <IconButton onClick={onToggleCollapsed} title="展開側邊"><IconChevRight /></IconButton>
         <IconButton onClick={onNewChat} title="新對話"><IconPlus /></IconButton>
         <IconButton onClick={onOpenAgentBrowser} title="Agents"><IconGrid /></IconButton>
+        <IconButton onClick={onOpenServices} title="專案入口"><IconExternal /></IconButton>
         <div style={{ flex: 1 }} />
         <IconButton onClick={onOpenSettings} title="設定"><IconSettings /></IconButton>
       </div>
@@ -1967,6 +1970,7 @@ export const Sidebar = ({
         )}>
           {(close) => (
             <div>
+              <MenuItem leftIcon={<IconExternal size={14} />} onClick={() => { onOpenServices?.(); close(); }}>專案入口</MenuItem>
               <MenuItem leftIcon={<IconSettings size={14} />} onClick={() => { onOpenSettings(); close(); }}>設定</MenuItem>
               {/* Sprint 7 X follow-up：API Key menu item 已移除（cookie 流程後 dead code）。 */}
               <Divider />
