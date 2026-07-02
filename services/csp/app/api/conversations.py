@@ -120,6 +120,11 @@ class ConversationOut(BaseModel):
     # vs the existing "此對話為機密"). Always FALSE on rows pre-dating
     # migration 0031, so old data renders as before.
     classification_inherited: bool = False
+    # Slice 3b: five-level classification (doc 08 §1). Additive — the legacy
+    # ``classified`` bool is retained as a compatibility read model for older
+    # UI (mirror rule: classified = classification_level >= 機密). Defaults to
+    # 無機密 so rows pre-dating the five-level column render unclassified.
+    classification_level: str = "無機密"
     created_at: datetime
     updated_at: datetime
     model_config = {"from_attributes": True}

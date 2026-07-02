@@ -13,6 +13,7 @@ from app.models.audit_log import AuditLog
 from app.models.conversation import Conversation, ConversationShare
 from app.models.message import Message
 from app.models.user import User
+from app.services.audit_service import log_audit_event
 from app.services.auth_service import is_admin_tier
 
 
@@ -300,21 +301,43 @@ def set_message_rating(
 # ── Classified policy ─────────────────────────────────────────────────────────
 
 def classify_conversation(db: Session, conv_id: int, user: User) -> Conversation:
-    """Mark conversation as classified (irreversible by non-admin)."""
+    """Mark conversation as classified (irreversible by non-admin).
+
+    Slice 3b: routes through the five-level one-way core
+    (``apply_classification`` reason=``manual_admin``) which writes the
+    ClassificationEvent, sets ``classification_level=機密`` and mirrors the
+    legacy boolean (``classified=True``). ``classified_by`` is an
+    admin-attribution field the event model doesn't carry, so it's stamped
+    here alongside the existing AuditLog trail.
+    """
     conv = get_conversation(db, conv_id, user)
     if conv.classified:
         raise HTTPException(status_code=409, detail="此對話已標示為機密")
-    conv.classified = True
-    conv.classified_at = datetime.now(timezone.utc)
-    conv.classified_by = user.id
-    db.add(AuditLog(
-        user_id=user.id,
-        action="classify_conversation",
+    from app.modules.policy import apply_classification
+    apply_classification(
+        db,
         resource_type="conversation",
         resource_id=str(conv_id),
-        status="success",
-        details=f"User {user.username} classified conversation {conv_id}",
-    ))
+        new_level="機密",
+        actor_type="user",
+        actor_id=str(user.id),
+        reason="manual_admin",
+        source="manual_admin",
+    )
+    conv.classified_by = user.id
+    # Supplementary AuditLog trail (the authoritative record is the
+    # ClassificationEvent written by apply_classification above). Uses the
+    # blessed helper — the previous hand-built AuditLog(user_id=..., details=)
+    # used column names the model doesn't have (actor_user_id / detail), so
+    # the manual classify path 500'd before this fix.
+    log_audit_event(
+        db,
+        action="classify_conversation",
+        resource_type="conversation",
+        actor=user,
+        resource_id=conv_id,
+        detail=f"User {user.username} classified conversation {conv_id}",
+    )
     db.commit()
     db.refresh(conv)
     return conv

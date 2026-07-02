@@ -25,8 +25,11 @@
 from __future__ import annotations
 
 import enum
+from datetime import datetime
 from functools import total_ordering
 from typing import Iterable
+
+from pydantic import BaseModel, Field
 
 
 @total_ordering
@@ -132,3 +135,106 @@ class DeclassificationApprovedVia(str, enum.Enum):
 
     IN_SYSTEM = "in_system"
     RECORDED_PAPER_DECISION = "recorded_paper_decision"
+
+
+# ── Slice 3b：降級申請 / 權責指派 API 契約(doc 08 §7/§8/§12、doc 09 §11)───────
+#
+# 邊界 fail-closed:``requested_level`` / ``from_level`` / ``to_level`` /
+# ``status`` / ``approved_via`` 皆以封閉 enum 型別把關,非法值由 FastAPI 422
+# 擋下(與 record/latch 端同一套字彙)。降級的三段式(申請→主管批核→audit)
+# 與雙人原則(申請人 ≠ 核准人/代錄人)在 service + router 層強制,契約層只
+# 定形狀。
+
+
+class DeclassificationRequestCreate(BaseModel):
+    """POST /api/classification/declassification-requests 請求體。
+
+    ``requested_level`` = 目標等級(service 的 ``to_level``),必須嚴格低於
+    資源現行等級(service 層驗證);``reason`` 必填(doc 08 §8)。
+    """
+
+    resource_type: str = Field(..., min_length=1, max_length=50)
+    resource_id: str = Field(..., min_length=1, max_length=100)
+    requested_level: ClassificationLevel
+    reason: str = Field(..., min_length=1)
+    proposed_redaction_summary: str | None = None
+
+
+class DeclassificationApproveBody(BaseModel):
+    """POST .../{id}/approve 請求體(變體 A)。
+
+    ``via=recorded_paper_decision`` 時 ``authority_reference``(公文文號/
+    簽呈)與 ``authority_title_name``(核定者官職＋姓名)必填 —— router 層
+    以 422 把關(fail-closed);``comment`` 落 ``supervisor_comment``。
+    """
+
+    via: DeclassificationApprovedVia = DeclassificationApprovedVia.IN_SYSTEM
+    authority_reference: str | None = None
+    authority_title_name: str | None = None
+    comment: str | None = None
+
+
+class DeclassificationRejectBody(BaseModel):
+    """POST .../{id}/reject 請求體;``reason`` 落 ``supervisor_comment``。"""
+
+    reason: str = Field(..., min_length=1)
+
+
+class DeclassificationRequestOut(BaseModel):
+    """DeclassificationRequest 讀出契約(from ORM;doc 08 §8 欄位)。"""
+
+    id: int
+    resource_type: str
+    resource_id: str
+    from_level: ClassificationLevel
+    to_level: ClassificationLevel
+    requested_by_admin_id: int
+    reason: str
+    proposed_redaction_summary: str | None = None
+    status: DeclassificationStatus
+    supervisor_user_id: int | None = None
+    supervisor_comment: str | None = None
+    decided_at: datetime | None = None
+    approved_via: DeclassificationApprovedVia | None = None
+    authority_reference: str | None = None
+    authority_title_name: str | None = None
+    recorded_by_user_id: int | None = None
+    resulting_resource_id: str | None = None
+    audit_event_ids: list[str] = Field(default_factory=list)
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ClassificationAuthorityCreate(BaseModel):
+    """POST /api/classification-authorities 請求體(doc 08 §7.3 信任錨)。
+
+    ``authority_reference``(核定依據:公文文號/簽呈)必填 —— 權責來自行政
+    程序,系統只負責記錄與鎖定;``department_id`` 為 None = 全域權責。
+    """
+
+    user_id: int
+    department_id: int | None = None
+    authority_reference: str = Field(..., min_length=1, max_length=255)
+
+
+class ClassificationAuthorityOut(BaseModel):
+    """ClassificationAuthorityAssignment 讀出契約(from ORM)。
+
+    ``is_effective`` = 生效與否 = ``is_active and revoked_at is None``
+    (雙人控制:登錄後未確認 → is_active=False → 不生效;撤銷 →
+    revoked_at 有值 → 不生效);由 router 層計算填入。
+    """
+
+    id: int
+    user_id: int
+    department_id: int | None = None
+    authority_reference: str
+    granted_by_user_id: int | None = None
+    confirmed_by_user_id: int | None = None
+    is_active: bool
+    is_effective: bool = False
+    revoked_at: datetime | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

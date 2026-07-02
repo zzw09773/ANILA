@@ -12,6 +12,7 @@ from app.database import get_db
 from app.middleware.caller import Caller, get_caller
 from app.models.agent import Agent, UserAgentPermission
 from app.models.model_registry import ModelRegistry
+from app.schemas.contracts.classification import ClassificationLevel
 from app.services import memory_service
 from app.services.api_key_service import check_model_permission, check_agent_permission
 from app.services.auth_service import is_admin_tier
@@ -43,66 +44,100 @@ def _coerce_conversation_id(raw: str | None) -> int | None:
         return None
 
 
-def _latch_agent_classification(db: Session, conversation_id: int) -> None:
-    """Persist conversations.classified=true when the routed agent has
-    ``requires_encryption=true``. Idempotent — no-ops on rows already
-    classified. Distinct from ``_latch_inherited_classification`` in that
-    it leaves ``classification_inherited=FALSE`` (the source is the
-    agent's own policy, not memory inheritance).
+def _agent_policy_level(agent) -> ClassificationLevel:
+    """The agent's own five-level classification floor (doc 08 §4).
 
-    Without this latch the classified flag only lived on the SSE
-    ``anila_meta`` payload — front-ends could latch the in-memory
-    conversation, but a hard refresh re-read the row from the DB and
-    found ``classified=false``, silently dropping encryption mode.
+    ``default_classification_level`` (set by the 3a migration bridge / manual
+    inventory) is the source of truth; a ``requires_encryption=true`` agent
+    without a manual level still floors at 機密 so the legacy boolean stays
+    byte-compatible (the old raw-SQL latch always meant classified=true).
     """
-    from sqlalchemy import text as sql_text
-    db.execute(
-        sql_text(
-            """
-            UPDATE conversations
-               SET classified = TRUE,
-                   classified_at = COALESCE(classified_at, CURRENT_TIMESTAMP)
-             WHERE id = :conv_id
-               AND classified = FALSE
-            """
-        ),
-        {"conv_id": conversation_id},
+    level = ClassificationLevel.from_storage(
+        getattr(agent, "default_classification_level", None) or "無機密"
     )
-    db.commit()
+    if bool(getattr(agent, "requires_encryption", False)):
+        level = ClassificationLevel.max_of(
+            [level, ClassificationLevel.CONFIDENTIAL]
+        )
+    return level
+
+
+def _latch_agent_classification(
+    db: Session, conversation_id: int, level: str = "機密"
+) -> None:
+    """Latch the routed agent's classification onto the conversation row.
+
+    Slice 3b: routes through the five-level one-way core
+    (``apply_classification`` reason=``agent_policy``) instead of the old raw
+    ``UPDATE ... SET classified=TRUE``. The core mirrors the legacy boolean
+    (``classified = level >= 機密``) so a hard refresh still latches the UI
+    back into encrypted mode; it never lowers (single-direction), and leaves
+    ``classification_inherited`` untouched (the source is agent policy, not
+    memory inheritance — that path is handled separately below).
+    """
+    from app.modules.policy import apply_classification
+    apply_classification(
+        db,
+        resource_type="conversation",
+        resource_id=str(conversation_id),
+        new_level=level,
+        actor_type="service",
+        actor_id="agent-policy",
+        reason="agent_policy",
+        source="agent_policy",
+    )
 
 
 def _latch_inherited_classification(db: Session, conversation_id: int) -> None:
-    """Mark the conversation as classified-via-inheritance, one-shot.
+    """Mark the conversation as classified-via-inheritance (memory recall).
 
-    Idempotent — calling twice on the same row is a no-op (the WHERE
-    clause filters out rows already in the inherited state). Doesn't
-    overwrite a manual / agent-driven classification that didn't go
-    through inheritance: those rows already have classified=true and
-    classification_inherited=false, and the WHERE clause skips them.
-    Net effect: ``classification_inherited`` only becomes TRUE when
-    the latch path is the first thing to flip it.
-
-    The current behaviour is "either path can flip classified=true,
-    only the first path stamps the timestamp / source flags". A
-    cleaner design would model classification as an event log rather
-    than a snapshot, but a single boolean + timestamp is enough for
-    P3's UI needs and avoids a much larger schema migration.
+    Slice 3b: routes through the five-level one-way core
+    (``apply_classification`` reason=``memory_inherited``), which floors the
+    row at 機密, mirrors the legacy boolean AND flips
+    ``classification_inherited=TRUE`` on the raising event (doc 08 §3 bridge).
+    One-way — never lowers a row already at 機密 or higher.
     """
-    from sqlalchemy import text as sql_text
-    db.execute(
-        sql_text(
-            """
-            UPDATE conversations
-               SET classified = TRUE,
-                   classification_inherited = TRUE,
-                   classified_at = COALESCE(classified_at, CURRENT_TIMESTAMP)
-             WHERE id = :conv_id
-               AND classification_inherited = FALSE
-            """
-        ),
-        {"conv_id": conversation_id},
+    from app.modules.policy import apply_classification
+    apply_classification(
+        db,
+        resource_type="conversation",
+        resource_id=str(conversation_id),
+        new_level=ClassificationLevel.CONFIDENTIAL.to_storage(),
+        actor_type="service",
+        actor_id="memory",
+        reason="memory_inherited",
+        source="memory_inherited",
     )
-    db.commit()
+
+
+def _propagate_conversation_level_to_task(
+    db: Session, task_id: int, conversation_id: int
+) -> None:
+    """Slice 3b: carry the conversation's effective level onto the linked
+    task so later ceiling checks (doc 08 §4/§10) see it.
+
+    reason=``source_selected`` — the runtime conversation is the selected
+    source context feeding the task (doc 08 §4 task.level = max(...,
+    source_snapshot.level, ...)). One-way core → never lowers the task.
+    No-op when the conversation is unclassified (nothing to raise to).
+    """
+    from app.modules.policy import apply_classification, effective_level
+    conv_level = effective_level(
+        db, resource_type="conversation", resource_id=str(conversation_id)
+    )
+    if conv_level <= ClassificationLevel.UNCLASSIFIED:
+        return
+    apply_classification(
+        db,
+        resource_type="task",
+        resource_id=str(task_id),
+        new_level=conv_level.to_storage(),
+        actor_type="service",
+        actor_id="task-link",
+        reason="source_selected",
+        task_id=task_id,
+        source="conversation_propagation",
+    )
 
 
 def _extract_assistant_text(payload: dict | None) -> str | None:
@@ -507,14 +542,24 @@ async def chat_completions(
         # but the row's classified flag must record the encrypted turn so
         # the next GET /api/conversations latches the UI back into
         # encrypted mode.
-        if agent_requires_encryption and conv_id_int is not None:
-            try:
-                _latch_agent_classification(db, conv_id_int)
-            except Exception:
-                logger.exception(
-                    "agent classification latch failed conv_id=%s",
-                    conv_id_int,
-                )
+        # Slice 3b: latch the agent's OWN five-level classification onto the
+        # conversation (reason=agent_policy) through the one-way core. Uses
+        # the agent's default level, floored at 機密 when requires_encryption
+        # (byte-compatible with the old boolean latch). The OR'd
+        # ``agent_requires_encryption`` still drives the wire meta below; the
+        # memory-inheritance contribution is latched separately (above).
+        if conv_id_int is not None:
+            agent_level = _agent_policy_level(agent)
+            if agent_level > ClassificationLevel.UNCLASSIFIED:
+                try:
+                    _latch_agent_classification(
+                        db, conv_id_int, agent_level.to_storage()
+                    )
+                except Exception:
+                    logger.exception(
+                        "agent classification latch failed conv_id=%s",
+                        conv_id_int,
+                    )
         # Slice 2b-C: optional X-ANILA-Task-Id — validate access, record
         # the task.run PolicyDecision and open a TaskRun BEFORE dispatch.
         # None → legacy traffic (usage row marked legacy_runtime_call).
@@ -526,6 +571,18 @@ async def chat_completions(
             resource_type="agent",
             resource_id=str(agent.id),
         )
+        # Slice 3b: propagate the conversation's effective level onto the
+        # linked task (reason=source_selected) so later ceiling checks see it.
+        if task_ctx is not None and conv_id_int is not None:
+            try:
+                _propagate_conversation_level_to_task(
+                    db, task_ctx.task_id, conv_id_int
+                )
+            except Exception:
+                logger.exception(
+                    "task classification propagation failed task_id=%s",
+                    task_ctx.task_id,
+                )
         # Usage attribution: inbound X-ANILA-Trace-Id wins (legacy
         # contract); a task-linked call without one falls back to the
         # task row's trace id (doc 04 AC10 歸戶).
@@ -680,6 +737,19 @@ async def chat_completions(
         resource_type="model",
         resource_id=str(model.id),
     )
+    # Slice 3b: propagate the conversation's effective level onto the linked
+    # task (reason=source_selected). On the direct-model path the conversation
+    # may still be classified via memory inheritance (latched above).
+    if task_ctx is not None and conv_id_int is not None:
+        try:
+            _propagate_conversation_level_to_task(
+                db, task_ctx.task_id, conv_id_int
+            )
+        except Exception:
+            logger.exception(
+                "task classification propagation failed task_id=%s",
+                task_ctx.task_id,
+            )
     usage_trace_id = trace_id or (task_ctx.trace_id if task_ctx else None)
     if stream:
         target_url = (
