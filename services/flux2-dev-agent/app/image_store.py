@@ -5,7 +5,7 @@ The local directory is bind-mounted from the host's
 ``share-dev/uploads/flux/`` into both this container and the
 ``anila-nginx-dev`` container. Nginx serves it under
 ``/uploads/flux/`` (sibling of the existing ``/uploads/`` static
-route in ``myCSPPlatform/docker/nginx.conf``).
+route in ``infra/nginx/anila.conf``).
 """
 from __future__ import annotations
 

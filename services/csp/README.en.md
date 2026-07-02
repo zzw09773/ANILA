@@ -1,16 +1,16 @@
-# myCSPPlatform (CSP — Control & Data Plane)
+# services/csp (CSP — Control & Data Plane)
 
-> ANILA's authoritative core service: owns users, API keys, model / agent registration, conversations, the knowledge base and audit, and exposes an OpenAI-compatible proxy.
+> ANILA's authoritative core service (formerly `myCSPPlatform`): owns users, API keys, model / agent registration, conversations, the knowledge base and audit, and exposes an OpenAI-compatible proxy.
 
 > 中文版本：[`README.md`](./README.md)
 
-> 🌿 **Branch note**: This service exists on every ANILA deployment branch. Each branch's target / auth / differences are in the root [`README.md`](../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md). **Auth mode is branch-dependent**: `main` and most branches are **password-only** (RS256 JWT + cookie; `/api/auth/*` has only register/login/refresh/logout/me/password/revoke/revocations); only **`prod-intranet-card`** adds SSO (OIDC) + MND PKI smart-card login (`/api/auth/card/*`) as a fork (the SSO / `local_password_disabled` columns were dropped from main in migration `0035`).
+> 🌿 **Branch note**: This service exists on every ANILA deployment branch. Each branch's target / auth / differences are in the root [`README.md`](../../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md). **Auth mode is branch-dependent**: `main` and most branches are **password-only** (RS256 JWT + cookie; `/api/auth/*` has only register/login/refresh/logout/me/password/revoke/revocations); only **`prod-intranet-card`** adds SSO (OIDC) + MND PKI smart-card login (`/api/auth/card/*`) as a fork (the SSO / `local_password_disabled` columns were dropped from main in migration `0035`).
 
 ---
 
 ## Overview
 
-`myCSPPlatform` (codename **CSP**) is ANILA's authoritative store: Router, ingestion-worker, anila-studio and the frontends all ask it for user identity, API keys, model / agent manifests and usage. It runs two planes:
+`services/csp` (formerly `myCSPPlatform`, codename **CSP**) is ANILA's authoritative store: Router, ingestion-worker, anila-studio and the frontends all ask it for user identity, API keys, model / agent manifests and usage. It runs two planes:
 
 - **Control Plane** — `/api/*` (RS256 JWT / cookie auth): management & internal comms — users, API keys, model registry, agent registration & approval, conversations / attachments / shares / handoffs, audit, alerts, banners, departments, platform links, trusted-hosts, user memory, service tokens / service clients.
 - **Data Plane** — `/v1/*` and `/v2/*` (`sk-` API key or cookie): OpenAI-compatible proxy routing by `model_type` to backend LLM / Embedding / VLM / Agent, writing unified `token_usage` billing.
@@ -18,9 +18,9 @@
 CSP also carries one application pipeline and fronts one extracted service:
 
 - **Ingestion knowledge base** — upload → chunk → embedding → pgvector retrieval (RAG) + cross-document relations. CSP enqueues to Redis via `arq`, consumed by the standalone [`ingestion-worker`](../ingestion-worker/).
-- **Studio deck / report generation** — **extracted into the standalone [`anila-studio`](../anila-studio/) service** (incl. FLUX image generation, Graphviz diagram rendering, PPTX/report pipelines). CSP keeps **only the contract endpoints**: ingestion `/search`, `/images/search`, `/images/{id}/blob`, the `/api/proxy` LLM path, `/.well-known/jwks.json`, `/api/auth/revocations`, plus the Redis token-revoke publisher. See [`docs/superpowers/anila-studio/extraction-decision.md`](../docs/superpowers/anila-studio/extraction-decision.md).
+- **Studio deck / report generation** — **extracted into the standalone [`anila-studio`](../anila-studio/) service** (incl. FLUX image generation, Graphviz diagram rendering, PPTX/report pipelines). CSP keeps **only the contract endpoints**: ingestion `/search`, `/images/search`, `/images/{id}/blob`, the `/api/proxy` LLM path, `/.well-known/jwks.json`, `/api/auth/revocations`, plus the Redis token-revoke publisher. See [`docs/superpowers/anila-studio/extraction-decision.md`](../../docs/superpowers/anila-studio/extraction-decision.md).
 
-> Platform-wide positioning: root [`../README.md`](../README.md) and the single source of truth [`../anila_plan.md`](../anila_plan.md).
+> Platform-wide positioning: root [`../../README.md`](../../README.md) and the single source of truth [`../../anila_plan.md`](../../anila_plan.md).
 
 ---
 
@@ -47,9 +47,9 @@ CSP also carries one application pipeline and fronts one extracted service:
                          └──────────────────┘
 ```
 
-### Backend `backend/` (FastAPI / Python)
+### Backend (FastAPI / Python; `app/` etc. live directly under `services/csp/`)
 
-| Item | Details (from `requirements.txt` / `docker/Dockerfile`) |
+| Item | Details (from `requirements.txt` / `infra/docker/csp.Dockerfile`) |
 |------|---------|
 | Language / framework | Python 3.11 · FastAPI 0.115.6 · uvicorn[standard] 0.34.0 |
 | ORM / migration | SQLAlchemy 2.0.36 · Alembic 1.14.1 (migrations `0001`–`0045`) |
@@ -61,9 +61,9 @@ CSP also carries one application pipeline and fronts one extracted service:
 | Text post-processing | opencc-python-reimplemented 0.1.7 |
 | Tests | pytest · pytest-asyncio 0.24.0 · respx 0.22.0 (~32 test files) |
 
-> The container uses `docker/Dockerfile` (multi-stage, incl. `anila-core[rag]`); system packages `gcc` / `libpq-dev` / `curl` / `graphviz` / `fonts-noto-cjk`. `backend/Dockerfile` is dead (compose uses `docker/Dockerfile`). **JWT signing is RS256**: `ALGORITHM=HS256` is a legacy setting, unused for access/refresh.
+> The container uses `infra/docker/csp.Dockerfile` (multi-stage, incl. `anila-core[rag]`); system packages `gcc` / `libpq-dev` / `curl` / `graphviz` / `fonts-noto-cjk`. `services/csp/Dockerfile` is dead / legacy (compose uses `infra/docker/csp.Dockerfile`). **JWT signing is RS256**: `ALGORITHM=HS256` is a legacy setting, unused for access/refresh.
 
-### Frontend `frontend/` (Vue 3 / Vite, package `csp-platform`)
+### Frontend [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/) (Vue 3 / Vite, package `csp-platform`; now a separate top-level dir, formerly `myCSPPlatform/frontend`)
 
 | Item | Details |
 |------|---------|
@@ -79,34 +79,34 @@ A pure SPA admin console (21 views: dashboard / API keys / models / users / usag
 ## Layout
 
 ```
-myCSPPlatform/
-├── backend/
-│   ├── app/
-│   │   ├── main.py            # lifespan: startup_security → alembic upgrade → startup_migrations
-│   │   │                      #   → auto_seed → trusted_host backfill → health_checker / usage_writer
-│   │   │                      #   / ingestion_pool; CORS / TrustedHost / CSRF / SPA fallback
-│   │   ├── config.py · database.py
-│   │   ├── api/               # router.py aggregates; per-resource routers (see API surface)
-│   │   │   └── ingestion/     # collections / credentials / documents / eval_runs /
-│   │   │                      #   image_blob / jobs / preview / relations / search
-│   │   ├── models/            # 23 ORM files (user / agent / model_registry / ingestion /
-│   │   │                      #   token_usage / audit_log / banner / department / ...)
-│   │   ├── schemas/
-│   │   ├── services/          # 26 services (auth / proxy / health_checker / usage_writer /
-│   │   │                      #   auto_seed / startup_security / ingestion_queue /
-│   │   │                      #   trusted_host / token_revocation_publisher / agent_credential ...)
-│   │   ├── middleware/        # api_key_auth · caller · cookies · csrf
-│   │   └── utils/             # security.py (RS256 JWT + JWKS keys) · time_helpers.py
-│   ├── migrations/versions/   # Alembic 0001..0045
-│   ├── tests/                 # ~32 pytest files
-│   ├── scripts/generate-jwt-keypair.py
-│   ├── requirements.txt
-│   └── Dockerfile             # dead (compose uses docker/Dockerfile)
-├── frontend/                  # Vue 3 SPA (src/views ×21 · components/cli design system)
-├── docker/                    # Dockerfile (the real one) · docker-compose.yml (standalone csp+nginx+postgres) · nginx.conf
-├── scripts/init_db.py · start.sh · .env.example
+services/csp/                  # formerly myCSPPlatform/backend; app / migrations / tests / scripts /
+│                              #   requirements.txt now live directly under this dir
+├── app/
+│   ├── main.py                # lifespan: startup_security → alembic upgrade → startup_migrations
+│   │                          #   → auto_seed → trusted_host backfill → health_checker / usage_writer
+│   │                          #   / ingestion_pool; CORS / TrustedHost / CSRF / SPA fallback
+│   ├── config.py · database.py
+│   ├── api/                   # router.py aggregates; per-resource routers (see API surface)
+│   │   └── ingestion/         # collections / credentials / documents / eval_runs /
+│   │                          #   image_blob / jobs / preview / relations / search
+│   ├── models/                # 23 ORM files (user / agent / model_registry / ingestion /
+│   │                          #   token_usage / audit_log / banner / department / ...)
+│   ├── schemas/
+│   ├── services/              # 26 services (auth / proxy / health_checker / usage_writer /
+│   │                          #   auto_seed / startup_security / ingestion_queue /
+│   │                          #   trusted_host / token_revocation_publisher / agent_credential ...)
+│   ├── middleware/            # api_key_auth · caller · cookies · csrf
+│   └── utils/                 # security.py (RS256 JWT + JWKS keys) · time_helpers.py
+├── migrations/versions/       # Alembic 0001..0045
+├── tests/                     # ~32 pytest files
+├── scripts/                   # generate-jwt-keypair.py · init_db.py
+├── requirements.txt
+├── .env.example
+├── Dockerfile                 # dead / legacy (the real image is infra/docker/csp.Dockerfile)
 └── README.md / README.en.md
 ```
+
+> The frontend SPA moved to the top-level [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/); the deploy Dockerfile is [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile) and the nginx config is [`infra/nginx/anila.conf`](../../infra/nginx/anila.conf) (both formerly under `myCSPPlatform/docker/`).
 
 ---
 
@@ -117,23 +117,22 @@ myCSPPlatform/
 The full stack (redis / ingestion-worker / router / anila-studio / frontends / nginx) is defined in the **repo-root** compose:
 
 ```bash
-docker compose -f docker-compose-dev.yml up -d --build csp   # dev
-# prod: docker compose up -d csp (prod branches can use scripts/deploy-prod.sh)
+docker compose -f compose.dev.yaml up -d --build csp   # dev
+# prod: docker compose up -d csp (prod branches can use infra/deployment/scripts/deploy-prod.sh)
 ```
 
 CSP joins two networks: `default` (in-stack) and `anila-models-net` (external, to reach `gemma4` / `gpt-oss-20b` / `nv-embed-proxy` / `flux2-dev`). On first start: `docker network create anila-models-net`.
 
-> `myCSPPlatform/docker/docker-compose.yml` is a minimal **standalone-dev** compose (only `nginx` + `postgres` + `csp`, no redis / router); use the repo-root compose for full functionality.
-
 ### CSP standalone development
 
+The old `myCSPPlatform` standalone compose (`docker/docker-compose.yml`) and `start.sh` were retired in the §17.1 directory migration and were not carried over. For standalone-ish dev, use the repo-root dev stack and start only csp:
+
 ```bash
-cd myCSPPlatform
-cp .env.example .env       # at minimum change SECRET_KEY and ADMIN_PASSWORD
-./start.sh up              # up / down / restart / logs [csp] / status / build / shell
+# from the repo root
+docker compose -f compose.dev.yaml up -d --build csp
 ```
 
-Backend locally (no container, bring your own PostgreSQL): `cd backend && uvicorn app.main:app --port 8000`.
+Backend locally (no container, bring your own PostgreSQL): `cd services/csp && uvicorn app.main:app --port 8000`.
 
 ### Key environment variables (from `config.py`, actual defaults)
 
@@ -201,10 +200,10 @@ curl http://localhost/v1/chat/completions \
 
 ## Related docs
 
-- Ingestion platform design: [`../docs/ingestion/ingestion-platform-design.md`](../docs/ingestion/ingestion-platform-design.md) · Parent-child RAG: [`../docs/ingestion/parent-child-rag-design.md`](../docs/ingestion/parent-child-rag-design.md)
-- Multi-service integration: [`../docs/platform/multi-service-integration-plan.md`](../docs/platform/multi-service-integration-plan.md) · Service-token cutover: [`../docs/runbooks/service-token-cutover.md`](../docs/runbooks/service-token-cutover.md)
-- anila-studio extraction: [`../docs/superpowers/anila-studio/extraction-decision.md`](../docs/superpowers/anila-studio/extraction-decision.md)
-- Platform: [`../README.md`](../README.md) · Roadmap: [`../anila_plan.md`](../anila_plan.md) · Branch strategy: [`../docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)
+- Ingestion platform design: [`../../docs/ingestion/ingestion-platform-design.md`](../../docs/ingestion/ingestion-platform-design.md) · Parent-child RAG: [`../../docs/ingestion/parent-child-rag-design.md`](../../docs/ingestion/parent-child-rag-design.md)
+- Multi-service integration: [`../../docs/platform/multi-service-integration-plan.md`](../../docs/platform/multi-service-integration-plan.md) · Service-token cutover: [`../../docs/runbooks/service-token-cutover.md`](../../docs/runbooks/service-token-cutover.md)
+- anila-studio extraction: [`../../docs/superpowers/anila-studio/extraction-decision.md`](../../docs/superpowers/anila-studio/extraction-decision.md)
+- Platform: [`../../README.md`](../../README.md) · Roadmap: [`../../anila_plan.md`](../../anila_plan.md) · Branch strategy: [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
 
 ---
 

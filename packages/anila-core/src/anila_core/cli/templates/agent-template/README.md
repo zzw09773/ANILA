@@ -67,5 +67,5 @@ See `examples/` in the `anila-core` repo or [`anila-agent/`](../../../../../../a
 | **A RAG agent** (搜文件 + 引用來源) | [`anila-agent/`](../../../../../../anila-agent/) — official template |
 | **A non-RAG agent** (workflow / external API / custom logic) | **This template** (`anila-core init my-agent`) — minimal starter |
 
-Both register to myCSPPlatform the same way — the `/developer/agents` register
+Both register to the CSP platform (services/csp) the same way — the `/developer/agents` register
 wizard issues one `csk-` into `CSP_SERVICE_TOKEN` (see `.env.example`).

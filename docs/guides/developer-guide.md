@@ -1,9 +1,9 @@
-# 開發者指南 — 在 myCSPPlatform 註冊一個 Agent
+# 開發者指南 — 在 CSP 平台註冊一個 Agent
 
 > 本文件說明開發者要如何從 fork `AgenticRAG` 樣板 → 部署自己的 agent →
 > 在「Developer / Agent Console」頁面完成註冊 → 送審 → 被 Router 自動 discover。
 >
-> 頁面位置：`/developer/agents`（`myCSPPlatform/frontend/src/views/DeveloperAgentsView.vue`）
+> 頁面位置：`/developer/agents`（`apps/csp-governance-ui/src/views/DeveloperAgentsView.vue`）
 
 ---
 
@@ -21,7 +21,7 @@
 
 - 一台可跑 Docker 的機器，對 CSP backend 可達（或反過來）。
 - 至少一組 LLM / embedding 端點（直連或走 CSP proxy）。
-- 你在 myCSPPlatform 已經登入且角色為 `developer` 或 `admin`。
+- 你在 CSP 平台已經登入且角色為 `developer` 或 `admin`。
 
 ---
 
@@ -48,7 +48,7 @@ curl http://localhost:24786/health
 # {"status":"ok","model":"google/gemma4","rag":true}
 ```
 
-`anila-core/` 不用動，那是平台共用的 runtime foundation。
+`packages/anila-core/` 不用動，那是平台共用的 runtime foundation。
 
 ---
 
@@ -246,9 +246,9 @@ Output 面向 Router 的格式一樣是 OpenAI-compat SSE，tool call 的中間�
 
 ## 8. 相關檔案索引
 
-- 前端頁面：`myCSPPlatform/frontend/src/views/DeveloperAgentsView.vue`
-- 註冊 API：`myCSPPlatform/backend/app/api/agents.py`（`register` / `approve` / `reject`）
-- Agent ORM：`myCSPPlatform/backend/app/models/agent.py`
+- 前端頁面：`apps/csp-governance-ui/src/views/DeveloperAgentsView.vue`
+- 註冊 API：`services/csp/app/api/agents.py`（`register` / `approve` / `reject`）
+- Agent ORM：`services/csp/app/models/agent.py`
 - 樣板：`AgenticRAG/`（`README.md`、`api.py`、`index_documents.py`）
-- Runtime foundation：`anila-core/`
+- Runtime foundation：`packages/anila-core/`
 - 平台藍圖：`anila_plan.md`

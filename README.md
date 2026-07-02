@@ -14,7 +14,7 @@
 > | `dev-military` | 國軍 dev | 純帳密 | dev-public + military 客製 |
 > | `trial-military` | 國軍 trial / 展示 | 純帳密 | main 精簡子集 |
 >
-> **`main` 是 SSOT** — 新 feature 先進 main 再 sync 進此分支。**改 SSO / card 相關檔(`auth.py` / `users.py` / `auth_providers.py` / `user.py` 等 fork 區)不要往 main 或其他 downstream 推**；其他改動(anila-studio / ANILA_UI / docs / 一般 bugfix)優先進 main 再 sync。
+> **`main` 是 SSOT** — 新 feature 先進 main 再 sync 進此分支。**改 SSO / card 相關檔(`auth.py` / `users.py` / `auth_providers.py` / `user.py` 等 fork 區)不要往 main 或其他 downstream 推**；其他改動(anila-studio / anila-shell / docs / 一般 bugfix)優先進 main 再 sync。
 > 完整 fork 區清單 + sync SOP 見 [`docs/branch-sync-backlog.md`](./docs/branch-sync-backlog.md)。Backup tag：`pre-branch-restructure-2026-05-26`。
 
 ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key、對外以 OpenAI 相容介面提供推論、讓開發者基於樣板複製出自己的 Agent 並註冊進來、讓終端使用者透過統一 UI 與所有 Agent 對話，並以「主 LLM 未加密 → 遇到加密 agent 整段對話升級為加密」的**單向閂鎖（one-way latch）**處理敏感資料。
@@ -38,14 +38,14 @@ ANILA 是一套企業內部的多 Agent 平台：統一管理模型與 API Key�
 
 | 子專案 | 角色 | 預設 Port |
 |---|---|---|
-| [`myCSPPlatform`](./myCSPPlatform/) | **CSP**（Control & Data Plane）— 使用者 / API Key / 模型 / Agent / 對話 / 附件 / 分享 / 交接 / 審計 / Ingestion / OpenAI 相容代理 / **card + SSO auth** / JWKS / token revocation publisher | `:8000`（internal） |
-| [`anila-studio`](./anila-studio/) | **Studio service** — Deck 生成（RAG + LLM + FLUX + PPTX）；本地驗 JWT（JWKS）+ Redis pub/sub revocation | `:8100`（internal） |
-| [`anila-core`](./anila-core/) | **Runtime foundation（SDK）** — api / registry / engine / tools / providers / storage / **memory** / compact / cli / **security** | — |
-| [`anila-core-router`](./anila-core-router/) | **Router** — OpenAI 相容分派器；per-credential service token 走 s2s | `:9000`（internal） |
-| [`anila-agent`](./anila-agent/) | **官方 sub-agent 模板**（git subtree；上游 [`zzw09773/anila-agent`](https://github.com/zzw09773/anila-agent)） | `:24786`（獨立執行時） |
-| [`ingestion-worker`](./ingestion-worker/) | **Async pipeline worker** — Arq + Redis；parse → chunk → embed → pgvector + Chunking Evaluator | （無 host port） |
-| [`ANILA_UI/anila-ui`](./ANILA_UI/anila-ui/) | **Chat Runtime UI** — React；含 card 登入畫面（LoginView） | nginx 前 |
-| [`ANILALM`](./ANILALM/) | **Knowledge-base + Studio SPA**；mount 在 nginx `/anilalm/` | nginx 前 |
+| [`services/csp`](./services/csp/) | **CSP**（Control & Data Plane）— 使用者 / API Key / 模型 / Agent / 對話 / 附件 / 分享 / 交接 / 審計 / Ingestion / OpenAI 相容代理 / **card + SSO auth** / JWKS / token revocation publisher；Vue 管理前端在 [`apps/csp-governance-ui`](./apps/csp-governance-ui/) | `:8000`（internal） |
+| [`services/anila-studio`](./services/anila-studio/) | **Studio service** — Deck 生成（RAG + LLM + FLUX + PPTX）；本地驗 JWT（JWKS）+ Redis pub/sub revocation | `:8100`（internal） |
+| [`packages/anila-core`](./packages/anila-core/) | **Runtime foundation（SDK）** — api / registry / engine / tools / providers / storage / **memory** / compact / cli / **security** | — |
+| [`services/anila-core-router`](./services/anila-core-router/) | **Router** — OpenAI 相容分派器；per-credential service token 走 s2s | `:9000`（internal） |
+| [`packages/anila-agent`](./packages/anila-agent/) | **官方 sub-agent 模板**（git subtree；上游 [`zzw09773/anila-agent`](https://github.com/zzw09773/anila-agent)） | `:24786`（獨立執行時） |
+| [`services/ingestion-worker`](./services/ingestion-worker/) | **Async pipeline worker** — Arq + Redis；parse → chunk → embed → pgvector + Chunking Evaluator | （無 host port） |
+| [`apps/anila-shell`](./apps/anila-shell/) | **Chat Runtime UI** — React；含 card 登入畫面（LoginView） | nginx 前 |
+| [`apps/anilalm`](./apps/anilalm/) | **Knowledge-base + Studio SPA**；mount 在 nginx `/anilalm/` | nginx 前 |
 | **`nginx`** | 對外閘道；**Host allowlist + 內網 hardening**；7 個安全 header | `:443` / `:4443` |
 | **`redis`** | ingestion-worker queue + token-revoke pub/sub | （無 host port） |
 
@@ -66,7 +66,7 @@ flowchart TB
         anilalm["ANILALM<br/>知識庫 · Studio"]
     end
 
-    subgraph csp["myCSPPlatform (internal only)"]
+    subgraph csp["services/csp (internal only)"]
         csp_auth["card auth /api/auth/card/*<br/>PKCS#7/CMS 真實驗章 + CA bundle"]
         csp_ctrl["Control Plane /api/*"]
         csp_data["Data Plane /v1/*"]
@@ -126,7 +126,7 @@ flowchart TB
 
 ## 內網快速部署（prod 主流程）
 
-內網部署一律走 [`scripts/deploy-prod.sh`](./scripts/deploy-prod.sh)，**不直接打 `docker compose up`**。腳本內含 pre-flight 檢查（branch / docker / env / network / models stack），避免在 main 上跑、避免 dev fallback 值偷渡上線、避免漏起模型 stack。
+內網部署一律走 [`infra/deployment/scripts/deploy-prod.sh`](./infra/deployment/scripts/deploy-prod.sh)，**不直接打 `docker compose up`**。腳本內含 pre-flight 檢查（branch / docker / env / network / models stack），避免在 main 上跑、避免 dev fallback 值偷渡上線、避免漏起模型 stack。
 
 ```bash
 # 0. 確認在本分支
@@ -134,7 +134,7 @@ git checkout prod-intranet-card && git pull origin prod-intranet-card
 # 1. 載入 prod 環境變數（secret 從你的 prod .env，不要 commit 進 repo）
 set -a; source /path/to/prod.env; set +a
 # 2. 一鍵部署（preflight + build + up + 等 healthy + verify）
-bash scripts/deploy-prod.sh
+bash infra/deployment/scripts/deploy-prod.sh
 ```
 
 `deploy-prod.sh` 子指令：`deploy`（預設）/ `preflight` / `up` / `down`（保留 named volumes）/ `restart` / `rebuild <svc>` / `status` / `logs <svc>` / `verify`（含 `/api/auth/revocations` 檢查）。
@@ -147,28 +147,28 @@ bash scripts/deploy-prod.sh
 
 ```bash
 # 外網開發機：
-bash scripts/build-and-export-for-intranet.sh
+bash infra/deployment/intranet/build-and-export-for-intranet.sh
 # → /tmp/anila-images-export/{01-anila-built,02-base,03-cold,04-models}.tar.gz + INTRANET-LOAD.sh
 
 # 內網（複製 export 目錄 + repo 進來）：
 bash /path/to/INTRANET-LOAD.sh                       # docker load 全部 image
 docker network create anila-models-net               # 第一次
-docker compose -f models/docker-compose.yml up -d    # 起模型 stack（獨立 lifecycle）
-bash scripts/deploy-prod.sh                           # 起 app stack
+docker compose -f infra/models/docker-compose.yml up -d   # 起模型 stack（獨立 lifecycle）
+bash infra/deployment/scripts/deploy-prod.sh                # 起 app stack
 ```
 
-> 相關離線腳本：[`scripts/download-intranet-models.sh`](./scripts/download-intranet-models.sh)、[`scripts/download-intranet-toolkit.sh`](./scripts/download-intranet-toolkit.sh)、[`scripts/intranet-quantize-nvfp4.py`](./scripts/intranet-quantize-nvfp4.py)、[`scripts/pack-chunks.sh`](./scripts/pack-chunks.sh) / [`unpack-chunks.sh`](./scripts/unpack-chunks.sh)（大檔分塊搬運）。V1.0.0 部署細節見 [`docs/runbooks/`](./docs/runbooks/)。
+> 相關離線腳本（都在 [`infra/deployment/intranet/`](./infra/deployment/intranet/)）：[`download-intranet-models.sh`](./infra/deployment/intranet/download-intranet-models.sh)、[`download-intranet-toolkit.sh`](./infra/deployment/intranet/download-intranet-toolkit.sh)、[`intranet-quantize-nvfp4.py`](./infra/deployment/intranet/intranet-quantize-nvfp4.py)、[`pack-chunks.sh`](./infra/deployment/intranet/pack-chunks.sh) / [`unpack-chunks.sh`](./infra/deployment/intranet/unpack-chunks.sh)（大檔分塊搬運）。V1.0.0 部署細節見 [`docs/runbooks/`](./docs/runbooks/)。
 
 ### 服務不健康時的排查
 
 ```bash
-bash scripts/deploy-prod.sh status               # 哪個 service 不 healthy？
-bash scripts/deploy-prod.sh logs <service>       # 看最新 logs
-bash scripts/deploy-prod.sh rebuild <service>    # 改完 source 後單獨重 build
+bash infra/deployment/scripts/deploy-prod.sh status               # 哪個 service 不 healthy？
+bash infra/deployment/scripts/deploy-prod.sh logs <service>       # 看最新 logs
+bash infra/deployment/scripts/deploy-prod.sh rebuild <service>    # 改完 source 後單獨重 build
 ```
 
 常見問題：
-- **csp ModuleNotFoundError**：多半是 fork 區 sync 漏 — `git diff origin/prod-intranet-card -- myCSPPlatform/backend/app/{api,models,schemas,services}/` 對照 [`docs/branch-sync-backlog.md`](./docs/branch-sync-backlog.md) 的「永久 fork 區」清單。
+- **csp ModuleNotFoundError**：多半是 fork 區 sync 漏 — `git diff origin/prod-intranet-card -- services/csp/app/{api,models,schemas,services}/` 對照 [`docs/branch-sync-backlog.md`](./docs/branch-sync-backlog.md) 的「永久 fork 區」清單。
 - **anila-studio cold-start JSONDecodeError**：csp 缺 `/api/auth/revocations`。確認 `auth.py` 有 `TOKEN_REVOCATION_RETENTION_DAYS` + `list_revocations`。
 - **`${VAR:?must be set}` 報錯**：該 env 必設，見 pre-flight 第 3 條。
 
@@ -193,7 +193,7 @@ card 登入需要本機 HiPKI 讀卡元件；本地 dev 若無實體卡，可暫
 | `REQUIRE_CARD_LOGIN_ONLY` | CSP | **branch SSO**：內網 prod 必開（`true`）。啟用後帳密 / OIDC / 自助註冊全回 404。`startup_security` 強制 `ENABLE_CARD_LOGIN` 也須 `true`，否則 fail-fast（避免 bricked 無人能登入） |
 | `CARD_INITIAL_OWNERS` | CSP | **branch SSO**：員工編號 CSV；列入者首次刷卡建為 `owner` + `is_approved=True`（bootstrap） |
 | `VITE_CARD_COMPONENT_ORIGIN` | UI build | **branch SSO**：HiPKI 本機元件 origin，預設 `http://localhost:16888` |
-| `CSP_SECRET_KEY` | CSP / Worker | JWT 簽署 + credential AES-GCM 主鑰；輪換配合 `scripts/reencrypt-credentials.py` |
+| `CSP_SECRET_KEY` | CSP / Worker | JWT 簽署 + credential AES-GCM 主鑰；輪換配合 `infra/deployment/scripts/reencrypt-credentials.py` |
 | `CSP_SERVICE_TOKEN` / `CSP_BOOTSTRAP_TOKEN` | CSP / Agent / Router | s2s token；以 per-credential bootstrap + state file（0600）為主 |
 | `LOCAL_LLM_BASE_URL` / `LOCAL_EMBEDDING_BASE_URL` | CSP | 落地 LLM / Embedding endpoint（OpenAI 相容） |
 | `ANILA_TRUSTED_HOSTS` | CSP / Worker | SSRF guard allow-list bootstrap；之後由 `/trusted-hosts` UI 管 |
@@ -253,4 +253,4 @@ ANILA 內網部署對齊 ISO/IEC 42001:2023（AI Management System），治理�
 
 ---
 
-**分支**：`prod-intranet-card`（中科院內網 / 自然人憑證卡）· **部署**：`bash scripts/deploy-prod.sh` · **治理**：[`docs/governance/iso-42001-compliance.md`](./docs/governance/iso-42001-compliance.md) · **分支同步**：[`docs/branch-sync-backlog.md`](./docs/branch-sync-backlog.md)
+**分支**：`prod-intranet-card`（中科院內網 / 自然人憑證卡）· **部署**：`bash infra/deployment/scripts/deploy-prod.sh` · **治理**：[`docs/governance/iso-42001-compliance.md`](./docs/governance/iso-42001-compliance.md) · **分支同步**：[`docs/branch-sync-backlog.md`](./docs/branch-sync-backlog.md)

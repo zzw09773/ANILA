@@ -1,5 +1,5 @@
 // Backend response shapes that ANILALM consumes. Mirrors the pydantic
-// models in myCSPPlatform/backend/app/schemas/{user,ingestion,...}.py.
+// models in services/csp/app/schemas/{user,ingestion,...}.py.
 // Kept minimal — only the fields the UI actually reads.
 
 export type Role = 'admin' | 'developer' | 'user' | string

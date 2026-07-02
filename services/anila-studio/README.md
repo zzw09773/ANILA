@@ -4,7 +4,7 @@
 
 > 中文為主版 · [English version](README.en.md)
 
-> 🌿 **分支對照**：本服務存在於 `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`。**`trial-military` 精簡版不含本服務**。分支策略見根目錄 [`README.md`](../README.md) 的分支對照表與 [`docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)。
+> 🌿 **分支對照**：本服務存在於 `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`。**`trial-military` 精簡版不含本服務**。分支策略見根目錄 [`README.md`](../../README.md) 的分支對照表與 [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)。
 
 ---
 
@@ -14,7 +14,7 @@
 - **單一職責**：csp 是 control plane（auth / models / ingestion / proxy 計費），anila-studio 只做內容生成。
 - **HTTP-only 對外**：與 csp 之間透過 `csp_client` 走 HTTP，**不**共用 DB。
 
-服務版本 **`0.1.0`**（`pyproject.toml` / `config.APP_VERSION` / `/health` 一致）。抽出決策見 [`docs/superpowers/anila-studio/extraction-decision.md`](../docs/superpowers/anila-studio/extraction-decision.md)（2026-05-23 / PR #12）。
+服務版本 **`0.1.0`**（`pyproject.toml` / `config.APP_VERSION` / `/health` 一致）。抽出決策見 [`docs/superpowers/anila-studio/extraction-decision.md`](../../docs/superpowers/anila-studio/extraction-decision.md)（2026-05-23 / PR #12）。
 
 ---
 
@@ -31,7 +31,7 @@
 ## 結構
 
 ```
-anila-studio/
+services/anila-studio/
 ├── pyproject.toml          # 核心 + artifact 渲染堆疊
 ├── Dockerfile              # python:3.11-slim + graphviz/pandoc/chromium/noto-cjk + non-root
 ├── scripts/export-openapi.py    # 重 gen openapi/studio.openapi.json（唯一 script）
@@ -72,11 +72,11 @@ anila-studio/
 ## 跑起來
 
 ```bash
-cd anila-studio
+cd services/anila-studio
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest                                            # test（不需 docker）
 .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8100   # 需 csp:8000 / redis:6379 / flux2-dev / pptx-renderer
-# 或：docker compose -f docker-compose-dev.yml up -d --build anila-studio
+# 或（於 repo 根）：docker compose -f compose.dev.yaml up -d --build anila-studio
 ```
 
 Health：`curl http://localhost:8100/health` → `{"status":"ok","service":"anila-studio","version":"0.1.0","ready":true,"deps":{"revocation_cache":true}}`。Lifespan startup 期間回 503 + `ready=false`（status `"degraded"`），等 JWKS + revocation cache cold-start 完才綠燈。
@@ -124,11 +124,11 @@ Health：`curl http://localhost:8100/health` → `{"status":"ok","service":"anil
 
 ## Frontend（ANILALM）如何呼叫
 
-`ANILALM/src/api/studio.ts` 透過 `VITE_STUDIO_BASE_URL` 指向 anila-studio。TypeScript types 從 `openapi/studio.openapi.json` codegen：
+`apps/anilalm/src/api/studio.ts` 透過 `VITE_STUDIO_BASE_URL` 指向 anila-studio。TypeScript types 從 `openapi/studio.openapi.json` codegen：
 
 ```bash
-cd anila-studio && .venv/bin/python scripts/export-openapi.py   # 改 schema 後
-cd ../ANILALM && npm run gen:studio-types
+cd services/anila-studio && .venv/bin/python scripts/export-openapi.py   # 改 schema 後
+cd ../../apps/anilalm && npm run gen:studio-types
 ```
 
 ---
@@ -144,5 +144,5 @@ cd ../ANILALM && npm run gen:studio-types
 ## 相關文件
 
 - 抽出計畫 / E2E：`docs/superpowers/anila-studio/plans/`
-- Studio / FLUX 主規格：[`../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md`](../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md)
-- 平台整體：[`../README.md`](../README.md) · 分支策略：[`../docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)
+- Studio / FLUX 主規格：[`../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md`](../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md)
+- 平台整體：[`../../README.md`](../../README.md) · 分支策略：[`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)

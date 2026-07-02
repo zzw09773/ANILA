@@ -4,7 +4,7 @@
 
 > English version：[`README.en.md`](./README.en.md)
 
-> 🌿 **分支對照**：本 UI 存在於所有 ANILA 部署分支。分支策略見根目錄 [`README.md`](../../README.md) 的分支對照表與 [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)。**登入路徑依分支而定**：`main` 等多數分支的 `login.jsx` 為**純本機帳密**（此 build 已移除 LDAP / OIDC / SSO 入口）；`prod-intranet-card` 的 `login.jsx` 已移除，改走 myCSPPlatform 的 Vue `LoginView.vue` 統一憑證卡 / SSO / 帳密入口；`trial-military` 精簡版視需求移除部分進階畫面。
+> 🌿 **分支對照**：本 UI 存在於所有 ANILA 部署分支。分支策略見根目錄 [`README.md`](../../README.md) 的分支對照表與 [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)。**登入路徑依分支而定**：`main` 等多數分支的 `login.jsx` 為**純本機帳密**（此 build 已移除 LDAP / OIDC / SSO 入口）；`prod-intranet-card` 的 `login.jsx` 已移除，改走 csp-governance-ui 的 Vue `LoginView.vue` 統一憑證卡 / SSO / 帳密入口；`trial-military` 精簡版視需求移除部分進階畫面。
 
 ---
 
@@ -33,7 +33,7 @@ scripts：`dev`（vite）/ `build`（vite build）/ `preview` / `test`（vitest 
 ## 目錄結構
 
 ```
-anila-ui/
+apps/anila-shell/            # 前身 ANILA_UI/anila-ui
 ├── index.html · vite.config.js · vitest.setup.js
 ├── Dockerfile              # 多階段：node:22-alpine build（npm install）→ nginx:1.27-alpine serve
 ├── .env.example · docker/nginx.conf · docs/ · e2e/   # e2e/ 僅存歷史 README（Functions v1 stack 已整個移除，無 spec、無 playwright 依賴）
@@ -73,7 +73,7 @@ anila-ui/
 ## 啟動與部署
 
 ```bash
-cd ANILA_UI/anila-ui
+cd apps/anila-shell
 cp .env.example .env.local      # 若 CSP / Router 不在 localhost 則編輯
 npm install && npm run dev      # Vite dev server :5173
 ```
@@ -119,7 +119,7 @@ npm test          # vitest run，跑 src/__tests__/ 的 10 個單元測試（run
 ## 相關文件
 
 - 平台整體：[`../../README.md`](../../README.md)、路線圖 [`../../anila_plan.md`](../../anila_plan.md)、分支策略 [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
-- CSP：[`../../myCSPPlatform/README.md`](../../myCSPPlatform/README.md) · Router：[`../../anila-core-router/README.md`](../../anila-core-router/README.md) · License：[`../../LICENSE`](../../LICENSE)
+- CSP：[`../../services/csp/README.md`](../../services/csp/README.md) · Router：[`../../services/anila-core-router/README.md`](../../services/anila-core-router/README.md) · License：[`../../LICENSE`](../../LICENSE)
 
 ---
 

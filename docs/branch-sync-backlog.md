@@ -72,32 +72,32 @@ git merge origin/main -X theirs   # content conflict 偏向 main
 
 | 檔案 | prod-intranet-card 樣貌 | main 樣貌 |
 |---|---|---|
-| `myCSPPlatform/backend/app/api/auth.py` | 含 SSO/OIDC + card auth + revocations | 純帳密 + revocations |
-| `myCSPPlatform/backend/app/api/users.py` | 含 card-related user 操作 | 簡化版 |
-| `myCSPPlatform/backend/app/api/auth_providers.py` | 存在(SSO admin) | 已刪除 |
-| `myCSPPlatform/backend/app/models/user.py` | 多 `local_password_disabled` Column | 無此欄位 |
-| `myCSPPlatform/backend/app/models/auth_provider.py` | 存在 | 已刪除 |
-| `myCSPPlatform/backend/app/models/external_identity.py` | 存在 | 已刪除 |
-| `myCSPPlatform/backend/app/schemas/user.py` | 多 `RefreshRequest` + `local_password_disabled` field | 多 `_validate_password_strength` validator |
-| `myCSPPlatform/backend/app/schemas/auth_provider.py` | 存在 | 已刪除 |
-| `myCSPPlatform/backend/app/schemas/card.py` | 存在 | 已刪除 |
-| `myCSPPlatform/backend/app/services/auth_service.py` | 多 `LOCAL_PASSWORD_DISABLED_SENTINEL` + SSO-only reject 邏輯 | 純帳密 |
-| `myCSPPlatform/backend/app/services/external_auth_service.py` | 存在(OIDC flow) | 已刪除 |
-| `myCSPPlatform/backend/app/services/auth_provider_secret.py` | 存在(envelope encryption) | 已刪除 |
-| `myCSPPlatform/backend/app/services/card_auth.py` | 存在 | 已刪除 |
-| `myCSPPlatform/backend/app/services/card_auth_service.py` | 存在 | 已刪除 |
-| `myCSPPlatform/backend/app/api/router.py` | 多 mount `auth_providers_router` | 無此 line |
-| `myCSPPlatform/frontend/src/views/LoginView.vue` | 自然人憑證 + SSO 入口 | 純帳密表單 |
-| `myCSPPlatform/frontend/src/views/AuthProvidersView.vue` | 存在 | 已刪除 |
-| `myCSPPlatform/frontend/src/views/UsersView.vue` | 含 SSO 帳號管理 | 簡化版 |
-| `myCSPPlatform/frontend/src/api/auth.js` | 含 SSO methods | 簡化版 |
-| `myCSPPlatform/frontend/src/api/users.js` | 含 SSO 操作 | 簡化版 |
-| `myCSPPlatform/frontend/src/stores/auth.js` | 含 SSO state | 簡化版 |
-| `ANILA_UI/anila-ui/src/app.jsx` | 含 SSO 路由 | 已簡化 |
-| `ANILA_UI/anila-ui/src/login.jsx` | 已刪除(改走 LoginView.vue) | 仍存在 |
-| `ANILA_UI/anila-ui/src/runtime/auth.jsx` | SSO 流程 | 帳密流程 |
-| `myCSPPlatform/docker/nginx.conf` | Host allowlist + card-verify exact-match location | 寬鬆 server_name |
-| docker-compose 內 `ENABLE_CARD_LOGIN=true` / `REQUIRE_CARD_LOGIN_ONLY=true` env | 設值 | 不設或預設 false |
+| `services/csp/app/api/auth.py` | 含 SSO/OIDC + card auth + revocations | 純帳密 + revocations |
+| `services/csp/app/api/users.py` | 含 card-related user 操作 | 簡化版 |
+| `services/csp/app/api/auth_providers.py` | 存在(SSO admin) | 已刪除 |
+| `services/csp/app/models/user.py` | 多 `local_password_disabled` Column | 無此欄位 |
+| `services/csp/app/models/auth_provider.py` | 存在 | 已刪除 |
+| `services/csp/app/models/external_identity.py` | 存在 | 已刪除 |
+| `services/csp/app/schemas/user.py` | 多 `RefreshRequest` + `local_password_disabled` field | 多 `_validate_password_strength` validator |
+| `services/csp/app/schemas/auth_provider.py` | 存在 | 已刪除 |
+| `services/csp/app/schemas/card.py` | 存在 | 已刪除 |
+| `services/csp/app/services/auth_service.py` | 多 `LOCAL_PASSWORD_DISABLED_SENTINEL` + SSO-only reject 邏輯 | 純帳密 |
+| `services/csp/app/services/external_auth_service.py` | 存在(OIDC flow) | 已刪除 |
+| `services/csp/app/services/auth_provider_secret.py` | 存在(envelope encryption) | 已刪除 |
+| `services/csp/app/services/card_auth.py` | 存在 | 已刪除 |
+| `services/csp/app/services/card_auth_service.py` | 存在 | 已刪除 |
+| `services/csp/app/api/router.py` | 多 mount `auth_providers_router` | 無此 line |
+| `apps/csp-governance-ui/src/views/LoginView.vue` | 自然人憑證 + SSO 入口 | 純帳密表單 |
+| `apps/csp-governance-ui/src/views/AuthProvidersView.vue` | 存在 | 已刪除 |
+| `apps/csp-governance-ui/src/views/UsersView.vue` | 含 SSO 帳號管理 | 簡化版 |
+| `apps/csp-governance-ui/src/api/auth.js` | 含 SSO methods | 簡化版 |
+| `apps/csp-governance-ui/src/api/users.js` | 含 SSO 操作 | 簡化版 |
+| `apps/csp-governance-ui/src/stores/auth.js` | 含 SSO state | 簡化版 |
+| `apps/anila-shell/src/app.jsx` | 含 SSO 路由 | 已簡化 |
+| `apps/anila-shell/src/login.jsx` | 已刪除(改走 LoginView.vue) | 仍存在 |
+| `apps/anila-shell/src/runtime/auth.jsx` | SSO 流程 | 帳密流程 |
+| `infra/nginx/anila.conf` | Host allowlist + card-verify exact-match location | 寬鬆 server_name |
+| `infra/compose/platform.yml` 內 `ENABLE_CARD_LOGIN=true` / `REQUIRE_CARD_LOGIN_ONLY=true` env | 設值 | 不設或預設 false |
 
 ### `prod-public-passwd` / `dev-public` only(外網 hardening,待落實)
 
@@ -126,7 +126,7 @@ git merge origin/main -X theirs   # content conflict 偏向 main
 
 | 預期差異 | 說明 |
 |---|---|
-| codeserver / n8n / gitlab | docker-compose 內 unmute(prod 系列全部 commented out) |
+| codeserver / n8n / gitlab | `infra/compose/platform.yml` 內 unmute(prod 系列全部 commented out) |
 | dev secret 模式 | 允許 `ANILA_ALLOW_DEV_SECRET=1`、`dev-changeme` fallback |
 | 寬鬆 nginx | dev 不強制 HSTS,allow http:// |
 | 開放 host port | csp `:8000` / router `:9000` 之類 host port 開出來給 dev 工具直連 |

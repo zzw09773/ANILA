@@ -1,10 +1,10 @@
 # anila-core-router
 
-> **ANILA Router** — OpenAI 相容的請求自動分派服務。一層薄殼部署入口（`main.py`），實際分派邏輯在 [`anila-core`](../anila-core/README.md) SDK 的 `anila_core.api.router_server`。在 stack 裡以服務名 `router` 出現。
+> **ANILA Router** — OpenAI 相容的請求自動分派服務。一層薄殼部署入口（`main.py`），實際分派邏輯在 [`anila-core`](../../packages/anila-core/README.md) SDK 的 `anila_core.api.router_server`。在 stack 裡以服務名 `router` 出現。
 
 > 中文為主版；English mirror：[`README.en.md`](./README.en.md)。技術名詞、指令、程式碼一律保留英文。
 
-> 🌿 **分支對照**：本服務存在於所有 ANILA 部署分支，內容跨分支一致。分支策略見根目錄 [`README.md`](../README.md) 的分支對照表與 [`docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)。
+> 🌿 **分支對照**：本服務存在於所有 ANILA 部署分支，內容跨分支一致。分支策略見根目錄 [`README.md`](../../README.md) 的分支對照表與 [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)。
 
 ---
 
@@ -17,7 +17,7 @@ Router 對外暴露 OpenAI 相容的 `POST /v1/chat/completions`，並提供 pse
 - 若決定分派，request 轉發到該 agent 的 `endpoint_url`，agent 的 SSE stream 逐 chunk 回傳給 caller。
 - 主路由模型由 CSP 在 runtime 決定：`main.py` 每 60 秒從 CSP `GET /api/models/router-primary` 拉目前指定的主 LLM。CSP 未設主路由模型時，middleware 把 `/v1/chat/completions` 擋成 **503**，避免 silent fall-back 到錯誤 upstream。
 
-> 定位：Router 是「用 anila-core runtime foundation 組一個分派服務」的部署範例，不是 core 本身。CSP（myCSPPlatform）才是平台權威的 control + data plane。
+> 定位：Router 是「用 anila-core runtime foundation 組一個分派服務」的部署範例，不是 core 本身。CSP（[`services/csp`](../csp/)，前身 `myCSPPlatform`）才是平台權威的 control + data plane。
 
 ---
 
@@ -43,14 +43,14 @@ Router 對外暴露 OpenAI 相容的 `POST /v1/chat/completions`，並提供 pse
 ## 目錄結構
 
 ```
-anila-core-router/
+services/anila-core-router/
 ├── main.py        # 部署 entrypoint：create_router_app() + 主路由模型 TTL refresh
 │                  #   + service-token state-file 三段式解析 + /router/primary-status debug endpoint
-├── Dockerfile     # multi-stage；build context 須為 repo 根（會 COPY anila-core/）
+├── Dockerfile     # multi-stage；build context 須為 repo 根（會 COPY packages/anila-core/）
 └── README.md / README.en.md
 
 # 實際分派邏輯在 anila-core SDK：
-anila-core/src/anila_core/api/router_server.py   # create_router_app() + 分派 / SSE forward
+packages/anila-core/src/anila_core/api/router_server.py   # create_router_app() + 分派 / SSE forward
 ```
 
 ---
@@ -63,8 +63,8 @@ Router image 由本目錄 `Dockerfile` build，以服務名 `router` 跑：
 
 ```bash
 # 於 repo 根
-docker compose -f docker-compose-dev.yml up -d router   # dev
-docker compose -f docker-compose.yml     up -d router   # prod（repo 根預設 compose，同樣以服務名 router 跑）
+docker compose -f compose.dev.yaml up -d router   # dev
+docker compose -f compose.yaml     up -d router   # prod（repo 根 shim compose，同樣以服務名 router 跑）
 ```
 
 compose 中 `router` 只用 `expose: 9000`（**沒有** host port），UI 透過 `/router` 反向代理對外（見 UI 的 `VITE_ROUTER_BASE_URL` 預設 `/router`）。Router 等 `csp` healthy 後才啟動。
@@ -72,14 +72,14 @@ compose 中 `router` 只用 `expose: 9000`（**沒有** host port），UI 透過
 ### 方式 2：自行 build image（build context 須為 repo 根）
 
 ```bash
-docker build -f anila-core-router/Dockerfile -t anila-core-router .
+docker build -f services/anila-core-router/Dockerfile -t anila-core-router .
 docker run -p 9000:9000 -e CSP_BASE_URL=http://csp:8000 -e CSP_SERVICE_TOKEN=dev-service-token anila-core-router
 ```
 
 ### 方式 3：單機 uvicorn（開發）
 
 ```bash
-pip install -e "../anila-core"        # 純 runtime，不需 RAG extras
+pip install -e "../../packages/anila-core"        # 純 runtime，不需 RAG extras
 export CSP_BASE_URL=http://localhost:8000
 uvicorn main:app --host 0.0.0.0 --port 9000 --log-level info
 ```
@@ -120,13 +120,13 @@ router (:9000)
 
 ## 相關文件
 
-- 平台整體：[`../README.md`](../README.md) · 分支策略：[`../docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)
-- 多服務整合計畫（含 Router 角色）：[`../docs/platform/multi-service-integration-plan.md`](../docs/platform/multi-service-integration-plan.md)
-- Agent framework 架構：[`../docs/agent-framework/anila-agent-framework-architecture.md`](../docs/agent-framework/anila-agent-framework-architecture.md)
-- Runtime foundation（SDK）：[`../anila-core/README.md`](../anila-core/README.md) · CSP：[`../myCSPPlatform/README.md`](../myCSPPlatform/README.md) · UI：[`../ANILA_UI/anila-ui/README.md`](../ANILA_UI/anila-ui/README.md)
+- 平台整體：[`../../README.md`](../../README.md) · 分支策略：[`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
+- 多服務整合計畫（含 Router 角色）：[`../../docs/platform/multi-service-integration-plan.md`](../../docs/platform/multi-service-integration-plan.md)
+- Agent framework 架構：[`../../docs/agent-framework/anila-agent-framework-architecture.md`](../../docs/agent-framework/anila-agent-framework-architecture.md)
+- Runtime foundation（SDK）：[`../../packages/anila-core/README.md`](../../packages/anila-core/README.md) · CSP：[`../csp/README.md`](../csp/README.md) · UI：[`../../apps/anila-shell/README.md`](../../apps/anila-shell/README.md)
 
 ---
 
 ## License
 
-見 repo 根 [`LICENSE`](../LICENSE)。
+見 repo 根 [`LICENSE`](../../LICENSE)。

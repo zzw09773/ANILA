@@ -4,7 +4,7 @@
 
 > 中文版本：[`README.md`](./README.md)
 
-> 🌿 **Branch note**: This worker exists on every ANILA deployment branch and is identical across branches. See the root [`README.md`](../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md).
+> 🌿 **Branch note**: This worker exists on every ANILA deployment branch and is identical across branches. See the root [`README.md`](../../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md).
 
 ---
 
@@ -20,7 +20,7 @@
 2. **`evaluate_strategies`** — compares retrieval quality of multiple chunking strategies (Hit@1 / Hit@5 / MRR, optional LLM-as-judge `judge_avg` 1–3) over sample docs + queries, writing back `recommended_strategy` and `results`.
 3. **`reresolve_collection_relations`** — collection-level relation re-extraction: re-parse every `indexed` doc, re-run rule / LLM / similarity edges (per-doc parse failures skipped).
 
-Each job function takes a single argument (CSP enqueues via `pool.enqueue_job(<name>, <arg>)`, see `myCSPPlatform/backend/app/services/ingestion_queue.py`):
+Each job function takes a single argument (CSP enqueues via `pool.enqueue_job(<name>, <arg>)`, see `services/csp/app/services/ingestion_queue.py`):
 
 ```text
 ingest_document(document_id)                    # ingest one document
@@ -50,7 +50,7 @@ The embedding endpoint returns NV-embed-V2's native 4096 dims and doesn't suppor
 ## Layout
 
 ```
-ingestion-worker/
+services/ingestion-worker/
 ├── Dockerfile            # build context = repo root; installs anila-core[rag] first, then this worker
 ├── pyproject.toml
 ├── src/ingestion_worker/
@@ -74,10 +74,10 @@ ingestion-worker/
 
 ```bash
 # In the stack (recommended) — repo-root compose
-docker compose -f docker-compose-dev.yml up -d --build ingestion-worker
+docker compose -f compose.dev.yaml up -d --build ingestion-worker
 
 # Local dev / tests
-cd ingestion-worker && pip install -e '.[dev]'
+cd services/ingestion-worker && pip install -e '.[dev]'
 pytest            # asyncio_mode=auto; testpaths=tests
 ruff check src tests
 ```
@@ -122,7 +122,7 @@ In compose: build context = repo root; `depends_on` (all `service_healthy`) `csp
 
 ## Related docs
 
-- [`../docs/ingestion/ingestion-platform-design.md`](../docs/ingestion/ingestion-platform-design.md) (incl. evaluator §6.5 LLM-as-judge)
-- [`../docs/ingestion/parent-child-rag-design.md`](../docs/ingestion/parent-child-rag-design.md)
-- [`../docs/anila-core/anila-core-boundary.md`](../docs/anila-core/anila-core-boundary.md)
-- Platform: [`../README.md`](../README.md) · Branch strategy: [`../docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)
+- [`../../docs/ingestion/ingestion-platform-design.md`](../../docs/ingestion/ingestion-platform-design.md) (incl. evaluator §6.5 LLM-as-judge)
+- [`../../docs/ingestion/parent-child-rag-design.md`](../../docs/ingestion/parent-child-rag-design.md)
+- [`../../docs/anila-core/anila-core-boundary.md`](../../docs/anila-core/anila-core-boundary.md)
+- Platform: [`../../README.md`](../../README.md) · Branch strategy: [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)

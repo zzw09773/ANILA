@@ -1,7 +1,7 @@
 """Tests for ``app.services.revocation_cache``.
 
 The revocation cache is the consumer end of the csp → anila-studio
-token-revoke pipeline (see ``myCSPPlatform/.../token_revocation_publisher.py``
+token-revoke pipeline (see ``services/csp/.../token_revocation_publisher.py``
 for the publisher side).
 
 Contract pinned by these tests:

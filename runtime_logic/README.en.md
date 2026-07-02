@@ -1,6 +1,6 @@
 # runtime_logic — agent runtime reference source snapshots
 
-> The agent runtime "design reference directory": holds source snapshots of two production-grade runtimes for ANILA to study, borrow from, and translate good design patterns into Python for `anila-core/` and the agent template. **This is not executable code.**
+> The agent runtime "design reference directory": holds source snapshots of two production-grade runtimes for ANILA to study, borrow from, and translate good design patterns into Python for `packages/anila-core/` and the agent template. **This is not executable code.**
 
 > 中文版本：[`README.md`](./README.md)
 
@@ -12,8 +12,8 @@
 
 This directory holds source snapshots of two **production-grade agent runtimes** as design references:
 
-- **Not ANILA's executable code.** The executable code is in `anila-core/`'s Python tree; the agent template is in [`anila-agent`](../anila-agent/).
-- Purpose: **study, borrow, and translate mature design patterns into Python** for `anila-core/`.
+- **Not ANILA's executable code.** The executable code is in `packages/anila-core/`'s Python tree; the agent template is in [`anila-agent`](../packages/anila-agent/).
+- Purpose: **study, borrow, and translate mature design patterns into Python** for `packages/anila-core/`.
 - Rule: **read the pattern, learn the interface, rewrite it yourself**; never copy verbatim. Licensing follows each codebase's own LICENSE.
 
 > ⚠️ **The entire source trees of `claude-code-src/` and `openai-agents-python/` are excluded by `.gitignore`** and never enter the repo. The only tracked files are this README and its English mirror; the source lives locally.
@@ -44,7 +44,7 @@ The two references cover two dimensions:
 
 ## Purpose & audience
 
-- **Audience**: engineers adding new agent-runtime capabilities to `anila-core/` or the RAG agent template.
+- **Audience**: engineers adding new agent-runtime capabilities to `packages/anila-core/` or the RAG agent template.
 - **When to read**: before adding a capability (multi-agent handoff, tracing, guardrails, session, PTL retry…), check the "enhancement map" below for "which reference's which file has a ready-made pattern", then read the contract and rewrite in Python.
 - **Not**: a deployment list, an ops manual, or an importable package.
 
@@ -54,7 +54,7 @@ The two references cover two dimensions:
 
 | Capability | Source reference | Current location |
 |---|---|---|
-| 7-stage turn loop | `claude-code-src/src/QueryEngine.ts` + `query/config.ts` | `anila-core/.../engine/query_engine.py` |
+| 7-stage turn loop | `claude-code-src/src/QueryEngine.ts` + `query/config.ts` | `packages/anila-core/.../engine/query_engine.py` |
 | BudgetTracker + diminishing returns | `claude-code-src/src/query/tokenBudget.ts` | `.../engine/budget_tracker.py` |
 | ExtractMemories + cursor | `claude-code-src/src/services/extractMemories/` | `.../memory/extract_memories.py` |
 | AutoCompact / MicroCompact / SessionMemory | `claude-code-src/src/services/compact/` | `.../compact/` |
@@ -93,14 +93,14 @@ The two references cover two dimensions:
 
 ## Setup & Run
 
-**N/A (reference / design directory).** No `package.json` / `Dockerfile` / `pyproject.toml`; nothing to build, deploy, or import. The actual executable code is in [`../anila-core/`](../anila-core/).
+**N/A (reference / design directory).** No `package.json` / `Dockerfile` / `pyproject.toml`; nothing to build, deploy, or import. The actual executable code is in [`../packages/anila-core/`](../packages/anila-core/).
 
 ---
 
 ## Related docs
 
 - Platform: [`../README.md`](../README.md) · Branch strategy: [`../docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)
-- Python runtime (porting destination): [`../anila-core/README.md`](../anila-core/README.md)
+- Python runtime (porting destination): [`../packages/anila-core/README.md`](../packages/anila-core/README.md)
 - `openai-agents-python` deep-dive: [`../docs/agent-framework/runtime-logic-openai-agents-deep-dive.md`](../docs/agent-framework/runtime-logic-openai-agents-deep-dive.md)
 - Agent framework architecture & porting decisions: [`../docs/agent-framework/anila-agent-framework-architecture.md`](../docs/agent-framework/anila-agent-framework-architecture.md), [`../docs/agent-framework/anila-agent-framework-porting-decisions.md`](../docs/agent-framework/anila-agent-framework-porting-decisions.md)
 

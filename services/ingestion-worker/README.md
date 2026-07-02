@@ -4,7 +4,7 @@
 
 > English mirror：[`README.en.md`](./README.en.md)
 
-> 🌿 **分支對照**：本 worker 存在於所有 ANILA 部署分支，內容跨分支一致。分支策略見根目錄 [`README.md`](../README.md) 的分支對照表與 [`docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)。
+> 🌿 **分支對照**：本 worker 存在於所有 ANILA 部署分支，內容跨分支一致。分支策略見根目錄 [`README.md`](../../README.md) 的分支對照表與 [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)。
 
 ---
 
@@ -20,7 +20,7 @@
 2. **`evaluate_strategies`** — 對樣本文件 + 查詢比較多個 chunking 策略的檢索品質（Hit@1 / Hit@5 / MRR，選用 LLM-as-judge `judge_avg` 1–3 分），寫回 `recommended_strategy` 與 `results`。
 3. **`reresolve_collection_relations`** — collection 級「重抽關係」：重新 parse 每份 `indexed` 文件、重跑 rule / LLM / similarity 邊（per-doc parse 失敗則跳過）。
 
-每個 job function 都吃單一參數（CSP 以 `pool.enqueue_job(<name>, <arg>)` enqueue，見 `myCSPPlatform/backend/app/services/ingestion_queue.py`）：
+每個 job function 都吃單一參數（CSP 以 `pool.enqueue_job(<name>, <arg>)` enqueue，見 `services/csp/app/services/ingestion_queue.py`）：
 
 ```text
 ingest_document(document_id)                    # 攝取一份文件
@@ -50,7 +50,7 @@ embedding endpoint 回傳 NV-embed-V2 原生 4096 維、不支援 OpenAI `dimens
 ## 目錄結構
 
 ```
-ingestion-worker/
+services/ingestion-worker/
 ├── Dockerfile            # repo root 為 build context；先裝 anila-core[rag] 再裝本 worker
 ├── pyproject.toml
 ├── src/ingestion_worker/
@@ -74,10 +74,10 @@ ingestion-worker/
 
 ```bash
 # 在 stack 中（建議）— repo root compose
-docker compose -f docker-compose-dev.yml up -d --build ingestion-worker
+docker compose -f compose.dev.yaml up -d --build ingestion-worker
 
 # 本機開發 / 測試
-cd ingestion-worker && pip install -e '.[dev]'
+cd services/ingestion-worker && pip install -e '.[dev]'
 pytest            # asyncio_mode=auto；testpaths=tests
 ruff check src tests
 ```
@@ -122,7 +122,7 @@ compose 中：build context = repo root；`depends_on`（皆 `service_healthy`�
 
 ## 相關文件
 
-- [`../docs/ingestion/ingestion-platform-design.md`](../docs/ingestion/ingestion-platform-design.md)（含 evaluator §6.5 LLM-as-judge）
-- [`../docs/ingestion/parent-child-rag-design.md`](../docs/ingestion/parent-child-rag-design.md)
-- [`../docs/anila-core/anila-core-boundary.md`](../docs/anila-core/anila-core-boundary.md)
-- 平台整體：[`../README.md`](../README.md) · 分支策略：[`../docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)
+- [`../../docs/ingestion/ingestion-platform-design.md`](../../docs/ingestion/ingestion-platform-design.md)（含 evaluator §6.5 LLM-as-judge）
+- [`../../docs/ingestion/parent-child-rag-design.md`](../../docs/ingestion/parent-child-rag-design.md)
+- [`../../docs/anila-core/anila-core-boundary.md`](../../docs/anila-core/anila-core-boundary.md)
+- 平台整體：[`../../README.md`](../../README.md) · 分支策略：[`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)

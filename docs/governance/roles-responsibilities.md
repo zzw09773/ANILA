@@ -14,7 +14,7 @@ ISO 42001 對 AI 系統的生命週期定義了 6 種角色;ANILA 內部對應�
 
 | ISO 42001 角色 | 定義 | ANILA 內部對應 |
 |---|---|---|
-| **AI provider** | 提供 AI 系統 / 服務 | ANILA 平台團隊(`myCSPPlatform` + `anila-core` + Router + UI) |
+| **AI provider** | 提供 AI 系統 / 服務 | ANILA 平台團隊(`services/csp` + `packages/anila-core` + Router + UI) |
 | **AI developer** | 設計 / 開發 AI 系統 | 各 agent 開發單位(fork `anila-agent` template);平台團隊負責 runtime / 控制面 |
 | **AI deployer** | 將 AI 系統部署到 production | ANILA 平台團隊(內網部署);agent 開發單位(各自服務上線) |
 | **AI user** | 直接使用 AI 系統的人 | 中科院內部使用者(透過 UI、SDK、Studio、Router) |

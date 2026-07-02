@@ -36,7 +36,7 @@ ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,*
 ## 3. 內網 TLS / CSPKI(踩過大坑,`AGENTS.md` 沒有)
 
 - 內網一切 https 走中科院 **CSPKI**:`CSPKI Root CA G1`(自簽 root)→ `中科院憑證管理中心 G1`(中繼)→ `*.ai.ncsist.org.tw`(leaf)。`.12` 只送 leaf。
-- **`model-ca.pem` = `myCSPPlatform/backend/app/services/cspki_ca_bundle.pem`**:卡登驗章那份 CSPKI bundle(Root+中繼)正好就是 csp 信任 `.12` 所需的完整鏈(中科院 PKI 一條根,卡與伺服器憑證同源)。`intranet-deploy.sh [2/7]` 已預設 cp 它(`6eadd83`)。
+- **`model-ca.pem` = `services/csp/app/services/cspki_ca_bundle.pem`**:卡登驗章那份 CSPKI bundle(Root+中繼)正好就是 csp 信任 `.12` 所需的完整鏈(中科院 PKI 一條根,卡與伺服器憑證同源)。`intranet-deploy.sh [2/7]` 已預設 cp 它(`6eadd83`)。
 - ⚠ **`SSL_CERT_FILE`(=`ANILA_MODEL_CA_FILE`)是「取代」整個系統信任庫,非疊加**。指到空/壞檔 → csp **所有**出向 https 全 `CERTIFICATE_VERIFY_FAILED`(admin 模型健康欄全 X509、連 agent 都連不上)。
 - TLS 鏈要爬到自簽 root 才算數;先在本機 `openssl s_client -connect host:443 -CAfile X` 驗到 `verify return code: 0` 再接進服務。
 - **`.12` 一律用 FQDN `aiagent2.ai.ncsist.org.tw`,不用 raw IP**(SSRF 私網 guard 擋 + 憑證主機名不符);容器靠 compose `extra_hosts` 解析,不需 DNS;`ANILA_TRUSTED_HOSTS=aiagent2.ai.ncsist.org.tw` 放行;model 註冊填 FQDN。
@@ -69,6 +69,6 @@ ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,*
 - **不動 running `anila-platform-*` 容器**(user dev 環境),除非授權。
 - **端到端驗證、用對方法**:別只看 status code(SPA catch-all 對未匹配路由回 200 text/html → 驗 Content-Type);取資料走正式 HTTP API + auth,不直連 DB。
 - **別腦補成 bug**:功能按 spec ≠ bug;先客觀呈現,讓 user 判斷。
-- 前端驗證用 `npm run build`(非只 `tsc`);後端 `myCSPPlatform/backend/.venv/bin/python -m pytest`。
+- 前端驗證用 `npm run build`(非只 `tsc`);後端 `services/csp/.venv/bin/python -m pytest`。
 - SSRF guard、卡登驗章、JWT 信任錨不可弱化;改 schema 必加 alembic migration;runtime DB 用 `csp_app` role(非 superuser,否則繞過 RLS)。
 - commit/push 只在 user 要求時;跨分支同步遵 `AGENTS.md` §3(main 起、downstream 不互 merge、card fork 區不可被 main 覆蓋)。

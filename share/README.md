@@ -31,7 +31,7 @@ share/
 - `uploads/` is `:rw` mounted — n8n / other services can write here. Don't
   put anything you can't afford to lose; back up out-of-band.
 
-nginx (`myCSPPlatform/docker/nginx.conf`) serves these: `/static/` uses `try_files =404`
+nginx (`infra/nginx/anila.conf`) serves these: `/static/` uses `try_files =404`
 with `expires 1y, immutable`; `/uploads/` uses `expires 1h`. Missing assets return 404
 (no SPA fallback).
 

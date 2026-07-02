@@ -15,7 +15,7 @@ import 這裡的任何檔案，所以放著無害；保留是為了未來 redesi
 ## 想看 prototype 怎麼跑？
 
 ```bash
-cd /home/aia/c1147259/ANILA/ANILALM/_design
+cd /home/aia/c1147259/ANILA/apps/anilalm/_design
 python3 -m http.server 8088
 # 開 http://localhost:8088/prototype.html
 ```

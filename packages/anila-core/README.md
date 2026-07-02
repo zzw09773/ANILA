@@ -4,7 +4,7 @@
 
 > English mirror：[`README.en.md`](./README.en.md)
 
-> 🌿 **分支對照**：本 SDK 存在於所有 ANILA 部署分支，內容跨分支一致（runtime 基座不隨部署情境而異）。分支策略見根目錄 [`README.md`](../README.md) 的分支對照表與 [`docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)。新功能一律先進 `main`，再 sync 進 downstream。
+> 🌿 **分支對照**：本 SDK 存在於所有 ANILA 部署分支，內容跨分支一致（runtime 基座不隨部署情境而異）。分支策略見根目錄 [`README.md`](../../README.md) 的分支對照表與 [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)。新功能一律先進 `main`，再 sync 進 downstream。
 
 ---
 
@@ -17,11 +17,11 @@
 
 平台各角色與 anila-core 的關係：
 
-- **Router 部署**（[`anila-core-router`](../anila-core-router/)）：直接 `import` Pillar 1 + Pillar 2。
+- **Router 部署**（[`anila-core-router`](../../services/anila-core-router/)）：直接 `import` Pillar 1 + Pillar 2。
 - **Agent 開發者**：`pip install "anila-core[rag]"` 並 fork [`anila-agent`](../anila-agent/) 作為官方 RAG agent starter template。`[rag]` extra 提供文件解析的重量級套件。
 - **ingestion-worker**（Arq 非同步 pipeline）：只消費 Pillar 2（`chunking_plugins`、`IngestionError`、`pg_pool`、`pgvector_store`、`credential_crypto`），不碰 Pillar 1。
 
-> Repo 根定位見 [`../README.md`](../README.md)。
+> Repo 根定位見 [`../../README.md`](../../README.md)。
 
 ---
 
@@ -63,7 +63,7 @@ anila-core = anila_core.cli.main:main
 `src/anila_core/` 關鍵模組（依 Pillar 分組）：
 
 ```
-anila-core/
+packages/anila-core/
 ├── pyproject.toml            # name=anila-core, v0.14.0
 ├── README.md / README.en.md
 ├── CHANGELOG.md              # 詳細 sprint release notes
@@ -107,7 +107,7 @@ anila-core/
             └── chunking_plugins/  # base · registry（@register_chunker）· builtins
 ```
 
-> 完整模組責任與邊界見 [`../docs/anila-core/anila-core-boundary.md`](../docs/anila-core/anila-core-boundary.md)。
+> 完整模組責任與邊界見 [`../../docs/anila-core/anila-core-boundary.md`](../../docs/anila-core/anila-core-boundary.md)。
 
 ---
 
@@ -118,9 +118,9 @@ anila-core 是 **library / SDK**，不是常駐服務。它被 Router / agent / 
 ### 安裝
 
 ```bash
-pip install -e "./anila-core"          # 完整 Pillar 1 + Pillar 2 core deps
-pip install -e "./anila-core[rag]"     # + 文件解析重量級堆疊
-pip install -e "./anila-core[rag,dev]" # + pytest / ruff / mypy（跑完整測試所需）
+pip install -e "./packages/anila-core"          # 完整 Pillar 1 + Pillar 2 core deps
+pip install -e "./packages/anila-core[rag]"     # + 文件解析重量級堆疊
+pip install -e "./packages/anila-core[rag,dev]" # + pytest / ruff / mypy（跑完整測試所需）
 ```
 
 ### Router 模式（OpenAI-compatible dispatcher）
@@ -175,7 +175,7 @@ pytest -m integration        # 需 live pgvector + RLS database
 | **anila-core-router** | Pillar 1 + Pillar 2 | `create_router_app()`、QueryEngine、Coordinator、agent registry、service-token middleware |
 | **anila-agent template**（fork 起點） | Pillar 1 + Pillar 2 + `[rag]` | 完整 runtime + 文件解析 / vision provider |
 | **ingestion-worker**（Arq + Redis） | 僅 Pillar 2 | `chunking_plugins`、`IngestionError`、`pg_pool`、`CollectionScopedPgVectorStore`、`credential_crypto` |
-| **myCSPPlatform**（CSP backend） | Pillar 2（部分） | `credential_crypto`（加密 `user_llm_credentials`）等共用 primitives |
+| **services/csp**（CSP backend） | Pillar 2（部分） | `credential_crypto`（加密 `user_llm_credentials`）等共用 primitives |
 
 對外能力面向：storage adapters（pg pool / pgvector store / in-memory test store）、ingestion primitives（error taxonomy / chunker registry / parser / OCR / vision，後者需 `[rag]`）、tools（dispatch / ask_user / plan_mode / todo_write / agent_as_tool / files / shell / apply_patch）、api（Router + agent server + 事件 / 認證 middleware）。
 
@@ -183,11 +183,11 @@ pytest -m integration        # 需 live pgvector + RLS database
 
 ## 相關文件
 
-- anila-core 邊界（留什麼、刪什麼）：[`../docs/anila-core/anila-core-boundary.md`](../docs/anila-core/anila-core-boundary.md)
-- runtime 設計（session state / subsystem 責任）：[`../docs/anila-core/anila-core-runtime-design.md`](../docs/anila-core/anila-core-runtime-design.md)
-- Ingestion 平台設計：[`../docs/ingestion/ingestion-platform-design.md`](../docs/ingestion/ingestion-platform-design.md)
+- anila-core 邊界（留什麼、刪什麼）：[`../../docs/anila-core/anila-core-boundary.md`](../../docs/anila-core/anila-core-boundary.md)
+- runtime 設計（session state / subsystem 責任）：[`../../docs/anila-core/anila-core-runtime-design.md`](../../docs/anila-core/anila-core-runtime-design.md)
+- Ingestion 平台設計：[`../../docs/ingestion/ingestion-platform-design.md`](../../docs/ingestion/ingestion-platform-design.md)
 - 詳細 release notes：[`CHANGELOG.md`](./CHANGELOG.md)
-- 官方 RAG agent template：[`../anila-agent/README.md`](../anila-agent/README.md) · Router 薄殼：[`../anila-core-router/README.md`](../anila-core-router/README.md)
-- 平台總覽：[`../README.md`](../README.md) · 分支策略：[`../docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)
+- 官方 RAG agent template：[`../anila-agent/README.md`](../anila-agent/README.md) · Router 薄殼：[`../../services/anila-core-router/README.md`](../../services/anila-core-router/README.md)
+- 平台總覽：[`../../README.md`](../../README.md) · 分支策略：[`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
 
 > 版本以 `pyproject.toml`（v0.14.0，`[rag]` extra 已恢復）為權威；`CHANGELOG.md` 最新條目為 v0.13.0。⚠️ 已知不一致：`src/anila_core/__init__.py` 的 `__version__` 仍寫死 `"0.7.0"`（程式碼 bug，非 README）；以程式設計方式讀 `anila_core.__version__` 會拿到舊值。CLI template 的 `requirements.txt` 也仍 pin `anila-core>=0.1.0`。

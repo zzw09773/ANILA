@@ -4,13 +4,13 @@
 
 > 中文為主、English mirror：[`README.en.md`](./README.en.md)。技術名詞、指令、程式碼維持英文。
 
-> 🌿 **分支對照**：`models/` 存在於所有 ANILA 部署分支（內容跨分支一致）。模型 stack 與平台 stack 拆 lifecycle，跨 stack 走 external network `anila-models-net`。分支策略見根目錄 [`README.md`](../README.md) 的分支對照表與 [`docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)。
+> 🌿 **分支對照**：`infra/models/`（前身 `models/`）存在於所有 ANILA 部署分支（內容跨分支一致）。模型 stack 與平台 stack 拆 lifecycle，跨 stack 走 external network `anila-models-net`。分支策略見根目錄 [`README.md`](../../README.md) 的分支對照表與 [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)。
 
 ---
 
 ## 簡介
 
-`models/` 是獨立 compose project（`name: anila-models`），與圖像生成相關的兩個服務：
+`infra/models/`（前身 `models/`）收容獨立 compose project（`name: anila-models`）；與圖像生成相關的兩個服務（原始碼已移至 `services/flux2-dev` 與 `services/flux2-dev-agent`）：
 
 - **`flux2-dev`** — FLUX.2-dev 文生圖推論服務。以 `diffusers` 的 `Flux2Pipeline` 包成極簡 HTTP server（`server.py`），對外 `POST /generate`。輸入 `prompt / aspect_ratio / seed / ...`，回 JSON（base64 PNG list + audit meta）。
 - **`flux2-dev-agent`** — agent 包裝層（OpenAI `/v1/chat/completions` 相容）。router / CSP 把圖像生成請求轉送到這裡；它負責 prompt 翻譯（zh→en，透過 gemma4）、呼叫 `flux2-dev`、把 PNG 落地到 share volume，再以 Markdown 圖片連結回前端。
@@ -71,22 +71,25 @@
 ## 目錄結構
 
 ```
-models/
+infra/models/
 ├── docker-compose.yml          # anila-models project（含 LLM/embedding/FLUX 服務）
-├── flux2-dev/                  # FLUX.2-dev 推論服務
-│   ├── Dockerfile              # CUDA 12.4 base + torch 2.6 + diffusers
-│   ├── requirements.txt · pyproject.toml
-│   ├── server.py               # build_app + /generate + /health + pipeline 載入
-│   └── tests/                  # pytest（以 mock pipeline 注入，不需 GPU）
-└── flux2-dev-agent/            # agent 包裝層（OpenAI 相容）
-    ├── Dockerfile              # python:3.11-slim
-    ├── app/{main,schemas,prompt_translator,flux_client,image_store,chat_handler}.py
-    └── tests/                  # pytest（pytest-asyncio + respx）
+└── src/                        # 非 FLUX 服務（如 embedding proxy）的 build context
+
+services/flux2-dev/             # FLUX.2-dev 推論服務（compose 以 ../../services/flux2-dev 引用）
+├── Dockerfile                  # CUDA 12.4 base + torch 2.6 + diffusers
+├── requirements.txt · pyproject.toml
+├── server.py                   # build_app + /generate + /health + pipeline 載入
+└── tests/                      # pytest（以 mock pipeline 注入，不需 GPU）
+
+services/flux2-dev-agent/       # agent 包裝層（OpenAI 相容）
+├── Dockerfile                  # python:3.11-slim
+├── app/{main,schemas,prompt_translator,flux_client,image_store,chat_handler}.py
+└── tests/                      # pytest（pytest-asyncio + respx）
 ```
 
 > 同一 `docker-compose.yml` 還定義 `gpt-oss-20b` / `gemma4` / `nv-embed-triton` / `nv-embed-proxy` 等非圖像服務，本文件僅聚焦 FLUX 兩個服務。
 >
-> `models/` 下另有 `inference/`（TensorRT-LLM / Triton 的本地建置脈絡與壓測 log）與 `model/`（HuggingFace 權重 symlink），兩者 git 未追蹤、不屬 FLUX 範圍，本文件不展開。
+> repo 根 `models/` 目錄仍有 `inference/`（TensorRT-LLM / Triton 的本地建置脈絡與壓測 log）與 `model/`（HuggingFace 權重 symlink，**位置未變**），兩者 git 未追蹤、不屬 FLUX 範圍，本文件不展開。
 
 ---
 
@@ -95,15 +98,15 @@ models/
 所有服務只用 `expose:`（內網），**不開 host port**；CSP 走共用 external network `anila-models-net` 以 DNS 連接。
 
 ```bash
-# 一次性 bootstrap
+# 一次性 bootstrap（於 repo 根）
 docker network create anila-models-net
-docker compose -f docker-compose.yml restart csp        # CSP 加入該網路
+docker compose -f compose.yaml restart csp        # CSP 加入該網路（平台 compose）
 
-# 日常操作
-docker compose -f models/docker-compose.yml up -d
-docker compose -f models/docker-compose.yml logs -f flux2-dev
-docker compose -f models/docker-compose.yml restart flux2-dev-agent
-docker compose -f models/docker-compose.yml down         # 只動模型，平台不受影響
+# 日常操作（於 repo 根）
+docker compose -f infra/models/docker-compose.yml up -d
+docker compose -f infra/models/docker-compose.yml logs -f flux2-dev
+docker compose -f infra/models/docker-compose.yml restart flux2-dev-agent
+docker compose -f infra/models/docker-compose.yml down         # 只動模型，平台不受影響
 ```
 
 GPU / 資源（取自 compose）：`flux2-dev` GPU `["1","2"]`、`shm_size: 32g`、`ipc: host`、healthcheck `/health`（`start_period: 300s`）；`flux2-dev-agent` 無 GPU，`depends_on: flux2-dev (service_healthy)`。
@@ -135,10 +138,10 @@ GPU / 資源（取自 compose）：`flux2-dev` GPU `["1","2"]`、`shm_size: 32g`
 
 ```bash
 # flux2-dev（conftest 自動設 FLUX_SKIP_LOAD=1，不載權重）
-cd models/flux2-dev       && pip install -e '.[test]' && pytest
+cd services/flux2-dev       && pip install -e '.[test]' && pytest
 
 # flux2-dev-agent（pytest-asyncio + respx；asyncio_mode=auto）
-cd models/flux2-dev-agent && pip install -e '.[test]' && pytest
+cd services/flux2-dev-agent && pip install -e '.[test]' && pytest
 ```
 
 > 測試相依（pinned）見各自 `pyproject.toml` 的 `[project.optional-dependencies].test`；torch / diffusers **不在** test deps，CI/dev 不必裝 GPU stack。
@@ -156,8 +159,8 @@ cd models/flux2-dev-agent && pip install -e '.[test]' && pytest
 
 ## 相關文件
 
-- FLUX 規格：[`../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md`](../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md)（§3.2 `/generate` 合約、§9 授權雷區）
-- 平台整體：[`../README.md`](../README.md) · 分支策略：[`../docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)
+- FLUX 規格：[`../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md`](../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md)（§3.2 `/generate` 合約、§9 授權雷區）
+- 平台整體：[`../../README.md`](../../README.md) · 分支策略：[`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
 
 ---
 

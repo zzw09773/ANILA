@@ -4,7 +4,7 @@
 
 > 中文版本：[`README.md`](./README.md)
 
-> 🌿 **Branch note**: This SDK exists on every ANILA deployment branch and is identical across branches (the runtime base does not vary by deployment context). See the root [`README.md`](../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md). New features always land in `main` first, then sync downstream.
+> 🌿 **Branch note**: This SDK exists on every ANILA deployment branch and is identical across branches (the runtime base does not vary by deployment context). See the root [`README.md`](../../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md). New features always land in `main` first, then sync downstream.
 
 ---
 
@@ -17,11 +17,11 @@
 
 How each role relates to anila-core:
 
-- **Router deployment** ([`anila-core-router`](../anila-core-router/)): directly `import`s Pillar 1 + Pillar 2.
+- **Router deployment** ([`anila-core-router`](../../services/anila-core-router/)): directly `import`s Pillar 1 + Pillar 2.
 - **Agent developers**: `pip install "anila-core[rag]"` and fork [`anila-agent`](../anila-agent/) as the official RAG agent starter template. The `[rag]` extra provides the heavyweight document-parsing packages.
 - **ingestion-worker** (Arq async pipeline): consumes only Pillar 2 (`chunking_plugins`, `IngestionError`, `pg_pool`, `pgvector_store`, `credential_crypto`); never touches Pillar 1.
 
-> Repo-root positioning: [`../README.md`](../README.md).
+> Repo-root positioning: [`../../README.md`](../../README.md).
 
 ---
 
@@ -63,7 +63,7 @@ anila-core = anila_core.cli.main:main
 Key modules under `src/anila_core/` (grouped by pillar):
 
 ```
-anila-core/
+packages/anila-core/
 ├── pyproject.toml            # name=anila-core, v0.14.0
 ├── README.md / README.en.md
 ├── CHANGELOG.md              # detailed sprint release notes
@@ -102,7 +102,7 @@ anila-core/
             └── chunking_plugins/  # base · registry (@register_chunker) · builtins
 ```
 
-> Full module responsibilities & boundaries: [`../docs/anila-core/anila-core-boundary.md`](../docs/anila-core/anila-core-boundary.md).
+> Full module responsibilities & boundaries: [`../../docs/anila-core/anila-core-boundary.md`](../../docs/anila-core/anila-core-boundary.md).
 
 ---
 
@@ -113,9 +113,9 @@ anila-core is a **library / SDK**, not a long-running service. It's consumed by 
 ### Install
 
 ```bash
-pip install -e "./anila-core"          # full Pillar 1 + Pillar 2 core deps
-pip install -e "./anila-core[rag]"     # + heavyweight parsing stack
-pip install -e "./anila-core[rag,dev]" # + pytest / ruff / mypy (needed to run the full test suite)
+pip install -e "./packages/anila-core"          # full Pillar 1 + Pillar 2 core deps
+pip install -e "./packages/anila-core[rag]"     # + heavyweight parsing stack
+pip install -e "./packages/anila-core[rag,dev]" # + pytest / ruff / mypy (needed to run the full test suite)
 ```
 
 ### Router mode (OpenAI-compatible dispatcher)
@@ -170,7 +170,7 @@ pytest -m integration        # needs a live pgvector + RLS database
 | **anila-core-router** | Pillar 1 + Pillar 2 | `create_router_app()`, QueryEngine, Coordinator, agent registry, service-token middleware |
 | **anila-agent template** (fork point) | Pillar 1 + Pillar 2 + `[rag]` | full runtime + parsing / vision provider |
 | **ingestion-worker** (Arq + Redis) | Pillar 2 only | `chunking_plugins`, `IngestionError`, `pg_pool`, `CollectionScopedPgVectorStore`, `credential_crypto` |
-| **myCSPPlatform** (CSP backend) | Pillar 2 (partial) | `credential_crypto` (encrypts `user_llm_credentials`) and other shared primitives |
+| **services/csp** (CSP backend) | Pillar 2 (partial) | `credential_crypto` (encrypts `user_llm_credentials`) and other shared primitives |
 
 Capabilities offered: storage adapters (pg pool / pgvector store / in-memory test store), ingestion primitives (error taxonomy / chunker registry / parser / OCR / vision — the latter needs `[rag]`), tools (dispatch / ask_user / plan_mode / todo_write / agent_as_tool / files / shell / apply_patch), api (Router + agent server + event / auth middleware).
 
@@ -178,11 +178,11 @@ Capabilities offered: storage adapters (pg pool / pgvector store / in-memory tes
 
 ## Related docs
 
-- anila-core boundary: [`../docs/anila-core/anila-core-boundary.md`](../docs/anila-core/anila-core-boundary.md)
-- runtime design: [`../docs/anila-core/anila-core-runtime-design.md`](../docs/anila-core/anila-core-runtime-design.md)
-- Ingestion platform design: [`../docs/ingestion/ingestion-platform-design.md`](../docs/ingestion/ingestion-platform-design.md)
+- anila-core boundary: [`../../docs/anila-core/anila-core-boundary.md`](../../docs/anila-core/anila-core-boundary.md)
+- runtime design: [`../../docs/anila-core/anila-core-runtime-design.md`](../../docs/anila-core/anila-core-runtime-design.md)
+- Ingestion platform design: [`../../docs/ingestion/ingestion-platform-design.md`](../../docs/ingestion/ingestion-platform-design.md)
 - Release notes: [`CHANGELOG.md`](./CHANGELOG.md)
-- RAG agent template: [`../anila-agent/README.md`](../anila-agent/README.md) · Router shell: [`../anila-core-router/README.md`](../anila-core-router/README.md)
-- Platform: [`../README.md`](../README.md) · Branch strategy: [`../docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)
+- RAG agent template: [`../anila-agent/README.md`](../anila-agent/README.md) · Router shell: [`../../services/anila-core-router/README.md`](../../services/anila-core-router/README.md)
+- Platform: [`../../README.md`](../../README.md) · Branch strategy: [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
 
 > Version authority is `pyproject.toml` (v0.14.0, `[rag]` extra restored); the latest `CHANGELOG.md` entry is v0.13.0. ⚠️ Known inconsistency: `src/anila_core/__init__.py` still hard-codes `__version__ = "0.7.0"` (a code bug, not a README issue); reading `anila_core.__version__` programmatically returns the stale value. The CLI template's `requirements.txt` also still pins `anila-core>=0.1.0`.

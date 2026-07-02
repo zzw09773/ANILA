@@ -9,7 +9,7 @@ render legible text in images (the "Geneeration / KIGDKED" garbage we
 saw on slide 9). When the LLM declares image_kind='diagram' it ships
 Graphviz DOT instead of a FLUX prompt, and we render it deterministically
 here. CJK label support requires `fonts-noto-cjk` installed in the
-container — see myCSPPlatform/backend/Dockerfile.
+container — see services/anila-studio/Dockerfile.
 
 Security note: we use asyncio.create_subprocess_exec (NOT shell), passing
 the binary name and a fixed argument list. The DOT source is fed via

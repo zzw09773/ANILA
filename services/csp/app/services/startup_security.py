@@ -2,7 +2,7 @@
 
 Sprint 5 X security review (M1): the platform shipped with several env
 vars whose defaults are publicly committed in ``.env.example`` and
-``docker-compose.yml`` (``SECRET_KEY``, ``ADMIN_PASSWORD``,
+``infra/compose/platform.yml`` (``SECRET_KEY``, ``ADMIN_PASSWORD``,
 ``CSP_SERVICE_TOKEN``, DB credentials embedded in ``DATABASE_URL``).
 ``credential_crypto`` already refuses the dev default unless the operator
 opts in via ``ANILA_ALLOW_DEV_SECRET=1``; we now extend the same gate to

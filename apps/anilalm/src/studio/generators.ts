@@ -88,7 +88,7 @@ function newId(): string {
  *   4. ``{...}\n\nNote: ...`` trailing commentary
  *   5. ``{...}`` happy path
  *
- * Mirrors ``myCSPPlatform/backend/app/api/studio.py:_extract_json_object``;
+ * Mirrors ``services/csp/app/api/studio.py:_extract_json_object``;
  * keep both in sync.
  */
 export function extractJsonObject(raw: string): string {

@@ -4,7 +4,7 @@
 >
 > **對應 ISO/IEC 42001:2023**:Clause 5.2 + Annex A.2.2 / A.2.3 / A.6.1.3 / A.9.3
 >
-> **適用範圍**:ANILA 平台所有元件(`myCSPPlatform`、`anila-core`、`anila-core-router`、`anila-agent` 模板、`ingestion-worker`、`ANILA_UI`、`ANILALM`)、註冊到平台的 agent、所有經 `model_registry` 註冊的 LLM 模型。
+> **適用範圍**:ANILA 平台所有元件(`services/csp` + `apps/csp-governance-ui`、`packages/anila-core`、`services/anila-core-router`、`packages/anila-agent` 模板、`services/ingestion-worker`、`apps/anila-shell`、`apps/anilalm`)、註冊到平台的 agent、所有經 `model_registry` 註冊的 LLM 模型。
 
 ---
 

@@ -325,12 +325,12 @@ func Bootstrap(cspURL string, agentID int, bsk, endpointURL, stateDir string) (s
 | 檔 | 內容 | LOC |
 |---|---|---|
 | `docs/agent-framework/csp-agent-bootstrap-protocol.md` | 本檔（凍結 protocol + snippets）| ✅ 已寫 |
-| `myCSPPlatform/docs/agent-onboarding.md`（新）| 整理三條入會路徑：(a) AgenticRAG fork (b) 自寫 agent + bsk- (c) 第三方 + static credential | ~150 |
+| `services/csp/docs/agent-onboarding.md`（新）| 整理三條入會路徑：(a) AgenticRAG fork (b) 自寫 agent + bsk- (c) 第三方 + static credential | ~150 |
 | `AgenticRAG/docs/CSP_INTEGRATION.md`（更新）| 改寫 fork-template 視角，刪除 anila-core 提及，引用本 protocol 文件 | ~80 |
 
 ### 3.2 CSP DeveloperAgentsView 強化
 
-`myCSPPlatform/frontend/src/views/DeveloperAgentsView.vue` 的 `secret-banner`（line 301-323）目前只顯示 bsk- + 一行使用提示。要擴充：
+`apps/csp-governance-ui/src/views/DeveloperAgentsView.vue` 的 `secret-banner`（line 301-323）目前只顯示 bsk- + 一行使用提示。要擴充：
 
 ```
 [secret-banner]

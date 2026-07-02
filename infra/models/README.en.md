@@ -4,13 +4,13 @@
 
 > 中文版本：[`README.md`](./README.md). Technical terms, commands and code stay in English.
 
-> 🌿 **Branch note**: `models/` exists on every ANILA deployment branch (identical across branches). The models stack has a separate lifecycle from the platform stack and is reached cross-stack via the external network `anila-models-net`. See the root [`README.md`](../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md).
+> 🌿 **Branch note**: `infra/models/` (formerly `models/`) exists on every ANILA deployment branch (identical across branches). The models stack has a separate lifecycle from the platform stack and is reached cross-stack via the external network `anila-models-net`. See the root [`README.md`](../../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md).
 
 ---
 
 ## Overview
 
-`models/` is a standalone compose project (`name: anila-models`). The two image-generation services are:
+`infra/models/` (formerly `models/`) houses the standalone compose project (`name: anila-models`). The two image-generation services (source now at `services/flux2-dev` and `services/flux2-dev-agent`) are:
 
 - **`flux2-dev`** — the FLUX.2-dev text-to-image inference service. It wraps `diffusers`' `Flux2Pipeline` into a minimal HTTP server (`server.py`) exposing `POST /generate`. Input `prompt / aspect_ratio / seed / ...`, returns JSON (base64 PNG list + audit meta).
 - **`flux2-dev-agent`** — an agent wrapper (OpenAI `/v1/chat/completions` compatible). The router / CSP forward image-generation requests here; it handles prompt translation (zh→en via gemma4), calls `flux2-dev`, lands the PNG to the share volume, and returns a Markdown image link to the frontend.
@@ -71,22 +71,25 @@ Design notes: always returns `list[str]` (even for `num_candidates=1`); aspect r
 ## Layout
 
 ```
-models/
+infra/models/
 ├── docker-compose.yml          # anila-models project (LLM/embedding/FLUX services)
-├── flux2-dev/                  # FLUX.2-dev inference service
-│   ├── Dockerfile              # CUDA 12.4 base + torch 2.6 + diffusers
-│   ├── requirements.txt · pyproject.toml
-│   ├── server.py               # build_app + /generate + /health + pipeline loading
-│   └── tests/                  # pytest (mock pipeline injected, no GPU needed)
-└── flux2-dev-agent/            # agent wrapper (OpenAI compatible)
-    ├── Dockerfile              # python:3.11-slim
-    ├── app/{main,schemas,prompt_translator,flux_client,image_store,chat_handler}.py
-    └── tests/                  # pytest (pytest-asyncio + respx)
+└── src/                        # build context for non-FLUX services (e.g. the embedding proxy)
+
+services/flux2-dev/             # FLUX.2-dev inference service (compose references ../../services/flux2-dev)
+├── Dockerfile                  # CUDA 12.4 base + torch 2.6 + diffusers
+├── requirements.txt · pyproject.toml
+├── server.py                   # build_app + /generate + /health + pipeline loading
+└── tests/                      # pytest (mock pipeline injected, no GPU needed)
+
+services/flux2-dev-agent/       # agent wrapper (OpenAI compatible)
+├── Dockerfile                  # python:3.11-slim
+├── app/{main,schemas,prompt_translator,flux_client,image_store,chat_handler}.py
+└── tests/                      # pytest (pytest-asyncio + respx)
 ```
 
 > The same `docker-compose.yml` also defines non-image services `gpt-oss-20b` / `gemma4` / `nv-embed-triton` / `nv-embed-proxy`; this document focuses on the two FLUX services.
 >
-> `models/` also contains `inference/` (local build context & load-test logs for the TensorRT-LLM / Triton images) and `model/` (HuggingFace weight symlinks); both are git-untracked, out of FLUX scope, and not covered here.
+> The repo-root `models/` directory still holds `inference/` (local build context & load-test logs for the TensorRT-LLM / Triton images) and `model/` (HuggingFace weight symlinks, **unchanged location**); both are git-untracked, out of FLUX scope, and not covered here.
 
 ---
 
@@ -97,13 +100,13 @@ All services only use `expose:` (intranet), with **no host port**; CSP reaches t
 ```bash
 # one-time bootstrap
 docker network create anila-models-net
-docker compose -f docker-compose.yml restart csp        # CSP joins the network
+docker compose restart csp                              # run from the repo root; CSP joins the network
 
-# day-to-day
-docker compose -f models/docker-compose.yml up -d
-docker compose -f models/docker-compose.yml logs -f flux2-dev
-docker compose -f models/docker-compose.yml restart flux2-dev-agent
-docker compose -f models/docker-compose.yml down         # touches models only; platform unaffected
+# day-to-day (run from the repo root)
+docker compose -f infra/models/docker-compose.yml up -d
+docker compose -f infra/models/docker-compose.yml logs -f flux2-dev
+docker compose -f infra/models/docker-compose.yml restart flux2-dev-agent
+docker compose -f infra/models/docker-compose.yml down   # touches models only; platform unaffected
 ```
 
 GPU / resources (from compose): `flux2-dev` GPUs `["1","2"]`, `shm_size: 32g`, `ipc: host`, healthcheck `/health` (`start_period: 300s`); `flux2-dev-agent` no GPU, `depends_on: flux2-dev (service_healthy)`.
@@ -135,10 +138,10 @@ Both services ship a pytest suite that needs **no GPU** (mock pipeline injected 
 
 ```bash
 # flux2-dev (conftest sets FLUX_SKIP_LOAD=1 — no weights loaded)
-cd models/flux2-dev       && pip install -e '.[test]' && pytest
+cd services/flux2-dev       && pip install -e '.[test]' && pytest
 
 # flux2-dev-agent (pytest-asyncio + respx; asyncio_mode=auto)
-cd models/flux2-dev-agent && pip install -e '.[test]' && pytest
+cd services/flux2-dev-agent && pip install -e '.[test]' && pytest
 ```
 
 > Pinned test deps live in each `pyproject.toml` under `[project.optional-dependencies].test`; torch / diffusers are **not** in test deps, so CI/dev never installs the GPU stack.
@@ -156,8 +159,8 @@ cd models/flux2-dev-agent && pip install -e '.[test]' && pytest
 
 ## Related docs
 
-- FLUX spec: [`../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md`](../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md) (§3.2 `/generate` contract, §9 licensing minefield)
-- Platform: [`../README.md`](../README.md) · Branch strategy: [`../docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)
+- FLUX spec: [`../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md`](../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md) (§3.2 `/generate` contract, §9 licensing minefield)
+- Platform: [`../../README.md`](../../README.md) · Branch strategy: [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
 
 ---
 

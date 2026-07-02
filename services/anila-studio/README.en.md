@@ -4,7 +4,7 @@
 
 > 中文版本：[README.md](README.md)
 
-> 🌿 **Branch note**: This service exists on `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`. **The `trial-military` slim build does not include it.** See the root [`README.md`](../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md).
+> 🌿 **Branch note**: This service exists on `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`. **The `trial-military` slim build does not include it.** See the root [`README.md`](../../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md).
 
 ---
 
@@ -14,7 +14,7 @@
 - **Single responsibility**: csp is the control plane (auth / models / ingestion / proxy billing); anila-studio only generates content.
 - **HTTP-only outward**: talks to csp via `csp_client` over HTTP, sharing **no** DB.
 
-Service version **`0.1.0`** (`pyproject.toml` / `config.APP_VERSION` / `/health` agree). Extraction decision: [`docs/superpowers/anila-studio/extraction-decision.md`](../docs/superpowers/anila-studio/extraction-decision.md) (2026-05-23 / PR #12).
+Service version **`0.1.0`** (`pyproject.toml` / `config.APP_VERSION` / `/health` agree). Extraction decision: [`docs/superpowers/anila-studio/extraction-decision.md`](../../docs/superpowers/anila-studio/extraction-decision.md) (2026-05-23 / PR #12).
 
 ---
 
@@ -31,7 +31,7 @@ Service version **`0.1.0`** (`pyproject.toml` / `config.APP_VERSION` / `/health`
 ## Layout
 
 ```
-anila-studio/
+services/anila-studio/
 ├── pyproject.toml          # core + artifact render stack
 ├── Dockerfile              # python:3.11-slim + graphviz/pandoc/chromium/noto-cjk + non-root
 ├── scripts/export-openapi.py    # regenerate openapi/studio.openapi.json (the only script)
@@ -72,11 +72,11 @@ Plus `GET /health`. `openapi/studio.openapi.json` (3.1.0) already includes all f
 ## Running
 
 ```bash
-cd anila-studio
+cd services/anila-studio
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest                                            # tests (no docker)
 .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8100   # needs csp:8000 / redis:6379 / flux2-dev / pptx-renderer
-# or: docker compose -f docker-compose-dev.yml up -d --build anila-studio
+# or (from the repo root): docker compose -f compose.dev.yaml up -d --build anila-studio
 ```
 
 Health: `curl http://localhost:8100/health` → `{"status":"ok","service":"anila-studio","version":"0.1.0","ready":true,"deps":{"revocation_cache":true}}`. During lifespan startup it returns 503 + `ready=false` (status `"degraded"`), going green only after JWKS + revocation cache cold-start.
@@ -124,11 +124,11 @@ Subscribes to channel `anila:auth:token-revoke` (published by csp). On Redis los
 
 ## How the frontend (ANILALM) calls it
 
-`ANILALM/src/api/studio.ts` points at anila-studio via `VITE_STUDIO_BASE_URL`. TypeScript types are codegen'd from `openapi/studio.openapi.json`:
+`apps/anilalm/src/api/studio.ts` points at anila-studio via `VITE_STUDIO_BASE_URL`. TypeScript types are codegen'd from `openapi/studio.openapi.json`:
 
 ```bash
-cd anila-studio && .venv/bin/python scripts/export-openapi.py   # after a schema change
-cd ../ANILALM && npm run gen:studio-types
+cd services/anila-studio && .venv/bin/python scripts/export-openapi.py   # after a schema change
+cd ../../apps/anilalm && npm run gen:studio-types
 ```
 
 ---
@@ -144,5 +144,5 @@ cd ../ANILALM && npm run gen:studio-types
 ## Related docs
 
 - Extraction plan / E2E: `docs/superpowers/anila-studio/plans/`
-- Studio / FLUX spec: [`../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md`](../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md)
-- Platform: [`../README.md`](../README.md) · Branch strategy: [`../docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)
+- Studio / FLUX spec: [`../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md`](../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md)
+- Platform: [`../../README.md`](../../README.md) · Branch strategy: [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)

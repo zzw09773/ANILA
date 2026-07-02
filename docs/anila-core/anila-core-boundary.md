@@ -10,16 +10,16 @@
 
 ## 1. 問題陳述
 
-`anila-core/README.md` 的「Note (Task 3 pending)」段落寫：
+`packages/anila-core/README.md` 的「Note (Task 3 pending)」段落寫：
 
 > 現階段 `ingestion/`、`storage/adapters/{pg_pool,pgvector_store,postgres_store}.py`、`providers/embedding_nvidia.py`、`engine/rag_preprocessor.py` 等仍留在 anila-core tree 裡（透過 `[rag]` extras 啟用）。**下一輪會把這些 RAG-specific 檔案搬回 AgenticRAG template，讓 core 真正成為 pure runtime。**
 
 這個「下一輪」一直沒做。同時 ANILA Ingestion Platform 設計（[`ingestion-platform-design.md`](../ingestion/ingestion-platform-design.md)）將會提供中央化的 ingestion 服務，**現在不做 anila-core 瘦身就會出現三套 ingestion**：
 
 ```
-1. anila-core/ingestion/         (歷史遺物，README 早就要刪)
-2. AgenticRAG/ingestion/         (template 自用)
-3. CSP /api/ingestion/*          (新平台)
+1. packages/anila-core/ingestion/ (歷史遺物，README 早就要刪)
+2. AgenticRAG/ingestion/          (template 自用)
+3. CSP /api/ingestion/*           (新平台)
 ```
 
 雙軌已是錯誤，三軌不可接受。本 spec 定義要刪什麼、要留什麼、判定原則、執行步驟。
@@ -127,16 +127,16 @@ async def agentic_chat(request: ChatRequest):
 ### 3.1 順序與相依
 
 ```
-Day 1-3   ─── ① RAG tools 從 anila-core/tools/ 搬到 AgenticRAG/tools/
+Day 1-3   ─── ① RAG tools 從 packages/anila-core/tools/ 搬到 AgenticRAG/tools/
               ② AgenticRAG/api.py 的 inline SQL 改寫前先確認還能跑
 
-Day 4-6   ─── ③ 刪除 anila-core/ingestion/ + api/{documents,search}.py
-              ④ 拔掉 anila-core/app_factory.py 的 RAG wiring
+Day 4-6   ─── ③ 刪除 packages/anila-core/ingestion/ + api/{documents,search}.py
+              ④ 拔掉 packages/anila-core/app_factory.py 的 RAG wiring
               ⑤ pytest anila-core 全綠
 
-Day 7-9   ─── ⑥ 刪除 anila-core/storage/adapters/{pg_pool,pgvector_store,postgres_store}.py
-              ⑦ 刪除 anila-core/providers/embedding_nvidia.py
-              ⑧ 刪除 anila-core/engine/rag_preprocessor.py
+Day 7-9   ─── ⑥ 刪除 packages/anila-core/storage/adapters/{pg_pool,pgvector_store,postgres_store}.py
+              ⑦ 刪除 packages/anila-core/providers/embedding_nvidia.py
+              ⑧ 刪除 packages/anila-core/engine/rag_preprocessor.py
               ⑨ 刪除 config.py 的 RAG 欄位
               ⑩ pytest anila-core + AgenticRAG 全綠
 
@@ -149,22 +149,22 @@ Day 10    ─── ⑪ Update anila-core README + CHANGELOG (BREAKING)
 刪除 ingestion 模組後，下列 anila-core test 會 break：
 
 ```
-anila-core/tests/test_chunker.py
-anila-core/tests/test_parsers.py
-anila-core/tests/test_ingestion_service.py
-anila-core/tests/test_rag_preprocessor.py
-anila-core/tests/test_embedding_mock.py  # 部分（embedding mock 還是要留）
-anila-core/tests/test_rag_tools.py
-anila-core/tests/test_agentic_chat.py    # 部分（需 RAG tools 的測試項）
-anila-core/tests/test_citation_and_vision.py
-anila-core/tests/test_chunker_cjk.py
-anila-core/tests/test_ocr_fallback.py
-anila-core/tests/test_normalize.py
-anila-core/tests/test_docling_parser.py
-anila-core/tests/test_tokenize_zh.py
+packages/anila-core/tests/test_chunker.py
+packages/anila-core/tests/test_parsers.py
+packages/anila-core/tests/test_ingestion_service.py
+packages/anila-core/tests/test_rag_preprocessor.py
+packages/anila-core/tests/test_embedding_mock.py  # 部分（embedding mock 還是要留）
+packages/anila-core/tests/test_rag_tools.py
+packages/anila-core/tests/test_agentic_chat.py    # 部分（需 RAG tools 的測試項）
+packages/anila-core/tests/test_citation_and_vision.py
+packages/anila-core/tests/test_chunker_cjk.py
+packages/anila-core/tests/test_ocr_fallback.py
+packages/anila-core/tests/test_normalize.py
+packages/anila-core/tests/test_docling_parser.py
+packages/anila-core/tests/test_tokenize_zh.py
 ```
 
-→ 全部從 `anila-core/tests/` **搬到** `AgenticRAG/tests/`（事實上 AgenticRAG/tests/ 已經有同名版本，只要 reconcile diff、保留較新版即可）
+→ 全部從 `packages/anila-core/tests/` **搬到** `AgenticRAG/tests/`（事實上 AgenticRAG/tests/ 已經有同名版本，只要 reconcile diff、保留較新版即可）
 
 ### 3.3 anila-core 升版
 
@@ -215,7 +215,7 @@ If you built a custom non-RAG agent on top of `anila-core`:
 **b. `pyproject.toml` 的 `[rag]` extras 移除**
 
 ```toml
-# anila-core/pyproject.toml — BEFORE
+# packages/anila-core/pyproject.toml — BEFORE
 [project.optional-dependencies]
 rag = [
     "pymupdf4llm>=0.0.10",
@@ -246,11 +246,11 @@ rag = [
 
 Sprint 1 結束時 anila-core 必須符合：
 
-- [ ] `find anila-core/src/anila_core -name '*.py'` 不再列出 `ingestion/` `storage/adapters/{pg_pool,pgvector_store,postgres_store}.py` `providers/embedding_nvidia.py` `engine/rag_preprocessor.py` `api/{documents,search}.py`
-- [ ] `grep -rn "document_chunks" anila-core/src` 零命中
-- [ ] `grep -rn "create_vector_search_tool\|create_keyword_search_tool\|create_read_document_tool" anila-core/src` 零命中
-- [ ] `pip install -e ./anila-core` （無 extras）成功，import 任何 KEEP list 的模組都成功
-- [ ] anila-core/tests 全綠（已搬走 RAG 相關 test）
+- [ ] `find packages/anila-core/src/anila_core -name '*.py'` 不再列出 `ingestion/` `storage/adapters/{pg_pool,pgvector_store,postgres_store}.py` `providers/embedding_nvidia.py` `engine/rag_preprocessor.py` `api/{documents,search}.py`
+- [ ] `grep -rn "document_chunks" packages/anila-core/src` 零命中
+- [ ] `grep -rn "create_vector_search_tool\|create_keyword_search_tool\|create_read_document_tool" packages/anila-core/src` 零命中
+- [ ] `pip install -e ./packages/anila-core` （無 extras）成功，import 任何 KEEP list 的模組都成功
+- [ ] packages/anila-core/tests 全綠（已搬走 RAG 相關 test）
 - [ ] AgenticRAG template 在新版 anila-core 之上 `pytest tests/` 全綠
 - [ ] anila-core README 的「Task 3 pending」段落改為「Task 3 (2026-XX-XX): completed — see CHANGELOG」
 - [ ] anila-core CHANGELOG 寫好 BREAKING entry + migration guide

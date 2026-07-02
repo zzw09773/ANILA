@@ -199,7 +199,7 @@ docker compose restart csp
 After this step, the legacy `CSP_SERVICE_TOKEN` env var is dead code
 on every service. A future Sprint can delete the fallback branch in
 `auth_service.verify_service_token` and the env var resolution in
-`anila-core-router/main.py`. Until then it's harmless.
+`services/anila-core-router/main.py`. Until then it's harmless.
 
 ---
 
@@ -220,7 +220,7 @@ recommend taking a database snapshot before stage 4.
 
 ## Boundary cleanup (deferred to Sprint 9 X)
 
-`anila-core/src/anila_core/ingestion/` is currently consumed by
+`packages/anila-core/src/anila_core/ingestion/` is currently consumed by
 `ingestion-worker` (`errors`, `chunking_plugins`). The original Phase
 J plan to delete it as a "dead orphan" turned out to be wrong — it's
 load-bearing. The boundary decision (keep in anila-core as shared

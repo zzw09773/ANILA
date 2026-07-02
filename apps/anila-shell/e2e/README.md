@@ -11,7 +11,7 @@ Pre-reqs:
 
 Run:
 
-    cd ANILA_UI/anila-ui
+    cd apps/anila-shell
     npx playwright install --with-deps  # one-time
     npx playwright test e2e/
 

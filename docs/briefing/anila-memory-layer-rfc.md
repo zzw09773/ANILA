@@ -15,7 +15,7 @@
 | **CSP 平台使用者記憶**（P1/P2/P3 已上線） | Postgres（`user_facts` + `conversation_memory_chunks`） | per-user | CSP `/v1/chat/completions` proxy hooks（任何走 CSP 的聊天都吃到） | ANILA_UI「設定 → 記憶」tab | 結構化 `key/value` + halfvec(4000) RAG |
 | **anila-core agent memdir** | 檔案系統（`MEMORY.md` + `*.md` 含 YAML frontmatter） | per-agent process | 個別 agent SDK runtime | 無（admin 直接看檔案） | 非結構化 markdown + relevance scoring |
 
-> 命名澄清：CSP = `myCSPPlatform` 後端；ANILA_UI = 主聊天前端；ANILALM 是知識庫管理 SPA（其對話也走 CSP，所以自動受惠記憶，但本身不持有記憶邏輯）。
+> 命名澄清：CSP = `services/csp` 後端；ANILA_UI = 主聊天前端（`apps/anila-shell`）；ANILALM 是知識庫管理 SPA（`apps/anilalm`；其對話也走 CSP，所以自動受惠記憶，但本身不持有記憶邏輯）。
 
 並存代價：兩套儲存要維運、兩套萃取要演進、agent 讀不到使用者事實、稽核 / GDPR 重做兩遍。
 
@@ -47,7 +47,7 @@
 └────────────────────┬───────────────────────────────────────────┘
                      │ import as library
                      ↓
-┌──────────────── CSP (myCSPPlatform 後端) ──────────────────────┐
+┌──────────────── CSP (services/csp 後端) ───────────────────────┐
 │                                                                │
 │  app.services.memory_service                                   │
 │   └─ PostgresMemoryAdapter(implements adapter.MemoryAdapter)   │
@@ -61,7 +61,7 @@
 └────────────────────┬───────────────────────────────────────────┘
                      │ HTTP /api/memory/*
                      ↓
-┌──────────────── ANILA_UI (anila-ui) ───────────────────────────┐
+┌──────────────── ANILA_UI (apps/anila-shell) ───────────────────┐
 │  「設定 → 記憶」tab — 列表 / 刪除 / 清空                            │
 └────────────────────────────────────────────────────────────────┘
 ```
@@ -84,7 +84,7 @@
 每個 phase 結束都有可驗收產出。
 
 ### Phase 1 — 抽取 schema 與 contract 到 anila-core（1 天）
-* 在 `anila-core/src/anila_core/memory/user/` 建立新 package。
+* 在 `packages/anila-core/src/anila_core/memory/user/` 建立新 package。
 * 把現有 CSP `memory_service.py` 的 dataclasses（`UserFact`, `RetrievedChunk`, `MemoryReadResult`）平移過去。
 * 把 `_EXTRACT_SYSTEM_PROMPT`、`parse_extraction_response` 平移過去（純函數，無依賴）。
 * 定義 `MemoryAdapter` Protocol（async CRUD 介面）。
@@ -100,7 +100,7 @@
 * DB schema 不變動（無 migration）。
 
 ### Phase 3 — Agent memdir 統一進來（1.5 天）
-* `anila-core/memory/agent/` 新增 `MemoryAdapter` 的「對 user 記憶的 read-only view」— agent 處理使用者請求時可以拉該使用者的 facts。
+* `packages/anila-core/memory/agent/` 新增 `MemoryAdapter` 的「對 user 記憶的 read-only view」— agent 處理使用者請求時可以拉該使用者的 facts。
 * `MemdirManager` 介面新增 `get_user_facts(user_id)` 方法，預設打 CSP `/api/memory/{user_id}/facts`（HTTP）。
 * CSP 新增 service-token 認證讓 agent 可以代呼叫使用者記憶。
 * 跨租戶讀取流程驗證：sub-agent 處理請求時能看到使用者 facts。
@@ -144,7 +144,7 @@
 ## 6. 開工前需要拍板的決議
 
 1. **anila-core lib 安裝方式**：editable install 還是 wheel publish？
-   * 建議 **editable install**（monorepo 已採用，CSP requirements 直接指 `-e ../anila-core`）。
+   * 建議 **editable install**（monorepo 已採用，CSP requirements 直接指 `-e ../../packages/anila-core`）。
 
 2. **Phase 3 agent 跨租戶讀取**：是否在 v1 啟用？
    * 建議 **啟用** — 你之前提的「agent 看得到使用者偏好才能個人化」是路線 3 主要動機之一。

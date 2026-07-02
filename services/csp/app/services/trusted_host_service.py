@@ -1,6 +1,6 @@
 """Admin-managed trusted-host allow-list service.
 
-Sits between [`/api/trusted-hosts`](myCSPPlatform/backend/app/api/trusted_hosts.py)
+Sits between [`/api/trusted-hosts`](services/csp/app/api/trusted_hosts.py)
 and the anila-core SSRF guard. Three jobs:
 
 1. **CRUD** with audit logging (every add / remove writes an

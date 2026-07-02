@@ -14,7 +14,7 @@ The pipeline:
 * **csp/backend** (the source-of-truth) bumps ``users.token_version``,
   writes a row to ``token_revocations``, and publishes a JSON event
   on the Redis channel ``anila:auth:token-revoke``. See
-  ``myCSPPlatform/backend/app/services/token_revocation_publisher.py``.
+  ``services/csp/app/services/token_revocation_publisher.py``.
 * **anila-studio** (this module) cold-starts by replaying the last 30
   days of revocations through ``GET /api/auth/revocations?since=...``
   (because Redis pub/sub is fire-and-forget — anything published

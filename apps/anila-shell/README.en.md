@@ -4,7 +4,7 @@
 
 > 中文版本：[`README.md`](./README.md)
 
-> 🌿 **Branch note**: This UI exists on every ANILA deployment branch. See the root [`README.md`](../../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md). **The login path is branch-dependent**: on `main` and most branches `login.jsx` is **local password only** (this build removed LDAP / OIDC / SSO entry points); on `prod-intranet-card`, `login.jsx` is removed in favour of myCSPPlatform's Vue `LoginView.vue` unified card / SSO / password entry; the `trial-military` slim build drops some advanced screens as needed.
+> 🌿 **Branch note**: This UI exists on every ANILA deployment branch. See the root [`README.md`](../../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md). **The login path is branch-dependent**: on `main` and most branches `login.jsx` is **local password only** (this build removed LDAP / OIDC / SSO entry points); on `prod-intranet-card`, `login.jsx` is removed in favour of csp-governance-ui's Vue `LoginView.vue` unified card / SSO / password entry; the `trial-military` slim build drops some advanced screens as needed.
 
 ---
 
@@ -33,7 +33,7 @@ Scripts: `dev` (vite) / `build` (vite build) / `preview` / `test` (vitest run). 
 ## Layout
 
 ```
-anila-ui/
+apps/anila-shell/            # formerly ANILA_UI/anila-ui
 ├── index.html · vite.config.js · vitest.setup.js
 ├── Dockerfile              # multi-stage: node:22-alpine build (npm install) → nginx:1.27-alpine serve
 ├── .env.example · docker/nginx.conf · docs/ · e2e/   # e2e/ holds only a legacy README (the Functions v1 stack was fully removed — no spec, no Playwright dep)
@@ -73,7 +73,7 @@ anila-ui/
 ## Setup & Run
 
 ```bash
-cd ANILA_UI/anila-ui
+cd apps/anila-shell
 cp .env.example .env.local      # edit if CSP / Router aren't on localhost
 npm install && npm run dev      # Vite dev server :5173
 ```
@@ -119,7 +119,7 @@ Backend endpoints actually called (from `runtime/*.js`): `/api/conversations` (i
 ## Related docs
 
 - Platform: [`../../README.md`](../../README.md), roadmap [`../../anila_plan.md`](../../anila_plan.md), branch strategy [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
-- CSP: [`../../myCSPPlatform/README.md`](../../myCSPPlatform/README.md) · Router: [`../../anila-core-router/README.md`](../../anila-core-router/README.md) · License: [`../../LICENSE`](../../LICENSE)
+- CSP: [`../../services/csp/README.md`](../../services/csp/README.md) · Router: [`../../services/anila-core-router/README.md`](../../services/anila-core-router/README.md) · License: [`../../LICENSE`](../../LICENSE)
 
 ---
 

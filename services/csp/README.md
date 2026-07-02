@@ -1,16 +1,16 @@
-# myCSPPlatform（CSP — Control & Data Plane）
+# services/csp（CSP — Control & Data Plane）
 
-> ANILA 平台的權威核心服務：掌管使用者、API Key、模型 / Agent 註冊、對話、知識庫與審計，並對外提供 OpenAI 相容代理。
+> ANILA 平台的權威核心服務（前身 `myCSPPlatform`）：掌管使用者、API Key、模型 / Agent 註冊、對話、知識庫與審計，並對外提供 OpenAI 相容代理。
 
 > English version：[`README.en.md`](./README.en.md)
 
-> 🌿 **分支對照**：本服務存在於所有 ANILA 部署分支。各分支的部署對象 / 認證 / 差異見根目錄 [`README.md`](../README.md) 的分支對照表與 [`docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)。**認證模式依分支而定**：`main` 與多數分支為**純帳密**（RS256 JWT + cookie，`/api/auth/*` 只有 register/login/refresh/logout/me/password/revoke/revocations）；只有 **`prod-intranet-card`** 額外含 SSO(OIDC) + 中科院 PKI 自然人憑證卡（`/api/auth/card/*`）等 fork（main 上的 SSO / `local_password_disabled` 欄位已於 migration `0035` 移除）。
+> 🌿 **分支對照**：本服務存在於所有 ANILA 部署分支。各分支的部署對象 / 認證 / 差異見根目錄 [`README.md`](../../README.md) 的分支對照表與 [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)。**認證模式依分支而定**：`main` 與多數分支為**純帳密**（RS256 JWT + cookie，`/api/auth/*` 只有 register/login/refresh/logout/me/password/revoke/revocations）；只有 **`prod-intranet-card`** 額外含 SSO(OIDC) + 中科院 PKI 自然人憑證卡（`/api/auth/card/*`）等 fork（main 上的 SSO / `local_password_disabled` 欄位已於 migration `0035` 移除）。
 
 ---
 
 ## 簡介
 
-`myCSPPlatform`（程式內代號 **CSP**）是 ANILA 的「真相來源」（authoritative store）：Router、ingestion-worker、anila-studio、各前端都向它要使用者身分、API Key、模型 / Agent manifest 與用量資料。它同時跑兩個平面：
+`services/csp`（前身 `myCSPPlatform`，程式內代號 **CSP**）是 ANILA 的「真相來源」（authoritative store）：Router、ingestion-worker、anila-studio、各前端都向它要使用者身分、API Key、模型 / Agent manifest 與用量資料。它同時跑兩個平面：
 
 - **Control Plane** — `/api/*`（RS256 JWT / cookie 認證）：管理介面與平台內部溝通。掌管使用者、API Key、模型註冊、Agent 註冊與核准、對話 / 附件 / 分享 / 交接、審計、告警、banners、部門、平台連結、trusted-hosts、使用者記憶、service token / service clients 等。
 - **Data Plane** — `/v1/*` 與 `/v2/*`（`sk-` API Key 或 cookie）：OpenAI 相容代理，依 `model_type` 路由到後端 LLM / Embedding / VLM / Agent，並統一寫 `token_usage` 計費。
@@ -18,9 +18,9 @@
 CSP 另承載一條應用管線並對接一個已抽離的服務：
 
 - **Ingestion 知識庫** — 文件上傳 → 切塊 → embedding → pgvector 檢索（RAG）+ 跨文件關係。CSP 透過 `arq` 把工作推進 Redis 佇列，由獨立的 [`ingestion-worker`](../ingestion-worker/) container 消化。
-- **Studio 簡報 / 報告生成** — **已抽出至獨立服務 [`anila-studio`](../anila-studio/)**（含 FLUX 生圖、Graphviz 圖表渲染、PPTX/報告管線）。CSP 端**只保留 contract endpoint**：ingestion `/search`、`/images/search`、`/images/{id}/blob`、`/api/proxy` LLM、`/.well-known/jwks.json`、`/api/auth/revocations`，以及 Redis token-revoke publisher。決策見 [`docs/superpowers/anila-studio/extraction-decision.md`](../docs/superpowers/anila-studio/extraction-decision.md)。
+- **Studio 簡報 / 報告生成** — **已抽出至獨立服務 [`anila-studio`](../anila-studio/)**（含 FLUX 生圖、Graphviz 圖表渲染、PPTX/報告管線）。CSP 端**只保留 contract endpoint**：ingestion `/search`、`/images/search`、`/images/{id}/blob`、`/api/proxy` LLM、`/.well-known/jwks.json`、`/api/auth/revocations`，以及 Redis token-revoke publisher。決策見 [`docs/superpowers/anila-studio/extraction-decision.md`](../../docs/superpowers/anila-studio/extraction-decision.md)。
 
-> 平台整體定位見根目錄 [`../README.md`](../README.md) 與唯一規劃文件 [`../anila_plan.md`](../anila_plan.md)。
+> 平台整體定位見根目錄 [`../../README.md`](../../README.md) 與唯一規劃文件 [`../../anila_plan.md`](../../anila_plan.md)。
 
 ---
 
@@ -47,9 +47,9 @@ CSP 另承載一條應用管線並對接一個已抽離的服務：
                          └──────────────────┘
 ```
 
-### 後端 `backend/`（FastAPI / Python）
+### 後端（FastAPI / Python；`app/` 等直接位於 `services/csp/` 下）
 
-| 項目 | 內容（取自 `requirements.txt` / `docker/Dockerfile`） |
+| 項目 | 內容（取自 `requirements.txt` / `infra/docker/csp.Dockerfile`） |
 |------|------|
 | 語言 / 框架 | Python 3.11 · FastAPI 0.115.6 · uvicorn[standard] 0.34.0 |
 | ORM / migration | SQLAlchemy 2.0.36 · Alembic 1.14.1（migrations `0001`–`0045`） |
@@ -61,9 +61,9 @@ CSP 另承載一條應用管線並對接一個已抽離的服務：
 | 文字後處理 | opencc-python-reimplemented 0.1.7 |
 | 測試 | pytest · pytest-asyncio 0.24.0 · respx 0.22.0（約 32 個測試檔） |
 
-> 容器走 `docker/Dockerfile`（multi-stage，含 `anila-core[rag]`），system 套件 `gcc` / `libpq-dev` / `curl` / `graphviz` / `fonts-noto-cjk`。`backend/Dockerfile` 已 dead（compose 用 `docker/Dockerfile`）。**JWT 簽署為 RS256**：`ALGORITHM=HS256` 設定為 legacy、不再用於 access/refresh。
+> 容器走 `infra/docker/csp.Dockerfile`（multi-stage，含 `anila-core[rag]`），system 套件 `gcc` / `libpq-dev` / `curl` / `graphviz` / `fonts-noto-cjk`。`services/csp/Dockerfile` 已 dead / legacy（compose 用 `infra/docker/csp.Dockerfile`）。**JWT 簽署為 RS256**：`ALGORITHM=HS256` 設定為 legacy、不再用於 access/refresh。
 
-### 前端 `frontend/`（Vue 3 / Vite，package `csp-platform`）
+### 前端 [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/)（Vue 3 / Vite，package `csp-platform`；已移為獨立頂層目錄，前身 `myCSPPlatform/frontend`）
 
 | 項目 | 內容 |
 |------|------|
@@ -79,35 +79,35 @@ CSP 另承載一條應用管線並對接一個已抽離的服務：
 ## 目錄結構
 
 ```
-myCSPPlatform/
-├── backend/
-│   ├── app/
-│   │   ├── main.py            # lifespan：startup_security → alembic upgrade → startup_migrations
-│   │   │                      #   → auto_seed → trusted_host backfill → health_checker / usage_writer
-│   │   │                      #   / ingestion_pool；CORS / TrustedHost / CSRF / SPA fallback
-│   │   ├── config.py          # pydantic-settings Settings
-│   │   ├── database.py
-│   │   ├── api/               # router.py 匯總；各資源 router（見「API 介面」）
-│   │   │   └── ingestion/     # collections / credentials / documents / eval_runs /
-│   │   │                      #   image_blob / jobs / preview / relations / search
-│   │   ├── models/            # 23 個 ORM 檔（user / agent / model_registry / ingestion /
-│   │   │                      #   token_usage / audit_log / banner / department / ...）
-│   │   ├── schemas/
-│   │   ├── services/          # 26 個 service（auth / proxy / health_checker / usage_writer /
-│   │   │                      #   auto_seed / startup_security / ingestion_queue /
-│   │   │                      #   trusted_host / token_revocation_publisher / agent_credential ...）
-│   │   ├── middleware/        # api_key_auth · caller · cookies · csrf
-│   │   └── utils/             # security.py（RS256 JWT + JWKS keys）· time_helpers.py
-│   ├── migrations/versions/   # Alembic 0001..0045
-│   ├── tests/                 # ~32 pytest 檔
-│   ├── scripts/generate-jwt-keypair.py
-│   ├── requirements.txt
-│   └── Dockerfile             # dead（compose 用 docker/Dockerfile）
-├── frontend/                  # Vue 3 SPA（src/views 21 個 · components/cli 設計系統）
-├── docker/                    # Dockerfile（真正用的）· docker-compose.yml（單獨 csp+nginx+postgres）· nginx.conf
-├── scripts/init_db.py · start.sh · .env.example
+services/csp/                  # 前身 myCSPPlatform/backend；app / migrations / tests / scripts /
+│                              #   requirements.txt 現在直接位於本目錄下
+├── app/
+│   ├── main.py                # lifespan：startup_security → alembic upgrade → startup_migrations
+│   │                          #   → auto_seed → trusted_host backfill → health_checker / usage_writer
+│   │                          #   / ingestion_pool；CORS / TrustedHost / CSRF / SPA fallback
+│   ├── config.py              # pydantic-settings Settings
+│   ├── database.py
+│   ├── api/                   # router.py 匯總；各資源 router（見「API 介面」）
+│   │   └── ingestion/         # collections / credentials / documents / eval_runs /
+│   │                          #   image_blob / jobs / preview / relations / search
+│   ├── models/                # 23 個 ORM 檔（user / agent / model_registry / ingestion /
+│   │                          #   token_usage / audit_log / banner / department / ...）
+│   ├── schemas/
+│   ├── services/              # 26 個 service（auth / proxy / health_checker / usage_writer /
+│   │                          #   auto_seed / startup_security / ingestion_queue /
+│   │                          #   trusted_host / token_revocation_publisher / agent_credential ...）
+│   ├── middleware/            # api_key_auth · caller · cookies · csrf
+│   └── utils/                 # security.py（RS256 JWT + JWKS keys）· time_helpers.py
+├── migrations/versions/       # Alembic 0001..0045
+├── tests/                     # ~32 pytest 檔
+├── scripts/                   # generate-jwt-keypair.py · init_db.py
+├── requirements.txt
+├── .env.example
+├── Dockerfile                 # dead / legacy（實際 image 用 infra/docker/csp.Dockerfile）
 └── README.md / README.en.md
 ```
+
+> 前端 SPA 已移至頂層 [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/)；真正部署用的 Dockerfile 在 [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile)、nginx 設定在 [`infra/nginx/anila.conf`](../../infra/nginx/anila.conf)（皆為原 `myCSPPlatform/docker/` 的內容）。
 
 ---
 
@@ -119,23 +119,22 @@ myCSPPlatform/
 
 ```bash
 # 從 repo 根目錄
-docker compose -f docker-compose-dev.yml up -d --build csp   # dev
-# 或 prod：docker compose up -d csp（prod 分支可用 scripts/deploy-prod.sh）
+docker compose -f compose.dev.yaml up -d --build csp   # dev
+# 或 prod：docker compose up -d csp（prod 分支可用 infra/deployment/scripts/deploy-prod.sh）
 ```
 
 CSP 連兩個 network：`default`（stack 內部）與 `anila-models-net`（external，打 `gemma4` / `gpt-oss-20b` / `nv-embed-proxy` / `flux2-dev`）。第一次啟動若 `anila-models-net` 不存在：`docker network create anila-models-net`。
 
-> `myCSPPlatform/docker/docker-compose.yml` 是**單獨開發**用的精簡 compose（只有 `nginx` + `postgres` + `csp`，無 redis / router）；要完整功能請用 repo 根目錄 compose。
-
 ### CSP 單獨開發
 
+原 `myCSPPlatform` 的單獨 compose（`docker/docker-compose.yml`）與 `start.sh` 已於 §17.1 目錄遷移時退役、未帶入新樹。要接近「單獨開發」的跑法，請用 repo 根目錄的 dev stack 只起 csp：
+
 ```bash
-cd myCSPPlatform
-cp .env.example .env       # 至少改 SECRET_KEY 與 ADMIN_PASSWORD
-./start.sh up              # up / down / restart / logs [csp] / status / build / shell
+# 從 repo 根目錄
+docker compose -f compose.dev.yaml up -d --build csp
 ```
 
-後端本地（不經容器，需自備 PostgreSQL）：`cd backend && uvicorn app.main:app --port 8000`。
+後端本地（不經容器，需自備 PostgreSQL）：`cd services/csp && uvicorn app.main:app --port 8000`。
 
 ### 關鍵環境變數（取自 `config.py`，預設值如實）
 
@@ -205,10 +204,10 @@ curl http://localhost/v1/chat/completions \
 
 ## 相關文件
 
-- Ingestion 平台設計：[`../docs/ingestion/ingestion-platform-design.md`](../docs/ingestion/ingestion-platform-design.md) · Parent-child RAG：[`../docs/ingestion/parent-child-rag-design.md`](../docs/ingestion/parent-child-rag-design.md)
-- 多服務整合：[`../docs/platform/multi-service-integration-plan.md`](../docs/platform/multi-service-integration-plan.md) · Service-token cutover：[`../docs/runbooks/service-token-cutover.md`](../docs/runbooks/service-token-cutover.md)
-- anila-studio 抽出：[`../docs/superpowers/anila-studio/extraction-decision.md`](../docs/superpowers/anila-studio/extraction-decision.md)
-- 平台整體：[`../README.md`](../README.md) · 路線圖：[`../anila_plan.md`](../anila_plan.md) · 分支策略：[`../docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)
+- Ingestion 平台設計：[`../../docs/ingestion/ingestion-platform-design.md`](../../docs/ingestion/ingestion-platform-design.md) · Parent-child RAG：[`../../docs/ingestion/parent-child-rag-design.md`](../../docs/ingestion/parent-child-rag-design.md)
+- 多服務整合：[`../../docs/platform/multi-service-integration-plan.md`](../../docs/platform/multi-service-integration-plan.md) · Service-token cutover：[`../../docs/runbooks/service-token-cutover.md`](../../docs/runbooks/service-token-cutover.md)
+- anila-studio 抽出：[`../../docs/superpowers/anila-studio/extraction-decision.md`](../../docs/superpowers/anila-studio/extraction-decision.md)
+- 平台整體：[`../../README.md`](../../README.md) · 路線圖：[`../../anila_plan.md`](../../anila_plan.md) · 分支策略：[`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
 
 ---
 

@@ -5,7 +5,7 @@
 > **模型來源**:`https://aiagent2.ai.ncsist.org.tw` (=10.53.100.12,My-OpenAI-Frontend gateway,模型容器不開 port)
 > **更新**:2026-06-12 (**V1.0.0**,git tag `v1.0.0`) — 卡登改真驗證、安全 hardening、
 >   migration 0040 修補、版號定版。前一版 2026-06-10。
-> **配套檔**:[`.env.example`](../../.env.example) / [`docker-compose.yml`](../../docker-compose.yml) / [`scripts/build-and-export-for-intranet.sh`](../../scripts/build-and-export-for-intranet.sh) / [`scripts/deploy-prod.sh`](../../scripts/deploy-prod.sh)
+> **配套檔**:[`.env.example`](../../.env.example) / [`compose.yaml`](../../compose.yaml)(root shim,實體在 [`infra/compose/platform.yml`](../../infra/compose/platform.yml)) / [`infra/deployment/intranet/build-and-export-for-intranet.sh`](../../infra/deployment/intranet/build-and-export-for-intranet.sh) / [`infra/deployment/scripts/deploy-prod.sh`](../../infra/deployment/scripts/deploy-prod.sh)
 
 這份是「**從外網 dev 機 → 帶進內網一鍵跑起來**」的逐步操作手冊。卡住直接看「Troubleshooting」段。
 
@@ -17,7 +17,7 @@
    8 項安全 hardening、CA bundle、`asn1crypto` 依賴、0040 migration 修補 →
    **務必以 `prod-intranet-card`(tag v1.0.0) 重跑 build-and-export** 再帶進內網。
 2. **卡登變「真驗證」**:不再只是解析 PKCS#7。現在驗 CMS 簽章 + 驗憑證鏈到釘死的
-   中科院 **CSPKI CA** + 綁 nonce。CA bundle(`myCSPPlatform/backend/app/services/
+   中科院 **CSPKI CA** + 綁 nonce。CA bundle(`services/csp/app/services/
    cspki_ca_bundle.pem`)**已 commit 隨碼附帶**,不用手動下載。**它跟 §2.2 的
    `share/pki/model-ca.pem` 其實是「同一套 CSPKI CA」、只是用途不同**:後者驗「https
    模型 gateway 的 TLS」,前者驗「卡片簽章」——內網 PKI 卡與伺服器憑證都由 CSPKI 簽,
@@ -45,7 +45,7 @@
 
 > **一條龍部署 (推薦)**:不想逐步跑 §2.2–§2.3,直接在 prod-intranet-card repo 根目錄:
 > ```bash
-> bash scripts/intranet-deploy.sh [image包資料夾]
+> bash infra/deployment/intranet/intranet-deploy.sh [image包資料夾]
 > ```
 > 互動式跑完 **TLS 抽取 → 模型 CA → 產 .env(自動生 secret + 問 gateway key / owner 工號)
 > → load image → JWT 金鑰 → up → 驗證**。重跑安全(偵測既有 .env 預設保留 secret,不重生 DB 密碼)。
@@ -111,10 +111,10 @@
 cd /home/aia/c1147259/ANILA
 
 # 基本款 (純 gateway 架構,平台主機不跑模型):
-bash scripts/build-and-export-for-intranet.sh
+bash infra/deployment/intranet/build-and-export-for-intranet.sh
 
 # 要在內網本機跑模型 (FLUX 繪圖 / gemma4) 就連 image + 權重一起:
-WITH_MODELS=1 WITH_WEIGHTS=1 bash scripts/build-and-export-for-intranet.sh
+WITH_MODELS=1 WITH_WEIGHTS=1 bash infra/deployment/intranet/build-and-export-for-intranet.sh
 ```
 
 預期產出 (`/tmp/anila-images-export/`):
@@ -138,7 +138,7 @@ MANIFEST.txt / CHECKSUMS.sha256
 ### 1.2b 完整模型清單下載與 Google Drive 轉入 (2026-06-10 拍板,12 repo ≈ 2469 GiB)
 
 > **轉入通道定案 (2026-06-10):Google Drive,無轉移碟** — 單檔上限 50G。
-> 格式用 tar+split 切塊 (`scripts/pack-chunks.sh` / 內網端 `unpack-chunks.sh`),
+> 格式用 tar+split 切塊 (`infra/deployment/intranet/pack-chunks.sh` / 內網端 `unpack-chunks.sh`),
 > **不用 zip**(壓不動 safetensors、不能串流重組)、**不把權重塞 docker image**
 > (load 要雙倍空間、壞一塊整包重傳)。chunk 45GiB:「50G」按十進位解讀時
 > 48GiB 會超限。失敗域 = 單一 chunk;內網端 cat|tar 串流解壓不吃雙倍磁碟。
@@ -169,16 +169,16 @@ Scout-Instruct-FP8 104G。
 
 ```bash
 # 1. 下載單一模型到本機暫存 (腳本內 MODELS 順序已按批次優先序排好):
-bash scripts/download-intranet-models.sh /data/staging/hf
+bash infra/deployment/intranet/download-intranet-models.sh /data/staging/hf
 #    (支援中斷續傳/重跑跳過已完成;gated repo 403 → 去 HF 網頁按同意再跑)
 
 # 2. 切塊 (每模型一組 chunk + manifest):
-bash scripts/pack-chunks.sh /data/staging/hf/gemma-4-26B-A4B /data/staging/chunks
+bash infra/deployment/intranet/pack-chunks.sh /data/staging/hf/gemma-4-26B-A4B /data/staging/chunks
 #    本機既有的權重直接從 project/Huggingface 打包,不經下載:
-bash scripts/pack-chunks.sh /home/aia/c1147259/project/Huggingface/gemma-4-31B-it /data/staging/chunks
+bash infra/deployment/intranet/pack-chunks.sh /home/aia/c1147259/project/Huggingface/gemma-4-31B-it /data/staging/chunks
 #    Maverick bf16 (748G) 專用 — 邊打包邊刪來源,峰值空間減半 (刪了不能重來,
 #    chunks 落地驗過再上傳):
-REMOVE_SOURCE=1 bash scripts/pack-chunks.sh /data/staging/hf/Llama-4-Maverick-17B-128E-Instruct /data/staging/chunks
+REMOVE_SOURCE=1 bash infra/deployment/intranet/pack-chunks.sh /data/staging/hf/Llama-4-Maverick-17B-128E-Instruct /data/staging/chunks
 
 # 3. rclone 上傳 (撞到 750GB 日上限自動停,隔天重跑同指令續傳):
 rclone copy /data/staging/chunks gdrive:anila-intranet/chunks \
@@ -187,7 +187,7 @@ rclone check /data/staging/chunks gdrive:anila-intranet/chunks
 #    check 過了才刪本地 chunks + 暫存權重,繼續下一個模型。
 
 # 4. 工具鏈 (llm-compressor wheelhouse + 校準資料集 + 推論伺服器 ×3,~80-100G):
-bash scripts/download-intranet-toolkit.sh /data/staging/toolkit
+bash infra/deployment/intranet/download-intranet-toolkit.sh /data/staging/toolkit
 #    image tar.gz >45G 的用 pack-chunks 檔案模式切塊再上傳。
 #    這包讓內網日後能自給自足:B200 換裝後從 bf16 母本離線壓 NVFP4、
 #    新模型用通用推論伺服器跑 (現有 model image 都是綁單一模型的客製品)。
@@ -198,7 +198,7 @@ bash scripts/download-intranet-toolkit.sh /data/staging/toolkit
 #        (1.3.0 仍在 RC;現役 gpt-oss 的 1.3.0rc10 image 照舊帶,新部署用 1.2.1)
 
 # 內網端 (該模型 chunk 到齊後;manifest 逐塊驗 hash 揪壞包,只重傳那包):
-bash scripts/unpack-chunks.sh /transfer/gemma-4-26B-A4B.manifest.sha256 models/model
+bash infra/deployment/intranet/unpack-chunks.sh /transfer/gemma-4-26B-A4B.manifest.sha256 models/model
 ```
 
 > 空間帳:除 Maverick 外最大單模型 388G(Maverick-FP8) → 峰值 388(權重)+
@@ -228,7 +228,7 @@ Small-4(225G)、FLUX.2-dev(165G,本機已有)/klein-4B(22G)。
 pip install --no-index --find-links=/path/to/toolkit/wheelhouse llmcompressor datasets
 
 # 2. 壓 (HF_HUB_OFFLINE 等離線開關腳本內建;1 張 GPU + CPU RAM ≳ 模型 bf16×1.2):
-python3 scripts/intranet-quantize-nvfp4.py \
+python3 infra/deployment/intranet/intranet-quantize-nvfp4.py \
   --model $ANILA_HF_DIR/Mistral-Medium-3.5-128B \
   --out   $ANILA_HF_DIR/Mistral-Medium-3.5-128B-NVFP4 \
   --calib /path/to/toolkit/calib-datasets/Open-Platypus
@@ -299,17 +299,17 @@ cd /opt/anila   # repo 解壓處
 
 # 1. TLS:從 pfx 抽 wildcard 憑證+私鑰 (pfx 密碼為空,直接 Enter / -passin pass:)
 openssl pkcs12 -in /path/to/server.pfx -clcerts -nokeys -legacy -passin pass: \
-  | openssl x509 > myCSPPlatform/docker/certs/server.crt
+  | openssl x509 > infra/nginx/certs/server.crt
 openssl pkcs12 -in /path/to/server.pfx -nocerts -noenc -legacy -passin pass: \
-  | openssl pkey > myCSPPlatform/docker/certs/server.key
-chmod 600 myCSPPlatform/docker/certs/server.key
+  | openssl pkey > infra/nginx/certs/server.key
+chmod 600 infra/nginx/certs/server.key
 # 驗:subject 應為 CN=*.ai.ncsist.org.tw
-openssl x509 -in myCSPPlatform/docker/certs/server.crt -noout -subject -dates
+openssl x509 -in infra/nginx/certs/server.crt -noout -subject -dates
 
 # 2. CA:預設用 repo 內 CSPKI bundle(內網模型 https 與卡片登入「同一套」CSPKI CA)。
 #    intranet-deploy.sh [2/7] 會自動 cp;手動等同下行(不必再下載 NCSISTCA):
 mkdir -p share/pki
-cp myCSPPlatform/backend/app/services/cspki_ca_bundle.pem share/pki/model-ca.pem
+cp services/csp/app/services/cspki_ca_bundle.pem share/pki/model-ca.pem
 # 驗:host 端先確認信任鏈成立(verify return code: 0)再交給容器
 echo | openssl s_client -connect 10.53.100.12:443 -servername aiagent2.ai.ncsist.org.tw \
   -CAfile share/pki/model-ca.pem 2>/dev/null | grep 'verify return code'
@@ -407,7 +407,7 @@ ENABLE_IMAGE_CAPTIONS=false       # 內網無 VLM,文件圖片以 [image] 處理
 ```bash
 cd /opt/anila
 set -a; source .env; set +a
-bash scripts/deploy-prod.sh preflight   # 遠端模型模式:自動建 anila-models-net
+bash infra/deployment/scripts/deploy-prod.sh preflight   # 遠端模型模式:自動建 anila-models-net
                                         # + curl 探測 gateway (帶 Bearer key)
 docker compose up -d --no-build         # image 已 load,跳過 build
 ```
@@ -492,7 +492,7 @@ docker compose exec csp python -c "import socket; print(socket.gethostbyname('ai
 
 ## 4.5 (選配) 本機模型混合模式 — FLUX 繪圖 / gemma4 回歸
 
-**前提:平台主機有 GPU**(FLUX 要 2 張、gemma4 要 1 張,見 `models/inference/docker-compose.yml`
+**前提:平台主機有 GPU**(FLUX 要 2 張、gemma4 要 1 張,見 `infra/models/docker-compose.yml`
 的 `device_ids`,依內網主機 GPU 配置調整)。
 
 架構:LLM/embedding 繼續走 aiagent2 gateway,FLUX(+gemma4)在本機跑。
@@ -503,9 +503,9 @@ docker compose exec csp python -c "import socket; print(socket.gethostbyname('ai
 
 # 2. 起模型 stack (獨立 compose project;腳本會自動 source .env + 建 network)
 cd /opt/anila
-bash scripts/model-serve.sh up flux2-dev flux2-dev-agent  # 要 gemma4 就加上
+bash infra/deployment/intranet/model-serve.sh up flux2-dev flux2-dev-agent  # 要 gemma4 就加上
 # 內網 H100 完整組 (gemma4/A4B/12B/120B/nv-embed) 一鍵:
-# bash scripts/model-serve.sh up intranet
+# bash infra/deployment/intranet/model-serve.sh up intranet
 
 # 3. 平台 .env 把對應變數從「空字串」改回「不設」(刪掉或註解),
 #    讓 compose 預設的 docker DNS 名生效:
@@ -608,9 +608,9 @@ docker exec anila-platform-csp-db-1 pg_dump -U csp csp | gzip > /backup/anila-$(
 
 ## 8. Cross-reference
 
-- 出向 gateway key 注入:[`proxy_service._apply_gateway_auth`](../../myCSPPlatform/backend/app/services/proxy_service.py) + [`tests/test_gateway_auth.py`](../../myCSPPlatform/backend/tests/test_gateway_auth.py)
-- 空 endpoint = 停用:[`auto_seed.py`](../../myCSPPlatform/backend/app/services/auto_seed.py)
-- 啟動安全檢查:[`startup_security.py`](../../myCSPPlatform/backend/app/services/startup_security.py)
-- backend 卡片驗證:[`card_auth.py`](../../myCSPPlatform/backend/app/services/card_auth.py)
-- 部署腳本 (含 `ANILA_REMOTE_MODELS=1` 遠端模型模式):[`scripts/deploy-prod.sh`](../../scripts/deploy-prod.sh)
+- 出向 gateway key 注入:[`proxy_service._apply_gateway_auth`](../../services/csp/app/services/proxy_service.py) + [`tests/test_gateway_auth.py`](../../services/csp/tests/test_gateway_auth.py)
+- 空 endpoint = 停用:[`auto_seed.py`](../../services/csp/app/services/auto_seed.py)
+- 啟動安全檢查:[`startup_security.py`](../../services/csp/app/services/startup_security.py)
+- backend 卡片驗證:[`card_auth.py`](../../services/csp/app/services/card_auth.py)
+- 部署腳本 (含 `ANILA_REMOTE_MODELS=1` 遠端模型模式):[`infra/deployment/scripts/deploy-prod.sh`](../../infra/deployment/scripts/deploy-prod.sh)
 - mock 卡片元件:[`cht/`](../../cht/) (僅 dev,內網用真 HiPKI)

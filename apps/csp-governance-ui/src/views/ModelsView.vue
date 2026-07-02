@@ -274,7 +274,7 @@ function healthLabel(s) {
 }
 
 // Sentinels returned by backend when endpoint_url is redacted from non-owner
-// viewers. Keep in sync with myCSPPlatform/backend/app/api/models.py.
+// viewers. Keep in sync with services/csp/app/api/models.py.
 //   <owner-only>  — generic redaction (external endpoint, owner-only)
 //   <internal>    — additional hint: row lives on anila-models-net,
 //                    unreachable from outside the platform stack

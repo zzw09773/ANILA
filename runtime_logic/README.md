@@ -1,6 +1,6 @@
 # runtime_logic — agent runtime 參考原始碼快照
 
-> Agent runtime 的「設計參考目錄」：收兩份生產級 runtime 的原始碼快照，供 ANILA 對照、借鑑、把好的 design pattern 翻譯成 Python 後納入 `anila-core/` 與 agent template。**這不是執行碼。**
+> Agent runtime 的「設計參考目錄」：收兩份生產級 runtime 的原始碼快照，供 ANILA 對照、借鑑、把好的 design pattern 翻譯成 Python 後納入 `packages/anila-core/` 與 agent template。**這不是執行碼。**
 
 > English mirror：[`README.en.md`](./README.en.md)
 
@@ -12,8 +12,8 @@
 
 本目錄收兩份**生產級 agent runtime 的原始碼快照**當「設計參考」：
 
-- **不是 ANILA 執行碼**。執行碼在 `anila-core/` 的 Python tree、agent template 在 [`anila-agent`](../anila-agent/)。
-- 目的是**對照、借鑑、把成熟的設計模式翻譯成 Python** 後納入 `anila-core/`。
+- **不是 ANILA 執行碼**。執行碼在 `packages/anila-core/` 的 Python tree、agent template 在 [`anila-agent`](../packages/anila-agent/)。
+- 目的是**對照、借鑑、把成熟的設計模式翻譯成 Python** 後納入 `packages/anila-core/`。
 - 規範：**讀 pattern、學介面、自己重寫**；不可逐字複製。授權見各 codebase 自身 LICENSE。
 
 > ⚠️ **`claude-code-src/` 與 `openai-agents-python/` 的整個 source tree 已由 `.gitignore` 排除**，不會進 repo。唯一被追蹤的檔案是本 README 與其 English mirror，原始碼在本機維護。
@@ -44,7 +44,7 @@
 
 ## 用途與讀者
 
-- **讀者**：要在 `anila-core/` 或 RAG agent template 上長新 agent-runtime 能力的工程師。
+- **讀者**：要在 `packages/anila-core/` 或 RAG agent template 上長新 agent-runtime 能力的工程師。
 - **何時讀**：要新增能力（multi-agent handoff、tracing、guardrails、session、PTL retry…）時，先查下方「強化對應地圖」找「哪份 reference 的哪個檔有現成 pattern」，再讀 contract、自己用 Python 重寫。
 - **不是**：部署清單、執行手冊、或可直接 import 的套件。
 
@@ -54,7 +54,7 @@
 
 | 能力 | 來源 reference | 目前位置 |
 |---|---|---|
-| 7-stage turn loop | `claude-code-src/src/QueryEngine.ts` + `query/config.ts` | `anila-core/.../engine/query_engine.py` |
+| 7-stage turn loop | `claude-code-src/src/QueryEngine.ts` + `query/config.ts` | `packages/anila-core/.../engine/query_engine.py` |
 | BudgetTracker + diminishing returns | `claude-code-src/src/query/tokenBudget.ts` | `.../engine/budget_tracker.py` |
 | ExtractMemories + cursor | `claude-code-src/src/services/extractMemories/` | `.../memory/extract_memories.py` |
 | AutoCompact / MicroCompact / SessionMemory | `claude-code-src/src/services/compact/` | `.../compact/` |
@@ -93,14 +93,14 @@
 
 ## 啟動與部署
 
-**N/A（參考 / 設計目錄）。** 沒有 `package.json` / `Dockerfile` / `pyproject.toml`，不可建置、不可部署、不可 import。實際可執行碼在 [`../anila-core/`](../anila-core/)。
+**N/A（參考 / 設計目錄）。** 沒有 `package.json` / `Dockerfile` / `pyproject.toml`，不可建置、不可部署、不可 import。實際可執行碼在 [`../packages/anila-core/`](../packages/anila-core/)。
 
 ---
 
 ## 相關文件
 
 - 平台總覽：[`../README.md`](../README.md) · 分支策略：[`../docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)
-- Python runtime（移植目的地）：[`../anila-core/README.md`](../anila-core/README.md)
+- Python runtime（移植目的地）：[`../packages/anila-core/README.md`](../packages/anila-core/README.md)
 - `openai-agents-python` 深入分析：[`../docs/agent-framework/runtime-logic-openai-agents-deep-dive.md`](../docs/agent-framework/runtime-logic-openai-agents-deep-dive.md)
 - Agent framework 架構與移植決策：[`../docs/agent-framework/anila-agent-framework-architecture.md`](../docs/agent-framework/anila-agent-framework-architecture.md)、[`../docs/agent-framework/anila-agent-framework-porting-decisions.md`](../docs/agent-framework/anila-agent-framework-porting-decisions.md)
 

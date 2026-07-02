@@ -58,7 +58,7 @@ docs/
 
 | 我想知道… | 看這份 |
 |---|---|
-| **內網部署怎麼跑** | [`runbooks/intranet-deployment-runbook.md`](./runbooks/intranet-deployment-runbook.md) + 根 `scripts/deploy-prod.sh` |
+| **內網部署怎麼跑** | [`runbooks/intranet-deployment-runbook.md`](./runbooks/intranet-deployment-runbook.md) + `infra/deployment/scripts/deploy-prod.sh` |
 | **main → prod 同步策略 / 永久 fork 區清單** | [`branch-sync-backlog.md`](./branch-sync-backlog.md) ⭐ |
 | **TLS 私鑰怎麼輪換** | [`runbooks/rotate-tls-cert.md`](./runbooks/rotate-tls-cert.md) |
 | **Service token 怎麼 cutover** | [`runbooks/service-token-cutover.md`](./runbooks/service-token-cutover.md) |

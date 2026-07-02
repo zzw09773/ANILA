@@ -1,6 +1,6 @@
 # Rotate TLS Certificate / Purge Leaked Private Key
 
-> 適用情境：Sprint 5 X 安全審查發現 `myCSPPlatform/docker/certs/server.key`
+> 適用情境：Sprint 5 X 安全審查發現 `infra/nginx/certs/server.key`
 > 自 commit `c043a23` / `2e96978` 起被 git 追蹤。Sprint 6 X / A3 提供徹底
 > 移除歷史 + 重簽憑證的步驟。**此為破壞性操作**：執行 `git filter-repo`
 > 會 rewrite all branches，所有 clone 必須重 clone。
@@ -34,8 +34,8 @@ pip install --user git-filter-repo
 
 cd /home/aia/c1147259/ANILA
 git filter-repo --invert-paths \
-  --path myCSPPlatform/docker/certs/server.key \
-  --path myCSPPlatform/docker/certs/server.key.bak \
+  --path infra/nginx/certs/server.key \
+  --path infra/nginx/certs/server.key.bak \
   --force
 ```
 
@@ -60,7 +60,7 @@ cd /home/aia/c1147259
 mv ANILA ANILA.old
 git clone <repo-url> ANILA
 cp ANILA.old/.env ANILA/.env  # 把本機 secrets 搬過來
-cp -a ANILA.old/myCSPPlatform/docker/certs ANILA/myCSPPlatform/docker/  # 但 server.key 等下會被新 cert 覆蓋
+cp -a ANILA.old/infra/nginx/certs ANILA/infra/nginx/  # 但 server.key 等下會被新 cert 覆蓋
 ```
 
 若 contributor 拒絕 fresh clone（有 in-flight branch），可使用：
@@ -82,13 +82,13 @@ in-flight branch push 出去（push 會被拒，得 force-push 自己的 branch
 
 ```bash
 cd /home/aia/c1147259/ANILA
-bash scripts/reissue-tls-cert.sh
+bash infra/deployment/scripts/reissue-tls-cert.sh
 ```
 
 該 script 會：
 1. 詢問 SAN（subject alternative name）— 需把所有 ANILA host 列入：
    `172.16.120.35`、`localhost`、`<production-fqdn>`。
-2. 產生 `myCSPPlatform/docker/certs/server.{key,crt}`，覆蓋舊檔。
+2. 產生 `infra/nginx/certs/server.{key,crt}`，覆蓋舊檔。
 3. 顯示新憑證 fingerprint。
 
 完成後 restart nginx：
@@ -105,7 +105,7 @@ git log --all --full-history --oneline -- '*.key' '*.pem'
 # 應該回空
 
 # 2. 檢查新憑證
-openssl x509 -in myCSPPlatform/docker/certs/server.crt -noout -fingerprint -sha256
+openssl x509 -in infra/nginx/certs/server.crt -noout -fingerprint -sha256
 # 應該是新 fingerprint
 
 # 3. 連線測試

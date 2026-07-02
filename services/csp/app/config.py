@@ -126,7 +126,7 @@ class Settings(BaseSettings):
     # Dev:用 ``cht/`` mock 容器假裝 localhost:16888。
     #
     # ENABLE_CARD_LOGIN: 是否註冊 /api/auth/card/* endpoints。預設 False;prod
-    #   必須 set true (見 docker-compose.yml 預設)。
+    #   必須 set true (見 infra/compose/platform.yml 預設)。
     # REQUIRE_CARD_LOGIN_ONLY: 內網 production 必設 True。一旦啟用:
     #   - POST /api/auth/login (本機帳密) → 404
     #   - POST /api/auth/register (自助註冊) → 404

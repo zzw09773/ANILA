@@ -1,10 +1,10 @@
 # anila-core-router
 
-> **ANILA Router** — an OpenAI-compatible automatic request dispatcher. A thin deployment entrypoint (`main.py`); the actual dispatch logic lives in the [`anila-core`](../anila-core/README.md) SDK's `anila_core.api.router_server`. In the stack it appears as the `router` service.
+> **ANILA Router** — an OpenAI-compatible automatic request dispatcher. A thin deployment entrypoint (`main.py`); the actual dispatch logic lives in the [`anila-core`](../../packages/anila-core/README.md) SDK's `anila_core.api.router_server`. In the stack it appears as the `router` service.
 
 > 中文為主版；中文版本：[`README.md`](./README.md). Technical terms, commands and code stay in English.
 
-> 🌿 **Branch note**: This service exists on every ANILA deployment branch and is identical across branches. See the root [`README.md`](../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md).
+> 🌿 **Branch note**: This service exists on every ANILA deployment branch and is identical across branches. See the root [`README.md`](../../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md).
 
 ---
 
@@ -17,7 +17,7 @@ The Router exposes an OpenAI-compatible `POST /v1/chat/completions` and provides
 - On dispatch the request is forwarded to that agent's `endpoint_url`; the agent's SSE stream is forwarded chunk by chunk to the caller.
 - The primary routing model is decided by CSP at runtime: `main.py` pulls the current primary LLM from CSP `GET /api/models/router-primary` every 60s. When CSP has no primary set, the middleware blocks `/v1/chat/completions` with a **503**, avoiding a silent fall-back to the wrong upstream.
 
-> Positioning: the Router is a deployment example of "assemble a dispatcher from the anila-core runtime foundation", not the core itself. CSP (myCSPPlatform) is the platform's authoritative control + data plane.
+> Positioning: the Router is a deployment example of "assemble a dispatcher from the anila-core runtime foundation", not the core itself. CSP ([`services/csp`](../csp/), formerly `myCSPPlatform`) is the platform's authoritative control + data plane.
 
 ---
 
@@ -43,14 +43,14 @@ The Router exposes an OpenAI-compatible `POST /v1/chat/completions` and provides
 ## Layout
 
 ```
-anila-core-router/
+services/anila-core-router/
 ├── main.py        # deployment entrypoint: create_router_app() + primary-model TTL refresh
 │                  #   + 3-tier service-token state-file resolution + /router/primary-status debug endpoint
-├── Dockerfile     # multi-stage; build context must be the repo root (COPYs anila-core/)
+├── Dockerfile     # multi-stage; build context must be the repo root (COPYs packages/anila-core/)
 └── README.md / README.en.md
 
 # Actual dispatch logic lives in the anila-core SDK:
-anila-core/src/anila_core/api/router_server.py   # create_router_app() + dispatch / SSE forward
+packages/anila-core/src/anila_core/api/router_server.py   # create_router_app() + dispatch / SSE forward
 ```
 
 ---
@@ -63,8 +63,8 @@ The Router image is built from this directory's `Dockerfile` and runs as service
 
 ```bash
 # from repo root
-docker compose -f docker-compose-dev.yml up -d router   # dev
-docker compose -f docker-compose.yml     up -d router   # prod (repo-root default compose, also runs as service router)
+docker compose -f compose.dev.yaml up -d router   # dev
+docker compose -f compose.yaml     up -d router   # prod (repo-root shim compose, also runs as service router)
 ```
 
 In compose `router` only uses `expose: 9000` (**no** host port); the UI exposes it via the `/router` reverse proxy (see the UI's `VITE_ROUTER_BASE_URL` default `/router`). The Router waits for `csp` to be healthy first.
@@ -72,14 +72,14 @@ In compose `router` only uses `expose: 9000` (**no** host port); the UI exposes 
 ### Option 2: build the image yourself (build context must be the repo root)
 
 ```bash
-docker build -f anila-core-router/Dockerfile -t anila-core-router .
+docker build -f services/anila-core-router/Dockerfile -t anila-core-router .
 docker run -p 9000:9000 -e CSP_BASE_URL=http://csp:8000 -e CSP_SERVICE_TOKEN=dev-service-token anila-core-router
 ```
 
 ### Option 3: single-host uvicorn (dev)
 
 ```bash
-pip install -e "../anila-core"        # pure runtime, no RAG extras
+pip install -e "../../packages/anila-core"        # pure runtime, no RAG extras
 export CSP_BASE_URL=http://localhost:8000
 uvicorn main:app --host 0.0.0.0 --port 9000 --log-level info
 ```
@@ -120,13 +120,13 @@ router (:9000)
 
 ## Related docs
 
-- Platform: [`../README.md`](../README.md) · Branch strategy: [`../docs/branch-sync-backlog.md`](../docs/branch-sync-backlog.md)
-- Multi-service integration (incl. Router role): [`../docs/platform/multi-service-integration-plan.md`](../docs/platform/multi-service-integration-plan.md)
-- Agent framework architecture: [`../docs/agent-framework/anila-agent-framework-architecture.md`](../docs/agent-framework/anila-agent-framework-architecture.md)
-- Runtime foundation (SDK): [`../anila-core/README.md`](../anila-core/README.md) · CSP: [`../myCSPPlatform/README.md`](../myCSPPlatform/README.md) · UI: [`../ANILA_UI/anila-ui/README.md`](../ANILA_UI/anila-ui/README.md)
+- Platform: [`../../README.md`](../../README.md) · Branch strategy: [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
+- Multi-service integration (incl. Router role): [`../../docs/platform/multi-service-integration-plan.md`](../../docs/platform/multi-service-integration-plan.md)
+- Agent framework architecture: [`../../docs/agent-framework/anila-agent-framework-architecture.md`](../../docs/agent-framework/anila-agent-framework-architecture.md)
+- Runtime foundation (SDK): [`../../packages/anila-core/README.md`](../../packages/anila-core/README.md) · CSP: [`../csp/README.md`](../csp/README.md) · UI: [`../../apps/anila-shell/README.md`](../../apps/anila-shell/README.md)
 
 ---
 
 ## License
 
-See repo-root [`LICENSE`](../LICENSE).
+See repo-root [`LICENSE`](../../LICENSE).

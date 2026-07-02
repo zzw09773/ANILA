@@ -27,7 +27,7 @@ ANILA 平台對 ISO/IEC 42001:2023 的角色:
 | **AI subject** | 中科院員工(對話記錄、user memory、檔案上傳會留存) |
 
 範圍邊界:
-- ✅ **In scope**:`myCSPPlatform`、`anila-core`、`anila-core-router`、`anila-agent` template、`ingestion-worker`、`ANILA_UI`、`ANILALM`、ingestion 走 pgvector 的所有資料、`audit_logs`、第三方 LLM 模型(經 model_registry 註冊者)
+- ✅ **In scope**:`services/csp` + `apps/csp-governance-ui`、`packages/anila-core`、`services/anila-core-router`、`packages/anila-agent` template、`services/ingestion-worker`、`apps/anila-shell`、`apps/anilalm`、ingestion 走 pgvector 的所有資料、`audit_logs`、第三方 LLM 模型(經 model_registry 註冊者)
 - ❌ **Out of scope**:上游 LLM 模型的訓練流程(由模型供應商負責)、使用者私人筆電上的 fork repo(進入 GitLab 後才納入範圍)
 
 ---
@@ -49,7 +49,7 @@ ANILA 平台對 ISO/IEC 42001:2023 的角色:
 | **7.3 awareness** | 知曉 AI 政策 | ❌ 無 | 政策上線後郵件通知 + GitLab MR template 加 checkbox |
 | **7.4 communication** | 利害關係人溝通 | ⚠️ 內部 channel 有但未制度化 | `ai-policy.md` §6 規範對外溝通管道 |
 | **7.5 documented information** | 文件控管 | ✅ 全部走 git + PR review | GitLab 上線後強化 |
-| **8.1 operational planning** | 維運計畫 | ✅ docker-compose + runbooks/ + intranet-deployment-runbook | — |
+| **8.1 operational planning** | 維運計畫 | ✅ compose.yaml(`infra/compose/`)+ runbooks/ + intranet-deployment-runbook | — |
 | **8.2 AI risk assessment(ops)** | 變更時重評風險 | ❌ 無觸發機制 | 將 AIIA 列為 agent 註冊強制欄位(migration 0035 + UI gate) |
 | **8.3 AI risk treatment** | 風險處置 | ⚠️ 安全控制有,但未對應到風險登錄 | `risk-register.md` 補 treatment 欄位 |
 | **8.4 AI impact assessment(ops)** | 上線前/變更時 AIIA | ❌ 無強制 | 同 8.2 |
@@ -71,9 +71,9 @@ ANILA 平台對 ISO/IEC 42001:2023 的角色:
 | **A.2.3** alignment with other policies | 與資安 / 隱私政策對齊 | ⚠️ | 待補 `info-sec-alignment` 章節在 `ai-policy.md` |
 | **A.3.2** AI roles & responsibilities | 角色職責 | ✅ | [`roles-responsibilities.md`](./roles-responsibilities.md) |
 | **A.3.3** reporting of concerns | 內部 AI 疑慮回報通道 | ⚠️ | `ai-incident-response.md` §3 待補 whistleblowing |
-| **A.4.2** resources for AI | AI 資源 inventory | ⚠️ | docker-compose.yml + models/ 有,但需補正式 inventory(GPU / model / dataset) |
+| **A.4.2** resources for AI | AI 資源 inventory | ⚠️ | compose.yaml + infra/models/ + models/ 有,但需補正式 inventory(GPU / model / dataset) |
 | **A.4.3** data resources | 資料資源 | ⚠️ | [`data-governance.md`](./data-governance.md) §2 |
-| **A.4.4** tooling resources | 工具資源 | ✅ | README §子專案 + docker-compose |
+| **A.4.4** tooling resources | 工具資源 | ✅ | README §子專案 + compose.yaml |
 | **A.4.5** system & computing resources | 算力資源 | ✅ | 4×H100 + Triton + ComfyUI(README) |
 | **A.4.6** human resources | 人力資源 | ⚠️ | 待補在 `roles-responsibilities.md` |
 | **A.5.2** AI system impact assessment | AIIA 程序 | ✅ | [`aiia-template.md`](./aiia-template.md) |
@@ -88,7 +88,7 @@ ANILA 平台對 ISO/IEC 42001:2023 的角色:
 | **A.6.2.5** deployment | 部署可追溯 | ⚠️ | docker image tag → git commit 待 CI 補綁定;[`intranet-deployment-runbook.md`](../runbooks/intranet-deployment-runbook.md) ✅ |
 | **A.6.2.6** operation & monitoring | 上線後監控 | ⚠️ | `audit_logs` ✅;模型 KPI 監控待補 |
 | **A.6.2.7** technical documentation | model card / data sheet | ✅ 範本 ❌ 落地 | [`model-card-template.md`](./model-card-template.md);migration 0035 加 `model_card_url` 欄位 |
-| **A.6.2.8** logging | 事件紀錄 | ✅ | `audit_logs` + [`audit_service.py`](../../myCSPPlatform/backend/app/services/audit_service.py)(fail-soft) |
+| **A.6.2.8** logging | 事件紀錄 | ✅ | `audit_logs` + [`audit_service.py`](../../services/csp/app/services/audit_service.py)(fail-soft) |
 | **A.7.2** data for development | 開發資料 | ⚠️ | [`data-governance.md`](./data-governance.md) §3 |
 | **A.7.3** acquisition of data | 資料取得合法性 | ⚠️ | `data-governance.md` §4(中科院內部資料,免外部蒐集同意,但需補使用同意書) |
 | **A.7.4** quality of data | 資料品質 | ⚠️ | Chunking Evaluator 服務(LLM-as-judge)✅;對齊 ISO 用語在 `data-governance.md` §5 |
@@ -137,11 +137,11 @@ ANILA 平台對 ISO/IEC 42001:2023 的角色:
 
 | 控制 | 實作位置 | 對應 |
 |---|---|---|
-| Cookies 安全 flags | [`middleware/cookies.py`](../../myCSPPlatform/backend/app/middleware/cookies.py) | A.6.2.6 |
-| Startup security checks(CARD_INITIAL_OWNERS 防呆等) | [`services/startup_security.py`](../../myCSPPlatform/backend/app/services/startup_security.py) | A.6.2.5 |
-| Audit logging(fail-soft) | [`services/audit_service.py`](../../myCSPPlatform/backend/app/services/audit_service.py) | **A.6.2.8** |
-| nginx 6 安全 header + Host allowlist | [`docker/nginx.conf`](../../myCSPPlatform/docker/nginx.conf) | A.6.2.6 |
-| 卡片登入(HiPKI / 中科院憑證卡) | [`services/card_auth.py`](../../myCSPPlatform/backend/app/services/card_auth.py) | A.9.4 |
+| Cookies 安全 flags | [`middleware/cookies.py`](../../services/csp/app/middleware/cookies.py) | A.6.2.6 |
+| Startup security checks(CARD_INITIAL_OWNERS 防呆等) | [`services/startup_security.py`](../../services/csp/app/services/startup_security.py) | A.6.2.5 |
+| Audit logging(fail-soft) | [`services/audit_service.py`](../../services/csp/app/services/audit_service.py) | **A.6.2.8** |
+| nginx 6 安全 header + Host allowlist | [`infra/nginx/anila.conf`](../../infra/nginx/anila.conf) | A.6.2.6 |
+| 卡片登入(HiPKI / 中科院憑證卡) | [`services/card_auth.py`](../../services/csp/app/services/card_auth.py) | A.9.4 |
 | RLS per-collection 隔離 | migrations 0012/0013 + ingestion pipeline | A.7.2 / A.9.4 |
 | Trusted hosts allowlist | migration 0034 | **A.10.2** |
 | Service token per-credential | migrations 0017/0027 + `service_clients` | A.10.2 |
