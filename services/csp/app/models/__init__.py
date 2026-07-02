@@ -31,9 +31,13 @@ from app.models.ingestion import (
 from app.models.message import Message
 from app.models.model_registry import ModelRegistry
 from app.models.platform_link import PlatformLink
+from app.models.policy_decision import PolicyDecision
 from app.models.service_client import ServiceClient
+from app.models.source_snapshot import Citation, SourceSnapshot
+from app.models.task import Task, TaskRun
 from app.models.token_revocation import TokenRevocation
 from app.models.token_usage import TokenUsage
+from app.models.trace_span import TraceSpan
 from app.models.user import User, UserModelPermission
 from app.models.user_memory import ConversationMemoryChunk, UserFact
 
@@ -49,6 +53,7 @@ __all__ = [
     "Attachment",
     "AuditLog",
     "Banner",
+    "Citation",
     "Conversation",
     "Department",
     "AgentLlmCredential",
@@ -62,9 +67,14 @@ __all__ = [
     "Message",
     "ModelRegistry",
     "PlatformLink",
+    "PolicyDecision",
     "ServiceClient",
+    "SourceSnapshot",
+    "Task",
+    "TaskRun",
     "TokenRevocation",
     "TokenUsage",
+    "TraceSpan",
     "User",
     "UserAgentPermission",
     "UserFact",
