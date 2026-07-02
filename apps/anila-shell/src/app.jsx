@@ -1902,6 +1902,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         <ConfidentialWatermark
           userEmail={user?.email || user?.username}
           traceId={latestAssistantMessage?.traceId}
+          level={selectedConv?.classificationLevel}
         />
       )}
       {isClassificationInherited && (
@@ -2159,6 +2160,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
                           agents={agents}
                           conversationId={selectedConvId}
                           classified={isClassified}
+                          classificationLevel={selectedConv?.classificationLevel}
                           onRegenerate={regenerateMessage}
                           onRate={handleRate}
                           onEditUser={handleEditUser}

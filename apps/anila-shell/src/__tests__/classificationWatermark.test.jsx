@@ -1,0 +1,82 @@
+import { describe, it, expect, afterEach } from "vitest";
+import { render, cleanup } from "@testing-library/react";
+import React from "react";
+import { ClassificationWatermark, watermarkLevel } from "../trust.jsx";
+
+afterEach(cleanup);
+
+// The corner watermark reflects the REAL five-level classification (Slice 3),
+// replacing the old decorative English "CONFIDENTIAL". Only 機密 and above
+// render a full watermark; 營業秘密/無機密/absent render nothing. When the
+// classification_level field is absent but the boolean latch is set, it falls
+// back to the floor 機密 — never English.
+
+describe("watermarkLevel (pure)", () => {
+  it("returns the elevated level for each machine-sensitive level", () => {
+    for (const level of ["機密", "極機密", "絕對機密"]) {
+      expect(watermarkLevel({ classificationLevel: level })).toBe(level);
+    }
+  });
+
+  it("honours the snake_case classification_level field too", () => {
+    expect(watermarkLevel({ classification_level: "極機密" })).toBe("極機密");
+  });
+
+  it("returns null for 無機密 and 營業秘密 (no full watermark)", () => {
+    expect(watermarkLevel({ classificationLevel: "無機密" })).toBeNull();
+    expect(watermarkLevel({ classificationLevel: "營業秘密" })).toBeNull();
+  });
+
+  it("returns null when nothing indicates classification", () => {
+    expect(watermarkLevel({})).toBeNull();
+    expect(watermarkLevel(null)).toBeNull();
+    expect(watermarkLevel(undefined)).toBeNull();
+    expect(watermarkLevel({ classified: false })).toBeNull();
+  });
+
+  it("falls back to the floor 機密 when only the boolean latch is set", () => {
+    const result = watermarkLevel({ classified: true });
+    expect(result).toBe("機密");
+    expect(result).not.toBe("CONFIDENTIAL");
+  });
+
+  it("prefers an explicit elevated level over the boolean fallback", () => {
+    expect(watermarkLevel({ classificationLevel: "絕對機密", classified: true })).toBe("絕對機密");
+  });
+});
+
+describe("<ClassificationWatermark>", () => {
+  const cases = [
+    ["機密", "warn"],
+    ["極機密", "danger"],
+    ["絕對機密", "danger-strong"],
+  ];
+
+  it("renders the real zh-TW level text with the correct severity class", () => {
+    for (const [level, severity] of cases) {
+      const { container } = render(<ClassificationWatermark level={level} />);
+      const el = container.firstChild;
+      expect(el).not.toBeNull();
+      expect(el.textContent).toBe(level);
+      expect(el.getAttribute("data-severity")).toBe(severity);
+      expect(el.className).toContain(`anila-classification-${severity}`);
+      cleanup();
+    }
+  });
+
+  it("never renders the old English CONFIDENTIAL marker", () => {
+    for (const [level] of cases) {
+      const { container } = render(<ClassificationWatermark level={level} />);
+      expect(container.textContent).not.toContain("CONFIDENTIAL");
+      cleanup();
+    }
+  });
+
+  it("renders nothing for 無機密, 營業秘密, or an unknown/absent level", () => {
+    for (const level of ["無機密", "營業秘密", "絕密", "", undefined, null]) {
+      const { container } = render(<ClassificationWatermark level={level} />);
+      expect(container.textContent.trim()).toBe("");
+      cleanup();
+    }
+  });
+});

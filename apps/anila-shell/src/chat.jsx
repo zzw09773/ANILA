@@ -58,7 +58,8 @@ import {
 import { BUILTIN_FOLDER_IDS, detectPII } from "./data.jsx";
 import {
   AuditWatermark,
-  ClassifiedCorner,
+  ClassificationWatermark,
+  watermarkLevel,
   ConfidenceChip,
   FollowUpSuggestions,
   RedactionHint,
@@ -234,6 +235,7 @@ export const MessageBubble = ({
   agents,
   conversationId,
   classified,
+  classificationLevel,
   onRegenerate,
   onRate,
   onEditUser,
@@ -255,6 +257,9 @@ export const MessageBubble = ({
   const [fbComment, setFbComment] = useState("");
   const [fbSent, setFbSent] = useState(false);
   const routedAgent = agents.find((a) => a.id === msg.routedAgentId);
+  // 真分類浮水印:優先讀對話 classificationLevel,缺欄位時以 boolean classified
+  // 回退 floor「機密」。仍維持「classified 或級別≥機密」才顯示的既有 gating。
+  const watermark = watermarkLevel({ classificationLevel, classified });
 
   // 點選單外部即關閉 guided regenerate(自管選單沒有 Dropdown 的內建處理)。
   useEffect(() => {
@@ -312,7 +317,7 @@ export const MessageBubble = ({
             if (btn && !editing) btn.style.opacity = "0";
           }}
         >
-          {classified && <ClassifiedCorner />}
+          {watermark && <ClassificationWatermark level={watermark} />}
           {canEdit && !editing && (
             <button
               data-edit-btn
@@ -471,7 +476,7 @@ export const MessageBubble = ({
       className="anila-msg anila-msg-assistant"
       style={{ position: "relative", marginBottom: 28 }}
     >
-      {classified && <ClassifiedCorner />}
+      {watermark && <ClassificationWatermark level={watermark} />}
 
       {msg.handoffChain && msg.handoffChain.length > 1 && (
         <HandoffTimeline chain={msg.handoffChain} agents={agents} />
