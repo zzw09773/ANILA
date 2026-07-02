@@ -2,8 +2,8 @@
   <div class="page">
     <header class="page-head">
       <div>
-        <router-link :to="{ name: 'CollectionDetail', params: { id: collectionId } }" class="back-link">← collection</router-link>
-        <h1 class="page-head__title">chunking · evaluator</h1>
+        <router-link :to="{ name: 'CollectionDetail', params: { id: collectionId } }" class="back-link">← 知識庫</router-link>
+        <h1 class="page-head__title">切塊 · 評測器</h1>
         <p v-if="collection" class="page-head__sub">
           collection #{{ collection.id }} · {{ collection.name }} · agent #{{ collection.agent_id }}
         </p>
@@ -12,44 +12,44 @@
 
     <div class="layout">
       <!-- Wizard ---------------------------------------------------- -->
-      <TermBox title="new · evaluation run" pad="md">
+      <TermBox title="新增 · 評測執行" pad="md">
         <ol class="steps">
-          <li :class="{ 'is-active': step === 1, 'is-done': step > 1 }">01 sample documents</li>
-          <li :class="{ 'is-active': step === 2, 'is-done': step > 2 }">02 eval queries</li>
-          <li :class="{ 'is-active': step === 3, 'is-done': step > 3 }">03 strategies</li>
-          <li :class="{ 'is-active': step === 4, 'is-done': step > 4 }">04 judge llm <span class="cell-meta">(optional)</span></li>
-          <li :class="{ 'is-active': step === 5 }">05 confirm</li>
+          <li :class="{ 'is-active': step === 1, 'is-done': step > 1 }">01 抽樣文件</li>
+          <li :class="{ 'is-active': step === 2, 'is-done': step > 2 }">02 評測查詢</li>
+          <li :class="{ 'is-active': step === 3, 'is-done': step > 3 }">03 策略</li>
+          <li :class="{ 'is-active': step === 4, 'is-done': step > 4 }">04 評審 LLM <span class="cell-meta">（選填）</span></li>
+          <li :class="{ 'is-active': step === 5 }">05 確認</li>
         </ol>
 
         <!-- Step 1 -->
         <div v-if="step === 1" class="step">
-          <p class="cell-meta">pick documents (must be indexed). 5–10 representative items recommended.</p>
-          <div v-if="loadingDocs" class="loading">loading…</div>
+          <p class="cell-meta">選擇文件（須已建立索引）。建議 5–10 份具代表性的項目。</p>
+          <div v-if="loadingDocs" class="loading">載入中…</div>
           <ul v-else class="picklist">
             <li v-for="d in indexedDocs" :key="d.id">
               <label>
                 <input type="checkbox" :value="d.id" v-model="form.sample_document_ids" />
                 <span class="picklist__name">{{ d.filename }}</span>
-                <span class="cell-meta">{{ d.chunk_count }} chunks · {{ humanBytes(d.bytes) }}</span>
+                <span class="cell-meta">{{ d.chunk_count }} 個區塊 · {{ humanBytes(d.bytes) }}</span>
               </label>
             </li>
           </ul>
           <div class="step-actions">
-            <TermButton variant="primary" :disabled="form.sample_document_ids.length === 0" @click="step = 2" label="next →" />
+            <TermButton variant="primary" :disabled="form.sample_document_ids.length === 0" @click="step = 2" label="下一步 →" />
           </div>
         </div>
 
         <!-- Step 2 -->
         <div v-if="step === 2" class="step">
-          <p class="cell-meta">(query, expected document) pairs · used for hit@k / mrr</p>
+          <p class="cell-meta">（查詢、預期文件）配對 · 用於 hit@k / mrr</p>
           <table class="term-table query-table">
-            <thead><tr><th>query</th><th style="width: 40%">expected document</th><th style="width: 36px"></th></tr></thead>
+            <thead><tr><th>查詢</th><th style="width: 40%">預期文件</th><th style="width: 36px"></th></tr></thead>
             <tbody>
               <tr v-for="(q, i) in form.queries" :key="i">
-                <td><input v-model.trim="q.query" class="term-input" placeholder="e.g. what does §8 specify?" /></td>
+                <td><input v-model.trim="q.query" class="term-input" placeholder="例：§8 規定了什麼？" /></td>
                 <td>
                   <select v-model.number="q.expected_doc_id" class="term-select">
-                    <option :value="0" disabled>— pick doc —</option>
+                    <option :value="0" disabled>— 選文件 —</option>
                     <option v-for="d in pickedDocs" :key="d.id" :value="d.id">{{ d.filename }} (#{{ d.id }})</option>
                   </select>
                 </td>
@@ -57,16 +57,16 @@
               </tr>
             </tbody>
           </table>
-          <TermButton size="xs" @click="addQuery" label="+ query" />
+          <TermButton size="xs" @click="addQuery" label="+ 查詢" />
           <div class="step-actions">
-            <TermButton variant="ghost" @click="step = 1" label="← back" />
-            <TermButton variant="primary" :disabled="!validQueries" @click="step = 3" label="next →" />
+            <TermButton variant="ghost" @click="step = 1" label="← 上一步" />
+            <TermButton variant="primary" :disabled="!validQueries" @click="step = 3" label="下一步 →" />
           </div>
         </div>
 
         <!-- Step 3 -->
         <div v-if="step === 3" class="step">
-          <p class="cell-meta">choose strategies to benchmark · ≥ 2 for meaningful comparison</p>
+          <p class="cell-meta">選擇要比較的策略 · 至少 2 個才有意義</p>
           <ul class="strats">
             <li v-for="s in availableStrategies" :key="s.name">
               <label>
@@ -77,135 +77,135 @@
             </li>
           </ul>
           <div class="step-actions">
-            <TermButton variant="ghost" @click="step = 2" label="← back" />
-            <TermButton variant="primary" :disabled="pickedStrategies.length < 1" @click="step = 4" label="next →" />
+            <TermButton variant="ghost" @click="step = 2" label="← 上一步" />
+            <TermButton variant="primary" :disabled="pickedStrategies.length < 1" @click="step = 4" label="下一步 →" />
           </div>
         </div>
 
         <!-- Step 4 -->
         <div v-if="step === 4" class="step">
           <p class="cell-meta">
-            llm-as-judge scores (query, top-k chunks) on a 1–3 scale, averaged into <code>judge_avg</code>.
-            optional · skip = hit@k / mrr only.
+            llm-as-judge 以 1–3 分為（查詢、top-k 區塊）評分，平均為 <code>judge_avg</code>。
+            選填 · 略過＝僅 hit@k / mrr。
           </p>
-          <div v-if="loadingCredentials" class="loading">loading credentials…</div>
+          <div v-if="loadingCredentials" class="loading">載入憑證中…</div>
           <div v-else>
             <div v-if="credentials.length === 0" class="cell-meta" style="margin-bottom: var(--gap-2);">
-              no llm credentials registered yet — add one below or skip.
+              尚未註冊 LLM 憑證 — 於下方新增或略過。
             </div>
-            <TermField v-else label="judge credential">
+            <TermField v-else label="評審憑證">
               <div class="cred-row">
                 <select v-model.number="form.judge_credential_id" class="term-select">
-                  <option :value="null">— skip judge · only hit@k / mrr —</option>
+                  <option :value="null">— 略過評審 · 僅 hit@k / mrr —</option>
                   <option v-for="c in credentials" :key="c.id" :value="c.id">{{ c.name }} · {{ c.model_name }}</option>
                 </select>
                 <button v-if="form.judge_credential_id" class="term-action term-action--danger" :disabled="deletingCredentialId === form.judge_credential_id" @click="onDeleteCredential(form.judge_credential_id)">
-                  {{ deletingCredentialId === form.judge_credential_id ? 'deleting…' : 'delete' }}
+                  {{ deletingCredentialId === form.judge_credential_id ? '刪除中…' : '刪除' }}
                 </button>
               </div>
             </TermField>
 
-            <TermButton v-if="!showCredentialForm" size="xs" @click="showCredentialForm = true" label="+ add credential" />
+            <TermButton v-if="!showCredentialForm" size="xs" @click="showCredentialForm = true" label="+ 新增憑證" />
 
             <div v-else class="cred-form">
-              <p v-if="insecureContext" class="feedback is-err">! page is not https ({{ pageProtocol }}) — api key would travel in plaintext. switch to https first.</p>
-              <TermField label="name (your label)">
+              <p v-if="insecureContext" class="feedback is-err">! 此頁非 https（{{ pageProtocol }}）— API 金鑰會以明文傳輸。請先切換到 https。</p>
+              <TermField label="名稱（自訂標籤）">
                 <input v-model.trim="newCredential.name" class="term-input" placeholder="openai-judge" />
               </TermField>
-              <TermField label="endpoint url">
+              <TermField label="端點 URL">
                 <input v-model.trim="newCredential.endpoint_url" class="term-input" placeholder="https://api.openai.com/v1" />
               </TermField>
-              <TermField label="model name">
+              <TermField label="模型名稱">
                 <input v-model.trim="newCredential.model_name" class="term-input" placeholder="gpt-4o-mini" />
               </TermField>
-              <TermField label="api key" hint="aes-gcm encrypted at rest · cannot be re-read · re-create to rotate">
+              <TermField label="API 金鑰" hint="靜態以 aes-gcm 加密 · 無法再次讀取 · 重建以輪替">
                 <input v-model.trim="newCredential.api_key" type="password" class="term-input" placeholder="sk-…" />
               </TermField>
               <div v-if="credentialError" class="feedback is-err">! {{ credentialError }}</div>
               <div class="step-actions">
-                <TermButton variant="ghost" size="xs" @click="cancelCredentialForm" label="cancel" />
-                <TermButton variant="primary" size="xs" :disabled="!validNewCredential || creatingCredential" :loading="creatingCredential" :label="creatingCredential ? 'creating' : 'create + select'" @click="onCreateCredential" />
+                <TermButton variant="ghost" size="xs" @click="cancelCredentialForm" label="取消" />
+                <TermButton variant="primary" size="xs" :disabled="!validNewCredential || creatingCredential" :loading="creatingCredential" :label="creatingCredential ? '建立中' : '建立並選取'" @click="onCreateCredential" />
               </div>
             </div>
           </div>
 
-          <TermField v-if="form.judge_credential_id" label="top-k chunks per query" hint="how many chunks the judge sees">
+          <TermField v-if="form.judge_credential_id" label="每查詢 top-k 區塊" hint="評審會看到幾個區塊">
             <input v-model.number="form.judge_top_k" type="number" min="1" max="20" class="term-input" />
           </TermField>
           <p v-if="form.judge_credential_id" class="cell-meta" style="margin-top: var(--gap-2);">
-            ! judge bills via your provider · not tracked in csp token_usage.
+            ! 評審依你的供應商計費 · 不列入 csp token_usage。
           </p>
 
           <div class="step-actions">
-            <TermButton variant="ghost" @click="step = 3" label="← back" />
-            <TermButton variant="primary" @click="step = 5" label="next →" />
+            <TermButton variant="ghost" @click="step = 3" label="← 上一步" />
+            <TermButton variant="primary" @click="step = 5" label="下一步 →" />
           </div>
         </div>
 
         <!-- Step 5 -->
         <div v-if="step === 5" class="step">
-          <p class="cell-meta">confirm and enqueue · results appear on the right when the run completes.</p>
-          <TermField label="run name">
+          <p class="cell-meta">確認並排入佇列 · 執行完成後結果會顯示在右側。</p>
+          <TermField label="執行名稱">
             <input v-model.trim="form.name" class="term-input" placeholder="2026-04-25 baseline" />
           </TermField>
           <dl class="confirm">
-            <div><dt>documents</dt><dd>{{ form.sample_document_ids.length }}</dd></div>
-            <div><dt>queries</dt><dd>{{ form.queries.length }}</dd></div>
-            <div><dt>strategies</dt><dd>{{ pickedStrategies.map(s => s.name).join(', ') }}</dd></div>
+            <div><dt>文件</dt><dd>{{ form.sample_document_ids.length }}</dd></div>
+            <div><dt>查詢</dt><dd>{{ form.queries.length }}</dd></div>
+            <div><dt>策略</dt><dd>{{ pickedStrategies.map(s => s.name).join(', ') }}</dd></div>
             <div>
-              <dt>judge llm</dt>
+              <dt>評審 LLM</dt>
               <dd>
-                <span v-if="!form.judge_credential_id" class="cell-meta">disabled</span>
-                <span v-else>{{ selectedCredentialLabel }} · top-{{ form.judge_top_k }} · <strong>{{ projectedJudgeCalls }}</strong> calls</span>
+                <span v-if="!form.judge_credential_id" class="cell-meta">已停用</span>
+                <span v-else>{{ selectedCredentialLabel }} · top-{{ form.judge_top_k }} · <strong>{{ projectedJudgeCalls }}</strong> 次呼叫</span>
               </dd>
             </div>
           </dl>
           <p v-if="judgeCallsExceedCap" class="feedback is-err">
-            ! projected {{ projectedJudgeCalls }} judge calls exceed the per-run cap of {{ JUDGE_MAX_CALLS_PER_RUN }}.
+            ! 預估 {{ projectedJudgeCalls }} 次評審呼叫超過單次執行上限 {{ JUDGE_MAX_CALLS_PER_RUN }}。
           </p>
           <div v-if="submitError" class="feedback is-err">! {{ submitError }}</div>
           <div class="step-actions">
-            <TermButton variant="ghost" @click="step = 4" label="← back" />
-            <TermButton variant="primary" :disabled="!form.name || submitting || judgeCallsExceedCap" :loading="submitting" :label="submitting ? 'submitting' : '↑ start evaluation'" @click="submit" />
+            <TermButton variant="ghost" @click="step = 4" label="← 上一步" />
+            <TermButton variant="primary" :disabled="!form.name || submitting || judgeCallsExceedCap" :loading="submitting" :label="submitting ? '提交中' : '↑ 開始評測'" @click="submit" />
           </div>
         </div>
       </TermBox>
 
       <!-- Results --------------------------------------------------- -->
-      <TermBox title="recent · runs" pad="md">
-        <TermEmpty v-if="runs.length === 0" message="no evaluation runs yet" />
+      <TermBox title="近期 · 執行" pad="md">
+        <TermEmpty v-if="runs.length === 0" message="尚無評測執行" />
         <ul v-else class="runs">
           <li v-for="r in runs" :key="r.id" :class="{ 'is-on': selectedRun?.id === r.id }" @click="selectedRun = r">
             <span class="runs__name">{{ r.name }}</span>
             <TermBadge :variant="runVariant(r.status)" dot>{{ r.status }}</TermBadge>
-            <span class="cell-meta">{{ r.strategies_tried.length }} strats · {{ r.queries.length }} q</span>
+            <span class="cell-meta">{{ r.strategies_tried.length }} 策略 · {{ r.queries.length }} 查詢</span>
           </li>
         </ul>
 
         <article v-if="selectedRun" class="rundetail">
           <h3 class="rundetail__title">{{ selectedRun.name }}</h3>
           <p v-if="selectedRun.status !== 'succeeded'" class="cell-meta">
-            status: {{ selectedRun.status }}
+            狀態：{{ selectedRun.status }}
             <span v-if="selectedRun.error_message"> · {{ selectedRun.error_message }}</span>
           </p>
           <div v-if="selectedRun.results">
             <p class="rundetail__meta">
-              {{ selectedRun.results.elapsed_seconds }}s · {{ selectedRun.results.n_docs }} docs · {{ selectedRun.results.n_queries }} q ·
-              recommended <code>{{ selectedRun.recommended_strategy || '—' }}</code>
+              {{ selectedRun.results.elapsed_seconds }}s · {{ selectedRun.results.n_docs }} 份文件 · {{ selectedRun.results.n_queries }} 查詢 ·
+              建議 <code>{{ selectedRun.recommended_strategy || '—' }}</code>
             </p>
             <p v-if="selectedRun.results.judge_load_error" class="feedback is-err">
-              ! judge credential failed to load ({{ selectedRun.results.judge_load_error }}) · skipped judge
+              ! 評審憑證載入失敗（{{ selectedRun.results.judge_load_error }}）· 已略過評審
             </p>
             <table class="term-table metrics">
               <thead>
                 <tr>
-                  <th>strategy</th>
+                  <th>策略</th>
                   <th class="num">hit@1</th>
                   <th class="num">hit@5</th>
                   <th class="num">mrr</th>
-                  <th class="num" title="llm-as-judge avg 1–3">judge</th>
-                  <th class="num">chunks/doc</th>
-                  <th class="num">avg tokens</th>
+                  <th class="num" title="llm-as-judge 平均 1–3">評審</th>
+                  <th class="num">區塊/文件</th>
+                  <th class="num">平均 tokens</th>
                 </tr>
               </thead>
               <tbody>
@@ -312,7 +312,7 @@ async function onCreateCredential() {
   } finally { creatingCredential.value = false }
 }
 async function onDeleteCredential(id) {
-  if (!(await confirm({ message: 'delete this credential? non-reversible · key is not retrievable.', confirmText: 'delete', danger: true }))) return
+  if (!(await confirm({ message: '刪除此憑證？不可復原 · 金鑰無法取回。', confirmText: '刪除', danger: true }))) return
   deletingCredentialId.value = id
   try {
     await deleteLlmCredential(id)

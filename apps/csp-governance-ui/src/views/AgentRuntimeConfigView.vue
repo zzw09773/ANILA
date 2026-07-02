@@ -3,13 +3,13 @@
     <header class="page-head">
       <div>
         <p class="page-head__eyebrow">developer · console</p>
-        <h1 class="page-head__title">runtime config · {{ agent?.name || agentId }}</h1>
+        <h1 class="page-head__title">執行設定 · {{ agent?.name || agentId }}</h1>
         <p class="page-head__sub">
-          per-agent tool permissions · workspace caps · guardrails — live-applied via 30s poll, no restart needed.
+          各 agent 的工具權限 · 工作區上限 · 護欄 — 透過 30 秒輪詢即時套用，無需重啟。
         </p>
       </div>
       <div class="page-head__actions">
-        <TermButton @click="goBack" label="← agents" />
+        <TermButton @click="goBack" label="← Agent" />
       </div>
     </header>
 
@@ -18,42 +18,42 @@
       <span>{{ feedback.message }}</span>
     </div>
 
-    <div v-if="loading" class="cell-meta" style="padding: 12px 0;">loading…</div>
+    <div v-if="loading" class="cell-meta" style="padding: 12px 0;">載入中…</div>
 
     <template v-else>
-      <TermBox title="status" pad="md">
+      <TermBox title="狀態" pad="md">
         <dl class="status-list">
           <div>
-            <dt>override</dt>
+            <dt>覆寫</dt>
             <dd>
               <TermBadge :variant="hasOverride ? 'accent' : ''">
-                {{ hasOverride ? 'admin-set' : 'code defaults' }}
+                {{ hasOverride ? '管理員設定' : '程式碼預設' }}
               </TermBadge>
             </dd>
           </div>
           <div v-if="lastSavedAt">
-            <dt>last saved</dt>
+            <dt>最後儲存</dt>
             <dd class="cell-meta tnum">{{ lastSavedAt }}</dd>
           </div>
           <div>
-            <dt>poll cadence</dt>
-            <dd class="cell-meta">≈ 30s on the agent process</dd>
+            <dt>輪詢頻率</dt>
+            <dd class="cell-meta">agent 程序約每 30 秒</dd>
           </div>
         </dl>
         <p class="cell-meta" style="margin-top: 8px;">
-          Setting <code>None</code> clears the override (agent reverts to compiled-in defaults).
-          Setting <code>{}</code> means "explicit empty" — different semantics.
+          設為 <code>None</code> 會清除覆寫（agent 回到編譯內建預設）。
+          設為 <code>{}</code> 代表「明確為空」— 語意不同。
         </p>
       </TermBox>
 
-      <TermBox title="tool permissions" pad="md">
+      <TermBox title="工具權限" pad="md">
         <p class="cell-meta">
-          <code>allow_list</code> + <code>deny_list</code> are evaluated by the
-          tool router; <code>ask_tools</code> flips the per-tool flag to ASK
-          (user approval interrupt); <code>deny_tools</code> hard-denies.
+          <code>allow_list</code> + <code>deny_list</code> 由工具 router 判斷；
+          <code>ask_tools</code> 把該工具的旗標切為 ASK（中斷等使用者核准）；
+          <code>deny_tools</code> 直接拒絕。
         </p>
         <div class="grid">
-          <TermField label="allow_list (comma-separated · '*' = all)">
+          <TermField label="allow_list（逗號分隔 · '*' = 全部）">
             <input v-model="permsForm.allow_list_csv" class="term-input" placeholder="*" />
           </TermField>
           <TermField label="deny_list">
@@ -68,68 +68,66 @@
         </div>
       </TermBox>
 
-      <TermBox title="workspace caps" pad="md">
+      <TermBox title="工作區上限" pad="md">
         <p class="cell-meta">
-          Caps overlay on the agent's compiled-in defaults. Leave a field empty
-          to keep the default; otherwise it overrides.
+          上限會疊加在 agent 的編譯內建預設上。欄位留空即沿用預設；否則覆寫。
         </p>
         <div class="grid">
           <TermField label="fs_read">
             <select v-model="wsForm.fs_read" class="term-select">
-              <option :value="null">(default)</option>
+              <option :value="null">（預設）</option>
               <option :value="true">true</option>
               <option :value="false">false</option>
             </select>
           </TermField>
           <TermField label="fs_write">
             <select v-model="wsForm.fs_write" class="term-select">
-              <option :value="null">(default)</option>
+              <option :value="null">（預設）</option>
               <option :value="true">true</option>
               <option :value="false">false</option>
             </select>
           </TermField>
           <TermField label="network">
             <select v-model="wsForm.network" class="term-select">
-              <option :value="null">(default)</option>
+              <option :value="null">（預設）</option>
               <option :value="true">true</option>
               <option :value="false">false</option>
             </select>
           </TermField>
           <TermField label="exec_bash">
             <select v-model="wsForm.exec_bash" class="term-select">
-              <option :value="null">(default)</option>
+              <option :value="null">（預設）</option>
               <option :value="true">true</option>
               <option :value="false">false</option>
             </select>
           </TermField>
           <TermField label="exec_python">
             <select v-model="wsForm.exec_python" class="term-select">
-              <option :value="null">(default)</option>
+              <option :value="null">（預設）</option>
               <option :value="true">true</option>
               <option :value="false">false</option>
             </select>
           </TermField>
           <TermField label="max_exec_seconds">
-            <input v-model.number="wsForm.max_exec_seconds" class="term-input" type="number" min="1" placeholder="(default 30)" />
+            <input v-model.number="wsForm.max_exec_seconds" class="term-input" type="number" min="1" placeholder="（預設 30）" />
           </TermField>
           <TermField label="max_workspace_size_mb">
-            <input v-model.number="wsForm.max_workspace_size_mb" class="term-input" type="number" min="1" placeholder="(default 100)" />
+            <input v-model.number="wsForm.max_workspace_size_mb" class="term-input" type="number" min="1" placeholder="（預設 100）" />
           </TermField>
-          <TermField label="command_allowlist (comma-separated)">
+          <TermField label="command_allowlist（逗號分隔）">
             <input v-model="wsForm.command_allowlist_csv" class="term-input" placeholder="ls,cat,grep" />
           </TermField>
         </div>
       </TermBox>
 
-      <TermBox title="guardrails" pad="md">
+      <TermBox title="護欄" pad="md">
         <p class="cell-meta">
-          Input guardrails inspect tool input dicts (regex_block reject/redact).
-          Output guardrails inspect tool result text (regex_block reject/redact,
-          max_length truncation). <code>tool='*'</code> applies to every
-          registered tool; specify a name to scope it.
+          輸入護欄檢查工具輸入 dict（regex_block reject/redact）。
+          輸出護欄檢查工具結果文字（regex_block reject/redact、max_length 截斷）。
+          <code>tool='*'</code> 套用到所有已註冊工具；指定名稱可限縮範圍。
         </p>
 
-        <TermSection title="input guardrails" />
+        <TermSection title="輸入護欄" />
         <table class="guardrail-table">
           <thead>
             <tr>
@@ -153,14 +151,14 @@
                 <input v-model="g.paramsRaw" class="term-input mono" placeholder='{"pattern":"sk-\\w+","mode":"reject"}' />
               </td>
               <td>
-                <button class="term-action danger" @click="removeGuard('input', idx)">remove</button>
+                <button class="term-action danger" @click="removeGuard('input', idx)">移除</button>
               </td>
             </tr>
           </tbody>
         </table>
-        <button class="term-action" @click="addGuard('input')">+ input guardrail</button>
+        <button class="term-action" @click="addGuard('input')">+ 輸入護欄</button>
 
-        <TermSection title="output guardrails" />
+        <TermSection title="輸出護欄" />
         <table class="guardrail-table">
           <thead>
             <tr>
@@ -185,15 +183,15 @@
                 <input v-model="g.paramsRaw" class="term-input mono" :placeholder='outputPlaceholder(g.kind)' />
               </td>
               <td>
-                <button class="term-action danger" @click="removeGuard('output', idx)">remove</button>
+                <button class="term-action danger" @click="removeGuard('output', idx)">移除</button>
               </td>
             </tr>
           </tbody>
         </table>
-        <button class="term-action" @click="addGuard('output')">+ output guardrail</button>
+        <button class="term-action" @click="addGuard('output')">+ 輸出護欄</button>
       </TermBox>
 
-      <TermBox title="functions" pad="md">
+      <TermBox title="功能" pad="md">
         <p class="hint" style="margin-bottom: 8px;">
           功能 — 在 ANILA 對話介面跟此 agent 對話時提供給使用者。純宣告式設定，
           不執行任何程式碼。新增功能類型(kind)由前端 renderer 決定，未來可擴充。
@@ -210,22 +208,22 @@
               </div>
               <div class="prompt-row__text">{{ f.config.text || f.config.template || '' }}</div>
             </div>
-            <TermButton :disabled="fnBusy" label="delete" @click="handleDeleteFunction(f)" />
+            <TermButton :disabled="fnBusy" label="刪除" @click="handleDeleteFunction(f)" />
           </li>
         </ul>
         <p v-else class="hint" style="margin-bottom: 8px;">尚未設定任何功能。</p>
 
         <div class="prompt-add">
-          <TermField label="kind">
+          <TermField label="類型">
             <select v-model="newFn.kind" class="term-input">
               <option value="preset_prompt">預設提示詞 — 點清單填入輸入框</option>
               <option value="prompt_action">回應動作 — 對回覆套模板送出 ({content})</option>
             </select>
           </TermField>
-          <TermField label="label">
+          <TermField label="標籤">
             <input v-model="newFn.label" class="term-input" placeholder="撰寫週報 / 翻譯成英文" maxlength="120" />
           </TermField>
-          <TermField :label="newFn.kind === 'preset_prompt' ? 'prompt text' : 'template ({content} = 回覆內容)'">
+          <TermField :label="newFn.kind === 'preset_prompt' ? '提示詞文字' : '模板（{content} = 回覆內容）'">
             <textarea v-model="newFn.body" class="term-textarea" rows="3"
               :placeholder="newFn.kind === 'preset_prompt' ? '請幫我把以下工作項目整理成一份正式週報：' : '請把以下內容翻譯成英文：\n\n{content}'"></textarea>
           </TermField>
@@ -234,24 +232,24 @@
           </TermField>
           <div class="row-actions">
             <TermButton variant="primary" :disabled="fnBusy || !newFn.label.trim() || !newFn.body.trim()"
-              :loading="fnBusy" label="add function" @click="handleAddFunction" />
+              :loading="fnBusy" label="新增功能" @click="handleAddFunction" />
           </div>
         </div>
       </TermBox>
 
-      <TermBox title="actions" pad="md">
+      <TermBox title="操作" pad="md">
         <div v-if="parseError" class="feedback is-err" style="margin-bottom: 8px;">
           <span>!</span><span>{{ parseError }}</span>
         </div>
         <div class="row-actions">
           <TermButton variant="primary" :disabled="saving" :loading="saving" @click="handleSave"
-            :label="saving ? 'saving…' : 'save runtime config'" />
-          <TermButton @click="handleClear" :disabled="saving" label="clear override (revert to defaults)" />
-          <TermButton @click="handleReload" :disabled="saving" label="reload from server" />
+            :label="saving ? '儲存中…' : '儲存執行設定'" />
+          <TermButton @click="handleClear" :disabled="saving" label="清除覆寫（回到預設）" />
+          <TermButton @click="handleReload" :disabled="saving" label="從伺服器重新載入" />
         </div>
       </TermBox>
 
-      <TermBox title="raw JSON preview" pad="sm">
+      <TermBox title="原始 JSON 預覽" pad="sm">
         <pre class="json-preview">{{ buildPreview() }}</pre>
       </TermBox>
     </template>
@@ -476,7 +474,7 @@ function buildConfig() {
             throw new Error('params must be a JSON object')
           }
         } catch (e) {
-          parseError.value = `invalid JSON in ${side} guardrail #${list.length + 1}: ${e.message}`
+          parseError.value = `${side} 護欄 #${list.length + 1} 的 JSON 無效：${e.message}`
           throw e
         }
       }
@@ -502,11 +500,11 @@ function buildConfig() {
 function buildPreview() {
   try {
     const cfg = buildConfig()
-    if (cfg === null) return '(invalid — fix errors above)'
-    if (Object.keys(cfg).length === 0) return '{}  // empty — explicit "no overrides" semantics'
+    if (cfg === null) return '（無效 — 請修正上方錯誤）'
+    if (Object.keys(cfg).length === 0) return '{}  // 空 — 明確「無覆寫」語意'
     return JSON.stringify(cfg, null, 2)
   } catch {
-    return '(invalid)'
+    return '（無效）'
   }
 }
 
@@ -520,7 +518,7 @@ async function load() {
     agent.value = agentRow.data
     loadFromConfig(cfgResp.data?.runtime_config ?? null)
   } catch (e) {
-    feedback.value = { type: 'error', message: `failed to load: ${e.response?.data?.detail || e.message}` }
+    feedback.value = { type: 'error', message: `載入失敗：${e.response?.data?.detail || e.message}` }
   } finally {
     loading.value = false
   }
@@ -535,7 +533,7 @@ async function handleSave() {
     const resp = await setAgentRuntimeConfig(agentId.value, cfg)
     initialConfig.value = resp.data?.runtime_config ?? cfg
     lastSavedAt.value = new Date().toLocaleTimeString()
-    feedback.value = { type: 'success', message: 'saved · agent will pick up within ~30s' }
+    feedback.value = { type: 'success', message: '已儲存 · agent 約 30 秒內生效' }
   } catch (e) {
     feedback.value = { type: 'error', message: e.response?.data?.detail || e.message }
   } finally {
@@ -544,7 +542,7 @@ async function handleSave() {
 }
 
 async function handleClear() {
-  if (!(await confirm({ message: 'Clear runtime_config override? Agent will revert to compiled-in defaults.', confirmText: 'Clear', danger: true }))) return
+  if (!(await confirm({ message: '清除 runtime_config 覆寫？agent 會回到編譯內建預設。', confirmText: '清除', danger: true }))) return
   saving.value = true
   feedback.value = { type: 'success', message: '' }
   try {
@@ -552,7 +550,7 @@ async function handleClear() {
     initialConfig.value = null
     loadFromConfig(null)
     lastSavedAt.value = new Date().toLocaleTimeString()
-    feedback.value = { type: 'success', message: 'cleared · agent reverts to defaults within ~30s' }
+    feedback.value = { type: 'success', message: '已清除 · agent 約 30 秒內回到預設' }
   } catch (e) {
     feedback.value = { type: 'error', message: e.response?.data?.detail || e.message }
   } finally {

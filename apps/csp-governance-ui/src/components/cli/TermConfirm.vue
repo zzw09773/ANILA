@@ -6,7 +6,7 @@
   <TermModal :visible="visible" :title="title" :width="'440px'" @close="$emit('cancel')">
     <p class="term-confirm__msg">{{ message }}</p>
     <template #footer>
-      <TermButton variant="ghost" @click="$emit('cancel')" label="Cancel" />
+      <TermButton variant="ghost" @click="$emit('cancel')" label="取消" />
       <TermButton :variant="danger ? 'danger' : 'primary'" @click="$emit('confirm')" :label="confirmText" />
     </template>
   </TermModal>
@@ -18,9 +18,9 @@ import TermButton from './TermButton.vue'
 
 defineProps({
   visible: { type: Boolean, default: false },
-  title: { type: String, default: 'Confirm' },
+  title: { type: String, default: '確認' },
   message: { type: String, default: '' },
-  confirmText: { type: String, default: 'Confirm' },
+  confirmText: { type: String, default: '確認' },
   danger: { type: Boolean, default: false },
 })
 defineEmits(['confirm', 'cancel'])

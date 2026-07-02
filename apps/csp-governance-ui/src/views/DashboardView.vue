@@ -3,32 +3,32 @@
     <header class="page__head">
       <div>
         <p class="page__eyebrow">control plane &nbsp;·&nbsp; overview</p>
-        <h1 class="page__title">dashboard<span class="term-caret" aria-hidden="true" /></h1>
+        <h1 class="page__title">儀表板<span class="term-caret" aria-hidden="true" /></h1>
       </div>
       <div class="page__head-meta">
         <span class="term-label">window</span>
-        <span class="page__head-val">last 24h</span>
+        <span class="page__head-val">近 24 小時</span>
         <span class="term-label">refreshed</span>
         <span class="page__head-val tnum">{{ refreshedLabel }}</span>
-        <TermButton size="xs" variant="ghost" :loading="loading" @click="refresh" label="refresh" />
+        <TermButton size="xs" variant="ghost" :loading="loading" @click="refresh" label="重新整理" />
       </div>
     </header>
 
     <!-- KPI strip ------------------------------------------------------- -->
     <section class="kpi-grid">
-      <TermStat label="24h · requests" :value="summary?.total_requests || 0" tone="accent" />
-      <TermStat label="24h · tokens"   :value="summary?.total_tokens || 0" />
-      <TermStat label="active · models" :value="summary?.active_models || 0" hint="health-checked" />
-      <TermStat label="active · keys"  :value="summary?.active_api_keys || 0" />
+      <TermStat label="24h · 請求數" :value="summary?.total_requests || 0" tone="accent" />
+      <TermStat label="24h · Token"   :value="summary?.total_tokens || 0" />
+      <TermStat label="使用中 · 模型" :value="summary?.active_models || 0" hint="已健康檢查" />
+      <TermStat label="使用中 · 金鑰"  :value="summary?.active_api_keys || 0" />
     </section>
 
     <!-- Chart + side meta ---------------------------------------------- -->
     <section class="dash-grid">
-      <TermBox title="usage · throughput · 24h" hint="per model · ts in local tz" pad="md">
+      <TermBox title="用量 · 吞吐 · 24h" hint="per model · ts in local tz" pad="md">
         <UsageLineChart :chart-data="chartData" :height="280" />
       </TermBox>
 
-      <TermBox title="quick · ops" pad="md">
+      <TermBox title="快速操作" pad="md">
         <ul class="ops">
           <li class="ops__row">
             <span class="ops__k">role</span>
@@ -49,11 +49,11 @@
         </ul>
         <hr class="ops__rule" />
         <div class="ops__quick">
-          <router-link to="/api-keys" class="ops__link">→ provision api-key</router-link>
-          <router-link to="/models" class="ops__link">→ inspect models</router-link>
-          <router-link to="/usage" class="ops__link">→ usage analytics</router-link>
-          <router-link v-if="authStore.isDeveloper" to="/developer/agents" class="ops__link">→ register agent</router-link>
-          <router-link v-if="authStore.isAdmin" to="/audit-logs" class="ops__link">→ audit log</router-link>
+          <router-link to="/api-keys" class="ops__link">→ 建立 API 金鑰</router-link>
+          <router-link to="/models" class="ops__link">→ 檢視模型</router-link>
+          <router-link to="/usage" class="ops__link">→ 用量分析</router-link>
+          <router-link v-if="authStore.isDeveloper" to="/developer/agents" class="ops__link">→ 註冊 Agent</router-link>
+          <router-link v-if="authStore.isAdmin" to="/audit-logs" class="ops__link">→ 稽核紀錄</router-link>
         </div>
       </TermBox>
     </section>
@@ -84,17 +84,17 @@
             仍有 agent / Router 走 legacy env-var fallback — 請至 audit log 查 ip_address 找出未 cutover 主機。
           </p>
         </div>
-        <TermEmpty v-else message="loading…" />
+        <TermEmpty v-else message="載入中…" />
       </TermBox>
 
       <!-- top-5 agents over the last 30 days -->
-      <TermBox title="top · agents · 30d" hint="caller-attributed token spend" pad="none" flush>
+      <TermBox title="熱門 · Agent · 30d" hint="caller-attributed token spend" pad="none" flush>
         <table class="term-table">
           <thead>
             <tr>
-              <th>agent</th>
-              <th class="num" style="width: 110px">tokens</th>
-              <th class="num" style="width: 110px">requests</th>
+              <th>Agent</th>
+              <th class="num" style="width: 110px">Token</th>
+              <th class="num" style="width: 110px">請求數</th>
             </tr>
           </thead>
           <tbody>
@@ -107,7 +107,7 @@
               <td class="num tnum">{{ formatNum(a.total_requests) }}</td>
             </tr>
             <tr v-if="topAgents.length === 0">
-              <td colspan="3"><TermEmpty message="no caller-attributed agent usage in the last 30 days" /></td>
+              <td colspan="3"><TermEmpty message="過去 30 天無歸屬呼叫端的 Agent 用量" /></td>
             </tr>
           </tbody>
         </table>
@@ -115,11 +115,11 @@
     </section>
 
     <!-- Platform links ------------------------------------------------- -->
-    <TermBox title="platform · external tooling" :hint="`${platformLinks.length} bound`" pad="md">
+    <TermBox title="平台 · 外部工具" :hint="`已綁定 ${platformLinks.length} 項`" pad="md">
       <div v-if="platformLinks.length" class="links">
         <PlatformCard v-for="link in platformLinks" :key="link.id" :link="link" />
       </div>
-      <TermEmpty v-else message="no platform links yet · admins can bind external tools under /admin/platform-links" />
+      <TermEmpty v-else message="尚無平台連結 · 管理員可於 /admin/platform-links 綁定外部工具" />
     </TermBox>
   </div>
 </template>

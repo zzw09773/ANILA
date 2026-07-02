@@ -1,18 +1,18 @@
 <template>
   <div class="rg" :class="{ 'rg--full': fullscreen }">
     <div class="rg__bar">
-      <span class="rg__legend"><i class="dot dot--rule"></i>rule</span>
-      <span class="rg__legend"><i class="dot dot--manual"></i>manual</span>
-      <span class="rg__legend"><i class="dot dot--llm"></i>llm</span>
-      <span class="rg__legend"><i class="dot dot--sim"></i>similarity</span>
+      <span class="rg__legend"><i class="dot dot--rule"></i>規則</span>
+      <span class="rg__legend"><i class="dot dot--manual"></i>手動</span>
+      <span class="rg__legend"><i class="dot dot--llm"></i>LLM</span>
+      <span class="rg__legend"><i class="dot dot--sim"></i>相似</span>
       <span class="rg__legend"><i class="dash"></i>未解析</span>
       <span class="rg__sep">·</span>
-      <button class="term-btn term-btn--xs" @click="fit">[ fit ]</button>
+      <button class="term-btn term-btn--xs" @click="fit">[ 符合 ]</button>
       <button class="term-btn term-btn--xs" @click="toggleFull">{{ fullscreen ? '✕ 關閉' : '⛶ 全螢幕' }}</button>
       <span class="rg__hint cell-meta">拖曳節點 · 滾輪縮放 · 點節點看鄰接{{ fullscreen ? ' · Esc 關閉' : '' }}</span>
     </div>
     <div ref="cyEl" class="rg__canvas"></div>
-    <p v-if="empty" class="rg__empty">no relations to plot</p>
+    <p v-if="empty" class="rg__empty">無關聯可繪製</p>
   </div>
 </template>
 

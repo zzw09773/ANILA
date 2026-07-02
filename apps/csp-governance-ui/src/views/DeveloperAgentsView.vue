@@ -3,14 +3,14 @@
     <header class="page-head">
       <div>
         <p class="page-head__eyebrow">developer · console</p>
-        <h1 class="page-head__title">agents</h1>
+        <h1 class="page-head__title">Agent</h1>
         <p class="page-head__sub">
-          {{ authStore.isAdmin ? 'review and govern every registered agent' : 'manage your agents · download templates · ship to router' }}
+          {{ authStore.isAdmin ? '審查並治理每個已註冊的 Agent' : '管理你的 Agent · 下載樣板 · 上線到 router' }}
         </p>
       </div>
       <div class="page-head__actions">
-        <TermButton @click="handleDownloadTemplate" label="download template" />
-        <TermButton variant="primary" @click="openRegisterModal" label="register agent" />
+        <TermButton @click="handleDownloadTemplate" label="下載樣板" />
+        <TermButton variant="primary" @click="openRegisterModal" label="註冊 Agent" />
       </div>
     </header>
 
@@ -19,10 +19,10 @@
       <span>{{ feedback.message }}</span>
     </div>
 
-    <TermBox title="developer · guide" pad="md">
+    <TermBox title="開發者 · 指南" pad="md">
       <button type="button" class="guide-toggle" @click="showGuide = !showGuide">
-        <span>{{ showGuide ? '▾' : '▸' }} download anila-agent template · wrap in FastAPI · register · wait for approval</span>
-        <span class="cell-meta">{{ showGuide ? 'collapse' : 'expand' }}</span>
+        <span>{{ showGuide ? '▾' : '▸' }} 下載 anila-agent 樣板 · 用 FastAPI 包裝 · 註冊 · 等待審核</span>
+        <span class="cell-meta">{{ showGuide ? '收合' : '展開' }}</span>
       </button>
       <div v-if="showGuide" class="guide">
         <p class="guide__lead">
@@ -85,63 +85,63 @@ def employee_count(department: str) -&gt; int:
     </TermBox>
 
     <div class="kpi-row">
-      <TermStat label="agents · total" :value="agents.length" />
-      <TermStat label="pending" :value="pendingCount" :tone="pendingCount ? 'warn' : 'default'" />
-      <TermStat label="approved" :value="approvedCount" tone="accent" />
-      <TermStat label="healthy" :value="healthyCount" />
+      <TermStat label="Agent · 總數" :value="agents.length" />
+      <TermStat label="待審核" :value="pendingCount" :tone="pendingCount ? 'warn' : 'default'" />
+      <TermStat label="已核准" :value="approvedCount" tone="accent" />
+      <TermStat label="健康" :value="healthyCount" />
     </div>
 
-    <TermBox title="filter" pad="sm">
+    <TermBox title="篩選" pad="sm">
       <div class="filters">
-        <TermField label="search">
-          <input v-model="filters.query" class="term-input" placeholder="name · description · endpoint" />
+        <TermField label="搜尋">
+          <input v-model="filters.query" class="term-input" placeholder="名稱 · 描述 · endpoint" />
         </TermField>
-        <TermField label="approval">
+        <TermField label="審批">
           <select v-model="filters.approval" class="term-select">
-            <option value="all">all</option>
+            <option value="all">全部</option>
             <option v-for="s in approvalFilterOptions" :key="s" :value="s">{{ approvalLabel(s) }}</option>
           </select>
         </TermField>
-        <TermField label="health">
+        <TermField label="健康">
           <select v-model="filters.health" class="term-select">
-            <option value="all">all</option>
-            <option value="healthy">healthy</option>
-            <option value="unhealthy">unhealthy</option>
-            <option value="unknown">unknown</option>
+            <option value="all">全部</option>
+            <option value="healthy">健康</option>
+            <option value="unhealthy">異常</option>
+            <option value="unknown">未知</option>
           </select>
         </TermField>
-        <TermField label="sort">
+        <TermField label="排序">
           <select v-model="filters.sort" class="term-select">
-            <option value="newest">newest</option>
-            <option value="oldest">oldest</option>
-            <option value="name">name a→z</option>
-            <option value="approval">pending first</option>
+            <option value="newest">最新</option>
+            <option value="oldest">最舊</option>
+            <option value="name">名稱 a→z</option>
+            <option value="approval">待審核優先</option>
           </select>
         </TermField>
       </div>
     </TermBox>
 
     <div v-if="authStore.isAdmin && pendingCount > 0" class="banner">
-      <span>{{ pendingCount }} agent(s) pending · use the filter to triage the queue.</span>
+      <span>{{ pendingCount }} 個 Agent 待審核 · 用篩選器分流佇列。</span>
     </div>
 
-    <TermBox :title="`agents · ${filteredAgents.length}/${agents.length}`" pad="none" flush>
-      <div v-if="loading" class="loading">loading agents…</div>
+    <TermBox :title="`Agent · ${filteredAgents.length}/${agents.length}`" pad="none" flush>
+      <div v-if="loading" class="loading">載入 Agent 中…</div>
       <div v-else-if="filteredAgents.length === 0" style="padding: var(--gap-6);">
-        <TermEmpty :message="agents.length === 0 ? 'no agents yet · download the template to get started' : 'no agents match the filter'" />
+        <TermEmpty :message="agents.length === 0 ? '尚無 Agent · 下載樣板開始' : '無符合篩選的 Agent'" />
       </div>
       <table v-else class="term-table">
         <thead>
           <tr>
-            <th>name</th>
-            <th>endpoint</th>
+            <th>名稱</th>
+            <th>端點</th>
             <th style="width: 140px">型別 / 版本</th>
             <th style="width: 90px">分類上限</th>
-            <th style="width: 100px">health</th>
+            <th style="width: 100px">健康</th>
             <th style="width: 120px">審批狀態</th>
-            <th style="width: 90px">enc</th>
-            <th style="width: 13%">created</th>
-            <th>ops</th>
+            <th style="width: 90px">加密</th>
+            <th style="width: 13%">建立時間</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -164,18 +164,18 @@ def employee_count(department: str) -&gt; int:
             <td><TermBadge :variant="approvalVariant(agent.approval_status)" dot>{{ approvalLabel(agent.approval_status) }}</TermBadge></td>
             <td>
               <TermBadge :variant="agent.requires_encryption ? 'danger' : ''">
-                {{ agent.requires_encryption ? 'forced' : 'normal' }}
+                {{ agent.requires_encryption ? '強制' : '一般' }}
               </TermBadge>
             </td>
             <td class="cell-meta tnum">{{ formatDate(agent.created_at) }}</td>
             <td>
               <div class="row-actions">
-                <button class="term-action" @click="openDetailModal(agent)">detail</button>
+                <button class="term-action" @click="openDetailModal(agent)">詳情</button>
                 <span class="row-actions__sep">·</span>
-                <button v-if="canEditAgent(agent)" class="term-action" @click="openEditModal(agent)">edit</button>
+                <button v-if="canEditAgent(agent)" class="term-action" @click="openEditModal(agent)">編輯</button>
                 <span v-if="canEditAgent(agent) && authStore.isAdmin" class="row-actions__sep">·</span>
                 <button v-if="authStore.isAdmin" class="term-action" :disabled="healthCheckingId === agent.id" @click="handleHealthCheck(agent)">
-                  {{ healthCheckingId === agent.id ? 'probe…' : 'probe' }}
+                  {{ healthCheckingId === agent.id ? '探測中…' : '探測' }}
                 </button>
                 <template v-if="authStore.isAdmin && isPendingReview(agent.approval_status)">
                   <span class="row-actions__sep">·</span>
@@ -184,15 +184,15 @@ def employee_count(department: str) -&gt; int:
                       class="term-action"
                       :disabled="!isApprovable(agent.approval_status, agent.trace_test_passed_at)"
                       @click="handleApprove(agent)"
-                    >approve</button>
+                    >核准</button>
                   </span>
                   <span class="row-actions__sep">·</span>
-                  <button class="term-action term-action--danger" @click="openRejectModal(agent)">reject</button>
+                  <button class="term-action term-action--danger" @click="openRejectModal(agent)">駁回</button>
                 </template>
                 <template v-if="authStore.isAdmin">
                   <span class="row-actions__sep">·</span>
                   <button class="term-action term-action--danger" :disabled="deletingId === agent.id" @click="handleDeleteAgent(agent)">
-                    {{ deletingId === agent.id ? 'delete…' : 'delete' }}
+                    {{ deletingId === agent.id ? '刪除中…' : '刪除' }}
                   </button>
                 </template>
               </div>
@@ -205,37 +205,37 @@ def employee_count(department: str) -&gt; int:
     <!-- Register wizard: step 1 = details, step 2 = provision csk- + verify -->
     <TermModal
       :visible="showRegisterModal"
-      :title="registerStep === 1 ? 'register · agent (1/2)' : `provision key · ${registeredAgent?.name || ''} (2/2)`"
+      :title="registerStep === 1 ? '註冊 · Agent（1/2）' : `核發金鑰 · ${registeredAgent?.name || ''}（2/2）`"
       width="640px"
       @close="finishRegister"
     >
       <!-- ── STEP 1 — details ────────────────────────────────────────── -->
       <div v-if="registerStep === 1" class="form-grid">
-        <TermField label="name" hint="immutable identifier · letters, digits, dashes" :error="formErrors.name">
+        <TermField label="名稱" hint="不可變更的識別碼 · 英數字與連字號" :error="formErrors.name">
           <input v-model="form.name" class="term-input" placeholder="hr-policy-agent" />
         </TermField>
-        <TermField label="endpoint url" :error="formErrors.endpoint_url">
+        <TermField label="端點 URL" :error="formErrors.endpoint_url">
           <input v-model="form.endpoint_url" class="term-input" placeholder="http://host:port" />
         </TermField>
-        <TermField label="router description" hint="≥ 24 chars · plain language describing what this agent solves" :error="formErrors.description_for_router">
+        <TermField label="router 說明" hint="≥ 24 字 · 用白話描述此 agent 解決什麼" :error="formErrors.description_for_router">
           <textarea v-model="form.description_for_router" rows="3" class="term-textarea" />
         </TermField>
         <div class="form-row-2">
-          <TermField label="api version">
+          <TermField label="API 版本">
             <input v-model="form.api_version" class="term-input" placeholder="v1" />
           </TermField>
-          <TermField label="base model" :error="formErrors.base_model_id" hint="usage attribution target">
+          <TermField label="基礎模型" :error="formErrors.base_model_id" hint="用量歸屬對象">
             <select v-model.number="form.base_model_id" class="term-select">
-              <option :value="null" disabled>— select base —</option>
+              <option :value="null" disabled>— 選擇基礎模型 —</option>
               <option v-for="m in baseModelOptions" :key="m.id" :value="m.id">
                 {{ m.display_name }} ({{ m.name }} · {{ m.model_type }})
               </option>
             </select>
           </TermField>
         </div>
-        <TermField label="RAG collection (optional)" hint="bind ONE collection this agent's csk- may search · leave empty for non-RAG agents">
+        <TermField label="RAG 知識庫（選填）" hint="綁定此 agent 的 csk- 可搜尋的「單一」知識庫 · 非 RAG agent 留空">
           <select v-model.number="form.collection_id" class="term-select">
-            <option :value="null">— none (non-RAG) —</option>
+            <option :value="null">— 無（非 RAG）—</option>
             <option v-for="c in collections" :key="c.id" :value="c.id">
               {{ c.name }} (#{{ c.id }})
             </option>
@@ -267,51 +267,51 @@ def employee_count(department: str) -&gt; int:
           </span>
         </label>
 
-        <TermSection title="pre-flight checklist" />
+        <TermSection title="起飛前檢查" />
         <ul class="check">
-          <li :class="form.name ? 'is-ok' : 'is-pending'">{{ form.name ? '●' : '○' }} agent name set</li>
-          <li :class="/^https?:\/\//.test(form.endpoint_url) ? 'is-ok' : 'is-pending'">{{ /^https?:\/\//.test(form.endpoint_url) ? '●' : '○' }} endpoint is http(s) url</li>
-          <li :class="form.description_for_router.trim().length >= 24 ? 'is-ok' : 'is-pending'">{{ form.description_for_router.trim().length >= 24 ? '●' : '○' }} description ≥ 24 chars</li>
-          <li :class="form.base_model_id ? 'is-ok' : 'is-pending'">{{ form.base_model_id ? '●' : '○' }} base model selected</li>
-          <li class="is-pending">○ <code>GET /health</code> + <code>POST /v1/chat/completions</code> implemented (manual check)</li>
+          <li :class="form.name ? 'is-ok' : 'is-pending'">{{ form.name ? '●' : '○' }} agent 名稱已設定</li>
+          <li :class="/^https?:\/\//.test(form.endpoint_url) ? 'is-ok' : 'is-pending'">{{ /^https?:\/\//.test(form.endpoint_url) ? '●' : '○' }} endpoint 為 http(s) URL</li>
+          <li :class="form.description_for_router.trim().length >= 24 ? 'is-ok' : 'is-pending'">{{ form.description_for_router.trim().length >= 24 ? '●' : '○' }} 說明 ≥ 24 字</li>
+          <li :class="form.base_model_id ? 'is-ok' : 'is-pending'">{{ form.base_model_id ? '●' : '○' }} 已選基礎模型</li>
+          <li class="is-pending">○ 已實作 <code>GET /health</code> + <code>POST /v1/chat/completions</code>（手動確認）</li>
         </ul>
       </div>
 
       <!-- ── STEP 2 — provision the single csk- + verify ─────────────── -->
       <div v-else class="form-grid">
         <p class="cell-meta">
-          agent <strong>{{ registeredAgent?.name }}</strong> (#{{ registeredAgent?.id }}) registered ·
+          agent <strong>{{ registeredAgent?.name }}</strong>（#{{ registeredAgent?.id }}）已註冊 ·
           <TermBadge :variant="approvalVariant(registeredAgent?.approval_status)" dot>{{ approvalLabel(registeredAgent?.approval_status) }}</TermBadge>
-          {{ registeredAgent?.approval_status === 'draft' ? '（草稿，未進入審批佇列）' : 'admin review.' }}
+          {{ registeredAgent?.approval_status === 'draft' ? '（草稿，未進入審批佇列）' : '待管理員審查。' }}
         </p>
 
         <div v-if="!newAgentCsk">
           <p class="cell-meta">
-            Issue this agent's single service token (<code>csk-</code>). It authenticates the
-            Router→agent dispatch, and (when a collection is bound) the agent's RAG search —
-            one key for both.
+            核發此 agent 的單一 service token（<code>csk-</code>）。它同時驗證
+            Router→agent 派送，以及（綁定知識庫時）agent 的 RAG 搜尋 —
+            兩者共用一把。
           </p>
           <TermButton
             variant="primary" :loading="issuingNew" :disabled="issuingNew"
-            label="issue service token (csk-)" @click="handleIssueForNew"
+            label="核發 service token（csk-）" @click="handleIssueForNew"
           />
         </div>
 
         <div v-else>
           <div class="secret-banner secret-banner--csk">
             <div class="secret-banner__head">
-              <span class="cell-strong">service token (csk-)</span>
-              <span class="cell-meta">copy now — will not be shown again</span>
+              <span class="cell-strong">service token（csk-）</span>
+              <span class="cell-meta">立即複製 — 不會再顯示</span>
             </div>
             <div class="secret-banner__body">
               <code class="secret-banner__token">{{ newAgentCsk }}</code>
-              <TermButton size="sm" variant="ghost" @click="copyToClipboard(newAgentCsk)" label="copy" />
+              <TermButton size="sm" variant="ghost" @click="copyToClipboard(newAgentCsk)" label="複製" />
             </div>
           </div>
 
           <TermSection title="agent .env" />
           <pre class="env-snippet">{{ newAgentEnvSnippet }}</pre>
-          <TermButton size="sm" variant="ghost" @click="copyToClipboard(newAgentEnvSnippet)" label="copy .env" />
+          <TermButton size="sm" variant="ghost" @click="copyToClipboard(newAgentEnvSnippet)" label="複製 .env" />
 
           <TermSection title="inbound guard + RAG usage（非模板 agent）" />
           <AgentGuardPanel
@@ -319,14 +319,14 @@ def employee_count(department: str) -&gt; int:
             :collection-id="registeredAgentCollectionId"
           />
 
-          <TermSection title="verify connection" />
+          <TermSection title="驗證連線" />
           <p class="cell-meta">
-            Paste the <code>.env</code> above into your agent and start it, then test that it
-            accepted the token (proves <code>CSP_SERVICE_TOKEN</code> is wired correctly).
+            把上面的 <code>.env</code> 貼進你的 agent 並啟動，然後測試它是否
+            接受該 token（證明 <code>CSP_SERVICE_TOKEN</code> 已正確接上）。
           </p>
           <TermButton
             variant="default" :loading="testing" :disabled="testing"
-            label="test connection" @click="handleTestConnection"
+            label="測試連線" @click="handleTestConnection"
           />
           <div v-if="testResult" class="test-result" :class="testResult.token_accepted ? 'test-result--ok' : 'test-result--bad'">
             {{ testResult.token_accepted ? '✅' : '✗' }} {{ testResult.detail }}
@@ -336,32 +336,32 @@ def employee_count(department: str) -&gt; int:
 
       <template #footer>
         <template v-if="registerStep === 1">
-          <TermButton variant="ghost" @click="finishRegister" label="cancel" />
-          <TermButton variant="primary" :loading="registering" :disabled="registering" :label="registering ? 'submitting' : 'register →'" @click="handleRegister" />
+          <TermButton variant="ghost" @click="finishRegister" label="取消" />
+          <TermButton variant="primary" :loading="registering" :disabled="registering" :label="registering ? '送出中' : '註冊 →'" @click="handleRegister" />
         </template>
-        <TermButton v-else variant="primary" @click="finishRegister" label="done" />
+        <TermButton v-else variant="primary" @click="finishRegister" label="完成" />
       </template>
     </TermModal>
 
     <!-- Edit modal ------------------------------------------------- -->
-    <TermModal :visible="showEditModal" title="edit · agent" width="640px" @close="closeEditModal">
+    <TermModal :visible="showEditModal" title="編輯 · Agent" width="640px" @close="closeEditModal">
       <div class="form-grid" v-if="editTarget">
-        <TermField label="name" hint="immutable">
+        <TermField label="名稱" hint="不可變更">
           <input :value="editTarget.name" class="term-input" disabled />
         </TermField>
-        <TermField label="endpoint url">
+        <TermField label="端點 URL">
           <input v-model="editForm.endpoint_url" class="term-input" />
         </TermField>
-        <TermField label="router description" hint="router uses this to dispatch — be precise">
+        <TermField label="router 說明" hint="router 依此派送 — 請精確">
           <textarea v-model="editForm.description_for_router" rows="4" class="term-textarea" />
         </TermField>
         <div class="form-row-2">
-          <TermField label="api version">
+          <TermField label="API 版本">
             <input v-model="editForm.api_version" class="term-input" />
           </TermField>
-          <TermField label="base model">
+          <TermField label="基礎模型">
             <select v-model.number="editForm.base_model_id" class="term-select">
-              <option :value="null" disabled>— select base —</option>
+              <option :value="null" disabled>— 選擇基礎模型 —</option>
               <option v-for="m in baseModelOptions" :key="m.id" :value="m.id">
                 {{ m.display_name }} ({{ m.name }} · {{ m.model_type }})
               </option>
@@ -373,34 +373,34 @@ def employee_count(department: str) -&gt; int:
         </TermField>
       </div>
       <template #footer>
-        <TermButton variant="ghost" @click="closeEditModal" label="cancel" />
-        <TermButton variant="primary" :disabled="editing" :loading="editing" :label="editing ? 'saving' : 'save'" @click="handleUpdateAgent" />
+        <TermButton variant="ghost" @click="closeEditModal" label="取消" />
+        <TermButton variant="primary" :disabled="editing" :loading="editing" :label="editing ? '儲存中' : '儲存'" @click="handleUpdateAgent" />
       </template>
     </TermModal>
 
     <!-- Detail drawer (modal-style) ------------------------------- -->
-    <TermModal :visible="showDetailModal" :title="detailAgent ? `detail · ${detailAgent.name}` : 'detail'" width="720px" @close="closeDetailModal">
+    <TermModal :visible="showDetailModal" :title="detailAgent ? `詳情 · ${detailAgent.name}` : '詳情'" width="720px" @close="closeDetailModal">
       <div v-if="detailAgent" class="detail">
-        <TermSection title="overview" />
+        <TermSection title="總覽" />
         <dl class="detail__list">
-          <div><dt>endpoint</dt><dd><code>{{ detailAgent.endpoint_url }}</code></dd></div>
-          <div><dt>api version</dt><dd>{{ detailAgent.api_version || 'v1' }}</dd></div>
+          <div><dt>端點</dt><dd><code>{{ detailAgent.endpoint_url }}</code></dd></div>
+          <div><dt>API 版本</dt><dd>{{ detailAgent.api_version || 'v1' }}</dd></div>
           <div><dt>runtime 型別</dt><dd><code>{{ detailAgent.runtime_type || '—' }}</code></dd></div>
           <div><dt>版本</dt><dd>{{ detailAgent.version || '—' }}</dd></div>
           <div><dt>分類上限</dt><dd>{{ detailAgent.classification_ceiling || '—' }}</dd></div>
-          <div><dt>health</dt><dd>{{ detailAgent.health_status }}</dd></div>
+          <div><dt>健康</dt><dd>{{ detailAgent.health_status }}</dd></div>
           <div>
             <dt>審批狀態</dt>
             <dd><TermBadge :variant="approvalVariant(detailAgent.approval_status)" dot>{{ approvalLabel(detailAgent.approval_status) }}</TermBadge></dd>
           </div>
-          <div><dt>created</dt><dd class="tnum">{{ formatDate(detailAgent.created_at) }}</dd></div>
-          <div><dt>owner</dt><dd>{{ ownerDisplay(detailAgent) }}</dd></div>
-          <div><dt>base model</dt><dd>{{ detailAgent.base_model_id || '—' }}</dd></div>
+          <div><dt>建立時間</dt><dd class="tnum">{{ formatDate(detailAgent.created_at) }}</dd></div>
+          <div><dt>擁有者</dt><dd>{{ ownerDisplay(detailAgent) }}</dd></div>
+          <div><dt>基礎模型</dt><dd>{{ detailAgent.base_model_id || '—' }}</dd></div>
           <div>
-            <dt>encryption</dt>
+            <dt>加密</dt>
             <dd>
               <TermBadge :variant="detailAgent.requires_encryption ? 'danger' : ''" dot>
-                {{ detailAgent.requires_encryption ? 'forced' : 'normal' }}
+                {{ detailAgent.requires_encryption ? '強制' : '一般' }}
               </TermBadge>
               <button
                 v-if="authStore.isAdmin"
@@ -409,13 +409,13 @@ def employee_count(department: str) -&gt; int:
                 :disabled="encryptionBusyId === detailAgent.id"
                 @click="handleToggleEncryption(detailAgent)"
               >
-                {{ encryptionBusyId === detailAgent.id ? 'updating…' : (detailAgent.requires_encryption ? 'disable' : 'enable') }}
+                {{ encryptionBusyId === detailAgent.id ? '更新中…' : (detailAgent.requires_encryption ? '停用' : '啟用') }}
               </button>
             </dd>
           </div>
         </dl>
 
-        <TermSection title="router description" />
+        <TermSection title="router 說明" />
         <p class="detail__desc">{{ detailAgent.description_for_router || '—' }}</p>
 
         <!-- Slice 5b — 軌跡測試（Full Trace 審批關卡）。admin 執行測試 → 逐項
@@ -456,24 +456,24 @@ def employee_count(department: str) -&gt; int:
 
         <TermSection title="capabilities" />
         <pre v-if="hasCapabilities(detailAgent)" class="detail__pre">{{ prettyJson(detailAgent.capabilities) }}</pre>
-        <TermEmpty v-else message="no capabilities declared in manifest" />
+        <TermEmpty v-else message="manifest 中未宣告 capabilities" />
 
         <!-- Sprint 13 PR C1 — quick link to the per-agent runtime
              config editor (tool permissions / workspace caps / guardrails). -->
-        <TermSection title="runtime config" />
+        <TermSection title="執行設定" />
         <p class="cell-meta">
-          tool permissions · workspace caps · guardrails — live-applied via 30s poll on the agent.
-          {{ detailAgent.runtime_config ? 'currently overridden.' : 'using compiled-in defaults.' }}
+          工具權限 · 工作區上限 · 護欄 — 透過 agent 上的 30 秒輪詢即時套用。
+          {{ detailAgent.runtime_config ? '目前已覆寫。' : '使用編譯內建預設。' }}
         </p>
         <router-link
           :to="{ name: 'AgentRuntimeConfig', params: { id: detailAgent.id } }"
           class="term-action"
           style="display: inline-block; margin-top: 4px;"
         >
-          edit runtime config →
+          編輯執行設定 →
         </router-link>
 
-        <TermSection title="status timeline" />
+        <TermSection title="狀態時間軸" />
         <ol class="timeline">
           <li v-for="entry in buildStatusHistory(detailAgent)" :key="entry.label + entry.timestamp">
             <span class="timeline__dot" />
@@ -498,20 +498,20 @@ def employee_count(department: str) -&gt; int:
           <div v-if="issuedSecret" class="secret-banner" :class="`secret-banner--${issuedSecret.kind}`">
             <div class="secret-banner__head">
               <span class="cell-strong">
-                {{ issuedSecret.kind === 'bsk' ? 'bootstrap token (bsk-)' : 'service token (csk-)' }}
+                {{ issuedSecret.kind === 'bsk' ? 'bootstrap token（bsk-）' : 'service token（csk-）' }}
               </span>
-              <span class="cell-meta">copy now — will not be shown again</span>
+              <span class="cell-meta">立即複製 — 不會再顯示</span>
             </div>
             <div class="secret-banner__body">
               <code class="secret-banner__token">{{ issuedSecret.value }}</code>
-              <TermButton size="sm" variant="ghost" @click="copyToClipboard(issuedSecret.value)" label="copy" />
-              <TermButton size="sm" variant="ghost" @click="clearIssuedSecret" label="hide" />
+              <TermButton size="sm" variant="ghost" @click="copyToClipboard(issuedSecret.value)" label="複製" />
+              <TermButton size="sm" variant="ghost" @click="clearIssuedSecret" label="隱藏" />
             </div>
             <ul v-if="issuedSecret.meta" class="secret-banner__meta">
               <li v-if="issuedSecret.kind === 'bsk'">
-                expires {{ formatDate(issuedSecret.meta.expires_at) }} — agent must call
+                到期 {{ formatDate(issuedSecret.meta.expires_at) }} — agent 必須呼叫
                 <code>POST /api/agents/{{ issuedSecret.meta.agent_id }}/bootstrap</code>
-                with this token + <code>endpoint_url={{ issuedSecret.meta.endpoint_url }}</code>
+                附上此 token + <code>endpoint_url={{ issuedSecret.meta.endpoint_url }}</code>
               </li>
               <li v-if="issuedSecret.kind === 'csk' && issuedSecret.meta.kind">
                 {{ issuedSecret.meta.kind }} · credential_id={{ issuedSecret.meta.credential_id }}{{ issuedSecret.meta.label ? ` · label=${issuedSecret.meta.label}` : '' }}
@@ -527,7 +527,7 @@ def employee_count(department: str) -&gt; int:
               class="secret-banner__howto"
               open
             >
-              <summary class="secret-banner__howto-summary">how to use this token →</summary>
+              <summary class="secret-banner__howto-summary">如何使用此 token →</summary>
               <BootstrapHowToTabs
                 :csp-url="cspUrl"
                 :agent-id="issuedSecret.meta.agent_id"
@@ -555,32 +555,32 @@ def employee_count(department: str) -&gt; int:
           <div class="row-actions" style="margin-bottom: 8px;">
             <template v-if="authStore.isAdmin">
               <button class="term-action" :disabled="credentialBusyId === -1" @click="handleIssueBootstrap">
-                {{ credentialBusyId === -1 ? 'issuing…' : 'issue bootstrap (bsk-)' }}
+                {{ credentialBusyId === -1 ? '核發中…' : '核發 bootstrap（bsk-）' }}
               </button>
               <span class="row-actions__sep">·</span>
             </template>
             <button class="term-action" :disabled="credentialBusyId === -2" @click="openIssueStaticModal">
-              {{ credentialBusyId === -2 ? 'issuing…' : 'issue static (csk-)' }}
+              {{ credentialBusyId === -2 ? '核發中…' : '核發靜態（csk-）' }}
             </button>
             <template v-if="authStore.isAdmin">
               <span class="row-actions__sep">·</span>
-              <button class="term-action" @click="refreshDetailCredentials">refresh</button>
+              <button class="term-action" @click="refreshDetailCredentials">重新整理</button>
             </template>
           </div>
 
           <!-- credential listing + rotate/revoke are admin-only (backend authz) -->
           <template v-if="authStore.isAdmin">
-          <TermEmpty v-if="!credentialsLoading && detailCredentials.length === 0" message="no credentials yet — issue a bootstrap or static token to start" />
+          <TermEmpty v-if="!credentialsLoading && detailCredentials.length === 0" message="尚無憑證 — 核發 bootstrap 或靜態 token 以開始" />
           <table v-else class="cred-table">
             <thead>
               <tr>
-                <th>id</th>
-                <th>label</th>
-                <th>status</th>
-                <th>issued</th>
-                <th>rotated</th>
-                <th>grace</th>
-                <th>actions</th>
+                <th>ID</th>
+                <th>標籤</th>
+                <th>狀態</th>
+                <th>核發時間</th>
+                <th>輪替時間</th>
+                <th>寬限期</th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -589,11 +589,11 @@ def employee_count(department: str) -&gt; int:
                 <td>
                   <span v-if="c.label">{{ c.label }}</span>
                   <span v-else class="cell-meta">—</span>
-                  <TermBadge v-if="c.is_legacy" variant="warn" style="margin-left: 6px;">legacy</TermBadge>
+                  <TermBadge v-if="c.is_legacy" variant="warn" style="margin-left: 6px;">舊版</TermBadge>
                 </td>
                 <td>
                   <TermBadge :variant="c.is_active ? '' : 'danger'" dot>
-                    {{ c.is_active ? 'active' : 'revoked' }}
+                    {{ c.is_active ? '使用中' : '已吊銷' }}
                   </TermBadge>
                   <TermBadge
                     v-if="c.id === dispatchedCredentialId"
@@ -605,18 +605,18 @@ def employee_count(department: str) -&gt; int:
                 <td class="cell-meta tnum">{{ formatDate(c.issued_at) }}</td>
                 <td class="cell-meta tnum">{{ c.rotated_at ? formatDate(c.rotated_at) : '—' }}</td>
                 <td class="cell-meta tnum">
-                  <span v-if="c.has_previous_token">until {{ formatDate(c.previous_expires_at) }}</span>
+                  <span v-if="c.has_previous_token">至 {{ formatDate(c.previous_expires_at) }}</span>
                   <span v-else>—</span>
                 </td>
                 <td>
                   <div class="row-actions">
                     <template v-if="c.is_active">
                       <button class="term-action" :disabled="credentialBusyId === c.id" @click="handleRotateCredential(c)">
-                        {{ credentialBusyId === c.id ? '…' : 'rotate' }}
+                        {{ credentialBusyId === c.id ? '…' : '輪替' }}
                       </button>
                       <span class="row-actions__sep">·</span>
                       <button class="term-action term-action--danger" :disabled="credentialBusyId === c.id" @click="handleRevokeCredential(c)">
-                        {{ credentialBusyId === c.id ? '…' : 'revoke' }}
+                        {{ credentialBusyId === c.id ? '…' : '吊銷' }}
                       </button>
                     </template>
                     <span v-else class="cell-meta">—</span>
@@ -629,34 +629,34 @@ def employee_count(department: str) -&gt; int:
         </template>
       </div>
       <template #footer>
-        <TermButton variant="ghost" @click="closeDetailModal" label="close" />
+        <TermButton variant="ghost" @click="closeDetailModal" label="關閉" />
       </template>
     </TermModal>
 
     <!-- Issue static token modal (Phase F Tier 0) -->
-    <TermModal :visible="showIssueStaticModal" title="issue static service token" width="440px" @close="showIssueStaticModal = false">
+    <TermModal :visible="showIssueStaticModal" title="核發靜態 service token" width="440px" @close="showIssueStaticModal = false">
       <p class="cell-meta">
         靜態 csk- 不會自動輪替；建議每 90 天手動 rotate 一次。
         適合無法跑 anila-core bootstrap CLI 的舊版 / 第三方 agent（Phase F Tier 0）。
       </p>
-      <TermField label="label (optional)" hint="e.g. vendor-foo / pod-1 / staging">
+      <TermField label="標籤（選填）" hint="例：vendor-foo / pod-1 / staging">
         <input v-model="staticLabel" class="term-input" placeholder="" maxlength="100" />
       </TermField>
       <template #footer>
-        <TermButton variant="ghost" @click="showIssueStaticModal = false" label="cancel" />
-        <TermButton variant="primary" :loading="credentialBusyId === -2" :disabled="credentialBusyId === -2" label="issue" @click="handleIssueStatic" />
+        <TermButton variant="ghost" @click="showIssueStaticModal = false" label="取消" />
+        <TermButton variant="primary" :loading="credentialBusyId === -2" :disabled="credentialBusyId === -2" label="核發" @click="handleIssueStatic" />
       </template>
     </TermModal>
 
     <!-- Reject modal ---------------------------------------------- -->
-    <TermModal :visible="!!rejectTarget" title="reject · agent" width="440px" @close="closeRejectModal">
-      <p class="cell-meta">leave a reason so the developer can iterate.</p>
-      <TermField label="reason">
-        <textarea v-model="rejectReason" rows="4" class="term-textarea" placeholder="e.g. missing /health endpoint · description too short" />
+    <TermModal :visible="!!rejectTarget" title="駁回 · Agent" width="440px" @close="closeRejectModal">
+      <p class="cell-meta">留下原因讓開發者可以修改。</p>
+      <TermField label="原因">
+        <textarea v-model="rejectReason" rows="4" class="term-textarea" placeholder="例：缺 /health 端點 · 說明太短" />
       </TermField>
       <template #footer>
-        <TermButton variant="ghost" @click="closeRejectModal" label="cancel" />
-        <TermButton variant="danger" @click="handleReject" label="confirm reject" />
+        <TermButton variant="ghost" @click="closeRejectModal" label="取消" />
+        <TermButton variant="danger" @click="handleReject" label="確認駁回" />
       </template>
     </TermModal>
   </div>
@@ -867,7 +867,7 @@ function validateForm() {
 async function fetchAgents() {
   loading.value = true
   try { const { data } = await listMyAgents(); agents.value = data }
-  catch (e) { setFeedback('error', e.response?.data?.detail || 'failed to load agents') }
+  catch (e) { setFeedback('error', e.response?.data?.detail || '載入 Agent 失敗') }
   finally { loading.value = false }
 }
 async function fetchAvailableModels() {
@@ -949,7 +949,7 @@ async function refreshDetailCredentials() {
   try {
     detailCredentials.value = await listAgentCredentials(detailAgent.value.id)
   } catch (e) {
-    setFeedback('error', e.response?.data?.detail || 'failed to load credentials')
+    setFeedback('error', e.response?.data?.detail || '載入憑證失敗')
     detailCredentials.value = []
   } finally {
     credentialsLoading.value = false
@@ -971,7 +971,7 @@ function closeDetailModal() {
 async function copyToClipboard(text) {
   try {
     await navigator.clipboard.writeText(text)
-    setFeedback('success', 'copied to clipboard')
+    setFeedback('success', '已複製到剪貼簿')
   } catch {
     setFeedback('error', 'clipboard write failed — copy manually')
   }
@@ -993,9 +993,9 @@ async function handleIssueBootstrap() {
         expires_at: data.expires_at,
       },
     }
-    setFeedback('success', 'bootstrap token issued — copy now, it will not be shown again')
+    setFeedback('success', 'bootstrap token 已核發 — 立即複製，不會再顯示')
   } catch (e) {
-    setFeedback('error', e.response?.data?.detail || 'failed to issue bootstrap')
+    setFeedback('error', e.response?.data?.detail || '核發 bootstrap 失敗')
   } finally {
     credentialBusyId.value = null
   }
@@ -1021,13 +1021,13 @@ async function handleIssueStatic() {
         kind: 'static (no auto-rotate)',
       },
     }
-    setFeedback('success', 'service token issued — copy now, it will not be shown again')
+    setFeedback('success', 'service token 已核發 — 立即複製，不會再顯示')
     showIssueStaticModal.value = false
     // Listing credentials is admin-only (backend authz); an owner has already
     // got the one-time plaintext from the banner above, so skip the refresh.
     if (authStore.isAdmin) await refreshDetailCredentials()
   } catch (e) {
-    setFeedback('error', e.response?.data?.detail || 'failed to issue static token')
+    setFeedback('error', e.response?.data?.detail || '核發靜態 token 失敗')
   } finally {
     credentialBusyId.value = null
   }
@@ -1049,10 +1049,10 @@ async function handleRotateCredential(credential) {
         kind: 'rotated (previous valid 24h)',
       },
     }
-    setFeedback('success', 'credential rotated — copy new token now')
+    setFeedback('success', '憑證已輪替 — 立即複製新 token')
     await refreshDetailCredentials()
   } catch (e) {
-    setFeedback('error', e.response?.data?.detail || 'failed to rotate')
+    setFeedback('error', e.response?.data?.detail || '輪替失敗')
   } finally {
     credentialBusyId.value = null
   }
@@ -1064,10 +1064,10 @@ async function handleRevokeCredential(credential) {
   credentialBusyId.value = credential.id
   try {
     await revokeAgentCredential(detailAgent.value.id, credential.id)
-    setFeedback('success', `credential id=${credential.id} revoked`)
+    setFeedback('success', `憑證 id=${credential.id} 已吊銷`)
     await refreshDetailCredentials()
   } catch (e) {
-    setFeedback('error', e.response?.data?.detail || 'failed to revoke')
+    setFeedback('error', e.response?.data?.detail || '吊銷失敗')
   } finally {
     credentialBusyId.value = null
   }
@@ -1096,7 +1096,7 @@ async function handleRegister() {
     // flow: register → issue csk- → paste into .env → verify (S-Q2/Q3).
     registeredAgent.value = resp.data
     registerStep.value = 2
-    setFeedback('success', 'agent registered · pending admin review — now provision its key')
+    setFeedback('success', 'agent 已註冊 · 待管理員審查 — 現在核發金鑰')
     await fetchAgents()
   } catch (e) { setFeedback('error', e.response?.data?.detail || 'register failed') }
   finally { registering.value = false }
@@ -1108,8 +1108,8 @@ async function handleIssueForNew() {
   try {
     const data = await issueStaticCredential(registeredAgent.value.id, null)
     newAgentCsk.value = data.service_token
-    setFeedback('success', 'service token issued — copy now, it will not be shown again')
-  } catch (e) { setFeedback('error', e.response?.data?.detail || 'failed to issue token') }
+    setFeedback('success', 'service token 已核發 — 立即複製，不會再顯示')
+  } catch (e) { setFeedback('error', e.response?.data?.detail || '核發 token 失敗') }
   finally { issuingNew.value = false }
 }
 
@@ -1199,7 +1199,7 @@ async function handleUpdateAgent() {
     const idx = agents.value.findIndex(a => a.id === data.id)
     if (idx >= 0) agents.value[idx] = data
     if (detailAgent.value && detailAgent.value.id === data.id) detailAgent.value = data
-    setFeedback('success', `updated '${data.name}'`)
+    setFeedback('success', `已更新「${data.name}」`)
     closeEditModal()
   } catch (e) { setFeedback('error', e.response?.data?.detail || 'update failed') }
   finally { editing.value = false }
@@ -1225,7 +1225,7 @@ function syncDetailFromList(id) {
 async function handleToggleEncryption(agent) {
   if (!agent || encryptionBusyId.value === agent.id) return
   const next = !agent.requires_encryption
-  if (next && !(await confirm({ message: `enable forced encryption for '${agent.name}'? all conversations through it lock to encrypted mode — irreversible per conversation.`, confirmText: 'enable', danger: true }))) return
+  if (next && !(await confirm({ message: `為「${agent.name}」啟用強制加密？經過它的所有對話都鎖為加密模式 — 每個對話不可逆。`, confirmText: '啟用', danger: true }))) return
   encryptionBusyId.value = agent.id
   try {
     const { data } = await setAgentEncryption(agent.id, next)
@@ -1233,7 +1233,7 @@ async function handleToggleEncryption(agent) {
     const idx = agents.value.findIndex(a => a.id === agent.id)
     if (idx !== -1) agents.value[idx] = { ...agents.value[idx], requires_encryption: applied }
     if (detailAgent.value && detailAgent.value.id === agent.id) detailAgent.value = { ...detailAgent.value, requires_encryption: applied }
-    setFeedback('success', `encryption ${applied ? 'enabled' : 'disabled'} for '${agent.name}'`)
+    setFeedback('success', `已為「${agent.name}」${applied ? '啟用' : '停用'}加密`)
   } catch (e) { setFeedback('error', e.response?.data?.detail || 'encryption update failed') }
   finally { encryptionBusyId.value = null }
 }
@@ -1246,20 +1246,20 @@ async function handleHealthCheck(agent) {
     const idx = agents.value.findIndex(a => a.id === agent.id)
     if (idx >= 0) agents.value[idx] = { ...agents.value[idx], health_status: data.status }
     setFeedback(data.status === 'healthy' ? 'success' : 'error',
-      `'${agent.name}' health: ${data.status}${data.detail ? ` — ${data.detail}` : ''}`)
-  } catch (e) { setFeedback('error', e.response?.data?.detail || `'${agent.name}' health probe failed`) }
+      `「${agent.name}」健康：${data.status}${data.detail ? ` — ${data.detail}` : ''}`)
+  } catch (e) { setFeedback('error', e.response?.data?.detail || `「${agent.name}」健康探測失敗`) }
   finally { healthCheckingId.value = null }
 }
 
 async function handleDeleteAgent(agent) {
   if (!agent || deletingId.value === agent.id) return
-  if (!(await confirm({ message: `delete '${agent.name}'? non-reversible · live references will break.`, confirmText: 'delete', danger: true }))) return
+  if (!(await confirm({ message: `刪除「${agent.name}」？不可復原 · 使用中的引用會失效。`, confirmText: '刪除', danger: true }))) return
   deletingId.value = agent.id
   try {
     await deleteAgent(agent.id)
     agents.value = agents.value.filter(a => a.id !== agent.id)
     if (detailAgent.value && detailAgent.value.id === agent.id) { showDetailModal.value = false; detailAgent.value = null }
-    setFeedback('success', `deleted '${agent.name}'`)
+    setFeedback('success', `已刪除「${agent.name}」`)
   } catch (e) { setFeedback('error', e.response?.data?.detail || 'delete failed') }
   finally { deletingId.value = null }
 }
@@ -1284,8 +1284,8 @@ async function handleDownloadTemplate() {
     link.download = 'anila-core-template.zip'
     link.click()
     URL.revokeObjectURL(url)
-    setFeedback('success', 'template downloaded')
-  } catch (e) { setFeedback('error', e.response?.data?.detail || 'download failed') }
+    setFeedback('success', '樣板已下載')
+  } catch (e) { setFeedback('error', e.response?.data?.detail || '下載失敗') }
 }
 
 function healthVariant(s) {

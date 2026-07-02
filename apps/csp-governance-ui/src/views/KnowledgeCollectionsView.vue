@@ -3,9 +3,9 @@
     <header class="page-head">
       <div>
         <p class="page-head__eyebrow">developer · rag</p>
-        <h1 class="page-head__title">collections</h1>
+        <h1 class="page-head__title">知識庫</h1>
         <p class="page-head__sub">
-          first-class rag store · agent backend mounts via <code>RAG_COLLECTION_ID=&lt;id&gt;</code>
+          第一級 RAG 儲存 · agent 後端以 <code>RAG_COLLECTION_ID=&lt;id&gt;</code> 掛載
         </p>
       </div>
       <!-- Sprint 8 X / chunking-preview Phase 3 — preview-then-pick
@@ -15,26 +15,26 @@
            wizard's "skip preview" link for power users who already
            know which strategy they want. -->
       <router-link :to="{ name: 'ChunkingPreview' }" custom v-slot="{ navigate }">
-        <TermButton variant="primary" label="+ new collection" @click="navigate" />
+        <TermButton variant="primary" label="+ 新增知識庫" @click="navigate" />
       </router-link>
     </header>
 
-    <TermBox title="filter" pad="sm">
+    <TermBox title="篩選" pad="sm">
       <div class="filters">
         <label class="filters__toggle">
-          <input type="checkbox" v-model="includeArchived" /> show archived
+          <input type="checkbox" v-model="includeArchived" /> 顯示已封存
         </label>
         <label v-if="isAdmin" class="filters__toggle">
-          <input type="checkbox" v-model="showAllCollections" /> show others' collections (admin)
+          <input type="checkbox" v-model="showAllCollections" /> 顯示他人的知識庫（管理員）
         </label>
       </div>
     </TermBox>
 
     <div v-if="error" class="feedback is-err">! {{ error }}</div>
-    <div v-else-if="loadingCollections" class="loading">loading collections…</div>
+    <div v-else-if="loadingCollections" class="loading">載入知識庫中…</div>
 
     <div v-if="collections.length === 0 && !loadingCollections && !error" class="term-box" style="padding: var(--gap-6);">
-      <TermEmpty message="no collections yet · click [new collection] to create one" />
+      <TermEmpty message="尚無知識庫 · 點選「新增知識庫」建立" />
     </div>
 
     <div v-if="collections.length > 0" class="grid">
@@ -49,48 +49,48 @@
         <p v-if="c.description" class="cc__desc">{{ c.description }}</p>
 
         <dl class="cc__stats">
-          <div><dt>documents</dt><dd class="tnum">{{ c.document_count.toLocaleString() }}</dd></div>
-          <div><dt>chunks</dt><dd class="tnum">{{ c.chunk_count.toLocaleString() }}</dd></div>
-          <div><dt>bytes</dt><dd class="tnum">{{ humanBytes(c.bytes_stored) }}</dd></div>
-          <div><dt>strategy</dt><dd>{{ c.chunking_config.strategy }}</dd></div>
-          <div><dt>embedding</dt><dd>{{ c.embedding_model }} · {{ c.embedding_dim }}-d</dd></div>
-          <div><dt>owner</dt><dd>user #{{ c.created_by }}</dd></div>
+          <div><dt>文件</dt><dd class="tnum">{{ c.document_count.toLocaleString() }}</dd></div>
+          <div><dt>區塊</dt><dd class="tnum">{{ c.chunk_count.toLocaleString() }}</dd></div>
+          <div><dt>位元組</dt><dd class="tnum">{{ humanBytes(c.bytes_stored) }}</dd></div>
+          <div><dt>策略</dt><dd>{{ c.chunking_config.strategy }}</dd></div>
+          <div><dt>嵌入</dt><dd>{{ c.embedding_model }} · {{ c.embedding_dim }}-d</dd></div>
+          <div><dt>擁有者</dt><dd>user #{{ c.created_by }}</dd></div>
         </dl>
 
         <div class="cc__dsn">
-          <span class="cell-meta">agent backend env</span>
+          <span class="cell-meta">agent 後端環境變數</span>
           <code>RAG_COLLECTION_ID={{ c.id }}</code>
         </div>
 
         <footer class="cc__foot">
-          <router-link :to="{ name: 'CollectionDetail', params: { id: c.id } }" class="term-action">→ inspector</router-link>
+          <router-link :to="{ name: 'CollectionDetail', params: { id: c.id } }" class="term-action">→ 檢視器</router-link>
           <span class="cc__sep">·</span>
-          <router-link :to="{ name: 'Evaluator', params: { id: c.id } }" class="term-action">→ evaluator</router-link>
+          <router-link :to="{ name: 'Evaluator', params: { id: c.id } }" class="term-action">→ 評測器</router-link>
           <span class="cc__sep">·</span>
-          <button v-if="c.status === 'active'" class="term-action" @click="archiveCollection(c)">archive</button>
-          <button v-else class="term-action" @click="restoreCollection(c)">restore</button>
+          <button v-if="c.status === 'active'" class="term-action" @click="archiveCollection(c)">封存</button>
+          <button v-else class="term-action" @click="restoreCollection(c)">還原</button>
           <span class="cc__sep">·</span>
-          <button class="term-action term-action--danger" @click="confirmDelete(c)">delete</button>
+          <button class="term-action term-action--danger" @click="confirmDelete(c)">刪除</button>
         </footer>
       </article>
     </div>
 
-    <TermModal :visible="creating" title="new · collection" width="520px" @close="creating = false">
+    <TermModal :visible="creating" title="新增 · 知識庫" width="520px" @close="creating = false">
       <div class="form-grid">
-        <TermField label="name">
+        <TermField label="名稱">
           <input v-model.trim="form.name" class="term-input" maxlength="200" placeholder="legal-regs" />
         </TermField>
-        <TermField label="description" optional>
+        <TermField label="描述" optional>
           <textarea v-model.trim="form.description" rows="2" class="term-textarea" maxlength="2000" />
         </TermField>
-        <TermField label="chunking strategy">
+        <TermField label="切塊策略">
           <select v-model="form.strategy" class="term-select">
-            <option value="hierarchical">hierarchical · heading tree + ancestor context</option>
-            <option value="markdown-aware">markdown-aware · heading + code-fence safe</option>
-            <option value="fixed">fixed · token-budget windowing</option>
-            <option value="pdf-page">pdf-page · pdf only · page boundaries</option>
-            <option value="cjk-sentence">cjk-sentence · cjk syntax + token merge</option>
-            <option value="semantic">semantic · embedding distance · slow but precise</option>
+            <option value="hierarchical">hierarchical · 標題樹 + 上階脈絡</option>
+            <option value="markdown-aware">markdown-aware · 標題 + code-fence 安全</option>
+            <option value="fixed">fixed · token 預算切窗</option>
+            <option value="pdf-page">pdf-page · 僅 PDF · 依頁邊界</option>
+            <option value="cjk-sentence">cjk-sentence · CJK 語法 + token 合併</option>
+            <option value="semantic">semantic · 嵌入距離 · 慢但精準</option>
           </select>
         </TermField>
         <TermField :label="tokenLabel" :hint="tokenHint">
@@ -99,8 +99,8 @@
         <div v-if="formError" class="feedback is-err">! {{ formError }}</div>
       </div>
       <template #footer>
-        <TermButton variant="ghost" @click="creating = false" label="cancel" />
-        <TermButton variant="primary" :loading="submitting" :disabled="submitting" :label="submitting ? 'creating' : 'create'" @click="submitCreate" />
+        <TermButton variant="ghost" @click="creating = false" label="取消" />
+        <TermButton variant="primary" :loading="submitting" :disabled="submitting" :label="submitting ? '建立中' : '建立'" @click="submitCreate" />
       </template>
     </TermModal>
   </div>
@@ -135,18 +135,18 @@ const formError = ref('')
 const form = ref({ name: '', description: '', strategy: 'hierarchical', maxTokens: 256 })
 
 const tokenLabel = computed(() => ({
-  fixed: 'size (tokens)',
-  'pdf-page': 'max page tokens',
-  'cjk-sentence': 'target tokens',
-  semantic: 'min segment tokens',
-})[form.value.strategy] || 'max leaf tokens')
+  fixed: '大小（tokens）',
+  'pdf-page': '每頁最大 tokens',
+  'cjk-sentence': '目標 tokens',
+  semantic: '最小片段 tokens',
+})[form.value.strategy] || '葉節點最大 tokens')
 
 const tokenHint = computed(() => ({
-  fixed: 'token budget per chunk · overlap auto = size/8',
-  'pdf-page': 'oversized pages split inside via fixed strategy',
-  'cjk-sentence': 'merge sentences until target reached',
-  semantic: 'segment cap · boundary by embedding distance',
-})[form.value.strategy] || 'token cap per heading-tree leaf')
+  fixed: '每區塊 token 預算 · overlap 自動 = size/8',
+  'pdf-page': '超大頁面內部改用 fixed 策略切分',
+  'cjk-sentence': '合併句子直到達到目標',
+  semantic: '片段上限 · 以嵌入距離決定邊界',
+})[form.value.strategy] || '每個標題樹葉節點的 token 上限')
 
 onMounted(() => {
   loadCollections()
@@ -170,7 +170,7 @@ async function loadCollections() {
     const { data } = await listCollections(params)
     collections.value = data
   } catch (e) {
-    error.value = `failed to load collections: ${e.response?.data?.detail || e.message}`
+    error.value = `載入知識庫失敗：${e.response?.data?.detail || e.message}`
   } finally { loadingCollections.value = false }
 }
 
@@ -214,16 +214,16 @@ async function submitCreate() {
 
 async function archiveCollection(c) {
   try { await updateCollection(c.id, { status: 'archived' }); await loadCollections() }
-  catch (e) { error.value = `archive failed: ${e.response?.data?.detail || e.message}` }
+  catch (e) { error.value = `封存失敗：${e.response?.data?.detail || e.message}` }
 }
 async function restoreCollection(c) {
   try { await updateCollection(c.id, { status: 'active' }); await loadCollections() }
-  catch (e) { error.value = `restore failed: ${e.response?.data?.detail || e.message}` }
+  catch (e) { error.value = `還原失敗：${e.response?.data?.detail || e.message}` }
 }
 async function confirmDelete(c) {
-  if (!(await confirm({ message: `delete '${c.name}'? CASCADE removes ${c.document_count} docs and ${c.chunk_count} chunks.`, danger: true }))) return
+  if (!(await confirm({ message: `刪除「${c.name}」？CASCADE 會移除 ${c.document_count} 份文件與 ${c.chunk_count} 個區塊。`, danger: true }))) return
   try { await deleteCollection(c.id); await loadCollections() }
-  catch (e) { error.value = `delete failed: ${e.response?.data?.detail || e.message}` }
+  catch (e) { error.value = `刪除失敗：${e.response?.data?.detail || e.message}` }
 }
 
 function humanBytes(n) {

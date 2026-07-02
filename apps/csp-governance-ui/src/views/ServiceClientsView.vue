@@ -2,7 +2,7 @@
   <div class="page">
     <header class="page-header">
       <div>
-        <h1 class="page-title">service clients</h1>
+        <h1 class="page-title">服務客戶端</h1>
         <p class="page-subtitle">
           Router / worker / admin-tool 走 <code>X-CSP-Service-Token</code> 的 s2s identity。每一列 = 一條 long-lived <code>csk-</code>。
         </p>
@@ -14,29 +14,29 @@
     </TermBox>
 
     <div class="row-actions" style="margin: 12px 0;">
-      <TermButton variant="primary" @click="openCreateModal" label="+ create client" />
+      <TermButton variant="primary" @click="openCreateModal" label="+ 建立客戶端" />
       <span class="row-actions__sep">·</span>
-      <button class="term-action" @click="fetchClients">refresh</button>
+      <button class="term-action" @click="fetchClients">重新整理</button>
     </div>
 
     <TermBox>
       <table class="data-table">
         <thead>
           <tr>
-            <th>id</th>
-            <th>name</th>
-            <th>type</th>
-            <th>status</th>
-            <th>issued</th>
-            <th>rotated</th>
-            <th>grace</th>
-            <th>actions</th>
+            <th>ID</th>
+            <th>名稱</th>
+            <th>類型</th>
+            <th>狀態</th>
+            <th>核發時間</th>
+            <th>輪替時間</th>
+            <th>寬限期</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="!clients.length">
             <td colspan="8">
-              <TermEmpty message="no service clients yet" />
+              <TermEmpty message="尚無服務客戶端" />
             </td>
           </tr>
           <tr v-for="c in clients" :key="c.id" :class="{ 'is-revoked': !c.is_active }">
@@ -47,27 +47,27 @@
             </td>
             <td>
               <TermBadge>{{ c.client_type }}</TermBadge>
-              <TermBadge v-if="c.is_legacy" variant="warn" style="margin-left: 6px;">legacy</TermBadge>
+              <TermBadge v-if="c.is_legacy" variant="warn" style="margin-left: 6px;">舊版</TermBadge>
             </td>
             <td>
               <TermBadge :variant="c.is_active ? '' : 'danger'" dot>
-                {{ c.is_active ? 'active' : 'revoked' }}
+                {{ c.is_active ? '使用中' : '已吊銷' }}
               </TermBadge>
             </td>
             <td class="cell-meta tnum">{{ formatDate(c.issued_at) }}</td>
             <td class="cell-meta tnum">{{ c.rotated_at ? formatDate(c.rotated_at) : '—' }}</td>
             <td class="cell-meta tnum">
-              <span v-if="c.has_previous_token">until {{ formatDate(c.previous_expires_at) }}</span>
+              <span v-if="c.has_previous_token">至 {{ formatDate(c.previous_expires_at) }}</span>
               <span v-else>—</span>
             </td>
             <td>
               <div class="row-actions" v-if="c.is_active">
                 <button class="term-action" :disabled="busyId === c.id" @click="handleRotate(c)">
-                  {{ busyId === c.id ? '…' : 'rotate' }}
+                  {{ busyId === c.id ? '…' : '輪替' }}
                 </button>
                 <span class="row-actions__sep">·</span>
                 <button class="term-action term-action--danger" :disabled="busyId === c.id" @click="handleRevoke(c)">
-                  {{ busyId === c.id ? '…' : 'revoke' }}
+                  {{ busyId === c.id ? '…' : '吊銷' }}
                 </button>
               </div>
               <span v-else class="cell-meta">—</span>
@@ -78,7 +78,7 @@
     </TermBox>
 
     <!-- Plaintext display -->
-    <TermModal :visible="!!issuedSecret" title="copy this token now" width="540px" @close="clearIssuedSecret">
+    <TermModal :visible="!!issuedSecret" title="立即複製此 token" width="540px" @close="clearIssuedSecret">
       <p class="cell-meta">
         plaintext 只會出現一次。複製後妥善保存（password manager / vault）。
       </p>
@@ -87,41 +87,41 @@
           <code class="secret-banner__token">{{ issuedSecret?.value }}</code>
         </div>
         <ul v-if="issuedSecret?.meta" class="secret-banner__meta">
-          <li v-if="issuedSecret.meta.client_name">client: <code>{{ issuedSecret.meta.client_name }}</code></li>
-          <li v-if="issuedSecret.meta.client_type">type: {{ issuedSecret.meta.client_type }}</li>
+          <li v-if="issuedSecret.meta.client_name">客戶端：<code>{{ issuedSecret.meta.client_name }}</code></li>
+          <li v-if="issuedSecret.meta.client_type">類型：{{ issuedSecret.meta.client_type }}</li>
           <li v-if="issuedSecret.meta.note">{{ issuedSecret.meta.note }}</li>
         </ul>
       </div>
       <template #footer>
-        <TermButton variant="ghost" @click="copySecret" label="copy" />
-        <TermButton variant="primary" @click="clearIssuedSecret" label="done" />
+        <TermButton variant="ghost" @click="copySecret" label="複製" />
+        <TermButton variant="primary" @click="clearIssuedSecret" label="完成" />
       </template>
     </TermModal>
 
     <!-- Create modal -->
-    <TermModal :visible="showCreateModal" title="create · service client" width="520px" @close="showCreateModal = false">
+    <TermModal :visible="showCreateModal" title="建立 · 服務客戶端" width="520px" @close="showCreateModal = false">
       <div class="form-grid">
-        <TermField label="name" hint="immutable identifier (e.g. router-primary, ingestion-worker)">
+        <TermField label="名稱" hint="不可變更的識別碼（例：router-primary、ingestion-worker）">
           <input v-model="createForm.client_name" class="term-input" placeholder="router-primary" />
         </TermField>
-        <TermField label="type">
+        <TermField label="類型">
           <select v-model="createForm.client_type" class="term-select">
             <option value="router">router</option>
             <option value="worker">worker</option>
             <option value="admin_tool">admin_tool</option>
           </select>
         </TermField>
-        <TermField label="description (optional)">
+        <TermField label="描述（選填）">
           <textarea v-model="createForm.description" rows="2" class="term-textarea" />
         </TermField>
       </div>
       <template #footer>
-        <TermButton variant="ghost" @click="showCreateModal = false" label="cancel" />
+        <TermButton variant="ghost" @click="showCreateModal = false" label="取消" />
         <TermButton
           variant="primary"
           :loading="createBusy"
           :disabled="createBusy || !createForm.client_name || !createForm.client_type"
-          label="create"
+          label="建立"
           @click="handleCreate"
         />
       </template>
@@ -161,7 +161,7 @@ function formatDate(iso) {
 
 async function fetchClients() {
   try { clients.value = await listServiceClients() }
-  catch (e) { setFeedback('error', e.response?.data?.detail || 'failed to load') }
+  catch (e) { setFeedback('error', e.response?.data?.detail || '載入失敗') }
 }
 
 onMounted(fetchClients)
@@ -174,9 +174,9 @@ async function copySecret() {
   if (!issuedSecret.value?.value) return
   try {
     await navigator.clipboard.writeText(issuedSecret.value.value)
-    setFeedback('success', 'copied to clipboard')
+    setFeedback('success', '已複製到剪貼簿')
   } catch {
-    setFeedback('error', 'clipboard write failed — copy manually')
+    setFeedback('error', '寫入剪貼簿失敗 — 請手動複製')
   }
 }
 
@@ -198,13 +198,13 @@ async function handleCreate() {
       meta: {
         client_name: data.client.client_name,
         client_type: data.client.client_type,
-        note: 'first issuance — paste into the client\'s state file or env',
+        note: '首次核發 — 貼進客戶端的 state 檔或 env',
       },
     }
     showCreateModal.value = false
     await fetchClients()
   } catch (e) {
-    setFeedback('error', e.response?.data?.detail || 'failed to create')
+    setFeedback('error', e.response?.data?.detail || '建立失敗')
   } finally {
     createBusy.value = false
   }
@@ -220,12 +220,12 @@ async function handleRotate(c) {
       meta: {
         client_name: data.client.client_name,
         client_type: data.client.client_type,
-        note: 'rotated — previous valid 24h',
+        note: '已輪替 — 前一組 24 小時內有效',
       },
     }
     await fetchClients()
   } catch (e) {
-    setFeedback('error', e.response?.data?.detail || 'failed to rotate')
+    setFeedback('error', e.response?.data?.detail || '輪替失敗')
   } finally {
     busyId.value = null
   }
@@ -236,10 +236,10 @@ async function handleRevoke(c) {
   busyId.value = c.id
   try {
     await revokeServiceClient(c.id)
-    setFeedback('success', `revoked ${c.client_name}`)
+    setFeedback('success', `已吊銷 ${c.client_name}`)
     await fetchClients()
   } catch (e) {
-    setFeedback('error', e.response?.data?.detail || 'failed to revoke')
+    setFeedback('error', e.response?.data?.detail || '吊銷失敗')
   } finally {
     busyId.value = null
   }

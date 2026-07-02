@@ -52,41 +52,41 @@ const authStore = useAuthStore()
 const menuGroups = computed(() => {
   const groups = [
     {
-      label: 'primary',
+      label: '主要',
       items: [
-        { path: '/', label: 'dashboard' },
-        { path: '/api-keys', label: 'api-keys' },
-        { path: '/models', label: 'models' },
-        { path: '/usage', label: 'usage' },
+        { path: '/', label: '儀表板' },
+        { path: '/api-keys', label: 'API 金鑰' },
+        { path: '/models', label: '模型' },
+        { path: '/usage', label: '用量' },
       ],
     },
   ]
 
   if (authStore.isDeveloper) {
     groups.push({
-      label: 'developer',
+      label: '開發者',
       items: [
-        { path: '/developer/guide', label: 'guide' },
-        { path: '/developer/agents', label: 'agents' },
-        { path: '/knowledge-collections', label: 'collections' },
+        { path: '/developer/guide', label: '開發指南' },
+        { path: '/developer/agents', label: 'Agent' },
+        { path: '/knowledge-collections', label: '知識庫' },
       ],
     })
   }
 
   if (authStore.isAdmin) {
     groups.push({
-      label: 'admin',
+      label: '管理',
       items: [
-        { path: '/users', label: 'users' },
-        { path: '/departments', label: 'departments' },
-        { path: '/alerts', label: 'alerts' },
-        { path: '/banners', label: 'banners' },
-        { path: '/audit-logs', label: 'audit-log' },
+        { path: '/users', label: '使用者' },
+        { path: '/departments', label: '部門' },
+        { path: '/alerts', label: '警報' },
+        { path: '/banners', label: '公告橫幅' },
+        { path: '/audit-logs', label: '稽核紀錄' },
         { path: '/classification-inventory', label: '分類盤點' },
-        { path: '/platform-links', label: 'platform-links' },
-        { path: '/service-access', label: 'service-access' },
-        { path: '/service-clients', label: 'service-clients' },
-        { path: '/trusted-hosts', label: 'trusted-hosts' },
+        { path: '/platform-links', label: '平台連結' },
+        { path: '/service-access', label: '服務存取' },
+        { path: '/service-clients', label: '服務客戶端' },
+        { path: '/trusted-hosts', label: '信任主機' },
       ],
     })
   }

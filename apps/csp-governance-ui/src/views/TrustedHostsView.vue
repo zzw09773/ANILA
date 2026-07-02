@@ -2,7 +2,7 @@
   <div class="page">
     <header class="page-header">
       <div>
-        <h1 class="page-title">trusted hosts</h1>
+        <h1 class="page-title">信任主機</h1>
         <p class="page-subtitle">
           SSRF guard allow-list — 列上的 hostname 在 model / agent / credential
           註冊時可繞過 single-label / internal-zone 阻擋。Owner-only,
@@ -20,28 +20,28 @@
         v-if="authStore.isOwner"
         variant="primary"
         @click="openCreateModal"
-        label="+ add host"
+        label="+ 新增主機"
       />
       <span v-if="authStore.isOwner" class="row-actions__sep">·</span>
-      <button class="term-action" @click="fetchHosts">refresh</button>
+      <button class="term-action" @click="fetchHosts">重新整理</button>
     </div>
 
     <TermBox>
       <table class="data-table">
         <thead>
           <tr>
-            <th>id</th>
-            <th>host</th>
-            <th>note</th>
-            <th>added by</th>
-            <th>added at</th>
-            <th v-if="authStore.isOwner">actions</th>
+            <th>ID</th>
+            <th>主機</th>
+            <th>備註</th>
+            <th>新增者</th>
+            <th>新增時間</th>
+            <th v-if="authStore.isOwner">操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="!hosts.length">
             <td :colspan="authStore.isOwner ? 6 : 5">
-              <TermEmpty message="no trusted hosts yet — admin will add them via this page" />
+              <TermEmpty message="尚無信任主機 — 管理員可在此頁新增" />
             </td>
           </tr>
           <tr v-for="h in hosts" :key="h.id">
@@ -52,7 +52,7 @@
             <td class="cell-meta">{{ h.note || '—' }}</td>
             <td class="cell-meta">
               <span v-if="h.created_by_username">{{ h.created_by_username }}</span>
-              <span v-else>system / env backfill</span>
+              <span v-else>系統 / env 回填</span>
             </td>
             <td class="cell-meta tnum">{{ formatDate(h.created_at) }}</td>
             <td v-if="authStore.isOwner">
@@ -61,7 +61,7 @@
                 :disabled="busyId === h.id"
                 @click="handleDelete(h)"
               >
-                {{ busyId === h.id ? '…' : 'remove' }}
+                {{ busyId === h.id ? '…' : '移除' }}
               </button>
             </td>
           </tr>
@@ -69,11 +69,11 @@
       </table>
     </TermBox>
 
-    <TermModal :visible="showModal" title="add trusted host" width="520px" @close="showModal = false">
+    <TermModal :visible="showModal" title="新增信任主機" width="520px" @close="showModal = false">
       <div class="form-grid">
         <TermField
-          label="host"
-          hint="bare hostname — no scheme / port / path (e.g. `gemma4`, `inference.internal`)"
+          label="主機"
+          hint="純 hostname — 不含 scheme / port / path（例：`gemma4`、`inference.internal`）"
         >
           <input
             v-model="form.host"
@@ -82,7 +82,7 @@
             @keyup.enter="handleSubmit"
           />
         </TermField>
-        <TermField label="note" hint="optional, free text — 寫清為什麼信任這個 host">
+        <TermField label="備註" hint="選填，自由文字 — 寫清為什麼信任這個 host">
           <textarea
             v-model="form.note"
             rows="3"
@@ -92,11 +92,11 @@
         </TermField>
       </div>
       <template #footer>
-        <TermButton variant="ghost" @click="showModal = false" label="cancel" />
+        <TermButton variant="ghost" @click="showModal = false" label="取消" />
         <TermButton
           variant="primary"
           :disabled="!form.host.trim() || submitting"
-          :label="submitting ? 'adding…' : 'add'"
+          :label="submitting ? '新增中…' : '新增'"
           @click="handleSubmit"
         />
       </template>
@@ -146,7 +146,7 @@ async function fetchHosts() {
     const { data } = await listTrustedHosts()
     hosts.value = data
   } catch (e) {
-    setFeedback('danger', e.response?.data?.detail || 'failed to load trusted hosts')
+    setFeedback('danger', e.response?.data?.detail || '載入信任主機失敗')
   }
 }
 
@@ -165,11 +165,11 @@ async function handleSubmit() {
       note: form.note.trim() || null,
     })
     showModal.value = false
-    setFeedback('ok', `added "${form.host.trim()}"`)
+    setFeedback('ok', `已新增「${form.host.trim()}」`)
     await fetchHosts()
   } catch (e) {
     const detail = e.response?.data?.detail
-    const msg = typeof detail === 'string' ? detail : (detail?.message || 'add failed')
+    const msg = typeof detail === 'string' ? detail : (detail?.message || '新增失敗')
     setFeedback('danger', msg)
   } finally {
     submitting.value = false
@@ -181,10 +181,10 @@ async function handleDelete(host) {
   busyId.value = host.id
   try {
     await deleteTrustedHost(host.id)
-    setFeedback('ok', `removed "${host.host}"`)
+    setFeedback('ok', `已移除「${host.host}」`)
     await fetchHosts()
   } catch (e) {
-    setFeedback('danger', e.response?.data?.detail || 'remove failed')
+    setFeedback('danger', e.response?.data?.detail || '移除失敗')
   } finally {
     busyId.value = null
   }

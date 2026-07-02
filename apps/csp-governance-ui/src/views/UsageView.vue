@@ -3,62 +3,62 @@
     <header class="page-head">
       <div>
         <p class="page-head__eyebrow">control plane · analytics</p>
-        <h1 class="page-head__title">usage</h1>
-        <p class="page-head__sub">throughput · token spend · per model · per user</p>
+        <h1 class="page-head__title">用量</h1>
+        <p class="page-head__sub">吞吐 · Token 用量 · 依模型 · 依使用者</p>
       </div>
       <div class="page-head__actions">
         <TimeRangeSelector v-model="selectedRange" @update:model-value="refreshUsage" />
-        <TermButton size="md" variant="default" @click="handleExport" label="export csv" />
+        <TermButton size="md" variant="default" @click="handleExport" label="匯出 CSV" />
       </div>
     </header>
 
     <!-- Filter bar ----------------------------------------------------- -->
-    <TermBox title="filter" pad="sm" hint="server-evaluated">
+    <TermBox title="篩選" pad="sm" hint="伺服器端計算">
       <div class="filters">
-        <TermField label="type">
+        <TermField label="類型">
           <select v-model="selectedModelType" @change="onModelTypeChange" class="term-select">
-            <option :value="null">all</option>
+            <option :value="null">全部</option>
             <option value="llm">llm</option>
             <option value="vlm">vlm</option>
             <option value="embedding">embedding</option>
             <option value="agent">agent</option>
           </select>
         </TermField>
-        <TermField v-if="authStore.isAdmin" label="department">
+        <TermField v-if="authStore.isAdmin" label="部門">
           <select v-model="selectedDepartment" @change="onDepartmentChange" class="term-select">
-            <option :value="null">all</option>
+            <option :value="null">全部</option>
             <option v-for="d in activeDepartments" :key="d.id" :value="d.id">{{ d.name }}</option>
           </select>
         </TermField>
-        <TermField label="model">
+        <TermField label="模型">
           <select v-model="selectedModel" @change="refreshUsage" class="term-select">
-            <option :value="null">all</option>
+            <option :value="null">全部</option>
             <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ m.display_name }}</option>
           </select>
         </TermField>
-        <TermField v-if="authStore.isAdmin" label="user">
+        <TermField v-if="authStore.isAdmin" label="使用者">
           <select v-model="selectedUser" @change="refreshUsage" class="term-select">
-            <option :value="null">all</option>
+            <option :value="null">全部</option>
             <option v-for="u in filteredUsers" :key="u.id" :value="u.id">{{ u.username }}</option>
           </select>
         </TermField>
-        <TermField label="group by">
+        <TermField label="分組依據">
           <select v-model="groupBy" @change="refreshUsage" class="term-select">
-            <option value="total">total</option>
-            <option value="model">model</option>
-            <option v-if="authStore.isAdmin" value="department">department</option>
-            <option v-if="authStore.isAdmin" value="user">user</option>
+            <option value="total">總計</option>
+            <option value="model">模型</option>
+            <option v-if="authStore.isAdmin" value="department">部門</option>
+            <option v-if="authStore.isAdmin" value="user">使用者</option>
           </select>
         </TermField>
       </div>
     </TermBox>
 
     <!-- Summary + chart ----------------------------------------------- -->
-    <TermBox :title="`throughput · ${rangeLabel}`" pad="md" hint="lower-bound = first request in window">
+    <TermBox :title="`吞吐 · ${rangeLabel}`" pad="md" hint="下界＝視窗內第一筆請求">
       <div class="kpi-row">
-        <TermStat :label="`${rangeLabel} · requests`" :value="usageStore.summary?.total_requests || 0" tone="accent" />
-        <TermStat :label="`${rangeLabel} · tokens`" :value="usageStore.summary?.total_tokens || 0" />
-        <TermStat :label="`${rangeLabel} · active keys`" :value="usageStore.summary?.active_api_keys || 0" />
+        <TermStat :label="`${rangeLabel} · 請求數`" :value="usageStore.summary?.total_requests || 0" tone="accent" />
+        <TermStat :label="`${rangeLabel} · Token`" :value="usageStore.summary?.total_tokens || 0" />
+        <TermStat :label="`${rangeLabel} · 使用中金鑰`" :value="usageStore.summary?.active_api_keys || 0" />
       </div>
       <div class="chart-wrap">
         <UsageLineChart :chart-data="usageStore.chartData" :height="380" />
@@ -67,10 +67,10 @@
 
     <!-- Top tables ----------------------------------------------------- -->
     <div class="tops" :class="{ 'tops--admin': authStore.isAdmin }">
-      <TermBox title="top · models · 30d" pad="none" flush>
+      <TermBox title="熱門 · 模型 · 30d" pad="none" flush>
         <table class="term-table">
           <thead>
-            <tr><th>model</th><th style="width: 90px">type</th><th class="num" style="width: 110px">tokens</th><th class="num" style="width: 110px">requests</th></tr>
+            <tr><th>模型</th><th style="width: 90px">類型</th><th class="num" style="width: 110px">Token</th><th class="num" style="width: 110px">請求數</th></tr>
           </thead>
           <tbody>
             <tr v-for="m in usageStore.topModels" :key="m.model_id">
@@ -80,16 +80,16 @@
               <td class="num tnum">{{ formatNum(m.total_requests) }}</td>
             </tr>
             <tr v-if="usageStore.topModels.length === 0">
-              <td colspan="4"><TermEmpty message="no model usage yet" /></td>
+              <td colspan="4"><TermEmpty message="尚無模型用量" /></td>
             </tr>
           </tbody>
         </table>
       </TermBox>
 
-      <TermBox v-if="authStore.isAdmin" title="top · departments · 30d" pad="none" flush>
+      <TermBox v-if="authStore.isAdmin" title="熱門 · 部門 · 30d" pad="none" flush>
         <table class="term-table">
           <thead>
-            <tr><th>department</th><th class="num" style="width: 110px">tokens</th><th class="num" style="width: 110px">requests</th></tr>
+            <tr><th>部門</th><th class="num" style="width: 110px">Token</th><th class="num" style="width: 110px">請求數</th></tr>
           </thead>
           <tbody>
             <tr v-for="d in usageStore.topDepartments" :key="d.department_id ?? 'unassigned'">
@@ -98,16 +98,16 @@
               <td class="num tnum">{{ formatNum(d.total_requests) }}</td>
             </tr>
             <tr v-if="usageStore.topDepartments.length === 0">
-              <td colspan="3"><TermEmpty message="no department usage yet" /></td>
+              <td colspan="3"><TermEmpty message="尚無部門用量" /></td>
             </tr>
           </tbody>
         </table>
       </TermBox>
 
-      <TermBox v-if="authStore.isAdmin" title="top · users · 30d" pad="none" flush>
+      <TermBox v-if="authStore.isAdmin" title="熱門 · 使用者 · 30d" pad="none" flush>
         <table class="term-table">
           <thead>
-            <tr><th>user</th><th class="num" style="width: 110px">tokens</th><th class="num" style="width: 110px">requests</th></tr>
+            <tr><th>使用者</th><th class="num" style="width: 110px">Token</th><th class="num" style="width: 110px">請求數</th></tr>
           </thead>
           <tbody>
             <tr v-for="u in usageStore.topUsers" :key="u.user_id">
@@ -116,20 +116,20 @@
               <td class="num tnum">{{ formatNum(u.total_requests) }}</td>
             </tr>
             <tr v-if="usageStore.topUsers.length === 0">
-              <td colspan="3"><TermEmpty message="no user usage yet" /></td>
+              <td colspan="3"><TermEmpty message="尚無使用者用量" /></td>
             </tr>
           </tbody>
         </table>
       </TermBox>
 
       <!-- Sprint 8 X / Phase G — caller attribution rollups (admin) -->
-      <TermBox v-if="authStore.isAdmin" title="top · agents · 30d" pad="none" flush>
+      <TermBox v-if="authStore.isAdmin" title="熱門 · Agent · 30d" pad="none" flush>
         <table class="term-table">
           <thead>
             <tr>
-              <th>agent</th>
-              <th class="num" style="width: 110px">tokens</th>
-              <th class="num" style="width: 110px">requests</th>
+              <th>Agent</th>
+              <th class="num" style="width: 110px">Token</th>
+              <th class="num" style="width: 110px">請求數</th>
             </tr>
           </thead>
           <tbody>
@@ -142,19 +142,19 @@
               <td class="num tnum">{{ formatNum(a.total_requests) }}</td>
             </tr>
             <tr v-if="topAgents.length === 0">
-              <td colspan="3"><TermEmpty message="no caller-attributed agent usage yet (pre-Phase-G rows show as unattributed)" /></td>
+              <td colspan="3"><TermEmpty message="尚無歸屬呼叫端的 Agent 用量（Phase G 前的資料顯示為未歸屬）" /></td>
             </tr>
           </tbody>
         </table>
       </TermBox>
 
-      <TermBox v-if="authStore.isAdmin" title="by · base model · 30d" pad="none" flush>
+      <TermBox v-if="authStore.isAdmin" title="依 · 基礎模型 · 30d" pad="none" flush>
         <table class="term-table">
           <thead>
             <tr>
-              <th>base model</th>
-              <th class="num" style="width: 110px">tokens</th>
-              <th class="num" style="width: 110px">requests</th>
+              <th>基礎模型</th>
+              <th class="num" style="width: 110px">Token</th>
+              <th class="num" style="width: 110px">請求數</th>
             </tr>
           </thead>
           <tbody>
@@ -164,7 +164,7 @@
               <td class="num tnum">{{ formatNum(m.total_requests) }}</td>
             </tr>
             <tr v-if="byBaseModel.length === 0">
-              <td colspan="3"><TermEmpty message="no agent → base-model attribution yet" /></td>
+              <td colspan="3"><TermEmpty message="尚無 Agent → 基礎模型的歸屬資料" /></td>
             </tr>
           </tbody>
         </table>

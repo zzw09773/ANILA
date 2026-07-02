@@ -12,13 +12,13 @@
 
     <div class="topbar__right">
       <span class="topbar__hints">
-        <span class="topbar__hint"><TermKbd>?</TermKbd> shortcuts</span>
+        <span class="topbar__hint"><TermKbd>?</TermKbd> 快速鍵</span>
       </span>
       <button
         class="topbar__theme"
         type="button"
-        :aria-label="`switch to ${otherTheme} theme`"
-        :title="`switch to ${otherTheme} theme`"
+        :aria-label="`切換至${otherTheme === 'light' ? '淺色' : '深色'}主題`"
+        :title="`切換至${otherTheme === 'light' ? '淺色' : '深色'}主題`"
         @click="toggleTheme"
       >
         <span class="topbar__theme-icon">{{ theme === 'dark' ? '◐' : '◑' }}</span>
@@ -35,34 +35,34 @@
       </span>
 
       <button class="topbar__action" type="button" @click="showChangePwModal = true">
-        change-pw
+        變更密碼
       </button>
       <button class="topbar__action topbar__action--danger" type="button" @click="handleLogout">
-        logout
+        登出
       </button>
     </div>
   </header>
 
   <!-- Change-password modal — terminal style ----------------------------- -->
-  <TermModal :visible="showChangePwModal" title="change password" width="440px" @close="closeChangePw">
+  <TermModal :visible="showChangePwModal" title="變更密碼" width="440px" @close="closeChangePw">
     <div class="pw-grid">
-      <TermField label="current password">
+      <TermField label="目前密碼">
         <input v-model="pw.current" type="password" class="term-input" placeholder="••••••••" autocomplete="current-password" />
       </TermField>
 
-      <TermField label="new password" :hint="pw.new ? '' : 'at least 8 chars · upper · lower · symbol'">
+      <TermField label="新密碼" :hint="pw.new ? '' : '至少 8 字元 · 大寫 · 小寫 · 符號'">
         <input v-model="pw.new" type="password" class="term-input" placeholder="••••••••" autocomplete="new-password" />
         <ul v-if="pw.new" class="pw-rules">
-          <li :class="pwRule(pw.new.length >= 8)">{{ pwGlyph(pw.new.length >= 8) }} 8+ characters</li>
-          <li :class="pwRule(/[A-Z]/.test(pw.new))">{{ pwGlyph(/[A-Z]/.test(pw.new)) }} uppercase</li>
-          <li :class="pwRule(/[a-z]/.test(pw.new))">{{ pwGlyph(/[a-z]/.test(pw.new)) }} lowercase</li>
-          <li :class="pwRule(hasSpecial(pw.new))">{{ pwGlyph(hasSpecial(pw.new)) }} symbol</li>
+          <li :class="pwRule(pw.new.length >= 8)">{{ pwGlyph(pw.new.length >= 8) }} 8 字元以上</li>
+          <li :class="pwRule(/[A-Z]/.test(pw.new))">{{ pwGlyph(/[A-Z]/.test(pw.new)) }} 大寫字母</li>
+          <li :class="pwRule(/[a-z]/.test(pw.new))">{{ pwGlyph(/[a-z]/.test(pw.new)) }} 小寫字母</li>
+          <li :class="pwRule(hasSpecial(pw.new))">{{ pwGlyph(hasSpecial(pw.new)) }} 符號</li>
         </ul>
       </TermField>
 
       <TermField
-        label="confirm new password"
-        :error="pw.confirm && pw.new !== pw.confirm ? 'mismatch' : ''"
+        label="確認新密碼"
+        :error="pw.confirm && pw.new !== pw.confirm ? '不一致' : ''"
       >
         <input v-model="pw.confirm" type="password" class="term-input" placeholder="••••••••" autocomplete="new-password" />
       </TermField>
@@ -72,12 +72,12 @@
     </div>
 
     <template #footer>
-      <TermButton variant="ghost" @click="closeChangePw" label="cancel" />
+      <TermButton variant="ghost" @click="closeChangePw" label="取消" />
       <TermButton
         variant="primary"
         :disabled="!canSubmit"
         :loading="saving"
-        :label="saving ? 'saving' : 'update'"
+        :label="saving ? '儲存中' : '更新'"
         @click="handleChangePassword"
       />
     </template>
@@ -167,14 +167,14 @@ async function handleChangePassword() {
   saving.value = true
   try {
     await changePassword(pw.value.current, pw.value.new)
-    pwSuccess.value = 'password updated — re-auth required'
+    pwSuccess.value = '密碼已更新 — 需重新登入'
     setTimeout(() => {
       authStore.logout()
       router.push('/login')
     }, 1500)
   } catch (e) {
     const detail = e.response?.data?.detail
-    pwError.value = Array.isArray(detail) ? detail.map(d => d.msg).join('; ') : (detail || 'update failed')
+    pwError.value = Array.isArray(detail) ? detail.map(d => d.msg).join('; ') : (detail || '更新失敗')
   } finally {
     saving.value = false
   }

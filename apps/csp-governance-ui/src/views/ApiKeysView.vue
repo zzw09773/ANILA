@@ -3,25 +3,25 @@
     <header class="page-head">
       <div>
         <p class="page-head__eyebrow">control plane · credentials</p>
-        <h1 class="page-head__title">api-keys</h1>
+        <h1 class="page-head__title">API 金鑰</h1>
         <p class="page-head__sub">
-          openai-compatible bearer keys for the data plane <code class="page-head__code">/v1/*</code>
+          資料層 <code class="page-head__code">/v1/*</code> 使用的 OpenAI 相容 bearer 金鑰
         </p>
       </div>
-      <TermButton variant="primary" @click="showCreateModal = true" label="provision key" />
+      <TermButton variant="primary" @click="showCreateModal = true" label="建立金鑰" />
     </header>
 
-    <TermBox title="keys · all" :hint="`${keysStore.keys.length} record(s)`" pad="none" flush>
+    <TermBox title="金鑰 · 全部" :hint="`${keysStore.keys.length} 筆`" pad="none" flush>
       <table class="term-table">
         <thead>
           <tr>
-            <th style="width: 18%">name</th>
-            <th style="width: 22%">key</th>
-            <th>allowed models</th>
-            <th style="width: 14%">created</th>
-            <th style="width: 14%">last used</th>
-            <th style="width: 8%">status</th>
-            <th style="width: 14%">ops</th>
+            <th style="width: 18%">名稱</th>
+            <th style="width: 22%">金鑰</th>
+            <th>允許的模型</th>
+            <th style="width: 14%">建立時間</th>
+            <th style="width: 14%">最後使用</th>
+            <th style="width: 8%">狀態</th>
+            <th style="width: 14%">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -40,65 +40,65 @@
               <span v-else class="cell-meta">—</span>
             </td>
             <td class="cell-meta tnum">{{ formatDate(key.created_at) }}</td>
-            <td class="cell-meta tnum">{{ key.last_used_at ? formatDate(key.last_used_at) : 'never' }}</td>
+            <td class="cell-meta tnum">{{ key.last_used_at ? formatDate(key.last_used_at) : '從未' }}</td>
             <td>
               <TermBadge :variant="key.is_active ? 'ok' : 'danger'" dot>
-                {{ key.is_active ? 'active' : 'revoked' }}
+                {{ key.is_active ? '使用中' : '已撤銷' }}
               </TermBadge>
             </td>
             <td>
               <div class="row-actions">
-                <button v-if="key.is_active" class="term-action" @click="confirmRegenerate(key)">regen</button>
+                <button v-if="key.is_active" class="term-action" @click="confirmRegenerate(key)">重新產生</button>
                 <span v-if="key.is_active" class="row-actions__sep">·</span>
-                <button v-if="key.is_active" class="term-action term-action--danger" @click="confirmRevoke(key)">revoke</button>
+                <button v-if="key.is_active" class="term-action term-action--danger" @click="confirmRevoke(key)">撤銷</button>
               </div>
             </td>
           </tr>
           <tr v-if="keysStore.keys.length === 0">
-            <td colspan="7"><TermEmpty message="no api keys yet · click [provision key] to create one" /></td>
+            <td colspan="7"><TermEmpty message="尚無 API 金鑰 · 點選「建立金鑰」新增" /></td>
           </tr>
         </tbody>
       </table>
     </TermBox>
 
     <!-- Create modal --------------------------------------------------- -->
-    <TermModal :visible="showCreateModal" title="provision · new api-key" width="520px" @close="showCreateModal = false">
+    <TermModal :visible="showCreateModal" title="建立 · 新 API 金鑰" width="520px" @close="showCreateModal = false">
       <div class="form-grid">
-        <TermField label="name" hint="for your records · not exposed in /v1/*">
-          <input v-model="newKey.name" class="term-input" placeholder="e.g. dev-laptop · ci-runner-1" />
+        <TermField label="名稱" hint="供你識別 · 不會出現在 /v1/*">
+          <input v-model="newKey.name" class="term-input" placeholder="例：dev-laptop · ci-runner-1" />
         </TermField>
-        <TermField label="expires at" hint="leave blank for non-expiring">
+        <TermField label="到期時間" hint="留空表示永不過期">
           <input v-model="newKey.expires_at" type="datetime-local" class="term-input" />
         </TermField>
 
-        <TermField v-if="authStore.isAdmin" label="allowed models" hint="server enforces · key cannot exceed user allowlist">
+        <TermField v-if="authStore.isAdmin" label="允許的模型" hint="伺服器強制 · 金鑰不得超出使用者允許清單">
           <div class="check-list term-box term-box--inset" style="padding: 8px 12px; max-height: 200px; overflow:auto;">
             <label v-for="model in allModels" :key="model.id" class="check-list__row">
               <input type="checkbox" :value="model.id" v-model="newKey.model_ids" />
               <span>{{ model.display_name }}</span>
               <TermBadge :tone="model.model_type">{{ model.model_type }}</TermBadge>
             </label>
-            <p v-if="allModels.length === 0" class="cell-meta">no models registered yet</p>
+            <p v-if="allModels.length === 0" class="cell-meta">尚未註冊任何模型</p>
           </div>
         </TermField>
 
-        <TermField v-else label="your allowlist" hint="set by admin · cannot be widened from this dialog">
+        <TermField v-else label="你的允許清單" hint="由管理員設定 · 無法從此對話方塊放寬">
           <div class="term-box term-box--inset" style="padding: 8px 12px;">
             <div v-if="myAllowedModels.length" class="chip-row">
               <TermBadge v-for="m in myAllowedModels" :key="m.id" variant="info">{{ m.display_name }}</TermBadge>
             </div>
-            <p v-else class="cell-meta">no models assigned · contact an admin</p>
+            <p v-else class="cell-meta">尚未指派模型 · 請聯絡管理員</p>
           </div>
         </TermField>
       </div>
 
       <template #footer>
-        <TermButton variant="ghost" @click="showCreateModal = false" label="cancel" />
+        <TermButton variant="ghost" @click="showCreateModal = false" label="取消" />
         <TermButton
           variant="primary"
           :disabled="!canCreate"
           :loading="creating"
-          :label="creating ? 'provisioning' : 'provision'"
+          :label="creating ? '建立中' : '建立'"
           :title="!canCreate ? createDisabledReason : ''"
           @click="handleCreate"
         />
@@ -107,32 +107,32 @@
 
     <!-- Reveal modal --------------------------------------------------- -->
     <TermModal :visible="showKeyModal" :title="keyModalTitle" width="600px" :dismissible="hasCopied" @close="closeKeyModal">
-      <p class="reveal__warn">! copy this key now — it cannot be retrieved again.</p>
+      <p class="reveal__warn">! 請立即複製此金鑰 — 無法再次取得。</p>
       <pre class="reveal__key">{{ createdFullKey }}</pre>
       <p class="reveal__hint">
-        store in your secret manager · use as <code>Authorization: Bearer …</code>
+        請存入你的密碼管理器 · 以 <code>Authorization: Bearer …</code> 使用
       </p>
       <template #footer>
-        <TermButton variant="default" @click="copyKey" :label="copied ? 'copied ✓' : 'copy'" />
-        <TermButton variant="primary" :disabled="!hasCopied" :title="!hasCopied ? 'copy first' : ''" @click="closeKeyModal" label="done" />
+        <TermButton variant="default" @click="copyKey" :label="copied ? '已複製 ✓' : '複製'" />
+        <TermButton variant="primary" :disabled="!hasCopied" :title="!hasCopied ? '請先複製' : ''" @click="closeKeyModal" label="完成" />
       </template>
     </TermModal>
 
     <!-- Confirm dialogs ------------------------------------------------- -->
     <TermConfirm
       :visible="showRevokeConfirm"
-      title="revoke · api-key"
-      :message="`revoke '${revokeTarget?.name}'? in-flight requests using this key will be rejected immediately.`"
-      confirm-text="revoke"
+      title="撤銷 · API 金鑰"
+      :message="`撤銷「${revokeTarget?.name}」？使用此金鑰的進行中請求將立即被拒絕。`"
+      confirm-text="撤銷"
       :danger="true"
       @confirm="handleRevoke"
       @cancel="showRevokeConfirm = false"
     />
     <TermConfirm
       :visible="showRegenerateConfirm"
-      title="regenerate · api-key"
-      :message="`regenerate '${regenerateTarget?.name}'? the existing key invalidates immediately, a new sk-… is issued with the same name and allowlist.`"
-      confirm-text="regenerate"
+      title="重新產生 · API 金鑰"
+      :message="`重新產生「${regenerateTarget?.name}」？現有金鑰立即失效，並以相同名稱與允許清單核發新的 sk-…。`"
+      confirm-text="重新產生"
       @confirm="handleRegenerate"
       @cancel="showRegenerateConfirm = false"
     />
@@ -163,7 +163,7 @@ const revokeTarget = ref(null)
 const regenerateTarget = ref(null)
 const creating = ref(false)
 const createdFullKey = ref('')
-const keyModalTitle = ref('api-key · created')
+const keyModalTitle = ref('API 金鑰 · 已建立')
 const copied = ref(false)
 const hasCopied = ref(false)
 
@@ -181,9 +181,9 @@ const canCreate = computed(() => {
 })
 
 const createDisabledReason = computed(() => {
-  if (!(newKey.value.name || '').trim()) return 'name cannot be blank'
-  if (authStore.isAdmin && (newKey.value.model_ids || []).length === 0) return 'pick at least one model'
-  if (!authStore.isAdmin && myAllowedModels.value.length === 0) return 'no models in allowlist · contact admin'
+  if (!(newKey.value.name || '').trim()) return '名稱不得空白'
+  if (authStore.isAdmin && (newKey.value.model_ids || []).length === 0) return '請至少選擇一個模型'
+  if (!authStore.isAdmin && myAllowedModels.value.length === 0) return '允許清單中沒有模型 · 請聯絡管理員'
   return ''
 })
 
@@ -212,14 +212,14 @@ async function handleCreate() {
     }
     const data = await keysStore.create(payload)
     createdFullKey.value = data.full_key
-    keyModalTitle.value = 'api-key · created'
+    keyModalTitle.value = 'API 金鑰 · 已建立'
     showCreateModal.value = false
     showKeyModal.value = true
     copied.value = false
     hasCopied.value = false
     newKey.value = { name: '', model_ids: [], expires_at: '' }
   } catch (e) {
-    toast(e.response?.data?.detail || 'create failed', { tone: 'error' })
+    toast(e.response?.data?.detail || '建立失敗', { tone: 'error' })
   } finally {
     creating.value = false
   }
@@ -263,12 +263,12 @@ async function handleRegenerate() {
   try {
     const data = await keysStore.regenerate(regenerateTarget.value.id)
     createdFullKey.value = data.full_key
-    keyModalTitle.value = 'api-key · regenerated'
+    keyModalTitle.value = 'API 金鑰 · 已重新產生'
     showKeyModal.value = true
     copied.value = false
     hasCopied.value = false
   } catch (e) {
-    toast(e.response?.data?.detail || 'regen failed', { tone: 'error' })
+    toast(e.response?.data?.detail || '重新產生失敗', { tone: 'error' })
   } finally {
     regenerateTarget.value = null
   }

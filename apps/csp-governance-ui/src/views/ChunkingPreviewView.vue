@@ -2,8 +2,8 @@
   <div class="page">
     <header class="page-head">
       <div>
-        <router-link :to="{ name: 'KnowledgeCollections' }" class="back-link">← collections</router-link>
-        <h1 class="page-head__title">chunking · preview &amp; pick</h1>
+        <router-link :to="{ name: 'KnowledgeCollections' }" class="back-link">← 知識庫</router-link>
+        <h1 class="page-head__title">切塊 · 預覽並挑選</h1>
         <p class="page-head__sub">
           上傳一份代表性文件 → 並排比較 6 種 strategy 切出來的 chunks → 選最合適的 → 真正建立 collection。
           純 dry-run，不寫 DB、不打 embedding。
@@ -12,15 +12,15 @@
     </header>
 
     <!-- Step 1: upload ------------------------------------------------- -->
-    <TermBox v-if="!result" title="step 1 · upload one document" pad="md" hint="≤ 10 MB · txt / md / pdf / docx / odt / rtf / 圖片">
+    <TermBox v-if="!result" title="步驟 1 · 上傳一份文件" pad="md" hint="≤ 10 MB · txt / md / pdf / docx / odt / rtf / 圖片">
       <div class="upload" @drop.prevent="onDrop" @dragover.prevent>
         <input ref="fileInput" type="file"
                accept=".txt,.md,.markdown,.pdf,.docx,.doc,.odt,.rtf,.png,.jpg,.jpeg,.webp,.gif,.bmp,text/plain,text/markdown,application/pdf"
                @change="onFilePicked" style="display:none" />
         <TermButton variant="primary" :disabled="loading" :loading="loading"
-                    :label="loading ? `running ${runningSec}s…` : '+ choose file'"
+                    :label="loading ? `執行中 ${runningSec}s…` : '+ 選擇檔案'"
                     @click="$refs.fileInput.click()" />
-        <span class="cell-meta">drag &amp; drop also works</span>
+        <span class="cell-meta">也可拖放上傳</span>
       </div>
       <div v-if="error" class="feedback is-err" style="margin-top: var(--gap-2);">! {{ error }}</div>
       <p class="cell-meta" style="margin-top: var(--gap-2);">
@@ -29,7 +29,7 @@
       </p>
       <p class="cell-meta" style="margin-top: var(--gap-2);">
         <router-link :to="{ name: 'KnowledgeCollections', query: { quick: 1 } }" class="term-link">
-          → skip preview · quick create with strategy dropdown
+          → 略過預覽 · 用策略下拉快速建立
         </router-link>
         <span style="margin-left: 8px;">— 已知道要哪個 strategy 的 power user 路徑</span>
       </p>
@@ -37,18 +37,18 @@
 
     <!-- Step 2: results compare --------------------------------------- -->
     <template v-if="result">
-      <TermBox title="step 2 · compare" pad="md">
+      <TermBox title="步驟 2 · 比較" pad="md">
         <div class="meta-row">
           <div>
             <span class="cell-strong">{{ result.filename }}</span>
             <span class="cell-meta"> · {{ humanBytes(result.bytes) }}</span>
             <span v-if="result.parse_metadata.format" class="cell-meta"> · format <code>{{ result.parse_metadata.format }}</code></span>
-            <span v-if="result.parse_metadata.page_count" class="cell-meta"> · {{ result.parse_metadata.page_count }} pages</span>
+            <span v-if="result.parse_metadata.page_count" class="cell-meta"> · {{ result.parse_metadata.page_count }} 頁</span>
           </div>
-          <TermButton variant="ghost" label="↻ start over" @click="reset" />
+          <TermButton variant="ghost" label="↻ 重新開始" @click="reset" />
         </div>
         <p v-if="result.skipped_strategies.length" class="cell-meta" style="margin-top: var(--gap-2);">
-          skipped (preview 不支援，commit 時可選):
+          略過（preview 不支援，commit 時可選）：
           <code>{{ result.skipped_strategies.join(', ') }}</code>
         </p>
       </TermBox>
@@ -58,18 +58,18 @@
            numbers comparison, boundary bars for "where do strategies
            place breakpoints", first-chunk side-by-side for content
            differences at the start of the doc. -->
-      <TermBox title="visual diff · how strategies actually differ on this doc" pad="md" v-if="diffStrategies.length">
+      <TermBox title="視覺比較 · 各策略在這份文件上的實際差異" pad="md" v-if="diffStrategies.length">
         <!-- (a) Stats compare table — outliers highlighted ------------ -->
         <div class="diff-section">
-          <h4 class="diff-section__title">stats · side-by-side</h4>
+          <h4 class="diff-section__title">統計 · 並排</h4>
           <table class="cmp-table">
             <thead>
               <tr>
-                <th>strategy</th>
-                <th class="num">chunks</th>
-                <th class="num">avg tokens</th>
-                <th class="num">total tokens</th>
-                <th class="num">size variance</th>
+                <th>策略</th>
+                <th class="num">區塊數</th>
+                <th class="num">平均 tokens</th>
+                <th class="num">總 tokens</th>
+                <th class="num">大小變異</th>
               </tr>
             </thead>
             <tbody>
@@ -77,7 +77,7 @@
                   :class="{ 'is-outlier': d.isOutlier }">
                 <td>
                   <span class="cell-strong">{{ d.name }}</span>
-                  <span v-if="d.isOutlier" class="cell-meta"> · outlier</span>
+                  <span v-if="d.isOutlier" class="cell-meta"> · 離群</span>
                 </td>
                 <td class="num tnum">{{ d.stats.chunk_count }}</td>
                 <td class="num tnum">{{ d.stats.avg_tokens }}</td>
@@ -94,7 +94,7 @@
 
         <!-- (b) Boundary bars — where each strategy splits ------------- -->
         <div class="diff-section">
-          <h4 class="diff-section__title">boundary positions · token-proportional</h4>
+          <h4 class="diff-section__title">邊界位置 · 依 token 比例</h4>
           <p class="cell-meta">
             水平條長度代表 doc 的 100%；豎線代表該 strategy 的 chunk 邊界。線越多 = 切得越碎；
             落點不同 = 對「哪裡該斷」的判斷不同。
@@ -115,7 +115,7 @@
 
         <!-- (c) First-chunk preview side-by-side -------------------- -->
         <div class="diff-section">
-          <h4 class="diff-section__title">first chunk · content head-to-head</h4>
+          <h4 class="diff-section__title">第一個 chunk · 內容對照</h4>
           <p class="cell-meta">
             同一份 doc，每個 strategy 的「第一個 chunk」是什麼樣子。
             最容易看出對 heading / paragraph 邊界的處理差異。
@@ -126,7 +126,7 @@
                 <code>{{ d.name }}</code>
                 <span class="cell-meta tnum">· {{ d.firstChunkTokens }} tokens</span>
               </header>
-              <pre class="head2head__content">{{ d.firstChunkPreview || '(empty)' }}</pre>
+              <pre class="head2head__content">{{ d.firstChunkPreview || '（空）' }}</pre>
             </div>
           </div>
         </div>
@@ -154,9 +154,9 @@
           </template>
           <template v-else>
             <div class="stats">
-              <TermStat label="chunks" :value="entry.stats.chunk_count" tone="accent" />
-              <TermStat label="total tokens" :value="entry.stats.total_tokens" />
-              <TermStat label="avg tokens" :value="entry.stats.avg_tokens" />
+              <TermStat label="區塊數" :value="entry.stats.chunk_count" tone="accent" />
+              <TermStat label="總 tokens" :value="entry.stats.total_tokens" />
+              <TermStat label="平均 tokens" :value="entry.stats.avg_tokens" />
             </div>
             <!-- Sprint 9 X / parent-child RAG — surface the tree
                  split when the chunker emits parents (currently only
@@ -165,17 +165,17 @@
                  (embedded for retrieval) and parent rows (no
                  embedding, JOIN-fetched for LLM context). -->
             <p v-if="entry.parentLeafSplit" class="cell-meta overlap-line">
-              <strong>tree:</strong> {{ entry.parentLeafSplit.leaves }} leaves (embedded)
-              · {{ entry.parentLeafSplit.parents }} parents (JOIN-fetched as context)
+              <strong>tree：</strong>{{ entry.parentLeafSplit.leaves }} 個 leaf（已 embedding）
+              · {{ entry.parentLeafSplit.parents }} 個 parent（以 JOIN 取得作為脈絡）
             </p>
             <p class="cell-meta overlap-line">
-              <strong>overlap:</strong> {{ overlapDescription(entry) }}
+              <strong>overlap：</strong>{{ overlapDescription(entry) }}
             </p>
             <p v-if="entry.stats.truncated_to" class="cell-meta" style="margin-top: var(--gap-1);">
               ⚠ 顯示前 {{ entry.stats.truncated_to }} 個（實際更多）
             </p>
             <details class="chunks">
-              <summary>preview chunks ({{ entry.chunks.length }})</summary>
+              <summary>預覽 chunks（{{ entry.chunks.length }}）</summary>
               <ol class="chunk-list">
                 <li v-for="c in entry.chunks.slice(0, expandedCount[entry.name] || 5)" :key="c.chunk_key" class="chunk">
                   <header class="chunk__head">
@@ -188,13 +188,13 @@
               <button v-if="entry.chunks.length > (expandedCount[entry.name] || 5)"
                       class="term-action"
                       @click.prevent="expandedCount[entry.name] = (expandedCount[entry.name] || 5) + 10">
-                show 10 more ({{ entry.chunks.length - (expandedCount[entry.name] || 5) }} remaining)
+                再顯示 10 個（剩餘 {{ entry.chunks.length - (expandedCount[entry.name] || 5) }}）
               </button>
             </details>
           </template>
           <div class="actions">
             <TermButton variant="primary" :disabled="!entry.canPick"
-                        :label="entry.canPick ? '↓ use this strategy' : 'unavailable'"
+                        :label="entry.canPick ? '↓ 使用此策略' : '無法使用'"
                         @click="pickStrategy(entry)" />
           </div>
         </TermBox>
@@ -202,15 +202,15 @@
     </template>
 
     <!-- Step 3: confirm + create -------------------------------------- -->
-    <TermModal :visible="!!chosen" :title="chosen ? `step 3 · create with ${chosen.displayName}` : 'create'" width="520px" @close="cancelChoice">
+    <TermModal :visible="!!chosen" :title="chosen ? `步驟 3 · 用 ${chosen.displayName} 建立` : '建立'" width="520px" @close="cancelChoice">
       <div v-if="chosen" class="form-grid">
-        <TermField label="strategy" hint="locked from preview pick">
+        <TermField label="策略" hint="由預覽挑選鎖定">
           <input :value="chosen.name" readonly disabled class="term-input" />
         </TermField>
-        <TermField label="name">
+        <TermField label="名稱">
           <input v-model.trim="commitForm.name" class="term-input" maxlength="200" placeholder="legal-regs" />
         </TermField>
-        <TermField label="description" optional>
+        <TermField label="描述" optional>
           <textarea v-model.trim="commitForm.description" rows="2" class="term-textarea" maxlength="2000" />
         </TermField>
         <TermField :label="tokenLabel" :hint="tokenHint">
@@ -222,9 +222,9 @@
         <div v-if="commitError" class="feedback is-err">! {{ commitError }}</div>
       </div>
       <template #footer>
-        <TermButton variant="ghost" @click="cancelChoice" label="cancel" />
+        <TermButton variant="ghost" @click="cancelChoice" label="取消" />
         <TermButton variant="primary" :loading="committing" :disabled="committing || !commitForm.name"
-                    :label="committing ? 'creating' : 'create collection'" @click="commitCreate" />
+                    :label="committing ? '建立中' : '建立知識庫'" @click="commitCreate" />
       </template>
     </TermModal>
   </div>
@@ -287,8 +287,8 @@ const strategyEntries = computed(() => {
       error: r?.error || null,
       parentLeafSplit,
       runMessage: skipped
-        ? 'skipped · needs embeddings'
-        : r ? '' : 'not requested',
+        ? '略過 · 需要 embedding'
+        : r ? '' : '未請求',
       // canPick: any strategy that has a preview row OR is requires_embedder
       // (semantic) — for the latter we trust the worker to do it on commit.
       canPick: !!r || s.requires_embedder,
@@ -368,25 +368,25 @@ const diffStrategies = computed(() => {
 })
 
 const tokenLabel = computed(() => ({
-  fixed: 'size (tokens)',
-  'pdf-page': 'max page tokens',
-  'cjk-sentence': 'target tokens',
-  semantic: 'min segment tokens',
-})[chosen.value?.name] || 'max leaf tokens')
+  fixed: '大小（tokens）',
+  'pdf-page': '每頁最大 tokens',
+  'cjk-sentence': '目標 tokens',
+  semantic: '最小片段 tokens',
+})[chosen.value?.name] || '葉節點最大 tokens')
 
 const tokenHint = computed(() => ({
-  fixed: 'token budget per chunk · overlap auto = size/8',
-  'pdf-page': 'oversized pages split inside via fixed strategy',
-  'cjk-sentence': 'merge sentences until target reached',
-  semantic: 'segment cap · boundary by embedding distance',
-})[chosen.value?.name] || 'token cap per heading-tree leaf')
+  fixed: '每區塊 token 預算 · overlap 自動 = size/8',
+  'pdf-page': '超大頁面內部改用 fixed 策略切分',
+  'cjk-sentence': '合併句子直到達到目標',
+  semantic: '片段上限 · 以嵌入距離決定邊界',
+})[chosen.value?.name] || '每個標題樹葉節點的 token 上限')
 
 onMounted(async () => {
   try {
     const { data } = await listStrategies()
     strategies.value = data
   } catch (e) {
-    error.value = `failed to load strategy catalogue: ${e.response?.data?.detail || e.message}`
+    error.value = `載入策略目錄失敗：${e.response?.data?.detail || e.message}`
   }
 })
 
@@ -522,17 +522,17 @@ function overlapDescription(entry) {
     const o = dp.overlap ?? 128
     const s = dp.size ?? 1024
     const pct = s ? Math.round((o / s) * 100) : 0
-    return `${o} tokens / chunk · ~${pct}% of size · sliding-window`
+    return `${o} tokens / chunk · 約為 size 的 ${pct}% · 滑動視窗`
   }
   if (entry.name === 'hierarchical') {
     const o = dp.overlap_tokens ?? 64
-    return `${o} tokens · only when section exceeds max_leaf_tokens`
+    return `${o} tokens · 僅當 section 超過 max_leaf_tokens 時`
   }
   if (entry.name === 'semantic') {
-    return 'none · embedding-distance boundary'
+    return '無 · 依 embedding 距離決定邊界'
   }
   // markdown-aware / pdf-page / cjk-sentence: hardcoded internal fallback only.
-  return 'internal fallback only · not user-tunable'
+  return '僅內部 fallback · 使用者無法調整'
 }
 </script>
 

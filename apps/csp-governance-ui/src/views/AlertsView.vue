@@ -3,55 +3,55 @@
     <header class="page-head">
       <div>
         <p class="page-head__eyebrow">admin · ops</p>
-        <h1 class="page-head__title">alerts</h1>
-        <p class="page-head__sub">system-detected anomalies · ack to silence · resolve to close</p>
+        <h1 class="page-head__title">警報</h1>
+        <p class="page-head__sub">系統偵測的異常 · 確認以靜音 · 解決以關閉</p>
       </div>
       <div class="page-head__chips">
-        <TermBadge variant="danger" dot>open · {{ summary.open_count }}</TermBadge>
-        <TermBadge variant="warn" dot>ack · {{ summary.acknowledged_count }}</TermBadge>
-        <TermBadge dot>resolved · {{ summary.resolved_count }}</TermBadge>
+        <TermBadge variant="danger" dot>待處理 · {{ summary.open_count }}</TermBadge>
+        <TermBadge variant="warn" dot>已確認 · {{ summary.acknowledged_count }}</TermBadge>
+        <TermBadge dot>已解決 · {{ summary.resolved_count }}</TermBadge>
       </div>
     </header>
 
     <div v-if="pageError" class="feedback is-err">! {{ pageError }}</div>
 
-    <TermBox title="filter" pad="sm">
+    <TermBox title="篩選" pad="sm">
       <div class="filters">
-        <TermField label="status">
+        <TermField label="狀態">
           <select v-model="filters.status" @change="fetchData" class="term-select">
-            <option value="">all</option>
-            <option value="open">open</option>
-            <option value="acknowledged">acknowledged</option>
-            <option value="resolved">resolved</option>
+            <option value="">全部</option>
+            <option value="open">待處理</option>
+            <option value="acknowledged">已確認</option>
+            <option value="resolved">已解決</option>
           </select>
         </TermField>
-        <TermField label="severity">
+        <TermField label="嚴重度">
           <select v-model="filters.severity" @change="fetchData" class="term-select">
-            <option value="">all</option>
-            <option value="low">low</option>
-            <option value="medium">medium</option>
-            <option value="high">high</option>
-            <option value="critical">critical</option>
+            <option value="">全部</option>
+            <option value="low">低</option>
+            <option value="medium">中</option>
+            <option value="high">高</option>
+            <option value="critical">嚴重</option>
           </select>
         </TermField>
-        <TermField label="category">
-          <input v-model="filters.category" @keyup.enter="fetchData" class="term-input" placeholder="e.g. health" />
+        <TermField label="分類">
+          <input v-model="filters.category" @keyup.enter="fetchData" class="term-input" placeholder="例：health" />
         </TermField>
         <div class="filters__cta">
-          <TermButton @click="fetchData" label="query" />
+          <TermButton @click="fetchData" label="查詢" />
         </div>
       </div>
     </TermBox>
 
-    <TermBox :title="`alerts · ${alerts.length}`" pad="none" flush>
+    <TermBox :title="`警報 · ${alerts.length}`" pad="none" flush>
       <table class="term-table">
         <thead>
           <tr>
-            <th>alert</th>
-            <th style="width: 22%">category</th>
-            <th style="width: 100px">status</th>
-            <th style="width: 160px">last seen</th>
-            <th style="width: 22%">ops</th>
+            <th>警報</th>
+            <th style="width: 22%">分類</th>
+            <th style="width: 100px">狀態</th>
+            <th style="width: 160px">最後出現</th>
+            <th style="width: 22%">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -72,14 +72,14 @@
             <td class="cell-meta tnum">{{ formatDate(alert.last_seen_at) }}</td>
             <td>
               <div class="row-actions">
-                <button v-if="alert.status === 'open'" class="term-action" @click="handleAck(alert)">acknowledge</button>
+                <button v-if="alert.status === 'open'" class="term-action" @click="handleAck(alert)">確認</button>
                 <span v-if="alert.status === 'open' && alert.status !== 'resolved'" class="row-actions__sep">·</span>
-                <button v-if="alert.status !== 'resolved'" class="term-action" @click="handleResolve(alert)">resolve</button>
+                <button v-if="alert.status !== 'resolved'" class="term-action" @click="handleResolve(alert)">解決</button>
               </div>
             </td>
           </tr>
           <tr v-if="alerts.length === 0">
-            <td colspan="5"><TermEmpty message="no alerts match · system is quiet" /></td>
+            <td colspan="5"><TermEmpty message="無符合的警報 · 系統平靜" /></td>
           </tr>
         </tbody>
       </table>
@@ -113,18 +113,18 @@ async function fetchData() {
     alerts.value = a
     summary.value = s
   } catch (e) {
-    pageError.value = e.response?.data?.detail || 'failed to load alerts'
+    pageError.value = e.response?.data?.detail || '載入警報失敗'
   }
 }
 onMounted(fetchData)
 
 async function handleAck(alert) {
   try { await acknowledgeAlert(alert.id); await fetchData() }
-  catch (e) { toast(e.response?.data?.detail || 'ack failed', { tone: 'error' }) }
+  catch (e) { toast(e.response?.data?.detail || '確認失敗', { tone: 'error' }) }
 }
 async function handleResolve(alert) {
   try { await resolveAlert(alert.id); await fetchData() }
-  catch (e) { toast(e.response?.data?.detail || 'resolve failed', { tone: 'error' }) }
+  catch (e) { toast(e.response?.data?.detail || '解決失敗', { tone: 'error' }) }
 }
 
 function severityStatus(s) {

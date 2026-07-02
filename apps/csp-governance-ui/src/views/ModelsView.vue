@@ -3,34 +3,34 @@
     <header class="page-head">
       <div>
         <p class="page-head__eyebrow">control plane · registry</p>
-        <h1 class="page-head__title">models</h1>
+        <h1 class="page-head__title">模型</h1>
         <p class="page-head__sub">
-          llm · vlm · embedding · agent — registered endpoints proxied via /v1/*
+          llm · vlm · embedding · agent — 經 /v1/* 代理的已註冊端點
         </p>
       </div>
-      <TermButton v-if="authStore.isAdmin" variant="primary" @click="openCreateModal" label="register model" />
+      <TermButton v-if="authStore.isAdmin" variant="primary" @click="openCreateModal" label="註冊模型" />
     </header>
 
     <div class="kpi-row">
-      <TermStat label="models · total" :value="modelsStore.models.length" />
-      <TermStat label="healthy" :value="healthyCount" tone="accent" />
-      <TermStat label="degraded" :value="degradedCount" :tone="degradedCount ? 'warn' : 'default'" />
-      <TermStat label="unhealthy" :value="unhealthyCount" :tone="unhealthyCount ? 'danger' : 'default'" />
+      <TermStat label="模型 · 總數" :value="modelsStore.models.length" />
+      <TermStat label="健康" :value="healthyCount" tone="accent" />
+      <TermStat label="降級" :value="degradedCount" :tone="degradedCount ? 'warn' : 'default'" />
+      <TermStat label="異常" :value="unhealthyCount" :tone="unhealthyCount ? 'danger' : 'default'" />
     </div>
 
-    <TermBox :title="`registry · ${modelsStore.models.length}`" hint="health-checked every 60s" pad="none" flush>
+    <TermBox :title="`已註冊 · ${modelsStore.models.length}`" hint="每 60 秒健康檢查" pad="none" flush>
       <table class="term-table">
         <thead>
           <tr>
-            <th style="width: 96px">health</th>
-            <th>name</th>
-            <th style="width: 100px">type</th>
+            <th style="width: 96px">健康</th>
+            <th>名稱</th>
+            <th style="width: 100px">類型</th>
             <th style="width: 92px">分類上限</th>
-            <th>endpoint</th>
-            <th style="width: 80px">api</th>
-            <th style="width: 80px">active</th>
-            <th style="width: 110px">router</th>
-            <th v-if="authStore.isAdmin" style="width: 26%">ops</th>
+            <th>端點</th>
+            <th style="width: 80px">API</th>
+            <th style="width: 80px">啟用</th>
+            <th style="width: 110px">Router</th>
+            <th v-if="authStore.isAdmin" style="width: 26%">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -79,20 +79,20 @@
             <td class="cell-meta">{{ model.api_version }}</td>
             <td>
               <TermBadge :variant="model.is_active ? 'ok' : 'danger'" dot>
-                {{ model.is_active ? 'on' : 'off' }}
+                {{ model.is_active ? '開' : '關' }}
               </TermBadge>
             </td>
             <td>
               <span v-if="model.is_router_primary" class="primary-pill" title="ANILA Router uses this as primary LLM">
-                ★ primary
+                ★ 主要
               </span>
               <span v-else class="cell-meta">—</span>
             </td>
             <td v-if="authStore.isAdmin">
               <div class="row-actions">
-                <button class="term-action" @click="openEditModal(model)">edit</button>
+                <button class="term-action" @click="openEditModal(model)">編輯</button>
                 <span class="row-actions__sep">·</span>
-                <button class="term-action" @click="handleHealthCheck(model.id)">probe</button>
+                <button class="term-action" @click="handleHealthCheck(model.id)">探測</button>
                 <span class="row-actions__sep">·</span>
                 <button
                   class="term-action"
@@ -107,7 +107,7 @@
                   :disabled="!model.is_active || settingPrimaryId === model.id"
                   @click="handleSetPrimary(model.id)"
                 >
-                  {{ settingPrimaryId === model.id ? 'pinning…' : 'set-primary' }}
+                  {{ settingPrimaryId === model.id ? '設定中…' : '設為主要' }}
                 </button>
                 <span v-else-if="model.is_router_primary" class="row-actions__sep">·</span>
                 <button
@@ -116,19 +116,19 @@
                   :disabled="settingPrimaryId === model.id"
                   @click="handleUnsetPrimary(model.id)"
                 >
-                  unpin
+                  取消主要
                 </button>
                 <span class="row-actions__sep">·</span>
                 <button
                   v-if="model.is_active"
                   class="term-action"
                   @click="handleDeactivate(model.id)"
-                >deactivate</button>
+                >停用</button>
                 <button
                   v-else
                   class="term-action"
                   @click="handleActivate(model.id)"
-                >activate</button>
+                >啟用</button>
                 <span v-if="authStore.isOwner" class="row-actions__sep">·</span>
                 <button
                   v-if="authStore.isOwner"
@@ -137,28 +137,28 @@
                   :title="'hard-delete this row · irreversible · owner-only'"
                   @click="handlePurge(model)"
                 >
-                  {{ purgingId === model.id ? 'purging…' : 'purge' }}
+                  {{ purgingId === model.id ? '清除中…' : '清除' }}
                 </button>
               </div>
             </td>
           </tr>
           <tr v-if="modelsStore.models.length === 0">
-            <td :colspan="authStore.isAdmin ? 9 : 8"><TermEmpty message="no models registered · register one to enable /v1/* proxy" /></td>
+            <td :colspan="authStore.isAdmin ? 9 : 8"><TermEmpty message="尚未註冊模型 · 註冊後即可啟用 /v1/* 代理" /></td>
           </tr>
         </tbody>
       </table>
     </TermBox>
 
-    <TermModal :visible="showModal" :title="editingId ? 'edit · model' : 'register · model'" width="600px" @close="showModal = false">
+    <TermModal :visible="showModal" :title="editingId ? '編輯 · 模型' : '註冊 · 模型'" width="600px" @close="showModal = false">
       <div class="form-grid">
-        <TermField label="model id" hint="immutable · used in api requests · e.g. llama3-70b">
+        <TermField label="模型 ID" hint="不可變更 · 用於 API 請求 · 例：llama3-70b">
           <input v-model="form.name" :disabled="!!editingId" class="term-input" placeholder="llama3-70b" />
         </TermField>
-        <TermField label="display name">
+        <TermField label="顯示名稱">
           <input v-model="form.display_name" class="term-input" placeholder="Llama 3 70B Instruct" />
         </TermField>
         <div class="form-row-2">
-          <TermField label="type">
+          <TermField label="類型">
             <select v-model="form.model_type" class="term-select">
               <option value="llm">llm</option>
               <option value="vlm">vlm</option>
@@ -166,14 +166,14 @@
               <option value="agent">agent</option>
             </select>
           </TermField>
-          <TermField label="api version">
+          <TermField label="API 版本">
             <select v-model="form.api_version" class="term-select">
               <option value="v1">v1</option>
               <option value="v2">v2</option>
             </select>
           </TermField>
         </div>
-        <TermField label="endpoint url" :hint="endpointFieldLocked ? '🔒 owner-only — admins keep the registered URL untouched on update' : ''">
+        <TermField label="端點 URL" :hint="endpointFieldLocked ? '🔒 owner-only — 管理員更新時不會動到已註冊的 URL' : ''">
           <input
             v-model="form.endpoint_url"
             class="term-input"
@@ -182,12 +182,12 @@
           />
         </TermField>
         <TermField
-          label="internal"
-          hint="lives on anila-models-net (cross-stack docker DNS) — no host port exposure, owner-only URL"
+          label="內部"
+          hint="位於 anila-models-net（跨 stack docker DNS）— 不對外開 host port，URL 僅 owner 可見"
         >
           <label class="internal-checkbox">
             <input v-model="form.is_internal" type="checkbox" :disabled="endpointFieldLocked" />
-            <span>{{ form.is_internal ? 'internal · only reachable from platform stack' : 'external · on-prem LAN or public endpoint' }}</span>
+            <span>{{ form.is_internal ? '內部 · 僅平台 stack 內可連' : '外部 · 內網 LAN 或公開端點' }}</span>
           </label>
         </TermField>
         <div class="form-row-2">
@@ -216,15 +216,15 @@
             placeholder="Bearer 金鑰(留空＝沿用現值/全域)"
           />
         </TermField>
-        <TermField label="description" optional>
+        <TermField label="描述" optional>
           <textarea v-model="form.description" rows="2" class="term-textarea" />
         </TermField>
         <TermField label="context window" optional hint="tokens">
           <input v-model.number="form.context_window" type="number" class="term-input" placeholder="128000" />
         </TermField>
-        <TermField v-if="form.model_type === 'agent'" label="base model" hint="for usage attribution">
+        <TermField v-if="form.model_type === 'agent'" label="基礎模型" hint="用於用量歸屬">
           <select v-model="form.base_model_id" class="term-select">
-            <option :value="null">— standalone —</option>
+            <option :value="null">— 獨立 —</option>
             <option v-for="m in baseModelOptions" :key="m.id" :value="m.id">
               {{ m.display_name }} ({{ m.model_type }})
             </option>
@@ -232,11 +232,11 @@
         </TermField>
       </div>
       <template #footer>
-        <TermButton variant="ghost" @click="showModal = false" label="cancel" />
+        <TermButton variant="ghost" @click="showModal = false" label="取消" />
         <TermButton
           variant="primary"
           :disabled="!form.name || !form.display_name || !form.endpoint_url"
-          :label="editingId ? 'update' : 'register'"
+          :label="editingId ? '更新' : '註冊'"
           @click="handleSubmit"
         />
       </template>
@@ -261,10 +261,10 @@
         </p>
       </div>
       <template #footer>
-        <TermButton variant="ghost" @click="cancelTrustPrompt" label="cancel" />
+        <TermButton variant="ghost" @click="cancelTrustPrompt" label="取消" />
         <TermButton
           variant="primary"
-          :label="`add ${untrustedHostPrompt?.host || ''} + retry`"
+          :label="`加入 ${untrustedHostPrompt?.host || ''} 並重試`"
           @click="confirmTrustAndRetry"
         />
       </template>
@@ -448,7 +448,7 @@ async function handleSubmit() {
     }
     const msg = typeof detail === 'string'
       ? detail
-      : (detail?.message || 'operation failed')
+      : (detail?.message || '操作失敗')
     toast(msg, { tone: 'error' })
   }
 }
@@ -480,7 +480,7 @@ async function confirmTrustAndRetry() {
     showModal.value = false
   } catch (e) {
     const detail = e.response?.data?.detail
-    const msg = typeof detail === 'string' ? detail : (detail?.message || 'retry failed')
+    const msg = typeof detail === 'string' ? detail : (detail?.message || '重試失敗')
     toast(msg, { tone: 'error' })
   }
 }
@@ -491,7 +491,7 @@ function cancelTrustPrompt() {
 
 async function handleHealthCheck(id) {
   const result = await modelsStore.checkHealth(id)
-  toast(`health probe → ${result.status}\n${result.detail}`, { tone: result.status === 'healthy' ? 'success' : 'error' })
+  toast(`健康探測 → ${result.status}\n${result.detail}`, { tone: result.status === 'healthy' ? 'success' : 'error' })
 }
 
 // Slice 6b — 主動探測連線。POST /test → 五態 + 延遲。防禦性讀取欄位
@@ -522,31 +522,31 @@ async function handleTest(model) {
 async function handleSetPrimary(id) {
   settingPrimaryId.value = id
   try { await modelsStore.setPrimary(id) }
-  catch (e) { toast(e.response?.data?.detail || 'pin failed', { tone: 'error' }) }
+  catch (e) { toast(e.response?.data?.detail || '設定主要失敗', { tone: 'error' }) }
   finally { settingPrimaryId.value = null }
 }
 async function handleUnsetPrimary(id) {
-  if (!(await confirm({ message: 'unpin primary? ANILA Router will have no primary LLM until you pin a new one.', confirmText: 'unpin', danger: true }))) return
+  if (!(await confirm({ message: '取消主要？在你指定新的主要模型前，ANILA Router 將沒有主要 LLM。', confirmText: '取消主要', danger: true }))) return
   settingPrimaryId.value = id
   try { await modelsStore.unsetPrimary(id) }
-  catch (e) { toast(e.response?.data?.detail || 'unpin failed', { tone: 'error' }) }
+  catch (e) { toast(e.response?.data?.detail || '取消主要失敗', { tone: 'error' }) }
   finally { settingPrimaryId.value = null }
 }
 async function handleDeactivate(id) {
-  if (await confirm({ message: 'deactivate this model? you can re-activate it later via the activate button on this row.', confirmText: 'deactivate', danger: true })) {
+  if (await confirm({ message: '停用此模型？之後可透過該列的「啟用」按鈕重新啟用。', confirmText: '停用', danger: true })) {
     await modelsStore.remove(id)
   }
 }
 async function handleActivate(id) {
   try { await modelsStore.activate(id) }
-  catch (e) { toast(e.response?.data?.detail || 'activate failed', { tone: 'error' }) }
+  catch (e) { toast(e.response?.data?.detail || '啟用失敗', { tone: 'error' }) }
 }
 async function handlePurge(model) {
   if (!model || purgingId.value === model.id) return
-  if (!(await confirm({ message: `hard-delete '${model.display_name}'? non-reversible. rejected if usage records or other models reference it.`, confirmText: 'hard-delete', danger: true }))) return
+  if (!(await confirm({ message: `永久刪除「${model.display_name}」？不可復原。若有用量紀錄或其他模型引用則會被拒絕。`, confirmText: '永久刪除', danger: true }))) return
   purgingId.value = model.id
   try { await modelsStore.purge(model.id) }
-  catch (e) { toast(e.response?.data?.detail || 'purge failed', { tone: 'error' }) }
+  catch (e) { toast(e.response?.data?.detail || '清除失敗', { tone: 'error' }) }
   finally { purgingId.value = null }
 }
 </script>

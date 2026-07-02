@@ -5,5 +5,5 @@
 </template>
 
 <script setup>
-defineProps({ message: { type: String, default: 'no records' } })
+defineProps({ message: { type: String, default: '尚無紀錄' } })
 </script>

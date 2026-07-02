@@ -3,22 +3,22 @@
     <header class="page-head">
       <div>
         <p class="page-head__eyebrow">admin · org</p>
-        <h1 class="page-head__title">departments</h1>
-        <p class="page-head__sub">grouping for usage attribution and access scoping</p>
+        <h1 class="page-head__title">部門</h1>
+        <p class="page-head__sub">用於用量歸屬與存取範圍的群組</p>
       </div>
-      <TermButton variant="primary" @click="openCreateModal" label="add department" />
+      <TermButton variant="primary" @click="openCreateModal" label="新增部門" />
     </header>
 
-    <TermBox :title="`departments · ${departments.length}`" pad="none" flush>
+    <TermBox :title="`部門 · ${departments.length}`" pad="none" flush>
       <table class="term-table">
         <thead>
           <tr>
-            <th>name</th>
-            <th>description</th>
-            <th style="width: 14%">users</th>
-            <th style="width: 100px">status</th>
-            <th style="width: 14%">created</th>
-            <th style="width: 18%">ops</th>
+            <th>名稱</th>
+            <th>描述</th>
+            <th style="width: 14%">使用者</th>
+            <th style="width: 100px">狀態</th>
+            <th style="width: 14%">建立時間</th>
+            <th style="width: 18%">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -29,36 +29,36 @@
               <span class="cell-strong">{{ d.active_user_count }}</span>
               <span class="cell-meta"> / {{ d.user_count }}</span>
             </td>
-            <td><TermBadge :variant="d.is_active ? 'ok' : 'danger'" dot>{{ d.is_active ? 'active' : 'inactive' }}</TermBadge></td>
+            <td><TermBadge :variant="d.is_active ? 'ok' : 'danger'" dot>{{ d.is_active ? '使用中' : '已停用' }}</TermBadge></td>
             <td class="cell-meta tnum">{{ formatDate(d.created_at) }}</td>
             <td>
               <div class="row-actions">
-                <button class="term-action" @click="openEditModal(d)">edit</button>
+                <button class="term-action" @click="openEditModal(d)">編輯</button>
                 <span class="row-actions__sep">·</span>
-                <button v-if="d.is_active" class="term-action term-action--danger" @click="handleDeactivate(d)">deactivate</button>
-                <button v-else class="term-action" @click="handleReactivate(d)">reactivate</button>
+                <button v-if="d.is_active" class="term-action term-action--danger" @click="handleDeactivate(d)">停用</button>
+                <button v-else class="term-action" @click="handleReactivate(d)">重新啟用</button>
               </div>
             </td>
           </tr>
           <tr v-if="departments.length === 0">
-            <td colspan="6"><TermEmpty message="no departments yet" /></td>
+            <td colspan="6"><TermEmpty message="尚無部門" /></td>
           </tr>
         </tbody>
       </table>
     </TermBox>
 
-    <TermModal :visible="showModal" :title="editingId ? 'edit · department' : 'add · department'" width="440px" @close="showModal = false">
+    <TermModal :visible="showModal" :title="editingId ? '編輯 · 部門' : '新增 · 部門'" width="440px" @close="showModal = false">
       <div class="form-grid">
-        <TermField label="name">
-          <input v-model="form.name" class="term-input" placeholder="e.g. r&d" />
+        <TermField label="名稱">
+          <input v-model="form.name" class="term-input" placeholder="例：研發" />
         </TermField>
-        <TermField label="description" optional>
+        <TermField label="描述" optional>
           <textarea v-model="form.description" rows="3" class="term-textarea" />
         </TermField>
       </div>
       <template #footer>
-        <TermButton variant="ghost" @click="showModal = false" label="cancel" />
-        <TermButton variant="primary" :disabled="!form.name.trim() || saving" :loading="saving" :label="saving ? 'saving' : (editingId ? 'update' : 'create')" @click="handleSubmit" />
+        <TermButton variant="ghost" @click="showModal = false" label="取消" />
+        <TermButton variant="primary" :disabled="!form.name.trim() || saving" :loading="saving" :label="saving ? '儲存中' : (editingId ? '更新' : '建立')" @click="handleSubmit" />
       </template>
     </TermModal>
   </div>
@@ -98,11 +98,11 @@ async function handleSubmit() {
     showModal.value = false
     await fetchDepartments()
   } catch (e) {
-    toast(e.response?.data?.detail || 'operation failed', { tone: 'error' })
+    toast(e.response?.data?.detail || '操作失敗', { tone: 'error' })
   } finally { saving.value = false }
 }
 async function handleDeactivate(d) {
-  if (!(await confirm({ message: `deactivate '${d.name}'? bound users will be detached.`, danger: true }))) return
+  if (!(await confirm({ message: `停用「${d.name}」？已綁定的使用者會被解除關聯。`, danger: true }))) return
   await deactivateDepartment(d.id)
   await fetchDepartments()
 }

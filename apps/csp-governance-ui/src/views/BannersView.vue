@@ -14,7 +14,7 @@
 
     <TermBox title="新增公告" pad="md">
       <div class="grid2">
-        <TermField label="level">
+        <TermField label="等級">
           <select v-model="form.level" class="term-input">
             <option value="info">info（一般）</option>
             <option value="warning">warning（注意）</option>
@@ -42,14 +42,14 @@
         <li v-for="b in banners" :key="b.id" class="banner-row" :class="`is-${b.level}`">
           <div class="banner-row__main">
             <div class="banner-row__meta">
-              <TermBadge :variant="b.is_active ? 'accent' : ''">{{ b.is_active ? 'active' : 'off' }}</TermBadge>
+              <TermBadge :variant="b.is_active ? 'accent' : ''">{{ b.is_active ? '使用中' : '關閉' }}</TermBadge>
               <span class="banner-row__level">{{ b.level }}</span>
             </div>
             <div class="banner-row__content">{{ b.content }}</div>
           </div>
           <div class="banner-row__actions">
             <TermButton :disabled="busy" :label="b.is_active ? '停用' : '啟用'" @click="toggleActive(b)" />
-            <TermButton :disabled="busy" label="delete" @click="handleDelete(b)" />
+            <TermButton :disabled="busy" label="刪除" @click="handleDelete(b)" />
           </div>
         </li>
       </ul>

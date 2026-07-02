@@ -3,29 +3,29 @@
     <header class="page-head">
       <div>
         <p class="page-head__eyebrow">admin · access</p>
-        <h1 class="page-head__title">service-access</h1>
-        <p class="page-head__sub">per-user / per-department grants for platform_links · multi-service-integration §7.5.3</p>
+        <h1 class="page-head__title">服務存取</h1>
+        <p class="page-head__sub">platform_links 的個別使用者 / 部門授權 · multi-service-integration §7.5.3</p>
       </div>
     </header>
 
     <div v-if="pageError" class="feedback is-err">! {{ pageError }}</div>
-    <div v-if="loading" class="loading">loading…</div>
+    <div v-if="loading" class="loading">載入中…</div>
 
     <div v-else class="link-list">
       <article v-for="link in sortedLinks" :key="link.id" class="link-card">
         <button type="button" class="link-card__head" :class="{ 'is-open': expandedId === link.id }" @click="toggleExpand(link.id)">
           <div class="link-card__title">
             <span class="link-card__name">{{ link.name }}</span>
-            <TermBadge v-if="!link.is_active" variant="">inactive</TermBadge>
-            <TermBadge v-if="link.is_public" variant="ok">public</TermBadge>
+            <TermBadge v-if="!link.is_active" variant="">已停用</TermBadge>
+            <TermBadge v-if="link.is_public" variant="ok">公開</TermBadge>
             <span class="role-gate" :class="(link.required_roles || []).length ? 'is-set' : 'is-open'">
               <span class="role-gate__k">role-gate</span>
-              <span class="role-gate__v">{{ (link.required_roles || []).length === 0 ? 'open' : (link.required_roles || []).join(' · ') }}</span>
+              <span class="role-gate__v">{{ (link.required_roles || []).length === 0 ? '開放' : (link.required_roles || []).join(' · ') }}</span>
             </span>
           </div>
           <div class="link-card__url">{{ link.url }}</div>
           <div class="link-card__count">
-            <span class="cell-meta">active grants</span>
+            <span class="cell-meta">有效授權</span>
             <span class="link-card__count-num tnum">{{ activeGrantsCount(link.id) }}</span>
           </div>
           <span class="link-card__chev">{{ expandedId === link.id ? '−' : '+' }}</span>
@@ -33,12 +33,12 @@
 
         <div v-if="expandedId === link.id" class="link-card__body">
           <div class="link-card__bar">
-            <TermButton size="xs" variant="primary" @click="openGrantModal(link, 'user')" label="+ grant user" />
-            <TermButton size="xs" @click="openGrantModal(link, 'department')" label="+ grant dept" />
+            <TermButton size="xs" variant="primary" @click="openGrantModal(link, 'user')" label="+ 授權使用者" />
+            <TermButton size="xs" @click="openGrantModal(link, 'department')" label="+ 授權部門" />
             <span class="bar-meta">
-              {{ activeGrantsForLink(link.id).length }} active
+              {{ activeGrantsForLink(link.id).length }} 筆有效
               <span v-if="!link.is_public && (link.required_roles || []).length === 0" class="bar-meta--warn">
-                · private + open gate · pure whitelist mode
+                · 私有 + 開放關卡 · 純白名單模式
               </span>
             </span>
           </div>
@@ -46,37 +46,37 @@
           <table v-if="activeGrantsForLink(link.id).length" class="term-table">
             <thead>
               <tr>
-                <th style="width: 80px">scope</th>
-                <th>target</th>
-                <th style="width: 22%">granted</th>
-                <th style="width: 90px">ops</th>
+                <th style="width: 80px">範圍</th>
+                <th>對象</th>
+                <th style="width: 22%">授權時間</th>
+                <th style="width: 90px">操作</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="g in activeGrantsForLink(link.id)" :key="g.id">
-                <td><TermBadge :variant="g.user_id != null ? 'info' : 'warn'">{{ g.user_id != null ? 'user' : 'dept' }}</TermBadge></td>
+                <td><TermBadge :variant="g.user_id != null ? 'info' : 'warn'">{{ g.user_id != null ? '使用者' : '部門' }}</TermBadge></td>
                 <td class="cell-strong">{{ targetLabel(g) }}</td>
-                <td class="cell-meta tnum">{{ formatDate(g.granted_at) }} · by {{ granterLabel(g) }}</td>
-                <td><button class="term-action term-action--danger" @click="handleRevoke(g)">revoke</button></td>
+                <td class="cell-meta tnum">{{ formatDate(g.granted_at) }} · 由 {{ granterLabel(g) }}</td>
+                <td><button class="term-action term-action--danger" @click="handleRevoke(g)">撤銷</button></td>
               </tr>
             </tbody>
           </table>
-          <TermEmpty v-else :message="link.is_public ? 'no grants · public — anyone passing the role gate sees this link' : 'no grants yet'" />
+          <TermEmpty v-else :message="link.is_public ? '無授權 · 公開 — 任何通過角色關卡者皆可見' : '尚無授權'" />
         </div>
       </article>
 
       <div v-if="sortedLinks.length === 0" class="term-box" style="padding: var(--gap-6);">
-        <TermEmpty message="no platform links · register one in /admin/platform-links first" />
+        <TermEmpty message="尚無平台連結 · 請先在 /admin/platform-links 註冊" />
       </div>
     </div>
 
-    <TermModal :visible="showGrantModal" :title="`grant · ${grantModalLink?.name || ''}`" width="520px" @close="closeGrantModal">
-      <p class="cell-meta">a target may have at most one active grant per link.</p>
+    <TermModal :visible="showGrantModal" :title="`授權 · ${grantModalLink?.name || ''}`" width="520px" @close="closeGrantModal">
+      <p class="cell-meta">每個連結對每個對象最多一筆有效授權。</p>
       <div class="seg">
-        <button class="seg__opt" :class="{ 'is-on': grantModalType === 'user' }" @click="setGrantModalType('user')">user-level</button>
-        <button class="seg__opt" :class="{ 'is-on': grantModalType === 'department' }" @click="setGrantModalType('department')">department-level</button>
+        <button class="seg__opt" :class="{ 'is-on': grantModalType === 'user' }" @click="setGrantModalType('user')">使用者層級</button>
+        <button class="seg__opt" :class="{ 'is-on': grantModalType === 'department' }" @click="setGrantModalType('department')">部門層級</button>
       </div>
-      <input v-model="grantModalFilter" :placeholder="grantModalType === 'user' ? 'search username · email' : 'search department'" class="term-input" style="margin-top: var(--gap-2);" />
+      <input v-model="grantModalFilter" :placeholder="grantModalType === 'user' ? '搜尋使用者名稱 · email' : '搜尋部門'" class="term-input" style="margin-top: var(--gap-2);" />
       <div class="picker term-box term-box--inset" style="margin-top: var(--gap-2);">
         <template v-if="grantModalType === 'user'">
           <button v-for="u in filteredUsers" :key="u.id" type="button" class="picker__row" :class="{ 'is-on': grantModalSelectedId === u.id }" @click="grantModalSelectedId = u.id">
@@ -86,20 +86,20 @@
             </span>
             <span v-if="u.email" class="cell-meta">{{ u.email }}</span>
           </button>
-          <TermEmpty v-if="filteredUsers.length === 0" message="no matching users" />
+          <TermEmpty v-if="filteredUsers.length === 0" message="無符合的使用者" />
         </template>
         <template v-else>
           <button v-for="d in filteredDepts" :key="d.id" type="button" class="picker__row" :class="{ 'is-on': grantModalSelectedId === d.id }" @click="grantModalSelectedId = d.id">
             <span class="picker__main"><span class="cell-strong">{{ d.name }}</span></span>
-            <span class="cell-meta">{{ d.user_count ?? 0 }} users</span>
+            <span class="cell-meta">{{ d.user_count ?? 0 }} 位使用者</span>
           </button>
-          <TermEmpty v-if="filteredDepts.length === 0" :message="departments.length === 0 ? 'no departments yet — create one first' : 'no matching departments'" />
+          <TermEmpty v-if="filteredDepts.length === 0" :message="departments.length === 0 ? '尚無部門 — 請先建立' : '無符合的部門'" />
         </template>
       </div>
       <div v-if="grantModalError" class="feedback is-err" style="margin-top: var(--gap-2);">! {{ grantModalError }}</div>
       <template #footer>
-        <TermButton variant="ghost" @click="closeGrantModal" label="cancel" />
-        <TermButton variant="primary" :disabled="grantModalSubmitting || !grantModalSelectedId" :loading="grantModalSubmitting" :label="grantModalSubmitting ? 'granting' : 'grant'" @click="submitGrant" />
+        <TermButton variant="ghost" @click="closeGrantModal" label="取消" />
+        <TermButton variant="primary" :disabled="grantModalSubmitting || !grantModalSelectedId" :loading="grantModalSubmitting" :label="grantModalSubmitting ? '授權中' : '授權'" @click="submitGrant" />
       </template>
     </TermModal>
   </div>
@@ -145,7 +145,7 @@ async function loadAll() {
     users.value = u.data || []
     departments.value = d.data || []
   } catch (e) {
-    pageError.value = e.response?.data?.detail || e.message || 'failed to load'
+    pageError.value = e.response?.data?.detail || e.message || '載入失敗'
   } finally { loading.value = false }
 }
 onMounted(loadAll)
@@ -167,7 +167,7 @@ function targetLabel(g) {
   return d ? d.name : `dept#${g.department_id}`
 }
 function granterLabel(g) {
-  if (!g.granted_by) return 'system'
+  if (!g.granted_by) return '系統'
   const u = userById.value.get(g.granted_by)
   return u ? u.username : `user#${g.granted_by}`
 }
@@ -207,13 +207,13 @@ async function submitGrant() {
     closeGrantModal()
     await loadAll()
   } catch (e) {
-    grantModalError.value = e.response?.data?.detail || 'grant failed'
+    grantModalError.value = e.response?.data?.detail || '授權失敗'
   } finally { grantModalSubmitting.value = false }
 }
 async function handleRevoke(g) {
-  if (!(await confirm({ message: `revoke grant for ${targetLabel(g)}?`, danger: true }))) return
+  if (!(await confirm({ message: `撤銷 ${targetLabel(g)} 的授權？`, danger: true }))) return
   try { await revokeGrant(g.id); await loadAll() }
-  catch (e) { toast(e.response?.data?.detail || 'revoke failed', { tone: 'error' }) }
+  catch (e) { toast(e.response?.data?.detail || '撤銷失敗', { tone: 'error' }) }
 }
 </script>
 

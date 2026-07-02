@@ -3,7 +3,7 @@
     <header class="page-head">
       <div>
         <p class="page-head__eyebrow">admin · platform</p>
-        <h1 class="page-head__title">service-registry</h1>
+        <h1 class="page-head__title">服務登記</h1>
         <p class="page-head__sub">
           註冊 GUI 服務 · 每服務角色閘門 + 授權白名單 · 啟動模式 / 分類上限 / 服務管理員委派
           <span v-if="!registryMode" class="compat-note">· 相容模式（platform_links）</span>
@@ -14,15 +14,15 @@
 
     <div v-if="pageError" class="feedback is-err">! {{ pageError }}</div>
 
-    <TermBox :title="`services · ${links.length}`" pad="none" flush>
+    <TermBox :title="`服務 · ${links.length}`" pad="none" flush>
       <table class="term-table">
         <thead>
           <tr>
-            <th>name</th>
-            <th>url</th>
-            <th style="width: 22%">registry</th>
-            <th style="width: 90px">status</th>
-            <th style="width: 14%">ops</th>
+            <th>名稱</th>
+            <th>網址</th>
+            <th style="width: 22%">註冊資訊</th>
+            <th style="width: 90px">狀態</th>
+            <th style="width: 14%">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -72,11 +72,11 @@
         <TermField label="名稱">
           <input v-model="form.name" class="term-input" :disabled="locked('name')" />
         </TermField>
-        <TermField label="url">
+        <TermField label="網址">
           <input v-model="form.url" class="term-input" placeholder="https://…" :disabled="locked('url')" />
         </TermField>
         <div class="form-row-2">
-          <TermField label="icon" hint="workflow · git · notebook · chat · monitor · database · api · docs · cpu">
+          <TermField label="圖示" hint="workflow · git · notebook · chat · monitor · database · api · docs · cpu">
             <input v-model="form.icon" class="term-input" placeholder="workflow" :disabled="locked('icon')" />
           </TermField>
           <TermField label="排序">
@@ -175,8 +175,8 @@
           <table v-if="auditCallbacks.length" class="term-table">
             <thead>
               <tr>
-                <th style="width: 30%">event</th>
-                <th>actor</th>
+                <th style="width: 30%">事件</th>
+                <th>操作者</th>
                 <th style="width: 30%">時間</th>
               </tr>
             </thead>

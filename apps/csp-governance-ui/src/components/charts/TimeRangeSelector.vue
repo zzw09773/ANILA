@@ -1,5 +1,5 @@
 <template>
-  <div class="trange" role="tablist" aria-label="time range">
+  <div class="trange" role="tablist" aria-label="時間範圍">
     <button
       v-for="option in options"
       :key="option.value"

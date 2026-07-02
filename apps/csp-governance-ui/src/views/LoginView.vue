@@ -7,7 +7,7 @@
       <span class="login__topbar-rule">│</span>
       <span class="login__topbar-path">control-plane@anila <span class="term-caret" /></span>
       <span class="login__topbar-spacer" />
-      <button class="login__theme" type="button" @click="toggleTheme" :title="`switch to ${otherTheme}`">
+      <button class="login__theme" type="button" @click="toggleTheme" :title="`切換至${otherTheme === 'light' ? '淺色' : '深色'}主題`">
         {{ theme === 'dark' ? '◐' : '◑' }} {{ theme }}
       </button>
     </header>
@@ -23,20 +23,20 @@
           </li>
         </ol>
 
-        <TermBox title="auth · local session" pad="lg" hint="local · ldap · oidc · card">
+        <TermBox title="認證 · 本地登入" pad="lg" hint="local · ldap · oidc · card">
           <form class="login__form" @submit.prevent="handleLogin" autocomplete="on">
-            <TermField label="username">
+            <TermField label="帳號">
               <input
                 v-model="username"
                 type="text"
                 class="term-input"
-                placeholder="enter username"
+                placeholder="輸入帳號"
                 autocomplete="username"
                 autofocus
                 required
               />
             </TermField>
-            <TermField label="password">
+            <TermField label="密碼">
               <input
                 v-model="password"
                 type="password"
@@ -53,17 +53,17 @@
             </div>
 
             <div class="login__actions">
-              <TermButton type="submit" variant="primary" :loading="loading" :label="loading ? 'auth' : 'sign-in'" />
-              <TermButton variant="ghost" @click="openRegisterModal" label="register" />
+              <TermButton type="submit" variant="primary" :loading="loading" :label="loading ? '驗證中' : '登入'" />
+              <TermButton variant="ghost" @click="openRegisterModal" label="註冊" />
             </div>
 
             <p class="login__hint">
-              <TermKbd>↵</TermKbd> submit · <TermKbd>Tab</TermKbd> field · <TermKbd>1</TermKbd>–<TermKbd>9</TermKbd> sso provider
+              <TermKbd>↵</TermKbd> 送出 · <TermKbd>Tab</TermKbd> 切換欄位 · <TermKbd>1</TermKbd>–<TermKbd>9</TermKbd> SSO 提供者
             </p>
           </form>
         </TermBox>
 
-        <TermBox v-if="oidcProviders.length" title="auth · single sign-on" pad="md">
+        <TermBox v-if="oidcProviders.length" title="認證 · 單一登入" pad="md">
           <ul class="login__sso">
             <li
               v-for="(provider, i) in oidcProviders"
@@ -72,21 +72,21 @@
             >
               <span class="login__sso-key">[{{ i + 1 }}]</span>
               <span class="login__sso-name">{{ provider.name }}</span>
-              <span class="login__sso-meta">oidc · {{ provider.button_text || `${provider.name} provider` }}</span>
+              <span class="login__sso-meta">oidc · {{ provider.button_text || `${provider.name} 提供者` }}</span>
               <button
                 type="button"
                 class="login__sso-btn"
                 :disabled="oidcLoadingId === provider.id"
                 @click="handleOidcLogin(provider)"
               >
-                {{ oidcLoadingId === provider.id ? 'redirecting…' : 'connect →' }}
+                {{ oidcLoadingId === provider.id ? '導向中…' : '連線 →' }}
               </button>
             </li>
           </ul>
         </TermBox>
 
         <!-- branch SSO: 中科院憑證卡登入 ------------------------------------ -->
-        <TermBox title="auth · pki card" pad="md" hint="ncsist · 中科院憑證卡">
+        <TermBox title="認證 · PKI 憑證卡" pad="md" hint="ncsist · 中科院憑證卡">
           <form class="login__form" @submit.prevent="handleCardLogin" autocomplete="off">
             <p class="login__hint" style="margin: 0 0 var(--gap-2);">
               請插入憑證卡，並確認本機元件運作中（<span style="font-family: var(--font-mono, monospace);">{{ cardComponentOrigin }}</span>）。
@@ -98,7 +98,7 @@
                 type="button"
                 variant="ghost"
                 :loading="detectLoading"
-                :label="detectLoading ? 'detecting' : 'detect card'"
+                :label="detectLoading ? '偵測中' : '偵測卡片'"
                 @click="handleDetectCard"
               />
             </div>
@@ -113,7 +113,7 @@
                   </span>
                 </div>
                 <div style="font-size: var(--t-2xs); color: var(--c-fg-3);">
-                  {{ detectedCard.email || '(no email)' }} · card #{{ detectedCard.cardSN || 'n/a' }}
+                  {{ detectedCard.email || '（無 email）' }} · card #{{ detectedCard.cardSN || 'n/a' }}
                 </div>
               </div>
               <button
@@ -125,7 +125,7 @@
             </div>
 
             <!-- Step 2-3: PIN → 簽章 (只有偵測成功才開啟) -->
-            <TermField v-if="detectedCard" label="pin">
+            <TermField v-if="detectedCard" label="PIN">
               <input
                 v-model="cardPin"
                 type="password"
@@ -150,14 +150,14 @@
                 variant="primary"
                 :loading="cardLoading"
                 :disabled="!cardPin"
-                :label="cardLoading ? 'verifying' : 'sign &amp; submit'"
+                :label="cardLoading ? '驗證中' : '簽章送出'"
               />
             </div>
           </form>
         </TermBox>
 
         <p class="login__legal">
-          ANILA · CSP control plane &nbsp;·&nbsp; on-prem &nbsp;·&nbsp; access requires admin approval
+          ANILA · CSP 控制平面 &nbsp;·&nbsp; 地端部署 &nbsp;·&nbsp; 存取需管理員核准
         </p>
       </section>
     </main>
@@ -167,8 +167,8 @@
       :visible="!!pending"
       :title="
         pending && pending.status === 'pending_approval'
-          ? 'registration · awaiting approval'
-          : 'registration · complete profile'
+          ? '註冊 · 等待核准'
+          : '註冊 · 完成資料'
       "
       width="480px"
       @close="resetPending"
@@ -183,7 +183,7 @@
               </span>
             </div>
             <div style="font-size: var(--t-2xs); color: var(--c-fg-3);">
-              {{ pending.email || '(no email)' }}
+              {{ pending.email || '（無 email）' }}
             </div>
           </div>
         </div>
@@ -214,50 +214,50 @@
 
       <template #footer>
         <template v-if="pending && pending.status === 'pending_registration'">
-          <TermButton variant="ghost" @click="resetPending" label="cancel" />
+          <TermButton variant="ghost" @click="resetPending" label="取消" />
           <TermButton
             variant="primary"
             :disabled="!pendingDeptId || pendingDepartments.length === 0"
             :loading="pendingSubmitting"
-            :label="pendingSubmitting ? 'submitting' : 'submit'"
+            :label="pendingSubmitting ? '送出中' : '送出'"
             @click="handleSubmitRegistration"
           />
         </template>
-        <TermButton v-else variant="primary" @click="resetPending" label="close" />
+        <TermButton v-else variant="primary" @click="resetPending" label="關閉" />
       </template>
     </TermModal>
 
     <!-- Register modal ------------------------------------------------- -->
-    <TermModal :visible="showRegisterModal" title="register · self-service" width="480px" @close="closeRegisterModal">
+    <TermModal :visible="showRegisterModal" title="註冊 · 自助" width="480px" @close="closeRegisterModal">
       <div v-if="!regSuccess" class="login__reg">
-        <TermField label="username">
+        <TermField label="帳號">
           <input v-model="reg.username" class="term-input" placeholder="e.g. j.smith" autocomplete="username" />
         </TermField>
         <TermField label="email">
           <input v-model="reg.email" type="email" class="term-input" placeholder="user@corp.example" autocomplete="email" />
         </TermField>
-        <TermField label="password" hint="8+ chars · upper · lower · symbol">
+        <TermField label="密碼" hint="8 字元以上 · 大寫 · 小寫 · 符號">
           <input v-model="reg.password" type="password" class="term-input" placeholder="••••••••" autocomplete="new-password" />
           <ul v-if="reg.password" class="login__rules">
-            <li :class="reg.password.length >= 8 ? 'is-ok' : 'is-pending'">{{ reg.password.length >= 8 ? '●' : '○' }} 8+ chars</li>
-            <li :class="/[A-Z]/.test(reg.password) ? 'is-ok' : 'is-pending'">{{ /[A-Z]/.test(reg.password) ? '●' : '○' }} uppercase</li>
-            <li :class="/[a-z]/.test(reg.password) ? 'is-ok' : 'is-pending'">{{ /[a-z]/.test(reg.password) ? '●' : '○' }} lowercase</li>
-            <li :class="hasSpecial(reg.password) ? 'is-ok' : 'is-pending'">{{ hasSpecial(reg.password) ? '●' : '○' }} symbol</li>
+            <li :class="reg.password.length >= 8 ? 'is-ok' : 'is-pending'">{{ reg.password.length >= 8 ? '●' : '○' }} 8 字元以上</li>
+            <li :class="/[A-Z]/.test(reg.password) ? 'is-ok' : 'is-pending'">{{ /[A-Z]/.test(reg.password) ? '●' : '○' }} 大寫</li>
+            <li :class="/[a-z]/.test(reg.password) ? 'is-ok' : 'is-pending'">{{ /[a-z]/.test(reg.password) ? '●' : '○' }} 小寫</li>
+            <li :class="hasSpecial(reg.password) ? 'is-ok' : 'is-pending'">{{ hasSpecial(reg.password) ? '●' : '○' }} 符號</li>
           </ul>
         </TermField>
         <div v-if="regError" class="login__msg is-err">! {{ regError }}</div>
       </div>
       <div v-else class="login__reg-done">
         <p class="login__msg is-ok">✓ {{ regSuccess }}</p>
-        <p class="login__legal">an admin must approve this account before first login.</p>
+        <p class="login__legal">首次登入前需管理員核准此帳號。</p>
       </div>
 
       <template #footer>
         <template v-if="!regSuccess">
-          <TermButton variant="ghost" @click="closeRegisterModal" label="cancel" />
-          <TermButton variant="primary" :disabled="!canRegister" :loading="registering" :label="registering ? 'submitting' : 'submit'" @click="handleRegister" />
+          <TermButton variant="ghost" @click="closeRegisterModal" label="取消" />
+          <TermButton variant="primary" :disabled="!canRegister" :loading="registering" :label="registering ? '送出中' : '送出'" @click="handleRegister" />
         </template>
-        <TermButton v-else variant="primary" @click="closeRegisterModal" label="close" />
+        <TermButton v-else variant="primary" @click="closeRegisterModal" label="關閉" />
       </template>
     </TermModal>
   </div>
@@ -419,7 +419,7 @@ async function handleLogin() {
     // 一律走 browser reload 讓 nginx 重新決定 routing。
     window.location.assign(resolveNextDestination())
   } catch (e) {
-    const detail = e.response?.data?.detail || 'login failed — check credentials'
+    const detail = e.response?.data?.detail || '登入失敗 — 請檢查帳號密碼'
     if (detail.includes('等待核准') || detail.toLowerCase().includes('pending')) {
       isPending.value = true
     }
@@ -459,7 +459,7 @@ function resetDetectedCard() {
 async function handleCardLogin() {
   cardError.value = ''
   if (!detectedCard.value) {
-    cardError.value = '請先點「detect card」偵測卡片'
+    cardError.value = '請先點「偵測卡片」'
     return
   }
   if (!cardPin.value) {
@@ -492,7 +492,7 @@ async function handleCardLogin() {
       }
     }
   } catch (e) {
-    cardError.value = e.response?.data?.detail || e.message || 'card sign-in failed'
+    cardError.value = e.response?.data?.detail || e.message || '憑證卡登入失敗'
   } finally {
     cardLoading.value = false
   }
@@ -541,7 +541,7 @@ async function handleOidcLogin(provider) {
     const { data } = await getOidcStartUrl(provider.id, '/')
     window.location.href = data.authorization_url
   } catch (e) {
-    error.value = e.response?.data?.detail || 'unable to start sso flow'
+    error.value = e.response?.data?.detail || '無法啟動 SSO 流程'
     oidcLoadingId.value = null
   }
 }
@@ -564,7 +564,7 @@ async function handleRegister() {
     regSuccess.value = data.message || 'registered — pending approval'
   } catch (e) {
     const detail = e.response?.data?.detail
-    regError.value = Array.isArray(detail) ? detail.map(d => d.msg).join('; ') : (detail || 'register failed')
+    regError.value = Array.isArray(detail) ? detail.map(d => d.msg).join('; ') : (detail || '註冊失敗')
   } finally {
     registering.value = false
   }

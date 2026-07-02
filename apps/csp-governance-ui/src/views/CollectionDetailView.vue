@@ -2,46 +2,46 @@
   <div class="page">
     <header class="page-head">
       <div>
-        <router-link :to="{ name: 'KnowledgeCollections' }" class="back-link">← collections</router-link>
+        <router-link :to="{ name: 'KnowledgeCollections' }" class="back-link">← 知識庫</router-link>
         <h1 class="page-head__title">
           <span v-if="collection">{{ collection.name }}</span>
-          <span v-else>loading…</span>
+          <span v-else>載入中…</span>
         </h1>
         <p v-if="collection" class="page-head__sub">
           agent #{{ collection.agent_id }} · {{ collection.embedding_model }} · {{ collection.embedding_dim }}-d ·
-          strategy <code>{{ collection.chunking_config.strategy }}</code>
+          策略 <code>{{ collection.chunking_config.strategy }}</code>
         </p>
       </div>
     </header>
 
     <div v-if="loadError" class="feedback is-err">! {{ loadError }}</div>
 
-    <TermBox v-if="collection" title="upload · ingest" pad="md" hint="text / md / pdf / docx · ≤ 50 MB single · ≤ 500 MB / 200 files zip">
+    <TermBox v-if="collection" title="上傳 · 匯入" pad="md" hint="text / md / pdf / docx · ≤ 50 MB single · ≤ 500 MB / 200 files zip">
       <div class="upload" @drop.prevent="onDrop" @dragover.prevent>
         <input ref="fileInput" type="file" multiple accept=".txt,.md,.markdown,.pdf,.docx,.doc,.odt,.rtf,.json,.html,.htm,text/plain,text/markdown,application/pdf,application/json,text/html" @change="onFilePicked" style="display:none" />
         <input ref="zipInput" type="file" accept=".zip,application/zip" @change="onZipPicked" style="display:none" />
-        <TermButton variant="primary" :disabled="uploading" :loading="uploading" :label="uploading ? `uploading… ${Math.round(progress * 100)}%` : '+ 檔案(可多選)'" @click="$refs.fileInput.click()" />
-        <TermButton :disabled="uploading" label="+ zip · multi-file" @click="$refs.zipInput.click()" />
+        <TermButton variant="primary" :disabled="uploading" :loading="uploading" :label="uploading ? `上傳中… ${Math.round(progress * 100)}%` : '+ 檔案(可多選)'" @click="$refs.fileInput.click()" />
+        <TermButton :disabled="uploading" label="+ zip · 多檔" @click="$refs.zipInput.click()" />
         <label class="upload__toggle">
           <input type="checkbox" v-model="preserveFolderStructure" />
-          <span>preserve folder paths (zip)</span>
+          <span>保留資料夾路徑（zip）</span>
         </label>
-        <span class="cell-meta">drag &amp; drop also works</span>
+        <span class="cell-meta">也可拖放上傳</span>
       </div>
       <div v-if="uploadError" class="feedback is-err" style="margin-top: var(--gap-2);">! {{ uploadError }}</div>
     </TermBox>
 
     <!-- Zip result modal --------------------------------------------- -->
-    <TermModal :visible="!!zipResult" title="zip · result" width="640px" @close="zipResult = null">
+    <TermModal :visible="!!zipResult" title="zip · 結果" width="640px" @close="zipResult = null">
       <dl v-if="zipResult" class="zip-grid">
-        <div><dt>files in archive</dt><dd class="tnum">{{ zipResult.files_in_archive }}</dd></div>
-        <div class="is-ok"><dt>enqueued</dt><dd class="tnum">{{ zipResult.enqueued }}</dd></div>
-        <div class="is-warn"><dt>duplicates</dt><dd class="tnum">{{ zipResult.duplicates }}</dd></div>
-        <div><dt>skipped</dt><dd class="tnum">{{ zipResult.skipped }}</dd></div>
-        <div v-if="zipResult.errors" class="is-err"><dt>errors</dt><dd class="tnum">{{ zipResult.errors }}</dd></div>
+        <div><dt>壓縮檔內檔案</dt><dd class="tnum">{{ zipResult.files_in_archive }}</dd></div>
+        <div class="is-ok"><dt>已排入佇列</dt><dd class="tnum">{{ zipResult.enqueued }}</dd></div>
+        <div class="is-warn"><dt>重複</dt><dd class="tnum">{{ zipResult.duplicates }}</dd></div>
+        <div><dt>已略過</dt><dd class="tnum">{{ zipResult.skipped }}</dd></div>
+        <div v-if="zipResult.errors" class="is-err"><dt>錯誤</dt><dd class="tnum">{{ zipResult.errors }}</dd></div>
       </dl>
       <details v-if="zipResult" class="zip-detail">
-        <summary>per-file results · {{ zipResult.results.length }}</summary>
+        <summary>各檔結果 · {{ zipResult.results.length }}</summary>
         <ul class="zip-list">
           <li v-for="r in zipResult.results" :key="r.filename" :class="r.status">
             <span class="zip-list__name">{{ r.filename }}</span>
@@ -51,14 +51,14 @@
         </ul>
       </details>
       <template #footer>
-        <TermButton variant="primary" @click="zipResult = null" label="close" />
+        <TermButton variant="primary" @click="zipResult = null" label="關閉" />
       </template>
     </TermModal>
 
     <section v-if="collection" class="split">
-      <TermBox :title="`documents · ${documents.length}`" pad="none" flush>
-        <div v-if="loadingDocs" class="loading">loading…</div>
-        <TermEmpty v-else-if="documents.length === 0" message="no documents yet · upload above" />
+      <TermBox :title="`文件 · ${documents.length}`" pad="none" flush>
+        <div v-if="loadingDocs" class="loading">載入中…</div>
+        <TermEmpty v-else-if="documents.length === 0" message="尚無文件 · 請於上方上傳" />
         <ul v-else class="docs">
           <li
             v-for="d in documents"
@@ -71,7 +71,7 @@
               <span class="doc__name">{{ d.filename }}</span>
               <TermBadge :variant="docVariant(d.status)" dot>{{ d.status }}</TermBadge>
             </div>
-            <div class="cell-meta tnum">{{ humanBytes(d.bytes) }} · {{ d.chunk_count }} chunks · sha {{ d.sha256.slice(0, 8) }}…</div>
+            <div class="cell-meta tnum">{{ humanBytes(d.bytes) }} · {{ d.chunk_count }} 個區塊 · sha {{ d.sha256.slice(0, 8) }}…</div>
             <div v-if="d.error_message" class="doc__err">! {{ d.error_message }}</div>
             <button
               v-if="d.status === 'failed'"
@@ -83,22 +83,22 @@
         </ul>
       </TermBox>
 
-      <TermBox :title="selectedDoc ? `inspector · ${selectedDoc.filename}` : 'inspector'" pad="md">
+      <TermBox :title="selectedDoc ? `檢視器 · ${selectedDoc.filename}` : '檢視器'" pad="md">
         <div v-if="!selectedDoc">
-          <TermEmpty message="select a document to inspect chunks" />
+          <TermEmpty message="選一份文件以檢視區塊" />
         </div>
         <template v-else>
           <div class="insp-bar">
-            <a :href="blobUrl(selectedDoc.id)" target="_blank" class="term-action">↓ download original</a>
+            <a :href="blobUrl(selectedDoc.id)" target="_blank" class="term-action">↓ 下載原始檔</a>
             <span class="row-actions__sep">·</span>
             <label class="filters__toggle">
               <input type="checkbox" v-model="showVectorDebug" />
-              <span>show vector debug</span>
+              <span>顯示向量除錯</span>
             </label>
           </div>
 
-          <div v-if="loadingChunks" class="loading">loading chunks…</div>
-          <TermEmpty v-else-if="chunks.length === 0" :message="`no chunks · doc status: ${selectedDoc.status}`" />
+          <div v-if="loadingChunks" class="loading">載入區塊中…</div>
+          <TermEmpty v-else-if="chunks.length === 0" :message="`無區塊 · 文件狀態：${selectedDoc.status}`" />
           <ol v-else class="chunks">
             <li v-for="c in chunks" :key="c.id" class="chunk">
               <header class="chunk__head">
@@ -107,7 +107,7 @@
               </header>
               <pre class="chunk__content">{{ c.content }}</pre>
               <details class="chunk__meta">
-                <summary>metadata</summary>
+                <summary>中繼資料</summary>
                 <dl class="chunk__meta-grid">
                   <template v-for="(v, k) in c.metadata" :key="k">
                     <dt>{{ k }}</dt>
@@ -120,12 +120,12 @@
               </details>
               <div v-if="showVectorDebug" class="vec">
                 <button v-if="!vecDebug[c.id]" class="term-btn term-btn--xs" :disabled="vecLoading[c.id]" @click="loadVectorDebug(c.id)">
-                  [ {{ vecLoading[c.id] ? 'loading…' : 'load vector dim + norm' }} ]
+                  [ {{ vecLoading[c.id] ? '載入中…' : '載入向量維度 + 範數' }} ]
                 </button>
                 <div v-else class="vec__stats">
                   <span><b>dim</b> {{ vecDebug[c.id].dim }}</span>
                   <span><b>L2 norm</b> {{ vecDebug[c.id].norm.toFixed(4) }}</span>
-                  <span class="cell-meta">(full vector kept server-side)</span>
+                  <span class="cell-meta">（完整向量保存在伺服器端）</span>
                 </div>
               </div>
             </li>
@@ -149,7 +149,7 @@
         <TermButton
           :loading="reresolving"
           :disabled="reresolving"
-          :label="reresolving ? 'reconciling…' : '↻ reresolve · re-scan + re-extract'"
+          :label="reresolving ? '對帳中…' : '↻ 重新解析 · 重新掃描 + 重新抽取'"
           @click="doReresolve"
         />
         <span v-if="relMsg" class="cell-meta">{{ relMsg }}</span>
@@ -158,32 +158,32 @@
       <!-- manual add -->
       <form class="rel-add" @submit.prevent="doCreateRelation">
         <select v-model.number="newRel.src_document_id" required class="rel-input">
-          <option :value="0" disabled>src document…</option>
+          <option :value="0" disabled>來源文件…</option>
           <option v-for="d in documents" :key="`s${d.id}`" :value="d.id">{{ d.title || d.filename }}</option>
         </select>
         <select v-model="newRel.relation_type" class="rel-input rel-input--type">
           <option v-for="t in RELATION_TYPES" :key="t" :value="t">{{ t }}</option>
         </select>
         <select v-model.number="newRel.dst_document_id" class="rel-input">
-          <option :value="0">dst document… (or name →)</option>
+          <option :value="0">目標文件…（或輸入名稱 →）</option>
           <option v-for="d in documents" :key="`d${d.id}`" :value="d.id">{{ d.title || d.filename }}</option>
         </select>
         <input
           v-model.trim="newRel.target_ref"
           class="rel-input"
-          placeholder="…or free-text target name"
+          placeholder="…或輸入目標名稱"
           :disabled="!!newRel.dst_document_id"
         />
-        <TermButton type="submit" variant="primary" :disabled="creating || !newRel.src_document_id" label="+ add" />
+        <TermButton type="submit" variant="primary" :disabled="creating || !newRel.src_document_id" label="+ 新增" />
       </form>
       <div v-if="relError" class="feedback is-err" style="margin-top: var(--gap-2);">! {{ relError }}</div>
 
       <div v-if="loadingRels" class="loading">loading…</div>
-      <TermEmpty v-else-if="relations.length === 0" message="no relations yet · upload linked docs or add one above" />
+      <TermEmpty v-else-if="relations.length === 0" message="尚無關聯 · 上傳有連結的文件或於上方新增" />
       <RelationGraph v-else-if="relView === 'graph'" :relations="relations" :documents="documents" />
       <table v-else class="rel-table">
         <thead>
-          <tr><th>src</th><th>type</th><th>target</th><th>source</th><th>evidence</th><th></th></tr>
+          <tr><th>來源</th><th>類型</th><th>目標</th><th>方式</th><th>佐證</th><th></th></tr>
         </thead>
         <tbody>
           <tr v-for="r in relations" :key="r.id" :class="{ 'rel--unresolved': !r.resolved }">
@@ -193,8 +193,8 @@
               <span v-if="r.resolved">{{ r.dst_title || `#${r.dst_document_id}` }}</span>
               <span v-else class="rel-target">
                 {{ r.target_ref }}
-                <TermBadge v-if="r.ambiguous" variant="warn">ambiguous</TermBadge>
-                <TermBadge v-else variant="danger">unresolved</TermBadge>
+                <TermBadge v-if="r.ambiguous" variant="warn">模糊</TermBadge>
+                <TermBadge v-else variant="danger">未解析</TermBadge>
               </span>
             </td>
             <td><TermBadge :variant="r.source === 'manual' ? 'ok' : ''">{{ r.source }}</TermBadge></td>
@@ -205,7 +205,7 @@
                 class="term-btn term-btn--xs"
                 :disabled="deletingId === r.id"
                 @click="doDeleteRelation(r)"
-              >[ del ]</button>
+              >[ 刪除 ]</button>
             </td>
           </tr>
         </tbody>
@@ -270,7 +270,7 @@ async function loadAll() {
     const { data } = await getCollection(collectionId.value)
     collection.value = data
   } catch (e) {
-    loadError.value = `failed to load collection: ${e.response?.data?.detail || e.message}`
+    loadError.value = `載入知識庫失敗：${e.response?.data?.detail || e.message}`
     return
   }
   await loadDocs()
@@ -341,7 +341,7 @@ async function loadChunks(docId) {
     chunks.value = data
   } catch (e) {
     chunks.value = []
-    loadError.value = `chunk load failed: ${e.response?.data?.detail || e.message}`
+    loadError.value = `載入區塊失敗：${e.response?.data?.detail || e.message}`
   } finally { loadingChunks.value = false }
 }
 
@@ -393,7 +393,7 @@ async function loadRelations() {
     const { data } = await listRelations(collectionId.value)
     relations.value = data
   } catch (e) {
-    relError.value = `relations load failed: ${e.response?.data?.detail || e.message}`
+    relError.value = `載入關聯失敗：${e.response?.data?.detail || e.message}`
   } finally { loadingRels.value = false }
 }
 
@@ -407,7 +407,7 @@ async function doCreateRelation() {
     }
     if (newRel.value.dst_document_id) payload.dst_document_id = newRel.value.dst_document_id
     else if (newRel.value.target_ref) payload.target_ref = newRel.value.target_ref
-    else { relError.value = 'pick a dst document or type a target name'; creating.value = false; return }
+    else { relError.value = '請選擇目標文件或輸入目標名稱'; creating.value = false; return }
     if (newRel.value.evidence) payload.evidence = newRel.value.evidence
     await createRelation(collectionId.value, payload)
     newRel.value = { src_document_id: 0, relation_type: 'cites', dst_document_id: 0, target_ref: '', evidence: '' }
@@ -431,7 +431,7 @@ async function doReresolve() {
   reresolving.value = true; relError.value = ''; relMsg.value = ''
   try {
     const { data } = await reresolveRelations(collectionId.value)
-    relMsg.value = `reconciled · ${data.resolved} resolved · ${data.unresolved} unresolved · ${data.ambiguous} ambiguous · re-extract queued`
+    relMsg.value = `已對帳 · ${data.resolved} 已解析 · ${data.unresolved} 未解析 · ${data.ambiguous} 模糊 · 已排入重新抽取`
     await loadRelations()
   } catch (e) {
     relError.value = e.response?.data?.detail || e.message
@@ -445,7 +445,7 @@ async function loadVectorDebug(chunkId) {
     const { data } = await getChunkEmbeddingDebug(selectedDoc.value.id, chunkId)
     vecDebug.value = { ...vecDebug.value, [chunkId]: data }
   } catch (e) {
-    uploadError.value = `vector debug failed: ${e.response?.data?.detail || e.message}`
+    uploadError.value = `向量除錯失敗：${e.response?.data?.detail || e.message}`
   } finally {
     vecLoading.value = { ...vecLoading.value, [chunkId]: false }
   }
