@@ -1,0 +1,6 @@
+# 開發／CI 專用依賴 — 不進 runtime image(Dockerfile 只裝 requirements.txt)。
+# 用法:services/csp/.venv/bin/pip install -r requirements-dev.txt
+-r requirements.txt
+
+# module boundary lint gate(infra/ci/lint-boundaries.sh + .importlinter)。
+import-linter==2.12
