@@ -2,11 +2,11 @@
 # pack-chunks.sh — 把目錄或大檔切成 ≤45GiB chunk (50G 轉入通道用)
 # ============================================================================
 # 用法:
-#   bash scripts/pack-chunks.sh <來源目錄或檔案> <輸出目錄> [chunk大小]
+#   bash infra/deployment/intranet/pack-chunks.sh <來源目錄或檔案> <輸出目錄> [chunk大小]
 #
 # 範例:
-#   bash scripts/pack-chunks.sh models/model/gemma-4-31B  /staging        # 權重目錄
-#   bash scripts/pack-chunks.sh export/04-models.tar.gz   /staging        # 既有大檔
+#   bash infra/deployment/intranet/pack-chunks.sh models/model/gemma-4-31B  /staging  # 權重目錄
+#   bash infra/deployment/intranet/pack-chunks.sh export/04-models.tar.gz   /staging  # 既有大檔
 #
 # 產出 (以 gemma-4-31B 為例):
 #   gemma-4-31B.tar.part-000, -001, ...   (目錄 → tar 串流切塊,無壓縮)
@@ -16,7 +16,7 @@
 # chunk 預設 45G (GiB):「50G」若指十進位 GB,48GiB=51.5GB 會超限;
 # 45GiB≈48.3GB 兩種解讀都安全。
 #
-# 內網端重組/解壓: bash scripts/unpack-chunks.sh (串流,不需雙倍磁碟)
+# 內網端重組/解壓: bash infra/deployment/intranet/unpack-chunks.sh (串流,不需雙倍磁碟)
 # 失敗域 = 單一 chunk:哪包壞了看 manifest 重傳那包就好。
 #
 # REMOVE_SOURCE=1 (目錄模式限定):tar 邊打包邊刪來源檔 (--remove-files),

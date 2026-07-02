@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# model-serve.sh — 模型推論服務管理 (models/inference/docker-compose.yml)
+# model-serve.sh — 模型推論服務管理 (infra/models/docker-compose.yml)
 # ============================================================================
 # 用法:
-#   bash scripts/model-serve.sh up <group|service...>   起服務
-#   bash scripts/model-serve.sh down [service...]       停 (不給名字 = 全停)
-#   bash scripts/model-serve.sh restart <service...>
-#   bash scripts/model-serve.sh status                  全部 health 一覽
-#   bash scripts/model-serve.sh logs <service>          tail -f
+#   bash infra/deployment/intranet/model-serve.sh up <group|service...>   起服務
+#   bash infra/deployment/intranet/model-serve.sh down [service...]       停 (不給名字 = 全停)
+#   bash infra/deployment/intranet/model-serve.sh restart <service...>
+#   bash infra/deployment/intranet/model-serve.sh status                  全部 health 一覽
+#   bash infra/deployment/intranet/model-serve.sh logs <service>          tail -f
 #
 # Group (up 專用捷徑):
 #   trial      試用機現役組: gpt-oss-20b gemma4 nv-embed flux
@@ -20,8 +20,8 @@
 # ============================================================================
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COMPOSE_FILE="$REPO_ROOT/models/inference/docker-compose.yml"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+COMPOSE_FILE="$REPO_ROOT/infra/models/docker-compose.yml"
 
 GROUP_TRIAL=(gpt-oss-20b gemma4 nv-embed-triton nv-embed-proxy flux2-dev flux2-dev-agent)
 GROUP_INTRANET=(gemma4 nv-embed-triton nv-embed-proxy gemma-4-26b-a4b gemma-4-12b gpt-oss-120b)

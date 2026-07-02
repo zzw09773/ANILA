@@ -13,7 +13,7 @@ This script ONLY generates the image set by calling the flux2-dev
 ``/generate`` JSON contract. It does no measurement and no labelling — that's
 ``calibrate_striping.py``. Run it yourself against the live FLUX service:
 
-    python scripts/gen_flux_calibration_set.py --n 50 --out-dir /tmp/flux-calib
+    python infra/deployment/scripts/gen_flux_calibration_set.py --n 50 --out-dir /tmp/flux-calib
 
 Files are named ``calib_<idx>_seed<seed>_<prompt-slug>.png`` so a human can
 map each image back to its prompt while labelling good/bad.

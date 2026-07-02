@@ -12,14 +12,14 @@
 #   [7] 等 healthy + 驗證
 #
 # 用法 (在 prod-intranet-card repo 根目錄):
-#   bash scripts/intranet-deploy.sh [IMAGE_BUNDLE_DIR]
+#   bash infra/deployment/intranet/intranet-deploy.sh [IMAGE_BUNDLE_DIR]
 #   IMAGE_BUNDLE_DIR 預設自動找 ./intranet-prod-v1.0.0;找不到會提示輸入。
 #
 # 重跑安全:偵測到既有 .env 預設「保留現有 secret」— 避免重生 DB 密碼炸掉既有
 # DB。只有你明確選擇重生才會換 secret(並先備份舊 .env)。
 #
 # 注意:這支不碰 model image / 權重(第一版走 .12 gateway)。後續日常操作用
-# scripts/deploy-prod.sh {status|logs|restart|down}。
+# infra/deployment/scripts/deploy-prod.sh {status|logs|restart|down}。
 # ============================================================================
 set -euo pipefail
 
@@ -31,7 +31,7 @@ die()  { echo "$(c '1;31' '✗') $*" >&2; exit 1; }
 ask()       { local p="$1" d="${2:-}" a; read -rp "$(c '1;35' '?') ${p}${d:+ [$d]}: " a; printf '%s' "${a:-$d}"; }
 asksecret() { local p="$1" a; read -rsp "$(c '1;35' '?') ${p}: " a; echo >&2; printf '%s' "$a"; }
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$REPO_ROOT"
 
 set_env() {  # set_env KEY VALUE — 去重後 append (literal,不怕特殊字元/sed 跳脫)
@@ -52,8 +52,8 @@ info "[0/7] 前置檢查"
 command -v docker >/dev/null   || die "找不到 docker"
 command -v openssl >/dev/null  || die "找不到 openssl"
 docker info >/dev/null 2>&1    || die "docker daemon 沒在跑 / 當前使用者無權限"
-[ -f docker-compose.yml ] && [ -f .env.example ] \
-  || die "請在 prod-intranet-card repo 根目錄執行(找不到 docker-compose.yml / .env.example)"
+[ -f compose.yaml ] && [ -f .env.example ] \
+  || die "請在 prod-intranet-card repo 根目錄執行(找不到 compose.yaml / .env.example)"
 br="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
 [ "$br" = prod-intranet-card ] || warn "目前 git 分支是 '$br',預期 prod-intranet-card — 確認 checkout 對了"
 
@@ -70,9 +70,9 @@ ok "image 包: $BUNDLE"
 
 # ── 1. TLS 憑證 ───────────────────────────────────────────────────────────
 info "[1/7] TLS 憑證 (wildcard *.ai.ncsist.org.tw)"
-mkdir -p myCSPPlatform/docker/certs
-CRT=myCSPPlatform/docker/certs/server.crt
-KEY=myCSPPlatform/docker/certs/server.key
+mkdir -p infra/nginx/certs
+CRT=infra/nginx/certs/server.crt
+KEY=infra/nginx/certs/server.key
 DO_TLS=1
 if [ -f "$CRT" ] && [ -f "$KEY" ]; then
   warn "已有 server.crt / server.key"
@@ -109,7 +109,7 @@ MCA=share/pki/model-ca.pem
 # PKI 卡與內網伺服器憑證皆 CSPKI 簽。repo 內 cspki_ca_bundle.pem 是「卡片登入驗章」
 # 釘死的同一套信任錨(Root + 中繼),正好就是這條鏈 → 直接當 model-ca,csp 即可
 # 信任 .12 gateway 的 https。免下載、免跟 IT 要,離線就有。
-CSPKI_BUNDLE=myCSPPlatform/backend/app/services/cspki_ca_bundle.pem
+CSPKI_BUNDLE=services/csp/app/services/cspki_ca_bundle.pem
 if [ -f "$MCA" ]; then
   ok "已有 $MCA (沿用,不覆蓋)"
 elif [ -f "$CSPKI_BUNDLE" ]; then
@@ -272,7 +272,7 @@ echo
 echo "============================================================"
 ok "內網部署完成"
 echo "  • 登入:員工從瀏覽器插卡 + HiPKI(localhost:16888)走卡片登入"
-echo "  • 日常:scripts/deploy-prod.sh {status | logs <svc> | restart | down}"
+echo "  • 日常:infra/deployment/scripts/deploy-prod.sh {status | logs <svc> | restart | down}"
 [ -z "${MGK:-}" ] && echo "  • $(c '1;33' '待辦'):MODEL_GATEWAY_API_KEY 拿到後填 .env → docker compose up -d csp"
 echo "  • DNS:確認 anila.ai.ncsist.org.tw → 本機、aiagent2.ai.ncsist.org.tw → .12"
 echo "============================================================"

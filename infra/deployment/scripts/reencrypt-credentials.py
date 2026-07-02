@@ -30,7 +30,7 @@ import sys
 
 # Ensure the CSP backend package is importable when run as a one-off
 # (matches scripts/init_db.py's path bootstrap).
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "myCSPPlatform", "backend"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "services", "csp"))
 
 from anila_core.security.credential_crypto import (  # noqa: E402
     encrypt_credential,

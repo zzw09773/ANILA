@@ -1,14 +1,14 @@
 #!/bin/bash
 # Reissue ANILA self-signed TLS cert (Sprint 6 X / A4).
 #
-# Generates server.{key,crt} into myCSPPlatform/docker/certs/, replacing the
+# Generates server.{key,crt} into infra/nginx/certs/, replacing the
 # existing pair. Old key is moved to server.key.revoked-<timestamp> rather
 # than deleted so ops can grep the host for any service that still has it
 # pinned. Production deployments should swap in a CA-signed cert at this
 # point — this script is the on-prem / dev fallback.
 #
 # Usage:
-#   bash scripts/reissue-tls-cert.sh
+#   bash infra/deployment/scripts/reissue-tls-cert.sh
 #
 # Optional env overrides:
 #   ANILA_CERT_CN          common name (default: 172.16.120.35)
@@ -17,7 +17,7 @@
 
 set -euo pipefail
 
-CERTS_DIR="$(cd "$(dirname "$0")/.." && pwd)/myCSPPlatform/docker/certs"
+CERTS_DIR="$(cd "$(dirname "$0")/../../.." && pwd)/infra/nginx/certs"
 KEY_PATH="$CERTS_DIR/server.key"
 CRT_PATH="$CERTS_DIR/server.crt"
 

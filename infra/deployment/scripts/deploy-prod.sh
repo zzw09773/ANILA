@@ -12,7 +12,7 @@
 # 用法:
 #   git checkout <prod-branch> && git pull
 #   set -a; source /path/to/<branch>.env; set +a
-#   bash scripts/deploy-prod.sh [SUBCOMMAND]
+#   bash infra/deployment/scripts/deploy-prod.sh [SUBCOMMAND]
 #
 # SUBCOMMAND:
 #   preflight        只跑 pre-flight 檢查,不動 stack
@@ -50,7 +50,7 @@
 # ============================================================================
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$REPO_ROOT"
 
 # ── 顏色 helper ────────────────────────────────────────────────────────────
@@ -109,7 +109,7 @@ check_docker() {
 
 check_env() {
   # 必要 env(沒設就停)。CSP_SECRET_KEY / SECRET_KEY 擇一即可
-  # (docker-compose.yml 內 csp service 看的是 CSP_SECRET_KEY)。
+  # (infra/compose/platform.yml 內 csp service 看的是 CSP_SECRET_KEY)。
   local required=(CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY)
   local missing=()
   for v in "${required[@]}"; do
@@ -128,7 +128,7 @@ check_env() {
     fatal "缺少或 dev 值的必要 env: ${missing[*]}
        export 它們後重跑,或載入你的 prod .env:
          set -a; source /path/to/prod.env; set +a
-         bash scripts/deploy-prod.sh"
+         bash infra/deployment/scripts/deploy-prod.sh"
   fi
   ok "必要 env 都已設且非 dev 值"
 }
@@ -177,7 +177,7 @@ check_models_stack() {
   if ! docker network inspect anila-models-net >/dev/null 2>&1; then
     err "anila-models-net network 不存在"
     fatal "請先起模型 stack:
-       bash scripts/model-serve.sh up trial
+       bash infra/deployment/intranet/model-serve.sh up trial
        (確認 gemma4 / flux2-dev / flux2-dev-agent / nv-embed-proxy 都 healthy)
        模型在別台主機的內網部署 → export ANILA_REMOTE_MODELS=1 重跑"
   fi
@@ -227,7 +227,7 @@ cmd_preflight() {
 
 # JWT 簽章金鑰：prod 模式 ALLOW_AUTO_KEYGEN=false 不自動生 → 缺這把 csp 的
 # /.well-known/jwks.json 回 500、登入發不了 access token、anila-studio crash-loop。
-# docker-compose.yml 以 ./secrets mount 進 csp /app/secrets；compose up 前確保存在。
+# compose (infra/compose/platform.yml) 以 ./secrets mount 進 csp /app/secrets；compose up 前確保存在。
 # (一條龍 intranet-deploy.sh 也有同款 [4b] 步驟;走 deploy-prod.sh 這條也補上。)
 ensure_jwt_keypair() {
   mkdir -p -m 700 secrets   # secrets 目錄不可 world-listable
@@ -352,7 +352,7 @@ cmd_verify() {
   if [[ "$nginx_health" == "200" ]]; then
     ok "https://localhost/health → 200"
   else
-    warn "https://localhost/health → $nginx_health (TLS cert 可能要重簽,bash scripts/reissue-tls-cert.sh)"
+    warn "https://localhost/health → $nginx_health (TLS cert 可能要重簽,bash infra/deployment/scripts/reissue-tls-cert.sh)"
   fi
 
   # 試 csp directly (cluster-internal,從 nginx container 出)

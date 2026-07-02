@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # build-and-export-for-intranet.sh
 # ============================================================================
-# 把整套 ANILA stack (含 myCSPPlatform + ANILA UI + ANILALM + ingestion-worker
+# 把整套 ANILA stack (含 csp + anila-shell + anilalm + ingestion-worker
 # + router + pptx-renderer + 3 個 base + 3 個 cold-service + 4 個 model) 全部
 # build 完 → save 成 tar.gz,可以帶進無外網的內網環境 docker load。
 #
 # 用法 (在有外網的環境執行):
-#   bash scripts/build-and-export-for-intranet.sh [OUTPUT_DIR]
+#   bash infra/deployment/intranet/build-and-export-for-intranet.sh [OUTPUT_DIR]
 #   OUTPUT_DIR 預設 /tmp/anila-images-export
 #
 # 環境變數:
@@ -37,7 +37,7 @@
 set -euo pipefail
 
 OUTPUT_DIR="${1:-/tmp/anila-images-export}"
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
 cd "$REPO_ROOT"
 mkdir -p "$OUTPUT_DIR"
@@ -75,7 +75,7 @@ echo
 echo "▶ [3/5] Saving images to compressed tar.gz..."
 
 # 自家 build 出來的 image 名稱由 compose project name + service name 決定。
-# project name = anila-platform (見 docker-compose.yml ``name:`` 頂層欄位)。
+# project name = anila-platform (見 infra/compose/platform.yml ``name:`` 頂層欄位)。
 echo "  • 01-anila-built.tar.gz"
 docker save \
     anila-platform-csp \
@@ -104,7 +104,7 @@ docker save \
 # ── Phase 4: model image (預設跳過,WITH_MODELS=1 啟用) ──────────────────
 # Model image 動輒 45+ GB (Triton + TensorRT-LLM + vLLM weights),通常走
 # 別的管道 (USB / 內部資料閘道) 進內網。預設不打包,需要時:
-#   WITH_MODELS=1 bash scripts/build-and-export-for-intranet.sh
+#   WITH_MODELS=1 bash infra/deployment/intranet/build-and-export-for-intranet.sh
 if [ "${WITH_MODELS:-0}" = "1" ]; then
     echo "  • 04-models.tar.gz (WITH_MODELS=1)"
     # 內網拓撲備註 (2026-06):gpt-oss/nv-embed 已由 aiagent2 gateway 服務,
@@ -219,7 +219,7 @@ done
 echo
 
 # ── HF 權重 (05-weights-*.tar,WITH_WEIGHTS=1 打包時才有) ────────────────
-# 解到 ANILA_HF_DIR — 慣例是 <repo>/models/model (models/inference/
+# 解到 ANILA_HF_DIR — 慣例是 <repo>/models/model (infra/models/
 # docker-compose.yml 的權重掛載預設)。先 export ANILA_HF_DIR=<repo>/models/model
 # 再跑本腳本;放別處就之後在 .env 設同一個值。
 HF_DIR="${ANILA_HF_DIR:-/home/aia/c1147259/project/Huggingface}"

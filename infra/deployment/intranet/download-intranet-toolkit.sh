@@ -12,7 +12,7 @@
 #                         model image 都是綁定單一模型的客製品,蓋不到新清單
 #
 # 用法:
-#   bash scripts/download-intranet-toolkit.sh /data/staging/toolkit
+#   bash infra/deployment/intranet/download-intranet-toolkit.sh /data/staging/toolkit
 #   (產出後 pack-chunks.sh 切塊 → rclone 上傳 Google Drive;>45G 檔走檔案模式)
 #
 # 環境變數:
@@ -31,7 +31,7 @@
 # ============================================================================
 set -euo pipefail
 
-DEST="${1:?用法: bash scripts/download-intranet-toolkit.sh <目的地目錄>}"
+DEST="${1:?用法: bash infra/deployment/intranet/download-intranet-toolkit.sh <目的地目錄>}"
 VLLM_IMAGE="${VLLM_IMAGE:-vllm/vllm-openai:v0.22.1-cu129-ubuntu2404}"
 TRITON_IMAGE="${TRITON_IMAGE:-nvcr.io/nvidia/tritonserver:26.05-py3}"
 TRTLLM_IMAGE="${TRTLLM_IMAGE:-nvcr.io/nvidia/tensorrt-llm/release:1.2.1}"

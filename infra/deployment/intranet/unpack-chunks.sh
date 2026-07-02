@@ -2,12 +2,12 @@
 # unpack-chunks.sh — 內網端:驗 chunk hash → 串流重組/解壓 (pack-chunks 的對端)
 # ============================================================================
 # 用法:
-#   bash scripts/unpack-chunks.sh <manifest檔> <輸出目錄>
+#   bash infra/deployment/intranet/unpack-chunks.sh <manifest檔> <輸出目錄>
 #
 # 範例:
-#   bash scripts/unpack-chunks.sh /transfer/gemma-4-31B.manifest.sha256 models/model
+#   bash infra/deployment/intranet/unpack-chunks.sh /transfer/gemma-4-31B.manifest.sha256 models/model
 #     → 驗每個 chunk 的 sha256 → cat | tar -x 直接解出 models/model/gemma-4-31B/
-#   bash scripts/unpack-chunks.sh /transfer/04-models.tar.gz.manifest.sha256 ./restore
+#   bash infra/deployment/intranet/unpack-chunks.sh /transfer/04-models.tar.gz.manifest.sha256 ./restore
 #     → 驗 hash → cat 重組回 ./restore/04-models.tar.gz (raw 檔案模式)
 #
 # 串流設計:tar 模式下 chunk 直接 cat 進 tar -x,**不需要**先重組出完整

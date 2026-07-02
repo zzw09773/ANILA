@@ -19,12 +19,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ANILALM_ROOT="$SCRIPT_DIR/.."
-ANILA_STUDIO_OPENAPI="$ANILALM_ROOT/../anila-studio/openapi/studio.openapi.json"
+ANILA_STUDIO_OPENAPI="$ANILALM_ROOT/../../services/anila-studio/openapi/studio.openapi.json"
 OUT="$ANILALM_ROOT/src/api/studio-types.gen.ts"
 
 if [ ! -f "$ANILA_STUDIO_OPENAPI" ]; then
   echo "ERROR: anila-studio OpenAPI not found at $ANILA_STUDIO_OPENAPI" >&2
-  echo "Run from the anila-studio root:" >&2
+  echo "Run from the services/anila-studio root:" >&2
   echo "  .venv/bin/python -c \"from app.main import app; import json; json.dump(app.openapi(), open('openapi/studio.openapi.json','w'), indent=2, sort_keys=True, ensure_ascii=False)\"" >&2
   exit 1
 fi

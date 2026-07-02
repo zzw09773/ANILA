@@ -8,7 +8,7 @@ Two modes:
              CSV (filename, hf_energy, label) with the ``label`` column left
              BLANK for the human to fill in good/bad.
 
-                 python scripts/calibrate_striping.py measure \\
+                 python infra/deployment/scripts/calibrate_striping.py measure \\
                      --img-dir /tmp/flux-calib --out-csv /tmp/calib.csv
 
              ...then a human opens /tmp/calib.csv and writes ``good`` or
@@ -19,14 +19,14 @@ Two modes:
              for good (and bad, if any) plus a RECOMMENDED HF_ENERGY_THRESH and
              the reasoning.
 
-                 python scripts/calibrate_striping.py analyze --csv /tmp/calib.csv
+                 python infra/deployment/scripts/calibrate_striping.py analyze --csv /tmp/calib.csv
 
 The measure mode needs to import the backend service. It auto-locates the
-``myCSPPlatform/backend`` dir relative to this script and adds it to sys.path,
+``services/csp`` dir relative to this script and adds it to sys.path,
 so it works whether you run it from the repo root or the backend dir. Use the
 backend venv python so numpy is available:
 
-    myCSPPlatform/backend/.venv/bin/python scripts/calibrate_striping.py measure ...
+    services/csp/.venv/bin/python infra/deployment/scripts/calibrate_striping.py measure ...
 """
 from __future__ import annotations
 
@@ -47,13 +47,13 @@ ABS_MARGIN = 0.005
 
 
 def _backend_on_path() -> None:
-    """Add myCSPPlatform/backend to sys.path so ``app.services...`` imports."""
+    """Add services/csp to sys.path so ``app.services...`` imports."""
     here = Path(__file__).resolve()
-    # repo root is scripts/..; backend is myCSPPlatform/backend under it.
+    # repo root is infra/deployment/scripts/../../..; backend is services/csp under it.
     candidates = [
-        here.parent.parent / "myCSPPlatform" / "backend",
-        Path.cwd() / "myCSPPlatform" / "backend",
-        Path.cwd() / "backend",
+        here.parents[3] / "services" / "csp",
+        Path.cwd() / "services" / "csp",
+        Path.cwd() / "csp",
         Path.cwd(),
     ]
     for c in candidates:
@@ -86,7 +86,7 @@ def cmd_measure(args: argparse.Namespace) -> int:
         print(
             f"ERROR: cannot import app.services.flux_quality_gate.striping_energy: {e}\n"
             "Run with the backend venv python so numpy is importable, e.g.:\n"
-            "  myCSPPlatform/backend/.venv/bin/python scripts/calibrate_striping.py "
+            "  services/csp/.venv/bin/python infra/deployment/scripts/calibrate_striping.py "
             "measure --img-dir ... --out-csv ...",
             file=sys.stderr,
         )
@@ -227,7 +227,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
     print("=" * 64)
     print(f"RECOMMENDED HF_ENERGY_THRESH = {rec:.5f}")
-    print(f"  (current shipped value: 0.06)")
+    print("  (current shipped value: 0.06)")
     print(f"Reason: {reason}")
     print("=" * 64)
     return 0
