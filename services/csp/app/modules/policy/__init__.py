@@ -11,6 +11,24 @@ PolicyDecision 的產出。分類等級契約型別在
 `from app.modules.policy import ...`(package 根的公開介面),不得 import
 本 package 子模組的內部實作。本 package 不得 import
 `app.modules.tasks` / `app.modules.launch` 內部,也不得 import `app.api`。
+
+公開面(Slice 2b-B,recording only;append-only —— 永遠不外露 mutator):
+
+- ``record_decision(db, *, action, resource_type, resource_id, decision,
+  actor_type, actor_id, task_id=None, reason=None, matched_policy_ids=None,
+  policy_version="r1", metadata=None) -> PolicyDecision``
+- ``evaluate_classification_ceiling(*, task_level, ceiling) -> bool``
+- ``router`` —— GET /api/policy-decisions(admin tier 唯讀查詢)
 """
 
-__all__: list = []
+from app.modules.policy.router import router
+from app.modules.policy.service import (
+    evaluate_classification_ceiling,
+    record_decision,
+)
+
+__all__ = [
+    "evaluate_classification_ceiling",
+    "record_decision",
+    "router",
+]
