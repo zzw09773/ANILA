@@ -4,16 +4,114 @@ import logging
 import os
 import re
 import hashlib
+from datetime import datetime, timezone
+from urllib.parse import urlparse
+
+from sqlalchemy import or_
+
 from app.config import settings
 from app.database import SessionLocal
 from app.models.agent import Agent, UserAgentPermission
 from app.models.api_key import ApiKey, ApiKeyModelPermission
 from app.models.model_registry import ModelRegistry
-from app.models.platform_link import PlatformLink
+from app.models.registered_service import RegisteredService
 from app.models.user import User
 from app.utils.security import hash_password
+from app.utils.slug import unique_slug
+
+
+def _origin_of(url: str) -> str | None:
+    """Return ``scheme://host[:port]`` for an entry URL, or None if unparseable.
+    Used to seed a service's ``allowed_origins`` (iframe origin allow-list)."""
+    try:
+        parts = urlparse(url)
+    except ValueError:
+        return None
+    if not parts.scheme or not parts.netloc:
+        return None
+    return f"{parts.scheme}://{parts.netloc}"
 
 logger = logging.getLogger(__name__)
+
+
+def sync_env_seeded_services(db, links_config: list[dict], *, now=None) -> None:
+    """Upsert AUTO_REGISTER_LINKS entries into registered_services under the
+    Slice 7 config_source rules (doc 07 §3/§15.1). Does NOT commit — caller owns
+    the transaction.
+
+    - Only ``config_source="env_seeded"`` rows are ever upserted; a ``db``
+      service is skipped (single source of truth = UI, survives restart).
+    - Within an env_seeded row, fields listed in ``db_editable_fields``
+      (admin-sticky, e.g. ``is_active``) are left untouched; env owns the rest.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    taken = {row[0] for row in db.query(RegisteredService.slug).all()}
+    for idx, link_data in enumerate(links_config):
+        name = link_data["name"]
+        env_seed_key = link_data.get("env_seed_key") or name
+        # Coerce nullable required_roles → [] (NOT NULL JSONB).
+        required_roles = link_data.get("required_roles") or []
+        is_public = bool(link_data.get("is_public", False))
+        url = link_data["url"]
+        icon = link_data.get("icon", "")
+        description = link_data.get("description", "")
+        sort_order = link_data.get("sort_order", idx + 1)
+
+        existing = (
+            db.query(RegisteredService)
+            .filter(
+                or_(
+                    RegisteredService.env_seed_key == env_seed_key,
+                    RegisteredService.name == name,
+                )
+            )
+            .first()
+        )
+        if existing is None:
+            slug = unique_slug(name, taken, fallback="link")
+            taken.add(slug)
+            origin = _origin_of(url)
+            db.add(RegisteredService(
+                name=name,
+                slug=slug,
+                entry_url=url,
+                icon=icon,
+                description=description,
+                sort_order=sort_order,
+                is_public=is_public,
+                required_roles=required_roles,
+                allowed_origins=[origin] if origin else [],
+                config_source="env_seeded",
+                env_seed_key=env_seed_key,
+                db_editable_fields=["is_active"],
+                last_seeded_at=now,
+            ))
+            logger.info(f"自動註冊服務 (env_seeded): {name}")
+        elif existing.config_source != "env_seeded":
+            # db-authored service: single source of truth = UI; seed skips it.
+            logger.debug("跳過 db 服務 %s(config_source=db,seed 不覆蓋)", name)
+            continue
+        else:
+            # env_seeded: re-sync env-owned fields, skipping admin-sticky ones.
+            editable = set(existing.db_editable_fields or [])
+            changed = False
+            for field, new_value in (
+                ("entry_url", url),
+                ("icon", icon),
+                ("description", description),
+                ("sort_order", sort_order),
+                ("is_public", is_public),
+                ("required_roles", required_roles),
+            ):
+                if field in editable:
+                    continue  # admin-sticky, seed must not clobber
+                if getattr(existing, field) != new_value:
+                    setattr(existing, field, new_value)
+                    changed = True
+            existing.last_seeded_at = now
+            if changed:
+                logger.info(f"同步 env_seeded 服務: {name}")
 
 
 def _parse_model_env_vars() -> list[dict]:
@@ -395,56 +493,18 @@ def auto_seed():
             except Exception as e:
                 logger.error(f"API key 自動初始化失敗: {e}")
 
-        # 5. Auto-register platform links from AUTO_REGISTER_LINKS env
-        # Idempotent upsert — also syncs is_public + required_roles on
-        # existing rows so that flipping a flag in env survives a restart
-        # without manual DB editing. Migrations 0012 (required_roles) and
-        # 0013 (is_public) added these fields; this seed honours them.
+        # 5. Auto-register services from AUTO_REGISTER_LINKS env → registered_services
+        # Slice 7 config_source rules (doc 07 §3/§15.1): the seed ONLY touches
+        # config_source="env_seeded" rows. A db-authored service is NEVER
+        # clobbered on restart; and within an env_seeded service the
+        # db_editable_fields whitelist (admin-sticky, e.g. is_active) is left
+        # untouched — env owns everything else. This is what makes admin edits
+        # to db services survive a restart (the old platform_links seed
+        # re-synced env values over admin edits every boot).
         if settings.AUTO_REGISTER_LINKS:
             try:
                 links_config = json.loads(settings.AUTO_REGISTER_LINKS)
-                for idx, link_data in enumerate(links_config):
-                    name = link_data["name"]
-                    # Coerce nullable required_roles → [] (schema is NOT NULL
-                    # JSONB DEFAULT '[]'). Keeps the env var copy-pastable
-                    # from older v0.4 design doc that wrote `null`.
-                    required_roles = link_data.get("required_roles") or []
-                    is_public = bool(link_data.get("is_public", False))
-
-                    existing = db.query(PlatformLink).filter(
-                        PlatformLink.name == name
-                    ).first()
-                    if existing is None:
-                        db.add(PlatformLink(
-                            name=name,
-                            url=link_data["url"],
-                            icon=link_data.get("icon", ""),
-                            description=link_data.get("description", ""),
-                            sort_order=link_data.get("sort_order", idx + 1),
-                            is_public=is_public,
-                            required_roles=required_roles,
-                        ))
-                        logger.info(f"自動註冊平台連結: {name}")
-                    else:
-                        # Sync mutable fields. Don't touch is_active so an
-                        # admin's manual deactivation isn't reverted on
-                        # restart (admin > env var here).
-                        changed = False
-                        for field, new_value in (
-                            ("url", link_data["url"]),
-                            ("icon", link_data.get("icon", existing.icon or "")),
-                            ("description", link_data.get(
-                                "description", existing.description or "")),
-                            ("sort_order", link_data.get(
-                                "sort_order", existing.sort_order)),
-                            ("is_public", is_public),
-                            ("required_roles", required_roles),
-                        ):
-                            if getattr(existing, field) != new_value:
-                                setattr(existing, field, new_value)
-                                changed = True
-                        if changed:
-                            logger.info(f"同步平台連結: {name}")
+                sync_env_seeded_services(db, links_config)
             except json.JSONDecodeError as e:
                 logger.error(f"AUTO_REGISTER_LINKS JSON 解析失敗: {e}")
 

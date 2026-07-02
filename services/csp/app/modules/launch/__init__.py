@@ -11,4 +11,36 @@
 `app.modules.tasks` / `app.modules.policy` 內部,也不得 import `app.api`。
 """
 
-__all__: list = []
+from app.modules.launch.manifest import (
+    ManifestFetchError,
+    fetch_service_manifest,
+    manifest_url_for,
+)
+from app.modules.launch.service import (
+    build_launch_url,
+    create_service_launch,
+    new_launch_id,
+    new_trace_id,
+    record_service_audit_callback,
+)
+from app.modules.launch.token import (
+    LAUNCH_TOKEN_ISSUER,
+    LAUNCH_TOKEN_TTL_MINUTES,
+    build_launch_claims,
+    issue_launch_token,
+)
+
+__all__ = [
+    "LAUNCH_TOKEN_ISSUER",
+    "LAUNCH_TOKEN_TTL_MINUTES",
+    "ManifestFetchError",
+    "build_launch_claims",
+    "build_launch_url",
+    "create_service_launch",
+    "fetch_service_manifest",
+    "issue_launch_token",
+    "manifest_url_for",
+    "new_launch_id",
+    "new_trace_id",
+    "record_service_audit_callback",
+]

@@ -59,7 +59,7 @@ def _secret_key(monkeypatch):
     yield
 
 
-# ── 1. alembic single head = r1_0005 ────────────────────────────────────────
+# ── 1. alembic single head = r1_0006 (advanced by Slice 7a) ─────────────────
 
 def test_alembic_single_head_is_r1_0005():
     versions = Path(__file__).resolve().parents[1] / "migrations" / "versions"
@@ -78,7 +78,8 @@ def test_alembic_single_head_is_r1_0005():
         if down and down.group(1):
             downs.add(down.group(1))
     heads = revisions - downs
-    assert heads == {"r1_0005"}, f"alembic head 應為 r1_0005,實得 {heads}"
+    # Slice 7a advanced the head r1_0005 → r1_0006 (registered_services).
+    assert heads == {"r1_0006"}, f"alembic head 應為 r1_0006,實得 {heads}"
 
 
 def test_r1_0005_revises_r1_0004():

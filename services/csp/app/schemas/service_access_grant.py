@@ -36,7 +36,10 @@ class ServiceAccessGrantResponse(BaseModel):
     id: int
     user_id: int | None
     department_id: int | None
-    platform_link_id: int
+    # Slice 7: ``service_id`` is the authoritative FK to registered_services;
+    # ``platform_link_id`` is the (now nullable) legacy column kept for compat.
+    service_id: int | None = None
+    platform_link_id: int | None = None
     granted_by: int | None
     granted_at: datetime
     revoked_at: datetime | None

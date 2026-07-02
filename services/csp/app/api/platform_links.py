@@ -1,18 +1,34 @@
+"""``/api/platform-links`` — compat façade over ``registered_services``.
+
+Slice 7 (doc 07 §14): ``PlatformLink`` is superseded by ``RegisteredService``
+but the legacy CRUD surface stays byte-compatible so existing CSP admin UI and
+any callers keep working with zero changes. Every handler here now reads/writes
+``registered_services`` and serialises through ``PlatformLinkResponse`` (the
+RegisteredService ``.url`` property mirrors the old ``url`` column). New rows
+are created with ``config_source="db"`` so the seed never clobbers them.
+"""
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+
 from app.database import get_db
-from app.models.platform_link import PlatformLink
+from app.models.registered_service import RegisteredService
 from app.models.user import User
 from app.schemas.platform_link import (
     PlatformLinkCreate,
-    PlatformLinkUpdate,
     PlatformLinkResponse,
+    PlatformLinkUpdate,
 )
 from app.services.access_control import accessible_links_for
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user, is_admin_tier, require_admin
+from app.utils.slug import unique_slug
 
 router = APIRouter(prefix="/api/platform-links", tags=["平台連結"])
+
+
+def _taken_slugs(db: Session) -> set[str]:
+    return {row[0] for row in db.query(RegisteredService.slug).all()}
 
 
 @router.get("", response_model=list[PlatformLinkResponse])
@@ -21,15 +37,14 @@ def list_links(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # admin / owner 都享全可視 + include_inactive 切換;
-    # 一般 user 走 access_control 的 role gate + grant check,
-    # include_inactive 對非 admin-tier 靜默忽略。
+    # admin / owner 全可視 + include_inactive 切換;一般 user 走
+    # access_control 的 role gate + grant check(include_inactive 靜默忽略)。
     if is_admin_tier(current_user):
-        query = db.query(PlatformLink).order_by(
-            PlatformLink.sort_order, PlatformLink.created_at
+        query = db.query(RegisteredService).order_by(
+            RegisteredService.sort_order, RegisteredService.created_at
         )
         if not include_inactive:
-            query = query.filter(PlatformLink.is_active == True)
+            query = query.filter(RegisteredService.is_active.is_(True))
         return query.all()
     return accessible_links_for(db, current_user)
 
@@ -40,20 +55,33 @@ def create_link(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    link = PlatformLink(**request.model_dump())
-    db.add(link)
+    data = request.model_dump()
+    url = data.pop("url")
+    service = RegisteredService(
+        name=data["name"],
+        slug=unique_slug(data["name"], _taken_slugs(db), fallback="link"),
+        entry_url=url,
+        icon=data.get("icon"),
+        description=data.get("description"),
+        sort_order=data.get("sort_order", 0),
+        is_public=data.get("is_public", False),
+        required_roles=data.get("required_roles") or [],
+        config_source="db",
+        db_editable_fields=[],
+    )
+    db.add(service)
     db.commit()
-    db.refresh(link)
+    db.refresh(service)
     log_audit_event(
         db,
         actor=admin,
         action="create",
         resource_type="platform_link",
-        resource_id=link.id,
-        detail=f"建立平台連結「{link.name}」",
+        resource_id=service.id,
+        detail=f"建立平台連結「{service.name}」",
         commit=True,
     )
-    return link
+    return service
 
 
 @router.put("/{link_id}", response_model=PlatformLinkResponse)
@@ -63,26 +91,32 @@ def update_link(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    link = db.query(PlatformLink).filter(PlatformLink.id == link_id).first()
-    if not link:
+    service = (
+        db.query(RegisteredService)
+        .filter(RegisteredService.id == link_id)
+        .first()
+    )
+    if not service:
         raise HTTPException(status_code=404, detail="連結不存在")
 
     update_data = request.model_dump(exclude_unset=True)
+    if "url" in update_data:
+        service.entry_url = update_data.pop("url")
     for field, value in update_data.items():
-        setattr(link, field, value)
+        setattr(service, field, value)
 
     db.commit()
-    db.refresh(link)
+    db.refresh(service)
     log_audit_event(
         db,
         actor=admin,
         action="update",
         resource_type="platform_link",
-        resource_id=link.id,
-        detail=f"更新平台連結「{link.name}」",
+        resource_id=service.id,
+        detail=f"更新平台連結「{service.name}」",
         commit=True,
     )
-    return link
+    return service
 
 
 @router.delete("/{link_id}")
@@ -91,18 +125,22 @@ def delete_link(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    link = db.query(PlatformLink).filter(PlatformLink.id == link_id).first()
-    if not link:
+    service = (
+        db.query(RegisteredService)
+        .filter(RegisteredService.id == link_id)
+        .first()
+    )
+    if not service:
         raise HTTPException(status_code=404, detail="連結不存在")
-    link.is_active = False
+    service.is_active = False
     db.commit()
     log_audit_event(
         db,
         actor=admin,
         action="deactivate",
         resource_type="platform_link",
-        resource_id=link.id,
-        detail=f"停用平台連結「{link.name}」",
+        resource_id=service.id,
+        detail=f"停用平台連結「{service.name}」",
         commit=True,
     )
     return {"message": "連結已停用"}
@@ -114,18 +152,24 @@ def purge_link(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """Hard-delete a platform link, irreversible.
+    """Hard-delete a registered service, irreversible.
 
-    Lower stakes than user purge so this stays at admin tier (not owner-
-    only). ``service_access_grant.platform_link_id`` already has
-    ``ondelete=CASCADE`` so direct ``db.delete(link)`` collapses any
-    per-user grant rows pointing at it.
+    Slice 7 preserve-history (doc §14 blocker): ``service_access_grants``
+    reference the service via ``service_id`` with ``ON DELETE SET NULL`` and
+    ``service_launches`` / ``service_audit_callbacks`` likewise, so the grant
+    and launch/audit history rows SURVIVE this purge (their ``service_id`` is
+    nulled, the audit trail is not erased) — unlike the old CASCADE that
+    silently deleted grant rows.
     """
-    link = db.query(PlatformLink).filter(PlatformLink.id == link_id).first()
-    if not link:
+    service = (
+        db.query(RegisteredService)
+        .filter(RegisteredService.id == link_id)
+        .first()
+    )
+    if not service:
         raise HTTPException(status_code=404, detail="連結不存在")
-    name = link.name
-    db.delete(link)
+    name = service.name
+    db.delete(service)
     db.commit()
     log_audit_event(
         db,

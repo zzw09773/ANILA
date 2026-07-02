@@ -45,10 +45,22 @@ class ServiceAccessGrant(Base):
     department_id = Column(
         Integer, ForeignKey("departments.id", ondelete="CASCADE"), nullable=True
     )
+    # Legacy FK, kept nullable for downgrade safety. New grants target a
+    # RegisteredService via ``service_id`` below; migrated grants carry both.
     platform_link_id = Column(
         Integer,
         ForeignKey("platform_links.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
+    )
+    # Slice 7 preserve-history FK: ``ON DELETE SET NULL`` so a grant's audit
+    # row (granted_by / granted_at / revoked_at) SURVIVES deletion of the
+    # RegisteredService it targeted — replacing the old CASCADE purge that
+    # silently erased grant history (doc 07 §14 / §15.1 blocker).
+    service_id = Column(
+        Integer,
+        ForeignKey("registered_services.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     # SET NULL on grantor delete: keep audit row even if the admin who issued
     # the grant is later removed.
@@ -63,6 +75,7 @@ class ServiceAccessGrant(Base):
     user = relationship("User", foreign_keys=[user_id])
     department = relationship("Department", foreign_keys=[department_id])
     platform_link = relationship("PlatformLink", foreign_keys=[platform_link_id])
+    service = relationship("RegisteredService", foreign_keys=[service_id])
     grantor = relationship("User", foreign_keys=[granted_by])
 
     @property

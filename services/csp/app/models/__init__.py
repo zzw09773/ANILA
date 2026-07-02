@@ -37,7 +37,13 @@ from app.models.message import Message
 from app.models.model_registry import ModelRegistry
 from app.models.platform_link import PlatformLink
 from app.models.policy_decision import PolicyDecision
+from app.models.registered_service import (
+    RegisteredService,
+    ServiceProjectBinding,
+)
+from app.models.service_access_grant import ServiceAccessGrant
 from app.models.service_client import ServiceClient
+from app.models.service_launch import ServiceAuditCallback, ServiceLaunch
 from app.models.source_snapshot import Citation, SourceSnapshot
 from app.models.task import Task, TaskRun
 from app.models.token_revocation import TokenRevocation
@@ -76,7 +82,12 @@ __all__ = [
     "ModelRegistry",
     "PlatformLink",
     "PolicyDecision",
+    "RegisteredService",
+    "ServiceAccessGrant",
+    "ServiceAuditCallback",
     "ServiceClient",
+    "ServiceLaunch",
+    "ServiceProjectBinding",
     "SourceSnapshot",
     "Task",
     "TaskRun",

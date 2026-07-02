@@ -1,33 +1,34 @@
-"""Service-level access control for platform_links.
+"""Service-level access control for the Service Registry (doc 07 §12).
 
-Single source of truth for "can this user see / open this service?". All API
-endpoints that surface or gate on a platform_link MUST go through this module
-— never reimplement the algorithm inline. The authoritative algorithm:
+Single source of truth for "can this user see / launch this service?". All API
+endpoints that surface or gate on a RegisteredService MUST go through this
+module — never reimplement the algorithm inline. The authoritative algorithm
+(doc 07 §12; steps 1–5 preserved from the legacy platform_links algorithm,
+steps 6–8 added by Slice 7):
 
-    1. Link must be active (``is_active = True``). Else: deny.
-    2. Admin bypass — if ``user.role == 'admin'``, allow.
-       Admins are universally trusted on active links: they bypass the role
-       gate, public flag, and grant check entirely. This matches the
-       "superuser sees everything" model and avoids the surprise of an
-       admin losing visibility on a link configured with
-       ``required_roles=['developer']``.
-    3. ``role`` gate — if ``link.required_roles`` is non-empty, ``user.role``
-       must be in it. Else: deny. Empty list means the gate is open.
-    4. Public bypass — if ``link.is_public`` is True, allow. Public links
-       still respect step 3's role gate (so "public to developers only"
-       works), but they skip the per-user / per-department grant check.
-    5. Grant check — must have an active grant (``revoked_at IS NULL``)
-       targeting this link, EITHER user-level (``user_id = me``) OR
-       department-level (``department_id = my_department``).
+    1. Service must be active (``is_active = True``). Else: deny.
+    2. Admin / owner bypass — ``is_admin_tier(user)`` sees & manages every
+       active service, crossing the per-service ``service_admin_user_ids``
+       boundary and grant checks (doc §12; "superuser sees everything").
+    3. Role gate — if ``required_roles`` is non-empty, ``user.role`` must be in
+       it. Empty list = open gate.
+    4. Public bypass — ``is_public`` skips the per-user / per-department grant.
+    5. Grant check — active grant (``revoked_at IS NULL``) targeting this
+       service, either user-level or department-level.
+    6. Classification clearance — when a ``context_level`` is supplied (launch
+       time), the launch's classification must be ``<=`` the service's
+       ``classification_ceiling``. This is a HARD ceiling checked for ALL tiers
+       (admins included) — the admin bypass in step 2 does NOT lift it, so the
+       single-directional classification invariant is never weakened.
+    7. Project membership check — MVP no-op pass (per-user project membership
+       is not yet modelled; ``service_project_bindings`` exist but there is no
+       user↔project store to gate on). Wired here for the future.
+    8. Service launch policy check — MVP no-op pass (per-service launch policy
+       beyond steps 3–6 is not yet modelled). Wired here for the future.
 
-This means access is "default deny" for non-admin / non-public links — no
-automatic open access just because a link exists. The role gate is the
-cheap pre-filter; the grant check is the authoritative per-user /
-per-department opt-in.
-
-See docs/platform/multi-service-integration-plan.md §7.5 for the design rationale and
-the migrations 0012_add_service_access_control.py + 0013_add_platform_link_is_public.py
-for the underlying schema.
+Default deny for non-admin / non-public services with no grant. Grants are
+matched on ``service_id`` (new) OR the legacy ``platform_link_id`` (migrated
+grants carry both; the ids mirror 1:1), so no grant is lost in the upgrade.
 """
 
 from __future__ import annotations
@@ -37,94 +38,125 @@ from collections.abc import Iterable
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.models.platform_link import PlatformLink
+from app.models.registered_service import RegisteredService
 from app.models.service_access_grant import ServiceAccessGrant
 from app.models.user import User
+from app.schemas.contracts.classification import ClassificationLevel
 from app.services.auth_service import is_admin_tier
 
 
-def _active_link_ids_for_user(db: Session, user: User) -> set[int]:
-    """Return platform_link ids the user has an active grant for, either
-    directly (user-level) or via their department (department-level)."""
-    clauses = [ServiceAccessGrant.user_id == user.id]
+def _active_service_ids_for_user(db: Session, user: User) -> set[int]:
+    """Return RegisteredService ids the user has an active grant for, either
+    directly (user-level) or via their department (department-level).
+
+    Both the new ``service_id`` and the legacy ``platform_link_id`` columns are
+    collected so migrated grants (keyed by platform_link_id) and new grants
+    (keyed by service_id) both count."""
+    who = [ServiceAccessGrant.user_id == user.id]
     if user.department_id is not None:
-        # Skip the department clause entirely when user has no department —
-        # otherwise SQL `NULL = NULL` would silently return UNKNOWN, and
-        # adding a redundant `IS NOT NULL` filter just bloats the query plan.
-        clauses.append(ServiceAccessGrant.department_id == user.department_id)
+        who.append(ServiceAccessGrant.department_id == user.department_id)
 
-    query = db.query(ServiceAccessGrant.platform_link_id).filter(
-        ServiceAccessGrant.revoked_at.is_(None),
-        or_(*clauses),
+    rows = (
+        db.query(
+            ServiceAccessGrant.service_id,
+            ServiceAccessGrant.platform_link_id,
+        )
+        .filter(ServiceAccessGrant.revoked_at.is_(None), or_(*who))
+        .all()
     )
-    return {row[0] for row in query.all()}
+    ids: set[int] = set()
+    for service_id, platform_link_id in rows:
+        if service_id is not None:
+            ids.add(service_id)
+        if platform_link_id is not None:
+            ids.add(platform_link_id)
+    return ids
 
 
-def can_access_link(db: Session, user: User, link: PlatformLink) -> bool:
-    """Return True iff user is allowed to see/open this link."""
-    if not link.is_active:
+def _classification_ok(context_level: str | None, ceiling: str | None) -> bool:
+    """Step 6: launch level must be ``<=`` the service ceiling. No context or
+    no ceiling = pass. Unknown level strings fail-closed via ValueError from
+    ``ClassificationLevel.from_storage`` (propagated to the caller)."""
+    if context_level is None or not ceiling:
+        return True
+    return ClassificationLevel.from_storage(context_level) <= (
+        ClassificationLevel.from_storage(ceiling)
+    )
+
+
+def can_access_service(
+    db: Session,
+    user: User,
+    service: RegisteredService,
+    *,
+    context_level: str | None = None,
+) -> bool:
+    """Return True iff user may see / launch this service (doc 07 §12)."""
+    if not service.is_active:
+        return False
+    # Step 6 first so the hard classification ceiling binds every tier.
+    if not _classification_ok(context_level, service.classification_ceiling):
         return False
     if is_admin_tier(user):
-        # admin / owner bypass placed *before* the role gate so they
-        # see links configured with required_roles=['developer'] regardless.
-        # Matches the documented "superuser is universally trusted"
-        # model and stays consistent with accessible_links_for() below.
-        return True
-    required = link.required_roles or []
+        return True  # steps 3–5, 7–8 bypass (doc §12)
+    required = service.required_roles or []
     if required and user.role not in required:
         return False
-    if link.is_public:
-        return True
-    return link.id in _active_link_ids_for_user(db, user)
+    if not (service.is_public or service.id in _active_service_ids_for_user(db, user)):
+        return False
+    # Steps 7 (project membership) & 8 (launch policy): MVP no-op pass.
+    return True
 
 
-def accessible_links_for(
+def accessible_services_for(
     db: Session,
     user: User,
     *,
     include_inactive: bool = False,
-) -> list[PlatformLink]:
-    """Return all platform_links the user can see, sorted by sort_order.
+) -> list[RegisteredService]:
+    """Return all services the user can see, sorted by sort_order.
 
-    Single-query implementation: pre-fetches user's grant set, then filters
-    in Python. This is ~10x faster than per-link can_access_link() in a
-    Python loop because it avoids N+1 queries.
-    """
-    query = db.query(PlatformLink).order_by(
-        PlatformLink.sort_order, PlatformLink.created_at
+    Single-query implementation: pre-fetches the user's grant set, then filters
+    in Python (avoids N+1). No ``context_level`` here — classification clearance
+    (step 6) is a launch-time gate, not a list-time one."""
+    query = db.query(RegisteredService).order_by(
+        RegisteredService.sort_order, RegisteredService.created_at
     )
     if not include_inactive:
-        query = query.filter(PlatformLink.is_active.is_(True))
-    links: list[PlatformLink] = query.all()
+        query = query.filter(RegisteredService.is_active.is_(True))
+    services: list[RegisteredService] = query.all()
 
     if is_admin_tier(user):
-        # admin / owner see every active link; role gate + grant check both
-        # bypassed (matches can_access_link()'s admin-tier path).
-        return links
+        return services
 
-    grant_set = _active_link_ids_for_user(db, user)
-    out: list[PlatformLink] = []
-    for link in links:
-        required = link.required_roles or []
+    grant_set = _active_service_ids_for_user(db, user)
+    out: list[RegisteredService] = []
+    for service in services:
+        required = service.required_roles or []
         if required and user.role not in required:
             continue
-        if link.is_public or link.id in grant_set:
-            out.append(link)
+        if service.is_public or service.id in grant_set:
+            out.append(service)
     return out
 
 
 def filter_accessible(
-    db: Session, user: User, link_ids: Iterable[int]
+    db: Session, user: User, service_ids: Iterable[int]
 ) -> set[int]:
-    """Return the subset of link_ids the user can access.
-
-    Useful when caller already has link ids in hand (e.g., from a redirect /
-    deep link) and just wants a yes/no per id without re-fetching every link
-    row. Skips inactive links and applies the same role + grant rules as
-    can_access_link().
-    """
-    ids = list(link_ids)
+    """Return the subset of service_ids the user can access."""
+    ids = list(service_ids)
     if not ids:
         return set()
-    links = db.query(PlatformLink).filter(PlatformLink.id.in_(ids)).all()
-    return {link.id for link in links if can_access_link(db, user, link)}
+    services = (
+        db.query(RegisteredService)
+        .filter(RegisteredService.id.in_(ids))
+        .all()
+    )
+    return {s.id for s in services if can_access_service(db, user, s)}
+
+
+# ── Legacy compat aliases (platform_links vocabulary) ───────────────────────
+# The /api/platform-links façade and any older callers keep these names; they
+# now operate on RegisteredService rows transparently.
+can_access_link = can_access_service
+accessible_links_for = accessible_services_for

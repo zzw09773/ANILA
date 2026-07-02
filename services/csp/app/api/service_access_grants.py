@@ -21,11 +21,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.department import Department
 from app.models.platform_link import PlatformLink
+from app.models.registered_service import RegisteredService
 from app.models.service_access_grant import ServiceAccessGrant
 from app.models.user import User
 from app.schemas.service_access_grant import (
@@ -57,8 +59,13 @@ def list_grants(
     if department_id is not None:
         query = query.filter(ServiceAccessGrant.department_id == department_id)
     if platform_link_id is not None:
+        # Match either the new service_id or the legacy platform_link_id column
+        # (they mirror 1:1) so a filter finds migrated and new grants alike.
         query = query.filter(
-            ServiceAccessGrant.platform_link_id == platform_link_id
+            or_(
+                ServiceAccessGrant.service_id == platform_link_id,
+                ServiceAccessGrant.platform_link_id == platform_link_id,
+            )
         )
     if not include_revoked:
         query = query.filter(ServiceAccessGrant.revoked_at.is_(None))
@@ -76,15 +83,26 @@ def create_grant(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    # Validate FK targets exist before INSERT — better 404 than the FK
-    # error trickling out of the DB driver.
-    link = (
-        db.query(PlatformLink)
-        .filter(PlatformLink.id == request.platform_link_id)
+    # ``platform_link_id`` in the request now names a RegisteredService id
+    # (the ids mirror 1:1). Validate against the registry; keep the legacy
+    # platform_link_id column populated only when a real platform_links row
+    # still exists (migrated services), else leave it NULL (new registry
+    # services have no platform_links row). The authoritative FK is service_id.
+    service = (
+        db.query(RegisteredService)
+        .filter(RegisteredService.id == request.platform_link_id)
         .first()
     )
-    if not link:
+    if not service:
         raise HTTPException(status_code=404, detail="平台連結不存在")
+    link = service  # name used in audit / duplicate messages below
+    legacy_platform_link_id = (
+        request.platform_link_id
+        if db.query(PlatformLink.id)
+        .filter(PlatformLink.id == request.platform_link_id)
+        .first()
+        else None
+    )
 
     target_label: str
     if request.user_id is not None:
@@ -104,8 +122,12 @@ def create_grant(
 
     # Check for duplicate active grant — the partial unique index would
     # reject it but we want a useful 409 instead of the IntegrityError page.
+    # Match on either column since migrated grants key on platform_link_id.
     duplicate_q = db.query(ServiceAccessGrant).filter(
-        ServiceAccessGrant.platform_link_id == request.platform_link_id,
+        or_(
+            ServiceAccessGrant.service_id == service.id,
+            ServiceAccessGrant.platform_link_id == request.platform_link_id,
+        ),
         ServiceAccessGrant.revoked_at.is_(None),
     )
     if request.user_id is not None:
@@ -126,7 +148,8 @@ def create_grant(
     grant = ServiceAccessGrant(
         user_id=request.user_id,
         department_id=request.department_id,
-        platform_link_id=request.platform_link_id,
+        service_id=service.id,
+        platform_link_id=legacy_platform_link_id,
         granted_by=admin.id,
     )
     db.add(grant)

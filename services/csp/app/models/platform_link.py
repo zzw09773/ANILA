@@ -13,6 +13,16 @@ _REQUIRED_ROLES_TYPE = JSON().with_variant(JSONB(), "postgresql")
 
 
 class PlatformLink(Base):
+    """DEPRECATED (Slice 7, doc 07 §14). Superseded by
+    ``models.registered_service.RegisteredService`` (``registered_services``).
+
+    The table is KEPT intact for downgrade safety and data-migration source,
+    but is no longer written to: the ``AUTO_REGISTER_LINKS`` seed and the
+    ``/api/platform-links`` compat façade both now read/write
+    ``registered_services``. Do not add new columns here — extend
+    ``RegisteredService`` instead.
+    """
+
     __tablename__ = "platform_links"
 
     id = Column(Integer, primary_key=True, autoincrement=True)

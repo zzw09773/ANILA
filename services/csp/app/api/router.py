@@ -16,6 +16,7 @@ from app.api.proxy import router as proxy_router
 from app.api.traces import router as traces_router
 from app.api.service_access_grants import router as service_access_grants_router
 from app.api.service_clients import router as service_clients_router
+from app.api.services import router as services_router
 from app.api.trusted_hosts import router as trusted_hosts_router
 from app.api.ingestion import (
     collections_router as ingestion_collections_router,
@@ -48,6 +49,7 @@ api_router.include_router(memory_router)
 api_router.include_router(platform_links_router)
 api_router.include_router(service_access_grants_router)
 api_router.include_router(service_clients_router)
+api_router.include_router(services_router)
 api_router.include_router(agents_router)
 api_router.include_router(banners_router)
 api_router.include_router(ingestion_collections_router)
