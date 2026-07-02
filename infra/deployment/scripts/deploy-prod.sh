@@ -130,6 +130,11 @@ check_env() {
          set -a; source /path/to/prod.env; set +a
          bash infra/deployment/scripts/deploy-prod.sh"
   fi
+  # Slice 6 旗標分域:少了 ANILA_ENV=production,「模型 http fail-closed」硬規則
+  # 不會生效(url_guard 以此判定 production)。不擋部署,但大聲提醒。
+  if [[ "${ANILA_ENV:-}" != "production" && "${ANILA_ENV:-}" != "prod" ]]; then
+    warn "ANILA_ENV 未設為 production — 正式模型 http fail-closed 守衛不會啟用;請在 .env 設 ANILA_ENV=production"
+  fi
   ok "必要 env 都已設且非 dev 值"
 }
 

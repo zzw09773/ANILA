@@ -42,9 +42,14 @@ def _enforce_endpoint_url(url: str) -> None:
     helper the ingestion-credentials API uses; agents now share the
     deny-list so a developer can't register an internal-only endpoint and
     have an admin unknowingly approve it.
+
+    Slice 6a (doc 04 §8): validated with ``endpoint_kind="agent"`` — http
+    agent endpoints are allowed via ``ANILA_ALLOW_HTTP_AGENT_ENDPOINT``
+    (legacy ``ANILA_ALLOW_HTTP_ENDPOINT`` still works with a deprecation
+    warning so intranet MLSteam http NodePort agents keep registering).
     """
     try:
-        validate_outbound_url(url)
+        validate_outbound_url(url, endpoint_kind="agent")
     except UnsafeEndpointError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

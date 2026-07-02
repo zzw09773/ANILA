@@ -40,6 +40,7 @@ from app.services.proxy.headers import (
     build_model_gateway_headers,
     downstream_identity,
     invalidate_agent_token_cache,
+    resolve_model_gateway_key,
 )
 from app.services.proxy.service import (
     _get_timeout,
@@ -87,4 +88,5 @@ __all__ = [
     "invalidate_agent_token_cache",
     "proxy_request",
     "proxy_stream",
+    "resolve_model_gateway_key",
 ]

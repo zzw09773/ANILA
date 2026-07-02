@@ -71,6 +71,12 @@ services:
       # metadata / docker service name 永遠擋,不受 flag 影響。Prod 不要 set。
       ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-0}"
       ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-0}"
+      # Slice 6 旗標分域:ANILA_ENV=production 時「模型」http 一律 fail-closed
+      # (不受任何旗標放行);agent endpoint 的 http 放行改走 AGENT 專用旗標
+      # (內網 MLSteam agent 用;legacy ANILA_ALLOW_HTTP_ENDPOINT 對 agent 仍可
+      # 放行但記 deprecation warning)。
+      ANILA_ENV: "${ANILA_ENV:-}"
+      ANILA_ALLOW_HTTP_AGENT_ENDPOINT: "${ANILA_ALLOW_HTTP_AGENT_ENDPOINT:-0}"
       # SSRF allow-list — single-label docker service names 預設被擋,
       # 列進這條才能註冊。新增模型 service 要同步加進這個值並重啟 csp。
       ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,host.docker.internal}"
@@ -222,6 +228,8 @@ services:
       ANILA_ALLOW_DEV_SECRET: "${ANILA_ALLOW_DEV_SECRET:-0}"
       ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-0}"
       ANILA_ALLOW_PRIVATE_ENDPOINT: "${ANILA_ALLOW_PRIVATE_ENDPOINT:-0}"
+      ANILA_ENV: "${ANILA_ENV:-}"
+      ANILA_ALLOW_HTTP_AGENT_ENDPOINT: "${ANILA_ALLOW_HTTP_AGENT_ENDPOINT:-0}"
       # VLM image captioning: ingest 時把 [[IMAGE:id]] placeholder 換成 caption
       # 才不會 chart/diagram 變成 [image] token 消失。走 csp /v1 proxy 為了計量。
       ENABLE_IMAGE_CAPTIONS: "${ENABLE_IMAGE_CAPTIONS:-true}"

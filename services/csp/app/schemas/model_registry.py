@@ -16,6 +16,17 @@ class ModelCreate(BaseModel):
     # Admin can untick for external on-prem LAN endpoints. DB column default
     # (migration 0033) is False so historical rows aren't auto-flipped.
     is_internal: bool = True
+    # Slice 6a (doc 04 §2): ModelEndpoint formalized fields.
+    protocol: str = "openai_compatible"  # 'openai_compatible' / 'custom_adapter'
+    classification_ceiling: str | None = None  # 五級字串;None = 不設限
+    owner_department_id: int | None = None
+    supports_streaming: bool = True
+    supports_json_schema: bool = False
+    supports_tools: bool = False
+    # doc 04 §3: write-only per-model gateway key. Encrypted to
+    # ``api_key_secret_ref`` on create; NEVER returned. Omit to use the
+    # global MODEL_GATEWAY_API_KEY fallback.
+    api_key: str | None = None
 
 
 class ModelUpdate(BaseModel):
@@ -28,6 +39,15 @@ class ModelUpdate(BaseModel):
     context_window: int | None = None
     base_model_id: int | None = None
     is_internal: bool | None = None
+    # Slice 6a (doc 04 §2/§3).
+    protocol: str | None = None
+    classification_ceiling: str | None = None
+    owner_department_id: int | None = None
+    supports_streaming: bool | None = None
+    supports_json_schema: bool | None = None
+    supports_tools: bool | None = None
+    # Write-only: re-encrypt the per-model gateway key. Never returned.
+    api_key: str | None = None
 
 
 class ModelResponse(BaseModel):
@@ -46,6 +66,16 @@ class ModelResponse(BaseModel):
     base_model_id: int | None = None
     base_model_name: str | None = None
     is_internal: bool = False
+    # Slice 6a (doc 04 §2): ModelEndpoint formalized fields.
+    protocol: str = "openai_compatible"
+    classification_ceiling: str | None = None
+    owner_department_id: int | None = None
+    supports_streaming: bool = True
+    supports_json_schema: bool = False
+    supports_tools: bool = False
+    # doc 04 §3: only the presence of a per-model key is exposed — never the
+    # ciphertext / secret ref, and never the plaintext.
+    has_api_key: bool = False
     created_at: datetime
     updated_at: datetime
 

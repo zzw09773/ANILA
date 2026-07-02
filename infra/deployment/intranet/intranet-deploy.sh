@@ -173,6 +173,10 @@ fi
 set_env ANILA_ALLOW_DEV_SECRET      0
 set_env ANILA_ALLOW_HTTP_ENDPOINT   0
 set_env ANILA_ALLOW_PRIVATE_ENDPOINT 0
+# Slice 6 旗標分域:ANILA_ENV=production → 「模型」http 一律 fail-closed(不受
+# 任何旗標放行);MLSteam agent 是純 http NodePort → agent 專用旗標開 1。
+set_env ANILA_ENV                   production
+set_env ANILA_ALLOW_HTTP_AGENT_ENDPOINT 1
 set_env ENABLE_CARD_LOGIN           true
 set_env REQUIRE_CARD_LOGIN_ONLY     true
 # 只在 model-ca.pem 真的有憑證時才指過去。ANILA_MODEL_CA_FILE → csp 的 SSL_CERT_FILE,
@@ -184,9 +188,9 @@ else
   set_env ANILA_MODEL_CA_FILE       ""
   warn "model-ca.pem 無有效憑證 → 暫不設 ANILA_MODEL_CA_FILE(csp 用系統 CA);補好 CA 再 up -d csp"
 fi
-# codeserver workspace:下方必填檢查需要它;.env.example 預設 `.`(repo root),
-# 這裡兜底,避免 .env.example 被改動後必填檢查直接 die。
-[ -n "$(get_env CODESERVER_WORKSPACE)" ] || set_env CODESERVER_WORKSPACE .
+# codeserver workspace:下方必填檢查需要它;compose 搬到 infra/compose 後,
+# 相對路徑以該目錄為基準,repo root = `../..`(與 .env.example 預設同值)。
+[ -n "$(get_env CODESERVER_WORKSPACE)" ] || set_env CODESERVER_WORKSPACE ../..
 
 echo
 # owner 是最高權限種子帳號。不讓「被竄改的 bundle 預設 + 一個 Enter」就生效:

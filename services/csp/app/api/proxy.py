@@ -16,6 +16,8 @@ from app.schemas.contracts.classification import ClassificationLevel
 from app.services import memory_service
 from app.services.api_key_service import check_model_permission, check_agent_permission
 from app.services.auth_service import is_admin_tier
+from app.services.proxy.ceiling import enforce_model_ceiling
+from app.services.proxy.headers import resolve_model_gateway_key
 from app.services.proxy.task_link import begin_task_run, finalize_task_run
 from app.services.proxy_service import (
     build_default_anila_meta,
@@ -750,6 +752,17 @@ async def chat_completions(
                 "task classification propagation failed task_id=%s",
                 task_ctx.task_id,
             )
+    # Slice 6a (doc 04 §5/§8): classification ceiling check BEFORE the
+    # outbound model call. Covers task-linked AND legacy traffic. A violation
+    # raises 403 + records a model.invoke deny row and never dispatches
+    # upstream; a pass records an allow row only when task-linked.
+    enforce_model_ceiling(
+        db,
+        model=model,
+        caller=caller,
+        task_ctx=task_ctx,
+        conv_id_int=conv_id_int,
+    )
     usage_trace_id = trace_id or (task_ctx.trace_id if task_ctx else None)
     if stream:
         target_url = (
@@ -774,6 +787,8 @@ async def chat_completions(
             task_trace_id=task_ctx.trace_id if task_ctx else None,
             task_run_id=task_ctx.task_run_id if task_ctx else None,
             legacy_runtime_call=task_ctx is None,
+            # Slice 6a: per-model gateway key (secret ref first, env fallback).
+            gateway_api_key=resolve_model_gateway_key(model),
         )
         teed = _tee_stream_capture_assistant(
             upstream,

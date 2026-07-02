@@ -57,6 +57,97 @@ def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip() == "1"
 
 
+# ── endpoint_kind (Slice 6a, doc 04 §8 flag domain split) ───────────────────
+# doc 04 §8「Production ModelEndpoint invariant (✅ 已拍板)」：production model
+# endpoint 必須 HTTPS,不允許透過 ``ANILA_ALLOW_HTTP_ENDPOINT`` 放寬;該旗標
+# 僅適用於 dev 或 agent endpoint transition。落實需把「全域不分域」的 http
+# 旗標按端點類型分域。三種 kind:
+#   'model'   — production 一律拒 http(fail-closed);僅在「非 production
+#               (ANILA_ENV 非 production/prod)且 ANILA_ALLOW_HTTP_ENDPOINT=1」
+#               的 dev 情境放行,符合 doc §8 例外(dev/local)。
+#   'agent'   — http 由新旗標 ANILA_ALLOW_HTTP_AGENT_ENDPOINT 放行;為不打斷
+#               既有內網 MLSteam 純 http NodePort agent,legacy
+#               ANILA_ALLOW_HTTP_ENDPOINT 仍作 fallback(帶 deprecation 警告)。
+#   'generic' — 既有全域語意(預設值);既有呼叫端零行為變更(ingestion 憑證
+#               等)。http 由 ANILA_ALLOW_HTTP_ENDPOINT 放行。
+ENDPOINT_KIND_MODEL = "model"
+ENDPOINT_KIND_AGENT = "agent"
+ENDPOINT_KIND_GENERIC = "generic"
+
+_HTTP_MODEL_FLAG = "ANILA_ALLOW_HTTP_ENDPOINT"
+_HTTP_AGENT_FLAG = "ANILA_ALLOW_HTTP_AGENT_ENDPOINT"
+
+
+def _is_production() -> bool:
+    """Deployment posture for the model-endpoint HTTPS invariant (doc 04 §8).
+
+    Production is signalled explicitly via ``ANILA_ENV`` in {production, prod}.
+    Read fresh on every call (like the other flags). NOTE: this defaults to
+    *non*-production when unset so existing dev / test call-sites (which
+    register model endpoints over http under ``ANILA_ALLOW_HTTP_ENDPOINT``)
+    keep working unchanged — the absolute HTTPS invariant only bites once a
+    deployment declares ``ANILA_ENV=production``. This is intentional and
+    additive: it never *weakens* an existing check, it only *adds* a
+    fail-closed rejection under production.
+    """
+    return os.environ.get("ANILA_ENV", "").strip().lower() in {"production", "prod"}
+
+
+def _reject_http_scheme(endpoint_kind: str) -> None:
+    """Enforce the per-kind http acceptance rules. Raise on rejection.
+
+    Called only when the scheme is ``http``. ``https`` is always fine and
+    never reaches here.
+    """
+    allow_http = _env_flag(_HTTP_MODEL_FLAG)
+
+    if endpoint_kind == ENDPOINT_KIND_MODEL:
+        # doc 04 §8 絕對不變量：production model endpoint 必須 HTTPS,
+        # 旗標救不了(fail-closed)。
+        if _is_production():
+            raise UnsafeEndpointError(
+                "production model endpoint 必須使用 https "
+                "(doc 04 §8 硬規則;ANILA_ALLOW_HTTP_ENDPOINT 不適用於 "
+                "production model endpoint)",
+                reason=REASON_SCHEME,
+            )
+        if not allow_http:
+            raise UnsafeEndpointError(
+                "model endpoint scheme must be 'https' "
+                "(dev 可設 ANILA_ALLOW_HTTP_ENDPOINT=1 放寬;"
+                "production 一律拒收 http)",
+                reason=REASON_SCHEME,
+            )
+        return
+
+    if endpoint_kind == ENDPOINT_KIND_AGENT:
+        # agent endpoint transition：新旗標優先;legacy 全域旗標仍 fallback
+        # (內網 MLSteam 純 http NodePort agent 靠它),但記 deprecation 警告。
+        if _env_flag(_HTTP_AGENT_FLAG):
+            return
+        if allow_http:
+            logger.warning(
+                "agent endpoint http 放行走 legacy ANILA_ALLOW_HTTP_ENDPOINT "
+                "(deprecated) — 請改設 ANILA_ALLOW_HTTP_AGENT_ENDPOINT=1;"
+                "legacy fallback 之後版本會移除"
+            )
+            return
+        raise UnsafeEndpointError(
+            "agent endpoint scheme must be 'https' "
+            "(set ANILA_ALLOW_HTTP_AGENT_ENDPOINT=1 to allow http agent "
+            "endpoints, e.g. MLSteam NodePort)",
+            reason=REASON_SCHEME,
+        )
+
+    # generic（既有語意，預設）
+    if not allow_http:
+        raise UnsafeEndpointError(
+            "endpoint_url scheme must be 'https' "
+            "(set ANILA_ALLOW_HTTP_ENDPOINT=1 in dev to relax)",
+            reason=REASON_SCHEME,
+        )
+
+
 def _env_trusted_hosts() -> set[str]:
     """Comma-separated allow-list from ``ANILA_TRUSTED_HOSTS``.
 
@@ -231,11 +322,18 @@ def _is_private_ip(addr: str) -> bool:
     return ip.is_private
 
 
-def validate_outbound_url(url: str) -> None:
+def validate_outbound_url(url: str, endpoint_kind: str = ENDPOINT_KIND_GENERIC) -> None:
     """Raise ``UnsafeEndpointError`` if the URL would be unsafe to POST to.
 
     Caller is expected to translate the exception into the appropriate
     framework error (HTTPException 400 in CSP, log + skip in worker).
+
+    ``endpoint_kind`` (Slice 6a, doc 04 §8) domain-splits the http-scheme
+    relaxation flag by endpoint class — ``'model'`` (fail-closed https in
+    production), ``'agent'`` (own ``ANILA_ALLOW_HTTP_AGENT_ENDPOINT`` flag,
+    legacy fallback), or ``'generic'`` (default; original global semantics,
+    existing callers unaffected). ALL host / IP / DNS / trusted-host checks
+    below are identical across kinds — the split touches scheme only.
     """
     if not url or not isinstance(url, str):
         raise UnsafeEndpointError(
@@ -245,7 +343,6 @@ def validate_outbound_url(url: str) -> None:
 
     # Read flags fresh on every call so test harnesses / docker-compose
     # env updates take effect without restarting the importer.
-    allow_http = _env_flag("ANILA_ALLOW_HTTP_ENDPOINT")
     allow_private = _env_flag("ANILA_ALLOW_PRIVATE_ENDPOINT")
 
     parsed = urlparse(url.strip())
@@ -253,12 +350,10 @@ def validate_outbound_url(url: str) -> None:
     if parsed.scheme == "https":
         pass
     elif parsed.scheme == "http":
-        if not allow_http:
-            raise UnsafeEndpointError(
-                "endpoint_url scheme must be 'https' "
-                "(set ANILA_ALLOW_HTTP_ENDPOINT=1 in dev to relax)",
-                reason=REASON_SCHEME,
-            )
+        # Per-kind http acceptance (raises on rejection). Scheme is validated
+        # BEFORE the trusted-host bypass below, so a trusted host can never
+        # rescue an http:// model endpoint in production.
+        _reject_http_scheme(endpoint_kind)
     else:
         raise UnsafeEndpointError(
             f"endpoint_url scheme {parsed.scheme!r} not allowed "

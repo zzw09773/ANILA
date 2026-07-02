@@ -5,6 +5,7 @@ behavior-preserving refactor). SECURITY-CRITICAL: ``downstream_identity`` /
 ``build_agent_headers`` / ``build_model_gateway_headers`` carry the
 employee-id (員編) downstream semantics — moved unchanged.
 """
+import logging
 import re
 import time
 from threading import Lock
@@ -13,6 +14,8 @@ from typing import Optional
 from app.config import settings
 from app.database import SessionLocal
 from app.services import agent_credential_service
+
+logger = logging.getLogger("app.services.proxy_service")
 
 # ---------------------------------------------------------------------------
 # Per-agent service-token cache (Sprint 8 X / Phase A — decision #2)
@@ -196,16 +199,52 @@ def build_model_gateway_headers(user_identity: Optional[str]) -> dict:
     return headers
 
 
-def _apply_gateway_auth(headers: dict) -> dict:
+def resolve_model_gateway_key(model) -> Optional[str]:
+    """Resolve the outbound gateway bearer key for a model call (Slice 6a).
+
+    doc 04 §3 New rule: per-model ``api_key_secret_ref`` takes precedence;
+    the global ``MODEL_GATEWAY_API_KEY`` env stays as the MVP fallback. The
+    secret ref is an ``enc::v1::`` AES-GCM envelope (the exact same crypto as
+    csk- / ingestion credentials); decode failures fall back to the env key
+    (fail-soft on the *key source*, never fail-open on auth — a wrong key
+    just means the gateway rejects the call) and are logged.
+
+    Returns ``None`` when neither source yields a key (bare same-host vLLM
+    with no gateway — behaviour unchanged: no Authorization header injected).
+    """
+    ref = getattr(model, "api_key_secret_ref", None)
+    if ref:
+        try:
+            from app.services.service_token_envelope import (
+                decode_service_token_envelope,
+            )
+
+            key = decode_service_token_envelope(ref)
+            if key:
+                return key
+        except Exception:
+            logger.warning(
+                "per-model gateway key 解密失敗 model_id=%s,退回全域 "
+                "MODEL_GATEWAY_API_KEY",
+                getattr(model, "id", None),
+                exc_info=True,
+            )
+    return (settings.MODEL_GATEWAY_API_KEY or "").strip() or None
+
+
+def _apply_gateway_auth(headers: dict, api_key: Optional[str] = None) -> dict:
     """注入出向模型 gateway 的 API key (in-place,並回傳同一 dict)。
 
-    ``MODEL_GATEWAY_API_KEY`` 非空才動作 — 內網拓撲下模型在
-    10.53.100.12 的 My-OpenAI-Frontend gateway 後面,/v1 全路由要
-    ``Authorization: Bearer``。呼叫端負責 scope:只用在 model 呼叫,
-    agent dispatch 不帶 (key 不該外流給第三方 agent)。
+    ``api_key`` 為 None(既有呼叫端 / 測試)時退回全域
+    ``MODEL_GATEWAY_API_KEY``;Slice 6a 起呼叫端傳入
+    ``resolve_model_gateway_key(model)`` 讓 per-model secret ref 優先。
+    非空才動作 — 內網拓撲下模型在 10.53.100.12 的 My-OpenAI-Frontend gateway
+    後面,/v1 全路由要 ``Authorization: Bearer``。呼叫端負責 scope:只用在
+    model 呼叫,agent dispatch 不帶 (key 不該外流給第三方 agent)。
     不覆蓋既有 Authorization。
     """
-    key = (settings.MODEL_GATEWAY_API_KEY or "").strip()
+    resolved = api_key if api_key is not None else settings.MODEL_GATEWAY_API_KEY
+    key = (resolved or "").strip()
     if key and "Authorization" not in headers:
         headers["Authorization"] = f"Bearer {key}"
     return headers

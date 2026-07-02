@@ -1,10 +1,8 @@
-import httpx
 from datetime import datetime, timezone
 from anila_core.security import UnsafeEndpointError, validate_outbound_url
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.models.agent import Agent
 from app.models.model_registry import ModelRegistry
 from app.models.token_usage import TokenUsage
 from app.models.user import User
@@ -17,6 +15,12 @@ from app.services.auth_service import (
     require_owner,
     verify_service_token,
 )
+from app.services.health_checker import (
+    HEALTH_UNHEALTHY,
+    normalize_health_status,
+    probe_model_health_detailed,
+)
+from app.services.service_token_envelope import encode_service_token_envelope
 
 router = APIRouter(prefix="/api/models", tags=["模型管理"])
 
@@ -49,9 +53,14 @@ def _enforce_endpoint_url(url: str) -> None:
     'foobar' to trusted hosts?") instead of just an opaque alert. Other
     failure reasons (loopback / metadata / private IP) keep the plain
     string detail — those aren't safe to bypass via the UI.
+
+    Slice 6a (doc 04 §8): validated with ``endpoint_kind="model"`` so the
+    production HTTPS invariant applies — a production deployment
+    (``ANILA_ENV=production``) rejects http:// model endpoints even with
+    ``ANILA_ALLOW_HTTP_ENDPOINT=1`` (fail-closed, no flag bypass).
     """
     try:
-        validate_outbound_url(url)
+        validate_outbound_url(url, endpoint_kind="model")
     except UnsafeEndpointError as exc:
         if exc.fixable_by_trust_host:
             detail = {
@@ -101,13 +110,27 @@ def _build_response(model: ModelRegistry, *, caller: User | None = None) -> dict
         "api_version": model.api_version,
         "is_active": model.is_active,
         "is_router_primary": bool(model.is_router_primary),
-        "health_status": model.health_status,
+        # Slice 6a: always surface the five-state vocabulary; 'disabled' when
+        # inactive, legacy online/connecting/offline normalized on read.
+        "health_status": normalize_health_status(
+            model.health_status, is_active=bool(model.is_active)
+        ),
         "health_checked_at": model.health_checked_at,
         "description": model.description,
         "context_window": model.context_window,
         "base_model_id": model.base_model_id,
         "base_model_name": model.base_model.display_name if model.base_model else None,
         "is_internal": is_internal,
+        # Slice 6a (doc 04 §2/§3): ModelEndpoint formalized fields. The
+        # per-model key is exposed ONLY as a boolean presence flag — never the
+        # ciphertext / secret ref, never plaintext.
+        "protocol": getattr(model, "protocol", "openai_compatible") or "openai_compatible",
+        "classification_ceiling": getattr(model, "classification_ceiling", None),
+        "owner_department_id": getattr(model, "owner_department_id", None),
+        "supports_streaming": bool(getattr(model, "supports_streaming", True)),
+        "supports_json_schema": bool(getattr(model, "supports_json_schema", False)),
+        "supports_tools": bool(getattr(model, "supports_tools", False)),
+        "has_api_key": bool(getattr(model, "api_key_secret_ref", None)),
         "created_at": model.created_at,
         "updated_at": model.updated_at,
     }
@@ -153,7 +176,14 @@ def create_model(
         if not base:
             raise HTTPException(status_code=400, detail="底層模型不存在")
 
-    model = ModelRegistry(**request.model_dump())
+    # Slice 6a (doc 04 §3): api_key is write-only — encrypt into the
+    # ``enc::v1::`` envelope and store as api_key_secret_ref; never a column
+    # by itself, so pop it before constructing the row.
+    data = request.model_dump()
+    api_key = (data.pop("api_key", None) or "").strip()
+    model = ModelRegistry(**data)
+    if api_key:
+        model.api_key_secret_ref = encode_service_token_envelope(api_key)
     db.add(model)
     db.commit()
     db.refresh(model)
@@ -305,6 +335,12 @@ def update_model(
         if base.id == model_id:
             raise HTTPException(status_code=400, detail="不能將自己設為底層模型")
 
+    # Slice 6a (doc 04 §3): api_key is write-only. When supplied non-empty,
+    # re-encrypt into api_key_secret_ref; it is never assigned as a column.
+    api_key = update_data.pop("api_key", None)
+    if api_key is not None and str(api_key).strip():
+        model.api_key_secret_ref = encode_service_token_envelope(str(api_key).strip())
+
     for field, value in update_data.items():
         setattr(model, field, value)
 
@@ -445,6 +481,86 @@ def purge_model(
     return {"message": f"已刪除模型「{display_name}」"}
 
 
+async def _probe_and_persist(model: ModelRegistry, admin: User, db: Session, ip: str | None) -> dict:
+    """Slice 6a: shared active-probe path for POST /test and the legacy alias.
+
+    Runs the five-state probe (SSRF re-validated inside), persists the new
+    ``health_status`` (five-state) + ``health_checked_at`` and audits the
+    result. Returns ``{status, last_checked, latency_ms}``. The probe carries
+    NO real user data (doc 04 §9).
+    """
+    status, latency_ms = await probe_model_health_detailed(model.endpoint_url)
+    checked_at = datetime.now(timezone.utc)
+    model.health_status = status
+    model.health_checked_at = checked_at
+    db.commit()
+    log_audit_event(
+        db,
+        actor=admin,
+        action="health_check",
+        resource_type="model",
+        resource_id=model.id,
+        status=("failure" if status == HEALTH_UNHEALTHY else "success"),
+        detail=f"主動健康檢查: {model.display_name} → {status} ({latency_ms}ms)",
+        ip_address=ip,
+        commit=True,
+    )
+    return {
+        "status": status,
+        "last_checked": checked_at,
+        "latency_ms": latency_ms,
+    }
+
+
+@router.get("/{model_id}/health")
+def get_model_health(
+    model_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Slice 6a (doc 04 §9): current five-state health without probing.
+
+    Passive read — returns the stored status normalized to the five-state
+    vocabulary (``disabled`` when inactive), plus ``last_checked`` and
+    ``latency`` (null here — latency is measured only by an active
+    POST /test). Non-admin/owner callers only see models they are permitted
+    to use (same gate as GET /{model_id}).
+    """
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    if current_user.role not in ("admin", "owner"):
+        allowed_ids = {m.id for m in current_user.allowed_models}
+        if model.id not in allowed_ids:
+            raise HTTPException(status_code=404, detail="模型不存在")
+    return {
+        "id": model.id,
+        "status": normalize_health_status(
+            model.health_status, is_active=bool(model.is_active)
+        ),
+        "last_checked": model.health_checked_at,
+        "latency_ms": None,
+    }
+
+
+@router.post("/{model_id}/test")
+async def test_model(
+    model_id: int,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Slice 6a (doc 04 §9): active probe — updates status + returns latency.
+
+    Admin-only. Runs the five-state health probe against the endpoint,
+    persists the result and returns ``{status, last_checked, latency_ms}``.
+    """
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    return await _probe_and_persist(model, admin, db, _client_ip(request))
+
+
 @router.post("/{model_id}/health-check")
 async def trigger_health_check(
     model_id: int,
@@ -452,82 +568,15 @@ async def trigger_health_check(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    """DEPRECATED legacy alias for POST /{model_id}/test.
+
+    Kept working for existing admin UIs; converged onto the same five-state
+    probe. Response carries ``deprecated: true`` + a pointer to the new route.
+    """
     model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
-
-    ip = _client_ip(request)
-    # Call-time SSRF guard — refuse to probe an endpoint that fails outbound
-    # validation (TOCTOU / DNS-rebinding defense), even for an admin ping.
-    try:
-        validate_outbound_url(model.endpoint_url)
-    except UnsafeEndpointError as exc:
-        model.health_status = "offline"
-        model.health_checked_at = datetime.now(timezone.utc)
-        db.commit()
-        log_audit_event(
-            db,
-            actor=admin,
-            action="health_check",
-            resource_type="model",
-            resource_id=model.id,
-            status="failure",
-            detail=f"健康檢查拒絕: 端點未通過出向安全驗證 ({exc})",
-            ip_address=ip,
-            commit=True,
-        )
-        return {"status": "offline", "detail": f"端點未通過出向安全驗證: {exc}"}
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            # Try common health endpoints
-            for path in ["/health", "/v1/models", "/"]:
-                try:
-                    resp = await client.get(f"{model.endpoint_url.rstrip('/')}{path}")
-                    if resp.status_code < 500:
-                        model.health_status = "online"
-                        model.health_checked_at = datetime.now(timezone.utc)
-                        db.commit()
-                        log_audit_event(
-                            db,
-                            actor=admin,
-                            action="health_check",
-                            resource_type="model",
-                            resource_id=model.id,
-                            detail=f"手動健康檢查成功: {model.display_name}",
-                            ip_address=ip,
-                            commit=True,
-                        )
-                        return {"status": "online", "detail": f"端點 {path} 回應正常"}
-                except httpx.ConnectError:
-                    continue
-
-            model.health_status = "offline"
-            model.health_checked_at = datetime.now(timezone.utc)
-            db.commit()
-            log_audit_event(
-                db,
-                actor=admin,
-                action="health_check",
-                resource_type="model",
-                resource_id=model.id,
-                detail=f"手動健康檢查離線: {model.display_name}",
-                ip_address=ip,
-                commit=True,
-            )
-            return {"status": "offline", "detail": "無法連線到模型端點"}
-    except Exception as e:
-        model.health_status = "offline"
-        model.health_checked_at = datetime.now(timezone.utc)
-        db.commit()
-        log_audit_event(
-            db,
-            actor=admin,
-            action="health_check",
-            resource_type="model",
-            resource_id=model.id,
-            status="failure",
-            detail=f"手動健康檢查失敗: {model.display_name} ({e})",
-            ip_address=ip,
-            commit=True,
-        )
-        return {"status": "offline", "detail": str(e)}
+    result = await _probe_and_persist(model, admin, db, _client_ip(request))
+    result["deprecated"] = True
+    result["detail"] = "此路由已棄用,請改用 POST /api/models/{id}/test"
+    return result

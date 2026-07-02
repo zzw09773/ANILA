@@ -79,7 +79,7 @@ async def trigger_agent_health_check(
     # Call-time SSRF guard — refuse to probe an endpoint that fails outbound
     # validation (TOCTOU / DNS-rebinding defense), even for an admin ping.
     try:
-        validate_outbound_url(agent.endpoint_url)
+        validate_outbound_url(agent.endpoint_url, endpoint_kind="agent")
     except UnsafeEndpointError as exc:
         agent.health_status = "unhealthy"
         db.commit()
@@ -169,7 +169,7 @@ async def test_agent_connection(
 
     # Call-time SSRF guard (TOCTOU / DNS-rebinding), same as health-check.
     try:
-        validate_outbound_url(agent.endpoint_url)
+        validate_outbound_url(agent.endpoint_url, endpoint_kind="agent")
     except UnsafeEndpointError as exc:
         raise HTTPException(status_code=400, detail=f"端點未通過出向安全驗證: {exc}")
 
@@ -399,7 +399,7 @@ async def run_agent_trace_test(
 
     # Call-time SSRF guard (TOCTOU / DNS-rebinding), same as test-connection.
     try:
-        validate_outbound_url(agent.endpoint_url)
+        validate_outbound_url(agent.endpoint_url, endpoint_kind="agent")
     except UnsafeEndpointError as exc:
         raise HTTPException(status_code=400, detail=f"端點未通過出向安全驗證: {exc}")
 

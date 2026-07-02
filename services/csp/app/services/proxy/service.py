@@ -23,6 +23,7 @@ from app.services.proxy.headers import (
     _apply_gateway_auth,
     build_agent_headers,
     build_model_gateway_headers,
+    resolve_model_gateway_key,
 )
 from app.services.proxy.sse import _aggregate_sse_to_chat_completion, _parse_sse_block
 from app.services.proxy.task_link import finalize_task_run
@@ -197,8 +198,9 @@ async def _proxy_request_impl(
         # task / trace headers, structurally (builder has no such params).
         req_headers = build_model_gateway_headers(user_identity)
     # gateway key 只給 model 呼叫;agent dispatch (model_type='agent') 不帶。
+    # Slice 6a: per-model api_key_secret_ref 優先,退回全域 env(MVP fallback)。
     if model.model_type != "agent":
-        _apply_gateway_auth(req_headers)
+        _apply_gateway_auth(req_headers, resolve_model_gateway_key(model))
 
     for attempt in range(settings.PROXY_MAX_RETRIES):
         try:
@@ -481,6 +483,7 @@ async def _proxy_stream_impl(
     task_id: Optional[int] = None,
     task_trace_id: Optional[str] = None,
     legacy_runtime_call: bool = False,
+    gateway_api_key: Optional[str] = None,
 ) -> AsyncIterator[str]:
     """Stream SSE response from a downstream backend through CSP proxy.
 
@@ -513,8 +516,10 @@ async def _proxy_stream_impl(
         # task / trace headers, structurally (builder has no such params).
         headers = build_model_gateway_headers(user_identity)
     # gateway key 只給 model 串流;agent 串流 (target_agent_id 非 None) 不帶。
+    # Slice 6a: 呼叫端已解析 per-model key(proxy.py 傳入 gateway_api_key);
+    # None → _apply_gateway_auth 退回全域 env(既有行為)。
     if target_agent_id is None:
-        _apply_gateway_auth(headers)
+        _apply_gateway_auth(headers, gateway_api_key)
     # Force stream_options so the downstream sends usage in last chunk
     body = {**request_body, "stream": True,
             "stream_options": {"include_usage": True}}
@@ -696,6 +701,7 @@ async def proxy_stream(
     task_trace_id: Optional[str] = None,
     task_run_id: Optional[int] = None,
     legacy_runtime_call: bool = False,
+    gateway_api_key: Optional[str] = None,
 ) -> AsyncIterator[str]:
     """Public entrypoint — ``_proxy_stream_impl`` plus Slice 2b-C TaskRun
     finalization. The stream drains AFTER the request handler returns, so
@@ -728,6 +734,7 @@ async def proxy_stream(
             task_id=task_id,
             task_trace_id=task_trace_id,
             legacy_runtime_call=legacy_runtime_call,
+            gateway_api_key=gateway_api_key,
         ):
             yield chunk
     except HTTPException as exc:

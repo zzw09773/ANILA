@@ -36,9 +36,15 @@ from app.services.credential_crypto import encrypt_credential
 
 
 def _check_endpoint_url(url: str) -> None:
-    """Translate ``UnsafeEndpointError`` into HTTP 400 for API callers."""
+    """Translate ``UnsafeEndpointError`` into HTTP 400 for API callers.
+
+    Slice 6a (doc 04 §8): explicit ``endpoint_kind="generic"`` — BYO judge /
+    external LLM credentials keep the original global http-flag semantics
+    (not model-gateway endpoints, so the production HTTPS invariant does not
+    apply to them).
+    """
     try:
-        validate_outbound_url(url)
+        validate_outbound_url(url, endpoint_kind="generic")
     except UnsafeEndpointError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
