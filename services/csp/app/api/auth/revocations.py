@@ -1,0 +1,88 @@
+"""GET /api/auth/revocations — token-revocation feed (anila-studio sync).
+
+Split from the original ``app/api/auth.py`` god-module — bodies moved
+verbatim; only this import header is new.
+"""
+from datetime import datetime, timedelta, timezone
+from typing import List
+
+from fastapi import Depends, Query
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.models.token_revocation import TokenRevocation
+from app.services import agent_credential_service
+from app.services.auth_service import verify_service_token
+
+from ._common import router
+
+
+# ── Token revocation retention (cross-service sync) ────────────────────
+# anila-studio cold-start GET /api/auth/revocations 用,
+# 同步最近 N 天的 revocation events 進它的 cache。
+TOKEN_REVOCATION_RETENTION_DAYS = 30
+
+
+class RevocationEntry(BaseModel):
+    user_id: int
+    revoked_at_version: int
+    ts: str
+
+
+class RevocationListResponse(BaseModel):
+    revocations: List[RevocationEntry]
+    retention_days: int
+
+
+def _serialise_ts(ts: datetime) -> str:
+    """Render a UTC ISO-8601 string with a ``Z`` suffix."""
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+@router.get("/revocations", response_model=RevocationListResponse)
+def list_revocations(
+    since: datetime = Query(
+        ...,
+        description=(
+            "Lower-bound timestamp (ISO-8601). Naive timestamps are "
+            "treated as UTC. Clamped against the retention floor."
+        ),
+    ),
+    db: Session = Depends(get_db),
+    _identity: agent_credential_service.CallerIdentity | None = Depends(
+        verify_service_token
+    ),
+):
+    """Return revocation events after ``since``, capped to the retention
+    window. Auth: ``X-CSP-Service-Token`` header (used by anila-studio
+    cold-start sync). Sorted ASC by ``revoked_at``.
+    """
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+
+    retention_floor = datetime.now(timezone.utc) - timedelta(
+        days=TOKEN_REVOCATION_RETENTION_DAYS
+    )
+    effective_since = max(since, retention_floor)
+
+    rows = (
+        db.query(TokenRevocation)
+        .filter(TokenRevocation.revoked_at >= effective_since)
+        .order_by(TokenRevocation.revoked_at.asc())
+        .all()
+    )
+
+    return RevocationListResponse(
+        revocations=[
+            RevocationEntry(
+                user_id=row.user_id,
+                revoked_at_version=row.revoked_at_version,
+                ts=_serialise_ts(row.revoked_at),
+            )
+            for row in rows
+        ],
+        retention_days=TOKEN_REVOCATION_RETENTION_DAYS,
+    )
