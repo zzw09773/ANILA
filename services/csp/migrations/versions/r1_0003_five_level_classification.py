@@ -29,9 +29,9 @@ classification_source / classification_event_id)掛載對象 —— 文件列 11
 |                   |                         | chunk 級 latch 接線於後續 slice)|
 | AgentRun          | task_runs               | 補 3 欄(現制對應表;獨立    |
 |                   |                         | agent_runs 表未存在)        |
-| Artifact          | ——(Slice 8 才建表)   | 深後補(deferred)           |
+| Artifact          | artifacts               | 4 欄已於 r1_0007 建(Slice 8a)|
 | ServiceLaunch     | ——(Slice 7 才建表)   | 深後補(deferred)           |
-| ExportRecord      | ——(後續 slice 建表) | 深後補(deferred)           |
+| ExportRecord      | export_records          | 4 欄已於 r1_0007 建(Slice 8a)|
 
 Backfill(doc 08 §3 migration bridge;floor=最低安全起點,最終等級以
 人工分類盤點為準,§15):

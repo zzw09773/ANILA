@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
+from app.models.artifact import Artifact, ExportRecord
 from app.models.classification import (
     ClassificationAuthorityAssignment,
     ClassificationEvent,
@@ -168,7 +169,7 @@ def evaluate_classification_ceiling(
 # resource_type → ORM model 的封閉派發表(doc 08 §5 的 11 種資源中,
 # 現存表的對應;整數 PK)。未列型別一律 ValueError fail-closed:
 # chunk(document_chunks 為 PG-only、非 ORM 建模,走 worker SDK)、
-# artifact / service_launch / export_record(表在 Slice 7/8 之後才建)。
+# service_launch(表在 Slice 7)。artifact / export_record 於 Slice 8a 補上。
 _RESOURCE_MODELS: dict[str, type] = {
     "task": Task,
     "task_run": TaskRun,  # doc 08 的 AgentRun 現制對應表
@@ -177,6 +178,8 @@ _RESOURCE_MODELS: dict[str, type] = {
     "source_snapshot": SourceSnapshot,
     "collection": IngestionCollection,
     "document": IngestionDocument,
+    "artifact": Artifact,  # doc 08 §5(Slice 8a)
+    "export_record": ExportRecord,  # doc 08 §5(Slice 8a)
 }
 
 _DECLASSIFICATION_SOURCE = "declassification_approved"

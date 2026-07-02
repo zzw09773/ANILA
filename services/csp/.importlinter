@@ -4,14 +4,17 @@
 [importlinter]
 root_package = app
 
-# tasks / policy / launch 三個 MVP module 互不 import(含各自子模組)。
+# tasks / policy / launch / artifacts 四個 MVP module 互不 import(含各自子模組)。
+# artifacts 的分類閂鎖 / PolicyDecision 由 orchestrator app.api.artifacts 呼叫
+# policy 完成(api → modules 單向合法),故 artifacts module 本身不 import policy。
 [importlinter:contract:modules-independence]
-name = modules 之間互不 import(tasks / policy / launch 各自獨立)
+name = modules 之間互不 import(tasks / policy / launch / artifacts 各自獨立)
 type = independence
 modules =
     app.modules.tasks
     app.modules.policy
     app.modules.launch
+    app.modules.artifacts
 
 # 分層:api 可以 import modules,modules 不得反向 import app.api。
 [importlinter:contract:modules-forbid-api]

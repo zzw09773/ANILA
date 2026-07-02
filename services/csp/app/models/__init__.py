@@ -13,6 +13,12 @@ from app.models.agent_credential import AgentCredential
 from app.models.agent_prompt import AgentFunction, AgentPrompt
 from app.models.alert import Alert
 from app.models.api_key import ApiKey, ApiKeyModelPermission
+from app.models.artifact import (
+    Artifact,
+    ArtifactJob,
+    ArtifactVersion,
+    ExportRecord,
+)
 from app.models.attachment import Attachment
 from app.models.audit_log import AuditLog
 from app.models.banner import Banner
@@ -61,7 +67,11 @@ __all__ = [
     "ApiKey",
     "ApiKeyAgentPermission",
     "ApiKeyModelPermission",
+    "Artifact",
+    "ArtifactJob",
+    "ArtifactVersion",
     "Attachment",
+    "ExportRecord",
     "AuditLog",
     "Banner",
     "Citation",

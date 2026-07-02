@@ -59,9 +59,12 @@ def _secret_key(monkeypatch):
     yield
 
 
-# ── 1. alembic single head = r1_0006 (advanced by Slice 7a) ─────────────────
+# ── 1. alembic single head, r1_ namespace (invariant, not head-pinned) ──────
 
-def test_alembic_single_head_is_r1_0005():
+def test_alembic_single_head_in_r1_namespace():
+    # 不釘死特定 head id(每加一個 migration 就過期,如 Slice 8a r1_0007);
+    # 守住兩個不變量:恰一個 head + head 屬 r1_ 命名空間(對齊
+    # tests/test_task_trace_schema.py 的 invariant 風格)。
     versions = Path(__file__).resolve().parents[1] / "migrations" / "versions"
     revisions: set[str] = set()
     downs: set[str] = set()
@@ -78,8 +81,10 @@ def test_alembic_single_head_is_r1_0005():
         if down and down.group(1):
             downs.add(down.group(1))
     heads = revisions - downs
-    # Slice 7a advanced the head r1_0005 → r1_0006 (registered_services).
-    assert heads == {"r1_0006"}, f"alembic head 應為 r1_0006,實得 {heads}"
+    assert len(heads) == 1, f"alembic head 應唯一,實得 {heads}"
+    assert next(iter(heads)).startswith("r1_"), (
+        f"head 應屬 r1_ 命名空間,實得 {heads}"
+    )
 
 
 def test_r1_0005_revises_r1_0004():

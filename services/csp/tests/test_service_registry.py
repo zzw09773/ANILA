@@ -65,12 +65,19 @@ def _auth_headers(client, db, username="alice", role="user") -> dict:
 
 
 class TestMigration:
-    def test_single_head_r1_0006(self):
+    def test_single_head_in_r1_namespace(self):
+        # 不釘死特定 head id(每加一個 migration 就過期,如 Slice 8a r1_0007);
+        # 守住兩個不變量:恰一個 head + head 屬 r1_ 命名空間(對齊
+        # tests/test_task_trace_schema.py 的 invariant 風格)。
         from alembic.config import Config
         from alembic.script import ScriptDirectory
 
         script = ScriptDirectory.from_config(Config("alembic.ini"))
-        assert list(script.get_heads()) == ["r1_0006"]
+        heads = list(script.get_heads())
+        assert len(heads) == 1, f"alembic head 應唯一,實得 {heads}"
+        assert heads[0].startswith("r1_"), (
+            f"head 應屬 r1_ 命名空間,實得 {heads}"
+        )
 
     def test_down_revision_chains_r1_0005(self):
         from migrations.versions import r1_0006_service_registry as mig
