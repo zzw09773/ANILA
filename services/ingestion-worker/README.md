@@ -1,6 +1,6 @@
 # ingestion-worker
 
-> ANILA 文件攝取（ingestion）的非同步 worker：parse → chunk → embed → index 一份文件 + 跨文件關係抽取，並提供 chunking 策略評估（evaluator）。
+> ANILA 文件攝取（ingestion）的非同步背景 worker：把一份上傳文件跑完 **parse → chunk → embed → index**，並抽取跨文件關係，另附 chunking 策略評估（evaluator）。它是「我的知識庫」入口背後真正把文件變成可檢索向量的引擎。
 
 > English mirror：[`README.en.md`](./README.en.md)
 
@@ -8,27 +8,51 @@
 
 ---
 
-## 簡介
+## 在 monorepo 的位置（重構後 §17.1 版圖）
 
-`ingestion-worker` 是 ANILA 攝取管線的背景處理服務，**不是 HTTP API**（無 health endpoint），是以 [Arq](https://arq-docs.helpmanual.io/)（Redis 為後端的 async job queue）驅動的 worker process。CSP enqueue job，worker 取出後執行。entrypoint：`arq ingestion_worker.main.WorkerSettings`。
+重構把原始碼收斂為 `services/` · `apps/` · `packages/` · `infra/` 四層。本服務落在：
 
-`main.py` 註冊 **三個** job function：
+```
+services/ingestion-worker/     ← 本服務（Arq worker，無 HTTP 對外）
+packages/anila-core/           ← 共用 SDK（parser / chunker / 向量儲存 / 安全工具）
+infra/compose/platform.yml     ← compose 定義（根目錄 compose.yaml 為 shim → include 它）
+```
 
-1. **`ingest_document`** — 完整攝取一份文件：
-   - **Parse**（pct 15）→ **Caption + 落地 images**（pct 22，選用 VLM，把 `[[IMAGE:<id>]]` 佔位符換成描述、寫 `ingestion_images` + caption embedding）→ **Chunk**（pct 30，依 `chunking_config`，預設 `hierarchical`）→ 分 parent / leaf → **Embed leaf**（pct 60）→ **Index**（pct 85，`CollectionScopedPgVectorStore`，先 `add_parent_chunks` 再 `index_chunks`）→ 更新計數。
-   - **關係抽取（best-effort、皆可關）**：① regex 引用邊（`relations.py`）② LLM 邊（`llm_relations.py`）③ embedding 主題相似邊（`similarity_relations.py`）。
-2. **`evaluate_strategies`** — 對樣本文件 + 查詢比較多個 chunking 策略的檢索品質（Hit@1 / Hit@5 / MRR，選用 LLM-as-judge `judge_avg` 1–3 分），寫回 `recommended_strategy` 與 `results`。
-3. **`reresolve_collection_relations`** — collection 級「重抽關係」：重新 parse 每份 `indexed` 文件、重跑 rule / LLM / similarity 邊（per-doc parse 失敗則跳過）。
+啟停一律走根目錄 compose shim：`compose.yaml` → `infra/compose/platform.yml`（prod stack，project `anila-platform`）；`compose.dev.yaml` → `infra/compose/dev.yml`（dev stack）。部署腳本在 `infra/deployment/{scripts,intranet}/`。
 
-每個 job function 都吃單一參數（CSP 以 `pool.enqueue_job(<name>, <arg>)` enqueue，見 `services/csp/app/services/ingestion_queue.py`）：
+---
+
+## 這不是 HTTP 服務
+
+`ingestion-worker` **沒有 HTTP endpoint、沒有 health route**。它是 [Arq](https://arq-docs.helpmanual.io/)（以 Redis 為後端的 async job queue）驅動的 worker process：CSP enqueue job，worker 取出後執行。entrypoint：
+
+```bash
+arq ingestion_worker.main.WorkerSettings
+```
+
+`main.py` 的 `WorkerSettings` 註冊 **三個** job function（CSP 以 `pool.enqueue_job(<name>, <arg>)` 送出，見 `services/csp/app/services/ingestion_queue.py`）：
 
 ```text
-ingest_document(document_id)                    # 攝取一份文件
-evaluate_strategies(eval_run_id)                # 評估一個 eval run
+ingest_document(document_id)                    # 完整攝取一份文件
+evaluate_strategies(eval_run_id)                # 評估一個 chunking eval run
 reresolve_collection_relations(collection_id)   # 重抽整個 collection 的關係
 ```
 
-Arq `WorkerSettings`：`max_tries=3`、`job_timeout=300s`、`keep_result=3600s`。
+Arq 重試 / 逾時策略（`main.py`）：`max_tries=3`、`job_timeout=300`（秒）、`keep_result=3600`（讓 CSP 一小時內輪詢得到結果）。`on_startup` 開一個共享 `PgPool` + 建 `Embedder`，`on_shutdown` 收乾淨。
+
+### `ingest_document` 管線（附進度 pct）
+
+| pct | 階段 | 說明 |
+|---|---|---|
+| 5 | 起始 | 標記 `running` |
+| 15 | Parse | `anila_core.ingestion.parsers.extract_text` 走 parser registry |
+| 22 | Caption + 落地 images | 選用 VLM：把 `[[IMAGE:<id>]]` 佔位符換成描述、寫 `ingestion_images` + caption embedding |
+| 30 | Chunk | 依 `chunking_config`（預設 `hierarchical`）分 parent / leaf |
+| 60 | Embed leaf | 逐 chunk 呼叫 embedding endpoint |
+| 85 | Index | `CollectionScopedPgVectorStore`：先 `add_parent_chunks` 再 `index_chunks` |
+| 100 | 完成 | 更新計數、標記 `indexed` |
+
+**關係抽取（皆 best-effort、皆可關）** 在攝取尾段跑：① regex 引用邊（`relations.py`）② LLM 邊（`llm_relations.py`）③ embedding 主題相似邊（`similarity_relations.py`）。`reresolve_collection_relations` 則對整個 collection 每份 `indexed` 文件重跑三種邊（單份 parse 失敗即跳過）。
 
 ---
 
@@ -36,14 +60,18 @@ Arq `WorkerSettings`：`max_tries=3`、`job_timeout=300s`、`keep_result=3600s`�
 
 - 語言 / runtime：Python `>=3.11`；`hatchling` 打包，原始碼在 `src/ingestion_worker`。
 - Job queue：`arq>=0.26`（Redis 後端）。
-- 共用 SDK：`anila-core[rag]>=0.14.0` — parser registry、chunking plugins、`PgPool`、`CollectionScopedPgVectorStore`、`VisionProvider`、`IngestionError` 體系、安全工具（`decrypt_credential` / `validate_outbound_url`）。
+- 共用 SDK：`anila-core[rag]>=0.14.0` — parser registry、chunking plugins、`PgPool`、`CollectionScopedPgVectorStore`、`VisionProvider`、`IngestionError` 錯誤體系，以及安全工具（憑證解密 `decrypt_credential`、SSRF 防護 `validate_outbound_url`）。`[rag]` extra 帶入 parser 堆疊（pymupdf4llm、python-docx、odfpy、striprtf、Pillow）。
 - DB / 向量：`asyncpg>=0.29` + `pgvector>=0.3`，寫 csp-db；chunk 向量欄位 `halfvec(4000)`（migration 0015）。
 - HTTP client：`httpx>=0.27`（embedding / VLM / relation-LLM / judge）。
 - 設定：`pydantic-settings>=2.0`（`WorkerSettings`，env 載入，`case_sensitive=False`）。
 
+### `.doc` 需要 antiword（Dockerfile 已裝）
+
+legacy `.doc`（二進位 Word）由 `anila-core` 的 `DocParser` 呼叫 **antiword** CLI 轉純文字；缺它時 `.doc` 上傳會在 parse 階段報 `antiword is required for .doc parsing`。Dockerfile 用 `apt-get install antiword` 補上；`DocParser` 以 `["antiword", "--", file_path]` 呼叫，用 `--` 擋掉檔名以 `-` 開頭的 argument injection。
+
 ### 向量維度合約（重要）
 
-embedding endpoint 回傳 NV-embed-V2 原生 4096 維、不支援 OpenAI `dimensions` 截斷，故 worker 在 **client 端截斷**到 `EMBEDDING_DIM`（預設 4000，對齊 `halfvec(4000)`），並在每次回應後 assert 維度（不符即 `E_EMBED_DIM_MISMATCH`，fail-fast，不讓錯誤維度拖到 asyncpg INSERT 才爆）。
+embedding endpoint 回傳 NV-embed-V2 原生 4096 維、不支援 OpenAI `dimensions` 截斷，故 worker 在 **client 端截斷**到 `EMBEDDING_DIM`（預設 4000，對齊 `halfvec(4000)`；halfvec HNSW 上限即 4000 維），並在每次回應後 assert 維度——不符即拋 `E_EMBED_DIM_MISMATCH`（fail-fast，不讓錯誤維度拖到 asyncpg INSERT 才爆）。
 
 ---
 
@@ -51,7 +79,7 @@ embedding endpoint 回傳 NV-embed-V2 原生 4096 維、不支援 OpenAI `dimens
 
 ```
 services/ingestion-worker/
-├── Dockerfile            # repo root 為 build context；先裝 anila-core[rag] 再裝本 worker
+├── Dockerfile            # build context = repo root；先裝 packages/anila-core[rag] 再裝本 worker；apt 裝 antiword
 ├── pyproject.toml
 ├── src/ingestion_worker/
 │   ├── main.py           # Arq WorkerSettings + 三個 job function 註冊 + on_startup/shutdown + retry
@@ -64,31 +92,34 @@ services/ingestion-worker/
 │   ├── llm_relations.py  # LLM 關係抽取
 │   ├── similarity_relations.py  # embedding 主題相似邊
 │   └── parsers.py        # anila_core.ingestion.parsers.extract_text 相容 re-export
-└── tests/                # 8 個 test 檔（parsers / uniform_color / llm_relations /
-                          #   handlers_helpers / embedder / judge / settings / evaluator_metrics）
+└── tests/                # 8 個 test 檔（parsers / uniform_color / llm_relations / handlers_helpers /
+                          #   embedder / judge / settings / evaluator_metrics）— 共 144 個 test
 ```
 
 ---
 
-## 啟動與部署
+## 啟動與測試
 
 ```bash
-# 在 stack 中（建議）— repo root compose
-docker compose -f compose.dev.yaml up -d --build ingestion-worker
+# 在 stack 中（建議）— 根目錄 compose shim
+docker compose up -d --build ingestion-worker            # → infra/compose/platform.yml
+# dev stack：docker compose -f compose.dev.yaml up -d --build ingestion-worker
 
-# 本機開發 / 測試
-cd services/ingestion-worker && pip install -e '.[dev]'
-pytest            # asyncio_mode=auto；testpaths=tests
-ruff check src tests
+# 本機開發 / 測試（先裝 anila-core，再裝本 worker）
+cd services/ingestion-worker
+.venv/bin/python -m pytest         # 144 tests；asyncio_mode=auto；testpaths=tests
+.venv/bin/ruff check src tests
 ```
 
-compose 中：build context = repo root；`depends_on`（皆 `service_healthy`）`csp-db` / `redis` / `csp`；volume `./share-dev/uploads/ingestion` → 容器 `/var/anila/ingestion-uploads`；CMD `arq ingestion_worker.main.WorkerSettings`。
+> 新建虛擬環境時，安裝順序與 Dockerfile 一致：先 `pip install -e 'packages/anila-core[rag]'`，再 `pip install -e 'services/ingestion-worker[dev]'`。
 
-### 環境變數（取自 `settings.py`）
+compose 中（`infra/compose/platform.yml`）：build context = repo root；`depends_on`（皆 `service_healthy`）`csp-db` / `redis` / `csp`；volume `share/uploads/ingestion`（host）→ 容器 `/var/anila/ingestion-uploads`；CMD `arq ingestion_worker.main.WorkerSettings`；`restart: unless-stopped`。**`docker restart` 不重載 `.env`/compose；套設定一律 `up -d`。**
+
+### 環境變數（取自 `settings.py`，compose 覆寫值另註）
 
 | 變數 | 預設 | 說明 |
 |------|------|------|
-| `DATABASE_URL` | `postgresql://csp_app:csp@csp-db:5432/csp` | asyncpg DSN，**必須**用 `csp_app` 角色（RLS） |
+| `DATABASE_URL` | `postgresql://csp_app:csp@csp-db:5432/csp` | asyncpg DSN，**必須**用 `csp_app` 角色（受 RLS，非 superuser） |
 | `REDIS_URL` | `redis://redis:6379` | Arq 佇列後端 |
 | `EMBEDDING_BASE_URL` | `http://host.docker.internal:7011/v1`（compose `http://csp:8000/v1`） | embedding endpoint |
 | `EMBEDDING_MODEL` / `EMBEDDING_API_KEY` | `nvidia/NV-embed-V2` / `not-set` | 模型 / Bearer token |
@@ -106,17 +137,19 @@ compose 中：build context = repo root；`depends_on`（皆 `service_healthy`�
 | `ENABLE_SIMILARITY_EDGES` | `true` | embedding 相似邊總開關 |
 | `SIMILARITY_TOP_K` / `SIMILARITY_MIN` / `SIMILARITY_MAX_DOCS` | `3` / `0.75` / `500` | 每文件連 K 個近鄰 / cosine 下限 / 超過略過重算 |
 
-> `SECRET_KEY`、`ANILA_ALLOW_*` 由 `anila-core` 安全模組消費（憑證解密 / SSRF），compose 注入 dev 預設值。
+> `SECRET_KEY`、`ANILA_ENV`、`ANILA_ALLOW_*` 由 `anila-core` 安全模組消費（憑證解密 / SSRF / http 端點 fail-closed），compose 由環境注入。
 
 ---
 
 ## 與其他服務的關係
 
-- **CSP**：上游。enqueue job + 輪詢進度。**Embedding / VLM / relation-LLM 呼叫都路由經 CSP `/v1` proxy**（指向 `http://csp:8000/v1`），由 CSP `proxy_service` 統一寫 `token_usage`，worker 不自行記帳（`embed()` 收到的 `user_id` 直接 `del`）。以 `ingestion-worker` 系統 API key（compose 由 `INTERNAL_PLATFORM_API_KEY_DEV` 注入）對 CSP 認證。
+- **CSP（治理中心）**：上游。enqueue job + 輪詢進度。**Embedding / VLM / relation-LLM 呼叫一律路由經 CSP `/v1` proxy**（compose 指向 `http://csp:8000/v1`），由 CSP `proxy_service` 統一寫 `token_usage`，worker 不自行記帳（`embed()` 收到的 `user_id` 直接 `del`）。對 CSP 以 **`ingestion-worker` 系統 API key** 認證（Model Gateway 的每服務金鑰；compose 由 `INTERNAL_PLATFORM_API_KEY` 注入）。外連前 `anila-core` 依 `ANILA_ENV` / `ANILA_ALLOW_*` 做 http 端點 fail-closed 與 SSRF 檢查。
 - **csp-db**：以 `csp_app`（受 RLS）連線；RLS-scoped 寫入用 `SET LOCAL anila.collection_id`。讀 documents / collections / eval_runs / user_llm_credentials，寫 chunks / images / `document_relations` / 狀態 / 計數。
 - **Redis**：Arq 佇列後端。
 - **共用上傳目錄**：CSP 寫、worker 讀；captioned 圖存 `<UPLOAD_DIR>/anila-images/<doc_id>/`。
-- **Judge / relation LLM**：使用者自帶憑證（`user_llm_credentials`，AES）即時解密；外連前 `validate_outbound_url`（SSRF），憑證 `__repr__` 遮罩 key。
+- **Judge / relation LLM 的使用者憑證**：使用者自帶憑證（`user_llm_credentials`，AES）即時解密；外連前 `validate_outbound_url`（SSRF），憑證物件 `__repr__` 遮罩 key。
+
+> 本 worker 早於重構的 Task spine / Full Trace / Artifact 合約，且**不參與**它們：它不讀 `X-ANILA-Task-Id`、不發 trace span、不設定分類等級。與重構相關的只有 §17.1 版圖、compose shim，以及經 CSP 的 Model Gateway 金鑰 + `ANILA_ENV` fail-closed 出向守衛。
 
 ---
 
@@ -125,4 +158,5 @@ compose 中：build context = repo root；`depends_on`（皆 `service_healthy`�
 - [`../../docs/ingestion/ingestion-platform-design.md`](../../docs/ingestion/ingestion-platform-design.md)（含 evaluator §6.5 LLM-as-judge）
 - [`../../docs/ingestion/parent-child-rag-design.md`](../../docs/ingestion/parent-child-rag-design.md)
 - [`../../docs/anila-core/anila-core-boundary.md`](../../docs/anila-core/anila-core-boundary.md)
+- 重構設計權威：[`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)（`00-product-constitution.md` 憲章、`02-system-architecture.md` 系統架構）
 - 平台整體：[`../../README.md`](../../README.md) · 分支策略：[`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)

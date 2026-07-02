@@ -1,175 +1,121 @@
-# ANILA models — standalone inference compose (FLUX image generation)
+# ANILA models — standalone inference compose
 
-> A standalone compose project (`name: anila-models`) whose lifecycle is decoupled from the platform stack, housing ANILA's inference workloads; this document focuses on local FLUX.2-dev image generation (air-gapped, intranet-only).
+> A standalone compose project (`name: anila-models`) whose lifecycle is **decoupled** from the platform stack, housing ANILA's inference workloads: local LLMs, embedding, and FLUX image generation. Everything is air-gapped and intranet-only (no host port); cross-stack traffic goes over the external network `anila-models-net` via docker DNS.
 
 > 中文版本：[`README.md`](./README.md). Technical terms, commands and code stay in English.
 
-> 🌿 **Branch note**: `infra/models/` (formerly `models/`) exists on every ANILA deployment branch (identical across branches). The models stack has a separate lifecycle from the platform stack and is reached cross-stack via the external network `anila-models-net`. See the root [`README.md`](../../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md).
+> 🌿 **Branch note**: `infra/models/` (formerly `models/`, moved under `infra/` in the §17.1 reorg) exists on every ANILA deployment branch and is identical across branches. See the root [`README.md`](../../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md).
 
 ---
 
-## Overview
+## Position
 
-`infra/models/` (formerly `models/`) houses the standalone compose project (`name: anila-models`). The two image-generation services (source now at `services/flux2-dev` and `services/flux2-dev-agent`) are:
+`infra/models/` holds one `docker-compose.yml` (project `anila-models`) plus the build contexts for the non-FLUX services (`src/`). It is a **separate project** from the platform stack (`anila-platform`, see the root `compose.yaml` → `infra/compose/platform.yml`):
 
-- **`flux2-dev`** — the FLUX.2-dev text-to-image inference service. It wraps `diffusers`' `Flux2Pipeline` into a minimal HTTP server (`server.py`) exposing `POST /generate`. Input `prompt / aspect_ratio / seed / ...`, returns JSON (base64 PNG list + audit meta).
-- **`flux2-dev-agent`** — an agent wrapper (OpenAI `/v1/chat/completions` compatible). The router / CSP forward image-generation requests here; it handles prompt translation (zh→en via gemma4), calls `flux2-dev`, lands the PNG to the share volume, and returns a Markdown image link to the frontend.
-
-Data flow:
-
-```
-user chat → router → DISPATCH:image-generator
-          → CSP proxy → flux2-dev-agent  (OpenAI chat compatible)
-                          → (prompt translation via gemma4)
-                          → flux2-dev  POST /generate  (FLUX inference)
-                          → land PNG to /share/flux
-                          ← Markdown image link
-```
-
-The frontend UX never sees `flux2-dev` directly; only the agent shim is its client.
+- Running `docker compose down` at the repo root only stops the platform — it does **not** kill the model containers here.
+- The two projects communicate over the shared external network `anila-models-net`; CSP / Router / Studio reach the models via docker DNS (e.g. `http://gemma4:8000`), with no host port exposed.
+- **Weights location is unchanged**: `ANILA_HF_DIR` defaults to `../../models/model` (resolved relative to this compose file). The §17.1 reorg only moved the compose and `src/`, not the weights directory.
 
 ---
 
-## Architecture & Stack
+## Services in this compose
 
-### flux2-dev (inference service)
+**Default group (no profile)** — the currently active set on the trial box / intranet:
 
-- **Language/framework**: Python 3.11, FastAPI + uvicorn.
-- **Inference backend**: `diffusers`' `Flux2Pipeline` (`diffusers>=0.36,<0.40`), `transformers>=4.50,<5.0`, `accelerate`.
-- **Precision & multi-GPU**: `torch_dtype=torch.bfloat16` (BF16), `device_map="balanced"` (weights sharded across GPUs).
-- **Base image**: `nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04`, `torch==2.6.0` (cu124 wheel).
-- **Offline**: `HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1`, weights mounted read-only, no HF connection.
+| Service | Role | GPU | Exposure |
+|---------|------|-----|----------|
+| `gpt-oss-20b` | TensorRT-LLM OpenAI server | `["2"]` | `expose 8000` |
+| `gemma4` | vLLM (gemma-4-31B-it + MTP speculative decode, `served-model-name=gemma4`) | `["3"]` | `expose 8000` |
+| `nv-embed-triton` | Triton (NV-Embed-v2 backend) | `["0"]` | **no expose/port** (fully cluster-internal) |
+| `nv-embed-proxy` | OpenAI `/v1/embeddings` shim (`build ./src/embedding_proxy`, bridges Triton) | — | `expose 8000` |
+| `flux2-dev` | FLUX.2-dev text-to-image backend | `["1","2"]` | `expose 8000` |
+| `flux2-dev-agent` | image-generation agent wrapper (OpenAI chat compatible) | — | `expose 8000` |
 
-`POST /generate` contract (spec §3.2, model-agnostic):
+**`--profile intranet` group** — added for the intranet H100s (generic vLLM image, GPU overridable via env):
 
-| Field | Type | Notes |
-|------|------|------|
-| `prompt` | `str` | required |
-| `aspect_ratio` | `Literal["1:1","16:9","9:16","4:3","3:4","3:1"]` | default `16:9` |
-| `seed` | `int \| None` | `None` = random (actual value returned for audit) |
-| `num_candidates` | `int (1–4)` | default `1`, always returns a list |
-| `num_inference_steps` | `int \| None` | `None` = env `FLUX_NUM_STEPS` (default 28) |
-| `guidance_scale` | `float \| None` | `None` = env `FLUX_GUIDANCE_SCALE` (default 4.0) |
+| Service | Weights | GPU (env default) |
+|---------|---------|-------------------|
+| `gemma-4-26b-a4b` | MoE ~48G bf16 | `${GEMMA_A4B_GPU:-1}` |
+| `gemma-4-12b` | ~22G bf16 | `${GEMMA_12B_GPU:-2}` |
+| `gpt-oss-120b` | native MXFP4 ~63G | `${GPT_OSS_120B_GPU:-3}` |
 
-Returns `GenerateResponse`:
-
-```json
-{"images": ["<base64 PNG>", "..."], "seed": 123456,
- "meta": {"steps": 28, "guidance": 4.0, "width": 1408, "height": 768, "model_sha": ""}}
-```
-
-Design notes: always returns `list[str]` (even for `num_candidates=1`); aspect ratios map to fixed resolutions (incl. `3:1` letterbox, ≤0.8MP FLUX stable zone); seeds use a **CPU generator** (with `device_map="balanced"` weights span GPUs, so pinning a cuda device is unsafe); `GET /health` → `{"status":"ok"}`; `FLUX_SKIP_LOAD=1` uses a stub pipeline (no real weights, no GPU) for integration smoke tests.
-
-### flux2-dev-agent (agent wrapper)
-
-- **Language/framework**: Python 3.11, FastAPI + uvicorn, httpx; base `python:3.11-slim` (no GPU; healthcheck via urllib).
-- **Endpoints**: `GET /health`, `GET /v1/models` (returns `image-generator`), `POST /v1/chat/completions` (JSON + SSE).
-- **Four collaborators**: `prompt_translator.py` (calls gemma4 via the CSP proxy to rewrite colloquial Chinese into FLUX-friendly English; any error falls back to the original text), `flux_client.py` (calls `flux2-dev` `/generate`, extracts the first candidate PNG), `image_store.py` (validates PNG magic bytes, writes the share volume, returns a public URL), `chat_handler.py` (chains the three, builds an OpenAI-shaped response `已為您繪製：\n\n![](url)`).
+> The FLUX pair's contract, env vars, tests and licensing are **not** covered here — see their own READMEs: [`services/flux2-dev`](../../services/flux2-dev/README.en.md) (the `/generate` inference backend) and [`services/flux2-dev-agent`](../../services/flux2-dev-agent/README.en.md) (the agent shim; their build contexts live under `services/`, referenced by this compose as `../../services/flux2-dev*`).
 
 ---
 
-## Layout
+## Layout & weights
 
 ```
 infra/models/
-├── docker-compose.yml          # anila-models project (LLM/embedding/FLUX services)
-└── src/                        # build context for non-FLUX services (e.g. the embedding proxy)
+├── docker-compose.yml   # project anila-models (LLM / embedding / FLUX)
+└── src/                 # build contexts / config for the non-FLUX services
+    ├── tensorrtllm-1.2.0rc5-openai-gpt-oss-20b/   # trtllm serve config + encodings + perf logs
+    ├── tritonserver-25.04-nv-embed-v2/            # Triton model repository + export
+    └── embedding_proxy/                           # nv-embed-proxy FastAPI (app.py + Dockerfile)
 
-services/flux2-dev/             # FLUX.2-dev inference service (compose references ../../services/flux2-dev)
-├── Dockerfile                  # CUDA 12.4 base + torch 2.6 + diffusers
-├── requirements.txt · pyproject.toml
-├── server.py                   # build_app + /generate + /health + pipeline loading
-└── tests/                      # pytest (mock pipeline injected, no GPU needed)
-
-services/flux2-dev-agent/       # agent wrapper (OpenAI compatible)
-├── Dockerfile                  # python:3.11-slim
-├── app/{main,schemas,prompt_translator,flux_client,image_store,chat_handler}.py
-└── tests/                      # pytest (pytest-asyncio + respx)
+models/model/            # HuggingFace weights (ANILA_HF_DIR points here by default; a dev symlink works too, not moved)
+models/inference/        # TensorRT-LLM / Triton local build context + perf logs (git-untracked, not part of this compose)
 ```
 
-> The same `docker-compose.yml` also defines non-image services `gpt-oss-20b` / `gemma4` / `nv-embed-triton` / `nv-embed-proxy`; this document focuses on the two FLUX services.
->
-> The repo-root `models/` directory still holds `inference/` (local build context & load-test logs for the TensorRT-LLM / Triton images) and `model/` (HuggingFace weight symlinks, **unchanged location**); both are git-untracked, out of FLUX scope, and not covered here.
+- `ANILA_HF_DIR` (default `../../models/model`) and `ANILA_MODELSRC_DIR` (default `./src`) are overridable — set the env when paths differ, so weights and config need no pinned host absolute paths.
+- All models set `HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1` / `HF_DATASETS_OFFLINE=1`, with weights mounted as volumes; containers never reach HuggingFace.
 
 ---
 
-## Setup & Run
+## Startup & deployment
 
-All services only use `expose:` (intranet), with **no host port**; CSP reaches them via the shared external network `anila-models-net` by DNS.
+Prefer the `infra/deployment/intranet/model-serve.sh` wrapper (auto-`source`s the repo-root `.env`, auto-creates `anila-models-net`, and always passes `--profile intranet` so both in- and out-of-profile services can be named):
 
 ```bash
-# one-time bootstrap
+# One-time bootstrap: create the net and re-apply networking to the platform stack
+# (restart does NOT attach a newly-added network — use up -d).
 docker network create anila-models-net
-docker compose restart csp                              # run from the repo root; CSP joins the network
+docker compose up -d csp            # at repo root, via the root shim compose.yaml; csp joins anila-models-net
 
-# day-to-day (run from the repo root)
-docker compose -f infra/models/docker-compose.yml up -d
-docker compose -f infra/models/docker-compose.yml logs -f flux2-dev
-docker compose -f infra/models/docker-compose.yml restart flux2-dev-agent
-docker compose -f infra/models/docker-compose.yml down   # touches models only; platform unaffected
+# Day-to-day (at repo root)
+bash infra/deployment/intranet/model-serve.sh up trial          # active set: gpt-oss-20b gemma4 nv-embed flux
+bash infra/deployment/intranet/model-serve.sh up intranet       # H100 set: gemma4 26b-a4b 12b 120b nv-embed
+bash infra/deployment/intranet/model-serve.sh up gemma4         # a single service (up always needs a group or service name)
+bash infra/deployment/intranet/model-serve.sh status            # health overview
+bash infra/deployment/intranet/model-serve.sh logs flux2-dev    # tail -f
+bash infra/deployment/intranet/model-serve.sh down              # stop all (models only; platform untouched)
 ```
 
-GPU / resources (from compose): `flux2-dev` GPUs `["1","2"]`, `shm_size: 32g`, `ipc: host`, healthcheck `/health` (`start_period: 300s`); `flux2-dev-agent` no GPU, `depends_on: flux2-dev (service_healthy)`.
-
-Key environment variables:
-
-| Service | Variable | Default / value | Notes |
-|------|------|-----------|------|
-| flux2-dev | `FLUX_MODEL_PATH` | `/workspace/model/FLUX.2-dev` | weights path |
-| flux2-dev | `FLUX_DEVICE_MAP` | `balanced` | multi-GPU sharding |
-| flux2-dev | `FLUX_NUM_STEPS` | `28` | inference steps |
-| flux2-dev | `FLUX_GUIDANCE_SCALE` | `3.5` (compose) / `4.0` (code fallback) | guidance |
-| flux2-dev | `HF_HUB_OFFLINE` / `TRANSFORMERS_OFFLINE` | `1` | air-gapped |
-| flux2-dev-agent | `FLUX_BACKEND_URL` | `http://flux2-dev:8000` | backend inference service |
-| flux2-dev-agent | `CSP_BASE_URL` / `CSP_API_KEY` | `http://csp:8000` / env | translation callback via CSP |
-| flux2-dev-agent | `GEMMA_MODEL` / `ENABLE_PROMPT_TRANSLATION` | `gemma4` / `1` | translation LLM / off = send original |
-| flux2-dev-agent | `SHARE_DIR` / `PUBLIC_URL_PREFIX` | `/share/flux` / `/uploads/flux` | landing path & public URL |
-| flux2-dev-agent | `DEFAULT_ASPECT_RATIO` / `FLUX_TIMEOUT_SECONDS` | `16:9` / `240` (code fallback `180`, compose overrides to 240) | default aspect ratio / backend timeout |
-
-> Also: `flux2-dev` has `FLUX_MODEL_SHA` (default `""`, written into `meta.model_sha`) and `FLUX_SKIP_LOAD=1` (stub pipeline — no weights, no GPU — for integration smoke tests); `FLUX_MAX_CONCURRENT`(4) is controlled by the upstream csp/studio, not this service. In compose, `flux2-dev` is bound to GPUs `["1","2"]` and `gpt-oss-20b` to `["2"]` — they share GPU 2, so watch VRAM when deploying.
-
-**Air-gapped weights**: FLUX.2-dev weights are mounted read-only (`.../FLUX.2-dev:/workspace/model/FLUX.2-dev:ro`) with `HF_HUB_OFFLINE=1`, so the container never fetches weights externally. `flux2-dev-agent` binds the host `share-dev/uploads/flux` to `/share/flux`; nginx serves it at `/uploads/flux/` (frontend image links point there).
-
----
-
-## Testing
-
-Both services ship a pytest suite that needs **no GPU** (mock pipeline injected / respx-stubbed HTTP), runnable straight on a dev box:
+Equivalent bare compose commands:
 
 ```bash
-# flux2-dev (conftest sets FLUX_SKIP_LOAD=1 — no weights loaded)
-cd services/flux2-dev       && pip install -e '.[test]' && pytest
-
-# flux2-dev-agent (pytest-asyncio + respx; asyncio_mode=auto)
-cd services/flux2-dev-agent && pip install -e '.[test]' && pytest
+docker compose -f infra/models/docker-compose.yml --profile intranet up -d gemma4
+docker compose -f infra/models/docker-compose.yml logs -f flux2-dev
+docker compose -f infra/models/docker-compose.yml down
 ```
 
-> Pinned test deps live in each `pyproject.toml` under `[project.optional-dependencies].test`; torch / diffusers are **not** in test deps, so CI/dev never installs the GPU stack.
+> ⚠️ Do not use `START-HERE.sh` / `intranet-deploy.sh` for small model-layer tweaks — those are the one-time card bootstrap. Use `model-serve.sh` for model lifecycle and `infra/deployment/scripts/deploy-prod.sh` for the platform lifecycle. Apply config changes with `up -d` (`docker restart` does not reload `.env` / compose).
 
 ---
 
-## Integration
+## Platform / Model Gateway boundary
 
-- When gemma4 emits `DISPATCH:image-generator:...`, the platform router has **CSP proxy** forward the request to `flux2-dev-agent` (registered in CSP `model_registry` as `model_type=agent`).
-- `flux2-dev-agent` connects directly to `flux2-dev` `/generate` via `FLUX_BACKEND_URL`; CSP's studio can hit `flux2-dev` along the same path.
-- The three share the external network `anila-models-net`, reachable only by container-to-container DNS; no host port is opened.
-- Translation callback: the agent calls CSP `/v1/chat/completions` (model=`gemma4`) via `CSP_BASE_URL` + `CSP_API_KEY` to rewrite colloquial prompts into English.
+CSP's **Model Gateway (治理中心, [doc 04](../../docs/anila-redesign-docs/04-model-gateway-design.md))** is where "registration, routing, per-model API keys, 5-state health, `ANILA_ENV` http fail-closed, classification limits, usage trace" live. This compose only **provides the upstream endpoints**; the two layers separate cleanly:
+
+- **Same-host docker-DNS upstreams (this compose)**: `gpt-oss-20b` / `gemma4` / `nv-embed-proxy` (three `model_type`s) and `image-generator` (`model_type=agent`, endpoint `flux2-dev-agent:8000`) are seed-registered into the CSP model registry by the platform; no API key needed inside the network. `nv-embed-triton` and `flux2-dev` are **not registered directly** — the former is reached only by `nv-embed-proxy` internally, the latter only by the agent / Studio via URL.
+- **Cross-host models (doc 04's main scenario)**: models on other intranet hosts (e.g. the `.12` gateway) go over HTTPS + per-model API key, proxied by the CSP Model Gateway — that path's credential / health / fail-closed governance lives in CSP, not in this compose.
+
+---
+
+## Key environment variables
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `ANILA_HF_DIR` | `../../models/model` | weights root (relative to this compose file) |
+| `ANILA_MODELSRC_DIR` | `./src` | config / build contexts for non-FLUX services |
+| `VLLM_IMAGE` | `vllm/vllm-openai:v0.22.1-cu129-ubuntu2404` | generic vLLM image for the intranet profile |
+| `GEMMA_A4B_GPU` / `GEMMA_12B_GPU` / `GPT_OSS_120B_GPU` | `1` / `2` / `3` | per-model GPU for the intranet profile |
+| `INTERNAL_PLATFORM_API_KEY` | (required) | injected as `flux2-dev-agent`'s `CSP_API_KEY` (translation callback; fail-loud if missing) |
 
 ---
 
 ## Related docs
 
-- FLUX spec: [`../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md`](../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md) (§3.2 `/generate` contract, §9 licensing minefield)
-- Platform: [`../../README.md`](../../README.md) · Branch strategy: [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
-
----
-
-## Licensing note (important)
-
-Per spec §9:
-
-- **`black-forest-labs/FLUX.2-dev` is under the BFL Non-Commercial License** — internal commercial use is a grey area. **Confirm with legal before going to production** whether an "internal company tool" falls within the license.
-- **`FLUX.2-klein-4B` is Apache-2.0**, the cleanest local alternative legally (slightly lower quality, lower latency). If legal deems internal commercial use of the dev version doubtful, **switch the primary to klein-4B**.
-- `FLUX.2-klein-9B` is Non-Commercial like dev and does not solve the licensing issue.
-
-The compose `flux2-dev` service also carries a matching caveat comment above it.
+- FLUX services: [`services/flux2-dev`](../../services/flux2-dev/README.en.md), [`services/flux2-dev-agent`](../../services/flux2-dev-agent/README.en.md) · FLUX spec & licensing: [`ANILA_Studio_FLUX_Spec.md`](../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md) (§9 licensing landmines: FLUX.2-dev is BFL Non-Commercial, klein-4B is the clean Apache-2.0 alternative)
+- Redesign docs: [`04-model-gateway-design.md`](../../docs/anila-redesign-docs/04-model-gateway-design.md), [`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md)
+- Deploy scripts: `infra/deployment/intranet/model-serve.sh` (model lifecycle), `infra/deployment/scripts/deploy-prod.sh` (platform lifecycle) · Platform overview: [`../../README.md`](../../README.md)

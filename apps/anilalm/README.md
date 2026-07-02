@@ -1,155 +1,138 @@
-# ANILA LM (ANILALM)
+# ANILA LM — 我的知識庫 / 產出中心（`anilalm`）
 
-> 知識庫前端 + Studio 入口：研究筆記風格的 SPA（Vite + React + TS），加上一個獨立的 `pptx-renderer`（pptx-skill）微服務，把投影片規格（deck spec）渲染成 `.pptx`。
+> ANILA 的知識與產出 SPA（Vite + React + TypeScript，v1.0.0）。承載「**我的知識庫**」（collection／文件／檢索／對話）與「**產出中心**」（Studio：簡報 / 報告 / 心智圖 / 資訊圖 / 資料表五種 artifact）。掛載於 nginx 同源子路徑 `/anilalm/`，由 ANILA Shell 的四入口導覽進入。
 
-> English mirror：[README.en.md](./README.en.md)
+> English mirror: [`README.en.md`](./README.en.md)
 
-> 🌿 **分支對照**：本子專案存在於 `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`。**`trial-military` 精簡版不含本子專案**。分支策略見根目錄 [`README.md`](../../README.md) 的分支對照表與 [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)。
-
----
-
-## 簡介
-
-**ANILALM** 提供「文件 → 對話 → 產出」一站式介面：上傳 → 建知識庫 → 對話查詢 → 生成深度報告與多種 artifact。它本身是 SPA，串接 services/csp（CSP）做認證 / ingestion / 對話 / LLM proxy，artifact 生成則走 [`anila-studio`](../../services/anila-studio/)（slides / reports / mindmaps / infographics / datatables 五種）。mount 在 nginx `/anilalm/` 子路徑。
-
-子專案含兩個獨立執行單元：
-
-1. **頂層 ANILALM app**（package `anilalm` v1.0.0）— Vite + React + TS 前端。
-2. **`pptx-renderer` 服務**（package `anilalm-pptx-skill` v0.1.0；前身 `ANILALM/pptx-skill`，現位於 [`services/pptx-renderer`](../../services/pptx-renderer/)）— 獨立 Node/Express 服務（`server.js`），用 pptxgenjs + headless LibreOffice + Poppler 把 deck spec 渲染成 `.pptx`。docker network 上以 `pptx-renderer:7100` 對外，**由 anila-studio server-to-server 呼叫，前端不直接打它**。端點：
-   - `GET /health` → `ok`
-   - `POST /render` — body `{ spec }`，回 `.pptx` 二進位（含 `X-Pptx-Job-Id` / `X-Pptx-Path` header；`spec.slides` 空陣列回 400、超過 `MAX_SLIDES` 回 413）
-   - `POST /screenshots` — body `{ pptxPath }` 或 `{ pptxBase64 }`（path 須在 TMP_ROOT 內，防 traversal）；soffice→PDF→pdftoppm(`-r 96`)→PNG，回 `{ images:[{index,mime,base64}] }`
-   - `POST /qa-geometric` — body `{ pptxBase64 }`；JSZip 解 + 解析 slide XML，回 `{ defects:[{slide_index,severity,kind,detail}] }`
+> 🌿 **分支對照**：本子專案存在於 `main` / `prod-intranet-card` / `prod-public-passwd` / `prod-military-passwd` / `dev-public` / `dev-military`；**`trial-military` 精簡版不含本子專案**。分支策略見根目錄 [`README.md`](../../README.md) 與 [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)。
+>
+> 設計權威：[`docs/anila-redesign-docs/00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md)（憲章）、[`01-domain-model.md`](../../docs/anila-redesign-docs/01-domain-model.md)（Task 網域）、[`09-api-event-contracts.md`](../../docs/anila-redesign-docs/09-api-event-contracts.md)（Task / artifact 契約）。
 
 ---
 
-## 架構與技術棧
+## 1. 產品定位
 
-### 頂層 ANILALM app（前端）
+本 SPA 提供「文件 → 對話 → 產出」一站式流程：上傳建知識庫 → 對話查詢 → 生成 artifact。它**只是前端**，串接 [`services/csp`](../../services/csp/)（CSP）做認證 / ingestion / 對話 / LLM proxy，artifact 生成走 [`services/anila-studio`](../../services/anila-studio/)。
 
-| 模組 | 版本（`package.json`） |
+在 ANILA 產品憲章（doc 00 §2）中，本 SPA 同時實作兩個一級使用者入口 —「我的知識庫」與「產出中心」；ANILA Shell 的側欄以同源絕對路徑 `/anilalm` 進入。
+
+---
+
+## 2. Task-first 產出（redesign Slice 8b）
+
+**每一次 Studio 產出 job 送出前，先在 CSP 建立一個 Task**，讓後續的 artifact-job / artifact / trace 全部掛回同一個治理單元（doc 09 §2 Task API）。
+
+- `src/api/tasks.ts` — `createArtifactTask()` → `POST /api/tasks`（`task_type:'generate_artifact'`、`source_scope` 預設 `'project'`、`selected_collection_ids`、`requested_output_type`）。回傳 `TaskBinding { taskId, sourceSnapshotId?, traceId? }`，再 thread 進 Studio job body。型別對映 `services/csp/app/schemas/contracts/tasks.py` 與 doc 01（`TaskType` / `SourceScope` / `RequestedOutputType`）。
+- **韌性契約**：任何失敗（端點未上線 / 認證 / 網路）回傳 `null` ＋ zh-TW `console.warn`，產出**以無任務綁定方式照常繼續**，絕不因治理 metadata 掛不上而中斷生成。
+- 呼叫點：`src/workspace/CommandModal.tsx`（簡報）與 `src/studio/generators.ts`（報告 / 心智圖 / 資訊圖 / 資料表）——五種 artifact 皆先建 Task。
+
+### Artifact 皆 async job 模式
+
+| Artifact | 送出 | 輪詢 / 下載 |
+|---|---|---|
+| 簡報 slides | `POST /api/studio/slides/jobs` → 202 `JobStatus` | `GET …/{id}` 輪詢 → `GET …/{id}/pptx` 下載 → `DELETE …/{id}` 取消（`src/api/studio.ts`，走 `STUDIO_BASE_URL`） |
+| 報告 report | `POST /api/reports/jobs` | 前端先 `chatComplete` 草擬 JSON spec，再建 job（`src/studio/generators.ts`） |
+| 心智圖 / 資訊圖 / 資料表 | `POST /api/{kind}/jobs` | 同上 job 模式 |
+
+`src/workspace/WSStudio.tsx` 的輪詢 effect 依 artifact `state === 'pending'` 驅動 done / failed 轉換與下載；使用者可在生成期間繼續操作。
+
+---
+
+## 3. 技術棧（讀自 `package.json`）
+
+| 模組 | 版本 |
 | --- | --- |
-| Build | Vite 6.0.5 + React 18.3.1 + TypeScript 5.7.2 |
-| 路由 | react-router-dom 6.28.0（`BrowserRouter` + 巢狀 Outlet 守衛） |
-| 狀態 | Zustand 5.0.2（auth / workspace / artifacts） |
-| HTTP | axios 1.7.9 + 攔截器（401 token refresh、`withCredentials`） |
-| Markdown | marked 14.1.3 + DOMPurify 3.2.3（LLM 輸出視為 untrusted，雙層防 XSS） |
-| 型別 codegen | openapi-typescript 7.13.0（dev） |
-| 圖示 | inline SVG（自製集合，0 套件） |
+| Build | **Vite 6.0.5 + React 18.3.1 + TypeScript 5.7.2** |
+| 路由 | `react-router-dom` 6.28.0（`BrowserRouter` + 巢狀 Outlet 守衛） |
+| 狀態 | **Zustand 5.0.2**（auth / workspace / artifacts） |
+| HTTP | `axios` 1.7.9 + 攔截器（401 refresh、`withCredentials`） |
+| Markdown | `marked` 14.1.3 + `DOMPurify` 3.2.3（LLM 輸出視為 untrusted，雙層防 XSS） |
+| 型別 codegen | `openapi-typescript` 7.13.0（dev） |
+| 圖示 | inline SVG（自製，0 套件） |
 
-scripts：`dev`（vite）/ `build`（`tsc -b && vite build`）/ `preview` / `typecheck` / `gen:studio-types`（`bash scripts/gen-studio-types.sh`，對 `../../services/anila-studio/openapi/studio.openapi.json` 跑 `openapi-typescript` 寫 `src/api/studio-types.gen.ts`）。Runtime image：`node:22-alpine` build（`npm install`）→ `nginx:1.27-alpine` 服務 `dist/`；`ARG BASE_PATH=/anilalm/`、`ARG VITE_DEFAULT_CHAT_MODEL=gpt-4o-mini`；`EXPOSE 80`、healthcheck wget `/health`。
+`scripts`：`dev` / `build`（**`tsc -b && vite build`**）/ `preview` / `typecheck`（`tsc -b --noEmit`）/ `gen:studio-types`。**驗證閘門 = `typecheck` + `build`**（本子專案無單元測試框架）。
 
-### pptx-renderer 服務（`services/pptx-renderer`，前身 `pptx-skill/`）
+### `gen:studio-types` 流程
 
-| 相依 | 版本 |
-| --- | --- |
-| `express` | ^5.2.1 |
-| `pptxgenjs` | ^3.12.0 |
-| `sharp` | ^0.33.5（`icons.js` 載入 / 處理 Heroicons PNG 點陣圖） |
-| `react` / `react-dom` / `react-icons` | ^18.3.1 / ^18.3.1 / ^5.4.0（`icons.js` 概念名→Heroicons PNG） |
-
-> `jszip`（`/qa-geometric` 用）為 `require` 但未列在 `package.json`，靠 lockfile / 傳遞相依解析。
-
-`Dockerfile`：base `node:22-bookworm-slim`（非 alpine），用 **`npm ci --omit=dev`**（不是 vendored COPY）。apt 套件：`libreoffice-core` / `libreoffice-impress`（`.pptx → PDF`）、`poppler-utils`（PDF → PNG）、`fonts-noto-cjk` + **`fonts-noto-cjk-extra`**、`tini`（PID-1 reaper，讓 SIGTERM 傳到 soffice）、`ca-certificates`。ENV `PORT=7100`、`PPTX_TMP_DIR=/var/anila/pptx-out`（`server.js` 程式碼 fallback 為 `/tmp/pptx-out`）。`MAX_PAYLOAD=10mb`、`MAX_SLIDES=60`。`server.js` schema-light（CSP 已做 Pydantic 驗證），只檢查 payload 大小 / 投影片數 / `/screenshots` 路徑。
+`bash scripts/gen-studio-types.sh` 對 `services/anila-studio/openapi/studio.openapi.json` 跑 `openapi-typescript`，寫出 `src/api/studio-types.gen.ts`。anila-studio schema 變動後重跑；產出的型別讓 studio job 契約在 build 時就抓到 drift。
 
 ---
 
-## 目錄結構
+## 4. 目錄結構
 
 ```
 apps/anilalm/
-├── package.json                # anilalm v1.0.0：react / axios / zustand / marked / dompurify / react-router
-├── Dockerfile                  # 前端 image：node:22-alpine（npm install）→ nginx
-├── vite.config.ts              # /api、/v1、/v2 → VITE_CSP_BACKEND；/api/studio → VITE_ANILA_STUDIO_BACKEND
-├── tsconfig*.json · index.html · docker/(nginx.conf) · _design/ · scripts/gen-studio-types.sh
-├── src/
-│   ├── main.tsx / App.tsx / types.ts / vite-env.d.ts
-│   ├── api/                    # client.ts(axios + STUDIO_BASE_URL) · auth · chat · collections ·
-│   │                           #   conversations · documents · jobs · search · studio · studio-types.gen.ts
-│   ├── store/                  # auth.ts / workspace.ts / artifacts.ts (Zustand)
-│   ├── routes/                 # ProtectedRoute / LoginPage / DashboardPage / WorkspacePage
-│   ├── workspace/              # WSSidebar / WSChat / WSStudio / CommandModal / ArtifactViewer /
-│   │                           #   StudioWizard / ThemePicker / useJobStream
-│   ├── studio/                 # generators.ts / themeMapping.ts / themes.ts
-│   ├── theme/                  # ThemeContext.tsx / tokens.ts
-│   ├── components/             # ErrorBoundary / Field / Icon / MarkdownPreview / Modal / Spinner / ThemeSwitch
-│   └── utils/format.ts
-└── README.md / README.en.md
-
-services/pptx-renderer/         # ── 獨立的 pptx-renderer 服務（前身 ANILALM/pptx-skill）──
-├── server.js                   # Express：/render /screenshots /qa-geometric /health（port 7100）
-├── icons.js · package.json（anilalm-pptx-skill v0.1.0）
-├── Dockerfile                  # node:22-bookworm-slim + npm ci + LibreOffice + Poppler + Noto CJK(+extra) + tini
-├── SKILL.md / pptxgenjs.md / editing.md
-├── scripts/                    # Python helper（add_slide / clean / thumbnail + office/）
-└── tests/                      # 4 檔：test_cover_hero_guard / test_hierarchy_bullets /
-                                #   test_image_focus_render / test_local_emptiness
+├── package.json · Dockerfile（node:22-alpine build → nginx；ARG BASE_PATH=/anilalm/）
+├── vite.config.ts（/api、/v1、/v2 → VITE_CSP_BACKEND；/api/studio → VITE_ANILA_STUDIO_BACKEND）
+├── tsconfig*.json · index.html · .env.example · docker/ · _design/ · scripts/gen-studio-types.sh
+└── src/
+    ├── main.tsx / App.tsx / types.ts / vite-env.d.ts
+    ├── api/          # client.ts(axios + STUDIO_BASE_URL) · auth · chat · collections · conversations ·
+    │                 #   documents · jobs · search · studio · studio-types.gen.ts · tasks.ts
+    ├── store/        # auth.ts / workspace.ts / artifacts.ts（Zustand）
+    ├── routes/       # ProtectedRoute / LoginPage / DashboardPage / WorkspacePage
+    ├── workspace/    # WSSidebar / WSChat / WSStudio / CommandModal / StudioWizard / ArtifactViewer /
+    │                 #   ThemePicker / useJobStream
+    ├── studio/       # generators.ts（5 種 artifact，皆先建 Task）/ themeMapping.ts / themes.ts
+    ├── theme/        # ThemeContext.tsx / tokens.ts
+    ├── components/   # ErrorBoundary / Field / Icon / MarkdownPreview / Modal / Spinner / ThemeSwitch
+    └── utils/format.ts
 ```
+
+> **`pptx-renderer` 不在本子專案內**：投影片渲染服務已獨立為 [`services/pptx-renderer`](../../services/pptx-renderer/)，由 **anila-studio** server-to-server 呼叫（`pptx-renderer:7100`），前端不直接打它。細節見該服務自己的 README / `SKILL.md`。
 
 ---
 
-## 啟動與部署
+## 5. 啟動與部署
 
-### 前端（開發模式）
+### 本機開發
 
 ```bash
 cd apps/anilalm
 npm install
-cp .env.example .env              # 視需要改 VITE_CSP_BACKEND / VITE_ANILA_STUDIO_BACKEND / VITE_DEFAULT_CHAT_MODEL
-npm run dev                       # http://localhost:5174
+cp .env.example .env               # 視需要改 VITE_CSP_BACKEND / VITE_ANILA_STUDIO_BACKEND / VITE_DEFAULT_CHAT_MODEL
+npm run dev                        # http://localhost:5174
 ```
 
-dev server 把 `/api`、`/v1`、`/v2` proxy 到 `VITE_CSP_BACKEND`（預設 `http://localhost:8000`），`/api/studio` proxy 到 `VITE_ANILA_STUDIO_BACKEND`（預設 `http://localhost:8100`）。先確認 backend：`curl -sf http://localhost:8000/health`。
+dev server 把 `/api`、`/v1`、`/v2` proxy 到 `VITE_CSP_BACKEND`（預設 `http://localhost:8000`），`/api/studio` proxy 到 `VITE_ANILA_STUDIO_BACKEND`（預設 `http://localhost:8100`）。先確認後端：`curl -sf http://localhost:8000/health`。
 
-### pptx-renderer 服務（容器）
+### 容器（monorepo compose）
 
-定義於 repo 根 shim `compose.dev.yaml`（實體 `infra/compose/dev.yml`）：`build.context: ../../services/pptx-renderer`、`expose: "7100"`（無 host port，由 anila-studio 以 `pptx-renderer:7100` 連線）、healthcheck `http://127.0.0.1:7100/health`。
+本 SPA 在 compose 中的 service 名為 **`anilalm`**（build context `apps/anilalm`、`BASE_PATH=/anilalm/`），由根目錄 shim `compose.yaml`（`name: anila-platform`）→ `infra/compose/platform.yml` 納管；dev 為 `compose.dev.yaml` → `infra/compose/dev.yml`。經主 nginx 於同源 `/anilalm/` 反向代理。
 
 ```bash
-cd <repo_root> && docker compose -f compose.dev.yaml up -d pptx-renderer
-# 或本機：cd services/pptx-renderer && node server.js   # :7100
+docker compose -f compose.yaml up -d anilalm
+# 日常生命週期走 infra/deployment/scripts/deploy-prod.sh
 ```
 
-> 正式環境（`compose.yaml`，非 `-dev`）同樣納管 `pptx-renderer` 與 `anilalm` 兩個 service（`anila-studio` 以 `RENDERER_BASE_URL=http://pptx-renderer:7100` 連線）；把 `-f compose.dev.yaml` 換成預設 compose 即可。
-
-### smoke 測試
+### 驗證閘門
 
 ```bash
-cd services/pptx-renderer
-node tests/test_image_focus_render.js        # 需 live renderer；RENDERER_URL 可覆寫
-node tests/test_local_emptiness.js           # inline，不需 server
+npm run typecheck      # tsc -b --noEmit
+npm run build          # tsc -b && vite build（正式驗證用；非只 tsc）
 ```
 
 ---
 
-## 環境變數
+## 6. 環境變數
 
 | 變數 | 預設 | 說明 |
 |---|---|---|
 | `VITE_CSP_BACKEND` | `http://localhost:8000` | dev proxy：`/api`、`/v1`、`/v2`（CSP） |
 | `VITE_ANILA_STUDIO_BACKEND` | `http://localhost:8100` | dev proxy：`/api/studio/*`（anila-studio） |
 | `VITE_STUDIO_BASE_URL` | `""` | 瀏覽器可見的 anila-studio base（`src/api/client.ts`）；空 = 用 vite proxy / 同源 nginx |
-| `VITE_DEFAULT_CHAT_MODEL` | `gpt-4o-mini` | 預設聊天模型（`src/studio/generators.ts` + Dockerfile ARG） |
-| `BASE_PATH` | `/anilalm/`（Dockerfile ARG；`.env.example` 註解） | SPA URL 前綴；`vite.config.ts` 讀 `BASE_PATH \|\| VITE_BASE_PATH \|\| '/'` |
+| `VITE_DEFAULT_CHAT_MODEL` | `gpt-4o-mini` | 預設聊天模型（須存在於 CSP model_registry 或為已核准 Agent 名） |
+| `BASE_PATH` | `/anilalm/`（Dockerfile ARG） | SPA URL 前綴；`vite.config.ts` 讀 `BASE_PATH \|\| VITE_BASE_PATH \|\| '/'` |
 
 ---
 
-## 與其他服務的關係
+## 7. 相關文件
 
-前端只跟 **CSP**（`/api`、`/v1`、`/v2`）與 **anila-studio**（`/api/studio/*` 及 `/api/{reports,mindmaps,infographics,datatables}/*`）溝通；`pptx-renderer` 由 **anila-studio** server-to-server 呼叫（前端 `src/` 無任何 renderer 參考）。前端走 `VITE_STUDIO_BASE_URL`（`src/api/studio.ts` 的 `studioFetch`）。
-
-artifact 皆 async job 模式：`POST /api/{kind}/jobs`（slides 回 202 + JobStatus）→ 輪詢 `GET …/{id}` → `GET …/{id}/download/{fmt}`（slides 為 `/pptx`）→ `DELETE …/{id}` 取消。slides 的 `generateSlides` 另在前端先 `chatComplete` 草擬 JSON spec；report/mindmap/infographic/datatable 則純後端 job。
-
-`image_focus` 渲染（`server.js`）：`image_focus` layout 把 `image_data` 畫左半、bullets 右半；`standard` / `stat_callout` / `quote` / `two_column` / `icon_rows` 忽略 `image_data`。例外：`section_break` 與自動加的封面（`image_gen_meta.use_case==='cover_hero'`）會把 `image_data` 當全幅 hero。
-
-> 重用性：renderer 是獨立 HTTP 服務，未來任何 caller（n8n / CLI / bot）都可打同一個 `/render`，CSP 容器維持 Python-only。
+- 設計權威：[`../../docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)（憲章 00 / 網域 01 / 契約 09）
+- 後端服務：CSP [`../../services/csp/README.md`](../../services/csp/README.md) · Studio [`../../services/anila-studio/README.md`](../../services/anila-studio/README.md) · Renderer [`../../services/pptx-renderer/`](../../services/pptx-renderer/)
+- 相鄰入口：任務中心 [`../anila-shell/README.md`](../anila-shell/README.md) · 治理中心 [`../csp-governance-ui/README.md`](../csp-governance-ui/README.md)
+- 平台整體：[`../../README.md`](../../README.md) · 分支策略 [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
 
 ---
 
-## 相關文件
-
-- Studio FLUX 主規格：[`../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md`](../../docs/superpowers/studio-flux/ANILA_Studio_FLUX_Spec.md)
-- 分階段設計 / 計畫：`../../docs/superpowers/studio-flux/specs/`、`../../docs/superpowers/studio-flux/plans/`
-- anila-studio 服務：[`../../services/anila-studio/README.md`](../../services/anila-studio/README.md)
-- 平台整體：[`../../README.md`](../../README.md) · 分支策略：[`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
-- renderer 內部參考：`../../services/pptx-renderer/SKILL.md`、`../../services/pptx-renderer/pptxgenjs.md`
+**Framework**：Vite + React + TypeScript · **Serves**：我的知識庫 + 產出中心 · **Talks to**：CSP（`/api`、`/v1`、`/v2`）+ anila-studio（`/api/studio/*`、`/api/{reports,mindmaps,infographics,datatables}/*`），皆先建 CSP Task。

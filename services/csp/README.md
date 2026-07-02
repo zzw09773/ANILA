@@ -1,30 +1,25 @@
 # services/csp（CSP — Control & Data Plane）
 
-> ANILA 平台的權威核心服務（前身 `myCSPPlatform`）：掌管使用者、API Key、模型 / Agent 註冊、對話、知識庫與審計，並對外提供 OpenAI 相容代理。
+> ANILA 平台的權威核心服務（前身 `myCSPPlatform`）：掌管使用者、API Key、模型 / Agent 註冊、任務主脊椎、全鏈追蹤、五級分類治理、對話、知識庫與審計，並對外提供 OpenAI 相容代理。
 
 > English version：[`README.en.md`](./README.en.md)
 
-> 🌿 **分支對照**：本服務存在於所有 ANILA 部署分支。各分支的部署對象 / 認證 / 差異見根目錄 [`README.md`](../../README.md) 的分支對照表與 [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)。**認證模式依分支而定**：`main` 與多數分支為**純帳密**（RS256 JWT + cookie，`/api/auth/*` 只有 register/login/refresh/logout/me/password/revoke/revocations）；只有 **`prod-intranet-card`** 額外含 SSO(OIDC) + 中科院 PKI 自然人憑證卡（`/api/auth/card/*`）等 fork（main 上的 SSO / `local_password_disabled` 欄位已於 migration `0035` 移除）。
+> 🧭 **本檔對齊 redesign 後現況**（`anila-redesign` 分支）：`services/ apps/ packages/ infra/` 四分頂層結構、根目錄 compose shim（`compose.yaml` → `infra/compose/platform.yml`）、部署腳本落在 `infra/deployment/{scripts,intranet}/`，以及與 CSP 相關的 Slice 2–9 能力（Task 主脊椎、Full Trace、五級分類、Agent Registry、Model Gateway、Service Registry、Artifact 契約）。設計權威在 [`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/)：憲章 [`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md) 與本服務主文件 [`03-csp-governance-control-plane.md`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md)。
 
 ---
 
-## 簡介
+## 0. 一句話定位
 
-`services/csp`（前身 `myCSPPlatform`，程式內代號 **CSP**）是 ANILA 的「真相來源」（authoritative store）：Router、ingestion-worker、anila-studio、各前端都向它要使用者身分、API Key、模型 / Agent manifest 與用量資料。它同時跑兩個平面：
+CSP 是 ANILA 的「真相來源」（authoritative store）與**雙平面閘道**：Router、ingestion-worker、anila-studio、各前端都向它要身分、API Key、模型 / Agent manifest 與用量。它同時服務產品面的**治理中心**（`apps/csp-governance-ui`）、**任務中心**（Task 主脊椎）、**產出中心**（Artifact 契約）與**專案入口**（Service Registry / 啟動閘道）。
 
-- **Control Plane** — `/api/*`（RS256 JWT / cookie 認證）：管理介面與平台內部溝通。掌管使用者、API Key、模型註冊、Agent 註冊與核准、對話 / 附件 / 分享 / 交接、審計、告警、banners、部門、平台連結、trusted-hosts、使用者記憶、service token / service clients 等。
-- **Data Plane** — `/v1/*` 與 `/v2/*`（`sk-` API Key 或 cookie）：OpenAI 相容代理，依 `model_type` 路由到後端 LLM / Embedding / VLM / Agent，並統一寫 `token_usage` 計費。
+- **Control Plane — `/api/*`**（RS256 JWT / cookie 認證）：治理與平台內部溝通。使用者、API Key、模型 / Agent 註冊與核准、任務、政策裁決、五級分類治理、對話 / 附件 / 分享 / 交接、審計、告警、banners、部門、Service Registry、trusted-hosts、使用者記憶、service token / service clients 等。
+- **Data Plane — `/v1/*`、`/v2/*`**（`sk-` API Key 或 cookie / service token）：OpenAI 相容代理，依 `model_type` 路由到後端 LLM / Embedding / VLM / Agent，統一寫 `token_usage` 計費；並收攏 Full Trace span（`POST /v1/traces/{trace_id}/spans`）。
 
-CSP 另承載一條應用管線並對接一個已抽離的服務：
-
-- **Ingestion 知識庫** — 文件上傳 → 切塊 → embedding → pgvector 檢索（RAG）+ 跨文件關係。CSP 透過 `arq` 把工作推進 Redis 佇列，由獨立的 [`ingestion-worker`](../ingestion-worker/) container 消化。
-- **Studio 簡報 / 報告生成** — **已抽出至獨立服務 [`anila-studio`](../anila-studio/)**（含 FLUX 生圖、Graphviz 圖表渲染、PPTX/報告管線）。CSP 端**只保留 contract endpoint**：ingestion `/search`、`/images/search`、`/images/{id}/blob`、`/api/proxy` LLM、`/.well-known/jwks.json`、`/api/auth/revocations`，以及 Redis token-revoke publisher。決策見 [`docs/superpowers/anila-studio/extraction-decision.md`](../../docs/superpowers/anila-studio/extraction-decision.md)。
-
-> 平台整體定位見根目錄 [`../../README.md`](../../README.md) 與唯一規劃文件 [`../../anila_plan.md`](../../anila_plan.md)。
+CSP 另承載 **Ingestion 知識庫**（文件 → 切塊 → embedding → pgvector RAG + 跨文件關係，經 `arq` 推 Redis 佇列給獨立的 [`ingestion-worker`](../ingestion-worker/)），並對接已抽離的 [`anila-studio`](../anila-studio/)（簡報 / 報告 / 生圖），CSP 端只保留 contract endpoint 與**持久化的 Artifact job store**。
 
 ---
 
-## 架構與技術棧
+## 1. 架構與技術棧
 
 ```
                        ┌──────────────┐
@@ -33,145 +28,87 @@ CSP 另承載一條應用管線並對接一個已抽離的服務：
                               │
                        ┌──────▼───────┐
                        │   FastAPI    │ csp :8000  (app.main:app)
-                       │  /api/*  ──── Control Plane (RS256 JWT / cookie)
-                       │  /v1,/v2 ──── Data Plane    (sk- API Key)
+                       │  /api/*  ──── Control Plane（RS256 JWT / cookie）
+                       │  /v1,/v2 ──── Data Plane（sk- / service token）
                        └──┬────┬───┬──┘
               ┌───────────┘    │   └────────────┐
-        ┌─────▼──────┐  ┌──────▼──────┐  ┌──────▼────────┐
-        │  postgres   │  │  Redis      │  │ 模型 / Agent   │
-        │ (pgvector)  │  │ (arq+pub/sub)│ │  endpoints     │
-        └─────────────┘  └──────┬──────┘  └────────────────┘
+        ┌─────▼──────┐  ┌──────▼───────┐  ┌──────▼────────┐
+        │  postgres   │  │  Redis       │  │ 模型 / Agent   │
+        │ (pgvector)  │  │ (arq+pub/sub)│  │  endpoints     │
+        └─────────────┘  └──────┬───────┘  └────────────────┘
                                 │ enqueue
-                         ┌──────▼──────────┐
-                         │ ingestion-worker │ (獨立 container)
-                         └──────────────────┘
+                         ┌──────▼───────────┐
+                         │ ingestion-worker  │（獨立 container）
+                         └───────────────────┘
 ```
-
-### 後端（FastAPI / Python；`app/` 等直接位於 `services/csp/` 下）
 
 | 項目 | 內容（取自 `requirements.txt` / `infra/docker/csp.Dockerfile`） |
 |------|------|
-| 語言 / 框架 | Python 3.11 · FastAPI 0.115.6 · uvicorn[standard] 0.34.0 |
-| ORM / migration | SQLAlchemy 2.0.36 · Alembic 1.14.1（migrations `0001`–`0045`） |
-| 設定 | pydantic-settings 2.7.1 |
-| 認證 | **JWT 為 RS256**（非對稱，`app/utils/security.py` + JWKS；`python-jose[cryptography] 3.3.0`）· passlib[bcrypt] 1.7.4 + bcrypt 4.0.1（pin）。**LDAP 已移除** |
+| 語言 / 框架 | Python 3.11 · FastAPI 0.136.1 · uvicorn[standard] 0.34.0 |
+| ORM / migration | SQLAlchemy 2.0.36 · Alembic 1.14.1（legacy `0001`–`0046`〔無 0025〕接 redesign `r1_0001`–`r1_0008`） |
+| 設定 | pydantic-settings 2.7.1（`app/config.py`） |
+| 認證 | **JWT 為 RS256**（非對稱，`app/utils/security.py` + JWKS；`python-jose[cryptography] 3.5.0`）· passlib[bcrypt] 1.7.4 + bcrypt 4.0.1（pin） |
 | 資料庫驅動 | psycopg2-binary 2.9.10（PostgreSQL 16 + pgvector）+ asyncpg（`csp_app` RLS pool，ingestion 用） |
 | HTTP client | httpx 0.28.1（代理下游模型 / agent） |
 | 佇列 | arq 0.26.1（ingestion / eval / relation-reresolve 推進 Redis）+ Redis pub/sub（token revoke） |
 | 文字後處理 | opencc-python-reimplemented 0.1.7 |
-| 測試 | pytest · pytest-asyncio 0.24.0 · respx 0.22.0（約 32 個測試檔） |
+| 測試 | pytest · pytest-asyncio 0.24.0 · respx 0.22.0 |
 
-> 容器走 `infra/docker/csp.Dockerfile`（multi-stage，含 `anila-core[rag]`），system 套件 `gcc` / `libpq-dev` / `curl` / `graphviz` / `fonts-noto-cjk`。`services/csp/Dockerfile` 已 dead / legacy（compose 用 `infra/docker/csp.Dockerfile`）。**JWT 簽署為 RS256**：`ALGORITHM=HS256` 設定為 legacy、不再用於 access/refresh。
-
-### 前端 [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/)（Vue 3 / Vite，package `csp-platform`；已移為獨立頂層目錄，前身 `myCSPPlatform/frontend`）
-
-| 項目 | 內容 |
-|------|------|
-| 框架 | Vue 3.5.13 + Vite 6.0.5 |
-| 狀態 / 路由 | Pinia 2.3.0 · vue-router 4.5.0 |
-| HTTP / 圖表 | axios 1.7.9 · ECharts 5.5.1 + vue-echarts 7.0.3 · **cytoscape 3.34.0**（`RelationGraph.vue` 關係圖） |
-| 樣式 | Tailwind 3.4.17 + PostCSS 8.4.49 |
-
-純 SPA 管理介面（21 個 view：dashboard / API Key / 模型 / 使用者 / 用量 / Developer agents / trusted-hosts / 關係圖等），由 Nginx 提供靜態檔。
+> 部署 image 走 [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile)（multi-stage、含 `anila-core[rag]`）；`services/csp/Dockerfile` 為**單容器 legacy**（compose 不使用它）。前端治理介面已移為頂層 [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/)（Vue 3 / Vite，官方藍視覺改版），由 Nginx 提供靜態檔。
 
 ---
 
-## 目錄結構
+## 2. 模組邊界（`app/modules/`）
 
-```
-services/csp/                  # 前身 myCSPPlatform/backend；app / migrations / tests / scripts /
-│                              #   requirements.txt 現在直接位於本目錄下
-├── app/
-│   ├── main.py                # lifespan：startup_security → alembic upgrade → startup_migrations
-│   │                          #   → auto_seed → trusted_host backfill → health_checker / usage_writer
-│   │                          #   / ingestion_pool；CORS / TrustedHost / CSRF / SPA fallback
-│   ├── config.py              # pydantic-settings Settings
-│   ├── database.py
-│   ├── api/                   # router.py 匯總；各資源 router（見「API 介面」）
-│   │   └── ingestion/         # collections / credentials / documents / eval_runs /
-│   │                          #   image_blob / jobs / preview / relations / search
-│   ├── models/                # 23 個 ORM 檔（user / agent / model_registry / ingestion /
-│   │                          #   token_usage / audit_log / banner / department / ...）
-│   ├── schemas/
-│   ├── services/              # 26 個 service（auth / proxy / health_checker / usage_writer /
-│   │                          #   auto_seed / startup_security / ingestion_queue /
-│   │                          #   trusted_host / token_revocation_publisher / agent_credential ...）
-│   ├── middleware/            # api_key_auth · caller · cookies · csrf
-│   └── utils/                 # security.py（RS256 JWT + JWKS keys）· time_helpers.py
-├── migrations/versions/       # Alembic 0001..0045
-├── tests/                     # ~32 pytest 檔
-├── scripts/                   # generate-jwt-keypair.py · init_db.py
-├── requirements.txt
-├── .env.example
-├── Dockerfile                 # dead / legacy（實際 image 用 infra/docker/csp.Dockerfile）
-└── README.md / README.en.md
-```
+redesign 把四個 MVP 核心切成**互不相依**的 module，並以 import-linter 契約（[`.importlinter`](./.importlinter)，`infra/ci/lint-boundaries.sh` 執行）強制：`tasks / policy / launch / artifacts` **彼此不得互相 import**，且 `app.modules.*` **不得反向 import `app.api`**（`api → modules` 單向分層）。
 
-> 前端 SPA 已移至頂層 [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/)；真正部署用的 Dockerfile 在 [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile)、nginx 設定在 [`infra/nginx/anila.conf`](../../infra/nginx/anila.conf)（皆為原 `myCSPPlatform/docker/` 的內容）。
+| Module | 檔案 | 職責 |
+|--------|------|------|
+| `app.modules.tasks` | `router.py` · `service.py` | Task / TaskRun 生命週期（十值狀態機）、SourceSnapshot 三規則、`trace_id` 必產生（doc 01 / doc 03）。 |
+| `app.modules.policy` | `router.py` · `service.py` | PolicyDecision **append-only** 裁決紀錄（fail-closed，deny 必附 reason）、ceiling 純函式、五級分類 latch core（`apply_classification` 單向閂鎖）。 |
+| `app.modules.launch` | `manifest.py` · `service.py` · `token.py` | Launch Gateway 原語：`service_launches` 落列、啟動 URL、RS256 launch token（doc 07 §6）。**零** policy/task/api 耦合，存取控制由 orchestrator（`app.api.services`）圍事。 |
+| `app.modules.artifacts` | `service.py` | Artifact 四表持久化、binding fail-closed、owner-scope 讀面。分類閂鎖與 PolicyDecision 由 orchestrator（`app.api.artifacts`）呼叫 policy 完成。 |
 
 ---
 
-## 啟動與部署
+## 3. 認證面（`app/api/auth/` 套件）
 
-### 整合跑法（建議）— 作為 ANILA stack 的 `csp` 服務
+auth router 已由單檔拆成套件，各認證形態獨立成子模組，全部掛在 `/api/auth` 前綴下（`_common.py`）：
 
-完整 stack（含 redis / ingestion-worker / router / anila-studio / 前端 / nginx）定義在 **repo 根目錄** 的 compose：
+| 子模組 | 路由（`/api/auth` 前綴） | 說明 |
+|--------|--------------------------|------|
+| `password.py` | `POST /register` · `POST /login` · `POST /refresh` · `POST /logout` · `GET /me` · `PUT /password` | 帳密登入 → RS256 JWT（access + refresh）+ cookie。 |
+| `oidc.py` | `GET /providers` · `GET /oidc/{provider_id}/start` · `GET /oidc/{provider_id}/callback` | 企業 SSO / OIDC 授權碼流程（provider 由 `/api/auth-providers` 管）。 |
+| `card.py` | `GET /card/challenge` · `POST /card/verify` | 中科院 CSPKI 自然人憑證卡登入：**真** PKCS#7 / CMS 驗簽（SignerInfo 簽章 + 憑證鏈 + nonce 反 replay，`app/services/card_auth.py`）。 |
+| `registration_tokens.py` | 一次性註冊 token 面 | 受控自助註冊。 |
+| `revocations.py` | `GET /revocations` | service-token 認證的撤銷冷啟同步（anila-studio 消化）。 |
 
-```bash
-# 從 repo 根目錄
-docker compose -f compose.dev.yaml up -d --build csp   # dev
-# 或 prod：docker compose up -d csp（prod 分支可用 infra/deployment/scripts/deploy-prod.sh）
-```
-
-CSP 連兩個 network：`default`（stack 內部）與 `anila-models-net`（external，打 `gemma4` / `gpt-oss-20b` / `nv-embed-proxy` / `flux2-dev`）。第一次啟動若 `anila-models-net` 不存在：`docker network create anila-models-net`。
-
-### CSP 單獨開發
-
-原 `myCSPPlatform` 的單獨 compose（`docker/docker-compose.yml`）與 `start.sh` 已於 §17.1 目錄遷移時退役、未帶入新樹。要接近「單獨開發」的跑法，請用 repo 根目錄的 dev stack 只起 csp：
-
-```bash
-# 從 repo 根目錄
-docker compose -f compose.dev.yaml up -d --build csp
-```
-
-後端本地（不經容器，需自備 PostgreSQL）：`cd services/csp && uvicorn app.main:app --port 8000`。
-
-### 關鍵環境變數（取自 `config.py`，預設值如實）
-
-| 變數 | 預設 | 說明 |
-|------|----------|------|
-| `APP_NAME` / `APP_VERSION` | `CSP Platform` / `1.0.0` | 服務識別；`/health` 回報版本 |
-| `DEBUG` | `False` | debug 旗標 |
-| `ENABLE_API_DOCS` | `False` | 為 true 才掛 `/docs` + `/openapi.json` |
-| `ENABLE_PUBLIC_SHARE` | `True` | 開放未認證的 `/api/public/share/{token}` |
-| `DATABASE_URL` | `postgresql://csp:csp_password@localhost:5432/csp`（compose 設 `@postgres:5432`） | DB 連線 |
-| `SECRET_KEY` | `your-secret-key-change-this-in-production` | **不再簽 access/refresh JWT**（已 RS256）；供 startup_security 與 credential_crypto |
-| `ALGORITHM` | `HS256` | **legacy / 未使用**（access/refresh 走 RS256） |
-| `JWT_PRIVATE_KEY_PATH` / `JWT_PUBLIC_KEY_PATH` / `JWT_KID` | `secrets/jwt-private.pem` / `secrets/jwt-public.pem` / `anila-v1` | RS256 金鑰 + JWKS kid |
-| `ALLOW_AUTO_KEYGEN` | `False` | 缺金鑰時自動產生（**僅 dev/test**） |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` / `REFRESH_TOKEN_EXPIRE_DAYS` | `60` / `30` | JWT 效期 |
-| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / `changeme` | seed admin；prod 必覆寫 |
-| `CSP_SERVICE_TOKEN` | `""` | legacy fleet-shared s2s token（fallback） |
-| `MODEL_GATEWAY_API_KEY` | `""` | 外呼 model gateway 注入的 Bearer（僅模型呼叫，不含 agent dispatch） |
-| `EMBEDDING_TIMEOUT` / `LLM_TIMEOUT` | `30` / `120` | proxy 逾時（秒） |
-| `PROXY_MAX_RETRIES` / `PROXY_RETRY_BASE_DELAY` | `3` / `0.5` | proxy 重試 |
-| `ALLOWED_ORIGINS` / `ALLOWED_HOSTS` / `COOKIE_SECURE` | 見 config | CORS allowlist / Host allowlist（`*`=不啟用）/ cookie secure |
-| `AUTO_REGISTER_MODELS` / `AUTO_REGISTER_AGENTS` / `AUTO_REGISTER_LINKS` / `AUTO_SEED_API_KEYS` | `""` | 啟動時宣告式 seed |
-| `ATTACHMENT_STORAGE_PATH` | `data/attachments` | 附件儲存 |
-
-直接由 `os.environ` 讀（不在 config.py）：`ANILA_ALLOW_DEV_SECRET`、`INTERNAL_PLATFORM_API_KEY`、`ANILA_TRUSTED_HOSTS`、`REDIS_URL`（`ingestion_queue` 預設 `redis://redis:6379`、`token_revocation_publisher` 預設 `redis://redis:6379/0`）、`INGESTION_UPLOAD_DIR`（`/var/anila/ingestion-uploads`）。
-
-> **`prod-intranet-card` 另有** `ENABLE_CARD_LOGIN` / `REQUIRE_CARD_LOGIN_ONLY` / `CARD_INITIAL_OWNERS` 等卡登入變數（見該分支根 README）；這些在 `main` 不存在。
+> 三種登入形態（password / oidc / card）在 redesign 樹中**並存於程式碼**，由設定 / 分支旗標決定啟用（如 `ENABLE_CARD_LOGIN`、SSO provider 是否註冊）。SSO / OIDC provider 的管理 CRUD 在獨立的 `app/api/auth_providers.py`（前綴 `/api/auth-providers`）。
 
 ---
 
-## API 介面
+## 4. API 介面：Data Plane vs Control Plane
 
-**Control Plane（`/api/*`）**：`/api/auth`（register / login / refresh / logout / me / password / revoke / **revocations** — main 上**無 card/SSO/OIDC**）、`/api/keys`、`/api/models`（含 `set-router-primary` / `activate` / `purge`）、`/api/agents`（register / approve / reject / encryption / runtime-config / health-check / credentials / template/download）、`/api/users`、`/api/departments`、`/api/usage`、`/api/alerts`、`/api/audit-logs`、`/api/banners`、`/api/memory`、`/api/platform-links`、`/api/service-clients`、`/api/service-access-grants`、`/api/trusted-hosts`、`/api/conversations`（含 `/search`、shares、ratings）、`/api/attachments`、`/api/handoffs` + `/api/notifications`、`/api/public/share/{token}`（未認證，受 `ENABLE_PUBLIC_SHARE` 控）、`/api/ingestion/*`。
+### Data Plane（`/v1/*`、`/v2/*`）— OpenAI 相容代理 + Trace 收攏
 
-**Data Plane（`/v1/*`、`/v2/*`，`app/api/proxy.py`）**：`GET /v1/agents`（Router 取 agent manifest）、`GET /v1/models`（權限過濾的模型清單）、`POST /v1/chat/completions`（agent-first 後 model，串流 + 非串流，記憶注入，classified latch）、`POST /v1/agents/{name}/sessions/{sid}/answer`（Router resume passthrough）、`POST /v1/embeddings`、`POST /v2/embeddings`。
+`app/api/proxy.py`（不帶 APIRouter prefix，寫完整路徑，讓 nginx `/v1` 直通吃得到）：
 
-**其他**：`GET /.well-known/jwks.json`（RFC 7517，未認證，`max-age=3600`）、`GET /health`、`GET /docs`+`/openapi.json`（僅 `ENABLE_API_DOCS=true`）、SPA catch-all（含路徑遍歷防護）。
+- `GET /v1/agents` — Router 取 agent manifest。
+- `GET /v1/models` — 權限過濾的模型清單。
+- `POST /v1/chat/completions` — agent-first 後 model；串流 + 非串流；記憶注入；classified 單向閂鎖；**Task 主脊椎**：可帶 `X-ANILA-Task-Id`，命中則對 Task spine 驗證、記 `PolicyDecision(action="task.run")`、以 `TaskRun` 括住代理呼叫；不帶則用量列標記 `legacy_runtime_call=true`（`app/services/proxy/task_link.py`）。
+- `POST /v1/agents/{agent_name}/sessions/{session_id}/answer` — Router resume passthrough。
+- `POST /v1/embeddings`、`POST /v2/embeddings`。
+
+Full Trace ingest（`app/api/traces.py`，同樣走完整路徑）：
+
+- `POST /v1/traces/{trace_id}/spans` — data-plane span 收攏（`202`，一批 1..256，`(trace_id, span_id)` 冪等 upsert-ignore，fail-safe 不外溢）。認證 = 任一 data-plane 憑證。生產端為 [`anila_trace_sdk`](../../packages/anila-core/src/anila_core/tracing/sdk.py)（`packages/anila-core` 內，fail-open、批次背景 exporter）。
+- `GET /api/traces/{trace_id}` — control-plane 讀（admin/owner 或該 trace 所屬任務之申請人）。
+
+### Control Plane（`/api/*`）
+
+- **redesign 新增**：`/api/tasks`（`tasks` module：建立 / 列出 / 取單 / `/{id}/runs`）、`/api/policy-decisions`、`/api/classification/inventory`（機敏盤點）、`/api/classification/declassification-requests`（解密申請 + 主管核准）、`/api/classification-authorities`（機密審批權責）、`/api/services`（Service Registry：CRUD + `/{id}/launch` + `/{id}/audit-callbacks` + `/{id}/manifest` + `/{id}/project-bindings`）、`/api/artifacts`（+ data-plane `POST /v1/artifact-jobs` 等 Studio 回報面）。
+- **既有治理面**：`/api/auth`、`/api/auth-providers`、`/api/keys`、`/api/models`（含 `set-router-primary` / `activate` / `purge`）、`/api/agents`（register / approve / reject / health-check / credentials / template）、`/api/users`、`/api/departments`、`/api/usage`、`/api/alerts`、`/api/audit-logs`、`/api/banners`、`/api/memory`、`/api/platform-links`、`/api/service-clients`、`/api/service-access-grants`、`/api/trusted-hosts`、`/api/conversations`（含 `/search`、shares、ratings）、`/api/attachments`、`/api/handoffs` + `/api/notifications`、`/api/public/share/{token}`（未認證，受 `ENABLE_PUBLIC_SHARE` 控）、`/api/ingestion/*`。
+- **其他**：`GET /.well-known/jwks.json`（RFC 7517，未認證，`max-age=3600`）、`GET /health`、`GET /docs` + `/openapi.json`（僅 `ENABLE_API_DOCS=true`）、SPA catch-all（含路徑遍歷防護）。
 
 代理使用範例：
 
@@ -183,32 +120,83 @@ curl http://localhost/v1/chat/completions \
 
 ---
 
-## 與其他服務的關係 / 認證
+## 5. 新資料表 / Migration（`r1_0001`–`r1_0008`，逐檔一行）
 
-- **被呼叫**：Router 拉 `/v1/agents` 並以 service token 分派；anila-studio 走 contract endpoint（search / image-blob / JWKS / `/api/auth/revocations`，並用 JWKS 驗 CSP JWT）；ingestion-worker 共用 DB / 佇列；前端走 `/api/*` + `/v1/*`。
-- **外呼**：已註冊模型 / 已核准 agent endpoint（httpx + 呼叫時 SSRF guard + per-agent service token）；model gateway（Bearer `MODEL_GATEWAY_API_KEY`）；Redis（arq + pub/sub）；Postgres + pgvector。引入 `anila_core` 做 SSRF guard / credential crypto / memory adapter / relation resolution / parser / pg pool。
-- **認證機制**：使用者 RS256 JWT（access + refresh，`tv` token-version 撤銷 claim）走 Bearer 或 `anila_access_token` cookie；使用者 API Key `sk-`；cookie session（`anila_access_token` / `anila_refresh_token` / `anila_csrf`）+ double-submit CSRF（`X-CSRF-Token`，constant-time）；s2s token `bsk-`（單次 bootstrap）/ `csk-`（輪替 agent）/ service_clients（AES-256-GCM envelope + sha256 lookup hash + `hmac.compare_digest`）+ legacy `CSP_SERVICE_TOKEN` fallback。
+redesign 系列接在 legacy 數字鏈之後（`r1_0001` revises `0046`），保持線性；enum 一律開放 `String`（封閉 enum 在 Pydantic 契約層 `app/schemas/contracts/` 把關），JSON 走 `with_variant(JSONB, "postgresql")` 保持可攜。
+
+| Revision | Slice | 內容 |
+|----------|-------|------|
+| `r1_0001` | 2a | Task / Trace / Policy 六表基礎：`tasks` · `task_runs` · `source_snapshots` · `citations` · `policy_decisions` · `trace_spans`；`classification_level` 預設 `無機密`。 |
+| `r1_0002` | 2b-C | `token_usage` ↔ task 連結：`task_id`（FK `ON DELETE SET NULL` + partial index）與 `legacy_runtime_call` 布林旗標（標記無 task 的 `/v1` chat 舊流量）。 |
+| `r1_0003` | 3a | 五級分類 schema 升級 + 治理三表：`classification_events` · `declassification_requests` · `classification_authority_assignments`；於現存資源（conversations / messages / collections / documents …）補四共通分類欄位並 backfill（`classified=true → 機密` floor）。 |
+| `r1_0004` | 5a | Agent Registry 升級：`agents.approval_status` 由三值擴為**七值狀態機**（`draft` / `pending_connection_test` / `pending_trace_test` / `pending_security_review` / `approved` / `rejected` / `disabled`），並補 manifest / trace-test / runtime 欄位。 |
+| `r1_0005` | 6a | Model Gateway Hardening：`model_registry` formalize 成 `ModelEndpoint`（`protocol` / per-model `api_key_secret_ref` AES-GCM envelope / `classification_ceiling` / `supports_*`）；`health_status` 收斂為**五態**（`healthy` / `degraded` / `unhealthy` / `unknown` / `disabled`）。 |
+| `r1_0006` | 7a | Service Registry：`platform_links` additive 升級為 `registered_services`（33 欄，保留原 id）+ `service_launches` · `service_audit_callbacks` · `service_project_bindings`；`service_access_grants` 加 `service_id` FK。 |
+| `r1_0007` | 8a | Artifact 契約四表：`artifacts` · `artifact_versions` · `export_records` · `artifact_jobs`（**持久化** Studio 五 pipeline job → 滿足「restart 不丟 job」；Studio 走 HTTP service token 回報，不直讀 CSP DB）。 |
+| `r1_0008` | R-SEC | `registered_services.service_client_id` FK：把 audit-callback 綁定到「屬於該服務」的 Service Client；fail-closed / default-deny，未綁定服務一律拒收 callback（`403`）。 |
 
 ---
 
-## 安全設計要點
+## 6. 安全不變量
 
-- **Classified 單向閂鎖**：agent `requires_encryption` → 對話 `classified=TRUE`（`proxy.py`）；記憶引用加密來源時依 Bell-LaPadula「no write down」latch（`ConversationMemoryChunk.is_encrypted`）；只升不降，declassify route 已移除（Phase K），classified 對話不可分享。
-- **SSRF guard**：`anila_core.security.validate_outbound_url` 在呼叫時把關（proxy 502 / health_checker offline / memory 注入 gateway key 前）；allow-list 由 `trusted_hosts` 表 + `ANILA_TRUSTED_HOSTS` env（30s TTL cache）。
-- **startup_security**：`assert_no_dev_defaults()` 在 prod 對 `SECRET_KEY` / `ADMIN_PASSWORD` / `CSP_SERVICE_TOKEN` / DB password / `INTERNAL_PLATFORM_API_KEY` / `CODESERVER_PASSWORD` 的 dev 預設值拒絕啟動（空 `SECRET_KEY` 永遠 fatal）；`ANILA_ALLOW_DEV_SECRET=1` 降為 warn。
-- **Credential 加密**：AES-256-GCM（anila-core `credential_crypto` / `service_token_envelope`）。
+- **五級分類單向閂鎖**：等級序 `無機密 < 營業秘密 < 機密 < 極機密 < 絕對機密`；effective level = 觀測到分類取 `max`，**絕不降級**（`policy.apply_classification` 寫 `ClassificationEvent`）。**解密（declassification）不是移除的路由，而是受治理的申請工作流**：`declassification_requests` + 主管核准（`classification_authority_assignments`），fail-closed 預設 `pending_supervisor`。
+- **卡登 SSO**：CSPKI 自然人憑證卡走真 PKCS#7 / CMS 驗簽（SignerInfo 簽章 + 憑證鏈 + nonce 反 replay），非只解析。
+- **JWT / JWKS**：RS256（access + refresh，`tv` token-version 撤銷 claim），`GET /.well-known/jwks.json` 公開驗章。Launch token 共用同一 RS256 keypair / `kid`，registered service 以 JWKS **本地**驗（`aud` / `iss` / `exp` / 簽章）；TTL 10 分、**絕不**內嵌模型金鑰或長效 user JWT。
+- **CSRF**：cookie 認證的變更請求走 double-submit（`X-CSRF-Token`，constant-time 比對，`CsrfMiddleware`）。
+- **RLS / `csp_app`**：runtime 用非特權 `csp_app` role（RLS 才會生效）；migration 才用升權 `csp` superuser（見 §7）。
+- **SSRF url_guard 分域（Slice 6a，doc 04 §8）**：`anila_core.security.validate_outbound_url(url, endpoint_kind=...)` 把 http 旗標按 `model` / `agent` / `generic` 分域——`ANILA_ENV=production` 時 **model endpoint 一律拒 http（fail-closed，旗標救不了）**；agent endpoint 由 `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` 放行（legacy `ANILA_ALLOW_HTTP_ENDPOINT` 仍作 fallback 但帶 deprecation 警告，供內網 MLSteam 純 http NodePort agent）。allow-list = `trusted_hosts` 表 + `ANILA_TRUSTED_HOSTS` env。
+- **Credential 加密**：AES-256-GCM（`anila-core` `credential_crypto` / `service_token_envelope`；涵蓋 per-model `api_key_secret_ref`、`csk-` agent 憑證、ingestion 憑證）。
 - **Token 撤銷**：持久 `token_revocations` 表 + JWT `tv` 強制 + Redis fan-out；`/api/auth/revocations` cold-start sync。
-- **入站 hardening**：CORS allowlist（無 `*` fallback）、選用 TrustedHostMiddleware、double-submit CSRF、SPA 路徑遍歷防護、nginx 安全 header + rate-limit。
+- **startup_security**：prod 對 `SECRET_KEY` / `ADMIN_PASSWORD` / `CSP_SERVICE_TOKEN` / DB 密碼等 dev 預設值拒絕啟動（空 `SECRET_KEY` 永遠 fatal；`ANILA_ALLOW_DEV_SECRET=1` 降為 warn）。入站另有 CORS allowlist（無 `*` fallback）、選用 TrustedHostMiddleware、SPA 路徑遍歷防護、nginx 安全 header + rate-limit。
 
 ---
 
-## 相關文件
+## 7. 測試
 
-- Ingestion 平台設計：[`../../docs/ingestion/ingestion-platform-design.md`](../../docs/ingestion/ingestion-platform-design.md) · Parent-child RAG：[`../../docs/ingestion/parent-child-rag-design.md`](../../docs/ingestion/parent-child-rag-design.md)
-- 多服務整合：[`../../docs/platform/multi-service-integration-plan.md`](../../docs/platform/multi-service-integration-plan.md) · Service-token cutover：[`../../docs/runbooks/service-token-cutover.md`](../../docs/runbooks/service-token-cutover.md)
-- anila-studio 抽出：[`../../docs/superpowers/anila-studio/extraction-decision.md`](../../docs/superpowers/anila-studio/extraction-decision.md)
-- 平台整體：[`../../README.md`](../../README.md) · 路線圖：[`../../anila_plan.md`](../../anila_plan.md) · 分支策略：[`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
+測試自帶 sqlite（`tests/conftest.py` 設 `DATABASE_URL=sqlite:///./.pytest-csp.db`，不碰 Postgres / 執行中容器），可獨立跑：
+
+```bash
+cd services/csp
+.venv/bin/python -m pytest            # 全套
+.venv/bin/python -m pytest -q tests/test_proxy_task_link.py   # 單檔
+```
+
+**目前規模（實跑基準）**：684 收集 → **628 passed · 43 failed · 1 skipped · 12 errors**。這 43 failed / 12 errors 為**既有（pre-existing）**，非 redesign regression；審查 Codex 產出時應以此為基準線區分新舊失敗（跑測試、別只看 diff）。
 
 ---
 
-**Role**：Control + Data Plane · **Authoritative for**：users · api_keys · models · agents · service_clients · token_usage · audit_logs · ingestion 知識庫（Studio + FLUX + 圖表渲染已抽到 anila-studio，CSP 僅保留 contract endpoint）
+## 8. Alembic 注意事項
+
+- **`r1_` 命名空間**：redesign migration 以 `r1_` 前綴、線性接在 legacy 數字鏈之後（`r1_0001` `Revises: 0046`）。新增 module / 表時同步補 `.importlinter` 契約與 `app/schemas/contracts/`。
+- **`MIGRATION_DATABASE_URL`（升權，僅 alembic 讀）**：migration 需 superuser 級連線（`0014` 要 `CREATE EXTENSION` / `CREATE ROLE csp_app`）。runtime `DATABASE_URL` 指非特權 `csp_app`（RLS 才會 fire）；`MIGRATION_DATABASE_URL` 是 alembic 專用的升權替身，未設時退回 `DATABASE_URL`（`migrations/env.py`）。compose 兩者拆開：runtime `csp_app:...`、migration `csp:...`。
+- **啟動自動升級**：`app/main.py` lifespan 以 `command.upgrade(cfg, "head")` 程式化跑 `alembic upgrade head`（失敗才 fallback `create_all`）。
+
+---
+
+## 9. 啟動與部署
+
+整合 stack（含 redis / ingestion-worker / router / anila-studio / 前端 / nginx）由根目錄 compose shim 定義：`compose.yaml` → [`infra/compose/platform.yml`](../../infra/compose/platform.yml)（prod，project `anila-platform`）、`compose.dev.yaml` → `infra/compose/dev.yml`（dev）。
+
+```bash
+# 從 repo 根目錄
+docker compose -f compose.dev.yaml up -d --build csp    # dev
+docker compose up -d csp                                 # prod（platform.yml）
+# 日常 lifecycle：infra/deployment/scripts/deploy-prod.sh
+# 內網卡登 bootstrap：infra/deployment/intranet/intranet-deploy.sh
+```
+
+CSP 連兩個 network：`default`（stack 內部）與 `anila-models-net`（external，打 `gemma4` / `gpt-oss-20b` / `nv-embed-proxy` / `flux2-dev`）。第一次啟動若不存在：`docker network create anila-models-net`。
+
+後端本地（不經容器、需自備 PostgreSQL）：`cd services/csp && .venv/bin/python -m uvicorn app.main:app --port 8000`。關鍵環境變數（`app/config.py` / compose）：`DATABASE_URL`（runtime `csp_app`）、`MIGRATION_DATABASE_URL`（升權）、`SECRET_KEY`、`JWT_PRIVATE_KEY_PATH` / `JWT_PUBLIC_KEY_PATH` / `JWT_KID`、`ADMIN_USERNAME` / `ADMIN_PASSWORD`、`CSP_SERVICE_TOKEN`、`MODEL_GATEWAY_API_KEY`、`ANILA_ENV`（`production` 觸發 model http fail-closed）、`ANILA_ALLOW_HTTP_ENDPOINT` / `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` / `ANILA_ALLOW_PRIVATE_ENDPOINT`、`ANILA_TRUSTED_HOSTS`、`REDIS_URL`、`ENABLE_API_DOCS` / `ENABLE_PUBLIC_SHARE`。詳見 [`.env.example`](./.env.example)。
+
+---
+
+## 10. 相關文件
+
+- 設計權威：[`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) — 憲章 [`00`](../../docs/anila-redesign-docs/00-product-constitution.md)、CSP 治理控制面 [`03`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md)、Model Gateway [`04`](../../docs/anila-redesign-docs/04-model-gateway-design.md)、Agent Registry [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md)、Service Platform [`07`](../../docs/anila-redesign-docs/07-registered-gui-service-platform.md)、分類閂鎖與政策引擎 [`08`](../../docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md)、API / 事件契約 [`09`](../../docs/anila-redesign-docs/09-api-event-contracts.md)、遷移與開發護欄 [`10`](../../docs/anila-redesign-docs/10-migration-and-development-guardrails.md)。
+- 平台整體：[`../../README.md`](../../README.md)。
+- 模組邊界契約：[`.importlinter`](./.importlinter)（`infra/ci/lint-boundaries.sh`）。
+
+---
+
+**Role**：Control + Data Plane · **Authoritative for**：users · api_keys · models · agents · service_clients · **tasks · trace_spans · policy_decisions · classification** · registered_services · artifacts · token_usage · audit_logs · ingestion 知識庫（Studio + FLUX + 圖表渲染已抽到 anila-studio，CSP 保留 contract endpoint 與持久化 artifact job store）

@@ -1,175 +1,116 @@
 # services/csp (CSP — Control & Data Plane)
 
-> ANILA's authoritative core service (formerly `myCSPPlatform`): owns users, API keys, model / agent registration, conversations, the knowledge base and audit, and exposes an OpenAI-compatible proxy.
+> ANILA's authoritative core service (formerly `myCSPPlatform`): owns users, API keys, model / agent registration, the Task spine, Full Trace, five-level classification governance, conversations, the knowledge base and audit — and fronts an OpenAI-compatible proxy.
 
-> 中文版本：[`README.md`](./README.md)
+> 繁體中文版：[`README.md`](./README.md)
 
-> 🌿 **Branch note**: This service exists on every ANILA deployment branch. Each branch's target / auth / differences are in the root [`README.md`](../../README.md) branch matrix and [`docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md). **Auth mode is branch-dependent**: `main` and most branches are **password-only** (RS256 JWT + cookie; `/api/auth/*` has only register/login/refresh/logout/me/password/revoke/revocations); only **`prod-intranet-card`** adds SSO (OIDC) + MND PKI smart-card login (`/api/auth/card/*`) as a fork (the SSO / `local_password_disabled` columns were dropped from main in migration `0035`).
-
----
-
-## Overview
-
-`services/csp` (formerly `myCSPPlatform`, codename **CSP**) is ANILA's authoritative store: Router, ingestion-worker, anila-studio and the frontends all ask it for user identity, API keys, model / agent manifests and usage. It runs two planes:
-
-- **Control Plane** — `/api/*` (RS256 JWT / cookie auth): management & internal comms — users, API keys, model registry, agent registration & approval, conversations / attachments / shares / handoffs, audit, alerts, banners, departments, platform links, trusted-hosts, user memory, service tokens / service clients.
-- **Data Plane** — `/v1/*` and `/v2/*` (`sk-` API key or cookie): OpenAI-compatible proxy routing by `model_type` to backend LLM / Embedding / VLM / Agent, writing unified `token_usage` billing.
-
-CSP also carries one application pipeline and fronts one extracted service:
-
-- **Ingestion knowledge base** — upload → chunk → embedding → pgvector retrieval (RAG) + cross-document relations. CSP enqueues to Redis via `arq`, consumed by the standalone [`ingestion-worker`](../ingestion-worker/).
-- **Studio deck / report generation** — **extracted into the standalone [`anila-studio`](../anila-studio/) service** (incl. FLUX image generation, Graphviz diagram rendering, PPTX/report pipelines). CSP keeps **only the contract endpoints**: ingestion `/search`, `/images/search`, `/images/{id}/blob`, the `/api/proxy` LLM path, `/.well-known/jwks.json`, `/api/auth/revocations`, plus the Redis token-revoke publisher. See [`docs/superpowers/anila-studio/extraction-decision.md`](../../docs/superpowers/anila-studio/extraction-decision.md).
-
-> Platform-wide positioning: root [`../../README.md`](../../README.md) and the single source of truth [`../../anila_plan.md`](../../anila_plan.md).
+> 🧭 **This file reflects the post-redesign reality** (`anila-redesign` branch): the four-way top layout `services/ apps/ packages/ infra/`, the root compose shim (`compose.yaml` → `infra/compose/platform.yml`), deploy scripts under `infra/deployment/{scripts,intranet}/`, and the Slice 2–9 capabilities relevant to CSP (Task spine, Full Trace, five-level classification, Agent Registry, Model Gateway, Service Registry, Artifact contract). Design authority lives in [`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/): the constitution [`00-product-constitution.md`](../../docs/anila-redesign-docs/00-product-constitution.md) and this service's domain doc [`03-csp-governance-control-plane.md`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md).
 
 ---
 
-## Architecture & Stack
+## 0. One-line role
+
+CSP is ANILA's authoritative store and **dual-plane gateway**: the Router, ingestion-worker, anila-studio and every frontend ask it for identity, API keys, model / agent manifests and usage. It backs the product-facing **Governance Center** (`apps/csp-governance-ui`), **Task Center** (Task spine), **Artifact Center** (Artifact contract) and **Project Entry** (Service Registry / launch gateway).
+
+- **Control Plane — `/api/*`** (RS256 JWT / cookie auth): governance and internal platform traffic. Users, API keys, model / agent registration + approval, tasks, policy decisions, five-level classification governance, conversations / attachments / shares / handoffs, audit, alerts, banners, departments, Service Registry, trusted-hosts, user memory, service tokens / service clients.
+- **Data Plane — `/v1/*`, `/v2/*`** (`sk-` API key or cookie / service token): OpenAI-compatible proxy that routes by `model_type` to backend LLM / Embedding / VLM / Agent and writes `token_usage` for billing; it also ingests Full Trace spans (`POST /v1/traces/{trace_id}/spans`).
+
+CSP also hosts the **Ingestion knowledge base** (document → chunk → embedding → pgvector RAG + cross-document relations, pushed via `arq` onto a Redis queue consumed by the standalone [`ingestion-worker`](../ingestion-worker/)) and integrates the extracted [`anila-studio`](../anila-studio/) (slides / reports / image generation); on the CSP side only the contract endpoints and the **durable Artifact job store** remain.
+
+---
+
+## 1. Architecture & stack
 
 ```
                        ┌──────────────┐
-        Users / SDK ─▶ │    Nginx     │ public entry (reverse proxy + static SPA + security headers)
+        User / SDK  ─▶ │    Nginx     │ edge (reverse proxy + static SPA + security headers)
         / Router       └──────┬───────┘
                               │
                        ┌──────▼───────┐
                        │   FastAPI    │ csp :8000  (app.main:app)
                        │  /api/*  ──── Control Plane (RS256 JWT / cookie)
-                       │  /v1,/v2 ──── Data Plane    (sk- API key)
+                       │  /v1,/v2 ──── Data Plane (sk- / service token)
                        └──┬────┬───┬──┘
               ┌───────────┘    │   └────────────┐
-        ┌─────▼──────┐  ┌──────▼──────┐  ┌──────▼────────┐
-        │  postgres   │  │  Redis      │  │ model / agent  │
-        │ (pgvector)  │  │ (arq+pubsub)│  │  endpoints     │
-        └─────────────┘  └──────┬──────┘  └────────────────┘
+        ┌─────▼──────┐  ┌──────▼───────┐  ┌──────▼────────┐
+        │  postgres   │  │  Redis       │  │ model / agent  │
+        │ (pgvector)  │  │ (arq+pub/sub)│  │  endpoints     │
+        └─────────────┘  └──────┬───────┘  └────────────────┘
                                 │ enqueue
-                         ┌──────▼──────────┐
-                         │ ingestion-worker │ (standalone container)
-                         └──────────────────┘
+                         ┌──────▼───────────┐
+                         │ ingestion-worker  │ (separate container)
+                         └───────────────────┘
 ```
 
-### Backend (FastAPI / Python; `app/` etc. live directly under `services/csp/`)
-
-| Item | Details (from `requirements.txt` / `infra/docker/csp.Dockerfile`) |
-|------|---------|
-| Language / framework | Python 3.11 · FastAPI 0.115.6 · uvicorn[standard] 0.34.0 |
-| ORM / migration | SQLAlchemy 2.0.36 · Alembic 1.14.1 (migrations `0001`–`0045`) |
-| Settings | pydantic-settings 2.7.1 |
-| Auth | **JWT is RS256** (asymmetric, `app/utils/security.py` + JWKS; `python-jose[cryptography] 3.3.0`) · passlib[bcrypt] 1.7.4 + bcrypt 4.0.1 (pinned). **LDAP removed** |
-| DB driver | psycopg2-binary 2.9.10 (PostgreSQL 16 + pgvector) + asyncpg (`csp_app` RLS pool for ingestion) |
+| Item | Detail (from `requirements.txt` / `infra/docker/csp.Dockerfile`) |
+|------|------|
+| Language / framework | Python 3.11 · FastAPI 0.136.1 · uvicorn[standard] 0.34.0 |
+| ORM / migration | SQLAlchemy 2.0.36 · Alembic 1.14.1 (legacy `0001`–`0046` [no 0025] then redesign `r1_0001`–`r1_0008`) |
+| Config | pydantic-settings 2.7.1 (`app/config.py`) |
+| Auth | **JWT is RS256** (asymmetric, `app/utils/security.py` + JWKS; `python-jose[cryptography] 3.5.0`) · passlib[bcrypt] 1.7.4 + bcrypt 4.0.1 (pinned) |
+| DB drivers | psycopg2-binary 2.9.10 (PostgreSQL 16 + pgvector) + asyncpg (`csp_app` RLS pool, ingestion) |
 | HTTP client | httpx 0.28.1 (proxies downstream models / agents) |
-| Queue | arq 0.26.1 (ingestion / eval / relation-reresolve to Redis) + Redis pub/sub (token revoke) |
+| Queue | arq 0.26.1 (ingestion / eval / relation-reresolve onto Redis) + Redis pub/sub (token revoke) |
 | Text post-processing | opencc-python-reimplemented 0.1.7 |
-| Tests | pytest · pytest-asyncio 0.24.0 · respx 0.22.0 (~32 test files) |
+| Tests | pytest · pytest-asyncio 0.24.0 · respx 0.22.0 |
 
-> The container uses `infra/docker/csp.Dockerfile` (multi-stage, incl. `anila-core[rag]`); system packages `gcc` / `libpq-dev` / `curl` / `graphviz` / `fonts-noto-cjk`. `services/csp/Dockerfile` is dead / legacy (compose uses `infra/docker/csp.Dockerfile`). **JWT signing is RS256**: `ALGORITHM=HS256` is a legacy setting, unused for access/refresh.
-
-### Frontend [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/) (Vue 3 / Vite, package `csp-platform`; now a separate top-level dir, formerly `myCSPPlatform/frontend`)
-
-| Item | Details |
-|------|---------|
-| Framework | Vue 3.5.13 + Vite 6.0.5 |
-| State / routing | Pinia 2.3.0 · vue-router 4.5.0 |
-| HTTP / charts | axios 1.7.9 · ECharts 5.5.1 + vue-echarts 7.0.3 · **cytoscape 3.34.0** (`RelationGraph.vue`) |
-| Styling | Tailwind 3.4.17 + PostCSS 8.4.49 |
-
-A pure SPA admin console (21 views: dashboard / API keys / models / users / usage / developer agents / trusted-hosts / relation graph), served as static files by Nginx.
+> The deployed image uses [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile) (multi-stage, bundles `anila-core[rag]`); `services/csp/Dockerfile` is a **single-container legacy** file (compose does not use it). The governance frontend now lives at the top level, [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/) (Vue 3 / Vite, "官方藍" visual redesign), served statically by Nginx.
 
 ---
 
-## Layout
+## 2. Module boundaries (`app/modules/`)
 
-```
-services/csp/                  # formerly myCSPPlatform/backend; app / migrations / tests / scripts /
-│                              #   requirements.txt now live directly under this dir
-├── app/
-│   ├── main.py                # lifespan: startup_security → alembic upgrade → startup_migrations
-│   │                          #   → auto_seed → trusted_host backfill → health_checker / usage_writer
-│   │                          #   / ingestion_pool; CORS / TrustedHost / CSRF / SPA fallback
-│   ├── config.py · database.py
-│   ├── api/                   # router.py aggregates; per-resource routers (see API surface)
-│   │   └── ingestion/         # collections / credentials / documents / eval_runs /
-│   │                          #   image_blob / jobs / preview / relations / search
-│   ├── models/                # 23 ORM files (user / agent / model_registry / ingestion /
-│   │                          #   token_usage / audit_log / banner / department / ...)
-│   ├── schemas/
-│   ├── services/              # 26 services (auth / proxy / health_checker / usage_writer /
-│   │                          #   auto_seed / startup_security / ingestion_queue /
-│   │                          #   trusted_host / token_revocation_publisher / agent_credential ...)
-│   ├── middleware/            # api_key_auth · caller · cookies · csrf
-│   └── utils/                 # security.py (RS256 JWT + JWKS keys) · time_helpers.py
-├── migrations/versions/       # Alembic 0001..0045
-├── tests/                     # ~32 pytest files
-├── scripts/                   # generate-jwt-keypair.py · init_db.py
-├── requirements.txt
-├── .env.example
-├── Dockerfile                 # dead / legacy (the real image is infra/docker/csp.Dockerfile)
-└── README.md / README.en.md
-```
+The redesign carves the four MVP cores into **mutually independent** modules, enforced by an import-linter contract ([`.importlinter`](./.importlinter), run by `infra/ci/lint-boundaries.sh`): `tasks / policy / launch / artifacts` **must not import one another**, and `app.modules.*` **must not import `app.api`** (one-way `api → modules` layering).
 
-> The frontend SPA moved to the top-level [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/); the deploy Dockerfile is [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile) and the nginx config is [`infra/nginx/anila.conf`](../../infra/nginx/anila.conf) (both formerly under `myCSPPlatform/docker/`).
+| Module | Files | Responsibility |
+|--------|-------|----------------|
+| `app.modules.tasks` | `router.py` · `service.py` | Task / TaskRun lifecycle (ten-value state machine), the three SourceSnapshot rules, mandatory `trace_id` (doc 01 / doc 03). |
+| `app.modules.policy` | `router.py` · `service.py` | Append-only PolicyDecision record (fail-closed; a deny must carry a reason), ceiling pure functions, and the five-level classification latch core (`apply_classification`, one-way). |
+| `app.modules.launch` | `manifest.py` · `service.py` · `token.py` | Launch Gateway primitives: `service_launches` rows, launch URLs, RS256 launch token (doc 07 §6). **Zero** policy/task/api coupling — access control is orchestrated by `app.api.services`. |
+| `app.modules.artifacts` | `service.py` | Persistence of the four artifact tables, fail-closed binding, owner-scoped reads. The classification latch and PolicyDecision are done by the orchestrator (`app.api.artifacts`) calling policy. |
 
 ---
 
-## Setup & Run
+## 3. Auth surfaces (`app/api/auth/` package)
 
-### Integrated (recommended) — as the `csp` service of the ANILA stack
+The auth router was split from a single file into a package, one submodule per auth form, all mounted under the `/api/auth` prefix (`_common.py`):
 
-The full stack (redis / ingestion-worker / router / anila-studio / frontends / nginx) is defined in the **repo-root** compose:
+| Submodule | Routes (`/api/auth` prefix) | Notes |
+|-----------|-----------------------------|-------|
+| `password.py` | `POST /register` · `POST /login` · `POST /refresh` · `POST /logout` · `GET /me` · `PUT /password` | Password login → RS256 JWT (access + refresh) + cookie. |
+| `oidc.py` | `GET /providers` · `GET /oidc/{provider_id}/start` · `GET /oidc/{provider_id}/callback` | Enterprise SSO / OIDC authorization-code flow (providers managed via `/api/auth-providers`). |
+| `card.py` | `GET /card/challenge` · `POST /card/verify` | NCSIST CSPKI natural-person smart-card login: **real** PKCS#7 / CMS signature verification (SignerInfo signature + cert chain + nonce anti-replay, `app/services/card_auth.py`). |
+| `registration_tokens.py` | one-time registration-token surface | Controlled self-service registration. |
+| `revocations.py` | `GET /revocations` | Service-token-authenticated revocation cold-start sync (consumed by anila-studio). |
 
-```bash
-docker compose -f compose.dev.yaml up -d --build csp   # dev
-# prod: docker compose up -d csp (prod branches can use infra/deployment/scripts/deploy-prod.sh)
-```
-
-CSP joins two networks: `default` (in-stack) and `anila-models-net` (external, to reach `gemma4` / `gpt-oss-20b` / `nv-embed-proxy` / `flux2-dev`). On first start: `docker network create anila-models-net`.
-
-### CSP standalone development
-
-The old `myCSPPlatform` standalone compose (`docker/docker-compose.yml`) and `start.sh` were retired in the §17.1 directory migration and were not carried over. For standalone-ish dev, use the repo-root dev stack and start only csp:
-
-```bash
-# from the repo root
-docker compose -f compose.dev.yaml up -d --build csp
-```
-
-Backend locally (no container, bring your own PostgreSQL): `cd services/csp && uvicorn app.main:app --port 8000`.
-
-### Key environment variables (from `config.py`, actual defaults)
-
-| Variable | Default | Notes |
-|------|----------|------|
-| `APP_NAME` / `APP_VERSION` | `CSP Platform` / `1.0.0` | identity; `/health` reports version |
-| `DEBUG` | `False` | debug flag |
-| `ENABLE_API_DOCS` | `False` | mounts `/docs` + `/openapi.json` only when true |
-| `ENABLE_PUBLIC_SHARE` | `True` | enables unauthenticated `/api/public/share/{token}` |
-| `DATABASE_URL` | `postgresql://csp:csp_password@localhost:5432/csp` (compose sets `@postgres:5432`) | DB connection |
-| `SECRET_KEY` | `your-secret-key-change-this-in-production` | **no longer signs access/refresh JWTs** (RS256 now); used by startup_security + credential_crypto |
-| `ALGORITHM` | `HS256` | **legacy / unused** (access/refresh use RS256) |
-| `JWT_PRIVATE_KEY_PATH` / `JWT_PUBLIC_KEY_PATH` / `JWT_KID` | `secrets/jwt-private.pem` / `secrets/jwt-public.pem` / `anila-v1` | RS256 keys + JWKS kid |
-| `ALLOW_AUTO_KEYGEN` | `False` | auto-generate keys if missing (**dev/test only**) |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` / `REFRESH_TOKEN_EXPIRE_DAYS` | `60` / `30` | JWT lifetimes |
-| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / `changeme` | seed admin; must override in prod |
-| `CSP_SERVICE_TOKEN` | `""` | legacy fleet-shared s2s token (fallback) |
-| `MODEL_GATEWAY_API_KEY` | `""` | Bearer injected for outbound model gateway (model calls only, not agent dispatch) |
-| `EMBEDDING_TIMEOUT` / `LLM_TIMEOUT` | `30` / `120` | proxy timeouts (s) |
-| `PROXY_MAX_RETRIES` / `PROXY_RETRY_BASE_DELAY` | `3` / `0.5` | proxy retries |
-| `ALLOWED_ORIGINS` / `ALLOWED_HOSTS` / `COOKIE_SECURE` | see config | CORS allowlist / Host allowlist (`*`=off) / cookie secure |
-| `AUTO_REGISTER_MODELS` / `AUTO_REGISTER_AGENTS` / `AUTO_REGISTER_LINKS` / `AUTO_SEED_API_KEYS` | `""` | declarative seed at startup |
-| `ATTACHMENT_STORAGE_PATH` | `data/attachments` | attachment storage |
-
-Read directly via `os.environ` (not in config.py): `ANILA_ALLOW_DEV_SECRET`, `INTERNAL_PLATFORM_API_KEY`, `ANILA_TRUSTED_HOSTS`, `REDIS_URL` (`ingestion_queue` default `redis://redis:6379`, `token_revocation_publisher` default `redis://redis:6379/0`), `INGESTION_UPLOAD_DIR` (`/var/anila/ingestion-uploads`).
-
-> **`prod-intranet-card` also has** `ENABLE_CARD_LOGIN` / `REQUIRE_CARD_LOGIN_ONLY` / `CARD_INITIAL_OWNERS` (see that branch's root README); these do not exist on `main`.
+> All three login forms (password / oidc / card) **coexist in the redesign tree's code**; which are enabled is decided by config / branch flags (e.g. `ENABLE_CARD_LOGIN`, whether an SSO provider is registered). The admin CRUD for SSO / OIDC providers is the separate `app/api/auth_providers.py` (prefix `/api/auth-providers`).
 
 ---
 
-## API surface
+## 4. API surface: Data Plane vs Control Plane
 
-**Control Plane (`/api/*`)**: `/api/auth` (register / login / refresh / logout / me / password / revoke / **revocations** — **no card/SSO/OIDC on main**), `/api/keys`, `/api/models` (incl. `set-router-primary` / `activate` / `purge`), `/api/agents` (register / approve / reject / encryption / runtime-config / health-check / credentials / template/download), `/api/users`, `/api/departments`, `/api/usage`, `/api/alerts`, `/api/audit-logs`, `/api/banners`, `/api/memory`, `/api/platform-links`, `/api/service-clients`, `/api/service-access-grants`, `/api/trusted-hosts`, `/api/conversations` (incl. `/search`, shares, ratings), `/api/attachments`, `/api/handoffs` + `/api/notifications`, `/api/public/share/{token}` (unauthenticated, gated by `ENABLE_PUBLIC_SHARE`), `/api/ingestion/*`.
+### Data Plane (`/v1/*`, `/v2/*`) — OpenAI-compatible proxy + Trace ingest
 
-**Data Plane (`/v1/*`, `/v2/*`, `app/api/proxy.py`)**: `GET /v1/agents` (Router agent manifest), `GET /v1/models` (permission-filtered), `POST /v1/chat/completions` (agent-first then model, streaming + non-streaming, memory injection, classified latch), `POST /v1/agents/{name}/sessions/{sid}/answer` (Router resume passthrough), `POST /v1/embeddings`, `POST /v2/embeddings`.
+`app/api/proxy.py` (no APIRouter prefix — full paths, so nginx `/v1` passthrough reaches them):
 
-**Other**: `GET /.well-known/jwks.json` (RFC 7517, unauthenticated, `max-age=3600`), `GET /health`, `GET /docs`+`/openapi.json` (only when `ENABLE_API_DOCS=true`), SPA catch-all (with path-traversal guard).
+- `GET /v1/agents` — Router fetches agent manifests.
+- `GET /v1/models` — permission-filtered model list.
+- `POST /v1/chat/completions` — agent-first then model; streaming + non-streaming; memory injection; classified one-way latch; **Task spine**: may carry `X-ANILA-Task-Id` — when present the call is validated against the Task spine, a `PolicyDecision(action="task.run")` is recorded, and a `TaskRun` brackets the proxied call; when absent the usage row is marked `legacy_runtime_call=true` (`app/services/proxy/task_link.py`).
+- `POST /v1/agents/{agent_name}/sessions/{session_id}/answer` — Router resume passthrough.
+- `POST /v1/embeddings`, `POST /v2/embeddings`.
+
+Full Trace ingest (`app/api/traces.py`, also full-path):
+
+- `POST /v1/traces/{trace_id}/spans` — data-plane span collection (`202`, batch 1..256, `(trace_id, span_id)` idempotent upsert-ignore, fail-safe / non-propagating). Auth = any data-plane credential. The producer is [`anila_trace_sdk`](../../packages/anila-core/src/anila_core/tracing/sdk.py) (inside `packages/anila-core`, fail-open, batching background exporter).
+- `GET /api/traces/{trace_id}` — control-plane read (admin/owner or the requester of the task that owns the trace).
+
+### Control Plane (`/api/*`)
+
+- **New in the redesign**: `/api/tasks` (`tasks` module: create / list / get / `/{id}/runs`), `/api/policy-decisions`, `/api/classification/inventory` (classification stock-take), `/api/classification/declassification-requests` (declassification request + supervisor approval), `/api/classification-authorities` (classification approval authority), `/api/services` (Service Registry: CRUD + `/{id}/launch` + `/{id}/audit-callbacks` + `/{id}/manifest` + `/{id}/project-bindings`), `/api/artifacts` (+ data-plane `POST /v1/artifact-jobs` etc. as the Studio report surface).
+- **Existing governance**: `/api/auth`, `/api/auth-providers`, `/api/keys`, `/api/models` (incl. `set-router-primary` / `activate` / `purge`), `/api/agents` (register / approve / reject / health-check / credentials / template), `/api/users`, `/api/departments`, `/api/usage`, `/api/alerts`, `/api/audit-logs`, `/api/banners`, `/api/memory`, `/api/platform-links`, `/api/service-clients`, `/api/service-access-grants`, `/api/trusted-hosts`, `/api/conversations` (incl. `/search`, shares, ratings), `/api/attachments`, `/api/handoffs` + `/api/notifications`, `/api/public/share/{token}` (unauthenticated, gated by `ENABLE_PUBLIC_SHARE`), `/api/ingestion/*`.
+- **Other**: `GET /.well-known/jwks.json` (RFC 7517, unauthenticated, `max-age=3600`), `GET /health`, `GET /docs` + `/openapi.json` (only when `ENABLE_API_DOCS=true`), SPA catch-all (with path-traversal guard).
+
+Proxy example:
 
 ```bash
 curl http://localhost/v1/chat/completions \
@@ -179,32 +120,83 @@ curl http://localhost/v1/chat/completions \
 
 ---
 
-## Integration / auth
+## 5. New tables / migrations (`r1_0001`–`r1_0008`, one line each)
 
-- **Called by**: Router (pulls `/v1/agents`, dispatches with a service token); anila-studio (contract endpoints — search / image-blob / JWKS / `/api/auth/revocations`, verifying CSP JWTs via JWKS); ingestion-worker (shared DB / queue); frontends via `/api/*` + `/v1/*`.
-- **Calls out to**: registered models / approved agent endpoints (httpx + call-time SSRF guard + per-agent service-token injection); a model gateway (Bearer `MODEL_GATEWAY_API_KEY`); Redis (arq + pub/sub); Postgres + pgvector. Imports `anila_core` for SSRF guard / credential crypto / memory adapter / relation resolution / parsers / pg pool.
-- **Auth mechanisms**: user RS256 JWT (access + refresh, `tv` token-version revocation claim) via Bearer or `anila_access_token` cookie; user API keys `sk-`; cookie session (`anila_access_token` / `anila_refresh_token` / `anila_csrf`) + double-submit CSRF (`X-CSRF-Token`, constant-time); s2s tokens `bsk-` (single-use bootstrap) / `csk-` (rotated agent) / service_clients (AES-256-GCM envelope + sha256 lookup hash + `hmac.compare_digest`) + legacy `CSP_SERVICE_TOKEN` fallback.
+The redesign series follows the legacy numeric chain (`r1_0001` revises `0046`), staying linear; enums are always stored as open `String` (closed enums are enforced at the Pydantic contract layer `app/schemas/contracts/`), and JSON uses `with_variant(JSONB, "postgresql")` to stay portable.
 
----
-
-## Security highlights
-
-- **Classified one-way latch**: agent `requires_encryption` → conversation `classified=TRUE` (`proxy.py`); memory referencing an encrypted source latches per Bell-LaPadula "no write down" (`ConversationMemoryChunk.is_encrypted`); upgrades only, the declassify route was removed (Phase K), classified conversations can't be shared.
-- **SSRF guard**: `anila_core.security.validate_outbound_url` enforced at call time (proxy 502 / health_checker offline / before attaching the gateway key); allow-list from the `trusted_hosts` table + `ANILA_TRUSTED_HOSTS` env (30s TTL cache).
-- **startup_security**: `assert_no_dev_defaults()` refuses to boot in prod when `SECRET_KEY` / `ADMIN_PASSWORD` / `CSP_SERVICE_TOKEN` / DB password / `INTERNAL_PLATFORM_API_KEY` / `CODESERVER_PASSWORD` are dev defaults (empty `SECRET_KEY` is always fatal); `ANILA_ALLOW_DEV_SECRET=1` downgrades to warnings.
-- **Credential encryption**: AES-256-GCM (anila-core `credential_crypto` / `service_token_envelope`).
-- **Token revocation**: durable `token_revocations` + JWT `tv` enforcement + Redis fan-out; `/api/auth/revocations` for cold-start sync.
-- **Inbound hardening**: CORS allowlist (no `*` fallback), optional TrustedHostMiddleware, double-submit CSRF, SPA path-traversal guard, nginx security headers + rate-limit.
+| Revision | Slice | What it does |
+|----------|-------|--------------|
+| `r1_0001` | 2a | Task / Trace / Policy six-table foundation: `tasks` · `task_runs` · `source_snapshots` · `citations` · `policy_decisions` · `trace_spans`; `classification_level` defaults to `無機密`. |
+| `r1_0002` | 2b-C | `token_usage` ↔ task link: `task_id` (FK `ON DELETE SET NULL` + partial index) and a `legacy_runtime_call` boolean flag (marks task-less `/v1` chat legacy traffic). |
+| `r1_0003` | 3a | Five-level classification schema upgrade + three governance tables: `classification_events` · `declassification_requests` · `classification_authority_assignments`; adds the four common classification columns to existing resources (conversations / messages / collections / documents …) and backfills (`classified=true → 機密` floor). |
+| `r1_0004` | 5a | Agent Registry upgrade: `agents.approval_status` grows from three values into a **seven-state machine** (`draft` / `pending_connection_test` / `pending_trace_test` / `pending_security_review` / `approved` / `rejected` / `disabled`), plus manifest / trace-test / runtime columns. |
+| `r1_0005` | 6a | Model Gateway hardening: `model_registry` formalized into `ModelEndpoint` (`protocol` / per-model `api_key_secret_ref` AES-GCM envelope / `classification_ceiling` / `supports_*`); `health_status` collapses to **five states** (`healthy` / `degraded` / `unhealthy` / `unknown` / `disabled`). |
+| `r1_0006` | 7a | Service Registry: `platform_links` additively upgraded into `registered_services` (33 fields, id preserved) + `service_launches` · `service_audit_callbacks` · `service_project_bindings`; `service_access_grants` gains a `service_id` FK. |
+| `r1_0007` | 8a | Artifact contract, four tables: `artifacts` · `artifact_versions` · `export_records` · `artifact_jobs` (**durable** state for Studio's five job pipelines → satisfies "restart never loses a job"; Studio reports over HTTP with its service token, never reading the CSP DB directly). |
+| `r1_0008` | R-SEC | `registered_services.service_client_id` FK: binds audit-callbacks to the Service Client that *belongs to* the target service; fail-closed / default-deny, an unbound service rejects all callbacks (`403`). |
 
 ---
 
-## Related docs
+## 6. Security invariants
 
-- Ingestion platform design: [`../../docs/ingestion/ingestion-platform-design.md`](../../docs/ingestion/ingestion-platform-design.md) · Parent-child RAG: [`../../docs/ingestion/parent-child-rag-design.md`](../../docs/ingestion/parent-child-rag-design.md)
-- Multi-service integration: [`../../docs/platform/multi-service-integration-plan.md`](../../docs/platform/multi-service-integration-plan.md) · Service-token cutover: [`../../docs/runbooks/service-token-cutover.md`](../../docs/runbooks/service-token-cutover.md)
-- anila-studio extraction: [`../../docs/superpowers/anila-studio/extraction-decision.md`](../../docs/superpowers/anila-studio/extraction-decision.md)
-- Platform: [`../../README.md`](../../README.md) · Roadmap: [`../../anila_plan.md`](../../anila_plan.md) · Branch strategy: [`../../docs/branch-sync-backlog.md`](../../docs/branch-sync-backlog.md)
+- **Five-level one-way classification latch**: order `無機密 < 營業秘密 < 機密 < 極機密 < 絕對機密`; effective level = `max` of observed classifications and **never downgrades** (`policy.apply_classification` writes a `ClassificationEvent`). **Declassification is not a removed route but a governed request workflow**: `declassification_requests` + supervisor approval (`classification_authority_assignments`), fail-closed default `pending_supervisor`.
+- **Card SSO**: the CSPKI natural-person smart card uses real PKCS#7 / CMS verification (SignerInfo signature + cert chain + nonce anti-replay), not mere parsing.
+- **JWT / JWKS**: RS256 (access + refresh, `tv` token-version revocation claim); `GET /.well-known/jwks.json` publishes the verification keys. The launch token reuses the same RS256 keypair / `kid`, so registered services verify it **locally** via JWKS (`aud` / `iss` / `exp` / signature); TTL 10 min, and it **never** embeds a model key or a long-lived user JWT.
+- **CSRF**: cookie-authenticated mutating requests use double-submit (`X-CSRF-Token`, constant-time compare, `CsrfMiddleware`).
+- **RLS / `csp_app`**: the runtime uses the non-privileged `csp_app` role (so RLS actually fires); only migrations use the escalated `csp` superuser (see §8).
+- **SSRF url_guard kind split (Slice 6a, doc 04 §8)**: `anila_core.security.validate_outbound_url(url, endpoint_kind=...)` domain-splits the http flag across `model` / `agent` / `generic` — under `ANILA_ENV=production`, **a model endpoint always rejects http (fail-closed, no flag can save it)**; an agent endpoint is allowed over http via `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` (legacy `ANILA_ALLOW_HTTP_ENDPOINT` still works as a deprecation-warned fallback, for the intranet MLSteam plain-http NodePort agent). The allow-list = the `trusted_hosts` table + the `ANILA_TRUSTED_HOSTS` env.
+- **Credential encryption**: AES-256-GCM (`anila-core` `credential_crypto` / `service_token_envelope`; covers per-model `api_key_secret_ref`, `csk-` agent credentials, ingestion credentials).
+- **Token revocation**: durable `token_revocations` table + JWT `tv` enforcement + Redis fan-out; `/api/auth/revocations` for cold-start sync.
+- **startup_security**: in prod, dev defaults for `SECRET_KEY` / `ADMIN_PASSWORD` / `CSP_SERVICE_TOKEN` / DB passwords refuse to boot (an empty `SECRET_KEY` is always fatal; `ANILA_ALLOW_DEV_SECRET=1` downgrades to a warning). Inbound hardening also includes a CORS allow-list (no `*` fallback), optional TrustedHostMiddleware, SPA path-traversal guard, and nginx security headers + rate-limit.
 
 ---
 
-**Role**: Control + Data Plane · **Authoritative for**: users · api_keys · models · agents · service_clients · token_usage · audit_logs · ingestion KB (Studio + FLUX + diagram rendering extracted to anila-studio; CSP keeps only the contract endpoints)
+## 7. Testing
+
+Tests are sqlite-backed (`tests/conftest.py` sets `DATABASE_URL=sqlite:///./.pytest-csp.db`, so they never touch Postgres / running containers) and run standalone:
+
+```bash
+cd services/csp
+.venv/bin/python -m pytest            # full suite
+.venv/bin/python -m pytest -q tests/test_proxy_task_link.py   # single file
+```
+
+**Current scale (measured baseline)**: 684 collected → **628 passed · 43 failed · 1 skipped · 12 errors**. Those 43 failed / 12 errors are **pre-existing**, not redesign regressions; when reviewing Codex output use this as the baseline to separate new from old failures (run the tests — don't just read the diff).
+
+---
+
+## 8. Alembic notes
+
+- **`r1_` namespace**: redesign migrations use the `r1_` prefix and chain linearly after the legacy numeric series (`r1_0001` has `Revises: 0046`). When adding a module / table, update the `.importlinter` contract and `app/schemas/contracts/` in lockstep.
+- **`MIGRATION_DATABASE_URL` (escalated, alembic-only)**: migrations need a superuser-class connection (`0014` runs `CREATE EXTENSION` / `CREATE ROLE csp_app`). The runtime `DATABASE_URL` points at the non-privileged `csp_app` (so RLS fires); `MIGRATION_DATABASE_URL` is alembic's escalated stand-in, falling back to `DATABASE_URL` when unset (`migrations/env.py`). Compose splits the two: runtime `csp_app:...`, migration `csp:...`.
+- **Auto-upgrade on boot**: the `app/main.py` lifespan runs `alembic upgrade head` programmatically via `command.upgrade(cfg, "head")` (falling back to `create_all` only on failure).
+
+---
+
+## 9. Running & deployment
+
+The full stack (redis / ingestion-worker / router / anila-studio / frontends / nginx) is defined by the root compose shim: `compose.yaml` → [`infra/compose/platform.yml`](../../infra/compose/platform.yml) (prod, project `anila-platform`) and `compose.dev.yaml` → `infra/compose/dev.yml` (dev).
+
+```bash
+# from repo root
+docker compose -f compose.dev.yaml up -d --build csp    # dev
+docker compose up -d csp                                 # prod (platform.yml)
+# day-to-day lifecycle: infra/deployment/scripts/deploy-prod.sh
+# intranet card-login bootstrap: infra/deployment/intranet/intranet-deploy.sh
+```
+
+CSP joins two networks: `default` (in-stack) and `anila-models-net` (external, reaching `gemma4` / `gpt-oss-20b` / `nv-embed-proxy` / `flux2-dev`). On first boot if it doesn't exist: `docker network create anila-models-net`.
+
+Local backend (no container, bring your own PostgreSQL): `cd services/csp && .venv/bin/python -m uvicorn app.main:app --port 8000`. Key env vars (`app/config.py` / compose): `DATABASE_URL` (runtime `csp_app`), `MIGRATION_DATABASE_URL` (escalated), `SECRET_KEY`, `JWT_PRIVATE_KEY_PATH` / `JWT_PUBLIC_KEY_PATH` / `JWT_KID`, `ADMIN_USERNAME` / `ADMIN_PASSWORD`, `CSP_SERVICE_TOKEN`, `MODEL_GATEWAY_API_KEY`, `ANILA_ENV` (`production` triggers the model-http fail-closed), `ANILA_ALLOW_HTTP_ENDPOINT` / `ANILA_ALLOW_HTTP_AGENT_ENDPOINT` / `ANILA_ALLOW_PRIVATE_ENDPOINT`, `ANILA_TRUSTED_HOSTS`, `REDIS_URL`, `ENABLE_API_DOCS` / `ENABLE_PUBLIC_SHARE`. See [`.env.example`](./.env.example).
+
+---
+
+## 10. Related docs
+
+- Design authority: [`docs/anila-redesign-docs/`](../../docs/anila-redesign-docs/) — constitution [`00`](../../docs/anila-redesign-docs/00-product-constitution.md), CSP governance control plane [`03`](../../docs/anila-redesign-docs/03-csp-governance-control-plane.md), Model Gateway [`04`](../../docs/anila-redesign-docs/04-model-gateway-design.md), Agent Registry [`05`](../../docs/anila-redesign-docs/05-agent-registry-and-runtime-protocol.md), Service Platform [`07`](../../docs/anila-redesign-docs/07-registered-gui-service-platform.md), classified latch & policy engine [`08`](../../docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md), API / event contracts [`09`](../../docs/anila-redesign-docs/09-api-event-contracts.md), migration & development guardrails [`10`](../../docs/anila-redesign-docs/10-migration-and-development-guardrails.md).
+- Platform overview: [`../../README.md`](../../README.md).
+- Module boundary contract: [`.importlinter`](./.importlinter) (`infra/ci/lint-boundaries.sh`).
+
+---
+
+**Role**: Control + Data Plane · **Authoritative for**: users · api_keys · models · agents · service_clients · **tasks · trace_spans · policy_decisions · classification** · registered_services · artifacts · token_usage · audit_logs · the ingestion knowledge base (Studio + FLUX + graph rendering are extracted into anila-studio; CSP keeps the contract endpoints and the durable artifact job store)

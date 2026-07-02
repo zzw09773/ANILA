@@ -25,8 +25,8 @@ curl -X POST http://localhost:9100/v1/chat/completions \
 
 ## Register with ANILA Platform
 
-Recommended: register from the CSP UI — `/developer/agents` → **register**
-(two-step wizard). Step 1 takes the agent details (name / endpoint / base model /
+Recommended: register from the CSP governance console (治理中心) —
+`/developer/agents` → **register** (two-step wizard). Step 1 takes the agent details (name / endpoint / base model /
 optional RAG collection). Step 2 issues this agent's single `csk-` service token
 and shows a pre-filled `.env` snippet; paste `CSP_SERVICE_TOKEN=csk-...` into your
 `.env`, start the agent, then click **test connection** to confirm the token is

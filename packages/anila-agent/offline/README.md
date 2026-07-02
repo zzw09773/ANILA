@@ -1,5 +1,7 @@
 # 離線安裝（air-gapped 內網）
 
+> 屬 `packages/anila-agent/`；回上層 [README.md](../README.md) · [English](../README.en.md)。
+
 `openai-agents==0.17.5` 會拉一整棵相依樹（openai / httpx / pydantic / mcp …）。
 真正的 air-gapped 部署需把完整相依閉包預先打包，帶進內網以 `--no-index` 安裝。
 
@@ -13,7 +15,7 @@
    # 要 litellm 時：bash offline/build-wheelhouse.sh serving,pgvector,csp,litellm
    ```
 
-   產生 `offline/wheelhouse/*.whl`。
+   產生 `offline/wheelhouse/*.whl`（含相依閉包，並把 `anila-agent` 本身也打成 wheel）。
 
 2. 把整個專案（含 `offline/wheelhouse/`）帶進 air-gapped 內網。
 
