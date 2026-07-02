@@ -96,9 +96,42 @@ flowchart TB
 
 ---
 
-## 介面預覽
+## 介面重設計（`anila-redesign` · 官方藍 institutional）
 
-> 以下截圖取自運行中的 ANILA 平台 CSP 控制台、anila-ui 對話前端與 ANILALM 知識庫。本分支登入為中科院自然人憑證卡（PKCS#7/CMS 驗章），與截圖環境的帳密登入不同，故登入畫面未列入。
+> 治理中心（CSP）視覺全面去終端／駭客風，改為**淺色優先・官方藍**的中性專業語彙：系統 sans 字型（等寬只保留給 ID／數字／代碼）、溫圓角、去霓虹綠與開機 log cosplay；登入頁改**自然人憑證卡優先**（帳密／SSO 收進「其他登入方式」）；機敏對話浮水印改為反映**真實五級分類**（機密／極機密／絕對機密）而非固定英文，全螢幕水印帶洩漏溯源（使用者＋trace_id）。設計語彙見 [`docs/anila-redesign-docs/12-frontend-visual-redesign.md`](docs/anila-redesign-docs/12-frontend-visual-redesign.md)。
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/redesign/login-card.png" alt="登入頁 · 卡登優先"><br><sub><b>登入頁 · 卡登優先</b>｜自然人憑證卡為主視覺，帳密／SSO 收「其他登入方式」</sub></td>
+    <td width="50%"><img src="docs/assets/screenshots/redesign/login-other.png" alt="其他登入方式展開"><br><sub><b>其他登入方式</b>｜展開後的帳密登入 + 單一登入（SSO）次要路徑</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/redesign/dashboard.png" alt="治理中心總覽"><br><sub><b>治理中心總覽</b>｜24h 用量 / 吞吐 / Top agents（官方藍・淺色）</sub></td>
+    <td><img src="docs/assets/screenshots/redesign/models.png" alt="模型治理"><br><sub><b>模型治理</b>｜五態健康 / 分類上限 / per-model 金鑰狀態（Slice 6）</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/redesign/agents.png" alt="Agent Registry"><br><sub><b>Agent Registry</b>｜七態審批 + trace-test 審批閘門（Slice 5）</sub></td>
+    <td><img src="docs/assets/screenshots/redesign/classification-inventory.png" alt="分類盤點"><br><sub><b>分類盤點</b>｜八資源 × 五級 cutover 前盤點（Slice 3）</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/redesign/services.png" alt="服務登記 / 專案入口"><br><sub><b>服務登記</b>｜Launch Gateway 服務管理（Slice 7）</sub></td>
+    <td><img src="docs/assets/screenshots/redesign/shell-chat.png" alt="ANILA 任務中心"><br><sub><b>ANILA 任務中心</b>｜四入口導覽：任務中心／我的知識庫／產出中心／專案入口（Slice 9）</sub></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/assets/screenshots/redesign/shell-classified.png" alt="機敏模式真分類浮水印"><br><sub><b>機敏模式真分類浮水印</b>｜真級別「極機密」角標 + 全螢幕對角洩漏溯源水印（使用者＋trace_id），取代固定英文 CONFIDENTIAL</sub></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/assets/screenshots/redesign/shell-services.png" alt="專案入口"><br><sub><b>專案入口</b>｜從 Service Registry 讀取的服務卡片，iframe / 新分頁啟動（Slice 7 / 9）</sub></td>
+  </tr>
+</table>
+
+> 截圖取自 `anila-redesign` 分支的本機 fixture 環境（mock API + vite dev，未碰觸線上 stack）；登入頁的偵測憑證卡流程與內網卡登一致，帳密區為次要路徑。
+
+---
+
+## 介面預覽（重設計前）
+
+> 以下為重設計前的舊版截圖（終端／碳黑風），保留作前後對照。取自運行中的 ANILA 平台 CSP 控制台、anila-ui 對話前端與 ANILALM 知識庫。
 
 <table>
   <tr>
