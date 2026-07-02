@@ -86,16 +86,16 @@ function buildElements() {
 }
 
 function styles() {
-  const fg = cssVar('--c-fg-1', '#e6e6e6')
-  const fg3 = cssVar('--c-fg-3', '#8a8a8a')
-  const bg = cssVar('--c-surface-1', '#161616')
-  const border = cssVar('--c-border', '#333')
-  const accent = cssVar('--c-accent', '#5ab0ff')
-  const ok = cssVar('--c-ok', '#3fb950')
-  const danger = cssVar('--c-danger', '#f85149')
-  const warn = cssVar('--c-warn', '#d29922')
-  const llm = '#a371f7'
-  const sim = '#22b8cf'
+  const fg = cssVar('--c-fg-1', '#1b2230')
+  const fg3 = cssVar('--c-fg-3', '#6b7484')
+  const bg = cssVar('--c-surface-1', '#ffffff')
+  const border = cssVar('--c-border', '#dfe3ea')
+  const accent = cssVar('--c-accent', '#2b4c7e')
+  const ok = cssVar('--c-ok', '#2f855a')
+  const danger = cssVar('--c-danger', '#b03636')
+  const warn = cssVar('--c-warn', '#b7791f')
+  const llm = cssVar('--c-vlm', '#6b46c1')
+  const sim = cssVar('--c-info', '#2b6cb0')
   return [
     {
       selector: 'node',
@@ -223,8 +223,8 @@ watch(() => props.relations, render, { deep: false })
 .dot { width: 18px; height: 0; border-top: 2px solid; display: inline-block; }
 .dot--rule { border-color: var(--c-accent); }
 .dot--manual { border-color: var(--c-ok); }
-.dot--llm { border-color: #a371f7; }
-.dot--sim { border-color: #22b8cf; border-top-style: dotted; }
+.dot--llm { border-color: var(--c-vlm); }
+.dot--sim { border-color: var(--c-info); border-top-style: dotted; }
 .dash { width: 18px; height: 0; border-top: 2px dashed var(--c-danger); display: inline-block; }
 .rg__canvas {
   width: 100%; height: 560px;

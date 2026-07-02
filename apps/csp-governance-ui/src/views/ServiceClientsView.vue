@@ -251,7 +251,7 @@ async function handleRevoke(c) {
 .page-header { margin-bottom: 12px; }
 .page-title { font-size: var(--t-lg); margin: 0 0 4px; font-weight: 500; }
 .page-subtitle { font-size: var(--t-2xs); color: var(--c-fg-2); margin: 0; }
-.page-subtitle code { background: var(--c-bg-1, #000); padding: 1px 4px; }
+.page-subtitle code { background: var(--c-surface-2); padding: 1px 4px; }
 
 .data-table { width: 100%; border-collapse: collapse; font-size: var(--t-2xs); }
 .data-table th {
@@ -278,7 +278,7 @@ async function handleRevoke(c) {
 
 .secret-banner {
   border: 1px solid var(--c-accent);
-  background: var(--c-bg-elev-1, rgba(255,255,255,0.04));
+  background: var(--c-surface-2);
   padding: 10px;
 }
 .secret-banner__body { display: flex; gap: 8px; }

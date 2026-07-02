@@ -2,7 +2,6 @@
   <div class="page">
     <header class="page-head">
       <div>
-        <p class="page-head__eyebrow">admin · platform</p>
         <h1 class="page-head__title">服務登記</h1>
         <p class="page-head__sub">
           註冊 GUI 服務 · 每服務角色閘門 + 授權白名單 · 啟動模式 / 分類上限 / 服務管理員委派
@@ -457,7 +456,6 @@ async function handlePurge(link) {
 <style scoped>
 .page { display: flex; flex-direction: column; gap: var(--gap-4); padding-bottom: var(--gap-8); }
 .page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--gap-3); flex-wrap: wrap; }
-.page-head__eyebrow { font-size: var(--t-2xs); letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--c-fg-3); }
 .page-head__title { font-size: var(--t-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin: 4px 0 2px; }
 .page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }
 .compat-note { color: var(--c-warn); }

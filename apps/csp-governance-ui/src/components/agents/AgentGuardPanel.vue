@@ -8,9 +8,9 @@
 -->
 <template>
   <TermBox
-    title="non-template agent — wire this csk-"
+    title="非樣板 agent — 接上這把 csk-"
     inset
-    hint="copy the inbound guard + RAG usage for a plain FastAPI agent"
+    hint="複製純 FastAPI agent 的入向護欄與 RAG 用法"
   >
     <section class="guard__section">
       <header class="guard__head">

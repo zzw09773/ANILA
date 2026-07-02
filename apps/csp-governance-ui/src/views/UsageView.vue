@@ -2,7 +2,6 @@
   <div class="page">
     <header class="page-head">
       <div>
-        <p class="page-head__eyebrow">control plane · analytics</p>
         <h1 class="page-head__title">用量</h1>
         <p class="page-head__sub">吞吐 · Token 用量 · 依模型 · 依使用者</p>
       </div>
@@ -321,7 +320,6 @@ function formatNum(n) {
 .page { display: flex; flex-direction: column; gap: var(--gap-4); padding-bottom: var(--gap-8); }
 
 .page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--gap-3); flex-wrap: wrap; }
-.page-head__eyebrow { font-size: var(--t-2xs); letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--c-fg-3); }
 .page-head__title { font-size: var(--t-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin: 4px 0 2px; }
 .page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }
 .page-head__actions { display: flex; align-items: center; gap: var(--gap-2); }

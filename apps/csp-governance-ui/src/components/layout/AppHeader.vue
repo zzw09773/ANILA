@@ -4,9 +4,7 @@
       <TermLogo :size="14" />
       <span class="topbar__rule">│</span>
       <span class="topbar__path">
-        <span class="topbar__path-prefix">{{ hostPrompt }}</span>
         <span class="topbar__path-segment">{{ currentSegment }}</span>
-        <span class="term-caret" aria-hidden="true" />
       </span>
     </div>
 
@@ -102,11 +100,6 @@ const authStore = useAuthStore()
 const { theme, toggleTheme } = useTheme()
 
 const otherTheme = computed(() => (theme.value === 'dark' ? 'light' : 'dark'))
-
-const hostPrompt = computed(() => {
-  const role = authStore.user?.role || 'guest'
-  return `csp-${role}@anila:`
-})
 
 const segmentMap = {
   '/': '/dashboard',
@@ -221,9 +214,6 @@ function handleLogout() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.topbar__path-prefix {
-  color: var(--c-fg-3);
 }
 .topbar__path-segment {
   color: var(--c-accent);

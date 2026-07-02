@@ -1,22 +1,27 @@
 /* =========================================================================
-   ANILA · CSP Terminal/CLI design tokens
-   - Two themes: dark (carbon) + light (paper-cream)
-   - Toggled via [data-theme="dark"|"light"] on <html>
-   - All view-level styling MUST consume these variables (no raw hex in views)
+   ANILA · CSP 治理中心 design tokens — 「官方藍」institutional console
+   - 淺色優先(default = light);深色主題保留但重調為柔和藍灰(非碳黑+霓虹綠)
+   - 由 <html> 的 [data-theme="light"|"dark"] 切換;未指定則 :root = 淺色
+   - 視覺語言:去終端機/駭客風,改中性專業;sans 為主、等寬只用於 ID/數字/代碼
+   - 所有 view 樣式一律吃這些變數(view 內禁 raw hex)
+   - Fable 5 重設計(2026-07-02):替換原 carbon+mint-green 終端美學
    ========================================================================= */
 
 :root {
   /* Type ---------------------------------------------------------------- */
-  /* Air-gapped intranet: external font CDNs are blocked by the outer nginx
-     CSP (font-src 'self' data:), so JetBrains Mono can't be downloaded.
-     Lead with ui-monospace + system monos (matches ANILA UI / ANILALM's
-     air-gap-aware stacks); "JetBrains Mono" stays as a preference for any
-     host that already ships it. The Google Fonts @import that used to sit
-     in main.css was a guaranteed CSP-violation + dead request on intranet. */
+  /* 內網 air-gap:外部字型 CDN 被外層 nginx CSP(font-src 'self')擋,故一律用
+     系統字型堆疊(中科院多為 Windows → Segoe UI / 微軟正黑),不下載任何 webfont。
+     --font-sans 為介面主字型(內文/標籤/標題);--font-mono 只保留給 ID、token、
+     時間戳、數值欄、代碼片段等真正需要等寬對齊的場景。 */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft JhengHei",
+    "PingFang TC", "Noto Sans TC", "Source Han Sans TC", "Helvetica Neue", Arial,
+    "Apple Color Emoji", sans-serif;
   --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Mono",
     "IBM Plex Mono", "Roboto Mono", "Menlo", "Consolas", monospace;
-  --font-feat: "ss02" on, "ss19" on, "zero" on, "calt" off, "liga" off;
+  /* 表格/數據一律等寬數字對齊(sans 也吃);連字關閉避免介面誤合字。 */
+  --font-feat: "tnum" on, "calt" off, "liga" off;
 
+  --t-3xs: 9px;
   --t-2xs: 10px;
   --t-xs:  11px;
   --t-sm:  12px;
@@ -28,20 +33,25 @@
   --t-3xl: 28px;
   --t-4xl: 36px;
 
-  --lh-tight: 1.25;
-  --lh-base:  1.45;
+  --lh-tight: 1.3;
+  --lh-base:  1.5;
   --lh-loose: 1.65;
 
-  --tracking-caps: 0.16em;
-  --tracking-tight: -0.01em;
+  /* sans 介面不用終端機式的寬 caps 追蹤;標籤小字用輕微正追蹤即可。 */
+  --tracking-caps: 0.06em;
+  --tracking-tight: -0.011em;
 
   /* Density ------------------------------------------------------------- */
   --row-h: 28px;
-  --input-h: 28px;
-  --tap-h: 32px;
+  --input-h: 30px;
+  --tap-h: 34px;
 
+  /* Radius — 溫圓角,去零圓角終端感 --------------------------------------- */
   --r-sharp: 0;
-  --r-soft: 2px;
+  --r-soft: 4px;
+  --r-md:   6px;
+  --r-lg:   8px;
+  --r-pill: 999px;
 
   --border-w: 1px;
   --border-w-strong: 2px;
@@ -63,179 +73,184 @@
   --shell-topbar-h: 40px;
 
   /* Motion -------------------------------------------------------------- */
-  --motion-fast: 80ms;
-  --motion: 140ms;
-  --easing: cubic-bezier(0.2, 0.8, 0.3, 1);
+  --motion-fast: 90ms;
+  --motion: 160ms;
+  --easing: cubic-bezier(0.2, 0.7, 0.3, 1);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
-   DARK · "carbon" — the default. Modern dark IDE vibe, not phosphor neon.
+   LIGHT · 「官方藍」institutional — 預設。乾淨微藍白底 + 深 slate-blue,
+   讀作官方、可信、專業;非奇色 cream、非終端綠。
    ──────────────────────────────────────────────────────────────────────── */
 :root,
-[data-theme="dark"] {
-  /* Surfaces */
-  --c-bg:        #0a0d12;
-  --c-surface-1: #11151c;
-  --c-surface-2: #171c25;
-  --c-surface-3: #1d2330;
-  --c-overlay:   rgba(10, 13, 18, 0.72);
-
-  /* Strokes */
-  --c-border:        #1f2530;
-  --c-border-strong: #2c3442;
-  --c-border-accent: #2f4c3a;
-
-  /* Foreground */
-  --c-fg-1: #d8dee8;
-  --c-fg-2: #9aa4b6;
-  --c-fg-3: #66708a;
-  --c-fg-mute: #4a546a;
-
-  /* Accent — mint terminal green */
-  --c-accent:        #7fd99b;
-  --c-accent-strong: #9ee5b6;
-  --c-accent-soft:   rgba(127, 217, 155, 0.10);
-  --c-accent-fg:     #0a0d12;
-
-  /* Status */
-  --c-info:    #6cb6ff;
-  --c-info-soft: rgba(108, 182, 255, 0.10);
-  --c-warn:    #e0a458;
-  --c-warn-soft: rgba(224, 164, 88, 0.12);
-  --c-danger:  #ec6f7c;
-  --c-danger-soft: rgba(236, 111, 124, 0.12);
-  --c-ok:      #7fd99b;
-  --c-ok-soft: rgba(127, 217, 155, 0.10);
-
-  /* Type semantics */
-  --c-llm:       #6cb6ff;
-  --c-vlm:       #c79bff;
-  --c-embedding: #7fd99b;
-  --c-agent:     #e0a458;
-
-  /* Selection / focus */
-  --c-selection-bg: rgba(127, 217, 155, 0.22);
-  --c-focus-ring:   #7fd99b;
-  --c-row-hover:    #161b25;
-
-  /* Chart palette (terminal-aware) */
-  --chart-1: #7fd99b;
-  --chart-2: #6cb6ff;
-  --chart-3: #e0a458;
-  --chart-4: #c79bff;
-  --chart-5: #ec6f7c;
-  --chart-6: #4dd0c0;
-  --chart-grid: #1f2530;
-  --chart-axis: #66708a;
-
-  --scheme: dark;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────
-   LIGHT · "paper" — warm cream, ink-on-paper. Reads like a tech manual.
-   ──────────────────────────────────────────────────────────────────────── */
 [data-theme="light"] {
   /* Surfaces */
-  --c-bg:        #f4f0e6;
-  --c-surface-1: #faf6ea;
-  --c-surface-2: #ece6d4;
-  --c-surface-3: #ddd5be;
-  --c-overlay:   rgba(21, 23, 28, 0.40);
+  --c-bg:        #f7f8fa;
+  --c-surface-1: #ffffff;
+  --c-surface-2: #eef1f5;
+  --c-surface-3: #e2e7ee;
+  --c-overlay:   rgba(17, 24, 39, 0.45);
 
   /* Strokes */
-  --c-border:        #d4ccb6;
-  --c-border-strong: #b1a78b;
-  --c-border-accent: #abc7b1;
+  --c-border:        #dfe3ea;
+  --c-border-strong: #c3cad6;
+  --c-border-accent: #b9c8dd;
+  --c-divider:       #e9ecf1;
 
-  /* Foreground */
-  --c-fg-1: #15171c;
-  --c-fg-2: #44495a;
-  --c-fg-3: #6d7587;
-  --c-fg-mute: #918a76;
+  /* Foreground — 冷調 slate 灰,近墨主色 */
+  --c-fg-1: #1b2230;
+  --c-fg-2: #48505f;
+  --c-fg-3: #6b7484;
+  --c-fg-mute: #9aa2b1;
 
-  /* Accent — deep ink green */
-  --c-accent:        #1f6b35;
-  --c-accent-strong: #154d25;
-  --c-accent-soft:   rgba(31, 107, 53, 0.08);
-  --c-accent-fg:     #faf6ea;
+  /* Accent — 官方 slate-blue */
+  --c-accent:        #2b4c7e;
+  --c-accent-strong: #1f3a63;
+  --c-accent-soft:   rgba(43, 76, 126, 0.08);
+  --c-accent-fg:     #ffffff;
 
-  /* Status */
-  --c-info:    #1c5fa3;
-  --c-info-soft: rgba(28, 95, 163, 0.08);
-  --c-warn:    #a86417;
-  --c-warn-soft: rgba(168, 100, 23, 0.10);
-  --c-danger:  #ad2e2e;
-  --c-danger-soft: rgba(173, 46, 46, 0.10);
-  --c-ok:      #1f6b35;
-  --c-ok-soft: rgba(31, 107, 53, 0.08);
+  /* Status — 去飽和、institutional */
+  --c-info:    #2b6cb0;
+  --c-info-soft: rgba(43, 108, 176, 0.08);
+  --c-warn:    #b7791f;
+  --c-warn-soft: rgba(183, 121, 31, 0.10);
+  --c-danger:  #b03636;
+  --c-danger-soft: rgba(176, 54, 54, 0.09);
+  --c-ok:      #2f855a;
+  --c-ok-soft: rgba(47, 133, 90, 0.09);
 
-  /* Type semantics */
-  --c-llm:       #1c5fa3;
-  --c-vlm:       #6f3aa8;
-  --c-embedding: #1f6b35;
-  --c-agent:     #a86417;
+  /* Type semantics — 各能力別可辨但不刺眼 */
+  --c-llm:       #2b6cb0;
+  --c-vlm:       #6b46c1;
+  --c-embedding: #2f855a;
+  --c-agent:     #b7791f;
 
   /* Selection / focus */
-  --c-selection-bg: rgba(31, 107, 53, 0.18);
-  --c-focus-ring:   #1f6b35;
-  --c-row-hover:    #ece6d4;
+  --c-selection-bg: rgba(43, 76, 126, 0.14);
+  --c-focus-ring:   #2b4c7e;
+  --c-row-hover:    #eef1f5;
 
-  /* Chart palette */
-  --chart-1: #1f6b35;
-  --chart-2: #1c5fa3;
-  --chart-3: #a86417;
-  --chart-4: #6f3aa8;
-  --chart-5: #ad2e2e;
-  --chart-6: #2a8a87;
-  --chart-grid: #d4ccb6;
-  --chart-axis: #6d7587;
+  /* Chart palette — accent + status 家族 */
+  --chart-1: #2b4c7e;
+  --chart-2: #2b6cb0;
+  --chart-3: #b7791f;
+  --chart-4: #6b46c1;
+  --chart-5: #b03636;
+  --chart-6: #2f855a;
+  --chart-grid: #e2e7ee;
+  --chart-axis: #6b7484;
 
   --scheme: light;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+   DARK · 「柔和藍灰」— 保留給偏好深色/長時間盯畫面者。非碳黑、非霓虹綠;
+   藍灰深底 + 去飽和 slate-blue accent。
+   ──────────────────────────────────────────────────────────────────────── */
+[data-theme="dark"] {
+  /* Surfaces */
+  --c-bg:        #161a22;
+  --c-surface-1: #1c212b;
+  --c-surface-2: #232936;
+  --c-surface-3: #2b3240;
+  --c-overlay:   rgba(10, 13, 18, 0.62);
+
+  /* Strokes */
+  --c-border:        #2a303c;
+  --c-border-strong: #3a4353;
+  --c-border-accent: #3a4c6b;
+  --c-divider:       #242a35;
+
+  /* Foreground */
+  --c-fg-1: #dbe1ec;
+  --c-fg-2: #9aa3b4;
+  --c-fg-3: #6b7484;
+  --c-fg-mute: #4d5567;
+
+  /* Accent — 去飽和 slate-blue(深色可讀,非霓虹) */
+  --c-accent:        #6f8fc2;
+  --c-accent-strong: #8aa5d1;
+  --c-accent-soft:   rgba(111, 143, 194, 0.12);
+  --c-accent-fg:     #10131a;
+
+  /* Status */
+  --c-info:    #6c99d6;
+  --c-info-soft: rgba(108, 153, 214, 0.12);
+  --c-warn:    #d6a95f;
+  --c-warn-soft: rgba(214, 169, 95, 0.12);
+  --c-danger:  #d67a82;
+  --c-danger-soft: rgba(214, 122, 130, 0.12);
+  --c-ok:      #6bbf8f;
+  --c-ok-soft: rgba(107, 191, 143, 0.12);
+
+  /* Type semantics */
+  --c-llm:       #6c99d6;
+  --c-vlm:       #a98fd6;
+  --c-embedding: #6bbf8f;
+  --c-agent:     #d6a95f;
+
+  /* Selection / focus */
+  --c-selection-bg: rgba(111, 143, 194, 0.22);
+  --c-focus-ring:   #6f8fc2;
+  --c-row-hover:    #1f2530;
+
+  /* Chart palette */
+  --chart-1: #6f8fc2;
+  --chart-2: #6c99d6;
+  --chart-3: #d6a95f;
+  --chart-4: #a98fd6;
+  --chart-5: #d67a82;
+  --chart-6: #5cc0b4;
+  --chart-grid: #2a303c;
+  --chart-axis: #6b7484;
+
+  --scheme: dark;
+}
+
 /* Respect OS preference until user has explicitly chosen ------------------ */
-@media (prefers-color-scheme: light) {
+/* 預設已是淺色;僅在使用者未指定且 OS 偏好深色時,於 :root scope 重發深色 token。 */
+@media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
-    /* re-emit light tokens at :root scope so they override the dark default */
-    --c-bg:        #f4f0e6;
-    --c-surface-1: #faf6ea;
-    --c-surface-2: #ece6d4;
-    --c-surface-3: #ddd5be;
-    --c-overlay:   rgba(21, 23, 28, 0.40);
-    --c-border:        #d4ccb6;
-    --c-border-strong: #b1a78b;
-    --c-border-accent: #abc7b1;
-    --c-fg-1: #15171c;
-    --c-fg-2: #44495a;
-    --c-fg-3: #6d7587;
-    --c-fg-mute: #918a76;
-    --c-accent:        #1f6b35;
-    --c-accent-strong: #154d25;
-    --c-accent-soft:   rgba(31, 107, 53, 0.08);
-    --c-accent-fg:     #faf6ea;
-    --c-info:    #1c5fa3;
-    --c-info-soft: rgba(28, 95, 163, 0.08);
-    --c-warn:    #a86417;
-    --c-warn-soft: rgba(168, 100, 23, 0.10);
-    --c-danger:  #ad2e2e;
-    --c-danger-soft: rgba(173, 46, 46, 0.10);
-    --c-ok:      #1f6b35;
-    --c-ok-soft: rgba(31, 107, 53, 0.08);
-    --c-llm:       #1c5fa3;
-    --c-vlm:       #6f3aa8;
-    --c-embedding: #1f6b35;
-    --c-agent:     #a86417;
-    --c-selection-bg: rgba(31, 107, 53, 0.18);
-    --c-focus-ring:   #1f6b35;
-    --c-row-hover:    #ece6d4;
-    --chart-1: #1f6b35;
-    --chart-2: #1c5fa3;
-    --chart-3: #a86417;
-    --chart-4: #6f3aa8;
-    --chart-5: #ad2e2e;
-    --chart-6: #2a8a87;
-    --chart-grid: #d4ccb6;
-    --chart-axis: #6d7587;
-    --scheme: light;
+    --c-bg:        #161a22;
+    --c-surface-1: #1c212b;
+    --c-surface-2: #232936;
+    --c-surface-3: #2b3240;
+    --c-overlay:   rgba(10, 13, 18, 0.62);
+    --c-border:        #2a303c;
+    --c-border-strong: #3a4353;
+    --c-border-accent: #3a4c6b;
+    --c-divider:       #242a35;
+    --c-fg-1: #dbe1ec;
+    --c-fg-2: #9aa3b4;
+    --c-fg-3: #6b7484;
+    --c-fg-mute: #4d5567;
+    --c-accent:        #6f8fc2;
+    --c-accent-strong: #8aa5d1;
+    --c-accent-soft:   rgba(111, 143, 194, 0.12);
+    --c-accent-fg:     #10131a;
+    --c-info:    #6c99d6;
+    --c-info-soft: rgba(108, 153, 214, 0.12);
+    --c-warn:    #d6a95f;
+    --c-warn-soft: rgba(214, 169, 95, 0.12);
+    --c-danger:  #d67a82;
+    --c-danger-soft: rgba(214, 122, 130, 0.12);
+    --c-ok:      #6bbf8f;
+    --c-ok-soft: rgba(107, 191, 143, 0.12);
+    --c-llm:       #6c99d6;
+    --c-vlm:       #a98fd6;
+    --c-embedding: #6bbf8f;
+    --c-agent:     #d6a95f;
+    --c-selection-bg: rgba(111, 143, 194, 0.22);
+    --c-focus-ring:   #6f8fc2;
+    --c-row-hover:    #1f2530;
+    --chart-1: #6f8fc2;
+    --chart-2: #6c99d6;
+    --chart-3: #d6a95f;
+    --chart-4: #a98fd6;
+    --chart-5: #d67a82;
+    --chart-6: #5cc0b4;
+    --chart-grid: #2a303c;
+    --chart-axis: #6b7484;
+    --scheme: dark;
   }
 }

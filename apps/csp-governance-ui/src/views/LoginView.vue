@@ -1,11 +1,9 @@
 <template>
   <div class="login">
-    <!-- Top status strip — mirrors the in-app statusbar so the design system
-         is consistent before login as after. ----------------------------- -->
+    <!-- Slim top bar — brand mark + theme toggle only (terminal path chrome
+         removed per redesign §3.2). ------------------------------------- -->
     <header class="login__topbar">
       <TermLogo :size="14" />
-      <span class="login__topbar-rule">│</span>
-      <span class="login__topbar-path">control-plane@anila <span class="term-caret" /></span>
       <span class="login__topbar-spacer" />
       <button class="login__theme" type="button" @click="toggleTheme" :title="`切換至${otherTheme === 'light' ? '淺色' : '深色'}主題`">
         {{ theme === 'dark' ? '◐' : '◑' }} {{ theme }}
@@ -14,91 +12,31 @@
 
     <main class="login__main">
       <section class="login__panel">
-        <!-- Boot log ----------------------------------------------------- -->
-        <ol class="bootlog" aria-hidden="true">
-          <li v-for="(line, i) in bootLines" :key="i" class="bootlog__line" :style="{ animationDelay: `${i * 60}ms` }">
-            <span class="bootlog__ts">[{{ line.ts }}]</span>
-            <span :class="['bootlog__lvl', `is-${line.lvl}`]">{{ line.lvl }}</span>
-            <span class="bootlog__msg">{{ line.msg }}</span>
-          </li>
-        </ol>
+        <!-- Page hero title ---------------------------------------------- -->
+        <header class="login__hero">
+          <h1 class="login__title">ANILA 治理中心</h1>
+          <p class="login__subtitle">知識治理控制台 · 請使用自然人憑證卡登入</p>
+        </header>
 
-        <TermBox title="認證 · 本地登入" pad="lg" hint="local · ldap · oidc · card">
-          <form class="login__form" @submit.prevent="handleLogin" autocomplete="on">
-            <TermField label="帳號">
-              <input
-                v-model="username"
-                type="text"
-                class="term-input"
-                placeholder="輸入帳號"
-                autocomplete="username"
-                autofocus
-                required
-              />
-            </TermField>
-            <TermField label="密碼">
-              <input
-                v-model="password"
-                type="password"
-                class="term-input"
-                placeholder="••••••••"
-                autocomplete="current-password"
-                required
-              />
-            </TermField>
+        <!-- Card login = primary hero card ------------------------------- -->
+        <!-- 卡登流程邏輯逐字保留:handleDetectCard / detectedCard /
+             cardComponentOrigin / cardPin / handleCardLogin。只改版型。 -->
+        <section class="login__card">
+          <h2 class="login__card-title">自然人憑證卡登入</h2>
 
-            <div v-if="error" class="login__msg" :class="isPending ? 'is-warn' : 'is-err'">
-              <span class="login__msg-glyph">{{ isPending ? '⏳' : '!' }}</span>
-              <span>{{ error }}</span>
-            </div>
-
-            <div class="login__actions">
-              <TermButton type="submit" variant="primary" :loading="loading" :label="loading ? '驗證中' : '登入'" />
-              <TermButton variant="ghost" @click="openRegisterModal" label="註冊" />
-            </div>
-
-            <p class="login__hint">
-              <TermKbd>↵</TermKbd> 送出 · <TermKbd>Tab</TermKbd> 切換欄位 · <TermKbd>1</TermKbd>–<TermKbd>9</TermKbd> SSO 提供者
-            </p>
-          </form>
-        </TermBox>
-
-        <TermBox v-if="oidcProviders.length" title="認證 · 單一登入" pad="md">
-          <ul class="login__sso">
-            <li
-              v-for="(provider, i) in oidcProviders"
-              :key="provider.id"
-              class="login__sso-row"
-            >
-              <span class="login__sso-key">[{{ i + 1 }}]</span>
-              <span class="login__sso-name">{{ provider.name }}</span>
-              <span class="login__sso-meta">oidc · {{ provider.button_text || `${provider.name} 提供者` }}</span>
-              <button
-                type="button"
-                class="login__sso-btn"
-                :disabled="oidcLoadingId === provider.id"
-                @click="handleOidcLogin(provider)"
-              >
-                {{ oidcLoadingId === provider.id ? '導向中…' : '連線 →' }}
-              </button>
-            </li>
-          </ul>
-        </TermBox>
-
-        <!-- branch SSO: 中科院憑證卡登入 ------------------------------------ -->
-        <TermBox title="認證 · PKI 憑證卡" pad="md" hint="ncsist · 中科院憑證卡">
           <form class="login__form" @submit.prevent="handleCardLogin" autocomplete="off">
-            <p class="login__hint" style="margin: 0 0 var(--gap-2);">
-              請插入憑證卡，並確認本機元件運作中（<span style="font-family: var(--font-mono, monospace);">{{ cardComponentOrigin }}</span>）。
+            <p v-if="!detectedCard" class="login__card-lead">請插入自然人憑證卡</p>
+            <p class="login__card-note">
+              並確認本機元件運作中（<span style="font-family: var(--font-mono, monospace);">{{ cardComponentOrigin }}</span>）。
             </p>
 
             <!-- Step 1: 偵測卡片 — 在輸入 PIN 前讓使用者確認自己的卡片 -->
             <div v-if="!detectedCard" class="login__actions">
               <TermButton
                 type="button"
-                variant="ghost"
+                variant="primary"
                 :loading="detectLoading"
-                :label="detectLoading ? '偵測中' : '偵測卡片'"
+                :label="detectLoading ? '偵測中' : '偵測憑證卡'"
                 @click="handleDetectCard"
               />
             </div>
@@ -154,7 +92,79 @@
               />
             </div>
           </form>
-        </TermBox>
+        </section>
+
+        <!-- Secondary: 帳密 + OIDC 收合在「其他登入方式」下,降低視覺權重 --- -->
+        <details class="login__more">
+          <summary class="login__more-summary">其他登入方式</summary>
+
+          <div class="login__more-body">
+            <!-- 本地帳密登入 -------------------------------------------- -->
+            <div class="login__section">
+              <h3 class="login__section-title">帳號密碼登入</h3>
+              <form class="login__form" @submit.prevent="handleLogin" autocomplete="on">
+                <TermField label="帳號">
+                  <input
+                    v-model="username"
+                    type="text"
+                    class="term-input"
+                    placeholder="輸入帳號"
+                    autocomplete="username"
+                    required
+                  />
+                </TermField>
+                <TermField label="密碼">
+                  <input
+                    v-model="password"
+                    type="password"
+                    class="term-input"
+                    placeholder="••••••••"
+                    autocomplete="current-password"
+                    required
+                  />
+                </TermField>
+
+                <div v-if="error" class="login__msg" :class="isPending ? 'is-warn' : 'is-err'">
+                  <span class="login__msg-glyph">{{ isPending ? '⏳' : '!' }}</span>
+                  <span>{{ error }}</span>
+                </div>
+
+                <div class="login__actions">
+                  <TermButton type="submit" variant="primary" :loading="loading" :label="loading ? '驗證中' : '登入'" />
+                  <TermButton variant="ghost" @click="openRegisterModal" label="註冊" />
+                </div>
+
+                <p class="login__hint">
+                  <TermKbd>↵</TermKbd> 送出 · <TermKbd>Tab</TermKbd> 切換欄位 · <TermKbd>1</TermKbd>–<TermKbd>9</TermKbd> 單一登入提供者
+                </p>
+              </form>
+            </div>
+
+            <!-- 單一登入 (OIDC) ----------------------------------------- -->
+            <div v-if="oidcProviders.length" class="login__section">
+              <h3 class="login__section-title">單一登入（SSO）</h3>
+              <ul class="login__sso">
+                <li
+                  v-for="(provider, i) in oidcProviders"
+                  :key="provider.id"
+                  class="login__sso-row"
+                >
+                  <span class="login__sso-key">[{{ i + 1 }}]</span>
+                  <span class="login__sso-name">{{ provider.name }}</span>
+                  <span class="login__sso-meta">{{ provider.button_text || `${provider.name} 提供者` }}</span>
+                  <button
+                    type="button"
+                    class="login__sso-btn"
+                    :disabled="oidcLoadingId === provider.id"
+                    @click="handleOidcLogin(provider)"
+                  >
+                    {{ oidcLoadingId === provider.id ? '導向中…' : '連線 →' }}
+                  </button>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </details>
 
         <p class="login__legal">
           ANILA · CSP 控制平面 &nbsp;·&nbsp; 地端部署 &nbsp;·&nbsp; 存取需管理員核准
@@ -282,7 +292,6 @@ import {
 } from '../api/caAuth'
 import { useTheme } from '../composables/useTheme'
 import TermLogo from '../components/cli/TermLogo.vue'
-import TermBox from '../components/cli/TermBox.vue'
 import TermButton from '../components/cli/TermButton.vue'
 import TermField from '../components/cli/TermField.vue'
 import TermKbd from '../components/cli/TermKbd.vue'
@@ -350,16 +359,6 @@ const regError = ref('')
 const regSuccess = ref('')
 const reg = ref({ username: '', email: '', password: '' })
 
-// Stable boot sequence — purely cosmetic but reinforces the terminal frame.
-// Timestamps anchored to load to feel real instead of random.
-const bootLines = ref([])
-const t0 = Date.now()
-function ts(offsetMs) {
-  const d = new Date(t0 + offsetMs)
-  const pad = (n) => String(n).padStart(2, '0')
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-}
-
 const SPECIAL_CHARS = '!@#$%^&*()_+-=[]{}|;:,.<>?/~`"\'\\'
 function hasSpecial(str) { return [...str].some(c => SPECIAL_CHARS.includes(c)) }
 
@@ -383,13 +382,6 @@ async function fetchProviders() {
   } catch {
     providers.value = []
   }
-  // Patch the boot log with whatever the providers tell us is wired up.
-  bootLines.value = [
-    { ts: ts(0),   lvl: 'info', msg: 'ANILA · CSP control plane — booting tty/0' },
-    { ts: ts(40),  lvl: 'info', msg: 'loading auth providers...' },
-    { ts: ts(120), lvl: 'ok',   msg: `${providers.value.length} provider(s) registered` },
-    { ts: ts(180), lvl: 'info', msg: 'awaiting credentials' },
-  ]
 }
 
 onMounted(() => {
@@ -589,9 +581,6 @@ async function handleRegister() {
   font-size: var(--t-xs);
   color: var(--c-fg-2);
 }
-.login__topbar-rule { color: var(--c-border-strong); }
-.login__topbar-path { color: var(--c-fg-3); }
-.login__topbar-path .term-caret { vertical-align: -0.05em; }
 .login__topbar-spacer { flex: 1; }
 .login__theme {
   background: transparent;
@@ -611,47 +600,69 @@ async function handleRegister() {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: var(--gap-6);
+  padding: var(--gap-8) var(--gap-6);
 }
 
 .login__panel {
   width: 100%;
-  max-width: 520px;
+  max-width: 460px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-6);
+}
+
+/* Page hero title --------------------------------------------------------- */
+.login__hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--gap-2);
+  text-align: center;
+}
+.login__title {
+  font-family: var(--font-sans);
+  font-size: var(--t-3xl);
+  font-weight: 600;
+  color: var(--c-fg-1);
+  letter-spacing: var(--tracking-tight);
+  margin: 0;
+}
+.login__subtitle {
+  font-size: var(--t-sm);
+  color: var(--c-fg-3);
+  margin: 0;
+}
+
+/* Card login = primary hero card ------------------------------------------ */
+.login__card {
+  background: var(--c-surface-1);
+  border: var(--border-w) solid var(--c-border);
+  border-top: var(--border-w-strong) solid var(--c-accent);
+  border-radius: var(--r-md);
+  padding: var(--gap-6);
   display: flex;
   flex-direction: column;
   gap: var(--gap-4);
 }
-
-.bootlog {
-  list-style: none;
+.login__card-title {
+  font-family: var(--font-sans);
+  font-size: var(--t-xl);
+  font-weight: 600;
+  color: var(--c-accent-strong);
+  letter-spacing: var(--tracking-tight);
   margin: 0;
-  padding: 0 0 var(--gap-2);
+}
+.login__card-lead {
+  font-size: var(--t-md);
+  color: var(--c-fg-1);
+  margin: 0;
+}
+.login__card-note {
   font-size: var(--t-2xs);
   color: var(--c-fg-3);
-  border-bottom: var(--border-w) dashed var(--c-border);
+  margin: 0;
+  line-height: var(--lh-base);
 }
-.bootlog__line {
-  display: flex;
-  gap: var(--gap-2);
-  padding: 1px 0;
-  opacity: 0;
-  animation: boot-fade 220ms var(--easing) forwards;
-}
-@keyframes boot-fade {
-  from { opacity: 0; transform: translateY(2px); }
-  to   { opacity: 1; transform: none; }
-}
-.bootlog__ts { color: var(--c-fg-mute); font-variant-numeric: tabular-nums; }
-.bootlog__lvl {
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  width: 32px;
-  flex-shrink: 0;
-}
-.bootlog__lvl.is-info { color: var(--c-info); }
-.bootlog__lvl.is-ok   { color: var(--c-ok); }
-.bootlog__lvl.is-warn { color: var(--c-warn); }
-.bootlog__lvl.is-err  { color: var(--c-danger); }
 
 .login__form {
   display: flex;
@@ -679,11 +690,57 @@ async function handleRegister() {
   font-size: var(--t-xs);
   padding: var(--gap-2) var(--gap-3);
   border: var(--border-w) solid;
+  border-radius: var(--r-soft);
 }
 .login__msg.is-err  { color: var(--c-danger); border-color: var(--c-danger); background: var(--c-danger-soft); }
 .login__msg.is-warn { color: var(--c-warn);   border-color: var(--c-warn);   background: var(--c-warn-soft); }
 .login__msg.is-ok   { color: var(--c-ok);     border-color: var(--c-ok);     background: var(--c-ok-soft); }
 .login__msg-glyph { font-weight: 600; }
+
+/* Secondary: 「其他登入方式」收合區 --------------------------------------- */
+.login__more {
+  border: 0;
+}
+.login__more-summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: var(--gap-3);
+  color: var(--c-fg-3);
+  font-size: var(--t-sm);
+  padding: var(--gap-1) 0;
+  user-select: none;
+}
+.login__more-summary::-webkit-details-marker { display: none; }
+.login__more-summary::before,
+.login__more-summary::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--c-border);
+}
+.login__more-summary:hover { color: var(--c-accent); }
+.login__more[open] .login__more-summary { margin-bottom: var(--gap-4); }
+
+.login__more-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-5);
+}
+.login__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-3);
+}
+.login__section-title {
+  font-size: var(--t-2xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+  color: var(--c-fg-3);
+  font-weight: 600;
+  margin: 0;
+}
 
 .login__sso {
   list-style: none;
@@ -698,7 +755,7 @@ async function handleRegister() {
   align-items: center;
   gap: var(--gap-3);
   padding: var(--gap-2) 0;
-  border-top: var(--border-w) dashed var(--c-border);
+  border-top: var(--border-w) solid var(--c-border);
   font-size: var(--t-sm);
 }
 .login__sso-row:first-child { border-top: 0; }

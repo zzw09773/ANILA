@@ -2,7 +2,6 @@
   <div class="page">
     <header class="page-head">
       <div>
-        <p class="page-head__eyebrow">admin · access</p>
         <h1 class="page-head__title">服務存取</h1>
         <p class="page-head__sub">platform_links 的個別使用者 / 部門授權 · multi-service-integration §7.5.3</p>
       </div>
@@ -219,7 +218,6 @@ async function handleRevoke(g) {
 
 <style scoped>
 .page { display: flex; flex-direction: column; gap: var(--gap-4); padding-bottom: var(--gap-8); }
-.page-head__eyebrow { font-size: var(--t-2xs); letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--c-fg-3); }
 .page-head__title { font-size: var(--t-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin: 4px 0 2px; }
 .page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }
 

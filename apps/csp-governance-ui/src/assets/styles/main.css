@@ -4,11 +4,13 @@
 @tailwind components;
 @tailwind utilities;
 
-/* JetBrains Mono is NOT @imported from a CDN — the air-gapped intranet's
-   nginx CSP (style-src/font-src 'self') blocks it, producing a console
-   violation + dead request on every load. The --font-mono stack in
-   tokens.css leads with ui-monospace so the TUI degrades cleanly to the
-   OS monospace, consistent with ANILA UI / ANILALM. */
+/* No webfont @import — the air-gapped intranet's nginx CSP
+   (style-src/font-src 'self') blocks CDN fonts, producing a console
+   violation + dead request on every load. Both --font-sans and --font-mono
+   in tokens.css are pure system stacks (Segoe UI / 微軟正黑 for sans,
+   ui-monospace for data), so the console degrades cleanly with no download.
+   Redesign (Fable, 2026-07-02): interface reads sans; --font-mono is opt-in
+   for data (IDs/tokens/timestamps/numbers/code) via the `.mono` utility. */
 
 @layer base {
   html,
@@ -20,7 +22,7 @@
   }
 
   body {
-    font-family: var(--font-mono);
+    font-family: var(--font-sans);
     font-feature-settings: var(--font-feat);
     font-size: var(--t-base);
     line-height: var(--lh-base);
@@ -76,9 +78,9 @@
     outline-offset: 1px;
   }
 
-  /* Heading defaults — keep monospace, suppress browser bold to control weight */
+  /* Heading defaults — sans (institutional), suppress browser bold to control weight */
   h1, h2, h3, h4, h5, h6 {
-    font-family: var(--font-mono);
+    font-family: var(--font-sans);
     font-weight: 600;
     letter-spacing: var(--tracking-tight);
   }
@@ -106,7 +108,7 @@
   .term-box {
     background: var(--c-surface-1);
     border: var(--border-w) solid var(--c-border);
-    border-radius: var(--r-sharp);
+    border-radius: var(--r-md);
   }
   .term-box--inset {
     background: var(--c-bg);
@@ -168,7 +170,7 @@
     border: var(--border-w) solid var(--c-border-strong);
     border-radius: var(--r-soft);
     color: var(--c-fg-1);
-    font-family: var(--font-mono);
+    font-family: var(--font-sans);
     font-size: var(--t-base);
     transition: border-color var(--motion) var(--easing);
   }
@@ -210,7 +212,7 @@
     border: var(--border-w) solid var(--c-border-strong);
     border-radius: var(--r-soft);
     color: var(--c-fg-1);
-    font-family: var(--font-mono);
+    font-family: var(--font-sans);
     font-size: var(--t-sm);
     cursor: pointer;
     transition: background-color var(--motion-fast) var(--easing),
@@ -310,6 +312,7 @@
     border-bottom: 0;
   }
   .term-table .num {
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
     text-align: right;
   }
@@ -406,14 +409,6 @@
     color: var(--c-fg-3);
     font-size: var(--t-sm);
   }
-  .term-empty::before {
-    content: "── ";
-    color: var(--c-border-strong);
-  }
-  .term-empty::after {
-    content: " ──";
-    color: var(--c-border-strong);
-  }
 
   /* Caret blink — for headline use only */
   .term-caret {
@@ -434,6 +429,24 @@
 /* Util — tabular numerals (use sparingly to avoid breaking copy text) */
 .tnum {
   font-variant-numeric: tabular-nums;
+}
+
+/* Util — monospace for DATA contexts only: IDs / slugs / tokens / trace_id,
+   timestamps, numeric columns, code/CLI snippets, model & agent identifiers.
+   CJK falls back to the system CJK font either way, so mixing zh-TW copy with
+   Latin identifiers in a `.mono` span keeps the Chinese identical and only
+   monospaces the identifiers/digits. Body/labels/headings stay sans. */
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The dense secondary metadata line under table primaries (timestamps, IPs,
+   resource IDs, counts) reads as data — monospace its Latin/digits globally.
+   Views only declare color/size on `.cell-meta`, so this sets font-family
+   without fighting their scoped rules. */
+.cell-meta {
+  font-family: var(--font-mono);
 }
 
 /* Respect reduced-motion requests (vestibular safety / a11y). The TUI uses

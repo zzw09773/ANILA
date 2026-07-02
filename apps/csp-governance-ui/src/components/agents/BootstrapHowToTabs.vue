@@ -15,7 +15,7 @@
   is shown immediately after issue and clears with the secret-banner.
 -->
 <template>
-  <TermBox title="how to use this bootstrap token" inset hint="copy a snippet for your agent's language">
+  <TermBox title="如何使用這把 bootstrap token" inset hint="依你的 agent 語言複製程式片段">
     <nav class="how-to__tabs" role="tablist">
       <button
         v-for="t in tabs"

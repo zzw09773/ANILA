@@ -2,7 +2,6 @@
   <div class="page">
     <header class="page-head">
       <div>
-        <p class="page-head__eyebrow">developer · console</p>
         <h1 class="page-head__title">執行設定 · {{ agent?.name || agentId }}</h1>
         <p class="page-head__sub">
           各 agent 的工具權限 · 工作區上限 · 護欄 — 透過 30 秒輪詢即時套用，無需重啟。
@@ -587,7 +586,7 @@ onMounted(async () => {
 }
 .status-list dt {
   font-size: 11px;
-  color: var(--cli-fg-muted, #8b94a8);
+  color: var(--c-fg-3);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -604,17 +603,17 @@ onMounted(async () => {
 .guardrail-table th, .guardrail-table td {
   padding: 4px 6px;
   text-align: left;
-  border-bottom: 1px solid var(--cli-border, #2a2f3a);
+  border-bottom: 1px solid var(--c-border);
 }
 .guardrail-table th {
   font-weight: 500;
-  color: var(--cli-fg-muted, #8b94a8);
+  color: var(--c-fg-3);
   text-transform: uppercase;
   font-size: 10px;
   letter-spacing: 0.05em;
 }
 .term-input.mono {
-  font-family: var(--cli-font-mono, monospace);
+  font-family: var(--font-mono);
   font-size: 11px;
 }
 .row-actions {
@@ -637,7 +636,7 @@ onMounted(async () => {
   gap: 8px;
   padding: 8px;
   border: 1px solid var(--c-border);
-  border-radius: var(--radius, 6px);
+  border-radius: var(--r-md);
 }
 .prompt-row__label {
   font-weight: 600;
@@ -656,27 +655,27 @@ onMounted(async () => {
 }
 .term-action {
   background: transparent;
-  border: 1px solid var(--cli-border, #2a2f3a);
-  color: var(--cli-fg, #e6edf3);
+  border: 1px solid var(--c-border);
+  color: var(--c-fg-1);
   padding: 4px 10px;
   font-size: 12px;
   border-radius: 3px;
   cursor: pointer;
 }
 .term-action.danger {
-  color: var(--cli-danger, #f85149);
+  color: var(--c-danger);
 }
 .term-action:hover {
-  background: var(--cli-bg-subtle, #2a2f3a);
+  background: var(--c-surface-2);
 }
 .json-preview {
   margin: 0;
   padding: 8px 10px;
-  font-family: var(--cli-font-mono, monospace);
+  font-family: var(--font-mono);
   font-size: 11px;
-  background: var(--cli-bg, #0e1116);
-  color: var(--cli-fg, #e6edf3);
-  border-radius: 3px;
+  background: var(--c-surface-2);
+  color: var(--c-fg-1);
+  border-radius: var(--r-soft);
   white-space: pre-wrap;
   max-height: 300px;
   overflow: auto;
@@ -691,11 +690,11 @@ onMounted(async () => {
   align-items: center;
 }
 .feedback.is-ok {
-  background: rgba(46, 160, 67, 0.1);
-  color: var(--cli-success, #2ea043);
+  background: var(--c-ok-soft);
+  color: var(--c-ok);
 }
 .feedback.is-err {
-  background: rgba(248, 81, 73, 0.1);
-  color: var(--cli-danger, #f85149);
+  background: var(--c-danger-soft);
+  color: var(--c-danger);
 }
 </style>

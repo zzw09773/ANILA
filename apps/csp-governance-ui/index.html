@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-TW" data-theme="dark">
+<html lang="zh-TW" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -10,7 +10,9 @@
          monospace (see tokens.css). -->
     <!--
       Resolve the user's chosen theme synchronously before Vue mounts so the
-      first paint is already correct (no light → dark flash on a stored 'light').
+      first paint is already correct (no dark → light flash on the light default).
+      Light-first: honour a stored pref, else only a dark OS preference flips to
+      dark; otherwise light. Mirrors readInitial() in composables/useTheme.js.
     -->
     <script>
       (function () {
@@ -18,7 +20,7 @@
           var stored = window.localStorage.getItem('anila.theme');
           var theme = stored === 'light' || stored === 'dark'
             ? stored
-            : (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+            : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
           document.documentElement.setAttribute('data-theme', theme);
         } catch (_) {
           // localStorage may be blocked — fall back to default attribute on <html>.

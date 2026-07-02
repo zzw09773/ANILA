@@ -2,8 +2,7 @@
   <div class="page">
     <header class="page__head">
       <div>
-        <p class="page__eyebrow">control plane &nbsp;·&nbsp; overview</p>
-        <h1 class="page__title">儀表板<span class="term-caret" aria-hidden="true" /></h1>
+        <h1 class="page__title">儀表板</h1>
       </div>
       <div class="page__head-meta">
         <span class="term-label">window</span>
@@ -24,7 +23,7 @@
 
     <!-- Chart + side meta ---------------------------------------------- -->
     <section class="dash-grid">
-      <TermBox title="用量 · 吞吐 · 24h" hint="per model · ts in local tz" pad="md">
+      <TermBox title="用量 · 吞吐 · 24h" hint="依模型 · 當地時區" pad="md">
         <UsageLineChart :chart-data="chartData" :height="280" />
       </TermBox>
 
@@ -62,7 +61,7 @@
     <section v-if="authStore.isAdmin" class="dash-grid">
       <!-- legacy-token cutover progress widget -->
       <TermBox
-        title="cutover · legacy service-token"
+        title="汰換 · 舊版 service token"
         :hint="legacyTokenHint"
         :tone="legacyTokenStats?.count_24h ? 'warn' : ''"
         pad="md"
@@ -88,7 +87,7 @@
       </TermBox>
 
       <!-- top-5 agents over the last 30 days -->
-      <TermBox title="熱門 · Agent · 30d" hint="caller-attributed token spend" pad="none" flush>
+      <TermBox title="熱門 · Agent · 30d" hint="依呼叫端歸屬 token 用量" pad="none" flush>
         <table class="term-table">
           <thead>
             <tr>
@@ -157,7 +156,7 @@ const topAgents = ref([])
 const legacyTokenHint = computed(() => {
   if (!legacyTokenStats.value) return ''
   const c = legacyTokenStats.value.count_24h
-  return c === 0 ? 'no fallback hits in 24h' : `${c} fallback hit${c === 1 ? '' : 's'} in 24h`
+  return c === 0 ? '24 小時內無舊 token 回退' : `24 小時內 ${c} 次舊 token 回退`
 })
 
 function formatNum(n) {
@@ -233,13 +232,6 @@ onMounted(refresh)
   justify-content: space-between;
   gap: var(--gap-3);
   flex-wrap: wrap;
-}
-.page__eyebrow {
-  font-size: var(--t-2xs);
-  letter-spacing: var(--tracking-caps);
-  text-transform: uppercase;
-  color: var(--c-fg-3);
-  margin-bottom: 4px;
 }
 .page__title {
   font-size: var(--t-2xl);

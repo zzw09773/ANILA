@@ -2,8 +2,8 @@
   <div class="usage-chart" :style="{ height: height + 'px' }">
     <div ref="chartRef" class="usage-chart__canvas" />
     <div v-if="isEmpty" class="usage-chart__empty">
-      <span>── no usage data ──</span>
-      <small>chart updates after the first proxied request lands.</small>
+      <span>尚無用量資料</span>
+      <small>第一筆代理請求送達後，圖表隨即更新。</small>
     </div>
   </div>
 </template>
@@ -59,21 +59,21 @@ function readPalette() {
   const v = (name, fb) => (css.getPropertyValue(name).trim() || fb)
   return {
     series: [
-      v('--chart-1', '#7fd99b'),
-      v('--chart-2', '#6cb6ff'),
-      v('--chart-3', '#e0a458'),
-      v('--chart-4', '#c79bff'),
-      v('--chart-5', '#ec6f7c'),
-      v('--chart-6', '#4dd0c0'),
+      v('--chart-1', '#2b4c7e'),
+      v('--chart-2', '#2b6cb0'),
+      v('--chart-3', '#b7791f'),
+      v('--chart-4', '#6b46c1'),
+      v('--chart-5', '#b03636'),
+      v('--chart-6', '#2f855a'),
     ],
-    fg1: v('--c-fg-1', '#d8dee8'),
-    fg2: v('--c-fg-2', '#9aa4b6'),
-    fg3: v('--c-fg-3', '#66708a'),
-    grid: v('--chart-grid', '#1f2530'),
-    axis: v('--chart-axis', '#66708a'),
-    surface: v('--c-surface-1', '#11151c'),
-    border: v('--c-border', '#1f2530'),
-    mono: v('--font-mono', '"JetBrains Mono", monospace'),
+    fg1: v('--c-fg-1', '#1b2230'),
+    fg2: v('--c-fg-2', '#48505f'),
+    fg3: v('--c-fg-3', '#6b7484'),
+    grid: v('--chart-grid', '#e2e7ee'),
+    axis: v('--chart-axis', '#6b7484'),
+    surface: v('--c-surface-1', '#ffffff'),
+    border: v('--c-border', '#dfe3ea'),
+    mono: v('--font-mono', 'ui-monospace, monospace'),
   }
 }
 
@@ -112,7 +112,7 @@ function renderChart() {
       borderColor: p.border,
       borderWidth: 1,
       textStyle: { color: p.fg1, fontFamily: p.mono, fontSize: 11 },
-      extraCssText: 'border-radius: 0; box-shadow: none;',
+      extraCssText: 'border-radius: 6px; box-shadow: none;',
       axisPointer: { lineStyle: { color: p.axis, type: 'dashed' } },
     },
     legend: {

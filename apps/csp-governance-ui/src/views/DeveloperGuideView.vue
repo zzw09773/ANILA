@@ -2,7 +2,6 @@
   <div class="page">
     <header class="page-head">
       <div>
-        <p class="page-head__eyebrow">developer · guide</p>
         <h1 class="page-head__title">打造 ANILA agent</h1>
         <p class="page-head__sub">
           在 MLSteam 開發 anila-agent · 模型走 CSP 真實 URL → 產 system prompt → port forward → 註冊 → app.py
@@ -248,7 +247,6 @@ async function saveAsPreset() {
 <style scoped>
 .page { display: flex; flex-direction: column; gap: var(--gap-4); }
 .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--gap-4); }
-.page-head__eyebrow { color: var(--c-fg-mute); font-size: var(--t-xs); text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 4px; }
 .page-head__title { font-size: var(--t-xl); font-weight: 500; color: var(--c-fg-1); margin: 0 0 4px; }
 .page-head__sub { color: var(--c-fg-2); font-size: var(--t-sm); margin: 0; }
 

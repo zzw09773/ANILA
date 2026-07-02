@@ -2,7 +2,6 @@
   <div class="page">
     <header class="page-head">
       <div>
-        <p class="page-head__eyebrow">control plane · credentials</p>
         <h1 class="page-head__title">API 金鑰</h1>
         <p class="page-head__sub">
           資料層 <code class="page-head__code">/v1/*</code> 使用的 OpenAI 相容 bearer 金鑰
@@ -288,12 +287,6 @@ function formatDate(dateStr) {
   align-items: flex-end;
   gap: var(--gap-3);
   flex-wrap: wrap;
-}
-.page-head__eyebrow {
-  font-size: var(--t-2xs);
-  letter-spacing: var(--tracking-caps);
-  text-transform: uppercase;
-  color: var(--c-fg-3);
 }
 .page-head__title {
   font-size: var(--t-2xl);

@@ -2,7 +2,6 @@
   <div class="page">
     <header class="page-head">
       <div>
-        <p class="page-head__eyebrow">developer · console</p>
         <h1 class="page-head__title">Agent</h1>
         <p class="page-head__sub">
           {{ authStore.isAdmin ? '審查並治理每個已註冊的 Agent' : '管理你的 Agent · 下載樣板 · 上線到 router' }}
@@ -1311,7 +1310,6 @@ function buildStatusHistory(agent) {
 <style scoped>
 .page { display: flex; flex-direction: column; gap: var(--gap-4); padding-bottom: var(--gap-8); }
 .page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--gap-3); flex-wrap: wrap; }
-.page-head__eyebrow { font-size: var(--t-2xs); letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--c-fg-3); }
 .page-head__title { font-size: var(--t-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin: 4px 0 2px; }
 .page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); }
 .page-head__actions { display: inline-flex; gap: var(--gap-2); }
@@ -1444,7 +1442,7 @@ function buildStatusHistory(agent) {
 /* Sprint 8 X / Phase A — service-token banner + table */
 .secret-banner {
   border: 1px solid var(--c-accent);
-  background: var(--c-bg-elev-1, rgba(255,255,255,0.04));
+  background: var(--c-surface-2);
   padding: 8px 10px;
   margin: 8px 0 12px;
   font-size: var(--t-2xs);
@@ -1493,7 +1491,7 @@ function buildStatusHistory(agent) {
 .cred-table tr.is-revoked td { opacity: 0.5; }
 
 .env-snippet {
-  background: var(--c-bg-1, #000);
+  background: var(--c-surface-2);
   border: 1px solid var(--c-divider);
   border-radius: var(--r-sharp);
   padding: 8px 10px;

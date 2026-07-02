@@ -2,7 +2,6 @@
   <div class="page">
     <header class="page-head">
       <div>
-        <p class="page-head__eyebrow">admin · console</p>
         <h1 class="page-head__title">公告 banner</h1>
         <p class="page-head__sub">
           張貼維護 / 資安 / 規範公告 — 顯示在所有使用者的 ANILA 對話介面頂部。純文字，不執行程式碼。

@@ -3,12 +3,13 @@ import { ref, watch } from 'vue'
 const STORAGE_KEY = 'anila.theme'
 
 function readInitial() {
-  if (typeof window === 'undefined') return 'dark'
+  if (typeof window === 'undefined') return 'light'
   const stored = window.localStorage?.getItem(STORAGE_KEY)
   if (stored === 'dark' || stored === 'light') return stored
-  // Mirror what the inline pre-mount script did in index.html.
-  if (window.matchMedia?.('(prefers-color-scheme: light)').matches) return 'light'
-  return 'dark'
+  // Light-first (institutional default, matches tokens.css :root = light).
+  // Only honour a dark OS preference. Mirror the inline pre-mount script.
+  if (window.matchMedia?.('(prefers-color-scheme: dark)').matches) return 'dark'
+  return 'light'
 }
 
 const theme = ref(readInitial())

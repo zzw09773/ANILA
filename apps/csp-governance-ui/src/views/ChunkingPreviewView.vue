@@ -575,14 +575,14 @@ function overlapDescription(entry) {
 .chunk__content {
   margin: 0; font-family: var(--font-mono); font-size: var(--t-3xs);
   white-space: pre-wrap; word-break: break-word;
-  background: var(--c-bg-1, #000); padding: 6px 8px;
+  background: var(--c-surface-2); padding: 6px 8px;
   max-height: 180px; overflow-y: auto;
 }
 
 .overlap-line {
   margin: var(--gap-1) 0 0;
   padding: 4px 8px;
-  background: var(--c-bg-elev-1, rgba(255,255,255,0.03));
+  background: var(--c-surface-2);
   border-left: 2px solid var(--c-divider);
   font-size: var(--t-3xs);
 }
@@ -624,7 +624,7 @@ function overlapDescription(entry) {
 .bar-row__count { color: var(--c-fg-2); text-align: right; }
 .bar {
   position: relative; height: 18px;
-  background: var(--c-bg-1, #000);
+  background: var(--c-surface-2);
   border: 1px solid var(--c-divider);
 }
 .bar__tick {
@@ -647,7 +647,7 @@ function overlapDescription(entry) {
 .head2head__content {
   margin: 0; font-family: var(--font-mono); font-size: var(--t-3xs);
   white-space: pre-wrap; word-break: break-word;
-  background: var(--c-bg-1, #000); padding: 6px 8px;
+  background: var(--c-surface-2); padding: 6px 8px;
   max-height: 140px; overflow-y: auto; line-height: 1.5;
 }
 </style>

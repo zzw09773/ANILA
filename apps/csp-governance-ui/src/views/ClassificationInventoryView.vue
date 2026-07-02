@@ -2,7 +2,6 @@
   <div class="page">
     <header class="page-head">
       <div>
-        <p class="page-head__eyebrow">admin · classification</p>
         <h1 class="page-head__title">分類盤點</h1>
         <p class="page-head__sub">
           切換五級分類前的資源盤點快照。「不一致」= 舊 latch 為真但等級仍低於「機密」,
@@ -114,7 +113,6 @@ onMounted(fetchInventory)
 <style scoped>
 .page { display: flex; flex-direction: column; gap: var(--gap-4); padding-bottom: var(--gap-8); }
 .page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--gap-3); flex-wrap: wrap; }
-.page-head__eyebrow { font-size: var(--t-2xs); letter-spacing: var(--tracking-caps); text-transform: uppercase; color: var(--c-fg-3); }
 .page-head__title { font-size: var(--t-2xl); font-weight: 600; letter-spacing: var(--tracking-tight); margin: 4px 0 2px; }
 .page-head__sub { font-size: var(--t-xs); color: var(--c-fg-3); max-width: 64ch; }
 
