@@ -60,6 +60,10 @@ export async function streamChatCompletion({
   url,
   payload,
   conversationId,
+  // Slice 2b-D 最小 Task 流:對話已綁 Task 時每次 /v1 chat 呼叫都帶
+  // X-ANILA-Task-Id,讓 CSP 把這次派發掛回同一個 Task。null/undefined
+  // (任務建立失敗的降級模式)則完全不送此標頭。
+  taskId,
   onText,
   onTrace,
   onMeta,
@@ -99,6 +103,9 @@ export async function streamChatCompletion({
   // it doesn't get forwarded into the OpenAI-compat downstream body.
   if (typeof conversationId === "number") {
     headers["X-ANILA-Conversation-Id"] = String(conversationId);
+  }
+  if (taskId !== undefined && taskId !== null && taskId !== "") {
+    headers["X-ANILA-Task-Id"] = String(taskId);
   }
   const response = await fetch(url, {
     method: "POST",

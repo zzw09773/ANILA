@@ -18,6 +18,7 @@ import React, {
 import { config, readCsrfCookie } from "./runtime/api.js";
 import { useAuth, useLogoutRedirect } from "./runtime/auth.jsx";
 import { streamChatCompletion } from "./runtime/sse.js";
+import { createTaskForConversation } from "./runtime/tasks.js";
 import {
   appendClassifiedTag,
   computeConversationClassified,
@@ -422,6 +423,13 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     catch { return false; }
   });
 
+  // Slice 2b-D 最小 Task 流:taskId 快取在 conversation state 上(與
+  // conversationId / agent 選擇同一份資料),串流期間不會消失。查無 = null
+  // (任務建立失敗的降級模式 → 後續 /v1 呼叫不帶 X-ANILA-Task-Id)。
+  function taskIdForConv(convId) {
+    return conversations.find((c) => c.id === convId)?.taskId ?? null;
+  }
+
   // Stop generation:每個進行中的串流對應一個 AbortController,以 convId 為鍵。
   // streamWithAbort 包住串流呼叫管理生命週期;stopStreaming 中止指定對話。
   const streamAbortRef = useRef(new Map());
@@ -429,7 +437,13 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     const controller = new AbortController();
     streamAbortRef.current.set(convId, controller);
     try {
-      return await streamChatCompletion({ ...opts, signal: controller.signal });
+      return await streamChatCompletion({
+        // 對話已綁 Task 時所有後續 chat 呼叫(送出/編輯/重試)自動帶上;
+        // 呼叫端可用 opts.taskId 覆寫(sendMessage 首回合的 state 尚未落地)。
+        taskId: taskIdForConv(convId),
+        ...opts,
+        signal: controller.signal,
+      });
     } finally {
       streamAbortRef.current.delete(convId);
     }
@@ -1144,6 +1158,21 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
     const convId = await ensureConversation(text, effectiveTarget);
     updateConversationAgent(convId, effectiveTarget);
 
+    // Slice 2b-D 最小 Task 流(doc 00 §3:提出任務→建立 Task→派發):對話
+    // 還沒綁 Task 時先建立一個(標題 = 首句前段),成功後快取到 conversation
+    // state;失敗回 null → 靜默降級,聊天照常、只是不帶 Task 標頭。
+    let taskId = taskIdForConv(convId);
+    if (taskId == null) {
+      const task = await createTaskForConversation({
+        title: text,
+        conversationId: typeof convId === "number" ? convId : undefined,
+      });
+      if (task) {
+        taskId = task.taskId;
+        updateConv(convId, { taskId: task.taskId, taskTraceId: task.traceId });
+      }
+    }
+
     const userMsg = {
       id: makeId("u"),
       role: "user",
@@ -1197,6 +1226,9 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         url: `${baseUrl}/v1/chat/completions`,
         payload,
         conversationId: typeof convId === "number" ? convId : undefined,
+        // 首回合 taskId 剛建立、state 還沒落地,顯式覆寫 streamWithAbort
+        // 的 state 查找;null(建立失敗)= 不送標頭。
+        taskId,
         onText: (acc) => {
           finalText = acc;
           updateMsg(convId, assistantId, { text: acc });
@@ -1348,6 +1380,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         url: `${baseUrl}/v1/chat/completions`,
         payload,
         conversationId: typeof convId === "number" ? convId : undefined,
+        taskId: taskIdForConv(convId),
         signal: controller.signal,
         onText: (acc) => {
           appended = acc;
