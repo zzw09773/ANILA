@@ -94,3 +94,106 @@ class TestRegisterHTTP:
 
         assert exc.value.code == 1
         assert "duplicate name" in capsys.readouterr().err
+
+
+class TestRegisterFlags:
+    """Slice 5c — runtime_type / classification_ceiling / version / draft."""
+
+    def test_runtime_type_values_are_the_five_doc05_values(self):
+        assert register_cmd._RUNTIME_TYPES == (
+            "anila_agent",
+            "langchain",
+            "openwebui_pipe_compatible",
+            "openai_compatible_agent",
+            "custom_http",
+        )
+
+    def test_classification_ceilings_are_the_five_zh_tw_levels(self):
+        assert register_cmd._CLASSIFICATION_CEILINGS == (
+            "無機密",
+            "營業秘密",
+            "機密",
+            "極機密",
+            "絕對機密",
+        )
+
+    def test_validate_choice_accepts_valid(self):
+        assert register_cmd._validate_choice(
+            "custom_http", register_cmd._RUNTIME_TYPES, "--runtime-type"
+        ) == "custom_http"
+        assert register_cmd._validate_choice(
+            "機密", register_cmd._CLASSIFICATION_CEILINGS, "--classification-ceiling"
+        ) == "機密"
+
+    def test_validate_choice_rejects_invalid_runtime_type(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            register_cmd._validate_choice(
+                "django", register_cmd._RUNTIME_TYPES, "--runtime-type"
+            )
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "--runtime-type" in err
+        assert "custom_http" in err
+
+    def test_validate_choice_rejects_invalid_ceiling(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            register_cmd._validate_choice(
+                "top-secret", register_cmd._CLASSIFICATION_CEILINGS,
+                "--classification-ceiling",
+            )
+        assert exc.value.code == 1
+        assert "絕對機密" in capsys.readouterr().err
+
+    def test_register_payload_passthrough(self, monkeypatch: pytest.MonkeyPatch):
+        captured: dict = {}
+
+        def fake_post(url, json, headers, timeout):
+            captured.update(json)
+            return httpx.Response(
+                200,
+                json={"id": 3, "name": "risk-agent", "approval_status": "draft"},
+                request=httpx.Request("POST", url),
+            )
+
+        monkeypatch.setattr(httpx, "post", fake_post)
+        register_cmd._register(
+            "http://csp",
+            "jwt-token",
+            {
+                "name": "risk-agent",
+                "endpoint_url": "http://agent:9100",
+                "description_for_router": "desc",
+                "runtime_type": "custom_http",
+                "classification_ceiling": "機密",
+                "version": "1.0.0",
+                "draft": True,
+            },
+        )
+        assert captured["runtime_type"] == "custom_http"
+        assert captured["classification_ceiling"] == "機密"
+        assert captured["version"] == "1.0.0"
+        assert captured["draft"] is True
+
+    def test_register_omits_absent_metadata(self, monkeypatch: pytest.MonkeyPatch):
+        captured: dict = {}
+
+        def fake_post(url, json, headers, timeout):
+            captured.update(json)
+            return httpx.Response(
+                200,
+                json={"id": 4, "name": "plain", "approval_status": "pending"},
+                request=httpx.Request("POST", url),
+            )
+
+        monkeypatch.setattr(httpx, "post", fake_post)
+        register_cmd._register(
+            "http://csp",
+            "jwt-token",
+            {
+                "name": "plain",
+                "endpoint_url": "http://agent:9100",
+                "description_for_router": "desc",
+            },
+        )
+        for key in ("runtime_type", "classification_ceiling", "version", "draft"):
+            assert key not in captured

@@ -7,7 +7,6 @@ using a JWT login, and calls POST /api/agents/register.
 from __future__ import annotations
 
 import getpass
-import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -17,6 +16,36 @@ import yaml
 
 
 _ANILA_YAML = "anila.yaml"
+
+# doc-05 §3 runtime_type 的 5 個合法值。
+_RUNTIME_TYPES: tuple[str, ...] = (
+    "anila_agent",
+    "langchain",
+    "openwebui_pipe_compatible",
+    "openai_compatible_agent",
+    "custom_http",
+)
+
+# doc-08 五級分類（繁中值，classification_ceiling 用）。
+_CLASSIFICATION_CEILINGS: tuple[str, ...] = (
+    "無機密",
+    "營業秘密",
+    "機密",
+    "極機密",
+    "絕對機密",
+)
+
+
+def _validate_choice(value: str, allowed: tuple[str, ...], flag: str) -> str:
+    """Validate a flag value against a closed set; exit 1 with a clear message."""
+    if value not in allowed:
+        allowed_str = " / ".join(allowed)
+        print(
+            f"error: invalid {flag} '{value}'. Allowed: {allowed_str}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return value
 
 
 def run(args: list[str]) -> None:
@@ -46,9 +75,51 @@ def run(args: list[str]) -> None:
         default=_ANILA_YAML,
         help=f"Path to agent manifest file (default: {_ANILA_YAML}).",
     )
+    parser.add_argument(
+        "--runtime-type", metavar="TYPE",
+        default="",
+        help="Agent runtime type. One of: " + " / ".join(_RUNTIME_TYPES)
+             + ". Overrides anila.yaml runtime_type.",
+    )
+    parser.add_argument(
+        "--classification-ceiling", metavar="LEVEL",
+        default="",
+        help="Highest classification this agent may handle. One of: "
+             + " / ".join(_CLASSIFICATION_CEILINGS)
+             + ". Overrides anila.yaml classification_ceiling.",
+    )
+    parser.add_argument(
+        "--version", metavar="VER",
+        default="",
+        help="Agent version string (e.g. 1.0.0). Overrides anila.yaml version.",
+    )
+    parser.add_argument(
+        "--draft",
+        action="store_true",
+        help="Shadow registration: register as a draft (governance view only, "
+             "not yet usable for real tasks).",
+    )
     parsed = parser.parse_args(args)
 
     manifest = _load_manifest(parsed.manifest)
+
+    # New optional metadata (Slice 5c). Flag overrides manifest; both validated
+    # against their closed value sets before the payload is built.
+    runtime_type = parsed.runtime_type or manifest.get("runtime_type", "")
+    if runtime_type:
+        manifest["runtime_type"] = _validate_choice(
+            runtime_type, _RUNTIME_TYPES, "--runtime-type"
+        )
+    ceiling = parsed.classification_ceiling or manifest.get("classification_ceiling", "")
+    if ceiling:
+        manifest["classification_ceiling"] = _validate_choice(
+            ceiling, _CLASSIFICATION_CEILINGS, "--classification-ceiling"
+        )
+    version = parsed.version or manifest.get("version", "")
+    if version:
+        manifest["version"] = version
+    if parsed.draft:
+        manifest["draft"] = True
 
     csp_url = (parsed.csp or _env("CSP_BASE_URL") or "http://localhost:8000").rstrip("/")
     if not parsed.csp and not _env("CSP_BASE_URL"):
@@ -73,13 +144,13 @@ def run(args: list[str]) -> None:
     jwt_token = _login(csp_url, username, password)
     result = _register(csp_url, jwt_token, manifest)
 
-    print(f"\n✓ Agent registered successfully")
+    print("\n✓ Agent registered successfully")
     print(f"  ID              : {result['id']}")
     print(f"  Name            : {result['name']}")
     print(f"  Approval status : {result['approval_status']}")
-    print(f"\nNext: ask an admin to approve via CSP console or:")
+    print("\nNext: ask an admin to approve via CSP console or:")
     print(f"  curl -X POST {csp_url}/api/agents/{result['id']}/approve \\")
-    print(f"       -H 'Authorization: Bearer <ADMIN_JWT>'")
+    print("       -H 'Authorization: Bearer <ADMIN_JWT>'")
 
 
 def _load_manifest(path: str) -> dict[str, Any]:
@@ -134,6 +205,17 @@ def _register(csp_url: str, token: str, manifest: dict[str, Any]) -> dict[str, A
         payload["capabilities"] = manifest["capabilities"]
     if manifest.get("input_schema"):
         payload["input_schema"] = manifest["input_schema"]
+    # Slice 5c additive metadata. The CSP /register endpoint ignores keys it
+    # doesn't yet model (Pydantic BaseModel defaults to extra="ignore"), so
+    # sending these is forward-compatible until 5a formalizes the columns.
+    if manifest.get("runtime_type"):
+        payload["runtime_type"] = manifest["runtime_type"]
+    if manifest.get("classification_ceiling"):
+        payload["classification_ceiling"] = manifest["classification_ceiling"]
+    if manifest.get("version"):
+        payload["version"] = manifest["version"]
+    if manifest.get("draft"):
+        payload["draft"] = True
 
     try:
         resp = httpx.post(
