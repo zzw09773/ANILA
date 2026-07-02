@@ -64,6 +64,13 @@ router = APIRouter(prefix="/api/services", tags=["Service Registry"])
 _UNCLASSIFIED = _CL.UNCLASSIFIED.value
 _AUDIT_MAX_BYTES = 16 * 1024
 
+# R-SEC (ADR-0008): fields a per-service admin may NEVER edit, even when an
+# admin whitelists them in ``db_editable_fields``. ``service_client_id`` binds
+# the service's audit-write identity — a delegate self-binding would grant
+# themselves the audit-write channel (self-serving delegation), so this stays
+# admin-tier only regardless of the db_editable_fields whitelist.
+_ADMIN_ONLY_FIELDS = frozenset({"service_client_id"})
+
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -157,6 +164,8 @@ def create_service(
         healthcheck_url=data.get("healthcheck_url"),
         audit_callback_url=data.get("audit_callback_url"),
         trace_callback_url=data.get("trace_callback_url"),
+        # R-SEC (ADR-0008): admin-tier only — create_service is require_admin.
+        service_client_id=data.get("service_client_id"),
         classification_ceiling=(ceiling.value if hasattr(ceiling, "value") else ceiling),
         required_roles=data.get("required_roles") or [],
         is_public=data.get("is_public", False),
@@ -208,6 +217,17 @@ def update_service(
 
     update_data = request.model_dump(exclude_unset=True)
     if not admin_tier:
+        # R-SEC (ADR-0008): admin-only fields are off-limits to a per-service
+        # admin BEFORE the db_editable_fields whitelist is even consulted — so
+        # a delegate cannot self-bind their audit-write identity even if an
+        # admin mistakenly whitelisted service_client_id in db_editable_fields.
+        admin_only = _ADMIN_ONLY_FIELDS.intersection(update_data)
+        if admin_only:
+            raise HTTPException(
+                status_code=403,
+                detail="該服務管理員不可變更 audit-callback 綁定"
+                f"({sorted(admin_only)} 僅限系統管理員)",
+            )
         # Per-service admin may only edit whitelisted db_editable_fields.
         allowed = set(service.db_editable_fields or [])
         blocked = [f for f in update_data if f not in allowed]
@@ -415,6 +435,50 @@ def audit_callback(
         raise HTTPException(status_code=401, detail="整合金鑰無效")
 
     service = _service_or_404(db, service_id)
+
+    # R-SEC (ADR-0008): fail-closed client↔service binding. Authenticating a
+    # valid Service Client Token is NOT sufficient — the presented client must
+    # be the one bound to THIS service, else any integration-key holder could
+    # inject audit events for any service (cross-service audit-trail pollution).
+    if service.service_client_id is None:
+        log_audit_event(
+            db,
+            actor=None,
+            action="service.audit_callback",
+            resource_type="registered_service",
+            resource_id=service.id,
+            status="denied",
+            detail="拒絕 audit callback:服務尚未綁定 Service Client Token",
+            metadata={
+                "reason": "attempted_unbound_callback",
+                "presented_client_id": identity.service_client_id,
+            },
+            commit=True,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="此服務尚未綁定 Service Client Token,請先由管理員於服務註冊表綁定",
+        )
+    if service.service_client_id != identity.service_client_id:
+        log_audit_event(
+            db,
+            actor=None,
+            action="service.audit_callback",
+            resource_type="registered_service",
+            resource_id=service.id,
+            status="denied",
+            detail="拒絕 audit callback:presented Service Client Token 與服務綁定不符",
+            metadata={
+                "reason": "attempted_cross_service_callback",
+                "bound_client_id": service.service_client_id,
+                "presented_client_id": identity.service_client_id,
+            },
+            commit=True,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="整合金鑰與此服務的綁定不符",
+        )
 
     body = payload.model_dump(mode="json")
     if len(json.dumps(body, ensure_ascii=False).encode("utf-8")) > _AUDIT_MAX_BYTES:

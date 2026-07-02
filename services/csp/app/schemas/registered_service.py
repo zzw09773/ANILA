@@ -68,6 +68,8 @@ class RegisteredServiceCreate(BaseModel):
     healthcheck_url: str | None = None
     audit_callback_url: str | None = None
     trace_callback_url: str | None = None
+    # R-SEC (ADR-0008): audit-callback client binding. Admin-tier only.
+    service_client_id: int | None = None
     classification_ceiling: ClassificationLevel | None = None
     required_roles: list[str] = Field(default_factory=list)
     is_public: bool = False
@@ -116,6 +118,10 @@ class RegisteredServiceUpdate(BaseModel):
     healthcheck_url: str | None = None
     audit_callback_url: str | None = None
     trace_callback_url: str | None = None
+    # R-SEC (ADR-0008): audit-callback client binding. Admin-tier only — the
+    # API layer rejects a per-service admin who tries to set this even when it
+    # is whitelisted in ``db_editable_fields``.
+    service_client_id: int | None = None
     classification_ceiling: ClassificationLevel | None = None
     required_roles: list[str] | None = None
     is_public: bool | None = None
@@ -152,6 +158,7 @@ class RegisteredServiceResponse(BaseModel):
     healthcheck_url: str | None
     audit_callback_url: str | None
     trace_callback_url: str | None
+    service_client_id: int | None
     classification_ceiling: str | None
     required_roles: list[str]
     is_public: bool

@@ -101,6 +101,18 @@ class RegisteredService(Base):
     audit_callback_url = Column(String(500), nullable=True)
     trace_callback_url = Column(String(500), nullable=True)
 
+    # R-SEC (ADR-0008): the Service Client that owns this service's audit-write
+    # identity. The ``/audit-callbacks`` endpoint requires the presented Service
+    # Client Token to resolve to THIS client id (fail-closed: NULL → reject all
+    # callbacks). Admin-tier only — a per-service admin may NOT self-bind
+    # (binding grants audit-write identity; delegation must not self-serve).
+    service_client_id = Column(
+        Integer,
+        ForeignKey("service_clients.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     classification_ceiling = Column(String(20), nullable=True)
     required_roles = Column(_JSON_LIST, nullable=False, default=list)
     is_public = Column(

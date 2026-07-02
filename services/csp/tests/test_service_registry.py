@@ -352,8 +352,9 @@ class TestAuditCallback:
         return sc
 
     def test_valid_key_appends_row(self, client, db, monkeypatch):
-        self._setup(db, monkeypatch)
-        svc = _make_service(db)
+        sc = self._setup(db, monkeypatch)
+        # R-SEC (ADR-0008): the service must be bound to the presenting client.
+        svc = _make_service(db, service_client_id=sc.id)
         resp = client.post(
             f"/api/services/{svc.slug}/audit-callbacks",
             json={
@@ -393,8 +394,8 @@ class TestAuditCallback:
         assert resp.status_code == 422
 
     def test_oversized_payload_413(self, client, db, monkeypatch):
-        self._setup(db, monkeypatch)
-        svc = _make_service(db)
+        sc = self._setup(db, monkeypatch)
+        svc = _make_service(db, service_client_id=sc.id)  # bound → reaches size gate
         resp = client.post(
             f"/api/services/{svc.slug}/audit-callbacks",
             json={
@@ -404,6 +405,154 @@ class TestAuditCallback:
             headers={"Authorization": f"Bearer {self._GOOD}"},
         )
         assert resp.status_code == 413
+
+    # ── R-SEC (ADR-0008): fail-closed client↔service binding ─────────────────
+
+    def test_unbound_service_rejected_403(self, client, db, monkeypatch):
+        """A service with NULL binding rejects ALL callbacks — even with a
+        valid Service Client Token (fail-closed default-deny)."""
+        import json as _json
+
+        from app.models.service_launch import ServiceAuditCallback
+
+        self._setup(db, monkeypatch)
+        svc = _make_service(db)  # service_client_id is NULL → unbound
+        resp = client.post(
+            f"/api/services/{svc.slug}/audit-callbacks",
+            json={"event_type": "session.started"},
+            headers={"Authorization": f"Bearer {self._GOOD}"},
+        )
+        assert resp.status_code == 403, resp.text
+        assert "尚未綁定" in resp.json()["detail"]
+        # no callback row appended …
+        assert db.query(ServiceAuditCallback).count() == 0
+        # … and a denied audit row records the attempt.
+        audit = (
+            db.query(AuditLog)
+            .filter_by(action="service.audit_callback", status="denied")
+            .one()
+        )
+        assert _json.loads(audit.metadata_json)["reason"] == "attempted_unbound_callback"
+
+    def test_cross_service_mismatch_403(self, client, db, monkeypatch):
+        """A token valid for client A cannot post to a service bound to a
+        DIFFERENT client B (cross-service audit-trail pollution)."""
+        import json as _json
+
+        from app.models.service_launch import ServiceAuditCallback
+
+        sc_a = ServiceClient(
+            client_name="svc-a", client_type="worker",
+            service_token_envelope="enc::a", service_token_lookup_hash="a" * 64,
+            is_active=True,
+        )
+        sc_b = ServiceClient(
+            client_name="svc-b", client_type="worker",
+            service_token_envelope="enc::b", service_token_lookup_hash="b" * 64,
+            is_active=True,
+        )
+        db.add_all([sc_a, sc_b])
+        db.commit()
+        db.refresh(sc_a)
+        db.refresh(sc_b)
+
+        def _fake_verify(_db, *, token):
+            if token != "csk-token-A":
+                return None
+            return CallerIdentity(
+                kind="service_client", agent_id=None, service_client_id=sc_a.id,
+                credential_id=sc_a.id, is_legacy=False, used_previous_token=False,
+            )
+
+        monkeypatch.setattr(
+            agent_credential_service, "verify_service_token", _fake_verify
+        )
+        # service bound to B; caller presents A's token → mismatch.
+        svc = _make_service(db, service_client_id=sc_b.id)
+        resp = client.post(
+            f"/api/services/{svc.slug}/audit-callbacks",
+            json={"event_type": "session.started"},
+            headers={"Authorization": "Bearer csk-token-A"},
+        )
+        assert resp.status_code == 403, resp.text
+        assert db.query(ServiceAuditCallback).count() == 0
+        audit = (
+            db.query(AuditLog)
+            .filter_by(action="service.audit_callback", status="denied")
+            .one()
+        )
+        meta = _json.loads(audit.metadata_json)
+        assert meta["reason"] == "attempted_cross_service_callback"
+        assert meta["bound_client_id"] == sc_b.id
+        assert meta["presented_client_id"] == sc_a.id
+
+
+# ── R-SEC binding governance (ADR-0008): who may set the binding ─────────────
+
+
+class TestAuditCallbackBindingGovernance:
+    """Admin-tier owns the client↔service binding; a per-service admin may NOT
+    self-bind — binding grants audit-write identity, so delegation must not
+    self-serve (ADR-0008)."""
+
+    def _client_row(self, db, name="bind-target") -> ServiceClient:
+        sc = ServiceClient(
+            client_name=name,
+            client_type="worker",
+            service_token_envelope="enc::stub",
+            service_token_lookup_hash=(name[:1] * 64),
+            is_active=True,
+        )
+        db.add(sc)
+        db.commit()
+        db.refresh(sc)
+        return sc
+
+    def test_admin_can_set_binding(self, client, db):
+        headers = _auth_headers(client, db, username="root", role="admin")
+        sc = self._client_row(db)
+        svc = _make_service(db)
+        resp = client.put(
+            f"/api/services/{svc.slug}",
+            json={"service_client_id": sc.id},
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["service_client_id"] == sc.id
+        db.refresh(svc)
+        assert svc.service_client_id == sc.id
+
+    def test_admin_can_set_binding_at_create(self, client, db):
+        headers = _auth_headers(client, db, username="root", role="admin")
+        sc = self._client_row(db, name="c")
+        resp = client.post(
+            "/api/services",
+            json={"name": "bound-svc", "entry_url": "https://b.local",
+                  "service_client_id": sc.id},
+            headers=headers,
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["service_client_id"] == sc.id
+
+    def test_per_service_admin_cannot_set_binding(self, client, db):
+        deleg = make_user(db, username="deleg", role="user")
+        sc = self._client_row(db, name="d")
+        # Even with service_client_id whitelisted in db_editable_fields, the
+        # per-service admin is blocked (admin-only field takes precedence).
+        svc = _make_service(
+            db,
+            service_admin_user_ids=[deleg.id],
+            db_editable_fields=["service_client_id"],
+        )
+        token = login(client, username="deleg")
+        resp = client.put(
+            f"/api/services/{svc.slug}",
+            json={"service_client_id": sc.id},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 403, resp.text
+        db.refresh(svc)
+        assert svc.service_client_id is None  # binding unchanged
 
 
 # ── compat façade (/api/platform-links unchanged shape) ─────────────────────
