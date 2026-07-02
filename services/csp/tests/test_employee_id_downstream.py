@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 
 from app.services import proxy_service
+from app.services.proxy import service as proxy_impl
 from app.services.proxy_service import (
     build_agent_headers,
     build_model_gateway_headers,
@@ -167,7 +168,7 @@ class TestProxyStreamRoutingNeverLeaksToken:
         async def _fake_enqueue_usage(**kwargs):
             return None
 
-        monkeypatch.setattr(proxy_service, "enqueue_usage", _fake_enqueue_usage)
+        monkeypatch.setattr(proxy_impl, "enqueue_usage", _fake_enqueue_usage)
 
         async def _run():
             async for _ in proxy_service.proxy_stream(
@@ -265,7 +266,7 @@ class TestProxyRequestRoutingNeverLeaksToken:
         async def _fake_enqueue_usage(**kwargs):
             return None
 
-        monkeypatch.setattr(proxy_service, "enqueue_usage", _fake_enqueue_usage)
+        monkeypatch.setattr(proxy_impl, "enqueue_usage", _fake_enqueue_usage)
 
         async def _run():
             return await proxy_service.proxy_request(

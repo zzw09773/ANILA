@@ -7,6 +7,7 @@ import asyncio
 import pytest
 
 from app.services import proxy_service
+from app.services.proxy import service as proxy_impl
 
 
 @pytest.fixture(autouse=True)
@@ -68,7 +69,7 @@ def test_proxy_stream_estimates_usage_when_missing(monkeypatch):
     async def fake_enqueue_usage(**kwargs):
         recorded.append(kwargs)
 
-    monkeypatch.setattr(proxy_service, "enqueue_usage", fake_enqueue_usage)
+    monkeypatch.setattr(proxy_impl, "enqueue_usage", fake_enqueue_usage)
 
     async def run():
         chunks = []
@@ -117,7 +118,7 @@ def test_proxy_stream_estimates_usage_from_message_content(monkeypatch):
     async def fake_enqueue_usage(**kwargs):
         recorded.append(kwargs)
 
-    monkeypatch.setattr(proxy_service, "enqueue_usage", fake_enqueue_usage)
+    monkeypatch.setattr(proxy_impl, "enqueue_usage", fake_enqueue_usage)
 
     async def run():
         async for _chunk in proxy_service.proxy_stream(
@@ -160,7 +161,7 @@ def test_proxy_stream_prefers_upstream_usage(monkeypatch):
     async def fake_enqueue_usage(**kwargs):
         recorded.append(kwargs)
 
-    monkeypatch.setattr(proxy_service, "enqueue_usage", fake_enqueue_usage)
+    monkeypatch.setattr(proxy_impl, "enqueue_usage", fake_enqueue_usage)
 
     async def run():
         async for _chunk in proxy_service.proxy_stream(
@@ -218,7 +219,7 @@ def test_proxy_stream_preserves_custom_anila_events(monkeypatch):
     async def fake_enqueue_usage(**kwargs):
         return None
 
-    monkeypatch.setattr(proxy_service, "enqueue_usage", fake_enqueue_usage)
+    monkeypatch.setattr(proxy_impl, "enqueue_usage", fake_enqueue_usage)
 
     async def run():
         chunks = []
