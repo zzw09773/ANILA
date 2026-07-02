@@ -57,6 +57,13 @@ class Agent(Base):
     # When true, runtime must treat every conversation routed to this agent as
     # classified / encrypted. Set by admin in the control panel.
     requires_encryption = Column(Boolean, nullable=False, default=False, server_default="false")
+    # doc 08 §3 migration bridge(Slice 3a):requires_encryption=true 的
+    # agent backfill 為 機密(migration floor,最終等級以人工盤點為準,
+    # doc 08 §15)。task.level 傳遞公式的 selected_agent.default_level
+    # 來源(doc 08 §4);boolean 欄位保留為 compatibility read model。
+    default_classification_level = Column(
+        String(20), nullable=False, default="無機密", server_default="無機密"
+    )
     approved_by = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

@@ -69,6 +69,14 @@ class SourceSnapshot(Base):
     # 三規則之 3:max(來源分類);service 層計算,這裡只存結果。
     classification_level = Column(String(20), nullable=False,
                                   default="無機密", server_default="無機密")
+    # doc 08 §5 其餘三共通欄位(Slice 3a 補齊)。
+    classification_latched_at = Column(DateTime, nullable=True)
+    classification_source = Column(String(50), nullable=True)
+    classification_event_id = Column(
+        Integer,
+        ForeignKey("classification_events.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at = Column(DateTime, nullable=False, default=_utcnow)
 
     task = relationship("Task", back_populates="source_snapshots")

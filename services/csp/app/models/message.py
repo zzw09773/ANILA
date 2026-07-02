@@ -26,6 +26,17 @@ class Message(Base):
     metadata_ = Column("metadata", JSONValue, nullable=True)
     # User feedback on assistant messages ('up' / 'down' / None)
     rating = Column(String(8), nullable=True)
+    # ── 五級分類共通欄位(doc 08 §5,Slice 3a)────────────────────────────
+    classification_level = Column(
+        String(20), nullable=False, default="無機密", server_default="無機密"
+    )
+    classification_latched_at = Column(DateTime, nullable=True)
+    classification_source = Column(String(50), nullable=True)
+    classification_event_id = Column(
+        Integer,
+        ForeignKey("classification_events.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
     conversation = relationship("Conversation", back_populates="messages")

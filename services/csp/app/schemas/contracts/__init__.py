@@ -11,6 +11,16 @@ Task / Policy / Trace 契約。模組間交換資料一律透過契約型別,不
 - ``traces`` — TraceSpan 契約(doc 09 span event schema)
 """
 
-from app.schemas.contracts.classification import ClassificationLevel
+from app.schemas.contracts.classification import (
+    ClassificationEventReason,
+    ClassificationLevel,
+    DeclassificationApprovedVia,
+    DeclassificationStatus,
+)
 
-__all__ = ["ClassificationLevel"]
+__all__ = [
+    "ClassificationEventReason",
+    "ClassificationLevel",
+    "DeclassificationApprovedVia",
+    "DeclassificationStatus",
+]

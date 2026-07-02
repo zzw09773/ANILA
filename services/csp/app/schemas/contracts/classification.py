@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""五級分類等級契約(ClassificationLevel)。
+"""五級分類契約(ClassificationLevel + 分類事件/降級申請 enum)。
 
 依 docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md:
 
@@ -11,6 +11,11 @@
   false → 無機密、true → 機密;此為 migration floor(最低安全起點),
   不是最終分類,最終等級以人工分類盤點為準 →
   見 :meth:`ClassificationLevel.from_legacy_classified`。
+- Slice 3a 補三個封閉 enum(DB 層存開放 String,契約層 fail-closed 把關,
+  同 ``contracts.policy`` 模式):
+  :class:`ClassificationEventReason`(doc 08 §6 reason 7 值,逐字)、
+  :class:`DeclassificationStatus`(doc 08 §8 status 5 值,逐字)、
+  :class:`DeclassificationApprovedVia`(doc 08 §8 變體 A 核准路徑二選一)。
 
 儲存格式:一律以繁中字串(enum value)落地,經
 :meth:`ClassificationLevel.to_storage` / :meth:`ClassificationLevel.from_storage`
@@ -83,3 +88,47 @@ class ClassificationLevel(enum.Enum):
 _RANKS: dict[ClassificationLevel, int] = {
     level: index for index, level in enumerate(ClassificationLevel)
 }
+
+
+class ClassificationEventReason(str, enum.Enum):
+    """doc 08 §6 ClassificationEvent.reason 7 值(逐字,順序照文件)。
+
+    注:文件的 7 值 enum 是封閉集合 —— 降級核准生效所寫的事件也必須
+    落在其中,採 ``declassification_copy``(doc 08 §9 降密模式的事件
+    reason;audit 面另記 ``classification.downgrade_approved`` 等事件)。
+    """
+
+    SOURCE_SELECTED = "source_selected"
+    AGENT_POLICY = "agent_policy"
+    MEMORY_INHERITED = "memory_inherited"
+    MANUAL_ADMIN = "manual_admin"
+    SERVICE_POLICY = "service_policy"
+    CONTENT_DETECTION = "content_detection"
+    DECLASSIFICATION_COPY = "declassification_copy"
+
+
+class DeclassificationStatus(str, enum.Enum):
+    """doc 08 §8 DeclassificationRequest.status 5 值(逐字,順序照文件)。
+
+    fail-closed 預設 = ``pending_supervisor``(doc 08 §12:無主管資料且
+    無可用權責者時,申請維持 pending,不升級、不自動放行)。
+    """
+
+    PENDING_SUPERVISOR = "pending_supervisor"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    CANCELLED = "cancelled"
+    APPLIED = "applied"
+
+
+class DeclassificationApprovedVia(str, enum.Enum):
+    """doc 08 §8 approved_via 二選一(變體 A,2026-07-02 拍板)。
+
+    ``recorded_paper_decision``(紙本核定＋代錄)時必填
+    ``authority_reference``(公文文號/簽呈)、``authority_title_name``
+    (核定者官職＋姓名)、``recorded_by_user_id``(代錄人,須持
+    「機密審批權責」且 ≠ 申請人)。系統內沒有自我核准欄位或碼路徑。
+    """
+
+    IN_SYSTEM = "in_system"
+    RECORDED_PAPER_DECISION = "recorded_paper_decision"

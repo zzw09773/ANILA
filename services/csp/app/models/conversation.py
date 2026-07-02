@@ -1,7 +1,7 @@
 import secrets
 from datetime import datetime, timezone
 from sqlalchemy import (
-    Boolean, Column, DateTime, ForeignKey, Integer, String, Text,
+    Boolean, Column, DateTime, ForeignKey, Integer, String,
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -38,6 +38,20 @@ class Conversation(Base):
     # classification (provenance matters; see migration 0031).
     classification_inherited = Column(
         Boolean, nullable=False, default=False, server_default="false"
+    )
+    # ── 五級分類共通欄位(doc 08 §5,Slice 3a)────────────────────────────
+    # 舊 boolean classified 保留為 compatibility read model(doc 08 §15
+    # Step 3;鏡射規則 classified = level >= 機密,由
+    # app.modules.policy.service 維護,舊 latch 不破)。
+    classification_level = Column(
+        String(20), nullable=False, default="無機密", server_default="無機密"
+    )
+    classification_latched_at = Column(DateTime, nullable=True)
+    classification_source = Column(String(50), nullable=True)
+    classification_event_id = Column(
+        Integer,
+        ForeignKey("classification_events.id", ondelete="SET NULL"),
+        nullable=True,
     )
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(

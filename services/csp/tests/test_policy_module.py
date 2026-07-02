@@ -170,8 +170,15 @@ class TestAppendOnlySurface:
 
     def test_package_public_surface_exact(self):
         policy = importlib.import_module("app.modules.policy")
+        # Slice 3a 加入五級分類 latch core(apply/effective/降級申請三件組
+        # + 權責查核 hook);仍無任何 mutator 命名(append-only 面不變)。
         assert set(policy.__all__) == {
+            "apply_classification",
+            "create_declassification_request",
+            "decide_declassification",
+            "effective_level",
             "evaluate_classification_ceiling",
+            "has_declassification_authority",
             "record_decision",
             "router",
         }

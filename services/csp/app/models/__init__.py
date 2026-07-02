@@ -16,6 +16,11 @@ from app.models.api_key import ApiKey, ApiKeyModelPermission
 from app.models.attachment import Attachment
 from app.models.audit_log import AuditLog
 from app.models.banner import Banner
+from app.models.classification import (
+    ClassificationAuthorityAssignment,
+    ClassificationEvent,
+    DeclassificationRequest,
+)
 from app.models.conversation import Conversation
 from app.models.department import Department
 from app.models.handoff import Handoff
@@ -54,7 +59,10 @@ __all__ = [
     "AuditLog",
     "Banner",
     "Citation",
+    "ClassificationAuthorityAssignment",
+    "ClassificationEvent",
     "Conversation",
+    "DeclassificationRequest",
     "Department",
     "AgentLlmCredential",
     "ConversationMemoryChunk",

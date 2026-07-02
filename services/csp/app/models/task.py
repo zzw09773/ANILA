@@ -92,6 +92,14 @@ class Task(Base):
     # 五級分類(ClassificationLevel)繁中字串落地;預設 無機密。
     classification_level = Column(String(20), nullable=False,
                                   default="無機密", server_default="無機密")
+    # doc 08 §5 其餘三共通欄位(Slice 3a 補齊)。
+    classification_latched_at = Column(DateTime, nullable=True)
+    classification_source = Column(String(50), nullable=True)
+    classification_event_id = Column(
+        Integer,
+        ForeignKey("classification_events.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     # 建立即產生;每 task 一條 trace(doc 02 observability ID)。
     trace_id = Column(String(64), nullable=False, unique=True, index=True,
                       default=_new_trace_id)
@@ -147,6 +155,14 @@ class TaskRun(Base):
     error = Column(JSONValue, nullable=True)
     classification_level = Column(String(20), nullable=False,
                                   default="無機密", server_default="無機密")
+    # doc 08 §5 其餘三共通欄位(Slice 3a;AgentRun 的現制對應表)。
+    classification_latched_at = Column(DateTime, nullable=True)
+    classification_source = Column(String(50), nullable=True)
+    classification_event_id = Column(
+        Integer,
+        ForeignKey("classification_events.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at = Column(DateTime, nullable=False, default=_utcnow)
 
     task = relationship("Task", back_populates="runs")
