@@ -296,6 +296,7 @@ def test_full_pipeline_round_trip(test_app, tmp_path):
                 assert final["node_count"] == 7  # 1 + 3 + 3 leaves
                 assert "svg" in final["download_urls"]
                 assert "dot" in final["download_urls"]
+                assert "json" in final["download_urls"]
 
                 # SVG download
                 svg_resp = client.get(
@@ -314,6 +315,24 @@ def test_full_pipeline_round_trip(test_app, tmp_path):
                 assert dot_resp.status_code == 200
                 assert "digraph mindmap" in dot_resp.text
                 assert "rankdir=LR" in dot_resp.text
+
+                # JSON spec download — 前端互動式樹狀檢視的資料來源
+                json_resp = client.get(
+                    f"/api/mindmaps/jobs/{job_id}/download/json",
+                )
+                assert json_resp.status_code == 200
+                assert json_resp.headers["content-type"].startswith(
+                    "application/json",
+                )
+                spec = json_resp.json()
+                assert spec["title"] == "RAG 系統概念樹"
+                assert spec["root"]["label"]
+                # 樹狀結構完整:root 有 children,節點帶 id/label/children
+                assert isinstance(spec["root"]["children"], list)
+                assert len(spec["root"]["children"]) == 3
+                for child in spec["root"]["children"]:
+                    assert child["id"] and child["label"]
+                    assert isinstance(child["children"], list)
 
 
 def test_get_nonexistent_job_returns_404(test_app):

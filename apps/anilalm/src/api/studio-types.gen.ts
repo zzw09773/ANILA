@@ -228,10 +228,12 @@ export interface paths {
         };
         /**
          * Download Mindmap
-         * @description Stream the rendered SVG or DOT source for a completed job.
+         * @description Stream the SVG, DOT source, or spec JSON for a completed job.
          *
-         *     Returns 404 for unknown/cross-user jobs, 409 if still running, and
-         *     410 if the job is failed/cancelled.
+         *     ``json`` is the validated MindmapSpec — the SPA's interactive tree
+         *     view (expand/collapse + click-to-ask) consumes it instead of the
+         *     rendered SVG. Returns 404 for unknown/cross-user jobs, 409 if still
+         *     running, and 410 if the job is failed/cancelled.
          */
         get: operations["download_mindmap_api_mindmaps_jobs__job_id__download__fmt__get"];
         put?: never;
@@ -1274,7 +1276,7 @@ export interface operations {
             };
             path: {
                 job_id: string;
-                fmt: "svg" | "dot";
+                fmt: "svg" | "dot" | "json";
             };
             cookie?: {
                 anila_access_token?: string | null;
@@ -1282,7 +1284,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Generated mindmap (SVG primary, DOT for debug) */
+            /** @description Generated mindmap (SVG primary, DOT for debug, JSON spec for the interactive tree view) */
             200: {
                 headers: {
                     [name: string]: unknown;

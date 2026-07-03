@@ -82,6 +82,9 @@ class MindmapJobRecord:
     error: str | None
     svg_bytes: bytes | None
     dot_source: str | None
+    # 驗證後的 MindmapSpec 序列化 JSON — 前端互動式樹狀檢視的資料來源
+    # (fmt=json 下載)。與 svg/dot 同生命週期。
+    spec_json: str | None
     created_at: datetime
     updated_at: datetime
     # Slice 8b: control-plane passthrough, back-filled after artifact register.
@@ -102,6 +105,10 @@ class MindmapJobRecord:
             if self.dot_source is not None:
                 download_urls["dot"] = (
                     f"/api/mindmaps/jobs/{self.job_id}/download/dot"
+                )
+            if self.spec_json is not None:
+                download_urls["json"] = (
+                    f"/api/mindmaps/jobs/{self.job_id}/download/json"
                 )
         return MindmapJobStatus(
             job_id=self.job_id,
@@ -187,6 +194,7 @@ async def create_job(
             error=None,
             svg_bytes=None,
             dot_source=None,
+            spec_json=None,
             created_at=now,
             updated_at=now,
         )
@@ -299,6 +307,7 @@ class MindmapJobUpdater:
         error: str | None = None,
         svg_bytes: bytes | None = None,
         dot_source: str | None = None,
+        spec_json: str | None = None,
         artifact_id: str | None = None,
         classification_level: str | None = None,
     ) -> None:
@@ -330,6 +339,8 @@ class MindmapJobUpdater:
                 patch["svg_bytes"] = svg_bytes
             if dot_source is not None:
                 patch["dot_source"] = dot_source
+            if spec_json is not None:
+                patch["spec_json"] = spec_json
             if artifact_id is not None:
                 patch["artifact_id"] = artifact_id
             if classification_level is not None:
@@ -345,6 +356,7 @@ class MindmapJobUpdater:
         node_count: int,
         svg_bytes: bytes,
         dot_source: str,
+        spec_json: str | None = None,
     ) -> None:
         """Convenience: write the terminal "done" state in one call."""
         await self.set(
@@ -354,4 +366,5 @@ class MindmapJobUpdater:
             node_count=node_count,
             svg_bytes=svg_bytes,
             dot_source=dot_source,
+            spec_json=spec_json,
         )
