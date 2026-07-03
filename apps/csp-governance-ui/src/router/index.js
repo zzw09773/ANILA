@@ -82,20 +82,6 @@ const routes = [
         component: () => import('../views/ServiceAccessView.vue'),
         meta: { requiresAdmin: true },
       },
-      {
-        path: 'developer/agents',
-        name: 'DeveloperAgents',
-        component: () => import('../views/DeveloperAgentsView.vue'),
-        meta: { requiresDeveloper: true },
-      },
-      // v0.1 framework rollout — dedicated dev walkthrough page.
-      // Linked from DeveloperAgentsView guide block.
-      {
-        path: 'developer/guide',
-        name: 'DeveloperGuide',
-        component: () => import('../views/DeveloperGuideView.vue'),
-        meta: { requiresDeveloper: true },
-      },
       // Sprint 13 PR C1 — per-agent runtime knobs (tool permissions /
       // workspace caps / guardrails). Owner of the agent OR admin.
       {

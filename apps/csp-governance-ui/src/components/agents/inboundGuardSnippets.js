@@ -13,8 +13,8 @@
 // The csk- only ever appears in the `.env` line; runnable code reads it
 // from os.environ so the secret never gets hardcoded into a source file
 // the dev might commit. Env names match the platform convention
-// (CSP_BASE_URL / CSP_SERVICE_TOKEN / ANILA_COLLECTION_ID — see
-// newAgentEnvSnippet in DeveloperAgentsView.vue). Mirrors bootstrapSnippets.js.
+// (CSP_BASE_URL / CSP_SERVICE_TOKEN / ANILA_COLLECTION_ID — see the
+// newAgentEnvSnippet in the agent onboarding view). Mirrors bootstrapSnippets.js.
 
 const PLACEHOLDER_CSK = 'csk-PASTE-FROM-ADMIN-UI'
 
