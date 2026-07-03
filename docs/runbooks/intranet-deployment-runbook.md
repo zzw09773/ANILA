@@ -8,6 +8,8 @@
 > **配套檔**:[`.env.example`](../../.env.example) / [`compose.yaml`](../../compose.yaml)(root shim,實體在 [`infra/compose/platform.yml`](../../infra/compose/platform.yml)) / [`infra/deployment/intranet/build-and-export-for-intranet.sh`](../../infra/deployment/intranet/build-and-export-for-intranet.sh) / [`infra/deployment/scripts/deploy-prod.sh`](../../infra/deployment/scripts/deploy-prod.sh)
 
 這份是「**從外網 dev 機 → 帶進內網一鍵跑起來**」的逐步操作手冊。卡住直接看「Troubleshooting」段。
+> **第一次部署?** 先讀精簡版主路徑 [`intranet-zero-to-prod-guide.md`](intranet-zero-to-prod-guide.md)
+> (從 0 到上線 + 日常維運 `anila-ops.sh`),本檔當它的深入對照。
 
 ---
 

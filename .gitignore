@@ -37,6 +37,7 @@ coverage.xml
 
 # Virtualenvs
 .venv/
+.venv-*/
 venv/
 env/
 ENV/
@@ -74,9 +75,13 @@ lerna-debug.log*
 .env.*.local
 *.pem
 *.key
+*.pfx
 # 例外:卡片登入的 CSPKI CA bundle 是「公開憑證」(root + 中繼,非私鑰),
 # 是 server 端驗卡的信任錨,必須隨碼一起交付。
 !services/csp/app/services/cspki_ca_bundle.pem
+
+# 維運備份輸出 (anila-ops.sh backup) — 含 .env 副本與 DB dump,絕不進 git
+/backups/
 
 # ── IDE / 編輯器 ─────────────────────────────────────────────────────────────
 .idea/
