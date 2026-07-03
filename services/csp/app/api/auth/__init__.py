@@ -63,6 +63,10 @@ from app.services.auth_service import (
     PENDING_APPROVAL_SENTINEL,
     LOCAL_PASSWORD_DISABLED_SENTINEL,
 )
+from app.services.token_revocation_publisher import (  # noqa: F401
+    publish_revocation,
+    publish_revocation_sync,
+)
 from app.services.card_auth import CardAuthError
 from app.services.card_auth_service import (
     CardLoginRejected,
@@ -92,8 +96,11 @@ from .revocations import (  # noqa: F401
     TOKEN_REVOCATION_RETENTION_DAYS,
     RevocationEntry,
     RevocationListResponse,
+    RevokeUserTokensRequest,
+    RevokeUserTokensResponse,
     _serialise_ts,
     list_revocations,
+    revoke_user_tokens,
 )
 from .oidc import (  # noqa: F401
     _build_oidc_callback_html,

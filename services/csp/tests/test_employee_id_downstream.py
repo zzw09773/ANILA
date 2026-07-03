@@ -100,6 +100,19 @@ class TestServiceTokenScoping:
         model_h = build_model_gateway_headers("1147259")
         assert "X-CSP-Service-Token" not in model_h
 
+    def test_registered_agent_without_db_credential_does_not_get_legacy_token(
+        self, monkeypatch
+    ):
+        """A known target_agent_id must use its own credential row; missing
+        per-agent credential must not silently fall back to fleet token."""
+        from app.services import proxy_service
+
+        monkeypatch.setattr(
+            proxy_service.settings, "CSP_SERVICE_TOKEN", "csk-legacy", raising=False
+        )
+        h = build_agent_headers("1147259", target_agent_id=12345)
+        assert "X-CSP-Service-Token" not in h
+
 
 class _HeaderCapturingStream:
     def __init__(self, lines):

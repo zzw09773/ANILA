@@ -211,7 +211,10 @@ def test_ask_user_then_resume_end_to_end(db_path: Path) -> None:
     assert "Pick which file to read" in body
 
     # session_owners pinned to the dispatched agent.
-    state = client.get("/v1/sessions/sid-e2e/state").json()
+    state = client.get(
+        "/v1/sessions/sid-e2e/state",
+        headers={"Authorization": "Bearer sk-test"},
+    ).json()
     assert state["owner_agent_id"] == "agent-demo"
     # Pending interrupts surface from the Router's session state too.
     # (Note: the Router-side Session doesn't see the agent's interrupt

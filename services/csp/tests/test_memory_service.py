@@ -31,6 +31,7 @@ from app.services.memory_service import (
     _format_block,
     parse_extraction_response,
 )
+from anila_core.security import ENDPOINT_KIND_MODEL
 
 
 # ── parse_extraction_response ────────────────────────────────────────────────
@@ -245,3 +246,19 @@ def test_resolve_extraction_target_none_when_no_active_llm(db, monkeypatch):
     """No active LLM at all → None (caller disables extraction, logs)."""
     monkeypatch.setattr(memory_service, "_LLM_MODEL_NAME", "gemma4")
     assert memory_service._resolve_extraction_target(db) is None
+
+
+def test_memory_outbound_guard_uses_model_endpoint_kind(monkeypatch):
+    """Memory embeddings send MODEL_GATEWAY_API_KEY, so the outbound guard
+    must use the model endpoint class instead of the generic HTTP relaxation.
+    """
+    calls: list[tuple[str, str]] = []
+
+    def fake_validate(url, *, endpoint_kind):
+        calls.append((url, endpoint_kind))
+
+    monkeypatch.setattr(memory_service, "validate_outbound_url", fake_validate)
+
+    memory_service._guard_outbound("https://embed.example/v1")
+
+    assert calls == [("https://embed.example/v1", ENDPOINT_KIND_MODEL)]

@@ -14,6 +14,7 @@ from typing import AsyncIterator, Optional
 
 from fastapi import HTTPException
 import httpx
+from anila_core.security import ENDPOINT_KIND_AGENT, ENDPOINT_KIND_MODEL
 
 from app.config import settings
 from app.models.model_registry import ModelRegistry
@@ -176,7 +177,12 @@ async def _proxy_request_impl(
         target_url = f"{base_url}{endpoint_path}"
 
     # Call-time SSRF re-validation (TOCTOU / DNS-rebinding defense).
-    _guard_outbound(target_url)
+    _guard_outbound(
+        target_url,
+        endpoint_kind=(
+            ENDPOINT_KIND_AGENT if model.model_type == "agent" else ENDPOINT_KIND_MODEL
+        ),
+    )
 
     last_error = None
     start_time = time.time()
@@ -497,7 +503,12 @@ async def _proxy_stream_impl(
     /v1 chat traffic. Run finalization lives in the ``proxy_stream`` wrapper.
     """
     # Call-time SSRF re-validation (TOCTOU / DNS-rebinding defense).
-    _guard_outbound(target_url)
+    _guard_outbound(
+        target_url,
+        endpoint_kind=(
+            ENDPOINT_KIND_AGENT if target_agent_id is not None else ENDPOINT_KIND_MODEL
+        ),
+    )
 
     # ``user_id`` (DB PK) is for usage attribution only; ``user_identity``
     # (員編) is the wire identity. Builder chosen by DESTINATION

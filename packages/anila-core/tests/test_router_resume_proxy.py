@@ -44,6 +44,7 @@ def _disable_recompose(monkeypatch):
 CSP_BASE = settings.csp_base_url
 CSP_URL = f"{CSP_BASE}/v1/chat/completions"
 CSP_AGENTS_URL = f"{CSP_BASE}/v1/agents"
+CSP_ME_URL = f"{CSP_BASE}/api/auth/me"
 
 
 @pytest_asyncio.fixture
@@ -81,6 +82,32 @@ def _agent_registry_response(agent_id: str) -> dict:
             }
         ]
     }
+
+
+def _jwt(label: str) -> str:
+    return f"jwt-header.{label}.jwt-signature"
+
+
+def _mock_me_same_user() -> None:
+    respx.get(CSP_ME_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": 99,
+                "username": "resume-user",
+                "email": None,
+                "role": "user",
+                "department_id": None,
+                "department_name": None,
+                "is_active": True,
+                "is_approved": True,
+                "local_password_disabled": False,
+                "last_login_at": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +191,12 @@ def test_state_endpoint_surfaces_owning_agent(db_path: Path) -> None:
         headers={"Authorization": "Bearer sk-test"},
     )
 
-    state = client.get("/v1/sessions/s-state-2/state").json()
+    state_response = client.get(
+        "/v1/sessions/s-state-2/state",
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert state_response.status_code == 200, state_response.text
+    state = state_response.json()
     assert state["owner_agent_id"] == "agent-state"
 
 
@@ -211,6 +243,57 @@ def test_answer_with_session_factory_returns_503(db_path: Path) -> None:
     )
     assert resp.status_code == 503
     assert "session_factory" in resp.text
+
+
+@respx.mock
+def test_answer_rejects_different_caller_before_proxy(db_path: Path) -> None:
+    """A session pinned by one caller cannot be resumed by another caller."""
+
+    def csp_chat_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        if body["model"] == "agent-resume":
+            return httpx.Response(
+                200, json=_llm_router_response("ok")
+            )
+        return httpx.Response(
+            200,
+            json=_llm_router_response("DISPATCH:agent-resume:hi"),
+        )
+
+    respx.post(CSP_URL).mock(side_effect=csp_chat_handler)
+    respx.get(CSP_AGENTS_URL).mock(
+        return_value=httpx.Response(
+            200, json=_agent_registry_response("agent-resume")
+        )
+    )
+    csp_resume_url = (
+        f"{CSP_BASE}/v1/agents/agent-resume/sessions/s-resume-owned/answer"
+    )
+    resume_route = respx.post(csp_resume_url).mock(
+        return_value=httpx.Response(500, json={"detail": "must not proxy"})
+    )
+
+    app = create_router_app(session_db_path=str(db_path))
+    client = TestClient(app)
+
+    pinned = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+            "session_id": "s-resume-owned",
+        },
+        headers={"Authorization": "Bearer sk-owner"},
+    )
+    assert pinned.status_code == 200
+
+    resume_resp = client.post(
+        "/v1/sessions/s-resume-owned/answer",
+        json={"interrupt_id": "i-7", "answer": "go ahead"},
+        headers={"Authorization": "Bearer sk-other"},
+    )
+    assert resume_resp.status_code == 403
+    assert resume_route.call_count == 0
 
 
 @respx.mock
@@ -296,3 +379,61 @@ def test_answer_proxies_to_csp_resume_endpoint(db_path: Path) -> None:
         "interrupt_id": "i-7",
         "answer": "go ahead",
     }
+
+
+@respx.mock
+def test_answer_accepts_refreshed_jwt_for_same_user(db_path: Path) -> None:
+    """ask_user -> resume may cross access-token TTL; new JWT must still
+    map to the same CSP user owner.
+    """
+    _mock_me_same_user()
+
+    def csp_chat_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        if body["model"] == "agent-resume":
+            return httpx.Response(200, json=_llm_router_response("ok"))
+        return httpx.Response(
+            200,
+            json=_llm_router_response("DISPATCH:agent-resume:hi"),
+        )
+
+    respx.post(CSP_URL).mock(side_effect=csp_chat_handler)
+    respx.get(CSP_AGENTS_URL).mock(
+        return_value=httpx.Response(
+            200, json=_agent_registry_response("agent-resume")
+        )
+    )
+
+    csp_resume_url = (
+        f"{CSP_BASE}/v1/agents/agent-resume/sessions/s-resume-jwt/answer"
+    )
+    resume_route = respx.post(csp_resume_url).mock(
+        return_value=httpx.Response(
+            200,
+            content=b"event: anila.resumed\ndata: {}\n\n",
+            headers={"Content-Type": "text/event-stream"},
+        )
+    )
+
+    app = create_router_app(session_db_path=str(db_path))
+    client = TestClient(app)
+
+    pinned = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+            "session_id": "s-resume-jwt",
+        },
+        headers={"Authorization": f"Bearer {_jwt('access-v1')}"},
+    )
+    assert pinned.status_code == 200, pinned.text
+
+    resume_resp = client.post(
+        "/v1/sessions/s-resume-jwt/answer",
+        json={"interrupt_id": "i-7", "answer": "go ahead"},
+        headers={"Authorization": f"Bearer {_jwt('access-v2')}"},
+    )
+
+    assert resume_resp.status_code == 200, resume_resp.text
+    assert resume_route.call_count == 1

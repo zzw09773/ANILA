@@ -11,12 +11,13 @@ from app.config import settings
 from app.database import get_db
 from app.middleware.caller import Caller, get_caller
 from app.models.agent import Agent, UserAgentPermission
+from app.models.conversation import Conversation
 from app.models.model_registry import ModelRegistry
 from app.schemas.contracts.classification import ClassificationLevel
 from app.services import memory_service
 from app.services.api_key_service import check_model_permission, check_agent_permission
 from app.services.auth_service import is_admin_tier
-from app.services.proxy.ceiling import enforce_model_ceiling
+from app.services.proxy.ceiling import enforce_agent_ceiling, enforce_model_ceiling
 from app.services.proxy.headers import resolve_model_gateway_key
 from app.services.proxy.task_link import begin_task_run, finalize_task_run
 from app.services.proxy_service import (
@@ -44,6 +45,23 @@ def _coerce_conversation_id(raw: str | None) -> int | None:
         return int(raw)
     except (TypeError, ValueError):
         return None
+
+
+def _require_conversation_access(
+    db: Session, caller: Caller, conversation_id: int
+) -> None:
+    """Ensure caller-supplied conversation id belongs to this caller.
+
+    ``X-ANILA-Conversation-Id`` drives memory writes and classification
+    latching, so accepting an arbitrary numeric id would let one user mutate
+    another user's conversation metadata. Admin-tier callers retain the
+    existing operational bypass.
+    """
+    conv = db.get(Conversation, conversation_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if conv.user_id != caller.user.id and not is_admin_tier(caller.user):
+        raise HTTPException(status_code=403, detail="無權使用此 conversation")
 
 
 def _agent_policy_level(agent) -> ClassificationLevel:
@@ -496,6 +514,8 @@ async def chat_completions(
     # RAG because the active conversation's history is already in the
     # messages array — re-injecting would just waste prompt tokens.
     conv_id_int = _coerce_conversation_id(conversation_id)
+    if conv_id_int is not None:
+        _require_conversation_access(db, caller, conv_id_int)
     memory_read = await _inject_memory(
         db,
         user.id,
@@ -585,6 +605,13 @@ async def chat_completions(
                     "task classification propagation failed task_id=%s",
                     task_ctx.task_id,
                 )
+        enforce_agent_ceiling(
+            db,
+            agent=agent,
+            caller=caller,
+            task_ctx=task_ctx,
+            conv_id_int=conv_id_int,
+        )
         # Usage attribution: inbound X-ANILA-Trace-Id wins (legacy
         # contract); a task-linked call without one falls back to the
         # task row's trace id (doc 04 AC10 歸戶).
@@ -642,12 +669,15 @@ async def chat_completions(
         import httpx
         from fastapi import HTTPException as _HTTPException
         target = f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions"
+        from anila_core.security import ENDPOINT_KIND_AGENT
         from app.services.proxy_service import (
             _aggregate_sse_to_chat_completion,
             build_agent_headers,
             _guard_outbound,
         )
-        _guard_outbound(target)  # call-time SSRF re-validation (TOCTOU defense)
+        _guard_outbound(
+            target, endpoint_kind=ENDPOINT_KIND_AGENT
+        )  # call-time SSRF re-validation (TOCTOU defense)
         # Phase G: also pass target_agent_id so the per-agent token + cache
         # path applies to non-streaming calls. usage_writer attribution for
         # this branch is still TODO — non-streaming agent forwards don't
@@ -869,8 +899,11 @@ async def resume_agent_session(
     target = (
         f"{agent.endpoint_url.rstrip('/')}/sessions/{session_id}/answer"
     )
+    from anila_core.security import ENDPOINT_KIND_AGENT
     from app.services.proxy_service import build_agent_headers, _guard_outbound
-    _guard_outbound(target)  # call-time SSRF re-validation (TOCTOU defense)
+    _guard_outbound(
+        target, endpoint_kind=ENDPOINT_KIND_AGENT
+    )  # call-time SSRF re-validation (TOCTOU defense)
     headers = build_agent_headers(
         downstream_identity(user), user.email, target_agent_id=agent.id,
     )

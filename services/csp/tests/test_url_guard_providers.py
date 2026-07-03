@@ -13,6 +13,8 @@ depending on the platform schema. This file pins the contract:
 """
 from __future__ import annotations
 
+import socket
+
 import pytest
 
 from anila_core.security import (
@@ -146,6 +148,53 @@ def test_unsafe_failures_not_fixable_by_trust(monkeypatch, url, expected_reason)
         validate_outbound_url(url)
     assert exc.value.reason == expected_reason
     assert exc.value.fixable_by_trust_host is False
+
+
+@pytest.mark.parametrize("url,host,expected_reason", [
+    ("http://localhost/v1", "localhost", REASON_DENY_HOST),
+    ("http://127.0.0.1/v1", "127.0.0.1", REASON_UNSAFE_IP),
+    ("http://10.0.0.1/v1", "10.0.0.1", REASON_PRIVATE_IP),
+])
+def test_trusted_hosts_do_not_bypass_structural_denies(
+    monkeypatch, url, host, expected_reason
+):
+    """Trusted hosts may only rescue single-label/internal-zone names.
+    Explicit deny hosts and unsafe/private IPs still fail closed."""
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.delenv("ANILA_ALLOW_PRIVATE_ENDPOINT", raising=False)
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", host)
+    with pytest.raises(UnsafeEndpointError) as exc:
+        validate_outbound_url(url)
+    assert exc.value.reason == expected_reason
+    assert exc.value.fixable_by_trust_host is False
+
+
+def test_trusted_fqdn_may_resolve_to_private_address(monkeypatch):
+    """Trusted FQDNs are narrow operator allow-lists.
+
+    In production intranet deployments the model gateway is an FQDN in
+    ANILA_TRUSTED_HOSTS, resolved by compose ``extra_hosts`` to an RFC1918 IP.
+    That must remain allowed without opening the global private-endpoint flag.
+    """
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_ENDPOINT", "1")
+    monkeypatch.delenv("ANILA_ALLOW_PRIVATE_ENDPOINT", raising=False)
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "aiagent2.ai.ncsist.org.tw")
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        assert host == "aiagent2.ai.ncsist.org.tw"
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                ("10.53.100.12", port or 0),
+            )
+        ]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    validate_outbound_url("http://aiagent2.ai.ncsist.org.tw:8000/v1")
 
 
 def test_scheme_failure_not_fixable(monkeypatch):

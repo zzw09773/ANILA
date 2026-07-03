@@ -3,6 +3,7 @@
 Split from the original ``app/api/auth.py`` god-module — bodies moved
 verbatim; only this import header is new.
 """
+
 from fastapi import Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
@@ -14,6 +15,7 @@ from app.middleware.cookies import (
     set_session_cookies,
 )
 from app.models.user import User
+from app.models.token_revocation import TokenRevocation
 from app.schemas.user import (
     LoginRequest,
     TokenResponse,
@@ -22,6 +24,7 @@ from app.schemas.user import (
     RegisterRequest,
 )
 from app.services.audit_service import log_audit_event
+from app.services.token_revocation_publisher import publish_revocation_sync
 from app.services.auth_service import (
     authenticate_user,
     create_tokens,
@@ -38,6 +41,14 @@ from ._common import (
     _reject_when_card_only,
     router,
 )
+
+
+def _commit_token_revocation(db: Session, user: User) -> None:
+    """Persist and publish a token-version revocation after bumping user."""
+    version = int(user.token_version or 0)
+    db.add(TokenRevocation(user_id=user.id, revoked_at_version=version))
+    db.commit()
+    publish_revocation_sync(user_id=user.id, revoked_at_version=version)
 
 
 @router.post("/register", status_code=201)
@@ -222,7 +233,7 @@ def logout(
 
     if current_user is not None:
         current_user.token_version = (current_user.token_version or 0) + 1
-        db.commit()
+        _commit_token_revocation(db, current_user)
         log_audit_event(
             db,
             actor=current_user,
@@ -262,7 +273,7 @@ def change_password(
         )
     current_user.hashed_password = hash_password(request.new_password)
     current_user.token_version = (current_user.token_version or 0) + 1
-    db.commit()
+    _commit_token_revocation(db, current_user)
     db.refresh(current_user)
     log_audit_event(
         db,

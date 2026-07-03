@@ -22,13 +22,6 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
-
-# Sprint 13 PR A2: callable threaded through multi-turn helpers so
-# every dispatch site can pin the (session_id, agent_id) mapping for
-# the resume endpoint. ``Optional`` because tests / non-persistent
-# session_factory paths skip persistence.
-PinOwnerFn = Optional[Callable[[str], Awaitable[None]]]
-
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -43,9 +36,21 @@ from ..memory.short_term import Session, SqliteSession, new_session_id
 from ..models.message import UserMessage
 from ..registry.remote_agent_manifest import RemoteAgentManifest, RemoteAgentRegistry
 from ..tools.dispatch_tool import dispatch_to_agent_response
-from .session_owner import get_session_owner, set_session_owner
+from .session_owner import (
+    ensure_session_owner,
+    fingerprint_session_owner,
+    get_session_owner_record,
+    set_session_owner,
+)
 
 logger = logging.getLogger(__name__)
+
+
+# Sprint 13 PR A2: callable threaded through multi-turn helpers so
+# every dispatch site can pin the (session_id, agent_id) mapping for
+# the resume endpoint. ``Optional`` because tests / non-persistent
+# session_factory paths skip persistence.
+PinOwnerFn = Optional[Callable[[str], Awaitable[None]]]
 
 
 # ---------------------------------------------------------------------------
@@ -509,6 +514,63 @@ def _extract_bearer_api_key(request: Request) -> str:
     raise HTTPException(status_code=401, detail="Missing Bearer API key")
 
 
+def _looks_like_jwt(token: str) -> bool:
+    return token.count(".") == 2
+
+
+async def _resolve_session_owner_hash(caller_api_key: str) -> str:
+    """Return a stable caller fingerprint for Router session ownership.
+
+    API keys are stable credentials, so the credential itself is sufficient.
+    Browser cookie/JWT auth rotates the access-token string during refresh; for
+    that path, ask CSP to authenticate the token and return the stable user id.
+    """
+    if not _looks_like_jwt(caller_api_key):
+        return fingerprint_session_owner(f"credential:{caller_api_key}")
+
+    url = f"{settings.csp_base_url.rstrip('/')}/api/auth/me"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {caller_api_key}"},
+            )
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to verify caller identity with CSP.",
+        ) from exc
+
+    if response.status_code in {401, 403}:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail="CSP rejected caller token.",
+        )
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to verify caller identity with CSP.",
+        ) from exc
+
+    try:
+        user = response.json()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="CSP returned an invalid caller identity response.",
+        ) from exc
+
+    stable_user_id = user.get("id") or user.get("user_id") or user.get("sub")
+    if stable_user_id is None:
+        raise HTTPException(
+            status_code=502,
+            detail="CSP caller identity response is missing a stable user id.",
+        )
+    return fingerprint_session_owner(f"jwt-user:{stable_user_id}")
+
+
 def create_router_app(
     session_db_path: str | None = None,
     session_factory: Any = None,
@@ -628,6 +690,16 @@ def create_router_app(
             or body.get("anila_session_id")
             or new_session_id()
         )
+        if session_factory is None:
+            owner_key_hash = await _resolve_session_owner_hash(caller_api_key)
+            owner_ok = await ensure_session_owner(
+                resolved_db_path, session_id, owner_key_hash
+            )
+            if not owner_ok:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Session belongs to a different caller.",
+                )
         sess = _make_session(session_id)
         # Persist the latest user message so cross-turn orchestration
         # (PR 4 multi-turn handoff) and /v1/sessions/{id}/state have
@@ -1159,26 +1231,55 @@ def create_router_app(
         )
 
     @app.get("/v1/sessions/{session_id}/state")
-    async def session_state(session_id: str) -> JSONResponse:
+    async def session_state(session_id: str, request: Request) -> JSONResponse:
         """Sprint 10 PR 3 — Router-side session snapshot.
 
         Returns conversation history (the user-visible turns the Router
         has seen) plus any pending interrupts. PR 4 will extend this
         with multi-turn handoff state.
         """
+        caller_api_key = _extract_bearer_api_key(request)
         sess = _make_session(session_id)
         items = await sess.get_items()
         pending = await sess.pending_interrupts()
         owner_agent: str | None = None
         if session_factory is None:
+            owner_key_hash = await _resolve_session_owner_hash(caller_api_key)
             try:
-                owner_agent = await get_session_owner(
+                owner_record = await get_session_owner_record(
                     resolved_db_path, session_id
                 )
             except Exception as exc:  # pragma: no cover — defensive
                 logger.warning(
                     "get_session_owner failed sid=%s: %s", session_id, exc
                 )
+                owner_record = None
+            if owner_record is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No owner recorded for session '{session_id}'.",
+                )
+            if (
+                owner_record.owner_key_hash is not None
+                and owner_record.owner_key_hash != owner_key_hash
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Session belongs to a different caller.",
+                )
+            if owner_record.owner_key_hash is None:
+                owner_ok = await ensure_session_owner(
+                    resolved_db_path, session_id, owner_key_hash
+                )
+                if not owner_ok:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=(
+                            "Session owner is not bound; start a new turn "
+                            "to re-establish ownership."
+                        ),
+                    )
+            owner_agent = owner_record.agent_id
         return JSONResponse(
             {
                 "session_id": session_id,
@@ -1248,8 +1349,9 @@ def create_router_app(
                     "against the agent's /sessions/{id}/answer directly."
                 ),
             )
-        agent_id = await get_session_owner(resolved_db_path, session_id)
-        if agent_id is None:
+        owner_key_hash = await _resolve_session_owner_hash(caller_api_key)
+        owner_record = await get_session_owner_record(resolved_db_path, session_id)
+        if owner_record is None or owner_record.agent_id is None:
             raise HTTPException(
                 status_code=404,
                 detail=(
@@ -1259,7 +1361,31 @@ def create_router_app(
                     "via POST /v1/chat/completions to (re)bind ownership."
                 ),
             )
+        if (
+            owner_record.owner_key_hash is not None
+            and owner_record.owner_key_hash != owner_key_hash
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Session belongs to a different caller.",
+            )
+        if owner_record.owner_key_hash is None:
+            owner_ok = await ensure_session_owner(
+                resolved_db_path, session_id, owner_key_hash
+            )
+            if not owner_ok:
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        "Session owner is not bound; start a new turn "
+                        "to re-establish ownership."
+                    ),
+                )
+        agent_id = owner_record.agent_id
         manifest = registry.get(caller_api_key, agent_id)
+        if manifest is None:
+            await registry.ensure_fresh(caller_api_key)
+            manifest = registry.get(caller_api_key, agent_id)
         if manifest is None:
             raise HTTPException(
                 status_code=502,

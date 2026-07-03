@@ -27,6 +27,7 @@ Routes
 from __future__ import annotations
 
 import json
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.orm import Session
@@ -36,6 +37,7 @@ from app.models.registered_service import (
     RegisteredService,
     ServiceProjectBinding,
 )
+from app.models.source_snapshot import SourceSnapshot
 from app.models.task import Task
 from app.models.user import User
 from app.modules import launch as launch_mod
@@ -103,6 +105,60 @@ def _bearer_token(authorization: str | None) -> str:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="缺少 Bearer 整合金鑰")
     return authorization[7:].strip()
+
+
+def _url_origin(raw_url: str) -> str:
+    parsed = urlparse((raw_url or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="服務 entry_url 必須是 http(s) URL")
+    if parsed.username or parsed.password:
+        raise HTTPException(status_code=400, detail="服務 entry_url 不可包含帳密")
+    host = parsed.hostname or ""
+    try:
+        parsed_port = parsed.port
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="服務 entry_url port 無效",
+        ) from exc
+    port = f":{parsed_port}" if parsed_port is not None else ""
+    return f"{parsed.scheme}://{host.lower()}{port}"
+
+
+def _validate_launch_entry_url(service: RegisteredService) -> None:
+    """Fail closed before appending a launch token to service.entry_url."""
+    origin = _url_origin(service.entry_url)
+    allowed = {
+        _url_origin(candidate)
+        for candidate in (service.allowed_origins or [])
+        if candidate
+    }
+    if allowed and origin not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail="服務 entry_url origin 不在 allowed_origins",
+        )
+
+
+def _validate_source_snapshot_access(
+    db: Session,
+    user: User,
+    source_snapshot_id: int | None,
+    *,
+    task_id: int | None,
+) -> None:
+    if source_snapshot_id is None:
+        return
+    snapshot = db.get(SourceSnapshot, source_snapshot_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="來源快照不存在")
+    if task_id is not None and snapshot.task_id != task_id:
+        raise HTTPException(status_code=403, detail="來源快照不屬於此任務")
+    task = db.get(Task, snapshot.task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="來源快照任務不存在")
+    if task.requester_user_id != user.id and not is_admin_tier(user):
+        raise HTTPException(status_code=403, detail="無權使用此來源快照")
 
 
 # ── CRUD ────────────────────────────────────────────────────────────────────
@@ -317,6 +373,10 @@ def launch_service(
             source_snapshot_id = task.source_snapshot_id
     if trace_id is None:
         trace_id = launch_mod.new_trace_id()
+    _validate_source_snapshot_access(
+        db, current_user, source_snapshot_id, task_id=task_id
+    )
+    _validate_launch_entry_url(service)
 
     # 8-step access algorithm with the launch classification as context_level:
     # step 6 (classification clearance) denies when level > service ceiling.

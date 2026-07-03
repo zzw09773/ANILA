@@ -368,13 +368,12 @@ def validate_outbound_url(url: str, endpoint_kind: str = ENDPOINT_KIND_GENERIC) 
             reason=REASON_NO_HOSTNAME,
         )
 
-    # Admin-blessed hosts (docker service names in cross-stack networks,
-    # etc.) skip every subsequent host check: deny list, internal-zone
-    # suffixes, single-label, private/loopback IP rules, DNS resolution.
-    # Scheme is already validated above. List is admin-managed via
-    # env (ANILA_TRUSTED_HOSTS) ∪ DB-backed providers (CSP).
-    if host in _trusted_hosts():
-        return
+    # Admin-blessed hosts (docker service names and intranet FQDNs in
+    # cross-stack networks, etc.) may bypass only narrow, operator-owned
+    # host checks: fixable name-shape checks below and RFC1918 DNS answers.
+    # Structural rejects such as loopback, metadata, link-local and IP
+    # literals still fail closed. Scheme is already validated above.
+    trusted = host in _trusted_hosts()
 
     if host in _DENY_HOSTS:
         raise UnsafeEndpointError(
@@ -385,6 +384,8 @@ def validate_outbound_url(url: str, endpoint_kind: str = ENDPOINT_KIND_GENERIC) 
         )
 
     if any(host.endswith(suffix) for suffix in _DENY_HOST_SUFFIXES):
+        if trusted:
+            return
         raise UnsafeEndpointError(
             f"endpoint_url host {host!r} is in an internal-only zone",
             host=host,
@@ -412,6 +413,8 @@ def validate_outbound_url(url: str, endpoint_kind: str = ENDPOINT_KIND_GENERIC) 
     # endpoints. We block them up-front so we don't depend on the DNS
     # check below (which can be racy or unavailable at create-time).
     if "." not in host and not _is_ip_literal(host):
+        if trusted:
+            return
         raise UnsafeEndpointError(
             f"endpoint_url host {host!r} is a single-label name "
             f"(typo / docker service name?). Use a fully-qualified "
@@ -442,7 +445,7 @@ def validate_outbound_url(url: str, endpoint_kind: str = ENDPOINT_KIND_GENERIC) 
                 host=host,
                 reason=REASON_UNSAFE_IP,
             )
-        if _is_private_ip(addr) and not allow_private:
+        if _is_private_ip(addr) and not allow_private and not trusted:
             raise UnsafeEndpointError(
                 f"endpoint_url host {host!r} resolves to private "
                 f"(RFC 1918) address {addr!r} "

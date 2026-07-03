@@ -77,11 +77,24 @@ SCHEMA_VERSION = 1
 # Default Redis URL — anila-platform docker-compose puts a Redis at
 # this hostname, and tests don't need a real connection.
 DEFAULT_REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+SYNC_REDIS_TIMEOUT_SECONDS = float(
+    os.environ.get("TOKEN_REVOCATION_REDIS_TIMEOUT_SECONDS", "2.0")
+)
 
 
 # Module-level singleton for the async Redis client. Cleared by tests
 # via monkeypatch.setattr(..., "_client_singleton", None).
 _client_singleton = None  # type: ignore[var-annotated]
+
+
+def _revocation_message(user_id: int, revoked_at_version: int) -> str:
+    payload = {
+        "user_id": user_id,
+        "revoked_at_version": revoked_at_version,
+        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "schema_version": SCHEMA_VERSION,
+    }
+    return json.dumps(payload, separators=(",", ":"))
 
 
 async def _get_redis_client(redis_url: Optional[str] = None):
@@ -128,13 +141,7 @@ async def publish_revocation(
     a revocation that ends up rolled back and over-invalidating
     subscribers.
     """
-    payload = {
-        "user_id": user_id,
-        "revoked_at_version": revoked_at_version,
-        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "schema_version": SCHEMA_VERSION,
-    }
-    message = json.dumps(payload, separators=(",", ":"))
+    message = _revocation_message(user_id, revoked_at_version)
 
     try:
         client = await _get_redis_client(redis_url)
@@ -160,3 +167,58 @@ async def publish_revocation(
             user_id,
             revoked_at_version,
         )
+
+
+def _make_sync_redis_client(redis_url: Optional[str] = None):
+    """Return a short-lived sync Redis client for sync FastAPI endpoints."""
+    import redis  # type: ignore[import-not-found]
+
+    url = redis_url or DEFAULT_REDIS_URL
+    return redis.from_url(
+        url,
+        decode_responses=True,
+        socket_connect_timeout=SYNC_REDIS_TIMEOUT_SECONDS,
+        socket_timeout=SYNC_REDIS_TIMEOUT_SECONDS,
+    )
+
+
+def publish_revocation_sync(
+    user_id: int,
+    revoked_at_version: int,
+    *,
+    redis_url: Optional[str] = None,
+) -> None:
+    """Broadcast one revocation event from a synchronous call path.
+
+    Synchronous FastAPI endpoints run in worker threads. Calling the async
+    publisher through ``asyncio.run()`` creates a throwaway event loop and can
+    poison the cached redis.asyncio client for later calls. This path uses a
+    short-lived synchronous Redis client instead. It remains best-effort and
+    never raises.
+    """
+    message = _revocation_message(user_id, revoked_at_version)
+    client = None
+    try:
+        client = _make_sync_redis_client(redis_url)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "token-revoke sync publish skipped: cannot build Redis client "
+            "(user_id=%s version=%s)",
+            user_id,
+            revoked_at_version,
+        )
+        return
+
+    try:
+        client.publish(CHANNEL, message)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "token-revoke sync publish failed (user_id=%s version=%s)",
+            user_id,
+            revoked_at_version,
+        )
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001
+            logger.debug("token-revoke sync Redis close failed", exc_info=True)

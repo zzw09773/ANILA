@@ -445,6 +445,46 @@ class ZipUploadResponse(BaseModel):
     results: list[ZipUploadResult]
 
 
+def _declared_zip_member_error(
+    member,
+    out_name: str,
+    *,
+    cumulative_bytes: int,
+) -> ZipUploadResult | None:
+    """Preflight zip metadata before inflating a member.
+
+    ``ZipInfo.file_size`` is the declared uncompressed size. We still keep
+    the post-read checks below as defense in depth, but this avoids inflating
+    members that are already known to exceed per-file or archive-total caps.
+    """
+    declared_size = max(int(getattr(member, "file_size", 0) or 0), 0)
+    if cumulative_bytes >= _ZIP_MAX_TOTAL_BYTES:
+        return ZipUploadResult(
+            filename=out_name,
+            status="skipped",
+            detail="archive total exceeds 1 GB cap",
+        )
+    if declared_size == 0:
+        return ZipUploadResult(
+            filename=out_name,
+            status="skipped",
+            detail="empty file",
+        )
+    if declared_size > _MAX_BYTES:
+        return ZipUploadResult(
+            filename=out_name,
+            status="too_large",
+            detail=f"{declared_size:,} bytes exceeds {_MAX_BYTES:,} limit",
+        )
+    if cumulative_bytes + declared_size > _ZIP_MAX_TOTAL_BYTES:
+        return ZipUploadResult(
+            filename=out_name,
+            status="skipped",
+            detail="archive total exceeds 1 GB cap (this file pushed over)",
+        )
+    return None
+
+
 @router.post(
     "/api/ingestion/collections/{collection_id}/documents/zip",
     response_model=ZipUploadResponse,
@@ -514,14 +554,14 @@ async def upload_zip(
             preserve_folder_structure=preserve_folder_structure,
         )
 
-        # Bail early if we already wrote 1 GB+ of decompressed content —
-        # avoids the worst-case 200-file × 50MB zip-bomb shape.
-        if cumulative_bytes >= _ZIP_MAX_TOTAL_BYTES:
+        declared_error = _declared_zip_member_error(
+            member,
+            out_name,
+            cumulative_bytes=cumulative_bytes,
+        )
+        if declared_error is not None:
             skipped += 1
-            results.append(ZipUploadResult(
-                filename=out_name, status="skipped",
-                detail="archive total exceeds 1 GB cap",
-            ))
+            results.append(declared_error)
             continue
 
         try:

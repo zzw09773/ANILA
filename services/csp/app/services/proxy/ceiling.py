@@ -67,22 +67,19 @@ def _effective_task_level(
     return ClassificationLevel.UNCLASSIFIED
 
 
-def enforce_model_ceiling(
+def _enforce_ceiling(
     db,
     *,
-    model,
+    target,
     caller,
     task_ctx: Optional[TaskRunContext],
     conv_id_int: Optional[int],
+    action: str,
+    resource_type: str,
+    target_label: str,
 ) -> None:
-    """出向前分類 ceiling 把關。違反 → 403 + deny 列 + 不發出向。
-
-    僅在「target 是設了 ``classification_ceiling`` 的 model」時判定(任務
-    Deliverable 5)。無 ceiling = 該模型不設上限 → 完全 no-op,不產生任何
-    PolicyDecision(沒有 ceiling 就沒有要裁決的事)。有 ceiling 時:pass 僅
-    task-linked 記 allow(避免 legacy 灌爆);deny 一律記 + 403 + 不發出向。
-    """
-    ceiling = (getattr(model, "classification_ceiling", None) or "").strip() or None
+    """Shared ceiling gate for model.invoke and agent.invoke."""
+    ceiling = (getattr(target, "classification_ceiling", None) or "").strip() or None
     if ceiling is None:
         return
 
@@ -96,17 +93,18 @@ def enforce_model_ceiling(
 
     actor_id = str(getattr(caller.user, "id", "") or "")
     task_id = task_ctx.task_id if task_ctx is not None else None
-    resource_id = str(getattr(model, "id", "") or "")
+    resource_id = str(getattr(target, "id", "") or "")
+    target_name = getattr(target, "name", "?")
 
     if not allowed:
         reason = (
-            f"任務分類等級「{level_str}」超過模型「{getattr(model, 'name', '?')}」"
+            f"任務分類等級「{level_str}」超過{target_label}「{target_name}」"
             f"分類上限「{ceiling}」,依 doc 04 §5 拒絕出向呼叫"
         )
         record_decision(
             db,
-            action=PolicyAction.MODEL_INVOKE.value,
-            resource_type="model",
+            action=action,
+            resource_type=resource_type,
             resource_id=resource_id,
             decision=PolicyDecisionVerdict.DENY.value,
             actor_type="user",
@@ -127,11 +125,59 @@ def enforce_model_ceiling(
     if task_ctx is not None:
         record_decision(
             db,
-            action=PolicyAction.MODEL_INVOKE.value,
-            resource_type="model",
+            action=action,
+            resource_type=resource_type,
             resource_id=resource_id,
             decision=PolicyDecisionVerdict.ALLOW.value,
             actor_type="user",
             actor_id=actor_id,
             task_id=task_id,
         )
+
+
+def enforce_model_ceiling(
+    db,
+    *,
+    model,
+    caller,
+    task_ctx: Optional[TaskRunContext],
+    conv_id_int: Optional[int],
+) -> None:
+    """出向前分類 ceiling 把關。違反 → 403 + deny 列 + 不發出向。
+
+    僅在「target 是設了 ``classification_ceiling`` 的 model」時判定(任務
+    Deliverable 5)。無 ceiling = 該模型不設上限 → 完全 no-op,不產生任何
+    PolicyDecision(沒有 ceiling 就沒有要裁決的事)。有 ceiling 時:pass 僅
+    task-linked 記 allow(避免 legacy 灌爆);deny 一律記 + 403 + 不發出向。
+    """
+    _enforce_ceiling(
+        db,
+        target=model,
+        caller=caller,
+        task_ctx=task_ctx,
+        conv_id_int=conv_id_int,
+        action=PolicyAction.MODEL_INVOKE.value,
+        resource_type="model",
+        target_label="模型",
+    )
+
+
+def enforce_agent_ceiling(
+    db,
+    *,
+    agent,
+    caller,
+    task_ctx: Optional[TaskRunContext],
+    conv_id_int: Optional[int],
+) -> None:
+    """Agent dispatch 前分類 ceiling 把關。違反 → 403 + deny 列 + 不 dispatch."""
+    _enforce_ceiling(
+        db,
+        target=agent,
+        caller=caller,
+        task_ctx=task_ctx,
+        conv_id_int=conv_id_int,
+        action=PolicyAction.AGENT_INVOKE.value,
+        resource_type="agent",
+        target_label="Agent",
+    )

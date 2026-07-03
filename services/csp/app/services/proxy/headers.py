@@ -78,14 +78,16 @@ def _resolve_outgoing_service_token(target_agent_id: Optional[int]) -> Optional[
 
     Resolution order:
 
-      1. Per-agent token from ``agent_credentials`` (cached 5 min).
-      2. Legacy fleet-shared ``CSP_SERVICE_TOKEN`` env var.
-      3. ``None`` — caller chose to skip identity injection.
+      1. Per-agent token from ``agent_credentials`` (cached 5 min) when
+         ``target_agent_id`` identifies a registered agent.
+      2. Legacy fleet-shared ``CSP_SERVICE_TOKEN`` env var only for
+         legacy calls with no registered target id.
+      3. ``None`` — no applicable service credential.
 
     Step 1 needs ``target_agent_id`` because we don't know which row
     is "this agent's" without it. When the proxy is forwarding to a
-    raw model endpoint (e.g. vLLM, not a registered agent),
-    ``target_agent_id`` is ``None`` and we go straight to legacy.
+    raw legacy endpoint with no registered agent id,
+    ``target_agent_id`` is ``None`` and we may use the legacy token.
     """
     if target_agent_id is not None:
         cached = _get_cached_agent_token(target_agent_id)
@@ -101,9 +103,10 @@ def _resolve_outgoing_service_token(target_agent_id: Optional[int]) -> Optional[
         if plaintext:
             _set_cached_agent_token(target_agent_id, plaintext)
             return plaintext
-        # Fall through to legacy when an agent has no DB credential
-        # yet — happens during the migration window before admin runs
-        # the cutover for that specific agent.
+        # Registered agents must not silently receive the fleet-shared
+        # legacy token. Missing per-agent credential is safer as "no
+        # service token" than broadening one leaked token across agents.
+        return None
 
     if settings.CSP_SERVICE_TOKEN:
         return settings.CSP_SERVICE_TOKEN
@@ -150,8 +153,8 @@ def build_agent_headers(
     attribution (it still receives the service token).
 
     Sprint 8 X: ``target_agent_id`` is the registered ``agents.id``. When
-    set, we prefer the per-agent token from ``agent_credentials``; falls
-    back to the legacy env-var token when no DB credential exists yet.
+    set, we use only that agent's token from ``agent_credentials``; missing
+    credential does not fall back to the fleet-shared legacy env var.
 
     Slice 2b-C (doc 05 §4 dispatch contract): ``task_id`` / ``trace_id``
     ride as ``X-ANILA-Task-Id`` / ``X-ANILA-Trace-Id`` when the call

@@ -40,7 +40,7 @@ from app.services.health_checker import (
     HEALTH_UNKNOWN,
     normalize_health_status,
 )
-from app.services.proxy.ceiling import enforce_model_ceiling
+from app.services.proxy.ceiling import enforce_agent_ceiling, enforce_model_ceiling
 from app.services.proxy.headers import resolve_model_gateway_key
 from app.services.proxy.task_link import TaskRunContext
 from app.services.service_token_envelope import (
@@ -48,7 +48,7 @@ from app.services.service_token_envelope import (
     decode_service_token_envelope,
     encode_service_token_envelope,
 )
-from tests.conftest import make_model, make_user
+from tests.conftest import make_agent, make_model, make_user
 
 
 @pytest.fixture(autouse=True)
@@ -257,6 +257,17 @@ def _model_decisions(db, model_id):
     )
 
 
+def _agent_decisions(db, agent_id):
+    return (
+        db.query(PolicyDecision)
+        .filter(
+            PolicyDecision.action == "agent.invoke",
+            PolicyDecision.resource_id == str(agent_id),
+        )
+        .all()
+    )
+
+
 def test_ceiling_deny_blocks_and_no_upstream_call(db):
     user = make_user(db, "u_deny")
     m = make_model(db, name="ceil_deny")
@@ -339,3 +350,45 @@ def test_ceiling_legacy_latched_conversation_deny(db):
         )
     assert exc.value.status_code == 403
     assert any(d.decision == "deny" for d in _model_decisions(db, m.id))
+
+
+def test_agent_ceiling_deny_blocks_before_dispatch(db):
+    owner = make_user(db, "agent_owner", role="developer")
+    user = make_user(db, "agent_caller")
+    agent = make_agent(db, owner, name="ceil_agent", approval_status="approved")
+    agent.classification_ceiling = "無機密"
+    conv = Conversation(user_id=user.id, title="classified")
+    db.add(conv)
+    db.commit()
+    conv.classification_level = "機密"
+    db.commit()
+
+    with respx.mock:
+        with pytest.raises(HTTPException) as exc:
+            enforce_agent_ceiling(
+                db, agent=agent, caller=_caller(user),
+                task_ctx=None, conv_id_int=conv.id,
+            )
+        assert respx.calls.call_count == 0
+    assert exc.value.status_code == 403
+    denies = [d for d in _agent_decisions(db, agent.id) if d.decision == "deny"]
+    assert len(denies) == 1
+    assert "機密" in (denies[0].reason or "")
+
+
+def test_agent_ceiling_allow_task_linked_records_allow(db):
+    owner = make_user(db, "agent_owner_allow", role="developer")
+    user = make_user(db, "agent_caller_allow")
+    agent = make_agent(db, owner, name="ceil_agent_allow", approval_status="approved")
+    agent.classification_ceiling = "機密"
+    task = Task(title="t", task_type="query", requester_user_id=user.id)
+    db.add(task)
+    db.commit()
+    ctx = TaskRunContext(task_id=task.id, trace_id=task.trace_id, task_run_id=1)
+
+    enforce_agent_ceiling(
+        db, agent=agent, caller=_caller(user), task_ctx=ctx, conv_id_int=None,
+    )
+    allows = [d for d in _agent_decisions(db, agent.id) if d.decision == "allow"]
+    assert len(allows) == 1
+    assert allows[0].task_id == task.id

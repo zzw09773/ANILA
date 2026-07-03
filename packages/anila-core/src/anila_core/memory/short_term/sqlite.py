@@ -81,6 +81,7 @@ CREATE INDEX IF NOT EXISTS idx_session_interrupts_sid
 CREATE TABLE IF NOT EXISTS session_owners (
     session_id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL,
+    owner_key_hash TEXT,
     updated_at TEXT NOT NULL
 );
 """
@@ -90,6 +91,17 @@ CREATE TABLE IF NOT EXISTS session_owners (
 # Guarded by a single lock; per-path lazy init avoids races on first use.
 _conn_cache: dict[str, "aiosqlite.Connection"] = {}
 _conn_cache_lock = asyncio.Lock()
+
+
+async def _ensure_schema_migrations(conn: "aiosqlite.Connection") -> None:
+    """Apply additive SQLite schema changes for existing session DB files."""
+    cursor = await conn.execute("PRAGMA table_info(session_owners)")
+    try:
+        columns = {str(row[1]) for row in await cursor.fetchall()}
+    finally:
+        await cursor.close()
+    if "owner_key_hash" not in columns:
+        await conn.execute("ALTER TABLE session_owners ADD COLUMN owner_key_hash TEXT")
 
 
 async def _get_connection(db_path: str) -> "aiosqlite.Connection":
@@ -106,6 +118,7 @@ async def _get_connection(db_path: str) -> "aiosqlite.Connection":
         # `executescript` runs the multi-statement schema in one call; commit
         # afterwards so the cache observers see a consistent DB.
         await conn.executescript(_SCHEMA)
+        await _ensure_schema_migrations(conn)
         await conn.commit()
         _conn_cache[db_path] = conn
         return conn
@@ -162,6 +175,7 @@ class SqliteSession:
                         import aiosqlite
                         cached = await aiosqlite.connect(":memory:")
                         await cached.executescript(_SCHEMA)
+                        await _ensure_schema_migrations(cached)
                         await cached.commit()
                         _conn_cache[self._db_path] = cached
             return cached

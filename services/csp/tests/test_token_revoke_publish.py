@@ -35,7 +35,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import datetime, timezone
+import sys
+from datetime import datetime
 from typing import Any
 
 # Same opt-in dance other client-based tests use; the startup security
@@ -102,6 +103,29 @@ class _RecordingRedis:
         self.closed = True
 
 
+class _RecordingSyncRedis:
+    """Sync stand-in used by synchronous FastAPI endpoints."""
+
+    def __init__(
+        self,
+        subscriber_count: int = 0,
+        raise_on_publish: BaseException | None = None,
+    ):
+        self.published: list[tuple[str, str]] = []
+        self.subscriber_count = subscriber_count
+        self.raise_on_publish = raise_on_publish
+        self.closed = False
+
+    def publish(self, channel: str, message: str) -> int:
+        if self.raise_on_publish is not None:
+            raise self.raise_on_publish
+        self.published.append((channel, message))
+        return self.subscriber_count
+
+    def close(self) -> None:
+        self.closed = True
+
+
 @pytest.fixture
 def recording_redis(monkeypatch) -> _RecordingRedis:
     """Install a recording fake in place of the real Redis client.
@@ -121,6 +145,20 @@ def recording_redis(monkeypatch) -> _RecordingRedis:
     # Wipe any cached singleton from previous tests in the same session.
     monkeypatch.setattr(token_revocation_publisher, "_client_singleton", None, raising=False)
     monkeypatch.setattr(token_revocation_publisher, "_get_redis_client", _factory)
+    return fake
+
+
+@pytest.fixture
+def recording_sync_redis(monkeypatch) -> _RecordingSyncRedis:
+    fake = _RecordingSyncRedis()
+
+    from app.services import token_revocation_publisher
+
+    monkeypatch.setattr(
+        token_revocation_publisher,
+        "_make_sync_redis_client",
+        lambda redis_url=None: fake,
+    )
     return fake
 
 
@@ -188,12 +226,68 @@ def test_publish_revocation_handles_factory_failure(monkeypatch, caplog):
     assert caplog.records, "expected an error log entry on factory failure"
 
 
+def test_publish_revocation_sync_uses_fresh_client_per_call(monkeypatch):
+    """Sync endpoints must not reuse a redis.asyncio client bound to a closed
+    asyncio.run() loop. Each sync publish gets and closes a sync client.
+    """
+    from app.services import token_revocation_publisher
+
+    clients: list[_RecordingSyncRedis] = []
+
+    def factory(redis_url: str | None = None):
+        client = _RecordingSyncRedis()
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(
+        token_revocation_publisher,
+        "_make_sync_redis_client",
+        factory,
+    )
+
+    token_revocation_publisher.publish_revocation_sync(
+        user_id=1, revoked_at_version=2
+    )
+    token_revocation_publisher.publish_revocation_sync(
+        user_id=1, revoked_at_version=3
+    )
+
+    assert len(clients) == 2
+    assert [len(client.published) for client in clients] == [1, 1]
+    assert all(client.closed for client in clients)
+
+
+def test_make_sync_redis_client_sets_timeouts(monkeypatch):
+    """A stuck Redis connection must not hang a sync worker thread."""
+    from app.services import token_revocation_publisher
+
+    captured: dict[str, Any] = {}
+
+    class FakeRedisModule:
+        @staticmethod
+        def from_url(url: str, **kwargs):
+            captured["url"] = url
+            captured.update(kwargs)
+            return _RecordingSyncRedis()
+
+    monkeypatch.setitem(sys.modules, "redis", FakeRedisModule)
+
+    client = token_revocation_publisher._make_sync_redis_client(
+        "redis://example.test:6379/0"
+    )
+
+    assert isinstance(client, _RecordingSyncRedis)
+    assert captured["url"] == "redis://example.test:6379/0"
+    assert captured["socket_connect_timeout"] == 2.0
+    assert captured["socket_timeout"] == 2.0
+
+
 # ---------------------------------------------------------------------------
 # Integration: HTTP endpoints trigger publish + DB write.
 # ---------------------------------------------------------------------------
 
 
-def _bump_call(recording_redis: _RecordingRedis) -> dict[str, Any]:
+def _bump_call(recording_redis: _RecordingRedis | _RecordingSyncRedis) -> dict[str, Any]:
     assert len(recording_redis.published) == 1, (
         f"expected exactly one publish, got {len(recording_redis.published)}"
     )
@@ -201,7 +295,9 @@ def _bump_call(recording_redis: _RecordingRedis) -> dict[str, Any]:
     return json.loads(message)
 
 
-def test_logout_triggers_publish_after_bump(client: TestClient, db, recording_redis):
+def test_logout_triggers_publish_after_bump(
+    client: TestClient, db, recording_sync_redis
+):
     """The existing logout path bumps token_version; the new publish
     call must fire after that bump, with the post-bump version."""
     user = make_user(db, username="logout-user", role="user")
@@ -222,12 +318,14 @@ def test_logout_triggers_publish_after_bump(client: TestClient, db, recording_re
 
     # publish_revocation should have been called once with the
     # *post-bump* token_version.
-    payload = _bump_call(recording_redis)
+    payload = _bump_call(recording_sync_redis)
     assert payload["user_id"] == user.id
     assert payload["revoked_at_version"] == initial_version + 1
 
 
-def test_password_change_triggers_publish(client: TestClient, db, recording_redis):
+def test_password_change_triggers_publish(
+    client: TestClient, db, recording_sync_redis
+):
     """Changing the password also bumps token_version → must publish."""
     user = make_user(db, username="pw-user", role="user")
 
@@ -245,16 +343,18 @@ def test_password_change_triggers_publish(client: TestClient, db, recording_redi
     )
     assert resp.status_code == 200, resp.text
 
-    payload = _bump_call(recording_redis)
+    payload = _bump_call(recording_sync_redis)
     assert payload["user_id"] == user.id
     # Original was 0; pw change bumps once.
     assert payload["revoked_at_version"] == 1
 
 
-def test_admin_revoke_triggers_publish_and_bump(client: TestClient, db, recording_redis):
+def test_admin_revoke_triggers_publish_and_bump(
+    client: TestClient, db, recording_sync_redis
+):
     """POST /api/auth/revoke is admin-only and force-bumps the target's
     token_version. Verifies bump, DB row insert, and publish all fire."""
-    admin = make_user(db, username="admin-rev", role="admin")
+    make_user(db, username="admin-rev", role="admin")
     target = make_user(db, username="target-1", role="user")
     initial_version = target.token_version
 
@@ -281,15 +381,17 @@ def test_admin_revoke_triggers_publish_and_bump(client: TestClient, db, recordin
     refreshed = db.query(User).filter(User.id == target.id).first()
     assert refreshed.token_version == initial_version + 1
 
-    payload = _bump_call(recording_redis)
+    payload = _bump_call(recording_sync_redis)
     assert payload["user_id"] == target.id
     assert payload["revoked_at_version"] == initial_version + 1
 
 
-def test_admin_revoke_forbidden_for_normal_user(client: TestClient, db, recording_redis):
+def test_admin_revoke_forbidden_for_normal_user(
+    client: TestClient, db, recording_sync_redis
+):
     """A regular user must not be able to call admin revoke. The
     request must short-circuit BEFORE bump / publish happens."""
-    not_admin = make_user(db, username="rando", role="user")
+    make_user(db, username="rando", role="user")
     target = make_user(db, username="target-2", role="user")
 
     resp = client.post(
@@ -307,15 +409,17 @@ def test_admin_revoke_forbidden_for_normal_user(client: TestClient, db, recordin
     assert resp.status_code == 403, resp.text
 
     # No publish, no bump.
-    assert recording_redis.published == []
+    assert recording_sync_redis.published == []
     db.expire_all()
     from app.models.user import User
     refreshed = db.query(User).filter(User.id == target.id).first()
     assert refreshed.token_version == 0
 
 
-def test_admin_revoke_404_unknown_user(client: TestClient, db, recording_redis):
-    admin = make_user(db, username="admin-404", role="admin")
+def test_admin_revoke_404_unknown_user(
+    client: TestClient, db, recording_sync_redis
+):
+    make_user(db, username="admin-404", role="admin")
     resp = client.post(
         "/api/auth/login",
         json={"username": "admin-404", "password": "password"},
@@ -328,7 +432,7 @@ def test_admin_revoke_404_unknown_user(client: TestClient, db, recording_redis):
         json={"user_id": 999_999},
     )
     assert resp.status_code == 404, resp.text
-    assert recording_redis.published == []
+    assert recording_sync_redis.published == []
 
 
 def test_publish_failure_does_not_break_logout(client: TestClient, db, monkeypatch):
@@ -344,13 +448,14 @@ def test_publish_failure_does_not_break_logout(client: TestClient, db, monkeypat
 
     from app.services import token_revocation_publisher
 
-    fake = _RecordingRedis(raise_on_publish=ConnectionError("redis down"))
+    fake = _RecordingSyncRedis(raise_on_publish=ConnectionError("redis down"))
 
-    async def _factory(redis_url: str | None = None):
+    def _factory(redis_url: str | None = None):
         return fake
 
-    monkeypatch.setattr(token_revocation_publisher, "_client_singleton", None, raising=False)
-    monkeypatch.setattr(token_revocation_publisher, "_get_redis_client", _factory)
+    monkeypatch.setattr(
+        token_revocation_publisher, "_make_sync_redis_client", _factory
+    )
 
     resp = client.post(
         "/api/auth/logout",

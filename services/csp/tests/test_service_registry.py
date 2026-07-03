@@ -26,6 +26,8 @@ from app.models.registered_service import RegisteredService
 from app.models.service_access_grant import ServiceAccessGrant
 from app.models.service_client import ServiceClient
 from app.models.service_launch import ServiceLaunch
+from app.models.source_snapshot import SourceSnapshot
+from app.models.task import Task
 from app.services import access_control, agent_credential_service
 from app.services.agent_credential_service import CallerIdentity
 from app.services.auto_seed import sync_env_seeded_services
@@ -308,6 +310,58 @@ class TestLaunch:
     def test_launch_unauthenticated_401(self, client, db):
         svc = _make_service(db, is_public=True)
         assert client.post(f"/api/services/{svc.slug}/launch", json={}).status_code == 401
+
+    def test_launch_rejects_source_snapshot_owned_by_another_user(self, client, db):
+        victim = make_user(db, username="snapshot-owner")
+        task = Task(
+            title="private task",
+            task_type="query",
+            requester_user_id=victim.id,
+            status="completed",
+        )
+        db.add(task)
+        db.commit()
+        snapshot = SourceSnapshot(task_id=task.id, origin="upload", source_scope="personal")
+        db.add(snapshot)
+        db.commit()
+
+        headers = _auth_headers(client, db, username="attacker")
+        svc = _make_service(db, slug="snapshot-svc", name="Snapshot Svc", is_public=True)
+        resp = client.post(
+            f"/api/services/{svc.slug}/launch",
+            json={"source_snapshot_id": snapshot.id},
+            headers=headers,
+        )
+        assert resp.status_code == 403, resp.text
+        assert db.query(ServiceLaunch).count() == 0
+
+    def test_launch_rejects_non_http_entry_url_before_issuing_token(self, client, db):
+        headers = _auth_headers(client, db, username="launch-user")
+        svc = _make_service(
+            db,
+            slug="unsafe-url-svc",
+            name="Unsafe URL",
+            is_public=True,
+            entry_url="javascript:alert(1)",
+        )
+        resp = client.post(f"/api/services/{svc.slug}/launch", json={}, headers=headers)
+        assert resp.status_code == 400, resp.text
+        assert "entry_url" in resp.text
+        assert db.query(ServiceLaunch).count() == 0
+
+    def test_launch_rejects_invalid_port_before_issuing_token(self, client, db):
+        headers = _auth_headers(client, db, username="launch-bad-port")
+        svc = _make_service(
+            db,
+            slug="bad-port-svc",
+            name="Bad Port",
+            is_public=True,
+            entry_url="https://example.com:99999/app",
+        )
+        resp = client.post(f"/api/services/{svc.slug}/launch", json={}, headers=headers)
+        assert resp.status_code == 400, resp.text
+        assert "entry_url" in resp.text
+        assert db.query(ServiceLaunch).count() == 0
 
 
 # ── audit callback (doc §10) ────────────────────────────────────────────────

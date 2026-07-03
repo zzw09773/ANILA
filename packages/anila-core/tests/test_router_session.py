@@ -27,6 +27,7 @@ from anila_core.memory import MemorySession, close_all_connections
 CSP_BASE = settings.csp_base_url
 CSP_URL = f"{CSP_BASE}/v1/chat/completions"
 CSP_AGENTS_URL = f"{CSP_BASE}/v1/agents"
+CSP_ME_URL = f"{CSP_BASE}/api/auth/me"
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +58,10 @@ def _llm_router_response(content: str) -> dict:
             }
         ],
     }
+
+
+def _jwt(label: str) -> str:
+    return f"jwt-header.{label}.jwt-signature"
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +165,12 @@ def test_state_endpoint_returns_persisted_user_message(
         headers={"Authorization": "Bearer sk-test"},
     )
 
-    state = client.get("/v1/sessions/s-state/state").json()
+    state_response = client.get(
+        "/v1/sessions/s-state/state",
+        headers={"Authorization": "Bearer sk-test"},
+    )
+    assert state_response.status_code == 200, state_response.text
+    state = state_response.json()
     assert state["session_id"] == "s-state"
     assert any(
         m.get("content") == "remember me"
@@ -170,6 +180,119 @@ def test_state_endpoint_returns_persisted_user_message(
         )
         for m in state["messages"]
     )
+
+
+@respx.mock
+def test_state_endpoint_requires_auth(db_path: Path) -> None:
+    respx.post(CSP_URL).mock(
+        return_value=httpx.Response(
+            200, json=_llm_router_response("private")
+        )
+    )
+    app = create_router_app(session_db_path=str(db_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "secret"}],
+            "stream": False,
+            "session_id": "s-private",
+        },
+        headers={"Authorization": "Bearer sk-owner"},
+    )
+    assert response.status_code == 200
+
+    state = client.get("/v1/sessions/s-private/state")
+    assert state.status_code == 401
+
+
+@respx.mock
+def test_state_endpoint_rejects_different_caller(db_path: Path) -> None:
+    respx.post(CSP_URL).mock(
+        return_value=httpx.Response(
+            200, json=_llm_router_response("private")
+        )
+    )
+    app = create_router_app(session_db_path=str(db_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "owner-only"}],
+            "stream": False,
+            "session_id": "s-owned",
+        },
+        headers={"Authorization": "Bearer sk-owner"},
+    )
+    assert response.status_code == 200
+
+    state = client.get(
+        "/v1/sessions/s-owned/state",
+        headers={"Authorization": "Bearer sk-other"},
+    )
+    assert state.status_code == 403
+
+
+@respx.mock
+def test_state_endpoint_accepts_refreshed_jwt_for_same_user(
+    db_path: Path,
+) -> None:
+    """Cookie/JWT auth refreshes the bearer string; ownership is the CSP user."""
+    respx.post(CSP_URL).mock(
+        return_value=httpx.Response(
+            200, json=_llm_router_response("Hi back")
+        )
+    )
+
+    seen_tokens: list[str] = []
+
+    def me_handler(request: httpx.Request) -> httpx.Response:
+        seen_tokens.append(request.headers["Authorization"])
+        return httpx.Response(
+            200,
+            json={
+                "id": 42,
+                "username": "rotating-user",
+                "email": None,
+                "role": "user",
+                "department_id": None,
+                "department_name": None,
+                "is_active": True,
+                "is_approved": True,
+                "local_password_disabled": False,
+                "last_login_at": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+        )
+
+    respx.get(CSP_ME_URL).mock(side_effect=me_handler)
+
+    app = create_router_app(session_db_path=str(db_path))
+    client = TestClient(app)
+
+    first = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "remember me"}],
+            "stream": False,
+            "session_id": "s-jwt-rotate",
+        },
+        headers={"Authorization": f"Bearer {_jwt('access-v1')}"},
+    )
+    assert first.status_code == 200, first.text
+
+    state = client.get(
+        "/v1/sessions/s-jwt-rotate/state",
+        headers={"Authorization": f"Bearer {_jwt('access-v2')}"},
+    )
+    assert state.status_code == 200, state.text
+    assert seen_tokens == [
+        f"Bearer {_jwt('access-v1')}",
+        f"Bearer {_jwt('access-v2')}",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -274,3 +397,62 @@ def test_session_factory_override_used() -> None:
     )
     assert response.status_code == 200
     assert "s-mem" in captured
+
+
+@respx.mock
+def test_session_factory_jwt_chat_does_not_resolve_owner_hash(monkeypatch) -> None:
+    """Custom session adapters do not use Router's SQLite owner table.
+
+    JWT chat turns in this mode must not call CSP /api/auth/me through
+    ``_resolve_session_owner_hash`` because the result is unused.
+    """
+    import anila_core.api.router_server as router_server
+
+    async def fail_if_called(_caller_api_key: str) -> str:
+        raise AssertionError("owner hash resolution should not run")
+
+    monkeypatch.setattr(
+        router_server, "_resolve_session_owner_hash", fail_if_called
+    )
+    respx.post(CSP_URL).mock(
+        return_value=httpx.Response(
+            200, json=_llm_router_response("hi!")
+        )
+    )
+
+    app = create_router_app(session_factory=lambda sid: MemorySession(sid))
+    client = TestClient(app)
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+            "session_id": "s-custom-jwt",
+        },
+        headers={"Authorization": f"Bearer {_jwt('access-v1')}"},
+    )
+
+    assert response.status_code == 200, response.text
+
+
+def test_session_factory_state_does_not_resolve_owner_hash(monkeypatch) -> None:
+    """State reads with a custom session adapter should not depend on CSP
+    auth-me because there is no local owner hash to compare.
+    """
+    import anila_core.api.router_server as router_server
+
+    async def fail_if_called(_caller_api_key: str) -> str:
+        raise AssertionError("owner hash resolution should not run")
+
+    monkeypatch.setattr(
+        router_server, "_resolve_session_owner_hash", fail_if_called
+    )
+
+    app = create_router_app(session_factory=lambda sid: MemorySession(sid))
+    client = TestClient(app)
+    response = client.get(
+        "/v1/sessions/s-custom-jwt/state",
+        headers={"Authorization": f"Bearer {_jwt('access-v1')}"},
+    )
+
+    assert response.status_code == 200, response.text

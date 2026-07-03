@@ -104,12 +104,23 @@ def _silence_publish(monkeypatch):
     """
     from app.services import token_revocation_publisher
     import app.api.auth as auth_module
+    import app.api.auth.password as password_module
+    import app.api.auth.revocations as revocations_module
 
     async def _noop(*args, **kwargs):
         return None
 
+    def _noop_sync(*args, **kwargs):
+        return None
+
     monkeypatch.setattr(token_revocation_publisher, "publish_revocation", _noop)
+    monkeypatch.setattr(
+        token_revocation_publisher, "publish_revocation_sync", _noop_sync
+    )
     monkeypatch.setattr(auth_module, "publish_revocation", _noop)
+    monkeypatch.setattr(auth_module, "publish_revocation_sync", _noop_sync)
+    monkeypatch.setattr(password_module, "publish_revocation_sync", _noop_sync)
+    monkeypatch.setattr(revocations_module, "publish_revocation_sync", _noop_sync)
 
 
 def _insert_revocation(db, *, user_id: int, version: int, ts: datetime) -> None:

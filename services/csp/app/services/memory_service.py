@@ -65,7 +65,11 @@ from anila_core.memory.long_term import (
     truncate_embedding,
 )
 
-from anila_core.security import UnsafeEndpointError, validate_outbound_url
+from anila_core.security import (
+    ENDPOINT_KIND_MODEL,
+    UnsafeEndpointError,
+    validate_outbound_url,
+)
 
 from app.database import SessionLocal
 from app.models.model_registry import ModelRegistry
@@ -84,7 +88,7 @@ def _guard_outbound(url: str) -> None:
     ``RuntimeError`` so the existing fail-closed callers skip the call.
     """
     try:
-        validate_outbound_url(url)
+        validate_outbound_url(url, endpoint_kind=ENDPOINT_KIND_MODEL)
     except UnsafeEndpointError as exc:
         raise RuntimeError(
             f"memory outbound endpoint failed SSRF guard: {exc}"
