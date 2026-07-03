@@ -56,8 +56,8 @@ export function buildShellEntries({ onTaskCenter, onOpenServices } = {}) {
     { id: "tasks", label: "任務中心", Icon: IconMessage, current: true, onClick: onTaskCenter },
     // 我的知識庫 = 同源知識 SPA。
     { id: "knowledge", label: "我的知識庫", Icon: IconBook, href: originHref("/anilalm") },
-    // 產出中心 = 知識 SPA 承載 Studio / artifacts。
-    { id: "output", label: "產出中心", Icon: IconSpark, href: originHref("/anilalm") },
+    // 產出中心 = 知識 SPA 的跨知識庫產出總覽(/anilalm/outputs)。
+    { id: "output", label: "產出中心", Icon: IconSpark, href: originHref("/anilalm/outputs") },
     // 專案入口 = ServicesPanel（Registry 服務卡片）。
     { id: "projects", label: "專案入口", Icon: IconGrid, onClick: onOpenServices },
   ];
