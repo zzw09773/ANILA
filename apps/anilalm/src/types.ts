@@ -193,8 +193,8 @@ export interface SlidesArtifact extends ArtifactBase {
 
 export interface MindmapArtifact extends ArtifactBase {
   kind: 'mindmap'
-  /** Backend job 完成後填入:{ svg, dot } */
-  downloadUrls?: { svg?: string; dot?: string }
+  /** Backend job 完成後填入:{ svg, dot, json };json = 互動樹檢視的 spec */
+  downloadUrls?: { svg?: string; dot?: string; json?: string }
   nodeCount?: number
 }
 
