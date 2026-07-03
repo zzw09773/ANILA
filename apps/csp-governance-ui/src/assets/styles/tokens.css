@@ -21,17 +21,19 @@
   /* 表格/數據一律等寬數字對齊(sans 也吃);連字關閉避免介面誤合字。 */
   --font-feat: "tnum" on, "calt" off, "liga" off;
 
-  --t-3xs: 9px;
-  --t-2xs: 10px;
-  --t-xs:  11px;
-  --t-sm:  12px;
-  --t-base: 13px;
-  --t-md:  14px;
-  --t-lg:  16px;
-  --t-xl:  19px;
-  --t-2xl: 22px;
-  --t-3xl: 28px;
-  --t-4xl: 36px;
+  /* 2026-07-03 全階 +1px:治理平台原字級偏小 (base 13px),整條 scale 一起放大
+     維持層級比例;要再調整改這裡即可,元件端全部引用 token。 */
+  --t-3xs: 10px;
+  --t-2xs: 11px;
+  --t-xs:  12px;
+  --t-sm:  13px;
+  --t-base: 14px;
+  --t-md:  15px;
+  --t-lg:  17px;
+  --t-xl:  20px;
+  --t-2xl: 23px;
+  --t-3xl: 29px;
+  --t-4xl: 37px;
 
   --lh-tight: 1.3;
   --lh-base:  1.5;
