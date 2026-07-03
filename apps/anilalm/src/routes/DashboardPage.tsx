@@ -163,6 +163,27 @@ export function DashboardPage() {
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button
+            onClick={() => navigate('/outputs')}
+            title="產出中心 — 所有知識庫的 Studio 產出"
+            style={{
+              height: 32,
+              padding: '0 12px',
+              borderRadius: 8,
+              border: `1px solid ${t.border}`,
+              background: t.surface,
+              color: t.textMuted,
+              fontSize: 12,
+              fontWeight: 500,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              cursor: 'pointer',
+            }}
+          >
+            <Icon name="sparkle" size={13} stroke={t.textMuted} />
+            產出中心
+          </button>
           <ThemeSwitch />
           <button
             onClick={() => logout()}

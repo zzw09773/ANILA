@@ -59,9 +59,9 @@ describe("buildShellEntries", () => {
       "產出中心",
       "專案入口",
     ]);
-    // 知識庫 / 產出中心皆連向同源 /anilalm。
+    // 知識庫連知識 SPA 首頁;產出中心深連結跨知識庫產出總覽 /anilalm/outputs。
     expect(entries[1].href).toBe(`${ORIGIN}/anilalm`);
-    expect(entries[2].href).toBe(`${ORIGIN}/anilalm`);
+    expect(entries[2].href).toBe(`${ORIGIN}/anilalm/outputs`);
   });
 });
 
@@ -101,7 +101,7 @@ describe("ShellNav", () => {
   it("points knowledge and output at the same-origin /anilalm surface", () => {
     render(<ShellNav user={{ role: "user" }} />);
     expect(screen.getByText("我的知識庫").closest("a").getAttribute("href")).toBe(`${ORIGIN}/anilalm`);
-    expect(screen.getByText("產出中心").closest("a").getAttribute("href")).toBe(`${ORIGIN}/anilalm`);
+    expect(screen.getByText("產出中心").closest("a").getAttribute("href")).toBe(`${ORIGIN}/anilalm/outputs`);
   });
 
   it("opens the ServicesPanel via onOpenServices when 專案入口 is clicked", () => {
