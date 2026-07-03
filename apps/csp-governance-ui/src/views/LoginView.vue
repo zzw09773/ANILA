@@ -304,16 +304,20 @@ const { theme, toggleTheme } = useTheme()
 const otherTheme = computed(() => (theme.value === 'dark' ? 'light' : 'dark'))
 
 // branch SSO: 其他 SPA (anila-ui / ANILALM) 在 unauthenticated 時把使用者
-// 送來這裡並夾帶 ?next=<原 URL>。登入成功後跳回去；沒帶 next 就回 dashboard。
+// 送來這裡並夾帶 ?next=<原 URL>。登入成功後跳回去；沒帶 next 就進 ANILA
+// 工作區 (/anila/app) — 一般使用者的日常入口是任務中心,不是治理 dashboard;
+// admin 要進治理中心走 shell 導覽的「治理中心」或直接開 /。
 //
 // 接受兩種 next 形式：
 //   1. 相對路徑（以 / 開頭、不含 //） — 例：/dashboard
 //   2. 同 hostname 的 absolute URL — 例：https://172.16.120.35:4443/app/...
 //      （4443 port 的 anila-ui 跨 port 跳回時必要）
 // 拒絕跨 hostname、javascript:、//evil.com 等 open-redirect 攻擊向量。
+const DEFAULT_POST_LOGIN_DEST = '/anila/app'
+
 function resolveNextDestination() {
   const candidate = route.query.next
-  if (typeof candidate !== 'string' || !candidate) return '/'
+  if (typeof candidate !== 'string' || !candidate) return DEFAULT_POST_LOGIN_DEST
 
   // 嘗試當 absolute URL parse；同 hostname 才接受
   try {
@@ -321,10 +325,10 @@ function resolveNextDestination() {
     if (url.hostname === window.location.hostname && (url.protocol === 'https:' || url.protocol === 'http:')) {
       return url.toString()
     }
-    return '/'
+    return DEFAULT_POST_LOGIN_DEST
   } catch {
     // 不是 absolute URL — 走相對路徑驗證
-    if (!candidate.startsWith('/') || candidate.startsWith('//')) return '/'
+    if (!candidate.startsWith('/') || candidate.startsWith('//')) return DEFAULT_POST_LOGIN_DEST
     return candidate
   }
 }
