@@ -5,6 +5,12 @@
 
 ---
 
+## -1. 跨專案制度（playbooks，2026-07-03 立）
+
+派工／驗收／完成判準／制度維護規則在 `~/.claude/playbooks/`（symlink，真身＝可攜 kit `/home/aia/claude-harness-kit/`；00 診斷、10 調度、20 判斷、30 派工模板、40 維護、90 給未來 session 的信）。觸發路由表在全域 `~/.claude/CLAUDE.md`：**派 subagent 前讀 10、宣稱完成前讀 20**。playbooks 是跨專案通則；與本檔或 `AGENTS.md` 衝突時，**專案檔優先**。
+
+---
+
 ## 0. 一句話定位
 
 ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,**PKI 自然人憑證卡登入**。多服務 monorepo,`main` 是 SSOT,7 分支 = main + 登入/部署設定 delta。**詳細服務地圖與分支模型見 `AGENTS.md` §2–3。** Repo 是 **PUBLIC** → 祕密零外洩。
