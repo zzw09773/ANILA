@@ -17,6 +17,9 @@ interface WorkspaceState {
   conversations: Conversation[]
   activeConversationId: number | null
   studioOpen: boolean
+  // 跨面板「代發問題」橋接:心智圖節點點擊等來源把問題放進來,
+  // WSChat 的 effect 撿走後送出並清空。null = 沒有待送問題。
+  pendingAsk: string | null
 
   setCollection: (c: Collection | null) => void
   setDocs: (docs: DocWithJob[]) => void
@@ -33,6 +36,8 @@ interface WorkspaceState {
   toggleStudio: () => void
   setStudioOpen: (v: boolean) => void
 
+  setPendingAsk: (q: string | null) => void
+
   reset: () => void
 }
 
@@ -42,6 +47,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   conversations: [],
   activeConversationId: null,
   studioOpen: true,
+  pendingAsk: null,
 
   setCollection: (c) => set({ collection: c }),
 
@@ -95,6 +101,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   toggleStudio: () => set((s) => ({ studioOpen: !s.studioOpen })),
   setStudioOpen: (v) => set({ studioOpen: v }),
 
+  setPendingAsk: (q) => set({ pendingAsk: q }),
+
   reset: () =>
     set({
       collection: null,
@@ -102,5 +110,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       conversations: [],
       activeConversationId: null,
       studioOpen: true,
+      pendingAsk: null,
     }),
 }))

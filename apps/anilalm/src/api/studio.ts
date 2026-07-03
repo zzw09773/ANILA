@@ -508,6 +508,42 @@ export const downloadMindmapArtifact = (
   filenameStem: string,
 ) => _downloadArtifact('mindmaps', jobId, fmt, filenameStem)
 
+/**
+ * 後端 MindmapSpec 的樹狀結構(fmt=json 下載內容)。手寫鏡像
+ * services/anila-studio/app/schemas/mindmap.py 的 MindmapNode/MindmapSpec —
+ * 該 schema 不在任何 response_model 內,OpenAPI 生成不會帶到;後端改欄位時
+ * 這裡要同步。
+ */
+export interface MindmapTreeNode {
+  id: string
+  label: string
+  children: MindmapTreeNode[]
+  note?: string | null
+}
+
+export interface MindmapTreeSpec {
+  title: string
+  preset: string
+  root: MindmapTreeNode
+  layout?: 'TB' | 'LR' | 'BT' | 'RL'
+}
+
+/**
+ * 取回互動式樹狀檢視的資料。404 表示 job 早於 JSON 格式上線(舊 job)—
+ * 呼叫端 fallback 到「僅提供 SVG/DOT 下載」的舊檢視。
+ */
+export async function fetchMindmapTree(jobId: string): Promise<MindmapTreeSpec> {
+  const res = await studioFetch(
+    studioUrl(`/api/mindmaps/jobs/${encodeURIComponent(jobId)}/download/json`),
+    { headers: {} },
+  )
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '')
+    throw new Error(`mindmap tree ${res.status}: ${txt || res.statusText}`)
+  }
+  return (await res.json()) as MindmapTreeSpec
+}
+
 // ── Infographic ────────────────────────────────────────────────────
 
 export interface CreateInfographicJobInput {
