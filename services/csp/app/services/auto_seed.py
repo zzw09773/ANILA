@@ -258,6 +258,7 @@ def auto_seed():
                             api_version=m.get("api_version", "v1"),
                             description=m.get("description", ""),
                             context_window=m.get("context_window"),
+                            protocol=m.get("protocol", "openai_compatible"),
                         )
                         db.add(model)
                         logger.info(f"自動註冊模型: {m['name']} -> {m['endpoint_url']}")
@@ -265,6 +266,10 @@ def auto_seed():
                         if existing.endpoint_url != m["endpoint_url"]:
                             existing.endpoint_url = m["endpoint_url"]
                             logger.info(f"更新模型端點: {m['name']} -> {m['endpoint_url']}")
+                        new_proto = m.get("protocol")
+                        if new_proto and existing.protocol != new_proto:
+                            existing.protocol = new_proto
+                            logger.info(f"更新模型 protocol: {m['name']} -> {new_proto}")
 
                 db.flush()  # Ensure base models have IDs
 
