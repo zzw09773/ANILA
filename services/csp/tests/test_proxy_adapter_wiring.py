@@ -261,6 +261,28 @@ async def test_openai_compatible_passthrough_error_detail_unchanged(db, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_openai_compatible_passthrough_error_non_openai_shape_never_leaks(db, monkeypatch):
+    """安全鎖：上游 4xx 回傳非 OpenAI-shape body（如 ``{"detail": ...}`` 或
+    純文字內部 trace），經真正的 openai_compatible/PassthroughAdapter 路徑後,
+    client 看到的 ``HTTPException.detail`` 必須是泛用訊息，絕對不含上游原文
+    ——防止未來又把 base.py 的 fail-safe 改壞、重新洩漏上游內部細節。"""
+    model = make_model(db, name="passthrough-llm-4xx-nonshape")
+    upstream_secret = "invalid api key for upstream backend at internal-host:9999"
+    _patch_client(
+        monkeypatch,
+        {"detail": upstream_secret},
+        status_code=400,
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        await _call(model)
+
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.detail == "模型服務拒絕請求 (HTTP 400)"
+    assert upstream_secret not in excinfo.value.detail
+
+
+@pytest.mark.asyncio
 async def test_unknown_protocol_falls_back_to_passthrough(db, monkeypatch):
     """A stale/unknown ``protocol`` DB value (e.g. a removed custom
     adapter) must not break the call — ``get_adapter`` fallback keeps it on

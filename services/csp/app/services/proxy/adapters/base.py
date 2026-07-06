@@ -37,10 +37,24 @@ class PassthroughAdapter:
         return raw_line
 
     def from_backend_error(self, endpoint_kind: str, status: int, raw_body: str) -> dict:
+        """Fail-safe 4xx translation: only a well-formed OpenAI-shape body
+        (JSON dict, ``error`` is a dict, ``error.message`` a non-empty str)
+        surfaces its message (truncated to 300 chars) to the client. Every
+        other shape — non-JSON, no ``error`` key, ``error`` not a dict,
+        missing/empty/non-str ``message`` — falls back to a generic message.
+        The raw upstream body is NEVER echoed back here; it may carry
+        internal backend detail (stack traces, internal hostnames, API key
+        hints) that must stay server-side-log-only (logged by the caller in
+        ``service.py``)."""
+        generic = f"模型服務拒絕請求 (HTTP {status})"
         try:
             parsed = json.loads(raw_body)
-            if isinstance(parsed, dict) and "error" in parsed:
-                return parsed
         except (json.JSONDecodeError, TypeError):
-            pass
-        return {"error": {"message": raw_body[:500] or f"upstream status {status}"}}
+            return {"error": {"message": generic}}
+        if isinstance(parsed, dict):
+            error = parsed.get("error")
+            if isinstance(error, dict):
+                msg = error.get("message")
+                if isinstance(msg, str) and msg:
+                    return {"error": {"message": msg[:300]}}
+        return {"error": {"message": generic}}
