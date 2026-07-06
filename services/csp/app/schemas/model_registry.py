@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from pydantic import BaseModel
 
 
@@ -17,7 +18,7 @@ class ModelCreate(BaseModel):
     # (migration 0033) is False so historical rows aren't auto-flipped.
     is_internal: bool = True
     # Slice 6a (doc 04 §2): ModelEndpoint formalized fields.
-    protocol: str = "openai_compatible"  # 'openai_compatible' / 'custom_adapter'
+    protocol: Literal["openai_compatible", "llamacpp"] = "openai_compatible"
     classification_ceiling: str | None = None  # 五級字串;None = 不設限
     owner_department_id: int | None = None
     supports_streaming: bool = True
@@ -40,7 +41,7 @@ class ModelUpdate(BaseModel):
     base_model_id: int | None = None
     is_internal: bool | None = None
     # Slice 6a (doc 04 §2/§3).
-    protocol: str | None = None
+    protocol: Literal["openai_compatible", "llamacpp"] | None = None
     classification_ceiling: str | None = None
     owner_department_id: int | None = None
     supports_streaming: bool | None = None
