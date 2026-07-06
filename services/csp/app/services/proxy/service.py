@@ -506,6 +506,7 @@ async def _proxy_stream_impl(
     task_trace_id: Optional[str] = None,
     legacy_runtime_call: bool = False,
     gateway_api_key: Optional[str] = None,
+    protocol: str = "openai_compatible",
 ) -> AsyncIterator[str]:
     """Stream SSE response from a downstream backend through CSP proxy.
 
@@ -517,7 +518,16 @@ async def _proxy_stream_impl(
     headers only (doc 05 §4; doc 04 AC5 forbids them toward the model
     gateway) and into the usage row; ``legacy_runtime_call`` marks task-less
     /v1 chat traffic. Run finalization lives in the ``proxy_stream`` wrapper.
+
+    Backend adapter (Task 6): protocol-specific translation layer around the
+    outbound stream call, mirroring Task 5's non-stream wiring. ``chat`` is
+    the only ``endpoint_kind`` here — streaming is chat-only. ``get_adapter``
+    falls back to the openai_compatible ``PassthroughAdapter`` for
+    unknown/legacy ``protocol`` values, so every hook below is a no-op on the
+    (default) passthrough path — existing behavior stays byte-identical,
+    including per-line forwarding via ``from_backend_stream_chunk``.
     """
+    adapter = get_adapter(protocol)
     # Call-time SSRF re-validation (TOCTOU / DNS-rebinding defense).
     _guard_outbound(
         target_url,
@@ -547,8 +557,12 @@ async def _proxy_stream_impl(
     # None → _apply_gateway_auth 退回全域 env(既有行為)。
     if target_agent_id is None:
         _apply_gateway_auth(headers, gateway_api_key)
-    # Force stream_options so the downstream sends usage in last chunk
-    body = {**request_body, "stream": True,
+    # Backend adapter (Task 6): translate the outbound body first, then
+    # force stream_options on top so the downstream sends usage in the last
+    # chunk — same override this call always made, now layered onto the
+    # adapter's (possibly no-op) transformed body instead of the raw one.
+    body = adapter.to_backend_request("chat", request_body)
+    body = {**body, "stream": True,
             "stream_options": {"include_usage": True}}
 
     start_time = time.time()
@@ -560,7 +574,9 @@ async def _proxy_stream_impl(
     pending_done_block: str | None = None
 
     try:
-        async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
+        async with httpx.AsyncClient(
+            timeout=adapter.request_timeout("chat", httpx.Timeout(settings.LLM_TIMEOUT))
+        ) as client:
             async with client.stream("POST", target_url, json=body, headers=headers) as resp:
                 if resp.status_code >= 400:
                     raise HTTPException(status_code=resp.status_code,
@@ -587,7 +603,18 @@ async def _proxy_stream_impl(
                     return block + "\n\n"
 
                 block_lines: list[str] = []
-                async for line in resp.aiter_lines():
+                async for raw_line in resp.aiter_lines():
+                    # Backend adapter (Task 6): per-line hook. ``None`` means
+                    # the adapter wants this raw line dropped entirely (e.g.
+                    # a protocol-specific comment/keepalive line) — it never
+                    # reaches ``block_lines``, so it cannot surface in a
+                    # block, the ``[DONE]`` holdback, anila.meta, or usage
+                    # interception below. Passthrough returns the line
+                    # unchanged, so every downstream branch keeps operating
+                    # on byte-identical input.
+                    line = adapter.from_backend_stream_chunk("chat", raw_line)
+                    if line is None:
+                        continue
                     if line == "":
                         if block_lines:
                             block = "\n".join(block_lines)
@@ -729,6 +756,7 @@ async def proxy_stream(
     task_run_id: Optional[int] = None,
     legacy_runtime_call: bool = False,
     gateway_api_key: Optional[str] = None,
+    protocol: str = "openai_compatible",
 ) -> AsyncIterator[str]:
     """Public entrypoint — ``_proxy_stream_impl`` plus Slice 2b-C TaskRun
     finalization. The stream drains AFTER the request handler returns, so
@@ -762,6 +790,7 @@ async def proxy_stream(
             task_trace_id=task_trace_id,
             legacy_runtime_call=legacy_runtime_call,
             gateway_api_key=gateway_api_key,
+            protocol=protocol,
         ):
             yield chunk
     except HTTPException as exc:

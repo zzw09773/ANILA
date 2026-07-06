@@ -299,3 +299,189 @@ async def test_unknown_protocol_falls_back_to_passthrough(db, monkeypatch):
     result = await _call(model)
 
     assert result["choices"] == payload["choices"]
+
+
+# ── Task 6: streaming path (proxy_stream / _proxy_stream_impl) ─────────────
+#
+# Same contract as the non-stream suite above, applied to the SSE path:
+# ``_proxy_stream_impl`` resolves a ``BackendAdapter`` from a new
+# ``protocol`` parameter and applies ``to_backend_request`` to the outbound
+# body, ``request_timeout`` to the client timeout, and
+# ``from_backend_stream_chunk`` to every raw line read off
+# ``resp.aiter_lines()`` *before* it enters the existing block-assembly /
+# ``[DONE]`` holdback / ``anila.meta`` / usage-interception logic. A line
+# that the adapter maps to ``None`` is dropped outright (never reaches
+# ``block_lines``). ``openai_compatible`` (``PassthroughAdapter``) returns
+# every raw line unchanged, so this suite locks byte-identical output for
+# that path.
+
+
+class _FakeStreamResponse:
+    def __init__(self, lines: list[str], status_code: int = 200):
+        self._lines = lines
+        self.status_code = status_code
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+
+class _FakeStreamClient:
+    """Fake httpx.AsyncClient exposing only ``.stream(...)`` — same shape as
+    test_proxy_stream_usage.py's ``_FakeAsyncClient``, plus call recording so
+    tests can assert on the outbound (adapter-transformed) request body."""
+
+    def __init__(self, lines: list[str], calls: list[dict], *args, **kwargs):
+        self._lines = lines
+        self._calls = calls
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def stream(self, method: str, url: str, json: dict | None = None, headers=None):
+        self._calls.append({"method": method, "url": url, "json": json, "headers": headers})
+        return _FakeStreamResponse(self._lines)
+
+
+def _patch_stream_client(monkeypatch, lines: list[str]) -> list[dict]:
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        proxy_impl.httpx,
+        "AsyncClient",
+        lambda *a, **k: _FakeStreamClient(lines, calls, *a, **k),
+    )
+    return calls
+
+
+async def _collect_stream(**kwargs) -> list[str]:
+    chunks = []
+    async for chunk in proxy_impl.proxy_stream(**kwargs):
+        chunks.append(chunk)
+    return chunks
+
+
+def _base_stream_kwargs(**overrides) -> dict:
+    kwargs = dict(
+        target_url="http://mock-llm/v1/chat/completions",
+        api_key_id=1,
+        user_id=2,
+        department_id=None,
+        usage_model_id=3,
+        request_body={
+            "model": "google/gemma4",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+        model_name="google/gemma4",
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+@pytest.mark.asyncio
+async def test_stream_hook_passthrough_is_byte_identical(monkeypatch):
+    """passthrough(openai_compatible)串流輸出與未接 hook 前逐位元組相同。
+
+    Upstream 已自帶 usage 與 anila.meta,讓 ``_proxy_stream_impl`` 不需合成
+    任何衍生內容(無 estimate usage、無 synthetic anila.meta)——整條輸出因
+    此完全由『逐行 hook 是否改動內容』決定,不受 wall-clock
+    (trace_id/latency_ms)影響,可以放心做逐位元組相等判斷。
+    """
+    lines = [
+        'data: {"choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}',
+        "",
+        'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],'
+        '"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}',
+        "",
+        "event: anila.meta",
+        'data: {"trace_id":"trace-1","trace":[],"citations":[],"confidence":null,'
+        '"handoff_chain":[],"follow_ups":[],"latency_ms":3,"classified":false,"usage":null}',
+        "",
+        "data: [DONE]",
+        "",
+    ]
+    _patch_stream_client(monkeypatch, lines)
+
+    chunks = await _collect_stream(**_base_stream_kwargs(protocol="openai_compatible"))
+
+    expected = [
+        lines[0] + "\n\n",
+        lines[2] + "\n\n",
+        "\n".join(lines[4:6]) + "\n\n",
+        lines[7] + "\n\n",
+    ]
+    assert chunks == expected
+
+
+@pytest.mark.asyncio
+async def test_stream_drop_line_when_adapter_returns_none(monkeypatch):
+    """``adapter.from_backend_stream_chunk`` 回 ``None`` 的行(如 SSE
+    comment/keepalive)要在組 block 之前就被丟棄,絕不能出現在任何輸出
+    chunk 裡。"""
+
+    class _DropCommentsAdapter:
+        name = "openai_compatible"
+
+        def request_timeout(self, endpoint_kind, default):
+            return default
+
+        def to_backend_request(self, endpoint_kind, body):
+            return body
+
+        def from_backend_stream_chunk(self, endpoint_kind, raw_line):
+            return None if raw_line.startswith(":") else raw_line
+
+    monkeypatch.setattr(
+        proxy_impl, "get_adapter", lambda protocol: _DropCommentsAdapter()
+    )
+
+    lines = [
+        ": keepalive",
+        "",
+        'data: {"choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":"stop"}],'
+        '"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}',
+        "",
+        "data: [DONE]",
+        "",
+    ]
+    _patch_stream_client(monkeypatch, lines)
+
+    chunks = await _collect_stream(**_base_stream_kwargs(protocol="anything"))
+
+    joined = "".join(chunks)
+    assert "keepalive" not in joined
+    assert lines[2] + "\n\n" in chunks
+    assert lines[4] + "\n\n" in chunks
+
+
+@pytest.mark.asyncio
+async def test_stream_applies_adapter_to_request_body_and_timeout(monkeypatch):
+    """順序驗證:先套 ``adapter.to_backend_request`` 再強制注入
+    ``stream``/``stream_options`` ——adapter 的轉換結果必須留在最終送上游
+    的 body 裡,且 ``stream_options.include_usage`` 一定存在(既有行為,不因
+    換了 adapter 而消失)。timeout 改走 ``adapter.request_timeout("chat",
+    default)``。"""
+    spy = _install_spy(monkeypatch)
+    lines = ["data: [DONE]", ""]
+    calls = _patch_stream_client(monkeypatch, lines)
+
+    await _collect_stream(**_base_stream_kwargs(protocol="spy_protocol"))
+
+    assert "req" in spy.calls
+    assert "timeout" in spy.calls
+    assert spy.kinds.get("req") == "chat"
+    assert spy.kinds.get("timeout") == "chat"
+
+    assert calls, "client.stream() 應該被呼叫一次"
+    sent_body = calls[0]["json"]
+    assert sent_body["_adapted_request"] is True
+    assert sent_body["stream"] is True
+    assert sent_body["stream_options"] == {"include_usage": True}

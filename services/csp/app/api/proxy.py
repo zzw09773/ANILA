@@ -646,6 +646,9 @@ async def chat_completions(
                 task_trace_id=task_ctx.trace_id if task_ctx else None,
                 task_run_id=task_ctx.task_run_id if task_ctx else None,
                 legacy_runtime_call=task_ctx is None,
+                # Backend adapter (Task 6): agents have no ``protocol``
+                # column (base LLMs do) — force passthrough.
+                protocol="openai_compatible",
             )
             # Tee the SSE so we can capture the final assistant text and
             # schedule the memory writer once the stream drains.
@@ -819,6 +822,10 @@ async def chat_completions(
             legacy_runtime_call=task_ctx is None,
             # Slice 6a: per-model gateway key (secret ref first, env fallback).
             gateway_api_key=resolve_model_gateway_key(model),
+            # Backend adapter (Task 5/6): getattr default covers duck-typed
+            # model doubles in older tests that predate the ``protocol``
+            # column.
+            protocol=getattr(model, "protocol", "openai_compatible"),
         )
         teed = _tee_stream_capture_assistant(
             upstream,
