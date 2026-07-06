@@ -19,6 +19,7 @@ from anila_core.security import ENDPOINT_KIND_AGENT, ENDPOINT_KIND_MODEL
 from app.config import settings
 from app.models.model_registry import ModelRegistry
 from app.services.proxy import spans
+from app.services.proxy.adapters import get_adapter
 from app.services.proxy.guard import _guard_outbound
 from app.services.proxy.headers import (
     _apply_gateway_auth,
@@ -151,13 +152,25 @@ async def _proxy_request_impl(
     /v1 chat traffic. Run finalization lives in the ``proxy_request``
     wrapper.
     """
-    timeout = _get_timeout(model.model_type)
+    numeric_timeout = _get_timeout(model.model_type)
     base_url = model.endpoint_url.rstrip("/")
     request_type = (
         "embedding"
         if "embedding" in endpoint_path or model.model_type == "embedding"
         else "chat"
     )
+
+    # Backend adapter (Task 5): protocol-specific translation layer around
+    # the outbound non-stream call. ``get_adapter`` falls back to the
+    # openai_compatible PassthroughAdapter for unknown/legacy ``protocol``
+    # values, so every hook below is a no-op on the (default) passthrough
+    # path — existing behavior stays byte-identical. The ``getattr`` default
+    # covers duck-typed model doubles in older tests that predate the
+    # ``protocol`` column (e.g. test_employee_id_downstream._FakeModel).
+    endpoint_kind = "embeddings" if request_type == "embedding" else "chat"
+    adapter = get_adapter(getattr(model, "protocol", "openai_compatible"))
+    timeout = adapter.request_timeout(endpoint_kind, httpx.Timeout(numeric_timeout))
+    request_body = adapter.to_backend_request(endpoint_kind, request_body)
 
     # Sprint 5 / Chunk W: AUTO_REGISTER_MODELS has historically set
     # endpoint_url with a trailing ``/v1`` (e.g. ``http://...:11434/v1``);
@@ -246,10 +259,12 @@ async def _proxy_request_impl(
                 )
                 detail = f"模型服務拒絕請求 (HTTP {response.status_code})"
                 try:
-                    body = response.json()
+                    adapted_error = adapter.from_backend_error(
+                        endpoint_kind, response.status_code, response.text
+                    )
                     msg = (
-                        body.get("error", {}).get("message")
-                        if isinstance(body, dict)
+                        adapted_error.get("error", {}).get("message")
+                        if isinstance(adapted_error, dict)
                         else None
                     )
                     if isinstance(msg, str) and msg:
@@ -268,6 +283,7 @@ async def _proxy_request_impl(
                 result = _aggregate_sse_to_chat_completion(response.text, model.name)
             else:
                 result = response.json()
+            result = adapter.from_backend_response(endpoint_kind, result)
 
             # Extract token usage from response
             usage = result.get("usage", {})
@@ -346,7 +362,7 @@ async def _proxy_request_impl(
             return result
 
         except httpx.TimeoutException:
-            last_error = f"請求逾時 ({timeout}s)"
+            last_error = f"請求逾時 ({numeric_timeout}s)"
             if attempt < settings.PROXY_MAX_RETRIES - 1:
                 delay = settings.PROXY_RETRY_BASE_DELAY * (2 ** attempt)
                 logger.warning(
