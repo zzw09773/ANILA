@@ -2151,9 +2151,13 @@ async def _stream_llm_sse(
                     return
                 async for line in resp.aiter_lines():
                     line = line.strip()
-                    if not line or not line.startswith("data: "):
+                    if not line or not line.startswith("data:"):
                         continue
-                    data_str = line[6:]
+                    # SSE spec: the space after "data:" is optional (both
+                    # "data: {...}" and "data:{...}" are valid).
+                    data_str = line[5:]
+                    if data_str.startswith(" "):
+                        data_str = data_str[1:]
                     if data_str == "[DONE]":
                         yield {"type": "done"}
                         return

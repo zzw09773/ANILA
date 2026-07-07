@@ -5,14 +5,15 @@ dev 在開發者 guide 頁選一個 collection + 輸入初始構想 → 這裡�
 is_router_primary / 第一個 active llm) 產生一份可直接貼進 anila-agent
 ``prompts/system.md`` 的領域 system prompt。
 
-LLM 呼叫沿用 memory_service 的模式（registry 解析 endpoint + SSRF guard + httpx
-POST /v1/chat/completions），gateway 模式自動帶 MODEL_GATEWAY_API_KEY。
+LLM 呼叫沿用 memory_service 的模式（registry 解析 endpoint + 版本段正規化 +
+SSRF guard + httpx POST .../chat/completions），認證走與主 proxy 幹道相同的
+per-model key 解析（``resolve_model_gateway_key`` + ``_apply_gateway_auth``），
+非自刻一份只讀全域 env 的邏輯。
 """
 
 from __future__ import annotations
 
 import logging
-import os
 
 import httpx
 from anila_core.security import UnsafeEndpointError, validate_outbound_url
@@ -20,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.models.ingestion import IngestionCollection, IngestionDocument
 from app.models.model_registry import ModelRegistry
+from app.services.proxy_service import _apply_gateway_auth, resolve_model_gateway_key
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +39,13 @@ _META_SYSTEM_PROMPT = (
 )
 
 
-def _resolve_primary_llm(db: Session) -> tuple[str, str]:
-    """回 (model_name, endpoint_url)：registry 內 is_router_primary 優先、否則第一個 active llm。"""
+def _resolve_primary_llm(db: Session) -> ModelRegistry:
+    """回 registry row：is_router_primary 優先、否則第一個 active llm。
+
+    回傳整個 row（不只 name/endpoint_url）是因為呼叫端要用
+    ``resolve_model_gateway_key`` 解 per-model ``api_key_secret_ref`` —
+    那個 helper 需要 model row，不能只給字串 tuple。
+    """
     row = (
         db.query(ModelRegistry)
         .filter(ModelRegistry.model_type == "llm", ModelRegistry.is_active.is_(True))
@@ -47,7 +54,7 @@ def _resolve_primary_llm(db: Session) -> tuple[str, str]:
     )
     if row is None:
         raise RuntimeError("model_registry 內沒有可用的 LLM（is_active 的 llm）")
-    return row.name, row.endpoint_url
+    return row
 
 
 def _strip_fence(text: str) -> str:
@@ -92,8 +99,15 @@ async def generate_system_prompt(
         )
     ]
 
-    model_name, base_url = _resolve_primary_llm(db)
-    endpoint = f"{base_url}/v1/chat/completions"
+    model = _resolve_primary_llm(db)
+    model_name = model.name
+    # registry 的 endpoint_url 兩種慣例都存在:帶 /v1 結尾或裸 host,且可能帶
+    # 尾斜線 — 比照 memory_service._embed 正規化,不 rstrip("/") 就去重版本段
+    # 會拼出 //v1/、/v1/v1/ 這類 404。
+    base_url = model.endpoint_url.rstrip("/")
+    if not base_url.endswith(("/v1", "/v2")):
+        base_url = f"{base_url}/v1"
+    endpoint = f"{base_url}/chat/completions"
     try:
         validate_outbound_url(endpoint)
     except UnsafeEndpointError as exc:
@@ -108,8 +122,10 @@ async def generate_system_prompt(
         "請依上述產生這個 agent 的領域 system prompt。"
     )
 
-    gateway_key = os.environ.get("MODEL_GATEWAY_API_KEY", "").strip()
-    headers = {"Authorization": f"Bearer {gateway_key}"} if gateway_key else {}
+    # Slice 6a 同款:per-model api_key_secret_ref 優先,退回全域
+    # MODEL_GATEWAY_API_KEY(MVP fallback)— 與主 proxy 幹道一致,不再自刻
+    # 一份只讀全域 env 的邏輯。
+    headers = _apply_gateway_auth({}, resolve_model_gateway_key(model))
     payload = {
         "model": model_name,
         "messages": [
@@ -124,7 +140,12 @@ async def generate_system_prompt(
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
             resp = await client.post(endpoint, json=payload, headers=headers)
             resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"].get("content") or ""
+        choices = resp.json().get("choices") or []
+        if not choices:
+            raise RuntimeError(
+                "LLM 回傳空內容（choices 為空，請確認模型端點/回應格式正確）"
+            )
+        content = choices[0].get("message", {}).get("content") or ""
     except httpx.HTTPError as exc:
         logger.warning("prompt_gen: LLM 呼叫失敗: %s", exc)
         raise RuntimeError(f"呼叫 LLM 失敗：{exc}") from exc

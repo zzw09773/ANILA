@@ -399,6 +399,13 @@ async def _extract_facts(db: Session, conversation_text: str) -> list[dict[str, 
         )
         return []
     model_name, base_url = target
+    # registry 的 endpoint_url 兩種慣例都存在:帶 /v1 結尾(舊 AUTO_REGISTER)
+    # 或裸 host(auto_seed,如 http://gpt-oss-proxy:8000)— 比照 _embed 的正規
+    # 化,沒帶版本段就補 /v1,避免裸 host 少一段 / 已帶 /v1 的又疊成 /v1/v1/。
+    if not base_url.endswith(("/v1", "/v2")):
+        base_url = f"{base_url}/v1"
+    # SSRF re-validation BEFORE attaching the gateway key — never send the
+    # bearer token to a host that fails the outbound guard.
     try:
         _guard_outbound(base_url)
     except RuntimeError:
@@ -408,6 +415,10 @@ async def _extract_facts(db: Session, conversation_text: str) -> list[dict[str, 
             base_url,
         )
         return []
+    # 內網 gateway 拓撲下 /v1 全路由要 Bearer(MODEL_GATEWAY_API_KEY);
+    # 本機 proxy 模式 key 為空 = no-op。直呼叫繞過 CSP proxy 層,要自帶
+    # (原本完全沒帶 header,對要求 Bearer 的 gateway 401,抽取靜默失效)。
+    headers = _apply_gateway_auth({})
 
     payload = {
         "model": model_name,
@@ -420,7 +431,9 @@ async def _extract_facts(db: Session, conversation_text: str) -> list[dict[str, 
     }
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-            r = await client.post(f"{base_url}/v1/chat/completions", json=payload)
+            r = await client.post(
+                f"{base_url}/chat/completions", json=payload, headers=headers
+            )
             r.raise_for_status()
         raw = r.json()["choices"][0]["message"]["content"]
     except Exception:
