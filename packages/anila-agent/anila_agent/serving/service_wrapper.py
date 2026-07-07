@@ -109,6 +109,32 @@ def _annotate_output(out: Any, answer: str, usage: dict[str, int] | None) -> Non
     if usage:
         out.attributes["total_tokens"] = usage.get("total_tokens", 0)
 
+
+def _usage_from_run_result(result: Any) -> dict[str, int] | None:
+    """從 Runner 結果抽 token usage —— 真值或 ``None``（未知）。
+
+    OpenAI Agents SDK 的 ``RunResult`` / ``RunResultStreaming`` 把 token 統計
+    放在 ``context_wrapper.usage``（``input_tokens`` / ``output_tokens`` /
+    ``total_tokens``）。抽不到、或值全為 0（真實完成不可能零耗用）→ 回
+    ``None``，呼叫端**省略 usage 欄位／不送 usage chunk**。
+
+    不能退回全 0 物件：CSP 消費端（proxy service 的 ``chunk.get("usage")``）
+    把任何非空 usage dict 當權威值，全 0 會蓋掉它的本地 token 估算、記帳歸零。
+    缺欄位時 CSP 會落回估算，才是對消費端誠實的行為。
+    """
+    usage_obj = getattr(getattr(result, "context_wrapper", None), "usage", None)
+    if usage_obj is None:
+        return None
+    usage = {
+        "prompt_tokens": getattr(usage_obj, "input_tokens", 0) or 0,
+        "completion_tokens": getattr(usage_obj, "output_tokens", 0) or 0,
+        "total_tokens": getattr(usage_obj, "total_tokens", 0) or 0,
+    }
+    if not any(usage.values()):
+        return None
+    return usage
+
+
 _CONFIG: Any = None
 _MODEL: Any = None  # 共用的 OpenAIChatCompletionsModel（避免每請求新建 httpx client）
 
@@ -157,13 +183,51 @@ app = FastAPI(title=MODEL_NAME, lifespan=lifespan)
 
 class ChatMessage(BaseModel):
     role: str
-    content: str
+    # OpenAI 標準也允許 content 為 parts 陣列（多模態：text/image_url/…）。
+    # 這個 agent 不支援影像輸入——array content 只抽 text parts（見
+    # ``_extract_text_content`` / ``_has_only_non_text_parts``），純非文字
+    # parts 在 chat_completions 內擋 422。
+    content: str | list[dict[str, Any]] | None = None
+
+
+class StreamOptions(BaseModel):
+    include_usage: bool = False
 
 
 class ChatCompletionRequest(BaseModel):
     model: str = MODEL_NAME
     messages: list[ChatMessage]
     stream: bool = False
+    stream_options: StreamOptions | None = None
+
+
+def _extract_text_content(content: str | list[dict[str, Any]] | None) -> str:
+    """把 OpenAI content（純字串或多模態 parts 陣列）攤平成純文字。
+
+    array content 只抽 ``{"type": "text", "text": ...}`` parts、依序串接；
+    其他 part 型別（``image_url`` 等）——此 agent 不支援影像輸入——靜默忽略。
+    整則訊息只有非文字 parts 的情況由呼叫端 ``_has_only_non_text_parts`` 先擋
+    422，不會走到這裡的「攤平成空字串」。
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    for part in content:
+        if not isinstance(part, dict) or part.get("type") != "text":
+            continue
+        text = part.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+    return "\n".join(parts)
+
+
+def _has_only_non_text_parts(content: str | list[dict[str, Any]] | None) -> bool:
+    """content 是非空 parts 陣列、但一個 text part 都沒有（例如純圖片）。"""
+    if not isinstance(content, list) or not content:
+        return False
+    return not any(isinstance(part, dict) and part.get("type") == "text" for part in content)
 
 
 @app.get("/health")
@@ -174,9 +238,16 @@ async def health() -> dict[str, str]:
 @app.get("/v1/models")
 async def list_models() -> dict[str, Any]:
     # model_type=agent 是 CSP 註冊 manifest 標記；勿改欄位名/形狀。
+    # created/owned_by 是 OpenAI /v1/models 規格必含欄位，補上但不動既有欄位。
     return {
         "object": "list",
-        "data": [{"id": MODEL_NAME, "object": "model", "model_type": "agent"}],
+        "data": [{
+            "id": MODEL_NAME,
+            "object": "model",
+            "created": int(time.time()),
+            "owned_by": "anila-agent",
+            "model_type": "agent",
+        }],
     }
 
 
@@ -225,14 +296,49 @@ def _chunk(
     return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
 
 
+def _usage_chunk(cid: str, created: int, usage: dict[str, int]) -> str:
+    """組 usage-only 的 OpenAI chat.completion.chunk（``choices: []``）。
+
+    OpenAI 標準行為：只在 client 帶 ``stream_options.include_usage=true`` 時才
+    送這塊，位置在 finish chunk 之後、``[DONE]`` 之前；``choices`` 必須是空
+    陣列（不是帶 delta 的正常 choice）。
+    """
+    payload: dict[str, Any] = {
+        "id": cid,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": MODEL_NAME,
+        "choices": [],
+        "usage": usage,
+    }
+    return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+
+
 async def _sse_stream(
-    assembled: Any, user_prompt: str, hooks: AuditHooks, *, emitter: TraceEmitter | None = None
+    assembled: Any,
+    user_prompt: str,
+    hooks: AuditHooks,
+    *,
+    emitter: TraceEmitter | None = None,
+    include_usage: bool = False,
 ) -> AsyncIterator[str]:
-    """agent 串流輸出 → OpenAI SSE：role → content deltas → finish+usage → ``[DONE]``。
+    """agent 串流輸出 → OpenAI SSE：role → content deltas → finish → [usage] → ``[DONE]``。
 
     只轉發 ResponseTextDeltaEvent（最終可見答案）；工具呼叫 / reasoning 軌跡不外送。
     usage 在串流跑完才定案（SDK 註明 context_wrapper.usage 末包前為 stale），故收尾才讀。
     Router 端（proxy_service.proxy_stream）以 ``resp.aiter_lines()`` 逐行解析這個格式。
+
+    OpenAI 標準：finish chunk（``choices`` 非空、帶 ``finish_reason``）本身不帶
+    usage；usage 只在 ``include_usage`` 為真（client 帶
+    ``stream_options.include_usage: true``）時，才在 finish chunk 之後、
+    ``[DONE]`` 之前補一個獨立的 usage-only chunk（``choices: []``）。CSP 轉發
+    agent 串流時一律強制 ``stream_options.include_usage=True``（見
+    ``services/csp/app/services/proxy/service.py`` 的
+    ``_proxy_stream_impl``），所以正式部署（經 CSP）路徑行為不變；差別只在
+    「繞過 CSP 直打 agent 且未帶 include_usage」的呼叫——現在不會再收到
+    usage（符合 OpenAI 規格；先前版本無條件把 usage 掛在 finish chunk 上）。
+    ``proxy_service.py`` 的解析只認 ``chunk.get("usage")``，不管 usage 掛在
+    finish chunk 還是獨立 chunk，兩種形狀都相容。
 
     Full Trace 為 out-of-band callback（POST 回 CSP），不動 SSE 格式；``emitter`` 未給或
     停用時完全 no-op。run/model/tool/retrieval/output/error spans 於此收攏 flush。
@@ -259,15 +365,10 @@ async def _sse_stream(
             logger.exception("streaming run failed mid-flight")
             em.error(repr(exc))
 
-        usage_obj = getattr(getattr(result, "context_wrapper", None), "usage", None)
-        usage_payload: dict[str, int] | None = None
-        if usage_obj is not None:
-            usage_payload = {
-                "prompt_tokens": getattr(usage_obj, "input_tokens", 0) or 0,
-                "completion_tokens": getattr(usage_obj, "output_tokens", 0) or 0,
-                "total_tokens": getattr(usage_obj, "total_tokens", 0) or 0,
-            }
-        yield _chunk(cid, created, delta={}, finish_reason="stop", usage=usage_payload)
+        usage_payload = _usage_from_run_result(result)
+        yield _chunk(cid, created, delta={}, finish_reason="stop")
+        if include_usage and usage_payload is not None:
+            yield _usage_chunk(cid, created, usage_payload)
         yield "data: [DONE]\n\n"
 
         answer_text = "".join(parts)
@@ -307,7 +408,19 @@ async def chat_completions(
         allowed, user_id=x_anila_user_id, email=x_anila_user_email, groups=x_anila_user_groups
     )
 
-    user_prompt = next((m.content for m in reversed(req.messages) if m.role == "user"), "")
+    last_user_msg = next((m for m in reversed(req.messages) if m.role == "user"), None)
+    if last_user_msg is None:
+        raise HTTPException(status_code=400, detail="no user message in `messages`")
+    if _has_only_non_text_parts(last_user_msg.content):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "此 agent 不支援影像輸入：訊息 content 只含非文字 part（例如 "
+                "image_url），請改用純文字查詢，或在 array content 中附上至少一個 "
+                "{\"type\": \"text\", ...} part。"
+            ),
+        )
+    user_prompt = _extract_text_content(last_user_msg.content)
     if not user_prompt:
         raise HTTPException(status_code=400, detail="no user message in `messages`")
 
@@ -357,8 +470,9 @@ async def chat_completions(
     # 串流：CSP Router 對 agent 強制 stream=true 並逐行解析 OpenAI SSE
     # （proxy_service.proxy_stream）。回 text/event-stream 的 chat.completion.chunk。
     if req.stream:
+        include_usage = bool(req.stream_options and req.stream_options.include_usage)
         return StreamingResponse(
-            _sse_stream(assembled, user_prompt, hooks, emitter=emitter),
+            _sse_stream(assembled, user_prompt, hooks, emitter=emitter, include_usage=include_usage),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -368,14 +482,15 @@ async def chat_completions(
         async with emitter.run_span(MODEL_NAME, attributes={"stream": False}):
             result = await run_once(assembled, user_prompt, hooks=hooks)
             answer = result.final_output or ""
+            usage_payload = _usage_from_run_result(result)
             async with emitter.span(OUTPUT, MODEL_NAME) as out:
-                _annotate_output(out, answer, None)
+                _annotate_output(out, answer, usage_payload)
     finally:
         await emitter.flush()
     # 回應建好後在背景抽取記憶（不延後 JSON 回應）。
     memory = getattr(getattr(assembled, "context", None), "memory", None)
     _schedule_absorb(memory, user_prompt, answer)
-    return {
+    response: dict[str, Any] = {
         "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
         "object": "chat.completion",
         "created": int(time.time()),
@@ -388,6 +503,11 @@ async def chat_completions(
             }
         ],
     }
+    # usage 只在拿得到真值時附上；未知時省略讓 CSP 落回本地估算
+    # （見 _usage_from_run_result 的說明）。
+    if usage_payload is not None:
+        response["usage"] = usage_payload
+    return response
 
 
 if __name__ == "__main__":
