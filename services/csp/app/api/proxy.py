@@ -842,7 +842,11 @@ async def chat_completions(
         user_identity=user_identity,
         department_id=department_id,
         request_body=body,
-        endpoint_path="/v1/chat/completions",
+        endpoint_path=(
+            "/v2/chat/completions"
+            if model.api_version == "v2"
+            else "/v1/chat/completions"
+        ),
         conversation_id=conversation_id,
         trace_id=usage_trace_id,
         requires_encryption=inherited_encryption,

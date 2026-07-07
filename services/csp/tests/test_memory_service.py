@@ -24,6 +24,7 @@ from __future__ import annotations
 import pytest
 
 from app.api import proxy
+from app.config import settings
 from app.models.user_memory import UserFact
 from app.services import memory_service
 from app.services.memory_service import (
@@ -262,3 +263,99 @@ def test_memory_outbound_guard_uses_model_endpoint_kind(monkeypatch):
     memory_service._guard_outbound("https://embed.example/v1")
 
     assert calls == [("https://embed.example/v1", ENDPOINT_KIND_MODEL)]
+
+
+# ── _extract_facts (outward HTTP call: auth + URL normalization) ─────────────
+#
+# Regression: _extract_facts used to POST with no headers at all (401 against
+# any gateway that requires Bearer, so fact extraction silently no-oped) and
+# hard-coded "/v1/chat/completions" onto whatever base_url the registry had,
+# double-versioning it when the row already carried the "/v1" convention.
+# _embed (a few hundred lines up) is the reference implementation: normalize
+# the version segment, THEN guard, THEN attach the gateway key.
+
+
+class _FakeExtractResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class _FakeExtractClient:
+    """Fake httpx.AsyncClient recording the URL + headers passed to .post()."""
+
+    last_url: str = ""
+    last_headers: dict = {}
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url, json=None, headers=None):
+        type(self).last_url = url
+        type(self).last_headers = dict(headers or {})
+        return _FakeExtractResponse(
+            {"choices": [{"message": {"role": "assistant", "content": "[]"}}]}
+        )
+
+
+def _patch_extract_client(monkeypatch):
+    _FakeExtractClient.last_url = ""
+    _FakeExtractClient.last_headers = {}
+    monkeypatch.setattr(
+        memory_service.httpx,
+        "AsyncClient",
+        lambda *a, **k: _FakeExtractClient(*a, **k),
+    )
+    # SSRF guard behavior is covered elsewhere (test_ssrf_call_time_guard.py /
+    # test_memory_outbound_guard_uses_model_endpoint_kind above); no-op it
+    # here so this test is isolated to the header/URL construction bug.
+    monkeypatch.setattr(memory_service, "_guard_outbound", lambda url: None)
+
+
+@pytest.mark.asyncio
+async def test_extract_facts_sends_bearer_auth_and_avoids_double_v1(db, monkeypatch):
+    """base_url already carrying the registry's historical '/v1' convention
+    must not become '/v1/v1/chat/completions', and the request must carry
+    Authorization: Bearer for gateways that require it."""
+    _add_llm(db, "gemma4", "http://gw.example:8000/v1")
+    monkeypatch.setattr(memory_service, "_LLM_MODEL_NAME", "gemma4")
+    monkeypatch.setattr(settings, "MODEL_GATEWAY_API_KEY", "sk-gw-test")
+    _patch_extract_client(monkeypatch)
+
+    result = await memory_service._extract_facts(
+        db, "使用者說了一段夠長的話用來測試事實抽取"
+    )
+
+    assert result == []
+    assert "/v1/v1/" not in _FakeExtractClient.last_url
+    assert _FakeExtractClient.last_url == "http://gw.example:8000/v1/chat/completions"
+    assert _FakeExtractClient.last_headers.get("Authorization") == "Bearer sk-gw-test"
+
+
+@pytest.mark.asyncio
+async def test_extract_facts_normalizes_bare_host_base_url(db, monkeypatch):
+    """Registry rows on the other convention (bare host, no version segment)
+    must still get a '/v1' segment appended before '/chat/completions'."""
+    _add_llm(db, "gemma4", "http://gw2.example:8000")
+    monkeypatch.setattr(memory_service, "_LLM_MODEL_NAME", "gemma4")
+    monkeypatch.setattr(settings, "MODEL_GATEWAY_API_KEY", "sk-gw-test-2")
+    _patch_extract_client(monkeypatch)
+
+    result = await memory_service._extract_facts(
+        db, "使用者說了一段夠長的話用來測試事實抽取"
+    )
+
+    assert result == []
+    assert _FakeExtractClient.last_url == "http://gw2.example:8000/v1/chat/completions"
+    assert _FakeExtractClient.last_headers.get("Authorization") == "Bearer sk-gw-test-2"
