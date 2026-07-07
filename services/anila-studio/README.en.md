@@ -70,7 +70,7 @@ services/anila-studio/
 │   ├── schemas/            # studio.py report.py mindmap.py infographic.py datatable.py
 │   ├── services/           # 30 modules (grouped below)
 │   └── templates/          # infographic/base.html.j2 + report/*.html.j2
-└── tests/                  # 41 test files; 511 collected, 508 green, 3 pre-existing FLUX reds (see Testing)
+└── tests/                  # 42 test files; 524 collected, 521 green, 3 pre-existing FLUX reds (see Testing)
 ```
 
 `services/` groups (30 modules):
@@ -108,9 +108,9 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 
 Health: `curl http://localhost:8100/health` → `{"status":"ok","service":"anila-studio","version":"0.1.0","ready":true,"deps":{"revocation_cache":true}}`. During lifespan startup it returns 503 + `ready=false` (status `"degraded"`) until JWKS + revocation cache cold-start finish. The JobStore is best-effort and does not gate readiness.
 
-### Testing (511 collected · 508 green · 3 pre-existing reds)
+### Testing (524 collected · 521 green · 3 pre-existing reds)
 
-`.venv/bin/python -m pytest` collects **511** tests (41 files): **508 pass**, **3 pre-existing FLUX reds** — all in `tests/test_hydrate_images.py` (`test_hydrate_image_prompt_calls_flux` / `test_cover_hero_path_generates_via_rewriter` / `test_mixed_slides_all_resolved`), a known pre-existing failure, not a regression from this work. Tests need no docker (csp / redis are mocked with respx / fakeredis).
+`.venv/bin/python -m pytest` collects **524** tests (42 files): **521 pass**, **3 pre-existing FLUX reds** — all in `tests/test_hydrate_images.py` (`test_hydrate_image_prompt_calls_flux` / `test_cover_hero_path_generates_via_rewriter` / `test_mixed_slides_all_resolved`), a known pre-existing failure, not a regression from this work. Tests need no docker (csp / redis are mocked with respx / fakeredis).
 
 ---
 
@@ -147,13 +147,13 @@ Subscribes to channel `anila:auth:token-revoke` (csp publishes). On Redis loss t
 | `JWT_KID` / `JWT_ALGORITHMS` / `JWT_LEEWAY_SECONDS` | `anila-v1` / `("RS256",)` / `60` | JWT settings |
 | `JWKS_REFRESH_SECONDS` / `REVOCATION_CACHE_TTL_SECONDS` | `3600` / `2592000` (30 days) | JWKS refetch / revocation deny-list TTL |
 | `INTERNAL_TIMEOUT_SECONDS` / `INTERNAL_TIMEOUT_CONNECT` / `INTERNAL_LLM_TIMEOUT_SECONDS` | `30.0` / `5.0` / `300.0` | csp_client read / connect / long LLM timeout |
-| `FLUX_BACKEND_URL` / `RENDERER_BASE_URL` | `http://flux2-dev:8000` / `http://pptx-renderer:7100` | FLUX backend / pptx renderer |
+| `FLUX_BACKEND_URL` / `RENDERER_BASE_URL` | `http://flux2-dev:8000` / `http://pptx-renderer:7100` | FLUX backend (OpenAI-compatible Images API base URL, server root or with `/v1`) / pptx renderer |
 | `FLUX_CACHE_DIR` | `/var/anila/anila-studio-flux-cache` | FLUX cache |
 | `ARTIFACTS_DIR` | `/var/anila/anila-studio-artifacts` | **persistence root for report/mindmap/infographic/datatable outputs**; download endpoints read back from here |
 | `JOB_STORE_KEY_PREFIX` / `JOB_STORE_TTL_SECONDS` | `anila-studio:jobs:` / `604800` (7 days) | Redis JobStore key prefix / TTL |
 | `STUDIO_ARTIFACT_REPORTING` | `true` | master switch for CSP artifact-job / artifact / trace-span reporting |
 
-> Note: some render paths read `os.environ` directly (`geometric_qa.py` reads `RENDERER_BASE_URL`, `studio_render.py` uses `FLUX_BACKEND_URL`); two FLUX knobs are **env-only, not in config.py**: `FLUX_MAX_CONCURRENT`, `FLUX_TIMEOUT_SECONDS`. In compose an empty `FLUX_BACKEND_URL` disables studio image generation (no FLUX on the intranet).
+> Note: some render paths read `os.environ` directly (`geometric_qa.py` reads `RENDERER_BASE_URL`, `studio_render.py` uses `FLUX_BACKEND_URL`); four FLUX knobs are **env-only, not in config.py**: `FLUX_MODEL` (the Images API `model` field, default `flux.2-dev`), `FLUX_API_KEY` (Bearer sent only when set), `FLUX_MAX_CONCURRENT`, `FLUX_TIMEOUT_SECONDS`. In compose an empty `FLUX_BACKEND_URL` disables studio image generation (no FLUX on the intranet). Since 2026-07 FLUX calls use the OpenAI-compatible `POST {base}/v1/images/generations` (`{model, prompt, n, size, response_format:"b64_json"}` → `{created, data:[{b64_json}]}`).
 
 ---
 
