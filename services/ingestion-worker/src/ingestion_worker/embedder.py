@@ -38,6 +38,27 @@ from ingestion_worker.settings import WorkerSettings
 logger = logging.getLogger(__name__)
 
 
+def _sorted_by_index(items: list) -> list:
+    """依 ``data[].index`` 排序，使回應對齊回請求 ``input`` 的原始位置。
+
+    OpenAI 相容的批次 embeddings 端點不保證 ``data[]`` 陣列順序等於 ``input``
+    順序（例如伺服端平行處理後亂序回傳），只保證每個 item 帶的 ``index`` 欄位
+    指回原始位置。缺 ``index``（非標準/舊端點）時退回原陣列順序（``sorted`` 為
+    穩定排序，此時每個 key 即原始位置本身，等同不動）。
+    """
+    return [
+        item
+        for _, item in sorted(
+            enumerate(items),
+            key=lambda pair: (
+                pair[1]["index"]
+                if isinstance(pair[1], dict) and "index" in pair[1]
+                else pair[0]
+            ),
+        )
+    ]
+
+
 class Embedder:
     """One-shot embedding client. Stateless; cheap to construct per-job.
 
@@ -104,9 +125,11 @@ class Embedder:
             )
 
         data = r.json()
-        # OpenAI-compatible response: { data: [{embedding: [...]}, ...] }
+        # OpenAI-compatible response: { data: [{embedding: [...], index: int}, ...] }.
+        # Sort by index before zipping so vectors stay positionally aligned with
+        # `texts` even when the endpoint returns `data[]` out of request order.
         try:
-            vectors = [item["embedding"] for item in data["data"]]
+            vectors = [item["embedding"] for item in _sorted_by_index(data["data"])]
         except (KeyError, TypeError) as e:  # noqa: F841 — used in raise from
             # Fall through to the explicit raise below.
             raise EmbedError(

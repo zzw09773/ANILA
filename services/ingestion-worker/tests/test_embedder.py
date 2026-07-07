@@ -222,6 +222,46 @@ async def test_count_mismatch_raises_model_down():
         await embedder.close()
 
 
+async def test_out_of_order_data_index_realigns_vectors():
+    """respx OpenAI-相容端點回傳的 ``data[]`` 不保證與 ``input`` 同序 —— 只保證
+    每個 item 帶的 ``index`` 欄位對得回原始 input 位置。這裡把 3 筆輸入的
+    embedding 故意用倒序回傳（index=2,0,1 的陣列順序),驗證對齊後仍照
+    input 順序（依 index 排序,而非依 data[] 陣列順序）。
+    """
+    settings = _make_settings(embedding_dim=2)
+    embedder = Embedder(settings)
+    # texts = ["a", "b", "c"] -> 對應 index 0, 1, 2；data[] 陣列本身倒序/亂序。
+    payload = {
+        "data": [
+            {"embedding": [3.0, 3.0], "index": 2},
+            {"embedding": [1.0, 1.0], "index": 0},
+            {"embedding": [2.0, 2.0], "index": 1},
+        ]
+    }
+    try:
+        with respx.mock:
+            respx.post(EMBED_URL).mock(return_value=httpx.Response(200, json=payload))
+            result = await embedder.embed(["a", "b", "c"])
+        # 依 index 對齊：a->index0, b->index1, c->index2，不是 data[] 陣列順序。
+        assert result == [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]
+    finally:
+        await embedder.close()
+
+
+async def test_missing_index_falls_back_to_array_order():
+    """端點不回 index 欄位時退回既有行為（依 data[] 陣列順序對齊)。"""
+    settings = _make_settings(embedding_dim=2)
+    embedder = Embedder(settings)
+    payload = _payload([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+    try:
+        with respx.mock:
+            respx.post(EMBED_URL).mock(return_value=httpx.Response(200, json=payload))
+            result = await embedder.embed(["a", "b", "c"])
+        assert result == [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]
+    finally:
+        await embedder.close()
+
+
 async def test_short_vector_raises_dim_mismatch():
     """A vector shorter than the schema dim -> E_EMBED_DIM_MISMATCH."""
     settings = _make_settings(embedding_dim=4000)
