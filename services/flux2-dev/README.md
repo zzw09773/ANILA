@@ -1,6 +1,6 @@
 # flux2-dev
 
-> **FLUX.2-dev 文生圖推論服務** — 把 `diffusers` 的 `Flux2Pipeline` 包成一支極簡 HTTP server（`server.py`），對外只有 `POST /generate` 與 `GET /health`。air-gapped、僅內網可達（不開 host port、無入向認證），在 stack 裡以服務名 `flux2-dev` 出現於 external network `anila-models-net`。
+> **FLUX.2-dev 文生圖推論服務** — 把 `diffusers` 的 `Flux2Pipeline` 包成一支極簡 HTTP server（`server.py`），對外只有 `POST /generate`、`POST /v1/images/generations`（OpenAI 相容）與 `GET /health`。air-gapped、僅內網可達（不開 host port、無入向認證），在 stack 裡以服務名 `flux2-dev` 出現於 external network `anila-models-net`。
 
 > 中文為主版；English mirror：[`README.en.md`](./README.en.md)。技術名詞、指令、程式碼一律保留英文。
 
@@ -15,14 +15,36 @@
 前端使用者不會直接看到本服務；它有兩個內部 client：
 
 - **`flux2-dev-agent`**（[`../flux2-dev-agent`](../flux2-dev-agent/README.md)）— 聊天「圖像繪製」流程（Router 分派 `image-generator` agent）的包裝層，只取回單一候選圖。
-- **`anila-studio`** 的 `FluxImageProvider`（`services/anila-studio/app/services/flux_image_provider.py`）— Studio 產出中心的簡報／資訊圖插圖管線，直接打 `/generate` 的 JSON 合約。
+- **`anila-studio`** 的 `FluxImageProvider`（`services/anila-studio/app/services/flux_image_provider.py`）— Studio 產出中心的簡報／資訊圖插圖管線，走 OpenAI 相容 `/v1/images/generations`。
 
 ```
 使用者聊天 → Router → DISPATCH:image-generator
                      → CSP proxy → flux2-dev-agent  (OpenAI chat 相容)
                                     → (prompt 翻譯 via gemma4)
-                                    → flux2-dev  POST /generate   ← 本服務
+                                    → flux2-dev  POST /v1/images/generations   ← 本服務
 Studio 產出 → anila-studio FluxImageProvider ──────┘
+```
+
+---
+
+## `/v1/images/generations`（OpenAI 相容,2026-07 新增）
+
+院內模型統一部署在雲端算力中心後,平台的兩個 client(`anila-studio` 的 `FluxImageProvider`、`flux2-dev-agent` 的 `FluxClient`)改走標準 **OpenAI Images API**。本 dev 後端提供同款端點對齊新契約;**既有 `/generate` 保留不動**(向後相容)。
+
+Request(標準 OpenAI 欄位):
+
+```json
+{"model": "flux.2-dev", "prompt": "...", "n": 1, "size": "1024x1024", "response_format": "b64_json"}
+```
+
+- `size`:`"WxH"` 字串(64–2048),格式錯誤 → `422`;內部解析成 width/height,與 `/generate` 共用同一個生成核心。
+- `response_format` 僅支援 `"b64_json"`(本服務不架靜態檔案伺服器,無從簽發 url)→ 其他值回 `400`。
+- steps / guidance 走 env 預設(`FLUX_NUM_STEPS` / `FLUX_GUIDANCE_SCALE`);seed 每次隨機(OpenAI 契約無 seed 欄位)。
+
+Response:
+
+```json
+{"created": 1720000000, "data": [{"b64_json": "<base64 PNG>"}]}
 ```
 
 ---
@@ -34,7 +56,8 @@ Studio 產出 → anila-studio FluxImageProvider ──────┘
 | 端點 | 方法 | 說明 |
 |------|------|------|
 | `/health` | GET | `{"status": "ok"}` |
-| `/generate` | POST | 見下方 request / response |
+| `/generate` | POST | 自訂 JSON 合約（見下方 request / response）— 向後相容保留 |
+| `/v1/images/generations` | POST | OpenAI Images API 相容（見下一節） |
 
 **`GenerateRequest`**：
 
@@ -100,13 +123,14 @@ Studio 產出 → anila-studio FluxImageProvider ──────┘
 
 ```
 services/flux2-dev/
-├── server.py           # build_app + /generate + /health + 管線載入（_load_pipeline_from_env）
+├── server.py           # build_app + /generate + /v1/images/generations + /health + 管線載入
 ├── Dockerfile          # CUDA 12.4 base → torch 2.6（cu124） → requirements.txt
 ├── requirements.txt    # 執行期相依（含 GPU stack）
 ├── pyproject.toml      # 極簡 runtime + [test] extra（不含 torch/diffusers）
 └── tests/
     ├── conftest.py     # 預設 FLUX_SKIP_LOAD=1
-    └── test_server.py  # 8 個測試，注入 mock pipeline（不需 GPU/權重）
+    ├── test_server.py  # /generate 端點測試，注入 mock pipeline（不需 GPU/權重）
+    └── test_openai_images.py  # /v1/images/generations（OpenAI 相容）端點測試
 ```
 
 ---
