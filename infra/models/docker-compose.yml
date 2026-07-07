@@ -293,7 +293,13 @@ services:
       context: ../../services/flux2-dev-agent
     environment:
       TZ: Asia/Taipei
+      # 2026-07 起 agent 底層打圖走 OpenAI 相容 Images API
+      # (POST {base}/v1/images/generations);base 指伺服器根或含 /v1 皆可。
+      # 本機 flux2-dev 已同步提供 /v1/images/generations 端點。
       FLUX_BACKEND_URL: http://flux2-dev:8000
+      # OpenAI Images API 的 model 欄位與可選 Bearer key(本機免驗留空)。
+      FLUX_MODEL: ${FLUX_MODEL:-flux.2-dev}
+      FLUX_API_KEY: ${FLUX_API_KEY-}
       CSP_BASE_URL: http://csp:8000
       # Prod: 同 csp service,缺值 fail-loud(不要走 dev fallback)。
       CSP_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}

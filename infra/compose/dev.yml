@@ -246,7 +246,12 @@ services:
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
+      # 2026-07 起走 OpenAI 相容 Images API(POST {base}/v1/images/generations);
+      # base URL 指伺服器根或含 /v1 皆可(client 自動補版本段)。
       FLUX_BACKEND_URL: http://flux2-dev:8000
+      FLUX_MODEL: ${FLUX_MODEL:-flux.2-dev}
+      # 有值才帶 Authorization: Bearer;留空 = 不帶(本機 flux2-dev 免驗)。
+      FLUX_API_KEY: ${FLUX_API_KEY-}
       # 對齊 volume mount 路徑。studio.py 內讀 os.environ["FLUX_CACHE_DIR"],
       # 預設 fallback 是 csp 的 /var/anila/ingestion-uploads/flux-cache,在
       # anila-studio container 內不存在/沒權限,所以這條 env 必須顯式設。
