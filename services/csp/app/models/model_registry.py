@@ -10,7 +10,7 @@ class ModelRegistry(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(200), unique=True, nullable=False, index=True)  # e.g. "aia/asrd"
     display_name = Column(String(200), nullable=False)
-    model_type = Column(String(20), nullable=False)  # 'llm' / 'vlm' / 'embedding' / 'agent'
+    model_type = Column(String(20), nullable=False)  # 'llm' / 'vlm' / 'embedding' / 'agent' / 'image'
     endpoint_url = Column(String(500), nullable=False)
     api_version = Column(String(10), default="v1")  # 'v1' / 'v2'
     # Slice 6a (doc 04 §2): 'openai_compatible' / 'custom_adapter'. formalize 既
@@ -21,6 +21,10 @@ class ModelRegistry(Base):
     )
     is_active = Column(Boolean, default=True)
     is_router_primary = Column(Boolean, nullable=False, default=False)
+    # Slice 8b (doc 2026-07-06-flux-image-primary-design.md §1): 完全比照
+    # is_router_primary 的模式,但選的是 flux2-dev-agent / anila-studio 消費的
+    # 主圖像模型(migration r1_0009 同款 partial unique index)。
+    is_image_primary = Column(Boolean, nullable=False, default=False)
     # Slice 6a (doc 04 §9 / doc 01 §32 拍板五態):
     # unknown / healthy / degraded / unhealthy / disabled。舊三值
     # (online/connecting/offline) 由 r1_0005 就地遷移;'disabled' 由讀取端
