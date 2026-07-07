@@ -113,8 +113,17 @@ class OpenAICompatProvider:
             "messages": [],
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
-            "stream": True,
+            "stream": request.stream,
         }
+        if request.stream:
+            # Ask the server to send a trailing usage-only chunk (OpenAI's
+            # ``stream_options.include_usage``). csp's own proxy already
+            # forces this on every downstream stream; match it here so
+            # this adapter reports real usage instead of always zero.
+            # Non-streaming requests don't get a trailing chunk at all, so
+            # the field is meaningless (and some backends reject unknown
+            # fields on non-stream calls) — only send it when streaming.
+            payload["stream_options"] = {"include_usage": True}
 
         if request.system:
             payload["messages"].append({"role": "system", "content": request.system})
@@ -139,9 +148,13 @@ class OpenAICompatProvider:
             response.raise_for_status()
             async for line in response.aiter_lines():
                 line = line.strip()
-                if not line or not line.startswith("data: "):
+                if not line or not line.startswith("data:"):
                     continue
-                data_str = line[6:]
+                # SSE spec: the space after "data:" is optional (both
+                # "data: {...}" and "data:{...}" are valid).
+                data_str = line[5:]
+                if data_str.startswith(" "):
+                    data_str = data_str[1:]
                 if data_str == "[DONE]":
                     break
                 try:

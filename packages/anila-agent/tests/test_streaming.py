@@ -89,12 +89,30 @@ async def test_sse_roundtrip_router_compatible(monkeypatch):
     events = [_delta_event("你好"), _delta_event("，世界")]
     monkeypatch.setattr(service_wrapper, "run_streamed", lambda *a, **k: _FakeStreaming(events))
 
-    sse = await _collect(service_wrapper._sse_stream(None, "hi", hooks=None))
+    # OpenAI 標準：usage 只在 client 帶 stream_options.include_usage=true 時才送
+    # （見 service_wrapper._sse_stream 的 docstring）。CSP 轉發 agent 串流時一律
+    # 強制這個旗標，所以這裡顯式帶上以模擬 CSP 的正式路徑。
+    sse = await _collect(
+        service_wrapper._sse_stream(None, "hi", hooks=None, include_usage=True)
+    )
     content, finish, usage, saw_done = _parse_like_router(sse)
 
     assert content == "你好，世界"  # 逐 delta 串接還原
     assert finish == "stop"
     assert usage == {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}
+    assert saw_done is True
+
+
+async def test_sse_without_include_usage_omits_usage(monkeypatch):
+    """沒帶 include_usage 時整段串流不出現 usage（OpenAI 標準行為）。"""
+    events = [_delta_event("嗨")]
+    monkeypatch.setattr(service_wrapper, "run_streamed", lambda *a, **k: _FakeStreaming(events))
+
+    sse = await _collect(service_wrapper._sse_stream(None, "hi", hooks=None))
+    _content, finish, usage, saw_done = _parse_like_router(sse)
+
+    assert finish == "stop"
+    assert usage is None
     assert saw_done is True
 
 
