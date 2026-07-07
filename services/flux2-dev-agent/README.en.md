@@ -13,14 +13,14 @@
 In the chat flow, when the Router detects the user wants an image it dispatches the `image-generator` agent, forwarding the OpenAI chat request (via CSP proxy) to this shim. The shim turns a casual request into a persisted image plus a markdown link:
 
 1. **`prompt_translator.py`** — calls `gemma4` through the CSP proxy to rewrite casual Chinese into a FLUX-friendly English prompt. Any error (non-200, malformed, None) **falls back to the original text** rather than failing the whole request; with `enabled=False` it is a pure pass-through (kill switch).
-2. **`flux_client.py`** — an async context manager that calls `flux2-dev`'s `POST /generate` and decodes the first candidate PNG (bytes). Non-200 / no images / non-JSON → `FluxBackendError`.
+2. **`flux_client.py`** — an async context manager that calls the FLUX backend's **OpenAI-compatible Images API** `POST {base}/v1/images/generations` (body `{model, prompt, n:1, size, response_format:"b64_json"}`; a base without `/v1` gets it appended; `Authorization: Bearer` only when `FLUX_API_KEY` is set) and decodes the first `b64_json` back to PNG bytes. Aspect ratios map to `size` via a built-in table (16:9→1792x1024, 1:1→1024x1024, …; unknown ratios fall back to `1024x1024`). Non-200 / no data / non-JSON → `FluxBackendError`.
 3. **`image_store.py`** — validates PNG magic bytes, writes to the share volume with a `uuid4` name, returns a public URL.
 4. **`chat_handler.py`** — chains the three above and assembles an OpenAI-shape response whose assistant content is `已為您繪製：\n\n![](url)`.
 
 ```
 Router → CSP proxy → flux2-dev-agent  POST /v1/chat/completions
                        ├─ prompt_translator → CSP /v1/chat/completions (gemma4)   ← outbound Bearer
-                       ├─ flux_client       → flux2-dev POST /generate
+                       ├─ flux_client       → FLUX backend POST {base}/v1/images/generations (OpenAI-compatible)
                        ├─ image_store       → write /share/flux, return /uploads/flux/<uuid>.png
                        └─ chat_handler      → OpenAI response (markdown image link)
 ```
@@ -36,7 +36,7 @@ Router → CSP proxy → flux2-dev-agent  POST /v1/chat/completions
 | Endpoint | Method | Notes |
 |----------|--------|-------|
 | `/health` | GET | `{"status": "ok"}` |
-| `/v1/models` | GET | returns `image-generator` (OpenAI list shape) |
+| `/v1/models` | GET | returns `image-generator` (OpenAI list shape: `id`/`object`/`created`/`owned_by`, plus a `model_type:"agent"` marker matching the CSP registration) |
 | `/v1/chat/completions` | POST | JSON or SSE (below) |
 
 **Request schema** (`ChatCompletionRequest`): a standard OpenAI body (`model` + non-empty `messages`) plus the ANILA extensions `anila_session_id` and `anila_handoff` (accepted because CSP forwards the body verbatim; the handler actually uses only `last_user_text()` and `model`). Empty `messages` → `422`.
@@ -59,7 +59,9 @@ Router → CSP proxy → flux2-dev-agent  POST /v1/chat/completions
 
 | Variable | Default (code) | Notes |
 |----------|----------------|-------|
-| `FLUX_BACKEND_URL` | `http://flux2-dev:8000` | inference backend |
+| `FLUX_BACKEND_URL` | `http://flux2-dev:8000` | OpenAI-compatible Images API base URL (server root or with `/v1`; the client normalises the version segment) |
+| `FLUX_MODEL` | `flux.2-dev` | `model` field of the Images API request |
+| `FLUX_API_KEY` | `""` | when set, sends `Authorization: Bearer`; empty = no header (local flux2-dev needs none) |
 | `CSP_BASE_URL` | `http://csp:8000` | translation callback target |
 | `CSP_API_KEY` | `""` (models compose injects `INTERNAL_PLATFORM_API_KEY`, fail-loud) | empty → translation auto-disabled with a warning, FLUX gets raw text |
 | `GEMMA_MODEL` | `gemma4` | translation LLM |
@@ -79,7 +81,7 @@ services/flux2-dev-agent/
 │   ├── main.py              # build_app + /health + /v1/models + /v1/chat/completions (incl. SSE)
 │   ├── schemas.py           # OpenAI chat shape + anila_session_id / anila_handoff extensions
 │   ├── prompt_translator.py # gemma4 via CSP proxy; falls back to original on error
-│   ├── flux_client.py       # calls flux2-dev /generate, decodes first PNG
+│   ├── flux_client.py       # calls the OpenAI-compatible /v1/images/generations, decodes first PNG
 │   ├── image_store.py       # PNG validation + write share volume + public URL
 │   └── chat_handler.py      # chains all four → OpenAI response
 ├── Dockerfile               # python:3.11-slim (no GPU; urllib healthcheck, image has no curl)

@@ -30,10 +30,14 @@ async def test_handle_returns_markdown_image_in_assistant_content(store: ImageSt
     flux_client = AsyncMock()
     flux_client.generate.return_value = _PNG
 
+    backend_resolver = AsyncMock()
+    backend_resolver.resolve.return_value = ("http://flux2-dev:8000", "flux.2-dev")
+
     handler = ChatHandler(
         translator=translator,
-        flux_client_factory=lambda: _AsyncContext(flux_client),
+        flux_client_factory=lambda endpoint, model: _AsyncContext(flux_client),
         image_store=store,
+        backend_resolver=backend_resolver,
         default_aspect_ratio="16:9",
     )
 
@@ -60,10 +64,14 @@ async def test_handle_translates_prompt_before_calling_flux(store: ImageStore):
     flux_client = AsyncMock()
     flux_client.generate.return_value = _PNG
 
+    backend_resolver = AsyncMock()
+    backend_resolver.resolve.return_value = ("http://flux2-dev:8000", "flux.2-dev")
+
     handler = ChatHandler(
         translator=translator,
-        flux_client_factory=lambda: _AsyncContext(flux_client),
+        flux_client_factory=lambda endpoint, model: _AsyncContext(flux_client),
         image_store=store,
+        backend_resolver=backend_resolver,
         default_aspect_ratio="16:9",
     )
 
@@ -86,10 +94,14 @@ async def test_handle_passes_default_aspect_ratio(store: ImageStore):
     flux_client = AsyncMock()
     flux_client.generate.return_value = _PNG
 
+    backend_resolver = AsyncMock()
+    backend_resolver.resolve.return_value = ("http://flux2-dev:8000", "flux.2-dev")
+
     handler = ChatHandler(
         translator=translator,
-        flux_client_factory=lambda: _AsyncContext(flux_client),
+        flux_client_factory=lambda endpoint, model: _AsyncContext(flux_client),
         image_store=store,
+        backend_resolver=backend_resolver,
         default_aspect_ratio="1:1",
     )
 
