@@ -126,6 +126,7 @@
   --c-vlm:       #6b46c1;
   --c-embedding: #2f855a;
   --c-agent:     #b7791f;
+  --c-image:     #b83280;
 
   /* Selection / focus */
   --c-selection-bg: rgba(43, 76, 126, 0.14);
@@ -190,6 +191,7 @@
   --c-vlm:       #a98fd6;
   --c-embedding: #6bbf8f;
   --c-agent:     #d6a95f;
+  --c-image:     #d68fc2;
 
   /* Selection / focus */
   --c-selection-bg: rgba(111, 143, 194, 0.22);
@@ -242,6 +244,7 @@
     --c-vlm:       #a98fd6;
     --c-embedding: #6bbf8f;
     --c-agent:     #d6a95f;
+    --c-image:     #d68fc2;
     --c-selection-bg: rgba(111, 143, 194, 0.22);
     --c-focus-ring:   #6f8fc2;
     --c-row-hover:    #1f2530;

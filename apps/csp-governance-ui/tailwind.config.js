@@ -62,6 +62,7 @@ export default {
         vlm:       'var(--c-vlm)',
         embedding: 'var(--c-embedding)',
         agent:     'var(--c-agent)',
+        image:     'var(--c-image)',
         // Border tokens — Tailwind's `border-` utility looks for these.
         'c-border':         'var(--c-border)',
         'c-border-strong':  'var(--c-border-strong)',

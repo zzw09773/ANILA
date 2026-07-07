@@ -110,6 +110,7 @@ def _build_response(model: ModelRegistry, *, caller: User | None = None) -> dict
         "api_version": model.api_version,
         "is_active": model.is_active,
         "is_router_primary": bool(model.is_router_primary),
+        "is_image_primary": bool(getattr(model, "is_image_primary", False)),
         # Slice 6a: always surface the five-state vocabulary; 'disabled' when
         # inactive, legacy online/connecting/offline normalized on read.
         "health_status": normalize_health_status(
@@ -295,6 +296,103 @@ def unset_router_primary(
     return _build_response(model, caller=admin)
 
 
+@router.get("/image-primary")
+def get_image_primary(
+    _: None = Depends(verify_service_token),
+    db: Session = Depends(get_db),
+):
+    """Return the model designated as the primary image (FLUX) model.
+
+    Service-to-service endpoint consumed by flux2-dev-agent / anila-studio
+    on a 60s TTL refresh (doc 2026-07-06-flux-image-primary-design.md §1).
+    Returns 404 when no primary is set so callers fall back to their env
+    config instead of silently using the wrong endpoint. Never returns the
+    model's API key — key management stays with each consumer's own env.
+    """
+    model = (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.is_image_primary.is_(True))
+        .first()
+    )
+    if not model:
+        raise HTTPException(status_code=404, detail="尚未指定主圖像模型")
+    if not model.is_active:
+        raise HTTPException(status_code=409, detail="已指定的主圖像模型已被停用")
+    return {
+        "id": model.id,
+        "name": model.name,
+        "display_name": model.display_name,
+        "model_type": model.model_type,
+        "endpoint_url": model.endpoint_url,
+        "api_version": model.api_version,
+        "health_status": model.health_status,
+    }
+
+
+@router.post("/{model_id}/set-image-primary", response_model=ModelResponse)
+def set_image_primary(
+    model_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Mark a model as the primary image (FLUX) model (clearing any previous one)."""
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    if model.model_type != "image":
+        raise HTTPException(status_code=400, detail="僅 image 類型可設為主圖像模型")
+    if not model.is_active:
+        raise HTTPException(status_code=400, detail="已停用的模型不能設為主圖像模型")
+
+    # Clear previous primary first to avoid violating the partial unique index.
+    (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.is_image_primary.is_(True), ModelRegistry.id != model_id)
+        .update({"is_image_primary": False}, synchronize_session=False)
+    )
+    model.is_image_primary = True
+    db.commit()
+    db.refresh(model)
+    log_audit_event(
+        db,
+        actor=admin,
+        action="set_image_primary",
+        resource_type="model",
+        resource_id=model.id,
+        detail=f"設為主圖像模型: {model.display_name}",
+        commit=True,
+    )
+    return _build_response(model, caller=admin)
+
+
+@router.post("/{model_id}/unset-image-primary", response_model=ModelResponse)
+def unset_image_primary(
+    model_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Remove the primary image-model designation from a model."""
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    if not model.is_image_primary:
+        return _build_response(model, caller=admin)
+
+    model.is_image_primary = False
+    db.commit()
+    db.refresh(model)
+    log_audit_event(
+        db,
+        actor=admin,
+        action="unset_image_primary",
+        resource_type="model",
+        resource_id=model.id,
+        detail=f"取消主圖像模型: {model.display_name}",
+        commit=True,
+    )
+    return _build_response(model, caller=admin)
+
+
 @router.get("/{model_id}", response_model=ModelResponse)
 def get_model(
     model_id: int,
@@ -385,6 +483,11 @@ def deactivate_model(
     # holds; admin must explicitly re-pin a primary after re-activation.
     if model.is_router_primary:
         model.is_router_primary = False
+    # Same invariant for the image-primary flag (doc
+    # 2026-07-06-flux-image-primary-design.md §1): a disabled row must not
+    # stay pinned as primary.
+    if model.is_image_primary:
+        model.is_image_primary = False
     db.commit()
     log_audit_event(
         db,
