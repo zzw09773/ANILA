@@ -37,6 +37,7 @@ from app.clients.csp_client import (
     CspServerError,
     fetch_image_blob,
 )
+from app.services.flux_image_primary import get_image_primary
 from app.services.studio_config import (
     CONTENT_ILLUSTRATION_MAX_BULLETS,
     FLUX_GATE_MAX_RETRIES,
@@ -67,7 +68,11 @@ def get_flux_provider() -> "FluxImageProvider | None":
     integration is disabled in this deployment.
 
     Configuration via env:
-      FLUX_BACKEND_URL       (required to enable; e.g. http://flux2-dev:8000)
+      FLUX_BACKEND_URL       (required to enable; OpenAI 相容 Images API 的
+                              base URL,伺服器根或含 /v1 皆可,如
+                              http://flux-images:8000 或 https://gw/v1)
+      FLUX_MODEL             (default: flux.2-dev — request 的 model 欄位)
+      FLUX_API_KEY           (default: 空 — 有值才帶 Authorization: Bearer)
       FLUX_CACHE_DIR         (default: /var/anila/anila-studio-flux-cache)
       FLUX_MAX_CONCURRENT    (default: 4)
       FLUX_TIMEOUT_SECONDS   (default: 180)
@@ -90,6 +95,8 @@ def get_flux_provider() -> "FluxImageProvider | None":
     )
     max_concurrent = int(os.environ.get("FLUX_MAX_CONCURRENT", "4"))
     timeout = float(os.environ.get("FLUX_TIMEOUT_SECONDS", "180"))
+    model = os.environ.get("FLUX_MODEL", "flux.2-dev").strip() or "flux.2-dev"
+    api_key = os.environ.get("FLUX_API_KEY", "").strip()
 
     from pathlib import Path
     _FLUX_PROVIDER = FluxImageProvider(
@@ -97,13 +104,100 @@ def get_flux_provider() -> "FluxImageProvider | None":
         cache_dir=Path(cache_dir),
         max_concurrent=max_concurrent,
         timeout_seconds=timeout,
+        model=model,
+        api_key=api_key,
     )
     _FLUX_PROVIDER_INITIALISED = True
     logger.info(
-        "FluxImageProvider wired: url=%s cache_dir=%s concurrent=%d",
-        flux_url, cache_dir, max_concurrent,
+        "FluxImageProvider wired: url=%s model=%s cache_dir=%s concurrent=%d",
+        flux_url, model, cache_dir, max_concurrent,
     )
     return _FLUX_PROVIDER
+
+
+# ── Runtime (image-primary) resolution — 2026-07-06 ────────────────────────
+#
+# get_flux_provider() above only ever looks at env, and only once (first
+# call wins for the process lifetime). That is wrong now that csp can hold
+# an admin-designated "主圖像模型" that changes without a studio restart
+# (spec doc: flux-image-primary-design.md §4): a deployment where csp has
+# an image-primary configured but FLUX_BACKEND_URL is empty must still be
+# able to generate — the old "env empty ⇒ disabled" check was a
+# startup-time decision and needs to become a per-call one.
+#
+# get_active_flux_provider() is the new entry point for the two real
+# call sites (_render_pptx below, and _run_pipeline's deck-style gate in
+# api/studio.py). It keeps its own singleton (separate from
+# get_flux_provider()'s env-only one — tests + call sites that build a
+# provider purely from env still use the old function unchanged) and
+# rebuilds the FluxImageProvider whenever the resolved (endpoint, model)
+# pair changes. FluxImageProvider itself opens a fresh httpx.AsyncClient
+# per _generate() call (no persistent client held across requests), so
+# "rebuilding the client" on an endpoint switch is satisfied simply by
+# swapping in a new FluxImageProvider instance — the next _generate()
+# naturally dials the new URL.
+_FLUX_DYNAMIC_PROVIDER: "FluxImageProvider | None" = None
+_FLUX_DYNAMIC_KEY: tuple[str, str] | None = None
+
+
+async def get_active_flux_provider() -> "FluxImageProvider | None":
+    """Resolve the FLUX provider to use right now.
+
+    Priority: csp image-primary (60s TTL fetcher) > env
+    (``FLUX_BACKEND_URL`` / ``FLUX_MODEL``). csp 404/未設定/停用、連線失敗、
+    401/403 一律 fallback 到 env(見 ``flux_image_primary.get_image_primary``
+    的錯誤處理)。兩者皆空 → 回 None,維持既有「FLUX 停用」語意。
+
+    ``FLUX_CACHE_DIR`` / ``FLUX_MAX_CONCURRENT`` / ``FLUX_TIMEOUT_SECONDS``
+    / ``FLUX_API_KEY`` 不隨 csp 熱切換 — 這些是本服務自己的資源設定,一律
+    讀 env(同 get_flux_provider 的既有慣例)。
+    """
+    global _FLUX_DYNAMIC_PROVIDER, _FLUX_DYNAMIC_KEY
+
+    csp_endpoint, csp_model = await get_image_primary()
+
+    if csp_endpoint:
+        flux_url = csp_endpoint
+        model = csp_model or "flux.2-dev"
+        source = "csp"
+    else:
+        flux_url = os.environ.get("FLUX_BACKEND_URL", "").strip()
+        model = os.environ.get("FLUX_MODEL", "flux.2-dev").strip() or "flux.2-dev"
+        source = "env"
+
+    if not flux_url:
+        return None
+
+    key = (flux_url, model)
+    if _FLUX_DYNAMIC_PROVIDER is not None and _FLUX_DYNAMIC_KEY == key:
+        return _FLUX_DYNAMIC_PROVIDER
+
+    from pathlib import Path
+
+    from app.services.flux_image_provider import FluxImageProvider
+
+    cache_dir = os.environ.get(
+        "FLUX_CACHE_DIR", "/var/anila/anila-studio-flux-cache"
+    )
+    max_concurrent = int(os.environ.get("FLUX_MAX_CONCURRENT", "4"))
+    timeout = float(os.environ.get("FLUX_TIMEOUT_SECONDS", "180"))
+    api_key = os.environ.get("FLUX_API_KEY", "").strip()
+
+    _FLUX_DYNAMIC_PROVIDER = FluxImageProvider(
+        flux_url=flux_url,
+        cache_dir=Path(cache_dir),
+        max_concurrent=max_concurrent,
+        timeout_seconds=timeout,
+        model=model,
+        api_key=api_key,
+    )
+    _FLUX_DYNAMIC_KEY = key
+    logger.info(
+        "FluxImageProvider (dynamic) wired: url=%s model=%s source=%s "
+        "cache_dir=%s concurrent=%d",
+        flux_url, model, source, cache_dir, max_concurrent,
+    )
+    return _FLUX_DYNAMIC_PROVIDER
 
 
 async def _gated_generate(
@@ -508,14 +602,23 @@ async def _render_pptx(
     (deck_base_seed = sha256(job_id)).
     """
     spec_dict = spec.model_dump()
-    flux_provider = get_flux_provider()
+    # Only resolve a FLUX provider (which, since 2026-07-06, means an async
+    # csp round-trip via get_active_flux_provider()) when the rest of the
+    # cover-hero toolchain is actually present. deck_base_seed/llm being
+    # None already makes cover_hero_ready False regardless of the provider,
+    # and _hydrate_images' own toolchain_ready check has the identical
+    # requirement — so skipping the csp call here changes no behaviour and
+    # avoids a wasted image-primary fetch on every images_lookup-only call
+    # (e.g. tests that pass deck_base_seed=None / llm=None).
+    flux_provider: "FluxImageProvider | None" = None
+    cover_hero_ready = False
+    if deck_base_seed is not None and llm is not None:
+        flux_provider = await get_active_flux_provider()
+        cover_hero_ready = flux_provider is not None
     # Hydrate when there are curated images to resolve OR when the FLUX
     # cover-hero path is fully wired (provider + seed + llm). The latter
     # matters for text-only knowledge bases: no retrieved images means an
     # empty images_lookup, but a cover hero should still be generated.
-    cover_hero_ready = (
-        flux_provider is not None and deck_base_seed is not None and llm is not None
-    )
     if images_lookup or cover_hero_ready:
         spec_dict = await _hydrate_images(
             spec_dict,
