@@ -7,8 +7,9 @@ which requires the full toolchain (an llm adapter + a deck_base_seed). Seeds are
 per-slide (deck_base_seed + idx), so the content-addressable cache is shared
 across *job re-runs* (same deck_base_seed), not across slides within one deck.
 
-These e2e tests stub the rewriter and the VLM gate, and mock the FLUX /generate
-HTTP call, to exercise the full hydration path deterministically.
+These e2e tests stub the rewriter and the VLM gate, and mock the FLUX
+OpenAI Images API call (POST /v1/images/generations), to exercise the full
+hydration path deterministically.
 """
 from __future__ import annotations
 
@@ -28,9 +29,9 @@ _PNG_B64 = base64.b64encode(_PNG).decode("ascii")
 
 
 def _flux_json() -> httpx.Response:
-    """Contract-3.2 JSON response (one PNG candidate)."""
+    """OpenAI Images API response (one PNG candidate)."""
     return httpx.Response(
-        200, json={"images": [_PNG_B64], "seed": 0, "meta": {"steps": 28}}
+        200, json={"created": 1_720_000_000, "data": [{"b64_json": _PNG_B64}]}
     )
 
 
@@ -88,7 +89,7 @@ async def test_stage4_cover_and_content_illustration(monkeypatch, tmp_path):
     importlib.reload(studio)
     _wire_stage4(monkeypatch, render_mod)
 
-    respx.post("http://flux2-dev:8000/generate").mock(return_value=_flux_json())
+    respx.post("http://flux2-dev:8000/v1/images/generations").mock(return_value=_flux_json())
 
     spec = {"slides": [
         {"title": "Cover", "bullets": ["overview"], "layout_kind": "section_break"},
@@ -137,7 +138,7 @@ async def test_stage4_rerun_hits_cache(monkeypatch, tmp_path):
     importlib.reload(studio)
     _wire_stage4(monkeypatch, render_mod)
 
-    route = respx.post("http://flux2-dev:8000/generate").mock(
+    route = respx.post("http://flux2-dev:8000/v1/images/generations").mock(
         return_value=_flux_json()
     )
     provider = studio.get_flux_provider()
@@ -185,7 +186,7 @@ async def test_stage4_flux_failure_falls_back_silently(monkeypatch, tmp_path):
     importlib.reload(studio)
     _wire_stage4(monkeypatch, render_mod)
 
-    respx.post("http://flux2-dev:8000/generate").mock(
+    respx.post("http://flux2-dev:8000/v1/images/generations").mock(
         return_value=httpx.Response(503, json={"detail": "model loading"})
     )
 
