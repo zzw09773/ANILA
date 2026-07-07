@@ -13,14 +13,14 @@
 聊天流程裡，Router 發現使用者想繪圖時會分派 `image-generator` agent，把 OpenAI chat 請求（經 CSP proxy）forward 到本 shim。shim 負責把「口語需求」變成「一張落地好的圖 + Markdown 連結」：
 
 1. **`prompt_translator.py`** — 呼叫 CSP proxy 的 `gemma4`，把中文口語改寫成 FLUX 友善的英文 prompt。任何錯誤（非 200、malformed、None）一律 **fallback 原文**，不讓整個請求失敗；`enabled=False` 時為 pure pass-through（kill switch）。
-2. **`flux_client.py`** — 以 async context manager 呼 `flux2-dev` 的 `POST /generate`，解出第一張候選 PNG（bytes）。非 200 / 無 images / 非 JSON → `FluxBackendError`。
+2. **`flux_client.py`** — 以 async context manager 呼 FLUX 後端的 **OpenAI 相容 Images API** `POST {base}/v1/images/generations`（body `{model, prompt, n:1, size, response_format:"b64_json"}`；base 沒帶 `/v1` 會自動補；設 `FLUX_API_KEY` 才帶 `Authorization: Bearer`），解出第一個 `b64_json` 還原 PNG（bytes）。aspect ratio 以內建對映表轉 `size`（16:9→1792x1024、1:1→1024x1024…未知比例 fallback `1024x1024`）。非 200 / 無 data / 非 JSON → `FluxBackendError`。
 3. **`image_store.py`** — 校驗 PNG magic bytes、以 `uuid4` 命名寫進 share volume，回傳 public URL。
 4. **`chat_handler.py`** — 串接前三者，組出 OpenAI 形狀回應，assistant 內容為 `已為您繪製：\n\n![](url)`。
 
 ```
 Router → CSP proxy → flux2-dev-agent  POST /v1/chat/completions
                        ├─ prompt_translator → CSP /v1/chat/completions (gemma4)   ← 出向帶 Bearer
-                       ├─ flux_client       → flux2-dev POST /generate
+                       ├─ flux_client       → FLUX 後端 POST {base}/v1/images/generations（OpenAI 相容）
                        ├─ image_store       → 寫 /share/flux，回 /uploads/flux/<uuid>.png
                        └─ chat_handler      → OpenAI 回應（Markdown 圖片連結）
 ```
@@ -36,7 +36,7 @@ Router → CSP proxy → flux2-dev-agent  POST /v1/chat/completions
 | 端點 | 方法 | 說明 |
 |------|------|------|
 | `/health` | GET | `{"status": "ok"}` |
-| `/v1/models` | GET | 回 `image-generator`（OpenAI list 形狀） |
+| `/v1/models` | GET | 回 `image-generator`（OpenAI list 形狀：`id`/`object`/`created`/`owned_by`，另帶 `model_type:"agent"` 標記，與 CSP 註冊資訊一致） |
 | `/v1/chat/completions` | POST | JSON 或 SSE（見下） |
 
 **請求 schema**（`ChatCompletionRequest`）：標準 OpenAI body（`model` + 非空 `messages`）+ ANILA 擴充 `anila_session_id`、`anila_handoff`（CSP 逐字 forward 而接受；handler 實際只用 `last_user_text()` 與 `model`）。空 `messages` → `422`。
@@ -59,7 +59,9 @@ Router → CSP proxy → flux2-dev-agent  POST /v1/chat/completions
 
 | 變數 | 預設（程式碼） | 說明 |
 |------|----------------|------|
-| `FLUX_BACKEND_URL` | `http://flux2-dev:8000` | 後端推論服務 |
+| `FLUX_BACKEND_URL` | `http://flux2-dev:8000` | OpenAI 相容 Images API 的 base URL（伺服器根或含 `/v1` 皆可，client 自動補版本段） |
+| `FLUX_MODEL` | `flux.2-dev` | Images API request 的 `model` 欄位 |
+| `FLUX_API_KEY` | `""` | 有值才帶 `Authorization: Bearer`；留空不帶（本機 flux2-dev 免驗） |
 | `CSP_BASE_URL` | `http://csp:8000` | 翻譯 callback 目的地 |
 | `CSP_API_KEY` | `""`（models compose 以 `INTERNAL_PLATFORM_API_KEY` fail-loud 帶入） | 空值 → 翻譯自動停用並 warn，FLUX 收原文 |
 | `GEMMA_MODEL` | `gemma4` | 翻譯用 LLM |
@@ -79,7 +81,7 @@ services/flux2-dev-agent/
 │   ├── main.py              # build_app + /health + /v1/models + /v1/chat/completions（含 SSE）
 │   ├── schemas.py           # OpenAI chat 形狀 + anila_session_id / anila_handoff 擴充
 │   ├── prompt_translator.py # gemma4 via CSP proxy；錯誤 fallback 原文
-│   ├── flux_client.py       # 呼 flux2-dev /generate，解第一張 PNG
+│   ├── flux_client.py       # 呼 OpenAI 相容 /v1/images/generations，解第一張 PNG
 │   ├── image_store.py       # PNG 校驗 + 寫 share volume + public URL
 │   └── chat_handler.py      # 串接四者 → OpenAI 回應
 ├── Dockerfile               # python:3.11-slim（無 GPU；healthcheck 用 urllib，image 無 curl）
