@@ -350,7 +350,13 @@ services:
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
       # 跟 csp 同一個 toggle:空字串 → studio 圖像生成停用 (內網無 FLUX)。
+      # 2026-07 起走 OpenAI 相容 Images API(POST {base}/v1/images/generations);
+      # base URL 指伺服器根或含 /v1 皆可(client 自動補版本段)。
       FLUX_BACKEND_URL: ${FLUX_BACKEND_URL-http://flux2-dev:8000}
+      # OpenAI Images API 的 model 欄位(依 FLUX 服務公布的模型名填)。
+      FLUX_MODEL: ${FLUX_MODEL:-flux.2-dev}
+      # 有值才帶 Authorization: Bearer;留空 = 不帶(本機 flux2-dev 免驗)。
+      FLUX_API_KEY: ${FLUX_API_KEY-}
       # 對齊 volume mount 路徑。studio.py 內讀 os.environ["FLUX_CACHE_DIR"],
       # 預設 fallback 是 csp 的 /var/anila/ingestion-uploads/flux-cache,在
       # anila-studio container 內不存在/沒權限,所以這條 env 必須顯式設。
@@ -380,6 +386,54 @@ services:
       timeout: 5s
       retries: 6
       start_period: 30s
+    restart: unless-stopped
+
+  # ── flux2-dev-agent (繪圖 agent — chat↔image 轉接層) ─────────────────────
+  # 聊天畫圖鏈路: SPA → Router → csp /v1/chat/completions(model=image-generator)
+  #   → 這個 agent。agent 內部: ① gemma4 中文→英文 prompt 翻譯(打 csp)
+  #   ② 打底層 T2I 模型 /v1/images/generations ③ 存圖 + 回 markdown 連結。
+  # 底層 T2I 模型 = 雲端算力中心 SGLang(172.16.120.35:30010, OpenAI 相容
+  #   Images API)。本機不跑 flux2-dev,故不 depends_on 它、FLUX_BACKEND_URL
+  #   直接指遠端。env 寫死(不走 .env FLUX_MODEL,避免污染 studio 的同名 env)。
+  flux2-dev-agent:
+    build:
+      context: ../../services/flux2-dev-agent
+    expose:
+      - "8000"
+    environment:
+      TZ: Asia/Taipei
+      # 底層 T2I 模型 = 雲端 SGLang(OpenAI 相容 /v1/images/generations)。
+      FLUX_BACKEND_URL: http://172.16.120.35:30010
+      # SGLang /v1/models 公布的 model id 是字面 "/model"。
+      FLUX_MODEL: "/model"
+      FLUX_API_KEY: ${FLUX_API_KEY-}
+      CSP_BASE_URL: http://csp:8000
+      # agent 打 csp 拉 gemma4 翻譯 + JWKS,prod fail-loud(缺值直接停)。
+      CSP_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
+      # image-primary fetcher 打 csp GET /api/models/image-primary 用。
+      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set (same value as csp)}
+      GEMMA_MODEL: gemma4
+      ENABLE_PROMPT_TRANSLATION: "1"
+      SHARE_DIR: /share/flux
+      PUBLIC_URL_PREFIX: /uploads/flux
+      DEFAULT_ASPECT_RATIO: "16:9"
+      FLUX_TIMEOUT_SECONDS: "240"
+    depends_on:
+      csp:
+        condition: service_healthy
+    volumes:
+      # nginx 以 /uploads/ alias share-files/uploads/ 對外 serve 這裡的圖。
+      - ../../share/uploads/flux:/share/flux
+    networks:
+      - default
+      - anila-models-net  # 與 csp 同網,csp 用 http://flux2-dev-agent:8000 打它
+    healthcheck:
+      # agent image(python:3.11-slim)無 curl,用 urllib。
+      test: ["CMD-SHELL", "python -c \"import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=5).status == 200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   # ── ANILA LM (Vite/React SPA at /anilalm/) ──────────────────────────────
