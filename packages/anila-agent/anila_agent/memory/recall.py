@@ -92,6 +92,27 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb + 1e-9)
 
 
+def _sorted_by_index(items: list) -> list:
+    """依 ``data[].index`` 排序，使回應對齊回請求 ``input`` 的原始位置。
+
+    OpenAI 相容的批次 embeddings 端點不保證 ``data[]`` 陣列順序等於 ``input``
+    順序，只保證每個 item 帶的 ``index`` 欄位指回原始位置。缺 ``index``
+    （非標準/舊端點）時退回原陣列順序（``sorted`` 為穩定排序，此時每個 key
+    即原始位置本身，等同不動）。
+    """
+    return [
+        item
+        for _, item in sorted(
+            enumerate(items),
+            key=lambda pair: (
+                pair[1]["index"]
+                if isinstance(pair[1], dict) and "index" in pair[1]
+                else pair[0]
+            ),
+        )
+    ]
+
+
 def make_embed_fn(
     *, base_url: str, model: str, api_key: str = "EMPTY", verify_ssl: bool = True, timeout: float = 30.0
 ) -> EmbedFn:
@@ -109,7 +130,9 @@ def make_embed_fn(
                 json={"model": model, "input": inputs},
             )
             resp.raise_for_status()
-            vectors = [d["embedding"] for d in resp.json()["data"]]
+            # data[] 陣列順序不保證與 input 對齊；依 index 排序後再對齊
+            # （缺 index 時退回陣列順序）。
+            vectors = [d["embedding"] for d in _sorted_by_index(resp.json()["data"])]
         q_vec, doc_vecs = vectors[0], vectors[1:]
         ranked = sorted(
             zip(names, doc_vecs, strict=False), key=lambda nv: _cosine(q_vec, nv[1]), reverse=True
