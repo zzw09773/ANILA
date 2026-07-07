@@ -34,3 +34,10 @@ export const setRouterPrimary = (id) =>
 
 export const unsetRouterPrimary = (id) =>
   client.post(`/api/models/${id}/unset-router-primary`)
+
+// FLUX 主圖像模型（image-primary）— 完全比照 router-primary 三件組寫法。
+export const setImagePrimary = (id) =>
+  client.post(`/api/models/${id}/set-image-primary`)
+
+export const unsetImagePrimary = (id) =>
+  client.post(`/api/models/${id}/unset-image-primary`)

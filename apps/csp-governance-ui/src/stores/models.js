@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import {
   listModels, createModel, updateModel, deleteModel, activateModel, purgeModel, triggerHealthCheck,
   setRouterPrimary, unsetRouterPrimary, testModelConnection,
+  setImagePrimary as setImagePrimaryApi, unsetImagePrimary as unsetImagePrimaryApi,
 } from '../api/models'
 
 export const useModelsStore = defineStore('models', () => {
@@ -68,8 +69,19 @@ export const useModelsStore = defineStore('models', () => {
     await fetchModels()
   }
 
+  // FLUX 主圖像模型（image-primary）— 完全比照 setPrimary/unsetPrimary 寫法。
+  async function setImagePrimary(id) {
+    await setImagePrimaryApi(id)
+    await fetchModels()
+  }
+
+  async function unsetImagePrimary(id) {
+    await unsetImagePrimaryApi(id)
+    await fetchModels()
+  }
+
   return {
     models, loading, fetchModels, create, update, remove, activate, purge, checkHealth, test,
-    setPrimary, unsetPrimary,
+    setPrimary, unsetPrimary, setImagePrimary, unsetImagePrimary,
   }
 })

@@ -5,7 +5,7 @@ from pydantic import BaseModel
 class ModelCreate(BaseModel):
     name: str
     display_name: str
-    model_type: str  # 'llm' / 'vlm' / 'embedding' / 'agent'
+    model_type: str  # 'llm' / 'vlm' / 'embedding' / 'agent' / 'image'
     endpoint_url: str
     api_version: str = "v1"
     description: str | None = None
@@ -59,6 +59,7 @@ class ModelResponse(BaseModel):
     api_version: str
     is_active: bool
     is_router_primary: bool = False
+    is_image_primary: bool = False
     health_status: str
     health_checked_at: datetime | None
     description: str | None

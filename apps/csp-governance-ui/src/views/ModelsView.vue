@@ -28,7 +28,7 @@
             <th>端點</th>
             <th style="width: 80px">API</th>
             <th style="width: 80px">啟用</th>
-            <th style="width: 110px">Router</th>
+            <th style="width: 110px">主要</th>
             <th v-if="authStore.isAdmin" style="width: 26%">操作</th>
           </tr>
         </thead>
@@ -85,6 +85,9 @@
               <span v-if="model.is_router_primary" class="primary-pill" title="ANILA Router uses this as primary LLM">
                 ★ 主要
               </span>
+              <span v-else-if="model.is_image_primary" class="primary-pill" title="flux2-dev-agent / anila-studio 以此為主圖像模型">
+                ★ 主圖像
+              </span>
               <span v-else class="cell-meta">—</span>
             </td>
             <td v-if="authStore.isAdmin">
@@ -116,6 +119,24 @@
                   @click="handleUnsetPrimary(model.id)"
                 >
                   取消主要
+                </button>
+                <span v-if="model.model_type === 'image' && !model.is_image_primary" class="row-actions__sep">·</span>
+                <button
+                  v-if="model.model_type === 'image' && !model.is_image_primary"
+                  class="term-action"
+                  :disabled="!model.is_active || settingImagePrimaryId === model.id"
+                  @click="handleSetImagePrimary(model.id)"
+                >
+                  {{ settingImagePrimaryId === model.id ? '設定中…' : '設為主圖像模型' }}
+                </button>
+                <span v-else-if="model.is_image_primary" class="row-actions__sep">·</span>
+                <button
+                  v-if="model.is_image_primary"
+                  class="term-action"
+                  :disabled="settingImagePrimaryId === model.id"
+                  @click="handleUnsetImagePrimary(model.id)"
+                >
+                  取消主圖像
                 </button>
                 <span class="row-actions__sep">·</span>
                 <button
@@ -163,6 +184,7 @@
               <option value="vlm">vlm</option>
               <option value="embedding">embedding</option>
               <option value="agent">agent</option>
+              <option value="image">image</option>
             </select>
           </TermField>
           <TermField label="API 版本">
@@ -286,6 +308,7 @@ const showModal = ref(false)
 const editingId = ref(null)
 const purgingId = ref(null)
 const settingPrimaryId = ref(null)
+const settingImagePrimaryId = ref(null)
 // Slice 6b — 每列一個「測試連線」狀態：testingId 顯示 spinner；
 // testResults[id] 快取最近一次探測的延遲標籤（五態 badge 由 refetch 後的
 // health_status 反映）。
@@ -530,6 +553,19 @@ async function handleUnsetPrimary(id) {
   try { await modelsStore.unsetPrimary(id) }
   catch (e) { toast(e.response?.data?.detail || '取消主要失敗', { tone: 'error' }) }
   finally { settingPrimaryId.value = null }
+}
+async function handleSetImagePrimary(id) {
+  settingImagePrimaryId.value = id
+  try { await modelsStore.setImagePrimary(id) }
+  catch (e) { toast(e.response?.data?.detail || '設定主圖像模型失敗', { tone: 'error' }) }
+  finally { settingImagePrimaryId.value = null }
+}
+async function handleUnsetImagePrimary(id) {
+  if (!(await confirm({ message: '取消主圖像模型？在你指定新的主圖像模型前，flux2-dev-agent / anila-studio 將 fallback 使用環境變數設定的端點。', confirmText: '取消主圖像', danger: true }))) return
+  settingImagePrimaryId.value = id
+  try { await modelsStore.unsetImagePrimary(id) }
+  catch (e) { toast(e.response?.data?.detail || '取消主圖像模型失敗', { tone: 'error' }) }
+  finally { settingImagePrimaryId.value = null }
 }
 async function handleDeactivate(id) {
   if (await confirm({ message: '停用此模型？之後可透過該列的「啟用」按鈕重新啟用。', confirmText: '停用', danger: true })) {
