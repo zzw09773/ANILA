@@ -488,7 +488,10 @@ services:
   # ── ANILA UI (admin SPA, same-origin via nginx) ─────────────────────────
   anila-ui:
     build:
-      context: ../../apps/anila-shell
+      # repo-root context（同 csp 慣例）：shell 以 Vite alias 引用共用設計
+      # 系統 packages/ui 原始碼，build context 必須涵蓋兩個目錄。
+      context: ../..
+      dockerfile: apps/anila-shell/Dockerfile
       args:
         # 空字串 → SPA 用相對 URL,所有請求 same-origin (clipboard secure context)。
         VITE_CSP_BASE_URL: ${ANILA_PUBLIC_CSP_BASE_URL-}

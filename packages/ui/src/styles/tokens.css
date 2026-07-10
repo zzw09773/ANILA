@@ -1,0 +1,97 @@
+/* ============================================================================
+ * @anila/ui — Design Tokens（三平台共用設計系統基礎）
+ *
+ * 設計語彙：淺色優先・官方藍 institutional（docs/anila-redesign-docs/12 §1–2）。
+ * 中性冷灰底、官方藍 accent（#2b4c7e）、溫圓角、系統字型堆疊（air-gap 安全，
+ * 不載入任何外部字型/資源；等寬字保留給 ID、數字與代碼語境）。
+ *
+ * 命名空間：一律 `--anila-*`，避免與各 app 既有變數（shell 的 --bg/--fg、
+ * 治理中心的 --c-*）衝突；各 app 以自己的橋接層把舊變數指到這裡。
+ *
+ * 主題化結構：token 值掛在 `:root, [data-theme="light"]`。要新增第二主題
+ * （例如深色）時，追加一段 `[data-theme="dark"] { --anila-color-bg: ...; }`
+ * 覆蓋即可，元件不需要改。本次交付僅含淺色官方藍一套主題（深色為後續
+ * change brief 的範圍，刻意不在此實作）。
+ * ========================================================================== */
+
+:root,
+[data-theme="light"] {
+  /* ---- 1. Colors ---------------------------------------------------------
+   * 表面三階（bg < bg-subtle < bg-elev）、前景三階（fg > fg-muted > fg-subtle）、
+   * 邊框兩階、官方藍 accent 三件組、語意狀態色。 */
+  --anila-color-bg:            oklch(0.977 0.002 250);
+  --anila-color-bg-elev:       oklch(1 0 0);
+  --anila-color-bg-subtle:     oklch(0.958 0.004 250);
+  --anila-color-fg:            oklch(0.24 0.02 260);
+  --anila-color-fg-muted:      oklch(0.47 0.018 260);
+  --anila-color-fg-subtle:     oklch(0.62 0.014 260);
+  --anila-color-border:        oklch(0.90 0.006 250);
+  --anila-color-border-strong: oklch(0.83 0.010 250);
+
+  /* 官方藍（doc 12 §2：--c-accent #2b4c7e 的共用版）。 */
+  --anila-color-accent:        #2b4c7e;
+  --anila-color-accent-fg:     #ffffff;
+  --anila-color-accent-soft:   oklch(0.93 0.022 258);
+
+  --anila-color-danger:        oklch(0.53 0.17 27);
+  --anila-color-warn:          oklch(0.70 0.13 75);
+  --anila-color-success:       oklch(0.56 0.10 152);
+  --anila-color-info:          oklch(0.55 0.08 245);
+
+  /* ---- 2. Typography ------------------------------------------------------
+   * 系統字型堆疊（zh-TW aware、無 webfont 下載）；等寬只給資料語境。 */
+  --anila-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Microsoft JhengHei", "PingFang TC", "Noto Sans CJK TC", system-ui,
+    sans-serif;
+  --anila-font-mono: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo,
+    Consolas, monospace;
+
+  --anila-text-xs:   11px;
+  --anila-text-sm:   12px;
+  --anila-text-md:   13px;
+  --anila-text-base: 14px;
+  --anila-text-lg:   15px;
+  --anila-text-xl:   17px;
+  --anila-text-2xl:  20px;
+
+  --anila-weight-regular:  400;
+  --anila-weight-medium:   500;
+  --anila-weight-semibold: 600;
+
+  --anila-leading-tight: 1.3;
+  --anila-leading-base:  1.55;
+
+  /* ---- 3. Spacing ---------------------------------------------------------
+   * 4px 基準刻度；元件內距/欄距一律取刻度，不再散落 magic number。 */
+  --anila-space-1: 4px;
+  --anila-space-2: 8px;
+  --anila-space-3: 12px;
+  --anila-space-4: 16px;
+  --anila-space-5: 20px;
+  --anila-space-6: 24px;
+  --anila-space-8: 32px;
+
+  /* ---- 4. Radius ----------------------------------------------------------
+   * 溫圓角（doc 12 §2）：4 / 6 / 8 / pill。 */
+  --anila-radius-sm:   4px;
+  --anila-radius-md:   6px;
+  --anila-radius-lg:   8px;
+  --anila-radius-pill: 999px;
+
+  /* ---- 5. Shadow ----------------------------------------------------------
+   * 三階海拔：卡片 < 浮層（dropdown）< 對話框（modal）。 */
+  --anila-shadow-sm: 0 1px 2px oklch(0.10 0 0 / 0.06);
+  --anila-shadow-md: 0 12px 32px -8px oklch(0.10 0 0 / 0.18),
+    0 0 0 1px oklch(0.10 0 0 / 0.02);
+  --anila-shadow-lg: 0 24px 60px -20px oklch(0.10 0 0 / 0.35);
+
+  /* ---- 6. Z-index ---------------------------------------------------------
+   * 對齊 shell 既有層級（dropdown 80 / mask 90 / modal 100 / drawer 120 /
+   * toast 200），避免遷移時浮層互相壓錯。密等浮水印不在此表：它是安全
+   * 元件（trust.jsx），層級由該元件自行定義，設計系統不得覆蓋。 */
+  --anila-z-dropdown: 80;
+  --anila-z-overlay:  90;
+  --anila-z-modal:    100;
+  --anila-z-drawer:   120;
+  --anila-z-toast:    200;
+}

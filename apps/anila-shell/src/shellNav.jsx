@@ -8,8 +8,12 @@
 // 外部同源介面（doc 02 §10 nginx 佈局：/anila=shell、/anilalm=知識 SPA、
 // / = 治理中心）以 origin 絕對路徑連結，不可相對於 shell 的 /anila/ base；
 // 因同屬單一 SSO origin，於同一分頁開啟即可共用登入 cookie。
+//
+// 呈現層（列樣式 / collapsed / aria-current）已收編到共用設計系統
+// @anila/ui 的 NavGroup / NavItem；本檔只保留 ANILA 的 IA 與角色 gating。
 
 import React from "react";
+import { NavGroup, NavItem } from "@anila/ui";
 
 import {
   IconBook,
@@ -68,87 +72,6 @@ function governanceEntry() {
   return { id: "governance", label: "治理中心", Icon: IconShield, href: originHref("/") };
 }
 
-const rowBase = {
-  display: "flex",
-  alignItems: "center",
-  gap: 10,
-  width: "100%",
-  padding: "7px 10px",
-  fontSize: 13,
-  fontWeight: 500,
-  textAlign: "left",
-  background: "transparent",
-  border: "1px solid transparent",
-  borderRadius: "var(--radius)",
-  color: "var(--fg)",
-  cursor: "pointer",
-  textDecoration: "none",
-  boxSizing: "border-box",
-};
-
-function hoverOn(e) {
-  e.currentTarget.style.background = "var(--bg-elev)";
-}
-function hoverOff(e) {
-  e.currentTarget.style.background = "transparent";
-}
-
-function NavRow({ entry, collapsed }) {
-  const { Icon, label, href, onClick, current } = entry;
-  const ariaCurrent = current ? "page" : undefined;
-
-  const style = collapsed
-    ? {
-        ...rowBase,
-        width: 36,
-        height: 36,
-        padding: 0,
-        justifyContent: "center",
-        color: current ? "var(--fg)" : "var(--fg-muted)",
-      }
-    : { ...rowBase, color: current ? "var(--fg)" : "var(--fg)" };
-
-  const body = collapsed ? (
-    <Icon size={18} />
-  ) : (
-    <>
-      <Icon size={15} style={{ color: "var(--fg-muted)", flexShrink: 0 }} />
-      <span>{label}</span>
-    </>
-  );
-
-  if (href) {
-    return (
-      <a
-        href={href}
-        title={label}
-        aria-label={collapsed ? label : undefined}
-        aria-current={ariaCurrent}
-        style={style}
-        onMouseEnter={hoverOn}
-        onMouseLeave={hoverOff}
-      >
-        {body}
-      </a>
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={label}
-      aria-label={collapsed ? label : undefined}
-      aria-current={ariaCurrent}
-      style={style}
-      onMouseEnter={hoverOn}
-      onMouseLeave={hoverOff}
-    >
-      {body}
-    </button>
-  );
-}
-
 /**
  * ANILA Shell 主導覽群組：四大使用者入口 + admin-gated 治理中心。
  * @param {{
@@ -165,17 +88,18 @@ export function ShellNav({ user, collapsed = false, onTaskCenter, onOpenServices
   }
 
   return (
-    <nav
-      aria-label="ANILA 主導覽"
-      style={
-        collapsed
-          ? { display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }
-          : { display: "flex", flexDirection: "column", gap: 2, padding: "0 10px 8px" }
-      }
-    >
+    <NavGroup aria-label="ANILA 主導覽" collapsed={collapsed}>
       {entries.map((entry) => (
-        <NavRow key={entry.id} entry={entry} collapsed={collapsed} />
+        <NavItem
+          key={entry.id}
+          icon={entry.Icon}
+          label={entry.label}
+          href={entry.href}
+          onClick={entry.onClick}
+          current={entry.current}
+          collapsed={collapsed}
+        />
       ))}
-    </nav>
+    </NavGroup>
   );
 }

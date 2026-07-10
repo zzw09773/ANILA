@@ -328,7 +328,9 @@ services:
   # ── ANILA UI (admin SPA) ────────────────────────────────────────────────
   anila-ui:
     build:
-      context: ../../apps/anila-shell
+      # repo-root context：同 platform.yml，涵蓋共用設計系統 packages/ui。
+      context: ../..
+      dockerfile: apps/anila-shell/Dockerfile
       args:
         VITE_CSP_BASE_URL: ${ANILA_PUBLIC_CSP_BASE_URL-}
         VITE_ROUTER_BASE_URL: ${ANILA_PUBLIC_ROUTER_BASE_URL:-/router}
