@@ -40,6 +40,7 @@
 | R-013 | 使用者不知道自己在跟 AI 互動(transparency) | UX | Medium | UI footer AI disclosure 本輪上線;model name banner 在 chat composer | Agent Owner | A.8.2 | 2026-06 |
 | R-014 | 大規模事件無 incident playbook(只有零散 runbook) | Process | Medium | 本輪建立 [`ai-incident-response.md`](./ai-incident-response.md) | Security Lead | A.10.1 | 2026-08 |
 | R-015 | 開發者沒受過 ISO 42001 awareness training | Competence | Medium | Q3 上線前完成 e-learning | AIMS Owner | Clause 7.2 / 7.3 | 2026-07 |
+| R-016 | Git 歷史含可達的卡片身分材料與兩個 TLS 私鑰 blob | Security / Privacy | **High** | Current tree 已清除且 CI 掃描；正式部署前須完成 fingerprint 比對／輪換，另行核准全 refs history rewrite | AI Security Lead | A.10.1 / A.10.2 / A.8.4 | 2026-07 |
 
 ---
 
@@ -56,6 +57,7 @@
 | Date | Reviewer | 變更 |
 |---|---|---|
 | 2026-05-16 | AI Risk Manager(初版) | 首次建立,15 條 active risks |
+| 2026-07-11 | AI Security Lead(事件觸發) | 新增 R-016；連結歷史卡片／TLS 私鑰事件與 deployment No-Go |
 
 ---
 
@@ -80,7 +82,8 @@
 | R-013 | UI footer ⏳ | 0% | 本輪上線 |
 | R-014 | playbook ✅ | 100% | 持續演練 |
 | R-015 | e-learning ⏳ | 0% | Q3 上線前 |
+| R-016 | Current tree／CI scanner ✅；輪換證據／history rewrite ⏳ | 40% | 事件未結案；正式部署維持 No-Go |
 
 ---
 
-**Last updated**: 2026-05-16 · **Owner**: AI Risk Manager · **Next review**: 2026-08
+**Last updated**: 2026-07-11 · **Owner**: AI Risk Manager · **Next review**: 2026-07 (R-016 event review)

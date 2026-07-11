@@ -1,0 +1,137 @@
+name: Gate 0 security
+
+on:
+  pull_request:
+    branches:
+      - prod-intranet-card
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate0-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deployment-contracts:
+    name: Deployment contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install contract-test dependencies
+        run: python -m pip install cryptography pyyaml
+
+      - name: Validate deployment shell syntax
+        run: |
+          set -euo pipefail
+          for script in infra/deployment/scripts/*.sh infra/deployment/intranet/*.sh infra/ci/*.sh; do
+            bash -n "$script"
+          done
+
+      - name: Run deployment contract and behavior tests
+        run: python -m unittest discover -s infra/deployment/tests -q
+
+      - name: Reject current-tree card or private-key material
+        run: python infra/security/scan_card_material.py --scope current
+
+  python-security-contracts:
+    name: Python security contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONIOENCODING: utf-8
+      SECRET_KEY: gate0-ci-only-secret-key-0123456789abcdef
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./packages/anila-core[dev,rag]"
+          python -m pip install -r services/csp/requirements-dev.txt
+          python -m pip install -e "./services/ingestion-worker[dev]"
+
+      - name: Run CSP card, cookie, and startup security tests
+        env:
+          PYTHONPATH: services/csp:packages/anila-core/src
+        run: |
+          python -m pytest \
+            services/csp/tests/test_card_auth.py \
+            services/csp/tests/test_card_auth_service.py \
+            services/csp/tests/test_card_endpoints.py \
+            services/csp/tests/test_cookie_auth.py \
+            services/csp/tests/test_startup_security.py -q
+
+      - name: Run CSP adjacent regression tests
+        env:
+          PYTHONPATH: services/csp:packages/anila-core/src
+        run: |
+          python -m pytest \
+            services/csp/tests/test_employee_id_downstream.py \
+            services/csp/tests/test_proxy_task_wiring.py \
+            services/csp/tests/test_trace_endpoints.py \
+            services/csp/tests/test_template_download.py -q
+
+      - name: Run Router security and readiness tests
+        env:
+          PYTHONPATH: packages/anila-core/src
+        run: |
+          python -m pytest \
+            packages/anila-core/tests/test_router_runtime_contract.py \
+            packages/anila-core/tests/test_router_session.py \
+            packages/anila-core/tests/test_caller_context.py \
+            packages/anila-core/tests/test_router_readiness.py -q
+
+      - name: Run ingestion-worker tests
+        env:
+          PYTHONPATH: services/ingestion-worker/src:packages/anila-core/src
+        run: python -m pytest services/ingestion-worker/tests -q
+
+  frontend-contracts:
+    name: Frontend contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Test and build ANILA Shell
+        working-directory: apps/anila-shell
+        run: |
+          npm ci
+          npm test
+          npm run build
+
+      - name: Test and build CSP governance UI
+        working-directory: apps/csp-governance-ui
+        run: |
+          npm ci
+          npm test
+          npm run build
+
+      - name: Typecheck and build AnilaLM
+        working-directory: apps/anilalm
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build

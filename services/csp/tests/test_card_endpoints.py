@@ -4,7 +4,7 @@ Pins the contract:
 - Endpoints 回 404 當 ``settings.ENABLE_CARD_LOGIN=False`` (預設) — prod
   錯誤配置時假裝功能不存在,避免暴露給外部探測。
 - ``GET /api/auth/card/challenge`` 回 JWT + 明文 nonce。
-- ``POST /api/auth/card/verify`` 接受 ``cht/`` mock 簽章 (鄒惠翔測試卡),
+- ``POST /api/auth/card/verify`` 接受 ephemeral synthetic card 簽章,
   端到端建 User + 種 session cookie + ``/me`` 可拿。
 - 同一張卡第二次登入不會 create 重複 user。
 - email collision 與 challenge 過期 / 簽章不合法都被正確拒絕。
@@ -15,24 +15,35 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import settings
-from app.middleware.cookies import ACCESS_COOKIE_NAME, REFRESH_COOKIE_NAME
+from app.middleware.cookies import (
+    ACCESS_COOKIE_NAME,
+    CSRF_COOKIE_NAME,
+    REFRESH_COOKIE_NAME,
+)
 from app.models.user import User
+from app.utils.security import decode_token
 
 from tests.conftest import make_user
-from tests.test_card_auth import MOCK_SIGNATURE_B64
+from tests.synthetic_card_pki import (
+    SYNTHETIC_CARD,
+    SYNTHETIC_CARD_SERIAL,
+    SYNTHETIC_DISPLAY_NAME,
+    SYNTHETIC_EMAIL,
+    SYNTHETIC_EMPLOYEE_ID,
+)
 
 
-EXPECTED_EMP_ID = "1090868"  # 鄒惠翔測試卡 subject.serialNumber
-EXPECTED_EMAIL = "C95THS@ncsist.org.tw"
-EXPECTED_CARD_SN = "CS00000000025247"
+EXPECTED_EMP_ID = SYNTHETIC_EMPLOYEE_ID
+EXPECTED_EMAIL = SYNTHETIC_EMAIL
+EXPECTED_CARD_SN = SYNTHETIC_CARD_SERIAL
 
 
 @pytest.fixture
-def card_login_enabled(monkeypatch):
+def card_login_enabled(monkeypatch, synthetic_card_trust):
     """Toggle the feature flag for this test only.
 
     預設 ``ENABLE_CARD_LOGIN=False``；明示啟用後 endpoint 才接受流量。
-    把 mock 鄒惠翔員工編號塞進 ``CARD_INITIAL_OWNERS`` — 這樣既有 happy
+    把 synthetic 員工編號塞進 ``CARD_INITIAL_OWNERS`` — 這樣既有 happy
     path 測試（預期 mock 卡能直接登入成 owner）仍然成立，等同於 dev
     環境的實際 DX。Pending flow 測試另外用 ``card_login_pending_default``。
     """
@@ -41,7 +52,7 @@ def card_login_enabled(monkeypatch):
 
 
 @pytest.fixture
-def card_login_pending_default(monkeypatch):
+def card_login_pending_default(monkeypatch, synthetic_card_trust):
     """跟 ``card_login_enabled`` 一樣但 ``CARD_INITIAL_OWNERS`` 為空 —
     所有人第一次刷卡都進 pending registration,給 pending flow 測試用。
     """
@@ -60,7 +71,7 @@ def test_challenge_returns_404_when_card_login_disabled(client: TestClient):
 def test_verify_returns_404_when_card_login_disabled(client: TestClient):
     resp = client.post(
         "/api/auth/card/verify",
-        json={"challenge_token": "x", "signature": "y"},
+        json={"challenge_token": "x", "signature": "synthetic-invalid"},
     )
     assert resp.status_code == 404
 
@@ -88,7 +99,7 @@ def test_verify_creates_user_and_sets_session_cookies(
         "/api/auth/card/verify",
         json={
             "challenge_token": ch["challenge_token"],
-            "signature": MOCK_SIGNATURE_B64,
+            "signature": SYNTHETIC_CARD.sign(ch["nonce"]),
             "card_serial": EXPECTED_CARD_SN,
         },
     )
@@ -119,13 +130,35 @@ def test_me_reachable_with_card_session_cookie(
         "/api/auth/card/verify",
         json={
             "challenge_token": ch["challenge_token"],
-            "signature": MOCK_SIGNATURE_B64,
+            "signature": SYNTHETIC_CARD.sign(ch["nonce"]),
         },
     )
 
     me = client.get("/api/auth/me")
     assert me.status_code == 200, me.text
     assert me.json()["username"] == EXPECTED_EMP_ID
+
+
+def test_verify_rejects_replayed_challenge(
+    client: TestClient, card_login_enabled
+):
+    """同一組 challenge token + CMS 簽章只能兌換一次 session。"""
+    ch = client.get("/api/auth/card/challenge").json()
+    payload = {
+        "challenge_token": ch["challenge_token"],
+        "signature": SYNTHETIC_CARD.sign(ch["nonce"]),
+        "card_serial": EXPECTED_CARD_SN,
+    }
+
+    first = client.post("/api/auth/card/verify", json=payload)
+    assert first.status_code == 200, first.text
+
+    # Simulate capture by a separate unauthenticated client: replay safety
+    # must not depend on the first session cookie or CSRF middleware.
+    client.cookies.clear()
+    replay = client.post("/api/auth/card/verify", json=payload)
+    assert replay.status_code == 400, replay.text
+    assert "已使用或過期" in replay.json()["detail"]
 
 
 # ── error cases ────────────────────────────────────────────────────────────────
@@ -138,7 +171,7 @@ def test_verify_rejects_malformed_challenge_token(
         "/api/auth/card/verify",
         json={
             "challenge_token": "not.a.valid.jwt",
-            "signature": MOCK_SIGNATURE_B64,
+            "signature": SYNTHETIC_CARD.sign("unused-invalid-challenge"),
         },
     )
     assert resp.status_code == 400
@@ -158,6 +191,31 @@ def test_verify_rejects_invalid_signature_with_401(
     assert resp.status_code == 401
 
 
+def test_invalid_signature_does_not_consume_challenge(
+    client: TestClient, card_login_enabled
+):
+    """只有驗章成功的請求可消耗 challenge，避免公開 token 被惡意燒毀。"""
+    ch = client.get("/api/auth/card/challenge").json()
+    invalid = client.post(
+        "/api/auth/card/verify",
+        json={
+            "challenge_token": ch["challenge_token"],
+            "signature": "not-base64!!!",
+        },
+    )
+    assert invalid.status_code == 401
+
+    valid = client.post(
+        "/api/auth/card/verify",
+        json={
+            "challenge_token": ch["challenge_token"],
+            "signature": SYNTHETIC_CARD.sign(ch["nonce"]),
+            "card_serial": EXPECTED_CARD_SN,
+        },
+    )
+    assert valid.status_code == 200, valid.text
+
+
 # ── idempotency + safety ──────────────────────────────────────────────────────
 
 
@@ -167,12 +225,14 @@ def test_second_login_reuses_existing_user(
     """同一張卡刷兩次不會 duplicate user row。"""
     for _ in range(2):
         ch = client.get("/api/auth/card/challenge").json()
+        csrf = client.cookies.get(CSRF_COOKIE_NAME)
         resp = client.post(
             "/api/auth/card/verify",
             json={
                 "challenge_token": ch["challenge_token"],
-                "signature": MOCK_SIGNATURE_B64,
+                "signature": SYNTHETIC_CARD.sign(ch["nonce"]),
             },
+            headers={"X-CSRF-Token": csrf} if csrf else {},
         )
         assert resp.status_code == 200, resp.text
 
@@ -197,7 +257,7 @@ def test_email_collision_with_other_account_is_rejected(
         "/api/auth/card/verify",
         json={
             "challenge_token": ch["challenge_token"],
-            "signature": MOCK_SIGNATURE_B64,
+            "signature": SYNTHETIC_CARD.sign(ch["nonce"]),
         },
     )
     assert resp.status_code == 400
@@ -224,7 +284,7 @@ def _do_card_verify(client: TestClient) -> dict:
         "/api/auth/card/verify",
         json={
             "challenge_token": ch["challenge_token"],
-            "signature": MOCK_SIGNATURE_B64,
+            "signature": SYNTHETIC_CARD.sign(ch["nonce"]),
         },
     )
     return {"status_code": resp.status_code, "body": resp.json()}
@@ -233,10 +293,12 @@ def _do_card_verify(client: TestClient) -> dict:
 def test_owner_in_initial_owners_logs_in_directly(
     client: TestClient, db, card_login_enabled
 ):
-    """``card_login_enabled`` fixture 把 1090868 設為 OWNERS → 應直接登入。"""
+    """``card_login_enabled`` 把 synthetic 員編設為 OWNERS → 應直接登入。"""
     result = _do_card_verify(client)
     assert result["status_code"] == 200
     assert "access_token" in result["body"]
+    assert decode_token(result["body"]["access_token"])["amr"] == ["sc"]
+    assert decode_token(result["body"]["refresh_token"])["amr"] == ["sc"]
 
     user = db.query(User).filter(User.username == EXPECTED_EMP_ID).first()
     assert user.role == "owner"
@@ -246,13 +308,13 @@ def test_owner_in_initial_owners_logs_in_directly(
 def test_non_owner_first_swipe_returns_pending_registration(
     client: TestClient, db, card_login_pending_default
 ):
-    """OWNERS 為空 → 鄒惠翔變一般申請者，回 202 pending_registration + token。"""
+    """OWNERS 為空 → synthetic user 回 202 pending_registration + token。"""
     result = _do_card_verify(client)
     assert result["status_code"] == 202
     body = result["body"]
     assert body["status"] == "pending_registration"
     assert body["employee_id"] == EXPECTED_EMP_ID
-    assert body["display_name"] == "鄒惠翔"
+    assert body["display_name"] == SYNTHETIC_DISPLAY_NAME
     assert body["email"] == EXPECTED_EMAIL
     assert body["registration_token"]
     assert body["expires_in"] == 900
@@ -381,7 +443,7 @@ def test_departments_endpoint_lists_only_active(
     """``/api/auth/card/registration/departments`` 應該 public + 只列 active。"""
     from app.models.department import Department
 
-    active_id = _make_department(db, "資通所人工智慧組")
+    _make_department(db, "資通所人工智慧組")
     inactive = Department(name="已裁撤組", is_active=False)
     db.add(inactive)
     db.commit()

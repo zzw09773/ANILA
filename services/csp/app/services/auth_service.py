@@ -1,5 +1,6 @@
 import hmac
 import logging
+from collections.abc import Sequence
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -15,7 +16,6 @@ from app.utils.security import (
     create_access_token,
     create_refresh_token,
     decode_token,
-    hash_password,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,12 +52,18 @@ def authenticate_user(db: Session, username: str, password: str) -> User | str |
     return user
 
 
-def create_tokens(user: User) -> dict:
+def create_tokens(user: User, *, amr: Sequence[str] = ()) -> dict:
+    """Create a token pair with an explicit authentication-method claim.
+
+    Legacy/internal callers that omit ``amr`` receive an empty claim and
+    therefore cannot be mistaken for a smart-card session by proxy gates.
+    """
     data = {
         "sub": str(user.id),
         "username": user.username,
         "role": user.role,
         "tv": user.token_version,
+        "amr": list(amr),
     }
     return {
         "access_token": create_access_token(data),
@@ -89,6 +95,26 @@ def _load_user_from_payload(payload: dict | None, db: Session, expected_type: st
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="權杖已失效，請重新登入",
         )
+    if settings.REQUIRE_CARD_LOGIN_ONLY:
+        raw_amr = payload.get("amr")
+        methods = (
+            set(raw_amr)
+            if isinstance(raw_amr, list)
+            and all(isinstance(method, str) for method in raw_amr)
+            else set()
+        )
+        # Formal intranet sessions must prove that the current token descends
+        # from a smart-card login.  The sole break-glass exception is a
+        # password-authenticated *current DB owner*.  Deliberately do not trust
+        # the role copied into the JWT: an old token must not retain owner
+        # assurance after the account has been demoted in the database.
+        card_assured = "sc" in methods
+        owner_break_glass = user.role == "owner" and "pwd" in methods
+        if not (card_assured or owner_break_glass):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="此部署僅接受憑證卡工作階段，請重新登入",
+            )
     return user
 
 
@@ -98,7 +124,8 @@ def get_current_user(
     db: Session = Depends(get_db),
 ) -> User:
     """Resolve the current user from either the ``Authorization`` header
-    or the ``anila_access_token`` httpOnly cookie.
+    or the configured ``__Host-anila_access_token`` httpOnly cookie
+    (``anila_dev_access_token`` only in explicit insecure test/dev mode).
 
     Header wins when both are present (explicit intent from SDK / curl).
     Cookie is the SPA's Wave 2 default. If neither is present, 401.
@@ -114,7 +141,11 @@ def get_current_user(
             detail="未登入或權杖已過期",
         )
     payload = decode_token(token)
-    return _load_user_from_payload(payload, db, "access")
+    user = _load_user_from_payload(payload, db, "access")
+    # Make verified claims available to narrowly scoped authorization probes.
+    # This assignment occurs only after signature/type/user/version checks.
+    request.state.auth_claims = payload
+    return user
 
 
 _ADMIN_TIER_ROLES = ("admin", "owner")

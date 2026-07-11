@@ -1,10 +1,10 @@
 # 內網部署 Runbook (prod-intranet-card)
 
-> **Owner**:你 (1147259)
-> **目標環境**:中科院內網,平台主機 `10.53.100.15`,對外名稱 **`https://anila.ai.ncsist.org.tw`**
+> **Owner**:部署負責人 (`<NCSIST_EMPLOYEE_ID>`)
+> **目標環境**:中科院內網,平台主機 `10.53.100.15`；主平台為 **`https://anila.ai.ncsist.org.tw`**，工具使用 `n8n`／`gitlab`／`code.ai.ncsist.org.tw` 三個獨立 origin。
 > **模型來源**:`https://aiagent2.ai.ncsist.org.tw` (=10.53.100.12,My-OpenAI-Frontend gateway,模型容器不開 port)
-> **更新**:2026-06-12 (**V1.0.0**,git tag `v1.0.0`) — 卡登改真驗證、安全 hardening、
->   migration 0040 修補、版號定版。前一版 2026-06-10。
+> **更新**:2026-07-11 — Gate 0 卡登、工具隔離、資料版本護欄、repo 外私鑰與
+>   fail-closed deployment acceptance。基礎交付版仍為 V1.0.0。
 > **配套檔**:[`.env.example`](../../.env.example) / [`compose.yaml`](../../compose.yaml)(root shim,實體在 [`infra/compose/platform.yml`](../../infra/compose/platform.yml)) / [`infra/deployment/intranet/build-and-export-for-intranet.sh`](../../infra/deployment/intranet/build-and-export-for-intranet.sh) / [`infra/deployment/scripts/deploy-prod.sh`](../../infra/deployment/scripts/deploy-prod.sh)
 
 這份是「**從外網 dev 機 → 帶進內網一鍵跑起來**」的逐步操作手冊。卡住直接看「Troubleshooting」段。
@@ -40,10 +40,10 @@
    並對 anila-studio 等發 JWKS。prod 模式 `ALLOW_AUTO_KEYGEN=false` **不自動生**;
    缺這把 → csp `/.well-known/jwks.json` 回 500、**登入發不了 token、anila-studio
    crash-loop**。**已修**:`intranet-deploy.sh` 步驟 `[4b]` 會用 csp image 跑
-   `scripts/generate-jwt-keypair.py` 產 `secrets/jwt-{private,public}.pem`,compose
-   以 `:ro` mount 進 csp `/app/secrets`(`./secrets` 在 host,recreate 不失效;
-   `*.pem` 已被 .gitignore 擋,不進公開 repo)。手動 `docker compose up` 而沒先跑
-   腳本的話,記得自己先產這把 key。
+   `scripts/generate-jwt-keypair.py` 產 `ANILA_SECRETS_DIR/jwt-{private,public}.pem`,
+   compose 以 `:ro` mount 進 csp `/app/secrets`。`ANILA_SECRETS_DIR` 必須是 repo
+   外的絕對路徑；gitignore 不是 secret boundary。手動 `docker compose up` 而沒先跑
+   腳本的話,也必須先產 key 並設定該路徑。
 
 > **一條龍部署 (推薦)**:不想逐步跑 §2.2–§2.3,直接在 prod-intranet-card repo 根目錄:
 > ```bash
@@ -54,7 +54,7 @@
 > 底下 §2.2–§2.3 是它每一步的詳解 / 手動備援。
 
 > **部署後兩件營運必做(live 預演 critic 抓到):**
-> 1. **首登 bootstrap**:owner(工號 `1147259`,插卡直接登入)登入後**要先建 department**,
+> 1. **首登 bootstrap**:owner(工號 `<NCSIST_EMPLOYEE_ID>`,插卡直接登入)登入後**要先建 department**,
 >    否則同仁卡片註冊時「完成註冊」的單位下拉是空的、卡在註冊。先建單位再請大家註冊。
 > 2. **break-glass(讀卡機/HiPKI 掛掉時的後路)**:card-only 模式關掉了帳密登入,若 go-live
 >    當天讀卡機或 HiPKI(`localhost:16888`)故障會**全員進不去**。應急:`.env` 暫設
@@ -101,7 +101,7 @@
 
 | 項目 | 取得方式 | 備註 |
 |---|---|---|
-| 內網 DNS A record `anila.ai.ncsist.org.tw → 10.53.100.15` | 請 IT 加 | 沒配好前過渡用 IP 連 (有憑證警告,預期) |
+| 內網 DNS A records：`anila`、`n8n`、`gitlab`、`code.ai.ncsist.org.tw → 10.53.100.15` | 請 IT 加 | 未完成前僅用 hosts／`curl --resolve` 測試，不可把工具改回主站 subpath |
 | `*.ai.ncsist.org.tw` wildcard 憑證 + 私鑰 | **已持有** — `server.pfx` (空密碼,2029 到期) | 抽取指令見 §2.2;⚠ pfx 空密碼放 repo 是冒充風險,進場後改妥善保管 |
 | model gateway 出向 CA (給 csp 信任 aiagent2) | **已隨碼附帶** — `cspki_ca_bundle.pem`(CSPKI Root CA G1 + 中科院憑證管理中心);`[2/7]` 自動套用 | 內網 https 與卡片登入同一套 CSPKI CA → 免下載/免跟 IT 要 |
 | 模型 gateway API key | 在 aiagent2 (My-OpenAI-Frontend) 管理介面簽發一把 ANILA 專用 key | 填 `MODEL_GATEWAY_API_KEY`;獨立一把方便撤銷/歸戶 |
@@ -110,7 +110,7 @@
 ### 1.2 Build + 打包
 
 ```bash
-cd /home/aia/c1147259/ANILA
+cd $HOME/ANILA
 
 # 基本款 (純 gateway 架構,平台主機不跑模型):
 bash infra/deployment/intranet/build-and-export-for-intranet.sh
@@ -124,7 +124,7 @@ WITH_MODELS=1 WITH_WEIGHTS=1 bash infra/deployment/intranet/build-and-export-for
 ```
 01-anila-built.tar.gz       (csp / ingestion-worker / router / anilalm / anila-ui / pptx-renderer)
 02-base.tar.gz              (pgvector / redis / nginx)
-03-cold.tar.gz              (codeserver / n8n / gitlab — nginx 鎖死但保留)
+03-cold.tar.gz              (codeserver / n8n / gitlab — 工具 image；瀏覽器走各自獨立 FQDN)
 04-models.tar.gz            (WITH_MODELS=1:含 flux2-dev / anila-flux-agent / vllm-gemma4 等,數十 GB)
 05-weights-*.tar            (WITH_WEIGHTS=1:預設 FLUX.2-dev 166G + gemma4 59G + assistant 0.9G)
 INTRANET-LOAD.sh            (內網一鍵 import,含 sha256 驗檔 + 權重解壓)
@@ -177,7 +177,7 @@ bash infra/deployment/intranet/download-intranet-models.sh /data/staging/hf
 # 2. 切塊 (每模型一組 chunk + manifest):
 bash infra/deployment/intranet/pack-chunks.sh /data/staging/hf/gemma-4-26B-A4B /data/staging/chunks
 #    本機既有的權重直接從 project/Huggingface 打包,不經下載:
-bash infra/deployment/intranet/pack-chunks.sh /home/aia/c1147259/project/Huggingface/gemma-4-31B-it /data/staging/chunks
+bash infra/deployment/intranet/pack-chunks.sh $HOME/project/Huggingface/gemma-4-31B-it /data/staging/chunks
 #    Maverick bf16 (748G) 專用 — 邊打包邊刪來源,峰值空間減半 (刪了不能重來,
 #    chunks 落地驗過再上傳):
 REMOVE_SOURCE=1 bash infra/deployment/intranet/pack-chunks.sh /data/staging/hf/Llama-4-Maverick-17B-128E-Instruct /data/staging/chunks
@@ -259,8 +259,8 @@ python3 infra/deployment/intranet/intranet-quantize-nvfp4.py \
 
 ```bash
 # R0 (背景跑,log 看進度):
-bash /home/aia/c1147259/intranet-staging/rehearsal-r0.sh \
-  > /home/aia/c1147259/intranet-staging/rehearsal-r0.log 2>&1 &
+bash $HOME/intranet-staging/rehearsal-r0.sh \
+  > $HOME/intranet-staging/rehearsal-r0.log 2>&1 &
 # 產出: intranet-staging/chunks/(上傳 Drive 的轉移物)
 #       intranet-staging/rehearsal-hf/(R2 的 ANILA_HF_DIR,演練完可刪)
 ```
@@ -278,6 +278,8 @@ echo "ADMIN_PASSWORD=$(openssl rand -base64 24)"
 echo "CSP_DB_PASSWORD=$(openssl rand -hex 32)"
 echo "CSP_APP_DB_PASSWORD=$(openssl rand -hex 32)"
 echo "CODESERVER_PASSWORD=$(openssl rand -base64 24)"
+echo "N8N_ENCRYPTION_KEY=$(openssl rand -hex 32)"
+echo "GITLAB_ROOT_PASSWORD=$(openssl rand -base64 32)"
 ```
 
 輸出直接進密碼管理器。**不要沿用試用機 .env 的值。**
@@ -291,22 +293,27 @@ echo "CODESERVER_PASSWORD=$(openssl rand -base64 24)"
 
 1. 整個 ANILA repo (`prod-intranet-card` checkout)
 2. `/tmp/anila-images-export/` 整個資料夾
-3. `server.pfx` (wildcard 憑證+key;在 My-OpenAI-Frontend repo 的 `nginx/cert/`,內網 .12 上也有同一份)
-4. 7 個 secret (密碼管理器)
+3. `server.pfx` (wildcard 憑證+key;只在受控媒介與 repo 外 state 目錄處理)
+4. 平台、n8n、GitLab secrets 與 n8n owner bcrypt hash (密碼管理器)
 
 ### 2.2 內網主機 (.15) 初始化
 
 ```bash
 cd /opt/anila   # repo 解壓處
+export ANILA_STATE_DIR=/var/lib/anila
+export ANILA_TLS_CERTS_DIR=$ANILA_STATE_DIR/tls
+export ANILA_SECRETS_DIR=$ANILA_STATE_DIR/secrets
+mkdir -p "$ANILA_TLS_CERTS_DIR" "$ANILA_SECRETS_DIR"
+chmod 700 "$ANILA_TLS_CERTS_DIR" "$ANILA_SECRETS_DIR"
 
 # 1. TLS:從 pfx 抽 wildcard 憑證+私鑰 (pfx 密碼為空,直接 Enter / -passin pass:)
 openssl pkcs12 -in /path/to/server.pfx -clcerts -nokeys -legacy -passin pass: \
-  | openssl x509 > infra/nginx/certs/server.crt
+  | openssl x509 > "$ANILA_TLS_CERTS_DIR/server.crt"
 openssl pkcs12 -in /path/to/server.pfx -nocerts -noenc -legacy -passin pass: \
-  | openssl pkey > infra/nginx/certs/server.key
-chmod 600 infra/nginx/certs/server.key
+  | openssl pkey > "$ANILA_TLS_CERTS_DIR/server.key"
+chmod 600 "$ANILA_TLS_CERTS_DIR/server.key"
 # 驗:subject 應為 CN=*.ai.ncsist.org.tw
-openssl x509 -in infra/nginx/certs/server.crt -noout -subject -dates
+openssl x509 -in "$ANILA_TLS_CERTS_DIR/server.crt" -noout -subject -dates
 
 # 2. CA:預設用 repo 內 CSPKI bundle(內網模型 https 與卡片登入「同一套」CSPKI CA)。
 #    intranet-deploy.sh [2/7] 會自動 cp;手動等同下行(不必再下載 NCSISTCA):
@@ -380,9 +387,20 @@ ANILA_ALLOW_PRIVATE_ENDPOINT=0
 ANILA_TRUSTED_HOSTS=aiagent2.ai.ncsist.org.tw   # FQDN 解到私網 IP,要點名放行
 
 ANILA_HOST=anila.ai.ncsist.org.tw
+ANILA_SECRETS_DIR=/var/lib/anila/secrets
+ANILA_TLS_CERTS_DIR=/var/lib/anila/tls
+N8N_HOST=n8n.ai.ncsist.org.tw
+N8N_EDITOR_BASE_URL=https://n8n.ai.ncsist.org.tw/
+N8N_WEBHOOK_URL=https://n8n.ai.ncsist.org.tw/   # canonical only; nginx 仍封鎖 /webhook*
+N8N_OWNER_EMAIL=<正式管理者信箱>
+N8N_OWNER_PASSWORD_HASH='$2b$12$...'              # 完整 bcrypt；單引號保留 $
+N8N_ENCRYPTION_KEY=<openssl rand -hex 32>        # 既有 volume 必須沿用原 key
+GITLAB_HOST=gitlab.ai.ncsist.org.tw
+GITLAB_ROOT_PASSWORD=<openssl rand -base64 32>   # 僅 fresh install 生效
+CODESERVER_HOST=code.ai.ncsist.org.tw
 ENABLE_CARD_LOGIN=true
 REQUIRE_CARD_LOGIN_ONLY=true
-CARD_INITIAL_OWNERS=1147259       # 你的員工編號;加同事用 CSV
+CARD_INITIAL_OWNERS=<NCSIST_EMPLOYEE_ID>  # 實際 owner 員工編號;多人用 CSV
 
 ANILA_REMOTE_MODELS=1             # deploy-prod.sh preflight 改 curl 遠端探測
 LOCAL_LLM_MODEL=openai/gpt-oss-20b              # gateway 的 RESPONSE_ID,大小寫敏感
@@ -525,13 +543,41 @@ cd /opt/anila && docker compose up -d csp
 
 ## 5. Phase 4:後續維運
 
-### 5.1 解凍 codeserver / n8n / gitlab
+### 5.1 n8n / GitLab / code-server 開發環境
 
-nginx 對 `/codeserver` `/n8n` `/gitlab/` 預設 `return 404`。解凍 = 把該 location 的那一行 `return 404;` 刪掉 → `docker compose restart nginx`。
+n8n 與 GitLab 是預設內網服務，分別使用
+`https://n8n.ai.ncsist.org.tw/`、`https://gitlab.ai.ncsist.org.tw/`；
+code-server 是 opt-in profile，先準備隔離 clone 後執行：
+
+```bash
+git clone <internal-gitlab-url> share/codeserver-sandbox/anila-dev
+bash infra/deployment/scripts/deploy-prod.sh codeserver-up
+# 使用完畢
+bash infra/deployment/scripts/deploy-prod.sh codeserver-down
+```
+
+code-server URL 為 `https://code.ai.ncsist.org.tw/`。三個工具使用各自原生認證；
+主平台 `/codeserver*`、`/n8n*`、`/gitlab*` 的 404 是安全邊界，**不可刪除**。
+n8n `/webhook*` 同樣維持 404，除非另行完成 machine-ingress 安全審查。
+部署前須確認四個 FQDN 都解析到平台主機，且 TLS 憑證 SAN 涵蓋四者。
+
+正式 compose 目前固定 `n8nio/n8n:2.29.10` 與
+`gitlab/gitlab-ce:19.1.1-ce.0`。`deploy-prod.sh` 會在看到舊 image container、
+或沒有目標版本驗證標記的既有資料卷時停止，**不得刪 guard 或直接讓新 major
+image 啟動舊資料**：
+
+- n8n 先備份，依官方 v2 migration guide 完成相容性處理，並確認既有
+  `N8N_ENCRYPTION_KEY` 能解密 credentials。
+- GitLab 必須依 [required upgrade stops](https://docs.gitlab.com/update/upgrade_paths/)
+  逐站升級；16.10.x 起至少經 16.11.10、17.3.7、17.5.5、17.8.7、17.11.7，
+  後續版本依當下官方路徑與每站 background migration 狀態決定。
+- 目標版本啟動後執行 `deploy-prod.sh wait` 與 `verify`；只有全部通過才會寫入
+  資料卷版本標記，之後的 `down`／`up` 才能安全復原。
 
 ### 5.2 TLS cert rotation
 
-wildcard 憑證 2029 到期;換發後同 §2.2 步驟 1 重抽,`docker compose restart nginx`。
+wildcard 憑證換發請執行 `anila-ops.sh cert-renew <server.pfx>`，輸出固定在 repo 外
+`ANILA_TLS_CERTS_DIR`；驗證通過後由腳本 reload nginx。
 NCSIST CA 換代時同步更新 `share/pki/model-ca.pem` 並 `docker compose restart csp`。
 
 ### 5.3 Postgres backup
@@ -599,7 +645,7 @@ docker exec anila-platform-csp-db-1 pg_dump -U csp csp | gzip > /backup/anila-$(
 
 ## 7. 給 IT / aiagent2 管理側的清單
 
-1. **DNS**:`anila.ai.ncsist.org.tw → 10.53.100.15` A record
+1. **DNS**:`anila`、`n8n`、`gitlab`、`code.ai.ncsist.org.tw → 10.53.100.15` A records
 2. **gateway API key**:在 aiagent2 簽發 ANILA 專用一把
 3. **NCSIST CA**:確認 `repository.ncsist.org.tw/certs/NCSISTCA.cer` 內網可達 (不行就從公司 PC 匯出)
 4. **防火牆**:.15 的 443 對員工網段開;.15 → .12 的 443 互通

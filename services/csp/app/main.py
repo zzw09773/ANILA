@@ -3,14 +3,13 @@ import sys
 from logging.handlers import RotatingFileHandler
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from app.config import settings
-from app.database import engine, Base
 from app.api.router import api_router
 from app.api.conversations import router as conversations_router
 from app.api.attachments import router as attachments_router
@@ -32,6 +31,74 @@ def _run_alembic_upgrade() -> None:
     cfg = Config(str(alembic_ini))
     cfg.set_main_option("script_location", str(migrations_dir))
     command.upgrade(cfg, "head")
+
+
+def _set_migration_state(
+    application: FastAPI, status: str, error: str | None = None
+) -> None:
+    application.state.migration_status = status
+    application.state.migration_error = error
+
+
+def _apply_schema_migrations(application: FastAPI) -> None:
+    """Apply every startup schema step or abort the process.
+
+    There is intentionally no ``create_all`` recovery. A partial/failed
+    Alembic chain is not equivalent to the current ORM schema and must never
+    be presented as a healthy production instance.
+    """
+    if settings.SKIP_STARTUP_MIGRATIONS:
+        _set_migration_state(application, "skipped")
+        return
+
+    _set_migration_state(application, "running")
+    try:
+        _run_alembic_upgrade()
+        from app.services import startup_migrations
+
+        startup_migrations.run_startup_migrations()
+    except Exception as exc:
+        _set_migration_state(application, "failed", type(exc).__name__)
+        # Alembic's logging config can disable the application's handlers.
+        # Restore them before recording the fatal startup event.
+        setup_logging()
+        logging.getLogger(__name__).exception(
+            "Database migration failed; refusing to start"
+        )
+        raise RuntimeError("Database migration failed; refusing to start") from exc
+    _set_migration_state(application, "succeeded")
+
+
+def _migration_health_payload(application: FastAPI) -> dict:
+    migration_status = getattr(application.state, "migration_status", "pending")
+    if migration_status in {"succeeded", "skipped"}:
+        overall = "healthy"
+    elif migration_status == "failed":
+        overall = "unhealthy"
+    else:
+        overall = "starting"
+    payload = {
+        "status": overall,
+        "version": settings.APP_VERSION,
+        "service": settings.APP_NAME,
+        "migration_status": migration_status,
+    }
+    migration_error = getattr(application.state, "migration_error", None)
+    if migration_error:
+        payload["migration_error"] = migration_error
+    return payload
+
+
+def _readiness_response(application: FastAPI) -> JSONResponse:
+    payload = _migration_health_payload(application)
+    ready = payload["migration_status"] in {"succeeded", "skipped"}
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={
+            "status": "ready" if ready else "not_ready",
+            "migration_status": payload["migration_status"],
+        },
+    )
 
 
 def setup_logging():
@@ -95,23 +162,26 @@ async def lifespan(app: FastAPI):
     # place (SECRET_KEY / admin / service token / DB password). Skipping
     # this check requires explicit ANILA_ALLOW_DEV_SECRET=1.
     from app.services.startup_security import (
+        assert_card_only_data_feature_policy,
+        assert_card_nonce_binding_policy,
         assert_intranet_lockdown_consistency,
         assert_no_dev_defaults,
+        assert_secure_cookie_policy,
+        assert_startup_migration_policy,
     )
     assert_no_dev_defaults()
+    assert_card_nonce_binding_policy()
+    assert_secure_cookie_policy()
+    assert_startup_migration_policy()
     # Branch SSO: 確保 REQUIRE_CARD_LOGIN_ONLY 與 ENABLE_CARD_LOGIN 互相一致，
     # 避免「政策設為卡片唯一但卡片功能沒開」的 bricked 狀態。
     assert_intranet_lockdown_consistency()
+    assert_card_only_data_feature_policy()
 
-    # Run Alembic migrations to bring schema to head.
-    # Falls back to create_all if Alembic config is not found (e.g. in tests).
-    try:
-        _run_alembic_upgrade()
-    except Exception as exc:
-        logging.getLogger(__name__).warning(
-            "Alembic upgrade failed, falling back to create_all: %s", exc
-        )
-        Base.metadata.create_all(bind=engine)
+    # Run the complete schema chain before any seed/background work. Any
+    # failure is fatal; SQLite unit fixtures explicitly opt out and create
+    # their own schema in tests/conftest.py.
+    _apply_schema_migrations(app)
 
     # Round 5 補:alembic.ini 的 [loggers] section 在 _run_alembic_upgrade
     # 內部觸發 logging.fileConfig(),把 setup_logging 加的
@@ -121,11 +191,6 @@ async def lifespan(app: FastAPI):
     # docker logs,debug 起來像幽靈。重 call setup_logging 把
     # handler + level 補回(setup_logging 已改 idempotent)。
     setup_logging()
-
-    # Legacy SQLite migration + column backfills (kept for zero-downtime upgrades
-    # from pre-Alembic deployments — safe to re-run, idempotent).
-    from app.services.startup_migrations import run_startup_migrations
-    run_startup_migrations()
 
     # Auto-seed: create admin, register models & links from env vars
     from app.services.auto_seed import auto_seed
@@ -196,6 +261,7 @@ app = FastAPI(
     openapi_url=None,
     lifespan=lifespan,
 )
+_set_migration_state(app, "pending")
 
 
 @app.middleware("http")
@@ -296,13 +362,15 @@ async def custom_openapi(_admin: User = Depends(require_admin)):
 
 
 @app.get("/health", tags=["health"])
-async def health_check():
-    """Health check endpoint for container orchestration and monitoring."""
-    return {
-        "status": "healthy",
-        "version": settings.APP_VERSION,
-        "service": settings.APP_NAME,
-    }
+async def health_check(request: Request):
+    """Liveness with explicit schema-migration state."""
+    return _migration_health_payload(request.app)
+
+
+@app.get("/ready", tags=["health"])
+async def readiness_check(request: Request):
+    """Readiness is 200 only after the complete migration chain succeeds."""
+    return _readiness_response(request.app)
 
 
 # Serve frontend SPA - check multiple possible locations

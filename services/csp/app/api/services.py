@@ -376,7 +376,6 @@ def launch_service(
     _validate_source_snapshot_access(
         db, current_user, source_snapshot_id, task_id=task_id
     )
-    _validate_launch_entry_url(service)
 
     # 8-step access algorithm with the launch classification as context_level:
     # step 6 (classification clearance) denies when level > service ceiling.
@@ -404,6 +403,11 @@ def launch_service(
             commit=True,
         )
         raise HTTPException(status_code=403, detail="無權啟動此服務")
+
+    # Validate attacker-controlled launch metadata only after the caller has
+    # passed the resource/role/classification gate. Otherwise 400 vs 403 turns
+    # this endpoint into a URL-validity oracle for private services.
+    _validate_launch_entry_url(service)
 
     launch_id = launch_mod.new_launch_id()
     row = launch_mod.create_service_launch(

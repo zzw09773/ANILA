@@ -80,7 +80,8 @@ lerna-debug.log*
 # 是 server 端驗卡的信任錨,必須隨碼一起交付。
 !services/csp/app/services/cspki_ca_bundle.pem
 
-# 維運備份輸出 (anila-ops.sh backup) — 含 .env 副本與 DB dump,絕不進 git
+# 舊版維運備份位置的防線。新版 anila-ops.sh 預設寫 repo 外且拒絕 repo
+# 內覆寫；仍忽略既有 /backups/，避免歷史機密意外被加入。
 /backups/
 
 # ── IDE / 編輯器 ─────────────────────────────────────────────────────────────

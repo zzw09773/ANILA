@@ -14,7 +14,7 @@
 
 ### 1. 卡登 PKCS#7 / CMS 真驗章重寫（前置：`ed13e5c`，2026-06-12）
 
-這是整條內網線的安全地基，也是一次 CRITICAL 認證繞過的修復。改寫前，`/api/auth/card/verify` 只用 `load_der_pkcs7_certificates` **解析** PKCS#7、從不**驗章**——任何人都能自簽一張把 `serialNumber` 設成任意員工編號（甚至 owner `1147259`）的憑證 POST 進來，換到一個完整的 owner session。內網唯一登入路徑等於形同虛設。
+這是整條內網線的安全地基，也是一次 CRITICAL 認證繞過的修復。改寫前，`/api/auth/card/verify` 只用 `load_der_pkcs7_certificates` **解析** PKCS#7、從不**驗章**——任何人都能自簽一張把 `serialNumber` 設成任意員工編號（甚至 owner `990000002`）的憑證 POST 進來，換到一個完整的 owner session。內網唯一登入路徑等於形同虛設。
 
 `ed13e5c` 實作了真正的伺服器端驗證，並釘死到中科院 CSPKI 信任錨：
 

@@ -125,3 +125,8 @@ from .registration_tokens import (  # noqa: F401
     card_complete_registration,
     card_registration_departments,
 )
+from .proxy_access import (  # noqa: F401
+    allow_card_admin_proxy_access,
+    allow_card_developer_proxy_access,
+    allow_card_session_proxy_access,
+)

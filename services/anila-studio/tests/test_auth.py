@@ -48,6 +48,7 @@ def _sign_jwt(
     type_: str = "access",
     kid: str = "anila-v1",
     exp: int | None = None,
+    amr: list[str] | str | None = None,
 ) -> str:
     import time
 
@@ -60,6 +61,8 @@ def _sign_jwt(
         "iat": int(time.time()),
         "exp": exp if exp is not None else int(time.time()) + 3600,
     }
+    if amr is not None:
+        claims["amr"] = amr
     return jwt.encode(claims, private_pem, algorithm="RS256", headers={"kid": kid})
 
 
@@ -143,6 +146,8 @@ def test_valid_token_passes(client, patched_deps, rsa_keypair):
 
 
 def test_cookie_token_also_works(client, patched_deps, rsa_keypair):
+    assert auth_mod.ACCESS_COOKIE_NAME == "__Host-anila_access_token"
+    assert auth_mod._access_cookie_name(False) == "anila_dev_access_token"
     token = _sign_jwt(rsa_keypair["private_pem"], sub="42")
     resp = client.get(
         "/whoami",
@@ -150,6 +155,17 @@ def test_cookie_token_also_works(client, patched_deps, rsa_keypair):
     )
     assert resp.status_code == 200
     assert resp.json()["id"] == 42
+
+
+def test_legacy_unprefixed_cookie_is_rejected(client, patched_deps, rsa_keypair):
+    token = _sign_jwt(rsa_keypair["private_pem"], sub="42")
+
+    resp = client.get(
+        "/whoami",
+        cookies={"anila_access_token": token},
+    )
+
+    assert resp.status_code == 401
 
 
 def test_bearer_wins_when_both_present(client, patched_deps, rsa_keypair):
@@ -223,6 +239,30 @@ def test_refresh_token_rejected_on_studio_surface(client, patched_deps, rsa_keyp
         "/whoami", headers={"Authorization": f"Bearer {token}"}
     )
     assert resp.status_code == 401
+
+
+def test_card_only_studio_accepts_smart_card_token(
+    client, patched_deps, rsa_keypair, monkeypatch,
+):
+    monkeypatch.setattr(auth_mod.settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+    token = _sign_jwt(rsa_keypair["private_pem"], amr=["sc"])
+
+    resp = client.get("/whoami", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 200
+
+
+@pytest.mark.parametrize("amr", [None, [], ["pwd"], ["oidc"], "sc"])
+def test_card_only_studio_rejects_non_card_bearer(
+    client, patched_deps, rsa_keypair, monkeypatch, amr,
+):
+    monkeypatch.setattr(auth_mod.settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+    token = _sign_jwt(rsa_keypair["private_pem"], amr=amr)
+
+    resp = client.get("/whoami", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "此服務僅接受憑證卡登入工作階段"
 
 
 def test_revoked_token_returns_401(client, patched_deps, rsa_keypair):

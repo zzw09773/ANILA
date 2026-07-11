@@ -59,6 +59,31 @@ export function classificationLabel(level) {
   return level && CLASSIFICATION_LEVELS.includes(level) ? level : '未設定'
 }
 
+// Registry 與 legacy platform-links 的寫入契約不同：前者要求
+// ``entry_url``，後者仍使用 ``url``。集中在純函式，避免 registryMode
+// 切換時把 legacy payload 送進 /api/services 而得到 422。
+export function buildPlatformLinkPayload(form, registryMode) {
+  const trim = (value) => (typeof value === 'string' ? value.trim() : '')
+  const common = {
+    name: trim(form.name),
+    icon: trim(form.icon) || null,
+    description: trim(form.description) || null,
+    sort_order: form.sort_order || 0,
+    is_public: !!form.is_public,
+    required_roles: form.required_roles,
+  }
+  const targetUrl = trim(form.url)
+  if (!registryMode) return { ...common, url: targetUrl }
+  return {
+    ...common,
+    entry_url: targetUrl,
+    launch_mode: form.launch_mode,
+    classification_ceiling: form.classification_ceiling || null,
+    healthcheck_url: trim(form.healthcheck_url) || null,
+    service_admin_user_ids: form.service_admin_user_ids,
+  }
+}
+
 // 服務列正規化：registered_services 缺欄位時退回 platform_links 既有值，
 // 確保 7a 後端尚未上線（僅 legacy /api/platform-links）時 UI 也能運作。
 export function normalizeService(row) {

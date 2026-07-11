@@ -158,7 +158,7 @@ def login(
             commit=True,
         )
         raise HTTPException(status_code=404)
-    tokens = create_tokens(result)
+    tokens = create_tokens(result, amr=("pwd",))
     _stamp_last_login(db, result)
     log_audit_event(
         db,
@@ -182,8 +182,9 @@ async def refresh(
     """Rotate access/refresh tokens.
 
     Refresh token may arrive in either:
-    - The ``anila_refresh_token`` cookie (SPA, Wave 2 default; cookie is
-      scoped to this path only, never leaks elsewhere), or
+    - The ``__Host-anila_refresh_token`` cookie (formal SPA default). The
+      ``__Host-`` contract requires ``Path=/``; token type checks prevent it
+      from authenticating access-token endpoints, or
     - The JSON body ``{"refresh_token": "..."}`` (SDK / legacy SPA).
 
     On success we set fresh cookies AND return the tokens in the JSON
@@ -204,7 +205,17 @@ async def refresh(
         )
     payload = decode_token(token)
     user = _load_user_from_payload(payload, db, "refresh")
-    tokens = create_tokens(user)
+    raw_amr = payload.get("amr") if isinstance(payload, dict) else None
+    # Tokens issued before AMR support must not be upgraded to smart-card
+    # sessions merely by refreshing.  They receive an empty AMR and must swipe
+    # again before crossing a card-only reverse-proxy gate.
+    amr = (
+        tuple(raw_amr)
+        if isinstance(raw_amr, list)
+        and all(isinstance(method, str) for method in raw_amr)
+        else ()
+    )
+    tokens = create_tokens(user, amr=amr)
     set_session_cookies(
         response,
         access_token=tokens["access_token"],
@@ -284,4 +295,7 @@ def change_password(
         detail="使用者更新自身密碼",
         commit=True,
     )
-    return {"message": "密碼已更新，請重新登入", **create_tokens(current_user)}
+    return {
+        "message": "密碼已更新，請重新登入",
+        **create_tokens(current_user, amr=("pwd",)),
+    }

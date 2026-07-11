@@ -4,7 +4,7 @@
 **Date**: 2026-04-25
 **Author**: ANILA 平台團隊
 **Companion docs**: [`ingestion-platform-design.md`](../ingestion/ingestion-platform-design.md) · [`anila-core-boundary.md`](../anila-core/anila-core-boundary.md)
-**Source of investigation**: `/home/aia/c1147259/project` 目錄實際 grep 結果
+**Source of investigation**: `$HOME/project` 目錄實際 grep 結果
 
 ---
 
@@ -39,7 +39,7 @@
 
 ### v0.5.5 (2026-04-25) — codeserver 真實 root cause: image fork + nginx config 一起錯
 
-v0.5.4 把 codeserver 改 dedicated port 仍然爆炸，最後翻 [`/home/aia/c1147259/project/My-OpenAI-Frontend/docker-compose.prod.yml`](https://) + `nginx.prod.conf` 對照組裡 prod 跑了多年的 working setup，找到真正 root cause：
+v0.5.4 把 codeserver 改 dedicated port 仍然爆炸，最後翻 [`$HOME/project/My-OpenAI-Frontend/docker-compose.prod.yml`](https://) + `nginx.prod.conf` 對照組裡 prod 跑了多年的 working setup，找到真正 root cause：
 
 | # | 之前以為的問題 | 真實 root cause |
 |---|---|---|
@@ -185,7 +185,7 @@ v0.5.4 把 codeserver 改 dedicated port 仍然爆炸，最後翻 [`/home/aia/c1
 
 ### v0.1 (2026-04-25) — 初版
 
-關於組內既有服務（位於 `/home/aia/c1147259/project`）如何整合進 ANILA 平台的初版決議：
+關於組內既有服務（位於 `$HOME/project`）如何整合進 ANILA 平台的初版決議：
 
 | 服務 | 決議 | 理由 |
 |---|---|---|
@@ -336,7 +336,7 @@ Step 3  ──  Archive notice
 
 ### 3.1.1 重疊範圍實證
 
-從 `/home/aia/c1147259/project/My-OpenAI-Frontend/README.md` 與 `myCSPPlatform/README.md` 對比：
+從 `$HOME/project/My-OpenAI-Frontend/README.md` 與 `myCSPPlatform/README.md` 對比：
 
 | 功能 | My-OpenAI-Frontend | myCSPPlatform | 結論 |
 |---|---|---|---|

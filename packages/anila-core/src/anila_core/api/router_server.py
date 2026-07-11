@@ -45,6 +45,18 @@ from .session_owner import (
 
 logger = logging.getLogger(__name__)
 
+_MAX_ROUTER_MULTI_TURN = 3
+
+SECURE_ACCESS_COOKIE_NAME = "__Host-anila_access_token"
+DEV_ACCESS_COOKIE_NAME = "anila_dev_access_token"
+
+
+def _access_cookie_name(secure: bool) -> str:
+    return SECURE_ACCESS_COOKIE_NAME if secure else DEV_ACCESS_COOKIE_NAME
+
+
+ACCESS_COOKIE_NAME = _access_cookie_name(settings.cookie_secure)
+
 
 # Sprint 13 PR A2: callable threaded through multi-turn helpers so
 # every dispatch site can pin the (session_id, agent_id) mapping for
@@ -494,8 +506,9 @@ def _extract_bearer_api_key(request: Request) -> str:
 
     Accepts either:
     - ``Authorization: Bearer <sk-…|jwt>`` (SDK / curl / legacy SPA),
-    - ``anila_access_token`` cookie (Wave 2 SPA: JWT delivered via
-      httpOnly cookie set by CSP's ``/api/auth/login``).
+    - ``__Host-anila_access_token`` cookie (formal SPA JWT delivered via
+      CSP), or the distinct ``anila_dev_access_token`` name only when the
+      Router explicitly runs with ``COOKIE_SECURE=false``.
 
     The returned string is forwarded verbatim to CSP as
     ``Authorization: Bearer …`` so CSP's ``get_caller`` dependency can
@@ -507,7 +520,7 @@ def _extract_bearer_api_key(request: Request) -> str:
         if token:
             return token
 
-    cookie_token = request.cookies.get("anila_access_token")
+    cookie_token = request.cookies.get(ACCESS_COOKIE_NAME)
     if cookie_token:
         return cookie_token.strip()
 
@@ -641,6 +654,28 @@ def create_router_app(
             "last_refresh_at": registry.last_refresh_at,
         }
 
+    @app.get("/ready")
+    async def readiness() -> JSONResponse:
+        """Production readiness includes the Full Trace export contract.
+
+        Liveness stays independent at ``/health`` so an operator can inspect a
+        misconfigured process.  Formal deployments fail readiness when the
+        trace callback is absent instead of silently running unobservable.
+        """
+        production = os.environ.get("ANILA_ENV", "").strip().lower() in {
+            "prod",
+            "production",
+        }
+        trace_configured = _trace_endpoint_base() is not None
+        ready = not production or trace_configured
+        return JSONResponse(
+            {
+                "status": "ready" if ready else "not_ready",
+                "trace_endpoint_configured": trace_configured,
+            },
+            status_code=200 if ready else 503,
+        )
+
     @app.get("/v1/models")
     async def list_models() -> JSONResponse:
         return JSONResponse({
@@ -659,6 +694,24 @@ def create_router_app(
         body: dict = await request.json()
         messages: list[dict] = body.get("messages", [])
         stream: bool = body.get("stream", False)
+        try:
+            max_iterations = int(body.get("anila_multi_turn", 1))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "anila_multi_turn must be between 1 and "
+                    f"{_MAX_ROUTER_MULTI_TURN}"
+                ),
+            ) from exc
+        if not 1 <= max_iterations <= _MAX_ROUTER_MULTI_TURN:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "anila_multi_turn must be between 1 and "
+                    f"{_MAX_ROUTER_MULTI_TURN}"
+                ),
+            )
 
         # Capture the X-ANILA-* / X-Anila-* audit + routing headers so the
         # downstream CSP call sees the same conversation_id / trace_id the
@@ -714,8 +767,6 @@ def create_router_app(
         # 1 preserves the single-shot single-dispatch behaviour the
         # existing UI relies on. Streaming path keeps single-shot for now
         # — multi-turn streaming is deferred to a future PR.
-        max_iterations = max(1, int(body.get("anila_multi_turn", 1)))
-
         await registry.ensure_fresh(caller_api_key)
         agents = registry.list_agents(caller_api_key)
 
@@ -723,11 +774,10 @@ def create_router_app(
             agent_list=_build_agent_list(agents)
         )
 
-        has_system = any(m.get("role") == "system" for m in messages)
-        if not has_system:
-            routing_messages = [{"role": "system", "content": system_prompt}] + messages
-        else:
-            routing_messages = messages
+        # Caller-supplied system messages are context, never a replacement for
+        # the Router's control policy.  Keep them for compatibility while
+        # unconditionally pinning the internal prompt first.
+        routing_messages = [{"role": "system", "content": system_prompt}] + messages
 
         started_at = time.time()
 

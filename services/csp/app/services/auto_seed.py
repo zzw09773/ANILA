@@ -5,7 +5,7 @@ import os
 import re
 import hashlib
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from sqlalchemy import or_
 
@@ -31,6 +31,37 @@ def _origin_of(url: str) -> str | None:
         return None
     return f"{parts.scheme}://{parts.netloc}"
 
+
+def _absolute_seed_url(raw_url: str) -> str:
+    """Resolve an AUTO_REGISTER_LINKS URL against the deployment SITE_URL.
+
+    Registered services are launchable resources, so ``entry_url`` must always
+    be absolute. Existing absolute http(s) values are preserved; relative
+    paths such as ``/anilalm`` are resolved against the externally reachable
+    ``SITE_URL``. Invalid schemes fail startup instead of seeding a permanently
+    broken launch card.
+    """
+    raw = str(raw_url or "").strip()
+    parsed = urlparse(raw)
+    if parsed.scheme:
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            raise ValueError(
+                f"AUTO_REGISTER_LINKS url 必須是 http(s) 或相對路徑: {raw!r}"
+            )
+        return raw
+    if parsed.netloc or raw.startswith("//"):
+        raise ValueError(f"AUTO_REGISTER_LINKS 不允許 protocol-relative url: {raw!r}")
+    if not raw:
+        raise ValueError("AUTO_REGISTER_LINKS url 不可為空")
+
+    site_url = settings.SITE_URL.strip()
+    site = urlparse(site_url)
+    if site.scheme.lower() not in {"http", "https"} or not site.netloc:
+        raise ValueError(
+            "SITE_URL 必須是 absolute http(s) URL，才能正規化 AUTO_REGISTER_LINKS"
+        )
+    return urljoin(f"{site_url.rstrip('/')}/", raw)
+
 logger = logging.getLogger(__name__)
 
 
@@ -53,7 +84,9 @@ def sync_env_seeded_services(db, links_config: list[dict], *, now=None) -> None:
         # Coerce nullable required_roles → [] (NOT NULL JSONB).
         required_roles = link_data.get("required_roles") or []
         is_public = bool(link_data.get("is_public", False))
-        url = link_data["url"]
+        url = _absolute_seed_url(link_data["url"])
+        origin = _origin_of(url)
+        allowed_origins = [origin] if origin else []
         icon = link_data.get("icon", "")
         description = link_data.get("description", "")
         sort_order = link_data.get("sort_order", idx + 1)
@@ -71,7 +104,6 @@ def sync_env_seeded_services(db, links_config: list[dict], *, now=None) -> None:
         if existing is None:
             slug = unique_slug(name, taken, fallback="link")
             taken.add(slug)
-            origin = _origin_of(url)
             db.add(RegisteredService(
                 name=name,
                 slug=slug,
@@ -81,7 +113,7 @@ def sync_env_seeded_services(db, links_config: list[dict], *, now=None) -> None:
                 sort_order=sort_order,
                 is_public=is_public,
                 required_roles=required_roles,
-                allowed_origins=[origin] if origin else [],
+                allowed_origins=allowed_origins,
                 config_source="env_seeded",
                 env_seed_key=env_seed_key,
                 db_editable_fields=["is_active"],
@@ -98,6 +130,7 @@ def sync_env_seeded_services(db, links_config: list[dict], *, now=None) -> None:
             changed = False
             for field, new_value in (
                 ("entry_url", url),
+                ("allowed_origins", allowed_origins),
                 ("icon", icon),
                 ("description", description),
                 ("sort_order", sort_order),

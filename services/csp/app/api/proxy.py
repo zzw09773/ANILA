@@ -209,6 +209,8 @@ async def _inject_memory(
     embed against. Failures are swallowed and logged — memory must
     not break chat.
     """
+    if not settings.ENABLE_MEMORY:
+        return None
     user_text = _extract_latest_user_message(body)
     if not user_text:
         return None
@@ -261,6 +263,8 @@ def _schedule_memory_write(
     Skips silently if the conversation FK is missing (legacy header
     formats) or either side of the turn is empty.
     """
+    if not settings.ENABLE_MEMORY:
+        return
     if conversation_id is None or not user_message or not assistant_message:
         return
     try:

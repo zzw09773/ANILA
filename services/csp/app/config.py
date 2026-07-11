@@ -1,5 +1,7 @@
-from pydantic_settings import BaseSettings
 from pathlib import Path
+
+from pydantic import Field
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -16,6 +18,22 @@ class Settings(BaseSettings):
     # unauthenticated by design. Air-gapped / card-only deployments that want
     # zero unauthenticated surface set this False to disable it entirely.
     ENABLE_PUBLIC_SHARE: bool = True
+    # Share links may never be permanent. When a caller omits ``expires_at``
+    # the service assigns this TTL; callers may request a shorter lifetime but
+    # never a longer one. Keep the upper validation bound finite so a malformed
+    # deployment profile cannot silently restore permanent public links.
+    PUBLIC_SHARE_MAX_TTL_HOURS: int = Field(default=168, ge=1, le=8760)
+
+    # Per-user long-term memory injects recalled content into the system prompt
+    # and asynchronously stores every completed turn. Until classification and
+    # provenance are enforced end-to-end, both paths are secure-by-default OFF.
+    # Development/test profiles may explicitly opt in with ENABLE_MEMORY=true.
+    ENABLE_MEMORY: bool = False
+
+    # Unit/dev harness escape hatch only. Formal deployments must run Alembic
+    # and the legacy idempotent migration pass before becoming ready. Startup
+    # security rejects this flag unless the explicit dev posture is enabled.
+    SKIP_STARTUP_MIGRATIONS: bool = False
 
     # Database
     DATABASE_URL: str = "postgresql://csp:csp_password@localhost:5432/csp"
@@ -121,9 +139,9 @@ class Settings(BaseSettings):
 
     # 中科院憑證卡登入 (branch: SSO)
     # 內網 production:唯一登入方式 = 憑證卡 (中華電信 HiPKI 本機元件 + 中科院
-    # PKI 卡)。Trust chain 由使用者 PC + HiPKI driver + 卡片硬體建立,backend
-    # 收到 PKCS#7 即視為「持卡人 + PIN 驗過」,parse 抽 employee_id 即可。
-    # Dev:用 ``cht/`` mock 容器假裝 localhost:16888。
+    # PKI 卡)。使用者 PC 負責 PIN/私鑰運算；backend 仍驗 CMS SignerInfo、
+    # challenge nonce 與釘選 CSPKI 憑證鏈，通過後才抽 employee_id。
+    # Dev:``cht/`` synthetic emulator 在記憶體產生測試 PKI 並簽實際 nonce。
     #
     # ENABLE_CARD_LOGIN: 是否註冊 /api/auth/card/* endpoints。預設 False;prod
     #   必須 set true (見 infra/compose/platform.yml 預設)。
@@ -137,7 +155,7 @@ class Settings(BaseSettings):
     # CARD_INITIAL_OWNERS: CSV 員工編號清單。列在裡面的第一次刷卡建為
     #   ``role="owner"`` + ``is_approved=True``,**直接登入** (bootstrap)。
     #   其他員工建為 ``role="user"`` + ``is_approved=False``,走 pending →
-    #   完成註冊 (填單位) → admin 核准 流程。範例:``"1147259,1090868"``。
+    #   完成註冊 (填單位) → admin 核准 流程。範例:``"990000002,990000001"``。
     ENABLE_CARD_LOGIN: bool = False
     REQUIRE_CARD_LOGIN_ONLY: bool = False
     CARD_INITIAL_OWNERS: str = ""
