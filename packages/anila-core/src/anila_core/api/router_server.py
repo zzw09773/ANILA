@@ -78,8 +78,8 @@ PinOwnerFn = Optional[Callable[[str], Awaitable[None]]]
 #   * a bare flag (``1``/``true``/``on``/``yes``/``default``) → use the CSP
 #     base the router already knows (``settings.csp_base_url``);
 #   * any other value → treated as an explicit trace base URL.
-# Auth reuses the router's CSP service-token mechanics (``X-CSP-Service-Token``);
-# the token is read lazily from ``ANILA_TRACE_TOKEN`` or
+# Auth uses the CSP data-plane bearer contract (``Authorization: Bearer …``);
+# the service token is read lazily from ``ANILA_TRACE_TOKEN`` or
 # ``settings.csp_service_token``.
 # ---------------------------------------------------------------------------
 _TRACE_EXPORTER: Any = None

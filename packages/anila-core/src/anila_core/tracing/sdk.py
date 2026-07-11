@@ -13,8 +13,9 @@ Three public pieces:
   that POSTs spans to the FROZEN wire endpoint
   ``POST {base_url}/v1/traces/{trace_id}/spans`` with body
   ``{"spans": [ <span dict>, ... ]}`` (≤256 per batch). Auth reuses the
-  router's CSP service-token mechanics via the ``X-CSP-Service-Token``
-  header, supplied lazily by ``token_provider``.
+  CSP data-plane bearer mechanics via ``Authorization: Bearer …``, supplied
+  lazily by ``token_provider``. Agent/service credentials and user/API-key
+  credentials intentionally share that wire shape at the trace ingest edge.
 
 * :class:`TraceSession` — per-``trace_id`` span factory. ``span()`` /
   ``async_span()`` context managers auto-generate the span id, time the
@@ -205,7 +206,7 @@ class TraceExporter:
         flush_interval: float = 2.0,
         timeout: float = 5.0,
         max_queue: int = 10_000,
-        header_name: str = "X-CSP-Service-Token",
+        header_name: str = "Authorization",
         producer: Optional[str] = None,
         start_worker: bool = True,
         client_factory: Optional[Callable[[], Any]] = None,
@@ -335,7 +336,11 @@ class TraceExporter:
         except Exception:
             token = None
         if token:
-            headers[self._header_name] = token
+            headers[self._header_name] = (
+                f"Bearer {token}"
+                if self._header_name.lower() == "authorization"
+                else token
+            )
         try:
             client = self._build_client()
             try:

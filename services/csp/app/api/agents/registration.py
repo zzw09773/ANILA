@@ -56,12 +56,27 @@ def _enforce_endpoint_url(url: str) -> None:
 # This file lives at app/api/agents/registration.py. The official template is
 # a monorepo package, so the local/dev fallback must resolve to
 # <repo-root>/packages/anila-agent (Compose overrides it with /app/anila-template).
-_TEMPLATE_DIR = Path(
-    _os.environ.get(
-        "ANILA_TEMPLATE_DIR",
-        str(Path(__file__).parents[5] / "packages" / "anila-agent"),
-    )
-)
+def _resolve_template_dir(source_file: Path | None = None) -> Path:
+    """Resolve lazily so a shallow production image path cannot crash import."""
+    override = _os.environ.get("ANILA_TEMPLATE_DIR")
+    if override:
+        return Path(override)
+
+    source = (source_file or Path(__file__)).resolve()
+    for parent in source.parents:
+        candidate = parent / "packages" / "anila-agent"
+        if candidate.is_dir():
+            return candidate
+
+    image_default = Path("/app/anila-template")
+    if image_default.is_dir():
+        return image_default
+    # Keep module import safe. The download endpoint returns its existing
+    # controlled 404 when the template is genuinely absent.
+    return image_default
+
+
+_TEMPLATE_DIR = _resolve_template_dir()
 
 router = APIRouter()
 

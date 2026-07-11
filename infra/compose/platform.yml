@@ -164,6 +164,10 @@ services:
       # 沒設 (空值) = 維持 httpx 預設 certifi 行為 (CPython 對空/不存在的
       # SSL_CERT_FILE 會 fallback 系統預設,無副作用)。
       SSL_CERT_FILE: ${ANILA_MODEL_CA_FILE-}
+      # Card signature verification has its own trust bundle.  Keep the
+      # packaged CSPKI roots by default, but allow an operator-provisioned
+      # intranet CA from the read-only /etc/anila/pki mount.
+      CARD_CA_BUNDLE_PATH: ${CARD_CA_BUNDLE_PATH:-/app/app/services/cspki_ca_bundle.pem}
       # 內網模型 gateway (10.53.100.12 My-OpenAI-Frontend) 的 /v1 要
       # Authorization: Bearer。proxy_service 只對 model 呼叫注入,agent
       # dispatch 不帶。空值 = 不注入 (同主機裸 vLLM 不需要)。

@@ -85,6 +85,7 @@ class DeploymentContainmentTests(unittest.TestCase):
                 "ANILA_SECRETS_DIR": str(ROOT.parent / ".anila-test-state" / "secrets"),
                 "ANILA_TLS_CERTS_DIR": str(ROOT.parent / ".anila-test-state" / "tls"),
                 "ANILA_DEV_TLS_CERTS_DIR": str(ROOT.parent / ".anila-test-state" / "dev-tls"),
+                "CARD_CA_BUNDLE_PATH": "/etc/anila/pki/cht-synthetic-ca.pem",
                 "N8N_HOST": "n8n.ai.ncsist.org.tw",
                 "N8N_EDITOR_BASE_URL": "https://n8n.ai.ncsist.org.tw/",
                 "N8N_WEBHOOK_URL": "https://n8n.ai.ncsist.org.tw/",
@@ -157,6 +158,16 @@ class DeploymentContainmentTests(unittest.TestCase):
             "gitlab.ai.ncsist.org.tw/gitlab",
             gitlab["environment"]["GITLAB_OMNIBUS_CONFIG"],
         )
+        self.assertEqual(
+            default_services["csp"]["environment"]["CARD_CA_BUNDLE_PATH"],
+            "/etc/anila/pki/cht-synthetic-ca.pem",
+        )
+        csp_pki = next(
+            volume
+            for volume in default_services["csp"]["volumes"]
+            if volume["target"] == "/etc/anila/pki"
+        )
+        self.assertTrue(csp_pki["read_only"])
 
         csp_secrets = next(
             volume
@@ -282,11 +293,15 @@ class DeploymentContainmentTests(unittest.TestCase):
             "flux2-dev-agent nginx n8n gitlab",
             "running_services=(ingestion-worker)",
             "cmd_wait_healthy",
+            "remaining=$(( deadline - $(date +%s) ))",
+            "cmd_postconfigure",
+            "ANILA_VERIFY_CA_FILE",
+            '"$rc" == "52" || "$rc" == "56"',
             "cmd_verify",
         ):
             self.assertIn(token, script)
         self.assertIn("check_tool_upgrade_safety\n  ensure_jwt_keypair", script)
-        self.assertIn("cmd_wait_healthy\n  cmd_verify", script)
+        self.assertIn("cmd_wait_healthy\n  cmd_postconfigure\n  cmd_verify", script)
         self.assertIn('"(unhealthy)"', script)
         self.assertIn('"(healthy)"', script)
 
@@ -294,6 +309,7 @@ class DeploymentContainmentTests(unittest.TestCase):
         self.assertIn("${ANILA_SECRETS_DIR:?", self.platform)
         self.assertIn("${ANILA_TLS_CERTS_DIR:?", self.platform)
         self.assertNotIn("../../secrets:/app/secrets", self.platform)
+
         self.assertNotIn("../../infra/nginx/certs:/etc/nginx/certs", self.platform)
         dev_compose = read("infra/compose/dev.yml")
         self.assertIn("${ANILA_DEV_TLS_CERTS_DIR:?", dev_compose)

@@ -178,7 +178,7 @@ print(result.stop_reason, result.turn_count)
 
 ### Full Trace 匯出(opt-in)
 
-Tracing 是 **additive 且 fail-open**:`ANILA_TRACE_ENDPOINT` 未設 → 整條 trace 路徑 no-op,行為與未接前完全一致。設定後,span 由背景 `TraceExporter` POST 到 CSP `POST {base}/v1/traces/{trace_id}/spans`(body `{"spans":[…]}`,≤256/批,`X-CSP-Service-Token` 認證),同時 mirror 進 `anila.spans` SSE 事件。
+Tracing 是 **additive 且 fail-open**:`ANILA_TRACE_ENDPOINT` 未設 → 整條 trace 路徑 no-op,行為與未接前完全一致。設定後,span 由背景 `TraceExporter` POST 到 CSP `POST {base}/v1/traces/{trace_id}/spans`(body `{"spans":[…]}`,≤256/批,`Authorization: Bearer …` 認證),同時 mirror 進 `anila.spans` SSE 事件。
 
 - `ANILA_TRACE_ENDPOINT`:bare flag(`1`/`true`/`on`/`yes`/`default`)→ 用 router 已知的 `CSP_BASE_URL`;其他值 → 當顯式 trace base URL。
 - `ANILA_TRACE_TOKEN`:trace export 用的 service token(未設則 fallback `CSP_SERVICE_TOKEN`)。

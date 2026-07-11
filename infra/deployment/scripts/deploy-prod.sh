@@ -23,6 +23,7 @@
 #   restart          down + up
 #   rebuild <svc>    rebuild + restart 單一 service (e.g. rebuild csp)
 #   status           顯示所有 service health
+#   postconfigure    收斂帶狀態 upstream 工具的 runtime 安全姿態
 #   logs <svc>       tail -f 單一 service logs
 #   wait             等正式 service 全數 ready/healthy
 #   verify           執行正式 endpoint、工具 owner 與 image pin 驗證
@@ -447,6 +448,7 @@ cmd_deploy() {
   docker compose up -d --pull never
 
   cmd_wait_healthy
+  cmd_postconfigure
   cmd_verify
 }
 
@@ -458,6 +460,7 @@ cmd_up() {
   section "docker compose up -d --pull never"
   docker compose up -d --pull never
   cmd_wait_healthy
+  cmd_postconfigure
   cmd_verify
 }
 
@@ -547,7 +550,7 @@ cmd_wait_healthy() {
   local deadline=$(( $(date +%s) + timeout ))
   local services=(csp-db redis pptx-renderer csp router anilalm anila-ui anila-studio flux2-dev-agent nginx n8n gitlab)
   local running_services=(ingestion-worker)
-  while (( $(date +%s) < deadline )); do
+  while true; do
     local pending=()
     for s in "${services[@]}"; do
       local status
@@ -578,7 +581,9 @@ cmd_wait_healthy() {
       return 0
     fi
     log "等待中:${pending[*]}"
-    sleep 5
+    local remaining=$(( deadline - $(date +%s) ))
+    (( remaining > 0 )) || break
+    if (( remaining < 5 )); then sleep "$remaining"; else sleep 5; fi
   done
   err "${timeout} 秒內仍有 service 未 ready/healthy"
   cmd_status
@@ -594,10 +599,21 @@ verify_service_image() {
     || fatal "$service image pin 不符: expected=$expected actual=${actual:-unknown}"
   ok "$service image pin = $expected"
 }
+verify_curl() {
+  local ca_file="${ANILA_VERIFY_CA_FILE:-}"
+  if [[ -n "$ca_file" ]]; then
+    [[ -f "$ca_file" && ! -L "$ca_file" ]] \
+      || fatal "ANILA_VERIFY_CA_FILE 必須是 regular non-symlink CA bundle"
+    curl --cacert "$ca_file" "$@"
+  else
+    curl "$@"
+  fi
+}
+
 
 verify_https_code() {
   local label="$1" host="$2" path="$3" expected="$4" code
-  code="$(curl -s --max-time 15 --resolve "$host:443:127.0.0.1" \
+  code="$(verify_curl -s --max-time 15 --resolve "$host:443:127.0.0.1" \
     -o /dev/null -w '%{http_code}' "https://$host$path" 2>/dev/null || true)"
   [[ "$code" == "$expected" ]] || fatal "$label: expected HTTP $expected, got ${code:-curl-failed}"
   ok "$label → $expected"
@@ -605,7 +621,7 @@ verify_https_code() {
 
 verify_https_reachable() {
   local label="$1" host="$2" path="$3"
-  curl -sf --max-time 20 --resolve "$host:443:127.0.0.1" \
+  verify_curl -sf --max-time 20 --resolve "$host:443:127.0.0.1" \
     -o /dev/null "https://$host$path" \
     || fatal "$label 無法經 nginx HTTPS origin 到達"
   ok "$label 可經 nginx HTTPS origin 到達"
@@ -614,12 +630,15 @@ verify_https_reachable() {
 verify_tool_host_rejected_on_ui_port() {
   local host="$1" code rc
   set +e
-  code="$(curl -s --max-time 10 --resolve "$host:4443:127.0.0.1" \
+  code="$(verify_curl -s --max-time 10 --resolve "$host:4443:127.0.0.1" \
     --http1.1 \
     -o /dev/null -w '%{http_code}' "https://$host:4443/" 2>/dev/null)"
   rc=$?
   set -e
-  [[ "$rc" == "52" && "$code" == "000" ]] \
+  # nginx 444 在 OpenSSL curl 回 CURLE_GOT_NOTHING(52)；Windows Schannel
+  # 在 TLS 已建立後回 CURLE_RECV_ERROR(56)。兩者都必須沒有任何 HTTP
+  # response；其他 transport failure 不視為有效 ingress rejection。
+  [[ ( "$rc" == "52" || "$rc" == "56" ) && "$code" == "000" ]] \
     || fatal "tool host $host 在 CSP-bearing :4443 未被 nginx 444 拒絕 (rc=$rc http=${code:-none})"
   ok "tool host $host 在 :4443 被拒絕"
 }
@@ -640,6 +659,22 @@ verify_tls_material() {
   key_pub="$(openssl pkey -in "$key" -pubout 2>/dev/null | sha256sum | cut -d' ' -f1)"
   [[ -n "$cert_pub" && "$cert_pub" == "$key_pub" ]] || fatal "TLS cert 與 private key 不成對"
   ok "TLS expiry / SAN / key-pair 驗證通過"
+}
+
+# GitLab 的 self-signup 是資料庫 ApplicationSetting；只在
+# GITLAB_OMNIBUS_CONFIG 寫 gitlab_signup_enabled 並不足以收斂既有或 fresh
+# database。這個步驟可重複執行，且只改明確的 security posture；verify
+# 保持純 read-back、不得偷偷修正失敗狀態。
+cmd_postconfigure() {
+  check_docker
+  section "Postconfigure stateful tool security posture"
+  local gitlab_posture
+  gitlab_posture="$(docker compose exec -T gitlab gitlab-rails runner \
+    "s=ApplicationSetting.current or abort('application setting missing'); s.update!(signup_enabled: false) unless s.signup_enabled == false; s.reload; abort('signup still enabled') unless s.signup_enabled == false; puts 'ANILA_GITLAB_SIGNUP=false'" \
+    2>&1)" || fatal "GitLab self-signup runtime posture 收斂失敗"
+  [[ "$gitlab_posture" == *"ANILA_GITLAB_SIGNUP=false"* ]] \
+    || fatal "GitLab postconfigure 未回報可驗證的 signup=false marker"
+  ok "GitLab self-signup runtime posture 已收斂"
 }
 
 cmd_verify() {
@@ -704,7 +739,7 @@ cmd_verify() {
   ok "GitLab self-signup 關閉且 root admin 已 bootstrap"
 
   verify_https_reachable "n8n origin" "$n8n_host" /rest/settings
-  curl -sf --max-time 20 --resolve "$gitlab_host:443:127.0.0.1" \
+  verify_curl -sf --max-time 20 --resolve "$gitlab_host:443:127.0.0.1" \
     "https://$gitlab_host/users/sign_in" 2>/dev/null | grep -qi gitlab \
     || fatal "GitLab origin 未回傳 GitLab sign-in page"
   ok "GitLab origin 回傳 GitLab sign-in page"
@@ -751,6 +786,7 @@ case "$SUBCMD" in
   verify)    cmd_verify ;;
   wait)      cmd_wait_healthy ;;
   help|-h|--help) cmd_help ;;
+  postconfigure) cmd_postconfigure ;;
   *)
     err "未知 subcommand: $SUBCMD"
     cmd_help

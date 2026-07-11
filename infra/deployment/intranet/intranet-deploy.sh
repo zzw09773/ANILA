@@ -567,6 +567,7 @@ docker compose up -d --no-build --pull never
 # ── 7. 驗證 ──────────────────────────────────────────────────────────────
 info "[7/7] 等全 stack ready + fail-closed 驗證"
 bash infra/deployment/scripts/deploy-prod.sh wait
+bash infra/deployment/scripts/deploy-prod.sh postconfigure
 bash infra/deployment/scripts/deploy-prod.sh verify
 
 echo
