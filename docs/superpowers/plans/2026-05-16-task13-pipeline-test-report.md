@@ -38,7 +38,7 @@ this report.
 
 ### A.1 FLUX.2-dev weights
 
-- Location: `/home/aia/c1147259/project/Huggingface/FLUX.2-dev`
+- Location: `$HOME/project/Huggingface/FLUX.2-dev`
 - Total size: **166 GB**
 - safetensors count: **20** (1 root flux2-dev.safetensors, 1 ae.safetensors,
   7 transformer shards, 10 text_encoder Mistral-3 shards, 1 vae)
@@ -62,7 +62,7 @@ this report.
 
 ### A.3 Share volume
 
-- `/home/aia/c1147259/ANILA/share-dev/uploads/flux` exists and is writable ✓
+- `$HOME/ANILA/share-dev/uploads/flux` exists and is writable ✓
 
 ### A.4 / A.5 / A.6 Service health
 
@@ -140,7 +140,7 @@ All 20 scenarios returned `OK` with valid 1408×768 RGB PNG output.
 | 19 | indoor_office | 現代辦公室室內,自然光從落地窗灑入 | 19.6 | 1414 |
 | 20 | geometric_minimal | 極簡幾何構圖,藍色三角形和橘色圓形 | 19.3 | 388 |
 
-Outputs: `/home/aia/c1147259/ANILA/share-dev/uploads/flux/quality-test/01_*.png` … `20_*.png`
+Outputs: `$HOME/ANILA/share-dev/uploads/flux/quality-test/01_*.png` … `20_*.png`
 
 Full JSON results: `/tmp/quality_test_results.json` (regenerated when the
 test reruns).
@@ -274,7 +274,7 @@ I cannot view images directly. The following observations are inferred:
 To review the 20 quality-test images, the user should:
 
 1. **Open them locally** from
-   `/home/aia/c1147259/ANILA/share-dev/uploads/flux/quality-test/`
+   `$HOME/ANILA/share-dev/uploads/flux/quality-test/`
    in their file browser, or
 2. **Via nginx** at `https://<host>:8443/uploads/flux/quality-test/01_mountain_patrol.png`
    (one URL per slug)
@@ -338,6 +338,6 @@ Both flux services are left **running**. No `docker compose down`
 issued. If operator wants to stop them:
 
 ```bash
-docker compose -f /home/aia/c1147259/ANILA/models/docker-compose.yml \
+docker compose -f $HOME/ANILA/models/docker-compose.yml \
     stop flux2-dev flux2-dev-agent
 ```

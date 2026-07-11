@@ -123,7 +123,7 @@ def test_slide_rejects_too_long_image_prompt():
 - [ ] **Step 1.2: Run test to verify it fails**
 
 ```bash
-cd /home/aia/c1147259/ANILA/myCSPPlatform/backend
+cd $HOME/ANILA/myCSPPlatform/backend
 pytest tests/test_slide_image_prompt.py -v
 ```
 
@@ -1234,7 +1234,7 @@ Find the block requiring `image_id` lookup. Add:
 LLM prompts are hard to unit-test for content; verify the surrounding parser/dispatcher still works:
 
 ```bash
-cd /home/aia/c1147259/ANILA/myCSPPlatform/backend
+cd $HOME/ANILA/myCSPPlatform/backend
 pytest tests/test_studio.py -v -k "prompt or spec" 2>&1 | tail -10
 ```
 
@@ -1423,7 +1423,7 @@ async def test_flux_failure_falls_back_silently(monkeypatch, tmp_path):
 - [ ] **Step 9.2: Run all backend tests**
 
 ```bash
-cd /home/aia/c1147259/ANILA/myCSPPlatform/backend
+cd $HOME/ANILA/myCSPPlatform/backend
 pytest tests/test_studio_flux_e2e.py tests/test_flux_image_provider.py \
        tests/test_hydrate_images.py tests/test_flux_provider_wiring.py \
        tests/test_slide_image_prompt.py -v

@@ -886,13 +886,13 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       "只能輸出標題本身，不要加引號、冒號、標點或其他說明。";
     const userPrompt = `使用者：${userText}\n助理：${assistantText}`;
     try {
-      const csrf = document.cookie.match(/(?:^|;\s*)anila_csrf=([^;]+)/);
+      const csrf = readCsrfCookie();
       const res = await fetch(`${baseUrl}/v1/chat/completions`, {
         method: "POST",
         credentials: "include",
         headers: {
           "Content-Type": "application/json",
-          ...(csrf ? { "X-CSRF-Token": decodeURIComponent(csrf[1]) } : {}),
+          ...(csrf ? { "X-CSRF-Token": csrf } : {}),
         },
         body: JSON.stringify({
           model: effectiveTarget,

@@ -174,10 +174,10 @@ def test_change_password_owner_allowed_when_locked_down(
     assert resp.status_code == 200
 
 
-def test_change_password_nonowner_returns_404_when_locked_down(
+def test_change_password_old_nonowner_session_returns_401_when_locked_down(
     client: TestClient, db, monkeypatch
 ):
-    """非 owner 帶有效 token 改密碼仍 404(token 先在 lockdown OFF 時取得)。"""
+    """切換正式姿態後，舊的非 owner 密碼 session 在共用 JWT 邊界即失效。"""
     make_user(db, username="staffer2", role="user")
     token = client.post(
         "/api/auth/login",
@@ -190,7 +190,7 @@ def test_change_password_nonowner_returns_404_when_locked_down(
         json={"current_password": "password", "new_password": "n3w-Passw0rd!xyz"},
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert resp.status_code == 404
+    assert resp.status_code == 401
 
 
 # ── disabled-by-default sanity ─────────────────────────────────────────────────

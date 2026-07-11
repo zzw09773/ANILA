@@ -77,6 +77,24 @@ def _is_dev_mode() -> bool:
     return os.environ.get("ANILA_ALLOW_DEV_SECRET", "").strip() == "1"
 
 
+def _is_production_posture() -> bool:
+    """Treat an explicit production profile as formal even if dev opt-in leaks.
+
+    When ANILA_ENV is absent, the existing secure convention applies: only an
+    explicit ANILA_ALLOW_DEV_SECRET=1 opts into development behavior.
+    """
+    env_name = os.environ.get("ANILA_ENV", "").strip().lower()
+    return (
+        env_name in {"prod", "production"}
+        or settings.REQUIRE_CARD_LOGIN_ONLY
+        or not _is_dev_mode()
+    )
+
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _value_for(name: str) -> str | None:
     if name == "SECRET_KEY":
         return settings.SECRET_KEY
@@ -110,6 +128,11 @@ def assert_no_dev_defaults() -> None:
       production 直接 raise。
     """
     dev_mode = _is_dev_mode()
+    if dev_mode and _is_production_posture():
+        raise RuntimeError(
+            "Refusing to start: ANILA_ALLOW_DEV_SECRET=1 僅限明示的 dev/test "
+            "profile；ANILA_ENV=production 或 card-only 正式姿態禁止此旁路。"
+        )
     offenders: list[str] = []
     warnings: list[str] = []
 
@@ -169,3 +192,81 @@ def assert_intranet_lockdown_consistency() -> None:
             "ENABLE_CARD_LOGIN=False — 將無人能登入。請同時啟用 "
             "ENABLE_CARD_LOGIN=true,或關閉 REQUIRE_CARD_LOGIN_ONLY。"
         )
+
+
+def assert_card_only_data_feature_policy() -> None:
+    """Keep unfinished data features out of the formal card-only posture.
+
+    A stale developer ``.env`` must not silently re-enable public sharing or
+    long-term memory when the deployment is switched to card-only mode.  These
+    capabilities remain available to explicit non-card development profiles;
+    they are blocked here only until their later security gates are complete.
+    """
+    if not settings.REQUIRE_CARD_LOGIN_ONLY:
+        return
+
+    enabled = [
+        name
+        for name, value in (
+            ("ENABLE_PUBLIC_SHARE", settings.ENABLE_PUBLIC_SHARE),
+            ("ENABLE_MEMORY", settings.ENABLE_MEMORY),
+        )
+        if value
+    ]
+    if enabled:
+        raise RuntimeError(
+            "Refusing to start: REQUIRE_CARD_LOGIN_ONLY=True 的正式姿態禁止啟用 "
+            + ", ".join(enabled)
+            + "；請先關閉這些未完成端到端分級控管的功能。"
+        )
+
+
+def assert_card_nonce_binding_policy() -> None:
+    """Reject the replay-prone card mock bypass in every formal posture."""
+    if not _env_truthy("CARD_DEV_SKIP_NONCE_BINDING"):
+        return
+    if _is_production_posture():
+        raise RuntimeError(
+            "Refusing to start: CARD_DEV_SKIP_NONCE_BINDING=true 是 dev-only "
+            "憑證卡 mock 旁路，production/formal profile 禁止啟用。"
+        )
+    logger.warning(
+        "[startup_security] CARD_DEV_SKIP_NONCE_BINDING=true dev-only 旁路已啟用；"
+        "只可搭配固定測試簽章，不得用於正式環境。"
+    )
+
+
+def assert_secure_cookie_policy() -> None:
+    """Formal profiles must emit standards-compliant ``__Host-`` cookies.
+
+    ``COOKIE_SECURE=false`` selects a distinct ``anila_dev_*`` namespace so
+    HTTP TestClient/local loops work without teaching production consumers to
+    accept a legacy cookie name. It is therefore permitted only under the
+    explicit development posture.
+    """
+    if settings.COOKIE_SECURE:
+        return
+    if _is_production_posture():
+        raise RuntimeError(
+            "Refusing to start: COOKIE_SECURE=false 僅限明示的 dev/test HTTP "
+            "profile；production/formal profile 必須使用 Secure + __Host- cookies。"
+        )
+    logger.warning(
+        "[startup_security] COOKIE_SECURE=false；使用 anila_dev_* cookies，"
+        "僅適用 TestClient 或本機 HTTP 開發。"
+    )
+
+
+def assert_startup_migration_policy() -> None:
+    """Production may never bypass the fail-stop Alembic startup gate."""
+    if not settings.SKIP_STARTUP_MIGRATIONS:
+        return
+    if _is_production_posture():
+        raise RuntimeError(
+            "Refusing to start: SKIP_STARTUP_MIGRATIONS=true 僅限明示的 "
+            "dev/test SQLite fixture，production/formal profile 禁止跳過 migration。"
+        )
+    logger.warning(
+        "[startup_security] SKIP_STARTUP_MIGRATIONS=true；"
+        "僅適用 dev/test 自行建立 schema 的 fixture。"
+    )

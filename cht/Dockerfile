@@ -5,4 +5,4 @@ ENV TZ=Asia/Taipei
 RUN apt update
 RUN apt install vim -y
 RUN pip install --upgrade pip
-RUN pip install flask
+RUN pip install --no-cache-dir "Flask>=3.1,<4" "cryptography>=45,<48"

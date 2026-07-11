@@ -6,6 +6,10 @@ Uses SQLite in-memory so tests have no external dependency on Postgres.
 from __future__ import annotations
 
 import os
+import atexit
+import shutil
+import tempfile
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,21 +20,35 @@ from sqlalchemy.pool import StaticPool
 os.environ["DEBUG"] = "false"
 os.environ["DATABASE_URL"] = "sqlite:///./.pytest-csp.db"
 os.environ["HEALTH_CHECK_INTERVAL"] = "3600"
-# TestClient uses http://testserver — Secure cookies would be dropped.
+# The SQLite unit fixture owns schema setup through Base.metadata.create_all.
+# Formal Alembic startup is exercised by focused startup tests, not every
+# TestClient instance. The dev opt-in is required so production cannot use the
+# skip flag as a migration bypass.
+os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
+os.environ.setdefault("SKIP_STARTUP_MIGRATIONS", "true")
+# TestClient uses http://testserver — Secure __Host- cookies would be dropped.
+# This selects the distinct anila_dev_* names; production never accepts the
+# old unprefixed names as a fallback.
 os.environ.setdefault("COOKIE_SECURE", "false")
 os.environ.setdefault("AUTO_REGISTER_MODELS", "")
 os.environ.setdefault("AUTO_REGISTER_AGENTS", "")
 os.environ.setdefault("AUTO_SEED_API_KEYS", "")
 os.environ.setdefault("AUTO_REGISTER_LINKS", "")
 # JWT keys: auto-generate dev RSA pair if missing, so CI / fresh clones
-# don't have to manually run scripts/generate-jwt-keypair.py first.
+# don't have to manually run scripts/generate-jwt-keypair.py first. Never put
+# these keys under the repository: ignored files still leak into Docker build
+# contexts and local multi-user ACLs.
+_TEST_JWT_DIR = Path(tempfile.mkdtemp(prefix="anila-csp-jwt-"))
+atexit.register(shutil.rmtree, _TEST_JWT_DIR, ignore_errors=True)
+os.environ.setdefault("JWT_PRIVATE_KEY_PATH", str(_TEST_JWT_DIR / "jwt-private.pem"))
+os.environ.setdefault("JWT_PUBLIC_KEY_PATH", str(_TEST_JWT_DIR / "jwt-public.pem"))
 os.environ.setdefault("ALLOW_AUTO_KEYGEN", "true")
 
 from app.database import Base, get_db
 from app.main import app
 from app.models.user import User
 from app.models.model_registry import ModelRegistry
-from app.models.api_key import ApiKey, ApiKeyModelPermission
+from app.models.api_key import ApiKey
 from app.models.agent import Agent
 from app.utils.security import hash_password
 
@@ -76,6 +94,17 @@ def client(db_engine):
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def synthetic_card_trust(monkeypatch):
+    """Trust only the ephemeral test CA and keep nonce binding enabled."""
+    from app.services import card_auth
+    from tests.synthetic_card_pki import SYNTHETIC_CARD
+
+    monkeypatch.setattr(card_auth, "_ca_anchor_cache", SYNTHETIC_CARD.anchor_cache())
+    monkeypatch.setattr(card_auth, "_SKIP_NONCE_BINDING", False)
+    return SYNTHETIC_CARD
 
 
 # ── Fixture helpers ────────────────────────────────────────────────────────────

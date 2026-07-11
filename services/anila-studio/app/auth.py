@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from fastapi import Cookie, Depends, Header, HTTPException, status
+from fastapi import Cookie, Header, HTTPException, status
 from jose import JWTError, jwt
 from jose.exceptions import ExpiredSignatureError
 
@@ -35,7 +35,15 @@ from app.services import jwks_client, revocation_cache as revocation_cache_mod
 logger = logging.getLogger(__name__)
 
 
-ACCESS_COOKIE_NAME = "anila_access_token"
+SECURE_ACCESS_COOKIE_NAME = "__Host-anila_access_token"
+DEV_ACCESS_COOKIE_NAME = "anila_dev_access_token"
+
+
+def _access_cookie_name(secure: bool) -> str:
+    return SECURE_ACCESS_COOKIE_NAME if secure else DEV_ACCESS_COOKIE_NAME
+
+
+ACCESS_COOKIE_NAME = _access_cookie_name(settings.COOKIE_SECURE)
 
 
 @dataclass(frozen=True)
@@ -133,12 +141,12 @@ async def _check_revocation(user_id: int, token_version: int) -> None:
 
 async def get_current_user_identity(
     authorization: str | None = Header(default=None),
-    anila_access_token: str | None = Cookie(default=None, alias=ACCESS_COOKIE_NAME),
+    access_cookie: str | None = Cookie(default=None, alias=ACCESS_COOKIE_NAME),
 ) -> CurrentUserIdentity:
     """FastAPI dependency: resolve identity from Bearer header OR cookie.
 
     Mirrors csp's ``get_current_user`` token sourcing precedence
-    (Authorization header wins, anila_access_token cookie is SPA fallback)
+    (Authorization header wins, the formal ``__Host-`` cookie is SPA fallback)
     but uses local RS256 + JWKS verify instead of csp's HS256 + DB.
 
     Returns ``CurrentUserIdentity`` (frozen dataclass). Raises 401 for
@@ -150,8 +158,8 @@ async def get_current_user_identity(
         scheme, _, value = authorization.partition(" ")
         if scheme.lower() == "bearer" and value:
             token = value
-    if token is None and anila_access_token:
-        token = anila_access_token
+    if token is None and access_cookie:
+        token = access_cookie
 
     if not token:
         raise _unauthorized("未登入或權杖已過期")
@@ -163,6 +171,20 @@ async def get_current_user_identity(
     # the studio API surface.
     if payload.get("type") != "access":
         raise _unauthorized("無效的存取權杖")
+
+    if settings.REQUIRE_CARD_LOGIN_ONLY:
+        raw_amr = payload.get("amr")
+        methods = (
+            set(raw_amr)
+            if isinstance(raw_amr, list)
+            and all(isinstance(method, str) for method in raw_amr)
+            else set()
+        )
+        if "sc" not in methods:
+            # Studio has no authoritative user DB, so it cannot safely mirror
+            # CSP's DB-current owner/password break-glass exception. Keep this
+            # direct artifact surface strictly smart-card-only.
+            raise _unauthorized("此服務僅接受憑證卡登入工作階段")
 
     sub = payload.get("sub")
     if not sub:
@@ -202,7 +224,7 @@ def _extract_bearer_for_csp_proxy(authorization: str | None) -> str:
 
 async def get_bearer_token(
     authorization: str | None = Header(default=None),
-    anila_access_token: str | None = Cookie(default=None, alias=ACCESS_COOKIE_NAME),
+    access_cookie: str | None = Cookie(default=None, alias=ACCESS_COOKIE_NAME),
 ) -> str:
     """FastAPI dependency: return the raw bearer token string for csp passthrough.
 
@@ -216,6 +238,6 @@ async def get_bearer_token(
         scheme, _, value = authorization.partition(" ")
         if scheme.lower() == "bearer" and value:
             return value
-    if anila_access_token:
-        return anila_access_token
+    if access_cookie:
+        return access_cookie
     raise _unauthorized("未登入或權杖已過期")

@@ -24,7 +24,7 @@
 ## 參考資料（實作 subagent 必讀）
 
 - 設計文件：`docs/anila-redesign-docs/`（00–11）
-- 契約萃取（scratchpad，遺失可重生）：`/tmp/claude-1001/-home-aia-c1147259-ANILA/81493b14-f838-412a-91ea-8e8a8eb104df/scratchpad/extractions/doc-XX-extract.md`
+- 契約萃取（scratchpad，遺失可重生）：`/tmp/claude-1001/-home-aia-anila-ANILA/81493b14-f838-412a-91ea-8e8a8eb104df/scratchpad/extractions/doc-XX-extract.md`
 - 搬遷影響地圖：同目錄 `recon-move-impact.md`（逐檔逐行 old→new）
 - CSP 結構地圖：同目錄 `recon-csp-structure.md`（god-modules、alembic 鏈、符號定位表）
 

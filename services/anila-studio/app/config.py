@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     JWT_ALGORITHMS: tuple[str, ...] = ("RS256",)
     # Sub-second drift tolerance for the iat/exp checks.
     JWT_LEEWAY_SECONDS: int = 60
+    # Formal browser sessions use the host-only ``__Host-`` cookie name.
+    # False is reserved for explicit HTTP-only unit/local development and
+    # selects a distinct ``anila_dev_*`` name, never the legacy cookie.
+    COOKIE_SECURE: bool = True
+    # Studio verifies browser JWTs locally. Formal intranet routes therefore
+    # must repeat CSP's smart-card assurance check instead of assuming every
+    # valid RS256 token was issued by the current login policy.
+    REQUIRE_CARD_LOGIN_ONLY: bool = False
 
     # HTTP timeouts for csp_client.
     INTERNAL_TIMEOUT_SECONDS: float = 30.0

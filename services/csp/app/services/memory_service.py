@@ -53,8 +53,6 @@ from sqlalchemy.orm import Session
 
 from anila_core.memory.long_term import (
     DEFAULT_EMBED_MODEL,
-    EMBED_DIM,
-    EMBED_NATIVE_DIM,
     EXTRACTION_SYSTEM_PROMPT,
     MemoryAdapter,
     MemoryReadResult,
@@ -71,6 +69,7 @@ from anila_core.security import (
     validate_outbound_url,
 )
 
+from app.config import settings
 from app.database import SessionLocal
 from app.models.model_registry import ModelRegistry
 from app.models.user_memory import ConversationMemoryChunk, UserFact
@@ -363,6 +362,8 @@ async def build_memory_block(
     exclude_conversation_id: int | None = None,
 ) -> MemoryReadResult:
     """Top-level read: fetch facts + run RAG, return formatted block."""
+    if not settings.ENABLE_MEMORY:
+        return MemoryReadResult(block=None, facts_count=0, chunks=[])
     facts = get_user_facts(db, user_id)
     chunks = await retrieve_relevant_chunks(
         db,
@@ -538,6 +539,8 @@ async def persist_turn(
     logged so a memory write failure can never propagate up to break
     the user-facing response.
     """
+    if not settings.ENABLE_MEMORY:
+        return
     db = SessionLocal()
     try:
         try:

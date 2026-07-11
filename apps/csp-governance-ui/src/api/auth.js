@@ -3,7 +3,7 @@ import client from './client'
 export const login = (username, password, extra = {}) =>
   client.post('/api/auth/login', { username, password, ...extra })
 
-// cookie 流程：refresh token 從 anila_refresh_token cookie 取，
+// cookie 流程：refresh token 從 __Host-anila_refresh_token cookie 取，
 // 不需 body；保留無參數 signature 以便未來 SDK 可選擇傳入。
 export const refreshTokenApi = () =>
   client.post('/api/auth/refresh', {})

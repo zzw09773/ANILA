@@ -49,7 +49,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function refreshToken() {
-    // 後端從 anila_refresh_token cookie 取 token；不需傳 body。
+    // 後端從 __Host-anila_refresh_token cookie 取 token；不需傳 body。
     await refreshTokenApi()
   }
 
