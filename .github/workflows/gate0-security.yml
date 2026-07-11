@@ -93,6 +93,7 @@ jobs:
         run: |
           python -m pytest \
             packages/anila-core/tests/test_router_runtime_contract.py \
+            packages/anila-core/tests/test_trace_sdk.py \
             packages/anila-core/tests/test_router_session.py \
             packages/anila-core/tests/test_caller_context.py \
             packages/anila-core/tests/test_router_readiness.py -q

@@ -178,7 +178,7 @@ print(result.stop_reason, result.turn_count)
 
 ### Full Trace export (opt-in)
 
-Tracing is **additive and fail-open**: with `ANILA_TRACE_ENDPOINT` unset the whole trace path is a no-op and behaviour is byte-identical to before it was wired. When set, spans are POSTed by a background `TraceExporter` to CSP `POST {base}/v1/traces/{trace_id}/spans` (body `{"spans":[…]}`, ≤256/batch, `X-CSP-Service-Token` auth) AND mirrored into the `anila.spans` SSE event.
+Tracing is **additive and fail-open**: with `ANILA_TRACE_ENDPOINT` unset the whole trace path is a no-op and behaviour is byte-identical to before it was wired. When set, spans are POSTed by a background `TraceExporter` to CSP `POST {base}/v1/traces/{trace_id}/spans` (body `{"spans":[…]}`, ≤256/batch, `Authorization: Bearer …` auth) AND mirrored into the `anila.spans` SSE event.
 
 - `ANILA_TRACE_ENDPOINT`: a bare flag (`1`/`true`/`on`/`yes`/`default`) → reuse the router's known `CSP_BASE_URL`; any other value → an explicit trace base URL.
 - `ANILA_TRACE_TOKEN`: the service token for trace export (falls back to `CSP_SERVICE_TOKEN`).

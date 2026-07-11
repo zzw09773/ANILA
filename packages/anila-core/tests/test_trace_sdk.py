@@ -104,7 +104,7 @@ def test_flush_posts_to_frozen_endpoint_with_service_token() -> None:
                                        "span_type": "agent.run.finished",
                                        "name": "x", "started_at": "t",
                                        "status": "ok"}]}
-    assert call["headers"]["X-CSP-Service-Token"] == "csk-token"
+    assert call["headers"]["Authorization"] == "Bearer csk-token"
     assert exp.stats()["sent"] == 1
 
 
@@ -149,7 +149,16 @@ def test_no_token_omits_header() -> None:
     )
     exp.enqueue("t", {"span_id": "a"})
     exp.flush()
-    assert "X-CSP-Service-Token" not in sink[0]["headers"]
+    assert "Authorization" not in sink[0]["headers"]
+
+
+def test_explicit_non_bearer_header_remains_supported() -> None:
+    sink: list = []
+    exp = _make_exporter(sink, header_name="X-Custom-Trace-Token")
+    exp.enqueue("t", {"span_id": "a"})
+    exp.flush()
+    assert sink[0]["headers"]["X-Custom-Trace-Token"] == "csk-token"
+
 
 
 # ---------------------------------------------------------------------------

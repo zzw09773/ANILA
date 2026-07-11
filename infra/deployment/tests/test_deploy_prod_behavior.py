@@ -85,6 +85,16 @@ if [[ "${1:-}" == "compose" && "${2:-}" == "ps" ]]; then
   [[ -n "$status" ]] && printf '%s\n' "$status"
   exit 0
 fi
+if [[ "${1:-}" == "compose" && "${2:-}" == "exec" && "${3:-}" == "-T" && "${4:-}" == "gitlab" ]]; then
+  [[ "$*" == *"signup_enabled: false"* ]] || {
+    printf '%s\n' 'postconfigure did not request signup=false' >&2
+    exit 96
+  }
+  [[ "$scenario" != "gitlab-postconfigure-fails" ]] || exit 42
+  printf '%s\n' 'ANILA_GITLAB_SIGNUP=false'
+  exit 0
+fi
+
 
 if [[ "${1:-}" == "inspect" ]]; then
   if [[ "$scenario" == "old-n8n-image" && "${2:-}" == "n8n-test-container" ]]; then
@@ -223,6 +233,20 @@ class DeployProdBehaviorTests(unittest.TestCase):
             "partial-gitlab-volume",
             "tool-preflight",
             "GitLab config/data volume 只剩一側",
+        )
+
+
+    def test_postconfigure_converges_gitlab_signup_posture(self) -> None:
+        result, _ = self.run_deploy("all-healthy", "postconfigure")
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertIn("GitLab self-signup runtime posture 已收斂", output)
+
+    def test_postconfigure_fails_closed_when_gitlab_rejects_update(self) -> None:
+        self.assert_guard_failed(
+            "gitlab-postconfigure-fails",
+            "postconfigure",
+            "GitLab self-signup runtime posture 收斂失敗",
         )
 
 
