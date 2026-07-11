@@ -14,9 +14,9 @@ import {
   Routes,
 } from "react-router-dom";
 
-// 共用設計系統 tokens（--anila-*）：index.html 的 :root 橋接層把 shell 舊
-// 變數（--bg / --fg / --accent …）映射到這裡，全站主題由 packages/ui 統一。
-import "@anila/ui/styles/tokens.css";
+// 跨框架設計 tokens（--anila-*）：index.html 的 :root 橋接層把 shell 舊
+// 變數（--bg / --fg / --accent …）映射到這裡；React 元件另由 @anila/ui 提供。
+import "@anila/tokens/tokens.css";
 
 import App from "./app.jsx";
 import { AuthProvider, useAuth } from "./runtime/auth.jsx";

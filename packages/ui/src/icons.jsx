@@ -2,8 +2,16 @@
 // 與 shell 的 icons.jsx 同語彙；套件自給自足，零外部 icon 依賴。
 import React from "react";
 
-export const Icon = ({ children, size = 16, stroke = 1.5, className = "" }) => (
+export const Icon = ({
+  children,
+  size = 16,
+  stroke = 1.5,
+  className = "",
+  "aria-hidden": ariaHidden,
+  ...rest
+}) => (
   <svg
+    {...rest}
     xmlns="http://www.w3.org/2000/svg"
     width={size}
     height={size}
@@ -14,7 +22,7 @@ export const Icon = ({ children, size = 16, stroke = 1.5, className = "" }) => (
     strokeLinecap="round"
     strokeLinejoin="round"
     className={className}
-    aria-hidden="true"
+    aria-hidden={ariaHidden ?? (rest["aria-label"] ? undefined : true)}
   >
     {children}
   </svg>

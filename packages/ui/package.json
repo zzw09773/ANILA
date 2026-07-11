@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "ANILA 三平台（CSP / ANILA / ANILALM）共用設計系統基礎：design tokens + 核心 React 元件。",
+  "description": "ANILA React 前端共用元件；跨框架 design tokens 由 @anila/tokens 提供。",
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",

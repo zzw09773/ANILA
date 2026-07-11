@@ -1,9 +1,10 @@
 // Tabs — 分段切換器（segmented control 語彙，對齊 shell 側欄「對話/Agents」
 // 切換的視覺）。完整 tablist 語意 + 左右方向鍵切換。
-import React from "react";
+import React, { useRef } from "react";
 
 export const Tabs = ({ tabs = [], value, onChange, "aria-label": ariaLabel }) => {
   const ids = tabs.map((t) => t.id);
+  const tabRefs = useRef(new Map());
 
   const onKeyDown = (e) => {
     const idx = ids.indexOf(value);
@@ -11,9 +12,12 @@ export const Tabs = ({ tabs = [], value, onChange, "aria-label": ariaLabel }) =>
     let next = null;
     if (e.key === "ArrowRight") next = ids[(idx + 1) % ids.length];
     if (e.key === "ArrowLeft") next = ids[(idx - 1 + ids.length) % ids.length];
+    if (e.key === "Home") next = ids[0];
+    if (e.key === "End") next = ids[ids.length - 1];
     if (next) {
       e.preventDefault();
       onChange?.(next);
+      tabRefs.current.get(next)?.focus();
     }
   };
 
@@ -29,6 +33,10 @@ export const Tabs = ({ tabs = [], value, onChange, "aria-label": ariaLabel }) =>
         return (
           <button
             key={t.id}
+            ref={(node) => {
+              if (node) tabRefs.current.set(t.id, node);
+              else tabRefs.current.delete(t.id);
+            }}
             role="tab"
             aria-selected={active}
             tabIndex={active ? 0 : -1}

@@ -8,9 +8,10 @@ import react from "@vitejs/plugin-react";
 const rawBase = process.env.BASE_PATH || "/";
 const base = (rawBase.startsWith("/") ? rawBase : `/${rawBase}`).replace(/\/?$/, "/");
 
-// 共用設計系統（packages/ui）以「原始碼 alias」引用：repo 無 JS workspace,
+// 共用 tokens 與 React 元件皆以「原始碼 alias」引用：repo 無 JS workspace,
 // 套件源碼直接交給本 app 的 Vite pipeline 編譯。Docker build 的 context
-// 因此必須涵蓋 packages/ui(見 infra/compose/platform.yml 的 anila-ui)。
+// 因此必須涵蓋 packages/tokens 與 packages/ui。
+const tokenSrc = fileURLToPath(new URL("../../packages/tokens/src", import.meta.url));
 const uiSrc = fileURLToPath(new URL("../../packages/ui/src", import.meta.url));
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -18,7 +19,7 @@ export default defineConfig({
   base,
   plugins: [react()],
   resolve: {
-    alias: { "@anila/ui": uiSrc },
+    alias: { "@anila/tokens": tokenSrc, "@anila/ui": uiSrc },
     // 套件源碼位於 app root 之外;bare import 的 react 必須固定解析回本 app
     // 的 node_modules,避免「找不到 react / 雙 React instance」兩類問題。
     dedupe: ["react", "react-dom"],
@@ -28,7 +29,7 @@ export default defineConfig({
   // 慣例對齊 csp-governance-ui/vite.config.js。僅影響 `vite dev`,不進 build。
   server: {
     fs: {
-      // dev server 允許讀 repo root(涵蓋 packages/ui 源碼);僅影響本機 dev。
+      // dev server 允許讀 repo root（涵蓋 packages/tokens 與 packages/ui）。
       allow: [repoRoot],
     },
     proxy: {

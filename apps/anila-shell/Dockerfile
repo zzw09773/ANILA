@@ -2,8 +2,8 @@ FROM node:22-alpine AS builder
 
 # Build context = repo root（infra/compose/{platform,dev}.yml 傳入 ../..，
 # 同 csp 服務的 root-context 慣例）：anila-shell 以 Vite alias 引用共用設計
-# 系統 packages/ui 的「原始碼」（見 vite.config.js），context 必須同時涵蓋
-# app 與 packages/ui 兩個目錄，否則 vite build 解析不到 ../../packages/ui。
+# 系統 packages/tokens 與 packages/ui 的「原始碼」，context 必須同時涵蓋
+# app 與兩個套件目錄，否則 Vite build 無法解析 alias。
 WORKDIR /app/apps/anila-shell
 
 ARG VITE_CSP_BASE_URL=http://localhost:8000
@@ -21,8 +21,9 @@ COPY apps/anila-shell/package.json apps/anila-shell/package-lock.json* ./
 # forcing a host-side lockfile regeneration. Only runs during image build.
 RUN npm install --no-audit --no-fund
 
-# 共用設計系統源碼（app 內相對路徑 ../../packages/ui）。react 由本 app 的
+# 共用 token 與 React 元件源碼。React 由本 app 的
 # node_modules 提供（vite resolve.dedupe），套件目錄不需要 npm install。
+COPY packages/tokens /app/packages/tokens
 COPY packages/ui /app/packages/ui
 COPY apps/anila-shell ./
 RUN npm run build

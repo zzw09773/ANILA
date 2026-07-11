@@ -1,6 +1,6 @@
 import React from "react";
 import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { Input } from "../components/Input.jsx";
 
 describe("Input", () => {
@@ -19,5 +19,14 @@ describe("Input", () => {
   it("無 error 時顯示 hint", () => {
     render(<Input label="名稱" hint="提示文字" />);
     expect(screen.getByText("提示文字")).toBeInTheDocument();
+  });
+  it("focus 與 blur 以 React state 切換邊框 token", () => {
+    render(<Input label="名稱" />);
+    const input = screen.getByLabelText("名稱");
+    const wrapper = input.parentElement;
+    fireEvent.focus(input);
+    expect(wrapper.style.border).toContain("--anila-color-accent");
+    fireEvent.blur(input);
+    expect(wrapper.style.border).toContain("--anila-color-border");
   });
 });

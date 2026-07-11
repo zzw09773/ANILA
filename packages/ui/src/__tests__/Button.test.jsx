@@ -27,6 +27,13 @@ describe("Button", () => {
     expect(screen.getByTestId("l")).toBeInTheDocument();
     expect(screen.getByTestId("r")).toBeInTheDocument();
   });
+  it("滑鼠離開後恢復呼叫者自訂 style", () => {
+    render(<Button style={{ background: "rgb(1, 2, 3)" }}>自訂</Button>);
+    const btn = screen.getByRole("button", { name: "自訂" });
+    fireEvent.mouseEnter(btn);
+    fireEvent.mouseLeave(btn);
+    expect(btn.style.background).toBe("rgb(1, 2, 3)");
+  });
 });
 
 describe("IconButton", () => {

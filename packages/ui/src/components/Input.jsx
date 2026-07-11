@@ -1,9 +1,12 @@
 // Input — 自 shell components.jsx 收編：label / hint / error / leftIcon /
 // rightEl API 相容；焦點邊框改官方藍。
-import React from "react";
+import React, { useState } from "react";
 
-export const Input = ({ label, hint, error, leftIcon, rightEl, ...rest }) => (
-  <label style={{ display: "block", fontFamily: "var(--anila-font-sans)" }}>
+export const Input = ({ label, hint, error, leftIcon, rightEl, ...rest }) => {
+  const [focused, setFocused] = useState(false);
+
+  return (
+    <label style={{ display: "block", fontFamily: "var(--anila-font-sans)" }}>
     {label && (
       <div
         style={{
@@ -21,19 +24,19 @@ export const Input = ({ label, hint, error, leftIcon, rightEl, ...rest }) => (
         display: "flex",
         alignItems: "center",
         background: "var(--anila-color-bg-elev)",
-        border:
-          "1px solid " +
-          (error ? "var(--anila-color-danger)" : "var(--anila-color-border)"),
+        border: `1px solid ${
+          error
+            ? "var(--anila-color-danger)"
+            : focused
+              ? "var(--anila-color-accent)"
+              : "var(--anila-color-border)"
+        }`,
         borderRadius: "var(--anila-radius-md)",
         transition: "border-color .12s",
       }}
-      onFocusCapture={(e) => {
-        if (!error)
-          e.currentTarget.style.borderColor = "var(--anila-color-accent)";
-      }}
+      onFocusCapture={() => setFocused(true)}
       onBlurCapture={(e) => {
-        if (!error)
-          e.currentTarget.style.borderColor = "var(--anila-color-border)";
+        if (!e.currentTarget.contains(e.relatedTarget)) setFocused(false);
       }}
     >
       {leftIcon && (
@@ -88,5 +91,6 @@ export const Input = ({ label, hint, error, leftIcon, rightEl, ...rest }) => (
         {hint}
       </div>
     )}
-  </label>
-);
+    </label>
+  );
+};

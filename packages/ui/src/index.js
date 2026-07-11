@@ -1,5 +1,5 @@
-// @anila/ui — 三平台共用設計系統基礎（tokens + 核心元件）barrel。
-// tokens 由 app 端 import "@anila/ui/styles/tokens.css" 載入。
+// @anila/ui — ANILA React 前端共用元件 barrel。
+// 跨框架 tokens 由 app 端 import "@anila/tokens/tokens.css" 載入。
 export { Button, IconButton } from "./components/Button.jsx";
 export { Input } from "./components/Input.jsx";
 export { Select } from "./components/Select.jsx";

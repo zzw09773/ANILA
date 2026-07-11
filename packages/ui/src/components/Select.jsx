@@ -1,6 +1,6 @@
 // Select — 原生 <select> 的樣式包裝（air-gap／可及性優先：不自造 listbox）。
 // API 對齊 Input：label / hint / error；選項用 options 或 children 二擇一。
-import React from "react";
+import React, { useState } from "react";
 import { IconChevDown } from "../icons.jsx";
 
 export const Select = ({
@@ -10,8 +10,11 @@ export const Select = ({
   options,
   children,
   ...rest
-}) => (
-  <label style={{ display: "block", fontFamily: "var(--anila-font-sans)" }}>
+}) => {
+  const [focused, setFocused] = useState(false);
+
+  return (
+    <label style={{ display: "block", fontFamily: "var(--anila-font-sans)" }}>
     {label && (
       <div
         style={{
@@ -30,19 +33,19 @@ export const Select = ({
         display: "flex",
         alignItems: "center",
         background: "var(--anila-color-bg-elev)",
-        border:
-          "1px solid " +
-          (error ? "var(--anila-color-danger)" : "var(--anila-color-border)"),
+        border: `1px solid ${
+          error
+            ? "var(--anila-color-danger)"
+            : focused
+              ? "var(--anila-color-accent)"
+              : "var(--anila-color-border)"
+        }`,
         borderRadius: "var(--anila-radius-md)",
         transition: "border-color .12s",
       }}
-      onFocusCapture={(e) => {
-        if (!error)
-          e.currentTarget.style.borderColor = "var(--anila-color-accent)";
-      }}
+      onFocusCapture={() => setFocused(true)}
       onBlurCapture={(e) => {
-        if (!error)
-          e.currentTarget.style.borderColor = "var(--anila-color-border)";
+        if (!e.currentTarget.contains(e.relatedTarget)) setFocused(false);
       }}
     >
       <select
@@ -106,5 +109,6 @@ export const Select = ({
         {hint}
       </div>
     )}
-  </label>
-);
+    </label>
+  );
+};

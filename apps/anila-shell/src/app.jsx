@@ -107,6 +107,7 @@ import {
 import { ParallelCompareView } from "./multiagent.jsx";
 import { HandoffMenu, ShareDialog } from "./collab.jsx";
 import { TweaksPanel } from "./tweaks.jsx";
+import { applyTweaks } from "./tweakRuntime.js";
 import { ChangelogModal, CHANGELOG_VERSION } from "./changelog.jsx";
 import { BannerBar } from "./banners.jsx";
 import { TraceExplorer } from "./spanTree.jsx";
@@ -217,25 +218,6 @@ export function normalizeAgents(data) {
       requiresEncryption: Boolean(item.requires_encryption),
     })),
   ];
-}
-
-function applyTweaks(t) {
-  const r = document.documentElement;
-  r.setAttribute("data-theme", t.dark ? "dark" : "light");
-  if (t.accent) r.style.setProperty("--accent", t.accent);
-  if (t.density) r.style.setProperty("--density", `${t.density}px`);
-  if (t.sansFamily) {
-    r.style.setProperty(
-      "--font-sans",
-      `"${t.sansFamily}", "Inter", system-ui, sans-serif`,
-    );
-  }
-  if (t.monoFamily) {
-    r.style.setProperty(
-      "--font-mono",
-      `"${t.monoFamily}", ui-monospace, Menlo, monospace`,
-    );
-  }
 }
 
 // ---- Chat Runtime ----------------------------------------------------------

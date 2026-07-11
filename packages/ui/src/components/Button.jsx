@@ -61,7 +61,11 @@ export const Button = ({
         rest.onMouseEnter?.(e);
       }}
       onMouseLeave={(e) => {
-        Object.assign(e.currentTarget.style, variants[variant]);
+        Object.assign(
+          e.currentTarget.style,
+          variants[variant],
+          rest.style || {},
+        );
         rest.onMouseLeave?.(e);
       }}
     >

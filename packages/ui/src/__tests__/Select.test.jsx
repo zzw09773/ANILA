@@ -29,4 +29,13 @@ describe("Select", () => {
     render(<Select label="模型" options={OPTIONS} error="尚未選擇" />);
     expect(screen.getByText("尚未選擇")).toBeInTheDocument();
   });
+  it("focus 與 blur 以 React state 切換邊框 token", () => {
+    render(<Select label="模型" options={OPTIONS} />);
+    const select = screen.getByLabelText("模型");
+    const wrapper = select.parentElement;
+    fireEvent.focus(select);
+    expect(wrapper.style.border).toContain("--anila-color-accent");
+    fireEvent.blur(select);
+    expect(wrapper.style.border).toContain("--anila-color-border");
+  });
 });

@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { Tabs } from "../components/Tabs.jsx";
@@ -23,10 +23,19 @@ describe("Tabs", () => {
     expect(onChange).toHaveBeenCalledWith("agents");
   });
 
-  it("方向鍵循環切換", () => {
-    const onChange = vi.fn();
-    render(<Tabs tabs={TABS} value="agents" onChange={onChange} />);
-    fireEvent.keyDown(screen.getByRole("tablist"), { key: "ArrowRight" });
-    expect(onChange).toHaveBeenCalledWith("chats");
+  it("方向鍵切換選取並把焦點移到新 tab", () => {
+    function Harness() {
+      const [value, setValue] = useState("agents");
+      return <Tabs tabs={TABS} value={value} onChange={setValue} />;
+    }
+
+    render(<Harness />);
+    const agents = screen.getByRole("tab", { name: "Agents" });
+    agents.focus();
+    fireEvent.keyDown(agents, { key: "ArrowRight" });
+
+    const chats = screen.getByRole("tab", { name: "對話" });
+    expect(chats).toHaveFocus();
+    expect(chats).toHaveAttribute("aria-selected", "true");
   });
 });
