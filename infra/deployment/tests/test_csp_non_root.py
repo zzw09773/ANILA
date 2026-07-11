@@ -39,7 +39,7 @@ class CspNonRootContractTests(unittest.TestCase):
         self.assertIn("--uid 10001", dockerfile)
         self.assertIn("--gid 10001", dockerfile)
         self.assertIn("/app/logs /app/secrets", dockerfile)
-        self.assertIn("chown csp:csp /app/logs /app/secrets", dockerfile)
+        self.assertIn("chown -R csp:csp /app/logs /app/secrets", dockerfile)
         self.assertIn("/var/anila/attachments", dockerfile)
         self.assertNotRegex(dockerfile, r"(?m)^USER\s+(?:root|0)(?::0)?\s*$")
 

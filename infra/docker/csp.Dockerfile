@@ -69,7 +69,7 @@ RUN groupadd --gid 10001 csp && \
     useradd --uid 10001 --gid csp --no-create-home --shell /usr/sbin/nologin csp && \
     mkdir -p /app/logs /app/secrets /var/anila/attachments /var/anila/ingestion-uploads && \
     touch /var/anila/attachments/.volume-init /var/anila/ingestion-uploads/.volume-init && \
-    chown csp:csp /app/logs /app/secrets && \
+    chown -R csp:csp /app/logs /app/secrets && \
     chown -R csp:csp /var/anila && \
     chmod 700 /app/secrets /var/anila/attachments /var/anila/ingestion-uploads
 
