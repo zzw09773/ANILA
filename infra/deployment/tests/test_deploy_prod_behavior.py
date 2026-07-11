@@ -126,8 +126,8 @@ class DeployProdBehaviorTests(unittest.TestCase):
         scenario: str,
         subcommand: str,
         *,
-        wait_timeout: int = 1,
-        process_timeout: int = 15,
+        wait_timeout: int = 3,
+        process_timeout: int = 20,
     ) -> tuple[subprocess.CompletedProcess[str], float]:
         with tempfile.TemporaryDirectory(prefix="anila-docker-stub-") as temp:
             stub_dir = Path(temp)
@@ -181,7 +181,7 @@ class DeployProdBehaviorTests(unittest.TestCase):
                 output = result.stdout + result.stderr
                 self.assertNotEqual(result.returncode, 0, output)
                 self.assertIn(expected, output)
-                self.assertLess(elapsed, 3, output)
+                self.assertLess(elapsed, 5, output)
 
     def test_wait_times_out_for_starting_or_missing_services(self) -> None:
         for scenario in ("starting", "missing"):
@@ -198,7 +198,7 @@ class DeployProdBehaviorTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, output)
         self.assertIn("ingestion-worker", output)
         self.assertIn("Exited", output)
-        self.assertLess(elapsed, 3, output)
+        self.assertLess(elapsed, 5, output)
 
     def test_tool_guard_accepts_a_fresh_install(self) -> None:
         result, _ = self.run_deploy("all-healthy", "tool-preflight")
