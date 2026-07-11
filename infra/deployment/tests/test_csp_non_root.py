@@ -263,6 +263,10 @@ class CspNonRootContractTests(unittest.TestCase):
 
     def test_backup_reads_mode_0700_runtime_data_through_a_bounded_helper(self) -> None:
         script = OPS_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn(
+            "docker compose ps --status running -q csp-db",
+            script,
+        )
         self.assertIn('CSP_RUNTIME_IMAGE="anila-platform-csp:latest"', script)
         self.assertIn("safe-runtime-backup.py", script)
         self.assertIn(

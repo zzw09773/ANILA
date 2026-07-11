@@ -394,7 +394,8 @@ backup_public_pki() {
 cmd_backup() {
   need_stack
   local full=0; [ "${1:-}" = --full ] && full=1
-  [ -n "$(docker compose ps -q csp-db 2>/dev/null)" ] || fatal "csp-db 沒 running — 無法 pg_dump"
+  [ -n "$(docker compose ps --status running -q csp-db 2>/dev/null)" ] \
+    || fatal "csp-db 沒 running — 無法 pg_dump"
   ensure_runtime_backup_helper
 
   local stamp dest
