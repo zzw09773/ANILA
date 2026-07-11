@@ -54,8 +54,6 @@ COPY services/csp/ ./
 # Copy built frontend
 COPY --from=frontend-build /build/dist /app/frontend-dist
 
-RUN mkdir -p /app/logs
-
 # Download Swagger UI static files for offline use
 RUN pip install --no-cache-dir requests && \
     python -c "\
@@ -64,8 +62,21 @@ open('app/static/swagger-ui-bundle.js','wb').write(requests.get('https://cdn.jsd
 open('app/static/swagger-ui.css','wb').write(requests.get('https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.18.2/swagger-ui.css').content); \
 print('Swagger UI downloaded')" 2>/dev/null || echo "Swagger UI download skipped (offline build)"
 
+# Runtime is deliberately non-root.  UID/GID are fixed so the offline
+# deployment script can prepare the two writable/read-sensitive bind mounts
+# (ingestion uploads and JWT keys) without making them world-writable.
+RUN groupadd --gid 10001 csp && \
+    useradd --uid 10001 --gid csp --no-create-home --shell /usr/sbin/nologin csp && \
+    mkdir -p /app/logs /app/secrets /var/anila/attachments /var/anila/ingestion-uploads && \
+    touch /var/anila/attachments/.volume-init /var/anila/ingestion-uploads/.volume-init && \
+    chown csp:csp /app/logs /app/secrets && \
+    chown -R csp:csp /var/anila && \
+    chmod 700 /app/secrets /var/anila/attachments /var/anila/ingestion-uploads
+
 ENV DATABASE_URL=postgresql://csp:csp_password@postgres:5432/csp
 
 EXPOSE 8000
+
+USER csp
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

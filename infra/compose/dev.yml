@@ -59,8 +59,19 @@ services:
       # Dev 寫死 "1"，不經 ${} 展開——避免被 .env 裡的 ANILA_ALLOW_DEV_SECRET=0
       # 鎖死。startup_security 在 dev 模式下只 log warning 不擋。
       ANILA_ALLOW_DEV_SECRET: "1"
+      # Dev auto-keygen writes only to a dedicated named volume. Never bake or
+      # generate reusable signing material under services/csp/secrets.
+      ALLOW_AUTO_KEYGEN: "true"
+      # This stack is still served through nginx HTTPS (:8443/:9443), so it
+      # exercises the same __Host- cookie contract as production.
+      COOKIE_SECURE: "true"
       # Dev keeps Swagger /docs + /openapi.json on (prod default off, S-117).
       ENABLE_API_DOCS: "true"
+      # Explicit development opt-ins; the formal profile defaults both off.
+      ENABLE_PUBLIC_SHARE: "${ENABLE_PUBLIC_SHARE:-true}"
+      ENABLE_MEMORY: "${ENABLE_MEMORY:-true}"
+      PUBLIC_SHARE_MAX_TTL_HOURS: "${PUBLIC_SHARE_MAX_TTL_HOURS:-168}"
+      SITE_URL: "${SITE_URL:-https://localhost:8443}"
       # Dev-only relax (S-117 URL guard): dev runs every model/agent on
       # docker-internal http endpoints (e.g. http://flux2-dev-agent:8000), so
       # register + health-check would otherwise fail "scheme must be https".
@@ -93,10 +104,14 @@ services:
          {"username":"ingestion-worker","email":"ingestion-worker@anila.local","role":"system","key":"${INTERNAL_PLATFORM_API_KEY_DEV:-sk-internal-worker-dev-changeme}","key_name":"ingestion-worker-system-key","models":["${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}"]}]
       AUTO_REGISTER_LINKS: >-
         [
-          {"name":"ANILA LM","url":"/anilalm","icon":"book-open","description":"AI 學習內容生成","sort_order":1,"is_public":false,"required_roles":[]}
+          {"name":"ANILA LM","url":"/anilalm","icon":"book-open","description":"AI 學習內容生成","sort_order":1,"is_public":false,"required_roles":[]},
+          {"name":"Code Server (按需)","env_seed_key":"Code Server","url":"https://${CODESERVER_HOST:-code.ai.ncsist.org.tw}/","icon":"code","description":"獨立來源的隔離開發 sandbox；使用原生密碼登入","sort_order":2,"is_public":false,"required_roles":["admin"]},
+          {"name":"n8n 工作流程","url":"https://${N8N_HOST:-n8n.ai.ncsist.org.tw}/","icon":"workflow","description":"獨立來源的 n8n 開發環境；使用原生帳號登入","sort_order":3,"is_public":true,"required_roles":["developer"]},
+          {"name":"GitLab","url":"https://${GITLAB_HOST:-gitlab.ai.ncsist.org.tw}/","icon":"git-branch","description":"獨立來源的 GitLab 開發環境；使用原生認證","sort_order":4,"is_public":true,"required_roles":["developer"]}
         ]
       ANILA_TEMPLATE_DIR: /app/anila-template
       INGESTION_UPLOAD_DIR: /var/anila/ingestion-uploads
+      ATTACHMENT_STORAGE_PATH: /var/anila/attachments
       # FLUX image-gen for ANILALM studio pptx pipeline — wires
       # studio.image_provider.FluxImageProvider; empty BACKEND_URL
       # would make get_flux_provider() return None (toggle OFF).
@@ -106,8 +121,12 @@ services:
       # FLUX_CACHE_DIR defaults to $INGESTION_UPLOAD_DIR/flux-cache
     volumes:
       - ../../packages/anila-agent:/app/anila-template:ro
-      # ⚠️ dev 用獨立 share 目錄，不撞 live stack 的 ./share/
-      - ../../share-dev/uploads/ingestion:/var/anila/ingestion-uploads
+      # Named volume inherits UID 10001 from the CSP image and is shared with
+      # the root-running worker.  A fresh Linux checkout therefore does not
+      # get a root-owned bind directory that blocks non-root CSP uploads.
+      - ingestion-uploads-dev:/var/anila/ingestion-uploads
+      - csp-attachments-dev:/var/anila/attachments
+      - csp-secrets-dev:/app/secrets
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -117,7 +136,7 @@ services:
       csp-db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')\""]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -181,7 +200,7 @@ services:
       SIMILARITY_MIN: "${SIMILARITY_MIN:-0.75}"
       PYTHONUNBUFFERED: "1"
     volumes:
-      - ../../share-dev/uploads/ingestion:/var/anila/ingestion-uploads
+      - ingestion-uploads-dev:/var/anila/ingestion-uploads
     depends_on:
       csp-db:
         condition: service_healthy
@@ -202,6 +221,7 @@ services:
       CSP_BASE_URL: http://csp:8000
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
       MODEL: ${LLM_MODEL:-gemma4}
+      COOKIE_SECURE: "true"
     depends_on:
       csp:
         condition: service_healthy
@@ -261,6 +281,8 @@ services:
       ARTIFACTS_DIR: /var/anila/anila-studio-artifacts
       RENDERER_BASE_URL: http://pptx-renderer:7100
       JWT_KID: anila-v1
+      REQUIRE_CARD_LOGIN_ONLY: "false"
+      COOKIE_SECURE: "true"
       LOG_LEVEL: INFO
     depends_on:
       csp:
@@ -336,7 +358,7 @@ services:
       - "${ANILA_UI_HTTPS_PORT_DEV:-9443}:4443"
     volumes:
       - ../../infra/nginx/anila.conf:/etc/nginx/conf.d/default.conf:ro
-      - ../../infra/nginx/certs:/etc/nginx/certs:ro
+      - "${ANILA_DEV_TLS_CERTS_DIR:?ANILA_DEV_TLS_CERTS_DIR must be outside the repo}:/etc/nginx/certs:ro"
       - ../../share-dev/static:/usr/share/nginx/share-files/static:ro
       - ../../share-dev/uploads:/usr/share/nginx/share-files/uploads:rw
     depends_on:
@@ -373,5 +395,8 @@ networks:
 volumes:
   csp-pgdata-dev:
   redis-data-dev:
+  ingestion-uploads-dev:
+  csp-attachments-dev:
+  csp-secrets-dev:
   anila-studio-flux-cache-dev:
   anila-studio-artifacts-dev:

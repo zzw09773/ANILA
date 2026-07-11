@@ -168,7 +168,7 @@ repo 根保有 `docker compose up -d` 錨點：root `compose.yaml` 以 `include:
 
 ```bash
 cp .env.example .env       # dev 才設 ANILA_ALLOW_DEV_SECRET=1
-docker compose up -d       # = compose.yaml → infra/compose/platform.yml
+docker compose up -d       # = compose.yaml → infra/compose/platform.yml (不含 code-server)
 docker compose -f compose.dev.yaml up -d   # dev stack（anila-platform-dev，獨立 ports/volumes）
 ```
 
@@ -185,6 +185,33 @@ bash infra/deployment/scripts/deploy-prod.sh     # preflight + build + up + 等 
 
 子指令：`deploy`（預設）/ `preflight` / `up` / `down`（保留 named volumes）/ `restart` / `rebuild <svc>` / `status` / `logs <svc>` / `verify` / `wait`。
 
+code-server 是內網必要但高權限的開發工具，因此不隨正式 stack 自動啟動。
+先把一份不含正式 `.env`／金鑰的獨立 clone 放到
+`share/codeserver-sandbox/`，再明確啟用；n8n 與 GitLab 仍是預設服務：
+
+```bash
+git clone <internal-gitlab-url> share/codeserver-sandbox/anila-dev
+bash infra/deployment/scripts/deploy-prod.sh codeserver-up
+# 使用完畢：
+bash infra/deployment/scripts/deploy-prod.sh codeserver-down
+```
+
+三個工具不再與 CSP 共用瀏覽器來源：n8n、GitLab、code-server 分別使用
+`https://n8n.ai.ncsist.org.tw/`、`https://gitlab.ai.ncsist.org.tw/`、
+`https://code.ai.ncsist.org.tw/`，並各自採原生帳號／PAT／密碼認證。主平台上的
+`/n8n`、`/gitlab`、`/codeserver`（含子路徑）固定回 404，不可改回同源代理。
+
+Git CLI 可使用 GitLab 原生 HTTPS/PAT，或
+`ssh://git@gitlab.ai.ncsist.org.tw:2222/<group>/<repo>.git`。
+`GITLAB_SSH_BIND_IP` 必須指定平台的內網介面，主機 firewall 另限核准開發者
+網段；n8n 的 `/webhook*` 仍由 nginx 固定回 404，待獨立 machine ingress。
+
+維運備份預設寫到 `$XDG_STATE_HOME/anila/backups`（未設時為
+`$HOME/.local/state/anila/backups`），不再寫入 repo。可用
+`ANILA_STATE_DIR`／`ANILA_BACKUP_DIR` 指定受控磁碟，但腳本會拒絕 repo 內路徑。
+內網 bootstrap 在重生 secret 前保存的舊 `.env` 同樣放在外部
+`$ANILA_STATE_DIR/env-backups`，可用 `ANILA_ENV_BACKUP_DIR` 覆寫。
+
 ### air-gap 離線交付（外網打包 → 內網 load）
 
 中科院機房無外網：先在有外網的機器打包所有 image，再帶進內網。card 一次性 bootstrap 走 [`infra/deployment/intranet/intranet-deploy.sh`](./infra/deployment/intranet/intranet-deploy.sh)（從 `server.pfx` 抽 TLS 憑證、產 secrets、組 `.env`、接 CSPKI model-CA、產 JWT keypair），收尾交棒 `deploy-prod.sh` 做日常 lifecycle。
@@ -200,6 +227,20 @@ bash infra/deployment/scripts/deploy-prod.sh                   # app stack lifec
 ```
 
 離線工具鏈（皆在 [`infra/deployment/intranet/`](./infra/deployment/intranet/)）：`download-intranet-models.sh`、`download-intranet-toolkit.sh`、`intranet-quantize-nvfp4.py`、`pack-chunks.sh` / `unpack-chunks.sh`（大檔分塊搬運）。部署細節見 [`docs/runbooks/`](./docs/runbooks/)。
+
+正式 platform 的 air-gap image SSOT 是
+[`platform-image-inventory.tsv`](./infra/deployment/intranet/platform-image-inventory.tsv)。
+新增／移除 Compose service 或改 image 時必須在同一個變更同步更新，並執行：
+
+```bash
+bash infra/ci/check-airgap-image-inventory.sh
+```
+
+目前 inventory 封閉集合為 13 個預設 service image，加上 1 個
+`developer-tools` optional profile image（code-server）。模型 stack 的大型 image
+另由 `model-image-inventory.tsv` 對齊 model Compose 的 6 個 default＋3 個
+`intranet` profile service；`WITH_MODELS=1` 才選擇性打包，實際收錄／缺漏會
+寫入 `MODEL-IMAGE-STATUS.tsv`，不會冒充正式 default platform 的必要 image。
 
 ---
 

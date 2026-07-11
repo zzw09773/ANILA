@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -43,6 +44,56 @@ PUBLIC_FILENAME = "jwt-public.pem"
 
 PRIVATE_MODE = 0o600
 PUBLIC_MODE = 0o644
+MIN_RSA_KEY_SIZE = 2048
+
+
+def _path_lexists(path: Path) -> bool:
+    """Return True for regular entries and broken symlinks alike."""
+    return os.path.lexists(path)
+
+
+def _read_regular_nofollow(path: Path) -> bytes:
+    """Read one existing regular file without following a final symlink."""
+    metadata = path.lstat()
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"keypair entry is not a regular file: {path}")
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if nofollow:
+        flags |= nofollow
+    fd = os.open(path, flags)
+    try:
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            return handle.read()
+    finally:
+        os.close(fd)
+
+
+def validate_existing_keypair(private_path: Path, public_path: Path) -> None:
+    """Require a complete, matching RSA keypair at two fixed paths."""
+    private_pem = _read_regular_nofollow(private_path)
+    public_pem = _read_regular_nofollow(public_path)
+    private_key = serialization.load_pem_private_key(private_pem, password=None)
+    public_key = serialization.load_pem_public_key(public_pem)
+    if not isinstance(private_key, rsa.RSAPrivateKey):
+        raise ValueError("JWT private key is not RSA")
+    if not isinstance(public_key, rsa.RSAPublicKey):
+        raise ValueError("JWT public key is not RSA")
+    if private_key.key_size < MIN_RSA_KEY_SIZE:
+        raise ValueError(
+            f"JWT RSA key is too small: {private_key.key_size} < {MIN_RSA_KEY_SIZE}"
+        )
+    if private_key.public_key().public_numbers().e != 65537:
+        raise ValueError("JWT RSA public exponent must be 65537")
+    if private_key.public_key().public_numbers() != public_key.public_numbers():
+        raise ValueError("JWT private/public keys do not match")
+
+    # ``--ensure`` is invoked as the CSP runtime UID after the deployment
+    # helper has taken ownership of the directory. Reassert modes without
+    # widening directory access or involving the host operator.
+    os.chmod(private_path, PRIVATE_MODE)
+    os.chmod(public_path, PUBLIC_MODE)
 
 
 def generate_keypair(key_size: int = 2048) -> rsa.RSAPrivateKey:
@@ -109,12 +160,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=2048,
         help="RSA key size in bits (default: 2048).",
     )
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--force",
         action="store_true",
         help=(
             "Overwrite existing pem files. Without this flag the script "
             "refuses to clobber an existing private key."
+        ),
+    )
+    mode.add_argument(
+        "--ensure",
+        action="store_true",
+        help=(
+            "Idempotently keep a complete matching keypair, or generate one "
+            "when both files are absent. Partial, symlinked, malformed, or "
+            "mismatched pairs fail closed."
         ),
     )
     return parser.parse_args(argv)
@@ -144,7 +205,26 @@ def main(argv: list[str] | None = None) -> int:
     private_path = output_dir / PRIVATE_FILENAME
     public_path = output_dir / PUBLIC_FILENAME
 
-    if (private_path.exists() or public_path.exists()) and not args.force:
+    private_exists = _path_lexists(private_path)
+    public_exists = _path_lexists(public_path)
+
+    if args.ensure and (private_exists or public_exists):
+        if not (private_exists and public_exists):
+            print(
+                "refusing partial JWT keypair: both jwt-private.pem and "
+                "jwt-public.pem are required",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            validate_existing_keypair(private_path, public_path)
+        except (OSError, ValueError, TypeError) as exc:
+            print(f"refusing invalid JWT keypair: {exc}", file=sys.stderr)
+            return 1
+        print(f"existing JWT keypair is valid: {private_path} / {public_path}")
+        return 0
+
+    if (private_exists or public_exists) and not args.force:
         print(
             "refusing to overwrite existing keypair without --force: "
             f"{private_path} / {public_path}",

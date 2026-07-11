@@ -22,7 +22,7 @@
 ## 步驟 2：備份 repo（一定要！）
 
 ```bash
-cd /home/aia/c1147259
+cd $HOME
 cp -a ANILA ANILA.backup-$(date +%Y%m%d-%H%M)
 ```
 
@@ -32,15 +32,15 @@ cp -a ANILA ANILA.backup-$(date +%Y%m%d-%H%M)
 # 安裝 git-filter-repo 若尚未安裝
 pip install --user git-filter-repo
 
-cd /home/aia/c1147259/ANILA
+cd $HOME/ANILA
 git filter-repo --invert-paths \
   --path infra/nginx/certs/server.key \
   --path infra/nginx/certs/server.key.bak \
   --force
 ```
 
-執行後 `.git` 已重新打包；本機 working tree 會保留 `server.key`（gitignore
-覆蓋），不影響 docker compose 啟動。
+執行後 `.git` 已重新打包。現行 Compose 不再從 working tree 讀 private key；
+正式憑證只放 repo 外 `ANILA_TLS_CERTS_DIR`。
 
 ## 步驟 4：force-push 到 remote
 
@@ -56,11 +56,11 @@ git push --force --tags
 
 ```bash
 # 在每個 contributor 的工作站
-cd /home/aia/c1147259
+cd $HOME
 mv ANILA ANILA.old
 git clone <repo-url> ANILA
 cp ANILA.old/.env ANILA/.env  # 把本機 secrets 搬過來
-cp -a ANILA.old/infra/nginx/certs ANILA/infra/nginx/  # 但 server.key 等下會被新 cert 覆蓋
+# 不要把舊 TLS key 搬回 repo；新 key 會產在 repo 外 state 目錄
 ```
 
 若 contributor 拒絕 fresh clone（有 in-flight branch），可使用：
@@ -81,15 +81,18 @@ in-flight branch push 出去（push 會被拒，得 force-push 自己的 branch
 舊私鑰在改寫歷史前已外洩，**必須**重簽。執行：
 
 ```bash
-cd /home/aia/c1147259/ANILA
+cd $HOME/ANILA
+export ANILA_STATE_DIR=/var/lib/anila
+export ANILA_TLS_CERTS_DIR=$ANILA_STATE_DIR/tls
 bash infra/deployment/scripts/reissue-tls-cert.sh
 ```
 
 該 script 會：
-1. 詢問 SAN（subject alternative name）— 需把所有 ANILA host 列入：
-   `172.16.120.35`、`localhost`、`<production-fqdn>`。
-2. 產生 `infra/nginx/certs/server.{key,crt}`，覆蓋舊檔。
-3. 顯示新憑證 fingerprint。
+1. 從 `ANILA_CERT_SAN` 讀 SAN；未設定時使用主平台、n8n、GitLab、
+   code-server、localhost 與既有 LAN IP 的安全預設。正式換發前仍須核對實際主機名。
+2. 產生 `$ANILA_TLS_CERTS_DIR/server.{key,crt}`，覆蓋舊檔。
+3. 把舊 pair 放到 `$ANILA_STATE_DIR/tls-archive/<timestamp>/`（不暴露給 nginx mount）。
+4. 顯示新憑證 fingerprint。
 
 完成後 restart nginx：
 
@@ -105,7 +108,7 @@ git log --all --full-history --oneline -- '*.key' '*.pem'
 # 應該回空
 
 # 2. 檢查新憑證
-openssl x509 -in infra/nginx/certs/server.crt -noout -fingerprint -sha256
+openssl x509 -in "$ANILA_TLS_CERTS_DIR/server.crt" -noout -fingerprint -sha256
 # 應該是新 fingerprint
 
 # 3. 連線測試
