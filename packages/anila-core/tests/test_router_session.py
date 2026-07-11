@@ -19,7 +19,11 @@ import pytest_asyncio
 import respx
 from fastapi.testclient import TestClient
 
-from anila_core.api.router_server import create_router_app
+from anila_core.api.router_server import (
+    ACCESS_COOKIE_NAME,
+    _access_cookie_name,
+    create_router_app,
+)
 from anila_core.config import settings
 from anila_core.memory import MemorySession, close_all_connections
 
@@ -205,6 +209,31 @@ def test_state_endpoint_requires_auth(db_path: Path) -> None:
 
     state = client.get("/v1/sessions/s-private/state")
     assert state.status_code == 401
+
+
+@respx.mock
+def test_router_accepts_only_the_configured_host_cookie(db_path: Path) -> None:
+    assert ACCESS_COOKIE_NAME == "__Host-anila_access_token"
+    assert _access_cookie_name(False) == "anila_dev_access_token"
+    respx.post(CSP_URL).mock(
+        return_value=httpx.Response(200, json=_llm_router_response("cookie ok"))
+    )
+    app = create_router_app(session_db_path=str(db_path))
+    client = TestClient(app)
+
+    accepted = client.post(
+        "/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": "x"}], "stream": False},
+        headers={"Cookie": f"{ACCESS_COOKIE_NAME}=sk-cookie-user"},
+    )
+    assert accepted.status_code == 200, accepted.text
+
+    rejected = client.post(
+        "/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": "x"}], "stream": False},
+        headers={"Cookie": "anila_access_token=sk-attacker-shadow"},
+    )
+    assert rejected.status_code == 401
 
 
 @respx.mock

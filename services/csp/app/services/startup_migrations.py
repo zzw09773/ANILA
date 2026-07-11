@@ -58,18 +58,15 @@ MIGRATION_ORDER = [
 
 
 def run_startup_migrations() -> None:
-    """Entry point called from the FastAPI lifespan hook."""
-    try:
-        _ensure_schema_backfills(engine)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.error(f"啟動 schema 回填失敗: {exc}")
+    """Run every post-Alembic step or propagate the first failure.
 
-    try:
-        _maybe_migrate_legacy_sqlite()
-    except LegacyMigrationError:
-        raise
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.error(f"SQLite → Postgres 遷移檢查失敗: {exc}")
+    Startup readiness is a correctness boundary: logging and continuing would
+    let ``main._apply_schema_migrations`` mark a partially migrated database as
+    succeeded. The lifespan owner records the exception and keeps ``/ready``
+    at 503, so no exception is intentionally swallowed here.
+    """
+    _ensure_schema_backfills(engine)
+    _maybe_migrate_legacy_sqlite()
 
 
 class LegacyMigrationError(RuntimeError):
@@ -420,7 +417,7 @@ def _resync_postgres_sequences() -> None:
         return
     with engine.begin() as conn:
         for stmt in stmts:
-            try:
-                conn.execute(text(stmt))
-            except Exception as exc:  # pragma: no cover
-                logger.warning(f"重設序列失敗: {stmt} ({exc})")
+            # A copied row with a stale SERIAL sequence is not a successful
+            # migration: the next insert can collide. Propagate and keep the
+            # service unready rather than publish a false success.
+            conn.execute(text(stmt))

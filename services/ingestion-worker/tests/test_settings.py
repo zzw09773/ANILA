@@ -21,6 +21,7 @@ from __future__ import annotations
 import pytest
 
 from ingestion_worker.settings import WorkerSettings, settings
+from ingestion_worker.main import WorkerSettings as ArqWorkerSettings
 
 # Every settable field and the ENV VAR that pydantic-settings maps onto it
 # (case_sensitive=False → uppercased field name).
@@ -285,3 +286,8 @@ def test_module_singleton_is_worker_settings():
     assert isinstance(settings, WorkerSettings)
     # Sanity: the singleton exposes the embedding_dim contract.
     assert isinstance(settings.embedding_dim, int)
+
+
+def test_arq_does_not_reschedule_a_published_cancelled_terminal_state():
+    assert ArqWorkerSettings.retry_jobs is False
+    assert ArqWorkerSettings.max_tries == 1

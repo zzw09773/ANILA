@@ -12,12 +12,12 @@ Lifecycle:
   graceful shutdown rather than half-closed connections.
 
 Job retry policy:
-- ``max_tries=3`` — covers transient embedding timeouts and DB
-  connection blips. Anything terminal (E_PARSE_*, E_PG_RLS_VIOLATION,
-  E_EMBED_DIM_MISMATCH) doesn't benefit from retries; the handler marks
-  the document as 'failed' and the retry happens but does the same work
-  with the same outcome. A future Sprint will key retries off
-  ``IngestionError.retryable`` to skip non-retryable codes entirely.
+- ``retry_jobs=False`` / ``max_tries=1`` — Gate 0 deliberately disables
+  Arq's implicit ``CancelledError`` reschedule. The handler has already
+  published a terminal ``cancelled`` state, so silently running that same job
+  again would reopen it as ``running`` after SSE consumers closed. Durable,
+  idempotent retry/replay belongs to Gate 3; until then an operator uses the
+  explicit reprocess endpoint after a terminal failure/cancellation.
 - ``job_timeout=300`` — 5 minutes per ingest. A 50 MB PDF with 5k chunks
   through a slow embedding endpoint can comfortably take 2-3 minutes.
 """
@@ -67,6 +67,10 @@ class WorkerSettings:
     on_startup = on_startup
     on_shutdown = on_shutdown
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
-    max_tries = 3
+    # Arq retries CancelledError by default (including worker shutdown). That
+    # conflicts with the terminal-state contract written by ingest_document.
+    # Keep cancellation honest until durable idempotent retries exist.
+    retry_jobs = False
+    max_tries = 1
     job_timeout = 300  # seconds
     keep_result = 3600  # 1h — let CSP poll completion within an hour
