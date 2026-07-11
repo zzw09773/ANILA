@@ -77,6 +77,16 @@ jobs:
             services/csp/tests/test_cookie_auth.py \
             services/csp/tests/test_startup_security.py -q
 
+      - name: Run CSP adjacent regression tests
+        env:
+          PYTHONPATH: services/csp:packages/anila-core/src
+        run: |
+          python -m pytest \
+            services/csp/tests/test_employee_id_downstream.py \
+            services/csp/tests/test_proxy_task_wiring.py \
+            services/csp/tests/test_trace_endpoints.py \
+            services/csp/tests/test_template_download.py -q
+
       - name: Run Router security and readiness tests
         env:
           PYTHONPATH: packages/anila-core/src

@@ -315,6 +315,20 @@ class DeploymentContainmentTests(unittest.TestCase):
         self.assertNotIn('$PWD/secrets:/out', intranet)
         self.assertNotIn('$REPO_ROOT/secrets:/out', generic)
 
+    def test_tls_history_runbook_matches_audited_paths_and_rotates_first(self) -> None:
+        audit = read("docs/security/2026-07-10-card-material-audit.md")
+        runbook = read("docs/runbooks/rotate-tls-cert.md")
+        for path in (
+            "myCSPPlatform/docker/certs/server.key",
+            "myCSPPlatform/docker/certs/server.key.bak",
+        ):
+            self.assertIn(path, audit)
+            self.assertIn(f"--path {path}", runbook)
+        self.assertLess(
+            runbook.index("reissue-tls-cert.sh"),
+            runbook.index("git filter-repo --invert-paths"),
+        )
+        self.assertIn("prod-intranet-card` 維持 deployment No-Go", runbook)
     def test_gitlab_ssh_defaults_bind_only_the_formal_lan_interface(self) -> None:
         env_example = read(".env.example")
         self.assertIn("N8N_HOST=n8n.ai.ncsist.org.tw", env_example)

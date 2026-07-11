@@ -17,8 +17,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+_TEST_RUNTIME_DIR = Path(tempfile.mkdtemp(prefix="anila-csp-tests-"))
+atexit.register(shutil.rmtree, _TEST_RUNTIME_DIR, ignore_errors=True)
+_TEST_DB_PATH = _TEST_RUNTIME_DIR / "csp.db"
+
 os.environ["DEBUG"] = "false"
-os.environ["DATABASE_URL"] = "sqlite:///./.pytest-csp.db"
+os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB_PATH.as_posix()}"
 os.environ["HEALTH_CHECK_INTERVAL"] = "3600"
 # The SQLite unit fixture owns schema setup through Base.metadata.create_all.
 # Formal Alembic startup is exercised by focused startup tests, not every
@@ -38,13 +42,13 @@ os.environ.setdefault("AUTO_REGISTER_LINKS", "")
 # don't have to manually run scripts/generate-jwt-keypair.py first. Never put
 # these keys under the repository: ignored files still leak into Docker build
 # contexts and local multi-user ACLs.
-_TEST_JWT_DIR = Path(tempfile.mkdtemp(prefix="anila-csp-jwt-"))
-atexit.register(shutil.rmtree, _TEST_JWT_DIR, ignore_errors=True)
+_TEST_JWT_DIR = _TEST_RUNTIME_DIR / "jwt"
+_TEST_JWT_DIR.mkdir()
 os.environ.setdefault("JWT_PRIVATE_KEY_PATH", str(_TEST_JWT_DIR / "jwt-private.pem"))
 os.environ.setdefault("JWT_PUBLIC_KEY_PATH", str(_TEST_JWT_DIR / "jwt-public.pem"))
 os.environ.setdefault("ALLOW_AUTO_KEYGEN", "true")
 
-from app.database import Base, get_db
+from app.database import Base, engine as app_engine, get_db
 from app.main import app
 from app.models.user import User
 from app.models.model_registry import ModelRegistry
@@ -54,6 +58,21 @@ from app.utils.security import hash_password
 
 
 TEST_DB_URL = "sqlite://"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def global_test_database_schema():
+    """Initialize out-of-request SessionLocal users on an isolated test DB.
+
+    Request handlers normally use the function-scoped ``get_db`` override,
+    but startup hooks and proxy helpers intentionally own independent
+    ``SessionLocal`` sessions. With migrations skipped in unit tests, their
+    global engine still needs the ORM schema or a clean CI checkout fails with
+    ``no such table`` before the security behavior can be asserted.
+    """
+    Base.metadata.create_all(bind=app_engine)
+    yield
+    app_engine.dispose()
 
 
 @pytest.fixture(scope="function")

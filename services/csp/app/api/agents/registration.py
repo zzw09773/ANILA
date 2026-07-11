@@ -53,13 +53,13 @@ def _enforce_endpoint_url(url: str) -> None:
     except UnsafeEndpointError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-# One extra ``.parent`` vs the old app/api/agents.py: this file lives one
-# package level deeper (app/api/agents/registration.py), and the default
-# must keep pointing at <repo-root>/anila-agent.
+# This file lives at app/api/agents/registration.py. The official template is
+# a monorepo package, so the local/dev fallback must resolve to
+# <repo-root>/packages/anila-agent (Compose overrides it with /app/anila-template).
 _TEMPLATE_DIR = Path(
     _os.environ.get(
         "ANILA_TEMPLATE_DIR",
-        str(Path(__file__).parent.parent.parent.parent.parent.parent / "anila-agent"),
+        str(Path(__file__).parents[5] / "packages" / "anila-agent"),
     )
 )
 
