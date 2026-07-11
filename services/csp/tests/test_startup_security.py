@@ -14,6 +14,7 @@ require the docker stack to be running.
 from __future__ import annotations
 
 import importlib
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -327,3 +328,189 @@ def test_non_card_dev_profile_may_opt_in_to_data_features(
 
     ss = reload_startup_security()
     ss.assert_card_only_data_feature_policy()
+
+
+def _set_formal_card_profile(monkeypatch) -> None:
+    values = {
+        "ANILA_DEPLOYMENT_PROFILE": "prod-intranet-card",
+        "ANILA_ENV": "production",
+        "ANILA_ALLOW_DEV_SECRET": "0",
+        "DEBUG": "false",
+        "ENABLE_API_DOCS": "false",
+        "ENABLE_PUBLIC_SHARE": "false",
+        "ENABLE_MEMORY": "false",
+        "SKIP_STARTUP_MIGRATIONS": "false",
+        "ALLOW_AUTO_KEYGEN": "false",
+        "COOKIE_SECURE": "true",
+        "ENABLE_CARD_LOGIN": "true",
+        "REQUIRE_CARD_LOGIN_ONLY": "true",
+        "ANILA_ALLOW_HTTP_ENDPOINT": "0",
+        "ANILA_ALLOW_HTTP_AGENT_ENDPOINT": "1",
+        "ANILA_ALLOW_PRIVATE_ENDPOINT": "0",
+        "CARD_DEV_SKIP_NONCE_BINDING": "false",
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+
+def test_declared_formal_card_profile_accepts_exact_posture(
+    monkeypatch, reload_startup_security
+):
+    _set_formal_card_profile(monkeypatch)
+    reload_startup_security().assert_deployment_profile_posture()
+
+
+def test_normal_card_profile_rejects_stale_break_glass_metadata(
+    monkeypatch, reload_startup_security
+):
+    _set_formal_card_profile(monkeypatch)
+    monkeypatch.setenv("ANILA_BREAK_GLASS_TICKET", "INC-STALE-001")
+    with pytest.raises(RuntimeError, match="must not retain break-glass metadata"):
+        reload_startup_security().assert_deployment_profile_posture()
+
+
+@pytest.mark.parametrize(
+    ("name", "bad_value"),
+    [
+        ("ANILA_ENV", "development"),
+        ("ANILA_ALLOW_DEV_SECRET", "1"),
+        ("DEBUG", "true"),
+        ("ENABLE_API_DOCS", "true"),
+        ("ENABLE_PUBLIC_SHARE", "true"),
+        ("ENABLE_MEMORY", "true"),
+        ("SKIP_STARTUP_MIGRATIONS", "true"),
+        ("ALLOW_AUTO_KEYGEN", "true"),
+        ("COOKIE_SECURE", "false"),
+        ("ENABLE_CARD_LOGIN", "false"),
+        ("REQUIRE_CARD_LOGIN_ONLY", "false"),
+        ("ANILA_ALLOW_HTTP_ENDPOINT", "1"),
+        ("ANILA_ALLOW_HTTP_AGENT_ENDPOINT", "0"),
+        ("ANILA_ALLOW_PRIVATE_ENDPOINT", "1"),
+        ("CARD_DEV_SKIP_NONCE_BINDING", "true"),
+    ],
+)
+def test_declared_formal_card_profile_rejects_each_mismatch(
+    name, bad_value, monkeypatch, reload_startup_security
+):
+    _set_formal_card_profile(monkeypatch)
+    monkeypatch.setenv(name, bad_value)
+    with pytest.raises(RuntimeError, match=name):
+        reload_startup_security().assert_deployment_profile_posture()
+
+
+def test_unknown_formal_profile_is_fail_closed(
+    monkeypatch, reload_startup_security
+):
+    _set_formal_card_profile(monkeypatch)
+    monkeypatch.setenv("ANILA_DEPLOYMENT_PROFILE", "prod-unreviewed")
+    with pytest.raises(RuntimeError, match="unknown ANILA_DEPLOYMENT_PROFILE"):
+        reload_startup_security().assert_deployment_profile_posture()
+
+
+def test_development_profile_cannot_mask_production_posture(
+    monkeypatch, reload_startup_security
+):
+    monkeypatch.setenv("ANILA_DEPLOYMENT_PROFILE", "development")
+    monkeypatch.setenv("ANILA_ENV", "production")
+    monkeypatch.setenv("ANILA_ALLOW_DEV_SECRET", "1")
+    with pytest.raises(RuntimeError, match="cannot be used"):
+        reload_startup_security().assert_deployment_profile_posture()
+
+
+def test_test_profile_is_allowed_only_in_explicit_dev_posture(
+    monkeypatch, reload_startup_security
+):
+    monkeypatch.setenv("ANILA_DEPLOYMENT_PROFILE", "test")
+    monkeypatch.setenv("ANILA_ENV", "test")
+    monkeypatch.setenv("ANILA_ALLOW_DEV_SECRET", "1")
+    monkeypatch.setenv("REQUIRE_CARD_LOGIN_ONLY", "false")
+    reload_startup_security().assert_deployment_profile_posture()
+
+
+def test_break_glass_is_named_time_bounded_and_auditable(
+    monkeypatch, caplog, reload_startup_security
+):
+    _set_formal_card_profile(monkeypatch)
+    monkeypatch.setenv(
+        "ANILA_DEPLOYMENT_PROFILE", "prod-intranet-card-breakglass"
+    )
+    monkeypatch.setenv("ANILA_BREAK_GLASS_OWNER", "system-owner")
+    monkeypatch.setenv("ANILA_BREAK_GLASS_TICKET", "INC-2026-001")
+    monkeypatch.setenv(
+        "ANILA_BREAK_GLASS_EXPIRES_AT",
+        (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+    )
+    with caplog.at_level("CRITICAL"):
+        reload_startup_security().assert_deployment_profile_posture()
+    assert "BREAK-GLASS posture active" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("missing", "bad_expiry"),
+    [
+        ("ANILA_BREAK_GLASS_OWNER", None),
+        ("ANILA_BREAK_GLASS_TICKET", None),
+        ("ANILA_BREAK_GLASS_EXPIRES_AT", None),
+        (None, "not-a-timestamp"),
+        (None, "2999-01-01T00:00:00Z"),
+    ],
+)
+def test_break_glass_rejects_missing_or_invalid_metadata(
+    missing, bad_expiry, monkeypatch, reload_startup_security
+):
+    _set_formal_card_profile(monkeypatch)
+    monkeypatch.setenv(
+        "ANILA_DEPLOYMENT_PROFILE", "prod-intranet-card-breakglass"
+    )
+    monkeypatch.setenv("ANILA_BREAK_GLASS_OWNER", "system-owner")
+    monkeypatch.setenv("ANILA_BREAK_GLASS_TICKET", "INC-2026-001")
+    monkeypatch.setenv(
+        "ANILA_BREAK_GLASS_EXPIRES_AT",
+        bad_expiry
+        or (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+    )
+    if missing:
+        monkeypatch.delenv(missing, raising=False)
+    with pytest.raises(RuntimeError, match="break-glass|BREAK_GLASS"):
+        reload_startup_security().assert_deployment_profile_posture()
+
+
+def test_break_glass_runtime_gate_closes_after_expiry(
+    monkeypatch, reload_startup_security
+):
+    _set_formal_card_profile(monkeypatch)
+    monkeypatch.setenv(
+        "ANILA_DEPLOYMENT_PROFILE", "prod-intranet-card-breakglass"
+    )
+    monkeypatch.setenv(
+        "ANILA_BREAK_GLASS_EXPIRES_AT",
+        (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+    )
+    ss = reload_startup_security()
+    assert ss.is_break_glass_active()
+    assert not ss.is_break_glass_active(
+        now=datetime.now(timezone.utc) + timedelta(minutes=6)
+    )
+
+
+@pytest.mark.asyncio
+async def test_lifespan_rejects_profile_drift_before_migrations(
+    monkeypatch, reload_startup_security
+):
+    _set_formal_card_profile(monkeypatch)
+    monkeypatch.setenv("ENABLE_PUBLIC_SHARE", "true")
+    reload_startup_security()
+
+    import app.main as main_module
+
+    migration_called = False
+
+    def migration_probe(_app):
+        nonlocal migration_called
+        migration_called = True
+
+    monkeypatch.setattr(main_module, "_apply_schema_migrations", migration_probe)
+    with pytest.raises(RuntimeError, match="ENABLE_PUBLIC_SHARE"):
+        async with main_module.lifespan(main_module.app):
+            pass
+    assert migration_called is False

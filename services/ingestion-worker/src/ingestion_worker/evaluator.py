@@ -34,7 +34,7 @@ embeddings = 3000 × N_strategies. Realistically a 6-strategy run is
 
 Sprint 5 / Chunk X: optional LLM-as-judge axis. When the eval run
 row carries ``judge_llm_config = {"credential_id": <user_llm_credentials.id>}``
-the worker decrypts the credential via ``anila_core.security`` and
+the worker decrypts the credential via ``anila_security`` and
 scores each (query, top-k chunks) pair 1–3 with the judge LLM (see
 ``judge.py``). Failed judge calls are skipped — the run still yields
 retrieval metrics. The judge LLM call goes through the CSP proxy so

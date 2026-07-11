@@ -63,6 +63,75 @@ async def test_g2_force_rls_enabled_on_document_chunks(pool: PgPool) -> None:
     )
 
 
+async def test_g2_detector_rejects_a_removed_collection_policy(
+    pool: PgPool,
+    integration_admin_dsn: str,
+    isolation_collections: list[int],
+    isolation_documents: list[int],
+) -> None:
+    """Mutation control: removing the real policy must trip the isolation oracle.
+
+    PostgreSQL DDL is transactional.  The policy is dropped only inside this
+    transaction, the session assumes ``csp_app``, and rollback restores the
+    schema before the next test.  This proves the required suite is sensitive
+    to policy removal instead of merely reporting a green happy path.
+    """
+
+    coll_id = isolation_collections[0]
+    doc_id = isolation_documents[0]
+    store = CollectionScopedPgVectorStore(pool, collection_id=coll_id)
+    await store.index_chunks(
+        document_id=doc_id,
+        chunks=[
+            ChunkResult(
+                content="rls mutation sentinel",
+                chunk_key=f"rls-mutation-{coll_id}",
+                token_count=3,
+            )
+        ],
+        embeddings=[[0.3] * 4000],
+    )
+
+    admin = await asyncpg.connect(dsn=integration_admin_dsn)
+    transaction = admin.transaction()
+    try:
+        await transaction.start()
+        try:
+            policy_exists = await admin.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM pg_policies
+                    WHERE schemaname = 'public'
+                      AND tablename = 'document_chunks'
+                      AND policyname = 'chunks_collection_isolation'
+                )
+                """
+            )
+            assert policy_exists, "required chunks_collection_isolation policy missing"
+            await admin.execute(
+                "DROP POLICY chunks_collection_isolation ON document_chunks"
+            )
+            await admin.execute("SET LOCAL ROLE csp_app")
+            await admin.execute(
+                "SELECT set_config('anila.collection_id', $1, true)", str(coll_id)
+            )
+            visible = await admin.fetchval(
+                "SELECT count(*) FROM document_chunks WHERE collection_id = $1",
+                coll_id,
+            )
+            with pytest.raises(
+                AssertionError,
+                match="RLS isolation oracle saw no rows",
+            ):
+                assert visible > 0, "RLS isolation oracle saw no rows"
+        finally:
+            # The mutation must never escape this test, even though the
+            # expected AssertionError is consumed by pytest.raises().
+            await transaction.rollback()
+    finally:
+        await admin.close()
+
+
 async def test_g2_bypass_attempt_no_guc_yields_zero_rows(
     pool: PgPool,
     isolation_collections: list[int],

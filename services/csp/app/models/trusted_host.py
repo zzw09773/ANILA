@@ -7,7 +7,7 @@ apply.
 
 Lookup is by ``host`` (case-insensitive, normalised lowercase at the
 service layer). Reads go through ``trusted_host_service`` which keeps
-an in-memory cache; the SSRF guard (anila-core ``url_guard``) gets
+an in-memory cache; the SSRF guard (``anila-security`` ``url_guard``) gets
 its data via the cached provider hook, not by querying this table
 directly.
 """

@@ -62,6 +62,11 @@ if [[ "${1:-}" == "compose" && "${2:-}" == "version" ]]; then
   exit 0
 fi
 
+if [[ "${1:-}" == "compose" && "${2:-}" == "down" ]]; then
+  printf '%s\n' 'DOCKER_DOWN_CALLED'
+  exit 0
+fi
+
 if [[ "${1:-}" == "compose" && "${2:-}" == "ps" ]]; then
   if [[ "${3:-}" == "-a" && "${4:-}" == "-q" ]]; then
     service="${5:-}"
@@ -138,23 +143,67 @@ class DeployProdBehaviorTests(unittest.TestCase):
         *,
         wait_timeout: int = 3,
         process_timeout: int = 20,
+        branch: str = "prod-intranet-card",
+        profile: str = "prod-intranet-card",
     ) -> tuple[subprocess.CompletedProcess[str], float]:
         with tempfile.TemporaryDirectory(prefix="anila-docker-stub-") as temp:
             stub_dir = Path(temp)
+            test_root = stub_dir / "repo"
+            test_script = test_root / "infra/deployment/scripts/deploy-prod.sh"
+            test_script.parent.mkdir(parents=True)
+            shutil.copy2(DEPLOY_SCRIPT, test_script)
+            subprocess.run(
+                ["git", "init", "-q", "-b", branch],
+                cwd=test_root,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "add", "."], cwd=test_root, check=True, capture_output=True
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=ANILA CI",
+                    "-c",
+                    "user.email=ci@anila.invalid",
+                    "commit",
+                    "-qm",
+                    "test fixture",
+                ],
+                cwd=test_root,
+                check=True,
+                capture_output=True,
+            )
             docker = stub_dir / "docker"
             docker.write_text(DOCKER_STUB, encoding="utf-8", newline="\n")
             docker.chmod(0o755)
-
+            # Image-lock behavior has its own executable unit suite.  These
+            # tests isolate the downstream wait/tool/postconfigure branches,
+            # so acknowledge the already-tested verifier boundary here.
+            python3 = stub_dir / "python3"
+            python3.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8", newline="\n")
+            python3.chmod(0o755)
             env = os.environ.copy()
             env["PATH"] = os.pathsep.join((str(stub_dir), env.get("PATH", "")))
             env["DOCKER_STUB_SCENARIO"] = scenario
             env["ANILA_WAIT_TIMEOUT_SECONDS"] = str(wait_timeout)
-            env.pop("COMPOSE_PROJECT_NAME", None)
+            env["ANILA_DEPLOYMENT_PROFILE"] = profile
+            for variable in (
+                "COMPOSE_FILE",
+                "COMPOSE_PROFILES",
+                "COMPOSE_PROJECT_NAME",
+                "COMPOSE_ENV_FILES",
+                "COMPOSE_DISABLE_ENV_FILE",
+                "COMPOSE_PATH_SEPARATOR",
+            ):
+                env.pop(variable, None)
 
             started = time.monotonic()
             result = subprocess.run(
-                [self.bash, str(DEPLOY_SCRIPT), subcommand],
-                cwd=ROOT,
+                [self.bash, str(test_script), subcommand],
+                cwd=test_root,
                 env=env,
                 check=False,
                 capture_output=True,
@@ -187,11 +236,13 @@ class DeployProdBehaviorTests(unittest.TestCase):
             ("exited", "Exited"),
         ):
             with self.subTest(scenario=scenario):
-                result, elapsed = self.run_deploy(scenario, "wait")
+                result, elapsed = self.run_deploy(
+                    scenario, "wait", wait_timeout=15
+                )
                 output = result.stdout + result.stderr
                 self.assertNotEqual(result.returncode, 0, output)
                 self.assertIn(expected, output)
-                self.assertLess(elapsed, 5, output)
+                self.assertLess(elapsed, 10, output)
 
     def test_wait_times_out_for_starting_or_missing_services(self) -> None:
         for scenario in ("starting", "missing"):
@@ -203,18 +254,70 @@ class DeployProdBehaviorTests(unittest.TestCase):
                 self.assertIn("csp", output)
 
     def test_wait_fails_immediately_when_ingestion_exits(self) -> None:
-        result, elapsed = self.run_deploy("ingestion-exited", "wait")
+        result, elapsed = self.run_deploy(
+            "ingestion-exited", "wait", wait_timeout=15
+        )
         output = result.stdout + result.stderr
         self.assertNotEqual(result.returncode, 0, output)
         self.assertIn("ingestion-worker", output)
         self.assertIn("Exited", output)
-        self.assertLess(elapsed, 5, output)
+        self.assertLess(elapsed, 10, output)
 
     def test_tool_guard_accepts_a_fresh_install(self) -> None:
         result, _ = self.run_deploy("all-healthy", "tool-preflight")
         output = result.stdout + result.stderr
         self.assertEqual(result.returncode, 0, output)
         self.assertIn("fresh install", output)
+
+    def test_card_branch_accepts_normal_and_breakglass_profiles(self) -> None:
+        for profile in (
+            "prod-intranet-card",
+            "prod-intranet-card-breakglass",
+        ):
+            with self.subTest(profile=profile):
+                result, _ = self.run_deploy(
+                    "all-healthy", "tool-preflight", profile=profile
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_non_card_prod_branch_cannot_claim_card_profile(self) -> None:
+        for branch in ("prod-public-passwd", "prod-military-passwd"):
+            with self.subTest(branch=branch):
+                result, _ = self.run_deploy(
+                    "all-healthy",
+                    "tool-preflight",
+                    branch=branch,
+                    profile="prod-intranet-card",
+                )
+                output = result.stdout + result.stderr
+                self.assertNotEqual(result.returncode, 0, output)
+                self.assertIn("deployment identity mismatch", output)
+
+    def test_restart_never_stops_stack_before_identity_and_profile_pass(self) -> None:
+        scenarios = (
+            {"branch": "prod-public-passwd", "profile": "prod-intranet-card"},
+            {"branch": "prod-intranet-card", "profile": "development"},
+        )
+        for values in scenarios:
+            with self.subTest(**values):
+                result, _ = self.run_deploy(
+                    "all-healthy", "restart", **values
+                )
+                output = result.stdout + result.stderr
+                self.assertNotEqual(result.returncode, 0, output)
+                self.assertNotIn("DOCKER_DOWN_CALLED", output)
+
+    def test_postconfigure_rejects_wrong_deployment_identity(self) -> None:
+        result, _ = self.run_deploy(
+            "all-healthy",
+            "postconfigure",
+            branch="prod-public-passwd",
+            profile="prod-intranet-card",
+        )
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn("deployment identity mismatch", output)
+        self.assertNotIn("ANILA_GITLAB_SIGNUP=false", output)
 
     def test_tool_guard_rejects_an_old_n8n_container_image(self) -> None:
         self.assert_guard_failed(

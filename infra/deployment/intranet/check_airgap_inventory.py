@@ -14,6 +14,7 @@ from pathlib import Path
 
 
 REQUIRED_ENV = {
+    "ANILA_DEPLOYMENT_PROFILE": "prod-intranet-card",
     "ADMIN_PASSWORD": "inventory-check-admin-0123456789",
     "CARD_INITIAL_OWNERS": "990000001",
     "CODESERVER_PASSWORD": "inventory-check-code-0123456789",
@@ -141,7 +142,11 @@ def load_model_inventory(path: Path) -> list[ModelInventoryEntry]:
 
 
 def compose_config(
-    root: Path, *, all_profiles: bool, compose_file: Path | None = None
+    root: Path,
+    *,
+    all_profiles: bool,
+    compose_file: Path | None = None,
+    trusted_env: dict[str, str] | None = None,
 ) -> dict[str, object]:
     if shutil.which("docker") is None:
         raise InventoryError("docker CLI is not installed")
@@ -151,6 +156,13 @@ def compose_config(
     for key, value in REQUIRED_ENV.items():
         if not env.get(key):
             env[key] = value
+    # Inventory validation is a connected-build operation, not a formal
+    # deployment.  Resolve every mandatory Compose pin to the tag declared by
+    # the inventory so the comparison remains closed and deterministic.  Use
+    # assignment (not setdefault) to prevent a caller's exported image variable
+    # from making the checker validate a different graph.
+    if trusted_env:
+        env.update(trusted_env)
     command = ["docker", "compose"]
     if compose_file is not None:
         command.extend(["-f", str(compose_file)])
@@ -218,8 +230,14 @@ def _compare_mapping(
 
 def validate(root: Path, inventory_path: Path) -> tuple[int, int]:
     entries = load_inventory(inventory_path)
-    default_config = compose_config(root, all_profiles=False)
-    all_config = compose_config(root, all_profiles=True)
+    trusted_env = {"ANILA_DEPLOYMENT_PROFILE": "prod-intranet-card"}
+    for entry in entries:
+        variable = "ANILA_IMAGE_" + entry.service.upper().replace("-", "_")
+        trusted_env[variable] = entry.image
+    default_config = compose_config(
+        root, all_profiles=False, trusted_env=trusted_env
+    )
+    all_config = compose_config(root, all_profiles=True, trusted_env=trusted_env)
     default_actual = _service_images(default_config)
     all_actual = _service_images(all_config)
     default_expected = {

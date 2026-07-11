@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 
 import httpx
-from anila_core.security import UnsafeEndpointError, validate_outbound_url
+from anila_security import UnsafeEndpointError, validate_outbound_url
 from sqlalchemy.orm import Session
 
 from app.models.ingestion import IngestionCollection, IngestionDocument

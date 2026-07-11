@@ -43,7 +43,7 @@ from app.models.user import User
 from app.modules import launch as launch_mod
 from app.modules import policy as policy_mod
 from app.modules.launch import ManifestFetchError
-from app.schemas.contracts.classification import ClassificationLevel as _CL
+from anila_contracts import Classification as _CL
 from app.schemas.registered_service import (
     AuditCallbackPayload,
     AuditCallbackResponse,

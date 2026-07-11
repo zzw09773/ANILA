@@ -18,15 +18,15 @@
 #   cert-renew <pfx>           平台 TLS 換發:安全提示密碼後重抽 fullchain+key → nginx reload
 #   model-ca <pem>             更新模型 gateway 出向 CA → 重建 csp
 #   gateway-key                輪替 MODEL_GATEWAY_API_KEY → 重建 csp → 探測
-#   break-glass on|off         讀卡環境故障應急:on=暫開帳密登入 / off=恢復 card-only
+#   break-glass on|off [...]   具名、限時 owner 帳密應急 / 恢復純卡片姿態
 #   prune                      清 dangling image + builder cache (不碰 volume)
 #   help                       顯示這份說明
 #
 # 鐵則 (寫死在本腳本的行為,不要繞過):
-#   1. 套用 .env / 掛載檔變更一律 `docker compose up -d [--force-recreate]`,
+#   1. 套用 .env / 掛載檔變更一律 `docker compose up -d --no-build --pull never [--force-recreate]`,
 #      絕不用 `docker restart` (不重載 env,見 AGENTS.md §4)。
-#   2. 本腳本不動 ANILA_ALLOW_* / ANILA_ENV 等 strict 旗標
-#      (唯一例外 = break-glass 的 REQUIRE_CARD_LOGIN_ONLY,那是文件化的應急程序)。
+#   2. 本腳本不動 ANILA_ALLOW_* / ANILA_ENV 等 strict 旗標。break-glass
+#      只切換已審查的 deployment profile；REQUIRE_CARD_LOGIN_ONLY 始終為 true。
 #   3. 備份輸出含機密 (.env / JWT 私鑰 / DB dump):目錄 700、檔案 600,
 #      預設寫到 repo 外的 user state 目錄,且拒絕任何落在 repo 內的覆寫。
 #
@@ -42,6 +42,15 @@ umask 077
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$REPO_ROOT"
 get_env() { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- || true; }
+get_env_unquoted() {
+  local value
+  value="$(get_env "$1")"
+  case "$value" in
+    \'*\'|\"*\") value="${value:1:${#value}-2}" ;;
+  esac
+  printf '%s' "$value"
+}
+IMAGE_LOCK_VERIFIER="$REPO_ROOT/infra/deployment/scripts/verify-compose-image-lock.py"
 
 if [ -n "${XDG_STATE_HOME:-}" ]; then
   DEFAULT_STATE_DIR="$XDG_STATE_HOME/anila"
@@ -69,7 +78,7 @@ TLS_CERTS_DIR="${ANILA_TLS_CERTS_DIR:-$_saved_tls}"
 SECRETS_DIR="${SECRETS_DIR:-$ANILA_STATE_DIR/secrets}"
 TLS_CERTS_DIR="${TLS_CERTS_DIR:-$ANILA_STATE_DIR/tls}"
 BACKUP_KEEP="${ANILA_BACKUP_KEEP:-14}"
-CSP_RUNTIME_IMAGE="anila-platform-csp:latest"
+CSP_RUNTIME_IMAGE="$(get_env ANILA_IMAGE_CSP)"
 SAFE_RUNTIME_BACKUP_HELPER="$REPO_ROOT/infra/deployment/scripts/safe-runtime-backup.py"
 
 # ── 輸出 helper ────────────────────────────────────────────────────────────
@@ -136,6 +145,8 @@ set_env() {
   printf '%s=%s\n' "$key" "$val" >> "$tmp"
   chmod 600 "$tmp"
   mv -f -- "$tmp" .env
+  printf -v "$key" '%s' "$val"
+  export "$key"
 }
 
 set_env_single_quoted() {
@@ -148,12 +159,65 @@ set_env_single_quoted() {
   printf "%s='%s'\n" "$key" "$val" >> "$tmp"
   chmod 600 "$tmp"
   mv -f -- "$tmp" .env
+  printf -v "$key" '%s' "$val"
+  export "$key"
+}
+
+unset_env() {
+  local key="$1" tmp
+  [ -f .env ] && [ ! -L .env ] || fatal ".env 必須是 regular file 且不得是 symlink"
+  tmp="$(mktemp "$REPO_ROOT/.env.tmp.XXXXXX")" || fatal "無法建立安全 .env temp file"
+  grep -vE "^${key}=" .env > "$tmp" 2>/dev/null || true
+  chmod 600 "$tmp"
+  mv -f -- "$tmp" .env
+  unset "$key"
+}
+
+csp_env_readback() {
+  local key="$1"
+  docker compose exec -T csp python -c \
+    'import os,sys; print(os.environ.get(sys.argv[1], ""))' "$key" 2>/dev/null \
+    || fatal "無法從 running CSP 回讀 $key"
 }
 
 need_stack() {
   command -v docker >/dev/null || fatal "找不到 docker"
   docker info >/dev/null 2>&1  || fatal "docker daemon 沒在跑 / 當前使用者無權限"
   [ -f compose.yaml ]          || fatal "請在 repo 根目錄執行 (找不到 compose.yaml)"
+  local compose_variable
+  for compose_variable in COMPOSE_FILE COMPOSE_PROFILES COMPOSE_PROJECT_NAME \
+    COMPOSE_ENV_FILES COMPOSE_DISABLE_ENV_FILE COMPOSE_PATH_SEPARATOR; do
+    [ -z "${!compose_variable:-}" ] \
+      || fatal "formal lifecycle 不接受 ambient $compose_variable；請 unset 後重跑"
+  done
+  local managed_variable file_value
+  for managed_variable in \
+    ANILA_DEPLOYMENT_PROFILE ANILA_ENV ANILA_ALLOW_DEV_SECRET DEBUG \
+    ENABLE_API_DOCS ENABLE_PUBLIC_SHARE ENABLE_MEMORY SKIP_STARTUP_MIGRATIONS \
+    ALLOW_AUTO_KEYGEN COOKIE_SECURE ENABLE_CARD_LOGIN REQUIRE_CARD_LOGIN_ONLY \
+    ANILA_ALLOW_HTTP_ENDPOINT ANILA_ALLOW_HTTP_AGENT_ENDPOINT \
+    ANILA_ALLOW_PRIVATE_ENDPOINT CARD_DEV_SKIP_NONCE_BINDING \
+    CSP_DB_PASSWORD CSP_APP_DB_PASSWORD CSP_SECRET_KEY CSP_SERVICE_TOKEN \
+    INTERNAL_PLATFORM_API_KEY ADMIN_PASSWORD MODEL_GATEWAY_API_KEY \
+    N8N_ENCRYPTION_KEY GITLAB_ROOT_PASSWORD ANILA_STATE_DIR \
+    ANILA_SECRETS_DIR ANILA_TLS_CERTS_DIR ANILA_BREAK_GLASS_OWNER \
+    ANILA_BREAK_GLASS_TICKET ANILA_BREAK_GLASS_EXPIRES_AT; do
+    if [[ -v "$managed_variable" ]]; then
+      file_value="$(get_env_unquoted "$managed_variable")"
+      [[ "${!managed_variable}" == "$file_value" ]] \
+        || fatal "ambient $managed_variable 與 .env 不一致；請 unset 或重新載入正式 .env"
+    fi
+  done
+  case "$(get_env ANILA_DEPLOYMENT_PROFILE)" in
+    prod-intranet-card|prod-intranet-card-breakglass)
+      command -v python3 >/dev/null || fatal "formal image-lock 驗證需要 python3"
+      python3 "$IMAGE_LOCK_VERIFIER" verify-env --env-file .env --inspect-docker \
+        || fatal "formal Compose image content-ID lock 驗證失敗"
+      ;;
+    *)
+      fatal "anila-ops.sh 本版只允許已審查的 prod-intranet-card profile"
+      ;;
+  esac
 }
 
 # ── status ─────────────────────────────────────────────────────────────────
@@ -479,7 +543,7 @@ cmd_restore() {
 
   log "停掉會碰 DB 的服務"
   docker compose stop csp ingestion-worker router anila-studio
-  docker compose up -d --pull never csp-db
+  docker compose up -d --no-build --pull never csp-db
   local i
   for i in $(seq 1 30); do
     docker compose exec -T csp-db pg_isready -U csp -d postgres >/dev/null 2>&1 && break
@@ -514,12 +578,12 @@ cmd_restore() {
     err "灌 dump 失敗 — 自動回滾到還原前狀態"
     docker compose exec -T csp-db psql -U csp -d postgres -q -c "DROP DATABASE IF EXISTS csp" || true
     docker compose exec -T csp-db psql -U csp -d postgres -v ON_ERROR_STOP=1 -q -c "ALTER DATABASE $keep RENAME TO csp"
-    docker compose up -d --pull never csp ingestion-worker router anila-studio
+    docker compose up -d --no-build --pull never csp ingestion-worker router anila-studio
     fatal "已回滾 (原資料完好)。檢查備份檔後再試"
   fi
 
   log "只重啟本次停止的 DB consumers，再跑全 stack fail-closed acceptance"
-  docker compose up -d --pull never csp ingestion-worker router anila-studio
+  docker compose up -d --no-build --pull never csp ingestion-worker router anila-studio
   bash infra/deployment/scripts/deploy-prod.sh wait
   bash infra/deployment/scripts/deploy-prod.sh verify
   warn "確認一切正常後清掉保留的舊庫:"
@@ -594,7 +658,7 @@ cmd_cert_renew() {
   if docker compose exec -T nginx nginx -t >/dev/null 2>&1; then
     docker compose exec -T nginx nginx -s reload \
       && ok "nginx 已 reload (零中斷)" \
-      || { warn "reload 失敗,改 recreate nginx"; docker compose up -d --pull never --force-recreate nginx; }
+      || { warn "reload 失敗,改 recreate nginx"; docker compose up -d --no-build --pull never --force-recreate nginx; }
   else
     err "nginx -t 拒絕新憑證 — 自動還原舊憑證"
     if [ -f "$archive/server.crt" ] && [ -f "$archive/server.key" ]; then
@@ -636,7 +700,7 @@ cmd_model_ca() {
   [ "$(get_env ANILA_MODEL_CA_FILE)" = /etc/anila/pki/model-ca.pem ] \
     || set_env ANILA_MODEL_CA_FILE /etc/anila/pki/model-ca.pem
   # 掛載檔內容變更 → 必須 recreate 讓 csp 重讀 (restart 不重載 .env)
-  docker compose up -d --pull never --force-recreate csp
+  docker compose up -d --no-build --pull never --force-recreate csp
   log "model-ca 已更新並 recreate csp — 用 'anila-ops.sh health' 驗模型鏈路"
 }
 
@@ -649,7 +713,7 @@ cmd_gateway_key() {
   [ -n "$key" ] || fatal "key 不能空"
   set_env_single_quoted MODEL_GATEWAY_API_KEY "$key"
   # env 變更 → up -d 會自動 recreate csp (compose 偵測 env diff)
-  docker compose up -d --pull never csp
+  docker compose up -d --no-build --pull never csp
   log "csp 已以新 key recreate,探測 gateway..."
   health_model_gateway
   [ "$_FAILS" -eq 0 ] && log "gateway key 輪替完成" \
@@ -662,19 +726,50 @@ cmd_break_glass() {
   [ -f .env ] || fatal ".env 不存在"
   case "${1:-}" in
     on)
-      warn "break-glass = 暫時開放帳密登入 (card-only 關閉)。只在讀卡機 / HiPKI 全面故障時使用!"
-      local c; read -rp "  確定開啟? [y/N]: " c; [ "$c" = y ] || fatal "已取消"
-      set_env REQUIRE_CARD_LOGIN_ONLY false
-      docker compose up -d --pull never csp
-      log "已開啟帳密後路 — 用 owner 帳密 (admin / .env 的 ADMIN_PASSWORD) 登入處理"
+      local owner="${2:-}" ticket="${3:-}" hours="${4:-}" expires_at c
+      warn "break-glass = 在 card-only 姿態中，暫時只允許 owner 帳密。只在讀卡機 / HiPKI 全面故障時使用!"
+      read -rp "  確定開啟? [y/N]: " c; [ "$c" = y ] || fatal "已取消"
+      [ -n "$owner" ] || read -rp "  具名系統負責人: " owner
+      [ -n "$ticket" ] || read -rp "  Incident/ticket 編號: " ticket
+      [ -n "$hours" ] || read -rp "  有效小時 (1-24，建議 1): " hours
+      hours="${hours:-1}"
+      [[ "$owner" =~ ^[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}$ ]] \
+        || fatal "負責人必須是 3-128 字元 audit identifier"
+      [[ "$ticket" =~ ^[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}$ ]] \
+        || fatal "ticket 必須是 3-128 字元 audit identifier"
+      [[ "$hours" =~ ^[0-9]+$ ]] && (( hours >= 1 && hours <= 24 )) \
+        || fatal "有效小時必須是 1-24 的整數"
+      expires_at="$(date -u -d "+${hours} hours" '+%Y-%m-%dT%H:%M:%SZ')" \
+        || fatal "無法計算 UTC expiry"
+      set_env REQUIRE_CARD_LOGIN_ONLY true
+      set_env_single_quoted ANILA_BREAK_GLASS_OWNER "$owner"
+      set_env_single_quoted ANILA_BREAK_GLASS_TICKET "$ticket"
+      set_env ANILA_BREAK_GLASS_EXPIRES_AT "$expires_at"
+      set_env ANILA_DEPLOYMENT_PROFILE prod-intranet-card-breakglass
+      docker compose up -d --no-build --pull never csp
+      [ "$(csp_env_readback ANILA_DEPLOYMENT_PROFILE)" = prod-intranet-card-breakglass ] \
+        || fatal "CSP effective profile 未切入 break-glass（可能有 ambient env override）"
+      [ "$(csp_env_readback REQUIRE_CARD_LOGIN_ONLY)" = true ] \
+        || fatal "CSP effective card-only flag 漂移"
+      [ "$(csp_env_readback ANILA_BREAK_GLASS_TICKET)" = "$ticket" ] \
+        || fatal "CSP break-glass ticket read-back 不一致"
+      log "已開啟具名 owner 帳密後路；owner=$owner ticket=$ticket expires=$expires_at"
       warn "修好讀卡環境後務必跑: anila-ops.sh break-glass off"
       ;;
     off)
       set_env REQUIRE_CARD_LOGIN_ONLY true
-      docker compose up -d --pull never csp
-      log "已恢復 card-only 模式 (REQUIRE_CARD_LOGIN_ONLY=true)"
+      set_env ANILA_DEPLOYMENT_PROFILE prod-intranet-card
+      unset_env ANILA_BREAK_GLASS_OWNER
+      unset_env ANILA_BREAK_GLASS_TICKET
+      unset_env ANILA_BREAK_GLASS_EXPIRES_AT
+      docker compose up -d --no-build --pull never csp
+      [ "$(csp_env_readback ANILA_DEPLOYMENT_PROFILE)" = prod-intranet-card ] \
+        || fatal "CSP effective profile 未恢復 prod-intranet-card"
+      [ "$(csp_env_readback REQUIRE_CARD_LOGIN_ONLY)" = true ] \
+        || fatal "CSP effective card-only flag 未恢復"
+      log "已恢復 prod-intranet-card 純卡片姿態，並清除 break-glass metadata"
       ;;
-    *) fatal "usage: anila-ops.sh break-glass on|off" ;;
+    *) fatal "usage: anila-ops.sh break-glass on [owner ticket hours]|off" ;;
   esac
 }
 

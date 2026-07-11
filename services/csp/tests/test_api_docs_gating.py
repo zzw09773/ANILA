@@ -1,9 +1,8 @@
-"""Swagger /docs + /openapi.json are gated behind ENABLE_API_DOCS (S-117).
+"""Swagger /docs + /openapi.json are always admin-gated (S-117).
 
-The OpenAPI schema and Swagger UI are unauthenticated and leak the full API
-surface, so they are OFF by default (secure-by-default) and only enabled in
-dev via ENABLE_API_DOCS=true. The conftest does not set ENABLE_API_DOCS, so
-the app under test is built with docs disabled — exactly the prod posture.
+The OpenAPI schema and Swagger UI leak the full API surface, so CSP registers
+only custom routes protected by ``require_admin``.  Anonymous callers must
+receive 401 rather than either document.
 
 These routes need neither the DB nor the lifespan, so we drive a bare
 TestClient (no ``with`` block) to avoid the lifespan startup that the shared
@@ -23,14 +22,12 @@ from app.main import app
 _client = TestClient(app)
 
 
-def test_openapi_schema_is_404_by_default():
-    """Prod default: the OpenAPI schema route is disabled entirely."""
-    assert _client.get("/openapi.json").status_code == 404
+def test_openapi_schema_requires_authentication():
+    assert _client.get("/openapi.json").status_code == 401
 
 
-def test_swagger_ui_is_404_by_default():
-    """Prod default: the custom Swagger UI route is not registered."""
-    assert _client.get("/docs").status_code == 404
+def test_swagger_ui_requires_authentication():
+    assert _client.get("/docs").status_code == 401
 
 
 def test_redoc_is_404_by_default():

@@ -23,6 +23,7 @@ class Gate0CloseoutEvidenceTests(unittest.TestCase):
             "services": {
                 "csp": {
                     "environment": {
+                        "ANILA_DEPLOYMENT_PROFILE": "prod-intranet-card",
                         "ANILA_ENV": "production",
                         "ENABLE_MEMORY": "false",
                         "ENABLE_PUBLIC_SHARE": "false",

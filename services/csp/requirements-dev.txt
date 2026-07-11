@@ -1,5 +1,7 @@
 # 開發／CI 專用依賴 — 不進 runtime image(Dockerfile 只裝 requirements.txt)。
-# 用法:services/csp/.venv/bin/pip install -r requirements-dev.txt
+# fresh venv（repo root）：先安裝兩個 internal dist 與 core，避免查詢 PyPI：
+# pip install -e packages/anila-contracts -e packages/anila-security \
+#   -e 'packages/anila-core[rag]' -r services/csp/requirements-dev.txt
 -r requirements.txt
 
 # module boundary lint gate(infra/ci/lint-boundaries.sh + .importlinter)。

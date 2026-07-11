@@ -2,26 +2,25 @@
 # ============================================================================
 # deploy-prod.sh
 # ----------------------------------------------------------------------------
-# ANILA Prod 部署腳本(支援 2026-05-26 重構後的 3 條 prod branch)
+# ANILA prod-intranet-card 正式部署腳本（Gate 1 F6 reviewed scope）
 #
-# 接受的 prod branch:
-#   - prod-intranet-card   中科院內網 + PKI 自然人憑證卡 (SSO + card auth fork)
-#   - prod-public-passwd   對外網 + 純帳密 (main + 外網 hardening)
-#   - prod-military-passwd 國軍交付 + 純帳密 (main + military spec)
+# 唯一接受的 prod branch:
+#   - prod-intranet-card   中科院內網 + PKI 自然人憑證卡
+# public/military 尚無 Gate 1 reviewed profile + image-lock lifecycle，不得混用。
 #
 # 用法:
-#   git checkout <prod-branch> && git pull
-#   set -a; source /path/to/<branch>.env; set +a
+#   git checkout prod-intranet-card && git pull
+#   set -a; source /path/to/prod-intranet-card.env; set +a
 #   bash infra/deployment/scripts/deploy-prod.sh [SUBCOMMAND]
 #
 # SUBCOMMAND:
 #   preflight        只跑 pre-flight 檢查,不動 stack
 #   tool-preflight   只驗 n8n/GitLab 資料版本護欄(一條龍部署共用)
-#   deploy           preflight + build + up + wait healthy + verify  (預設)
-#   up               docker compose up -d + wait + fail-closed verify (不 rebuild)
+#   deploy           preflight + locked no-build up + wait + verify（預設）
+#   up               docker compose up -d --no-build + wait + fail-closed verify
 #   down             docker compose down (保留 volumes,db 資料不丟)
-#   restart          down + up
-#   rebuild <svc>    rebuild + restart 單一 service (e.g. rebuild csp)
+#   restart          完整 preflight 通過後才 down + locked up
+#   rebuild <svc>    正式 profile 一律拒絕；必須重出 air-gap bundle
 #   status           顯示所有 service health
 #   postconfigure    收斂帶狀態 upstream 工具的 runtime 安全姿態
 #   logs <svc>       tail -f 單一 service logs
@@ -46,7 +45,7 @@
 #                           model container 檢查,改 curl *_BASE_URL 探測
 #
 # 前置條件(腳本會自動 check):
-#   1. 現在 git branch 是 `prod`(避免不小心在 main 上跑)
+#   1. 現在 git branch 是 `prod-intranet-card`
 #   2. Docker daemon running
 #   3. docker compose v2 可用
 #   4. anila-models-net network 已存在(模型 stack 先起來)
@@ -60,12 +59,34 @@ umask 077
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$REPO_ROOT"
 
+env_file_value() {
+  if [[ -f .env ]]; then
+    sed -n "s/^$1=//p" .env | head -1 | sed "s/^['\"]//;s/['\"]$//"
+  fi
+  return 0
+}
+
+deployment_profile() {
+  printf '%s' "${ANILA_DEPLOYMENT_PROFILE:-$(env_file_value ANILA_DEPLOYMENT_PROFILE)}"
+}
+
+is_formal_card_profile() {
+  case "${1:-$(deployment_profile)}" in
+    prod-intranet-card|prod-intranet-card-breakglass) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Must match infra/docker/csp.Dockerfile and intranet-deploy.sh.
 CSP_RUNTIME_UID=10001
 CSP_RUNTIME_GID=10001
-CSP_RUNTIME_IMAGE=anila-platform-csp:latest
-N8N_RUNTIME_IMAGE=n8nio/n8n:2.29.10
-GITLAB_RUNTIME_IMAGE=gitlab/gitlab-ce:19.1.1-ce.0
+CSP_RUNTIME_IMAGE="${ANILA_IMAGE_CSP:-$(env_file_value ANILA_IMAGE_CSP)}"
+N8N_RUNTIME_IMAGE="${ANILA_IMAGE_N8N:-$(env_file_value ANILA_IMAGE_N8N)}"
+GITLAB_RUNTIME_IMAGE="${ANILA_IMAGE_GITLAB:-$(env_file_value ANILA_IMAGE_GITLAB)}"
+CSP_RUNTIME_IMAGE="${CSP_RUNTIME_IMAGE:-anila-platform-csp:latest}"
+N8N_RUNTIME_IMAGE="${N8N_RUNTIME_IMAGE:-n8nio/n8n:2.29.10}"
+GITLAB_RUNTIME_IMAGE="${GITLAB_RUNTIME_IMAGE:-gitlab/gitlab-ce:19.1.1-ce.0}"
+IMAGE_LOCK_VERIFIER=infra/deployment/scripts/verify-compose-image-lock.py
 TOOL_VERSION_MARKER=.anila-managed-image
 COMPOSE_PROJECT=anila-platform
 
@@ -101,9 +122,9 @@ prepare_csp_runtime_mount() {
 }
 
 # ── Pre-flight: 環境 ──────────────────────────────────────────────────────
-# 接受的 prod branch 清單(2026-05-26 重構後從 1 條變 3 條)。
-# 防呆:在 main / dev-* / feature/* 上跑這腳本會被擋掉。
-_PROD_BRANCHES=(prod-intranet-card prod-public-passwd prod-military-passwd)
+# Gate 1 F6 的 executable posture/image lock 只審查 card 分支。
+# 防呆:在其他 prod、main、dev-*、feature/* 上跑都必須被擋掉。
+_PROD_BRANCHES=(prod-intranet-card)
 
 check_branch() {
   local branch
@@ -115,15 +136,10 @@ check_branch() {
   if (( matched == 0 )); then
     err "目前在 '$branch' 分支,prod 部署必須切到下列其中一條:"
     for b in "${_PROD_BRANCHES[@]}"; do err "  - $b"; done
-    fatal "請執行: git checkout <branch> && git pull origin <branch>"
+    fatal "deployment identity mismatch: 請切到 prod-intranet-card 並同步正式 release"
   fi
   ok "git branch = $branch"
-  # 對應分支特性簡述,讓 user 確認沒切錯
-  case "$branch" in
-    prod-intranet-card)   ok "  特性: 中科院內網 + PKI 自然人憑證卡(SSO + card auth fork)" ;;
-    prod-public-passwd)   ok "  特性: 對外網 + 純帳密(main + 外網 hardening)" ;;
-    prod-military-passwd) ok "  特性: 國軍交付 + 純帳密(main + military spec)" ;;
-  esac
+  ok "  特性: 中科院內網 + PKI 自然人憑證卡"
 }
 
 check_docker() {
@@ -132,6 +148,44 @@ check_docker() {
   ok "docker daemon healthy"
   docker compose version >/dev/null 2>&1 || fatal "docker compose v2 不可用"
   ok "docker compose v2 OK"
+}
+
+check_compose_control_env() {
+  local variable
+  for variable in COMPOSE_FILE COMPOSE_PROFILES COMPOSE_PROJECT_NAME \
+    COMPOSE_ENV_FILES COMPOSE_DISABLE_ENV_FILE COMPOSE_PATH_SEPARATOR; do
+    [[ -z "${!variable:-}" ]] \
+      || fatal "formal lifecycle 不接受 ambient $variable；請 unset 後重跑"
+  done
+}
+
+check_formal_image_lock() {
+  local profile branch
+  branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  [[ "$branch" == "prod-intranet-card" ]] \
+    || fatal "deployment identity mismatch: profile/image-lock lifecycle 只核准 prod-intranet-card branch（目前 $branch）"
+  profile="$(deployment_profile)"
+  [[ -n "$profile" ]] || fatal "ANILA_DEPLOYMENT_PROFILE 未宣告"
+  if ! is_formal_card_profile "$profile"; then
+    fatal "本 Gate 1 lifecycle 只核准 prod-intranet-card 與 prod-intranet-card-breakglass；目前為未審查 profile: $profile"
+  fi
+  command -v python3 >/dev/null 2>&1 \
+    || fatal "formal image-lock verifier 需要 python3"
+  python3 "$IMAGE_LOCK_VERIFIER" check-wiring \
+    || fatal "Compose image lock wiring 不完整"
+  python3 "$IMAGE_LOCK_VERIFIER" verify-env --env-file .env --inspect-docker \
+    || fatal "正式 image content-ID lock 缺失或本機 image 不符"
+  ok "formal Compose images 已鎖定 sha256 content IDs"
+}
+
+check_running_container_image_lock() {
+  local optional_args=()
+  if [[ -n "$(docker compose --profile developer-tools ps --status running -q codeserver 2>/dev/null || true)" ]]; then
+    optional_args=(--include-optional)
+  fi
+  python3 "$IMAGE_LOCK_VERIFIER" verify-env --env-file .env \
+    "${optional_args[@]}" --inspect-containers \
+    || fatal "running container image content-ID read-back 失敗"
 }
 
 check_external_secret_paths() {
@@ -168,7 +222,7 @@ check_external_secret_paths() {
 check_env() {
   # 必要 env(沒設就停)。CSP_SECRET_KEY / SECRET_KEY 擇一即可
   # (infra/compose/platform.yml 內 csp service 看的是 CSP_SECRET_KEY)。
-  local required=(CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY SITE_URL GITLAB_SSH_BIND_IP ANILA_ENV ANILA_STATE_DIR ANILA_SECRETS_DIR ANILA_TLS_CERTS_DIR)
+  local required=(CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY SITE_URL GITLAB_SSH_BIND_IP ANILA_ENV ANILA_DEPLOYMENT_PROFILE ANILA_STATE_DIR ANILA_SECRETS_DIR ANILA_TLS_CERTS_DIR)
   local branch
   branch="$(git branch --show-current 2>/dev/null || true)"
   if [[ "$branch" == "prod-intranet-card" ]]; then
@@ -395,6 +449,7 @@ cmd_preflight() {
   section "ANILA Prod Deploy — Pre-flight checks"
   check_branch
   check_docker
+  check_formal_image_lock
   check_env
   check_dirs
   check_models_stack
@@ -432,36 +487,44 @@ ensure_jwt_keypair() {
     || fatal "JWT keypair 權限收斂失敗"
 }
 
+validate_formal_identity() {
+  check_branch
+  check_docker
+  check_formal_image_lock
+}
+
+validate_formal_up() {
+  validate_formal_identity
+  check_env
+  check_tool_upgrade_safety
+  ensure_jwt_keypair
+}
+
 # ── Subcommand: deploy ─────────────────────────────────────────────────────
 cmd_deploy() {
   cmd_preflight
 
-  section "Build images (csp / router / ingestion-worker / pptx-renderer / anila-studio / anilalm / anila-ui)"
-  # Compose build has no `--pull never`; the equivalent is explicit
-  # `--pull=false`, which preserves the preloaded/base-image cache.
-  docker compose build --pull=false
+  section "Use preloaded content-ID-locked images (formal profile; no build)"
 
   section "JWT 簽章金鑰"
   ensure_jwt_keypair
 
   section "Bring up the stack"
-  docker compose up -d --pull never
+  docker compose up -d --no-build --pull never
 
   cmd_wait_healthy
-  cmd_postconfigure
-  cmd_verify
+  cmd_postconfigure --prevalidated
+  cmd_verify --prevalidated
 }
 
 # ── Subcommand: up / down / restart ────────────────────────────────────────
 cmd_up() {
-  check_branch; check_docker; check_env
-  check_tool_upgrade_safety
-  ensure_jwt_keypair
-  section "docker compose up -d --pull never"
-  docker compose up -d --pull never
+  [[ "${1:-}" == "--prevalidated" ]] || validate_formal_up
+  section "docker compose up -d --no-build --pull never"
+  docker compose up -d --no-build --pull never
   cmd_wait_healthy
-  cmd_postconfigure
-  cmd_verify
+  cmd_postconfigure --prevalidated
+  cmd_verify --prevalidated
 }
 
 cmd_down() {
@@ -472,8 +535,11 @@ cmd_down() {
 }
 
 cmd_restart() {
+  # Complete every non-destructive gate before taking the current stack down.
+  # A missing lock/wrong profile must leave the running deployment untouched.
+  validate_formal_up
   cmd_down
-  cmd_up
+  cmd_up --prevalidated
 }
 
 # ── Opt-in developer tool: code-server ───────────────────────────────────
@@ -481,7 +547,11 @@ cmd_restart() {
 # share/codeserver-sandbox；開發者需先放入一份「獨立 clone」，不要把正式 repo
 # root、.env、secrets 或憑證複製進去。
 cmd_codeserver_up() {
-  check_branch; check_docker; check_env
+  validate_formal_identity
+  check_env
+  python3 "$IMAGE_LOCK_VERIFIER" verify-env --env-file .env \
+    --include-optional --inspect-docker \
+    || fatal "developer-tools image 未鎖定或未載入"
   mkdir -p share/codeserver-sandbox
   chmod 700 share/codeserver-sandbox
   # Compose 的 service user 要跟建立 sandbox 的 operator 一致；Bash 的 UID
@@ -492,7 +562,10 @@ cmd_codeserver_up() {
     warn "share/codeserver-sandbox 是空的 — 建議先從內網 GitLab clone 一份獨立 checkout"
   fi
   section "Enable code-server (developer-tools profile; isolated workspace)"
-  docker compose --profile developer-tools up -d --pull never codeserver
+  docker compose --profile developer-tools up -d --no-build --pull never codeserver
+  python3 "$IMAGE_LOCK_VERIFIER" verify-env --env-file .env \
+    --include-optional --inspect-containers \
+    || fatal "developer-tools container image read-back 失敗"
   docker compose --profile developer-tools ps codeserver
   ok "code-server: https://${CODESERVER_HOST:-code.ai.ncsist.org.tw}/ (原生密碼登入)"
 }
@@ -514,15 +587,9 @@ cmd_rebuild() {
       fatal "$svc 是帶狀態的 upstream 工具，不可用 rebuild 繞過分段升級護欄" ;;
   esac
   check_docker
-  section "Rebuild + restart: $svc"
-  docker compose build --pull=false "$svc"
-  if [[ "$svc" == csp ]]; then
-    ensure_jwt_keypair
-  fi
-  docker compose up -d --pull never "$svc"
-  log "等 15 秒 healthcheck..."
-  sleep 15
-  docker compose ps "$svc"
+  is_formal_card_profile \
+    || fatal "本 Gate 1 lifecycle 不支援未審查 deployment profile: $(deployment_profile)"
+  fatal "formal card profile 禁止在部署主機 rebuild；請在外網 build-and-export 產生新 bundle/content-ID lock，再以 intranet-deploy 套用"
 }
 
 # ── Subcommand: status ─────────────────────────────────────────────────────
@@ -666,7 +733,10 @@ verify_tls_material() {
 # database。這個步驟可重複執行，且只改明確的 security posture；verify
 # 保持純 read-back、不得偷偷修正失敗狀態。
 cmd_postconfigure() {
-  check_docker
+  if [[ "${1:-}" != "--prevalidated" ]]; then
+    validate_formal_identity
+  fi
+  check_running_container_image_lock
   section "Postconfigure stateful tool security posture"
   local gitlab_posture
   gitlab_posture="$(docker compose exec -T gitlab gitlab-rails runner \
@@ -678,11 +748,13 @@ cmd_postconfigure() {
 }
 
 cmd_verify() {
+  [[ "${1:-}" == "--prevalidated" ]] || validate_formal_identity
   section "Formal deployment verification (fail-closed)"
   local main_host="${ANILA_HOST:-anila.ai.ncsist.org.tw}"
   local n8n_host="${N8N_HOST:-n8n.ai.ncsist.org.tw}"
   local gitlab_host="${GITLAB_HOST:-gitlab.ai.ncsist.org.tw}"
 
+  check_running_container_image_lock
   verify_tls_material
   verify_https_code "主平台 nginx /health" "$main_host" /health 200
   docker compose exec -T csp python -c \
@@ -771,9 +843,11 @@ cmd_help() {
 SUBCMD="${1:-deploy}"
 shift || true
 
+check_compose_control_env
+
 case "$SUBCMD" in
   preflight) cmd_preflight ;;
-  tool-preflight) check_docker; check_tool_upgrade_safety ;;
+  tool-preflight) validate_formal_identity; check_tool_upgrade_safety ;;
   deploy)    cmd_deploy ;;
   up)        cmd_up ;;
   down)      cmd_down ;;

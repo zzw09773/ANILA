@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[3]
 AUDIT_JSON = ROOT / "docs/security/2026-07-10-card-material-audit.json"
 INVENTORY = ROOT / "infra/deployment/intranet/platform-image-inventory.tsv"
 POSTURE_ENV = (
-    "ANILA_ENV", "ENABLE_CARD_LOGIN", "REQUIRE_CARD_LOGIN_ONLY",
+    "ANILA_DEPLOYMENT_PROFILE", "ANILA_ENV", "ENABLE_CARD_LOGIN", "REQUIRE_CARD_LOGIN_ONLY",
     "ENABLE_PUBLIC_SHARE", "ENABLE_MEMORY", "ANILA_TRACE_ENDPOINT",
     "SITE_URL", "N8N_HOST", "N8N_EDITOR_BASE_URL", "N8N_WEBHOOK_URL",
     "GITLAB_HOST", "CODESERVER_HOST",
@@ -308,6 +308,8 @@ def collect_runtime(bundle: EvidenceBundle) -> dict[str, Any]:
             item["acl_restricted"] for item in acl
         ),
         "repo_root_has_no_rw_mount": not rw_repo,
+        "deployment_profile_declared": csp_env.get("ANILA_DEPLOYMENT_PROFILE")
+        == "prod-intranet-card",
         "no_privileged_container": not any(item["privileged"] for item in containers),
     }
     payload = {

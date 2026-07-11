@@ -78,6 +78,14 @@ class AirgapImageInventoryTests(unittest.TestCase):
         self.assertIn("expected_id", script)
         self.assertIn("actual_id", script)
         self.assertIn("sha256sum -c CHECKSUMS.sha256", script)
+        self.assertIn(
+            'echo "   bash infra/deployment/intranet/intranet-deploy.sh"',
+            script,
+        )
+        self.assertNotIn(
+            'echo "   docker compose up -d --no-build --pull never"',
+            script,
+        )
         self.assertNotIn("CHECKSUMS.sha256 不存在", script)
         self.assertNotIn("missing $tar — skipped", script)
         self.assertNotIn(

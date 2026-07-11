@@ -29,6 +29,7 @@ os.environ["HEALTH_CHECK_INTERVAL"] = "3600"
 # TestClient instance. The dev opt-in is required so production cannot use the
 # skip flag as a migration bypass.
 os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
+os.environ.setdefault("ANILA_DEPLOYMENT_PROFILE", "test")
 os.environ.setdefault("SKIP_STARTUP_MIGRATIONS", "true")
 # TestClient uses http://testserver — Secure __Host- cookies would be dropped.
 # This selects the distinct anila_dev_* names; production never accepts the

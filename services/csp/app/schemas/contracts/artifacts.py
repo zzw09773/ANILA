@@ -18,7 +18,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, model_validator
 
-from app.schemas.contracts.classification import ClassificationLevel
+from anila_contracts import Classification as ClassificationLevel
 
 
 class ArtifactType(str, enum.Enum):

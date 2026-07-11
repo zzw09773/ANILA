@@ -1,0 +1,342 @@
+name: Gate 1 required CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - prod-intranet-card
+  push:
+    branches:
+      - main
+      - prod-intranet-card
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate1-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONIOENCODING: utf-8
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  governance:
+    name: Test and capability governance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate F1/F3 suite and quarantine registry
+        run: |
+          python infra/ci/check_gate1_test_governance.py
+          python -m unittest discover -s infra/ci/tests -v
+
+      - name: Test capability-freeze policy
+        run: python -m unittest infra.policy.tests.test_gate1_capability_freeze -v
+
+      - name: Enforce capability freeze against trusted PR base
+        if: github.event_name == 'pull_request'
+        run: >-
+          python infra/policy/gate1/check_capability_freeze.py
+          --base-ref "origin/${{ github.base_ref }}"
+          --bootstrap-if-missing
+
+      - name: Enforce capability freeze
+        if: github.event_name != 'pull_request'
+        run: python infra/policy/gate1/check_capability_freeze.py
+
+  deployment-posture:
+    name: Deployment / image-lock posture
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deployment-contract dependencies
+        run: python -m pip install cryptography pyyaml
+
+      - name: Validate deployment shell syntax
+        run: |
+          set -euo pipefail
+          for script in infra/deployment/scripts/*.sh infra/deployment/intranet/*.sh infra/ci/*.sh; do
+            bash -n "$script"
+          done
+
+      - name: Verify formal Compose image-lock wiring
+        run: python infra/deployment/scripts/verify-compose-image-lock.py check-wiring
+
+      - name: Run complete deployment contracts
+        run: python -m unittest discover -s infra/deployment/tests -v
+
+  contract-smoke:
+    name: Contract smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SECRET_KEY: gate1-ci-only-secret-key-0123456789abcdef
+      PYTHONPATH: services/csp:packages/anila-core/src
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install local contract, security, core, and CSP dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./packages/anila-contracts[dev]"
+          python -m pip install -e "./packages/anila-security[dev]"
+          python -m pip install -e "./packages/anila-core[dev]"
+          python -m pip install -r services/csp/requirements-dev.txt
+
+      - name: Run standalone package contracts
+        run: |
+          python -m pytest packages/anila-contracts/tests packages/anila-security/tests -q
+          python -m ruff check packages/anila-contracts/src packages/anila-contracts/tests
+          python -m ruff check packages/anila-security
+
+      - name: Run consumer identity and compatibility contracts
+        run: |
+          python -m pytest packages/anila-core/tests/test_contracts_facade.py packages/anila-core/tests/test_url_guard_kind_split.py -q
+          cd services/csp
+          python -m pytest tests/test_anila_contracts_package.py tests/test_url_guard_opt_in.py tests/test_url_guard_providers.py -q
+
+  backend-core:
+    name: Backend / anila-core unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install local packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./packages/anila-contracts"
+          python -m pip install -e "./packages/anila-security"
+          python -m pip install -e "./packages/anila-core[dev,rag]"
+
+      - name: Run unit suite
+        working-directory: packages/anila-core
+        run: python -m pytest --ignore=tests/integration tests -q
+
+  backend-agent:
+    name: Backend / anila-agent unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install agent
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./packages/anila-agent[dev,serving,pgvector,csp]"
+
+      - name: Run deterministic unit suite
+        working-directory: packages/anila-agent
+        run: python -m pytest -m "not live" -q
+
+  backend-ingestion:
+    name: Backend / ingestion-worker unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install local packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./packages/anila-contracts"
+          python -m pip install -e "./packages/anila-security"
+          python -m pip install -e "./packages/anila-core[rag]"
+          python -m pip install -e "./services/ingestion-worker[dev]"
+
+      - name: Run worker suite
+        working-directory: services/ingestion-worker
+        run: python -m pytest tests -q
+
+  backend-csp:
+    name: Backend / CSP full suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      SECRET_KEY: gate1-ci-only-secret-key-0123456789abcdef
+      PYTHONPATH: .
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install local packages and CSP test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./packages/anila-contracts"
+          python -m pip install -e "./packages/anila-security"
+          python -m pip install -e "./packages/anila-core[rag]"
+          python -m pip install -r services/csp/requirements-dev.txt
+
+      - name: Run complete CSP suite
+        working-directory: services/csp
+        run: python -m pytest -q
+
+  postgres-rls:
+    name: Backend / PostgreSQL RLS
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: csp
+          POSTGRES_USER: csp
+          POSTGRES_PASSWORD: gate1-admin-db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U csp -d csp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install migration and integration dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./packages/anila-contracts"
+          python -m pip install -e "./packages/anila-security"
+          python -m pip install -e "./packages/anila-core[dev]"
+          python -m pip install -r services/csp/requirements-dev.txt
+
+      - name: Migrate fresh PostgreSQL to Alembic head
+        working-directory: services/csp
+        env:
+          MIGRATION_DATABASE_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          DATABASE_URL: postgresql://csp_app:gate1-app-db@127.0.0.1:5432/csp
+          CSP_APP_DB_PASSWORD: gate1-app-db
+          PYTHONPATH: .
+        run: python -m alembic upgrade head
+
+      - name: Prove RLS and mutation sensitivity with app and admin roles
+        working-directory: packages/anila-core
+        env:
+          ANILA_REQUIRE_RLS_TESTS: "1"
+          INTEGRATION_DB_URL: postgresql://csp_app:gate1-app-db@127.0.0.1:5432/csp
+          INTEGRATION_ADMIN_DB_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+        run: python -m pytest tests/integration -q
+
+      - name: Run CSP ingestion-image RLS contract
+        working-directory: services/csp
+        env:
+          ANILA_TEST_PG_DSN: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          DATABASE_URL: postgresql://csp_app:gate1-app-db@127.0.0.1:5432/csp
+          PYTHONPATH: .
+        run: python -m pytest tests/test_ingestion_images_rls_pg.py -q
+
+  frontend-governance:
+    name: Frontend / CSP governance UI
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/csp-governance-ui/package-lock.json
+      - name: Install, test, and build
+        working-directory: apps/csp-governance-ui
+        run: |
+          npm ci
+          npm test
+          npm run build
+
+  frontend-shell:
+    name: Frontend / ANILA Shell
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/anila-shell/package-lock.json
+      - name: Install, test, and build
+        working-directory: apps/anila-shell
+        run: |
+          npm ci
+          npm test
+          npm run build
+
+  frontend-anilalm:
+    name: Frontend / ANILALM
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/anilalm/package-lock.json
+      - name: Install, typecheck, and build
+        working-directory: apps/anilalm
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build

@@ -1,31 +1,28 @@
-"""Security primitives shared across services.
+"""Backward-compatible facade for the standalone :mod:`anila_security`.
 
-Sprint 5 / Chunk X:
-- ``credential_crypto`` for AES-256-GCM encrypted credential columns.
-  CSP backend uses it at create time; ingestion-worker uses it at
-  judge-call time.
-- ``url_guard`` rejects user-supplied endpoint URLs that point at
-  private / loopback / metadata addresses (SSRF defense for the
-  Chunking Evaluator's BYO LLM credentials).
+New service code must import ``anila_security`` directly.  This namespace is
+kept so published ``anila-core`` users retain their existing import contract.
 """
 
-from anila_core.security.credential_crypto import (
-    decrypt_credential,
-    encrypt_credential,
-)
-from anila_core.security.url_guard import (
+from anila_security import (
     ENDPOINT_KIND_AGENT,
     ENDPOINT_KIND_GENERIC,
     ENDPOINT_KIND_MODEL,
     UnsafeEndpointError,
     clear_trusted_host_providers,
+    decrypt_credential,
+    encrypt_credential,
+    legacy_fallback_count,
     register_trusted_host_provider,
+    reset_legacy_fallback_count,
     validate_outbound_url,
 )
 
 __all__ = [
     "decrypt_credential",
     "encrypt_credential",
+    "legacy_fallback_count",
+    "reset_legacy_fallback_count",
     "UnsafeEndpointError",
     "validate_outbound_url",
     "register_trusted_host_provider",

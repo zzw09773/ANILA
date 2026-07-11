@@ -55,8 +55,9 @@ def test_tenant_slug_is_single_safe_component(evil):
     assert "\x00" not in slug
     assert all(c.isalnum() or c in "-_" for c in slug)
     # 當成 tenants/<slug> 路徑元件不會逃出 base。
-    resolved = (Path("/base/tenants") / slug).resolve()
-    assert str(resolved).startswith("/base/tenants/")
+    base = Path("/base/tenants").resolve()
+    resolved = (base / slug).resolve()
+    assert resolved.parent == base
 
 
 def test_tenant_slug_collision_free_even_when_prefix_collides():

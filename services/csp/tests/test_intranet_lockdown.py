@@ -3,13 +3,12 @@
 Pins the contract:
 - 預設 ``REQUIRE_CARD_LOGIN_ONLY=False`` → 既有 endpoint 行為不變。
 - ``REQUIRE_CARD_LOGIN_ONLY=True`` 時：
-  - ``POST /api/auth/login``       → 404;**例外:owner 帳密正確可登入**
-    (break-glass,2026-06-11)— 其他所有結果(密碼錯/非 owner 憑證有效/
-    待核准)一律 404,姿態不可區分
+  - ``POST /api/auth/login``       → 404；只有具名且未過期的 break-glass
+    profile 對 owner 帳密開放，其他結果一律 404、姿態不可區分
   - ``POST /api/auth/register``    → 404
   - ``GET  /api/auth/oidc/{id}/start`` → 404
   - ``GET  /api/auth/oidc/{id}/callback`` → 404
-  - ``PUT  /api/auth/password``    → 404;**例外:owner 可輪換密碼**
+  - ``PUT  /api/auth/password``    → 404；break-glass owner 才可輪換密碼
   - ``GET  /api/auth/providers``   → 不再列出 OIDC providers
 - Startup 一致性：``REQUIRE_CARD_LOGIN_ONLY=True`` 但
   ``ENABLE_CARD_LOGIN=False`` → ``RuntimeError``。
@@ -31,6 +30,22 @@ def card_only_lockdown(monkeypatch):
     """Toggle the intranet lockdown for this test only."""
     monkeypatch.setattr(settings, "ENABLE_CARD_LOGIN", True)
     monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+    monkeypatch.setattr(settings, "ANILA_DEPLOYMENT_PROFILE", "prod-intranet-card")
+
+
+@pytest.fixture
+def active_break_glass(monkeypatch, card_only_lockdown):
+    from datetime import datetime, timedelta, timezone
+
+    monkeypatch.setattr(
+        settings,
+        "ANILA_DEPLOYMENT_PROFILE",
+        "prod-intranet-card-breakglass",
+    )
+    monkeypatch.setenv(
+        "ANILA_BREAK_GLASS_EXPIRES_AT",
+        (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+    )
 
 
 # ── endpoint-level lockdown ────────────────────────────────────────────────────
@@ -117,17 +132,27 @@ def test_providers_endpoint_hides_oidc_when_locked_down(
     assert names == set()
 
 
-# ── owner break-glass(2026-06-11):card-only 下帳密登入僅限 owner ────────────
+# ── named/time-bounded owner break-glass ─────────────────────────────────────
 
 
-def test_owner_password_login_allowed_when_locked_down(
+def test_owner_password_login_rejected_in_normal_card_profile(
     client: TestClient, db, card_only_lockdown
 ):
-    """owner 是 break-glass 例外:card-only 下帳密正確仍可登入。"""
     make_user(db, username="boss", role="owner")
     resp = client.post(
         "/api/auth/login",
         json={"username": "boss", "password": "password"},
+    )
+    assert resp.status_code == 404
+
+
+def test_owner_password_login_allowed_in_active_break_glass(
+    client: TestClient, db, active_break_glass
+):
+    make_user(db, username="incident-owner", role="owner")
+    resp = client.post(
+        "/api/auth/login",
+        json={"username": "incident-owner", "password": "password"},
     )
     assert resp.status_code == 200
     assert resp.json()["access_token"]
@@ -158,9 +183,9 @@ def test_nonowner_valid_credentials_return_404_when_locked_down(
 
 
 def test_change_password_owner_allowed_when_locked_down(
-    client: TestClient, db, card_only_lockdown
+    client: TestClient, db, active_break_glass
 ):
-    """owner 能登入就必須能輪換密碼(與 /login 例外對齊)。"""
+    """Active break-glass owner can rotate the recovery password."""
     make_user(db, username="boss", role="owner")
     token = client.post(
         "/api/auth/login",

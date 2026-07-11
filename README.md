@@ -125,6 +125,7 @@ flowchart TB
 | 目錄 | 說明 |
 |---|---|
 | [`anila-core`](./packages/anila-core/) | Runtime foundation SDK：`api` / `registry` / `engine` / `tools` / `providers` / `storage` / `memory` / `tracing` / `security` / `router` / `ingestion`。Router、CSP、ingestion-worker 皆安裝它 |
+| [`anila-contracts`](./packages/anila-contracts/) | Gate 1 F5 薄型 wire contracts：五級 `Classification`、`StepEvent`、`AgentError`；不繼承服務框架或資料庫依賴 |
 | [`anila-agent`](./packages/anila-agent/) | 官方 sub-agent 模板（git subtree）；root compose 唯讀掛入 CSP 的 `/app/anila-template` |
 
 **`infra/`** — compose / 部署 / 閘道 / CI / 模型
@@ -251,8 +252,9 @@ bash infra/ci/check-airgap-image-inventory.sh
 | 子專案 | 指令（於 repo 根執行） |
 |---|---|
 | CSP | `cd services/csp && .venv/bin/python -m pytest` |
-| anila-core | `cd packages/anila-core && pip install -e '.[dev,rag]' && pytest`（RLS 類另 `pytest -m integration`；品質 `ruff check src tests` / `mypy src`） |
-| ingestion-worker | `cd services/ingestion-worker && pip install -e '../../packages/anila-core[rag]' -e '.[dev]' && pytest` |
+| anila-core | `cd packages/anila-core && pip install -e ../anila-contracts -e ../anila-security -e '.[dev,rag]' && pytest`（RLS 類另 `pytest -m integration`；品質 `ruff check src tests` / `mypy src`） |
+| anila-contracts | `cd packages/anila-contracts && pip install -e '.[dev]' && pytest && ruff check src tests` |
+| ingestion-worker | `cd services/ingestion-worker && pip install -e ../../packages/anila-contracts -e ../../packages/anila-security -e '../../packages/anila-core[rag]' -e '.[dev]' && pytest` |
 | anila-studio | `cd services/anila-studio && pip install -e '.[dev]' && pytest` |
 | anila-agent | `cd packages/anila-agent && make install && make test && make lint`（live 端點才 `make test-live`） |
 | anila-shell | `cd apps/anila-shell && npm install && npm test && npm run build` |

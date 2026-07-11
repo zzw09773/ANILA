@@ -111,7 +111,8 @@ cd services/ingestion-worker
 .venv/bin/ruff check src tests
 ```
 
-> For a fresh venv, follow the Dockerfile's install order: `pip install -e 'packages/anila-core[rag]'` first, then `pip install -e 'services/ingestion-worker[dev]'`.
+> For a fresh venv, run this from the current `services/ingestion-worker`
+> directory in Dockerfile order: `pip install -e ../../packages/anila-contracts -e ../../packages/anila-security -e '../../packages/anila-core[rag]' -e '.[dev]'`.
 
 In compose (`infra/compose/platform.yml`): build context = repo root; `depends_on` (all `service_healthy`) `csp-db` / `redis` / `csp`; volume `share/uploads/ingestion` (host) → `/var/anila/ingestion-uploads`; CMD `arq ingestion_worker.main.WorkerSettings`; `restart: unless-stopped`. **`docker restart` does not reload `.env`/compose; apply config with `up -d`.**
 

@@ -81,7 +81,9 @@ docker run -p 9000:9000 -e CSP_BASE_URL=http://csp:8000 -e CSP_SERVICE_TOKEN=dev
 ### 方式 3:單機 uvicorn(開發)
 
 ```bash
-pip install -e "../../packages/anila-core"        # 純 runtime,不需 RAG extras
+pip install -e "../../packages/anila-contracts" \
+  -e "../../packages/anila-security" \
+  -e "../../packages/anila-core"                  # 純 runtime,不需 RAG extras
 export CSP_BASE_URL=http://localhost:8000
 uvicorn main:app --host 0.0.0.0 --port 9000 --log-level info
 ```

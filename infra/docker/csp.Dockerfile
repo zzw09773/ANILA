@@ -28,7 +28,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
-# Install anila-core first (changes less often than backend code, so
+# Install the thin wire-contract package before its consumers.
+COPY packages/anila-contracts /tmp/anila-contracts
+RUN pip install --no-cache-dir /tmp/anila-contracts
+
+# Install the thin security package before anila-core. anila-core keeps a
+# compatibility dependency on it, while CSP imports anila_security directly.
+COPY packages/anila-security /tmp/anila-security
+RUN pip install --no-cache-dir /tmp/anila-security
+
+# Install anila-core next (changes less often than backend code, so
 # layer caching survives most builds). The package brings asyncpg +
 # pgvector + the AgentScopedPgVectorStore the inspector uses, and the
 # ``[rag]`` extra adds the parser stack (pymupdf4llm / python-docx /

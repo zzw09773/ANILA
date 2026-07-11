@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     # Application
     APP_NAME: str = "CSP Platform"
     APP_VERSION: str = "1.0.0"
+    # Machine-readable deployment identity. Formal compose profiles must set
+    # this explicitly; startup_security verifies the resolved flags against
+    # the named contract before migrations or background work begin.
+    ANILA_DEPLOYMENT_PROFILE: str = "development"
     DEBUG: bool = False
     # Swagger UI (/docs) + OpenAPI schema (/openapi.json) exposure. These have
     # no auth and leak the full API surface, so they are OFF by default

@@ -66,8 +66,15 @@ class DeploymentContainmentTests(unittest.TestCase):
             self.skipTest("docker compose is not usable in this environment")
 
         env = os.environ.copy()
-        env.pop("COMPOSE_FILE", None)
-        env.pop("COMPOSE_PROFILES", None)
+        for variable in (
+            "COMPOSE_FILE",
+            "COMPOSE_PROFILES",
+            "COMPOSE_PROJECT_NAME",
+            "COMPOSE_ENV_FILES",
+            "COMPOSE_DISABLE_ENV_FILE",
+            "COMPOSE_PATH_SEPARATOR",
+        ):
+            env.pop(variable, None)
         env.update(
             {
                 "ADMIN_PASSWORD": "test-admin-0123456789012345",
@@ -98,8 +105,18 @@ class DeploymentContainmentTests(unittest.TestCase):
                 "GITLAB_ROOT_PASSWORD": "gitlab-root-test-password-0123456789",
                 "CODESERVER_HOST": "code.ai.ncsist.org.tw",
                 "GITLAB_SSH_BIND_IP": "10.53.100.15",
+                "ANILA_DEPLOYMENT_PROFILE": "prod-intranet-card",
             }
         )
+        inventory = read(
+            "infra/deployment/intranet/platform-image-inventory.tsv"
+        )
+        for raw in inventory.splitlines():
+            if not raw or raw.startswith("#"):
+                continue
+            service, image, *_ = raw.split("\t")
+            variable = "ANILA_IMAGE_" + service.upper().replace("-", "_")
+            env[variable] = image
 
         def compose_config(*args: str) -> dict[str, object]:
             result = subprocess.run(
@@ -285,8 +302,8 @@ class DeploymentContainmentTests(unittest.TestCase):
             "check_tool_upgrade_safety",
             "tool-preflight",
             "unverified-volume:",
-            "N8N_RUNTIME_IMAGE=n8nio/n8n:2.29.10",
-            "GITLAB_RUNTIME_IMAGE=gitlab/gitlab-ce:19.1.1-ce.0",
+            'N8N_RUNTIME_IMAGE="${ANILA_IMAGE_N8N:-$(env_file_value ANILA_IMAGE_N8N)}"',
+            'GITLAB_RUNTIME_IMAGE="${ANILA_IMAGE_GITLAB:-$(env_file_value ANILA_IMAGE_GITLAB)}"',
             "showSetupOnFirstLoad!==false",
             "GitLab main/ci background 與 schema migrations 全數完成",
             "mark_verified_tool_versions",
@@ -300,8 +317,27 @@ class DeploymentContainmentTests(unittest.TestCase):
             "cmd_verify",
         ):
             self.assertIn(token, script)
-        self.assertIn("check_tool_upgrade_safety\n  ensure_jwt_keypair", script)
-        self.assertIn("cmd_wait_healthy\n  cmd_postconfigure\n  cmd_verify", script)
+        formal_up = script[
+            script.index("validate_formal_up() {") :
+            script.index("# ── Subcommand: deploy")
+        ]
+        restart = script[
+            script.index("cmd_restart() {") :
+            script.index("# ── Opt-in developer tool")
+        ]
+        postconfigure = script[
+            script.index("cmd_postconfigure() {") : script.index("cmd_verify() {")
+        ]
+        verify = script[script.index("cmd_verify() {") : script.index("# ── 顯示說明")]
+        self.assertLess(
+            formal_up.index("check_tool_upgrade_safety"),
+            formal_up.index("ensure_jwt_keypair"),
+        )
+        self.assertLess(restart.index("validate_formal_up"), restart.index("cmd_down"))
+        self.assertIn("cmd_postconfigure --prevalidated", script)
+        self.assertIn("cmd_verify --prevalidated", script)
+        self.assertIn("check_running_container_image_lock", postconfigure)
+        self.assertIn("check_running_container_image_lock", verify)
         self.assertIn('"(unhealthy)"', script)
         self.assertIn('"(healthy)"', script)
 
@@ -433,7 +469,7 @@ class DeploymentContainmentTests(unittest.TestCase):
     def test_developer_lifecycle_explicitly_enables_the_profile(self) -> None:
         script = read("infra/deployment/scripts/deploy-prod.sh")
         self.assertIn(
-            "docker compose --profile developer-tools up -d --pull never codeserver",
+            "docker compose --profile developer-tools up -d --no-build --pull never codeserver",
             script,
         )
         self.assertIn(

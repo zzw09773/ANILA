@@ -106,7 +106,9 @@ def test_agent_http_legacy_flag_fallback_warns(monkeypatch, caplog):
     """legacy ANILA_ALLOW_HTTP_ENDPOINT 仍放行 agent http,但記 deprecation 警告
     (不打斷內網 MLSteam 純 http NodePort agent)。"""
     monkeypatch.setenv(_HTTP_MODEL, "1")  # legacy only
-    with caplog.at_level(logging.WARNING, logger="anila_core.security.url_guard"):
+    # The legacy facade deliberately re-exports the canonical implementation,
+    # so log records use the canonical module name.
+    with caplog.at_level(logging.WARNING, logger="anila_security.url_guard"):
         validate_outbound_url(_PUBLIC, endpoint_kind=ENDPOINT_KIND_AGENT)
     assert any("ANILA_ALLOW_HTTP_AGENT_ENDPOINT" in r.message for r in caplog.records)
 

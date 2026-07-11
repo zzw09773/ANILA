@@ -24,6 +24,7 @@ from app.schemas.user import (
     RegisterRequest,
 )
 from app.services.audit_service import log_audit_event
+from app.services.startup_security import is_break_glass_active
 from app.services.token_revocation_publisher import publish_revocation_sync
 from app.services.auth_service import (
     authenticate_user,
@@ -87,13 +88,17 @@ def login(
     response: Response,
     db: Session = Depends(get_db),
 ):
-    # Branch SSO lockdown:``REQUIRE_CARD_LOGIN_ONLY`` 時帳密登入僅保留給
-    # **owner**(break-glass 管理通道,2026-06-11 拍板)。posture 與
+    # Branch SSO lockdown:``REQUIRE_CARD_LOGIN_ONLY`` 時帳密登入只有在
+    # 具名、未過期的 break-glass deployment profile 才保留給 **owner**。
+    # posture 與
     # ``_reject_when_card_only`` 一致:非 owner 的所有結果 — 帳密錯、待核准、
     # 甚至帳密完全正確 — 一律回與「功能不存在」相同的 404,讓外部探測無法
     # 區分「密碼錯 / 權限不足 / 端點關閉」;只有 owner 完整登入成功會放行。
     card_only = settings.REQUIRE_CARD_LOGIN_ONLY
     ip_address = http_request.client.host if http_request.client else None
+
+    if card_only and not is_break_glass_active():
+        raise HTTPException(status_code=404)
 
     if request.auth_source not in (None, "", "local"):
         if card_only:
@@ -271,11 +276,13 @@ def change_password(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # Card-only deployments：本機帳密僅 owner 保留(break-glass,與 /login 的
-    # owner 例外對齊)— owner 能登入就必須能輪換密碼。其他帳號的
+    # Card-only deployments：本機帳密只在具名、未過期的 break-glass
+    # profile 對 owner 開放（與 /login 的 owner 例外對齊）。其他帳號的
     # hashed_password 是 unguessable random,本來就提供不出 current_password,
     # 對他們維持 404 姿態。
-    if settings.REQUIRE_CARD_LOGIN_ONLY and current_user.role != "owner":
+    if settings.REQUIRE_CARD_LOGIN_ONLY and not (
+        current_user.role == "owner" and is_break_glass_active()
+    ):
         raise HTTPException(status_code=404)
     if not verify_password(request.current_password, current_user.hashed_password):
         raise HTTPException(
