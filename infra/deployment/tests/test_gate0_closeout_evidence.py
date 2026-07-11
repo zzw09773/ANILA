@@ -54,6 +54,8 @@ class Gate0CloseoutEvidenceTests(unittest.TestCase):
             bundle = MODULE.EvidenceBundle(Path(directory) / "evidence")
             with patch.object(MODULE, "compose_config", return_value=config), patch.object(
                 MODULE, "git_commit", return_value="1aedf155"
+            ), patch.object(
+                MODULE, "git_worktree_clean", return_value=False
             ):
                 payload = MODULE.collect_profile(bundle)
             self.assertTrue(payload["passed"])
