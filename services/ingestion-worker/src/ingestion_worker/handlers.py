@@ -610,51 +610,10 @@ async def _bump_collection_counters(
 async def _reconcile_collection_counters(
     pool: PgPool, collection_id: int
 ) -> None:
-    """Recompute denormalized counters under a collection row lock.
+    """Delegate exact replacement counters to the canonical chunk store."""
 
-    Re-index is a replacement, not an append.  Delta-only updates double
-    counted documents and chunks on retries.  ``FOR UPDATE`` serializes
-    concurrent completions so the last writer observes every earlier commit.
-    """
-
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            exists = await conn.fetchval(
-                """
-                SELECT id
-                  FROM ingestion_collections
-                 WHERE id = $1
-                   FOR UPDATE
-                """,
-                collection_id,
-            )
-            if exists is None:
-                raise StoreError(
-                    code="E_PG_CONSTRAINT",
-                    retryable=False,
-                    severity="error",
-                    user_message="知識庫不存在，無法校正索引計數。",
-                    details={"collection_id": collection_id},
-                )
-            await conn.execute(
-                """
-                UPDATE ingestion_collections
-                   SET document_count = (
-                           SELECT count(*)
-                             FROM ingestion_documents
-                            WHERE collection_id = $1
-                              AND status = 'indexed'
-                       ),
-                       chunk_count = (
-                           SELECT count(*)
-                             FROM document_chunks
-                            WHERE collection_id = $1
-                       ),
-                       updated_at = now()
-                 WHERE id = $1
-                """,
-                collection_id,
-            )
+    store = CollectionScopedPgVectorStore(pool, collection_id=collection_id)
+    await store.reconcile_collection_counters()
 
 
 async def _record_job_failure(

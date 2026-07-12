@@ -325,6 +325,26 @@ async def test_atomic_replace_rejects_invalid_generation_before_database_use() -
         )
 
 
+async def test_counter_reconciliation_stays_inside_canonical_store() -> None:
+    connection = _RecordingConnection()
+    store = CollectionScopedPgVectorStore(
+        _RecordingPool(connection),  # type: ignore[arg-type]
+        collection_id=9,
+    )
+
+    await store.reconcile_collection_counters()
+
+    assert any(
+        "FROM ingestion_collections" in sql and "FOR UPDATE" in sql
+        for sql, _args in connection.fetchrow_calls
+    )
+    assert any(
+        "UPDATE ingestion_collections" in sql
+        and "FROM document_chunks" in sql
+        for sql, _args in connection.execute_calls
+    )
+
+
 async def test_clearance_allowlist_is_applied_in_sql_before_global_ranking() -> None:
     connection = _RecordingConnection()
     store = CollectionScopedPgVectorStore(

@@ -750,6 +750,60 @@ class CollectionScopedPgVectorStore:
             ) from exc
         return len(parent_chunks) + len(leaf_chunks)
 
+    async def reconcile_collection_counters(self) -> None:
+        """Recompute indexed document/chunk counters under the scope lock.
+
+        Re-index replaces a generation, so increment-only counters drift on
+        every retry. Keeping the chunk-table aggregation in this canonical
+        store also preserves the invariant that worker handlers never grow a
+        second raw ``document_chunks`` SQL boundary.
+        """
+
+        try:
+            async with self._acquire() as conn:
+                async with conn.transaction():
+                    locked = await conn.fetchrow(
+                        """
+                        SELECT id
+                          FROM ingestion_collections
+                         WHERE id = $1
+                           FOR UPDATE
+                        """,
+                        self._collection_id,
+                    )
+                    if locked is None:
+                        raise StoreError(
+                            code="E_PG_SCOPE_MISSING",
+                            retryable=False,
+                            severity="error",
+                            user_message="知識庫不存在，無法校正索引計數。",
+                            details={"collection_id": self._collection_id},
+                        )
+                    await conn.execute(
+                        """
+                        UPDATE ingestion_collections
+                           SET document_count = (
+                                   SELECT count(*)
+                                     FROM ingestion_documents
+                                    WHERE collection_id = $1
+                                      AND status = 'indexed'
+                               ),
+                               chunk_count = (
+                                   SELECT count(*)
+                                     FROM document_chunks
+                                    WHERE collection_id = $1
+                               ),
+                               updated_at = now()
+                         WHERE id = $1
+                        """,
+                        self._collection_id,
+                    )
+        except asyncpg.ConnectionDoesNotExistError as exc:
+            raise StoreError.pg_connect(
+                user_message="資料庫連線中斷，請稍後再試",
+                details={"cause": type(exc).__name__},
+            ) from exc
+
     async def keyword_search(
         self,
         query: str,
