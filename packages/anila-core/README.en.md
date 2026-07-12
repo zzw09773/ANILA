@@ -42,7 +42,7 @@ How each role relates to anila-core:
 | `python-frontmatter>=1.1` / `pyyaml>=6.0` | agent definition / config loading |
 | `anyio>=4.0` / `aiofiles>=23.0` | async IO |
 | `asyncpg>=0.29` / `pgvector>=0.3` | Pillar 2 `CollectionScopedPgVectorStore` (central ingestion vector store) |
-| `anila-contracts>=0.1,<0.2` | standalone Classification / StepEvent / AgentError wire contracts; `anila_core.contracts` is only a facade |
+| `anila-contracts>=1,<2` | standalone classification, event, and Gate 2 governance wire contracts; `anila_core.contracts` is only a facade |
 | `anila-security>=0.1,<0.2` | compatibility facade for legacy `anila_core.security` imports; implementation and `cryptography` dependency live in the standalone package |
 | `aiosqlite>=0.20` | default `sqlite_session` short-term session adapter |
 

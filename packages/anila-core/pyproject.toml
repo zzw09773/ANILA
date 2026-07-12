@@ -8,8 +8,8 @@ version = "0.14.0"
 description = "ANILA Core — Python agent runtime foundation (chat / agent / memory / dispatch)"
 requires-python = ">=3.11"
 dependencies = [
-    # Gate 1 F5: framework-neutral cross-service wire contracts.
-    "anila-contracts>=0.1.0,<0.2.0",
+    # Gate 2 F5→: governed task/trace/invocation/source wire contracts.
+    "anila-contracts>=1.0.0,<2.0.0",
     # Gate 1 F4: security primitives now live in a thin standalone package.
     # anila-core depends on it only to preserve the historical
     # ``anila_core.security`` compatibility facade.

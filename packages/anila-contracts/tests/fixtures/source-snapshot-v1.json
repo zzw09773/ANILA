@@ -1,0 +1,19 @@
+{
+  "schema_version": "source-snapshot/v1",
+  "id": 3,
+  "task_id": 2,
+  "origin": "collection",
+  "source_scope": "project",
+  "collection_ids": [11, 12],
+  "document_ids": [100, 200],
+  "chunk_ids": ["chunk-100-1", "chunk-200-4"],
+  "document_versions": {
+    "100": "generation-3",
+    "200": "generation-8"
+  },
+  "retrieval_queries": ["核准資料集的隔離設計"],
+  "content_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "payload_ref": "snapshots/snapshot-003.json",
+  "classification_level": "機密",
+  "created_at": "2026-07-12T01:02:03Z"
+}
