@@ -28,6 +28,14 @@ from app.models.classification import (
     ClassificationEvent,
     DeclassificationRequest,
 )
+from app.models.clearance import (
+    ClearanceGrant,
+    ClearanceGrantCompartment,
+    CollectionAccessGrant,
+    CollectionRequiredCompartment,
+    DocumentRequiredCompartment,
+    SecurityCompartment,
+)
 from app.models.conversation import Conversation
 from app.models.department import Department
 from app.models.handoff import Handoff
@@ -79,12 +87,17 @@ __all__ = [
     "Citation",
     "ClassificationAuthorityAssignment",
     "ClassificationEvent",
+    "ClearanceGrant",
+    "ClearanceGrantCompartment",
+    "CollectionAccessGrant",
+    "CollectionRequiredCompartment",
     "Conversation",
     "DeclassificationRequest",
     "Department",
     "AgentLlmCredential",
     "ConversationMemoryChunk",
     "DocumentRelation",
+    "DocumentRequiredCompartment",
     "Handoff",
     "IngestionCollection",
     "IngestionDocument",
@@ -101,6 +114,7 @@ __all__ = [
     "ServiceLaunch",
     "ServiceProjectBinding",
     "SourceSnapshot",
+    "SecurityCompartment",
     "Task",
     "TaskRun",
     "TokenRevocation",
