@@ -64,7 +64,13 @@ class RemoteAgentRegistry:
 
     def _is_stale(self, api_key: str) -> bool:
         cache_key = self._cache_key(api_key)
-        last_refresh = self._last_refresh_by_key.get(cache_key, 0.0)
+        # A process can start while the host monotonic clock is still below
+        # ``ttl`` (notably on fresh ephemeral CI/production hosts).  Treating a
+        # missing entry as timestamp 0 would then misclassify an empty registry
+        # as fresh and skip the first CSP read entirely.
+        if cache_key not in self._last_refresh_by_key:
+            return True
+        last_refresh = self._last_refresh_by_key[cache_key]
         return (time.monotonic() - last_refresh) >= self._ttl
 
     async def refresh(self, api_key: str) -> None:
