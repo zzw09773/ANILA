@@ -24,6 +24,7 @@ import asyncio
 import os
 import uuid
 from collections.abc import AsyncIterator
+from urllib.parse import urlsplit
 
 import asyncpg
 import pytest
@@ -33,10 +34,26 @@ from anila_core.storage.adapters.pg_pool import PgPool
 
 
 _DEFAULT_DSN = "postgresql://csp_app:csp@127.0.0.1:5432/csp"
+_REQUIRE_RLS = os.environ.get("ANILA_REQUIRE_RLS_TESTS", "").lower() in {
+    "1", "true", "yes",
+}
 
 
 def _resolve_dsn() -> str:
     return os.environ.get("INTEGRATION_DB_URL", _DEFAULT_DSN)
+
+
+def _safe_dsn_label(dsn: str) -> str:
+    """Describe a target without ever echoing CI database credentials."""
+
+    try:
+        parsed = urlsplit(dsn)
+        host = parsed.hostname or "configured-host"
+        port = f":{parsed.port}" if parsed.port else ""
+        database = parsed.path or "/configured-db"
+        return f"{parsed.scheme or 'postgresql'}://{host}{port}{database}"
+    except (TypeError, ValueError):
+        return "<configured PostgreSQL DSN>"
 
 
 def _can_reach(dsn: str, timeout_s: float = 1.5) -> bool:
@@ -67,9 +84,14 @@ def pytest_collection_modifyitems(config, items):
     """
     dsn = _resolve_dsn()
     reachable = bool(dsn) and _can_reach(dsn)
+    if _REQUIRE_RLS and not reachable:
+        raise pytest.UsageError(
+            "ANILA_REQUIRE_RLS_TESTS=1 but the real PostgreSQL app-role DSN "
+            f"is unreachable: {_safe_dsn_label(dsn)}"
+        )
     skip_marker = pytest.mark.skip(
         reason=(
-            f"pgvector not reachable at {dsn!r}; set INTEGRATION_DB_URL or "
+            f"pgvector not reachable at {_safe_dsn_label(dsn)}; set INTEGRATION_DB_URL or "
             f"start the dev compose stack to enable G1/G2 gates."
         )
     )
@@ -79,6 +101,20 @@ def pytest_collection_modifyitems(config, items):
         item.add_marker(pytest.mark.asyncio(loop_scope="session"))
         if not reachable:
             item.add_marker(skip_marker)
+
+
+@pytest.fixture(scope="session")
+def integration_admin_dsn() -> str:
+    """Migration/superuser DSN used only for RLS metadata mutation controls."""
+
+    dsn = os.environ.get("INTEGRATION_ADMIN_DB_URL")
+    if dsn:
+        return dsn
+    if _REQUIRE_RLS:
+        raise pytest.UsageError(
+            "ANILA_REQUIRE_RLS_TESTS=1 requires INTEGRATION_ADMIN_DB_URL"
+        )
+    pytest.skip("INTEGRATION_ADMIN_DB_URL is required for RLS mutation controls")
 
 
 # ── Shared resources ────────────────────────────────────────────────────────
@@ -96,24 +132,63 @@ async def pool() -> AsyncIterator[PgPool]:
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
-async def isolation_collections(pool: PgPool) -> AsyncIterator[list[int]]:
+async def integration_owner_id() -> AsyncIterator[int]:
+    """Return an owner row, provisioning a disabled test user on a fresh DB.
+
+    Gate 1 CI starts from Alembic ``head`` without running CSP auto-seed.  The
+    RLS suite must therefore own its prerequisite instead of depending on an
+    operator/admin account.  The synthetic row cannot authenticate and is
+    removed after all dependent collections have been cleaned up.
+    """
+
+    conn = await asyncpg.connect(dsn=_resolve_dsn())
+    created_id: int | None = None
+    try:
+        owner_id = await conn.fetchval("SELECT id FROM users ORDER BY id LIMIT 1")
+        if owner_id is None:
+            owner_id = await conn.fetchval(
+                """
+                INSERT INTO users
+                    (username, hashed_password, role, is_active, is_approved,
+                     local_password_disabled, ui_settings)
+                VALUES ($1, $2, 'user', false, false, true, '{}'::jsonb)
+                RETURNING id
+                """,
+                f"rls-integration-{uuid.uuid4().hex}",
+                "!disabled-gate1-rls-fixture!",
+            )
+            created_id = int(owner_id)
+    finally:
+        await conn.close()
+
+    yield int(owner_id)
+
+    if created_id is not None:
+        try:
+            cleanup = await asyncpg.connect(dsn=_resolve_dsn())
+            try:
+                await cleanup.execute("DELETE FROM users WHERE id = $1", created_id)
+            finally:
+                await cleanup.close()
+        except Exception:
+            pass
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def isolation_collections(
+    pool: PgPool, integration_owner_id: int
+) -> AsyncIterator[list[int]]:
     """Allocate 5 throwaway collections for the suite.
 
-    Each collection's ``created_by`` points at the first existing user
-    (CSP seed creates at least one admin). Cleanup at session-end
-    deletes the collections (CASCADE clears every doc / chunk).
+    Each collection's ``created_by`` points at the suite-owned owner fixture.
+    Cleanup at session-end deletes the collections (CASCADE clears every doc /
+    chunk).
     """
     suffix = uuid.uuid4().hex[:8]
     coll_ids: list[int] = []
 
     conn = await asyncpg.connect(dsn=_resolve_dsn())
     try:
-        owner_id = await conn.fetchval("SELECT id FROM users ORDER BY id LIMIT 1")
-        if owner_id is None:
-            raise RuntimeError(
-                "No users in csp.users — CSP seed hasn't run; cannot allocate "
-                "test collections for G1/G2."
-            )
         for i in range(5):
             row = await conn.fetchrow(
                 """
@@ -125,7 +200,7 @@ async def isolation_collections(pool: PgPool) -> AsyncIterator[list[int]]:
                 RETURNING id
                 """,
                 f"g1-coll-{i}-{suffix}",
-                owner_id,
+                integration_owner_id,
             )
             coll_ids.append(int(row["id"]))
     finally:

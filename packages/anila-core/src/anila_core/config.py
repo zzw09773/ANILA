@@ -71,6 +71,13 @@ try:
             default=False,
             description="Disable auth checks when True (development only).",
         )
+        cookie_secure: bool = Field(
+            default=True,
+            description=(
+                "Read the formal __Host- session cookie. False selects the "
+                "distinct anila_dev_* name for explicit HTTP-only tests/dev."
+            ),
+        )
 
         # ── Sessions (Sprint 9) ───────────────────────────────────────
         session_db_path: str = Field(
@@ -102,6 +109,7 @@ except ImportError:
         csp_service_token: Optional[str] = None
         api_key: Optional[str] = None
         api_dev_mode: bool = False
+        cookie_secure: bool = True
         session_db_path: str = "./.anila/sessions.db"
 
 

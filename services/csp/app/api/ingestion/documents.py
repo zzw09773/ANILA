@@ -221,6 +221,37 @@ def _persist_blob(content: bytes, sha256: str) -> str:
     return path
 
 
+def _rollback_initial_upload(
+    db: Session,
+    *,
+    document_id: int,
+) -> None:
+    """Delete a newly-created upload after its first enqueue fails.
+
+    Redis cannot participate in the database transaction, so the initial
+    upload is committed before enqueueing.  Compensate that commit when the
+    enqueue fails, deleting any defensive job row first.
+
+    Deliberately keep the content-addressed blob.  An apparently unreferenced
+    path may already have been observed by another concurrent upload whose DB
+    row has not committed yet; unlinking here would let that transaction commit
+    a document pointing at a missing file.  A separate GC with a grace period
+    can safely remove old, repeatedly-unreferenced blobs later.
+    """
+    db.rollback()
+    try:
+        db.query(IngestionJob).filter(
+            IngestionJob.document_id == document_id
+        ).delete(synchronize_session=False)
+        db.query(IngestionDocument).filter(
+            IngestionDocument.id == document_id
+        ).delete(synchronize_session=False)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
 
@@ -307,7 +338,23 @@ async def upload_document(
     # Enqueue + create the matching jobs row. We do this in two steps
     # because Arq returns a job id only after enqueue, and we want the
     # row to carry that id from the start (no UPDATE-after-INSERT race).
-    arq_job_id = await enqueue_ingest_document(doc.id)
+    try:
+        arq_job_id = await enqueue_ingest_document(doc.id)
+    except Exception as exc:
+        try:
+            _rollback_initial_upload(
+                db,
+                document_id=doc.id,
+            )
+        except Exception as rollback_exc:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to enqueue ingest job and roll back upload",
+            ) from rollback_exc
+        raise HTTPException(
+            status_code=502,
+            detail="Failed to enqueue ingest job; upload rolled back",
+        ) from exc
     job = IngestionJob(
         arq_job_id=arq_job_id,
         collection_id=collection_id,
@@ -653,10 +700,19 @@ async def upload_zip(
         try:
             arq_job_id = await enqueue_ingest_document(doc.id)
         except Exception as e:
+            try:
+                _rollback_initial_upload(
+                    db,
+                    document_id=doc.id,
+                )
+            except Exception as rollback_exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to enqueue zip member and roll back upload",
+                ) from rollback_exc
             errors += 1
             results.append(ZipUploadResult(
                 filename=out_name, status="error",
-                document_id=doc.id,
                 detail=f"enqueue failed: {type(e).__name__}",
             ))
             continue

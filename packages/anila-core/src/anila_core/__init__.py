@@ -27,8 +27,8 @@ Two pillars
    (ingestion-worker today, future PII / scoring / refresh workers
    tomorrow):
 
-     - security/           credential_crypto (AES-GCM + PBKDF2 600k) +
-                           url_guard (SSRF deny-list)
+     - security/           compatibility facade over the standalone
+                           anila-security package
      - storage/adapters/   PgPool (asyncpg) + CollectionScopedPgVectorStore
                            + MemoryFileStore for tests
      - ingestion/          IngestionError taxonomy + chunking_plugins

@@ -2,9 +2,11 @@ services:
     api:
         build: .
         volumes:
-            - .:/workspace
+            - .:/workspace:ro
         working_dir: /workspace
         command: python app.py
         ports:
-            - "16888:16888"
+            # The synthetic signer is a localhost-only development device.
+            # Never expose its fixed test PIN and signing API to the LAN.
+            - "127.0.0.1:16888:16888"
 

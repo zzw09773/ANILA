@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
 
 from anila_core.cli.init_cmd import _render, _slugify, _scaffold
@@ -61,7 +58,7 @@ class TestScaffold:
         }
         _scaffold(output, variables)
 
-        content = (output / "agent.py").read_text()
+        content = (output / "agent.py").read_text(encoding="utf-8")
         assert "hr-agent" in content
         assert "{{AGENT_NAME}}" not in content
 
@@ -76,7 +73,7 @@ class TestScaffold:
         _scaffold(output, variables)
 
         import yaml
-        manifest = yaml.safe_load((output / "anila.yaml").read_text())
+        manifest = yaml.safe_load((output / "anila.yaml").read_text(encoding="utf-8"))
         assert manifest["name"] == "finance-agent"
         assert manifest["description_for_router"] == "Finance reports"
         assert manifest["endpoint_url"] == "http://localhost:9102"

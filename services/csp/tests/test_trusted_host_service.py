@@ -182,9 +182,9 @@ def test_backfill_records_note_for_audit(db, monkeypatch):
 
 
 def test_register_with_url_guard_wires_provider(db, monkeypatch):
-    """register_with_url_guard 應該把 cache provider 灌進 anila-core,
+    """register_with_url_guard 應該把 cache provider 灌進 anila-security,
     讓 validate_outbound_url 走 DB 看到 host。"""
-    from anila_core.security import (
+    from anila_security import (
         UnsafeEndpointError,
         clear_trusted_host_providers,
         validate_outbound_url,

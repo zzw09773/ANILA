@@ -90,7 +90,7 @@ export const useAuthStore = create<AuthState>()(
       },
 
       hydrate: async () => {
-        // Cookie-first session pickup. CSP 登入設 httpOnly anila_access_token
+        // Cookie-first session pickup. CSP 登入設 httpOnly __Host-anila_access_token
         // cookie 在 path '/'(host-scoped,同源這個 SPA 也帶得到);getMe() 靠
         // client 的 withCredentials 把 cookie 送出。所以**無條件**探測 —
         // 即使本地 localStorage 沒 token(跨 app SSO:user 在 CSP 登入後直接

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from anila_core.security import UnsafeEndpointError, validate_outbound_url
+from anila_security import UnsafeEndpointError, validate_outbound_url
 
 
 # ── scheme 行為 ─────────────────────────────────────────────────────────────

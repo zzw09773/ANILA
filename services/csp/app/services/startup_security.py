@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 from app.config import settings
@@ -77,6 +79,24 @@ def _is_dev_mode() -> bool:
     return os.environ.get("ANILA_ALLOW_DEV_SECRET", "").strip() == "1"
 
 
+def _is_production_posture() -> bool:
+    """Treat an explicit production profile as formal even if dev opt-in leaks.
+
+    When ANILA_ENV is absent, the existing secure convention applies: only an
+    explicit ANILA_ALLOW_DEV_SECRET=1 opts into development behavior.
+    """
+    env_name = os.environ.get("ANILA_ENV", "").strip().lower()
+    return (
+        env_name in {"prod", "production"}
+        or settings.REQUIRE_CARD_LOGIN_ONLY
+        or not _is_dev_mode()
+    )
+
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _value_for(name: str) -> str | None:
     if name == "SECRET_KEY":
         return settings.SECRET_KEY
@@ -95,6 +115,225 @@ def _value_for(name: str) -> str | None:
     return os.environ.get(name)
 
 
+def _resolved_posture() -> dict[str, object]:
+    """Return only non-secret fields governed by deployment profiles."""
+
+    return {
+        "ANILA_ENV": os.environ.get("ANILA_ENV", "").strip().lower(),
+        "ANILA_ALLOW_DEV_SECRET": _is_dev_mode(),
+        "DEBUG": settings.DEBUG,
+        "ENABLE_API_DOCS": settings.ENABLE_API_DOCS,
+        "ENABLE_PUBLIC_SHARE": settings.ENABLE_PUBLIC_SHARE,
+        "ENABLE_MEMORY": settings.ENABLE_MEMORY,
+        "SKIP_STARTUP_MIGRATIONS": settings.SKIP_STARTUP_MIGRATIONS,
+        "ALLOW_AUTO_KEYGEN": settings.ALLOW_AUTO_KEYGEN,
+        "COOKIE_SECURE": settings.COOKIE_SECURE,
+        "ENABLE_CARD_LOGIN": settings.ENABLE_CARD_LOGIN,
+        "REQUIRE_CARD_LOGIN_ONLY": settings.REQUIRE_CARD_LOGIN_ONLY,
+        "ANILA_ALLOW_HTTP_ENDPOINT": _env_truthy("ANILA_ALLOW_HTTP_ENDPOINT"),
+        "ANILA_ALLOW_HTTP_AGENT_ENDPOINT": _env_truthy(
+            "ANILA_ALLOW_HTTP_AGENT_ENDPOINT"
+        ),
+        "ANILA_ALLOW_PRIVATE_ENDPOINT": _env_truthy(
+            "ANILA_ALLOW_PRIVATE_ENDPOINT"
+        ),
+        "CARD_DEV_SKIP_NONCE_BINDING": _env_truthy(
+            "CARD_DEV_SKIP_NONCE_BINDING"
+        ),
+    }
+
+
+_PROD_INTRANET_CARD_POSTURE: dict[str, object] = {
+    "ANILA_ENV": "production",
+    "ANILA_ALLOW_DEV_SECRET": False,
+    "DEBUG": False,
+    "ENABLE_API_DOCS": False,
+    "ENABLE_PUBLIC_SHARE": False,
+    "ENABLE_MEMORY": False,
+    "SKIP_STARTUP_MIGRATIONS": False,
+    "ALLOW_AUTO_KEYGEN": False,
+    "COOKIE_SECURE": True,
+    "ENABLE_CARD_LOGIN": True,
+    "REQUIRE_CARD_LOGIN_ONLY": True,
+    "ANILA_ALLOW_HTTP_ENDPOINT": False,
+    # The reviewed intranet topology has an MLSteam agent on a plain-http
+    # NodePort.  This agent-only exception must stay explicit; model/generic
+    # endpoints remain HTTPS-only and private hosts still require allow-listing.
+    "ANILA_ALLOW_HTTP_AGENT_ENDPOINT": True,
+    "ANILA_ALLOW_PRIVATE_ENDPOINT": False,
+    "CARD_DEV_SKIP_NONCE_BINDING": False,
+}
+
+_FORMAL_PROFILE_POSTURES: dict[str, dict[str, object]] = {
+    "prod-intranet-card": _PROD_INTRANET_CARD_POSTURE,
+    # Availability recovery is a distinct, time-bounded posture rather than a
+    # silent mutation of the normal card-only profile.  Card-only remains true:
+    # only the owner password AMR is conditionally admitted at the JWT boundary.
+    "prod-intranet-card-breakglass": dict(_PROD_INTRANET_CARD_POSTURE),
+}
+
+_AUDIT_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}$")
+
+
+def _parse_break_glass_expiry(raw: str) -> datetime:
+    expires_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    if expires_at.tzinfo is None:
+        raise ValueError("timezone required")
+    return expires_at.astimezone(timezone.utc)
+
+
+def is_break_glass_active(*, now: datetime | None = None) -> bool:
+    """Return whether the password-owner exception is active *right now*.
+
+    This is intentionally evaluated at every login/access/refresh boundary,
+    not only at process startup, so an already-running container cannot keep a
+    password session alive past the approved incident window.
+    """
+
+    if settings.ANILA_DEPLOYMENT_PROFILE.strip().lower() != (
+        "prod-intranet-card-breakglass"
+    ):
+        return False
+    owner = os.environ.get("ANILA_BREAK_GLASS_OWNER", "").strip()
+    ticket = os.environ.get("ANILA_BREAK_GLASS_TICKET", "").strip()
+    if not (
+        _AUDIT_IDENTIFIER_RE.fullmatch(owner)
+        and _AUDIT_IDENTIFIER_RE.fullmatch(ticket)
+    ):
+        return False
+    try:
+        expires_at = _parse_break_glass_expiry(
+            os.environ.get("ANILA_BREAK_GLASS_EXPIRES_AT", "").strip()
+        )
+    except (ValueError, TypeError):
+        return False
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    return current < expires_at
+
+
+def break_glass_audit_metadata() -> dict[str, object] | None:
+    """Return safe incident identifiers for an active password exception."""
+
+    if not is_break_glass_active():
+        return None
+    expires_at = _parse_break_glass_expiry(
+        os.environ["ANILA_BREAK_GLASS_EXPIRES_AT"].strip()
+    )
+    return {
+        "break_glass": True,
+        "owner": os.environ["ANILA_BREAK_GLASS_OWNER"].strip(),
+        "ticket": os.environ["ANILA_BREAK_GLASS_TICKET"].strip(),
+        "expires_at": expires_at.isoformat(),
+    }
+
+
+def _assert_break_glass_metadata() -> None:
+    owner = os.environ.get("ANILA_BREAK_GLASS_OWNER", "").strip()
+    ticket = os.environ.get("ANILA_BREAK_GLASS_TICKET", "").strip()
+    expires_raw = os.environ.get("ANILA_BREAK_GLASS_EXPIRES_AT", "").strip()
+    missing = [
+        name
+        for name, value in (
+            ("ANILA_BREAK_GLASS_OWNER", owner),
+            ("ANILA_BREAK_GLASS_TICKET", ticket),
+            ("ANILA_BREAK_GLASS_EXPIRES_AT", expires_raw),
+        )
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(
+            "Refusing to start: break-glass profile requires " + ", ".join(missing)
+        )
+    for name, value in (
+        ("ANILA_BREAK_GLASS_OWNER", owner),
+        ("ANILA_BREAK_GLASS_TICKET", ticket),
+    ):
+        if not _AUDIT_IDENTIFIER_RE.fullmatch(value):
+            raise RuntimeError(
+                f"Refusing to start: {name} must be a bounded audit identifier"
+            )
+    try:
+        expires_at = _parse_break_glass_expiry(expires_raw)
+    except ValueError as exc:
+        raise RuntimeError(
+            "Refusing to start: ANILA_BREAK_GLASS_EXPIRES_AT must be an "
+            "RFC3339 timestamp with timezone"
+        ) from exc
+    now = datetime.now(timezone.utc)
+    if expires_at <= now or expires_at > now + timedelta(hours=24):
+        raise RuntimeError(
+            "Refusing to start: break-glass expiry must be in the next 24 hours"
+        )
+    logger.critical(
+        "[startup_security] BREAK-GLASS posture active; owner=%s ticket=%s "
+        "expires_at=%s",
+        owner,
+        ticket,
+        expires_at.isoformat(),
+    )
+
+
+def assert_deployment_profile_posture() -> None:
+    """Fail startup when resolved flags contradict the declared profile.
+
+    A branch name is not a security boundary: the same container can be
+    started with arbitrary environment variables.  This assertion turns the
+    formal deployment profile into an executable contract and runs before
+    migrations, seeds, or workers begin.  Development/test remain explicit
+    profiles, but they can never be paired with a production posture.
+    """
+
+    profile = settings.ANILA_DEPLOYMENT_PROFILE.strip().lower()
+    if not profile:
+        raise RuntimeError(
+            "Refusing to start: ANILA_DEPLOYMENT_PROFILE must be declared"
+        )
+
+    if profile in {"development", "test"}:
+        if _is_production_posture():
+            raise RuntimeError(
+                "Refusing to start: development/test deployment profile "
+                "cannot be used with a production/formal posture"
+            )
+        return
+
+    expected = _FORMAL_PROFILE_POSTURES.get(profile)
+    if expected is None:
+        raise RuntimeError(
+            "Refusing to start: unknown ANILA_DEPLOYMENT_PROFILE "
+            f"{profile!r}; add a reviewed posture contract before deployment"
+        )
+
+    actual = _resolved_posture()
+    mismatches = [
+        f"{name} expected {wanted!r}, got {actual[name]!r}"
+        for name, wanted in expected.items()
+        if actual[name] != wanted
+    ]
+    if mismatches:
+        raise RuntimeError(
+            f"Refusing to start: deployment profile {profile!r} posture "
+            "mismatch: " + "; ".join(mismatches)
+        )
+    if profile == "prod-intranet-card-breakglass":
+        _assert_break_glass_metadata()
+    else:
+        stale_metadata = [
+            name
+            for name in (
+                "ANILA_BREAK_GLASS_OWNER",
+                "ANILA_BREAK_GLASS_TICKET",
+                "ANILA_BREAK_GLASS_EXPIRES_AT",
+            )
+            if os.environ.get(name, "").strip()
+        ]
+        if stale_metadata:
+            raise RuntimeError(
+                "Refusing to start: normal card profile must not retain "
+                "break-glass metadata: " + ", ".join(stale_metadata)
+            )
+
+
 def assert_no_dev_defaults() -> None:
     """Raise unless every protected secret is overridden, or dev opt-in is set.
 
@@ -110,6 +349,11 @@ def assert_no_dev_defaults() -> None:
       production 直接 raise。
     """
     dev_mode = _is_dev_mode()
+    if dev_mode and _is_production_posture():
+        raise RuntimeError(
+            "Refusing to start: ANILA_ALLOW_DEV_SECRET=1 僅限明示的 dev/test "
+            "profile；ANILA_ENV=production 或 card-only 正式姿態禁止此旁路。"
+        )
     offenders: list[str] = []
     warnings: list[str] = []
 
@@ -169,3 +413,81 @@ def assert_intranet_lockdown_consistency() -> None:
             "ENABLE_CARD_LOGIN=False — 將無人能登入。請同時啟用 "
             "ENABLE_CARD_LOGIN=true,或關閉 REQUIRE_CARD_LOGIN_ONLY。"
         )
+
+
+def assert_card_only_data_feature_policy() -> None:
+    """Keep unfinished data features out of the formal card-only posture.
+
+    A stale developer ``.env`` must not silently re-enable public sharing or
+    long-term memory when the deployment is switched to card-only mode.  These
+    capabilities remain available to explicit non-card development profiles;
+    they are blocked here only until their later security gates are complete.
+    """
+    if not settings.REQUIRE_CARD_LOGIN_ONLY:
+        return
+
+    enabled = [
+        name
+        for name, value in (
+            ("ENABLE_PUBLIC_SHARE", settings.ENABLE_PUBLIC_SHARE),
+            ("ENABLE_MEMORY", settings.ENABLE_MEMORY),
+        )
+        if value
+    ]
+    if enabled:
+        raise RuntimeError(
+            "Refusing to start: REQUIRE_CARD_LOGIN_ONLY=True 的正式姿態禁止啟用 "
+            + ", ".join(enabled)
+            + "；請先關閉這些未完成端到端分級控管的功能。"
+        )
+
+
+def assert_card_nonce_binding_policy() -> None:
+    """Reject the replay-prone card mock bypass in every formal posture."""
+    if not _env_truthy("CARD_DEV_SKIP_NONCE_BINDING"):
+        return
+    if _is_production_posture():
+        raise RuntimeError(
+            "Refusing to start: CARD_DEV_SKIP_NONCE_BINDING=true 是 dev-only "
+            "憑證卡 mock 旁路，production/formal profile 禁止啟用。"
+        )
+    logger.warning(
+        "[startup_security] CARD_DEV_SKIP_NONCE_BINDING=true dev-only 旁路已啟用；"
+        "只可搭配固定測試簽章，不得用於正式環境。"
+    )
+
+
+def assert_secure_cookie_policy() -> None:
+    """Formal profiles must emit standards-compliant ``__Host-`` cookies.
+
+    ``COOKIE_SECURE=false`` selects a distinct ``anila_dev_*`` namespace so
+    HTTP TestClient/local loops work without teaching production consumers to
+    accept a legacy cookie name. It is therefore permitted only under the
+    explicit development posture.
+    """
+    if settings.COOKIE_SECURE:
+        return
+    if _is_production_posture():
+        raise RuntimeError(
+            "Refusing to start: COOKIE_SECURE=false 僅限明示的 dev/test HTTP "
+            "profile；production/formal profile 必須使用 Secure + __Host- cookies。"
+        )
+    logger.warning(
+        "[startup_security] COOKIE_SECURE=false；使用 anila_dev_* cookies，"
+        "僅適用 TestClient 或本機 HTTP 開發。"
+    )
+
+
+def assert_startup_migration_policy() -> None:
+    """Production may never bypass the fail-stop Alembic startup gate."""
+    if not settings.SKIP_STARTUP_MIGRATIONS:
+        return
+    if _is_production_posture():
+        raise RuntimeError(
+            "Refusing to start: SKIP_STARTUP_MIGRATIONS=true 僅限明示的 "
+            "dev/test SQLite fixture，production/formal profile 禁止跳過 migration。"
+        )
+    logger.warning(
+        "[startup_security] SKIP_STARTUP_MIGRATIONS=true；"
+        "僅適用 dev/test 自行建立 schema 的 fixture。"
+    )

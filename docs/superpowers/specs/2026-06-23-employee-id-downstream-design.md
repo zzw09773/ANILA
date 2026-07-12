@@ -16,7 +16,7 @@
 
 現況（`prod-intranet-card`）：CSP 轉發給下游時送的 `X-ANILA-User-Id` 值是 **`user.id`（資料庫自增主鍵 PK）**，不是員編。對上述兩個需求都無用。
 
-員編來源：卡片登入時 `card_auth` 從 X.509 `subject.serialNumber` 抽出員編（例 `1090868`），並以 `username = employee_id` 建立/比對帳號。因此**本分支 `user.username ≡ 員編`**（卡登為唯一登入方式；唯一例外是 admin 帳密登入，其 `username = "admin"`）。
+員編來源：卡片登入時 `card_auth` 從 X.509 `subject.serialNumber` 抽出員編（例 `990000001`），並以 `username = employee_id` 建立/比對帳號。因此**本分支 `user.username ≡ 員編`**（卡登為唯一登入方式；唯一例外是 admin 帳密登入，其 `username = "admin"`）。
 
 ## 2. 已定案決策
 
@@ -114,7 +114,7 @@ service token **只走 agent 路徑、絕不上模型閘道**（§2）。員編�
 ### §6 測試
 
 - 改既有釘死 numeric `42` 的測試：`anila-core/tests/test_caller_context.py:26-101`、`anila-core/tests/test_memory_user_http_client.py:19-138`。
-- `caller_context`：員編 `"1147259"`、`admin`、空白 header（→ user_id None）三案。
+- `caller_context`：員編 `"990000002"`、`admin`、空白 header（→ user_id None）三案。
 - CSP `list_user_facts_for_agent`：員編 resolve→facts、admin/未知→404。
 - header builder：`build_model_gateway_headers` **不含** `X-CSP-Service-Token`（CRITICAL 回歸鎖）；`build_agent_headers` 含完整身分；模型路徑 header 無 email/groups。
 - 拆參數：usage 永遠寫 `users.id`(PK)、header 永遠寫員編；非卡片帳號不送身分。

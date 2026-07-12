@@ -27,8 +27,16 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
+from anila_core.tracing import TraceExporter
+
 from app.models.agent import UserAgentPermission
+from app.models.service_client import ServiceClient
 from app.models.trace_span import TraceSpan
+from app.services.service_token_envelope import (
+    compute_lookup_hash,
+    encode_service_token_envelope,
+    generate_service_token,
+)
 from app.services import proxy_service
 from app.services.proxy import service as proxy_impl
 from app.services.proxy import spans as proxy_spans
@@ -88,6 +96,55 @@ def _span_payload(span_id: str, **over) -> dict:
 
 
 class TestIngest:
+    def test_core_exporter_posts_with_live_csp_bearer_contract(
+        self, client: TestClient, db: Session, monkeypatch
+    ):
+        """Exercise the real anila-core sender against CSP, not a mock URL."""
+        monkeypatch.setenv("SECRET_KEY", "trace-test-credential-key-0123456789")
+        service_token = generate_service_token()
+        service_client = ServiceClient(
+            client_name="trace-exporter-integration",
+            client_type="router",
+            service_token_envelope=encode_service_token_envelope(service_token),
+            service_token_lookup_hash=compute_lookup_hash(service_token),
+        )
+        db.add(service_client)
+        db.commit()
+
+        class _ClientAdapter:
+            def post(self, url, json=None, headers=None):
+                return client.post(url, json=json, headers=headers)
+
+            def close(self) -> None:
+                # The pytest fixture owns the TestClient lifecycle.
+                pass
+
+        exporter = TraceExporter(
+            str(client.base_url),
+            token_provider=lambda: service_token,
+            start_worker=False,
+            client_factory=_ClientAdapter,
+        )
+        exporter.enqueue(
+            "trace-exporter-live-contract",
+            _span_payload("sdk-to-csp", span_type="agent.run.finished"),
+        )
+        exporter.flush()
+
+        assert exporter.stats() == {
+            "queued": 0,
+            "dropped": 0,
+            "sent": 1,
+            "failed": 0,
+        }
+        db.expire_all()
+        row = db.query(TraceSpan).filter_by(
+            trace_id="trace-exporter-live-contract",
+            span_id="sdk-to-csp",
+        ).one()
+        assert row.producer == "router"
+
+
     def test_happy_path_persists_and_links_task(
         self, client: TestClient, db: Session
     ):

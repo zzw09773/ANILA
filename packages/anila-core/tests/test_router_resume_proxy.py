@@ -151,9 +151,7 @@ def test_dispatch_pins_owning_agent(db_path: Path) -> None:
     )
 
     import asyncio
-    owner = asyncio.get_event_loop().run_until_complete(
-        get_session_owner(str(Path(db_path).resolve()), "s-pin")
-    )
+    owner = asyncio.run(get_session_owner(str(Path(db_path).resolve()), "s-pin"))
     assert owner == "agent-pinme"
 
 

@@ -34,7 +34,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 
-from app.schemas.contracts.classification import ClassificationLevel
+from anila_contracts import Classification as ClassificationLevel
 from app.schemas.contracts.policy import PolicyAction, PolicyDecisionVerdict
 from app.services.proxy.task_link import TaskRunContext, finalize_task_run
 

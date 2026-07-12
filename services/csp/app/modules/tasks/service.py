@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 from app.models.source_snapshot import SourceSnapshot
 from app.models.task import Task, TaskRun
 from app.models.user import User
-from app.schemas.contracts.classification import ClassificationLevel
+from anila_contracts import Classification as ClassificationLevel
 from app.schemas.contracts.tasks import (
     DispatchTarget,
     SnapshotOrigin,

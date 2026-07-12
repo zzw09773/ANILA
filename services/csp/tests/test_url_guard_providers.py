@@ -17,13 +17,13 @@ import socket
 
 import pytest
 
-from anila_core.security import (
+from anila_security import (
     UnsafeEndpointError,
     clear_trusted_host_providers,
     register_trusted_host_provider,
     validate_outbound_url,
 )
-from anila_core.security.url_guard import (
+from anila_security.url_guard import (
     FIXABLE_BY_TRUST_HOST,
     REASON_DENY_HOST,
     REASON_INTERNAL_ZONE,

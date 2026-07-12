@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
-from tests.conftest import make_user, make_agent, login
+import pytest
+
+from tests.conftest import login, make_agent, make_model, make_user
+
+
+@pytest.fixture(autouse=True)
+def _trusted_agent_host(monkeypatch):
+    """The dev registration fixture uses the Compose service name ``agent``."""
+    monkeypatch.setenv("ANILA_TRUSTED_HOSTS", "agent")
+    monkeypatch.setenv("ANILA_ALLOW_HTTP_AGENT_ENDPOINT", "1")
 
 
 class TestAgentRegistration:
     def test_developer_can_register_agent(self, client, db):
         dev = make_user(db, username="dev1", role="developer")
+        base_model = make_model(db, name="agent-base-1")
         token = login(client, "dev1")
 
         resp = client.post(
@@ -16,13 +26,14 @@ class TestAgentRegistration:
                 "name": "my-agent",
                 "endpoint_url": "http://agent:9100",
                 "description_for_router": "Handles HR queries",
+                "base_model_id": base_model.id,
             },
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 200, resp.text
         data = resp.json()
         assert data["name"] == "my-agent"
-        assert data["approval_status"] == "pending"
+        assert data["approval_status"] == "pending_connection_test"
         assert data["owner_user_id"] == dev.id
 
     def test_plain_user_cannot_register(self, client, db):
@@ -42,6 +53,7 @@ class TestAgentRegistration:
 
     def test_duplicate_name_rejected(self, client, db):
         dev = make_user(db, username="dev2", role="developer")
+        base_model = make_model(db, name="agent-base-2")
         make_agent(db, dev, name="dup-agent")
         token = login(client, "dev2")
 
@@ -51,6 +63,7 @@ class TestAgentRegistration:
                 "name": "dup-agent",
                 "endpoint_url": "http://agent:9100",
                 "description_for_router": "...",
+                "base_model_id": base_model.id,
             },
             headers={"Authorization": f"Bearer {token}"},
         )
@@ -131,7 +144,7 @@ class TestAllowedAgents:
 
         resp = client.put(
             f"/api/users/{user.id}/allowed-agents",
-            json=[agent.id],
+            json={"agent_ids": [agent.id]},
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         assert resp.status_code == 200
@@ -150,7 +163,7 @@ class TestAllowedAgents:
 
         resp = client.put(
             f"/api/users/{user.id}/allowed-agents",
-            json=[],
+            json={"agent_ids": []},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 403

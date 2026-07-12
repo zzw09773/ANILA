@@ -48,7 +48,7 @@ from app.models.model_registry import ModelRegistry
 from app.models.source_snapshot import SourceSnapshot
 from app.models.task import Task
 from app.models.user import User
-from app.schemas.contracts.classification import ClassificationLevel
+from anila_contracts import Classification as ClassificationLevel
 from app.services.auth_service import require_admin
 
 router = APIRouter(prefix="/api/classification", tags=["機敏分類盤點"])

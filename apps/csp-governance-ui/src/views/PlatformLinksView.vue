@@ -211,7 +211,7 @@ import {
 import { listUsers } from '../api/users'
 import {
   LAUNCH_MODES, CLASSIFICATION_LEVELS, launchModeLabel, configSourceBadge,
-  stickyEditableFields, isFieldLocked, normalizeService,
+  stickyEditableFields, isFieldLocked, normalizeService, buildPlatformLinkPayload,
 } from '../utils/serviceRegistry'
 import { TermBox, TermButton, TermField, TermBadge, TermEmpty, TermModal, TermSection } from '../components/cli'
 import { useDialog } from '../composables/useDialog'
@@ -378,23 +378,7 @@ async function loadAuditCallbacks(id) {
 }
 
 function buildPayload() {
-  const base = {
-    name: form.value.name.trim(),
-    url: form.value.url.trim(),
-    icon: form.value.icon.trim() || null,
-    description: form.value.description.trim() || null,
-    sort_order: form.value.sort_order || 0,
-    is_public: !!form.value.is_public,
-    required_roles: form.value.required_roles,
-  }
-  if (!registryMode.value) return base
-  return {
-    ...base,
-    launch_mode: form.value.launch_mode,
-    classification_ceiling: form.value.classification_ceiling || null,
-    healthcheck_url: form.value.healthcheck_url.trim() || null,
-    service_admin_user_ids: form.value.service_admin_user_ids,
-  }
+  return buildPlatformLinkPayload(form.value, registryMode.value)
 }
 
 async function handleSubmit() {

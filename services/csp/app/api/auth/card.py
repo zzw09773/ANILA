@@ -35,7 +35,7 @@ from ._common import (
 
 
 @router.get("/card/challenge", response_model=CardChallengeResponse)
-def card_challenge() -> CardChallengeResponse:
+def card_challenge(db: Session = Depends(get_db)) -> CardChallengeResponse:
     """簽發一條 2 分鐘有效的卡片簽章 challenge。
 
     Client 流程：
@@ -47,7 +47,7 @@ def card_challenge() -> CardChallengeResponse:
     Endpoint 在 ``ENABLE_CARD_LOGIN=false`` 時回 404。
     """
     _require_card_login_enabled()
-    token, nonce, expires_in = issue_card_challenge()
+    token, nonce, expires_in = issue_card_challenge(db)
     return CardChallengeResponse(
         challenge_token=token,
         nonce=nonce,
@@ -163,7 +163,7 @@ def card_verify(
         return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=payload)
 
     # ── Approved: 正常登入流程 ───────────────────────────────────────────
-    tokens = create_tokens(user)
+    tokens = create_tokens(user, amr=("sc",))
     _stamp_last_login(db, user)
     log_audit_event(
         db,

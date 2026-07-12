@@ -31,7 +31,7 @@ from anila_core.context.agent_context import (
 
 
 def test_caller_context_has_user_requires_user_id():
-    assert CallerContext(user_id="1147259").has_user is True
+    assert CallerContext(user_id="990000002").has_user is True
     assert CallerContext().has_user is False
     # 員編 is a string now; blank / whitespace-only is "no identity".
     assert CallerContext(user_id="").has_user is False
@@ -42,14 +42,14 @@ def test_caller_context_has_callback_credentials_requires_three_fields():
     Pin so a refactor that quietly relaxes the check (e.g. forgets
     csp_base_url) doesn't make the factory fall over with KeyError."""
     full = CallerContext(
-        user_id="1147259",
+        user_id="990000002",
         service_token="csk-x",
         csp_base_url="http://csp:8000",
     )
     assert full.has_callback_credentials is True
 
-    assert CallerContext(user_id="1147259", service_token="csk-x").has_callback_credentials is False
-    assert CallerContext(user_id="1147259", csp_base_url="http://csp:8000").has_callback_credentials is False
+    assert CallerContext(user_id="990000002", service_token="csk-x").has_callback_credentials is False
+    assert CallerContext(user_id="990000002", csp_base_url="http://csp:8000").has_callback_credentials is False
     assert CallerContext(service_token="csk-x", csp_base_url="http://csp:8000").has_callback_credentials is False
     # Blank / whitespace fields must not satisfy the callback gate (would
     # otherwise build a reader that calls /users//facts or auths with "").
@@ -57,10 +57,10 @@ def test_caller_context_has_callback_credentials_requires_three_fields():
         user_id="", service_token="csk-x", csp_base_url="http://csp:8000"
     ).has_callback_credentials is False
     assert CallerContext(
-        user_id="1147259", service_token="   ", csp_base_url="http://csp:8000"
+        user_id="990000002", service_token="   ", csp_base_url="http://csp:8000"
     ).has_callback_credentials is False
     assert CallerContext(
-        user_id="1147259", service_token="csk-x", csp_base_url="   "
+        user_id="990000002", service_token="csk-x", csp_base_url="   "
     ).has_callback_credentials is False
 
 
@@ -89,13 +89,13 @@ def test_extract_caller_context_parses_full_header_set(monkeypatch):
     resp = client.get(
         "/echo",
         headers={
-            "X-ANILA-User-Id": "1147259",
+            "X-ANILA-User-Id": "990000002",
             "X-ANILA-User-Email": "alice@example.com",
             "X-CSP-Service-Token": "csk-test",
         },
     )
     body = resp.json()
-    assert body["user_id"] == "1147259"  # 員編 kept as string, not int-coerced
+    assert body["user_id"] == "990000002"  # 員編 kept as string, not int-coerced
     assert body["user_email"] == "alice@example.com"
     assert body["service_token"] == "csk-test"
     assert body["csp_base_url"] == "http://csp:8000"  # trailing slash stripped
@@ -121,7 +121,7 @@ def test_extract_caller_context_keeps_non_numeric_identity(monkeypatch):
     monkeypatch.setenv("ANILA_CSP_BASE_URL", "http://csp:8000")
     client = TestClient(_make_test_app())
     assert client.get("/echo", headers={"X-ANILA-User-Id": "admin"}).json()["user_id"] == "admin"
-    assert client.get("/echo", headers={"X-ANILA-User-Id": "1147259"}).json()["user_id"] == "1147259"
+    assert client.get("/echo", headers={"X-ANILA-User-Id": "990000002"}).json()["user_id"] == "990000002"
     assert client.get("/echo", headers={"X-ANILA-User-Id": "   "}).json()["user_id"] is None
 
 
@@ -133,7 +133,7 @@ def test_subagent_inherits_caller_from_parent():
     must propagate the immutable caller bundle so the subagent
     can call back into CSP for memory reads on the same user."""
     parent_caller = CallerContext(
-        user_id="1147259",
+        user_id="990000002",
         service_token="csk-x",
         csp_base_url="http://csp:8000",
     )

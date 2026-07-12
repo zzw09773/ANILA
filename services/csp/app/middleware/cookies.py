@@ -1,16 +1,23 @@
 """Helpers for setting / clearing the SPA's session cookies.
 
-Three cookies make up the Wave 2 session:
+Three cookies make up the browser session. Formal HTTPS deployments use the
+``__Host-`` prefix, which browsers accept only when ``Secure`` is present,
+``Path=/``, and no ``Domain`` attribute is set:
 
-- ``anila_access_token``  — httpOnly, short-lived JWT bearer. Read by
+- ``__Host-anila_access_token``  — httpOnly, short-lived JWT bearer. Read by
   ``get_caller`` and ``get_current_user`` as a fallback source when no
   ``Authorization`` header is present.
-- ``anila_refresh_token`` — httpOnly, longer-lived JWT. ``Path`` is
-  scoped to ``/api/auth/refresh`` so it never leaks into other
-  endpoints' request context.
-- ``anila_csrf``          — NOT httpOnly; the SPA's JS reads it and
+- ``__Host-anila_refresh_token`` — httpOnly, longer-lived JWT. The ``__Host-``
+  invariant requires ``Path=/``; consumers still reject it anywhere an access
+  token is required by checking the JWT ``type`` claim.
+- ``__Host-anila_csrf``          — NOT httpOnly; the SPA's JS reads it and
   echoes the value back as the ``X-CSRF-Token`` header on mutating
   requests (double-submit pattern, see ``middleware/csrf.py``).
+
+HTTP-only unit/local-dev runs cannot use a standards-compliant ``__Host-``
+cookie. When and only when ``COOKIE_SECURE=false``, all three names switch to
+the visibly non-production ``anila_dev_*`` namespace. The former unprefixed
+``anila_*`` cookies are never accepted as a fallback.
 
 SameSite policy 條件式選擇 (見 ``_cookie_samesite``):
 - **card-only mode** (``REQUIRE_CARD_LOGIN_ONLY=true``,內網 prod):升 ``Strict``。
@@ -30,10 +37,33 @@ from fastapi import Response
 
 from app.config import settings
 
-ACCESS_COOKIE_NAME = "anila_access_token"
-REFRESH_COOKIE_NAME = "anila_refresh_token"
-CSRF_COOKIE_NAME = "anila_csrf"
-REFRESH_COOKIE_PATH = "/api/auth/refresh"
+SECURE_ACCESS_COOKIE_NAME = "__Host-anila_access_token"
+SECURE_REFRESH_COOKIE_NAME = "__Host-anila_refresh_token"
+SECURE_CSRF_COOKIE_NAME = "__Host-anila_csrf"
+
+DEV_ACCESS_COOKIE_NAME = "anila_dev_access_token"
+DEV_REFRESH_COOKIE_NAME = "anila_dev_refresh_token"
+DEV_CSRF_COOKIE_NAME = "anila_dev_csrf"
+
+
+def cookie_names(secure: bool) -> tuple[str, str, str]:
+    """Return access/refresh/CSRF names for one explicit security profile."""
+    if secure:
+        return (
+            SECURE_ACCESS_COOKIE_NAME,
+            SECURE_REFRESH_COOKIE_NAME,
+            SECURE_CSRF_COOKIE_NAME,
+        )
+    return DEV_ACCESS_COOKIE_NAME, DEV_REFRESH_COOKIE_NAME, DEV_CSRF_COOKIE_NAME
+
+
+ACCESS_COOKIE_NAME, REFRESH_COOKIE_NAME, CSRF_COOKIE_NAME = cookie_names(
+    bool(settings.COOKIE_SECURE)
+)
+
+# ``__Host-`` cookies must always use the root path. Keep the same path in the
+# explicit dev profile so auth behavior does not diverge between environments.
+REFRESH_COOKIE_PATH = "/"
 
 
 def _cookie_secure() -> bool:
@@ -97,9 +127,17 @@ def set_session_cookies(
 
 def clear_session_cookies(response: Response) -> None:
     """Remove all session cookies — used on logout and on refresh failure."""
-    for name, path in (
-        (ACCESS_COOKIE_NAME, "/"),
-        (REFRESH_COOKIE_NAME, REFRESH_COOKIE_PATH),
-        (CSRF_COOKIE_NAME, "/"),
+    for name, httponly in (
+        (ACCESS_COOKIE_NAME, True),
+        (REFRESH_COOKIE_NAME, True),
+        (CSRF_COOKIE_NAME, False),
     ):
-        response.delete_cookie(name, path=path)
+        # A __Host- deletion is itself a Set-Cookie operation and must retain
+        # Secure + Path=/ or a conforming browser will ignore it.
+        response.delete_cookie(
+            name,
+            path="/",
+            secure=_cookie_secure(),
+            httponly=httponly,
+            samesite=_cookie_samesite(),
+        )

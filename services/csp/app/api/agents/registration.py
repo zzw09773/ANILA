@@ -8,7 +8,7 @@ import os as _os
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from anila_core.security import UnsafeEndpointError, validate_outbound_url
+from anila_security import UnsafeEndpointError, validate_outbound_url
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -38,7 +38,7 @@ from app.schemas.contracts.agents import (
 def _enforce_endpoint_url(url: str) -> None:
     """Reject SSRF-prone agent endpoint URLs (loopback / private / metadata).
 
-    ``anila_core.security.url_guard.validate_outbound_url`` is the same
+    ``anila_security.url_guard.validate_outbound_url`` is the same
     helper the ingestion-credentials API uses; agents now share the
     deny-list so a developer can't register an internal-only endpoint and
     have an admin unknowingly approve it.
@@ -53,15 +53,30 @@ def _enforce_endpoint_url(url: str) -> None:
     except UnsafeEndpointError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-# One extra ``.parent`` vs the old app/api/agents.py: this file lives one
-# package level deeper (app/api/agents/registration.py), and the default
-# must keep pointing at <repo-root>/anila-agent.
-_TEMPLATE_DIR = Path(
-    _os.environ.get(
-        "ANILA_TEMPLATE_DIR",
-        str(Path(__file__).parent.parent.parent.parent.parent.parent / "anila-agent"),
-    )
-)
+# This file lives at app/api/agents/registration.py. The official template is
+# a monorepo package, so the local/dev fallback must resolve to
+# <repo-root>/packages/anila-agent (Compose overrides it with /app/anila-template).
+def _resolve_template_dir(source_file: Path | None = None) -> Path:
+    """Resolve lazily so a shallow production image path cannot crash import."""
+    override = _os.environ.get("ANILA_TEMPLATE_DIR")
+    if override:
+        return Path(override)
+
+    source = (source_file or Path(__file__)).resolve()
+    for parent in source.parents:
+        candidate = parent / "packages" / "anila-agent"
+        if candidate.is_dir():
+            return candidate
+
+    image_default = Path("/app/anila-template")
+    if image_default.is_dir():
+        return image_default
+    # Keep module import safe. The download endpoint returns its existing
+    # controlled 404 when the template is genuinely absent.
+    return image_default
+
+
+_TEMPLATE_DIR = _resolve_template_dir()
 
 router = APIRouter()
 
@@ -253,7 +268,7 @@ def register_agent(
 
     # SSRF guard — block loopback / private / cloud-metadata endpoints
     # before they ever land in the DB. Same helper the ingestion
-    # credentials API uses (anila_core.security.url_guard).
+    # credentials API uses (anila_security.url_guard).
     _enforce_endpoint_url(request.endpoint_url)
 
     # Validate base model — a registered agent must wrap a real, active

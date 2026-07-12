@@ -887,7 +887,7 @@ export interface operations {
             };
             path?: never;
             cookie?: {
-                anila_access_token?: string | null;
+                "__Host-anila_access_token"?: string | null;
             };
         };
         requestBody: {
@@ -926,7 +926,7 @@ export interface operations {
                 job_id: string;
             };
             cookie?: {
-                anila_access_token?: string | null;
+                "__Host-anila_access_token"?: string | null;
             };
         };
         requestBody?: never;
@@ -961,7 +961,7 @@ export interface operations {
                 job_id: string;
             };
             cookie?: {
-                anila_access_token?: string | null;
+                "__Host-anila_access_token"?: string | null;
             };
         };
         requestBody?: never;
@@ -994,7 +994,7 @@ export interface operations {
                 job_id: string;
             };
             cookie?: {
-                anila_access_token?: string | null;
+                "__Host-anila_access_token"?: string | null;
             };
         };
         requestBody?: never;
@@ -1027,7 +1027,7 @@ export interface operations {
             };
             path?: never;
             cookie?: {
-                anila_access_token?: string | null;
+                "__Host-anila_access_token"?: string | null;
             };
         };
         requestBody: {
@@ -1066,7 +1066,7 @@ export interface operations {
                 job_id: string;
             };
             cookie?: {
-                anila_access_token?: string | null;
+                "__Host-anila_access_token"?: string | null;
             };
         };
         requestBody?: never;
@@ -1101,7 +1101,7 @@ export interface operations {
                 job_id: string;
             };
             cookie?: {
-                anila_access_token?: string | null;
+                "__Host-anila_access_token"?: string | null;
             };
         };
         requestBody?: never;
@@ -1135,7 +1135,7 @@ export interface operations {
                 fmt: "html" | "pdf" | "docx";
             };
             cookie?: {
-                anila_access_token?: string | null;
+                "__Host-anila_access_token"?: string | null;
             };
         };
         requestBody?: never;
@@ -1171,7 +1171,7 @@ export interface operations {
             };
             path?: never;
             cookie?: {
-                anila_access_token?: string | null;
+                "__Host-anila_access_token"?: string | null;
             };
         };
         requestBody: {
@@ -1210,7 +1210,7 @@ export interface operations {
                 job_id: string;
             };
             cookie?: {
-                anila_access_token?: string | null;
+                "__Host-anila_access_token"?: string | null;
             };
         };
         requestBody?: never;
@@ -1245,7 +1245,7 @@ export interface operations {
                 job_id: string;
             };
             cookie?: {
-                anila_access_token?: string | null;
+                "__Host-anila_access_token"?: string | null;
             };
         };
         requestBody?: never;
@@ -1279,7 +1279,7 @@ export interface operations {
                 fmt: "svg" | "dot" | "json";
             };
             cookie?: {
-                anila_access_token?: string | null;
+                "__Host-anila_access_token"?: string | null;
             };
         };
         requestBody?: never;
@@ -1314,7 +1314,7 @@ export interface operations {
             };
             path?: never;
             cookie?: {
-                anila_access_token?: string | null;
+                "__Host-anila_access_token"?: string | null;
             };
         };
         requestBody: {
@@ -1353,7 +1353,7 @@ export interface operations {
                 job_id: string;
             };
             cookie?: {
-                anila_access_token?: string | null;
+                "__Host-anila_access_token"?: string | null;
             };
         };
         requestBody?: never;
@@ -1388,7 +1388,7 @@ export interface operations {
                 job_id: string;
             };
             cookie?: {
-                anila_access_token?: string | null;
+                "__Host-anila_access_token"?: string | null;
             };
         };
         requestBody?: never;
@@ -1422,7 +1422,7 @@ export interface operations {
                 fmt: string;
             };
             cookie?: {
-                anila_access_token?: string | null;
+                "__Host-anila_access_token"?: string | null;
             };
         };
         requestBody?: never;
@@ -1453,7 +1453,7 @@ export interface operations {
             };
             path?: never;
             cookie?: {
-                anila_access_token?: string | null;
+                "__Host-anila_access_token"?: string | null;
             };
         };
         requestBody: {
@@ -1492,7 +1492,7 @@ export interface operations {
                 job_id: string;
             };
             cookie?: {
-                anila_access_token?: string | null;
+                "__Host-anila_access_token"?: string | null;
             };
         };
         requestBody?: never;
@@ -1527,7 +1527,7 @@ export interface operations {
                 job_id: string;
             };
             cookie?: {
-                anila_access_token?: string | null;
+                "__Host-anila_access_token"?: string | null;
             };
         };
         requestBody?: never;
@@ -1561,7 +1561,7 @@ export interface operations {
                 fmt: string;
             };
             cookie?: {
-                anila_access_token?: string | null;
+                "__Host-anila_access_token"?: string | null;
             };
         };
         requestBody?: never;

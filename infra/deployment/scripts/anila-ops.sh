@@ -15,32 +15,71 @@
 #   logs <svc> [n]             tail -f 單一 service logs (預設最後 100 行)
 #   backup [--full]            備份 DB + .env + secrets + pki;--full 加上傳檔案
 #   restore <backup-dir>       從 backup 目錄還原 DB (毀滅性,需輸入 RESTORE 確認)
-#   cert-renew <pfx> [passwd]  平台 TLS 換發:從 pfx 重抽 fullchain+key → nginx reload
+#   cert-renew <pfx>           平台 TLS 換發:安全提示密碼後重抽 fullchain+key → nginx reload
 #   model-ca <pem>             更新模型 gateway 出向 CA → 重建 csp
 #   gateway-key                輪替 MODEL_GATEWAY_API_KEY → 重建 csp → 探測
-#   break-glass on|off         讀卡環境故障應急:on=暫開帳密登入 / off=恢復 card-only
+#   break-glass on|off [...]   具名、限時 owner 帳密應急 / 恢復純卡片姿態
 #   prune                      清 dangling image + builder cache (不碰 volume)
 #   help                       顯示這份說明
 #
 # 鐵則 (寫死在本腳本的行為,不要繞過):
-#   1. 套用 .env / 掛載檔變更一律 `docker compose up -d [--force-recreate]`,
+#   1. 套用 .env / 掛載檔變更一律 `docker compose up -d --no-build --pull never [--force-recreate]`,
 #      絕不用 `docker restart` (不重載 env,見 AGENTS.md §4)。
-#   2. 本腳本不動 ANILA_ALLOW_* / ANILA_ENV 等 strict 旗標
-#      (唯一例外 = break-glass 的 REQUIRE_CARD_LOGIN_ONLY,那是文件化的應急程序)。
+#   2. 本腳本不動 ANILA_ALLOW_* / ANILA_ENV 等 strict 旗標。break-glass
+#      只切換已審查的 deployment profile；REQUIRE_CARD_LOGIN_ONLY 始終為 true。
 #   3. 備份輸出含機密 (.env / JWT 私鑰 / DB dump):目錄 700、檔案 600,
-#      已被 .gitignore 的 /backups/ 擋住,不進 git。
+#      預設寫到 repo 外的 user state 目錄,且拒絕任何落在 repo 內的覆寫。
 #
 # 環境變數 (可選):
-#   ANILA_BACKUP_DIR   備份根目錄 (預設 <repo>/backups)
+#   ANILA_STATE_DIR    ANILA 外部 state 根目錄
+#                      (預設 $XDG_STATE_HOME/anila 或 $HOME/.local/state/anila)
+#   ANILA_BACKUP_DIR   備份根目錄 (預設 $ANILA_STATE_DIR/backups;必須在 repo 外)
 #   ANILA_BACKUP_KEEP  保留最近幾份備份 (預設 14)
 # ============================================================================
 set -euo pipefail
+umask 077
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$REPO_ROOT"
+get_env() { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- || true; }
+get_env_unquoted() {
+  local value
+  value="$(get_env "$1")"
+  case "$value" in
+    \'*\'|\"*\") value="${value:1:${#value}-2}" ;;
+  esac
+  printf '%s' "$value"
+}
+IMAGE_LOCK_VERIFIER="$REPO_ROOT/infra/deployment/scripts/verify-compose-image-lock.py"
 
-BACKUP_DIR="${ANILA_BACKUP_DIR:-$REPO_ROOT/backups}"
+if [ -n "${XDG_STATE_HOME:-}" ]; then
+  DEFAULT_STATE_DIR="$XDG_STATE_HOME/anila"
+elif [ -n "${HOME:-}" ]; then
+  DEFAULT_STATE_DIR="$HOME/.local/state/anila"
+else
+  DEFAULT_STATE_DIR="/var/lib/anila"
+fi
+_saved_state="$(get_env ANILA_STATE_DIR)"
+_saved_secrets="$(get_env ANILA_SECRETS_DIR)"
+_saved_tls="$(get_env ANILA_TLS_CERTS_DIR)"
+if [ -n "${ANILA_STATE_DIR:-}" ] && [ -n "$_saved_state" ] && [ "$ANILA_STATE_DIR" != "$_saved_state" ]; then
+  printf 'ANILA_STATE_DIR 與既有 .env 不一致；拒絕靜默切換 private-key state root\n' >&2; exit 1
+fi
+if [ -n "${ANILA_SECRETS_DIR:-}" ] && [ -n "$_saved_secrets" ] && [ "$ANILA_SECRETS_DIR" != "$_saved_secrets" ]; then
+  printf 'ANILA_SECRETS_DIR 與既有 .env 不一致\n' >&2; exit 1
+fi
+if [ -n "${ANILA_TLS_CERTS_DIR:-}" ] && [ -n "$_saved_tls" ] && [ "$ANILA_TLS_CERTS_DIR" != "$_saved_tls" ]; then
+  printf 'ANILA_TLS_CERTS_DIR 與既有 .env 不一致\n' >&2; exit 1
+fi
+ANILA_STATE_DIR="${ANILA_STATE_DIR:-${_saved_state:-$DEFAULT_STATE_DIR}}"
+BACKUP_DIR="${ANILA_BACKUP_DIR:-$ANILA_STATE_DIR/backups}"
+SECRETS_DIR="${ANILA_SECRETS_DIR:-$_saved_secrets}"
+TLS_CERTS_DIR="${ANILA_TLS_CERTS_DIR:-$_saved_tls}"
+SECRETS_DIR="${SECRETS_DIR:-$ANILA_STATE_DIR/secrets}"
+TLS_CERTS_DIR="${TLS_CERTS_DIR:-$ANILA_STATE_DIR/tls}"
 BACKUP_KEEP="${ANILA_BACKUP_KEEP:-14}"
+CSP_RUNTIME_IMAGE="$(get_env ANILA_IMAGE_CSP)"
+SAFE_RUNTIME_BACKUP_HELPER="$REPO_ROOT/infra/deployment/scripts/safe-runtime-backup.py"
 
 # ── 輸出 helper ────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -55,20 +94,130 @@ err()   { printf "  %s✗%s %s\n" "$C_R" "$C_N" "$*"; }
 fatal() { err "$*"; exit 1; }
 section(){ printf "\n%s── %s ──%s\n" "$C_C" "$*" "$C_N"; }
 
+# 備份含全庫 dump 與正式 secret。即使 operator 覆寫路徑,也不可重新落進
+# repo (code-server / IDE / accidental archive 的可見範圍)。
+assert_outside_repo() {
+  local raw="$1" label="$2" repo_real target_real
+  command -v realpath >/dev/null 2>&1 || fatal "缺少 realpath,無法驗證 $label 路徑"
+  repo_real="$(realpath -m -- "$REPO_ROOT")"
+  target_real="$(realpath -m -- "$raw")"
+  case "$target_real" in
+    "$repo_real"|"$repo_real"/*)
+      fatal "$label 不得位於 repo 內: $target_real (請設到獨立受控磁碟/目錄)" ;;
+  esac
+  OUTSIDE_PATH="$target_real"
+}
+assert_safe_state_layout() {
+  local state_lex state_real target_lex target_real label raw leaf
+  [[ "$ANILA_STATE_DIR" = /* ]] || fatal "ANILA_STATE_DIR 必須是絕對路徑"
+  state_lex="$(realpath -ms -- "$ANILA_STATE_DIR")"
+  state_real="$(realpath -m -- "$ANILA_STATE_DIR")"
+  [[ "$state_lex" == "$state_real" ]] || fatal "ANILA_STATE_DIR 不得包含 symlink component"
+  case "$state_real" in
+    /|/bin|/boot|/dev|/etc|/home|/lib|/lib64|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var|/var/lib)
+      fatal "ANILA_STATE_DIR 太寬或是系統目錄: $state_real" ;;
+  esac
+  assert_outside_repo "$state_real" ANILA_STATE_DIR
+  ANILA_STATE_DIR="$state_real"
+  for label in ANILA_SECRETS_DIR ANILA_TLS_CERTS_DIR; do
+    if [ "$label" = ANILA_SECRETS_DIR ]; then raw="$SECRETS_DIR"; leaf=secrets; else raw="$TLS_CERTS_DIR"; leaf=tls; fi
+    [[ "$raw" = /* ]] || fatal "$label 必須是絕對路徑"
+    target_lex="$(realpath -ms -- "$raw")"; target_real="$(realpath -m -- "$raw")"
+    [[ "$target_lex" == "$target_real" ]] || fatal "$label 不得包含 symlink component"
+    [[ "$target_real" == "$state_real/$leaf" ]] || fatal "$label 必須固定為 $state_real/$leaf"
+    if [ "$label" = ANILA_SECRETS_DIR ]; then SECRETS_DIR="$target_real"; else TLS_CERTS_DIR="$target_real"; fi
+  done
+}
+OUTSIDE_PATH=""
+assert_safe_state_layout
+export ANILA_STATE_DIR
+export ANILA_SECRETS_DIR="$SECRETS_DIR"
+export ANILA_TLS_CERTS_DIR="$TLS_CERTS_DIR"
+assert_outside_repo "$BACKUP_DIR" ANILA_BACKUP_DIR
+BACKUP_DIR="$OUTSIDE_PATH"
+
 # ── .env helper (同 intranet-deploy.sh:literal 去重 append,不用 sed 跳脫) ──
-get_env() { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- || true; }
 set_env() {
-  local key="$1" val="$2"
-  [ -f .env ] || fatal ".env 不存在 — 先跑 intranet-deploy.sh 完成部署"
-  grep -vE "^${key}=" .env > .env.tmp 2>/dev/null || true
-  mv .env.tmp .env
-  printf '%s=%s\n' "$key" "$val" >> .env
+  local key="$1" val="$2" tmp
+  [ -f .env ] && [ ! -L .env ] || fatal ".env 必須是 regular file 且不得是 symlink"
+  tmp="$(mktemp "$REPO_ROOT/.env.tmp.XXXXXX")" || fatal "無法建立安全 .env temp file"
+  grep -vE "^${key}=" .env > "$tmp" 2>/dev/null || true
+  printf '%s=%s\n' "$key" "$val" >> "$tmp"
+  chmod 600 "$tmp"
+  mv -f -- "$tmp" .env
+  printf -v "$key" '%s' "$val"
+  export "$key"
+}
+
+set_env_single_quoted() {
+  local key="$1" val="$2" tmp
+  [[ "$val" != *"'"* && "$val" != *$'\n'* && "$val" != *$'\r'* ]] \
+    || fatal "$key 含不能安全寫入 .env 單引號值的字元"
+  [ -f .env ] && [ ! -L .env ] || fatal ".env 必須是 regular file 且不得是 symlink"
+  tmp="$(mktemp "$REPO_ROOT/.env.tmp.XXXXXX")" || fatal "無法建立安全 .env temp file"
+  grep -vE "^${key}=" .env > "$tmp" 2>/dev/null || true
+  printf "%s='%s'\n" "$key" "$val" >> "$tmp"
+  chmod 600 "$tmp"
+  mv -f -- "$tmp" .env
+  printf -v "$key" '%s' "$val"
+  export "$key"
+}
+
+unset_env() {
+  local key="$1" tmp
+  [ -f .env ] && [ ! -L .env ] || fatal ".env 必須是 regular file 且不得是 symlink"
+  tmp="$(mktemp "$REPO_ROOT/.env.tmp.XXXXXX")" || fatal "無法建立安全 .env temp file"
+  grep -vE "^${key}=" .env > "$tmp" 2>/dev/null || true
+  chmod 600 "$tmp"
+  mv -f -- "$tmp" .env
+  unset "$key"
+}
+
+csp_env_readback() {
+  local key="$1"
+  docker compose exec -T csp python -c \
+    'import os,sys; print(os.environ.get(sys.argv[1], ""))' "$key" 2>/dev/null \
+    || fatal "無法從 running CSP 回讀 $key"
 }
 
 need_stack() {
   command -v docker >/dev/null || fatal "找不到 docker"
   docker info >/dev/null 2>&1  || fatal "docker daemon 沒在跑 / 當前使用者無權限"
   [ -f compose.yaml ]          || fatal "請在 repo 根目錄執行 (找不到 compose.yaml)"
+  local compose_variable
+  for compose_variable in COMPOSE_FILE COMPOSE_PROFILES COMPOSE_PROJECT_NAME \
+    COMPOSE_ENV_FILES COMPOSE_DISABLE_ENV_FILE COMPOSE_PATH_SEPARATOR; do
+    [[ ! -v "$compose_variable" ]] \
+      || fatal "formal lifecycle 不接受 ambient $compose_variable；請 unset 後重跑"
+  done
+  local managed_variable file_value
+  for managed_variable in \
+    ANILA_DEPLOYMENT_PROFILE ANILA_ENV ANILA_ALLOW_DEV_SECRET DEBUG \
+    ENABLE_API_DOCS ENABLE_PUBLIC_SHARE ENABLE_MEMORY SKIP_STARTUP_MIGRATIONS \
+    ALLOW_AUTO_KEYGEN COOKIE_SECURE ENABLE_CARD_LOGIN REQUIRE_CARD_LOGIN_ONLY \
+    ANILA_ALLOW_HTTP_ENDPOINT ANILA_ALLOW_HTTP_AGENT_ENDPOINT \
+    ANILA_ALLOW_PRIVATE_ENDPOINT CARD_DEV_SKIP_NONCE_BINDING \
+    CSP_DB_PASSWORD CSP_APP_DB_PASSWORD CSP_SECRET_KEY CSP_SERVICE_TOKEN \
+    INTERNAL_PLATFORM_API_KEY ADMIN_PASSWORD MODEL_GATEWAY_API_KEY \
+    N8N_ENCRYPTION_KEY GITLAB_ROOT_PASSWORD ANILA_STATE_DIR \
+    ANILA_SECRETS_DIR ANILA_TLS_CERTS_DIR ANILA_BREAK_GLASS_OWNER \
+    ANILA_BREAK_GLASS_TICKET ANILA_BREAK_GLASS_EXPIRES_AT; do
+    if [[ -v "$managed_variable" ]]; then
+      file_value="$(get_env_unquoted "$managed_variable")"
+      [[ "${!managed_variable}" == "$file_value" ]] \
+        || fatal "ambient $managed_variable 與 .env 不一致；請 unset 或重新載入正式 .env"
+    fi
+  done
+  case "$(get_env ANILA_DEPLOYMENT_PROFILE)" in
+    prod-intranet-card|prod-intranet-card-breakglass)
+      command -v python3 >/dev/null || fatal "formal image-lock 驗證需要 python3"
+      python3 "$IMAGE_LOCK_VERIFIER" verify-env --env-file .env --inspect-docker \
+        || fatal "formal Compose image content-ID lock 驗證失敗"
+      ;;
+    *)
+      fatal "anila-ops.sh 本版只允許已審查的 prod-intranet-card profile"
+      ;;
+  esac
 }
 
 # ── status ─────────────────────────────────────────────────────────────────
@@ -93,7 +242,7 @@ chk() {  # chk <ok|warn|fail> <訊息>
 
 health_containers() {
   section "容器健康"
-  local svcs=(csp-db redis csp ingestion-worker router nginx anilalm anila-ui pptx-renderer anila-studio)
+  local svcs=(csp-db redis csp ingestion-worker router nginx anilalm anila-ui pptx-renderer anila-studio flux2-dev-agent n8n gitlab)
   local s cid st hs
   for s in "${svcs[@]}"; do
     cid="$(docker compose ps -q "$s" 2>/dev/null || true)"
@@ -118,20 +267,20 @@ health_endpoints() {
                     || chk fail "https://localhost/health → $code"
   # csp 容器內 (csp image 沒 curl,用 python urllib;curl 回空會是假陰性)
   if docker compose exec -T csp python -c \
-      "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)" >/dev/null 2>&1; then
-    chk ok "csp /health (internal) → 200"
+      "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=5)" >/dev/null 2>&1; then
+    chk ok "csp /ready (internal) → 200"
   else
-    chk fail "csp /health (internal) 失敗"
+    chk fail "csp /ready (internal) 失敗"
   fi
   # JWKS:缺 JWT keypair 時這裡會 500 (登入發不了 token、studio crash-loop 的前兆)
   if docker compose exec -T csp python -c \
       "import urllib.request; urllib.request.urlopen('http://localhost:8000/.well-known/jwks.json', timeout=5)" >/dev/null 2>&1; then
     chk ok "csp /.well-known/jwks.json → 200 (JWT 簽章金鑰正常)"
   else
-    chk fail "csp JWKS 失敗 — 檢查 secrets/jwt-private.pem 是否存在"
+    chk fail "csp JWKS 失敗 — 檢查 $SECRETS_DIR/jwt-private.pem 是否存在"
   fi
-  docker compose exec -T router curl -sf --max-time 5 http://localhost:9000/health >/dev/null 2>&1 \
-    && chk ok "router /health (internal) → 200" || chk fail "router /health (internal) 失敗"
+  docker compose exec -T router curl -sf --max-time 5 http://localhost:9000/ready >/dev/null 2>&1 \
+    && chk ok "router /ready (internal) → 200" || chk fail "router /ready (internal) 失敗"
   docker compose exec -T anila-studio curl -sf --max-time 5 http://localhost:8100/health >/dev/null 2>&1 \
     && chk ok "anila-studio /health (internal) → 200" || chk fail "anila-studio /health (internal) 失敗"
   docker compose exec -T csp-db pg_isready -U csp -d csp >/dev/null 2>&1 \
@@ -165,7 +314,7 @@ health_model_gateway() {
 
 health_certs() {
   section "憑證效期"
-  local crt=infra/nginx/certs/server.crt ca=share/pki/model-ca.pem f
+  local crt="$TLS_CERTS_DIR/server.crt" ca=share/pki/model-ca.pem f
   for f in "$crt" "$ca"; do
     if [ ! -s "$f" ]; then chk warn "$f 不存在"; continue; fi
     if openssl x509 -in "$f" -noout -checkend $((30*86400)) >/dev/null 2>&1; then
@@ -176,9 +325,15 @@ health_certs() {
       chk fail "$f 已過期"
     fi
   done
-  [ -f secrets/jwt-private.pem ] && [ -f secrets/jwt-public.pem ] \
-    && chk ok "JWT keypair 存在 (secrets/jwt-{private,public}.pem)" \
-    || chk fail "JWT keypair 缺失 — csp JWKS 會 500,見 deploy-prod.sh ensure_jwt_keypair"
+  # secrets/ is UID 10001 + mode 0700,so the host operator must not stat it.
+  # Ask the running non-root CSP process to load the exact key files instead.
+  if docker compose exec -T csp python -c \
+      "from app.utils.security import get_private_key,get_public_key; assert get_private_key() and get_public_key()" \
+      >/dev/null 2>&1; then
+    chk ok "JWT keypair 可由 CSP runtime 載入"
+  else
+    chk fail "JWT keypair 無法由 CSP runtime 載入 — 見 deploy-prod.sh ensure_jwt_keypair"
+  fi
 }
 
 health_disk_backup() {
@@ -223,10 +378,89 @@ cmd_logs() {
 }
 
 # ── backup ─────────────────────────────────────────────────────────────────
+assert_real_source_directory() {
+  local source="$1" label="$2"
+  [ ! -L "$source" ] || fatal "$label 不得是 symlink: $source"
+  [ -d "$source" ] || fatal "$label 不存在或不是目錄: $source"
+}
+
+ensure_runtime_backup_helper() {
+  [ -s "$SAFE_RUNTIME_BACKUP_HELPER" ] \
+    || fatal "缺少安全備份 helper: $SAFE_RUNTIME_BACKUP_HELPER"
+  docker image inspect "$CSP_RUNTIME_IMAGE" >/dev/null 2>&1 \
+    || fatal "缺少 $CSP_RUNTIME_IMAGE — air-gap 主機請先跑 INTRANET-LOAD.sh"
+}
+
+# 以 CSP image 內的 Python 做一次性 root helper。只有精確的 read-only source
+# 與當次 backup destination 會掛入；container 無網路、root filesystem 也是唯讀。
+# helper 會把輸出 chown 回 host operator，避免 root-owned backup 無法輪替/搬移。
+run_runtime_backup_helper() {
+  local source_type="$1" source="$2" command="$3" destination="$4" kind="${5:-}"
+  local source_mount uid gid
+  uid="$(id -u)"; gid="$(id -g)"
+
+  case "$source_type" in
+    bind)
+      assert_real_source_directory "$source" "$command backup source"
+      source_mount="type=bind,source=$source,target=/source,readonly"
+      ;;
+    volume)
+      docker volume inspect "$source" >/dev/null 2>&1 \
+        || fatal "找不到 runtime volume: $source"
+      source_mount="type=volume,source=$source,target=/source,readonly"
+      ;;
+    *) fatal "未知 runtime backup source type: $source_type" ;;
+  esac
+
+  local helper_args=("$command" --source /source --destination /backup --uid "$uid" --gid "$gid")
+  [ "$command" != tree ] || helper_args+=(--kind "$kind")
+  docker run --rm --pull never --user 0:0 --network none --read-only \
+    --security-opt no-new-privileges \
+    --mount "$source_mount" \
+    --mount "type=bind,source=$destination,target=/backup" \
+    "$CSP_RUNTIME_IMAGE" python - "${helper_args[@]}" \
+    < "$SAFE_RUNTIME_BACKUP_HELPER" \
+    || fatal "$kind$command runtime backup helper 失敗 — 備份不完整,已中止"
+}
+
+ATTACHMENT_VOLUME=""
+find_attachment_volume() {
+  local item count=0
+  ATTACHMENT_VOLUME=""
+  while IFS= read -r item; do
+    [ -n "$item" ] || continue
+    ATTACHMENT_VOLUME="$item"
+    count=$((count + 1))
+  done < <(docker volume ls --quiet \
+    --filter label=com.docker.compose.project=anila-platform \
+    --filter label=com.docker.compose.volume=csp-attachments)
+  [ "$count" -eq 1 ] \
+    || fatal "--full 需要且只能找到 1 個 csp-attachments volume (目前 $count 個)"
+}
+
+backup_public_pki() {
+  local destination="$1" pem pems=()
+  [ -e "$REPO_ROOT/share/pki" ] || return 0
+  assert_real_source_directory "$REPO_ROOT/share/pki" "share/pki"
+  shopt -s nullglob
+  pems=("$REPO_ROOT"/share/pki/*.pem)
+  shopt -u nullglob
+  [ "${#pems[@]}" -gt 0 ] || return 0
+  mkdir -m 700 "$destination/pki"
+  for pem in "${pems[@]}"; do
+    [ ! -L "$pem" ] && [ -f "$pem" ] \
+      || fatal "PKI 備份只接受 regular file,拒絕: $pem"
+    cp -- "$pem" "$destination/pki/"
+  done
+  chmod 600 "$destination/pki/"*.pem
+}
+
 cmd_backup() {
   need_stack
   local full=0; [ "${1:-}" = --full ] && full=1
-  [ -n "$(docker compose ps -q csp-db 2>/dev/null)" ] || fatal "csp-db 沒 running — 無法 pg_dump"
+  [ -n "$(docker compose ps --status running -q csp-db 2>/dev/null)" ] \
+    || fatal "csp-db 沒 running — 無法 pg_dump"
+  ensure_runtime_backup_helper
 
   local stamp dest
   stamp="$(date +%Y%m%d-%H%M%S)"
@@ -241,22 +475,23 @@ cmd_backup() {
   ok "DB dump: $(du -h "$dest/db-csp.sql.gz" | cut -f1)"
 
   # 2. 設定與金鑰 (還原整台機器的最小集) — 這裡缺一樣都不算備份成功,fail-loud
+  [ -f .env ] && [ ! -L .env ] \
+    || fatal ".env 必須是 regular file 且不得是 symlink"
   cp .env "$dest/env.bak" || fatal "備份 .env 失敗 — 中止 (少了它 secret 全滅,備份不可用)"
   chmod 600 "$dest/env.bak"
-  if [ -f secrets/jwt-private.pem ]; then
-    mkdir -m 700 "$dest/secrets"
-    cp secrets/*.pem "$dest/secrets/" || fatal "備份 secrets/*.pem 失敗 — 中止"
-    chmod 600 "$dest/secrets/"*
-  else
-    warn "secrets/jwt-private.pem 不存在 — JWT 金鑰未入備份 (部署不完整?)"
-  fi
-  [ -d share/pki ] && { mkdir -p "$dest/pki"; cp share/pki/*.pem "$dest/pki/" 2>/dev/null || true; }
-  ok "設定/金鑰: .env + secrets/ + share/pki/"
+  run_runtime_backup_helper bind "$SECRETS_DIR" secrets "$dest"
+  run_runtime_backup_helper bind "$TLS_CERTS_DIR" tls "$dest"
+  backup_public_pki "$dest"
+  ok "設定/金鑰: .env + JWT secrets/ + TLS keypair + share/pki/"
 
-  # 3. --full:使用者上傳的原始文件 (chunks 在 DB,但原檔只在這裡)
-  if [ "$full" = 1 ] && [ -d share/uploads ]; then
-    tar czf "$dest/uploads.tar.gz" -C share uploads
+  # 3. --full:使用者上傳原檔 + CSP attachment named volume。兩者都由
+  #    one-shot root helper 從精確 readonly mount 讀取,tar 不跟隨 symlink。
+  if [ "$full" = 1 ]; then
+    run_runtime_backup_helper bind "$REPO_ROOT/share/uploads" tree "$dest" uploads
     ok "上傳檔案: $(du -h "$dest/uploads.tar.gz" | cut -f1)"
+    find_attachment_volume
+    run_runtime_backup_helper volume "$ATTACHMENT_VOLUME" tree "$dest" attachments
+    ok "CSP 附件: $(du -h "$dest/attachments.tar.gz" | cut -f1)"
   fi
 
   # 4. manifest + checksum (異機還原時對版本、驗完整性)
@@ -264,6 +499,7 @@ cmd_backup() {
     echo "stamp: $stamp"
     echo "git:   $(git rev-parse HEAD 2>/dev/null || echo '?') ($(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?'))"
     echo "note:  n8n/gitlab volume 不在此備份內 — gitlab 用它自己的 gitlab-backup 機制"
+    echo "full:  $full (1 = uploads.tar.gz + attachments.tar.gz)"
     docker compose images 2>/dev/null || true
   } > "$dest/MANIFEST.txt"
   (cd "$dest" && find . -type f ! -name CHECKSUMS.sha256 -exec sha256sum {} + > CHECKSUMS.sha256)
@@ -307,7 +543,7 @@ cmd_restore() {
 
   log "停掉會碰 DB 的服務"
   docker compose stop csp ingestion-worker router anila-studio
-  docker compose up -d csp-db
+  docker compose up -d --no-build --pull never csp-db
   local i
   for i in $(seq 1 30); do
     docker compose exec -T csp-db pg_isready -U csp -d postgres >/dev/null 2>&1 && break
@@ -342,64 +578,78 @@ cmd_restore() {
     err "灌 dump 失敗 — 自動回滾到還原前狀態"
     docker compose exec -T csp-db psql -U csp -d postgres -q -c "DROP DATABASE IF EXISTS csp" || true
     docker compose exec -T csp-db psql -U csp -d postgres -v ON_ERROR_STOP=1 -q -c "ALTER DATABASE $keep RENAME TO csp"
-    docker compose up -d
+    docker compose up -d --no-build --pull never csp ingestion-worker router anila-studio
     fatal "已回滾 (原資料完好)。檢查備份檔後再試"
   fi
 
-  log "重啟 stack (up -d,非 docker restart)"
-  docker compose up -d
-  local csp_ok=0
-  for i in $(seq 1 60); do
-    [ "$(docker inspect "$(docker compose ps -q csp)" --format '{{.State.Health.Status}}' 2>/dev/null)" = healthy ] \
-      && { csp_ok=1; break; }
-    sleep 5
-  done
-  docker compose ps --format "table {{.Service}}\t{{.Status}}"
-  if [ "$csp_ok" != 1 ]; then
-    err "csp 5 分鐘內未 healthy — DB 已換成備份內容,但服務沒起來;查 logs csp。"
-    err "要退回還原前狀態:stop 相關服務後把 $keep 改名回 csp (參考本函式的回滾段)"
-    exit 1
-  fi
+  log "只重啟本次停止的 DB consumers，再跑全 stack fail-closed acceptance"
+  docker compose up -d --no-build --pull never csp ingestion-worker router anila-studio
+  bash infra/deployment/scripts/deploy-prod.sh wait
+  bash infra/deployment/scripts/deploy-prod.sh verify
   warn "確認一切正常後清掉保留的舊庫:"
   warn "  docker compose exec -T csp-db psql -U csp -d postgres -c 'DROP DATABASE $keep'"
-  warn "本指令只還原 DB。.env / secrets / 上傳檔要另外手動還原:"
-  warn "  cp $src/env.bak .env && cp $src/secrets/*.pem secrets/  (確認後 docker compose up -d)"
-  [ -f "$src/uploads.tar.gz" ] && warn "  tar xzf $src/uploads.tar.gz -C share/"
+  warn "本指令目前只還原 DB；.env / secrets / uploads / attachments 尚未自動還原。"
+  warn "secrets 與 runtime 目錄是 UID 10001 + mode 0700，禁止直接 cp/tar 或放寬權限。"
+  warn "請用受控 root helper 還原並重設 owner/mode；Gate 6 restore drill 前須完成自動化 restore。"
   log "還原完成 — 用 'anila-ops.sh health' 驗一輪,再實際登入測一次"
 }
 
 # ── cert-renew (平台入向 TLS) ──────────────────────────────────────────────
 cmd_cert_renew() {
   need_stack
-  local pfx="${1:-}" pw="${2:-}"
-  [ -n "$pfx" ] && [ -f "$pfx" ] || fatal "usage: anila-ops.sh cert-renew <server.pfx> [pfx密碼]"
+  local pfx="${1:-}" pw
+  [ -z "${2:-}" ] || fatal "PFX 密碼不可放命令列；腳本會安全提示輸入"
+  [ -n "$pfx" ] && [ -f "$pfx" ] && [ ! -L "$pfx" ] || fatal "usage: anila-ops.sh cert-renew <server.pfx>"
   command -v openssl >/dev/null || fatal "找不到 openssl"
+  pfx="$(realpath -e -- "$pfx")"
+  case "$pfx" in "$REPO_ROOT"|"$REPO_ROOT"/*) fatal "PFX 不得放在 repo 內" ;; esac
+  read -rsp "  PFX 密碼 (空密碼直接 Enter): " pw; echo
 
-  local certs=infra/nginx/certs stamp
+  local certs="$TLS_CERTS_DIR" archive_root="$ANILA_STATE_DIR/tls-archive" archive stamp staging new_crt new_key
   stamp="$(date +%Y%m%d-%H%M%S)"
-  mkdir -p "$certs/archive/$stamp"
-  [ -f "$certs/server.crt" ] && cp "$certs/server.crt" "$certs/archive/$stamp/"
-  [ -f "$certs/server.key" ] && cp "$certs/server.key" "$certs/archive/$stamp/" \
-    && chmod 600 "$certs/archive/$stamp/server.key"
+  archive="$archive_root/$stamp"
+  staging="$(mktemp -d "$certs/.renew.XXXXXX")" || fatal "無法建立 TLS staging directory"
+  trap 'rm -rf -- "${staging:-}"' EXIT
+  new_crt="$staging/server.crt"; new_key="$staging/server.key"
 
   # fullchain = leaf + pfx 內所有中繼 CA;sed 只留 PEM 區塊 (同 intranet-deploy [1/7])
   {
-    openssl pkcs12 -in "$pfx" -clcerts -nokeys -legacy -passin "pass:$pw" 2>/dev/null
-    openssl pkcs12 -in "$pfx" -cacerts -nokeys -legacy -passin "pass:$pw" 2>/dev/null
-  } | sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' > "$certs/server.crt.new"
-  grep -q 'BEGIN CERTIFICATE' "$certs/server.crt.new" || fatal "抽 cert 失敗 (pfx 路徑/密碼?)"
-  openssl pkcs12 -in "$pfx" -nocerts -noenc -legacy -passin "pass:$pw" 2>/dev/null \
-    | openssl pkey > "$certs/server.key.new" || fatal "抽 key 失敗"
-  chmod 600 "$certs/server.key.new"
+    openssl pkcs12 -in "$pfx" -clcerts -nokeys -legacy -passin fd:3 3<<<"$pw" 2>/dev/null
+    openssl pkcs12 -in "$pfx" -cacerts -nokeys -legacy -passin fd:3 3<<<"$pw" 2>/dev/null
+  } | sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' > "$new_crt"
+  grep -q 'BEGIN CERTIFICATE' "$new_crt" || fatal "抽 cert 失敗 (pfx 路徑/密碼?)"
+  openssl pkcs12 -in "$pfx" -nocerts -noenc -legacy -passin fd:3 3<<<"$pw" 2>/dev/null \
+    | openssl pkey > "$new_key" || fatal "抽 key 失敗"
+  unset pw
+  chmod 600 "$new_key"; chmod 644 "$new_crt"
 
   # key 與 cert 必須成對,錯配會讓 nginx 起不來
   local m1 m2
-  m1="$(openssl x509 -in "$certs/server.crt.new" -noout -pubkey 2>/dev/null | sha256sum | cut -d' ' -f1)"
-  m2="$(openssl pkey -in "$certs/server.key.new" -pubout 2>/dev/null | sha256sum | cut -d' ' -f1)"
+  m1="$(openssl x509 -in "$new_crt" -noout -pubkey 2>/dev/null | sha256sum | cut -d' ' -f1)"
+  m2="$(openssl pkey -in "$new_key" -pubout 2>/dev/null | sha256sum | cut -d' ' -f1)"
   [ -n "$m1" ] && [ "$m1" = "$m2" ] || fatal "新 cert 與 key 不成對 — 已中止 (舊檔未動)"
+  openssl x509 -in "$new_crt" -noout -checkend 86400 >/dev/null 2>&1 \
+    || fatal "新 TLS 憑證已過期或 24 小時內到期"
+  local tls_host
+  for tls_host in anila.ai.ncsist.org.tw n8n.ai.ncsist.org.tw gitlab.ai.ncsist.org.tw code.ai.ncsist.org.tw; do
+    openssl x509 -in "$new_crt" -noout -checkhost "$tls_host" >/dev/null 2>&1 \
+      || fatal "新 TLS 憑證不涵蓋 $tls_host"
+  done
 
-  mv "$certs/server.crt.new" "$certs/server.crt"
-  mv "$certs/server.key.new" "$certs/server.key"
+  mkdir -p "$archive"
+  chmod 700 "$archive_root" "$archive"
+  [ -f "$certs/server.crt" ] && cp "$certs/server.crt" "$archive/"
+  [ -f "$certs/server.key" ] && cp "$certs/server.key" "$archive/" \
+    && chmod 600 "$archive/server.key"
+  install -m 600 "$new_key" "$certs/server.key.next"
+  install -m 644 "$new_crt" "$certs/server.crt.next"
+  if ! mv -f -- "$certs/server.key.next" "$certs/server.key" || \
+     ! mv -f -- "$certs/server.crt.next" "$certs/server.crt"; then
+    [ -f "$archive/server.key" ] && cp "$archive/server.key" "$certs/server.key" || rm -f -- "$certs/server.key"
+    [ -f "$archive/server.crt" ] && cp "$archive/server.crt" "$certs/server.crt" || rm -f -- "$certs/server.crt"
+    fatal "TLS pair install 失敗，已回復舊檔"
+  fi
+  rm -rf -- "$staging"; staging=""; trap - EXIT
   ok "新憑證: $(openssl x509 -in "$certs/server.crt" -noout -subject -enddate | tr '\n' ' ')"
 
   # certs 目錄是 bind-mount,檔案換了只要 nginx reload。順序關鍵:nginx 在 reload
@@ -408,12 +658,12 @@ cmd_cert_renew() {
   if docker compose exec -T nginx nginx -t >/dev/null 2>&1; then
     docker compose exec -T nginx nginx -s reload \
       && ok "nginx 已 reload (零中斷)" \
-      || { warn "reload 失敗,改 recreate nginx"; docker compose up -d --force-recreate nginx; }
+      || { warn "reload 失敗,改 recreate nginx"; docker compose up -d --no-build --pull never --force-recreate nginx; }
   else
     err "nginx -t 拒絕新憑證 — 自動還原舊憑證"
-    if [ -f "$certs/archive/$stamp/server.crt" ] && [ -f "$certs/archive/$stamp/server.key" ]; then
-      cp "$certs/archive/$stamp/server.crt" "$certs/server.crt"
-      cp "$certs/archive/$stamp/server.key" "$certs/server.key"
+    if [ -f "$archive/server.crt" ] && [ -f "$archive/server.key" ]; then
+      cp "$archive/server.crt" "$certs/server.crt"
+      cp "$archive/server.key" "$certs/server.key"
       chmod 600 "$certs/server.key"
       docker compose exec -T nginx nginx -t >/dev/null 2>&1 || warn "舊憑證也沒過 -t?手動檢查 $certs"
       fatal "已還原舊憑證 (服務未中斷)。檢查 pfx 內容 (fullchain/格式) 後再試"
@@ -421,7 +671,7 @@ cmd_cert_renew() {
     fatal "沒有舊憑證可還原 (首次部署?) — 檢查 pfx 後重跑,或用 intranet-deploy.sh [1/7]"
   fi
   log "TLS 換發完成 — 瀏覽器開 https://$(get_env ANILA_HOST || echo localhost)/ 確認無憑證警告"
-  warn "舊憑證已備份到 $certs/archive/$stamp/"
+  warn "舊憑證已備份到 $archive/（不在 nginx TLS mount 內）"
 }
 
 # ── model-ca (出向模型 gateway CA) ─────────────────────────────────────────
@@ -450,7 +700,7 @@ cmd_model_ca() {
   [ "$(get_env ANILA_MODEL_CA_FILE)" = /etc/anila/pki/model-ca.pem ] \
     || set_env ANILA_MODEL_CA_FILE /etc/anila/pki/model-ca.pem
   # 掛載檔內容變更 → 必須 recreate 讓 csp 重讀 (restart 不重載 .env)
-  docker compose up -d --force-recreate csp
+  docker compose up -d --no-build --pull never --force-recreate csp
   log "model-ca 已更新並 recreate csp — 用 'anila-ops.sh health' 驗模型鏈路"
 }
 
@@ -461,9 +711,9 @@ cmd_gateway_key() {
   local key
   read -rsp "  新的 MODEL_GATEWAY_API_KEY (在 .12 gateway 簽發): " key; echo
   [ -n "$key" ] || fatal "key 不能空"
-  set_env MODEL_GATEWAY_API_KEY "$key"
+  set_env_single_quoted MODEL_GATEWAY_API_KEY "$key"
   # env 變更 → up -d 會自動 recreate csp (compose 偵測 env diff)
-  docker compose up -d csp
+  docker compose up -d --no-build --pull never csp
   log "csp 已以新 key recreate,探測 gateway..."
   health_model_gateway
   [ "$_FAILS" -eq 0 ] && log "gateway key 輪替完成" \
@@ -476,19 +726,50 @@ cmd_break_glass() {
   [ -f .env ] || fatal ".env 不存在"
   case "${1:-}" in
     on)
-      warn "break-glass = 暫時開放帳密登入 (card-only 關閉)。只在讀卡機 / HiPKI 全面故障時使用!"
-      local c; read -rp "  確定開啟? [y/N]: " c; [ "$c" = y ] || fatal "已取消"
-      set_env REQUIRE_CARD_LOGIN_ONLY false
-      docker compose up -d csp
-      log "已開啟帳密後路 — 用 owner 帳密 (admin / .env 的 ADMIN_PASSWORD) 登入處理"
+      local owner="${2:-}" ticket="${3:-}" hours="${4:-}" expires_at c
+      warn "break-glass = 在 card-only 姿態中，暫時只允許 owner 帳密。只在讀卡機 / HiPKI 全面故障時使用!"
+      read -rp "  確定開啟? [y/N]: " c; [ "$c" = y ] || fatal "已取消"
+      [ -n "$owner" ] || read -rp "  具名系統負責人: " owner
+      [ -n "$ticket" ] || read -rp "  Incident/ticket 編號: " ticket
+      [ -n "$hours" ] || read -rp "  有效小時 (1-24，建議 1): " hours
+      hours="${hours:-1}"
+      [[ "$owner" =~ ^[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}$ ]] \
+        || fatal "負責人必須是 3-128 字元 audit identifier"
+      [[ "$ticket" =~ ^[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}$ ]] \
+        || fatal "ticket 必須是 3-128 字元 audit identifier"
+      [[ "$hours" =~ ^[0-9]+$ ]] && (( hours >= 1 && hours <= 24 )) \
+        || fatal "有效小時必須是 1-24 的整數"
+      expires_at="$(date -u -d "+${hours} hours" '+%Y-%m-%dT%H:%M:%SZ')" \
+        || fatal "無法計算 UTC expiry"
+      set_env REQUIRE_CARD_LOGIN_ONLY true
+      set_env_single_quoted ANILA_BREAK_GLASS_OWNER "$owner"
+      set_env_single_quoted ANILA_BREAK_GLASS_TICKET "$ticket"
+      set_env ANILA_BREAK_GLASS_EXPIRES_AT "$expires_at"
+      set_env ANILA_DEPLOYMENT_PROFILE prod-intranet-card-breakglass
+      docker compose up -d --no-build --pull never csp
+      [ "$(csp_env_readback ANILA_DEPLOYMENT_PROFILE)" = prod-intranet-card-breakglass ] \
+        || fatal "CSP effective profile 未切入 break-glass（可能有 ambient env override）"
+      [ "$(csp_env_readback REQUIRE_CARD_LOGIN_ONLY)" = true ] \
+        || fatal "CSP effective card-only flag 漂移"
+      [ "$(csp_env_readback ANILA_BREAK_GLASS_TICKET)" = "$ticket" ] \
+        || fatal "CSP break-glass ticket read-back 不一致"
+      log "已開啟具名 owner 帳密後路；owner=$owner ticket=$ticket expires=$expires_at"
       warn "修好讀卡環境後務必跑: anila-ops.sh break-glass off"
       ;;
     off)
       set_env REQUIRE_CARD_LOGIN_ONLY true
-      docker compose up -d csp
-      log "已恢復 card-only 模式 (REQUIRE_CARD_LOGIN_ONLY=true)"
+      set_env ANILA_DEPLOYMENT_PROFILE prod-intranet-card
+      unset_env ANILA_BREAK_GLASS_OWNER
+      unset_env ANILA_BREAK_GLASS_TICKET
+      unset_env ANILA_BREAK_GLASS_EXPIRES_AT
+      docker compose up -d --no-build --pull never csp
+      [ "$(csp_env_readback ANILA_DEPLOYMENT_PROFILE)" = prod-intranet-card ] \
+        || fatal "CSP effective profile 未恢復 prod-intranet-card"
+      [ "$(csp_env_readback REQUIRE_CARD_LOGIN_ONLY)" = true ] \
+        || fatal "CSP effective card-only flag 未恢復"
+      log "已恢復 prod-intranet-card 純卡片姿態，並清除 break-glass metadata"
       ;;
-    *) fatal "usage: anila-ops.sh break-glass on|off" ;;
+    *) fatal "usage: anila-ops.sh break-glass on [owner ticket hours]|off" ;;
   esac
 }
 

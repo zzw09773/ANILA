@@ -22,6 +22,7 @@ from app.models.artifact import (
 from app.models.attachment import Attachment
 from app.models.audit_log import AuditLog
 from app.models.banner import Banner
+from app.models.card_login_challenge import CardLoginChallenge
 from app.models.classification import (
     ClassificationAuthorityAssignment,
     ClassificationEvent,
@@ -74,6 +75,7 @@ __all__ = [
     "ExportRecord",
     "AuditLog",
     "Banner",
+    "CardLoginChallenge",
     "Citation",
     "ClassificationAuthorityAssignment",
     "ClassificationEvent",

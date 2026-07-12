@@ -7,7 +7,8 @@
 challenge endpoint 產一條簽過名的 ``challenge_token`` JWT 與明文 ``nonce``，
 client 簽 ``nonce``（透過本機 CHT 元件 / dev mock）後把
 ``challenge_token + signature`` 一起送回 verify endpoint。後端用 SECRET_KEY
-驗 JWT 還原 ``nonce``，再用 ``nonce`` 當 ``expected_tbs`` 驗 PKCS#7 簽章。
+驗 JWT 還原 ``nonce``，再用 ``nonce`` 當 ``expected_tbs`` 驗 PKCS#7 簽章；
+驗章成功後以 JWT ``jti`` 原子消耗資料庫中的短效 challenge，防止重放。
 """
 from __future__ import annotations
 
@@ -19,7 +20,8 @@ class CardChallengeResponse(BaseModel):
 
     Attributes:
         challenge_token: SECRET_KEY 簽過的 JWT，``aud="card-challenge"``、
-            ``exp=2min``，內含 ``nonce``。client 應原樣回傳給 verify endpoint。
+            ``exp=2min``，內含 ``nonce`` 與 ``jti``。client 應原樣回傳給
+            verify endpoint；同一 token 只能成功驗證一次。
         nonce: 明文 nonce，client 簽章時用作 ``tbsPackage.tbs`` 的值。
         expires_in: ``challenge_token`` 剩餘有效秒數，僅供 client 顯示倒數用。
     """
@@ -34,9 +36,9 @@ class CardVerifyRequest(BaseModel):
 
     Attributes:
         challenge_token: 從 ``/card/challenge`` 拿到的同一份 JWT。
-        signature: base64 編碼的 PKCS#7 SignedData（由本機 CHT 元件回傳，
-            等同於 ``cht/app.py:18`` 的 ``signature`` 欄位）。
-        card_serial: 元件回應的 ``cardSN`` 欄位（例：``CS00000000025247``）。
+        signature: base64 編碼的 PKCS#7 SignedData（由本機 CHT 元件回傳；
+            dev emulator 會對本次 challenge 的實際 nonce 動態簽章）。
+        card_serial: 元件回應的 ``cardSN`` 欄位（例：``SYNTH-CARD-0001``）。
             純 audit log 用途；不參與密碼學驗證。
     """
 

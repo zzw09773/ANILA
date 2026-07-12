@@ -1,9 +1,31 @@
 # Rotate TLS Certificate / Purge Leaked Private Key
 
-> 適用情境：Sprint 5 X 安全審查發現 `infra/nginx/certs/server.key`
-> 自 commit `c043a23` / `2e96978` 起被 git 追蹤。Sprint 6 X / A3 提供徹底
-> 移除歷史 + 重簽憑證的步驟。**此為破壞性操作**：執行 `git filter-repo`
-> 會 rewrite all branches，所有 clone 必須重 clone。
+> 適用情境：2026-07-11 歷史稽核確認
+> `myCSPPlatform/docker/certs/server.key` 與 `server.key.bak` 仍可從 Git
+> 歷史取回。本文同時防禦性清理舊版曾使用的 `infra/nginx/certs/` 路徑。
+> **此為破壞性操作**：執行 `git filter-repo` 會 rewrite all branches，所有
+> clone 必須重 clone。歷史改寫不能撤銷已外洩金鑰，輪換必須先做。
+
+---
+
+## 步驟 0：先確認並輪換部署中的 TLS 金鑰
+
+在安排 history rewrite 前，先比對部署中憑證 fingerprint 與事件紀錄。只要
+無法證明歷史金鑰已停用，就視為仍可能有效，立即執行：
+
+```bash
+cd $HOME/ANILA
+export ANILA_STATE_DIR=/var/lib/anila
+export ANILA_TLS_CERTS_DIR=$ANILA_STATE_DIR/tls
+bash infra/deployment/scripts/reissue-tls-cert.sh
+docker compose restart nginx
+openssl x509 -in "$ANILA_TLS_CERTS_DIR/server.crt" -noout -fingerprint -sha256
+curl -sk -I https://localhost/health | head -1
+```
+
+保存新舊憑證 fingerprint、執行時間與核准人到
+`docs/governance/incidents/2026-07-11-historical-card-and-tls-material.md`。
+在這項證據完成前，`prod-intranet-card` 維持 deployment No-Go。
 
 ---
 
@@ -22,7 +44,7 @@
 ## 步驟 2：備份 repo（一定要！）
 
 ```bash
-cd /home/aia/c1147259
+cd $HOME
 cp -a ANILA ANILA.backup-$(date +%Y%m%d-%H%M)
 ```
 
@@ -32,15 +54,17 @@ cp -a ANILA ANILA.backup-$(date +%Y%m%d-%H%M)
 # 安裝 git-filter-repo 若尚未安裝
 pip install --user git-filter-repo
 
-cd /home/aia/c1147259/ANILA
+cd $HOME/ANILA
 git filter-repo --invert-paths \
+  --path myCSPPlatform/docker/certs/server.key \
+  --path myCSPPlatform/docker/certs/server.key.bak \
   --path infra/nginx/certs/server.key \
   --path infra/nginx/certs/server.key.bak \
   --force
 ```
 
-執行後 `.git` 已重新打包；本機 working tree 會保留 `server.key`（gitignore
-覆蓋），不影響 docker compose 啟動。
+執行後 `.git` 已重新打包。現行 Compose 不再從 working tree 讀 private key；
+正式憑證只放 repo 外 `ANILA_TLS_CERTS_DIR`。
 
 ## 步驟 4：force-push 到 remote
 
@@ -56,11 +80,11 @@ git push --force --tags
 
 ```bash
 # 在每個 contributor 的工作站
-cd /home/aia/c1147259
+cd $HOME
 mv ANILA ANILA.old
 git clone <repo-url> ANILA
 cp ANILA.old/.env ANILA/.env  # 把本機 secrets 搬過來
-cp -a ANILA.old/infra/nginx/certs ANILA/infra/nginx/  # 但 server.key 等下會被新 cert 覆蓋
+# 不要把舊 TLS key 搬回 repo；新 key 會產在 repo 外 state 目錄
 ```
 
 若 contributor 拒絕 fresh clone（有 in-flight branch），可使用：
@@ -76,20 +100,26 @@ git gc --prune=now --aggressive
 in-flight branch push 出去（push 會被拒，得 force-push 自己的 branch
 到備援 remote 或 stash）。
 
-## 步驟 6：重簽 TLS 憑證
+## 步驟 6：確認 TLS 憑證已先完成重簽
 
-舊私鑰在改寫歷史前已外洩，**必須**重簽。執行：
+舊私鑰在改寫歷史前已外洩，**必須在步驟 0 先重簽**。不要在此再次執行
+`reissue-tls-cert.sh`（它會產生另一組 keypair）；只確認事件紀錄已有新
+fingerprint、核准人與執行時間，且外部 state 目錄中的 keypair 存在：
 
 ```bash
-cd /home/aia/c1147259/ANILA
-bash infra/deployment/scripts/reissue-tls-cert.sh
+export ANILA_STATE_DIR=/var/lib/anila
+export ANILA_TLS_CERTS_DIR=$ANILA_STATE_DIR/tls
+test -s "$ANILA_TLS_CERTS_DIR/server.key"
+test -s "$ANILA_TLS_CERTS_DIR/server.crt"
+openssl x509 -in "$ANILA_TLS_CERTS_DIR/server.crt" -noout -fingerprint -sha256
 ```
 
-該 script 會：
-1. 詢問 SAN（subject alternative name）— 需把所有 ANILA host 列入：
-   `172.16.120.35`、`localhost`、`<production-fqdn>`。
-2. 產生 `infra/nginx/certs/server.{key,crt}`，覆蓋舊檔。
-3. 顯示新憑證 fingerprint。
+步驟 0 的 script 會：
+1. 從 `ANILA_CERT_SAN` 讀 SAN；未設定時使用主平台、n8n、GitLab、
+   code-server、localhost 與既有 LAN IP 的安全預設。正式換發前仍須核對實際主機名。
+2. 產生 `$ANILA_TLS_CERTS_DIR/server.{key,crt}`，覆蓋舊檔。
+3. 把舊 pair 放到 `$ANILA_STATE_DIR/tls-archive/<timestamp>/`（不暴露給 nginx mount）。
+4. 顯示新憑證 fingerprint。
 
 完成後 restart nginx：
 
@@ -100,15 +130,25 @@ docker compose restart nginx
 ## 步驟 7：驗證
 
 ```bash
-# 1. 檢查歷史已乾淨
-git log --all --full-history --oneline -- '*.key' '*.pem'
-# 應該回空
+# 1. 檢查已知私鑰路徑已從所有 refs 清除
+git log --all --full-history --oneline -- \
+  myCSPPlatform/docker/certs/server.key \
+  myCSPPlatform/docker/certs/server.key.bak \
+  infra/nginx/certs/server.key \
+  infra/nginx/certs/server.key.bak
+# 應該回空；public CA PEM 不在清理範圍。
 
-# 2. 檢查新憑證
-openssl x509 -in infra/nginx/certs/server.crt -noout -fingerprint -sha256
+# 2. 重跑 redacted 稽核；history_critical_blobs 必須為 0
+python infra/security/scan_card_material.py \
+  --scope all \
+  --json docs/security/post-rewrite-card-material-audit.json \
+  --markdown docs/security/post-rewrite-card-material-audit.md
+
+# 3. 檢查新憑證
+openssl x509 -in "$ANILA_TLS_CERTS_DIR/server.crt" -noout -fingerprint -sha256
 # 應該是新 fingerprint
 
-# 3. 連線測試
+# 4. 連線測試
 curl -sk -I https://localhost/health | head -1
 # HTTP/2 200
 ```

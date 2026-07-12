@@ -307,6 +307,27 @@ class TestLaunch:
             is not None
         )
 
+    def test_launch_denied_user_cannot_probe_invalid_entry_url(self, client, db):
+        """Access control must run before URL validation.
+
+        Otherwise an ungranted caller can distinguish a malformed/private
+        service from a valid/private service by observing 400 vs 403.
+        """
+        headers = _auth_headers(client, db, username="url-oracle-attacker")
+        svc = _make_service(
+            db,
+            slug="private-invalid-url",
+            name="Private Invalid URL",
+            is_public=False,
+            entry_url="javascript:alert(1)",
+        )
+
+        resp = client.post(f"/api/services/{svc.slug}/launch", json={}, headers=headers)
+
+        assert resp.status_code == 403, resp.text
+        assert "entry_url" not in resp.text
+        assert db.query(ServiceLaunch).count() == 0
+
     def test_launch_unauthenticated_401(self, client, db):
         svc = _make_service(db, is_public=True)
         assert client.post(f"/api/services/{svc.slug}/launch", json={}).status_code == 401
@@ -415,7 +436,7 @@ class TestAuditCallback:
                 "event_type": "analysis.completed",
                 "launch_id": "launch_abc",
                 "trace_id": "trace_abc",
-                "actor": {"employee_id": "123456"},
+                "actor": {"employee_id": "990000001"},
                 "classification_level": "機密",
             },
             headers={"Authorization": f"Bearer {self._GOOD}"},
@@ -671,6 +692,36 @@ class TestCompatFacade:
 
 
 class TestSeedRework:
+    def test_env_seed_normalizes_relative_url_to_absolute(self, db, monkeypatch):
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "SITE_URL", "https://anila.example.tw")
+        sync_env_seeded_services(
+            db,
+            [{"name": "ANILA LM", "url": "/anilalm", "is_public": False}],
+        )
+        db.commit()
+
+        svc = db.query(RegisteredService).filter_by(name="ANILA LM").one()
+        assert svc.entry_url == "https://anila.example.tw/anilalm"
+        assert svc.allowed_origins == ["https://anila.example.tw"]
+
+    def test_env_seed_resyncs_absolute_url_and_allowed_origin(self, db, monkeypatch):
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "SITE_URL", "https://old.example.tw")
+        cfg = [{"name": "ANILA LM", "url": "/anilalm"}]
+        sync_env_seeded_services(db, cfg)
+        db.commit()
+
+        monkeypatch.setattr(settings, "SITE_URL", "https://new.example.tw:4443")
+        sync_env_seeded_services(db, cfg)
+        db.commit()
+
+        svc = db.query(RegisteredService).filter_by(name="ANILA LM").one()
+        assert svc.entry_url == "https://new.example.tw:4443/anilalm"
+        assert svc.allowed_origins == ["https://new.example.tw:4443"]
+
     def test_env_seed_keeps_admin_sticky_and_resyncs(self, db):
         cfg = [{"name": "GitLab", "url": "https://gitlab.local", "is_public": True}]
         sync_env_seeded_services(db, cfg)

@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""五級分類契約(ClassificationLevel + 分類事件/降級申請 enum)。
+"""CSP 分類流程契約與 ``ClassificationLevel`` 相容 facade。
+
+五級分類的單一事實來源已抽至 :mod:`anila_contracts`；本模組保留舊公共
+import path，並繼續承載 CSP 專屬的分類事件／降級申請 schema。
 
 依 docs/anila-redesign-docs/08-classified-latch-and-policy-engine.md:
 
@@ -26,71 +29,9 @@ from __future__ import annotations
 
 import enum
 from datetime import datetime
-from functools import total_ordering
-from typing import Iterable
 
+from anila_contracts import Classification as ClassificationLevel
 from pydantic import BaseModel, Field
-
-
-@total_ordering
-class ClassificationLevel(enum.Enum):
-    """五級分類等級;成員定義順序即由低到高的排序契約。"""
-
-    UNCLASSIFIED = "無機密"
-    TRADE_SECRET = "營業秘密"
-    CONFIDENTIAL = "機密"
-    SECRET = "極機密"
-    TOP_SECRET = "絕對機密"
-
-    @property
-    def rank(self) -> int:
-        """數值序(doc 08 §1 的 0–4);僅供排序/比較,不作儲存格式。"""
-        return _RANKS[self]
-
-    def __lt__(self, other: object) -> bool:
-        if not isinstance(other, ClassificationLevel):
-            return NotImplemented
-        return self.rank < other.rank
-
-    @classmethod
-    def max_of(cls, levels: Iterable["ClassificationLevel"]) -> "ClassificationLevel":
-        """單向閂鎖 helper:effective level = 觀測到分類的最大值。
-
-        空集合拋 ``ValueError``(分類判定不允許憑空預設,fail-closed)。
-        """
-        materialized = list(levels)
-        if not materialized:
-            raise ValueError("max_of() 需要至少一個分類等級,不允許空集合")
-        return max(materialized, key=lambda level: level.rank)
-
-    @classmethod
-    def from_legacy_classified(cls, classified: bool) -> "ClassificationLevel":
-        """舊 boolean classified → 五級的 floor backfill 映射(doc 08 §3)。
-
-        true → 機密 只是 migration floor(最低安全起點),不是最終分類。
-        """
-        return cls.CONFIDENTIAL if classified else cls.UNCLASSIFIED
-
-    def to_storage(self) -> str:
-        """回傳落地儲存用的繁中字串(enum value)。"""
-        return self.value
-
-    @classmethod
-    def from_storage(cls, value: str) -> "ClassificationLevel":
-        """由儲存字串還原等級;未知值拋 ``ValueError``(fail-closed)。"""
-        try:
-            return cls(value)
-        except ValueError:
-            raise ValueError(
-                f"未知的分類等級儲存值:{value!r};"
-                f"合法值為 {[level.value for level in cls]}"
-            ) from None
-
-
-# 定義順序即排序:rank 由成員宣告順序推導,單一事實來源。
-_RANKS: dict[ClassificationLevel, int] = {
-    level: index for index, level in enumerate(ClassificationLevel)
-}
 
 
 class ClassificationEventReason(str, enum.Enum):

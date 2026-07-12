@@ -1,3 +1,5 @@
+import { readCsrfCookie } from "./api.js";
+
 export function parseSseBlocks(buffer) {
   const normalized = buffer.replace(/\r\n/g, "\n");
   const blocks = normalized.split("\n\n");
@@ -90,10 +92,8 @@ export async function streamChatCompletion({
   // 路徑也是攻擊面）。SDK / curl 使用者請改打 ``apiKeyRequest`` 或自己組
   // Authorization header — 那不會經過此函式。
   const headers = { "Content-Type": "application/json" };
-  if (typeof document !== "undefined") {
-    const match = document.cookie.match(/(?:^|;\s*)anila_csrf=([^;]+)/);
-    if (match) headers["X-CSRF-Token"] = decodeURIComponent(match[1]);
-  }
+  const csrf = readCsrfCookie();
+  if (csrf) headers["X-CSRF-Token"] = csrf;
   // Surface the conversation id to CSP so server-side latches
   // (memory inheritance, agent.requires_encryption) can persist
   // ``classified=true`` to the conversation row. Without this header
@@ -361,10 +361,8 @@ export async function streamSessionAnswer({
   }
 
   const headers = { "Content-Type": "application/json" };
-  if (typeof document !== "undefined") {
-    const match = document.cookie.match(/(?:^|;\s*)anila_csrf=([^;]+)/);
-    if (match) headers["X-CSRF-Token"] = decodeURIComponent(match[1]);
-  }
+  const csrf = readCsrfCookie();
+  if (csrf) headers["X-CSRF-Token"] = csrf;
 
   const url = `${(routerBaseUrl || "").replace(/\/$/, "")}/v1/sessions/${encodeURIComponent(
     sessionId,

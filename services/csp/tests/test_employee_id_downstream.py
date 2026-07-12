@@ -34,8 +34,8 @@ class _User:
 
 class TestDownstreamIdentity:
     def test_card_user_returns_employee_id(self):
-        assert downstream_identity(_User("1147259")) == "1147259"
-        assert downstream_identity(_User("1090868")) == "1090868"
+        assert downstream_identity(_User("990000002")) == "990000002"
+        assert downstream_identity(_User("990000001")) == "990000001"
 
     def test_admin_non_numeric_fails_closed(self):
         # admin 帳密登入 username='admin' → 不送身分(不偽造 "admin" 當員編)。
@@ -51,16 +51,16 @@ class TestDownstreamIdentity:
 
 class TestModelGatewayHeaders:
     def test_carries_only_employee_id(self):
-        h = build_model_gateway_headers("1147259")
-        assert h["X-ANILA-User-Id"] == "1147259"
+        h = build_model_gateway_headers("990000002")
+        assert h["X-ANILA-User-Id"] == "990000002"
 
     def test_never_carries_service_token(self):
         # CRITICAL 回歸鎖:模型閘道(.12)絕不可拿到 CSP service token。
-        h = build_model_gateway_headers("1147259")
+        h = build_model_gateway_headers("990000002")
         assert "X-CSP-Service-Token" not in h
 
     def test_no_pii_to_model(self):
-        h = build_model_gateway_headers("1147259")
+        h = build_model_gateway_headers("990000002")
         assert "X-ANILA-User-Email" not in h
         assert "X-ANILA-User-Groups" not in h
 
@@ -72,14 +72,14 @@ class TestModelGatewayHeaders:
 
 class TestAgentHeaders:
     def test_full_identity(self):
-        h = build_agent_headers("1147259", "alice@ncsist.org.tw", "g1")
-        assert h["X-ANILA-User-Id"] == "1147259"
-        assert h["X-ANILA-User-Email"] == "alice@ncsist.org.tw"
+        h = build_agent_headers("990000002", "synthetic.agent.user@example.invalid", "g1")
+        assert h["X-ANILA-User-Id"] == "990000002"
+        assert h["X-ANILA-User-Email"] == "synthetic.agent.user@example.invalid"
         assert h["X-ANILA-User-Groups"] == "g1"
 
     def test_none_identity_omits_user_id_header(self):
         # 非卡片帳號 (downstream_identity→None):省略身分主鍵(不偽造),請求照常。
-        h = build_agent_headers(None, "alice@ncsist.org.tw")
+        h = build_agent_headers(None, "synthetic.agent.user@example.invalid")
         assert "X-ANILA-User-Id" not in h
 
 
@@ -94,10 +94,10 @@ class TestServiceTokenScoping:
             proxy_service.settings, "CSP_SERVICE_TOKEN", "csk-legacy", raising=False
         )
         # agent path (no target_agent_id → legacy env token) carries it…
-        agent_h = build_agent_headers("1147259")
+        agent_h = build_agent_headers("990000002")
         assert agent_h.get("X-CSP-Service-Token") == "csk-legacy"
         # …model-gateway path never does.
-        model_h = build_model_gateway_headers("1147259")
+        model_h = build_model_gateway_headers("990000002")
         assert "X-CSP-Service-Token" not in model_h
 
     def test_registered_agent_without_db_credential_does_not_get_legacy_token(
@@ -110,7 +110,7 @@ class TestServiceTokenScoping:
         monkeypatch.setattr(
             proxy_service.settings, "CSP_SERVICE_TOKEN", "csk-legacy", raising=False
         )
-        h = build_agent_headers("1147259", target_agent_id=12345)
+        h = build_agent_headers("990000002", target_agent_id=12345)
         assert "X-CSP-Service-Token" not in h
 
 
@@ -195,7 +195,7 @@ class TestProxyStreamRoutingNeverLeaksToken:
                     "messages": [{"role": "user", "content": "hi"}],
                     "stream": True,
                 },
-                user_identity="1147259",  # 員編 → wire identity
+                user_identity="990000002",  # 員編 → wire identity
                 model_name="m",
                 target_agent_id=None,  # MODEL destination
             ):
@@ -204,7 +204,7 @@ class TestProxyStreamRoutingNeverLeaksToken:
         asyncio.run(_run())
         h = _HeaderCapturingClient.last_headers
         assert "X-CSP-Service-Token" not in h  # CRITICAL: no service token to model
-        assert h.get("X-ANILA-User-Id") == "1147259"  # 員編 forwarded for traceability
+        assert h.get("X-ANILA-User-Id") == "990000002"  # 員編 forwarded for traceability
         assert "X-ANILA-User-Email" not in h  # no end-user PII into model logs
 
 
@@ -292,11 +292,11 @@ class TestProxyRequestRoutingNeverLeaksToken:
                     "messages": [{"role": "user", "content": "hi"}],
                 },
                 endpoint_path="/v1/chat/completions",
-                user_identity="1147259",  # 員編 → wire identity
+                user_identity="990000002",  # 員編 → wire identity
             )
 
         asyncio.run(_run())
         h = _PostCapturingClient.last_headers
         assert "X-CSP-Service-Token" not in h  # CRITICAL: no service token to model
-        assert h.get("X-ANILA-User-Id") == "1147259"  # 員編 forwarded
+        assert h.get("X-ANILA-User-Id") == "990000002"  # 員編 forwarded
         assert "X-ANILA-User-Email" not in h  # no end-user PII into model logs

@@ -1,0 +1,674 @@
+{
+  "schema_version": 1,
+  "policy_id": "gate1-f7-capability-freeze",
+  "freeze_until_gate": 5,
+  "surfaces": [
+    {
+      "id": "agent.runtime_types",
+      "category": "agent",
+      "collector": {
+        "type": "python_enum",
+        "path": "services/csp/app/schemas/contracts/agents.py",
+        "symbol": "RuntimeType"
+      }
+    },
+    {
+      "id": "agent.declared_ids",
+      "category": "agent",
+      "collector": {
+        "type": "compose_declared_names",
+        "paths": [
+          "infra/compose/platform.yml",
+          "infra/compose/dev.yml"
+        ],
+        "marker": "AUTO_REGISTER_AGENTS:"
+      }
+    },
+    {
+      "id": "artifact.types",
+      "category": "artifact",
+      "collector": {
+        "type": "python_enum",
+        "path": "services/csp/app/schemas/contracts/artifacts.py",
+        "symbol": "ArtifactType"
+      }
+    },
+    {
+      "id": "artifact.job_services",
+      "category": "artifact",
+      "collector": {
+        "type": "glob_paths",
+        "patterns": [
+          "services/anila-studio/app/services/*_job_service.py"
+        ]
+      }
+    },
+    {
+      "id": "artifact.http_routes",
+      "category": "artifact",
+      "collector": {
+        "type": "fastapi_routes",
+        "paths": [
+          "services/anila-studio/app/api/studio.py",
+          "services/anila-studio/app/api/reports.py",
+          "services/anila-studio/app/api/mindmaps.py",
+          "services/anila-studio/app/api/infographics.py",
+          "services/anila-studio/app/api/datatables.py"
+        ]
+      }
+    },
+    {
+      "id": "memory.core_types",
+      "category": "memory",
+      "collector": {
+        "type": "python_enum",
+        "path": "packages/anila-core/src/anila_core/models/memory.py",
+        "symbol": "MemoryType"
+      }
+    },
+    {
+      "id": "memory.core_scopes",
+      "category": "memory",
+      "collector": {
+        "type": "python_enum",
+        "path": "packages/anila-core/src/anila_core/models/memory.py",
+        "symbol": "MemoryScope"
+      }
+    },
+    {
+      "id": "memory.agent_types",
+      "category": "memory",
+      "collector": {
+        "type": "python_enum",
+        "path": "packages/anila-agent/anila_agent/memory/taxonomy.py",
+        "symbol": "MemoryType"
+      }
+    },
+    {
+      "id": "memory.core_modules",
+      "category": "memory",
+      "collector": {
+        "type": "python_modules",
+        "root": "packages/anila-core/src/anila_core/memory",
+        "exclude_init": true
+      }
+    },
+    {
+      "id": "memory.agent_modules",
+      "category": "memory",
+      "collector": {
+        "type": "python_modules",
+        "root": "packages/anila-agent/anila_agent/memory",
+        "exclude_init": true
+      }
+    },
+    {
+      "id": "memory.core_public_symbols",
+      "category": "memory",
+      "collector": {
+        "type": "python_public_symbols",
+        "root": "packages/anila-core/src/anila_core/memory"
+      }
+    },
+    {
+      "id": "memory.agent_public_symbols",
+      "category": "memory",
+      "collector": {
+        "type": "python_public_symbols",
+        "root": "packages/anila-agent/anila_agent/memory"
+      }
+    },
+    {
+      "id": "memory.csp_http_routes",
+      "category": "memory",
+      "collector": {
+        "type": "fastapi_routes",
+        "paths": [
+          "services/csp/app/api/memory.py"
+        ]
+      }
+    },
+    {
+      "id": "memory.csp_service_symbols",
+      "category": "memory",
+      "collector": {
+        "type": "python_public_symbols",
+        "paths": [
+          "services/csp/app/services/memory_service.py"
+        ]
+      }
+    },
+    {
+      "id": "multiagent.coordinator_methods",
+      "category": "multiagent",
+      "collector": {
+        "type": "python_class_methods",
+        "path": "packages/anila-core/src/anila_core/coordinator/coordinator.py",
+        "symbol": "Coordinator"
+      }
+    },
+    {
+      "id": "multiagent.tool_entrypoints",
+      "category": "multiagent",
+      "collector": {
+        "type": "python_public_symbols",
+        "paths": [
+          "packages/anila-core/src/anila_core/tools/agent_as_tool.py",
+          "packages/anila-core/src/anila_core/tools/dispatch_tool.py"
+        ]
+      }
+    },
+    {
+      "id": "multiagent.router_entrypoints",
+      "category": "multiagent",
+      "collector": {
+        "type": "python_public_symbols",
+        "paths": [
+          "packages/anila-core/src/anila_core/api/router_server.py"
+        ],
+        "include_private": true,
+        "name_pattern": "(?i)(agent|dispatch|handoff|multi)"
+      }
+    },
+    {
+      "id": "multiagent.named_source_files",
+      "category": "multiagent",
+      "collector": {
+        "type": "glob_paths",
+        "patterns": [
+          "packages/anila-core/src/anila_core/coordinator/**/*.py",
+          "packages/anila-core/src/anila_core/tools/agent_as_tool.py",
+          "packages/anila-core/src/anila_core/tools/dispatch_tool.py",
+          "apps/anila-shell/src/multiagent.*"
+        ]
+      }
+    },
+    {
+      "id": "multiagent.exposure_files",
+      "category": "multiagent",
+      "collector": {
+        "type": "text_matched_files",
+        "roots": [
+          "packages",
+          "services",
+          "apps"
+        ],
+        "pattern": "\\bCoordinator\\b|spawn_workers_parallel|make_agent_tool|_multi_turn_dispatch|ParallelCompareView"
+      }
+    },
+    {
+      "id": "memory.core_public_methods",
+      "category": "memory",
+      "collector": {
+        "type": "python_public_class_methods",
+        "root": "packages/anila-core/src/anila_core/memory"
+      }
+    },
+    {
+      "id": "memory.agent_public_methods",
+      "category": "memory",
+      "collector": {
+        "type": "python_public_class_methods",
+        "root": "packages/anila-agent/anila_agent/memory"
+      }
+    },
+    {
+      "id": "memory.csp_service_public_methods",
+      "category": "memory",
+      "collector": {
+        "type": "python_public_class_methods",
+        "paths": [
+          "services/csp/app/services/memory_service.py"
+        ]
+      }
+    },
+    {
+      "id": "memory.core_exports",
+      "category": "memory",
+      "collector": {
+        "type": "python_all_exports",
+        "root": "packages/anila-core/src/anila_core/memory"
+      }
+    },
+    {
+      "id": "memory.agent_exports",
+      "category": "memory",
+      "collector": {
+        "type": "python_all_exports",
+        "root": "packages/anila-agent/anila_agent/memory"
+      }
+    },
+    {
+      "id": "multiagent.public_exports",
+      "category": "multiagent",
+      "collector": {
+        "type": "python_all_exports",
+        "paths": [
+          "packages/anila-core/src/anila_core/coordinator/__init__.py",
+          "packages/anila-core/src/anila_core/tools/__init__.py"
+        ],
+        "name_pattern": "(?i)(agent|coordinator|worker|tasknotification)"
+      }
+    }
+  ],
+  "reviewed_inventory": {
+    "agent.declared_ids": [
+      "image-generator"
+    ],
+    "agent.runtime_types": [
+      "anila_agent",
+      "custom_http",
+      "langchain",
+      "openai_compatible_agent",
+      "openwebui_pipe_compatible"
+    ],
+    "artifact.http_routes": [
+      "DELETE /api/datatables/jobs/{job_id}",
+      "DELETE /api/infographics/jobs/{job_id}",
+      "DELETE /api/mindmaps/jobs/{job_id}",
+      "DELETE /api/reports/jobs/{job_id}",
+      "DELETE /api/studio/slides/jobs/{job_id}",
+      "GET /api/datatables/jobs/{job_id}",
+      "GET /api/datatables/jobs/{job_id}/download/{fmt}",
+      "GET /api/infographics/jobs/{job_id}",
+      "GET /api/infographics/jobs/{job_id}/download/{fmt}",
+      "GET /api/mindmaps/jobs/{job_id}",
+      "GET /api/mindmaps/jobs/{job_id}/download/{fmt}",
+      "GET /api/reports/jobs/{job_id}",
+      "GET /api/reports/jobs/{job_id}/download/{fmt}",
+      "GET /api/studio/slides/jobs/{job_id}",
+      "GET /api/studio/slides/jobs/{job_id}/pptx",
+      "POST /api/datatables/jobs",
+      "POST /api/infographics/jobs",
+      "POST /api/mindmaps/jobs",
+      "POST /api/reports/jobs",
+      "POST /api/studio/slides/jobs"
+    ],
+    "artifact.job_services": [
+      "services/anila-studio/app/services/datatable_job_service.py",
+      "services/anila-studio/app/services/infographic_job_service.py",
+      "services/anila-studio/app/services/mindmap_job_service.py",
+      "services/anila-studio/app/services/report_job_service.py",
+      "services/anila-studio/app/services/studio_job_service.py"
+    ],
+    "artifact.types": [
+      "datatable",
+      "infographic",
+      "mindmap",
+      "report",
+      "slides"
+    ],
+    "memory.agent_exports": [],
+    "memory.agent_modules": [
+      "packages/anila-agent/anila_agent/memory/extract.py",
+      "packages/anila-agent/anila_agent/memory/freshness.py",
+      "packages/anila-agent/anila_agent/memory/memdir.py",
+      "packages/anila-agent/anila_agent/memory/recall.py",
+      "packages/anila-agent/anila_agent/memory/runtime.py",
+      "packages/anila-agent/anila_agent/memory/session.py",
+      "packages/anila-agent/anila_agent/memory/taxonomy.py"
+    ],
+    "memory.agent_public_methods": [
+      "packages/anila-agent/anila_agent/memory/memdir.py::Memory.to_markdown",
+      "packages/anila-agent/anila_agent/memory/memdir.py::MemoryStore.delete",
+      "packages/anila-agent/anila_agent/memory/memdir.py::MemoryStore.index_text",
+      "packages/anila-agent/anila_agent/memory/memdir.py::MemoryStore.list",
+      "packages/anila-agent/anila_agent/memory/memdir.py::MemoryStore.manifest",
+      "packages/anila-agent/anila_agent/memory/memdir.py::MemoryStore.read",
+      "packages/anila-agent/anila_agent/memory/memdir.py::MemoryStore.write",
+      "packages/anila-agent/anila_agent/memory/runtime.py::MemdirRuntime.absorb_turn",
+      "packages/anila-agent/anila_agent/memory/runtime.py::MemdirRuntime.recall_bodies",
+      "packages/anila-agent/anila_agent/memory/session.py::PostgresSession.add_items",
+      "packages/anila-agent/anila_agent/memory/session.py::PostgresSession.clear_session",
+      "packages/anila-agent/anila_agent/memory/session.py::PostgresSession.get_items",
+      "packages/anila-agent/anila_agent/memory/session.py::PostgresSession.pop_item",
+      "packages/anila-agent/anila_agent/memory/session.py::SummarizingSession.add_items",
+      "packages/anila-agent/anila_agent/memory/session.py::SummarizingSession.clear_session",
+      "packages/anila-agent/anila_agent/memory/session.py::SummarizingSession.get_items",
+      "packages/anila-agent/anila_agent/memory/session.py::SummarizingSession.pop_item"
+    ],
+    "memory.agent_public_symbols": [
+      "packages/anila-agent/anila_agent/memory/extract.py::extract_memories",
+      "packages/anila-agent/anila_agent/memory/extract.py::make_extractor",
+      "packages/anila-agent/anila_agent/memory/extract.py::redact",
+      "packages/anila-agent/anila_agent/memory/freshness.py::freshness_caveat",
+      "packages/anila-agent/anila_agent/memory/freshness.py::is_stale",
+      "packages/anila-agent/anila_agent/memory/freshness.py::relative_age",
+      "packages/anila-agent/anila_agent/memory/freshness.py::tag",
+      "packages/anila-agent/anila_agent/memory/memdir.py::Memory",
+      "packages/anila-agent/anila_agent/memory/memdir.py::MemoryStore",
+      "packages/anila-agent/anila_agent/memory/memdir.py::tenant_slug",
+      "packages/anila-agent/anila_agent/memory/memdir.py::validate_memory_dir",
+      "packages/anila-agent/anila_agent/memory/memdir.py::validate_name",
+      "packages/anila-agent/anila_agent/memory/recall.py::keyword_shortlist",
+      "packages/anila-agent/anila_agent/memory/recall.py::make_embed_fn",
+      "packages/anila-agent/anila_agent/memory/recall.py::make_llm_select_fn",
+      "packages/anila-agent/anila_agent/memory/recall.py::recall",
+      "packages/anila-agent/anila_agent/memory/runtime.py::MemdirRuntime",
+      "packages/anila-agent/anila_agent/memory/runtime.py::auto_memory_enabled",
+      "packages/anila-agent/anila_agent/memory/runtime.py::build_memdir_runtime",
+      "packages/anila-agent/anila_agent/memory/session.py::PostgresSession",
+      "packages/anila-agent/anila_agent/memory/session.py::SummarizingSession",
+      "packages/anila-agent/anila_agent/memory/session.py::build_session",
+      "packages/anila-agent/anila_agent/memory/taxonomy.py::MemoryType",
+      "packages/anila-agent/anila_agent/memory/taxonomy.py::coerce_type"
+    ],
+    "memory.agent_types": [
+      "feedback",
+      "project",
+      "reference",
+      "user"
+    ],
+    "memory.core_exports": [
+      "packages/anila-core/src/anila_core/memory/__init__.py::ConsolidationService",
+      "packages/anila-core/src/anila_core/memory/__init__.py::DEFAULT_EMBED_MODEL",
+      "packages/anila-core/src/anila_core/memory/__init__.py::EMBED_DIM",
+      "packages/anila-core/src/anila_core/memory/__init__.py::EMBED_NATIVE_DIM",
+      "packages/anila-core/src/anila_core/memory/__init__.py::ENTRYPOINT_NAME",
+      "packages/anila-core/src/anila_core/memory/__init__.py::EXTRACTION_SYSTEM_PROMPT",
+      "packages/anila-core/src/anila_core/memory/__init__.py::InterruptRecord",
+      "packages/anila-core/src/anila_core/memory/__init__.py::MAX_ENTRYPOINT_LINES",
+      "packages/anila-core/src/anila_core/memory/__init__.py::MemdirManager",
+      "packages/anila-core/src/anila_core/memory/__init__.py::MemoryAdapter",
+      "packages/anila-core/src/anila_core/memory/__init__.py::MemoryExtractor",
+      "packages/anila-core/src/anila_core/memory/__init__.py::MemoryReadResult",
+      "packages/anila-core/src/anila_core/memory/__init__.py::MemorySession",
+      "packages/anila-core/src/anila_core/memory/__init__.py::ModelBasedRelevanceSelector",
+      "packages/anila-core/src/anila_core/memory/__init__.py::RelevantMemory",
+      "packages/anila-core/src/anila_core/memory/__init__.py::RetrievedChunk",
+      "packages/anila-core/src/anila_core/memory/__init__.py::Session",
+      "packages/anila-core/src/anila_core/memory/__init__.py::SqliteSession",
+      "packages/anila-core/src/anila_core/memory/__init__.py::UserFactDTO",
+      "packages/anila-core/src/anila_core/memory/__init__.py::close_all_connections",
+      "packages/anila-core/src/anila_core/memory/__init__.py::format_transcript_for_extraction",
+      "packages/anila-core/src/anila_core/memory/__init__.py::long_term",
+      "packages/anila-core/src/anila_core/memory/__init__.py::new_interrupt_id",
+      "packages/anila-core/src/anila_core/memory/__init__.py::new_session_id",
+      "packages/anila-core/src/anila_core/memory/__init__.py::parse_extraction_response",
+      "packages/anila-core/src/anila_core/memory/__init__.py::short_term",
+      "packages/anila-core/src/anila_core/memory/__init__.py::truncate_embedding",
+      "packages/anila-core/src/anila_core/memory/consolidation.py::CONSOLIDATION_PROMPT_TEMPLATE",
+      "packages/anila-core/src/anila_core/memory/consolidation.py::ConsolidationConfig",
+      "packages/anila-core/src/anila_core/memory/consolidation.py::ConsolidationLockManager",
+      "packages/anila-core/src/anila_core/memory/consolidation.py::ConsolidationLockState",
+      "packages/anila-core/src/anila_core/memory/consolidation.py::ConsolidationService",
+      "packages/anila-core/src/anila_core/memory/consolidation.py::DEFAULT_MIN_HOURS",
+      "packages/anila-core/src/anila_core/memory/consolidation.py::DEFAULT_MIN_SESSIONS",
+      "packages/anila-core/src/anila_core/memory/consolidation.py::HOLDER_STALE_SECONDS",
+      "packages/anila-core/src/anila_core/memory/consolidation.py::LOCK_FILE_NAME",
+      "packages/anila-core/src/anila_core/memory/consolidation.py::build_consolidation_prompt",
+      "packages/anila-core/src/anila_core/memory/extract_memories.py::EXTRACTION_ALLOWED_TOOLS",
+      "packages/anila-core/src/anila_core/memory/extract_memories.py::EXTRACT_PROMPT_TEMPLATE",
+      "packages/anila-core/src/anila_core/memory/extract_memories.py::MemoryExtractor",
+      "packages/anila-core/src/anila_core/memory/long_term/__init__.py::DEFAULT_EMBED_MODEL",
+      "packages/anila-core/src/anila_core/memory/long_term/__init__.py::EMBED_DIM",
+      "packages/anila-core/src/anila_core/memory/long_term/__init__.py::EMBED_NATIVE_DIM",
+      "packages/anila-core/src/anila_core/memory/long_term/__init__.py::EXTRACTION_SYSTEM_PROMPT",
+      "packages/anila-core/src/anila_core/memory/long_term/__init__.py::MemoryAdapter",
+      "packages/anila-core/src/anila_core/memory/long_term/__init__.py::MemoryReadResult",
+      "packages/anila-core/src/anila_core/memory/long_term/__init__.py::RetrievedChunk",
+      "packages/anila-core/src/anila_core/memory/long_term/__init__.py::UserFactDTO",
+      "packages/anila-core/src/anila_core/memory/long_term/__init__.py::format_transcript_for_extraction",
+      "packages/anila-core/src/anila_core/memory/long_term/__init__.py::parse_extraction_response",
+      "packages/anila-core/src/anila_core/memory/long_term/__init__.py::truncate_embedding",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::CONSOLIDATION_PROMPT_TEMPLATE",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::ConsolidationConfig",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::ConsolidationLockManager",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::ConsolidationLockState",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::ConsolidationService",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::DEFAULT_MIN_HOURS",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::DEFAULT_MIN_SESSIONS",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::ENTRYPOINT_NAME",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::EXTRACTION_ALLOWED_TOOLS",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::EXTRACT_PROMPT_TEMPLATE",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::FRONTMATTER_MAX_LINES",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::HOLDER_STALE_SECONDS",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::LOCK_FILE_NAME",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::MAX_ENTRYPOINT_BYTES",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::MAX_ENTRYPOINT_LINES",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::MAX_MEMORY_FILES",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::MAX_RELEVANT_MEMORIES",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::MemdirManager",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::MemoryExtractor",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::ModelBasedRelevanceSelector",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::RelevanceSelector",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::RelevantMemory",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::SELECT_MEMORIES_SYSTEM_PROMPT",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::SIDE_QUERY_TIMEOUT",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::build_consolidation_prompt",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::format_memory_manifest",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::scan_memory_files",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/__init__.py::truncate_entrypoint_content",
+      "packages/anila-core/src/anila_core/memory/memdir.py::ENTRYPOINT_NAME",
+      "packages/anila-core/src/anila_core/memory/memdir.py::FRONTMATTER_MAX_LINES",
+      "packages/anila-core/src/anila_core/memory/memdir.py::MAX_ENTRYPOINT_BYTES",
+      "packages/anila-core/src/anila_core/memory/memdir.py::MAX_ENTRYPOINT_LINES",
+      "packages/anila-core/src/anila_core/memory/memdir.py::MAX_MEMORY_FILES",
+      "packages/anila-core/src/anila_core/memory/memdir.py::MemdirManager",
+      "packages/anila-core/src/anila_core/memory/memdir.py::format_memory_manifest",
+      "packages/anila-core/src/anila_core/memory/memdir.py::scan_memory_files",
+      "packages/anila-core/src/anila_core/memory/memdir.py::truncate_entrypoint_content",
+      "packages/anila-core/src/anila_core/memory/memory_session.py::MemorySession",
+      "packages/anila-core/src/anila_core/memory/relevance_selector.py::MAX_RELEVANT_MEMORIES",
+      "packages/anila-core/src/anila_core/memory/relevance_selector.py::ModelBasedRelevanceSelector",
+      "packages/anila-core/src/anila_core/memory/relevance_selector.py::RelevanceSelector",
+      "packages/anila-core/src/anila_core/memory/relevance_selector.py::RelevantMemory",
+      "packages/anila-core/src/anila_core/memory/relevance_selector.py::SELECT_MEMORIES_SYSTEM_PROMPT",
+      "packages/anila-core/src/anila_core/memory/relevance_selector.py::SIDE_QUERY_TIMEOUT",
+      "packages/anila-core/src/anila_core/memory/relevance_selector.py::format_memory_manifest",
+      "packages/anila-core/src/anila_core/memory/session.py::InterruptRecord",
+      "packages/anila-core/src/anila_core/memory/session.py::Session",
+      "packages/anila-core/src/anila_core/memory/session.py::new_interrupt_id",
+      "packages/anila-core/src/anila_core/memory/session.py::new_session_id",
+      "packages/anila-core/src/anila_core/memory/short_term/__init__.py::InterruptRecord",
+      "packages/anila-core/src/anila_core/memory/short_term/__init__.py::MemorySession",
+      "packages/anila-core/src/anila_core/memory/short_term/__init__.py::Session",
+      "packages/anila-core/src/anila_core/memory/short_term/__init__.py::SqliteSession",
+      "packages/anila-core/src/anila_core/memory/short_term/__init__.py::close_all_connections",
+      "packages/anila-core/src/anila_core/memory/short_term/__init__.py::new_interrupt_id",
+      "packages/anila-core/src/anila_core/memory/short_term/__init__.py::new_session_id",
+      "packages/anila-core/src/anila_core/memory/sqlite_session.py::SqliteSession",
+      "packages/anila-core/src/anila_core/memory/sqlite_session.py::_conn_cache",
+      "packages/anila-core/src/anila_core/memory/sqlite_session.py::_get_connection",
+      "packages/anila-core/src/anila_core/memory/sqlite_session.py::close_all_connections",
+      "packages/anila-core/src/anila_core/memory/user.py::DEFAULT_EMBED_MODEL",
+      "packages/anila-core/src/anila_core/memory/user.py::EMBED_DIM",
+      "packages/anila-core/src/anila_core/memory/user.py::EMBED_NATIVE_DIM",
+      "packages/anila-core/src/anila_core/memory/user.py::EXTRACTION_SYSTEM_PROMPT",
+      "packages/anila-core/src/anila_core/memory/user.py::MemoryAdapter",
+      "packages/anila-core/src/anila_core/memory/user.py::MemoryReadResult",
+      "packages/anila-core/src/anila_core/memory/user.py::RetrievedChunk",
+      "packages/anila-core/src/anila_core/memory/user.py::UserFactDTO",
+      "packages/anila-core/src/anila_core/memory/user.py::format_transcript_for_extraction",
+      "packages/anila-core/src/anila_core/memory/user.py::parse_extraction_response",
+      "packages/anila-core/src/anila_core/memory/user.py::truncate_embedding"
+    ],
+    "memory.core_modules": [
+      "packages/anila-core/src/anila_core/memory/consolidation.py",
+      "packages/anila-core/src/anila_core/memory/contract.py",
+      "packages/anila-core/src/anila_core/memory/extract_memories.py",
+      "packages/anila-core/src/anila_core/memory/long_term/adapter.py",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/consolidator.py",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/extractor.py",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/manager.py",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/selector.py",
+      "packages/anila-core/src/anila_core/memory/long_term/embedding.py",
+      "packages/anila-core/src/anila_core/memory/long_term/extraction.py",
+      "packages/anila-core/src/anila_core/memory/long_term/models.py",
+      "packages/anila-core/src/anila_core/memory/memdir.py",
+      "packages/anila-core/src/anila_core/memory/memory_session.py",
+      "packages/anila-core/src/anila_core/memory/relevance_selector.py",
+      "packages/anila-core/src/anila_core/memory/session.py",
+      "packages/anila-core/src/anila_core/memory/short_term/in_memory.py",
+      "packages/anila-core/src/anila_core/memory/short_term/protocol.py",
+      "packages/anila-core/src/anila_core/memory/short_term/sqlite.py",
+      "packages/anila-core/src/anila_core/memory/sqlite_session.py",
+      "packages/anila-core/src/anila_core/memory/user.py"
+    ],
+    "memory.core_public_methods": [
+      "packages/anila-core/src/anila_core/memory/long_term/adapter.py::MemoryAdapter.build_memory_block",
+      "packages/anila-core/src/anila_core/memory/long_term/adapter.py::MemoryAdapter.clear_user_chunks",
+      "packages/anila-core/src/anila_core/memory/long_term/adapter.py::MemoryAdapter.clear_user_facts",
+      "packages/anila-core/src/anila_core/memory/long_term/adapter.py::MemoryAdapter.delete_user_fact",
+      "packages/anila-core/src/anila_core/memory/long_term/adapter.py::MemoryAdapter.get_user_facts",
+      "packages/anila-core/src/anila_core/memory/long_term/adapter.py::MemoryAdapter.persist_turn",
+      "packages/anila-core/src/anila_core/memory/long_term/adapter.py::MemoryAdapter.retrieve_relevant_chunks",
+      "packages/anila-core/src/anila_core/memory/long_term/adapter.py::MemoryAdapter.upsert_user_facts",
+      "packages/anila-core/src/anila_core/memory/long_term/adapter.py::MemoryAdapter.write_chunk",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/consolidator.py::ConsolidationLockManager.list_sessions_since",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/consolidator.py::ConsolidationLockManager.read_last_consolidated_at",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/consolidator.py::ConsolidationLockManager.rollback",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/consolidator.py::ConsolidationLockManager.try_acquire",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/consolidator.py::ConsolidationService.run",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/consolidator.py::ConsolidationService.should_consolidate",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/extractor.py::MemoryExtractor.drain",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/extractor.py::MemoryExtractor.reset",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/extractor.py::MemoryExtractor.run",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/extractor.py::MemoryExtractor.submit",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/manager.py::MemdirManager.add_index_entry",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/manager.py::MemdirManager.build_memory_prompt",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/manager.py::MemdirManager.ensure_dir",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/manager.py::MemdirManager.entrypoint_path",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/manager.py::MemdirManager.memory_dir",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/manager.py::MemdirManager.read_entrypoint",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/manager.py::MemdirManager.scan",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/manager.py::MemdirManager.write_entrypoint",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/selector.py::ModelBasedRelevanceSelector.select",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/selector.py::RelevanceSelector.select",
+      "packages/anila-core/src/anila_core/memory/long_term/models.py::MemoryReadResult.encryption_inherited",
+      "packages/anila-core/src/anila_core/memory/short_term/in_memory.py::MemorySession.add_items",
+      "packages/anila-core/src/anila_core/memory/short_term/in_memory.py::MemorySession.clear_session",
+      "packages/anila-core/src/anila_core/memory/short_term/in_memory.py::MemorySession.get_items",
+      "packages/anila-core/src/anila_core/memory/short_term/in_memory.py::MemorySession.pending_interrupts",
+      "packages/anila-core/src/anila_core/memory/short_term/in_memory.py::MemorySession.pop_interrupt",
+      "packages/anila-core/src/anila_core/memory/short_term/in_memory.py::MemorySession.pop_item",
+      "packages/anila-core/src/anila_core/memory/short_term/in_memory.py::MemorySession.push_interrupt",
+      "packages/anila-core/src/anila_core/memory/short_term/protocol.py::Session.add_items",
+      "packages/anila-core/src/anila_core/memory/short_term/protocol.py::Session.clear_session",
+      "packages/anila-core/src/anila_core/memory/short_term/protocol.py::Session.get_items",
+      "packages/anila-core/src/anila_core/memory/short_term/protocol.py::Session.pending_interrupts",
+      "packages/anila-core/src/anila_core/memory/short_term/protocol.py::Session.pop_interrupt",
+      "packages/anila-core/src/anila_core/memory/short_term/protocol.py::Session.pop_item",
+      "packages/anila-core/src/anila_core/memory/short_term/protocol.py::Session.push_interrupt",
+      "packages/anila-core/src/anila_core/memory/short_term/sqlite.py::SqliteSession.add_items",
+      "packages/anila-core/src/anila_core/memory/short_term/sqlite.py::SqliteSession.clear_session",
+      "packages/anila-core/src/anila_core/memory/short_term/sqlite.py::SqliteSession.get_items",
+      "packages/anila-core/src/anila_core/memory/short_term/sqlite.py::SqliteSession.pending_interrupts",
+      "packages/anila-core/src/anila_core/memory/short_term/sqlite.py::SqliteSession.pop_interrupt",
+      "packages/anila-core/src/anila_core/memory/short_term/sqlite.py::SqliteSession.pop_item",
+      "packages/anila-core/src/anila_core/memory/short_term/sqlite.py::SqliteSession.push_interrupt"
+    ],
+    "memory.core_public_symbols": [
+      "packages/anila-core/src/anila_core/memory/contract.py::sanitize_agent_reply",
+      "packages/anila-core/src/anila_core/memory/long_term/adapter.py::MemoryAdapter",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/consolidator.py::ConsolidationConfig",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/consolidator.py::ConsolidationLockManager",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/consolidator.py::ConsolidationLockState",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/consolidator.py::ConsolidationService",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/consolidator.py::build_consolidation_prompt",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/extractor.py::MemoryExtractor",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/manager.py::MemdirManager",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/manager.py::format_memory_manifest",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/manager.py::scan_memory_files",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/manager.py::truncate_entrypoint_content",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/selector.py::ModelBasedRelevanceSelector",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/selector.py::RelevanceSelector",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/selector.py::RelevantMemory",
+      "packages/anila-core/src/anila_core/memory/long_term/backends/filesystem/selector.py::format_memory_manifest",
+      "packages/anila-core/src/anila_core/memory/long_term/embedding.py::truncate_embedding",
+      "packages/anila-core/src/anila_core/memory/long_term/extraction.py::format_transcript_for_extraction",
+      "packages/anila-core/src/anila_core/memory/long_term/extraction.py::parse_extraction_response",
+      "packages/anila-core/src/anila_core/memory/long_term/models.py::MemoryReadResult",
+      "packages/anila-core/src/anila_core/memory/long_term/models.py::RetrievedChunk",
+      "packages/anila-core/src/anila_core/memory/long_term/models.py::UserFactDTO",
+      "packages/anila-core/src/anila_core/memory/short_term/in_memory.py::MemorySession",
+      "packages/anila-core/src/anila_core/memory/short_term/protocol.py::InterruptRecord",
+      "packages/anila-core/src/anila_core/memory/short_term/protocol.py::Session",
+      "packages/anila-core/src/anila_core/memory/short_term/protocol.py::new_interrupt_id",
+      "packages/anila-core/src/anila_core/memory/short_term/protocol.py::new_session_id",
+      "packages/anila-core/src/anila_core/memory/short_term/sqlite.py::SqliteSession",
+      "packages/anila-core/src/anila_core/memory/short_term/sqlite.py::close_all_connections"
+    ],
+    "memory.core_scopes": [
+      "global",
+      "project",
+      "session"
+    ],
+    "memory.core_types": [
+      "api_pattern",
+      "debugging_lesson",
+      "general",
+      "project_convention",
+      "user_preference"
+    ],
+    "memory.csp_http_routes": [
+      "DELETE /api/memory/chunks",
+      "DELETE /api/memory/facts",
+      "DELETE /api/memory/facts/{fact_id}",
+      "GET /api/memory/chunks",
+      "GET /api/memory/facts"
+    ],
+    "memory.csp_service_public_methods": [
+      "services/csp/app/services/memory_service.py::PostgresMemoryAdapter.build_memory_block",
+      "services/csp/app/services/memory_service.py::PostgresMemoryAdapter.clear_user_chunks",
+      "services/csp/app/services/memory_service.py::PostgresMemoryAdapter.clear_user_facts",
+      "services/csp/app/services/memory_service.py::PostgresMemoryAdapter.delete_user_fact",
+      "services/csp/app/services/memory_service.py::PostgresMemoryAdapter.get_user_facts",
+      "services/csp/app/services/memory_service.py::PostgresMemoryAdapter.persist_turn",
+      "services/csp/app/services/memory_service.py::PostgresMemoryAdapter.retrieve_relevant_chunks",
+      "services/csp/app/services/memory_service.py::PostgresMemoryAdapter.upsert_user_facts",
+      "services/csp/app/services/memory_service.py::PostgresMemoryAdapter.write_chunk"
+    ],
+    "memory.csp_service_symbols": [
+      "services/csp/app/services/memory_service.py::PostgresMemoryAdapter",
+      "services/csp/app/services/memory_service.py::build_memory_block",
+      "services/csp/app/services/memory_service.py::get_user_facts",
+      "services/csp/app/services/memory_service.py::persist_turn",
+      "services/csp/app/services/memory_service.py::retrieve_relevant_chunks"
+    ],
+    "multiagent.coordinator_methods": [
+      "Coordinator.all_tasks",
+      "Coordinator.build_results_summary",
+      "Coordinator.get_task",
+      "Coordinator.spawn_worker",
+      "Coordinator.spawn_workers_parallel",
+      "Coordinator.spawn_workers_sequential"
+    ],
+    "multiagent.exposure_files": [
+      "apps/anila-shell/src/app.jsx",
+      "apps/anila-shell/src/multiagent.jsx",
+      "packages/anila-core/src/anila_core/api/router_server.py",
+      "packages/anila-core/src/anila_core/coordinator/__init__.py",
+      "packages/anila-core/src/anila_core/coordinator/coordinator.py",
+      "packages/anila-core/src/anila_core/tools/__init__.py",
+      "packages/anila-core/src/anila_core/tools/agent_as_tool.py"
+    ],
+    "multiagent.named_source_files": [
+      "apps/anila-shell/src/multiagent.jsx",
+      "packages/anila-core/src/anila_core/coordinator/__init__.py",
+      "packages/anila-core/src/anila_core/coordinator/coordinator.py",
+      "packages/anila-core/src/anila_core/tools/agent_as_tool.py",
+      "packages/anila-core/src/anila_core/tools/dispatch_tool.py"
+    ],
+    "multiagent.public_exports": [
+      "packages/anila-core/src/anila_core/coordinator/__init__.py::Coordinator",
+      "packages/anila-core/src/anila_core/coordinator/__init__.py::TaskNotification",
+      "packages/anila-core/src/anila_core/coordinator/__init__.py::WorkerTask",
+      "packages/anila-core/src/anila_core/tools/__init__.py::make_agent_tool"
+    ],
+    "multiagent.router_entrypoints": [
+      "packages/anila-core/src/anila_core/api/router_server.py::_build_agent_list",
+      "packages/anila-core/src/anila_core/api/router_server.py::_dispatch_safe",
+      "packages/anila-core/src/anila_core/api/router_server.py::_multi_turn_dispatch",
+      "packages/anila-core/src/anila_core/api/router_server.py::_parse_dispatch",
+      "packages/anila-core/src/anila_core/api/router_server.py::_router_streaming_multi_turn",
+      "packages/anila-core/src/anila_core/api/router_server.py::_stream_agent_sse"
+    ],
+    "multiagent.tool_entrypoints": [
+      "packages/anila-core/src/anila_core/tools/agent_as_tool.py::make_agent_tool",
+      "packages/anila-core/src/anila_core/tools/dispatch_tool.py::dispatch_for_handoff",
+      "packages/anila-core/src/anila_core/tools/dispatch_tool.py::dispatch_to_agent",
+      "packages/anila-core/src/anila_core/tools/dispatch_tool.py::dispatch_to_agent_response"
+    ]
+  }
+}

@@ -10,7 +10,10 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
-from app.services.conversation_service import get_share_by_token
+from app.services.conversation_service import (
+    get_share_by_token,
+    is_publicly_shareable,
+)
 
 router = APIRouter(prefix="/api/public/share", tags=["public-share"])
 
@@ -52,19 +55,17 @@ def get_shared_conversation(
     share = get_share_by_token(db, token)
     conv = share.conversation
 
-    # Never expose classified conversation content OR its title publicly
-    # (belt + suspenders): a 256-bit token is still an unauthenticated surface,
-    # so a classified conversation leaks nothing — not even the title.
-    classified = bool(conv.classified)
-    messages: list[PublicMessageOut] = []
-    if not classified:
-        for msg in conv.messages:
-            messages.append(PublicMessageOut.model_validate(msg))
+    # Defense in depth: get_share_by_token already checks the current level,
+    # but the unauthenticated serialization boundary must independently fail
+    # closed rather than rely on the legacy ``classified`` boolean.
+    if not is_publicly_shareable(conv):
+        raise HTTPException(status_code=404, detail="Not Found")
+    messages = [PublicMessageOut.model_validate(msg) for msg in conv.messages]
 
     return PublicShareOut(
         share_token=token,
         conversation_id=conv.id,
-        conversation_title="（機密對話）" if classified else conv.title,
+        conversation_title=conv.title,
         mode=share.mode,
         allow_fork=share.allow_fork,
         expires_at=share.expires_at,

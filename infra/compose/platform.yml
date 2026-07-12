@@ -6,8 +6,9 @@
 # Prod initial mode 切換 (branch SSO):
 #   - 所有 secret env var 預設改成 ``${VAR:?must be set}``,缺 .env 直接 fail。
 #   - ANILA_ALLOW_DEV_SECRET 預設 0,任何 dev 預設值會被 startup_security 擋下。
-#   - codeserver / n8n / gitlab:內網維護/自動化/合規(ISO 42001)都需要,均已啟用
-#     (nginx route 2026-06-11 解凍);codeserver 掛 repo root 維護平台(機密已遮蔽)。
+#   - n8n / gitlab:內網自動化/合規(ISO 42001)需要,預設啟用。
+#   - codeserver:只在明確指定 ``--profile developer-tools`` 時啟用,且只掛
+#     ``share/codeserver-sandbox``；正式 stack 不掛 repo root。
 # Dev 切換回去:把 .env 還原成 .env.dev.local 內容即可,所有 dev opt-in flag
 # 都被 .env 那邊重新賦值,compose 不再提供「dev 預設值」這個安全網。
 
@@ -19,7 +20,7 @@ services:
   csp-db:
     # pgvector 是 postgres:16 的 superset,migration 0014 (ingestion) 需要
     # vector extension。換回 upstream postgres 會破 ingestion stack。
-    image: pgvector/pgvector:pg16
+    image: ${ANILA_IMAGE_CSP_DB:?ANILA_IMAGE_CSP_DB must be a locked image content ID}
     environment:
       POSTGRES_USER: csp
       # 只在 volume 首次初始化時生效;既有 csp-pgdata volume 改這個值不會
@@ -44,6 +45,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/docker/csp.Dockerfile
+    image: ${ANILA_IMAGE_CSP:?ANILA_IMAGE_CSP must be a locked image content ID}
     # 不對 host 開 port — 外部入口只有 nginx :443 (HTTPS + API key)。
     # 容器內 service-to-service 用 ``http://csp:8000`` 走 docker DNS。
     expose:
@@ -67,6 +69,19 @@ services:
       # startup_security 對 dev 預設值的拒絕開關。Prod 必須是 0 / unset。
       # 預設改成 0 (不再 fallback 1) — 缺 .env 時直接 enforce prod 模式。
       ANILA_ALLOW_DEV_SECRET: "${ANILA_ALLOW_DEV_SECRET:-0}"
+      # Gate 1 F6: deployment identity is declared, then CSP startup verifies
+      # every security-sensitive flag against this exact profile contract.
+      ANILA_DEPLOYMENT_PROFILE: "${ANILA_DEPLOYMENT_PROFILE:?ANILA_DEPLOYMENT_PROFILE must be declared}"
+      # Populated only by the named break-glass lifecycle command.  Keeping
+      # them explicit in Compose is required: values left only in host .env do
+      # not reach the CSP process.
+      ANILA_BREAK_GLASS_OWNER: "${ANILA_BREAK_GLASS_OWNER:-}"
+      ANILA_BREAK_GLASS_TICKET: "${ANILA_BREAK_GLASS_TICKET:-}"
+      ANILA_BREAK_GLASS_EXPIRES_AT: "${ANILA_BREAK_GLASS_EXPIRES_AT:-}"
+      # Cookie-tossing defense: formal sessions use Secure, Path=/, no Domain
+      # and the browser-enforced __Host- prefix. Never make this configurable
+      # on the production compose path.
+      COOKIE_SECURE: "true"
       # url_guard 兩個 SSRF opt-in。loopback / link-local / cloud
       # metadata / docker service name 永遠擋,不受 flag 影響。Prod 不要 set。
       ANILA_ALLOW_HTTP_ENDPOINT: "${ANILA_ALLOW_HTTP_ENDPOINT:-0}"
@@ -75,7 +90,7 @@ services:
       # (不受任何旗標放行);agent endpoint 的 http 放行改走 AGENT 專用旗標
       # (內網 MLSteam agent 用;legacy ANILA_ALLOW_HTTP_ENDPOINT 對 agent 仍可
       # 放行但記 deprecation warning)。
-      ANILA_ENV: "${ANILA_ENV:-}"
+      ANILA_ENV: "${ANILA_ENV:-production}"
       ANILA_ALLOW_HTTP_AGENT_ENDPOINT: "${ANILA_ALLOW_HTTP_AGENT_ENDPOINT:-0}"
       # SSRF allow-list — single-label docker service names 預設被擋,
       # 列進這條才能註冊。新增模型 service 要同步加進這個值並重啟 csp。
@@ -94,10 +109,18 @@ services:
       # ⚠ fork 區:main→prod sync 時不可拿 main 版 compose 整檔覆蓋 —
       # 6fcbdce (PR #16) 曾把這段蓋掉,內網就沒有刷卡登入了 (P0 迴歸)。
       # 預設值 = 內網 prod (card-only)。dev 降級在 .env 設兩個 false。
-      # strict/CA/OCSP 已在 f01288e 移除 — PIN + 卡片簽章由使用者 PC 的
-      # HiPKI 元件 (localhost:16888) 處理,backend 只解 PKCS#7 抽 employee_id。
+      # 私鑰/PIN 運算由使用者 PC 的 HiPKI 元件 (localhost:16888) 處理；backend
+      # 仍會驗 CMS SignerInfo、challenge nonce 與釘選 CSPKI 憑證鏈後才抽 claims。
       ENABLE_CARD_LOGIN: "${ENABLE_CARD_LOGIN:-true}"
       REQUIRE_CARD_LOGIN_ONLY: "${REQUIRE_CARD_LOGIN_ONLY:-true}"
+      # Formal posture: anonymous shares and long-term memory are disabled.
+      # Dev uses its separate compose file and opts in explicitly.
+      ENABLE_PUBLIC_SHARE: "${ENABLE_PUBLIC_SHARE:-false}"
+      ENABLE_MEMORY: "${ENABLE_MEMORY:-false}"
+      PUBLIC_SHARE_MAX_TTL_HOURS: "${PUBLIC_SHARE_MAX_TTL_HOURS:-168}"
+      # Used to normalize auto-seeded relative launch paths.  A formal host
+      # must never seed localhost URLs into the governance registry.
+      SITE_URL: ${SITE_URL:?SITE_URL must be set to the formal external origin}
       # CSV 員工編號;列入者首刷直接建 owner + is_approved (bootstrap),其餘
       # 走 pending → admin 核准。缺值 fail-fast;.env.example 的 placeholder
       # 字面由 startup_security 在啟動時擋 (避免 bricked:沒人能 approve)。
@@ -134,13 +157,16 @@ services:
         [
           {"name":"ANILA","url":"/anila","icon":"message-square","description":"AI 對話入口 — Router 自動分派最合適的 agent 處理查詢","sort_order":1,"is_public":false,"required_roles":[]},
           {"name":"ANILA LM","url":"/anilalm","icon":"book-open","description":"AI 學習內容生成（podcast / slides / mind map / quiz / report）","sort_order":2,"is_public":false,"required_roles":[]},
-          {"name":"Code Server","url":"/codeserver","icon":"code","description":"Browser VS Code — agent 開發整合入口","sort_order":3,"is_public":false,"required_roles":["admin"]},
-          {"name":"n8n 工作流程","url":"/n8n","icon":"workflow","description":"自動化工作流程平台 — 排程任務、跨服務串接","sort_order":4,"is_public":true,"required_roles":["developer"]},
-          {"name":"GitLab","url":"/gitlab","icon":"git-branch","description":"Git server — agent 程式碼與 issue tracking（ISO 42001 合規必備）","sort_order":5,"is_public":true,"required_roles":["developer"]},
+          {"name":"Code Server (按需)","env_seed_key":"Code Server","url":"https://${CODESERVER_HOST:-code.ai.ncsist.org.tw}/","icon":"code","description":"獨立來源的隔離開發 sandbox；需先由維運啟用 developer-tools profile並使用原生密碼登入","sort_order":3,"is_public":false,"required_roles":["admin"]},
+          {"name":"n8n 工作流程","url":"https://${N8N_HOST:-n8n.ai.ncsist.org.tw}/","icon":"workflow","description":"獨立來源的自動化工作流程平台；使用 n8n 原生帳號登入","sort_order":4,"is_public":true,"required_roles":["developer"]},
+          {"name":"GitLab","url":"https://${GITLAB_HOST:-gitlab.ai.ncsist.org.tw}/","icon":"git-branch","description":"獨立來源的 Git server 與 issue tracking；使用 GitLab 原生認證（ISO 42001 合規必備）","sort_order":5,"is_public":true,"required_roles":["developer"]},
           {"name":"MLSteam","url":"https://aiops.ai.ncsist.org.tw:4443/","icon":"cpu","description":"MLOps 平台 — agent 訓練與部署","sort_order":6,"is_public":true,"required_roles":["developer"]}
         ]
       ANILA_TEMPLATE_DIR: /app/anila-template
       INGESTION_UPLOAD_DIR: /var/anila/ingestion-uploads
+      # Conversation attachments are durable application data.  The named
+      # volume inherits UID 10001 ownership from the image directory.
+      ATTACHMENT_STORAGE_PATH: /var/anila/attachments
       # 出向 https 的 CA 信任 (內網模型主機 10.53.100.12 走 https,憑證通常
       # 是內部 CA / 自簽 — 不在 certifi 預設信任鏈內,httpx 會
       # CERTIFICATE_VERIFY_FAILED)。把 IT 給的 PEM 放 ./share/pki/ 並在
@@ -148,6 +174,10 @@ services:
       # 沒設 (空值) = 維持 httpx 預設 certifi 行為 (CPython 對空/不存在的
       # SSL_CERT_FILE 會 fallback 系統預設,無副作用)。
       SSL_CERT_FILE: ${ANILA_MODEL_CA_FILE-}
+      # Card signature verification has its own trust bundle.  Keep the
+      # packaged CSPKI roots by default, but allow an operator-provisioned
+      # intranet CA from the read-only /etc/anila/pki mount.
+      CARD_CA_BUNDLE_PATH: ${CARD_CA_BUNDLE_PATH:-/app/app/services/cspki_ca_bundle.pem}
       # 內網模型 gateway (10.53.100.12 My-OpenAI-Frontend) 的 /v1 要
       # Authorization: Bearer。proxy_service 只對 model 呼叫注入,agent
       # dispatch 不帶。空值 = 不注入 (同主機裸 vLLM 不需要)。
@@ -167,14 +197,13 @@ services:
       - ../../packages/anila-agent:/app/anila-template:ro
       # 跟 ingestion-worker 共用 inode,不走拷貝。
       - ../../share/uploads/ingestion:/var/anila/ingestion-uploads
+      - csp-attachments:/var/anila/attachments
       # 內網模型 https 的內部 CA PEM 放這裡 (見上 SSL_CERT_FILE)。
       - ../../share/pki:/etc/anila/pki:ro
-      # JWT 簽章金鑰 (csp 簽 access token + 對 studio 發 JWKS)。prod 模式
-      # (ALLOW_AUTO_KEYGEN=false) 不自動生 → 缺這把 csp /.well-known/jwks.json
-      # 回 500、登入發不了 token、anila-studio 起不來。由 infra/deployment/intranet/
-      # intranet-deploy.sh 的 [4b] 步驟用 csp image 跑 scripts/generate-jwt-keypair.py
-      # 產到 repo 根 ./secrets。
-      - ../../secrets:/app/secrets:ro
+      # JWT 簽章金鑰 (csp 簽 access token + 對 studio 發 JWKS)。正式私鑰
+      # 必須位於 repo 外的受控 state 目錄；部署腳本會拒絕 repo 內路徑。
+      # 缺值時 Compose 直接 fail-closed，不可回退到 ./secrets。
+      - "${ANILA_SECRETS_DIR:?ANILA_SECRETS_DIR must be an absolute path outside the repo}:/app/secrets:ro"
     extra_hosts:
       # csp 從這條 reach on-host service (e.g. host port 上的 embedding 後備)。
       - "host.docker.internal:host-gateway"
@@ -188,7 +217,7 @@ services:
       csp-db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')\""]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -197,7 +226,7 @@ services:
 
   # ── Redis (Arq queue for ingestion-worker) ──────────────────────────────
   redis:
-    image: redis:7-alpine
+    image: ${ANILA_IMAGE_REDIS:?ANILA_IMAGE_REDIS must be a locked image content ID}
     command: ["redis-server", "--appendonly", "no", "--maxmemory", "256mb"]
     volumes:
       - redis-data:/data
@@ -213,6 +242,7 @@ services:
     build:
       context: ../..
       dockerfile: services/ingestion-worker/Dockerfile
+    image: ${ANILA_IMAGE_INGESTION_WORKER:?ANILA_IMAGE_INGESTION_WORKER must be a locked image content ID}
     environment:
       DATABASE_URL: postgresql://csp_app:${CSP_APP_DB_PASSWORD:?CSP_APP_DB_PASSWORD must be set (same value as csp)}@csp-db:5432/csp
       REDIS_URL: redis://redis:6379
@@ -257,6 +287,7 @@ services:
     build:
       context: ../..
       dockerfile: services/anila-core-router/Dockerfile
+    image: ${ANILA_IMAGE_ROUTER:?ANILA_IMAGE_ROUTER must be a locked image content ID}
     # 不對 host 開 port — 外部走 nginx /router/* → router:9000。
     expose:
       - "9000"
@@ -265,11 +296,16 @@ services:
       # 必須跟 csp 的 CSP_SERVICE_TOKEN 一致 — router 用它走 service-auth endpoint。
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set (same value as csp)}
       MODEL: ${LLM_MODEL:-gemma4}
+      # Formal Router must export Full Trace spans back to CSP. /ready fails
+      # closed in production when this callback is absent.
+      ANILA_ENV: "${ANILA_ENV:-production}"
+      COOKIE_SECURE: "true"
+      ANILA_TRACE_ENDPOINT: "${ANILA_TRACE_ENDPOINT:-http://csp:8000}"
     depends_on:
       csp:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9000/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/ready || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -280,7 +316,7 @@ services:
   # TLS termination (self-signed dev cert),HTTP→HTTPS 301,proxy /, /api/,
   # /v1/, /v2/, /router/* 到對應內部 service。
   nginx:
-    image: nginx:alpine
+    image: ${ANILA_IMAGE_NGINX:?ANILA_IMAGE_NGINX must be a locked image content ID}
     container_name: anila-nginx
     ports:
       - "${NGINX_HTTP_PORT:-80}:80"
@@ -288,7 +324,9 @@ services:
       - "${ANILA_UI_HTTPS_PORT:-4443}:4443"
     volumes:
       - ../../infra/nginx/anila.conf:/etc/nginx/conf.d/default.conf:ro
-      - ../../infra/nginx/certs:/etc/nginx/certs:ro
+      # TLS private key 與 JWT key 同樣不得落在 repo；正式路徑由 operator
+      # 明確提供，避免 gitignore 被誤當成 secret boundary。
+      - "${ANILA_TLS_CERTS_DIR:?ANILA_TLS_CERTS_DIR must be an absolute path outside the repo}:/etc/nginx/certs:ro"
       - ../../share/static:/usr/share/nginx/share-files/static:ro
       - ../../share/uploads:/usr/share/nginx/share-files/uploads:rw
     depends_on:
@@ -306,6 +344,11 @@ services:
       anila-ui:
         condition: service_healthy
         restart: true
+    networks:
+      - default
+      - n8n-tools
+      - gitlab-tools
+      - codeserver-tools
     healthcheck:
       test: ["CMD", "nginx", "-t"]
       interval: 30s
@@ -319,6 +362,7 @@ services:
     build:
       context: ../../services/pptx-renderer
       dockerfile: Dockerfile
+    image: ${ANILA_IMAGE_PPTX_RENDERER:?ANILA_IMAGE_PPTX_RENDERER must be a locked image content ID}
     expose:
       - "7100"
     healthcheck:
@@ -338,6 +382,7 @@ services:
     build:
       context: ../../services/anila-studio
       dockerfile: Dockerfile
+    image: ${ANILA_IMAGE_ANILA_STUDIO:?ANILA_IMAGE_ANILA_STUDIO must be a locked image content ID}
     expose:
       - "8100"
     environment:
@@ -366,6 +411,8 @@ services:
       ARTIFACTS_DIR: /var/anila/anila-studio-artifacts
       RENDERER_BASE_URL: http://pptx-renderer:7100
       JWT_KID: anila-v1
+      REQUIRE_CARD_LOGIN_ONLY: "true"
+      COOKIE_SECURE: "true"
       LOG_LEVEL: INFO
     depends_on:
       csp:
@@ -398,6 +445,7 @@ services:
   flux2-dev-agent:
     build:
       context: ../../services/flux2-dev-agent
+    image: ${ANILA_IMAGE_FLUX2_DEV_AGENT:?ANILA_IMAGE_FLUX2_DEV_AGENT must be a locked image content ID}
     expose:
       - "8000"
     environment:
@@ -443,6 +491,7 @@ services:
       args:
         BASE_PATH: ${ANILALM_BASE_PATH:-/anilalm/}
         VITE_DEFAULT_CHAT_MODEL: ${ANILALM_DEFAULT_CHAT_MODEL:-gemma4}
+    image: ${ANILA_IMAGE_ANILALM:?ANILA_IMAGE_ANILALM must be a locked image content ID}
     expose:
       - "80"
     depends_on:
@@ -467,6 +516,7 @@ services:
         # 同源 subpath(2026-06-11 B 案):443 的 /anila/,SSO cookie 自然共用。
         # 本機 dev 直跑 vite 時不受影響(無此 env = '/')。
         BASE_PATH: ${ANILA_UI_BASE_PATH:-/anila/}
+    image: ${ANILA_IMAGE_ANILA_UI:?ANILA_IMAGE_ANILA_UI must be a locked image content ID}
     expose:
       - "80"
     depends_on:
@@ -482,13 +532,17 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # ── code-server (cold-stored) ───────────────────────────────────────────
-  # Browser-based VS Code,reachable via /codeserver subpath through nginx.
+  # ── code-server (opt-in developer tool) ─────────────────────────────────
+  # Browser-based VS Code,reachable only at https://code.ai.ncsist.org.tw/.
+  # 不屬於正式預設 stack；必須明確使用 ``--profile developer-tools`` 啟動。
+  # workspace 固定在隔離的 git-ignored sandbox,不接受 env 改回 repo root。
+  # 要開發 ANILA 時,先把獨立 clone 放進 share/codeserver-sandbox/。
   # 用 codercom 上游而非 lscr.io/linuxserver fork — 後者多一層 s6-overlay
   # 會破 subpath 部署 (workspace fs provider 註冊失敗)。
-  # 解凍前的 TODO:把 PASSWORD 換掉,SSO 接好後改 nginx auth_request 驗 CSP JWT。
+  # 獨立來源避免 CSP host-only session cookie 進入 IDE；原生強密碼是登入邊界。
   codeserver:
-    image: codercom/code-server:latest
+    profiles: ["developer-tools"]
+    image: ${ANILA_IMAGE_CODESERVER:?ANILA_IMAGE_CODESERVER must be a locked image content ID}
     # 1001:1001 對齊 host 'aia' UID,避免容器內存檔 EACCES。
     user: "${UID:-1001}:${GID:-1001}"
     environment:
@@ -497,16 +551,12 @@ services:
       PASSWORD: ${CODESERVER_PASSWORD:?CODESERVER_PASSWORD must be set}
     volumes:
       - codeserver_config:/home/coder/.config
-      # codeserver = 內網維護 ANILA 平台用 → 掛整個 repo 源碼
-      # (CODESERVER_WORKSPACE 預設 '../..' = repo root,見 .env.example)。
-      # repo 根有機密(.env 的 JWT/DB 密碼、server.key 的 TLS 私鑰),用 /dev/null
-      # 把這兩個遮蔽掉,避免拿到 codeserver 密碼的人讀到(軍方 air-gap 防護)。
-      # 其餘(server.crt、CA bundle、share/pki)是公開資料,可見無妨。
-      # ⚠ 改了 CODESERVER_WORKSPACE 就要相應調整 / 移除下面兩條遮蔽。
-      - ${CODESERVER_WORKSPACE:-../..}:/home/coder/workspace
-      - /dev/null:/home/coder/workspace/.env:ro
-      - /dev/null:/home/coder/workspace/infra/nginx/certs/server.key:ro
+      # 只掛隔離 workspace。repo root 內有 .env、TLS/JWT 私鑰與 PKI 材料,
+      # 不能靠逐檔 /dev/null 遮蔽(新機密檔一出現就會漏)。
+      - ../../share/codeserver-sandbox:/home/coder/workspace
     working_dir: /home/coder/workspace
+    networks:
+      - codeserver-tools
     expose:
       - "8080"
     healthcheck:
@@ -517,29 +567,58 @@ services:
       start_period: 30s
     restart: unless-stopped
 
-  # ── n8n workflow automation (cold-stored) ───────────────────────────────
-  # Subpath /n8n。重要 hardening (不要回退):
+  # ── n8n workflow automation (retained intranet service) ────────────────
+  # 獨立來源 https://n8n.ai.ncsist.org.tw/。重要 hardening (不要回退):
   #   - NODE_TLS_REJECT_UNAUTHORIZED 預設 1。要連自簽 endpoint 逐節點設
   #     self-signed CA,**不要**全域關 TLS 驗證 (歷史教訓)。
   #   - Code Node 模組白名單寫死,避免變成任意 require() 的 RCE 平台。
+  #   - n8n 原生 user-management 是登入邊界；不得與 CSP 共用瀏覽器 origin。
+  #     webhook / form ingress 在 nginx 一律 fail-closed；若要接 machine
+  #     callback，必須另建 mTLS / signed machine ingress。
   n8n:
-    image: n8nio/n8n:1.98.2
+    image: ${ANILA_IMAGE_N8N:?ANILA_IMAGE_N8N must be a locked image content ID}
     # 用 image 內建 'node' user (UID 1000),不要 override user — n8n 首次
     # 開機 HOME 對不上會 mkdir /.n8n EACCES。
     environment:
       TZ: Asia/Taipei
-      N8N_PATH: /n8n/
-      N8N_HOST: ${ANILA_HOST:-172.16.120.35}
+      N8N_PATH: /
+      N8N_HOST: ${N8N_HOST:-n8n.ai.ncsist.org.tw}
       N8N_PROTOCOL: https
-      WEBHOOK_URL: ${N8N_WEBHOOK_URL:-https://172.16.120.35/n8n/}
+      N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL:-https://n8n.ai.ncsist.org.tw/}
+      WEBHOOK_URL: ${N8N_WEBHOOK_URL:-https://n8n.ai.ncsist.org.tw/}
+      # 官方 reverse-proxy contract：信任最後一跳 nginx 提供的
+      # X-Forwarded-For / Host / Proto；不可放大成 >1。
+      N8N_PROXY_HOPS: "1"
       NODE_TLS_REJECT_UNAUTHORIZED: "${N8N_TLS_REJECT_UNAUTHORIZED:-1}"
-      # 後面 nginx 已是 HTTPS,n8n 自己看到 HTTP 所以 cookie 標非 secure 才能登入。
-      N8N_SECURE_COOKIE: "false"
+      # nginx 提供 X-Forwarded-Proto=https 且 N8N_PROXY_HOPS=1；session cookie
+      # 必須維持 Secure，避免使用者先碰 http:80 時在 redirect 前洩出。
+      N8N_SECURE_COOKIE: "true"
+      # n8n 2.x 官方 instance-settings loader：首次啟動與每次重啟都用
+      # env-managed owner 收斂帳號，避免 fresh volume 的 first-visitor takeover。
+      # PASSWORD_HASH 必須是完整 bcrypt 字串；.env 請以單引號包住 $ 字元。
+      N8N_INSTANCE_OWNER_MANAGED_BY_ENV: "true"
+      N8N_INSTANCE_OWNER_EMAIL: ${N8N_OWNER_EMAIL:?N8N_OWNER_EMAIL must be set}
+      N8N_INSTANCE_OWNER_FIRST_NAME: ${N8N_OWNER_FIRST_NAME:-ANILA}
+      N8N_INSTANCE_OWNER_LAST_NAME: ${N8N_OWNER_LAST_NAME:-Owner}
+      N8N_INSTANCE_OWNER_PASSWORD_HASH: ${N8N_OWNER_PASSWORD_HASH:?N8N_OWNER_PASSWORD_HASH must be a bcrypt hash}
+      # n8n 2.x instance MCP is a separate machine-ingress surface from
+      # workflow MCP triggers. Lock both config state and reverse-proxy path.
+      N8N_MCP_MANAGED_BY_ENV: "true"
+      N8N_MCP_ACCESS_ENABLED: "false"
+      # 不把 credential encryption key 留給容器首次啟動隨機產生；重建時必須
+      # 使用同一把正式 key，否則既有 n8n credentials 無法解密。
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?N8N_ENCRYPTION_KEY must be set}
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "true"
+      N8N_BLOCK_FILE_ACCESS_TO_N8N_FILES: "true"
+      N8N_RESTRICT_FILE_ACCESS_TO: /home/node/.n8n-files
       NODE_FUNCTION_ALLOW_EXTERNAL: "${N8N_NODE_FUNCTION_ALLOW_EXTERNAL:-axios,lodash,dayjs}"
       NODE_FUNCTION_ALLOW_BUILTIN: "${N8N_NODE_FUNCTION_ALLOW_BUILTIN:-crypto,url}"
       N8N_DIAGNOSTICS_ENABLED: "false"
     volumes:
       - n8n_data:/home/node/.n8n
+    networks:
+      - n8n-tools
     expose:
       - "5678"
     healthcheck:
@@ -551,20 +630,22 @@ services:
       start_period: 60s
     restart: unless-stopped
 
-  # ── GitLab CE (cold-stored) ─────────────────────────────────────────────
-  # Subpath /gitlab via Workhorse:external_url 讓 GitLab 把所有 absolute link
-  # 渲染在 subpath 下,內建 nginx disable 讓外面 ANILA nginx 接 8181。
+  # ── GitLab CE (retained intranet service) ───────────────────────────────
+  # 獨立來源 https://gitlab.ai.ncsist.org.tw/；內建 nginx disable，外層 ANILA
+  # nginx 接 Workhorse 8181。Web/API/smart HTTP 均由 GitLab 原生帳號、PAT、
+  # runner token 驗證，不得把 CSP session cookie 或 auth_request 帶進此 origin。
   # 首次開機 reconfigure ~5-10 分鐘,start_period 600s 是必要的。
   # Initial root password 在容器內 /etc/gitlab/initial_root_password,首次登入要輪換。
   gitlab:
-    image: gitlab/gitlab-ce:16.10.10-ce.0
-    hostname: gitlab.anila.internal
+    image: ${ANILA_IMAGE_GITLAB:?ANILA_IMAGE_GITLAB must be a locked image content ID}
+    hostname: ${GITLAB_HOST:-gitlab.ai.ncsist.org.tw}
     environment:
       GITLAB_OMNIBUS_CONFIG: |
-        external_url 'https://${ANILA_HOST:-172.16.120.35:4443}/gitlab'
+        external_url 'https://${GITLAB_HOST:-gitlab.ai.ncsist.org.tw}'
         nginx['enable'] = false
         gitlab_workhorse['listen_network'] = "tcp"
         gitlab_workhorse['listen_addr'] = "0.0.0.0:8181"
+        gitlab_rails['gitlab_shell_ssh_port'] = ${GITLAB_SSH_PORT:-2222}
         gitlab_rails['time_zone'] = 'Asia/Taipei'
         # 內網部署 — admin 發帳號,不開 self sign-up。
         gitlab_rails['gitlab_signup_enabled'] = false
@@ -574,20 +655,27 @@ services:
         # 初始 root 密碼從 GITLAB_ROOT_PASSWORD env 帶入(密碼不寫死在 compose;
         # 由 .env / bundle 的 intranet-defaults.env 提供)。只在首次 reconfigure 生效。
         gitlab_rails['initial_root_password'] = ENV['GITLAB_ROOT_PASSWORD'] if (ENV['GITLAB_ROOT_PASSWORD'] || '') != ''
-      GITLAB_ROOT_PASSWORD: ${GITLAB_ROOT_PASSWORD-}
+      GITLAB_ROOT_PASSWORD: ${GITLAB_ROOT_PASSWORD:?GITLAB_ROOT_PASSWORD must be set}
     volumes:
       - gitlab_config:/etc/gitlab
       - gitlab_logs:/var/log/gitlab
       - gitlab_data:/var/opt/gitlab
+    networks:
+      - gitlab-tools
+    # GitLab's isolated origin owns browser, HTTPS/LFS/API, PAT and SSH auth;
+    # ANILA card-session cookies are deliberately not shared with this host.
+    # Git CLI SSH uses GitLab Shell on an explicitly selected intranet interface;
+    # host firewall must restrict this port to approved developer subnets.
+    ports:
+      - "${GITLAB_SSH_BIND_IP:?GITLAB_SSH_BIND_IP must name the intranet interface}:${GITLAB_SSH_PORT:-2222}:22"
     expose:
       - "8181"   # Workhorse for ANILA nginx
-      - "22"     # SSH for git push/pull (not host-exposed yet)
+      - "22"     # SSH for git push/pull; host port above is LAN-IP-bound
     shm_size: 256m
     healthcheck:
       # /-/health 預設只開 127/8 的 monitoring_whitelist,從外部 monitor 看不到。
       # /users/sign_in 不需 auth,Puma 起來就 200,正好當 readiness probe。
-      # /gitlab prefix 必要,因為 external_url 設 subpath 後 Workhorse 預期所有 URL 都帶。
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8181/gitlab/users/sign_in || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8181/users/sign_in || exit 1"]
       interval: 60s
       timeout: 10s
       retries: 5
@@ -602,14 +690,23 @@ networks:
   anila-models-net:
     external: true
     name: anila-models-net
+  # Each active developer tool gets its own bridge. nginx is the only dual-home
+  # service, so compromised tools cannot call another tool's Docker DNS name.
+  n8n-tools:
+    name: anila-n8n-tools-net
+  gitlab-tools:
+    name: anila-gitlab-tools-net
+  codeserver-tools:
+    name: anila-codeserver-tools-net
 
 volumes:
   csp-pgdata:
   redis-data:
+  csp-attachments:
   anila-studio-flux-cache:
   anila-studio-artifacts:
-  # cold-stored — 對應上面 commented service。volume 名稱保留可以避免
-  # 解凍時 named volume 重生造成既有資料遺失 (compose 看到舊名就 reuse)。
+  # 工具資料 volume：n8n/GitLab 為保留的預設內網服務；code-server profile
+  # 按需啟用。名稱固定以確保重建容器時沿用既有資料。
   codeserver_config:
   n8n_data:
   gitlab_config:
