@@ -26,7 +26,8 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-from anila_core.ingestion.errors import EmbedError
+from anila_core.contracts import Classification
+from anila_core.ingestion.errors import EmbedError, StoreError
 from ingestion_worker import handlers
 from ingestion_worker.handlers import _CAPTION_MAX_CHARS, _clean_caption
 from ingestion_worker.settings import settings
@@ -281,10 +282,98 @@ async def test_persist_images_mkdir_failure_returns_zero(monkeypatch):
     assert await handlers._persist_images(None, 1, 42, images, None, None) == 0
 
 
+@pytest.mark.parametrize(
+    ("document_level", "collection_level"),
+    [(document, collection) for document in Classification for collection in Classification],
+)
+def test_effective_chunk_classification_uses_canonical_max_truth_table(
+    document_level: Classification,
+    collection_level: Classification,
+) -> None:
+    effective = handlers._effective_chunk_classification(
+        {
+            "document_classification_level": document_level.to_storage(),
+            "collection_classification_level": collection_level.to_storage(),
+        }
+    )
+
+    assert effective is Classification.max_of([document_level, collection_level])
+
+
+@pytest.mark.parametrize("bad_value", [None, "UNKNOWN", 3, ""])
+@pytest.mark.parametrize(
+    "field",
+    ["document_classification_level", "collection_classification_level"],
+)
+def test_effective_chunk_classification_rejects_missing_or_invalid_storage(
+    field: str,
+    bad_value: object,
+) -> None:
+    meta: dict[str, object] = {
+        "document_classification_level": Classification.UNCLASSIFIED.to_storage(),
+        "collection_classification_level": Classification.UNCLASSIFIED.to_storage(),
+    }
+    meta[field] = bad_value
+
+    with pytest.raises(StoreError) as exc_info:
+        handlers._effective_chunk_classification(meta)
+
+    assert exc_info.value.code == "E_CLASSIFICATION_INVALID"
+    assert exc_info.value.retryable is False
+    assert exc_info.value.severity == "critical"
+
+
+async def test_load_document_meta_selects_document_and_collection_classification() -> None:
+    class Connection:
+        sql = ""
+
+        async def fetchrow(self, sql, document_id):
+            self.sql = sql
+            assert document_id == 17
+            return {
+                "document_id": 17,
+                "document_classification_level": "機密",
+                "collection_classification_level": "極機密",
+            }
+
+    class Acquire:
+        def __init__(self, connection) -> None:
+            self.connection = connection
+
+        async def __aenter__(self):
+            return self.connection
+
+        async def __aexit__(self, exc_type, exc, traceback) -> bool:
+            return False
+
+    class Pool:
+        def __init__(self, connection) -> None:
+            self.connection = connection
+
+        def acquire(self):
+            return Acquire(self.connection)
+
+    connection = Connection()
+    meta = await handlers._load_document_meta(Pool(connection), 17)  # type: ignore[arg-type]
+
+    assert "d.classification_level AS document_classification_level" in connection.sql
+    assert "c.classification_level AS collection_classification_level" in connection.sql
+    assert meta["document_classification_level"] == "機密"
+    assert meta["collection_classification_level"] == "極機密"
+
+
 # ── ingest_document terminal convergence ─────────────────────────────────────
 
 
-def _install_ingest_fakes(monkeypatch, tmp_path, *, chunks, embedder):
+def _install_ingest_fakes(
+    monkeypatch,
+    tmp_path,
+    *,
+    chunks,
+    embedder,
+    document_classification: str = "無機密",
+    collection_classification: str = "無機密",
+):
     blob_path = tmp_path / "document.txt"
     blob_path.write_text("content", encoding="utf-8")
     document_updates: list[tuple[str, dict]] = []
@@ -299,6 +388,8 @@ def _install_ingest_fakes(monkeypatch, tmp_path, *, chunks, embedder):
             "owner_user_id": 12,
             "filename": "document.txt",
             "mime_type": "text/plain",
+            "document_classification_level": document_classification,
+            "collection_classification_level": collection_classification,
             "chunking_config": {"strategy": "test", "params": {}},
         }
 
@@ -311,11 +402,15 @@ def _install_ingest_fakes(monkeypatch, tmp_path, *, chunks, embedder):
     async def record_failure(_pool, _job_id, error):
         failures.append(error)
 
+    async def bump_counters(_pool, _collection_id, **_kwargs):
+        return None
+
     chunker = SimpleNamespace(requires_embedder=False, chunk=lambda *_args: chunks)
     monkeypatch.setattr(handlers, "_load_document_meta", load_meta)
     monkeypatch.setattr(handlers, "_update_document_status", update_document)
     monkeypatch.setattr(handlers, "_update_job", update_job)
     monkeypatch.setattr(handlers, "_record_job_failure", record_failure)
+    monkeypatch.setattr(handlers, "_bump_collection_counters", bump_counters)
     monkeypatch.setattr(
         handlers,
         "extract_text",
@@ -360,6 +455,65 @@ async def test_ingest_empty_chunks_writes_one_succeeded_terminal_job_state(
         {"chunk_count": 0, "error_message": None},
     )
     assert result == {"chunk_count": 0, "warning": "no chunks produced"}
+
+
+async def test_ingest_propagates_effective_classification_to_parent_and_leaf_writes(
+    monkeypatch,
+    tmp_path,
+):
+    writes: list[tuple[str, Classification]] = []
+
+    class RecordingStore:
+        def __init__(self, _pool, *, collection_id: int) -> None:
+            assert collection_id == 7
+
+        async def add_parent_chunks(self, **kwargs):
+            writes.append(("parent", kwargs["classification_level"]))
+            return {"parent-1": 101}
+
+        async def index_chunks(self, **kwargs):
+            writes.append(("leaf", kwargs["classification_level"]))
+            assert kwargs["parent_id_map"] == {"parent-1": 101}
+            return 1
+
+    class Embedder:
+        async def embed(self, texts, *, user_id=None):
+            assert texts == ["leaf content"]
+            assert user_id == 11
+            return [[0.1]]
+
+    chunks = [
+        SimpleNamespace(
+            content="heading",
+            chunk_key="parent-1",
+            token_count=1,
+            metadata={"chunk_type": "heading"},
+        ),
+        SimpleNamespace(
+            content="leaf content",
+            chunk_key="leaf-1",
+            token_count=2,
+            metadata={"chunk_type": "leaf", "parent_chunk_key": "parent-1"},
+        ),
+    ]
+    state = _install_ingest_fakes(
+        monkeypatch,
+        tmp_path,
+        chunks=chunks,
+        embedder=Embedder(),
+        document_classification="機密",
+        collection_classification="極機密",
+    )
+    monkeypatch.setattr(handlers, "CollectionScopedPgVectorStore", RecordingStore)
+
+    result = await handlers.ingest_document(state["ctx"], document_id=44)
+
+    assert writes == [
+        ("parent", Classification.SECRET),
+        ("leaf", Classification.SECRET),
+    ]
+    assert result["parent_count"] == 1
+    assert result["leaf_count"] == 1
 
 
 async def test_ingest_embedding_timeout_converges_document_and_job_to_failed(

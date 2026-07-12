@@ -32,15 +32,51 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 
 import asyncpg
+from anila_contracts import Classification
 from pgvector import HalfVector
 
 from anila_core.ingestion.chunking_plugins.base import ChunkResult
 from anila_core.ingestion.errors import StoreError
 from anila_core.models.ingestion import IngestionChunk, SearchHit
 from anila_core.storage.adapters.pg_pool import PgPool
+
+
+_INGESTION_CLASSIFICATION_SOURCE = "ingestion_effective"
+
+
+def _classification_storage_value(classification: Classification) -> str:
+    """Return the canonical storage value and reject untyped callers."""
+    if not isinstance(classification, Classification):
+        raise ValueError(
+            "classification must be an anila_contracts.Classification value, "
+            f"got {type(classification).__name__}"
+        )
+    return classification.to_storage()
+
+
+def _classification_from_storage(*, field: str, raw: object) -> Classification:
+    """Parse trusted DB state without ever defaulting an invalid value low."""
+    if not isinstance(raw, str):
+        raise StoreError(
+            code="E_CLASSIFICATION_INVALID",
+            retryable=False,
+            severity="critical",
+            user_message="資料庫分類資料無效，已拒絕存取。",
+            details={"field": field, "value_type": type(raw).__name__},
+        )
+    try:
+        return Classification.from_storage(raw)
+    except ValueError as exc:
+        raise StoreError(
+            code="E_CLASSIFICATION_INVALID",
+            retryable=False,
+            severity="critical",
+            user_message="資料庫分類資料無效，已拒絕存取。",
+            details={"field": field, "value": raw},
+        ) from exc
 
 
 class CollectionScopedPgVectorStore:
@@ -101,6 +137,77 @@ class CollectionScopedPgVectorStore:
                 await tr.rollback()
                 raise
 
+    async def _resolve_write_classification(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        document_id: int,
+        caller_floor: Classification,
+    ) -> Classification:
+        """Lock current sources and return max(caller, document, collection).
+
+        Lock order is always collection then document for both parent and leaf
+        writes. ``FOR SHARE`` conflicts with classification UPDATEs: if ingest
+        wins, a later parent upgrade waits then cascades to the new rows; if the
+        upgrade wins, this read waits and observes the raised source level.
+        """
+        collection = await conn.fetchrow(
+            """
+            SELECT id, classification_level
+              FROM ingestion_collections
+             WHERE id = $1
+               FOR SHARE
+            """,
+            self._collection_id,
+        )
+        if collection is None:
+            raise StoreError(
+                code="E_PG_CONSTRAINT",
+                retryable=False,
+                severity="error",
+                user_message="知識庫不存在或已刪除，已拒絕寫入 chunk。",
+                details={"collection_id": self._collection_id},
+            )
+
+        document = await conn.fetchrow(
+            """
+            SELECT id, collection_id, classification_level
+              FROM ingestion_documents
+             WHERE id = $1
+               FOR SHARE
+            """,
+            document_id,
+        )
+        if document is None:
+            raise StoreError(
+                code="E_PG_CONSTRAINT",
+                retryable=False,
+                severity="error",
+                user_message="文件不存在或已刪除，已拒絕寫入 chunk。",
+                details={"document_id": document_id},
+            )
+        if document["collection_id"] != self._collection_id:
+            raise StoreError.rls_violation(
+                user_message="文件不屬於目前知識庫，已拒絕跨知識庫寫入。",
+                details={
+                    "document_id": document_id,
+                    "expected_collection_id": self._collection_id,
+                    "actual_collection_id": document["collection_id"],
+                },
+            )
+
+        collection_level = _classification_from_storage(
+            field="ingestion_collections.classification_level",
+            raw=collection["classification_level"],
+        )
+        document_level = _classification_from_storage(
+            field="ingestion_documents.classification_level",
+            raw=document["classification_level"],
+        )
+        return Classification.max_of(
+            [caller_floor, collection_level, document_level]
+        )
+
     # ── Write path ──────────────────────────────────────────────────────────
 
     async def index_chunks(
@@ -108,6 +215,8 @@ class CollectionScopedPgVectorStore:
         document_id: int,
         chunks: list[ChunkResult],
         embeddings: list[list[float]],
+        *,
+        classification_level: Classification,
         parent_id_map: dict[str, int] | None = None,
     ) -> int:
         """Bulk-insert leaf chunks with their embeddings.
@@ -130,6 +239,9 @@ class CollectionScopedPgVectorStore:
         document) we re-raise the asyncpg error wrapped in
         ``StoreError`` so the worker's error taxonomy stays uniform.
         """
+        # Validate the public contract even on an empty batch. The actual
+        # persisted level is re-derived from locked DB sources below.
+        _classification_storage_value(classification_level)
         if len(chunks) != len(embeddings):
             raise ValueError(
                 f"index_chunks: got {len(chunks)} chunks but {len(embeddings)} "
@@ -147,40 +259,50 @@ class CollectionScopedPgVectorStore:
         # codec ships the right binary shape into the halfvec(4000)
         # column; a bare list[float] would be interpreted as ``vector``
         # and rejected as a type mismatch.
-        rows = []
-        for ch, emb in zip(chunks, embeddings):
-            meta = ch.metadata or {}
-            chunk_type = meta.get("chunk_type", "leaf")
-            chunk_level = int(meta.get("chunk_level", 0))
-            parent_key = meta.get("parent_chunk_key")
-            parent_id = parent_id_map.get(parent_key) if parent_key else None
-            rows.append(
-                (
-                    self._collection_id,
-                    document_id,
-                    ch.chunk_key,
-                    ch.content,
-                    HalfVector(emb),
-                    meta,
-                    ch.token_count,
-                    chunk_type,
-                    chunk_level,
-                    parent_id,
-                )
-            )
-
         sql = """
             INSERT INTO document_chunks
                 (collection_id, document_id, chunk_key,
                  content, content_tsv, embedding, metadata, token_count,
-                 chunk_type, chunk_level, parent_chunk_id)
+                 chunk_type, chunk_level, parent_chunk_id,
+                 classification_level, classification_latched_at,
+                 classification_source)
             VALUES
                 ($1, $2, $3, $4,
                  to_tsvector('simple', $4),
-                 $5, $6, $7, $8, $9, $10)
+                 $5, $6, $7, $8, $9, $10,
+                 $11, CURRENT_TIMESTAMP, $12)
         """
         try:
             async with self._acquire() as conn:
+                effective = await self._resolve_write_classification(
+                    conn,
+                    document_id=document_id,
+                    caller_floor=classification_level,
+                )
+                classification_value = effective.to_storage()
+                rows = []
+                for ch, emb in zip(chunks, embeddings):
+                    meta = ch.metadata or {}
+                    chunk_type = meta.get("chunk_type", "leaf")
+                    chunk_level = int(meta.get("chunk_level", 0))
+                    parent_key = meta.get("parent_chunk_key")
+                    parent_id = parent_id_map.get(parent_key) if parent_key else None
+                    rows.append(
+                        (
+                            self._collection_id,
+                            document_id,
+                            ch.chunk_key,
+                            ch.content,
+                            HalfVector(emb),
+                            meta,
+                            ch.token_count,
+                            chunk_type,
+                            chunk_level,
+                            parent_id,
+                            classification_value,
+                            _INGESTION_CLASSIFICATION_SOURCE,
+                        )
+                    )
                 await conn.executemany(sql, rows)
         except asyncpg.ConnectionDoesNotExistError as e:
             raise StoreError.pg_connect(
@@ -223,6 +345,8 @@ class CollectionScopedPgVectorStore:
             SELECT id, collection_id, document_id, chunk_key,
                    content, metadata, token_count, created_at,
                    parent_chunk_id, chunk_type, chunk_level,
+                   classification_level, classification_latched_at,
+                   classification_source,
                    1 - (embedding <=> $1) AS score
               FROM document_chunks
              WHERE chunk_type = 'leaf'
@@ -266,6 +390,8 @@ class CollectionScopedPgVectorStore:
                 SELECT id, collection_id, document_id, chunk_key,
                        content, metadata, token_count, created_at,
                        parent_chunk_id, chunk_type, chunk_level,
+                       classification_level, classification_latched_at,
+                       classification_source,
                        1 - (embedding <=> $1) AS score,
                        RANK() OVER (
                            PARTITION BY document_id
@@ -290,6 +416,8 @@ class CollectionScopedPgVectorStore:
         self,
         document_id: int,
         chunks: list,
+        *,
+        classification_level: Classification,
     ) -> dict[str, int]:
         """Sprint 9 X / parent-child — insert non-leaf rows (no embedding).
 
@@ -306,6 +434,7 @@ class CollectionScopedPgVectorStore:
         comes back in one round-trip; ``executemany`` doesn't surface
         RETURNING values, hence the per-row loop.
         """
+        _classification_storage_value(classification_level)
         if not chunks:
             return {}
 
@@ -313,33 +442,43 @@ class CollectionScopedPgVectorStore:
             INSERT INTO document_chunks
                 (collection_id, document_id, chunk_key,
                  content, content_tsv, embedding, metadata, token_count,
-                 chunk_type, chunk_level, parent_chunk_id)
+                 chunk_type, chunk_level, parent_chunk_id,
+                 classification_level, classification_latched_at,
+                 classification_source)
             VALUES
                 ($1, $2, $3, $4,
                  to_tsvector('simple', $4),
-                 NULL, $5, $6, $7, $8, NULL)
+                 NULL, $5, $6, $7, $8, NULL,
+                 $9, CURRENT_TIMESTAMP, $10)
             RETURNING id, chunk_key
         """
         out: dict[str, int] = {}
         try:
             async with self._acquire() as conn:
-                async with conn.transaction():
-                    for ch in chunks:
-                        meta = ch.metadata or {}
-                        chunk_type = meta.get("chunk_type", "heading")
-                        chunk_level = int(meta.get("chunk_level", 0))
-                        row = await conn.fetchrow(
-                            sql,
-                            self._collection_id,
-                            document_id,
-                            ch.chunk_key,
-                            ch.content,
-                            meta,
-                            ch.token_count,
-                            chunk_type,
-                            chunk_level,
-                        )
-                        out[row["chunk_key"]] = row["id"]
+                effective = await self._resolve_write_classification(
+                    conn,
+                    document_id=document_id,
+                    caller_floor=classification_level,
+                )
+                classification_value = effective.to_storage()
+                for ch in chunks:
+                    meta = ch.metadata or {}
+                    chunk_type = meta.get("chunk_type", "heading")
+                    chunk_level = int(meta.get("chunk_level", 0))
+                    row = await conn.fetchrow(
+                        sql,
+                        self._collection_id,
+                        document_id,
+                        ch.chunk_key,
+                        ch.content,
+                        meta,
+                        ch.token_count,
+                        chunk_type,
+                        chunk_level,
+                        classification_value,
+                        _INGESTION_CLASSIFICATION_SOURCE,
+                    )
+                    out[row["chunk_key"]] = row["id"]
         except asyncpg.ConnectionDoesNotExistError as e:
             raise StoreError.pg_connect(
                 user_message="資料庫連線中斷，請稍後再試",
@@ -383,6 +522,8 @@ class CollectionScopedPgVectorStore:
             SELECT id, collection_id, document_id, chunk_key,
                    content, metadata, token_count, created_at,
                    parent_chunk_id, chunk_type, chunk_level,
+                   classification_level, classification_latched_at,
+                   classification_source,
                    ts_rank_cd(content_tsv, q) AS score
               FROM document_chunks,
                    plainto_tsquery('simple', $1) q
@@ -420,7 +561,7 @@ class CollectionScopedPgVectorStore:
             return
         rows = await conn.fetch(
             """
-            SELECT id, content
+            SELECT id, content, classification_level
               FROM document_chunks
              WHERE id = ANY($1::bigint[])
                AND collection_id = $2
@@ -428,6 +569,10 @@ class CollectionScopedPgVectorStore:
             list(parent_ids),
             self._collection_id,
         )
+        # A malformed parent must block retrieval too. Returning its content
+        # while validating only the matched leaf would be a fail-open path.
+        for row in rows:
+            self._classification_from_row(row)
         parent_map = {r["id"]: r["content"] for r in rows}
         for h in hits:
             pid = getattr(h.chunk, "parent_chunk_id", None)
@@ -450,10 +595,12 @@ class CollectionScopedPgVectorStore:
         """
         cols = (
             "id, collection_id, document_id, chunk_key, content, "
-            "embedding, metadata, token_count, created_at"
+            "embedding, metadata, token_count, created_at, "
+            "classification_level, classification_latched_at, classification_source"
             if include_embedding
             else "id, collection_id, document_id, chunk_key, content, "
-            "metadata, token_count, created_at"
+            "metadata, token_count, created_at, classification_level, "
+            "classification_latched_at, classification_source"
         )
         sql = f"""
             SELECT {cols}
@@ -478,7 +625,9 @@ class CollectionScopedPgVectorStore:
         """
         sql = """
             SELECT id, collection_id, document_id, chunk_key,
-                   content, metadata, token_count, created_at
+                   content, metadata, token_count, created_at,
+                   classification_level, classification_latched_at,
+                   classification_source
               FROM document_chunks
              ORDER BY id
              LIMIT $1 OFFSET $2
@@ -511,6 +660,17 @@ class CollectionScopedPgVectorStore:
     # ── Row mappers ─────────────────────────────────────────────────────────
 
     @staticmethod
+    def _classification_from_row(row: asyncpg.Record) -> Classification:
+        """Parse a required DB classification with canonical fail-closed rules."""
+        raw = row["classification_level"]
+        if not isinstance(raw, str):
+            raise ValueError(
+                "document_chunks.classification_level must be a non-null string, "
+                f"got {type(raw).__name__}"
+            )
+        return Classification.from_storage(raw)
+
+    @staticmethod
     def _row_to_chunk(row: asyncpg.Record, *, include_embedding: bool) -> IngestionChunk:
         # JSONB codec parses asynchronously into a dict. Defaults to {}
         # in the schema so this can never be NULL, but None-guard regardless.
@@ -530,6 +690,9 @@ class CollectionScopedPgVectorStore:
             document_id=row["document_id"],
             chunk_key=row["chunk_key"],
             content=row["content"],
+            classification_level=CollectionScopedPgVectorStore._classification_from_row(row),
+            classification_latched_at=_opt("classification_latched_at"),
+            classification_source=_opt("classification_source"),
             embedding=list(row["embedding"]) if include_embedding else None,
             metadata=metadata,
             token_count=row["token_count"],
@@ -557,6 +720,9 @@ class CollectionScopedPgVectorStore:
                 document_id=row["document_id"],
                 chunk_key=row["chunk_key"],
                 content=row["content"],
+                classification_level=cls._classification_from_row(row),
+                classification_latched_at=_opt("classification_latched_at"),
+                classification_source=_opt("classification_source"),
                 metadata=row["metadata"] or {},
                 token_count=row["token_count"],
                 created_at=row["created_at"],

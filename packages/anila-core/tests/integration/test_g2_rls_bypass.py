@@ -19,6 +19,7 @@ import os
 
 import asyncpg
 import pytest
+from anila_contracts import Classification
 
 from anila_core.ingestion.chunking_plugins import ChunkResult
 from anila_core.storage.adapters.pg_pool import PgPool
@@ -90,6 +91,7 @@ async def test_g2_detector_rejects_a_removed_collection_policy(
             )
         ],
         embeddings=[[0.3] * 4000],
+        classification_level=Classification.UNCLASSIFIED,
     )
 
     admin = await asyncpg.connect(dsn=integration_admin_dsn)
@@ -151,6 +153,7 @@ async def test_g2_bypass_attempt_no_guc_yields_zero_rows(
             )
         ],
         embeddings=[[0.1] * 4000],
+        classification_level=Classification.UNCLASSIFIED,
     )
 
     raw_conn = await asyncpg.connect(dsn=_resolve_dsn())
@@ -191,6 +194,7 @@ async def test_g2_bypass_attempt_wrong_collection_yields_only_their_rows(
                 )
             ],
             embeddings=[[0.2] * 4000],
+            classification_level=Classification.UNCLASSIFIED,
         )
 
     raw_conn = await asyncpg.connect(dsn=_resolve_dsn())

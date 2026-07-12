@@ -19,11 +19,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re as _re
 from datetime import datetime, timezone
 from typing import Any
 
-import asyncpg
-
+from anila_core.contracts import Classification
 from anila_core.ingestion.chunking_plugins import get_chunker
 from anila_core.ingestion.errors import IngestionError, StoreError
 from anila_core.storage.adapters.pg_pool import PgPool
@@ -35,6 +35,39 @@ from ingestion_worker.settings import settings
 
 
 logger = logging.getLogger(__name__)
+
+
+def _effective_chunk_classification(meta: dict[str, Any]) -> Classification:
+    """Return max(document, collection) using the canonical five-level type.
+
+    Both values are required DB state. Missing, NULL, non-string, or unknown
+    values abort ingestion before source content is embedded or persisted.
+    """
+    parsed: list[Classification] = []
+    for field in (
+        "document_classification_level",
+        "collection_classification_level",
+    ):
+        raw = meta.get(field)
+        if not isinstance(raw, str):
+            raise StoreError(
+                code="E_CLASSIFICATION_INVALID",
+                retryable=False,
+                severity="critical",
+                user_message="文件或知識庫的分類資料無效，已拒絕入庫。",
+                details={"field": field, "value_type": type(raw).__name__},
+            )
+        try:
+            parsed.append(Classification.from_storage(raw))
+        except ValueError as exc:
+            raise StoreError(
+                code="E_CLASSIFICATION_INVALID",
+                retryable=False,
+                severity="critical",
+                user_message="文件或知識庫的分類資料無效，已拒絕入庫。",
+                details={"field": field, "value": raw},
+            ) from exc
+    return Classification.max_of(parsed)
 
 
 # ── VLM caption injection ────────────────────────────────────────────
@@ -79,8 +112,6 @@ def _get_vision_provider() -> Any | None:
 # Reasoning-preamble patterns gemma4 likes to emit even when the prompt
 # forbids it. We strip them at ingest time rather than fighting the
 # model — same trick Studio does for its slide-spec JSON parser.
-import re as _re
-
 _THINK_BLOCK_RE = _re.compile(
     r"<think(?:ing)?>.*?</think(?:ing)?>", _re.DOTALL | _re.IGNORECASE,
 )
@@ -510,6 +541,8 @@ async def _load_document_meta(
                d.mime_type     AS mime_type,
                d.storage_path  AS storage_path,
                d.uploaded_by   AS uploaded_by,
+               d.classification_level AS document_classification_level,
+               c.classification_level AS collection_classification_level,
                c.chunking_config AS chunking_config,
                c.created_by    AS owner_user_id
           FROM ingestion_documents d
@@ -669,6 +702,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
     try:
         meta = await _load_document_meta(pool, document_id)
         collection_id = int(meta["collection_id"])
+        effective_classification = _effective_chunk_classification(meta)
         storage_path = meta["storage_path"]
         # Bill embedding usage to whoever uploaded the file; fall back
         # to the collection owner when the doc row's uploaded_by is null
@@ -814,12 +848,14 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             parent_id_map = await store.add_parent_chunks(
                 document_id=document_id,
                 chunks=parents,
+                classification_level=effective_classification,
             )
         if leaves:
             await store.index_chunks(
                 document_id=document_id,
                 chunks=leaves,
                 embeddings=embeddings,
+                classification_level=effective_classification,
                 parent_id_map=parent_id_map,
             )
 
