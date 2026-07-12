@@ -268,6 +268,13 @@ class Gate2ClassificationReconciliationTests(unittest.TestCase):
         visibility_position = source.index("_require_full_visibility")
         self.assertLess(set_position, visibility_position)
 
+    def test_checker_accepts_only_current_single_head_descending_from_reconciliation(self) -> None:
+        source = inspect.getsource(checker._collect_schema)
+        self.assertIn("current_revisions == source_heads", source)
+        self.assertIn("len(source_heads) == 1", source)
+        self.assertIn("reconciliation_in_head_history", source)
+        self.assertIn("script.walk_revisions", source)
+
 
 if __name__ == "__main__":
     unittest.main()

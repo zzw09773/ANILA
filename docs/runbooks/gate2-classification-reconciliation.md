@@ -57,7 +57,8 @@ orphan/cross-collection chunk 與 cross-service callback；任一筆存在便
 - document 低於 collection 為 0
 - chunk 低於 document 或 collection 為 0
 - linked callback 低於 launch 或跨 service 為 0
-- Alembic current/head 都是 `r1_0011`
+- Alembic database current 與唯一 source head 相同，且該 head 的 ancestry
+  必須包含 `r1_0011`（後續 Gate 2 migration 不需把 checker 釘回舊 head）
 - 每個五級值 CHECK constraint 存在且 `convalidated=true`
 - ceiling、callback level 與 export target floor 都是 DB `NOT NULL`，且 server
   default 為明確「無機密」

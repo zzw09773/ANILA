@@ -223,7 +223,7 @@ def test_backfill_reconciles_all_rows_and_is_rerunnable(
     with engine.connect() as conn:
         assert conn.execute(
             text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == "r1_0011"
+        ).scalar_one() == report["schema"]["alembic"]["source_heads"][0]
         assert conn.execute(
             text("SELECT classification_level FROM ingestion_documents")
         ).scalar_one() == "機密"
@@ -331,8 +331,16 @@ def test_checker_detects_legal_but_lower_child_mutation(
 
     engine = create_engine(database_url)
     with engine.begin() as conn:
-        # This remains inside the five-value CHECK domain, so only the semantic
-        # hierarchy checker can catch it. It simulates a legal low child write.
+        # Mutation control: temporarily remove the live guard, then create a
+        # value that remains inside the five-value CHECK domain but violates
+        # the hierarchy.  The independent reconciliation checker must still
+        # catch it instead of trusting the writer trigger.
+        conn.execute(
+            text(
+                "ALTER TABLE ingestion_documents DISABLE TRIGGER "
+                "trg_gate2_document_classification_update"
+            )
+        )
         conn.execute(
             text(
                 """

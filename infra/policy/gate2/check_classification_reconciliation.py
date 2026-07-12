@@ -137,20 +137,31 @@ def _collect_schema(conn: Connection) -> dict[str, Any]:
     alembic_config.set_main_option(
         "script_location", str(ROOT / "services/csp/migrations")
     )
-    source_heads = list(ScriptDirectory.from_config(alembic_config).get_heads())
+    script = ScriptDirectory.from_config(alembic_config)
+    source_heads = list(script.get_heads())
     current_revisions = [
         str(row[0])
         for row in conn.execute(
             text("SELECT version_num FROM alembic_version ORDER BY version_num")
         ).all()
     ]
+    reconciliation_in_head_history = False
+    if len(source_heads) == 1:
+        reconciliation_in_head_history = any(
+            revision.revision == EXPECTED_ALEMBIC_REVISION
+            for revision in script.walk_revisions(
+                base="base", head=source_heads[0]
+            )
+        )
     alembic = {
-        "expected_revision": EXPECTED_ALEMBIC_REVISION,
+        "required_reconciliation_revision": EXPECTED_ALEMBIC_REVISION,
         "source_heads": source_heads,
         "current_revisions": current_revisions,
+        "reconciliation_in_head_history": reconciliation_in_head_history,
         "passed": (
-            source_heads == [EXPECTED_ALEMBIC_REVISION]
-            and current_revisions == [EXPECTED_ALEMBIC_REVISION]
+            len(source_heads) == 1
+            and current_revisions == source_heads
+            and reconciliation_in_head_history
         ),
     }
 
