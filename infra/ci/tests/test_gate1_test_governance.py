@@ -147,6 +147,29 @@ class RegistryTests(unittest.TestCase):
             finally:
                 governance.TEST_ROOTS = original
 
+    def test_skip_collector_fails_closed_on_unparseable_source(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            tests = root / "tests"
+            tests.mkdir()
+            original = governance.TEST_ROOTS
+            governance.TEST_ROOTS = ("tests",)
+            try:
+                for filename, payload in (
+                    ("test_syntax.py", b"def broken(:\n"),
+                    ("test_encoding.py", b"\xff\xfe\x00"),
+                ):
+                    path = tests / filename
+                    path.write_bytes(payload)
+                    with self.subTest(filename=filename):
+                        with self.assertRaisesRegex(
+                            governance.GovernanceError, "cannot inspect"
+                        ):
+                            governance.collect_skip_calls(root)
+                    path.unlink()
+            finally:
+                governance.TEST_ROOTS = original
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -24,7 +24,10 @@ from app.schemas.user import (
     RegisterRequest,
 )
 from app.services.audit_service import log_audit_event
-from app.services.startup_security import is_break_glass_active
+from app.services.startup_security import (
+    break_glass_audit_metadata,
+    is_break_glass_active,
+)
 from app.services.token_revocation_publisher import publish_revocation_sync
 from app.services.auth_service import (
     authenticate_user,
@@ -96,12 +99,26 @@ def login(
     # 區分「密碼錯 / 權限不足 / 端點關閉」;只有 owner 完整登入成功會放行。
     card_only = settings.REQUIRE_CARD_LOGIN_ONLY
     ip_address = http_request.client.host if http_request.client else None
+    break_glass_metadata = break_glass_audit_metadata() if card_only else None
 
-    if card_only and not is_break_glass_active():
+    if card_only and break_glass_metadata is None:
         raise HTTPException(status_code=404)
 
     if request.auth_source not in (None, "", "local"):
         if card_only:
+            log_audit_event(
+                db,
+                action="login",
+                resource_type="auth",
+                status="failure",
+                detail=(
+                    "break-glass 登入被擋（auth_source 非 local）: "
+                    f"{request.username}"
+                ),
+                ip_address=ip_address,
+                metadata=break_glass_metadata,
+                commit=True,
+            )
             raise HTTPException(status_code=404)
         # LDAP 已自系統移除（將以 SSO 取代），僅保留本地登入 + OIDC callback。
         raise HTTPException(
@@ -118,6 +135,7 @@ def login(
             status="failure",
             detail=f"本機登入失敗: {request.username}",
             ip_address=ip_address,
+            metadata=break_glass_metadata,
             commit=True,
         )
         if card_only:
@@ -127,6 +145,17 @@ def login(
             detail="帳號或密碼錯誤",
         )
     if result is PENDING_APPROVAL_SENTINEL:
+        if break_glass_metadata is not None:
+            log_audit_event(
+                db,
+                action="login",
+                resource_type="auth",
+                status="failure",
+                detail=f"break-glass 登入被擋（帳號待核准）: {request.username}",
+                ip_address=ip_address,
+                metadata=break_glass_metadata,
+                commit=True,
+            )
         if card_only:
             raise HTTPException(status_code=404)
         raise HTTPException(
@@ -142,6 +171,7 @@ def login(
             status="failure",
             detail=f"本機登入被阻擋（local_password_disabled=true）: {request.username}",
             ip_address=ip_address,
+            metadata=break_glass_metadata,
             commit=True,
         )
         if card_only:
@@ -160,6 +190,7 @@ def login(
             status="failure",
             detail=f"card-only 模式下非 owner 嘗試帳密登入(憑證有效): {request.username}",
             ip_address=ip_address,
+            metadata=break_glass_metadata,
             commit=True,
         )
         raise HTTPException(status_code=404)
@@ -173,6 +204,7 @@ def login(
         resource_id=result.id,
         detail="本機登入成功",
         ip_address=ip_address,
+        metadata=break_glass_metadata,
         commit=True,
     )
     return _finalize_login(response, tokens)

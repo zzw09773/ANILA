@@ -66,6 +66,22 @@ def enforce_trusted_baseline(
     return trusted
 
 
+def _run_git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """Run a read-only git query or fail with a policy-level diagnostic."""
+
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=root,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise PolicyError(f"cannot execute git for trusted baseline: {exc}") from exc
+
+
 def _baseline_for_run(
     root: Path,
     relative: str,
@@ -76,26 +92,14 @@ def _baseline_for_run(
     if not base_ref:
         return working, None
 
-    verify = subprocess.run(
-        ["git", "rev-parse", "--verify", f"{base_ref}^{{commit}}"],
-        cwd=root,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    verify = _run_git(root, "rev-parse", "--verify", f"{base_ref}^{{commit}}")
     if verify.returncode != 0:
         raise PolicyError(
             f"trusted base ref is unavailable: {base_ref}; CI must fetch full base history"
         )
 
     object_name = f"{base_ref}:{relative}"
-    exists = subprocess.run(
-        ["git", "cat-file", "-e", object_name],
-        cwd=root,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    exists = _run_git(root, "cat-file", "-e", object_name)
     if exists.returncode != 0:
         if bootstrap_if_missing:
             return working, (
@@ -106,14 +110,7 @@ def _baseline_for_run(
             "--bootstrap-if-missing is allowed only for the initial F7 rollout"
         )
 
-    shown = subprocess.run(
-        ["git", "show", object_name],
-        cwd=root,
-        text=True,
-        encoding="utf-8",
-        capture_output=True,
-        check=False,
-    )
+    shown = _run_git(root, "show", object_name)
     if shown.returncode != 0:
         raise PolicyError(f"cannot read trusted baseline {object_name}: {shown.stderr.strip()}")
     trusted = _json_object(shown.stdout, object_name)

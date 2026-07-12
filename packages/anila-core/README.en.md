@@ -18,7 +18,7 @@
 How each role relates to anila-core:
 
 - **Router deployment** ([`anila-core-router`](../../services/anila-core-router/)): directly `import`s Pillar 1 + Pillar 2.
-- **Agent developers**: `anila-core init` produces a non-RAG starter, or `pip install "anila-core[rag]"` and fork [`anila-agent`](../anila-agent/) as the official RAG agent starter template. The `[rag]` extra provides the heavyweight document-parsing packages.
+- **Agent developers**: `anila-core init` produces a non-RAG starter, or install the `[rag]` extra from the monorepo with the local-path command below and fork [`anila-agent`](../anila-agent/) as the official RAG agent starter. Internal distribution names are not published on public PyPI yet; do not run a bare `pip install anila-core`.
 - **ingestion-worker** (Arq async pipeline): consumes only Pillar 2 (`chunking_plugins`, `IngestionError`, `pg_pool`, `pgvector_store`, `credential_crypto`); never touches Pillar 1.
 
 > **Post-redesign repo layout (§17.1)**: the monorepo uses four tiers — `services/` (deployable services, incl. `csp` / `anila-core-router`), `apps/` (frontends), `packages/` (importable packages; this SDK lives here), `infra/` (compose / deploy scripts / nginx / models). The root [`compose.yaml`](../../compose.yaml) is a shim → `include: infra/compose/platform.yml`; deploy scripts live under `infra/deployment/{scripts,intranet}/`. Repo-root positioning: [`../../README.md`](../../README.md).
@@ -133,10 +133,8 @@ anila-core is a **library / SDK**, not a long-running service. It's consumed by 
 ### Install & test
 
 ```bash
-pip install -e "./packages/anila-contracts" -e "./packages/anila-security" # install monorepo thin packages first
-pip install -e "./packages/anila-core"          # full Pillar 1 + Pillar 2 core deps
-pip install -e "./packages/anila-core[rag]"     # + heavyweight parsing stack
-pip install -e "./packages/anila-core[rag,dev]" # + pytest / ruff / mypy (to run the full suite)
+pip install -e "./packages/anila-contracts" -e "./packages/anila-security" -e "./packages/anila-core[rag,dev]"
+# One invocation supplies every internal local candidate and prevents public-index resolution of unreserved names.
 
 cd packages/anila-core
 .venv/bin/python -m pytest            # asyncio_mode=auto; testpaths=["tests"]

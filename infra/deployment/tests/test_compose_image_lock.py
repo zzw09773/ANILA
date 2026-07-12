@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[3]
+INTRANET = ROOT / "infra/deployment/intranet"
 SCRIPT = ROOT / "infra/deployment/scripts/verify-compose-image-lock.py"
 SPEC = importlib.util.spec_from_file_location("verify_compose_image_lock", SCRIPT)
 assert SPEC and SPEC.loader
@@ -20,6 +22,57 @@ SPEC.loader.exec_module(MODULE)
 
 
 class ComposeImageLockTests(unittest.TestCase):
+    def test_compose_control_guards_are_nounset_safe_and_reject_empty_values(
+        self,
+    ) -> None:
+        guard = r"""
+set -euo pipefail
+guard() {
+  local variable
+  for variable in COMPOSE_FILE COMPOSE_PROFILES COMPOSE_PROJECT_NAME \
+    COMPOSE_ENV_FILES COMPOSE_DISABLE_ENV_FILE COMPOSE_PATH_SEPARATOR; do
+    [[ ! -v "$variable" ]] || return 42
+  done
+}
+unset COMPOSE_FILE COMPOSE_PROFILES COMPOSE_PROJECT_NAME \
+  COMPOSE_ENV_FILES COMPOSE_DISABLE_ENV_FILE COMPOSE_PATH_SEPARATOR
+guard
+COMPOSE_FILE=
+set +e
+guard
+status=$?
+set -e
+[[ $status -eq 42 ]]
+"""
+        if os.name == "nt":
+            wsl = shutil.which("wsl.exe")
+            self.assertIsNotNone(wsl, "WSL is required for the Windows Bash contract")
+            command = [str(wsl), "--exec", "bash", "-c", guard]
+        else:
+            bash = shutil.which("bash")
+            self.assertIsNotNone(bash, "bash is required for deployment contracts")
+            command = [str(bash), "-c", guard]
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+        exporter = (INTRANET / "build-and-export-for-intranet.sh").read_text(
+            encoding="utf-8"
+        )
+        ops = (ROOT / "infra/deployment/scripts/anila-ops.sh").read_text(
+            encoding="utf-8"
+        )
+        deploy = (ROOT / "infra/deployment/scripts/deploy-prod.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('[[ -v "$compose_variable" ]]', exporter)
+        self.assertIn('[[ ! -v "$compose_variable" ]]', ops)
+        self.assertIn('[[ ! -v "$variable" ]]', deploy)
+
     def setUp(self) -> None:
         self.inventory = MODULE.read_inventory(MODULE.DEFAULT_INVENTORY)
 

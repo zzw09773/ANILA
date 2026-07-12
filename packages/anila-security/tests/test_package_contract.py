@@ -71,7 +71,15 @@ def test_consumers_declare_and_install_local_security_package_before_core():
     csp_requirements = (REPO_ROOT / "services" / "csp" / "requirements.txt").read_text(
         encoding="utf-8"
     )
-    assert "anila-security>=0.1.0,<0.2.0" in csp_requirements
+    requirement_lines = {
+        line.strip()
+        for line in csp_requirements.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    assert not any(
+        line.startswith(("anila-security", "anila-contracts", "anila-core"))
+        for line in requirement_lines
+    )
 
     dockerfiles = [
         REPO_ROOT / "infra" / "docker" / "csp.Dockerfile",

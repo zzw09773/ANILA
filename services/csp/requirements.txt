@@ -1,10 +1,8 @@
 fastapi==0.136.1
-# Gate 1 F5: framework-neutral cross-service wire contracts.
-# Docker and monorepo CI install the local package before this file.
-anila-contracts>=0.1.0,<0.2.0
-# Gate 1 F4: direct CSP dependency for credential crypto and SSRF guard.
-# Docker and monorepo CI install the local package before this file.
-anila-security>=0.1.0,<0.2.0
+# Internal distributions are deliberately absent here: their public PyPI names
+# are not reserved.  Docker/CI/fresh-venv instructions install the reviewed
+# monorepo paths before this third-party-only file, so pip cannot substitute an
+# index package with the same name (dependency confusion).
 # starlette 顯式 pin:fastapi 0.136.1 對 starlette 只有 >=0.46.0 下限,pip
 # 預設會拉到 1.0.0 (主版本變動,行為可能有非顯式變化)。鎖在 0.49.3 —
 # CVE-2025-54121 / CVE-2025-62727 修復線中最新的 patch,API 與 0.41 系列

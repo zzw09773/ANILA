@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -157,6 +158,26 @@ class CapabilityFreezePolicyTests(unittest.TestCase):
             policy.enforce_trusted_baseline(
                 branch_baseline, self.baseline, "origin/main:capability-freeze-baseline.json"
             )
+
+    def test_missing_git_fails_closed_with_policy_error(self) -> None:
+        relative = "infra/policy/gate1/capability-freeze-baseline.json"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / relative
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(self.baseline), encoding="utf-8")
+            with mock.patch.object(
+                policy.subprocess,
+                "run",
+                side_effect=FileNotFoundError("git executable missing"),
+            ):
+                with self.assertRaisesRegex(policy.PolicyError, "cannot execute git"):
+                    policy._baseline_for_run(
+                        root,
+                        relative,
+                        "origin/main",
+                        bootstrap_if_missing=False,
+                    )
 
 
 if __name__ == "__main__":

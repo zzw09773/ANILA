@@ -55,6 +55,8 @@ CSP also hosts the **Ingestion knowledge base** (document → chunk → embeddin
 | Tests | pytest · pytest-asyncio 0.24.0 · respx 0.22.0 |
 
 > The deployed image uses [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile) (multi-stage, bundles `anila-core[rag]`); `services/csp/Dockerfile` is a **single-container legacy** file (compose does not use it). The governance frontend now lives at the top level, [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/) (Vue 3 / Vite, "官方藍" visual redesign), served statically by Nginx.
+>
+> **Internal package origin**: `anila-contracts`, `anila-security`, and `anila-core` are not reserved on public PyPI yet. From the repository root, install every reviewed local candidate in one invocation: `pip install -e ./packages/anila-contracts -e ./packages/anila-security -e './packages/anila-core[rag]' -r services/csp/requirements-dev.txt`. Never resolve these names as bare public-index requirements.
 
 ---
 

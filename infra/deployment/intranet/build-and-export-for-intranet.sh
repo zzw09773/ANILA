@@ -54,10 +54,10 @@ mkdir -p "$OUTPUT_DIR"
 
 for compose_variable in COMPOSE_FILE COMPOSE_PROFILES COMPOSE_PROJECT_NAME \
   COMPOSE_ENV_FILES COMPOSE_DISABLE_ENV_FILE COMPOSE_PATH_SEPARATOR; do
-    [ -z "${!compose_variable:-}" ] || {
+    if [[ -v "$compose_variable" ]]; then
         echo "✗ exporter 不接受 ambient $compose_variable；請 unset 後重跑" >&2
         exit 1
-    }
+    fi
 done
 
 # 不把前一次的 04-models / weights 混進這次 manifest。要求 fresh output

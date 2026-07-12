@@ -18,7 +18,7 @@
 平台各角色與 anila-core 的關係:
 
 - **Router 部署**([`anila-core-router`](../../services/anila-core-router/)):直接 `import` Pillar 1 + Pillar 2。
-- **Agent 開發者**:`anila-core init` 產生 non-RAG starter,或 `pip install "anila-core[rag]"` 並 fork [`anila-agent`](../anila-agent/) 作為官方 RAG agent starter template。`[rag]` extra 提供文件解析的重量級套件。
+- **Agent 開發者**:`anila-core init` 產生 non-RAG starter,或從 monorepo 以下方 local-path 指令安裝 `[rag]` 並 fork [`anila-agent`](../anila-agent/) 作為官方 RAG agent starter template。目前 internal distribution name 未在 public PyPI 發佈，不得直接 `pip install anila-core`。
 - **ingestion-worker**(Arq 非同步 pipeline):只消費 Pillar 2(`chunking_plugins`、`IngestionError`、`pg_pool`、`pgvector_store`、`credential_crypto`),不碰 Pillar 1。
 
 > **Redesign 後倉庫佈局(§17.1)**:monorepo 採 `services/`(可部署服務,含 `csp` / `anila-core-router`)、`apps/`(前端)、`packages/`(可 import 的套件,本 SDK 在此)、`infra/`(compose / 部署腳本 / nginx / models)四分層。根目錄 [`compose.yaml`](../../compose.yaml) 是 shim → `include: infra/compose/platform.yml`;部署腳本在 `infra/deployment/{scripts,intranet}/`。repo 根定位見 [`../../README.md`](../../README.md)。
@@ -133,10 +133,8 @@ anila-core 是 **library / SDK**,不是常駐服務。它被 Router / agent / in
 ### 安裝與測試
 
 ```bash
-pip install -e "./packages/anila-contracts" -e "./packages/anila-security" # monorepo 薄套件先安裝
-pip install -e "./packages/anila-core"          # 完整 Pillar 1 + Pillar 2 core deps
-pip install -e "./packages/anila-core[rag]"     # + 文件解析重量級堆疊
-pip install -e "./packages/anila-core[rag,dev]" # + pytest / ruff / mypy(跑完整測試所需)
+pip install -e "./packages/anila-contracts" -e "./packages/anila-security" -e "./packages/anila-core[rag,dev]"
+# 同一 invocation 提供全部 internal local candidates，避免 pip 向 public index 解析未保留名稱。
 
 cd packages/anila-core
 .venv/bin/python -m pytest            # asyncio_mode=auto;testpaths=["tests"]

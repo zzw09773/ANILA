@@ -211,7 +211,7 @@
       "required": true,
       "status": "passing",
       "command": "cd services/csp && python -m pytest -q",
-      "evidence": "847 passed, 1 external-Postgres test skipped; that RLS case is required and passed separately in postgres-rls"
+      "evidence": "852 passed, 1 external-Postgres test skipped; that RLS case is required and passed separately in postgres-rls"
     },
     {
       "id": "postgres-rls",
@@ -253,14 +253,14 @@
       "required": true,
       "status": "passing",
       "command": "python infra/policy/gate1/check_capability_freeze.py && python -m unittest infra.policy.tests.test_gate1_capability_freeze -v",
-      "evidence": "25 surfaces / 369 entries checked; 7 policy tests passed"
+      "evidence": "25 surfaces / 369 entries checked; 8 policy tests passed"
     },
     {
       "id": "deployment-posture",
       "required": true,
       "status": "passing",
       "command": "bash -n deployment scripts && python infra/deployment/scripts/verify-compose-image-lock.py check-wiring && python -m unittest discover -s infra/deployment/tests -v",
-      "evidence": "LF-normalized shell syntax and Compose image-lock wiring passed; complete local discovery passed 75 tests with 1 Windows-only Linux-runtime helper skip that executes on the required Ubuntu runner"
+      "evidence": "LF-normalized shell syntax and Compose image-lock wiring passed; complete local discovery passed 77 tests with 1 Windows-only Linux-runtime helper skip that executes on the required Ubuntu runner"
     }
   ],
   "observed_failures": [

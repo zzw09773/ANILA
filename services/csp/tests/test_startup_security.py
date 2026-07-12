@@ -482,15 +482,20 @@ def test_break_glass_runtime_gate_closes_after_expiry(
     monkeypatch.setenv(
         "ANILA_DEPLOYMENT_PROFILE", "prod-intranet-card-breakglass"
     )
+    monkeypatch.setenv("ANILA_BREAK_GLASS_OWNER", "system-owner")
+    monkeypatch.setenv("ANILA_BREAK_GLASS_TICKET", "INC-2026-001")
     monkeypatch.setenv(
         "ANILA_BREAK_GLASS_EXPIRES_AT",
         (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
     )
     ss = reload_startup_security()
     assert ss.is_break_glass_active()
+    assert ss.break_glass_audit_metadata()["ticket"] == "INC-2026-001"
     assert not ss.is_break_glass_active(
         now=datetime.now(timezone.utc) + timedelta(minutes=6)
     )
+    monkeypatch.delenv("ANILA_BREAK_GLASS_TICKET")
+    assert not ss.is_break_glass_active()
 
 
 @pytest.mark.asyncio

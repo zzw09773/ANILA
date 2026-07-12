@@ -14,6 +14,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PRODUCTION_DOCKERFILE = REPO_ROOT / "infra" / "docker" / "csp.Dockerfile"
+CSP_REQUIREMENTS = REPO_ROOT / "services" / "csp" / "requirements.txt"
 DEAD_DOCKERFILE = REPO_ROOT / "services" / "csp" / "Dockerfile"
 INTRANET_DEPLOY = (
     REPO_ROOT / "infra" / "deployment" / "intranet" / "intranet-deploy.sh"
@@ -32,6 +33,27 @@ PLATFORM_INVENTORY = (
 
 
 class CspNonRootContractTests(unittest.TestCase):
+    def test_internal_packages_never_resolve_from_public_index(self) -> None:
+        requirements = CSP_REQUIREMENTS.read_text(encoding="utf-8")
+        for distribution in ("anila-contracts", "anila-security", "anila-core"):
+            self.assertNotRegex(
+                requirements,
+                rf"(?m)^\s*{re.escape(distribution)}(?:\s|[<>=!~@])",
+                f"{distribution} must be installed from a reviewed local path",
+            )
+
+        dockerfile = PRODUCTION_DOCKERFILE.read_text(encoding="utf-8")
+        requirements_install = dockerfile.index(
+            "RUN pip install --no-cache-dir -r requirements.txt"
+        )
+        for package in ("anila-contracts", "anila-security", "anila-core"):
+            copy_index = dockerfile.index(f"COPY packages/{package} /tmp/{package}")
+            local_install = dockerfile.index("RUN pip install", copy_index)
+            self.assertLess(copy_index, local_install)
+            self.assertLess(local_install, requirements_install)
+            self.assertIn(f"'file:///tmp/{package}'", dockerfile)
+        self.assertIn("direct_url.json", dockerfile)
+
     def test_production_image_has_explicit_non_root_user(self) -> None:
         dockerfile = PRODUCTION_DOCKERFILE.read_text(encoding="utf-8")
         self.assertRegex(dockerfile, r"(?m)^USER\s+csp(?::csp)?\s*$")

@@ -51,6 +51,8 @@ def _activate_break_glass(monkeypatch, *, minutes: int = 5) -> None:
         "ANILA_DEPLOYMENT_PROFILE",
         "prod-intranet-card-breakglass",
     )
+    monkeypatch.setenv("ANILA_BREAK_GLASS_OWNER", "system-owner")
+    monkeypatch.setenv("ANILA_BREAK_GLASS_TICKET", "INC-PROXY-ACCESS-001")
     monkeypatch.setenv(
         "ANILA_BREAK_GLASS_EXPIRES_AT",
         (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat(),

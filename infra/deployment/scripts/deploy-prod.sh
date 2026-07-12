@@ -154,7 +154,7 @@ check_compose_control_env() {
   local variable
   for variable in COMPOSE_FILE COMPOSE_PROFILES COMPOSE_PROJECT_NAME \
     COMPOSE_ENV_FILES COMPOSE_DISABLE_ENV_FILE COMPOSE_PATH_SEPARATOR; do
-    [[ -z "${!variable:-}" ]] \
+    [[ ! -v "$variable" ]] \
       || fatal "formal lifecycle 不接受 ambient $variable；請 unset 後重跑"
   done
 }

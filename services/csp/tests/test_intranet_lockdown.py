@@ -15,10 +15,13 @@ Pins the contract:
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
 from app.config import settings
+from app.models.audit_log import AuditLog
 from app.models.auth_provider import AuthProvider
 from app.services.startup_security import assert_intranet_lockdown_consistency
 
@@ -42,6 +45,8 @@ def active_break_glass(monkeypatch, card_only_lockdown):
         "ANILA_DEPLOYMENT_PROFILE",
         "prod-intranet-card-breakglass",
     )
+    monkeypatch.setenv("ANILA_BREAK_GLASS_OWNER", "system-owner")
+    monkeypatch.setenv("ANILA_BREAK_GLASS_TICKET", "INC-LOCKDOWN-001")
     monkeypatch.setenv(
         "ANILA_BREAK_GLASS_EXPIRES_AT",
         (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
@@ -156,6 +161,81 @@ def test_owner_password_login_allowed_in_active_break_glass(
     )
     assert resp.status_code == 200
     assert resp.json()["access_token"]
+    event = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "login", AuditLog.status == "success")
+        .order_by(AuditLog.id.desc())
+        .first()
+    )
+    assert event is not None
+    metadata = json.loads(event.metadata_json)
+    assert metadata["break_glass"] is True
+    assert metadata["owner"] == "system-owner"
+    assert metadata["ticket"] == "INC-LOCKDOWN-001"
+    assert metadata["expires_at"]
+
+
+def test_break_glass_failed_password_audit_includes_ticket(
+    client: TestClient, db, active_break_glass
+):
+    make_user(db, username="incident-owner-failed", role="owner")
+    resp = client.post(
+        "/api/auth/login",
+        json={"username": "incident-owner-failed", "password": "wrong-password"},
+    )
+    assert resp.status_code == 404
+    event = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "login", AuditLog.status == "failure")
+        .order_by(AuditLog.id.desc())
+        .first()
+    )
+    assert event is not None
+    metadata = json.loads(event.metadata_json)
+    assert metadata["break_glass"] is True
+    assert metadata["owner"] == "system-owner"
+    assert metadata["ticket"] == "INC-LOCKDOWN-001"
+
+
+@pytest.mark.parametrize(
+    "rejection",
+    (
+        "unsupported_auth_source",
+        "pending_owner",
+        "local_password_disabled_owner",
+        "valid_non_owner",
+    ),
+)
+def test_break_glass_rejected_login_branches_audit_ticket(
+    client: TestClient, db, active_break_glass, rejection: str
+):
+    username = f"incident-{rejection.replace('_', '-')}"
+    payload = {"username": username, "password": "password"}
+
+    if rejection == "unsupported_auth_source":
+        payload["auth_source"] = "ldap"
+    elif rejection == "pending_owner":
+        make_user(db, username=username, role="owner", is_approved=False)
+    elif rejection == "local_password_disabled_owner":
+        user = make_user(db, username=username, role="owner")
+        user.local_password_disabled = True
+        db.commit()
+    else:
+        make_user(db, username=username, role="user")
+
+    resp = client.post("/api/auth/login", json=payload)
+    assert resp.status_code == 404
+    event = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "login", AuditLog.status == "failure")
+        .order_by(AuditLog.id.desc())
+        .first()
+    )
+    assert event is not None
+    metadata = json.loads(event.metadata_json)
+    assert metadata["break_glass"] is True
+    assert metadata["owner"] == "system-owner"
+    assert metadata["ticket"] == "INC-LOCKDOWN-001"
 
 
 def test_owner_wrong_password_returns_404_when_locked_down(

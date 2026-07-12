@@ -90,7 +90,12 @@ def collect_skip_calls(root: Path) -> dict[str, int]:
         if not directory.is_dir():
             raise GovernanceError(f"required test root missing: {relative_root}")
         for path in directory.rglob("*.py"):
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            try:
+                tree = ast.parse(
+                    path.read_text(encoding="utf-8"), filename=str(path)
+                )
+            except (SyntaxError, UnicodeDecodeError) as exc:
+                raise GovernanceError(f"cannot inspect {path}: {exc}") from exc
             relative = path.relative_to(root).as_posix()
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):

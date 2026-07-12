@@ -187,7 +187,7 @@ need_stack() {
   local compose_variable
   for compose_variable in COMPOSE_FILE COMPOSE_PROFILES COMPOSE_PROJECT_NAME \
     COMPOSE_ENV_FILES COMPOSE_DISABLE_ENV_FILE COMPOSE_PATH_SEPARATOR; do
-    [ -z "${!compose_variable:-}" ] \
+    [[ ! -v "$compose_variable" ]] \
       || fatal "formal lifecycle 不接受 ambient $compose_variable；請 unset 後重跑"
   done
   local managed_variable file_value

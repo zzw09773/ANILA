@@ -51,6 +51,14 @@ RUN pip install --no-cache-dir /tmp/anila-security
 COPY packages/anila-core /tmp/anila-core
 RUN pip install --no-cache-dir '/tmp/anila-core[rag]'
 
+# Supply-chain provenance: these unreserved internal distribution names must
+# resolve only from the reviewed build context, never from a package index.
+RUN python -c "\
+import importlib.metadata as m,json; \
+expected={'anila-contracts':'file:///tmp/anila-contracts','anila-security':'file:///tmp/anila-security','anila-core':'file:///tmp/anila-core'}; \
+actual={name:json.loads(m.distribution(name).read_text('direct_url.json'))['url'] for name in expected}; \
+assert actual == expected, f'internal package origin mismatch: {actual}'"
+
 # Install Python dependencies (CSP-specific)
 COPY services/csp/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt

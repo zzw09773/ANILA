@@ -194,6 +194,13 @@ def is_break_glass_active(*, now: datetime | None = None) -> bool:
         "prod-intranet-card-breakglass"
     ):
         return False
+    owner = os.environ.get("ANILA_BREAK_GLASS_OWNER", "").strip()
+    ticket = os.environ.get("ANILA_BREAK_GLASS_TICKET", "").strip()
+    if not (
+        _AUDIT_IDENTIFIER_RE.fullmatch(owner)
+        and _AUDIT_IDENTIFIER_RE.fullmatch(ticket)
+    ):
+        return False
     try:
         expires_at = _parse_break_glass_expiry(
             os.environ.get("ANILA_BREAK_GLASS_EXPIRES_AT", "").strip()
@@ -202,6 +209,22 @@ def is_break_glass_active(*, now: datetime | None = None) -> bool:
         return False
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     return current < expires_at
+
+
+def break_glass_audit_metadata() -> dict[str, object] | None:
+    """Return safe incident identifiers for an active password exception."""
+
+    if not is_break_glass_active():
+        return None
+    expires_at = _parse_break_glass_expiry(
+        os.environ["ANILA_BREAK_GLASS_EXPIRES_AT"].strip()
+    )
+    return {
+        "break_glass": True,
+        "owner": os.environ["ANILA_BREAK_GLASS_OWNER"].strip(),
+        "ticket": os.environ["ANILA_BREAK_GLASS_TICKET"].strip(),
+        "expires_at": expires_at.isoformat(),
+    }
 
 
 def _assert_break_glass_metadata() -> None:
