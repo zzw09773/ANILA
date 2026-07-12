@@ -26,6 +26,8 @@ from ingestion_worker.main import WorkerSettings as ArqWorkerSettings
 # Every settable field and the ENV VAR that pydantic-settings maps onto it
 # (case_sensitive=False → uppercased field name).
 _ENV_VARS = [
+    "ANILA_PILOT_MODE",
+    "GATE2_ALLOW_UNCONVERGED_INFERENCE",
     "DATABASE_URL",
     "REDIS_URL",
     "EMBEDDING_BASE_URL",
@@ -146,6 +148,8 @@ def test_all_defaults_at_once(clean_env):
     """Snapshot of the full default config in one shot."""
     s = _fresh()
     assert s.model_dump() == {
+        "anila_pilot_mode": False,
+        "gate2_allow_unconverged_inference": False,
         "database_url": "postgresql://csp_app:csp@csp-db:5432/csp",
         "redis_url": "redis://redis:6379",
         "embedding_base_url": "http://host.docker.internal:7011/v1",

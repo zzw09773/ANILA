@@ -460,7 +460,14 @@ async def _embed_query(
     query: str,
 ) -> list[float]:
     try:
-        return await embed_query(db, user, model_name, embedding_dim, query)
+        return await embed_query(
+            db,
+            user,
+            model_name,
+            embedding_dim,
+            query,
+            inference_callsite_id="csp.standalone_search_embedding",
+        )
     except RetrievalFailure as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

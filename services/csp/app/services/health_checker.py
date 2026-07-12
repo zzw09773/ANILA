@@ -198,15 +198,40 @@ async def _agent_health_check_loop():
         await asyncio.sleep(settings.HEALTH_CHECK_INTERVAL)
 
 
+async def _task_reconciliation_loop():
+    """Converge TaskRuns abandoned by a crashed proxy process."""
+    from app.services.proxy.task_link import reconcile_stale_task_runs
+
+    while True:
+        try:
+            db = SessionLocal()
+            try:
+                closed = reconcile_stale_task_runs(
+                    db, stale_after_seconds=settings.TASK_RUN_STALE_SECONDS
+                )
+                if closed:
+                    logger.error("治理收斂器關閉 %s 筆 stale TaskRun", closed)
+            finally:
+                db.close()
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("TaskRun crash reconciliation 失敗")
+        await asyncio.sleep(settings.HEALTH_CHECK_INTERVAL)
+
+
 async def start_health_checker() -> asyncio.Task:
     """Start background health checker tasks for models and agents."""
     async def _run_all() -> None:
         model_task = asyncio.create_task(_health_check_loop())
         agent_task = asyncio.create_task(_agent_health_check_loop())
+        reconcile_task = asyncio.create_task(_task_reconciliation_loop())
         try:
-            await asyncio.gather(model_task, agent_task, return_exceptions=True)
+            await asyncio.gather(
+                model_task, agent_task, reconcile_task, return_exceptions=True
+            )
         finally:
-            for task in (model_task, agent_task):
+            for task in (model_task, agent_task, reconcile_task):
                 if not task.done():
                     task.cancel()
 

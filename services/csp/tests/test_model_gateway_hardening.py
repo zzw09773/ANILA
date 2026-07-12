@@ -30,7 +30,7 @@ from app.api import models as models_api
 from app.models.conversation import Conversation
 from app.models.model_registry import ModelRegistry
 from app.models.policy_decision import PolicyDecision
-from app.models.task import Task
+from app.models.task import Task, TaskRun
 from app.schemas.model_registry import ModelCreate
 from app.services.health_checker import (
     HEALTH_DEGRADED,
@@ -269,6 +269,22 @@ def _agent_decisions(db, agent_id):
     )
 
 
+def _task_context(db, task: Task) -> TaskRunContext:
+    task.status = "running"
+    run = TaskRun(
+        task_id=task.id,
+        run_sequence=1,
+        dispatch_target="model",
+        status="running",
+        classification_level=task.classification_level,
+    )
+    db.add(run)
+    db.commit()
+    return TaskRunContext(
+        task_id=task.id, trace_id=task.trace_id, task_run_id=run.id
+    )
+
+
 def test_ceiling_deny_blocks_and_no_upstream_call(db):
     user = make_user(db, "u_deny")
     m = make_model(db, name="ceil_deny")
@@ -302,7 +318,7 @@ def test_ceiling_allow_task_linked_records_allow(db):
     task = Task(title="t", task_type="query", requester_user_id=user.id)
     db.add(task)
     db.commit()  # task defaults classification_level = 無機密
-    ctx = TaskRunContext(task_id=task.id, trace_id=task.trace_id, task_run_id=1)
+    ctx = _task_context(db, task)
 
     enforce_model_ceiling(
         db, model=m, caller=_caller(user), task_ctx=ctx, conv_id_int=None,
@@ -379,6 +395,47 @@ def test_ceiling_legacy_latched_conversation_deny(db):
     assert any(d.decision == "deny" for d in _model_decisions(db, m.id))
 
 
+def test_invalid_task_classification_fails_closed_and_blocks_task(db):
+    user = make_user(db, "u_invalid_task_level")
+    model = make_model(db, name="invalid-task-level-model")
+    model.classification_ceiling = "絕對機密"
+    task = Task(title="bad", task_type="query", requester_user_id=user.id)
+    db.add(task)
+    db.commit()
+    ctx = _task_context(db, task)
+    task.classification_level = "UNKNOWN-LEVEL"
+    db.commit()
+    with respx.mock:
+        with pytest.raises(HTTPException) as exc:
+            enforce_model_ceiling(
+                db, model=model, caller=_caller(user),
+                task_ctx=ctx, conv_id_int=None,
+            )
+        assert respx.calls.call_count == 0
+    assert exc.value.status_code == 403
+    db.expire_all()
+    assert db.get(Task, task.id).status == "blocked_by_policy"
+
+
+def test_background_inference_requires_explicit_authority_and_honors_override(db):
+    user = make_user(db, "u_explicit_authority")
+    model = make_model(db, name="explicit-authority-model")
+    model.classification_ceiling = "機密"
+    db.commit()
+    with pytest.raises(HTTPException):
+        enforce_model_ceiling(
+            db, model=model, caller=_caller(user), task_ctx=None,
+            conv_id_int=None, require_explicit_authority=True,
+        )
+    with pytest.raises(HTTPException):
+        enforce_model_ceiling(
+            db, model=model, caller=_caller(user), task_ctx=None,
+            conv_id_int=None, trusted_classification_level="絕對機密",
+            require_explicit_authority=True,
+        )
+    assert len([d for d in _model_decisions(db, model.id) if d.decision == "deny"]) == 2
+
+
 def test_agent_ceiling_deny_blocks_before_dispatch(db):
     owner = make_user(db, "agent_owner", role="developer")
     user = make_user(db, "agent_caller")
@@ -411,7 +468,7 @@ def test_agent_ceiling_allow_task_linked_records_allow(db):
     task = Task(title="t", task_type="query", requester_user_id=user.id)
     db.add(task)
     db.commit()
-    ctx = TaskRunContext(task_id=task.id, trace_id=task.trace_id, task_run_id=1)
+    ctx = _task_context(db, task)
 
     enforce_agent_ceiling(
         db, agent=agent, caller=_caller(user), task_ctx=ctx, conv_id_int=None,

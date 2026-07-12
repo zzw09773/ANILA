@@ -36,9 +36,16 @@ from fastapi import HTTPException
 
 from anila_contracts import Classification as ClassificationLevel
 from app.schemas.contracts.policy import PolicyAction, PolicyDecisionVerdict
-from app.services.proxy.task_link import TaskRunContext, finalize_task_run
+from app.services.proxy.task_link import (
+    TaskRunContext,
+    record_task_policy_decision,
+)
 
 logger = logging.getLogger("app.services.proxy_service")
+
+
+class CeilingPolicyStateError(ValueError):
+    """Task/conversation/override classification authority is unusable."""
 
 
 def _effective_task_level(
@@ -46,25 +53,43 @@ def _effective_task_level(
     *,
     task_ctx: Optional[TaskRunContext],
     conv_id_int: Optional[int],
+    trusted_classification_level: str | ClassificationLevel | None = None,
+    require_explicit_authority: bool = False,
 ) -> ClassificationLevel:
-    """doc 04 §5 的 task effective level（fail-closed 讀取,查無 → 無機密）。"""
+    """Resolve authoritative classification; corrupt state always raises."""
     from app.modules.policy import effective_level
 
     if task_ctx is not None:
         try:
-            return effective_level(
+            base = effective_level(
                 db, resource_type="task", resource_id=str(task_ctx.task_id)
             )
-        except ValueError:
-            return ClassificationLevel.UNCLASSIFIED
-    if conv_id_int is not None:
+        except ValueError as exc:
+            raise CeilingPolicyStateError("Task classification authority invalid") from exc
+    elif conv_id_int is not None:
         try:
-            return effective_level(
+            base = effective_level(
                 db, resource_type="conversation", resource_id=str(conv_id_int)
             )
-        except ValueError:
-            return ClassificationLevel.UNCLASSIFIED
-    return ClassificationLevel.UNCLASSIFIED
+        except ValueError as exc:
+            raise CeilingPolicyStateError(
+                "conversation classification authority invalid"
+            ) from exc
+    elif require_explicit_authority and trusted_classification_level is None:
+        raise CeilingPolicyStateError("missing explicit classification authority")
+    else:
+        base = ClassificationLevel.UNCLASSIFIED
+    if trusted_classification_level is None:
+        return base
+    try:
+        override = (
+            trusted_classification_level
+            if isinstance(trusted_classification_level, ClassificationLevel)
+            else ClassificationLevel.from_storage(trusted_classification_level)
+        )
+    except (TypeError, ValueError) as exc:
+        raise CeilingPolicyStateError("trusted classification override invalid") from exc
+    return ClassificationLevel.max_of([base, override])
 
 
 def _enforce_ceiling(
@@ -77,32 +102,70 @@ def _enforce_ceiling(
     action: str,
     resource_type: str,
     target_label: str,
+    commit: bool = True,
+    trusted_classification_level: str | ClassificationLevel | None = None,
     effective_level_override: ClassificationLevel | None = None,
-) -> None:
+    require_explicit_authority: bool = False,
+) -> str:
     """Shared ceiling gate for model.invoke and agent.invoke."""
     from app.modules.policy import evaluate_classification_ceiling, record_decision
-
-    derived_level = _effective_task_level(
-        db, task_ctx=task_ctx, conv_id_int=conv_id_int
-    )
-    if effective_level_override is not None and not isinstance(
-        effective_level_override, ClassificationLevel
-    ):
-        raise TypeError(
-            "effective_level_override 必須是 canonical Classification"
-        )
-    # An explicit server-derived input/task/source floor may only raise the
-    # DB-derived conversation/task level.  It can never be used to lower it.
-    level = (
-        ClassificationLevel.max_of([derived_level, effective_level_override])
-        if effective_level_override is not None
-        else derived_level
-    )
-    level_str = level.to_storage()
+    if effective_level_override is not None:
+        if not isinstance(effective_level_override, ClassificationLevel):
+            raise TypeError(
+                "effective_level_override 必須是 canonical Classification"
+            )
+        if trusted_classification_level is not None:
+            raise TypeError(
+                "trusted_classification_level 與 effective_level_override 不可同時設定"
+            )
+        trusted_classification_level = effective_level_override
     actor_id = str(getattr(caller.user, "id", "") or "")
     task_id = task_ctx.task_id if task_ctx is not None else None
     resource_id = str(getattr(target, "id", "") or "")
     target_name = getattr(target, "name", "?")
+
+    try:
+        level = _effective_task_level(
+            db,
+            task_ctx=task_ctx,
+            conv_id_int=conv_id_int,
+            trusted_classification_level=trusted_classification_level,
+            require_explicit_authority=require_explicit_authority,
+        )
+        level_str = level.to_storage()
+    except CeilingPolicyStateError as exc:
+        reason = (
+            f"{target_label}「{target_name}」的分類權威資料缺失或損壞，"
+            "依 Gate 2 fail-closed 拒絕出向呼叫"
+        )
+        if task_ctx is not None:
+            record_task_policy_decision(
+                db,
+                task_ctx=task_ctx,
+                action=action,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                decision=PolicyDecisionVerdict.DENY.value,
+                actor_id=actor_id,
+                reason=reason,
+                metadata={"classification_authority_error": str(exc)},
+                block=True,
+                commit=commit,
+            )
+        else:
+            record_decision(
+                db,
+                action=action,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                decision=PolicyDecisionVerdict.DENY.value,
+                actor_type="user",
+                actor_id=actor_id,
+                reason=reason,
+                metadata={"classification_authority_error": str(exc)},
+                commit=commit,
+            )
+        raise HTTPException(status_code=403, detail=reason) from exc
 
     raw_ceiling = getattr(target, "classification_ceiling", None)
     try:
@@ -114,23 +177,32 @@ def _enforce_ceiling(
             f"{target_label}「{target_name}」分類上限資料無效，"
             "依 Gate 2 fail-closed 拒絕出向呼叫"
         )
-        record_decision(
-            db,
-            action=action,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            decision=PolicyDecisionVerdict.DENY.value,
-            actor_type="user",
-            actor_id=actor_id,
-            task_id=task_id,
-            reason=reason,
-            metadata={"classification_state": type(raw_ceiling).__name__},
-        )
         if task_ctx is not None:
-            finalize_task_run(
-                task_ctx.task_run_id,
-                "failed",
-                error={"code": "classification_ceiling", "message": reason},
+            record_task_policy_decision(
+                db,
+                task_ctx=task_ctx,
+                action=action,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                decision=PolicyDecisionVerdict.DENY.value,
+                actor_id=actor_id,
+                reason=reason,
+                metadata={"classification_state": type(raw_ceiling).__name__},
+                block=True,
+                commit=commit,
+            )
+        else:
+            record_decision(
+                db,
+                action=action,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                decision=PolicyDecisionVerdict.DENY.value,
+                actor_type="user",
+                actor_id=actor_id,
+                task_id=task_id,
+                reason=reason,
+                metadata={"classification_state": type(raw_ceiling).__name__},
             )
         raise HTTPException(status_code=403, detail=reason) from exc
 
@@ -141,38 +213,46 @@ def _enforce_ceiling(
             f"任務分類等級「{level_str}」超過{target_label}「{target_name}」"
             f"分類上限「{ceiling}」,依 doc 04 §5 拒絕出向呼叫"
         )
-        record_decision(
-            db,
-            action=action,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            decision=PolicyDecisionVerdict.DENY.value,
-            actor_type="user",
-            actor_id=actor_id,
-            task_id=task_id,
-            reason=reason,
-        )
-        # task-linked:已開的 run 收尾為 failed(deny 前 begin_task_run 已起 run)。
         if task_ctx is not None:
-            finalize_task_run(
-                task_ctx.task_run_id,
-                "failed",
-                error={"code": "classification_ceiling", "message": reason},
+            record_task_policy_decision(
+                db,
+                task_ctx=task_ctx,
+                action=action,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                decision=PolicyDecisionVerdict.DENY.value,
+                actor_id=actor_id,
+                reason=reason,
+                block=True,
+                commit=commit,
+            )
+        else:
+            record_decision(
+                db,
+                action=action,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                decision=PolicyDecisionVerdict.DENY.value,
+                actor_type="user",
+                actor_id=actor_id,
+                task_id=task_id,
+                reason=reason,
             )
         raise HTTPException(status_code=403, detail=reason)
 
     # pass:僅 task-linked 記 allow(避免 legacy 灌爆 policy_decisions)。
     if task_ctx is not None:
-        record_decision(
+        record_task_policy_decision(
             db,
+            task_ctx=task_ctx,
             action=action,
             resource_type=resource_type,
             resource_id=resource_id,
             decision=PolicyDecisionVerdict.ALLOW.value,
-            actor_type="user",
             actor_id=actor_id,
-            task_id=task_id,
+            commit=commit,
         )
+    return level_str
 
 
 def enforce_model_ceiling(
@@ -182,15 +262,18 @@ def enforce_model_ceiling(
     caller,
     task_ctx: Optional[TaskRunContext],
     conv_id_int: Optional[int],
+    commit: bool = True,
+    trusted_classification_level: str | ClassificationLevel | None = None,
     effective_level_override: ClassificationLevel | None = None,
-) -> None:
+    require_explicit_authority: bool = False,
+) -> str:
     """出向前分類 ceiling 把關。違反 → 403 + deny 列 + 不發出向。
 
     每個 model 都必須有顯式 ``classification_ceiling``。NULL、空字串或未知
     值視為損壞的治理狀態，會記 deny、回 403，且不發出向呼叫。合法 ceiling
     pass 時僅 task-linked 記 allow(避免 legacy 灌爆);deny 一律記錄。
     """
-    _enforce_ceiling(
+    return _enforce_ceiling(
         db,
         target=model,
         caller=caller,
@@ -199,7 +282,10 @@ def enforce_model_ceiling(
         action=PolicyAction.MODEL_INVOKE.value,
         resource_type="model",
         target_label="模型",
+        commit=commit,
+        trusted_classification_level=trusted_classification_level,
         effective_level_override=effective_level_override,
+        require_explicit_authority=require_explicit_authority,
     )
 
 
@@ -210,9 +296,12 @@ def enforce_agent_ceiling(
     caller,
     task_ctx: Optional[TaskRunContext],
     conv_id_int: Optional[int],
-) -> None:
+    commit: bool = True,
+    trusted_classification_level: str | ClassificationLevel | None = None,
+    require_explicit_authority: bool = False,
+) -> str:
     """Agent dispatch 前分類 ceiling 把關。違反 → 403 + deny 列 + 不 dispatch."""
-    _enforce_ceiling(
+    return _enforce_ceiling(
         db,
         target=agent,
         caller=caller,
@@ -221,4 +310,7 @@ def enforce_agent_ceiling(
         action=PolicyAction.AGENT_INVOKE.value,
         resource_type="agent",
         target_label="Agent",
+        commit=commit,
+        trusted_classification_level=trusted_classification_level,
+        require_explicit_authority=require_explicit_authority,
     )

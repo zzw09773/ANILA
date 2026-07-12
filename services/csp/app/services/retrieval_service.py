@@ -202,6 +202,8 @@ async def embed_query(
     model_name: str,
     embedding_dim: int,
     query: str,
+    *,
+    inference_callsite_id: str = "csp.server_retrieval_embedding",
 ) -> list[float]:
     """Embed a retrieval query through the metered CSP model gateway."""
 
@@ -220,6 +222,7 @@ async def embed_query(
             department_id=user.department_id,
             request_body={"model": model_name, "input": query},
             endpoint_path="/v1/embeddings",
+            inference_callsite_id=inference_callsite_id,
         )
         raw_vector = response["data"][0]["embedding"]
     except RetrievalFailure:

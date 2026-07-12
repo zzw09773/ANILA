@@ -61,6 +61,26 @@ async def test_generate_sends_correct_body():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_governed_csp_hop_carries_service_task_and_owner_headers():
+    route = respx.post("http://csp:8000/v1/images/generations").mock(
+        return_value=httpx.Response(200, json=_JSON_BODY)
+    )
+    client = FluxClient(
+        base_url="http://csp:8000",
+        timeout=10.0,
+        service_token="csk-test",
+    )
+    client.set_governance_context(task_id="42", user_identity="990000001")
+    async with client:
+        await client.generate("governed", aspect_ratio="1:1")
+    headers = route.calls.last.request.headers
+    assert headers["X-CSP-Service-Token"] == "csk-test"
+    assert headers["X-ANILA-Task-Id"] == "42"
+    assert headers["X-ANILA-User-Id"] == "990000001"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_generate_raises_on_non_200():
     respx.post("http://flux2-dev:8000/v1/images/generations").mock(
         return_value=httpx.Response(500, json={"detail": "OOM"})

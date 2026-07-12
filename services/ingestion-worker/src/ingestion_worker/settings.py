@@ -24,6 +24,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class WorkerSettings(BaseSettings):
+    # Normal deployments preserve the existing inference feature set. The
+    # signed-pilot overlay pins this true and the escape hatch below false.
+    anila_pilot_mode: bool = Field(default=False)
+    # Gate 2 signed pilot hard stop.  Direct relation/judge endpoints are
+    # inventoried but not yet CSP-mediated; formal compose pins this false.
+    gate2_allow_unconverged_inference: bool = Field(default=False)
     database_url: str = Field(
         default="postgresql://csp_app:csp@csp-db:5432/csp",
         description="asyncpg DSN to csp-db; MUST be the csp_app role for RLS.",

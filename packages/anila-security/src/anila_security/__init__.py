@@ -29,6 +29,10 @@ from anila_security.url_guard import (
     register_trusted_host_provider,
     validate_outbound_url,
 )
+from anila_security.pilot_profile import (
+    PilotProfileError,
+    verify_signed_pilot_profile,
+)
 
 __all__ = [
     "ENDPOINT_KIND_AGENT",
@@ -44,6 +48,7 @@ __all__ = [
     "REASON_SINGLE_LABEL",
     "REASON_UNSAFE_IP",
     "UnsafeEndpointError",
+    "PilotProfileError",
     "clear_trusted_host_providers",
     "decrypt_credential",
     "encrypt_credential",
@@ -51,4 +56,5 @@ __all__ = [
     "register_trusted_host_provider",
     "reset_legacy_fallback_count",
     "validate_outbound_url",
+    "verify_signed_pilot_profile",
 ]

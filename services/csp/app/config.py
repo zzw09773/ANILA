@@ -33,6 +33,17 @@ class Settings(BaseSettings):
     # provenance are enforced end-to-end, both paths are secure-by-default OFF.
     # Development/test profiles may explicitly opt in with ENABLE_MEMORY=true.
     ENABLE_MEMORY: bool = False
+    # Gate 2 pilot posture. Turning pilot mode on is meaningful only after
+    # the signed-profile verifier succeeds; unconverged inference surfaces
+    # remain independently closed at their runtime boundaries.
+    ANILA_PILOT_MODE: bool = False
+    ENABLE_PILOT_PROMPT_GENERATOR: bool = False
+    ENABLE_PILOT_INGESTION_JUDGE: bool = False
+    ENABLE_PILOT_STUDIO_ARTIFACTS: bool = False
+    PILOT_FIRST_PARTY_AGENT_ALLOWLIST: str = ""
+    GATE2_PILOT_PROFILE_PATH: str = "secrets/gate2-pilot-profile.json"
+    GATE2_PILOT_TRUST_STORE_PATH: str = "secrets/gate2-pilot-trust.json"
+    GATE2_INFERENCE_INVENTORY_PATH: str = "policy/inference-callsites.v1.json"
 
     # Unit/dev harness escape hatch only. Formal deployments must run Alembic
     # and the legacy idempotent migration pass before becoming ready. Startup
@@ -94,6 +105,7 @@ class Settings(BaseSettings):
 
     # Health Check
     HEALTH_CHECK_INTERVAL: int = 60
+    TASK_RUN_STALE_SECONDS: int = Field(default=900, ge=60, le=86400)
 
     # Usage Writer
     USAGE_BATCH_SIZE: int = 100

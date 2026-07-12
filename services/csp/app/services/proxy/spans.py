@@ -33,6 +33,8 @@ from typing import Any, Optional
 
 from app.database import SessionLocal
 from app.models.trace_span import TraceSpan
+from app.models.task import Task
+from anila_contracts import Classification as ClassificationLevel
 from app.schemas.contracts.traces import SpanProducer
 
 # Share the proxy logger channel so span-emission logs route with the rest of
@@ -69,6 +71,7 @@ def emit_span(
     parent_span_id: Optional[str] = None,
     task_id: Optional[int] = None,
     attributes: Optional[dict[str, Any]] = None,
+    classification_level: str | None = None,
 ) -> Optional[str]:
     """Persist one proxy-produced span and return its generated ``span_id``.
 
@@ -84,6 +87,17 @@ def emit_span(
     span_id = uuid.uuid4().hex
     db = db_sessionmaker()
     try:
+        if task_id is None:
+            return None
+        task = db.get(Task, task_id)
+        if task is None or task.trace_id != trace_id:
+            raise ValueError("proxy span 的 task/trace ownership 不一致")
+        effective_level = ClassificationLevel.max_of([
+            ClassificationLevel.from_storage(task.classification_level),
+            ClassificationLevel.from_storage(
+                classification_level or ClassificationLevel.UNCLASSIFIED.value
+            ),
+        ])
         db.add(
             TraceSpan(
                 trace_id=trace_id,
@@ -97,6 +111,7 @@ def emit_span(
                 status=status,
                 attributes=attributes,
                 producer=SpanProducer.PROXY.value,
+                classification_level=effective_level.to_storage(),
             )
         )
         db.commit()

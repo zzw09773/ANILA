@@ -166,6 +166,7 @@ async def lifespan(app: FastAPI):
         assert_card_nonce_binding_policy,
         assert_card_crl_policy,
         assert_deployment_profile_posture,
+        assert_gate2_pilot_profile,
         assert_intranet_lockdown_consistency,
         assert_no_dev_defaults,
         assert_secure_cookie_policy,
@@ -173,6 +174,7 @@ async def lifespan(app: FastAPI):
         assert_startup_migration_policy,
     )
     assert_deployment_profile_posture()
+    assert_gate2_pilot_profile()
     assert_no_dev_defaults()
     assert_card_nonce_binding_policy()
     assert_card_crl_policy()

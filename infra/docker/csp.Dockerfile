@@ -67,6 +67,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # land in /app/scripts — no separate scripts COPY needed since §17.1 folded
 # myCSPPlatform/scripts/ into services/csp/scripts/)
 COPY services/csp/ ./
+COPY infra/policy/gate2/inference-callsites.v1.json /app/policy/inference-callsites.v1.json
 
 # Copy built frontend
 COPY --from=frontend-build /build/dist /app/frontend-dist

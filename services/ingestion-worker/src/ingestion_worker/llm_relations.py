@@ -220,7 +220,14 @@ async def extract_and_resolve_llm(
     Gated by ``enable_relation_llm`` + a non-empty ``relation_llm_url``. Skips
     cleanly when there are no sibling documents or too many to list.
     """
-    if not (settings.enable_relation_llm and settings.relation_llm_url):
+    if not (
+        (
+            not settings.anila_pilot_mode
+            or settings.gate2_allow_unconverged_inference
+        )
+        and settings.enable_relation_llm
+        and settings.relation_llm_url
+    ):
         return {"extracted": 0}
 
     async with pool.acquire() as conn:

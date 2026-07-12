@@ -97,6 +97,7 @@ def record_decision(
     matched_policy_ids: list[str] | None = None,
     policy_version: str = "r1",
     metadata: dict | None = None,
+    commit: bool = True,
 ) -> PolicyDecision:
     """追加一筆政策裁決(append-only;doc 03 §5)。
 
@@ -105,7 +106,9 @@ def record_decision(
     - ``decision == "deny"`` 必附非空 ``reason``(doc 03 Done Criteria 4:
       所有 deny 都有可解釋原因)。``matched_policy_ids`` 在 r1 紀錄階段
       允許空(規則引擎未建,hardcoded guard 沒有 policy id 可填)。
-    - 立即 commit:裁決紀錄是治理帳,寫入即須持久,不搭 caller 的交易。
+    - 預設立即 commit；治理編排器可傳 ``commit=False``，把裁決與
+      Task／Audit／Artifact 納入同一個資料庫交易。此時仍會 ``flush``，
+      因此任何裁決寫入錯誤都會 fail-closed，而不是延後到回應送出後。
     - 不改寫、不刪除既有列;本模組沒有任何 mutator。
     """
     action_value = _validate_enum("action", action, PolicyAction)
@@ -144,8 +147,10 @@ def record_decision(
         metadata_json=metadata_json,
     )
     db.add(row)
-    db.commit()
-    db.refresh(row)
+    db.flush()
+    if commit:
+        db.commit()
+        db.refresh(row)
     return row
 
 
@@ -281,6 +286,7 @@ def apply_classification(
     reason: str,
     task_id: int | None = None,
     source: str = "propagation",
+    commit: bool = True,
 ) -> ClassificationEvent | None:
     """單向閂鎖(doc 08 §2):effective = max(current, new),絕不降級。
 
@@ -328,8 +334,10 @@ def apply_classification(
         and hasattr(row, "classification_inherited")
     ):
         row.classification_inherited = True
-    db.commit()
-    db.refresh(event)
+    db.flush()
+    if commit:
+        db.commit()
+        db.refresh(event)
     return event
 
 

@@ -1,0 +1,26 @@
+{
+  "schema_version": "anila.gate2.pilot-registry-denylist.v1",
+  "denied_callsites": [
+    "router.primary",
+    "csp.prompt_generator",
+    "csp.standalone_search_embedding",
+    "csp.public_embedding_api",
+    "csp.image_generation",
+    "csp.agent_session_resume",
+    "csp.agent_dispatch",
+    "ingestion.embedding",
+    "ingestion.vision_caption",
+    "ingestion.ocr_vision",
+    "agent.runtime_model",
+    "agent.memory_extract",
+    "agent.memory_embedding",
+    "agent.memory_select",
+    "studio.llm",
+    "flux_agent.prompt_translation",
+    "ingestion.relation_llm",
+    "ingestion.judge",
+    "studio.flux",
+    "flux_agent.backend",
+    "third_party.agent"
+  ]
+}

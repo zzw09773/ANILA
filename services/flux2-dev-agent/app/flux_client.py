@@ -50,6 +50,7 @@ class FluxClient:
         *,
         model: str = "flux.2-dev",
         api_key: str = "",
+        service_token: str = "",
     ) -> None:
         base = base_url.rstrip("/")
         # /v1 正規化:伺服器根或含 /v1 的 base 皆可。
@@ -59,14 +60,31 @@ class FluxClient:
         self._timeout = timeout
         self._model = model
         self._api_key = api_key
+        self._service_token = service_token
+        self._task_id: str | None = None
+        self._user_identity: str | None = None
         self._client: Optional[httpx.AsyncClient] = None
 
     async def __aenter__(self) -> "FluxClient":
         headers: dict[str, str] = {}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
+        if self._service_token:
+            headers["X-CSP-Service-Token"] = self._service_token
+        if self._task_id:
+            headers["X-ANILA-Task-Id"] = self._task_id
+        if self._user_identity:
+            headers["X-ANILA-User-Id"] = self._user_identity
         self._client = httpx.AsyncClient(timeout=self._timeout, headers=headers)
         return self
+
+    def set_governance_context(
+        self, *, task_id: str | None, user_identity: str | None
+    ) -> None:
+        if self._client is not None:
+            raise RuntimeError("governance context must be set before opening client")
+        self._task_id = task_id
+        self._user_identity = user_identity
 
     async def __aexit__(self, *exc) -> None:
         if self._client is not None:

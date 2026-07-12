@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from .backend_resolver import BackendResolver
@@ -77,9 +77,15 @@ def build_app(
         }
 
     @app.post("/v1/chat/completions")  # response_model removed — supports both JSON and SSE
-    async def _chat_completions(req: ChatCompletionRequest):  # pyright: ignore[reportUnusedFunction]
+    async def _chat_completions(
+        req: ChatCompletionRequest, request: Request
+    ):  # pyright: ignore[reportUnusedFunction]
         try:
-            response = await handler.handle(req)
+            response = await handler.handle(
+                req,
+                task_id=request.headers.get("X-ANILA-Task-Id"),
+                user_identity=request.headers.get("X-ANILA-User-Id"),
+            )
         except Exception:
             logger.exception("flux generation failed")
             raise HTTPException(status_code=502, detail="image generation failed")
@@ -130,6 +136,7 @@ def _build_from_env() -> FastAPI:
     # 端認證是兩回事);沒設就送不帶 header 的請求,CSP 會回 401,fetcher
     # 照樣 fallback 到 env(見錯誤處理表),行為等同「功能關閉」。
     csp_service_token = os.environ.get("CSP_SERVICE_TOKEN", "").strip()
+    image_via_csp = os.environ.get("GATE2_IMAGE_VIA_CSP", "1") == "1"
     gemma_model = os.environ.get("GEMMA_MODEL", "gemma4")
     enable_translation = os.environ.get("ENABLE_PROMPT_TRANSLATION", "1") == "1"
     share_dir = Path(os.environ.get("SHARE_DIR", "/share/flux"))
@@ -167,10 +174,11 @@ def _build_from_env() -> FastAPI:
 
     def flux_factory(endpoint: str, model: str) -> FluxClient:
         return FluxClient(
-            base_url=endpoint,
+            base_url=csp_base_url if image_via_csp else endpoint,
             timeout=flux_timeout,
             model=model,
             api_key=flux_api_key,
+            service_token=csp_service_token if image_via_csp else "",
         )
 
     store = ImageStore(local_dir=share_dir, public_url_prefix=public_prefix)

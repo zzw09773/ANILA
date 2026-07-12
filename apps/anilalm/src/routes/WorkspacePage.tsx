@@ -11,6 +11,7 @@ import { Icon } from '../components/Icon'
 import { WSSidebar } from '../workspace/WSSidebar'
 import { WSChat } from '../workspace/WSChat'
 import { WSStudio } from '../workspace/WSStudio'
+import { gate2PilotCapabilities } from '../config/pilotCapabilities'
 import { useJobStream } from '../workspace/useJobStream'
 
 export function WorkspacePage() {
@@ -198,7 +199,7 @@ export function WorkspacePage() {
     >
       <WSSidebar />
       <WSChat flex={studioOpen ? 1.4 : 1} />
-      {studioOpen && <WSStudio />}
+      {gate2PilotCapabilities.studio && studioOpen && <WSStudio />}
     </div>
   )
 }

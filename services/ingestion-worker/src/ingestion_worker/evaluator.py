@@ -48,9 +48,6 @@ import math
 import time
 from typing import Any
 
-
-logger = logging.getLogger(__name__)
-
 from anila_core.ingestion.chunking_plugins import ChunkResult, get_chunker
 from anila_core.ingestion.chunking_plugins.builtins import SemanticChunker
 from anila_core.storage.adapters.pg_pool import PgPool
@@ -58,6 +55,10 @@ from anila_core.storage.adapters.pg_pool import PgPool
 from ingestion_worker.embedder import Embedder
 from ingestion_worker.judge import JudgeCredential, load_judge_credential, score_one
 from ingestion_worker.parsers import extract_text
+from ingestion_worker.settings import settings
+
+
+logger = logging.getLogger(__name__)
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -182,8 +183,10 @@ async def _score_strategy(
         )
         rr = 1.0 / rank if rank else 0.0
 
-        if h1: hits_at_1 += 1
-        if h5: hits_at_5 += 1
+        if h1:
+            hits_at_1 += 1
+        if h5:
+            hits_at_5 += 1
         rr_total += rr
 
         # ── Judge phase (optional) ──────────────────────────────────
@@ -279,7 +282,14 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
         # exception *type* only — never the exception value, which can
         # carry plaintext fragments or key bytes for some crypto errors.
         judge_load_error: str | None = None
-        if isinstance(judge_cfg, dict) and judge_cfg.get("credential_id"):
+        if (
+            (
+                not settings.anila_pilot_mode
+                or settings.gate2_allow_unconverged_inference
+            )
+            and isinstance(judge_cfg, dict)
+            and judge_cfg.get("credential_id")
+        ):
             cred_id = int(judge_cfg["credential_id"])
             try:
                 judge_credential = await load_judge_credential(pool, cred_id)

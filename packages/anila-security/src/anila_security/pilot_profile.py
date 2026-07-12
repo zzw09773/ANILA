@@ -1,0 +1,243 @@
+"""Cryptographic verification for Gate 2 machine-readable pilot profiles."""
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+REQUIRED_PILOT_SIGNERS = frozenset(
+    {"system_owner", "data_owner", "pki_owner", "security"}
+)
+REQUIRED_DISABLED_CAPABILITIES = frozenset(
+    {"studio", "artifact", "export", "flux", "prompt_generator",
+     "relation_llm", "judge", "third_party_agents"}
+)
+
+
+class PilotProfileError(ValueError):
+    """The profile is incomplete, unsigned, stale relative to inventory, or unsafe."""
+
+
+_PROFILE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
+_PILOT_CEILINGS = frozenset({"無機密", "營業秘密"})
+
+
+def _unique_nonempty_strings(value: Any, field: str) -> list[str]:
+    if not isinstance(value, list):
+        raise PilotProfileError(f"{field} must be a list")
+    if any(not isinstance(item, str) or not item.strip() for item in value):
+        raise PilotProfileError(f"{field} must contain non-empty strings")
+    if len(value) != len(set(value)):
+        raise PilotProfileError(f"{field} contains duplicates")
+    return value
+
+
+def _bounded_int(value: Any, field: str, *, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PilotProfileError(f"{field} must be an integer")
+    if not minimum <= value <= maximum:
+        raise PilotProfileError(f"{field} outside allowed range")
+    return value
+
+
+def _aware_rfc3339(value: Any, field: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise PilotProfileError(f"{field} must be RFC3339")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise PilotProfileError(f"{field} must be RFC3339") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise PilotProfileError(f"{field} must include timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def _validate_profile_contract(profile: dict[str, Any]) -> tuple[list[str], list[str]]:
+    if not isinstance(profile.get("pilot_enabled"), bool):
+        raise PilotProfileError("pilot_enabled must be boolean")
+    profile_id = profile.get("profile_id")
+    if not isinstance(profile_id, str) or not _PROFILE_ID_RE.fullmatch(profile_id):
+        raise PilotProfileError("invalid profile_id")
+    ceiling = profile.get("data_classification_ceiling")
+    if ceiling not in _PILOT_CEILINGS or not isinstance(ceiling, str):
+        raise PilotProfileError(
+            "data_classification_ceiling must be 無機密 or 營業秘密"
+        )
+    enabled = _unique_nonempty_strings(
+        profile.get("enabled_callsites"), "enabled_callsites"
+    )
+    disabled = _unique_nonempty_strings(
+        profile.get("disabled_callsites"), "disabled_callsites"
+    )
+    _unique_nonempty_strings(
+        profile.get("disabled_capabilities"), "disabled_capabilities"
+    )
+    if not profile["pilot_enabled"]:
+        return enabled, disabled
+
+    _bounded_int(
+        profile.get("revocation_sla_seconds"),
+        "revocation_sla_seconds", minimum=1, maximum=86400,
+    )
+    _bounded_int(
+        profile.get("lost_card_sla_seconds"),
+        "lost_card_sla_seconds", minimum=1, maximum=86400,
+    )
+    _bounded_int(
+        profile.get("retention_days"),
+        "retention_days", minimum=1, maximum=3650,
+    )
+    withdrawal = profile.get("withdrawal_procedure")
+    if (
+        not isinstance(withdrawal, str)
+        or not withdrawal.strip()
+        or len(withdrawal) > 2000
+    ):
+        raise PilotProfileError("withdrawal_procedure must be non-empty")
+    collection_ids = profile.get("collection_ids")
+    if not isinstance(collection_ids, list) or not collection_ids:
+        raise PilotProfileError("enabled pilot requires collection_ids")
+    if any(
+        isinstance(item, bool) or not isinstance(item, int) or item <= 0
+        for item in collection_ids
+    ) or len(collection_ids) != len(set(collection_ids)):
+        raise PilotProfileError("collection_ids must be unique positive integers")
+    if len(collection_ids) > 1000:
+        raise PilotProfileError("collection_ids exceeds pilot scope limit")
+    valid_from = _aware_rfc3339(profile.get("valid_from"), "valid_from")
+    valid_until = _aware_rfc3339(profile.get("valid_until"), "valid_until")
+    now = datetime.now(timezone.utc)
+    if not valid_from <= now < valid_until:
+        raise PilotProfileError("pilot profile is not currently effective")
+    if (
+        valid_until <= valid_from
+        or (valid_until - valid_from).total_seconds() > 180 * 86400
+    ):
+        raise PilotProfileError("pilot validity interval is invalid or too long")
+    return enabled, disabled
+
+
+def _canonical(value: Any) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def _read(path: str | Path) -> dict[str, Any]:
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PilotProfileError(f"cannot read {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise PilotProfileError(f"{path} root must be an object")
+    return value
+
+
+def verify_signed_pilot_profile(
+    *, profile_path: str | Path, inventory_path: str | Path,
+    trust_store_path: str | Path,
+) -> frozenset[str]:
+    """Verify the profile and return its exact enabled-callsite set.
+
+    Trust anchors come only from ``trust_store_path``. Public keys embedded in
+    a profile, if any, have no authority.
+    """
+    profile = _read(profile_path)
+    inventory = _read(inventory_path)
+    trust = _read(trust_store_path)
+    if profile.get("schema_version") != "anila.gate2.signed-pilot.v1":
+        raise PilotProfileError("unknown profile schema")
+    if inventory.get("schema_version") != "anila.gate2.inference-callsites.v1":
+        raise PilotProfileError("unknown inventory schema")
+    digest = hashlib.sha256(_canonical(inventory)).hexdigest()
+    if profile.get("inventory_sha256") != digest:
+        raise PilotProfileError("pilot profile inventory hash mismatch")
+    calls = inventory.get("callsites")
+    if not isinstance(calls, list) or not calls:
+        raise PilotProfileError("empty inference inventory")
+    call_ids = [entry.get("id") for entry in calls if isinstance(entry, dict)]
+    if (
+        len(call_ids) != len(calls)
+        or any(not isinstance(item, str) or not item.strip() for item in call_ids)
+        or len(call_ids) != len(set(call_ids))
+    ):
+        raise PilotProfileError("invalid or duplicate callsite inventory")
+    by_id = {entry["id"]: entry for entry in calls}
+    enabled, disabled = _validate_profile_contract(profile)
+    if set(enabled) & set(disabled) or set(enabled) | set(disabled) != set(by_id):
+        raise PilotProfileError("profile must partition every inventory callsite")
+    if not profile.get("pilot_enabled") or not enabled:
+        raise PilotProfileError("disabled template is not a pilot approval")
+    for call_id in enabled:
+        entry = by_id[call_id]
+        if not entry.get("pilot_eligible") or entry.get("mode") != "via_csp":
+            raise PilotProfileError(f"unconverged callsite enabled: {call_id}")
+        controls = entry.get("controls")
+        if not isinstance(controls, dict) or any(
+            controls.get(name) is not True
+            for name in (
+                "csp_mediated", "task", "classification_ceiling", "usage", "audit"
+            )
+        ):
+            raise PilotProfileError(f"incomplete callsite controls: {call_id}")
+    if not REQUIRED_DISABLED_CAPABILITIES <= set(
+        profile.get("disabled_capabilities") or []
+    ):
+        raise PilotProfileError("Gate 3/unconverged capabilities are not all disabled")
+    for field in (
+        "revocation_sla_seconds", "lost_card_sla_seconds", "retention_days",
+        "withdrawal_procedure",
+    ):
+        if profile.get(field) in (None, ""):
+            raise PilotProfileError(f"missing required pilot field: {field}")
+    if profile.get("pki_stale_policy") != "fail_closed":
+        raise PilotProfileError("PKI stale policy must fail closed")
+
+    unsigned = dict(profile)
+    signatures = unsigned.pop("signatures", None)
+    trusted = trust.get("trusted_signers")
+    if not isinstance(signatures, list) or not isinstance(trusted, dict):
+        raise PilotProfileError("signature list or trusted_signers missing")
+    payload = _canonical(unsigned)
+    seen: set[str] = set()
+    key_fingerprints: set[str] = set()
+    for entry in signatures:
+        if not isinstance(entry, dict):
+            raise PilotProfileError("invalid signature entry")
+        role = entry.get("role")
+        if role not in REQUIRED_PILOT_SIGNERS or role in seen:
+            raise PilotProfileError(f"invalid/duplicate signer role: {role!r}")
+        pem = trusted.get(role)
+        if not isinstance(pem, str):
+            raise PilotProfileError(f"missing trusted key for {role}")
+        try:
+            key = serialization.load_pem_public_key(pem.encode("ascii"))
+            if not isinstance(key, Ed25519PublicKey):
+                raise TypeError("trusted key is not Ed25519")
+            fingerprint = hashlib.sha256(
+                key.public_bytes(
+                    serialization.Encoding.DER,
+                    serialization.PublicFormat.SubjectPublicKeyInfo,
+                )
+            ).hexdigest()
+            if fingerprint in key_fingerprints:
+                raise TypeError("trusted signer roles must use distinct keys")
+            key.verify(
+                base64.b64decode(entry["signature"], validate=True), payload
+            )
+        except Exception as exc:
+            raise PilotProfileError(f"invalid signature for {role}: {exc}") from exc
+        seen.add(role)
+        key_fingerprints.add(fingerprint)
+    if seen != set(REQUIRED_PILOT_SIGNERS):
+        raise PilotProfileError(
+            f"missing signer roles: {sorted(REQUIRED_PILOT_SIGNERS - seen)}"
+        )
+    return frozenset(enabled)

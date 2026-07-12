@@ -1,0 +1,37 @@
+# Gate 2 signed-pilot posture overlay.
+#
+# Apply only with platform.yml after provisioning the externally signed pilot
+# profile and out-of-band trust store. The base stack preserves all existing
+# non-pilot product capabilities.
+services:
+  csp:
+    environment:
+      ANILA_PILOT_MODE: "true"
+      ENABLE_PILOT_PROMPT_GENERATOR: "false"
+      ENABLE_PILOT_INGESTION_JUDGE: "false"
+      ENABLE_PILOT_STUDIO_ARTIFACTS: "false"
+
+  ingestion-worker:
+    # Pilot data is frozen/pre-indexed. Starting ingestion requires the
+    # deliberately excluded data-admin profile and is not a pilot action.
+    profiles: ["gate2-data-admin"]
+    environment:
+      ANILA_PILOT_MODE: "true"
+      GATE2_ALLOW_UNCONVERGED_INFERENCE: "false"
+      ENABLE_IMAGE_CAPTIONS: "false"
+
+  pptx-renderer:
+    profiles: ["gate3-artifacts"]
+
+  anila-studio:
+    profiles: ["gate3-artifacts"]
+
+  flux2-dev-agent:
+    profiles: ["gate3-artifacts"]
+    environment:
+      GATE2_IMAGE_VIA_CSP: "1"
+
+  anilalm:
+    build:
+      args:
+        VITE_ANILA_PILOT_MODE: "true"

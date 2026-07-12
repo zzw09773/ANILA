@@ -39,6 +39,7 @@ from app.models.policy_decision import PolicyDecision
 from app.models.task import Task, TaskRun
 from app.models.token_usage import TokenUsage
 from app.services import proxy_service
+from app.api import proxy as proxy_api
 from app.services.auth_service import create_tokens
 from app.services.proxy import service as proxy_impl
 from app.services.proxy import task_link
@@ -319,6 +320,80 @@ class TestUserCallerWithTask:
         assert all(decision.resource_type == "agent" for decision in decisions)
         assert by_action["agent.invoke"].decision == "allow"
         assert captured_usage and captured_usage[0]["task_id"] == task.id
+
+    def test_agent_nonstream_writes_task_attributed_token_usage(
+        self, client: TestClient, db: Session, monkeypatch, task_sessions,
+    ):
+        user = make_user(db, username="task_user_agent_nonstream")
+        dev = make_user(db, username="task_dev_agent_nonstream", role="developer")
+        agent = make_agent(
+            db, dev, name="task-agent-nonstream", approval_status="approved"
+        )
+        db.add(UserAgentPermission(user_id=user.id, agent_id=agent.id))
+        db.commit()
+        task = _make_task(db, user)
+        _patch_post_client(monkeypatch)
+        recorded: list[dict] = []
+
+        async def capture(**kwargs):
+            recorded.append(kwargs)
+
+        monkeypatch.setattr(proxy_api, "enqueue_usage_task_linked", capture)
+        resp = client.post(
+            "/v1/chat/completions",
+            headers={**_bearer(_jwt(user)), "X-ANILA-Task-Id": str(task.id)},
+            json={
+                "model": agent.name,
+                "stream": False,
+                "messages": [{"role": "user", "content": "draw"}],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        assert len(recorded) == 1
+        assert recorded[0]["task_id"] == task.id
+        assert recorded[0]["caller_agent_id"] == agent.id
+        assert recorded[0]["total_tokens"] > 0
+
+    def test_image_inference_is_task_bound_ceiling_checked_and_metered(
+        self, client: TestClient, db: Session, monkeypatch,
+        task_sessions, captured_usage,
+    ):
+        admin = make_user(db, username="image_proxy_admin", role="admin")
+        model = make_model(db, name="governed-flux")
+        model.model_type = "image"
+        model.is_image_primary = True
+        model.classification_ceiling = "機密"
+        db.commit()
+        task = _make_task(db, admin)
+        task.classification_level = "機密"
+        db.commit()
+        _patch_post_client(monkeypatch)
+
+        response = client.post(
+            "/v1/images/generations",
+            headers={**_bearer(_jwt(admin)), "X-ANILA-Task-Id": str(task.id)},
+            json={
+                "model": model.name,
+                "prompt": "synthetic",
+                "n": 1,
+                "size": "1024x1024",
+                "response_format": "b64_json",
+            },
+        )
+        assert response.status_code == 200, response.text
+        db.expire_all()
+        assert db.get(Task, task.id).status == "completed"
+        assert db.query(PolicyDecision).filter_by(
+            task_id=task.id, action="model.invoke", decision="allow"
+        ).count() == 1
+        assert captured_usage and captured_usage[-1]["request_type"] == "image"
+
+        no_task = client.post(
+            "/v1/images/generations",
+            headers=_bearer(_jwt(admin)),
+            json={"model": model.name, "prompt": "must fail"},
+        )
+        assert no_task.status_code == 400
 
     def test_upstream_failure_marks_run_failed(
         self, client: TestClient, db: Session, monkeypatch,

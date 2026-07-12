@@ -582,3 +582,47 @@ def assert_startup_migration_policy() -> None:
         "[startup_security] SKIP_STARTUP_MIGRATIONS=true；"
         "僅適用 dev/test 自行建立 schema 的 fixture。"
     )
+
+
+_verified_pilot_callsites: frozenset[str] = frozenset()
+
+
+def assert_gate2_pilot_profile() -> None:
+    """Pilot mode requires the four-owner signed machine profile.
+
+    The disabled repository template intentionally fails this boundary. Trust
+    keys and the actual approval profile must be provisioned out-of-band in
+    the read-only secrets mount.
+    """
+    global _verified_pilot_callsites
+    if not settings.ANILA_PILOT_MODE:
+        _verified_pilot_callsites = frozenset()
+        return
+    from anila_security import PilotProfileError, verify_signed_pilot_profile
+
+    try:
+        enabled = verify_signed_pilot_profile(
+            profile_path=settings.GATE2_PILOT_PROFILE_PATH,
+            inventory_path=settings.GATE2_INFERENCE_INVENTORY_PATH,
+            trust_store_path=settings.GATE2_PILOT_TRUST_STORE_PATH,
+        )
+    except PilotProfileError as exc:
+        raise RuntimeError(
+            f"Refusing to start unsigned/invalid Gate 2 pilot: {exc}"
+        ) from exc
+    if "csp.agent_dispatch" in enabled and not {
+        item.strip()
+        for item in settings.PILOT_FIRST_PARTY_AGENT_ALLOWLIST.split(",")
+        if item.strip()
+    }:
+        raise RuntimeError(
+            "Refusing to start Gate 2 pilot: enabled agent dispatch requires "
+            "PILOT_FIRST_PARTY_AGENT_ALLOWLIST"
+        )
+    _verified_pilot_callsites = enabled
+
+
+def require_pilot_callsite(callsite: str) -> None:
+    """Reject runtime inference not present in the verified signed profile."""
+    if settings.ANILA_PILOT_MODE and callsite not in _verified_pilot_callsites:
+        raise RuntimeError(f"Gate 2 signed pilot does not enable {callsite}")

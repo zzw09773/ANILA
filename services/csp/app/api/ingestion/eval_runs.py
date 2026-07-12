@@ -37,13 +37,13 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from app.config import settings
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.orm import Session
 
 from app.api.ingestion.collections import _require_collection_access
 from app.database import get_db
 from app.models.ingestion import (
-    IngestionCollection,
     IngestionDocument,
     IngestionEvalRun,
     UserLlmCredential,
@@ -152,7 +152,7 @@ async def create_eval_run(
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> EvalRunResponse:
     # Sprint 4: collection-scoped access (admin OR owner).
-    coll = _require_collection_access(db, current_user, payload.collection_id)
+    _require_collection_access(db, current_user, payload.collection_id)
 
     # Validate every sample document belongs to this collection — guards
     # against a buggy frontend or a malicious caller mixing in another
@@ -191,6 +191,11 @@ async def create_eval_run(
     # security boundary — caller can't pick someone else's API key).
     judge_llm_config: dict[str, Any] | None = None
     if payload.judge_credential_id is not None:
+        if settings.ANILA_PILOT_MODE and not settings.ENABLE_PILOT_INGESTION_JUDGE:
+            raise HTTPException(
+                status_code=403,
+                detail="Gate 2 pilot 禁止未經 CSP 收斂的 judge 推論",
+            )
         cred = (
             db.query(UserLlmCredential)
             .filter(

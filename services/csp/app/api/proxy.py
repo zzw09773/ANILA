@@ -23,17 +23,29 @@ from app.models.agent import Agent, UserAgentPermission
 from app.models.conversation import Conversation
 from app.models.model_registry import ModelRegistry
 from app.models.task import Task
+from app.models.user import User
 from anila_contracts import Classification as ClassificationLevel
 from app.services import memory_service
 from app.services.api_key_service import check_model_permission, check_agent_permission
 from app.services.auth_service import is_admin_tier
+from app.services import agent_credential_service
 from app.services.proxy.ceiling import enforce_agent_ceiling, enforce_model_ceiling
 from app.services.proxy.headers import resolve_model_gateway_key
-from app.services.proxy.task_link import begin_task_run, finalize_task_run
+from app.services.proxy.task_link import (
+    begin_task_run,
+    finalize_task_run_in_session,
+    record_task_policy_decision,
+)
 from app.services.retrieval_service import (
     RetrievalFailure,
     RetrievalOutcome,
     retrieve_and_seal,
+)
+from app.services.proxy.usage import (
+    _estimate_token_count,
+    _extract_response_text,
+    _serialize_request_for_usage,
+    enqueue_usage_task_linked,
 )
 from app.services.proxy_service import (
     build_default_anila_meta,
@@ -346,6 +358,10 @@ def _propagate_conversation_level_to_task_or_fail(
     *,
     task_ctx,
     conversation_id: int,
+    action: str,
+    resource_type: str,
+    resource_id: str,
+    actor_id: str,
 ) -> None:
     """Propagate the conversation floor or stop the run before dispatch.
 
@@ -364,13 +380,20 @@ def _propagate_conversation_level_to_task_or_fail(
             "task classification propagation failed task_id=%s",
             task_ctx.task_id,
         )
-        finalize_task_run(
-            task_ctx.task_run_id,
-            "failed",
-            error={
-                "code": "task_classification_propagation",
-                "message": "conversation classification propagation failed",
+        record_task_policy_decision(
+            db,
+            task_ctx=task_ctx,
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            decision="deny",
+            actor_id=actor_id,
+            reason="Task 分類傳播失敗，依 Gate 2 fail-closed 拒絕 dispatch",
+            metadata={
+                "error_type": type(exc).__name__,
+                "error_code": "task_classification_propagation",
             },
+            fail=True,
         )
         raise HTTPException(
             status_code=503,
@@ -589,6 +612,32 @@ async def _tee_stream_capture_assistant(
 router = APIRouter(tags=["API 代理"])
 
 
+def _image_inference_caller(
+    request: Request, db: Session = Depends(get_db)
+) -> Caller:
+    """Resolve an image caller, including CSP-authenticated service hops.
+
+    FLUX agent receives task/user headers from CSP and calls back through this
+    endpoint with its service token.  The forwarded user is trusted only after
+    that token verifies, preserving task ownership and attribution.
+    """
+    service_token = request.headers.get("X-CSP-Service-Token")
+    if not service_token:
+        return get_caller(request, db)
+    identity = agent_credential_service.verify_service_token(
+        db, token=service_token
+    )
+    if identity is None:
+        raise HTTPException(status_code=401, detail="無效的 service token")
+    employee_id = (request.headers.get("X-ANILA-User-Id") or "").strip()
+    user = db.query(User).filter(
+        User.username == employee_id, User.is_active.is_(True)
+    ).first()
+    if user is None:
+        raise HTTPException(status_code=403, detail="圖像推論缺少有效的轉發申請人")
+    return Caller(user=user, api_key_id=None)
+
+
 def _resolve_model(db: Session, caller: Caller, model_name: str) -> ModelRegistry:
     """Resolve model name to registry entry and check caller permissions."""
     model = db.query(ModelRegistry).filter(ModelRegistry.name == model_name).first()
@@ -635,6 +684,11 @@ def list_available_agents(
     Used by RemoteAgentRegistry in the Router to discover agents.
     Response mirrors OpenAI /v1/models shape.
     """
+    if settings.ANILA_PILOT_MODE:
+        # Agent execution is outside the signed chat-only Gate 2 envelope.
+        # Returning an empty registry prevents Router discovery from becoming
+        # a second data-plane bypass.
+        return JSONResponse({"object": "list", "data": []})
     user = caller.user
 
     # admin + owner 都看得到所有 approved agent;一般 user 必須有
@@ -713,6 +767,72 @@ async def list_models_openai(
     })
 
 
+@router.post("/v1/images/generations")
+async def image_generations(
+    request: Request,
+    caller: Caller = Depends(_image_inference_caller),
+    db: Session = Depends(get_db),
+):
+    """Governed OpenAI Images proxy; raw FLUX endpoints stay off limits.
+
+    Every image inference is Task-bound, classification-ceiling checked and
+    metered by the same proxy core as chat/embedding. Gate 2's chat-only pilot
+    keeps this route closed; it is the convergence point for later Gate 3
+    artifact-enabled profiles.
+    """
+    if settings.ANILA_PILOT_MODE:
+        raise HTTPException(status_code=403, detail="Gate 2 pilot 禁止圖像推論")
+    raw_task_id = request.headers.get("X-ANILA-Task-Id")
+    if not raw_task_id:
+        raise HTTPException(status_code=400, detail="圖像推論必須綁定 Task")
+    body = await request.json()
+    model_name = str(body.get("model") or "").strip()
+    query = db.query(ModelRegistry).filter(
+        ModelRegistry.is_active.is_(True),
+        ModelRegistry.model_type == "image",
+    )
+    model = (
+        query.filter(ModelRegistry.name == model_name).first()
+        if model_name
+        else query.filter(ModelRegistry.is_image_primary.is_(True)).first()
+    )
+    if model is None:
+        raise HTTPException(status_code=404, detail="找不到啟用中的圖像模型")
+    if not request.headers.get("X-CSP-Service-Token") and not check_model_permission(
+        db, user=caller.user, api_key_id=caller.api_key_id, model_id=model.id
+    ):
+        raise HTTPException(status_code=403, detail="無權使用此圖像模型")
+    task_ctx = begin_task_run(
+        db,
+        caller=caller,
+        request_headers=request.headers,
+        dispatch_target="model",
+        resource_type="model",
+        resource_id=str(model.id),
+    )
+    if task_ctx is None:  # header was checked above; defence in depth
+        raise HTTPException(status_code=400, detail="圖像推論 Task 綁定失敗")
+    admitted_level = enforce_model_ceiling(
+        db, model=model, caller=caller, task_ctx=task_ctx, conv_id_int=None
+    )
+    return await proxy_request(
+        model=model,
+        api_key_id=caller.api_key_id,
+        user_id=caller.user.id,
+        department_id=caller.user.department_id,
+        request_body=body,
+        endpoint_path="/v1/images/generations",
+        user_identity=downstream_identity(caller.user),
+        trace_id=task_ctx.trace_id,
+        task_id=task_ctx.task_id,
+        task_trace_id=task_ctx.trace_id,
+        task_run_id=task_ctx.task_run_id,
+        inference_callsite_id="csp.image_generation",
+        governance_db=db,
+        admitted_classification_level=admitted_level,
+    )
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(
     request: Request,
@@ -725,6 +845,34 @@ async def chat_completions(
     model_name = body.get("model")
     if not model_name:
         raise HTTPException(status_code=400, detail="缺少 model 參數")
+
+    # G19: in signed pilot mode, inventory admission happens before memory,
+    # retrieval, prompt mutation, or any outbound side effect.
+    pre_resolved_agent = _resolve_agent(db, caller, model_name)
+    if settings.ANILA_PILOT_MODE:
+        from app.services.startup_security import require_pilot_callsite
+
+        if not request.headers.get("X-ANILA-Task-Id"):
+            raise HTTPException(status_code=400, detail="Gate 2 pilot 呼叫必須綁定 Task")
+        callsite = (
+            "csp.agent_dispatch" if pre_resolved_agent is not None
+            else "csp.chat_model"
+        )
+        try:
+            require_pilot_callsite(callsite)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        if pre_resolved_agent is not None:
+            allowlist = {
+                item.strip()
+                for item in settings.PILOT_FIRST_PARTY_AGENT_ALLOWLIST.split(",")
+                if item.strip()
+            }
+            if pre_resolved_agent.name not in allowlist:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Gate 2 pilot 禁止未列入簽核範圍的第三方 Agent",
+                )
 
     stream: bool = body.get("stream", False)
     user = caller.user
@@ -797,7 +945,7 @@ async def chat_completions(
     )
 
     # Try agent first, fallback to model_registry
-    agent = _resolve_agent(db, caller, model_name)
+    agent = pre_resolved_agent
     if agent:
         agent_requires_encryption = bool(getattr(agent, "requires_encryption", False))
         # P3 hook: if any retrieved memory chunk was encrypted at write
@@ -848,8 +996,12 @@ async def chat_completions(
                 db,
                 task_ctx=task_ctx,
                 conversation_id=conv_id_int,
+                action="agent.invoke",
+                resource_type="agent",
+                resource_id=str(agent.id),
+                actor_id=str(caller.user.id),
             )
-        enforce_agent_ceiling(
+        admitted_level = enforce_agent_ceiling(
             db,
             agent=agent,
             caller=caller,
@@ -890,6 +1042,10 @@ async def chat_completions(
                 task_trace_id=task_ctx.trace_id if task_ctx else None,
                 task_run_id=task_ctx.task_run_id if task_ctx else None,
                 legacy_runtime_call=task_ctx is None,
+                inference_callsite_id="csp.agent_dispatch",
+                governance_db=db,
+                registry_endpoint_url=agent.endpoint_url,
+                admitted_classification_level=admitted_level,
             )
             # Tee the SSE so we can capture the final assistant text and
             # schedule the memory writer once the stream drains.
@@ -935,9 +1091,10 @@ async def chat_completions(
             build_agent_headers,
             _guard_outbound,
         )
-        _guard_outbound(
-            target, endpoint_kind=ENDPOINT_KIND_AGENT
-        )  # call-time SSRF re-validation (TOCTOU defense)
+        from app.services.proxy.service import (
+            lock_agent_registry_admission,
+            lock_task_run_admission,
+        )
         # Phase G: also pass target_agent_id so the per-agent token + cache
         # path applies to non-streaming calls. usage_writer attribution for
         # this branch is still TODO — non-streaming agent forwards don't
@@ -953,6 +1110,20 @@ async def chat_completions(
         )
         started_at = time.time()
         try:
+            lock_agent_registry_admission(
+                governance_db=db,
+                agent_id=agent.id,
+                endpoint_url=agent.endpoint_url,
+                admitted_classification_level=admitted_level,
+            )
+            lock_task_run_admission(
+                governance_db=db,
+                task_id=task_ctx.task_id if task_ctx else None,
+                task_run_id=task_ctx.task_run_id if task_ctx else None,
+            )
+            _guard_outbound(
+                target, endpoint_kind=ENDPOINT_KIND_AGENT
+            )  # call-time SSRF re-validation (TOCTOU defense)
             async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
                 resp = await client.post(target, json=body, headers=headers)
                 resp.raise_for_status()
@@ -975,6 +1146,39 @@ async def chat_completions(
                     )
                 elif agent_requires_encryption and isinstance(existing_meta, dict):
                     existing_meta["classified"] = True
+                # G8: non-streaming agent dispatch is a governed inference
+                # call too.  Prefer downstream usage, otherwise estimate on
+                # the server; never leave this branch absent from token_usage.
+                usage = payload.get("usage") or {}
+                prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                completion_tokens = int(usage.get("completion_tokens") or 0)
+                if not usage:
+                    prompt_tokens = _estimate_token_count(
+                        agent.name, _serialize_request_for_usage(body)
+                    )
+                    completion_tokens = _estimate_token_count(
+                        agent.name, _extract_response_text(payload)
+                    )
+                total_tokens = int(
+                    usage.get("total_tokens")
+                    or (prompt_tokens + completion_tokens)
+                )
+                await enqueue_usage_task_linked(
+                    api_key_id=caller.api_key_id,
+                    user_id=user.id,
+                    department_id=department_id,
+                    model_id=agent.id,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    request_duration_ms=int((time.time() - started_at) * 1000),
+                    conversation_id=conversation_id,
+                    trace_id=(trace_id or (task_ctx.trace_id if task_ctx else None)),
+                    request_type="chat",
+                    caller_agent_id=agent.id,
+                    task_id=task_ctx.task_id if task_ctx else None,
+                    legacy_runtime_call=task_ctx is None,
+                )
                 # Memory write (non-streaming agent path)
                 assistant_text = _extract_assistant_text(payload)
                 _schedule_memory_write(
@@ -1003,11 +1207,23 @@ async def chat_completions(
                 # Slice 2b-C: run finished. (This branch still writes no
                 # usage row — orthogonal pre-existing gap, see above.)
                 if task_ctx is not None:
-                    finalize_task_run(task_ctx.task_run_id, "completed")
+                    finalize_task_run_in_session(
+                        db, task_ctx.task_run_id, "completed"
+                    )
                 return _attach_retrieval_meta(payload, retrieval_outcome)
+        except _HTTPException as e:
+            if task_ctx is not None:
+                finalize_task_run_in_session(
+                    db,
+                    task_ctx.task_run_id,
+                    "failed",
+                    error={"code": f"http_{e.status_code}", "message": str(e.detail)},
+                )
+            raise
         except httpx.HTTPStatusError as e:
             if task_ctx is not None:
-                finalize_task_run(
+                finalize_task_run_in_session(
+                    db,
                     task_ctx.task_run_id,
                     "failed",
                     error={
@@ -1018,7 +1234,8 @@ async def chat_completions(
             raise _HTTPException(status_code=e.response.status_code, detail=str(e))
         except Exception as e:
             if task_ctx is not None:
-                finalize_task_run(
+                finalize_task_run_in_session(
+                    db,
                     task_ctx.task_run_id,
                     "failed",
                     error={"code": "agent_call_failed", "message": str(e)},
@@ -1053,12 +1270,16 @@ async def chat_completions(
             db,
             task_ctx=task_ctx,
             conversation_id=conv_id_int,
+            action="model.invoke",
+            resource_type="model",
+            resource_id=str(model.id),
+            actor_id=str(caller.user.id),
         )
     # Slice 6a (doc 04 §5/§8): classification ceiling check BEFORE the
     # outbound model call. Covers task-linked AND legacy traffic. A violation
     # raises 403 + records a model.invoke deny row and never dispatches
     # upstream; a pass records an allow row only when task-linked.
-    enforce_model_ceiling(
+    admitted_level = enforce_model_ceiling(
         db,
         model=model,
         caller=caller,
@@ -1091,6 +1312,10 @@ async def chat_completions(
             legacy_runtime_call=task_ctx is None,
             # Slice 6a: per-model gateway key (secret ref first, env fallback).
             gateway_api_key=resolve_model_gateway_key(model),
+            inference_callsite_id="csp.chat_model",
+            governance_db=db,
+            registry_endpoint_url=model.endpoint_url,
+            admitted_classification_level=admitted_level,
         )
         teed = _tee_stream_capture_assistant(
             upstream,
@@ -1142,6 +1367,9 @@ async def chat_completions(
         task_trace_id=task_ctx.trace_id if task_ctx else None,
         task_run_id=task_ctx.task_run_id if task_ctx else None,
         legacy_runtime_call=task_ctx is None,
+        inference_callsite_id="csp.chat_model",
+        governance_db=db,
+        admitted_classification_level=admitted_level,
     )
     assistant_text = _extract_assistant_text(payload)
     _schedule_memory_write(
@@ -1196,6 +1424,11 @@ async def resume_agent_session(
 
     Response: SSE stream of the resumed turn, passed through verbatim.
     """
+    if settings.ANILA_PILOT_MODE:
+        raise HTTPException(
+            status_code=403,
+            detail="Gate 2 chat-only pilot 禁止 Agent session resume",
+        )
     body = await request.json()
     agent = _resolve_agent(db, caller, agent_name)
     if agent is None:
@@ -1261,6 +1494,11 @@ async def embeddings_v1(
     caller: Caller = Depends(get_caller),
     db: Session = Depends(get_db),
 ):
+    if settings.ANILA_PILOT_MODE:
+        raise HTTPException(
+            status_code=403,
+            detail="Gate 2 pilot 禁止公開 embeddings API",
+        )
     body = await request.json()
     model_name = body.get("model")
     if not model_name:
@@ -1275,6 +1513,7 @@ async def embeddings_v1(
         department_id=caller.user.department_id,
         request_body=body,
         endpoint_path="/v1/embeddings",
+        inference_callsite_id="csp.public_embedding_api",
     )
 
 
@@ -1284,6 +1523,11 @@ async def embeddings_v2(
     caller: Caller = Depends(get_caller),
     db: Session = Depends(get_db),
 ):
+    if settings.ANILA_PILOT_MODE:
+        raise HTTPException(
+            status_code=403,
+            detail="Gate 2 pilot 禁止公開 embeddings API",
+        )
     body = await request.json()
     model_name = body.get("model")
     if not model_name:
@@ -1298,4 +1542,5 @@ async def embeddings_v2(
         department_id=caller.user.department_id,
         request_body=body,
         endpoint_path="/v2/embeddings",
+        inference_callsite_id="csp.public_embedding_api",
     )

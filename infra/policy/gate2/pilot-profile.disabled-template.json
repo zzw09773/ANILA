@@ -1,0 +1,34 @@
+{
+  "schema_version": "anila.gate2.signed-pilot.v1",
+  "profile_id": "DISABLED-TEMPLATE-NOT-AN-APPROVAL",
+  "pilot_enabled": false,
+  "data_classification_ceiling": "無機密",
+  "inventory_sha256": "e158addd9b8688dfc88f7090388c003c434790ed15814a571bb95aaeba66f820",
+  "enabled_callsites": [],
+  "disabled_callsites": [
+    "router.primary", "csp.chat_model", "csp.agent_dispatch",
+    "csp.server_retrieval_embedding", "csp.standalone_search_embedding",
+    "csp.public_embedding_api", "csp.image_generation", "csp.agent_session_resume",
+    "csp.memory_extract",
+    "csp.memory_embedding", "ingestion.embedding", "ingestion.vision_caption",
+    "ingestion.ocr_vision", "agent.runtime_model", "agent.memory_extract",
+    "agent.memory_embedding", "agent.memory_select", "studio.llm",
+    "flux_agent.prompt_translation",
+    "csp.prompt_generator", "ingestion.relation_llm",
+    "ingestion.judge", "studio.flux", "flux_agent.backend",
+    "third_party.agent"
+  ],
+  "disabled_capabilities": [
+    "studio", "artifact", "export", "flux", "prompt_generator",
+    "relation_llm", "judge", "third_party_agents"
+  ],
+  "revocation_sla_seconds": null,
+  "lost_card_sla_seconds": null,
+  "pki_stale_policy": "fail_closed",
+  "retention_days": null,
+  "withdrawal_procedure": null,
+  "collection_ids": null,
+  "valid_from": null,
+  "valid_until": null,
+  "signatures": []
+}

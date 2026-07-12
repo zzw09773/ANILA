@@ -208,6 +208,8 @@ class TraceExporter:
         max_queue: int = 10_000,
         header_name: str = "Authorization",
         producer: Optional[str] = None,
+        task_id: Optional[int] = None,
+        user_identity: Optional[str] = None,
         start_worker: bool = True,
         client_factory: Optional[Callable[[], Any]] = None,
     ) -> None:
@@ -219,6 +221,8 @@ class TraceExporter:
         self._max_queue = max(1, int(max_queue))
         self._header_name = header_name
         self._producer = producer
+        self._task_id = task_id
+        self._user_identity = user_identity
         self._client_factory = client_factory
 
         self._queue: deque[tuple[str, dict[str, Any]]] = deque()
@@ -341,6 +345,10 @@ class TraceExporter:
                 if self._header_name.lower() == "authorization"
                 else token
             )
+        if self._task_id is not None:
+            headers["X-ANILA-Task-Id"] = str(self._task_id)
+        if self._user_identity:
+            headers["X-ANILA-User-Id"] = self._user_identity
         try:
             client = self._build_client()
             try:

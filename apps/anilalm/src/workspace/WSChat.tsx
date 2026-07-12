@@ -27,6 +27,7 @@ import {
 import { createQueryTask } from '../api/tasks'
 import { explainError } from '../api/client'
 import type { Message } from '../types'
+import { gate2PilotCapabilities } from '../config/pilotCapabilities'
 
 const FOLLOWUP_SUGGESTIONS = [
   '幫我整理這份文件的核心論點',
@@ -393,7 +394,7 @@ export function WSChat({ flex }: WSChatProps) {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <ThemeSwitch />
-          <button
+          {gate2PilotCapabilities.studio && <button
             onClick={toggleStudio}
             title={studioOpen ? '收起 Studio' : '展開 Studio'}
             style={{
@@ -412,7 +413,7 @@ export function WSChat({ flex }: WSChatProps) {
             }}
           >
             <Icon name="layers" size={13} stroke={studioOpen ? '#fff' : t.text} /> Studio
-          </button>
+          </button>}
         </div>
       </div>
 

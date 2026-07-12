@@ -35,6 +35,7 @@ from __future__ import annotations
 import hmac
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
@@ -43,6 +44,7 @@ from app.config import settings
 from app.database import get_db
 from app.middleware.caller import ACCESS_COOKIE_NAME, _extract_bearer, get_caller
 from app.models.artifact import Artifact, ArtifactJob
+from app.models.audit_log import AuditLog
 from app.models.source_snapshot import SourceSnapshot
 from app.models.task import Task
 from app.models.user import User
@@ -66,7 +68,14 @@ from app.services.auth_service import get_current_user, is_admin_tier
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["Artifact"])
+def _gate2_pilot_artifact_gate() -> None:
+    if settings.ANILA_PILOT_MODE and not settings.ENABLE_PILOT_STUDIO_ARTIFACTS:
+        raise HTTPException(status_code=404, detail="Gate 2 pilot 未啟用 Artifact")
+
+
+router = APIRouter(
+    tags=["Artifact"], dependencies=[Depends(_gate2_pilot_artifact_gate)]
+)
 
 _INHERIT_REASON = "source_selected"
 
@@ -188,6 +197,7 @@ def _latch_inheritance(
     db: Session, *, artifact: Artifact, task: Task | None,
     snapshot: SourceSnapshot | None, actor_id: str,
     explicit_floor: ClassificationLevel | None = None,
+    commit: bool = True,
 ) -> ClassificationLevel:
     """把 artifact 分類單向閂鎖到 max(current, task, snapshot, explicit_floor)。
 
@@ -212,6 +222,7 @@ def _latch_inheritance(
         reason=_INHERIT_REASON,
         task_id=task.id if task is not None else None,
         source="artifact_inheritance",
+        commit=commit,
     )
     db.refresh(artifact)
     return ClassificationLevel.from_storage(artifact.classification_level)
@@ -287,14 +298,14 @@ def register_artifact(
             db, payload=payload, owner_user_id=owner_user_id,
             source_task_id=payload.task_id,
             source_snapshot_id=payload.source_snapshot_id,
-            trace_id=trace_id, initial_level=explicit,
+            trace_id=trace_id, initial_level=explicit, commit=False,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
 
     effective = _latch_inheritance(
         db, artifact=artifact, task=task, snapshot=snapshot,
-        actor_id=str(owner_user_id or 0),
+        actor_id=str(owner_user_id or 0), commit=False,
     )
     version = artifacts.create_version(
         db, artifact=artifact, storage_ref=payload.storage_ref,
@@ -303,7 +314,21 @@ def register_artifact(
         generated_by_model_id=payload.generated_by_model_id,
         generated_by_agent_id=payload.generated_by_agent_id,
         generated_by_studio_job_id=payload.job_id, level=effective,
+        commit=False,
     )
+    if task is not None:
+        task.status = "completed"
+        task.updated_at = datetime.now(timezone.utc)
+    db.add(AuditLog(
+        actor_user_id=owner_user_id,
+        action="artifact.registered",
+        resource_type="artifact",
+        resource_id=str(artifact.id),
+        status="success",
+        detail=f"version={version.version}; task={payload.task_id}",
+    ))
+    db.flush()
+    db.commit()
     return ArtifactRegisterResult(
         artifact_id=artifact.id, version_id=version.id,
         classification_level=effective,
@@ -329,7 +354,7 @@ def add_artifact_version(
     effective = _latch_inheritance(
         db, artifact=artifact, task=task, snapshot=snapshot,
         actor_id=str(artifact.owner_user_id or 0),
-        explicit_floor=payload.classification_level,
+        explicit_floor=payload.classification_level, commit=False,
     )
     version = artifacts.create_version(
         db, artifact=artifact, storage_ref=payload.storage_ref,
@@ -338,8 +363,18 @@ def add_artifact_version(
         generated_by_model_id=payload.generated_by_model_id,
         generated_by_agent_id=payload.generated_by_agent_id,
         generated_by_studio_job_id=payload.generated_by_studio_job_id,
-        level=effective,
+        level=effective, commit=False,
     )
+    db.add(AuditLog(
+        actor_user_id=artifact.owner_user_id,
+        action="artifact.version.registered",
+        resource_type="artifact",
+        resource_id=str(artifact.id),
+        status="success",
+        detail=f"version={version.version}",
+    ))
+    db.flush()
+    db.commit()
     return ArtifactVersionResult(
         artifact_id=artifact.id, version_id=version.id,
         version=version.version, classification_level=effective,
@@ -386,8 +421,28 @@ def export_artifact(
             "target_classification_floor": target_floor.to_storage(),
             "artifact_classification_level": artifact_level.to_storage(),
         },
+        commit=False,
     )
     if not allowed:
+        if artifact.source_task_id is not None:
+            task = db.get(Task, artifact.source_task_id)
+            if task is not None and task.status not in (
+                "completed", "failed", "cancelled", "blocked_by_policy"
+            ):
+                task.status = "blocked_by_policy"
+                task.policy_decision_id = pd.id
+                task.updated_at = datetime.now(timezone.utc)
+        db.add(AuditLog(
+            actor_user_id=caller.exporter_user_id,
+            actor_username=caller.exporter_employee_id,
+            action="artifact.export.denied",
+            resource_type="artifact",
+            resource_id=str(artifact.id),
+            status="failure",
+            detail=reason,
+        ))
+        db.flush()
+        db.commit()
         raise HTTPException(
             status_code=403,
             detail="匯出遭 classification policy 拒絕:目的地分類下限不足",
@@ -403,7 +458,24 @@ def export_artifact(
         exporter_user_id=exporter_user_id,
         exporter_employee_id=exporter_employee_id,
         policy_decision_id=pd.id, level=artifact_level,
+        commit=False,
     )
+    if artifact.source_task_id is not None:
+        task = db.get(Task, artifact.source_task_id)
+        if task is not None:
+            task.policy_decision_id = pd.id
+            task.updated_at = datetime.now(timezone.utc)
+    db.add(AuditLog(
+        actor_user_id=exporter_user_id,
+        actor_username=exporter_employee_id,
+        action="artifact.export.allowed",
+        resource_type="artifact",
+        resource_id=str(artifact.id),
+        status="success",
+        detail=reason,
+    ))
+    db.flush()
+    db.commit()
     return ExportResult(
         export_id=export.id, classification_level=artifact_level,
         decision="allow",
