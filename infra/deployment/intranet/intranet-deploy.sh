@@ -320,6 +320,20 @@ else
   else warn "略過 — 部署前務必把 model CA 放到 $MCA,否則 csp 連 gateway 會 TLS 失敗"; fi
 fi
 
+# Card login is a production authentication boundary. The operator-updated
+# offline CRL is public material but mandatory; starting with only the CA bundle
+# would leave lost/revoked cards usable until account deactivation.
+CARD_CRL=share/pki/card-crl-bundle.pem
+if ! [ -s "$CARD_CRL" ] || ! grep -q 'BEGIN X509 CRL' "$CARD_CRL" 2>/dev/null; then
+  P="$(ask '離線 card CRL PEM bundle 路徑 (必填，應涵蓋 signer/intermediate issuer)')"
+  [ -n "$P" ] && [ -f "$P" ] || die "正式 card-only 部署必須提供離線 CRL bundle"
+  cp "$P" "$CARD_CRL"
+fi
+grep -q 'BEGIN X509 CRL' "$CARD_CRL" 2>/dev/null \
+  || die "$CARD_CRL 不含 PEM X509 CRL"
+chmod 644 "$CARD_CRL"
+ok "已備妥離線 card CRL bundle（CSP 啟動時會驗 issuer/signature/freshness）"
+
 # ── 3. .env ──────────────────────────────────────────────────────────────
 info "[3/7] 產生 / 更新 .env"
 REGEN=1
@@ -345,7 +359,7 @@ DEFAULTS="$BUNDLE/intranet-defaults.env"
 if [ -f "$DEFAULTS" ]; then
   while IFS='=' read -r _k _v; do
     case "$_k" in
-      ADMIN_PASSWORD|CODESERVER_PASSWORD|CARD_INITIAL_OWNERS|GITLAB_ROOT_PASSWORD|CSP_SECRET_KEY|CSP_SERVICE_TOKEN|CSP_DB_PASSWORD|CSP_APP_DB_PASSWORD|INTERNAL_PLATFORM_API_KEY|N8N_OWNER_EMAIL|N8N_OWNER_FIRST_NAME|N8N_OWNER_LAST_NAME|N8N_OWNER_PASSWORD_HASH|N8N_ENCRYPTION_KEY)
+      ADMIN_PASSWORD|CODESERVER_PASSWORD|CARD_INITIAL_OWNERS|CARD_CRL_SOURCE|CARD_CRL_MAX_AGE_HOURS|CARD_REQUIRED_CERT_POLICY_OIDS|GITLAB_ROOT_PASSWORD|CSP_SECRET_KEY|CSP_SERVICE_TOKEN|CSP_DB_PASSWORD|CSP_APP_DB_PASSWORD|INTERNAL_PLATFORM_API_KEY|N8N_OWNER_EMAIL|N8N_OWNER_FIRST_NAME|N8N_OWNER_LAST_NAME|N8N_OWNER_PASSWORD_HASH|N8N_ENCRYPTION_KEY)
         _v="${_v%\"}"; _v="${_v#\"}"; _v="${_v%\'}"; _v="${_v#\'}"   # 去頭尾引號
         printf -v "$_k" '%s' "$_v" ;;                                # 賦值,非 eval
       *) : ;;
@@ -458,6 +472,29 @@ unset_env SKIP_STARTUP_MIGRATIONS
 unset_env ANILA_BREAK_GLASS_OWNER
 unset_env ANILA_BREAK_GLASS_TICKET
 unset_env ANILA_BREAK_GLASS_EXPIRES_AT
+
+_card_crl_source="${CARD_CRL_SOURCE:-$(get_env_unquoted CARD_CRL_SOURCE)}"
+case "$_card_crl_source" in ""|\<*\>)
+  _card_crl_source="$(ask 'CARD_CRL_SOURCE — 離線 CRL 同步來源/責任單位 (必填)')" ;;
+esac
+[ -n "$_card_crl_source" ] || die "CARD_CRL_SOURCE 不能空"
+_card_policy_oids="${CARD_REQUIRED_CERT_POLICY_OIDS:-$(get_env_unquoted CARD_REQUIRED_CERT_POLICY_OIDS)}"
+case "$_card_policy_oids" in ""|\<*\>)
+  _card_policy_oids="$(ask 'CARD_REQUIRED_CERT_POLICY_OIDS — 核准的卡片 certificate policy OID (CSV)')" ;;
+esac
+[[ "$_card_policy_oids" =~ ^[0-9]+(\.[0-9]+)+(,[[:space:]]*[0-9]+(\.[0-9]+)+)*$ ]] \
+  || die "CARD_REQUIRED_CERT_POLICY_OIDS 必須是數字 OID 或 CSV"
+_card_crl_max_age="${CARD_CRL_MAX_AGE_HOURS:-$(get_env_unquoted CARD_CRL_MAX_AGE_HOURS)}"
+_card_crl_max_age="${_card_crl_max_age:-24}"
+[[ "$_card_crl_max_age" =~ ^[0-9]+$ ]] \
+  && (( 10#$_card_crl_max_age >= 1 && 10#$_card_crl_max_age <= 168 )) \
+  || die "CARD_CRL_MAX_AGE_HOURS 必須介於 1..168"
+set_env CARD_CRL_REQUIRED true
+set_env CARD_CRL_BUNDLE_PATH /etc/anila/pki/card-crl-bundle.pem
+set_env_single_quoted CARD_CRL_SOURCE "$_card_crl_source"
+set_env CARD_CRL_MAX_AGE_HOURS "$_card_crl_max_age"
+set_env CARD_REQUIRED_EKU_OID 1.3.6.1.5.5.7.3.2
+set_env_single_quoted CARD_REQUIRED_CERT_POLICY_OIDS "$_card_policy_oids"
 # 只在 model-ca.pem 真的有憑證時才指過去。ANILA_MODEL_CA_FILE → csp 的 SSL_CERT_FILE,
 # 而 SSL_CERT_FILE 是「取代」整個系統信任庫(非疊加):指到空/壞檔 → csp 所有出向 https
 # 全 CERTIFICATE_VERIFY_FAILED(連 agent 都連不上)。空字串則 fallback 系統 CA,無副作用。
@@ -498,7 +535,8 @@ for k in CSP_SECRET_KEY CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY ADMIN_PASSWO
          SITE_URL N8N_HOST N8N_EDITOR_BASE_URL N8N_WEBHOOK_URL GITLAB_HOST \
          N8N_OWNER_EMAIL N8N_OWNER_PASSWORD_HASH N8N_ENCRYPTION_KEY \
          GITLAB_ROOT_PASSWORD CODESERVER_HOST GITLAB_SSH_BIND_IP GITLAB_SSH_PORT \
-         ANILA_SECRETS_DIR ANILA_TLS_CERTS_DIR; do
+         ANILA_SECRETS_DIR ANILA_TLS_CERTS_DIR CARD_CRL_SOURCE \
+         CARD_REQUIRED_CERT_POLICY_OIDS CARD_CRL_BUNDLE_PATH; do
   [ -n "$(get_env "$k")" ] || die ".env 缺必填值: $k"
 done
 for _secret_name in CSP_SECRET_KEY CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY \

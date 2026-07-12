@@ -1,6 +1,10 @@
 import hmac
+import json
 import logging
+import secrets
 from collections.abc import Sequence
+from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -8,10 +12,16 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.middleware.cookies import ACCESS_COOKIE_NAME
+from app.models.audit_log import AuditLog
+from app.models.auth_session import AuthRefreshToken, AuthSession
 from app.models.user import User
 from app.services import agent_credential_service
 from app.services.audit_service import log_audit_event
 from app.services.startup_security import is_break_glass_active
+from app.services.token_revocation_service import (
+    is_revoked as is_identifier_revoked,
+    revoke_sid as persist_sid_revocation,
+)
 from app.utils.security import (
     verify_password,
     create_access_token,
@@ -53,24 +63,366 @@ def authenticate_user(db: Session, username: str, password: str) -> User | str |
     return user
 
 
-def create_tokens(user: User, *, amr: Sequence[str] = ()) -> dict:
+_ACR_BY_AMR = {
+    "pwd": "urn:anila:acr:password",
+    "oidc": "urn:anila:acr:federated",
+    "sc": "urn:anila:acr:smart-card",
+}
+
+
+class RefreshTokenReuseDetected(Exception):
+    """A consumed refresh-token generation was presented again."""
+
+    def __init__(self, *, token_jti_hash: str, session_id_hash: str) -> None:
+        super().__init__("refresh token reuse detected")
+        self.token_jti_hash = token_jti_hash
+        self.session_id_hash = session_id_hash
+
+
+def _identifier_hash(value: str) -> str:
+    return sha256(value.encode("utf-8")).hexdigest()
+
+
+def _normalise_amr(amr: Sequence[str]) -> tuple[str, ...]:
+    methods = tuple(dict.fromkeys(method for method in amr if method))
+    if any(method not in _ACR_BY_AMR for method in methods):
+        raise ValueError("unsupported authentication method reference")
+    return methods
+
+
+def _acr_for(methods: Sequence[str], *, break_glass: bool) -> str:
+    if break_glass:
+        return "urn:anila:acr:break-glass"
+    for method in ("sc", "oidc", "pwd"):
+        if method in methods:
+            return _ACR_BY_AMR[method]
+    return "urn:anila:acr:unspecified"
+
+
+def _epoch_to_datetime(value: int | float) -> datetime:
+    return datetime.fromtimestamp(float(value), tz=timezone.utc)
+
+
+def _sessionless_tokens_allowed() -> bool:
+    return settings.ANILA_DEPLOYMENT_PROFILE.strip().lower() in {
+        "development",
+        "dev",
+        "test",
+    }
+
+
+def create_tokens(
+    user: User,
+    *,
+    db: Session | None = None,
+    amr: Sequence[str] = (),
+    sid: str | None = None,
+    auth_time: int | None = None,
+    acr: str | None = None,
+    break_glass: bool | None = None,
+    refresh_generation: int = 0,
+    parent_refresh_jti_hash: str | None = None,
+) -> dict:
     """Create a token pair with an explicit authentication-method claim.
 
     Legacy/internal callers that omit ``amr`` receive an empty claim and
     therefore cannot be mistaken for a smart-card session by proxy gates.
     """
-    data = {
+    methods = _normalise_amr(amr)
+    now = datetime.now(timezone.utc)
+    issued_at = int(now.timestamp())
+    session_id = sid or secrets.token_urlsafe(32)
+    access_jti = secrets.token_urlsafe(32)
+    refresh_jti = secrets.token_urlsafe(32)
+    if break_glass is None:
+        break_glass = (
+            "pwd" in methods
+            and settings.REQUIRE_CARD_LOGIN_ONLY
+            and is_break_glass_active()
+        )
+    if break_glass and methods != ("pwd",):
+        raise ValueError("break-glass assurance requires password-only AMR")
+    expected_assurance = _acr_for(methods, break_glass=bool(break_glass))
+    if acr is not None and acr != expected_assurance:
+        raise ValueError("ACR contradicts the authentication method reference")
+    assurance = expected_assurance
+    authenticated_at = auth_time if auth_time is not None else issued_at
+    if (
+        isinstance(authenticated_at, bool)
+        or not isinstance(authenticated_at, (int, float))
+        or authenticated_at < 0
+        or authenticated_at > issued_at + settings.JWT_LEEWAY_SECONDS
+    ):
+        raise ValueError("auth_time is outside the token issuance boundary")
+    authenticated_at = int(authenticated_at)
+
+    session: AuthSession | None = None
+    if db is not None:
+        session = db.get(AuthSession, session_id)
+        if session is not None:
+            if session.user_id != user.id or session.revoked_at is not None:
+                raise ValueError("cannot issue tokens for an invalid auth session")
+            durable_assurance = _assurance_from_session(session)
+            requested_assurance = (
+                methods,
+                assurance,
+                authenticated_at,
+                bool(break_glass),
+            )
+            if durable_assurance != requested_assurance:
+                raise ValueError("cannot change assurance for an existing auth session")
+
+    common = {
         "sub": str(user.id),
         "username": user.username,
         "role": user.role,
         "tv": user.token_version,
-        "amr": list(amr),
+        "sid": session_id,
+        "iat": issued_at,
+        "iss": settings.JWT_ISSUER,
+        "aud": settings.JWT_AUDIENCE,
+        "amr": list(methods),
+        "acr": assurance,
+        "auth_time": authenticated_at,
+        "break_glass": bool(break_glass),
     }
-    return {
-        "access_token": create_access_token(data),
-        "refresh_token": create_refresh_token(data),
+    access_data = {**common, "jti": access_jti}
+    refresh_data = {**common, "jti": refresh_jti}
+    pair = {
+        "access_token": create_access_token(access_data),
+        "refresh_token": create_refresh_token(refresh_data),
         "token_type": "bearer",
     }
+
+    if db is not None:
+        if session is None:
+            session = AuthSession(
+                sid=session_id,
+                user_id=user.id,
+                refresh_family_id=secrets.token_urlsafe(32),
+                amr_json=json.dumps(list(methods), separators=(",", ":")),
+                acr=assurance,
+                auth_time=_epoch_to_datetime(authenticated_at),
+                break_glass=bool(break_glass),
+            )
+            db.add(session)
+            # Flush the parent explicitly. Without an ORM relationship the
+            # unit-of-work does not reliably order these two mapper inserts on
+            # PostgreSQL, and the refresh FK can race ahead of auth_sessions.
+            db.flush()
+        db.add(
+            AuthRefreshToken(
+                jti_hash=_identifier_hash(refresh_jti),
+                sid=session_id,
+                generation=refresh_generation,
+                parent_jti_hash=parent_refresh_jti_hash,
+                issued_at=now,
+                expires_at=now + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+            )
+        )
+        db.flush()
+
+    return pair
+
+
+def _assurance_from_session(
+    session: AuthSession,
+) -> tuple[tuple[str, ...], str, int, bool]:
+    """Load the durable assurance envelope without repairing corrupt state.
+
+    A session id is the security boundary for a refresh family.  Treating a
+    malformed row as an empty/default assurance would let the same ``sid`` be
+    reissued at a different assurance level, so every field is validated and
+    compared exactly at issuance and request boundaries.
+    """
+    try:
+        raw = json.loads(session.amr_json)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("auth session contains invalid AMR state") from exc
+    if (
+        not isinstance(raw, list)
+        or any(not isinstance(item, str) or not item for item in raw)
+        or len(raw) != len(set(raw))
+    ):
+        raise ValueError("auth session contains invalid AMR state")
+    methods = _normalise_amr(raw)
+
+    if not isinstance(session.break_glass, bool):
+        raise ValueError("auth session contains invalid break-glass state")
+    expected_acr = _acr_for(methods, break_glass=session.break_glass)
+    if not isinstance(session.acr, str) or session.acr != expected_acr:
+        raise ValueError("auth session contains contradictory assurance state")
+    if session.break_glass and methods != ("pwd",):
+        raise ValueError("auth session contains contradictory break-glass state")
+
+    auth_time = session.auth_time
+    if not isinstance(auth_time, datetime):
+        raise ValueError("auth session contains invalid authentication time")
+    if auth_time.tzinfo is None:
+        auth_time = auth_time.replace(tzinfo=timezone.utc)
+    authenticated_at = int(auth_time.timestamp())
+    if (
+        authenticated_at < 0
+        or authenticated_at
+        > int(datetime.now(timezone.utc).timestamp()) + settings.JWT_LEEWAY_SECONDS
+    ):
+        raise ValueError("auth session contains invalid authentication time")
+    return methods, session.acr, authenticated_at, session.break_glass
+
+
+def _revoke_auth_session(db: Session, session: AuthSession, *, reason: str) -> None:
+    now = datetime.now(timezone.utc)
+    session.revoked_at = now
+    session.revoke_reason = reason
+    (
+        db.query(AuthRefreshToken)
+        .filter(
+            AuthRefreshToken.sid == session.sid,
+            AuthRefreshToken.revoked_at.is_(None),
+        )
+        .update({"revoked_at": now}, synchronize_session=False)
+    )
+
+
+def rotate_refresh_token(
+    db: Session,
+    user: User,
+    payload: dict,
+    *,
+    ip_address: str | None = None,
+) -> dict:
+    """Atomically consume one refresh generation and mint its successor."""
+    raw_jti = payload.get("jti")
+    sid = payload.get("sid")
+    if not isinstance(raw_jti, str) or not isinstance(sid, str):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="無效的刷新權杖",
+        )
+    jti_hash = _identifier_hash(raw_jti)
+    session = (
+        db.query(AuthSession)
+        .filter(AuthSession.sid == sid, AuthSession.user_id == user.id)
+        .with_for_update()
+        .first()
+    )
+    record = (
+        db.query(AuthRefreshToken)
+        .filter(AuthRefreshToken.jti_hash == jti_hash)
+        .with_for_update()
+        .first()
+    )
+
+    # Compatibility for session tokens minted directly by test/dev helpers
+    # before persistence was introduced. Formal profiles reject missing state.
+    if session is None or record is None:
+        if not _sessionless_tokens_allowed():
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="刷新工作階段不存在",
+            )
+        if session is None:
+            raw_amr = payload.get("amr")
+            methods = (
+                tuple(raw_amr)
+                if isinstance(raw_amr, list)
+                and all(isinstance(method, str) for method in raw_amr)
+                else ()
+            )
+            auth_time = int(payload.get("auth_time") or payload["iat"])
+            session = AuthSession(
+                sid=sid,
+                user_id=user.id,
+                refresh_family_id=secrets.token_urlsafe(32),
+                amr_json=json.dumps(list(methods), separators=(",", ":")),
+                acr=str(payload.get("acr") or _acr_for(methods, break_glass=False)),
+                auth_time=_epoch_to_datetime(auth_time),
+                break_glass=bool(payload.get("break_glass", False)),
+            )
+            db.add(session)
+            db.flush()
+        if record is None:
+            record = AuthRefreshToken(
+                jti_hash=jti_hash,
+                sid=sid,
+                generation=0,
+                issued_at=_epoch_to_datetime(int(payload["iat"])),
+                expires_at=_epoch_to_datetime(int(payload["exp"])),
+            )
+            db.add(record)
+            db.flush()
+
+    if session.revoked_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="刷新工作階段已撤銷",
+        )
+    if record.sid != sid or record.revoked_at is not None or record.consumed_at is not None:
+        sid_hash = _identifier_hash(sid)
+        persist_sid_revocation(
+            db,
+            user_id=user.id,
+            sid=sid,
+            reason="refresh_token_reuse",
+            commit=False,
+        )
+        db.add(
+            AuditLog(
+                actor_user_id=user.id,
+                actor_username=user.username,
+                action="auth.refresh_reuse",
+                resource_type="auth_session",
+                resource_id=sid_hash,
+                status="failure",
+                detail=(
+                    "已使用的 refresh token 再次出現；撤銷目前工作階段"
+                ),
+                ip_address=ip_address,
+                metadata_json=json.dumps(
+                    {
+                        "reason": "refresh_token_reuse",
+                        "token_jti_hash": jti_hash,
+                        "session_id_hash": sid_hash,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            )
+        )
+        try:
+            # Revocation and the theft-signal audit are one durable unit. A
+            # failure must not return a normal 401 while leaving the family
+            # active and the incident unrecorded.
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("failed to persist refresh-token reuse incident")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="無法安全記錄刷新權杖重放事件",
+            )
+        raise RefreshTokenReuseDetected(
+            token_jti_hash=jti_hash,
+            session_id_hash=sid_hash,
+        )
+
+    record.consumed_at = datetime.now(timezone.utc)
+    methods, assurance, authenticated_at, break_glass = _assurance_from_session(
+        session
+    )
+    pair = create_tokens(
+        user,
+        db=db,
+        amr=methods,
+        sid=session.sid,
+        auth_time=authenticated_at,
+        acr=assurance,
+        break_glass=break_glass,
+        refresh_generation=record.generation + 1,
+        parent_refresh_jti_hash=record.jti_hash,
+    )
+    db.commit()
+    return pair
 
 
 def _load_user_from_payload(payload: dict | None, db: Session, expected_type: str) -> User:
@@ -85,7 +437,14 @@ def _load_user_from_payload(payload: dict | None, db: Session, expected_type: st
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="無效的存取權杖",
         )
-    user = db.query(User).filter(User.id == int(user_id)).first()
+    try:
+        parsed_user_id = int(user_id)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="無效的存取權杖",
+        ) from exc
+    user = db.query(User).filter(User.id == parsed_user_id).first()
     if not user or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -96,6 +455,55 @@ def _load_user_from_payload(payload: dict | None, db: Session, expected_type: st
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="權杖已失效，請重新登入",
         )
+    sid = payload.get("sid")
+    jti = payload.get("jti")
+    if (
+        not isinstance(sid, str)
+        or not isinstance(jti, str)
+        or is_identifier_revoked(
+            db,
+            user_id=user.id,
+            jti=jti,
+            sid=sid,
+            token_type=expected_type,
+        )
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="權杖或工作階段已撤銷，請重新登入",
+        )
+    session = db.get(AuthSession, sid) if isinstance(sid, str) else None
+    if session is None:
+        if not _sessionless_tokens_allowed():
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="工作階段不存在，請重新登入",
+            )
+    else:
+        if session.user_id != user.id or session.revoked_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="工作階段已撤銷，請重新登入",
+            )
+        try:
+            durable_assurance = _assurance_from_session(session)
+        except ValueError as exc:
+            logger.warning("rejecting malformed durable auth session: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="工作階段保證狀態無效，請重新登入",
+            ) from exc
+        token_assurance = (
+            tuple(payload.get("amr", ())),
+            payload.get("acr"),
+            payload.get("auth_time"),
+            payload.get("break_glass"),
+        )
+        if token_assurance != durable_assurance:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="權杖與工作階段保證狀態不一致，請重新登入",
+            )
     if settings.REQUIRE_CARD_LOGIN_ONLY:
         raw_amr = payload.get("amr")
         methods = (

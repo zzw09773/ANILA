@@ -19,6 +19,18 @@ from app.utils.security import create_access_token, create_refresh_token, decode
 from tests.conftest import make_user
 
 
+def _acr_for_amr(amr) -> str:
+    if isinstance(amr, list):
+        for method, acr in (
+            ("sc", "urn:anila:acr:smart-card"),
+            ("oidc", "urn:anila:acr:federated"),
+            ("pwd", "urn:anila:acr:password"),
+        ):
+            if method in amr:
+                return acr
+    return "urn:anila:acr:unspecified"
+
+
 def _claims_for(user, *, token_role: str | None = None, amr=None, include_amr=True):
     claims = {
         "sub": str(user.id),
@@ -28,6 +40,7 @@ def _claims_for(user, *, token_role: str | None = None, amr=None, include_amr=Tr
     }
     if include_amr:
         claims["amr"] = amr
+        claims["acr"] = _acr_for_amr(amr)
     return claims
 
 
@@ -38,7 +51,11 @@ def _set_session_cookie(client, user, *, amr: list[str] | None = None) -> None:
             "username": user.username,
             "role": user.role,
             "tv": user.token_version,
-            **({"amr": amr} if amr is not None else {}),
+            **(
+                {"amr": amr, "acr": _acr_for_amr(amr)}
+                if amr is not None
+                else {}
+            ),
         }
     )
     client.cookies.set(ACCESS_COOKIE_NAME, token)
@@ -199,7 +216,8 @@ def test_card_only_access_accepts_owner_password_only_during_break_glass(
 ) -> None:
     _activate_break_glass(monkeypatch)
     user = make_user(db, username="break-glass-access-owner", role="owner")
-    token = create_access_token(_claims_for(user, token_role="user", amr=["pwd"]))
+    token = create_tokens(user, db=db, amr=("pwd",))["access_token"]
+    db.commit()
 
     response = client.get(
         "/api/auth/me", headers={"Authorization": f"Bearer {token}"}
@@ -277,7 +295,8 @@ def test_card_only_refresh_accepts_owner_password_only_during_break_glass(
 ) -> None:
     _activate_break_glass(monkeypatch)
     user = make_user(db, username="break-glass-refresh-owner", role="owner")
-    token = create_refresh_token(_claims_for(user, token_role="user", amr=["pwd"]))
+    token = create_tokens(user, db=db, amr=("pwd",))["refresh_token"]
+    db.commit()
 
     response = client.post("/api/auth/refresh", json={"refresh_token": token})
 

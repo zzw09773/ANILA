@@ -113,6 +113,9 @@ services:
       # 仍會驗 CMS SignerInfo、challenge nonce 與釘選 CSPKI 憑證鏈後才抽 claims。
       ENABLE_CARD_LOGIN: "${ENABLE_CARD_LOGIN:-true}"
       REQUIRE_CARD_LOGIN_ONLY: "${REQUIRE_CARD_LOGIN_ONLY:-true}"
+      JWT_ISSUER: "${JWT_ISSUER:-https://anila.internal/csp}"
+      JWT_AUDIENCE: "${JWT_AUDIENCE:-anila-platform}"
+      JWT_LEEWAY_SECONDS: "${JWT_LEEWAY_SECONDS:-60}"
       # Formal posture: anonymous shares and long-term memory are disabled.
       # Dev uses its separate compose file and opts in explicitly.
       ENABLE_PUBLIC_SHARE: "${ENABLE_PUBLIC_SHARE:-false}"
@@ -182,6 +185,12 @@ services:
       # packaged CSPKI roots by default, but allow an operator-provisioned
       # intranet CA from the read-only /etc/anila/pki mount.
       CARD_CA_BUNDLE_PATH: ${CARD_CA_BUNDLE_PATH:-/app/app/services/cspki_ca_bundle.pem}
+      CARD_CRL_REQUIRED: "true"
+      CARD_CRL_BUNDLE_PATH: ${CARD_CRL_BUNDLE_PATH:?CARD_CRL_BUNDLE_PATH must point inside /etc/anila/pki}
+      CARD_CRL_MAX_AGE_HOURS: "${CARD_CRL_MAX_AGE_HOURS:-24}"
+      CARD_CRL_SOURCE: ${CARD_CRL_SOURCE:?CARD_CRL_SOURCE must identify the offline sync source}
+      CARD_REQUIRED_EKU_OID: "${CARD_REQUIRED_EKU_OID:-1.3.6.1.5.5.7.3.2}"
+      CARD_REQUIRED_CERT_POLICY_OIDS: ${CARD_REQUIRED_CERT_POLICY_OIDS:?CARD_REQUIRED_CERT_POLICY_OIDS must be set}
       # 內網模型 gateway (10.53.100.12 My-OpenAI-Frontend) 的 /v1 要
       # Authorization: Bearer。proxy_service 只對 model 呼叫注入,agent
       # dispatch 不帶。空值 = 不注入 (同主機裸 vLLM 不需要)。
@@ -416,6 +425,10 @@ services:
       ARTIFACTS_DIR: /var/anila/anila-studio-artifacts
       RENDERER_BASE_URL: http://pptx-renderer:7100
       JWT_KID: anila-v1
+      JWT_ISSUER: "${JWT_ISSUER:-https://anila.internal/csp}"
+      JWT_AUDIENCE: "${JWT_AUDIENCE:-anila-platform}"
+      JWT_LEEWAY_SECONDS: "${JWT_LEEWAY_SECONDS:-60}"
+      REVOCATION_RECONCILE_INTERVAL_SECONDS: "${REVOCATION_RECONCILE_INTERVAL_SECONDS:-5}"
       REQUIRE_CARD_LOGIN_ONLY: "true"
       COOKIE_SECURE: "true"
       LOG_LEVEL: INFO

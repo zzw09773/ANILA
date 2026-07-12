@@ -7,11 +7,9 @@ for the publisher side).
 Contract pinned by these tests:
 
 * ``is_revoked(user_id, token_version)`` returns True iff the cached
-  ``revoked_at_version`` for that user is ``>=`` the supplied
-  ``token_version``. The ``>=`` boundary matters — csp bumps
-  ``token_version`` to N to invalidate everything signed at N-1 or
-  before, AND the JWT carrying tv=N itself (because the bump happens
-  pre-issuance for hard revoke flows).
+  ``revoked_at_version`` is greater than the token's version. CSP records the
+  new version N after a bump: old tokens carry N-1, while legitimate tokens
+  minted after the bump carry N and remain valid.
 
 * Cache misses are ``False`` (no revocation on record).
 
@@ -53,6 +51,7 @@ from freezegun import freeze_time
 from app.config import settings
 from app.services.revocation_cache import (
     RevocationCache,
+    RevocationPayloadError,
     get_revocation_cache,
 )
 
@@ -181,9 +180,9 @@ async def test_publish_event_updates_cache(
     )
     assert fired, "subscriber never picked up the published event"
 
-    # Now is_revoked must reflect the >= rule.
+    # Now is_revoked must reflect the strict boundary.
     assert await started_cache.is_revoked(user_id, token_version=6) is True
-    assert await started_cache.is_revoked(user_id, token_version=7) is True
+    assert await started_cache.is_revoked(user_id, token_version=7) is False
     assert await started_cache.is_revoked(user_id, token_version=8) is False
 
 
@@ -220,10 +219,12 @@ async def test_cold_start_seeds_cache_from_csp(fake_redis_factory, respx_mock):
     await cache.start(app=None)
     try:
         assert cache.ready is True
-        assert await cache.is_revoked(1, token_version=3) is True
+        assert await cache.is_revoked(1, token_version=2) is True
+        assert await cache.is_revoked(1, token_version=3) is False
         assert await cache.is_revoked(2, token_version=4) is True
+        assert await cache.is_revoked(2, token_version=5) is False
         assert await cache.is_revoked(2, token_version=6) is False
-        assert await cache.is_revoked(3, token_version=1) is True
+        assert await cache.is_revoked(3, token_version=1) is False
         # User not in the cold-start set → not revoked.
         assert await cache.is_revoked(4, token_version=99) is False
     finally:
@@ -249,13 +250,92 @@ async def test_cold_start_failure_raises(fake_redis_factory, respx_mock):
     await cache.stop(app=None)
 
 
+async def test_live_revoke_during_cold_start_is_not_lost(
+    fake_redis_factory,
+    fake_redis_server,
+    monkeypatch,
+):
+    """Subscribe-before-replay must queue an event published mid-replay.
+
+    This is mutation-sensitive: moving ``subscribe`` back below
+    ``_cold_start_sync`` makes the event disappear and this test time out.
+    """
+    cache = RevocationCache()
+
+    async def publish_while_replaying():
+        await _publish(
+            fake_redis_server,
+            {
+                "user_id": 991,
+                "revoked_at_version": 4,
+                "scope": "user_version",
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "schema_version": 2,
+            },
+        )
+
+    monkeypatch.setattr(cache, "_cold_start_sync", publish_while_replaying)
+    await cache.start(app=None)
+    try:
+        fired = await _wait_until(lambda: cache._cache.get(991) == 4)
+        assert fired, "revocation published during replay was lost"
+        assert await cache.is_revoked(991, token_version=3) is True
+    finally:
+        await cache.stop(app=None)
+
+
+async def test_periodic_replay_recovers_a_missed_pubsub_publish(
+    fake_redis_factory,
+    respx_mock,
+    monkeypatch,
+):
+    """A durable row must propagate even when no Redis event arrives."""
+    calls = 0
+
+    def replay_response(_request):
+        nonlocal calls
+        calls += 1
+        rows = []
+        if calls >= 2:
+            rows = [
+                {
+                    "user_id": 992,
+                    "revoked_at_version": 3,
+                    "scope": "user_version",
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                }
+            ]
+        return httpx.Response(
+            200,
+            json={"revocations": rows, "retention_days": 30},
+        )
+
+    respx_mock.get(f"{settings.CSP_BASE_URL}/api/auth/revocations").mock(
+        side_effect=replay_response
+    )
+    monkeypatch.setattr(
+        settings,
+        "REVOCATION_RECONCILE_INTERVAL_SECONDS",
+        0.1,
+    )
+    cache = RevocationCache()
+    await cache.start(app=None)
+    try:
+        fired = await _wait_until(lambda: cache._cache.get(992) == 3)
+        assert fired, "durable replay did not recover missed pub/sub event"
+        assert calls >= 2
+        assert await cache.is_revoked(992, token_version=2) is True
+    finally:
+        await cache.stop(app=None)
+
+
 # ---------------------------------------------------------------------------
-# >= boundary
+# Strict version boundary
 # ---------------------------------------------------------------------------
 
 
-async def test_revoked_at_version_inclusive_boundary(started_cache, fake_redis_server):
-    """Revocation @ version=5 must block v4, v5 AND let v6 through."""
+async def test_revoked_at_version_exclusive_boundary(started_cache, fake_redis_server):
+    """Revocation @ version=5 blocks v4 while newly minted v5 remains valid."""
     await _publish(
         fake_redis_server,
         {
@@ -269,7 +349,7 @@ async def test_revoked_at_version_inclusive_boundary(started_cache, fake_redis_s
     assert fired
 
     assert await started_cache.is_revoked(100, token_version=4) is True
-    assert await started_cache.is_revoked(100, token_version=5) is True
+    assert await started_cache.is_revoked(100, token_version=5) is False
     assert await started_cache.is_revoked(100, token_version=6) is False
 
 
@@ -290,15 +370,15 @@ async def test_ttl_expires_after_30_days(fake_redis_factory, empty_revocations_e
             # Force a value into the cache directly — we're testing TTL
             # semantics, not the subscriber path.
             cache._cache[123] = 9
-            assert await cache.is_revoked(123, token_version=9) is True
+            assert await cache.is_revoked(123, token_version=8) is True
 
             # Just inside the TTL: still revoked.
             frozen.tick(timedelta(seconds=settings.REVOCATION_CACHE_TTL_SECONDS - 60))
-            assert await cache.is_revoked(123, token_version=9) is True
+            assert await cache.is_revoked(123, token_version=8) is True
 
             # Past the TTL: cache must miss → not revoked.
             frozen.tick(timedelta(seconds=120))
-            assert await cache.is_revoked(123, token_version=9) is False
+            assert await cache.is_revoked(123, token_version=8) is False
         finally:
             await cache.stop(app=None)
 
@@ -342,7 +422,7 @@ async def test_out_of_order_publish_keeps_max(started_cache, fake_redis_server):
 
     # Cache must still hold the max.
     assert started_cache._cache.get(uid) == 3
-    assert await started_cache.is_revoked(uid, token_version=3) is True
+    assert await started_cache.is_revoked(uid, token_version=2) is True
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +456,59 @@ async def test_redis_disconnect_flips_ready_false(
         await cache.stop(app=None)
 
 
+async def test_malformed_live_revocation_flips_ready_false(
+    fake_redis_server,
+    fake_redis_factory,
+    empty_revocations_endpoint,
+):
+    """A message we cannot enforce is a deny-list outage, not a soft skip."""
+    cache = RevocationCache()
+    cache._reconnect_initial_delay = 60.0
+    cache._reconnect_max_delay = 60.0
+    await cache.start(app=None)
+    try:
+        await _publish(
+            fake_redis_server,
+            {
+                "user_id": 42,
+                "revoked_at_version": 0,
+                "scope": "jti",
+                # Deliberately missing token_jti_hash.
+                "schema_version": 2,
+            },
+        )
+        fired = await _wait_until(lambda: cache.ready is False)
+        assert fired, "malformed revocation did not fail the cache closed"
+    finally:
+        await cache.stop(app=None)
+
+
+async def test_malformed_cold_start_row_prevents_ready(
+    fake_redis_factory,
+    respx_mock,
+):
+    respx_mock.get(f"{settings.CSP_BASE_URL}/api/auth/revocations").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "revocations": [
+                    {
+                        "user_id": 42,
+                        "revoked_at_version": 0,
+                        "scope": "sid",
+                    }
+                ],
+                "retention_days": 30,
+            },
+        )
+    )
+    cache = RevocationCache()
+    with pytest.raises(RevocationPayloadError, match="malformed revocation"):
+        await cache.start(app=None)
+    assert cache.ready is False
+    await cache.stop(app=None)
+
+
 # ---------------------------------------------------------------------------
 # schema_version != 1 → log warning, still update cache
 # ---------------------------------------------------------------------------
@@ -401,7 +534,7 @@ async def test_unknown_schema_version_logs_warning_but_updates(
         fired = await _wait_until(lambda: started_cache._cache.get(uid) == 11)
         assert fired
 
-    assert await started_cache.is_revoked(uid, token_version=11) is True
+    assert await started_cache.is_revoked(uid, token_version=10) is True
     # A warning was emitted somewhere mentioning schema_version.
     assert any(
         "schema_version" in record.getMessage().lower()

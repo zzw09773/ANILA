@@ -61,6 +61,13 @@ class Settings(BaseSettings):
     JWT_PRIVATE_KEY_PATH: str = "secrets/jwt-private.pem"
     JWT_PUBLIC_KEY_PATH: str = "secrets/jwt-public.pem"
     JWT_KID: str = "anila-v1"
+    # Stable trust-domain identifiers shared by every JWT consumer.  Tokens
+    # without these exact values are rejected even when the RS256 signature is
+    # otherwise valid.
+    JWT_ISSUER: str = "https://anila.internal/csp"
+    JWT_AUDIENCE: str = "anila-platform"
+    # Future-iat tolerance only; exp verification remains strict.
+    JWT_LEEWAY_SECONDS: int = Field(default=60, ge=0, le=300)
     # When True the JWT module will auto-generate a keypair at the
     # configured paths if missing. Dev / test only — production must
     # provision keys out-of-band so ``kid`` rotation is explicit.
@@ -170,6 +177,15 @@ class Settings(BaseSettings):
     ENABLE_CARD_LOGIN: bool = False
     REQUIRE_CARD_LOGIN_ONLY: bool = False
     CARD_INITIAL_OWNERS: str = ""
+    # Offline certificate-revocation/profile enforcement. Formal card-only
+    # deployments mount an operator-refreshed PEM CRL bundle read-only and
+    # startup refuses a missing/stale-policy configuration.
+    CARD_CRL_REQUIRED: bool = False
+    CARD_CRL_BUNDLE_PATH: str = ""
+    CARD_CRL_MAX_AGE_HOURS: int = Field(default=24, ge=1, le=168)
+    CARD_CRL_SOURCE: str = ""
+    CARD_REQUIRED_EKU_OID: str = "1.3.6.1.5.5.7.3.2"  # id-kp-clientAuth
+    CARD_REQUIRED_CERT_POLICY_OIDS: str = ""
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

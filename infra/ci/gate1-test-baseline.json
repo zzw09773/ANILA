@@ -452,6 +452,13 @@
       "count": 1,
       "required_execution": true,
       "reason": "CSP SQLite pass skips by design; postgres-rls supplies ANILA_TEST_PG_DSN and executes it."
+    },
+    {
+      "path": "services/csp/tests/test_gate2_auth_races_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "reason": "CSP SQLite pass skips by design; postgres-rls supplies ANILA_TEST_PG_DSN and executes challenge/refresh races plus migration upgrade/downgrade."
     }
   ],
   "quarantine": [],

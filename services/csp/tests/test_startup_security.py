@@ -348,6 +348,7 @@ def _set_formal_card_profile(monkeypatch) -> None:
         "ANILA_ALLOW_HTTP_AGENT_ENDPOINT": "1",
         "ANILA_ALLOW_PRIVATE_ENDPOINT": "0",
         "CARD_DEV_SKIP_NONCE_BINDING": "false",
+        "CARD_CRL_REQUIRED": "true",
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)

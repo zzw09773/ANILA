@@ -140,7 +140,7 @@ def test_me_reachable_with_card_session_cookie(
 
 
 def test_verify_rejects_replayed_challenge(
-    client: TestClient, card_login_enabled
+    client: TestClient, db, card_login_enabled
 ):
     """同一組 challenge token + CMS 簽章只能兌換一次 session。"""
     ch = client.get("/api/auth/card/challenge").json()
@@ -159,6 +159,22 @@ def test_verify_rejects_replayed_challenge(
     replay = client.post("/api/auth/card/verify", json=payload)
     assert replay.status_code == 400, replay.text
     assert "已使用或過期" in replay.json()["detail"]
+
+    from app.models.audit_log import AuditLog
+    from app.services.audit_service import parse_metadata
+
+    event = (
+        db.query(AuditLog)
+        .filter(AuditLog.action == "card_login", AuditLog.status == "failure")
+        .order_by(AuditLog.id.desc())
+        .first()
+    )
+    metadata = parse_metadata(event.metadata_json)
+    assert metadata["reason"] == "challenge_replay_or_expired"
+    assert len(metadata["challenge_jti_hash"]) == 64
+    serialized = event.metadata_json
+    assert ch["nonce"] not in serialized
+    assert payload["signature"] not in serialized
 
 
 # ── error cases ────────────────────────────────────────────────────────────────
@@ -297,8 +313,13 @@ def test_owner_in_initial_owners_logs_in_directly(
     result = _do_card_verify(client)
     assert result["status_code"] == 200
     assert "access_token" in result["body"]
-    assert decode_token(result["body"]["access_token"])["amr"] == ["sc"]
-    assert decode_token(result["body"]["refresh_token"])["amr"] == ["sc"]
+    access_claims = decode_token(result["body"]["access_token"])
+    refresh_claims = decode_token(result["body"]["refresh_token"])
+    assert access_claims["amr"] == refresh_claims["amr"] == ["sc"]
+    assert access_claims["acr"] == refresh_claims["acr"] == (
+        "urn:anila:acr:smart-card"
+    )
+    assert access_claims["break_glass"] is refresh_claims["break_glass"] is False
 
     user = db.query(User).filter(User.username == EXPECTED_EMP_ID).first()
     assert user.role == "owner"

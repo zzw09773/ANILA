@@ -159,7 +159,8 @@ def test_publish_revocation_emits_expected_envelope(recording_redis):
     payload = json.loads(message)
     assert payload["user_id"] == 42
     assert payload["revoked_at_version"] == 3
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
+    assert payload["scope"] == "user_version"
     # ts is ISO-8601 UTC, parseable.
     ts = datetime.fromisoformat(payload["ts"].replace("Z", "+00:00"))
     assert ts.tzinfo is not None
@@ -277,8 +278,7 @@ def _bump_call(recording_redis: _RecordingRedis | _RecordingSyncRedis) -> dict[s
 def test_logout_triggers_publish_after_bump(
     client: TestClient, db, recording_sync_redis
 ):
-    """The existing logout path bumps token_version; the new publish
-    call must fire after that bump, with the post-bump version."""
+    """Logout publishes a focused sid revocation without widening scope."""
     user = make_user(db, username="logout-user", role="user")
     initial_version = user.token_version
 
@@ -295,11 +295,13 @@ def test_logout_triggers_publish_after_bump(
     )
     assert resp.status_code == 200, resp.text
 
-    # publish_revocation should have been called once with the
-    # *post-bump* token_version.
+    # The event carries the current version only for compatibility; scope=sid
+    # tells consumers not to invalidate the user's other sessions.
     payload = _bump_call(recording_sync_redis)
     assert payload["user_id"] == user.id
-    assert payload["revoked_at_version"] == initial_version + 1
+    assert payload["revoked_at_version"] == initial_version
+    assert payload["scope"] == "sid"
+    assert len(payload["session_id_hash"]) == 64
 
 
 def test_password_change_triggers_publish(
@@ -442,8 +444,11 @@ def test_publish_failure_does_not_break_logout(client: TestClient, db, monkeypat
     )
     assert resp.status_code == 200, resp.text
 
-    # DB bump still happened even though publish blew up.
+    # Durable sid revocation still happened even though publish blew up.
     db.expire_all()
     from app.models.user import User
     refreshed = db.query(User).filter(User.id == user.id).first()
-    assert refreshed.token_version == 1
+    assert refreshed.token_version == 0
+    from app.models.token_revocation import TokenRevocation
+    row = db.query(TokenRevocation).filter_by(user_id=user.id, scope="sid").one()
+    assert len(row.session_id_hash) == 64

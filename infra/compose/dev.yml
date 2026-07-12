@@ -70,6 +70,11 @@ services:
       # Explicit development opt-ins; the formal profile defaults both off.
       ENABLE_PUBLIC_SHARE: "${ENABLE_PUBLIC_SHARE:-true}"
       ENABLE_MEMORY: "${ENABLE_MEMORY:-true}"
+      CARD_CRL_REQUIRED: "false"
+      CARD_CRL_SOURCE: "development-disabled"
+      JWT_ISSUER: "https://anila.internal/csp"
+      JWT_AUDIENCE: "anila-platform"
+      JWT_LEEWAY_SECONDS: "60"
       PUBLIC_SHARE_MAX_TTL_HOURS: "${PUBLIC_SHARE_MAX_TTL_HOURS:-168}"
       SITE_URL: "${SITE_URL:-https://localhost:8443}"
       # Dev-only relax (S-117 URL guard): dev runs every model/agent on
@@ -283,6 +288,10 @@ services:
       ARTIFACTS_DIR: /var/anila/anila-studio-artifacts
       RENDERER_BASE_URL: http://pptx-renderer:7100
       JWT_KID: anila-v1
+      JWT_ISSUER: "https://anila.internal/csp"
+      JWT_AUDIENCE: "anila-platform"
+      JWT_LEEWAY_SECONDS: "60"
+      REVOCATION_RECONCILE_INTERVAL_SECONDS: "5"
       REQUIRE_CARD_LOGIN_ONLY: "false"
       COOKIE_SECURE: "true"
       LOG_LEVEL: INFO

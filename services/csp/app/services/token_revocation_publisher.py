@@ -15,8 +15,11 @@ This module fans out revocation events on the Redis channel
 
     {"user_id": int,
      "revoked_at_version": int,
+     "scope": "user_version" | "jti" | "sid",
+     "token_jti_hash": str | null,
+     "session_id_hash": str | null,
      "ts": "<ISO-8601 UTC>",
-     "schema_version": 1}
+     "schema_version": 2}
 
 Why best-effort, not fail-closed
 ================================
@@ -29,8 +32,8 @@ R14 fail-closed trade-off:
   ``token_revocations`` are already committed by the time we get
   here. If Redis is unreachable we log the error and return; the
   caller's HTTP request still succeeds because the durable record
-  is in place. Subscribers cold-starting later replay it via
-  ``GET /api/auth/revocations?since=...``.
+  is in place. Subscribers reconcile that endpoint periodically (and on
+  cold-start/reconnect), bounding a missed publish by the configured SLA.
 
 * **anila-studio (subscriber, separate service) — fail-closed.**
   When a subscriber can't reach Redis it has no way to know if it's
@@ -72,7 +75,7 @@ CHANNEL = "anila:auth:token-revoke"
 
 # Payload schema. Bump alongside any breaking change so subscribers
 # can downgrade gracefully on encountering a newer event.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Default Redis URL — anila-platform docker-compose puts a Redis at
 # this hostname, and tests don't need a real connection.
@@ -87,10 +90,24 @@ SYNC_REDIS_TIMEOUT_SECONDS = float(
 _client_singleton = None  # type: ignore[var-annotated]
 
 
-def _revocation_message(user_id: int, revoked_at_version: int) -> str:
+def _revocation_message(
+    user_id: int,
+    revoked_at_version: int,
+    *,
+    scope: str = "user_version",
+    token_jti_hash: str | None = None,
+    session_id_hash: str | None = None,
+    token_type: str | None = None,
+    reason: str | None = None,
+) -> str:
     payload = {
         "user_id": user_id,
         "revoked_at_version": revoked_at_version,
+        "scope": scope,
+        "token_jti_hash": token_jti_hash,
+        "session_id_hash": session_id_hash,
+        "token_type": token_type,
+        "reason": reason,
         "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "schema_version": SCHEMA_VERSION,
     }
@@ -126,14 +143,19 @@ async def publish_revocation(
     revoked_at_version: int,
     *,
     redis_url: Optional[str] = None,
+    scope: str = "user_version",
+    token_jti_hash: str | None = None,
+    session_id_hash: str | None = None,
+    token_type: str | None = None,
+    reason: str | None = None,
 ) -> None:
     """Broadcast one revocation event. Never raises.
 
     Args:
         user_id: The user whose tokens are now invalid.
         revoked_at_version: ``users.token_version`` value AFTER the
-            bump. Subscribers compare ``jwt.tv >= revoked_at_version``
-            and reject when the inequality holds.
+            bump. Subscribers reject when ``jwt.tv < revoked_at_version``;
+            a token minted after the bump legitimately carries the new value.
         redis_url: Override the default URL (mostly for tests).
 
     The function MUST be called only after the corresponding DB
@@ -141,7 +163,15 @@ async def publish_revocation(
     a revocation that ends up rolled back and over-invalidating
     subscribers.
     """
-    message = _revocation_message(user_id, revoked_at_version)
+    message = _revocation_message(
+        user_id,
+        revoked_at_version,
+        scope=scope,
+        token_jti_hash=token_jti_hash,
+        session_id_hash=session_id_hash,
+        token_type=token_type,
+        reason=reason,
+    )
 
     try:
         client = await _get_redis_client(redis_url)
@@ -187,6 +217,11 @@ def publish_revocation_sync(
     revoked_at_version: int,
     *,
     redis_url: Optional[str] = None,
+    scope: str = "user_version",
+    token_jti_hash: str | None = None,
+    session_id_hash: str | None = None,
+    token_type: str | None = None,
+    reason: str | None = None,
 ) -> None:
     """Broadcast one revocation event from a synchronous call path.
 
@@ -196,7 +231,15 @@ def publish_revocation_sync(
     short-lived synchronous Redis client instead. It remains best-effort and
     never raises.
     """
-    message = _revocation_message(user_id, revoked_at_version)
+    message = _revocation_message(
+        user_id,
+        revoked_at_version,
+        scope=scope,
+        token_jti_hash=token_jti_hash,
+        session_id_hash=session_id_hash,
+        token_type=token_type,
+        reason=reason,
+    )
     client = None
     try:
         client = _make_sync_redis_client(redis_url)

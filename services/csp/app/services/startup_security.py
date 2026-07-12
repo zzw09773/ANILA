@@ -23,7 +23,10 @@ from pathlib import Path
 import re
 import stat
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from urllib.parse import urlparse
+
+from cryptography import x509
 
 from app.config import settings
 
@@ -142,6 +145,7 @@ def _resolved_posture() -> dict[str, object]:
         "CARD_DEV_SKIP_NONCE_BINDING": _env_truthy(
             "CARD_DEV_SKIP_NONCE_BINDING"
         ),
+        "CARD_CRL_REQUIRED": settings.CARD_CRL_REQUIRED,
     }
 
 
@@ -164,6 +168,7 @@ _PROD_INTRANET_CARD_POSTURE: dict[str, object] = {
     "ANILA_ALLOW_HTTP_AGENT_ENDPOINT": True,
     "ANILA_ALLOW_PRIVATE_ENDPOINT": False,
     "CARD_DEV_SKIP_NONCE_BINDING": False,
+    "CARD_CRL_REQUIRED": True,
 }
 
 _FORMAL_PROFILE_POSTURES: dict[str, dict[str, object]] = {
@@ -450,6 +455,55 @@ def assert_intranet_lockdown_consistency() -> None:
             "ENABLE_CARD_LOGIN=False — 將無人能登入。請同時啟用 "
             "ENABLE_CARD_LOGIN=true,或關閉 REQUIRE_CARD_LOGIN_ONLY。"
         )
+
+
+def assert_card_crl_policy() -> None:
+    """Formal card-only posture must provision offline revocation inputs."""
+    if not settings.REQUIRE_CARD_LOGIN_ONLY:
+        return
+    if not settings.CARD_CRL_REQUIRED:
+        raise RuntimeError(
+            "Refusing to start: card-only profile requires CARD_CRL_REQUIRED=true"
+        )
+    path = Path(settings.CARD_CRL_BUNDLE_PATH)
+    if not settings.CARD_CRL_BUNDLE_PATH or not path.is_file():
+        raise RuntimeError(
+            "Refusing to start: CARD_CRL_BUNDLE_PATH must be a mounted CRL file"
+        )
+    crl_source = settings.CARD_CRL_SOURCE.strip()
+    if (
+        not crl_source
+        or (crl_source.startswith("<") and crl_source.endswith(">"))
+        or crl_source.lower() in {"manual", "unknown", "todo", "placeholder"}
+    ):
+        raise RuntimeError(
+            "Refusing to start: CARD_CRL_SOURCE must name the offline sync source/owner"
+        )
+    policy_values = [
+        item.strip()
+        for item in settings.CARD_REQUIRED_CERT_POLICY_OIDS.split(",")
+        if item.strip()
+    ]
+    if not policy_values:
+        raise RuntimeError(
+            "Refusing to start: CARD_REQUIRED_CERT_POLICY_OIDS is required"
+        )
+    try:
+        for value in policy_values:
+            x509.ObjectIdentifier(value)
+        x509.ObjectIdentifier(settings.CARD_REQUIRED_EKU_OID)
+    except ValueError as exc:
+        raise RuntimeError(
+            "Refusing to start: card EKU/certificate policy OID is malformed"
+        ) from exc
+    from app.services.card_auth import CardAuthError, validate_card_crl_bundle
+
+    try:
+        validate_card_crl_bundle()
+    except CardAuthError as exc:
+        raise RuntimeError(
+            f"Refusing to start: card CRL bundle validation failed: {exc}"
+        ) from exc
 
 
 def assert_card_only_data_feature_policy() -> None:

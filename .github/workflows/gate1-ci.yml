@@ -296,6 +296,13 @@ jobs:
           PYTHONPATH: .
         run: python -m pytest tests/test_ingestion_images_rls_pg.py -q
 
+      - name: Run Gate 2 auth concurrency and migration contracts
+        working-directory: services/csp
+        env:
+          ANILA_TEST_PG_DSN: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          PYTHONPATH: .
+        run: python -m pytest tests/test_gate2_auth_races_pg.py -q
+
   frontend-governance:
     name: Frontend / CSP governance UI
     runs-on: ubuntu-latest

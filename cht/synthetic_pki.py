@@ -15,13 +15,14 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import pkcs7
-from cryptography.x509.oid import NameOID
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 
 SYNTHETIC_EMPLOYEE_ID = "990000001"
 SYNTHETIC_DISPLAY_NAME = "Synthetic Card User"
 SYNTHETIC_EMAIL = "synthetic.card.user@example.invalid"
 SYNTHETIC_CARD_SERIAL = "SYNTH-CARD-0001"
+SYNTHETIC_POLICY_OID = x509.ObjectIdentifier("1.3.6.1.4.1.55555.1.1")
 
 
 def _name(common_name: str, employee_id: str | None = None) -> x509.Name:
@@ -79,6 +80,16 @@ def _certificate(
     if email:
         builder = builder.add_extension(
             x509.SubjectAlternativeName([x509.RFC822Name(email)]), critical=False
+        )
+    if not is_ca:
+        builder = builder.add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH]),
+            critical=False,
+        ).add_extension(
+            x509.CertificatePolicies(
+                [x509.PolicyInformation(SYNTHETIC_POLICY_OID, None)]
+            ),
+            critical=False,
         )
     return builder.sign(issuer_key, hashes.SHA256())
 
@@ -174,3 +185,7 @@ def create_synthetic_card_identity() -> SyntheticCardIdentity:
 
 
 SYNTHETIC_CARD = create_synthetic_card_identity()
+SYNTHETIC_SIGNER_CERT_SERIAL = format(
+    SYNTHETIC_CARD.signer_certificate.serial_number,
+    "X",
+)

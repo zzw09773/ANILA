@@ -79,6 +79,9 @@ class DeploymentContainmentTests(unittest.TestCase):
             {
                 "ADMIN_PASSWORD": "test-admin-0123456789012345",
                 "CARD_INITIAL_OWNERS": "990000001",
+                "CARD_CRL_BUNDLE_PATH": "/etc/anila/pki/card-crl-bundle.pem",
+                "CARD_CRL_SOURCE": "synthetic-inventory-feed",
+                "CARD_REQUIRED_CERT_POLICY_OIDS": "1.3.6.1.4.1.55555.1.1",
                 "CODESERVER_PASSWORD": "test-code-0123456789012345",
                 "CSP_APP_DB_PASSWORD": "0123456789abcdef0123456789abcdef",
                 "CSP_DB_PASSWORD": "abcdef0123456789abcdef0123456789",
@@ -465,6 +468,24 @@ class DeploymentContainmentTests(unittest.TestCase):
         ops = read("infra/deployment/scripts/anila-ops.sh")
         self.assertIn("set_env_single_quoted()", ops)
         self.assertIn('set_env_single_quoted MODEL_GATEWAY_API_KEY "$key"', ops)
+
+    def test_intranet_card_profile_requires_offline_crl_evidence(self) -> None:
+        script = read("infra/deployment/intranet/intranet-deploy.sh")
+        self.assertIn("share/pki/card-crl-bundle.pem", script)
+        self.assertIn("BEGIN X509 CRL", script)
+        self.assertIn("set_env CARD_CRL_REQUIRED true", script)
+        self.assertIn(
+            "set_env CARD_CRL_BUNDLE_PATH /etc/anila/pki/card-crl-bundle.pem",
+            script,
+        )
+        self.assertIn(
+            'set_env_single_quoted CARD_CRL_SOURCE "$_card_crl_source"',
+            script,
+        )
+        self.assertIn(
+            'set_env_single_quoted CARD_REQUIRED_CERT_POLICY_OIDS "$_card_policy_oids"',
+            script,
+        )
 
     def test_developer_lifecycle_explicitly_enables_the_profile(self) -> None:
         script = read("infra/deployment/scripts/deploy-prod.sh")

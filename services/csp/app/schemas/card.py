@@ -38,8 +38,9 @@ class CardVerifyRequest(BaseModel):
         challenge_token: 從 ``/card/challenge`` 拿到的同一份 JWT。
         signature: base64 編碼的 PKCS#7 SignedData（由本機 CHT 元件回傳；
             dev emulator 會對本次 challenge 的實際 nonce 動態簽章）。
-        card_serial: 元件回應的 ``cardSN`` 欄位（例：``SYNTH-CARD-0001``）。
-            純 audit log 用途；不參與密碼學驗證。
+        card_serial: 舊版元件回應的 ``cardSN`` 相容欄位。後端不信任或記錄
+            此值；audit identity 一律由已驗證 CMS signer X.509 serial 與
+            SHA-256 fingerprint 衍生。
     """
 
     challenge_token: str = Field(..., min_length=1)
