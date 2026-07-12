@@ -62,6 +62,8 @@ jobs:
       - name: Install Python test dependencies
         run: |
           python -m pip install --upgrade pip
+          python -m pip install -e "./packages/anila-contracts"
+          python -m pip install -e "./packages/anila-security"
           python -m pip install -e "./packages/anila-core[dev,rag]"
           python -m pip install -r services/csp/requirements-dev.txt
           python -m pip install -e "./services/ingestion-worker[dev]"

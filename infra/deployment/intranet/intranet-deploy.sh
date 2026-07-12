@@ -184,7 +184,7 @@ prepare_csp_runtime_mount() {
   docker run --rm --pull never --user 0:0 --network none --read-only \
     --security-opt no-new-privileges \
     -v "$host_path:/mnt" \
-    --entrypoint sh anila-platform-csp:latest \
+    --entrypoint sh "$(get_env ANILA_IMAGE_CSP)" \
     -c "chown $CSP_RUNTIME_UID:$CSP_RUNTIME_GID /mnt && chmod $dir_mode /mnt" \
     || die "無法準備 CSP non-root mount: $host_path"
 }
@@ -420,6 +420,7 @@ set_env_single_quoted GITLAB_ROOT_PASSWORD "$_gitlab_root"
 
 # 內網 strict 模式 + 卡片登入 + 模型 CA 路徑(每次都確保正確)
 set_env ANILA_ALLOW_DEV_SECRET      0
+set_env ANILA_DEPLOYMENT_PROFILE    prod-intranet-card
 set_env ANILA_ALLOW_HTTP_ENDPOINT   0
 set_env ANILA_ALLOW_PRIVATE_ENDPOINT 0
 # Slice 6 旗標分域:ANILA_ENV=production → 「模型」http 一律 fail-closed(不受
@@ -454,6 +455,9 @@ set_env GITLAB_SSH_PORT             "${_gitlab_ssh_port:-2222}"
 # Dev/test bypasses must not survive an old .env into the formal card profile.
 unset_env CARD_DEV_SKIP_NONCE_BINDING
 unset_env SKIP_STARTUP_MIGRATIONS
+unset_env ANILA_BREAK_GLASS_OWNER
+unset_env ANILA_BREAK_GLASS_TICKET
+unset_env ANILA_BREAK_GLASS_EXPIRES_AT
 # 只在 model-ca.pem 真的有憑證時才指過去。ANILA_MODEL_CA_FILE → csp 的 SSL_CERT_FILE,
 # 而 SSL_CERT_FILE 是「取代」整個系統信任庫(非疊加):指到空/壞檔 → csp 所有出向 https
 # 全 CERTIFICATE_VERIFY_FAILED(連 agent 都連不上)。空字串則 fallback 系統 CA,無副作用。
@@ -486,7 +490,7 @@ set_env_single_quoted CARD_INITIAL_OWNERS "$CIO"
 
 MGK="$(asksecret 'MODEL_GATEWAY_API_KEY — 在 .12 gateway 簽發的 key (還沒有就 Enter 跳過)')"
 if [ -n "$MGK" ]; then set_env_single_quoted MODEL_GATEWAY_API_KEY "$MGK"; ok "已設 MODEL_GATEWAY_API_KEY"
-else warn "MODEL_GATEWAY_API_KEY 留空 — 模型 proxy 暫時打不通。拿到後填進 .env 再 'docker compose up -d --pull never csp'"; fi
+else warn "MODEL_GATEWAY_API_KEY 留空 — 模型 proxy 暫時打不通。拿到後用 anila-ops.sh gateway-key 安全套用"; fi
 
 # 必填齊全檢查
 for k in CSP_SECRET_KEY CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY ADMIN_PASSWORD \
@@ -528,6 +532,19 @@ fi
 info "[4/7] load image (SHA256 驗檔 + re-tag anila-intranet-* → anila-platform-*)"
 bash "$BUNDLE/INTRANET-LOAD.sh"
 
+# Gate 1 F6: resolve every formal Compose image to the exact content ID in the
+# checksummed bundle lock.  These values persist in .env, so later recreates
+# cannot drift when a mutable tag is retargeted on the host.
+IMAGE_LOCK_SCRIPT="infra/deployment/scripts/verify-compose-image-lock.py"
+while IFS=$'\t' read -r image_variable image_id; do
+  [ -n "$image_variable" ] && set_env "$image_variable" "$image_id"
+done < <(python3 "$IMAGE_LOCK_SCRIPT" emit-env \
+  --lock "$BUNDLE/PLATFORM-IMAGE-LOCK.tsv")
+python3 "$IMAGE_LOCK_SCRIPT" verify-env --env-file .env \
+  --lock "$BUNDLE/PLATFORM-IMAGE-LOCK.tsv" --inspect-docker \
+  || die "formal Compose image content-ID lock 驗證失敗"
+ok "formal Compose default services 已鎖定 bundle sha256 image IDs"
+
 # ── 4b. JWT 簽章金鑰 ───────────────────────────────────────────────────────
 # csp 用這把 RSA 私鑰簽登入 access token,並對 anila-studio 等服務發 JWKS 公鑰。
 # prod 模式 ALLOW_AUTO_KEYGEN=false → 不自動生;缺這把:csp /.well-known/jwks.json
@@ -541,7 +558,7 @@ prepare_csp_runtime_mount "$PWD/share/uploads/ingestion" 700
 # user 在無網路、唯讀 rootfs 的 one-shot container 內驗證/沿用/首次生成；
 # partial、symlink、malformed、mismatched pair 一律 fail-closed。
 docker run --rm --pull never --network none --read-only \
-  -v "$SECRETS_DIR:/out" --entrypoint python anila-platform-csp:latest \
+  -v "$SECRETS_DIR:/out" --entrypoint python "$(get_env ANILA_IMAGE_CSP)" \
   /app/scripts/generate-jwt-keypair.py --output-dir /out --ensure \
   && ok "JWT keypair 已驗證/就緒 (RSA-2048 / RS256 / PKCS#8)" \
   || die "JWT keypair ensure 失敗 (csp image / keypair 完整性 / 權限?)"
@@ -549,7 +566,7 @@ docker run --rm --pull never --network none --read-only \
 # for newly generated files.  Public key is readable; private key is CSP-only.
 docker run --rm --pull never --user 0:0 --network none --read-only \
   -v "$SECRETS_DIR:/mnt" \
-  --entrypoint sh anila-platform-csp:latest \
+  --entrypoint sh "$(get_env ANILA_IMAGE_CSP)" \
   -c "chown $CSP_RUNTIME_UID:$CSP_RUNTIME_GID /mnt /mnt/jwt-private.pem /mnt/jwt-public.pem && chmod 700 /mnt && chmod 600 /mnt/jwt-private.pem && chmod 644 /mnt/jwt-public.pem" \
   || die "JWT keypair 權限收斂失敗"
 
@@ -579,6 +596,6 @@ echo "  • 維運:infra/deployment/scripts/anila-ops.sh {health | backup | rest
 echo "  • n8n:    https://n8n.ai.ncsist.org.tw/ (原生帳號；webhook ingress 封鎖)"
 echo "  • GitLab: https://gitlab.ai.ncsist.org.tw/ (原生帳號/PAT；SSH :$(get_env GITLAB_SSH_PORT))"
 echo "  • 開發 IDE:https://code.ai.ncsist.org.tw/ (先放獨立 clone,再執行 deploy-prod.sh codeserver-up)"
-[ -z "${MGK:-}" ] && echo "  • $(c '1;33' '待辦'):MODEL_GATEWAY_API_KEY 拿到後填 .env → docker compose up -d --pull never csp"
+[ -z "${MGK:-}" ] && echo "  • $(c '1;33' '待辦'):MODEL_GATEWAY_API_KEY 拿到後執行 anila-ops.sh gateway-key"
 echo "  • DNS:確認 anila/n8n/gitlab/code.ai.ncsist.org.tw → 本機、aiagent2.ai.ncsist.org.tw → .12"
 echo "============================================================"

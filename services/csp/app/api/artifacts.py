@@ -60,7 +60,7 @@ from app.schemas.contracts.artifacts import (
     ArtifactVersionResult,
     ExportResult,
 )
-from app.schemas.contracts.classification import ClassificationLevel
+from anila_contracts import Classification as ClassificationLevel
 from app.services import agent_credential_service
 from app.services.auth_service import get_current_user, is_admin_tier
 

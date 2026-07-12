@@ -31,7 +31,7 @@ from app.services.memory_service import (
     _format_block,
     parse_extraction_response,
 )
-from anila_core.security import ENDPOINT_KIND_MODEL
+from anila_security import ENDPOINT_KIND_MODEL
 
 
 # ── parse_extraction_response ────────────────────────────────────────────────

@@ -28,7 +28,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
-# Install anila-core first (changes less often than backend code, so
+# Install the thin wire-contract package before its consumers.
+COPY packages/anila-contracts /tmp/anila-contracts
+RUN pip install --no-cache-dir /tmp/anila-contracts
+
+# Install the thin security package before anila-core. anila-core keeps a
+# compatibility dependency on it, while CSP imports anila_security directly.
+COPY packages/anila-security /tmp/anila-security
+RUN pip install --no-cache-dir /tmp/anila-security
+
+# Install anila-core next (changes less often than backend code, so
 # layer caching survives most builds). The package brings asyncpg +
 # pgvector + the AgentScopedPgVectorStore the inspector uses, and the
 # ``[rag]`` extra adds the parser stack (pymupdf4llm / python-docx /
@@ -41,6 +50,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # anila_core.* directly and does NOT install AgenticRAG at runtime.
 COPY packages/anila-core /tmp/anila-core
 RUN pip install --no-cache-dir '/tmp/anila-core[rag]'
+
+# Supply-chain provenance: these unreserved internal distribution names must
+# resolve only from the reviewed build context, never from a package index.
+RUN python -c "\
+import importlib.metadata as m,json; \
+expected={'anila-contracts':'file:///tmp/anila-contracts','anila-security':'file:///tmp/anila-security','anila-core':'file:///tmp/anila-core'}; \
+actual={name:json.loads(m.distribution(name).read_text('direct_url.json'))['url'] for name in expected}; \
+assert actual == expected, f'internal package origin mismatch: {actual}'"
 
 # Install Python dependencies (CSP-specific)
 COPY services/csp/requirements.txt ./

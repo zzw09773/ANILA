@@ -7,7 +7,7 @@ unchanged.
 """
 from fastapi import HTTPException
 
-from anila_core.security import (
+from anila_security import (
     ENDPOINT_KIND_GENERIC,
     UnsafeEndpointError,
     validate_outbound_url,

@@ -14,7 +14,7 @@ from app.models.audit_log import AuditLog
 from app.models.conversation import Conversation, ConversationShare
 from app.models.message import Message
 from app.models.user import User
-from app.schemas.contracts.classification import ClassificationLevel
+from anila_contracts import Classification as ClassificationLevel
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import is_admin_tier
 

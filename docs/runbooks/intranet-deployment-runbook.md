@@ -42,24 +42,38 @@
    crash-loop**。**已修**:`intranet-deploy.sh` 步驟 `[4b]` 會用 csp image 跑
    `scripts/generate-jwt-keypair.py` 產 `ANILA_SECRETS_DIR/jwt-{private,public}.pem`,
    compose 以 `:ro` mount 進 csp `/app/secrets`。`ANILA_SECRETS_DIR` 必須是 repo
-   外的絕對路徑；gitignore 不是 secret boundary。手動 `docker compose up` 而沒先跑
-   腳本的話,也必須先產 key 並設定該路徑。
+    外的絕對路徑；gitignore 不是 secret boundary。手動 `docker compose up` 而沒先跑
+    腳本的話,也必須先產 key 並設定該路徑。
+8. **Gate 1 F6 posture + image lock**:`ANILA_DEPLOYMENT_PROFILE=prod-intranet-card`
+   是可執行合約；card/public-share/memory/cookie/migration/dev-bypass 任一旗標漂移，CSP
+   在 migration 前拒絕啟動。`[4]` load 完會把 checksummed
+   `PLATFORM-IMAGE-LOCK.tsv` 的 13 個 default service content ID 寫成
+   `ANILA_IMAGE_*=sha256:...`；後續 `deploy-prod.sh` 會重驗 wiring、本機 image ID 與
+   `.env`，不得手改回 mutable tag。
+   本次 Gate 1 posture/lock 合約的核准範圍只含 `prod-intranet-card` 與其限時
+   break-glass profile；public/military profile 尚未審查，不得直接 port 這份 formal
+   Compose，必須先另建 profile contract、bundle lock lifecycle 與 CI 證據。
 
 > **一條龍部署 (推薦)**:不想逐步跑 §2.2–§2.3,直接在 prod-intranet-card repo 根目錄:
 > ```bash
 > bash infra/deployment/intranet/intranet-deploy.sh [image包資料夾]
 > ```
 > 互動式跑完 **TLS 抽取 → 模型 CA → 產 .env(自動生 secret + 問 gateway key / owner 工號)
-> → load image → JWT 金鑰 → up → 驗證**。重跑安全(偵測既有 .env 預設保留 secret,不重生 DB 密碼)。
+> → load image + content-ID pin → JWT 金鑰 → up → 驗證**。重跑安全(偵測既有 .env 預設保留 secret,不重生 DB 密碼)。
 > 底下 §2.2–§2.3 是它每一步的詳解 / 手動備援。
 
 > **部署後兩件營運必做(live 預演 critic 抓到):**
 > 1. **首登 bootstrap**:owner(工號 `<NCSIST_EMPLOYEE_ID>`,插卡直接登入)登入後**要先建 department**,
 >    否則同仁卡片註冊時「完成註冊」的單位下拉是空的、卡在註冊。先建單位再請大家註冊。
 > 2. **break-glass(讀卡機/HiPKI 掛掉時的後路)**:card-only 模式關掉了帳密登入,若 go-live
->    當天讀卡機或 HiPKI(`localhost:16888`)故障會**全員進不去**。應急:`.env` 暫設
->    `REQUIRE_CARD_LOGIN_ONLY=false` → `docker compose up -d csp`,用 owner 帳密
->    (admin 密碼)break-glass 進去處理,修好讀卡環境後改回 `true` 再 recreate csp。
+>    當天讀卡機或 HiPKI(`localhost:16888`)故障會**全員進不去**。不得改
+>    `REQUIRE_CARD_LOGIN_ONLY=false`（F6 會把它視為 profile drift 並拒啟）；必須維持
+>    `REQUIRE_CARD_LOGIN_ONLY=true` 並切到
+>    `ANILA_DEPLOYMENT_PROFILE=prod-intranet-card-breakglass`，填具名
+>    `ANILA_BREAK_GLASS_OWNER`、`ANILA_BREAK_GLASS_TICKET` 與未來 24 小時內的 RFC3339
+>    `ANILA_BREAK_GLASS_EXPIRES_AT`，recreate CSP 後只允許 owner 帳密處理。到期後 login、
+>    access 與 refresh 會即時 fail-closed；修復後仍應立即執行
+>    `anila-ops.sh break-glass off`，恢復 `prod-intranet-card` 並清除事件 metadata。
 
 ---
 
@@ -329,7 +343,18 @@ nano .env   # 填 7 個 secret + MODEL_GATEWAY_API_KEY + CARD_INITIAL_OWNERS
             # 並打開 ANILA_MODEL_CA_FILE=/etc/anila/pki/model-ca.pem
 
 # 4. import image (內含 sha256 驗檔 + 提示建 anila-models-net)
-cd /tmp/anila-images-export && bash INTRANET-LOAD.sh
+(cd /tmp/anila-images-export && bash INTRANET-LOAD.sh)
+
+# 5. 把 checksummed bundle lock 原子寫進正式 .env，並驗本機 image/effective Compose
+LOCK=/tmp/anila-images-export/PLATFORM-IMAGE-LOCK.tsv
+while IFS=$'\t' read -r variable image_id; do
+  tmp="$(mktemp .env.tmp.XXXXXX)"
+  grep -vE "^${variable}=" .env > "$tmp" || true
+  printf '%s=%s\n' "$variable" "$image_id" >> "$tmp"
+  chmod 600 "$tmp" && mv -f -- "$tmp" .env
+done < <(python3 infra/deployment/scripts/verify-compose-image-lock.py emit-env --lock "$LOCK")
+python3 infra/deployment/scripts/verify-compose-image-lock.py verify-env \
+  --env-file .env --lock "$LOCK" --inspect-docker
 ```
 
 ### 2.2b 模型主機 (.12) 確認 + API key 簽發 (有 admin,SSH 上去跑)
@@ -429,7 +454,7 @@ cd /opt/anila
 set -a; source .env; set +a
 bash infra/deployment/scripts/deploy-prod.sh preflight   # 遠端模型模式:自動建 anila-models-net
                                         # + curl 探測 gateway (帶 Bearer key)
-docker compose up -d --no-build         # image 已 load,跳過 build
+docker compose up -d --no-build --pull never  # image 已 load且 content-ID locked
 ```
 
 ### 3.1b 本機模型要過 url_guard (R2 演練教訓,2026-06-11)
@@ -535,7 +560,7 @@ bash infra/deployment/intranet/model-serve.sh up flux2-dev flux2-dev-agent  # �
 #    ENABLE_IMAGE_CAPTIONS=true + VISION_MODEL=gemma4 (圖表進 RAG)
 
 # 4. 重建平台 csp 讓 auto_seed 重新註冊
-cd /opt/anila && docker compose up -d csp
+cd /opt/anila && docker compose up -d --no-build --pull never csp
 # /models 應出現 image-generator (圖像繪製);對話輸入「畫一張…」驗證 dispatch
 ```
 
@@ -589,7 +614,7 @@ docker exec anila-platform-csp-db-1 pg_dump -U csp csp | gzip > /backup/anila-$(
 ### 5.4 加 owner / 模型 gateway key 輪替
 
 - 新 owner:改 `CARD_INITIAL_OWNERS` (只對新刷卡者生效) 或 `/users` UI 改既有帳號
-- gateway key 輪替:aiagent2 重簽 → 改 `.env` `MODEL_GATEWAY_API_KEY` → `docker compose up -d csp`
+- gateway key 輪替:aiagent2 重簽 → 執行 `anila-ops.sh gateway-key`（內含 no-build recreate + readback）
 
 ---
 

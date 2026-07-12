@@ -14,6 +14,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PRODUCTION_DOCKERFILE = REPO_ROOT / "infra" / "docker" / "csp.Dockerfile"
+CSP_REQUIREMENTS = REPO_ROOT / "services" / "csp" / "requirements.txt"
 DEAD_DOCKERFILE = REPO_ROOT / "services" / "csp" / "Dockerfile"
 INTRANET_DEPLOY = (
     REPO_ROOT / "infra" / "deployment" / "intranet" / "intranet-deploy.sh"
@@ -32,6 +33,27 @@ PLATFORM_INVENTORY = (
 
 
 class CspNonRootContractTests(unittest.TestCase):
+    def test_internal_packages_never_resolve_from_public_index(self) -> None:
+        requirements = CSP_REQUIREMENTS.read_text(encoding="utf-8")
+        for distribution in ("anila-contracts", "anila-security", "anila-core"):
+            self.assertNotRegex(
+                requirements,
+                rf"(?m)^\s*{re.escape(distribution)}(?:\s|[<>=!~@])",
+                f"{distribution} must be installed from a reviewed local path",
+            )
+
+        dockerfile = PRODUCTION_DOCKERFILE.read_text(encoding="utf-8")
+        requirements_install = dockerfile.index(
+            "RUN pip install --no-cache-dir -r requirements.txt"
+        )
+        for package in ("anila-contracts", "anila-security", "anila-core"):
+            copy_index = dockerfile.index(f"COPY packages/{package} /tmp/{package}")
+            local_install = dockerfile.index("RUN pip install", copy_index)
+            self.assertLess(copy_index, local_install)
+            self.assertLess(local_install, requirements_install)
+            self.assertIn(f"'file:///tmp/{package}'", dockerfile)
+        self.assertIn("direct_url.json", dockerfile)
+
     def test_production_image_has_explicit_non_root_user(self) -> None:
         dockerfile = PRODUCTION_DOCKERFILE.read_text(encoding="utf-8")
         self.assertRegex(dockerfile, r"(?m)^USER\s+csp(?::csp)?\s*$")
@@ -70,7 +92,10 @@ class CspNonRootContractTests(unittest.TestCase):
         script = PROD_DEPLOY.read_text(encoding="utf-8")
         self.assertIn("CSP_RUNTIME_UID=10001", script)
         self.assertIn("CSP_RUNTIME_GID=10001", script)
-        self.assertIn("CSP_RUNTIME_IMAGE=anila-platform-csp:latest", script)
+        self.assertIn(
+            'CSP_RUNTIME_IMAGE="${ANILA_IMAGE_CSP:-$(env_file_value ANILA_IMAGE_CSP)}"',
+            script,
+        )
         self.assertIn(
             'prepare_csp_runtime_mount "$ANILA_SECRETS_DIR" 700', script
         )
@@ -80,11 +105,8 @@ class CspNonRootContractTests(unittest.TestCase):
         )
         self.assertIn("docker run --rm --pull never", script)
         deploy_body = script[script.index("cmd_deploy() {") : script.index("# ── Subcommand: up")]
-        self.assertLess(
-            deploy_body.index("docker compose build"),
-            deploy_body.index("ensure_jwt_keypair"),
-            "local deploy must build the non-root image before using it as chmod helper",
-        )
+        self.assertNotIn("docker compose build", deploy_body)
+        self.assertIn("preloaded content-ID-locked images", deploy_body)
         self.assertIn("docker image inspect \"$CSP_RUNTIME_IMAGE\"", script)
 
     def test_keypair_ensure_runs_inside_csp_and_host_never_stats_mode_0700(self) -> None:
@@ -187,10 +209,8 @@ class CspNonRootContractTests(unittest.TestCase):
         ]
         build_lines = [line for line in command_lines if " compose build" in line]
         up_lines = [line for line in command_lines if " compose up" in line]
-        self.assertTrue(build_lines)
+        self.assertFalse(build_lines, "formal host must never build images")
         self.assertTrue(up_lines)
-        for line in build_lines:
-            self.assertIn("--pull=false", line, line)
         for line in up_lines:
             self.assertIn("--pull never", line, line)
 
@@ -204,6 +224,11 @@ class CspNonRootContractTests(unittest.TestCase):
             ]
             self.assertTrue(commands, script_path)
             for command in commands:
+                self.assertIn(
+                    "--no-build",
+                    command,
+                    f"{script_path}: {command}",
+                )
                 self.assertIn(
                     "--pull never",
                     command,
@@ -259,7 +284,7 @@ class CspNonRootContractTests(unittest.TestCase):
         self.assertEqual(csp_rows[0][1], "anila-platform-csp")
         for script_path in (INTRANET_DEPLOY, PROD_DEPLOY):
             script = script_path.read_text(encoding="utf-8")
-            self.assertIn("anila-platform-csp:latest", script)
+            self.assertIn("ANILA_IMAGE_CSP", script)
 
     def test_backup_reads_mode_0700_runtime_data_through_a_bounded_helper(self) -> None:
         script = OPS_SCRIPT.read_text(encoding="utf-8")
@@ -267,7 +292,7 @@ class CspNonRootContractTests(unittest.TestCase):
             "docker compose ps --status running -q csp-db",
             script,
         )
-        self.assertIn('CSP_RUNTIME_IMAGE="anila-platform-csp:latest"', script)
+        self.assertIn('CSP_RUNTIME_IMAGE="$(get_env ANILA_IMAGE_CSP)"', script)
         self.assertIn("safe-runtime-backup.py", script)
         self.assertIn(
             "docker run --rm --pull never --user 0:0 --network none --read-only",

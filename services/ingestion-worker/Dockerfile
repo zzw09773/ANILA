@@ -1,13 +1,15 @@
 # ANILA ingestion-worker
 #
-# Build context is repo root (set in docker-compose.yml). Two packages
+# Build context is repo root (set in docker-compose.yml). Four packages
 # get pip-installed in dependency order, each in its own layer so cache
 # survives most code edits:
 #
-#   1. anila-core[rag]      — central SDK + parser stack (pymupdf4llm,
+#   1. anila-contracts      — framework-neutral wire contracts.
+#   2. anila-security       — credential crypto + outbound SSRF guard.
+#   3. anila-core[rag]      — central SDK + parser stack (pymupdf4llm,
 #                             python-docx, odfpy, striprtf, Pillow) and
 #                             the VisionProvider for image captioning.
-#   2. ingestion-worker     — the Arq handler that wires it all together.
+#   4. ingestion-worker     — the Arq handler that wires it all together.
 #
 # AgenticRAG/ in this branch is a pure starter template and is NOT
 # installed at runtime — production code (this worker, CSP, evaluator)
@@ -29,8 +31,14 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends antiword \
     && rm -rf /var/lib/apt/lists/*
 
-# Install in dependency order. anila-core changes less often than
-# worker code, so its layer stays cached on most rebuilds.
+# Install in dependency order. Shared packages change less often than
+# worker code, so their layers stay cached on most rebuilds.
+COPY packages/anila-contracts /tmp/anila-contracts
+RUN pip install /tmp/anila-contracts
+
+COPY packages/anila-security /tmp/anila-security
+RUN pip install /tmp/anila-security
+
 COPY packages/anila-core /tmp/anila-core
 RUN pip install '/tmp/anila-core[rag]'
 

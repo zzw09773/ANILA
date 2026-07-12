@@ -8,7 +8,7 @@ import os as _os
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from anila_core.security import UnsafeEndpointError, validate_outbound_url
+from anila_security import UnsafeEndpointError, validate_outbound_url
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -38,7 +38,7 @@ from app.schemas.contracts.agents import (
 def _enforce_endpoint_url(url: str) -> None:
     """Reject SSRF-prone agent endpoint URLs (loopback / private / metadata).
 
-    ``anila_core.security.url_guard.validate_outbound_url`` is the same
+    ``anila_security.url_guard.validate_outbound_url`` is the same
     helper the ingestion-credentials API uses; agents now share the
     deny-list so a developer can't register an internal-only endpoint and
     have an admin unknowingly approve it.
@@ -268,7 +268,7 @@ def register_agent(
 
     # SSRF guard — block loopback / private / cloud-metadata endpoints
     # before they ever land in the DB. Same helper the ingestion
-    # credentials API uses (anila_core.security.url_guard).
+    # credentials API uses (anila_security.url_guard).
     _enforce_endpoint_url(request.endpoint_url)
 
     # Validate base model — a registered agent must wrap a real, active

@@ -20,7 +20,7 @@ services:
   csp-db:
     # pgvector 是 postgres:16 的 superset,migration 0014 (ingestion) 需要
     # vector extension。換回 upstream postgres 會破 ingestion stack。
-    image: pgvector/pgvector:pg16
+    image: ${ANILA_IMAGE_CSP_DB:?ANILA_IMAGE_CSP_DB must be a locked image content ID}
     environment:
       POSTGRES_USER: csp
       # 只在 volume 首次初始化時生效;既有 csp-pgdata volume 改這個值不會
@@ -45,6 +45,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/docker/csp.Dockerfile
+    image: ${ANILA_IMAGE_CSP:?ANILA_IMAGE_CSP must be a locked image content ID}
     # 不對 host 開 port — 外部入口只有 nginx :443 (HTTPS + API key)。
     # 容器內 service-to-service 用 ``http://csp:8000`` 走 docker DNS。
     expose:
@@ -68,6 +69,15 @@ services:
       # startup_security 對 dev 預設值的拒絕開關。Prod 必須是 0 / unset。
       # 預設改成 0 (不再 fallback 1) — 缺 .env 時直接 enforce prod 模式。
       ANILA_ALLOW_DEV_SECRET: "${ANILA_ALLOW_DEV_SECRET:-0}"
+      # Gate 1 F6: deployment identity is declared, then CSP startup verifies
+      # every security-sensitive flag against this exact profile contract.
+      ANILA_DEPLOYMENT_PROFILE: "${ANILA_DEPLOYMENT_PROFILE:?ANILA_DEPLOYMENT_PROFILE must be declared}"
+      # Populated only by the named break-glass lifecycle command.  Keeping
+      # them explicit in Compose is required: values left only in host .env do
+      # not reach the CSP process.
+      ANILA_BREAK_GLASS_OWNER: "${ANILA_BREAK_GLASS_OWNER:-}"
+      ANILA_BREAK_GLASS_TICKET: "${ANILA_BREAK_GLASS_TICKET:-}"
+      ANILA_BREAK_GLASS_EXPIRES_AT: "${ANILA_BREAK_GLASS_EXPIRES_AT:-}"
       # Cookie-tossing defense: formal sessions use Secure, Path=/, no Domain
       # and the browser-enforced __Host- prefix. Never make this configurable
       # on the production compose path.
@@ -216,7 +226,7 @@ services:
 
   # ── Redis (Arq queue for ingestion-worker) ──────────────────────────────
   redis:
-    image: redis:7-alpine
+    image: ${ANILA_IMAGE_REDIS:?ANILA_IMAGE_REDIS must be a locked image content ID}
     command: ["redis-server", "--appendonly", "no", "--maxmemory", "256mb"]
     volumes:
       - redis-data:/data
@@ -232,6 +242,7 @@ services:
     build:
       context: ../..
       dockerfile: services/ingestion-worker/Dockerfile
+    image: ${ANILA_IMAGE_INGESTION_WORKER:?ANILA_IMAGE_INGESTION_WORKER must be a locked image content ID}
     environment:
       DATABASE_URL: postgresql://csp_app:${CSP_APP_DB_PASSWORD:?CSP_APP_DB_PASSWORD must be set (same value as csp)}@csp-db:5432/csp
       REDIS_URL: redis://redis:6379
@@ -276,6 +287,7 @@ services:
     build:
       context: ../..
       dockerfile: services/anila-core-router/Dockerfile
+    image: ${ANILA_IMAGE_ROUTER:?ANILA_IMAGE_ROUTER must be a locked image content ID}
     # 不對 host 開 port — 外部走 nginx /router/* → router:9000。
     expose:
       - "9000"
@@ -304,7 +316,7 @@ services:
   # TLS termination (self-signed dev cert),HTTP→HTTPS 301,proxy /, /api/,
   # /v1/, /v2/, /router/* 到對應內部 service。
   nginx:
-    image: nginx:alpine
+    image: ${ANILA_IMAGE_NGINX:?ANILA_IMAGE_NGINX must be a locked image content ID}
     container_name: anila-nginx
     ports:
       - "${NGINX_HTTP_PORT:-80}:80"
@@ -350,6 +362,7 @@ services:
     build:
       context: ../../services/pptx-renderer
       dockerfile: Dockerfile
+    image: ${ANILA_IMAGE_PPTX_RENDERER:?ANILA_IMAGE_PPTX_RENDERER must be a locked image content ID}
     expose:
       - "7100"
     healthcheck:
@@ -369,6 +382,7 @@ services:
     build:
       context: ../../services/anila-studio
       dockerfile: Dockerfile
+    image: ${ANILA_IMAGE_ANILA_STUDIO:?ANILA_IMAGE_ANILA_STUDIO must be a locked image content ID}
     expose:
       - "8100"
     environment:
@@ -431,6 +445,7 @@ services:
   flux2-dev-agent:
     build:
       context: ../../services/flux2-dev-agent
+    image: ${ANILA_IMAGE_FLUX2_DEV_AGENT:?ANILA_IMAGE_FLUX2_DEV_AGENT must be a locked image content ID}
     expose:
       - "8000"
     environment:
@@ -476,6 +491,7 @@ services:
       args:
         BASE_PATH: ${ANILALM_BASE_PATH:-/anilalm/}
         VITE_DEFAULT_CHAT_MODEL: ${ANILALM_DEFAULT_CHAT_MODEL:-gemma4}
+    image: ${ANILA_IMAGE_ANILALM:?ANILA_IMAGE_ANILALM must be a locked image content ID}
     expose:
       - "80"
     depends_on:
@@ -500,6 +516,7 @@ services:
         # 同源 subpath(2026-06-11 B 案):443 的 /anila/,SSO cookie 自然共用。
         # 本機 dev 直跑 vite 時不受影響(無此 env = '/')。
         BASE_PATH: ${ANILA_UI_BASE_PATH:-/anila/}
+    image: ${ANILA_IMAGE_ANILA_UI:?ANILA_IMAGE_ANILA_UI must be a locked image content ID}
     expose:
       - "80"
     depends_on:
@@ -525,7 +542,7 @@ services:
   # 獨立來源避免 CSP host-only session cookie 進入 IDE；原生強密碼是登入邊界。
   codeserver:
     profiles: ["developer-tools"]
-    image: codercom/code-server:latest
+    image: ${ANILA_IMAGE_CODESERVER:?ANILA_IMAGE_CODESERVER must be a locked image content ID}
     # 1001:1001 對齊 host 'aia' UID,避免容器內存檔 EACCES。
     user: "${UID:-1001}:${GID:-1001}"
     environment:
@@ -559,7 +576,7 @@ services:
   #     webhook / form ingress 在 nginx 一律 fail-closed；若要接 machine
   #     callback，必須另建 mTLS / signed machine ingress。
   n8n:
-    image: n8nio/n8n:2.29.10
+    image: ${ANILA_IMAGE_N8N:?ANILA_IMAGE_N8N must be a locked image content ID}
     # 用 image 內建 'node' user (UID 1000),不要 override user — n8n 首次
     # 開機 HOME 對不上會 mkdir /.n8n EACCES。
     environment:
@@ -620,7 +637,7 @@ services:
   # 首次開機 reconfigure ~5-10 分鐘,start_period 600s 是必要的。
   # Initial root password 在容器內 /etc/gitlab/initial_root_password,首次登入要輪換。
   gitlab:
-    image: gitlab/gitlab-ce:19.1.1-ce.0
+    image: ${ANILA_IMAGE_GITLAB:?ANILA_IMAGE_GITLAB must be a locked image content ID}
     hostname: ${GITLAB_HOST:-gitlab.ai.ncsist.org.tw}
     environment:
       GITLAB_OMNIBUS_CONFIG: |

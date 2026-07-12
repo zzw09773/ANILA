@@ -13,7 +13,7 @@ from app.middleware.caller import Caller, get_caller
 from app.models.agent import Agent, UserAgentPermission
 from app.models.conversation import Conversation
 from app.models.model_registry import ModelRegistry
-from app.schemas.contracts.classification import ClassificationLevel
+from anila_contracts import Classification as ClassificationLevel
 from app.services import memory_service
 from app.services.api_key_service import check_model_permission, check_agent_permission
 from app.services.auth_service import is_admin_tier
@@ -673,7 +673,7 @@ async def chat_completions(
         import httpx
         from fastapi import HTTPException as _HTTPException
         target = f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions"
-        from anila_core.security import ENDPOINT_KIND_AGENT
+        from anila_security import ENDPOINT_KIND_AGENT
         from app.services.proxy_service import (
             _aggregate_sse_to_chat_completion,
             build_agent_headers,
@@ -907,7 +907,7 @@ async def resume_agent_session(
     target = (
         f"{agent.endpoint_url.rstrip('/')}/sessions/{session_id}/answer"
     )
-    from anila_core.security import ENDPOINT_KIND_AGENT
+    from anila_security import ENDPOINT_KIND_AGENT
     from app.services.proxy_service import build_agent_headers, _guard_outbound
     _guard_outbound(
         target, endpoint_kind=ENDPOINT_KIND_AGENT

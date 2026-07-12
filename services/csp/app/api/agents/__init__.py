@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
-from anila_core.security import UnsafeEndpointError, validate_outbound_url
+from anila_security import UnsafeEndpointError, validate_outbound_url
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field

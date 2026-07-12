@@ -164,11 +164,13 @@ async def lifespan(app: FastAPI):
     from app.services.startup_security import (
         assert_card_only_data_feature_policy,
         assert_card_nonce_binding_policy,
+        assert_deployment_profile_posture,
         assert_intranet_lockdown_consistency,
         assert_no_dev_defaults,
         assert_secure_cookie_policy,
         assert_startup_migration_policy,
     )
+    assert_deployment_profile_posture()
     assert_no_dev_defaults()
     assert_card_nonce_binding_policy()
     assert_secure_cookie_policy()

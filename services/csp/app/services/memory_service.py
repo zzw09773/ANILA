@@ -63,7 +63,7 @@ from anila_core.memory.long_term import (
     truncate_embedding,
 )
 
-from anila_core.security import (
+from anila_security import (
     ENDPOINT_KIND_MODEL,
     UnsafeEndpointError,
     validate_outbound_url,

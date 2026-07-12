@@ -43,7 +43,7 @@ from app.schemas.contracts.artifacts import (
     ArtifactJobPatch,
     ArtifactJobStatus,
 )
-from app.schemas.contracts.classification import ClassificationLevel
+from anila_contracts import Classification as ClassificationLevel
 
 
 def _utcnow() -> datetime:

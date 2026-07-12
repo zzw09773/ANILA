@@ -93,11 +93,30 @@ class _StubPool:
 
         class _Acq:
             async def __aenter__(self):
+                class _Transaction:
+                    async def __aenter__(self):
+                        return None
+
+                    async def __aexit__(self, *exc):
+                        return False
+
+                async def execute(sql, *args):
+                    return "OK"
+
                 async def fetch(sql, *args):
                     outer.last_sql = sql
                     outer.last_args = args
                     return rows
-                return type("C", (), {"fetch": staticmethod(fetch)})()
+
+                return type(
+                    "C",
+                    (),
+                    {
+                        "execute": staticmethod(execute),
+                        "fetch": staticmethod(fetch),
+                        "transaction": staticmethod(_Transaction),
+                    },
+                )()
 
             async def __aexit__(self, *exc):
                 return False

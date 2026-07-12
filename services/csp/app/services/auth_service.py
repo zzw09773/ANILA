@@ -11,6 +11,7 @@ from app.middleware.cookies import ACCESS_COOKIE_NAME
 from app.models.user import User
 from app.services import agent_credential_service
 from app.services.audit_service import log_audit_event
+from app.services.startup_security import is_break_glass_active
 from app.utils.security import (
     verify_password,
     create_access_token,
@@ -104,12 +105,17 @@ def _load_user_from_payload(payload: dict | None, db: Session, expected_type: st
             else set()
         )
         # Formal intranet sessions must prove that the current token descends
-        # from a smart-card login.  The sole break-glass exception is a
-        # password-authenticated *current DB owner*.  Deliberately do not trust
-        # the role copied into the JWT: an old token must not retain owner
-        # assurance after the account has been demoted in the database.
+        # from a smart-card login.  A password-authenticated *current DB owner*
+        # is admitted only while the named, time-bounded break-glass deployment
+        # profile is active.  Deliberately do not trust the role copied into the
+        # JWT: an old token must not retain owner assurance after DB demotion,
+        # profile recovery, or incident-window expiry.
         card_assured = "sc" in methods
-        owner_break_glass = user.role == "owner" and "pwd" in methods
+        owner_break_glass = (
+            user.role == "owner"
+            and "pwd" in methods
+            and is_break_glass_active()
+        )
         if not (card_assured or owner_break_glass):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,

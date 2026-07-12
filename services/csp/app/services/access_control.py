@@ -41,7 +41,7 @@ from sqlalchemy.orm import Session
 from app.models.registered_service import RegisteredService
 from app.models.service_access_grant import ServiceAccessGrant
 from app.models.user import User
-from app.schemas.contracts.classification import ClassificationLevel
+from anila_contracts import Classification as ClassificationLevel
 from app.services.auth_service import is_admin_tier
 
 

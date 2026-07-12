@@ -41,6 +41,7 @@
 | R-014 | 大規模事件無 incident playbook(只有零散 runbook) | Process | Medium | 本輪建立 [`ai-incident-response.md`](./ai-incident-response.md) | Security Lead | A.10.1 | 2026-08 |
 | R-015 | 開發者沒受過 ISO 42001 awareness training | Competence | Medium | Q3 上線前完成 e-learning | AIMS Owner | Clause 7.2 / 7.3 | 2026-07 |
 | R-016 | Git 歷史含可達的卡片身分材料與兩個 TLS 私鑰 blob | Security / Privacy | **High** | Current tree 已清除且 CI 掃描；正式部署前須完成 fingerprint 比對／輪換，另行核准全 refs history rewrite | AI Security Lead | A.10.1 / A.10.2 / A.8.4 | 2026-07 |
+| R-017 | Internal Python distribution 名稱未在 public PyPI 保留，bare-name install 可被 dependency confusion 取代 | Supply chain | Medium | CSP index requirements 已移除 bare names；Docker／CI／支援的 dev 指令以 repo local path 安裝並有 ordering contract。對外發布 agent template 前仍須完成 Trusted Publishing 或 exclusive private index／簽章 wheelhouse | Release Owner | A.10.3 | 2026-08 |
 
 ---
 
@@ -58,6 +59,7 @@
 |---|---|---|
 | 2026-05-16 | AI Risk Manager(初版) | 首次建立,15 條 active risks |
 | 2026-07-11 | AI Security Lead(事件觸發) | 新增 R-016；連結歷史卡片／TLS 私鑰事件與 deployment No-Go |
+| 2026-07-12 | Release Owner(PR review) | 新增 R-017；記錄 internal Python package origin 與對外發布前的完整封口 |
 
 ---
 
@@ -83,7 +85,8 @@
 | R-014 | playbook ✅ | 100% | 持續演練 |
 | R-015 | e-learning ⏳ | 0% | Q3 上線前 |
 | R-016 | Current tree／CI scanner ✅；輪換證據／history rewrite ⏳ | 40% | 事件未結案；正式部署維持 No-Go |
+| R-017 | CSP bare names ✅ / Docker與 CI local ordering ✅ / 受控套件發布 ⏳ | 67% | agent template 對外交付前必須完成 exclusive origin |
 
 ---
 
-**Last updated**: 2026-07-11 · **Owner**: AI Risk Manager · **Next review**: 2026-07 (R-016 event review)
+**Last updated**: 2026-07-12 · **Owner**: AI Risk Manager · **Next review**: 2026-07 (R-016 / R-017 review)

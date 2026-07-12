@@ -2,7 +2,7 @@
 
 Sprint 5 X security review (H1): ``oidc_client_secret`` used to be stored
 plaintext in ``auth_providers``. This module wraps the existing
-``anila_core.security.credential_crypto`` AES-256-GCM helper so the secret
+``anila_security.credential_crypto`` AES-256-GCM helper so the secret
 lives encrypted at rest, and is only decrypted just-in-time when CSP
 exchanges an OIDC ``code`` for tokens.
 
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import base64
 
-from anila_core.security.credential_crypto import (
+from anila_security.credential_crypto import (
     decrypt_credential,
     encrypt_credential,
 )

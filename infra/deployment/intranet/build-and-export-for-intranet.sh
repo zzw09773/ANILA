@@ -46,10 +46,19 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 INVENTORY_FILE="$REPO_ROOT/infra/deployment/intranet/platform-image-inventory.tsv"
 MODEL_INVENTORY_FILE="$REPO_ROOT/infra/deployment/intranet/model-image-inventory.tsv"
 INVENTORY_CHECKER="$REPO_ROOT/infra/deployment/intranet/check_airgap_inventory.py"
+IMAGE_LOCK_VERIFIER="$REPO_ROOT/infra/deployment/scripts/verify-compose-image-lock.py"
 PLATFORM_LOCK_FILE="$OUTPUT_DIR/PLATFORM-IMAGE-LOCK.tsv"
 
 cd "$REPO_ROOT"
 mkdir -p "$OUTPUT_DIR"
+
+for compose_variable in COMPOSE_FILE COMPOSE_PROFILES COMPOSE_PROJECT_NAME \
+  COMPOSE_ENV_FILES COMPOSE_DISABLE_ENV_FILE COMPOSE_PATH_SEPARATOR; do
+    if [[ -v "$compose_variable" ]]; then
+        echo "✗ exporter 不接受 ambient $compose_variable；請 unset 後重跑" >&2
+        exit 1
+    fi
+done
 
 # 不把前一次的 04-models / weights 混進這次 manifest。要求 fresh output
 # 比默默 rm 掉 operator 的大型 bundle 安全,也讓 STATUS 與實際檔案一一對應。
@@ -77,6 +86,15 @@ if [ ${#EXISTING_OUTPUT[@]} -gt 0 ]; then
     printf '  - %s\n' "${EXISTING_OUTPUT[@]}" >&2
     exit 1
 fi
+
+# Formal Compose intentionally has no mutable tag fallback.  The connected
+# exporter is the sole trusted build mode: resolve the same inventory tags
+# explicitly for build/pull, then freeze their resulting content IDs below.
+while IFS=$'\t' read -r image_variable image_value; do
+    [ -n "$image_variable" ] || continue
+    printf -v "$image_variable" '%s' "$image_value"
+    export "$image_variable"
+done < <(python3 "$IMAGE_LOCK_VERIFIER" emit-build-env)
 
 # 先做 closure check,避免 build 數小時後才發現某個正式 service 沒打包。
 python3 "$INVENTORY_CHECKER" --root "$REPO_ROOT" --inventory "$INVENTORY_FILE"
@@ -383,7 +401,9 @@ echo
 echo "✓ Load complete. 後續步驟:"
 echo "   cd <repo-root>"
 echo "   docker network create anila-models-net  # 若還沒建"
-echo "   docker compose up -d --no-build --pull never"
+echo "   bash infra/deployment/intranet/intranet-deploy.sh"
+echo "   # 正式入口會把 bundle 的 PLATFORM-IMAGE-LOCK.tsv 寫成 ANILA_IMAGE_* content-ID lock。"
+echo "   # 不要在 lock 寫入前直接 docker compose up；compose 會 fail-closed。"
 echo "   # code-server 為 optional profile: deploy-prod.sh codeserver-up"
 EOF
 chmod +x "$OUTPUT_DIR/INTRANET-LOAD.sh"

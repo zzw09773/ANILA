@@ -8,6 +8,8 @@ request may reach them at all.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from app.config import settings
@@ -40,6 +42,21 @@ def _set_session_cookie(client, user, *, amr: list[str] | None = None) -> None:
         }
     )
     client.cookies.set(ACCESS_COOKIE_NAME, token)
+
+
+def _activate_break_glass(monkeypatch, *, minutes: int = 5) -> None:
+    monkeypatch.setattr(settings, "REQUIRE_CARD_LOGIN_ONLY", True)
+    monkeypatch.setattr(
+        settings,
+        "ANILA_DEPLOYMENT_PROFILE",
+        "prod-intranet-card-breakglass",
+    )
+    monkeypatch.setenv("ANILA_BREAK_GLASS_OWNER", "system-owner")
+    monkeypatch.setenv("ANILA_BREAK_GLASS_TICKET", "INC-PROXY-ACCESS-001")
+    monkeypatch.setenv(
+        "ANILA_BREAK_GLASS_EXPIRES_AT",
+        (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat(),
+    )
 
 
 def test_proxy_access_rejects_unauthenticated_request(client) -> None:
@@ -157,9 +174,6 @@ def test_refresh_does_not_upgrade_legacy_token_to_card_session(client, db) -> No
     ("db_role", "token_role", "amr"),
     [
         pytest.param("developer", "developer", ["sc"], id="smart-card"),
-        # The DB role is authoritative: a stale JWT role cannot prevent a
-        # current owner from using the documented password break-glass path.
-        pytest.param("owner", "user", ["pwd"], id="db-owner-password"),
     ],
 )
 def test_card_only_access_accepts_assured_sessions(
@@ -180,6 +194,21 @@ def test_card_only_access_accepts_assured_sessions(
     assert response.json()["role"] == db_role
 
 
+def test_card_only_access_accepts_owner_password_only_during_break_glass(
+    client, db, monkeypatch
+) -> None:
+    _activate_break_glass(monkeypatch)
+    user = make_user(db, username="break-glass-access-owner", role="owner")
+    token = create_access_token(_claims_for(user, token_role="user", amr=["pwd"]))
+
+    response = client.get(
+        "/api/auth/me", headers={"Authorization": f"Bearer {token}"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["role"] == "owner"
+
+
 @pytest.mark.parametrize(
     ("db_role", "token_role", "amr", "include_amr"),
     [
@@ -187,6 +216,7 @@ def test_card_only_access_accepts_assured_sessions(
         pytest.param("developer", "developer", ["oidc"], True, id="oidc"),
         pytest.param("developer", "developer", None, False, id="legacy"),
         pytest.param("owner", "owner", ["oidc"], True, id="owner-oidc"),
+        pytest.param("owner", "owner", ["pwd"], True, id="owner-pwd-normal-profile"),
     ],
 )
 def test_card_only_access_rejects_unassured_sessions(
@@ -225,7 +255,6 @@ def test_card_only_access_rejects_unassured_sessions(
     ("db_role", "token_role", "amr"),
     [
         pytest.param("developer", "developer", ["sc"], id="smart-card"),
-        pytest.param("owner", "user", ["pwd"], id="db-owner-password"),
     ],
 )
 def test_card_only_refresh_accepts_assured_sessions(
@@ -241,6 +270,31 @@ def test_card_only_refresh_accepts_assured_sessions(
 
     assert response.status_code == 200
     assert decode_token(response.json()["access_token"])["amr"] == amr
+
+
+def test_card_only_refresh_accepts_owner_password_only_during_break_glass(
+    client, db, monkeypatch
+) -> None:
+    _activate_break_glass(monkeypatch)
+    user = make_user(db, username="break-glass-refresh-owner", role="owner")
+    token = create_refresh_token(_claims_for(user, token_role="user", amr=["pwd"]))
+
+    response = client.post("/api/auth/refresh", json={"refresh_token": token})
+
+    assert response.status_code == 200
+    assert decode_token(response.json()["access_token"])["amr"] == ["pwd"]
+
+
+def test_break_glass_password_refresh_is_rejected_after_expiry(
+    client, db, monkeypatch
+) -> None:
+    _activate_break_glass(monkeypatch, minutes=-1)
+    user = make_user(db, username="expired-break-glass-owner", role="owner")
+    token = create_refresh_token(_claims_for(user, amr=["pwd"]))
+
+    response = client.post("/api/auth/refresh", json={"refresh_token": token})
+
+    assert response.status_code == 401
 
 
 @pytest.mark.parametrize(

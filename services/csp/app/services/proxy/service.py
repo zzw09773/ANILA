@@ -14,7 +14,7 @@ from typing import AsyncIterator, Optional
 
 from fastapi import HTTPException
 import httpx
-from anila_core.security import ENDPOINT_KIND_AGENT, ENDPOINT_KIND_MODEL
+from anila_security import ENDPOINT_KIND_AGENT, ENDPOINT_KIND_MODEL
 
 from app.config import settings
 from app.models.model_registry import ModelRegistry

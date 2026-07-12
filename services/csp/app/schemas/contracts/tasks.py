@@ -3,8 +3,9 @@
 
 DB 層(app/models/task.py、source_snapshot.py)存開放 String;封閉 enum
 在這裡把關 —— API 進出一律走本模組型別,未知值 fail-closed 拋驗證錯誤。
-分類等級沿用 ``app.schemas.contracts.classification.ClassificationLevel``
-(五級繁中字串),不另定義。
+分類等級沿用 ``anila_contracts.Classification``（在 CSP 內以舊名稱
+``ClassificationLevel`` 相容引用；五級繁中字串），
+不另定義。
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.schemas.contracts.classification import ClassificationLevel
+from anila_contracts import Classification as ClassificationLevel
 
 
 class TaskType(str, enum.Enum):

@@ -18,7 +18,7 @@
 
 **三條鐵則(全程適用)**:
 
-1. **改設定 = 編 `.env` + `docker compose up -d <svc>`**。不要重跑一鍵腳本做小修改
+1. **改設定 = 編 `.env` + `docker compose up -d --no-build --pull never <svc>`**。不要重跑一鍵腳本做小修改
    (它每次都會把 strict 旗標重設回預設);也不要用 `docker restart`(不會重載 `.env`)。
 2. **祕密零外洩**:`.env`、`secrets/`、`*.pem`、`*.key`、`*.pfx`、`backups/` 都已被
    `.gitignore` 擋住,不要加回追蹤。
@@ -118,10 +118,10 @@ bash infra/deployment/intranet/intranet-deploy.sh /path/to/image包資料夾
 | [1] TLS 憑證 | 從 `server.pfx` 抽 fullchain `server.crt` + `server.key` | pfx 路徑、pfx 密碼(空就 Enter) |
 | [2] 模型 CA | 把 repo 內建 CSPKI bundle 複製為 `share/pki/model-ca.pem`(卡登與內網 https 同一套 CA,離線即有) | — |
 | [3] 產 `.env` | 自動生成 7 組 secret、設 strict 旗標(`ANILA_ENV=production`、card-only、agent http 專用旗標) | **owner 員工編號**(CSV,含你自己)、`MODEL_GATEWAY_API_KEY`(還沒簽發可先 Enter 跳過) |
-| [4] load image | 跑 image 包的 `INTRANET-LOAD.sh`(sha256 驗檔 + re-tag) | — |
+| [4] load image | 跑 `INTRANET-LOAD.sh` 驗檔/load，再從 `PLATFORM-IMAGE-LOCK.tsv` 把 13 個 default service 寫成 `ANILA_IMAGE_*=sha256:...` 並 read-back | — |
 | [4b] JWT 金鑰 | 用 csp image 產 `secrets/jwt-{private,public}.pem`(缺這把:登入發不了 token、studio crash-loop) | — |
 | [5] network | 建 `anila-models-net` | — |
-| [6] up | `docker compose up -d --no-build` | — |
+| [6] up | posture contract + image content-ID lock 通過後，`docker compose up -d --no-build --pull never` | — |
 | [7] 驗證 | 等 csp healthy + nginx 探測 | — |
 
 **重跑安全**:偵測到既有 `.env` 時預設「保留現有 secret」,不會重生 DB 密碼炸掉既有資料庫。
@@ -168,9 +168,12 @@ curl --cacert share/pki/model-ca.pem \
    出現 gemma4 / image-generator = `.env` 對應 BASE_URL 沒設空。
 3. **記住 break-glass 程序**(讀卡機/HiPKI 故障時全員進不去的後路):
    ```bash
-   bash infra/deployment/scripts/anila-ops.sh break-glass on    # 暫開帳密,用 admin + .env 的 ADMIN_PASSWORD 進去
-   bash infra/deployment/scripts/anila-ops.sh break-glass off   # 修好後恢復 card-only
+   # 互動輸入具名負責人、incident ticket、1-24 小時有效期；card-only flag 不會關閉
+   bash infra/deployment/scripts/anila-ops.sh break-glass on
+   bash infra/deployment/scripts/anila-ops.sh break-glass off   # 修好後立即恢復並清 metadata
    ```
+   只有目前 DB owner 的帳密在有效窗內放行；到期後 login/access/refresh 即時關閉，
+   不必等容器重啟，但仍要執行 `off` 完成事件收尾。
 4. **排每日備份 cron**(root 或部署帳號):
    ```cron
    30 2 * * * cd /opt/anila && bash infra/deployment/scripts/anila-ops.sh backup >> /var/log/anila-backup.log 2>&1
@@ -193,10 +196,10 @@ curl --cacert share/pki/model-ca.pem \
 | wildcard 憑證換發(2029 前) | `anila-ops.sh cert-renew /path/new-server.pfx` |
 | CSPKI CA 換代 | `anila-ops.sh model-ca /path/new-ca-chain.pem`(先驗鏈再上,壞檔不會被套用) |
 | gateway key 輪替 | `anila-ops.sh gateway-key` |
-| 讀卡環境故障應急 | `anila-ops.sh break-glass on` → 處理 → `... off` |
+| 讀卡環境故障應急 | `anila-ops.sh break-glass on [owner ticket hours]` → 處理 → `... off` |
 | 磁碟吃緊 | `anila-ops.sh prune`(只清 dangling image/builder cache,不碰 volume) |
 | 停/起整個 stack | `deploy-prod.sh down` / `deploy-prod.sh up` |
-| 加 owner | `/users` UI 改角色;或改 `.env` `CARD_INITIAL_OWNERS`(只對新刷卡者生效)+ `docker compose up -d csp` |
+| 加 owner | `/users` UI 改角色;或改 `.env` `CARD_INITIAL_OWNERS`(只對新刷卡者生效)+ `docker compose up -d --no-build --pull never csp` |
 
 ### 8.1 版本升級(新版程式落地)
 
@@ -213,10 +216,10 @@ curl --cacert share/pki/model-ca.pem \
 
 | 改了什麼 | 正確做法 |
 |---|---|
-| `.env` 任何值 | `docker compose up -d <受影響 svc>`(compose 偵測 env diff 自動 recreate) |
-| `share/pki/model-ca.pem` 內容 | `docker compose up -d --force-recreate csp`(或用 `anila-ops.sh model-ca`) |
+| `.env` 任何值 | `docker compose up -d --no-build --pull never <受影響 svc>`(compose 偵測 env diff 自動 recreate) |
+| `share/pki/model-ca.pem` 內容 | `docker compose up -d --no-build --pull never --force-recreate csp`(或用 `anila-ops.sh model-ca`) |
 | `infra/nginx/certs/*` | `nginx -t` + `nginx -s reload`(或用 `anila-ops.sh cert-renew`) |
-| compose / nginx conf | `docker compose up -d`(絕不用 `docker restart` 當作套用設定) |
+| compose / nginx conf | `docker compose up -d --no-build --pull never`(絕不用 `docker restart` 當作套用設定) |
 | 程式碼 | 走 §8.1 版本升級,內網不現場 build |
 
 ---

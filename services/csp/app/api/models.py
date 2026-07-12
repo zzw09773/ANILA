@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from anila_core.security import UnsafeEndpointError, validate_outbound_url
+from anila_security import UnsafeEndpointError, validate_outbound_url
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from app.database import get_db
