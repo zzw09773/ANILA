@@ -99,14 +99,14 @@ def _seed_unsealed_snapshot(database_url: str) -> tuple[int, int]:
                 text(
                     """
                     INSERT INTO tasks
-                        (title, task_type, requester_user_id, source_scope,
+                        (title, task_type, requester_user_id, trace_id, source_scope,
                          selected_collection_ids, classification_level)
-                    VALUES ('snapshot test', 'query', :user_id, 'project',
+                    VALUES ('snapshot test', 'query', :user_id, :trace_id, 'project',
                             '[101]'::jsonb, '機密')
                     RETURNING id
                     """
                 ),
-                {"user_id": user_id},
+                {"user_id": user_id, "trace_id": f"gate2-snapshot-{suffix}"},
             ).scalar_one()
         )
         snapshot_id = int(
