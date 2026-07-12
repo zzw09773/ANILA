@@ -217,8 +217,8 @@
       "id": "postgres-rls",
       "required": true,
       "status": "passing",
-      "command": "ANILA_REQUIRE_RLS_TESTS=1 python -m pytest packages/anila-core/tests/integration -q",
-      "evidence": "7 core RLS tests plus 1 CSP ingestion-image RLS test passed against fresh pgvector/pgvector:pg16 after Alembic head"
+      "command": "Require one Alembic head, migrate fresh pgvector/pgvector:pg16, then run core RLS plus Gate 2 classification, SourceSnapshot, memory, ledger, ingestion-image, and auth PostgreSQL contracts",
+      "evidence": "Required postgres-rls workflow wires every registered PostgreSQL skip guard to a named command after a single-head assertion and fresh Alembic upgrade"
     },
     {
       "id": "csp-governance-ui",
@@ -238,8 +238,8 @@
       "id": "anilalm",
       "required": true,
       "status": "passing",
-      "command": "cd apps/anilalm && npm ci && npm run typecheck && npm run build",
-      "evidence": "TypeScript no-emit typecheck and Vite production build passed on Node 20 Linux"
+      "command": "cd apps/anilalm && npm ci && npm run typecheck && VITE_ANILA_PILOT_MODE=false npm run build && VITE_ANILA_PILOT_MODE=true npm run build",
+      "evidence": "Required Node 20 workflow typechecks once and builds both the normal product and signed-pilot postures"
     },
     {
       "id": "contract-smoke",
@@ -261,6 +261,27 @@
       "status": "passing",
       "command": "bash -n deployment scripts && python infra/deployment/scripts/verify-compose-image-lock.py check-wiring && python -m unittest discover -s infra/deployment/tests -v",
       "evidence": "LF-normalized shell syntax and Compose image-lock wiring passed; complete local discovery passed 77 tests with 1 Windows-only Linux-runtime helper skip that executes on the required Ubuntu runner"
+    },
+    {
+      "id": "gate2-pilot-policy",
+      "required": true,
+      "status": "passing",
+      "command": "python infra/policy/gate2/check_pilot_inference_profile.py --inventory infra/policy/gate2/inference-callsites.v1.json --profile infra/policy/gate2/pilot-profile.disabled-template.json --allow-disabled-template && python -m pytest infra/policy/tests/test_gate2_pilot_inference_profile.py -q",
+      "evidence": "Disabled-template CLI passed and 35 signed-profile schema, signature, distinct-key, inventory-mutation, and ineligible-callsite fail-closed tests passed locally"
+    },
+    {
+      "id": "studio-auth-revocation",
+      "required": true,
+      "status": "passing",
+      "command": "cd services/anila-studio && python -m pytest tests/test_auth.py tests/test_revocation_cache.py tests/test_gate2_scoped_revocation_cache.py -q",
+      "evidence": "41 focused JWT assurance and durable JTI/SID revocation tests passed locally without invoking unrelated artifact or FLUX integration suites"
+    },
+    {
+      "id": "flux-agent-focused",
+      "required": true,
+      "status": "passing",
+      "command": "cd services/flux2-dev-agent && python -m pytest tests -q",
+      "evidence": "63 focused FLUX agent tests passed locally, including governed CSP task/owner propagation and backend-resolution contracts"
     }
   ],
   "observed_failures": [
@@ -395,6 +416,8 @@
       "kind": "pytest.importorskip",
       "count": 1,
       "required_execution": true,
+      "ci_job": "backend-agent",
+      "ci_command_fragment": "python -m pytest -m \"not live\" -q",
       "reason": "The required agent job installs the serving extra, so this compatibility guard does not skip in CI."
     },
     {
@@ -402,6 +425,8 @@
       "kind": "pytest.importorskip",
       "count": 1,
       "required_execution": true,
+      "ci_job": "backend-agent",
+      "ci_command_fragment": "python -m pytest -m \"not live\" -q",
       "reason": "The required agent job installs the serving extra, so this compatibility guard does not skip in CI."
     },
     {
@@ -409,6 +434,8 @@
       "kind": "pytest.importorskip",
       "count": 2,
       "required_execution": true,
+      "ci_job": "backend-agent",
+      "ci_command_fragment": "python -m pytest -m \"not live\" -q",
       "reason": "The required agent job installs the serving extra, so both FastAPI tracing cases run in CI."
     },
     {
@@ -416,6 +443,8 @@
       "kind": "pytest.mark.skip",
       "count": 1,
       "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/integration -q",
       "reason": "Local opt-out only; postgres-rls sets ANILA_REQUIRE_RLS_TESTS=1 so an unreachable DB is a hard failure."
     },
     {
@@ -423,6 +452,8 @@
       "kind": "pytest.skip",
       "count": 1,
       "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/integration -q",
       "reason": "Local opt-out only; postgres-rls supplies the required admin DSN and cannot take this branch."
     },
     {
@@ -430,6 +461,8 @@
       "kind": "pytest.mark.skipif",
       "count": 1,
       "required_execution": true,
+      "ci_job": "backend-core",
+      "ci_command_fragment": "python -m pytest --ignore=tests/integration tests -q",
       "reason": "POSIX-only shell behavior executes on the required ubuntu-latest runner."
     },
     {
@@ -437,6 +470,8 @@
       "kind": "pytest.skip",
       "count": 1,
       "required_execution": true,
+      "ci_job": "backend-core",
+      "ci_command_fragment": "python -m pytest --ignore=tests/integration tests -q",
       "reason": "Only Windows without symlink privilege skips; the required Linux runner executes the case."
     },
     {
@@ -444,6 +479,8 @@
       "kind": "pytest.importorskip",
       "count": 1,
       "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_ingestion_images_rls_pg.py -q",
       "reason": "asyncpg is installed and the case runs in the required postgres-rls job."
     },
     {
@@ -451,6 +488,8 @@
       "kind": "pytest.mark.skipif",
       "count": 1,
       "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_ingestion_images_rls_pg.py -q",
       "reason": "CSP SQLite pass skips by design; postgres-rls supplies ANILA_TEST_PG_DSN and executes it."
     },
     {
@@ -458,7 +497,54 @@
       "kind": "pytest.mark.skipif",
       "count": 1,
       "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_gate2_auth_races_pg.py -q",
       "reason": "CSP SQLite pass skips by design; postgres-rls supplies ANILA_TEST_PG_DSN and executes challenge/refresh races plus migration upgrade/downgrade."
+    },
+    {
+      "path": "infra/policy/tests/test_gate2_classification_reconciliation_pg.py",
+      "kind": "pytest.skip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest infra/policy/tests/test_gate2_classification_reconciliation_pg.py -q",
+      "reason": "Local policy runs skip without an admin DSN; postgres-rls supplies ANILA_GATE2_TEST_PG_ADMIN_URL and executes migration, downgrade, and mutation-sensitive reconciliation proofs."
+    },
+    {
+      "path": "infra/policy/tests/test_gate2_runtime_classification_invariants_pg.py",
+      "kind": "pytest.skip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest infra/policy/tests/test_gate2_runtime_classification_invariants_pg.py -q",
+      "reason": "Local policy runs skip without an admin DSN; postgres-rls executes the true-PostgreSQL hierarchy-floor, app-role, and race invariants."
+    },
+    {
+      "path": "services/csp/tests/test_gate2_source_snapshot_sealing_pg.py",
+      "kind": "pytest.skip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest services/csp/tests/test_gate2_source_snapshot_sealing_pg.py -q",
+      "reason": "The complete SQLite CSP suite skips without an admin DSN; postgres-rls executes SourceSnapshot/Citation immutability, membership, finite-score, and downgrade proofs."
+    },
+    {
+      "path": "services/csp/tests/test_gate2_memory_governance_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_gate2_memory_governance_pg.py -q",
+      "reason": "The complete SQLite CSP suite skips without GATE2_MEMORY_PG_DSN; postgres-rls executes memory classification migration, trigger, and authorization-lock proofs."
+    },
+    {
+      "path": "services/csp/tests/test_gate2_transaction_ledger_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_gate2_transaction_ledger_pg.py -q",
+      "reason": "The complete SQLite CSP suite skips without ANILA_GATE2_LEDGER_PG_URL; postgres-rls executes concurrent block finalization and same-session admission-lock proofs."
     }
   ],
   "quarantine": [],
