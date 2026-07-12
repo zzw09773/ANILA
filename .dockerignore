@@ -4,6 +4,14 @@
 share/
 share-dev/
 secrets/
+**/secrets/**
+**/certs/*.key
+**/certs/*.pem
+**/*.pfx
+**/*.p12
+.env
+.env.*
+!.env.example
 models/model/
 n8n_DATA/
 onyx/

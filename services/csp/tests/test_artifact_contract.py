@@ -115,15 +115,15 @@ class TestJobContract:
 
     def test_register_job_resolves_employee_id(self, client: TestClient, db: Session):
         # 員編騎在 username;employee_id 可解析 owner。
-        user = make_user(db, username="600123")
+        user = make_user(db, username="990000001")
         resp = client.post(
             "/v1/artifact-jobs", headers=_SVC,
             json={"job_id": "job-emp", "artifact_type": "mindmap",
-                  "employee_id": "600123"},
+                  "employee_id": "990000001"},
         )
         assert resp.status_code == 201, resp.text
         assert resp.json()["owner_user_id"] == user.id
-        assert resp.json()["requester_employee_id"] == "600123"
+        assert resp.json()["requester_employee_id"] == "990000001"
 
     def test_job_missing_requester_422(self, client: TestClient, db: Session):
         resp = client.post("/v1/artifact-jobs", headers=_SVC,

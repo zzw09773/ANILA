@@ -39,6 +39,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from anila_contracts import Classification as ClassificationLevel
 from sqlalchemy.orm import Session
 
 from app.models.artifact import Artifact, ExportRecord
@@ -56,7 +57,6 @@ from app.models.task import Task, TaskRun
 from app.models.user import User
 from app.schemas.contracts.classification import (
     ClassificationEventReason,
-    ClassificationLevel,
     DeclassificationApprovedVia,
     DeclassificationStatus,
 )

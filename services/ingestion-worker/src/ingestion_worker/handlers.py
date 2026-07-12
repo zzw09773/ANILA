@@ -764,6 +764,14 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
                 chunk_count=0,
                 error_message=None,
             )
+            await _update_job(
+                pool,
+                arq_job_id,
+                status="succeeded",
+                succeeded=True,
+                progress_pct=100,
+                progress_message="0 chunks indexed",
+            )
             return {"chunk_count": 0, "warning": "no chunks produced"}
 
         # Sprint 9 X / parent-child — two-pass persistence.
@@ -922,6 +930,29 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             ).total_seconds(),
         }
 
+    except asyncio.CancelledError:
+        # Arq job timeouts and worker shutdowns arrive as cancellation, which
+        # bypasses ``except Exception`` on modern Python.  Best-effort terminal
+        # writes prevent a permanently running document/job, then preserve the
+        # cancellation so Arq can finish its own timeout/shutdown handling.
+        try:
+            await _update_document_status(
+                pool,
+                document_id,
+                "failed",
+                error_message="處理已取消或逾時，可重新處理。",
+            )
+            await _update_job(
+                pool,
+                arq_job_id,
+                status="cancelled",
+                succeeded=True,
+                progress_pct=100,
+                progress_message="cancelled or timed out",
+            )
+        except Exception:
+            pass
+        raise
     except IngestionError as err:
         # Persist the structured failure for the dev UI / inspector.
         await _update_document_status(

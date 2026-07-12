@@ -16,7 +16,7 @@
 **前置條件(非本計畫範圍,需先確認/完成):**
 
 1. **License**:FLUX.2-dev 是 BFL Non-Commercial License,軍方部署要先取得商用授權,或確認屬非商用範圍。**沒解決這個就不要進 Task 1**。
-2. **模型下載**:`huggingface-cli download black-forest-labs/FLUX.2-dev --local-dir /home/aia/c1147259/project/Huggingface/FLUX.2-dev`(約 110-120GB,沿用既有 HF 模型存放慣例)。
+2. **模型下載**:`huggingface-cli download black-forest-labs/FLUX.2-dev --local-dir $HOME/project/Huggingface/FLUX.2-dev`(約 110-120GB,沿用既有 HF 模型存放慣例)。
 3. **External network 存在**:`docker network inspect anila-models-net`(現有 stack 已建立,理論上 OK)。
 
 **檔案結構決策:**
@@ -198,7 +198,7 @@ Both empty. Just `touch` them.
 - [ ] **Step 1.5: Run test to verify it fails(import error,schemas 還沒寫)**
 
 ```bash
-cd /home/aia/c1147259/ANILA/models/flux2-dev-agent
+cd $HOME/ANILA/models/flux2-dev-agent
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[test]"
@@ -1330,7 +1330,7 @@ pyproject.toml
 - [ ] **Step 7.3: Build the image locally to verify it works**
 
 ```bash
-cd /home/aia/c1147259/ANILA/models/flux2-dev-agent
+cd $HOME/ANILA/models/flux2-dev-agent
 docker build -t anila-flux-agent:dev .
 ```
 
@@ -1502,7 +1502,7 @@ def test_generate_rejects_unknown_aspect_ratio():
 - [ ] **Step 8.4: Run tests (will fail — server.py not written yet)**
 
 ```bash
-cd /home/aia/c1147259/ANILA/models/flux2-dev
+cd $HOME/ANILA/models/flux2-dev
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[test]"
 pytest tests/test_server.py -v
@@ -1705,7 +1705,7 @@ pyproject.toml
 - [ ] **Step 9.3: Build (this will take ~10-15 min due to torch + CUDA)**
 
 ```bash
-cd /home/aia/c1147259/ANILA/models/flux2-dev
+cd $HOME/ANILA/models/flux2-dev
 docker build -t flux2-dev:bf16 .
 ```
 
@@ -1776,7 +1776,7 @@ git commit -m "build(flux2-dev): CUDA 12.4 Dockerfile with diffusers"
       FLUX_NUM_STEPS: "28"
       FLUX_GUIDANCE_SCALE: "3.5"
     volumes:
-      - /home/aia/c1147259/project/Huggingface/FLUX.2-dev:/workspace/model/FLUX.2-dev:ro
+      - $HOME/project/Huggingface/FLUX.2-dev:/workspace/model/FLUX.2-dev:ro
     expose:
       - "8000"
     restart: unless-stopped
@@ -1822,7 +1822,7 @@ git commit -m "build(flux2-dev): CUDA 12.4 Dockerfile with diffusers"
       DEFAULT_ASPECT_RATIO: "16:9"
       FLUX_TIMEOUT_SECONDS: "240"
     volumes:
-      - /home/aia/c1147259/ANILA/share-dev/uploads/flux:/share/flux
+      - $HOME/ANILA/share-dev/uploads/flux:/share/flux
     expose:
       - "8000"
     depends_on:
@@ -1841,13 +1841,13 @@ git commit -m "build(flux2-dev): CUDA 12.4 Dockerfile with diffusers"
 - [ ] **Step 10.3: Ensure share-dev/uploads/flux directory exists on host**
 
 ```bash
-mkdir -p /home/aia/c1147259/ANILA/share-dev/uploads/flux
+mkdir -p $HOME/ANILA/share-dev/uploads/flux
 ```
 
 - [ ] **Step 10.4: Validate compose syntax**
 
 ```bash
-cd /home/aia/c1147259/ANILA
+cd $HOME/ANILA
 docker compose -f models/docker-compose.yml config --quiet
 ```
 
@@ -1916,7 +1916,7 @@ git commit -m "feat(csp): auto-register image-generator agent for FLUX dispatch"
 - [ ] **Step 12.1: Read nginx.conf to confirm /uploads/ aliasing**
 
 ```bash
-grep -A 4 'location /uploads/' /home/aia/c1147259/ANILA/myCSPPlatform/docker/nginx.conf
+grep -A 4 'location /uploads/' $HOME/ANILA/myCSPPlatform/docker/nginx.conf
 ```
 
 Expected output(兩個 server block 各一段):
@@ -1931,7 +1931,7 @@ location /uploads/ {
 - [ ] **Step 12.2: Confirm volume mount maps to that path**
 
 ```bash
-grep -B 1 -A 1 'share-files/uploads' /home/aia/c1147259/ANILA/docker-compose-dev.yml
+grep -B 1 -A 1 'share-files/uploads' $HOME/ANILA/docker-compose-dev.yml
 ```
 
 Expected: 看到 `./share-dev/uploads:/usr/share/nginx/share-files/uploads:rw`。
@@ -1939,8 +1939,8 @@ Expected: 看到 `./share-dev/uploads:/usr/share/nginx/share-files/uploads:rw`�
 - [ ] **Step 12.3: Touch a placeholder file and verify nginx serves it**
 
 ```bash
-mkdir -p /home/aia/c1147259/ANILA/share-dev/uploads/flux
-echo "placeholder" > /home/aia/c1147259/ANILA/share-dev/uploads/flux/.gitkeep
+mkdir -p $HOME/ANILA/share-dev/uploads/flux
+echo "placeholder" > $HOME/ANILA/share-dev/uploads/flux/.gitkeep
 # 找出 dev nginx 暴露的 port (從 docker-compose-dev.yml 看)
 docker compose -f docker-compose-dev.yml ps nginx
 # 假設 :8080 是 http
@@ -1989,8 +1989,8 @@ git commit -m "feat(nginx): explicit /uploads/flux/ location for FLUX-generated 
 - [ ] **Step 13.1: 確認 FLUX.2-dev 權重已下載到 host**
 
 ```bash
-ls -la /home/aia/c1147259/project/Huggingface/FLUX.2-dev/
-du -sh /home/aia/c1147259/project/Huggingface/FLUX.2-dev/
+ls -la $HOME/project/Huggingface/FLUX.2-dev/
+du -sh $HOME/project/Huggingface/FLUX.2-dev/
 ```
 
 Expected: 看到 `*.safetensors`、`config.json`、`model_index.json` 等,總大小約 110-120 GB。**如果這步失敗就停下**,先跑 `huggingface-cli download` 把模型抓下來(見前置條件 #2)。
@@ -2006,7 +2006,7 @@ Expected: GPU 1 與 GPU 2 的 `memory.used` 接近 0 MiB。如果有東西在跑
 - [ ] **Step 13.3: Build 兩個 image(如果還沒 build)**
 
 ```bash
-cd /home/aia/c1147259/ANILA
+cd $HOME/ANILA
 docker compose -f models/docker-compose.yml build flux2-dev flux2-dev-agent
 ```
 
@@ -2038,7 +2038,7 @@ Expected: JSON response,`choices[0].message.content` 含 `![](/uploads/flux/<uui
 - [ ] **Step 13.7: 從 host 確認圖檔真的落地**
 
 ```bash
-ls -la /home/aia/c1147259/ANILA/share-dev/uploads/flux/
+ls -la $HOME/ANILA/share-dev/uploads/flux/
 ```
 
 Expected: 看到 step 13.6 產生的 `<uuid>.png` 檔。

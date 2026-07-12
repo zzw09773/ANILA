@@ -195,7 +195,7 @@ sequenceDiagram
   "launch_id": "launch_123",
   "service_id": "material-analysis",
   "user_id": 12,
-  "employee_id": "123456",
+   "employee_id": "990000001",
   "department_id": 5,
   "roles": ["user"],
   "task_id": "task_123",
@@ -321,7 +321,7 @@ Authorization: Bearer <service integration key>
   "event_type": "analysis.completed",
   "timestamp": "2026-07-01T00:00:00Z",
   "actor": {
-    "employee_id": "123456"
+     "employee_id": "990000001"
   },
   "resource": {
     "type": "service_analysis",

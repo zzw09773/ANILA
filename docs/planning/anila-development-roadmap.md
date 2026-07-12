@@ -208,10 +208,10 @@ Gate 4（Demo Lane）不在關鍵路徑上。Gate 7 在 Go 之後。**這是工�
 
 | ID | 工作 | 對應 |
 |---|---|---|
-| S1 | `ANILA_BACKUP_DIR` 移出 repo root；codeserver 移出正式 profile（或 `CODESERVER_WORKSPACE` 指向非機密子目錄）；nginx `/codeserver` 還原 `return 404;`（做法就在該處註解）；`intranet-deploy.sh:131` 的 `.env.bak` 改寫到 repo 外 | **C1** |
-| S1b | **`/n8n` 與 `/gitlab` 一併還原 `return 404;`**（`anila.conf:342-366,463-485,728-753,805-835` 四個 block，兩個 server 各兩條；實測全部無 `auth_request`，唯一認證是各服務自身的靜態密碼）。**修在 `main`，七條分支全部受益** | §2.4 |
-| S1c | 落實 `AGENTS.md` §3.3 的服務移除交付要求（compose service ＋ nginx location ＋ `AUTO_REGISTER_LINKS`）。**注意：`prod-intranet-card` 的 n8n/GitLab 處置也要一併決定**——v1.0 的清單漏了它 | §2.4 |
-| 🆕 S1d | nginx `/uploads/` 加認證，或至少把 `/uploads/flux/` 比照 `/uploads/ingestion/` 擋掉並改由 CSP 驗證後供應。**中期正解**：artifact 一律經 CSP 下載端點（Gate 3 A3） | **H6** |
+| S1 | `ANILA_BACKUP_DIR` 與 `.env.bak` 移出 repo root；codeserver 移出正式預設 stack，只保留明示 `developer-tools` profile，workspace 固定為 git-ignored 非機密 sandbox，registry 明標「按需」；啟用時只由 `code.ai.ncsist.org.tw` 的獨立 origin 提供，使用 code-server 原生強密碼，主平台 `/codeserver*` 固定 404 | **C1** |
+| S1b | **依使用者決策，`prod-intranet-card` 保留 n8n／GitLab，但隔離瀏覽器來源。** n8n 與 GitLab 分別只由 `n8n.ai.ncsist.org.tw`、`gitlab.ai.ncsist.org.tw` 的 root canonical URL 提供，採各自原生帳號／PAT／runner token 認證；不得接受或轉送 CSP session cookie／`auth_request`，主平台 `/n8n*`、`/gitlab*` 固定 404。n8n 的 `webhook`／`webhook-test`／`webhook-waiting`（exact 與子路徑）一律 404；Git smart HTTP／LFS／API 走 GitLab 原生認證，Git CLI 亦可走明示綁定內網介面、以 SSH key 驗證的 GitLab Shell port | §2.4 |
+| S1c | 落實 `AGENTS.md` §3.3 的服務交付矩陣（compose service ＋ nginx virtual host ＋ `AUTO_REGISTER_LINKS`）：不需要 n8n／GitLab 的 profile 必須移除；`prod-intranet-card` 是經決策保留的例外，signed deployment profile 必須明列三個工具 FQDN、原生認證與 GitLab SSH ingress。n8n machine ingress 未完成前維持 fail-closed，不得以「內網」取代身分驗證 | §2.4 |
+| 🆕 S1d | nginx `/uploads/ingestion/` 維持 404；`/uploads/flux/` 與其餘 `/uploads/` 均以 CSP smart-card session 驗證，並回 `private, no-store`／`no-referrer`。這只關閉匿名暴露：已知 UUID 仍可能被其他已登入使用者讀取；**完整正解**仍是 Gate 3 A3 的 CSP artifact 下載端點，綁 owner／Task／classification 並可撤銷 | **H6** |
 | S2 | compose 設 `ENABLE_PUBLIC_SHARE: "false"`；`create_share` 的 gate 由 legacy boolean 改為 `classification_level > 無機密`；**🆕 讀取端 `public_share.py:58` 的 `conv.classified` 一併改為 level 判斷** | **H1** |
 | | ↳ 註：讀取端是**即時查 conversation 當下狀態**（非建立時快照），所以改完 level 判斷後，分類升級會讓既有 token **自動失效**——不需要另建「撤銷舊 token」機制。v1.0 只改了 `create_share`，等於營業秘密對話在修補前建立的連結仍可讀。**另**：`expires_at` 加強制上限（現可為 NULL ＝ 永久） | |
 | 🆕 S2b | **加 `ENABLE_MEMORY` 旗標**（包住 `proxy.py:519` 的 `_inject_memory` 與 `proxy.py:251-279` 的 `_schedule_memory_write`），正式 profile 預設 `false`。實測：`config.py` 全檔無此旗標，今天**只能改 code 才能停用** | **H2 的部署層止血**（完整修復＝Gate 2 G3/G4） |
@@ -226,9 +226,9 @@ Gate 4（Demo Lane）不在關鍵路徑上。Gate 7 在 Go 之後。**這是工�
 | S11 | `infra/docker/csp.Dockerfile` 加 `USER`（目前以 root 執行）；刪除死檔 `services/csp/Dockerfile` | 審查報告 Part 3 §3.6 |
 
 **退出條件（v1.1 改寫）**
-- 以 route inventory ＋匿名 contract/DAST negative tests 證明無任何**未登入即可讀取資料**的路徑；至少覆蓋 `public_share`（S2）、`/codeserver`、`/n8n`、`/gitlab`（S1、S1b）、`/uploads/*`（S1d）
+- 以 route inventory ＋匿名 contract/DAST negative tests 證明無任何**未登入即可讀取資料**的路徑；至少覆蓋 `public_share`（S2）、主平台 `/codeserver*`／`/n8n*`／`/gitlab*` 全為 404、三個工具獨立 origin 由原生認證保護、n8n `/webhook*` 全為 404（S1、S1b），以及 `/uploads/*`（S1d）
 - 正式 profile 的 `docker compose config`／container mount inventory 證明 codeserver 不在 stack（或 workspace 只掛非機密子目錄且已通過明文核准）、repo root 不存在 RW 掛載、backup／`.env.bak`／key material 全部位於 repo 與 codeserver workspace 外並有最小權限 ACL（S1）
-- 逐 deployment profile 對照 `AGENTS.md` §3.3：要求移除的 codeserver／n8n／GitLab 在 compose service、nginx location、`AUTO_REGISTER_LINKS` 三處都不存在；用 rendered compose／nginx config 驗證，不只看匿名 HTTP 結果（S1c）
+- 逐 deployment profile 對照 `AGENTS.md` §3.3：要求移除的 codeserver／n8n／GitLab 在 compose service、nginx virtual host、`AUTO_REGISTER_LINKS` 三處都不存在；`prod-intranet-card` 則須證明 links 指向三個獨立 HTTPS origin、主平台沒有工具代理、GitLab SSH 僅綁 `GITLAB_SSH_BIND_IP`；用 rendered compose／nginx config 驗證，不只看匿名 HTTP 結果（S1c）
 - H2 有部署層 kill switch 且正式 profile 已關閉（S2b）——**完整修復記在 Gate 2，不在此處宣稱已關閉**
 - 全新內網主機 `docker compose up -d --no-build` 可完整啟動（S4）
 - Governance UI 建立／啟動服務的正反向測試通過；未授權者先得到 403、不是 URL oracle 的 400（S5）

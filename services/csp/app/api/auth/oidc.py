@@ -176,7 +176,7 @@ async def oidc_callback(
         # state 內有 PKCE verifier 與 nonce，必須完整傳給 authenticate_oidc_code
         # 才能驗 id_token；任何缺漏由該函式 raise ValueError。
         user = await authenticate_oidc_code(db, provider, code, state_payload)
-        tokens = create_tokens(user)
+        tokens = create_tokens(user, amr=("oidc",))
         _stamp_last_login(db, user)
         log_audit_event(
             db,
@@ -191,7 +191,7 @@ async def oidc_callback(
             tokens,
             state_payload.get("next_path", "/"),
         )
-        # Cookies carry the session — SPA reads `anila_csrf` (non-httpOnly)
+        # Cookies carry the session — SPA reads `__Host-anila_csrf` (non-httpOnly)
         # on first render and echoes it on mutating requests.
         set_session_cookies(
             html,

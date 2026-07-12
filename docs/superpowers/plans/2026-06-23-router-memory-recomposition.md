@@ -64,7 +64,7 @@ def test_sanitize_agent_reply_strips_agent_sentinels():
 
 - [ ] **Step 2: 跑確認 FAIL**
 
-Run: `cd anila-core && /home/aia/c1147259/ANILA/myCSPPlatform/backend/.venv/bin/python -m pytest tests/test_memory_contract.py -q`
+Run: `cd anila-core && $HOME/ANILA/myCSPPlatform/backend/.venv/bin/python -m pytest tests/test_memory_contract.py -q`
 Expected: FAIL（module 不存在）
 
 - [ ] **Step 3: 實作**
@@ -99,7 +99,7 @@ def sanitize_agent_reply(text: str) -> str:
 
 - [ ] **Step 4: 跑確認 PASS**
 
-Run: `cd anila-core && /home/aia/c1147259/ANILA/myCSPPlatform/backend/.venv/bin/python -m pytest tests/test_memory_contract.py -q`
+Run: `cd anila-core && $HOME/ANILA/myCSPPlatform/backend/.venv/bin/python -m pytest tests/test_memory_contract.py -q`
 Expected: PASS
 
 ---

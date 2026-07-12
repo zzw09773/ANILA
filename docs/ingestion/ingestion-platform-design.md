@@ -552,7 +552,7 @@ async def test_constructor_rejects_invalid_agent_id():
 ```bash
 # Sprint 1 結束時必須通過：
 $ grep -rn "document_chunks" --include="*.py" \
-    /home/aia/c1147259/ANILA/anila-core /home/aia/c1147259/ANILA/AgenticRAG \
+    $HOME/ANILA/anila-core $HOME/ANILA/AgenticRAG \
     | grep -v "_archive\|tests\|__pycache__"
 # 期望輸出：只剩一個檔案 — 新的 anila_core.storage.adapters.pgvector_store_v2
 ```

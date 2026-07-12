@@ -7,6 +7,7 @@
 #   bash infra/deployment/intranet/anila-serve.sh up|down|restart
 #   bash infra/deployment/intranet/anila-serve.sh rebuild <svc>   重建單一服務 (e.g. rebuild csp)
 #   bash infra/deployment/intranet/anila-serve.sh status|logs <svc>
+#   bash infra/deployment/intranet/anila-serve.sh codeserver-up|codeserver-down
 #
 # 跟 model-serve.sh 的分工:
 #   anila-serve.sh  → 平台 stack (infra/compose/platform.yml, project: anila-platform)

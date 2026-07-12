@@ -81,7 +81,9 @@ docker run -p 9000:9000 -e CSP_BASE_URL=http://csp:8000 -e CSP_SERVICE_TOKEN=dev
 ### Option 3: single-host uvicorn (dev)
 
 ```bash
-pip install -e "../../packages/anila-core"        # pure runtime, no RAG extras
+pip install -e "../../packages/anila-contracts" \
+  -e "../../packages/anila-security" \
+  -e "../../packages/anila-core"                  # pure runtime, no RAG extras
 export CSP_BASE_URL=http://localhost:8000
 uvicorn main:app --host 0.0.0.0 --port 9000 --log-level info
 ```

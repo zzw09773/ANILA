@@ -18,7 +18,7 @@
 平台各角色與 anila-core 的關係:
 
 - **Router 部署**([`anila-core-router`](../../services/anila-core-router/)):直接 `import` Pillar 1 + Pillar 2。
-- **Agent 開發者**:`anila-core init` 產生 non-RAG starter,或 `pip install "anila-core[rag]"` 並 fork [`anila-agent`](../anila-agent/) 作為官方 RAG agent starter template。`[rag]` extra 提供文件解析的重量級套件。
+- **Agent 開發者**:`anila-core init` 產生 non-RAG starter,或從 monorepo 以下方 local-path 指令安裝 `[rag]` 並 fork [`anila-agent`](../anila-agent/) 作為官方 RAG agent starter template。目前 internal distribution name 未在 public PyPI 發佈，不得直接 `pip install anila-core`。
 - **ingestion-worker**(Arq 非同步 pipeline):只消費 Pillar 2(`chunking_plugins`、`IngestionError`、`pg_pool`、`pgvector_store`、`credential_crypto`),不碰 Pillar 1。
 
 > **Redesign 後倉庫佈局(§17.1)**:monorepo 採 `services/`(可部署服務,含 `csp` / `anila-core-router`)、`apps/`(前端)、`packages/`(可 import 的套件,本 SDK 在此)、`infra/`(compose / 部署腳本 / nginx / models)四分層。根目錄 [`compose.yaml`](../../compose.yaml) 是 shim → `include: infra/compose/platform.yml`;部署腳本在 `infra/deployment/{scripts,intranet}/`。repo 根定位見 [`../../README.md`](../../README.md)。
@@ -42,7 +42,8 @@
 | `python-frontmatter>=1.1` / `pyyaml>=6.0` | agent definition / 設定載入 |
 | `anyio>=4.0` / `aiofiles>=23.0` | async IO |
 | `asyncpg>=0.29` / `pgvector>=0.3` | Pillar 2 `CollectionScopedPgVectorStore`(ingestion 中央向量庫) |
-| `cryptography>=42` | `security.credential_crypto`(AES-GCM + PBKDF2,加解密 `user_llm_credentials`) |
+| `anila-contracts>=0.1,<0.2` | 獨立的 Classification／StepEvent／AgentError wire contracts；`anila_core.contracts` 僅作 facade |
+| `anila-security>=0.1,<0.2` | 舊 `anila_core.security` import 的相容 facade；實作與 `cryptography` 依賴在獨立套件 |
 | `aiosqlite>=0.20` | 預設 `sqlite_session` short-term session adapter |
 
 ### Optional extras
@@ -100,7 +101,7 @@ packages/anila-core/
     ├── cli/                  # init / register / status / bootstrap + templates/
     │
     └── ──── Pillar 2 · shared infrastructure ────
-        ├── security/         # credential_crypto(AES-GCM + PBKDF2)+ url_guard(SSRF,含 endpoint_kind 分域)
+        ├── security/         # anila-security 的向後相容 facade（無第二份狀態）
         ├── storage/          # ports.py(Protocol)+ adapters/(pg_pool · pgvector_store · memory_file_store)
         └── ingestion/        # errors(IngestionError taxonomy)· parser_registry · parsers · docling_parser
             │                 #   · ocr · citation_extractor · relation_resolution
@@ -132,9 +133,8 @@ anila-core 是 **library / SDK**,不是常駐服務。它被 Router / agent / in
 ### 安裝與測試
 
 ```bash
-pip install -e "./packages/anila-core"          # 完整 Pillar 1 + Pillar 2 core deps
-pip install -e "./packages/anila-core[rag]"     # + 文件解析重量級堆疊
-pip install -e "./packages/anila-core[rag,dev]" # + pytest / ruff / mypy(跑完整測試所需)
+pip install -e "./packages/anila-contracts" -e "./packages/anila-security" -e "./packages/anila-core[rag,dev]"
+# 同一 invocation 提供全部 internal local candidates，避免 pip 向 public index 解析未保留名稱。
 
 cd packages/anila-core
 .venv/bin/python -m pytest            # asyncio_mode=auto;testpaths=["tests"]
@@ -178,7 +178,7 @@ print(result.stop_reason, result.turn_count)
 
 ### Full Trace 匯出(opt-in)
 
-Tracing 是 **additive 且 fail-open**:`ANILA_TRACE_ENDPOINT` 未設 → 整條 trace 路徑 no-op,行為與未接前完全一致。設定後,span 由背景 `TraceExporter` POST 到 CSP `POST {base}/v1/traces/{trace_id}/spans`(body `{"spans":[…]}`,≤256/批,`X-CSP-Service-Token` 認證),同時 mirror 進 `anila.spans` SSE 事件。
+Tracing 是 **additive 且 fail-open**:`ANILA_TRACE_ENDPOINT` 未設 → 整條 trace 路徑 no-op,行為與未接前完全一致。設定後,span 由背景 `TraceExporter` POST 到 CSP `POST {base}/v1/traces/{trace_id}/spans`(body `{"spans":[…]}`,≤256/批,`Authorization: Bearer …` 認證),同時 mirror 進 `anila.spans` SSE 事件。
 
 - `ANILA_TRACE_ENDPOINT`:bare flag(`1`/`true`/`on`/`yes`/`default`)→ 用 router 已知的 `CSP_BASE_URL`;其他值 → 當顯式 trace base URL。
 - `ANILA_TRACE_TOKEN`:trace export 用的 service token(未設則 fallback `CSP_SERVICE_TOKEN`)。
@@ -208,7 +208,7 @@ anila-core register \
 
 ## 安全:outbound URL guard(SSRF)
 
-`security.url_guard.validate_outbound_url(url, endpoint_kind="generic")` 是使用者提供之 endpoint URL 的中央 allow-list(CSP 建憑證時 + worker 呼叫時各驗一次,defense in depth)。**Slice 6a** 依 `endpoint_kind` 把 http 放寬旗標分域(僅影響 scheme;host / IP / DNS / trusted-host 檢查跨 kind 一致):
+canonical API 是 `anila_security.validate_outbound_url(url, endpoint_kind="generic")`；`anila_core.security` 僅保留相同物件的相容 re-export。它是使用者提供之 endpoint URL 的中央 allow-list(CSP 建憑證時 + worker 呼叫時各驗一次,defense in depth)。**Slice 6a** 依 `endpoint_kind` 把 http 放寬旗標分域(僅影響 scheme;host / IP / DNS / trusted-host 檢查跨 kind 一致):
 
 - **`model`** — production(`ANILA_ENV` ∈ {`production`,`prod`})一律 fail-closed 拒 http,`ANILA_ALLOW_HTTP_ENDPOINT` 救不了(doc `04` §8 硬規則);非 production 才吃該旗標。
 - **`agent`** — http 由 `ANILA_ALLOW_HTTP_AGENT_ENDPOINT=1` 放行(內網 MLSteam 純 http NodePort agent);legacy `ANILA_ALLOW_HTTP_ENDPOINT` 仍作 deprecated fallback。
@@ -224,8 +224,8 @@ host 面固定守則:deny list(loopback / `169.254.169.254` metadata / mDNS)、i
 |--------|----------|----------|
 | **anila-core-router** | Pillar 1 + Pillar 2 | `create_router_app()`、QueryEngine、Coordinator、`RemoteAgentRegistry`、service-token middleware、trace SDK |
 | **anila-agent template**(fork 起點) | Pillar 1 + Pillar 2 + `[rag]` | 完整 runtime + 文件解析 / vision provider |
-| **ingestion-worker**(Arq + Redis) | 僅 Pillar 2 | `chunking_plugins`、`IngestionError`、`pg_pool`、`CollectionScopedPgVectorStore`、`credential_crypto` |
-| **services/csp**(CSP backend) | Pillar 2(部分) | `credential_crypto`(加密 `user_llm_credentials`)、`url_guard`(SSRF)等共用 primitives |
+| **ingestion-worker**(Arq + Redis) | Pillar 2 + `anila-security` | core 的 ingestion/storage primitives；安全 primitive 直接從薄套件 import |
+| **services/csp**(CSP backend) | `anila-security` + core 部分 | credential crypto／SSRF 直接依賴薄套件；其餘共用 runtime 仍來自 core |
 
 ---
 

@@ -55,6 +55,8 @@ CSP 另承載 **Ingestion 知識庫**（文件 → 切塊 → embedding → pgve
 | 測試 | pytest · pytest-asyncio 0.24.0 · respx 0.22.0 |
 
 > 部署 image 走 [`infra/docker/csp.Dockerfile`](../../infra/docker/csp.Dockerfile)（multi-stage、含 `anila-core[rag]`）；`services/csp/Dockerfile` 為**單容器 legacy**（compose 不使用它）。前端治理介面已移為頂層 [`apps/csp-governance-ui/`](../../apps/csp-governance-ui/)（Vue 3 / Vite，官方藍視覺改版），由 Nginx 提供靜態檔。
+>
+> **Internal package 來源**：`anila-contracts` / `anila-security` / `anila-core` 目前未在 public PyPI 保留。fresh venv 必須從 repo root 同一次執行 `pip install -e ./packages/anila-contracts -e ./packages/anila-security -e './packages/anila-core[rag]' -r services/csp/requirements-dev.txt`；不得以 bare name 從 public index 安裝。
 
 ---
 

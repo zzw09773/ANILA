@@ -8,8 +8,9 @@
 - Production 內網：**唯一**登入方式 = 憑證卡。使用者 PC 安裝中華電信 HiPKI
   本機元件 (``localhost:16888``),硬體讀卡機讀中科院 PKI 卡,PIN 驗證 +
   簽章運算都在卡片內完成。Backend 拿到的是 base64 PKCS#7 (CMS SignedData)。
-- Dev：用 ``cht/`` mock 容器假裝 localhost:16888,回鄒惠翔測試卡的「固定」簽章
-  (eContent 永遠是 ``b"TBS"``,mock 無私鑰故無法簽新 nonce)。
+- Dev：用 ``cht/`` synthetic emulator 假裝 localhost:16888。它在啟動時於記憶體
+  產生測試 CA/卡片金鑰，並對每次 challenge 的實際 nonce 簽章；repo 不保存
+  私鑰、個人憑證或固定 CMS payload。
 
 信任邊界（2026-06-12 重做）
 ===========================
@@ -24,19 +25,22 @@
    Authority - G1``(經 ``中科院憑證管理中心 - G1`` 中繼),且都在效期內。攻擊者
    自簽的憑證鏈不到我們的 root → 拒絕。
 3. **綁 nonce(反 replay)**:eContent 必須 == 本次 challenge 發出的 nonce
-   (見 ``card_auth_service``),除非 ``CARD_DEV_SKIP_NONCE_BINDING`` 開啟
-   (僅供 dev 用固定 mock 測試;**prod 一律不可開**)。
+   (見 ``card_auth_service``)。``CARD_DEV_SKIP_NONCE_BINDING`` 僅保留作舊版開發
+   相容開關；正式環境會在 startup fail closed，現行 synthetic emulator 也不需要它。
 
-撤銷檢查(CRL/OCSP)**刻意不做**:院內離職流程實體回收銷毀卡片,加上系統端
-``User.is_active``/核准狀態把關,air-gap 下接受「不查線上撤銷」為已知設計。
+目前限制：本模組尚未驗 CRL／OCSP，也尚未完整驗 X.509 policy／EKU；
+``User.is_active`` 與核准狀態只能撤銷 ANILA 帳號，不能證明卡片本身未被撤銷。
+因此這不是機密 production 的完整憑證保證，需由 Gate 2 的撤銷與 profile 驗證、
+以及 Gate 6 的 production-equivalent 卡片矩陣完成後才能解除此限制。
 
 員工編號的來源
 ==============
 
 驗證通過後,從 signer cert 的 Subject 取::
 
-    Subject: C=TW, O=國家中山科學研究院, CN=鄒惠翔, serialNumber=1090868
-    SAN.rfc822Name: ['C95THS@ncsist.org.tw']
+    Subject: C=ZZ, O=ANILA Synthetic Test Lab,
+             CN=Synthetic Card User, serialNumber=990000001
+    SAN.rfc822Name: ['synthetic.card.user@example.invalid']
 
 員工編號 = ``serialNumber`` 屬性(非憑證序號)。
 """
@@ -60,16 +64,16 @@ from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.x509.oid import ExtensionOID, NameOID
 
 
-# 中科院員工編號:純數字,目前觀察到 7 digits (例:1147259、1090868);
-# 6/8/9 留邊界給歷史與未來 ID schema 變化。用 ``\A...\Z`` 嚴格頭尾。
+# 員工編號是 6--9 位純數字；測試只使用保留的 990000xxx 合成編號。
+# 用 ``\A...\Z`` 嚴格頭尾。
 _EMPLOYEE_ID_RE = re.compile(r"\A\d{6,9}\Z")
 
 # 釘死的信任錨 bundle(CSPKI Root + 中科院憑證管理中心 中繼)。隨碼附帶;
 # 可用 CARD_CA_BUNDLE_PATH 覆寫(內網若換 CA 換檔即可,不必改碼)。
 _DEFAULT_CA_BUNDLE = Path(__file__).resolve().parent / "cspki_ca_bundle.pem"
 
-# Dev-only:用固定 mock(eContent 永遠 b"TBS",無法簽新 nonce)測試時跳過
-# nonce 綁定。**prod 一律不可開**;簽章 + 憑證鏈驗證照常執行。
+# Legacy dev-only compatibility switch. 現行 synthetic emulator 會簽實際 nonce，
+# 不需要此開關；正式環境的 startup security gate 會拒絕啟用。
 _SKIP_NONCE_BINDING = os.environ.get("CARD_DEV_SKIP_NONCE_BINDING", "").lower() in (
     "1",
     "true",
@@ -109,8 +113,8 @@ class CardConfigError(CardAuthError):
 class CardClaims:
     """憑證卡驗證成功後抽出的不可變身分資訊。"""
 
-    employee_id: str  # X.509 subject.serialNumber (例:'1090868' / '1147259')
-    display_name: str  # X.509 subject.CN (例:'鄒惠翔')
+    employee_id: str  # X.509 subject.serialNumber (測試例:'990000001')
+    display_name: str  # X.509 subject.CN (測試例:'Synthetic Card User')
     email: str  # X.509 SAN.rfc822Name
     card_serial: str | None  # 元件回的 cardSN,純供 audit log 用
 

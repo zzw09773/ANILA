@@ -49,27 +49,6 @@ from fastapi.testclient import TestClient
 from tests.conftest import make_user
 
 
-# `test_startup_security.py` reloads `app.config` mid-suite to test the
-# production-mode raises. Its monkeypatched env is restored AFTER the
-# reload, so the cached `settings` global picks up *production* values
-# (non-dev SECRET_KEY etc.) and subsequent tests that boot the TestClient
-# lifespan would fail the dev-default gate.
-#
-# This autouse fixture re-applies the dev opt-in env var AND reloads
-# the affected modules so our lifespan boot sees the dev-secret allow
-# flag again. ``app.main.lifespan`` does a fresh ``from
-# app.services.startup_security import assert_no_dev_defaults`` on
-# every call so we don't need to re-patch main.
-@pytest.fixture(autouse=True)
-def _ensure_dev_secret_gate(monkeypatch):
-    monkeypatch.setenv("ANILA_ALLOW_DEV_SECRET", "1")
-    import importlib
-    import app.config as config_module
-    importlib.reload(config_module)
-    import app.services.startup_security as ss_module
-    importlib.reload(ss_module)
-
-
 # ---------------------------------------------------------------------------
 # Recording fake — captures every publish(channel, message) call.
 # ---------------------------------------------------------------------------

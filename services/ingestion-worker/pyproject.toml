@@ -8,6 +8,8 @@ version = "0.1.0"
 description = "ANILA ingestion-worker — Arq-based async pipeline for parse / chunk / embed / index"
 requires-python = ">=3.11"
 dependencies = [
+    # Direct security dependency: credential decrypt + call-time SSRF guard.
+    "anila-security>=0.1.0,<0.2.0",
     # Core SDK — chunkers + AgentScopedPgVectorStore + error taxonomy.
     # ``[rag]`` extra pulls in the parser stack (pymupdf4llm, python-docx,
     # odfpy, striprtf, Pillow) and is required because handlers.py /

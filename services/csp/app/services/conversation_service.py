@@ -3,16 +3,18 @@ from __future__ import annotations
 
 import json
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models.audit_log import AuditLog
 from app.models.conversation import Conversation, ConversationShare
 from app.models.message import Message
 from app.models.user import User
+from anila_contracts import Classification as ClassificationLevel
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import is_admin_tier
 
@@ -371,6 +373,57 @@ def log_classified_access(db: Session, conv_id: int, user: User) -> None:
 
 # ── Share links ───────────────────────────────────────────────────────────────
 
+def is_publicly_shareable(conv: Conversation) -> bool:
+    """Return True only for a valid, explicitly UNCLASSIFIED conversation.
+
+    The legacy ``classified`` boolean is only a compatibility read model and
+    remains False for 營業秘密, so it is not an authorization input. Unknown or
+    malformed stored values fail closed.
+    """
+    try:
+        return (
+            ClassificationLevel.from_storage(conv.classification_level)
+            is ClassificationLevel.UNCLASSIFIED
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _stored_datetime_as_utc(value: datetime) -> datetime:
+    """Normalize DB datetimes to UTC.
+
+    ``ConversationShare.expires_at`` is a legacy timezone-naive column. SQLite
+    and PostgreSQL can therefore return a naive value even when the API wrote
+    an aware UTC datetime. Stored values have always represented UTC.
+    """
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _bounded_share_expiration(expires_at: Optional[datetime]) -> datetime:
+    now = datetime.now(timezone.utc)
+    maximum = now + timedelta(hours=settings.PUBLIC_SHARE_MAX_TTL_HOURS)
+    if expires_at is None:
+        return maximum
+    if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+        raise HTTPException(
+            status_code=400,
+            detail="分享連結到期時間必須包含時區",
+        )
+    normalized = expires_at.astimezone(timezone.utc)
+    if normalized <= now:
+        raise HTTPException(status_code=400, detail="分享連結到期時間必須在未來")
+    if normalized > maximum:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "分享連結期限不可超過 "
+                f"{settings.PUBLIC_SHARE_MAX_TTL_HOURS} 小時"
+            ),
+        )
+    return normalized
+
 def create_share(
     db: Session,
     conv_id: int,
@@ -381,17 +434,18 @@ def create_share(
     expires_at: Optional[datetime] = None,
 ) -> ConversationShare:
     conv = get_conversation(db, conv_id, user)
-    if conv.classified:
+    if not is_publicly_shareable(conv):
         raise HTTPException(
             status_code=403,
-            detail="機密對話不允許建立分享連結",
+            detail="只有無機密對話可建立分享連結",
         )
+    bounded_expires_at = _bounded_share_expiration(expires_at)
     share = ConversationShare(
         conversation_id=conv.id,
         token=secrets.token_urlsafe(32),
         mode=mode,
         allow_fork=allow_fork,
-        expires_at=expires_at,
+        expires_at=bounded_expires_at,
         created_by=user.id,
     )
     db.add(share)
@@ -408,7 +462,15 @@ def get_share_by_token(db: Session, token: str) -> ConversationShare:
     )
     if not share:
         raise HTTPException(status_code=404, detail="找不到此分享連結")
-    if share.expires_at and share.expires_at < datetime.now(timezone.utc):
+    # Re-check the conversation's current five-level classification on every
+    # anonymous read. Upgrading a conversation immediately invalidates all old
+    # tokens without disclosing whether the token itself was ever valid.
+    if not is_publicly_shareable(share.conversation):
+        raise HTTPException(status_code=404, detail="找不到此分享連結")
+    if (
+        share.expires_at
+        and _stored_datetime_as_utc(share.expires_at) < datetime.now(timezone.utc)
+    ):
         raise HTTPException(status_code=410, detail="此分享連結已過期")
     share.view_count += 1
     db.commit()
@@ -424,7 +486,7 @@ def revoke_share(db: Session, share_id: int, user: User) -> None:
     share = db.query(ConversationShare).filter(ConversationShare.id == share_id).first()
     if not share:
         raise HTTPException(status_code=404, detail="找不到此分享連結")
-    conv = get_conversation(db, share.conversation_id, user)  # ownership check
+    get_conversation(db, share.conversation_id, user)  # ownership check
     db.delete(share)
     db.commit()
 

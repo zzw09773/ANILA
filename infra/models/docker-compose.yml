@@ -7,7 +7,7 @@
 #     so the host's external NICs cannot reach them; CSP talks via the
 #     shared external `anila-models-net` docker network DNS
 #   * Mirror the GPU layout previously deployed by
-#     /home/aia/c1147259/project/My-OpenAI-Frontend/docker-compose.migration.yml
+#     $HOME/project/My-OpenAI-Frontend/docker-compose.migration.yml
 #     so the cutover is a stop-and-swap, not a redesign
 #
 # Bootstrap (one-time, on the host):

@@ -215,9 +215,9 @@ Image generation：
 | 範圍 | 指令 / 方法 |
 |---|---|
 | `packages/anila-agent` | `cd packages/anila-agent && make install && make test && make lint`；live endpoint 才跑 `make test-live`。 |
-| `packages/anila-core` | `cd packages/anila-core && pip install -e '.[dev,rag]' && pytest`；DB/RLS 類另跑 `pytest -m integration`；品質跑 `ruff check src tests`, `mypy src`。 |
-| `services/ingestion-worker` | `cd services/ingestion-worker && pip install -e '../../packages/anila-core[rag]' -e '.[dev]' && pytest && ruff check src tests`。 |
-| `services/csp` | `cd services/csp && python -m pytest`；schema/API 改動要驗 Alembic startup。 |
+| `packages/anila-core` | repo root 先跑 `pip install -e ./packages/anila-contracts -e ./packages/anila-security -e './packages/anila-core[dev,rag]'`，再 `cd packages/anila-core && pytest`；DB/RLS 類另跑 `pytest -m integration`；品質跑 `ruff check src tests`, `mypy src`。 |
+| `services/ingestion-worker` | repo root 跑 `pip install -e ./packages/anila-contracts -e ./packages/anila-security -e './packages/anila-core[rag]' -e './services/ingestion-worker[dev]'`，再 `cd services/ingestion-worker && pytest && ruff check src tests`。 |
+| `services/csp` | repo root 跑 `pip install -e ./packages/anila-contracts -e ./packages/anila-security -e './packages/anila-core[rag]' -r services/csp/requirements-dev.txt`，再 `cd services/csp && python -m pytest`；schema/API 改動要驗 Alembic startup。不得用 bare internal distribution name 從 public index 安裝。 |
 | `apps/csp-governance-ui` | `cd apps/csp-governance-ui && npm run build`。 |
 | `apps/anila-shell` | `cd apps/anila-shell && npm test && npm run build`。目前 `e2e/README.md` 是過時殘留，沒有可靠 Playwright spec。 |
 | `apps/anilalm` | `cd apps/anilalm && npm run typecheck && npm run build`；schema 變更後先 `npm run gen:studio-types`。 |

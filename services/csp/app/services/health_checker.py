@@ -11,7 +11,7 @@ import logging
 import time
 from datetime import datetime, timezone
 import httpx
-from anila_core.security import UnsafeEndpointError, validate_outbound_url
+from anila_security import UnsafeEndpointError, validate_outbound_url
 from app.database import SessionLocal
 from app.models.model_registry import ModelRegistry
 from app.models.agent import Agent

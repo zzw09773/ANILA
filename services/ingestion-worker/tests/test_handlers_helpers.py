@@ -13,18 +13,20 @@ Scope (deliberately narrow — no DB/redis/arq infra stood up):
 ``_is_uniform_color`` is intentionally NOT tested here — tests/test_uniform_color.py
 already owns it.
 
-Skipped (noted in the StructuredOutput 'notes'): the ``ingest_document`` job
-pipeline and the full insert path of ``_persist_images`` — both require a live
-PgPool / asyncpg connection + an Embedder HTTP endpoint, which can't be stood up
-deterministically as a pure unit test.
+The narrow terminal-state branches of ``ingest_document`` are covered with
+mocked DB helpers.  The full insert path of ``_persist_images`` still requires
+a live PgPool / asyncpg connection + an Embedder HTTP endpoint.
 """
 from __future__ import annotations
 
+import asyncio
 import io
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
 
+from anila_core.ingestion.errors import EmbedError
 from ingestion_worker import handlers
 from ingestion_worker.handlers import _CAPTION_MAX_CHARS, _clean_caption
 from ingestion_worker.settings import settings
@@ -277,3 +279,147 @@ async def test_persist_images_mkdir_failure_returns_zero(monkeypatch):
     monkeypatch.setattr(handlers.os, "makedirs", _boom)
     images = {"img1": _FakeRef(_gradient_png())}
     assert await handlers._persist_images(None, 1, 42, images, None, None) == 0
+
+
+# ── ingest_document terminal convergence ─────────────────────────────────────
+
+
+def _install_ingest_fakes(monkeypatch, tmp_path, *, chunks, embedder):
+    blob_path = tmp_path / "document.txt"
+    blob_path.write_text("content", encoding="utf-8")
+    document_updates: list[tuple[str, dict]] = []
+    job_updates: list[dict] = []
+    failures = []
+
+    async def load_meta(_pool, _document_id):
+        return {
+            "collection_id": 7,
+            "storage_path": str(blob_path),
+            "uploaded_by": 11,
+            "owner_user_id": 12,
+            "filename": "document.txt",
+            "mime_type": "text/plain",
+            "chunking_config": {"strategy": "test", "params": {}},
+        }
+
+    async def update_document(_pool, _document_id, status, **kwargs):
+        document_updates.append((status, kwargs))
+
+    async def update_job(_pool, _job_id, **kwargs):
+        job_updates.append(kwargs)
+
+    async def record_failure(_pool, _job_id, error):
+        failures.append(error)
+
+    chunker = SimpleNamespace(requires_embedder=False, chunk=lambda *_args: chunks)
+    monkeypatch.setattr(handlers, "_load_document_meta", load_meta)
+    monkeypatch.setattr(handlers, "_update_document_status", update_document)
+    monkeypatch.setattr(handlers, "_update_job", update_job)
+    monkeypatch.setattr(handlers, "_record_job_failure", record_failure)
+    monkeypatch.setattr(
+        handlers,
+        "extract_text",
+        lambda *_args: ("parsed content", {}, {}),
+    )
+    monkeypatch.setattr(handlers, "get_chunker", lambda _strategy: chunker)
+    return {
+        "ctx": {"pool": object(), "embedder": embedder, "job_id": "job-1"},
+        "document_updates": document_updates,
+        "job_updates": job_updates,
+        "failures": failures,
+    }
+
+
+async def test_ingest_empty_chunks_writes_one_succeeded_terminal_job_state(
+    monkeypatch, tmp_path
+):
+    state = _install_ingest_fakes(
+        monkeypatch,
+        tmp_path,
+        chunks=[],
+        embedder=object(),
+    )
+
+    result = await handlers.ingest_document(state["ctx"], document_id=41)
+
+    terminal = [
+        update
+        for update in state["job_updates"]
+        if update.get("status") in {"succeeded", "failed", "cancelled"}
+    ]
+    assert terminal == [
+        {
+            "status": "succeeded",
+            "succeeded": True,
+            "progress_pct": 100,
+            "progress_message": "0 chunks indexed",
+        }
+    ]
+    assert state["document_updates"][-1] == (
+        "indexed",
+        {"chunk_count": 0, "error_message": None},
+    )
+    assert result == {"chunk_count": 0, "warning": "no chunks produced"}
+
+
+async def test_ingest_embedding_timeout_converges_document_and_job_to_failed(
+    monkeypatch, tmp_path
+):
+    class TimeoutEmbedder:
+        async def embed(self, _texts, *, user_id=None):
+            raise EmbedError.timeout("embedding timed out")
+
+    chunk = SimpleNamespace(content="leaf", metadata={})
+    state = _install_ingest_fakes(
+        monkeypatch,
+        tmp_path,
+        chunks=[chunk],
+        embedder=TimeoutEmbedder(),
+    )
+
+    with pytest.raises(EmbedError):
+        await handlers.ingest_document(state["ctx"], document_id=42)
+
+    assert state["document_updates"][-1] == (
+        "failed",
+        {"error_message": "embedding timed out"},
+    )
+    assert len(state["failures"]) == 1
+    assert state["failures"][0].code == "E_EMBED_TIMEOUT"
+
+
+async def test_ingest_cancellation_converges_document_and_job_then_reraises(
+    monkeypatch, tmp_path
+):
+    class CancelledEmbedder:
+        async def embed(self, _texts, *, user_id=None):
+            raise asyncio.CancelledError
+
+    chunk = SimpleNamespace(content="leaf", metadata={})
+    state = _install_ingest_fakes(
+        monkeypatch,
+        tmp_path,
+        chunks=[chunk],
+        embedder=CancelledEmbedder(),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await handlers.ingest_document(state["ctx"], document_id=43)
+
+    assert state["document_updates"][-1] == (
+        "failed",
+        {"error_message": "處理已取消或逾時，可重新處理。"},
+    )
+    terminal = [
+        update
+        for update in state["job_updates"]
+        if update.get("status") in {"succeeded", "failed", "cancelled"}
+    ]
+    assert terminal == [
+        {
+            "status": "cancelled",
+            "succeeded": True,
+            "progress_pct": 100,
+            "progress_message": "cancelled or timed out",
+        }
+    ]

@@ -31,7 +31,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -116,7 +116,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -189,7 +189,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -257,7 +257,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -319,7 +319,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -404,7 +404,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -477,7 +477,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -559,7 +559,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -626,7 +626,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -711,7 +711,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -784,7 +784,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -866,7 +866,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -932,7 +932,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -1016,7 +1016,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -1089,7 +1089,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -1166,7 +1166,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -1225,7 +1225,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -1310,7 +1310,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -1383,7 +1383,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {
@@ -1460,7 +1460,7 @@
             }
           },
           {
-            "name": "anila_access_token",
+            "name": "__Host-anila_access_token",
             "in": "cookie",
             "required": false,
             "schema": {

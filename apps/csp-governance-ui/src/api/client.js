@@ -5,15 +5,24 @@ import router from '../router'
 // Sprint 5 X / H5: 全面改走 backend 既有的 httpOnly cookie 流程，停止把
 // access / refresh token 寫進 localStorage（XSS 即洩漏的 7 天 refresh
 // token）。後端在 /api/auth/login + /refresh + OIDC callback 都已 set
-// `anila_access_token` (httpOnly) / `anila_refresh_token` (httpOnly,
-// path=/api/auth/refresh) / `anila_csrf` (non-httpOnly, double-submit
+// `__Host-anila_access_token` (httpOnly) / `__Host-anila_refresh_token`
+// (httpOnly) / `__Host-anila_csrf` (non-httpOnly, double-submit
 // CSRF) 三個 cookie；前端只要：
 //   1. 開啟 withCredentials 讓瀏覽器自動帶 cookie
-//   2. mutating request 從 anila_csrf cookie 讀值並 echo 到 X-CSRF-Token
+//   2. mutating request 從 __Host-anila_csrf 讀值並 echo 到 X-CSRF-Token
 
-const CSRF_COOKIE_NAME = 'anila_csrf'
+const SECURE_CSRF_COOKIE_NAME = '__Host-anila_csrf'
+const DEV_CSRF_COOKIE_NAME = 'anila_dev_csrf'
 const CSRF_HEADER_NAME = 'X-CSRF-Token'
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+
+function csrfCookieName() {
+  if (typeof window === 'undefined') return SECURE_CSRF_COOKIE_NAME
+  const loopback = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(window.location.hostname)
+  return window.location.protocol === 'http:' && loopback
+    ? DEV_CSRF_COOKIE_NAME
+    : SECURE_CSRF_COOKIE_NAME
+}
 
 function readCookie(name) {
   if (typeof document === 'undefined') return null
@@ -42,7 +51,7 @@ const client = axios.create({
 client.interceptors.request.use((config) => {
   const method = (config.method || 'get').toUpperCase()
   if (!SAFE_METHODS.has(method)) {
-    const csrf = readCookie(CSRF_COOKIE_NAME)
+    const csrf = readCookie(csrfCookieName())
     if (csrf) {
       config.headers[CSRF_HEADER_NAME] = csrf
     }
@@ -51,7 +60,7 @@ client.interceptors.request.use((config) => {
 })
 
 // Response interceptor: 401 → 嘗試 refresh（cookie 流程不需要 body 傳
-// refresh_token，後端會從 anila_refresh_token cookie 讀）。
+// refresh_token，後端會從 __Host-anila_refresh_token cookie 讀）。
 //
 // 三條「不 retry」白名單避免 infinite loop / 不必要的 redirect：
 //   - /api/auth/refresh 本身 401：cookie 已死，重試只會再 401，每次新

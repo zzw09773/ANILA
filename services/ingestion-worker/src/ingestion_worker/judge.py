@@ -114,9 +114,9 @@ async def load_judge_credential(
     succeeds so a failed decrypt (tampered ciphertext, wrong key)
     doesn't leave a misleading "last_used_at = now" trail.
     """
-    # Central anila-core decrypt helper. Same crypto as CSP's create
+    # Central anila-security decrypt helper. Same crypto as CSP's create
     # path so encrypt(at CSP) → decrypt(at worker) round-trips.
-    from anila_core.security import decrypt_credential
+    from anila_security import decrypt_credential
 
     sql = """
         SELECT endpoint_url, model_name,
@@ -166,7 +166,7 @@ async def score_one(
     # validator (or someone bypassed it via direct DB INSERT), refuse
     # to issue the outbound POST. Returning None matches the rest of
     # the soft-failure contract (judge_n_scored stays 0 + warning logged).
-    from anila_core.security import UnsafeEndpointError, validate_outbound_url
+    from anila_security import UnsafeEndpointError, validate_outbound_url
     try:
         validate_outbound_url(cred.endpoint_url)
     except UnsafeEndpointError as exc:

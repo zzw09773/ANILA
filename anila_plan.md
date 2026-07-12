@@ -45,7 +45,7 @@
 
 10. **主循環原則**：`ANILA` 主循環是 router / orchestrator，不預設內建業務 RAG。主循環負責意圖判斷、agent 選擇、workflow 協調、狀態維持與串流回傳；真正的 RAG 能力下放到各 agent，只有需要知識檢索的 agent 才實作 RAG
 
-11. **設計參考來源**：`/home/c1147259/下載/claude-code-src` 可作為高層設計參考，重點借鑑其 `tool/session/orchestration`、memory compact、任務分解與 sub-agent 協作思路；但**不直接拿它取代 runtime 底座**。`ANILA` 仍以 Python `anila-core` 為正式實作基底，避免把既有 CSP / Router / agent service 鏈拆掉重來
+11. **設計參考來源**：`$HOME/下載/claude-code-src` 可作為高層設計參考，重點借鑑其 `tool/session/orchestration`、memory compact、任務分解與 sub-agent 協作思路；但**不直接拿它取代 runtime 底座**。`ANILA` 仍以 Python `anila-core` 為正式實作基底，避免把既有 CSP / Router / agent service 鏈拆掉重來
 
 ## Target Architecture
 

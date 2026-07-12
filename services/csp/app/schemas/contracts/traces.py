@@ -21,7 +21,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.schemas.contracts.classification import ClassificationLevel
+from anila_contracts import Classification as ClassificationLevel
 
 # doc 05 §6 — 一次正式 agent run 必須產出的 13 個 span type(逐字)。
 REQUIRED_AGENT_SPAN_TYPES: tuple[str, ...] = (

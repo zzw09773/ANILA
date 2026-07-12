@@ -2,7 +2,7 @@
 """Service manifest fetch — ``GET {origin}/.well-known/anila-service.json``.
 
 doc 07 §4. Fetched THROUGH the central outbound SSRF guard
-(``anila_core.security.validate_outbound_url``) — the same call-time guard the
+(``anila_security.validate_outbound_url``) — the same call-time guard the
 CSP proxy uses — so registering a service can't be turned into an SSRF probe
 of the internal network.
 """
@@ -12,7 +12,7 @@ from __future__ import annotations
 from urllib.parse import urlparse, urlunparse
 
 import httpx
-from anila_core.security import UnsafeEndpointError, validate_outbound_url
+from anila_security import UnsafeEndpointError, validate_outbound_url
 
 _WELL_KNOWN_PATH = "/.well-known/anila-service.json"
 _TIMEOUT_SECONDS = 5.0

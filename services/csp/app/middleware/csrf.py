@@ -1,13 +1,14 @@
 """Double-submit CSRF middleware for cookie-authenticated requests.
 
-When the SPA is authenticated via the ``anila_access_token`` httpOnly
+When the SPA is authenticated via the ``__Host-anila_access_token`` httpOnly
 cookie, the browser auto-attaches that cookie to every same-origin
 request — including cross-origin POSTs initiated from attacker pages.
 That's the classic CSRF attack surface.
 
 Mitigation (the double-submit cookie pattern):
 
-1. On login/refresh we set a second, non-httpOnly cookie ``anila_csrf``
+1. On login/refresh we set a second, non-httpOnly cookie
+   ``__Host-anila_csrf``
    with a random value. Being non-httpOnly lets our SPA's JS read it.
 2. Same-origin policy prevents a cross-origin attacker page from reading
    the cookie value, so it cannot forge a matching header.
@@ -35,9 +36,10 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-CSRF_COOKIE_NAME = "anila_csrf"
+from app.middleware.cookies import ACCESS_COOKIE_NAME, CSRF_COOKIE_NAME
+
+
 CSRF_HEADER_NAME = "x-csrf-token"  # headers are case-insensitive
-ACCESS_COOKIE_NAME = "anila_access_token"
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 

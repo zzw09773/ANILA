@@ -171,7 +171,7 @@ function runPopupRoundTrip({
 /**
  * 解析 X.509 subjectDN 字串成 key-value object (lowercase keys)。
  *
- * @param {string} dn 例:``"C=TW,O=國家中山科學研究院,CN=鄒惠翔,serialNumber=1090868"``
+ * @param {string} dn 例:``"C=TW,O=國家中山科學研究院,CN=合成測試使用者,serialNumber=990000001"``
  * @returns {Object<string, string>}
  */
 function parseSubjectDN(dn) {

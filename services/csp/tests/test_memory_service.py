@@ -24,15 +24,14 @@ from __future__ import annotations
 import pytest
 
 from app.api import proxy
-from app.config import settings
-from app.models.user_memory import UserFact
+from app.config import Settings, settings
 from app.services import memory_service
 from app.services.memory_service import (
     RetrievedChunk,
     _format_block,
     parse_extraction_response,
 )
-from anila_core.security import ENDPOINT_KIND_MODEL
+from anila_security import ENDPOINT_KIND_MODEL
 
 
 # ── parse_extraction_response ────────────────────────────────────────────────
@@ -129,6 +128,14 @@ def test_format_block_marks_encrypted_chunks_with_visible_tag():
 # ── proxy._coerce_conversation_id ────────────────────────────────────────────
 
 
+def test_memory_setting_is_secure_by_default_and_supports_explicit_opt_in(
+    monkeypatch,
+):
+    monkeypatch.delenv("ENABLE_MEMORY", raising=False)
+    assert Settings(_env_file=None).ENABLE_MEMORY is False
+    assert Settings(ENABLE_MEMORY=True, _env_file=None).ENABLE_MEMORY is True
+
+
 def test_coerce_conversation_id_handles_legacy_and_missing_values():
     """Header value goes int → int, junk → None, missing → None.
 
@@ -176,6 +183,8 @@ async def test_inject_memory_prepends_to_existing_system_message(monkeypatch):
     Patches ``build_memory_block`` so no DB is needed — the test is
     about the proxy-side message-array merge logic.
     """
+    # Memory is secure-by-default and requires an explicit dev/test opt-in.
+    monkeypatch.setattr(settings, "ENABLE_MEMORY", True)
     body = {
         "model": "gemma4",
         "messages": [
@@ -202,6 +211,79 @@ async def test_inject_memory_prepends_to_existing_system_message(monkeypatch):
     assert "client-side rules go here" in body["messages"][0]["content"]
     # User message untouched.
     assert body["messages"][1] == {"role": "user", "content": "hello"}
+
+
+@pytest.mark.asyncio
+async def test_inject_memory_disabled_does_not_read_or_mutate(monkeypatch):
+    """The Gate 0 kill switch must stop prompt injection at its boundary."""
+    monkeypatch.setattr(settings, "ENABLE_MEMORY", False)
+    body = {
+        "model": "gemma4",
+        "messages": [{"role": "user", "content": "do not persist me"}],
+    }
+    original = {"model": body["model"], "messages": [*body["messages"]]}
+
+    async def must_not_read(*args, **kwargs):
+        raise AssertionError("memory reader was called while ENABLE_MEMORY=false")
+
+    monkeypatch.setattr(memory_service, "build_memory_block", must_not_read)
+
+    result = await proxy._inject_memory(
+        None, user_id=1, body=body, exclude_conversation_id=None
+    )
+
+    assert result is None
+    assert body == original
+
+
+def test_schedule_memory_write_disabled_does_not_create_task(monkeypatch):
+    """Disabling memory must gate writes as well as prompt reads."""
+    monkeypatch.setattr(settings, "ENABLE_MEMORY", False)
+
+    def must_not_schedule(*args, **kwargs):
+        raise AssertionError("memory writer was scheduled while ENABLE_MEMORY=false")
+
+    monkeypatch.setattr(proxy.asyncio, "create_task", must_not_schedule)
+
+    proxy._schedule_memory_write(
+        user_id=1,
+        conversation_id=2,
+        user_message="user",
+        assistant_message="assistant",
+        is_encrypted=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_memory_service_boundaries_also_fail_closed(monkeypatch):
+    """Direct adapter callers cannot bypass the proxy-level kill switch."""
+    monkeypatch.setattr(settings, "ENABLE_MEMORY", False)
+
+    def must_not_read(*args, **kwargs):
+        raise AssertionError("memory storage was read while disabled")
+
+    def must_not_open_session(*args, **kwargs):
+        raise AssertionError("memory writer opened a DB session while disabled")
+
+    monkeypatch.setattr(memory_service, "get_user_facts", must_not_read)
+    monkeypatch.setattr(memory_service, "SessionLocal", must_not_open_session)
+
+    result = await memory_service.build_memory_block(
+        None,
+        user_id=1,
+        latest_user_message="disabled",
+    )
+    assert result.block is None
+    assert result.facts_count == 0
+    assert result.chunks == []
+
+    await memory_service.persist_turn(
+        user_id=1,
+        conversation_id=2,
+        user_message="user",
+        assistant_message="assistant",
+        is_encrypted=False,
+    )
 
 
 # ── _resolve_extraction_target (fact-extraction model fallback) ───────────────

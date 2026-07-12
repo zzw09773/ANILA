@@ -40,7 +40,7 @@ import base64
 import hashlib
 import secrets
 
-from anila_core.security.credential_crypto import (
+from anila_security.credential_crypto import (
     decrypt_credential,
     encrypt_credential,
 )

@@ -478,7 +478,7 @@ class TestServiceTokenCaller:
         self, client: TestClient, db: Session, monkeypatch,
         task_sessions, captured_usage, service_caller,
     ):
-        acting = make_user(db, username="123456")  # 員編-shape username
+        acting = make_user(db, username="990000001")  # synthetic employee ID
         task = _make_task(db, acting)
         _patch_post_client(monkeypatch)
 
@@ -487,7 +487,7 @@ class TestServiceTokenCaller:
             headers={
                 **_bearer(service_caller["key"]),
                 "X-CSP-Service-Token": "csk-router-test",
-                "X-ANILA-User-Id": "123456",
+                "X-ANILA-User-Id": "990000001",
                 "X-ANILA-Task-Id": str(task.id),
             },
             json={"model": service_caller["model"],
@@ -512,7 +512,7 @@ class TestServiceTokenCaller:
         self, client: TestClient, db: Session, monkeypatch,
         task_sessions, captured_usage, service_caller,
     ):
-        make_user(db, username="123456")
+        make_user(db, username="990000001")
         other = make_user(db, username="654321")
         foreign_task = _make_task(db, other)
         _patch_post_client(monkeypatch)
@@ -522,7 +522,7 @@ class TestServiceTokenCaller:
             headers={
                 **_bearer(service_caller["key"]),
                 "X-CSP-Service-Token": "csk-router-test",
-                "X-ANILA-User-Id": "123456",
+                "X-ANILA-User-Id": "990000001",
                 "X-ANILA-Task-Id": str(foreign_task.id),
             },
             json={"model": service_caller["model"],
@@ -536,7 +536,7 @@ class TestServiceTokenCaller:
         self, client: TestClient, db: Session, monkeypatch,
         task_sessions, captured_usage, service_caller,
     ):
-        acting = make_user(db, username="123456")
+        acting = make_user(db, username="990000001")
         task = _make_task(db, acting)
         _patch_post_client(monkeypatch)
 
@@ -545,7 +545,7 @@ class TestServiceTokenCaller:
             headers={
                 **_bearer(service_caller["key"]),
                 "X-CSP-Service-Token": "csk-bogus",
-                "X-ANILA-User-Id": "123456",
+                "X-ANILA-User-Id": "990000001",
                 "X-ANILA-Task-Id": str(task.id),
             },
             json={"model": service_caller["model"],
@@ -557,7 +557,7 @@ class TestServiceTokenCaller:
         self, client: TestClient, db: Session, monkeypatch,
         task_sessions, captured_usage, service_caller,
     ):
-        acting = make_user(db, username="123456")
+        acting = make_user(db, username="990000001")
         task = _make_task(db, acting)
         _patch_post_client(monkeypatch)
 
@@ -580,20 +580,20 @@ class TestServiceTokenCaller:
 class TestHeaderBuilders:
     def test_agent_headers_carry_task_and_trace_ids(self):
         h = build_agent_headers(
-            "1147259", "a@ncsist.org.tw", task_id="42", trace_id="trace-abc"
+            "990000002", "synthetic.agent.user@example.invalid", task_id="42", trace_id="trace-abc"
         )
         assert h["X-ANILA-Task-Id"] == "42"
         assert h["X-ANILA-Trace-Id"] == "trace-abc"
 
     def test_agent_headers_omit_task_headers_when_absent(self):
-        h = build_agent_headers("1147259", "a@ncsist.org.tw")
+        h = build_agent_headers("990000002", "synthetic.agent.user@example.invalid")
         assert "X-ANILA-Task-Id" not in h
         assert "X-ANILA-Trace-Id" not in h
 
     def test_model_gateway_headers_have_no_task_or_trace_surface(self):
         """doc 04 AC5 regression lock — the model-gateway builder must not
         even expose a way to emit task / trace headers."""
-        h = build_model_gateway_headers("1147259")
+        h = build_model_gateway_headers("990000002")
         assert "X-ANILA-Task-Id" not in h
         assert "X-ANILA-Trace-Id" not in h
         assert "X-CSP-Service-Token" not in h
@@ -618,7 +618,7 @@ class TestHeaderBuilders:
                 usage_model_id=3,
                 request_body={"model": "m", "stream": True,
                               "messages": [{"role": "user", "content": "hi"}]},
-                user_identity="1147259",
+                user_identity="990000002",
                 model_name="m",
                 target_agent_id=None,  # MODEL destination
                 task_id=42,

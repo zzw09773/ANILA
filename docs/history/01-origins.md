@@ -27,7 +27,7 @@ ANILA 不是從零起筆,而是由兩個先行 repo 匯流而成:
 - **v0.2.0(`544e1b1`,2026-04-07)** 完成 Agentic RAG 後端;同日 `89a8449` 新增 **OpenWebUI 相容 RAG proxy(`api.py`)**,這支獨立 surface 日後在 monorepo 內成為「第一個可註冊 agent 模板」。
 - **v0.3.0(`d462cfe`/`60f1422`,2026-04-07)** 導入 **tool-driven RAG loop**:LLM 自主決定何時搜尋、搜什麼、是否多輪檢索,並提供 `vector_search` / `keyword_search` / `read_document` 三個 RAG 工具、Layer 3 滑動窗口壓縮。README 標題此時明確寫著「**ANILA Core 是一個面向 Agentic RAG 的 Python Runtime**」。
 - **2026-04-09 `00efc41`** 加入 **Hybrid Search**(語意 + 關鍵字);**2026-04-13 `4d31446`** 加入協調者/文檔撰寫者/任務分析師/研究者/審核者等多個 agent 配置 —— 框架的「多 agent 協調」雛形至此齊備。
-- **2026-04-24 `d48d219`** 由作者 1147259 落下 **封存通知**:README 改寫為「此 repo 已封存,主線開發已遷移至 ANILA 平台 monorepo,升格為官方 RAG agent template」。這是前身正式交棒的墓誌銘。
+- **2026-04-24 `d48d219`** 由作者 990000002 落下 **封存通知**:README 改寫為「此 repo 已封存,主線開發已遷移至 ANILA 平台 monorepo,升格為官方 RAG agent template」。這是前身正式交棒的墓誌銘。
 
 依 `src/anila_core/` 模組樹佐證其「引擎」本質:`engine/`(query_engine、budget_tracker、rag_preprocessor)、`coordinator/`、`registry/agent_registry`、`router/tool_router`、`compact/`(auto/micro/session_memory/sliding_window)、`memory/`(extract/consolidation/relevance)、`ingestion/`(chunker/parsers)、`providers/`(embedding_nvidia、openai_compat)、`storage/adapters/`(pgvector_store、postgres_store)。
 

@@ -34,7 +34,7 @@ ANILA = 中科院/NCSIST 軍方**內網(air-gapped)** 的 NotebookLM 式平台,*
 | 平台主機 | `.15` = 10.53.100.15 / `anila.ai.ncsist.org.tw` | docker compose 全棧(project `anila-platform`) |
 | 模型 gateway | `.12` = 10.53.100.12 / `aiagent2.ai.ncsist.org.tw` | My-OpenAI-Frontend;`/v1` 出 gpt-oss-20b / gemma4 / nv-embed,需 Bearer `MODEL_GATEWAY_API_KEY` |
 | MLSteam | `aiops.ai.ncsist.org.tw` | anila-agent 跑在這的 Lab(純 http NodePort 對外) |
-| 本開發機 | `/home/aia/c1147259/ANILA` | 寫碼處;另跑本機 `anila-platform` stack(prod-public-passwd,放寬旗標)+ 本機 anila-models |
+| 本開發機 | `$HOME/ANILA` | 寫碼處;另跑本機 `anila-platform` stack(prod-public-passwd,放寬旗標)+ 本機 anila-models |
 
 - 本機 `anila-platform-*` 容器 = user dev 環境,**未授權不要 restart/動它**。
 - **csp 容器沒裝 `curl`** → 測內部端點用 `docker exec <csp> python3 -c "import httpx; ..."`(curl 回空 = 假陰性)。
