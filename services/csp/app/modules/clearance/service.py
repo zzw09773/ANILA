@@ -37,6 +37,17 @@ class ClearancePolicyDataError(ValueError):
 _COMPARTMENT_CODE_RE = re.compile(r"^[A-Z0-9][A-Z0-9_.-]{0,63}$")
 
 
+def _for_update_get(db: Session, model: type, primary_key: int):
+    """Serialize governance mutations against runtime FOR SHARE decisions."""
+
+    return (
+        db.query(model)
+        .filter(model.id == primary_key)
+        .with_for_update()
+        .first()
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class DataAccessContext:
     user_id: int
@@ -247,12 +258,7 @@ def revoke_clearance_grant(
     now: datetime | None = None,
 ) -> ClearanceGrant:
     _assert_manager(actor)
-    row = (
-        db.query(ClearanceGrant)
-        .filter(ClearanceGrant.id == clearance_grant_id)
-        .with_for_update()
-        .first()
-    )
+    row = _for_update_get(db, ClearanceGrant, clearance_grant_id)
     if row is None:
         raise LookupError("找不到 clearance grant")
     if row.revoked_at is not None:
@@ -287,10 +293,10 @@ def add_grant_compartment(
     compartment_id: int,
 ) -> ClearanceGrantCompartment:
     _assert_manager(actor)
-    grant = db.get(ClearanceGrant, clearance_grant_id)
+    grant = _for_update_get(db, ClearanceGrant, clearance_grant_id)
     if grant is None or grant.revoked_at is not None:
         raise LookupError("clearance grant 不存在或已撤銷")
-    compartment = db.get(SecurityCompartment, compartment_id)
+    compartment = _for_update_get(db, SecurityCompartment, compartment_id)
     if compartment is None or not compartment.is_active:
         raise LookupError("compartment 不存在或未啟用")
     existing = db.get(
@@ -334,10 +340,10 @@ def grant_collection_access(
     _assert_manager(actor)
     if not membership_granted and not need_to_know:
         raise ValueError("collection grant 至少要包含 membership 或 need-to-know")
-    grant = db.get(ClearanceGrant, clearance_grant_id)
+    grant = _for_update_get(db, ClearanceGrant, clearance_grant_id)
     if grant is None or grant.revoked_at is not None:
         raise LookupError("clearance grant 不存在或已撤銷")
-    collection = db.get(IngestionCollection, collection_id)
+    collection = _for_update_get(db, IngestionCollection, collection_id)
     if collection is None:
         raise LookupError("collection 不存在")
     existing = (
@@ -387,12 +393,7 @@ def revoke_collection_access(
     now: datetime | None = None,
 ) -> CollectionAccessGrant:
     _assert_manager(actor)
-    row = (
-        db.query(CollectionAccessGrant)
-        .filter(CollectionAccessGrant.id == collection_access_grant_id)
-        .with_for_update()
-        .first()
-    )
+    row = _for_update_get(db, CollectionAccessGrant, collection_access_grant_id)
     if row is None:
         raise LookupError("找不到 collection access grant")
     if row.revoked_at is not None:
@@ -419,8 +420,14 @@ def revoke_collection_access(
     return row
 
 
-def _active_compartment(db: Session, compartment_id: int) -> SecurityCompartment:
-    row = db.get(SecurityCompartment, compartment_id)
+def _active_compartment(
+    db: Session, compartment_id: int, *, for_update: bool = False
+) -> SecurityCompartment:
+    row = (
+        _for_update_get(db, SecurityCompartment, compartment_id)
+        if for_update
+        else db.get(SecurityCompartment, compartment_id)
+    )
     if row is None or not row.is_active:
         raise LookupError("compartment 不存在或未啟用")
     return row
@@ -435,15 +442,9 @@ def assign_collection_required_compartment(
     basis_ticket: str,
 ) -> CollectionRequiredCompartment:
     _assert_manager(actor)
-    collection = (
-        db.query(IngestionCollection)
-        .filter(IngestionCollection.id == collection_id)
-        .with_for_update()
-        .first()
-    )
-    if collection is None:
+    if _for_update_get(db, IngestionCollection, collection_id) is None:
         raise LookupError("collection 不存在")
-    _active_compartment(db, compartment_id)
+    _active_compartment(db, compartment_id, for_update=True)
     existing = db.get(
         CollectionRequiredCompartment,
         {"collection_id": collection_id, "compartment_id": compartment_id},
@@ -483,15 +484,9 @@ def assign_document_required_compartment(
     basis_ticket: str,
 ) -> DocumentRequiredCompartment:
     _assert_manager(actor)
-    document = (
-        db.query(IngestionDocument)
-        .filter(IngestionDocument.id == document_id)
-        .with_for_update()
-        .first()
-    )
-    if document is None:
+    if _for_update_get(db, IngestionDocument, document_id) is None:
         raise LookupError("document 不存在")
-    _active_compartment(db, compartment_id)
+    _active_compartment(db, compartment_id, for_update=True)
     existing = db.get(
         DocumentRequiredCompartment,
         {"document_id": document_id, "compartment_id": compartment_id},

@@ -26,6 +26,8 @@ from __future__ import annotations
 
 from typing import Any, Optional, Protocol, runtime_checkable
 
+from anila_contracts import Classification
+
 from .models import MemoryReadResult, RetrievedChunk, UserFactDTO
 
 
@@ -46,6 +48,10 @@ class MemoryAdapter(Protocol):
         *,
         source_conversation_id: Optional[int] = None,
         source_message_id: Optional[int] = None,
+        task_id: Optional[int] = None,
+        input_classification: Classification | str | None = None,
+        inherited_compartment_ids: frozenset[int] = frozenset(),
+        inherited_source_collection_ids: frozenset[int] = frozenset(),
     ) -> None:
         """Bulk-upsert on ``(user_id, key)`` — newest write wins.
 
@@ -79,6 +85,10 @@ class MemoryAdapter(Protocol):
         role: str,
         content: str,
         is_encrypted: bool,
+        task_id: Optional[int] = None,
+        input_classification: Classification | str | None = None,
+        inherited_compartment_ids: frozenset[int] = frozenset(),
+        inherited_source_collection_ids: frozenset[int] = frozenset(),
     ) -> None:
         """Embed + store one message slice.
 
@@ -96,6 +106,7 @@ class MemoryAdapter(Protocol):
         exclude_conversation_id: Optional[int] = None,
         top_k: int = 3,
         min_cosine: float = 0.4,
+        consumer_conversation_id: int,
     ) -> list[RetrievedChunk]:
         """ANN search over this user's chunks.
 
@@ -139,6 +150,10 @@ class MemoryAdapter(Protocol):
         is_encrypted: bool,
         user_message_id: Optional[int] = None,
         assistant_message_id: Optional[int] = None,
+        task_id: Optional[int] = None,
+        input_classification: Classification | str | None = None,
+        inherited_compartment_ids: frozenset[int] = frozenset(),
+        inherited_source_collection_ids: frozenset[int] = frozenset(),
     ) -> None:
         """Fire-and-forget post-turn write: chunks + extracted facts.
 

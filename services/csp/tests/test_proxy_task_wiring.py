@@ -31,8 +31,10 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.api import proxy as proxy_api
 from app.models.agent import UserAgentPermission
 from app.models.api_key import ApiKeyModelPermission
+from app.models.conversation import Conversation
 from app.models.policy_decision import PolicyDecision
 from app.models.task import Task, TaskRun
 from app.models.token_usage import TokenUsage
@@ -342,6 +344,56 @@ class TestUserCallerWithTask:
         assert len(runs) == 1
         assert runs[0].status == "failed"
         assert runs[0].error  # structured error payload recorded
+
+    def test_classification_propagation_failure_fails_closed_before_outbound(
+        self, client: TestClient, db: Session, monkeypatch,
+        task_sessions, captured_usage,
+    ):
+        """A stale-low task must never reach the ceiling or outbound call."""
+        admin = make_user(db, username="task_propagation_fail", role="admin")
+        make_model(db, name="task-propagation-llm")
+        task = _make_task(db, admin)
+        conversation = Conversation(
+            user_id=admin.id,
+            title="classified source",
+            classification_level="絕對機密",
+        )
+        db.add(conversation)
+        db.commit()
+        db.refresh(conversation)
+        _patch_post_client(monkeypatch)
+
+        def _raise_propagation(*args, **kwargs):
+            raise RuntimeError("synthetic classification propagation failure")
+
+        monkeypatch.setattr(
+            proxy_api,
+            "_propagate_conversation_level_to_task",
+            _raise_propagation,
+        )
+
+        resp = client.post(
+            "/v1/chat/completions",
+            headers={
+                **_bearer(_jwt(admin)),
+                "X-ANILA-Task-Id": str(task.id),
+                "X-ANILA-Conversation-Id": str(conversation.id),
+            },
+            json={
+                "model": "task-propagation-llm",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+        assert resp.status_code == 503
+        assert "fail-closed" in resp.json()["detail"]
+        assert _PostClient.last_headers == {}
+        assert captured_usage == []
+
+        db.expire_all()
+        run = db.query(TaskRun).filter(TaskRun.task_id == task.id).one()
+        assert run.status == "failed"
+        assert run.error["code"] == "task_classification_propagation"
 
 
 # ── Legacy compat: no task header → unchanged + marked ─────────────────────

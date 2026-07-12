@@ -287,21 +287,23 @@ def _latch_agent_classification(
     )
 
 
-def _latch_inherited_classification(db: Session, conversation_id: int) -> None:
+def _latch_inherited_classification(
+    db: Session, conversation_id: int, inherited_level: ClassificationLevel
+) -> None:
     """Mark the conversation as classified-via-inheritance (memory recall).
 
     Slice 3b: routes through the five-level one-way core
     (``apply_classification`` reason=``memory_inherited``), which floors the
-    row at 機密, mirrors the legacy boolean AND flips
+    row at the highest recalled source level, mirrors the legacy boolean AND flips
     ``classification_inherited=TRUE`` on the raising event (doc 08 §3 bridge).
-    One-way — never lowers a row already at 機密 or higher.
+    One-way — never lowers a row already at the same or higher level.
     """
     from app.modules.policy import apply_classification
     apply_classification(
         db,
         resource_type="conversation",
         resource_id=str(conversation_id),
-        new_level=ClassificationLevel.CONFIDENTIAL.to_storage(),
+        new_level=inherited_level.to_storage(),
         actor_type="service",
         actor_id="memory",
         reason="memory_inherited",
@@ -337,6 +339,43 @@ def _propagate_conversation_level_to_task(
         task_id=task_id,
         source="conversation_propagation",
     )
+
+
+def _propagate_conversation_level_to_task_or_fail(
+    db: Session,
+    *,
+    task_ctx,
+    conversation_id: int,
+) -> None:
+    """Propagate the conversation floor or stop the run before dispatch.
+
+    A started task run is already durable when this boundary executes.  If
+    propagation fails, a later ceiling check would otherwise read the stale
+    task level and could approve a lower-ceiling target.  Terminalize through
+    the out-of-request finalizer, then fail closed before any model/agent
+    outbound call.
+    """
+    try:
+        _propagate_conversation_level_to_task(
+            db, task_ctx.task_id, conversation_id
+        )
+    except Exception as exc:
+        logger.exception(
+            "task classification propagation failed task_id=%s",
+            task_ctx.task_id,
+        )
+        finalize_task_run(
+            task_ctx.task_run_id,
+            "failed",
+            error={
+                "code": "task_classification_propagation",
+                "message": "conversation classification propagation failed",
+            },
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="任務分類傳遞失敗，已依 fail-closed 拒絕出向呼叫",
+        ) from exc
 
 
 def _extract_assistant_text(payload: dict | None) -> str | None:
@@ -436,6 +475,10 @@ def _schedule_memory_write(
     user_message: str | None,
     assistant_message: str | None,
     is_encrypted: bool,
+    task_id: int | None,
+    input_classification: ClassificationLevel | None,
+    inherited_compartment_ids: frozenset[int],
+    inherited_source_collection_ids: frozenset[int],
 ) -> None:
     """Fire-and-forget the post-turn memory writer.
 
@@ -454,6 +497,10 @@ def _schedule_memory_write(
                 user_message=user_message,
                 assistant_message=assistant_message,
                 is_encrypted=is_encrypted,
+                task_id=task_id,
+                input_classification=input_classification,
+                inherited_compartment_ids=inherited_compartment_ids,
+                inherited_source_collection_ids=inherited_source_collection_ids,
             )
         )
     except RuntimeError:
@@ -721,15 +768,25 @@ async def chat_completions(
     if (
         conv_id_int is not None
         and memory_read
-        and memory_read.encryption_inherited
+        and memory_read.inherited_classification is not None
+        and memory_read.inherited_classification > ClassificationLevel.UNCLASSIFIED
     ):
         try:
-            _latch_inherited_classification(db, conv_id_int)
-        except Exception:
+            _latch_inherited_classification(
+                db, conv_id_int, memory_read.inherited_classification
+            )
+        except Exception as exc:
             logger.exception(
                 "memory_service: classification latch failed conv_id=%s",
                 conv_id_int,
             )
+            # Recalled bytes are already present in ``body``.  Continuing
+            # would dispatch them under a stale-low conversation/task level,
+            # so a latch failure is a hard pre-dispatch policy failure.
+            raise HTTPException(
+                status_code=503,
+                detail="Memory 分類閂鎖失敗，已依 fail-closed 拒絕模型呼叫",
+            ) from exc
     # Capture the user message text NOW (after memory injection but
     # before any downstream mutation) so the post-turn writer has the
     # exact string the user sent.
@@ -787,15 +844,11 @@ async def chat_completions(
         # Slice 3b: propagate the conversation's effective level onto the
         # linked task (reason=source_selected) so later ceiling checks see it.
         if task_ctx is not None and conv_id_int is not None:
-            try:
-                _propagate_conversation_level_to_task(
-                    db, task_ctx.task_id, conv_id_int
-                )
-            except Exception:
-                logger.exception(
-                    "task classification propagation failed task_id=%s",
-                    task_ctx.task_id,
-                )
+            _propagate_conversation_level_to_task_or_fail(
+                db,
+                task_ctx=task_ctx,
+                conversation_id=conv_id_int,
+            )
         enforce_agent_ceiling(
             db,
             agent=agent,
@@ -848,6 +901,22 @@ async def chat_completions(
                     user_message=captured_user_text,
                     assistant_message=assistant_text,
                     is_encrypted=agent_requires_encryption,
+                    task_id=task_ctx.task_id if task_ctx else None,
+                    input_classification=(
+                        memory_read.inherited_classification
+                        if memory_read is not None
+                        else None
+                    ),
+                    inherited_compartment_ids=(
+                        memory_read.required_compartment_ids
+                        if memory_read is not None
+                        else frozenset()
+                    ),
+                    inherited_source_collection_ids=(
+                        memory_read.source_collection_ids
+                        if memory_read is not None
+                        else frozenset()
+                    ),
                 ),
             )
             return StreamingResponse(
@@ -914,6 +983,22 @@ async def chat_completions(
                     user_message=captured_user_text,
                     assistant_message=assistant_text,
                     is_encrypted=agent_requires_encryption,
+                    task_id=task_ctx.task_id if task_ctx else None,
+                    input_classification=(
+                        memory_read.inherited_classification
+                        if memory_read is not None
+                        else None
+                    ),
+                    inherited_compartment_ids=(
+                        memory_read.required_compartment_ids
+                        if memory_read is not None
+                        else frozenset()
+                    ),
+                    inherited_source_collection_ids=(
+                        memory_read.source_collection_ids
+                        if memory_read is not None
+                        else frozenset()
+                    ),
                 )
                 # Slice 2b-C: run finished. (This branch still writes no
                 # usage row — orthogonal pre-existing gap, see above.)
@@ -964,15 +1049,11 @@ async def chat_completions(
     # task (reason=source_selected). On the direct-model path the conversation
     # may still be classified via memory inheritance (latched above).
     if task_ctx is not None and conv_id_int is not None:
-        try:
-            _propagate_conversation_level_to_task(
-                db, task_ctx.task_id, conv_id_int
-            )
-        except Exception:
-            logger.exception(
-                "task classification propagation failed task_id=%s",
-                task_ctx.task_id,
-            )
+        _propagate_conversation_level_to_task_or_fail(
+            db,
+            task_ctx=task_ctx,
+            conversation_id=conv_id_int,
+        )
     # Slice 6a (doc 04 §5/§8): classification ceiling check BEFORE the
     # outbound model call. Covers task-linked AND legacy traffic. A violation
     # raises 403 + records a model.invoke deny row and never dispatches
@@ -1019,6 +1100,22 @@ async def chat_completions(
                 user_message=captured_user_text,
                 assistant_message=assistant_text,
                 is_encrypted=inherited_encryption,
+                task_id=task_ctx.task_id if task_ctx else None,
+                input_classification=(
+                    memory_read.inherited_classification
+                    if memory_read is not None
+                    else None
+                ),
+                inherited_compartment_ids=(
+                    memory_read.required_compartment_ids
+                    if memory_read is not None
+                    else frozenset()
+                ),
+                inherited_source_collection_ids=(
+                    memory_read.source_collection_ids
+                    if memory_read is not None
+                    else frozenset()
+                ),
             ),
         )
         return StreamingResponse(
@@ -1053,6 +1150,22 @@ async def chat_completions(
         user_message=captured_user_text,
         assistant_message=assistant_text,
         is_encrypted=inherited_encryption,
+        task_id=task_ctx.task_id if task_ctx else None,
+        input_classification=(
+            memory_read.inherited_classification
+            if memory_read is not None
+            else None
+        ),
+        inherited_compartment_ids=(
+            memory_read.required_compartment_ids
+            if memory_read is not None
+            else frozenset()
+        ),
+        inherited_source_collection_ids=(
+            memory_read.source_collection_ids
+            if memory_read is not None
+            else frozenset()
+        ),
     )
     return _attach_retrieval_meta(payload, retrieval_outcome)
 

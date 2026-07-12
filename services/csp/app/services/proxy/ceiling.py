@@ -77,11 +77,27 @@ def _enforce_ceiling(
     action: str,
     resource_type: str,
     target_label: str,
+    effective_level_override: ClassificationLevel | None = None,
 ) -> None:
     """Shared ceiling gate for model.invoke and agent.invoke."""
     from app.modules.policy import evaluate_classification_ceiling, record_decision
 
-    level = _effective_task_level(db, task_ctx=task_ctx, conv_id_int=conv_id_int)
+    derived_level = _effective_task_level(
+        db, task_ctx=task_ctx, conv_id_int=conv_id_int
+    )
+    if effective_level_override is not None and not isinstance(
+        effective_level_override, ClassificationLevel
+    ):
+        raise TypeError(
+            "effective_level_override 必須是 canonical Classification"
+        )
+    # An explicit server-derived input/task/source floor may only raise the
+    # DB-derived conversation/task level.  It can never be used to lower it.
+    level = (
+        ClassificationLevel.max_of([derived_level, effective_level_override])
+        if effective_level_override is not None
+        else derived_level
+    )
     level_str = level.to_storage()
     actor_id = str(getattr(caller.user, "id", "") or "")
     task_id = task_ctx.task_id if task_ctx is not None else None
@@ -166,6 +182,7 @@ def enforce_model_ceiling(
     caller,
     task_ctx: Optional[TaskRunContext],
     conv_id_int: Optional[int],
+    effective_level_override: ClassificationLevel | None = None,
 ) -> None:
     """出向前分類 ceiling 把關。違反 → 403 + deny 列 + 不發出向。
 
@@ -182,6 +199,7 @@ def enforce_model_ceiling(
         action=PolicyAction.MODEL_INVOKE.value,
         resource_type="model",
         target_label="模型",
+        effective_level_override=effective_level_override,
     )
 
 

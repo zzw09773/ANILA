@@ -66,7 +66,14 @@ from app.models.token_revocation import TokenRevocation
 from app.models.token_usage import TokenUsage
 from app.models.trace_span import TraceSpan
 from app.models.user import User, UserModelPermission
-from app.models.user_memory import ConversationMemoryChunk, UserFact
+from app.models.user_memory import (
+    ConversationMemoryChunk,
+    MemoryChunkRequiredCompartment,
+    MemoryChunkSourceCollection,
+    UserFact,
+    UserFactRequiredCompartment,
+    UserFactSourceCollection,
+)
 
 __all__ = [
     "Agent",
@@ -99,6 +106,8 @@ __all__ = [
     "Department",
     "AgentLlmCredential",
     "ConversationMemoryChunk",
+    "MemoryChunkRequiredCompartment",
+    "MemoryChunkSourceCollection",
     "DocumentRelation",
     "DocumentRequiredCompartment",
     "Handoff",
@@ -126,6 +135,8 @@ __all__ = [
     "User",
     "UserAgentPermission",
     "UserFact",
+    "UserFactRequiredCompartment",
+    "UserFactSourceCollection",
     "UserLlmCredential",
     "UserModelPermission",
 ]
