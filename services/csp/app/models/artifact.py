@@ -224,7 +224,9 @@ class ExportRecord(Base):
     exporter_employee_id = Column(String(32), nullable=True)
     # 匯出目的地與其分類下限(doc 08 §10 匯出判定式的輸入)。
     target_space = Column(String(100), nullable=True)
-    target_classification_floor = Column(String(20), nullable=True)
+    target_classification_floor = Column(
+        String(20), nullable=False, default="無機密", server_default="無機密"
+    )
     export_format = Column(String(32), nullable=True)
     # 掛回核可的 PolicyDecision(allow)。
     policy_decision_id = Column(

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-import uuid
+import zipfile
 from datetime import datetime, timezone
 
 from fastapi import (
@@ -38,8 +38,8 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from anila_contracts import Classification
 from anila_core.ingestion.citation_extractor import normalize_title
-from anila_core.storage.adapters.pg_pool import PgPool
 from anila_core.storage.adapters.pgvector_store import CollectionScopedPgVectorStore
 
 from app.api.ingestion.collections import _require_collection_access
@@ -204,6 +204,36 @@ def _resolve_collection(
     return _require_collection_access(db, user, collection_id)
 
 
+def _locked_collection_classification(db: Session, collection_id: int) -> str:
+    """Read the canonical collection floor under a writer-conflicting lock.
+
+    PostgreSQL emits ``FOR SHARE``; SQLite test fixtures safely ignore the lock
+    clause. Holding it until the document INSERT commits prevents a concurrent
+    collection upgrade from racing a lower child into existence.
+    """
+    row = (
+        db.query(IngestionCollection.classification_level)
+        .filter(IngestionCollection.id == collection_id)
+        .with_for_update(read=True)
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    raw = row[0]
+    if not isinstance(raw, str):
+        raise HTTPException(
+            status_code=409,
+            detail="Collection classification state is invalid",
+        )
+    try:
+        return Classification.from_storage(raw).to_storage()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Collection classification state is invalid",
+        ) from exc
+
+
 def _persist_blob(content: bytes, sha256: str) -> str:
     """Write the upload to disk under a content-addressable path.
 
@@ -279,7 +309,7 @@ async def upload_document(
     happens async. Caller polls ``GET /api/ingestion/documents/{id}``
     to watch status transitions.
     """
-    coll = _resolve_collection(db, current_user, collection_id)
+    _resolve_collection(db, current_user, collection_id)
 
     # Read fully into memory — Sprint 1 caps uploads at 50 MB so this is
     # fine; Sprint 2 streaming upload will spool to disk in chunks.
@@ -297,6 +327,8 @@ async def upload_document(
     storage_path = _persist_blob(content, sha256)
 
     doc_title, doc_norm_title = _derive_title(file.filename or "", title)
+    classification_level = _locked_collection_classification(db, collection_id)
+    classified_at = datetime.now(timezone.utc)
 
     # Insert the document row. Uniqueness on (collection_id, sha256) gives
     # us cheap content-level dedup — re-uploading the same file just
@@ -313,6 +345,9 @@ async def upload_document(
         status="pending",
         chunk_count=0,
         uploaded_by=current_user.id,
+        classification_level=classification_level,
+        classification_latched_at=classified_at,
+        classification_source="collection_inherited",
     )
     db.add(doc)
     try:
@@ -561,10 +596,9 @@ async def upload_zip(
     Hard limit: 200 files per zip. Bigger archives should be split or
     use the future Sprint 4 streaming API.
     """
-    import zipfile
     from io import BytesIO
 
-    coll = _resolve_collection(db, current_user, collection_id)
+    _resolve_collection(db, current_user, collection_id)
 
     archive_bytes = await file.read()
     if len(archive_bytes) > 500 * 1024 * 1024:  # 500 MB cap on archive
@@ -671,6 +705,7 @@ async def upload_zip(
         mime, _ = mimetypes.guess_type(out_name)
 
         member_title, member_norm_title = _derive_title(out_name)
+        classification_level = _locked_collection_classification(db, collection_id)
         doc = IngestionDocument(
             collection_id=collection_id,
             filename=out_name,
@@ -683,6 +718,9 @@ async def upload_zip(
             status="pending",
             chunk_count=0,
             uploaded_by=current_user.id,
+            classification_level=classification_level,
+            classification_latched_at=datetime.now(timezone.utc),
+            classification_source="collection_inherited",
         )
         db.add(doc)
         try:

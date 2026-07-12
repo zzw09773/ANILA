@@ -1,4 +1,5 @@
 from datetime import datetime
+from anila_contracts import Classification as ClassificationLevel
 from pydantic import BaseModel
 
 
@@ -18,7 +19,7 @@ class ModelCreate(BaseModel):
     is_internal: bool = True
     # Slice 6a (doc 04 §2): ModelEndpoint formalized fields.
     protocol: str = "openai_compatible"  # 'openai_compatible' / 'custom_adapter'
-    classification_ceiling: str | None = None  # 五級字串;None = 不設限
+    classification_ceiling: ClassificationLevel = ClassificationLevel.UNCLASSIFIED
     owner_department_id: int | None = None
     supports_streaming: bool = True
     supports_json_schema: bool = False
@@ -41,7 +42,9 @@ class ModelUpdate(BaseModel):
     is_internal: bool | None = None
     # Slice 6a (doc 04 §2/§3).
     protocol: str | None = None
-    classification_ceiling: str | None = None
+    # A default still preserves PATCH semantics because the API uses
+    # ``exclude_unset=True``. Explicit JSON null is rejected by Pydantic.
+    classification_ceiling: ClassificationLevel = ClassificationLevel.UNCLASSIFIED
     owner_department_id: int | None = None
     supports_streaming: bool | None = None
     supports_json_schema: bool | None = None
@@ -69,7 +72,7 @@ class ModelResponse(BaseModel):
     is_internal: bool = False
     # Slice 6a (doc 04 §2): ModelEndpoint formalized fields.
     protocol: str = "openai_compatible"
-    classification_ceiling: str | None = None
+    classification_ceiling: ClassificationLevel
     owner_department_id: int | None = None
     supports_streaming: bool = True
     supports_json_schema: bool = False

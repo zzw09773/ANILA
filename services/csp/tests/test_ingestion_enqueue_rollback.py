@@ -21,7 +21,11 @@ from tests.conftest import make_user
 
 
 def _collection(
-    db, user, *, name: str = "enqueue-rollback"
+    db,
+    user,
+    *,
+    name: str = "enqueue-rollback",
+    classification_level: str = "無機密",
 ) -> IngestionCollection:
     collection = IngestionCollection(
         name=name,
@@ -29,6 +33,7 @@ def _collection(
         embedding_model="test-embedding",
         embedding_dim=4,
         created_by=user.id,
+        classification_level=classification_level,
     )
     db.add(collection)
     db.commit()
@@ -48,6 +53,58 @@ def _assert_no_document_or_job(db) -> None:
     db.expire_all()
     assert db.query(IngestionDocument).count() == 0
     assert db.query(IngestionJob).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_single_upload_inherits_locked_collection_classification(
+    monkeypatch, tmp_path, db
+) -> None:
+    user = make_user(db, username="single-classification")
+    collection = _collection(
+        db, user, classification_level="極機密"
+    )
+    monkeypatch.setattr(documents, "_UPLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(documents, "enqueue_ingest_document", _enqueue_success)
+    upload = UploadFile(filename="classified.txt", file=BytesIO(b"classified"))
+
+    await documents.upload_document(
+        collection.id,
+        upload,
+        title=None,
+        db=db,
+        current_user=user,
+    )
+
+    row = db.query(IngestionDocument).one()
+    assert row.classification_level == "極機密"
+    assert row.classification_source == "collection_inherited"
+    assert row.classification_latched_at is not None
+
+
+@pytest.mark.asyncio
+async def test_zip_upload_inherits_locked_collection_classification(
+    monkeypatch, tmp_path, db
+) -> None:
+    user = make_user(db, username="zip-classification")
+    collection = _collection(db, user, classification_level="機密")
+    monkeypatch.setattr(documents, "_UPLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(documents, "enqueue_ingest_document", _enqueue_success)
+    archive = BytesIO()
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("classified.txt", "classified zip")
+
+    await documents.upload_zip(
+        collection.id,
+        UploadFile(filename="classified.zip", file=BytesIO(archive.getvalue())),
+        preserve_folder_structure=False,
+        db=db,
+        current_user=user,
+    )
+
+    row = db.query(IngestionDocument).one()
+    assert row.classification_level == "機密"
+    assert row.classification_source == "collection_inherited"
+    assert row.classification_latched_at is not None
 
 
 @pytest.mark.asyncio

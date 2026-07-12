@@ -238,11 +238,12 @@ class TestUserCallerWithTask:
             .filter(PolicyDecision.task_id == task.id)
             .all()
         )
-        assert len(decisions) == 1
-        assert decisions[0].action == "task.run"
-        assert decisions[0].decision == "allow"
-        assert decisions[0].resource_type == "model"
-        assert decisions[0].actor_type == "user"
+        by_action = {decision.action: decision for decision in decisions}
+        assert set(by_action) == {"task.run", "model.invoke"}
+        assert by_action["task.run"].decision == "allow"
+        assert by_action["task.run"].resource_type == "model"
+        assert by_action["task.run"].actor_type == "user"
+        assert by_action["model.invoke"].decision == "allow"
 
         assert len(captured_usage) == 1
         assert captured_usage[0]["task_id"] == task.id
@@ -311,8 +312,10 @@ class TestUserCallerWithTask:
             .filter(PolicyDecision.task_id == task.id)
             .all()
         )
-        assert len(decisions) == 1
-        assert decisions[0].resource_type == "agent"
+        by_action = {decision.action: decision for decision in decisions}
+        assert set(by_action) == {"task.run", "agent.invoke"}
+        assert all(decision.resource_type == "agent" for decision in decisions)
+        assert by_action["agent.invoke"].decision == "allow"
         assert captured_usage and captured_usage[0]["task_id"] == task.id
 
     def test_upstream_failure_marks_run_failed(
@@ -504,8 +507,10 @@ class TestServiceTokenCaller:
             .filter(PolicyDecision.task_id == task.id)
             .all()
         )
-        assert len(decisions) == 1
-        assert decisions[0].actor_type == "service"
+        by_action = {decision.action: decision for decision in decisions}
+        assert set(by_action) == {"task.run", "model.invoke"}
+        assert by_action["task.run"].actor_type == "service"
+        assert by_action["model.invoke"].decision == "allow"
         assert captured_usage and captured_usage[0]["task_id"] == task.id
 
     def test_requester_mismatch_returns_403(

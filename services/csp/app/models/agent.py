@@ -91,9 +91,11 @@ class Agent(Base):
     audit_level = Column(
         String(20), nullable=False, default="full_trace", server_default="full_trace"
     )
-    # doc 05 §3/§11 classification_ceiling:分類上限(NULL = 無上限);
-    # 執行時 effective_task_level <= ceiling 才允許 dispatch。
-    classification_ceiling = Column(String(20), nullable=True)
+    # Gate 2: every executable target has an explicit least-privilege ceiling;
+    # NULL must never mean "unlimited" at either the DB or runtime boundary.
+    classification_ceiling = Column(
+        String(20), nullable=False, default="無機密", server_default="無機密"
+    )
     # doc 05 §6 Full Trace 是 approval blocker:trace-test 全過才落章。
     # trace_test_passed_at 非空 + approval_status=pending_security_review 才可 approve。
     trace_test_passed_at = Column(DateTime, nullable=True)

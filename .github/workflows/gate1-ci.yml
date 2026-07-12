@@ -120,9 +120,10 @@ jobs:
           python -m ruff check packages/anila-contracts/src packages/anila-contracts/tests
           python -m ruff check packages/anila-security
 
-      - name: Run consumer identity and compatibility contracts
+      - name: Require G1 writer source contract and consumer compatibility
         run: |
           python -m pytest packages/anila-core/tests/test_contracts_facade.py packages/anila-core/tests/test_url_guard_kind_split.py -q
+          python -m unittest infra.policy.tests.test_gate2_classification_reconciliation -v
           cd services/csp
           python -m pytest tests/test_anila_contracts_package.py tests/test_url_guard_opt_in.py tests/test_url_guard_providers.py -q
 
@@ -227,6 +228,7 @@ jobs:
 
   postgres-rls:
     name: Backend / PostgreSQL RLS
+    needs: [contract-smoke, backend-core, backend-ingestion, backend-csp]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -276,6 +278,14 @@ jobs:
           INTEGRATION_DB_URL: postgresql://csp_app:gate1-app-db@127.0.0.1:5432/csp
           INTEGRATION_ADMIN_DB_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
         run: python -m pytest tests/integration -q
+
+      - name: Prove Gate 2 classification reconciliation and mutation sensitivity
+        env:
+          MIGRATION_DATABASE_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          ANILA_GATE2_TEST_PG_ADMIN_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/postgres
+        run: |
+          python infra/policy/gate2/check_classification_reconciliation.py --sample-size 0
+          python -m pytest infra/policy/tests/test_gate2_classification_reconciliation_pg.py -q
 
       - name: Run CSP ingestion-image RLS contract
         working-directory: services/csp

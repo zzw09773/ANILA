@@ -126,7 +126,8 @@ def test_build_response_never_leaks_secret():
         endpoint_url="http://x/v1", api_version="v1", is_active=True,
         is_router_primary=False, health_status="online", health_checked_at=None,
         description=None, context_window=None, base_model_id=None, base_model=None,
-        is_internal=True, api_key_secret_ref=ref, created_at=None, updated_at=None,
+        is_internal=True, api_key_secret_ref=ref,
+        classification_ceiling="無機密", created_at=None, updated_at=None,
     )
     data = models_api._build_response(model, caller=SimpleNamespace(role="owner"))
     assert data["has_api_key"] is True
@@ -323,14 +324,40 @@ def test_ceiling_allow_legacy_records_no_decision_row(db):
     assert _model_decisions(db, m.id) == []
 
 
-def test_ceiling_none_is_noop(db):
-    user = make_user(db, "u_noceil")
-    m = make_model(db, name="ceil_none")  # classification_ceiling defaults None
+def test_ceiling_default_is_explicit_unclassified(db):
+    user = make_user(db, "u_default_ceiling")
+    m = make_model(db, name="ceil_default")
     db.commit()
+    assert m.classification_ceiling == "無機密"
     enforce_model_ceiling(
         db, model=m, caller=_caller(user), task_ctx=None, conv_id_int=None,
     )
     assert _model_decisions(db, m.id) == []
+
+
+def test_ceiling_null_runtime_state_denies_and_records_policy(db):
+    user = make_user(db, "u_null_ceiling")
+    persisted = make_model(db, name="ceil_null_runtime")
+    db.commit()
+    corrupted_view = SimpleNamespace(
+        id=persisted.id,
+        name=persisted.name,
+        classification_ceiling=None,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        enforce_model_ceiling(
+            db,
+            model=corrupted_view,
+            caller=_caller(user),
+            task_ctx=None,
+            conv_id_int=None,
+        )
+    assert exc.value.status_code == 403
+    denies = [
+        row for row in _model_decisions(db, persisted.id) if row.decision == "deny"
+    ]
+    assert len(denies) == 1
 
 
 def test_ceiling_legacy_latched_conversation_deny(db):

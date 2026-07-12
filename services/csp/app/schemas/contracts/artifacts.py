@@ -220,7 +220,7 @@ class ExportRecordOut(BaseModel):
     exporter_user_id: int | None = None
     exporter_employee_id: str | None = None
     target_space: str | None = None
-    target_classification_floor: ClassificationLevel | None = None
+    target_classification_floor: ClassificationLevel
     export_format: str | None = None
     policy_decision_id: int | None = None
     decision: str

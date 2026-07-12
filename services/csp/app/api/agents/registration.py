@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from anila_contracts import Classification as ClassificationLevel
 from app.database import get_db
 from app.models.agent import Agent
 from app.models.user import User
@@ -112,6 +113,7 @@ class AgentRegisterRequest(BaseModel):
     input_schema: dict | None = None
     # doc 05 §3 runtime_type(5 值;預設 openai_compatible_agent = 現況 endpoint proxy)。
     runtime_type: RuntimeType = RuntimeType.OPENAI_COMPATIBLE_AGENT
+    classification_ceiling: ClassificationLevel = ClassificationLevel.UNCLASSIFIED
     # doc 05 §4 optional manifest —— 提供則 fail-closed 驗證(422)並留存 manifest_json。
     manifest: dict | None = None
     # doc 06 Phase 1 shadow registration:True → approval_status=draft(盤點暫存);
@@ -139,7 +141,7 @@ class AgentResponse(BaseModel):
     runtime_type: str | None = None
     agent_version: str | None = None
     audit_level: str | None = None
-    classification_ceiling: str | None = None
+    classification_ceiling: ClassificationLevel
     default_classification_level: str | None = None
     manifest_json: dict | None = None
     trace_test_passed_at: datetime | None = None
@@ -167,6 +169,15 @@ _AGENT_HEALTH_MAP = {
 }
 
 
+def _required_classification_ceiling(agent: Agent) -> str:
+    raw = getattr(agent, "classification_ceiling", None)
+    if not isinstance(raw, str):
+        raise RuntimeError(
+            "agents.classification_ceiling must be a non-null canonical value"
+        )
+    return ClassificationLevel.from_storage(raw).to_storage()
+
+
 def _serialize_agent(agent: Agent) -> dict:
     raw = agent.health_status or "unknown"
     normalized = _AGENT_HEALTH_MAP.get(raw, raw)
@@ -190,7 +201,7 @@ def _serialize_agent(agent: Agent) -> dict:
         "runtime_type": getattr(agent, "runtime_type", None),
         "agent_version": getattr(agent, "agent_version", None),
         "audit_level": getattr(agent, "audit_level", None),
-        "classification_ceiling": getattr(agent, "classification_ceiling", None),
+        "classification_ceiling": _required_classification_ceiling(agent),
         "default_classification_level": getattr(
             agent, "default_classification_level", None
         ),
@@ -323,6 +334,7 @@ def register_agent(
         capabilities=request.capabilities,
         input_schema=request.input_schema,
         runtime_type=request.runtime_type.value,
+        classification_ceiling=request.classification_ceiling.to_storage(),
         manifest_json=manifest_json,
         approval_status=approval_status,
     )

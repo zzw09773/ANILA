@@ -35,6 +35,35 @@ class TestAgentRegistration:
         assert data["name"] == "my-agent"
         assert data["approval_status"] == "pending_connection_test"
         assert data["owner_user_id"] == dev.id
+        assert data["classification_ceiling"] == "無機密"
+
+    def test_registration_persists_explicit_ceiling_and_rejects_null(
+        self, client, db
+    ):
+        make_user(db, username="dev-ceiling", role="developer")
+        base_model = make_model(db, name="agent-base-ceiling")
+        token = login(client, "dev-ceiling")
+        payload = {
+            "name": "ceiling-agent",
+            "endpoint_url": "http://agent:9100",
+            "description_for_router": "classified work",
+            "base_model_id": base_model.id,
+        }
+
+        accepted = client.post(
+            "/api/agents/register",
+            json={**payload, "classification_ceiling": "極機密"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert accepted.status_code == 200, accepted.text
+        assert accepted.json()["classification_ceiling"] == "極機密"
+
+        rejected = client.post(
+            "/api/agents/register",
+            json={**payload, "name": "null-agent", "classification_ceiling": None},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert rejected.status_code == 422
 
     def test_plain_user_cannot_register(self, client, db):
         make_user(db, username="user1", role="user")

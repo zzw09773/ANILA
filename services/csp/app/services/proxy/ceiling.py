@@ -79,22 +79,46 @@ def _enforce_ceiling(
     target_label: str,
 ) -> None:
     """Shared ceiling gate for model.invoke and agent.invoke."""
-    ceiling = (getattr(target, "classification_ceiling", None) or "").strip() or None
-    if ceiling is None:
-        return
-
     from app.modules.policy import evaluate_classification_ceiling, record_decision
 
     level = _effective_task_level(db, task_ctx=task_ctx, conv_id_int=conv_id_int)
     level_str = level.to_storage()
-
-    # ceiling 純函式:無 ceiling → True。
-    allowed = evaluate_classification_ceiling(task_level=level_str, ceiling=ceiling)
-
     actor_id = str(getattr(caller.user, "id", "") or "")
     task_id = task_ctx.task_id if task_ctx is not None else None
     resource_id = str(getattr(target, "id", "") or "")
     target_name = getattr(target, "name", "?")
+
+    raw_ceiling = getattr(target, "classification_ceiling", None)
+    try:
+        if not isinstance(raw_ceiling, str) or not raw_ceiling.strip():
+            raise ValueError("classification ceiling is NULL or empty")
+        ceiling = ClassificationLevel.from_storage(raw_ceiling).to_storage()
+    except ValueError as exc:
+        reason = (
+            f"{target_label}「{target_name}」分類上限資料無效，"
+            "依 Gate 2 fail-closed 拒絕出向呼叫"
+        )
+        record_decision(
+            db,
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            decision=PolicyDecisionVerdict.DENY.value,
+            actor_type="user",
+            actor_id=actor_id,
+            task_id=task_id,
+            reason=reason,
+            metadata={"classification_state": type(raw_ceiling).__name__},
+        )
+        if task_ctx is not None:
+            finalize_task_run(
+                task_ctx.task_run_id,
+                "failed",
+                error={"code": "classification_ceiling", "message": reason},
+            )
+        raise HTTPException(status_code=403, detail=reason) from exc
+
+    allowed = evaluate_classification_ceiling(task_level=level_str, ceiling=ceiling)
 
     if not allowed:
         reason = (
@@ -145,10 +169,9 @@ def enforce_model_ceiling(
 ) -> None:
     """出向前分類 ceiling 把關。違反 → 403 + deny 列 + 不發出向。
 
-    僅在「target 是設了 ``classification_ceiling`` 的 model」時判定(任務
-    Deliverable 5)。無 ceiling = 該模型不設上限 → 完全 no-op,不產生任何
-    PolicyDecision(沒有 ceiling 就沒有要裁決的事)。有 ceiling 時:pass 僅
-    task-linked 記 allow(避免 legacy 灌爆);deny 一律記 + 403 + 不發出向。
+    每個 model 都必須有顯式 ``classification_ceiling``。NULL、空字串或未知
+    值視為損壞的治理狀態，會記 deny、回 403，且不發出向呼叫。合法 ceiling
+    pass 時僅 task-linked 記 allow(避免 legacy 灌爆);deny 一律記錄。
     """
     _enforce_ceiling(
         db,
