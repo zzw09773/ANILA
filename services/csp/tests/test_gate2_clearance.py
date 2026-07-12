@@ -132,6 +132,9 @@ def test_five_level_boundary_requires_grant_at_or_above_resource(
     )
 
     assert decision.allowed is (grant_level.rank >= required_level.rank)
+    assert decision.authorized_classification is (
+        grant_level if decision.allowed else None
+    )
 
 
 def test_same_level_different_compartment_is_denied(db) -> None:
@@ -350,6 +353,28 @@ def test_authority_cannot_be_composed_across_clearance_grants(db) -> None:
     assert decision.reason_code == "no_single_grant_satisfies_requirements"
 
 
+def test_highest_complete_single_grant_sets_chunk_retrieval_ceiling(db) -> None:
+    manager = make_user(db, "manager", role="admin")
+    subject = make_user(db, "subject")
+    owner = make_user(db, "data-owner")
+    collection = _collection(db, owner, level=Classification.UNCLASSIFIED)
+    low = _active_grant(
+        db, manager=manager, subject=subject, level=Classification.TRADE_SECRET
+    )
+    high = _active_grant(
+        db, manager=manager, subject=subject, level=Classification.TOP_SECRET
+    )
+    _collection_access(db, manager=manager, grant=low, collection=collection)
+    _collection_access(db, manager=manager, grant=high, collection=collection)
+
+    decision = resolve_and_evaluate_data_access(
+        db, user_id=subject.id, collection_id=collection.id, now=NOW
+    )
+    assert decision.allowed is True
+    assert decision.clearance_grant_id == high.id
+    assert decision.authorized_classification is Classification.TOP_SECRET
+
+
 def test_document_effective_requirements_union_collection_and_document(db) -> None:
     manager = make_user(db, "manager", role="admin")
     subject = make_user(db, "subject")
@@ -439,6 +464,45 @@ def test_unknown_and_null_classification_fail_closed(db) -> None:
         )
     with pytest.raises(ClearancePolicyDataError, match="NULL"):
         _classification_from_storage(None, field_name="unit")
+
+
+def test_inactive_required_compartment_is_policy_corruption_not_a_bypass(db) -> None:
+    manager = make_user(db, "manager", role="admin")
+    subject = make_user(db, "subject")
+    owner = make_user(db, "data-owner")
+    collection = _collection(db, owner, level=Classification.UNCLASSIFIED)
+    compartment = create_security_compartment(
+        db, actor=manager, code="ACTIVE_SCOPE", name="Active scope"
+    )
+    assign_collection_required_compartment(
+        db,
+        actor=manager,
+        collection_id=collection.id,
+        compartment_id=compartment.id,
+        basis_ticket="REQ-ACTIVE",
+    )
+    grant = _active_grant(
+        db, manager=manager, subject=subject, level=Classification.TOP_SECRET
+    )
+    add_grant_compartment(
+        db,
+        actor=manager,
+        clearance_grant_id=grant.id,
+        compartment_id=compartment.id,
+    )
+    _collection_access(
+        db, manager=manager, grant=grant, collection=collection
+    )
+    compartment.is_active = False
+    db.commit()
+
+    with pytest.raises(ClearancePolicyDataError, match="已停用"):
+        resolve_and_evaluate_data_access(
+            db,
+            user_id=subject.id,
+            collection_id=collection.id,
+            now=NOW,
+        )
 
 
 def test_regular_user_cannot_call_management_service(db) -> None:

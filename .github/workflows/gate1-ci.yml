@@ -124,6 +124,7 @@ jobs:
         run: |
           python -m pytest packages/anila-core/tests/test_contracts_facade.py packages/anila-core/tests/test_url_guard_kind_split.py -q
           python -m unittest infra.policy.tests.test_gate2_classification_reconciliation -v
+          python -m unittest infra.policy.tests.test_gate2_retrieval_governance -v
           cd services/csp
           python -m pytest tests/test_anila_contracts_package.py tests/test_url_guard_opt_in.py tests/test_url_guard_providers.py -q
 

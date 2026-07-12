@@ -554,6 +554,7 @@ info "[4b/7] JWT 簽章金鑰 ($SECRETS_DIR/jwt-private.pem)"
 mkdir -p "$SECRETS_DIR"
 prepare_csp_runtime_mount "$SECRETS_DIR" 700
 prepare_csp_runtime_mount "$PWD/share/uploads/ingestion" 700
+prepare_csp_runtime_mount "$ANILA_STATE_DIR/source-snapshots" 700
 # Host operator 無法 traverse UID 10001 + mode 0700 的 secrets。由 CSP runtime
 # user 在無網路、唯讀 rootfs 的 one-shot container 內驗證/沿用/首次生成；
 # partial、symlink、malformed、mismatched pair 一律 fail-closed。

@@ -607,6 +607,56 @@ async def _bump_collection_counters(
         await conn.execute(sql, collection_id, document_count_delta, chunk_count_delta)
 
 
+async def _reconcile_collection_counters(
+    pool: PgPool, collection_id: int
+) -> None:
+    """Recompute denormalized counters under a collection row lock.
+
+    Re-index is a replacement, not an append.  Delta-only updates double
+    counted documents and chunks on retries.  ``FOR UPDATE`` serializes
+    concurrent completions so the last writer observes every earlier commit.
+    """
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            exists = await conn.fetchval(
+                """
+                SELECT id
+                  FROM ingestion_collections
+                 WHERE id = $1
+                   FOR UPDATE
+                """,
+                collection_id,
+            )
+            if exists is None:
+                raise StoreError(
+                    code="E_PG_CONSTRAINT",
+                    retryable=False,
+                    severity="error",
+                    user_message="知識庫不存在，無法校正索引計數。",
+                    details={"collection_id": collection_id},
+                )
+            await conn.execute(
+                """
+                UPDATE ingestion_collections
+                   SET document_count = (
+                           SELECT count(*)
+                             FROM ingestion_documents
+                            WHERE collection_id = $1
+                              AND status = 'indexed'
+                       ),
+                       chunk_count = (
+                           SELECT count(*)
+                             FROM document_chunks
+                            WHERE collection_id = $1
+                       ),
+                       updated_at = now()
+                 WHERE id = $1
+                """,
+                collection_id,
+            )
+
+
 async def _record_job_failure(
     pool: PgPool, arq_job_id: str | None, err: IngestionError
 ) -> None:
@@ -792,12 +842,24 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             else:
                 params["_embeddings"] = []
         chunks = chunker.chunk(text, parse_meta, params)
+        store = CollectionScopedPgVectorStore(pool, collection_id=collection_id)
         if not chunks:
+            # An empty re-index must still remove the previous generation;
+            # otherwise stale chunks remain searchable even though the
+            # document advertises chunk_count=0.
+            await store.replace_document_chunks(
+                document_id=document_id,
+                parent_chunks=[],
+                leaf_chunks=[],
+                embeddings=[],
+                classification_level=effective_classification,
+            )
             await _update_document_status(
                 pool, document_id, "indexed",
                 chunk_count=0,
                 error_message=None,
             )
+            await _reconcile_collection_counters(pool, collection_id)
             await _update_job(
                 pool,
                 arq_job_id,
@@ -839,25 +901,17 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             [c.content for c in leaves], user_id=billing_user_id,
         ) if leaves else []
 
-        # 4. Index — parents first to populate the chunk_key→id map;
-        #    leaves second with their parent_chunk_id resolved.
+        # 4. Index — replace the complete parent/leaf generation in one
+        #    transaction.  A failed leaf write restores the previous rows;
+        #    retries never collide with a partial parent generation.
         await _update_job(pool, arq_job_id, progress_pct=85, progress_message="indexing")
-        store = CollectionScopedPgVectorStore(pool, collection_id=collection_id)
-        parent_id_map: dict[str, int] = {}
-        if parents:
-            parent_id_map = await store.add_parent_chunks(
-                document_id=document_id,
-                chunks=parents,
-                classification_level=effective_classification,
-            )
-        if leaves:
-            await store.index_chunks(
-                document_id=document_id,
-                chunks=leaves,
-                embeddings=embeddings,
-                classification_level=effective_classification,
-                parent_id_map=parent_id_map,
-            )
+        await store.replace_document_chunks(
+            document_id=document_id,
+            parent_chunks=parents,
+            leaf_chunks=leaves,
+            embeddings=embeddings,
+            classification_level=effective_classification,
+        )
 
         total_chunks = len(chunks)
         # 5. Status + counters.
@@ -866,9 +920,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             chunk_count=total_chunks,
             error_message=None,
         )
-        await _bump_collection_counters(
-            pool, collection_id, document_count_delta=1, chunk_count_delta=total_chunks
-        )
+        await _reconcile_collection_counters(pool, collection_id)
 
         # 6. Cross-document relations (best-effort — design v2 §5/§6). The
         #    parsed text only exists here, so we extract citations + deposit

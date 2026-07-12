@@ -273,6 +273,37 @@ class CspNonRootContractTests(unittest.TestCase):
             dev,
         )
 
+    def test_source_snapshot_evidence_uses_external_restricted_state(self) -> None:
+        dockerfile = PRODUCTION_DOCKERFILE.read_text(encoding="utf-8")
+        self.assertIn("/var/lib/anila/source-snapshots/.volume-init", dockerfile)
+        self.assertIn("chown -R csp:csp /var/anila /var/lib/anila", dockerfile)
+        self.assertIn("/var/lib/anila/source-snapshots", dockerfile)
+
+        platform = PLATFORM_COMPOSE.read_text(encoding="utf-8")
+        self.assertIn(
+            "SOURCE_SNAPSHOT_STORAGE_PATH: /var/lib/anila/source-snapshots",
+            platform,
+        )
+        self.assertIn(
+            "${ANILA_STATE_DIR:?ANILA_STATE_DIR must be an absolute path "
+            "outside the repo}/source-snapshots:/var/lib/anila/source-snapshots",
+            platform,
+        )
+        self.assertNotIn("share/source-snapshots", platform)
+
+        dev = DEV_COMPOSE.read_text(encoding="utf-8")
+        self.assertIn(
+            "csp-source-snapshots-dev:/var/lib/anila/source-snapshots", dev
+        )
+        self.assertRegex(dev, r"(?m)^  csp-source-snapshots-dev:\s*$")
+
+        for deploy_script in (PROD_DEPLOY, INTRANET_DEPLOY):
+            script = deploy_script.read_text(encoding="utf-8")
+            self.assertIn(
+                'prepare_csp_runtime_mount "$ANILA_STATE_DIR/source-snapshots" 700',
+                script,
+            )
+
     def test_offline_csp_tag_matches_inventory_and_permission_helpers(self) -> None:
         inventory = PLATFORM_INVENTORY.read_text(encoding="utf-8")
         csp_rows = [
@@ -332,7 +363,15 @@ class CspNonRootContractTests(unittest.TestCase):
             '"$dest" attachments',
             script,
         )
-        self.assertIn("uploads.tar.gz + attachments.tar.gz", script)
+        self.assertIn(
+            "uploads.tar.gz + attachments.tar.gz + source-snapshots.tar.gz",
+            script,
+        )
+        self.assertIn(
+            'run_runtime_backup_helper bind "$ANILA_STATE_DIR/source-snapshots" '
+            'tree "$dest" source-snapshots',
+            script,
+        )
         self.assertIn("禁止直接 cp/tar", script)
 
     def test_safe_backup_helper_rejects_secret_links_and_never_follows_tree_links(self) -> None:
@@ -341,6 +380,7 @@ class CspNonRootContractTests(unittest.TestCase):
         self.assertIn('TLS_FILES = ("server.key", "server.crt")', helper)
         self.assertIn('"uploads": "uploads.tar.gz"', helper)
         self.assertIn('"attachments": "attachments.tar.gz"', helper)
+        self.assertIn('"source-snapshots": "source-snapshots.tar.gz"', helper)
         self.assertIn('getattr(os, "O_NOFOLLOW", None)', helper)
         self.assertIn("stat.S_ISREG", helper)
         self.assertIn("dereference=False", helper)

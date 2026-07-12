@@ -84,11 +84,11 @@ print('Swagger UI downloaded')" 2>/dev/null || echo "Swagger UI download skipped
 # (ingestion uploads and JWT keys) without making them world-writable.
 RUN groupadd --gid 10001 csp && \
     useradd --uid 10001 --gid csp --no-create-home --shell /usr/sbin/nologin csp && \
-    mkdir -p /app/logs /app/secrets /var/anila/attachments /var/anila/ingestion-uploads && \
-    touch /var/anila/attachments/.volume-init /var/anila/ingestion-uploads/.volume-init && \
+    mkdir -p /app/logs /app/secrets /var/anila/attachments /var/anila/ingestion-uploads /var/lib/anila/source-snapshots && \
+    touch /var/anila/attachments/.volume-init /var/anila/ingestion-uploads/.volume-init /var/lib/anila/source-snapshots/.volume-init && \
     chown -R csp:csp /app/logs /app/secrets && \
-    chown -R csp:csp /var/anila && \
-    chmod 700 /app/secrets /var/anila/attachments /var/anila/ingestion-uploads
+    chown -R csp:csp /var/anila /var/lib/anila && \
+    chmod 700 /app/secrets /var/anila/attachments /var/anila/ingestion-uploads /var/lib/anila/source-snapshots
 
 ENV DATABASE_URL=postgresql://csp:csp_password@postgres:5432/csp
 

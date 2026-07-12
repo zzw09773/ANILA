@@ -468,6 +468,7 @@ ensure_jwt_keypair() {
   [[ -n "${ANILA_SECRETS_DIR:-}" ]] || fatal "ANILA_SECRETS_DIR 未設定"
   prepare_csp_runtime_mount "$ANILA_SECRETS_DIR" 700
   prepare_csp_runtime_mount "$REPO_ROOT/share/uploads/ingestion" 700
+  prepare_csp_runtime_mount "$ANILA_STATE_DIR/source-snapshots" 700
   # The host operator cannot traverse this UID 10001 + mode 0700 directory.
   # Validate/reuse/generate entirely as the CSP runtime user inside a bounded
   # one-shot container; partial, symlinked, malformed, or mismatched pairs fail.

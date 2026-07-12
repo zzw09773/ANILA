@@ -214,3 +214,33 @@ async def test_g2_bypass_attempt_wrong_collection_yields_only_their_rows(
         )
     finally:
         await raw_conn.close()
+
+
+async def test_transaction_local_collection_scope_never_survives_pool_reuse(
+    isolation_collections: list[int],
+) -> None:
+    """A max-size-one pool guarantees the next request reuses the connection."""
+
+    coll_id = isolation_collections[0]
+    one_connection_pool = await asyncpg.create_pool(
+        dsn=_resolve_dsn(), min_size=1, max_size=1
+    )
+    try:
+        async with one_connection_pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute(
+                    f"SET LOCAL anila.collection_id = {int(coll_id)}"
+                )
+                assert await connection.fetchval(
+                    "SELECT current_setting('anila.collection_id', true)"
+                ) == str(coll_id)
+
+        # This is the exact same physical connection after release/acquire.
+        async with one_connection_pool.acquire() as reused:
+            residual = await reused.fetchval(
+                "SELECT current_setting('anila.collection_id', true)"
+            )
+            assert residual in (None, "")
+            assert await reused.fetch("SELECT id FROM document_chunks") == []
+    finally:
+        await one_connection_pool.close()

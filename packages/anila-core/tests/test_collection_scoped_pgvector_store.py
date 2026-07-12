@@ -22,6 +22,7 @@ A regression here would silently disable collection isolation.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from anila_contracts import Classification
@@ -80,11 +81,13 @@ class _RecordingConnection:
         self.executemany_calls: list[tuple[str, list[tuple]]] = []
         self.fetch_calls: list[tuple[str, tuple]] = []
         self.fetchrow_calls: list[tuple[str, tuple]] = []
+        self.execute_calls: list[tuple[str, tuple]] = []
 
     def transaction(self) -> _Transaction:
         return _Transaction()
 
     async def execute(self, _sql: str, *_args) -> str:
+        self.execute_calls.append((_sql, _args))
         return "OK"
 
     async def executemany(self, sql: str, rows: list[tuple]) -> None:
@@ -232,6 +235,154 @@ async def test_parent_and_leaf_insert_sql_persists_classification_provenance() -
     assert "FROM ingestion_documents" in lock_queries[3]
     assert all("FOR SHARE" in sql for sql in lock_queries)
 
+
+async def test_atomic_replace_deletes_then_inserts_one_classified_generation() -> None:
+    connection = _RecordingConnection(
+        collection_level="機密",
+        document_level="極機密",
+    )
+    store = CollectionScopedPgVectorStore(
+        _RecordingPool(connection),  # type: ignore[arg-type]
+        collection_id=9,
+    )
+    parent = ChunkResult(
+        content="heading",
+        chunk_key="parent-1",
+        token_count=1,
+        metadata={"chunk_type": "heading", "chunk_level": 1},
+    )
+    leaf = ChunkResult(
+        content="leaf",
+        chunk_key="leaf-1",
+        token_count=2,
+        metadata={"chunk_type": "leaf", "parent_chunk_key": "parent-1"},
+    )
+
+    written = await store.replace_document_chunks(
+        document_id=12,
+        parent_chunks=[parent],
+        leaf_chunks=[leaf],
+        embeddings=[[0.1]],
+        classification_level=Classification.UNCLASSIFIED,
+    )
+
+    assert written == 2
+    delete_index = next(
+        index
+        for index, (sql, args) in enumerate(connection.execute_calls)
+        if "DELETE FROM document_chunks" in sql and args == (12,)
+    )
+    # SET LOCAL always precedes the destructive replacement.
+    assert delete_index > 0
+    parent_sql, parent_args = next(
+        call
+        for call in connection.fetchrow_calls
+        if "INSERT INTO document_chunks" in call[0]
+    )
+    assert "RETURNING id, chunk_key" in parent_sql
+    assert parent_args[-2:] == ("極機密", "ingestion_effective")
+    leaf_sql, leaf_rows = connection.executemany_calls[-1]
+    assert "parent_chunk_id" in leaf_sql
+    assert leaf_rows[0][-2:] == ("極機密", "ingestion_effective")
+    assert leaf_rows[0][-3] == 3
+
+
+async def test_atomic_replace_rejects_invalid_generation_before_database_use() -> None:
+    store = CollectionScopedPgVectorStore(_FakePool(), collection_id=9)
+    parent = ChunkResult(content="p", chunk_key="same", token_count=1)
+    duplicate = ChunkResult(content="l", chunk_key="same", token_count=1)
+    with pytest.raises(ValueError, match="duplicate chunk_key"):
+        await store.replace_document_chunks(
+            document_id=12,
+            parent_chunks=[parent],
+            leaf_chunks=[duplicate],
+            embeddings=[[0.1]],
+            classification_level=Classification.UNCLASSIFIED,
+        )
+
+    orphan = ChunkResult(
+        content="l",
+        chunk_key="leaf",
+        token_count=1,
+        metadata={"parent_chunk_key": "missing"},
+    )
+    with pytest.raises(ValueError, match="unknown parent_chunk_key"):
+        await store.replace_document_chunks(
+            document_id=12,
+            parent_chunks=[],
+            leaf_chunks=[orphan],
+            embeddings=[[0.1]],
+            classification_level=Classification.UNCLASSIFIED,
+        )
+
+    with pytest.raises(ValueError, match="counts must match"):
+        await store.replace_document_chunks(
+            document_id=12,
+            parent_chunks=[],
+            leaf_chunks=[orphan],
+            embeddings=[],
+            classification_level=Classification.UNCLASSIFIED,
+        )
+
+
+async def test_clearance_allowlist_is_applied_in_sql_before_global_ranking() -> None:
+    connection = _RecordingConnection()
+    store = CollectionScopedPgVectorStore(
+        _RecordingPool(connection),  # type: ignore[arg-type]
+        collection_id=9,
+    )
+
+    assert await store.similarity_search_scoped_documents(
+        query_embedding=[0.1],
+        document_ids=[12, 13],
+        top_k=4,
+        min_score=0.25,
+        classification_ceiling=Classification.CONFIDENTIAL,
+    ) == []
+    sql, args = connection.fetch_calls[-1]
+    assert "document_id = ANY($2::bigint[])" in sql
+    assert "classification_level = ANY($3::text[])" in sql
+    assert "LIMIT $5" in sql
+    assert args[1:] == (
+        [12, 13],
+        ["無機密", "營業秘密", "機密"],
+        0.25,
+        4,
+    )
+
+    before = len(connection.fetch_calls)
+    assert await store.similarity_search_scoped_documents(
+        query_embedding=[0.1],
+        document_ids=[],
+        top_k=4,
+        classification_ceiling=Classification.CONFIDENTIAL,
+    ) == []
+    assert len(connection.fetch_calls) == before
+
+    assert await store.similarity_search_per_document_authorized(
+        query_embedding=[0.1],
+        document_ids=[12],
+        classification_ceiling=Classification.TRADE_SECRET,
+        k=2,
+        min_score=0.1,
+    ) == []
+    per_document_sql, per_document_args = connection.fetch_calls[-1]
+    assert "classification_level = ANY($3::text[])" in per_document_sql
+    assert per_document_args[1:] == (
+        [12],
+        ["無機密", "營業秘密"],
+        0.1,
+        2,
+    )
+
+    await store._attach_parent_content(  # noqa: SLF001
+        connection,
+        [SimpleNamespace(chunk=SimpleNamespace(parent_chunk_id=99))],
+        classification_ceiling=Classification.TRADE_SECRET,
+    )
+    parent_sql, parent_args = connection.fetch_calls[-1]
+    assert "classification_level = ANY($3::text[])" in parent_sql
+    assert parent_args == ([99], 9, ["無機密", "營業秘密"])
 
 async def test_write_floor_preserves_higher_caller_and_rejects_wrong_owner() -> None:
     high_connection = _RecordingConnection()

@@ -379,6 +379,7 @@ def _install_ingest_fakes(
     document_updates: list[tuple[str, dict]] = []
     job_updates: list[dict] = []
     failures = []
+    replacements: list[dict] = []
 
     async def load_meta(_pool, _document_id):
         return {
@@ -402,15 +403,28 @@ def _install_ingest_fakes(
     async def record_failure(_pool, _job_id, error):
         failures.append(error)
 
-    async def bump_counters(_pool, _collection_id, **_kwargs):
+    async def reconcile_counters(_pool, _collection_id):
         return None
+
+    class RecordingStore:
+        def __init__(self, _pool, *, collection_id: int) -> None:
+            assert collection_id == 7
+
+        async def replace_document_chunks(self, **kwargs):
+            replacements.append(kwargs)
+            return len(kwargs["parent_chunks"]) + len(kwargs["leaf_chunks"])
 
     chunker = SimpleNamespace(requires_embedder=False, chunk=lambda *_args: chunks)
     monkeypatch.setattr(handlers, "_load_document_meta", load_meta)
     monkeypatch.setattr(handlers, "_update_document_status", update_document)
     monkeypatch.setattr(handlers, "_update_job", update_job)
     monkeypatch.setattr(handlers, "_record_job_failure", record_failure)
-    monkeypatch.setattr(handlers, "_bump_collection_counters", bump_counters)
+    monkeypatch.setattr(
+        handlers, "_reconcile_collection_counters", reconcile_counters
+    )
+    monkeypatch.setattr(
+        handlers, "CollectionScopedPgVectorStore", RecordingStore
+    )
     monkeypatch.setattr(
         handlers,
         "extract_text",
@@ -422,6 +436,7 @@ def _install_ingest_fakes(
         "document_updates": document_updates,
         "job_updates": job_updates,
         "failures": failures,
+        "replacements": replacements,
     }
 
 
@@ -454,6 +469,9 @@ async def test_ingest_empty_chunks_writes_one_succeeded_terminal_job_state(
         "indexed",
         {"chunk_count": 0, "error_message": None},
     )
+    assert len(state["replacements"]) == 1
+    assert state["replacements"][0]["parent_chunks"] == []
+    assert state["replacements"][0]["leaf_chunks"] == []
     assert result == {"chunk_count": 0, "warning": "no chunks produced"}
 
 
@@ -467,14 +485,16 @@ async def test_ingest_propagates_effective_classification_to_parent_and_leaf_wri
         def __init__(self, _pool, *, collection_id: int) -> None:
             assert collection_id == 7
 
-        async def add_parent_chunks(self, **kwargs):
-            writes.append(("parent", kwargs["classification_level"]))
-            return {"parent-1": 101}
-
-        async def index_chunks(self, **kwargs):
-            writes.append(("leaf", kwargs["classification_level"]))
-            assert kwargs["parent_id_map"] == {"parent-1": 101}
-            return 1
+        async def replace_document_chunks(self, **kwargs):
+            writes.append(("replace", kwargs["classification_level"]))
+            assert [chunk.chunk_key for chunk in kwargs["parent_chunks"]] == [
+                "parent-1"
+            ]
+            assert [chunk.chunk_key for chunk in kwargs["leaf_chunks"]] == [
+                "leaf-1"
+            ]
+            assert kwargs["embeddings"] == [[0.1]]
+            return 2
 
     class Embedder:
         async def embed(self, texts, *, user_id=None):
@@ -508,10 +528,7 @@ async def test_ingest_propagates_effective_classification_to_parent_and_leaf_wri
 
     result = await handlers.ingest_document(state["ctx"], document_id=44)
 
-    assert writes == [
-        ("parent", Classification.SECRET),
-        ("leaf", Classification.SECRET),
-    ]
+    assert writes == [("replace", Classification.SECRET)]
     assert result["parent_count"] == 1
     assert result["leaf_count"] == 1
 

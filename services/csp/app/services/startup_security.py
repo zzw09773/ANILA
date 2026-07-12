@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 import re
+import stat
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
@@ -173,6 +175,7 @@ _FORMAL_PROFILE_POSTURES: dict[str, dict[str, object]] = {
 }
 
 _AUDIT_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}$")
+_FORMAL_SOURCE_SNAPSHOT_PATH = Path("/var/lib/anila/source-snapshots")
 
 
 def _parse_break_glass_expiry(raw: str) -> datetime:
@@ -332,6 +335,40 @@ def assert_deployment_profile_posture() -> None:
                 "Refusing to start: normal card profile must not retain "
                 "break-glass metadata: " + ", ".join(stale_metadata)
             )
+
+
+def assert_source_snapshot_storage_policy() -> None:
+    """Formal retrieval evidence must use the prepared private state mount."""
+
+    profile = settings.ANILA_DEPLOYMENT_PROFILE.strip().lower()
+    if profile not in _FORMAL_PROFILE_POSTURES:
+        return
+    configured = Path(settings.SOURCE_SNAPSHOT_STORAGE_PATH)
+    if configured != _FORMAL_SOURCE_SNAPSHOT_PATH:
+        raise RuntimeError(
+            "Refusing to start: formal SOURCE_SNAPSHOT_STORAGE_PATH must be "
+            f"{_FORMAL_SOURCE_SNAPSHOT_PATH}"
+        )
+    try:
+        metadata = configured.lstat()
+    except OSError as exc:
+        raise RuntimeError(
+            "Refusing to start: SourceSnapshot state mount is missing"
+        ) from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise RuntimeError(
+            "Refusing to start: SourceSnapshot state mount must be a real directory"
+        )
+    runtime_uid = os.geteuid() if hasattr(os, "geteuid") else metadata.st_uid
+    if metadata.st_uid != runtime_uid or metadata.st_mode & 0o077:
+        raise RuntimeError(
+            "Refusing to start: SourceSnapshot state mount must be owned by "
+            "the CSP runtime user with mode 0700"
+        )
+    if not os.access(configured, os.W_OK | os.X_OK):
+        raise RuntimeError(
+            "Refusing to start: SourceSnapshot state mount is not writable"
+        )
 
 
 def assert_no_dev_defaults() -> None:

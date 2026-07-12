@@ -17,6 +17,7 @@ to return deterministic fixture data.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
 
 # Same shape as other client-based tests — the global conftest only sets the
 # SQLite DB; the lifespan-startup security gate needs an explicit opt-in.
@@ -27,6 +28,10 @@ from fastapi.testclient import TestClient
 
 import app.api.ingestion.search as search_mod
 from app.models.ingestion import IngestionCollection, IngestionDocument
+from app.modules.clearance.service import (
+    grant_collection_access,
+    issue_clearance_grant,
+)
 from app.services.auth_service import create_tokens
 
 from tests.conftest import make_user
@@ -50,7 +55,12 @@ def bob(db):
 
 
 @pytest.fixture
-def alice_collection(db, alice) -> IngestionCollection:
+def clearance_manager(db):
+    return make_user(db, username="clearance-manager", role="admin")
+
+
+@pytest.fixture
+def alice_collection(db, alice, clearance_manager) -> IngestionCollection:
     """Active collection owned by alice with one document."""
     coll = IngestionCollection(
         name="alice-collection",
@@ -74,6 +84,26 @@ def alice_collection(db, alice) -> IngestionCollection:
     db.add(doc)
     db.commit()
     db.refresh(doc)
+    coll._test_doc_id = doc.id
+    now = datetime.now(timezone.utc)
+    grant = issue_clearance_grant(
+        db,
+        actor=clearance_manager,
+        subject_user_id=alice.id,
+        max_classification_level="絕對機密",
+        valid_from=now - timedelta(minutes=5),
+        expires_at=now + timedelta(hours=1),
+        basis_ticket="TEST-CLEARANCE",
+    )
+    grant_collection_access(
+        db,
+        actor=clearance_manager,
+        clearance_grant_id=grant.id,
+        collection_id=coll.id,
+        membership_granted=True,
+        need_to_know=True,
+        basis_ticket="TEST-NTK",
+    )
     return coll
 
 
@@ -148,7 +178,7 @@ def test_image_search_returns_hits(client: TestClient, db, alice, alice_collecti
         {
             "pk_id": 101,
             "image_id": "img-abc",
-            "document_id": 5001,
+            "document_id": alice_collection._test_doc_id,
             "page": 3,
             "storage_path": "alice/uploads/img-abc.png",
             "mime": "image/png",
@@ -159,7 +189,7 @@ def test_image_search_returns_hits(client: TestClient, db, alice, alice_collecti
         {
             "pk_id": 102,
             "image_id": "img-def",
-            "document_id": 5001,
+            "document_id": alice_collection._test_doc_id,
             "page": 5,
             "storage_path": "alice/uploads/img-def.jpg",
             "mime": "image/jpeg",
@@ -190,7 +220,7 @@ def test_image_search_returns_hits(client: TestClient, db, alice, alice_collecti
                 "mime", "caption", "filename", "score"):
         assert key in first, f"missing field {key} in result: {first}"
     assert first["image_id"] == 101
-    assert first["document_id"] == 5001
+    assert first["document_id"] == alice_collection._test_doc_id
     assert first["page"] == 3
     assert first["mime"] == "image/png"
     assert first["filename"] == "paper.pdf"
@@ -268,7 +298,9 @@ def test_image_search_default_top_k_is_8(
         headers=_bearer(alice),
     )
     assert resp.status_code == 200, resp.text
-    # The LIMIT $4 arg in _retrieve_images is the 4th positional arg.
-    # args order: (collection_id, q_value, max_dist, top_k)
+    # Clearance IDs are applied before ranking.
+    # args: (collection_id, q_value, document_ids, max_dist, top_k)
     assert captured["pool"].last_args is not None
-    assert captured["pool"].last_args[3] == 8
+    assert captured["pool"].last_args[2] == [alice_collection._test_doc_id]
+    assert captured["pool"].last_args[4] == 8
+    assert "i.document_id = ANY($3::bigint[])" in captured["pool"].last_sql

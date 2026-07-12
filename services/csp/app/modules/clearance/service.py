@@ -71,6 +71,7 @@ class DataAccessDecision:
     context: DataAccessContext
     clearance_grant_id: int | None = None
     collection_access_grant_id: int | None = None
+    authorized_classification: Classification | None = None
 
 
 def _stored_datetime_as_utc(value: object, *, field_name: str) -> datetime:
@@ -246,7 +247,12 @@ def revoke_clearance_grant(
     now: datetime | None = None,
 ) -> ClearanceGrant:
     _assert_manager(actor)
-    row = db.get(ClearanceGrant, clearance_grant_id)
+    row = (
+        db.query(ClearanceGrant)
+        .filter(ClearanceGrant.id == clearance_grant_id)
+        .with_for_update()
+        .first()
+    )
     if row is None:
         raise LookupError("找不到 clearance grant")
     if row.revoked_at is not None:
@@ -381,7 +387,12 @@ def revoke_collection_access(
     now: datetime | None = None,
 ) -> CollectionAccessGrant:
     _assert_manager(actor)
-    row = db.get(CollectionAccessGrant, collection_access_grant_id)
+    row = (
+        db.query(CollectionAccessGrant)
+        .filter(CollectionAccessGrant.id == collection_access_grant_id)
+        .with_for_update()
+        .first()
+    )
     if row is None:
         raise LookupError("找不到 collection access grant")
     if row.revoked_at is not None:
@@ -424,7 +435,13 @@ def assign_collection_required_compartment(
     basis_ticket: str,
 ) -> CollectionRequiredCompartment:
     _assert_manager(actor)
-    if db.get(IngestionCollection, collection_id) is None:
+    collection = (
+        db.query(IngestionCollection)
+        .filter(IngestionCollection.id == collection_id)
+        .with_for_update()
+        .first()
+    )
+    if collection is None:
         raise LookupError("collection 不存在")
     _active_compartment(db, compartment_id)
     existing = db.get(
@@ -466,7 +483,13 @@ def assign_document_required_compartment(
     basis_ticket: str,
 ) -> DocumentRequiredCompartment:
     _assert_manager(actor)
-    if db.get(IngestionDocument, document_id) is None:
+    document = (
+        db.query(IngestionDocument)
+        .filter(IngestionDocument.id == document_id)
+        .with_for_update()
+        .first()
+    )
+    if document is None:
         raise LookupError("document 不存在")
     _active_compartment(db, compartment_id)
     existing = db.get(
@@ -507,7 +530,12 @@ def resolve_data_access_context(
     document_id: int | None = None,
     now: datetime | None = None,
 ) -> DataAccessContext:
-    collection = db.get(IngestionCollection, collection_id)
+    collection = (
+        db.query(IngestionCollection)
+        .filter(IngestionCollection.id == collection_id)
+        .with_for_update(read=True)
+        .first()
+    )
     if collection is None:
         raise LookupError("collection 不存在")
     levels = [
@@ -521,6 +549,7 @@ def resolve_data_access_context(
         document = (
             db.query(IngestionDocument)
             .filter_by(id=document_id, collection_id=collection.id)
+            .with_for_update(read=True)
             .first()
         )
         if document is None:
@@ -533,18 +562,38 @@ def resolve_data_access_context(
         )
 
     required_compartments = {
-        row[0]
+        int(row[0])
         for row in db.query(CollectionRequiredCompartment.compartment_id)
         .filter(CollectionRequiredCompartment.collection_id == collection.id)
+        .with_for_update(read=True)
         .all()
     }
     if document is not None:
         required_compartments.update(
-            row[0]
+            int(row[0])
             for row in db.query(DocumentRequiredCompartment.compartment_id)
             .filter(DocumentRequiredCompartment.document_id == document.id)
+            .with_for_update(read=True)
             .all()
         )
+    if required_compartments:
+        compartments = (
+            db.query(SecurityCompartment)
+            .filter(SecurityCompartment.id.in_(required_compartments))
+            .with_for_update(read=True)
+            .all()
+        )
+        if len(compartments) != len(required_compartments):
+            raise ClearancePolicyDataError("required compartment catalog 不完整")
+        for compartment in compartments:
+            if (
+                not compartment.is_active
+                or not isinstance(compartment.code, str)
+                or _COMPARTMENT_CODE_RE.fullmatch(compartment.code) is None
+            ):
+                raise ClearancePolicyDataError(
+                    f"required compartment#{compartment.id} 已停用或格式無效"
+                )
     evaluated_at = _required_aware_datetime(
         now or datetime.now(timezone.utc), field_name="evaluated_at"
     )
@@ -577,7 +626,12 @@ def evaluate_data_access(
         )
     context = authoritative
 
-    subject = db.get(User, context.user_id)
+    subject = (
+        db.query(User)
+        .filter(User.id == context.user_id)
+        .with_for_update(read=True)
+        .first()
+    )
     if subject is None or not subject.is_active:
         return DataAccessDecision(False, "subject_inactive", context)
 
@@ -585,6 +639,7 @@ def evaluate_data_access(
         db.query(ClearanceGrant)
         .filter(ClearanceGrant.subject_user_id == context.user_id)
         .order_by(ClearanceGrant.id.asc())
+        .with_for_update(read=True)
         .all()
     )
     parsed_grants: list[tuple[ClearanceGrant, Classification]] = []
@@ -623,7 +678,13 @@ def evaluate_data_access(
     if not active:
         return DataAccessDecision(False, "no_active_clearance_grant", context)
 
-    for grant, level in active:
+    # Prefer the highest single grant that independently satisfies every
+    # predicate. This never composes grants, but avoids accidentally selecting
+    # an older low grant and hiding chunks the same user is explicitly cleared
+    # to read under a later high grant.
+    for grant, level in sorted(
+        active, key=lambda item: (-item[1].rank, item[0].id)
+    ):
         if level < context.required_classification:
             continue
         covered_compartments = {
@@ -641,6 +702,7 @@ def evaluate_data_access(
                 collection_id=context.collection_id,
                 revoked_at=None,
             )
+            .with_for_update(read=True)
             .first()
         )
         if access is None or not access.need_to_know:
@@ -653,6 +715,7 @@ def evaluate_data_access(
             context,
             clearance_grant_id=grant.id,
             collection_access_grant_id=access.id,
+            authorized_classification=level,
         )
     return DataAccessDecision(
         False, "no_single_grant_satisfies_requirements", context

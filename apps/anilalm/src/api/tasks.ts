@@ -55,6 +55,7 @@ export interface TaskCreate {
   selected_collection_ids?: number[]
   requested_output_type?: RequestedOutputType | null
   classification_level?: string
+  conversation_id?: number | null
 }
 
 export interface TaskOut {
@@ -87,6 +88,41 @@ export interface CreateArtifactTaskInput {
   collectionIds: number[]
   /** Defaults to 'project' (a shared knowledge-base collection). */
   sourceScope?: SourceScope
+}
+
+export interface CreateQueryTaskInput {
+  title: string
+  collectionId: number
+  conversationId: number
+  sourceScope?: SourceScope
+}
+
+/**
+ * Create the mandatory Task for one governed RAG turn.
+ *
+ * Unlike the pre-Gate-2 Studio compatibility helper, this function is
+ * intentionally fail-closed: a chat turn must not fall back to browser-side
+ * or taskless retrieval when governance state cannot be created.
+ */
+export async function createQueryTask(
+  input: CreateQueryTaskInput,
+): Promise<TaskBinding> {
+  const { data } = await client.post<TaskOut>('/api/tasks', {
+    title: input.title,
+    task_type: 'query',
+    source_scope: input.sourceScope ?? 'project',
+    selected_collection_ids: [input.collectionId],
+    requested_output_type: 'answer',
+    conversation_id: input.conversationId,
+  } satisfies TaskCreate)
+  if (data.source_snapshot_id == null || !data.trace_id) {
+    throw new Error('CSP 建立的 RAG Task 缺少 SourceSnapshot 或 trace_id')
+  }
+  return {
+    taskId: String(data.id),
+    sourceSnapshotId: String(data.source_snapshot_id),
+    traceId: data.trace_id,
+  }
 }
 
 /**

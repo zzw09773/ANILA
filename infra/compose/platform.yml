@@ -167,6 +167,10 @@ services:
       # Conversation attachments are durable application data.  The named
       # volume inherits UID 10001 ownership from the image directory.
       ATTACHMENT_STORAGE_PATH: /var/anila/attachments
+      # Gate 2 sealed retrieval evidence contains the exact bounded source
+      # slabs supplied to the model.  Keep it under the external formal state
+      # root, never in the repository/share bind mounts.
+      SOURCE_SNAPSHOT_STORAGE_PATH: /var/lib/anila/source-snapshots
       # 出向 https 的 CA 信任 (內網模型主機 10.53.100.12 走 https,憑證通常
       # 是內部 CA / 自簽 — 不在 certifi 預設信任鏈內,httpx 會
       # CERTIFICATE_VERIFY_FAILED)。把 IT 給的 PEM 放 ./share/pki/ 並在
@@ -198,6 +202,7 @@ services:
       # 跟 ingestion-worker 共用 inode,不走拷貝。
       - ../../share/uploads/ingestion:/var/anila/ingestion-uploads
       - csp-attachments:/var/anila/attachments
+      - "${ANILA_STATE_DIR:?ANILA_STATE_DIR must be an absolute path outside the repo}/source-snapshots:/var/lib/anila/source-snapshots"
       # 內網模型 https 的內部 CA PEM 放這裡 (見上 SSL_CERT_FILE)。
       - ../../share/pki:/etc/anila/pki:ro
       # JWT 簽章金鑰 (csp 簽 access token + 對 studio 發 JWKS)。正式私鑰

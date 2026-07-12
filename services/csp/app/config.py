@@ -137,6 +137,13 @@ class Settings(BaseSettings):
     # Attachment storage (local filesystem)
     ATTACHMENT_STORAGE_PATH: str = "data/attachments"
 
+    # Gate 2 G11: sealed retrieval payloads.  Formal Compose mounts this
+    # path from the external ANILA state directory; the repository-relative
+    # default is only for dev/TestClient.  Files contain the exact bounded
+    # source slabs sent to the model and therefore must be treated as
+    # classified application data (0700 directory, 0600 files).
+    SOURCE_SNAPSHOT_STORAGE_PATH: str = "data/source-snapshots"
+
     # Auto-register platform links on startup (JSON string)
     # Format: '[{"name":"n8n","url":"http://n8n:5678","icon":"workflow","description":"自動化工作流程"}]'
     AUTO_REGISTER_LINKS: str = ""

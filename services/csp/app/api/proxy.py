@@ -1,11 +1,20 @@
 """OpenAI-compatible API proxy endpoints."""
 import asyncio
+import json
 import logging
+import math
 import time
 from typing import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+)
 from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
@@ -13,6 +22,7 @@ from app.middleware.caller import Caller, get_caller
 from app.models.agent import Agent, UserAgentPermission
 from app.models.conversation import Conversation
 from app.models.model_registry import ModelRegistry
+from app.models.task import Task
 from anila_contracts import Classification as ClassificationLevel
 from app.services import memory_service
 from app.services.api_key_service import check_model_permission, check_agent_permission
@@ -20,6 +30,11 @@ from app.services.auth_service import is_admin_tier
 from app.services.proxy.ceiling import enforce_agent_ceiling, enforce_model_ceiling
 from app.services.proxy.headers import resolve_model_gateway_key
 from app.services.proxy.task_link import begin_task_run, finalize_task_run
+from app.services.retrieval_service import (
+    RetrievalFailure,
+    RetrievalOutcome,
+    retrieve_and_seal,
+)
 from app.services.proxy_service import (
     build_default_anila_meta,
     downstream_identity,
@@ -28,6 +43,170 @@ from app.services.proxy_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _RetrievalExtension(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    collection_id: int = Field(gt=0)
+    top_k: int = Field(default=5, ge=1, le=50)
+    min_score: float = Field(default=0.3, ge=0.0, le=1.0)
+    document_ids: list[int] | None = Field(
+        default=None, min_length=1, max_length=100
+    )
+
+    @field_validator("collection_id", "top_k", mode="before")
+    @classmethod
+    def _strict_integer(cls, value):
+        if type(value) is not int:
+            raise ValueError("must be a JSON integer")
+        return value
+
+    @field_validator("min_score", mode="before")
+    @classmethod
+    def _finite_number(cls, value):
+        if type(value) not in (int, float) or not math.isfinite(float(value)):
+            raise ValueError("must be a finite JSON number")
+        return value
+
+    @field_validator("document_ids", mode="before")
+    @classmethod
+    def _strict_document_ids(cls, value):
+        if value is None:
+            return None
+        if not isinstance(value, list) or any(type(item) is not int for item in value):
+            raise ValueError("must be a JSON integer array")
+        if len(value) != len(set(value)):
+            raise ValueError("document_ids must be unique")
+        return value
+
+
+def _retrieval_wire(outcome: RetrievalOutcome) -> dict:
+    return {
+        "state": outcome.state,
+        "task_id": outcome.task_id,
+        "source_snapshot_id": outcome.source_snapshot_id,
+        "content_hash": outcome.content_hash,
+        "citations": [
+            {
+                "index": citation.index,
+                "chunk_id": citation.chunk_id,
+                "document_id": citation.document_id,
+                "filename": citation.filename,
+                "chunk_key": citation.chunk_key,
+                "excerpt": citation.excerpt,
+                "score": citation.score,
+                "classification_level": citation.classification_level,
+            }
+            for citation in outcome.citations
+        ],
+    }
+
+
+async def _prepend_retrieval_event(
+    stream: AsyncIterator[bytes | str], outcome: RetrievalOutcome | None
+):
+    if outcome is not None:
+        payload = json.dumps(_retrieval_wire(outcome), ensure_ascii=False)
+        yield f"event: anila.retrieval\ndata: {payload}\n\n"
+    async for chunk in stream:
+        yield chunk
+
+
+def _attach_retrieval_meta(
+    payload: dict, outcome: RetrievalOutcome | None
+) -> dict:
+    if outcome is not None:
+        payload["anila_retrieval"] = _retrieval_wire(outcome)
+    return payload
+
+
+async def _prepare_server_retrieval(
+    db: Session,
+    *,
+    user,
+    request_headers,
+    body: dict,
+) -> RetrievalOutcome | None:
+    """Consume the OpenAI-compatible ``anila_retrieval`` extension.
+
+    The query is always derived from the latest user message.  Callers may
+    choose a declared source scope and bounded ranking knobs, but cannot send
+    a second hidden query that would make the sealed evidence diverge from the
+    text actually sent to the model.
+    """
+
+    raw = body.pop("anila_retrieval", None)
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=422, detail="anila_retrieval 必須是物件")
+    raw_task_id = request_headers.get("X-ANILA-Task-Id")
+    if raw_task_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="正式 RAG 必須先建立 Task 並帶 X-ANILA-Task-Id",
+        )
+    try:
+        task_id = int(str(raw_task_id).strip())
+        if task_id <= 0:
+            raise ValueError("task id must be positive")
+        extension = _RetrievalExtension.model_validate(raw)
+    except (TypeError, ValueError, ValidationError):
+        raise HTTPException(status_code=422, detail="RAG scope/排名參數格式錯誤") from None
+    task = db.get(Task, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="RAG Task 不存在")
+    query = _extract_latest_user_message(body)
+    if not query:
+        raise HTTPException(status_code=422, detail="RAG request 缺少 user message")
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        raise HTTPException(status_code=422, detail="messages 必須是陣列")
+    if any(
+        isinstance(message, dict)
+        and message.get("role") in {"system", "developer"}
+        for message in messages
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="正式 RAG 的 system/developer prompt 只能由 CSP 產生",
+        )
+    try:
+        outcome = await retrieve_and_seal(
+            db,
+            user=user,
+            task=task,
+            collection_id=extension.collection_id,
+            query=query,
+            top_k=extension.top_k,
+            min_score=extension.min_score,
+            document_ids=extension.document_ids,
+        )
+    except RetrievalFailure as exc:
+        status_code = {
+            "task_owner_mismatch": 403,
+            "task_scope_mismatch": 403,
+            "clearance_denied": 403,
+            "snapshot_already_sealed": 409,
+            "snapshot_payload_conflict": 409,
+            "collection_unavailable": 409,
+            "snapshot_missing": 409,
+            "snapshot_scope_invalid": 409,
+            "invalid_document_scope": 422,
+            "empty_document_scope": 422,
+            "invalid_query": 422,
+            "invalid_retrieval_bounds": 422,
+        }.get(exc.code, 503)
+        raise HTTPException(
+            status_code=status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    body["messages"] = [
+        {"role": "system", "content": outcome.system_prompt},
+        *messages,
+    ]
+    return outcome
 
 
 def _coerce_conversation_id(raw: str | None) -> int | None:
@@ -494,6 +673,8 @@ async def chat_completions(
     db: Session = Depends(get_db),
 ):
     body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="request body 必須是 JSON object")
     model_name = body.get("model")
     if not model_name:
         raise HTTPException(status_code=400, detail="缺少 model 參數")
@@ -520,6 +701,12 @@ async def chat_completions(
     conv_id_int = _coerce_conversation_id(conversation_id)
     if conv_id_int is not None:
         _require_conversation_access(db, caller, conv_id_int)
+    retrieval_outcome = await _prepare_server_retrieval(
+        db,
+        user=user,
+        request_headers=request.headers,
+        body=body,
+    )
     memory_read = await _inject_memory(
         db,
         user.id,
@@ -664,7 +851,7 @@ async def chat_completions(
                 ),
             )
             return StreamingResponse(
-                teed,
+                _prepend_retrieval_event(teed, retrieval_outcome),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
@@ -732,7 +919,7 @@ async def chat_completions(
                 # usage row — orthogonal pre-existing gap, see above.)
                 if task_ctx is not None:
                     finalize_task_run(task_ctx.task_run_id, "completed")
-                return payload
+                return _attach_retrieval_meta(payload, retrieval_outcome)
         except httpx.HTTPStatusError as e:
             if task_ctx is not None:
                 finalize_task_run(
@@ -835,7 +1022,7 @@ async def chat_completions(
             ),
         )
         return StreamingResponse(
-            teed,
+            _prepend_retrieval_event(teed, retrieval_outcome),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -867,7 +1054,7 @@ async def chat_completions(
         assistant_message=assistant_text,
         is_encrypted=inherited_encryption,
     )
-    return payload
+    return _attach_retrieval_meta(payload, retrieval_outcome)
 
 
 @router.post("/v1/agents/{agent_name}/sessions/{session_id}/answer")

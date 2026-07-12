@@ -19,8 +19,12 @@ import {
   getConversation,
   updateConversationTitle,
 } from '../api/conversations'
-import { chatStream, type ChatMessage } from '../api/chat'
-import { searchCollection, type SearchHit } from '../api/search'
+import {
+  chatStream,
+  type ChatMessage,
+  type RetrievalEvent,
+} from '../api/chat'
+import { createQueryTask } from '../api/tasks'
 import { explainError } from '../api/client'
 import type { Message } from '../types'
 
@@ -38,22 +42,6 @@ const DEFAULT_MODEL = (import.meta.env.VITE_DEFAULT_CHAT_MODEL as string | undef
 // attention. Dial up if users complain "the model didn't see X".
 const RAG_TOP_K = 5
 const RAG_MIN_SCORE = 0.3
-// Trim chunk content before injection so a single 8KB chunk doesn't
-// monopolise the prompt window. The model still gets enough to ground;
-// users who want the full text click the citation card to drill in.
-const RAG_CONTENT_LIMIT = 1200
-
-// Hard language directive prepended to every system prompt. Placed first so
-// it dominates any later instructions; covers the common drift modes
-// (English fallback, simplified-zh from quoted source material).
-const ZHTW_DIRECTIVE = [
-  '【語言規則・最高優先】',
-  '- 一律以繁體中文（zh-TW，台灣慣用語）回答。',
-  '- 即使使用者以英文、簡體中文、日文或其他語言提問，仍以繁體中文回答。',
-  '- 程式碼、API 名稱、技術專有名詞可保留原文，說明文字一律使用繁體中文。',
-  '- 引用簡體中文原文時，請於引用後加上繁體中文翻譯或對照。',
-  '- 絕不在輸出中混用簡體字。',
-].join('\n')
 
 interface WSChatProps {
   flex: number
@@ -67,6 +55,7 @@ interface Citation {
   chunk_key: string
   excerpt: string
   score: number
+  classification_level?: string
 }
 
 interface ChatRow {
@@ -154,77 +143,6 @@ export function WSChat({ flex }: WSChatProps) {
     return stored?.title ?? '新對話'
   }, [activeConversationId, conversations])
 
-  /**
-   * Build the system prompt for a turn given retrieved hits.
-   *
-   * Three modes:
-   *   1. No indexed docs at all → "free-form chat" prompt.
-   *   2. Indexed docs but query returned no hits above min-score →
-   *      "you have docs but this query didn't match" prompt.
-   *   3. Hits available → standard RAG prompt with [N] citation markers
-   *      and trimmed content slabs.
-   *
-   * The model is told to cite as `[N]` and only use the supplied chunks.
-   * The citation cards in the UI map [N] → filename + chunk_key so the
-   * user can verify provenance.
-   */
-  const buildSystemPrompt = useCallback(
-    (hits: SearchHit[]): string => {
-      const indexedCount = docs.filter((d) => d.doc.status === 'indexed').length
-      const collName = collection?.name ?? '未指定'
-
-      if (indexedCount === 0) {
-        return [
-          ZHTW_DIRECTIVE,
-          '你是 ANILA LM 的研究助理。',
-          `知識庫名稱：「${collName}」。`,
-          '使用者尚未上傳已完成索引的文件，請依使用者輸入直接作答，',
-          '並提醒可上傳資料以獲得引用支撐的回答。',
-        ].join('\n')
-      }
-
-      if (hits.length === 0) {
-        return [
-          ZHTW_DIRECTIVE,
-          '你是 ANILA LM 的研究助理。',
-          `當前知識庫：「${collName}」（共 ${indexedCount} 份已索引文件）。`,
-          '本次查詢在向量檢索中沒有命中相似度 ≥ 0.3 的段落。請：',
-          '1) 先告知使用者「已搜尋但無高相似度命中」，',
-          '2) 依你領域知識先給出嘗試性回答，並標註此回答未經文件支撐，',
-          '3) 建議使用者改寫問題或上傳更相關文件。',
-        ].join('\n')
-      }
-
-      const chunkBlock = hits
-        .map((h, i) => {
-          const n = i + 1
-          const trimmed =
-            h.content.length > RAG_CONTENT_LIMIT
-              ? h.content.slice(0, RAG_CONTENT_LIMIT) + '…'
-              : h.content
-          return `[${n}] 來源：${h.filename}（chunk ${h.chunk_key}，相似度 ${h.score.toFixed(3)}）\n${trimmed}`
-        })
-        .join('\n\n')
-
-      return [
-        ZHTW_DIRECTIVE,
-        '你是 ANILA LM 的研究助理，以使用者知識庫的段落為依據作答。',
-        `當前知識庫：「${collName}」。`,
-        '',
-        '以下是針對本次提問檢索到的相關段落（已依相似度排序）：',
-        '',
-        chunkBlock,
-        '',
-        '回答規則：',
-        `1) 僅根據上方 ${hits.length} 個段落作答；不要編造段落中沒有的資訊。`,
-        '2) 引用時用 [N] 標號（例如：「依據 [1]，...」），N 對應上方段落編號。',
-        '3) 段落不足以回答時，明確說「目前段落沒有提供 X 資訊」，不要硬湊。',
-        '4) 如使用者問的是檔案結構、條目順序之類的整體性問題，可彙整多個段落並交叉引用。',
-      ].join('\n')
-    },
-    [collection?.name, docs],
-  )
-
   // textOverride:代發來源(如心智圖節點點擊)直接帶問題文字進來,
   // 不經 composer state — 避免 setState 後同 tick 讀不到的競態。
   const send = useCallback(async (textOverride?: string) => {
@@ -280,44 +198,23 @@ export function WSChat({ flex }: WSChatProps) {
       // stop button can interrupt search OR streaming OR persistence.
       abortRef.current = new AbortController()
 
-      // 3) Retrieve top-K chunks for grounding. Skip if no indexed docs;
-      // fall through to "free-form chat" prompt. Search failures are
-      // soft — log but proceed with empty hits so a temporarily down
-      // embedding service doesn't block chat entirely.
-      const indexedDocs = docs.filter((d) => d.doc.status === 'indexed')
-      let hits: SearchHit[] = []
-      if (indexedDocs.length > 0) {
-        try {
-          const { data } = await searchCollection(collection.id, text, {
-            topK: RAG_TOP_K,
-            minScore: RAG_MIN_SCORE,
-            signal: abortRef.current.signal,
-          })
-          hits = data.results
-        } catch (searchErr) {
-          // eslint-disable-next-line no-console
-          console.warn('[anilalm] search failed, falling back to no-RAG mode', searchErr)
-        }
-      }
+      // 3) Create the mandatory governance Task.  Gate 2 deliberately has no
+      // taskless/browser-RAG fallback: failure here stops the turn.
+      const task = await createQueryTask({
+        title: text.length > 120 ? `${text.slice(0, 120)}…` : text,
+        collectionId: collection.id,
+        conversationId: convId,
+      })
+      let citations: Citation[] = []
+      let retrievalEvent: RetrievalEvent | undefined
 
-      const citations: Citation[] = hits.map((h, i) => ({
-        index: i + 1,
-        chunk_id: h.chunk_id,
-        document_id: h.document_id,
-        filename: h.filename,
-        chunk_key: h.chunk_key,
-        excerpt: h.content.slice(0, 240),
-        score: h.score,
-      }))
-
-      // Build LLM request: full chat history + the new user turn,
-      // prefixed with the retrieval-aware system prompt.
+      // The browser sends only conversation text and source scope. CSP owns
+      // embedding, ranking, prompt assembly, snapshot sealing and citations.
       const history: ChatMessage[] = messages.map((m) => ({
         role: m.role,
         content: m.content,
       }))
       const llmMessages: ChatMessage[] = [
-        { role: 'system', content: buildSystemPrompt(hits) },
         ...history,
         { role: 'user', content: text },
       ]
@@ -330,6 +227,13 @@ export function WSChat({ flex }: WSChatProps) {
           messages: llmMessages,
           temperature: 0.4,
           conversationId: convId,
+          taskId: task.taskId,
+          traceId: task.traceId,
+          retrieval: {
+            collectionId: collection.id,
+            topK: RAG_TOP_K,
+            minScore: RAG_MIN_SCORE,
+          },
         },
         (_delta, accumulated) => {
           setMessages((prev) =>
@@ -341,6 +245,17 @@ export function WSChat({ flex }: WSChatProps) {
           )
         },
         abortRef.current.signal,
+        (event) => {
+          retrievalEvent = event
+          citations = event.citations.map((citation) => ({ ...citation }))
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === tempAssistantId
+                ? { ...message, citations: citations.length > 0 ? citations : undefined }
+                : message,
+            ),
+          )
+        },
       )
       const latency = Math.round(performance.now() - t0)
 
@@ -351,7 +266,12 @@ export function WSChat({ flex }: WSChatProps) {
         content: finalText,
         latency_ms: latency,
         model_name: DEFAULT_MODEL,
-        metadata: citations.length > 0 ? { citations } : undefined,
+        metadata: {
+          citations,
+          retrieval: retrievalEvent,
+          task_id: Number(task.taskId),
+          source_snapshot_id: Number(task.sourceSnapshotId),
+        },
       })
 
       setMessages((prev) =>
@@ -394,7 +314,6 @@ export function WSChat({ flex }: WSChatProps) {
     collection,
     activeConversationId,
     messages,
-    buildSystemPrompt,
     upsertConversation,
     setActiveConversationId,
     navigate,

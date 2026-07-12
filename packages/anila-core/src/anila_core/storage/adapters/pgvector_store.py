@@ -57,6 +57,17 @@ def _classification_storage_value(classification: Classification) -> str:
     return classification.to_storage()
 
 
+def _classification_values_at_or_below(
+    ceiling: Classification,
+) -> list[str]:
+    _classification_storage_value(ceiling)
+    return [
+        level.to_storage()
+        for level in Classification
+        if level <= ceiling
+    ]
+
+
 def _classification_from_storage(*, field: str, raw: object) -> Classification:
     """Parse trusted DB state without ever defaulting an invalid value low."""
     if not isinstance(raw, str):
@@ -412,6 +423,129 @@ class CollectionScopedPgVectorStore:
             await self._attach_parent_content(conn, hits)
         return hits
 
+    async def similarity_search_scoped_documents(
+        self,
+        query_embedding: list[float],
+        document_ids: list[int],
+        top_k: int = 10,
+        min_score: float = 0.0,
+        *,
+        classification_ceiling: Classification,
+    ) -> list[SearchHit]:
+        """Global top-k constrained to an authoritative document allow-list.
+
+        Clearance evaluation happens in CSP against persisted grants and
+        compartments.  This storage boundary consumes only the resulting
+        positive document IDs and applies them in SQL *before* ranking; it
+        never accepts a caller-supplied clearance level or performs a
+        post-filter that could widen scope.
+        """
+
+        if top_k <= 0 or not document_ids:
+            return []
+        if any(
+            not isinstance(document_id, int)
+            or isinstance(document_id, bool)
+            or document_id <= 0
+            for document_id in document_ids
+        ) or len(document_ids) != len(set(document_ids)):
+            raise ValueError("document_ids must be unique positive integers")
+
+        query = HalfVector(query_embedding)
+        allowed_levels = _classification_values_at_or_below(
+            classification_ceiling
+        )
+        sql = """
+            SELECT id, collection_id, document_id, chunk_key,
+                   content, metadata, token_count, created_at,
+                   parent_chunk_id, chunk_type, chunk_level,
+                   classification_level, classification_latched_at,
+                   classification_source,
+                   1 - (embedding <=> $1) AS score
+              FROM document_chunks
+             WHERE chunk_type = 'leaf'
+               AND document_id = ANY($2::bigint[])
+               AND classification_level = ANY($3::text[])
+               AND 1 - (embedding <=> $1) >= $4
+             ORDER BY embedding <=> $1
+             LIMIT $5
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                sql,
+                query,
+                document_ids,
+                allowed_levels,
+                min_score,
+                top_k,
+            )
+            hits = [self._row_to_search_hit(row) for row in rows]
+            await self._attach_parent_content(
+                conn, hits, classification_ceiling=classification_ceiling
+            )
+        return hits
+
+    async def similarity_search_per_document_authorized(
+        self,
+        query_embedding: list[float],
+        document_ids: list[int],
+        *,
+        classification_ceiling: Classification,
+        k: int = 1,
+        min_score: float = 0.0,
+    ) -> list[SearchHit]:
+        """Per-document ranking with a canonical chunk-level ceiling."""
+
+        if k <= 0 or not document_ids:
+            return []
+        if any(
+            not isinstance(document_id, int)
+            or isinstance(document_id, bool)
+            or document_id <= 0
+            for document_id in document_ids
+        ) or len(document_ids) != len(set(document_ids)):
+            raise ValueError("document_ids must be unique positive integers")
+        query = HalfVector(query_embedding)
+        allowed_levels = _classification_values_at_or_below(
+            classification_ceiling
+        )
+        sql = """
+            WITH ranked AS (
+                SELECT id, collection_id, document_id, chunk_key,
+                       content, metadata, token_count, created_at,
+                       parent_chunk_id, chunk_type, chunk_level,
+                       classification_level, classification_latched_at,
+                       classification_source,
+                       1 - (embedding <=> $1) AS score,
+                       RANK() OVER (
+                           PARTITION BY document_id
+                           ORDER BY embedding <=> $1
+                       ) AS rnk
+                  FROM document_chunks
+                 WHERE chunk_type = 'leaf'
+                   AND document_id = ANY($2::bigint[])
+                   AND classification_level = ANY($3::text[])
+                   AND 1 - (embedding <=> $1) >= $4
+            )
+            SELECT * FROM ranked
+             WHERE rnk <= $5
+             ORDER BY document_id, rnk
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                sql,
+                query,
+                document_ids,
+                allowed_levels,
+                min_score,
+                k,
+            )
+            hits = [self._row_to_search_hit(row) for row in rows]
+            await self._attach_parent_content(
+                conn, hits, classification_ceiling=classification_ceiling
+            )
+        return hits
+
     async def add_parent_chunks(
         self,
         document_id: int,
@@ -486,6 +620,136 @@ class CollectionScopedPgVectorStore:
             ) from e
         return out
 
+    async def replace_document_chunks(
+        self,
+        document_id: int,
+        *,
+        parent_chunks: list[ChunkResult],
+        leaf_chunks: list[ChunkResult],
+        embeddings: list[list[float]],
+        classification_level: Classification,
+    ) -> int:
+        """Atomically replace every indexed chunk for one document.
+
+        Re-indexing used to commit parents and leaves in separate
+        transactions.  A leaf insert failure therefore left partial parents,
+        and the next retry collided with the document/chunk-key uniqueness
+        constraint.  This boundary locks the current classification sources,
+        deletes the previous generation, inserts parents, resolves their IDs,
+        and inserts leaves in one transaction.  Any exception restores the
+        complete prior generation.
+        """
+
+        _classification_storage_value(classification_level)
+        if len(leaf_chunks) != len(embeddings):
+            raise ValueError(
+                "replace_document_chunks: got "
+                f"{len(leaf_chunks)} leaf chunks but {len(embeddings)} "
+                "embeddings; counts must match"
+            )
+
+        all_keys = [chunk.chunk_key for chunk in (*parent_chunks, *leaf_chunks)]
+        if len(all_keys) != len(set(all_keys)):
+            raise ValueError("replace_document_chunks: duplicate chunk_key")
+
+        parent_keys = {chunk.chunk_key for chunk in parent_chunks}
+        for leaf in leaf_chunks:
+            metadata = leaf.metadata or {}
+            parent_key = metadata.get("parent_chunk_key")
+            if parent_key is not None and parent_key not in parent_keys:
+                raise ValueError(
+                    "replace_document_chunks: leaf references an unknown "
+                    f"parent_chunk_key {parent_key!r}"
+                )
+
+        parent_sql = """
+            INSERT INTO document_chunks
+                (collection_id, document_id, chunk_key,
+                 content, content_tsv, embedding, metadata, token_count,
+                 chunk_type, chunk_level, parent_chunk_id,
+                 classification_level, classification_latched_at,
+                 classification_source)
+            VALUES
+                ($1, $2, $3, $4,
+                 to_tsvector('simple', $4),
+                 NULL, $5, $6, $7, $8, NULL,
+                 $9, CURRENT_TIMESTAMP, $10)
+            RETURNING id, chunk_key
+        """
+        leaf_sql = """
+            INSERT INTO document_chunks
+                (collection_id, document_id, chunk_key,
+                 content, content_tsv, embedding, metadata, token_count,
+                 chunk_type, chunk_level, parent_chunk_id,
+                 classification_level, classification_latched_at,
+                 classification_source)
+            VALUES
+                ($1, $2, $3, $4,
+                 to_tsvector('simple', $4),
+                 $5, $6, $7, $8, $9, $10,
+                 $11, CURRENT_TIMESTAMP, $12)
+        """
+
+        try:
+            async with self._acquire() as conn:
+                effective = await self._resolve_write_classification(
+                    conn,
+                    document_id=document_id,
+                    caller_floor=classification_level,
+                )
+                classification_value = effective.to_storage()
+                await conn.execute(
+                    "DELETE FROM document_chunks WHERE document_id = $1",
+                    document_id,
+                )
+
+                parent_id_map: dict[str, int] = {}
+                for chunk in parent_chunks:
+                    metadata = chunk.metadata or {}
+                    row = await conn.fetchrow(
+                        parent_sql,
+                        self._collection_id,
+                        document_id,
+                        chunk.chunk_key,
+                        chunk.content,
+                        metadata,
+                        chunk.token_count,
+                        metadata.get("chunk_type", "heading"),
+                        int(metadata.get("chunk_level", 0)),
+                        classification_value,
+                        _INGESTION_CLASSIFICATION_SOURCE,
+                    )
+                    parent_id_map[str(row["chunk_key"])] = int(row["id"])
+
+                leaf_rows: list[tuple] = []
+                for chunk, embedding in zip(leaf_chunks, embeddings):
+                    metadata = chunk.metadata or {}
+                    parent_key = metadata.get("parent_chunk_key")
+                    leaf_rows.append(
+                        (
+                            self._collection_id,
+                            document_id,
+                            chunk.chunk_key,
+                            chunk.content,
+                            HalfVector(embedding),
+                            metadata,
+                            chunk.token_count,
+                            metadata.get("chunk_type", "leaf"),
+                            int(metadata.get("chunk_level", 0)),
+                            parent_id_map.get(parent_key),
+                            classification_value,
+                            _INGESTION_CLASSIFICATION_SOURCE,
+                        )
+                    )
+                if leaf_rows:
+                    await conn.executemany(leaf_sql, leaf_rows)
+        except asyncpg.ConnectionDoesNotExistError as exc:
+            raise StoreError.pg_connect(
+                user_message="資料庫連線中斷，請稍後再試",
+                details={"cause": type(exc).__name__},
+            ) from exc
+        return len(parent_chunks) + len(leaf_chunks)
+
     async def keyword_search(
         self,
         query: str,
@@ -542,6 +806,8 @@ class CollectionScopedPgVectorStore:
         self,
         conn,
         hits: list,
+        *,
+        classification_ceiling: Classification | None = None,
     ) -> None:
         """Sprint 9 X — fill ``hit.parent_content`` from the parent row's content.
 
@@ -559,16 +825,30 @@ class CollectionScopedPgVectorStore:
         }
         if not parent_ids:
             return
-        rows = await conn.fetch(
-            """
+        if classification_ceiling is None:
+            rows = await conn.fetch(
+                """
             SELECT id, content, classification_level
               FROM document_chunks
              WHERE id = ANY($1::bigint[])
                AND collection_id = $2
-            """,
-            list(parent_ids),
-            self._collection_id,
-        )
+                """,
+                list(parent_ids),
+                self._collection_id,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT id, content, classification_level
+                  FROM document_chunks
+                 WHERE id = ANY($1::bigint[])
+                   AND collection_id = $2
+                   AND classification_level = ANY($3::text[])
+                """,
+                list(parent_ids),
+                self._collection_id,
+                _classification_values_at_or_below(classification_ceiling),
+            )
         # A malformed parent must block retrieval too. Returning its content
         # while validating only the matched leaf would be a fail-open path.
         for row in rows:

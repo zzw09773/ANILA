@@ -112,6 +112,7 @@ services:
       ANILA_TEMPLATE_DIR: /app/anila-template
       INGESTION_UPLOAD_DIR: /var/anila/ingestion-uploads
       ATTACHMENT_STORAGE_PATH: /var/anila/attachments
+      SOURCE_SNAPSHOT_STORAGE_PATH: /var/lib/anila/source-snapshots
       # FLUX image-gen for ANILALM studio pptx pipeline — wires
       # studio.image_provider.FluxImageProvider; empty BACKEND_URL
       # would make get_flux_provider() return None (toggle OFF).
@@ -126,6 +127,7 @@ services:
       # get a root-owned bind directory that blocks non-root CSP uploads.
       - ingestion-uploads-dev:/var/anila/ingestion-uploads
       - csp-attachments-dev:/var/anila/attachments
+      - csp-source-snapshots-dev:/var/lib/anila/source-snapshots
       - csp-secrets-dev:/app/secrets
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -397,6 +399,7 @@ volumes:
   redis-data-dev:
   ingestion-uploads-dev:
   csp-attachments-dev:
+  csp-source-snapshots-dev:
   csp-secrets-dev:
   anila-studio-flux-cache-dev:
   anila-studio-artifacts-dev:
