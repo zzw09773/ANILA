@@ -3,6 +3,7 @@ name: Gate 0 security
 on:
   pull_request:
     branches:
+      - main
       - prod-intranet-card
   workflow_dispatch:
 

@@ -38,10 +38,14 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install governance test dependency
+        run: python -m pip install pytest
+
       - name: Validate F1/F3 suite and quarantine registry
         run: |
           python infra/ci/check_gate1_test_governance.py
           python -m unittest discover -s infra/ci/tests -v
+          python -m pytest infra/ci/test_lint_zh_tw.py -q
 
       - name: Test capability-freeze policy
         run: python -m unittest infra.policy.tests.test_gate1_capability_freeze -v
