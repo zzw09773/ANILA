@@ -50,6 +50,13 @@ def _files(tmp_path, *, overrides=None, same_key: bool = False):
         "retention_days": 30,
         "withdrawal_procedure": "revoke profile",
         "collection_ids": [1],
+        "allowed_targets": [{
+            "callsite": "csp.chat_model",
+            "name": "synthetic-llm",
+            "model_type": "llm",
+            "endpoint_url": "http://synthetic-llm:8000",
+            "classification_ceiling": "營業秘密",
+        }],
         "valid_from": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
         "valid_until": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
     }
@@ -79,13 +86,24 @@ def _files(tmp_path, *, overrides=None, same_key: bool = False):
 
 def test_four_role_signature_and_inventory_binding(tmp_path) -> None:
     profile, inventory, trust = _files(tmp_path)
-    assert verify_signed_pilot_profile(
+    admission = verify_signed_pilot_profile(
         profile_path=profile, inventory_path=inventory, trust_store_path=trust
-    ) == frozenset({"csp.chat_model"})
+    )
+    assert admission.enabled_callsites == frozenset({"csp.chat_model"})
+    assert admission.collection_ids == frozenset({1})
+    assert admission.data_classification_ceiling == "營業秘密"
+    assert admission.target_allowed(
+        callsite="csp.chat_model",
+        name="synthetic-llm",
+        model_type="llm",
+        endpoint_url="http://synthetic-llm:8000",
+        classification_ceiling="營業秘密",
+    )
 
     value = json.loads(profile.read_text())
     value["enabled_callsites"] = ["bare.model"]
     value["disabled_callsites"] = ["csp.chat_model"]
+    value["allowed_targets"][0]["callsite"] = "bare.model"
     profile.write_text(json.dumps(value), encoding="utf-8")
     with pytest.raises(PilotProfileError, match="unconverged"):
         verify_signed_pilot_profile(
@@ -101,6 +119,12 @@ def test_four_role_signature_and_inventory_binding(tmp_path) -> None:
         ({"data_classification_ceiling": "機密"}, "classification"),
         ({"disabled_callsites": ["bare.model", "bare.model"]}, "duplicates"),
         ({"collection_ids": [1, 1]}, "collection_ids"),
+        ({"allowed_targets": []}, "missing exact allowed targets"),
+        ({"allowed_targets": [{
+            "callsite": "csp.chat_model", "name": "synthetic-llm",
+            "model_type": "agent", "endpoint_url": "http://agent:8000",
+            "classification_ceiling": "營業秘密",
+        }]}, "model_type"),
         ({"valid_until": "2000-01-01T00:00:00Z"}, "effective"),
     ],
 )

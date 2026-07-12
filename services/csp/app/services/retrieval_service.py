@@ -30,6 +30,7 @@ import tempfile
 from typing import Any, Sequence
 
 from sqlalchemy.orm import Session
+from fastapi import HTTPException
 
 from anila_contracts import Classification
 from anila_core.storage.adapters.pgvector_store import (
@@ -37,6 +38,8 @@ from anila_core.storage.adapters.pgvector_store import (
 )
 
 from app.config import settings
+from app.database import SessionLocal
+from app.middleware.caller import Caller
 from app.models.ingestion import IngestionCollection, IngestionDocument
 from app.models.model_registry import ModelRegistry
 from app.models.source_snapshot import Citation, SourceSnapshot
@@ -47,6 +50,8 @@ from app.modules.clearance.service import (
     resolve_and_evaluate_data_access,
 )
 from app.services.ingestion_pool import get_pool
+from app.services.proxy.ceiling import enforce_model_ceiling
+from app.services.proxy.task_link import TaskRunContext
 from app.services.proxy_service import (
     downstream_identity,
     proxy_request,
@@ -204,6 +209,8 @@ async def embed_query(
     query: str,
     *,
     inference_callsite_id: str = "csp.server_retrieval_embedding",
+    task_ctx: TaskRunContext | None = None,
+    trusted_classification_level: str | Classification | None = None,
 ) -> list[float]:
     """Embed a retrieval query through the metered CSP model gateway."""
 
@@ -213,7 +220,27 @@ async def embed_query(
             "embedding_model_unavailable",
             f"檢索模型 {model_name!r} 未註冊或未啟用",
         )
+    policy_db = SessionLocal()
+    governance_db = SessionLocal()
     try:
+        policy_user = policy_db.get(User, user.id)
+        policy_model = policy_db.get(ModelRegistry, model.id)
+        if policy_user is None or policy_model is None:
+            raise RetrievalFailure(
+                "embedding_policy_subject_missing",
+                "檢索 embedding 的治理主體不存在",
+            )
+        admitted_level = enforce_model_ceiling(
+            policy_db,
+            model=policy_model,
+            caller=Caller(user=policy_user, api_key_id=None),
+            task_ctx=task_ctx,
+            conv_id_int=None,
+            trusted_classification_level=trusted_classification_level,
+            require_explicit_authority=(
+                task_ctx is not None or trusted_classification_level is not None
+            ),
+        )
         response = await proxy_request(
             model=model,
             api_key_id=None,
@@ -222,15 +249,32 @@ async def embed_query(
             department_id=user.department_id,
             request_body={"model": model_name, "input": query},
             endpoint_path="/v1/embeddings",
+            task_id=task_ctx.task_id if task_ctx else None,
+            task_trace_id=task_ctx.trace_id if task_ctx else None,
+            task_run_id=task_ctx.task_run_id if task_ctx else None,
+            legacy_runtime_call=task_ctx is None,
             inference_callsite_id=inference_callsite_id,
+            governance_db=governance_db,
+            admitted_classification_level=admitted_level,
+            finalize_task_run_on_completion=False,
         )
         raw_vector = response["data"][0]["embedding"]
     except RetrievalFailure:
         raise
+    except HTTPException as exc:
+        raise RetrievalFailure(
+            "embedding_policy_denied"
+            if exc.status_code == 403
+            else "embedding_admission_failed",
+            "檢索 embedding 未通過模型治理 admission",
+        ) from exc
     except Exception as exc:
         raise RetrievalFailure(
             "embedding_failed", "檢索查詢向量化失敗"
         ) from exc
+    finally:
+        policy_db.close()
+        governance_db.close()
     if not isinstance(raw_vector, list) or not all(
         isinstance(value, (int, float)) and not isinstance(value, bool)
         for value in raw_vector
@@ -431,6 +475,7 @@ async def retrieve_and_seal(
     min_score: float = 0.3,
     document_ids: Sequence[int] | None = None,
     used_by: str = "answer",
+    task_ctx: TaskRunContext | None = None,
 ) -> RetrievalOutcome:
     """Run one governed retrieval and irreversibly seal the Task snapshot."""
 
@@ -487,6 +532,8 @@ async def retrieve_and_seal(
             collection.embedding_model,
             collection.embedding_dim,
             query.strip(),
+            task_ctx=task_ctx,
+            trusted_classification_level=task.classification_level,
         )
         try:
             store = CollectionScopedPgVectorStore(

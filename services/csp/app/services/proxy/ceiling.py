@@ -203,6 +203,7 @@ def _enforce_ceiling(
                 task_id=task_id,
                 reason=reason,
                 metadata={"classification_state": type(raw_ceiling).__name__},
+                commit=commit,
             )
         raise HTTPException(status_code=403, detail=reason) from exc
 
@@ -237,6 +238,7 @@ def _enforce_ceiling(
                 actor_id=actor_id,
                 task_id=task_id,
                 reason=reason,
+                commit=commit,
             )
         raise HTTPException(status_code=403, detail=reason)
 

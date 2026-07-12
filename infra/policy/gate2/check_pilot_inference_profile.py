@@ -17,6 +17,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 REQUIRED_SIGNERS = {"system_owner", "data_owner", "pki_owner", "security"}
 REQUIRED_DISABLED = {
@@ -31,6 +32,13 @@ class PilotPolicyError(RuntimeError):
 
 _PROFILE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
 _PILOT_CEILINGS = {"無機密", "營業秘密"}
+_TARGET_CEILINGS = {"無機密", "營業秘密", "機密", "極機密"}
+_TARGET_TYPES_BY_CALLSITE = {
+    "csp.chat_model": {"llm"},
+    "csp.server_retrieval_embedding": {"embedding"},
+    "csp.memory_extract": {"llm"},
+    "csp.memory_embedding": {"embedding"},
+}
 
 
 def _unique_nonempty_strings(value: Any, field: str) -> list[str]:
@@ -63,6 +71,66 @@ def _aware_rfc3339(value: Any, field: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _validate_allowed_targets(
+    value: Any, *, enabled_callsites: set[str], pilot_enabled: bool,
+) -> None:
+    if not isinstance(value, list):
+        raise PilotPolicyError("allowed_targets must be a list")
+    if not pilot_enabled:
+        if value:
+            raise PilotPolicyError("disabled template cannot authorize targets")
+        return
+    seen: set[tuple[str, str]] = set()
+    covered: set[str] = set()
+    required_keys = {
+        "callsite", "name", "model_type", "endpoint_url",
+        "classification_ceiling",
+    }
+    for target in value:
+        if not isinstance(target, dict) or set(target) != required_keys:
+            raise PilotPolicyError("allowed target has unknown or missing fields")
+        callsite = target.get("callsite")
+        name = target.get("name")
+        model_type = target.get("model_type")
+        endpoint_url = target.get("endpoint_url")
+        if callsite not in enabled_callsites:
+            raise PilotPolicyError("allowed target callsite is not enabled")
+        if not isinstance(name, str) or not name or name != name.strip() or len(name) > 200:
+            raise PilotPolicyError("allowed target name is invalid")
+        allowed_types = _TARGET_TYPES_BY_CALLSITE.get(callsite)
+        if (
+            not isinstance(model_type, str)
+            or not model_type.strip()
+            or (allowed_types is not None and model_type not in allowed_types)
+        ):
+            raise PilotPolicyError("allowed target model_type does not match callsite")
+        if target.get("classification_ceiling") not in _TARGET_CEILINGS:
+            raise PilotPolicyError("allowed target classification_ceiling is invalid")
+        if (
+            not isinstance(endpoint_url, str)
+            or not endpoint_url
+            or endpoint_url != endpoint_url.strip()
+        ):
+            raise PilotPolicyError("allowed target endpoint_url is invalid")
+        parsed = urlsplit(endpoint_url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise PilotPolicyError("allowed target endpoint_url must be an absolute base URL")
+        key = (callsite, name)
+        if key in seen:
+            raise PilotPolicyError("allowed target callsite/name is duplicated")
+        seen.add(key)
+        covered.add(callsite)
+    if covered != enabled_callsites:
+        raise PilotPolicyError("enabled callsites missing exact allowed targets")
+
+
 def _validate_profile_contract(profile: dict[str, Any]) -> tuple[list[str], list[str]]:
     if not isinstance(profile.get("pilot_enabled"), bool):
         raise PilotPolicyError("pilot_enabled must be boolean")
@@ -84,6 +152,11 @@ def _validate_profile_contract(profile: dict[str, Any]) -> tuple[list[str], list
         profile.get("disabled_capabilities"), "disabled_capabilities"
     )
     if not profile["pilot_enabled"]:
+        _validate_allowed_targets(
+            profile.get("allowed_targets"),
+            enabled_callsites=set(enabled),
+            pilot_enabled=False,
+        )
         return enabled, disabled
     _bounded_int(
         profile.get("revocation_sla_seconds"),
@@ -121,6 +194,11 @@ def _validate_profile_contract(profile: dict[str, Any]) -> tuple[list[str], list
         raise PilotPolicyError("pilot profile is not currently effective")
     if valid_until <= valid_from or (valid_until - valid_from).total_seconds() > 180 * 86400:
         raise PilotPolicyError("pilot validity interval is invalid or too long")
+    _validate_allowed_targets(
+        profile.get("allowed_targets"),
+        enabled_callsites=set(enabled),
+        pilot_enabled=True,
+    )
     return enabled, disabled
 
 
@@ -250,6 +328,8 @@ def verify(
         raise PilotPolicyError("worker unconverged-inference flag is not hard false")
     if 'ENABLE_PILOT_PROMPT_GENERATOR: "false"' not in pilot_compose:
         raise PilotPolicyError("CSP prompt-generator flag is not hard false")
+    if 'ENABLE_MEMORY: "false"' not in pilot_compose:
+        raise PilotPolicyError("post-turn memory inference is not hard disabled")
     if 'ENABLE_IMAGE_CAPTIONS: "false"' not in pilot_compose:
         raise PilotPolicyError("ingestion VLM caption callsite is not hard false")
     for service_profile in (

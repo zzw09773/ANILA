@@ -196,6 +196,17 @@ def _utcnow() -> datetime:
 
 def _resolve_resource(db: Session, resource_type: str, resource_id: str):
     """派發 + 取列;未知型別 / 非整數 id / 查無列 一律 ValueError。"""
+    model, pk = _resolve_resource_identity(resource_type, resource_id)
+    row = db.get(model, pk)
+    if row is None:
+        raise ValueError(
+            f"找不到分類資源 {resource_type}#{resource_id}(fail-closed)"
+        )
+    return row
+
+
+def _resolve_resource_identity(resource_type: str, resource_id: str):
+    """驗證分類資源型別與主鍵，供 read / locked mutation 共用。"""
     model = _RESOURCE_MODELS.get(resource_type)
     if model is None:
         raise ValueError(
@@ -208,7 +219,28 @@ def _resolve_resource(db: Session, resource_type: str, resource_id: str):
         raise ValueError(
             f"分類資源 id 必須是整數字串,實得 {resource_id!r}"
         ) from None
-    row = db.get(model, pk)
+    return model, pk
+
+
+def _resolve_resource_for_update(
+    db: Session, resource_type: str, resource_id: str
+):
+    """鎖住並強制重讀分類資源，避免 identity-map stale lost update。
+
+    ``populate_existing`` 是安全不變量的一部分：呼叫者可能在同一
+    Session 先讀過資源；單純 ``db.get`` 會直接回 identity map 的舊值，
+    即使 PostgreSQL 已讓另一交易完成更高分類，也可能以舊 current 覆寫。
+    mutation path 一律在 ``SELECT ... FOR UPDATE`` 取得列鎖後覆寫現存 ORM
+    狀態，再計算 monotonic max。
+    """
+    model, pk = _resolve_resource_identity(resource_type, resource_id)
+    row = (
+        db.query(model)
+        .populate_existing()
+        .filter(model.id == pk)
+        .with_for_update()
+        .one_or_none()
+    )
     if row is None:
         raise ValueError(
             f"找不到分類資源 {resource_type}#{resource_id}(fail-closed)"
@@ -305,7 +337,7 @@ def apply_classification(
         "actor_type", actor_type, PolicyActorType
     )
     target = ClassificationLevel.from_storage(new_level)
-    row = _resolve_resource(db, resource_type, resource_id)
+    row = _resolve_resource_for_update(db, resource_type, resource_id)
 
     current = ClassificationLevel.from_storage(row.classification_level)
     effective = ClassificationLevel.max_of([current, target])
@@ -396,9 +428,10 @@ def create_declassification_request(
             f"user#{requested_by_admin_id} 不具 Admin 角色"
         )
     target = ClassificationLevel.from_storage(to_level)
-    current = effective_level(
+    row = _resolve_resource_for_update(
         db, resource_type=resource_type, resource_id=resource_id
     )
+    current = ClassificationLevel.from_storage(row.classification_level)
     if not target < current:
         raise ValueError(
             f"降級申請的目標等級必須低於現行等級:"
@@ -449,9 +482,23 @@ def _apply_approved_declassification(
     ``declassification_copy``;in-place 不產生新資源,
     ``resulting_resource_id`` 留 NULL。
     """
-    row = _resolve_resource(db, request.resource_type, request.resource_id)
+    row = _resolve_resource_for_update(
+        db, request.resource_type, request.resource_id
+    )
     previous = ClassificationLevel.from_storage(row.classification_level)
+    requested_from = ClassificationLevel.from_storage(request.from_level)
     target = ClassificationLevel.from_storage(request.to_level)
+    if previous != requested_from:
+        raise ValueError(
+            "資源分類已在降級申請後變更，原申請失效；"
+            f"request#{request.id} 預期 {requested_from.to_storage()}，"
+            f"現為 {previous.to_storage()}，必須依現況重新申請(fail-closed)"
+        )
+    if not target < previous:
+        raise ValueError(
+            "核准降級的目標必須嚴格低於鎖定後的現行分類；"
+            f"實得 {previous.to_storage()} → {target.to_storage()}"
+        )
     event = ClassificationEvent(
         resource_type=request.resource_type,
         resource_id=str(request.resource_id),
@@ -498,7 +545,13 @@ def decide_declassification(
     - 核准:status → approved → 生效(唯一內部降級路徑)→ applied;
       駁回:status → rejected,資源等級不動。
     """
-    request = db.get(DeclassificationRequest, request_id)
+    request = (
+        db.query(DeclassificationRequest)
+        .populate_existing()
+        .filter(DeclassificationRequest.id == request_id)
+        .with_for_update()
+        .one_or_none()
+    )
     if request is None:
         raise ValueError(f"找不到降級申請 #{request_id}(fail-closed)")
     if request.status != DeclassificationStatus.PENDING_SUPERVISOR.value:

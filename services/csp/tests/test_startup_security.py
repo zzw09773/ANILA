@@ -546,5 +546,7 @@ def test_non_pilot_does_not_accept_disabled_template_as_approval(
     # empty and cannot accidentally be reused from an earlier pilot process.
     ss = reload_startup_security()
     ss._verified_pilot_callsites = frozenset({"csp.chat_model"})
+    ss._verified_pilot_admission = object()
     ss.assert_gate2_pilot_profile()
     assert ss._verified_pilot_callsites == frozenset()
+    assert ss._verified_pilot_admission is None

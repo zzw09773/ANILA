@@ -8,11 +8,12 @@ mocked while exercising the real endpoint ordering and proxy admission code.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 
 import pytest
+from anila_security import PilotTarget, VerifiedPilotAdmission
 from anila_contracts import Classification
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -225,7 +226,23 @@ def test_pilot_denied_hidden_callsite_closes_open_run_and_stays_zero_egress(
     task = _task(db, user)
     monkeypatch.setattr(settings, "ANILA_PILOT_MODE", True)
     monkeypatch.setattr(
-        startup_security, "_verified_pilot_callsites", frozenset({"csp.chat_model"})
+        startup_security,
+        "_verified_pilot_admission",
+        VerifiedPilotAdmission(
+            profile_id="ordering-test",
+            enabled_callsites=frozenset({"csp.chat_model"}),
+            allowed_targets=(PilotTarget(
+                callsite="csp.chat_model",
+                name=model.name,
+                model_type=model.model_type,
+                endpoint_url=model.endpoint_url,
+                classification_ceiling=model.classification_ceiling,
+            ),),
+            collection_ids=frozenset({1}),
+            data_classification_ceiling="營業秘密",
+            valid_from=datetime.now(timezone.utc) - timedelta(minutes=1),
+            valid_until=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
     )
 
     async def hidden_memory_call(stage_db, _user_id, body, *, task_ctx, **kwargs):

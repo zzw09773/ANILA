@@ -23,7 +23,6 @@ from pathlib import Path
 import re
 import stat
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from urllib.parse import urlparse
 
 from cryptography import x509
@@ -585,6 +584,7 @@ def assert_startup_migration_policy() -> None:
 
 
 _verified_pilot_callsites: frozenset[str] = frozenset()
+_verified_pilot_admission = None
 
 
 def assert_gate2_pilot_profile() -> None:
@@ -594,14 +594,15 @@ def assert_gate2_pilot_profile() -> None:
     keys and the actual approval profile must be provisioned out-of-band in
     the read-only secrets mount.
     """
-    global _verified_pilot_callsites
+    global _verified_pilot_admission, _verified_pilot_callsites
     if not settings.ANILA_PILOT_MODE:
+        _verified_pilot_admission = None
         _verified_pilot_callsites = frozenset()
         return
     from anila_security import PilotProfileError, verify_signed_pilot_profile
 
     try:
-        enabled = verify_signed_pilot_profile(
+        admission = verify_signed_pilot_profile(
             profile_path=settings.GATE2_PILOT_PROFILE_PATH,
             inventory_path=settings.GATE2_INFERENCE_INVENTORY_PATH,
             trust_store_path=settings.GATE2_PILOT_TRUST_STORE_PATH,
@@ -610,7 +611,7 @@ def assert_gate2_pilot_profile() -> None:
         raise RuntimeError(
             f"Refusing to start unsigned/invalid Gate 2 pilot: {exc}"
         ) from exc
-    if "csp.agent_dispatch" in enabled and not {
+    if "csp.agent_dispatch" in admission.enabled_callsites and not {
         item.strip()
         for item in settings.PILOT_FIRST_PARTY_AGENT_ALLOWLIST.split(",")
         if item.strip()
@@ -619,10 +620,71 @@ def assert_gate2_pilot_profile() -> None:
             "Refusing to start Gate 2 pilot: enabled agent dispatch requires "
             "PILOT_FIRST_PARTY_AGENT_ALLOWLIST"
         )
-    _verified_pilot_callsites = enabled
+    _verified_pilot_admission = admission
+    _verified_pilot_callsites = admission.enabled_callsites
+
+
+def _active_pilot_admission():
+    if not settings.ANILA_PILOT_MODE:
+        return None
+    admission = _verified_pilot_admission
+    if admission is None:
+        raise RuntimeError("Gate 2 signed pilot admission is unavailable")
+    now = datetime.now(timezone.utc)
+    if not admission.valid_from <= now < admission.valid_until:
+        raise RuntimeError("Gate 2 signed pilot profile is no longer effective")
+    return admission
 
 
 def require_pilot_callsite(callsite: str) -> None:
     """Reject runtime inference not present in the verified signed profile."""
-    if settings.ANILA_PILOT_MODE and callsite not in _verified_pilot_callsites:
+    admission = _active_pilot_admission()
+    if admission is not None and callsite not in admission.enabled_callsites:
         raise RuntimeError(f"Gate 2 signed pilot does not enable {callsite}")
+
+
+def require_pilot_target(
+    *, callsite: str, name: str, model_type: str, endpoint_url: str,
+    classification_ceiling: str,
+) -> None:
+    """Require an exact signer-approved registry target at the network sink."""
+    admission = _active_pilot_admission()
+    if admission is None:
+        return
+    if not admission.target_allowed(
+        callsite=callsite,
+        name=name,
+        model_type=model_type,
+        endpoint_url=endpoint_url,
+        classification_ceiling=classification_ceiling,
+    ):
+        raise RuntimeError(
+            f"Gate 2 signed pilot does not authorize target {name!r} for {callsite}"
+        )
+
+
+def require_pilot_collection(collection_id: int) -> None:
+    """Reject data access outside the exact signed pilot collection scope."""
+    admission = _active_pilot_admission()
+    if admission is not None and collection_id not in admission.collection_ids:
+        raise RuntimeError(
+            f"Gate 2 signed pilot does not authorize collection {collection_id}"
+        )
+
+
+def require_pilot_classification(level: str) -> None:
+    """Enforce the signed data ceiling on every request and outbound sink."""
+    admission = _active_pilot_admission()
+    if admission is None:
+        return
+    from anila_contracts import Classification
+
+    try:
+        current = Classification.from_storage(level)
+        ceiling = Classification.from_storage(admission.data_classification_ceiling)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Gate 2 pilot classification authority is invalid") from exc
+    if current > ceiling:
+        raise RuntimeError(
+            "Gate 2 signed pilot data classification ceiling would be exceeded"
+        )

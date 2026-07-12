@@ -470,7 +470,11 @@ async def _embed_query(
         )
     except RetrievalFailure as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=(
+                status.HTTP_403_FORBIDDEN
+                if exc.code == "embedding_policy_denied"
+                else status.HTTP_422_UNPROCESSABLE_ENTITY
+            ),
             detail=f"{exc.code}: {exc}",
         ) from exc
 

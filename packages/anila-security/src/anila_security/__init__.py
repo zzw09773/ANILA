@@ -30,7 +30,9 @@ from anila_security.url_guard import (
     validate_outbound_url,
 )
 from anila_security.pilot_profile import (
+    PilotTarget,
     PilotProfileError,
+    VerifiedPilotAdmission,
     verify_signed_pilot_profile,
 )
 
@@ -49,6 +51,8 @@ __all__ = [
     "REASON_UNSAFE_IP",
     "UnsafeEndpointError",
     "PilotProfileError",
+    "PilotTarget",
+    "VerifiedPilotAdmission",
     "clear_trusted_host_providers",
     "decrypt_credential",
     "encrypt_credential",

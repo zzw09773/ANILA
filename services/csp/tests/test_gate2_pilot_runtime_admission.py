@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 
 import pytest
+from anila_security import PilotTarget, VerifiedPilotAdmission
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
@@ -33,6 +35,24 @@ def _bearer(user) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _pilot_admission(model) -> VerifiedPilotAdmission:
+    return VerifiedPilotAdmission(
+        profile_id="runtime-test",
+        enabled_callsites=frozenset({"csp.chat_model"}),
+        allowed_targets=(PilotTarget(
+            callsite="csp.chat_model",
+            name=model.name,
+            model_type=model.model_type,
+            endpoint_url=model.endpoint_url,
+            classification_ceiling=model.classification_ceiling,
+        ),),
+        collection_ids=frozenset({1}),
+        data_classification_ceiling="營業秘密",
+        valid_from=datetime.now(timezone.utc) - timedelta(minutes=1),
+        valid_until=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "callsite", [None, "csp.memory_extract", "csp.standalone_search_embedding"]
@@ -43,7 +63,7 @@ async def test_signed_chat_only_profile_denies_missing_or_other_sink_before_outb
     model = make_model(db, name=f"pilot-sink-{callsite or 'missing'}")
     monkeypatch.setattr(settings, "ANILA_PILOT_MODE", True)
     monkeypatch.setattr(
-        startup_security, "_verified_pilot_callsites", frozenset({"csp.chat_model"})
+        startup_security, "_verified_pilot_admission", _pilot_admission(model)
     )
     monkeypatch.setattr(proxy_service.httpx, "AsyncClient", _OutboundMustNotRun)
 
@@ -70,7 +90,7 @@ async def test_signed_chat_callsite_still_requires_task_and_ceiling_authority(
     model = make_model(db, name="pilot-chat-authority")
     monkeypatch.setattr(settings, "ANILA_PILOT_MODE", True)
     monkeypatch.setattr(
-        startup_security, "_verified_pilot_callsites", frozenset({"csp.chat_model"})
+        startup_security, "_verified_pilot_admission", _pilot_admission(model)
     )
     monkeypatch.setattr(proxy_service.httpx, "AsyncClient", _OutboundMustNotRun)
     with pytest.raises(HTTPException, match="Task"):

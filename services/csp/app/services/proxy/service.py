@@ -107,10 +107,11 @@ def _require_pilot_sink_admission(
 
 def _lock_task_run_admission(
     *, governance_db, task_id: int | None, task_run_id: int | None,
-) -> None:
+    admitted_classification_level: str | None = None,
+) -> str | None:
     """Lock the active attempt so cancel/finalize cannot race outbound."""
     if governance_db is None or task_id is None or task_run_id is None:
-        return
+        return admitted_classification_level
     try:
         task = (
             governance_db.query(Task)
@@ -136,13 +137,33 @@ def _lock_task_run_admission(
             status_code=409,
             detail="Task/TaskRun 已非 running，禁止終態後發出推論呼叫",
         )
+    from anila_contracts import Classification
+
+    try:
+        levels = [
+            Classification.from_storage(task.classification_level),
+            Classification.from_storage(run.classification_level),
+        ]
+        if admitted_classification_level is not None:
+            levels.append(Classification.from_storage(admitted_classification_level))
+        effective = Classification.max_of(levels)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=403,
+            detail="Task/TaskRun 分類治理狀態無效，已拒絕出向呼叫",
+        ) from exc
+    if Classification.from_storage(run.classification_level) < effective:
+        run.classification_level = effective.to_storage()
+        run.classification_latched_at = datetime.now(timezone.utc)
+        run.classification_source = "outbound_admission"
+    return effective.to_storage()
 
 
 def lock_task_run_admission(
     *, governance_db, task_id: int | None, task_run_id: int | None,
-) -> None:
+) -> str | None:
     """Public helper for the legacy non-streaming Agent branch."""
-    _lock_task_run_admission(
+    return _lock_task_run_admission(
         governance_db=governance_db,
         task_id=task_id,
         task_run_id=task_run_id,
@@ -156,7 +177,8 @@ def _lock_registry_admission(
     registry_agent_id: int | None,
     registry_endpoint_url: str | None,
     admitted_classification_level: str | None,
-) -> None:
+    inference_callsite_id: str | None = None,
+):
     """Re-read and lock the exact registry row used for outbound.
 
     This closes the model-registry TOCTOU window: an endpoint swap or ceiling
@@ -180,7 +202,7 @@ def _lock_registry_admission(
                 governance_db.query(Agent)
                 .filter(Agent.id == registry_agent_id)
                 .populate_existing()
-                .with_for_update()
+                .with_for_update(read=True)
                 .one_or_none()
             )
             active = locked is not None and locked.approval_status == "approved"
@@ -189,7 +211,7 @@ def _lock_registry_admission(
                 governance_db.query(ModelRegistry)
                 .filter(ModelRegistry.id == registry_model_id)
                 .populate_existing()
-                .with_for_update()
+                .with_for_update(read=True)
                 .one_or_none()
             )
             active = locked is not None and bool(locked.is_active)
@@ -205,6 +227,27 @@ def _lock_registry_admission(
             status_code=409,
             detail="模型端點在 admission 後已變更，已拒絕出向呼叫",
         )
+    if settings.ANILA_PILOT_MODE:
+        from app.services.startup_security import (
+            require_pilot_classification,
+            require_pilot_target,
+        )
+
+        if not isinstance(inference_callsite_id, str):
+            raise HTTPException(status_code=403, detail="Gate 2 pilot 缺少 target callsite")
+        try:
+            require_pilot_target(
+                callsite=inference_callsite_id,
+                name=str(locked.name),
+                model_type=(
+                    "agent" if registry_agent_id is not None else str(locked.model_type)
+                ),
+                endpoint_url=str(locked.endpoint_url),
+                classification_ceiling=str(locked.classification_ceiling),
+            )
+            require_pilot_classification(str(admitted_classification_level))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
     try:
         level = ClassificationLevel.from_storage(admitted_classification_level)
         ceiling = ClassificationLevel.from_storage(locked.classification_ceiling)
@@ -223,6 +266,7 @@ def _lock_registry_admission(
     # Deliberately do not commit/rollback here: the request-owned session
     # holds this row lock across the immediately following async outbound and
     # releases it when the request transaction ends.
+    return locked
 
 
 def lock_agent_registry_admission(
@@ -236,6 +280,7 @@ def lock_agent_registry_admission(
         registry_agent_id=agent_id,
         registry_endpoint_url=endpoint_url,
         admitted_classification_level=admitted_classification_level,
+        inference_callsite_id="csp.agent_dispatch",
     )
 
 def _get_timeout(model_type: str) -> float:
@@ -616,6 +661,7 @@ async def proxy_request(
     inference_callsite_id: str | None = None,
     governance_db=None,
     admitted_classification_level: str | None = None,
+    finalize_task_run_on_completion: bool = True,
 ) -> dict:
     """Public entrypoint — ``_proxy_request_impl`` plus Slice 2b-C TaskRun
     finalization: when the call belongs to a Task (``task_run_id`` set),
@@ -633,17 +679,19 @@ async def proxy_request(
             governance_db=governance_db,
             admitted_classification_level=admitted_classification_level,
         )
+        effective_level = _lock_task_run_admission(
+            governance_db=governance_db,
+            task_id=task_id,
+            task_run_id=task_run_id,
+            admitted_classification_level=admitted_classification_level,
+        )
         _lock_registry_admission(
             governance_db=governance_db,
             registry_model_id=getattr(model, "id", None),
             registry_agent_id=None,
             registry_endpoint_url=getattr(model, "endpoint_url", None),
-            admitted_classification_level=admitted_classification_level,
-        )
-        _lock_task_run_admission(
-            governance_db=governance_db,
-            task_id=task_id,
-            task_run_id=task_run_id,
+            admitted_classification_level=effective_level,
+            inference_callsite_id=inference_callsite_id,
         )
         result = await _proxy_request_impl(
             model=model,
@@ -669,7 +717,7 @@ async def proxy_request(
             task_run_id=task_run_id,
         )
     except HTTPException as exc:
-        if task_run_id is not None:
+        if task_run_id is not None and finalize_task_run_on_completion:
             _finalize_proxy_task_run(
                 governance_db=governance_db,
                 task_run_id=task_run_id,
@@ -689,8 +737,10 @@ async def proxy_request(
                 target_id=(target_agent_id if is_agent_target else model.id),
                 target_name=model.name,
             )
+        elif task_run_id is not None and governance_db is not None:
+            governance_db.rollback()
         raise
-    if task_run_id is not None:
+    if task_run_id is not None and finalize_task_run_on_completion:
         _finalize_proxy_task_run(
             governance_db=governance_db,
             task_run_id=task_run_id,
@@ -708,6 +758,11 @@ async def proxy_request(
             target_name=model.name,
             usage=(result.get("usage") if isinstance(result, dict) else None),
         )
+    elif task_run_id is not None and governance_db is not None:
+        # Nested retrieval/memory inference is governed by the outer TaskRun,
+        # but must not terminalize it. Commit only the short admission
+        # transaction so its Task/registry row locks are released.
+        governance_db.commit()
     return result
 
 
@@ -989,6 +1044,12 @@ async def proxy_stream(
             governance_db=governance_db,
             admitted_classification_level=admitted_classification_level,
         )
+        effective_level = _lock_task_run_admission(
+            governance_db=governance_db,
+            task_id=task_id,
+            task_run_id=task_run_id,
+            admitted_classification_level=admitted_classification_level,
+        )
         _lock_registry_admission(
             governance_db=governance_db,
             registry_model_id=(
@@ -996,12 +1057,8 @@ async def proxy_stream(
             ),
             registry_agent_id=target_agent_id,
             registry_endpoint_url=registry_endpoint_url,
-            admitted_classification_level=admitted_classification_level,
-        )
-        _lock_task_run_admission(
-            governance_db=governance_db,
-            task_id=task_id,
-            task_run_id=task_run_id,
+            admitted_classification_level=effective_level,
+            inference_callsite_id=inference_callsite_id,
         )
         async for chunk in _proxy_stream_impl(
             target_url=target_url,

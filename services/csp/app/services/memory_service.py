@@ -95,6 +95,7 @@ from app.models.user_memory import (
 from app.services.audit_service import log_audit_event
 from app.services.proxy import downstream_identity, proxy_request
 from app.services.proxy.ceiling import enforce_model_ceiling
+from app.services.proxy.task_link import TaskRunContext
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +283,7 @@ async def _gateway_request(
     purpose: str,
     task_id: int | None,
     trace_id: str | None,
+    task_ctx: TaskRunContext | None = None,
 ) -> dict[str, Any]:
     """The only memory inference sink: ceiling -> CSP proxy -> usage/audit."""
 
@@ -292,13 +294,14 @@ async def _gateway_request(
             policy_model = policy_db.get(ModelRegistry, model.id)
             if policy_user is None or policy_model is None:
                 raise MemoryPolicyDataError("memory gateway policy subject 不存在")
-            enforce_model_ceiling(
+            admitted_level = enforce_model_ceiling(
                 policy_db,
                 model=policy_model,
                 caller=Caller(user=policy_user, api_key_id=None),
-                task_ctx=None,
+                task_ctx=task_ctx,
                 conv_id_int=conversation_id,
-                effective_level_override=classification_level,
+                trusted_classification_level=classification_level,
+                require_explicit_authority=True,
             )
         finally:
             policy_db.close()
@@ -316,24 +319,37 @@ async def _gateway_request(
             conversation_id=conversation_id,
             detail=f"memory {purpose} 已通過 ceiling，準備經 CSP gateway 呼叫",
         )
-        result = await proxy_request(
-            model=model,
-            api_key_id=None,
-            user_id=user.id,
-            department_id=user.department_id,
-            request_body=request_body,
-            endpoint_path=endpoint_path,
-            user_email=user.email,
-            user_identity=downstream_identity(user),
-            conversation_id=str(conversation_id),
-            trace_id=trace_id,
-            requires_encryption=(
-                classification_level >= Classification.CONFIDENTIAL
-            ),
-            task_id=task_id,
-            task_trace_id=trace_id,
-            legacy_runtime_call=task_id is None,
-        )
+        governance_db = SessionLocal()
+        try:
+            result = await proxy_request(
+                model=model,
+                api_key_id=None,
+                user_id=user.id,
+                department_id=user.department_id,
+                request_body=request_body,
+                endpoint_path=endpoint_path,
+                user_email=user.email,
+                user_identity=downstream_identity(user),
+                conversation_id=str(conversation_id),
+                trace_id=trace_id,
+                requires_encryption=(
+                    classification_level >= Classification.CONFIDENTIAL
+                ),
+                task_id=task_id,
+                task_trace_id=trace_id,
+                task_run_id=task_ctx.task_run_id if task_ctx else None,
+                legacy_runtime_call=task_id is None,
+                inference_callsite_id=(
+                    "csp.memory_embedding"
+                    if purpose == "embedding"
+                    else "csp.memory_extract"
+                ),
+                governance_db=governance_db,
+                admitted_classification_level=admitted_level,
+                finalize_task_run_on_completion=False,
+            )
+        finally:
+            governance_db.close()
     except Exception as exc:
         _audit_memory_inference(
             user_id=user.id,
@@ -372,6 +388,7 @@ async def _embed(
     classification_level: Classification,
     task_id: int | None,
     trace_id: str | None,
+    task_ctx: TaskRunContext | None = None,
 ) -> list[float]:
     """Return one truncated NV-embed-V2 vector for ``text_input``.
 
@@ -392,6 +409,7 @@ async def _embed(
         purpose="embedding",
         task_id=task_id,
         trace_id=trace_id,
+        task_ctx=task_ctx,
     )
     vec = data["data"][0]["embedding"]
     # anila-core's truncate_embedding handles both 4096 (truncate) and
@@ -736,6 +754,7 @@ async def retrieve_relevant_chunks(
     min_cosine: float | None = None,
     consumer_conversation_id: int,
     grants: tuple[_ActiveMemoryGrant, ...] | None = None,
+    task_ctx: TaskRunContext | None = None,
 ) -> list[RetrievedChunk]:
     """ANN-search this user's past message embeddings.
 
@@ -817,8 +836,9 @@ async def retrieve_relevant_chunks(
         user=user,
         conversation_id=consumer_conversation_id,
         classification_level=consumer_level,
-        task_id=None,
-        trace_id=None,
+        task_id=task_ctx.task_id if task_ctx else None,
+        trace_id=task_ctx.trace_id if task_ctx else None,
+        task_ctx=task_ctx,
     )
 
     vec_literal = _vec_to_pg_literal(embedding)
@@ -1092,6 +1112,7 @@ async def build_memory_block(
     latest_user_message: str,
     *,
     exclude_conversation_id: int | None = None,
+    task_ctx: TaskRunContext | None = None,
 ) -> MemoryReadResult:
     """Top-level read: fetch facts + run RAG, return formatted block."""
     if not settings.ENABLE_MEMORY:
@@ -1111,6 +1132,7 @@ async def build_memory_block(
         exclude_conversation_id=exclude_conversation_id,
         consumer_conversation_id=exclude_conversation_id,
         grants=grants,
+        task_ctx=task_ctx,
     )
     # Time itself is a mutable authorization input: a grant can expire while
     # the governed embedding call is in flight.  Re-evaluate immediately

@@ -139,6 +139,7 @@ async def _prepare_server_retrieval(
     user,
     request_headers,
     body: dict,
+    task_ctx=None,
 ) -> RetrievalOutcome | None:
     """Consume the OpenAI-compatible ``anila_retrieval`` extension.
 
@@ -166,6 +167,13 @@ async def _prepare_server_retrieval(
         extension = _RetrievalExtension.model_validate(raw)
     except (TypeError, ValueError, ValidationError):
         raise HTTPException(status_code=422, detail="RAG scope/排名參數格式錯誤") from None
+    if task_ctx is None:
+        raise HTTPException(
+            status_code=409,
+            detail="正式 RAG 必須先建立 running TaskRun",
+        )
+    if task_id != task_ctx.task_id:
+        raise HTTPException(status_code=409, detail="RAG Task 與 active TaskRun 不一致")
     task = db.get(Task, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="RAG Task 不存在")
@@ -194,12 +202,14 @@ async def _prepare_server_retrieval(
             top_k=extension.top_k,
             min_score=extension.min_score,
             document_ids=extension.document_ids,
+            task_ctx=task_ctx,
         )
     except RetrievalFailure as exc:
         status_code = {
             "task_owner_mismatch": 403,
             "task_scope_mismatch": 403,
             "clearance_denied": 403,
+            "embedding_policy_denied": 403,
             "snapshot_already_sealed": 409,
             "snapshot_payload_conflict": 409,
             "collection_unavailable": 409,
@@ -401,6 +411,45 @@ def _propagate_conversation_level_to_task_or_fail(
         ) from exc
 
 
+def _terminalize_stage_failure(
+    db: Session,
+    *,
+    task_ctx,
+    code: str,
+    message: str,
+    blocked_by_policy: bool = False,
+    action: str = "collection.read",
+    resource_type: str = "task",
+    resource_id: str | None = None,
+    actor_id: str = "",
+) -> None:
+    """Close an already-started orchestration before returning an error."""
+
+    if task_ctx is None:
+        return
+    db.rollback()
+    if blocked_by_policy:
+        record_task_policy_decision(
+            db,
+            task_ctx=task_ctx,
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id or str(task_ctx.task_id),
+            decision="deny",
+            actor_id=actor_id,
+            reason=message,
+            metadata={"error_code": code},
+            block=True,
+        )
+        return
+    finalize_task_run_in_session(
+        db,
+        task_ctx.task_run_id,
+        "failed",
+        error={"code": code, "message": message},
+    )
+
+
 def _extract_assistant_text(payload: dict | None) -> str | None:
     """Pull the assistant message text out of an OpenAI chat response."""
     if not isinstance(payload, dict):
@@ -442,13 +491,15 @@ async def _inject_memory(
     body: dict,
     *,
     exclude_conversation_id: int | None,
+    task_ctx=None,
 ) -> memory_service.MemoryReadResult | None:
     """Mutate ``body`` in-place to prepend a memory block to system msg.
 
     Returns the read result (so the caller can inspect
     ``encryption_inherited``) or None when there's no user message to
-    embed against. Failures are swallowed and logged — memory must
-    not break chat.
+    embed against. Legacy taskless non-pilot calls retain best-effort
+    behavior; task-linked or pilot governance failures propagate so the
+    active TaskRun can be closed before foreground inference.
     """
     if not settings.ENABLE_MEMORY:
         return None
@@ -461,9 +512,12 @@ async def _inject_memory(
             user_id=user_id,
             latest_user_message=user_text,
             exclude_conversation_id=exclude_conversation_id,
+            task_ctx=task_ctx,
         )
     except Exception:
         logger.exception("memory_service: build_memory_block failed user_id=%s", user_id)
+        if task_ctx is not None or settings.ANILA_PILOT_MODE:
+            raise
         return None
 
     if not result.block:
@@ -780,10 +834,13 @@ async def image_generations(
     keeps this route closed; it is the convergence point for later Gate 3
     artifact-enabled profiles.
     """
-    if settings.ANILA_PILOT_MODE:
-        raise HTTPException(status_code=403, detail="Gate 2 pilot 禁止圖像推論")
     raw_task_id = request.headers.get("X-ANILA-Task-Id")
     if not raw_task_id:
+        if settings.ANILA_PILOT_MODE:
+            raise HTTPException(
+                status_code=403,
+                detail="Gate 2 chat-only pilot 禁止圖像推論",
+            )
         raise HTTPException(status_code=400, detail="圖像推論必須綁定 Task")
     body = await request.json()
     model_name = str(body.get("model") or "").strip()
@@ -812,6 +869,21 @@ async def image_generations(
     )
     if task_ctx is None:  # header was checked above; defence in depth
         raise HTTPException(status_code=400, detail="圖像推論 Task 綁定失敗")
+    if settings.ANILA_PILOT_MODE:
+        reason = "Gate 2 chat-only pilot 禁止圖像推論"
+        record_task_policy_decision(
+            db,
+            task_ctx=task_ctx,
+            action="model.invoke",
+            resource_type="model",
+            resource_id=str(model.id),
+            decision="deny",
+            actor_id=str(caller.user.id),
+            reason=reason,
+            metadata={"pilot_callsite": "csp.image_generation"},
+            block=True,
+        )
+        raise HTTPException(status_code=403, detail=reason)
     admitted_level = enforce_model_ceiling(
         db, model=model, caller=caller, task_ctx=task_ctx, conv_id_int=None
     )
@@ -849,30 +921,21 @@ async def chat_completions(
     # G19: in signed pilot mode, inventory admission happens before memory,
     # retrieval, prompt mutation, or any outbound side effect.
     pre_resolved_agent = _resolve_agent(db, caller, model_name)
+    pre_resolved_model = (
+        None
+        if pre_resolved_agent is not None
+        else _resolve_model(db, caller, model_name)
+    )
     if settings.ANILA_PILOT_MODE:
-        from app.services.startup_security import require_pilot_callsite
-
-        if not request.headers.get("X-ANILA-Task-Id"):
+        raw_pilot_task_id = request.headers.get("X-ANILA-Task-Id")
+        if raw_pilot_task_id is None or not str(raw_pilot_task_id).strip():
             raise HTTPException(status_code=400, detail="Gate 2 pilot 呼叫必須綁定 Task")
-        callsite = (
+        pilot_callsite = (
             "csp.agent_dispatch" if pre_resolved_agent is not None
             else "csp.chat_model"
         )
-        try:
-            require_pilot_callsite(callsite)
-        except RuntimeError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
-        if pre_resolved_agent is not None:
-            allowlist = {
-                item.strip()
-                for item in settings.PILOT_FIRST_PARTY_AGENT_ALLOWLIST.split(",")
-                if item.strip()
-            }
-            if pre_resolved_agent.name not in allowlist:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Gate 2 pilot 禁止未列入簽核範圍的第三方 Agent",
-                )
+    else:
+        pilot_callsite = None
 
     stream: bool = body.get("stream", False)
     user = caller.user
@@ -896,18 +959,189 @@ async def chat_completions(
     conv_id_int = _coerce_conversation_id(conversation_id)
     if conv_id_int is not None:
         _require_conversation_access(db, caller, conv_id_int)
-    retrieval_outcome = await _prepare_server_retrieval(
+
+    # The run spine must exist before any hidden retrieval/memory inference.
+    # Target resolution above is read-only and guarantees a missing/inactive
+    # target cannot trigger an embedding call or seal a SourceSnapshot first.
+    target = pre_resolved_agent or pre_resolved_model
+    target_kind = "agent" if pre_resolved_agent is not None else "model"
+    task_ctx = begin_task_run(
         db,
-        user=user,
+        caller=caller,
         request_headers=request.headers,
-        body=body,
+        dispatch_target=target_kind,
+        resource_type=target_kind,
+        resource_id=str(target.id),
     )
-    memory_read = await _inject_memory(
-        db,
-        user.id,
-        body,
-        exclude_conversation_id=conv_id_int,
-    )
+
+    if settings.ANILA_PILOT_MODE:
+        from app.services.startup_security import require_pilot_callsite
+
+        if task_ctx is None:
+            raise HTTPException(status_code=409, detail="Gate 2 pilot TaskRun 建立失敗")
+        try:
+            require_pilot_callsite(str(pilot_callsite))
+            if pre_resolved_agent is not None:
+                allowlist = {
+                    item.strip()
+                    for item in settings.PILOT_FIRST_PARTY_AGENT_ALLOWLIST.split(",")
+                    if item.strip()
+                }
+                if pre_resolved_agent.name not in allowlist:
+                    raise RuntimeError(
+                        "Gate 2 pilot 禁止未列入簽核範圍的第三方 Agent"
+                    )
+        except RuntimeError as exc:
+            record_task_policy_decision(
+                db,
+                task_ctx=task_ctx,
+                action=f"{target_kind}.invoke",
+                resource_type=target_kind,
+                resource_id=str(target.id),
+                decision="deny",
+                actor_id=str(user.id),
+                reason=str(exc),
+                metadata={"pilot_callsite": pilot_callsite},
+                block=True,
+            )
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    agent_level: ClassificationLevel | None = None
+    if pre_resolved_agent is not None:
+        agent_level = _agent_policy_level(pre_resolved_agent)
+        if agent_level > ClassificationLevel.UNCLASSIFIED:
+            try:
+                if conv_id_int is not None:
+                    _latch_agent_classification(
+                        db, conv_id_int, agent_level.to_storage()
+                    )
+                elif task_ctx is not None:
+                    from app.modules.policy import apply_classification
+
+                    apply_classification(
+                        db,
+                        resource_type="task",
+                        resource_id=str(task_ctx.task_id),
+                        new_level=agent_level.to_storage(),
+                        actor_type="service",
+                        actor_id="agent-policy",
+                        reason="agent_policy",
+                        task_id=task_ctx.task_id,
+                        source="agent_policy",
+                    )
+            except Exception as exc:
+                _terminalize_stage_failure(
+                    db,
+                    task_ctx=task_ctx,
+                    code="agent_classification_latch",
+                    message="Agent 分類閂鎖失敗，已依 fail-closed 拒絕出向呼叫",
+                    actor_id=str(user.id),
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail="Agent 分類閂鎖失敗，已依 fail-closed 拒絕出向呼叫",
+                ) from exc
+
+    if task_ctx is not None and conv_id_int is not None:
+        _propagate_conversation_level_to_task_or_fail(
+            db,
+            task_ctx=task_ctx,
+            conversation_id=conv_id_int,
+            action=f"{target_kind}.invoke",
+            resource_type=target_kind,
+            resource_id=str(target.id),
+            actor_id=str(user.id),
+        )
+
+    # Initial target ceiling preflight prevents a target already known to be
+    # too weak from causing retrieval/memory egress. Sources may raise the
+    # task later, so the same boundary is re-evaluated before foreground send.
+    if pre_resolved_agent is not None:
+        enforce_agent_ceiling(
+            db,
+            agent=pre_resolved_agent,
+            caller=caller,
+            task_ctx=task_ctx,
+            conv_id_int=conv_id_int,
+            trusted_classification_level=agent_level,
+        )
+    else:
+        enforce_model_ceiling(
+            db,
+            model=pre_resolved_model,
+            caller=caller,
+            task_ctx=task_ctx,
+            conv_id_int=conv_id_int,
+        )
+
+    stage = "retrieval"
+    try:
+        retrieval_outcome = await _prepare_server_retrieval(
+            db,
+            user=user,
+            request_headers=request.headers,
+            body=body,
+            task_ctx=task_ctx,
+        )
+        if retrieval_outcome is not None and task_ctx is not None:
+            record_task_policy_decision(
+                db,
+                task_ctx=task_ctx,
+                action="collection.read",
+                resource_type="source_snapshot",
+                resource_id=str(retrieval_outcome.source_snapshot_id),
+                decision="allow",
+                actor_id=str(user.id),
+                metadata={"retrieval_state": retrieval_outcome.state},
+            )
+        stage = "memory"
+        memory_read = await _inject_memory(
+            db,
+            user.id,
+            body,
+            exclude_conversation_id=conv_id_int,
+            task_ctx=task_ctx,
+        )
+    except HTTPException as exc:
+        detail = exc.detail
+        code = (
+            str(detail.get("code"))
+            if isinstance(detail, dict) and detail.get("code")
+            else f"{stage}_http_{exc.status_code}"
+        )
+        message = (
+            str(detail.get("message"))
+            if isinstance(detail, dict) and detail.get("message")
+            else str(detail)
+        )
+        _terminalize_stage_failure(
+            db,
+            task_ctx=task_ctx,
+            code=code,
+            message=message,
+            blocked_by_policy=exc.status_code == 403,
+            action="collection.read" if stage == "retrieval" else "model.invoke",
+            resource_type=(
+                "source_snapshot" if stage == "retrieval" else "model"
+            ),
+            resource_id=str(
+                getattr(target, "id", task_ctx.task_id if task_ctx else "legacy")
+            ),
+            actor_id=str(user.id),
+        )
+        raise
+    except Exception as exc:
+        _terminalize_stage_failure(
+            db,
+            task_ctx=task_ctx,
+            code=f"{stage}_failed",
+            message=f"{stage} governance stage failed",
+            actor_id=str(user.id),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"{stage} governance stage failed，已依 fail-closed 拒絕出向呼叫",
+        ) from exc
     # P3: latch the consuming conversation into classified state when
     # memory recall pulled at least one encrypted chunk. One-shot — once
     # set, never cleared by a later non-encrypted turn (would otherwise
@@ -931,10 +1165,27 @@ async def chat_completions(
             # Recalled bytes are already present in ``body``.  Continuing
             # would dispatch them under a stale-low conversation/task level,
             # so a latch failure is a hard pre-dispatch policy failure.
+            _terminalize_stage_failure(
+                db,
+                task_ctx=task_ctx,
+                code="memory_classification_latch",
+                message="Memory 分類閂鎖失敗，已依 fail-closed 拒絕模型呼叫",
+                actor_id=str(user.id),
+            )
             raise HTTPException(
                 status_code=503,
                 detail="Memory 分類閂鎖失敗，已依 fail-closed 拒絕模型呼叫",
             ) from exc
+    if task_ctx is not None and conv_id_int is not None:
+        _propagate_conversation_level_to_task_or_fail(
+            db,
+            task_ctx=task_ctx,
+            conversation_id=conv_id_int,
+            action=f"{target_kind}.invoke",
+            resource_type=target_kind,
+            resource_id=str(target.id),
+            actor_id=str(user.id),
+        )
     # Capture the user message text NOW (after memory injection but
     # before any downstream mutation) so the post-turn writer has the
     # exact string the user sent.
@@ -954,59 +1205,13 @@ async def chat_completions(
         # down). For P1 we just OR them — UI / latch wiring lands in P3.
         if memory_read and memory_read.encryption_inherited:
             agent_requires_encryption = True
-        # Persist classified state to the conversation row so it survives
-        # hard refresh. ROUTER routing to an encrypted downstream agent
-        # is the canonical case: conversation.agent_id stays NULL (router)
-        # but the row's classified flag must record the encrypted turn so
-        # the next GET /api/conversations latches the UI back into
-        # encrypted mode.
-        # Slice 3b: latch the agent's OWN five-level classification onto the
-        # conversation (reason=agent_policy) through the one-way core. Uses
-        # the agent's default level, floored at 機密 when requires_encryption
-        # (byte-compatible with the old boolean latch). The OR'd
-        # ``agent_requires_encryption`` still drives the wire meta below; the
-        # memory-inheritance contribution is latched separately (above).
-        if conv_id_int is not None:
-            agent_level = _agent_policy_level(agent)
-            if agent_level > ClassificationLevel.UNCLASSIFIED:
-                try:
-                    _latch_agent_classification(
-                        db, conv_id_int, agent_level.to_storage()
-                    )
-                except Exception:
-                    logger.exception(
-                        "agent classification latch failed conv_id=%s",
-                        conv_id_int,
-                    )
-        # Slice 2b-C: optional X-ANILA-Task-Id — validate access, record
-        # the task.run PolicyDecision and open a TaskRun BEFORE dispatch.
-        # None → legacy traffic (usage row marked legacy_runtime_call).
-        task_ctx = begin_task_run(
-            db,
-            caller=caller,
-            request_headers=request.headers,
-            dispatch_target="agent",
-            resource_type="agent",
-            resource_id=str(agent.id),
-        )
-        # Slice 3b: propagate the conversation's effective level onto the
-        # linked task (reason=source_selected) so later ceiling checks see it.
-        if task_ctx is not None and conv_id_int is not None:
-            _propagate_conversation_level_to_task_or_fail(
-                db,
-                task_ctx=task_ctx,
-                conversation_id=conv_id_int,
-                action="agent.invoke",
-                resource_type="agent",
-                resource_id=str(agent.id),
-                actor_id=str(caller.user.id),
-            )
         admitted_level = enforce_agent_ceiling(
             db,
             agent=agent,
             caller=caller,
             task_ctx=task_ctx,
             conv_id_int=conv_id_int,
+            trusted_classification_level=agent_level,
         )
         # Usage attribution: inbound X-ANILA-Trace-Id wins (legacy
         # contract); a task-linked call without one falls back to the
@@ -1242,7 +1447,7 @@ async def chat_completions(
                 )
             raise _HTTPException(status_code=502, detail=f"Agent 呼叫失敗: {e}")
 
-    model = _resolve_model(db, caller, model_name)
+    model = pre_resolved_model
     # Direct LLM calls (not through an agent) do NOT trigger CSP-side classified
     # latch. Encryption is agent-level policy; the same LLM can back both
     # classified and non-classified agents. Downstream-reported classified=True
@@ -1250,31 +1455,6 @@ async def chat_completions(
     # Inheritance: if memory injected encrypted material, latch this
     # direct-LLM call as encrypted too (matches agent path semantics).
     inherited_encryption = bool(memory_read and memory_read.encryption_inherited)
-    # Slice 2b-C: optional X-ANILA-Task-Id — same wiring as the agent
-    # branch, dispatch_target/resource_type = "model". Outbound headers to
-    # the model gateway stay minimal (doc 04 §3/AC5) — the task ids below
-    # only reach the usage row + run lifecycle, never the gateway headers.
-    task_ctx = begin_task_run(
-        db,
-        caller=caller,
-        request_headers=request.headers,
-        dispatch_target="model",
-        resource_type="model",
-        resource_id=str(model.id),
-    )
-    # Slice 3b: propagate the conversation's effective level onto the linked
-    # task (reason=source_selected). On the direct-model path the conversation
-    # may still be classified via memory inheritance (latched above).
-    if task_ctx is not None and conv_id_int is not None:
-        _propagate_conversation_level_to_task_or_fail(
-            db,
-            task_ctx=task_ctx,
-            conversation_id=conv_id_int,
-            action="model.invoke",
-            resource_type="model",
-            resource_id=str(model.id),
-            actor_id=str(caller.user.id),
-        )
     # Slice 6a (doc 04 §5/§8): classification ceiling check BEFORE the
     # outbound model call. Covers task-linked AND legacy traffic. A violation
     # raises 403 + records a model.invoke deny row and never dispatches

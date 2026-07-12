@@ -184,6 +184,7 @@ def begin_task_run(
             db, task=task, dispatch_target=dispatch_target, commit=False
         )
     except ValueError as exc:
+        db.rollback()
         raise HTTPException(
             status_code=409, detail=f"任務狀態不允許執行:{exc}"
         )
@@ -284,7 +285,11 @@ def record_task_policy_decision(
         run.status = "failed"
         run.finished_at = now
         run.error = {
-            "code": "classification_ceiling" if block else "pre_dispatch_failed",
+            "code": (
+                "classification_ceiling"
+                if block
+                else str((metadata or {}).get("error_code") or "pre_dispatch_failed")
+            ),
             "message": reason,
         }
     db.add(AuditLog(

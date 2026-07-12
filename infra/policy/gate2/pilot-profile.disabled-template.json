@@ -28,6 +28,7 @@
   "retention_days": null,
   "withdrawal_procedure": null,
   "collection_ids": null,
+  "allowed_targets": [],
   "valid_from": null,
   "valid_until": null,
   "signatures": []

@@ -50,6 +50,18 @@ def _signed_files(
         "retention_days": 30,
         "withdrawal_procedure": "owner revokes profile and disables pilot mode",
         "collection_ids": [1],
+        "allowed_targets": [
+            {
+                "callsite": callsite,
+                "name": f"synthetic-{index}",
+                "model_type": (
+                    "embedding" if callsite.endswith("embedding") else "llm"
+                ),
+                "endpoint_url": f"http://synthetic-{index}:8000",
+                "classification_ceiling": "營業秘密",
+            }
+            for index, callsite in enumerate(enabled, start=1)
+        ],
         "valid_from": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
         "valid_until": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
     }
@@ -138,6 +150,7 @@ def test_signature_or_inventory_mutation_fails_closed(tmp_path: Path) -> None:
         ({"enabled_callsites": ["csp.chat_model", "csp.chat_model"]}, "duplicates"),
         ({"collection_ids": [1, 1]}, "collection_ids"),
         ({"collection_ids": [True]}, "collection_ids"),
+        ({"allowed_targets": []}, "allowed targets"),
         ({"valid_from": "2026-01-01"}, "timezone"),
         ({"valid_until": "2000-01-01T00:00:00+00:00"}, "effective"),
     ],

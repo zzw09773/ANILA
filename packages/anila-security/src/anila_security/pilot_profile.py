@@ -5,9 +5,11 @@ import base64
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -27,6 +29,54 @@ class PilotProfileError(ValueError):
 
 _PROFILE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
 _PILOT_CEILINGS = frozenset({"無機密", "營業秘密"})
+_TARGET_CEILINGS = frozenset({"無機密", "營業秘密", "機密", "極機密"})
+_TARGET_TYPES_BY_CALLSITE = {
+    "csp.chat_model": frozenset({"llm"}),
+    "csp.server_retrieval_embedding": frozenset({"embedding"}),
+    "csp.memory_extract": frozenset({"llm"}),
+    "csp.memory_embedding": frozenset({"embedding"}),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class PilotTarget:
+    """One exact registry target authorized by all pilot signers."""
+
+    callsite: str
+    name: str
+    model_type: str
+    endpoint_url: str
+    classification_ceiling: str
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedPilotAdmission:
+    """Immutable runtime authority extracted from a verified signed profile."""
+
+    profile_id: str
+    enabled_callsites: frozenset[str]
+    allowed_targets: tuple[PilotTarget, ...]
+    collection_ids: frozenset[int]
+    data_classification_ceiling: str
+    valid_from: datetime
+    valid_until: datetime
+
+    def target_allowed(
+        self,
+        *,
+        callsite: str,
+        name: str,
+        model_type: str,
+        endpoint_url: str,
+        classification_ceiling: str,
+    ) -> bool:
+        return PilotTarget(
+            callsite=callsite,
+            name=name,
+            model_type=model_type,
+            endpoint_url=endpoint_url,
+            classification_ceiling=classification_ceiling,
+        ) in self.allowed_targets
 
 
 def _unique_nonempty_strings(value: Any, field: str) -> list[str]:
@@ -59,7 +109,77 @@ def _aware_rfc3339(value: Any, field: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def _validate_profile_contract(profile: dict[str, Any]) -> tuple[list[str], list[str]]:
+def _validate_target_url(value: Any) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise PilotProfileError("allowed target endpoint_url must be a canonical URL")
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise PilotProfileError("allowed target endpoint_url must be an absolute base URL")
+    return value
+
+
+def _validate_allowed_targets(
+    value: Any, *, enabled_callsites: set[str], pilot_enabled: bool,
+) -> tuple[PilotTarget, ...]:
+    if not isinstance(value, list):
+        raise PilotProfileError("allowed_targets must be a list")
+    if not pilot_enabled:
+        if value:
+            raise PilotProfileError("disabled template cannot authorize targets")
+        return ()
+    targets: list[PilotTarget] = []
+    target_keys: set[tuple[str, str]] = set()
+    required_keys = {
+        "callsite", "name", "model_type", "endpoint_url",
+        "classification_ceiling",
+    }
+    for raw in value:
+        if not isinstance(raw, dict) or set(raw) != required_keys:
+            raise PilotProfileError("allowed target has unknown or missing fields")
+        callsite = raw.get("callsite")
+        name = raw.get("name")
+        model_type = raw.get("model_type")
+        ceiling = raw.get("classification_ceiling")
+        if callsite not in enabled_callsites:
+            raise PilotProfileError("allowed target callsite is not enabled")
+        if not isinstance(name, str) or not name or name != name.strip() or len(name) > 200:
+            raise PilotProfileError("allowed target name is invalid")
+        if not isinstance(model_type, str) or not model_type.strip():
+            raise PilotProfileError("allowed target model_type is invalid")
+        allowed_types = _TARGET_TYPES_BY_CALLSITE.get(callsite)
+        if allowed_types is not None and model_type not in allowed_types:
+            raise PilotProfileError("allowed target model_type does not match callsite")
+        if ceiling not in _TARGET_CEILINGS or not isinstance(ceiling, str):
+            raise PilotProfileError("allowed target classification_ceiling is invalid")
+        key = (callsite, name)
+        if key in target_keys:
+            raise PilotProfileError("allowed target callsite/name is duplicated")
+        target_keys.add(key)
+        targets.append(PilotTarget(
+            callsite=callsite,
+            name=name,
+            model_type=model_type,
+            endpoint_url=_validate_target_url(raw.get("endpoint_url")),
+            classification_ceiling=ceiling,
+        ))
+    missing = enabled_callsites - {target.callsite for target in targets}
+    if missing:
+        raise PilotProfileError(
+            f"enabled callsites missing exact allowed targets: {sorted(missing)}"
+        )
+    return tuple(targets)
+
+
+def _validate_profile_contract(
+    profile: dict[str, Any],
+) -> tuple[list[str], list[str], tuple[PilotTarget, ...], datetime | None, datetime | None]:
     if not isinstance(profile.get("pilot_enabled"), bool):
         raise PilotProfileError("pilot_enabled must be boolean")
     profile_id = profile.get("profile_id")
@@ -80,7 +200,12 @@ def _validate_profile_contract(profile: dict[str, Any]) -> tuple[list[str], list
         profile.get("disabled_capabilities"), "disabled_capabilities"
     )
     if not profile["pilot_enabled"]:
-        return enabled, disabled
+        targets = _validate_allowed_targets(
+            profile.get("allowed_targets"),
+            enabled_callsites=set(enabled),
+            pilot_enabled=False,
+        )
+        return enabled, disabled, targets, None, None
 
     _bounded_int(
         profile.get("revocation_sla_seconds"),
@@ -121,7 +246,12 @@ def _validate_profile_contract(profile: dict[str, Any]) -> tuple[list[str], list
         or (valid_until - valid_from).total_seconds() > 180 * 86400
     ):
         raise PilotProfileError("pilot validity interval is invalid or too long")
-    return enabled, disabled
+    targets = _validate_allowed_targets(
+        profile.get("allowed_targets"),
+        enabled_callsites=set(enabled),
+        pilot_enabled=True,
+    )
+    return enabled, disabled, targets, valid_from, valid_until
 
 
 def _canonical(value: Any) -> bytes:
@@ -143,8 +273,8 @@ def _read(path: str | Path) -> dict[str, Any]:
 def verify_signed_pilot_profile(
     *, profile_path: str | Path, inventory_path: str | Path,
     trust_store_path: str | Path,
-) -> frozenset[str]:
-    """Verify the profile and return its exact enabled-callsite set.
+) -> VerifiedPilotAdmission:
+    """Verify the profile and return its complete immutable runtime authority.
 
     Trust anchors come only from ``trust_store_path``. Public keys embedded in
     a profile, if any, have no authority.
@@ -170,7 +300,7 @@ def verify_signed_pilot_profile(
     ):
         raise PilotProfileError("invalid or duplicate callsite inventory")
     by_id = {entry["id"]: entry for entry in calls}
-    enabled, disabled = _validate_profile_contract(profile)
+    enabled, disabled, targets, valid_from, valid_until = _validate_profile_contract(profile)
     if set(enabled) & set(disabled) or set(enabled) | set(disabled) != set(by_id):
         raise PilotProfileError("profile must partition every inventory callsite")
     if not profile.get("pilot_enabled") or not enabled:
@@ -240,4 +370,14 @@ def verify_signed_pilot_profile(
         raise PilotProfileError(
             f"missing signer roles: {sorted(REQUIRED_PILOT_SIGNERS - seen)}"
         )
-    return frozenset(enabled)
+    if valid_from is None or valid_until is None:  # guarded by pilot_enabled above
+        raise PilotProfileError("enabled pilot validity interval is missing")
+    return VerifiedPilotAdmission(
+        profile_id=str(profile["profile_id"]),
+        enabled_callsites=frozenset(enabled),
+        allowed_targets=targets,
+        collection_ids=frozenset(int(item) for item in profile["collection_ids"]),
+        data_classification_ceiling=str(profile["data_classification_ceiling"]),
+        valid_from=valid_from,
+        valid_until=valid_until,
+    )

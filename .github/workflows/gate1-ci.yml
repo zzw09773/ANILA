@@ -312,6 +312,7 @@ jobs:
       - name: Prove Gate 2 SourceSnapshot and Citation sealing on PostgreSQL
         env:
           ANILA_GATE2_TEST_PG_ADMIN_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/postgres
+          PYTHONPATH: services/csp
         run: python -m pytest services/csp/tests/test_gate2_source_snapshot_sealing_pg.py -q
 
       - name: Prove Gate 2 memory classification governance on PostgreSQL

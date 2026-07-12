@@ -4,9 +4,20 @@
 # profile and out-of-band trust store. The base stack preserves all existing
 # non-pilot product capabilities.
 services:
+  nginx:
+    # The separate Router process is not a signed Gate 2 egress path. Keep the
+    # service available for normal posture, but hard-deny both public origins.
+    volumes:
+      - ../../infra/nginx/snippets/router-disabled.conf:/etc/nginx/snippets/router-posture.conf:ro
+
   csp:
     environment:
       ANILA_PILOT_MODE: "true"
+      # Post-turn memory inference currently runs after the foreground TaskRun
+      # is terminal. Gate 2 therefore keeps it unreachable in the signed
+      # chat-only pilot; the governed memory code remains available for tests
+      # and non-pilot development, but cannot bypass active-run admission.
+      ENABLE_MEMORY: "false"
       ENABLE_PILOT_PROMPT_GENERATOR: "false"
       ENABLE_PILOT_INGESTION_JUDGE: "false"
       ENABLE_PILOT_STUDIO_ARTIFACTS: "false"
