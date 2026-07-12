@@ -266,12 +266,12 @@ def test_classification_propagation_failure_atomically_fails_task_zero_egress(
             "messages": [{"role": "user", "content": "classified"}],
         },
     )
-    assert response.status_code == 500
+    assert response.status_code == 503
     db.expire_all()
     assert db.get(Task, task.id).status == "failed"
     run = db.query(TaskRun).filter_by(task_id=task.id).one()
     assert run.status == "failed"
-    assert run.error["code"] == "pre_dispatch_failed"
+    assert run.error["code"] == "task_classification_propagation"
     assert db.query(PolicyDecision).filter_by(
         task_id=task.id, action="model.invoke", decision="deny"
     ).count() == 1

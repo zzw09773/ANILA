@@ -48,7 +48,8 @@ def test_memory_inference_has_no_direct_http_sink():
     }
     assert "httpx" not in imports
     assert "enforce_model_ceiling(" in source
-    assert "effective_level_override=classification_level" in source
+    assert "trusted_classification_level=classification_level" in source
+    assert "finalize_task_run_on_completion=False" in source
     assert "proxy_request(" in source
     assert 'action="memory.model_inference"' in source
 
@@ -67,7 +68,7 @@ def test_task_classification_propagation_is_fail_closed_on_both_paths():
     start = source.index("def _propagate_conversation_level_to_task_or_fail")
     end = source.index("\ndef _extract_assistant_text", start)
     function = source[start:end]
-    assert "finalize_task_run(" in function
+    assert "finalize_task_run_in_session(" in function
     assert '"task_classification_propagation"' in function
     assert "status_code=503" in function
     # Definition plus agent and direct-model call sites.

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 from fastapi import HTTPException
 
 from app.api import proxy as proxy_mod
 from app.models.ingestion import IngestionCollection
+from app.models.task import TaskRun
 from app.modules.tasks import service as task_service
 from app.schemas.contracts.tasks import TaskCreate
 from app.services.retrieval_service import (
@@ -14,6 +16,7 @@ from app.services.retrieval_service import (
     RetrievalFailure,
     RetrievalOutcome,
 )
+from app.services.proxy.task_link import TaskRunContext
 
 from tests.conftest import make_user
 
@@ -44,6 +47,26 @@ def query_task(db):
         ),
     )
     return user, collection, task
+
+
+def _running_context(db, task) -> TaskRunContext:
+    """Model the endpoint contract: formal RAG starts after TaskRun opens."""
+    task.status = "running"
+    run = TaskRun(
+        task_id=task.id,
+        run_sequence=1,
+        dispatch_target="model",
+        status="running",
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return TaskRunContext(
+        task_id=task.id,
+        trace_id=task.trace_id,
+        task_run_id=run.id,
+    )
 
 
 @pytest.mark.asyncio
@@ -93,16 +116,19 @@ async def test_proxy_requires_task_and_derives_query_from_user_message(
 
     monkeypatch.setattr(proxy_mod, "retrieve_and_seal", fake_retrieve)
     mutable = json.loads(json.dumps(body))
+    task_ctx = _running_context(db, task)
     outcome = await proxy_mod._prepare_server_retrieval(
         db,
         user=user,
         request_headers={"X-ANILA-Task-Id": str(task.id)},
         body=mutable,
+        task_ctx=task_ctx,
     )
     assert outcome is not None
     assert observed["query"] == "真正的使用者問題"
     assert observed["collection_id"] == collection.id
     assert observed["top_k"] == 4
+    assert observed["task_ctx"] == task_ctx
     assert "anila_retrieval" not in mutable
     assert mutable["messages"][0] == {
         "role": "system",
@@ -120,6 +146,7 @@ async def test_proxy_does_not_soft_fallback_on_retrieval_failure(
         raise RetrievalFailure("retrieval_backend_failed", "backend down")
 
     monkeypatch.setattr(proxy_mod, "retrieve_and_seal", fail)
+    task_ctx = _running_context(db, task)
     with pytest.raises(HTTPException) as exc:
         await proxy_mod._prepare_server_retrieval(
             db,
@@ -129,6 +156,7 @@ async def test_proxy_does_not_soft_fallback_on_retrieval_failure(
                 "messages": [{"role": "user", "content": "q"}],
                 "anila_retrieval": {"collection_id": collection.id},
             },
+            task_ctx=task_ctx,
         )
     assert exc.value.status_code == 503
     assert exc.value.detail["code"] == "retrieval_backend_failed"
@@ -166,6 +194,7 @@ async def test_proxy_rejects_caller_authored_system_prompt_for_formal_rag(
     db, query_task,
 ):
     user, collection, task = query_task
+    task_ctx = _running_context(db, task)
     with pytest.raises(HTTPException) as invalid:
         await proxy_mod._prepare_server_retrieval(
             db,
@@ -178,6 +207,7 @@ async def test_proxy_rejects_caller_authored_system_prompt_for_formal_rag(
                 ],
                 "anila_retrieval": {"collection_id": collection.id},
             },
+            task_ctx=task_ctx,
         )
     assert invalid.value.status_code == 422
 

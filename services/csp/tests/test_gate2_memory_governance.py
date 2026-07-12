@@ -427,20 +427,31 @@ def test_latch_uses_actual_highest_memory_level_not_confidential_floor(db):
 
 
 @pytest.mark.asyncio
-async def test_latch_failure_hard_fails_before_any_model_resolution_or_dispatch(
+async def test_latch_failure_allows_read_only_resolution_but_not_dispatch(
     db, monkeypatch
 ):
     from app.api import proxy
 
     user = _user(db, "memory-latch-failure-user")
     conversation = _conversation(db, user, level=Classification.UNCLASSIFIED)
+    model = ModelRegistry(
+        name="memory-latch-target",
+        display_name="memory-latch-target",
+        model_type="llm",
+        endpoint_url="http://must-not-dispatch.invalid",
+        is_active=True,
+        is_router_primary=True,
+        classification_ceiling=Classification.TOP_SECRET.to_storage(),
+    )
+    db.add(model)
+    db.commit()
 
     class _Request:
         headers = {"X-ANILA-Conversation-Id": str(conversation.id)}
 
         async def json(self):
             return {
-                "model": "must-not-resolve",
+                "model": model.name,
                 "messages": [{"role": "user", "content": "classified recall"}],
             }
 
@@ -455,12 +466,10 @@ async def test_latch_failure_hard_fails_before_any_model_resolution_or_dispatch(
         raise RuntimeError("synthetic latch failure")
 
     def must_not_reach_dispatch(*args, **kwargs):
-        raise AssertionError("model/agent resolution is already too late")
+        raise AssertionError("latch failure must remain zero outbound")
 
     monkeypatch.setattr(proxy, "_inject_memory", recalled)
     monkeypatch.setattr(proxy, "_latch_inherited_classification", latch_failure)
-    monkeypatch.setattr(proxy, "_resolve_agent", must_not_reach_dispatch)
-    monkeypatch.setattr(proxy, "_resolve_model", must_not_reach_dispatch)
     monkeypatch.setattr(proxy, "proxy_request", must_not_reach_dispatch)
 
     with pytest.raises(HTTPException) as exc_info:
