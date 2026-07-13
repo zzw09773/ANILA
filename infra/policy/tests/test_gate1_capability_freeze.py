@@ -57,7 +57,12 @@ class CapabilityFreezePolicyTests(unittest.TestCase):
         )
 
     def test_exact_active_exception_allows_only_named_change(self) -> None:
-        changed = {key: list(values) for key, values in self.current.items()}
+        # Isolate the synthetic exception from any real, separately approved
+        # repository additions present while this policy test runs.
+        changed = {
+            key: list(values)
+            for key, values in self.baseline["reviewed_inventory"].items()
+        }
         changed["artifact.types"].extend(["approved_test_type", "unapproved_test_type"])
         registry = {
             "schema_version": 1,

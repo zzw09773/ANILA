@@ -94,7 +94,20 @@ class Gate2ClassificationReconciliationTests(unittest.TestCase):
     def test_checker_and_migration_use_the_same_complete_manifest(self) -> None:
         checker_columns = {(item.table, item.column) for item in checker.COLUMNS}
         migration_columns = set(migration._CLASSIFICATION_COLUMNS)
-        self.assertEqual(checker_columns, migration_columns)
+        memory_columns = {
+            ("user_facts", "classification_level"),
+            ("conversation_memory_chunks", "classification_level"),
+        }
+        self.assertEqual(checker_columns - memory_columns, migration_columns)
+        self.assertTrue(memory_columns <= checker_columns)
+        memory_migration = (
+            ROOT
+            / "services/csp/migrations/versions/"
+            "r1_0016_gate2_memory_classification_governance.py"
+        ).read_text(encoding="utf-8")
+        for table_name, column_name in memory_columns:
+            self.assertIn(f'_add_memory_columns("{table_name}")', memory_migration)
+            self.assertIn(f'sa.Column("{column_name}"', memory_migration)
         self.assertEqual(len(checker_columns), len(checker.COLUMNS))
         self.assertIn(("document_chunks", "classification_level"), checker_columns)
         self.assertIn(("trace_spans", "classification_level"), checker_columns)
