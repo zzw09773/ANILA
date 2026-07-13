@@ -8,6 +8,7 @@
     "csp.image_generation",
     "csp.agent_session_resume",
     "csp.agent_dispatch",
+    "csp.agent_trace_test",
     "ingestion.embedding",
     "ingestion.vision_caption",
     "ingestion.ocr_vision",

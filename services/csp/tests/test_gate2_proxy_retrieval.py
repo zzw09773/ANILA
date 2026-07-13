@@ -82,6 +82,9 @@ async def test_proxy_requires_task_and_derives_query_from_user_message(
             "top_k": 4,
             "min_score": 0.4,
         },
+        "tools": [{"type": "function", "function": {"name": "danger"}}],
+        "tool_choice": "auto",
+        "parallel_tool_calls": True,
     }
 
     with pytest.raises(HTTPException) as missing:
@@ -130,10 +133,19 @@ async def test_proxy_requires_task_and_derives_query_from_user_message(
     assert observed["top_k"] == 4
     assert observed["task_ctx"] == task_ctx
     assert "anila_retrieval" not in mutable
-    assert mutable["messages"][0] == {
-        "role": "system",
+    assert mutable["messages"][0]["role"] == "system"
+    assert "untrusted reference data" in mutable["messages"][0]["content"]
+    assert mutable["messages"][1] == {
+        "role": "user",
         "content": "SERVER AUTHORED RAG PROMPT",
     }
+    assert mutable["messages"][-1] == {
+        "role": "user",
+        "content": "真正的使用者問題",
+    }
+    assert "tools" not in mutable
+    assert "tool_choice" not in mutable
+    assert "parallel_tool_calls" not in mutable
 
 
 @pytest.mark.asyncio

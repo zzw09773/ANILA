@@ -43,6 +43,10 @@ from anila_core.ingestion.citation_extractor import normalize_title
 from anila_core.storage.adapters.pgvector_store import CollectionScopedPgVectorStore
 
 from app.api.ingestion.collections import _require_collection_access
+from app.modules.clearance.service import (
+    ClearancePolicyDataError,
+    resolve_and_evaluate_data_access,
+)
 from app.database import get_db
 from app.models.ingestion import (
     IngestionCollection,
@@ -202,6 +206,36 @@ def _resolve_collection(
     working unchanged.
     """
     return _require_collection_access(db, user, collection_id)
+
+
+def _require_document_data_clearance(
+    db: Session, *, user: User, document: IngestionDocument
+) -> None:
+    """Require canonical data authority in addition to management ACL.
+
+    Inspector endpoints expose document bytes (or direct derivatives of those
+    bytes), so collection ownership/admin status is never sufficient.  The
+    shared evaluator checks classification, every required compartment,
+    need-to-know, and collection membership under one active grant.
+    """
+
+    try:
+        decision = resolve_and_evaluate_data_access(
+            db,
+            user_id=user.id,
+            collection_id=document.collection_id,
+            document_id=document.id,
+        )
+    except (LookupError, ClearancePolicyDataError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="clearance policy data invalid; document access denied",
+        ) from exc
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="clearance/compartment/need-to-know/collection grant insufficient",
+        )
 
 
 def _locked_collection_classification(db: Session, collection_id: int) -> str:
@@ -1016,6 +1050,7 @@ async def list_document_chunks(
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
     coll = _resolve_collection(db, current_user, doc.collection_id)
+    _require_document_data_clearance(db, user=current_user, document=doc)
 
     try:
         pool = get_pool()
@@ -1082,6 +1117,7 @@ async def get_chunk_embedding_debug(
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
     coll = _resolve_collection(db, current_user, doc.collection_id)
+    _require_document_data_clearance(db, user=current_user, document=doc)
 
     try:
         pool = get_pool()
@@ -1134,6 +1170,7 @@ def download_document_blob(
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
     _resolve_collection(db, current_user, doc.collection_id)  # auth check
+    _require_document_data_clearance(db, user=current_user, document=doc)
 
     if not doc.storage_path or not os.path.exists(doc.storage_path):
         raise HTTPException(status_code=410, detail="Blob no longer on disk")

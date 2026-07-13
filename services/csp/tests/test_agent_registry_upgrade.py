@@ -21,7 +21,7 @@ import os
 
 os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -32,6 +32,7 @@ from app.models.agent import Agent
 from app.models.trace_span import TraceSpan
 from app.schemas.contracts.agents import AgentManifest, RuntimeType
 from app.services import agent_credential_service
+from app.services import startup_security
 from tests.conftest import login, make_agent, make_model, make_user
 
 pytestmark = pytest.mark.filterwarnings("ignore")
@@ -331,6 +332,46 @@ class TestApprovalStateMachine:
 
 
 class TestTraceTest:
+    def test_signed_pilot_denies_unapproved_trace_test_before_outbound(
+        self, client, db, monkeypatch
+    ):
+        dev = make_user(db, username="tt_pilot_dev", role="developer")
+        admin = make_user(db, username="tt_pilot_admin", role="admin")
+        agent = make_agent(
+            db, dev, name="tt-pilot-denied", approval_status="pending_trace_test"
+        )
+        _issue_cred(db, agent, admin)
+        monkeypatch.setattr(health.settings, "ANILA_PILOT_MODE", True)
+        now = datetime.now(timezone.utc)
+        monkeypatch.setattr(
+            startup_security,
+            "_verified_pilot_admission",
+            type(
+                "Admission",
+                (),
+                {
+                    "valid_from": now - timedelta(minutes=1),
+                    "valid_until": now + timedelta(minutes=1),
+                    "enabled_callsites": frozenset({"csp.chat_model"}),
+                },
+            )(),
+        )
+
+        class _NoOutbound:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("trace-test reached outbound client")
+
+        monkeypatch.setattr(health.httpx, "AsyncClient", _NoOutbound)
+        token = login(client, dev.username)
+
+        response = client.post(
+            f"/api/agents/{agent.id}/trace-test", headers=_bearer(token)
+        )
+
+        assert response.status_code == 403
+        assert "pilot" in response.json()["detail"].lower()
+        assert "csp.agent_trace_test" in response.json()["detail"]
+
     def test_pass_transitions_state_and_stamps(
         self, client, db, db_engine, monkeypatch
     ):

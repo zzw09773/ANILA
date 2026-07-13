@@ -49,6 +49,10 @@ from app.models.ingestion import (
     UserLlmCredential,
 )
 from app.models.user import User
+from app.modules.clearance.service import (
+    ClearancePolicyDataError,
+    resolve_and_evaluate_data_access,
+)
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import get_current_user
 from app.services.ingestion_queue import enqueue_evaluator_run
@@ -172,6 +176,32 @@ async def create_eval_run(
                 "sample_document_ids contains documents that don't belong to "
                 "this collection"
             ),
+        )
+
+    # Evaluator input is raw document data, not collection-management
+    # metadata.  Every sampled document must pass the same canonical
+    # classification/compartment/NTK evaluator used by production retrieval.
+    # The worker repeats this check immediately before reading the blobs and
+    # before any external judge call because queued authority can expire.
+    try:
+        decisions = [
+            resolve_and_evaluate_data_access(
+                db,
+                user_id=current_user.id,
+                collection_id=payload.collection_id,
+                document_id=document.id,
+            )
+            for document in docs
+        ]
+    except (LookupError, ClearancePolicyDataError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="clearance policy data invalid; evaluator denied",
+        ) from exc
+    if not all(decision.allowed for decision in decisions):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="evaluator requires clearance for every sampled document",
         )
 
     # Validate every expected_doc_id is in sample_document_ids — otherwise

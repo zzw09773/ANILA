@@ -96,7 +96,7 @@ def test_disabled_repository_template_is_evidence_not_approval() -> None:
         profile_path=TEMPLATE,
         allow_disabled_template=True,
     )
-    assert result == {"callsites": 25, "enabled": 0, "pilot_enabled": False}
+    assert result == {"callsites": 26, "enabled": 0, "pilot_enabled": False}
     with pytest.raises(PilotPolicyError, match="not an approval"):
         verify(inventory_path=INVENTORY, profile_path=TEMPLATE)
 
