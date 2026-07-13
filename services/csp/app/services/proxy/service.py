@@ -161,8 +161,9 @@ def _lock_registry_admission(
 
     This closes the model-registry TOCTOU window: an endpoint swap or ceiling
     downgrade committed after the handler's first check is observed here and
-    denied; once this query succeeds, ``FOR UPDATE`` remains held by the
-    request session until the outbound operation completes.
+    denied. Streaming callers immediately commit this snapshot before network
+    I/O so the lock is not held for the SSE lifetime; synchronous callers keep
+    the request transaction until their durable closure.
     """
     if (
         governance_db is None
@@ -241,10 +242,29 @@ def _lock_registry_admission(
             status_code=403,
             detail="模型分類上限在 admission 後降低，已拒絕出向呼叫",
         )
-    # Deliberately do not commit/rollback here: the request-owned session
-    # holds this row lock across the immediately following async outbound and
-    # releases it when the request transaction ends.
+    # The caller chooses the lock lifetime. ``proxy_stream`` commits the
+    # snapshot before opening SSE; synchronous paths release it in closure.
     return locked
+
+
+def _commit_stream_admission(governance_db) -> None:
+    """Durably publish the admission snapshot and release all row locks.
+
+    The outbound URL and ceiling have already been copied into plain request
+    values and revalidated while the Task/TaskRun and registry rows were
+    locked.  Committing here makes that decision atomic without pinning a DB
+    connection for the (bounded, but potentially long) SSE lifetime.
+    """
+    if governance_db is None:
+        return
+    try:
+        governance_db.commit()
+    except Exception as exc:
+        governance_db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="推論 admission 無法提交，已拒絕出向呼叫",
+        ) from exc
 
 
 def lock_agent_registry_admission(
@@ -851,6 +871,43 @@ async def _proxy_stream_impl(
     prompt_text = _serialize_request_for_usage(body)
     completion_parts: list[str] = []
     pending_done_block: str | None = None
+    stream_started = time.monotonic()
+    stream_events = 0
+    stream_bytes = 0
+
+    def _check_stream_limits(line: str, *, event: bool = False) -> None:
+        nonlocal stream_events, stream_bytes
+        stream_bytes += len(line.encode("utf-8", errors="replace")) + 1
+        if event:
+            stream_events += 1
+        if time.monotonic() - stream_started > settings.PROXY_STREAM_MAX_SECONDS:
+            raise HTTPException(status_code=504, detail="下游串流超過總時限")
+        if stream_events > settings.PROXY_STREAM_MAX_EVENTS:
+            raise HTTPException(status_code=502, detail="下游串流事件數超過上限")
+        if stream_bytes > settings.PROXY_STREAM_MAX_BYTES:
+            raise HTTPException(status_code=502, detail="下游串流資料量超過上限")
+
+    def _capture_reported_usage() -> None:
+        """Snapshot usage as soon as upstream reports it.
+
+        If the client disconnects after the usage frame but before ``[DONE]``,
+        the wrapper can still persist metering in the failed durable closure.
+        """
+        if task_id is None or usage_capture is None or not usage_seen:
+            return
+        usage_capture["record"] = UsageRecordData(
+            api_key_id=api_key_id,
+            user_id=user_id,
+            department_id=department_id,
+            model_id=usage_model_id,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+            request_duration_ms=int((time.time() - start_time) * 1000),
+            conversation_id=conversation_id,
+            caller_agent_id=caller_agent_id,
+            caller_client_id=caller_client_id,
+        )
 
     try:
         async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
@@ -881,8 +938,10 @@ async def _proxy_stream_impl(
 
                 block_lines: list[str] = []
                 async for line in resp.aiter_lines():
+                    _check_stream_limits(line)
                     if line == "":
                         if block_lines:
+                            _check_stream_limits("", event=True)
                             block = "\n".join(block_lines)
                             event_name, data = _parse_sse_block(block)
                             if data == "[DONE]":
@@ -901,6 +960,7 @@ async def _proxy_stream_impl(
                                             usage_seen = True
                                             prompt_tokens = usage.get("prompt_tokens", 0)
                                             completion_tokens = usage.get("completion_tokens", 0)
+                                            _capture_reported_usage()
                                     except (json.JSONDecodeError, KeyError):
                                         pass
                                 yield _emit(block, event_name, data)
@@ -908,6 +968,7 @@ async def _proxy_stream_impl(
                         continue
                     block_lines.append(line)
                 if block_lines:
+                    _check_stream_limits("", event=True)
                     block = "\n".join(block_lines)
                     event_name, data = _parse_sse_block(block)
                     if data == "[DONE]":
@@ -926,6 +987,7 @@ async def _proxy_stream_impl(
                                     usage_seen = True
                                     prompt_tokens = usage.get("prompt_tokens", 0)
                                     completion_tokens = usage.get("completion_tokens", 0)
+                                    _capture_reported_usage()
                             except (json.JSONDecodeError, KeyError):
                                 pass
                         yield _emit(block, event_name, data)
@@ -1090,6 +1152,7 @@ async def proxy_stream(
             admitted_classification_level=effective_level,
             inference_callsite_id=inference_callsite_id,
         )
+        _commit_stream_admission(governance_db)
         async for chunk in _proxy_stream_impl(
             target_url=target_url,
             api_key_id=api_key_id,
@@ -1178,11 +1241,9 @@ async def proxy_stream(
                                 else usage_model_id
                             ),
                             target_name=model_name,
-                            usage=(
-                                usage_capture.get("record")
-                                if status == "completed"
-                                else None
-                            ),
+                            # Metering is factual even when delivery was
+                            # cancelled after the upstream usage frame.
+                            usage=usage_capture.get("record"),
                             error=error,
                             classification_level=admitted_classification_level,
                             callsite=inference_callsite_id,

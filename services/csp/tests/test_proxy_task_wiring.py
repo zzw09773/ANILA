@@ -28,6 +28,7 @@ import os
 os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -505,6 +506,31 @@ class TestLegacyNoTaskHeader:
         assert db.query(PolicyDecision).count() == 0
 
 
+def test_ceiling_preflight_does_not_leave_allow_when_retrieval_fails(
+    client: TestClient, db: Session, monkeypatch, task_sessions, captured_usage,
+):
+    admin = make_user(db, username="preflight_no_phantom_allow", role="admin")
+    model = make_model(db, name="preflight-no-phantom-model")
+    task = _make_task(db, admin)
+
+    async def fail_retrieval(*_args, **_kwargs):
+        raise HTTPException(status_code=503, detail="synthetic retrieval failure")
+
+    monkeypatch.setattr(proxy_api, "_prepare_server_retrieval", fail_retrieval)
+    response = client.post(
+        "/v1/chat/completions",
+        headers={**_bearer(_jwt(admin)), "X-ANILA-Task-Id": str(task.id)},
+        json={
+            "model": model.name,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert response.status_code == 503
+    assert db.query(PolicyDecision).filter_by(
+        task_id=task.id, action="model.invoke", decision="allow"
+    ).count() == 0
+
+
 # ── Access control: unknown / foreign / malformed task ─────────────────────
 
 
@@ -711,6 +737,60 @@ class TestServiceTokenCaller:
                   "messages": [{"role": "user", "content": "hi"}]},
         )
         assert resp.status_code == 403
+
+
+def test_image_service_hop_rejects_non_agent_service_identity(
+    client: TestClient, db: Session, monkeypatch,
+):
+    from app.services.agent_credential_service import CallerIdentity
+
+    monkeypatch.setattr(
+        proxy_api.agent_credential_service,
+        "verify_service_token",
+        lambda *_args, **_kwargs: CallerIdentity(
+            kind="service_client", agent_id=None, service_client_id=7,
+            credential_id=7, is_legacy=False, used_previous_token=False,
+        ),
+    )
+    response = client.post(
+        "/v1/images/generations",
+        headers={
+            "X-CSP-Service-Token": "csk-router",
+            "X-ANILA-User-Id": "990000001",
+            "X-ANILA-Task-Id": "1",
+        },
+        json={"model": "governed-flux", "prompt": "x"},
+    )
+    assert response.status_code == 403
+    assert "具名 agent" in response.json()["detail"]
+
+
+def test_image_service_hop_rejects_wrong_named_agent_identity(
+    client: TestClient, db: Session, monkeypatch,
+):
+    from app.services.agent_credential_service import CallerIdentity
+
+    owner = make_user(db, username="image_agent_owner", role="admin")
+    wrong = make_agent(db, owner, name="not-image-generator", approval_status="approved")
+    monkeypatch.setattr(
+        proxy_api.agent_credential_service,
+        "verify_service_token",
+        lambda *_args, **_kwargs: CallerIdentity(
+            kind="agent", agent_id=wrong.id, service_client_id=None,
+            credential_id=9, is_legacy=False, used_previous_token=False,
+        ),
+    )
+    response = client.post(
+        "/v1/images/generations",
+        headers={
+            "X-CSP-Service-Token": "csk-wrong-agent",
+            "X-ANILA-User-Id": "990000001",
+            "X-ANILA-Task-Id": "1",
+        },
+        json={"model": "governed-flux", "prompt": "x"},
+    )
+    assert response.status_code == 403
+    assert "image-generator" in response.json()["detail"]
 
 
 # ── Header builder unit tests ───────────────────────────────────────────────

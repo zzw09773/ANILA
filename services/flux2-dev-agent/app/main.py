@@ -11,6 +11,7 @@ what uvicorn imports.
 from __future__ import annotations
 
 import json
+import hmac
 import logging
 import os
 import time
@@ -38,6 +39,7 @@ def build_app(
     image_store: ImageStore,
     backend_resolver: _BackendResolverProto,
     default_aspect_ratio: str,
+    inbound_service_token: str,
 ) -> FastAPI:
     app = FastAPI(title="flux2-dev-agent", version="0.1.0")
     handler = ChatHandler(
@@ -80,6 +82,11 @@ def build_app(
     async def _chat_completions(
         req: ChatCompletionRequest, request: Request
     ):  # pyright: ignore[reportUnusedFunction]
+        presented = request.headers.get("X-CSP-Service-Token", "")
+        if not inbound_service_token:
+            raise HTTPException(status_code=503, detail="agent inbound auth 未設定")
+        if not presented or not hmac.compare_digest(presented, inbound_service_token):
+            raise HTTPException(status_code=401, detail="無效的 CSP agent credential")
         try:
             response = await handler.handle(
                 req,
@@ -135,7 +142,10 @@ def _build_from_env() -> FastAPI:
     # CSP_API_KEY Bearer,是給 gemma4 chat completions 用的,跟這裡的服務
     # 端認證是兩回事);沒設就送不帶 header 的請求,CSP 會回 401,fetcher
     # 照樣 fallback 到 env(見錯誤處理表),行為等同「功能關閉」。
-    csp_service_token = os.environ.get("CSP_SERVICE_TOKEN", "").strip()
+    # This is the image-generator's own per-agent credential.  It authenticates
+    # both CSP -> agent and the governed agent -> CSP callback; it must not be
+    # the fleet-wide legacy service token.
+    csp_service_token = os.environ.get("FLUX_AGENT_SERVICE_TOKEN", "").strip()
     image_via_csp = os.environ.get("GATE2_IMAGE_VIA_CSP", "1") == "1"
     gemma_model = os.environ.get("GEMMA_MODEL", "gemma4")
     enable_translation = os.environ.get("ENABLE_PROMPT_TRANSLATION", "1") == "1"
@@ -151,7 +161,8 @@ def _build_from_env() -> FastAPI:
         )
     if not csp_service_token:
         logger.info(
-            "CSP_SERVICE_TOKEN 未設定;image-primary 熱抓取會被 CSP 拒絕"
+            "FLUX_AGENT_SERVICE_TOKEN 未設定;inbound/callback 會 fail-closed，"
+            "image-primary 熱抓取會被 CSP 拒絕"
             "(401),FLUX 端點/模型固定用 env FLUX_BACKEND_URL/FLUX_MODEL。"
         )
 
@@ -189,6 +200,7 @@ def _build_from_env() -> FastAPI:
         image_store=store,
         backend_resolver=backend_resolver,
         default_aspect_ratio=aspect_ratio,
+        inbound_service_token=csp_service_token,
     )
 
 

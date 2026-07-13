@@ -40,6 +40,7 @@ def client(tmp_path: Path) -> TestClient:
         image_store=ImageStore(local_dir=tmp_path, public_url_prefix="/uploads/flux"),
         backend_resolver=backend_resolver,
         default_aspect_ratio="16:9",
+        inbound_service_token="csk-image-test",
     )
     return TestClient(app)
 
@@ -53,6 +54,7 @@ def test_health_returns_200(client: TestClient):
 def test_chat_completions_returns_openai_shape(client: TestClient):
     resp = client.post(
         "/v1/chat/completions",
+        headers={"X-CSP-Service-Token": "csk-image-test"},
         json={
             "model": "image-generator",
             "messages": [{"role": "user", "content": "畫一張坦克"}],
@@ -65,9 +67,25 @@ def test_chat_completions_returns_openai_shape(client: TestClient):
     assert "![](" in body["choices"][0]["message"]["content"]
 
 
+def test_chat_completions_rejects_missing_or_wrong_csp_credential(
+    client: TestClient,
+):
+    body = {
+        "model": "image-generator",
+        "messages": [{"role": "user", "content": "畫一張坦克"}],
+    }
+    assert client.post("/v1/chat/completions", json=body).status_code == 401
+    assert client.post(
+        "/v1/chat/completions",
+        headers={"X-CSP-Service-Token": "csk-other-agent"},
+        json=body,
+    ).status_code == 401
+
+
 def test_chat_completions_rejects_empty_messages(client: TestClient):
     resp = client.post(
         "/v1/chat/completions",
+        headers={"X-CSP-Service-Token": "csk-image-test"},
         json={"model": "image-generator", "messages": []},
     )
     assert resp.status_code == 422
@@ -124,11 +142,13 @@ def test_chat_completions_returns_502_when_flux_fails(tmp_path: Path):
         image_store=ImageStore(local_dir=tmp_path, public_url_prefix="/uploads/flux"),
         backend_resolver=backend_resolver,
         default_aspect_ratio="16:9",
+        inbound_service_token="csk-image-test",
     )
     client = TestClient(app)
 
     resp = client.post(
         "/v1/chat/completions",
+        headers={"X-CSP-Service-Token": "csk-image-test"},
         json={
             "model": "image-generator",
             "messages": [{"role": "user", "content": "畫一張坦克"}],
@@ -151,6 +171,7 @@ def test_chat_completions_streaming_emits_sse_with_content(client: TestClient):
     """
     resp = client.post(
         "/v1/chat/completions",
+        headers={"X-CSP-Service-Token": "csk-image-test"},
         json={
             "model": "image-generator",
             "stream": True,

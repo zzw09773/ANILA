@@ -123,6 +123,28 @@ def test_flush_groups_by_trace_id() -> None:
     assert by_url["http://csp.local/v1/traces/t-B/spans"] == [{"span_id": "2"}]
 
 
+def test_shared_exporter_keeps_request_task_and_user_context_isolated() -> None:
+    sink: list = []
+    exp = _make_exporter(sink)
+    first = TraceSession(
+        exp, "trace-A", task_id="41", user_identity="990000001"
+    )
+    second = TraceSession(
+        exp, "trace-B", task_id="42", user_identity="990000002"
+    )
+    with first.span("agent.run.finished", "a"):
+        pass
+    with second.span("agent.run.finished", "b"):
+        pass
+    exp.flush()
+
+    by_trace = {call["url"].split("/")[-2]: call for call in sink}
+    assert by_trace["trace-A"]["headers"]["X-ANILA-Task-Id"] == "41"
+    assert by_trace["trace-A"]["headers"]["X-ANILA-User-Id"] == "990000001"
+    assert by_trace["trace-B"]["headers"]["X-ANILA-Task-Id"] == "42"
+    assert by_trace["trace-B"]["headers"]["X-ANILA-User-Id"] == "990000002"
+
+
 def test_batch_capped_at_256() -> None:
     sink: list = []
     exp = _make_exporter(sink, batch_size=256)

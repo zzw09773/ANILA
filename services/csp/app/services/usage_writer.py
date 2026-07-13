@@ -1,7 +1,6 @@
 """Async queue-based usage writer to avoid SQLite write contention."""
 import asyncio
 import logging
-import time
 from datetime import datetime, timezone
 from app.database import SessionLocal
 from app.models.token_usage import TokenUsage
@@ -113,8 +112,15 @@ async def _flush_batch(batch: list[dict]):
         except Exception as exc:
             if _is_transient(exc) and attempt < 3:
                 logger.warning("用量 DB 暫時性錯誤，重試 %s/3: %s", attempt, exc)
-                time.sleep(0.01 * attempt)
+                await asyncio.sleep(0.01 * attempt)
                 continue
+            if _is_transient(exc):
+                # A connection/serialization/deadlock exhaustion says
+                # nothing about row validity.  Propagate so the owning loop
+                # retains and retries the whole legal batch; never bisect and
+                # discard it as poison data.
+                logger.error("用量 DB 暫時性錯誤重試耗盡，保留 batch: %s", exc)
+                raise
             if len(batch) > 1:
                 midpoint = len(batch) // 2
                 logger.error(

@@ -91,6 +91,12 @@ class Settings(BaseSettings):
     # Proxy Timeouts (seconds)
     EMBEDDING_TIMEOUT: int = 30
     LLM_TIMEOUT: int = 120
+    # Hard ceilings for outbound SSE.  The httpx read timeout only limits an
+    # idle socket; a peer that keeps sending heartbeats could otherwise hold
+    # a request and its resources forever.
+    PROXY_STREAM_MAX_SECONDS: float = 300.0
+    PROXY_STREAM_MAX_EVENTS: int = 10000
+    PROXY_STREAM_MAX_BYTES: int = 16 * 1024 * 1024
 
     # 出向模型 gateway 的 API key (選配,預設空 = 不注入,行為不變)。
     # 內網拓撲下模型不直連 — 走 10.53.100.12 My-OpenAI-Frontend 的

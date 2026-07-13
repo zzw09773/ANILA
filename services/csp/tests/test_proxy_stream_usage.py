@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from fastapi import HTTPException
 
 from app.services import proxy_service
 from app.services.proxy import service as proxy_impl
@@ -244,3 +245,76 @@ def test_proxy_stream_preserves_custom_anila_events(monkeypatch):
     assert "event: anila.trace" in joined
     assert "event: anila.meta" in joined
     assert '"trace_id":"trace-1"' in joined
+
+
+def test_proxy_stream_enforces_total_byte_ceiling(monkeypatch):
+    lines = ['data: {"choices":[{"delta":{"content":"too large"}}]}', ""]
+    monkeypatch.setattr(
+        proxy_service.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: _FakeAsyncClient(lines, *args, **kwargs),
+    )
+    monkeypatch.setattr(proxy_impl.settings, "PROXY_STREAM_MAX_BYTES", 8)
+
+    async def run():
+        async for _ in proxy_service.proxy_stream(
+            target_url="http://mock-llm/v1/chat/completions",
+            api_key_id=1,
+            user_id=2,
+            department_id=None,
+            usage_model_id=3,
+            request_body={"model": "m", "messages": []},
+        ):
+            pass
+
+    with pytest.raises(HTTPException, match="資料量"):
+        asyncio.run(run())
+
+
+def test_cancel_after_usage_preserves_usage_in_failed_closure(monkeypatch):
+    lines = [
+        'data: {"choices":[{"delta":{}}],"usage":{"prompt_tokens":5,"completion_tokens":3}}',
+        "",
+        'data: {"choices":[{"delta":{"content":"later"}}]}',
+        "",
+    ]
+    monkeypatch.setattr(
+        proxy_service.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: _FakeAsyncClient(lines, *args, **kwargs),
+    )
+    monkeypatch.setattr(proxy_impl, "_lock_task_run_admission", lambda **_: "無機密")
+    monkeypatch.setattr(proxy_impl, "_lock_registry_admission", lambda **_: None)
+    monkeypatch.setattr(proxy_impl, "_commit_stream_admission", lambda _db: None)
+    captured = []
+    monkeypatch.setattr(
+        proxy_impl,
+        "persist_task_call_closure",
+        lambda _db, closure: captured.append(closure),
+    )
+
+    class _DB:
+        def rollback(self):
+            pass
+
+    async def run():
+        stream = proxy_service.proxy_stream(
+            target_url="http://mock-llm/v1/chat/completions",
+            api_key_id=1,
+            user_id=2,
+            department_id=None,
+            usage_model_id=3,
+            request_body={"model": "m", "messages": []},
+            task_id=10,
+            task_trace_id="trace-10",
+            task_run_id=11,
+            governance_db=_DB(),
+            admitted_classification_level="無機密",
+        )
+        await anext(stream)
+        await stream.aclose()
+
+    asyncio.run(run())
+    assert captured
+    assert captured[-1].status == "failed"
+    assert captured[-1].usage.total_tokens == 8

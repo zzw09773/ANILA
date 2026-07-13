@@ -482,8 +482,9 @@ services:
       CSP_BASE_URL: http://csp:8000
       # agent 打 csp 拉 gemma4 翻譯 + JWKS,prod fail-loud(缺值直接停)。
       CSP_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
-      # image-primary fetcher 打 csp GET /api/models/image-primary 用。
-      CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set (same value as csp)}
+      # image-generator 自身的具名 agent credential；需與 CSP
+      # agent_credentials 內該 agent 的有效 token 一致，不可用 fleet token。
+      FLUX_AGENT_SERVICE_TOKEN: ${FLUX_AGENT_SERVICE_TOKEN:?FLUX_AGENT_SERVICE_TOKEN must match image-generator credential}
       GEMMA_MODEL: gemma4
       ENABLE_PROMPT_TRANSLATION: "1"
       SHARE_DIR: /share/flux

@@ -106,6 +106,7 @@ def _enforce_ceiling(
     trusted_classification_level: str | ClassificationLevel | None = None,
     effective_level_override: ClassificationLevel | None = None,
     require_explicit_authority: bool = False,
+    record_allow: bool = True,
 ) -> str:
     """Shared ceiling gate for model.invoke and agent.invoke."""
     from app.modules.policy import evaluate_classification_ceiling, record_decision
@@ -243,7 +244,7 @@ def _enforce_ceiling(
         raise HTTPException(status_code=403, detail=reason)
 
     # pass:僅 task-linked 記 allow(避免 legacy 灌爆 policy_decisions)。
-    if task_ctx is not None:
+    if task_ctx is not None and record_allow:
         record_task_policy_decision(
             db,
             task_ctx=task_ctx,
@@ -268,6 +269,7 @@ def enforce_model_ceiling(
     trusted_classification_level: str | ClassificationLevel | None = None,
     effective_level_override: ClassificationLevel | None = None,
     require_explicit_authority: bool = False,
+    record_allow: bool = True,
 ) -> str:
     """出向前分類 ceiling 把關。違反 → 403 + deny 列 + 不發出向。
 
@@ -288,6 +290,7 @@ def enforce_model_ceiling(
         trusted_classification_level=trusted_classification_level,
         effective_level_override=effective_level_override,
         require_explicit_authority=require_explicit_authority,
+        record_allow=record_allow,
     )
 
 
@@ -301,6 +304,7 @@ def enforce_agent_ceiling(
     commit: bool = True,
     trusted_classification_level: str | ClassificationLevel | None = None,
     require_explicit_authority: bool = False,
+    record_allow: bool = True,
 ) -> str:
     """Agent dispatch 前分類 ceiling 把關。違反 → 403 + deny 列 + 不 dispatch."""
     return _enforce_ceiling(
@@ -315,4 +319,5 @@ def enforce_agent_ceiling(
         commit=commit,
         trusted_classification_level=trusted_classification_level,
         require_explicit_authority=require_explicit_authority,
+        record_allow=record_allow,
     )

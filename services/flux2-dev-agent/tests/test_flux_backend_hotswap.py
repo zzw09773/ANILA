@@ -78,6 +78,7 @@ def _build_client(tmp_path: Path, *, ttl_seconds: float = 60.0) -> TestClient:
         image_store=ImageStore(local_dir=tmp_path, public_url_prefix="/uploads/flux"),
         backend_resolver=resolver,
         default_aspect_ratio="16:9",
+        inbound_service_token="svc-token",
     )
     return TestClient(app)
 
@@ -85,6 +86,7 @@ def _build_client(tmp_path: Path, *, ttl_seconds: float = 60.0) -> TestClient:
 def _generate(client: TestClient) -> httpx.Response:
     return client.post(
         "/v1/chat/completions",
+        headers={"X-CSP-Service-Token": "svc-token"},
         json={"model": "image-generator", "messages": [{"role": "user", "content": "畫一張坦克"}]},
     )
 

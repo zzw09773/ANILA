@@ -708,12 +708,22 @@ def _image_inference_caller(
     )
     if identity is None:
         raise HTTPException(status_code=401, detail="無效的 service token")
+    if identity.kind != "agent" or identity.agent_id is None:
+        raise HTTPException(status_code=403, detail="圖像推論只接受具名 agent 委派")
+    delegated_agent = db.get(Agent, identity.agent_id)
+    if (
+        delegated_agent is None
+        or delegated_agent.name != "image-generator"
+        or delegated_agent.approval_status != "approved"
+    ):
+        raise HTTPException(status_code=403, detail="service token 不屬於核准的 image-generator")
     employee_id = (request.headers.get("X-ANILA-User-Id") or "").strip()
     user = db.query(User).filter(
         User.username == employee_id, User.is_active.is_(True)
     ).first()
     if user is None:
         raise HTTPException(status_code=403, detail="圖像推論缺少有效的轉發申請人")
+    request.state.image_delegating_agent_id = identity.agent_id
     return Caller(user=user, api_key_id=None)
 
 
@@ -880,7 +890,7 @@ async def image_generations(
     )
     if model is None:
         raise HTTPException(status_code=404, detail="找不到啟用中的圖像模型")
-    if not request.headers.get("X-CSP-Service-Token") and not check_model_permission(
+    if not check_model_permission(
         db, user=caller.user, api_key_id=caller.api_key_id, model_id=model.id
     ):
         raise HTTPException(status_code=403, detail="無權使用此圖像模型")
@@ -1130,6 +1140,7 @@ async def chat_completions(
             task_ctx=task_ctx,
             conv_id_int=conv_id_int,
             trusted_classification_level=agent_level,
+            record_allow=False,
         )
     else:
         enforce_model_ceiling(
@@ -1138,6 +1149,7 @@ async def chat_completions(
             caller=caller,
             task_ctx=task_ctx,
             conv_id_int=conv_id_int,
+            record_allow=False,
         )
 
     stage = "retrieval"

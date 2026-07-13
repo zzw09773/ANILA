@@ -87,6 +87,7 @@ class DeploymentContainmentTests(unittest.TestCase):
                 "CSP_DB_PASSWORD": "abcdef0123456789abcdef0123456789",
                 "CSP_SECRET_KEY": "0123456789abcdef0123456789abcdef",
                 "CSP_SERVICE_TOKEN": "abcdef0123456789abcdef0123456789",
+                "FLUX_AGENT_SERVICE_TOKEN": "csk-image-generator-synthetic-test",
                 "INTERNAL_PLATFORM_API_KEY": (
                     "sk-internal-0123456789abcdef0123456789abcdef"
                 ),

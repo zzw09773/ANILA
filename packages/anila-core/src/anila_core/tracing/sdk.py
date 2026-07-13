@@ -225,7 +225,12 @@ class TraceExporter:
         self._user_identity = user_identity
         self._client_factory = client_factory
 
-        self._queue: deque[tuple[str, dict[str, Any]]] = deque()
+        # Per-span request context is queued with the span.  A process-wide
+        # exporter is shared by concurrent Router requests, so task/user
+        # attribution must never live only on the exporter instance.
+        self._queue: deque[
+            tuple[str, dict[str, Any], int | str | None, str | None]
+        ] = deque()
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._stopping = threading.Event()
@@ -262,7 +267,14 @@ class TraceExporter:
 
     # -- enqueue --------------------------------------------------------
 
-    def enqueue(self, trace_id: str, span: dict[str, Any]) -> None:
+    def enqueue(
+        self,
+        trace_id: str,
+        span: dict[str, Any],
+        *,
+        task_id: int | str | None = None,
+        user_identity: str | None = None,
+    ) -> None:
         """Queue one span for ``trace_id``. Non-blocking, never raises."""
         if not trace_id or not isinstance(span, dict):
             return
@@ -270,7 +282,14 @@ class TraceExporter:
             if len(self._queue) >= self._max_queue:
                 self.dropped += 1
                 return
-            self._queue.append((trace_id, span))
+            self._queue.append(
+                (
+                    trace_id,
+                    span,
+                    task_id if task_id is not None else self._task_id,
+                    user_identity or self._user_identity,
+                )
+            )
             should_wake = len(self._queue) >= self._batch_size
         if should_wake:
             self._wake.set()
@@ -296,25 +315,34 @@ class TraceExporter:
             except Exception:  # pragma: no cover — defensive; never break worker
                 logger.exception("trace exporter flush loop error")
 
-    def _drain_batches(self) -> list[tuple[str, list[dict[str, Any]]]]:
+    def _drain_batches(
+        self,
+    ) -> list[tuple[str, int | str | None, str | None, list[dict[str, Any]]]]:
         """Pop the queue and group by trace_id into ≤256-span batches."""
         with self._lock:
             items = list(self._queue)
             self._queue.clear()
         # Preserve order but group contiguous-by-trace to respect the
         # per-trace endpoint while capping each POST at _MAX_BATCH.
-        batches: list[tuple[str, list[dict[str, Any]]]] = []
-        grouped: dict[str, list[dict[str, Any]]] = {}
-        order: list[str] = []
-        for trace_id, span in items:
-            if trace_id not in grouped:
-                grouped[trace_id] = []
-                order.append(trace_id)
-            grouped[trace_id].append(span)
-        for trace_id in order:
-            spans = grouped[trace_id]
+        batches: list[
+            tuple[str, int | str | None, str | None, list[dict[str, Any]]]
+        ] = []
+        grouped: dict[
+            tuple[str, int | str | None, str | None], list[dict[str, Any]]
+        ] = {}
+        order: list[tuple[str, int | str | None, str | None]] = []
+        for trace_id, span, task_id, user_identity in items:
+            key = (trace_id, task_id, user_identity)
+            if key not in grouped:
+                grouped[key] = []
+                order.append(key)
+            grouped[key].append(span)
+        for trace_id, task_id, user_identity in order:
+            spans = grouped[(trace_id, task_id, user_identity)]
             for i in range(0, len(spans), _MAX_BATCH):
-                batches.append((trace_id, spans[i : i + _MAX_BATCH]))
+                batches.append(
+                    (trace_id, task_id, user_identity, spans[i : i + _MAX_BATCH])
+                )
         return batches
 
     def flush(self) -> None:
@@ -322,8 +350,13 @@ class TraceExporter:
         batches = self._drain_batches()
         if not batches:
             return
-        for trace_id, spans in batches:
-            self._post(trace_id, spans)
+        for trace_id, task_id, user_identity, spans in batches:
+            self._post(
+                trace_id,
+                spans,
+                task_id=task_id,
+                user_identity=user_identity,
+            )
 
     def _build_client(self) -> Any:
         if self._client_factory is not None:
@@ -332,7 +365,14 @@ class TraceExporter:
 
         return httpx.Client(timeout=self._timeout)
 
-    def _post(self, trace_id: str, spans: list[dict[str, Any]]) -> None:
+    def _post(
+        self,
+        trace_id: str,
+        spans: list[dict[str, Any]],
+        *,
+        task_id: int | str | None,
+        user_identity: str | None,
+    ) -> None:
         url = f"{self._base_url}/v1/traces/{trace_id}/spans"
         headers = {"Content-Type": "application/json"}
         try:
@@ -345,10 +385,10 @@ class TraceExporter:
                 if self._header_name.lower() == "authorization"
                 else token
             )
-        if self._task_id is not None:
-            headers["X-ANILA-Task-Id"] = str(self._task_id)
-        if self._user_identity:
-            headers["X-ANILA-User-Id"] = self._user_identity
+        if task_id is not None:
+            headers["X-ANILA-Task-Id"] = str(task_id)
+        if user_identity:
+            headers["X-ANILA-User-Id"] = user_identity
         try:
             client = self._build_client()
             try:
@@ -393,10 +433,14 @@ class TraceSession:
         trace_id: str,
         *,
         producer: Optional[str] = None,
+        task_id: int | str | None = None,
+        user_identity: str | None = None,
     ) -> None:
         self._exporter = exporter
         self.trace_id = trace_id
         self._producer = producer
+        self._task_id = task_id
+        self._user_identity = user_identity
         self._stack: list[str] = []
         # Finished span dicts, in close order — mirrored into anila.spans SSE.
         self.spans: list[dict[str, Any]] = []
@@ -439,7 +483,12 @@ class TraceSession:
         self.spans.append(span_dict)
         if self._exporter is not None:
             try:
-                self._exporter.enqueue(self.trace_id, span_dict)
+                self._exporter.enqueue(
+                    self.trace_id,
+                    span_dict,
+                    task_id=self._task_id,
+                    user_identity=self._user_identity,
+                )
             except Exception:  # pragma: no cover — exporter is fail-open already
                 logger.debug("trace enqueue failed", exc_info=True)
         return span_dict
