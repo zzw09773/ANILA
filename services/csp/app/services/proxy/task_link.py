@@ -371,20 +371,44 @@ def reconcile_stale_task_runs(
     from app.modules.policy import record_decision
 
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)
-    runs = (
-        db.query(TaskRun)
-        .filter(TaskRun.status == "running", TaskRun.started_at < cutoff)
-        .order_by(TaskRun.id)
-        .limit(limit)
-        .with_for_update(skip_locked=True)
-        .all()
-    )
-    closed = 0
-    for run in runs:
-        task = (
-            db.query(Task).filter(Task.id == run.task_id).with_for_update().one()
+    # Candidate discovery intentionally takes no row lock.  Every mutator then
+    # follows the canonical parent-first order Task -> TaskRun; the previous
+    # Run -> Task order could deadlock against finalization/admission.
+    candidate_ids = [
+        int(run_id)
+        for (run_id,) in (
+            db.query(TaskRun.id)
+            .filter(TaskRun.status == "running", TaskRun.started_at < cutoff)
+            .order_by(TaskRun.id)
+            .limit(limit)
+            .all()
         )
-        if run.status != "running":
+    ]
+    closed = 0
+    for run_id in candidate_ids:
+        task = (
+            db.query(Task)
+            .join(TaskRun, TaskRun.task_id == Task.id)
+            .filter(TaskRun.id == run_id)
+            .populate_existing()
+            .with_for_update(skip_locked=True, of=Task)
+            .one_or_none()
+        )
+        if task is None:
+            continue
+        run = (
+            db.query(TaskRun)
+            .filter(TaskRun.id == run_id, TaskRun.task_id == task.id)
+            .populate_existing()
+            .with_for_update(skip_locked=True)
+            .one_or_none()
+        )
+        if run is None or run.status != "running" or run.started_at is None:
+            continue
+        started_at = run.started_at
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=timezone.utc)
+        if started_at >= cutoff:
             continue
         reason = "CSP 執行中斷且超過治理收斂時限，依 crash reconciliation 關閉"
         decision = record_decision(

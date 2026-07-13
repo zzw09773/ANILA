@@ -40,10 +40,11 @@ from anila_core.storage.adapters.pgvector_store import (
 from app.config import settings
 from app.database import SessionLocal
 from app.middleware.caller import Caller
+from app.models.audit_log import AuditLog
 from app.models.ingestion import IngestionCollection, IngestionDocument
 from app.models.model_registry import ModelRegistry
 from app.models.source_snapshot import Citation, SourceSnapshot
-from app.models.task import Task
+from app.models.task import Task, TaskRun
 from app.models.user import User
 from app.modules.clearance.service import (
     ClearancePolicyDataError,
@@ -516,7 +517,6 @@ async def retrieve_and_seal(
             SourceSnapshot.id == task.source_snapshot_id,
             SourceSnapshot.task_id == task.id,
         )
-        .with_for_update()
         .first()
     )
     if snapshot is None:
@@ -529,6 +529,7 @@ async def retrieve_and_seal(
         raise RetrievalFailure(
             "snapshot_scope_invalid", "正式 RAG SourceSnapshot origin 必須是 collection"
         )
+    expected_snapshot_id = int(snapshot.id)
 
     scoped_document_ids = _validate_document_scope(
         db, collection_id=collection_id, document_ids=document_ids
@@ -698,7 +699,7 @@ async def retrieve_and_seal(
     payload = {
         "schema_version": _PAYLOAD_SCHEMA_VERSION,
         "task_id": int(task.id),
-        "source_snapshot_id": int(snapshot.id),
+        "source_snapshot_id": expected_snapshot_id,
         "collection_ids": [int(collection_id)],
         "retrieval_queries": [query.strip()],
         "classification_level": effective_level.to_storage(),
@@ -706,18 +707,98 @@ async def retrieve_and_seal(
     }
     payload_bytes = _canonical_json(payload)
     content_hash = sha256(payload_bytes).hexdigest()
+    payload_path: Path | None = None
     try:
-        payload_ref = _write_payload(int(snapshot.id), payload_bytes)
-    except RetrievalFailure:
-        db.rollback()
-        raise
-    except Exception as exc:
-        db.rollback()
-        raise RetrievalFailure(
-            "snapshot_storage_failed", "SourceSnapshot payload 寫入失敗"
-        ) from exc
+        # Final authority is acquired only after ranking and always follows
+        # the canonical Task -> TaskRun -> SourceSnapshot order.  Refreshing
+        # the Task under lock is essential: the ORM instance passed into this
+        # coroutine may predate a concurrent classification raise.
+        task = (
+            db.query(Task)
+            .populate_existing()
+            .filter(Task.id == task.id)
+            .with_for_update()
+            .one_or_none()
+        )
+        if task is None:
+            raise RetrievalFailure("task_missing", "Task 已不存在")
+        if task.requester_user_id != user.id:
+            raise RetrievalFailure("task_owner_mismatch", "Task 不屬於目前使用者")
+        if collection_id not in (task.selected_collection_ids or []):
+            raise RetrievalFailure(
+                "task_scope_mismatch", "collection 不在 Task 宣告來源內"
+            )
+        if task_ctx is not None:
+            if task_ctx.task_id != task.id:
+                raise RetrievalFailure(
+                    "task_run_mismatch", "active TaskRun 不屬於此 Task"
+                )
+            run = (
+                db.query(TaskRun)
+                .populate_existing()
+                .filter(
+                    TaskRun.id == task_ctx.task_run_id,
+                    TaskRun.task_id == task.id,
+                )
+                .with_for_update()
+                .one_or_none()
+            )
+            if task.status != "running" or run is None or run.status != "running":
+                raise RetrievalFailure(
+                    "task_run_inactive",
+                    "Task/TaskRun 已非 running，禁止密封檢索證據",
+                )
 
-    try:
+        if task.source_snapshot_id != expected_snapshot_id:
+            raise RetrievalFailure(
+                "snapshot_mismatch",
+                "Task 的 SourceSnapshot 指標在檢索期間已變更",
+            )
+        snapshot = (
+            db.query(SourceSnapshot)
+            .populate_existing()
+            .filter(
+                SourceSnapshot.id == expected_snapshot_id,
+                SourceSnapshot.task_id == task.id,
+            )
+            .with_for_update()
+            .one_or_none()
+        )
+        if snapshot is None:
+            raise RetrievalFailure("snapshot_missing", "Task 缺少 SourceSnapshot")
+        if snapshot.content_hash is not None or snapshot.retrieval_queries:
+            raise RetrievalFailure(
+                "snapshot_already_sealed", "每個 Task 只能密封一次檢索快照"
+            )
+        if snapshot.origin != "collection":
+            raise RetrievalFailure(
+                "snapshot_scope_invalid",
+                "正式 RAG SourceSnapshot origin 必須是 collection",
+            )
+
+        target_path = (
+            Path(settings.SOURCE_SNAPSHOT_STORAGE_PATH).resolve()
+            / f"{snapshot.id}.json"
+        )
+        target_existed = target_path.exists()
+        try:
+            payload_ref = _write_payload(int(snapshot.id), payload_bytes)
+            payload_path = target_path
+        except RetrievalFailure:
+            raise
+        except Exception as exc:
+            # _write_payload may fail after the atomic replace (for example a
+            # directory fsync error).  Remove only a file created by this
+            # attempt; never delete a pre-existing conflicting evidence file.
+            if not target_existed:
+                try:
+                    target_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise RetrievalFailure(
+                "snapshot_storage_failed", "SourceSnapshot payload 寫入失敗"
+            ) from exc
+
         snapshot.origin = "collection"
         snapshot.source_scope = str(task.source_scope)
         snapshot.collection_ids = [int(collection_id)]
@@ -734,15 +815,23 @@ async def retrieve_and_seal(
         snapshot.classification_latched_at = _utcnow()
         snapshot.classification_source = "retrieval_snapshot_seal"
 
-        task_level = _parse_level(
-            getattr(task, "classification_level", None),
-            field="tasks.classification_level",
+        # Use the canonical monotonic latch instead of directly assigning a
+        # possibly stale Task value.  This also produces the append-only event
+        # in the same transaction as the evidence seal.
+        from app.modules.policy import apply_classification, record_decision
+
+        apply_classification(
+            db,
+            resource_type="task",
+            resource_id=str(task.id),
+            new_level=effective_level.to_storage(),
+            actor_type="user",
+            actor_id=str(user.id),
+            reason="source_selected",
+            task_id=task.id,
+            source="retrieval_snapshot_inherited",
+            commit=False,
         )
-        raised_task_level = Classification.max_of([task_level, effective_level])
-        if raised_task_level > task_level:
-            task.classification_level = raised_task_level.to_storage()
-            task.classification_latched_at = _utcnow()
-            task.classification_source = "retrieval_snapshot_inherited"
 
         # PostgreSQL's Citation membership trigger reads the sealed snapshot
         # from the database.  Flush the snapshot update first so a Citation
@@ -762,15 +851,52 @@ async def retrieve_and_seal(
                     classification_level=citation.classification_level,
                 )
             )
+
+        # A successful collection.read decision is evidence of the exact
+        # sealed sources, so it cannot be committed in a later transaction.
+        # Deny/failure paths remain owned by the outer orchestrator.
+        if task_ctx is not None:
+            decision = record_decision(
+                db,
+                action="collection.read",
+                resource_type="source_snapshot",
+                resource_id=str(snapshot.id),
+                decision="allow",
+                actor_type="user",
+                actor_id=str(user.id),
+                task_id=task.id,
+                metadata={
+                    "retrieval_state": "hits" if sources else "zero_hits"
+                },
+                commit=False,
+            )
+            task.policy_decision_id = decision.id
+            db.add(
+                AuditLog(
+                    actor_user_id=task.requester_user_id,
+                    action="task.policy.allowed",
+                    resource_type="task",
+                    resource_id=str(task.id),
+                    status="success",
+                    detail="collection.read allow",
+                )
+            )
         db.commit()
+    except RetrievalFailure:
+        db.rollback()
+        if payload_path is not None:
+            try:
+                payload_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
     except Exception as exc:
         db.rollback()
-        try:
-            (Path(settings.SOURCE_SNAPSHOT_STORAGE_PATH).resolve() / f"{snapshot.id}.json").unlink(
-                missing_ok=True
-            )
-        except OSError:
-            pass
+        if payload_path is not None:
+            try:
+                payload_path.unlink(missing_ok=True)
+            except OSError:
+                pass
         raise RetrievalFailure(
             "snapshot_seal_failed", "SourceSnapshot/Citation 資料庫密封失敗"
         ) from exc

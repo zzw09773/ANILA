@@ -138,7 +138,7 @@ def test_concurrent_high_low_updates_preserve_max_and_event_chain() -> None:
                 start.wait(timeout=5)
                 assert high_locked.wait(timeout=5)
                 low_pid.append(
-                    int(db.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+                    int(db.execute(text("SELECT pg_backend_pid()")).scalar_one())
                 )
                 low_entered.set()
                 event = apply_classification(
@@ -303,7 +303,7 @@ def test_concurrent_raise_invalidates_stale_approved_declassification() -> None:
                 start.wait(timeout=5)
                 assert high_locked.wait(timeout=5)
                 low_pid.append(
-                    int(db.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+                    int(db.execute(text("SELECT pg_backend_pid()")).scalar_one())
                 )
                 low_entered.set()
                 with pytest.raises(ValueError, match="降級申請後變更"):

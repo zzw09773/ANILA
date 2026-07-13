@@ -289,6 +289,33 @@ def start_task_run(
     source_resolving/waiting_for_user),沿合法鏈快轉到 running;
     終態任務不可再開 run → ``ValueError``。
     """
+    # This service is the canonical allocator, including callers outside the
+    # HTTP proxy.  Always acquire the parent Task first and refresh any stale
+    # identity-map state before inspecting status or allocating a sequence.
+    task = (
+        db.query(Task)
+        .populate_existing()
+        .filter(Task.id == task.id)
+        .with_for_update()
+        .one_or_none()
+    )
+    if task is None:
+        raise ValueError("找不到 Task，無法建立 TaskRun")
+
+    active_run = (
+        db.query(TaskRun.id)
+        .filter(
+            TaskRun.task_id == task.id,
+            TaskRun.status.in_((
+                TaskRunStatus.QUEUED.value,
+                TaskRunStatus.RUNNING.value,
+            )),
+        )
+        .first()
+    )
+    if active_run is not None:
+        raise ValueError(f"Task#{task.id} 已有 active TaskRun")
+
     try:
         target = DispatchTarget(dispatch_target)
     except ValueError:

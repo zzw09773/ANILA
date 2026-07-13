@@ -219,6 +219,8 @@ async def _prepare_server_retrieval(
             "embedding_policy_denied": 403,
             "pilot_scope_denied": 403,
             "snapshot_already_sealed": 409,
+            "task_run_mismatch": 409,
+            "task_run_inactive": 409,
             "snapshot_payload_conflict": 409,
             "collection_unavailable": 409,
             "snapshot_missing": 409,
@@ -1132,17 +1134,6 @@ async def chat_completions(
             body=body,
             task_ctx=task_ctx,
         )
-        if retrieval_outcome is not None and task_ctx is not None:
-            record_task_policy_decision(
-                db,
-                task_ctx=task_ctx,
-                action="collection.read",
-                resource_type="source_snapshot",
-                resource_id=str(retrieval_outcome.source_snapshot_id),
-                decision="allow",
-                actor_id=str(user.id),
-                metadata={"retrieval_state": retrieval_outcome.state},
-            )
         stage = "memory"
         memory_read = await _inject_memory(
             db,

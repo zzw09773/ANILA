@@ -326,9 +326,14 @@ jobs:
       - name: Prove Gate 2 transaction-ledger atomicity on PostgreSQL
         working-directory: services/csp
         env:
-          ANILA_GATE2_LEDGER_PG_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          ANILA_GATE2_LEDGER_PG_URL: postgresql://csp_app:gate1-app-db@127.0.0.1:5432/csp
           PYTHONPATH: .
-        run: python -m pytest tests/test_gate2_transaction_ledger_pg.py -q
+        run: >-
+          python -m pytest
+          tests/test_gate2_transaction_ledger_pg.py
+          tests/test_gate2_classification_latch_pg.py
+          tests/test_gate2_pg_atomicity.py
+          -q
 
       - name: Prove Gate 2 classification latch races on PostgreSQL
         working-directory: services/csp

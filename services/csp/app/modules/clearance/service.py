@@ -624,7 +624,10 @@ def evaluate_data_access(
     subject = (
         db.query(User)
         .filter(User.id == context.user_id)
-        .with_for_update(read=True)
+        # User.department is eager-loaded through a nullable LEFT JOIN.
+        # PostgreSQL cannot apply FOR SHARE to the nullable join side, so lock
+        # only the authoritative User row.
+        .with_for_update(read=True, of=User)
         .first()
     )
     if subject is None or not subject.is_active:
@@ -686,6 +689,7 @@ def evaluate_data_access(
             row[0]
             for row in db.query(ClearanceGrantCompartment.compartment_id)
             .filter(ClearanceGrantCompartment.clearance_grant_id == grant.id)
+            .with_for_update(read=True)
             .all()
         }
         if not context.required_compartment_ids.issubset(covered_compartments):

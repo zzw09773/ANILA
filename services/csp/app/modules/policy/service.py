@@ -343,6 +343,11 @@ def apply_classification(
     effective = ClassificationLevel.max_of([current, target])
     if effective == current:
         # 維持或降級嘗試:單向閂鎖,不動資源、不寫 event。
+        # ``commit=True`` still owns the transaction contract: release the
+        # FOR UPDATE latch immediately instead of leaking a lock until the
+        # caller happens to close/rollback its Session.
+        if commit:
+            db.commit()
         return None
 
     event = _write_event(
