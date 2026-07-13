@@ -135,6 +135,7 @@ async def test_exact_signed_target_reaches_sink_once(
         request_body={"model": model.name, "messages": []},
         endpoint_path="/v1/chat/completions",
         task_id=task.id,
+        task_trace_id=task.trace_id,
         task_run_id=run.id,
         inference_callsite_id="csp.chat_model",
         governance_db=db,
