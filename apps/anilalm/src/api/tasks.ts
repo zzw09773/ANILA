@@ -115,8 +115,13 @@ export async function createQueryTask(
     requested_output_type: 'answer',
     conversation_id: input.conversationId,
   } satisfies TaskCreate)
-  if (data.source_snapshot_id == null || !data.trace_id) {
-    throw new Error('CSP 建立的 RAG Task 缺少 SourceSnapshot 或 trace_id')
+  if (
+    !Number.isInteger(data.id) ||
+    data.id <= 0 ||
+    data.source_snapshot_id == null ||
+    !data.trace_id
+  ) {
+    throw new Error('CSP 建立的 RAG Task 缺少有效的 Task、SourceSnapshot 或 trace_id')
   }
   return {
     taskId: String(data.id),

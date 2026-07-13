@@ -49,6 +49,8 @@ COLUMNS: tuple[ColumnSpec, ...] = tuple(
         ("citations", "classification_level"),
         ("conversations", "classification_level"),
         ("messages", "classification_level"),
+        ("user_facts", "classification_level"),
+        ("conversation_memory_chunks", "classification_level"),
         ("ingestion_collections", "classification_level"),
         ("ingestion_documents", "classification_level"),
         ("document_chunks", "classification_level"),

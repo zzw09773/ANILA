@@ -40,14 +40,19 @@ class _FakePool:
 
 
 class _Transaction:
+    def __init__(self) -> None:
+        self.started = False
+        self.committed = False
+        self.rolled_back = False
+
     async def start(self) -> None:
-        return None
+        self.started = True
 
     async def commit(self) -> None:
-        return None
+        self.committed = True
 
     async def rollback(self) -> None:
-        return None
+        self.rolled_back = True
 
     async def __aenter__(self):
         return self
@@ -74,17 +79,25 @@ class _RecordingConnection:
         collection_level: str = "無機密",
         document_level: str = "無機密",
         document_collection_id: int = 9,
+        fail_parent_insert_at: int | None = None,
+        fail_executemany: bool = False,
     ) -> None:
         self.collection_level = collection_level
         self.document_level = document_level
         self.document_collection_id = document_collection_id
+        self.fail_parent_insert_at = fail_parent_insert_at
+        self.fail_executemany = fail_executemany
+        self.parent_insert_count = 0
+        self.transactions: list[_Transaction] = []
         self.executemany_calls: list[tuple[str, list[tuple]]] = []
         self.fetch_calls: list[tuple[str, tuple]] = []
         self.fetchrow_calls: list[tuple[str, tuple]] = []
         self.execute_calls: list[tuple[str, tuple]] = []
 
     def transaction(self) -> _Transaction:
-        return _Transaction()
+        transaction = _Transaction()
+        self.transactions.append(transaction)
+        return transaction
 
     async def execute(self, _sql: str, *_args) -> str:
         self.execute_calls.append((_sql, _args))
@@ -92,6 +105,8 @@ class _RecordingConnection:
 
     async def executemany(self, sql: str, rows: list[tuple]) -> None:
         self.executemany_calls.append((sql, rows))
+        if self.fail_executemany:
+            raise RuntimeError("synthetic leaf batch failure")
 
     async def fetch(self, sql: str, *args) -> list:
         self.fetch_calls.append((sql, args))
@@ -107,6 +122,10 @@ class _RecordingConnection:
                 "collection_id": self.document_collection_id,
                 "classification_level": self.document_level,
             }
+        if "INSERT INTO document_chunks" in sql:
+            self.parent_insert_count += 1
+            if self.parent_insert_count == self.fail_parent_insert_at:
+                raise RuntimeError("synthetic parent insert failure")
         return {"id": len(self.fetchrow_calls), "chunk_key": args[2]}
 
 
@@ -285,6 +304,61 @@ async def test_atomic_replace_deletes_then_inserts_one_classified_generation() -
     assert "parent_chunk_id" in leaf_sql
     assert leaf_rows[0][-2:] == ("極機密", "ingestion_effective")
     assert leaf_rows[0][-3] == 3
+
+
+async def test_add_parent_chunks_rolls_back_the_batch_when_an_insert_fails() -> None:
+    connection = _RecordingConnection(fail_parent_insert_at=2)
+    store = CollectionScopedPgVectorStore(
+        _RecordingPool(connection),  # type: ignore[arg-type]
+        collection_id=9,
+    )
+    parents = [
+        ChunkResult(content="one", chunk_key="parent-1", token_count=1),
+        ChunkResult(content="two", chunk_key="parent-2", token_count=1),
+    ]
+
+    with pytest.raises(RuntimeError, match="synthetic parent insert failure"):
+        await store.add_parent_chunks(
+            document_id=12,
+            chunks=parents,
+            classification_level=Classification.UNCLASSIFIED,
+        )
+
+    assert len(connection.transactions) == 1
+    transaction = connection.transactions[0]
+    assert transaction.started is True
+    assert transaction.rolled_back is True
+    assert transaction.committed is False
+
+
+async def test_atomic_replace_rolls_back_delete_and_parents_on_leaf_failure() -> None:
+    connection = _RecordingConnection(fail_executemany=True)
+    store = CollectionScopedPgVectorStore(
+        _RecordingPool(connection),  # type: ignore[arg-type]
+        collection_id=9,
+    )
+    parent = ChunkResult(content="heading", chunk_key="parent-1", token_count=1)
+    leaf = ChunkResult(
+        content="leaf",
+        chunk_key="leaf-1",
+        token_count=1,
+        metadata={"parent_chunk_key": "parent-1"},
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic leaf batch failure"):
+        await store.replace_document_chunks(
+            document_id=12,
+            parent_chunks=[parent],
+            leaf_chunks=[leaf],
+            embeddings=[[0.1]],
+            classification_level=Classification.UNCLASSIFIED,
+        )
+
+    assert len(connection.transactions) == 1
+    transaction = connection.transactions[0]
+    assert transaction.started is True
+    assert transaction.rolled_back is True
+    assert transaction.committed is False
 
 
 async def test_atomic_replace_rejects_invalid_generation_before_database_use() -> None:

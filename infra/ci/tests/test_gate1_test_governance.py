@@ -164,6 +164,25 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(governance.GovernanceError, "not wired"):
             governance.verify_required_skip_wiring(document, workflow)
 
+    def test_workflow_job_parser_ignores_job_shaped_lines_in_run_blocks(self) -> None:
+        workflow = (
+            "jobs:\n"
+            "  contract-smoke:\n"
+            "    steps:\n"
+            "      - run: |\n"
+            "          echo preparing\n"
+            "          setup:\n"
+            "          echo complete\n"
+            "  postgres-rls:\n"
+            "    steps:\n"
+            "      - run: pytest tests/test_pg.py\n"
+        )
+
+        jobs = governance._workflow_jobs(workflow)
+
+        self.assertEqual(set(jobs), {"contract-smoke", "postgres-rls"})
+        self.assertIn("setup:", jobs["contract-smoke"])
+
     def test_ast_scan_rejects_xfail(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
