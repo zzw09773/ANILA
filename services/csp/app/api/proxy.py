@@ -4,6 +4,8 @@ import json
 import logging
 import math
 import time
+import uuid
+from datetime import datetime, timezone
 from typing import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -30,6 +32,11 @@ from app.services.api_key_service import check_model_permission, check_agent_per
 from app.services.auth_service import is_admin_tier
 from app.services import agent_credential_service
 from app.services.proxy.ceiling import enforce_agent_ceiling, enforce_model_ceiling
+from app.services.proxy.closure import (
+    TaskCallClosure,
+    UsageRecordData,
+    persist_task_call_closure,
+)
 from app.services.proxy.headers import resolve_model_gateway_key
 from app.services.proxy.task_link import (
     begin_task_run,
@@ -1255,17 +1262,16 @@ async def chat_completions(
             conv_id_int=conv_id_int,
             trusted_classification_level=agent_level,
         )
-        # Usage attribution: inbound X-ANILA-Trace-Id wins (legacy
-        # contract); a task-linked call without one falls back to the
-        # task row's trace id (doc 04 AC10 歸戶).
-        usage_trace_id = trace_id or (task_ctx.trace_id if task_ctx else None)
+        # A formal Task owns its canonical trace.  The optional inbound trace
+        # header remains available only to legacy taskless traffic.
+        usage_trace_id = task_ctx.trace_id if task_ctx else trace_id
         if stream:
             upstream = proxy_stream(
                 target_url=f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions",
                 api_key_id=caller.api_key_id,
                 user_id=user.id,
                 department_id=department_id,
-                usage_model_id=agent.id,
+                usage_model_id=agent.base_model_id,
                 request_body=body,
                 user_email=user_email,
                 user_identity=user_identity,
@@ -1356,6 +1362,8 @@ async def chat_completions(
             trace_id=task_ctx.trace_id if task_ctx else None,
         )
         started_at = time.time()
+        closure_started_at = datetime.now(timezone.utc)
+        closure_id = uuid.uuid4().hex
         try:
             lock_agent_registry_admission(
                 governance_db=db,
@@ -1410,22 +1418,54 @@ async def chat_completions(
                     usage.get("total_tokens")
                     or (prompt_tokens + completion_tokens)
                 )
-                await enqueue_usage_task_linked(
+                usage_record = UsageRecordData(
                     api_key_id=caller.api_key_id,
                     user_id=user.id,
                     department_id=department_id,
-                    model_id=agent.id,
+                    model_id=agent.base_model_id,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     total_tokens=total_tokens,
                     request_duration_ms=int((time.time() - started_at) * 1000),
                     conversation_id=conversation_id,
-                    trace_id=(trace_id or (task_ctx.trace_id if task_ctx else None)),
                     request_type="chat",
                     caller_agent_id=agent.id,
-                    task_id=task_ctx.task_id if task_ctx else None,
-                    legacy_runtime_call=task_ctx is None,
                 )
+                if task_ctx is not None:
+                    persist_task_call_closure(
+                        db,
+                        TaskCallClosure(
+                            closure_id=closure_id,
+                            task_id=task_ctx.task_id,
+                            task_run_id=task_ctx.task_run_id,
+                            trace_id=task_ctx.trace_id,
+                            started_at=closure_started_at,
+                            status="completed",
+                            is_agent=True,
+                            target_id=agent.id,
+                            target_name=agent.name,
+                            usage=usage_record,
+                            classification_level=admitted_level,
+                            callsite="csp.agent_dispatch",
+                        ),
+                    )
+                else:
+                    await enqueue_usage_task_linked(
+                        api_key_id=caller.api_key_id,
+                        user_id=user.id,
+                        department_id=department_id,
+                        model_id=agent.base_model_id,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        request_duration_ms=usage_record.request_duration_ms,
+                        conversation_id=conversation_id,
+                        trace_id=trace_id,
+                        request_type="chat",
+                        caller_agent_id=agent.id,
+                        task_id=None,
+                        legacy_runtime_call=True,
+                    )
                 # Memory write (non-streaming agent path)
                 assistant_text = _extract_assistant_text(payload)
                 _schedule_memory_write(
@@ -1451,42 +1491,75 @@ async def chat_completions(
                         else frozenset()
                     ),
                 )
-                # Slice 2b-C: run finished. (This branch still writes no
-                # usage row — orthogonal pre-existing gap, see above.)
-                if task_ctx is not None:
-                    finalize_task_run_in_session(
-                        db, task_ctx.task_run_id, "completed"
-                    )
                 return _attach_retrieval_meta(payload, retrieval_outcome)
         except _HTTPException as e:
             if task_ctx is not None:
-                finalize_task_run_in_session(
+                persist_task_call_closure(
                     db,
-                    task_ctx.task_run_id,
-                    "failed",
-                    error={"code": f"http_{e.status_code}", "message": str(e.detail)},
+                    TaskCallClosure(
+                        closure_id=closure_id,
+                        task_id=task_ctx.task_id,
+                        task_run_id=task_ctx.task_run_id,
+                        trace_id=task_ctx.trace_id,
+                        started_at=closure_started_at,
+                        status="failed",
+                        is_agent=True,
+                        target_id=agent.id,
+                        target_name=agent.name,
+                        error={"code": f"http_{e.status_code}", "message": str(e.detail)},
+                        classification_level=admitted_level,
+                        callsite="csp.agent_dispatch",
+                    ),
                 )
             raise
         except httpx.HTTPStatusError as e:
             if task_ctx is not None:
-                finalize_task_run_in_session(
+                persist_task_call_closure(
                     db,
-                    task_ctx.task_run_id,
-                    "failed",
-                    error={
-                        "code": f"http_{e.response.status_code}",
-                        "message": str(e),
-                    },
+                    TaskCallClosure(
+                        closure_id=closure_id,
+                        task_id=task_ctx.task_id,
+                        task_run_id=task_ctx.task_run_id,
+                        trace_id=task_ctx.trace_id,
+                        started_at=closure_started_at,
+                        status="failed",
+                        is_agent=True,
+                        target_id=agent.id,
+                        target_name=agent.name,
+                        error={
+                            "code": f"http_{e.response.status_code}",
+                            "message": str(e),
+                        },
+                        classification_level=admitted_level,
+                        callsite="csp.agent_dispatch",
+                    ),
                 )
             raise _HTTPException(status_code=e.response.status_code, detail=str(e))
         except Exception as e:
             if task_ctx is not None:
-                finalize_task_run_in_session(
-                    db,
-                    task_ctx.task_run_id,
-                    "failed",
-                    error={"code": "agent_call_failed", "message": str(e)},
-                )
+                # If the successful closure already committed and only a
+                # post-turn side effect failed, its deterministic id makes
+                # this retry a no-op rather than rewriting completed state.
+                try:
+                    persist_task_call_closure(
+                        db,
+                        TaskCallClosure(
+                            closure_id=closure_id,
+                            task_id=task_ctx.task_id,
+                            task_run_id=task_ctx.task_run_id,
+                            trace_id=task_ctx.trace_id,
+                            started_at=closure_started_at,
+                            status="failed",
+                            is_agent=True,
+                            target_id=agent.id,
+                            target_name=agent.name,
+                            error={"code": "agent_call_failed", "message": str(e)},
+                            classification_level=admitted_level,
+                            callsite="csp.agent_dispatch",
+                        ),
+                    )
+                except RuntimeError:
+                    pass
             raise _HTTPException(status_code=502, detail=f"Agent 呼叫失敗: {e}")
 
     model = pre_resolved_model
@@ -1508,7 +1581,7 @@ async def chat_completions(
         task_ctx=task_ctx,
         conv_id_int=conv_id_int,
     )
-    usage_trace_id = trace_id or (task_ctx.trace_id if task_ctx else None)
+    usage_trace_id = task_ctx.trace_id if task_ctx else trace_id
     if stream:
         target_url = (
             f"{model.endpoint_url.rstrip('/')}/v2/chat/completions"

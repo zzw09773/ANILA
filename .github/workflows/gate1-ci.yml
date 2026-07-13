@@ -337,6 +337,13 @@ jobs:
           PYTHONPATH: .
         run: python -m pytest tests/test_gate2_classification_latch_pg.py -q
 
+      - name: Prove Gate 2 durable usage and Full Trace closure on PostgreSQL
+        working-directory: services/csp
+        env:
+          ANILA_GATE2_LEDGER_PG_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          PYTHONPATH: .
+        run: python -m pytest tests/test_gate2_durable_usage_closure_pg.py -q
+
       - name: Run CSP ingestion-image RLS contract
         working-directory: services/csp
         env:

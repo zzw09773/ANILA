@@ -39,7 +39,6 @@ from app.models.policy_decision import PolicyDecision
 from app.models.task import Task, TaskRun
 from app.models.token_usage import TokenUsage
 from app.services import proxy_service
-from app.api import proxy as proxy_api
 from app.services.auth_service import create_tokens
 from app.services.proxy import service as proxy_impl
 from app.services.proxy import task_link
@@ -224,7 +223,11 @@ class TestUserCallerWithTask:
 
         resp = client.post(
             "/v1/chat/completions",
-            headers={**_bearer(_jwt(admin)), "X-ANILA-Task-Id": str(task.id)},
+            headers={
+                **_bearer(_jwt(admin)),
+                "X-ANILA-Task-Id": str(task.id),
+                "X-ANILA-Trace-Id": "attacker-selected-trace",
+            },
             json={"model": "task-llm",
                   "messages": [{"role": "user", "content": "hi"}]},
         )
@@ -248,12 +251,12 @@ class TestUserCallerWithTask:
         assert by_action["task.run"].actor_type == "user"
         assert by_action["model.invoke"].decision == "allow"
 
-        assert len(captured_usage) == 1
-        assert captured_usage[0]["task_id"] == task.id
-        assert captured_usage[0]["legacy_runtime_call"] is False
-        # No inbound X-ANILA-Trace-Id → usage attribution falls back to the
-        # task row's trace id.
-        assert captured_usage[0]["trace_id"] == task.trace_id
+        usage = db.query(TokenUsage).filter_by(task_id=task.id).one()
+        assert usage.legacy_runtime_call is False
+        # Task-linked attribution is canonical even when a caller tries to
+        # supply a different trace id.
+        assert usage.trace_id == task.trace_id
+        assert runs[0].usage_record_id == usage.id
 
     def test_model_gateway_headers_never_carry_task_headers(
         self, client: TestClient, db: Session, monkeypatch,
@@ -319,26 +322,25 @@ class TestUserCallerWithTask:
         assert set(by_action) == {"task.run", "agent.invoke"}
         assert all(decision.resource_type == "agent" for decision in decisions)
         assert by_action["agent.invoke"].decision == "allow"
-        assert captured_usage and captured_usage[0]["task_id"] == task.id
+        usage = db.query(TokenUsage).filter_by(task_id=task.id).one()
+        assert usage.caller_agent_id == agent.id
+        assert usage.model_id is None
+        assert runs[0].usage_record_id == usage.id
 
     def test_agent_nonstream_writes_task_attributed_token_usage(
         self, client: TestClient, db: Session, monkeypatch, task_sessions,
     ):
         user = make_user(db, username="task_user_agent_nonstream")
         dev = make_user(db, username="task_dev_agent_nonstream", role="developer")
+        base_model = make_model(db, name="task-agent-nonstream-base")
         agent = make_agent(
             db, dev, name="task-agent-nonstream", approval_status="approved"
         )
+        agent.base_model_id = base_model.id
         db.add(UserAgentPermission(user_id=user.id, agent_id=agent.id))
         db.commit()
         task = _make_task(db, user)
         _patch_post_client(monkeypatch)
-        recorded: list[dict] = []
-
-        async def capture(**kwargs):
-            recorded.append(kwargs)
-
-        monkeypatch.setattr(proxy_api, "enqueue_usage_task_linked", capture)
         resp = client.post(
             "/v1/chat/completions",
             headers={**_bearer(_jwt(user)), "X-ANILA-Task-Id": str(task.id)},
@@ -349,10 +351,12 @@ class TestUserCallerWithTask:
             },
         )
         assert resp.status_code == 200, resp.text
-        assert len(recorded) == 1
-        assert recorded[0]["task_id"] == task.id
-        assert recorded[0]["caller_agent_id"] == agent.id
-        assert recorded[0]["total_tokens"] > 0
+        usage = db.query(TokenUsage).filter_by(task_id=task.id).one()
+        assert usage.caller_agent_id == agent.id
+        assert usage.model_id == base_model.id
+        assert usage.total_tokens > 0
+        run = db.query(TaskRun).filter_by(task_id=task.id).one()
+        assert run.usage_record_id == usage.id
 
     def test_image_inference_is_task_bound_ceiling_checked_and_metered(
         self, client: TestClient, db: Session, monkeypatch,
@@ -386,7 +390,8 @@ class TestUserCallerWithTask:
         assert db.query(PolicyDecision).filter_by(
             task_id=task.id, action="model.invoke", decision="allow"
         ).count() == 1
-        assert captured_usage and captured_usage[-1]["request_type"] == "image"
+        usage = db.query(TokenUsage).filter_by(task_id=task.id).one()
+        assert usage.request_type == "image"
 
         no_task = client.post(
             "/v1/images/generations",
@@ -638,7 +643,9 @@ class TestServiceTokenCaller:
         assert set(by_action) == {"task.run", "model.invoke"}
         assert by_action["task.run"].actor_type == "service"
         assert by_action["model.invoke"].decision == "allow"
-        assert captured_usage and captured_usage[0]["task_id"] == task.id
+        usage = db.query(TokenUsage).filter_by(task_id=task.id).one()
+        assert usage.trace_id == task.trace_id
+        assert runs[0].usage_record_id == usage.id
 
     def test_requester_mismatch_returns_403(
         self, client: TestClient, db: Session, monkeypatch,
@@ -762,6 +769,62 @@ class TestHeaderBuilders:
         h = _StreamClient.last_headers
         assert "X-ANILA-Task-Id" not in h
         assert "X-ANILA-Trace-Id" not in h
+
+    def test_task_stream_commits_closure_before_done_marker(
+        self, db: Session, monkeypatch,
+    ):
+        """A client must not observe semantic success before durable closure."""
+        _patch_stream_client(monkeypatch)
+        user = make_user(db, username="stream_done_order")
+        model = make_model(db, name="stream-done-order-model")
+        task = Task(
+            title="stream done ordering",
+            task_type="query",
+            requester_user_id=user.id,
+            status="running",
+        )
+        db.add(task)
+        db.flush()
+        run = TaskRun(
+            task_id=task.id,
+            run_sequence=1,
+            dispatch_target="model",
+            status="running",
+        )
+        db.add(run)
+        db.commit()
+        events: list[str] = []
+
+        def capture_closure(*args, **kwargs):
+            events.append("closure")
+            return 1
+
+        monkeypatch.setattr(proxy_impl, "persist_task_call_closure", capture_closure)
+
+        async def _run():
+            async for chunk in proxy_service.proxy_stream(
+                target_url="http://mock-llm/v1/chat/completions",
+                api_key_id=None,
+                user_id=user.id,
+                department_id=None,
+                usage_model_id=model.id,
+                request_body={"model": model.name, "messages": []},
+                model_name=model.name,
+                task_id=task.id,
+                task_trace_id=task.trace_id,
+                task_run_id=run.id,
+                governance_db=db,
+                registry_endpoint_url=model.endpoint_url,
+                admitted_classification_level="無機密",
+            ):
+                events.append(chunk)
+
+        asyncio.run(_run())
+        closure_position = events.index("closure")
+        done_position = next(
+            index for index, event in enumerate(events) if "[DONE]" in event
+        )
+        assert closure_position < done_position
 
 
 # ── Usage enqueue helper writes real columns ────────────────────────────────
