@@ -33,7 +33,7 @@ def _files(tmp_path, *, overrides=None, same_key: bool = False):
         ],
     }
     profile = {
-        "schema_version": "anila.gate2.signed-pilot.v1",
+        "schema_version": "anila.gate2.signed-pilot.v2",
         "profile_id": "synthetic-test",
         "pilot_enabled": True,
         "data_classification_ceiling": "營業秘密",
@@ -141,6 +141,18 @@ def test_runtime_verifier_rejects_malformed_signed_contract(
 def test_runtime_verifier_rejects_same_key_for_all_roles(tmp_path) -> None:
     profile, inventory, trust = _files(tmp_path, same_key=True)
     with pytest.raises(PilotProfileError, match="distinct keys"):
+        verify_signed_pilot_profile(
+            profile_path=profile, inventory_path=inventory, trust_store_path=trust
+        )
+
+
+def test_v1_profile_is_not_silently_reinterpreted_as_target_bound(tmp_path) -> None:
+    profile, inventory, trust = _files(tmp_path)
+    value = json.loads(profile.read_text(encoding="utf-8"))
+    value["schema_version"] = "anila.gate2.signed-pilot.v1"
+    profile.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(PilotProfileError, match="unknown profile schema"):
         verify_signed_pilot_profile(
             profile_path=profile, inventory_path=inventory, trust_store_path=trust
         )

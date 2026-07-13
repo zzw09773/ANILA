@@ -210,6 +210,7 @@ async def _prepare_server_retrieval(
             "task_scope_mismatch": 403,
             "clearance_denied": 403,
             "embedding_policy_denied": 403,
+            "pilot_scope_denied": 403,
             "snapshot_already_sealed": 409,
             "snapshot_payload_conflict": 409,
             "collection_unavailable": 409,
@@ -975,12 +976,26 @@ async def chat_completions(
     )
 
     if settings.ANILA_PILOT_MODE:
-        from app.services.startup_security import require_pilot_callsite
+        from app.services.startup_security import (
+            require_pilot_callsite,
+            require_pilot_target,
+        )
 
         if task_ctx is None:
             raise HTTPException(status_code=409, detail="Gate 2 pilot TaskRun 建立失敗")
         try:
             require_pilot_callsite(str(pilot_callsite))
+            require_pilot_target(
+                callsite=str(pilot_callsite),
+                name=str(target.name),
+                model_type=(
+                    "agent"
+                    if pre_resolved_agent is not None
+                    else str(pre_resolved_model.model_type)
+                ),
+                endpoint_url=str(target.endpoint_url),
+                classification_ceiling=str(target.classification_ceiling),
+            )
             if pre_resolved_agent is not None:
                 allowlist = {
                     item.strip()
@@ -1052,6 +1067,33 @@ async def chat_completions(
             resource_id=str(target.id),
             actor_id=str(user.id),
         )
+
+    if settings.ANILA_PILOT_MODE and task_ctx is not None:
+        # This pre-hidden-inference check is intentionally repeated at the
+        # locked network sink.  Here it prevents an over-ceiling Task from
+        # reaching retrieval/memory inference; the sink closes concurrent
+        # classification changes after this point.
+        from app.services.startup_security import require_pilot_classification
+
+        pilot_task = db.get(Task, task_ctx.task_id)
+        try:
+            if pilot_task is None:
+                raise RuntimeError("Gate 2 pilot Task governance row is unavailable")
+            require_pilot_classification(str(pilot_task.classification_level))
+        except RuntimeError as exc:
+            record_task_policy_decision(
+                db,
+                task_ctx=task_ctx,
+                action=f"{target_kind}.invoke",
+                resource_type=target_kind,
+                resource_id=str(target.id),
+                decision="deny",
+                actor_id=str(user.id),
+                reason=str(exc),
+                metadata={"pilot_callsite": pilot_callsite},
+                block=True,
+            )
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     # Initial target ceiling preflight prevents a target already known to be
     # too weak from causing retrieval/memory egress. Sources may raise the

@@ -7,7 +7,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from anila_contracts import Classification
+from anila_security import VerifiedPilotAdmission
 
+from app.config import settings
 from app.models.ingestion import IngestionCollection, IngestionDocument
 from app.models.source_snapshot import Citation, SourceSnapshot
 from app.schemas.contracts.tasks import TaskCreate
@@ -17,6 +19,7 @@ from app.modules.clearance.service import (
     issue_clearance_grant,
 )
 import app.services.retrieval_service as retrieval
+from app.services import startup_security
 
 from tests.conftest import make_user
 
@@ -163,6 +166,47 @@ def _wire_backend(monkeypatch, store: _Store) -> None:
         "CollectionScopedPgVectorStore",
         lambda pool, collection_id: store,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("denial", ["collection_scope", "collection_ceiling", "document_ceiling"])
+async def test_signed_pilot_retrieval_scope_and_ceiling_deny_before_embedding(
+    db, governed_source, monkeypatch, denial,
+) -> None:
+    user, collection, document = governed_source
+    task = _new_task(db, user=user, collection=collection)
+    admitted_collections = (
+        frozenset({collection.id + 100})
+        if denial == "collection_scope"
+        else frozenset({collection.id})
+    )
+    data_ceiling = "無機密" if denial == "collection_ceiling" else "營業秘密"
+    admission = VerifiedPilotAdmission(
+        profile_id="retrieval-scope-test",
+        enabled_callsites=frozenset({"csp.server_retrieval_embedding"}),
+        allowed_targets=(),
+        collection_ids=admitted_collections,
+        data_classification_ceiling=data_ceiling,
+        valid_from=datetime.now(timezone.utc) - timedelta(minutes=1),
+        valid_until=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    monkeypatch.setattr(settings, "ANILA_PILOT_MODE", True)
+    monkeypatch.setattr(startup_security, "_verified_pilot_admission", admission)
+
+    async def outbound_must_not_run(*args, **kwargs):
+        raise AssertionError("pilot scope denial must happen before embedding")
+
+    monkeypatch.setattr(retrieval, "embed_query", outbound_must_not_run)
+    with pytest.raises(retrieval.RetrievalFailure, match="signed pilot") as caught:
+        await retrieval.retrieve_and_seal(
+            db,
+            user=user,
+            task=task,
+            collection_id=collection.id,
+            query="must remain local",
+            document_ids=[document.id],
+        )
+    assert caught.value.code == "pilot_scope_denied"
 
 
 @pytest.mark.asyncio

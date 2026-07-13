@@ -483,6 +483,17 @@ async def retrieve_and_seal(
         raise RetrievalFailure("task_owner_mismatch", "Task 不屬於目前使用者")
     if collection_id not in (task.selected_collection_ids or []):
         raise RetrievalFailure("task_scope_mismatch", "collection 不在 Task 宣告來源內")
+    if settings.ANILA_PILOT_MODE:
+        from app.services.startup_security import (
+            require_pilot_classification,
+            require_pilot_collection,
+        )
+
+        try:
+            require_pilot_collection(collection_id)
+            require_pilot_classification(str(task.classification_level))
+        except RuntimeError as exc:
+            raise RetrievalFailure("pilot_scope_denied", str(exc)) from exc
     if not isinstance(query, str) or not query.strip() or len(query) > 4000:
         raise RetrievalFailure("invalid_query", "檢索 query 必須為 1–4000 字")
     if not 1 <= top_k <= RAG_MAX_HITS or not 0.0 <= min_score <= 1.0:
@@ -493,6 +504,11 @@ async def retrieve_and_seal(
     collection = db.get(IngestionCollection, collection_id)
     if collection is None or collection.status != "active":
         raise RetrievalFailure("collection_unavailable", "collection 不存在或未啟用")
+    if settings.ANILA_PILOT_MODE:
+        try:
+            require_pilot_classification(str(collection.classification_level))
+        except RuntimeError as exc:
+            raise RetrievalFailure("pilot_scope_denied", str(exc)) from exc
 
     snapshot = (
         db.query(SourceSnapshot)
@@ -523,6 +539,12 @@ async def retrieve_and_seal(
         collection_id=collection_id,
         requested_document_ids=scoped_document_ids,
     )
+    if settings.ANILA_PILOT_MODE:
+        try:
+            for authorized_level in authorized_document_ceilings.values():
+                require_pilot_classification(authorized_level.to_storage())
+        except RuntimeError as exc:
+            raise RetrievalFailure("pilot_scope_denied", str(exc)) from exc
     if not authorized_document_ceilings:
         hits = []
     else:
@@ -664,6 +686,15 @@ async def retrieve_and_seal(
         )
 
     effective_level = Classification.max_of(levels)
+    if settings.ANILA_PILOT_MODE:
+        try:
+            # Recheck the actual collection/document/chunk levels that will
+            # enter the sealed prompt.  Earlier checks prevent an over-scope
+            # embedding call; this final check prevents a high-classification
+            # hit from being serialized or sent under a lower Task snapshot.
+            require_pilot_classification(effective_level.to_storage())
+        except RuntimeError as exc:
+            raise RetrievalFailure("pilot_scope_denied", str(exc)) from exc
     payload = {
         "schema_version": _PAYLOAD_SCHEMA_VERSION,
         "task_id": int(task.id),

@@ -1,5 +1,5 @@
 {
-  "schema_version": "anila.gate2.signed-pilot.v1",
+  "schema_version": "anila.gate2.signed-pilot.v2",
   "profile_id": "DISABLED-TEMPLATE-NOT-AN-APPROVAL",
   "pilot_enabled": false,
   "data_classification_ceiling": "無機密",

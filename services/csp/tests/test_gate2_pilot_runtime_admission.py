@@ -30,6 +30,39 @@ class _OutboundMustNotRun:
         raise AssertionError("outbound network call must remain zero")
 
 
+class _SuccessfulResponse:
+    status_code = 200
+    text = '{"choices":[{"message":{"content":"ok"}}]}'
+    headers = {"content-type": "application/json"}
+
+    def json(self):
+        return {
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+            },
+        }
+
+
+class _SuccessfulClient:
+    calls = 0
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def post(self, *args, **kwargs):
+        type(self).calls += 1
+        return _SuccessfulResponse()
+
+
 def _bearer(user) -> dict[str, str]:
     token = create_tokens(user)["access_token"]
     return {"Authorization": f"Bearer {token}"}
@@ -51,6 +84,172 @@ def _pilot_admission(model) -> VerifiedPilotAdmission:
         valid_from=datetime.now(timezone.utc) - timedelta(minutes=1),
         valid_until=datetime.now(timezone.utc) + timedelta(hours=1),
     )
+
+
+def _running_task(db: Session, *, user, level: str = "無機密"):
+    task = Task(
+        title="pilot runtime admission",
+        task_type="query",
+        requester_user_id=user.id,
+        status="running",
+        classification_level=level,
+    )
+    db.add(task)
+    db.flush()
+    run = TaskRun(
+        task_id=task.id,
+        run_sequence=1,
+        dispatch_target="model",
+        status="running",
+        classification_level=level,
+    )
+    db.add(run)
+    db.commit()
+    return task, run
+
+
+@pytest.mark.asyncio
+async def test_exact_signed_target_reaches_sink_once(
+    db: Session, monkeypatch,
+) -> None:
+    user = make_user(db, username="pilot_exact_target")
+    model = make_model(db, name="pilot-exact-target")
+    task, run = _running_task(db, user=user)
+    monkeypatch.setattr(settings, "ANILA_PILOT_MODE", True)
+    monkeypatch.setattr(
+        startup_security, "_verified_pilot_admission", _pilot_admission(model)
+    )
+    monkeypatch.setattr(proxy_service, "_guard_outbound", lambda *args, **kwargs: None)
+    monkeypatch.setattr(proxy_service.httpx, "AsyncClient", _SuccessfulClient)
+
+    async def ignore_usage(**kwargs):
+        return None
+
+    monkeypatch.setattr(proxy_service, "enqueue_usage_task_linked", ignore_usage)
+    _SuccessfulClient.calls = 0
+    result = await proxy_service.proxy_request(
+        model=model,
+        api_key_id=None,
+        user_id=user.id,
+        department_id=None,
+        request_body={"model": model.name, "messages": []},
+        endpoint_path="/v1/chat/completions",
+        task_id=task.id,
+        task_run_id=run.id,
+        inference_callsite_id="csp.chat_model",
+        governance_db=db,
+        admitted_classification_level="無機密",
+    )
+
+    assert result["choices"][0]["message"]["content"] == "ok"
+    assert _SuccessfulClient.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_expired_signed_admission_is_zero_egress(
+    db: Session, monkeypatch,
+) -> None:
+    user = make_user(db, username="pilot_expired_target")
+    model = make_model(db, name="pilot-expired-target")
+    task, run = _running_task(db, user=user)
+    current = _pilot_admission(model)
+    expired = VerifiedPilotAdmission(
+        profile_id=current.profile_id,
+        enabled_callsites=current.enabled_callsites,
+        allowed_targets=current.allowed_targets,
+        collection_ids=current.collection_ids,
+        data_classification_ceiling=current.data_classification_ceiling,
+        valid_from=datetime.now(timezone.utc) - timedelta(hours=2),
+        valid_until=datetime.now(timezone.utc) - timedelta(hours=1),
+    )
+    monkeypatch.setattr(settings, "ANILA_PILOT_MODE", True)
+    monkeypatch.setattr(startup_security, "_verified_pilot_admission", expired)
+    monkeypatch.setattr(proxy_service.httpx, "AsyncClient", _OutboundMustNotRun)
+
+    with pytest.raises(HTTPException, match="no longer effective"):
+        await proxy_service.proxy_request(
+            model=model,
+            api_key_id=None,
+            user_id=user.id,
+            department_id=None,
+            request_body={"model": model.name, "messages": []},
+            endpoint_path="/v1/chat/completions",
+            task_id=task.id,
+            task_run_id=run.id,
+            inference_callsite_id="csp.chat_model",
+            governance_db=db,
+            admitted_classification_level="無機密",
+        )
+
+
+@pytest.mark.asyncio
+async def test_over_signed_data_ceiling_is_zero_egress(
+    db: Session, monkeypatch,
+) -> None:
+    user = make_user(db, username="pilot_over_ceiling")
+    model = make_model(db, name="pilot-over-ceiling")
+    task, run = _running_task(db, user=user, level="機密")
+    monkeypatch.setattr(settings, "ANILA_PILOT_MODE", True)
+    monkeypatch.setattr(
+        startup_security, "_verified_pilot_admission", _pilot_admission(model)
+    )
+    monkeypatch.setattr(proxy_service.httpx, "AsyncClient", _OutboundMustNotRun)
+
+    with pytest.raises(HTTPException, match="classification ceiling"):
+        await proxy_service.proxy_request(
+            model=model,
+            api_key_id=None,
+            user_id=user.id,
+            department_id=None,
+            request_body={"model": model.name, "messages": []},
+            endpoint_path="/v1/chat/completions",
+            task_id=task.id,
+            task_run_id=run.id,
+            inference_callsite_id="csp.chat_model",
+            governance_db=db,
+            admitted_classification_level="無機密",
+        )
+
+
+@pytest.mark.parametrize("mutation", ["name", "endpoint", "model_type"])
+def test_chat_rejects_unsigned_or_type_confused_target_before_hidden_or_foreground_egress(
+    client: TestClient, db: Session, monkeypatch, mutation: str,
+) -> None:
+    user = make_user(db, username=f"pilot_unsigned_{mutation}", role="admin")
+    model = make_model(db, name=f"pilot-authorized-before-{mutation}")
+    admission = _pilot_admission(model)
+    if mutation == "name":
+        model.name = f"pilot-unsigned-after-{mutation}"
+    elif mutation == "endpoint":
+        model.endpoint_url = "http://unsigned-target:8080"
+    else:
+        model.model_type = "embedding"
+    db.commit()
+    task = Task(
+        title="unsigned pilot target",
+        task_type="query",
+        requester_user_id=user.id,
+        status="submitted",
+    )
+    db.add(task)
+    db.commit()
+    monkeypatch.setattr(settings, "ANILA_PILOT_MODE", True)
+    monkeypatch.setattr(startup_security, "_verified_pilot_admission", admission)
+    monkeypatch.setattr(proxy_service.httpx, "AsyncClient", _OutboundMustNotRun)
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers={**_bearer(user), "X-ANILA-Task-Id": str(task.id)},
+        json={
+            "model": model.name,
+            "messages": [{"role": "user", "content": "must not egress"}],
+        },
+    )
+
+    assert response.status_code == 403
+    db.expire_all()
+    run = db.query(TaskRun).filter_by(task_id=task.id).one()
+    assert run.status == "failed"
 
 
 @pytest.mark.asyncio

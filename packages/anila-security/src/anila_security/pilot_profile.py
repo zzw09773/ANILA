@@ -282,7 +282,9 @@ def verify_signed_pilot_profile(
     profile = _read(profile_path)
     inventory = _read(inventory_path)
     trust = _read(trust_store_path)
-    if profile.get("schema_version") != "anila.gate2.signed-pilot.v1":
+    # v2 adds signer-bound exact registry targets.  v1 profiles did not bind
+    # name/type/endpoint/ceiling and therefore cannot be upgraded implicitly.
+    if profile.get("schema_version") != "anila.gate2.signed-pilot.v2":
         raise PilotProfileError("unknown profile schema")
     if inventory.get("schema_version") != "anila.gate2.inference-callsites.v1":
         raise PilotProfileError("unknown inventory schema")

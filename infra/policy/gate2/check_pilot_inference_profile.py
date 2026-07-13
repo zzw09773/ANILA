@@ -276,7 +276,7 @@ def verify(
     profile = _load(profile_path)
     if inventory.get("schema_version") != "anila.gate2.inference-callsites.v1":
         raise PilotPolicyError("unknown inventory schema")
-    if profile.get("schema_version") != "anila.gate2.signed-pilot.v1":
+    if profile.get("schema_version") != "anila.gate2.signed-pilot.v2":
         raise PilotPolicyError("unknown pilot profile schema")
     calls = inventory.get("callsites")
     if not isinstance(calls, list) or not calls:
@@ -322,8 +322,35 @@ def verify(
     pilot_compose = (repo_root / "infra/compose/gate2-pilot.yml").read_text(
         encoding="utf-8"
     )
+    nginx_config = (repo_root / "infra/nginx/anila.conf").read_text(
+        encoding="utf-8"
+    )
+    router_enabled = (
+        repo_root / "infra/nginx/snippets/router-enabled.conf"
+    ).read_text(encoding="utf-8")
+    router_disabled = (
+        repo_root / "infra/nginx/snippets/router-disabled.conf"
+    ).read_text(encoding="utf-8")
     if 'VITE_ANILA_PILOT_MODE: "false"' not in compose:
         raise PilotPolicyError("base UI posture no longer preserves non-pilot capabilities")
+    router_mount = (
+        "../../infra/nginx/snippets/router-enabled.conf:"
+        "/etc/nginx/snippets/router-posture.conf:ro"
+    )
+    pilot_router_mount = (
+        "../../infra/nginx/snippets/router-disabled.conf:"
+        "/etc/nginx/snippets/router-posture.conf:ro"
+    )
+    if router_mount not in compose:
+        raise PilotPolicyError("base Router posture snippet is not mounted read-only")
+    if pilot_router_mount not in pilot_compose:
+        raise PilotPolicyError("pilot Router hard-deny snippet is not mounted read-only")
+    if nginx_config.count("include /etc/nginx/snippets/router-posture.conf;") != 2:
+        raise PilotPolicyError("both public Router origins must use the posture snippet")
+    if router_disabled.strip() != "return 403;":
+        raise PilotPolicyError("pilot Router posture is not an unconditional hard deny")
+    if "proxy_pass http://router_backend/;" not in router_enabled:
+        raise PilotPolicyError("base Router posture no longer preserves routing")
     if 'GATE2_ALLOW_UNCONVERGED_INFERENCE: "false"' not in pilot_compose:
         raise PilotPolicyError("worker unconverged-inference flag is not hard false")
     if 'ENABLE_PILOT_PROMPT_GENERATOR: "false"' not in pilot_compose:

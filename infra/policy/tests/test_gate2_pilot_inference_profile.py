@@ -33,7 +33,7 @@ def _signed_files(
     inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
     all_ids = [entry["id"] for entry in inventory["callsites"]]
     profile = {
-        "schema_version": "anila.gate2.signed-pilot.v1",
+        "schema_version": "anila.gate2.signed-pilot.v2",
         "profile_id": "synthetic-test-only",
         "pilot_enabled": True,
         "data_classification_ceiling": "營業秘密",
