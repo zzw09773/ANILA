@@ -543,7 +543,7 @@
       "count": 1,
       "required_execution": true,
       "ci_job": "postgres-rls",
-      "ci_command_fragment": "python -m pytest tests/test_gate2_transaction_ledger_pg.py -q",
+      "ci_command_fragment": "tests/test_gate2_transaction_ledger_pg.py",
       "reason": "The complete SQLite CSP suite skips without ANILA_GATE2_LEDGER_PG_URL; postgres-rls executes concurrent block finalization and same-session admission-lock proofs."
     },
     {
@@ -554,6 +554,24 @@
       "ci_job": "postgres-rls",
       "ci_command_fragment": "python -m pytest tests/test_gate2_classification_latch_pg.py -q",
       "reason": "The complete SQLite CSP suite skips without a disposable PostgreSQL DSN; postgres-rls supplies ANILA_GATE2_CLASSIFICATION_PG_URL and executes stale-session classification and declassification race proofs."
+    },
+    {
+      "path": "services/csp/tests/test_gate2_pg_atomicity.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "tests/test_gate2_pg_atomicity.py",
+      "reason": "The complete SQLite CSP suite skips without ANILA_GATE2_LEDGER_PG_URL; postgres-rls executes the active-run uniqueness, lock-order, clearance barrier, and retrieval-seal race proofs as csp_app."
+    },
+    {
+      "path": "services/csp/tests/test_gate2_durable_usage_closure_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_gate2_durable_usage_closure_pg.py -q",
+      "reason": "The complete SQLite CSP suite skips without ANILA_GATE2_LEDGER_PG_URL; postgres-rls proves atomic usage, TaskRun, TraceSpan closure and poison-record isolation on PostgreSQL."
     }
   ],
   "quarantine": [],
