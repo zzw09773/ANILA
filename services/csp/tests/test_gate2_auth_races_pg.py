@@ -105,9 +105,20 @@ def _create_schema(*, auth: bool) -> tuple[str, object]:
                         acr varchar(128) NOT NULL,
                         auth_time timestamptz NOT NULL,
                         break_glass boolean NOT NULL DEFAULT false,
+                        break_glass_ticket varchar(128),
+                        break_glass_expires_at timestamptz,
                         created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
                         revoked_at timestamptz,
-                        revoke_reason varchar(128)
+                        revoke_reason varchar(128),
+                        CONSTRAINT ck_auth_sessions_break_glass_binding CHECK (
+                            (break_glass = false
+                                AND break_glass_ticket IS NULL
+                                AND break_glass_expires_at IS NULL)
+                            OR
+                            (break_glass = true
+                                AND break_glass_ticket IS NOT NULL
+                                AND break_glass_expires_at IS NOT NULL)
+                        )
                     );
                     CREATE TABLE auth_refresh_tokens (
                         jti_hash varchar(64) PRIMARY KEY,
