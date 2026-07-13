@@ -32,7 +32,7 @@ nginx ``/v1`` 直通吃得到 service 面):
 
 from __future__ import annotations
 
-import hmac
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -45,10 +45,11 @@ from app.database import get_db
 from app.middleware.caller import ACCESS_COOKIE_NAME, _extract_bearer, get_caller
 from app.models.artifact import Artifact, ArtifactJob
 from app.models.audit_log import AuditLog
+from app.models.registered_service import RegisteredService
 from app.models.source_snapshot import SourceSnapshot
-from app.models.task import Task
+from app.models.task import Task, TaskRun
 from app.models.user import User
-from app.modules import artifacts, policy
+from app.modules import artifacts, policy, tasks
 from app.schemas.contracts.artifacts import (
     ArtifactDetailOut,
     ArtifactExportIn,
@@ -85,9 +86,45 @@ _INHERIT_REASON = "source_selected"
 
 @dataclass(frozen=True)
 class _ServiceCaller:
-    """/v1 service 面呼叫者(service token;legacy env 時 identity=None)。"""
+    """Artifact writer with an explicit registry identity and capability."""
 
-    identity: object | None
+    identity: agent_credential_service.CallerIdentity
+    service: RegisteredService
+
+    @property
+    def actor_id(self) -> str:
+        return f"service_client:{self.identity.service_client_id}"
+
+
+def _artifact_service_for_identity(
+    db: Session, identity: agent_credential_service.CallerIdentity
+) -> RegisteredService:
+    """Resolve the one active artifact-capable service bound to this client."""
+    if (
+        identity.kind != "service_client"
+        or identity.service_client_id is None
+        or identity.is_legacy
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Artifact 寫入需使用具名、非 legacy 的 Service Client 憑證",
+        )
+    candidates = (
+        db.query(RegisteredService)
+        .filter(
+            RegisteredService.service_client_id == identity.service_client_id,
+            RegisteredService.is_active.is_(True),
+            RegisteredService.service_type == "artifact_tool",
+        )
+        .all()
+    )
+    services = [row for row in candidates if "artifact" in (row.data_egress or [])]
+    if len(services) != 1:
+        raise HTTPException(
+            status_code=403,
+            detail="Service Client 未唯一綁定 artifact_tool + artifact egress 能力",
+        )
+    return services[0]
 
 
 def _resolve_service_token(request: Request, db: Session):
@@ -99,10 +136,6 @@ def _resolve_service_token(request: Request, db: Session):
     if identity is not None:
         request.state.csp_caller = identity
         return True, identity
-    legacy = (settings.CSP_SERVICE_TOKEN or "").strip()
-    if legacy and hmac.compare_digest(token, legacy):
-        request.state.csp_caller = None  # legacy = unattributed
-        return True, None
     # header present but invalid → 明確 401(不是 403)。
     raise HTTPException(status_code=401, detail="服務權杖無效")
 
@@ -116,8 +149,11 @@ def require_service_caller(
     直建 artifact/job);完全匿名 → 401。
     """
     matched, identity = _resolve_service_token(request, db)
-    if matched:
-        return _ServiceCaller(identity=identity)
+    if matched and identity is not None:
+        return _ServiceCaller(
+            identity=identity,
+            service=_artifact_service_for_identity(db, identity),
+        )
     has_user_cred = bool(
         _extract_bearer(request.headers.get("Authorization"))
         or request.cookies.get(ACCESS_COOKIE_NAME)
@@ -147,8 +183,9 @@ def require_export_caller(
 ) -> _ExportCaller:
     """匯出 gate 接受 user JWT 或 service token(doc 09 Artifact export)。"""
     matched, identity = _resolve_service_token(request, db)
-    if matched:
-        actor_id = str(getattr(identity, "id", 0) or 0)
+    if matched and identity is not None:
+        _artifact_service_for_identity(db, identity)
+        actor_id = f"service_client:{identity.service_client_id}"
         return _ExportCaller(
             actor_type="service", actor_id=actor_id,
             exporter_user_id=None, exporter_employee_id=None,
@@ -178,7 +215,12 @@ def _resolve_binding(
     task = None
     snapshot = None
     if task_id is not None:
-        task = db.query(Task).filter(Task.id == task_id).first()
+        task = (
+            db.query(Task)
+            .filter(Task.id == task_id)
+            .with_for_update()
+            .first()
+        )
         if task is None:
             raise HTTPException(status_code=404, detail=f"找不到 task {task_id}")
     if source_snapshot_id is not None:
@@ -190,7 +232,80 @@ def _resolve_binding(
                 status_code=404,
                 detail=f"找不到 source_snapshot {source_snapshot_id}",
             )
+        if task is None:
+            task = (
+                db.query(Task)
+                .filter(Task.id == snapshot.task_id)
+                .with_for_update()
+                .first()
+            )
+            if task is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="source_snapshot 已失去所屬 Task，拒絕註冊 artifact",
+                )
+        elif snapshot.task_id != task.id:
+            raise HTTPException(
+                status_code=403,
+                detail="source_snapshot 與 Task ownership 不一致",
+            )
     return task, snapshot
+
+
+def _require_task_service_and_run(
+    db: Session, *, task: Task, caller: _ServiceCaller
+) -> TaskRun:
+    selected = (task.selected_service_id or "").strip()
+    if selected not in {str(caller.service.id), caller.service.slug}:
+        raise HTTPException(
+            status_code=403,
+            detail="Task 未指派給目前的 Artifact Service",
+        )
+    if task.status != "running":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Task 狀態 {task.status!r} 不可註冊完成 artifact",
+        )
+    run = (
+        db.query(TaskRun)
+        .filter(
+            TaskRun.task_id == task.id,
+            TaskRun.dispatch_target == "studio",
+            TaskRun.status == "running",
+        )
+        .with_for_update()
+        .one_or_none()
+    )
+    if run is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Task 缺少目前 Artifact Service 的 active studio TaskRun",
+        )
+    return run
+
+
+def _service_audit_log(
+    *, caller: _ServiceCaller, action: str, resource_id: str, detail: str
+) -> AuditLog:
+    return AuditLog(
+        actor_user_id=None,
+        actor_username=caller.actor_id,
+        action=action,
+        resource_type="artifact",
+        resource_id=resource_id,
+        status="success",
+        detail=detail,
+        metadata_json=json.dumps(
+            {
+                "actor_type": "service",
+                "service_client_id": caller.identity.service_client_id,
+                "registered_service_id": caller.service.id,
+                "registered_service_slug": caller.service.slug,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+    )
 
 
 def _latch_inheritance(
@@ -280,17 +395,39 @@ def register_artifact(
         db, task_id=payload.task_id,
         source_snapshot_id=payload.source_snapshot_id,
     )
+    if payload.task_id is None and payload.source_snapshot_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="artifact 必須綁 task 或 source_snapshot",
+        )
+    if task is None:
+        raise HTTPException(status_code=409, detail="artifact 必須能解析至所屬 Task")
+    task_run = _require_task_service_and_run(db, task=task, caller=caller)
+    if payload.generated_by_agent_id is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="Service Client 不可冒用 Agent 身分寫入 artifact provenance",
+        )
+    job = db.get(ArtifactJob, payload.job_id) if payload.job_id else None
+    if payload.job_id and job is None:
+        raise HTTPException(status_code=404, detail=f"找不到 artifact job {payload.job_id}")
+    if job is not None and (
+        job.owner_user_id != task.requester_user_id
+        or (job.task_id is not None and job.task_id != task.id)
+        or (
+            job.source_snapshot_id is not None
+            and job.source_snapshot_id != payload.source_snapshot_id
+        )
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="artifact job 與 Task requester/ownership 不一致",
+        )
     # owner / trace 由 task 優先、否則 job。
     owner_user_id: int | None = None
     trace_id: str | None = None
-    if task is not None:
-        owner_user_id = task.requester_user_id
-        trace_id = task.trace_id
-    elif payload.job_id:
-        job = db.get(ArtifactJob, payload.job_id)
-        if job is not None:
-            owner_user_id = job.owner_user_id
-            trace_id = job.trace_id
+    owner_user_id = task.requester_user_id
+    trace_id = task.trace_id
 
     explicit = payload.classification_level or ClassificationLevel.UNCLASSIFIED
     try:
@@ -305,7 +442,7 @@ def register_artifact(
 
     effective = _latch_inheritance(
         db, artifact=artifact, task=task, snapshot=snapshot,
-        actor_id=str(owner_user_id or 0), commit=False,
+        actor_id=caller.actor_id, commit=False,
     )
     version = artifacts.create_version(
         db, artifact=artifact, storage_ref=payload.storage_ref,
@@ -316,16 +453,19 @@ def register_artifact(
         generated_by_studio_job_id=payload.job_id, level=effective,
         commit=False,
     )
-    if task is not None:
-        task.status = "completed"
-        task.updated_at = datetime.now(timezone.utc)
-    db.add(AuditLog(
-        actor_user_id=owner_user_id,
+    tasks.finish_task_run(
+        db,
+        task_run=task_run,
+        status="completed",
+        commit=False,
+    )
+    if job is not None:
+        job.artifact_id = artifact.id
+    db.add(_service_audit_log(
+        caller=caller,
         action="artifact.registered",
-        resource_type="artifact",
         resource_id=str(artifact.id),
-        status="success",
-        detail=f"version={version.version}; task={payload.task_id}",
+        detail=f"version={version.version}; task={task.id}",
     ))
     db.flush()
     db.commit()
@@ -351,9 +491,19 @@ def add_artifact_version(
         db, task_id=artifact.source_task_id,
         source_snapshot_id=artifact.source_snapshot_id,
     )
+    if task is None:
+        raise HTTPException(status_code=409, detail="artifact 已失去所屬 Task")
+    selected = (task.selected_service_id or "").strip()
+    if selected not in {str(caller.service.id), caller.service.slug}:
+        raise HTTPException(status_code=403, detail="Task 未指派給目前的 Artifact Service")
+    if payload.generated_by_agent_id is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="Service Client 不可冒用 Agent 身分寫入 artifact provenance",
+        )
     effective = _latch_inheritance(
         db, artifact=artifact, task=task, snapshot=snapshot,
-        actor_id=str(artifact.owner_user_id or 0),
+        actor_id=caller.actor_id,
         explicit_floor=payload.classification_level, commit=False,
     )
     version = artifacts.create_version(
@@ -365,12 +515,10 @@ def add_artifact_version(
         generated_by_studio_job_id=payload.generated_by_studio_job_id,
         level=effective, commit=False,
     )
-    db.add(AuditLog(
-        actor_user_id=artifact.owner_user_id,
+    db.add(_service_audit_log(
+        caller=caller,
         action="artifact.version.registered",
-        resource_type="artifact",
         resource_id=str(artifact.id),
-        status="success",
         detail=f"version={version.version}",
     ))
     db.flush()

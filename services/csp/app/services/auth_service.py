@@ -17,7 +17,10 @@ from app.models.auth_session import AuthRefreshToken, AuthSession
 from app.models.user import User
 from app.services import agent_credential_service
 from app.services.audit_service import log_audit_event
-from app.services.startup_security import is_break_glass_active
+from app.services.startup_security import (
+    break_glass_audit_metadata,
+    is_break_glass_active,
+)
 from app.services.token_revocation_service import (
     is_revoked as is_identifier_revoked,
     revoke_sid as persist_sid_revocation,
@@ -103,6 +106,41 @@ def _epoch_to_datetime(value: int | float) -> datetime:
     return datetime.fromtimestamp(float(value), tz=timezone.utc)
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _active_break_glass_binding() -> tuple[str, datetime] | None:
+    metadata = break_glass_audit_metadata()
+    if metadata is None:
+        return None
+    ticket = metadata.get("ticket")
+    expires_raw = metadata.get("expires_at")
+    if not isinstance(ticket, str) or not ticket:
+        return None
+    try:
+        expires_at = datetime.fromisoformat(str(expires_raw).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if expires_at.tzinfo is None:
+        return None
+    return ticket, expires_at.astimezone(timezone.utc)
+
+
+def _break_glass_expiry_claim(payload: dict) -> datetime | None:
+    raw = payload.get("break_glass_expires_at")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise ValueError("invalid break-glass expiry claim")
+    value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    if value.tzinfo is None:
+        raise ValueError("break-glass expiry claim requires timezone")
+    return value.astimezone(timezone.utc)
+
+
 def _sessionless_tokens_allowed() -> bool:
     return settings.ANILA_DEPLOYMENT_PROFILE.strip().lower() in {
         "development",
@@ -120,6 +158,8 @@ def create_tokens(
     auth_time: int | None = None,
     acr: str | None = None,
     break_glass: bool | None = None,
+    break_glass_ticket: str | None = None,
+    break_glass_expires_at: datetime | None = None,
     refresh_generation: int = 0,
     parent_refresh_jti_hash: str | None = None,
 ) -> dict:
@@ -134,6 +174,7 @@ def create_tokens(
     session_id = sid or secrets.token_urlsafe(32)
     access_jti = secrets.token_urlsafe(32)
     refresh_jti = secrets.token_urlsafe(32)
+    existing_session = db.get(AuthSession, session_id) if db is not None else None
     if break_glass is None:
         break_glass = (
             "pwd" in methods
@@ -142,6 +183,20 @@ def create_tokens(
         )
     if break_glass and methods != ("pwd",):
         raise ValueError("break-glass assurance requires password-only AMR")
+    if break_glass:
+        active_binding = _active_break_glass_binding()
+        if break_glass_ticket is None or break_glass_expires_at is None:
+            if active_binding is not None:
+                break_glass_ticket, break_glass_expires_at = active_binding
+        if not break_glass_ticket or break_glass_expires_at is None:
+            if existing_session is not None:
+                raise ValueError("cannot change assurance for an existing auth session")
+            raise ValueError("break-glass assurance requires an active incident binding")
+        break_glass_expires_at = _as_utc(break_glass_expires_at)
+        if active_binding != (break_glass_ticket, break_glass_expires_at):
+            raise ValueError("break-glass assurance does not match the active incident")
+    elif break_glass_ticket is not None or break_glass_expires_at is not None:
+        raise ValueError("ordinary assurance cannot carry break-glass incident metadata")
     expected_assurance = _acr_for(methods, break_glass=bool(break_glass))
     if acr is not None and acr != expected_assurance:
         raise ValueError("ACR contradicts the authentication method reference")
@@ -158,7 +213,7 @@ def create_tokens(
 
     session: AuthSession | None = None
     if db is not None:
-        session = db.get(AuthSession, session_id)
+        session = existing_session
         if session is not None:
             if session.user_id != user.id or session.revoked_at is not None:
                 raise ValueError("cannot issue tokens for an invalid auth session")
@@ -168,6 +223,8 @@ def create_tokens(
                 assurance,
                 authenticated_at,
                 bool(break_glass),
+                break_glass_ticket,
+                break_glass_expires_at,
             )
             if durable_assurance != requested_assurance:
                 raise ValueError("cannot change assurance for an existing auth session")
@@ -185,6 +242,12 @@ def create_tokens(
         "acr": assurance,
         "auth_time": authenticated_at,
         "break_glass": bool(break_glass),
+        "break_glass_ticket": break_glass_ticket,
+        "break_glass_expires_at": (
+            break_glass_expires_at.isoformat()
+            if break_glass_expires_at is not None
+            else None
+        ),
     }
     access_data = {**common, "jti": access_jti}
     refresh_data = {**common, "jti": refresh_jti}
@@ -204,6 +267,8 @@ def create_tokens(
                 acr=assurance,
                 auth_time=_epoch_to_datetime(authenticated_at),
                 break_glass=bool(break_glass),
+                break_glass_ticket=break_glass_ticket,
+                break_glass_expires_at=break_glass_expires_at,
             )
             db.add(session)
             # Flush the parent explicitly. Without an ORM relationship the
@@ -227,7 +292,7 @@ def create_tokens(
 
 def _assurance_from_session(
     session: AuthSession,
-) -> tuple[tuple[str, ...], str, int, bool]:
+) -> tuple[tuple[str, ...], str, int, bool, str | None, datetime | None]:
     """Load the durable assurance envelope without repairing corrupt state.
 
     A session id is the security boundary for a refresh family.  Treating a
@@ -254,6 +319,14 @@ def _assurance_from_session(
         raise ValueError("auth session contains contradictory assurance state")
     if session.break_glass and methods != ("pwd",):
         raise ValueError("auth session contains contradictory break-glass state")
+    ticket = session.break_glass_ticket
+    expires_at = session.break_glass_expires_at
+    if session.break_glass:
+        if not isinstance(ticket, str) or not ticket or not isinstance(expires_at, datetime):
+            raise ValueError("auth session lacks break-glass incident binding")
+        expires_at = _as_utc(expires_at)
+    elif ticket is not None or expires_at is not None:
+        raise ValueError("ordinary auth session contains break-glass incident binding")
 
     auth_time = session.auth_time
     if not isinstance(auth_time, datetime):
@@ -267,7 +340,14 @@ def _assurance_from_session(
         > int(datetime.now(timezone.utc).timestamp()) + settings.JWT_LEEWAY_SECONDS
     ):
         raise ValueError("auth session contains invalid authentication time")
-    return methods, session.acr, authenticated_at, session.break_glass
+    return (
+        methods,
+        session.acr,
+        authenticated_at,
+        session.break_glass,
+        ticket,
+        expires_at,
+    )
 
 
 def _revoke_auth_session(db: Session, session: AuthSession, *, reason: str) -> None:
@@ -338,6 +418,8 @@ def rotate_refresh_token(
                 acr=str(payload.get("acr") or _acr_for(methods, break_glass=False)),
                 auth_time=_epoch_to_datetime(auth_time),
                 break_glass=bool(payload.get("break_glass", False)),
+                break_glass_ticket=payload.get("break_glass_ticket"),
+                break_glass_expires_at=_break_glass_expiry_claim(payload),
             )
             db.add(session)
             db.flush()
@@ -407,9 +489,14 @@ def rotate_refresh_token(
         )
 
     record.consumed_at = datetime.now(timezone.utc)
-    methods, assurance, authenticated_at, break_glass = _assurance_from_session(
-        session
-    )
+    (
+        methods,
+        assurance,
+        authenticated_at,
+        break_glass,
+        break_glass_ticket,
+        break_glass_expires_at,
+    ) = _assurance_from_session(session)
     pair = create_tokens(
         user,
         db=db,
@@ -418,6 +505,8 @@ def rotate_refresh_token(
         auth_time=authenticated_at,
         acr=assurance,
         break_glass=break_glass,
+        break_glass_ticket=break_glass_ticket,
+        break_glass_expires_at=break_glass_expires_at,
         refresh_generation=record.generation + 1,
         parent_refresh_jti_hash=record.jti_hash,
     )
@@ -431,6 +520,13 @@ def _load_user_from_payload(payload: dict | None, db: Session, expected_type: st
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="無效的存取權杖" if expected_type == "access" else "無效的刷新權杖",
         )
+    try:
+        token_break_glass_expiry = _break_glass_expiry_claim(payload)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="權杖的 break-glass 保證狀態無效",
+        ) from exc
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(
@@ -498,6 +594,8 @@ def _load_user_from_payload(payload: dict | None, db: Session, expected_type: st
             payload.get("acr"),
             payload.get("auth_time"),
             payload.get("break_glass"),
+            payload.get("break_glass_ticket"),
+            token_break_glass_expiry,
         )
         if token_assurance != durable_assurance:
             raise HTTPException(
@@ -522,6 +620,13 @@ def _load_user_from_payload(payload: dict | None, db: Session, expected_type: st
         owner_break_glass = (
             user.role == "owner"
             and "pwd" in methods
+            and payload.get("break_glass") is True
+            and payload.get("acr") == "urn:anila:acr:break-glass"
+            and _active_break_glass_binding()
+            == (
+                payload.get("break_glass_ticket"),
+                token_assurance[5],
+            )
             and is_break_glass_active()
         )
         if not (card_assured or owner_break_glass):

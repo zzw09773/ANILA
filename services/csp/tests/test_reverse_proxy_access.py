@@ -227,6 +227,22 @@ def test_card_only_access_accepts_owner_password_only_during_break_glass(
     assert response.json()["role"] == "owner"
 
 
+def test_opening_break_glass_does_not_revive_preexisting_password_access(
+    client, db, monkeypatch
+) -> None:
+    user = make_user(db, username="prewindow-access-owner", role="owner")
+    ordinary = create_tokens(user, db=db, amr=("pwd",), break_glass=False)
+    db.commit()
+    _activate_break_glass(monkeypatch)
+
+    response = client.get(
+        "/api/auth/me",
+        headers={"Authorization": f"Bearer {ordinary['access_token']}"},
+    )
+
+    assert response.status_code == 401
+
+
 @pytest.mark.parametrize(
     ("db_role", "token_role", "amr", "include_amr"),
     [
@@ -301,7 +317,66 @@ def test_card_only_refresh_accepts_owner_password_only_during_break_glass(
     response = client.post("/api/auth/refresh", json={"refresh_token": token})
 
     assert response.status_code == 200
-    assert decode_token(response.json()["access_token"])["amr"] == ["pwd"]
+    claims = decode_token(response.json()["access_token"])
+    assert claims["amr"] == ["pwd"]
+    assert claims["break_glass"] is True
+    assert claims["acr"] == "urn:anila:acr:break-glass"
+    assert claims["break_glass_ticket"] == "INC-PROXY-ACCESS-001"
+
+
+def test_opening_break_glass_does_not_revive_preexisting_password_refresh(
+    client, db, monkeypatch
+) -> None:
+    user = make_user(db, username="prewindow-refresh-owner", role="owner")
+    ordinary = create_tokens(user, db=db, amr=("pwd",), break_glass=False)
+    db.commit()
+    _activate_break_glass(monkeypatch)
+
+    response = client.post(
+        "/api/auth/refresh",
+        json={"refresh_token": ordinary["refresh_token"]},
+    )
+
+    assert response.status_code == 401
+
+
+def test_break_glass_session_is_bound_to_the_original_incident_ticket(
+    client, db, monkeypatch
+) -> None:
+    _activate_break_glass(monkeypatch)
+    user = make_user(db, username="ticket-bound-owner", role="owner")
+    pair = create_tokens(user, db=db, amr=("pwd",))
+    db.commit()
+    monkeypatch.setenv("ANILA_BREAK_GLASS_TICKET", "INC-PROXY-ACCESS-002")
+
+    access = client.get(
+        "/api/auth/me",
+        headers={"Authorization": f"Bearer {pair['access_token']}"},
+    )
+    refresh = client.post(
+        "/api/auth/refresh",
+        json={"refresh_token": pair["refresh_token"]},
+    )
+
+    assert access.status_code == 401
+    assert refresh.status_code == 401
+
+
+def test_break_glass_issuer_rejects_supplied_metadata_for_another_incident(
+    db, monkeypatch
+) -> None:
+    _activate_break_glass(monkeypatch)
+    user = make_user(db, username="forged-ticket-owner", role="owner")
+
+    with pytest.raises(ValueError, match="active incident"):
+        create_tokens(
+            user,
+            db=db,
+            amr=("pwd",),
+            break_glass=True,
+            break_glass_ticket="INC-ATTACKER-DEFINED",
+            break_glass_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        )
 
 
 def test_break_glass_password_refresh_is_rejected_after_expiry(

@@ -38,6 +38,11 @@ class AuthSession(Base):
     acr = Column(String(128), nullable=False)
     auth_time = Column(DateTime(timezone=True), nullable=False)
     break_glass = Column(Boolean, nullable=False, default=False)
+    # Bind a privileged password session to the incident window that minted it.
+    # These are deliberately durable (not only JWT claims), so opening a later
+    # break-glass window cannot revive an ordinary or earlier password session.
+    break_glass_ticket = Column(String(128), nullable=True)
+    break_glass_expires_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     revoked_at = Column(DateTime(timezone=True), nullable=True, index=True)
     revoke_reason = Column(String(128), nullable=True)
@@ -49,6 +54,13 @@ class AuthSession(Base):
             name="ck_auth_sessions_family_entropy",
         ),
         CheckConstraint("length(acr) > 0", name="ck_auth_sessions_acr_nonempty"),
+        CheckConstraint(
+            "(break_glass = false AND break_glass_ticket IS NULL "
+            "AND break_glass_expires_at IS NULL) OR "
+            "(break_glass = true AND break_glass_ticket IS NOT NULL "
+            "AND break_glass_expires_at IS NOT NULL)",
+            name="ck_auth_sessions_break_glass_binding",
+        ),
         Index("ix_auth_sessions_user_active", "user_id", "revoked_at"),
     )
 

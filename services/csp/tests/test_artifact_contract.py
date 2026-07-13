@@ -33,10 +33,15 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.artifact import Artifact, ArtifactJob, ArtifactVersion, ExportRecord
+from app.models.audit_log import AuditLog
 from app.models.classification import ClassificationEvent
 from app.models.policy_decision import PolicyDecision
+from app.models.registered_service import RegisteredService
+from app.models.service_client import ServiceClient
 from app.models.source_snapshot import SourceSnapshot
-from app.models.task import Task
+from app.models.task import Task, TaskRun
+from app.services import agent_credential_service
+from app.services.agent_credential_service import CallerIdentity
 from app.utils.security import create_access_token
 from tests.conftest import make_user
 
@@ -45,11 +50,46 @@ _SVC = {"X-CSP-Service-Token": SVC_TOKEN}
 
 
 @pytest.fixture(autouse=True)
-def _svc_token(monkeypatch):
+def _svc_token(monkeypatch, db):
     """本模組內把 legacy CSP_SERVICE_TOKEN 設成已知值,供 /v1 service 面測試
     (function-scoped,測完自動還原,不外洩到別模組)。"""
     monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", SVC_TOKEN)
-    yield
+    service_client = ServiceClient(
+        client_name="artifact-contract-studio",
+        client_type="worker",
+        service_token_envelope="enc::stub",
+        service_token_lookup_hash="a" * 64,
+        is_active=True,
+        is_legacy=False,
+    )
+    db.add(service_client)
+    db.flush()
+    service = RegisteredService(
+        name="Artifact Contract Studio",
+        slug="artifact-contract-studio",
+        service_type="artifact_tool",
+        entry_url="https://studio.test.invalid",
+        data_egress=["artifact"],
+        service_client_id=service_client.id,
+        is_active=True,
+    )
+    db.add(service)
+    db.commit()
+
+    def _verify(_db, *, token):
+        if token != SVC_TOKEN:
+            return None
+        return CallerIdentity(
+            kind="service_client",
+            agent_id=None,
+            service_client_id=service_client.id,
+            credential_id=service_client.id,
+            is_legacy=False,
+            used_previous_token=False,
+        )
+
+    monkeypatch.setattr(agent_credential_service, "verify_service_token", _verify)
+    yield service
 
 
 def _bearer(user) -> dict:
@@ -62,8 +102,17 @@ def _bearer(user) -> dict:
 
 def _make_task(db: Session, user, level: str = "無機密") -> Task:
     task = Task(title="測試任務", task_type="query", requester_user_id=user.id,
-                status="submitted", classification_level=level)
+                status="running", classification_level=level,
+                selected_service_id="artifact-contract-studio")
     db.add(task)
+    db.flush()
+    db.add(TaskRun(
+        task_id=task.id,
+        run_sequence=1,
+        dispatch_target="studio",
+        status="running",
+        classification_level=level,
+    ))
     db.commit()
     db.refresh(task)
     return task
@@ -202,6 +251,109 @@ class TestServiceTokenOnly:
         )
         assert resp.status_code == 401
 
+    def test_agent_credential_cannot_write_artifact(
+        self, client: TestClient, db: Session, monkeypatch
+    ):
+        user = make_user(db, username="agent_artifact_owner")
+        task = _make_task(db, user)
+        monkeypatch.setattr(
+            agent_credential_service,
+            "verify_service_token",
+            lambda _db, *, token: CallerIdentity(
+                kind="agent",
+                agent_id=777,
+                service_client_id=None,
+                credential_id=888,
+                is_legacy=False,
+                used_previous_token=False,
+            ),
+        )
+        resp = client.post(
+            "/v1/artifacts",
+            headers={"X-CSP-Service-Token": "csk-agent"},
+            json=_artifact_body(task_id=task.id, generated_by_agent_id=777),
+        )
+        assert resp.status_code == 403
+
+    def test_service_without_artifact_capability_is_rejected(
+        self, client: TestClient, db: Session, monkeypatch
+    ):
+        user = make_user(db, username="wrong_cap_owner")
+        task = _make_task(db, user)
+        other = ServiceClient(
+            client_name="not-an-artifact-tool",
+            client_type="worker",
+            service_token_envelope="enc::stub",
+            service_token_lookup_hash="b" * 64,
+            is_active=True,
+        )
+        db.add(other)
+        db.commit()
+        monkeypatch.setattr(
+            agent_credential_service,
+            "verify_service_token",
+            lambda _db, *, token: CallerIdentity(
+                kind="service_client",
+                agent_id=None,
+                service_client_id=other.id,
+                credential_id=other.id,
+                is_legacy=False,
+                used_previous_token=False,
+            ),
+        )
+        resp = client.post(
+            "/v1/artifacts",
+            headers={"X-CSP-Service-Token": "csk-wrong-cap"},
+            json=_artifact_body(task_id=task.id),
+        )
+        assert resp.status_code == 403
+
+    def test_other_artifact_service_cannot_complete_unassigned_task(
+        self, client: TestClient, db: Session, monkeypatch
+    ):
+        user = make_user(db, username="other_studio_task_owner")
+        task = _make_task(db, user)
+        other = ServiceClient(
+            client_name="other-artifact-studio",
+            client_type="worker",
+            service_token_envelope="enc::stub",
+            service_token_lookup_hash="c" * 64,
+            is_active=True,
+        )
+        db.add(other)
+        db.flush()
+        other_service = RegisteredService(
+            name="Other Artifact Studio",
+            slug="other-artifact-studio",
+            service_type="artifact_tool",
+            entry_url="https://other-studio.test.invalid",
+            data_egress=["artifact"],
+            service_client_id=other.id,
+            is_active=True,
+        )
+        db.add(other_service)
+        db.commit()
+        monkeypatch.setattr(
+            agent_credential_service,
+            "verify_service_token",
+            lambda _db, *, token: CallerIdentity(
+                kind="service_client",
+                agent_id=None,
+                service_client_id=other.id,
+                credential_id=other.id,
+                is_legacy=False,
+                used_previous_token=False,
+            ),
+        )
+
+        resp = client.post(
+            "/v1/artifacts",
+            headers={"X-CSP-Service-Token": "csk-other-artifact-studio"},
+            json=_artifact_body(task_id=task.id),
+        )
+
+        assert resp.status_code == 403
+
 
 # ── binding 規則(constitution §6)─────────────────────────────────────────────
 
@@ -218,11 +370,88 @@ class TestBindingRule:
         resp = _register_artifact(client, task_id=99999)
         assert resp.status_code == 404
 
+    def test_job_cannot_cross_requester_boundary(self, client, db):
+        task_owner = make_user(db, username="artifact_task_owner")
+        other = make_user(db, username="artifact_other_requester")
+        task = _make_task(db, task_owner)
+        job = ArtifactJob(
+            job_id="cross-requester-job",
+            owner_user_id=other.id,
+            task_id=task.id,
+            artifact_type="report",
+            status="running",
+        )
+        db.add(job)
+        db.commit()
+
+        resp = client.post(
+            "/v1/artifacts",
+            headers=_SVC,
+            json=_artifact_body(task_id=task.id, job_id=job.job_id),
+        )
+        assert resp.status_code == 403
+
+    def test_snapshot_cannot_cross_task_requester_boundary(self, client, db):
+        first = make_user(db, username="artifact_snapshot_first")
+        second = make_user(db, username="artifact_snapshot_second")
+        task = _make_task(db, first)
+        other_task = _make_task(db, second)
+        snapshot = SourceSnapshot(
+            task_id=other_task.id,
+            origin="collection",
+            classification_level="機密",
+        )
+        db.add(snapshot)
+        db.commit()
+
+        resp = _register_artifact(
+            client,
+            task_id=task.id,
+            snapshot_id=snapshot.id,
+        )
+
+        assert resp.status_code == 403
+
+    @pytest.mark.parametrize("terminal", ["failed", "cancelled", "blocked_by_policy"])
+    def test_terminal_task_cannot_be_revived_by_artifact_registration(
+        self, client, db, terminal
+    ):
+        user = make_user(db, username=f"artifact_terminal_{terminal}")
+        task = _make_task(db, user)
+        run = db.query(TaskRun).filter_by(task_id=task.id).one()
+        run.status = "failed" if terminal == "blocked_by_policy" else terminal
+        task.status = terminal
+        db.commit()
+
+        resp = _register_artifact(client, task_id=task.id)
+
+        assert resp.status_code == 409
+        db.refresh(task)
+        assert task.status == terminal
+
 
 # ── 分類繼承(effective = max、單向)──────────────────────────────────────────
 
 
 class TestClassificationInheritance:
+    def test_registration_closes_canonical_run_and_audits_service_actor(
+        self, client: TestClient, db: Session
+    ):
+        user = make_user(db, username="artifact_ledger_owner")
+        task = _make_task(db, user)
+
+        resp = _register_artifact(client, task_id=task.id)
+
+        assert resp.status_code == 201, resp.text
+        db.refresh(task)
+        run = db.query(TaskRun).filter_by(task_id=task.id).one()
+        event = db.query(AuditLog).filter_by(action="artifact.registered").one()
+        assert task.status == "completed"
+        assert run.status == "completed"
+        assert event.actor_user_id is None
+        assert event.actor_username.startswith("service_client:")
+        assert str(user.id) != event.actor_username
+
     def test_task_level_wins_when_explicit_lower(self, client: TestClient, db: Session):
         user = make_user(db, username="inh_task")
         task = _make_task(db, user, level="機密")
@@ -400,9 +629,10 @@ class TestGovernanceReads:
 
     def test_filter_by_artifact_type(self, client: TestClient, db: Session):
         owner = make_user(db, username="gov_filter")
-        task = _make_task(db, owner, level="無機密")
-        _register_artifact(client, task_id=task.id, atype="report")
-        _register_artifact(client, task_id=task.id, atype="slides")
+        report_task = _make_task(db, owner, level="無機密")
+        slides_task = _make_task(db, owner, level="無機密")
+        _register_artifact(client, task_id=report_task.id, atype="report")
+        _register_artifact(client, task_id=slides_task.id, atype="slides")
         resp = client.get("/api/artifacts?artifact_type=slides",
                           headers=_bearer(owner))
         assert resp.status_code == 200
