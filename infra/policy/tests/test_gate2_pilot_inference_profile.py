@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from infra.policy.gate2.check_pilot_inference_profile import (
     PilotPolicyError,
     _canonical,
+    _render_gate2_pilot_nginx,
     inventory_hash,
     verify,
 )
@@ -25,6 +26,35 @@ INELIGIBLE = [
     if not entry["pilot_eligible"]
 ]
 _CSP_IMAGE_ID = "sha256:" + "a" * 64
+
+
+def test_pilot_nginx_is_exact_fail_closed_derivation() -> None:
+    base = (ROOT / "infra/nginx/anila.conf").read_text(encoding="utf-8")
+    pilot = (ROOT / "infra/nginx/anila-gate2-pilot.conf").read_text(
+        encoding="utf-8"
+    )
+    assert pilot == _render_gate2_pilot_nginx(base)
+    assert "anila_studio_backend" not in pilot
+    assert "server anila-studio:" not in pilot
+    assert pilot.count(
+        "location ~ ^/api/(studio|reports|mindmaps|infographics|datatables)/ {"
+    ) == 2
+    assert pilot.count("return 403;") == 2
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "# GATE2-PILOT-EXCLUDE-STUDIO-UPSTREAM-BEGIN\n",
+        "    # GATE2-PILOT-EXCLUDE-STUDIO-ROUTE-BEGIN\n",
+    ],
+)
+def test_pilot_nginx_derivation_fails_closed_when_marker_is_missing(
+    marker: str,
+) -> None:
+    base = (ROOT / "infra/nginx/anila.conf").read_text(encoding="utf-8")
+    with pytest.raises(PilotPolicyError, match="pilot-excluded Studio"):
+        _render_gate2_pilot_nginx(base.replace(marker, "", 1))
 
 
 def _signed_files(

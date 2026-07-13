@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     # Exact Docker content ID of the executing CSP image. The signed Gate 2
     # profile must bind this value, preventing approval replay on other code.
     GATE2_CSP_IMAGE_ID: str = ""
+    # Compose-level pilot posture marker. Only the reviewed Gate 2 overlay
+    # injects this value; setting ANILA_PILOT_MODE in the host dotenv alone
+    # must never be sufficient to claim the signed pilot posture.
+    GATE2_PILOT_COMPOSE_POSTURE: str = ""
 
     # Unit/dev harness escape hatch only. Formal deployments must run Alembic
     # and the legacy idempotent migration pass before becoming ready. Startup

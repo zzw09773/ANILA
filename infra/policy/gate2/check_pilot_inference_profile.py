@@ -41,6 +41,43 @@ _TARGET_TYPES_BY_CALLSITE = {
     "csp.memory_embedding": {"embedding"},
 }
 
+_PILOT_NGINX_HEADER = (
+    "# GENERATED PILOT POSTURE: synchronized from anila.conf by policy checks.\n"
+    "# Studio/artifact proxying is intentionally absent; do not use outside Gate 2 pilot.\n"
+)
+_PILOT_STUDIO_UPSTREAM_PATTERN = re.compile(
+    r"# GATE2-PILOT-EXCLUDE-STUDIO-UPSTREAM-BEGIN\n"
+    r".*?"
+    r"# GATE2-PILOT-EXCLUDE-STUDIO-UPSTREAM-END\n",
+    re.DOTALL,
+)
+_PILOT_STUDIO_ROUTE_PATTERN = re.compile(
+    r"    # GATE2-PILOT-EXCLUDE-STUDIO-ROUTE-BEGIN\n"
+    r".*?"
+    r"    # GATE2-PILOT-EXCLUDE-STUDIO-ROUTE-END\n",
+    re.DOTALL,
+)
+
+
+def _render_gate2_pilot_nginx(base_config: str) -> str:
+    """Derive the pilot config while proving all exclusion sentinels exist."""
+    if len(_PILOT_STUDIO_UPSTREAM_PATTERN.findall(base_config)) != 1:
+        raise PilotPolicyError("base nginx must have one pilot-excluded Studio upstream")
+    if len(_PILOT_STUDIO_ROUTE_PATTERN.findall(base_config)) != 2:
+        raise PilotPolicyError("base nginx must have two pilot-excluded Studio routes")
+    rendered = _PILOT_STUDIO_UPSTREAM_PATTERN.sub(
+        "# Gate 2 pilot: Studio upstream intentionally absent.\n",
+        base_config,
+    )
+    rendered = _PILOT_STUDIO_ROUTE_PATTERN.sub(
+        "    # Gate 2 pilot: excluded Studio/artifact API families fail closed.\n"
+        "    location ~ ^/api/(studio|reports|mindmaps|infographics|datatables)/ {\n"
+        "        return 403;\n"
+        "    }\n",
+        rendered,
+    )
+    return _PILOT_NGINX_HEADER + rendered
+
 
 def _unique_nonempty_strings(value: Any, field: str) -> list[str]:
     if not isinstance(value, list):
@@ -340,6 +377,9 @@ def verify(
     nginx_config = (repo_root / "infra/nginx/anila.conf").read_text(
         encoding="utf-8"
     )
+    pilot_nginx_config = (
+        repo_root / "infra/nginx/anila-gate2-pilot.conf"
+    ).read_text(encoding="utf-8")
     router_enabled = (
         repo_root / "infra/nginx/snippets/router-enabled.conf"
     ).read_text(encoding="utf-8")
@@ -361,12 +401,36 @@ def verify(
         "../../infra/nginx/snippets/router-disabled.conf:"
         "/etc/nginx/snippets/router-posture.conf:ro"
     )
+    pilot_nginx_mount = (
+        "../../infra/nginx/anila-gate2-pilot.conf:"
+        "/etc/nginx/conf.d/default.conf:ro"
+    )
     if router_mount not in compose:
         raise PilotPolicyError("base Router posture snippet is not mounted read-only")
     if pilot_router_mount not in pilot_compose:
         raise PilotPolicyError("pilot Router hard-deny snippet is not mounted read-only")
+    if pilot_nginx_mount not in pilot_compose:
+        raise PilotPolicyError("pilot nginx config is not mounted read-only")
+    if pilot_nginx_config != _render_gate2_pilot_nginx(nginx_config):
+        raise PilotPolicyError("pilot nginx config drifted from fail-closed derivation")
+    if (
+        "anila_studio_backend" in pilot_nginx_config
+        or "server anila-studio:" in pilot_nginx_config
+        or "proxy_pass http://anila_studio" in pilot_nginx_config
+    ):
+        raise PilotPolicyError("pilot nginx still references the excluded Studio service")
+    if pilot_nginx_config.count(
+        "location ~ ^/api/(studio|reports|mindmaps|infographics|datatables)/ {"
+    ) != 2 or pilot_nginx_config.count(
+        "# Gate 2 pilot: excluded Studio/artifact API families fail closed."
+    ) != 2:
+        raise PilotPolicyError("both pilot origins must hard-deny Studio/artifact APIs")
     if nginx_config.count("include /etc/nginx/snippets/router-posture.conf;") != 2:
         raise PilotPolicyError("both public Router origins must use the posture snippet")
+    if pilot_nginx_config.count(
+        "include /etc/nginx/snippets/router-posture.conf;"
+    ) != 2:
+        raise PilotPolicyError("both pilot origins must use the Router posture snippet")
     if router_disabled.strip() != "return 403;":
         raise PilotPolicyError("pilot Router posture is not an unconditional hard deny")
     if "proxy_pass http://router_backend/;" not in router_enabled:
@@ -377,6 +441,8 @@ def verify(
         raise PilotPolicyError("CSP prompt-generator flag is not hard false")
     if 'ENABLE_MEMORY: "false"' not in pilot_compose:
         raise PilotPolicyError("post-turn memory inference is not hard disabled")
+    if 'GATE2_PILOT_COMPOSE_POSTURE: "gate2-pilot-v1"' not in pilot_compose:
+        raise PilotPolicyError("CSP pilot compose posture marker is not hard-wired")
     if 'ENABLE_IMAGE_CAPTIONS: "false"' not in pilot_compose:
         raise PilotPolicyError("ingestion VLM caption callsite is not hard false")
     for service_profile in (

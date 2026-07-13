@@ -70,6 +70,42 @@ deployment_profile() {
   printf '%s' "${ANILA_DEPLOYMENT_PROFILE:-$(env_file_value ANILA_DEPLOYMENT_PROFILE)}"
 }
 
+pilot_mode_value() {
+  if [[ -v ANILA_PILOT_MODE ]]; then
+    printf '%s' "$ANILA_PILOT_MODE"
+  else
+    printf '%s' "$(env_file_value ANILA_PILOT_MODE)"
+  fi
+}
+
+FORMAL_POSTURE=normal
+FORMAL_COMPOSE_ARGS=()
+IMAGE_LOCK_POSTURE_ARGS=()
+
+configure_formal_posture() {
+  local requested
+  requested="$(pilot_mode_value)"
+  case "${requested,,}" in
+    ""|false) FORMAL_POSTURE=normal ;;
+    true) FORMAL_POSTURE=gate2-pilot ;;
+    *) fatal "ANILA_PILOT_MODE 必須是明確的 true/false；目前為 '$requested'" ;;
+  esac
+  FORMAL_COMPOSE_ARGS=(--project-name anila-platform -f infra/compose/platform.yml)
+  IMAGE_LOCK_POSTURE_ARGS=(--posture normal)
+  if [[ "$FORMAL_POSTURE" == gate2-pilot ]]; then
+    FORMAL_COMPOSE_ARGS+=(-f infra/compose/gate2-pilot.yml)
+    IMAGE_LOCK_POSTURE_ARGS=(--posture gate2-pilot)
+  fi
+}
+
+compose() {
+  docker compose "${FORMAL_COMPOSE_ARGS[@]}" "$@"
+}
+
+is_gate2_pilot_posture() {
+  [[ "$FORMAL_POSTURE" == gate2-pilot ]]
+}
+
 is_formal_card_profile() {
   case "${1:-$(deployment_profile)}" in
     prod-intranet-card|prod-intranet-card-breakglass) return 0 ;;
@@ -171,19 +207,19 @@ check_formal_image_lock() {
   fi
   command -v python3 >/dev/null 2>&1 \
     || fatal "formal image-lock verifier 需要 python3"
-  python3 "$IMAGE_LOCK_VERIFIER" check-wiring \
+  python3 "$IMAGE_LOCK_VERIFIER" "${IMAGE_LOCK_POSTURE_ARGS[@]}" check-wiring \
     || fatal "Compose image lock wiring 不完整"
-  python3 "$IMAGE_LOCK_VERIFIER" verify-env --env-file .env --inspect-docker \
+  python3 "$IMAGE_LOCK_VERIFIER" "${IMAGE_LOCK_POSTURE_ARGS[@]}" verify-env --env-file .env --inspect-docker \
     || fatal "正式 image content-ID lock 缺失或本機 image 不符"
   ok "formal Compose images 已鎖定 sha256 content IDs"
 }
 
 check_running_container_image_lock() {
   local optional_args=()
-  if [[ -n "$(docker compose --profile developer-tools ps --status running -q codeserver 2>/dev/null || true)" ]]; then
+  if [[ -n "$(compose --profile developer-tools ps --status running -q codeserver 2>/dev/null || true)" ]]; then
     optional_args=(--include-optional)
   fi
-  python3 "$IMAGE_LOCK_VERIFIER" verify-env --env-file .env \
+  python3 "$IMAGE_LOCK_VERIFIER" "${IMAGE_LOCK_POSTURE_ARGS[@]}" verify-env --env-file .env \
     "${optional_args[@]}" --inspect-containers \
     || fatal "running container image content-ID read-back 失敗"
 }
@@ -383,7 +419,7 @@ tool_upgrade_guidance() {
 check_one_tool_upgrade() {
   local service="$1" expected="$2" volume_label="$3"
   local cid actual volumes volume marker
-  cid="$(docker compose ps -a -q "$service" 2>/dev/null || true)"
+  cid="$(compose ps -a -q "$service" 2>/dev/null || true)"
   if [[ -n "$cid" ]]; then
     actual="$(docker inspect "$cid" --format '{{.Config.Image}}' 2>/dev/null || true)"
     if [[ "$actual" != "$expected" ]]; then
@@ -433,11 +469,11 @@ check_tool_upgrade_safety() {
 }
 
 mark_verified_tool_versions() {
-  docker compose exec -T n8n sh -c \
+  compose exec -T n8n sh -c \
     'umask 077; printf "%s\n" "$1" > "/home/node/.n8n/$2"' \
     _ "$N8N_RUNTIME_IMAGE" "$TOOL_VERSION_MARKER" \
     || fatal "無法寫入 n8n 目標版本驗證標記"
-  docker compose exec -T gitlab sh -c \
+  compose exec -T gitlab sh -c \
     'umask 077; printf "%s\n" "$1" > "/var/opt/gitlab/$2"' \
     _ "$GITLAB_RUNTIME_IMAGE" "$TOOL_VERSION_MARKER" \
     || fatal "無法寫入 GitLab 目標版本驗證標記"
@@ -511,7 +547,7 @@ cmd_deploy() {
   ensure_jwt_keypair
 
   section "Bring up the stack"
-  docker compose up -d --no-build --pull never
+  compose up -d --no-build --pull never
 
   cmd_wait_healthy
   cmd_postconfigure --prevalidated
@@ -522,7 +558,7 @@ cmd_deploy() {
 cmd_up() {
   [[ "${1:-}" == "--prevalidated" ]] || validate_formal_up
   section "docker compose up -d --no-build --pull never"
-  docker compose up -d --no-build --pull never
+  compose up -d --no-build --pull never
   cmd_wait_healthy
   cmd_postconfigure --prevalidated
   cmd_verify --prevalidated
@@ -531,7 +567,7 @@ cmd_up() {
 cmd_down() {
   check_docker
   section "docker compose down (保留 named volumes,db 資料不丟)"
-  docker compose down
+  compose down
   ok "stack 已停"
 }
 
@@ -550,7 +586,9 @@ cmd_restart() {
 cmd_codeserver_up() {
   validate_formal_identity
   check_env
-  python3 "$IMAGE_LOCK_VERIFIER" verify-env --env-file .env \
+  is_gate2_pilot_posture \
+    && fatal "Gate 2 pilot active set 禁止啟用 developer-tools/codeserver"
+  python3 "$IMAGE_LOCK_VERIFIER" "${IMAGE_LOCK_POSTURE_ARGS[@]}" verify-env --env-file .env \
     --include-optional --inspect-docker \
     || fatal "developer-tools image 未鎖定或未載入"
   mkdir -p share/codeserver-sandbox
@@ -563,19 +601,19 @@ cmd_codeserver_up() {
     warn "share/codeserver-sandbox 是空的 — 建議先從內網 GitLab clone 一份獨立 checkout"
   fi
   section "Enable code-server (developer-tools profile; isolated workspace)"
-  docker compose --profile developer-tools up -d --no-build --pull never codeserver
-  python3 "$IMAGE_LOCK_VERIFIER" verify-env --env-file .env \
+  compose --profile developer-tools up -d --no-build --pull never codeserver
+  python3 "$IMAGE_LOCK_VERIFIER" "${IMAGE_LOCK_POSTURE_ARGS[@]}" verify-env --env-file .env \
     --include-optional --inspect-containers \
     || fatal "developer-tools container image read-back 失敗"
-  docker compose --profile developer-tools ps codeserver
+  compose --profile developer-tools ps codeserver
   ok "code-server: https://${CODESERVER_HOST:-code.ai.ncsist.org.tw}/ (原生密碼登入)"
 }
 
 cmd_codeserver_down() {
   check_docker
   section "Disable code-server"
-  docker compose --profile developer-tools stop codeserver
-  docker compose --profile developer-tools rm -f codeserver
+  compose --profile developer-tools stop codeserver
+  compose --profile developer-tools rm -f codeserver
   ok "code-server 已停用；sandbox 內容保留"
 }
 
@@ -596,7 +634,7 @@ cmd_rebuild() {
 # ── Subcommand: status ─────────────────────────────────────────────────────
 cmd_status() {
   section "ANILA stack status"
-  docker compose ps --format "table {{.Service}}\t{{.Status}}\t{{.Image}}"
+  compose ps --format "table {{.Service}}\t{{.Status}}\t{{.Image}}"
   echo
   log "模型 stack (anila-models project):"
   docker compose -p anila-models ps --format "table {{.Service}}\t{{.Status}}" 2>/dev/null || \
@@ -607,7 +645,7 @@ cmd_status() {
 cmd_logs() {
   local svc="${1:-}"
   [[ -z "$svc" ]] && fatal "usage: $0 logs <service>"
-  docker compose logs -f --tail=100 "$svc"
+  compose logs -f --tail=100 "$svc"
 }
 
 # ── Subcommand: wait healthy + verify ──────────────────────────────────────
@@ -618,11 +656,15 @@ cmd_wait_healthy() {
   local deadline=$(( $(date +%s) + timeout ))
   local services=(csp-db redis pptx-renderer csp router anilalm anila-ui anila-studio flux2-dev-agent nginx n8n gitlab)
   local running_services=(ingestion-worker)
+  if is_gate2_pilot_posture; then
+    services=(csp-db redis csp router anilalm anila-ui nginx n8n gitlab)
+    running_services=()
+  fi
   while true; do
     local pending=()
     for s in "${services[@]}"; do
       local status
-      status=$(docker compose ps "$s" --format '{{.Status}}' 2>/dev/null || echo "")
+      status=$(compose ps "$s" --format '{{.Status}}' 2>/dev/null || echo "")
       if [[ "$status" == *"(unhealthy)"* ]] || [[ "$status" == *"Restarting"* ]] || [[ "$status" == *"Exited"* ]]; then
           err "$s: $status"
           warn "看 logs 找原因: bash $0 logs $s"
@@ -634,7 +676,7 @@ cmd_wait_healthy() {
     done
     for s in "${running_services[@]}"; do
       local status
-      status=$(docker compose ps "$s" --format '{{.Status}}' 2>/dev/null || echo "")
+      status=$(compose ps "$s" --format '{{.Status}}' 2>/dev/null || echo "")
       if [[ -z "$status" ]] || [[ "$status" != Up* ]]; then
         if [[ "$status" == *"Restarting"* ]] || [[ "$status" == *"Exited"* ]] || [[ "$status" == *"Dead"* ]]; then
           err "$s: $status"
@@ -660,7 +702,7 @@ cmd_wait_healthy() {
 
 verify_service_image() {
   local service="$1" expected="$2" cid actual
-  cid="$(docker compose ps -a -q "$service" 2>/dev/null || true)"
+  cid="$(compose ps -a -q "$service" 2>/dev/null || true)"
   [[ -n "$cid" ]] || fatal "$service container 不存在"
   actual="$(docker inspect "$cid" --format '{{.Config.Image}}' 2>/dev/null || true)"
   [[ "$actual" == "$expected" ]] \
@@ -685,6 +727,62 @@ verify_https_code() {
     -o /dev/null -w '%{http_code}' "https://$host$path" 2>/dev/null || true)"
   [[ "$code" == "$expected" ]] || fatal "$label: expected HTTP $expected, got ${code:-curl-failed}"
   ok "$label → $expected"
+}
+
+verify_https_port_code() {
+  local label="$1" host="$2" port="$3" path="$4" expected="$5" code
+  code="$(verify_curl -s --max-time 15 --resolve "$host:$port:127.0.0.1" \
+    -o /dev/null -w '%{http_code}' "https://$host:$port$path" 2>/dev/null || true)"
+  [[ "$code" == "$expected" ]] \
+    || fatal "$label: expected HTTP $expected, got ${code:-curl-failed}"
+  ok "$label → $expected"
+}
+
+verify_gate2_pilot_runtime_posture() {
+  local main_host="$1" service config_json
+  for service in ingestion-worker pptx-renderer anila-studio flux2-dev-agent codeserver; do
+    if [[ -n "$(compose --profile gate2-data-admin --profile gate3-artifacts --profile developer-tools ps --status running -q "$service" 2>/dev/null || true)" ]]; then
+      fatal "Gate 2 pilot 禁止的 service 仍在 running: $service"
+    fi
+  done
+
+  config_json="$(compose config --format json)" \
+    || fatal "無法 read-back Gate 2 pilot resolved Compose"
+  printf '%s' "$config_json" | python3 -c '
+import json, pathlib, sys
+config = json.load(sys.stdin)
+services = config.get("services", {})
+csp = services.get("csp", {})
+env = csp.get("environment", {})
+expected = {
+    "ANILA_PILOT_MODE": "true",
+    "GATE2_PILOT_COMPOSE_POSTURE": "gate2-pilot-v1",
+    "ENABLE_MEMORY": "false",
+    "ENABLE_PILOT_PROMPT_GENERATOR": "false",
+    "ENABLE_PILOT_INGESTION_JUDGE": "false",
+    "ENABLE_PILOT_STUDIO_ARTIFACTS": "false",
+}
+for name, value in expected.items():
+    if str(env.get(name, "")).lower() != value:
+        raise SystemExit(f"resolved CSP pilot posture mismatch: {name}")
+volumes = services.get("nginx", {}).get("volumes", [])
+matches = [
+    item for item in volumes
+    if isinstance(item, dict)
+    and item.get("target") == "/etc/nginx/snippets/router-posture.conf"
+]
+if len(matches) != 1:
+    raise SystemExit("resolved nginx must have exactly one router posture mount")
+mount = matches[0]
+if pathlib.PurePath(str(mount.get("source", ""))).name != "router-disabled.conf":
+    raise SystemExit("resolved nginx router posture is not disabled")
+if mount.get("read_only") is not True:
+    raise SystemExit("resolved nginx router posture mount is not read-only")
+' || fatal "Gate 2 pilot resolved Compose posture read-back 失敗"
+
+  verify_https_code "Gate 2 pilot 443 Router deny" "$main_host" /router/health 403
+  verify_https_port_code "Gate 2 pilot 4443 Router deny" "$main_host" 4443 /router/health 403
+  ok "Gate 2 pilot active service set、CSP marker 與 nginx Router deny 已 read-back"
 }
 
 verify_https_reachable() {
@@ -740,7 +838,7 @@ cmd_postconfigure() {
   check_running_container_image_lock
   section "Postconfigure stateful tool security posture"
   local gitlab_posture
-  gitlab_posture="$(docker compose exec -T gitlab gitlab-rails runner \
+  gitlab_posture="$(compose exec -T gitlab gitlab-rails runner \
     "s=ApplicationSetting.current or abort('application setting missing'); s.update!(signup_enabled: false) unless s.signup_enabled == false; s.reload; abort('signup still enabled') unless s.signup_enabled == false; puts 'ANILA_GITLAB_SIGNUP=false'" \
     2>&1)" || fatal "GitLab self-signup runtime posture 收斂失敗"
   [[ "$gitlab_posture" == *"ANILA_GITLAB_SIGNUP=false"* ]] \
@@ -758,27 +856,31 @@ cmd_verify() {
   check_running_container_image_lock
   verify_tls_material
   verify_https_code "主平台 nginx /health" "$main_host" /health 200
-  docker compose exec -T csp python -c \
+  compose exec -T csp python -c \
     "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=5)" \
     >/dev/null 2>&1 || fatal "csp /ready (internal) 失敗"
   ok "csp /ready (internal) → 200"
-  docker compose exec -T anila-studio python -c \
-    "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=5)" \
-    >/dev/null 2>&1 || fatal "anila-studio /health (internal) 失敗"
-  ok "anila-studio /health (internal) → 200"
-  docker compose exec -T anila-studio python -c \
-    "import os,urllib.request; r=urllib.request.Request('http://csp:8000/api/auth/revocations?since=2026-01-01T00:00:00Z', headers={'X-CSP-Service-Token': os.environ['CSP_SERVICE_TOKEN']}); urllib.request.urlopen(r, timeout=5)" \
-    >/dev/null 2>&1 || fatal "csp /api/auth/revocations (studio cold-start dependency) 失敗"
-  ok "csp /api/auth/revocations → 200"
+  if is_gate2_pilot_posture; then
+    verify_gate2_pilot_runtime_posture "$main_host"
+  else
+    compose exec -T anila-studio python -c \
+      "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=5)" \
+      >/dev/null 2>&1 || fatal "anila-studio /health (internal) 失敗"
+    ok "anila-studio /health (internal) → 200"
+    compose exec -T anila-studio python -c \
+      "import os,urllib.request; r=urllib.request.Request('http://csp:8000/api/auth/revocations?since=2026-01-01T00:00:00Z', headers={'X-CSP-Service-Token': os.environ['CSP_SERVICE_TOKEN']}); urllib.request.urlopen(r, timeout=5)" \
+      >/dev/null 2>&1 || fatal "csp /api/auth/revocations (studio cold-start dependency) 失敗"
+    ok "csp /api/auth/revocations → 200"
+  fi
 
   verify_service_image n8n "$N8N_RUNTIME_IMAGE"
   verify_service_image gitlab "$GITLAB_RUNTIME_IMAGE"
-  docker compose exec -T n8n node -e \
+  compose exec -T n8n node -e \
     "fetch('http://127.0.0.1:5678/rest/settings').then(async r=>{if(!r.ok)throw new Error('HTTP '+r.status);const j=await r.json();if(j?.data?.userManagement?.showSetupOnFirstLoad!==false)throw new Error('owner setup is still public')}).catch(e=>{console.error(e.message);process.exit(1)})" \
     >/dev/null 2>&1 || fatal "n8n env-managed owner 尚未收斂，fresh-install takeover 仍可能發生"
   ok "n8n owner setup 已關閉且由 env 管理"
   local gitlab_migration_list gitlab_pending_by_db gitlab_schema_status
-  gitlab_migration_list="$(docker compose exec -T gitlab \
+  gitlab_migration_list="$(compose exec -T gitlab \
     gitlab-rake gitlab:background_migrations:list 2>&1)" \
     || fatal "GitLab 19 cross-database background migration list command 失敗"
   [[ "$gitlab_migration_list" == *"id"* && "$gitlab_migration_list" == *"status"* ]] \
@@ -792,7 +894,7 @@ cmd_verify() {
   '; then
     fatal "GitLab main/ci 尚有未完成 background migration"
   fi
-  gitlab_pending_by_db="$(docker compose exec -T gitlab gitlab-rails runner \
+  gitlab_pending_by_db="$(compose exec -T gitlab gitlab-rails runner \
     "Gitlab::Database.database_base_models.each { |n,m| next unless Gitlab::Database.has_database?(n); c=m.connection; p=c.data_source_exists?('batched_background_migrations') ? c.select_value('SELECT count(*) FROM batched_background_migrations WHERE status NOT IN (3, 6)').to_i : 0; puts \"ANILA_BG #{n}=#{p}\" }" \
     2>&1)" || fatal "GitLab 無法逐 database 查 background migrations"
   [[ "$gitlab_pending_by_db" == *"ANILA_BG "* ]] \
@@ -800,13 +902,13 @@ cmd_verify() {
   if printf '%s\n' "$gitlab_pending_by_db" | grep -Eq '^ANILA_BG [^=]+=[1-9][0-9]*$'; then
     fatal "GitLab 至少一個 database 尚有 background migration"
   fi
-  gitlab_schema_status="$(docker compose exec -T gitlab gitlab-rake db:migrate:status 2>&1)" \
+  gitlab_schema_status="$(compose exec -T gitlab gitlab-rake db:migrate:status 2>&1)" \
     || fatal "GitLab schema migration status command 失敗"
   if printf '%s\n' "$gitlab_schema_status" | grep -Eq '^[[:space:]]*down[[:space:]]'; then
     fatal "GitLab 尚有 down schema migration"
   fi
   ok "GitLab main/ci background 與 schema migrations 全數完成"
-  docker compose exec -T gitlab gitlab-rails runner \
+  compose exec -T gitlab gitlab-rails runner \
     "s=ApplicationSetting.current; abort('signup enabled') unless s && s.signup_enabled == false; u=User.find_by_username('root'); abort('root admin missing') unless u && u.admin?" \
     >/dev/null 2>&1 || fatal "GitLab signup/root-admin runtime posture 驗證失敗"
   ok "GitLab self-signup 關閉且 root admin 已 bootstrap"
@@ -845,6 +947,7 @@ SUBCMD="${1:-deploy}"
 shift || true
 
 check_compose_control_env
+configure_formal_posture
 
 case "$SUBCMD" in
   preflight) cmd_preflight ;;

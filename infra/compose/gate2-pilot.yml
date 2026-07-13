@@ -8,11 +8,13 @@ services:
     # The separate Router process is not a signed Gate 2 egress path. Keep the
     # service available for normal posture, but hard-deny both public origins.
     volumes:
+      - ../../infra/nginx/anila-gate2-pilot.conf:/etc/nginx/conf.d/default.conf:ro
       - ../../infra/nginx/snippets/router-disabled.conf:/etc/nginx/snippets/router-posture.conf:ro
 
   csp:
     environment:
       ANILA_PILOT_MODE: "true"
+      GATE2_PILOT_COMPOSE_POSTURE: "gate2-pilot-v1"
       # Post-turn memory inference currently runs after the foreground TaskRun
       # is terminal. Gate 2 therefore keeps it unreachable in the signed
       # chat-only pilot; the governed memory code remains available for tests

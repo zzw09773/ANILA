@@ -455,6 +455,10 @@ set_env ENABLE_PUBLIC_SHARE         false
 set_env ENABLE_MEMORY               false
 set_env PUBLIC_SHARE_MAX_TTL_HOURS  168
 set_env ANILA_TRACE_ENDPOINT        http://csp:8000
+# Fresh installs default to normal production.  A pre-provisioned signed Gate
+# 2 pilot may retain ANILA_PILOT_MODE=true; deploy-prod.sh then selects and
+# verifies the reviewed overlay instead of trusting this flag by itself.
+[ -n "$(get_env ANILA_PILOT_MODE)" ] || set_env ANILA_PILOT_MODE false
 _formal_host="$(get_env ANILA_HOST)"
 set_env SITE_URL                    "https://${_formal_host:-anila.ai.ncsist.org.tw}"
 set_env N8N_HOST                    n8n.ai.ncsist.org.tw
@@ -631,14 +635,24 @@ docker network inspect anila-models-net >/dev/null 2>&1 \
 
 # ── 6. up ────────────────────────────────────────────────────────────────
 info "[6/7] docker compose up -d --no-build --pull never"
-bash infra/deployment/scripts/deploy-prod.sh tool-preflight
-docker compose up -d --no-build --pull never
+# deploy-prod.sh is the single authoritative Compose lifecycle.  It selects
+# platform.yml alone for normal production or platform.yml + gate2-pilot.yml
+# for a signed pilot, then performs posture-aware wait/postconfigure/verify.
+# Export only the reviewed formal keys without `source .env`: dotenv content
+# is data, not shell code, and may contain literal `$`, spaces, or `#`.
+for _deploy_key in \
+  CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY CSP_SECRET_KEY SECRET_KEY \
+  SITE_URL GITLAB_SSH_BIND_IP ANILA_ENV ANILA_DEPLOYMENT_PROFILE \
+  N8N_HOST N8N_EDITOR_BASE_URL N8N_WEBHOOK_URL N8N_TLS_REJECT_UNAUTHORIZED \
+  N8N_OWNER_EMAIL N8N_OWNER_PASSWORD_HASH N8N_ENCRYPTION_KEY \
+  GITLAB_HOST GITLAB_ROOT_PASSWORD CODESERVER_HOST CODESERVER_PASSWORD; do
+  _deploy_value="$(get_env_unquoted "$_deploy_key")"
+  [ -z "$_deploy_value" ] || export "$_deploy_key=$_deploy_value"
+done
+bash infra/deployment/scripts/deploy-prod.sh up
 
 # ── 7. 驗證 ──────────────────────────────────────────────────────────────
-info "[7/7] 等全 stack ready + fail-closed 驗證"
-bash infra/deployment/scripts/deploy-prod.sh wait
-bash infra/deployment/scripts/deploy-prod.sh postconfigure
-bash infra/deployment/scripts/deploy-prod.sh verify
+info "[7/7] 正式 posture-aware verify 已由 deploy-prod.sh 完成"
 
 echo
 echo "============================================================"

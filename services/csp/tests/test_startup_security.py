@@ -526,6 +526,7 @@ def test_gate2_pilot_mode_requires_external_signed_profile(
     monkeypatch, reload_startup_security, tmp_path
 ):
     monkeypatch.setenv("ANILA_PILOT_MODE", "true")
+    monkeypatch.setenv("GATE2_PILOT_COMPOSE_POSTURE", "gate2-pilot-v1")
     monkeypatch.setenv(
         "GATE2_PILOT_PROFILE_PATH", str(tmp_path / "missing-profile.json")
     )
@@ -536,6 +537,16 @@ def test_gate2_pilot_mode_requires_external_signed_profile(
         "GATE2_INFERENCE_INVENTORY_PATH", str(tmp_path / "missing-inventory.json")
     )
     with pytest.raises(RuntimeError, match="unsigned/invalid Gate 2 pilot"):
+        reload_startup_security().assert_gate2_pilot_profile()
+
+
+def test_gate2_pilot_mode_rejects_base_compose_without_posture_marker(
+    monkeypatch, reload_startup_security
+):
+    monkeypatch.setenv("ANILA_PILOT_MODE", "true")
+    monkeypatch.delenv("GATE2_PILOT_COMPOSE_POSTURE", raising=False)
+
+    with pytest.raises(RuntimeError, match="Compose posture marker"):
         reload_startup_security().assert_gate2_pilot_profile()
 
 

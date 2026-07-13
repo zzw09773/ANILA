@@ -496,14 +496,43 @@ class DeploymentContainmentTests(unittest.TestCase):
     def test_developer_lifecycle_explicitly_enables_the_profile(self) -> None:
         script = read("infra/deployment/scripts/deploy-prod.sh")
         self.assertIn(
-            "docker compose --profile developer-tools up -d --no-build --pull never codeserver",
+            "compose --profile developer-tools up -d --no-build --pull never codeserver",
             script,
         )
         self.assertIn(
-            "docker compose --profile developer-tools stop codeserver", script
+            "compose --profile developer-tools stop codeserver", script
         )
+        self.assertIn("Gate 2 pilot active set 禁止啟用", script)
         self.assertIn("codeserver-up)   cmd_codeserver_up", script)
         self.assertIn("codeserver-down) cmd_codeserver_down", script)
+
+    def test_gate2_pilot_uses_one_authoritative_formal_compose_lifecycle(self) -> None:
+        deploy = read("infra/deployment/scripts/deploy-prod.sh")
+        intranet = read("infra/deployment/intranet/intranet-deploy.sh")
+
+        self.assertIn(
+            "FORMAL_COMPOSE_ARGS=(--project-name anila-platform -f infra/compose/platform.yml)",
+            deploy,
+        )
+        self.assertIn(
+            "FORMAL_COMPOSE_ARGS+=(-f infra/compose/gate2-pilot.yml)", deploy
+        )
+        self.assertIn('IMAGE_LOCK_POSTURE_ARGS=(--posture gate2-pilot)', deploy)
+        self.assertIn('docker compose "${FORMAL_COMPOSE_ARGS[@]}" "$@"', deploy)
+        self.assertIn('compose up -d --no-build --pull never', deploy)
+        self.assertIn('verify_gate2_pilot_runtime_posture "$main_host"', deploy)
+        for service in (
+            "ingestion-worker",
+            "pptx-renderer",
+            "anila-studio",
+            "flux2-dev-agent",
+            "codeserver",
+        ):
+            self.assertIn(service, deploy)
+        self.assertIn("Gate 2 pilot 443 Router deny", deploy)
+        self.assertIn("Gate 2 pilot 4443 Router deny", deploy)
+        self.assertIn("bash infra/deployment/scripts/deploy-prod.sh up", intranet)
+        self.assertNotIn("\ndocker compose up -d", intranet)
 
     def test_e2e_does_not_assume_codeserver_is_in_default_stack(self) -> None:
         script = read("infra/deployment/scripts/phase1-e2e.sh")

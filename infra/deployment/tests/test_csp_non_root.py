@@ -205,17 +205,17 @@ class CspNonRootContractTests(unittest.TestCase):
         command_lines = [
             line.strip()
             for line in script.splitlines()
-            if line.strip().startswith("docker compose ")
+            if line.strip().startswith(("docker compose ", "compose "))
         ]
-        build_lines = [line for line in command_lines if " compose build" in line]
-        up_lines = [line for line in command_lines if " compose up" in line]
+        build_lines = [line for line in command_lines if "compose build" in line]
+        up_lines = [line for line in command_lines if "compose up" in line]
         self.assertFalse(build_lines, "formal host must never build images")
         self.assertTrue(up_lines)
         for line in up_lines:
             self.assertIn("--pull never", line, line)
 
     def test_every_formal_operator_up_path_refuses_registry_pull(self) -> None:
-        for script_path in (PROD_DEPLOY, INTRANET_DEPLOY, OPS_SCRIPT):
+        for script_path in (PROD_DEPLOY, OPS_SCRIPT):
             script = script_path.read_text(encoding="utf-8")
             commands = [
                 line.strip()
@@ -234,6 +234,9 @@ class CspNonRootContractTests(unittest.TestCase):
                     command,
                     f"{script_path}: {command}",
                 )
+        intranet = INTRANET_DEPLOY.read_text(encoding="utf-8")
+        self.assertIn("bash infra/deployment/scripts/deploy-prod.sh up", intranet)
+        self.assertNotIn("\ndocker compose up ", intranet)
 
     def test_compose_mounts_match_the_paths_prepared_for_uid_10001(self) -> None:
         compose = PLATFORM_COMPOSE.read_text(encoding="utf-8")

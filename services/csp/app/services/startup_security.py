@@ -599,6 +599,11 @@ def assert_gate2_pilot_profile() -> None:
         _verified_pilot_admission = None
         _verified_pilot_callsites = frozenset()
         return
+    if settings.GATE2_PILOT_COMPOSE_POSTURE != "gate2-pilot-v1":
+        raise RuntimeError(
+            "Refusing to start Gate 2 pilot without the reviewed Compose "
+            "posture marker; ANILA_PILOT_MODE alone does not apply the pilot overlay"
+        )
     from anila_security import PilotProfileError, verify_signed_pilot_profile
 
     try:
