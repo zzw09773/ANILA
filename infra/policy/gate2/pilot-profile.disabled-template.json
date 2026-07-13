@@ -1,9 +1,12 @@
 {
-  "schema_version": "anila.gate2.signed-pilot.v2",
+  "schema_version": "anila.gate2.signed-pilot.v3",
   "profile_id": "DISABLED-TEMPLATE-NOT-AN-APPROVAL",
   "pilot_enabled": false,
   "data_classification_ceiling": "無機密",
   "inventory_sha256": "7340eec6ba336f68a137e1b00cde2bead67f052b299ef60eeffe46a12bec9d7c",
+  "deployment_artifacts": {
+    "csp_image_id": null
+  },
   "enabled_callsites": [],
   "disabled_callsites": [
     "router.primary", "csp.chat_model", "csp.agent_dispatch",

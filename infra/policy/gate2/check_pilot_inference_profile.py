@@ -31,6 +31,7 @@ class PilotPolicyError(RuntimeError):
 
 
 _PROFILE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
+_IMAGE_CONTENT_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PILOT_CEILINGS = {"無機密", "營業秘密"}
 _TARGET_CEILINGS = {"無機密", "營業秘密", "機密", "極機密"}
 _TARGET_TYPES_BY_CALLSITE = {
@@ -151,13 +152,27 @@ def _validate_profile_contract(profile: dict[str, Any]) -> tuple[list[str], list
     _unique_nonempty_strings(
         profile.get("disabled_capabilities"), "disabled_capabilities"
     )
+    artifacts = profile.get("deployment_artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != {"csp_image_id"}:
+        raise PilotPolicyError(
+            "deployment_artifacts must contain only csp_image_id"
+        )
     if not profile["pilot_enabled"]:
+        if artifacts["csp_image_id"] is not None:
+            raise PilotPolicyError("disabled template cannot bind a CSP image")
         _validate_allowed_targets(
             profile.get("allowed_targets"),
             enabled_callsites=set(enabled),
             pilot_enabled=False,
         )
         return enabled, disabled
+    csp_image_id = artifacts["csp_image_id"]
+    if not isinstance(csp_image_id, str) or not _IMAGE_CONTENT_ID_RE.fullmatch(
+        csp_image_id
+    ):
+        raise PilotPolicyError(
+            "enabled pilot requires a sha256 CSP image content ID"
+        )
     _bounded_int(
         profile.get("revocation_sla_seconds"),
         "revocation_sla_seconds", minimum=1, maximum=86400,
@@ -276,7 +291,7 @@ def verify(
     profile = _load(profile_path)
     if inventory.get("schema_version") != "anila.gate2.inference-callsites.v1":
         raise PilotPolicyError("unknown inventory schema")
-    if profile.get("schema_version") != "anila.gate2.signed-pilot.v2":
+    if profile.get("schema_version") != "anila.gate2.signed-pilot.v3":
         raise PilotPolicyError("unknown pilot profile schema")
     calls = inventory.get("callsites")
     if not isinstance(calls, list) or not calls:
@@ -333,6 +348,11 @@ def verify(
     ).read_text(encoding="utf-8")
     if 'VITE_ANILA_PILOT_MODE: "false"' not in compose:
         raise PilotPolicyError("base UI posture no longer preserves non-pilot capabilities")
+    if (
+        'GATE2_CSP_IMAGE_ID: "${ANILA_IMAGE_CSP:?'
+        not in compose
+    ):
+        raise PilotPolicyError("CSP image content ID is not wired into runtime")
     router_mount = (
         "../../infra/nginx/snippets/router-enabled.conf:"
         "/etc/nginx/snippets/router-posture.conf:ro"

@@ -125,6 +125,9 @@ services:
       ENABLE_PILOT_INGESTION_JUDGE: "${ENABLE_PILOT_INGESTION_JUDGE:-false}"
       ENABLE_PILOT_STUDIO_ARTIFACTS: "${ENABLE_PILOT_STUDIO_ARTIFACTS:-false}"
       PILOT_FIRST_PARTY_AGENT_ALLOWLIST: "${PILOT_FIRST_PARTY_AGENT_ALLOWLIST:-}"
+      # Runtime read-back of the exact content ID used by this service. Gate 2
+      # signed-pilot v3 profiles must bind this value or CSP refuses startup.
+      GATE2_CSP_IMAGE_ID: "${ANILA_IMAGE_CSP:?ANILA_IMAGE_CSP must be a locked image content ID}"
       PUBLIC_SHARE_MAX_TTL_HOURS: "${PUBLIC_SHARE_MAX_TTL_HOURS:-168}"
       # Used to normalize auto-seeded relative launch paths.  A formal host
       # must never seed localhost URLs into the governance registry.

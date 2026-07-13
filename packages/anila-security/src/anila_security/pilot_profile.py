@@ -28,6 +28,7 @@ class PilotProfileError(ValueError):
 
 
 _PROFILE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
+_IMAGE_CONTENT_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PILOT_CEILINGS = frozenset({"無機密", "營業秘密"})
 _TARGET_CEILINGS = frozenset({"無機密", "營業秘密", "機密", "極機密"})
 _TARGET_TYPES_BY_CALLSITE = {
@@ -199,13 +200,28 @@ def _validate_profile_contract(
     _unique_nonempty_strings(
         profile.get("disabled_capabilities"), "disabled_capabilities"
     )
+    artifacts = profile.get("deployment_artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != {"csp_image_id"}:
+        raise PilotProfileError(
+            "deployment_artifacts must contain only csp_image_id"
+        )
     if not profile["pilot_enabled"]:
+        if artifacts["csp_image_id"] is not None:
+            raise PilotProfileError("disabled template cannot bind a CSP image")
         targets = _validate_allowed_targets(
             profile.get("allowed_targets"),
             enabled_callsites=set(enabled),
             pilot_enabled=False,
         )
         return enabled, disabled, targets, None, None
+
+    csp_image_id = artifacts["csp_image_id"]
+    if not isinstance(csp_image_id, str) or not _IMAGE_CONTENT_ID_RE.fullmatch(
+        csp_image_id
+    ):
+        raise PilotProfileError(
+            "enabled pilot requires a sha256 CSP image content ID"
+        )
 
     _bounded_int(
         profile.get("revocation_sla_seconds"),
@@ -272,7 +288,7 @@ def _read(path: str | Path) -> dict[str, Any]:
 
 def verify_signed_pilot_profile(
     *, profile_path: str | Path, inventory_path: str | Path,
-    trust_store_path: str | Path,
+    trust_store_path: str | Path, expected_csp_image_id: str,
 ) -> VerifiedPilotAdmission:
     """Verify the profile and return its complete immutable runtime authority.
 
@@ -282,9 +298,9 @@ def verify_signed_pilot_profile(
     profile = _read(profile_path)
     inventory = _read(inventory_path)
     trust = _read(trust_store_path)
-    # v2 adds signer-bound exact registry targets.  v1 profiles did not bind
-    # name/type/endpoint/ceiling and therefore cannot be upgraded implicitly.
-    if profile.get("schema_version") != "anila.gate2.signed-pilot.v2":
+    # v3 adds signer-bound executable identity.  v1/v2 profiles did not bind
+    # the CSP image content ID and therefore cannot be upgraded implicitly.
+    if profile.get("schema_version") != "anila.gate2.signed-pilot.v3":
         raise PilotProfileError("unknown profile schema")
     if inventory.get("schema_version") != "anila.gate2.inference-callsites.v1":
         raise PilotProfileError("unknown inventory schema")
@@ -303,6 +319,10 @@ def verify_signed_pilot_profile(
         raise PilotProfileError("invalid or duplicate callsite inventory")
     by_id = {entry["id"]: entry for entry in calls}
     enabled, disabled, targets, valid_from, valid_until = _validate_profile_contract(profile)
+    if not _IMAGE_CONTENT_ID_RE.fullmatch(expected_csp_image_id):
+        raise PilotProfileError("runtime CSP image content ID is missing or invalid")
+    if profile["deployment_artifacts"]["csp_image_id"] != expected_csp_image_id:
+        raise PilotProfileError("pilot profile CSP image content ID mismatch")
     if set(enabled) & set(disabled) or set(enabled) | set(disabled) != set(by_id):
         raise PilotProfileError("profile must partition every inventory callsite")
     if not profile.get("pilot_enabled") or not enabled:

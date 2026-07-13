@@ -24,6 +24,7 @@ INELIGIBLE = [
     entry["id"] for entry in _INVENTORY_VALUE["callsites"]
     if not entry["pilot_eligible"]
 ]
+_CSP_IMAGE_ID = "sha256:" + "a" * 64
 
 
 def _signed_files(
@@ -33,11 +34,12 @@ def _signed_files(
     inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
     all_ids = [entry["id"] for entry in inventory["callsites"]]
     profile = {
-        "schema_version": "anila.gate2.signed-pilot.v2",
+        "schema_version": "anila.gate2.signed-pilot.v3",
         "profile_id": "synthetic-test-only",
         "pilot_enabled": True,
         "data_classification_ceiling": "營業秘密",
         "inventory_sha256": inventory_hash(inventory),
+        "deployment_artifacts": {"csp_image_id": _CSP_IMAGE_ID},
         "enabled_callsites": enabled,
         "disabled_callsites": [item for item in all_ids if item not in enabled],
         "disabled_capabilities": [
@@ -151,6 +153,7 @@ def test_signature_or_inventory_mutation_fails_closed(tmp_path: Path) -> None:
         ({"collection_ids": [1, 1]}, "collection_ids"),
         ({"collection_ids": [True]}, "collection_ids"),
         ({"allowed_targets": []}, "allowed targets"),
+        ({"deployment_artifacts": {"csp_image_id": "anila:csp"}}, "content ID"),
         ({"valid_from": "2026-01-01"}, "timezone"),
         ({"valid_until": "2000-01-01T00:00:00+00:00"}, "effective"),
     ],

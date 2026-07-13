@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     GATE2_PILOT_PROFILE_PATH: str = "secrets/gate2-pilot-profile.json"
     GATE2_PILOT_TRUST_STORE_PATH: str = "secrets/gate2-pilot-trust.json"
     GATE2_INFERENCE_INVENTORY_PATH: str = "policy/inference-callsites.v1.json"
+    # Exact Docker content ID of the executing CSP image. The signed Gate 2
+    # profile must bind this value, preventing approval replay on other code.
+    GATE2_CSP_IMAGE_ID: str = ""
 
     # Unit/dev harness escape hatch only. Formal deployments must run Alembic
     # and the legacy idempotent migration pass before becoming ready. Startup

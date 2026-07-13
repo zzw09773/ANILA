@@ -606,6 +606,7 @@ def assert_gate2_pilot_profile() -> None:
             profile_path=settings.GATE2_PILOT_PROFILE_PATH,
             inventory_path=settings.GATE2_INFERENCE_INVENTORY_PATH,
             trust_store_path=settings.GATE2_PILOT_TRUST_STORE_PATH,
+            expected_csp_image_id=settings.GATE2_CSP_IMAGE_ID,
         )
     except PilotProfileError as exc:
         raise RuntimeError(
