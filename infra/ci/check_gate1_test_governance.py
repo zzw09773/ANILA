@@ -120,21 +120,33 @@ def _require_text(entry: dict, field: str, label: str) -> str:
 
 
 def _workflow_jobs(workflow_text: str) -> dict[str, str]:
-    """Extract top-level job blocks without adding a YAML runtime dependency."""
+    """Parse real YAML jobs so block-scalar text can never become a job boundary."""
 
-    jobs_match = re.search(r"(?m)^jobs:\s*$", workflow_text)
-    if jobs_match is None:
+    try:
+        import yaml
+    except ImportError as exc:
+        raise GovernanceError("PyYAML is required for workflow governance") from exc
+    try:
+        workflow = yaml.safe_load(workflow_text)
+    except yaml.YAMLError as exc:
+        raise GovernanceError(f"required workflow is invalid YAML: {exc}") from exc
+    if not isinstance(workflow, dict) or not isinstance(workflow.get("jobs"), dict):
         raise GovernanceError("required workflow has no jobs mapping")
-    jobs_text = workflow_text[jobs_match.end() :]
-    matches = list(re.finditer(r"(?m)^  ([A-Za-z0-9_-]+):\s*$", jobs_text))
-    if not matches:
+    jobs = workflow["jobs"]
+    if not jobs:
         raise GovernanceError("required workflow has no job definitions")
-    jobs: dict[str, str] = {}
-    for index, match in enumerate(matches):
-        job_id = match.group(1)
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(jobs_text)
-        jobs[job_id] = jobs_text[match.start() : end]
-    return jobs
+    if any(not isinstance(job_id, str) or not isinstance(job, dict) for job_id, job in jobs.items()):
+        raise GovernanceError("required workflow contains an invalid job definition")
+    def _string_values(value: object) -> list[str]:
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, dict):
+            return [item for child in value.values() for item in _string_values(child)]
+        if isinstance(value, list):
+            return [item for child in value for item in _string_values(child)]
+        return []
+
+    return {job_id: "\n".join(_string_values(job)) for job_id, job in jobs.items()}
 
 
 def verify_required_skip_wiring(document: dict, workflow_text: str) -> None:

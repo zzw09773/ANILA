@@ -183,6 +183,10 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(set(jobs), {"contract-smoke", "postgres-rls"})
         self.assertIn("setup:", jobs["contract-smoke"])
 
+    def test_workflow_job_parser_fails_closed_on_invalid_yaml(self) -> None:
+        with self.assertRaisesRegex(governance.GovernanceError, "invalid YAML"):
+            governance._workflow_jobs("jobs:\n  broken: [\n")
+
     def test_ast_scan_rejects_xfail(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
