@@ -486,6 +486,11 @@ class DeploymentContainmentTests(unittest.TestCase):
             'set_env_single_quoted CARD_REQUIRED_CERT_POLICY_OIDS "$_card_policy_oids"',
             script,
         )
+        self.assertIn('_defaults_card_crl_source="$_v"', script)
+        self.assertIn('_defaults_card_crl_max_age="$_v"', script)
+        self.assertIn('_defaults_card_policy_oids="$_v"', script)
+        self.assertIn("APPROVE-PKI-PROFILE", script)
+        self.assertIn("未明確核准 bundle 提供的 PKI 信任姿態", script)
 
     def test_developer_lifecycle_explicitly_enables_the_profile(self) -> None:
         script = read("infra/deployment/scripts/deploy-prod.sh")

@@ -356,12 +356,20 @@ chmod 600 .env
 # 安全:不用 `source`(被竄改的 defaults 檔會執行任意指令),改嚴格解析 KEY=VALUE
 # + 白名單;非白名單 / 註解 / 空行一律略過。
 DEFAULTS="$BUNDLE/intranet-defaults.env"
+_defaults_card_crl_source=""
+_defaults_card_crl_max_age=""
+_defaults_card_policy_oids=""
 if [ -f "$DEFAULTS" ]; then
   while IFS='=' read -r _k _v; do
     case "$_k" in
       ADMIN_PASSWORD|CODESERVER_PASSWORD|CARD_INITIAL_OWNERS|CARD_CRL_SOURCE|CARD_CRL_MAX_AGE_HOURS|CARD_REQUIRED_CERT_POLICY_OIDS|GITLAB_ROOT_PASSWORD|CSP_SECRET_KEY|CSP_SERVICE_TOKEN|CSP_DB_PASSWORD|CSP_APP_DB_PASSWORD|INTERNAL_PLATFORM_API_KEY|N8N_OWNER_EMAIL|N8N_OWNER_FIRST_NAME|N8N_OWNER_LAST_NAME|N8N_OWNER_PASSWORD_HASH|N8N_ENCRYPTION_KEY)
         _v="${_v%\"}"; _v="${_v#\"}"; _v="${_v%\'}"; _v="${_v#\'}"   # 去頭尾引號
-        printf -v "$_k" '%s' "$_v" ;;                                # 賦值,非 eval
+        printf -v "$_k" '%s' "$_v"                                  # 賦值,非 eval
+        case "$_k" in
+          CARD_CRL_SOURCE) _defaults_card_crl_source="$_v" ;;
+          CARD_CRL_MAX_AGE_HOURS) _defaults_card_crl_max_age="$_v" ;;
+          CARD_REQUIRED_CERT_POLICY_OIDS) _defaults_card_policy_oids="$_v" ;;
+        esac ;;
       *) : ;;
     esac
   done < "$DEFAULTS"
@@ -489,6 +497,12 @@ _card_crl_max_age="${_card_crl_max_age:-24}"
 [[ "$_card_crl_max_age" =~ ^[0-9]+$ ]] \
   && (( 10#$_card_crl_max_age >= 1 && 10#$_card_crl_max_age <= 168 )) \
   || die "CARD_CRL_MAX_AGE_HOURS 必須介於 1..168"
+if [ -n "$_defaults_card_crl_source$_defaults_card_crl_max_age$_defaults_card_policy_oids" ]; then
+  warn "intranet-defaults.env 含 PKI 信任姿態；格式正確不代表已獲 PKI owner 核准"
+  _pki_posture_ack="$(ask '請向 PKI owner 核對 CRL 來源、freshness 與 certificate policy，輸入 APPROVE-PKI-PROFILE 確認')"
+  [ "$_pki_posture_ack" = APPROVE-PKI-PROFILE ] \
+    || die "未明確核准 bundle 提供的 PKI 信任姿態；拒絕部署"
+fi
 set_env CARD_CRL_REQUIRED true
 set_env CARD_CRL_BUNDLE_PATH /etc/anila/pki/card-crl-bundle.pem
 set_env_single_quoted CARD_CRL_SOURCE "$_card_crl_source"

@@ -153,6 +153,17 @@ def test_source_snapshot_accepts_an_explicit_no_source_record() -> None:
         SourceSnapshot.model_validate({**no_source, "content_hash": "0" * 64})
 
 
+def test_source_snapshot_document_versions_cannot_change_after_validation() -> None:
+    parsed = SourceSnapshot.model_validate(_fixture("source-snapshot-v1.json"))
+    assert parsed.document_versions is not None
+    with pytest.raises(TypeError, match="immutable"):
+        parsed.document_versions.clear()
+    assert json.loads(parsed.model_dump_json())["document_versions"] == {
+        "100": "generation-3",
+        "200": "generation-8",
+    }
+
+
 @pytest.mark.parametrize(
     ("path", "replacement"),
     [
@@ -189,6 +200,18 @@ def test_invocation_command_rejects_unknown_protocol_duplicate_tools_and_empty_i
     ):
         with pytest.raises(ValidationError):
             InvocationCommand.model_validate({**payload, **patch})
+
+
+def test_invocation_command_input_is_deeply_immutable_after_validation() -> None:
+    command = InvocationCommand.model_validate(_fixture("invocation-command-v1.json"))
+    with pytest.raises(TypeError, match="immutable"):
+        command.input["replacement"] = "changed"
+    nested = command.input["messages"]
+    assert isinstance(nested, list)
+    with pytest.raises(TypeError, match="immutable"):
+        nested[0] = {"role": "system", "content": "changed"}
+    dumped = json.loads(command.model_dump_json())
+    assert dumped["input"] == _fixture("invocation-command-v1.json")["input"]
 
 
 @pytest.mark.parametrize("nested_field", ["task_context", "trace_context", "safe_input_summary"])

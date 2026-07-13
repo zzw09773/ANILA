@@ -13,6 +13,7 @@ from ._base import (
     PositiveInt,
     Sha256Hex,
     ensure_unique,
+    freeze_json,
 )
 from ._types import SnapshotOrigin, SourceScope
 from .classification import ClassificationLevel
@@ -59,6 +60,13 @@ class SourceSnapshot(ContractModel):
     ) -> tuple[str, ...]:
         ensure_unique(value, field_name=info.field_name or "source_list")
         return value
+
+    @field_validator("document_versions")
+    @classmethod
+    def _document_versions_are_immutable(
+        cls, value: dict[str, str] | None
+    ) -> dict[str, str] | None:
+        return None if value is None else freeze_json(value)
 
     @model_validator(mode="after")
     def _source_identity_is_complete(self) -> SourceSnapshot:

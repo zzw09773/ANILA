@@ -7,7 +7,14 @@ from typing import Literal
 
 from pydantic import Field, JsonValue, StrictInt, field_validator, model_validator
 
-from ._base import ContractModel, Identifier, LongIdentifier, PositiveInt, ensure_unique
+from ._base import (
+    ContractModel,
+    Identifier,
+    LongIdentifier,
+    PositiveInt,
+    ensure_unique,
+    freeze_json,
+)
 from ._types import InvocationTargetKind
 from .classification import ClassificationLevel
 from .contexts import TaskContext, TraceContext
@@ -63,7 +70,7 @@ class InvocationCommand(ContractModel):
         if any(not key.strip() for key in value):
             raise ValueError("input key 不得為空白")
         _reject_non_finite_json(value)
-        return value
+        return freeze_json(value)
 
     @model_validator(mode="after")
     def _authority_contexts_match(self) -> InvocationCommand:
