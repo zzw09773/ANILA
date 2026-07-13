@@ -130,7 +130,7 @@ def test_streaming_dispatch_emits_anila_spans_when_configured(
             "Authorization": "Bearer sk-x",
             "X-ANILA-Trace-Id": "trace-123",
             "X-ANILA-Task-Id": "73",
-            "X-ANILA-User-Id": "990000073",
+            "X-ANILA-User-Id": "synthetic-trace-user-73",
         },
         json={"messages": [{"role": "user", "content": "hi"}], "stream": True},
     )
@@ -162,8 +162,8 @@ def test_streaming_dispatch_emits_anila_spans_when_configured(
         "agent.run.finished",
     ]
     assert exporter.contexts == [
-        {"task_id": "73", "user_identity": "990000073"},
-        {"task_id": "73", "user_identity": "990000073"},
+        {"task_id": "73", "user_identity": "synthetic-trace-user-73"},
+        {"task_id": "73", "user_identity": "synthetic-trace-user-73"},
     ]
 
 
