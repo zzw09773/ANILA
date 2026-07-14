@@ -13,6 +13,13 @@
 - **不得 merge，也不得進入 Gate 6。** Claude Fable review 尚未執行。
 - Current CI：`c106993` 新 runs `29370210595`、`10617`、`10724` 已回報多個 failure（Deployment contracts、Gate 5 static/routing、Contract smoke、`anila-core`、`anila-agent`、governance、image-lock）；CSP 仍 in progress。`ingestion-worker` 與 Python security 已 pass，表示 resolver 至少解除部分安裝阻塞；仍需重新查看新 logs，required CI 尚未綠。
 
+## Post-handoff checkpoint
+
+- `cd82f17 [security-all] align Gate 5 CI governance surfaces`
+- 摘要：修正 Contracts tests、PR SHA 契約、32 個 skip baseline、FLUX image/airgap/backup/deployment drift。
+- Root validation：deployment full `130 OK / 2 skipped`；focused pytest `15 passed`；Gate1 governance `PASS`（32 skips、0 xfail）。
+- PR CI 因 push 正在重跑；仍不得宣告 required CI 綠燈。
+
 ## R1–R7 狀態
 
 | R | 狀態 | 已完成範圍 |
