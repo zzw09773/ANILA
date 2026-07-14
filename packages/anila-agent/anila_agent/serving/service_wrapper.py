@@ -373,10 +373,10 @@ async def _sse_stream(
             if timeline is not None:
                 for frame in timeline.drain():
                     yield frame
-        except asyncio.CancelledError:
-            # Starlette cancels this generator when CSP closes the downstream
-            # socket.  Explicitly cancel the SDK background tasks; merely
-            # abandoning ``stream_events`` leaves model/tool work running.
+        except (asyncio.CancelledError, GeneratorExit):
+            # Starlette may cancel the task, while direct async-generator
+            # consumers inject GeneratorExit via ``aclose()``.  Both paths
+            # must stop SDK background work; neither is a normal finish.
             result.cancel(mode="immediate")
             if timeline is not None:
                 timeline.cancel()

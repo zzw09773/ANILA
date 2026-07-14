@@ -195,6 +195,45 @@ async def test_sse_cancellation_cancels_sdk_run_once_without_normal_terminal(mon
     assert first["choices"][0]["finish_reason"] is None
 
 
+async def test_sse_aclose_cancels_sdk_run_and_closes_inner_stream(monkeypatch):
+    """Direct ``aclose`` injects GeneratorExit and must cancel the SDK run."""
+
+    class _ClosableStreaming:
+        context_wrapper = _FakeCtx()
+
+        def __init__(self):
+            self.cancel_calls: list[str] = []
+            self.content_yielded = asyncio.Event()
+            self.inner_closed = asyncio.Event()
+
+        async def stream_events(self):
+            try:
+                self.content_yielded.set()
+                yield _delta_event("partial")
+                await asyncio.Event().wait()
+            finally:
+                self.inner_closed.set()
+
+        def cancel(self, *, mode):
+            self.cancel_calls.append(mode)
+
+    result = _ClosableStreaming()
+    monkeypatch.setattr(service_wrapper, "run_streamed", lambda *a, **k: result)
+
+    stream = service_wrapper._sse_stream(None, "hi", hooks=None)
+    assert "partial" not in await anext(stream)  # role chunk
+    content_chunk = await anext(stream)
+    assert "partial" in content_chunk
+    assert result.content_yielded.is_set()
+
+    await stream.aclose()
+    await asyncio.wait_for(result.inner_closed.wait(), timeout=1)
+
+    assert result.cancel_calls == ["immediate"]
+    assert '"finish_reason": "stop"' not in content_chunk
+    assert "[DONE]" not in content_chunk
+
+
 def test_pinned_sdk_run_result_streaming_cancel_accepts_immediate_mode():
     """Pin the SDK API used by the real CancelledError path, not only the fake."""
     signature = inspect.signature(RunResultStreaming.cancel)
