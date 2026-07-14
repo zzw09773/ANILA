@@ -45,8 +45,11 @@ from app.models.ingestion import (
     DocumentRelation,
     IngestionCollection,
     IngestionDocument,
+    IngestionDocumentGeneration,
     IngestionEvalRun,
     IngestionJob,
+    IngestionOutbox,
+    SimilarityRecomputeRequest,
     UserLlmCredential,
 )
 from app.models.message import Message
@@ -57,6 +60,7 @@ from app.models.registered_service import (
     RegisteredService,
     ServiceProjectBinding,
 )
+from app.models.retention import RetentionReaperLease
 from app.models.service_access_grant import ServiceAccessGrant
 from app.models.service_client import ServiceClient
 from app.models.service_launch import ServiceAuditCallback, ServiceLaunch
@@ -113,13 +117,17 @@ __all__ = [
     "Handoff",
     "IngestionCollection",
     "IngestionDocument",
+    "IngestionDocumentGeneration",
     "IngestionEvalRun",
     "IngestionJob",
+    "IngestionOutbox",
+    "SimilarityRecomputeRequest",
     "Message",
     "ModelRegistry",
     "PlatformLink",
     "PolicyDecision",
     "RegisteredService",
+    "RetentionReaperLease",
     "ServiceAccessGrant",
     "ServiceAuditCallback",
     "ServiceClient",

@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "anila-studio"
     APP_VERSION: str = "0.1.0"
     LOG_LEVEL: str = "INFO"
+    ANILA_DEPLOYMENT_PROFILE: str = "development"
 
     # csp (control plane) HTTP base — used by csp_client for RAG, model
     # registry, LLM proxy, revocations cold-start sync, and (2026-07-06)
@@ -26,11 +27,18 @@ class Settings(BaseSettings):
     CSP_BASE_URL: str = "http://csp:8000"
     # Service-to-service shared secret (legacy) — eventually agent-credential
     # bearer will replace this. Same env name as csp side. Sent as
-    # ``X-CSP-Service-Token`` by job_reporting.py / revocation_cache.py, and
-    # (2026-07-06) reused as-is by flux_image_primary.get_image_primary() —
+    # ``X-CSP-Service-Token`` by revocation_cache.py and (2026-07-06) reused
+    # as-is by flux_image_primary.get_image_primary() —
     # no separate service-token env was introduced for the image-primary
     # fetcher.
     CSP_SERVICE_TOKEN: str = ""
+    # Dedicated named, non-legacy Service Client token for artifact control
+    # plane writes. job_reporting never falls back to CSP_SERVICE_TOKEN.
+    STUDIO_ARTIFACT_SERVICE_TOKEN: str = ""
+    # Separate least-privilege named Service Client used only by the durable
+    # Studio runner when retrieving/inferencing for a task-bound envelope.
+    # It must never share the artifact-writer credential.
+    STUDIO_RUNTIME_SERVICE_TOKEN: str = ""
 
     # FLUX 圖像生成 — OpenAI 相容 Images API(POST {base}/v1/images/generations)。
     # base URL 指到伺服器根或含 /v1 皆可(client 會自動補版本段)。
@@ -107,16 +115,74 @@ class Settings(BaseSettings):
     # carry a generous TTL so restarts can still answer status queries.
     JOB_STORE_KEY_PREFIX: str = "anila-studio:jobs:"
     JOB_STORE_TTL_SECONDS: int = 7 * 24 * 3600  # 7 days
+    # Authenticates authority-bearing Redis envelopes. Redis is shared with
+    # other platform services, so queue transport access alone must not let a
+    # peer forge a victim Task/request_spec for Studio's privileged runtime.
+    STUDIO_JOB_ENVELOPE_HMAC_KEY: str = (
+        "dev-studio-job-envelope-hmac-key-change-me"
+    )
+    STUDIO_JOB_LEASE_SECONDS: float = Field(default=90.0, ge=15.0, le=900.0)
+    STUDIO_JOB_HEARTBEAT_SECONDS: float = Field(default=20.0, ge=1.0, le=300.0)
+    STUDIO_JOB_POLL_SECONDS: float = Field(default=0.5, ge=0.05, le=30.0)
+    STUDIO_JOB_RETRY_SECONDS: float = Field(default=5.0, ge=0.0, le=300.0)
+    STUDIO_JOB_MAX_ATTEMPTS: int = Field(default=3, ge=1, le=10)
+    # Local/unit callers may keep the legacy in-process runner. Every shipped
+    # compose profile enables this explicitly, and formal startup rejects
+    # false, so a missing deployment value cannot silently weaken production.
+    STUDIO_DURABLE_SUPERVISOR: bool = False
+    STUDIO_JOB_WORKERS: int = Field(default=2, ge=1, le=16)
+    STUDIO_JOB_READINESS_PROBE_SECONDS: float = Field(
+        default=5.0,
+        ge=0.5,
+        le=300.0,
+    )
 
     # ── CSP artifact-job / artifact reporting (Slice 8b) ─────────────────
     # When enabled, each job create → POST {csp}/v1/artifact-jobs, terminal
     # states → PATCH, and persisted artifacts → POST {csp}/v1/artifacts.
-    # All fire-and-forget (retry-once, log-not-raise): CSP being down must
-    # never break generation. Toggle off to fully silence the outbound
-    # reporting (spans included) in constrained environments.
-    STUDIO_ARTIFACT_REPORTING: bool = True
+    # Control-plane failures degrade readiness; terminal registration fails
+    # the local job closed. Toggle off only in constrained dev/test contexts.
+    STUDIO_ARTIFACT_REPORTING: bool = False
+    # Bounded background re-probe. This breaks the startup-degraded recovery
+    # deadlock without turning every /health poll into outbound CSP traffic.
+    STUDIO_ARTIFACT_READINESS_PROBE_SECONDS: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=300.0,
+    )
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
 settings = Settings()
+
+
+_FORMAL_PROFILES = {
+    "prod-intranet-card",
+    "prod-intranet-card-breakglass",
+    "prod-public-passwd",
+    "prod-military-passwd",
+}
+
+
+def is_formal_profile() -> bool:
+    return settings.ANILA_DEPLOYMENT_PROFILE.strip().lower() in _FORMAL_PROFILES
+
+
+def assert_durable_startup_posture() -> None:
+    """Formal deployments cannot disable Gate 3 durability controls."""
+    if not is_formal_profile():
+        return
+    writer = settings.STUDIO_ARTIFACT_SERVICE_TOKEN.strip()
+    runtime = settings.STUDIO_RUNTIME_SERVICE_TOKEN.strip()
+    if not settings.STUDIO_DURABLE_SUPERVISOR:
+        raise RuntimeError("formal profile requires STUDIO_DURABLE_SUPERVISOR=true")
+    if not settings.STUDIO_ARTIFACT_REPORTING:
+        raise RuntimeError("formal profile requires STUDIO_ARTIFACT_REPORTING=true")
+    if not writer or not runtime or writer == runtime:
+        raise RuntimeError("formal profile requires distinct writer/runtime tokens")
+    envelope_key = settings.STUDIO_JOB_ENVELOPE_HMAC_KEY.strip()
+    if len(envelope_key) < 32 or envelope_key.startswith("dev-"):
+        raise RuntimeError(
+            "formal profile requires a non-development Studio job envelope HMAC key"
+        )

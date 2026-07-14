@@ -7,21 +7,24 @@ embedder, and the agent-scoped store. Each piece raises
 structured failure into ``ingestion_jobs`` so the dev UI can render a
 useful message.
 
-Concurrency note: this handler is async and will run in the same event
-loop as the Arq worker's main loop. A long-running embedding call
-doesn't block other jobs — they're awaited not blocked on. That's why
-the parser uses pure-Python (no thread offload) for now: the bottleneck
-is the embedding endpoint, not parsing.
+Concurrency note: this handler is async and runs in Arq's shared event loop.
+Network calls are awaited and blocking filesystem/parser work is delegated to
+``document_io.read_and_extract`` so heartbeats, cancellations and unrelated
+jobs continue to make progress.
 """
 
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 import logging
 import os
 import re as _re
 from datetime import datetime, timezone
 from typing import Any
+from anila_security import verify_queue_proof
+
+import asyncpg
 
 from anila_core.contracts import Classification
 from anila_core.ingestion.chunking_plugins import get_chunker
@@ -29,12 +32,16 @@ from anila_core.ingestion.errors import IngestionError, StoreError
 from anila_core.storage.adapters.pg_pool import PgPool
 from anila_core.storage.adapters.pgvector_store import CollectionScopedPgVectorStore
 
+from ingestion_worker.document_io import DocumentParseTimeout, read_and_extract
 from ingestion_worker.embedder import Embedder
-from ingestion_worker.parsers import extract_text
+from ingestion_worker import job_state
 from ingestion_worker.settings import settings
 
 
 logger = logging.getLogger(__name__)
+_ACTIVE_JOB: ContextVar[tuple[int, int, str] | None] = ContextVar(
+    "active_ingestion_job", default=None
+)
 
 
 def _effective_chunk_classification(meta: dict[str, Any]) -> Classification:
@@ -68,6 +75,52 @@ def _effective_chunk_classification(meta: dict[str, Any]) -> Classification:
                 details={"field": field, "value": raw},
             ) from exc
     return Classification.max_of(parsed)
+
+
+def _require_embedding_contract(meta: dict[str, Any]) -> tuple[str, str, int]:
+    """Fail before parsing when worker and collection embedding identity drift.
+
+    A model name is not a weight identity.  The fingerprint must be an
+    explicitly configured SHA-256 value on both sides; it is never derived
+    from the model label.
+    """
+    collection_model = meta.get("embedding_model")
+    collection_fingerprint = meta.get("embedding_fingerprint")
+    collection_dim = meta.get("embedding_dim")
+    worker_fingerprint = settings.embedding_model_fingerprint
+    if (
+        not isinstance(collection_model, str)
+        or not collection_model
+        or not isinstance(collection_fingerprint, str)
+        or _re.fullmatch(r"sha256:[0-9a-f]{64}", collection_fingerprint) is None
+        or not isinstance(collection_dim, int)
+        or collection_dim <= 0
+        or _re.fullmatch(r"sha256:[0-9a-f]{64}", worker_fingerprint) is None
+    ):
+        raise StoreError(
+            code="E_EMBEDDING_CONTRACT_INVALID",
+            retryable=False,
+            severity="critical",
+            user_message="嵌入模型權重契約缺失或格式無效，已拒絕入庫。",
+        )
+    expected = (collection_model, collection_fingerprint, collection_dim)
+    supplied = (
+        settings.embedding_model,
+        worker_fingerprint,
+        settings.embedding_dim,
+    )
+    if supplied != expected:
+        raise StoreError(
+            code="E_EMBEDDING_CONTRACT_MISMATCH",
+            retryable=False,
+            severity="critical",
+            user_message="worker 嵌入模型、權重指紋或維度與知識庫契約不一致。",
+            details={
+                "expected_dim": collection_dim,
+                "supplied_dim": settings.embedding_dim,
+            },
+        )
+    return expected
 
 
 # ── VLM caption injection ────────────────────────────────────────────
@@ -544,6 +597,9 @@ async def _load_document_meta(
                d.classification_level AS document_classification_level,
                c.classification_level AS collection_classification_level,
                c.chunking_config AS chunking_config,
+               c.embedding_model AS embedding_model,
+               c.embedding_fingerprint AS embedding_fingerprint,
+               c.embedding_dim AS embedding_dim,
                c.created_by    AS owner_user_id
           FROM ingestion_documents d
           JOIN ingestion_collections c ON c.id = d.collection_id
@@ -575,16 +631,29 @@ async def _update_document_status(
     # parameter being used in both ``SET status = $2`` (varchar column)
     # and ``CASE WHEN $2 = 'indexed'`` (text literal compare). Without
     # the cast it raises AmbiguousParameterError.
+    stage = "complete" if status == "indexed" else status
     sql = """
         UPDATE ingestion_documents
-           SET status = $2::text,
-               chunk_count = COALESCE($3, chunk_count),
-               error_message = $4,
-               indexed_at = CASE WHEN $2::text = 'indexed' THEN now() ELSE indexed_at END
+           SET processing_stage = $2::text,
+               status = CASE
+                   WHEN $2::text = 'complete' THEN 'indexed'
+                   WHEN active_generation_id IS NULL THEN $3::text
+                   ELSE 'indexed'
+               END,
+               chunk_count = COALESCE($4, chunk_count),
+               error_message = $5,
+               indexed_at = CASE WHEN $2::text = 'complete' THEN now() ELSE indexed_at END
          WHERE id = $1
     """
     async with pool.acquire() as conn:
-        await conn.execute(sql, document_id, status, chunk_count, error_message)
+        await conn.execute(
+            sql,
+            document_id,
+            stage,
+            status,
+            chunk_count,
+            error_message,
+        )
 
 
 async def _bump_collection_counters(
@@ -619,11 +688,25 @@ async def _reconcile_collection_counters(
 async def _record_job_failure(
     pool: PgPool, arq_job_id: str | None, err: IngestionError
 ) -> None:
-    """Mark the matching ingestion_jobs row as failed with the error code.
-
-    Best-effort — failure to update the job row should never re-raise out
-    of the handler (would mask the original error).
-    """
+    """Durably fail/retry the matching job; terminal write errors fail loud."""
+    active = _ACTIVE_JOB.get()
+    if active is not None:
+        job_id, document_id, lease_token = active
+        transition = await job_state.fail_or_retry(
+            pool,
+            job_id=job_id,
+            document_id=document_id,
+            lease_token=lease_token,
+            error_code=err.code,
+            error_message=err.user_message or err.code,
+            retryable=bool(err.retryable),
+            backoff_seconds=settings.job_retry_backoff_seconds,
+        )
+        if transition is None:
+            raise job_state.LeaseLostError(
+                "failure transition rejected because the lease is no longer owned"
+            )
+        return
     if arq_job_id is None:
         return
     sql = """
@@ -635,12 +718,10 @@ async def _record_job_failure(
                completed_at = now()
          WHERE arq_job_id = $1::text
     """
-    try:
-        async with pool.acquire() as conn:
-            await conn.execute(sql, arq_job_id, err.code, err.user_message)
-    except Exception:
-        # Don't shadow the original IngestionError.
-        pass
+    async with pool.acquire() as conn:
+        result = await conn.execute(sql, arq_job_id, err.code, err.user_message)
+    if result != "UPDATE 1":
+        raise RuntimeError("terminal ingestion job failure update matched no row")
 
 
 async def _update_job(
@@ -660,6 +741,27 @@ async def _update_job(
     succeeded). Best-effort — silently ignores DB failures so a
     transient blip doesn't kill the actual ingestion.
     """
+    active = _ACTIVE_JOB.get()
+    if active is not None:
+        job_id, _document_id, lease_token = active
+        if succeeded or status == "succeeded":
+            updated = await job_state.succeed(
+                pool,
+                job_id=job_id,
+                lease_token=lease_token,
+                message=progress_message or "ingestion completed",
+            )
+        else:
+            updated = await job_state.progress(
+                pool,
+                job_id=job_id,
+                lease_token=lease_token,
+                progress_pct=progress_pct,
+                progress_message=progress_message,
+            )
+        if not updated:
+            raise job_state.LeaseLostError("lease-fenced job update was rejected")
+        return
     if arq_job_id is None:
         return
     sets = []
@@ -686,15 +788,64 @@ async def _update_job(
     )
     try:
         async with pool.acquire() as conn:
-            await conn.execute(sql, *args)
+            result = await conn.execute(sql, *args)
     except Exception:
-        pass
+        if succeeded or status in {"succeeded", "failed", "cancelled", "dead_letter"}:
+            raise
+        logger.warning("Non-terminal ingestion progress update failed", exc_info=True)
+        return
+    if (
+        result != "UPDATE 1"
+        and (succeeded or status in {"succeeded", "failed", "cancelled", "dead_letter"})
+    ):
+        raise RuntimeError("terminal ingestion job update matched no row")
 
 
 # ── Handler ─────────────────────────────────────────────────────────────────
 
 
-async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, Any]:
+async def _load_ingestion_authority_user(
+    pool: PgPool,
+    *,
+    ingestion_job_id: int | None,
+    fallback_user_id: int | None,
+) -> int:
+    """Return the user whose live clearance authorizes ingestion work.
+
+    Durable jobs are authorized by the user recorded when the CSP enqueued the
+    job. Direct/test invocations have no job row and therefore use the
+    document uploader/collection owner. Missing or malformed authority is a
+    security boundary failure, never an anonymous/system fallback.
+    """
+    authority_user_id = fallback_user_id
+    if ingestion_job_id is not None:
+        async with pool.acquire() as conn:
+            authority_user_id = await conn.fetchval(
+                "SELECT enqueued_by FROM ingestion_jobs WHERE id=$1",
+                ingestion_job_id,
+            )
+    if (
+        isinstance(authority_user_id, bool)
+        or not isinstance(authority_user_id, int)
+        or authority_user_id <= 0
+    ):
+        raise StoreError(
+            code="E_INTERNAL",
+            retryable=False,
+            severity="error",
+            user_message="Ingestion authority is missing or invalid.",
+            details={"ingestion_job_id": ingestion_job_id},
+        )
+    return authority_user_id
+
+
+async def ingest_document(
+    ctx: dict[str, Any],
+    document_id: int,
+    ingestion_job_id: int | None = None,
+    attempt_number: int = 1,
+    queue_proof: str | None = None,
+) -> dict[str, Any]:
     """Parse → chunk → embed → index one document.
 
     ``ctx`` is Arq's per-call context; the worker config injects the
@@ -704,13 +855,56 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
     """
     pool: PgPool = ctx["pool"]
     embedder: Embedder = ctx["embedder"]
+    if settings.ingestion_queue_hmac_key:
+        verify_queue_proof(
+            settings.ingestion_queue_hmac_key,
+            task_name="ingest_document",
+            payload={
+                "document_id": document_id,
+                "ingestion_job_id": ingestion_job_id,
+                "attempt_number": attempt_number,
+            },
+            proof=queue_proof,
+        )
     arq_job_id: str | None = ctx.get("job_id")
+    heartbeat_task: asyncio.Task[None] | None = None
+    active_token = None
+    if ingestion_job_id is not None:
+        lease_token = await job_state.claim_job(
+            pool,
+            job_id=ingestion_job_id,
+            document_id=document_id,
+            attempt_number=attempt_number,
+            lease_seconds=settings.job_lease_seconds,
+        )
+        if lease_token is None:
+            return {
+                "duplicate": True,
+                "ingestion_job_id": ingestion_job_id,
+                "attempt_number": attempt_number,
+            }
+        active_token = _ACTIVE_JOB.set(
+            (ingestion_job_id, document_id, lease_token)
+        )
+        heartbeat_task = asyncio.create_task(
+            job_state.heartbeat_loop(
+                pool,
+                job_id=ingestion_job_id,
+                lease_token=lease_token,
+                lease_seconds=settings.job_lease_seconds,
+                interval_seconds=settings.job_heartbeat_seconds,
+                owner_task=asyncio.current_task(),
+            )
+        )
 
     started_at = datetime.now(timezone.utc)
     await _update_job(pool, arq_job_id, status="running", started=True, progress_pct=5)
     try:
         meta = await _load_document_meta(pool, document_id)
         collection_id = int(meta["collection_id"])
+        embedding_model, embedding_fingerprint, embedding_dim = (
+            _require_embedding_contract(meta)
+        )
         effective_classification = _effective_chunk_classification(meta)
         storage_path = meta["storage_path"]
         # Bill embedding usage to whoever uploaded the file; fall back
@@ -719,6 +913,23 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         billing_user_id = (
             meta.get("uploaded_by") or meta.get("owner_user_id")
         )
+        authority_user_id = await _load_ingestion_authority_user(
+            pool,
+            ingestion_job_id=ingestion_job_id,
+            fallback_user_id=billing_user_id,
+        )
+
+        from ingestion_worker.evaluator import _require_eval_data_clearance
+
+        async def require_current_clearance() -> None:
+            await _require_eval_data_clearance(
+                pool,
+                user_id=authority_user_id,
+                collection_id=collection_id,
+                document_ids=[document_id],
+            )
+
+        await require_current_clearance()
         if not storage_path or not os.path.exists(storage_path):
             raise StoreError(
                 code="E_INTERNAL",
@@ -733,11 +944,21 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         # 1. Parse — pure function, fast.
         await _update_document_status(pool, document_id, "parsing")
         await _update_job(pool, arq_job_id, progress_pct=15, progress_message="parsing")
-        with open(storage_path, "rb") as f:
-            blob = f.read()
-        text, parse_meta, images = extract_text(
-            meta["filename"], blob, meta["mime_type"],
-        )
+        try:
+            text, parse_meta, images = await read_and_extract(
+                storage_path,
+                meta["filename"],
+                meta["mime_type"],
+                timeout_seconds=settings.parse_timeout_seconds,
+            )
+        except DocumentParseTimeout as exc:
+            raise StoreError(
+                code="E_PARSE_TIMEOUT",
+                retryable=True,
+                severity="error",
+                user_message="文件解析逾時，系統將自動重試。",
+                details={"timeout_s": settings.parse_timeout_seconds},
+            ) from exc
 
         # 1a. Caption embedded images via VLM (when configured).
         # Replaces ``[[IMAGE:<id>]]`` placeholders with VLM-generated
@@ -750,6 +971,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
                 progress_pct=22,
                 progress_message=f"captioning {len(images)} image(s)",
             )
+            await require_current_clearance()
             text = await _caption_images_into(text, images)
             # 1b. Persist captioned images to disk + DB so Studio can
             # vector-search over them (Phase 5). Best-effort: a failure
@@ -790,6 +1012,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             if len(segments) >= 2:
                 # Real path: embed every candidate segment, semantic
                 # chunker does the boundary detection.
+                await require_current_clearance()
                 params["_embeddings"] = await embedder.embed(segments, user_id=billing_user_id)
             elif len(segments) == 1:
                 # Single-segment short-circuit. The chunker checks
@@ -806,13 +1029,41 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             # An empty re-index must still remove the previous generation;
             # otherwise stale chunks remain searchable even though the
             # document advertises chunk_count=0.
-            await store.replace_document_chunks(
-                document_id=document_id,
-                parent_chunks=[],
-                leaf_chunks=[],
-                embeddings=[],
-                classification_level=effective_classification,
-            )
+            if ingestion_job_id is not None:
+                await job_state.ensure_lease(
+                    pool, job_id=ingestion_job_id, lease_token=lease_token
+                )
+            if ingestion_job_id is not None:
+                try:
+                    async with asyncio.timeout(settings.index_timeout_seconds):
+                        await store.stage_and_activate_generation(
+                            document_id=document_id,
+                            source_ingestion_job_id=ingestion_job_id,
+                            source_ingestion_lease_token=lease_token,
+                            embedding_model=embedding_model,
+                            embedding_fingerprint=embedding_fingerprint,
+                            embedding_dim=embedding_dim,
+                            parent_chunks=[],
+                            leaf_chunks=[],
+                            embeddings=[],
+                            classification_level=effective_classification,
+                        )
+                except TimeoutError as exc:
+                    raise StoreError(
+                        code="E_INDEX_TIMEOUT",
+                        retryable=True,
+                        severity="error",
+                        user_message="索引寫入逾時，系統將自動重試。",
+                        details={"timeout_s": settings.index_timeout_seconds},
+                    ) from exc
+            else:
+                await store.replace_document_chunks(
+                    document_id=document_id,
+                    parent_chunks=[],
+                    leaf_chunks=[],
+                    embeddings=[],
+                    classification_level=effective_classification,
+                )
             await _update_document_status(
                 pool, document_id, "indexed",
                 chunk_count=0,
@@ -856,6 +1107,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             pool, arq_job_id, progress_pct=60,
             progress_message=f"embedding {len(leaves)} leaf chunks",
         )
+        await require_current_clearance()
         embeddings = await embedder.embed(
             [c.content for c in leaves], user_id=billing_user_id,
         ) if leaves else []
@@ -864,13 +1116,41 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         #    transaction.  A failed leaf write restores the previous rows;
         #    retries never collide with a partial parent generation.
         await _update_job(pool, arq_job_id, progress_pct=85, progress_message="indexing")
-        await store.replace_document_chunks(
-            document_id=document_id,
-            parent_chunks=parents,
-            leaf_chunks=leaves,
-            embeddings=embeddings,
-            classification_level=effective_classification,
-        )
+        if ingestion_job_id is not None:
+            await job_state.ensure_lease(
+                pool, job_id=ingestion_job_id, lease_token=lease_token
+            )
+        if ingestion_job_id is not None:
+            try:
+                async with asyncio.timeout(settings.index_timeout_seconds):
+                    await store.stage_and_activate_generation(
+                        document_id=document_id,
+                        source_ingestion_job_id=ingestion_job_id,
+                        source_ingestion_lease_token=lease_token,
+                        embedding_model=embedding_model,
+                        embedding_fingerprint=embedding_fingerprint,
+                        embedding_dim=embedding_dim,
+                        parent_chunks=parents,
+                        leaf_chunks=leaves,
+                        embeddings=embeddings,
+                        classification_level=effective_classification,
+                    )
+            except TimeoutError as exc:
+                raise StoreError(
+                    code="E_INDEX_TIMEOUT",
+                    retryable=True,
+                    severity="error",
+                    user_message="索引寫入逾時，系統將自動重試。",
+                    details={"timeout_s": settings.index_timeout_seconds},
+                ) from exc
+        else:
+            await store.replace_document_chunks(
+                document_id=document_id,
+                parent_chunks=parents,
+                leaf_chunks=leaves,
+                embeddings=embeddings,
+                classification_level=effective_classification,
+            )
 
         total_chunks = len(chunks)
         # 5. Status + counters.
@@ -916,6 +1196,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
             from ingestion_worker.settings import settings as _settings
             from ingestion_worker.llm_relations import extract_and_resolve_llm
 
+            await require_current_clearance()
             llm_rel = await extract_and_resolve_llm(
                 pool,
                 collection_id=collection_id,
@@ -936,27 +1217,24 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
                 document_id, e,
             )
 
-        # 6c. Topic-similarity edges (document-relations / C). Pure-vector
-        #     relations recomputed collection-wide (a new doc shifts everyone's
-        #     nearest neighbours). Best-effort + gated.
+        # 6c. Topic-similarity edges (document-relations / C).  Do not run the
+        #     collection-wide O(N^2) query inline.  One durable row per
+        #     collection debounces bursts and is lease-replayed after crashes.
         try:
             from ingestion_worker.settings import settings as _settings
-            from ingestion_worker.similarity_relations import recompute_similarity_edges
-
-            sim = await recompute_similarity_edges(
-                pool,
-                collection_id=collection_id,
-                run_id=(arq_job_id or f"ingest-{document_id}")[:40],
-                settings=_settings,
+            from ingestion_worker.similarity_relations import (
+                request_similarity_recompute,
             )
-            if sim["edges"]:
-                logger.info(
-                    "collection %s: %d similarity edge(s) (after doc %s)",
-                    collection_id, sim["edges"], document_id,
+
+            if _settings.enable_similarity_edges:
+                await request_similarity_recompute(
+                    pool,
+                    collection_id=collection_id,
+                    debounce_seconds=_settings.similarity_debounce_seconds,
                 )
         except Exception as e:  # noqa: BLE001
             logger.warning(
-                "Similarity edge recompute failed for collection %s: %s",
+                "Similarity edge recompute request failed for collection %s: %s",
                 collection_id, e,
             )
 
@@ -982,7 +1260,7 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
         # bypasses ``except Exception`` on modern Python.  Best-effort terminal
         # writes prevent a permanently running document/job, then preserve the
         # cancellation so Arq can finish its own timeout/shutdown handling.
-        try:
+        if _ACTIVE_JOB.get() is None:
             await _update_document_status(
                 pool,
                 document_id,
@@ -997,37 +1275,70 @@ async def ingest_document(ctx: dict[str, Any], document_id: int) -> dict[str, An
                 progress_pct=100,
                 progress_message="cancelled or timed out",
             )
-        except Exception:
-            pass
+        else:
+            wrapped = StoreError(
+                code="E_WORKER_CANCELLED",
+                retryable=True,
+                severity="error",
+                user_message="處理已取消或逾時，系統將自動重試。",
+            )
+            await _record_job_failure(pool, arq_job_id, wrapped)
         raise
     except IngestionError as err:
         # Persist the structured failure for the dev UI / inspector.
-        await _update_document_status(
-            pool, document_id, "failed",
-            error_message=err.user_message or err.code,
-        )
+        if _ACTIVE_JOB.get() is None:
+            await _update_document_status(
+                pool, document_id, "failed",
+                error_message=err.user_message or err.code,
+            )
         await _record_job_failure(pool, arq_job_id, err)
         # Re-raise so Arq's retry policy sees the failure too.
         raise
+    except job_state.LeaseLostError:
+        # Another owner (or the reaper) now controls this logical job.  The
+        # stale attempt must not mutate either the document or terminal state.
+        raise
     except Exception as e:
         # Unknown failure → wrap as E_INTERNAL with bounded leakage.
+        retryable = isinstance(
+            e,
+            (
+                TimeoutError,
+                ConnectionError,
+                asyncpg.PostgresConnectionError,
+                asyncpg.CannotConnectNowError,
+                asyncpg.TooManyConnectionsError,
+            ),
+        )
         wrapped = StoreError(
             code="E_INTERNAL",
-            retryable=False,
+            retryable=retryable,
             severity="error",
             user_message="內部錯誤，請聯絡管理員。",
             details={"cause": type(e).__name__, "message": str(e)[:200]},
         )
-        await _update_document_status(
-            pool, document_id, "failed",
-            error_message=wrapped.user_message,
-        )
+        if _ACTIVE_JOB.get() is None:
+            await _update_document_status(
+                pool, document_id, "failed",
+                error_message=wrapped.user_message,
+            )
         await _record_job_failure(pool, arq_job_id, wrapped)
         raise
+    finally:
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+        if active_token is not None:
+            _ACTIVE_JOB.reset(active_token)
 
 
 async def reresolve_collection_relations(
-    ctx: dict[str, Any], collection_id: int
+    ctx: dict[str, Any], collection_id: int,
+    actor_user_id: int,
+    queue_proof: str | None = None,
 ) -> dict[str, Any]:
     """Re-extract + reconcile cross-document relations for a whole collection
     (document-relations §8 ``:reresolve``).
@@ -1039,6 +1350,16 @@ async def reresolve_collection_relations(
     rule edges simply remain) — the whole job never fails for one bad blob.
     """
     pool: PgPool = ctx["pool"]
+    if settings.ingestion_queue_hmac_key:
+        verify_queue_proof(
+            settings.ingestion_queue_hmac_key,
+            task_name="reresolve_collection_relations",
+            payload={
+                "collection_id": collection_id,
+                "actor_user_id": actor_user_id,
+            },
+            proof=queue_proof,
+        )
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, filename, mime_type, storage_path "
@@ -1047,14 +1368,28 @@ async def reresolve_collection_relations(
         )
 
     docs: list[tuple[int, str]] = []
+    document_ids = [int(row["id"]) for row in rows]
+    async def require_current_clearance() -> None:
+        from ingestion_worker.evaluator import _require_eval_data_clearance
+
+        await _require_eval_data_clearance(
+            pool,
+            user_id=actor_user_id,
+            collection_id=collection_id,
+            document_ids=document_ids,
+        )
+    await require_current_clearance()
     for r in rows:
         sp = r["storage_path"]
         if not sp or not os.path.exists(sp):
             continue
         try:
-            with open(sp, "rb") as f:
-                blob = f.read()
-            text, _meta, _images = extract_text(r["filename"], blob, r["mime_type"])
+            text, _meta, _images = await read_and_extract(
+                sp,
+                r["filename"],
+                r["mime_type"],
+                timeout_seconds=settings.parse_timeout_seconds,
+            )
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "reresolve: parse failed for doc %s (%s) — keeping its old "
@@ -1065,6 +1400,7 @@ async def reresolve_collection_relations(
 
     from ingestion_worker.relations import reresolve_collection_edges
 
+    await require_current_clearance()
     result = await reresolve_collection_edges(
         pool,
         collection_id=collection_id,
@@ -1080,6 +1416,7 @@ async def reresolve_collection_relations(
     llm_extracted = 0
     for doc_id, doc_text in docs:
         try:
+            await require_current_clearance()
             r = await extract_and_resolve_llm(
                 pool,
                 collection_id=collection_id,
@@ -1094,20 +1431,21 @@ async def reresolve_collection_relations(
                 "reresolve: LLM extraction failed for doc %s: %s", doc_id, e
             )
 
-    # Recompute topic-similarity edges once for the whole collection.
+    # Schedule one durable topic-similarity recompute for the collection.
     sim_edges = 0
     try:
-        from ingestion_worker.similarity_relations import recompute_similarity_edges
-
-        sim = await recompute_similarity_edges(
-            pool,
-            collection_id=collection_id,
-            run_id=f"reresolve-{collection_id}"[:40],
-            settings=_settings,
+        from ingestion_worker.similarity_relations import (
+            request_similarity_recompute,
         )
-        sim_edges = sim["edges"]
+
+        if _settings.enable_similarity_edges:
+            await request_similarity_recompute(
+                pool,
+                collection_id=collection_id,
+                debounce_seconds=_settings.similarity_debounce_seconds,
+            )
     except Exception as e:  # noqa: BLE001
-        logger.warning("reresolve: similarity recompute failed: %s", e)
+        logger.warning("reresolve: similarity recompute request failed: %s", e)
 
     logger.info(
         "reresolve collection %s: %d docs, %d rule edges, %d resolved, %d llm, %d similarity",

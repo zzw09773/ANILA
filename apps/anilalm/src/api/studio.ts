@@ -1,5 +1,5 @@
 import { useAuthStore } from '../store/auth'
-import { STUDIO_BASE_URL } from './client'
+import { client, STUDIO_BASE_URL } from './client'
 import type { TaskBinding } from './tasks'
 import type { components } from './studio-types.gen'
 
@@ -96,6 +96,26 @@ export interface CreateSlidesJobInput {
 
 const PPTX_MIME =
   'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+
+/** Download the authoritative current ArtifactVersion from CSP. */
+export async function downloadCspArtifact(
+  artifactId: number,
+  filename: string,
+): Promise<void> {
+  const response = await client.get(
+    `/api/artifacts/${encodeURIComponent(String(artifactId))}/download`,
+    { responseType: 'blob' },
+  )
+  const url = URL.createObjectURL(response.data as Blob)
+  try {
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    anchor.click()
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
 
 /**
  * fetch wrapper for studio calls. Injects the Bearer access token and —
@@ -526,22 +546,6 @@ export interface MindmapTreeSpec {
   preset: string
   root: MindmapTreeNode
   layout?: 'TB' | 'LR' | 'BT' | 'RL'
-}
-
-/**
- * 取回互動式樹狀檢視的資料。404 表示 job 早於 JSON 格式上線(舊 job)—
- * 呼叫端 fallback 到「僅提供 SVG/DOT 下載」的舊檢視。
- */
-export async function fetchMindmapTree(jobId: string): Promise<MindmapTreeSpec> {
-  const res = await studioFetch(
-    studioUrl(`/api/mindmaps/jobs/${encodeURIComponent(jobId)}/download/json`),
-    { headers: {} },
-  )
-  if (!res.ok) {
-    const txt = await res.text().catch(() => '')
-    throw new Error(`mindmap tree ${res.status}: ${txt || res.statusText}`)
-  }
-  return (await res.json()) as MindmapTreeSpec
 }
 
 // ── Infographic ────────────────────────────────────────────────────

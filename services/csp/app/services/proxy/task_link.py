@@ -27,7 +27,7 @@ slices; only their package-root public surface is used.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -61,6 +61,50 @@ class TaskRunContext:
     task_id: int
     trace_id: str
     task_run_id: int
+    owns_lifecycle: bool = True
+    started_at: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+
+
+def attach_running_task_run(
+    db: Session,
+    *,
+    task: Task,
+    expected_dispatch_target: str,
+) -> TaskRunContext:
+    """Attach a nested Studio inference call to the existing outer run.
+
+    This records attribution against the canonical TaskRun without opening a
+    second run or allowing a nested model call to terminalize the artifact
+    Task.  Absence/ambiguity fails closed.
+    """
+    runs = (
+        db.query(TaskRun)
+        .filter(
+            TaskRun.task_id == task.id,
+            TaskRun.status == "running",
+            TaskRun.dispatch_target == expected_dispatch_target,
+        )
+        .order_by(TaskRun.run_sequence.desc())
+        .all()
+    )
+    if len(runs) != 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Studio runtime 必須唯一綁定既有 running "
+                f"{expected_dispatch_target} TaskRun"
+            ),
+        )
+    run = runs[0]
+    return TaskRunContext(
+        task_id=task.id,
+        trace_id=task.trace_id,
+        task_run_id=run.id,
+        owns_lifecycle=False,
+        started_at=run.started_at,
+    )
 
 
 def _resolve_acting_user(db: Session, *, caller, request_headers):
@@ -212,7 +256,10 @@ def begin_task_run(
     if commit:
         db.commit()
     return TaskRunContext(
-        task_id=task.id, trace_id=task.trace_id, task_run_id=run.id
+        task_id=task.id,
+        trace_id=task.trace_id,
+        task_run_id=run.id,
+        started_at=run.started_at,
     )
 
 

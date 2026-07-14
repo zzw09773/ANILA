@@ -57,6 +57,9 @@ services:
       # 的 RLS 失效 (superuser 自動 bypass)。
       DATABASE_URL: postgresql://csp_app:${CSP_APP_DB_PASSWORD:?CSP_APP_DB_PASSWORD must be set (csp_app runtime role password)}@csp-db:5432/csp
       MIGRATION_DATABASE_URL: postgresql://csp:${CSP_DB_PASSWORD:?CSP_DB_PASSWORD must be set (same as csp-db POSTGRES_PASSWORD)}@csp-db:5432/csp
+      # r1_0021 migration/backfill requires a real deployed-weight identity.
+      # Never derive this value from LOCAL_EMBEDDING_MODEL.
+      EMBEDDING_MODEL_FINGERPRINT: ${EMBEDDING_MODEL_FINGERPRINT:?EMBEDDING_MODEL_FINGERPRINT must be sha256:<64 lowercase hex> for deployed embedding weights}
       # migration 0014 在 fresh DB 建 csp_app role 時讀這個值當 role 密碼;
       # 既有 DB 的 role 已存在,改值要自己 ALTER ROLE csp_app PASSWORD。
       # 密碼用 hex 生成 (openssl rand -hex),避免 URL 特殊字元要 escape。
@@ -105,6 +108,11 @@ services:
       # CSP 對下游 agent 注入這個 header,downstream 用它認 CSP source。
       # 跟 router service 必須同值,缺值直接 fail (避免 prod 部署誤用 dev token)。
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set}
+      # Dedicated non-legacy Service Client secret. CSP bootstraps/verifies the
+      # exact artifact_tool + artifact-egress registry binding from this value.
+      STUDIO_ARTIFACT_SERVICE_TOKEN: ${STUDIO_ARTIFACT_SERVICE_TOKEN:?STUDIO_ARTIFACT_SERVICE_TOKEN must be set}
+      STUDIO_RUNTIME_SERVICE_TOKEN: ${STUDIO_RUNTIME_SERVICE_TOKEN:?STUDIO_RUNTIME_SERVICE_TOKEN must be set separately}
+      INGESTION_QUEUE_HMAC_KEY: ${INGESTION_QUEUE_HMAC_KEY:?INGESTION_QUEUE_HMAC_KEY must be set}
       # ── branch SSO:中科院憑證卡登入 (prod-intranet-card fork 區) ─────────
       # ⚠ fork 區:main→prod sync 時不可拿 main 版 compose 整檔覆蓋 —
       # 6fcbdce (PR #16) 曾把這段蓋掉,內網就沒有刷卡登入了 (P0 迴歸)。
@@ -175,6 +183,7 @@ services:
         ]
       ANILA_TEMPLATE_DIR: /app/anila-template
       INGESTION_UPLOAD_DIR: /var/anila/ingestion-uploads
+      INGESTION_OUTBOX_STALE_SECONDS: "${INGESTION_OUTBOX_STALE_SECONDS:-120}"
       # Conversation attachments are durable application data.  The named
       # volume inherits UID 10001 ownership from the image directory.
       ATTACHMENT_STORAGE_PATH: /var/anila/attachments
@@ -182,6 +191,16 @@ services:
       # slabs supplied to the model.  Keep it under the external formal state
       # root, never in the repository/share bind mounts.
       SOURCE_SNAPSHOT_STORAGE_PATH: /var/lib/anila/source-snapshots
+      ARTIFACT_BLOB_STORAGE_PATH: /var/lib/anila/artifact-blobs
+      RETENTION_ENABLED: "true"
+      RETENTION_ARTIFACT_ACTIVE_DAYS: "${RETENTION_ARTIFACT_ACTIVE_DAYS:-30}"
+      RETENTION_ARTIFACT_ARCHIVE_DAYS: "${RETENTION_ARTIFACT_ARCHIVE_DAYS:-365}"
+      RETENTION_INGESTION_ACTIVE_DAYS: "${RETENTION_INGESTION_ACTIVE_DAYS:-365}"
+      RETENTION_INGESTION_ARCHIVE_DAYS: "${RETENTION_INGESTION_ARCHIVE_DAYS:-365}"
+      RETENTION_REAPER_INTERVAL_SECONDS: "${RETENTION_REAPER_INTERVAL_SECONDS:-300}"
+      RETENTION_REAPER_LEASE_SECONDS: "${RETENTION_REAPER_LEASE_SECONDS:-900}"
+      RETENTION_REAPER_BATCH_SIZE: "${RETENTION_REAPER_BATCH_SIZE:-50}"
+      RETENTION_ALLOW_ARCHIVED_DOWNLOADS: "${RETENTION_ALLOW_ARCHIVED_DOWNLOADS:-false}"
       # 出向 https 的 CA 信任 (內網模型主機 10.53.100.12 走 https,憑證通常
       # 是內部 CA / 自簽 — 不在 certifi 預設信任鏈內,httpx 會
       # CERTIFICATE_VERIFY_FAILED)。把 IT 給的 PEM 放 ./share/pki/ 並在
@@ -220,6 +239,7 @@ services:
       - ../../share/uploads/ingestion:/var/anila/ingestion-uploads
       - csp-attachments:/var/anila/attachments
       - "${ANILA_STATE_DIR:?ANILA_STATE_DIR must be an absolute path outside the repo}/source-snapshots:/var/lib/anila/source-snapshots"
+      - "${ANILA_STATE_DIR:?ANILA_STATE_DIR must be an absolute path outside the repo}/artifact-blobs:/var/lib/anila/artifact-blobs"
       # 內網模型 https 的內部 CA PEM 放這裡 (見上 SSL_CERT_FILE)。
       - ../../share/pki:/etc/anila/pki:ro
       # JWT 簽章金鑰 (csp 簽 access token + 對 studio 發 JWKS)。正式私鑰
@@ -249,11 +269,27 @@ services:
   # ── Redis (Arq queue for ingestion-worker) ──────────────────────────────
   redis:
     image: ${ANILA_IMAGE_REDIS:?ANILA_IMAGE_REDIS must be a locked image content ID}
-    command: ["redis-server", "--appendonly", "no", "--maxmemory", "256mb"]
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --aof-use-rdb-preamble
+      - "yes"
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - noeviction
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+        - CMD-SHELL
+        - >-
+          redis-cli ping | grep -qx PONG &&
+          redis-cli INFO persistence | tr -d '\r' | grep -q '^aof_enabled:1$' &&
+          redis-cli INFO persistence | tr -d '\r' | grep -q '^aof_last_write_status:ok$'
       interval: 5s
       timeout: 3s
       retries: 5
@@ -266,13 +302,22 @@ services:
       dockerfile: services/ingestion-worker/Dockerfile
     image: ${ANILA_IMAGE_INGESTION_WORKER:?ANILA_IMAGE_INGESTION_WORKER must be a locked image content ID}
     environment:
+      ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:?ANILA_DEPLOYMENT_PROFILE must be declared}
       DATABASE_URL: postgresql://csp_app:${CSP_APP_DB_PASSWORD:?CSP_APP_DB_PASSWORD must be set (same value as csp)}@csp-db:5432/csp
       REDIS_URL: redis://redis:6379
+      INGESTION_QUEUE_HMAC_KEY: ${INGESTION_QUEUE_HMAC_KEY:?INGESTION_QUEUE_HMAC_KEY must be set}
       # 經由 CSP /v1/embeddings 走 token_usage 計量,不直連模型。
       EMBEDDING_BASE_URL: http://csp:8000/v1
       EMBEDDING_MODEL: ${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}
+      EMBEDDING_MODEL_FINGERPRINT: ${EMBEDDING_MODEL_FINGERPRINT:?EMBEDDING_MODEL_FINGERPRINT must be sha256:<64 lowercase hex> for deployed embedding weights}
       EMBEDDING_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
       EMBEDDING_DIM: "4000"
+      PARSE_TIMEOUT_SECONDS: "${INGESTION_PARSE_TIMEOUT_SECONDS:-120}"
+      INDEX_TIMEOUT_SECONDS: "${INGESTION_INDEX_TIMEOUT_SECONDS:-120}"
+      JOB_TIMEOUT_SECONDS: "${INGESTION_JOB_TIMEOUT_SECONDS:-900}"
+      JOB_LEASE_SECONDS: "${INGESTION_JOB_LEASE_SECONDS:-90}"
+      JOB_HEARTBEAT_SECONDS: "${INGESTION_JOB_HEARTBEAT_SECONDS:-20}"
+      JOB_LEASE_GRACE_SECONDS: "${INGESTION_JOB_LEASE_GRACE_SECONDS:-15}"
       UPLOAD_DIR: /var/anila/ingestion-uploads
       # judge 路徑要解 AES-encrypted credentials,cipher key 從 SECRET_KEY 派生,
       # **必須**跟 csp 同值,不然每次 judge decrypt 失敗會 silently skip。
@@ -295,6 +340,8 @@ services:
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../../share/uploads/ingestion:/var/anila/ingestion-uploads
+    expose:
+      - "8081"
     depends_on:
       csp-db:
         condition: service_healthy
@@ -302,6 +349,16 @@ services:
         condition: service_healthy
       csp:
         condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/ready', timeout=2).read()"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   # ── Router (anila-core-router :9000) ────────────────────────────────────
@@ -409,12 +466,19 @@ services:
     expose:
       - "8100"
     environment:
+      ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:?ANILA_DEPLOYMENT_PROFILE must be declared}
       CSP_BASE_URL: http://csp:8000
       # 跟 csp 共用同一把 service-to-service token,讓 cold-start sync
       # /api/auth/revocations 能透過 X-CSP-Service-Token header 通過
       # csp 的 verify_service_token。對齊 csp / router / ingestion-worker
       # 的 prod fail-loud convention(缺值直接停,不走 dev fallback)。
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:?CSP_SERVICE_TOKEN must be set (same value as csp)}
+      # Artifact writes never use the shared legacy CSP_SERVICE_TOKEN above.
+      STUDIO_ARTIFACT_SERVICE_TOKEN: ${STUDIO_ARTIFACT_SERVICE_TOKEN:?STUDIO_ARTIFACT_SERVICE_TOKEN must be set (dedicated named service client)}
+      STUDIO_RUNTIME_SERVICE_TOKEN: ${STUDIO_RUNTIME_SERVICE_TOKEN:?STUDIO_RUNTIME_SERVICE_TOKEN must be set (separate task-scoped runtime client)}
+      STUDIO_JOB_ENVELOPE_HMAC_KEY: ${STUDIO_JOB_ENVELOPE_HMAC_KEY:?STUDIO_JOB_ENVELOPE_HMAC_KEY must be set}
+      STUDIO_DURABLE_SUPERVISOR: "true"
+      STUDIO_ARTIFACT_REPORTING: "true"
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
       # 跟 csp 同一個 toggle:空字串 → studio 圖像生成停用 (內網無 FLUX)。

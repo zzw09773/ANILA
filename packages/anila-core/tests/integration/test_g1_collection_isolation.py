@@ -60,9 +60,15 @@ async def test_g1_random_workload_no_cross_collection_leak(
                 )
             )
             embeddings.append(_random_unit_vector(rng))
-        await store.index_chunks(
+        await store.stage_and_activate_generation(
             document_id=doc_id,
-            chunks=chunks,
+            source_ingestion_job_id=None,
+            source_ingestion_lease_token=None,
+            embedding_model="test-model",
+            embedding_fingerprint="sha256:" + ("0" * 64),
+            embedding_dim=_DIM,
+            parent_chunks=[],
+            leaf_chunks=chunks,
             embeddings=embeddings,
             classification_level=Classification.UNCLASSIFIED,
         )

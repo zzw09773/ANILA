@@ -26,6 +26,8 @@ from ingestion_worker.main import WorkerSettings as ArqWorkerSettings
 # Every settable field and the ENV VAR that pydantic-settings maps onto it
 # (case_sensitive=False → uppercased field name).
 _ENV_VARS = [
+    "ANILA_DEPLOYMENT_PROFILE",
+    "INGESTION_QUEUE_HMAC_KEY",
     "ANILA_PILOT_MODE",
     "GATE2_ALLOW_UNCONVERGED_INFERENCE",
     "DATABASE_URL",
@@ -35,9 +37,18 @@ _ENV_VARS = [
     "EMBEDDING_API_KEY",
     "EMBEDDING_DIM",
     "EMBEDDING_TIMEOUT_SECONDS",
+    "PARSE_TIMEOUT_SECONDS",
+    "INDEX_TIMEOUT_SECONDS",
+    "JOB_TIMEOUT_SECONDS",
     "UPLOAD_DIR",
     "PG_POOL_MIN",
     "PG_POOL_MAX",
+    "JOB_LEASE_SECONDS",
+    "JOB_HEARTBEAT_SECONDS",
+    "JOB_RETRY_BACKOFF_SECONDS",
+    "JOB_REAPER_INTERVAL_SECONDS",
+    "JOB_REAPER_BATCH_SIZE",
+    "JOB_LEASE_GRACE_SECONDS",
     "ENABLE_IMAGE_CAPTIONS",
     "VISION_URL",
     "VISION_MODEL",
@@ -148,18 +159,32 @@ def test_all_defaults_at_once(clean_env):
     """Snapshot of the full default config in one shot."""
     s = _fresh()
     assert s.model_dump() == {
+        "anila_deployment_profile": "development",
+        "ingestion_queue_hmac_key": "",
         "anila_pilot_mode": False,
         "gate2_allow_unconverged_inference": False,
         "database_url": "postgresql://csp_app:csp@csp-db:5432/csp",
         "redis_url": "redis://redis:6379",
         "embedding_base_url": "http://host.docker.internal:7011/v1",
         "embedding_model": "nvidia/NV-embed-V2",
+        "embedding_model_fingerprint": "",
         "embedding_api_key": "not-set",
         "embedding_dim": 4000,
         "embedding_timeout_seconds": 30.0,
+        "parse_timeout_seconds": 120.0,
+        "index_timeout_seconds": 120.0,
+        "job_timeout_seconds": 900,
         "upload_dir": "/var/anila/ingestion-uploads",
         "pg_pool_min": 1,
         "pg_pool_max": 5,
+        "job_lease_seconds": 90,
+        "job_heartbeat_seconds": 20,
+        "job_retry_backoff_seconds": 15,
+        "job_reaper_interval_seconds": 15,
+        "job_reaper_batch_size": 25,
+        "job_lease_grace_seconds": 15,
+        "metrics_port": 8081,
+        "health_probe_timeout_seconds": 2.0,
         "enable_image_captions": True,
         "vision_url": "",
         "vision_model": "gemma4",
@@ -180,6 +205,11 @@ def test_all_defaults_at_once(clean_env):
         "similarity_top_k": 3,
         "similarity_min": 0.75,
         "similarity_max_docs": 500,
+        "similarity_debounce_seconds": 10.0,
+        "similarity_job_poll_seconds": 1.0,
+        "similarity_job_lease_seconds": 300,
+        "similarity_job_heartbeat_seconds": 30,
+        "similarity_job_retry_backoff_seconds": 30,
     }
 
 
@@ -283,6 +313,20 @@ def test_invalid_int_raises(clean_env):
         _fresh()
 
 
+def test_job_deadline_posture_rejects_heartbeat_not_shorter_than_lease(clean_env):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="heartbeat must be shorter"):
+        _fresh(job_lease_seconds=60, job_heartbeat_seconds=60)
+
+
+def test_job_deadline_posture_rejects_stage_timeout_at_job_timeout(clean_env):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="parse timeout must be shorter"):
+        _fresh(job_timeout_seconds=120, parse_timeout_seconds=120)
+
+
 # ── Module singleton ─────────────────────────────────────────────────────────
 
 
@@ -292,6 +336,7 @@ def test_module_singleton_is_worker_settings():
     assert isinstance(settings.embedding_dim, int)
 
 
-def test_arq_does_not_reschedule_a_published_cancelled_terminal_state():
+def test_arq_delegates_retries_to_durable_db_state_machine():
     assert ArqWorkerSettings.retry_jobs is False
     assert ArqWorkerSettings.max_tries == 1
+    assert ArqWorkerSettings.job_timeout == settings.job_timeout_seconds

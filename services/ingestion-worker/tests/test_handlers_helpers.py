@@ -28,7 +28,7 @@ from PIL import Image
 
 from anila_core.contracts import Classification
 from anila_core.ingestion.errors import EmbedError, StoreError
-from ingestion_worker import handlers
+from ingestion_worker import evaluator, handlers
 from ingestion_worker.handlers import _CAPTION_MAX_CHARS, _clean_caption
 from ingestion_worker.settings import settings
 
@@ -374,6 +374,10 @@ def _install_ingest_fakes(
     document_classification: str = "無機密",
     collection_classification: str = "無機密",
 ):
+    fingerprint = "sha256:" + ("1" * 64)
+    monkeypatch.setattr(
+        handlers.settings, "embedding_model_fingerprint", fingerprint
+    )
     blob_path = tmp_path / "document.txt"
     blob_path.write_text("content", encoding="utf-8")
     document_updates: list[tuple[str, dict]] = []
@@ -392,6 +396,9 @@ def _install_ingest_fakes(
             "document_classification_level": document_classification,
             "collection_classification_level": collection_classification,
             "chunking_config": {"strategy": "test", "params": {}},
+            "embedding_model": handlers.settings.embedding_model,
+            "embedding_fingerprint": fingerprint,
+            "embedding_dim": handlers.settings.embedding_dim,
         }
 
     async def update_document(_pool, _document_id, status, **kwargs):
@@ -406,11 +413,27 @@ def _install_ingest_fakes(
     async def reconcile_counters(_pool, _collection_id):
         return None
 
+    async def load_authority_user(
+        _pool, *, ingestion_job_id, fallback_user_id
+    ):
+        del ingestion_job_id, fallback_user_id
+        return 11
+
+    async def require_eval_data_clearance(
+        _pool, *, user_id, collection_id, document_ids
+    ):
+        del user_id, collection_id, document_ids
+        return None
+
     class RecordingStore:
         def __init__(self, _pool, *, collection_id: int) -> None:
             assert collection_id == 7
 
         async def replace_document_chunks(self, **kwargs):
+            replacements.append(kwargs)
+            return len(kwargs["parent_chunks"]) + len(kwargs["leaf_chunks"])
+
+        async def stage_and_activate_generation(self, **kwargs):
             replacements.append(kwargs)
             return len(kwargs["parent_chunks"]) + len(kwargs["leaf_chunks"])
 
@@ -423,13 +446,18 @@ def _install_ingest_fakes(
         handlers, "_reconcile_collection_counters", reconcile_counters
     )
     monkeypatch.setattr(
-        handlers, "CollectionScopedPgVectorStore", RecordingStore
+        handlers, "_load_ingestion_authority_user", load_authority_user
     )
     monkeypatch.setattr(
-        handlers,
-        "extract_text",
-        lambda *_args: ("parsed content", {}, {}),
+        evaluator, "_require_eval_data_clearance", require_eval_data_clearance
     )
+    monkeypatch.setattr(
+        handlers, "CollectionScopedPgVectorStore", RecordingStore
+    )
+    async def read_and_extract(*_args, **_kwargs):
+        return "parsed content", {}, {}
+
+    monkeypatch.setattr(handlers, "read_and_extract", read_and_extract)
     monkeypatch.setattr(handlers, "get_chunker", lambda _strategy: chunker)
     return {
         "ctx": {"pool": object(), "embedder": embedder, "job_id": "job-1"},
@@ -438,6 +466,111 @@ def _install_ingest_fakes(
         "failures": failures,
         "replacements": replacements,
     }
+
+
+async def test_ingest_rejects_invalid_queue_proof_before_pool_access(monkeypatch):
+    monkeypatch.setattr(handlers.settings, "ingestion_queue_hmac_key", "k" * 32)
+
+    with pytest.raises(PermissionError, match="integrity proof"):
+        await handlers.ingest_document(
+            {"pool": object(), "embedder": object()},
+            document_id=41,
+            ingestion_job_id=9,
+            queue_proof="invalid",
+        )
+
+
+async def test_ingest_clearance_denial_precedes_raw_document_read(
+    monkeypatch, tmp_path
+):
+    state = _install_ingest_fakes(
+        monkeypatch,
+        tmp_path,
+        chunks=[],
+        embedder=object(),
+    )
+    raw_read = False
+
+    async def deny_clearance(*_args, **_kwargs):
+        raise PermissionError("live clearance denied")
+
+    async def forbidden_raw_read(*_args, **_kwargs):
+        nonlocal raw_read
+        raw_read = True
+        raise AssertionError("raw document was read before authorization")
+
+    monkeypatch.setattr(evaluator, "_require_eval_data_clearance", deny_clearance)
+    monkeypatch.setattr(handlers, "read_and_extract", forbidden_raw_read)
+
+    with pytest.raises(PermissionError, match="live clearance denied"):
+        await handlers.ingest_document(state["ctx"], document_id=41)
+
+    assert raw_read is False
+
+
+async def test_reresolve_rejects_invalid_queue_proof_before_pool_access(
+    monkeypatch,
+):
+    monkeypatch.setattr(handlers.settings, "ingestion_queue_hmac_key", "k" * 32)
+
+    with pytest.raises(PermissionError, match="integrity proof"):
+        await handlers.reresolve_collection_relations(
+            {"pool": object()},
+            collection_id=7,
+            actor_user_id=11,
+            queue_proof="invalid",
+        )
+
+
+async def test_reresolve_clearance_denial_precedes_raw_document_read(
+    monkeypatch, tmp_path
+):
+    blob_path = tmp_path / "classified.txt"
+    blob_path.write_text("classified", encoding="utf-8")
+    raw_read = False
+
+    class Connection:
+        async def fetch(self, *_args, **_kwargs):
+            return [
+                {
+                    "id": 41,
+                    "filename": "classified.txt",
+                    "mime_type": "text/plain",
+                    "storage_path": str(blob_path),
+                }
+            ]
+
+    class Acquire:
+        async def __aenter__(self):
+            return Connection()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    class Pool:
+        def acquire(self):
+            return Acquire()
+
+    async def deny_clearance(*_args, **_kwargs):
+        raise PermissionError("live clearance denied")
+
+    async def forbidden_raw_read(*_args, **_kwargs):
+        nonlocal raw_read
+        raw_read = True
+        raise AssertionError("raw document was read before authorization")
+
+    monkeypatch.setattr(handlers.settings, "ingestion_queue_hmac_key", "")
+    monkeypatch.setattr(evaluator, "_require_eval_data_clearance", deny_clearance)
+    monkeypatch.setattr(handlers, "read_and_extract", forbidden_raw_read)
+
+    with pytest.raises(PermissionError, match="live clearance denied"):
+        await handlers.reresolve_collection_relations(
+            {"pool": Pool()},
+            collection_id=7,
+            actor_user_id=11,
+        )
+
+    assert raw_read is False
 
 
 async def test_ingest_empty_chunks_writes_one_succeeded_terminal_job_state(
@@ -473,6 +606,152 @@ async def test_ingest_empty_chunks_writes_one_succeeded_terminal_job_state(
     assert state["replacements"][0]["parent_chunks"] == []
     assert state["replacements"][0]["leaf_chunks"] == []
     assert result == {"chunk_count": 0, "warning": "no chunks produced"}
+
+
+async def test_lease_loss_before_chunk_publish_writes_no_index_or_success(
+    monkeypatch, tmp_path
+):
+    class Embedder:
+        async def embed(self, _texts, *, user_id=None):
+            return [[0.1]]
+
+    state = _install_ingest_fakes(
+        monkeypatch,
+        tmp_path,
+        chunks=[SimpleNamespace(content="leaf", metadata={})],
+        embedder=Embedder(),
+    )
+
+    async def claim(*_args, **_kwargs):
+        return "lease"
+
+    async def heartbeat_forever(*_args, **_kwargs):
+        await asyncio.sleep(3600)
+
+    async def lease_lost(*_args, **_kwargs):
+        raise handlers.job_state.LeaseLostError("lost")
+
+    monkeypatch.setattr(handlers.job_state, "claim_job", claim)
+    monkeypatch.setattr(handlers.job_state, "heartbeat_loop", heartbeat_forever)
+    monkeypatch.setattr(handlers.job_state, "ensure_lease", lease_lost)
+
+    with pytest.raises(handlers.job_state.LeaseLostError):
+        await handlers.ingest_document(
+            state["ctx"], document_id=44, ingestion_job_id=9, attempt_number=1
+        )
+
+    assert state["replacements"] == []
+    assert not any(
+        update.get("status") == "succeeded" for update in state["job_updates"]
+    )
+
+
+async def test_active_generation_publish_passes_exact_claimed_lease_token(
+    monkeypatch, tmp_path
+):
+    state = _install_ingest_fakes(
+        monkeypatch,
+        tmp_path,
+        chunks=[],
+        embedder=object(),
+    )
+
+    async def claim(*_args, **_kwargs):
+        return "claimed-lease-token"
+
+    async def heartbeat_forever(*_args, **_kwargs):
+        await asyncio.sleep(3600)
+
+    async def lease_valid(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(handlers.job_state, "claim_job", claim)
+    monkeypatch.setattr(handlers.job_state, "heartbeat_loop", heartbeat_forever)
+    monkeypatch.setattr(handlers.job_state, "ensure_lease", lease_valid)
+
+    await handlers.ingest_document(
+        state["ctx"], document_id=44, ingestion_job_id=9, attempt_number=1
+    )
+    assert len(state["replacements"]) == 1
+    assert state["replacements"][0]["source_ingestion_job_id"] == 9
+    assert (
+        state["replacements"][0]["source_ingestion_lease_token"]
+        == "claimed-lease-token"
+    )
+
+
+async def test_index_timeout_becomes_retryable_durable_failure(monkeypatch, tmp_path):
+    state = _install_ingest_fakes(
+        monkeypatch,
+        tmp_path,
+        chunks=[],
+        embedder=object(),
+    )
+
+    class SlowStore:
+        def __init__(self, _pool, *, collection_id):
+            assert collection_id == 7
+
+        async def stage_and_activate_generation(self, **_kwargs):
+            await asyncio.sleep(1)
+
+    async def claim(*_args, **_kwargs):
+        return "lease"
+
+    async def heartbeat_forever(*_args, **_kwargs):
+        await asyncio.sleep(3600)
+
+    async def lease_valid(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(handlers, "CollectionScopedPgVectorStore", SlowStore)
+    monkeypatch.setattr(handlers.job_state, "claim_job", claim)
+    monkeypatch.setattr(handlers.job_state, "heartbeat_loop", heartbeat_forever)
+    monkeypatch.setattr(handlers.job_state, "ensure_lease", lease_valid)
+    previous = handlers.settings.index_timeout_seconds
+    handlers.settings.index_timeout_seconds = 0.01
+    try:
+        with pytest.raises(StoreError) as exc_info:
+            await handlers.ingest_document(
+                state["ctx"], document_id=44, ingestion_job_id=9, attempt_number=1
+            )
+    finally:
+        handlers.settings.index_timeout_seconds = previous
+    assert exc_info.value.code == "E_INDEX_TIMEOUT"
+    assert exc_info.value.retryable is True
+    assert len(state["failures"]) == 1
+    assert state["failures"][0].code == "E_INDEX_TIMEOUT"
+
+
+async def test_parse_timeout_becomes_retryable_durable_failure(monkeypatch, tmp_path):
+    state = _install_ingest_fakes(
+        monkeypatch,
+        tmp_path,
+        chunks=[],
+        embedder=object(),
+    )
+
+    async def parse_timeout(*_args, **_kwargs):
+        raise handlers.DocumentParseTimeout("too slow")
+
+    async def claim(*_args, **_kwargs):
+        return "lease"
+
+    async def heartbeat_forever(*_args, **_kwargs):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(handlers, "read_and_extract", parse_timeout)
+    monkeypatch.setattr(handlers.job_state, "claim_job", claim)
+    monkeypatch.setattr(handlers.job_state, "heartbeat_loop", heartbeat_forever)
+
+    with pytest.raises(StoreError) as exc_info:
+        await handlers.ingest_document(
+            state["ctx"], document_id=44, ingestion_job_id=9, attempt_number=1
+        )
+    assert exc_info.value.code == "E_PARSE_TIMEOUT"
+    assert exc_info.value.retryable is True
+    assert len(state["failures"]) == 1
+    assert state["failures"][0].code == "E_PARSE_TIMEOUT"
 
 
 async def test_ingest_propagates_effective_classification_to_parent_and_leaf_writes(
@@ -594,3 +873,84 @@ async def test_ingest_cancellation_converges_document_and_job_then_reraises(
             "progress_message": "cancelled or timed out",
         }
     ]
+
+
+async def test_active_cancellation_schedules_durable_retry_then_reraises(
+    monkeypatch, tmp_path
+):
+    class CancelledEmbedder:
+        async def embed(self, _texts, *, user_id=None):
+            raise asyncio.CancelledError
+
+    state = _install_ingest_fakes(
+        monkeypatch,
+        tmp_path,
+        chunks=[SimpleNamespace(content="leaf", metadata={})],
+        embedder=CancelledEmbedder(),
+    )
+
+    async def claim(*_args, **_kwargs):
+        return "lease-token"
+
+    async def heartbeat_forever(*_args, **_kwargs):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(handlers.job_state, "claim_job", claim)
+    monkeypatch.setattr(handlers.job_state, "heartbeat_loop", heartbeat_forever)
+
+    with pytest.raises(asyncio.CancelledError):
+        await handlers.ingest_document(
+            state["ctx"], document_id=43, ingestion_job_id=9, attempt_number=1
+        )
+
+    assert len(state["failures"]) == 1
+    assert state["failures"][0].code == "E_WORKER_CANCELLED"
+    assert state["failures"][0].retryable is True
+    assert not any(status == "failed" for status, _ in state["document_updates"])
+
+
+async def test_record_failure_rejects_silent_lease_loss(monkeypatch):
+    async def rejected(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(handlers.job_state, "fail_or_retry", rejected)
+    token = handlers._ACTIVE_JOB.set((7, 8, "lease"))
+    try:
+        with pytest.raises(handlers.job_state.LeaseLostError):
+            await handlers._record_job_failure(
+                object(),
+                "arq-id",
+                StoreError(
+                    code="E_INTERNAL",
+                    retryable=True,
+                    severity="error",
+                    user_message="temporary",
+                ),
+            )
+    finally:
+        handlers._ACTIVE_JOB.reset(token)
+
+
+async def test_legacy_terminal_db_write_failure_is_not_swallowed():
+    class Pool:
+        class Acquire:
+            async def __aenter__(self):
+                raise RuntimeError("db down")
+
+            async def __aexit__(self, *_args):
+                return None
+
+        def acquire(self):
+            return self.Acquire()
+
+    with pytest.raises(RuntimeError, match="db down"):
+        await handlers._record_job_failure(
+            Pool(),
+            "arq-id",
+            StoreError(
+                code="E_INTERNAL",
+                retryable=True,
+                severity="error",
+                user_message="temporary",
+            ),
+        )

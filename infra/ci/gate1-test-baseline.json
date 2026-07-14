@@ -572,6 +572,42 @@
       "ci_job": "postgres-rls",
       "ci_command_fragment": "python -m pytest tests/test_gate2_durable_usage_closure_pg.py -q",
       "reason": "The complete SQLite CSP suite skips without ANILA_GATE2_LEDGER_PG_URL; postgres-rls proves atomic usage, TaskRun, TraceSpan closure and poison-record isolation on PostgreSQL."
+    },
+    {
+      "path": "services/csp/tests/test_gate3_retention_upload_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_gate3_retention_upload_pg.py -q",
+      "reason": "The complete SQLite CSP suite skips without ANILA_GATE3_RETENTION_PG_URL; postgres-rls runs retention and artifact upload race proofs as csp_app."
+    },
+    {
+      "path": "services/csp/tests/test_ingestion_generations_pg.py",
+      "kind": "pytest.skip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest services/csp/tests/test_ingestion_generations_pg.py -q",
+      "reason": "Local CSP runs skip without an admin DSN; postgres-rls creates a disposable database and proves the Gate 3 generation migration, backfill, and downgrade contract."
+    },
+    {
+      "path": "services/ingestion-worker/tests/test_job_state_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "services/ingestion-worker/tests/test_job_state_pg.py",
+      "reason": "The worker unit suite skips without a disposable PostgreSQL DSN; postgres-rls runs lease fencing, reaper grace, retry taxonomy, DLQ, and terminal-write recovery proofs in an isolated database."
+    },
+    {
+      "path": "services/ingestion-worker/tests/test_similarity_relations_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "services/ingestion-worker/tests/test_similarity_relations_pg.py",
+      "reason": "The worker unit suite skips without a disposable PostgreSQL DSN; postgres-rls runs concurrent request dedupe, single-owner claim, expired-lease recovery, and stale-owner fencing proofs."
     }
   ],
   "quarantine": [],

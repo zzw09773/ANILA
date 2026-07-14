@@ -98,6 +98,7 @@ def governed_source(db, tmp_path, monkeypatch):
         name="Gate 2 KB",
         chunking_config={"strategy": "semantic"},
         embedding_model="nv-embed",
+        embedding_fingerprint="sha256:" + "0" * 64,
         embedding_dim=4,
         status="active",
         created_by=user.id,

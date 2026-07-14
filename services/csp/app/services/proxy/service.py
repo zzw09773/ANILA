@@ -6,6 +6,7 @@ behavior-preserving refactor). ``proxy_request`` / ``proxy_stream`` /
 live in the sibling modules of this package (headers / sse / usage / guard).
 """
 import asyncio
+import codecs
 import json
 import logging
 import time
@@ -810,6 +811,7 @@ async def _proxy_stream_impl(
     governance_db=None,
     admitted_classification_level: str | None = None,
     task_run_id: int | None = None,
+    task_run_started_at: datetime | None = None,
     usage_capture: dict | None = None,
     terminal_capture: dict | None = None,
 ) -> AsyncIterator[str]:
@@ -871,17 +873,33 @@ async def _proxy_stream_impl(
     prompt_text = _serialize_request_for_usage(body)
     completion_parts: list[str] = []
     pending_done_block: str | None = None
-    stream_started = time.monotonic()
+    request_started = time.monotonic()
+    if task_run_started_at is not None:
+        persisted_start = task_run_started_at
+        if persisted_start.tzinfo is None:
+            persisted_start = persisted_start.replace(tzinfo=timezone.utc)
+        else:
+            persisted_start = persisted_start.astimezone(timezone.utc)
+        pre_stream_elapsed = max(
+            0.0,
+            (datetime.now(timezone.utc) - persisted_start).total_seconds(),
+        )
+        request_started -= pre_stream_elapsed
+    request_deadline = request_started + settings.PROXY_STREAM_MAX_SECONDS
     stream_events = 0
     stream_bytes = 0
 
-    def _check_stream_limits(line: str, *, event: bool = False) -> None:
+    def _remaining_request_seconds() -> float:
+        remaining = request_deadline - time.monotonic()
+        if remaining <= 0:
+            raise HTTPException(status_code=504, detail="下游請求超過總時限")
+        return remaining
+
+    def _check_stream_limits(_line: str, *, event: bool = False) -> None:
         nonlocal stream_events, stream_bytes
-        stream_bytes += len(line.encode("utf-8", errors="replace")) + 1
         if event:
             stream_events += 1
-        if time.monotonic() - stream_started > settings.PROXY_STREAM_MAX_SECONDS:
-            raise HTTPException(status_code=504, detail="下游串流超過總時限")
+        _remaining_request_seconds()
         if stream_events > settings.PROXY_STREAM_MAX_EVENTS:
             raise HTTPException(status_code=502, detail="下游串流事件數超過上限")
         if stream_bytes > settings.PROXY_STREAM_MAX_BYTES:
@@ -910,6 +928,7 @@ async def _proxy_stream_impl(
         )
 
     try:
+        _remaining_request_seconds()
         async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
             async with client.stream("POST", target_url, json=body, headers=headers) as resp:
                 if resp.status_code >= 400:
@@ -937,7 +956,66 @@ async def _proxy_stream_impl(
                     return block + "\n\n"
 
                 block_lines: list[str] = []
-                async for line in resp.aiter_lines():
+
+                async def _bounded_lines():
+                    """Decode lines only after enforcing the raw byte budget.
+
+                    ``httpx.aiter_lines`` buffers until a delimiter, so a
+                    malicious no-newline stream could grow memory before the
+                    old per-line limit ran. Fixed-size decoded byte chunks keep
+                    the overshoot bounded while preserving incremental UTF-8.
+                    """
+                    nonlocal stream_bytes
+                    decoder = codecs.getincrementaldecoder("utf-8")(
+                        errors="replace"
+                    )
+                    text_buffer = ""
+                    chunks = resp.aiter_bytes(chunk_size=64 * 1024).__aiter__()
+                    while True:
+                        try:
+                            chunk = await asyncio.wait_for(
+                                anext(chunks),
+                                timeout=_remaining_request_seconds(),
+                            )
+                        except StopAsyncIteration:
+                            break
+                        except TimeoutError as exc:
+                            raise HTTPException(
+                                status_code=504,
+                                detail="下游請求超過總時限",
+                            ) from exc
+                        stream_bytes += len(chunk)
+                        if stream_bytes > settings.PROXY_STREAM_MAX_BYTES:
+                            raise HTTPException(
+                                status_code=502,
+                                detail="下游串流資料量超過上限",
+                            )
+                        text_buffer += decoder.decode(chunk)
+                        while "\n" in text_buffer:
+                            line, text_buffer = text_buffer.split("\n", 1)
+                            yield line[:-1] if line.endswith("\r") else line
+                    text_buffer += decoder.decode(b"", final=True)
+                    if text_buffer:
+                        yield (
+                            text_buffer[:-1]
+                            if text_buffer.endswith("\r")
+                            else text_buffer
+                        )
+
+                lines = _bounded_lines().__aiter__()
+                while True:
+                    try:
+                        line = await asyncio.wait_for(
+                            anext(lines),
+                            timeout=_remaining_request_seconds(),
+                        )
+                    except StopAsyncIteration:
+                        break
+                    except TimeoutError as exc:
+                        raise HTTPException(
+                            status_code=504,
+                            detail="下游請求超過總時限",
+                        ) from exc
                     _check_stream_limits(line)
                     if line == "":
                         if block_lines:
@@ -1106,12 +1184,14 @@ async def proxy_stream(
     task_id: Optional[int] = None,
     task_trace_id: Optional[str] = None,
     task_run_id: Optional[int] = None,
+    task_run_started_at: datetime | None = None,
     legacy_runtime_call: bool = False,
     gateway_api_key: Optional[str] = None,
     inference_callsite_id: str | None = None,
     governance_db=None,
     registry_endpoint_url: str | None = None,
     admitted_classification_level: str | None = None,
+    finalize_task_run_on_completion: bool = True,
 ) -> AsyncIterator[str]:
     """Public entrypoint — ``_proxy_stream_impl`` plus Slice 2b-C TaskRun
     finalization. The stream drains AFTER the request handler returns, so
@@ -1177,6 +1257,7 @@ async def proxy_stream(
             governance_db=governance_db,
             admitted_classification_level=admitted_classification_level,
             task_run_id=task_run_id,
+            task_run_started_at=task_run_started_at,
             usage_capture=usage_capture,
             terminal_capture=terminal_capture,
         ):
@@ -1202,7 +1283,8 @@ async def proxy_stream(
                     target_name=model_name,
                     usage=usage_capture.get("record"),
                     classification_level=admitted_classification_level,
-                    callsite=inference_callsite_id,
+                        callsite=inference_callsite_id,
+                        finalize_run=finalize_task_run_on_completion,
                 ),
             )
             closure_committed = True
@@ -1247,6 +1329,7 @@ async def proxy_stream(
                             error=error,
                             classification_level=admitted_classification_level,
                             callsite=inference_callsite_id,
+                            finalize_run=finalize_task_run_on_completion,
                         ),
                     )
                 except Exception:

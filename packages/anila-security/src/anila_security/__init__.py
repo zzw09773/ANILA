@@ -35,6 +35,7 @@ from anila_security.pilot_profile import (
     VerifiedPilotAdmission,
     verify_signed_pilot_profile,
 )
+from anila_security.queue_integrity import create_queue_proof, verify_queue_proof
 
 __all__ = [
     "ENDPOINT_KIND_AGENT",
@@ -54,6 +55,7 @@ __all__ = [
     "PilotTarget",
     "VerifiedPilotAdmission",
     "clear_trusted_host_providers",
+    "create_queue_proof",
     "decrypt_credential",
     "encrypt_credential",
     "legacy_fallback_count",
@@ -61,4 +63,5 @@ __all__ = [
     "reset_legacy_fallback_count",
     "validate_outbound_url",
     "verify_signed_pilot_profile",
+    "verify_queue_proof",
 ]

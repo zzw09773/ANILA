@@ -48,14 +48,15 @@ import math
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
+from anila_security import verify_queue_proof
 
 from anila_core.ingestion.chunking_plugins import ChunkResult, get_chunker
 from anila_core.ingestion.chunking_plugins.builtins import SemanticChunker
 from anila_core.storage.adapters.pg_pool import PgPool
 
+from ingestion_worker.document_io import read_and_extract
 from ingestion_worker.embedder import Embedder
 from ingestion_worker.judge import JudgeCredential, load_judge_credential, score_one
-from ingestion_worker.parsers import extract_text
 from ingestion_worker.settings import settings
 
 
@@ -373,10 +374,19 @@ async def _score_strategy(
     }
 
 
-async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
+async def evaluate_strategies(
+    ctx: dict, eval_run_id: int, queue_proof: str | None = None
+) -> dict:
     """Arq handler. Runs every strategy in the run row, writes results."""
     pool: PgPool = ctx["pool"]
     embedder: Embedder = ctx["embedder"]
+    if settings.ingestion_queue_hmac_key:
+        verify_queue_proof(
+            settings.ingestion_queue_hmac_key,
+            task_name="evaluate_strategies",
+            payload={"eval_run_id": eval_run_id},
+            proof=queue_proof,
+        )
 
     started = time.time()
 
@@ -481,10 +491,11 @@ async def evaluate_strategies(ctx: dict, eval_run_id: int) -> dict:
                 parse_errors[doc_id] = "missing storage_path"
                 continue
             try:
-                with open(sp, "rb") as f:
-                    blob = f.read()
-                text, parse_meta, _images = extract_text(
-                    d["filename"], blob, d["mime_type"]
+                text, parse_meta, _images = await read_and_extract(
+                    sp,
+                    d["filename"],
+                    d["mime_type"],
+                    timeout_seconds=settings.parse_timeout_seconds,
                 )
                 parsed_docs[doc_id] = (text, parse_meta)
             except Exception as exc:

@@ -1,7 +1,8 @@
+import asyncio
 import logging
 import sys
 from logging.handlers import RotatingFileHandler
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -91,12 +92,18 @@ def _migration_health_payload(application: FastAPI) -> dict:
 
 def _readiness_response(application: FastAPI) -> JSONResponse:
     payload = _migration_health_payload(application)
-    ready = payload["migration_status"] in {"succeeded", "skipped"}
+    relay_task = getattr(application.state, "ingestion_relay_task", None)
+    relay_ready = relay_task is not None and not relay_task.done()
+    ready = (
+        payload["migration_status"] in {"succeeded", "skipped"}
+        and relay_ready
+    )
     return JSONResponse(
         status_code=200 if ready else 503,
         content={
             "status": "ready" if ready else "not_ready",
             "migration_status": payload["migration_status"],
+            "ingestion_outbox_relay": "running" if relay_ready else "stopped",
         },
     )
 
@@ -163,12 +170,16 @@ async def lifespan(app: FastAPI):
     # this check requires explicit ANILA_ALLOW_DEV_SECRET=1.
     from app.services.startup_security import (
         assert_card_only_data_feature_policy,
+        assert_artifact_blob_storage_policy,
         assert_card_nonce_binding_policy,
         assert_card_crl_policy,
         assert_deployment_profile_posture,
         assert_gate2_pilot_profile,
         assert_intranet_lockdown_consistency,
+        assert_ingestion_queue_integrity_policy,
         assert_no_dev_defaults,
+        assert_runtime_deadline_policy,
+        assert_retention_policy,
         assert_secure_cookie_policy,
         assert_source_snapshot_storage_policy,
         assert_startup_migration_policy,
@@ -180,7 +191,11 @@ async def lifespan(app: FastAPI):
     assert_card_crl_policy()
     assert_secure_cookie_policy()
     assert_source_snapshot_storage_policy()
+    assert_artifact_blob_storage_policy()
+    assert_ingestion_queue_integrity_policy()
+    assert_retention_policy()
     assert_startup_migration_policy()
+    assert_runtime_deadline_policy()
     # Branch SSO: 確保 REQUIRE_CARD_LOGIN_ONLY 與 ENABLE_CARD_LOGIN 互相一致，
     # 避免「政策設為卡片唯一但卡片功能沒開」的 bricked 狀態。
     assert_intranet_lockdown_consistency()
@@ -203,6 +218,34 @@ async def lifespan(app: FastAPI):
     # Auto-seed: create admin, register models & links from env vars
     from app.services.auto_seed import auto_seed
     auto_seed()
+
+    if settings.STUDIO_ARTIFACT_SERVICE_TOKEN:
+        from app.database import SessionLocal as _ArtifactSessionLocal
+        from app.services.artifact_service_bootstrap import ensure_artifact_service
+
+        _artifact_db = _ArtifactSessionLocal()
+        try:
+            ensure_artifact_service(
+                _artifact_db, token=settings.STUDIO_ARTIFACT_SERVICE_TOKEN
+            )
+        finally:
+            _artifact_db.close()
+
+    if settings.STUDIO_RUNTIME_SERVICE_TOKEN:
+        from app.database import SessionLocal as _RuntimeSessionLocal
+        from app.services.studio_runtime_service_bootstrap import (
+            ensure_studio_runtime_service,
+        )
+
+        _runtime_db = _RuntimeSessionLocal()
+        try:
+            ensure_studio_runtime_service(
+                _runtime_db,
+                token=settings.STUDIO_RUNTIME_SERVICE_TOKEN,
+                artifact_token=settings.STUDIO_ARTIFACT_SERVICE_TOKEN,
+            )
+        finally:
+            _runtime_db.close()
 
     # Trusted-host allow-list: backfill ANILA_TRUSTED_HOSTS env into the
     # new DB table (idempotent on unique constraint), then register the
@@ -228,10 +271,15 @@ async def lifespan(app: FastAPI):
 
     # Start background tasks
     from app.services.health_checker import start_health_checker
+    from app.services.ingestion_outbox import start_ingestion_outbox_relay
     from app.services.usage_writer import start_usage_writer
+    from app.services.retention_reaper import start_retention_reaper
 
     health_task = await start_health_checker()
     writer_task = await start_usage_writer()
+    ingestion_relay_task = await start_ingestion_outbox_relay()
+    app.state.ingestion_relay_task = ingestion_relay_task
+    retention_task = await start_retention_reaper()
 
     # Phase 2 Sprint 2 / Chunk H: open the shared anila_core PgPool
     # used by the ingestion inspector endpoints (read-only chunk
@@ -255,6 +303,15 @@ async def lifespan(app: FastAPI):
         health_task.cancel()
     if writer_task:
         writer_task.cancel()
+    if ingestion_relay_task:
+        ingestion_relay_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await ingestion_relay_task
+        app.state.ingestion_relay_task = None
+    if retention_task:
+        retention_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await retention_task
     await close_pool()
 
 

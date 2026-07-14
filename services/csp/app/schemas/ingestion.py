@@ -61,6 +61,14 @@ class CollectionCreate(BaseModel):
         default="nvidia/NV-embed-V2",
         description="Embedding endpoint identifier; worker resolves to a credential.",
     )
+    embedding_fingerprint: str | None = Field(
+        default=None,
+        pattern="^sha256:[0-9a-f]{64}$",
+        description=(
+            "Optional assertion of the server-pinned deployed embedding "
+            "weight fingerprint. Omit to use the CSP deployment contract."
+        ),
+    )
     embedding_dim: int = Field(
         default=4000,
         ge=64,
@@ -110,6 +118,7 @@ class CollectionResponse(BaseModel):
     description: str | None
     chunking_config: dict[str, Any]
     embedding_model: str
+    embedding_fingerprint: str
     embedding_dim: int
     status: str
     document_count: int

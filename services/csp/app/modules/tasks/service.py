@@ -157,6 +157,31 @@ def create_task(
             "collection / service"
         )
 
+    if payload.selected_collection_ids:
+        from app.models.ingestion import IngestionCollection
+
+        # Retention takes the same collection row lock while revalidating a
+        # document erase.  Taking it here makes Task admission serialize with
+        # that decision instead of allowing a new active Task to appear in the
+        # erase check/unlink window.
+        selected_collections = (
+            db.query(IngestionCollection)
+            .filter(IngestionCollection.id.in_(payload.selected_collection_ids))
+            .order_by(IngestionCollection.id)
+            .with_for_update()
+            .all()
+        )
+        inactive_ids = [
+            row.id
+            for row in selected_collections
+            if row.lifecycle_state != "active"
+        ]
+        if inactive_ids:
+            raise ValueError(
+                "不得以非 active collection 建立 Task: "
+                + ", ".join(str(collection_id) for collection_id in inactive_ids)
+            )
+
     snapshot_level = _derive_snapshot_classification(db, payload)
     task_level = ClassificationLevel.max_of(
         [payload.classification_level, snapshot_level]

@@ -32,6 +32,7 @@ from app.api.ingestion import (
 )
 from app.api.jwks import router as jwks_router
 from app.api.classification_inventory import router as classification_inventory_router
+from app.api.studio_runtime import router as studio_runtime_router
 from app.modules.policy import router as policy_decisions_router
 from app.modules.tasks import router as tasks_router
 from app.modules.clearance import router as clearance_router
@@ -68,6 +69,7 @@ api_router.include_router(tasks_router)
 api_router.include_router(policy_decisions_router)
 api_router.include_router(clearance_router)
 api_router.include_router(proxy_router)
+api_router.include_router(studio_runtime_router)
 # Trace REST 面(Slice 4a):POST /v1/traces/{trace_id}/spans(data plane,和
 # proxy 一樣寫完整路徑無 prefix,nginx /v1 直通吃得到)+ GET /api/traces/{id}。
 api_router.include_router(traces_router)

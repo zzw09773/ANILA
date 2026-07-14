@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -34,6 +35,11 @@ class _FakeStreamResponse:
     async def aiter_lines(self):
         for line in self._lines:
             yield line
+
+    async def aiter_bytes(self, chunk_size: int | None = None):
+        del chunk_size
+        for line in self._lines:
+            yield (line + "\n").encode()
 
 
 class _FakeAsyncClient:
@@ -268,6 +274,191 @@ def test_proxy_stream_enforces_total_byte_ceiling(monkeypatch):
             pass
 
     with pytest.raises(HTTPException, match="資料量"):
+        asyncio.run(run())
+
+
+def test_proxy_stream_enforces_byte_ceiling_before_no_newline_buffer_grows(
+    monkeypatch,
+):
+    consumed = 0
+
+    class _NoNewlineResponse:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def aiter_bytes(self, chunk_size: int | None = None):
+            nonlocal consumed
+            assert chunk_size == 64 * 1024
+            for _ in range(1000):
+                consumed += 1
+                yield b"abcd"
+
+    class _NoNewlineClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        def stream(self, *_args, **_kwargs):
+            return _NoNewlineResponse()
+
+    monkeypatch.setattr(
+        proxy_service.httpx, "AsyncClient", lambda *_args, **_kwargs: _NoNewlineClient()
+    )
+    monkeypatch.setattr(proxy_impl.settings, "PROXY_STREAM_MAX_BYTES", 10)
+
+    async def run():
+        async for _ in proxy_service.proxy_stream(
+            target_url="http://mock-llm/v1/chat/completions",
+            api_key_id=1,
+            user_id=2,
+            department_id=None,
+            usage_model_id=3,
+            request_body={"model": "m", "messages": []},
+        ):
+            pass
+
+    with pytest.raises(HTTPException, match="資料量"):
+        asyncio.run(run())
+    assert consumed == 3
+
+
+def test_proxy_stream_preserves_event_ceiling(monkeypatch):
+    lines = [
+        'data: {"choices":[{"delta":{"content":"one"}}]}',
+        "",
+        'data: {"choices":[{"delta":{"content":"two"}}]}',
+        "",
+    ]
+    monkeypatch.setattr(
+        proxy_service.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: _FakeAsyncClient(lines, *args, **kwargs),
+    )
+    monkeypatch.setattr(proxy_impl.settings, "PROXY_STREAM_MAX_EVENTS", 1)
+
+    async def run():
+        async for _ in proxy_service.proxy_stream(
+            target_url="http://mock-llm/v1/chat/completions",
+            api_key_id=1,
+            user_id=2,
+            department_id=None,
+            usage_model_id=3,
+            request_body={"model": "m", "messages": []},
+        ):
+            pass
+
+    with pytest.raises(HTTPException, match="事件數"):
+        asyncio.run(run())
+
+
+def test_task_stream_deadline_includes_pre_stream_elapsed(monkeypatch):
+    client_opened = False
+
+    def unexpected_client(*_args, **_kwargs):
+        nonlocal client_opened
+        client_opened = True
+        raise AssertionError("expired request must not open an upstream client")
+
+    monkeypatch.setattr(proxy_service.httpx, "AsyncClient", unexpected_client)
+    monkeypatch.setattr(proxy_impl.settings, "PROXY_STREAM_MAX_SECONDS", 1.0)
+    monkeypatch.setattr(
+        proxy_impl, "_lock_task_run_admission", lambda **_: "無機密"
+    )
+    monkeypatch.setattr(proxy_impl, "_lock_registry_admission", lambda **_: None)
+    monkeypatch.setattr(proxy_impl, "_commit_stream_admission", lambda _db: None)
+    closures = []
+    monkeypatch.setattr(
+        proxy_impl,
+        "persist_task_call_closure",
+        lambda _db, closure: closures.append(closure),
+    )
+
+    class _DB:
+        def rollback(self):
+            pass
+
+    async def run():
+        async for _ in proxy_service.proxy_stream(
+            target_url="http://mock-llm/v1/chat/completions",
+            api_key_id=1,
+            user_id=2,
+            department_id=None,
+            usage_model_id=3,
+            request_body={"model": "m", "messages": []},
+            task_id=10,
+            task_trace_id="trace-10",
+            task_run_id=11,
+            task_run_started_at=(
+                datetime.now(timezone.utc) - timedelta(seconds=2)
+            ),
+            governance_db=_DB(),
+            admitted_classification_level="無機密",
+        ):
+            pass
+
+    with pytest.raises(HTTPException, match="總時限"):
+        asyncio.run(run())
+
+    assert not client_opened
+    assert closures
+    assert closures[-1].status == "failed"
+
+
+def test_stream_deadline_interrupts_silent_upstream(monkeypatch):
+    class _SilentResponse:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def aiter_lines(self):
+            await asyncio.sleep(10)
+            yield "data: never reached"
+
+        async def aiter_bytes(self, chunk_size: int | None = None):
+            del chunk_size
+            await asyncio.sleep(10)
+            yield b"data: never reached\n"
+
+    class _SilentClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, *_args, **_kwargs):
+            return _SilentResponse()
+
+    monkeypatch.setattr(
+        proxy_service.httpx,
+        "AsyncClient",
+        lambda *_args, **_kwargs: _SilentClient(),
+    )
+    monkeypatch.setattr(proxy_impl.settings, "PROXY_STREAM_MAX_SECONDS", 0.05)
+
+    async def run():
+        async for _ in proxy_service.proxy_stream(
+            target_url="http://mock-llm/v1/chat/completions",
+            api_key_id=1,
+            user_id=2,
+            department_id=None,
+            usage_model_id=3,
+            request_body={"model": "m", "messages": []},
+        ):
+            pass
+
+    with pytest.raises(HTTPException, match="總時限"):
         asyncio.run(run())
 
 

@@ -70,6 +70,7 @@ def _collection(
         name="classified-memory-source",
         chunking_config={},
         embedding_model="test",
+        embedding_fingerprint="sha256:" + "0" * 64,
         embedding_dim=4000,
         created_by=owner.id,
         classification_level=level.to_storage(),

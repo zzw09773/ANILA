@@ -31,6 +31,7 @@ def _make_collection(db: Session, owner_id: int, name: str = "規範知識庫") 
         name=name,
         chunking_config={"strategy": "fixed"},
         embedding_model="nvidia/NV-embed-V2",
+        embedding_fingerprint="sha256:" + "0" * 64,
         embedding_dim=4000,
         created_by=owner_id,
     )

@@ -5,6 +5,9 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
+    INGESTION_JOB_MAX_ATTEMPTS: int = Field(default=3, ge=1, le=10)
+    INGESTION_QUEUE_HMAC_KEY: str = "dev-ingestion-queue-hmac-key-change-me"
+    INGESTION_OUTBOX_STALE_SECONDS: int = Field(default=120, ge=30, le=3600)
     # Application
     APP_NAME: str = "CSP Platform"
     APP_VERSION: str = "1.0.0"
@@ -97,11 +100,20 @@ class Settings(BaseSettings):
 
     # Proxy Timeouts (seconds)
     EMBEDDING_TIMEOUT: int = 30
+    # Explicit deployed-weight identity.  Collection creation binds to this
+    # value; a model name is never accepted as a weight fingerprint.
+    EMBEDDING_MODEL_FINGERPRINT: str = ""
     LLM_TIMEOUT: int = 120
-    # Hard ceilings for outbound SSE.  The httpx read timeout only limits an
-    # idle socket; a peer that keeps sending heartbeats could otherwise hold
-    # a request and its resources forever.
-    PROXY_STREAM_MAX_SECONDS: float = 300.0
+    # Hard ceilings for outbound SSE.  For Task-bound calls the seconds budget
+    # starts at TaskRun.started_at, so hidden retrieval/memory work and the
+    # downstream stream share one deadline.  Legacy streams start the same
+    # budget when proxying begins.  The httpx read timeout only limits an idle
+    # socket; a peer that keeps sending heartbeats could otherwise hold a
+    # request and its resources forever.
+    PROXY_STREAM_MAX_SECONDS: float = Field(
+        default=300.0,
+        allow_inf_nan=False,
+    )
     PROXY_STREAM_MAX_EVENTS: int = 10000
     PROXY_STREAM_MAX_BYTES: int = 16 * 1024 * 1024
 
@@ -127,6 +139,27 @@ class Settings(BaseSettings):
     # Service-to-service token sent to downstream agents so they can verify
     # requests originate from CSP. Set to a long random string in production.
     CSP_SERVICE_TOKEN: str = ""
+    # Dedicated named Service Client credential for anila-studio's artifact
+    # control-plane writer. It must not reuse the legacy fleet token above.
+    STUDIO_ARTIFACT_SERVICE_TOKEN: str = ""
+    STUDIO_RUNTIME_SERVICE_TOKEN: str = ""
+    # CSP-owned immutable ArtifactVersion bytes. Formal deployments mount
+    # this outside the repository and back it up together with the DB.
+    ARTIFACT_BLOB_STORAGE_PATH: str = "/var/lib/anila/artifact-blobs"
+    INGESTION_UPLOAD_DIR: str = "/var/anila/ingestion-uploads"
+
+    # Gate 3 A5: executable retention posture. Formal profiles must keep the
+    # reaper enabled; lifecycle timestamps are persisted in DB and this worker
+    # is the only component authorised to erase CSP/ingestion bytes.
+    RETENTION_ENABLED: bool = True
+    RETENTION_ARTIFACT_ACTIVE_DAYS: int = Field(default=30, ge=1, le=3650)
+    RETENTION_ARTIFACT_ARCHIVE_DAYS: int = Field(default=365, ge=1, le=3650)
+    RETENTION_INGESTION_ACTIVE_DAYS: int = Field(default=365, ge=1, le=3650)
+    RETENTION_INGESTION_ARCHIVE_DAYS: int = Field(default=365, ge=1, le=3650)
+    RETENTION_REAPER_INTERVAL_SECONDS: int = Field(default=300, ge=10, le=86400)
+    RETENTION_REAPER_LEASE_SECONDS: int = Field(default=900, ge=30, le=86400)
+    RETENTION_REAPER_BATCH_SIZE: int = Field(default=50, ge=1, le=500)
+    RETENTION_ALLOW_ARCHIVED_DOWNLOADS: bool = False
 
     # Site URL (for external access, used by platform links)
     SITE_URL: str = "http://localhost"

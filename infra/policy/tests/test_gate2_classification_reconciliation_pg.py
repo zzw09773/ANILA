@@ -22,6 +22,7 @@ from sqlalchemy.engine import URL, make_url
 ROOT = Path(__file__).resolve().parents[3]
 CSP_DIR = ROOT / "services/csp"
 CHECK_PATH = ROOT / "infra/policy/gate2/check_classification_reconciliation.py"
+TEST_EMBEDDING_FINGERPRINT = "sha256:" + ("a" * 64)
 SPEC = importlib.util.spec_from_file_location(
     "gate2_classification_reconciliation_pg", CHECK_PATH
 )
@@ -69,6 +70,10 @@ def _run_alembic(database_url: str, target: str, *, check: bool = True):
             "MIGRATION_DATABASE_URL": database_url,
             "DATABASE_URL": database_url,
             "CSP_APP_DB_PASSWORD": "gate2-app-db",
+            # This suite intentionally upgrades seeded legacy collections through
+            # Gate 3.  Supply the same explicit weight-identity contract that a
+            # real migration operator must provide.
+            "EMBEDDING_MODEL_FINGERPRINT": TEST_EMBEDDING_FINGERPRINT,
             "PYTHONPATH": ".",
             "PYTHONIOENCODING": "utf-8",
         }

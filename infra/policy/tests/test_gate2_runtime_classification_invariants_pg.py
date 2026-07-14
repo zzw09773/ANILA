@@ -18,6 +18,7 @@ from sqlalchemy.engine import URL, make_url
 
 ROOT = Path(__file__).resolve().parents[3]
 CSP_DIR = ROOT / "services/csp"
+TEST_EMBEDDING_FINGERPRINT = "sha256:" + ("b" * 64)
 
 
 def _admin_url() -> URL:
@@ -104,8 +105,10 @@ def _seed_hierarchy(
             text(
                 """
                 INSERT INTO ingestion_collections
-                    (name, created_by, classification_level)
-                VALUES (:name, :user_id, :classification_level)
+                    (name, created_by, classification_level,
+                     embedding_fingerprint)
+                VALUES (:name, :user_id, :classification_level,
+                        :embedding_fingerprint)
                 RETURNING id
                 """
             ),
@@ -113,6 +116,7 @@ def _seed_hierarchy(
                 "name": f"gate2-runtime-{suffix}",
                 "user_id": user_id,
                 "classification_level": collection_level,
+                "embedding_fingerprint": TEST_EMBEDDING_FINGERPRINT,
             },
         ).scalar_one()
         document_id = conn.execute(
@@ -133,6 +137,38 @@ def _seed_hierarchy(
                 "classification_level": document_level,
             },
         ).scalar_one()
+        generation_id = conn.execute(
+            text(
+                """
+                INSERT INTO ingestion_document_generations
+                    (document_id, collection_id, generation_number, status,
+                     embedding_model, embedding_fingerprint, embedding_dim,
+                     chunk_count, activated_at)
+                VALUES (:document_id, :collection_id, 1, 'active',
+                        'gate2-runtime-test', :embedding_fingerprint, 1536,
+                        0, CURRENT_TIMESTAMP)
+                RETURNING id
+                """
+            ),
+            {
+                "document_id": document_id,
+                "collection_id": collection_id,
+                "embedding_fingerprint": TEST_EMBEDDING_FINGERPRINT,
+            },
+        ).scalar_one()
+        conn.execute(
+            text(
+                """
+                UPDATE ingestion_documents
+                   SET active_generation_id=:generation_id,
+                       availability_status='available',
+                       processing_stage='complete',
+                       status='indexed'
+                 WHERE id=:document_id
+                """
+            ),
+            {"generation_id": generation_id, "document_id": document_id},
+        )
     engine.dispose()
     return int(collection_id), int(document_id)
 
@@ -149,9 +185,12 @@ def _insert_chunk(
         text(
             """
             INSERT INTO document_chunks
-                (collection_id, document_id, chunk_key, content,
+                (collection_id, document_id, generation_id,
+                 is_active_generation, chunk_key, content,
                  classification_level)
-            VALUES (:collection_id, :document_id, :chunk_key,
+            VALUES (:collection_id, :document_id,
+                    (SELECT active_generation_id FROM ingestion_documents
+                      WHERE id=:document_id), true, :chunk_key,
                     'synthetic runtime floor fixture', :classification_level)
             """
         ),

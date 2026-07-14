@@ -28,9 +28,11 @@ os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+from app.api.ingestion import image_blob
 from app.api.ingestion.image_blob import router as image_blob_router
 from app.main import app
 from app.models.ingestion import IngestionCollection, IngestionDocument
@@ -114,6 +116,20 @@ def bob(db):
     return make_user(db, username="bob", role="user")
 
 
+@pytest.fixture(autouse=True)
+def _allow_document_data_clearance(monkeypatch):
+    """Keep blob contract tests focused on route wiring and streaming.
+
+    The canonical evaluator has its own policy matrix; the regression below
+    overrides this stub to prove a denied live decision stops the byte sink.
+    """
+    monkeypatch.setattr(
+        image_blob,
+        "_require_document_data_clearance",
+        lambda _db, *, user, document: None,
+    )
+
+
 @pytest.fixture
 def alice_image(db, db_engine, alice, tmp_path, monkeypatch) -> tuple[int, Path]:
     """Insert one ingestion_image row owned by alice + write its blob
@@ -129,6 +145,7 @@ def alice_image(db, db_engine, alice, tmp_path, monkeypatch) -> tuple[int, Path]
         name="alice-collection",
         chunking_config={"strategy": "semantic"},
         embedding_model="nv-embed",
+        embedding_fingerprint="sha256:" + "0" * 64,
         embedding_dim=4096,
         status="active",
         created_by=alice.id,
@@ -194,6 +211,7 @@ def test_image_blob_content_type_tracks_mime(
         name="c2",
         chunking_config={"strategy": "semantic"},
         embedding_model="nv-embed",
+        embedding_fingerprint="sha256:" + "0" * 64,
         embedding_dim=4096,
         status="active",
         created_by=alice.id,
@@ -252,3 +270,32 @@ def test_image_blob_403_when_caller_not_owner(
         headers=_bearer(bob),
     )
     assert resp.status_code == 403, resp.text
+
+
+def test_image_blob_live_data_clearance_denial_precedes_stream(
+    client: TestClient, db, alice, alice_image, monkeypatch,
+):
+    image_pk, _ = alice_image
+    streamed = False
+
+    def deny(_db, *, user, document):
+        raise HTTPException(
+            status_code=403,
+            detail="clearance/compartment/need-to-know/collection grant insufficient",
+        )
+
+    def stream(**kwargs):
+        nonlocal streamed
+        streamed = True
+        raise AssertionError("blob sink must not run after denied live authority")
+
+    monkeypatch.setattr(image_blob, "_require_document_data_clearance", deny)
+    monkeypatch.setattr(image_blob, "stream_scoped_image_blob", stream)
+
+    response = client.get(
+        f"/api/ingestion/images/{image_pk}/blob",
+        headers=_bearer(alice),
+    )
+
+    assert response.status_code == 403
+    assert streamed is False

@@ -42,7 +42,9 @@ def _collection(db) -> IngestionCollection:
     manager: User = make_user(db, username="relation-manager", role="admin")
     c = IngestionCollection(
         name="regs", chunking_config={"strategy": "fixed"},
-        embedding_model="nvidia/NV-embed-V2", embedding_dim=4000, created_by=owner.id,
+        embedding_model="nvidia/NV-embed-V2",
+        embedding_fingerprint="sha256:" + "0" * 64,
+        embedding_dim=4000, created_by=owner.id,
     )
     db.add(c)
     db.commit()
@@ -156,6 +158,34 @@ def test_outgoing_expansion(db, coll):
     assert r.relation_type == "supplements"
     assert r.content == "母法第一條…" and r.score == 0.8
     assert store.last_doc_ids == [parent.id]
+
+
+def test_relation_expansion_cannot_escape_requested_snapshot_scope(db, coll):
+    from anila_core.ingestion.citation_extractor import Citation
+
+    outside = _doc(db, coll.id, "快照外母法")
+    inside = _doc(db, coll.id, "快照內補充")
+    rr.apply_document_extraction(
+        db,
+        collection_id=coll.id,
+        src_document_id=inside.id,
+        citations=[Citation("supplements", "快照外母法", None, "快照外母法", "引用")],
+        run_id="scope",
+    )
+    db.commit()
+    store = _FakeStore({outside.id: _hit(outside.id, 91, "不可外洩", 0.9)})
+
+    related = _expand(
+        db,
+        store,
+        coll.id,
+        [inside.id],
+        document_ids=[inside.id],
+        max_related=5,
+    )
+
+    assert related == []
+    assert store.last_doc_ids is None
 
 
 # ── in-going: a related doc cites the main hit ───────────────────────────────

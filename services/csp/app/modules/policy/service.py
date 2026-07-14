@@ -159,13 +159,13 @@ def evaluate_classification_ceiling(
 ) -> bool:
     """doc 08 §10 判定式:``allow if task.level <= ceiling``。
 
-    純函式,無副作用。``ceiling is None`` = 該資源不設分類上限 → True。
-    等級字串一律經 :meth:`ClassificationLevel.from_storage` 解析,
-    未知值 fail-closed 拋 ``ValueError``(不得默默放行)。
+    純函式,無副作用。缺少 ceiling 代表治理資料不完整，必須 fail-closed；
+    等級字串一律經 :meth:`ClassificationLevel.from_storage` 解析，未知值
+    同樣拋 ``ValueError``（不得默默放行）。
     """
     level = ClassificationLevel.from_storage(task_level)
     if ceiling is None:
-        return True
+        return False
     return level <= ClassificationLevel.from_storage(ceiling)
 
 

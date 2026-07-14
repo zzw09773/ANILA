@@ -87,6 +87,18 @@ class DeploymentContainmentTests(unittest.TestCase):
                 "CSP_DB_PASSWORD": "abcdef0123456789abcdef0123456789",
                 "CSP_SECRET_KEY": "0123456789abcdef0123456789abcdef",
                 "CSP_SERVICE_TOKEN": "abcdef0123456789abcdef0123456789",
+                "STUDIO_ARTIFACT_SERVICE_TOKEN": (
+                    "csk-studio-artifact-containment-test"
+                ),
+                "STUDIO_RUNTIME_SERVICE_TOKEN": (
+                    "csk-studio-runtime-containment-test"
+                ),
+                "STUDIO_JOB_ENVELOPE_HMAC_KEY": (
+                    "studio-envelope-containment-test-0123456789abcdef"
+                ),
+                "INGESTION_QUEUE_HMAC_KEY": (
+                    "ingestion-queue-containment-test-0123456789abcdef"
+                ),
                 "FLUX_AGENT_SERVICE_TOKEN": "csk-image-generator-synthetic-test",
                 "INTERNAL_PLATFORM_API_KEY": (
                     "sk-internal-0123456789abcdef0123456789abcdef"
@@ -110,6 +122,8 @@ class DeploymentContainmentTests(unittest.TestCase):
                 "CODESERVER_HOST": "code.ai.ncsist.org.tw",
                 "GITLAB_SSH_BIND_IP": "10.53.100.15",
                 "ANILA_DEPLOYMENT_PROFILE": "prod-intranet-card",
+                "EMBEDDING_MODEL_FINGERPRINT": "0" * 64,
+                "EMBEDDING_MODEL_FINGERPRINT_DEV": "1" * 64,
             }
         )
         inventory = read(
@@ -127,11 +141,12 @@ class DeploymentContainmentTests(unittest.TestCase):
                 ["docker", "compose", *args, "config", "--format", "json"],
                 cwd=ROOT,
                 env=env,
-                check=True,
+                check=False,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
             )
+            self.assertEqual(result.returncode, 0, result.stderr)
             return json.loads(result.stdout)
 
         default = compose_config()
@@ -139,6 +154,21 @@ class DeploymentContainmentTests(unittest.TestCase):
         self.assertNotIn("codeserver", default_services)
         self.assertIn("n8n", default_services)
         self.assertIn("gitlab", default_services)
+        dedicated = "csk-studio-artifact-containment-test"
+        self.assertEqual(
+            default_services["csp"]["environment"]["STUDIO_ARTIFACT_SERVICE_TOKEN"],
+            dedicated,
+        )
+        self.assertEqual(
+            default_services["anila-studio"]["environment"][
+                "STUDIO_ARTIFACT_SERVICE_TOKEN"
+            ],
+            dedicated,
+        )
+        self.assertNotIn(
+            "STUDIO_ARTIFACT_SERVICE_TOKEN",
+            default_services["router"]["environment"],
+        )
         n8n = default_services["n8n"]
         self.assertEqual(n8n["environment"]["N8N_HOST"], "n8n.ai.ncsist.org.tw")
         self.assertEqual(n8n["environment"]["N8N_PATH"], "/")
@@ -366,7 +396,15 @@ class DeploymentContainmentTests(unittest.TestCase):
             self.assertIn("repo", script.lower())
         self.assertIn("ANILA_SECRETS_DIR", intranet)
         self.assertIn("ANILA_SECRETS_DIR", generic)
-        self.assertIn('run_runtime_backup_helper bind "$SECRETS_DIR"', ops)
+        backup_profile = read(
+            "infra/deployment/backup/production-backup-profile.v1.json"
+        )
+        backup_tool = read("infra/deployment/backup/production_backup.py")
+        self.assertIn("production-backup.py", ops)
+        self.assertIn("ANILA_BACKUP_JWT_KEY_REFERENCE", backup_profile)
+        self.assertIn("ANILA_BACKUP_TLS_KEY_REFERENCE", backup_profile)
+        self.assertNotIn("jwt-private.pem", backup_tool)
+        self.assertNotIn("server.key", backup_tool)
         self.assertNotIn("local certs=infra/nginx/certs", ops)
         self.assertNotIn('$PWD/secrets:/out', intranet)
         self.assertNotIn('$REPO_ROOT/secrets:/out', generic)
@@ -449,6 +487,7 @@ class DeploymentContainmentTests(unittest.TestCase):
         for name in (
             "CSP_SECRET_KEY",
             "CSP_SERVICE_TOKEN",
+            "STUDIO_ARTIFACT_SERVICE_TOKEN",
             "INTERNAL_PLATFORM_API_KEY",
             "ADMIN_PASSWORD",
             "CSP_DB_PASSWORD",
@@ -461,6 +500,14 @@ class DeploymentContainmentTests(unittest.TestCase):
             "MODEL_GATEWAY_API_KEY",
         ):
             self.assertIn(f"set_env_single_quoted {name}", script)
+        self.assertIn(
+            "STUDIO_ARTIFACT_SERVICE_TOKEN 必須是專用 csk- Service Client token",
+            script,
+        )
+        self.assertIn(
+            "STUDIO_ARTIFACT_SERVICE_TOKEN 必須是專用 csk- Service Client token",
+            read("infra/deployment/scripts/deploy-prod.sh"),
+        )
         self.assertIn(
             'DEF_CIO="${CARD_INITIAL_OWNERS:-$(get_env_unquoted CARD_INITIAL_OWNERS)}"',
             script,

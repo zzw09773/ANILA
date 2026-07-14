@@ -35,6 +35,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     JSON,
+    Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     ForeignKey,
@@ -64,6 +66,11 @@ class Artifact(Base):
         Index("ix_artifacts_source_task_id", "source_task_id"),
         Index("ix_artifacts_artifact_type", "artifact_type"),
         Index("ix_artifacts_owner_user_id", "owner_user_id"),
+        UniqueConstraint("job_id", name="uq_artifacts_job_id"),
+        CheckConstraint(
+            "active_version_count >= 0 AND erased_version_count >= 0",
+            name="ck_artifacts_version_counters_nonnegative",
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -89,6 +96,10 @@ class Artifact(Base):
     job_id = Column(String(64), nullable=True, index=True)
     current_version = Column(Integer, nullable=False, default=1,
                              server_default="1")
+    active_version_count = Column(Integer, nullable=False, default=1,
+                                  server_default="1")
+    erased_version_count = Column(Integer, nullable=False, default=0,
+                                  server_default="0")
     trace_id = Column(String(64), nullable=True, index=True)
     metadata_json = Column(JSONValue, nullable=True)
     # doc 08 §5 四共通分類欄位(effective = max(explicit, task, snapshot),
@@ -125,6 +136,54 @@ class ArtifactVersion(Base):
     __table_args__ = (
         UniqueConstraint("artifact_id", "version",
                          name="uq_artifact_versions_artifact_version"),
+        UniqueConstraint("blob_key", name="uq_artifact_versions_blob_key"),
+        CheckConstraint(
+            "blob_size_bytes IS NULL OR blob_size_bytes > 0",
+            name="ck_artifact_versions_blob_size_positive",
+        ),
+        CheckConstraint(
+            "content_hash IS NULL OR "
+            "(length(content_hash) = 64 AND content_hash = lower(content_hash))",
+            name="ck_artifact_versions_content_hash_sha256",
+        ),
+        CheckConstraint(
+            "(is_active = true AND lifecycle_state = 'active' "
+            "AND revoked_at IS NULL AND erased_at IS NULL) OR "
+            "(is_active = false AND lifecycle_state IN "
+            "('archived','revoked','erase_due','erased'))",
+            name="ck_artifact_versions_revocation_state",
+        ),
+        CheckConstraint(
+            "lifecycle_state IN ('active','archived','revoked','erase_due','erased')",
+            name="ck_artifact_versions_lifecycle_state",
+        ),
+        CheckConstraint(
+            "(lifecycle_state = 'active' AND archived_at IS NULL AND erased_at IS NULL) OR "
+            "(lifecycle_state = 'archived' AND archived_at IS NOT NULL "
+            "AND erase_due_at IS NOT NULL AND erased_at IS NULL) OR "
+            "(lifecycle_state = 'revoked' AND revoked_at IS NOT NULL "
+            "AND erased_at IS NULL) OR "
+            "(lifecycle_state = 'erase_due' AND erase_due_at IS NOT NULL "
+            "AND erased_at IS NULL) OR "
+            "(lifecycle_state = 'erased' AND erased_at IS NOT NULL "
+            "AND blob_key IS NULL AND blob_size_bytes IS NULL AND media_type IS NULL "
+            "AND original_filename IS NULL)",
+            name="ck_artifact_versions_lifecycle_timestamps",
+        ),
+        CheckConstraint(
+            "(legal_hold = true AND legal_hold_reason IS NOT NULL "
+            "AND length(legal_hold_reason) > 0) OR "
+            "(legal_hold = false AND legal_hold_reason IS NULL)",
+            name="ck_artifact_versions_legal_hold_reason",
+        ),
+        CheckConstraint(
+            "(blob_key IS NULL AND blob_size_bytes IS NULL AND media_type IS NULL "
+            "AND original_filename IS NULL) OR "
+            "(blob_key IS NOT NULL AND blob_size_bytes IS NOT NULL "
+            "AND media_type IS NOT NULL AND original_filename IS NOT NULL "
+            "AND content_hash IS NOT NULL)",
+            name="ck_artifact_versions_blob_metadata_complete",
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -135,6 +194,28 @@ class ArtifactVersion(Base):
     version = Column(Integer, nullable=False, default=1)
     storage_ref = Column(String(1000), nullable=True)
     content_hash = Column(String(64), nullable=True)
+    # New completed artifacts use only this CSP-generated opaque key.  The
+    # legacy storage_ref remains nullable for read compatibility and is never
+    # accepted by the immutable upload endpoint.
+    blob_key = Column(String(80), nullable=True)
+    blob_size_bytes = Column(Integer, nullable=True)
+    media_type = Column(String(200), nullable=True)
+    original_filename = Column(String(255), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    revoked_at = Column(DateTime, nullable=True)
+    revoked_by_user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    revocation_reason = Column(String(500), nullable=True)
+    lifecycle_state = Column(String(20), nullable=False, default="active",
+                             server_default="active", index=True)
+    archive_due_at = Column(DateTime, nullable=True)
+    archived_at = Column(DateTime, nullable=True)
+    erase_due_at = Column(DateTime, nullable=True, index=True)
+    erased_at = Column(DateTime, nullable=True)
+    legal_hold = Column(Boolean, nullable=False, default=False,
+                        server_default="false")
+    legal_hold_reason = Column(String(500), nullable=True)
     file_refs = Column(JSONValue, nullable=False, default=list)
     citation_map = Column(JSONValue, nullable=True)
     generated_by_model_id = Column(Integer, nullable=True)
@@ -198,6 +279,10 @@ class ArtifactJob(Base):
     updated_at = Column(DateTime, nullable=False, default=_utcnow,
                         onupdate=_utcnow)
     expires_at = Column(DateTime, nullable=True)
+    artifact_upload_sha256 = Column(String(64), nullable=True)
+    artifact_upload_metadata_digest = Column(String(64), nullable=True)
+    durable_attempt = Column(Integer, nullable=True)
+    durable_lease_digest = Column(String(64), nullable=True)
 
 
 class ExportRecord(Base):

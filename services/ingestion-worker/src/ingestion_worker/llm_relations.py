@@ -230,53 +230,84 @@ async def extract_and_resolve_llm(
     ):
         return {"extracted": 0}
 
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await conn.execute(
-                f"SET LOCAL anila.collection_id = {int(collection_id)}"
-            )
-            cands = await _candidates(conn, collection_id, document_id)
-            if not cands:
-                return {"extracted": 0}
-            if len(cands) > settings.relation_llm_max_candidates:
-                logger.info(
-                    "doc %s: %d sibling docs > cap %d — skipping LLM relation "
-                    "extraction (needs a retrieval pre-filter)",
-                    document_id, len(cands), settings.relation_llm_max_candidates,
-                )
-                return {"extracted": 0}
+    # Snapshot candidates in a short RLS-scoped transaction. The potentially
+    # 120-second model call must never retain a DB transaction or connection.
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute(
+            f"SET LOCAL anila.collection_id = {int(collection_id)}"
+        )
+        cands = await _candidates(conn, collection_id, document_id)
+    if not cands:
+        return {"extracted": 0}
+    if len(cands) > settings.relation_llm_max_candidates:
+        logger.info(
+            "doc %s: %d sibling docs > cap %d — skipping LLM relation "
+            "extraction (needs a retrieval pre-filter)",
+            document_id,
+            len(cands),
+            settings.relation_llm_max_candidates,
+        )
+        return {"extracted": 0}
 
-            norm_by_id = {cid: nt for cid, _t, nt in cands}
-            messages = build_relation_messages(
-                text, [(cid, t) for cid, t, _nt in cands],
-                max_chars=settings.relation_llm_max_chars,
-            )
-            content = await _call_llm(messages, settings)
-            edges = parse_llm_relations(
-                content,
-                candidate_ids=set(norm_by_id),
-                source_text=text,
-            )
+    initial_ids = {cid for cid, _title, _normalized in cands}
+    messages = build_relation_messages(
+        text,
+        [(cid, title) for cid, title, _normalized in cands],
+        max_chars=settings.relation_llm_max_chars,
+    )
+    content = await _call_llm(messages, settings)
+    edges = parse_llm_relations(
+        content,
+        candidate_ids=initial_ids,
+        source_text=text,
+    )
 
-            # delete-then-insert this doc's llm edges (rule/manual untouched)
-            await conn.execute(
-                "DELETE FROM document_relations "
-                "WHERE collection_id = $1 AND src_document_id = $2 AND source = 'llm'",
-                collection_id, document_id,
+    # Re-read candidates under a fresh transaction before replace. A sibling
+    # removed or made unavailable during the HTTP call must not be resurrected
+    # by stale model output. Added candidates are not offered retroactively.
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute(
+            f"SET LOCAL anila.collection_id = {int(collection_id)}"
+        )
+        current = await _candidates(conn, collection_id, document_id)
+        norm_by_id = {
+            candidate_id: normalized
+            for candidate_id, _title, normalized in current
+            if candidate_id in initial_ids
+        }
+        current_edges = [
+            edge for edge in edges if edge.dst_document_id in norm_by_id
+        ]
+
+        # delete-then-insert this doc's llm edges (rule/manual untouched)
+        await conn.execute(
+            "DELETE FROM document_relations "
+            "WHERE collection_id = $1 AND src_document_id = $2 AND source = 'llm'",
+            collection_id,
+            document_id,
+        )
+        inserted = 0
+        for edge in current_edges:
+            target_ref = (
+                norm_by_id.get(edge.dst_document_id)
+                or f"doc:{edge.dst_document_id}"
             )
-            inserted = 0
-            for e in edges:
-                target_ref = norm_by_id.get(e.dst_document_id) or f"doc:{e.dst_document_id}"
-                status = await conn.execute(
-                    "INSERT INTO document_relations "
-                    "(collection_id, src_document_id, dst_document_id, target_ref, "
-                    " relation_type, confidence, source, extractor_run_id, evidence) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, 'llm', $7, $8) "
-                    "ON CONFLICT (collection_id, src_document_id, target_ref, relation_type, source) "
-                    "DO NOTHING",
-                    collection_id, document_id, e.dst_document_id, target_ref,
-                    e.relation_type, e.confidence, run_id, e.evidence,
-                )
-                if isinstance(status, str) and status.rsplit(" ", 1)[-1] == "1":
-                    inserted += 1
+            status = await conn.execute(
+                "INSERT INTO document_relations "
+                "(collection_id, src_document_id, dst_document_id, target_ref, "
+                " relation_type, confidence, source, extractor_run_id, evidence) "
+                "VALUES ($1, $2, $3, $4, $5, $6, 'llm', $7, $8) "
+                "ON CONFLICT (collection_id, src_document_id, target_ref, relation_type, source) "
+                "DO NOTHING",
+                collection_id,
+                document_id,
+                edge.dst_document_id,
+                target_ref,
+                edge.relation_type,
+                edge.confidence,
+                run_id,
+                edge.evidence,
+            )
+            if isinstance(status, str) and status.rsplit(" ", 1)[-1] == "1":
+                inserted += 1
     return {"extracted": inserted}
