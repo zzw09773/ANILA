@@ -1,0 +1,39 @@
+{
+  "schema_version": "agent-manifest/v1",
+  "agent_id": "research-agent",
+  "name": "Research Agent",
+  "version": "1.2.0",
+  "runtime_type": "anila_agent",
+  "runtime_version": "0.4.0",
+  "api_version": "v1",
+  "supported_task_types": ["knowledge_search"],
+  "description_for_router": "Searches approved collections and returns governed findings.",
+  "input_schema": {
+    "type": "object",
+    "properties": {"query": {"type": "string"}},
+    "required": ["query"]
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {"answer": {"type": "string"}}
+  },
+  "capabilities": ["retrieval"],
+  "event_protocols": ["step-event/v1"],
+  "required_scopes": ["agent:invoke"],
+  "classification": {
+    "ceiling": "機密",
+    "default": "無機密"
+  },
+  "full_trace_required": true,
+  "supports_streaming": true,
+  "supports_resume": true,
+  "supports_cancel": true,
+  "supports_idempotency": true,
+  "model_binding": {
+    "model_id": 7,
+    "model_revision": "deployment-2026-07-01",
+    "gateway": "csp",
+    "classification_ceiling": "機密"
+  },
+  "base_model_id": 7
+}

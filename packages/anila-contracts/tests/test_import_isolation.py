@@ -17,6 +17,7 @@ import anila_contracts
 expected = {
     'Classification', 'StepEvent', 'AgentError', 'TaskContext',
     'TraceContext', 'InvocationCommand', 'SourceSnapshot', 'SafeSummary',
+    'RouteDecision', 'PolicyGateResult', 'AgentManifest', 'ExecutionGrant',
 }
 assert set(anila_contracts.__all__) == expected, anila_contracts.__all__
 for name in expected:
