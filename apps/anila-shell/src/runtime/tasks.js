@@ -62,3 +62,40 @@ export async function createTaskForConversation({ title, conversationId } = {}) 
     return null;
   }
 }
+
+/**
+ * Best-effort in-session cancellation signal.
+ *
+ * ``accepted`` is true for both the first signal and an idempotent retry that
+ * reports ``cancellation_in_progress``.  Callers must keep the stream socket
+ * open for either response so the trusted cancelled terminal can arrive.
+ */
+export async function cancelTaskExecution(taskId) {
+  if (taskId === null || taskId === undefined || taskId === "") {
+    return { accepted: false, status: "no_task" };
+  }
+  try {
+    const headers = {};
+    const csrf = readCsrfCookie();
+    if (csrf) headers["X-CSRF-Token"] = csrf;
+    const response = await fetch(
+      joinUrl(config.cspBaseUrl, `/api/tasks/${encodeURIComponent(taskId)}/cancel`),
+      { method: "POST", credentials: "include", headers },
+    );
+    if (!response.ok) return { accepted: false, status: "http_error" };
+    const result = await response.json();
+    return {
+      accepted: result.accepted === true,
+      status: result.status ?? null,
+    };
+  } catch (error) {
+    // The AbortController fallback below still tears down the browser socket.
+    console.warn("[ANILA Task] 取消訊號送出失敗，改以關閉串流連線中止。", error);
+    return { accepted: false, status: "network_error" };
+  }
+}
+
+/** Keep the browser socket open whenever CSP accepted or is already handling cancellation. */
+export function shouldAbortAfterCancellation(result) {
+  return result?.accepted !== true;
+}

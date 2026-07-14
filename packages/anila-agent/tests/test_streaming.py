@@ -7,12 +7,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 
 import pytest
 
 fastapi = pytest.importorskip("fastapi")  # serving extra；沒裝就跳過
 
+from agents import RunResultStreaming  # noqa: E402
 from agents.stream_events import RawResponsesStreamEvent  # noqa: E402
 from openai.types.responses import ResponseTextDeltaEvent  # noqa: E402
 
@@ -145,6 +148,104 @@ async def test_stream_error_mid_flight_closes_cleanly(monkeypatch):
     assert content == "partial"
     assert finish == "stop"
     assert saw_done is True
+
+
+async def test_sse_cancellation_cancels_sdk_run_once_without_normal_terminal(monkeypatch):
+    """A downstream disconnect must stop the SDK run, not finish the SSE turn."""
+
+    class _BlockingStreaming:
+        context_wrapper = _FakeCtx()
+
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.cancel_calls: list[str] = []
+            self.stream_cancelled = False
+
+        async def stream_events(self):
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.stream_cancelled = True
+                raise
+            if False:  # keep this an async generator for the SDK-shaped fake
+                yield _delta_event("unreachable")
+
+        def cancel(self, *, mode):
+            self.cancel_calls.append(mode)
+
+    result = _BlockingStreaming()
+    monkeypatch.setattr(service_wrapper, "run_streamed", lambda *a, **k: result)
+
+    stream = service_wrapper._sse_stream(None, "hi", hooks=None)
+    emitted = [await anext(stream)]  # role chunk is emitted before SDK startup
+    read_task = asyncio.create_task(anext(stream))
+    await result.started.wait()
+    read_task.cancel()  # simulate Starlette cancelling after downstream close
+    with pytest.raises(asyncio.CancelledError):
+        await read_task
+
+    await stream.aclose()
+    assert result.stream_cancelled is True
+    assert result.cancel_calls == ["immediate"]
+    assert len(emitted) == 1
+    assert "[DONE]" not in emitted[0]
+    first = json.loads(emitted[0][len("data:") :].strip())
+    assert first["choices"][0]["delta"] == {"role": "assistant"}
+    assert first["choices"][0]["finish_reason"] is None
+
+
+async def test_sse_aclose_cancels_sdk_run_and_closes_inner_stream(monkeypatch):
+    """Direct ``aclose`` injects GeneratorExit and must cancel the SDK run."""
+
+    class _ClosableStreaming:
+        context_wrapper = _FakeCtx()
+
+        def __init__(self):
+            self.cancel_calls: list[str] = []
+            self.content_yielded = asyncio.Event()
+            self.inner_closed = asyncio.Event()
+
+        async def stream_events(self):
+            try:
+                self.content_yielded.set()
+                yield _delta_event("partial")
+                await asyncio.Event().wait()
+            finally:
+                self.inner_closed.set()
+
+        def cancel(self, *, mode):
+            self.cancel_calls.append(mode)
+
+    result = _ClosableStreaming()
+    monkeypatch.setattr(service_wrapper, "run_streamed", lambda *a, **k: result)
+
+    stream = service_wrapper._sse_stream(None, "hi", hooks=None)
+    assert "partial" not in await anext(stream)  # role chunk
+    content_chunk = await anext(stream)
+    assert "partial" in content_chunk
+    assert result.content_yielded.is_set()
+
+    await stream.aclose()
+    await asyncio.wait_for(result.inner_closed.wait(), timeout=1)
+
+    assert result.cancel_calls == ["immediate"]
+    assert '"finish_reason": "stop"' not in content_chunk
+    assert "[DONE]" not in content_chunk
+
+
+def test_pinned_sdk_run_result_streaming_cancel_accepts_immediate_mode():
+    """Pin the SDK API used by the real CancelledError path, not only the fake."""
+    signature = inspect.signature(RunResultStreaming.cancel)
+    mode = signature.parameters.get("mode")
+    assert mode is not None
+    assert mode.kind in {
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    }
+    assert mode.default == "immediate"
+    assert "immediate" in str(mode.annotation)
+    signature.bind(object(), mode="immediate")
 
 
 # ---- HTTP 端點層（TestClient）：證明 branch + content-type + auth 守衛 ----

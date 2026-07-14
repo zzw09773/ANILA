@@ -17,6 +17,8 @@ GET /api/tasks/{task_id};list / runs 為 Slice 2b-A 附加讀面)。
 from __future__ import annotations
 
 import os
+import json
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -429,3 +431,82 @@ class TestTasksApi:
         assert runs[0]["run_sequence"] == 1
         assert runs[0]["dispatch_target"] == "model"
         assert runs[0]["status"] == "running"
+
+    def test_cancel_endpoint_signals_live_registry_and_audits(self, client, db, monkeypatch):
+        headers = _auth_headers(client, db)
+        task_id = client.post(
+            "/api/tasks",
+            json={"title": "可取消任務", "task_type": "query"},
+            headers=headers,
+        ).json()["id"]
+        from app.services.proxy.cancellation import registry
+
+        from app.services.proxy.cancellation import (
+            CancellationDisposition,
+            CancellationResult,
+        )
+
+        signal = AsyncMock(
+            return_value=CancellationResult(CancellationDisposition.ACCEPTED)
+        )
+        monkeypatch.setattr(registry, "cancel", signal)
+        response = client.post(f"/api/tasks/{task_id}/cancel", headers=headers)
+        assert response.status_code == 202
+        assert response.json() == {
+            "task_id": task_id,
+            "accepted": True,
+            "status": "cancellation_requested",
+        }
+        signal.assert_awaited_once_with(task_id)
+        audit = db.query(AuditLog).filter_by(
+            action="task.cancel_requested", resource_id=str(task_id)
+        ).one()
+        assert json.loads(audit.metadata_json)["in_session_signal_delivered"] is True
+
+    def test_duplicate_cancel_remains_accepted_while_in_progress(
+        self, client, db, monkeypatch
+    ):
+        headers = _auth_headers(client, db)
+        task_id = client.post(
+            "/api/tasks",
+            json={"title": "重複取消任務", "task_type": "query"},
+            headers=headers,
+        ).json()["id"]
+        from app.services.proxy.cancellation import (
+            CancellationDisposition,
+            CancellationResult,
+            registry,
+        )
+
+        signal = AsyncMock(
+            side_effect=[
+                CancellationResult(CancellationDisposition.ACCEPTED),
+                CancellationResult(CancellationDisposition.IN_PROGRESS),
+            ]
+        )
+        monkeypatch.setattr(registry, "cancel", signal)
+
+        first = client.post(f"/api/tasks/{task_id}/cancel", headers=headers)
+        second = client.post(f"/api/tasks/{task_id}/cancel", headers=headers)
+
+        assert first.json()["accepted"] is True
+        assert first.json()["status"] == "cancellation_requested"
+        assert second.json()["accepted"] is True
+        assert second.json()["status"] == "cancellation_in_progress"
+        assert signal.await_count == 2
+        audits = (
+            db.query(AuditLog)
+            .filter_by(action="task.cancel_requested", resource_id=str(task_id))
+            .order_by(AuditLog.id)
+            .all()
+        )
+        assert [json.loads(row.metadata_json) for row in audits] == [
+            {
+                "cancel_disposition": "accepted",
+                "in_session_signal_delivered": True,
+            },
+            {
+                "cancel_disposition": "in_progress",
+                "in_session_signal_delivered": False,
+            },
+        ]

@@ -1009,7 +1009,11 @@ def create_router_app(
                 aggregated = ""
 
                 async for event in _stream_agent_sse(
-                    agent_id, query, caller_api_key, session_id=session_id
+                    agent_id,
+                    query,
+                    caller_api_key,
+                    session_id=session_id,
+                    forwarded_headers=anila_headers,
                 ):
                     kind = event.get("type")
                     if kind == "content":
@@ -1039,6 +1043,12 @@ def create_router_app(
                             yield _make_event(ev_name, ev_payload)
                             continue
                         yield _make_event(ev_name, ev_payload)
+                        if (
+                            ev_name == "anila.step"
+                            and isinstance(ev_payload, dict)
+                            and ev_payload.get("status") == "cancelled"
+                        ):
+                            return
                     elif kind == "error":
                         had_error = True
                         friendly = (
@@ -2348,6 +2358,7 @@ async def _stream_agent_sse(
     caller_api_key: str,
     *,
     session_id: str | None = None,
+    forwarded_headers: dict[str, str] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Open an SSE connection to the dispatched agent via CSP and yield parsed events.
 
@@ -2387,6 +2398,11 @@ async def _stream_agent_sse(
         "Authorization": f"Bearer {caller_api_key}",
         "Content-Type": "application/json",
     }
+    if forwarded_headers:
+        for key, value in forwarded_headers.items():
+            if key.lower() in {"authorization", "content-type"}:
+                continue
+            headers[key] = value
     url = f"{settings.csp_base_url.rstrip('/')}/v1/chat/completions"
 
     def _classify_and_yield(
@@ -2817,8 +2833,13 @@ async def _router_streaming(
     buffer_for_recompose = not bool(manifest.requires_encryption)
     aggregated_parts: list[str] = []
     agent_stream_completed = False
+    agent_stream_cancelled = False
     async for event in _stream_agent_sse(
-        agent_id, query, caller_api_key, session_id=session_id
+        agent_id,
+        query,
+        caller_api_key,
+        session_id=session_id,
+        forwarded_headers=forwarded_headers,
     ):
         kind = event.get("type")
         if kind == "content":
@@ -2839,6 +2860,13 @@ async def _router_streaming(
                 downstream_meta = ev_payload
                 continue
             yield _make_event(ev_name, ev_payload)
+            if (
+                ev_name == "anila.step"
+                and isinstance(ev_payload, dict)
+                and ev_payload.get("status") == "cancelled"
+            ):
+                agent_stream_cancelled = True
+                break
         elif kind == "error":
             if _downstream_span is not None:
                 _downstream_span.set_error(event.get("error") or event.get("detail"))
@@ -2858,6 +2886,13 @@ async def _router_streaming(
         elif kind == "done":
             agent_stream_completed = True
             break
+
+    if agent_stream_cancelled:
+        if trace_session is not None and _downstream_span is not None:
+            _downstream_span.set_error("cancelled")
+            trace_session.close(_downstream_span)
+            trace_session.close(_decision_span)
+        return
 
     # Emit the buffered reply: personalize it with the user's memory (CSP injects
     # it into the recompose call), unless the agent self-declared classified via

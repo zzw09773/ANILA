@@ -217,7 +217,13 @@ def _persist_once(db: Session, closure: TaskCallClosure) -> int | None:
     ])
 
     if closure.finalize_run:
-        run.status = "completed" if closure.status == "completed" else "failed"
+        # Preserve the complete terminal state.  ``cancelled`` is a first-class
+        # in-session outcome in Gate 4, not an error alias: collapsing it to
+        # ``failed`` would make the Task/TaskRun ledger disagree with the
+        # trusted ``anila.step`` cancelled terminal emitted by the bridge.
+        if closure.status not in ("completed", "failed", "cancelled"):
+            raise ValueError(f"非法 Task closure 終態: {closure.status!r}")
+        run.status = closure.status
         run.finished_at = now
         run.error = closure.error
         run.usage_record_id = usage_row.id if usage_row is not None else None
@@ -228,7 +234,11 @@ def _persist_once(db: Session, closure: TaskCallClosure) -> int | None:
             action="task.run.finished",
             resource_type="task",
             resource_id=str(task.id),
-            status="success" if run.status == "completed" else "failure",
+            status=(
+                "success"
+                if run.status in ("completed", "cancelled")
+                else "failure"
+            ),
             detail=f"task_run={run.id}; terminal={run.status}; closure={closure.closure_id}",
         ))
     db.flush()

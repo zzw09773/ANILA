@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from anila_contracts import AgentError, StepEvent
 from anila_contracts.errors import AGENT_ERROR_SCHEMA_VERSION
-from anila_contracts.events import STEP_EVENT_SCHEMA_VERSION
+from anila_contracts.events import STEP_EVENT_SCHEMA_VERSION, STEP_EVENT_SSE_NAME
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -90,6 +90,7 @@ def test_agent_error_schema_freezes_required_fields_and_error_codes() -> None:
 
 
 def test_step_event_schema_does_not_implicitly_nest_unrelated_contracts() -> None:
+    assert STEP_EVENT_SSE_NAME == "anila.step"
     assert list(StepEvent.model_fields) == [
         "schema_version",
         "event_id",

@@ -16,14 +16,16 @@ IMAGE="${ANILA_IMAGE:-anila-agent}"
 TAG="${ANILA_TAG:-1.0.0}"
 REF="${IMAGE}:${TAG}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+MONOREPO_ROOT="$(cd "$ROOT/../.." && pwd)"
+DOCKERFILE="$MONOREPO_ROOT/packages/anila-agent/Dockerfile"
 
 cmd="${1:-save}"
 case "$cmd" in
   build)
-    docker build ${DOCKER_TARGET:+--target "$DOCKER_TARGET"} -t "$REF" "$ROOT"
+    docker build ${DOCKER_TARGET:+--target "$DOCKER_TARGET"} -f "$DOCKERFILE" -t "$REF" "$MONOREPO_ROOT"
     ;;
   save)
-    docker image inspect "$REF" >/dev/null 2>&1 || docker build -t "$REF" "$ROOT"
+    docker image inspect "$REF" >/dev/null 2>&1 || docker build -f "$DOCKERFILE" -t "$REF" "$MONOREPO_ROOT"
     out="${ROOT}/${IMAGE}_${TAG}.tar.gz"
     echo "→ saving ${REF} ..."
     docker save "$REF" | gzip > "$out"

@@ -17,6 +17,7 @@ from typing import AsyncIterator, Optional
 from fastapi import HTTPException
 import httpx
 from anila_security import ENDPOINT_KIND_AGENT, ENDPOINT_KIND_MODEL
+from anila_contracts import Classification
 
 from app.config import settings
 from app.models.model_registry import ModelRegistry
@@ -26,6 +27,7 @@ from app.services.proxy.closure import (
     UsageRecordData,
     persist_task_call_closure,
 )
+from app.services.proxy.cancellation import StreamCancelled, cancellable_iter, registry
 from app.services.proxy.guard import _guard_outbound
 from app.services.proxy.headers import (
     _apply_gateway_auth,
@@ -34,6 +36,11 @@ from app.services.proxy.headers import (
     resolve_model_gateway_key,
 )
 from app.services.proxy.sse import _aggregate_sse_to_chat_completion, _parse_sse_block
+from app.services.proxy.stream_bridge import (
+    BridgeContext,
+    StreamValidator,
+    cancelled_terminal_frame,
+)
 from app.services.proxy.usage import (
     _estimate_token_count,
     _extract_response_text,
@@ -853,6 +860,18 @@ async def _proxy_stream_impl(
             task_id=task_id,
             trace_id=task_trace_id,
         )
+        # These values are all derived from CSP admission state.  The agent may
+        # echo them, but the StreamValidator below remains authoritative and
+        # overwrites every corresponding field before browser delivery.
+        headers["X-ANILA-Agent-Id"] = str(target_agent_id)
+        headers["X-ANILA-Session-Id"] = str(
+            request_body.get("anila_session_id")
+            or conversation_id
+            or f"task-{task_id or 'legacy'}"
+        )
+        headers["X-ANILA-Run-Id"] = str(task_run_id or f"live-{uuid.uuid4().hex}")
+        if admitted_classification_level:
+            headers["X-ANILA-Classification-Level"] = admitted_classification_level
     else:
         # Doc 04 §3/AC5: model gateway gets Bearer key + 員編 ONLY — no
         # task / trace headers, structurally (builder has no such params).
@@ -888,6 +907,27 @@ async def _proxy_stream_impl(
     request_deadline = request_started + settings.PROXY_STREAM_MAX_SECONDS
     stream_events = 0
     stream_bytes = 0
+    stream_validator: StreamValidator | None = None
+    if target_agent_id is not None:
+        try:
+            trusted_classification = Classification.from_storage(
+                admitted_classification_level
+                or ("機密" if requires_encryption else "無機密")
+            )
+        except (TypeError, ValueError):
+            # The admission layer normally rejects this earlier.  If a legacy
+            # caller bypassed that layer, bind to the most restrictive value.
+            trusted_classification = Classification.TOP_SECRET
+        stream_validator = StreamValidator(
+            BridgeContext(
+                task_id=str(task_id or "legacy-no-task"),
+                trace_id=str(task_trace_id or trace_id or "legacy-no-trace"),
+                agent_id=str(target_agent_id),
+                session_id=headers["X-ANILA-Session-Id"],
+                run_id=headers["X-ANILA-Run-Id"],
+                classification=trusted_classification,
+            )
+        )
 
     def _remaining_request_seconds() -> float:
         remaining = request_deadline - time.monotonic()
@@ -935,7 +975,14 @@ async def _proxy_stream_impl(
                     raise HTTPException(status_code=resp.status_code,
                                         detail=f"下游回應錯誤: {resp.status_code}")
                 def _emit(block: str, event_name: str | None, data: str | None) -> str:
-                    """Render a block, upgrading anila.meta.classified if required."""
+                    """Render one downstream block through the Agent trust boundary."""
+                    if stream_validator is not None and event_name not in (None, "message"):
+                        validated = stream_validator.validate(event_name, data)
+                        # Empty strings are intentionally yielded by the caller
+                        # and produce no bytes.  The default CSP ``anila.meta``
+                        # is synthesized after the stream, so dropping an
+                        # untrusted agent meta block does not remove UI metadata.
+                        return validated or ""
                     if (
                         event_name == "anila.meta"
                         and data
@@ -1025,8 +1072,6 @@ async def _proxy_stream_impl(
                             if data == "[DONE]":
                                 pending_done_block = block + "\n\n"
                             else:
-                                if event_name == "anila.meta":
-                                    meta_seen = True
                                 if data and event_name in (None, "message"):
                                     try:
                                         chunk = json.loads(data)
@@ -1041,7 +1086,11 @@ async def _proxy_stream_impl(
                                             _capture_reported_usage()
                                     except (json.JSONDecodeError, KeyError):
                                         pass
-                                yield _emit(block, event_name, data)
+                                rendered = _emit(block, event_name, data)
+                                if rendered and event_name == "anila.meta":
+                                    meta_seen = True
+                                if rendered:
+                                    yield rendered
                             block_lines = []
                         continue
                     block_lines.append(line)
@@ -1052,8 +1101,6 @@ async def _proxy_stream_impl(
                     if data == "[DONE]":
                         pending_done_block = block + "\n\n"
                     else:
-                        if event_name == "anila.meta":
-                            meta_seen = True
                         if data and event_name in (None, "message"):
                             try:
                                 chunk = json.loads(data)
@@ -1068,7 +1115,11 @@ async def _proxy_stream_impl(
                                     _capture_reported_usage()
                             except (json.JSONDecodeError, KeyError):
                                 pass
-                        yield _emit(block, event_name, data)
+                        rendered = _emit(block, event_name, data)
+                        if rendered and event_name == "anila.meta":
+                            meta_seen = True
+                        if rendered:
+                            yield rendered
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="下游請求逾時")
     except httpx.ConnectError:
@@ -1207,6 +1258,7 @@ async def proxy_stream(
     closure_id = uuid.uuid4().hex
     usage_capture: dict = {}
     terminal_capture: dict = {}
+    cancel_terminal_capture = {"claimed": False}
     closure_committed = False
     try:
         _require_pilot_sink_admission(
@@ -1233,35 +1285,53 @@ async def proxy_stream(
             inference_callsite_id=inference_callsite_id,
         )
         _commit_stream_admission(governance_db)
-        async for chunk in _proxy_stream_impl(
-            target_url=target_url,
-            api_key_id=api_key_id,
-            user_id=user_id,
-            department_id=department_id,
-            usage_model_id=usage_model_id,
-            request_body=request_body,
-            user_email=user_email,
-            user_identity=user_identity,
-            model_name=model_name,
-            conversation_id=conversation_id,
-            trace_id=trace_id,
-            requires_encryption=requires_encryption,
-            target_agent_id=target_agent_id,
-            caller_agent_id=caller_agent_id,
-            caller_client_id=caller_client_id,
-            task_id=task_id,
-            task_trace_id=task_trace_id,
-            legacy_runtime_call=legacy_runtime_call,
-            gateway_api_key=gateway_api_key,
-            inference_callsite_id=inference_callsite_id,
-            governance_db=governance_db,
-            admitted_classification_level=admitted_classification_level,
-            task_run_id=task_run_id,
-            task_run_started_at=task_run_started_at,
-            usage_capture=usage_capture,
-            terminal_capture=terminal_capture,
-        ):
-            yield chunk
+        async with registry.register(task_id) as cancel_event:
+            upstream = _proxy_stream_impl(
+                target_url=target_url,
+                api_key_id=api_key_id,
+                user_id=user_id,
+                department_id=department_id,
+                usage_model_id=usage_model_id,
+                request_body=request_body,
+                user_email=user_email,
+                user_identity=user_identity,
+                model_name=model_name,
+                conversation_id=conversation_id,
+                trace_id=trace_id,
+                requires_encryption=requires_encryption,
+                target_agent_id=target_agent_id,
+                caller_agent_id=caller_agent_id,
+                caller_client_id=caller_client_id,
+                task_id=task_id,
+                task_trace_id=task_trace_id,
+                legacy_runtime_call=legacy_runtime_call,
+                gateway_api_key=gateway_api_key,
+                inference_callsite_id=inference_callsite_id,
+                governance_db=governance_db,
+                admitted_classification_level=admitted_classification_level,
+                task_run_id=task_run_id,
+                task_run_started_at=task_run_started_at,
+                usage_capture=usage_capture,
+                terminal_capture=terminal_capture,
+            )
+            try:
+                async for chunk in cancellable_iter(upstream, cancel_event):
+                    yield chunk
+            except StreamCancelled:
+                # Multiple consumers can observe the same Task cancellation;
+                # only one is allowed to author the terminal StepEvent.
+                cancel_terminal_capture["claimed"] = (
+                    await registry.claim_cancel_terminal(task_id, cancel_event)
+                    if task_id is not None
+                    else False
+                )
+                raise
+            else:
+                if task_id is not None and cancel_event is not None:
+                    was_cancelled, claimed = await registry.finish(task_id, cancel_event)
+                    if was_cancelled:
+                        cancel_terminal_capture["claimed"] = claimed
+                        raise StreamCancelled("live task cancellation requested")
         if task_run_id is not None:
             if governance_db is None or task_id is None or not task_trace_id:
                 raise RuntimeError("Task stream closure 缺少治理上下文")
@@ -1288,6 +1358,8 @@ async def proxy_stream(
                 ),
             )
             closure_committed = True
+        if task_id is not None:
+            await registry.complete(task_id)
         done_block = terminal_capture.get("done_block")
         if done_block:
             yield done_block
@@ -1295,6 +1367,33 @@ async def proxy_stream(
         status = "failed"
         error = {"code": f"http_{exc.status_code}", "message": str(exc.detail)}
         raise
+    except StreamCancelled:
+        status = "cancelled"
+        error = {"code": "cancelled", "message": "使用者取消執行"}
+        # Cancellation is a normal terminal outcome.  Do not emit [DONE] and
+        # do not translate it into a 5xx after response headers were sent.
+        if cancel_terminal_capture["claimed"]:
+            try:
+                cancellation_level = Classification.from_storage(
+                    admitted_classification_level
+                    or ("機密" if requires_encryption else "無機密")
+                )
+            except (TypeError, ValueError):
+                cancellation_level = Classification.TOP_SECRET
+            yield cancelled_terminal_frame(
+                BridgeContext(
+                    task_id=str(task_id or "legacy-no-task"),
+                    trace_id=str(task_trace_id or trace_id or "legacy-no-trace"),
+                    agent_id=str(target_agent_id or model_name or "anila-router"),
+                    session_id=str(
+                        request_body.get("anila_session_id")
+                        or conversation_id
+                        or f"task-{task_id or 'legacy'}"
+                    ),
+                    run_id=str(task_run_id or "legacy-live-run"),
+                    classification=cancellation_level,
+                )
+            )
     except BaseException as exc:  # GeneratorExit / CancelledError included
         status = "failed"
         error = {"code": "stream_aborted", "message": type(exc).__name__}
@@ -1332,6 +1431,7 @@ async def proxy_stream(
                             finalize_run=finalize_task_run_on_completion,
                         ),
                     )
+                    closure_committed = True
                 except Exception:
                     # Streaming bytes may already be on the wire.  Never claim a
                     # successful durable closure; the still-running attempt is
@@ -1340,3 +1440,10 @@ async def proxy_stream(
                     logger.exception(
                         "Task stream durable closure 失敗 run_id=%s", task_run_id
                     )
+        if task_id is not None:
+            # Process-local cancellation state is only a live-stream lease;
+            # release it after teardown even when the durable closure write
+            # failed.  The failed closure remains uncommitted for crash
+            # reconciliation, but a later Task id must not be stuck forever in
+            # ``cancellation_in_progress``.
+            await registry.complete(task_id)

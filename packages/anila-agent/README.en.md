@@ -50,7 +50,7 @@
 ```bash
 git clone <repo> && cd packages/anila-agent
 
-make install                 # create .venv and editable install (incl. dev)
+make install                 # create .venv; install local ../anila-contracts + dev editable
 cp .env.example .env         # set ANILA_BASE_URL / ANILA_MODEL
 make test                    # 198 unit tests (offline)
 make lint                    # ruff (anila_agent + tests)

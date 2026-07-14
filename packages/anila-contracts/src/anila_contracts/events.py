@@ -12,6 +12,7 @@ from .classification import ClassificationLevel
 from .errors import AgentError
 
 STEP_EVENT_SCHEMA_VERSION = "step-event/v1"
+STEP_EVENT_SSE_NAME = "anila.step"
 
 
 class StepKind(str, Enum):
@@ -72,4 +73,10 @@ class StepEvent(BaseModel):
     classification: ClassificationLevel
 
 
-__all__ = ["STEP_EVENT_SCHEMA_VERSION", "StepEvent", "StepKind", "StepStatus"]
+__all__ = [
+    "STEP_EVENT_SCHEMA_VERSION",
+    "STEP_EVENT_SSE_NAME",
+    "StepEvent",
+    "StepKind",
+    "StepStatus",
+]

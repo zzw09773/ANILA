@@ -27,6 +27,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
+from anila_contracts import Classification
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from openai.types.responses import ResponseTextDeltaEvent
@@ -35,6 +36,11 @@ from pydantic import BaseModel
 from anila_agent.config import load_config
 from anila_agent.memory.runtime import MemdirRuntime, auto_memory_enabled
 from anila_agent.observability.hooks import AuditHooks
+from anila_agent.observability.timeline import (
+    TimelineEmitter,
+    TimelineRetriever,
+    TimelineRunHooks,
+)
 from anila_agent.retrieval.csp_http import CspHttpRetriever
 from anila_agent.runtime.agent_factory import build_agent
 from anila_agent.runtime.model import build_model
@@ -320,6 +326,7 @@ async def _sse_stream(
     hooks: AuditHooks,
     *,
     emitter: TraceEmitter | None = None,
+    timeline: TimelineEmitter | None = None,
     include_usage: bool = False,
 ) -> AsyncIterator[str]:
     """agent 串流輸出 → OpenAI SSE：role → content deltas → finish → [usage] → ``[DONE]``。
@@ -353,6 +360,9 @@ async def _sse_stream(
         result = run_streamed(assembled, user_prompt, hooks=hooks)
         try:
             async for event in result.stream_events():
+                if timeline is not None:
+                    for frame in timeline.drain():
+                        yield frame
                 if (
                     event.type == "raw_response_event"
                     and isinstance(event.data, ResponseTextDeltaEvent)
@@ -360,10 +370,25 @@ async def _sse_stream(
                 ):
                     parts.append(event.data.delta)
                     yield _chunk(cid, created, delta={"content": event.data.delta})
+            if timeline is not None:
+                for frame in timeline.drain():
+                    yield frame
+        except (asyncio.CancelledError, GeneratorExit):
+            # Starlette may cancel the task, while direct async-generator
+            # consumers inject GeneratorExit via ``aclose()``.  Both paths
+            # must stop SDK background work; neither is a normal finish.
+            result.cancel(mode="immediate")
+            if timeline is not None:
+                timeline.cancel()
+            raise
         except Exception as exc:
             # 串流中途失敗：headers 已送出、status 無法再改，記錄 + error span 後乾淨收尾。
             logger.exception("streaming run failed mid-flight")
             em.error(repr(exc))
+            if timeline is not None:
+                timeline.fail()
+                for frame in timeline.drain():
+                    yield frame
 
         usage_payload = _usage_from_run_result(result)
         yield _chunk(cid, created, delta={}, finish_reason="stop")
@@ -390,6 +415,12 @@ async def chat_completions(
     x_anila_user_groups: str | None = Header(default=None, alias="X-ANILA-User-Groups"),
     x_anila_trace_id: str | None = Header(default=None, alias="X-ANILA-Trace-Id"),
     x_anila_task_id: str | None = Header(default=None, alias="X-ANILA-Task-Id"),
+    x_anila_agent_id: str | None = Header(default=None, alias="X-ANILA-Agent-Id"),
+    x_anila_session_id: str | None = Header(default=None, alias="X-ANILA-Session-Id"),
+    x_anila_run_id: str | None = Header(default=None, alias="X-ANILA-Run-Id"),
+    x_anila_classification_level: str | None = Header(
+        default=None, alias="X-ANILA-Classification-Level"
+    ),
 ) -> Any:
     allowed = verify_service_token(
         x_csp_service_token, CSP_SERVICE_TOKEN, allow_unset=ALLOW_NO_SERVICE_TOKEN
@@ -445,6 +476,22 @@ async def chat_completions(
         min_score=CSP_MIN_SCORE,
         verify_ssl=SSL_VERIFY,
     )
+    try:
+        timeline_classification = Classification.from_storage(
+            x_anila_classification_level or CLASSIFICATION_LEVEL or "無機密"
+        )
+    except ValueError:
+        # A malformed classification must not downgrade a direct/dev call.
+        timeline_classification = Classification.TOP_SECRET
+    timeline = TimelineEmitter(
+        task_id=x_anila_task_id or "legacy-no-task",
+        trace_id=x_anila_trace_id or "legacy-no-trace",
+        agent_id=x_anila_agent_id or MODEL_NAME,
+        session_id=x_anila_session_id or x_anila_task_id or "legacy-no-session",
+        run_id=x_anila_run_id or uuid.uuid4().hex,
+        classification=timeline_classification,
+    )
+    retriever = TimelineRetriever(retriever, timeline)
     if emitter.active:
         # 包一層 → search 前後送 agent.retrieval span（掛在工具 span 下）。
         retriever = TracingRetriever(retriever, emitter)
@@ -465,14 +512,26 @@ async def chat_completions(
     )
     # 追蹤啟用時把 AuditHooks 包進 TracingRunHooks（step/model/tool spans + 稽核 fan-out）。
     audit = AuditHooks(user_id=identity.get("user_id"))
-    hooks: Any = TracingRunHooks(emitter, inner=audit) if emitter.active else audit
+    timeline_hooks = TimelineRunHooks(timeline, inner=audit)
+    hooks: Any = (
+        TracingRunHooks(emitter, inner=timeline_hooks)
+        if emitter.active
+        else timeline_hooks
+    )
 
     # 串流：CSP Router 對 agent 強制 stream=true 並逐行解析 OpenAI SSE
     # （proxy_service.proxy_stream）。回 text/event-stream 的 chat.completion.chunk。
     if req.stream:
         include_usage = bool(req.stream_options and req.stream_options.include_usage)
         return StreamingResponse(
-            _sse_stream(assembled, user_prompt, hooks, emitter=emitter, include_usage=include_usage),
+            _sse_stream(
+                assembled,
+                user_prompt,
+                hooks,
+                emitter=emitter,
+                timeline=timeline,
+                include_usage=include_usage,
+            ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
