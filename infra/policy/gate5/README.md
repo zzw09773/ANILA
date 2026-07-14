@@ -100,3 +100,47 @@ cases/category counts/denominator membership，並重新計算 `dataset_sha256`�
 分數刪除、替換或重分類 case。新 runtime runner 必須輸出 dataset version/hash、
 每個 denominator 的 numerator/denominator 與 runner commit，並維持本檔的
 membership 與 thresholds。
+
+## R7 model governance (static authority only)
+
+`model-governance-inventory.v1.json` 是目前 source-level inference sink 的
+可審計清單；Gate 5 worktree 會把 Router、formal Agent、embedding、Studio／FLUX、
+Memory、prompt generator、ingestion relation／judge 與模型 backend sink 綁到
+唯一 `csp-model-gateway`、classification ceiling、usage／audit sink、agent scope
+以及 source scanner。新增而未登錄的 inference sink 會讓 verifier fail-closed。
+
+`model-governance-profile.disabled-template.json` 明確是「未啟用、不是 production
+approval」的 repository template。它沒有 approver、signature、model artifact 或
+deployment；只有帶 `--allow-disabled-template` 的 static verifier 才可接受。任何
+production enabled profile 仍必須另具備 signed profile、artifact／deployment
+digest、license／法務裁決、GPU topology、fresh health/readiness、四類 approver 與
+唯一 CSP gateway binding。
+
+本批 R7 只建立 static contracts、source inventory、hash／signature verifier 與
+negative tests；**尚未完成 runtime admission、model egress enforcement、usage
+reconciliation 或 live health/readiness enforcement**。因此 disabled template
+不能被部署工具或 runtime 當成可用模型授權，也不代表 routing／model quality 已
+有 live metric。
+
+Static check：
+
+```bash
+PYTHONPATH=packages/anila-security/src python \
+  infra/policy/gate5/check_model_governance.py \
+  --inventory infra/policy/gate5/model-governance-inventory.v1.json \
+  --profile infra/policy/gate5/model-governance-profile.disabled-template.json \
+  --allow-disabled-template
+```
+
+R6 的 deterministic contract runner 只接受明確的 R3 runtime adapter interface；
+adapter 只會看到 immutable 的 `input`／`messages`／`context` projection，不能讀到
+case id、category、`expected` 或 `must_not_route_to`。未提供 adapter 時 runner 會
+以 non-zero incomplete code 回報 `SKIPPED`，不會拿 frozen `expected` 欄位冒充
+prediction，也不會產生假 metric。required static foundation job 只執行 frozen
+dataset 與 disabled-profile checks；另外的
+required routing runtime exit job 會保留 non-zero incomplete 狀態，直到真正的 R3
+adapter 接上，因而不宣稱 live routing 結果。
+
+有 adapter 的報告必須帶 dataset version/hash、runner commit，以及每個 frozen
+denominator 的 numerator／denominator；未提供 adapter 的報告只帶 identity 與
+`SKIPPED` reason，不會填入任何 metric。
