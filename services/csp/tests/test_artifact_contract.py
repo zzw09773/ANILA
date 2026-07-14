@@ -103,10 +103,15 @@ def _office_bytes(kind: str) -> bytes:
 
 
 @pytest.fixture(autouse=True)
-def _svc_token(monkeypatch, db):
+def _svc_token(monkeypatch, tmp_path, db):
     """本模組內把 legacy CSP_SERVICE_TOKEN 設成已知值,供 /v1 service 面測試
     (function-scoped,測完自動還原,不外洩到別模組)。"""
     monkeypatch.setattr(settings, "CSP_SERVICE_TOKEN", SVC_TOKEN)
+    monkeypatch.setattr(
+        settings,
+        "ARTIFACT_BLOB_STORAGE_PATH",
+        str(tmp_path / "artifact-blobs"),
+    )
     service_client = ServiceClient(
         client_name="artifact-contract-studio",
         client_type="worker",
