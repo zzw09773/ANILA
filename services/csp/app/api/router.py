@@ -18,6 +18,7 @@ from app.api.traces import router as traces_router
 from app.api.artifacts import router as artifacts_router
 from app.api.service_access_grants import router as service_access_grants_router
 from app.api.service_clients import router as service_clients_router
+from app.api.execution_grants import router as execution_grants_router
 from app.api.services import router as services_router
 from app.api.trusted_hosts import router as trusted_hosts_router
 from app.api.ingestion import (
@@ -53,6 +54,10 @@ api_router.include_router(memory_router)
 api_router.include_router(platform_links_router)
 api_router.include_router(service_access_grants_router)
 api_router.include_router(service_clients_router)
+# Versioned, service-only CSP grant mint seam.  The caller is a named Router
+# service client; the user context is carried in the dedicated header and is
+# revalidated against durable Task/AuthSession/registry state.
+api_router.include_router(execution_grants_router, prefix="/internal/v1/execution-grants")
 api_router.include_router(services_router)
 api_router.include_router(agents_router)
 # Versioned service-only registry projection.  It is intentionally outside
