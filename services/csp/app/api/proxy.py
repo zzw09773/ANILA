@@ -59,6 +59,7 @@ from app.services.proxy.usage import (
     _serialize_request_for_usage,
     enqueue_usage_task_linked,
 )
+from app.services.model_governance_runtime import governance_required_for_settings
 from app.services.proxy_service import (
     build_default_anila_meta,
     downstream_identity,
@@ -67,6 +68,35 @@ from app.services.proxy_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _formal_gate5_governance_enabled() -> bool:
+    """Return whether the CSP is in a Gate 5 formal governance posture."""
+
+    return bool(getattr(settings, "GATE5_MODEL_GOVERNANCE_ENABLED", False)) or (
+        governance_required_for_settings(settings)
+    )
+
+
+def _reject_legacy_agent_dispatch_in_formal(*, resume: bool = False) -> None:
+    """Block public legacy Agent egress once Gate 5 is formally enabled.
+
+    The signed Router→CSP→Agent dispatch route owns the ExecutionGrant and
+    durable event receipt contract.  This guard deliberately runs before
+    task/memory work and before importing/constructing any HTTP transport; it
+    never fabricates a grant or silently downgrades to the legacy Agent URL.
+    """
+
+    if not _formal_gate5_governance_enabled():
+        return
+    subject = "Agent session resume" if resume else "公開 Agent dispatch"
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            f"{subject} 已在 Gate 5 formal profile 停用；"
+            "請改由 Router signed ExecutionGrant dispatch path"
+        ),
+    )
 
 
 class _RetrievalExtension(BaseModel):
@@ -1175,6 +1205,7 @@ async def image_generations(
         task_trace_id=task_ctx.trace_id,
         task_run_id=task_ctx.task_run_id,
         inference_callsite_id="csp.image_generation",
+        governance_callsite_id="r7.csp.proxy",
         governance_db=db,
         admitted_classification_level=admitted_level,
     )
@@ -1274,6 +1305,12 @@ async def _chat_completions_impl(
     # G19: in signed pilot mode, inventory admission happens before memory,
     # retrieval, prompt mutation, or any outbound side effect.
     pre_resolved_agent = _resolve_agent(db, caller, model_name)
+    if pre_resolved_agent is not None and not internal_router:
+        # Public ``model=<agent>`` is the legacy direct Agent sink.  In a
+        # formal Gate 5 posture it must not proceed to memory/task setup or
+        # either the stream/non-stream HTTP branches below; only the signed
+        # Router ExecutionGrant endpoint may reach the Agent.
+        _reject_legacy_agent_dispatch_in_formal()
     pre_resolved_model = (
         None
         if pre_resolved_agent is not None
@@ -2039,6 +2076,7 @@ async def _chat_completions_impl(
             # Slice 6a: per-model gateway key (secret ref first, env fallback).
             gateway_api_key=resolve_model_gateway_key(model),
             inference_callsite_id="csp.chat_model",
+            governance_callsite_id="r7.csp.proxy",
             governance_db=db,
             registry_endpoint_url=model.endpoint_url,
             admitted_classification_level=admitted_level,
@@ -2106,6 +2144,7 @@ async def _chat_completions_impl(
         task_run_id=task_ctx.task_run_id if task_ctx else None,
         legacy_runtime_call=task_ctx is None,
         inference_callsite_id="csp.chat_model",
+        governance_callsite_id="r7.csp.proxy",
         governance_db=db,
         admitted_classification_level=admitted_level,
         registry_user_id=user.id,
@@ -2171,6 +2210,7 @@ async def resume_agent_session(
 
     Response: SSE stream of the resumed turn, passed through verbatim.
     """
+    _reject_legacy_agent_dispatch_in_formal(resume=True)
     if settings.ANILA_PILOT_MODE:
         raise HTTPException(
             status_code=403,
@@ -2298,6 +2338,8 @@ async def embeddings_v1(
         request_body=body,
         endpoint_path="/v1/embeddings",
         inference_callsite_id="csp.public_embedding_api",
+        governance_callsite_id="r7.csp.proxy",
+        governance_db=db,
     )
 
 
@@ -2327,4 +2369,6 @@ async def embeddings_v2(
         request_body=body,
         endpoint_path="/v2/embeddings",
         inference_callsite_id="csp.public_embedding_api",
+        governance_callsite_id="r7.csp.proxy",
+        governance_db=db,
     )

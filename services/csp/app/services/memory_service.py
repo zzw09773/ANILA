@@ -344,6 +344,7 @@ async def _gateway_request(
                     if purpose == "embedding"
                     else "csp.memory_extract"
                 ),
+                governance_callsite_id="r7.csp.memory",
                 governance_db=governance_db,
                 admitted_classification_level=admitted_level,
                 finalize_task_run_on_completion=False,

@@ -2,6 +2,19 @@
   "schema_version": 1,
   "exceptions": [
     {
+      "id": "GATE1-PR31-SESSION-COMPATIBILITY",
+      "architecture_owner": "zzw09773",
+      "rationale": "Gate 5 R5 Silver protocol conformance requires the Router/CSP session bridge to read the SDK session identifier and session settings; PR31 records the reviewed, time-bounded exception for these three metadata accessors, with re-review at expiry.",
+      "ticket": "https://github.com/zzw09773/ANILA/pull/31",
+      "approved_on": "2026-07-15",
+      "expires_on": "2026-08-15",
+      "changes": [
+        "memory.agent_public_methods::packages/anila-agent/anila_agent/memory/session.py::PostgresSession.session_id",
+        "memory.agent_public_methods::packages/anila-agent/anila_agent/memory/session.py::SummarizingSession.session_id",
+        "memory.agent_public_methods::packages/anila-agent/anila_agent/memory/session.py::SummarizingSession.session_settings"
+      ]
+    },
+    {
       "id": "GATE2-PR27-MEMORY-GOVERNANCE",
       "architecture_owner": "zzw09773",
       "rationale": "Gate 2 classified-memory enforcement requires explicit policy error, write context, and authorized retrieval boundaries; these are governance interfaces rather than new end-user capabilities.",

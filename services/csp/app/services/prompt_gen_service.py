@@ -16,11 +16,17 @@ from __future__ import annotations
 import logging
 
 import httpx
+from anila_contracts import Classification
 from anila_security import UnsafeEndpointError, validate_outbound_url
 from sqlalchemy.orm import Session
 
 from app.models.ingestion import IngestionCollection, IngestionDocument
 from app.models.model_registry import ModelRegistry
+from app.services.model_governance_receipts import (
+    GovernedModelInvocation,
+    ReceiptSubject,
+    resolve_model_governance_runtime,
+)
 from app.services.proxy_service import _apply_gateway_auth, resolve_model_gateway_key
 
 logger = logging.getLogger(__name__)
@@ -136,19 +142,52 @@ async def generate_system_prompt(
         "max_tokens": _MAX_TOKENS,
     }
 
+    governed = GovernedModelInvocation.from_runtime(
+        db,
+        runtime=resolve_model_governance_runtime(),
+        subject=ReceiptSubject(
+            user_id=user.id,
+            model_id=model.id,
+            department_id=getattr(user, "department_id", None),
+            conversation_id=f"collection:{collection_id}",
+            actor_username=getattr(user, "username", None),
+        ),
+    )
+    authorization = None
     try:
+        # The inventory intentionally records this legacy direct endpoint as
+        # raw/disabled.  A formal enabled runtime therefore denies here,
+        # before any HTTP client is opened; development keeps the old direct
+        # path because its runtime is disabled.
+        authorization = governed.authorize(
+            callsite_id="r7.csp.prompt-generator",
+            classification=Classification.UNCLASSIFIED,
+            endpoint=endpoint,
+        )
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
             resp = await client.post(endpoint, json=payload, headers=headers)
             resp.raise_for_status()
-        choices = resp.json().get("choices") or []
+        response_payload = resp.json()
+        choices = response_payload.get("choices") or []
         if not choices:
             raise RuntimeError(
                 "LLM 回傳空內容（choices 為空，請確認模型端點/回應格式正確）"
             )
         content = choices[0].get("message", {}).get("content") or ""
-    except httpx.HTTPError as exc:
-        logger.warning("prompt_gen: LLM 呼叫失敗: %s", exc)
-        raise RuntimeError(f"呼叫 LLM 失敗：{exc}") from exc
+        if authorization is not None:
+            governed.complete(authorization, response_payload.get("usage", {}))
+    except Exception as exc:
+        if authorization is not None:
+            try:
+                governed.fail(authorization, exc)
+            except Exception:
+                logger.exception(
+                    "prompt_gen: Gate 5 failure receipt could not be committed"
+                )
+        if isinstance(exc, httpx.HTTPError):
+            logger.warning("prompt_gen: LLM 呼叫失敗: %s", exc)
+            raise RuntimeError(f"呼叫 LLM 失敗：{exc}") from exc
+        raise
 
     result = _strip_fence(content)
     if not result:

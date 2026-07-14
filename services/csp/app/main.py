@@ -257,9 +257,15 @@ async def lifespan(app: FastAPI):
     # as approval.  Formal deployments may make this a startup hard-stop;
     # otherwise /ready remains 503 until the signed material is provisioned.
     from app.services.model_governance_runtime import ModelGovernanceRuntime
+    from app.services.model_governance_receipts import (
+        set_model_governance_runtime_provider,
+    )
 
     model_governance_runtime = ModelGovernanceRuntime.from_settings(settings)
     app.state.model_governance_runtime = model_governance_runtime
+    set_model_governance_runtime_provider(
+        lambda: getattr(app.state, "model_governance_runtime", None)
+    )
     model_governance_readiness = model_governance_runtime.bootstrap()
     app.state.model_governance_readiness = model_governance_readiness
     if model_governance_runtime.startup_required and not model_governance_readiness.ready:
@@ -363,23 +369,29 @@ async def lifespan(app: FastAPI):
             "will return 503 until the pool comes back.", exc,
         )
 
-    yield
-
-    # Cleanup
-    if health_task:
-        health_task.cancel()
-    if writer_task:
-        writer_task.cancel()
-    if ingestion_relay_task:
-        ingestion_relay_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await ingestion_relay_task
-        app.state.ingestion_relay_task = None
-    if retention_task:
-        retention_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await retention_task
-    await close_pool()
+    try:
+        yield
+    finally:
+        try:
+            # Cleanup
+            if health_task:
+                health_task.cancel()
+            if writer_task:
+                writer_task.cancel()
+            if ingestion_relay_task:
+                ingestion_relay_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await ingestion_relay_task
+                app.state.ingestion_relay_task = None
+            if retention_task:
+                retention_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await retention_task
+            await close_pool()
+        finally:
+            # Do not leak a previous app/runtime into the next test or
+            # lifespan instance in this process.
+            set_model_governance_runtime_provider(None)
 
 
 app = FastAPI(

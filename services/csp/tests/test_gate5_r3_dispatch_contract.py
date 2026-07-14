@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from app.api.agent_dispatch import _grant_header
+import app.api.proxy as proxy_api
 import app.services.agent_dispatch_service as dispatch_service
 from app.services.agent_dispatch_service import (
     DispatchAuthority,
@@ -364,6 +365,74 @@ def test_completed_run_without_terminal_fails_before_agent_call(monkeypatch) -> 
         )
     assert caught.value.status_code == 409
     assert calls == 0
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_formal_public_agent_chat_fails_before_any_downstream_branch(
+    monkeypatch, stream: bool
+) -> None:
+    class RequestStub:
+        headers = {}
+        state = SimpleNamespace()
+
+        async def json(self):
+            return {
+                "model": "legacy-agent",
+                "stream": stream,
+                "messages": [{"role": "user", "content": "hi"}],
+            }
+
+    fake_agent = SimpleNamespace(name="legacy-agent")
+    monkeypatch.setattr(proxy_api.settings, "GATE5_MODEL_GOVERNANCE_ENABLED", True)
+    monkeypatch.setattr(proxy_api.settings, "ANILA_DEPLOYMENT_PROFILE", "development")
+    monkeypatch.setattr(proxy_api, "_resolve_agent", lambda _db, _caller, _name: fake_agent)
+    monkeypatch.setattr(
+        proxy_api,
+        "_resolve_model",
+        lambda *_args, **_kwargs: pytest.fail("formal direct Agent must stop before model resolution"),
+    )
+    caller = SimpleNamespace(user=SimpleNamespace())
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            proxy_api._chat_completions_impl(
+                RequestStub(), caller=caller, db=SimpleNamespace(), internal_router=False
+            )
+        )
+    assert caught.value.status_code == 409
+    assert "Router signed ExecutionGrant" in str(caught.value.detail)
+
+
+def test_formal_agent_resume_fails_before_body_or_agent_lookup(monkeypatch) -> None:
+    class RequestStub:
+        headers = {}
+
+        async def json(self):
+            raise AssertionError("formal resume must stop before reading the body")
+
+    monkeypatch.setattr(proxy_api.settings, "GATE5_MODEL_GOVERNANCE_ENABLED", True)
+    monkeypatch.setattr(proxy_api.settings, "ANILA_DEPLOYMENT_PROFILE", "development")
+    monkeypatch.setattr(proxy_api.settings, "ALLOW_LEGACY_AGENT_DISPATCH", True)
+    monkeypatch.setattr(
+        proxy_api,
+        "_resolve_agent",
+        lambda *_args, **_kwargs: pytest.fail("formal resume must stop before Agent lookup"),
+    )
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            proxy_api.resume_agent_session(
+                "legacy-agent", "session-1", RequestStub(), caller=None, db=None
+            )
+        )
+    assert caught.value.status_code == 409
+    assert "Router signed ExecutionGrant" in str(caught.value.detail)
+
+
+def test_development_keeps_legacy_agent_guard_disabled(monkeypatch) -> None:
+    monkeypatch.setattr(proxy_api.settings, "GATE5_MODEL_GOVERNANCE_ENABLED", False)
+    monkeypatch.setattr(proxy_api.settings, "ANILA_DEPLOYMENT_PROFILE", "development")
+    # The helper is intentionally a no-op outside formal Gate 5 posture;
+    # existing development legacy dispatch remains governed by its own path.
+    proxy_api._reject_legacy_agent_dispatch_in_formal()
 
 
 def test_concurrent_stream_duplicate_waits_replays_and_calls_agent_once(monkeypatch) -> None:

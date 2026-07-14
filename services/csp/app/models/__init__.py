@@ -54,6 +54,7 @@ from app.models.ingestion import (
 )
 from app.models.message import Message
 from app.models.model_registry import ModelRegistry
+from app.models.model_governance_receipt import ModelGovernanceReceipt
 from app.models.platform_link import PlatformLink
 from app.models.policy_decision import PolicyDecision
 from app.models.registered_service import (
@@ -125,6 +126,7 @@ __all__ = [
     "SimilarityRecomputeRequest",
     "Message",
     "ModelRegistry",
+    "ModelGovernanceReceipt",
     "PlatformLink",
     "PolicyDecision",
     "RegisteredService",

@@ -73,6 +73,8 @@ class DurableReceiptSink(Protocol):
 
     def compensate_post_usage(self, event: Mapping[str, Any]) -> object: ...
 
+    def record_failure_audit(self, event: Mapping[str, Any]) -> object: ...
+
 
 @dataclass(frozen=True, slots=True)
 class ModelInvocationAuthorization:
@@ -397,6 +399,48 @@ class ModelGovernanceRuntime:
             _same_artifact(artifact, observed_artifact)
             _same_deployment(deployment, observed_deployment, now=now)
 
+    def invocation_facts(
+        self,
+        callsite_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> tuple[ObservedArtifactFacts, ObservedDeploymentFacts]:
+        """Return the current verified artifact/deployment pair for a callsite.
+
+        Callers must not copy model facts from an untrusted registry row.  The
+        pair is projected from the authority and the observed evidence loaded
+        by the same atomic bootstrap used for admission.
+        """
+
+        current = _now(now)
+        with self._lock:
+            authority = self._require_ready(now=current)
+            binding = authority.bindings.get(callsite_id)
+            if binding is None:
+                raise ModelGovernanceRuntimeError(
+                    f"callsite {callsite_id!r} is not enabled in verified profile"
+                )
+            observed = self._observed
+            if observed is None:
+                raise ModelGovernanceRuntimeError(
+                    "observed governance facts are unavailable"
+                )
+            artifact = authority.model_artifacts[binding.model_artifact_id]
+            deployment = authority.deployments[binding.deployment_id]
+            observed_artifact = next(
+                (item for item in observed.artifacts if item.artifact_id == artifact.artifact_id),
+                None,
+            )
+            observed_deployment = next(
+                (item for item in observed.deployments if item.deployment_id == deployment.deployment_id),
+                None,
+            )
+            if observed_artifact is None or observed_deployment is None:
+                raise ModelGovernanceRuntimeError(
+                    f"observed facts are missing for callsite {callsite_id!r}"
+                )
+            return observed_artifact, observed_deployment
+
     def bootstrap(self, *, now: datetime | None = None) -> ModelGovernanceReadiness:
         """Atomically load and verify all mounted governance material."""
 
@@ -414,6 +458,7 @@ class ModelGovernanceRuntime:
             self._observed = None
             self._source_signature = None
             try:
+                before_signature = self._signature()
                 inventory = _json_object(self.paths.inventory, "inventory")
                 profile = _json_object(self.paths.profile, "profile")
                 trust_store = _json_object(self.paths.trust_store, "trust_store")
@@ -431,6 +476,10 @@ class ModelGovernanceRuntime:
                 observed = self._read_observed()
                 self._verify_observed(authority, observed, now=current)
                 signature = self._signature()
+                if signature != before_signature:
+                    raise ModelGovernanceRuntimeError(
+                        "governance material changed during bootstrap; retry required"
+                    )
             except Exception as exc:
                 reason = str(exc).strip() or type(exc).__name__
                 self._readiness = ModelGovernanceReadiness(
@@ -535,6 +584,8 @@ class ModelGovernanceRuntime:
         endpoint: str,
         phase: Literal["pre", "post"],
         usage: Mapping[str, Any] | None = None,
+        outcome: Literal["success", "failure"] | None = None,
+        receipt_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         event: dict[str, Any] = {
             "schema_version": "anila.gate5.model-governance.receipt.v1",
@@ -549,6 +600,10 @@ class ModelGovernanceRuntime:
         }
         if usage is not None:
             event["usage"] = dict(usage)
+        if outcome is not None:
+            event["outcome"] = outcome
+        if receipt_context is not None:
+            event["receipt_context"] = dict(receipt_context)
         return event
 
     @staticmethod
@@ -599,13 +654,16 @@ class ModelGovernanceRuntime:
         self,
         callsite_id: str,
         classification: Any,
-        agent_id: str,
+        agent_id: str | None,
         endpoint: str,
         artifact_facts: ObservedArtifactFacts | Mapping[str, Any],
         deployment_facts: ObservedDeploymentFacts | Mapping[str, Any],
         *,
         invocation_id: str | None = None,
         now: datetime | None = None,
+        usage_sink: DurableReceiptSink | None = None,
+        audit_sink: DurableReceiptSink | None = None,
+        receipt_context: Mapping[str, Any] | None = None,
     ) -> ModelInvocationAuthorization:
         """Authorize one model invocation only after durable pre-receipts."""
 
@@ -662,22 +720,25 @@ class ModelGovernanceRuntime:
                 invocation_id=invocation,
                 endpoint=safe_endpoint,
                 phase="pre",
+                receipt_context=receipt_context,
             )
-            if self.usage_sink is None or not callable(
-                getattr(self.usage_sink, "compensate_pre_usage", None)
+            effective_usage_sink = usage_sink or self.usage_sink
+            effective_audit_sink = audit_sink or self.audit_sink
+            if effective_usage_sink is None or not callable(
+                getattr(effective_usage_sink, "compensate_pre_usage", None)
             ):
                 raise ModelGovernanceRuntimeError(
                     "usage sink lacks transactional pre-receipt compensation"
                 )
             usage_receipt = self._write_receipt(
-                self.usage_sink,
+                effective_usage_sink,
                 "record_pre_usage",
                 event,
                 kind="usage pre",
             )
             try:
                 audit_receipt = self._write_receipt(
-                    self.audit_sink,
+                    effective_audit_sink,
                     "record_pre_audit",
                     event,
                     kind="audit pre",
@@ -685,7 +746,7 @@ class ModelGovernanceRuntime:
             except ModelGovernanceRuntimeError as exc:
                 try:
                     self._compensate_receipt(
-                        self.usage_sink,
+                        effective_usage_sink,
                         event,
                         method_name="compensate_pre_usage",
                         kind="usage pre",
@@ -714,6 +775,9 @@ class ModelGovernanceRuntime:
         usage: Mapping[str, Any],
         *,
         now: datetime | None = None,
+        usage_sink: DurableReceiptSink | None = None,
+        audit_sink: DurableReceiptSink | None = None,
+        receipt_context: Mapping[str, Any] | None = None,
     ) -> ModelInvocationCompletion:
         """Persist post-network usage and audit receipts, fail-closed."""
 
@@ -741,22 +805,44 @@ class ModelGovernanceRuntime:
                 endpoint=authorization.endpoint,
                 phase="post",
                 usage=usage,
+                outcome="success",
+                receipt_context=receipt_context,
             )
-            if self.usage_sink is None or not callable(
-                getattr(self.usage_sink, "compensate_post_usage", None)
+            effective_usage_sink = usage_sink or self.usage_sink
+            effective_audit_sink = audit_sink or self.audit_sink
+            if effective_usage_sink is None or not callable(
+                getattr(effective_usage_sink, "compensate_post_usage", None)
             ):
                 raise ModelGovernanceRuntimeError(
                     "usage sink lacks transactional post-receipt compensation"
                 )
-            usage_receipt = self._write_receipt(
-                self.usage_sink,
-                "record_post_usage",
-                event,
-                kind="usage post",
-            )
+            try:
+                usage_receipt = self._write_receipt(
+                    effective_usage_sink,
+                    "record_post_usage",
+                    event,
+                    kind="usage post",
+                )
+            except ModelGovernanceRuntimeError as exc:
+                event["outcome"] = "failure"
+                event["error"] = str(exc)[:512]
+                try:
+                    self._write_receipt(
+                        effective_audit_sink,
+                        "record_failure_audit",
+                        event,
+                        kind="audit post-failure",
+                    )
+                except ModelGovernanceRuntimeError as audit_exc:
+                    raise ModelGovernanceRuntimeError(
+                        "post usage receipt failed and failure audit failed"
+                    ) from audit_exc
+                raise ModelGovernanceRuntimeError(
+                    "post usage receipt failed; failure audit committed"
+                ) from exc
             try:
                 audit_receipt = self._write_receipt(
-                    self.audit_sink,
+                    effective_audit_sink,
                     "record_post_audit",
                     event,
                     kind="audit post",
@@ -764,7 +850,7 @@ class ModelGovernanceRuntime:
             except ModelGovernanceRuntimeError as exc:
                 try:
                     self._compensate_receipt(
-                        self.usage_sink,
+                        effective_usage_sink,
                         event,
                         method_name="compensate_post_usage",
                         kind="usage post",
@@ -775,6 +861,87 @@ class ModelGovernanceRuntime:
                     ) from compensation_exc
                 raise ModelGovernanceRuntimeError(
                     "post-receipt transaction failed; usage receipt compensated"
+                ) from exc
+            return ModelInvocationCompletion(
+                invocation_id=authorization.invocation_id,
+                post_usage_receipt=usage_receipt,
+                post_audit_receipt=audit_receipt,
+                completed_at=current,
+            )
+
+    def record_post_failure(
+        self,
+        authorization: ModelInvocationAuthorization,
+        error: BaseException | str,
+        *,
+        now: datetime | None = None,
+        usage_sink: DurableReceiptSink | None = None,
+        audit_sink: DurableReceiptSink | None = None,
+        receipt_context: Mapping[str, Any] | None = None,
+    ) -> ModelInvocationCompletion:
+        """Close an admitted call with zero/partial usage and a failure audit."""
+
+        if not isinstance(authorization, ModelInvocationAuthorization):
+            raise ModelGovernanceRuntimeError(
+                "invalid immutable invocation authorization"
+            )
+        current = _now(now)
+        with self._lock:
+            authority = self._require_ready(now=current)
+            if (
+                authority.profile_content_sha256
+                != authorization.authority_profile_content_sha256
+                or authority.inventory_sha256
+                != authorization.authority_inventory_sha256
+            ):
+                raise ModelGovernanceRuntimeError(
+                    "governance authority rotated/revoked before failure receipt"
+                )
+            event = self._event(
+                authorization=authorization.governance,
+                invocation_id=authorization.invocation_id,
+                endpoint=authorization.endpoint,
+                phase="post",
+                usage={"status": "failed", "error": str(error)[:512]},
+                outcome="failure",
+                receipt_context=receipt_context,
+            )
+            effective_usage_sink = usage_sink or self.usage_sink
+            effective_audit_sink = audit_sink or self.audit_sink
+            if effective_usage_sink is None or not callable(
+                getattr(effective_usage_sink, "compensate_post_usage", None)
+            ):
+                raise ModelGovernanceRuntimeError(
+                    "usage sink lacks transactional post-receipt compensation"
+                )
+            try:
+                usage_receipt = self._write_receipt(
+                    effective_usage_sink,
+                    "record_post_usage",
+                    event,
+                    kind="usage failure post",
+                )
+                audit_receipt = self._write_receipt(
+                    effective_audit_sink,
+                    "record_post_audit",
+                    event,
+                    kind="audit failure post",
+                )
+            except ModelGovernanceRuntimeError as exc:
+                event["error"] = str(exc)[:512]
+                try:
+                    self._compensate_receipt(
+                        effective_usage_sink,
+                        event,
+                        method_name="compensate_post_usage",
+                        kind="usage failure post",
+                    )
+                except ModelGovernanceRuntimeError as compensation_exc:
+                    raise ModelGovernanceRuntimeError(
+                        "failure receipt transaction failed and compensation failed"
+                    ) from compensation_exc
+                raise ModelGovernanceRuntimeError(
+                    "failure receipt transaction failed; usage receipt compensated"
                 ) from exc
             return ModelInvocationCompletion(
                 invocation_id=authorization.invocation_id,

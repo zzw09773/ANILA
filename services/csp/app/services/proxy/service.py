@@ -51,11 +51,132 @@ from app.services.proxy.usage import (
     _serialize_request_for_usage,
     enqueue_usage_task_linked,
 )
+from app.services.model_governance_receipts import (
+    GovernedModelInvocation,
+    ReceiptSubject,
+    resolve_model_governance_runtime,
+)
 from app.services.usage_writer import enqueue_usage
 
 # Keep the pre-split logger channel ("app.services.proxy_service") so log
 # routing / filtering / capture behavior is identical after the package split.
 logger = logging.getLogger("app.services.proxy_service")
+
+_DEFAULT_GOVERNANCE_CALLSITE = "r7.csp.proxy-service"
+
+
+def _build_governed_model_invocation(
+    *,
+    governance_db,
+    governance_callsite_id: str | None,
+    model_type: str | None,
+    target_agent_id: int | None,
+    user_id: int,
+    model_id: int | None,
+    department_id: int | None,
+    conversation_id: str | None,
+    trace_id: str | None,
+) -> GovernedModelInvocation | None:
+    """Build the central Gate 5 seam for model egress only.
+
+    Agent dispatch intentionally bypasses this helper: R3 owns its dispatch
+    admission/stream contract and must not receive a second Gate 5 receipt.
+    A formal enabled runtime cannot silently fall back when the caller forgot
+    the DB binding; that denial happens before an HTTP client is created.
+    """
+    if target_agent_id is not None or model_type == "agent":
+        return None
+    runtime = resolve_model_governance_runtime()
+    if runtime is None or not runtime.enabled:
+        return None
+    if not governance_callsite_id or not governance_callsite_id.strip():
+        raise HTTPException(
+            status_code=503,
+            detail="Gate 5 model governance 缺少 outbound callsite binding",
+        )
+    if governance_db is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Gate 5 model governance 缺少 durable receipt DB",
+        )
+    return GovernedModelInvocation.from_runtime(
+        governance_db,
+        runtime=runtime,
+        subject=ReceiptSubject(
+            user_id=user_id,
+            model_id=model_id,
+            department_id=department_id,
+            conversation_id=conversation_id,
+            trace_id=trace_id,
+        ),
+    )
+
+
+def _governance_classification(
+    admitted_classification_level: str | None,
+) -> Classification:
+    if admitted_classification_level is None:
+        return Classification.UNCLASSIFIED
+    return Classification.from_storage(admitted_classification_level)
+
+
+def _record_governance_failure(
+    governed: GovernedModelInvocation | None,
+    authorization,
+    error: BaseException | str,
+) -> None:
+    if governed is None or authorization is None:
+        return
+    try:
+        governed.fail(authorization, error)
+    except Exception:
+        # The outbound/network exception is authoritative for the caller. A
+        # failure-receipt outage is logged and must never mask that exception.
+        logger.exception("proxy_service: Gate 5 failure receipt could not be committed")
+
+
+def _complete_governance(
+    governed: GovernedModelInvocation | None,
+    authorization,
+    usage: Mapping[str, object],
+) -> None:
+    if governed is None or authorization is None:
+        return
+    try:
+        governed.complete(authorization, usage)
+    except Exception as exc:
+        # A successful upstream response without a durable post receipt is not
+        # a successful CSP result. Convert this governance-only failure to the
+        # normal service-unavailable shape so task-bound callers still enter
+        # their existing HTTPException closure path.
+        raise HTTPException(
+            status_code=503,
+            detail="Gate 5 model usage receipt failed; result rejected",
+        ) from exc
+
+
+def _authorize_governance(
+    governed: GovernedModelInvocation | None,
+    *,
+    callsite_id: str,
+    classification: Classification,
+    invocation_id: str,
+):
+    if governed is None:
+        return None
+    try:
+        return governed.authorize(
+            callsite_id=callsite_id,
+            classification=classification,
+            invocation_id=invocation_id,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Gate 5 model governance admission failed; outbound rejected",
+        ) from exc
 
 
 def _require_pilot_sink_admission(
@@ -662,6 +783,13 @@ async def _proxy_request_impl(
                     prompt_tokens,
                     completion_tokens,
                 )
+            if usage_capture is not None:
+                usage_capture["governance_usage"] = {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                    "request_duration_ms": duration_ms,
+                }
             existing_meta = result.get("anila_meta")
             if not existing_meta:
                 result["anila_meta"] = build_default_anila_meta(
@@ -798,6 +926,7 @@ async def proxy_request(
     task_run_id: Optional[int] = None,
     legacy_runtime_call: bool = False,
     inference_callsite_id: str | None = None,
+    governance_callsite_id: str | None = _DEFAULT_GOVERNANCE_CALLSITE,
     governance_db=None,
     admitted_classification_level: str | None = None,
     registry_user_id: int | None = None,
@@ -818,6 +947,9 @@ async def proxy_request(
     closure_id = uuid.uuid4().hex
     usage_capture: dict = {}
     is_agent_target = model.model_type == "agent" or target_agent_id is not None
+    governed = None
+    authorization = None
+    governance_closed = False
     try:
         _require_pilot_sink_admission(
             inference_callsite_id=inference_callsite_id,
@@ -848,32 +980,67 @@ async def proxy_request(
             registry_manifest_revision=registry_manifest_revision,
             registry_manifest_sha256=registry_manifest_sha256,
         )
-        result = await _proxy_request_impl(
-            model=model,
-            api_key_id=api_key_id,
+        governed = _build_governed_model_invocation(
+            governance_db=governance_db,
+            governance_callsite_id=governance_callsite_id,
+            model_type=getattr(model, "model_type", None),
+            target_agent_id=target_agent_id,
             user_id=user_id,
+            model_id=getattr(model, "id", None),
             department_id=department_id,
-            request_body=request_body,
-            endpoint_path=endpoint_path,
-            user_email=user_email,
-            user_identity=user_identity,
-            router_caller_user_id=router_caller_user_id,
-            router_context=router_context,
             conversation_id=conversation_id,
             trace_id=trace_id,
-            requires_encryption=requires_encryption,
-            target_agent_id=target_agent_id,
-            caller_agent_id=caller_agent_id,
-            caller_client_id=caller_client_id,
-            task_id=task_id,
-            task_trace_id=task_trace_id,
-            legacy_runtime_call=legacy_runtime_call,
-            inference_callsite_id=inference_callsite_id,
-            governance_db=governance_db,
-            admitted_classification_level=admitted_classification_level,
-            task_run_id=task_run_id,
-            usage_capture=usage_capture,
         )
+        if governed is not None:
+            authorization = _authorize_governance(
+                governed,
+                callsite_id=governance_callsite_id or _DEFAULT_GOVERNANCE_CALLSITE,
+                classification=_governance_classification(
+                    admitted_classification_level
+                ),
+                invocation_id=f"proxy-{closure_id}",
+            )
+        try:
+            result = await _proxy_request_impl(
+                model=model,
+                api_key_id=api_key_id,
+                user_id=user_id,
+                department_id=department_id,
+                request_body=request_body,
+                endpoint_path=endpoint_path,
+                user_email=user_email,
+                user_identity=user_identity,
+                router_caller_user_id=router_caller_user_id,
+                router_context=router_context,
+                conversation_id=conversation_id,
+                trace_id=trace_id,
+                requires_encryption=requires_encryption,
+                target_agent_id=target_agent_id,
+                caller_agent_id=caller_agent_id,
+                caller_client_id=caller_client_id,
+                task_id=task_id,
+                task_trace_id=task_trace_id,
+                legacy_runtime_call=legacy_runtime_call,
+                inference_callsite_id=inference_callsite_id,
+                governance_db=governance_db,
+                admitted_classification_level=admitted_classification_level,
+                task_run_id=task_run_id,
+                usage_capture=usage_capture,
+            )
+            if governed is not None and authorization is not None:
+                try:
+                    _complete_governance(
+                        governed,
+                        authorization,
+                        usage_capture.get("governance_usage", {}),
+                    )
+                finally:
+                    governance_closed = True
+        except BaseException as exc:
+            if authorization is not None and not governance_closed:
+                governance_closed = True
+                _record_governance_failure(governed, authorization, exc)
+            raise
     except HTTPException as exc:
         if task_run_id is not None and finalize_task_run_on_completion:
             if governance_db is None or task_id is None:
@@ -1330,6 +1497,13 @@ async def _proxy_stream_impl(
             ),
             ensure_ascii=False,
         ) + "\n\n"
+    if terminal_capture is not None:
+        terminal_capture["governance_usage"] = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "request_duration_ms": duration_ms,
+        }
     if pending_done_block:
         if terminal_capture is None:
             yield pending_done_block
@@ -1419,6 +1593,7 @@ async def proxy_stream(
     legacy_runtime_call: bool = False,
     gateway_api_key: Optional[str] = None,
     inference_callsite_id: str | None = None,
+    governance_callsite_id: str | None = _DEFAULT_GOVERNANCE_CALLSITE,
     governance_db=None,
     registry_endpoint_url: str | None = None,
     admitted_classification_level: str | None = None,
@@ -1446,6 +1621,9 @@ async def proxy_stream(
     terminal_capture: dict = {}
     cancel_terminal_capture = {"claimed": False}
     closure_committed = False
+    governed = None
+    authorization = None
+    governance_closed = False
     try:
         _require_pilot_sink_admission(
             inference_callsite_id=inference_callsite_id,
@@ -1477,6 +1655,26 @@ async def proxy_stream(
             registry_manifest_sha256=registry_manifest_sha256,
         )
         _commit_stream_admission(governance_db)
+        governed = _build_governed_model_invocation(
+            governance_db=governance_db,
+            governance_callsite_id=governance_callsite_id,
+            model_type=None,
+            target_agent_id=target_agent_id,
+            user_id=user_id,
+            model_id=usage_model_id,
+            department_id=department_id,
+            conversation_id=conversation_id,
+            trace_id=trace_id,
+        )
+        if governed is not None:
+            authorization = _authorize_governance(
+                governed,
+                callsite_id=governance_callsite_id or _DEFAULT_GOVERNANCE_CALLSITE,
+                classification=_governance_classification(
+                    admitted_classification_level
+                ),
+                invocation_id=f"proxy-{closure_id}",
+            )
         async with registry.register(task_id) as cancel_event:
             upstream = _proxy_stream_impl(
                 target_url=target_url,
@@ -1526,6 +1724,15 @@ async def proxy_stream(
                     if was_cancelled:
                         cancel_terminal_capture["claimed"] = claimed
                         raise StreamCancelled("live task cancellation requested")
+        if governed is not None and authorization is not None:
+            try:
+                _complete_governance(
+                    governed,
+                    authorization,
+                    terminal_capture.get("governance_usage", {}),
+                )
+            finally:
+                governance_closed = True
         if task_run_id is not None:
             if governance_db is None or task_id is None or not task_trace_id:
                 raise RuntimeError("Task stream closure 缺少治理上下文")
@@ -1560,10 +1767,18 @@ async def proxy_stream(
     except HTTPException as exc:
         status = "failed"
         error = {"code": f"http_{exc.status_code}", "message": str(exc.detail)}
+        if authorization is not None and not governance_closed:
+            governance_closed = True
+            _record_governance_failure(governed, authorization, exc)
         raise
     except StreamCancelled:
         status = "cancelled"
         error = {"code": "cancelled", "message": "使用者取消執行"}
+        if authorization is not None and not governance_closed:
+            governance_closed = True
+            _record_governance_failure(
+                governed, authorization, "使用者取消執行"
+            )
         # Cancellation is a normal terminal outcome.  Do not emit [DONE] and
         # do not translate it into a 5xx after response headers were sent.
         if cancel_terminal_capture["claimed"]:
@@ -1591,8 +1806,18 @@ async def proxy_stream(
     except BaseException as exc:  # GeneratorExit / CancelledError included
         status = "failed"
         error = {"code": "stream_aborted", "message": type(exc).__name__}
+        if authorization is not None and not governance_closed:
+            governance_closed = True
+            _record_governance_failure(governed, authorization, exc)
         raise
     finally:
+        if authorization is not None and not governance_closed:
+            governance_closed = True
+            _record_governance_failure(
+                governed,
+                authorization,
+                error or "stream finalizer closed before completion",
+            )
         if task_run_id is not None and not closure_committed:
             if governance_db is None or task_id is None or not task_trace_id:
                 logger.critical(
