@@ -55,6 +55,9 @@ class Agent(Base):
     manifest_url = Column(String(500), nullable=True)
     healthcheck_url = Column(String(500), nullable=True)
     api_version = Column(String(20), nullable=False, default="v1")
+    # Explicit lifecycle gate.  ``approval_status`` is a governance workflow
+    # state, not a replacement for an operator's active/inactive switch.
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
     # doc 05 §3/§4 agent semver(manifest.version;§13「尚未存在」欄位逐字名
     # agent_version,對映 manifest 欄位 version)。
     agent_version = Column(String(40), nullable=True)
@@ -80,6 +83,9 @@ class Agent(Base):
     trace_callback_mode = Column(String(20), nullable=True)
     # health_status: unknown / healthy / unhealthy
     health_status = Column(String(20), nullable=False, default="unknown")
+    # Last successful or failed probe timestamp.  ``health_status`` without a
+    # fresh timestamp is not evidence of readiness (fail-closed).
+    health_checked_at = Column(DateTime, nullable=True)
     # approval_status(doc 05 §3,7 值):draft / pending_connection_test /
     # pending_trace_test / pending_security_review / approved / rejected / disabled。
     # 現況三值由 r1_0004 backfill(pending → pending_connection_test)。註冊落地
@@ -100,6 +106,16 @@ class Agent(Base):
     # trace_test_passed_at 非空 + approval_status=pending_security_review 才可 approve。
     trace_test_passed_at = Column(DateTime, nullable=True)
     trace_test_report = Column(JSONValue, nullable=True)
+    # Deterministic identity of the stored canonical manifest.  The revision
+    # is a CSP ``sha256:<content-hash>`` identifier, not the Agent-authored
+    # semantic ``manifest.version``.  These fields are populated only after
+    # CSP parses the manifest; old rows stay null and therefore cannot become
+    # ready by migration backfill.
+    manifest_sha256 = Column(String(64), nullable=True)
+    manifest_revision = Column(String(128), nullable=True)
+    # Fingerprint of every governance input used by the trace-test evidence:
+    # manifest, endpoint, base model and classification/trace posture.
+    trace_test_governance_fingerprint = Column(String(64), nullable=True)
     # When true, runtime must treat every conversation routed to this agent as
     # classified / encrypted. Set by admin in the control panel.
     requires_encryption = Column(Boolean, nullable=False, default=False, server_default="false")

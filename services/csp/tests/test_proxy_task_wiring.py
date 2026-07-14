@@ -294,6 +294,12 @@ class TestUserCallerWithTask:
         """doc 05 §4:agent dispatch 帶 X-ANILA-Task-Id + X-ANILA-Trace-Id
         (trace id 取自 task 列)。"""
         user = make_user(db, username="task_user_ag")
+        # This fixture intentionally exercises the pre-Router-v2 legacy
+        # compatibility path. Formal dispatch tests provide the complete
+        # caller-scoped registry snapshot/manifest evidence instead.
+        monkeypatch.setattr(
+            proxy_service.settings, "ALLOW_LEGACY_AGENT_DISPATCH", True
+        )
         dev = make_user(db, username="task_dev_ag", role="developer")
         agent = make_agent(db, dev, name="task-agent", approval_status="approved")
         db.add(UserAgentPermission(user_id=user.id, agent_id=agent.id))
@@ -336,6 +342,11 @@ class TestUserCallerWithTask:
     def test_agent_nonstream_writes_task_attributed_token_usage(
         self, client: TestClient, db: Session, monkeypatch, task_sessions,
     ):
+        # Legacy fixture: keep the old task-linked call shape explicit while
+        # Gate5 formal callers migrate to snapshot headers.
+        monkeypatch.setattr(
+            proxy_service.settings, "ALLOW_LEGACY_AGENT_DISPATCH", True
+        )
         user = make_user(db, username="task_user_agent_nonstream")
         dev = make_user(db, username="task_dev_agent_nonstream", role="developer")
         base_model = make_model(db, name="task-agent-nonstream-base")

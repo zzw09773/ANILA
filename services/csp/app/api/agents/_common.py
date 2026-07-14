@@ -8,9 +8,12 @@ from fastapi import Depends, HTTPException, Request
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from anila_contracts import AgentManifest as CanonicalAgentManifest
 from app.models.agent import Agent
 from app.models.user import User
-from app.schemas.contracts.agents import AgentManifest
+# The CSP-local manifest remains only as an input compatibility adapter for
+# pre-Gate-5 registrations.  Readiness never parses it as canonical authority.
+from app.schemas.contracts.agents import AgentManifest as LegacyAgentManifest
 from app.services.auth_service import get_current_user
 
 
@@ -21,9 +24,35 @@ def validate_agent_manifest(payload: dict) -> dict:
     non-五級 classification) raise ``422`` with a zh-TW detail. Returns the
     normalized manifest dict (JSON-mode) suitable for ``Agent.manifest_json``.
     """
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Agent manifest 驗證失敗:必須是 JSON object")
+    # Canonical Gate-5 payloads are never downgraded to the legacy adapter if
+    # they contain any v2-only key.  This prevents a malformed new manifest
+    # from accidentally becoming a permissive legacy row.
+    canonical_hint = {
+        "schema_version",
+        "event_protocols",
+        "required_scopes",
+        "full_trace_required",
+        "supports_streaming",
+    }
+    errors: list[ValidationError] = []
     try:
-        manifest = AgentManifest.model_validate(payload)
-    except ValidationError as exc:
+        manifest = CanonicalAgentManifest.model_validate(payload)
+    except ValidationError as canonical_exc:
+        errors.append(canonical_exc)
+        if canonical_hint.intersection(payload):
+            manifest = None
+        else:
+            try:
+                manifest = LegacyAgentManifest.model_validate(payload)
+            except ValidationError as legacy_exc:
+                errors.append(legacy_exc)
+                manifest = None
+    if manifest is None:
+        exc = errors[-1] if errors else ValidationError.from_exception_data(
+            "AgentManifest", []
+        )
         first = exc.errors()[0] if exc.errors() else {}
         loc = ".".join(str(p) for p in first.get("loc", ())) or "(root)"
         msg = first.get("msg", "格式不符")

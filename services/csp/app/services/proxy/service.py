@@ -20,6 +20,7 @@ from anila_security import ENDPOINT_KIND_AGENT, ENDPOINT_KIND_MODEL
 from anila_contracts import Classification
 
 from app.config import settings
+from app.models.agent import Agent
 from app.models.model_registry import ModelRegistry
 from app.models.task import Task, TaskRun
 from app.services.proxy.closure import (
@@ -164,6 +165,12 @@ def _lock_registry_admission(
     registry_endpoint_url: str | None,
     admitted_classification_level: str | None,
     inference_callsite_id: str | None = None,
+    registry_user_id: int | None = None,
+    registry_snapshot_id: str | None = None,
+    registry_snapshot_revision: str | None = None,
+    registry_snapshot_hash: str | None = None,
+    registry_manifest_revision: str | None = None,
+    registry_manifest_sha256: str | None = None,
 ):
     """Re-read and lock the exact registry row used for outbound.
 
@@ -176,13 +183,13 @@ def _lock_registry_admission(
     if (
         governance_db is None
         or (registry_model_id is None and registry_agent_id is None)
-        or admitted_classification_level is None
+        or (admitted_classification_level is None and registry_agent_id is None)
     ):
+        if registry_agent_id is not None:
+            raise HTTPException(status_code=403, detail="Agent readiness 缺少治理 DB")
         return
     from anila_contracts import Classification as ClassificationLevel
     from app.modules.policy import evaluate_classification_ceiling
-    from app.models.agent import Agent
-
     try:
         if registry_agent_id is not None:
             locked = (
@@ -192,6 +199,18 @@ def _lock_registry_admission(
                 .with_for_update(read=True)
                 .one_or_none()
             )
+            # Agent readiness also depends on its bound model's active,
+            # healthy and classification state.  Lock that exact row in the
+            # same transaction so a concurrent model update cannot land
+            # between readiness evaluation and outbound network I/O.
+            if locked is not None and locked.base_model_id is not None:
+                (
+                    governance_db.query(ModelRegistry)
+                    .filter(ModelRegistry.id == locked.base_model_id)
+                    .populate_existing()
+                    .with_for_update(read=True)
+                    .one_or_none()
+                )
             active = locked is not None and locked.approval_status == "approved"
         else:
             locked = (
@@ -214,6 +233,101 @@ def _lock_registry_admission(
             status_code=409,
             detail="模型端點在 admission 後已變更，已拒絕出向呼叫",
         )
+    if registry_agent_id is not None:
+        from app.services.agent_readiness import (
+            evaluate_agent_readiness,
+            MANIFEST_REVISION_MISSING,
+            SNAPSHOT_REVISION_MISMATCH,
+            SNAPSHOT_REVISION_MISSING,
+        )
+
+        # Formal Router calls must carry both a caller-scoped snapshot and the
+        # manifest revision it selected.  An explicit development flag is the
+        # only escape hatch while the legacy consumer is being retired.
+        snapshot_evidence_present = any(
+            (
+                registry_snapshot_id,
+                registry_snapshot_revision,
+                registry_snapshot_hash,
+                registry_manifest_revision,
+                registry_manifest_sha256,
+            )
+        )
+        # The development bridge is intentionally all-or-nothing: a truly
+        # headerless legacy call may bypass the R2 snapshot contract, but a
+        # caller that supplies even one identity header must present and pass
+        # the complete five-field evidence set.
+        legacy_without_snapshot = (
+            settings.ALLOW_LEGACY_AGENT_DISPATCH and not snapshot_evidence_present
+        )
+        if not legacy_without_snapshot:
+            if (
+                registry_user_id is None
+                or not registry_snapshot_id
+                or not registry_snapshot_revision
+                or not registry_snapshot_hash
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Agent dispatch 缺少完整 registry snapshot ({SNAPSHOT_REVISION_MISSING})",
+                )
+            from app.services.agent_registry import build_registry_snapshot
+
+            try:
+                current_snapshot = build_registry_snapshot(
+                    governance_db, user_id=registry_user_id
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=403, detail="registry caller context 無效") from exc
+            if (
+                current_snapshot.snapshot_id != registry_snapshot_id
+                or current_snapshot.snapshot_revision != registry_snapshot_revision
+                or current_snapshot.snapshot_hash != registry_snapshot_hash
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"registry snapshot 已變更 ({SNAPSHOT_REVISION_MISMATCH})",
+                )
+            target_entry = next(
+                (
+                    entry
+                    for entry in current_snapshot.agents
+                    if entry.registry_id == registry_agent_id
+                    and entry.agent_id == str(locked.name)
+                ),
+                None,
+            )
+            if target_entry is None:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Agent 不在 caller-scoped registry snapshot，已拒絕出向呼叫",
+                )
+            if (
+                not registry_manifest_revision
+                or not registry_manifest_sha256
+                or target_entry.manifest_revision != registry_manifest_revision
+                or target_entry.manifest_sha256 != registry_manifest_sha256
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Agent dispatch manifest identity 不符 ({MANIFEST_REVISION_MISSING})",
+                )
+        if not legacy_without_snapshot:
+            readiness = evaluate_agent_readiness(
+                locked,
+                db=governance_db,
+                requested_classification=admitted_classification_level,
+                expected_manifest_revision=registry_manifest_revision,
+                expected_manifest_sha256=registry_manifest_sha256,
+            )
+            if not readiness.ready_for_dispatch:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "code": "agent_not_ready_for_dispatch",
+                        "reason_codes": readiness.reasons,
+                    },
+                )
     if settings.ANILA_PILOT_MODE:
         from app.services.startup_security import (
             require_pilot_classification,
@@ -278,6 +392,12 @@ def _commit_stream_admission(governance_db) -> None:
 def lock_agent_registry_admission(
     *, governance_db, agent_id: int, endpoint_url: str,
     admitted_classification_level: str,
+    registry_user_id: int | None = None,
+    registry_snapshot_id: str | None = None,
+    registry_snapshot_revision: str | None = None,
+    registry_snapshot_hash: str | None = None,
+    registry_manifest_revision: str | None = None,
+    registry_manifest_sha256: str | None = None,
 ) -> None:
     """Public helper for the legacy non-streaming Agent branch."""
     _lock_registry_admission(
@@ -287,6 +407,12 @@ def lock_agent_registry_admission(
         registry_endpoint_url=endpoint_url,
         admitted_classification_level=admitted_classification_level,
         inference_callsite_id="csp.agent_dispatch",
+        registry_user_id=registry_user_id,
+        registry_snapshot_id=registry_snapshot_id,
+        registry_snapshot_revision=registry_snapshot_revision,
+        registry_snapshot_hash=registry_snapshot_hash,
+        registry_manifest_revision=registry_manifest_revision,
+        registry_manifest_sha256=registry_manifest_sha256,
     )
 
 def _get_timeout(model_type: str) -> float:
@@ -342,6 +468,7 @@ async def _proxy_request_impl(
     endpoint_path: str,
     user_email: Optional[str] = None,
     user_identity: Optional[str] = None,
+    router_caller_user_id: int | None = None,
     conversation_id: Optional[str] = None,
     trace_id: Optional[str] = None,
     requires_encryption: bool = False,
@@ -431,7 +558,10 @@ async def _proxy_request_impl(
     else:
         # Doc 04 §3/AC5: model gateway gets Bearer key + 員編 ONLY — no
         # task / trace headers, structurally (builder has no such params).
-        req_headers = build_model_gateway_headers(user_identity)
+        req_headers = build_model_gateway_headers(
+            user_identity,
+            router_caller_user_id=router_caller_user_id,
+        )
     # gateway key 只給 model 呼叫;agent dispatch (model_type='agent') 不帶。
     # Slice 6a: per-model api_key_secret_ref 優先,退回全域 env(MVP fallback)。
     if model.model_type != "agent":
@@ -640,6 +770,7 @@ async def proxy_request(
     endpoint_path: str,
     user_email: Optional[str] = None,
     user_identity: Optional[str] = None,
+    router_caller_user_id: int | None = None,
     conversation_id: Optional[str] = None,
     trace_id: Optional[str] = None,
     requires_encryption: bool = False,
@@ -653,6 +784,12 @@ async def proxy_request(
     inference_callsite_id: str | None = None,
     governance_db=None,
     admitted_classification_level: str | None = None,
+    registry_user_id: int | None = None,
+    registry_snapshot_id: str | None = None,
+    registry_snapshot_revision: str | None = None,
+    registry_snapshot_hash: str | None = None,
+    registry_manifest_revision: str | None = None,
+    registry_manifest_sha256: str | None = None,
     finalize_task_run_on_completion: bool = True,
 ) -> dict:
     """Public entrypoint — ``_proxy_request_impl`` plus Slice 2b-C TaskRun
@@ -681,11 +818,19 @@ async def proxy_request(
         )
         _lock_registry_admission(
             governance_db=governance_db,
-            registry_model_id=getattr(model, "id", None),
-            registry_agent_id=None,
+            registry_model_id=(
+                None if target_agent_id is not None else getattr(model, "id", None)
+            ),
+            registry_agent_id=target_agent_id,
             registry_endpoint_url=getattr(model, "endpoint_url", None),
             admitted_classification_level=effective_level,
             inference_callsite_id=inference_callsite_id,
+            registry_user_id=registry_user_id or user_id,
+            registry_snapshot_id=registry_snapshot_id,
+            registry_snapshot_revision=registry_snapshot_revision,
+            registry_snapshot_hash=registry_snapshot_hash,
+            registry_manifest_revision=registry_manifest_revision,
+            registry_manifest_sha256=registry_manifest_sha256,
         )
         result = await _proxy_request_impl(
             model=model,
@@ -696,6 +841,7 @@ async def proxy_request(
             endpoint_path=endpoint_path,
             user_email=user_email,
             user_identity=user_identity,
+            router_caller_user_id=router_caller_user_id,
             conversation_id=conversation_id,
             trace_id=trace_id,
             requires_encryption=requires_encryption,
@@ -803,6 +949,7 @@ async def _proxy_stream_impl(
     request_body: dict,
     user_email: Optional[str] = None,
     user_identity: Optional[str] = None,
+    router_caller_user_id: int | None = None,
     model_name: str | None = None,
     conversation_id: Optional[str] = None,
     trace_id: Optional[str] = None,
@@ -875,7 +1022,10 @@ async def _proxy_stream_impl(
     else:
         # Doc 04 §3/AC5: model gateway gets Bearer key + 員編 ONLY — no
         # task / trace headers, structurally (builder has no such params).
-        headers = build_model_gateway_headers(user_identity)
+        headers = build_model_gateway_headers(
+            user_identity,
+            router_caller_user_id=router_caller_user_id,
+        )
     # gateway key 只給 model 串流;agent 串流 (target_agent_id 非 None) 不帶。
     # Slice 6a: 呼叫端已解析 per-model key(proxy.py 傳入 gateway_api_key);
     # None → _apply_gateway_auth 退回全域 env(既有行為)。
@@ -1225,6 +1375,7 @@ async def proxy_stream(
     request_body: dict,
     user_email: Optional[str] = None,
     user_identity: Optional[str] = None,
+    router_caller_user_id: int | None = None,
     model_name: str | None = None,
     conversation_id: Optional[str] = None,
     trace_id: Optional[str] = None,
@@ -1242,6 +1393,12 @@ async def proxy_stream(
     governance_db=None,
     registry_endpoint_url: str | None = None,
     admitted_classification_level: str | None = None,
+    registry_user_id: int | None = None,
+    registry_snapshot_id: str | None = None,
+    registry_snapshot_revision: str | None = None,
+    registry_snapshot_hash: str | None = None,
+    registry_manifest_revision: str | None = None,
+    registry_manifest_sha256: str | None = None,
     finalize_task_run_on_completion: bool = True,
 ) -> AsyncIterator[str]:
     """Public entrypoint — ``_proxy_stream_impl`` plus Slice 2b-C TaskRun
@@ -1283,6 +1440,12 @@ async def proxy_stream(
             registry_endpoint_url=registry_endpoint_url,
             admitted_classification_level=effective_level,
             inference_callsite_id=inference_callsite_id,
+            registry_user_id=registry_user_id or user_id,
+            registry_snapshot_id=registry_snapshot_id,
+            registry_snapshot_revision=registry_snapshot_revision,
+            registry_snapshot_hash=registry_snapshot_hash,
+            registry_manifest_revision=registry_manifest_revision,
+            registry_manifest_sha256=registry_manifest_sha256,
         )
         _commit_stream_admission(governance_db)
         async with registry.register(task_id) as cancel_event:
@@ -1295,6 +1458,7 @@ async def proxy_stream(
                 request_body=request_body,
                 user_email=user_email,
                 user_identity=user_identity,
+                router_caller_user_id=router_caller_user_id,
                 model_name=model_name,
                 conversation_id=conversation_id,
                 trace_id=trace_id,

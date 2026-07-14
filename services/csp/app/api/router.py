@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 from app.api.agents import router as agents_router
+from app.api.agents.registry import router as agent_registry_router
 from app.api.banners import router as banners_router
 from app.api.auth import router as auth_router
 from app.api.auth_providers import router as auth_providers_router
@@ -54,6 +55,9 @@ api_router.include_router(service_access_grants_router)
 api_router.include_router(service_clients_router)
 api_router.include_router(services_router)
 api_router.include_router(agents_router)
+# Versioned service-only registry projection.  It is intentionally outside
+# ``/api/agents`` (JWT control-plane CRUD) and never replaces legacy /v1/agents.
+api_router.include_router(agent_registry_router, prefix="/internal/v1/agents")
 api_router.include_router(banners_router)
 api_router.include_router(ingestion_collections_router)
 api_router.include_router(ingestion_credentials_router)

@@ -69,6 +69,17 @@ class TestModelGatewayHeaders:
         assert "X-ANILA-User-Id" not in h
         assert "X-CSP-Service-Token" not in h
 
+    def test_router_caller_pk_uses_dedicated_header(self):
+        h = build_model_gateway_headers(
+            "990000002", router_caller_user_id=42
+        )
+        assert h["X-ANILA-User-Id"] == "990000002"
+        assert h["X-ANILA-Caller-User-Id"] == "42"
+
+    def test_non_router_model_has_no_caller_pk_header(self):
+        h = build_model_gateway_headers("990000002")
+        assert "X-ANILA-Caller-User-Id" not in h
+
 
 class TestAgentHeaders:
     def test_full_identity(self):
@@ -81,6 +92,7 @@ class TestAgentHeaders:
         # 非卡片帳號 (downstream_identity→None):省略身分主鍵(不偽造),請求照常。
         h = build_agent_headers(None, "synthetic.agent.user@example.invalid")
         assert "X-ANILA-User-Id" not in h
+        assert "X-ANILA-Caller-User-Id" not in h
 
 
 class TestServiceTokenScoping:

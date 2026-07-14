@@ -182,7 +182,11 @@ def build_agent_headers(
     return headers
 
 
-def build_model_gateway_headers(user_identity: Optional[str]) -> dict:
+def build_model_gateway_headers(
+    user_identity: Optional[str],
+    *,
+    router_caller_user_id: int | None = None,
+) -> dict:
     """Build headers for an LLM / embedding model gateway (.12) call.
 
     Carries ONLY the employee ID (員編) in ``X-ANILA-User-Id`` for
@@ -194,11 +198,18 @@ def build_model_gateway_headers(user_identity: Optional[str]) -> dict:
 
     ``X-ANILA-User-Id`` is omitted when ``user_identity`` is falsy
     (non-card accounts send no identity rather than a forged one; the
-    model call still proceeds).
+    model call still proceeds).  ``router_caller_user_id`` is a separate,
+    integer DB-PK context used only when the destination is the internal
+    ``anila-router`` model.  Callers must leave it ``None`` for ordinary
+    LLM/embedding destinations; it is never an employee-id alias.
     """
     headers: dict = {"Content-Type": "application/json"}
     if user_identity:
         headers["X-ANILA-User-Id"] = user_identity
+    if router_caller_user_id is not None:
+        if int(router_caller_user_id) <= 0:
+            raise ValueError("router caller user id must be a positive integer")
+        headers["X-ANILA-Caller-User-Id"] = str(int(router_caller_user_id))
     return headers
 
 

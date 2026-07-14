@@ -82,8 +82,11 @@ def extract_citations(text: str) -> list[str]:
 class _Span:
     """一個進行中的邏輯 span：``.started`` 已送出，``finish()`` 送 ``.finished``。
 
-    兩筆記錄共用同一 ``span_id`` 與 ``parent_span_id``（frozen shape 帶 started_at +
-    ended_at?，故 started/finished 是同一 span 的兩個生命週期事件）。
+    ``TraceSpan`` 以 ``(trace_id, span_id)`` 去重，因此 lifecycle event 不可
+    共用同一 wire ``span_id``。``self.span_id`` 是 logical span identity；
+    finished event 會取得新的 wire id，並以 ``attributes.logical_span_id``
+    保留 started/finished 配對。Finished event 仍掛在 logical parent（root
+    finished 則掛在 root started）下，故平面資料仍能重建單一父子樹。
     """
 
     __slots__ = ("_done", "_emitter", "attributes", "base", "name",
@@ -107,8 +110,13 @@ class _Span:
         self._done = True
         if attributes:
             self.attributes.update(attributes)
+        self.attributes.setdefault("logical_span_id", self.span_id)
+        # A lifecycle event must have a distinct DB identity.  Root finished
+        # events are children of root started; non-root finished events remain
+        # siblings under their logical parent.
+        finish_parent = self.parent_span_id or self.span_id
         self._emitter._record(
-            f"{self.base}.finished", self.name, self.span_id, self.parent_span_id,
+            f"{self.base}.finished", self.name, _new_id(), finish_parent,
             self.started_at, _now(), status, self.attributes,
         )
 
@@ -127,7 +135,9 @@ class TraceEmitter:
         endpoint: str | None,
         api_key: str | None = None,
         agent_id: str | None = None,
-        task_id: str | None = None,
+        task_id: str | int | None = None,
+        user_id: str | None = None,
+        user_identity: str | None = None,
         producer: str = "agent",
         enabled: bool = True,
         verify_ssl: bool = True,
@@ -140,6 +150,10 @@ class TraceEmitter:
         self.api_key = api_key or None
         self.agent_id = agent_id
         self.task_id = task_id
+        # ``user_identity`` is an ergonomic alias used by the core Router's
+        # TraceSession API; both names carry the validated owner username on
+        # the wire (never the integer DB PK).
+        self.user_id = (user_id or user_identity or "").strip() or None
         self.producer = producer
         self.classification_level = classification_level
         self.verify_ssl = verify_ssl
@@ -154,7 +168,9 @@ class TraceEmitter:
         cls,
         *,
         trace_id: str | None,
-        task_id: str | None = None,
+        task_id: str | int | None = None,
+        user_id: str | None = None,
+        user_identity: str | None = None,
         endpoint: str | None = None,
         api_key: str | None = None,
         agent_id: str | None = None,
@@ -162,10 +178,15 @@ class TraceEmitter:
         verify_ssl: bool = True,
         classification_level: str | None = None,
     ) -> TraceEmitter:
-        """由 CSP dispatch header（X-ANILA-Trace-Id / X-ANILA-Task-Id）建 emitter。"""
+        """由 CSP dispatch headers 建 emitter。
+
+        ``user_id`` 是 CSP 已驗證的 owner username；它與整數 Task id
+        一起回傳給 trace ingest，防止 agent 以任意 trace/task 竄改稽核歸屬。
+        """
         return cls(
             trace_id=trace_id, task_id=task_id, endpoint=endpoint, api_key=api_key,
-            agent_id=agent_id, enabled=enabled, verify_ssl=verify_ssl,
+            agent_id=agent_id, user_id=user_id, user_identity=user_identity,
+            enabled=enabled, verify_ssl=verify_ssl,
             classification_level=classification_level,
         )
 
@@ -217,9 +238,13 @@ class TraceEmitter:
         span_id = _new_id()
         started_at = _now()
         parent_span_id = parent if parent is not None else _current_parent.get()
+        event_attributes = dict(attributes or {})
+        event_attributes.setdefault("logical_span_id", span_id)
         self._record(f"{base}.started", name, span_id, parent_span_id,
-                     started_at, None, "ok", attributes)
-        return _Span(self, base, name, span_id, parent_span_id, started_at, attributes)
+                     started_at, None, "ok", event_attributes)
+        return _Span(
+            self, base, name, span_id, parent_span_id, started_at, event_attributes
+        )
 
     def error(self, message: str, *, parent: str | None = None,
               attributes: dict[str, Any] | None = None) -> None:
@@ -297,6 +322,10 @@ class TraceEmitter:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
+        if self.task_id is not None:
+            headers["X-ANILA-Task-Id"] = str(self.task_id)
+        if self.user_id:
+            headers["X-ANILA-User-Id"] = self.user_id
         try:
             async with httpx.AsyncClient(verify=self.verify_ssl, timeout=self.timeout) as client:
                 for i in range(0, len(pending), self.batch_size):

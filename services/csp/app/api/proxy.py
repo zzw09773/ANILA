@@ -774,6 +774,21 @@ def _resolve_model(db: Session, caller: Caller, model_name: str) -> ModelRegistr
     return model
 
 
+def _is_internal_router_model(model: ModelRegistry | None) -> bool:
+    """Return whether a model row is the CSP-facing ANILA Router target.
+
+    ``is_router_primary`` is a governance/UI selection for a primary model and
+    is deliberately *not* sufficient here: the caller-PK header may only be
+    emitted to the concrete internal ``anila-router`` endpoint, never to a
+    normal LLM/embedding gateway that happens to be selected as primary.
+    """
+
+    return (
+        model is not None
+        and str(getattr(model, "name", "")).strip().lower() == "anila-router"
+    )
+
+
 def _resolve_agent(db: Session, caller: Caller, agent_name: str) -> Agent | None:
     """Return the Agent if agent_name matches an approved agent, else None."""
     agent = (
@@ -1014,6 +1029,24 @@ async def chat_completions(
     # Audit fields from optional client headers
     conversation_id: str | None = request.headers.get("X-ANILA-Conversation-Id")
     trace_id: str | None = request.headers.get("X-ANILA-Trace-Id")
+    # Router's internal registry response is a caller-scoped, versioned
+    # admission input.  These values are forwarded to the final Agent sink;
+    # they are never trusted without the sink re-reading the registry row.
+    registry_snapshot_id: str | None = request.headers.get(
+        "X-ANILA-Registry-Snapshot-Id"
+    )
+    registry_snapshot_revision: str | None = request.headers.get(
+        "X-ANILA-Registry-Snapshot-Revision"
+    )
+    registry_snapshot_hash: str | None = request.headers.get(
+        "X-ANILA-Registry-Snapshot-Hash"
+    )
+    registry_manifest_revision: str | None = request.headers.get(
+        "X-ANILA-Agent-Manifest-Revision"
+    )
+    registry_manifest_sha256: str | None = request.headers.get(
+        "X-ANILA-Agent-Manifest-SHA256"
+    )
 
     # ── Memory: read path (sync, ~150ms) ─────────────────────────────────────
     # Inject the user's long-term memory block into the system prompt
@@ -1319,6 +1352,12 @@ async def chat_completions(
         # A formal Task owns its canonical trace.  The optional inbound trace
         # header remains available only to legacy taskless traffic.
         usage_trace_id = task_ctx.trace_id if task_ctx else trace_id
+        # Full Trace callback admission binds the trace to the exact Task
+        # owner username.  Legacy card identity remains unchanged when no
+        # formal Task/trace is present.
+        trace_user_identity = (
+            user.username if task_ctx is not None and usage_trace_id else user_identity
+        )
         if stream:
             upstream = proxy_stream(
                 target_url=f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions",
@@ -1328,7 +1367,7 @@ async def chat_completions(
                 usage_model_id=agent.base_model_id,
                 request_body=body,
                 user_email=user_email,
-                user_identity=user_identity,
+                user_identity=trace_user_identity,
                 model_name=agent.name,
                 conversation_id=conversation_id,
                 trace_id=usage_trace_id,
@@ -1354,6 +1393,12 @@ async def chat_completions(
                 governance_db=db,
                 registry_endpoint_url=agent.endpoint_url,
                 admitted_classification_level=admitted_level,
+                registry_user_id=user.id,
+                registry_snapshot_id=registry_snapshot_id,
+                registry_snapshot_revision=registry_snapshot_revision,
+                registry_snapshot_hash=registry_snapshot_hash,
+                registry_manifest_revision=registry_manifest_revision,
+                registry_manifest_sha256=registry_manifest_sha256,
                 finalize_task_run_on_completion=(
                     task_ctx.owns_lifecycle if task_ctx else True
                 ),
@@ -1412,7 +1457,7 @@ async def chat_completions(
         # currently emit a token_usage row at all (orthogonal pre-existing
         # gap, tracked in Sprint 9 X follow-ups).
         headers = build_agent_headers(
-            user_identity,
+            trace_user_identity,
             user_email,
             target_agent_id=agent.id,
             # Slice 2b-C (doc 05 §4): task/trace ids ride on agent dispatch.
@@ -1428,6 +1473,12 @@ async def chat_completions(
                 agent_id=agent.id,
                 endpoint_url=agent.endpoint_url,
                 admitted_classification_level=admitted_level,
+                registry_user_id=user.id,
+                registry_snapshot_id=registry_snapshot_id,
+                registry_snapshot_revision=registry_snapshot_revision,
+                registry_snapshot_hash=registry_snapshot_hash,
+                registry_manifest_revision=registry_manifest_revision,
+                registry_manifest_sha256=registry_manifest_sha256,
             )
             lock_task_run_admission(
                 governance_db=db,
@@ -1659,6 +1710,9 @@ async def chat_completions(
             request_body=body,
             user_email=user_email,
             user_identity=user_identity,
+            router_caller_user_id=(
+                user.id if _is_internal_router_model(model) else None
+            ),
             model_name=model.name,
             conversation_id=conversation_id,
             trace_id=usage_trace_id,
@@ -1714,6 +1768,9 @@ async def chat_completions(
         api_key_id=caller.api_key_id,
         user_id=user.id,
         user_identity=user_identity,
+        router_caller_user_id=(
+            user.id if _is_internal_router_model(model) else None
+        ),
         department_id=department_id,
         request_body=body,
         endpoint_path=(
@@ -1731,6 +1788,12 @@ async def chat_completions(
         inference_callsite_id="csp.chat_model",
         governance_db=db,
         admitted_classification_level=admitted_level,
+        registry_user_id=user.id,
+        registry_snapshot_id=registry_snapshot_id,
+        registry_snapshot_revision=registry_snapshot_revision,
+        registry_snapshot_hash=registry_snapshot_hash,
+        registry_manifest_revision=registry_manifest_revision,
+        registry_manifest_sha256=registry_manifest_sha256,
         finalize_task_run_on_completion=(
             task_ctx.owns_lifecycle if task_ctx else True
         ),
@@ -1793,6 +1856,14 @@ async def resume_agent_session(
             status_code=403,
             detail="Gate 2 chat-only pilot 禁止 Agent session resume",
         )
+    if not settings.ALLOW_LEGACY_AGENT_DISPATCH:
+        # Durable session/task ownership and classification admission are an
+        # R4 prerequisite.  A stateless resume request must not downgrade to
+        # the Agent's mutable default classification in the formal profile.
+        raise HTTPException(
+            status_code=409,
+            detail="Agent session resume 尚未完成 durable admission，正式 profile 已拒絕",
+        )
     body = await request.json()
     agent = _resolve_agent(db, caller, agent_name)
     if agent is None:
@@ -1806,6 +1877,35 @@ async def resume_agent_session(
     )
     from anila_security import ENDPOINT_KIND_AGENT
     from app.services.proxy_service import build_agent_headers, _guard_outbound
+    from app.services.proxy.service import (
+        _commit_stream_admission,
+        lock_agent_registry_admission,
+    )
+    # Session resume is another Agent downstream sink.  It receives the same
+    # caller-scoped registry evidence as chat; the lock/readiness predicate
+    # runs before the URL guard and the DB snapshot is committed before SSE
+    # network I/O begins.
+    lock_agent_registry_admission(
+        governance_db=db,
+        agent_id=agent.id,
+        endpoint_url=agent.endpoint_url,
+        admitted_classification_level=(
+            getattr(agent, "default_classification_level", None) or "無機密"
+        ),
+        registry_user_id=user.id,
+        registry_snapshot_id=request.headers.get("X-ANILA-Registry-Snapshot-Id"),
+        registry_snapshot_revision=request.headers.get(
+            "X-ANILA-Registry-Snapshot-Revision"
+        ),
+        registry_snapshot_hash=request.headers.get("X-ANILA-Registry-Snapshot-Hash"),
+        registry_manifest_revision=request.headers.get(
+            "X-ANILA-Agent-Manifest-Revision"
+        ),
+        registry_manifest_sha256=request.headers.get(
+            "X-ANILA-Agent-Manifest-SHA256"
+        ),
+    )
+    _commit_stream_admission(db)
     _guard_outbound(
         target, endpoint_kind=ENDPOINT_KIND_AGENT
     )  # call-time SSRF re-validation (TOCTOU defense)

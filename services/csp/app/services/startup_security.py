@@ -146,6 +146,9 @@ def _resolved_posture() -> dict[str, object]:
             "CARD_DEV_SKIP_NONCE_BINDING"
         ),
         "CARD_CRL_REQUIRED": settings.CARD_CRL_REQUIRED,
+        # Formal profiles must use the CSP-owned readiness/snapshot gate;
+        # legacy Agent dispatch is an explicit development-only bridge.
+        "ALLOW_LEGACY_AGENT_DISPATCH": settings.ALLOW_LEGACY_AGENT_DISPATCH,
     }
 
 
@@ -169,6 +172,7 @@ _PROD_INTRANET_CARD_POSTURE: dict[str, object] = {
     "ANILA_ALLOW_PRIVATE_ENDPOINT": False,
     "CARD_DEV_SKIP_NONCE_BINDING": False,
     "CARD_CRL_REQUIRED": True,
+    "ALLOW_LEGACY_AGENT_DISPATCH": False,
 }
 
 _FORMAL_PROFILE_POSTURES: dict[str, dict[str, object]] = {

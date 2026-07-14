@@ -85,11 +85,14 @@ TRACE_ENABLED = os.environ.get("ANILA_TRACE_ENABLED", "1").lower() not in (
 CLASSIFICATION_LEVEL = os.environ.get("ANILA_CLASSIFICATION_LEVEL", "") or None
 
 
-def _build_emitter(trace_id: str | None, task_id: str | None) -> TraceEmitter:
+def _build_emitter(
+    trace_id: str | None, task_id: str | None, user_id: str | None
+) -> TraceEmitter:
     """由入向 trace header 建 emitter（缺 trace_id/endpoint 時自動停用）。"""
     return TraceEmitter.from_context(
         trace_id=trace_id,
         task_id=task_id,
+        user_id=user_id,
         endpoint=TRACE_ENDPOINT,
         api_key=CSP_SEARCH_TOKEN,  # 與 RAG 出向同一把 Agent Integration Key（csk-）
         agent_id=MODEL_NAME,
@@ -466,7 +469,7 @@ async def chat_completions(
         )
 
     # Full Trace：CSP dispatch 帶 X-ANILA-Trace-Id 才啟用；否則 emitter 停用、零行為變化。
-    emitter = _build_emitter(x_anila_trace_id, x_anila_task_id)
+    emitter = _build_emitter(x_anila_trace_id, x_anila_task_id, x_anila_user_id)
 
     # Retrieval via CSP HTTP（無 DB）；build_agent(retriever=) escape hatch 直接注入。
     retriever: Any = CspHttpRetriever(

@@ -130,6 +130,18 @@ class Settings(BaseSettings):
 
     # Health Check
     HEALTH_CHECK_INTERVAL: int = 60
+    # Readiness freshness is a governance TTL, not a UI polling interval.  A
+    # target with no timestamp (or a timestamp older than these bounds) is
+    # never dispatchable.  Keep the values explicit so production profiles
+    # can review them instead of inheriting a wall-clock constant in code.
+    AGENT_HEALTH_FRESHNESS_SECONDS: int = Field(default=300, ge=1, le=86400)
+    MODEL_HEALTH_FRESHNESS_SECONDS: int = Field(default=300, ge=1, le=86400)
+    AGENT_TRACE_TEST_FRESHNESS_SECONDS: int = Field(default=86400, ge=1, le=604800)
+    AGENT_REGISTRY_SNAPSHOT_TTL_SECONDS: int = Field(default=60, ge=1, le=3600)
+    # Legacy /v1 agent callers do not carry a registry snapshot or manifest
+    # revision.  Formal dispatch must keep this disabled; development can opt
+    # in explicitly while the Router v2 consumer is being rolled out.
+    ALLOW_LEGACY_AGENT_DISPATCH: bool = False
     TASK_RUN_STALE_SECONDS: int = Field(default=900, ge=60, le=86400)
 
     # Usage Writer

@@ -244,6 +244,17 @@ async def test_scripted_run_span_type_multiset(fake_http):
     })
 
 
+async def test_lifecycle_finish_uses_distinct_wire_id_and_logical_pair(fake_http):
+    em = _active()
+    async with em.run_span("risk-agent"):
+        pass
+    started = next(s for s in em._buffer if s["span_type"] == f"{RUN}.started")
+    finished = next(s for s in em._buffer if s["span_type"] == f"{RUN}.finished")
+    assert finished["span_id"] != started["span_id"]
+    assert finished["attributes"]["logical_span_id"] == started["span_id"]
+    assert finished["parent_span_id"] == started["span_id"]
+
+
 async def test_final_output_carries_citations_and_classification(fake_http):
     em = _active()
     await _scripted_run(em)
@@ -364,13 +375,19 @@ def test_service_wrapper_ships_spans_when_trace_header_present(fake_http, monkey
     with TestClient(service_wrapper.app) as client:
         resp = client.post(
             "/v1/chat/completions",
-            headers={"X-ANILA-Trace-Id": "trace_xyz", "X-ANILA-Task-Id": "task_1"},
+            headers={
+                "X-ANILA-Trace-Id": "trace_xyz",
+                "X-ANILA-Task-Id": "17",
+                "X-ANILA-User-Id": "trace_owner",
+            },
             json={"model": "anila-agent", "messages": [{"role": "user", "content": "hi"}]},
         )
     assert resp.status_code == 200
     # emitter 應把 run + output span POST 回 CSP 的 /v1/traces/<id>/spans
     assert fake_http.calls, "沒有 trace span 被送出"
     assert fake_http.calls[0]["url"] == "https://csp.local/v1/traces/trace_xyz/spans"
+    assert fake_http.calls[0]["headers"]["X-ANILA-Task-Id"] == "17"
+    assert fake_http.calls[0]["headers"]["X-ANILA-User-Id"] == "trace_owner"
     span_types = {s["span_type"] for c in fake_http.calls for s in c["json"]["spans"]}
     assert {"agent.run.started", "agent.run.finished",
             "agent.output.started", "agent.output.finished"} <= span_types
