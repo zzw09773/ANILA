@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     Float,
@@ -33,6 +35,7 @@ from sqlalchemy import (
     UniqueConstraint,
     JSON,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, CHAR, JSONB
 from sqlalchemy.orm import relationship
@@ -70,17 +73,59 @@ class IngestionCollection(Base):
     """
 
     __tablename__ = "ingestion_collections"
+    __table_args__ = (
+        CheckConstraint(
+            "embedding_fingerprint ~ '^sha256:[0-9a-f]{64}$'",
+            name="ck_ingestion_collections_embedding_fingerprint",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "lifecycle_state IN ('active','archived','erase_due','erased')",
+            name="ck_ingestion_collections_lifecycle_state",
+        ),
+        CheckConstraint(
+            "(lifecycle_state = 'active' AND archived_at IS NULL AND erased_at IS NULL) OR "
+            "(lifecycle_state = 'archived' AND archived_at IS NOT NULL "
+            "AND erase_due_at IS NOT NULL AND erased_at IS NULL) OR "
+            "(lifecycle_state = 'erase_due' AND erase_due_at IS NOT NULL "
+            "AND erased_at IS NULL) OR "
+            "(lifecycle_state = 'erased' AND erased_at IS NOT NULL)",
+            name="ck_ingestion_collections_lifecycle_timestamps",
+        ),
+        CheckConstraint(
+            "(legal_hold = true AND legal_hold_reason IS NOT NULL "
+            "AND length(legal_hold_reason) > 0) OR "
+            "(legal_hold = false AND legal_hold_reason IS NULL)",
+            name="ck_ingestion_collections_legal_hold_reason",
+        ),
+        CheckConstraint(
+            "document_count >= 0 AND chunk_count >= 0 AND bytes_stored >= 0 "
+            "AND image_count >= 0 AND artifact_count >= 0",
+            name="ck_ingestion_collections_counters_nonnegative",
+        ),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(200), nullable=False)
     description = Column(Text, nullable=True)
     chunking_config = Column(JSONValue, nullable=False)
     embedding_model = Column(String(200), nullable=False)
+    embedding_fingerprint = Column(CHAR(71), nullable=False)
     embedding_dim = Column(Integer, nullable=False)
     status = Column(String(20), nullable=False, default="active")
     document_count = Column(Integer, nullable=False, default=0)
     chunk_count = Column(Integer, nullable=False, default=0)
     bytes_stored = Column(BigInteger, nullable=False, default=0)
+    image_count = Column(Integer, nullable=False, default=0, server_default="0")
+    artifact_count = Column(Integer, nullable=False, default=0, server_default="0")
+    lifecycle_state = Column(String(20), nullable=False, default="active",
+                             server_default="active", index=True)
+    archive_due_at = Column(DateTime, nullable=True)
+    archived_at = Column(DateTime, nullable=True)
+    erase_due_at = Column(DateTime, nullable=True, index=True)
+    erased_at = Column(DateTime, nullable=True)
+    legal_hold = Column(Boolean, nullable=False, default=False,
+                        server_default="false")
+    legal_hold_reason = Column(String(500), nullable=True)
     # Owner (NOT NULL post-Sprint-4 — see migration 0019). Same person
     # who created the collection; ON DELETE RESTRICT would lock user
     # deletes, so we stay with default and rely on app-layer reassign
@@ -140,6 +185,49 @@ class IngestionDocument(Base):
         UniqueConstraint(
             "collection_id", "id", name="uq_ingestion_documents_collection_id_id"
         ),
+        ForeignKeyConstraint(
+            ["active_generation_id", "id", "collection_id"],
+            [
+                "ingestion_document_generations.id",
+                "ingestion_document_generations.document_id",
+                "ingestion_document_generations.collection_id",
+            ],
+            ondelete="RESTRICT",
+            name="fk_ingestion_document_active_generation",
+            use_alter=True,
+        ),
+        CheckConstraint(
+            "availability_status IN ('unavailable','available')",
+            name="ck_ingestion_documents_availability",
+        ),
+        CheckConstraint(
+            "processing_stage IN ('pending','parsing','chunking','embedding',"
+            "'staging','complete','failed')",
+            name="ck_ingestion_documents_processing_stage",
+        ),
+        CheckConstraint(
+            "lifecycle_state IN ('active','archived','erase_due','erased')",
+            name="ck_ingestion_documents_lifecycle_state",
+        ),
+        CheckConstraint(
+            "(lifecycle_state = 'active' AND archived_at IS NULL AND erased_at IS NULL) OR "
+            "(lifecycle_state = 'archived' AND archived_at IS NOT NULL "
+            "AND erase_due_at IS NOT NULL AND erased_at IS NULL) OR "
+            "(lifecycle_state = 'erase_due' AND erase_due_at IS NOT NULL "
+            "AND erased_at IS NULL) OR "
+            "(lifecycle_state = 'erased' AND erased_at IS NOT NULL)",
+            name="ck_ingestion_documents_lifecycle_timestamps",
+        ),
+        CheckConstraint(
+            "(legal_hold = true AND legal_hold_reason IS NOT NULL "
+            "AND length(legal_hold_reason) > 0) OR "
+            "(legal_hold = false AND legal_hold_reason IS NULL)",
+            name="ck_ingestion_documents_legal_hold_reason",
+        ),
+        CheckConstraint(
+            "chunk_count >= 0 AND (bytes IS NULL OR bytes >= 0)",
+            name="ck_ingestion_documents_counters_nonnegative",
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -162,6 +250,23 @@ class IngestionDocument(Base):
     status = Column(String(20), nullable=False, default="pending")
     chunk_count = Column(Integer, nullable=False, default=0)
     error_message = Column(Text, nullable=True)
+    availability_status = Column(
+        String(20), nullable=False, default="unavailable",
+        server_default="unavailable",
+    )
+    processing_stage = Column(
+        String(20), nullable=False, default="pending", server_default="pending"
+    )
+    active_generation_id = Column(BigInteger, nullable=True)
+    lifecycle_state = Column(String(20), nullable=False, default="active",
+                             server_default="active", index=True)
+    archive_due_at = Column(DateTime, nullable=True)
+    archived_at = Column(DateTime, nullable=True)
+    erase_due_at = Column(DateTime, nullable=True, index=True)
+    erased_at = Column(DateTime, nullable=True)
+    legal_hold = Column(Boolean, nullable=False, default=False,
+                        server_default="false")
+    legal_hold_reason = Column(String(500), nullable=True)
     uploaded_by = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -182,6 +287,109 @@ class IngestionDocument(Base):
     indexed_at = Column(DateTime, nullable=True)
 
     collection = relationship("IngestionCollection", back_populates="documents")
+
+
+class IngestionDocumentGeneration(Base):
+    """Immutable, model-bound generation activated atomically per document."""
+
+    __tablename__ = "ingestion_document_generations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "document_id"],
+            ["ingestion_documents.collection_id", "ingestion_documents.id"],
+            ondelete="CASCADE",
+            name="fk_ingestion_generation_document_collection",
+        ),
+        UniqueConstraint(
+            "document_id", "generation_number",
+            name="uq_ingestion_generation_document_number",
+        ),
+        UniqueConstraint(
+            "id", "document_id", "collection_id",
+            name="uq_ingestion_generation_identity_scope",
+        ),
+        CheckConstraint(
+            "status IN ('staging','active','retired','failed')",
+            name="ck_ingestion_generation_status",
+        ),
+        CheckConstraint(
+            "embedding_dim > 0 AND chunk_count >= 0",
+            name="ck_ingestion_generation_counts",
+        ),
+        CheckConstraint(
+            "embedding_fingerprint ~ '^sha256:[0-9a-f]{64}$'",
+            name="ck_ingestion_generation_fingerprint",
+        ).ddl_if(dialect="postgresql"),
+        Index(
+            "uq_ingestion_generation_one_active", "document_id",
+            unique=True, postgresql_where=text("status = 'active'"),
+        ),
+        Index(
+            "ix_ingestion_generation_collection_status", "collection_id", "status"
+        ),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    document_id = Column(Integer, nullable=False)
+    collection_id = Column(Integer, nullable=False)
+    generation_number = Column(Integer, nullable=False)
+    source_ingestion_job_id = Column(
+        Integer,
+        ForeignKey(
+            "ingestion_jobs.id", ondelete="RESTRICT", use_alter=True,
+            name="fk_ingestion_generation_source_job",
+        ),
+        nullable=True, unique=True,
+    )
+    status = Column(String(20), nullable=False)
+    embedding_model = Column(String(200), nullable=False)
+    embedding_fingerprint = Column(CHAR(71), nullable=False)
+    embedding_dim = Column(Integer, nullable=False)
+    chunk_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    activated_at = Column(DateTime(timezone=True), nullable=True)
+    retired_at = Column(DateTime(timezone=True), nullable=True)
+    failed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class SimilarityRecomputeRequest(Base):
+    """Durable collection-level debounce/lease row owned by I7."""
+
+    __tablename__ = "similarity_recompute_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','running')", name="ck_similarity_recompute_status"
+        ),
+        CheckConstraint(
+            "request_seq >= 1 AND (claimed_seq IS NULL OR claimed_seq >= 1)",
+            name="ck_similarity_recompute_sequences",
+        ),
+        CheckConstraint(
+            "(status='pending' AND claimed_seq IS NULL AND lease_token IS NULL "
+            "AND lease_expires_at IS NULL) OR "
+            "(status='running' AND claimed_seq IS NOT NULL AND lease_token IS NOT NULL "
+            "AND lease_expires_at IS NOT NULL)",
+            name="ck_similarity_recompute_lease_state",
+        ),
+        Index("ix_similarity_recompute_dispatch", "status", "not_before"),
+    )
+
+    collection_id = Column(
+        Integer, ForeignKey("ingestion_collections.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    status = Column(String(20), nullable=False)
+    request_seq = Column(BigInteger, nullable=False)
+    claimed_seq = Column(BigInteger, nullable=True)
+    requested_at = Column(DateTime(timezone=True), nullable=False)
+    not_before = Column(DateTime(timezone=True), nullable=False)
+    lease_token = Column(String(64), nullable=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(Text, nullable=True)
+    updated_at = Column(DateTime(timezone=True), nullable=False)
 
 
 class IngestionEvalRun(Base):
@@ -278,6 +486,25 @@ class IngestionJob(Base):
     """
 
     __tablename__ = "ingestion_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('dispatch_pending','queued','running','retry_wait',"
+            "'succeeded','failed','cancelled','dead_letter')",
+            name="ck_ingestion_jobs_status",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0 AND max_attempts >= 1 "
+            "AND attempt_count <= max_attempts",
+            name="ck_ingestion_jobs_attempt_bounds",
+        ),
+        CheckConstraint(
+            "(status='running' AND lease_token IS NOT NULL "
+            "AND lease_expires_at IS NOT NULL AND heartbeat_at IS NOT NULL) OR "
+            "(status<>'running' AND lease_token IS NULL "
+            "AND lease_expires_at IS NULL)",
+            name="ck_ingestion_jobs_lease_state",
+        ),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     arq_job_id = Column(String(100), nullable=True, unique=True)
@@ -305,6 +532,76 @@ class IngestionJob(Base):
     )
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    max_attempts = Column(Integer, nullable=False, default=3)
+    lease_token = Column(String(64), nullable=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True)
+    heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    next_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    failure_kind = Column(String(20), nullable=True)
+    retryable = Column(Boolean, nullable=True)
+    dead_lettered_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class IngestionOutbox(Base):
+    """Durable intent to publish an ingestion job to Arq.
+
+    The document, ``IngestionJob``, and this row are committed together.  A
+    background relay owns the Redis side effect afterwards, so a Redis outage
+    can never turn an accepted upload into a document with no durable work
+    intent.  ``arq_job_id`` is deterministic and unique, making relay replay
+    safe after a crash between enqueue and the published acknowledgement.
+    """
+
+    __tablename__ = "ingestion_outbox"
+    __table_args__ = (
+        UniqueConstraint(
+            "ingestion_job_id",
+            "attempt_number",
+            name="uq_ingestion_outbox_job_attempt",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'dispatching', 'published')",
+            name="ck_ingestion_outbox_status",
+        ),
+        CheckConstraint(
+            "(status = 'pending' AND lease_token IS NULL "
+            "AND lease_expires_at IS NULL AND published_at IS NULL) OR "
+            "(status = 'dispatching' AND lease_token IS NOT NULL "
+            "AND lease_expires_at IS NOT NULL AND published_at IS NULL) OR "
+            "(status = 'published' AND lease_token IS NULL "
+            "AND lease_expires_at IS NULL AND published_at IS NOT NULL)",
+            name="ck_ingestion_outbox_state_fields",
+        ),
+        Index("ix_ingestion_outbox_dispatch", "status", "available_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ingestion_job_id = Column(
+        Integer,
+        ForeignKey("ingestion_jobs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    attempt_number = Column(Integer, nullable=False)
+    arq_job_id = Column(String(100), nullable=False, unique=True)
+    task_name = Column(String(100), nullable=False, default="ingest_document")
+    payload = Column(JSONValue, nullable=False)
+    status = Column(String(20), nullable=False, default="pending")
+    attempt_count = Column(Integer, nullable=False, default=0)
+    available_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    lease_token = Column(String(64), nullable=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    published_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class DocumentRelation(Base):

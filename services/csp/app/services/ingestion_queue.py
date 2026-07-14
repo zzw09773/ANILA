@@ -19,6 +19,9 @@ from typing import Any
 
 from arq import create_pool
 from arq.connections import ArqRedis, RedisSettings
+from anila_security import create_queue_proof
+
+from app.config import settings
 
 
 _REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379")
@@ -41,7 +44,19 @@ async def enqueue_ingest_document(document_id: int) -> str:
     the ``ingestion_jobs`` row and let the dev UI poll for completion.
     """
     pool = await _get_pool()
-    job = await pool.enqueue_job("ingest_document", document_id)
+    payload = {
+        "document_id": document_id,
+        "ingestion_job_id": None,
+        "attempt_number": 1,
+    }
+    proof = create_queue_proof(
+        settings.INGESTION_QUEUE_HMAC_KEY,
+        task_name="ingest_document",
+        payload=payload,
+    )
+    job = await pool.enqueue_job(
+        "ingest_document", document_id, None, 1, proof,
+    )
     if job is None:
         # Arq returns None when a duplicate job_id collides; we don't
         # set an explicit one, so this branch is theoretically
@@ -68,7 +83,13 @@ async def enqueue_evaluator_run(eval_run_id: int) -> str:
     in the same row — caller polls via the GET endpoint.
     """
     pool = await _get_pool()
-    job = await pool.enqueue_job("evaluate_strategies", eval_run_id)
+    payload = {"eval_run_id": eval_run_id}
+    proof = create_queue_proof(
+        settings.INGESTION_QUEUE_HMAC_KEY,
+        task_name="evaluate_strategies",
+        payload=payload,
+    )
+    job = await pool.enqueue_job("evaluate_strategies", eval_run_id, proof)
     if job is None:
         raise RuntimeError(
             "Arq returned no job — possible duplicate id collision."
@@ -76,7 +97,7 @@ async def enqueue_evaluator_run(eval_run_id: int) -> str:
     return job.job_id
 
 
-async def enqueue_reresolve_relations(collection_id: int) -> str:
+async def enqueue_reresolve_relations(collection_id: int, actor_user_id: int) -> str:
     """Enqueue a ``reresolve_collection_relations`` job (document-relations §8).
 
     The worker re-parses every document in the collection, re-extracts rule
@@ -85,7 +106,18 @@ async def enqueue_reresolve_relations(collection_id: int) -> str:
     half asynchronously.
     """
     pool = await _get_pool()
-    job = await pool.enqueue_job("reresolve_collection_relations", collection_id)
+    payload = {
+        "collection_id": collection_id,
+        "actor_user_id": actor_user_id,
+    }
+    proof = create_queue_proof(
+        settings.INGESTION_QUEUE_HMAC_KEY,
+        task_name="reresolve_collection_relations",
+        payload=payload,
+    )
+    job = await pool.enqueue_job(
+        "reresolve_collection_relations", collection_id, actor_user_id, proof,
+    )
     if job is None:
         raise RuntimeError(
             "Arq returned no job — possible duplicate id collision."

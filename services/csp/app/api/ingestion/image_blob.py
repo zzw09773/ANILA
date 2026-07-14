@@ -28,9 +28,12 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.api.ingestion.collections import _require_collection_access
+from app.api.ingestion.documents import _require_document_data_clearance
 from app.database import get_db
+from app.models.ingestion import IngestionDocument
 from app.models.user import User
 from app.services.auth_service import get_current_user
+from app.services.retention_reaper import RetentionSafetyError, safe_ingestion_path
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +63,35 @@ def _stream_file(path: Path) -> AsyncIterator[bytes]:
                 yield chunk
 
     return _generator()
+
+
+def stream_scoped_image_blob(
+    *,
+    image_id: int,
+    storage_path: str,
+    mime: str | None,
+) -> StreamingResponse:
+    """Stream bytes after the caller has performed canonical live auth."""
+    upload_root = os.environ.get(
+        "INGESTION_UPLOAD_DIR", "/var/anila/ingestion-uploads",
+    )
+    try:
+        abs_path = safe_ingestion_path(upload_root, storage_path)
+    except RetentionSafetyError:
+        logger.error("Rejecting unsafe image storage_path for image %s", image_id)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Image {image_id} blob unavailable",
+        ) from None
+    if not abs_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Image {image_id} blob unavailable",
+        )
+    return StreamingResponse(
+        _stream_file(abs_path),
+        media_type=mime or "image/png",
+    )
 
 
 @router.get("/api/ingestion/images/{image_id}/blob")
@@ -114,7 +146,11 @@ def get_image_blob(
             {"cid": str(collection_id)},
         )
         row = db.execute(
-            text("SELECT storage_path, mime FROM ingestion_images WHERE id = :id"),
+            text(
+                "SELECT i.document_id, i.storage_path, i.mime FROM ingestion_images i "
+                "JOIN ingestion_documents d ON d.id=i.document_id "
+                "WHERE i.id=:id AND d.lifecycle_state='active'"
+            ),
             {"id": image_id},
         ).first()
         if row is None:
@@ -129,9 +165,10 @@ def get_image_blob(
         row = db.execute(
             text(
                 """
-                SELECT collection_id, storage_path, mime
-                FROM ingestion_images
-                WHERE id = :id
+                SELECT i.collection_id, i.document_id, i.storage_path, i.mime
+                FROM ingestion_images i
+                JOIN ingestion_documents d ON d.id=i.document_id
+                WHERE i.id = :id AND d.lifecycle_state='active'
                 """
             ),
             {"id": image_id},
@@ -146,23 +183,18 @@ def get_image_blob(
         storage_path = str(row.storage_path)
         mime = str(row.mime) if row.mime else "image/png"
 
-    upload_root = os.environ.get(
-        "INGESTION_UPLOAD_DIR", "/var/anila/ingestion-uploads",
-    )
-    # ``storage_path`` is the relative path the worker recorded; join
-    # against the configured upload root to obtain the absolute file.
-    abs_path = Path(upload_root) / storage_path
-    if not abs_path.is_file():
-        logger.warning(
-            "Image %s storage_path=%s missing under upload root %s",
-            image_id, storage_path, upload_root,
-        )
+    document = db.get(IngestionDocument, int(row.document_id))
+    if document is None or document.collection_id != collection_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Image {image_id} blob unavailable",
         )
+    _require_document_data_clearance(
+        db, user=current_user, document=document,
+    )
 
-    return StreamingResponse(
-        _stream_file(abs_path),
-        media_type=mime,
+    return stream_scoped_image_blob(
+        image_id=image_id,
+        storage_path=storage_path,
+        mime=mime,
     )

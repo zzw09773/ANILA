@@ -1,11 +1,11 @@
 import { create } from 'zustand'
-import { persist, createJSONStorage } from 'zustand/middleware'
 import type { StudioArtifact } from '../types'
 
-// Studio-generated artifacts (Report markdown / Slides JSON). MVP keeps
-// them client-side in localStorage keyed per collection. Sprint 6+ would
-// land a real ``/api/studio/artifacts`` endpoint and we'd swap the
-// storage backend out.
+// Ephemeral coordination state for Studio jobs currently observed by this
+// browser tab. Durable artifact metadata belongs to CSP's Artifact / Version
+// tables and must never be copied into origin-wide localStorage: another user
+// signing in on the same workstation would otherwise inherit titles,
+// collection IDs and job IDs from the previous session.
 //
 // Slides artifacts now carry a `state` ("pending" | "done" | "failed")
 // because the backend pipeline is async — when CommandModal returns,
@@ -34,9 +34,17 @@ interface ArtifactState {
   clear: (collectionId: number) => void
 }
 
-export const useArtifactStore = create<ArtifactState>()(
-  persist(
-    (set, get) => ({
+// Remove cross-user metadata left by the former persisted store.  No new
+// artifact state is ever written to Web Storage.
+if (typeof window !== 'undefined') {
+  try {
+    window.localStorage.removeItem('anilalm:artifacts')
+  } catch {
+    // Storage may be disabled by browser policy; the store remains memory-only.
+  }
+}
+
+export const useArtifactStore = create<ArtifactState>()((set, get) => ({
       byCollection: {},
 
       add: (artifact) =>
@@ -91,10 +99,4 @@ export const useArtifactStore = create<ArtifactState>()(
           delete next[collectionId]
           return { byCollection: next }
         }),
-    }),
-    {
-      name: 'anilalm:artifacts',
-      storage: createJSONStorage(() => localStorage),
-    },
-  ),
-)
+    }))

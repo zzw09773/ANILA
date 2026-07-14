@@ -67,6 +67,7 @@ def alice_collection(db, alice, clearance_manager) -> IngestionCollection:
         name="alice-collection",
         chunking_config={"strategy": "semantic"},
         embedding_model="nv-embed",
+        embedding_fingerprint="sha256:" + "0" * 64,
         embedding_dim=4096,
         status="active",
         created_by=alice.id,

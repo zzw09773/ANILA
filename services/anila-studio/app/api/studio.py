@@ -50,14 +50,11 @@ job state, and downloads the pptx once state==done.
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
-import re
-from typing import Any, Literal
+from typing import Any
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
@@ -133,6 +130,18 @@ from app.services.studio_vision_qa import (
 
 router = APIRouter(prefix="/api/studio", tags=["Studio / Slides"])
 logger = logging.getLogger(__name__)
+
+# Stable test/plugin re-export surface retained while the durable supervisor
+# imports only the pipeline entrypoint.
+__all__ = [
+    "RENDERER_BASE_URL",
+    "VISION_LLM_MODEL",
+    "_apply_illustration_fallback",
+    "_generate_slide_illustration",
+    "_hydrate_images",
+    "_infer_image_use_case",
+    "get_flux_provider",
+]
 
 
 # ── Tunables → moved to app/services/studio_config.py (god-module split) ─────
@@ -811,6 +820,7 @@ async def create_slides_job(
         task_id=payload.task_id,
         source_snapshot_id=payload.source_snapshot_id,
         trace_id=payload.trace_id,
+        request_spec=payload.model_dump(mode="json"),
     )
     record = await jobs.create_job(
         user_id=identity.id,
@@ -867,7 +877,8 @@ async def get_slides_job_pptx(
     Returns 404 for unknown/cross-user jobs, 409 if the job is still
     running, and 410 if it has been failed/cancelled.
     """
-    rec = jobs.get_user_job(job_id, identity.id)
+    raise HTTPException(status_code=410, detail="僅允許 CSP Artifact 下載")
+    rec = jobs.get_user_job(job_id, identity.id)  # pragma: no cover
     if rec is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
     if rec.state in ("pending", "running"):

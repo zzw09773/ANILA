@@ -31,8 +31,8 @@
 #   help             顯示這份說明
 #
 # 環境變數(必要,缺值 fail-loud):
-#   CSP_SERVICE_TOKEN         service-to-service token,csp/router/anila-studio/
-#                             ingestion-worker 都用同一把
+#   CSP_SERVICE_TOKEN         legacy fleet service-to-service token
+#   STUDIO_ARTIFACT_SERVICE_TOKEN dedicated named artifact-writer credential
 #   INTERNAL_PLATFORM_API_KEY 內部 system worker API key,ingestion-worker /
 #                             flux2-dev-agent 用
 #   SECRET_KEY                JWT signing key + agent credential AES key
@@ -258,7 +258,7 @@ check_external_secret_paths() {
 check_env() {
   # 必要 env(沒設就停)。CSP_SECRET_KEY / SECRET_KEY 擇一即可
   # (infra/compose/platform.yml 內 csp service 看的是 CSP_SECRET_KEY)。
-  local required=(CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY SITE_URL GITLAB_SSH_BIND_IP ANILA_ENV ANILA_DEPLOYMENT_PROFILE ANILA_STATE_DIR ANILA_SECRETS_DIR ANILA_TLS_CERTS_DIR)
+  local required=(CSP_SERVICE_TOKEN STUDIO_ARTIFACT_SERVICE_TOKEN STUDIO_RUNTIME_SERVICE_TOKEN STUDIO_JOB_ENVELOPE_HMAC_KEY INGESTION_QUEUE_HMAC_KEY INTERNAL_PLATFORM_API_KEY SITE_URL GITLAB_SSH_BIND_IP ANILA_ENV ANILA_DEPLOYMENT_PROFILE ANILA_STATE_DIR ANILA_SECRETS_DIR ANILA_TLS_CERTS_DIR)
   local branch
   branch="$(git branch --show-current 2>/dev/null || true)"
   if [[ "$branch" == "prod-intranet-card" ]]; then
@@ -283,6 +283,14 @@ check_env() {
          set -a; source /path/to/prod.env; set +a
          bash infra/deployment/scripts/deploy-prod.sh"
   fi
+  [[ "${STUDIO_ARTIFACT_SERVICE_TOKEN:-}" == csk-* ]] \
+    || fatal "STUDIO_ARTIFACT_SERVICE_TOKEN 必須是專用 csk- Service Client token"
+  [[ "${STUDIO_RUNTIME_SERVICE_TOKEN:-}" == csk-* && "${STUDIO_RUNTIME_SERVICE_TOKEN}" != "${STUDIO_ARTIFACT_SERVICE_TOKEN}" ]] \
+    || fatal "STUDIO_RUNTIME_SERVICE_TOKEN 必須是另一把專用 csk- Service Client token"
+  (( ${#STUDIO_JOB_ENVELOPE_HMAC_KEY} >= 32 )) \
+    || fatal "STUDIO_JOB_ENVELOPE_HMAC_KEY 長度必須 >= 32"
+  (( ${#INGESTION_QUEUE_HMAC_KEY} >= 32 )) \
+    || fatal "INGESTION_QUEUE_HMAC_KEY 長度必須 >= 32"
   if [[ "$branch" == "prod-intranet-card" ]]; then
     [[ "${N8N_HOST:-}" == "n8n.ai.ncsist.org.tw" ]] \
       || fatal "prod-intranet-card 的 N8N_HOST 必須是 n8n.ai.ncsist.org.tw"

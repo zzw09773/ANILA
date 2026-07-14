@@ -48,13 +48,15 @@ async def test_reindex_is_idempotent_and_failed_generation_rolls_back(
             await admin.fetchval(
                 """
                 INSERT INTO ingestion_collections
-                    (name, chunking_config, embedding_model, embedding_dim,
-                     created_by, classification_level)
+                    (name, chunking_config, embedding_model,
+                     embedding_fingerprint, embedding_dim, created_by,
+                     classification_level)
                 VALUES ($1, '{"strategy":"fixed"}'::jsonb, 'test-model',
-                        $2, $3, '機密')
+                        $2, $3, $4, '機密')
                 RETURNING id
                 """,
                 f"g9-reindex-{suffix}",
+                "sha256:" + ("0" * 64),
                 _DIM,
                 integration_owner_id,
             )
@@ -76,8 +78,13 @@ async def test_reindex_is_idempotent_and_failed_generation_rolls_back(
         store = CollectionScopedPgVectorStore(pool, collection_id=collection_id)
         vector = [0.0] * _DIM
         vector[0] = 1.0
-        assert await store.replace_document_chunks(
+        assert await store.stage_and_activate_generation(
             document_id=document_id,
+            source_ingestion_job_id=None,
+            source_ingestion_lease_token=None,
+            embedding_model="test-model",
+            embedding_fingerprint="sha256:" + ("0" * 64),
+            embedding_dim=_DIM,
             parent_chunks=[_parent("generation one parent")],
             leaf_chunks=[_leaf("generation one leaf")],
             embeddings=[vector],
@@ -86,8 +93,13 @@ async def test_reindex_is_idempotent_and_failed_generation_rolls_back(
 
         # The same logical keys can be re-indexed repeatedly without unique
         # collisions and without accumulating stale rows.
-        await store.replace_document_chunks(
+        await store.stage_and_activate_generation(
             document_id=document_id,
+            source_ingestion_job_id=None,
+            source_ingestion_lease_token=None,
+            embedding_model="test-model",
+            embedding_fingerprint="sha256:" + ("0" * 64),
+            embedding_dim=_DIM,
             parent_chunks=[_parent("generation two parent")],
             leaf_chunks=[_leaf("generation two leaf")],
             embeddings=[vector],
@@ -106,8 +118,13 @@ async def test_reindex_is_idempotent_and_failed_generation_rolls_back(
         # A database error after DELETE and parent insertion must roll the
         # entire transaction back, preserving generation two byte-for-byte.
         with pytest.raises((asyncpg.PostgresError, ValueError)):
-            await store.replace_document_chunks(
+            await store.stage_and_activate_generation(
                 document_id=document_id,
+                source_ingestion_job_id=None,
+                source_ingestion_lease_token=None,
+                embedding_model="test-model",
+                embedding_fingerprint="sha256:" + ("0" * 64),
+                embedding_dim=_DIM,
                 parent_chunks=[_parent("broken generation parent")],
                 leaf_chunks=[_leaf("broken generation leaf")],
                 embeddings=[[0.1]],  # halfvec(4000) dimension violation
@@ -121,8 +138,13 @@ async def test_reindex_is_idempotent_and_failed_generation_rolls_back(
 
         # A parser result with zero chunks is also a replacement and removes
         # the previous searchable generation.
-        assert await store.replace_document_chunks(
+        assert await store.stage_and_activate_generation(
             document_id=document_id,
+            source_ingestion_job_id=None,
+            source_ingestion_lease_token=None,
+            embedding_model="test-model",
+            embedding_fingerprint="sha256:" + ("0" * 64),
+            embedding_dim=_DIM,
             parent_chunks=[],
             leaf_chunks=[],
             embeddings=[],
@@ -130,74 +152,12 @@ async def test_reindex_is_idempotent_and_failed_generation_rolls_back(
         ) == 0
         assert await store.list_by_document(document_id, limit=10) == []
 
-        await store.index_chunks(
-            document_id=document_id,
-            chunks=[
-                ChunkResult(
-                    content="allowed confidential chunk",
-                    chunk_key="allowed-confidential",
-                    token_count=2,
-                )
-            ],
-            embeddings=[vector],
-            classification_level=Classification.UNCLASSIFIED,
+        retired = await admin.fetchval(
+            "SELECT count(*) FROM ingestion_document_generations "
+            "WHERE document_id=$1 AND status='retired'",
+            document_id,
         )
-        await store.index_chunks(
-            document_id=document_id,
-            chunks=[
-                ChunkResult(
-                    content="must remain top secret",
-                    chunk_key="blocked-top-secret",
-                    token_count=2,
-                )
-            ],
-            embeddings=[vector],
-            classification_level=Classification.TOP_SECRET,
-        )
-        parent_ids = await store.add_parent_chunks(
-            document_id=document_id,
-            chunks=[
-                ChunkResult(
-                    content="top secret parent context",
-                    chunk_key="high-parent",
-                    token_count=2,
-                    metadata={"chunk_type": "heading"},
-                )
-            ],
-            classification_level=Classification.TOP_SECRET,
-        )
-        await store.index_chunks(
-            document_id=document_id,
-            chunks=[
-                ChunkResult(
-                    content="allowed leaf without high parent disclosure",
-                    chunk_key="allowed-leaf",
-                    token_count=2,
-                    metadata={
-                        "chunk_type": "leaf",
-                        "parent_chunk_key": "high-parent",
-                    },
-                )
-            ],
-            embeddings=[vector],
-            classification_level=Classification.UNCLASSIFIED,
-            parent_id_map=parent_ids,
-        )
-        governed_hits = await store.similarity_search_scoped_documents(
-            query_embedding=vector,
-            document_ids=[document_id],
-            top_k=10,
-            min_score=0.0,
-            classification_ceiling=Classification.CONFIDENTIAL,
-        )
-        assert {hit.chunk.chunk_key for hit in governed_hits} == {
-            "allowed-confidential",
-            "allowed-leaf",
-        }
-        leaf_hit = next(
-            hit for hit in governed_hits if hit.chunk.chunk_key == "allowed-leaf"
-        )
-        assert leaf_hit.parent_content is None
+        assert retired == 2
     finally:
         if collection_id is not None:
             await admin.execute(

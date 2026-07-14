@@ -45,10 +45,19 @@ RUN pip install '/tmp/anila-core[rag]'
 COPY services/ingestion-worker /tmp/ingestion-worker
 RUN pip install /tmp/ingestion-worker
 
-# Default upload dir — overridden by env / volume mount in compose.
-RUN mkdir -p /var/anila/ingestion-uploads
+# Default upload dir — overridden by env / volume mount in compose.  UID/GID
+# 10001 intentionally matches the production CSP image because both services
+# share the same upload inode; the deployment scripts prepare that surface for
+# this numeric identity before either container starts.
+RUN groupadd --gid 10001 ingestion \
+    && useradd --create-home --uid 10001 --gid 10001 ingestion \
+    && mkdir -p /var/anila/ingestion-uploads \
+    && chown -R ingestion:ingestion /var/anila/ingestion-uploads \
+    && chmod 700 /var/anila/ingestion-uploads
 VOLUME ["/var/anila/ingestion-uploads"]
 
 # Run the Arq worker. ``--watch`` is intentionally OFF here — we want
 # explicit restarts on code change in dev; production would never use it.
+USER ingestion
+
 CMD ["arq", "ingestion_worker.main.WorkerSettings"]

@@ -1030,14 +1030,20 @@ async def chat_completions(
     # target cannot trigger an embedding call or seal a SourceSnapshot first.
     target = pre_resolved_agent or pre_resolved_model
     target_kind = "agent" if pre_resolved_agent is not None else "model"
-    task_ctx = begin_task_run(
-        db,
-        caller=caller,
-        request_headers=request.headers,
-        dispatch_target=target_kind,
-        resource_type=target_kind,
-        resource_id=str(target.id),
+    task_ctx = getattr(
+        getattr(request, "state", None),
+        "prevalidated_task_ctx",
+        None,
     )
+    if task_ctx is None:
+        task_ctx = begin_task_run(
+            db,
+            caller=caller,
+            request_headers=request.headers,
+            dispatch_target=target_kind,
+            resource_type=target_kind,
+            resource_id=str(target.id),
+        )
 
     if settings.ANILA_PILOT_MODE:
         from app.services.startup_security import (
@@ -1342,11 +1348,15 @@ async def chat_completions(
                 task_id=task_ctx.task_id if task_ctx else None,
                 task_trace_id=task_ctx.trace_id if task_ctx else None,
                 task_run_id=task_ctx.task_run_id if task_ctx else None,
+                task_run_started_at=task_ctx.started_at if task_ctx else None,
                 legacy_runtime_call=task_ctx is None,
                 inference_callsite_id="csp.agent_dispatch",
                 governance_db=db,
                 registry_endpoint_url=agent.endpoint_url,
                 admitted_classification_level=admitted_level,
+                finalize_task_run_on_completion=(
+                    task_ctx.owns_lifecycle if task_ctx else True
+                ),
             )
             # Tee the SSE so we can capture the final assistant text and
             # schedule the memory writer once the stream drains.
@@ -1495,6 +1505,7 @@ async def chat_completions(
                             usage=usage_record,
                             classification_level=admitted_level,
                             callsite="csp.agent_dispatch",
+                            finalize_run=task_ctx.owns_lifecycle,
                         ),
                     )
                 else:
@@ -1557,6 +1568,7 @@ async def chat_completions(
                         error={"code": f"http_{e.status_code}", "message": str(e.detail)},
                         classification_level=admitted_level,
                         callsite="csp.agent_dispatch",
+                        finalize_run=task_ctx.owns_lifecycle,
                     ),
                 )
             raise
@@ -1580,6 +1592,7 @@ async def chat_completions(
                         },
                         classification_level=admitted_level,
                         callsite="csp.agent_dispatch",
+                        finalize_run=task_ctx.owns_lifecycle,
                     ),
                 )
             raise _HTTPException(status_code=e.response.status_code, detail=str(e))
@@ -1604,6 +1617,7 @@ async def chat_completions(
                             error={"code": "agent_call_failed", "message": str(e)},
                             classification_level=admitted_level,
                             callsite="csp.agent_dispatch",
+                            finalize_run=task_ctx.owns_lifecycle,
                         ),
                     )
                 except RuntimeError:
@@ -1652,6 +1666,7 @@ async def chat_completions(
             task_id=task_ctx.task_id if task_ctx else None,
             task_trace_id=task_ctx.trace_id if task_ctx else None,
             task_run_id=task_ctx.task_run_id if task_ctx else None,
+            task_run_started_at=task_ctx.started_at if task_ctx else None,
             legacy_runtime_call=task_ctx is None,
             # Slice 6a: per-model gateway key (secret ref first, env fallback).
             gateway_api_key=resolve_model_gateway_key(model),
@@ -1659,6 +1674,9 @@ async def chat_completions(
             governance_db=db,
             registry_endpoint_url=model.endpoint_url,
             admitted_classification_level=admitted_level,
+            finalize_task_run_on_completion=(
+                task_ctx.owns_lifecycle if task_ctx else True
+            ),
         )
         teed = _tee_stream_capture_assistant(
             upstream,
@@ -1713,6 +1731,9 @@ async def chat_completions(
         inference_callsite_id="csp.chat_model",
         governance_db=db,
         admitted_classification_level=admitted_level,
+        finalize_task_run_on_completion=(
+            task_ctx.owns_lifecycle if task_ctx else True
+        ),
     )
     assistant_text = _extract_assistant_text(payload)
     _schedule_memory_write(

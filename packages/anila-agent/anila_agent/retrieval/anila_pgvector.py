@@ -159,6 +159,7 @@ class AnilaPgVectorRetriever:
                            1 - (embedding <=> $1::halfvec) AS score
                       FROM document_chunks
                      WHERE chunk_type = 'leaf'
+                       AND is_active_generation = true
                      ORDER BY embedding <=> $1::halfvec
                      LIMIT $2
                     """,

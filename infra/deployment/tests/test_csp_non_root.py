@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import re
 import subprocess
 import sys
@@ -14,6 +15,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PRODUCTION_DOCKERFILE = REPO_ROOT / "infra" / "docker" / "csp.Dockerfile"
+INGESTION_WORKER_DOCKERFILE = REPO_ROOT / "services" / "ingestion-worker" / "Dockerfile"
+PPTX_RENDERER_DOCKERFILE = REPO_ROOT / "services" / "pptx-renderer" / "Dockerfile"
+FLUX_AGENT_DOCKERFILE = REPO_ROOT / "services" / "flux2-dev-agent" / "Dockerfile"
 CSP_REQUIREMENTS = REPO_ROOT / "services" / "csp" / "requirements.txt"
 DEAD_DOCKERFILE = REPO_ROOT / "services" / "csp" / "Dockerfile"
 INTRANET_DEPLOY = (
@@ -21,6 +25,16 @@ INTRANET_DEPLOY = (
 )
 PROD_DEPLOY = REPO_ROOT / "infra" / "deployment" / "scripts" / "deploy-prod.sh"
 OPS_SCRIPT = REPO_ROOT / "infra" / "deployment" / "scripts" / "anila-ops.sh"
+PRODUCTION_BACKUP = (
+    REPO_ROOT / "infra" / "deployment" / "backup" / "production_backup.py"
+)
+PRODUCTION_BACKUP_PROFILE = (
+    REPO_ROOT
+    / "infra"
+    / "deployment"
+    / "backup"
+    / "production-backup-profile.v1.json"
+)
 SAFE_BACKUP_HELPER = (
     REPO_ROOT / "infra" / "deployment" / "scripts" / "safe-runtime-backup.py"
 )
@@ -64,6 +78,30 @@ class CspNonRootContractTests(unittest.TestCase):
         self.assertIn("chown -R csp:csp /app/logs /app/secrets", dockerfile)
         self.assertIn("/var/anila/attachments", dockerfile)
         self.assertNotRegex(dockerfile, r"(?m)^USER\s+(?:root|0)(?::0)?\s*$")
+
+    def test_ingestion_worker_uses_shared_non_root_runtime_identity(self) -> None:
+        dockerfile = INGESTION_WORKER_DOCKERFILE.read_text(encoding="utf-8")
+        self.assertRegex(dockerfile, r"(?m)^USER\s+ingestion(?::ingestion)?\s*$")
+        self.assertIn("groupadd --gid 10001 ingestion", dockerfile)
+        self.assertIn("useradd --create-home --uid 10001 --gid 10001 ingestion", dockerfile)
+        self.assertIn("chown -R ingestion:ingestion /var/anila/ingestion-uploads", dockerfile)
+        self.assertNotRegex(dockerfile, r"(?m)^USER\s+(?:root|0)(?::0)?\s*$")
+
+    def test_gate3_artifact_services_use_non_root_runtime_identity(self) -> None:
+        for dockerfile_path, user, writable_path in (
+            (PPTX_RENDERER_DOCKERFILE, "anila", "/var/anila/pptx-out"),
+            (FLUX_AGENT_DOCKERFILE, "anila", "/share/flux"),
+        ):
+            dockerfile = dockerfile_path.read_text(encoding="utf-8")
+            self.assertRegex(dockerfile, rf"(?m)^USER\s+{user}(?::{user})?\s*$")
+            self.assertIn(f"chown -R {user}:{user}", dockerfile)
+            self.assertIn(writable_path, dockerfile)
+            self.assertIn("--uid 10001", dockerfile)
+            self.assertIn("--gid 10001", dockerfile)
+            self.assertNotRegex(
+                dockerfile,
+                r"(?m)^USER\s+(?:root|0)(?::0)?\s*$",
+            )
 
     def test_dead_csp_dockerfile_is_removed(self) -> None:
         self.assertFalse(
@@ -321,61 +359,40 @@ class CspNonRootContractTests(unittest.TestCase):
             self.assertIn("ANILA_IMAGE_CSP", script)
 
     def test_backup_reads_mode_0700_runtime_data_through_a_bounded_helper(self) -> None:
-        script = OPS_SCRIPT.read_text(encoding="utf-8")
-        self.assertIn(
-            "docker compose ps --status running -q csp-db",
-            script,
-        )
-        self.assertIn('CSP_RUNTIME_IMAGE="$(get_env ANILA_IMAGE_CSP)"', script)
-        self.assertIn("safe-runtime-backup.py", script)
-        self.assertIn(
-            "docker run --rm --pull never --user 0:0 --network none --read-only",
-            script,
-        )
-        self.assertIn("--security-opt no-new-privileges", script)
-        self.assertIn(
-            'source_mount="type=bind,source=$source,target=/source,readonly"',
-            script,
-        )
-        self.assertIn(
-            'source_mount="type=volume,source=$source,target=/source,readonly"',
-            script,
-        )
-        self.assertIn(
-            'run_runtime_backup_helper bind "$SECRETS_DIR" secrets "$dest"',
-            script,
-        )
-        self.assertIn(
-            'run_runtime_backup_helper bind "$TLS_CERTS_DIR" tls "$dest"',
-            script,
-        )
-        self.assertIn("ANILA_SECRETS_DIR", script)
-        self.assertNotIn("cp secrets/*.pem", script)
+        tool = PRODUCTION_BACKUP.read_text(encoding="utf-8")
+        self.assertIn('"--network",\n            "none"', tool)
+        self.assertIn('"--read-only"', tool)
+        self.assertIn('"no-new-privileges"', tool)
+        self.assertIn('target=/source,readonly', tool)
+        self.assertIn('["age", "-R", str(recipients), "-o", str(tmp)]', tool)
+        self.assertIn('"pg_dump", "-U", "csp", "-d", "csp", "-Fc"', tool)
+        self.assertNotIn("jwt-private.pem", tool)
+        self.assertNotIn("server.key", tool)
 
     def test_full_backup_includes_uploads_and_labeled_attachment_volume(self) -> None:
-        script = OPS_SCRIPT.read_text(encoding="utf-8")
-        self.assertIn("com.docker.compose.project=anila-platform", script)
-        self.assertIn("com.docker.compose.volume=csp-attachments", script)
-        self.assertIn(
-            'run_runtime_backup_helper bind "$REPO_ROOT/share/uploads" tree '
-            '"$dest" uploads',
-            script,
+        profile = json.loads(PRODUCTION_BACKUP_PROFILE.read_text(encoding="utf-8"))
+        required = {
+            surface["id"]: surface
+            for surface in profile["surfaces"]
+            if surface["disposition"] == "required"
+        }
+        for surface_id in (
+            "ingestion-uploads",
+            "shared-upload-tree",
+            "csp-conversation-attachments",
+            "sealed-source-snapshots",
+            "studio-artifacts",
+            "csp-artifact-blobs",
+        ):
+            self.assertIn(surface_id, required)
+        self.assertEqual(
+            required["csp-conversation-attachments"]["source"]["name"],
+            "csp-attachments",
         )
-        self.assertIn(
-            'run_runtime_backup_helper volume "$ATTACHMENT_VOLUME" tree '
-            '"$dest" attachments',
-            script,
+        self.assertEqual(
+            required["csp-conversation-attachments"]["backup_method"],
+            "volume_archive",
         )
-        self.assertIn(
-            "uploads.tar.gz + attachments.tar.gz + source-snapshots.tar.gz",
-            script,
-        )
-        self.assertIn(
-            'run_runtime_backup_helper bind "$ANILA_STATE_DIR/source-snapshots" '
-            'tree "$dest" source-snapshots',
-            script,
-        )
-        self.assertIn("禁止直接 cp/tar", script)
 
     def test_safe_backup_helper_rejects_secret_links_and_never_follows_tree_links(self) -> None:
         helper = SAFE_BACKUP_HELPER.read_text(encoding="utf-8")

@@ -13,8 +13,9 @@
 #   status                     stack + 模型 stack 一覽 (等同 deploy-prod.sh status)
 #   health                     深度健檢:容器/端點/模型鏈路/TLS 效期/磁碟/備份新鮮度
 #   logs <svc> [n]             tail -f 單一 service logs (預設最後 100 行)
-#   backup [--full]            備份 DB + .env + secrets + pki;--full 加上傳檔案
-#   restore <backup-dir>       從 backup 目錄還原 DB (毀滅性,需輸入 RESTORE 確認)
+#   backup                     加密、簽章並發佈 production backup bundle
+#   restore <bundle> <new-target> [prepare|smoke]
+#                              只還原到全新可拋棄目標；不支援 live/in-place restore
 #   cert-renew <pfx>           平台 TLS 換發:安全提示密碼後重抽 fullchain+key → nginx reload
 #   model-ca <pem>             更新模型 gateway 出向 CA → 重建 csp
 #   gateway-key                輪替 MODEL_GATEWAY_API_KEY → 重建 csp → 探測
@@ -27,8 +28,8 @@
 #      絕不用 `docker restart` (不重載 env,見 AGENTS.md §4)。
 #   2. 本腳本不動 ANILA_ALLOW_* / ANILA_ENV 等 strict 旗標。break-glass
 #      只切換已審查的 deployment profile；REQUIRE_CARD_LOGIN_ONLY 始終為 true。
-#   3. 備份輸出含機密 (.env / JWT 私鑰 / DB dump):目錄 700、檔案 600,
-#      預設寫到 repo 外的 user state 目錄,且拒絕任何落在 repo 內的覆寫。
+#   3. DB/state 只會直接串流進 age；JWT/TLS private key 只備份外部 reference
+#      與 public fingerprint。backup/off-host 目錄必須位於 repo 外。
 #
 # 環境變數 (可選):
 #   ANILA_STATE_DIR    ANILA 外部 state 根目錄
@@ -77,9 +78,6 @@ SECRETS_DIR="${ANILA_SECRETS_DIR:-$_saved_secrets}"
 TLS_CERTS_DIR="${ANILA_TLS_CERTS_DIR:-$_saved_tls}"
 SECRETS_DIR="${SECRETS_DIR:-$ANILA_STATE_DIR/secrets}"
 TLS_CERTS_DIR="${TLS_CERTS_DIR:-$ANILA_STATE_DIR/tls}"
-BACKUP_KEEP="${ANILA_BACKUP_KEEP:-14}"
-CSP_RUNTIME_IMAGE="$(get_env ANILA_IMAGE_CSP)"
-SAFE_RUNTIME_BACKUP_HELPER="$REPO_ROOT/infra/deployment/scripts/safe-runtime-backup.py"
 
 # ── 輸出 helper ────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -94,8 +92,8 @@ err()   { printf "  %s✗%s %s\n" "$C_R" "$C_N" "$*"; }
 fatal() { err "$*"; exit 1; }
 section(){ printf "\n%s── %s ──%s\n" "$C_C" "$*" "$C_N"; }
 
-# 備份含全庫 dump 與正式 secret。即使 operator 覆寫路徑,也不可重新落進
-# repo (code-server / IDE / accidental archive 的可見範圍)。
+# 備份含加密後的全庫 dump 與 classified state。即使 operator 覆寫路徑，
+# 也不可重新落進 repo (code-server / IDE / accidental archive 的可見範圍)。
 assert_outside_repo() {
   local raw="$1" label="$2" repo_real target_real
   command -v realpath >/dev/null 2>&1 || fatal "缺少 realpath,無法驗證 $label 路徑"
@@ -198,6 +196,7 @@ need_stack() {
     ANILA_ALLOW_HTTP_ENDPOINT ANILA_ALLOW_HTTP_AGENT_ENDPOINT \
     ANILA_ALLOW_PRIVATE_ENDPOINT CARD_DEV_SKIP_NONCE_BINDING \
     CSP_DB_PASSWORD CSP_APP_DB_PASSWORD CSP_SECRET_KEY CSP_SERVICE_TOKEN \
+    STUDIO_ARTIFACT_SERVICE_TOKEN \
     INTERNAL_PLATFORM_API_KEY ADMIN_PASSWORD MODEL_GATEWAY_API_KEY \
     N8N_ENCRYPTION_KEY GITLAB_ROOT_PASSWORD ANILA_STATE_DIR \
     ANILA_SECRETS_DIR ANILA_TLS_CERTS_DIR ANILA_BREAK_GLASS_OWNER \
@@ -377,225 +376,9 @@ cmd_logs() {
   docker compose logs -f --tail="${2:-100}" "$svc"
 }
 
-# ── backup ─────────────────────────────────────────────────────────────────
-assert_real_source_directory() {
-  local source="$1" label="$2"
-  [ ! -L "$source" ] || fatal "$label 不得是 symlink: $source"
-  [ -d "$source" ] || fatal "$label 不存在或不是目錄: $source"
-}
-
-ensure_runtime_backup_helper() {
-  [ -s "$SAFE_RUNTIME_BACKUP_HELPER" ] \
-    || fatal "缺少安全備份 helper: $SAFE_RUNTIME_BACKUP_HELPER"
-  docker image inspect "$CSP_RUNTIME_IMAGE" >/dev/null 2>&1 \
-    || fatal "缺少 $CSP_RUNTIME_IMAGE — air-gap 主機請先跑 INTRANET-LOAD.sh"
-}
-
-# 以 CSP image 內的 Python 做一次性 root helper。只有精確的 read-only source
-# 與當次 backup destination 會掛入；container 無網路、root filesystem 也是唯讀。
-# helper 會把輸出 chown 回 host operator，避免 root-owned backup 無法輪替/搬移。
-run_runtime_backup_helper() {
-  local source_type="$1" source="$2" command="$3" destination="$4" kind="${5:-}"
-  local source_mount uid gid
-  uid="$(id -u)"; gid="$(id -g)"
-
-  case "$source_type" in
-    bind)
-      assert_real_source_directory "$source" "$command backup source"
-      source_mount="type=bind,source=$source,target=/source,readonly"
-      ;;
-    volume)
-      docker volume inspect "$source" >/dev/null 2>&1 \
-        || fatal "找不到 runtime volume: $source"
-      source_mount="type=volume,source=$source,target=/source,readonly"
-      ;;
-    *) fatal "未知 runtime backup source type: $source_type" ;;
-  esac
-
-  local helper_args=("$command" --source /source --destination /backup --uid "$uid" --gid "$gid")
-  [ "$command" != tree ] || helper_args+=(--kind "$kind")
-  docker run --rm --pull never --user 0:0 --network none --read-only \
-    --security-opt no-new-privileges \
-    --mount "$source_mount" \
-    --mount "type=bind,source=$destination,target=/backup" \
-    "$CSP_RUNTIME_IMAGE" python - "${helper_args[@]}" \
-    < "$SAFE_RUNTIME_BACKUP_HELPER" \
-    || fatal "$kind$command runtime backup helper 失敗 — 備份不完整,已中止"
-}
-
-ATTACHMENT_VOLUME=""
-find_attachment_volume() {
-  local item count=0
-  ATTACHMENT_VOLUME=""
-  while IFS= read -r item; do
-    [ -n "$item" ] || continue
-    ATTACHMENT_VOLUME="$item"
-    count=$((count + 1))
-  done < <(docker volume ls --quiet \
-    --filter label=com.docker.compose.project=anila-platform \
-    --filter label=com.docker.compose.volume=csp-attachments)
-  [ "$count" -eq 1 ] \
-    || fatal "--full 需要且只能找到 1 個 csp-attachments volume (目前 $count 個)"
-}
-
-backup_public_pki() {
-  local destination="$1" pem pems=()
-  [ -e "$REPO_ROOT/share/pki" ] || return 0
-  assert_real_source_directory "$REPO_ROOT/share/pki" "share/pki"
-  shopt -s nullglob
-  pems=("$REPO_ROOT"/share/pki/*.pem)
-  shopt -u nullglob
-  [ "${#pems[@]}" -gt 0 ] || return 0
-  mkdir -m 700 "$destination/pki"
-  for pem in "${pems[@]}"; do
-    [ ! -L "$pem" ] && [ -f "$pem" ] \
-      || fatal "PKI 備份只接受 regular file,拒絕: $pem"
-    cp -- "$pem" "$destination/pki/"
-  done
-  chmod 600 "$destination/pki/"*.pem
-}
-
-cmd_backup() {
-  need_stack
-  local full=0; [ "${1:-}" = --full ] && full=1
-  [ -n "$(docker compose ps --status running -q csp-db 2>/dev/null)" ] \
-    || fatal "csp-db 沒 running — 無法 pg_dump"
-  ensure_runtime_backup_helper
-
-  local stamp dest
-  stamp="$(date +%Y%m%d-%H%M%S)"
-  dest="$BACKUP_DIR/$stamp"
-  mkdir -p -m 700 "$BACKUP_DIR"; mkdir -m 700 "$dest"
-  log "備份到 $dest (含機密,目錄 700)"
-
-  # 1. DB:pg_dump 整個 csp database (schema+data;csp_app role 是 cluster 級,
-  #    不在 dump 內 — restore 到全新 volume 時由 cmd_restore 補建)。
-  docker compose exec -T csp-db pg_dump -U csp -d csp | gzip > "$dest/db-csp.sql.gz"
-  [ -s "$dest/db-csp.sql.gz" ] || fatal "pg_dump 輸出是空的 — 中止"
-  ok "DB dump: $(du -h "$dest/db-csp.sql.gz" | cut -f1)"
-
-  # 2. 設定與金鑰 (還原整台機器的最小集) — 這裡缺一樣都不算備份成功,fail-loud
-  [ -f .env ] && [ ! -L .env ] \
-    || fatal ".env 必須是 regular file 且不得是 symlink"
-  cp .env "$dest/env.bak" || fatal "備份 .env 失敗 — 中止 (少了它 secret 全滅,備份不可用)"
-  chmod 600 "$dest/env.bak"
-  run_runtime_backup_helper bind "$SECRETS_DIR" secrets "$dest"
-  run_runtime_backup_helper bind "$TLS_CERTS_DIR" tls "$dest"
-  backup_public_pki "$dest"
-  ok "設定/金鑰: .env + JWT secrets/ + TLS keypair + share/pki/"
-
-  # 3. --full:使用者上傳原檔 + CSP attachment named volume + 密封檢索
-  #    evidence。三者都由
-  #    one-shot root helper 從精確 readonly mount 讀取,tar 不跟隨 symlink。
-  if [ "$full" = 1 ]; then
-    run_runtime_backup_helper bind "$REPO_ROOT/share/uploads" tree "$dest" uploads
-    ok "上傳檔案: $(du -h "$dest/uploads.tar.gz" | cut -f1)"
-    find_attachment_volume
-    run_runtime_backup_helper volume "$ATTACHMENT_VOLUME" tree "$dest" attachments
-    ok "CSP 附件: $(du -h "$dest/attachments.tar.gz" | cut -f1)"
-    run_runtime_backup_helper bind "$ANILA_STATE_DIR/source-snapshots" tree "$dest" source-snapshots
-    ok "SourceSnapshot evidence: $(du -h "$dest/source-snapshots.tar.gz" | cut -f1)"
-  fi
-
-  # 4. manifest + checksum (異機還原時對版本、驗完整性)
-  {
-    echo "stamp: $stamp"
-    echo "git:   $(git rev-parse HEAD 2>/dev/null || echo '?') ($(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?'))"
-    echo "note:  n8n/gitlab volume 不在此備份內 — gitlab 用它自己的 gitlab-backup 機制"
-    echo "full:  $full (1 = uploads.tar.gz + attachments.tar.gz + source-snapshots.tar.gz)"
-    docker compose images 2>/dev/null || true
-  } > "$dest/MANIFEST.txt"
-  (cd "$dest" && find . -type f ! -name CHECKSUMS.sha256 -exec sha256sum {} + > CHECKSUMS.sha256)
-  chmod 600 "$dest"/CHECKSUMS.sha256 "$dest"/MANIFEST.txt
-
-  # 5. retention:只留最近 BACKUP_KEEP 份。只認本腳本的 YYYYmmdd-HHMMSS 命名 —
-  #    operator 手動放進來的其他目錄 (如異機備份) 一律不碰。
-  local old
-  old="$(find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d \
-         -regextype posix-extended -regex '.*/[0-9]{8}-[0-9]{6}' | sort | head -n -"$BACKUP_KEEP" || true)"
-  if [ -n "$old" ]; then
-    echo "$old" | while IFS= read -r d; do rm -rf "$d"; warn "retention 清除舊備份: $d"; done
-  fi
-  log "備份完成: $dest"
-}
-
-# ── restore ────────────────────────────────────────────────────────────────
-cmd_restore() {
-  need_stack
-  local src="${1:-}"
-  [ -n "$src" ] && [ -f "$src/db-csp.sql.gz" ] \
-    || fatal "usage: anila-ops.sh restore <backup-dir> (目錄內要有 db-csp.sql.gz)"
-
-  if [ -f "$src/CHECKSUMS.sha256" ]; then
-    (cd "$src" && sha256sum -c CHECKSUMS.sha256 --quiet) || fatal "備份 checksum 驗證失敗 — 檔案可能損壞"
-    ok "備份 checksum 驗證通過"
-  else
-    warn "$src 沒有 CHECKSUMS.sha256 — 跳過 checksum 驗證"
-  fi
-  # dump 完整性:truncated gzip 會在灌到一半才炸 (EOF 不是 SQL error,psql 不會擋)。
-  # 動手前先整包解壓驗 trailer,壞包直接擋在門外。
-  if ! gunzip -c "$src/db-csp.sql.gz" | tail -20 | grep -q 'PostgreSQL database dump complete'; then
-    fatal "db-csp.sql.gz 不完整 (缺 pg_dump 結尾標記) — 拒絕還原"
-  fi
-  ok "dump 完整性驗證通過 (pg_dump trailer 存在)"
-
-  warn "即將「清空並覆蓋」目前的 csp 資料庫 (使用者/對話/知識庫全部換成備份內容)"
-  warn "來源: $src ($(head -2 "$src/MANIFEST.txt" 2>/dev/null | tr '\n' ' '))"
-  local confirm; read -rp "  確定請輸入 RESTORE: " confirm
-  [ "$confirm" = RESTORE ] || fatal "已取消"
-
-  log "停掉會碰 DB 的服務"
-  docker compose stop csp ingestion-worker router anila-studio
-  docker compose up -d --no-build --pull never csp-db
-  local i
-  for i in $(seq 1 30); do
-    docker compose exec -T csp-db pg_isready -U csp -d postgres >/dev/null 2>&1 && break
-    sleep 2
-  done
-
-  # 全新 volume 還原時 csp_app role 不存在 (cluster 級,不在 dump 內) → 先補建
-  local app_pw; app_pw="$(get_env CSP_APP_DB_PASSWORD)"
-  if ! docker compose exec -T csp-db psql -U csp -d postgres -tAc \
-       "SELECT 1 FROM pg_roles WHERE rolname='csp_app'" 2>/dev/null | grep -q 1; then
-    [ -n "$app_pw" ] || fatal "csp_app role 不存在且 .env 缺 CSP_APP_DB_PASSWORD — 無法補建"
-    docker compose exec -T csp-db psql -U csp -d postgres -v ON_ERROR_STOP=1 -q \
-      -c "CREATE ROLE csp_app LOGIN PASSWORD '$app_pw'"
-    ok "已補建 csp_app role (密碼取自 .env)"
-  fi
-
-  # 舊庫「改名保留」而非 DROP:灌 dump 失敗還有路可退。
-  local keep="csp_pre_restore_$(date +%Y%m%d%H%M%S)"
-  log "把現有 csp 改名保留為 $keep,建新庫灌 dump"
-  for i in $(seq 1 5); do
-    docker compose exec -T csp-db psql -U csp -d postgres -q -c \
-      "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='csp' AND pid <> pg_backend_pid()" >/dev/null
-    docker compose exec -T csp-db psql -U csp -d postgres -q \
-      -c "ALTER DATABASE csp RENAME TO $keep" 2>/dev/null && break
-    [ "$i" = 5 ] && fatal "csp 改名失敗 (仍有連線佔用?) — 未動任何資料,已中止"
-    sleep 2
-  done
-  docker compose exec -T csp-db psql -U csp -d postgres -v ON_ERROR_STOP=1 -q -c "CREATE DATABASE csp OWNER csp"
-  if gunzip -c "$src/db-csp.sql.gz" | docker compose exec -T csp-db psql -U csp -d csp -v ON_ERROR_STOP=1 -q; then
-    ok "DB 還原完成 (舊庫保留為 $keep,確認新庫沒問題後可清除)"
-  else
-    err "灌 dump 失敗 — 自動回滾到還原前狀態"
-    docker compose exec -T csp-db psql -U csp -d postgres -q -c "DROP DATABASE IF EXISTS csp" || true
-    docker compose exec -T csp-db psql -U csp -d postgres -v ON_ERROR_STOP=1 -q -c "ALTER DATABASE $keep RENAME TO csp"
-    docker compose up -d --no-build --pull never csp ingestion-worker router anila-studio
-    fatal "已回滾 (原資料完好)。檢查備份檔後再試"
-  fi
-
-  log "只重啟本次停止的 DB consumers，再跑全 stack fail-closed acceptance"
-  docker compose up -d --no-build --pull never csp ingestion-worker router anila-studio
-  bash infra/deployment/scripts/deploy-prod.sh wait
-  bash infra/deployment/scripts/deploy-prod.sh verify
-  warn "確認一切正常後清掉保留的舊庫:"
-  warn "  docker compose exec -T csp-db psql -U csp -d postgres -c 'DROP DATABASE $keep'"
-  warn "本指令目前只還原 DB；.env / secrets / uploads / attachments / source-snapshots 尚未自動還原。"
-  warn "secrets 與 runtime 目錄是 UID 10001 + mode 0700，禁止直接 cp/tar 或放寬權限。"
-  warn "請用受控 root helper 還原並重設 owner/mode；Gate 6 restore drill 前須完成自動化 restore。"
-  log "還原完成 — 用 'anila-ops.sh health' 驗一輪,再實際登入測一次"
-}
+# ── backup / restore ───────────────────────────────────────────────────────
+# Legacy plaintext backup and live/in-place restore were removed at Gate 3 I9.
+# Only the fail-closed production backup wrapper near the entrypoint is callable.
 
 # ── cert-renew (平台入向 TLS) ──────────────────────────────────────────────
 cmd_cert_renew() {
@@ -789,6 +572,38 @@ cmd_prune() {
 }
 
 # ── help ───────────────────────────────────────────────────────────────────
+# Gate 3 I9 production path. Do not reintroduce plaintext backup or destructive
+# live restore into this daily operator command.
+PRODUCTION_BACKUP_TOOL="$REPO_ROOT/infra/deployment/scripts/production-backup.py"
+
+cmd_backup() {
+  [ -f "$PRODUCTION_BACKUP_TOOL" ] \
+    || fatal "缺少 production backup tool: $PRODUCTION_BACKUP_TOOL"
+  [ "$#" -eq 0 ] || fatal "usage: anila-ops.sh backup"
+  exec python3 "$PRODUCTION_BACKUP_TOOL" \
+    --repo-root "$REPO_ROOT" backup --backup-root "$BACKUP_DIR"
+}
+
+cmd_restore() {
+  [ -f "$PRODUCTION_BACKUP_TOOL" ] \
+    || fatal "缺少 production restore tool: $PRODUCTION_BACKUP_TOOL"
+  local bundle="${1:-}" target="${2:-}" mode="${3:-prepare}"
+  [ -n "$bundle" ] && [ -n "$target" ] \
+    || fatal "usage: anila-ops.sh restore <signed-bundle-dir> <new-disposable-target> [prepare|smoke]"
+  [ "$#" -le 3 ] || fatal "restore 參數過多"
+  case "$mode" in
+    prepare)
+      exec python3 "$PRODUCTION_BACKUP_TOOL" --repo-root "$REPO_ROOT" \
+        restore-prepare "$bundle" --target "$target"
+      ;;
+    smoke)
+      exec python3 "$PRODUCTION_BACKUP_TOOL" --repo-root "$REPO_ROOT" \
+        restore-smoke "$bundle" --target "$target"
+      ;;
+    *) fatal "restore mode 只能是 prepare 或 smoke；正式 destructive restore 留在 Gate 6" ;;
+  esac
+}
+
 cmd_help() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # ── entrypoint ─────────────────────────────────────────────────────────────

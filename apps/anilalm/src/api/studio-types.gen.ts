@@ -402,7 +402,7 @@ export interface paths {
          * Health
          * @description Liveness + readiness gate.
          *
-         *     ``revocation_cache.ready`` flips to False if Redis disconnects; the
+         *     ``revocation_cache.ready`` or artifact reporting readiness flips False;
          *     /health endpoint reports 503 in that window so k8s readiness probes
          *     pull the pod out of the load balancer until it recovers.
          *
@@ -451,7 +451,7 @@ export interface components {
                 [key: string]: string;
             } | null;
             /** Artifact Id */
-            artifact_id?: string | null;
+            artifact_id?: number | null;
             /** Classification Level */
             classification_level?: string | null;
             /**
@@ -666,7 +666,7 @@ export interface components {
                 [key: string]: string;
             } | null;
             /** Artifact Id */
-            artifact_id?: string | null;
+            artifact_id?: number | null;
             /** Classification Level */
             classification_level?: string | null;
             /**
@@ -715,7 +715,7 @@ export interface components {
             /** Error */
             error?: string | null;
             /** Artifact Id */
-            artifact_id?: string | null;
+            artifact_id?: number | null;
             /** Classification Level */
             classification_level?: string | null;
             /** Created At */
@@ -754,7 +754,7 @@ export interface components {
                 [key: string]: string;
             } | null;
             /** Artifact Id */
-            artifact_id?: string | null;
+            artifact_id?: number | null;
             /** Classification Level */
             classification_level?: string | null;
             /**
@@ -813,7 +813,7 @@ export interface components {
                 [key: string]: string;
             } | null;
             /** Artifact Id */
-            artifact_id?: string | null;
+            artifact_id?: number | null;
             /** Classification Level */
             classification_level?: string | null;
             /**

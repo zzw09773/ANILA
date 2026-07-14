@@ -42,6 +42,7 @@ def _collection(db, owner, *, level: Classification) -> IngestionCollection:
         description=None,
         chunking_config={},
         embedding_model="test-embed",
+        embedding_fingerprint="sha256:" + "0" * 64,
         embedding_dim=4000,
         created_by=owner.id,
         classification_level=level.to_storage(),

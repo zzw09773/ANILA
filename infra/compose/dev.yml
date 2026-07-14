@@ -55,6 +55,7 @@ services:
       PYTHONUNBUFFERED: "1"
       DATABASE_URL: postgresql://csp_app:csp@csp-db:5432/csp
       MIGRATION_DATABASE_URL: postgresql://csp:csp@csp-db:5432/csp
+      EMBEDDING_MODEL_FINGERPRINT: ${EMBEDDING_MODEL_FINGERPRINT_DEV:?EMBEDDING_MODEL_FINGERPRINT_DEV must be sha256:<64 lowercase hex> for deployed dev embedding weights}
       SECRET_KEY: ${CSP_SECRET_KEY:-dev-secret-key-change-in-prod}
       # Dev 寫死 "1"，不經 ${} 展開——避免被 .env 裡的 ANILA_ALLOW_DEV_SECRET=0
       # 鎖死。startup_security 在 dev 模式下只 log warning 不擋。
@@ -96,6 +97,12 @@ services:
       # 自己 mid-stream timeout 把連線關掉 → anila-studio 觀察到 ReadTimeout。
       LLM_TIMEOUT: "${LLM_TIMEOUT:-300}"
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
+      STUDIO_ARTIFACT_SERVICE_TOKEN: ${STUDIO_ARTIFACT_SERVICE_TOKEN:-csk-dev-studio-artifact}
+      STUDIO_RUNTIME_SERVICE_TOKEN: ${STUDIO_RUNTIME_SERVICE_TOKEN:-csk-dev-studio-runtime}
+      STUDIO_JOB_ENVELOPE_HMAC_KEY: ${STUDIO_JOB_ENVELOPE_HMAC_KEY:-dev-studio-job-envelope-hmac-key-change-me}
+      INGESTION_QUEUE_HMAC_KEY: ${INGESTION_QUEUE_HMAC_KEY:-dev-ingestion-queue-hmac-key-change-me}
+      STUDIO_DURABLE_SUPERVISOR: "true"
+      STUDIO_ARTIFACT_REPORTING: "true"
       AUTO_REGISTER_MODELS: >-
         [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://gpt-oss-20b:8000}","api_version":"v1","description":"On-prem local LLM (anila-models-net)"},{"name":"gemma4","display_name":"gemma4","model_type":"llm","endpoint_url":"http://gemma4:8000","api_version":"v1","description":"On-prem gemma4 vLLM (anila-models-net) — Router primary"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://nv-embed-proxy:8000}","api_version":"v1","description":"On-prem NV-embed-V2 via FastAPI shim (anila-models-net)"},{"name":"image-generator","display_name":"圖像繪製","model_type":"agent","endpoint_url":"http://flux2-dev-agent:8000","api_version":"v1","description":"FLUX.2-dev image generation agent","description_for_router":"當使用者要求繪製、產生、設計、畫一張、給我一張圖、視覺化、想看看 XX 的樣子、想要看一張圖等等的時候使用。輸入是使用者的中文自然語言描述,不需要先翻譯,agent 內部會處理。"}]
       # Phase G：agents 表的 declarative 來源(不同於 model_registry,後者是 catalog;
@@ -116,8 +123,19 @@ services:
         ]
       ANILA_TEMPLATE_DIR: /app/anila-template
       INGESTION_UPLOAD_DIR: /var/anila/ingestion-uploads
+      INGESTION_OUTBOX_STALE_SECONDS: "${INGESTION_OUTBOX_STALE_SECONDS_DEV:-120}"
       ATTACHMENT_STORAGE_PATH: /var/anila/attachments
       SOURCE_SNAPSHOT_STORAGE_PATH: /var/lib/anila/source-snapshots
+      ARTIFACT_BLOB_STORAGE_PATH: /var/lib/anila/artifact-blobs
+      RETENTION_ENABLED: "true"
+      RETENTION_ARTIFACT_ACTIVE_DAYS: "${RETENTION_ARTIFACT_ACTIVE_DAYS_DEV:-30}"
+      RETENTION_ARTIFACT_ARCHIVE_DAYS: "${RETENTION_ARTIFACT_ARCHIVE_DAYS_DEV:-365}"
+      RETENTION_INGESTION_ACTIVE_DAYS: "${RETENTION_INGESTION_ACTIVE_DAYS_DEV:-365}"
+      RETENTION_INGESTION_ARCHIVE_DAYS: "${RETENTION_INGESTION_ARCHIVE_DAYS_DEV:-365}"
+      RETENTION_REAPER_INTERVAL_SECONDS: "${RETENTION_REAPER_INTERVAL_SECONDS_DEV:-300}"
+      RETENTION_REAPER_LEASE_SECONDS: "${RETENTION_REAPER_LEASE_SECONDS_DEV:-900}"
+      RETENTION_REAPER_BATCH_SIZE: "${RETENTION_REAPER_BATCH_SIZE_DEV:-50}"
+      RETENTION_ALLOW_ARCHIVED_DOWNLOADS: "false"
       # FLUX image-gen for ANILALM studio pptx pipeline — wires
       # studio.image_provider.FluxImageProvider; empty BACKEND_URL
       # would make get_flux_provider() return None (toggle OFF).
@@ -128,11 +146,12 @@ services:
     volumes:
       - ../../packages/anila-agent:/app/anila-template:ro
       # Named volume inherits UID 10001 from the CSP image and is shared with
-      # the root-running worker.  A fresh Linux checkout therefore does not
-      # get a root-owned bind directory that blocks non-root CSP uploads.
+      # the worker running under the same numeric identity.  A fresh Linux
+      # checkout therefore does not get a root-owned bind directory.
       - ingestion-uploads-dev:/var/anila/ingestion-uploads
       - csp-attachments-dev:/var/anila/attachments
       - csp-source-snapshots-dev:/var/lib/anila/source-snapshots
+      - csp-artifact-blobs-dev:/var/lib/anila/artifact-blobs
       - csp-secrets-dev:/app/secrets
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -153,11 +172,27 @@ services:
   # ── Redis ───────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "no", "--maxmemory", "256mb"]
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --aof-use-rdb-preamble
+      - "yes"
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - noeviction
     volumes:
       - redis-data-dev:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+        - CMD-SHELL
+        - >-
+          redis-cli ping | grep -qx PONG &&
+          redis-cli INFO persistence | tr -d '\r' | grep -q '^aof_enabled:1$' &&
+          redis-cli INFO persistence | tr -d '\r' | grep -q '^aof_last_write_status:ok$'
       interval: 5s
       timeout: 3s
       retries: 5
@@ -169,12 +204,21 @@ services:
       context: ../..
       dockerfile: services/ingestion-worker/Dockerfile
     environment:
+      ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-development}
       DATABASE_URL: postgresql://csp_app:csp@csp-db:5432/csp
       REDIS_URL: redis://redis:6379
+      INGESTION_QUEUE_HMAC_KEY: ${INGESTION_QUEUE_HMAC_KEY:-dev-ingestion-queue-hmac-key-change-me}
       EMBEDDING_BASE_URL: http://csp:8000/v1
       EMBEDDING_MODEL: ${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}
+      EMBEDDING_MODEL_FINGERPRINT: ${EMBEDDING_MODEL_FINGERPRINT_DEV:?EMBEDDING_MODEL_FINGERPRINT_DEV must be sha256:<64 lowercase hex> for deployed dev embedding weights}
       EMBEDDING_API_KEY: ${INTERNAL_PLATFORM_API_KEY_DEV:-sk-internal-worker-dev-changeme}
       EMBEDDING_DIM: "4000"
+      PARSE_TIMEOUT_SECONDS: "${INGESTION_PARSE_TIMEOUT_SECONDS_DEV:-120}"
+      INDEX_TIMEOUT_SECONDS: "${INGESTION_INDEX_TIMEOUT_SECONDS_DEV:-120}"
+      JOB_TIMEOUT_SECONDS: "${INGESTION_JOB_TIMEOUT_SECONDS_DEV:-900}"
+      JOB_LEASE_SECONDS: "${INGESTION_JOB_LEASE_SECONDS_DEV:-90}"
+      JOB_HEARTBEAT_SECONDS: "${INGESTION_JOB_HEARTBEAT_SECONDS_DEV:-20}"
+      JOB_LEASE_GRACE_SECONDS: "${INGESTION_JOB_LEASE_GRACE_SECONDS_DEV:-15}"
       UPLOAD_DIR: /var/anila/ingestion-uploads
       SECRET_KEY: ${CSP_SECRET_KEY:-dev-secret-key-change-in-prod}
       ANILA_ALLOW_DEV_SECRET: "1"
@@ -208,6 +252,8 @@ services:
       PYTHONUNBUFFERED: "1"
     volumes:
       - ingestion-uploads-dev:/var/anila/ingestion-uploads
+    expose:
+      - "8081"
     depends_on:
       csp-db:
         condition: service_healthy
@@ -215,6 +261,16 @@ services:
         condition: service_healthy
       csp:
         condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/ready', timeout=2).read()"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   # ── Router ──────────────────────────────────────────────────────────────
@@ -266,11 +322,14 @@ services:
     expose:
       - "8100"
     environment:
+      ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-development}
       CSP_BASE_URL: http://csp:8000
       # 跟 csp 共用同一把 service-to-service token,讓 cold-start sync
       # /api/auth/revocations 能透過 X-CSP-Service-Token header 通過
       # csp 的 verify_service_token。對齊 router / ingestion-worker 的 pattern。
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
+      STUDIO_ARTIFACT_SERVICE_TOKEN: ${STUDIO_ARTIFACT_SERVICE_TOKEN:-csk-dev-studio-artifact}
+      STUDIO_RUNTIME_SERVICE_TOKEN: ${STUDIO_RUNTIME_SERVICE_TOKEN:-csk-dev-studio-runtime}
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
       # 2026-07 起走 OpenAI 相容 Images API(POST {base}/v1/images/generations);
@@ -409,6 +468,7 @@ volumes:
   ingestion-uploads-dev:
   csp-attachments-dev:
   csp-source-snapshots-dev:
+  csp-artifact-blobs-dev:
   csp-secrets-dev:
   anila-studio-flux-cache-dev:
   anila-studio-artifacts-dev:

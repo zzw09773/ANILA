@@ -26,8 +26,10 @@ import logging
 import secrets
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from app.config import settings
 from app.schemas.infographic import (
     InfographicJobStatus,
     InfographicPreset,
@@ -67,7 +69,7 @@ class InfographicJobRecord:
     created_at: datetime
     updated_at: datetime
     # Slice 8b: control-plane passthrough, back-filled after artifact register.
-    artifact_id: str | None = None
+    artifact_id: int | None = None
     classification_level: str | None = None
     task: asyncio.Task[Any] | None = field(default=None, compare=False, repr=False)
 
@@ -79,12 +81,6 @@ class InfographicJobRecord:
         buttons. URLs are RELATIVE so they survive proxy / domain
         changes at deploy time.
         """
-        download_urls: dict[str, str] | None = None
-        if self.state == "done" and self.html_path and self.pdf_path:
-            download_urls = {
-                "html": f"/api/infographics/jobs/{self.job_id}/download/html",
-                "pdf": f"/api/infographics/jobs/{self.job_id}/download/pdf",
-            }
         return InfographicJobStatus(
             job_id=self.job_id,
             state=self.state,  # type: ignore[arg-type]
@@ -93,7 +89,7 @@ class InfographicJobRecord:
             preset=self.preset,
             chart_count=self.chart_count,
             error=self.error,
-            download_urls=download_urls,
+            download_urls=None,
             artifact_id=self.artifact_id,
             classification_level=self.classification_level,
             created_at=self.created_at,
@@ -170,6 +166,9 @@ async def create_job(
 
     await job_lifecycle.on_create(record, report_ctx)
 
+    if settings.STUDIO_DURABLE_SUPERVISOR:
+        return record
+
     updater = InfographicJobUpdater(job_id=job_id, ctx=report_ctx)
 
     async def _wrapped() -> None:
@@ -226,7 +225,6 @@ async def delete_job(job_id: str, user_id: int) -> bool:
     async with _lock:
         _jobs.pop(job_id, None)
     # Files outside the lock — disk I/O shouldn't block the registry.
-    from pathlib import Path
     for path_str in (rec.html_path, rec.pdf_path):
         if not path_str:
             continue
@@ -246,11 +244,19 @@ def artifact_info(rec: InfographicJobRecord) -> ArtifactInfo:
     downloadable. Bytes live on disk (not memory) so the content hash is
     skipped (not "cheap").
     """
+    primary_path = Path(rec.pdf_path) if rec.pdf_path else None
+    primary_bytes = (
+        primary_path.read_bytes()
+        if primary_path is not None and primary_path.is_file()
+        else None
+    )
     return ArtifactInfo(
         artifact_type="infographic",
         title=rec.title,
         storage_ref=rec.pdf_path or rec.html_path,
-        primary_bytes=None,
+        primary_bytes=primary_bytes,
+        original_filename=f"{rec.job_id}.pdf",
+        media_type="application/pdf",
         result_metadata={"chart_count": rec.chart_count},
     )
 
@@ -284,7 +290,7 @@ class InfographicJobUpdater:
         error: str | None = None,
         html_path: str | None = None,
         pdf_path: str | None = None,
-        artifact_id: str | None = None,
+        artifact_id: int | None = None,
         classification_level: str | None = None,
     ) -> None:
         async with _lock:

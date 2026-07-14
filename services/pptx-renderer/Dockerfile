@@ -50,9 +50,14 @@ COPY scripts ./scripts
 
 ENV PORT=7100 \
     PPTX_TMP_DIR=/var/anila/pptx-out \
-    NODE_ENV=production
+    NODE_ENV=production \
+    HOME=/home/anila
 
-RUN mkdir -p $PPTX_TMP_DIR
+RUN groupadd --gid 10001 anila \
+ && useradd --create-home --uid 10001 --gid 10001 anila \
+ && mkdir -p $PPTX_TMP_DIR \
+ && chown -R anila:anila /app $PPTX_TMP_DIR \
+ && chmod 700 $PPTX_TMP_DIR
 
 EXPOSE 7100
 
@@ -60,4 +65,6 @@ EXPOSE 7100
 # children cleanly; without it a hanging soffice can leave zombie procs
 # that wedge the container restart.
 ENTRYPOINT ["/usr/bin/tini", "--"]
+USER anila
+
 CMD ["node", "server.js"]

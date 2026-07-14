@@ -271,6 +271,7 @@ jobs:
           python -m pip install -e "./packages/anila-contracts"
           python -m pip install -e "./packages/anila-security"
           python -m pip install -e "./packages/anila-core[dev]"
+          python -m pip install -e "./services/ingestion-worker[dev]"
           python -m pip install -r services/csp/requirements-dev.txt
 
       - name: Require a single Alembic head
@@ -341,6 +342,46 @@ jobs:
           ANILA_GATE2_CLASSIFICATION_PG_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
           PYTHONPATH: .
         run: python -m pytest tests/test_gate2_classification_latch_pg.py -q
+
+      - name: Prove Gate 3 retention and artifact upload races on PostgreSQL
+        working-directory: services/csp
+        env:
+          ANILA_GATE3_RETENTION_PG_URL: postgresql://csp_app:gate1-app-db@127.0.0.1:5432/csp
+          PYTHONPATH: .
+        run: python -m pytest tests/test_gate3_retention_upload_pg.py -q
+
+      - name: Prove Gate 3 ingestion generation migration and backfill
+        env:
+          ANILA_GATE3_TEST_PG_ADMIN_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/postgres
+        run: python -m pytest services/csp/tests/test_ingestion_generations_pg.py -q
+
+      - name: Prove Gate 3 worker lease, DLQ, and similarity concurrency
+        env:
+          ANILA_JOB_STATE_PG_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/gate3_worker_ci
+          ANILA_JOB_STATE_PG_ADMIN_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/gate3_worker_ci
+        run: |
+          python - <<'PY'
+          import asyncio
+          import asyncpg
+
+          async def main() -> None:
+              connection = await asyncpg.connect(
+                  "postgresql://csp:gate1-admin-db@127.0.0.1:5432/postgres"
+              )
+              try:
+                  await connection.execute(
+                      "DROP DATABASE IF EXISTS gate3_worker_ci WITH (FORCE)"
+                  )
+                  await connection.execute("CREATE DATABASE gate3_worker_ci")
+              finally:
+                  await connection.close()
+
+          asyncio.run(main())
+          PY
+          python -m pytest \
+            services/ingestion-worker/tests/test_job_state_pg.py \
+            services/ingestion-worker/tests/test_similarity_relations_pg.py \
+            -q
 
       - name: Prove Gate 2 durable usage and Full Trace closure on PostgreSQL
         working-directory: services/csp
@@ -434,6 +475,43 @@ jobs:
         env:
           VITE_ANILA_PILOT_MODE: "true"
         run: npm run build
+
+  backend-pptx-renderer:
+    name: Backend / PPTX renderer contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: services/pptx-renderer/package-lock.json
+      - name: Install production dependencies and audit
+        working-directory: services/pptx-renderer
+        run: |
+          npm ci --omit=dev
+          npm audit --omit=dev --audit-level=moderate
+      - name: Run renderer contracts against the live HTTP boundary
+        working-directory: services/pptx-renderer
+        run: |
+          set -euo pipefail
+          node server.js >renderer.log 2>&1 &
+          renderer_pid=$!
+          trap 'kill "$renderer_pid" 2>/dev/null || true; cat renderer.log' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:7100/health >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$renderer_pid" 2>/dev/null; then
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:7100/health >/dev/null
+          for test_file in tests/test_*.js; do
+            node "$test_file"
+          done
 
   backend-studio-security:
     name: Backend / Studio auth and revocation

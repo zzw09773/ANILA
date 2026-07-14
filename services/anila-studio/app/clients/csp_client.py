@@ -47,6 +47,7 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.services.runtime_context import current_runtime_context
 
 
 logger = logging.getLogger(__name__)
@@ -153,7 +154,27 @@ def _llm_timeout() -> httpx.Timeout:
 
 
 def _auth_headers(bearer: str) -> dict[str, str]:
+    runtime = current_runtime_context()
+    if runtime is not None:
+        return runtime.headers()
     return {"Authorization": f"Bearer {bearer}"}
+
+
+def _runtime_url(url: str) -> str:
+    """Route durable runners only through CSP's narrow delegation surface."""
+    if current_runtime_context() is None:
+        return url
+    base = settings.CSP_BASE_URL.rstrip("/")
+    if not url.startswith(base):
+        raise CspClientError("runtime delegation 只允許 CSP origin")
+    path = url[len(base):]
+    if path == "/v1/chat/completions":
+        return f"{base}/v1/studio-runtime/chat/completions"
+    if path.startswith("/api/ingestion/collections/"):
+        return f"{base}/v1/studio-runtime{path[len('/api/ingestion') :]}"
+    if path.startswith("/api/ingestion/images/"):
+        return f"{base}/v1/studio-runtime{path[len('/api/ingestion') :]}"
+    raise CspClientError(f"runtime delegation endpoint 不在 allow-list: {path}")
 
 
 def _safe_detail(response: httpx.Response) -> str:
@@ -222,6 +243,7 @@ async def _request(
     (no retry, fail-fast).
     """
     headers = _auth_headers(bearer)
+    url = _runtime_url(url)
     timeout = timeout_override if timeout_override is not None else _default_timeout()
     max_attempts = max_attempts_override if max_attempts_override is not None else _MAX_ATTEMPTS
 

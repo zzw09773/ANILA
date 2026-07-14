@@ -25,6 +25,7 @@ def _governed_document(db):
         name="Restricted collection",
         chunking_config={"strategy": "fixed"},
         embedding_model="embed",
+        embedding_fingerprint="sha256:" + "0" * 64,
         embedding_dim=4,
         status="active",
         created_by=owner.id,

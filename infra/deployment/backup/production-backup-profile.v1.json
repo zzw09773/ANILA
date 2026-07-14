@@ -1,0 +1,571 @@
+{
+  "schema_version": "anila.production-backup-profile.v1",
+  "profile_id": "anila-platform-production",
+  "scope": {
+    "compose_file": "infra/compose/platform.yml",
+    "compose_project": "anila-platform"
+  },
+  "policy": {
+    "default_disposition": "reject",
+    "unknown_surface": "reject",
+    "missing_surface": "reject",
+    "duplicate_surface": "reject",
+    "invalid_surface": "reject"
+  },
+  "automation": {
+    "bundle_schema": "anila.production-backup-envelope.v1",
+    "manifest_schema": "anila.production-backup-manifest.v1",
+    "encryption": {
+      "tool": "age",
+      "recipients_file_env": "ANILA_BACKUP_AGE_RECIPIENTS_FILE",
+      "identity_file_env": "ANILA_BACKUP_AGE_IDENTITY_FILE"
+    },
+    "signature": {
+      "tool": "openssl-dgst-sha256",
+      "signing_key_env": "ANILA_BACKUP_SIGNING_KEY_FILE",
+      "verification_key_env": "ANILA_BACKUP_SIGNING_PUBLIC_KEY_FILE"
+    },
+    "off_host": {
+      "directory_env": "ANILA_BACKUP_OFFHOST_DIR",
+      "readback": "sha256"
+    },
+    "retention": {
+      "keep_env": "ANILA_BACKUP_KEEP",
+      "default_keep": 14
+    },
+    "alert": {
+      "hook_env": "ANILA_BACKUP_ALERT_HOOK",
+      "protocol": "json-stdin-v1"
+    },
+    "consistency": {
+      "mode": "quiesced-writers-v1",
+      "writer_services": [
+        "csp",
+        "ingestion-worker",
+        "router",
+        "anila-studio",
+        "n8n",
+        "gitlab",
+        "flux2-dev-agent"
+      ],
+      "database_service": "csp-db",
+      "redis_service": "redis"
+    },
+    "external_references": {
+      "csp-jwt-key-reference": {
+        "reference_env": "ANILA_BACKUP_JWT_KEY_REFERENCE",
+        "fingerprint_env": "ANILA_BACKUP_JWT_PUBLIC_FINGERPRINT"
+      },
+      "ingress-tls-key-reference": {
+        "reference_env": "ANILA_BACKUP_TLS_KEY_REFERENCE",
+        "fingerprint_env": "ANILA_BACKUP_TLS_PUBLIC_FINGERPRINT"
+      },
+      "gitlab-configuration": {
+        "reference_env": "ANILA_BACKUP_GITLAB_CONFIG_REFERENCE",
+        "fingerprint_env": "ANILA_BACKUP_GITLAB_CONFIG_FINGERPRINT"
+      },
+      "n8n-encryption-key": {
+        "reference_env": "ANILA_BACKUP_N8N_KEY_REFERENCE",
+        "fingerprint_env": "ANILA_BACKUP_N8N_KEY_FINGERPRINT"
+      },
+      "gitlab-secrets": {
+        "reference_env": "ANILA_BACKUP_GITLAB_SECRETS_REFERENCE",
+        "fingerprint_env": "ANILA_BACKUP_GITLAB_SECRETS_FINGERPRINT"
+      },
+      "signed-release": {
+        "reference_env": "ANILA_BACKUP_RELEASE_REFERENCE",
+        "fingerprint_env": "ANILA_BACKUP_RELEASE_FINGERPRINT"
+      }
+    }
+  },
+  "surfaces": [
+    {
+      "id": "csp-postgresql",
+      "source": {
+        "kind": "named_volume",
+        "name": "csp-pgdata",
+        "mounts": [
+          {
+            "service": "csp-db",
+            "target": "/var/lib/postgresql/data",
+            "read_only": false
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "極機密",
+      "owner": "database-operations",
+      "reason": "Authoritative CSP records, policy state, audit data, and active vector generations.",
+      "acceptance_gate": "Gate 6 P1",
+      "backup_method": "pg_dump",
+      "restore_order": 10
+    },
+    {
+      "id": "ingestion-uploads",
+      "source": {
+        "kind": "bind",
+        "name": "../../share/uploads/ingestion",
+        "mounts": [
+          {
+            "service": "csp",
+            "target": "/var/anila/ingestion-uploads",
+            "read_only": false
+          },
+          {
+            "service": "ingestion-worker",
+            "target": "/var/anila/ingestion-uploads",
+            "read_only": false
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "極機密",
+      "owner": "data-operations",
+      "reason": "Original accepted ingestion blobs and extracted image files are not reconstructable from database rows.",
+      "acceptance_gate": "Gate 6 P1",
+      "backup_method": "filesystem_archive",
+      "restore_order": 20
+    },
+    {
+      "id": "shared-upload-tree",
+      "source": {
+        "kind": "bind",
+        "name": "../../share/uploads",
+        "mounts": [
+          {
+            "service": "nginx",
+            "target": "/usr/share/nginx/share-files/uploads",
+            "read_only": false
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "極機密",
+      "owner": "data-operations",
+      "reason": "Public-path storage includes generated and uploaded bytes referenced by CSP and user-facing links.",
+      "acceptance_gate": "Gate 6 P1",
+      "backup_method": "filesystem_archive",
+      "restore_order": 30
+    },
+    {
+      "id": "flux-generated-uploads",
+      "source": {
+        "kind": "bind",
+        "name": "../../share/uploads/flux",
+        "mounts": [
+          {
+            "service": "flux2-dev-agent",
+            "target": "/share/flux",
+            "read_only": false
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "極機密",
+      "owner": "artifact-operations",
+      "reason": "Generated image outputs are user-visible artifacts and cannot be assumed reproducible from prompts.",
+      "acceptance_gate": "Gate 6 P1",
+      "backup_method": "filesystem_archive",
+      "restore_order": 40
+    },
+    {
+      "id": "csp-conversation-attachments",
+      "source": {
+        "kind": "named_volume",
+        "name": "csp-attachments",
+        "mounts": [
+          {
+            "service": "csp",
+            "target": "/var/anila/attachments",
+            "read_only": false
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "極機密",
+      "owner": "data-operations",
+      "reason": "Conversation attachment database records depend on these durable user-supplied bytes.",
+      "acceptance_gate": "Gate 6 P1",
+      "backup_method": "volume_archive",
+      "restore_order": 50
+    },
+    {
+      "id": "sealed-source-snapshots",
+      "source": {
+        "kind": "bind",
+        "name": "${ANILA_STATE_DIR:?ANILA_STATE_DIR must be an absolute path outside the repo}/source-snapshots",
+        "mounts": [
+          {
+            "service": "csp",
+            "target": "/var/lib/anila/source-snapshots",
+            "read_only": false
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "極機密",
+      "owner": "governance-operations",
+      "reason": "Sealed retrieval evidence is required to reproduce citations, policy decisions, and Full Trace inputs.",
+      "acceptance_gate": "Gate 6 P1",
+      "backup_method": "filesystem_archive",
+      "restore_order": 60
+    },
+    {
+      "id": "studio-artifacts",
+      "source": {
+        "kind": "named_volume",
+        "name": "anila-studio-artifacts",
+        "mounts": [
+          {
+            "service": "anila-studio",
+            "target": "/var/anila/anila-studio-artifacts",
+            "read_only": false
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "極機密",
+      "owner": "artifact-operations",
+      "reason": "Completed report, mindmap, infographic, and datatable bytes back CSP artifact records.",
+      "acceptance_gate": "Gate 6 P1",
+      "backup_method": "volume_archive",
+      "restore_order": 70
+    },
+    {
+      "id": "csp-artifact-blobs",
+      "source": {
+        "kind": "bind",
+        "name": "${ANILA_STATE_DIR:?ANILA_STATE_DIR must be an absolute path outside the repo}/artifact-blobs",
+        "mounts": [
+          {
+            "service": "csp",
+            "target": "/var/lib/anila/artifact-blobs",
+            "read_only": false
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "極機密",
+      "owner": "artifact-operations",
+      "reason": "Immutable CSP artifact version blobs are referenced by artifact_versions and must match the restored control-plane rows.",
+      "acceptance_gate": "Gate 6 P1",
+      "backup_method": "filesystem_archive",
+      "restore_order": 75
+    },
+    {
+      "id": "redis-runtime-state",
+      "source": {
+        "kind": "named_volume",
+        "name": "redis-data",
+        "mounts": [
+          {
+            "service": "redis",
+            "target": "/data",
+            "read_only": false
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "機密",
+      "owner": "queue-operations",
+      "reason": "Queued ingestion work and revocation propagation state require an explicit persistence and replay contract.",
+      "acceptance_gate": "Gate 6 P1",
+      "backup_method": "redis_snapshot",
+      "restore_order": 80
+    },
+    {
+      "id": "n8n-state",
+      "source": {
+        "kind": "named_volume",
+        "name": "n8n_data",
+        "mounts": [
+          {
+            "service": "n8n",
+            "target": "/home/node/.n8n",
+            "read_only": false
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "極機密",
+      "owner": "automation-operations",
+      "reason": "n8n workflows, credentials, and their encryption metadata are retained production application state.",
+      "acceptance_gate": "Gate 6 P1",
+      "backup_method": "service_native",
+      "restore_order": 90
+    },
+    {
+      "id": "gitlab-configuration",
+      "source": {
+        "kind": "named_volume",
+        "name": "gitlab_config",
+        "mounts": [
+          {
+            "service": "gitlab",
+            "target": "/etc/gitlab",
+            "read_only": false
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "極機密",
+      "owner": "gitlab-operations",
+      "reason": "GitLab configuration and secrets are required alongside native repository backups for recovery.",
+      "acceptance_gate": "Gate 6 P1",
+      "backup_method": "key_management_reference",
+      "restore_order": 100
+    },
+    {
+      "id": "gitlab-logs",
+      "source": {
+        "kind": "named_volume",
+        "name": "gitlab_logs",
+        "mounts": [
+          {
+            "service": "gitlab",
+            "target": "/var/log/gitlab",
+            "read_only": false
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "機密",
+      "owner": "gitlab-operations",
+      "reason": "GitLab audit and operational logs are required for incident reconstruction after recovery.",
+      "acceptance_gate": "Gate 6 P1",
+      "backup_method": "service_native",
+      "restore_order": 110
+    },
+    {
+      "id": "gitlab-application-data",
+      "source": {
+        "kind": "named_volume",
+        "name": "gitlab_data",
+        "mounts": [
+          {
+            "service": "gitlab",
+            "target": "/var/opt/gitlab",
+            "read_only": false
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "極機密",
+      "owner": "gitlab-operations",
+      "reason": "Git repositories, database state, uploads, and package data are production records.",
+      "acceptance_gate": "Gate 6 P1",
+      "backup_method": "service_native",
+      "restore_order": 120
+    },
+    {
+      "id": "card-and-model-public-pki",
+      "source": {
+        "kind": "bind",
+        "name": "../../share/pki",
+        "mounts": [
+          {
+            "service": "csp",
+            "target": "/etc/anila/pki",
+            "read_only": true
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "機密",
+      "owner": "pki-operations",
+      "reason": "Operator-provisioned CA and CRL material defines trusted issuers and offline revocation state.",
+      "acceptance_gate": "Gate 6 P1",
+      "backup_method": "filesystem_archive",
+      "restore_order": 130
+    },
+    {
+      "id": "csp-jwt-key-reference",
+      "source": {
+        "kind": "bind",
+        "name": "${ANILA_SECRETS_DIR:?ANILA_SECRETS_DIR must be an absolute path outside the repo}",
+        "mounts": [
+          {
+            "service": "csp",
+            "target": "/app/secrets",
+            "read_only": true
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "極機密",
+      "owner": "security-operations",
+      "reason": "JWT signing identity must be restored through the approved key-management and rotation procedure.",
+      "acceptance_gate": "Gate 6 P1",
+      "backup_method": "key_management_reference",
+      "restore_order": 140
+    },
+    {
+      "id": "ingress-tls-key-reference",
+      "source": {
+        "kind": "bind",
+        "name": "${ANILA_TLS_CERTS_DIR:?ANILA_TLS_CERTS_DIR must be an absolute path outside the repo}",
+        "mounts": [
+          {
+            "service": "nginx",
+            "target": "/etc/nginx/certs",
+            "read_only": true
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "極機密",
+      "owner": "pki-operations",
+      "reason": "Ingress certificate identity must be restored or reissued through controlled PKI key handling.",
+      "acceptance_gate": "Gate 6 P1",
+      "backup_method": "key_management_reference",
+      "restore_order": 150
+    },
+    {
+      "id": "shared-static-content",
+      "source": {
+        "kind": "bind",
+        "name": "../../share/static",
+        "mounts": [
+          {
+            "service": "nginx",
+            "target": "/usr/share/nginx/share-files/static",
+            "read_only": true
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "機密",
+      "owner": "platform-operations",
+      "reason": "Operator-managed static content is outside immutable images and must have an explicit recovery source.",
+      "acceptance_gate": "Gate 6 P1",
+      "backup_method": "filesystem_archive",
+      "restore_order": 160
+    },
+    {
+      "id": "studio-flux-cache",
+      "source": {
+        "kind": "named_volume",
+        "name": "anila-studio-flux-cache",
+        "mounts": [
+          {
+            "service": "anila-studio",
+            "target": "/var/anila/anila-studio-flux-cache",
+            "read_only": false
+          }
+        ]
+      },
+      "disposition": "derivable",
+      "data_classification": "營業秘密",
+      "owner": "artifact-operations",
+      "reason": "This cache may be rebuilt only from restored required artifact and upload sources.",
+      "acceptance_gate": "Gate 3 I9",
+      "backup_method": "rebuild_from_required_sources",
+      "restore_order": 800
+    },
+    {
+      "id": "agent-template-release-content",
+      "source": {
+        "kind": "bind",
+        "name": "../../packages/anila-agent",
+        "mounts": [
+          {
+            "service": "csp",
+            "target": "/app/anila-template",
+            "read_only": true
+          }
+        ]
+      },
+      "disposition": "derivable",
+      "data_classification": "營業秘密",
+      "owner": "release-operations",
+      "reason": "The read-only agent template is reconstructed from the signed source release rather than runtime backup.",
+      "acceptance_gate": "Gate 3 I9",
+      "backup_method": "rebuild_from_required_sources",
+      "restore_order": 810
+    },
+    {
+      "id": "nginx-release-configuration",
+      "source": {
+        "kind": "bind",
+        "name": "../../infra/nginx/anila.conf",
+        "mounts": [
+          {
+            "service": "nginx",
+            "target": "/etc/nginx/conf.d/default.conf",
+            "read_only": true
+          }
+        ]
+      },
+      "disposition": "derivable",
+      "data_classification": "營業秘密",
+      "owner": "release-operations",
+      "reason": "The read-only ingress configuration is reconstructed from the signed source release.",
+      "acceptance_gate": "Gate 3 I9",
+      "backup_method": "rebuild_from_required_sources",
+      "restore_order": 820
+    },
+    {
+      "id": "router-posture-release-configuration",
+      "source": {
+        "kind": "bind",
+        "name": "../../infra/nginx/snippets/router-enabled.conf",
+        "mounts": [
+          {
+            "service": "nginx",
+            "target": "/etc/nginx/snippets/router-posture.conf",
+            "read_only": true
+          }
+        ]
+      },
+      "disposition": "derivable",
+      "data_classification": "營業秘密",
+      "owner": "release-operations",
+      "reason": "The read-only Router posture snippet is reconstructed from the signed source release.",
+      "acceptance_gate": "Gate 3 I9",
+      "backup_method": "rebuild_from_required_sources",
+      "restore_order": 830
+    },
+    {
+      "id": "developer-codeserver-config",
+      "source": {
+        "kind": "named_volume",
+        "name": "codeserver_config",
+        "mounts": [
+          {
+            "service": "codeserver",
+            "target": "/home/coder/.config",
+            "read_only": false
+          }
+        ]
+      },
+      "disposition": "excluded",
+      "data_classification": "機密",
+      "owner": "developer-tools-owner",
+      "reason": "The optional developer-tools profile is not production application state and must be re-provisioned.",
+      "acceptance_gate": "Gate 6 P0",
+      "backup_method": "none",
+      "restore_order": 900
+    },
+    {
+      "id": "developer-codeserver-sandbox",
+      "source": {
+        "kind": "bind",
+        "name": "../../share/codeserver-sandbox",
+        "mounts": [
+          {
+            "service": "codeserver",
+            "target": "/home/coder/workspace",
+            "read_only": false
+          }
+        ]
+      },
+      "disposition": "excluded",
+      "data_classification": "機密",
+      "owner": "developer-tools-owner",
+      "reason": "The disposable developer sandbox is prohibited from containing authoritative production records.",
+      "acceptance_gate": "Gate 6 P0",
+      "backup_method": "none",
+      "restore_order": 910
+    }
+  ]
+}

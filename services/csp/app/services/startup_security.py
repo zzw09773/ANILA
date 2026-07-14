@@ -18,6 +18,7 @@ starts.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -180,6 +181,7 @@ _FORMAL_PROFILE_POSTURES: dict[str, dict[str, object]] = {
 
 _AUDIT_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}$")
 _FORMAL_SOURCE_SNAPSHOT_PATH = Path("/var/lib/anila/source-snapshots")
+_FORMAL_ARTIFACT_BLOB_PATH = Path("/var/lib/anila/artifact-blobs")
 
 
 def _parse_break_glass_expiry(raw: str) -> datetime:
@@ -372,6 +374,63 @@ def assert_source_snapshot_storage_policy() -> None:
     if not os.access(configured, os.W_OK | os.X_OK):
         raise RuntimeError(
             "Refusing to start: SourceSnapshot state mount is not writable"
+        )
+
+
+def assert_ingestion_queue_integrity_policy() -> None:
+    """Formal CSP must authenticate every job published to shared Redis."""
+    profile = settings.ANILA_DEPLOYMENT_PROFILE.strip().lower()
+    if profile not in _FORMAL_PROFILE_POSTURES:
+        return
+    key = settings.INGESTION_QUEUE_HMAC_KEY.strip()
+    if len(key) < 32 or key.startswith("dev-"):
+        raise RuntimeError(
+            "Refusing to start: formal ingestion queue HMAC key is missing or development-only"
+        )
+
+
+def assert_artifact_blob_storage_policy() -> None:
+    """Formal immutable artifacts require a private CSP-owned state mount."""
+    profile = settings.ANILA_DEPLOYMENT_PROFILE.strip().lower()
+    if profile not in _FORMAL_PROFILE_POSTURES:
+        return
+    configured = Path(settings.ARTIFACT_BLOB_STORAGE_PATH)
+    if configured != _FORMAL_ARTIFACT_BLOB_PATH:
+        raise RuntimeError(
+            "Refusing to start: formal ARTIFACT_BLOB_STORAGE_PATH must be "
+            f"{_FORMAL_ARTIFACT_BLOB_PATH}"
+        )
+    try:
+        metadata = configured.lstat()
+    except OSError as exc:
+        raise RuntimeError("Refusing to start: Artifact blob state mount is missing") from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise RuntimeError("Refusing to start: Artifact blob mount must be a real directory")
+    runtime_uid = os.geteuid() if hasattr(os, "geteuid") else metadata.st_uid
+    if metadata.st_uid != runtime_uid or metadata.st_mode & 0o077:
+        raise RuntimeError(
+            "Refusing to start: Artifact blob mount must be owned by the CSP "
+            "runtime user with mode 0700"
+        )
+    if not os.access(configured, os.W_OK | os.X_OK):
+        raise RuntimeError("Refusing to start: Artifact blob mount is not writable")
+
+
+def assert_retention_policy() -> None:
+    """Formal profiles must run one bounded, leased, fail-closed reaper."""
+    profile = settings.ANILA_DEPLOYMENT_PROFILE.strip().lower()
+    if profile not in _FORMAL_PROFILE_POSTURES:
+        return
+    if not settings.RETENTION_ENABLED:
+        raise RuntimeError("Refusing to start: formal retention reaper is disabled")
+    if settings.RETENTION_REAPER_INTERVAL_SECONDS >= settings.RETENTION_REAPER_LEASE_SECONDS:
+        raise RuntimeError(
+            "Refusing to start: retention lease must exceed the reaper interval"
+        )
+    if Path(settings.INGESTION_UPLOAD_DIR) != Path("/var/anila/ingestion-uploads"):
+        raise RuntimeError(
+            "Refusing to start: formal INGESTION_UPLOAD_DIR must be "
+            "/var/anila/ingestion-uploads"
         )
 
 
@@ -581,6 +640,34 @@ def assert_startup_migration_policy() -> None:
         "[startup_security] SKIP_STARTUP_MIGRATIONS=true；"
         "僅適用 dev/test 自行建立 schema 的 fixture。"
     )
+
+
+def assert_runtime_deadline_policy() -> None:
+    """Keep durable stream closure ahead of crash reconciliation.
+
+    Streaming releases admission locks before bytes flow. If the stale-run
+    reconciler can close that run while the configured stream is still valid,
+    the real final usage closure is rejected by the terminal-state guard and
+    usage is lost. Preserve one minute for cancellation propagation and the
+    final durable closure transaction.
+    """
+
+    stream_seconds = float(settings.PROXY_STREAM_MAX_SECONDS)
+    stale_seconds = float(settings.TASK_RUN_STALE_SECONDS)
+    if not math.isfinite(stream_seconds) or stream_seconds <= 0:
+        raise RuntimeError(
+            "Refusing to start: PROXY_STREAM_MAX_SECONDS must be positive and finite"
+        )
+    if not math.isfinite(stale_seconds) or stale_seconds < 60:
+        raise RuntimeError(
+            "Refusing to start: TASK_RUN_STALE_SECONDS must be finite and at least 60"
+        )
+    if stream_seconds + 60 > stale_seconds:
+        raise RuntimeError(
+            "Refusing to start: PROXY_STREAM_MAX_SECONDS must leave at least "
+            "60 seconds before TASK_RUN_STALE_SECONDS so durable usage closure "
+            "cannot race crash reconciliation"
+        )
 
 
 _verified_pilot_callsites: frozenset[str] = frozenset()

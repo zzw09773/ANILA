@@ -564,7 +564,7 @@ class JobStatus(BaseModel):
     error: str | None = None
     # Slice 8b: control-plane passthrough — populated once the produced
     # artifact is registered on CSP (POST /v1/artifacts). Absent until then.
-    artifact_id: str | None = None
+    artifact_id: int | None = None
     classification_level: str | None = None
     # ISO 8601 timestamps so the UI can show "鑄造中 1m 30s" style age.
     created_at: str

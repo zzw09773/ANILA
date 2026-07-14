@@ -19,11 +19,15 @@ duplication.
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class WorkerSettings(BaseSettings):
+    anila_deployment_profile: str = Field(default="development")
+    ingestion_queue_hmac_key: str = Field(
+        default=""
+    )
     # Normal deployments preserve the existing inference feature set. The
     # signed-pilot overlay pins this true and the escape hatch below false.
     anila_pilot_mode: bool = Field(default=False)
@@ -51,6 +55,14 @@ class WorkerSettings(BaseSettings):
         default="nvidia/NV-embed-V2",
         description="Embedding model identifier passed to the endpoint.",
     )
+    embedding_model_fingerprint: str = Field(
+        default="",
+        pattern="^$|^sha256:[0-9a-f]{64}$",
+        description=(
+            "Explicit SHA-256 fingerprint of deployed embedding weights. "
+            "The ingestion boundary rejects an empty value."
+        ),
+    )
     embedding_api_key: str = Field(
         default="not-set",
         description="Bearer token for the embedding endpoint (if required).",
@@ -68,6 +80,9 @@ class WorkerSettings(BaseSettings):
         default=30.0,
         description="Per-request embedding timeout.",
     )
+    parse_timeout_seconds: float = Field(default=120.0, gt=0, le=1800)
+    index_timeout_seconds: float = Field(default=120.0, gt=0, le=1800)
+    job_timeout_seconds: int = Field(default=900, ge=60, le=7200)
 
     upload_dir: str = Field(
         default="/var/anila/ingestion-uploads",
@@ -82,6 +97,14 @@ class WorkerSettings(BaseSettings):
     # block on connection acquire when many jobs run in parallel.
     pg_pool_min: int = 1
     pg_pool_max: int = 5
+    job_lease_seconds: int = Field(default=90, ge=15, le=3600)
+    job_heartbeat_seconds: int = Field(default=20, ge=5, le=300)
+    job_retry_backoff_seconds: int = Field(default=15, ge=1, le=3600)
+    job_reaper_interval_seconds: int = Field(default=15, ge=5, le=300)
+    job_reaper_batch_size: int = Field(default=25, ge=1, le=500)
+    job_lease_grace_seconds: int = Field(default=15, ge=0, le=300)
+    metrics_port: int = Field(default=8081, ge=1, le=65535)
+    health_probe_timeout_seconds: float = Field(default=2.0, gt=0, le=10)
 
     # ── VLM-based image captioning ─────────────────────────────────────
     #
@@ -261,6 +284,31 @@ class WorkerSettings(BaseSettings):
             "documents (logged) — a later phase adds an ANN pre-filter."
         ),
     )
+    similarity_debounce_seconds: float = Field(default=10.0, ge=0.1, le=3600)
+    similarity_job_poll_seconds: float = Field(default=1.0, ge=0.1, le=60)
+    similarity_job_lease_seconds: int = Field(default=300, ge=30, le=7200)
+    similarity_job_heartbeat_seconds: int = Field(default=30, ge=5, le=600)
+    similarity_job_retry_backoff_seconds: int = Field(default=30, ge=1, le=3600)
+
+    @model_validator(mode="after")
+    def _validate_job_deadlines(self) -> "WorkerSettings":
+        if self.job_heartbeat_seconds >= self.job_lease_seconds:
+            raise ValueError("job heartbeat must be shorter than the job lease")
+        if self.parse_timeout_seconds >= self.job_timeout_seconds:
+            raise ValueError("parse timeout must be shorter than the Arq job timeout")
+        if self.index_timeout_seconds >= self.job_timeout_seconds:
+            raise ValueError("index timeout must be shorter than the Arq job timeout")
+        if self.anila_deployment_profile.strip().lower() in {
+            "prod-intranet-card",
+            "prod-intranet-card-breakglass",
+            "prod-public-passwd",
+            "prod-military-passwd",
+        } and (
+            len(self.ingestion_queue_hmac_key.strip()) < 32
+            or self.ingestion_queue_hmac_key.startswith("dev-")
+        ):
+            raise ValueError("formal profile requires a non-development ingestion queue HMAC key")
+        return self
 
     model_config = SettingsConfigDict(
         env_file=".env",

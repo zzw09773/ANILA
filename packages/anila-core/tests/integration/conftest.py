@@ -194,12 +194,13 @@ async def isolation_collections(
                 """
                 INSERT INTO ingestion_collections
                     (name, chunking_config, embedding_model,
-                     embedding_dim, created_by)
+                     embedding_fingerprint, embedding_dim, created_by)
                 VALUES ($1, '{"strategy":"fixed"}'::jsonb,
-                        'test-model', 4000, $2)
+                        'test-model', $2, 4000, $3)
                 RETURNING id
                 """,
                 f"g1-coll-{i}-{suffix}",
+                "sha256:" + ("0" * 64),
                 integration_owner_id,
             )
             coll_ids.append(int(row["id"]))

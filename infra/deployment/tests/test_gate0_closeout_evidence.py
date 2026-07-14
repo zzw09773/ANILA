@@ -32,6 +32,7 @@ class Gate0CloseoutEvidenceTests(unittest.TestCase):
                         "SITE_URL": "https://anila.ai.ncsist.org.tw",
                         "CSP_SECRET_KEY": "must-never-appear",
                         "CSP_SERVICE_TOKEN": "must-never-appear",
+                        "STUDIO_ARTIFACT_SERVICE_TOKEN": "must-never-appear",
                         "DATABASE_URL": "postgresql://user:must-never-appear@db/app",
                         "AUTO_REGISTER_LINKS": json.dumps([
                             {"name": "n8n 工作流程", "url": "https://n8n.ai.ncsist.org.tw/"},
@@ -66,6 +67,7 @@ class Gate0CloseoutEvidenceTests(unittest.TestCase):
             self.assertNotIn("must-never-appear", serialized)
             self.assertNotIn("DATABASE_URL", serialized)
             self.assertNotIn("CSP_SERVICE_TOKEN", serialized)
+            self.assertNotIn("STUDIO_ARTIFACT_SERVICE_TOKEN", serialized)
             manifest = json.loads(
                 (bundle.directory / "manifest.json").read_text(encoding="utf-8")
             )

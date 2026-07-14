@@ -129,6 +129,11 @@ class _HeaderCapturingStream:
         for line in self._lines:
             yield line
 
+    async def aiter_bytes(self, chunk_size: int | None = None):
+        del chunk_size
+        for line in self._lines:
+            yield (line + "\n").encode()
+
 
 class _HeaderCapturingClient:
     """Fake httpx.AsyncClient that records the headers passed to .stream()."""

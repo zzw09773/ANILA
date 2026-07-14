@@ -12,7 +12,7 @@ Phase 4 (2026-05-23) — adapted from csp baseline for anila-studio:
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -73,7 +73,9 @@ async def test_hydrate_image_ref_unchanged_behavior(existing_image, fetch_blob_m
 
 
 @pytest.mark.asyncio
-async def test_hydrate_image_prompt_calls_flux(existing_image, fetch_blob_mock):
+async def test_image_prompt_without_durable_toolchain_is_removed(
+    existing_image, fetch_blob_mock
+):
     flux = AsyncMock()
     flux.get_or_generate.return_value = _gen()
 
@@ -87,33 +89,36 @@ async def test_hydrate_image_prompt_calls_flux(existing_image, fetch_blob_mock):
     )
 
     s = result["slides"][1]
-    assert "image_data" in s
-    assert s["image_data"].startswith("data:image/png;base64,")
-    # Legacy path now uses the contract-3.4 keyword signature; no deck seed
-    # passed → legacy_seed defaults to 0, CONTENT_ILLUSTRATION aspect.
-    flux.get_or_generate.assert_awaited_once_with(
-        "a tank",
-        use_case=ImageUseCase.CONTENT_ILLUSTRATION,
-        seed=0,
-        num_candidates=1,
-    )
+    assert "image_data" not in s
+    assert "image_prompt" not in s
+    flux.get_or_generate.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_cover_hero_path_generates_via_rewriter(fetch_blob_mock):
     """FLUX Stage 1 cover hero: slide index 0 with deck_base_seed + llm →
     rewriter produces a prompt, provider generates, image_gen_meta filled."""
-    flux = AsyncMock()
-    flux.get_or_generate.return_value = _gen(seed=12345)
+    flux = MagicMock()
+    candidate = _gen(seed=12345)[0]
+    flux.cached_image.return_value = None
+    flux.generate_candidates = AsyncMock(return_value=[candidate])
 
     llm = AsyncMock()
 
     spec = {"slides": [{"title": "韌性網路", "bullets": ["a", "b"]}]}
 
-    with patch(
-        "app.services.flux_prompt_rewriter.derive_flux_prompt",
-        new=AsyncMock(return_value="a resilient lattice of light, soft glow, flat style"),
-    ) as mock_rw:
+    with (
+        patch(
+            "app.services.flux_prompt_rewriter.derive_flux_prompt",
+            new=AsyncMock(
+                return_value="a resilient lattice of light, soft glow, flat style"
+            ),
+        ) as mock_rw,
+        patch(
+            "app.services.flux_quality_gate.gate_candidates",
+            new=AsyncMock(return_value=candidate),
+        ),
+    ):
         result = await _hydrate_images(
             spec, {}, bearer=_BEARER,
             flux_provider=flux, default_aspect="16:9",
@@ -128,7 +133,7 @@ async def test_cover_hero_path_generates_via_rewriter(fetch_blob_mock):
     assert "flux_prompt" in s["image_gen_meta"]
     mock_rw.assert_awaited_once()
     # Provider called with COVER_HERO + deterministic seed (base + index 0).
-    _, kwargs = flux.get_or_generate.call_args
+    _, kwargs = flux.generate_candidates.call_args
     assert kwargs["use_case"] == ImageUseCase.COVER_HERO
     assert kwargs["seed"] == 1000
 
@@ -293,6 +298,7 @@ async def test_mixed_slides_all_resolved(existing_image, fetch_blob_mock):
     )
 
     assert "image_data" in result["slides"][0]
-    assert "image_data" in result["slides"][1]
+    assert "image_data" not in result["slides"][1]
+    assert "image_prompt" not in result["slides"][1]
     assert "image_data" not in result["slides"][2]
-    flux.get_or_generate.assert_awaited_once()
+    flux.get_or_generate.assert_not_called()

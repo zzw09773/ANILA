@@ -598,6 +598,7 @@ async def create_mindmap_job(
         task_id=payload.task_id,
         source_snapshot_id=payload.source_snapshot_id,
         trace_id=payload.trace_id,
+        request_spec=payload.model_dump(mode="json"),
     )
     record = await jobs.create_job(
         user_id=identity.id,
@@ -661,7 +662,8 @@ async def download_mindmap(
     rendered SVG. Returns 404 for unknown/cross-user jobs, 409 if still
     running, and 410 if the job is failed/cancelled.
     """
-    rec = jobs.get_user_job(job_id, identity.id)
+    raise HTTPException(status_code=410, detail="僅允許 CSP Artifact 下載")
+    rec = jobs.get_user_job(job_id, identity.id)  # pragma: no cover
     if rec is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.",

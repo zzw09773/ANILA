@@ -10,7 +10,7 @@ import type { SlidesArtifact, StudioArtifact } from '../types'
 import { findTheme, type ThemeId } from '../studio/themes'
 import { timeAgo } from '../utils/format'
 import {
-  downloadSlidesJobPptx,
+  downloadCspArtifact,
   getSlidesJobStatus,
   getReportJobStatus,
   getMindmapJobStatus,
@@ -41,6 +41,7 @@ type GenericJobStatus = {
   chart_count?: number | null
   row_count?: number | null
   column_count?: number | null
+  artifact_id?: number | null
 }
 
 async function fetchJobStatus(
@@ -232,11 +233,16 @@ export function WSStudio() {
           }
 
           if (status.state === 'done') {
+            if (!Number.isInteger(status.artifact_id) || (status.artifact_id ?? 0) <= 0) {
+              updateArtifact(collectionId, artifact.id, { step: 'registering' })
+              return
+            }
             // 共通的 done patch + kind 特有 metadata
             const patch: Record<string, unknown> = {
               state: 'done',
               step: status.step ?? null,
               title: status.title ?? artifact.title,
+              artifactId: status.artifact_id,
             }
             if (status.download_urls) {
               patch.downloadUrls = status.download_urls
@@ -269,9 +275,9 @@ export function WSStudio() {
             if (kind === 'slides' && !downloadedRef.current.has(jobId)) {
               downloadedRef.current.add(jobId)
               try {
-                await downloadSlidesJobPptx(
-                  jobId,
-                  status.title ?? '簡報',
+                await downloadCspArtifact(
+                  status.artifact_id!,
+                  `${status.title ?? '簡報'}.pptx`,
                 )
               } catch (downloadErr) {
                 // Non-fatal — artifact 仍 done,使用者可從 viewer 重觸發
@@ -786,18 +792,14 @@ export function WSStudio() {
                           <span>· {meta}</span>
                           {a.kind === 'slides' &&
                             state === 'done' &&
-                            a.jobId && (
+                            a.artifactId && (
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation()
-                                  // Re-download by hitting the same
-                                  // /pptx endpoint. Job stays in
-                                  // memory until evicted (max 8 per
-                                  // user / 1 h).
-                                  void downloadSlidesJobPptx(
-                                    a.jobId!,
-                                    a.title || '簡報',
-                                  ).catch((err) => {
+                                  void downloadCspArtifact(
+                                    a.artifactId!,
+                                    `${a.title || '簡報'}.pptx`,
+                                  ).catch((err: unknown) => {
                                     // eslint-disable-next-line no-console
                                     console.warn(
                                       '[studio] re-download failed:',

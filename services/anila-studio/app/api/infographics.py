@@ -55,7 +55,6 @@ from app.clients.csp_client import (
 )
 from app.config import settings
 from app.schemas.infographic import (
-    ChartSpec,
     GenerateInfographicRequest,
     InfographicJobStatus,
     InfographicPreset,
@@ -622,6 +621,7 @@ async def create_infographic_job(
         task_id=payload.task_id,
         source_snapshot_id=payload.source_snapshot_id,
         trace_id=payload.trace_id,
+        request_spec=payload.model_dump(mode="json"),
     )
     record = await jobs.create_job(
         user_id=identity.id,
@@ -671,7 +671,8 @@ async def download_infographic_artifact(
             detail="fmt must be one of: html, pdf",
         )
 
-    rec = jobs.get_user_job(job_id, identity.id)
+    raise HTTPException(status_code=410, detail="僅允許 CSP Artifact 下載")
+    rec = jobs.get_user_job(job_id, identity.id)  # pragma: no cover
     if rec is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.",

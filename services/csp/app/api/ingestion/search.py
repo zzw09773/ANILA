@@ -459,6 +459,7 @@ class RelatedHit(BaseModel):
 class SearchResponse(BaseModel):
     query: str
     embedding_model: str
+    embedding_fingerprint: str
     embedding_dim: int
     results: list[SearchHitOut]
     related: list[RelatedHit] = Field(
@@ -488,6 +489,23 @@ class ImageSearchRequest(BaseModel):
         le=1.0,
         description="cosine 相似度最低門檻 (0=不過濾)",
     )
+    document_ids: list[int] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+        description="選填；先在 SQL 限縮到 canonical snapshot 文件",
+    )
+
+    @field_validator("document_ids")
+    @classmethod
+    def _validate_document_ids(cls, value: list[int] | None) -> list[int] | None:
+        if value is None:
+            return None
+        if any(type(item) is not int or item <= 0 for item in value):
+            raise ValueError("document_ids 必須是正整數陣列")
+        if len(value) != len(set(value)):
+            raise ValueError("document_ids 不得重複")
+        return value
 
 
 class ImageHitOut(BaseModel):
@@ -509,6 +527,7 @@ class ImageHitOut(BaseModel):
 class ImageSearchResponse(BaseModel):
     query: str
     embedding_model: str
+    embedding_fingerprint: str
     embedding_dim: int
     results: list[ImageHitOut]
 
@@ -601,6 +620,10 @@ async def _expand_relations(
         else:
             continue
         if rel_doc in picked:
+            continue
+        # A caller-provided document scope is a hard retrieval boundary, not
+        # merely a seed set.  Relation expansion may never escape it.
+        if payload.document_ids is not None and rel_doc not in set(payload.document_ids):
             continue
         picked[rel_doc] = e
         direction[rel_doc] = edge_dir
@@ -713,6 +736,7 @@ async def search_collection(
         return SearchResponse(
             query=payload.query,
             embedding_model=coll.embedding_model,
+            embedding_fingerprint=coll.embedding_fingerprint,
             embedding_dim=coll.embedding_dim,
             results=[],
         )
@@ -780,6 +804,7 @@ async def search_collection(
         return SearchResponse(
             query=payload.query,
             embedding_model=coll.embedding_model,
+            embedding_fingerprint=coll.embedding_fingerprint,
             embedding_dim=coll.embedding_dim,
             results=[],
         )
@@ -809,6 +834,7 @@ async def search_collection(
     return SearchResponse(
         query=payload.query,
         embedding_model=coll.embedding_model,
+        embedding_fingerprint=coll.embedding_fingerprint,
         embedding_dim=coll.embedding_dim,
         related=related,
         results=[
@@ -878,13 +904,14 @@ async def search_collection_images(
         db,
         principal=principal,
         collection_id=coll.id,
-        requested_ids=None,
-        reject_denied=False,
+        requested_ids=payload.document_ids,
+        reject_denied=payload.document_ids is not None,
     )
     if not authorized_document_access:
         return ImageSearchResponse(
             query=payload.query,
             embedding_model=coll.embedding_model,
+            embedding_fingerprint=coll.embedding_fingerprint,
             embedding_dim=coll.embedding_dim,
             results=[],
         )
@@ -904,6 +931,7 @@ async def search_collection_images(
         return ImageSearchResponse(
             query=payload.query,
             embedding_model=coll.embedding_model,
+            embedding_fingerprint=coll.embedding_fingerprint,
             embedding_dim=coll.embedding_dim,
             results=[],
         )
@@ -965,6 +993,7 @@ async def search_collection_images(
     return ImageSearchResponse(
         query=payload.query,
         embedding_model=coll.embedding_model,
+        embedding_fingerprint=coll.embedding_fingerprint,
         embedding_dim=coll.embedding_dim,
         results=[
             ImageHitOut(

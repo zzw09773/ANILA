@@ -233,7 +233,7 @@ async def reresolve_relations(
     try:
         from app.services.ingestion_queue import enqueue_reresolve_relations
 
-        job_id = await enqueue_reresolve_relations(collection_id)
+        job_id = await enqueue_reresolve_relations(collection_id, current_user.id)
     except Exception:  # noqa: BLE001 — re-extract is best-effort; reconcile already ran
         job_id = None
 

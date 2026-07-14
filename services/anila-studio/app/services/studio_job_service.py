@@ -38,6 +38,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
+from app.config import settings
 from app.schemas.studio import (
     JOB_STEP_DONE,
     JOB_STEP_QUEUED,
@@ -88,7 +89,7 @@ class JobRecord:
     updated_at: datetime
     # Slice 8b: control-plane passthrough, back-filled after the produced
     # artifact is registered on CSP. None until then.
-    artifact_id: str | None = None
+    artifact_id: int | None = None
     classification_level: str | None = None
     # Loose handle to the spawned task — kept so `cancel_job` can call
     # task.cancel() without a separate side-table. Excluded from public
@@ -197,6 +198,9 @@ async def create_job(
     # Persist + report the freshly-created job (best-effort; no-op without ctx).
     await job_lifecycle.on_create(record, report_ctx)
 
+    if settings.STUDIO_DURABLE_SUPERVISOR:
+        return record
+
     updater = JobUpdater(job_id=job_id, ctx=report_ctx)
 
     async def _wrapped() -> None:
@@ -260,6 +264,8 @@ def artifact_info(rec: JobRecord) -> ArtifactInfo:
             else None
         ),
         primary_bytes=rec.pptx_bytes,
+        original_filename=f"{rec.job_id}.pptx",
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
         result_metadata={
             "slide_count": rec.slide_count,
             "qa_passes": rec.qa_passes,
@@ -300,7 +306,7 @@ class JobUpdater:
         qa_passes: int | None = None,
         error: str | None = None,
         pptx_bytes: bytes | None = None,
-        artifact_id: str | None = None,
+        artifact_id: int | None = None,
         classification_level: str | None = None,
     ) -> None:
         """Patch fields on the current JobRecord. Only specified fields

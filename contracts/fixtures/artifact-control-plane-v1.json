@@ -1,0 +1,29 @@
+{
+  "job_created": {
+    "job_id": "contract-job-1",
+    "artifact_type": "slides",
+    "status": "queued",
+    "requester_user_id": 7,
+    "employee_id": "EMP42",
+    "task_id": 101,
+    "trace_id": "trace-contract-1"
+  },
+  "artifact_registered": {
+    "artifact_type": "slides",
+    "title": "Deck",
+    "job_id": "contract-job-1",
+    "task_id": 101,
+    "source_snapshot_id": 202,
+    "content_sha256": "b61f92598d1cc251a2893cdc29aa5a92abe5a6f0b7f3805f7fe0115278156357",
+    "content_size": 22,
+    "media_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "original_filename": "contract-job-1.pptx",
+    "metadata": {
+      "slide_count": 3
+    }
+  },
+  "job_completed": {
+    "status": "completed",
+    "artifact_id": 9
+  }
+}

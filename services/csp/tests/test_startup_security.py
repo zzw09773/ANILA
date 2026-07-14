@@ -561,3 +561,73 @@ def test_non_pilot_does_not_accept_disabled_template_as_approval(
     ss.assert_gate2_pilot_profile()
     assert ss._verified_pilot_callsites == frozenset()
     assert ss._verified_pilot_admission is None
+
+
+def test_runtime_deadline_policy_accepts_default_margin(
+    reload_startup_security,
+):
+    reload_startup_security().assert_runtime_deadline_policy()
+
+
+def test_runtime_deadline_policy_rejects_stream_reconciler_race(
+    monkeypatch, reload_startup_security,
+):
+    monkeypatch.setenv("PROXY_STREAM_MAX_SECONDS", "850")
+    monkeypatch.setenv("TASK_RUN_STALE_SECONDS", "900")
+
+    with pytest.raises(RuntimeError, match="at least 60 seconds"):
+        reload_startup_security().assert_runtime_deadline_policy()
+
+
+def test_runtime_deadline_policy_rejects_nonpositive_stream_limit(
+    monkeypatch, reload_startup_security,
+):
+    monkeypatch.setenv("PROXY_STREAM_MAX_SECONDS", "0")
+
+    with pytest.raises(RuntimeError, match="must be positive"):
+        reload_startup_security().assert_runtime_deadline_policy()
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_stream_deadline_setting_rejects_nonfinite_values(
+    monkeypatch, value,
+):
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    monkeypatch.setenv("PROXY_STREAM_MAX_SECONDS", value)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_stale_deadline_setting_rejects_nonfinite_values(
+    monkeypatch, value,
+):
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    monkeypatch.setenv("TASK_RUN_STALE_SECONDS", value)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("PROXY_STREAM_MAX_SECONDS", float("nan")),
+        ("PROXY_STREAM_MAX_SECONDS", float("inf")),
+        ("TASK_RUN_STALE_SECONDS", float("nan")),
+        ("TASK_RUN_STALE_SECONDS", float("inf")),
+    ],
+)
+def test_runtime_deadline_policy_defends_against_nonfinite_assignment(
+    monkeypatch, reload_startup_security, field, value,
+):
+    module = reload_startup_security()
+    monkeypatch.setattr(module.settings, field, value)
+
+    with pytest.raises(RuntimeError, match="finite"):
+        module.assert_runtime_deadline_policy()

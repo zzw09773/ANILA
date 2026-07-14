@@ -362,7 +362,7 @@ _defaults_card_policy_oids=""
 if [ -f "$DEFAULTS" ]; then
   while IFS='=' read -r _k _v; do
     case "$_k" in
-      ADMIN_PASSWORD|CODESERVER_PASSWORD|CARD_INITIAL_OWNERS|CARD_CRL_SOURCE|CARD_CRL_MAX_AGE_HOURS|CARD_REQUIRED_CERT_POLICY_OIDS|GITLAB_ROOT_PASSWORD|CSP_SECRET_KEY|CSP_SERVICE_TOKEN|CSP_DB_PASSWORD|CSP_APP_DB_PASSWORD|INTERNAL_PLATFORM_API_KEY|N8N_OWNER_EMAIL|N8N_OWNER_FIRST_NAME|N8N_OWNER_LAST_NAME|N8N_OWNER_PASSWORD_HASH|N8N_ENCRYPTION_KEY)
+      ADMIN_PASSWORD|CODESERVER_PASSWORD|CARD_INITIAL_OWNERS|CARD_CRL_SOURCE|CARD_CRL_MAX_AGE_HOURS|CARD_REQUIRED_CERT_POLICY_OIDS|GITLAB_ROOT_PASSWORD|CSP_SECRET_KEY|CSP_SERVICE_TOKEN|STUDIO_ARTIFACT_SERVICE_TOKEN|STUDIO_RUNTIME_SERVICE_TOKEN|STUDIO_JOB_ENVELOPE_HMAC_KEY|INGESTION_QUEUE_HMAC_KEY|CSP_DB_PASSWORD|CSP_APP_DB_PASSWORD|INTERNAL_PLATFORM_API_KEY|N8N_OWNER_EMAIL|N8N_OWNER_FIRST_NAME|N8N_OWNER_LAST_NAME|N8N_OWNER_PASSWORD_HASH|N8N_ENCRYPTION_KEY)
         _v="${_v%\"}"; _v="${_v#\"}"; _v="${_v%\'}"; _v="${_v#\'}"   # 去頭尾引號
         printf -v "$_k" '%s' "$_v"                                  # 賦值,非 eval
         case "$_k" in
@@ -380,6 +380,10 @@ if [ "$REGEN" = 1 ]; then
   info "  secret:有預設用預設,否則 openssl 隨機生成"
   set_env_single_quoted CSP_SECRET_KEY            "${CSP_SECRET_KEY:-$(openssl rand -hex 32)}"
   set_env_single_quoted CSP_SERVICE_TOKEN         "${CSP_SERVICE_TOKEN:-$(openssl rand -hex 32)}"
+  set_env_single_quoted STUDIO_ARTIFACT_SERVICE_TOKEN "${STUDIO_ARTIFACT_SERVICE_TOKEN:-csk-$(openssl rand -hex 32)}"
+  set_env_single_quoted STUDIO_RUNTIME_SERVICE_TOKEN "${STUDIO_RUNTIME_SERVICE_TOKEN:-csk-$(openssl rand -hex 32)}"
+  set_env_single_quoted STUDIO_JOB_ENVELOPE_HMAC_KEY "${STUDIO_JOB_ENVELOPE_HMAC_KEY:-$(openssl rand -hex 32)}"
+  set_env_single_quoted INGESTION_QUEUE_HMAC_KEY "${INGESTION_QUEUE_HMAC_KEY:-$(openssl rand -hex 32)}"
   set_env_single_quoted INTERNAL_PLATFORM_API_KEY "${INTERNAL_PLATFORM_API_KEY:-sk-internal-$(openssl rand -hex 24)}"
   set_env_single_quoted ADMIN_PASSWORD            "${ADMIN_PASSWORD:-$(openssl rand -base64 24)}"
   set_env_single_quoted CSP_DB_PASSWORD           "${CSP_DB_PASSWORD:-$(openssl rand -hex 32)}"
@@ -390,7 +394,7 @@ fi
 # 舊版 .env 可能把 secret 以裸 KEY=VALUE 寫入；Compose dotenv 會對 `$` 做
 # interpolation，空白與 `#` 也可能改變實際值。每次部署都把既有值正規化成
 # literal 單引號，確保密碼管理器中的內容與 container 收到的內容一致。
-for _secret_name in CSP_SECRET_KEY CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY \
+for _secret_name in CSP_SECRET_KEY CSP_SERVICE_TOKEN STUDIO_ARTIFACT_SERVICE_TOKEN STUDIO_RUNTIME_SERVICE_TOKEN STUDIO_JOB_ENVELOPE_HMAC_KEY INGESTION_QUEUE_HMAC_KEY INTERNAL_PLATFORM_API_KEY \
   ADMIN_PASSWORD CSP_DB_PASSWORD CSP_APP_DB_PASSWORD CODESERVER_PASSWORD; do
   _secret_value="$(get_env_unquoted "$_secret_name")"
   [ -z "$_secret_value" ] || set_env_single_quoted "$_secret_name" "$_secret_value"
@@ -548,7 +552,7 @@ if [ -n "$MGK" ]; then set_env_single_quoted MODEL_GATEWAY_API_KEY "$MGK"; ok "�
 else warn "MODEL_GATEWAY_API_KEY 留空 — 模型 proxy 暫時打不通。拿到後用 anila-ops.sh gateway-key 安全套用"; fi
 
 # 必填齊全檢查
-for k in CSP_SECRET_KEY CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY ADMIN_PASSWORD \
+for k in CSP_SECRET_KEY CSP_SERVICE_TOKEN STUDIO_ARTIFACT_SERVICE_TOKEN STUDIO_RUNTIME_SERVICE_TOKEN STUDIO_JOB_ENVELOPE_HMAC_KEY INGESTION_QUEUE_HMAC_KEY INTERNAL_PLATFORM_API_KEY ADMIN_PASSWORD \
   CSP_DB_PASSWORD CSP_APP_DB_PASSWORD CODESERVER_PASSWORD CARD_INITIAL_OWNERS \
          SITE_URL N8N_HOST N8N_EDITOR_BASE_URL N8N_WEBHOOK_URL GITLAB_HOST \
          N8N_OWNER_EMAIL N8N_OWNER_PASSWORD_HASH N8N_ENCRYPTION_KEY \
@@ -557,7 +561,7 @@ for k in CSP_SECRET_KEY CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY ADMIN_PASSWO
          CARD_REQUIRED_CERT_POLICY_OIDS CARD_CRL_BUNDLE_PATH; do
   [ -n "$(get_env "$k")" ] || die ".env 缺必填值: $k"
 done
-for _secret_name in CSP_SECRET_KEY CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY \
+for _secret_name in CSP_SECRET_KEY CSP_SERVICE_TOKEN STUDIO_ARTIFACT_SERVICE_TOKEN STUDIO_RUNTIME_SERVICE_TOKEN STUDIO_JOB_ENVELOPE_HMAC_KEY INGESTION_QUEUE_HMAC_KEY INTERNAL_PLATFORM_API_KEY \
   ADMIN_PASSWORD CSP_DB_PASSWORD CSP_APP_DB_PASSWORD CODESERVER_PASSWORD \
   N8N_ENCRYPTION_KEY GITLAB_ROOT_PASSWORD; do
   _secret_value="$(get_env_unquoted "$_secret_name")"
@@ -565,6 +569,16 @@ for _secret_name in CSP_SECRET_KEY CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY \
     ""|\<*\>|*changeme*|*placeholder*|*example*) die "$_secret_name 仍是空值/dev/template 值" ;;
   esac
 done
+_studio_artifact_token="$(get_env_unquoted STUDIO_ARTIFACT_SERVICE_TOKEN)"
+[[ "$_studio_artifact_token" == csk-* ]] \
+  || die "STUDIO_ARTIFACT_SERVICE_TOKEN 必須是專用 csk- Service Client token"
+_studio_runtime_token="$(get_env_unquoted STUDIO_RUNTIME_SERVICE_TOKEN)"
+[[ "$_studio_runtime_token" == csk-* && "$_studio_runtime_token" != "$_studio_artifact_token" ]] \
+  || die "STUDIO_RUNTIME_SERVICE_TOKEN 必須是另一把專用 csk- Service Client token"
+_studio_envelope_key="$(get_env_unquoted STUDIO_JOB_ENVELOPE_HMAC_KEY)"
+(( ${#_studio_envelope_key} >= 32 )) || die "STUDIO_JOB_ENVELOPE_HMAC_KEY 長度必須 >= 32"
+_ingestion_queue_key="$(get_env_unquoted INGESTION_QUEUE_HMAC_KEY)"
+(( ${#_ingestion_queue_key} >= 32 )) || die "INGESTION_QUEUE_HMAC_KEY 長度必須 >= 32"
 [ "$(get_env N8N_TLS_REJECT_UNAUTHORIZED)" = 1 ] || die "n8n TLS 驗證必須開啟"
 (( ${#_n8n_key} >= 32 )) || die "N8N_ENCRYPTION_KEY 長度必須 >= 32"
 (( ${#_gitlab_root} >= 16 )) || die "GITLAB_ROOT_PASSWORD 長度必須 >= 16"
@@ -641,7 +655,7 @@ info "[6/7] docker compose up -d --no-build --pull never"
 # Export only the reviewed formal keys without `source .env`: dotenv content
 # is data, not shell code, and may contain literal `$`, spaces, or `#`.
 for _deploy_key in \
-  CSP_SERVICE_TOKEN INTERNAL_PLATFORM_API_KEY CSP_SECRET_KEY SECRET_KEY \
+  CSP_SERVICE_TOKEN STUDIO_ARTIFACT_SERVICE_TOKEN STUDIO_RUNTIME_SERVICE_TOKEN STUDIO_JOB_ENVELOPE_HMAC_KEY INGESTION_QUEUE_HMAC_KEY INTERNAL_PLATFORM_API_KEY CSP_SECRET_KEY SECRET_KEY \
   SITE_URL GITLAB_SSH_BIND_IP ANILA_ENV ANILA_DEPLOYMENT_PROFILE \
   N8N_HOST N8N_EDITOR_BASE_URL N8N_WEBHOOK_URL N8N_TLS_REJECT_UNAUTHORIZED \
   N8N_OWNER_EMAIL N8N_OWNER_PASSWORD_HASH N8N_ENCRYPTION_KEY \

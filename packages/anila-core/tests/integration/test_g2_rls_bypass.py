@@ -81,9 +81,15 @@ async def test_g2_detector_rejects_a_removed_collection_policy(
     coll_id = isolation_collections[0]
     doc_id = isolation_documents[0]
     store = CollectionScopedPgVectorStore(pool, collection_id=coll_id)
-    await store.index_chunks(
+    await store.stage_and_activate_generation(
         document_id=doc_id,
-        chunks=[
+        source_ingestion_job_id=None,
+        source_ingestion_lease_token=None,
+        embedding_model="test-model",
+        embedding_fingerprint="sha256:" + ("0" * 64),
+        embedding_dim=4000,
+        parent_chunks=[],
+        leaf_chunks=[
             ChunkResult(
                 content="rls mutation sentinel",
                 chunk_key=f"rls-mutation-{coll_id}",
@@ -143,9 +149,15 @@ async def test_g2_bypass_attempt_no_guc_yields_zero_rows(
     coll_id = isolation_collections[0]
     doc_id = isolation_documents[0]
     store = CollectionScopedPgVectorStore(pool, collection_id=coll_id)
-    await store.index_chunks(
+    await store.stage_and_activate_generation(
         document_id=doc_id,
-        chunks=[
+        source_ingestion_job_id=None,
+        source_ingestion_lease_token=None,
+        embedding_model="test-model",
+        embedding_fingerprint="sha256:" + ("0" * 64),
+        embedding_dim=4000,
+        parent_chunks=[],
+        leaf_chunks=[
             ChunkResult(
                 content="g2 secret",
                 chunk_key=f"g2-bypass-{coll_id}",
@@ -184,9 +196,15 @@ async def test_g2_bypass_attempt_wrong_collection_yields_only_their_rows(
         (CollectionScopedPgVectorStore(pool, collection_id=coll_a), coll_a, doc_a, "A"),
         (CollectionScopedPgVectorStore(pool, collection_id=coll_b), coll_b, doc_b, "B"),
     ):
-        await store.index_chunks(
+        await store.stage_and_activate_generation(
             document_id=doc_id,
-            chunks=[
+            source_ingestion_job_id=None,
+            source_ingestion_lease_token=None,
+            embedding_model="test-model",
+            embedding_fingerprint="sha256:" + ("0" * 64),
+            embedding_dim=4000,
+            parent_chunks=[],
+            leaf_chunks=[
                 ChunkResult(
                     content=f"g2 {label}",
                     chunk_key=f"g2-pin-{label}-{coll_id}",

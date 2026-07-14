@@ -108,6 +108,14 @@ class Embedder:
                 user_message="Embedding endpoint timed out.",
                 details={"timeout_s": self._settings.embedding_timeout_seconds},
             ) from e
+        except httpx.RequestError as e:
+            raise EmbedError(
+                code="E_EMBED_MODEL_DOWN",
+                retryable=True,
+                severity="error",
+                user_message="Embedding endpoint is temporarily unreachable.",
+                details={"cause": type(e).__name__},
+            ) from e
 
         if r.status_code != 200:
             raise EmbedError(
