@@ -58,6 +58,9 @@ mutation-sensitive regression：
 - published outbox 只有 DB job 仍為同一個 queued attempt 時才保留 Redis-loss replay；
   job 已前進後清除無 recovery 用途的 receipt，並在同次 claim 立即往後掃。150 筆終態
   歷史資料加 1 筆新 pending 的 regression 證明新任務不會 starvation。
+- GitHub inline review 指出 backup external-command 啟動失敗會裸拋 `OSError`；`Runner`
+  現已轉譯為保留 cause 的 `BackupAutomationError`，缺少 `docker`／`age` 等依賴時以
+  受控 non-zero fail-closed，並有 `FileNotFoundError` mutation regression。
 
 ## 3. 測試與 runtime 證據
 
@@ -68,7 +71,7 @@ mutation-sensitive regression：
 - anila-studio：`585 passed, 5 skipped`。
 - anila-core：`806 passed, 11 skipped`。
 - anila-security：`37 passed`。
-- deployment contracts：`134 passed, 2 skipped`。
+- deployment contracts：`135 passed, 2 skipped`。
 - ANILALM：OpenAPI export、generated types、`npm run typecheck`、`npm run build` 全綠。
 - PPTX renderer：4 支 live HTTP contract tests 全綠；production `npm audit` 為 0
   vulnerabilities。`qs` 由有 advisory 的 `6.15.1` 升到 `6.15.3`，CI 已加入

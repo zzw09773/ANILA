@@ -105,6 +105,19 @@ def _manifest(profile_hash: str) -> dict:
 
 
 class ProductionBackupAutomationTests(unittest.TestCase):
+    @mock.patch.object(
+        backup.subprocess,
+        "run",
+        side_effect=FileNotFoundError("missing backup dependency"),
+    )
+    def test_runner_wraps_command_start_oserror(self, run: mock.Mock) -> None:
+        with self.assertRaises(backup.BackupAutomationError) as caught:
+            backup.Runner().run(["missing-tool", "--version"], cwd=ROOT)
+
+        self.assertIn("command failed to start (missing-tool)", str(caught.exception))
+        self.assertIsInstance(caught.exception.__cause__, FileNotFoundError)
+        run.assert_called_once()
+
     def _run_minimal_backup(
         self,
         root: Path,

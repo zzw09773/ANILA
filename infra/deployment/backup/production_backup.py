@@ -265,14 +265,19 @@ class Runner:
         input_bytes: bytes | None = None,
         check: bool = True,
     ) -> subprocess.CompletedProcess[bytes]:
-        result = subprocess.run(
-            argv,
-            cwd=cwd,
-            input=input_bytes,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                argv,
+                cwd=cwd,
+                input=input_bytes,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        except OSError as exc:
+            raise BackupAutomationError(
+                f"command failed to start ({argv[0]}): {exc}"
+            ) from exc
         if check and result.returncode != 0:
             detail = result.stderr.decode("utf-8", errors="replace")[-2000:]
             raise BackupAutomationError(f"command failed ({argv[0]}): {detail}")
