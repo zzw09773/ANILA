@@ -246,8 +246,19 @@ def _snapshot_collection_ids(db: Session, artifact: Artifact) -> set[int]:
         return set()
 
 
+def _scope_collection_rls(db: Session, collection_id: int) -> None:
+    """Bind FORCE-RLS ingestion tables to one collection for this transaction."""
+    bind = db.get_bind()
+    if bind is not None and bind.dialect.name == "postgresql":
+        db.execute(
+            text("SELECT set_config('anila.collection_id', :cid, true)"),
+            {"cid": str(int(collection_id))},
+        )
+
+
 def reconcile_collection_counters(db: Session, collection_id: int) -> None:
     """Recompute, never decrement, so retries cannot create negative counters."""
+    _scope_collection_rls(db, collection_id)
     collection = db.get(IngestionCollection, collection_id)
     if collection is None:
         return
@@ -443,6 +454,7 @@ def _erase_document(
     ):
         db.rollback()
         return False
+    _scope_collection_rls(db, document.collection_id)
     images = _image_rows(db, document.id)
     image_paths = [safe_ingestion_path(ingestion_root, path) for _id, path in images]
     doc_path = (
@@ -461,16 +473,56 @@ def _erase_document(
 
     tables = set(inspect(db.connection()).get_table_names())
     if "ingestion_images" in tables:
-        db.execute(text("DELETE FROM ingestion_images WHERE document_id=:did"),
-                   {"did": document.id})
+        deleted = db.execute(
+            text("DELETE FROM ingestion_images WHERE document_id=:did"),
+            {"did": document.id},
+        ).rowcount
+        if deleted != len(images):
+            raise RetentionSafetyError(
+                "ingestion image erasure count did not match the scoped snapshot"
+            )
     if "document_chunks" in tables:
-        db.execute(text("DELETE FROM document_chunks WHERE document_id=:did"),
-                   {"did": document.id})
+        chunk_count = int(db.execute(
+            text("SELECT count(*) FROM document_chunks WHERE document_id=:did"),
+            {"did": document.id},
+        ).scalar() or 0)
+        deleted = db.execute(
+            text("DELETE FROM document_chunks WHERE document_id=:did"),
+            {"did": document.id},
+        ).rowcount
+        if deleted != chunk_count:
+            raise RetentionSafetyError(
+                "document chunk erasure count did not match the scoped snapshot"
+            )
     if "document_relations" in tables:
-        db.execute(text(
-            "DELETE FROM document_relations "
-            "WHERE src_document_id=:did OR dst_document_id=:did"
-        ), {"did": document.id})
+        relation_where = "src_document_id=:did OR dst_document_id=:did"
+        relation_count = int(db.execute(
+            text(f"SELECT count(*) FROM document_relations WHERE {relation_where}"),
+            {"did": document.id},
+        ).scalar() or 0)
+        deleted = db.execute(
+            text(f"DELETE FROM document_relations WHERE {relation_where}"),
+            {"did": document.id},
+        ).rowcount
+        if deleted != relation_count:
+            raise RetentionSafetyError(
+                "document relation erasure count did not match the scoped snapshot"
+            )
+    for table in ("ingestion_images", "document_chunks", "document_relations"):
+        if table in tables:
+            residual = int(db.execute(
+                text(
+                    f"SELECT count(*) FROM {table} "
+                    "WHERE document_id=:did" if table != "document_relations" else
+                    f"SELECT count(*) FROM {table} "
+                    "WHERE src_document_id=:did OR dst_document_id=:did"
+                ),
+                {"did": document.id},
+            ).scalar() or 0)
+            if residual:
+                raise RetentionSafetyError(
+                    f"{table} still contains rows after document erasure"
+                )
     document.active_generation_id = None
     db.flush()
     db.query(IngestionDocumentGeneration).filter(

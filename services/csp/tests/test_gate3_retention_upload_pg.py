@@ -25,7 +25,11 @@ from starlette.datastructures import Headers, UploadFile
 from app.api import artifacts as artifact_api
 from app.config import settings
 from app.models.artifact import Artifact, ArtifactJob, ArtifactVersion
-from app.models.ingestion import IngestionCollection
+from app.models.ingestion import (
+    IngestionCollection,
+    IngestionDocument,
+    IngestionDocumentGeneration,
+)
 from app.models.registered_service import RegisteredService
 from app.models.service_client import ServiceClient
 from app.models.source_snapshot import SourceSnapshot
@@ -34,6 +38,7 @@ from app.models.user import User
 from app.modules.tasks.service import create_task
 from app.schemas.contracts.tasks import TaskCreate
 from app.services.agent_credential_service import CallerIdentity
+from app.services import retention_reaper
 
 
 _DSN = os.environ.get("ANILA_GATE3_RETENTION_PG_URL")
@@ -85,6 +90,153 @@ def _user(suffix: str, purpose: str) -> User:
         is_active=True,
         is_approved=True,
     )
+
+
+def test_document_erasure_scopes_force_rls_rows_and_unlinks_bytes(tmp_path: Path):
+    engine = _engine()
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    suffix = uuid.uuid4().hex[:12]
+    now = datetime.now(timezone.utc)
+    db = factory()
+    document_path = tmp_path / "documents" / f"{suffix}.pdf"
+    image_relative = f"images/{suffix}.png"
+    image_path = tmp_path / image_relative
+    document_path.parent.mkdir(parents=True, exist_ok=True)
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    document_path.write_bytes(b"classified document")
+    image_path.write_bytes(b"classified image")
+
+    try:
+        owner = _user(suffix, "retention-rls")
+        db.add(owner)
+        db.flush()
+        collection = IngestionCollection(
+            name=f"gate3-retention-rls-{suffix}",
+            chunking_config={},
+            embedding_model="test",
+            embedding_fingerprint="sha256:" + ("1" * 64),
+            embedding_dim=3,
+            created_by=owner.id,
+            classification_level="機密",
+            document_count=1,
+            chunk_count=1,
+            bytes_stored=document_path.stat().st_size,
+            image_count=1,
+        )
+        db.add(collection)
+        db.flush()
+        document = IngestionDocument(
+            collection_id=collection.id,
+            filename=document_path.name,
+            sha256=hashlib.sha256(document_path.read_bytes()).hexdigest(),
+            mime_type="application/pdf",
+            bytes=document_path.stat().st_size,
+            storage_path=str(document_path),
+            status="indexed",
+            chunk_count=1,
+            availability_status="unavailable",
+            processing_stage="complete",
+            uploaded_by=owner.id,
+            classification_level="機密",
+            lifecycle_state="archived",
+            archived_at=now - timedelta(days=1),
+            erase_due_at=now,
+        )
+        db.add(document)
+        db.flush()
+        generation = IngestionDocumentGeneration(
+            document_id=document.id,
+            collection_id=collection.id,
+            generation_number=1,
+            status="active",
+            embedding_model="test",
+            embedding_fingerprint=collection.embedding_fingerprint,
+            embedding_dim=3,
+            chunk_count=1,
+            activated_at=now,
+        )
+        db.add(generation)
+        db.flush()
+        document.active_generation_id = generation.id
+        db.execute(
+            text("SELECT set_config('anila.collection_id', :cid, true)"),
+            {"cid": str(collection.id)},
+        )
+        db.execute(
+            text(
+                "INSERT INTO ingestion_images "
+                "(collection_id,document_id,image_id,storage_path,mime) "
+                "VALUES (:cid,:did,:iid,:path,'image/png')"
+            ),
+            {
+                "cid": collection.id,
+                "did": document.id,
+                "iid": f"gate3-retention-{suffix}",
+                "path": image_relative,
+            },
+        )
+        db.execute(
+            text(
+                "INSERT INTO document_chunks "
+                "(collection_id,document_id,chunk_key,content,generation_id,"
+                "is_active_generation) VALUES "
+                "(:cid,:did,:key,'classified chunk',:gid,true)"
+            ),
+            {
+                "cid": collection.id,
+                "did": document.id,
+                "key": f"gate3-retention-{suffix}",
+                "gid": generation.id,
+            },
+        )
+        db.execute(
+            text(
+                "INSERT INTO document_relations "
+                "(collection_id,src_document_id,target_ref,relation_type,source) "
+                "VALUES (:cid,:did,:target,'cites','rule')"
+            ),
+            {
+                "cid": collection.id,
+                "did": document.id,
+                "target": f"gate3-retention-target-{suffix}",
+            },
+        )
+        db.commit()
+        document_id = int(document.id)
+        collection_id = int(collection.id)
+
+        assert retention_reaper._erase_document(
+            db,
+            document_id=document_id,
+            now=now,
+            ingestion_root=str(tmp_path),
+        )
+        assert not document_path.exists()
+        assert not image_path.exists()
+
+        db.execute(
+            text("SELECT set_config('anila.collection_id', :cid, true)"),
+            {"cid": str(collection_id)},
+        )
+        for table in ("ingestion_images", "document_chunks", "document_relations"):
+            assert db.execute(
+                text(f"SELECT count(*) FROM {table} WHERE collection_id=:cid"),
+                {"cid": collection_id},
+            ).scalar_one() == 0
+        erased = db.get(IngestionDocument, document_id)
+        assert erased is not None and erased.lifecycle_state == "erased"
+        refreshed_collection = db.get(IngestionCollection, collection_id)
+        assert refreshed_collection is not None
+        assert (
+            refreshed_collection.document_count,
+            refreshed_collection.chunk_count,
+            refreshed_collection.bytes_stored,
+            refreshed_collection.image_count,
+        ) == (0, 0, 0, 0)
+    finally:
+        db.rollback()
+        db.close()
+        engine.dispose()
 
 
 def test_task_admission_waits_for_retention_and_rejects_erasing_collection():

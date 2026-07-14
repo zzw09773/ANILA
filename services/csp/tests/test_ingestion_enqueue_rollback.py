@@ -606,8 +606,77 @@ async def test_stale_published_terminal_job_is_never_replayed(
         session_factory=Session, pool=NeverPool()
     )
     db.expire_all()
-    assert db.query(IngestionOutbox).one().status == "published"
+    assert db.query(IngestionOutbox).count() == 0
     assert db.query(IngestionJob).one().status == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_terminal_history_cannot_starve_new_pending_intent(
+    monkeypatch, tmp_path, db
+) -> None:
+    user = make_user(db, username="relay-terminal-history")
+    collection = _collection(db, user)
+    stale_at = datetime.now(timezone.utc) - timedelta(seconds=121)
+
+    # More rows than a normal minute of relay polling makes the starvation
+    # deterministic: the old implementation selected the lowest stale id,
+    # refreshed it, slept, and never reached the new pending intent.
+    for index in range(150):
+        job = IngestionJob(
+            arq_job_id=f"historical-terminal-{index}",
+            collection_id=collection.id,
+            document_id=None,
+            job_type="ingest",
+            status="succeeded",
+            attempt_count=1,
+            completed_at=stale_at,
+            enqueued_by=user.id,
+        )
+        db.add(job)
+        db.flush()
+        db.add(
+            IngestionOutbox(
+                ingestion_job_id=job.id,
+                attempt_number=1,
+                arq_job_id=job.arq_job_id,
+                task_name="ingest_document",
+                payload={
+                    "document_id": 0,
+                    "ingestion_job_id": job.id,
+                    "attempt_number": 1,
+                },
+                status="published",
+                published_at=stale_at,
+            )
+        )
+    db.commit()
+
+    await _upload(db, user, collection, tmp_path, content=b"new pending work")
+    pending = (
+        db.query(IngestionOutbox)
+        .filter(IngestionOutbox.status == "pending")
+        .one()
+    )
+    pending_id = pending.id
+    Session = sessionmaker(bind=db.get_bind())
+    monkeypatch.setattr(
+        ingestion_outbox.settings, "INGESTION_OUTBOX_STALE_SECONDS", 120
+    )
+
+    class Pool:
+        calls = 0
+
+        async def enqueue_job(self, *_args, **_kwargs):
+            self.calls += 1
+            return object()
+
+    pool = Pool()
+    assert await ingestion_outbox.relay_once(session_factory=Session, pool=pool)
+    db.expire_all()
+    assert pool.calls == 1
+    assert db.query(IngestionOutbox).count() == 1
+    intent = db.get(IngestionOutbox, pending_id)
+    assert intent is not None and intent.status == "published"
 
 
 @pytest.mark.asyncio

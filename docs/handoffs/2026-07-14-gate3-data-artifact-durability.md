@@ -48,11 +48,22 @@ Redis envelope。
 修正後 canonical finding set 為 0；security work ledger 66/66 完成，未留下 suppressed
 code finding。這個結果不取代最終 remote head 的 Fable review。
 
+第一輪 Fable review 對 `1914b8c` 提出兩個 blocker，已在後續 head 修正並加上
+mutation-sensitive regression：
+
+- retention reaper 現在於 counter reconciliation 與 document erase transaction 設定
+  transaction-local `anila.collection_id`，並檢查 scoped delete row count 與 residual；
+  `csp_app` 真 PostgreSQL 測試實際建立 FORCE-RLS image/chunk/relation rows 及磁碟檔案，
+  舊實作會留下 image bytes，新實作完整清除。
+- published outbox 只有 DB job 仍為同一個 queued attempt 時才保留 Redis-loss replay；
+  job 已前進後清除無 recovery 用途的 receipt，並在同次 claim 立即往後掃。150 筆終態
+  歷史資料加 1 筆新 pending 的 regression 證明新任務不會 starvation。
+
 ## 3. 測試與 runtime 證據
 
 ### 3.1 完整套件
 
-- CSP：`1208 passed, 30 skipped`。
+- CSP：`1209 passed, 31 skipped`（31 項皆由下一節的真 PostgreSQL job 補跑）。
 - ingestion-worker：`219 passed, 10 skipped`；Ruff 全綠。
 - anila-studio：`585 passed, 5 skipped`。
 - anila-core：`806 passed, 11 skipped`。
@@ -76,7 +87,7 @@ PostgreSQL／Redis 補跑 Gate 3 infra contracts。
 以專用 disposable `pgvector/pgvector:pg16` 與 `redis:7-alpine` volumes 執行：
 
 - fresh DB 從零 migration 到 `r1_0024 (head)`。
-- CSP retention/upload PostgreSQL race：2 passed。
+- CSP retention/upload PostgreSQL race／FORCE-RLS erase：3 passed。
 - ingestion generation migration/backfill：1 passed。
 - anila-core pgvector/RLS：10 passed。
 - worker lease/similarity PostgreSQL concurrency：10 passed。
