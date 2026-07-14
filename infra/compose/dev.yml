@@ -205,6 +205,13 @@ services:
       dockerfile: services/ingestion-worker/Dockerfile
     environment:
       ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-development}
+      # Development keeps direct model services/network access explicitly
+      # testable.  This marker is never accepted by the formal checker.
+      ANILA_DEV_DIRECT_MODEL_EGRESS: "1"
+      GATE5_MODEL_GOVERNANCE_ENABLED: "false"
+      GATE5_MODEL_GOVERNANCE_STARTUP_REQUIRED: "false"
+      GATE5_MODEL_GATEWAY_ENDPOINT: http://csp:8000/v1
+      GATE5_FLUX_LEGAL_APPROVED: "false"
       DATABASE_URL: postgresql://csp_app:csp@csp-db:5432/csp
       REDIS_URL: redis://redis:6379
       INGESTION_QUEUE_HMAC_KEY: ${INGESTION_QUEUE_HMAC_KEY:-dev-ingestion-queue-hmac-key-change-me}
@@ -323,6 +330,10 @@ services:
       - "8100"
     environment:
       ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-development}
+      ANILA_DEV_DIRECT_MODEL_EGRESS: "1"
+      GATE5_MODEL_GOVERNANCE_ENABLED: "false"
+      GATE5_MODEL_GOVERNANCE_STARTUP_REQUIRED: "false"
+      GATE5_MODEL_GATEWAY_ENDPOINT: http://csp:8000/v1
       CSP_BASE_URL: http://csp:8000
       # 跟 csp 共用同一把 service-to-service token,讓 cold-start sync
       # /api/auth/revocations 能透過 X-CSP-Service-Token header 通過

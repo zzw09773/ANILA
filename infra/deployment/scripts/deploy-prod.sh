@@ -33,8 +33,7 @@
 # 環境變數(必要,缺值 fail-loud):
 #   CSP_SERVICE_TOKEN         legacy fleet service-to-service token
 #   STUDIO_ARTIFACT_SERVICE_TOKEN dedicated named artifact-writer credential
-#   INTERNAL_PLATFORM_API_KEY 內部 system worker API key,ingestion-worker /
-#                             flux2-dev-agent 用
+#   INTERNAL_PLATFORM_API_KEY 內部 system worker API key,ingestion-worker 用
 #   SECRET_KEY                JWT signing key + agent credential AES key
 #
 # 環境變數(可選,有合理 default):
@@ -49,8 +48,8 @@
 #   2. Docker daemon running
 #   3. docker compose v2 可用
 #   4. anila-models-net network 已存在(模型 stack 先起來)
-#   5. 模型服務(gemma4 / flux2-dev / flux2-dev-agent / nv-embed-proxy)healthy
-#   6. share/uploads/flux 目錄存在(flux2-dev-agent 寫圖檔用)
+#   5. 模型服務(gemma4 / nv-embed-proxy)healthy；FLUX 預設停用
+#   6. Gate 5 governance material 是 repo 外的唯讀正式部署輸入
 #   7. 必要 env 已設且非 dev fallback
 # ============================================================================
 set -euo pipefail
@@ -123,6 +122,7 @@ CSP_RUNTIME_IMAGE="${CSP_RUNTIME_IMAGE:-anila-platform-csp:latest}"
 N8N_RUNTIME_IMAGE="${N8N_RUNTIME_IMAGE:-n8nio/n8n:2.29.10}"
 GITLAB_RUNTIME_IMAGE="${GITLAB_RUNTIME_IMAGE:-gitlab/gitlab-ce:19.1.1-ce.0}"
 IMAGE_LOCK_VERIFIER=infra/deployment/scripts/verify-compose-image-lock.py
+GATE5_EGRESS_CHECKER=infra/policy/gate5/check_deployment_egress.py
 TOOL_VERSION_MARKER=.anila-managed-image
 COMPOSE_PROJECT=anila-platform
 
@@ -258,7 +258,7 @@ check_external_secret_paths() {
 check_env() {
   # 必要 env(沒設就停)。CSP_SECRET_KEY / SECRET_KEY 擇一即可
   # (infra/compose/platform.yml 內 csp service 看的是 CSP_SECRET_KEY)。
-  local required=(CSP_SERVICE_TOKEN STUDIO_ARTIFACT_SERVICE_TOKEN STUDIO_RUNTIME_SERVICE_TOKEN STUDIO_JOB_ENVELOPE_HMAC_KEY INGESTION_QUEUE_HMAC_KEY INTERNAL_PLATFORM_API_KEY SITE_URL GITLAB_SSH_BIND_IP ANILA_ENV ANILA_DEPLOYMENT_PROFILE ANILA_STATE_DIR ANILA_SECRETS_DIR ANILA_TLS_CERTS_DIR)
+  local required=(CSP_SERVICE_TOKEN STUDIO_ARTIFACT_SERVICE_TOKEN STUDIO_RUNTIME_SERVICE_TOKEN STUDIO_JOB_ENVELOPE_HMAC_KEY INGESTION_QUEUE_HMAC_KEY INTERNAL_PLATFORM_API_KEY SITE_URL GITLAB_SSH_BIND_IP ANILA_ENV ANILA_DEPLOYMENT_PROFILE GATE5_MATERIAL_DIR ANILA_STATE_DIR ANILA_SECRETS_DIR ANILA_TLS_CERTS_DIR)
   local branch
   branch="$(git branch --show-current 2>/dev/null || true)"
   if [[ "$branch" == "prod-intranet-card" ]]; then
@@ -321,7 +321,53 @@ check_env() {
     fatal "ANILA_ENV 必須是 production/prod，否則正式模型 HTTP fail-closed 守衛不會啟用"
   fi
   check_external_secret_paths
+  command -v realpath >/dev/null 2>&1 \
+    || fatal "未找到 realpath，無法驗證 Gate 5 material 路徑"
+  local material_lex material_real repo_real
+  [[ "$GATE5_MATERIAL_DIR" = /* ]] || fatal "GATE5_MATERIAL_DIR 必須是絕對路徑"
+  repo_real="$(realpath -m -- "$REPO_ROOT")"
+  material_lex="$(realpath -ms -- "$GATE5_MATERIAL_DIR")"
+  material_real="$(realpath -m -- "$GATE5_MATERIAL_DIR")"
+  [[ "$material_lex" == "$material_real" ]] \
+    || fatal "GATE5_MATERIAL_DIR 不得包含 symlink component: $GATE5_MATERIAL_DIR"
+  case "$material_real" in
+    "$repo_real"|"$repo_real"/*) fatal "GATE5_MATERIAL_DIR 不得位於 repo 內: $material_real" ;;
+  esac
+  ok "Gate 5 governance material 路徑位於 repo 外"
   ok "必要 env 都已設且非 dev 值"
+}
+
+check_gate5_egress_policy() {
+  command -v python3 >/dev/null 2>&1 \
+    || fatal "Gate 5 deployment egress checker 需要 python3"
+  [[ -f "$GATE5_EGRESS_CHECKER" ]] \
+    || fatal "找不到 Gate 5 deployment egress checker: $GATE5_EGRESS_CHECKER"
+
+  local tmp platform_json models_json profile rc
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/anila-gate5-egress.XXXXXX")" \
+    || fatal "無法建立 Gate 5 Compose read-back 暫存目錄"
+  platform_json="$tmp/platform.json"
+  models_json="$tmp/models.json"
+  profile="$(deployment_profile)"
+  if ! compose config --format json >"$platform_json"; then
+    rm -rf -- "$tmp"
+    fatal "無法解析 formal platform resolved Compose"
+  fi
+  if ! docker compose -p anila-models -f infra/models/docker-compose.yml config --format json >"$models_json"; then
+    rm -rf -- "$tmp"
+    fatal "無法解析 formal model-stack resolved Compose"
+  fi
+  set +e
+  python3 "$GATE5_EGRESS_CHECKER" \
+    --profile "$profile" \
+    --repo-root "$REPO_ROOT" \
+    --compose-json "$platform_json" \
+    --compose-json "$models_json"
+  rc=$?
+  set -e
+  rm -rf -- "$tmp"
+  (( rc == 0 )) || fatal "Gate 5 formal deployment egress/governance policy 失敗"
+  ok "Gate 5 formal deployment egress/governance policy 通過"
 }
 
 check_models_stack() {
@@ -369,13 +415,13 @@ check_models_stack() {
     err "anila-models-net network 不存在"
     fatal "請先起模型 stack:
        bash infra/deployment/intranet/model-serve.sh up trial
-       (確認 gemma4 / flux2-dev / flux2-dev-agent / nv-embed-proxy 都 healthy)
+       (確認 gemma4 / nv-embed-proxy 都 healthy；FLUX 需另有法務核准 profile)
        模型在別台主機的內網部署 → export ANILA_REMOTE_MODELS=1 重跑"
   fi
   ok "anila-models-net network 存在"
 
   # 列必要的 model service,讓 user 看到 health
-  local need=(anila-model-gemma4 anila-model-nv-embed-proxy anila-model-flux2-dev-agent)
+  local need=(anila-model-gemma4 anila-model-nv-embed-proxy)
   local degraded=0
   for c in "${need[@]}"; do
     local status
@@ -495,6 +541,7 @@ cmd_preflight() {
   check_docker
   check_formal_image_lock
   check_env
+  check_gate5_egress_policy
   check_dirs
   check_models_stack
   check_tool_upgrade_safety
@@ -541,6 +588,7 @@ validate_formal_identity() {
 validate_formal_up() {
   validate_formal_identity
   check_env
+  check_gate5_egress_policy
   check_tool_upgrade_safety
   ensure_jwt_keypair
 }
@@ -662,7 +710,7 @@ cmd_wait_healthy() {
   [[ "$timeout" =~ ^[0-9]+$ ]] || fatal "ANILA_WAIT_TIMEOUT_SECONDS 必須是正整數"
   section "等正式 service ready/healthy(最多 ${timeout} 秒)"
   local deadline=$(( $(date +%s) + timeout ))
-  local services=(csp-db redis pptx-renderer csp router anilalm anila-ui anila-studio flux2-dev-agent nginx n8n gitlab)
+  local services=(csp-db redis pptx-renderer csp router anilalm anila-ui anila-studio nginx n8n gitlab)
   local running_services=(ingestion-worker)
   if is_gate2_pilot_posture; then
     services=(csp-db redis csp router anilalm anila-ui nginx n8n gitlab)

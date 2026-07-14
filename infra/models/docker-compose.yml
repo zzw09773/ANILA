@@ -244,6 +244,13 @@ services:
   # License caveat: black-forest-labs/FLUX.2-dev is BFL Non-Commercial.
   # Confirm authorization before enabling in production.
   flux2-dev:
+    # FLUX.2-dev is non-commercial and remains disabled in every default
+    # model stack.  Only an explicitly named legal-approved profile may
+    # resolve this service.
+    profiles: ["flux-approved"]
+    labels:
+      com.anila.inference-role: model-runtime
+      com.anila.requires-legal-approval: "true"
     image: flux2-dev:bf16
     container_name: anila-model-flux2-dev
     build:
@@ -287,6 +294,13 @@ services:
   # here. Shim handles prompt translation (zh→en via gemma4 callback)
   # and image persistence; binds /share/flux from share/uploads/flux.
   flux2-dev-agent:
+    # This is a model-side shim, not a freely dispatchable Silver Agent.  It
+    # may only resolve together with flux2-dev under the legal-approved
+    # profile; the formal platform does not attach arbitrary Agents here.
+    profiles: ["flux-approved"]
+    labels:
+      com.anila.inference-role: model-side-shim
+      com.anila.requires-legal-approval: "true"
     image: anila-flux-agent:latest
     container_name: anila-model-flux2-dev-agent
     build:
@@ -301,7 +315,10 @@ services:
       FLUX_MODEL: ${FLUX_MODEL:-flux.2-dev}
       FLUX_API_KEY: ${FLUX_API_KEY-}
       CSP_BASE_URL: http://csp:8000
-      FLUX_AGENT_SERVICE_TOKEN: ${FLUX_AGENT_SERVICE_TOKEN:?FLUX_AGENT_SERVICE_TOKEN must match image-generator credential}
+      # Compose resolves interpolation even when this service's profile is
+      # inactive.  Keep the default stack resolvable without a FLUX secret;
+      # model-serve.sh verifies the credential before --profile flux-approved.
+      FLUX_AGENT_SERVICE_TOKEN: ${FLUX_AGENT_SERVICE_TOKEN-}
       # Prod: 同 csp service,缺值 fail-loud(不要走 dev fallback)。
       CSP_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
       GEMMA_MODEL: gemma4

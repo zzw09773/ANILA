@@ -101,13 +101,18 @@ cases/category counts/denominator membership，並重新計算 `dataset_sha256`�
 每個 denominator 的 numerator/denominator 與 runner commit，並維持本檔的
 membership 與 thresholds。
 
-## R7 model governance (static authority only)
+## R7 model governance and deployment boundary
 
 `model-governance-inventory.v1.json` 是目前 source-level inference sink 的
 可審計清單；Gate 5 worktree 會把 Router、formal Agent、embedding、Studio／FLUX、
 Memory、prompt generator、ingestion relation／judge 與模型 backend sink 綁到
 唯一 `csp-model-gateway`、classification ceiling、usage／audit sink、agent scope
 以及 source scanner。新增而未登錄的 inference sink 會讓 verifier fail-closed。
+
+其中 `r3.csp.agent-dispatch` 是獨立於 Router→CSP client 的 CSP→Agent trust
+boundary：它治理 signed ExecutionGrant envelope、per-agent outbound dispatch
+與 durable `csp.session_events` receipts；Agent 內部實際模型呼叫仍須另由 R7
+model binding、usage 與 audit sink 治理，這個 entry 不得被解讀為模型授權本身。
 
 `model-governance-profile.disabled-template.json` 明確是「未啟用、不是 production
 approval」的 repository template。它沒有 approver、signature、model artifact 或
@@ -116,9 +121,29 @@ production enabled profile 仍必須另具備 signed profile、artifact／deploy
 digest、license／法務裁決、GPU topology、fresh health/readiness、四類 approver 與
 唯一 CSP gateway binding。
 
-本批 R7 只建立 static contracts、source inventory、hash／signature verifier 與
-negative tests；**尚未完成 runtime admission、model egress enforcement、usage
-reconciliation 或 live health/readiness enforcement**。因此 disabled template
+本批 R7 建立 static foundation（contracts、source inventory、hash／signature
+verifier 與 negative tests），並接上目前已完成範圍的 CSP runtime admission 與
+deployment integration；這不宣稱所有 inference callsite 都已完成 runtime
+接線。正式 profile 啟動時，CSP 會
+從四個 repo 外的唯讀掛載載入 inventory、signed profile、trust store 與 observed
+deployment facts，驗證 signature／digest／license／deployment readiness 後才讓
+model call 通過；缺檔、過期、撤銷、authority rotation 或 pre/post usage／audit
+receipt 失敗都 fail-closed。治理 runtime 不直接執行模型網路 I/O，實際部署邊界
+由 resolved Compose 的 deployment checker 與 network topology 雙重拒絕：formal
+profile 只有 CSP 可加入 `anila-models-net`，Agent 不得拿任意 raw model URL，且
+governance material 必須是 CSP 的 read-only mounts。`deploy-prod.sh preflight`
+會對 platform 與獨立 model stack 的 `docker compose config --format json` 執行
+`check_deployment_egress.py`；development profile 只保留明示的 testable direct
+model egress，不得被當成 production approval。這是 deployment-time topology
+guard，不取代主機／容器層的 packet-level egress firewall 或外部 usage
+reconciliation 報表。
+
+Repository 只附 disabled template 與 synthetic-material generator（測試時在
+記憶體產生 ephemeral signing key，輸出不含 private key），不附任何 production
+approval。FLUX.2-dev 的 BFL Non-Commercial 限制尚未取得正式法務簽核；因此
+formal platform 預設不註冊 image model／Agent，獨立 model stack 的 `flux2-dev`
+與 model-side shim 僅在明示 `flux-approved` profile、`GATE5_FLUX_LEGAL_APPROVED`
+與 signed profile 的 FLUX callsite binding 同時成立時才可啟動。disabled template
 不能被部署工具或 runtime 當成可用模型授權，也不代表 routing／model quality 已
 有 live metric。
 

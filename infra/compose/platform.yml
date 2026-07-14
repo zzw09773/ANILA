@@ -98,6 +98,21 @@ services:
       # SSRF allow-list — single-label docker service names 預設被擋,
       # 列進這條才能註冊。新增模型 service 要同步加進這個值並重啟 csp。
       ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,host.docker.internal}"
+      # Gate 5 R5/R7 formal model-governance boundary.  These values are
+      # intentionally explicit container paths; the host-side material
+      # directory is injected only through read-only mounts below.  A formal
+      # profile cannot fall back to the disabled repository template.
+      GATE5_MODEL_GOVERNANCE_ENABLED: "${GATE5_MODEL_GOVERNANCE_ENABLED:-true}"
+      GATE5_MODEL_GOVERNANCE_STARTUP_REQUIRED: "${GATE5_MODEL_GOVERNANCE_STARTUP_REQUIRED:-true}"
+      GATE5_MODEL_GOVERNANCE_INVENTORY_PATH: /etc/anila/governance/inventory.json
+      GATE5_MODEL_GOVERNANCE_PROFILE_PATH: /etc/anila/governance/profile.json
+      GATE5_MODEL_GOVERNANCE_TRUST_STORE_PATH: /etc/anila/governance/trust-store.json
+      GATE5_MODEL_GOVERNANCE_OBSERVED_FACTS_PATH: /etc/anila/governance/observed-facts.json
+      GATE5_MODEL_GATEWAY_ENDPOINT: "${GATE5_MODEL_GATEWAY_ENDPOINT:-http://csp:8000/v1}"
+      # FLUX.2-dev is non-commercial and has no production legal approval in
+      # this release.  Keep the capability absent until a named, signed
+      # legal-approved overlay supplies this marker and its callsite binding.
+      GATE5_FLUX_LEGAL_APPROVED: "${GATE5_FLUX_LEGAL_APPROVED:-false}"
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
       REFRESH_TOKEN_EXPIRE_DAYS: "${REFRESH_TOKEN_EXPIRE_DAYS:-30}"
@@ -154,14 +169,16 @@ services:
       MEMORY_LLM_MODEL: ${MEMORY_LLM_MODEL:-${LOCAL_LLM_MODEL:-gemma4}}
       # auto_seed 會用這條覆寫 DB 既有 row,改完 /models UI 也要同步改。
       AUTO_REGISTER_MODELS: >-
-        [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://gpt-oss-20b:8000}","api_version":"v1","description":"On-prem local LLM (anila-models-net)"},{"name":"gemma4","display_name":"gemma4","model_type":"llm","endpoint_url":"${GEMMA4_BASE_URL-http://gemma4:8000}","api_version":"v1","description":"On-prem gemma4 vLLM — Router primary"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://nv-embed-proxy:8000}","api_version":"v1","description":"On-prem NV-embed-V2 via FastAPI shim (anila-models-net)"},{"name":"image-generator","display_name":"圖像繪製","model_type":"agent","endpoint_url":"${FLUX_AGENT_BASE_URL-http://flux2-dev-agent:8000}","api_version":"v1","description":"FLUX.2-dev image generation agent","description_for_router":"當使用者要求繪製、產生、設計、畫一張、給我一張圖、視覺化、想看看 XX 的樣子、想要看一張圖等等的時候使用。輸入是使用者的中文自然語言描述,不需要先翻譯,agent 內部會處理。"}]
+        [{"name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","display_name":"${LOCAL_LLM_MODEL:-gpt-oss-20b}","model_type":"llm","endpoint_url":"${LOCAL_LLM_BASE_URL:-http://gpt-oss-20b:8000}","api_version":"v1","description":"On-prem local LLM (anila-models-net)"},{"name":"gemma4","display_name":"gemma4","model_type":"llm","endpoint_url":"${GEMMA4_BASE_URL-http://gemma4:8000}","api_version":"v1","description":"On-prem gemma4 vLLM — Router primary"},{"name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","display_name":"${LOCAL_EMBEDDING_MODEL:-nvidia/NV-embed-V2}","model_type":"embedding","endpoint_url":"${LOCAL_EMBEDDING_BASE_URL:-http://nv-embed-proxy:8000}","api_version":"v1","description":"On-prem NV-embed-V2 via FastAPI shim (anila-models-net)"}]
       # Phase G：agents 表的 declarative 來源(不同於 model_registry,後者是 catalog;
       # agents 表才是 Router /v1/agents 與 DISPATCH 路徑會 join 的權限源)。
       # FLUX_AGENT_BASE_URL 用 `${VAR-default}` (無冒號):「沒設」→ 同主機
       # docker DNS 預設;「設成空字串」→ auto_seed 跳過該 entry (內網無 FLUX
       # 時用這招停用繪圖 agent,避免註冊一個打不通的 dead agent 給 Router)。
-      AUTO_REGISTER_AGENTS: >-
-        [{"name":"image-generator","endpoint_url":"${FLUX_AGENT_BASE_URL-http://flux2-dev-agent:8000}","api_version":"v1","description_for_router":"當使用者要求繪製、產生、設計、畫一張、給我一張圖、視覺化、想看看 XX 的樣子、想要看一張圖等等的時候使用。輸入是使用者的中文自然語言描述,不需要先翻譯,agent 內部會處理。","health_status":"healthy","approval_status":"approved"}]
+      # No third-party/official Agent is admitted in the formal default set.
+      # A legal-approved signed overlay may replace this with the image shim
+      # manifest; an empty list is intentional and fail-closed.
+      AUTO_REGISTER_AGENTS: "[]"
       # AUTO_SEED_API_KEYS: prod initial 模式只 seed ingestion-worker (系統內部
       # 必需,讓 worker 能呼叫 csp /v1/embeddings)。smoke-user 是 e2e 測試用的
       # 帳號,prod 不需要,已移除。要恢復就把舊 entry 加回來 (參考 .env.dev.local
@@ -227,7 +244,9 @@ services:
       # would make get_flux_provider() return None (toggle OFF).
       # `${VAR-default}` 無冒號:設成空字串 → get_flux_provider() 回 None
       # (toggle OFF,內網無 FLUX 時整個圖像 pipeline 乾淨停用)。
-      FLUX_BACKEND_URL: ${FLUX_BACKEND_URL-http://flux2-dev:8000}
+      # Formal CSP has no FLUX fallback endpoint.  A legal-approved overlay
+      # must bind image-primary through the signed CSP governance profile.
+      FLUX_BACKEND_URL: "${FLUX_BACKEND_URL-}"
       FLUX_MAX_CONCURRENT: "${FLUX_MAX_CONCURRENT:-4}"
       FLUX_TIMEOUT_SECONDS: "${FLUX_TIMEOUT_SECONDS:-180}"
       # FLUX_CACHE_DIR defaults to $INGESTION_UPLOAD_DIR/flux-cache
@@ -246,6 +265,14 @@ services:
       # 必須位於 repo 外的受控 state 目錄；部署腳本會拒絕 repo 內路徑。
       # 缺值時 Compose 直接 fail-closed，不可回退到 ./secrets。
       - "${ANILA_SECRETS_DIR:?ANILA_SECRETS_DIR must be an absolute path outside the repo}:/app/secrets:ro"
+      # Signed profile, public trust store and observed deployment facts are
+      # supplied by the deployment bundle, never generated in this container.
+      # Every file is mounted read-only; missing files are a preflight/startup
+      # failure rather than a reason to use a repository template.
+      - "${GATE5_MATERIAL_DIR:-/var/lib/anila/governance}/inventory.json:/etc/anila/governance/inventory.json:ro"
+      - "${GATE5_MATERIAL_DIR:-/var/lib/anila/governance}/profile.json:/etc/anila/governance/profile.json:ro"
+      - "${GATE5_MATERIAL_DIR:-/var/lib/anila/governance}/trust-store.json:/etc/anila/governance/trust-store.json:ro"
+      - "${GATE5_MATERIAL_DIR:-/var/lib/anila/governance}/observed-facts.json:/etc/anila/governance/observed-facts.json:ro"
     extra_hosts:
       # csp 從這條 reach on-host service (e.g. host port 上的 embedding 後備)。
       - "host.docker.internal:host-gateway"
@@ -481,10 +508,12 @@ services:
       STUDIO_ARTIFACT_REPORTING: "true"
       REDIS_URL: redis://redis:6379/0
       REDIS_REVOCATION_CHANNEL: anila:auth:token-revoke
-      # 跟 csp 同一個 toggle:空字串 → studio 圖像生成停用 (內網無 FLUX)。
+      # Gate 5 formal default keeps FLUX disabled until legal approval.
+      # Empty backend is deliberate: studio must not fall back to a raw model
+      # host when the signed image-primary binding is absent.
       # 2026-07 起走 OpenAI 相容 Images API(POST {base}/v1/images/generations);
       # base URL 指伺服器根或含 /v1 皆可(client 自動補版本段)。
-      FLUX_BACKEND_URL: ${FLUX_BACKEND_URL-http://flux2-dev:8000}
+      FLUX_BACKEND_URL: "${FLUX_BACKEND_URL-}"
       # OpenAI Images API 的 model 欄位(依 FLUX 服務公布的模型名填)。
       FLUX_MODEL: ${FLUX_MODEL:-flux.2-dev}
       # 有值才帶 Authorization: Bearer;留空 = 不帶(本機 flux2-dev 免驗)。
@@ -517,67 +546,12 @@ services:
       - anila-studio-artifacts:/var/anila/anila-studio-artifacts
     networks:
       - default
-      - anila-models-net  # flux2-dev sits here
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8100/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 6
       start_period: 30s
-    restart: unless-stopped
-
-  # ── flux2-dev-agent (繪圖 agent — chat↔image 轉接層) ─────────────────────
-  # 聊天畫圖鏈路: SPA → Router → csp /v1/chat/completions(model=image-generator)
-  #   → 這個 agent。agent 內部: ① gemma4 中文→英文 prompt 翻譯(打 csp)
-  #   ② 打底層 T2I 模型 /v1/images/generations ③ 存圖 + 回 markdown 連結。
-  # 底層 T2I 模型 = 雲端算力中心 SGLang(172.16.120.35:30010, OpenAI 相容
-  #   Images API)。本機不跑 flux2-dev,故不 depends_on 它、FLUX_BACKEND_URL
-  #   直接指遠端。env 寫死(不走 .env FLUX_MODEL,避免污染 studio 的同名 env)。
-  flux2-dev-agent:
-    build:
-      context: ../../services/flux2-dev-agent
-    image: ${ANILA_IMAGE_FLUX2_DEV_AGENT:?ANILA_IMAGE_FLUX2_DEV_AGENT must be a locked image content ID}
-    expose:
-      - "8000"
-    environment:
-      TZ: Asia/Taipei
-      # 底層 T2I 模型 = 雲端 SGLang(OpenAI 相容 /v1/images/generations)。
-      FLUX_BACKEND_URL: http://172.16.120.35:30010
-      # SGLang /v1/models 公布的 model id 是字面 "/model"。
-      FLUX_MODEL: "/model"
-      FLUX_API_KEY: ${FLUX_API_KEY-}
-      CSP_BASE_URL: http://csp:8000
-      # agent 打 csp 拉 gemma4 翻譯 + JWKS,prod fail-loud(缺值直接停)。
-      CSP_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
-      # image-generator 自身的具名 agent credential；需與 CSP
-      # agent_credentials 內該 agent 的有效 token 一致，不可用 fleet token。
-      FLUX_AGENT_SERVICE_TOKEN: ${FLUX_AGENT_SERVICE_TOKEN:?FLUX_AGENT_SERVICE_TOKEN must match image-generator credential}
-      # Normal deployments call the configured FLUX_BACKEND_URL directly.
-      # The signed Gate 2 pilot overlay is the only profile that flips this
-      # to 1 and routes the governed callback through CSP.
-      GATE2_IMAGE_VIA_CSP: "0"
-      GEMMA_MODEL: gemma4
-      ENABLE_PROMPT_TRANSLATION: "1"
-      SHARE_DIR: /share/flux
-      PUBLIC_URL_PREFIX: /uploads/flux
-      DEFAULT_ASPECT_RATIO: "16:9"
-      FLUX_TIMEOUT_SECONDS: "240"
-    depends_on:
-      csp:
-        condition: service_healthy
-    volumes:
-      # nginx 以 /uploads/ alias share-files/uploads/ 對外 serve 這裡的圖。
-      - ../../share/uploads/flux:/share/flux
-    networks:
-      - default
-      - anila-models-net  # 與 csp 同網,csp 用 http://flux2-dev-agent:8000 打它
-    healthcheck:
-      # agent image(python:3.11-slim)無 curl,用 urllib。
-      test: ["CMD-SHELL", "python -c \"import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=5).status == 200 else 1)\""]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 20s
     restart: unless-stopped
 
   # ── ANILA LM (Vite/React SPA at /anilalm/) ──────────────────────────────
