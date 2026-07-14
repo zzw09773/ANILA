@@ -145,7 +145,7 @@ def test_disabled_template_is_explicitly_not_an_approval() -> None:
         allow_disabled_template=True,
         now=NOW,
     )
-    assert result["inventory_callsites"] == 37
+    assert result["inventory_callsites"] == 38
     assert result["enabled_callsites"] == 0
     with pytest.raises(ModelGovernancePolicyError, match="not an approval"):
         verify(inventory_path=INVENTORY, profile_path=TEMPLATE, now=NOW)
@@ -371,5 +371,5 @@ def test_disabled_template_authority_is_constructible_for_audit_but_never_author
 def test_inventory_hash_is_bound_to_profile() -> None:
     inventory = _load_json(INVENTORY)
     assert inventory_hash(inventory) == (
-        "51e26955a987ca7072ccae5a0aa78a9e49e04a6c9d0457b1ffc69c5d6a643eb8"
+        "d47359c3ccb28b387754b0dbe14a0954441f0d84b79968503c496c94036cd703"
     )

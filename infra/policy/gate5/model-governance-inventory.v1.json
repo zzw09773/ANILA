@@ -593,6 +593,22 @@
       "sink_kinds": ["chat_completions"]
     },
     {
+      "id": "r3.csp.agent-dispatch",
+      "owner": "csp-control-plane",
+      "service": "csp",
+      "source": "services/csp/app/services/agent_dispatch_service.py",
+      "symbol": "authorize_dispatch/dispatch_nonstream/dispatch_stream",
+      "kind": "csp_agent_dispatch_sink",
+      "enabled": false,
+      "gateway_id": "csp-model-gateway",
+      "raw_endpoint": false,
+      "classification_ceiling": "機密",
+      "usage_sink": "csp.session_events",
+      "audit_sink": "csp.audit_log",
+      "agent_scope": ["router", "registered-agent"],
+      "sink_kinds": ["chat_completions"]
+    },
+    {
       "id": "r7.model-backend.triton-embedding",
       "owner": "model-platform",
       "service": "anila-models",

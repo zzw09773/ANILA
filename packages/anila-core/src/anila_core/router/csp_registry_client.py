@@ -53,6 +53,32 @@ class GrantMintUnavailable(RuntimeError):
     """Raised when CSP has not issued a grant for a formal Agent call."""
 
 
+@dataclass(frozen=True, slots=True)
+class ExecutionGrantEnvelope:
+    """The CSP transport envelope around an unsigned inner grant.
+
+    ``anila-contracts.ExecutionGrant`` intentionally has no cryptographic
+    material.  The token is kept beside it (never injected into the inner
+    model) so the Router can carry the exact RS256 envelope to the CSP final
+    dispatch sink.
+    """
+
+    token: str
+    grant: ExecutionGrant
+    schema_version: str = "execution-grant-envelope/v1"
+    token_type: str = "Bearer"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.token, str) or not self.token.strip():
+            raise ValueError("CSP ExecutionGrant envelope 缺少 signed token")
+        if not isinstance(self.grant, ExecutionGrant):
+            raise TypeError("ExecutionGrant envelope grant 必須是 ExecutionGrant")
+        if self.schema_version != "execution-grant-envelope/v1":
+            raise ValueError("ExecutionGrant envelope schema_version 無效")
+        if self.token_type != "Bearer":
+            raise ValueError("ExecutionGrant envelope token_type 無效")
+
+
 class ExecutionGrantMinter(Protocol):
     """CSP mint seam; the Router never signs or fabricates a grant."""
 
@@ -65,13 +91,13 @@ class ExecutionGrantMinter(Protocol):
         snapshot: RegistrySnapshot,
         entry: RegistryEntry,
         caller_user_id: int,
-    ) -> ExecutionGrant | None: ...
+    ) -> ExecutionGrantEnvelope | None: ...
 
 
 class NoopExecutionGrantMinter:
     """Explicit R2 blocker until a CSP grant-mint endpoint is available."""
 
-    async def mint(self, **_: Any) -> ExecutionGrant | None:
+    async def mint(self, **_: Any) -> ExecutionGrantEnvelope | None:
         return None
 
 
@@ -90,7 +116,7 @@ class AgentClient(Protocol):
         route_decision: RouteDecision,
         policy_result: PolicyGateResult,
         grant_input: ExecutionGrantInput,
-        execution_grant: ExecutionGrant,
+        execution_grant: ExecutionGrantEnvelope,
         stream: bool = False,
     ) -> dict[str, Any]: ...
 
@@ -106,7 +132,7 @@ class AgentClient(Protocol):
         route_decision: RouteDecision,
         policy_result: PolicyGateResult,
         grant_input: ExecutionGrantInput,
-        execution_grant: ExecutionGrant,
+        execution_grant: ExecutionGrantEnvelope,
     ) -> AsyncIterator[dict[str, Any]]: ...
 
 
@@ -631,6 +657,175 @@ class CspInferenceClient:
             yield {"type": "error", "error": f"CSP inference stream 失敗: {type(exc).__name__}"}
 
 
+class CspExecutionGrantMinter:
+    """Call CSP's signed ExecutionGrant mint seam.
+
+    The Router submits unsigned evidence and receives a transport envelope.
+    It never creates a local ``ExecutionGrant`` as an authority substitute
+    and never places the signed token inside that inner contract.
+    """
+
+    def __init__(
+        self,
+        csp_base_url: str,
+        *,
+        service_token: str | None,
+        mint_path: str = "/internal/v1/execution-grants/mint",
+        timeout: float = 20.0,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self.base_url = csp_base_url.rstrip("/")
+        parsed = urlsplit(self.base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("CSP base URL 必須是絕對 HTTP(S) origin")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
+            raise ValueError("CSP base URL 不得包含 userinfo/path/query/fragment")
+        if not mint_path.startswith("/") or "?" in mint_path or "#" in mint_path:
+            raise ValueError("CSP ExecutionGrant mint path 必須是 origin-relative path")
+        self.service_token = (service_token or "").strip()
+        self.mint_path = mint_path
+        self.timeout = timeout
+        self.transport = transport
+
+    @property
+    def is_configured(self) -> bool:
+        token = self.service_token.strip()
+        return bool(token.startswith("csk-") and token.lower() not in _PLACEHOLDER_TOKENS)
+
+    @staticmethod
+    def _payload(
+        *,
+        grant_input: ExecutionGrantInput,
+        decision: RouteDecision,
+        policy_result: PolicyGateResult,
+        snapshot: RegistrySnapshot,
+        entry: RegistryEntry,
+        caller_user_id: int,
+    ) -> dict[str, Any]:
+        if isinstance(caller_user_id, bool) or not isinstance(caller_user_id, int) or caller_user_id <= 0:
+            raise GrantMintUnavailable("caller_user_id 必須是 positive integer")
+        if snapshot.snapshot_id != decision.registry_snapshot_id:
+            raise GrantMintUnavailable("grant mint snapshot/decision mismatch")
+        if entry.agent_id != grant_input.target_agent_id:
+            raise GrantMintUnavailable("grant mint target mismatch")
+        if not entry.manifest_sha256 or not entry.manifest_revision:
+            raise GrantMintUnavailable("grant mint 缺少 manifest identity")
+        return {
+            "task_id": grant_input.task_id,
+            "run_id": grant_input.run_id,
+            "source_snapshot_id": grant_input.source_snapshot_id,
+            "trace_id": grant_input.trace_id,
+            "invocation_id": grant_input.invocation_id,
+            "session_id": grant_input.session_id,
+            "registry_snapshot_id": snapshot.snapshot_id,
+            "registry_snapshot_revision": snapshot.snapshot_revision or snapshot.snapshot_id,
+            "registry_snapshot_hash": snapshot.snapshot_hash or snapshot.snapshot_id,
+            "target_agent_id": entry.agent_id,
+            "manifest_revision": entry.manifest_revision,
+            "manifest_sha256": entry.manifest_sha256,
+            "classification": grant_input.classification.to_storage(),
+            "auth_assurance": grant_input.auth_assurance.model_dump(mode="json"),
+            "model_binding": grant_input.model_binding.model_dump(mode="json"),
+            "allowed_capabilities": list(grant_input.allowed_capabilities),
+            "allowed_scopes": list(grant_input.allowed_scopes),
+            "route_decision": decision.model_dump(mode="json"),
+            "policy_result": policy_result.model_dump(mode="json"),
+            "ttl_seconds": 60,
+        }
+
+    def build_request(
+        self,
+        *,
+        grant_input: ExecutionGrantInput,
+        decision: RouteDecision,
+        policy_result: PolicyGateResult,
+        snapshot: RegistrySnapshot,
+        entry: RegistryEntry,
+        caller_user_id: int,
+    ) -> CspAgentRequest:
+        if not self.is_configured:
+            raise GrantMintUnavailable("缺少具名 Router service-client token")
+        payload = self._payload(
+            grant_input=grant_input,
+            decision=decision,
+            policy_result=policy_result,
+            snapshot=snapshot,
+            entry=entry,
+            caller_user_id=caller_user_id,
+        )
+        return CspAgentRequest(
+            url=f"{self.base_url}{self.mint_path}",
+            payload=payload,
+            headers={
+                "X-CSP-Service-Token": self.service_token,
+                "X-ANILA-Caller-User-Id": str(caller_user_id),
+                "Content-Type": "application/json",
+            },
+        )
+
+    async def mint(
+        self,
+        *,
+        grant_input: ExecutionGrantInput,
+        decision: RouteDecision,
+        policy_result: PolicyGateResult,
+        snapshot: RegistrySnapshot,
+        entry: RegistryEntry,
+        caller_user_id: int,
+    ) -> ExecutionGrantEnvelope | None:
+        request = self.build_request(
+            grant_input=grant_input,
+            decision=decision,
+            policy_result=policy_result,
+            snapshot=snapshot,
+            entry=entry,
+            caller_user_id=caller_user_id,
+        )
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
+                response = await client.post(
+                    request.url, json=request.payload, headers=request.headers
+                )
+                response.raise_for_status()
+                data = response.json()
+        except (httpx.HTTPError, ValueError, TypeError) as exc:
+            raise GrantMintUnavailable("CSP ExecutionGrant mint call 失敗") from exc
+        if not isinstance(data, Mapping):
+            raise GrantMintUnavailable("CSP ExecutionGrant mint response 必須是 JSON object")
+        token = data.get("token")
+        raw_grant = data.get("grant")
+        if not isinstance(token, str) or not token.strip() or not isinstance(raw_grant, Mapping):
+            raise GrantMintUnavailable("CSP mint response 缺少 signed envelope")
+        try:
+            grant = ExecutionGrant.model_validate(raw_grant)
+            envelope = ExecutionGrantEnvelope(
+                token=token,
+                grant=grant,
+                schema_version=str(data.get("schema_version") or ""),
+                token_type=str(data.get("token_type") or ""),
+            )
+        except (TypeError, ValueError) as exc:
+            raise GrantMintUnavailable("CSP mint response envelope schema 無效") from exc
+        # The response is not authority until the final CSP sink verifies the
+        # JWT.  Still fail closed if the inner response is not the evidence we
+        # just submitted; this prevents accidental cross-request reuse.
+        if (
+            grant.task_id != grant_input.task_id
+            or grant.run_id != grant_input.run_id
+            or grant.trace_id != grant_input.trace_id
+            or grant.invocation_id != grant_input.invocation_id
+            or grant.source_snapshot_id != grant_input.source_snapshot_id
+            or grant.registry_snapshot_id != snapshot.snapshot_id
+            or grant.target.id != entry.agent_id
+            or grant.manifest_revision != entry.manifest_revision
+            or grant.route_decision_id != decision.decision_id
+            or grant.policy_decision_id != policy_result.decision_id
+            or grant.session_id != grant_input.session_id
+        ):
+            raise GrantMintUnavailable("CSP mint response binding mismatch")
+        return envelope
+
+
 class CspAgentClient:
     """CSP-only Agent transport carrying the complete R2/R3 binding.
 
@@ -694,7 +889,7 @@ class CspAgentClient:
         route_decision: RouteDecision,
         policy_result: PolicyGateResult,
         grant_input: ExecutionGrantInput,
-        execution_grant: ExecutionGrant,
+        execution_grant: ExecutionGrantEnvelope,
         stream: bool,
     ) -> CspAgentRequest:
         # ``caller_api_key`` is retained in the protocol for call-site
@@ -710,25 +905,29 @@ class CspAgentClient:
             raise AgentClientError("Agent query 不得為空")
         if entry.snapshot_id != snapshot.snapshot_id:
             raise AgentClientError("Agent entry/snapshot mismatch")
-        if not isinstance(execution_grant, ExecutionGrant):
-            raise AgentClientError("formal Agent call 缺少 CSP-issued ExecutionGrant")
+        if not isinstance(execution_grant, ExecutionGrantEnvelope):
+            raise AgentClientError(
+                "formal Agent call 缺少 CSP-issued signed ExecutionGrant envelope"
+            )
+        signed_token = execution_grant.token
+        inner_grant = execution_grant.grant
         try:
-            execution_grant.assert_active_at(datetime.now(timezone.utc))
+            inner_grant.assert_active_at(datetime.now(timezone.utc))
         except ValueError as exc:
             raise AgentClientError("ExecutionGrant 不在有效期限") from exc
-        if execution_grant.target.kind.value != "agent" or execution_grant.target.id != entry.agent_id:
+        if inner_grant.target.kind.value != "agent" or inner_grant.target.id != entry.agent_id:
             raise AgentClientError("ExecutionGrant target 與 Agent entry 不一致")
-        if execution_grant.task_id != getattr(context, "task_id", None) or execution_grant.run_id != getattr(context, "run_id", None):
+        if inner_grant.task_id != getattr(context, "task_id", None) or inner_grant.run_id != getattr(context, "run_id", None):
             raise AgentClientError("ExecutionGrant task/run binding 不一致")
-        if execution_grant.trace_id != getattr(context, "trace_id", None):
+        if inner_grant.trace_id != getattr(context, "trace_id", None):
             raise AgentClientError("ExecutionGrant trace binding 不一致")
-        if execution_grant.registry_snapshot_id != snapshot.snapshot_id:
+        if inner_grant.registry_snapshot_id != snapshot.snapshot_id:
             raise AgentClientError("ExecutionGrant snapshot binding 不一致")
-        if execution_grant.manifest_revision != entry.manifest_revision:
+        if inner_grant.manifest_revision != entry.manifest_revision:
             raise AgentClientError("ExecutionGrant manifest binding 不一致")
-        if execution_grant.route_decision_id != route_decision.decision_id:
+        if inner_grant.route_decision_id != route_decision.decision_id:
             raise AgentClientError("ExecutionGrant route decision binding 不一致")
-        if execution_grant.policy_decision_id != policy_result.decision_id:
+        if inner_grant.policy_decision_id != policy_result.decision_id:
             raise AgentClientError("ExecutionGrant policy binding 不一致")
         if grant_input.route_decision_id != route_decision.decision_id or grant_input.target_agent_id != entry.agent_id:
             raise AgentClientError("unsigned grant input binding 不一致")
@@ -756,18 +955,20 @@ class CspAgentClient:
             "stream": stream,
             "anila_session_id": session_id,
             "anila_binding": {
+                "owner_id": owner_id,
                 "task_id": task_id,
                 "run_id": run_id,
                 "source_snapshot_id": source_snapshot_id,
                 "trace_id": trace_id,
                 "invocation_id": invocation_id,
+                "session_id": session_id,
                 "agent_id": entry.agent_id,
                 "registry_snapshot_id": snapshot.snapshot_id,
                 "registry_snapshot_revision": snapshot_revision,
                 "registry_snapshot_hash": snapshot_hash,
                 "manifest_revision": entry.manifest_revision,
                 "manifest_sha256": entry.manifest_sha256,
-                "grant_id": execution_grant.grant_id,
+                "grant_id": inner_grant.grant_id,
                 "route_decision_id": route_decision.decision_id,
                 "policy_decision_id": policy_result.decision_id,
             },
@@ -789,7 +990,15 @@ class CspAgentClient:
             "X-ANILA-Registry-Snapshot-Hash": snapshot_hash,
             "X-ANILA-Agent-Manifest-Revision": entry.manifest_revision,
             "X-ANILA-Agent-Manifest-SHA256": entry.manifest_sha256,
-            "X-ANILA-Execution-Grant-Id": execution_grant.grant_id,
+            "X-ANILA-Execution-Grant-Id": inner_grant.grant_id,
+            "X-ANILA-Execution-Grant": signed_token,
+            "X-ANILA-Route-Decision-Id": route_decision.decision_id,
+            "X-ANILA-Policy-Decision-Id": policy_result.decision_id,
+            # HTTP field values are ASCII on the wire; the CSP sink unquotes
+            # this canonical authority field before Classification parsing.
+            "X-ANILA-Classification-Level": quote(
+                inner_grant.classification.to_storage(), safe=""
+            ),
         }
         if not _POSITIVE_DECIMAL.fullmatch(headers["X-ANILA-Caller-User-Id"]):
             raise AgentClientError("CSP caller user id 必須是 positive numeric id")
@@ -811,7 +1020,7 @@ class CspAgentClient:
         route_decision: RouteDecision,
         policy_result: PolicyGateResult,
         grant_input: ExecutionGrantInput,
-        execution_grant: ExecutionGrant,
+        execution_grant: ExecutionGrantEnvelope,
         stream: bool = False,
     ) -> dict[str, Any]:
         request = self.build_request(
@@ -861,7 +1070,7 @@ class CspAgentClient:
         route_decision: RouteDecision,
         policy_result: PolicyGateResult,
         grant_input: ExecutionGrantInput,
-        execution_grant: ExecutionGrant,
+        execution_grant: ExecutionGrantEnvelope,
     ) -> AsyncIterator[dict[str, Any]]:
         request = self.build_request(
             query=query,
@@ -923,6 +1132,8 @@ __all__ = [
     "CspInferenceClient",
     "CspInferenceRequest",
     "CspRegistryClient",
+    "CspExecutionGrantMinter",
+    "ExecutionGrantEnvelope",
     "ExecutionGrantMinter",
     "GrantMintUnavailable",
     "InferenceClient",

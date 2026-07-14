@@ -55,6 +55,10 @@ class BridgeContext:
     session_id: str
     run_id: str
     classification: Classification
+    # CSP-authored invocation identity.  Gate 5 R4 uses this to prevent a
+    # duplicate Router invocation from creating a second downstream side
+    # effect; older Gate 4 callers may omit it.
+    invocation_id: str | None = None
     # These optional fields are not read from the Agent event.  They are
     # CSP-owned dispatch binding facts used by ``AgentClient`` when a caller
     # wants to carry the same context across the proxy boundary.
@@ -77,6 +81,9 @@ class BridgeContext:
             value = getattr(self, field_name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{field_name} 必須是非空字串")
+        if self.invocation_id is not None:
+            if not isinstance(self.invocation_id, str) or not self.invocation_id.strip():
+                raise ValueError("invocation_id 不得為空白")
         if not isinstance(self.classification, Classification):
             raise TypeError("classification 必須是 Classification")
         for field_name in (
@@ -891,6 +898,7 @@ class StreamValidator:
                 "agent_id": trusted.agent_id,
                 "session_id": trusted.session_id,
                 "run_id": trusted.run_id,
+                "invocation_id": trusted.invocation_id or event.invocation_id,
                 "classification": trusted.classification,
             }
         )
@@ -1089,7 +1097,7 @@ class StreamBridge:
             trace_id=self.context.trace_id,
             task_id=self.context.task_id,
             session_id=self.context.session_id,
-            invocation_id=self.context.run_id,
+            invocation_id=self.context.invocation_id or self.context.run_id,
             run_id=self.context.run_id,
             step_id=f"agent:{self.context.agent_id}",
             kind=StepKind.AGENT,
@@ -1117,7 +1125,7 @@ def cancelled_terminal_frame(context: BridgeContext) -> str:
         trace_id=context.trace_id,
         task_id=context.task_id,
         session_id=context.session_id,
-        invocation_id=context.run_id,
+        invocation_id=context.invocation_id or context.run_id,
         run_id=context.run_id,
         step_id=f"agent:{context.agent_id}",
         kind=StepKind.AGENT,

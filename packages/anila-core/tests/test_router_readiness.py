@@ -68,6 +68,19 @@ def test_production_readiness_fails_when_one_named_token_is_missing(monkeypatch)
     assert "inference_service_token" in response.json()["missing_capabilities"]
 
 
+def test_production_readiness_requires_explicit_injected_grant_minter_capability(monkeypatch):
+    monkeypatch.setenv("ANILA_ENV", "production")
+    monkeypatch.setenv("ANILA_TRACE_ENDPOINT", "http://csp:8000")
+    _set_named_tokens(monkeypatch)
+    # An injected transport is not trusted merely because it has a ``mint``
+    # method; it must expose an explicit ``is_configured`` capability marker.
+    response = TestClient(create_router_app(grant_minter=object())).get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["grant_minter_configured"] is False
+    assert "grant_minter" in response.json()["missing_capabilities"]
+
+
 def test_production_readiness_ignores_legacy_fleet_token(monkeypatch):
     monkeypatch.setenv("ANILA_ENV", "production")
     monkeypatch.setenv("ANILA_TRACE_ENDPOINT", "http://csp:8000")

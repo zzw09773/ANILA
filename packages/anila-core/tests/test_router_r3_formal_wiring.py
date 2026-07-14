@@ -17,7 +17,10 @@ from anila_contracts import AgentManifest, ExecutionGrant
 from anila_core.api import router_server
 from anila_core.router import (
     CspAgentClient,
+    CspExecutionGrantMinter,
     CspInferenceClient,
+    ExecutionGrantEnvelope,
+    ExecutionRuntime,
     RegistryEntry,
     RegistrySnapshot,
     RequestContextBuilder,
@@ -276,10 +279,10 @@ def test_formal_direct_answer_policy_deny_has_zero_second_inference(monkeypatch)
 
 
 class _Minter:
-    async def mint(self, **kwargs: Any) -> ExecutionGrant:
+    async def mint(self, **kwargs: Any) -> ExecutionGrantEnvelope:
         grant_input = kwargs["grant_input"]
         now = datetime.now(timezone.utc)
-        return ExecutionGrant.model_validate(
+        grant = ExecutionGrant.model_validate(
             {
                 "schema_version": "execution-grant/v1",
                 "grant_id": "grant-1",
@@ -306,6 +309,13 @@ class _Minter:
                 "session_id": grant_input.session_id,
             }
         )
+        return ExecutionGrantEnvelope(token="signed.execution-grant.test", grant=grant)
+
+
+class _UnsignedMinter(_Minter):
+    async def mint(self, **kwargs: Any) -> ExecutionGrant:
+        envelope = await super().mint(**kwargs)
+        return envelope.grant
 
 
 def test_formal_allowed_route_uses_selected_entry_and_carries_grant(
@@ -329,7 +339,25 @@ def test_formal_allowed_route_uses_selected_entry_and_carries_grant(
     call = spy.calls[0]
     assert call["entry"].agent_id == "research-agent"
     assert call["snapshot"].snapshot_id == SNAPSHOT_ID
-    assert call["execution_grant"].grant_id == "grant-1"
+    assert call["execution_grant"].grant.grant_id == "grant-1"
+
+
+def test_formal_unsigned_grant_is_rejected_before_agent_call(route_llm: None) -> None:
+    spy = _AgentSpy()
+    app = router_server.create_router_app(
+        session_factory=lambda _sid: None,
+        registry_client=_Registry(_snapshot()),
+        agent_client=spy,
+        grant_minter=_UnsignedMinter(),
+    )
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        headers=_headers(),
+        json={"messages": [{"role": "user", "content": "query"}]},
+    )
+    assert response.status_code == 200
+    assert "CSP" in response.json()["choices"][0]["message"]["content"]
+    assert spy.calls == []
 
 
 def test_csp_agent_transport_uses_named_service_token_not_inbound_bearer(
@@ -370,6 +398,69 @@ def test_csp_agent_transport_uses_named_service_token_not_inbound_bearer(
     assert captured["x-csp-service-token"] == "csk-router-primary"
     assert "authorization" not in captured
     assert "sk-test" not in str(captured)
+    assert captured["x-anila-execution-grant"] == "signed.execution-grant.test"
+    assert "x-anila-execution-grant-token" not in captured
+
+
+def test_csp_execution_grant_minter_carries_signed_envelope_separately() -> None:
+    snapshot = _snapshot()
+    context = _formal_context()
+    runtime = ExecutionRuntime().execute(context, _route(), snapshot)
+    assert runtime.allowed
+    assert runtime.decision is not None
+    assert runtime.policy_result is not None
+    assert runtime.entry is not None
+    assert runtime.grant_input is not None
+
+    async def make_response() -> ExecutionGrantEnvelope:
+        return await _Minter().mint(
+            grant_input=runtime.grant_input,
+            decision=runtime.decision,
+            policy_result=runtime.policy_result,
+            snapshot=snapshot,
+            entry=runtime.entry,
+            caller_user_id=123,
+        )
+
+    envelope = asyncio.run(make_response())
+    captured: dict[str, Any] = {}
+
+    def _mint(request: httpx.Request) -> httpx.Response:
+        captured["headers"] = dict(request.headers)
+        captured["payload"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            json={
+                "schema_version": "execution-grant-envelope/v1",
+                "token_type": "Bearer",
+                "token": envelope.token,
+                "grant": envelope.grant.model_dump(mode="json"),
+            },
+            request=request,
+        )
+
+    minter = CspExecutionGrantMinter(
+        "https://csp.test",
+        service_token="csk-router-primary",
+        transport=httpx.MockTransport(_mint),
+    )
+    received = asyncio.run(
+        minter.mint(
+            grant_input=runtime.grant_input,
+            decision=runtime.decision,
+            policy_result=runtime.policy_result,
+            snapshot=snapshot,
+            entry=runtime.entry,
+            caller_user_id=123,
+        )
+    )
+    assert isinstance(received, ExecutionGrantEnvelope)
+    assert received.token == envelope.token
+    assert received.grant.grant_id == envelope.grant.grant_id
+    assert captured["headers"]["x-csp-service-token"] == "csk-router-primary"
+    assert captured["headers"]["x-anila-caller-user-id"] == "123"
+    assert "caller_user_id" not in captured["payload"]
+    assert "token" not in captured["payload"]
 
 
 def test_csp_inference_transport_uses_named_token_and_context_without_bearer():

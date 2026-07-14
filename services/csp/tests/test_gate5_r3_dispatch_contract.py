@@ -1,0 +1,446 @@
+"""Focused transport-contract tests for the CSP-owned Agent sink."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from types import SimpleNamespace
+
+import pytest
+from anila_contracts import Classification
+from fastapi import HTTPException
+from starlette.requests import Request
+
+from app.api.agent_dispatch import _grant_header
+import app.services.agent_dispatch_service as dispatch_service
+from app.services.agent_dispatch_service import (
+    DispatchAuthority,
+    DispatchBinding,
+    _normalize_agent_block,
+    dispatch_nonstream,
+    dispatch_stream,
+)
+from app.services.proxy.stream_bridge import (
+    BridgeContext,
+    InMemorySessionEventStore,
+    StreamBridge,
+)
+
+
+def _request(*headers: tuple[str, str]) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/internal/v1/agents/dispatch",
+            "headers": [(name.lower().encode(), value.encode()) for name, value in headers],
+        }
+    )
+
+
+def test_dispatch_accepts_only_canonical_signed_grant_header() -> None:
+    assert _grant_header(_request(("X-ANILA-Execution-Grant", "signed-token"))) == "signed-token"
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        pytest.param((), id="missing-canonical"),
+        (("X-ANILA-Execution-Grant-Token", "signed-token"),),
+        (
+            ("X-ANILA-Execution-Grant", "canonical-token"),
+            ("X-ANILA-Execution-Grant-Token", "alternate-token"),
+        ),
+        (
+            ("X-ANILA-Execution-Grant", "first-token"),
+            ("X-ANILA-Execution-Grant", "second-token"),
+        ),
+    ],
+)
+def test_dispatch_rejects_missing_or_alternate_grant_header(
+    headers: tuple[tuple[str, str], ...],
+) -> None:
+    with pytest.raises(HTTPException) as caught:
+        _grant_header(_request(*headers))
+    assert caught.value.status_code == 400
+
+
+def test_invocation_guards_share_one_lock_and_cleanup_refcount() -> None:
+    invocation_id = "guard-contract-unique"
+
+    async def scenario() -> None:
+        lock_refs: list[asyncio.Lock] = []
+        owner_entered = asyncio.Event()
+        release_owner = asyncio.Event()
+
+        async def worker() -> None:
+            async with dispatch_service._invocation_guard(invocation_id) as lock:
+                lock_refs.append(lock)
+                if len(lock_refs) == 1:
+                    owner_entered.set()
+                    await release_owner.wait()
+                else:
+                    await asyncio.sleep(0)
+
+        tasks = [asyncio.create_task(worker()) for _ in range(3)]
+        await owner_entered.wait()
+        users = 0
+        for _ in range(20):
+            async with dispatch_service._INVOCATION_LOCKS_GUARD:
+                entry = dispatch_service._INVOCATION_LOCKS.get(invocation_id)
+                users = 0 if entry is None else entry.users
+            if users == 3:
+                break
+            await asyncio.sleep(0)
+        assert users == 3
+        release_owner.set()
+        await asyncio.gather(*tasks)
+        async with dispatch_service._INVOCATION_LOCKS_GUARD:
+            assert invocation_id not in dispatch_service._INVOCATION_LOCKS
+        assert len(lock_refs) == 3
+        assert len({id(lock) for lock in lock_refs}) == 1
+
+    asyncio.run(scenario())
+
+
+def _bridge(*, max_events_per_run: int = 500) -> StreamBridge:
+    return StreamBridge(
+        BridgeContext(
+            task_id="1",
+            trace_id="trace-1",
+            agent_id="research-agent",
+            session_id="session-1",
+            invocation_id="invocation-1",
+            run_id="1",
+            classification=Classification.UNCLASSIFIED,
+        ),
+        store=InMemorySessionEventStore(),
+        max_events_per_run=max_events_per_run,
+    )
+
+
+def _authority(*, invocation_id: str = "invocation-test", run_status: str | None = None) -> DispatchAuthority:
+    return DispatchAuthority(
+        caller=object(),
+        user=object(),
+        agent=SimpleNamespace(name="research-agent"),
+        grant=object(),
+        binding=DispatchBinding(
+            caller_user_id=1,
+            owner_id=1,
+            task_id=1,
+            run_id=1,
+            source_snapshot_id=1,
+            trace_id="trace-1",
+            invocation_id=invocation_id,
+            session_id="session-1",
+            agent_id="research-agent",
+            registry_snapshot_id="registry-1",
+            registry_snapshot_revision="registry-1",
+            registry_snapshot_hash="registry-1",
+            manifest_revision="sha256:manifest-1",
+            manifest_sha256="manifest-1",
+            grant_id="grant-1",
+            route_decision_id="route-1",
+            policy_decision_id="policy-1",
+            classification=Classification.UNCLASSIFIED,
+        ),
+        endpoint_url="http://agent.test/v1/chat/completions",
+        run_status=run_status,
+    )
+
+
+def test_agent_openai_content_is_rebuilt_only_after_bridge_validation() -> None:
+    bridge = _bridge()
+    frames, _ = _normalize_agent_block(
+        bridge,
+        block='data: {"choices":[{"delta":{"content":"safe answer"}}]}',
+        model="research-agent",
+        source_sequence=1,
+    )
+    assert len(frames) == 2
+    assert frames[0].startswith("event: anila.step\n")
+    assert '"content":"safe answer"' in frames[1]
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        pytest.param(
+            'data: {"choices":[{"delta":{"content":"api_key=sk-abcdefghijklmnopqrst"}}]}',
+            id="secret-content",
+        ),
+        pytest.param(
+            'event: anila.meta\ndata: {"safe":"no", "secret":"sk-abcdefghijklmnopqrst"}',
+            id="fake-meta",
+        ),
+        pytest.param(
+            'event: attacker\ndata: {"choices":[{"delta":{"content":"spoof"}}]}',
+            id="unknown-event",
+        ),
+        pytest.param("data: " + ("x" * 40_000), id="oversize"),
+    ],
+)
+def test_untrusted_agent_frames_never_reach_client(block: str) -> None:
+    bridge = _bridge()
+    frames, _ = _normalize_agent_block(
+        bridge,
+        block=block,
+        model="research-agent",
+        source_sequence=1,
+    )
+    assert frames == []
+    assert bridge.replay_events() == ()
+
+
+def test_stream_bridge_budget_drops_flooded_agent_content() -> None:
+    bridge = _bridge(max_events_per_run=1)
+    first, next_sequence = _normalize_agent_block(
+        bridge,
+        block='data: {"choices":[{"delta":{"content":"one"}}]}',
+        model="research-agent",
+        source_sequence=1,
+    )
+    second, _ = _normalize_agent_block(
+        bridge,
+        block='data: {"choices":[{"delta":{"content":"two"}}]}',
+        model="research-agent",
+        source_sequence=next_sequence,
+    )
+    assert first and second == []
+    assert len(bridge.replay_events()) == 1
+
+
+def test_nonstream_rebuilds_minimal_csp_response_and_drops_agent_extras(monkeypatch) -> None:
+    payload = {
+        "id": "agent-secret-id",
+        "object": "chat.completion",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "safe answer", "secret": "drop"},
+                "finish_reason": "length",
+            }
+        ],
+        "usage": {"prompt_tokens": 99},
+        "anila_meta": {"forged": True},
+    }
+    bridge = _bridge()
+    authority = _authority(invocation_id="nonstream-extra")
+    calls = 0
+
+    class Response:
+        headers = {"content-type": "application/json"}
+        text = json.dumps(payload)
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> object:
+            return payload
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, *_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            return Response()
+
+    monkeypatch.setattr(dispatch_service, "_bridge", lambda _authority, _db: bridge)
+    monkeypatch.setattr(
+        dispatch_service,
+        "build_agent_outbound_headers",
+        lambda _db, _authority, grant_token: {"X-CSP-Service-Token": "csk-test"},
+    )
+    monkeypatch.setattr(dispatch_service.httpx, "AsyncClient", lambda **_kwargs: Client())
+    result = asyncio.run(
+        dispatch_nonstream(
+            db=SimpleNamespace(rollback=lambda: None),
+            authority=authority,
+            messages=[{"role": "user", "content": "hello"}],
+            grant_token="signed-grant",
+        )
+    )
+    assert calls == 1
+    assert set(result) == {"id", "object", "model", "choices", "anila_meta"}
+    assert result["object"] == "chat.completion"
+    assert result["choices"][0]["message"] == {"role": "assistant", "content": "safe answer"}
+    assert "usage" not in result
+    assert result["anila_meta"]["status"] == "completed"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(
+            {"choices": [{"message": {"content": "api_key=sk-abcdefghijklmnopqrst"}}]},
+            id="secret",
+        ),
+        pytest.param(
+            {"choices": [{"message": {"content": "x" * 40_000}}]},
+            id="oversize",
+        ),
+        pytest.param({"choices": [{"delta": {"content": "missing-message"}}]}, id="malformed"),
+    ],
+)
+def test_nonstream_rejects_secret_oversize_and_malformed_agent_payload(monkeypatch, payload) -> None:
+    bridge = _bridge()
+    authority = _authority(invocation_id=f"nonstream-reject-{id(payload)}")
+
+    class Response:
+        headers = {"content-type": "application/json"}
+        text = json.dumps(payload)
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> object:
+            return payload
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr(dispatch_service, "_bridge", lambda _authority, _db: bridge)
+    monkeypatch.setattr(
+        dispatch_service,
+        "build_agent_outbound_headers",
+        lambda _db, _authority, grant_token: {"X-CSP-Service-Token": "csk-test"},
+    )
+    monkeypatch.setattr(dispatch_service.httpx, "AsyncClient", lambda **_kwargs: Client())
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            dispatch_nonstream(
+                db=SimpleNamespace(rollback=lambda: None),
+                authority=authority,
+                messages=[{"role": "user", "content": "hello"}],
+                grant_token="signed-grant",
+            )
+        )
+    assert caught.value.status_code == 502
+    terminal = bridge.terminal_event()
+    assert terminal is not None
+    assert terminal.status.value == "failed"
+
+
+def test_completed_run_without_terminal_fails_before_agent_call(monkeypatch) -> None:
+    bridge = _bridge()
+    authority = _authority(invocation_id="completed-without-terminal", run_status="completed")
+    calls = 0
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, *_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            raise AssertionError("completed run must not reach Agent")
+
+    monkeypatch.setattr(dispatch_service, "_bridge", lambda _authority, _db: bridge)
+    monkeypatch.setattr(dispatch_service.httpx, "AsyncClient", lambda **_kwargs: Client())
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            dispatch_nonstream(
+                db=SimpleNamespace(rollback=lambda: None),
+                authority=authority,
+                messages=[{"role": "user", "content": "hello"}],
+                grant_token="signed-grant",
+            )
+        )
+    assert caught.value.status_code == 409
+    assert calls == 0
+
+
+def test_concurrent_stream_duplicate_waits_replays_and_calls_agent_once(monkeypatch) -> None:
+    bridge = _bridge()
+    authority = _authority(invocation_id="stream-duplicate")
+    downstream_started = asyncio.Event()
+    release_downstream = asyncio.Event()
+    calls = 0
+
+    class Response:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def aiter_lines(self):
+            downstream_started.set()
+            await release_downstream.wait()
+            yield 'data: {"choices":[{"delta":{"content":"winner"}}]}'
+            yield ""
+
+        async def aread(self):
+            return b""
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def stream(self, *_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            return Response()
+
+    monkeypatch.setattr(dispatch_service, "_bridge", lambda _authority, _db: bridge)
+    monkeypatch.setattr(
+        dispatch_service,
+        "build_agent_outbound_headers",
+        lambda _db, _authority, grant_token: {},
+    )
+    monkeypatch.setattr(dispatch_service.httpx, "AsyncClient", lambda **_kwargs: Client())
+
+    async def collect() -> list[str]:
+        return [frame async for frame in dispatch_stream(
+            db=SimpleNamespace(rollback=lambda: None),
+            authority=authority,
+            messages=[{"role": "user", "content": "hello"}],
+            grant_token="signed-grant",
+        )]
+
+    async def scenario() -> tuple[list[str], list[str]]:
+        winner = asyncio.create_task(collect())
+        await downstream_started.wait()
+        duplicate = asyncio.create_task(collect())
+        users = 0
+        for _ in range(20):
+            async with dispatch_service._INVOCATION_LOCKS_GUARD:
+                entry = dispatch_service._INVOCATION_LOCKS.get("stream-duplicate")
+                users = 0 if entry is None else entry.users
+            if users == 2:
+                break
+            await asyncio.sleep(0)
+        assert users == 2
+        release_downstream.set()
+        return await winner, await duplicate
+
+    first, second = asyncio.run(scenario())
+    assert calls == 1
+    assert any('"content":"winner"' in frame for frame in first)
+    assert any('"content":"winner"' in frame for frame in second)
+    assert first[-1] == second[-1] == "data: [DONE]\n\n"
+    async def assert_clean() -> None:
+        async with dispatch_service._INVOCATION_LOCKS_GUARD:
+            assert "stream-duplicate" not in dispatch_service._INVOCATION_LOCKS
+    asyncio.run(assert_clean())

@@ -162,6 +162,44 @@ class SqlAlchemySessionEventStore(SessionEventStoreProtocol):
             return existing
         return run
 
+    def claim_dispatch(self, *, binding: BridgeContext) -> bool:
+        """Durably claim a not-yet-started invocation before Agent I/O.
+
+        The row lock is intentionally held by the caller's SQLAlchemy
+        transaction until the first event/terminal append commits.  A second
+        CSP process therefore waits for the winner, then observes either the
+        durable cursor or terminal latch and replays instead of issuing a
+        second outbound call.  If the winner crashes before an append, the
+        transaction rolls back; the downstream idempotency key is still sent
+        on the retry so the Agent can return its durable result.
+        """
+
+        run = self._run_for_update(binding)
+        if run is None:
+            run = SessionEventRun(
+                run_id=binding.run_id,
+                task_id=binding.task_id,
+                trace_id=binding.trace_id,
+                agent_id=binding.agent_id,
+                session_id=binding.session_id,
+                next_cursor=0,
+                created_at=_utcnow(),
+                updated_at=_utcnow(),
+            )
+            self.db.add(run)
+            try:
+                self.db.flush()
+            except IntegrityError:
+                self.db.rollback()
+                existing = self._run_for_update(binding)
+                if existing is None:
+                    raise
+                self._assert_row_binding(existing, binding)
+                run = existing
+        else:
+            self._assert_row_binding(run, binding)
+        return run.terminal_event_id is None and int(run.next_cursor or 0) == 0
+
     @staticmethod
     def _event_from_row(row: SessionEvent, *, binding: BridgeContext) -> StepEvent:
         try:

@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+from threading import Lock
 from typing import cast
 from uuid import uuid4
 
@@ -46,6 +47,7 @@ def _context(run_id: str) -> BridgeContext:
         agent_id="pg-agent-gate5",
         session_id=f"pg-session-{run_id}",
         run_id=run_id,
+        invocation_id=f"pg-invocation-{run_id}",
         classification=Classification.CONFIDENTIAL,
     )
 
@@ -261,6 +263,72 @@ def test_postgres_same_event_race_is_exactly_once_and_replays_after_restart(
         # not depend on either racing worker's Python objects.
         assert ledger["replay"] == ((event.event_id, "1"),)
         assert ledger["terminal"] is None
+    finally:
+        _cleanup(postgres_database_url, run_id)
+
+
+def test_postgres_dispatch_claim_allows_one_concurrent_agent_side_effect_and_restart_replay(
+    postgres_database_url: str,
+) -> None:
+    """Two independent CSP sessions claim one invocation before Agent I/O.
+
+    The fake Agent models its own durable idempotency ledger.  PostgreSQL's
+    row lock must make the concurrent dispatch winner the only outbound call;
+    a fresh session then sees the terminal latch and replays without another
+    side effect.
+    """
+
+    run_id = f"pg-r3-claim-{uuid4().hex}"
+    binding = _context(run_id)
+    calls: list[str] = []
+    side_effects: set[str] = set()
+    state_lock = Lock()
+
+    def fake_agent(invocation_id: str) -> None:
+        with state_lock:
+            calls.append(invocation_id)
+            side_effects.add(invocation_id)
+
+    def worker() -> bool:
+        engine = create_engine(postgres_database_url, pool_pre_ping=True)
+        Session = sessionmaker(bind=engine)
+        db = Session()
+        barrier.wait(timeout=30)
+        try:
+            store = SqlAlchemySessionEventStore(db)
+            claimed = store.claim_dispatch(binding=binding)
+            if claimed:
+                fake_agent(binding.invocation_id or binding.run_id)
+                store.append(
+                    _bound(
+                        _event(
+                            event_id=f"{run_id}-terminal",
+                            sequence=2_147_483_647,
+                            status=StepStatus.COMPLETED,
+                        ),
+                        binding,
+                    ),
+                    binding=binding,
+                )
+            else:
+                db.rollback()
+            return claimed
+        finally:
+            db.close()
+            engine.dispose()
+
+    barrier = Barrier(2)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = [executor.submit(worker), executor.submit(worker)]
+            claimed = [future.result(timeout=60) for future in results]
+        assert sum(claimed) == 1
+        assert calls == [binding.invocation_id or binding.run_id]
+        assert side_effects == {binding.invocation_id or binding.run_id}
+
+        ledger = _read_ledger(postgres_database_url, binding)
+        assert ledger["terminal_event_id"] == f"{run_id}-terminal"
+        assert ledger["terminal"] == f"{run_id}-terminal"
     finally:
         _cleanup(postgres_database_url, run_id)
 

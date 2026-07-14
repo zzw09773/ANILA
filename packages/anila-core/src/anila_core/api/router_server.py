@@ -29,7 +29,6 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from anila_contracts import ExecutionGrant
 from anila_contracts.contexts import AuthAssurance
 from anila_contracts.routing import RouteType
 
@@ -45,17 +44,17 @@ from ..registry.remote_agent_manifest import RemoteAgentManifest, RemoteAgentReg
 from ..router import (
     AgentClientError,
     CspAgentClient,
+    CspExecutionGrantMinter,
     CspInferenceClient,
     CspRegistryClient,
     ExecutionRuntime,
     GrantMintUnavailable,
-    NoopExecutionGrantMinter,
     RegistryClientError,
     RegistrySnapshot,
     RequestContext,
     RequestContextBuilder,
 )
-from ..router.csp_registry_client import ExecutionGrantMinter
+from ..router.csp_registry_client import ExecutionGrantEnvelope, ExecutionGrantMinter
 from ..tools.dispatch_tool import dispatch_to_agent_response
 from .session_owner import (
     ensure_session_owner,
@@ -895,6 +894,7 @@ def create_router_app(
     registry_injected = registry_client is not None
     agent_injected = agent_client is not None
     inference_injected = inference_client is not None
+    grant_minter_injected = grant_minter is not None
     registry_service_token = (
         getattr(settings, "csp_registry_service_token", None)
         or os.environ.get("ANILA_CSP_REGISTRY_SERVICE_TOKEN")
@@ -922,7 +922,14 @@ def create_router_app(
         settings.csp_base_url,
         service_token=inference_service_token,
     )
-    formal_grant_minter = grant_minter or NoopExecutionGrantMinter()
+    # The grant seam is CSP-owned.  The registry service-client token is the
+    # Router's named authority credential for both the caller-scoped registry
+    # projection and the signed grant mint endpoint; no legacy fleet token is
+    # silently substituted here.
+    formal_grant_minter = grant_minter or CspExecutionGrantMinter(
+        settings.csp_base_url,
+        service_token=registry_service_token,
+    )
     formal_runtime = ExecutionRuntime()
 
     resolved_db_path = session_db_path or settings.session_db_path
@@ -996,6 +1003,9 @@ def create_router_app(
         inference_configured = _client_capability_configured(
             formal_inference_client, injected=inference_injected
         )
+        grant_minter_configured = _client_capability_configured(
+            formal_grant_minter, injected=grant_minter_injected
+        )
         missing_capabilities = [
             name
             for name, configured in (
@@ -1003,6 +1013,7 @@ def create_router_app(
                 ("registry_service_token", registry_configured),
                 ("agent_service_token", agent_configured),
                 ("inference_service_token", inference_configured),
+                ("grant_minter", grant_minter_configured),
             )
             if not configured
         ]
@@ -1014,6 +1025,7 @@ def create_router_app(
                 "registry_service_token_configured": registry_configured,
                 "agent_service_token_configured": agent_configured,
                 "inference_service_token_configured": inference_configured,
+                "grant_minter_configured": grant_minter_configured,
                 "missing_capabilities": missing_capabilities,
             },
             status_code=200 if ready else 503,
@@ -1878,7 +1890,7 @@ def create_router_app(
         async def _mint_grant(
             current_context: RequestContext,
             current_result: Any,
-        ) -> ExecutionGrant | None:
+        ) -> ExecutionGrantEnvelope | None:
             if current_result.grant_input is None or current_result.decision is None or current_result.policy_result is None or current_result.entry is None:
                 return None
             try:
@@ -1890,7 +1902,9 @@ def create_router_app(
                     entry=current_result.entry,
                     caller_user_id=caller_user_id,
                 )
-                return minted if isinstance(minted, ExecutionGrant) else None
+                if isinstance(minted, ExecutionGrantEnvelope):
+                    return minted
+                return None
             except (GrantMintUnavailable, ValueError, TypeError) as exc:
                 logger.info("formal CSP grant mint denied: %s", exc)
                 return None
@@ -1907,7 +1921,7 @@ def create_router_app(
         async def _complete_agent(
             current_context: RequestContext,
             current_result: Any,
-            current_grant: ExecutionGrant,
+            current_grant: ExecutionGrantEnvelope,
         ) -> dict[str, Any]:
             assert current_result.decision is not None
             assert current_result.policy_result is not None

@@ -2,8 +2,8 @@
   "schema_version": "anila.gate5.model-governance.profile.v1",
   "profile_id": "DISABLED-TEMPLATE-NOT-AN-APPROVAL",
   "profile_version": "1.0.0",
-  "profile_content_sha256": "afc719c8459cdffb38d00b3f505620d6c068b924badce0a4355aac476dc0fcf0",
-  "inventory_sha256": "51e26955a987ca7072ccae5a0aa78a9e49e04a6c9d0457b1ffc69c5d6a643eb8",
+  "profile_content_sha256": "f330a5c1558765beb3e2699ecbd707aafdd18f244a7d599323acfd32670903bb",
+  "inventory_sha256": "d47359c3ccb28b387754b0dbe14a0954441f0d84b79968503c496c94036cd703",
   "enabled": false,
   "enabled_callsites": [],
   "disabled_callsites": [
@@ -43,6 +43,7 @@
     "r7.ingestion.relation-llm",
     "r7.model-backend.embedding-proxy",
     "r3.router.csp-agent-client",
+    "r3.csp.agent-dispatch",
     "r7.model-backend.triton-embedding"
   ],
   "callsite_bindings": [],
