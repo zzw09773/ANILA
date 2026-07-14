@@ -30,23 +30,31 @@ from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from anila_core.storage.adapters.pgvector_store import (
     CollectionScopedPgVectorStore,
 )
+from anila_contracts import Classification
 
-from app.api.ingestion.collections import _require_collection_access
 from app.database import get_db
-from app.models.ingestion import DocumentRelation, IngestionDocument
-from app.models.model_registry import ModelRegistry
+from app.models.ingestion import (
+    DocumentRelation,
+    IngestionCollection,
+    IngestionDocument,
+)
 from app.models.user import User
+from app.modules.clearance.service import (
+    ClearancePolicyDataError,
+    DataAccessDecision,
+    resolve_and_evaluate_data_access,
+)
 from app.services.auth_service import get_current_user
 from app.services.ingestion_pool import get_pool
-from app.services.proxy_service import downstream_identity, proxy_request
 from app.services.relation_resolver import scope_collection_rls
+from app.services.retrieval_service import RetrievalFailure, embed_query
 
 router = APIRouter(tags=["Ingestion / Search"])
 
@@ -111,6 +119,227 @@ def _enforce_agent_collection_scope(principal: SearchPrincipal, collection_id: i
         )
 
 
+def _agent_classification_ceiling(
+    principal: SearchPrincipal,
+) -> Classification | None:
+    if principal.agent is None:
+        return None
+    raw = getattr(principal.agent, "classification_ceiling", None)
+    if not isinstance(raw, str):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="agent classification ceiling 缺失，已拒絕檢索",
+        )
+    try:
+        return Classification.from_storage(raw)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="agent classification ceiling 無效，已拒絕檢索",
+        ) from exc
+
+
+def _resolved_data_access(
+    db: Session,
+    *,
+    principal: SearchPrincipal,
+    collection_id: int,
+    document_id: int | None = None,
+) -> tuple[DataAccessDecision, Classification | None] | None:
+    try:
+        decision = resolve_and_evaluate_data_access(
+            db,
+            user_id=principal.user.id,
+            collection_id=collection_id,
+            document_id=document_id,
+        )
+    except LookupError:
+        return None
+    except ClearancePolicyDataError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="clearance policy data 無效，已 fail-closed",
+        ) from exc
+    if not decision.allowed:
+        return None
+    if decision.authorized_classification is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="clearance decision 缺少 authorized classification",
+        )
+    ceiling = _agent_classification_ceiling(principal)
+    if ceiling is not None and decision.context.required_classification > ceiling:
+        return None
+    return decision, ceiling
+
+
+def _query_classification_ceiling(
+    decision: DataAccessDecision,
+    agent_ceiling: Classification | None,
+) -> Classification:
+    authorized = decision.authorized_classification
+    if authorized is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="clearance decision 缺少 authorized classification",
+        )
+    if agent_ceiling is None or authorized <= agent_ceiling:
+        return authorized
+    return agent_ceiling
+
+
+def _data_access_ceiling(
+    db: Session,
+    *,
+    principal: SearchPrincipal,
+    collection_id: int,
+    document_id: int | None = None,
+) -> Classification | None:
+    resolved = _resolved_data_access(
+        db,
+        principal=principal,
+        collection_id=collection_id,
+        document_id=document_id,
+    )
+    if resolved is None:
+        return None
+    return _query_classification_ceiling(*resolved)
+
+
+def _is_data_access_allowed(
+    db: Session,
+    *,
+    principal: SearchPrincipal,
+    collection_id: int,
+    document_id: int | None = None,
+) -> bool:
+    return _data_access_ceiling(
+        db,
+        principal=principal,
+        collection_id=collection_id,
+        document_id=document_id,
+    ) is not None
+
+
+def _require_collection_clearance(
+    db: Session,
+    *,
+    principal: SearchPrincipal,
+    collection_id: int,
+) -> IngestionCollection:
+    collection = db.get(IngestionCollection, collection_id)
+    if collection is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    if not _is_data_access_allowed(
+        db,
+        principal=principal,
+        collection_id=collection_id,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="clearance/compartment/need-to-know/collection grant 不足",
+        )
+    return collection
+
+
+@dataclass(frozen=True, slots=True)
+class _AuthorizedDocumentAccess:
+    query_ceiling: Classification
+    required_classification: Classification
+
+
+def _authorized_document_access(
+    db: Session,
+    *,
+    principal: SearchPrincipal,
+    collection_id: int,
+    requested_ids: list[int] | None,
+    reject_denied: bool,
+) -> dict[int, _AuthorizedDocumentAccess]:
+    query = db.query(IngestionDocument.id).filter(
+        IngestionDocument.collection_id == collection_id
+    )
+    if requested_ids is not None:
+        query = query.filter(IngestionDocument.id.in_(requested_ids))
+    found = sorted(int(row.id) for row in query.all())
+    if requested_ids is not None and set(found) != set(requested_ids):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="document_ids 含不存在或不屬於此 collection 的文件",
+        )
+
+    allowed: dict[int, _AuthorizedDocumentAccess] = {}
+    for document_id in found:
+        resolved = _resolved_data_access(
+            db,
+            principal=principal,
+            collection_id=collection_id,
+            document_id=document_id,
+        )
+        if resolved is not None:
+            decision, agent_ceiling = resolved
+            allowed[document_id] = _AuthorizedDocumentAccess(
+                query_ceiling=_query_classification_ceiling(
+                    decision, agent_ceiling
+                ),
+                required_classification=decision.context.required_classification,
+            )
+    if reject_denied and len(allowed) != len(found):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="至少一份 document 的 clearance/compartment 不足",
+        )
+    return allowed
+
+
+def _authorized_document_ceilings(
+    db: Session,
+    *,
+    principal: SearchPrincipal,
+    collection_id: int,
+    requested_ids: list[int] | None,
+    reject_denied: bool,
+) -> dict[int, Classification]:
+    return {
+        document_id: access.query_ceiling
+        for document_id, access in _authorized_document_access(
+            db,
+            principal=principal,
+            collection_id=collection_id,
+            requested_ids=requested_ids,
+            reject_denied=reject_denied,
+        ).items()
+    }
+
+
+def _authorized_document_ids(
+    db: Session,
+    *,
+    principal: SearchPrincipal,
+    collection_id: int,
+    requested_ids: list[int] | None,
+    reject_denied: bool,
+) -> list[int]:
+    return list(
+        _authorized_document_ceilings(
+            db,
+            principal=principal,
+            collection_id=collection_id,
+            requested_ids=requested_ids,
+            reject_denied=reject_denied,
+        )
+    )
+
+
+def _documents_by_ceiling(
+    ceilings: dict[int, Classification],
+) -> dict[Classification, list[int]]:
+    grouped: dict[Classification, list[int]] = {}
+    for document_id, ceiling in ceilings.items():
+        grouped.setdefault(ceiling, []).append(document_id)
+    return grouped
+
+
 # ── Schemas ─────────────────────────────────────────────────────────────────
 
 
@@ -130,11 +359,27 @@ class SearchRequest(BaseModel):
     )
     document_ids: list[int] | None = Field(
         default=None,
+        min_length=1,
+        max_length=100,
         description=(
             "可選：僅在指定 documents 內檢索（None=全 collection）。"
             "前端如要做 'in this doc' 之類的範圍縮限會用到。"
         ),
     )
+
+    @field_validator("document_ids")
+    @classmethod
+    def _document_ids_are_positive_and_unique(
+        cls, value: list[int] | None
+    ) -> list[int] | None:
+        if value is None:
+            return None
+        if any(not isinstance(document_id, int) or isinstance(document_id, bool)
+               or document_id <= 0 for document_id in value):
+            raise ValueError("document_ids 必須全部是正整數")
+        if len(value) != len(set(value)):
+            raise ValueError("document_ids 不允許重複")
+        return value
     # ── Cross-document relation expansion (design v2 §7) — all opt-in, B/C ──────
     expand_relations: bool = Field(
         default=False,
@@ -277,84 +522,35 @@ async def _embed_query(
     model_name: str,
     embedding_dim: int,
     query: str,
+    *,
+    trusted_classification_level: Classification,
 ) -> list[float]:
-    """Embed ``query`` through the same model as the collection.
-
-    Reuses ``proxy_request`` so the call:
-      - runs through the model_registry endpoint resolution (so the
-        embedder URL change in one place propagates),
-      - is metered into ``token_usage`` with request_type='embedding',
-      - inherits the proxy's retry/backoff.
-
-    Truncation logic mirrors ``ingestion_worker/embedder.py``:
-    NV-embed-V2 returns 4096-d vectors but ``halfvec(4000)`` is what
-    pgvector can index; drop the last 96. If the runtime model returns
-    a shorter vector, that's a model-mismatch and we 422 — the chunks
-    were embedded against a different model and the collection should
-    be reindexed before search makes sense.
-    """
-    model = (
-        db.query(ModelRegistry)
-        .filter(ModelRegistry.name == model_name)
-        .first()
-    )
-    if model is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"Collection's embedding_model '{model_name}' is not registered "
-                "in model_registry — admin must add it before search works."
-            ),
-        )
-    if not model.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Embedding model '{model_name}' is registered but inactive.",
-        )
-
-    body = {"model": model_name, "input": query}
-    response = await proxy_request(
-        model=model,
-        api_key_id=None,  # SPA caller; usage attributes to user, no key
-        user_id=user.id,
-        user_identity=downstream_identity(user),
-        department_id=user.department_id,
-        request_body=body,
-        endpoint_path="/v1/embeddings",
-    )
-
     try:
-        raw_vector = response["data"][0]["embedding"]
-    except (KeyError, IndexError, TypeError) as e:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Embedding endpoint returned an unexpected payload shape.",
-        ) from e
-
-    if not isinstance(raw_vector, list) or not all(
-        isinstance(x, (int, float)) for x in raw_vector
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Embedding endpoint returned a non-numeric vector.",
+        return await embed_query(
+            db,
+            user,
+            model_name,
+            embedding_dim,
+            query,
+            inference_callsite_id="csp.standalone_search_embedding",
+            trusted_classification_level=trusted_classification_level,
         )
-
-    if len(raw_vector) < embedding_dim:
+    except RetrievalFailure as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"Model returned {len(raw_vector)}-d vector but collection's "
-                f"chunks are stored as {embedding_dim}-d. The collection was "
-                "indexed against a different model — reindex before searching."
+            status_code=(
+                status.HTTP_403_FORBIDDEN
+                if exc.code == "embedding_policy_denied"
+                else status.HTTP_422_UNPROCESSABLE_ENTITY
             ),
-        )
-    return [float(x) for x in raw_vector[:embedding_dim]]
+            detail=f"{exc.code}: {exc}",
+        ) from exc
 
 
 async def _expand_relations(
     db: Session,
     store: "CollectionScopedPgVectorStore",
     *,
+    principal: SearchPrincipal,
     collection_id: int,
     main_doc_ids: set[int],
     query_vec: list[float],
@@ -416,12 +612,30 @@ async def _expand_relations(
     if not related_doc_ids:
         return []
 
+    authorized = _authorized_document_ceilings(
+        db,
+        principal=principal,
+        collection_id=collection_id,
+        requested_ids=related_doc_ids,
+        reject_denied=False,
+    )
+    related_doc_ids = [
+        document_id for document_id in related_doc_ids if document_id in authorized
+    ]
+    if not related_doc_ids:
+        return []
+
     # One representative chunk per related document (batched, RANK-partitioned).
     rep: dict[int, Any] = {}
-    for h in await store.similarity_search_per_document(
-        query_embedding=query_vec, document_ids=related_doc_ids, k=1, min_score=0.0
-    ):
-        rep.setdefault(h.chunk.document_id, h)
+    for ceiling, document_ids in _documents_by_ceiling(authorized).items():
+        for hit in await store.similarity_search_per_document_authorized(
+            query_embedding=query_vec,
+            document_ids=document_ids,
+            classification_ceiling=ceiling,
+            k=1,
+            min_score=0.0,
+        ):
+            rep.setdefault(hit.chunk.document_id, hit)
 
     meta_rows = (
         db.query(
@@ -472,14 +686,15 @@ async def search_collection(
 ) -> SearchResponse:
     """Semantic top-K retrieval over one collection's chunks.
 
-    Auth: ``_require_collection_access`` — admin or owner. An agent csk-
-    authenticates as its owner but is additionally hard-scoped to its single
-    ``bound_collection_id`` (S-Q1). Cross-user sharing is a future
-    ``collection_access_grants`` feature.
+    One active clearance grant must cover level, compartments, collection
+    membership and need-to-know. Admin/owner roles never bypass this data
+    policy. Agent callers also need a sufficient ceiling and bound collection.
     """
     _enforce_agent_collection_scope(principal, collection_id)
     current_user = principal.user
-    coll = _require_collection_access(db, current_user, collection_id)
+    coll = _require_collection_clearance(
+        db, principal=principal, collection_id=collection_id
+    )
 
     if coll.status != "active":
         raise HTTPException(
@@ -487,12 +702,35 @@ async def search_collection(
             detail=f"Collection {collection_id} is {coll.status}; reactivate before search.",
         )
 
+    authorized_document_access = _authorized_document_access(
+        db,
+        principal=principal,
+        collection_id=coll.id,
+        requested_ids=payload.document_ids,
+        reject_denied=payload.document_ids is not None,
+    )
+    if not authorized_document_access:
+        return SearchResponse(
+            query=payload.query,
+            embedding_model=coll.embedding_model,
+            embedding_dim=coll.embedding_dim,
+            results=[],
+        )
+
+    authorized_document_ceilings = {
+        document_id: access.query_ceiling
+        for document_id, access in authorized_document_access.items()
+    }
     query_vec = await _embed_query(
         db,
         current_user,
         coll.embedding_model,
         coll.embedding_dim,
         payload.query,
+        trusted_classification_level=Classification.max_of(
+            access.required_classification
+            for access in authorized_document_access.values()
+        ),
     )
 
     try:
@@ -504,19 +742,39 @@ async def search_collection(
         ) from exc
 
     store = CollectionScopedPgVectorStore(pool, collection_id=coll.id)
-    hits = await store.similarity_search(
-        query_embedding=query_vec,
-        top_k=payload.top_k,
-        min_score=payload.min_score,
-    )
-
-    # Optional document_ids filter — done in app code rather than SQL
-    # because ``similarity_search`` lives in anila_core and we don't want
-    # to fork its signature for one consumer. The HNSW index makes the
-    # initial scan cheap; post-filter on top_k is O(k).
-    if payload.document_ids:
-        allowed = set(payload.document_ids)
-        hits = [h for h in hits if h.chunk.document_id in allowed]
+    candidates = []
+    if payload.document_ids is None:
+        for ceiling, document_ids in _documents_by_ceiling(
+            authorized_document_ceilings
+        ).items():
+            candidates.extend(
+                await store.similarity_search_scoped_documents(
+                    query_embedding=query_vec,
+                    document_ids=document_ids,
+                    top_k=payload.top_k,
+                    min_score=payload.min_score,
+                    classification_ceiling=ceiling,
+                )
+            )
+    else:
+        # G13: filter in SQL before ranking.  Ask for up to top_k per
+        # document, then take the global top_k across that authorised set.
+        # This prevents unrelated rows from consuming the HNSW top-k window.
+        for ceiling, document_ids in _documents_by_ceiling(
+            authorized_document_ceilings
+        ).items():
+            candidates.extend(
+                await store.similarity_search_per_document_authorized(
+                    query_embedding=query_vec,
+                    document_ids=document_ids,
+                    classification_ceiling=ceiling,
+                    k=payload.top_k,
+                    min_score=payload.min_score,
+                )
+            )
+    hits = sorted(candidates, key=lambda hit: hit.score, reverse=True)[
+        : payload.top_k
+    ]
 
     if not hits:
         return SearchResponse(
@@ -541,6 +799,7 @@ async def search_collection(
         related = await _expand_relations(
             db,
             store,
+            principal=principal,
             collection_id=coll.id,
             main_doc_ids=doc_ids,
             query_vec=query_vec,
@@ -595,9 +854,8 @@ async def search_collection_images(
     sub-service can pull image hits over HTTP instead of binding to the
     csp-db pgvector layer directly.
 
-    Auth: same as chunk search — admin OR collection owner. Future
-    sharing flows (collection_access_grants) plug into
-    ``_require_collection_access``.
+    Auth is identical to text search: clearance, compartments, collection
+    grant, need-to-know and optional agent ceiling all apply before embedding.
 
     Returns ``results=[]`` (not an error) when:
       - the collection has zero indexed images (text-only KB),
@@ -606,12 +864,29 @@ async def search_collection_images(
     """
     _enforce_agent_collection_scope(principal, collection_id)
     current_user = principal.user
-    coll = _require_collection_access(db, current_user, collection_id)
+    coll = _require_collection_clearance(
+        db, principal=principal, collection_id=collection_id
+    )
 
     if coll.status != "active":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Collection {collection_id} is {coll.status}; reactivate before search.",
+        )
+
+    authorized_document_access = _authorized_document_access(
+        db,
+        principal=principal,
+        collection_id=coll.id,
+        requested_ids=None,
+        reject_denied=False,
+    )
+    if not authorized_document_access:
+        return ImageSearchResponse(
+            query=payload.query,
+            embedding_model=coll.embedding_model,
+            embedding_dim=coll.embedding_dim,
+            results=[],
         )
 
     q_vec = await _embed_query(
@@ -620,6 +895,10 @@ async def search_collection_images(
         coll.embedding_model,
         coll.embedding_dim,
         payload.query,
+        trusted_classification_level=Classification.max_of(
+            access.required_classification
+            for access in authorized_document_access.values()
+        ),
     )
     if not q_vec:
         return ImageSearchResponse(
@@ -671,11 +950,16 @@ async def search_collection_images(
             JOIN ingestion_documents d ON d.id = i.document_id
             WHERE i.collection_id = $1
               AND i.embedding IS NOT NULL
-              AND (i.embedding <=> $2) < $3
+              AND i.document_id = ANY($3::bigint[])
+              AND (i.embedding <=> $2) < $4
             ORDER BY i.embedding <=> $2
-            LIMIT $4
+            LIMIT $5
             """,
-            collection_id, q_value, max_dist, payload.top_k,
+            collection_id,
+            q_value,
+            list(authorized_document_access),
+            max_dist,
+            payload.top_k,
         )
 
     return ImageSearchResponse(

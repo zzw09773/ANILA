@@ -20,6 +20,9 @@ hits so the endpoint glue itself is what gets exercised.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 
@@ -28,6 +31,12 @@ from fastapi.testclient import TestClient
 
 import app.api.ingestion.search as search_mod
 from app.models.ingestion import IngestionCollection, IngestionDocument
+from app.modules.clearance.service import (
+    assign_document_required_compartment,
+    create_security_compartment,
+    grant_collection_access,
+    issue_clearance_grant,
+)
 from app.services.auth_service import create_tokens
 
 from tests.conftest import make_user
@@ -48,7 +57,34 @@ def bob(db):
 
 
 @pytest.fixture
-def alice_collection(db, alice) -> IngestionCollection:
+def clearance_manager(db):
+    return make_user(db, username="clearance-manager", role="admin")
+
+
+def _grant_search_access(db, *, manager, subject, collection) -> None:
+    now = datetime.now(timezone.utc)
+    grant = issue_clearance_grant(
+        db,
+        actor=manager,
+        subject_user_id=subject.id,
+        max_classification_level="絕對機密",
+        valid_from=now - timedelta(minutes=5),
+        expires_at=now + timedelta(hours=1),
+        basis_ticket="TEST-CLEARANCE",
+    )
+    grant_collection_access(
+        db,
+        actor=manager,
+        clearance_grant_id=grant.id,
+        collection_id=collection.id,
+        membership_granted=True,
+        need_to_know=True,
+        basis_ticket="TEST-NTK",
+    )
+
+
+@pytest.fixture
+def alice_collection(db, alice, clearance_manager) -> IngestionCollection:
     coll = IngestionCollection(
         name="alice-collection",
         chunking_config={"strategy": "semantic"},
@@ -73,11 +109,16 @@ def alice_collection(db, alice) -> IngestionCollection:
     db.refresh(doc)
     # Stash doc id on the collection so stubs can reference it.
     coll._test_doc_id = doc.id
+    _grant_search_access(
+        db, manager=clearance_manager, subject=alice, collection=coll
+    )
     return coll
 
 
 @pytest.fixture
-def alice_archived_collection(db, alice) -> IngestionCollection:
+def alice_archived_collection(
+    db, alice, clearance_manager
+) -> IngestionCollection:
     coll = IngestionCollection(
         name="alice-archived",
         chunking_config={"strategy": "semantic"},
@@ -89,6 +130,9 @@ def alice_archived_collection(db, alice) -> IngestionCollection:
     db.add(coll)
     db.commit()
     db.refresh(coll)
+    _grant_search_access(
+        db, manager=clearance_manager, subject=alice, collection=coll
+    )
     return coll
 
 
@@ -115,17 +159,62 @@ class _StubStore:
 
     def __init__(self, hits):
         self._hits = hits
+        self.similarity_search_called = False
+        self.per_document_ids = None
+        self.scoped_document_ids = None
+        self.classification_ceiling = None
 
     async def similarity_search(self, *, query_embedding, top_k, min_score):
+        self.similarity_search_called = True
         return self._hits
+
+    async def similarity_search_per_document(
+        self, *, query_embedding, document_ids, k, min_score
+    ):
+        self.per_document_ids = list(document_ids)
+        return [hit for hit in self._hits if hit.chunk.document_id in document_ids]
+
+    async def similarity_search_scoped_documents(
+        self,
+        *,
+        query_embedding,
+        document_ids,
+        top_k,
+        min_score,
+        classification_ceiling,
+    ):
+        self.scoped_document_ids = list(document_ids)
+        self.classification_ceiling = classification_ceiling
+        return [hit for hit in self._hits if hit.chunk.document_id in document_ids][
+            :top_k
+        ]
+
+    async def similarity_search_per_document_authorized(
+        self,
+        *,
+        query_embedding,
+        document_ids,
+        classification_ceiling,
+        k,
+        min_score,
+    ):
+        self.per_document_ids = list(document_ids)
+        self.classification_ceiling = classification_ceiling
+        return [hit for hit in self._hits if hit.chunk.document_id in document_ids]
 
 
 @pytest.fixture(autouse=True)
-def _patch_retrieval(monkeypatch):
-    async def fake_embed_query(db, user, model_name, dim, query):
+def _patch_retrieval(monkeypatch) -> Iterator[dict[str, object]]:
+    captured: dict[str, object] = {}
+
+    async def fake_embed_query(
+        db, user, model_name, dim, query, *, trusted_classification_level
+    ):
+        captured["trusted_classification_level"] = trusted_classification_level
         return [0.1] * dim
 
     monkeypatch.setattr(search_mod, "_embed_query", fake_embed_query)
+    yield captured
 
 
 # ── 200 happy path ────────────────────────────────────────────────────────
@@ -241,11 +330,22 @@ def test_chunk_search_empty_results(
 def test_chunk_search_document_ids_filter_drops_others(
     client: TestClient, db, alice, alice_collection, monkeypatch,
 ):
-    """``document_ids`` post-filters the hits in-app."""
+    """``document_ids`` is applied before ranking through the SQL path."""
+    allowed_id = alice_collection._test_doc_id
+    other_doc = IngestionDocument(
+        collection_id=alice_collection.id,
+        filename="other.pdf",
+        sha256="b" * 64,
+        mime_type="application/pdf",
+        status="indexed",
+    )
+    db.add(other_doc)
+    db.commit()
+    db.refresh(other_doc)
     hits = [
         _StubHit(
             chunk=_StubChunk(
-                id=1001, document_id=5001, chunk_key="a",
+                id=1001, document_id=allowed_id, chunk_key="a",
                 content="x", metadata={}, parent_chunk_id=None,
                 chunk_type="leaf", chunk_level=0,
             ),
@@ -253,28 +353,203 @@ def test_chunk_search_document_ids_filter_drops_others(
         ),
         _StubHit(
             chunk=_StubChunk(
-                id=1002, document_id=9999, chunk_key="b",
+                id=1002, document_id=other_doc.id, chunk_key="b",
                 content="y", metadata={}, parent_chunk_id=None,
                 chunk_type="leaf", chunk_level=0,
             ),
             score=0.8,
         ),
     ]
+    store = _StubStore(hits)
     monkeypatch.setattr(
         search_mod, "CollectionScopedPgVectorStore",
-        lambda pool, collection_id: _StubStore(hits),
+        lambda pool, collection_id: store,
     )
     monkeypatch.setattr(search_mod, "get_pool", lambda: object())
 
     resp = client.post(
         f"/api/ingestion/collections/{alice_collection.id}/search",
-        json={"query": "q", "document_ids": [5001]},
+        json={"query": "q", "document_ids": [allowed_id]},
         headers=_bearer(alice),
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert len(body["results"]) == 1
-    assert body["results"][0]["document_id"] == 5001
+    assert body["results"][0]["document_id"] == allowed_id
+    assert store.per_document_ids == [allowed_id]
+    assert store.similarity_search_called is False
+
+
+def test_chunk_search_rejects_empty_or_cross_collection_document_scope(
+    client: TestClient, db, alice, bob, alice_collection,
+):
+    empty = client.post(
+        f"/api/ingestion/collections/{alice_collection.id}/search",
+        json={"query": "q", "document_ids": []},
+        headers=_bearer(alice),
+    )
+    assert empty.status_code == 422
+
+    foreign_collection = IngestionCollection(
+        name="foreign",
+        chunking_config={"strategy": "semantic"},
+        embedding_model="nv-embed",
+        embedding_dim=4096,
+        status="active",
+        created_by=bob.id,
+    )
+    db.add(foreign_collection)
+    db.flush()
+    foreign_document = IngestionDocument(
+        collection_id=foreign_collection.id,
+        filename="foreign.pdf",
+        sha256="c" * 64,
+        status="indexed",
+    )
+    db.add(foreign_document)
+    db.commit()
+
+    foreign = client.post(
+        f"/api/ingestion/collections/{alice_collection.id}/search",
+        json={"query": "q", "document_ids": [foreign_document.id]},
+        headers=_bearer(alice),
+    )
+    assert foreign.status_code == 422
+
+
+def test_document_compartment_is_filtered_before_sql_and_explicit_scope_denies(
+    client: TestClient,
+    db,
+    alice,
+    alice_collection,
+    clearance_manager,
+    monkeypatch,
+):
+    allowed_id = alice_collection._test_doc_id
+    restricted = IngestionDocument(
+        collection_id=alice_collection.id,
+        filename="restricted.pdf",
+        sha256="d" * 64,
+        status="indexed",
+    )
+    db.add(restricted)
+    db.commit()
+    db.refresh(restricted)
+    compartment = create_security_compartment(
+        db,
+        actor=clearance_manager,
+        code="PROJECT_RESTRICTED",
+        name="Restricted project",
+    )
+    assign_document_required_compartment(
+        db,
+        actor=clearance_manager,
+        document_id=restricted.id,
+        compartment_id=compartment.id,
+        basis_ticket="TEST-DOC-COMPARTMENT",
+    )
+    hits = [
+        _StubHit(
+            chunk=_StubChunk(
+                id=1101,
+                document_id=allowed_id,
+                chunk_key="allowed",
+                content="allowed",
+                metadata={},
+                parent_chunk_id=None,
+                chunk_type="leaf",
+                chunk_level=0,
+            ),
+            score=0.9,
+        ),
+        _StubHit(
+            chunk=_StubChunk(
+                id=1102,
+                document_id=restricted.id,
+                chunk_key="restricted",
+                content="must not escape",
+                metadata={},
+                parent_chunk_id=None,
+                chunk_type="leaf",
+                chunk_level=0,
+            ),
+            score=0.99,
+        ),
+    ]
+    store = _StubStore(hits)
+    monkeypatch.setattr(
+        search_mod,
+        "CollectionScopedPgVectorStore",
+        lambda pool, collection_id: store,
+    )
+    monkeypatch.setattr(search_mod, "get_pool", lambda: object())
+
+    unscoped = client.post(
+        f"/api/ingestion/collections/{alice_collection.id}/search",
+        json={"query": "q"},
+        headers=_bearer(alice),
+    )
+    assert unscoped.status_code == 200, unscoped.text
+    assert [row["document_id"] for row in unscoped.json()["results"]] == [
+        allowed_id
+    ]
+    assert store.scoped_document_ids == [allowed_id]
+
+    explicit = client.post(
+        f"/api/ingestion/collections/{alice_collection.id}/search",
+        json={"query": "q", "document_ids": [restricted.id]},
+        headers=_bearer(alice),
+    )
+    assert explicit.status_code == 403
+
+
+def test_agent_ceiling_is_part_of_data_access_decision(db, alice, alice_collection):
+    alice_collection.classification_level = "機密"
+    db.commit()
+    principal = search_mod.SearchPrincipal(
+        user=alice,
+        agent=SimpleNamespace(
+            bound_collection_id=alice_collection.id,
+            classification_ceiling="營業秘密",
+        ),
+    )
+    assert search_mod._is_data_access_allowed(  # noqa: SLF001
+        db,
+        principal=principal,
+        collection_id=alice_collection.id,
+    ) is False
+
+
+def test_chunk_search_embedding_uses_highest_authorized_classification(
+    client: TestClient,
+    db,
+    alice,
+    alice_collection,
+    monkeypatch,
+    _patch_retrieval,
+):
+    document = db.get(IngestionDocument, alice_collection._test_doc_id)
+    document.classification_level = "機密"
+    document.classification_source = "test"
+    db.commit()
+    monkeypatch.setattr(search_mod, "get_pool", lambda: object())
+    monkeypatch.setattr(
+        search_mod,
+        "CollectionScopedPgVectorStore",
+        lambda pool, collection_id: _StubStore([]),
+    )
+
+    response = client.post(
+        f"/api/ingestion/collections/{alice_collection.id}/search",
+        json={"query": "classified query"},
+        headers=_bearer(alice),
+    )
+
+    assert response.status_code == 200, response.text
+    assert (
+        _patch_retrieval["trusted_classification_level"]
+        is search_mod.Classification.CONFIDENTIAL
+    )
 
 
 # ── auth / status ────────────────────────────────────────────────────────

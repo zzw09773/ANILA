@@ -11,6 +11,7 @@ against the SQLite ``db`` fixture. Neutral regulation names throughout.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 import hashlib
 from types import SimpleNamespace
 
@@ -18,9 +19,18 @@ import pytest
 
 from anila_core.ingestion.citation_extractor import normalize_title
 
-from app.api.ingestion.search import RelatedHit, SearchRequest, _expand_relations
+from app.api.ingestion.search import (
+    RelatedHit,
+    SearchPrincipal,
+    SearchRequest,
+    _expand_relations,
+)
 from app.models.ingestion import IngestionCollection, IngestionDocument
 from app.models.user import User
+from app.modules.clearance.service import (
+    grant_collection_access,
+    issue_clearance_grant,
+)
 from app.services import relation_resolver as rr
 
 
@@ -28,7 +38,8 @@ from app.services import relation_resolver as rr
 def _collection(db) -> IngestionCollection:
     from tests.conftest import make_user
 
-    owner: User = make_user(db)
+    owner: User = make_user(db, username="relation-owner")
+    manager: User = make_user(db, username="relation-manager", role="admin")
     c = IngestionCollection(
         name="regs", chunking_config={"strategy": "fixed"},
         embedding_model="nvidia/NV-embed-V2", embedding_dim=4000, created_by=owner.id,
@@ -36,6 +47,25 @@ def _collection(db) -> IngestionCollection:
     db.add(c)
     db.commit()
     db.refresh(c)
+    now = datetime.now(timezone.utc)
+    grant = issue_clearance_grant(
+        db,
+        actor=manager,
+        subject_user_id=owner.id,
+        max_classification_level="絕對機密",
+        valid_from=now - timedelta(minutes=5),
+        expires_at=now + timedelta(hours=1),
+        basis_ticket="TEST-RELATION-CLEARANCE",
+    )
+    grant_collection_access(
+        db,
+        actor=manager,
+        clearance_grant_id=grant.id,
+        collection_id=c.id,
+        membership_granted=True,
+        need_to_know=True,
+        basis_ticket="TEST-RELATION-NTK",
+    )
     return c
 
 
@@ -68,8 +98,14 @@ class _FakeStore:
         self._by_doc = hits_by_doc
         self.last_doc_ids: list[int] | None = None
 
-    async def similarity_search_per_document(
-        self, *, query_embedding, document_ids, k=1, min_score=0.0
+    async def similarity_search_per_document_authorized(
+        self,
+        *,
+        query_embedding,
+        document_ids,
+        classification_ceiling,
+        k=1,
+        min_score=0.0,
     ):
         self.last_doc_ids = list(document_ids)
         return [self._by_doc[d] for d in document_ids if d in self._by_doc]
@@ -77,9 +113,14 @@ class _FakeStore:
 
 def _expand(db, store, collection_id, main_ids, **req):
     payload = SearchRequest(query="q", expand_relations=True, **req)
+    collection = db.get(IngestionCollection, collection_id)
+    owner = db.get(User, collection.created_by)
     return asyncio.run(
         _expand_relations(
-            db, store, collection_id=collection_id,
+            db,
+            store,
+            principal=SearchPrincipal(user=owner),
+            collection_id=collection_id,
             main_doc_ids=set(main_ids), query_vec=[0.1, 0.2], payload=payload,
         )
     )

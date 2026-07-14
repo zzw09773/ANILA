@@ -38,8 +38,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install governance test dependency
-        run: python -m pip install pytest
+      - name: Install governance test dependencies
+        run: python -m pip install pytest cryptography pyyaml
 
       - name: Validate F1/F3 suite and quarantine registry
         run: |
@@ -49,6 +49,14 @@ jobs:
 
       - name: Test capability-freeze policy
         run: python -m unittest infra.policy.tests.test_gate1_capability_freeze -v
+
+      - name: Prove Gate 2 signed-pilot policy and disabled template
+        run: |
+          python infra/policy/gate2/check_pilot_inference_profile.py \
+            --inventory infra/policy/gate2/inference-callsites.v1.json \
+            --profile infra/policy/gate2/pilot-profile.disabled-template.json \
+            --allow-disabled-template
+          python -m pytest infra/policy/tests/test_gate2_pilot_inference_profile.py -q
 
       - name: Enforce capability freeze against trusted PR base
         if: github.event_name == 'pull_request'
@@ -120,9 +128,11 @@ jobs:
           python -m ruff check packages/anila-contracts/src packages/anila-contracts/tests
           python -m ruff check packages/anila-security
 
-      - name: Run consumer identity and compatibility contracts
+      - name: Require G1 writer source contract and consumer compatibility
         run: |
           python -m pytest packages/anila-core/tests/test_contracts_facade.py packages/anila-core/tests/test_url_guard_kind_split.py -q
+          python -m unittest infra.policy.tests.test_gate2_classification_reconciliation -v
+          python -m unittest infra.policy.tests.test_gate2_retrieval_governance -v
           cd services/csp
           python -m pytest tests/test_anila_contracts_package.py tests/test_url_guard_opt_in.py tests/test_url_guard_providers.py -q
 
@@ -227,8 +237,11 @@ jobs:
 
   postgres-rls:
     name: Backend / PostgreSQL RLS
+    needs: [contract-smoke, backend-core, backend-ingestion, backend-csp]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
+    env:
+      SECRET_KEY: gate1-ci-only-secret-key-0123456789abcdef
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -260,6 +273,12 @@ jobs:
           python -m pip install -e "./packages/anila-core[dev]"
           python -m pip install -r services/csp/requirements-dev.txt
 
+      - name: Require a single Alembic head
+        working-directory: services/csp
+        run: |
+          python -c "from alembic.config import Config; from alembic.script import ScriptDirectory; heads = ScriptDirectory.from_config(Config('alembic.ini')).get_heads(); assert len(heads) == 1, f'expected one Alembic head, got {heads}'"
+          python -m alembic heads
+
       - name: Migrate fresh PostgreSQL to Alembic head
         working-directory: services/csp
         env:
@@ -277,6 +296,59 @@ jobs:
           INTEGRATION_ADMIN_DB_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
         run: python -m pytest tests/integration -q
 
+      - name: Prove Gate 2 classification reconciliation and mutation sensitivity
+        env:
+          MIGRATION_DATABASE_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          ANILA_GATE2_TEST_PG_ADMIN_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/postgres
+          PYTHONPATH: services/csp
+        run: |
+          python infra/policy/gate2/check_classification_reconciliation.py --sample-size 0
+          python -m pytest infra/policy/tests/test_gate2_classification_reconciliation_pg.py -q
+
+      - name: Prove Gate 2 runtime classification invariants on PostgreSQL
+        env:
+          ANILA_GATE2_TEST_PG_ADMIN_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/postgres
+        run: python -m pytest infra/policy/tests/test_gate2_runtime_classification_invariants_pg.py -q
+
+      - name: Prove Gate 2 SourceSnapshot and Citation sealing on PostgreSQL
+        env:
+          ANILA_GATE2_TEST_PG_ADMIN_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/postgres
+          PYTHONPATH: services/csp
+        run: python -m pytest services/csp/tests/test_gate2_source_snapshot_sealing_pg.py -q
+
+      - name: Prove Gate 2 memory classification governance on PostgreSQL
+        working-directory: services/csp
+        env:
+          GATE2_MEMORY_PG_DSN: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          PYTHONPATH: .
+        run: python -m pytest tests/test_gate2_memory_governance_pg.py -q
+
+      - name: Prove Gate 2 transaction-ledger atomicity on PostgreSQL
+        working-directory: services/csp
+        env:
+          ANILA_GATE2_LEDGER_PG_URL: postgresql://csp_app:gate1-app-db@127.0.0.1:5432/csp
+          PYTHONPATH: .
+        run: >-
+          python -m pytest
+          tests/test_gate2_transaction_ledger_pg.py
+          tests/test_gate2_classification_latch_pg.py
+          tests/test_gate2_pg_atomicity.py
+          -q
+
+      - name: Prove Gate 2 classification latch races on PostgreSQL
+        working-directory: services/csp
+        env:
+          ANILA_GATE2_CLASSIFICATION_PG_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          PYTHONPATH: .
+        run: python -m pytest tests/test_gate2_classification_latch_pg.py -q
+
+      - name: Prove Gate 2 durable usage and Full Trace closure on PostgreSQL
+        working-directory: services/csp
+        env:
+          ANILA_GATE2_LEDGER_PG_URL: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          PYTHONPATH: .
+        run: python -m pytest tests/test_gate2_durable_usage_closure_pg.py -q
+
       - name: Run CSP ingestion-image RLS contract
         working-directory: services/csp
         env:
@@ -284,6 +356,13 @@ jobs:
           DATABASE_URL: postgresql://csp_app:gate1-app-db@127.0.0.1:5432/csp
           PYTHONPATH: .
         run: python -m pytest tests/test_ingestion_images_rls_pg.py -q
+
+      - name: Run Gate 2 auth concurrency and migration contracts
+        working-directory: services/csp
+        env:
+          ANILA_TEST_PG_DSN: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
+          PYTHONPATH: .
+        run: python -m pytest tests/test_gate2_auth_races_pg.py -q
 
   frontend-governance:
     name: Frontend / CSP governance UI
@@ -338,9 +417,63 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: apps/anilalm/package-lock.json
-      - name: Install, typecheck, and build
+      - name: Install and typecheck
         working-directory: apps/anilalm
         run: |
           npm ci
           npm run typecheck
-          npm run build
+
+      - name: Build normal product posture
+        working-directory: apps/anilalm
+        env:
+          VITE_ANILA_PILOT_MODE: "false"
+        run: npm run build
+
+      - name: Build signed-pilot posture
+        working-directory: apps/anilalm
+        env:
+          VITE_ANILA_PILOT_MODE: "true"
+        run: npm run build
+
+  backend-studio-security:
+    name: Backend / Studio auth and revocation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Studio test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./services/anila-studio[dev]"
+      - name: Run Studio auth and durable revocation contracts
+        working-directory: services/anila-studio
+        run: >-
+          python -m pytest
+          tests/test_auth.py
+          tests/test_revocation_cache.py
+          tests/test_gate2_scoped_revocation_cache.py
+          -q
+
+  backend-flux-agent:
+    name: Backend / FLUX agent governed-hop contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install FLUX agent test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./services/flux2-dev-agent[test]"
+      - name: Run focused FLUX agent suite
+        working-directory: services/flux2-dev-agent
+        run: python -m pytest tests -q

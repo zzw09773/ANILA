@@ -28,11 +28,14 @@ import os
 os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.api import proxy as proxy_api
 from app.models.agent import UserAgentPermission
 from app.models.api_key import ApiKeyModelPermission
+from app.models.conversation import Conversation
 from app.models.policy_decision import PolicyDecision
 from app.models.task import Task, TaskRun
 from app.models.token_usage import TokenUsage
@@ -221,7 +224,11 @@ class TestUserCallerWithTask:
 
         resp = client.post(
             "/v1/chat/completions",
-            headers={**_bearer(_jwt(admin)), "X-ANILA-Task-Id": str(task.id)},
+            headers={
+                **_bearer(_jwt(admin)),
+                "X-ANILA-Task-Id": str(task.id),
+                "X-ANILA-Trace-Id": "attacker-selected-trace",
+            },
             json={"model": "task-llm",
                   "messages": [{"role": "user", "content": "hi"}]},
         )
@@ -238,18 +245,19 @@ class TestUserCallerWithTask:
             .filter(PolicyDecision.task_id == task.id)
             .all()
         )
-        assert len(decisions) == 1
-        assert decisions[0].action == "task.run"
-        assert decisions[0].decision == "allow"
-        assert decisions[0].resource_type == "model"
-        assert decisions[0].actor_type == "user"
+        by_action = {decision.action: decision for decision in decisions}
+        assert set(by_action) == {"task.run", "model.invoke"}
+        assert by_action["task.run"].decision == "allow"
+        assert by_action["task.run"].resource_type == "model"
+        assert by_action["task.run"].actor_type == "user"
+        assert by_action["model.invoke"].decision == "allow"
 
-        assert len(captured_usage) == 1
-        assert captured_usage[0]["task_id"] == task.id
-        assert captured_usage[0]["legacy_runtime_call"] is False
-        # No inbound X-ANILA-Trace-Id → usage attribution falls back to the
-        # task row's trace id.
-        assert captured_usage[0]["trace_id"] == task.trace_id
+        usage = db.query(TokenUsage).filter_by(task_id=task.id).one()
+        assert usage.legacy_runtime_call is False
+        # Task-linked attribution is canonical even when a caller tries to
+        # supply a different trace id.
+        assert usage.trace_id == task.trace_id
+        assert runs[0].usage_record_id == usage.id
 
     def test_model_gateway_headers_never_carry_task_headers(
         self, client: TestClient, db: Session, monkeypatch,
@@ -311,9 +319,87 @@ class TestUserCallerWithTask:
             .filter(PolicyDecision.task_id == task.id)
             .all()
         )
-        assert len(decisions) == 1
-        assert decisions[0].resource_type == "agent"
-        assert captured_usage and captured_usage[0]["task_id"] == task.id
+        by_action = {decision.action: decision for decision in decisions}
+        assert set(by_action) == {"task.run", "agent.invoke"}
+        assert all(decision.resource_type == "agent" for decision in decisions)
+        assert by_action["agent.invoke"].decision == "allow"
+        usage = db.query(TokenUsage).filter_by(task_id=task.id).one()
+        assert usage.caller_agent_id == agent.id
+        assert usage.model_id is None
+        assert runs[0].usage_record_id == usage.id
+
+    def test_agent_nonstream_writes_task_attributed_token_usage(
+        self, client: TestClient, db: Session, monkeypatch, task_sessions,
+    ):
+        user = make_user(db, username="task_user_agent_nonstream")
+        dev = make_user(db, username="task_dev_agent_nonstream", role="developer")
+        base_model = make_model(db, name="task-agent-nonstream-base")
+        agent = make_agent(
+            db, dev, name="task-agent-nonstream", approval_status="approved"
+        )
+        agent.base_model_id = base_model.id
+        db.add(UserAgentPermission(user_id=user.id, agent_id=agent.id))
+        db.commit()
+        task = _make_task(db, user)
+        _patch_post_client(monkeypatch)
+        resp = client.post(
+            "/v1/chat/completions",
+            headers={**_bearer(_jwt(user)), "X-ANILA-Task-Id": str(task.id)},
+            json={
+                "model": agent.name,
+                "stream": False,
+                "messages": [{"role": "user", "content": "draw"}],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        usage = db.query(TokenUsage).filter_by(task_id=task.id).one()
+        assert usage.caller_agent_id == agent.id
+        assert usage.model_id == base_model.id
+        assert usage.total_tokens > 0
+        run = db.query(TaskRun).filter_by(task_id=task.id).one()
+        assert run.usage_record_id == usage.id
+
+    def test_image_inference_is_task_bound_ceiling_checked_and_metered(
+        self, client: TestClient, db: Session, monkeypatch,
+        task_sessions, captured_usage,
+    ):
+        admin = make_user(db, username="image_proxy_admin", role="admin")
+        model = make_model(db, name="governed-flux")
+        model.model_type = "image"
+        model.is_image_primary = True
+        model.classification_ceiling = "機密"
+        db.commit()
+        task = _make_task(db, admin)
+        task.classification_level = "機密"
+        db.commit()
+        _patch_post_client(monkeypatch)
+
+        response = client.post(
+            "/v1/images/generations",
+            headers={**_bearer(_jwt(admin)), "X-ANILA-Task-Id": str(task.id)},
+            json={
+                "model": model.name,
+                "prompt": "synthetic",
+                "n": 1,
+                "size": "1024x1024",
+                "response_format": "b64_json",
+            },
+        )
+        assert response.status_code == 200, response.text
+        db.expire_all()
+        assert db.get(Task, task.id).status == "completed"
+        assert db.query(PolicyDecision).filter_by(
+            task_id=task.id, action="model.invoke", decision="allow"
+        ).count() == 1
+        usage = db.query(TokenUsage).filter_by(task_id=task.id).one()
+        assert usage.request_type == "image"
+
+        no_task = client.post(
+            "/v1/images/generations",
+            headers=_bearer(_jwt(admin)),
+            json={"model": model.name, "prompt": "must fail"},
+        )
+        assert no_task.status_code == 400
 
     def test_upstream_failure_marks_run_failed(
         self, client: TestClient, db: Session, monkeypatch,
@@ -339,6 +425,56 @@ class TestUserCallerWithTask:
         assert len(runs) == 1
         assert runs[0].status == "failed"
         assert runs[0].error  # structured error payload recorded
+
+    def test_classification_propagation_failure_fails_closed_before_outbound(
+        self, client: TestClient, db: Session, monkeypatch,
+        task_sessions, captured_usage,
+    ):
+        """A stale-low task must never reach the ceiling or outbound call."""
+        admin = make_user(db, username="task_propagation_fail", role="admin")
+        make_model(db, name="task-propagation-llm")
+        task = _make_task(db, admin)
+        conversation = Conversation(
+            user_id=admin.id,
+            title="classified source",
+            classification_level="絕對機密",
+        )
+        db.add(conversation)
+        db.commit()
+        db.refresh(conversation)
+        _patch_post_client(monkeypatch)
+
+        def _raise_propagation(*args, **kwargs):
+            raise RuntimeError("synthetic classification propagation failure")
+
+        monkeypatch.setattr(
+            proxy_api,
+            "_propagate_conversation_level_to_task",
+            _raise_propagation,
+        )
+
+        resp = client.post(
+            "/v1/chat/completions",
+            headers={
+                **_bearer(_jwt(admin)),
+                "X-ANILA-Task-Id": str(task.id),
+                "X-ANILA-Conversation-Id": str(conversation.id),
+            },
+            json={
+                "model": "task-propagation-llm",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+        assert resp.status_code == 503
+        assert "fail-closed" in resp.json()["detail"]
+        assert _PostClient.last_headers == {}
+        assert captured_usage == []
+
+        db.expire_all()
+        run = db.query(TaskRun).filter(TaskRun.task_id == task.id).one()
+        assert run.status == "failed"
+        assert run.error["code"] == "task_classification_propagation"
 
 
 # ── Legacy compat: no task header → unchanged + marked ─────────────────────
@@ -368,6 +504,31 @@ class TestLegacyNoTaskHeader:
         db.expire_all()
         assert db.query(TaskRun).count() == 0
         assert db.query(PolicyDecision).count() == 0
+
+
+def test_ceiling_preflight_does_not_leave_allow_when_retrieval_fails(
+    client: TestClient, db: Session, monkeypatch, task_sessions, captured_usage,
+):
+    admin = make_user(db, username="preflight_no_phantom_allow", role="admin")
+    model = make_model(db, name="preflight-no-phantom-model")
+    task = _make_task(db, admin)
+
+    async def fail_retrieval(*_args, **_kwargs):
+        raise HTTPException(status_code=503, detail="synthetic retrieval failure")
+
+    monkeypatch.setattr(proxy_api, "_prepare_server_retrieval", fail_retrieval)
+    response = client.post(
+        "/v1/chat/completions",
+        headers={**_bearer(_jwt(admin)), "X-ANILA-Task-Id": str(task.id)},
+        json={
+            "model": model.name,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert response.status_code == 503
+    assert db.query(PolicyDecision).filter_by(
+        task_id=task.id, action="model.invoke", decision="allow"
+    ).count() == 0
 
 
 # ── Access control: unknown / foreign / malformed task ─────────────────────
@@ -504,9 +665,13 @@ class TestServiceTokenCaller:
             .filter(PolicyDecision.task_id == task.id)
             .all()
         )
-        assert len(decisions) == 1
-        assert decisions[0].actor_type == "service"
-        assert captured_usage and captured_usage[0]["task_id"] == task.id
+        by_action = {decision.action: decision for decision in decisions}
+        assert set(by_action) == {"task.run", "model.invoke"}
+        assert by_action["task.run"].actor_type == "service"
+        assert by_action["model.invoke"].decision == "allow"
+        usage = db.query(TokenUsage).filter_by(task_id=task.id).one()
+        assert usage.trace_id == task.trace_id
+        assert runs[0].usage_record_id == usage.id
 
     def test_requester_mismatch_returns_403(
         self, client: TestClient, db: Session, monkeypatch,
@@ -574,6 +739,60 @@ class TestServiceTokenCaller:
         assert resp.status_code == 403
 
 
+def test_image_service_hop_rejects_non_agent_service_identity(
+    client: TestClient, db: Session, monkeypatch,
+):
+    from app.services.agent_credential_service import CallerIdentity
+
+    monkeypatch.setattr(
+        proxy_api.agent_credential_service,
+        "verify_service_token",
+        lambda *_args, **_kwargs: CallerIdentity(
+            kind="service_client", agent_id=None, service_client_id=7,
+            credential_id=7, is_legacy=False, used_previous_token=False,
+        ),
+    )
+    response = client.post(
+        "/v1/images/generations",
+        headers={
+            "X-CSP-Service-Token": "csk-router",
+            "X-ANILA-User-Id": "990000001",
+            "X-ANILA-Task-Id": "1",
+        },
+        json={"model": "governed-flux", "prompt": "x"},
+    )
+    assert response.status_code == 403
+    assert "具名 agent" in response.json()["detail"]
+
+
+def test_image_service_hop_rejects_wrong_named_agent_identity(
+    client: TestClient, db: Session, monkeypatch,
+):
+    from app.services.agent_credential_service import CallerIdentity
+
+    owner = make_user(db, username="image_agent_owner", role="admin")
+    wrong = make_agent(db, owner, name="not-image-generator", approval_status="approved")
+    monkeypatch.setattr(
+        proxy_api.agent_credential_service,
+        "verify_service_token",
+        lambda *_args, **_kwargs: CallerIdentity(
+            kind="agent", agent_id=wrong.id, service_client_id=None,
+            credential_id=9, is_legacy=False, used_previous_token=False,
+        ),
+    )
+    response = client.post(
+        "/v1/images/generations",
+        headers={
+            "X-CSP-Service-Token": "csk-wrong-agent",
+            "X-ANILA-User-Id": "990000001",
+            "X-ANILA-Task-Id": "1",
+        },
+        json={"model": "governed-flux", "prompt": "x"},
+    )
+    assert response.status_code == 403
+    assert "image-generator" in response.json()["detail"]
+
+
 # ── Header builder unit tests ───────────────────────────────────────────────
 
 
@@ -630,6 +849,62 @@ class TestHeaderBuilders:
         h = _StreamClient.last_headers
         assert "X-ANILA-Task-Id" not in h
         assert "X-ANILA-Trace-Id" not in h
+
+    def test_task_stream_commits_closure_before_done_marker(
+        self, db: Session, monkeypatch,
+    ):
+        """A client must not observe semantic success before durable closure."""
+        _patch_stream_client(monkeypatch)
+        user = make_user(db, username="stream_done_order")
+        model = make_model(db, name="stream-done-order-model")
+        task = Task(
+            title="stream done ordering",
+            task_type="query",
+            requester_user_id=user.id,
+            status="running",
+        )
+        db.add(task)
+        db.flush()
+        run = TaskRun(
+            task_id=task.id,
+            run_sequence=1,
+            dispatch_target="model",
+            status="running",
+        )
+        db.add(run)
+        db.commit()
+        events: list[str] = []
+
+        def capture_closure(*args, **kwargs):
+            events.append("closure")
+            return 1
+
+        monkeypatch.setattr(proxy_impl, "persist_task_call_closure", capture_closure)
+
+        async def _run():
+            async for chunk in proxy_service.proxy_stream(
+                target_url="http://mock-llm/v1/chat/completions",
+                api_key_id=None,
+                user_id=user.id,
+                department_id=None,
+                usage_model_id=model.id,
+                request_body={"model": model.name, "messages": []},
+                model_name=model.name,
+                task_id=task.id,
+                task_trace_id=task.trace_id,
+                task_run_id=run.id,
+                governance_db=db,
+                registry_endpoint_url=model.endpoint_url,
+                admitted_classification_level="無機密",
+            ):
+                events.append(chunk)
+
+        asyncio.run(_run())
+        closure_position = events.index("closure")
+        done_position = next(
+            index for index, event in enumerate(events) if "[DONE]" in event
+        )
+        assert closure_position < done_position
 
 
 # ── Usage enqueue helper writes real columns ────────────────────────────────

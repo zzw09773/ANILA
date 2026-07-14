@@ -484,7 +484,8 @@ cmd_backup() {
   backup_public_pki "$dest"
   ok "設定/金鑰: .env + JWT secrets/ + TLS keypair + share/pki/"
 
-  # 3. --full:使用者上傳原檔 + CSP attachment named volume。兩者都由
+  # 3. --full:使用者上傳原檔 + CSP attachment named volume + 密封檢索
+  #    evidence。三者都由
   #    one-shot root helper 從精確 readonly mount 讀取,tar 不跟隨 symlink。
   if [ "$full" = 1 ]; then
     run_runtime_backup_helper bind "$REPO_ROOT/share/uploads" tree "$dest" uploads
@@ -492,6 +493,8 @@ cmd_backup() {
     find_attachment_volume
     run_runtime_backup_helper volume "$ATTACHMENT_VOLUME" tree "$dest" attachments
     ok "CSP 附件: $(du -h "$dest/attachments.tar.gz" | cut -f1)"
+    run_runtime_backup_helper bind "$ANILA_STATE_DIR/source-snapshots" tree "$dest" source-snapshots
+    ok "SourceSnapshot evidence: $(du -h "$dest/source-snapshots.tar.gz" | cut -f1)"
   fi
 
   # 4. manifest + checksum (異機還原時對版本、驗完整性)
@@ -499,7 +502,7 @@ cmd_backup() {
     echo "stamp: $stamp"
     echo "git:   $(git rev-parse HEAD 2>/dev/null || echo '?') ($(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?'))"
     echo "note:  n8n/gitlab volume 不在此備份內 — gitlab 用它自己的 gitlab-backup 機制"
-    echo "full:  $full (1 = uploads.tar.gz + attachments.tar.gz)"
+    echo "full:  $full (1 = uploads.tar.gz + attachments.tar.gz + source-snapshots.tar.gz)"
     docker compose images 2>/dev/null || true
   } > "$dest/MANIFEST.txt"
   (cd "$dest" && find . -type f ! -name CHECKSUMS.sha256 -exec sha256sum {} + > CHECKSUMS.sha256)
@@ -588,7 +591,7 @@ cmd_restore() {
   bash infra/deployment/scripts/deploy-prod.sh verify
   warn "確認一切正常後清掉保留的舊庫:"
   warn "  docker compose exec -T csp-db psql -U csp -d postgres -c 'DROP DATABASE $keep'"
-  warn "本指令目前只還原 DB；.env / secrets / uploads / attachments 尚未自動還原。"
+  warn "本指令目前只還原 DB；.env / secrets / uploads / attachments / source-snapshots 尚未自動還原。"
   warn "secrets 與 runtime 目錄是 UID 10001 + mode 0700，禁止直接 cp/tar 或放寬權限。"
   warn "請用受控 root helper 還原並重設 owner/mode；Gate 6 restore drill 前須完成自動化 restore。"
   log "還原完成 — 用 'anila-ops.sh health' 驗一輪,再實際登入測一次"

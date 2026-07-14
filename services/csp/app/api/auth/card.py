@@ -103,6 +103,9 @@ def card_verify(
             detail=f"憑證卡驗證失敗: {exc}",
         ) from exc
     except CardLoginRejected as exc:
+        rejection_metadata = {"reason": exc.reason}
+        if exc.challenge_jti_hash:
+            rejection_metadata["challenge_jti_hash"] = exc.challenge_jti_hash
         log_audit_event(
             db,
             action="card_login",
@@ -110,6 +113,7 @@ def card_verify(
             status="failure",
             detail=f"憑證卡登入拒絕: {exc}",
             ip_address=ip_address,
+            metadata=rejection_metadata,
             commit=True,
         )
         raise HTTPException(
@@ -163,7 +167,7 @@ def card_verify(
         return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=payload)
 
     # ── Approved: 正常登入流程 ───────────────────────────────────────────
-    tokens = create_tokens(user, amr=("sc",))
+    tokens = create_tokens(user, db=db, amr=("sc",))
     _stamp_last_login(db, user)
     log_audit_event(
         db,
@@ -173,7 +177,8 @@ def card_verify(
         resource_id=user.id,
         detail=(
             f"憑證卡登入成功: employee_id={claims.employee_id} "
-            f"name={claims.display_name} card_sn={claims.card_serial or '-'}"
+            f"name={claims.display_name} cert_serial={claims.card_serial} "
+            f"cert_fp_sha256={claims.certificate_fingerprint_sha256}"
         ),
         ip_address=ip_address,
         commit=True,

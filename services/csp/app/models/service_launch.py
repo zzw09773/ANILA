@@ -84,7 +84,9 @@ class ServiceAuditCallback(Base):
     )
     event_type = Column(String(100), nullable=False)
     payload = Column(_JSON_OBJ, nullable=True)
-    classification_level = Column(String(20), nullable=True)
+    classification_level = Column(
+        String(20), nullable=False, default="無機密", server_default="無機密"
+    )
     integration_key_id = Column(
         Integer,
         ForeignKey("service_clients.id", ondelete="SET NULL"),

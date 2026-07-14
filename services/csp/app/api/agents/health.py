@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import get_db
 from app.models.agent import Agent
 from app.models.trace_span import TraceSpan
@@ -396,6 +397,18 @@ async def run_agent_trace_test(
                 "(僅 draft / 審核中的 Agent 適用)"
             ),
         )
+
+    if settings.ANILA_PILOT_MODE:
+        # Trace-test is itself an outbound model/agent callsite.  It is kept
+        # outside the signed Gate 2 pilot envelope until explicitly inventoried
+        # and signer-approved, instead of being treated as harmless control
+        # plane diagnostics.
+        from app.services.startup_security import require_pilot_callsite
+
+        try:
+            require_pilot_callsite("csp.agent_trace_test")
+        except RuntimeError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     # Call-time SSRF guard (TOCTOU / DNS-rebinding), same as test-connection.
     try:

@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from anila_security import UnsafeEndpointError, validate_outbound_url
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
+from anila_contracts import Classification as ClassificationLevel
 from app.database import get_db
 from app.models.model_registry import ModelRegistry
 from app.models.token_usage import TokenUsage
@@ -101,6 +102,15 @@ def _build_response(model: ModelRegistry, *, caller: User | None = None) -> dict
         endpoint = ENDPOINT_INTERNAL
     else:
         endpoint = ENDPOINT_REDACTED
+    raw_ceiling = getattr(model, "classification_ceiling", None)
+    if not isinstance(raw_ceiling, str):
+        raise RuntimeError(
+            "model_registry.classification_ceiling must be a non-null canonical value"
+        )
+    classification_ceiling = ClassificationLevel.from_storage(
+        raw_ceiling
+    ).to_storage()
+
     data = {
         "id": model.id,
         "name": model.name,
@@ -126,7 +136,7 @@ def _build_response(model: ModelRegistry, *, caller: User | None = None) -> dict
         # per-model key is exposed ONLY as a boolean presence flag — never the
         # ciphertext / secret ref, never plaintext.
         "protocol": getattr(model, "protocol", "openai_compatible") or "openai_compatible",
-        "classification_ceiling": getattr(model, "classification_ceiling", None),
+        "classification_ceiling": classification_ceiling,
         "owner_department_id": getattr(model, "owner_department_id", None),
         "supports_streaming": bool(getattr(model, "supports_streaming", True)),
         "supports_json_schema": bool(getattr(model, "supports_json_schema", False)),
@@ -181,6 +191,7 @@ def create_model(
     # ``enc::v1::`` envelope and store as api_key_secret_ref; never a column
     # by itself, so pop it before constructing the row.
     data = request.model_dump()
+    data["classification_ceiling"] = request.classification_ceiling.to_storage()
     api_key = (data.pop("api_key", None) or "").strip()
     model = ModelRegistry(**data)
     if api_key:
@@ -421,6 +432,10 @@ def update_model(
         raise HTTPException(status_code=404, detail="模型不存在")
 
     update_data = request.model_dump(exclude_unset=True)
+    if "classification_ceiling" in update_data:
+        update_data["classification_ceiling"] = update_data[
+            "classification_ceiling"
+        ].to_storage()
 
     if "endpoint_url" in update_data and update_data["endpoint_url"] is not None:
         _enforce_endpoint_url(update_data["endpoint_url"])

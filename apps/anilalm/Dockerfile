@@ -17,8 +17,10 @@ WORKDIR /app
 
 ARG BASE_PATH=/anilalm/
 ARG VITE_DEFAULT_CHAT_MODEL=gpt-4o-mini
+ARG VITE_ANILA_PILOT_MODE=false
 ENV BASE_PATH=${BASE_PATH}
 ENV VITE_DEFAULT_CHAT_MODEL=${VITE_DEFAULT_CHAT_MODEL}
+ENV VITE_ANILA_PILOT_MODE=${VITE_ANILA_PILOT_MODE}
 
 # Copy lockfile first for cache-friendly installs. `npm install` (not `npm ci`)
 # tolerates package.json edits without forcing a host-side lockfile sync —

@@ -62,6 +62,17 @@ if [[ "${1:-}" == "compose" && "${2:-}" == "version" ]]; then
   exit 0
 fi
 
+# Formal lifecycle pins project/file identity before every Compose subcommand.
+# Normalize those global options so the behavior scenarios below can focus on
+# the requested subcommand rather than duplicating Docker Compose parsing.
+if [[ "${1:-}" == "compose" ]]; then
+  shift
+  while [[ "${1:-}" == "--project-name" || "${1:-}" == "-p" || "${1:-}" == "-f" ]]; do
+    shift 2
+  done
+  set -- compose "$@"
+fi
+
 if [[ "${1:-}" == "compose" && "${2:-}" == "down" ]]; then
   printf '%s\n' 'DOCKER_DOWN_CALLED'
   exit 0
@@ -145,6 +156,7 @@ class DeployProdBehaviorTests(unittest.TestCase):
         process_timeout: int = 20,
         branch: str = "prod-intranet-card",
         profile: str = "prod-intranet-card",
+        pilot_mode: str | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], float]:
         with tempfile.TemporaryDirectory(prefix="anila-docker-stub-") as temp:
             stub_dir = Path(temp)
@@ -190,6 +202,10 @@ class DeployProdBehaviorTests(unittest.TestCase):
             env["DOCKER_STUB_SCENARIO"] = scenario
             env["ANILA_WAIT_TIMEOUT_SECONDS"] = str(wait_timeout)
             env["ANILA_DEPLOYMENT_PROFILE"] = profile
+            if pilot_mode is None:
+                env.pop("ANILA_PILOT_MODE", None)
+            else:
+                env["ANILA_PILOT_MODE"] = pilot_mode
             for variable in (
                 "COMPOSE_FILE",
                 "COMPOSE_PROFILES",
@@ -222,6 +238,18 @@ class DeployProdBehaviorTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, output)
         self.assertIn(expected, output)
         return result
+
+    def test_formal_pilot_mode_rejects_ambiguous_boolean_spelling(self) -> None:
+        result, _ = self.run_deploy("all-healthy", "help", pilot_mode="1")
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn("ANILA_PILOT_MODE 必須是明確的 true/false", output)
+
+    def test_gate2_pilot_wait_uses_the_posture_aware_compose_wrapper(self) -> None:
+        result, _ = self.run_deploy("all-healthy", "wait", pilot_mode="true")
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertIn("全部 healthy", output)
 
     def test_wait_succeeds_when_every_service_is_ready(self) -> None:
         result, _ = self.run_deploy("all-healthy", "wait")

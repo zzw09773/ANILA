@@ -79,11 +79,15 @@ class DeploymentContainmentTests(unittest.TestCase):
             {
                 "ADMIN_PASSWORD": "test-admin-0123456789012345",
                 "CARD_INITIAL_OWNERS": "990000001",
+                "CARD_CRL_BUNDLE_PATH": "/etc/anila/pki/card-crl-bundle.pem",
+                "CARD_CRL_SOURCE": "synthetic-inventory-feed",
+                "CARD_REQUIRED_CERT_POLICY_OIDS": "1.3.6.1.4.1.55555.1.1",
                 "CODESERVER_PASSWORD": "test-code-0123456789012345",
                 "CSP_APP_DB_PASSWORD": "0123456789abcdef0123456789abcdef",
                 "CSP_DB_PASSWORD": "abcdef0123456789abcdef0123456789",
                 "CSP_SECRET_KEY": "0123456789abcdef0123456789abcdef",
                 "CSP_SERVICE_TOKEN": "abcdef0123456789abcdef0123456789",
+                "FLUX_AGENT_SERVICE_TOKEN": "csk-image-generator-synthetic-test",
                 "INTERNAL_PLATFORM_API_KEY": (
                     "sk-internal-0123456789abcdef0123456789abcdef"
                 ),
@@ -466,17 +470,69 @@ class DeploymentContainmentTests(unittest.TestCase):
         self.assertIn("set_env_single_quoted()", ops)
         self.assertIn('set_env_single_quoted MODEL_GATEWAY_API_KEY "$key"', ops)
 
-    def test_developer_lifecycle_explicitly_enables_the_profile(self) -> None:
-        script = read("infra/deployment/scripts/deploy-prod.sh")
+    def test_intranet_card_profile_requires_offline_crl_evidence(self) -> None:
+        script = read("infra/deployment/intranet/intranet-deploy.sh")
+        self.assertIn("share/pki/card-crl-bundle.pem", script)
+        self.assertIn("BEGIN X509 CRL", script)
+        self.assertIn("set_env CARD_CRL_REQUIRED true", script)
         self.assertIn(
-            "docker compose --profile developer-tools up -d --no-build --pull never codeserver",
+            "set_env CARD_CRL_BUNDLE_PATH /etc/anila/pki/card-crl-bundle.pem",
             script,
         )
         self.assertIn(
-            "docker compose --profile developer-tools stop codeserver", script
+            'set_env_single_quoted CARD_CRL_SOURCE "$_card_crl_source"',
+            script,
         )
+        self.assertIn(
+            'set_env_single_quoted CARD_REQUIRED_CERT_POLICY_OIDS "$_card_policy_oids"',
+            script,
+        )
+        self.assertIn('_defaults_card_crl_source="$_v"', script)
+        self.assertIn('_defaults_card_crl_max_age="$_v"', script)
+        self.assertIn('_defaults_card_policy_oids="$_v"', script)
+        self.assertIn("APPROVE-PKI-PROFILE", script)
+        self.assertIn("未明確核准 bundle 提供的 PKI 信任姿態", script)
+
+    def test_developer_lifecycle_explicitly_enables_the_profile(self) -> None:
+        script = read("infra/deployment/scripts/deploy-prod.sh")
+        self.assertIn(
+            "compose --profile developer-tools up -d --no-build --pull never codeserver",
+            script,
+        )
+        self.assertIn(
+            "compose --profile developer-tools stop codeserver", script
+        )
+        self.assertIn("Gate 2 pilot active set 禁止啟用", script)
         self.assertIn("codeserver-up)   cmd_codeserver_up", script)
         self.assertIn("codeserver-down) cmd_codeserver_down", script)
+
+    def test_gate2_pilot_uses_one_authoritative_formal_compose_lifecycle(self) -> None:
+        deploy = read("infra/deployment/scripts/deploy-prod.sh")
+        intranet = read("infra/deployment/intranet/intranet-deploy.sh")
+
+        self.assertIn(
+            "FORMAL_COMPOSE_ARGS=(--project-name anila-platform -f infra/compose/platform.yml)",
+            deploy,
+        )
+        self.assertIn(
+            "FORMAL_COMPOSE_ARGS+=(-f infra/compose/gate2-pilot.yml)", deploy
+        )
+        self.assertIn('IMAGE_LOCK_POSTURE_ARGS=(--posture gate2-pilot)', deploy)
+        self.assertIn('docker compose "${FORMAL_COMPOSE_ARGS[@]}" "$@"', deploy)
+        self.assertIn('compose up -d --no-build --pull never', deploy)
+        self.assertIn('verify_gate2_pilot_runtime_posture "$main_host"', deploy)
+        for service in (
+            "ingestion-worker",
+            "pptx-renderer",
+            "anila-studio",
+            "flux2-dev-agent",
+            "codeserver",
+        ):
+            self.assertIn(service, deploy)
+        self.assertIn("Gate 2 pilot 443 Router deny", deploy)
+        self.assertIn("Gate 2 pilot 4443 Router deny", deploy)
+        self.assertIn("bash infra/deployment/scripts/deploy-prod.sh up", intranet)
+        self.assertNotIn("\ndocker compose up -d", intranet)
 
     def test_e2e_does_not_assume_codeserver_is_in_default_stack(self) -> None:
         script = read("infra/deployment/scripts/phase1-e2e.sh")

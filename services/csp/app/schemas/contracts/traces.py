@@ -74,6 +74,9 @@ class TraceSpanIn(BaseModel):
     started_at: datetime | None = None
     ended_at: datetime | None = None
     attributes: dict[str, Any] | None = None
+    # Producer may only raise the task-derived floor.  The ingest service
+    # computes max(task, supplied); omission never means 無機密.
+    classification_level: ClassificationLevel | None = None
 
 
 class TraceSpanOut(BaseModel):

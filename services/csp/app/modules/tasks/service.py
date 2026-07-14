@@ -256,7 +256,9 @@ def ensure_task_access(db: Session, *, task_id: int, user_id: int) -> Task:
 
 # ── 狀態機 ────────────────────────────────────────────────────────────────────
 
-def transition_task(db: Session, *, task: Task, new_status: str) -> Task:
+def transition_task(
+    db: Session, *, task: Task, new_status: str, commit: bool = True
+) -> Task:
     """套用一次狀態轉移;未知狀態或非法轉移一律 ``ValueError``。"""
     try:
         target = TaskStatus(new_status)
@@ -269,20 +271,51 @@ def transition_task(db: Session, *, task: Task, new_status: str) -> Task:
         )
     task.status = target.value
     task.updated_at = _utcnow()
-    db.commit()
-    db.refresh(task)
+    db.flush()
+    if commit:
+        db.commit()
+        db.refresh(task)
     return task
 
 
 # ── TaskRun 生命週期 ──────────────────────────────────────────────────────────
 
-def start_task_run(db: Session, *, task: Task, dispatch_target: str) -> TaskRun:
+def start_task_run(
+    db: Session, *, task: Task, dispatch_target: str, commit: bool = True
+) -> TaskRun:
     """開一筆執行(run_sequence 遞增),並把任務推進到 running。
 
     任務若在 pre-running 狀態(draft/submitted/policy_checking/
     source_resolving/waiting_for_user),沿合法鏈快轉到 running;
     終態任務不可再開 run → ``ValueError``。
     """
+    # This service is the canonical allocator, including callers outside the
+    # HTTP proxy.  Always acquire the parent Task first and refresh any stale
+    # identity-map state before inspecting status or allocating a sequence.
+    task = (
+        db.query(Task)
+        .populate_existing()
+        .filter(Task.id == task.id)
+        .with_for_update()
+        .one_or_none()
+    )
+    if task is None:
+        raise ValueError("找不到 Task，無法建立 TaskRun")
+
+    active_run = (
+        db.query(TaskRun.id)
+        .filter(
+            TaskRun.task_id == task.id,
+            TaskRun.status.in_((
+                TaskRunStatus.QUEUED.value,
+                TaskRunStatus.RUNNING.value,
+            )),
+        )
+        .first()
+    )
+    if active_run is not None:
+        raise ValueError(f"Task#{task.id} 已有 active TaskRun")
+
     try:
         target = DispatchTarget(dispatch_target)
     except ValueError:
@@ -295,7 +328,9 @@ def start_task_run(db: Session, *, task: Task, dispatch_target: str) -> TaskRun:
             raise ValueError(
                 f"任務狀態 {current.value} 不可開始執行(終態或非法路徑)"
             )
-        task = transition_task(db, task=task, new_status=nxt.value)
+        task = transition_task(
+            db, task=task, new_status=nxt.value, commit=False
+        )
         current = TaskStatus(task.status)
 
     last_sequence = (
@@ -314,8 +349,10 @@ def start_task_run(db: Session, *, task: Task, dispatch_target: str) -> TaskRun:
         classification_level=task.classification_level,
     )
     db.add(run)
-    db.commit()
-    db.refresh(run)
+    db.flush()
+    if commit:
+        db.commit()
+        db.refresh(run)
     return run
 
 
@@ -326,11 +363,13 @@ def finish_task_run(
     status: str,
     error: dict | None = None,
     usage_record_id: int | None = None,
+    commit: bool = True,
 ) -> TaskRun:
     """收攏一筆執行:只接受終態(completed/failed/cancelled)。
 
-    任務本身的收斂(completed/failed)屬 orchestration 層職責,
-    本函式只落 run 欄位,不代打任務狀態。
+    同時收斂 Task 本身；run 與 task 在同一個 transaction flush/commit，
+    避免 run 已終態但 Task 永遠停在 running。policy deny 的
+    ``blocked_by_policy`` 由治理 finalizer 明示處理（run 仍為 failed）。
     """
     try:
         target = TaskRunStatus(status)
@@ -343,6 +382,18 @@ def finish_task_run(
     task_run.error = error
     if usage_record_id is not None:
         task_run.usage_record_id = usage_record_id
-    db.commit()
-    db.refresh(task_run)
+    task = db.get(Task, task_run.task_id)
+    if task is None:
+        raise ValueError(f"找不到執行所屬任務 id={task_run.task_id}")
+    if target == TaskRunStatus.COMPLETED:
+        task.status = TaskStatus.COMPLETED.value
+    elif target == TaskRunStatus.FAILED:
+        task.status = TaskStatus.FAILED.value
+    else:
+        task.status = TaskStatus.CANCELLED.value
+    task.updated_at = _utcnow()
+    db.flush()
+    if commit:
+        db.commit()
+        db.refresh(task_run)
     return task_run

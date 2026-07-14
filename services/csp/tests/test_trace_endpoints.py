@@ -110,6 +110,8 @@ class TestIngest:
         )
         db.add(service_client)
         db.commit()
+        owner = make_user(db, username="trace_export_owner")
+        task = _make_task(db, owner)
 
         class _ClientAdapter:
             def post(self, url, json=None, headers=None):
@@ -124,9 +126,11 @@ class TestIngest:
             token_provider=lambda: service_token,
             start_worker=False,
             client_factory=_ClientAdapter,
+            task_id=task.id,
+            user_identity=owner.username,
         )
         exporter.enqueue(
-            "trace-exporter-live-contract",
+            task.trace_id,
             _span_payload("sdk-to-csp", span_type="agent.run.finished"),
         )
         exporter.flush()
@@ -139,7 +143,8 @@ class TestIngest:
         }
         db.expire_all()
         row = db.query(TraceSpan).filter_by(
-            trace_id="trace-exporter-live-contract",
+            trace_id=task.trace_id,
+            # Query uses the task-owned trace, never a free-floating id.
             span_id="sdk-to-csp",
         ).one()
         assert row.producer == "router"
@@ -263,10 +268,10 @@ class TestIngest:
         )
         assert resp.status_code == 401
 
-    def test_traceless_ingest_without_task_still_persists(
+    def test_traceless_ingest_without_task_fails_closed(
         self, client: TestClient, db: Session
     ):
-        """A trace with no owning task still ingests (task_id NULL)."""
+        """A free-floating trace has no owner/classification authority."""
         make_user(db, username="tr_notask")
         token = login(client, "tr_notask")
         resp = client.post(
@@ -274,14 +279,42 @@ class TestIngest:
             headers=_bearer(token),
             json={"spans": [_span_payload("s1")]},
         )
-        assert resp.status_code == 202
+        assert resp.status_code == 404
         db.expire_all()
-        row = (
-            db.query(TraceSpan)
-            .filter(TraceSpan.trace_id == "free-floating-trace")
-            .one()
+        assert db.query(TraceSpan).filter(
+            TraceSpan.trace_id == "free-floating-trace"
+        ).count() == 0
+
+    def test_foreign_owner_cannot_ingest_and_task_classification_is_floor(
+        self, client: TestClient, db: Session
+    ):
+        owner = make_user(db, username="tr_ingest_owner")
+        other = make_user(db, username="tr_ingest_other")
+        task = _make_task(db, owner)
+        task.classification_level = "機密"
+        db.commit()
+
+        denied = client.post(
+            f"/v1/traces/{task.trace_id}/spans",
+            headers=_bearer(_jwt(other)),
+            json={"spans": [_span_payload("foreign")]},
         )
-        assert row.task_id is None
+        assert denied.status_code == 403
+        accepted = client.post(
+            f"/v1/traces/{task.trace_id}/spans",
+            headers=_bearer(_jwt(owner)),
+            json={"spans": [
+                _span_payload("floor"),
+                _span_payload("raised", classification_level="絕對機密"),
+            ]},
+        )
+        assert accepted.status_code == 202
+        db.expire_all()
+        rows = {r.span_id: r for r in db.query(TraceSpan).filter_by(
+            trace_id=task.trace_id
+        )}
+        assert rows["floor"].classification_level == "機密"
+        assert rows["raised"].classification_level == "絕對機密"
 
 
 class TestQuery:

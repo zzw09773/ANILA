@@ -317,4 +317,6 @@ def test_logout_writes_row_visible_to_endpoint(
     revocations = resp.json()["revocations"]
     assert len(revocations) == 1, revocations
     assert revocations[0]["user_id"] == user.id
-    assert revocations[0]["revoked_at_version"] == 1
+    assert revocations[0]["revoked_at_version"] == 0
+    assert revocations[0]["scope"] == "sid"
+    assert len(revocations[0]["session_id_hash"]) == 64

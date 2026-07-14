@@ -33,6 +33,24 @@ class Settings(BaseSettings):
     # provenance are enforced end-to-end, both paths are secure-by-default OFF.
     # Development/test profiles may explicitly opt in with ENABLE_MEMORY=true.
     ENABLE_MEMORY: bool = False
+    # Gate 2 pilot posture. Turning pilot mode on is meaningful only after
+    # the signed-profile verifier succeeds; unconverged inference surfaces
+    # remain independently closed at their runtime boundaries.
+    ANILA_PILOT_MODE: bool = False
+    ENABLE_PILOT_PROMPT_GENERATOR: bool = False
+    ENABLE_PILOT_INGESTION_JUDGE: bool = False
+    ENABLE_PILOT_STUDIO_ARTIFACTS: bool = False
+    PILOT_FIRST_PARTY_AGENT_ALLOWLIST: str = ""
+    GATE2_PILOT_PROFILE_PATH: str = "secrets/gate2-pilot-profile.json"
+    GATE2_PILOT_TRUST_STORE_PATH: str = "secrets/gate2-pilot-trust.json"
+    GATE2_INFERENCE_INVENTORY_PATH: str = "policy/inference-callsites.v1.json"
+    # Exact Docker content ID of the executing CSP image. The signed Gate 2
+    # profile must bind this value, preventing approval replay on other code.
+    GATE2_CSP_IMAGE_ID: str = ""
+    # Compose-level pilot posture marker. Only the reviewed Gate 2 overlay
+    # injects this value; setting ANILA_PILOT_MODE in the host dotenv alone
+    # must never be sufficient to claim the signed pilot posture.
+    GATE2_PILOT_COMPOSE_POSTURE: str = ""
 
     # Unit/dev harness escape hatch only. Formal deployments must run Alembic
     # and the legacy idempotent migration pass before becoming ready. Startup
@@ -61,6 +79,13 @@ class Settings(BaseSettings):
     JWT_PRIVATE_KEY_PATH: str = "secrets/jwt-private.pem"
     JWT_PUBLIC_KEY_PATH: str = "secrets/jwt-public.pem"
     JWT_KID: str = "anila-v1"
+    # Stable trust-domain identifiers shared by every JWT consumer.  Tokens
+    # without these exact values are rejected even when the RS256 signature is
+    # otherwise valid.
+    JWT_ISSUER: str = "https://anila.internal/csp"
+    JWT_AUDIENCE: str = "anila-platform"
+    # Future-iat tolerance only; exp verification remains strict.
+    JWT_LEEWAY_SECONDS: int = Field(default=60, ge=0, le=300)
     # When True the JWT module will auto-generate a keypair at the
     # configured paths if missing. Dev / test only — production must
     # provision keys out-of-band so ``kid`` rotation is explicit.
@@ -73,6 +98,12 @@ class Settings(BaseSettings):
     # Proxy Timeouts (seconds)
     EMBEDDING_TIMEOUT: int = 30
     LLM_TIMEOUT: int = 120
+    # Hard ceilings for outbound SSE.  The httpx read timeout only limits an
+    # idle socket; a peer that keeps sending heartbeats could otherwise hold
+    # a request and its resources forever.
+    PROXY_STREAM_MAX_SECONDS: float = 300.0
+    PROXY_STREAM_MAX_EVENTS: int = 10000
+    PROXY_STREAM_MAX_BYTES: int = 16 * 1024 * 1024
 
     # 出向模型 gateway 的 API key (選配,預設空 = 不注入,行為不變)。
     # 內網拓撲下模型不直連 — 走 10.53.100.12 My-OpenAI-Frontend 的
@@ -87,6 +118,7 @@ class Settings(BaseSettings):
 
     # Health Check
     HEALTH_CHECK_INTERVAL: int = 60
+    TASK_RUN_STALE_SECONDS: int = Field(default=900, ge=60, le=86400)
 
     # Usage Writer
     USAGE_BATCH_SIZE: int = 100
@@ -137,6 +169,13 @@ class Settings(BaseSettings):
     # Attachment storage (local filesystem)
     ATTACHMENT_STORAGE_PATH: str = "data/attachments"
 
+    # Gate 2 G11: sealed retrieval payloads.  Formal Compose mounts this
+    # path from the external ANILA state directory; the repository-relative
+    # default is only for dev/TestClient.  Files contain the exact bounded
+    # source slabs sent to the model and therefore must be treated as
+    # classified application data (0700 directory, 0600 files).
+    SOURCE_SNAPSHOT_STORAGE_PATH: str = "data/source-snapshots"
+
     # Auto-register platform links on startup (JSON string)
     # Format: '[{"name":"n8n","url":"http://n8n:5678","icon":"workflow","description":"自動化工作流程"}]'
     AUTO_REGISTER_LINKS: str = ""
@@ -163,6 +202,15 @@ class Settings(BaseSettings):
     ENABLE_CARD_LOGIN: bool = False
     REQUIRE_CARD_LOGIN_ONLY: bool = False
     CARD_INITIAL_OWNERS: str = ""
+    # Offline certificate-revocation/profile enforcement. Formal card-only
+    # deployments mount an operator-refreshed PEM CRL bundle read-only and
+    # startup refuses a missing/stale-policy configuration.
+    CARD_CRL_REQUIRED: bool = False
+    CARD_CRL_BUNDLE_PATH: str = ""
+    CARD_CRL_MAX_AGE_HOURS: int = Field(default=24, ge=1, le=168)
+    CARD_CRL_SOURCE: str = ""
+    CARD_REQUIRED_EKU_OID: str = "1.3.6.1.5.5.7.3.2"  # id-kp-clientAuth
+    CARD_REQUIRED_CERT_POLICY_OIDS: str = ""
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

@@ -9,6 +9,7 @@ import { OutputsPage } from './routes/OutputsPage'
 import { WorkspacePage } from './routes/WorkspacePage'
 import { ProtectedRoute } from './routes/ProtectedRoute'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { gate2PilotCapabilities } from './config/pilotCapabilities'
 
 function AppRoutes() {
   const hydrate = useAuthStore((s) => s.hydrate)
@@ -21,7 +22,10 @@ function AppRoutes() {
       <Route element={<ProtectedRoute />}>
         <Route path="/" element={<DashboardPage />} />
         {/* 產出中心 — 跨知識庫產出總覽;Shell 導覽的「產出中心」深連結到這裡 */}
-        <Route path="/outputs" element={<OutputsPage />} />
+        <Route
+          path="/outputs"
+          element={gate2PilotCapabilities.artifact ? <OutputsPage /> : <Navigate to="/" replace />}
+        />
         <Route path="/c/:collectionId" element={<WorkspacePage />} />
         <Route path="/c/:collectionId/conv/:conversationId" element={<WorkspacePage />} />
       </Route>

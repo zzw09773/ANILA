@@ -70,7 +70,7 @@ class RegisteredServiceCreate(BaseModel):
     trace_callback_url: str | None = None
     # R-SEC (ADR-0008): audit-callback client binding. Admin-tier only.
     service_client_id: int | None = None
-    classification_ceiling: ClassificationLevel | None = None
+    classification_ceiling: ClassificationLevel = ClassificationLevel.UNCLASSIFIED
     required_roles: list[str] = Field(default_factory=list)
     is_public: bool = False
     sort_order: int = 0
@@ -122,7 +122,9 @@ class RegisteredServiceUpdate(BaseModel):
     # API layer rejects a per-service admin who tries to set this even when it
     # is whitelisted in ``db_editable_fields``.
     service_client_id: int | None = None
-    classification_ceiling: ClassificationLevel | None = None
+    # ``exclude_unset=True`` keeps an omitted update a no-op; explicit null is
+    # invalid and can no longer clear the DB ceiling.
+    classification_ceiling: ClassificationLevel = ClassificationLevel.UNCLASSIFIED
     required_roles: list[str] | None = None
     is_public: bool | None = None
     is_active: bool | None = None
@@ -159,7 +161,7 @@ class RegisteredServiceResponse(BaseModel):
     audit_callback_url: str | None
     trace_callback_url: str | None
     service_client_id: int | None
-    classification_ceiling: str | None
+    classification_ceiling: ClassificationLevel
     required_roles: list[str]
     is_public: bool
     is_active: bool
@@ -215,7 +217,7 @@ class AuditCallbackPayload(BaseModel):
     timestamp: datetime | None = None
     actor: AuditCallbackActor | None = None
     resource: AuditCallbackResource | None = None
-    classification_level: str | None = None
+    classification_level: ClassificationLevel = ClassificationLevel.UNCLASSIFIED
     metadata: dict | None = None
 
     @field_validator("event_type")
@@ -235,6 +237,7 @@ class AuditCallbackResponse(BaseModel):
     service_id: int | None
     launch_id: str | None
     event_type: str
+    classification_level: ClassificationLevel
     received_at: datetime
 
     model_config = {"from_attributes": True}

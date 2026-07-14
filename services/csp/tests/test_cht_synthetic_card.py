@@ -20,6 +20,7 @@ from cht.synthetic_pki import (  # noqa: E402
     SYNTHETIC_DISPLAY_NAME,
     SYNTHETIC_EMAIL,
     SYNTHETIC_EMPLOYEE_ID,
+    SYNTHETIC_SIGNER_CERT_SERIAL,
 )
 
 
@@ -47,7 +48,7 @@ def test_cht_emulator_signs_actual_nonce_with_trusted_synthetic_chain(monkeypatc
     assert claims.employee_id == SYNTHETIC_EMPLOYEE_ID
     assert claims.display_name == SYNTHETIC_DISPLAY_NAME
     assert claims.email == SYNTHETIC_EMAIL
-    assert claims.card_serial == SYNTHETIC_CARD_SERIAL
+    assert claims.card_serial == SYNTHETIC_SIGNER_CERT_SERIAL
 
     with pytest.raises(InvalidSignatureError, match="nonce"):
         verify_pkcs7_signature(SYNTHETIC_CARD.sign(nonce), "different-challenge")

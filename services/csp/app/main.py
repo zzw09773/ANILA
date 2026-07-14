@@ -164,16 +164,22 @@ async def lifespan(app: FastAPI):
     from app.services.startup_security import (
         assert_card_only_data_feature_policy,
         assert_card_nonce_binding_policy,
+        assert_card_crl_policy,
         assert_deployment_profile_posture,
+        assert_gate2_pilot_profile,
         assert_intranet_lockdown_consistency,
         assert_no_dev_defaults,
         assert_secure_cookie_policy,
+        assert_source_snapshot_storage_policy,
         assert_startup_migration_policy,
     )
     assert_deployment_profile_posture()
+    assert_gate2_pilot_profile()
     assert_no_dev_defaults()
     assert_card_nonce_binding_policy()
+    assert_card_crl_policy()
     assert_secure_cookie_policy()
+    assert_source_snapshot_storage_policy()
     assert_startup_migration_policy()
     # Branch SSO: 確保 REQUIRE_CARD_LOGIN_ONLY 與 ENABLE_CARD_LOGIN 互相一致，
     # 避免「政策設為卡片唯一但卡片功能沒開」的 bricked 狀態。

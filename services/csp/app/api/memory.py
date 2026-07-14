@@ -31,6 +31,12 @@ from app.database import get_db
 from app.models.user import User
 from app.models.user_memory import ConversationMemoryChunk, UserFact
 from app.services.auth_service import get_current_user
+from app.services.memory_service import (
+    MemoryPolicyDataError,
+    get_authorized_chunk_rows,
+    get_user_facts,
+)
+from anila_contracts import Classification
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
@@ -59,6 +65,12 @@ class FactResponse(BaseModel):
     confidence: float
     source_conversation_id: Optional[int] = None
     source_message_id: Optional[int] = None
+    classification_level: str
+    classification_source: str
+    source_task_id: Optional[int] = None
+    source_snapshot_id: Optional[int] = None
+    required_compartment_ids: list[int]
+    source_collection_ids: list[int]
     created_at: datetime
     updated_at: datetime
 
@@ -77,6 +89,12 @@ class ChunkPreviewResponse(BaseModel):
     role: str
     content: str  # already trimmed to _PREVIEW_CHARS
     is_encrypted: bool
+    classification_level: str
+    classification_source: str
+    source_task_id: Optional[int] = None
+    source_snapshot_id: Optional[int] = None
+    required_compartment_ids: list[int]
+    source_collection_ids: list[int]
     created_at: datetime
 
 
@@ -106,15 +124,34 @@ def list_facts(
     deployment ever sees thousands of facts per user, the right fix
     is consolidation, not pagination.
     """
-    rows = (
-        db.query(UserFact)
-        .filter(UserFact.user_id == current_user.id)
-        .order_by(UserFact.updated_at.desc())
-        .all()
-    )
+    try:
+        rows = get_user_facts(db, current_user.id)
+    except MemoryPolicyDataError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Memory 治理資料不完整，已依 fail-closed 拒絕讀取",
+        ) from exc
     return FactListResponse(
         total=len(rows),
-        facts=[FactResponse.model_validate(r) for r in rows],
+        facts=[
+            FactResponse(
+                id=int(row.id),
+                key=row.key,
+                value=row.value,
+                confidence=row.confidence,
+                source_conversation_id=row.source_conversation_id,
+                source_message_id=row.source_message_id,
+                classification_level=row.classification_level.to_storage(),
+                classification_source=row.classification_source,
+                source_task_id=row.source_task_id,
+                source_snapshot_id=row.source_snapshot_id,
+                required_compartment_ids=sorted(row.required_compartment_ids),
+                source_collection_ids=sorted(row.source_collection_ids),
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+            )
+            for row in rows
+        ],
     )
 
 
@@ -177,22 +214,23 @@ def list_chunks(
     * ``distinct_conversations`` — gives a sense of how broad the
       recall is, helps the user decide whether wiping is overkill.
     """
-    base_q = db.query(ConversationMemoryChunk).filter(
-        ConversationMemoryChunk.user_id == current_user.id
+    try:
+        authorized = get_authorized_chunk_rows(db, current_user.id)
+    except MemoryPolicyDataError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Memory 治理資料不完整，已依 fail-closed 拒絕讀取",
+        ) from exc
+    total = len(authorized)
+    encrypted_total = sum(
+        level >= Classification.CONFIDENTIAL
+        for _row, level, _compartments, _collections in authorized
     )
-    total = base_q.count()
-    encrypted_total = base_q.filter(
-        ConversationMemoryChunk.is_encrypted.is_(True)
-    ).count()
-    distinct_conv_rows = (
-        base_q.with_entities(ConversationMemoryChunk.conversation_id)
-        .distinct()
-        .count()
-    )
-    rows = base_q.order_by(ConversationMemoryChunk.id.desc()).limit(limit).all()
+    distinct_conv_rows = len({int(row.conversation_id) for row, *_ in authorized})
+    rows = authorized[:limit]
 
     items: list[ChunkPreviewResponse] = []
-    for r in rows:
+    for r, level, compartments, collections in rows:
         content = r.content or ""
         if len(content) > _PREVIEW_CHARS:
             content = content[:_PREVIEW_CHARS] + "…"
@@ -202,7 +240,15 @@ def list_chunks(
                 conversation_id=int(r.conversation_id),
                 role=str(r.role),
                 content=content,
-                is_encrypted=bool(r.is_encrypted),
+                is_encrypted=bool(
+                    r.is_encrypted or level >= Classification.CONFIDENTIAL
+                ),
+                classification_level=level.to_storage(),
+                classification_source=str(r.classification_source),
+                source_task_id=r.source_task_id,
+                source_snapshot_id=r.source_snapshot_id,
+                required_compartment_ids=sorted(compartments),
+                source_collection_ids=sorted(collections),
                 created_at=r.created_at,
             )
         )

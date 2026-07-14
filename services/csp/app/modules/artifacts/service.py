@@ -190,6 +190,7 @@ def create_artifact(
     db: Session, *, payload: ArtifactIn, owner_user_id: int | None,
     source_task_id: int | None, source_snapshot_id: int | None,
     trace_id: str | None, initial_level: ClassificationLevel,
+    commit: bool = True,
 ) -> Artifact:
     """建立 artifact 列(不含 version);binding 規則 fail-closed。
 
@@ -217,8 +218,10 @@ def create_artifact(
         classification_level=initial_level.to_storage(),
     )
     db.add(artifact)
-    db.commit()
-    db.refresh(artifact)
+    db.flush()
+    if commit:
+        db.commit()
+        db.refresh(artifact)
     return artifact
 
 
@@ -228,6 +231,7 @@ def create_version(
     citation_map: dict | None, generated_by_model_id: int | None,
     generated_by_agent_id: int | None, generated_by_studio_job_id: str | None,
     level: ClassificationLevel,
+    commit: bool = True,
 ) -> ArtifactVersion:
     """新增一個版本(version = 現有最大 + 1),並回填 ``current_version``。"""
     last = (
@@ -252,8 +256,10 @@ def create_version(
     db.add(version)
     artifact.current_version = last + 1
     artifact.updated_at = _utcnow()
-    db.commit()
-    db.refresh(version)
+    db.flush()
+    if commit:
+        db.commit()
+        db.refresh(version)
     return version
 
 
@@ -261,6 +267,7 @@ def record_export(
     db: Session, *, artifact: Artifact, payload: ArtifactExportIn,
     exporter_user_id: int | None, exporter_employee_id: str | None,
     policy_decision_id: int | None, level: ClassificationLevel,
+    commit: bool = True,
 ) -> ExportRecord:
     """落一筆(已核可的)匯出列;只在 policy allow 後由 orchestrator 呼叫。"""
     export = ExportRecord(
@@ -277,8 +284,10 @@ def record_export(
         classification_level=level.to_storage(),
     )
     db.add(export)
-    db.commit()
-    db.refresh(export)
+    db.flush()
+    if commit:
+        db.commit()
+        db.refresh(export)
     return export
 
 

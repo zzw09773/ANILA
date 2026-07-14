@@ -54,7 +54,13 @@ class ChatHandler:
         self._backend_resolver = backend_resolver
         self._default_aspect_ratio = default_aspect_ratio
 
-    async def handle(self, req: ChatCompletionRequest) -> ChatCompletionResponse:
+    async def handle(
+        self,
+        req: ChatCompletionRequest,
+        *,
+        task_id: str | None = None,
+        user_identity: str | None = None,
+    ) -> ChatCompletionResponse:
         user_text = req.last_user_text()
         english_prompt = await self._translator.translate(user_text)
 
@@ -65,7 +71,11 @@ class ChatHandler:
         # 只要把解析出來的值傳進工廠即可。
         endpoint, model = await self._backend_resolver.resolve()
 
-        async with self._flux_client_factory(endpoint, model) as flux:
+        flux_context = self._flux_client_factory(endpoint, model)
+        set_context = getattr(flux_context, "set_governance_context", None)
+        if callable(set_context):
+            set_context(task_id=task_id, user_identity=user_identity)
+        async with flux_context as flux:
             png_bytes = await flux.generate(
                 english_prompt,
                 aspect_ratio=self._default_aspect_ratio,

@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 """Shared test fixtures for myCSPPlatform backend tests.
 
 Uses SQLite in-memory so tests have no external dependency on Postgres.
@@ -120,10 +121,18 @@ def client(db_engine):
 def synthetic_card_trust(monkeypatch):
     """Trust only the ephemeral test CA and keep nonce binding enabled."""
     from app.services import card_auth
-    from tests.synthetic_card_pki import SYNTHETIC_CARD
+    from tests.synthetic_card_pki import SYNTHETIC_CARD, SYNTHETIC_POLICY_OID
 
     monkeypatch.setattr(card_auth, "_ca_anchor_cache", SYNTHETIC_CARD.anchor_cache())
+    monkeypatch.setattr(card_auth, "_crl_cache", SYNTHETIC_CARD.crl_cache())
+    monkeypatch.setattr(card_auth, "_crl_cache_source", None)
     monkeypatch.setattr(card_auth, "_SKIP_NONCE_BINDING", False)
+    monkeypatch.setattr(card_auth.settings, "CARD_CRL_REQUIRED", True)
+    monkeypatch.setattr(
+        card_auth.settings,
+        "CARD_REQUIRED_CERT_POLICY_OIDS",
+        SYNTHETIC_POLICY_OID,
+    )
     return SYNTHETIC_CARD
 
 

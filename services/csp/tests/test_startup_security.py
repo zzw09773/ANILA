@@ -348,6 +348,7 @@ def _set_formal_card_profile(monkeypatch) -> None:
         "ANILA_ALLOW_HTTP_AGENT_ENDPOINT": "1",
         "ANILA_ALLOW_PRIVATE_ENDPOINT": "0",
         "CARD_DEV_SKIP_NONCE_BINDING": "false",
+        "CARD_CRL_REQUIRED": "true",
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
@@ -519,3 +520,44 @@ async def test_lifespan_rejects_profile_drift_before_migrations(
         async with main_module.lifespan(main_module.app):
             pass
     assert migration_called is False
+
+
+def test_gate2_pilot_mode_requires_external_signed_profile(
+    monkeypatch, reload_startup_security, tmp_path
+):
+    monkeypatch.setenv("ANILA_PILOT_MODE", "true")
+    monkeypatch.setenv("GATE2_PILOT_COMPOSE_POSTURE", "gate2-pilot-v1")
+    monkeypatch.setenv(
+        "GATE2_PILOT_PROFILE_PATH", str(tmp_path / "missing-profile.json")
+    )
+    monkeypatch.setenv(
+        "GATE2_PILOT_TRUST_STORE_PATH", str(tmp_path / "missing-trust.json")
+    )
+    monkeypatch.setenv(
+        "GATE2_INFERENCE_INVENTORY_PATH", str(tmp_path / "missing-inventory.json")
+    )
+    with pytest.raises(RuntimeError, match="unsigned/invalid Gate 2 pilot"):
+        reload_startup_security().assert_gate2_pilot_profile()
+
+
+def test_gate2_pilot_mode_rejects_base_compose_without_posture_marker(
+    monkeypatch, reload_startup_security
+):
+    monkeypatch.setenv("ANILA_PILOT_MODE", "true")
+    monkeypatch.delenv("GATE2_PILOT_COMPOSE_POSTURE", raising=False)
+
+    with pytest.raises(RuntimeError, match="Compose posture marker"):
+        reload_startup_security().assert_gate2_pilot_profile()
+
+
+def test_non_pilot_does_not_accept_disabled_template_as_approval(
+    reload_startup_security,
+):
+    # Normal development remains available, but verified-callsite cache is
+    # empty and cannot accidentally be reused from an earlier pilot process.
+    ss = reload_startup_security()
+    ss._verified_pilot_callsites = frozenset({"csp.chat_model"})
+    ss._verified_pilot_admission = object()
+    ss.assert_gate2_pilot_profile()
+    assert ss._verified_pilot_callsites == frozenset()
+    assert ss._verified_pilot_admission is None

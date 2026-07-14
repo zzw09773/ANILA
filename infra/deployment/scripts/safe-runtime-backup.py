@@ -32,6 +32,7 @@ TLS_FILES = ("server.key", "server.crt")
 TREE_KINDS = {
     "uploads": "uploads.tar.gz",
     "attachments": "attachments.tar.gz",
+    "source-snapshots": "source-snapshots.tar.gz",
 }
 
 

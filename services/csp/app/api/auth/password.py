@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.middleware.cookies import (
+    ACCESS_COOKIE_NAME,
     REFRESH_COOKIE_NAME,
     clear_session_cookies,
     set_session_cookies,
@@ -29,10 +30,13 @@ from app.services.startup_security import (
     is_break_glass_active,
 )
 from app.services.token_revocation_publisher import publish_revocation_sync
+from app.services.token_revocation_service import revoke_sid
 from app.services.auth_service import (
     authenticate_user,
     create_tokens,
     get_current_user,
+    rotate_refresh_token,
+    RefreshTokenReuseDetected,
     _load_user_from_payload,
     PENDING_APPROVAL_SENTINEL,
     LOCAL_PASSWORD_DISABLED_SENTINEL,
@@ -194,7 +198,7 @@ def login(
             commit=True,
         )
         raise HTTPException(status_code=404)
-    tokens = create_tokens(result, amr=("pwd",))
+    tokens = create_tokens(result, db=db, amr=("pwd",))
     _stamp_last_login(db, result)
     log_audit_event(
         db,
@@ -242,17 +246,27 @@ async def refresh(
         )
     payload = decode_token(token)
     user = _load_user_from_payload(payload, db, "refresh")
-    raw_amr = payload.get("amr") if isinstance(payload, dict) else None
-    # Tokens issued before AMR support must not be upgraded to smart-card
-    # sessions merely by refreshing.  They receive an empty AMR and must swipe
-    # again before crossing a card-only reverse-proxy gate.
-    amr = (
-        tuple(raw_amr)
-        if isinstance(raw_amr, list)
-        and all(isinstance(method, str) for method in raw_amr)
-        else ()
-    )
-    tokens = create_tokens(user, amr=amr)
+    try:
+        tokens = rotate_refresh_token(
+            db,
+            user,
+            payload,
+            ip_address=(
+                http_request.client.host if http_request.client else None
+            ),
+        )
+    except RefreshTokenReuseDetected as exc:
+        publish_revocation_sync(
+            user_id=user.id,
+            revoked_at_version=int(user.token_version or 0),
+            scope="sid",
+            session_id_hash=exc.session_id_hash,
+            reason="refresh_token_reuse",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="刷新權杖已使用；工作階段已撤銷",
+        ) from exc
     set_session_cookies(
         response,
         access_token=tokens["access_token"],
@@ -267,28 +281,47 @@ def logout(
     response: Response,
     db: Session = Depends(get_db),
 ):
-    """Clear session cookies and bump the user's token_version.
-
-    Bumping ``token_version`` invalidates any outstanding JWTs the user
-    already issued — so logout is effective even if an attacker copied
-    the access token before logout. Cookie removal handles the active
-    browser tab; token_version handles everything else.
-    """
-    try:
-        current_user = get_current_user(http_request, None, db)
-    except HTTPException:
-        current_user = None
+    """Clear cookies and revoke only the currently presented session."""
+    current_user = None
+    claims = None
+    authorization = http_request.headers.get("Authorization", "")
+    scheme, _, bearer_token = authorization.partition(" ")
+    token = (
+        bearer_token
+        if scheme.lower() == "bearer" and bearer_token
+        else http_request.cookies.get(ACCESS_COOKIE_NAME)
+    )
+    if token:
+        claims = decode_token(token)
+        try:
+            current_user = _load_user_from_payload(claims, db, "access")
+        except HTTPException:
+            current_user = None
 
     if current_user is not None:
-        current_user.token_version = (current_user.token_version or 0) + 1
-        _commit_token_revocation(db, current_user)
+        sid = claims.get("sid") if isinstance(claims, dict) else None
+        if isinstance(sid, str):
+            row = revoke_sid(
+                db,
+                user_id=current_user.id,
+                sid=sid,
+                reason="logout",
+                commit=True,
+            )
+            publish_revocation_sync(
+                user_id=current_user.id,
+                revoked_at_version=int(row.revoked_at_version),
+                scope="sid",
+                session_id_hash=row.session_id_hash,
+                reason=row.reason,
+            )
         log_audit_event(
             db,
             actor=current_user,
             action="logout",
             resource_type="auth",
             resource_id=current_user.id,
-            detail="使用者登出（cookie 清除 + token_version++）",
+            detail="使用者登出（cookie 清除 + current sid revoked）",
             ip_address=http_request.client.host if http_request.client else None,
             commit=True,
         )
@@ -334,7 +367,9 @@ def change_password(
         detail="使用者更新自身密碼",
         commit=True,
     )
+    tokens = create_tokens(current_user, db=db, amr=("pwd",))
+    db.commit()
     return {
         "message": "密碼已更新，請重新登入",
-        **create_tokens(current_user, amr=("pwd",)),
+        **tokens,
     }

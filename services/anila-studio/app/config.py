@@ -10,6 +10,7 @@ pydantic-settings compatibility.
 
 from __future__ import annotations
 
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -51,7 +52,10 @@ class Settings(BaseSettings):
     # JWT verify — only public key needed (csp signs with private).
     JWT_KID: str = "anila-v1"  # default until JWKS fetch overrides
     JWT_ALGORITHMS: tuple[str, ...] = ("RS256",)
-    # Sub-second drift tolerance for the iat/exp checks.
+    JWT_ISSUER: str = "https://anila.internal/csp"
+    JWT_AUDIENCE: str = "anila-platform"
+    # Tolerance for rejecting a signed token whose iat is in the future. Token
+    # expiry remains strict: leeway is deliberately not applied to exp.
     JWT_LEEWAY_SECONDS: int = 60
     # Formal browser sessions use the host-only ``__Host-`` cookie name.
     # False is reserved for explicit HTTP-only unit/local development and
@@ -86,6 +90,13 @@ class Settings(BaseSettings):
     JWKS_REFRESH_SECONDS: int = 3600
     # Revocation cache TTL (matches csp /api/auth/revocations retention).
     REVOCATION_CACHE_TTL_SECONDS: int = 30 * 24 * 3600
+    # Pub/sub is the fast path, but it has no delivery acknowledgement. This
+    # durable replay interval bounds propagation when a CSP publish fails.
+    REVOCATION_RECONCILE_INTERVAL_SECONDS: float = Field(
+        default=5.0,
+        ge=0.1,
+        le=60.0,
+    )
 
     # ── Durable job store (Slice 8b) ─────────────────────────────────────
     # The five artifact pipelines used to hold job state purely in process

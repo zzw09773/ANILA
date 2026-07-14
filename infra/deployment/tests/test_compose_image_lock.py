@@ -102,6 +102,18 @@ set -e
             rows.append(f"{variable}=sha256:{index:064x}")
         return "\n".join(rows) + "\n"
 
+    def _pilot_env_text(self) -> str:
+        rows = [
+            "ANILA_DEPLOYMENT_PROFILE=prod-intranet-card",
+            "ANILA_PILOT_MODE=true",
+        ]
+        for index, entry in enumerate(self.inventory.values(), 1):
+            if entry.service not in MODULE.GATE2_PILOT_ACTIVE_SERVICES:
+                continue
+            variable = MODULE.IMAGE_ENV_BY_SERVICE[entry.service]
+            rows.append(f"{variable}=sha256:{index:064x}")
+        return "\n".join(rows) + "\n"
+
     def test_current_compose_wires_every_inventory_service_to_lock_variable(self):
         MODULE.verify_compose_wiring(MODULE.DEFAULT_COMPOSE, self.inventory)
 
@@ -143,6 +155,29 @@ set -e
                 lock,
                 include_optional=False,
                 inspect_docker=False,
+            )
+
+    def test_gate2_pilot_requires_only_exact_active_service_pins(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env_path = Path(directory) / ".env"
+            env_path.write_text(self._pilot_env_text(), encoding="utf-8")
+            MODULE.verify_env(
+                env_path,
+                self.inventory,
+                None,
+                include_optional=False,
+                inspect_docker=False,
+                posture="gate2-pilot",
+            )
+
+    def test_gate2_pilot_rejects_optional_profile_activation(self):
+        with self.assertRaisesRegex(
+            MODULE.ImageLockError, "forbids optional Compose profiles"
+        ):
+            MODULE.active_services(
+                self.inventory,
+                posture="gate2-pilot",
+                include_optional=True,
             )
 
     def test_mutable_tag_in_formal_env_is_rejected(self):
@@ -248,6 +283,86 @@ set -e
                 include_optional=False,
             )
 
+    def test_gate2_pilot_resolved_service_set_and_images_are_exact(self):
+        values = {
+            line.split("=", 1)[0]: line.split("=", 1)[1]
+            for line in self._pilot_env_text().splitlines()
+        }
+        services = {
+            service: {"image": values[MODULE.IMAGE_ENV_BY_SERVICE[service]]}
+            for service in MODULE.GATE2_PILOT_ACTIVE_SERVICES
+        }
+        services["csp"]["environment"] = {
+            "ANILA_DEPLOYMENT_PROFILE": "prod-intranet-card",
+            "ANILA_BREAK_GLASS_OWNER": "",
+            "ANILA_BREAK_GLASS_TICKET": "",
+            "ANILA_BREAK_GLASS_EXPIRES_AT": "",
+            "ANILA_PILOT_MODE": "true",
+            "GATE2_PILOT_COMPOSE_POSTURE": "gate2-pilot-v1",
+        }
+        config = {"name": "anila-platform", "services": services}
+        MODULE.verify_resolved_compose_images(
+            values,
+            self.inventory,
+            config,
+            include_optional=False,
+            posture="gate2-pilot",
+        )
+
+        for mutation, expected_error in (
+            ({**services, "ingestion-worker": {"image": "sha256:" + "f" * 64}}, "unexpected"),
+            ({name: value for name, value in services.items() if name != "router"}, "missing"),
+        ):
+            with (
+                self.subTest(expected_error=expected_error),
+                self.assertRaisesRegex(MODULE.ImageLockError, expected_error),
+            ):
+                MODULE.verify_resolved_compose_images(
+                    values,
+                    self.inventory,
+                    {"name": "anila-platform", "services": mutation},
+                    include_optional=False,
+                    posture="gate2-pilot",
+                )
+
+    def test_gate2_pilot_env_and_resolved_marker_must_match_posture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env_path = Path(directory) / ".env"
+            env_path.write_text(self._env_text(), encoding="utf-8")
+            with self.assertRaisesRegex(MODULE.ImageLockError, "ANILA_PILOT_MODE=true"):
+                MODULE.verify_env(
+                    env_path,
+                    self.inventory,
+                    None,
+                    include_optional=False,
+                    inspect_docker=False,
+                    posture="gate2-pilot",
+                )
+
+        values = {
+            line.split("=", 1)[0]: line.split("=", 1)[1]
+            for line in self._pilot_env_text().splitlines()
+        }
+        services = {
+            service: {"image": values[MODULE.IMAGE_ENV_BY_SERVICE[service]]}
+            for service in MODULE.GATE2_PILOT_ACTIVE_SERVICES
+        }
+        services["csp"]["environment"] = {
+            "ANILA_DEPLOYMENT_PROFILE": "prod-intranet-card",
+            "ANILA_BREAK_GLASS_OWNER": "",
+            "ANILA_BREAK_GLASS_TICKET": "",
+            "ANILA_BREAK_GLASS_EXPIRES_AT": "",
+            "ANILA_PILOT_MODE": "true",
+        }
+        with self.assertRaisesRegex(MODULE.ImageLockError, "posture marker"):
+            MODULE.verify_resolved_compose_images(
+                values,
+                self.inventory,
+                {"name": "anila-platform", "services": services},
+                include_optional=False,
+                posture="gate2-pilot",
+            )
+
     def test_breakglass_metadata_shell_override_is_rejected(self):
         values = {
             line.split("=", 1)[0]: line.split("=", 1)[1]
@@ -318,6 +433,36 @@ set -e
                     Path("formal.env"), include_optional=False
                 )
 
+    def test_empty_ambient_compose_control_variable_is_rejected(self):
+        with mock.patch.dict(os.environ, {"COMPOSE_FILE": ""}):
+            with self.assertRaisesRegex(MODULE.ImageLockError, "COMPOSE_FILE"):
+                MODULE.resolved_compose_config(
+                    Path("formal.env"),
+                    include_optional=False,
+                    posture="gate2-pilot",
+                )
+
+    def test_gate2_pilot_render_uses_base_and_overlay_with_canonical_project(self):
+        rendered = {"name": "anila-platform", "services": {}}
+        completed = subprocess.CompletedProcess(
+            ["docker", "compose"], 0, __import__("json").dumps(rendered), ""
+        )
+        with mock.patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(
+                MODULE.resolved_compose_config(
+                    Path("formal.env"),
+                    include_optional=False,
+                    posture="gate2-pilot",
+                ),
+                rendered,
+            )
+        command = run.call_args.args[0]
+        self.assertEqual(command[:4], ["docker", "compose", "--project-name", "anila-platform"])
+        self.assertEqual(
+            [command[index + 1] for index, value in enumerate(command) if value == "--file"],
+            [str(MODULE.DEFAULT_COMPOSE.resolve()), str(MODULE.GATE2_PILOT_COMPOSE.resolve())],
+        )
+
     def test_running_container_immutable_ids_are_read_back(self):
         values = {
             line.split("=", 1)[0]: line.split("=", 1)[1]
@@ -352,6 +497,111 @@ set -e
                 Path("formal.env"),
                 include_optional=False,
             )
+
+    def test_gate2_pilot_running_set_and_every_image_id_are_read_back(self):
+        values = {
+            line.split("=", 1)[0]: line.split("=", 1)[1]
+            for line in self._pilot_env_text().splitlines()
+        }
+        expected_services = sorted(MODULE.GATE2_PILOT_ACTIVE_SERVICES)
+        inspected: list[str] = []
+
+        def run(command):
+            if "--services" in command:
+                return subprocess.CompletedProcess(
+                    command, 0, "\n".join(expected_services) + "\n", ""
+                )
+            if command[:3] == ["docker", "container", "inspect"]:
+                service = command[-1].removeprefix("cid-")
+                inspected.append(service)
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    values[MODULE.IMAGE_ENV_BY_SERVICE[service]] + "\n",
+                    "",
+                )
+            service = command[-1]
+            return subprocess.CompletedProcess(command, 0, f"cid-{service}\n", "")
+
+        with mock.patch.object(MODULE, "_run_utf8", side_effect=run):
+            MODULE.verify_running_containers(
+                values,
+                self.inventory,
+                Path("formal.env"),
+                include_optional=False,
+                posture="gate2-pilot",
+            )
+        self.assertEqual(inspected, expected_services)
+
+    def test_gate2_pilot_running_service_set_rejects_missing_and_unexpected(self):
+        values = {
+            line.split("=", 1)[0]: line.split("=", 1)[1]
+            for line in self._pilot_env_text().splitlines()
+        }
+        expected = set(MODULE.GATE2_PILOT_ACTIVE_SERVICES)
+        mutations = (
+            (expected - {"router"}, "missing"),
+            (expected | {"ingestion-worker"}, "unexpected"),
+        )
+        for running, error in mutations:
+            completed = subprocess.CompletedProcess(
+                ["docker", "compose"], 0, "\n".join(sorted(running)) + "\n", ""
+            )
+            with (
+                self.subTest(error=error),
+                mock.patch.object(MODULE, "_run_utf8", return_value=completed),
+                self.assertRaisesRegex(MODULE.ImageLockError, error),
+            ):
+                MODULE.verify_running_containers(
+                    values,
+                    self.inventory,
+                    Path("formal.env"),
+                    include_optional=False,
+                    posture="gate2-pilot",
+                )
+
+    def test_gate2_pilot_running_image_drift_is_rejected(self):
+        values = {
+            line.split("=", 1)[0]: line.split("=", 1)[1]
+            for line in self._pilot_env_text().splitlines()
+        }
+        expected_services = sorted(MODULE.GATE2_PILOT_ACTIVE_SERVICES)
+
+        def run(command):
+            if "--services" in command:
+                return subprocess.CompletedProcess(
+                    command, 0, "\n".join(expected_services) + "\n", ""
+                )
+            if command[:3] == ["docker", "container", "inspect"]:
+                service = command[-1].removeprefix("cid-")
+                image_id = values[MODULE.IMAGE_ENV_BY_SERVICE[service]]
+                if service == "router":
+                    image_id = "sha256:" + "f" * 64
+                return subprocess.CompletedProcess(command, 0, image_id + "\n", "")
+            return subprocess.CompletedProcess(command, 0, f"cid-{command[-1]}\n", "")
+
+        with (
+            mock.patch.object(MODULE, "_run_utf8", side_effect=run),
+            self.assertRaisesRegex(
+                MODULE.ImageLockError, "running container image drift for router"
+            ),
+        ):
+            MODULE.verify_running_containers(
+                values,
+                self.inventory,
+                Path("formal.env"),
+                include_optional=False,
+                posture="gate2-pilot",
+            )
+
+    def test_cli_supports_gate2_pilot_posture_and_defaults_to_normal(self):
+        parser = MODULE._parser()
+        normal = parser.parse_args(["check-wiring"])
+        pilot = parser.parse_args(
+            ["verify-env", "--posture", "gate2-pilot", "--env-file", ".env"]
+        )
+        self.assertEqual(normal.posture, "normal")
+        self.assertEqual(pilot.posture, "gate2-pilot")
 
     def test_intranet_bootstrap_installs_and_verifies_bundle_lock(self):
         script = (

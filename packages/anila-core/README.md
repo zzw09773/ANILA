@@ -42,7 +42,7 @@
 | `python-frontmatter>=1.1` / `pyyaml>=6.0` | agent definition / 設定載入 |
 | `anyio>=4.0` / `aiofiles>=23.0` | async IO |
 | `asyncpg>=0.29` / `pgvector>=0.3` | Pillar 2 `CollectionScopedPgVectorStore`(ingestion 中央向量庫) |
-| `anila-contracts>=0.1,<0.2` | 獨立的 Classification／StepEvent／AgentError wire contracts；`anila_core.contracts` 僅作 facade |
+| `anila-contracts>=1,<2` | 獨立的分類、事件與 Gate 2 治理 wire contracts；`anila_core.contracts` 僅作 facade |
 | `anila-security>=0.1,<0.2` | 舊 `anila_core.security` import 的相容 facade；實作與 `cryptography` 依賴在獨立套件 |
 | `aiosqlite>=0.20` | 預設 `sqlite_session` short-term session adapter |
 

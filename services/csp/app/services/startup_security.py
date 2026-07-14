@@ -19,9 +19,13 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 import re
+import stat
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
+
+from cryptography import x509
 
 from app.config import settings
 
@@ -140,6 +144,7 @@ def _resolved_posture() -> dict[str, object]:
         "CARD_DEV_SKIP_NONCE_BINDING": _env_truthy(
             "CARD_DEV_SKIP_NONCE_BINDING"
         ),
+        "CARD_CRL_REQUIRED": settings.CARD_CRL_REQUIRED,
     }
 
 
@@ -162,6 +167,7 @@ _PROD_INTRANET_CARD_POSTURE: dict[str, object] = {
     "ANILA_ALLOW_HTTP_AGENT_ENDPOINT": True,
     "ANILA_ALLOW_PRIVATE_ENDPOINT": False,
     "CARD_DEV_SKIP_NONCE_BINDING": False,
+    "CARD_CRL_REQUIRED": True,
 }
 
 _FORMAL_PROFILE_POSTURES: dict[str, dict[str, object]] = {
@@ -173,6 +179,7 @@ _FORMAL_PROFILE_POSTURES: dict[str, dict[str, object]] = {
 }
 
 _AUDIT_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}$")
+_FORMAL_SOURCE_SNAPSHOT_PATH = Path("/var/lib/anila/source-snapshots")
 
 
 def _parse_break_glass_expiry(raw: str) -> datetime:
@@ -334,6 +341,40 @@ def assert_deployment_profile_posture() -> None:
             )
 
 
+def assert_source_snapshot_storage_policy() -> None:
+    """Formal retrieval evidence must use the prepared private state mount."""
+
+    profile = settings.ANILA_DEPLOYMENT_PROFILE.strip().lower()
+    if profile not in _FORMAL_PROFILE_POSTURES:
+        return
+    configured = Path(settings.SOURCE_SNAPSHOT_STORAGE_PATH)
+    if configured != _FORMAL_SOURCE_SNAPSHOT_PATH:
+        raise RuntimeError(
+            "Refusing to start: formal SOURCE_SNAPSHOT_STORAGE_PATH must be "
+            f"{_FORMAL_SOURCE_SNAPSHOT_PATH}"
+        )
+    try:
+        metadata = configured.lstat()
+    except OSError as exc:
+        raise RuntimeError(
+            "Refusing to start: SourceSnapshot state mount is missing"
+        ) from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise RuntimeError(
+            "Refusing to start: SourceSnapshot state mount must be a real directory"
+        )
+    runtime_uid = os.geteuid() if hasattr(os, "geteuid") else metadata.st_uid
+    if metadata.st_uid != runtime_uid or metadata.st_mode & 0o077:
+        raise RuntimeError(
+            "Refusing to start: SourceSnapshot state mount must be owned by "
+            "the CSP runtime user with mode 0700"
+        )
+    if not os.access(configured, os.W_OK | os.X_OK):
+        raise RuntimeError(
+            "Refusing to start: SourceSnapshot state mount is not writable"
+        )
+
+
 def assert_no_dev_defaults() -> None:
     """Raise unless every protected secret is overridden, or dev opt-in is set.
 
@@ -415,6 +456,55 @@ def assert_intranet_lockdown_consistency() -> None:
         )
 
 
+def assert_card_crl_policy() -> None:
+    """Formal card-only posture must provision offline revocation inputs."""
+    if not settings.REQUIRE_CARD_LOGIN_ONLY:
+        return
+    if not settings.CARD_CRL_REQUIRED:
+        raise RuntimeError(
+            "Refusing to start: card-only profile requires CARD_CRL_REQUIRED=true"
+        )
+    path = Path(settings.CARD_CRL_BUNDLE_PATH)
+    if not settings.CARD_CRL_BUNDLE_PATH or not path.is_file():
+        raise RuntimeError(
+            "Refusing to start: CARD_CRL_BUNDLE_PATH must be a mounted CRL file"
+        )
+    crl_source = settings.CARD_CRL_SOURCE.strip()
+    if (
+        not crl_source
+        or (crl_source.startswith("<") and crl_source.endswith(">"))
+        or crl_source.lower() in {"manual", "unknown", "todo", "placeholder"}
+    ):
+        raise RuntimeError(
+            "Refusing to start: CARD_CRL_SOURCE must name the offline sync source/owner"
+        )
+    policy_values = [
+        item.strip()
+        for item in settings.CARD_REQUIRED_CERT_POLICY_OIDS.split(",")
+        if item.strip()
+    ]
+    if not policy_values:
+        raise RuntimeError(
+            "Refusing to start: CARD_REQUIRED_CERT_POLICY_OIDS is required"
+        )
+    try:
+        for value in policy_values:
+            x509.ObjectIdentifier(value)
+        x509.ObjectIdentifier(settings.CARD_REQUIRED_EKU_OID)
+    except ValueError as exc:
+        raise RuntimeError(
+            "Refusing to start: card EKU/certificate policy OID is malformed"
+        ) from exc
+    from app.services.card_auth import CardAuthError, validate_card_crl_bundle
+
+    try:
+        validate_card_crl_bundle()
+    except CardAuthError as exc:
+        raise RuntimeError(
+            f"Refusing to start: card CRL bundle validation failed: {exc}"
+        ) from exc
+
+
 def assert_card_only_data_feature_policy() -> None:
     """Keep unfinished data features out of the formal card-only posture.
 
@@ -491,3 +581,116 @@ def assert_startup_migration_policy() -> None:
         "[startup_security] SKIP_STARTUP_MIGRATIONS=true；"
         "僅適用 dev/test 自行建立 schema 的 fixture。"
     )
+
+
+_verified_pilot_callsites: frozenset[str] = frozenset()
+_verified_pilot_admission = None
+
+
+def assert_gate2_pilot_profile() -> None:
+    """Pilot mode requires the four-owner signed machine profile.
+
+    The disabled repository template intentionally fails this boundary. Trust
+    keys and the actual approval profile must be provisioned out-of-band in
+    the read-only secrets mount.
+    """
+    global _verified_pilot_admission, _verified_pilot_callsites
+    if not settings.ANILA_PILOT_MODE:
+        _verified_pilot_admission = None
+        _verified_pilot_callsites = frozenset()
+        return
+    if settings.GATE2_PILOT_COMPOSE_POSTURE != "gate2-pilot-v1":
+        raise RuntimeError(
+            "Refusing to start Gate 2 pilot without the reviewed Compose "
+            "posture marker; ANILA_PILOT_MODE alone does not apply the pilot overlay"
+        )
+    from anila_security import PilotProfileError, verify_signed_pilot_profile
+
+    try:
+        admission = verify_signed_pilot_profile(
+            profile_path=settings.GATE2_PILOT_PROFILE_PATH,
+            inventory_path=settings.GATE2_INFERENCE_INVENTORY_PATH,
+            trust_store_path=settings.GATE2_PILOT_TRUST_STORE_PATH,
+            expected_csp_image_id=settings.GATE2_CSP_IMAGE_ID,
+        )
+    except PilotProfileError as exc:
+        raise RuntimeError(
+            f"Refusing to start unsigned/invalid Gate 2 pilot: {exc}"
+        ) from exc
+    if "csp.agent_dispatch" in admission.enabled_callsites and not {
+        item.strip()
+        for item in settings.PILOT_FIRST_PARTY_AGENT_ALLOWLIST.split(",")
+        if item.strip()
+    }:
+        raise RuntimeError(
+            "Refusing to start Gate 2 pilot: enabled agent dispatch requires "
+            "PILOT_FIRST_PARTY_AGENT_ALLOWLIST"
+        )
+    _verified_pilot_admission = admission
+    _verified_pilot_callsites = admission.enabled_callsites
+
+
+def _active_pilot_admission():
+    if not settings.ANILA_PILOT_MODE:
+        return None
+    admission = _verified_pilot_admission
+    if admission is None:
+        raise RuntimeError("Gate 2 signed pilot admission is unavailable")
+    now = datetime.now(timezone.utc)
+    if not admission.valid_from <= now < admission.valid_until:
+        raise RuntimeError("Gate 2 signed pilot profile is no longer effective")
+    return admission
+
+
+def require_pilot_callsite(callsite: str) -> None:
+    """Reject runtime inference not present in the verified signed profile."""
+    admission = _active_pilot_admission()
+    if admission is not None and callsite not in admission.enabled_callsites:
+        raise RuntimeError(f"Gate 2 signed pilot does not enable {callsite}")
+
+
+def require_pilot_target(
+    *, callsite: str, name: str, model_type: str, endpoint_url: str,
+    classification_ceiling: str,
+) -> None:
+    """Require an exact signer-approved registry target at the network sink."""
+    admission = _active_pilot_admission()
+    if admission is None:
+        return
+    if not admission.target_allowed(
+        callsite=callsite,
+        name=name,
+        model_type=model_type,
+        endpoint_url=endpoint_url,
+        classification_ceiling=classification_ceiling,
+    ):
+        raise RuntimeError(
+            f"Gate 2 signed pilot does not authorize target {name!r} for {callsite}"
+        )
+
+
+def require_pilot_collection(collection_id: int) -> None:
+    """Reject data access outside the exact signed pilot collection scope."""
+    admission = _active_pilot_admission()
+    if admission is not None and collection_id not in admission.collection_ids:
+        raise RuntimeError(
+            f"Gate 2 signed pilot does not authorize collection {collection_id}"
+        )
+
+
+def require_pilot_classification(level: str) -> None:
+    """Enforce the signed data ceiling on every request and outbound sink."""
+    admission = _active_pilot_admission()
+    if admission is None:
+        return
+    from anila_contracts import Classification
+
+    try:
+        current = Classification.from_storage(level)
+        ceiling = Classification.from_storage(admission.data_classification_ceiling)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Gate 2 pilot classification authority is invalid") from exc
+    if current > ceiling:
+        raise RuntimeError(
+            "Gate 2 signed pilot data classification ceiling would be exceeded"
+        )

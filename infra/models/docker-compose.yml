@@ -301,6 +301,7 @@ services:
       FLUX_MODEL: ${FLUX_MODEL:-flux.2-dev}
       FLUX_API_KEY: ${FLUX_API_KEY-}
       CSP_BASE_URL: http://csp:8000
+      FLUX_AGENT_SERVICE_TOKEN: ${FLUX_AGENT_SERVICE_TOKEN:?FLUX_AGENT_SERVICE_TOKEN must match image-generator credential}
       # Prod: 同 csp service,缺值 fail-loud(不要走 dev fallback)。
       CSP_API_KEY: ${INTERNAL_PLATFORM_API_KEY:?INTERNAL_PLATFORM_API_KEY must be set}
       GEMMA_MODEL: gemma4

@@ -74,11 +74,16 @@ def _active_service_ids_for_user(db: Session, user: User) -> set[int]:
 
 
 def _classification_ok(context_level: str | None, ceiling: str | None) -> bool:
-    """Step 6: launch level must be ``<=`` the service ceiling. No context or
-    no ceiling = pass. Unknown level strings fail-closed via ValueError from
-    ``ClassificationLevel.from_storage`` (propagated to the caller)."""
-    if context_level is None or not ceiling:
+    """Step 6: launch level must be ``<=`` the service ceiling.
+
+    Listing calls have no context and do not perform this launch-time gate.
+    Once a context exists, however, a missing/NULL ceiling is invalid state and
+    fails closed instead of restoring the historical "unlimited" behavior.
+    """
+    if context_level is None:
         return True
+    if not isinstance(ceiling, str) or not ceiling.strip():
+        return False
     return ClassificationLevel.from_storage(context_level) <= (
         ClassificationLevel.from_storage(ceiling)
     )

@@ -117,7 +117,12 @@ def _get_trace_exporter() -> Any:
     return _TRACE_EXPORTER
 
 
-def _make_trace_session(trace_id: str | None) -> Any:
+def _make_trace_session(
+    trace_id: str | None,
+    *,
+    task_id: str | None = None,
+    user_identity: str | None = None,
+) -> Any:
     """Build a per-request ``TraceSession`` for ``trace_id`` (``None`` = off)."""
     if not trace_id:
         return None
@@ -126,7 +131,13 @@ def _make_trace_session(trace_id: str | None) -> Any:
         return None
     from ..tracing.sdk import TraceSession
 
-    return TraceSession(exporter, trace_id, producer="anila-router")
+    return TraceSession(
+        exporter,
+        trace_id,
+        producer="anila-router",
+        task_id=task_id,
+        user_identity=user_identity,
+    )
 
 
 _ROUTER_SYSTEM_TEMPLATE = """\
@@ -731,7 +742,11 @@ def create_router_app(
             request.headers.get("X-ANILA-Trace-Id")
             or (body.get("metadata") or {}).get("trace_id")
         )
-        trace_session = _make_trace_session(_inbound_trace_id)
+        trace_session = _make_trace_session(
+            _inbound_trace_id,
+            task_id=request.headers.get("X-ANILA-Task-Id"),
+            user_identity=request.headers.get("X-ANILA-User-Id"),
+        )
 
         # Sprint 10 PR 3: Router-side Session. Accept either standard
         # ``session_id`` (so OpenAI clients can pass it as an extension

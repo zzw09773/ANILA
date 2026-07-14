@@ -40,9 +40,11 @@ class FakeExporter:
 
     def __init__(self) -> None:
         self.spans: list[tuple[str, dict]] = []
+        self.contexts: list[dict] = []
 
-    def enqueue(self, trace_id: str, span: dict) -> None:
+    def enqueue(self, trace_id: str, span: dict, **context) -> None:
         self.spans.append((trace_id, span))
+        self.contexts.append(context)
 
 
 AGENT = RemoteAgentManifest(
@@ -66,10 +68,10 @@ def _patch_registry(monkeypatch) -> None:
 def _install_fake_session(monkeypatch) -> FakeExporter:
     exporter = FakeExporter()
 
-    def fake_make(trace_id):
+    def fake_make(trace_id, **context):
         if not trace_id:
             return None
-        return TraceSession(exporter, trace_id, producer="anila-router")
+        return TraceSession(exporter, trace_id, producer="anila-router", **context)
 
     monkeypatch.setattr(router_server, "_make_trace_session", fake_make)
     return exporter
@@ -124,7 +126,12 @@ def test_streaming_dispatch_emits_anila_spans_when_configured(
     client = TestClient(app)
     resp = client.post(
         "/v1/chat/completions",
-        headers={"Authorization": "Bearer sk-x", "X-ANILA-Trace-Id": "trace-123"},
+        headers={
+            "Authorization": "Bearer sk-x",
+            "X-ANILA-Trace-Id": "trace-123",
+            "X-ANILA-Task-Id": "73",
+            "X-ANILA-User-Id": "synthetic-trace-user-73",
+        },
         json={"messages": [{"role": "user", "content": "hi"}], "stream": True},
     )
     assert resp.status_code == 200
@@ -153,6 +160,10 @@ def test_streaming_dispatch_emits_anila_spans_when_configured(
     assert [sp["span_type"] for _, sp in exporter.spans] == [
         "agent.model_call.finished",  # child closes first
         "agent.run.finished",
+    ]
+    assert exporter.contexts == [
+        {"task_id": "73", "user_identity": "synthetic-trace-user-73"},
+        {"task_id": "73", "user_identity": "synthetic-trace-user-73"},
     ]
 
 

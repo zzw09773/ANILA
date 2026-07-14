@@ -23,6 +23,7 @@ proxy router 同樣「不帶 APIRouter prefix、寫完整路徑」掛載 —— 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -40,6 +41,7 @@ from app.modules.tasks import ensure_task_access
 from app.schemas.contracts.traces import SpanProducer, TraceSpanIn, TraceSpanOut
 from app.services import agent_credential_service
 from app.services.auth_service import get_current_user, is_admin_tier
+from anila_contracts import Classification as ClassificationLevel
 
 logger = logging.getLogger(__name__)
 
@@ -67,9 +69,16 @@ class SpanIngestRequest(BaseModel):
     spans: list[TraceSpanIn] = Field(min_length=1)
 
 
-def _ingest_producer(
+@dataclass(frozen=True)
+class _TracePrincipal:
+    producer: str
+    user_id: int | None = None
+    service_kind: str | None = None
+
+
+def _ingest_principal(
     request: Request, db: Session = Depends(get_db)
-) -> str:
+) -> _TracePrincipal:
     """Resolve the data-plane caller and map its type to a span producer role.
 
     順序:先試 agent integration key / service client token(csk-,經
@@ -87,21 +96,25 @@ def _ingest_producer(
     if token and not token.startswith("sk-"):
         identity = agent_credential_service.verify_service_token(db, token=token)
         if identity is not None:
-            return (
-                SpanProducer.AGENT.value
+            return _TracePrincipal(
+                producer=(SpanProducer.AGENT.value
                 if identity.kind == "agent"
-                else SpanProducer.ROUTER.value
+                else SpanProducer.ROUTER.value),
+                service_kind=identity.kind,
             )
     # JWT / sk- API key path — raises 401 when anonymous / invalid.
-    get_caller(request, db)
-    return SpanProducer.PROXY.value
+    caller = get_caller(request, db)
+    return _TracePrincipal(
+        producer=SpanProducer.PROXY.value, user_id=caller.user.id
+    )
 
 
 @router.post("/v1/traces/{trace_id}/spans", status_code=202)
 def ingest_spans(
     trace_id: str,
+    request: Request,
     payload: SpanIngestRequest,
-    producer: str = Depends(_ingest_producer),
+    principal: _TracePrincipal = Depends(_ingest_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, int]:
     """Ingest a batch of spans for ``trace_id`` (idempotent, fail-safe)."""
@@ -128,9 +141,29 @@ def ingest_spans(
             detail=f"span 的 trace_id 與路徑不一致(索引 {mismatched})",
         )
 
-    # Link to the owning task (if any) via tasks.trace_id.
+    # Formal trace ingest is task-owned.  Free-floating trace ids cannot prove
+    # owner/classification and are rejected rather than persisted at 無機密.
     task = db.query(Task).filter(Task.trace_id == trace_id).first()
-    task_id = task.id if task is not None else None
+    if task is None:
+        raise HTTPException(status_code=404, detail="trace 不屬於任何 Task")
+    if principal.user_id is not None:
+        if principal.user_id != task.requester_user_id:
+            raise HTTPException(status_code=403, detail="trace owner 不符")
+    else:
+        raw_task_id = request.headers.get("X-ANILA-Task-Id")
+        forwarded_user = request.headers.get("X-ANILA-User-Id")
+        owner = db.get(User, task.requester_user_id)
+        if (
+            raw_task_id != str(task.id)
+            or owner is None
+            or forwarded_user != owner.username
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="service trace 必須綁定相同 Task 與申請人",
+            )
+    task_level = ClassificationLevel.from_storage(task.classification_level)
+    task_id = task.id
 
     accepted = 0
     duplicates = 0
@@ -152,7 +185,11 @@ def ingest_spans(
                 ended_at=_naive_utc(s.ended_at),
                 status=s.status.value,
                 attributes=s.attributes,
-                producer=producer,
+                producer=principal.producer,
+                classification_level=ClassificationLevel.max_of([
+                    task_level,
+                    s.classification_level or ClassificationLevel.UNCLASSIFIED,
+                ]).to_storage(),
             )
             try:
                 with db.begin_nested():

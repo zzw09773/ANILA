@@ -26,6 +26,9 @@ REQUIRED_SUITES = {
     "contract-smoke",
     "capability-freeze",
     "deployment-posture",
+    "gate2-pilot-policy",
+    "studio-auth-revocation",
+    "flux-agent-focused",
 }
 TEST_ROOTS = (
     "packages/anila-contracts/tests",
@@ -34,7 +37,9 @@ TEST_ROOTS = (
     "packages/anila-agent/tests",
     "services/ingestion-worker/tests",
     "services/csp/tests",
+    "infra/policy/tests",
 )
+REQUIRED_WORKFLOW = ".github/workflows/gate1-ci.yml"
 CLASSIFICATIONS = {"functional", "platform", "test-staleness"}
 HISTORICAL_CSP_RESULT = {
     "failed": 38,
@@ -114,6 +119,59 @@ def _require_text(entry: dict, field: str, label: str) -> str:
     return value.strip()
 
 
+def _workflow_jobs(workflow_text: str) -> dict[str, str]:
+    """Parse real YAML jobs so block-scalar text can never become a job boundary."""
+
+    try:
+        import yaml
+    except ImportError as exc:
+        raise GovernanceError("PyYAML is required for workflow governance") from exc
+    try:
+        workflow = yaml.safe_load(workflow_text)
+    except yaml.YAMLError as exc:
+        raise GovernanceError(f"required workflow is invalid YAML: {exc}") from exc
+    if not isinstance(workflow, dict) or not isinstance(workflow.get("jobs"), dict):
+        raise GovernanceError("required workflow has no jobs mapping")
+    jobs = workflow["jobs"]
+    if not jobs:
+        raise GovernanceError("required workflow has no job definitions")
+    if any(not isinstance(job_id, str) or not isinstance(job, dict) for job_id, job in jobs.items()):
+        raise GovernanceError("required workflow contains an invalid job definition")
+    def _string_values(value: object) -> list[str]:
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, dict):
+            return [item for child in value.values() for item in _string_values(child)]
+        if isinstance(value, list):
+            return [item for child in value for item in _string_values(child)]
+        return []
+
+    return {job_id: "\n".join(_string_values(job)) for job_id, job in jobs.items()}
+
+
+def verify_required_skip_wiring(document: dict, workflow_text: str) -> None:
+    """Prove every required skip guard has a concrete CI execution path."""
+
+    jobs = _workflow_jobs(workflow_text)
+    for entry in document["allowed_skips"]:
+        if entry["required_execution"] is not True:
+            continue
+        key = f"{entry['path']}::{entry['kind']}"
+        job_id = _require_text(entry, "ci_job", f"allowed skip {key}")
+        fragment = _require_text(
+            entry, "ci_command_fragment", f"allowed skip {key}"
+        )
+        job = jobs.get(job_id)
+        if job is None:
+            raise GovernanceError(
+                f"allowed skip {key}: CI job {job_id!r} is not defined"
+            )
+        if fragment not in job:
+            raise GovernanceError(
+                f"allowed skip {key}: command fragment is not wired in job {job_id!r}"
+            )
+
+
 def validate_registry(document: dict, *, as_of: dt.date) -> None:
     if document.get("schema_version") != 1:
         raise GovernanceError("registry schema_version must be 1")
@@ -122,6 +180,8 @@ def validate_registry(document: dict, *, as_of: dt.date) -> None:
     if not isinstance(suites, list):
         raise GovernanceError("required_suites must be a list")
     suite_ids = {entry.get("id") for entry in suites if isinstance(entry, dict)}
+    if len(suite_ids) != len(suites):
+        raise GovernanceError("required_suites contains duplicate or invalid ids")
     if suite_ids != REQUIRED_SUITES:
         raise GovernanceError(
             f"required suite set mismatch; missing={sorted(REQUIRED_SUITES-suite_ids)}, "
@@ -266,6 +326,9 @@ def validate_registry(document: dict, *, as_of: dt.date) -> None:
         _require_text(entry, "reason", f"allowed skip {key}")
         if entry.get("required_execution") not in {True, False}:
             raise GovernanceError(f"allowed skip {key}: required_execution must be boolean")
+        if entry["required_execution"] is True:
+            _require_text(entry, "ci_job", f"allowed skip {key}")
+            _require_text(entry, "ci_command_fragment", f"allowed skip {key}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -279,6 +342,8 @@ def main(argv: list[str] | None = None) -> int:
         document = json.loads((root / args.registry).read_text(encoding="utf-8"))
         as_of = dt.date.fromisoformat(args.as_of) if args.as_of else dt.date.today()
         validate_registry(document, as_of=as_of)
+        workflow_text = (root / REQUIRED_WORKFLOW).read_text(encoding="utf-8")
+        verify_required_skip_wiring(document, workflow_text)
         xfails = find_xfail_calls(root)
         if xfails:
             raise GovernanceError("permanent xfail is forbidden: " + ", ".join(xfails))

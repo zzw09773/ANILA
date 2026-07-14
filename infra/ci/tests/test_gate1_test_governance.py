@@ -78,6 +78,8 @@ class RegistryTests(unittest.TestCase):
             (ROOT / "infra/ci/gate1-test-baseline.json").read_text(encoding="utf-8")
         )
         governance.validate_registry(document, as_of=dt.date(2026, 7, 12))
+        workflow = (ROOT / governance.REQUIRED_WORKFLOW).read_text(encoding="utf-8")
+        governance.verify_required_skip_wiring(document, workflow)
         self.assertEqual(governance.find_xfail_calls(ROOT), [])
 
     def test_required_suite_cannot_be_non_passing(self) -> None:
@@ -109,6 +111,81 @@ class RegistryTests(unittest.TestCase):
         document["quarantine"][0]["expires_on"] = "2026-07-01"
         with self.assertRaisesRegex(governance.GovernanceError, "expired"):
             governance.validate_registry(document, as_of=dt.date(2026, 7, 12))
+
+    def test_required_skip_requires_concrete_ci_wiring(self) -> None:
+        document = _document()
+        document["allowed_skips"] = [
+            {
+                "path": "tests/test_pg.py",
+                "kind": "pytest.mark.skipif",
+                "count": 1,
+                "required_execution": True,
+                "reason": "The PostgreSQL runner must execute this guard.",
+            }
+        ]
+        with self.assertRaisesRegex(governance.GovernanceError, "ci_job"):
+            governance.validate_registry(document, as_of=dt.date(2026, 7, 12))
+
+        document["allowed_skips"][0].update(
+            {
+                "ci_job": "postgres-gate",
+                "ci_command_fragment": "pytest tests/test_pg.py",
+            }
+        )
+        governance.validate_registry(document, as_of=dt.date(2026, 7, 12))
+        with self.assertRaisesRegex(governance.GovernanceError, "not defined"):
+            governance.verify_required_skip_wiring(
+                document,
+                "jobs:\n  another-job:\n    steps: []\n",
+            )
+
+    def test_required_skip_command_must_be_inside_declared_job(self) -> None:
+        document = _document()
+        document["allowed_skips"] = [
+            {
+                "path": "tests/test_pg.py",
+                "kind": "pytest.skip",
+                "count": 1,
+                "required_execution": True,
+                "reason": "The PostgreSQL runner must execute this guard.",
+                "ci_job": "postgres-gate",
+                "ci_command_fragment": "pytest tests/test_pg.py",
+            }
+        ]
+        workflow = (
+            "jobs:\n"
+            "  postgres-gate:\n"
+            "    steps:\n"
+            "      - run: pytest tests/a_different_test.py\n"
+            "  other-job:\n"
+            "    steps:\n"
+            "      - run: pytest tests/test_pg.py\n"
+        )
+        with self.assertRaisesRegex(governance.GovernanceError, "not wired"):
+            governance.verify_required_skip_wiring(document, workflow)
+
+    def test_workflow_job_parser_ignores_job_shaped_lines_in_run_blocks(self) -> None:
+        workflow = (
+            "jobs:\n"
+            "  contract-smoke:\n"
+            "    steps:\n"
+            "      - run: |\n"
+            "          echo preparing\n"
+            "          setup:\n"
+            "          echo complete\n"
+            "  postgres-rls:\n"
+            "    steps:\n"
+            "      - run: pytest tests/test_pg.py\n"
+        )
+
+        jobs = governance._workflow_jobs(workflow)
+
+        self.assertEqual(set(jobs), {"contract-smoke", "postgres-rls"})
+        self.assertIn("setup:", jobs["contract-smoke"])
+
+    def test_workflow_job_parser_fails_closed_on_invalid_yaml(self) -> None:
+        with self.assertRaisesRegex(governance.GovernanceError, "invalid YAML"):
+            governance._workflow_jobs("jobs:\n  broken: [\n")
 
     def test_ast_scan_rejects_xfail(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

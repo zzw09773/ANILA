@@ -1,4 +1,18 @@
 {
   "schema_version": 1,
-  "exceptions": []
+  "exceptions": [
+    {
+      "id": "GATE2-PR27-MEMORY-GOVERNANCE",
+      "architecture_owner": "zzw09773",
+      "rationale": "Gate 2 classified-memory enforcement requires explicit policy error, write context, and authorized retrieval boundaries; these are governance interfaces rather than new end-user capabilities.",
+      "ticket": "https://github.com/zzw09773/ANILA/pull/27",
+      "approved_on": "2026-07-13",
+      "expires_on": "2026-07-31",
+      "changes": [
+        "memory.csp_service_symbols::services/csp/app/services/memory_service.py::MemoryPolicyDataError",
+        "memory.csp_service_symbols::services/csp/app/services/memory_service.py::MemoryWriteContext",
+        "memory.csp_service_symbols::services/csp/app/services/memory_service.py::get_authorized_chunk_rows"
+      ]
+    }
+  ]
 }

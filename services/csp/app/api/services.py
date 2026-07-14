@@ -548,15 +548,29 @@ def audit_callback(
     if len(json.dumps(body, ensure_ascii=False).encode("utf-8")) > _AUDIT_MAX_BYTES:
         raise HTTPException(status_code=413, detail="audit callback payload 過大")
 
-    row = launch_mod.record_service_audit_callback(
-        db,
-        service_id=service.id,
-        launch_id=payload.launch_id,
-        event_type=payload.event_type,
-        payload=body,
-        classification_level=payload.classification_level,
-        integration_key_id=identity.service_client_id,
-    )
+    try:
+        row = launch_mod.record_service_audit_callback(
+            db,
+            service_id=service.id,
+            launch_id=payload.launch_id,
+            event_type=payload.event_type,
+            payload=body,
+            classification_level=payload.classification_level,
+            integration_key_id=identity.service_client_id,
+        )
+    except ValueError as exc:
+        log_audit_event(
+            db,
+            actor=None,
+            action="service.audit_callback",
+            resource_type="registered_service",
+            resource_id=service.id,
+            status="denied",
+            detail="拒絕 audit callback:launch 或分類脈絡無效",
+            metadata={"reason": str(exc), "launch_id": payload.launch_id},
+            commit=True,
+        )
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     db.flush()
     log_audit_event(
         db,
@@ -569,6 +583,7 @@ def audit_callback(
             "event_type": payload.event_type,
             "launch_id": payload.launch_id,
             "trace_id": payload.trace_id,
+            "classification_level": row.classification_level,
             "integration_key_id": identity.service_client_id,
         },
         commit=True,

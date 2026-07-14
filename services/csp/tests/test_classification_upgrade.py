@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from sqlalchemy.orm import sessionmaker
 
 os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 
@@ -207,6 +208,66 @@ class TestApplyClassification:
         assert conv.classification_level == "極機密"
         assert conv.classification_source == "content_detection"
         assert conv.classified is True
+
+    def test_stale_identity_map_is_reloaded_before_monotonic_max(
+        self, db_engine
+    ):
+        """即使 caller 先快取舊列，也不可覆寫另一交易的較高分類。"""
+        Session = sessionmaker(bind=db_engine, expire_on_commit=False)
+        seed = Session()
+        stale = Session()
+        raiser = Session()
+        try:
+            user = make_user(seed, "stale-latch-owner")
+            conv = make_conversation(seed, user)
+            conversation_id = conv.id
+            user_id = user.id
+
+            cached = stale.get(Conversation, conversation_id)
+            assert cached.classification_level == "無機密"
+
+            high_event = apply_classification(
+                raiser,
+                resource_type="conversation",
+                resource_id=str(conversation_id),
+                new_level="絕對機密",
+                actor_type="user",
+                actor_id=str(user_id),
+                reason="content_detection",
+            )
+            assert high_event.new_level == "絕對機密"
+
+            # ``stale`` 的 identity map 仍是無機密；mutation 必須用
+            # populate_existing + FOR UPDATE 重讀，而非信任 cached instance。
+            low_event = apply_classification(
+                stale,
+                resource_type="conversation",
+                resource_id=str(conversation_id),
+                new_level="機密",
+                actor_type="user",
+                actor_id=str(user_id),
+                reason="manual_admin",
+            )
+            assert low_event is None
+            stale.refresh(cached)
+            assert cached.classification_level == "絕對機密"
+
+            events = (
+                stale.query(ClassificationEvent)
+                .filter(
+                    ClassificationEvent.resource_type == "conversation",
+                    ClassificationEvent.resource_id == str(conversation_id),
+                )
+                .order_by(ClassificationEvent.id)
+                .all()
+            )
+            assert [(event.previous_level, event.new_level) for event in events] == [
+                ("無機密", "絕對機密")
+            ]
+        finally:
+            raiser.close()
+            stale.close()
+            seed.close()
 
     def test_below_confidential_does_not_flip_legacy_boolean(self, db):
         user = make_user(db)
@@ -515,6 +576,45 @@ class TestDeclassification:
                 approve=True,
                 via="in_system",
             )
+
+    def test_approval_fails_closed_when_resource_changed_after_request(self, db):
+        admin, conv = self._latched_conversation(db)
+        req = self._request(db, admin, conv)
+        supervisor = make_user(db, "stale-request-supervisor", role="admin")
+        grant_authority(db, supervisor)
+
+        raised = apply_classification(
+            db,
+            resource_type="conversation",
+            resource_id=str(conv.id),
+            new_level="絕對機密",
+            actor_type="service",
+            actor_id="detector",
+            reason="content_detection",
+        )
+        assert raised.previous_level == "機密"
+        assert raised.new_level == "絕對機密"
+
+        with pytest.raises(ValueError, match="降級申請後變更"):
+            decide_declassification(
+                db,
+                request_id=req.id,
+                approver_user_id=supervisor.id,
+                approve=True,
+                via="in_system",
+            )
+        db.rollback()
+
+        db.refresh(req)
+        db.refresh(conv)
+        assert req.status == "pending_supervisor"
+        assert conv.classification_level == "絕對機密"
+        assert (
+            db.query(ClassificationEvent)
+            .filter(ClassificationEvent.reason == "declassification_copy")
+            .count()
+            == 0
+        )
 
     def test_reject_keeps_level(self, db):
         admin, conv = self._latched_conversation(db)

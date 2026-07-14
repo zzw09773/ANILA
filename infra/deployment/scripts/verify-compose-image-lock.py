@@ -22,7 +22,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_INVENTORY = ROOT / "infra/deployment/intranet/platform-image-inventory.tsv"
 DEFAULT_COMPOSE = ROOT / "infra/compose/platform.yml"
+GATE2_PILOT_COMPOSE = ROOT / "infra/compose/gate2-pilot.yml"
 IMAGE_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+POSTURES = ("normal", "gate2-pilot")
+GATE2_PILOT_ACTIVE_SERVICES = frozenset(
+    {
+        "gitlab",
+        "n8n",
+        "redis",
+        "csp-db",
+        "csp",
+        "router",
+        "anila-ui",
+        "anilalm",
+        "nginx",
+    }
+)
 FORBIDDEN_AMBIENT_COMPOSE_ENV = (
     "COMPOSE_FILE",
     "COMPOSE_PROFILES",
@@ -70,6 +85,34 @@ class LockEntry:
     image_id: str
     bundle: str
     activation: str
+
+
+def active_services(
+    inventory: dict[str, InventoryEntry],
+    *,
+    posture: str = "normal",
+    include_optional: bool,
+) -> set[str]:
+    """Return the exact service set admitted by the selected runtime posture."""
+
+    if posture == "gate2-pilot":
+        if include_optional:
+            raise ImageLockError(
+                "gate2-pilot posture forbids optional Compose profiles"
+            )
+        missing = GATE2_PILOT_ACTIVE_SERVICES - set(inventory)
+        if missing:
+            raise ImageLockError(
+                f"gate2-pilot image inventory missing services: {sorted(missing)}"
+            )
+        return set(GATE2_PILOT_ACTIVE_SERVICES)
+    if posture != "normal":
+        raise ImageLockError(f"unsupported image-lock posture {posture!r}")
+    return {
+        service
+        for service, entry in inventory.items()
+        if entry.activation == "default" or include_optional
+    }
 
 
 def _data_lines(path: Path) -> list[tuple[int, list[str]]]:
@@ -202,6 +245,7 @@ def verify_env(
     include_optional: bool,
     inspect_docker: bool,
     inspect_containers: bool = False,
+    posture: str = "normal",
 ) -> None:
     values = read_dotenv(env_file)
     forbidden_in_file = [name for name in FORBIDDEN_AMBIENT_COMPOSE_ENV if name in values]
@@ -230,9 +274,19 @@ def verify_env(
         raise ImageLockError(
             f"{env_file}: normal card profile must not retain break-glass metadata"
         )
-    for service, declared in inventory.items():
-        if declared.activation != "default" and not include_optional:
-            continue
+    pilot_requested = values.get("ANILA_PILOT_MODE", "").strip().lower() == "true"
+    if posture == "gate2-pilot" and not pilot_requested:
+        raise ImageLockError(
+            f"{env_file}: gate2-pilot posture requires ANILA_PILOT_MODE=true"
+        )
+    if posture == "normal" and pilot_requested:
+        raise ImageLockError(
+            f"{env_file}: ANILA_PILOT_MODE=true requires --posture gate2-pilot"
+        )
+    expected_services = active_services(
+        inventory, posture=posture, include_optional=include_optional
+    )
+    for service in sorted(expected_services):
         variable = IMAGE_ENV_BY_SERVICE[service]
         value = values.get(variable, "")
         if not IMAGE_ID_RE.fullmatch(value):
@@ -262,13 +316,14 @@ def verify_env(
         # Verify the effective Compose model as well as the file so an operator
         # cannot accidentally run a different image than the audited lock.
         compose_config = resolved_compose_config(
-            env_file, include_optional=include_optional
+            env_file, include_optional=include_optional, posture=posture
         )
         verify_resolved_compose_images(
             values,
             inventory,
             compose_config,
             include_optional=include_optional,
+            posture=posture,
         )
     if inspect_containers:
         verify_running_containers(
@@ -276,6 +331,7 @@ def verify_env(
             inventory,
             env_file,
             include_optional=include_optional,
+            posture=posture,
         )
 
 
@@ -285,6 +341,7 @@ def verify_resolved_compose_images(
     compose_config: dict[str, object],
     *,
     include_optional: bool,
+    posture: str = "normal",
 ) -> None:
     """Compare pins with Compose's resolved config, including shell overrides."""
 
@@ -313,11 +370,20 @@ def verify_resolved_compose_images(
                 f"resolved CSP posture override for {name}: "
                 f"dotenv={expected!r}, effective={actual!r}"
             )
-    expected_services = {
-        service
-        for service, entry in inventory.items()
-        if entry.activation == "default" or include_optional
-    }
+    pilot_mode = str(csp_environment.get("ANILA_PILOT_MODE", "")).lower()
+    pilot_marker = csp_environment.get("GATE2_PILOT_COMPOSE_POSTURE", "")
+    if posture == "gate2-pilot":
+        if pilot_mode != "true" or pilot_marker != "gate2-pilot-v1":
+            raise ImageLockError(
+                "resolved CSP is missing the Gate 2 pilot mode/posture marker"
+            )
+    elif pilot_marker:
+        raise ImageLockError(
+            "resolved normal CSP unexpectedly contains a Gate 2 pilot posture marker"
+        )
+    expected_services = active_services(
+        inventory, posture=posture, include_optional=include_optional
+    )
     actual_services = set(services)
     if actual_services != expected_services:
         raise ImageLockError(
@@ -325,9 +391,7 @@ def verify_resolved_compose_images(
             f"missing={sorted(expected_services - actual_services)}, "
             f"unexpected={sorted(actual_services - expected_services)}"
         )
-    for service, declared in inventory.items():
-        if declared.activation != "default" and not include_optional:
-            continue
+    for service in sorted(expected_services):
         service_config = services.get(service)
         if not isinstance(service_config, dict):
             raise ImageLockError(f"resolved Compose service missing: {service}")
@@ -340,8 +404,13 @@ def verify_resolved_compose_images(
             )
 
 
-def resolved_compose_config(env_file: Path, *, include_optional: bool) -> dict[str, object]:
-    ambient = [name for name in FORBIDDEN_AMBIENT_COMPOSE_ENV if os.environ.get(name)]
+def resolved_compose_config(
+    env_file: Path,
+    *,
+    include_optional: bool,
+    posture: str = "normal",
+) -> dict[str, object]:
+    ambient = [name for name in FORBIDDEN_AMBIENT_COMPOSE_ENV if name in os.environ]
     if ambient:
         raise ImageLockError(
             "formal lifecycle forbids ambient Compose control variables: "
@@ -350,9 +419,25 @@ def resolved_compose_config(env_file: Path, *, include_optional: bool) -> dict[s
     command = [
         "docker",
         "compose",
-        "--env-file",
-        str(env_file.resolve()),
     ]
+    if posture == "gate2-pilot":
+        if include_optional:
+            raise ImageLockError(
+                "gate2-pilot posture forbids optional Compose profiles"
+            )
+        command.extend(
+            (
+                "--project-name",
+                "anila-platform",
+                "--file",
+                str(DEFAULT_COMPOSE.resolve()),
+                "--file",
+                str(GATE2_PILOT_COMPOSE.resolve()),
+            )
+        )
+    elif posture != "normal":
+        raise ImageLockError(f"unsupported image-lock posture {posture!r}")
+    command.extend(("--env-file", str(env_file.resolve())))
     if include_optional:
         command.extend(("--profile", "developer-tools"))
     command.extend(("config", "--format", "json"))
@@ -379,8 +464,40 @@ def resolved_compose_config(env_file: Path, *, include_optional: bool) -> dict[s
     return value
 
 
-def _compose_base_command(env_file: Path, *, include_optional: bool) -> list[str]:
-    command = ["docker", "compose", "--env-file", str(env_file.resolve())]
+def _compose_base_command(
+    env_file: Path,
+    *,
+    include_optional: bool,
+    posture: str = "normal",
+) -> list[str]:
+    ambient = [name for name in FORBIDDEN_AMBIENT_COMPOSE_ENV if name in os.environ]
+    if ambient:
+        raise ImageLockError(
+            "formal lifecycle forbids ambient Compose control variables: "
+            + ", ".join(ambient)
+        )
+    command = [
+        "docker",
+        "compose",
+    ]
+    if posture == "gate2-pilot":
+        if include_optional:
+            raise ImageLockError(
+                "gate2-pilot posture forbids optional Compose profiles"
+            )
+        command.extend(
+            (
+                "--project-name",
+                "anila-platform",
+                "--file",
+                str(DEFAULT_COMPOSE.resolve()),
+                "--file",
+                str(GATE2_PILOT_COMPOSE.resolve()),
+            )
+        )
+    elif posture != "normal":
+        raise ImageLockError(f"unsupported image-lock posture {posture!r}")
+    command.extend(("--env-file", str(env_file.resolve())))
     if include_optional:
         command.extend(("--profile", "developer-tools"))
     return command
@@ -404,15 +521,16 @@ def verify_running_containers(
     env_file: Path,
     *,
     include_optional: bool,
+    posture: str = "normal",
 ) -> None:
     """Read back immutable image IDs from the currently running containers."""
 
-    base = _compose_base_command(env_file, include_optional=include_optional)
-    expected_services = {
-        service
-        for service, entry in inventory.items()
-        if entry.activation == "default" or include_optional
-    }
+    base = _compose_base_command(
+        env_file, include_optional=include_optional, posture=posture
+    )
+    expected_services = active_services(
+        inventory, posture=posture, include_optional=include_optional
+    )
     result = _run_utf8(base + ["ps", "--services", "--status", "running"])
     if result.returncode != 0:
         raise ImageLockError(
@@ -451,6 +569,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inventory", type=Path, default=DEFAULT_INVENTORY)
     parser.add_argument("--compose", type=Path, default=DEFAULT_COMPOSE)
+    parser.add_argument("--posture", choices=POSTURES, default="normal")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("check-wiring")
@@ -464,6 +583,12 @@ def _parser() -> argparse.ArgumentParser:
     )
 
     verify = sub.add_parser("verify-env")
+    verify.add_argument(
+        "--posture",
+        choices=POSTURES,
+        default=argparse.SUPPRESS,
+        help="runtime service posture (default: normal)",
+    )
     verify.add_argument("--env-file", type=Path, required=True)
     verify.add_argument("--lock", type=Path)
     verify.add_argument("--include-optional", action="store_true")
@@ -498,6 +623,7 @@ def main(argv: list[str] | None = None) -> int:
             include_optional=args.include_optional,
             inspect_docker=args.inspect_docker,
             inspect_containers=args.inspect_containers,
+            posture=args.posture,
         )
         print("formal compose image lock verified")
         return 0

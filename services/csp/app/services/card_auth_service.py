@@ -53,6 +53,17 @@ class CardLoginRejected(Exception):
     跟 ``CardAuthError`` (簽章層級失敗) 分開,endpoint 對應不同 HTTP status。
     """
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str = "card_login_rejected",
+        challenge_jti_hash: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.challenge_jti_hash = challenge_jti_hash
+
 
 class CardRegistrationTokenInvalid(Exception):
     """``registration_token`` 過期 / 簽章不對 / 對應使用者不存在。"""
@@ -162,7 +173,11 @@ def _consume_card_challenge(db: Session, *, jti: str, nonce: str) -> None:
         )
         if result.rowcount != 1:
             db.rollback()
-            raise CardLoginRejected("challenge_token 已使用或過期")
+            raise CardLoginRejected(
+                "challenge_token 已使用或過期",
+                reason="challenge_replay_or_expired",
+                challenge_jti_hash=sha256(jti.encode("utf-8")).hexdigest(),
+            )
         db.commit()
     except CardLoginRejected:
         raise
@@ -230,8 +245,8 @@ def verify_card_and_resolve_user(
     """卡片登入主流程。
 
     1. 驗 challenge_token JWT 還原 nonce (反 replay 第一道防線)。
-    2. Parse PKCS#7 簽章抽 cert claims。簽章本身的密碼學驗證信任使用者 PC
-       上的 HiPKI driver — backend 不重複驗證 (見 ``card_auth`` 模組 docstring)。
+    2. Backend 驗 PKCS#7 SignerInfo、nonce、釘選鏈、X.509 profile 與離線
+       CRL，通過後才抽 signer certificate claims。
     3. ``username = employee_id`` 查 user,找不到就 auto-provision。
 
     Raises:

@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import AsyncIterator, Optional
 
@@ -18,7 +19,12 @@ from anila_security import ENDPOINT_KIND_AGENT, ENDPOINT_KIND_MODEL
 
 from app.config import settings
 from app.models.model_registry import ModelRegistry
-from app.services.proxy import spans
+from app.models.task import Task, TaskRun
+from app.services.proxy.closure import (
+    TaskCallClosure,
+    UsageRecordData,
+    persist_task_call_closure,
+)
 from app.services.proxy.guard import _guard_outbound
 from app.services.proxy.headers import (
     _apply_gateway_auth,
@@ -27,7 +33,6 @@ from app.services.proxy.headers import (
     resolve_model_gateway_key,
 )
 from app.services.proxy.sse import _aggregate_sse_to_chat_completion, _parse_sse_block
-from app.services.proxy.task_link import finalize_task_run
 from app.services.proxy.usage import (
     _estimate_token_count,
     _extract_response_text,
@@ -40,6 +45,241 @@ from app.services.usage_writer import enqueue_usage
 # Keep the pre-split logger channel ("app.services.proxy_service") so log
 # routing / filtering / capture behavior is identical after the package split.
 logger = logging.getLogger("app.services.proxy_service")
+
+
+def _require_pilot_sink_admission(
+    *,
+    inference_callsite_id: str | None,
+    task_id: int | None,
+    task_run_id: int | None,
+    governance_db,
+    admitted_classification_level: str | None,
+) -> None:
+    """Last-hop pilot admission, before SSRF resolution or network I/O.
+
+    API handlers are allowed to perform an earlier user-friendly check, but
+    this sink is authoritative: a new caller cannot reach inference in pilot
+    mode without an enabled inventory id, Task, DB authority and ceiling
+    snapshot.
+    """
+    if not settings.ANILA_PILOT_MODE:
+        return
+    if not isinstance(inference_callsite_id, str) or not inference_callsite_id.strip():
+        raise HTTPException(status_code=403, detail="Gate 2 pilot 缺少 inference callsite")
+    from app.services.startup_security import require_pilot_callsite
+
+    try:
+        require_pilot_callsite(inference_callsite_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if task_id is None:
+        raise HTTPException(status_code=403, detail="Gate 2 pilot 推論必須綁定 Task")
+    if task_run_id is None:
+        raise HTTPException(status_code=403, detail="Gate 2 pilot 推論必須綁定 TaskRun")
+    if governance_db is None or admitted_classification_level is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Gate 2 pilot 缺少可信分類 ceiling admission",
+        )
+
+
+def _lock_task_run_admission(
+    *, governance_db, task_id: int | None, task_run_id: int | None,
+    admitted_classification_level: str | None = None,
+) -> str | None:
+    """Lock the active attempt so cancel/finalize cannot race outbound."""
+    if governance_db is None or task_id is None or task_run_id is None:
+        return admitted_classification_level
+    try:
+        task = (
+            governance_db.query(Task)
+            .filter(Task.id == task_id)
+            .populate_existing()
+            .with_for_update()
+            .one_or_none()
+        )
+        run = (
+            governance_db.query(TaskRun)
+            .filter(TaskRun.id == task_run_id, TaskRun.task_id == task_id)
+            .populate_existing()
+            .with_for_update()
+            .one_or_none()
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="TaskRun governance lock 失敗，已拒絕出向呼叫",
+        ) from exc
+    if task is None or run is None or task.status != "running" or run.status != "running":
+        raise HTTPException(
+            status_code=409,
+            detail="Task/TaskRun 已非 running，禁止終態後發出推論呼叫",
+        )
+    from anila_contracts import Classification
+
+    try:
+        levels = [
+            Classification.from_storage(task.classification_level),
+            Classification.from_storage(run.classification_level),
+        ]
+        if admitted_classification_level is not None:
+            levels.append(Classification.from_storage(admitted_classification_level))
+        effective = Classification.max_of(levels)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=403,
+            detail="Task/TaskRun 分類治理狀態無效，已拒絕出向呼叫",
+        ) from exc
+    if Classification.from_storage(run.classification_level) < effective:
+        run.classification_level = effective.to_storage()
+        run.classification_latched_at = datetime.now(timezone.utc)
+        run.classification_source = "outbound_admission"
+    return effective.to_storage()
+
+
+def lock_task_run_admission(
+    *, governance_db, task_id: int | None, task_run_id: int | None,
+) -> str | None:
+    """Public helper for the legacy non-streaming Agent branch."""
+    return _lock_task_run_admission(
+        governance_db=governance_db,
+        task_id=task_id,
+        task_run_id=task_run_id,
+    )
+
+
+def _lock_registry_admission(
+    *,
+    governance_db,
+    registry_model_id: int | None,
+    registry_agent_id: int | None,
+    registry_endpoint_url: str | None,
+    admitted_classification_level: str | None,
+    inference_callsite_id: str | None = None,
+):
+    """Re-read and lock the exact registry row used for outbound.
+
+    This closes the model-registry TOCTOU window: an endpoint swap or ceiling
+    downgrade committed after the handler's first check is observed here and
+    denied. Streaming callers immediately commit this snapshot before network
+    I/O so the lock is not held for the SSE lifetime; synchronous callers keep
+    the request transaction until their durable closure.
+    """
+    if (
+        governance_db is None
+        or (registry_model_id is None and registry_agent_id is None)
+        or admitted_classification_level is None
+    ):
+        return
+    from anila_contracts import Classification as ClassificationLevel
+    from app.modules.policy import evaluate_classification_ceiling
+    from app.models.agent import Agent
+
+    try:
+        if registry_agent_id is not None:
+            locked = (
+                governance_db.query(Agent)
+                .filter(Agent.id == registry_agent_id)
+                .populate_existing()
+                .with_for_update(read=True)
+                .one_or_none()
+            )
+            active = locked is not None and locked.approval_status == "approved"
+        else:
+            locked = (
+                governance_db.query(ModelRegistry)
+                .filter(ModelRegistry.id == registry_model_id)
+                .populate_existing()
+                .with_for_update(read=True)
+                .one_or_none()
+            )
+            active = locked is not None and bool(locked.is_active)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="模型治理登錄無法鎖定，已拒絕出向呼叫",
+        ) from exc
+    if not active:
+        raise HTTPException(status_code=403, detail="推論目標已停用或治理登錄不存在")
+    if locked.endpoint_url != registry_endpoint_url:
+        raise HTTPException(
+            status_code=409,
+            detail="模型端點在 admission 後已變更，已拒絕出向呼叫",
+        )
+    if settings.ANILA_PILOT_MODE:
+        from app.services.startup_security import (
+            require_pilot_classification,
+            require_pilot_target,
+        )
+
+        if not isinstance(inference_callsite_id, str):
+            raise HTTPException(status_code=403, detail="Gate 2 pilot 缺少 target callsite")
+        try:
+            require_pilot_target(
+                callsite=inference_callsite_id,
+                name=str(locked.name),
+                model_type=(
+                    "agent" if registry_agent_id is not None else str(locked.model_type)
+                ),
+                endpoint_url=str(locked.endpoint_url),
+                classification_ceiling=str(locked.classification_ceiling),
+            )
+            require_pilot_classification(str(admitted_classification_level))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+    try:
+        level = ClassificationLevel.from_storage(admitted_classification_level)
+        ceiling = ClassificationLevel.from_storage(locked.classification_ceiling)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=403,
+            detail="模型分類治理狀態無效，已拒絕出向呼叫",
+        ) from exc
+    if not evaluate_classification_ceiling(
+        task_level=level.to_storage(), ceiling=ceiling.to_storage()
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="模型分類上限在 admission 後降低，已拒絕出向呼叫",
+        )
+    # The caller chooses the lock lifetime. ``proxy_stream`` commits the
+    # snapshot before opening SSE; synchronous paths release it in closure.
+    return locked
+
+
+def _commit_stream_admission(governance_db) -> None:
+    """Durably publish the admission snapshot and release all row locks.
+
+    The outbound URL and ceiling have already been copied into plain request
+    values and revalidated while the Task/TaskRun and registry rows were
+    locked.  Committing here makes that decision atomic without pinning a DB
+    connection for the (bounded, but potentially long) SSE lifetime.
+    """
+    if governance_db is None:
+        return
+    try:
+        governance_db.commit()
+    except Exception as exc:
+        governance_db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="推論 admission 無法提交，已拒絕出向呼叫",
+        ) from exc
+
+
+def lock_agent_registry_admission(
+    *, governance_db, agent_id: int, endpoint_url: str,
+    admitted_classification_level: str,
+) -> None:
+    """Public helper for the legacy non-streaming Agent branch."""
+    _lock_registry_admission(
+        governance_db=governance_db,
+        registry_model_id=None,
+        registry_agent_id=agent_id,
+        registry_endpoint_url=endpoint_url,
+        admitted_classification_level=admitted_classification_level,
+        inference_callsite_id="csp.agent_dispatch",
+    )
 
 def _get_timeout(model_type: str) -> float:
     if model_type == "embedding":
@@ -85,39 +325,6 @@ def build_default_anila_meta(
     }
 
 
-def _emit_proxy_dispatch_spans(
-    *,
-    trace_id: Optional[str],
-    task_id: Optional[int],
-    started_at: datetime,
-    run_status: str,
-    is_agent: bool,
-    target_id: Optional[int],
-    target_name: Optional[str],
-    usage: Optional[dict] = None,
-) -> None:
-    """Slice 4a — emit the proxy.dispatch + model/agent call spans for a
-    task-linked proxied call. ``run_status`` is the TaskRun terminal status
-    (``completed`` → span ``ok``; anything else → ``error``). Best-effort:
-    ``spans.record_proxy_dispatch`` already logs-not-raises, the extra guard
-    here keeps any unexpected error from touching the proxied response."""
-    span_status = "ok" if run_status == "completed" else "error"
-    try:
-        spans.record_proxy_dispatch(
-            trace_id=trace_id,
-            task_id=task_id,
-            started_at=started_at,
-            ended_at=datetime.now(timezone.utc),
-            status=span_status,
-            is_agent=is_agent,
-            target_id=target_id,
-            target_name=target_name,
-            usage=usage,
-        )
-    except Exception:  # pragma: no cover - defensive; helper is log-not-raise
-        logger.exception("proxy span 記錄失敗 trace_id=%s", trace_id)
-
-
 async def _proxy_request_impl(
     model: ModelRegistry,
     api_key_id: int,
@@ -136,6 +343,11 @@ async def _proxy_request_impl(
     task_id: Optional[int] = None,
     task_trace_id: Optional[str] = None,
     legacy_runtime_call: bool = False,
+    inference_callsite_id: str | None = None,
+    governance_db=None,
+    admitted_classification_level: str | None = None,
+    task_run_id: int | None = None,
+    usage_capture: dict | None = None,
 ) -> dict:
     """Forward request to model backend with exponential backoff retry.
 
@@ -151,11 +363,20 @@ async def _proxy_request_impl(
     /v1 chat traffic. Run finalization lives in the ``proxy_request``
     wrapper.
     """
+    _require_pilot_sink_admission(
+        inference_callsite_id=inference_callsite_id,
+        task_id=task_id,
+        task_run_id=task_run_id,
+        governance_db=governance_db,
+        admitted_classification_level=admitted_classification_level,
+    )
     timeout = _get_timeout(model.model_type)
     base_url = model.endpoint_url.rstrip("/")
     request_type = (
         "embedding"
         if "embedding" in endpoint_path or model.model_type == "embedding"
+        else "image"
+        if "images/generations" in endpoint_path or model.model_type == "image"
         else "chat"
     )
 
@@ -308,7 +529,25 @@ async def _proxy_request_impl(
             # Slice 2b-C: task-linked / legacy-marked /v1 chat rows go
             # through the task-aware variant; every other caller keeps the
             # byte-identical legacy enqueue path.
-            if task_id is not None or legacy_runtime_call:
+            usage_record = UsageRecordData(
+                api_key_id=api_key_id,
+                user_id=user_id,
+                department_id=department_id,
+                model_id=model.id,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                request_duration_ms=duration_ms,
+                conversation_id=conversation_id,
+                request_type=request_type,
+                caller_agent_id=caller_agent_id,
+                caller_client_id=caller_client_id,
+            )
+            if task_id is not None:
+                if usage_capture is None:
+                    raise RuntimeError("Task-linked proxy 缺少 durable usage capture")
+                usage_capture["record"] = usage_record
+            elif legacy_runtime_call:
                 await enqueue_usage_task_linked(
                     api_key_id=api_key_id,
                     user_id=user_id,
@@ -323,8 +562,8 @@ async def _proxy_request_impl(
                     request_type=request_type,
                     caller_agent_id=caller_agent_id,
                     caller_client_id=caller_client_id,
-                    task_id=task_id,
-                    legacy_runtime_call=legacy_runtime_call,
+                    task_id=None,
+                    legacy_runtime_call=True,
                 )
             else:
                 await enqueue_usage(
@@ -403,6 +642,10 @@ async def proxy_request(
     task_trace_id: Optional[str] = None,
     task_run_id: Optional[int] = None,
     legacy_runtime_call: bool = False,
+    inference_callsite_id: str | None = None,
+    governance_db=None,
+    admitted_classification_level: str | None = None,
+    finalize_task_run_on_completion: bool = True,
 ) -> dict:
     """Public entrypoint — ``_proxy_request_impl`` plus Slice 2b-C TaskRun
     finalization: when the call belongs to a Task (``task_run_id`` set),
@@ -411,8 +654,31 @@ async def proxy_request(
     byte-identical behavior — for legacy task-less callers.
     """
     span_started_at = datetime.now(timezone.utc)
+    closure_id = uuid.uuid4().hex
+    usage_capture: dict = {}
     is_agent_target = model.model_type == "agent" or target_agent_id is not None
     try:
+        _require_pilot_sink_admission(
+            inference_callsite_id=inference_callsite_id,
+            task_id=task_id,
+            task_run_id=task_run_id,
+            governance_db=governance_db,
+            admitted_classification_level=admitted_classification_level,
+        )
+        effective_level = _lock_task_run_admission(
+            governance_db=governance_db,
+            task_id=task_id,
+            task_run_id=task_run_id,
+            admitted_classification_level=admitted_classification_level,
+        )
+        _lock_registry_admission(
+            governance_db=governance_db,
+            registry_model_id=getattr(model, "id", None),
+            registry_agent_id=None,
+            registry_endpoint_url=getattr(model, "endpoint_url", None),
+            admitted_classification_level=effective_level,
+            inference_callsite_id=inference_callsite_id,
+        )
         result = await _proxy_request_impl(
             model=model,
             api_key_id=api_key_id,
@@ -431,41 +697,91 @@ async def proxy_request(
             task_id=task_id,
             task_trace_id=task_trace_id,
             legacy_runtime_call=legacy_runtime_call,
+            inference_callsite_id=inference_callsite_id,
+            governance_db=governance_db,
+            admitted_classification_level=admitted_classification_level,
+            task_run_id=task_run_id,
+            usage_capture=usage_capture,
         )
     except HTTPException as exc:
-        if task_run_id is not None:
-            finalize_task_run(
-                task_run_id,
-                "failed",
-                error={
-                    "code": f"http_{exc.status_code}",
-                    "message": str(exc.detail),
-                },
-            )
-            # Slice 4a: record the dispatch even on failure (error status).
-            _emit_proxy_dispatch_spans(
-                trace_id=task_trace_id,
+        if task_run_id is not None and finalize_task_run_on_completion:
+            if governance_db is None or task_id is None:
+                raise RuntimeError("Task closure 缺少 governance DB/Task trace") from exc
+            run_state = governance_db.get(TaskRun, task_run_id)
+            if run_state is None or run_state.status not in (
+                "completed", "failed", "cancelled"
+            ):
+                authoritative_trace = task_trace_id
+                if not authoritative_trace:
+                    task_state = governance_db.get(Task, task_id)
+                    authoritative_trace = task_state.trace_id if task_state else None
+                if not authoritative_trace:
+                    raise RuntimeError("Task closure 缺少 governance DB/Task trace") from exc
+                persist_task_call_closure(
+                    governance_db,
+                    TaskCallClosure(
+                        closure_id=closure_id,
+                        task_id=task_id,
+                        task_run_id=task_run_id,
+                        trace_id=authoritative_trace,
+                        started_at=span_started_at,
+                        status="failed",
+                        is_agent=is_agent_target,
+                        target_id=(target_agent_id if is_agent_target else model.id),
+                        target_name=model.name,
+                        error={
+                            "code": f"http_{exc.status_code}",
+                            "message": str(exc.detail),
+                        },
+                        classification_level=admitted_classification_level,
+                        callsite=inference_callsite_id,
+                    ),
+                )
+            else:
+                governance_db.rollback()
+        elif task_run_id is not None and governance_db is not None:
+            governance_db.rollback()
+        raise
+    if task_run_id is not None and finalize_task_run_on_completion:
+        if governance_db is None or task_id is None or not task_trace_id:
+            raise RuntimeError("Task closure 缺少 governance DB/Task trace")
+        persist_task_call_closure(
+            governance_db,
+            TaskCallClosure(
+                closure_id=closure_id,
                 task_id=task_id,
+                task_run_id=task_run_id,
+                trace_id=task_trace_id,
                 started_at=span_started_at,
-                run_status="failed",
+                status="completed",
                 is_agent=is_agent_target,
                 target_id=(target_agent_id if is_agent_target else model.id),
                 target_name=model.name,
-            )
-        raise
-    if task_run_id is not None:
-        finalize_task_run(task_run_id, "completed")
-        # Slice 4a: usage tokens (when the upstream returned them) ride into
-        # the model/agent child span attributes.
-        _emit_proxy_dispatch_spans(
-            trace_id=task_trace_id,
-            task_id=task_id,
-            started_at=span_started_at,
-            run_status="completed",
-            is_agent=is_agent_target,
-            target_id=(target_agent_id if is_agent_target else model.id),
-            target_name=model.name,
-            usage=(result.get("usage") if isinstance(result, dict) else None),
+                usage=usage_capture.get("record"),
+                classification_level=admitted_classification_level,
+                callsite=inference_callsite_id,
+            ),
+        )
+    elif task_run_id is not None and governance_db is not None:
+        if task_id is None or not task_trace_id:
+            raise RuntimeError("Nested Task closure 缺少 Task trace")
+        persist_task_call_closure(
+            governance_db,
+            TaskCallClosure(
+                closure_id=closure_id,
+                task_id=task_id,
+                task_run_id=task_run_id,
+                trace_id=task_trace_id,
+                started_at=span_started_at,
+                status="completed",
+                is_agent=is_agent_target,
+                target_id=(target_agent_id if is_agent_target else model.id),
+                target_name=model.name,
+                usage=usage_capture.get("record"),
+                finalize_run=False,
+                classification_level=admitted_classification_level,
+                callsite=inference_callsite_id,
+            ),
         )
     return result
 
@@ -475,7 +791,7 @@ async def _proxy_stream_impl(
     api_key_id: int,
     user_id: int,
     department_id: int | None,
-    usage_model_id: int,
+    usage_model_id: int | None,
     request_body: dict,
     user_email: Optional[str] = None,
     user_identity: Optional[str] = None,
@@ -490,6 +806,12 @@ async def _proxy_stream_impl(
     task_trace_id: Optional[str] = None,
     legacy_runtime_call: bool = False,
     gateway_api_key: Optional[str] = None,
+    inference_callsite_id: str | None = None,
+    governance_db=None,
+    admitted_classification_level: str | None = None,
+    task_run_id: int | None = None,
+    usage_capture: dict | None = None,
+    terminal_capture: dict | None = None,
 ) -> AsyncIterator[str]:
     """Stream SSE response from a downstream backend through CSP proxy.
 
@@ -502,6 +824,13 @@ async def _proxy_stream_impl(
     gateway) and into the usage row; ``legacy_runtime_call`` marks task-less
     /v1 chat traffic. Run finalization lives in the ``proxy_stream`` wrapper.
     """
+    _require_pilot_sink_admission(
+        inference_callsite_id=inference_callsite_id,
+        task_id=task_id,
+        task_run_id=task_run_id,
+        governance_db=governance_db,
+        admitted_classification_level=admitted_classification_level,
+    )
     # Call-time SSRF re-validation (TOCTOU / DNS-rebinding defense).
     _guard_outbound(
         target_url,
@@ -542,6 +871,43 @@ async def _proxy_stream_impl(
     prompt_text = _serialize_request_for_usage(body)
     completion_parts: list[str] = []
     pending_done_block: str | None = None
+    stream_started = time.monotonic()
+    stream_events = 0
+    stream_bytes = 0
+
+    def _check_stream_limits(line: str, *, event: bool = False) -> None:
+        nonlocal stream_events, stream_bytes
+        stream_bytes += len(line.encode("utf-8", errors="replace")) + 1
+        if event:
+            stream_events += 1
+        if time.monotonic() - stream_started > settings.PROXY_STREAM_MAX_SECONDS:
+            raise HTTPException(status_code=504, detail="下游串流超過總時限")
+        if stream_events > settings.PROXY_STREAM_MAX_EVENTS:
+            raise HTTPException(status_code=502, detail="下游串流事件數超過上限")
+        if stream_bytes > settings.PROXY_STREAM_MAX_BYTES:
+            raise HTTPException(status_code=502, detail="下游串流資料量超過上限")
+
+    def _capture_reported_usage() -> None:
+        """Snapshot usage as soon as upstream reports it.
+
+        If the client disconnects after the usage frame but before ``[DONE]``,
+        the wrapper can still persist metering in the failed durable closure.
+        """
+        if task_id is None or usage_capture is None or not usage_seen:
+            return
+        usage_capture["record"] = UsageRecordData(
+            api_key_id=api_key_id,
+            user_id=user_id,
+            department_id=department_id,
+            model_id=usage_model_id,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+            request_duration_ms=int((time.time() - start_time) * 1000),
+            conversation_id=conversation_id,
+            caller_agent_id=caller_agent_id,
+            caller_client_id=caller_client_id,
+        )
 
     try:
         async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
@@ -572,8 +938,10 @@ async def _proxy_stream_impl(
 
                 block_lines: list[str] = []
                 async for line in resp.aiter_lines():
+                    _check_stream_limits(line)
                     if line == "":
                         if block_lines:
+                            _check_stream_limits("", event=True)
                             block = "\n".join(block_lines)
                             event_name, data = _parse_sse_block(block)
                             if data == "[DONE]":
@@ -592,6 +960,7 @@ async def _proxy_stream_impl(
                                             usage_seen = True
                                             prompt_tokens = usage.get("prompt_tokens", 0)
                                             completion_tokens = usage.get("completion_tokens", 0)
+                                            _capture_reported_usage()
                                     except (json.JSONDecodeError, KeyError):
                                         pass
                                 yield _emit(block, event_name, data)
@@ -599,6 +968,7 @@ async def _proxy_stream_impl(
                         continue
                     block_lines.append(line)
                 if block_lines:
+                    _check_stream_limits("", event=True)
                     block = "\n".join(block_lines)
                     event_name, data = _parse_sse_block(block)
                     if data == "[DONE]":
@@ -617,6 +987,7 @@ async def _proxy_stream_impl(
                                     usage_seen = True
                                     prompt_tokens = usage.get("prompt_tokens", 0)
                                     completion_tokens = usage.get("completion_tokens", 0)
+                                    _capture_reported_usage()
                             except (json.JSONDecodeError, KeyError):
                                 pass
                         yield _emit(block, event_name, data)
@@ -653,12 +1024,36 @@ async def _proxy_stream_impl(
             ensure_ascii=False,
         ) + "\n\n"
     if pending_done_block:
-        yield pending_done_block
+        if terminal_capture is None:
+            yield pending_done_block
+        else:
+            # Formal streams publish [DONE] only after the wrapper commits the
+            # TaskRun/usage/span closure.  A process crash can therefore leave
+            # an incomplete stream, never a client-visible successful stream
+            # with an incomplete ledger.
+            terminal_capture["done_block"] = pending_done_block
     if total_tokens > 0:
         # Slice 2b-C: task-linked / legacy-marked /v1 chat rows go through
         # the task-aware variant; every other caller keeps the
         # byte-identical legacy enqueue path.
-        if task_id is not None or legacy_runtime_call:
+        usage_record = UsageRecordData(
+            api_key_id=api_key_id,
+            user_id=user_id,
+            department_id=department_id,
+            model_id=usage_model_id,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            request_duration_ms=duration_ms,
+            conversation_id=conversation_id,
+            caller_agent_id=caller_agent_id,
+            caller_client_id=caller_client_id,
+        )
+        if task_id is not None:
+            if usage_capture is None:
+                raise RuntimeError("Task-linked stream 缺少 durable usage capture")
+            usage_capture["record"] = usage_record
+        elif legacy_runtime_call:
             await enqueue_usage_task_linked(
                 api_key_id=api_key_id,
                 user_id=user_id,
@@ -672,8 +1067,8 @@ async def _proxy_stream_impl(
                 trace_id=trace_id,
                 caller_agent_id=caller_agent_id,
                 caller_client_id=caller_client_id,
-                task_id=task_id,
-                legacy_runtime_call=legacy_runtime_call,
+                task_id=None,
+                legacy_runtime_call=True,
             )
         else:
             await enqueue_usage(
@@ -697,7 +1092,7 @@ async def proxy_stream(
     api_key_id: int,
     user_id: int,
     department_id: int | None,
-    usage_model_id: int,
+    usage_model_id: int | None,
     request_body: dict,
     user_email: Optional[str] = None,
     user_identity: Optional[str] = None,
@@ -713,6 +1108,10 @@ async def proxy_stream(
     task_run_id: Optional[int] = None,
     legacy_runtime_call: bool = False,
     gateway_api_key: Optional[str] = None,
+    inference_callsite_id: str | None = None,
+    governance_db=None,
+    registry_endpoint_url: str | None = None,
+    admitted_classification_level: str | None = None,
 ) -> AsyncIterator[str]:
     """Public entrypoint — ``_proxy_stream_impl`` plus Slice 2b-C TaskRun
     finalization. The stream drains AFTER the request handler returns, so
@@ -725,7 +1124,35 @@ async def proxy_stream(
     status = "completed"
     error: dict | None = None
     span_started_at = datetime.now(timezone.utc)
+    closure_id = uuid.uuid4().hex
+    usage_capture: dict = {}
+    terminal_capture: dict = {}
+    closure_committed = False
     try:
+        _require_pilot_sink_admission(
+            inference_callsite_id=inference_callsite_id,
+            task_id=task_id,
+            task_run_id=task_run_id,
+            governance_db=governance_db,
+            admitted_classification_level=admitted_classification_level,
+        )
+        effective_level = _lock_task_run_admission(
+            governance_db=governance_db,
+            task_id=task_id,
+            task_run_id=task_run_id,
+            admitted_classification_level=admitted_classification_level,
+        )
+        _lock_registry_admission(
+            governance_db=governance_db,
+            registry_model_id=(
+                None if target_agent_id is not None else usage_model_id
+            ),
+            registry_agent_id=target_agent_id,
+            registry_endpoint_url=registry_endpoint_url,
+            admitted_classification_level=effective_level,
+            inference_callsite_id=inference_callsite_id,
+        )
+        _commit_stream_admission(governance_db)
         async for chunk in _proxy_stream_impl(
             target_url=target_url,
             api_key_id=api_key_id,
@@ -746,8 +1173,42 @@ async def proxy_stream(
             task_trace_id=task_trace_id,
             legacy_runtime_call=legacy_runtime_call,
             gateway_api_key=gateway_api_key,
+            inference_callsite_id=inference_callsite_id,
+            governance_db=governance_db,
+            admitted_classification_level=admitted_classification_level,
+            task_run_id=task_run_id,
+            usage_capture=usage_capture,
+            terminal_capture=terminal_capture,
         ):
             yield chunk
+        if task_run_id is not None:
+            if governance_db is None or task_id is None or not task_trace_id:
+                raise RuntimeError("Task stream closure 缺少治理上下文")
+            persist_task_call_closure(
+                governance_db,
+                TaskCallClosure(
+                    closure_id=closure_id,
+                    task_id=task_id,
+                    task_run_id=task_run_id,
+                    trace_id=task_trace_id,
+                    started_at=span_started_at,
+                    status="completed",
+                    is_agent=target_agent_id is not None,
+                    target_id=(
+                        target_agent_id
+                        if target_agent_id is not None
+                        else usage_model_id
+                    ),
+                    target_name=model_name,
+                    usage=usage_capture.get("record"),
+                    classification_level=admitted_classification_level,
+                    callsite=inference_callsite_id,
+                ),
+            )
+            closure_committed = True
+        done_block = terminal_capture.get("done_block")
+        if done_block:
+            yield done_block
     except HTTPException as exc:
         status = "failed"
         error = {"code": f"http_{exc.status_code}", "message": str(exc.detail)}
@@ -757,22 +1218,42 @@ async def proxy_stream(
         error = {"code": "stream_aborted", "message": type(exc).__name__}
         raise
     finally:
-        if task_run_id is not None:
-            finalize_task_run(task_run_id, status, error=error)
-            # Slice 4a: emit dispatch spans once the stream drains. Streaming
-            # usage is tallied inside _proxy_stream_impl and not surfaced here,
-            # so the child span carries timing/status but no token attributes
-            # (usage rides the token_usage row instead).
-            _emit_proxy_dispatch_spans(
-                trace_id=task_trace_id,
-                task_id=task_id,
-                started_at=span_started_at,
-                run_status=status,
-                is_agent=target_agent_id is not None,
-                target_id=(
-                    target_agent_id
-                    if target_agent_id is not None
-                    else usage_model_id
-                ),
-                target_name=model_name,
-            )
+        if task_run_id is not None and not closure_committed:
+            if governance_db is None or task_id is None or not task_trace_id:
+                logger.critical(
+                    "Task stream closure 缺少治理上下文 run_id=%s", task_run_id
+                )
+            else:
+                try:
+                    persist_task_call_closure(
+                        governance_db,
+                        TaskCallClosure(
+                            closure_id=closure_id,
+                            task_id=task_id,
+                            task_run_id=task_run_id,
+                            trace_id=task_trace_id,
+                            started_at=span_started_at,
+                            status=status,
+                            is_agent=target_agent_id is not None,
+                            target_id=(
+                                target_agent_id
+                                if target_agent_id is not None
+                                else usage_model_id
+                            ),
+                            target_name=model_name,
+                            # Metering is factual even when delivery was
+                            # cancelled after the upstream usage frame.
+                            usage=usage_capture.get("record"),
+                            error=error,
+                            classification_level=admitted_classification_level,
+                            callsite=inference_callsite_id,
+                        ),
+                    )
+                except Exception:
+                    # Streaming bytes may already be on the wire.  Never claim a
+                    # successful durable closure; the still-running attempt is
+                    # intentionally left for crash reconciliation.
+                    governance_db.rollback()
+                    logger.exception(
+                        "Task stream durable closure 失敗 run_id=%s", task_run_id
+                    )

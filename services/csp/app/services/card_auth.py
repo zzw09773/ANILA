@@ -28,10 +28,10 @@
    (見 ``card_auth_service``)。``CARD_DEV_SKIP_NONCE_BINDING`` 僅保留作舊版開發
    相容開關；正式環境會在 startup fail closed，現行 synthetic emulator 也不需要它。
 
-目前限制：本模組尚未驗 CRL／OCSP，也尚未完整驗 X.509 policy／EKU；
-``User.is_active`` 與核准狀態只能撤銷 ANILA 帳號，不能證明卡片本身未被撤銷。
-因此這不是機密 production 的完整憑證保證，需由 Gate 2 的撤銷與 profile 驗證、
-以及 Gate 6 的 production-equivalent 卡片矩陣完成後才能解除此限制。
+Gate 2 起正式姿態會驗離線 CRL(issuer/signature/thisUpdate/nextUpdate/max-age)、
+BasicConstraints、KeyUsage、EKU、certificate policy 與 pathLen；CRL 缺漏或過期
+一律 fail closed。Gate 6 仍需以 production-equivalent 實體卡/CA/CRL 矩陣完成
+交付驗證，不能以 synthetic PKI 取代硬體與真實 PKI drill。
 
 員工編號的來源
 ==============
@@ -61,7 +61,9 @@ from cryptography import x509
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
-from cryptography.x509.oid import ExtensionOID, NameOID
+from cryptography.x509.oid import ExtensionOID, NameOID, SignatureAlgorithmOID
+
+from app.config import settings
 
 
 # 員工編號是 6--9 位純數字；測試只使用保留的 990000xxx 合成編號。
@@ -116,7 +118,10 @@ class CardClaims:
     employee_id: str  # X.509 subject.serialNumber (測試例:'990000001')
     display_name: str  # X.509 subject.CN (測試例:'Synthetic Card User')
     email: str  # X.509 SAN.rfc822Name
-    card_serial: str | None  # 元件回的 cardSN,純供 audit log 用
+    # Both values are derived from the verified CMS signer certificate. The
+    # frontend ``cardSN`` field is untrusted compatibility input and is ignored.
+    card_serial: str
+    certificate_fingerprint_sha256: str
 
 
 def verify_pkcs7_signature(
@@ -130,7 +135,8 @@ def verify_pkcs7_signature(
         signature_b64: frontend POST 上來的 base64 PKCS#7 (CMS SignedData)。
         expected_nonce: 本次 challenge 發出的 nonce;必須等於卡片簽的 eContent
             (反 replay)。``CARD_DEV_SKIP_NONCE_BINDING`` 開啟時不比對(dev only)。
-        card_serial: 元件回的 ``cardSN``,純 audit log 用。
+        card_serial: 舊 client 相容欄位；不可信，驗證結果一律從 signer X.509
+            certificate serial/fingerprint 衍生。
 
     Raises:
         InvalidSignatureError: base64/DER/CMS 解析失敗、簽章不對、鏈驗不過、
@@ -305,9 +311,11 @@ def _verify_chain(
     anchors: dict[bytes, x509.Certificate],
     roots: list[x509.Certificate],
 ) -> None:
-    """從 signer 沿 issuer 連到釘死 bundle 內的自簽 root,逐層驗簽 + 效期。"""
+    """Validate profile, CRLs, pathLen and signatures to a pinned root."""
     root_fps = {r.fingerprint(hashes.SHA256()) for r in roots}
+    _validate_signer_profile(signer)
     cur = signer
+    ca_below = 0
     for _ in range(8):  # 深度上限,防迴圈
         _check_validity(cur)
         if cur.fingerprint(hashes.SHA256()) in root_fps:
@@ -317,19 +325,260 @@ def _verify_chain(
             raise InvalidSignatureError(
                 "憑證鏈無法連到釘死的 CSPKI CA(issuer 不在信任 bundle 內)"
             )
+        _check_validity(parent)
+        _validate_ca_profile(parent, ca_below=ca_below)
         _verify_cert_signed_by(cur, parent)
+        _verify_crl_status(cur, parent)
         cur = parent
+        ca_below += 1
     raise InvalidSignatureError("憑證鏈過深")
+
+
+def _extension_value(cert: x509.Certificate, oid: x509.ObjectIdentifier):
+    try:
+        return cert.extensions.get_extension_for_oid(oid).value
+    except x509.ExtensionNotFound as exc:
+        raise InvalidSignatureError(f"憑證缺必要 extension: {oid.dotted_string}") from exc
+
+
+def _validate_signer_profile(cert: x509.Certificate) -> None:
+    basic = _extension_value(cert, ExtensionOID.BASIC_CONSTRAINTS)
+    if basic.ca:
+        raise InvalidSignatureError("signer certificate 不可宣告 CA=true")
+    usage = _extension_value(cert, ExtensionOID.KEY_USAGE)
+    if not usage.digital_signature or usage.key_cert_sign or usage.crl_sign:
+        raise InvalidSignatureError("signer certificate KeyUsage 不允許卡片簽章")
+
+    try:
+        required_eku = x509.ObjectIdentifier(settings.CARD_REQUIRED_EKU_OID.strip())
+    except ValueError as exc:
+        raise CardConfigError("CARD_REQUIRED_EKU_OID 格式無效") from exc
+    eku = _extension_value(cert, ExtensionOID.EXTENDED_KEY_USAGE)
+    if required_eku not in eku:
+        raise InvalidSignatureError("signer certificate EKU 不符合卡片登入政策")
+
+    policy_oids = {
+        item.strip()
+        for item in settings.CARD_REQUIRED_CERT_POLICY_OIDS.split(",")
+        if item.strip()
+    }
+    if policy_oids:
+        try:
+            required_policies = {x509.ObjectIdentifier(item) for item in policy_oids}
+        except ValueError as exc:
+            raise CardConfigError("CARD_REQUIRED_CERT_POLICY_OIDS 格式無效") from exc
+        policies = _extension_value(cert, ExtensionOID.CERTIFICATE_POLICIES)
+        present = {policy.policy_identifier for policy in policies}
+        if not present.intersection(required_policies):
+            raise InvalidSignatureError("signer certificate policy OID 不在允許清單")
+
+
+def _validate_ca_profile(cert: x509.Certificate, *, ca_below: int) -> None:
+    basic = _extension_value(cert, ExtensionOID.BASIC_CONSTRAINTS)
+    if not basic.ca:
+        raise InvalidSignatureError("issuer certificate 未宣告 CA=true")
+    if basic.path_length is not None and ca_below > basic.path_length:
+        raise InvalidSignatureError("憑證鏈違反 BasicConstraints pathLen")
+    usage = _extension_value(cert, ExtensionOID.KEY_USAGE)
+    if not usage.key_cert_sign or not usage.crl_sign:
+        raise InvalidSignatureError("issuer certificate KeyUsage 缺 keyCertSign/crlSign")
+
+
+_crl_cache: dict[bytes, list[x509.CertificateRevocationList]] | None = None
+_crl_cache_source: tuple[str, int, int] | None = None
+
+
+def _verify_crl_status(cert: x509.Certificate, issuer: x509.Certificate) -> None:
+    if not settings.CARD_CRL_REQUIRED:
+        return
+    crls = _load_crls()
+    candidates = crls.get(issuer.subject.public_bytes(), [])
+    if not candidates:
+        raise CardConfigError("CRL bundle 缺少憑證 issuer 的撤銷清單")
+    crl = max(candidates, key=lambda item: _crl_times(item)[0])
+    _verify_crl_signed_by(crl, issuer)
+    _validate_crl_freshness(crl)
+    if crl.get_revoked_certificate_by_serial_number(cert.serial_number) is not None:
+        raise InvalidSignatureError("signer/issuer certificate 已被 CRL 撤銷")
+
+
+def _validate_crl_freshness(crl: x509.CertificateRevocationList) -> None:
+    last_update, next_update = _crl_times(crl)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if last_update > now:
+        raise InvalidSignatureError("CRL thisUpdate 位於未來")
+    if next_update is None or now >= next_update:
+        raise InvalidSignatureError("CRL 已超過 nextUpdate")
+    max_age = datetime.timedelta(hours=settings.CARD_CRL_MAX_AGE_HOURS)
+    if now - last_update > max_age:
+        raise InvalidSignatureError("CRL 超過允許 max-age")
+
+
+def validate_card_crl_bundle() -> None:
+    """Validate every configured CRL before a formal process becomes ready."""
+    anchors, _roots = _load_ca_anchors()
+    crls = _load_crls()
+    for issuer_key, candidates in crls.items():
+        issuer = anchors.get(issuer_key)
+        if issuer is None:
+            raise CardConfigError("CRL issuer 不在釘選 CA bundle")
+        for crl in candidates:
+            _verify_crl_signed_by(crl, issuer)
+            _validate_crl_freshness(crl)
+            this_update, next_update = _crl_times(crl)
+            logger.info(
+                "card CRL validated: source=%s issuer=%s this_update=%s "
+                "next_update=%s max_age_hours=%s",
+                settings.CARD_CRL_SOURCE,
+                crl.issuer.rfc4514_string(),
+                this_update.isoformat(),
+                next_update.isoformat() if next_update else None,
+                settings.CARD_CRL_MAX_AGE_HOURS,
+            )
+    # Every CA in the configured chain can issue/revoke a child. Requiring one
+    # CRL per anchor prevents a partial bundle from silently omitting a tier.
+    for anchor in anchors.values():
+        if not crls.get(anchor.subject.public_bytes()):
+            raise CardConfigError("CRL bundle 未涵蓋完整釘選 CA chain")
+
+
+def _crl_times(
+    crl: x509.CertificateRevocationList,
+) -> tuple[datetime.datetime, datetime.datetime | None]:
+    last_update = getattr(crl, "last_update_utc", None) or crl.last_update.replace(
+        tzinfo=datetime.timezone.utc
+    )
+    next_update_raw = getattr(crl, "next_update_utc", None) or crl.next_update
+    next_update = (
+        next_update_raw
+        if next_update_raw is None or next_update_raw.tzinfo is not None
+        else next_update_raw.replace(tzinfo=datetime.timezone.utc)
+    )
+    return last_update, next_update
+
+
+def _verify_crl_signed_by(
+    crl: x509.CertificateRevocationList,
+    issuer: x509.Certificate,
+) -> None:
+    if crl.issuer != issuer.subject:
+        raise InvalidSignatureError("CRL issuer 與憑證 issuer 不一致")
+    public_key = issuer.public_key()
+    try:
+        if isinstance(public_key, rsa.RSAPublicKey):
+            signature_padding = _rsa_padding_for_crl(crl)
+            public_key.verify(
+                crl.signature,
+                crl.tbs_certlist_bytes,
+                signature_padding,
+                crl.signature_hash_algorithm,
+            )
+        elif isinstance(public_key, ec.EllipticCurvePublicKey):
+            public_key.verify(
+                crl.signature,
+                crl.tbs_certlist_bytes,
+                ec.ECDSA(crl.signature_hash_algorithm),
+            )
+        else:
+            raise InvalidSignatureError("CRL issuer 公鑰型別不支援")
+    except InvalidSignature as exc:
+        raise InvalidSignatureError("CRL 簽章驗證失敗") from exc
+
+
+def _rsa_padding_for_crl(
+    crl: x509.CertificateRevocationList,
+) -> padding.PKCS1v15 | padding.PSS:
+    return _rsa_padding_for_x509_signature(crl, label="CRL")
+
+
+def _rsa_padding_for_certificate(
+    cert: x509.Certificate,
+) -> padding.PKCS1v15 | padding.PSS:
+    return _rsa_padding_for_x509_signature(cert, label="憑證")
+
+
+def _rsa_padding_for_x509_signature(
+    signed_object,
+    *,
+    label: str,
+) -> padding.PKCS1v15 | padding.PSS:
+    """Return the RSA padding encoded by an X.509 AlgorithmIdentifier.
+
+    RSASSA-PSS parameters are part of the signed-object contract.  Falling
+    back to PKCS#1 v1.5 when those parameters are unavailable would verify a
+    different algorithm than the CRL declares, so unsupported parameter
+    encodings fail closed.
+    """
+    parameters = getattr(signed_object, "signature_algorithm_parameters", None)
+    if signed_object.signature_algorithm_oid == SignatureAlgorithmOID.RSASSA_PSS:
+        if not isinstance(parameters, padding.PSS):
+            raise InvalidSignatureError(f"{label} RSA-PSS 參數缺失或不受支援")
+        return parameters
+    if not isinstance(parameters, padding.PKCS1v15):
+        raise InvalidSignatureError(f"{label} RSA 簽章 padding 不受支援")
+    return parameters
+
+
+def _load_crls() -> dict[bytes, list[x509.CertificateRevocationList]]:
+    global _crl_cache, _crl_cache_source
+    if _crl_cache is not None and _crl_cache_source is None:
+        # Explicit in-memory synthetic-test seam; production loads from disk.
+        return _crl_cache
+    path = Path(settings.CARD_CRL_BUNDLE_PATH)
+    if not settings.CARD_CRL_BUNDLE_PATH or not path.is_file():
+        raise CardConfigError("CARD_CRL_BUNDLE_PATH 未設定或無法讀取")
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        raise CardConfigError(f"無法 stat CRL bundle: {path}") from exc
+    source = (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+    if _crl_cache is not None and _crl_cache_source == source:
+        return _crl_cache
+    try:
+        pem_bytes = path.read_bytes()
+    except OSError as exc:
+        raise CardConfigError(f"無法讀取 CRL bundle: {path}") from exc
+    crls = _load_pem_crls(pem_bytes)
+    if not crls:
+        raise CardConfigError("CRL bundle 不含任何 PEM CRL")
+    by_issuer: dict[bytes, list[x509.CertificateRevocationList]] = {}
+    for crl in crls:
+        by_issuer.setdefault(crl.issuer.public_bytes(), []).append(crl)
+    _crl_cache = by_issuer
+    _crl_cache_source = source
+    return by_issuer
+
+
+def _load_pem_crls(pem_bytes: bytes) -> list[x509.CertificateRevocationList]:
+    marker = b"-----BEGIN X509 CRL-----"
+    end = b"-----END X509 CRL-----"
+    result: list[x509.CertificateRevocationList] = []
+    offset = 0
+    while True:
+        start = pem_bytes.find(marker, offset)
+        if start < 0:
+            break
+        stop = pem_bytes.find(end, start)
+        if stop < 0:
+            break
+        block = pem_bytes[start : stop + len(end)] + b"\n"
+        try:
+            result.append(x509.load_pem_x509_crl(block))
+        except ValueError as exc:
+            raise CardConfigError("CRL bundle 含無效 PEM CRL") from exc
+        offset = stop + len(end)
+    return result
 
 
 def _verify_cert_signed_by(cert: x509.Certificate, issuer: x509.Certificate) -> None:
     pub = issuer.public_key()
     try:
         if isinstance(pub, rsa.RSAPublicKey):
+            signature_padding = _rsa_padding_for_certificate(cert)
             pub.verify(
                 cert.signature,
                 cert.tbs_certificate_bytes,
-                padding.PKCS1v15(),
+                signature_padding,
                 cert.signature_hash_algorithm,
             )
         elif isinstance(pub, ec.EllipticCurvePublicKey):
@@ -418,6 +667,7 @@ def _load_pem_certs_fallback(pem_bytes: bytes) -> list[x509.Certificate]:
 
 
 def _extract_claims(cert: x509.Certificate, card_serial: str | None) -> CardClaims:
+    del card_serial  # Never trust the browser/HiPKI wrapper's unsigned cardSN.
     employee_id = _attr_or_none(cert, NameOID.SERIAL_NUMBER)
     if not employee_id:
         raise MissingClaimError("signer cert 缺 subject.serialNumber (員工編號)")
@@ -438,7 +688,8 @@ def _extract_claims(cert: x509.Certificate, card_serial: str | None) -> CardClai
         employee_id=employee_id,
         display_name=display_name,
         email=email,
-        card_serial=card_serial,
+        card_serial=format(cert.serial_number, "X"),
+        certificate_fingerprint_sha256=cert.fingerprint(hashes.SHA256()).hex(),
     )
 
 

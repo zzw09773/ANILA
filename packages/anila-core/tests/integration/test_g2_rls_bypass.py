@@ -19,6 +19,7 @@ import os
 
 import asyncpg
 import pytest
+from anila_contracts import Classification
 
 from anila_core.ingestion.chunking_plugins import ChunkResult
 from anila_core.storage.adapters.pg_pool import PgPool
@@ -90,6 +91,7 @@ async def test_g2_detector_rejects_a_removed_collection_policy(
             )
         ],
         embeddings=[[0.3] * 4000],
+        classification_level=Classification.UNCLASSIFIED,
     )
 
     admin = await asyncpg.connect(dsn=integration_admin_dsn)
@@ -151,6 +153,7 @@ async def test_g2_bypass_attempt_no_guc_yields_zero_rows(
             )
         ],
         embeddings=[[0.1] * 4000],
+        classification_level=Classification.UNCLASSIFIED,
     )
 
     raw_conn = await asyncpg.connect(dsn=_resolve_dsn())
@@ -191,6 +194,7 @@ async def test_g2_bypass_attempt_wrong_collection_yields_only_their_rows(
                 )
             ],
             embeddings=[[0.2] * 4000],
+            classification_level=Classification.UNCLASSIFIED,
         )
 
     raw_conn = await asyncpg.connect(dsn=_resolve_dsn())
@@ -210,3 +214,33 @@ async def test_g2_bypass_attempt_wrong_collection_yields_only_their_rows(
         )
     finally:
         await raw_conn.close()
+
+
+async def test_transaction_local_collection_scope_never_survives_pool_reuse(
+    isolation_collections: list[int],
+) -> None:
+    """A max-size-one pool guarantees the next request reuses the connection."""
+
+    coll_id = isolation_collections[0]
+    one_connection_pool = await asyncpg.create_pool(
+        dsn=_resolve_dsn(), min_size=1, max_size=1
+    )
+    try:
+        async with one_connection_pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute(
+                    f"SET LOCAL anila.collection_id = {int(coll_id)}"
+                )
+                assert await connection.fetchval(
+                    "SELECT current_setting('anila.collection_id', true)"
+                ) == str(coll_id)
+
+        # This is the exact same physical connection after release/acquire.
+        async with one_connection_pool.acquire() as reused:
+            residual = await reused.fetchval(
+                "SELECT current_setting('anila.collection_id', true)"
+            )
+            assert residual in (None, "")
+            assert await reused.fetch("SELECT id FROM document_chunks") == []
+    finally:
+        await one_connection_pool.close()

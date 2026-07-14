@@ -70,6 +70,11 @@ services:
       # Explicit development opt-ins; the formal profile defaults both off.
       ENABLE_PUBLIC_SHARE: "${ENABLE_PUBLIC_SHARE:-true}"
       ENABLE_MEMORY: "${ENABLE_MEMORY:-true}"
+      CARD_CRL_REQUIRED: "false"
+      CARD_CRL_SOURCE: "development-disabled"
+      JWT_ISSUER: "https://anila.internal/csp"
+      JWT_AUDIENCE: "anila-platform"
+      JWT_LEEWAY_SECONDS: "60"
       PUBLIC_SHARE_MAX_TTL_HOURS: "${PUBLIC_SHARE_MAX_TTL_HOURS:-168}"
       SITE_URL: "${SITE_URL:-https://localhost:8443}"
       # Dev-only relax (S-117 URL guard): dev runs every model/agent on
@@ -112,6 +117,7 @@ services:
       ANILA_TEMPLATE_DIR: /app/anila-template
       INGESTION_UPLOAD_DIR: /var/anila/ingestion-uploads
       ATTACHMENT_STORAGE_PATH: /var/anila/attachments
+      SOURCE_SNAPSHOT_STORAGE_PATH: /var/lib/anila/source-snapshots
       # FLUX image-gen for ANILALM studio pptx pipeline — wires
       # studio.image_provider.FluxImageProvider; empty BACKEND_URL
       # would make get_flux_provider() return None (toggle OFF).
@@ -126,6 +132,7 @@ services:
       # get a root-owned bind directory that blocks non-root CSP uploads.
       - ingestion-uploads-dev:/var/anila/ingestion-uploads
       - csp-attachments-dev:/var/anila/attachments
+      - csp-source-snapshots-dev:/var/lib/anila/source-snapshots
       - csp-secrets-dev:/app/secrets
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -281,6 +288,10 @@ services:
       ARTIFACTS_DIR: /var/anila/anila-studio-artifacts
       RENDERER_BASE_URL: http://pptx-renderer:7100
       JWT_KID: anila-v1
+      JWT_ISSUER: "https://anila.internal/csp"
+      JWT_AUDIENCE: "anila-platform"
+      JWT_LEEWAY_SECONDS: "60"
+      REVOCATION_RECONCILE_INTERVAL_SECONDS: "5"
       REQUIRE_CARD_LOGIN_ONLY: "false"
       COOKIE_SECURE: "true"
       LOG_LEVEL: INFO
@@ -397,6 +408,7 @@ volumes:
   redis-data-dev:
   ingestion-uploads-dev:
   csp-attachments-dev:
+  csp-source-snapshots-dev:
   csp-secrets-dev:
   anila-studio-flux-cache-dev:
   anila-studio-artifacts-dev:

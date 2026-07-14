@@ -214,6 +214,16 @@ class TestTaskRuns:
         assert run1.started_at is not None
         assert task.status == "running"  # draft → … → running 快轉
 
+        with pytest.raises(ValueError, match="active TaskRun"):
+            tasks_module.start_task_run(
+                db, task=task, dispatch_target="agent"
+            )
+
+        # A retry/handoff may allocate the next sequence only after the
+        # previous attempt is terminal.  Keep Task running to model the
+        # coordinator's between-attempt state.
+        run1.status = "failed"
+        db.commit()
         run2 = tasks_module.start_task_run(db, task=task, dispatch_target="agent")
         assert run2.run_sequence == 2
 
