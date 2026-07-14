@@ -18,6 +18,7 @@ from typing import Any, Mapping, cast
 from anila_contracts import AgentManifest, Classification
 from anila_security import UnsafeEndpointError, validate_outbound_url
 from pydantic import ValidationError
+from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.model_registry import ModelRegistry
@@ -119,7 +120,7 @@ def manifest_revision(manifest: AgentManifest | Mapping[str, Any]) -> str:
     return f"sha256:{manifest_sha256(manifest)}"
 
 
-def _base_model(agent: Any, db: Any) -> ModelRegistry | None:
+def _base_model(agent: Any, db: Session | None) -> ModelRegistry | None:
     model_id = getattr(agent, "base_model_id", None)
     if model_id is None:
         return None
@@ -252,7 +253,7 @@ def _append(reasons: list[str], code: str) -> None:
 def evaluate_agent_readiness(
     agent: Any,
     *,
-    db: Any = None,
+    db: Session | None = None,
     requested_classification: str | Classification | None = None,
     expected_manifest_revision: str | None = None,
     expected_manifest_sha256: str | None = None,
