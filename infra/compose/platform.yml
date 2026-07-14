@@ -488,6 +488,10 @@ services:
       # image-generator 自身的具名 agent credential；需與 CSP
       # agent_credentials 內該 agent 的有效 token 一致，不可用 fleet token。
       FLUX_AGENT_SERVICE_TOKEN: ${FLUX_AGENT_SERVICE_TOKEN:?FLUX_AGENT_SERVICE_TOKEN must match image-generator credential}
+      # Normal deployments call the configured FLUX_BACKEND_URL directly.
+      # The signed Gate 2 pilot overlay is the only profile that flips this
+      # to 1 and routes the governed callback through CSP.
+      GATE2_IMAGE_VIA_CSP: "0"
       GEMMA_MODEL: gemma4
       ENABLE_PROMPT_TRANSLATION: "1"
       SHARE_DIR: /share/flux

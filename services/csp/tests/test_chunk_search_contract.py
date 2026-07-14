@@ -20,6 +20,7 @@ hits so the endpoint glue itself is what gets exercised.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -203,11 +204,17 @@ class _StubStore:
 
 
 @pytest.fixture(autouse=True)
-def _patch_retrieval(monkeypatch):
-    async def fake_embed_query(db, user, model_name, dim, query):
+def _patch_retrieval(monkeypatch) -> Iterator[dict[str, object]]:
+    captured: dict[str, object] = {}
+
+    async def fake_embed_query(
+        db, user, model_name, dim, query, *, trusted_classification_level
+    ):
+        captured["trusted_classification_level"] = trusted_classification_level
         return [0.1] * dim
 
     monkeypatch.setattr(search_mod, "_embed_query", fake_embed_query)
+    yield captured
 
 
 # ── 200 happy path ────────────────────────────────────────────────────────
@@ -511,6 +518,38 @@ def test_agent_ceiling_is_part_of_data_access_decision(db, alice, alice_collecti
         principal=principal,
         collection_id=alice_collection.id,
     ) is False
+
+
+def test_chunk_search_embedding_uses_highest_authorized_classification(
+    client: TestClient,
+    db,
+    alice,
+    alice_collection,
+    monkeypatch,
+    _patch_retrieval,
+):
+    document = db.get(IngestionDocument, alice_collection._test_doc_id)
+    document.classification_level = "機密"
+    document.classification_source = "test"
+    db.commit()
+    monkeypatch.setattr(search_mod, "get_pool", lambda: object())
+    monkeypatch.setattr(
+        search_mod,
+        "CollectionScopedPgVectorStore",
+        lambda pool, collection_id: _StubStore([]),
+    )
+
+    response = client.post(
+        f"/api/ingestion/collections/{alice_collection.id}/search",
+        json={"query": "classified query"},
+        headers=_bearer(alice),
+    )
+
+    assert response.status_code == 200, response.text
+    assert (
+        _patch_retrieval["trusted_classification_level"]
+        is search_mod.Classification.CONFIDENTIAL
+    )
 
 
 # ── auth / status ────────────────────────────────────────────────────────

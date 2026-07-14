@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 
@@ -243,3 +244,36 @@ async def test_stream_prefix_is_named_retrieval_event(query_task):
     assert chunks[0].startswith("event: anila.retrieval\n")
     assert '"state": "zero_hits"' in chunks[0]
     assert chunks[1] == b'data: {"choices":[]}\n\n'
+
+
+@pytest.mark.asyncio
+async def test_retrieval_prelude_cancellation_closes_started_upstream(query_task):
+    """Disconnect after evidence must still enter and close proxy_stream."""
+    _user, _collection, task = query_task
+    outcome = RetrievalOutcome(
+        state="zero_hits",
+        task_id=task.id,
+        source_snapshot_id=task.source_snapshot_id,
+        system_prompt="p",
+        citations=(),
+        content_hash="c" * 64,
+    )
+    started = asyncio.Event()
+    closed = asyncio.Event()
+
+    async def upstream():
+        try:
+            started.set()
+            await asyncio.Event().wait()
+            yield b"unreachable"
+        finally:
+            closed.set()
+
+    wrapped = proxy_mod._prepend_retrieval_event(upstream(), outcome)
+    first = await anext(wrapped)
+    assert first.startswith("event: anila.retrieval\n")
+    assert started.is_set()
+
+    await wrapped.aclose()
+
+    assert closed.is_set()

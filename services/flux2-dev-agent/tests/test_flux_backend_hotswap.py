@@ -27,7 +27,7 @@ from app.backend_resolver import BackendResolver
 from app.flux_client import FluxClient
 from app.image_primary_fetcher import ImagePrimaryFetcher
 from app.image_store import ImageStore
-from app.main import build_app
+from app.main import _build_from_env, build_app
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 _B64 = base64.b64encode(_PNG).decode()
@@ -89,6 +89,33 @@ def _generate(client: TestClient) -> httpx.Response:
         headers={"X-CSP-Service-Token": "svc-token"},
         json={"model": "image-generator", "messages": [{"role": "user", "content": "畫一張坦克"}]},
     )
+
+
+@respx.mock
+def test_default_environment_mode_calls_direct_flux_backend(monkeypatch, tmp_path: Path):
+    """Only the pilot overlay may opt into the governed CSP callback."""
+    monkeypatch.delenv("GATE2_IMAGE_VIA_CSP", raising=False)
+    monkeypatch.setenv("FLUX_BACKEND_URL", _ENV_BACKEND_URL)
+    monkeypatch.setenv("FLUX_MODEL", _ENV_MODEL)
+    monkeypatch.setenv("FLUX_AGENT_SERVICE_TOKEN", "svc-token")
+    monkeypatch.setenv("ENABLE_PROMPT_TRANSLATION", "0")
+    monkeypatch.setenv("SHARE_DIR", str(tmp_path))
+
+    respx.get(_CSP_URL).mock(
+        return_value=httpx.Response(404, json={"detail": "未設定"})
+    )
+    direct = respx.post(
+        f"{_ENV_BACKEND_URL}/v1/images/generations"
+    ).mock(return_value=httpx.Response(200, json=_IMAGES_BODY))
+    callback = respx.post(
+        "http://csp:8000/v1/images/generations"
+    ).mock(return_value=httpx.Response(500))
+
+    response = _generate(TestClient(_build_from_env()))
+
+    assert response.status_code == 200, response.text
+    assert direct.call_count == 1
+    assert callback.call_count == 0
 
 
 @respx.mock

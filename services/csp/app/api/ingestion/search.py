@@ -48,6 +48,7 @@ from app.models.ingestion import (
 from app.models.user import User
 from app.modules.clearance.service import (
     ClearancePolicyDataError,
+    DataAccessDecision,
     resolve_and_evaluate_data_access,
 )
 from app.services.auth_service import get_current_user
@@ -138,13 +139,13 @@ def _agent_classification_ceiling(
         ) from exc
 
 
-def _data_access_ceiling(
+def _resolved_data_access(
     db: Session,
     *,
     principal: SearchPrincipal,
     collection_id: int,
     document_id: int | None = None,
-) -> Classification | None:
+) -> tuple[DataAccessDecision, Classification | None] | None:
     try:
         decision = resolve_and_evaluate_data_access(
             db,
@@ -167,11 +168,42 @@ def _data_access_ceiling(
             detail="clearance decision 缺少 authorized classification",
         )
     ceiling = _agent_classification_ceiling(principal)
-    if ceiling is None or decision.authorized_classification <= ceiling:
-        return decision.authorized_classification
-    if decision.context.required_classification <= ceiling:
-        return ceiling
-    return None
+    if ceiling is not None and decision.context.required_classification > ceiling:
+        return None
+    return decision, ceiling
+
+
+def _query_classification_ceiling(
+    decision: DataAccessDecision,
+    agent_ceiling: Classification | None,
+) -> Classification:
+    authorized = decision.authorized_classification
+    if authorized is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="clearance decision 缺少 authorized classification",
+        )
+    if agent_ceiling is None or authorized <= agent_ceiling:
+        return authorized
+    return agent_ceiling
+
+
+def _data_access_ceiling(
+    db: Session,
+    *,
+    principal: SearchPrincipal,
+    collection_id: int,
+    document_id: int | None = None,
+) -> Classification | None:
+    resolved = _resolved_data_access(
+        db,
+        principal=principal,
+        collection_id=collection_id,
+        document_id=document_id,
+    )
+    if resolved is None:
+        return None
+    return _query_classification_ceiling(*resolved)
 
 
 def _is_data_access_allowed(
@@ -210,14 +242,20 @@ def _require_collection_clearance(
     return collection
 
 
-def _authorized_document_ceilings(
+@dataclass(frozen=True, slots=True)
+class _AuthorizedDocumentAccess:
+    query_ceiling: Classification
+    required_classification: Classification
+
+
+def _authorized_document_access(
     db: Session,
     *,
     principal: SearchPrincipal,
     collection_id: int,
     requested_ids: list[int] | None,
     reject_denied: bool,
-) -> dict[int, Classification]:
+) -> dict[int, _AuthorizedDocumentAccess]:
     query = db.query(IngestionDocument.id).filter(
         IngestionDocument.collection_id == collection_id
     )
@@ -230,22 +268,48 @@ def _authorized_document_ceilings(
             detail="document_ids 含不存在或不屬於此 collection 的文件",
         )
 
-    allowed: dict[int, Classification] = {}
+    allowed: dict[int, _AuthorizedDocumentAccess] = {}
     for document_id in found:
-        ceiling = _data_access_ceiling(
+        resolved = _resolved_data_access(
             db,
             principal=principal,
             collection_id=collection_id,
             document_id=document_id,
         )
-        if ceiling is not None:
-            allowed[document_id] = ceiling
+        if resolved is not None:
+            decision, agent_ceiling = resolved
+            allowed[document_id] = _AuthorizedDocumentAccess(
+                query_ceiling=_query_classification_ceiling(
+                    decision, agent_ceiling
+                ),
+                required_classification=decision.context.required_classification,
+            )
     if reject_denied and len(allowed) != len(found):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="至少一份 document 的 clearance/compartment 不足",
         )
     return allowed
+
+
+def _authorized_document_ceilings(
+    db: Session,
+    *,
+    principal: SearchPrincipal,
+    collection_id: int,
+    requested_ids: list[int] | None,
+    reject_denied: bool,
+) -> dict[int, Classification]:
+    return {
+        document_id: access.query_ceiling
+        for document_id, access in _authorized_document_access(
+            db,
+            principal=principal,
+            collection_id=collection_id,
+            requested_ids=requested_ids,
+            reject_denied=reject_denied,
+        ).items()
+    }
 
 
 def _authorized_document_ids(
@@ -458,6 +522,8 @@ async def _embed_query(
     model_name: str,
     embedding_dim: int,
     query: str,
+    *,
+    trusted_classification_level: Classification,
 ) -> list[float]:
     try:
         return await embed_query(
@@ -467,6 +533,7 @@ async def _embed_query(
             embedding_dim,
             query,
             inference_callsite_id="csp.standalone_search_embedding",
+            trusted_classification_level=trusted_classification_level,
         )
     except RetrievalFailure as exc:
         raise HTTPException(
@@ -635,14 +702,14 @@ async def search_collection(
             detail=f"Collection {collection_id} is {coll.status}; reactivate before search.",
         )
 
-    authorized_document_ceilings = _authorized_document_ceilings(
+    authorized_document_access = _authorized_document_access(
         db,
         principal=principal,
         collection_id=coll.id,
         requested_ids=payload.document_ids,
         reject_denied=payload.document_ids is not None,
     )
-    if not authorized_document_ceilings:
+    if not authorized_document_access:
         return SearchResponse(
             query=payload.query,
             embedding_model=coll.embedding_model,
@@ -650,12 +717,20 @@ async def search_collection(
             results=[],
         )
 
+    authorized_document_ceilings = {
+        document_id: access.query_ceiling
+        for document_id, access in authorized_document_access.items()
+    }
     query_vec = await _embed_query(
         db,
         current_user,
         coll.embedding_model,
         coll.embedding_dim,
         payload.query,
+        trusted_classification_level=Classification.max_of(
+            access.required_classification
+            for access in authorized_document_access.values()
+        ),
     )
 
     try:
@@ -799,14 +874,14 @@ async def search_collection_images(
             detail=f"Collection {collection_id} is {coll.status}; reactivate before search.",
         )
 
-    authorized_document_ids = _authorized_document_ids(
+    authorized_document_access = _authorized_document_access(
         db,
         principal=principal,
         collection_id=coll.id,
         requested_ids=None,
         reject_denied=False,
     )
-    if not authorized_document_ids:
+    if not authorized_document_access:
         return ImageSearchResponse(
             query=payload.query,
             embedding_model=coll.embedding_model,
@@ -820,6 +895,10 @@ async def search_collection_images(
         coll.embedding_model,
         coll.embedding_dim,
         payload.query,
+        trusted_classification_level=Classification.max_of(
+            access.required_classification
+            for access in authorized_document_access.values()
+        ),
     )
     if not q_vec:
         return ImageSearchResponse(
@@ -878,7 +957,7 @@ async def search_collection_images(
             """,
             collection_id,
             q_value,
-            authorized_document_ids,
+            list(authorized_document_access),
             max_dist,
             payload.top_k,
         )

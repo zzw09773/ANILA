@@ -17,6 +17,7 @@ to return deterministic fixture data.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 
 # Same shape as other client-based tests — the global conftest only sets the
@@ -155,16 +156,22 @@ class _StubPool:
 
 
 @pytest.fixture(autouse=True)
-def _patch_retrieval(monkeypatch):
+def _patch_retrieval(monkeypatch) -> Iterator[dict[str, object]]:
     """Stub the embedding + pgvector layer so the endpoint logic itself
     is what gets exercised, not the asyncpg / proxy machinery."""
 
-    async def fake_embed_query(db, user, model_name, dim, query):
+    captured: dict[str, object] = {}
+
+    async def fake_embed_query(
+        db, user, model_name, dim, query, *, trusted_classification_level
+    ):
         # Return a vector of the right length; values don't matter — the
         # pool fetch is also stubbed.
+        captured["trusted_classification_level"] = trusted_classification_level
         return [0.1] * dim
 
     monkeypatch.setattr(search_mod, "_embed_query", fake_embed_query)
+    yield captured
 
 
 # ── 200 happy path ────────────────────────────────────────────────────────
@@ -304,3 +311,30 @@ def test_image_search_default_top_k_is_8(
     assert captured["pool"].last_args[2] == [alice_collection._test_doc_id]
     assert captured["pool"].last_args[4] == 8
     assert "i.document_id = ANY($3::bigint[])" in captured["pool"].last_sql
+
+
+def test_image_search_embedding_uses_highest_authorized_classification(
+    client: TestClient,
+    db,
+    alice,
+    alice_collection,
+    monkeypatch,
+    _patch_retrieval,
+):
+    document = db.get(IngestionDocument, alice_collection._test_doc_id)
+    document.classification_level = "極機密"
+    document.classification_source = "test"
+    db.commit()
+    monkeypatch.setattr(search_mod, "get_pool", lambda: _StubPool([]))
+
+    response = client.post(
+        f"/api/ingestion/collections/{alice_collection.id}/images/search",
+        json={"query": "classified diagram"},
+        headers=_bearer(alice),
+    )
+
+    assert response.status_code == 200, response.text
+    assert (
+        _patch_retrieval["trusted_classification_level"]
+        is search_mod.Classification.SECRET
+    )

@@ -125,11 +125,38 @@ def _retrieval_wire(outcome: RetrievalOutcome) -> dict:
 async def _prepend_retrieval_event(
     stream: AsyncIterator[bytes | str], outcome: RetrievalOutcome | None
 ):
+    iterator = stream.__aiter__()
+    first_chunk = None
     if outcome is not None:
-        payload = json.dumps(_retrieval_wire(outcome), ensure_ascii=False)
-        yield f"event: anila.retrieval\ndata: {payload}\n\n"
-    async for chunk in stream:
-        yield chunk
+        # Prime the governed stream before publishing the retrieval prelude.
+        # This enters proxy_stream's admission/finally boundary without
+        # waiting for the first model token.  If the browser disconnects after
+        # the evidence event, cancellation therefore reaches the durable
+        # TaskRun closure instead of leaving it running until reconciliation.
+        first_chunk = asyncio.create_task(anext(iterator))
+        await asyncio.sleep(0)
+    try:
+        if outcome is not None:
+            payload = json.dumps(_retrieval_wire(outcome), ensure_ascii=False)
+            yield f"event: anila.retrieval\ndata: {payload}\n\n"
+            try:
+                yield await first_chunk
+            except StopAsyncIteration:
+                return
+            first_chunk = None
+        async for chunk in iterator:
+            yield chunk
+    finally:
+        if first_chunk is not None:
+            if not first_chunk.done():
+                first_chunk.cancel()
+            try:
+                await first_chunk
+            except (asyncio.CancelledError, StopAsyncIteration, Exception):
+                pass
+        close = getattr(iterator, "aclose", None)
+        if close is not None:
+            await close()
 
 
 def _attach_retrieval_meta(
@@ -683,6 +710,9 @@ async def _tee_stream_capture_assistant(
                         parts.append(txt)
             yield block
     finally:
+        close = getattr(upstream, "aclose", None)
+        if close is not None:
+            await close()
         try:
             on_complete("".join(parts))
         except Exception:
