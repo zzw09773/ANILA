@@ -64,6 +64,7 @@ from app.models.retention import RetentionReaperLease
 from app.models.service_access_grant import ServiceAccessGrant
 from app.models.service_client import ServiceClient
 from app.models.service_launch import ServiceAuditCallback, ServiceLaunch
+from app.models.session_event import SessionEvent, SessionEventRun
 from app.models.source_snapshot import Citation, SourceSnapshot
 from app.models.task import Task, TaskRun
 from app.models.token_revocation import TokenRevocation
@@ -133,6 +134,8 @@ __all__ = [
     "ServiceClient",
     "ServiceLaunch",
     "ServiceProjectBinding",
+    "SessionEvent",
+    "SessionEventRun",
     "SourceSnapshot",
     "SecurityCompartment",
     "Task",
