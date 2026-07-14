@@ -55,6 +55,18 @@ class Settings(BaseSettings):
     # must never be sufficient to claim the signed pilot posture.
     GATE2_PILOT_COMPOSE_POSTURE: str = ""
 
+    # Gate 5 model-governance runtime.  The feature is opt-in so existing
+    # development/test profiles remain usable; once enabled, readiness is
+    # fail-closed until every explicit signed material/facts path verifies.
+    GATE5_MODEL_GOVERNANCE_ENABLED: bool = False
+    GATE5_MODEL_GOVERNANCE_STARTUP_REQUIRED: bool = False
+    GATE5_MODEL_GOVERNANCE_INVENTORY_PATH: str = ""
+    GATE5_MODEL_GOVERNANCE_PROFILE_PATH: str = ""
+    GATE5_MODEL_GOVERNANCE_TRUST_STORE_PATH: str = ""
+    GATE5_MODEL_GOVERNANCE_OBSERVED_FACTS_PATH: str = ""
+    GATE5_MODEL_GOVERNANCE_OBSERVED_DEPLOYMENT_FACTS_PATH: str = ""
+    GATE5_MODEL_GATEWAY_ENDPOINT: str = ""
+
     # Unit/dev harness escape hatch only. Formal deployments must run Alembic
     # and the legacy idempotent migration pass before becoming ready. Startup
     # security rejects this flag unless the explicit dev posture is enabled.

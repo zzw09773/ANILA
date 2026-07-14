@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sys
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -18,7 +19,9 @@ from app.api.handoffs import router as handoffs_router
 from app.api.public_share import router as public_share_router
 from app.middleware.csrf import CsrfMiddleware
 from app.models.user import User
+from app.schemas.model_governance import ModelGovernanceReadiness
 from app.services.auth_service import require_admin
+from app.services.model_governance_runtime import governance_required_for_settings
 
 
 def _run_alembic_upgrade() -> None:
@@ -84,6 +87,12 @@ def _migration_health_payload(application: FastAPI) -> dict:
         "service": settings.APP_NAME,
         "migration_status": migration_status,
     }
+    governance = getattr(application.state, "model_governance_readiness", None)
+    governance_required = governance_required_for_settings(settings) or settings.GATE5_MODEL_GOVERNANCE_ENABLED
+    if governance_required and governance is not None:
+        payload["model_governance"] = governance.model_dump(mode="json")
+        if not governance.ready:
+            payload["status"] = "unhealthy"
     migration_error = getattr(application.state, "migration_error", None)
     if migration_error:
         payload["migration_error"] = migration_error
@@ -94,17 +103,29 @@ def _readiness_response(application: FastAPI) -> JSONResponse:
     payload = _migration_health_payload(application)
     relay_task = getattr(application.state, "ingestion_relay_task", None)
     relay_ready = relay_task is not None and not relay_task.done()
+    governance = getattr(application.state, "model_governance_readiness", None)
+    governance_required = governance_required_for_settings(settings) or settings.GATE5_MODEL_GOVERNANCE_ENABLED
+    governance_ready = not governance_required or (governance is not None and governance.ready)
     ready = (
         payload["migration_status"] in {"succeeded", "skipped"}
         and relay_ready
+        and governance_ready
     )
+    governance_payload = (
+        governance.model_dump(mode="json")
+        if governance is not None
+        else {"status": "not_configured", "ready": False}
+    )
+    content = {
+        "status": "ready" if ready else "not_ready",
+        "migration_status": payload["migration_status"],
+        "ingestion_outbox_relay": "running" if relay_ready else "stopped",
+    }
+    if governance_required:
+        content["model_governance"] = governance_payload
     return JSONResponse(
         status_code=200 if ready else 503,
-        content={
-            "status": "ready" if ready else "not_ready",
-            "migration_status": payload["migration_status"],
-            "ingestion_outbox_relay": "running" if relay_ready else "stopped",
-        },
+        content=content,
     )
 
 
@@ -200,6 +221,22 @@ async def lifespan(app: FastAPI):
     # 避免「政策設為卡片唯一但卡片功能沒開」的 bricked 狀態。
     assert_intranet_lockdown_consistency()
     assert_card_only_data_feature_policy()
+
+    # Gate 5 model governance is a CSP-owned readiness boundary.  Bootstrap
+    # reads only explicit mounted paths and never treats the disabled template
+    # as approval.  Formal deployments may make this a startup hard-stop;
+    # otherwise /ready remains 503 until the signed material is provisioned.
+    from app.services.model_governance_runtime import ModelGovernanceRuntime
+
+    model_governance_runtime = ModelGovernanceRuntime.from_settings(settings)
+    app.state.model_governance_runtime = model_governance_runtime
+    model_governance_readiness = model_governance_runtime.bootstrap()
+    app.state.model_governance_readiness = model_governance_readiness
+    if model_governance_runtime.startup_required and not model_governance_readiness.ready:
+        raise RuntimeError(
+            "Gate 5 model-governance bootstrap failed: "
+            + model_governance_readiness.reason
+        )
 
     # Run the complete schema chain before any seed/background work. Any
     # failure is fatal; SQLite unit fixtures explicitly opt out and create
@@ -327,6 +364,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 _set_migration_state(app, "pending")
+app.state.model_governance_readiness = ModelGovernanceReadiness(
+    status="not_configured",
+    ready=True,
+    reason="Gate 5 model governance has not been enabled",
+    checked_at=datetime.now(timezone.utc),
+)
 
 
 @app.middleware("http")
