@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import unittest
 from dataclasses import fields
 from pathlib import Path
@@ -17,7 +18,10 @@ class Gate5RoutingContractTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "skipped")
         self.assertNotIn("metrics", result)
-        self.assertEqual(result["runner_commit"], "uncommitted-local")
+        self.assertEqual(
+            result["runner_commit"],
+            os.environ.get("GITHUB_SHA") or "uncommitted-local",
+        )
         self.assertIn("R3 runtime adapter", result["reason"])
 
     def test_adapter_receives_no_expected_prediction_and_scores_observation(

@@ -341,7 +341,7 @@ class DeploymentContainmentTests(unittest.TestCase):
             "showSetupOnFirstLoad!==false",
             "GitLab main/ci background 與 schema migrations 全數完成",
             "mark_verified_tool_versions",
-            "flux2-dev-agent nginx n8n gitlab",
+            "local services=(csp-db redis pptx-renderer csp router anilalm anila-ui anila-studio nginx n8n gitlab)",
             "running_services=(ingestion-worker)",
             "cmd_wait_healthy",
             "remaining=$(( deadline - $(date +%s) ))",

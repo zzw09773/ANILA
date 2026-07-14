@@ -148,27 +148,6 @@
       "restore_order": 30
     },
     {
-      "id": "flux-generated-uploads",
-      "source": {
-        "kind": "bind",
-        "name": "../../share/uploads/flux",
-        "mounts": [
-          {
-            "service": "flux2-dev-agent",
-            "target": "/share/flux",
-            "read_only": false
-          }
-        ]
-      },
-      "disposition": "required",
-      "data_classification": "極機密",
-      "owner": "artifact-operations",
-      "reason": "Generated image outputs are user-visible artifacts and cannot be assumed reproducible from prompts.",
-      "acceptance_gate": "Gate 6 P1",
-      "backup_method": "filesystem_archive",
-      "restore_order": 40
-    },
-    {
       "id": "csp-conversation-attachments",
       "source": {
         "kind": "named_volume",
@@ -440,6 +419,90 @@
       "acceptance_gate": "Gate 6 P1",
       "backup_method": "filesystem_archive",
       "restore_order": 160
+    },
+    {
+      "id": "gate5-governance-inventory",
+      "source": {
+        "kind": "bind",
+        "name": "${GATE5_MATERIAL_DIR:-/var/lib/anila/governance}/inventory.json",
+        "mounts": [
+          {
+            "service": "csp",
+            "target": "/etc/anila/governance/inventory.json",
+            "read_only": true
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "極機密",
+      "owner": "governance-operations",
+      "reason": "Signed model-governance inventory is an authoritative production admission input and must be recoverable with the deployment bundle.",
+      "acceptance_gate": "Gate 5 R7",
+      "backup_method": "filesystem_archive",
+      "restore_order": 170
+    },
+    {
+      "id": "gate5-governance-profile",
+      "source": {
+        "kind": "bind",
+        "name": "${GATE5_MATERIAL_DIR:-/var/lib/anila/governance}/profile.json",
+        "mounts": [
+          {
+            "service": "csp",
+            "target": "/etc/anila/governance/profile.json",
+            "read_only": true
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "極機密",
+      "owner": "governance-operations",
+      "reason": "The signed production governance profile controls model admission and must be restored as an immutable deployment input.",
+      "acceptance_gate": "Gate 5 R7",
+      "backup_method": "filesystem_archive",
+      "restore_order": 180
+    },
+    {
+      "id": "gate5-governance-trust-store",
+      "source": {
+        "kind": "bind",
+        "name": "${GATE5_MATERIAL_DIR:-/var/lib/anila/governance}/trust-store.json",
+        "mounts": [
+          {
+            "service": "csp",
+            "target": "/etc/anila/governance/trust-store.json",
+            "read_only": true
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "極機密",
+      "owner": "governance-operations",
+      "reason": "The operator trust store verifies signed governance materials and must be recovered without modification.",
+      "acceptance_gate": "Gate 5 R7",
+      "backup_method": "filesystem_archive",
+      "restore_order": 190
+    },
+    {
+      "id": "gate5-governance-observed-facts",
+      "source": {
+        "kind": "bind",
+        "name": "${GATE5_MATERIAL_DIR:-/var/lib/anila/governance}/observed-facts.json",
+        "mounts": [
+          {
+            "service": "csp",
+            "target": "/etc/anila/governance/observed-facts.json",
+            "read_only": true
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "極機密",
+      "owner": "governance-operations",
+      "reason": "Signed observed deployment facts bind runtime model posture to the approved governance decision and must be recoverable.",
+      "acceptance_gate": "Gate 5 R7",
+      "backup_method": "filesystem_archive",
+      "restore_order": 200
     },
     {
       "id": "studio-flux-cache",

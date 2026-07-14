@@ -46,6 +46,6 @@ def test_core_contract_exports_are_identity_preserving_facades() -> None:
     assert CoreTraceContext is TraceContext
 
 
-def test_core_requires_contracts_v1_without_accepting_a_future_major() -> None:
+def test_core_requires_contracts_v2_without_accepting_a_future_major() -> None:
     pyproject = (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
-    assert '"anila-contracts>=1.0.0,<2.0.0"' in pyproject
+    assert '"anila-contracts>=2.0.0,<3.0.0"' in pyproject

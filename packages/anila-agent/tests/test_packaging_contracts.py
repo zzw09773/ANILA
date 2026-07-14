@@ -29,7 +29,7 @@ def test_make_install_resolves_internal_contract_from_this_checkout():
 def test_agent_metadata_keeps_contract_version_constraint():
     """Metadata remains explicit while Makefile controls source provenance."""
     pyproject = (PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert '"anila-contracts>=1.0.0,<2.0.0"' in pyproject
+    assert '"anila-contracts>=2.0.0,<3.0.0"' in pyproject
 
 
 def test_ci_installs_contract_and_agent_in_one_local_resolver_invocation():
