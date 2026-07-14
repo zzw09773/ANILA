@@ -9,17 +9,23 @@ from __future__ import annotations
 
 import dataclasses
 
-from agents import ToolGuardrailFunctionOutput, ToolInputGuardrail
+from agents import (
+    FunctionTool,
+    ToolGuardrailFunctionOutput,
+    ToolInputGuardrail,
+    ToolInputGuardrailData,
+)
 
 from anila_agent.policy.dsl import Decision, Effect, Policy
 from anila_agent.tools.capabilities import Capability, capability_of
+from anila_agent.tools.context import AnilaRunContext
 from anila_agent.util.structured import parse_json_object
 
 
-def build_policy_guardrail(policy: Policy) -> ToolInputGuardrail:
+def build_policy_guardrail(policy: Policy) -> ToolInputGuardrail[AnilaRunContext]:
     """建構一個評估 policy 的 tool-input-guardrail。"""
 
-    async def _enforce(data) -> ToolGuardrailFunctionOutput:
+    async def _enforce(data: ToolInputGuardrailData) -> ToolGuardrailFunctionOutput:
         tool_name = data.context.tool_name
         args = parse_json_object(data.context.tool_arguments)
         decision: Decision = policy.evaluate(tool_name, args)
@@ -38,9 +44,11 @@ def build_policy_guardrail(policy: Policy) -> ToolInputGuardrail:
     return ToolInputGuardrail(guardrail_function=_enforce, name="anila-policy")
 
 
-def apply_policy(tools: list, guardrail: ToolInputGuardrail) -> list:
+def apply_policy(
+    tools: list[FunctionTool], guardrail: ToolInputGuardrail[AnilaRunContext]
+) -> list[FunctionTool]:
     """回傳掛上政策 guardrail 的新工具清單（immutable：不改原工具物件）。"""
-    out = []
+    out: list[FunctionTool] = []
     for tool in tools:
         existing = list(getattr(tool, "tool_input_guardrails", None) or [])
         out.append(dataclasses.replace(tool, tool_input_guardrails=[guardrail, *existing]))
@@ -48,7 +56,7 @@ def apply_policy(tools: list, guardrail: ToolInputGuardrail) -> list:
 
 
 def enforce_privileged_need_explicit_rules(
-    tools: list, capabilities: dict[str, Capability], policy: Policy
+    tools: list[FunctionTool], capabilities: dict[str, Capability], policy: Policy
 ) -> None:
     """fail-closed 啟動守衛：write/admin 工具必須有「明確指名」的政策規則，否則 raise。
 

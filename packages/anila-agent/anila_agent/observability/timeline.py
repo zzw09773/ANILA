@@ -13,6 +13,9 @@ from agents import RunHooks
 from anila_contracts import Classification, StepEvent
 from anila_contracts.events import STEP_EVENT_SSE_NAME, StepKind, StepStatus
 
+from anila_agent.retrieval.base import Retriever
+from anila_agent.retrieval.schemas import Document
+
 TIMELINE_EVENT_NAME = STEP_EVENT_SSE_NAME
 
 
@@ -28,6 +31,7 @@ class TimelineEmitter:
         session_id: str,
         run_id: str,
         classification: Classification,
+        invocation_id: str | None = None,
     ) -> None:
         self.task_id = task_id
         self.trace_id = trace_id
@@ -35,9 +39,10 @@ class TimelineEmitter:
         self.session_id = session_id
         self.run_id = run_id
         self.classification = classification
-        self.invocation_id = uuid.uuid4().hex
+        self.invocation_id = invocation_id or uuid.uuid4().hex
         self._sequence = 0
         self._queue: asyncio.Queue[str] = asyncio.Queue()
+        self._events: list[StepEvent] = []
         self._started: dict[str, float] = {}
         self._terminal_emitted = False
 
@@ -94,6 +99,7 @@ class TimelineEmitter:
             latency_ms=latency_ms,
             classification=self.classification,
         )
+        self._events.append(event)
         self._queue.put_nowait(
             f"event: {TIMELINE_EVENT_NAME}\n"
             f"data: {event.model_dump_json()}\n\n"
@@ -104,6 +110,26 @@ class TimelineEmitter:
         while not self._queue.empty():
             frames.append(self._queue.get_nowait())
         return frames
+
+    def set_sequence_floor(self, sequence: int) -> None:
+        """Continue a durable task timeline without reusing sequence cursors.
+
+        A resume starts in a fresh process-local emitter, but its StepEvents
+        are appended to the same durable Task record.  Advancing this floor
+        keeps SSE cursor order monotonic across a pause/restart boundary.
+        """
+
+        if sequence < 0:
+            raise ValueError("timeline sequence floor must be non-negative")
+        if self._events:
+            raise RuntimeError("cannot change timeline sequence after emitting events")
+        self._sequence = max(self._sequence, sequence)
+
+    @property
+    def events(self) -> tuple[StepEvent, ...]:
+        """Read-only canonical event history for durable task persistence."""
+
+        return tuple(self._events)
 
     def cancel(self) -> None:
         self.emit(
@@ -152,7 +178,10 @@ class TimelineRunHooks(RunHooks):
             kind=StepKind.AGENT,
             status=StepStatus.COMPLETED,
             safe_output_summary="Agent 執行完成",
-            terminal=True,
+            # The service/Task runner owns the durable terminal transition.
+            # Keeping this SDK callback non-terminal leaves a real cancellation
+            # race able to emit exactly one authoritative cancelled terminal.
+            terminal=False,
         )
         await self._fan("on_agent_end", context, agent, output)
 
@@ -192,7 +221,7 @@ class TimelineRunHooks(RunHooks):
 class TimelineRetriever:
     """Retriever decorator that emits count-only, content-free events."""
 
-    def __init__(self, inner: Any, emitter: TimelineEmitter) -> None:
+    def __init__(self, inner: Retriever, emitter: TimelineEmitter) -> None:
         self.inner = inner
         self.emitter = emitter
 
@@ -204,7 +233,7 @@ class TimelineRetriever:
     def metadata(self) -> dict[str, Any]:
         return self.inner.metadata
 
-    async def search(self, query: str, k: int = 5) -> list[Any]:
+    async def search(self, query: str, k: int = 5) -> list[Document]:
         step_id = f"retrieval:{uuid.uuid4().hex}"
         self.emitter.emit(
             step_id=step_id,
@@ -223,7 +252,7 @@ class TimelineRetriever:
         )
         return hits
 
-    async def fetch(self, doc_id: str) -> Any:
+    async def fetch(self, doc_id: str) -> Document | None:
         return await self.inner.fetch(doc_id)
 
 

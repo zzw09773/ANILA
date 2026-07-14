@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from agents import Agent
+from agents import Agent, OpenAIChatCompletionsModel, Tool
 
 from anila_agent.cli.output_styles import load_output_style
 from anila_agent.config import AppConfig
@@ -53,7 +53,7 @@ def build_agent(
     *,
     retriever: Retriever | None = None,
     name: str | None = None,
-    model=None,
+    model: OpenAIChatCompletionsModel | None = None,
     memory_tenant: str | None = None,
     memory_requires_tenant: bool = False,
 ) -> AssembledAgent:
@@ -87,7 +87,8 @@ def build_agent(
     capabilities = load_capabilities()
     policy = load_policy(capabilities)
     enforce_privileged_need_explicit_rules(tool_set, capabilities, policy)
-    tools = apply_policy(tool_set, build_policy_guardrail(policy))
+    tools: list[Tool] = []
+    tools.extend(apply_policy(tool_set, build_policy_guardrail(policy)))
 
     # 接地引用：ANILA_CITED=1 套 concise-cited output style（行內【來源：id】）。
     # 不用 SDK output_type=CitedAnswer——實測自架 reasoning 模型在「工具使用 + 結構化

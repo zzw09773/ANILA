@@ -22,7 +22,7 @@ class Retriever(Protocol):
         ...
 
     @property
-    def metadata(self) -> dict:
+    def metadata(self) -> dict[str, object]:
         """後端設定摘要（不得含密鑰）。"""
         ...
 

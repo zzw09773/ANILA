@@ -30,6 +30,9 @@ from typing import Any
 
 from agents import RunHooks
 
+from anila_agent.retrieval.base import Retriever
+from anila_agent.retrieval.schemas import Document
+
 logger = logging.getLogger("anila.trace")
 
 # FROZEN：CSP ingestion 每批上限。
@@ -437,7 +440,7 @@ class TracingRetriever:
     retrieval span 自動掛在當前 tool span 下（模型的 search_documents 工具內呼叫檢索）。
     """
 
-    def __init__(self, inner: Any, emitter: TraceEmitter) -> None:
+    def __init__(self, inner: Retriever, emitter: TraceEmitter) -> None:
         self._inner = inner
         self._e = emitter
 
@@ -449,7 +452,7 @@ class TracingRetriever:
     def metadata(self) -> dict[str, Any]:
         return self._inner.metadata
 
-    async def search(self, query: str, k: int = 5) -> list[Any]:
+    async def search(self, query: str, k: int = 5) -> list[Document]:
         meta: dict[str, Any] = {}
         with contextlib.suppress(Exception):
             meta = self._inner.metadata or {}
@@ -473,5 +476,5 @@ class TracingRetriever:
             sp.attributes["result_count"] = len(hits)
             return hits
 
-    async def fetch(self, doc_id: str) -> Any:
+    async def fetch(self, doc_id: str) -> Document | None:
         return await self._inner.fetch(doc_id)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import uuid
 
 import pytest
 
@@ -253,11 +254,32 @@ def test_pinned_sdk_run_result_streaming_cancel_accepts_immediate_mode():
 
 def _patch_guards(monkeypatch):
     monkeypatch.setattr(service_wrapper, "COLLECTION_ID", 12)
+    # This specifically exercises the local no-token profile.  R5 tests can
+    # reload the shared module with a csk- configured before this test runs.
+    monkeypatch.setattr(service_wrapper, "CSP_SERVICE_TOKEN", "")
     monkeypatch.setattr(service_wrapper, "ALLOW_NO_SERVICE_TOKEN", True)
     # CspHttpRetriever 建構會驗 api_key 非空（search 重用 agent 的 csk-）。
     monkeypatch.setattr(service_wrapper, "CSP_SEARCH_TOKEN", "csk-test")
     monkeypatch.setattr(service_wrapper, "build_model", lambda *a, **k: object())
     monkeypatch.setattr(service_wrapper, "build_agent", lambda *a, **k: object())
+
+
+def _dispatch_headers(*, trace_id: str | None = None) -> dict[str, str]:
+    """The formal endpoint accepts only CSP-bound invocations."""
+
+    assert service_wrapper._ADMISSION is not None
+    nonce = uuid.uuid4().hex
+    headers = {
+        "X-ANILA-Agent-Id": service_wrapper._ADMISSION.manifest.agent_id,
+        "X-ANILA-Task-Id": f"task-streaming-{nonce}",
+        "X-ANILA-Run-Id": f"run-streaming-{nonce}",
+        "X-ANILA-Session-Id": f"session-streaming-{nonce}",
+        "X-ANILA-Invocation-Id": f"inv-streaming-{nonce}",
+        "X-ANILA-Trace-Id": trace_id or f"trace-streaming-{nonce}",
+        "X-ANILA-Classification-Level": "%E7%84%A1%E6%A9%9F%E5%AF%86",
+        "X-ANILA-Idempotency-Key": f"idem-streaming-{nonce}",
+    }
+    return headers
 
 
 def test_http_stream_true_returns_event_stream(monkeypatch):
@@ -272,6 +294,7 @@ def test_http_stream_true_returns_event_stream(monkeypatch):
             "/v1/chat/completions",
             json={"model": "anila-agent", "messages": [{"role": "user", "content": "hi"}],
                   "stream": True},
+            headers=_dispatch_headers(),
         )
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
@@ -296,6 +319,7 @@ def test_http_stream_false_returns_json(monkeypatch):
         resp = client.post(
             "/v1/chat/completions",
             json={"model": "anila-agent", "messages": [{"role": "user", "content": "hi"}]},
+            headers=_dispatch_headers(),
         )
     assert resp.status_code == 200
     body = resp.json()
@@ -309,7 +333,7 @@ def test_http_unauthorized_when_token_required(monkeypatch):
     # 預設 fail-closed：未設 allow_unset 且 expected 非空 → 缺 header 應 401。
     monkeypatch.setattr(service_wrapper, "COLLECTION_ID", 12)
     monkeypatch.setattr(service_wrapper, "ALLOW_NO_SERVICE_TOKEN", False)
-    monkeypatch.setattr(service_wrapper, "CSP_SERVICE_TOKEN", "csk-secret")
+    monkeypatch.setattr(service_wrapper, "CSP_SERVICE_TOKEN", f"csk-{'A' * 43}")
     monkeypatch.setattr(service_wrapper, "build_model", lambda *a, **k: object())
     with TestClient(service_wrapper.app) as client:
         resp = client.post(
