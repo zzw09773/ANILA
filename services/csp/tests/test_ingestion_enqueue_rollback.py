@@ -117,7 +117,7 @@ async def test_relay_loop_survives_transient_claim_failure(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_upload_accepts_while_redis_is_down_and_persists_one_transaction(
+async def test_single_upload_inherits_locked_collection_classification(
     monkeypatch, tmp_path, db
 ) -> None:
     user = make_user(db, username="redis-down-upload")
