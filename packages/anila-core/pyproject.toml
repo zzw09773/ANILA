@@ -9,7 +9,7 @@ description = "ANILA Core — Python agent runtime foundation (chat / agent / me
 requires-python = ">=3.11"
 dependencies = [
     # Gate 2 F5→: governed task/trace/invocation/source wire contracts.
-    "anila-contracts>=1.0.0,<2.0.0",
+    "anila-contracts>=2.0.0,<3.0.0",
     # Gate 1 F4: security primitives now live in a thin standalone package.
     # anila-core depends on it only to preserve the historical
     # ``anila_core.security`` compatibility facade.
