@@ -28,6 +28,12 @@ from anila_core.registry.remote_agent_manifest import (
 from anila_core.tracing.sdk import TraceSession
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def _enable_legacy_dispatch_compat(monkeypatch):
+    """Trace fixtures predate the R3 formal CSP context contract."""
+    monkeypatch.setenv("ALLOW_LEGACY_AGENT_DISPATCH", "1")
+
+
 @pytest_asyncio.fixture
 async def db_path(tmp_path: Path):
     db = tmp_path / "router-trace.db"

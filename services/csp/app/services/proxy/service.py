@@ -11,6 +11,7 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import AsyncIterator, Optional
 
@@ -34,6 +35,7 @@ from app.services.proxy.headers import (
     _apply_gateway_auth,
     build_agent_headers,
     build_model_gateway_headers,
+    build_router_model_gateway_headers,
     resolve_model_gateway_key,
 )
 from app.services.proxy.sse import _aggregate_sse_to_chat_completion, _parse_sse_block
@@ -469,6 +471,7 @@ async def _proxy_request_impl(
     user_email: Optional[str] = None,
     user_identity: Optional[str] = None,
     router_caller_user_id: int | None = None,
+    router_context: Mapping[str, object] | None = None,
     conversation_id: Optional[str] = None,
     trace_id: Optional[str] = None,
     requires_encryption: bool = False,
@@ -558,10 +561,22 @@ async def _proxy_request_impl(
     else:
         # Doc 04 §3/AC5: model gateway gets Bearer key + 員編 ONLY — no
         # task / trace headers, structurally (builder has no such params).
-        req_headers = build_model_gateway_headers(
-            user_identity,
-            router_caller_user_id=router_caller_user_id,
+        router_target = (
+            str(getattr(model, "name", "")).strip().lower() == "anila-router"
         )
+        if router_target and router_caller_user_id is not None and router_context is not None:
+            req_headers = build_router_model_gateway_headers(
+                user_identity,
+                router_caller_user_id=router_caller_user_id,
+                router_context=router_context,
+            )
+        else:
+            req_headers = build_model_gateway_headers(
+                user_identity,
+                router_caller_user_id=(
+                    router_caller_user_id if router_target else None
+                ),
+            )
     # gateway key 只給 model 呼叫;agent dispatch (model_type='agent') 不帶。
     # Slice 6a: per-model api_key_secret_ref 優先,退回全域 env(MVP fallback)。
     if model.model_type != "agent":
@@ -771,6 +786,7 @@ async def proxy_request(
     user_email: Optional[str] = None,
     user_identity: Optional[str] = None,
     router_caller_user_id: int | None = None,
+    router_context: Mapping[str, object] | None = None,
     conversation_id: Optional[str] = None,
     trace_id: Optional[str] = None,
     requires_encryption: bool = False,
@@ -842,6 +858,7 @@ async def proxy_request(
             user_email=user_email,
             user_identity=user_identity,
             router_caller_user_id=router_caller_user_id,
+            router_context=router_context,
             conversation_id=conversation_id,
             trace_id=trace_id,
             requires_encryption=requires_encryption,
@@ -950,6 +967,7 @@ async def _proxy_stream_impl(
     user_email: Optional[str] = None,
     user_identity: Optional[str] = None,
     router_caller_user_id: int | None = None,
+    router_context: Mapping[str, object] | None = None,
     model_name: str | None = None,
     conversation_id: Optional[str] = None,
     trace_id: Optional[str] = None,
@@ -1022,10 +1040,20 @@ async def _proxy_stream_impl(
     else:
         # Doc 04 §3/AC5: model gateway gets Bearer key + 員編 ONLY — no
         # task / trace headers, structurally (builder has no such params).
-        headers = build_model_gateway_headers(
-            user_identity,
-            router_caller_user_id=router_caller_user_id,
-        )
+        router_target = str(model_name or "").strip().lower() == "anila-router"
+        if router_target and router_caller_user_id is not None and router_context is not None:
+            headers = build_router_model_gateway_headers(
+                user_identity,
+                router_caller_user_id=router_caller_user_id,
+                router_context=router_context,
+            )
+        else:
+            headers = build_model_gateway_headers(
+                user_identity,
+                router_caller_user_id=(
+                    router_caller_user_id if router_target else None
+                ),
+            )
     # gateway key 只給 model 串流;agent 串流 (target_agent_id 非 None) 不帶。
     # Slice 6a: 呼叫端已解析 per-model key(proxy.py 傳入 gateway_api_key);
     # None → _apply_gateway_auth 退回全域 env(既有行為)。
@@ -1376,6 +1404,7 @@ async def proxy_stream(
     user_email: Optional[str] = None,
     user_identity: Optional[str] = None,
     router_caller_user_id: int | None = None,
+    router_context: Mapping[str, object] | None = None,
     model_name: str | None = None,
     conversation_id: Optional[str] = None,
     trace_id: Optional[str] = None,
@@ -1459,6 +1488,7 @@ async def proxy_stream(
                 user_email=user_email,
                 user_identity=user_identity,
                 router_caller_user_id=router_caller_user_id,
+                router_context=router_context,
                 model_name=model_name,
                 conversation_id=conversation_id,
                 trace_id=trace_id,

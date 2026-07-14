@@ -61,6 +61,33 @@ try:
             default=None,
             description="Service-to-service token CSP injects; agents verify this header.",
         )
+        # Formal Router R3 registry reads use a named CSP service-client token;
+        # the legacy fleet token is intentionally not accepted by the CSP
+        # internal registry endpoint.  Deployments may still inject the value
+        # under the existing ``CSP_SERVICE_TOKEN`` environment name while the
+        # package-side field keeps the intent explicit.
+        csp_registry_service_token: Optional[str] = Field(
+            default=None,
+            description="Named service-client token for CSP internal registry reads.",
+        )
+        csp_agent_service_token: Optional[str] = Field(
+            default=None,
+            description=(
+                "Named Router service-client token for the pending CSP "
+                "internal Agent dispatch seam."
+            ),
+        )
+        csp_inference_service_token: Optional[str] = Field(
+            default=None,
+            description=(
+                "Named Router service-client token for CSP internal primary "
+                "model inference; preferred over the registry token."
+            ),
+        )
+        allow_legacy_agent_dispatch: bool = Field(
+            default=False,
+            description="Explicit compatibility-only DISPATCH adapter switch.",
+        )
 
         # ── API / Auth ────────────────────────────────────────────────
         api_key: Optional[str] = Field(
@@ -107,6 +134,10 @@ except ImportError:
         csp_base_url: str = "http://localhost:8000"
         csp_api_key: str = "not-set"
         csp_service_token: Optional[str] = None
+        csp_registry_service_token: Optional[str] = None
+        csp_agent_service_token: Optional[str] = None
+        csp_inference_service_token: Optional[str] = None
+        allow_legacy_agent_dispatch: bool = False
         api_key: Optional[str] = None
         api_dev_mode: bool = False
         cookie_secure: bool = True

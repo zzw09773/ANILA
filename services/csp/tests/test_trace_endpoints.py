@@ -29,7 +29,6 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from anila_core.tracing import TraceExporter
 
-from app.models.agent import UserAgentPermission
 from app.models.service_client import ServiceClient
 from app.models.trace_span import TraceSpan
 from app.services.service_token_envelope import (
@@ -38,13 +37,13 @@ from app.services.service_token_envelope import (
     generate_service_token,
 )
 from app.services import proxy_service
+from app.services.agent_registry import build_registry_snapshot
 from app.services.proxy import service as proxy_impl
 from app.services.proxy import spans as proxy_spans
 from app.services.proxy import task_link
 
 from tests.conftest import (
     login,
-    make_agent,
     make_model,
     make_user,
 )
@@ -55,6 +54,7 @@ from tests.test_proxy_task_wiring import (
     _patch_post_client,
     _patch_stream_client,
 )
+from tests.test_gate5_r2_agent_readiness import _ready_agent
 
 
 # ── Ingest / query fixtures ────────────────────────────────────────────────
@@ -464,20 +464,21 @@ class TestProxyEmittedSpans:
         self, client: TestClient, db: Session, monkeypatch,
         out_of_request_sessions, captured_usage,
     ):
-        user = make_user(db, username="span_user")
-        dev = make_user(db, username="span_dev", role="developer")
-        agent = make_agent(db, dev, name="span-agent",
-                           approval_status="approved")
-        db.add(UserAgentPermission(user_id=user.id, agent_id=agent.id))
-        db.commit()
+        user, _model, agent, now = _ready_agent(db)
         task = _make_task(db, user)
         _patch_stream_client(monkeypatch)
+        snapshot = build_registry_snapshot(db, user_id=user.id, now=now)
 
         resp = client.post(
             "/v1/chat/completions",
             headers={**_bearer(_jwt(user)),
-                     "X-ANILA-Task-Id": str(task.id)},
-            json={"model": "span-agent", "stream": True,
+                     "X-ANILA-Task-Id": str(task.id),
+                     "X-ANILA-Registry-Snapshot-Id": snapshot.snapshot_id,
+                     "X-ANILA-Registry-Snapshot-Revision": snapshot.snapshot_revision,
+                     "X-ANILA-Registry-Snapshot-Hash": snapshot.snapshot_hash,
+                     "X-ANILA-Agent-Manifest-Revision": agent.manifest_revision,
+                     "X-ANILA-Agent-Manifest-SHA256": agent.manifest_sha256},
+            json={"model": agent.name, "stream": True,
                   "messages": [{"role": "user", "content": "hi"}]},
         )
         assert resp.status_code == 200

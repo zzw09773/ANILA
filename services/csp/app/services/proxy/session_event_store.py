@@ -282,11 +282,12 @@ class SqlAlchemySessionEventStore(SessionEventStoreProtocol):
             raise
 
     def _run_for_read(self, binding: BridgeContext) -> SessionEventRun | None:
-        run = (
+        run = cast(
+            SessionEventRun | None,
             self.db.query(SessionEventRun)
             .filter(SessionEventRun.run_id == binding.run_id)
             .populate_existing()
-            .one_or_none()
+            .one_or_none(),
         )
         if run is not None:
             self._assert_row_binding(run, binding)

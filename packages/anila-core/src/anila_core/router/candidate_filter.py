@@ -61,6 +61,10 @@ class RegistryEntry:
     manifest: AgentManifest | dict[str, Any] | None = None
     snapshot_id: str | None = None
     manifest_revision: str | None = None
+    # CSP-owned manifest content identity.  This is deliberately kept out of
+    # AgentManifest (the Agent cannot self-assert its admission hash) and is
+    # carried separately into the CSP proxy binding.
+    manifest_sha256: str | None = None
     approved: bool = False
     health_ready: bool = False
     trace_test_passed: bool = False
@@ -191,6 +195,12 @@ class RegistrySnapshot:
     authority: str = "csp"
     captured_at: datetime | None = None
     expires_at: datetime | None = None
+    # R2 currently sets all three generation facts to one SHA-256 value.  R3
+    # keeps the fields explicit so a future authority can version them without
+    # losing the binding at the Router→CSP boundary.
+    snapshot_revision: str | None = None
+    snapshot_hash: str | None = None
+    caller_user_id: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.snapshot_id, str) or not self.snapshot_id.strip():
@@ -223,6 +233,20 @@ class RegistrySnapshot:
             raise ValueError("captured_at 必須帶時區")
         if self.expires_at is not None and self.expires_at.tzinfo is None:
             raise ValueError("expires_at 必須帶時區")
+        if self.snapshot_revision is not None and (
+            not isinstance(self.snapshot_revision, str) or not self.snapshot_revision.strip()
+        ):
+            raise ValueError("snapshot_revision 不得為空白")
+        if self.snapshot_hash is not None and (
+            not isinstance(self.snapshot_hash, str) or not self.snapshot_hash.strip()
+        ):
+            raise ValueError("snapshot_hash 不得為空白")
+        if self.caller_user_id is not None and (
+            isinstance(self.caller_user_id, bool)
+            or not isinstance(self.caller_user_id, int)
+            or self.caller_user_id <= 0
+        ):
+            raise ValueError("caller_user_id 必須是 positive integer")
 
     def is_fresh(self, at: datetime | None = None, *, now: datetime | None = None) -> bool:
         if (

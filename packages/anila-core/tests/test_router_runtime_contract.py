@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from anila_core.api import router_server
-from anila_core.registry.remote_agent_manifest import RemoteAgentManifest, RemoteAgentRegistry
+from anila_core.registry.remote_agent_manifest import (
+    RemoteAgentManifest,
+    RemoteAgentRegistry,
+)
+
+
+@pytest.fixture(autouse=True)
+def _enable_legacy_dispatch_compat(monkeypatch):
+    """These contract tests intentionally cover the legacy adapter."""
+    monkeypatch.setenv("ALLOW_LEGACY_AGENT_DISPATCH", "1")
 
 
 def test_router_non_stream_includes_anila_meta(monkeypatch):

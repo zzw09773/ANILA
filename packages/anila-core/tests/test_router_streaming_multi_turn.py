@@ -24,6 +24,12 @@ CSP_URL = f"{CSP_BASE}/v1/chat/completions"
 CSP_AGENTS_URL = f"{CSP_BASE}/v1/agents"
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def _enable_legacy_dispatch_compat(monkeypatch):
+    """Streaming multi-turn tests cover the legacy DISPATCH adapter."""
+    monkeypatch.setenv("ALLOW_LEGACY_AGENT_DISPATCH", "1")
+
+
 @pytest_asyncio.fixture
 async def db_path(tmp_path: Path):
     db = tmp_path / "router-stream-multi.db"

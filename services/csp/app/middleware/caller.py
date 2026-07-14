@@ -84,4 +84,9 @@ def get_caller(
 
     payload = decode_token(token)
     user = _load_user_from_payload(payload, db, "access")
+    # Preserve the already verified JWT assurance projection for the
+    # Router-only CSP header builder.  It is request-local and never exposed
+    # to ordinary model gateways; API-key callers intentionally have no such
+    # claim and therefore cannot satisfy formal Router admission.
+    request.state.auth_claims = payload
     return Caller(user=user, api_key_id=None)

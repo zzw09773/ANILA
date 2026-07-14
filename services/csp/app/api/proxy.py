@@ -3,10 +3,12 @@ import asyncio
 import json
 import logging
 import math
+import re
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import AsyncIterator
+from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -24,7 +26,8 @@ from app.middleware.caller import Caller, get_caller
 from app.models.agent import Agent, UserAgentPermission
 from app.models.conversation import Conversation
 from app.models.model_registry import ModelRegistry
-from app.models.task import Task
+from app.models.service_client import ServiceClient
+from app.models.task import Task, TaskRun
 from app.models.user import User
 from anila_contracts import Classification as ClassificationLevel
 from app.services import memory_service
@@ -39,6 +42,8 @@ from app.services.proxy.closure import (
 )
 from app.services.proxy.headers import resolve_model_gateway_key
 from app.services.proxy.task_link import (
+    _resolve_acting_user,
+    attach_running_task_run,
     begin_task_run,
     finalize_task_run_in_session,
     record_task_policy_decision,
@@ -721,6 +726,125 @@ async def _tee_stream_capture_assistant(
 router = APIRouter(tags=["API 代理"])
 
 
+_POSITIVE_DECIMAL_RE = re.compile(r"\A[1-9][0-9]*\Z")
+_INTERNAL_ROUTER_CONTEXT_HEADERS = (
+    "X-ANILA-Caller-User-Id",
+    "X-ANILA-Owner-Id",
+    "X-ANILA-Task-Id",
+    "X-ANILA-Run-Id",
+    "X-ANILA-Source-Snapshot-Id",
+    "X-ANILA-Trace-Id",
+    "X-ANILA-Invocation-Id",
+    "X-ANILA-Task-Type",
+    "X-ANILA-Classification-Level",
+    "X-ANILA-Scopes",
+    "X-ANILA-Auth-Assurance",
+)
+
+
+def _strict_positive_decimal_header(request: Request, name: str) -> int:
+    raw = request.headers.get(name)
+    if raw is None or _POSITIVE_DECIMAL_RE.fullmatch(raw) is None:
+        raise HTTPException(status_code=400, detail=f"{name} 必須是正十進位整數")
+    try:
+        return int(raw)
+    except ValueError as exc:  # pragma: no cover - regex bounds Python int
+        raise HTTPException(status_code=400, detail=f"{name} 格式錯誤") from exc
+
+
+def _require_internal_router_context(request: Request, *, caller: Caller, db: Session) -> None:
+    """Validate the CSP-authored context on Router's nested model call.
+
+    The Router is a transport hop, not a second authority.  This check binds
+    every formal context identifier back to the active Task/TaskRun and the
+    already authenticated User before the shared chat implementation can
+    perform memory/retrieval or open an outbound model connection.
+    """
+
+    for name in _INTERNAL_ROUTER_CONTEXT_HEADERS:
+        value = request.headers.get(name)
+        if value is None or not value.strip() or any(ord(ch) < 0x20 for ch in value):
+            raise HTTPException(status_code=400, detail=f"缺少或無效的 {name}")
+    caller_user_id = _strict_positive_decimal_header(
+        request, "X-ANILA-Caller-User-Id"
+    )
+    owner_id = _strict_positive_decimal_header(request, "X-ANILA-Owner-Id")
+    task_id = _strict_positive_decimal_header(request, "X-ANILA-Task-Id")
+    run_id = _strict_positive_decimal_header(request, "X-ANILA-Run-Id")
+    source_snapshot_id = _strict_positive_decimal_header(
+        request, "X-ANILA-Source-Snapshot-Id"
+    )
+    if caller_user_id != caller.user.id:
+        raise HTTPException(status_code=403, detail="Router caller user id 不符")
+    if owner_id != caller.user.id:
+        raise HTTPException(status_code=403, detail="Router owner 不符")
+
+    task = db.get(Task, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任務不存在")
+    if task.requester_user_id != caller.user.id:
+        raise HTTPException(status_code=403, detail="Router 任務申請人不符")
+    if task.source_snapshot_id != source_snapshot_id:
+        raise HTTPException(status_code=403, detail="Router source snapshot 不符")
+    if task.trace_id != request.headers.get("X-ANILA-Trace-Id"):
+        raise HTTPException(status_code=403, detail="Router trace 不符")
+    if task.task_type != request.headers.get("X-ANILA-Task-Type"):
+        raise HTTPException(status_code=403, detail="Router task type 不符")
+    if task.classification_level != request.headers.get("X-ANILA-Classification-Level"):
+        if task.classification_level != unquote(
+            request.headers["X-ANILA-Classification-Level"]
+        ):
+            raise HTTPException(status_code=403, detail="Router classification 不符")
+
+    scopes = {
+        item.strip()
+        for item in unquote(request.headers["X-ANILA-Scopes"]).split(",")
+        if item.strip()
+    }
+    if "agent:invoke" not in scopes:
+        raise HTTPException(status_code=403, detail="Router scope 不允許 inference")
+    try:
+        assurance = json.loads(unquote(request.headers["X-ANILA-Auth-Assurance"]))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="Router auth assurance 格式無效") from exc
+    if not isinstance(assurance, dict) or not all(
+        isinstance(assurance.get(key), value_type)
+        for key, value_type in (
+            ("sid", str),
+            ("amr", list),
+            ("acr", str),
+            ("auth_time", str),
+            ("break_glass", bool),
+        )
+    ):
+        raise HTTPException(status_code=400, detail="Router auth assurance 欄位無效")
+
+    task_run = db.get(TaskRun, run_id)
+    if (
+        task_run is None
+        or task_run.task_id != task.id
+        or task_run.status != "running"
+        or task_run.dispatch_target != "agent"
+    ):
+        raise HTTPException(status_code=409, detail="Router TaskRun 不可用")
+    if not task.source_snapshot_id:
+        raise HTTPException(status_code=409, detail="Router Task 缺少來源快照")
+
+    # Keep the established service-token + task-requester authority path.  A
+    # numeric caller id is preferred for this internal seam; the task-link
+    # helper still verifies the presented token and returns the actor identity.
+    request_headers = dict(request.headers)
+    request_headers["X-ANILA-Caller-User-Id"] = str(caller.user.id)
+    _resolve_acting_user(
+        db,
+        caller=caller,
+        request_headers=request_headers,
+        allow_router_caller_pk=True,
+    )
+    request.state.internal_router_task = task
+    request.state.internal_router_headers = request_headers
+
+
 def _image_inference_caller(
     request: Request, db: Session = Depends(get_db)
 ) -> Caller:
@@ -787,6 +911,77 @@ def _is_internal_router_model(model: ModelRegistry | None) -> bool:
         model is not None
         and str(getattr(model, "name", "")).strip().lower() == "anila-router"
     )
+
+
+def _router_formal_context(
+    request: Request,
+    *,
+    db: Session,
+    task_ctx,
+    admitted_classification_level: str | None,
+) -> dict[str, object] | None:
+    """Project CSP-owned task/auth facts for the internal Router target.
+
+    The regular model gateway must never see these fields.  We only return a
+    projection when the durable Task/source snapshot and verified JWT
+    assurance are present; API-key traffic therefore remains fail-closed at
+    the Router's formal context parser instead of receiving fabricated auth
+    facts.  ``agent:invoke`` is the CSP policy scope for this concrete
+    internal Router model, not a caller-provided header.
+    """
+
+    if task_ctx is None:
+        return None
+    task = db.get(Task, task_ctx.task_id)
+    if task is None or not task.source_snapshot_id:
+        return None
+
+    claims = getattr(getattr(request, "state", None), "auth_claims", None)
+    if not isinstance(claims, dict):
+        return None
+    sid = claims.get("sid")
+    amr = claims.get("amr")
+    acr = claims.get("acr")
+    auth_time = claims.get("auth_time")
+    if (
+        not isinstance(sid, str)
+        or not sid.strip()
+        or not isinstance(amr, list)
+        or not amr
+        or not all(isinstance(method, str) and method.strip() for method in amr)
+        or not isinstance(acr, str)
+        or not acr.strip()
+    ):
+        return None
+    try:
+        auth_time_iso = datetime.fromtimestamp(
+            float(auth_time), tz=timezone.utc
+        ).isoformat()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+    return {
+        "task_id": task_ctx.task_id,
+        "run_id": task_ctx.task_run_id,
+        "source_snapshot_id": int(task.source_snapshot_id),
+        "trace_id": task_ctx.trace_id,
+        "task_type": task.task_type,
+        "classification_level": (
+            admitted_classification_level or task.classification_level
+        ),
+        "scopes": ("agent:invoke",),
+        "auth_assurance": {
+            "sid": sid,
+            "amr": tuple(amr),
+            "acr": acr,
+            "auth_time": auth_time_iso,
+            "break_glass": bool(claims.get("break_glass", False)),
+        },
+        "owner_id": task.requester_user_id,
+        # Request-scoped CSP authority; Router must receive and bind this
+        # value rather than inventing a UUID when the header is absent.
+        "invocation_id": f"invocation-{uuid.uuid4().hex}",
+    }
 
 
 def _resolve_agent(db: Session, caller: Caller, agent_name: str) -> Agent | None:
@@ -985,12 +1180,90 @@ async def image_generations(
     )
 
 
+def _resolve_internal_router_caller(request: Request, db: Session) -> Caller:
+    """Authenticate a nested Router inference with a named service client."""
+
+    token = request.headers.get("X-CSP-Service-Token")
+    if not token:
+        raise HTTPException(status_code=401, detail="缺少 X-CSP-Service-Token header")
+    identity = agent_credential_service.verify_service_token(db, token=token)
+    if (
+        identity is None
+        or identity.kind != "service_client"
+        or identity.service_client_id is None
+        or identity.is_legacy
+    ):
+        raise HTTPException(status_code=401, detail="無效的 Router service token")
+    client = db.get(ServiceClient, identity.service_client_id)
+    if (
+        client is None
+        or not client.is_active
+        or client.is_legacy
+        or client.client_type != "router"
+    ):
+        raise HTTPException(status_code=403, detail="service client 不是 active Router")
+
+    caller_user_id = _strict_positive_decimal_header(
+        request, "X-ANILA-Caller-User-Id"
+    )
+    user = (
+        db.query(User)
+        .filter(
+            User.id == caller_user_id,
+            User.is_active.is_(True),
+            User.is_approved.is_(True),
+        )
+        .first()
+    )
+    if user is None:
+        raise HTTPException(status_code=403, detail="Router caller 使用者未核准或已停用")
+    request.state.csp_caller = identity
+    request.state.router_service_client_id = client.id
+    return Caller(user=user, api_key_id=None)
+
+
+@router.post("/internal/v1/router/chat/completions")
+async def router_internal_chat_completions(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    caller = _resolve_internal_router_caller(request, db)
+    return await _chat_completions_impl(
+        request, caller=caller, db=db, internal_router=True
+    )
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(
     request: Request,
     caller: Caller = Depends(get_caller),
     db: Session = Depends(get_db),
 ):
+    return await _chat_completions_impl(
+        request, caller=caller, db=db, internal_router=False
+    )
+
+
+async def _chat_completions_impl(
+    request: Request,
+    *,
+    caller: Caller,
+    db: Session,
+    internal_router: bool,
+):
+    """Shared public and Router-internal chat implementation.
+
+    ``internal_router`` is established only by the dedicated service-token
+    route below.  The shared body deliberately keeps the same governance,
+    memory, retrieval, usage and task-link machinery for both entrypoints.
+    """
+    if internal_router:
+        _require_internal_router_context(request, caller=caller, db=db)
+    request_headers = (
+        getattr(request.state, "internal_router_headers", None)
+        if internal_router
+        else request.headers
+    ) or request.headers
     body = await request.json()
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="request body 必須是 JSON object")
@@ -1006,8 +1279,24 @@ async def chat_completions(
         if pre_resolved_agent is not None
         else _resolve_model(db, caller, model_name)
     )
+    if internal_router and (
+        pre_resolved_agent is not None or _is_internal_router_model(pre_resolved_model)
+    ):
+        # A Router nested inference is allowed to target only an ordinary
+        # model.  Agent dispatch and ``anila-router`` recursion are rejected
+        # before task/memory/retrieval/outbound side effects.
+        raise HTTPException(
+            status_code=403,
+            detail="Router internal inference 不得呼叫 Agent 或遞迴 anila-router",
+        )
+    if internal_router:
+        request.state.prevalidated_task_ctx = attach_running_task_run(
+            db,
+            task=request.state.internal_router_task,
+            expected_dispatch_target="agent",
+        )
     if settings.ANILA_PILOT_MODE:
-        raw_pilot_task_id = request.headers.get("X-ANILA-Task-Id")
+        raw_pilot_task_id = request_headers.get("X-ANILA-Task-Id")
         if raw_pilot_task_id is None or not str(raw_pilot_task_id).strip():
             raise HTTPException(status_code=400, detail="Gate 2 pilot 呼叫必須綁定 Task")
         pilot_callsite = (
@@ -1027,24 +1316,24 @@ async def chat_completions(
     user_identity = downstream_identity(user)
 
     # Audit fields from optional client headers
-    conversation_id: str | None = request.headers.get("X-ANILA-Conversation-Id")
-    trace_id: str | None = request.headers.get("X-ANILA-Trace-Id")
+    conversation_id: str | None = request_headers.get("X-ANILA-Conversation-Id")
+    trace_id: str | None = request_headers.get("X-ANILA-Trace-Id")
     # Router's internal registry response is a caller-scoped, versioned
     # admission input.  These values are forwarded to the final Agent sink;
     # they are never trusted without the sink re-reading the registry row.
-    registry_snapshot_id: str | None = request.headers.get(
+    registry_snapshot_id: str | None = request_headers.get(
         "X-ANILA-Registry-Snapshot-Id"
     )
-    registry_snapshot_revision: str | None = request.headers.get(
+    registry_snapshot_revision: str | None = request_headers.get(
         "X-ANILA-Registry-Snapshot-Revision"
     )
-    registry_snapshot_hash: str | None = request.headers.get(
+    registry_snapshot_hash: str | None = request_headers.get(
         "X-ANILA-Registry-Snapshot-Hash"
     )
-    registry_manifest_revision: str | None = request.headers.get(
+    registry_manifest_revision: str | None = request_headers.get(
         "X-ANILA-Agent-Manifest-Revision"
     )
-    registry_manifest_sha256: str | None = request.headers.get(
+    registry_manifest_sha256: str | None = request_headers.get(
         "X-ANILA-Agent-Manifest-SHA256"
     )
 
@@ -1063,6 +1352,15 @@ async def chat_completions(
     # target cannot trigger an embedding call or seal a SourceSnapshot first.
     target = pre_resolved_agent or pre_resolved_model
     target_kind = "agent" if pre_resolved_agent is not None else "model"
+    # ``anila-router`` is an orchestration sink: its outer TaskRun must use
+    # the Agent dispatch type because the Router's CSP ExecutionGrant mint
+    # gate binds the grant to an active Agent TaskRun.  The nested Router
+    # inference seam attaches to that same run with ``owns_lifecycle=False``;
+    # ordinary model calls keep the model dispatch type.
+    router_orchestration = (
+        pre_resolved_agent is None and _is_internal_router_model(pre_resolved_model)
+    )
+    task_run_dispatch_target = "agent" if router_orchestration else target_kind
     task_ctx = getattr(
         getattr(request, "state", None),
         "prevalidated_task_ctx",
@@ -1072,8 +1370,8 @@ async def chat_completions(
         task_ctx = begin_task_run(
             db,
             caller=caller,
-            request_headers=request.headers,
-            dispatch_target=target_kind,
+            request_headers=request_headers,
+            dispatch_target=task_run_dispatch_target,
             resource_type=target_kind,
             resource_id=str(target.id),
         )
@@ -1226,7 +1524,7 @@ async def chat_completions(
         retrieval_outcome = await _prepare_server_retrieval(
             db,
             user=user,
-            request_headers=request.headers,
+            request_headers=request_headers,
             body=body,
             task_ctx=task_ctx,
         )
@@ -1694,6 +1992,16 @@ async def chat_completions(
         task_ctx=task_ctx,
         conv_id_int=conv_id_int,
     )
+    router_context = (
+        _router_formal_context(
+            request,
+            db=db,
+            task_ctx=task_ctx,
+            admitted_classification_level=admitted_level,
+        )
+        if _is_internal_router_model(model)
+        else None
+    )
     usage_trace_id = task_ctx.trace_id if task_ctx else trace_id
     if stream:
         target_url = (
@@ -1704,6 +2012,11 @@ async def chat_completions(
         upstream = proxy_stream(
             target_url=target_url,
             api_key_id=caller.api_key_id,
+            caller_client_id=(
+                getattr(request.state, "router_service_client_id", None)
+                if internal_router
+                else None
+            ),
             user_id=user.id,
             department_id=department_id,
             usage_model_id=model.id,
@@ -1713,6 +2026,7 @@ async def chat_completions(
             router_caller_user_id=(
                 user.id if _is_internal_router_model(model) else None
             ),
+            router_context=router_context,
             model_name=model.name,
             conversation_id=conversation_id,
             trace_id=usage_trace_id,
@@ -1766,11 +2080,17 @@ async def chat_completions(
     payload = await proxy_request(
         model=model,
         api_key_id=caller.api_key_id,
+        caller_client_id=(
+            getattr(request.state, "router_service_client_id", None)
+            if internal_router
+            else None
+        ),
         user_id=user.id,
         user_identity=user_identity,
         router_caller_user_id=(
             user.id if _is_internal_router_model(model) else None
         ),
+        router_context=router_context,
         department_id=department_id,
         request_body=body,
         endpoint_path=(

@@ -34,6 +34,12 @@ CSP_AGENTS_URL = f"{CSP_BASE}/v1/agents"
 CSP_ME_URL = f"{CSP_BASE}/api/auth/me"
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def _enable_legacy_dispatch_compat(monkeypatch):
+    """Session persistence tests target the compatibility dispatch path."""
+    monkeypatch.setenv("ALLOW_LEGACY_AGENT_DISPATCH", "1")
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

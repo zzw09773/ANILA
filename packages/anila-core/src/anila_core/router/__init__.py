@@ -12,6 +12,21 @@ from .candidate_filter import (
 )
 from .decision_engine import DecisionEngine, DecisionResult
 from .execution_runtime import Dispatcher, ExecutionRuntime, RuntimeResult
+from .csp_registry_client import (
+    AgentClient,
+    AgentClientError,
+    CspAgentClient,
+    CspAgentRequest,
+    CspInferenceClient,
+    CspInferenceRequest,
+    InferenceClient,
+    CspRegistryClient,
+    ExecutionGrantMinter,
+    GrantMintUnavailable,
+    NoopExecutionGrantMinter,
+    RegistryClientError,
+    parse_registry_snapshot,
+)
 from .policy_gate import ExecutionGrantInput, PolicyGate
 from .request_context import (
     RequestContext,
@@ -24,15 +39,27 @@ from .tool_router import RouterError, ToolRegistry, execute_batch
 __all__ = [
     "AgentRegistryEntry",
     "AgentRegistrySnapshot",
+    "AgentClient",
+    "AgentClientError",
     "CapabilityFilter",
     "CandidateFilterResult",
     "DecisionEngine",
     "DecisionResult",
+    "CspAgentClient",
+    "CspAgentRequest",
+    "CspInferenceClient",
+    "CspInferenceRequest",
+    "CspRegistryClient",
+    "ExecutionGrantMinter",
     "Dispatcher",
     "ExecutionGrantInput",
     "ExecutionRuntime",
     "PolicyGate",
     "RegistryEntry",
+    "RegistryClientError",
+    "GrantMintUnavailable",
+    "InferenceClient",
+    "NoopExecutionGrantMinter",
     "RegistrySnapshot",
     "RequestContext",
     "RequestContextBuilder",
@@ -44,4 +71,5 @@ __all__ = [
     "ToolRegistry",
     "UntrustedHistoryItem",
     "execute_batch",
+    "parse_registry_snapshot",
 ]

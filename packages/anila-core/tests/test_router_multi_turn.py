@@ -33,6 +33,8 @@ def _disable_recompose(monkeypatch):
     its extra recompose LLM call."""
     import anila_core.api.router_server as _rs
 
+    monkeypatch.setenv("ALLOW_LEGACY_AGENT_DISPATCH", "1")
+
     async def _passthrough(agent_reply, caller_api_key, *, forwarded_headers=None):
         return agent_reply, "skipped"
 
