@@ -7,7 +7,8 @@
 - Branch：`codex/gate5-brain-runtime`
 - Base：`prod-intranet-card`
 - Draft PR：<https://github.com/zzw09773/ANILA/pull/31>
-- 最新 HEAD：`c106993813aca6925cf5f90a94ae5dd37b2276ba`（`c106993`）
+- Implementation checkpoint（handoff 前）：`c106993813aca6925cf5f90a94ae5dd37b2276ba`（`c106993`）
+- Handoff artifact commit / current branch head：請用 `git log -1 --format=%H -- docs/handoffs/2026-07-15-gate5-brain-runtime-incomplete.md` 與 `git rev-parse HEAD` 讀取，避免 self-reference SHA 失真。
 - Gate 5：**INCOMPLETE**。
 - **不得 merge，也不得進入 Gate 6。** Claude Fable review 尚未執行。
 - Current CI：`c106993` 新 runs `29370210595`、`10617`、`10724` 已回報多個 failure（Deployment contracts、Gate 5 static/routing、Contract smoke、`anila-core`、`anila-agent`、governance、image-lock）；CSP 仍 in progress。`ingestion-worker` 與 Python security 已 pass，表示 resolver 至少解除部分安裝阻塞；仍需重新查看新 logs，required CI 尚未綠。
