@@ -62,3 +62,16 @@ def test_docker_and_offline_builds_use_local_contract_sources():
     )
     assert "anila-contracts @ file://$CONTRACTS_ROOT" in offline
     assert "anila-agent[$EXTRAS] @ file://$ROOT" in offline
+
+
+def test_make_docker_build_uses_package_local_dockerfile_and_repo_context():
+    """Running make from this package must not create a nested Docker path."""
+    makefile = (PACKAGE_ROOT / "Makefile").read_text(encoding="utf-8")
+    command = next(
+        line.strip()
+        for line in makefile.splitlines()
+        if line.strip().startswith("docker build ")
+    )
+    assert "-f Dockerfile" in command
+    assert "-f packages/anila-agent/Dockerfile" not in command
+    assert command.endswith("../..")

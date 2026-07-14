@@ -8,12 +8,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 
 import pytest
 
 fastapi = pytest.importorskip("fastapi")  # serving extra；沒裝就跳過
 
+from agents import RunResultStreaming  # noqa: E402
 from agents.stream_events import RawResponsesStreamEvent  # noqa: E402
 from openai.types.responses import ResponseTextDeltaEvent  # noqa: E402
 
@@ -191,6 +193,20 @@ async def test_sse_cancellation_cancels_sdk_run_once_without_normal_terminal(mon
     first = json.loads(emitted[0][len("data:") :].strip())
     assert first["choices"][0]["delta"] == {"role": "assistant"}
     assert first["choices"][0]["finish_reason"] is None
+
+
+def test_pinned_sdk_run_result_streaming_cancel_accepts_immediate_mode():
+    """Pin the SDK API used by the real CancelledError path, not only the fake."""
+    signature = inspect.signature(RunResultStreaming.cancel)
+    mode = signature.parameters.get("mode")
+    assert mode is not None
+    assert mode.kind in {
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    }
+    assert mode.default == "immediate"
+    assert "immediate" in str(mode.annotation)
+    signature.bind(object(), mode="immediate")
 
 
 # ---- HTTP 端點層（TestClient）：證明 branch + content-type + auth 守衛 ----
