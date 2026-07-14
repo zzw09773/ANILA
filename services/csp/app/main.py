@@ -44,6 +44,35 @@ def _set_migration_state(
     application.state.migration_error = error
 
 
+def _refresh_model_governance_readiness(application: FastAPI) -> None:
+    """Refresh mounted Gate 5 evidence before exposing health/readiness.
+
+    The runtime deliberately reloads its signed material and observed facts
+    atomically.  Rechecking here closes the window where a profile, trust
+    store, or deployment-health evidence is rotated/staled after lifespan
+    bootstrap but before the next health probe.  Applications/tests that do
+    not install the optional runtime keep their existing health behavior.
+    """
+
+    governance_required = governance_required_for_settings(settings) or settings.GATE5_MODEL_GOVERNANCE_ENABLED
+    if not governance_required:
+        return
+    runtime = getattr(application.state, "model_governance_runtime", None)
+    if runtime is None:
+        return
+    try:
+        application.state.model_governance_readiness = runtime.reload(
+            now=datetime.now(timezone.utc)
+        )
+    except Exception as exc:
+        application.state.model_governance_readiness = ModelGovernanceReadiness(
+            status="not_ready",
+            ready=False,
+            reason=f"runtime readiness refresh failed: {type(exc).__name__}",
+            checked_at=datetime.now(timezone.utc),
+        )
+
+
 def _apply_schema_migrations(application: FastAPI) -> None:
     """Apply every startup schema step or abort the process.
 
@@ -74,6 +103,7 @@ def _apply_schema_migrations(application: FastAPI) -> None:
 
 
 def _migration_health_payload(application: FastAPI) -> dict:
+    _refresh_model_governance_readiness(application)
     migration_status = getattr(application.state, "migration_status", "pending")
     if migration_status in {"succeeded", "skipped"}:
         overall = "healthy"
