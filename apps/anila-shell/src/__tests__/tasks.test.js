@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  cancelTaskExecution,
   createTaskForConversation,
+  shouldAbortAfterCancellation,
   TASK_TITLE_MAX_LENGTH,
 } from "../runtime/tasks.js";
 import { streamChatCompletion } from "../runtime/sse.js";
@@ -158,5 +160,36 @@ describe("chat send path task header", () => {
 
     const chatHeaders = fetchMock.mock.calls[1][1].headers;
     expect("X-ANILA-Task-Id" in chatHeaders).toBe(false);
+  });
+});
+
+describe("task cancellation", () => {
+  it("keeps the stream open for an idempotent in-progress response", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        accepted: true,
+        status: "cancellation_in_progress",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await cancelTaskExecution(42);
+
+    expect(result).toEqual({ accepted: true, status: "cancellation_in_progress" });
+    expect(shouldAbortAfterCancellation(result)).toBe(false);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/tasks/42/cancel"),
+      expect.objectContaining({ method: "POST", credentials: "include" }),
+    );
+  });
+
+  it("uses local abort only when cancellation was not accepted", () => {
+    expect(shouldAbortAfterCancellation({ accepted: false, status: "no_active_stream" })).toBe(
+      true,
+    );
+    expect(
+      shouldAbortAfterCancellation({ accepted: true, status: "cancellation_requested" }),
+    ).toBe(false);
   });
 });

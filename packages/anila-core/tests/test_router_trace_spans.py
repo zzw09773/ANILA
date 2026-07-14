@@ -111,7 +111,9 @@ def test_streaming_dispatch_emits_anila_spans_when_configured(
         yield {"type": "delta", "content": "DISPATCH:agent-a:hello"}
         yield {"type": "done"}
 
-    async def fake_stream_agent(agent_id, query, api_key, *, session_id=None):
+    async def fake_stream_agent(
+        agent_id, query, api_key, *, session_id=None, forwarded_headers=None
+    ):
         yield {"type": "content", "content": "hi from agent"}
         yield {"type": "done"}
 
@@ -178,7 +180,9 @@ def test_streaming_dispatch_emits_no_spans_when_unconfigured(
         yield {"type": "delta", "content": "DISPATCH:agent-a:hello"}
         yield {"type": "done"}
 
-    async def fake_stream_agent(agent_id, query, api_key, *, session_id=None):
+    async def fake_stream_agent(
+        agent_id, query, api_key, *, session_id=None, forwarded_headers=None
+    ):
         yield {"type": "content", "content": "hi"}
         yield {"type": "done"}
 
@@ -201,6 +205,38 @@ def test_streaming_dispatch_emits_no_spans_when_unconfigured(
     # Existing contract preserved: still get trace + meta + DONE.
     assert "event: anila.meta" in resp.text
     assert "data: [DONE]" in resp.text
+
+
+def test_streaming_dispatch_cancelled_terminal_stops_router_success_tail(
+    monkeypatch, db_path: Path
+) -> None:
+    _patch_registry(monkeypatch)
+
+    async def fake_stream_llm(api_key, messages, *, forwarded_headers=None):
+        yield {"type": "delta", "content": "DISPATCH:agent-a:hello"}
+        yield {"type": "done"}
+
+    async def fake_stream_agent(
+        agent_id, query, api_key, *, session_id=None, forwarded_headers=None
+    ):
+        yield {
+            "type": "anila_event",
+            "event": "anila.step",
+            "payload": {"status": "cancelled", "step_id": "agent:1"},
+        }
+
+    monkeypatch.setattr(router_server, "_stream_llm_sse", fake_stream_llm)
+    monkeypatch.setattr(router_server, "_stream_agent_sse", fake_stream_agent)
+    app = router_server.create_router_app(session_db_path=str(db_path))
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer sk-x", "X-ANILA-Task-Id": "73"},
+        json={"messages": [{"role": "user", "content": "hi"}], "stream": True},
+    )
+    assert response.status_code == 200
+    assert response.text.count("event: anila.step") == 1
+    assert "data: [DONE]" not in response.text
+    assert "event: anila.meta" not in response.text
 
 
 # ---------------------------------------------------------------------------

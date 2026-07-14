@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -145,6 +146,51 @@ async def test_stream_error_mid_flight_closes_cleanly(monkeypatch):
     assert content == "partial"
     assert finish == "stop"
     assert saw_done is True
+
+
+async def test_sse_cancellation_cancels_sdk_run_once_without_normal_terminal(monkeypatch):
+    """A downstream disconnect must stop the SDK run, not finish the SSE turn."""
+
+    class _BlockingStreaming:
+        context_wrapper = _FakeCtx()
+
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.cancel_calls: list[str] = []
+            self.stream_cancelled = False
+
+        async def stream_events(self):
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.stream_cancelled = True
+                raise
+            if False:  # keep this an async generator for the SDK-shaped fake
+                yield _delta_event("unreachable")
+
+        def cancel(self, *, mode):
+            self.cancel_calls.append(mode)
+
+    result = _BlockingStreaming()
+    monkeypatch.setattr(service_wrapper, "run_streamed", lambda *a, **k: result)
+
+    stream = service_wrapper._sse_stream(None, "hi", hooks=None)
+    emitted = [await anext(stream)]  # role chunk is emitted before SDK startup
+    read_task = asyncio.create_task(anext(stream))
+    await result.started.wait()
+    read_task.cancel()  # simulate Starlette cancelling after downstream close
+    with pytest.raises(asyncio.CancelledError):
+        await read_task
+
+    await stream.aclose()
+    assert result.stream_cancelled is True
+    assert result.cancel_calls == ["immediate"]
+    assert len(emitted) == 1
+    assert "[DONE]" not in emitted[0]
+    first = json.loads(emitted[0][len("data:") :].strip())
+    assert first["choices"][0]["delta"] == {"role": "assistant"}
+    assert first["choices"][0]["finish_reason"] is None
 
 
 # ---- HTTP 端點層（TestClient）：證明 branch + content-type + auth 守衛 ----

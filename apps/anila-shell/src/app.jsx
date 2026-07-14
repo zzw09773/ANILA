@@ -18,7 +18,12 @@ import React, {
 import { config, readCsrfCookie } from "./runtime/api.js";
 import { useAuth, useLogoutRedirect } from "./runtime/auth.jsx";
 import { streamChatCompletion } from "./runtime/sse.js";
-import { createTaskForConversation } from "./runtime/tasks.js";
+import { executionCallbacks, reduceExecution } from "./runtime/executionReducer.js";
+import {
+  cancelTaskExecution,
+  createTaskForConversation,
+  shouldAbortAfterCancellation,
+} from "./runtime/tasks.js";
 import {
   appendClassifiedTag,
   computeConversationClassified,
@@ -456,9 +461,30 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
       streamAbortRef.current.delete(convId);
     }
   }
-  function stopStreaming(convId) {
+  async function stopStreaming(convId) {
     const controller = streamAbortRef.current.get(convId);
-    if (controller) controller.abort();
+    if (!controller) return;
+    const taskId = taskIdForConv(convId);
+    const cancellation = taskId !== null
+      ? await cancelTaskExecution(taskId)
+      : { accepted: false, status: "no_task" };
+    // A delivered signal lets CSP close the downstream Agent and emit the
+    // single trusted cancelled terminal.  Idempotent retries report
+    // ``accepted=true, status=cancellation_in_progress`` and must follow the
+    // same path; Abort is only the legacy/failure fallback where no live Task
+    // stream was registered.
+    if (shouldAbortAfterCancellation(cancellation)) controller.abort();
+  }
+  function timelineCallbacks(convId, messageId, { compare = false } = {}) {
+    return executionCallbacks((action) => {
+      const setter = compare ? setCompareMsgs : setMessagesByConv;
+      setter((prev) => ({
+        ...prev,
+        [convId]: (prev[convId] || []).map((message) =>
+          message.id === messageId ? reduceExecution(message, action) : message,
+        ),
+      }));
+    });
   }
 
   const selectedConv = useMemo(
@@ -990,6 +1016,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         url: `${baseUrl}/v1/chat/completions`,
         payload,
         conversationId: typeof convId === "number" ? convId : undefined,
+        ...timelineCallbacks(convId, assistantId),
         onText: (acc) => {
           finalText = acc;
           updateMsg(convId, assistantId, { text: acc });
@@ -1238,6 +1265,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         url: `${baseUrl}/v1/chat/completions`,
         payload,
         conversationId: typeof convId === "number" ? convId : undefined,
+        ...timelineCallbacks(convId, assistantId),
         // 首回合 taskId 剛建立、state 還沒落地,顯式覆寫 streamWithAbort
         // 的 state 查找;null(建立失敗)= 不送標頭。
         taskId,
@@ -1392,6 +1420,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         url: `${baseUrl}/v1/chat/completions`,
         payload,
         conversationId: typeof convId === "number" ? convId : undefined,
+        ...timelineCallbacks(convId, assistantMsg.id),
         taskId: taskIdForConv(convId),
         signal: controller.signal,
         onText: (acc) => {
@@ -1509,6 +1538,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
         url: `${baseUrl}/v1/chat/completions`,
         payload,
         conversationId: typeof convId === "number" ? convId : undefined,
+        ...timelineCallbacks(convId, assistantMsg.id),
         onText: (acc) => {
           finalText = acc;
           updateMsg(convId, assistantMsg.id, { text: acc });
@@ -1726,6 +1756,7 @@ function ChatRuntime({ user, tweaks, setTweaks, tweaksOpen, setTweaksOpen }) {
               messages: [{ role: "user", content: buildUserContent(text, attachments) }],
             },
             conversationId: typeof col.id === "number" ? col.id : undefined,
+            ...timelineCallbacks(col.id, aId, { compare: true }),
             onText: (acc) => {
               setCompareMsgs((prev) => ({
                 ...prev,

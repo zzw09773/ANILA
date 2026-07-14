@@ -23,7 +23,9 @@ $(BIN)/python:
 
 .PHONY: install
 install: $(BIN)/python ## 建 venv + editable 安裝（含 dev extra）
-	$(BIN)/pip install -e '.[dev]'
+	# Resolve the internal contract from this monorepo checkout; never ask the
+	# public index to satisfy the same distribution name.
+	$(BIN)/pip install -e ../anila-contracts -e '.[dev]'
 
 .PHONY: test
 test: ## 單元測試（不連網）
@@ -50,7 +52,7 @@ TAG ?= 1.0.0
 
 .PHONY: docker-build
 docker-build: ## build 開發環境 image（外網/有網路環境）
-	docker build -t $(IMAGE):$(TAG) .
+	docker build -f packages/anila-agent/Dockerfile -t $(IMAGE):$(TAG) ../..
 
 .PHONY: docker-save
 docker-save: ## build + 存成 tar，供搬進 air-gap 內網 / MLSteam

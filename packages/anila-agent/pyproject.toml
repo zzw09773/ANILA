@@ -7,6 +7,10 @@ requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "ANILA" }]
 dependencies = [
+    # Framework-neutral Gate 4 StepEvent wire envelope.  Air-gap builds install
+    # the reviewed local wheel before this package; never resolve it from a
+    # public index in deployment workflows.
+    "anila-contracts>=1.0.0,<2.0.0",
     # Runtime base. Pinned exactly: RunState/HITL persistence is bound to the
     # SDK schema version, and the 0.3->0.17 surface change is large. See REBUILD_PLAN.md.
     "openai-agents==0.17.5",
