@@ -1,5 +1,15 @@
 # Gate 6 Production Acceptance durable handoff（INCOMPLETE / NO-GO）
 
+## 2026-07-16 立即交接更新
+
+- PR [#32](https://github.com/zzw09773/ANILA/pull/32) 維持 Draft／No-Go；branch `codex/gate6-production-acceptance`，已推 head `cbf37a0`。
+- 本輪 commits：`881cb1a`、`97e3860`、`fb672ad`、`cbf37a0`。
+- 驗證：ingestion full `248 passed / 10 skipped`；deployment `178 OK / 2 skipped`；model-lock focused `20/20`；PostgreSQL Docker `3 passed`。
+- Claude Fable session `d66bae15-cd88-4581-ae53-564aa67549fc` 只審到 `bca5..f2a44e2` 並給 Approve；**不是 current-head 最終審查**。最新 CI 與 current-head Fable 5 max review 尚待完成。
+- Gate 6 外部 blockers：P0 真實 prod 與五方簽核；P1 production-equivalent timed restore；P2 實際故障注入；P3 七日 SLO；P4 簽章 release/SBOM/CA/clean host；P5 完整矩陣與 trace；P6 獨立具名人類簽核；P7 法務採購；P8 實體卡/reader/HiPKI；P9 剩餘 runtime/network/usage reconciliation。
+- Resume：`cd C:\Users\USER\.codex\worktrees\ANILA-gate6`，再跑 `git status`、`gh pr checks 32 --watch`；之後以 `claude-fable-5`、effort `max`、auto mode resume 上述 session，allowed `Read,Grep,Glob,WebFetch,WebSearch`，disallowed `Bash,Edit,Write,NotebookEdit`。
+- 不得宣告 Gate 6 完成；PR 維持 Draft／No-Go。
+
 更新時間：2026-07-16 05:45（UTC+8；05:45 後現況）
 
 ## 先看結論
