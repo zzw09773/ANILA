@@ -8,6 +8,8 @@ import pytest
 
 from infra.policy.gate5.check_deployment_egress import (
     DeploymentEgressError,
+    _csp_base_url,
+    _gateway_url,
     verify_deployment_egress,
 )
 
@@ -115,6 +117,31 @@ def test_formal_agent_raw_endpoint_is_rejected() -> None:
             profile="prod-intranet-card",
             require_material=False,
         )
+
+
+def test_invalid_endpoint_ports_fail_closed() -> None:
+    platform = _platform()
+    platform["services"]["csp"]["environment"][
+        "GATE5_MODEL_GATEWAY_ENDPOINT"
+    ] = "http://csp:notaport/v1"
+    with pytest.raises(DeploymentEgressError, match="port is invalid"):
+        verify_deployment_egress(
+            [platform, _models()],
+            profile="prod-intranet-card",
+            require_material=False,
+        )
+
+    with pytest.raises(DeploymentEgressError, match="port is invalid"):
+        _gateway_url("http://csp:notaport/v1")
+    assert not _csp_base_url(
+        "http://csp:notaport/v1", ("csp", 8000, "/v1")
+    )
+
+
+def test_malformed_ipv6_endpoint_fails_closed() -> None:
+    with pytest.raises(DeploymentEgressError, match="URL is invalid"):
+        _gateway_url("http://[bad/v1")
+    assert not _csp_base_url("http://[bad/v1", ("csp", 8000, "/v1"))
 
 
 def test_flux_requires_legal_marker_and_signed_callsite() -> None:

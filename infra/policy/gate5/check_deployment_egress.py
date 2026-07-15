@@ -178,15 +178,23 @@ def _service_labels(service: Mapping[str, Any]) -> dict[str, str]:
 
 
 def _gateway_url(value: str) -> tuple[str, int | None, str]:
-    parsed = urlsplit(value.strip())
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+    try:
+        parsed = urlsplit(value.strip())
+        hostname = parsed.hostname
+    except ValueError as exc:
+        raise DeploymentEgressError("CSP gateway endpoint URL is invalid") from exc
+    if parsed.scheme not in {"http", "https"} or not hostname:
         raise DeploymentEgressError("GATE5_MODEL_GATEWAY_ENDPOINT must be an absolute URL")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise DeploymentEgressError("CSP gateway endpoint must not contain credentials/query/fragment")
     path = parsed.path.rstrip("/")
     if not path.startswith("/v1"):
         raise DeploymentEgressError("CSP gateway endpoint must be rooted at /v1")
-    return parsed.hostname.lower(), parsed.port, path
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise DeploymentEgressError("CSP gateway endpoint port is invalid") from exc
+    return hostname.lower(), port, path
 
 
 def _host_is_csp(value: str, gateway: tuple[str, int | None, str]) -> bool:
@@ -203,17 +211,25 @@ def _host_is_csp(value: str, gateway: tuple[str, int | None, str]) -> bool:
 def _csp_base_url(value: str, gateway: tuple[str, int | None, str]) -> bool:
     """Accept CSP service bases with or without the gateway's ``/v1`` path."""
 
-    parsed = urlsplit(value.strip())
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+    try:
+        parsed = urlsplit(value.strip())
+        hostname = parsed.hostname
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"} or not hostname:
         return False
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         return False
     path = parsed.path.rstrip("/")
     if path not in {"", "/v1"}:
         return False
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
     gateway_host, gateway_port, _ = gateway
-    return parsed.hostname.lower() in {"csp", "csp-model-gateway", gateway_host} and (
-        parsed.port is None or gateway_port is None or parsed.port == gateway_port
+    return hostname.lower() in {"csp", "csp-model-gateway", gateway_host} and (
+        port is None or gateway_port is None or port == gateway_port
     )
 
 

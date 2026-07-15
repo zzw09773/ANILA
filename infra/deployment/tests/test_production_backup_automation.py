@@ -118,6 +118,93 @@ class ProductionBackupAutomationTests(unittest.TestCase):
         self.assertIsInstance(caught.exception.__cause__, FileNotFoundError)
         run.assert_called_once()
 
+    def test_mountinfo_malformed_row_fails_closed(self) -> None:
+        with mock.patch.object(backup.Path, "read_text", return_value="- a\n"):
+            with self.assertRaises(backup.BackupAutomationError):
+                backup._linux_mount_fstype(Path("/off-host"))
+
+    def test_validate_envelope_wraps_openssl_start_oserror(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            bundle = Path(temp) / "bundle"
+            bundle.mkdir()
+            (bundle / "envelope.json").write_bytes(b"{}")
+            (bundle / "envelope.sig").write_bytes(b"signature")
+            with mock.patch.object(
+                backup.subprocess, "run", side_effect=OSError("openssl missing")
+            ):
+                with self.assertRaises(backup.BackupAutomationError) as caught:
+                    backup.validate_envelope(bundle, Path(temp) / "public.pem")
+            self.assertIsInstance(caught.exception.__cause__, OSError)
+
+    def test_decrypt_bytes_wraps_age_start_oserror(self) -> None:
+        with mock.patch.object(
+            backup.subprocess, "run", side_effect=OSError("age missing")
+        ):
+            with self.assertRaises(backup.BackupAutomationError) as caught:
+                backup._decrypt_bytes(Path("manifest.age"), Path("identity.txt"))
+        self.assertIsInstance(caught.exception.__cause__, OSError)
+
+    def test_prepare_restore_wraps_popen_oserror_and_cleans_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bundle = root / "bundle"
+            bundle.mkdir()
+            repo = root / "repo"
+            repo.mkdir()
+            profile = root / "profile.json"
+            profile.write_text("{}", encoding="utf-8")
+            target = root / "prepared"
+            manifest_raw = backup._canonical_json(
+                {
+                    "components": [
+                        {
+                            "file": "db.age",
+                            "format": "postgres-custom-v1",
+                            "surfaces": ["csp-postgresql"],
+                        }
+                    ]
+                }
+            )
+            envelope = {
+                "manifest": {
+                    "file": "manifest.age",
+                    "logical_sha256": hashlib.sha256(manifest_raw).hexdigest(),
+                    "logical_size": len(manifest_raw),
+                }
+            }
+            with mock.patch.object(
+                backup,
+                "_required_file_env",
+                return_value=root / "identity.txt",
+            ), mock.patch.object(
+                backup, "validate_envelope", return_value=envelope
+            ), mock.patch.object(
+                backup, "_decrypt_bytes", return_value=manifest_raw
+            ), mock.patch.object(
+                backup, "validate_manifest"
+            ), mock.patch.object(
+                backup.subprocess,
+                "Popen",
+                side_effect=FileNotFoundError("age missing"),
+            ):
+                with self.assertRaises(backup.BackupAutomationError) as caught:
+                    backup.prepare_restore(
+                        bundle=bundle,
+                        target=target,
+                        repo_root=repo,
+                        profile_path=profile,
+                    )
+            self.assertIsInstance(caught.exception.__cause__, OSError)
+            self.assertFalse(target.exists())
+
+    def test_docker_output_wraps_start_oserror(self) -> None:
+        with mock.patch.object(
+            backup.subprocess, "run", side_effect=OSError("docker missing")
+        ):
+            with self.assertRaises(backup.BackupAutomationError) as caught:
+                backup._docker_output(["docker", "version"])
+        self.assertIsInstance(caught.exception.__cause__, OSError)
+
     def _run_minimal_backup(
         self,
         root: Path,
