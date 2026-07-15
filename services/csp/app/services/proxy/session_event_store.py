@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+import math
+import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
 from pydantic import ValidationError
@@ -23,8 +25,10 @@ from anila_contracts import StepEvent
 from anila_contracts.events import StepStatus
 
 from app.models.session_event import SessionEvent, SessionEventRun
+from app.models.resume_authority import ResumeAttempt
 from app.services.proxy.stream_bridge import (
     BridgeContext,
+    DispatchClaimLostError,
     EventBindingError,
     EventBudgetExceeded,
     EventConflictError,
@@ -56,6 +60,13 @@ class SqlAlchemySessionEventStore(SessionEventStoreProtocol):
         self, db: Session, *, max_events_per_run: int = MAX_EVENTS_PER_RUN
     ) -> None:
         self.db = db
+        self._dispatch_claim_generation: int | None = None
+        self._dispatch_claim_token_sha256: str | None = None
+        self._dispatch_claim_lease_seconds: float = 900.0
+        self._resume_claim_generation: int | None = None
+        self._resume_claim_token_sha256: str | None = None
+        self._resume_claim_cursor: int | None = None
+        self._resume_claim_lease_seconds: float = 180.0
         if (
             isinstance(max_events_per_run, bool)
             or not isinstance(max_events_per_run, int)
@@ -63,6 +74,57 @@ class SqlAlchemySessionEventStore(SessionEventStoreProtocol):
         ):
             raise ValueError("max_events_per_run 必須是非負整數")
         self.max_events_per_run = max_events_per_run
+
+    @staticmethod
+    def _lease_now() -> datetime:
+        return _utcnow()
+
+    @staticmethod
+    def _aware(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    def _set_dispatch_fence(
+        self, *, generation: int, token_hash: str, lease_seconds: float
+    ) -> None:
+        self._dispatch_claim_generation = generation
+        self._dispatch_claim_token_sha256 = token_hash
+        self._dispatch_claim_lease_seconds = lease_seconds
+
+    def set_resume_fence(
+        self,
+        *,
+        blocked_cursor: int,
+        generation: int,
+        token_hash: str,
+        lease_seconds: float = 180.0,
+    ) -> None:
+        if (
+            isinstance(blocked_cursor, bool)
+            or not isinstance(blocked_cursor, int)
+            or blocked_cursor <= 0
+            or isinstance(generation, bool)
+            or not isinstance(generation, int)
+            or generation <= 0
+            or not isinstance(token_hash, str)
+            or len(token_hash) != 64
+            or not math.isfinite(float(lease_seconds))
+            or float(lease_seconds) <= 0
+            or float(lease_seconds) > 900
+        ):
+            raise ValueError("writer fence 無效")
+        self._resume_claim_cursor = blocked_cursor
+        self._resume_claim_generation = generation
+        self._resume_claim_token_sha256 = token_hash
+        self._resume_claim_lease_seconds = float(lease_seconds)
+
+    def clear_resume_fence(self) -> None:
+        self._resume_claim_cursor = None
+        self._resume_claim_generation = None
+        self._resume_claim_token_sha256 = None
 
     @staticmethod
     def _binding_key(binding: BridgeContext) -> tuple[str, str, str, str, str]:
@@ -175,18 +237,31 @@ class SqlAlchemySessionEventStore(SessionEventStoreProtocol):
             return existing
         return run
 
-    def claim_dispatch(self, *, binding: BridgeContext) -> bool:
-        """Durably claim a not-yet-started invocation before Agent I/O.
+    def claim_dispatch(
+        self,
+        *,
+        binding: BridgeContext,
+        idempotency_key: str | None = None,
+        lease_seconds: float = 900.0,
+    ) -> bool:
+        """Durably claim/reclaim an initial invocation before Agent I/O.
 
-        The row lock is intentionally held by the caller's SQLAlchemy
-        transaction until the first event/terminal append commits.  A second
-        CSP process therefore waits for the winner, then observes either the
-        durable cursor or terminal latch and replays instead of issuing a
-        second outbound call.  If the winner crashes before an append, the
-        transaction rolls back; the downstream idempotency key is still sent
-        on the retry so the Agent can return its durable result.
+        The lease is committed before network I/O, so another CSP process
+        cannot race the same invocation.  Once expired, a new worker may
+        reclaim the row with a higher generation; every append from the old
+        worker is fenced before it can mutate the event ledger.
         """
 
+        if (
+            isinstance(lease_seconds, bool)
+            or not isinstance(lease_seconds, (int, float))
+            or not math.isfinite(float(lease_seconds))
+            or float(lease_seconds) <= 0
+            or float(lease_seconds) > 900
+        ):
+            raise ValueError("dispatch lease_seconds 超出允許範圍")
+        key = idempotency_key or binding.invocation_id or binding.run_id
+        key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
         run = self._run_for_update(binding)
         if run is None:
             run = SessionEventRun(
@@ -211,7 +286,101 @@ class SqlAlchemySessionEventStore(SessionEventStoreProtocol):
                 run = existing
         else:
             self._assert_row_binding(run, binding)
-        return run.terminal_event_id is None and int(run.next_cursor or 0) == 0
+        if (
+            run.dispatch_idempotency_key_sha256 is not None
+            and run.dispatch_idempotency_key_sha256 != key_hash
+        ):
+            raise EventConflictError(
+                "相同 run 的 initial dispatch key 不一致",
+                run_id=binding.run_id,
+            )
+        if run.terminal_event_id is not None:
+            self.db.commit()
+            return False
+        now = self._lease_now()
+        expiry = self._aware(run.dispatch_lease_expires_at)
+        if (
+            run.dispatch_lease_token_sha256
+            and expiry is not None
+            and expiry > now
+        ):
+            self.db.commit()
+            return False
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        generation = int(run.dispatch_lease_generation or 0) + 1
+        run.dispatch_idempotency_key_sha256 = key_hash
+        run.dispatch_lease_token_sha256 = token_hash
+        run.dispatch_lease_generation = generation
+        run.dispatch_lease_expires_at = now + timedelta(seconds=float(lease_seconds))
+        run.updated_at = now
+        self._set_dispatch_fence(
+            generation=generation,
+            token_hash=token_hash,
+            lease_seconds=float(lease_seconds),
+        )
+        self.db.flush()
+        self.db.commit()
+        return True
+
+    def _assert_dispatch_fence(
+        self, run: SessionEventRun, *, binding: BridgeContext
+    ) -> None:
+        if self._dispatch_claim_generation is None:
+            return
+        now = self._lease_now()
+        expiry = self._aware(run.dispatch_lease_expires_at)
+        if (
+            int(run.dispatch_lease_generation or 0) != self._dispatch_claim_generation
+            or run.dispatch_lease_token_sha256 != self._dispatch_claim_token_sha256
+            or expiry is None
+            or expiry <= now
+        ):
+            raise DispatchClaimLostError(
+                "initial dispatch lease 已失效",
+                run_id=binding.run_id,
+            )
+        run.dispatch_lease_expires_at = now + timedelta(
+            seconds=self._dispatch_claim_lease_seconds
+        )
+        run.updated_at = now
+
+    def _assert_resume_fence(self, *, binding: BridgeContext) -> None:
+        """Lock and renew the current ResumeAttempt writer lease.
+
+        This is intentionally checked in the same transaction as the event
+        append.  A stale resume worker therefore cannot append ordinary or
+        terminal events after another CSP reclaimed the attempt generation.
+        """
+
+        if self._resume_claim_generation is None:
+            return
+        if self._resume_claim_cursor is None or self._resume_claim_token_sha256 is None:
+            raise DispatchClaimLostError("resume writer fence 缺失", run_id=binding.run_id)
+        now = self._lease_now()
+        attempt = (
+            self.db.query(ResumeAttempt)
+            .filter(
+                ResumeAttempt.run_id == binding.run_id,
+                ResumeAttempt.blocked_cursor == self._resume_claim_cursor,
+                ResumeAttempt.status == "claimed",
+                ResumeAttempt.lease_generation == self._resume_claim_generation,
+                ResumeAttempt.lease_token_sha256 == self._resume_claim_token_sha256,
+            )
+            .populate_existing()
+            .with_for_update()
+            .one_or_none()
+        )
+        expiry = self._aware(None if attempt is None else attempt.lease_expires_at)
+        if attempt is None or expiry is None or expiry <= now:
+            raise DispatchClaimLostError(
+                "resume writer lease 已失效",
+                run_id=binding.run_id,
+            )
+        attempt.lease_expires_at = now + timedelta(
+            seconds=self._resume_claim_lease_seconds
+        )
+        attempt.updated_at = now
 
     @staticmethod
     def _event_from_row(row: SessionEvent, *, binding: BridgeContext) -> StepEvent:
@@ -268,6 +437,8 @@ class SqlAlchemySessionEventStore(SessionEventStoreProtocol):
         digest = self._event_digest(event)
         try:
             run = self._get_or_create_run(binding)
+            self._assert_dispatch_fence(run, binding=binding)
+            self._assert_resume_fence(binding=binding)
             existing = (
                 self.db.query(SessionEvent)
                 .filter(

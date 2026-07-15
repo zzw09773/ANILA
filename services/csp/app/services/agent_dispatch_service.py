@@ -14,11 +14,13 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import re
+import secrets
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote, unquote
 
@@ -57,6 +59,7 @@ from app.services.proxy.stream_bridge import (
     EventBudgetExceeded,
     EventConflictError,
     EventOrderError,
+    DispatchClaimLostError,
     MAX_EVENT_BYTES,
     StreamBridge,
     TerminalConflictError,
@@ -73,6 +76,14 @@ _EVENT_BUDGET_ERROR_DETAIL = {
     "code": EventBudgetExceeded.code,
     "message": "執行事件數已達上限",
 }
+
+# A resume claim must survive one Agent HTTP timeout plus a small scheduling
+# margin, while remaining bounded so a crashed CSP is eventually reclaimable.
+# The explicit upper bound is fail-closed: an invalid deployment timeout is not
+# silently converted into an unbounded lease.
+_RESUME_LEASE_MIN_SECONDS = 180.0
+_RESUME_LEASE_GRACE_SECONDS = 30.0
+_RESUME_LEASE_MAX_SECONDS = 900.0
 
 
 @dataclass(slots=True)
@@ -101,6 +112,77 @@ def _event_budget_http_error(
     except Exception:
         db.rollback()
     return HTTPException(status_code=409, detail=dict(_EVENT_BUDGET_ERROR_DETAIL))
+
+
+def _resume_lease_ttl() -> timedelta:
+    """Return a bounded lease covering the configured Agent HTTP timeout."""
+
+    try:
+        timeout = float(settings.LLM_TIMEOUT)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise HTTPException(status_code=503, detail="resume lease 設定無效") from exc
+    if not math.isfinite(timeout) or timeout < 0:
+        raise HTTPException(status_code=503, detail="resume lease 設定無效")
+    seconds = max(_RESUME_LEASE_MIN_SECONDS, timeout + _RESUME_LEASE_GRACE_SECONDS)
+    if seconds > _RESUME_LEASE_MAX_SECONDS:
+        raise HTTPException(status_code=503, detail="resume lease 設定超出允許範圍")
+    return timedelta(seconds=seconds)
+
+
+def _dispatch_lease_seconds() -> float:
+    """Bound initial-dispatch leases for both HTTP and bounded streams."""
+
+    ttl = _resume_lease_ttl().total_seconds()
+    try:
+        stream_budget = float(settings.PROXY_STREAM_MAX_SECONDS)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise HTTPException(status_code=503, detail="dispatch lease 設定無效") from exc
+    if not math.isfinite(stream_budget) or stream_budget < 0:
+        raise HTTPException(status_code=503, detail="dispatch lease 設定無效")
+    seconds = max(ttl, stream_budget + _RESUME_LEASE_GRACE_SECONDS)
+    if seconds > _RESUME_LEASE_MAX_SECONDS:
+        raise HTTPException(status_code=503, detail="dispatch lease 設定超出允許範圍")
+    return seconds
+
+
+def _resume_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _resume_aware(value: datetime | None) -> datetime | None:
+    """Normalize SQLite's naive datetime readback to UTC for lease checks."""
+
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _resume_lease_token() -> tuple[str, str]:
+    token = secrets.token_urlsafe(32)
+    return token, hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _attach_resume_lease_token(attempt: ResumeAttempt, token: str | None) -> None:
+    # This process-local attribute is deliberately not a mapped column.  Only
+    # the digest/generation/expiry are durable; the raw token never leaves the
+    # current CSP worker and is needed solely for fenced completion writes.
+    setattr(attempt, "_resume_lease_token", token)
+
+
+def _resume_attempt_fence(
+    attempt: ResumeAttempt | None,
+) -> tuple[int | None, str | None]:
+    if attempt is None:
+        return None, None
+    generation = getattr(attempt, "lease_generation", None)
+    token = getattr(attempt, "_resume_lease_token", None)
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation <= 0:
+        return None, None
+    if token is not None and (not isinstance(token, str) or not token):
+        return None, None
+    return generation, token
 
 
 def _positive(value: object, *, field: str) -> int:
@@ -748,17 +830,96 @@ def _claim_resume_attempt(
     bridge: StreamBridge,
     idempotency_key: str,
 ) -> ResumeAttempt | None:
-    """Claim one run/cursor via durable unique key and row lock."""
+    """Claim one run/cursor via a durable, fenced lease.
+
+    The unique ``(run_id, blocked_cursor)`` row is retained across CSP
+    restarts.  A live ``claimed`` lease rejects concurrent work; an expired
+    lease (or a prior failed attempt) is atomically reclaimed under the row
+    lock with a new token and monotonically increasing generation.  The raw
+    token is attached only to the current ORM object and never persisted.
+    """
 
     if not _db_session_capable(db):
         # Legacy focused tests inject an in-memory event store and a small
         # fake DB. Formal HTTP endpoints always use a real SQLAlchemy Session.
         return None
     cursor = _resume_attempt_cursor(db, authority=authority, bridge=bridge)
+    lease_seconds = _resume_lease_ttl().total_seconds()
     key_hash = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
     request_hash = _resume_request_hash(
         run_id=authority.binding.run_id, blocked_cursor=cursor
     )
+
+    def bind_store_fence(attempt: ResumeAttempt) -> None:
+        token = getattr(attempt, "_resume_lease_token", None)
+        generation = getattr(attempt, "lease_generation", None)
+        store = getattr(bridge, "store", None)
+        setter = getattr(store, "set_resume_fence", None)
+        if not isinstance(generation, int) or generation <= 0 or not isinstance(token, str):
+            return
+        if not callable(setter):
+            if bool(getattr(store, "durable", False)):
+                raise HTTPException(status_code=503, detail="resume writer fence unavailable")
+            return
+        setter(
+            blocked_cursor=cursor,
+            generation=generation,
+            token_hash=hashlib.sha256(token.encode("utf-8")).hexdigest(),
+            lease_seconds=lease_seconds,
+        )
+
+    def resolve_existing(existing: ResumeAttempt) -> ResumeAttempt:
+        if (
+            existing.idempotency_key_sha256 != key_hash
+            or existing.request_sha256 != request_hash
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="resume idempotency key conflicts with blocked cursor",
+            )
+
+        terminal_reader = getattr(bridge, "terminal_event", None)
+        has_terminal = False
+        if callable(terminal_reader):
+            try:
+                has_terminal = terminal_reader() is not None
+            except Exception:
+                # A malformed/unavailable event ledger must not make a
+                # claimed row reclaimable; fail closed as an active lease.
+                has_terminal = False
+
+        status = str(existing.status or "")
+        now = _resume_now()
+        expiry = _resume_aware(getattr(existing, "lease_expires_at", None))
+        if status == "claimed" and has_terminal:
+            # Crash window: the authoritative terminal was committed before
+            # the attempt lifecycle row.  Same-key replay may reconcile it;
+            # a different key was rejected above.
+            _attach_resume_lease_token(existing, None)
+            return existing
+        if status == "claimed":
+            if expiry is None or expiry > now:
+                raise HTTPException(status_code=409, detail="resume 已在執行")
+        elif status not in {"failed"}:
+            # paused/completed/cancelled are durable replay latches.  They
+            # must not be silently converted back into a new Agent call.
+            if status in {"paused", "completed", "cancelled"}:
+                _attach_resume_lease_token(existing, None)
+                return existing
+            raise HTTPException(status_code=409, detail="resume claim state 無效")
+
+        token, token_hash = _resume_lease_token()
+        existing.status = "claimed"
+        existing.lease_token_sha256 = token_hash
+        existing.lease_generation = int(existing.lease_generation or 0) + 1
+        existing.lease_expires_at = now + timedelta(seconds=lease_seconds)
+        existing.updated_at = now
+        _attach_resume_lease_token(existing, token)
+        db.flush()
+        db.commit()
+        bind_store_fence(existing)
+        return existing
+
     existing = (
         db.query(ResumeAttempt)
         .filter(
@@ -770,22 +931,26 @@ def _claim_resume_attempt(
         .one_or_none()
     )
     if existing is not None:
-        if existing.idempotency_key_sha256 != key_hash or existing.request_sha256 != request_hash:
-            raise HTTPException(status_code=409, detail="resume idempotency key conflicts with blocked cursor")
-        if existing.status == "claimed":
-            raise HTTPException(status_code=409, detail="resume 已在執行")
-        return existing
+        return resolve_existing(existing)
+
+    now = _resume_now()
+    token, token_hash = _resume_lease_token()
     attempt = ResumeAttempt(
         run_id=authority.binding.run_id,
         blocked_cursor=cursor,
         idempotency_key_sha256=key_hash,
         request_sha256=request_hash,
         status="claimed",
+        lease_token_sha256=token_hash,
+        lease_generation=1,
+        lease_expires_at=now + timedelta(seconds=lease_seconds),
     )
+    _attach_resume_lease_token(attempt, token)
     db.add(attempt)
     try:
         db.flush()
         db.commit()
+        bind_store_fence(attempt)
     except IntegrityError:
         db.rollback()
         existing = (
@@ -800,11 +965,7 @@ def _claim_resume_attempt(
         )
         if existing is None:
             raise HTTPException(status_code=409, detail="resume claim conflict")
-        if existing.idempotency_key_sha256 != key_hash or existing.request_sha256 != request_hash:
-            raise HTTPException(status_code=409, detail="resume idempotency key conflicts with blocked cursor")
-        if existing.status == "claimed":
-            raise HTTPException(status_code=409, detail="resume 已在執行")
-        return existing
+        return resolve_existing(existing)
     return attempt
 
 
@@ -815,27 +976,42 @@ def _mark_resume_attempt(
     bridge: StreamBridge,
     status: str,
     blocked_cursor: int | None = None,
-) -> None:
+    claim_generation: int | None = None,
+    lease_token: str | None = None,
+) -> bool:
+    """Persist resume lifecycle only when the caller still owns its fence."""
+
     if not _db_session_capable(db):
-        return
+        return False
     cursor = blocked_cursor or _resume_attempt_cursor(db, authority=authority, bridge=bridge)
-    attempt = (
-        db.query(ResumeAttempt)
-        .filter(
-            ResumeAttempt.run_id == authority.binding.run_id,
-            ResumeAttempt.blocked_cursor == cursor,
-        )
-        .populate_existing()
-        .with_for_update()
-        .one_or_none()
+    query = db.query(ResumeAttempt).filter(
+        ResumeAttempt.run_id == authority.binding.run_id,
+        ResumeAttempt.blocked_cursor == cursor,
     )
+    if claim_generation is not None:
+        query = query.filter(
+            ResumeAttempt.lease_generation == claim_generation,
+            ResumeAttempt.status == "claimed",
+        )
+        if lease_token is not None:
+            query = query.filter(
+                ResumeAttempt.lease_token_sha256
+                == hashlib.sha256(lease_token.encode("utf-8")).hexdigest()
+            )
+    attempt = query.populate_existing().with_for_update().one_or_none()
+    if attempt is None or claim_generation is None:
+        # No matching fence means this worker is stale (or an unsafe legacy
+        # caller omitted the fence).  Crucially, do not touch authority state.
+        db.rollback()
+        return False
     latest_cursor = _bridge_latest_cursor(bridge)
-    if attempt is not None:
-        attempt.status = status
-        attempt.response_cursor = latest_cursor
-        attempt.response_status = status
-        attempt.response_meta = {"status": status, "cursor": attempt.response_cursor}
-        attempt.updated_at = datetime.now(timezone.utc)
+    now = _resume_now()
+    attempt.status = status
+    attempt.response_cursor = latest_cursor
+    attempt.response_status = status
+    attempt.response_meta = {"status": status, "cursor": attempt.response_cursor}
+    attempt.lease_expires_at = now
+    attempt.updated_at = now
     authority_row = (
         db.query(ResumeAuthority)
         .filter(ResumeAuthority.run_id == authority.binding.run_id)
@@ -845,12 +1021,16 @@ def _mark_resume_attempt(
     )
     if authority_row is not None:
         authority_row.lifecycle = status
-        authority_row.resumed_at = datetime.now(timezone.utc)
-        authority_row.updated_at = datetime.now(timezone.utc)
+        authority_row.resumed_at = now
+        authority_row.updated_at = now
         if status in {"completed", "failed", "cancelled"}:
-            authority_row.terminal_at = datetime.now(timezone.utc)
+            authority_row.terminal_at = now
             authority_row.terminal_cursor = latest_cursor
     db.commit()
+    clear_fence = getattr(getattr(bridge, "store", None), "clear_resume_fence", None)
+    if callable(clear_fence):
+        clear_fence()
+    return True
 
 
 def _authority_from_row(
@@ -1443,10 +1623,25 @@ async def dispatch_nonstream(
         existing = _terminal_payload(bridge)
         if existing is not None:
             return existing
+        # Crash window recovery: the Agent's BLOCKED event may already be
+        # durably committed while ``persist_blocked_authority`` was still in
+        # flight.  Rebind that verified event into the CSP authority and do
+        # not issue a second downstream invocation.
+        if _bridge_is_paused(bridge):
+            persist_blocked_authority(db, authority=authority, bridge=bridge)
+            return _paused_payload(authority)
         claim_dispatch = getattr(bridge.store, "claim_dispatch", None)
         if callable(claim_dispatch):
             try:
-                claimed = bool(claim_dispatch(binding=bridge.context))
+                claimed = bool(
+                    claim_dispatch(
+                        binding=bridge.context,
+                        idempotency_key=authority.binding.invocation_id,
+                        lease_seconds=_dispatch_lease_seconds(),
+                    )
+                )
+            except HTTPException:
+                raise
             except Exception as exc:
                 db.rollback()
                 raise HTTPException(status_code=409, detail="Agent invocation claim conflict") from exc
@@ -1533,6 +1728,9 @@ async def dispatch_nonstream(
                 return _terminal_payload(bridge) or _paused_payload(authority)
         except EventBudgetExceeded as exc:
             raise _event_budget_http_error(db=db, bridge=bridge) from exc
+        except DispatchClaimLostError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Agent invocation lease 已失效") from exc
         except (EventConflictError, EventOrderError, TerminalConflictError) as exc:
             db.rollback()
             raise HTTPException(status_code=409, detail="Agent dispatch terminal conflict") from exc
@@ -1590,10 +1788,18 @@ async def dispatch_resume(
         )
         if isinstance(raw_attempt_cursor, int) and raw_attempt_cursor > 0:
             attempt_cursor = raw_attempt_cursor
-        # Only a freshly inserted ``claimed`` row is owned by this call.  An
-        # existing paused/terminal row is a deliberate replay and must never
-        # be rewritten to failed merely because its transport is skipped.
-        claim_owned = bool(attempt is not None and attempt.status == "claimed")
+        # Only a freshly inserted or expired/reclaimed ``claimed`` row with a
+        # process-local lease token is owned by this call.  A claimed row
+        # recovered after a terminal crash has no raw token in the new CSP
+        # process, but its generation is still usable for terminal-only
+        # reconciliation (never for a normal completion write).
+        claim_generation, claim_token = _resume_attempt_fence(attempt)
+        claim_owned = bool(
+            attempt is not None
+            and attempt.status == "claimed"
+            and claim_generation is not None
+            and claim_token is not None
+        )
 
         def mark_owned_failed() -> None:
             nonlocal claim_owned
@@ -1606,6 +1812,8 @@ async def dispatch_resume(
                     bridge=bridge,
                     status="failed",
                     blocked_cursor=attempt_cursor,
+                    claim_generation=claim_generation,
+                    lease_token=claim_token,
                 )
             except Exception:
                 db.rollback()
@@ -1623,13 +1831,15 @@ async def dispatch_resume(
                 # touching Agent again.  A conflicting key cannot mutate this
                 # latch.  A rare race where this call inserted the claim after
                 # the terminal event is still completed, never left claimed.
-                if claim_owned:
+                if attempt is not None and attempt.status == "claimed" and claim_generation is not None:
                     _mark_resume_attempt(
                         db,
                         authority=authority,
                         bridge=bridge,
                         status=existing_terminal.status.value,
                         blocked_cursor=attempt_cursor,
+                        claim_generation=claim_generation,
+                        lease_token=claim_token,
                     )
                     claim_owned = False
                 return _terminal_payload(bridge) or _paused_payload(authority)
@@ -1681,6 +1891,8 @@ async def dispatch_resume(
                         bridge=bridge,
                         status="paused",
                         blocked_cursor=attempt_cursor,
+                        claim_generation=claim_generation,
+                        lease_token=claim_token,
                     )
                     claim_owned = False
                     return _paused_payload(authority)
@@ -1702,11 +1914,16 @@ async def dispatch_resume(
                         bridge=bridge,
                         status=terminal_receipt.status.value,
                         blocked_cursor=attempt_cursor,
+                        claim_generation=claim_generation,
+                        lease_token=claim_token,
                     )
                     claim_owned = False
                     return _terminal_payload(bridge) or _paused_payload(authority)
             except EventBudgetExceeded as exc:
                 raise _event_budget_http_error(db=db, bridge=bridge) from exc
+            except DispatchClaimLostError as exc:
+                db.rollback()
+                raise HTTPException(status_code=409, detail="Agent resume lease 已失效") from exc
             except (EventConflictError, EventOrderError, TerminalConflictError) as exc:
                 raise HTTPException(status_code=409, detail="Agent resume event conflict") from exc
             except Exception as exc:
@@ -1742,6 +1959,8 @@ async def dispatch_resume(
                 bridge=bridge,
                 status="completed",
                 blocked_cursor=attempt_cursor,
+                claim_generation=claim_generation,
+                lease_token=claim_token,
             )
             claim_owned = False
             return result
@@ -1778,6 +1997,61 @@ async def dispatch_stream(
         bridge = _bridge(authority, db)
         _reject_completed_without_terminal(authority, bridge)
         existing_events = bridge.replay_events()
+        existing_terminal = bridge.terminal_event()
+        existing_paused = _bridge_is_paused(bridge)
+        if existing_events and existing_paused:
+            # Same crash window as non-stream dispatch: make the durable
+            # ResumeAuthority visible before replaying the blocked event.
+            persist_blocked_authority(db, authority=authority, bridge=bridge)
+        if existing_events and (existing_terminal is not None or existing_paused):
+            for event in existing_events:
+                if int(event.cursor) <= after_cursor:
+                    continue
+                yield _step_frame(event)
+                content_frame = _openai_content_frame(event, model=authority.agent.name)
+                if content_frame is not None:
+                    yield content_frame
+            if existing_terminal is not None:
+                yield "data: [DONE]\n\n"
+            return
+        claim_dispatch = getattr(bridge.store, "claim_dispatch", None)
+        if callable(claim_dispatch):
+            try:
+                claimed = bool(
+                    claim_dispatch(
+                        binding=bridge.context,
+                        idempotency_key=authority.binding.invocation_id,
+                        lease_seconds=_dispatch_lease_seconds(),
+                    )
+                )
+            except HTTPException:
+                raise
+            except Exception as exc:
+                db.rollback()
+                raise HTTPException(status_code=409, detail="Agent invocation claim conflict") from exc
+            if not claimed:
+                db.rollback()
+                # Do not emit replay frames until we know this worker owns a
+                # terminal or paused run.  An active lease must fail before
+                # StreamingResponse sends its first byte; otherwise the
+                # caller receives a misleading partial stream followed by a
+                # 409 that cannot be represented as an HTTP status change.
+                existing_terminal = bridge.terminal_event()
+                existing_paused = _bridge_is_paused(bridge)
+                if existing_terminal is None and not existing_paused:
+                    raise HTTPException(status_code=409, detail="Agent invocation 已在執行")
+                for event in bridge.replay_events(after_cursor=after_cursor):
+                    yield _step_frame(event)
+                    content_frame = _openai_content_frame(event, model=authority.agent.name)
+                    if content_frame is not None:
+                        yield content_frame
+                if existing_terminal is not None:
+                    yield "data: [DONE]\n\n"
+                return
+        # A stale initial-dispatch lease may have left a partial RUNNING
+        # prefix.  Once this worker owns the reclaimed fence, replay that
+        # prefix and resume the same downstream idempotency key from its
+        # authoritative cursor instead of starting a second call.
         if existing_events:
             for event in existing_events:
                 if int(event.cursor) <= after_cursor:
@@ -1786,28 +2060,12 @@ async def dispatch_stream(
                 content_frame = _openai_content_frame(event, model=authority.agent.name)
                 if content_frame is not None:
                     yield content_frame
-            if bridge.terminal_event() is not None:
-                yield "data: [DONE]\n\n"
-            return
-        claim_dispatch = getattr(bridge.store, "claim_dispatch", None)
-        if callable(claim_dispatch):
-            try:
-                claimed = bool(claim_dispatch(binding=bridge.context))
-            except Exception as exc:
-                db.rollback()
-                raise HTTPException(status_code=409, detail="Agent invocation claim conflict") from exc
-            if not claimed:
-                db.rollback()
-                for event in bridge.replay_events(after_cursor=after_cursor):
-                    yield _step_frame(event)
-                    content_frame = _openai_content_frame(event, model=authority.agent.name)
-                    if content_frame is not None:
-                        yield content_frame
-                if bridge.terminal_event() is not None:
-                    yield "data: [DONE]\n\n"
-                return
         headers = build_agent_outbound_headers(db, authority, grant_token=grant_token)
-        headers["X-ANILA-After-Cursor"] = str(after_cursor)
+        # The client cursor controls local replay, but the downstream Agent
+        # must resume after the CSP's durable prefix.  Sending the client
+        # cursor here would replay already-yielded events after a reclaimed
+        # crash window and duplicate the stream.
+        headers["X-ANILA-After-Cursor"] = str(_bridge_latest_cursor(bridge))
         body = {
             "model": authority.agent.name,
             "messages": messages,
@@ -1839,7 +2097,10 @@ async def dispatch_stream(
                         await response.aread()
                         raise HTTPException(status_code=502, detail="Agent 呼叫失敗，已安全終止")
                     lines: list[str] = []
-                    source_sequence = 1
+                    source_sequence = max(
+                        (int(event.sequence) + 1 for event in bridge.replay_events()),
+                        default=1,
+                    )
                     async for line in response.aiter_lines():
                         if line == "":
                             if not lines:
@@ -1887,6 +2148,9 @@ async def dispatch_stream(
             raise
         except EventBudgetExceeded as exc:
             raise _event_budget_http_error(db=db, bridge=bridge) from exc
+        except DispatchClaimLostError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Agent stream lease 已失效") from exc
         except Exception as exc:
             try:
                 bridge.append_terminal(StepStatus.FAILED, safe_output_summary="Agent stream 失敗")

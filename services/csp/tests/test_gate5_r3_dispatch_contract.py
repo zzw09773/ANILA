@@ -517,6 +517,152 @@ def test_stream_blocked_event_does_not_append_completed(monkeypatch) -> None:
     assert bridge.replay_events()[-1].status is StepStatus.BLOCKED
 
 
+def test_stream_reclaims_partial_prefix_and_sends_durable_cursor_downstream(monkeypatch) -> None:
+    """A restart with a RUNNING prefix resumes Agent after the durable cursor."""
+
+    bridge = _bridge()
+    prefix = dict(_blocked_event(event_id="running-prefix"))
+    prefix.update(
+        {
+            "status": StepStatus.RUNNING.value,
+            "safe_output_summary": "prefix",
+        }
+    )
+    bridge.append("anila.step", json.dumps(prefix, ensure_ascii=False))
+    authority = _authority(invocation_id="stream-reclaim-prefix")
+    captured: dict[str, str] = {}
+
+    class Response:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def aiter_lines(self):
+            yield 'data: {"choices":[{"delta":{"content":"resumed"}}]}'
+            yield ""
+
+        async def aread(self):
+            return b""
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def stream(self, *_args, **kwargs):
+            captured.update(kwargs.get("headers", {}))
+            return Response()
+
+    monkeypatch.setattr(dispatch_service, "_bridge", lambda _authority, _db: bridge)
+    monkeypatch.setattr(
+        dispatch_service,
+        "build_agent_outbound_headers",
+        lambda _db, _authority, grant_token: {},
+    )
+    monkeypatch.setattr(dispatch_service.httpx, "AsyncClient", lambda **_kwargs: Client())
+    frames = asyncio.run(
+        _collect_stream(
+            dispatch_stream(
+                db=SimpleNamespace(rollback=lambda: None),
+                authority=authority,
+                messages=[{"role": "user", "content": "hello"}],
+                grant_token="signed-grant",
+                after_cursor=0,
+            )
+        )
+    )
+    assert captured["X-ANILA-After-Cursor"] == "1"
+    assert any('"content":"prefix"' in frame for frame in frames)
+    assert any('"content":"resumed"' in frame for frame in frames)
+    assert frames[-1] == "data: [DONE]\n\n"
+
+
+def test_stream_active_dispatch_lease_fails_before_emitting_replay(monkeypatch) -> None:
+    """An active initial lease must not send a partial stream before 409."""
+
+    bridge = _bridge()
+    authority = _authority(invocation_id="stream-active-lease")
+    assert bridge.store.claim_dispatch(
+        binding=bridge.context,
+        idempotency_key=authority.binding.invocation_id,
+        lease_seconds=180,
+    ) is True
+    monkeypatch.setattr(dispatch_service, "_bridge", lambda _authority, _db: bridge)
+
+    async def consume_first_frame() -> None:
+        stream = dispatch_stream(
+            db=SimpleNamespace(rollback=lambda: None),
+            authority=authority,
+            messages=[{"role": "user", "content": "hello"}],
+            grant_token="signed-grant",
+        )
+        with pytest.raises(HTTPException) as caught:
+            await anext(stream)
+        assert caught.value.status_code == 409
+
+    asyncio.run(consume_first_frame())
+
+
+def test_dispatch_claim_configuration_http_error_is_preserved(monkeypatch) -> None:
+    """Invalid lease configuration remains a 503 instead of becoming 409."""
+
+    bridge = _bridge()
+    authority = _authority(invocation_id="nonstream-lease-config")
+    monkeypatch.setattr(dispatch_service, "_bridge", lambda _authority, _db: bridge)
+    monkeypatch.setattr(
+        dispatch_service,
+        "_dispatch_lease_seconds",
+        lambda: (_ for _ in ()).throw(
+            HTTPException(status_code=503, detail="dispatch lease configuration invalid")
+        ),
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            dispatch_nonstream(
+                db=SimpleNamespace(rollback=lambda: None),
+                authority=authority,
+                messages=[{"role": "user", "content": "hello"}],
+                grant_token="signed-grant",
+            )
+        )
+    assert caught.value.status_code == 503
+    assert caught.value.detail == "dispatch lease configuration invalid"
+
+
+def test_stream_dispatch_claim_configuration_http_error_is_preserved(monkeypatch) -> None:
+    bridge = _bridge()
+    authority = _authority(invocation_id="stream-lease-config")
+    monkeypatch.setattr(dispatch_service, "_bridge", lambda _authority, _db: bridge)
+    monkeypatch.setattr(
+        dispatch_service,
+        "_dispatch_lease_seconds",
+        lambda: (_ for _ in ()).throw(
+            HTTPException(status_code=503, detail="dispatch lease configuration invalid")
+        ),
+    )
+
+    async def consume_first_frame() -> None:
+        stream = dispatch_stream(
+            db=SimpleNamespace(rollback=lambda: None),
+            authority=authority,
+            messages=[{"role": "user", "content": "hello"}],
+            grant_token="signed-grant",
+        )
+        with pytest.raises(HTTPException) as caught:
+            await anext(stream)
+        assert caught.value.status_code == 503
+        assert caught.value.detail == "dispatch lease configuration invalid"
+
+    asyncio.run(consume_first_frame())
+
+
 async def _collect_stream(stream: AsyncIterator[str]) -> list[str]:
     return [frame async for frame in stream]
 

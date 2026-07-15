@@ -59,6 +59,18 @@ thread resolution。在這些關卡全部通過前，不得把 Gate 5 宣告 clo
 
 - `ResumeAuthority`／`ResumeAttempt` durable models、migration、renewed grant 與 formal
   resume path 已落地；Router restart 後可從 CSP authority 恢復，不依賴程序內 cache。
+- Resume claim 已改為 bounded durable lease：`lease_generation`、token digest 與
+  `lease_expires_at` 一起 fenced；active lease 會拒絕同一 invocation，過期 lease 才能
+  以遞增 generation reclaim。舊 worker 在 append 或 authoritative terminal 前會重新驗證
+  generation/token/expiry，stale worker 不得污染新 generation 的事件或 lifecycle。
+- Initial dispatch 同樣以 `SessionEventRun` durable lease fence（idempotency key、generation、
+  token digest、expiry）保護；CSP crash 後可 reclaim partial `RUNNING` prefix，並從
+  durable cursor 繼續。stream active lease 在送出任何 frame 前回 409；lease 設定錯誤的
+  503 不會被誤轉成 claim conflict。
+- 已覆蓋三個 crash window：BLOCKED event 已 commit 但 authority 尚未 rebinding 時可
+  recovery；terminal event 已 commit 但 `ResumeAttempt` lifecycle 尚未 mark 時可同 key
+  reconciliation；initial dispatch partial prefix 可 reclaim/replay，舊 worker append／
+  terminal 皆被 fence。
 - Official `anila-agent` 有 non-root Docker target、Silver compose profile、persistent
   runstate volume、正式 service token boundary 與 restart/idempotency tests。
 - Agent RunState 只保存可安全序列化的 SDK state；fresh runtime context/retriever 在
@@ -75,7 +87,8 @@ thread resolution。在這些關卡全部通過前，不得把 Gate 5 宣告 clo
 
 ## Docker／HTTP 端到端證據
 
-Disposable `gate5-silver-e2e` fresh-host 等價流程已實跑 PASS：
+Disposable `gate5-silver-e2e` fresh-host 等價流程已實跑 PASS（Git Bash 執行；成功與失敗
+路徑均自動清理 Docker project／volumes，除錯才需設定 `GATE5_E2E_KEEP=1`）：
 
 1. fresh isolated Docker project/volumes 啟動 CSP、Router、official Agent 與 E2E model；
 2. formal dispatch 進入 `BLOCKED`；
@@ -99,17 +112,19 @@ PASS: Gate 5 Silver official anila-agent dispatch -> BLOCKED -> restart -> resum
 
 | 範圍 | 結果 |
 | --- | --- |
-| CSP full（event-cap 變更後） | `1476 passed / 40 skipped` |
+| CSP full（durable lease/fencing 變更後） | `1486 passed / 40 skipped` |
 | anila-core full | `902 passed / 11 skipped` |
 | anila-core Gate 5 focused | `68 passed`；Ruff PASS |
 | official anila-agent | `256 passed / 1 skipped` |
 | anila-contracts | `65 passed` |
 | anila-security | `44 passed` |
 | deployment + CI + policy | `223 passed / 2 skipped` |
-| fresh PostgreSQL migration + R4/R5 | `14 passed` |
+| R3/R4/R5 focused（`TEST_POSTGRES_URL` + `TEST_DATABASE_URL` fresh pgvector） | `85 passed` |
+| fresh migrations | `r1_0029` head；`r1_0029` downgrade/upgrade round-trip PASS；existing `r1_0028` row upgrade 後 `generation=0/token=NULL/expiry=NULL` |
+| standalone test PostgreSQL | PASS；`PASS_PG_TWO_SESSION_FENCE generation=1->2 rejected=['ordinary','terminal']`；container + anonymous volume 已清理 |
 | Agent strict mypy | PASS |
 | changed-file Ruff | PASS |
-| Docker restart/resume/replay + Full Trace | PASS |
+| Git Bash Docker restart/resume/replay + Full Trace | PASS；成功與失敗路徑自動清理 |
 
 品質 baseline 必須如實保留：
 

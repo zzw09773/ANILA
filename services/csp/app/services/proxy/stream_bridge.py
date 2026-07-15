@@ -14,12 +14,13 @@ import hashlib
 import json
 import logging
 import re
+import secrets
 import time
 import uuid
 from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import RLock
 from typing import Protocol, cast, runtime_checkable
 from urllib.parse import urlsplit, urlunsplit
@@ -144,6 +145,13 @@ class EventBudgetExceeded(StreamBridgeError):
 
     status_code = 409
     code = "EVENT_RUN_BUDGET_EXCEEDED"
+
+
+class DispatchClaimLostError(StreamBridgeError):
+    """The caller's durable initial-dispatch fence is no longer current."""
+
+    status_code = 409
+    code = "DISPATCH_CLAIM_LOST"
 
 
 class TerminalEventError(StreamBridgeError):
@@ -669,6 +677,10 @@ class _RunState:
     next_cursor: int = 0
     last_source_order: int | None = None
     terminal_event_id: str | None = None
+    dispatch_idempotency_key_sha256: str | None = None
+    dispatch_lease_token_sha256: str | None = None
+    dispatch_lease_generation: int = 0
+    dispatch_lease_expires_at: datetime | None = None
 
 
 class InMemorySessionEventStore:
@@ -684,6 +696,14 @@ class InMemorySessionEventStore:
     def __init__(self, *, max_events_per_run: int = MAX_EVENTS_PER_RUN) -> None:
         self._runs: dict[str, _RunState] = {}
         self._lock = RLock()
+        self._dispatch_claim_generation: int | None = None
+        self._dispatch_claim_token_sha256: str | None = None
+        self._dispatch_claim_lease_seconds: float = 900.0
+        self._resume_claim_cursor: int | None = None
+        self._resume_claim_generation: int | None = None
+        self._resume_claim_token_sha256: str | None = None
+        self._resume_claim_expires_at: datetime | None = None
+        self._resume_claim_lease_seconds: float = 180.0
         if (
             isinstance(max_events_per_run, bool)
             or not isinstance(max_events_per_run, int)
@@ -745,6 +765,122 @@ class InMemorySessionEventStore:
                 "run_id 已綁定其他 task/session/trace/agent", run_id=binding.run_id
             )
 
+    @staticmethod
+    def _lease_now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    def claim_dispatch(
+        self,
+        *,
+        binding: BridgeContext,
+        idempotency_key: str | None = None,
+        lease_seconds: float = 900.0,
+    ) -> bool:
+        """Claim/reclaim an initial invocation with a monotonic fence."""
+
+        if not isinstance(lease_seconds, (int, float)) or isinstance(lease_seconds, bool):
+            raise ValueError("dispatch lease_seconds 必須是有限正數")
+        if lease_seconds <= 0 or lease_seconds > 900 or lease_seconds != lease_seconds:
+            raise ValueError("dispatch lease_seconds 超出允許範圍")
+        key = idempotency_key or binding.invocation_id or binding.run_id
+        key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        with self._lock:
+            state = self._runs.get(binding.run_id)
+            if state is None:
+                state = _RunState(binding=binding, events=[], by_event_id={})
+                self._runs[binding.run_id] = state
+            else:
+                self._assert_state_binding(state, binding)
+            if state.dispatch_idempotency_key_sha256 not in (None, key_hash):
+                raise EventConflictError(
+                    "相同 run 的 initial dispatch key 不一致",
+                    run_id=binding.run_id,
+                )
+            if state.terminal_event_id is not None:
+                return False
+            expiry = state.dispatch_lease_expires_at
+            if (
+                state.dispatch_lease_token_sha256
+                and expiry is not None
+                and expiry > self._lease_now()
+            ):
+                return False
+            token = secrets.token_urlsafe(32)
+            state.dispatch_idempotency_key_sha256 = key_hash
+            state.dispatch_lease_token_sha256 = hashlib.sha256(token.encode("utf-8")).hexdigest()
+            state.dispatch_lease_generation = int(state.dispatch_lease_generation) + 1
+            state.dispatch_lease_expires_at = self._lease_now() + timedelta(seconds=float(lease_seconds))
+            self._dispatch_claim_generation = state.dispatch_lease_generation
+            self._dispatch_claim_token_sha256 = state.dispatch_lease_token_sha256
+            self._dispatch_claim_lease_seconds = float(lease_seconds)
+            return True
+
+    def _assert_dispatch_fence(self, state: _RunState, binding: BridgeContext) -> None:
+        if self._dispatch_claim_generation is None:
+            return
+        if (
+            state.dispatch_lease_generation != self._dispatch_claim_generation
+            or state.dispatch_lease_token_sha256 != self._dispatch_claim_token_sha256
+            or state.dispatch_lease_expires_at is None
+            or state.dispatch_lease_expires_at <= self._lease_now()
+        ):
+            raise DispatchClaimLostError(
+                "initial dispatch lease 已失效",
+                run_id=binding.run_id,
+            )
+        state.dispatch_lease_expires_at = self._lease_now() + timedelta(
+            seconds=self._dispatch_claim_lease_seconds
+        )
+
+    def set_resume_fence(
+        self,
+        *,
+        blocked_cursor: int,
+        generation: int,
+        token_hash: str,
+        lease_seconds: float = 180.0,
+    ) -> None:
+        if (
+            isinstance(blocked_cursor, bool)
+            or not isinstance(blocked_cursor, int)
+            or blocked_cursor <= 0
+            or isinstance(generation, bool)
+            or not isinstance(generation, int)
+            or generation <= 0
+            or not isinstance(token_hash, str)
+            or len(token_hash) != 64
+            or not isinstance(lease_seconds, (int, float))
+            or isinstance(lease_seconds, bool)
+            or lease_seconds <= 0
+            or lease_seconds > 900
+        ):
+            raise ValueError("resume writer fence 無效")
+        self._resume_claim_cursor = blocked_cursor
+        self._resume_claim_generation = generation
+        self._resume_claim_token_sha256 = token_hash
+        self._resume_claim_expires_at = self._lease_now() + timedelta(seconds=float(lease_seconds))
+        self._resume_claim_lease_seconds = float(lease_seconds)
+
+    def _assert_resume_fence(self, *, binding: BridgeContext) -> None:
+        if self._resume_claim_generation is None:
+            return
+        if (
+            self._resume_claim_cursor is None
+            or self._resume_claim_token_sha256 is None
+            or self._resume_claim_expires_at is None
+            or self._resume_claim_expires_at <= self._lease_now()
+        ):
+            raise DispatchClaimLostError("resume writer lease 已失效", run_id=binding.run_id)
+        self._resume_claim_expires_at = self._lease_now() + timedelta(
+            seconds=self._resume_claim_lease_seconds
+        )
+
+    def clear_resume_fence(self) -> None:
+        self._resume_claim_cursor = None
+        self._resume_claim_generation = None
+        self._resume_claim_token_sha256 = None
+        self._resume_claim_expires_at = None
+
     def append(
         self,
         event: StepEvent,
@@ -768,6 +904,9 @@ class InMemorySessionEventStore:
                 self._runs[binding.run_id] = state
             else:
                 self._assert_state_binding(state, binding)
+
+            self._assert_dispatch_fence(state, binding)
+            self._assert_resume_fence(binding=binding)
 
             existing = state.by_event_id.get(event.event_id)
             if existing is not None:
@@ -1207,6 +1346,7 @@ __all__ = [
     "CspProxyAgentClient",
     "CspProxyRequest",
     "CspProxyRequiredError",
+    "DispatchClaimLostError",
     "CspSessionEventStore",
     "EventBindingError",
     "EventBudgetExceeded",

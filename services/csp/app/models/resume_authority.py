@@ -110,6 +110,12 @@ class ResumeAttempt(Base):
     idempotency_key_sha256 = Column(String(64), nullable=False)
     request_sha256 = Column(String(64), nullable=False)
     status = Column(String(20), nullable=False, default="claimed", server_default="claimed", index=True)
+    # A claim is a bounded lease, not an eternal process marker.  The raw
+    # token is never persisted; its digest plus the monotonic generation form
+    # the CSP fencing proof used by completion writers.
+    lease_token_sha256 = Column(String(64), nullable=False)
+    lease_generation = Column(Integer, nullable=False, default=1, server_default="1")
+    lease_expires_at = Column(DateTime(timezone=True), nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
     response_cursor = Column(Integer, nullable=True)

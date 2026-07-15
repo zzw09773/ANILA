@@ -343,6 +343,29 @@ def test_durable_store_budget_survives_bridge_restart_and_terminal_bypasses_cap(
     ]
 
 
+def test_inmemory_initial_dispatch_lease_reclaims_and_rejects_active_or_other_key():
+    store = InMemorySessionEventStore()
+    context = _context("dispatch-lease")
+    assert store.claim_dispatch(
+        binding=context, idempotency_key="dispatch-key", lease_seconds=180
+    ) is True
+    state = store._runs[context.run_id]
+    state.dispatch_lease_expires_at = datetime.now(timezone.utc) + timedelta(minutes=1)
+    assert store.claim_dispatch(
+        binding=context, idempotency_key="dispatch-key", lease_seconds=180
+    ) is False
+    with pytest.raises(EventConflictError):
+        store.claim_dispatch(
+            binding=context, idempotency_key="different-key", lease_seconds=180
+        )
+    first_generation = state.dispatch_lease_generation
+    state.dispatch_lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    assert store.claim_dispatch(
+        binding=context, idempotency_key="dispatch-key", lease_seconds=180
+    ) is True
+    assert state.dispatch_lease_generation == first_generation + 1
+
+
 def test_agent_client_only_prepares_csp_proxy_request_with_all_bindings():
     calls: list[object] = []
     client = CspProxyAgentClient(

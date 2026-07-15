@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine
@@ -14,12 +14,14 @@ from anila_contracts.events import StepKind, StepStatus
 
 from app.database import Base
 from app.models.session_event import SessionEvent
+from app.models.session_event import SessionEventRun
 from app.services.proxy.session_event_store import SqlAlchemySessionEventStore
 from app.services.proxy.stream_bridge import (
     BridgeContext,
     EventBudgetExceeded,
     EventBindingError,
     EventConflictError,
+    DispatchClaimLostError,
     EventOrderError,
     StreamBridge,
     TerminalEventError,
@@ -185,6 +187,49 @@ def test_run_event_budget_survives_fresh_session_and_terminal_bypasses_cap(
         ]
     finally:
         restarted_db.close()
+
+
+def test_initial_dispatch_lease_reclaim_fences_stale_store_and_keys(store_sessions):
+    _engine, Session, db = store_sessions
+    context = _context()
+    first_store = SqlAlchemySessionEventStore(db)
+    assert first_store.claim_dispatch(
+        binding=context, idempotency_key="dispatch-key", lease_seconds=180
+    ) is True
+    first_bridge = StreamBridge(context, store=first_store)
+    first = first_bridge.append_event(_event(sequence=1))
+    assert first is not None
+    run = db.query(SessionEventRun).filter(SessionEventRun.run_id == context.run_id).one()
+    run.dispatch_lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    db.commit()
+
+    active_db = Session()
+    try:
+        active_store = SqlAlchemySessionEventStore(active_db)
+        # The old key cannot be reclaimed while its durable lease is live.
+        active_run = active_db.query(SessionEventRun).filter(
+            SessionEventRun.run_id == context.run_id
+        ).one()
+        active_run.dispatch_lease_expires_at = datetime.now(timezone.utc) + timedelta(minutes=2)
+        active_db.commit()
+        assert active_store.claim_dispatch(
+            binding=context, idempotency_key="dispatch-key", lease_seconds=180
+        ) is False
+        with pytest.raises(EventConflictError):
+            active_store.claim_dispatch(
+                binding=context, idempotency_key="different-key", lease_seconds=180
+            )
+        active_run.dispatch_lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        active_db.commit()
+        assert active_store.claim_dispatch(
+            binding=context, idempotency_key="dispatch-key", lease_seconds=180
+        ) is True
+        with pytest.raises(DispatchClaimLostError):
+            first_bridge.append_event(_event(event_id="stale", sequence=2))
+        with pytest.raises(DispatchClaimLostError):
+            first_bridge.append_terminal(StepStatus.COMPLETED, safe_output_summary="stale")
+    finally:
+        active_db.close()
 
 
 def test_duplicate_event_is_idempotent_and_changed_payload_conflicts(store_sessions):

@@ -39,6 +39,7 @@ from app.services.agent_dispatch_service import (
 )
 from app.services.proxy.stream_bridge import (
     BridgeContext,
+    DispatchClaimLostError,
     InMemorySessionEventStore,
     StreamBridge,
 )
@@ -251,8 +252,15 @@ def test_new_blocked_cursor_allows_new_resume_attempt(db_engine):
     authority = replace(authority, blocked_cursor=row.blocked_cursor)
     attempt = _claim_resume_attempt(db, authority=authority, bridge=bridge, idempotency_key="first")
     assert attempt is not None
-    attempt.status = "paused"
-    db.commit()
+    assert dispatch_service._mark_resume_attempt(
+        db,
+        authority=authority,
+        bridge=bridge,
+        status="paused",
+        blocked_cursor=row.blocked_cursor,
+        claim_generation=int(attempt.lease_generation),
+        lease_token=getattr(attempt, "_resume_lease_token"),
+    ) is True
     bridge.append("anila.step", _event(authority, sequence=2, status=StepStatus.BLOCKED).model_dump_json())
     row = persist_blocked_authority(db, authority=authority, bridge=bridge)
     assert row is not None and row.blocked_cursor == 2
@@ -550,6 +558,7 @@ def test_postgres_resume_claim_contenders_are_unique():
         finally:
             db.close()
 
+
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             outcomes = list(
@@ -580,3 +589,164 @@ def test_postgres_resume_claim_contenders_are_unique():
         finally:
             cleanup.close()
             engine.dispose()
+
+
+def test_resume_claim_lease_reclaims_and_fences_stale_worker(db_engine):
+    """An expired lease is reclaimed; the old generation cannot mark it."""
+
+    Session = sessionmaker(bind=db_engine)
+    db = Session()
+    authority = _authority(db)
+    bridge = _bridge(authority, db)
+    bridge.append("anila.step", _event(authority, sequence=1, status=StepStatus.BLOCKED).model_dump_json())
+    row = persist_blocked_authority(db, authority=authority, bridge=bridge)
+    assert row is not None
+    authority = replace(authority, blocked_cursor=row.blocked_cursor)
+
+    first = _claim_resume_attempt(db, authority=authority, bridge=bridge, idempotency_key="lease-key")
+    assert first is not None
+    first_generation = int(first.lease_generation)
+    first_token = getattr(first, "_resume_lease_token")
+    assert isinstance(first_token, str) and first_token
+    with pytest.raises(HTTPException) as active:
+        _claim_resume_attempt(db, authority=authority, bridge=bridge, idempotency_key="lease-key")
+    assert active.value.status_code == 409
+
+    first.lease_expires_at = _now() - timedelta(seconds=1)
+    db.commit()
+    second = _claim_resume_attempt(db, authority=authority, bridge=bridge, idempotency_key="lease-key")
+    assert second is not None
+    second_generation = int(second.lease_generation)
+    second_token = getattr(second, "_resume_lease_token")
+    assert second_generation > first_generation
+    assert second_token != first_token
+
+    assert dispatch_service._mark_resume_attempt(
+        db,
+        authority=authority,
+        bridge=bridge,
+        status="failed",
+        blocked_cursor=row.blocked_cursor,
+        claim_generation=first_generation,
+        lease_token=first_token,
+    ) is False
+    db.expire_all()
+    still_claimed = db.query(ResumeAttempt).filter(ResumeAttempt.id == second.id).one()
+    assert still_claimed.status == "claimed"
+    assert int(still_claimed.lease_generation) == second_generation
+
+    assert dispatch_service._mark_resume_attempt(
+        db,
+        authority=authority,
+        bridge=bridge,
+        status="failed",
+        blocked_cursor=row.blocked_cursor,
+        claim_generation=second_generation,
+        lease_token=second_token,
+    ) is True
+    db.expire_all()
+    assert db.query(ResumeAttempt).filter(ResumeAttempt.id == second.id).one().status == "failed"
+
+
+def test_terminal_crash_window_reconciles_claimed_attempt_for_same_key(db_engine):
+    """A committed terminal can reconcile an uncommitted attempt mark."""
+
+    Session = sessionmaker(bind=db_engine)
+    db = Session()
+    authority = _authority(db)
+    bridge = _bridge(authority, db)
+    bridge.append("anila.step", _event(authority, sequence=1, status=StepStatus.BLOCKED).model_dump_json())
+    row = persist_blocked_authority(db, authority=authority, bridge=bridge)
+    assert row is not None
+    authority = replace(authority, blocked_cursor=row.blocked_cursor)
+    first = _claim_resume_attempt(db, authority=authority, bridge=bridge, idempotency_key="terminal-crash")
+    assert first is not None
+    generation = int(first.lease_generation)
+    bridge.append_terminal(StepStatus.COMPLETED, safe_output_summary="done")
+
+    recovered = _claim_resume_attempt(db, authority=authority, bridge=bridge, idempotency_key="terminal-crash")
+    assert recovered is not None and recovered.status == "claimed"
+    assert getattr(recovered, "_resume_lease_token", None) is None
+    assert dispatch_service._mark_resume_attempt(
+        db,
+        authority=authority,
+        bridge=bridge,
+        status="completed",
+        blocked_cursor=row.blocked_cursor,
+        claim_generation=generation,
+    ) is True
+    db.expire_all()
+    assert db.query(ResumeAttempt).filter(ResumeAttempt.id == first.id).one().status == "completed"
+    with pytest.raises(HTTPException) as conflict:
+        _claim_resume_attempt(db, authority=authority, bridge=bridge, idempotency_key="other-terminal-key")
+    assert conflict.value.status_code == 409
+
+
+def test_reclaimed_resume_fence_rejects_old_worker_event_and_terminal(db_engine):
+    """A stale resume worker cannot append after a generation reclaim."""
+
+    Session = sessionmaker(bind=db_engine)
+    db1 = Session()
+    db2 = Session()
+    try:
+        authority = _authority(db1)
+        first_bridge = _bridge(authority, db1)
+        first_bridge.append(
+            "anila.step",
+            _event(authority, sequence=1, status=StepStatus.BLOCKED).model_dump_json(),
+        )
+        row = persist_blocked_authority(db1, authority=authority, bridge=first_bridge)
+        assert row is not None
+        authority = replace(authority, blocked_cursor=row.blocked_cursor)
+        first = _claim_resume_attempt(
+            db1, authority=authority, bridge=first_bridge, idempotency_key="fenced-resume"
+        )
+        assert first is not None
+        first.lease_expires_at = _now() - timedelta(seconds=1)
+        db1.commit()
+
+        # A separate SQLAlchemy session models a second CSP worker.  The
+        # second bridge must observe and reclaim the expired durable lease,
+        # advancing the generation that fences the first worker.
+        second_bridge = _bridge(authority, db2)
+        second = _claim_resume_attempt(
+            db2, authority=authority, bridge=second_bridge, idempotency_key="fenced-resume"
+        )
+        assert second is not None
+        with pytest.raises(DispatchClaimLostError):
+            first_bridge.append(
+                "anila.step",
+                _event(authority, sequence=2, status=StepStatus.RUNNING).model_dump_json(),
+            )
+        with pytest.raises(DispatchClaimLostError):
+            first_bridge.append_terminal(StepStatus.COMPLETED, safe_output_summary="stale")
+    finally:
+        db2.close()
+        db1.close()
+
+
+def test_initial_blocked_crash_window_rebuilds_authority_without_agent_call(db_engine, monkeypatch):
+    """A committed BLOCKED event is enough to recover the pause after CSP crash."""
+
+    Session = sessionmaker(bind=db_engine)
+    db = Session()
+    authority = _authority(db)
+    bridge = _bridge(authority, db)
+    bridge.append("anila.step", _event(authority, sequence=1, status=StepStatus.BLOCKED).model_dump_json())
+    assert db.query(ResumeAuthority).count() == 0
+    monkeypatch.setattr(dispatch_service, "_bridge", lambda _authority, _db: bridge)
+    monkeypatch.setattr(
+        dispatch_service,
+        "build_agent_outbound_headers",
+        lambda *_args, **_kwargs: pytest.fail("blocked recovery must not call Agent"),
+    )
+    result = asyncio.run(
+        dispatch_service.dispatch_nonstream(
+            db=db,
+            authority=authority,
+            messages=[{"role": "user", "content": "resume"}],
+            grant_token="signed-grant",
+        )
+    )
+    assert result["status"] == "paused"
+    assert db.query(ResumeAuthority).count() == 1

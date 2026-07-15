@@ -56,6 +56,12 @@ class SessionEventRun(Base):
     next_cursor = Column(Integer, nullable=False, default=0, server_default="0")
     last_source_sequence = Column(Integer, nullable=True)
     terminal_event_id = Column(String(255), nullable=True)
+    # Durable initial-dispatch lease/fence.  The raw token is never stored;
+    # generation plus digest fence stale CSP workers after reclaim.
+    dispatch_idempotency_key_sha256 = Column(String(64), nullable=True)
+    dispatch_lease_token_sha256 = Column(String(64), nullable=True)
+    dispatch_lease_generation = Column(Integer, nullable=False, default=0, server_default="0")
+    dispatch_lease_expires_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=_utcnow)
     updated_at = Column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
 

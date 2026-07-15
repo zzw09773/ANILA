@@ -101,6 +101,12 @@ def upgrade() -> None:
         sa.Column("idempotency_key_sha256", sa.String(length=64), nullable=False),
         sa.Column("request_sha256", sa.String(length=64), nullable=False),
         sa.Column("status", sa.String(length=20), nullable=False, server_default="claimed"),
+        # The raw lease token is never stored.  ``lease_generation`` is the
+        # monotonic fence; the digest lets the current worker prove ownership
+        # without exposing bearer material in the database.
+        sa.Column("lease_token_sha256", sa.String(length=64), nullable=False),
+        sa.Column("lease_generation", sa.Integer(), nullable=False, server_default="1"),
+        sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("response_cursor", sa.Integer(), nullable=True),
