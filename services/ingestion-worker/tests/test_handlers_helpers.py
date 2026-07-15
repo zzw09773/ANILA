@@ -775,6 +775,44 @@ async def test_persist_images_unsafe_final_fails_closed(
     assert list(tmp_path.rglob("*.tmp-*")) == []
 
 
+async def test_persist_images_unsafe_final_without_backup_fails_closed(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    image_root = tmp_path / "anila-images" / "42"
+    image_root.mkdir(parents=True)
+    final_path = image_root / "img1.png"
+    final_path.write_bytes(b"current")
+    real_lstat = handlers.os.lstat
+
+    def _lstat_with_unsafe_final(path):
+        if str(path) == str(final_path):
+            return SimpleNamespace(st_mode=stat.S_IFLNK)
+        return real_lstat(path)
+
+    monkeypatch.setattr(handlers.os, "lstat", _lstat_with_unsafe_final)
+    with pytest.raises(StoreError) as exc_info:
+        await handlers._persist_images(
+            _FakePool(_FakeConnection()),
+            7,
+            42,
+            {"img1": _FakeRef(_gradient_png())},
+            None,
+            None,
+        )
+
+    error = exc_info.value
+    assert error.code == "E_IMAGE_RECONCILIATION_FAILED"
+    assert error.retryable is False
+    assert error.severity == "critical"
+    assert error.details == {
+        "operation": "reconcile",
+        "reason": "unsafe_final",
+    }
+    assert final_path.read_bytes() == b"current"
+    assert list(tmp_path.rglob("*.tmp-*")) == []
+
+
 async def test_persist_images_reconciles_crash_temp_before_retry(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
     image_root = tmp_path / "anila-images" / "42"

@@ -443,6 +443,17 @@ def _reconcile_stale_image_backups(final_path: str) -> None:
             raise _image_storage_error("reconcile", exc) from exc
 
         if not backup_paths:
+            # Even without stale backups, never let publish move a directory,
+            # symlink, device, or other special residue into a backup slot.
+            # A regular final (or a missing final) is the only safe state.
+            try:
+                final_mode = os.lstat(final_path).st_mode
+            except FileNotFoundError:
+                return
+            except OSError as exc:
+                raise _image_storage_error("reconcile", exc) from exc
+            if not stat.S_ISREG(final_mode):
+                raise _image_reconciliation_error("unsafe_final")
             return
 
         validated_paths: list[str] = []
