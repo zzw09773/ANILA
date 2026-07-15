@@ -932,13 +932,15 @@ def _image_inference_caller(
 def _proxy_caller(
     request: Request, db: Session = Depends(get_db)
 ) -> Caller:
-    """Resolve normal user auth or an authenticated Agent csk for /v1.
+    """Resolve normal user auth or an authenticated service credential for /v1.
 
     Official ``anila-agent`` instances call the CSP model gateway with their
     own ``X-CSP-Service-Token``.  Only the DB-backed ``CallerIdentity`` may
     establish Agent scope; all self-reported ``X-ANILA-Agent-Id`` headers are
-    intentionally ignored.  Service-client tokens stay on the dedicated
-    Router/internal seams and cannot borrow an Agent-scoped callsite.
+    intentionally ignored.  A non-agent service client may still use the
+    generic proxy on behalf of an independently authenticated user (the
+    Router/task-link compatibility path); it must never borrow an
+    Agent-scoped callsite.
     """
 
     service_token = request.headers.get("X-CSP-Service-Token")
@@ -947,27 +949,58 @@ def _proxy_caller(
     identity = agent_credential_service.verify_service_token(db, token=service_token)
     if identity is None:
         raise HTTPException(status_code=401, detail="無效的 service token")
-    if identity.kind != "agent" or identity.agent_id is None:
-        raise HTTPException(status_code=403, detail="/v1 model gateway 只接受具名 agent csk")
-    # Reject credential ambiguity.  The official OpenAI client sends the same
-    # csk as its Bearer value; a different JWT/API key must never override the
-    # verified service identity through dependency precedence.
+    if identity.kind == "agent":
+        if (
+            identity.agent_id is None
+            or identity.service_client_id is not None
+        ):
+            raise HTTPException(status_code=401, detail="無效的 service token")
+        # Reject credential ambiguity.  The official OpenAI client sends the
+        # same csk as its Bearer value; a different JWT/API key must never
+        # override the verified service identity through dependency precedence.
+        authorization = request.headers.get("Authorization")
+        if authorization and authorization.strip() != f"Bearer {service_token}":
+            raise HTTPException(status_code=401, detail="認證標頭不一致")
+        agent = db.get(Agent, identity.agent_id)
+        if agent is None or not agent.is_active:
+            raise HTTPException(status_code=403, detail="service token 不屬於 active agent")
+        owner = db.get(User, agent.owner_user_id)
+        if owner is None or not owner.is_active or not getattr(owner, "is_approved", True):
+            raise HTTPException(status_code=403, detail="agent owner 未核准或已停用")
+        # This state is written only after DB credential verification and the
+        # canonical Agent row lookup.  Downstream governance reads this state,
+        # never a client header.
+        request.state.csp_caller = identity
+        request.state.csp_caller_agent_id = agent.id
+        request.state.csp_caller_agent_name = agent.name
+        return Caller(user=owner, api_key_id=None)
+
+    if identity.kind != "service_client":
+        raise HTTPException(status_code=403, detail="/v1 model gateway 不接受此 service token")
+    if (
+        identity.service_client_id is None
+        or identity.agent_id is not None
+    ):
+        raise HTTPException(status_code=401, detail="無效的 service token")
+
+    # A service-client csk authenticates the service hop, not the end user.
+    # Keep the user Bearer/cookie as a separate credential so a csk cannot be
+    # silently re-used as both identities.  ``get_caller`` also preserves the
+    # API-key id for usage attribution; ``X-ANILA-User-Id`` is then resolved by
+    # the task-link helper after this service token has been verified.
     authorization = request.headers.get("Authorization")
-    if authorization and authorization.strip() != f"Bearer {service_token}":
+    if authorization and authorization.strip() == f"Bearer {service_token}":
         raise HTTPException(status_code=401, detail="認證標頭不一致")
-    agent = db.get(Agent, identity.agent_id)
-    if agent is None or not agent.is_active:
-        raise HTTPException(status_code=403, detail="service token 不屬於 active agent")
-    owner = db.get(User, agent.owner_user_id)
-    if owner is None or not owner.is_active or not getattr(owner, "is_approved", True):
-        raise HTTPException(status_code=403, detail="agent owner 未核准或已停用")
-    # This state is written only after DB credential verification and the
-    # canonical Agent row lookup.  Downstream governance reads this state,
-    # never a client header.
+    caller = get_caller(request, db)
+
+    # Keep the verified service identity available to the governance/usage
+    # seam, but deliberately do not populate Agent fields.  The latter are
+    # reserved for ``identity.kind == 'agent'`` above, so this path remains on
+    # the generic ``r7.csp.proxy`` callsite even when a forged Agent header is
+    # present.
     request.state.csp_caller = identity
-    request.state.csp_caller_agent_id = agent.id
-    request.state.csp_caller_agent_name = agent.name
-    return Caller(user=owner, api_key_id=None)
+    request.state.proxy_service_client_id = identity.service_client_id
+    return caller
 
 
 def _verified_proxy_agent_context(

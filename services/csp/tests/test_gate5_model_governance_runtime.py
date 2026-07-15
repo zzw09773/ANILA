@@ -456,11 +456,11 @@ def test_raw_endpoint_scope_and_receipt_failures_never_authorize(
             deployment,
             now=NOW,
         )
-    with pytest.raises(ModelGovernanceRuntimeError, match="scope"):
+    with pytest.raises(ModelGovernanceRuntimeError, match="selector"):
         runtime.authorize_model_invocation(
             "r7.router.core",
             "機密",
-            "unregistered-agent",
+            "registered-agent",
             "https://csp-model-gateway/v1/chat/completions",
             artifact,
             deployment,

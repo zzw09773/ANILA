@@ -225,7 +225,42 @@ async def test_verified_agent_csk_selects_agent_callsite_and_records_db_attribut
     assert metadata["receipt_context"]["caller_agent_id"] == agent.id
 
 
-def test_service_client_csk_is_rejected_before_model_network(
+def test_service_client_csk_stays_generic_with_user_auth(
+    db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user = make_user(db, username="gate5-r7-service-user")
+    caller = proxy_api.Caller(user=user, api_key_id=17)
+    identity = CallerIdentity(
+        kind="service_client",
+        agent_id=None,
+        service_client_id=99,
+        credential_id=99,
+        is_legacy=False,
+        used_previous_token=False,
+    )
+    monkeypatch.setattr(
+        proxy_api.agent_credential_service,
+        "verify_service_token",
+        lambda _db, *, token: identity,
+    )
+    monkeypatch.setattr(proxy_api, "get_caller", lambda _request, _db: caller)
+    request = _request(
+        ("Authorization", "Bearer user-api-key"),
+        ("X-CSP-Service-Token", "csk-router"),
+        ("X-ANILA-Agent-Id", "forged-agent"),
+    )
+
+    resolved = proxy_api._proxy_caller(request, db)
+
+    assert resolved == caller
+    assert request.state.csp_caller == identity
+    assert not hasattr(request.state, "csp_caller_agent_id")
+    assert not hasattr(request.state, "csp_caller_agent_name")
+    assert proxy_api._verified_proxy_agent_context(request, db) is None
+    assert proxy_api._proxy_governance_callsite(None) == "r7.csp.proxy"
+
+
+def test_service_client_csk_cannot_double_as_user_bearer(
     db, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     identity = CallerIdentity(
@@ -244,16 +279,12 @@ def test_service_client_csk_is_rejected_before_model_network(
     request = _request(
         ("Authorization", "Bearer csk-router"),
         ("X-CSP-Service-Token", "csk-router"),
-        ("X-ANILA-Agent-Id", "forged-agent"),
     )
-    network_calls: list[object] = []
 
     with pytest.raises(HTTPException) as raised:
         proxy_api._proxy_caller(request, db)
-        network_calls.append("must-not-run")
 
-    assert raised.value.status_code == 403
-    assert network_calls == []
+    assert raised.value.status_code == 401
 
 
 @pytest.mark.parametrize(
