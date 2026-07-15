@@ -2,102 +2,143 @@
 
 日期：2026-07-15
 
-## 目前定位
+## 目前定位與 checkpoint 真實狀態
 
 - Branch：`codex/gate5-brain-runtime`
 - Base：`prod-intranet-card`
-- Draft PR：<https://github.com/zzw09773/ANILA/pull/31>
-- Implementation checkpoint（handoff 前）：`c106993813aca6925cf5f90a94ae5dd37b2276ba`（`c106993`）
-- Handoff artifact commit / current branch head：請用 `git log -1 --format=%H -- docs/handoffs/2026-07-15-gate5-brain-runtime-incomplete.md` 與 `git rev-parse HEAD` 讀取，避免 self-reference SHA 失真。
+- Draft PR：[#31](https://github.com/zzw09773/ANILA/pull/31)
+- 功能 code checkpoint：`1d9ce24d4be965855acf9c98ce0056a28435e322`（`1d9ce24 [security-all] harden Gate 5 resume and model egress`）。本輪已 push。
+- Handoff 前 implementation/CI-fix checkpoint：`847f217ec44ff13df7d34e72219d8a42da7e7302`（`847f217 fix(security): [security-all] preserve service-client proxy isolation`）。
+- Handoff artifact／current branch HEAD：本 handoff artifact commit/push 後 HEAD 會前進；請用下列命令 read-back，避免預填本檔自身的未知 SHA：
+
+```powershell
+git log -1 --format=%H -- docs/handoffs/2026-07-15-gate5-brain-runtime-incomplete.md
+git rev-parse HEAD
+```
+- CI 修正鏈：`62041599bfd5544e34c1279b330faefb096d76d6`（`6204159 fix(ci): [security-all] make Gate 5 generator tests unittest-compatible`）→ `eb02a960afa76b682efdac4343c143b9e9105cef`（`eb02a96 style(ci): [security-all] format Gate 5 generator contract`）→ `847f217`。
+- 前一個 CI dependency checkpoint：`86d33167bc3aa6b4682748c7e271df9f9bed1be7`（`86d3316 [security-all] install Gate 5 CI runtime dependencies`）。
+- `eb02a96` 的 CI read-back：CSP full 為 `2 failed / 1441 passed / 38 skipped`，Python security 為 `1 failed`。兩者共通的 service-client regression 已由 `847f217` 修正；CSP 另一個 runtime failure 已確認是 registered-agent category test drift，並已精準修正測試。
+- `847f217` implementation checkpoint 的 runs 全部 completed success：security run `29412637564`、Gate 5 run `29412637562`，以及 main run `29412637572`。Main run 的 CSP full suite PASS（9m26s）、PostgreSQL RLS PASS（2m28s），其餘列出的 FLUX、PPTX、Studio、anila-agent、anila-core、ingestion、Contract smoke、image-lock、frontends 與 governance 亦均 PASS；該 code checkpoint 的 required checks 全綠。
+- 這是 `847f217` code checkpoint 的 CI read-back，不代表 Gate 5 已 close；handoff artifact commit/push 後仍須重新 read-back 以防狀態漂移。
 - Gate 5：**INCOMPLETE**。
-- **不得 merge，也不得進入 Gate 6。** Claude Fable review 尚未執行。
-- Current CI：`c106993` 新 runs `29370210595`、`10617`、`10724` 已回報多個 failure（Deployment contracts、Gate 5 static/routing、Contract smoke、`anila-core`、`anila-agent`、governance、image-lock）；CSP 仍 in progress。`ingestion-worker` 與 Python security 已 pass，表示 resolver 至少解除部分安裝阻塞；仍需重新查看新 logs，required CI 尚未綠。
+- Router 跨重啟 durable resume authority context 與 CSP→Router caller provenance 尚未完成；因此不可 production-ready、不可進行 Claude Fable review、不可 merge，也不可進入 Gate 6。
 
-## Post-handoff checkpoint
+## 本輪已落地的 runtime seam
 
-- `cd82f17 [security-all] align Gate 5 CI governance surfaces`
-- 摘要：修正 Contracts tests、PR SHA 契約、32 個 skip baseline、FLUX image/airgap/backup/deployment drift。
-- Root validation：deployment full `130 OK / 2 skipped`；focused pytest `15 passed`；Gate1 governance `PASS`（32 skips、0 xfail）。
-- PR CI 因 push 正在重跑；仍不得宣告 required CI 綠燈。
+- 正式 Router → CSP → Agent binary `approve_all` in-process resume seam。
+- CSP event rebind；`BLOCKED` 維持 nonterminal，不再 synthetic `COMPLETED`。
+- Agent `FileTaskStore` restart/idempotency 行為。
+- Router resume cache：bounded 256 entries、15 分鐘 TTL、不保存 bearer、terminal 取出即移除；cache miss 回 `409`。
+
+上述是 in-process／現行程序生命週期內的 seam，尚不能當成跨 Router 重啟的 durable authority proof。
 
 ## R1–R7 狀態
 
 | R | 狀態 | 已完成範圍 |
 |---|---|---|
 | R1 | implemented / locally verified | Contracts v2 |
-| R2 | implemented / locally verified | Readiness |
-| R3 | implemented / locally verified | Structured `RouterRuntime` / metrics |
-| R4 | PARTIAL | `AgentClient` + `StreamBridge` + PostgreSQL event store；restart 後正式 E2E 尚未證明 |
-| R5 | PARTIAL | Official Agent Silver foundation；restart 後正式 E2E 尚未證明 |
-| R6 | implemented / locally verified | Frozen evaluation |
-| R7 | PARTIAL | Signed model governance、central CSP receipts、formal egress topology；packet firewall、operator-signed 材料、完整 38-callsite wiring 尚未完成 |
+| R2 | implemented / locally verified | Readiness、Agent readiness 與 execution grant |
+| R3 | implemented / locally verified | Structured `RouterRuntime`、dispatch 與 metrics |
+| R4 | PARTIAL | `AgentClient`、`StreamBridge`、durable PostgreSQL event store；跨 Router 重啟 authority context 尚未證明 |
+| R5 | PARTIAL | Official Agent Silver foundation、`FileTaskStore` restart/idempotency；正式跨重啟 E2E 尚未證明 |
+| R6 | implemented / locally verified | Frozen deterministic evaluation |
+| R7 | PARTIAL | 40-callsite model inventory、proxy 分流、CSP receipts、internal model network 與 disabled FLUX governance；production provenance 與完整重啟證據仍待補 |
 
-R1/R2/R3/R6 的 implemented / locally verified 仍不代表 required CI 已綠；R1–R7 的完成度也不等於 Gate 5 close。下列 blocker 仍必須關閉並重新驗證。
+R1/R2/R3/R6 的 locally verified 與 `847f217` code checkpoint required checks 全綠，仍不等於 Gate 5 close。
 
-## Local evidence
+### R7 目前實測範圍
 
-- `packages/anila-core`：875 passed、11 skipped。
-- `services/csp`：1432 passed、38 skipped。
-- True PostgreSQL：7 passed。
-- Gate 5 static：47 passed。
-- Routing：14 passed；top-1 `60/60`、false `0/90`、bypass `0/20`。
-- Deployment/capability：14 passed。
-- `c106993` 後 resolver dry-run：PASS。
+- Model inventory 共 40 個 callsites；generic proxy 與 agent-scoped proxy callsites 已拆開。
+- 只有具 verified `CallerIdentity` 的 agent csk 才能走 agent-scoped proxy；單獨 forged header 在該 admission path 無效。
+- DB receipts 使用實際 attribution；synthetic default 僅 memory-only。
+- External material verifier 明確使用 `--repo-root`。
+- FLUX profile/readback/legal 維持 disabled。
+- Model network 使用 internal bridge；完整 direct-IP Docker negative smoke 的 initial／restart／recreate 三階段均 PASS。
+
+這不等於 CSP→Router 的 caller provenance 已完成：`X-ANILA-Caller-User-Id` 目前雖會比對 cached identity／owner，但 header 尚未有 authenticated/signed provenance，仍可被 spoof。
+
+## Local validation evidence
+
+- Policy/deployment：`36 passed`。
+- Agent：`19 passed`。
+- Core：`24 passed`。
+- CSP：`37 passed`；後補 CSP R7：`15 passed`。
+- 本機 security four-file：`67 passed`。
+- 本機 runtime+R7：`20 passed`。
+- Ruff／`git diff --check`：PASS；另有 `compileall`、3 個 scripts 的 `bash -n` 通過。
+- Disabled governance verifier：PASS；inventory 40，hash `e49b...`。
+- Docker smoke：`49.4s PASS`。
+- 本機 model network 已安全重建為 `Internal=true`、`Driver=bridge`，目前無 attached containers。
+- GitHub implementation checkpoint read-back：CSP full suite 與 PostgreSQL RLS 均 PASS（不在此處虛構測試數）。
+
+上述測試套件有重疊；各套件數字不可相加成一個唯一總數。
 
 ## Gate 5 blockers（不可省略）
 
-1. 尚無 packet firewall。
-2. 尚無真正的 operator-signed production profile、trust/legal materials；因此 FLUX 維持 disabled。
-3. 尚無 formal Docker live E2E / network-negative smoke。
-4. 仍有 38 個 callsites 尚未全部接上 runtime admission/usage wiring。
-5. 尚未證明 restart 後 `Router → CSP signed sink` 的 pause/approve/resume 流程。
-6. GitHub required CI 尚未綠。
-
-## 舊 `a9ce759` runs 的失敗根因
-
-以下只記錄 `a9ce759` 舊 runs 的已知根因；不可直接套用到 `c106993` 新 runs。新 runs 已回報不同或額外 failure，仍需重新查看新 logs，不能只沿用 `a9ce759` 根因；`c106993` 目前只能確認修正 contracts v2 resolver：
-
-- contracts v2 resolver 失敗（已由 `c106993` 修正）。
-- Static PR merge SHA expected 錯誤。
-- 4 個 skip baseline 未登記。
-- `flux2-dev-agent` stale image mapping。
-- Backup profile 缺少 4 個 GATE5 material binds；extra 只有 `../../share/uploads/flux` 一個。
-- Airgap count 預期 13、實際 12。
-- Deploy test 仍期待 flux token。
-
-## True PostgreSQL 測試環境
-
-| 欄位 | 值 |
-|---|---|
-| Container | `anila-gate5-pgtest` |
-| Host/port | `127.0.0.1:5544` |
-| Database | `csp` |
-| User | `csp` |
-| Password | `gate5test`（僅本機測試） |
-| Alembic | `r1_0027` |
-
-測試完成後清理：
-
-```powershell
-docker rm -f anila-gate5-pgtest
-```
+1. Router 跨重啟的 durable resume authority context 尚未完成；目前 cache／in-process seam 不能取代 durable record 與 renewed grant。
+2. CSP→Router `X-ANILA-Caller-User-Id` 的 authenticated/signed provenance 尚未完成；目前 cached identity／owner 比對不足以防 header spoof。
+3. 真 PostgreSQL／container restart E2E 尚未補齊，尚未以可重啟實例證明 pause／approve／resume 全鏈路。
 
 ## Exact resume commands
 
 ```powershell
-Set-Location C:\Users\USER\.codex\worktrees\ANILA-gate5
+cd C:\Users\USER\.codex\worktrees\ANILA-gate5
 git status --short --branch
+git log -1 --format=%H -- docs/handoffs/2026-07-15-gate5-brain-runtime-incomplete.md
 git rev-parse HEAD
+git log -5 --oneline --decorate
 git log --oneline --no-merges origin/prod-intranet-card..HEAD
+gh pr checks 31
 ```
 
-目前最新 commit：
+Focused runtime／governance tests：
+
+```powershell
+python -m pytest `
+  packages/anila-core/tests/test_router_resume_proxy.py `
+  packages/anila-core/tests/test_e2e_ask_user_resume.py `
+  packages/anila-core/tests/test_router_session.py `
+  packages/anila-agent/tests/test_streaming.py `
+  services/csp/tests/test_gate5_r4_durable_session_event_store.py `
+  services/csp/tests/test_gate5_r4_stream_bridge.py `
+  services/csp/tests/test_gate5_model_governance_receipts.py `
+  services/csp/tests/test_gate5_proxy_model_governance.py `
+  infra/policy/tests/test_gate5_model_governance.py `
+  infra/policy/tests/test_gate5_deployment_egress.py
+```
+
+Docker negative smoke 與 network read-back：
+
+```powershell
+bash infra/deployment/scripts/gate5-network-negative-smoke.sh
+docker network inspect anila-models-net --format 'Internal={{.Internal}} Driver={{.Driver}} Containers={{len .Containers}}'
+```
+
+## 下一步（只做 Gate 5 blocker closure）
+
+1. 設計並落地 CSP durable resume record／renewed grant，補 Router restart E2E。
+2. 建立 CSP→Router authenticated/signed header provenance，補 forged/spoof header negatives。
+3. 補真 PostgreSQL／container restart E2E，證明 durable pause／approve／resume。
+4. Resume 時先重新 read-back `gh pr checks 31` 與 current HEAD，防止 CI/status drift；若 head 或 required checks 改變，再補測並重跑 CI。
+5. 上述 blocker 與證據全部閉合後，最後才用 `claude -p`、`--model claude-fable-5`、`--effort max` 做 review；在此之前不進 Gate 6。
+
+## Commit list / head provenance
+
+目前 head 與最近 checkpoint：
 
 ```text
-c106993 [security-all] align runtime packages with contracts v2
+847f217 fix(security): [security-all] preserve service-client proxy isolation
+eb02a96 style(ci): [security-all] format Gate 5 generator contract
+6204159 fix(ci): [security-all] make Gate 5 generator tests unittest-compatible
+1d9ce24 [security-all] harden Gate 5 resume and model egress
+86d3316 [security-all] install Gate 5 CI runtime dependencies
+e78d658 docs: update Gate 5 CI checkpoint
+cd82f17 [security-all] align Gate 5 CI governance surfaces
+2a3d9cc docs: clarify Gate 5 checkpoint provenance
+05ba86f docs: hand off incomplete Gate 5 checkpoint
 ```
 
-Gate 5 commit list（起點 `e8d6989` 至 HEAD，共 19 commits）：
+Gate 5 implementation lineage（起點 `e8d6989`；不把 prior Gate commits 冒充 Gate 5）：
 
 ```text
 c106993 [security-all] align runtime packages with contracts v2
@@ -121,17 +162,10 @@ fa517f9 [security-all] feat: add structured RouterRuntime core
 e8d6989 [security-all] feat: add Gate 5 governance contracts v2
 ```
 
-`origin/prod-intranet-card` 尚未收進 prior Gate history，因此完整 branch delta（含 prior Gate/merge）請另查：
+`origin/prod-intranet-card` 尚未收進 prior Gate history；若需完整 branch delta，另查：
 
 ```powershell
 git log --format='%h %s' origin/prod-intranet-card..HEAD
 ```
 
-不要把上述 prior Gate commits 冒充 Gate 5。
-
-## Resume order
-
-1. 先修正並重新查證 GitHub required CI；`c106993` push 後目前正在重跑，狀態須重新查。
-2. 補齊 operator-signed production profile/trust/legal materials 與 packet firewall；材料核准前維持 FLUX disabled。
-3. 補 formal Docker live E2E、network-negative smoke、完整 38 個 runtime admission/usage wiring，並以可重啟實例證明 `Router → CSP signed sink` pause/approve/resume。
-4. 最後執行 Claude Fable review；只有 blocker 關閉且證據重跑通過後，才可標記 Gate 5 complete 並評估進 Gate 6。
+本 handoff artifact commit/push 會使 branch HEAD 前進；不要預填本檔自身的未知 SHA。完成後請用上列 `git log -1 --format=%H -- docs/handoffs/2026-07-15-gate5-brain-runtime-incomplete.md` 與 `git rev-parse HEAD` read-back。
