@@ -5,7 +5,7 @@
 ## 先看結論
 
 - **Gate 6 engineering checkpoint 的變更已提交並推送；Production Acceptance 結論仍為 No-Go。**
-- Gate 6 branch 目前為 `f538a734fcc76a9254713414aac6440c9ef24fc9`；draft PR
+- Gate 6 branch 目前為 `537417471884c6ff456180e5c5523b27d43a65a8`；draft PR
   [#32](https://github.com/zzw09773/ANILA/pull/32) 為 `OPEN / MERGEABLE / Draft`。
   PR 不得 merge、不得改 ready，也不得據此宣告 Go。
 - P0 schema／verifier、disabled template、P9 inventory exporter、backup contract、CI
@@ -26,18 +26,18 @@
 | Worktree | `C:\Users\USER\.codex\worktrees\ANILA-gate6` |
 | Branch | `codex/gate6-production-acceptance` |
 | Base | `main`；Gate 5 merge `bca5af0cc091dac231903d5b9cfa3dc66d2fa95d` |
-| Gate 6 commits | `6a126870d760c7d34b2632fe642229c3a878f00c`、`d545630f38336f1e99190ef360711aa0df2ea71d`、`bdf1177495ca6364e2a1bb22915482a76b2d8e97`、`83f0d3556b086a56581e82aa908e26842522d59d`、`4650347af2e9beffbc03efe9ee2233457be596af`、`f538a734fcc76a9254713414aac6440c9ef24fc9` |
-| Current committed HEAD | `f538a734fcc76a9254713414aac6440c9ef24fc9`（restore tests unittest-compatible；P1 checkpoint 在 `4650347…`，P2 fail-closed 在 `83f0d35…`） |
+| Gate 6 commits | `6a126870d760c7d34b2632fe642229c3a878f00c`、`d545630f38336f1e99190ef360711aa0df2ea71d`、`bdf1177495ca6364e2a1bb22915482a76b2d8e97`、`83f0d3556b086a56581e82aa908e26842522d59d`、`4650347af2e9beffbc03efe9ee2233457be596af`、`f538a734fcc76a9254713414aac6440c9ef24fc9`、`537417471884c6ff456180e5c5523b27d43a65a8` |
+| Current committed HEAD | `537417471884c6ff456180e5c5523b27d43a65a8`（current final head；Fable findings 尚未修） |
 | Gate 5 PR | [#31](https://github.com/zzw09773/ANILA/pull/31)；merge commit `bca5af0cc091dac231903d5b9cfa3dc66d2fa95d` |
 | Gate 6 PR URL / number | [#32](https://github.com/zzw09773/ANILA/pull/32) |
 | Gate 6 PR state / draft / mergeability | `OPEN / Draft / MERGEABLE`；不得 merge 或改 ready |
-| Gate 6 pushed head SHA | `f538a734fcc76a9254713414aac6440c9ef24fc9` |
+| Gate 6 pushed head SHA | `537417471884c6ff456180e5c5523b27d43a65a8` |
 | Remote | `origin=https://github.com/zzw09773/ANILA.git` |
-| Working tree | 本次只更新此 handoff，其他檔案不得修改；current pushed code head 為 `f538a734fcc76a9254713414aac6440c9ef24fc9` |
+| Working tree | 本次只更新此 handoff，其他檔案不得修改；current pushed code head 為 `537417471884c6ff456180e5c5523b27d43a65a8` |
 
 目前的 `HEAD` 是 Gate 6 current head，不是 Gate 5 merge；`bca5af0…` 僅是 base。後續
-CI／review 必須指向 `f538a734fcc76a9254713414aac6440c9ef24fc9`；`4650347…` 是 P1
-checkpoint、`83f0d35…` 是 P2 code head，不可誤當目前 PR head。
+CI／review 必須指向 `537417471884c6ff456180e5c5523b27d43a65a8`；`f538a73…` 是前一個
+unittest-compatible code head，不可誤當目前 PR head。
 
 ## 本 checkpoint 的具體變更與用途
 
@@ -121,7 +121,7 @@ checkpoint、`83f0d35…` 是 P2 code head，不可誤當目前 PR head。
 | f538 deployment Ruff | **PASS** |
 | Ruff／compileall／`git diff --check` | **PASS** |
 | Gate 6 workflow posture／static checks | **PASS** |
-| PR #32 current head `f538a73…` CI | **PENDING**；不得宣稱 current PR checks 已綠 |
+| PR #32 current head `5374174…` CI | **21 pass / 1 CSP pending**（2026-07-16 05:55）；不得宣稱 current PR checks 已綠 |
 
 先前並行 source-scanner 曾因 shared-worktree temporary fixture race 失敗；該競態不是產品
 failure，序列重跑的 current Gate 5／P9 suite 為 30 passed，且工作樹／Docker 無殘留。不得
@@ -134,7 +134,7 @@ failure，序列重跑的 current Gate 5／P9 suite 為 30 passed，且工作樹
   scanner 已修正。
 - Run `29448123678`：前一個 code head `bdf1177495ca6364e2a1bb22915482a76b2d8e97` 的
   23 個 checks 於 `2026-07-16 04:36:01`（UTC+8）read-back 全部 pass；這是歷史工程
-  證據，不代表 current head `f538a73…` 的 PR checks 已完成。
+  證據，不代表 current head `5374174…` 的 PR checks 已完成。
 - CSP full suite job `87463604849`：**success**，耗時 `8m59s`。
 - PostgreSQL RLS job `87465627161`：**success**，完成於 `2026-07-16 04:36:01`（UTC+8）。
 - Gate 6 Python 3.11 job `87463600938` 已於 `2026-07-15T20:26:06Z`
@@ -181,9 +181,14 @@ evidence。接手或重跑 ingestion-worker 時，必須顯式指定 Gate6 sourc
   code-head incremental review 已為 **Verdict: Approve**：確認 PEP 701 scanner fix correct，
   無 blocker。新增的 INFO 為 tokenize error 目前回傳 `[]` 的窄 fail-open，以及 future
   Python 3.14 t-string 支援提醒；兩者均不影響本 PR。
-- Current Fable5 review session：`cc881337…`，正在審查 `6ae7f7a…` →
-  `83f0d3556b086a56581e82aa908e26842522d59d`；verdict 尚未完成。Claude PID／process
-  狀態不在 handoff 內寫死，接手者必須讀 session JSONL 尾端確認。
+- Current Fable5 review session：`cc881337…` 已完成審查 `6ae7f7a…` →
+  `83f0d3556b086a56581e82aa908e26842522d59d`，**Verdict: Request changes**。HIGH：handlers
+  uuid `.tmp-*` hard crash 會留下孤兒，retry reconcile 只掃 `.bak-*`，retention erase 只按 DB
+  final path，可能造成分類 bytes 跨銷毀殘留。MEDIUM：`asyncpg.InsufficientPrivilegeError`／RLS
+  被 `_image_persistence_error` 降為 retryable/error，應改為 `StoreError.rls_violation`
+  nonretryable critical。LOW：ambiguous backups synthetic EIO 可後續處理。上述 findings 尚未
+  覆蓋 P1/fix 的 current final head `5374174…`；Claude PID／process 狀態不寫死，接手者必須
+  讀 session JSONL 尾端確認。
 - Codex Security diff scan：**no reportable findings**；exact report path：
   `C:\Users\USER\AppData\Local\Temp\codex-security-scans\ANILA\bca5af0_20260715T194201Z\report.md`。
 - Fable5、Claude、Argus 與 Codex scan 都是工程／安全證據，不是 P6 獨立具名人類 reviewer，
@@ -192,9 +197,9 @@ evidence。接手或重跑 ingestion-worker 時，必須顯式指定 Gate6 sourc
 ## 05:45+（UTC+8）current decision／process snapshot
 
 05:45 後 read-back 確認：Git `HEAD` 與 pushed PR head 均為
-`f538a734fcc76a9254713414aac6440c9ef24fc9`，branch 為 `codex/gate6-production-acceptance`，
-PR #32 為 `OPEN / Draft / MERGEABLE`。Current PR checks **PENDING**；不得宣稱 current
-head CI 已綠。這份 handoff 只記錄工程與流程狀態，不改 PR、不 merge、不改 Draft。
+`537417471884c6ff456180e5c5523b27d43a65a8`，branch 為 `codex/gate6-production-acceptance`，
+PR #32 為 `OPEN / Draft / MERGEABLE`。Current PR checks 為 **21 pass / 1 CSP pending**；
+不得宣稱 current head CI 已綠。這份 handoff 只記錄工程與流程狀態，不改 PR、不 merge、不改 Draft。
 
 **Gate 6 正式維持 No-Go。** P0 五方簽章、P3 連續 7 日 time-lock、P6 獨立具名人類、P7
 法務／採購書面裁決、P8 實體卡／reader／HiPKI、P1 production-equivalent restore 與 P9
@@ -210,28 +215,28 @@ production network／usage evidence 均不可由 AI 或工程測試代替；P2 �
   signed backup manifest，故 **P1 仍未 pass**，不可宣告 production acceptance。
 - Fable review session `cc881337…`：**正在審查** `6ae7f7a…` → `83f0d355…`；verdict
   尚未完成。Claude PID／process 狀態不寫死，依下方 JSONL 指令即時檢查。
-- GitHub current PR checks：**PENDING**；`f538a73…` 的 CI 不得沿用 `bdf1177…` 歷史綠燈。
-  465 deployment jobs 曾因頂層 pytest／unittest discovery 缺少 pytest 失敗，已由 Luna
-  改為純 unittest 並推送 f538；新的 CI 仍 pending。
+- GitHub current PR checks：**21 pass / 1 CSP pending**；`5374174…` 的 CI 不得沿用歷史綠燈。
+  Fable findings 尚未修，且尚未做 current final-head review。
   結果。Disposable Docker restore smoke 已有 **1 passed**，但不等於 production restore。
 - exact current stage：Gate 5 已 merge；P2 image persistence fail-closed code 在 `83f0d35…`，
-  P1 verifier checkpoint 在 `4650347…`，restore tests unittest-compatible 修正已在
-  `f538a734fcc76a9254713414aac6440c9ef24fc9` pushed；root focused/full validation 已完成。
-  仍停在 Gate 6 external acceptance evidence collection，等待 Fable review 與 current PR CI，
+  P1 checkpoint 在 `4650347…`，unittest-compatible restore tests 在 `f538a73…`，current final
+  head `537417471884c6ff456180e5c5523b27d43a65a8` pushed；CI 為 21 pass / 1 CSP pending。
+  停止於 **未修 Fable findings、未做 current final-head review**；PR 保持 Draft、Gate 6 No-Go，
   且 P1 因 unsigned backup-manifest binding 限制仍未 pass；
   仍缺 P0／P1／P2／P3／P4／P5／P6／P7／P8／P9 closure。
 
 ### Current handoff checklist
 
-- [x] HEAD／branch／PR #32 state 與 current pushed head `f538a734fcc76a9254713414aac6440c9ef24fc9`
+- [x] HEAD／branch／PR #32 state 與 current pushed head `537417471884c6ff456180e5c5523b27d43a65a8`
       已 read-back。
 - [x] P2 focused **88 passed**、ingestion-worker full **235 passed / 10 skipped**、
       ruff／compile／diff 與 disposable Docker restore smoke **1 passed** 已記錄。
 - [x] Opus session `2eb9a4dd…` completed，engineering package 與 No-Go 邊界已記錄。
-- [ ] Current PR #32 checks：**PENDING**；不得提前宣稱綠燈。
+- [ ] Current PR #32 checks：**21 pass / 1 CSP pending**；不得提前宣稱綠燈。
 - [x] P1 verifier checkpoint：11 focused、P1+P0 32、backup+P1 54/1skip、posture pass 已記錄；
       expected／actual 同 report 且無 signed backup manifest，P1 仍標記 No-Go。
-- [ ] Fable session `cc881337…`：審查 `6ae7f7a…` → `83f0d35…` 進行中；尚未覆蓋 `4650347…`。
+- [x] Fable session `cc881337…`：`6ae7f7a…` → `83f0d35…` **Request changes**；HIGH/MEDIUM
+      findings 已記錄，尚未覆蓋 current final head `5374174…`。
 - [x] P0／P3／P6／P7／P8 及 P1／P2／P4／P5／P9 external blockers、owner 與 resume action
       已列出；仍維持 Gate 6 No-Go。
 
@@ -272,14 +277,14 @@ git fetch origin main codex/gate6-production-acceptance --prune
 git status --short --branch
 git branch --show-current
 git rev-parse HEAD
-git show --no-patch --format=fuller f538a734fcc76a9254713414aac6440c9ef24fc9
+git show --no-patch --format=fuller 537417471884c6ff456180e5c5523b27d43a65a8
 git log -5 --oneline --decorate
-git diff --stat bca5af0cc091dac231903d5b9cfa3dc66d2fa95d..f538a734fcc76a9254713414aac6440c9ef24fc9
-git diff --name-status bca5af0cc091dac231903d5b9cfa3dc66d2fa95d..f538a734fcc76a9254713414aac6440c9ef24fc9
+git diff --stat bca5af0cc091dac231903d5b9cfa3dc66d2fa95d..537417471884c6ff456180e5c5523b27d43a65a8
+git diff --name-status bca5af0cc091dac231903d5b9cfa3dc66d2fa95d..537417471884c6ff456180e5c5523b27d43a65a8
 git diff --check
 ```
 
-PR #32／current head `f538a734fcc76a9254713414aac6440c9ef24fc9` 的 exact read-back：
+PR #32／current head `537417471884c6ff456180e5c5523b27d43a65a8` 的 exact read-back：
 
 ```powershell
 gh pr view 32 --json number,url,state,isDraft,headRefName,baseRefName,headRefOid,mergeable,reviewDecision,statusCheckRollup
