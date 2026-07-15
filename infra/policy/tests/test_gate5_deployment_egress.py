@@ -20,12 +20,18 @@ GOVERNANCE_TARGETS = {
 }
 
 
-def _platform(*, agent_on_models: bool = False, raw_endpoint: bool = False) -> dict:
+def _platform(
+    *,
+    agent_on_models: bool = False,
+    raw_endpoint: bool = False,
+    flux_legal_approved: bool = False,
+) -> dict:
     csp = {
         "environment": {
             "GATE5_MODEL_GOVERNANCE_ENABLED": "true",
             "GATE5_MODEL_GOVERNANCE_STARTUP_REQUIRED": "true",
             "GATE5_MODEL_GATEWAY_ENDPOINT": "http://csp:8000/v1",
+            "GATE5_FLUX_LEGAL_APPROVED": "true" if flux_legal_approved else "false",
             **GOVERNANCE_TARGETS,
         },
         "volumes": [
@@ -62,8 +68,20 @@ def _models(*, flux: bool = False) -> dict:
     }
     if flux:
         services["flux2-dev"] = {
-            "labels": {"com.anila.inference-role": "model-runtime"},
+            "labels": {
+                "com.anila.inference-role": "model-runtime",
+                "com.anila.required-profile": "flux-approved",
+            },
             "networks": ["models"],
+        }
+        services["flux2-dev-agent"] = {
+            "labels": {
+                "com.anila.inference-role": "model-side-shim",
+                "com.anila.required-profile": "flux-approved",
+            },
+            "environment": {"FLUX_BACKEND_URL": "http://flux2-dev:8000"},
+            "networks": ["models"],
+            "expose": ["8000"],
         }
     return {
         "services": services,
@@ -104,6 +122,35 @@ def test_flux_requires_legal_marker_and_signed_callsite() -> None:
     with pytest.raises(DeploymentEgressError, match="legal-approved"):
         verify_deployment_egress(
             [platform, _models(flux=True)],
+            profile="prod-intranet-card",
+            require_material=False,
+        )
+
+
+def test_legal_approved_requires_active_flux_profile() -> None:
+    with pytest.raises(DeploymentEgressError, match="--profile flux-approved"):
+        verify_deployment_egress(
+            [_platform(flux_legal_approved=True), _models()],
+            profile="prod-intranet-card",
+            require_material=False,
+        )
+
+
+def test_legal_approved_flux_profile_is_complete() -> None:
+    result = verify_deployment_egress(
+        [_platform(flux_legal_approved=True), _models(flux=True)],
+        profile="prod-intranet-card",
+        require_material=False,
+    )
+    assert result["flux_present"] is True
+
+
+def test_flux_profile_must_not_publish_host_port() -> None:
+    model = _models(flux=True)
+    model["services"]["flux2-dev"]["ports"] = ["30010:8000"]
+    with pytest.raises(DeploymentEgressError, match="host ports"):
+        verify_deployment_egress(
+            [_platform(flux_legal_approved=True), model],
             profile="prod-intranet-card",
             require_material=False,
         )

@@ -66,6 +66,8 @@ from .session_owner import (
 logger = logging.getLogger(__name__)
 
 _MAX_ROUTER_MULTI_TURN = 3
+_FORMAL_RESUME_MAX_CONTEXTS = 256
+_FORMAL_RESUME_TTL_SECONDS = 15 * 60
 
 SECURE_ACCESS_COOKIE_NAME = "__Host-anila_access_token"
 DEV_ACCESS_COOKIE_NAME = "anila_dev_access_token"
@@ -931,6 +933,39 @@ def create_router_app(
         service_token=registry_service_token,
     )
     formal_runtime = ExecutionRuntime()
+    # Formal resume keeps the original CSP grant evidence in the Router
+    # process only as a transport cache.  CSP revalidates the complete
+    # binding/grant on every approve call; this cache is never authority and a
+    # missing entry (for example after a Router restart) fails closed instead
+    # of falling back to the legacy proxy.  Durable cross-restart recovery is
+    # a CSP encrypted-context follow-up, not fabricated from client headers.
+    formal_resume_contexts: dict[str, tuple[float, dict[str, Any]]] = {}
+
+    def _remember_formal_resume_context(session_key: str, payload: dict[str, Any]) -> None:
+        now = time.monotonic()
+        # Expire stale paused contexts before enforcing the bounded cache cap.
+        for stale_key, (created_at, _value) in list(formal_resume_contexts.items()):
+            if now - created_at >= _FORMAL_RESUME_TTL_SECONDS:
+                formal_resume_contexts.pop(stale_key, None)
+        if session_key in formal_resume_contexts:
+            formal_resume_contexts.pop(session_key, None)
+        while len(formal_resume_contexts) >= _FORMAL_RESUME_MAX_CONTEXTS:
+            oldest_key = min(formal_resume_contexts, key=lambda key: formal_resume_contexts[key][0])
+            formal_resume_contexts.pop(oldest_key, None)
+        formal_resume_contexts[session_key] = (now, payload)
+
+    def _get_formal_resume_context(session_key: str) -> dict[str, Any] | None:
+        record = formal_resume_contexts.get(session_key)
+        if record is None:
+            return None
+        created_at, payload = record
+        if time.monotonic() - created_at >= _FORMAL_RESUME_TTL_SECONDS:
+            formal_resume_contexts.pop(session_key, None)
+            return None
+        return payload
+
+    def _forget_formal_resume_context(session_key: str) -> None:
+        formal_resume_contexts.pop(session_key, None)
 
     resolved_db_path = session_db_path or settings.session_db_path
 
@@ -1918,6 +1953,16 @@ def create_router_app(
                 status="error",
             )
 
+        _remember_formal_resume_context(session_id, {
+            "context": context,
+            "snapshot": snapshot,
+            "entry": entry,
+            "decision": decision,
+            "policy_result": policy_result,
+            "grant_input": grant_input,
+            "execution_grant": execution_grant,
+        })
+
         async def _complete_agent(
             current_context: RequestContext,
             current_result: Any,
@@ -2028,6 +2073,38 @@ def create_router_app(
             return await _safe_result(
                 "（Agent 派工未完成，已安全停止。）",
                 status="error",
+            )
+
+        if agent_response.get("status") == "paused":
+            paused_meta = _merge_anila_meta(
+                [
+                    *base_trace,
+                    _make_trace_step(
+                        "dispatch",
+                        "Agent HITL 暫停",
+                        f"single_agent:{entry.agent_id}",
+                        status="ok",
+                    ),
+                ],
+                agent_response.get("anila_meta"),
+                agent_id=entry.agent_id,
+                latency_ms=int((time.time() - started_at) * 1000),
+            )
+            paused_raw = agent_response.get("raw")
+            if isinstance(paused_raw, dict):
+                paused_body = dict(paused_raw)
+            else:
+                paused_body = {
+                    "object": "anila.task",
+                    "status": "paused",
+                    "session_id": session_id,
+                }
+            paused_body["status"] = "paused"
+            paused_body["anila_meta"] = paused_meta
+            return JSONResponse(
+                paused_body,
+                status_code=202,
+                headers={"X-Anila-Session-Id": session_id},
             )
 
         last_entry = entry
@@ -2211,6 +2288,84 @@ def create_router_app(
         """
         caller_api_key = _extract_bearer_api_key(request)
         body: dict = await request.json()
+
+        formal_resume_requested = (
+            "x-anila-caller-user-id" in request.headers
+            or not _formal_legacy_enabled()
+        )
+        if formal_resume_requested:
+            # Formal R4/R5 resume is a CSP-authorized binary approve seam.  It
+            # intentionally does not accept the legacy interrupt_id/answer
+            # body or consult Router's SQLite owner table.
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="formal resume body 必須是 object")
+            if set(body) - {"approval_mode"}:
+                raise HTTPException(status_code=400, detail="formal resume body 含未定義欄位")
+            approval_mode = body.get("approval_mode", "approve_all")
+            if approval_mode != "approve_all":
+                raise HTTPException(status_code=400, detail="approval_mode 必須是 approve_all")
+            idempotency_key = request.headers.get("X-ANILA-Idempotency-Key")
+            if not idempotency_key:
+                raise HTTPException(status_code=400, detail="必須提供 X-ANILA-Idempotency-Key")
+            caller_user_header = request.headers.get("X-ANILA-Caller-User-Id")
+            if caller_user_header is None or re.fullmatch(r"[1-9][0-9]*", caller_user_header.strip()) is None:
+                raise HTTPException(status_code=403, detail="formal resume 缺少可信 caller user binding")
+
+            cached = _get_formal_resume_context(session_id)
+            if cached is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="formal resume context unavailable; Router restart/expiry requires a new governed turn",
+                )
+            cached_context = cached.get("context")
+            cached_identity = str(getattr(cached_context, "identity", "")).strip()
+            cached_owner = str(getattr(cached_context, "owner_id", "")).strip()
+            if caller_user_header.strip() != cached_identity or caller_user_header.strip() != cached_owner:
+                raise HTTPException(status_code=403, detail="formal resume caller/owner binding 不一致")
+            try:
+                result = await formal_agent_client.resume(
+                    entry=cached["entry"],
+                    snapshot=cached["snapshot"],
+                    # The Router transport never forwards/caches the public
+                    # bearer; CspAgentClient ignores this compatibility field.
+                    caller_api_key="",
+                    session_id=session_id,
+                    context=cached["context"],
+                    route_decision=cached["decision"],
+                    policy_result=cached["policy_result"],
+                    grant_input=cached["grant_input"],
+                    execution_grant=cached["execution_grant"],
+                    idempotency_key=idempotency_key,
+                    approval_mode=approval_mode,
+                )
+            except AgentClientError as exc:
+                logger.info("formal Router resume denied: %s", exc)
+                status = 409 if "conflict" in str(exc).lower() else 502
+                raise HTTPException(status_code=status, detail="formal resume 未完成") from exc
+
+            if not isinstance(result, Mapping):
+                raise HTTPException(status_code=502, detail="formal resume response 無效")
+            result_meta = result.get("anila_meta")
+            if not isinstance(result_meta, dict):
+                result_meta = _default_anila_meta()
+            result_meta = {**result_meta, "session_id": session_id}
+            resumed_payload = {
+                "session_id": session_id,
+                "approval_mode": approval_mode,
+                "status": result.get("status", "completed"),
+                "anila_meta": result_meta,
+            }
+            if result.get("status") == "paused":
+                # Preserve non-terminal pause semantics for repeated human
+                # approval; never turn a blocked cursor into completion.
+                resumed_payload["anila_events"] = list(result.get("anila_events") or [])
+                return JSONResponse(resumed_payload, status_code=202)
+            _forget_formal_resume_context(session_id)
+            content = result.get("content")
+            if not isinstance(content, str):
+                raise HTTPException(status_code=502, detail="formal resume content 無效")
+            resumed_payload.update(_make_full_response(content, "anila-router", anila_meta=result_meta))
+            return JSONResponse(resumed_payload, status_code=200)
 
         # Formal Router calls cannot resume through the legacy SQLite owner
         # table.  R4's CSP-authoritative SessionEventStore must own pause /

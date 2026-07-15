@@ -225,8 +225,20 @@ def _verify_inventory(
         by_id = validate_inventory_payload(inventory)
     except ModelGovernanceError as exc:
         raise ModelGovernancePolicyError(str(exc)) from exc
+    repo_root = repo_root.resolve()
     for call in by_id.values():
-        source_path = repo_root / call.source
+        source_ref = Path(call.source)
+        if source_ref.is_absolute():
+            raise ModelGovernancePolicyError(
+                f"callsite source must be repository-relative: {call.source}"
+            )
+        source_path = (repo_root / source_ref).resolve()
+        try:
+            source_path.relative_to(repo_root)
+        except ValueError as exc:
+            raise ModelGovernancePolicyError(
+                f"callsite source escapes repository root: {call.source}"
+            ) from exc
         if not source_path.is_file():
             raise ModelGovernancePolicyError(f"callsite source missing: {call.source}")
         if call.enabled:
@@ -263,6 +275,7 @@ def verify(
     inventory_path: Path,
     profile_path: Path,
     trust_store_path: Path | None = None,
+    repo_root: Path | None = None,
     allow_disabled_template: bool = False,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -270,8 +283,13 @@ def verify(
 
     inventory = _load_json(inventory_path)
     profile = _load_json(profile_path)
-    repo_root = inventory_path.parents[3]
-    calls = _verify_inventory(inventory, repo_root)
+    # Production governance material is deliberately mounted from outside the
+    # repository.  Never infer the source tree from that external path: doing
+    # so would either scan the host root or silently skip the real repository.
+    # Callers may omit this only for the repository-local test fixtures, where
+    # the historical path-derived default remains useful.
+    source_root = (repo_root or inventory_path.parents[3]).resolve()
+    calls = _verify_inventory(inventory, source_root)
     current = now or datetime.now(timezone.utc)
     trust_store = _load_json(trust_store_path) if trust_store_path is not None else None
     try:
@@ -305,6 +323,12 @@ def main() -> int:
     parser.add_argument("--inventory", type=Path, required=True)
     parser.add_argument("--profile", type=Path, required=True)
     parser.add_argument("--trust-store", type=Path)
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        required=True,
+        help="repository root whose source tree is scanned (independent of external material)",
+    )
     parser.add_argument("--allow-disabled-template", action="store_true")
     args = parser.parse_args()
     try:
@@ -312,6 +336,7 @@ def main() -> int:
             inventory_path=args.inventory,
             profile_path=args.profile,
             trust_store_path=args.trust_store,
+            repo_root=args.repo_root,
             allow_disabled_template=args.allow_disabled_template,
         )
     except ModelGovernancePolicyError as exc:

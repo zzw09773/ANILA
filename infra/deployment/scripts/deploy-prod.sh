@@ -353,7 +353,14 @@ check_gate5_egress_policy() {
     rm -rf -- "$tmp"
     fatal "無法解析 formal platform resolved Compose"
   fi
-  if ! docker compose -p anila-models -f infra/models/docker-compose.yml config --format json >"$models_json"; then
+  local model_compose_args=( -p anila-models -f infra/models/docker-compose.yml )
+  if [[ "${GATE5_FLUX_LEGAL_APPROVED:-false}" == "true" || "${GATE5_FLUX_LEGAL_APPROVED:-0}" == "1" ]]; then
+    # A legal-approved FLUX posture is meaningful only when the resolved model
+    # document was rendered with the named profile.  The egress checker then
+    # performs the full service/label/network/binding checks.
+    model_compose_args+=(--profile flux-approved)
+  fi
+  if ! docker compose "${model_compose_args[@]}" config --format json >"$models_json"; then
     rm -rf -- "$tmp"
     fatal "無法解析 formal model-stack resolved Compose"
   fi
@@ -370,6 +377,49 @@ check_gate5_egress_policy() {
   ok "Gate 5 formal deployment egress/governance policy 通過"
 }
 
+model_network_recreate_hint() {
+  cat >&2 <<'EOF'
+安全重建指令（僅限先確認 network 沒有任何 attached containers）：
+  docker network inspect anila-models-net --format '{{json .Containers}}'
+  docker network rm anila-models-net
+  docker network create --driver bridge --internal anila-models-net
+EOF
+}
+
+check_models_network_internal() {
+  if ! docker network inspect anila-models-net >/dev/null 2>&1; then
+    fatal "anila-models-net network 不存在；先執行 docker network create --driver bridge --internal anila-models-net，再重跑"
+  fi
+  local internal driver containers
+  internal="$(docker network inspect anila-models-net --format '{{.Internal}}' 2>/dev/null || true)"
+  driver="$(docker network inspect anila-models-net --format '{{.Driver}}' 2>/dev/null || echo unknown)"
+  if [[ "$internal" != "true" || "$driver" != "bridge" ]]; then
+    containers="$(docker network inspect anila-models-net --format '{{json .Containers}}' 2>/dev/null || echo unknown)"
+    err "anila-models-net 必須是 Docker internal bridge (Internal=true, Driver=bridge); actual Internal=${internal:-missing} Driver=$driver Containers=$containers"
+    model_network_recreate_hint
+    fatal "拒絕使用既有錯誤 network；不會自動刪除任何 attached-container network"
+  fi
+  ok "anila-models-net = internal bridge (Internal=true)"
+}
+
+check_flux_runtime_profile() {
+  local approved="${GATE5_FLUX_LEGAL_APPROVED:-false}" service cid
+  local flux_services=(anila-model-flux2-dev anila-model-flux2-dev-agent)
+  if [[ "$approved" == "true" || "$approved" == "1" ]]; then
+    for service in "${flux_services[@]}"; do
+      cid="$(docker ps -q --filter "name=^/${service}$" 2>/dev/null || true)"
+      [[ -n "$cid" ]] || fatal "GATE5_FLUX_LEGAL_APPROVED=true 但 FLUX container 未 running: $service"
+    done
+    ok "legal-approved FLUX profile 的兩個 container 都在 running"
+  else
+    for service in "${flux_services[@]}"; do
+      cid="$(docker ps -q --filter "name=^/${service}$" 2>/dev/null || true)"
+      [[ -z "$cid" ]] || fatal "FLUX container $service 正在 running，但 GATE5_FLUX_LEGAL_APPROVED 未核准；拒絕繼續"
+    done
+    ok "FLUX disabled posture：沒有 running FLUX container"
+  fi
+}
+
 check_models_stack() {
   # ── 遠端模型模式 (內網拓撲:模型在 10.53.100.12,平台在 10.53.100.15) ──
   # ANILA_REMOTE_MODELS=1 → 本機沒有 models stack:跳過本機 container
@@ -378,9 +428,10 @@ check_models_stack() {
   if [[ "${ANILA_REMOTE_MODELS:-0}" == "1" ]]; then
     if ! docker network inspect anila-models-net >/dev/null 2>&1; then
       log "遠端模型模式:建立空的 anila-models-net (compose external 引用需要)"
-      docker network create anila-models-net >/dev/null
+      docker network create --driver bridge --internal anila-models-net >/dev/null
     fi
-    ok "anila-models-net network 存在 (remote-models mode)"
+    check_models_network_internal
+    check_flux_runtime_profile
 
     local probes=()
     [[ -n "${GEMMA4_BASE_URL:-}" ]] && probes+=("gemma4|${GEMMA4_BASE_URL}")
@@ -418,7 +469,8 @@ check_models_stack() {
        (確認 gemma4 / nv-embed-proxy 都 healthy；FLUX 需另有法務核准 profile)
        模型在別台主機的內網部署 → export ANILA_REMOTE_MODELS=1 重跑"
   fi
-  ok "anila-models-net network 存在"
+  check_models_network_internal
+  check_flux_runtime_profile
 
   # 列必要的 model service,讓 user 看到 health
   local need=(anila-model-gemma4 anila-model-nv-embed-proxy)
@@ -589,6 +641,7 @@ validate_formal_up() {
   validate_formal_identity
   check_env
   check_gate5_egress_policy
+  check_models_stack
   check_tool_upgrade_safety
   ensure_jwt_keypair
 }

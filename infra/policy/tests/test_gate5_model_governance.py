@@ -4,6 +4,7 @@ import base64
 import copy
 import hashlib
 import json
+import shutil
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -145,7 +146,7 @@ def test_disabled_template_is_explicitly_not_an_approval() -> None:
         allow_disabled_template=True,
         now=NOW,
     )
-    assert result["inventory_callsites"] == 38
+    assert result["inventory_callsites"] == 40
     assert result["enabled_callsites"] == 0
     with pytest.raises(ModelGovernancePolicyError, match="not an approval"):
         verify(inventory_path=INVENTORY, profile_path=TEMPLATE, now=NOW)
@@ -159,6 +160,46 @@ def test_scanner_and_inventory_are_exhaustive() -> None:
     assert any("relation-llm" in item["id"] for item in inventory["callsites"])
     assert any("judge" in item["id"] for item in inventory["callsites"])
     assert any("flux" in item["id"] for item in inventory["callsites"])
+
+
+def test_external_material_uses_explicit_repository_root(tmp_path: Path) -> None:
+    material = tmp_path / "governance-material"
+    material.mkdir()
+    inventory_path = material / "inventory.json"
+    profile_path = material / "profile.json"
+    shutil.copy2(INVENTORY, inventory_path)
+    shutil.copy2(TEMPLATE, profile_path)
+
+    result = verify(
+        inventory_path=inventory_path,
+        profile_path=profile_path,
+        repo_root=ROOT,
+        allow_disabled_template=True,
+        now=NOW,
+    )
+    assert result["inventory_callsites"] == 40
+
+    # Deriving a source tree from an external material path is intentionally
+    # unsafe and must no longer be a usable CLI/runtime path.
+    with pytest.raises(
+        ModelGovernancePolicyError,
+        match="(?:scanner source root missing|callsite source missing)",
+    ):
+        verify(
+            inventory_path=inventory_path,
+            profile_path=profile_path,
+            allow_disabled_template=True,
+            now=NOW,
+        )
+
+
+def test_governance_cli_callers_pin_repository_root() -> None:
+    workflow = (ROOT / ".github/workflows/gate5-static.yml").read_text(encoding="utf-8")
+    model_serve = (ROOT / "infra/deployment/intranet/model-serve.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "--repo-root ." in workflow
+    assert "--repo-root \"$REPO_ROOT\"" in model_serve
 
 
 def test_signed_profile_uses_ephemeral_keys_and_passes(tmp_path: Path) -> None:
@@ -327,13 +368,13 @@ def test_verified_authority_returns_immutable_admission_and_checks_runtime_scope
             NOW,
             artifact_digest=_DIGEST_B,
         )
-    with pytest.raises(ModelGovernanceError, match="outside"):
+    with pytest.raises(ModelGovernanceError, match="agent scope"):
         authority.authorize(
             "r7.router.core",
             "機密",
             "artifact.synthetic",
             "deployment.synthetic",
-            "not-admitted",
+            None,
             NOW,
         )
     with pytest.raises(ModelGovernanceError, match="stale"):
@@ -371,5 +412,5 @@ def test_disabled_template_authority_is_constructible_for_audit_but_never_author
 def test_inventory_hash_is_bound_to_profile() -> None:
     inventory = _load_json(INVENTORY)
     assert inventory_hash(inventory) == (
-        "d47359c3ccb28b387754b0dbe14a0954441f0d84b79968503c496c94036cd703"
+        "e49b3be132dcce46925c97d50c4d944887f0d552e1d04c7a02bbaad6512ccbfe"
     )

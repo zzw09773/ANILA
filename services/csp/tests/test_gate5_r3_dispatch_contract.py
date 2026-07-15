@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 
 import pytest
-from anila_contracts import Classification
+from anila_contracts import Classification, StepEvent
+from anila_contracts.events import StepKind, StepStatus
 from fastapi import HTTPException
 from starlette.requests import Request
 
@@ -19,6 +21,7 @@ from app.services.agent_dispatch_service import (
     DispatchBinding,
     _normalize_agent_block,
     dispatch_nonstream,
+    dispatch_resume,
     dispatch_stream,
 )
 from app.services.proxy.stream_bridge import (
@@ -124,7 +127,7 @@ def _authority(*, invocation_id: str = "invocation-test", run_status: str | None
     return DispatchAuthority(
         caller=object(),
         user=object(),
-        agent=SimpleNamespace(name="research-agent"),
+        agent=SimpleNamespace(name="research-agent", endpoint_url="http://agent.test"),
         grant=object(),
         binding=DispatchBinding(
             caller_user_id=1,
@@ -149,6 +152,24 @@ def _authority(*, invocation_id: str = "invocation-test", run_status: str | None
         endpoint_url="http://agent.test/v1/chat/completions",
         run_status=run_status,
     )
+
+
+def _blocked_event(*, event_id: str = "blocked-1") -> dict[str, object]:
+    return StepEvent(
+        event_id=event_id,
+        sequence=1,
+        cursor="forged-cursor",
+        trace_id="forged-trace",
+        task_id="999",
+        session_id="forged-session",
+        invocation_id="forged-invocation",
+        run_id="999",
+        step_id="agent:research-agent",
+        kind=StepKind.AGENT,
+        status=StepStatus.BLOCKED,
+        safe_output_summary="等待 CSP 核准",
+        classification=Classification.UNCLASSIFIED,
+    ).model_dump(mode="json")
 
 
 def test_agent_openai_content_is_rebuilt_only_after_bridge_validation() -> None:
@@ -273,6 +294,188 @@ def test_nonstream_rebuilds_minimal_csp_response_and_drops_agent_extras(monkeypa
     assert result["choices"][0]["message"] == {"role": "assistant", "content": "safe answer"}
     assert "usage" not in result
     assert result["anila_meta"]["status"] == "completed"
+
+
+def test_nonstream_blocked_202_is_durable_pause_without_synthetic_completion(monkeypatch) -> None:
+    bridge = _bridge()
+    authority = _authority(invocation_id="nonstream-blocked")
+    blocked = _blocked_event()
+    calls = 0
+
+    class Response:
+        status_code = 202
+
+        def json(self) -> object:
+            return {"status": "paused", "anila_events": [blocked]}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, *_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            return Response()
+
+    monkeypatch.setattr(dispatch_service, "_bridge", lambda _authority, _db: bridge)
+    monkeypatch.setattr(
+        dispatch_service,
+        "build_agent_outbound_headers",
+        lambda _db, _authority, grant_token: {"X-CSP-Service-Token": "csk-test"},
+    )
+    monkeypatch.setattr(dispatch_service.httpx, "AsyncClient", lambda **_kwargs: Client())
+    result = asyncio.run(
+        dispatch_nonstream(
+            db=SimpleNamespace(rollback=lambda: None),
+            authority=authority,
+            messages=[{"role": "user", "content": "hello"}],
+            grant_token="signed-grant",
+        )
+    )
+    assert calls == 1
+    assert result["status"] == "paused"
+    assert bridge.terminal_event() is None
+    events = bridge.replay_events()
+    assert events[-1].status is StepStatus.BLOCKED
+    # Agent-provided identity/cursor was rebound to the CSP authority.
+    assert events[-1].task_id == "1"
+    assert events[-1].trace_id == "trace-1"
+
+
+def test_stream_blocked_event_does_not_append_completed(monkeypatch) -> None:
+    bridge = _bridge()
+    authority = _authority(invocation_id="stream-blocked")
+    blocked = json.dumps(_blocked_event(), ensure_ascii=False, separators=(",", ":"))
+
+    class Response:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def aiter_lines(self):
+            yield "event: anila.step"
+            yield f"data: {blocked}"
+            yield ""
+            yield "data: [DONE]"
+            yield ""
+
+        async def aread(self):
+            return b""
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def stream(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr(dispatch_service, "_bridge", lambda _authority, _db: bridge)
+    monkeypatch.setattr(
+        dispatch_service,
+        "build_agent_outbound_headers",
+        lambda _db, _authority, grant_token: {},
+    )
+    monkeypatch.setattr(dispatch_service.httpx, "AsyncClient", lambda **_kwargs: Client())
+    frames = asyncio.run(
+        _collect_stream(
+            dispatch_stream(
+                db=SimpleNamespace(rollback=lambda: None),
+                authority=authority,
+                messages=[{"role": "user", "content": "hello"}],
+                grant_token="signed-grant",
+            )
+        )
+    )
+    assert frames[-1] == "data: [DONE]\n\n"
+    assert bridge.terminal_event() is None
+    assert bridge.replay_events()[-1].status is StepStatus.BLOCKED
+
+
+async def _collect_stream(stream: AsyncIterator[str]) -> list[str]:
+    return [frame async for frame in stream]
+
+
+def test_resume_rebinds_agent_history_and_replays_terminal_once(monkeypatch) -> None:
+    bridge = _bridge()
+    blocked = _blocked_event()
+    bridge.append("anila.step", json.dumps(blocked, ensure_ascii=False))
+    authority = _authority(invocation_id="resume-success")
+    completed = dict(blocked)
+    completed.update(
+        {
+            "event_id": "completed-1",
+            "sequence": 2,
+            "status": StepStatus.COMPLETED.value,
+            "safe_output_summary": "resumed answer",
+        }
+    )
+    calls = 0
+
+    class Response:
+        status_code = 200
+
+        def json(self) -> object:
+            return {
+                "choices": [{"message": {"content": "resumed answer"}}],
+                "anila_events": [completed],
+            }
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, url, **_kwargs):
+            nonlocal calls
+            calls += 1
+            assert url.endswith("/v1/tasks/1/approve")
+            return Response()
+
+    monkeypatch.setattr(dispatch_service, "_bridge", lambda _authority, _db: bridge)
+    monkeypatch.setattr(
+        dispatch_service,
+        "build_agent_outbound_headers",
+        lambda _db, _authority, *, grant_token, idempotency_key=None: {
+            "X-CSP-Service-Token": "csk-test",
+            "X-ANILA-Idempotency-Key": idempotency_key or "",
+        },
+    )
+    monkeypatch.setattr(dispatch_service.httpx, "AsyncClient", lambda **_kwargs: Client())
+    db = SimpleNamespace(rollback=lambda: None)
+    first = asyncio.run(
+        dispatch_resume(
+            db=db,
+            authority=authority,
+            grant_token="signed-grant",
+            idempotency_key="resume-key-1",
+        )
+    )
+    second = asyncio.run(
+        dispatch_resume(
+            db=db,
+            authority=authority,
+            grant_token="signed-grant",
+            idempotency_key="resume-key-1",
+        )
+    )
+    assert calls == 1
+    assert first["choices"][0]["message"]["content"] == "resumed answer"
+    assert second["choices"][0]["message"]["content"] == first["choices"][0]["message"]["content"]
+    assert second["anila_meta"]["status"] == "completed"
+    assert bridge.terminal_event() is not None
+    assert bridge.terminal_event().status is StepStatus.COMPLETED
 
 
 @pytest.mark.parametrize(

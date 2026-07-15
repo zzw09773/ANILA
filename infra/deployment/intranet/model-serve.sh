@@ -16,7 +16,7 @@
 # 行為:
 #   * 自動 set -a source repo root .env (INTERNAL_PLATFORM_API_KEY /
 #     ANILA_HF_DIR / *_GPU 等都從那邊來)
-#   * 自動建 anila-models-net external network (不存在時)
+#   * 自動建 anila-models-net internal bridge (不存在時)
 #   * 一律帶 --profile intranet,profile 內外的服務都可直接點名
 # ============================================================================
 set -euo pipefail
@@ -55,6 +55,7 @@ verify_flux_approval() {
       --inventory "$material_dir/inventory.json" \
       --profile "$material_dir/profile.json" \
       --trust-store "$material_dir/trust-store.json" \
+      --repo-root "$REPO_ROOT" \
     || { echo "FLUX signed governance profile 驗證失敗" >&2; exit 1; }
   python3 - "$material_dir/profile.json" <<'PY'
 import json
@@ -68,9 +69,83 @@ if not any(isinstance(item, str) and "flux" in item.lower() for item in enabled)
 PY
 }
 
+network_recreate_hint() {
+  cat >&2 <<'EOF'
+安全重建指令（僅限先確認 network 沒有任何 attached containers）：
+  docker network inspect anila-models-net --format '{{json .Containers}}'
+  docker network rm anila-models-net
+  docker network create --driver bridge --internal anila-models-net
+EOF
+}
+
+verify_internal_network() {
+  local internal driver containers
+  internal="$(docker network inspect anila-models-net --format '{{.Internal}}' 2>/dev/null || true)"
+  [[ "$internal" == "true" ]] || {
+    driver="$(docker network inspect anila-models-net --format '{{.Driver}}' 2>/dev/null || echo unknown)"
+    containers="$(docker network inspect anila-models-net --format '{{json .Containers}}' 2>/dev/null || echo unknown)"
+    echo "anila-models-net 必須是 Docker internal bridge (Internal=true, Driver=bridge); actual Internal=${internal:-missing} Driver=$driver Containers=$containers" >&2
+    network_recreate_hint
+    exit 1
+  }
+  driver="$(docker network inspect anila-models-net --format '{{.Driver}}' 2>/dev/null || true)"
+  [[ "$driver" == "bridge" ]] || {
+    echo "anila-models-net driver 必須是 bridge，目前為 $driver" >&2
+    network_recreate_hint
+    exit 1
+  }
+}
+
 ensure_network() {
-  docker network inspect anila-models-net >/dev/null 2>&1 \
-    || { echo "建立 anila-models-net network"; docker network create anila-models-net >/dev/null; }
+  if ! docker network inspect anila-models-net >/dev/null 2>&1; then
+    echo "建立 internal bridge anila-models-net network"
+    docker network create --driver bridge --internal anila-models-net >/dev/null
+  fi
+  verify_internal_network
+}
+
+verify_no_running_flux() {
+  local service cid
+  for service in anila-model-flux2-dev anila-model-flux2-dev-agent; do
+    cid="$(docker ps -q --filter "name=^/${service}$" 2>/dev/null || true)"
+    [[ -z "$cid" ]] || {
+      echo "FLUX container $service 正在 running，但 GATE5_FLUX_LEGAL_APPROVED 未核准；拒絕繼續" >&2
+      exit 1
+    }
+  done
+}
+
+verify_flux_compose_readback() {
+  local resolved
+  resolved="$(dc --profile flux-approved config --format json)" \
+    || { echo "無法 read-back --profile flux-approved 的 model Compose" >&2; exit 1; }
+  printf '%s' "$resolved" | python3 -c '
+import json
+import sys
+
+doc = json.load(sys.stdin)
+services = doc.get("services", {})
+required = ("flux2-dev", "flux2-dev-agent")
+missing = [name for name in required if name not in services]
+if missing:
+    raise SystemExit(f"flux-approved resolved Compose 缺少服務: {missing}")
+for name in required:
+    service = services[name]
+    labels = service.get("labels", {})
+    if labels.get("com.anila.required-profile") != "flux-approved":
+        raise SystemExit(f"{name} 缺少 com.anila.required-profile=flux-approved")
+    networks = service.get("networks", {})
+    if "models" not in networks:
+        raise SystemExit(f"{name} 未加入 models network")
+    if service.get("ports"):
+        raise SystemExit(f"{name} 不得暴露 host ports")
+    expose = service.get("expose", [])
+    if "8000" not in {str(item) for item in expose}:
+        raise SystemExit(f"{name} 缺少 internal expose 8000")
+backend = services["flux2-dev-agent"].get("environment", {}).get("FLUX_BACKEND_URL", "")
+if not str(backend).startswith("http://flux2-dev:"):
+    raise SystemExit("flux2-dev-agent FLUX_BACKEND_URL 必須指向 flux2-dev")
+' || { echo "flux-approved resolved Compose read-back 不完整" >&2; exit 1; }
 }
 
 cmd="${1:-help}"; shift || true
@@ -82,8 +157,8 @@ case "$cmd" in
     flux_profile=0
     for a in "$@"; do
       case "$a" in
-        trial)    services+=("${GROUP_TRIAL[@]}") ;;
-        flux-approved) verify_flux_approval; services+=("${GROUP_FLUX[@]}"); flux_profile=1 ;;
+        trial)    verify_no_running_flux; services+=("${GROUP_TRIAL[@]}") ;;
+        flux-approved) verify_flux_approval; verify_flux_compose_readback; services+=("${GROUP_FLUX[@]}"); flux_profile=1 ;;
         intranet) services+=("${GROUP_INTRANET[@]}") ;;
         flux2-dev|flux2-dev-agent)
           echo "FLUX 服務需要明示 flux-approved profile 與法務核准證據" >&2
@@ -105,14 +180,17 @@ case "$cmd" in
     ;;
   restart)
     (( $# > 0 )) || { echo "restart 要指定服務名"; exit 1; }
+    ensure_network
     for a in "$@"; do
       case "$a" in
-        flux2-dev|flux2-dev-agent) verify_flux_approval ;;
+        flux2-dev|flux2-dev-agent) verify_flux_approval; verify_flux_compose_readback ;;
+        *) verify_no_running_flux ;;
       esac
     done
     dc restart "$@"
     ;;
   status)
+    ensure_network
     dc ps
     ;;
   logs)

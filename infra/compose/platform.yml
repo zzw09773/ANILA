@@ -280,7 +280,7 @@ services:
       - default
       # 跨 project 的 external network — 解 ``gemma4`` / ``gpt-oss-20b`` /
       # ``nv-embed-proxy`` (在 infra/models/docker-compose.yml)。bootstrap 一次:
-      #   docker network create anila-models-net
+      #   docker network create --driver bridge --internal anila-models-net
       - anila-models-net
     depends_on:
       csp-db:
@@ -757,7 +757,7 @@ networks:
   default:
     name: anila-net
   # 跟 infra/models/docker-compose.yml 共用。external → 兩個 project 任一個 down
-  # 都不會刪掉它。bootstrap:  docker network create anila-models-net
+  # 都不會刪掉它。bootstrap: docker network create --driver bridge --internal anila-models-net
   anila-models-net:
     external: true
     name: anila-models-net

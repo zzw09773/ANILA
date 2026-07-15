@@ -69,6 +69,19 @@ from app.services.proxy_service import (
 
 logger = logging.getLogger(__name__)
 
+_GENERIC_PROXY_GOVERNANCE_CALLSITE = "r7.csp.proxy"
+_AGENT_PROXY_GOVERNANCE_CALLSITE = "r7.csp.proxy-agent"
+
+
+def _proxy_governance_callsite(agent_context: tuple[int, str] | None) -> str:
+    """Select an explicit generic or verified-Agent Gate 5 callsite."""
+
+    return (
+        _AGENT_PROXY_GOVERNANCE_CALLSITE
+        if agent_context is not None
+        else _GENERIC_PROXY_GOVERNANCE_CALLSITE
+    )
+
 
 def _formal_gate5_governance_enabled() -> bool:
     """Return whether the CSP is in a Gate 5 formal governance posture."""
@@ -907,8 +920,71 @@ def _image_inference_caller(
     ).first()
     if user is None:
         raise HTTPException(status_code=403, detail="圖像推論缺少有效的轉發申請人")
+    # Preserve the verified identity for the downstream model-governance seam;
+    # the forwarded ``X-ANILA-Agent-Id`` remains non-authoritative.
+    request.state.csp_caller = identity
+    request.state.csp_caller_agent_id = delegated_agent.id
+    request.state.csp_caller_agent_name = delegated_agent.name
     request.state.image_delegating_agent_id = identity.agent_id
     return Caller(user=user, api_key_id=None)
+
+
+def _proxy_caller(
+    request: Request, db: Session = Depends(get_db)
+) -> Caller:
+    """Resolve normal user auth or an authenticated Agent csk for /v1.
+
+    Official ``anila-agent`` instances call the CSP model gateway with their
+    own ``X-CSP-Service-Token``.  Only the DB-backed ``CallerIdentity`` may
+    establish Agent scope; all self-reported ``X-ANILA-Agent-Id`` headers are
+    intentionally ignored.  Service-client tokens stay on the dedicated
+    Router/internal seams and cannot borrow an Agent-scoped callsite.
+    """
+
+    service_token = request.headers.get("X-CSP-Service-Token")
+    if not service_token:
+        return get_caller(request, db)
+    identity = agent_credential_service.verify_service_token(db, token=service_token)
+    if identity is None:
+        raise HTTPException(status_code=401, detail="無效的 service token")
+    if identity.kind != "agent" or identity.agent_id is None:
+        raise HTTPException(status_code=403, detail="/v1 model gateway 只接受具名 agent csk")
+    # Reject credential ambiguity.  The official OpenAI client sends the same
+    # csk as its Bearer value; a different JWT/API key must never override the
+    # verified service identity through dependency precedence.
+    authorization = request.headers.get("Authorization")
+    if authorization and authorization.strip() != f"Bearer {service_token}":
+        raise HTTPException(status_code=401, detail="認證標頭不一致")
+    agent = db.get(Agent, identity.agent_id)
+    if agent is None or not agent.is_active:
+        raise HTTPException(status_code=403, detail="service token 不屬於 active agent")
+    owner = db.get(User, agent.owner_user_id)
+    if owner is None or not owner.is_active or not getattr(owner, "is_approved", True):
+        raise HTTPException(status_code=403, detail="agent owner 未核准或已停用")
+    # This state is written only after DB credential verification and the
+    # canonical Agent row lookup.  Downstream governance reads this state,
+    # never a client header.
+    request.state.csp_caller = identity
+    request.state.csp_caller_agent_id = agent.id
+    request.state.csp_caller_agent_name = agent.name
+    return Caller(user=owner, api_key_id=None)
+
+
+def _verified_proxy_agent_context(
+    request: Request, db: Session
+) -> tuple[int, str] | None:
+    """Return ``(agents.id, agents.name)`` only for verified Agent csk calls."""
+
+    identity = getattr(getattr(request, "state", None), "csp_caller", None)
+    if identity is None:
+        return None
+    if identity.kind != "agent" or identity.agent_id is None:
+        return None
+    agent = db.get(Agent, identity.agent_id)
+    if agent is None or not agent.is_active:
+        raise HTTPException(status_code=403, detail="verified agent identity is no longer active")
+    # Read the canonical registry name from CSP, never from X-ANILA-Agent-Id.
+    return agent.id, agent.name
 
 
 def _resolve_model(db: Session, caller: Caller, model_name: str) -> ModelRegistry:
@@ -1192,6 +1268,7 @@ async def image_generations(
     admitted_level = enforce_model_ceiling(
         db, model=model, caller=caller, task_ctx=task_ctx, conv_id_int=None
     )
+    proxy_agent_context = _verified_proxy_agent_context(request, db)
     return await proxy_request(
         model=model,
         api_key_id=caller.api_key_id,
@@ -1205,7 +1282,9 @@ async def image_generations(
         task_trace_id=task_ctx.trace_id,
         task_run_id=task_ctx.task_run_id,
         inference_callsite_id="csp.image_generation",
-        governance_callsite_id="r7.csp.proxy",
+        governance_callsite_id=_proxy_governance_callsite(proxy_agent_context),
+        governance_agent_id=(proxy_agent_context[1] if proxy_agent_context else None),
+        caller_agent_id=(proxy_agent_context[0] if proxy_agent_context else None),
         governance_db=db,
         admitted_classification_level=admitted_level,
     )
@@ -1267,7 +1346,7 @@ async def router_internal_chat_completions(
 @router.post("/v1/chat/completions")
 async def chat_completions(
     request: Request,
-    caller: Caller = Depends(get_caller),
+    caller: Caller = Depends(_proxy_caller),
     db: Session = Depends(get_db),
 ):
     return await _chat_completions_impl(
@@ -1290,6 +1369,10 @@ async def _chat_completions_impl(
     """
     if internal_router:
         _require_internal_router_context(request, caller=caller, db=db)
+    proxy_agent_context = _verified_proxy_agent_context(request, db)
+    proxy_agent_id = proxy_agent_context[0] if proxy_agent_context else None
+    proxy_agent_name = proxy_agent_context[1] if proxy_agent_context else None
+    proxy_governance_callsite = _proxy_governance_callsite(proxy_agent_context)
     request_headers = (
         getattr(request.state, "internal_router_headers", None)
         if internal_router
@@ -2076,7 +2159,9 @@ async def _chat_completions_impl(
             # Slice 6a: per-model gateway key (secret ref first, env fallback).
             gateway_api_key=resolve_model_gateway_key(model),
             inference_callsite_id="csp.chat_model",
-            governance_callsite_id="r7.csp.proxy",
+            governance_callsite_id=proxy_governance_callsite,
+            governance_agent_id=proxy_agent_name,
+            caller_agent_id=proxy_agent_id,
             governance_db=db,
             registry_endpoint_url=model.endpoint_url,
             admitted_classification_level=admitted_level,
@@ -2144,7 +2229,9 @@ async def _chat_completions_impl(
         task_run_id=task_ctx.task_run_id if task_ctx else None,
         legacy_runtime_call=task_ctx is None,
         inference_callsite_id="csp.chat_model",
-        governance_callsite_id="r7.csp.proxy",
+        governance_callsite_id=proxy_governance_callsite,
+        governance_agent_id=proxy_agent_name,
+        caller_agent_id=proxy_agent_id,
         governance_db=db,
         admitted_classification_level=admitted_level,
         registry_user_id=user.id,
@@ -2315,7 +2402,7 @@ async def resume_agent_session(
 @router.post("/v1/embeddings")
 async def embeddings_v1(
     request: Request,
-    caller: Caller = Depends(get_caller),
+    caller: Caller = Depends(_proxy_caller),
     db: Session = Depends(get_db),
 ):
     if settings.ANILA_PILOT_MODE:
@@ -2329,6 +2416,7 @@ async def embeddings_v1(
         raise HTTPException(status_code=400, detail="缺少 model 參數")
 
     model = _resolve_model(db, caller, model_name)
+    proxy_agent_context = _verified_proxy_agent_context(request, db)
     return await proxy_request(
         model=model,
         api_key_id=caller.api_key_id,
@@ -2338,7 +2426,9 @@ async def embeddings_v1(
         request_body=body,
         endpoint_path="/v1/embeddings",
         inference_callsite_id="csp.public_embedding_api",
-        governance_callsite_id="r7.csp.proxy",
+        governance_callsite_id=_proxy_governance_callsite(proxy_agent_context),
+        governance_agent_id=(proxy_agent_context[1] if proxy_agent_context else None),
+        caller_agent_id=(proxy_agent_context[0] if proxy_agent_context else None),
         governance_db=db,
     )
 
@@ -2346,7 +2436,7 @@ async def embeddings_v1(
 @router.post("/v2/embeddings")
 async def embeddings_v2(
     request: Request,
-    caller: Caller = Depends(get_caller),
+    caller: Caller = Depends(_proxy_caller),
     db: Session = Depends(get_db),
 ):
     if settings.ANILA_PILOT_MODE:
@@ -2360,6 +2450,7 @@ async def embeddings_v2(
         raise HTTPException(status_code=400, detail="缺少 model 參數")
 
     model = _resolve_model(db, caller, model_name)
+    proxy_agent_context = _verified_proxy_agent_context(request, db)
     return await proxy_request(
         model=model,
         api_key_id=caller.api_key_id,
@@ -2369,6 +2460,8 @@ async def embeddings_v2(
         request_body=body,
         endpoint_path="/v2/embeddings",
         inference_callsite_id="csp.public_embedding_api",
-        governance_callsite_id="r7.csp.proxy",
+        governance_callsite_id=_proxy_governance_callsite(proxy_agent_context),
+        governance_agent_id=(proxy_agent_context[1] if proxy_agent_context else None),
+        caller_agent_id=(proxy_agent_context[0] if proxy_agent_context else None),
         governance_db=db,
     )

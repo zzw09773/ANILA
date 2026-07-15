@@ -63,6 +63,7 @@ from app.services.usage_writer import enqueue_usage
 logger = logging.getLogger("app.services.proxy_service")
 
 _DEFAULT_GOVERNANCE_CALLSITE = "r7.csp.proxy-service"
+_AGENT_GOVERNANCE_CALLSITE = "r7.csp.proxy-service-agent"
 
 
 def _build_governed_model_invocation(
@@ -76,6 +77,8 @@ def _build_governed_model_invocation(
     department_id: int | None,
     conversation_id: str | None,
     trace_id: str | None,
+    caller_agent_id: int | None = None,
+    governance_agent_id: str | None = None,
 ) -> GovernedModelInvocation | None:
     """Build the central Gate 5 seam for model egress only.
 
@@ -108,6 +111,8 @@ def _build_governed_model_invocation(
             department_id=department_id,
             conversation_id=conversation_id,
             trace_id=trace_id,
+            caller_agent_id=caller_agent_id,
+            agent_id=governance_agent_id,
         ),
     )
 
@@ -161,6 +166,7 @@ def _authorize_governance(
     callsite_id: str,
     classification: Classification,
     invocation_id: str,
+    agent_id: str | None = None,
 ):
     if governed is None:
         return None
@@ -169,6 +175,10 @@ def _authorize_governance(
             callsite_id=callsite_id,
             classification=classification,
             invocation_id=invocation_id,
+            # This is a verified CSP-derived canonical id at the API seam;
+            # GovernedModelInvocation also re-anchors it to its immutable
+            # ReceiptSubject before reaching the authority.
+            agent_id=agent_id,
         )
     except HTTPException:
         raise
@@ -927,6 +937,7 @@ async def proxy_request(
     legacy_runtime_call: bool = False,
     inference_callsite_id: str | None = None,
     governance_callsite_id: str | None = _DEFAULT_GOVERNANCE_CALLSITE,
+    governance_agent_id: str | None = None,
     governance_db=None,
     admitted_classification_level: str | None = None,
     registry_user_id: int | None = None,
@@ -990,6 +1001,8 @@ async def proxy_request(
             department_id=department_id,
             conversation_id=conversation_id,
             trace_id=trace_id,
+            caller_agent_id=caller_agent_id,
+            governance_agent_id=governance_agent_id,
         )
         if governed is not None:
             authorization = _authorize_governance(
@@ -999,6 +1012,7 @@ async def proxy_request(
                     admitted_classification_level
                 ),
                 invocation_id=f"proxy-{closure_id}",
+                agent_id=governance_agent_id,
             )
         try:
             result = await _proxy_request_impl(
@@ -1594,6 +1608,7 @@ async def proxy_stream(
     gateway_api_key: Optional[str] = None,
     inference_callsite_id: str | None = None,
     governance_callsite_id: str | None = _DEFAULT_GOVERNANCE_CALLSITE,
+    governance_agent_id: str | None = None,
     governance_db=None,
     registry_endpoint_url: str | None = None,
     admitted_classification_level: str | None = None,
@@ -1665,6 +1680,8 @@ async def proxy_stream(
             department_id=department_id,
             conversation_id=conversation_id,
             trace_id=trace_id,
+            caller_agent_id=caller_agent_id,
+            governance_agent_id=governance_agent_id,
         )
         if governed is not None:
             authorization = _authorize_governance(
@@ -1674,6 +1691,7 @@ async def proxy_stream(
                     admitted_classification_level
                 ),
                 invocation_id=f"proxy-{closure_id}",
+                agent_id=governance_agent_id,
             )
         async with registry.register(task_id) as cancel_event:
             upstream = _proxy_stream_impl(

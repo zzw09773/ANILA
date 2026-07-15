@@ -801,6 +801,15 @@ def _verified_profile_parts(
 
 _AUTHORITY_CONSTRUCTOR_TOKEN = object()
 
+# ``agent_scope`` is deliberately a small selector language, not a list of
+# values that are all compared as literal Agent ids.  The inventory uses this
+# reserved selector for a callsite available to any *verified registered*
+# Agent.  Concrete values remain exact canonical Agent ids for future profiles.
+# Keep the selector out of the canonical-id namespace so a caller cannot pass
+# the sentinel itself and accidentally satisfy a scoped binding.
+REGISTERED_AGENT_SCOPE = "registered-agent"
+_AGENT_SCOPE_SELECTORS = frozenset({REGISTERED_AGENT_SCOPE})
+
 
 @dataclass(frozen=True, slots=True, init=False)
 class VerifiedModelGovernanceAuthority:
@@ -981,8 +990,20 @@ class VerifiedModelGovernanceAuthority:
         requested_agent = agent_id if agent_scope is None else agent_scope
         if agent_scope is not None and agent_id is not None and agent_scope != agent_id:
             raise ModelGovernanceError("agent scope arguments disagree")
+        if requested_agent in _AGENT_SCOPE_SELECTORS:
+            # ``registered-agent`` is a category selector, never a real
+            # canonical id.  Treating the literal sentinel as an identity
+            # would turn a missing/forged caller context into an admission.
+            raise ModelGovernanceError("agent scope selector cannot be used as an agent id")
         if binding.agent_scope:
-            if requested_agent is None or requested_agent not in binding.agent_scope:
+            if requested_agent is None:
+                raise ModelGovernanceError("agent is outside the admitted agent scope")
+            exact_scopes = set(binding.agent_scope) - _AGENT_SCOPE_SELECTORS
+            registered_scope = REGISTERED_AGENT_SCOPE in binding.agent_scope
+            if not (
+                (registered_scope and isinstance(requested_agent, str) and requested_agent.strip())
+                or (requested_agent in exact_scopes)
+            ):
                 raise ModelGovernanceError("agent is outside the admitted agent scope")
         elif requested_agent is not None:
             raise ModelGovernanceError("callsite has no admitted agent scope")
@@ -1015,6 +1036,7 @@ __all__ = [
     "Deployment",
     "InferenceCallsite",
     "REQUIRED_APPROVER_ROLES",
+    "REGISTERED_AGENT_SCOPE",
     "VerifiedModelGovernanceAuthority",
     "canonical_json",
     "classification_rank",

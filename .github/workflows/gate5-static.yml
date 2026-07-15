@@ -48,6 +48,7 @@ jobs:
       - name: Verify disabled R7 model-governance profile
         run: |
           python infra/policy/gate5/check_model_governance.py \
+            --repo-root . \
             --inventory infra/policy/gate5/model-governance-inventory.v1.json \
             --profile infra/policy/gate5/model-governance-profile.disabled-template.json \
             --allow-disabled-template

@@ -156,6 +156,10 @@ class _AgentSpy:
         yield {"type": "content", "content": "agent answer"}
         yield {"type": "done"}
 
+    async def resume(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(kwargs)
+        return {"content": "resumed answer", "anila_meta": {"status": "completed"}}
+
 
 @pytest.mark.parametrize(
     "route_output",
@@ -342,6 +346,42 @@ def test_formal_allowed_route_uses_selected_entry_and_carries_grant(
     assert call["execution_grant"].grant.grant_id == "grant-1"
 
 
+def test_formal_resume_requires_cached_caller_owner_binding(
+    route_llm: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ALLOW_LEGACY_AGENT_DISPATCH", "0")
+    spy = _AgentSpy()
+    app = router_server.create_router_app(
+        session_factory=lambda _sid: None,
+        registry_client=_Registry(_snapshot()),
+        agent_client=spy,
+        grant_minter=_Minter(),
+    )
+    client = TestClient(app)
+    first = client.post(
+        "/v1/chat/completions",
+        headers=_headers(),
+        json={
+            "session_id": "formal-resume-authz",
+            "messages": [{"role": "user", "content": "query"}],
+        },
+    )
+    assert first.status_code == 200
+    resume_headers = {
+        **_headers(),
+        "X-ANILA-Idempotency-Key": "resume-authz-1",
+        "X-ANILA-Caller-User-Id": "999",
+    }
+    denied = client.post(
+        "/v1/sessions/formal-resume-authz/answer",
+        headers=resume_headers,
+        json={"approval_mode": "approve_all"},
+    )
+    assert denied.status_code == 403
+    assert len(spy.calls) == 1
+
+
 def test_formal_unsigned_grant_is_rejected_before_agent_call(route_llm: None) -> None:
     spy = _AgentSpy()
     app = router_server.create_router_app(
@@ -400,6 +440,69 @@ def test_csp_agent_transport_uses_named_service_token_not_inbound_bearer(
     assert "sk-test" not in str(captured)
     assert captured["x-anila-execution-grant"] == "signed.execution-grant.test"
     assert "x-anila-execution-grant-token" not in captured
+
+
+def test_csp_agent_resume_transport_uses_binary_mode_and_retry_key() -> None:
+    snapshot = _snapshot()
+    context = _formal_context()
+    runtime = ExecutionRuntime().execute(context, _route(), snapshot)
+    assert runtime.allowed
+    assert runtime.decision is not None
+    assert runtime.policy_result is not None
+    assert runtime.entry is not None
+    assert runtime.grant_input is not None
+    envelope = asyncio.run(
+        _Minter().mint(
+            grant_input=runtime.grant_input,
+            decision=runtime.decision,
+            policy_result=runtime.policy_result,
+            snapshot=snapshot,
+            entry=runtime.entry,
+            caller_user_id=123,
+        )
+    )
+    captured: dict[str, Any] = {}
+
+    def _resume(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["headers"] = dict(request.headers)
+        captured["payload"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "resumed"}}
+                ],
+                "anila_meta": {"status": "completed"},
+            },
+            request=request,
+        )
+
+    client = CspAgentClient(
+        "https://csp.test",
+        service_token="csk-router-primary",
+        transport=httpx.MockTransport(_resume),
+    )
+    result = asyncio.run(
+        client.resume(
+            entry=runtime.entry,
+            snapshot=snapshot,
+            caller_api_key="sk-test",
+            session_id=context.session_id,
+            context=context,
+            route_decision=runtime.decision,
+            policy_result=runtime.policy_result,
+            grant_input=runtime.grant_input,
+            execution_grant=envelope,
+            idempotency_key="resume-retry-1",
+        )
+    )
+    assert result["content"] == "resumed"
+    assert captured["url"] == "https://csp.test/internal/v1/agents/dispatch/resume"
+    assert captured["payload"] == {"approval_mode": "approve_all"}
+    assert captured["headers"]["x-csp-service-token"] == "csk-router-primary"
+    assert captured["headers"]["x-anila-idempotency-key"] == "resume-retry-1"
+    assert "authorization" not in captured["headers"]
 
 
 def test_csp_execution_grant_minter_carries_signed_envelope_separately() -> None:

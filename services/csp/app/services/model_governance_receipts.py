@@ -89,6 +89,12 @@ class ReceiptSubject:
     conversation_id: str | None = None
     trace_id: str | None = None
     actor_username: str | None = None
+    # The integer FK is the durable DB attribution for an Agent-originated
+    # model call; ``agent_id`` below is the canonical registry name used by
+    # the signed model-governance authority.  Both are request-derived from
+    # the verified csk identity, never from a client header.
+    caller_agent_id: int | None = None
+    agent_id: str | None = None
 
 
 class SqlAlchemyReceiptSink(DurableReceiptSink):
@@ -252,6 +258,7 @@ class SqlAlchemyReceiptSink(DurableReceiptSink):
             conversation_id=self.subject.conversation_id,
             trace_id=invocation_id,
             request_type=_REQUEST_TYPE,
+            caller_agent_id=self.subject.caller_agent_id,
             legacy_runtime_call=False,
         )
         self.db.add(row)
@@ -403,6 +410,10 @@ class GovernedModelInvocation:
         invocation_id: str | None = None,
         now: datetime | None = None,
     ) -> ModelInvocationAuthorization | None:
+        # ``agent_id`` is retained for source compatibility with earlier
+        # callsites, but it is intentionally ignored.  The only authority is
+        # the request subject populated from verified CSP identity context.
+        del agent_id
         if not self.enabled:
             return None
         assert self.runtime is not None
@@ -412,7 +423,7 @@ class GovernedModelInvocation:
         return self.runtime.authorize_model_invocation(
             callsite_id,
             classification,
-            agent_id,
+            self.subject.agent_id,
             safe_endpoint,
             artifact,
             deployment,
@@ -425,6 +436,8 @@ class GovernedModelInvocation:
                 "model_id": self.subject.model_id,
                 "conversation_id": self.subject.conversation_id,
                 "trace_id": self.subject.trace_id,
+                "caller_agent_id": self.subject.caller_agent_id,
+                "agent_id": self.subject.agent_id,
             },
         )
 
@@ -453,6 +466,8 @@ class GovernedModelInvocation:
                     "model_id": self.subject.model_id,
                     "conversation_id": self.subject.conversation_id,
                     "trace_id": self.subject.trace_id,
+                    "caller_agent_id": self.subject.caller_agent_id,
+                    "agent_id": self.subject.agent_id,
                 },
             )
         except Exception:
@@ -489,6 +504,8 @@ class GovernedModelInvocation:
                     "model_id": self.subject.model_id,
                     "conversation_id": self.subject.conversation_id,
                     "trace_id": self.subject.trace_id,
+                    "caller_agent_id": self.subject.caller_agent_id,
+                    "agent_id": self.subject.agent_id,
                 },
             )
         finally:

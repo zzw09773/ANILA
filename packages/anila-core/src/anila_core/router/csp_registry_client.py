@@ -135,6 +135,22 @@ class AgentClient(Protocol):
         execution_grant: ExecutionGrantEnvelope,
     ) -> AsyncIterator[dict[str, Any]]: ...
 
+    async def resume(
+        self,
+        *,
+        entry: RegistryEntry,
+        snapshot: RegistrySnapshot,
+        caller_api_key: str,
+        session_id: str,
+        context: Any,
+        route_decision: RouteDecision,
+        policy_result: PolicyGateResult,
+        grant_input: ExecutionGrantInput,
+        execution_grant: ExecutionGrantEnvelope,
+        idempotency_key: str,
+        approval_mode: str = "approve_all",
+    ) -> dict[str, Any]: ...
+
 
 class InferenceClient(Protocol):
     """CSP-owned primary-model inference transport for formal Router calls."""
@@ -841,6 +857,7 @@ class CspAgentClient:
         *,
         service_token: str | None = None,
         dispatch_path: str = "/internal/v1/agents/dispatch",
+        resume_path: str | None = None,
         timeout: float = 120.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
@@ -852,8 +869,12 @@ class CspAgentClient:
             raise ValueError("CSP base URL 不得包含 userinfo/path/query/fragment")
         if not dispatch_path.startswith("/") or "?" in dispatch_path or "#" in dispatch_path:
             raise ValueError("CSP Agent dispatch path 必須是 origin-relative path")
+        resolved_resume_path = resume_path or f"{dispatch_path.rstrip('/')}/resume"
+        if not resolved_resume_path.startswith("/") or "?" in resolved_resume_path or "#" in resolved_resume_path:
+            raise ValueError("CSP Agent resume path 必須是 origin-relative path")
         self.service_token = (service_token or "").strip()
         self.dispatch_path = dispatch_path
+        self.resume_path = resolved_resume_path
         self.timeout = timeout
         self.transport = transport
 
@@ -992,6 +1013,7 @@ class CspAgentClient:
             "X-ANILA-Agent-Manifest-SHA256": entry.manifest_sha256,
             "X-ANILA-Execution-Grant-Id": inner_grant.grant_id,
             "X-ANILA-Execution-Grant": signed_token,
+            "X-ANILA-Idempotency-Key": invocation_id,
             "X-ANILA-Route-Decision-Id": route_decision.decision_id,
             "X-ANILA-Policy-Decision-Id": policy_result.decision_id,
             # HTTP field values are ASCII on the wire; the CSP sink unquotes
@@ -1005,6 +1027,56 @@ class CspAgentClient:
         return CspAgentRequest(
             url=f"{self.base_url}{self.dispatch_path}",
             payload=payload,
+            headers=headers,
+        )
+
+    def build_resume_request(
+        self,
+        *,
+        entry: RegistryEntry,
+        snapshot: RegistrySnapshot,
+        caller_api_key: str,
+        session_id: str,
+        context: Any,
+        route_decision: RouteDecision,
+        policy_result: PolicyGateResult,
+        grant_input: ExecutionGrantInput,
+        execution_grant: ExecutionGrantEnvelope,
+        idempotency_key: str,
+        approval_mode: str = "approve_all",
+    ) -> CspAgentRequest:
+        """Build the body-less formal approve request through the same gate.
+
+        Calling ``build_request`` first deliberately reuses all grant,
+        registry, manifest, owner and correlation validation.  Only after that
+        validation does this method replace the normal chat payload with the
+        explicit R5 binary ``approval_mode`` body and resume path.
+        """
+
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            raise AgentClientError("resume 缺少 idempotency key")
+        if len(idempotency_key) > 255 or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in idempotency_key):
+            raise AgentClientError("resume idempotency key 格式無效")
+        if approval_mode != "approve_all":
+            raise AgentClientError("resume approval_mode 必須是 approve_all")
+        base = self.build_request(
+            query="resume",
+            entry=entry,
+            snapshot=snapshot,
+            caller_api_key=caller_api_key,
+            session_id=session_id,
+            context=context,
+            route_decision=route_decision,
+            policy_result=policy_result,
+            grant_input=grant_input,
+            execution_grant=execution_grant,
+            stream=False,
+        )
+        headers = dict(base.headers)
+        headers["X-ANILA-Idempotency-Key"] = idempotency_key.strip()
+        return CspAgentRequest(
+            url=f"{self.base_url}{self.resume_path}",
+            payload={"approval_mode": approval_mode},
             headers=headers,
         )
 
@@ -1043,6 +1115,17 @@ class CspAgentClient:
                     json=request.payload,
                     headers=request.headers,
                 )
+                if response.status_code == 202:
+                    data = response.json()
+                    if not isinstance(data, Mapping):
+                        raise AgentClientError("CSP Agent pause response 必須是 JSON object")
+                    return {
+                        "content": "",
+                        "status": "paused",
+                        "anila_meta": data.get("anila_meta"),
+                        "anila_events": data.get("anila_events", []),
+                        "raw": dict(data),
+                    }
                 response.raise_for_status()
                 data = response.json()
         except (httpx.HTTPError, ValueError, TypeError) as exc:
@@ -1123,6 +1206,65 @@ class CspAgentClient:
         except (httpx.HTTPError, ValueError, TypeError) as exc:
             yield {"type": "error", "error": f"CSP Agent stream 失敗: {type(exc).__name__}"}
 
+    async def resume(
+        self,
+        *,
+        entry: RegistryEntry,
+        snapshot: RegistrySnapshot,
+        caller_api_key: str,
+        session_id: str,
+        context: Any,
+        route_decision: RouteDecision,
+        policy_result: PolicyGateResult,
+        grant_input: ExecutionGrantInput,
+        execution_grant: ExecutionGrantEnvelope,
+        idempotency_key: str,
+        approval_mode: str = "approve_all",
+    ) -> dict[str, Any]:
+        request = self.build_resume_request(
+            entry=entry,
+            snapshot=snapshot,
+            caller_api_key=caller_api_key,
+            session_id=session_id,
+            context=context,
+            route_decision=route_decision,
+            policy_result=policy_result,
+            grant_input=grant_input,
+            execution_grant=execution_grant,
+            idempotency_key=idempotency_key,
+            approval_mode=approval_mode,
+        )
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
+                response = await client.post(
+                    request.url,
+                    json=request.payload,
+                    headers=request.headers,
+                )
+                if response.status_code == 409:
+                    raise AgentClientError("CSP Agent resume idempotency/lifecycle conflict")
+                response.raise_for_status()
+                data = response.json()
+        except AgentClientError:
+            raise
+        except (httpx.HTTPError, ValueError, TypeError) as exc:
+            raise AgentClientError("CSP Agent resume call 失敗") from exc
+        if not isinstance(data, Mapping):
+            raise AgentClientError("CSP Agent resume response 必須是 JSON object")
+        result = {"raw": dict(data), **dict(data)}
+        if data.get("status") == "paused" or response.status_code == 202:
+            result.setdefault("content", "")
+            result.setdefault("anila_meta", data.get("anila_meta"))
+            return result
+        try:
+            message = data["choices"][0]["message"]
+            content = message.get("content", "")
+        except (KeyError, IndexError, TypeError) as exc:
+            raise AgentClientError("CSP Agent resume response shape 無效") from exc
+        if not isinstance(content, str):
+            raise AgentClientError("CSP Agent resume content 必須是字串")
+        result.update({"content": content, "anila_meta": data.get("anila_meta")})
+        return result
 
 __all__ = [
     "AgentClient",

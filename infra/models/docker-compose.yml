@@ -11,7 +11,7 @@
 #     so the cutover is a stop-and-swap, not a redesign
 #
 # Bootstrap (one-time, on the host):
-#     docker network create anila-models-net
+#     docker network create --driver bridge --internal anila-models-net
 #     docker compose restart csp   # CSP joins the net (repo 根,經 root shim)
 #
 # 目錄佈局 (2026-07 §17.1 重組):
@@ -26,7 +26,8 @@
 #     docker compose -f infra/models/docker-compose.yml up -d ...
 #
 # Profiles:
-#     (無 profile)        試用機現役組:gpt-oss-20b / gemma4 / nv-embed / flux
+#     (無 profile)        試用機現役組:gpt-oss-20b / gemma4 / nv-embed
+#     --profile flux-approved  明示法務核准後才加入 flux2-dev + shim
 #     --profile intranet  內網 H100 新增組:gemma-4-26b-a4b / gemma-4-12b /
 #                         gpt-oss-120b (generic vLLM image,權重走 ANILA_HF_DIR)
 #
@@ -251,6 +252,7 @@ services:
     labels:
       com.anila.inference-role: model-runtime
       com.anila.requires-legal-approval: "true"
+      com.anila.required-profile: flux-approved
     image: flux2-dev:bf16
     container_name: anila-model-flux2-dev
     build:
@@ -301,6 +303,7 @@ services:
     labels:
       com.anila.inference-role: model-side-shim
       com.anila.requires-legal-approval: "true"
+      com.anila.required-profile: flux-approved
     image: anila-flux-agent:latest
     container_name: anila-model-flux2-dev-agent
     build:

@@ -140,7 +140,15 @@ reconciliation 報表。
 
 Repository 只附 disabled template 與 synthetic-material generator（測試時在
 記憶體產生 ephemeral signing key，輸出不含 private key），不附任何 production
-approval。FLUX.2-dev 的 BFL Non-Commercial 限制尚未取得正式法務簽核；因此
+approval。Generator 預設只啟用目前可實際執行且 agent scope 為空的
+`r7.csp.memory`；其餘 37 個 inventory callsite 維持 disabled。`r7.csp.proxy`
+與 `r7.csp.proxy-service` 雖有來源碼接線，但目前 signed binding 宣告
+`registered-agent` scope，而 CSP proxy admission 沒有傳入 caller-agent context；
+因此缺少該 context 時必須在 network 前 fail-closed，不能把它們冒充成 live
+synthetic smoke。可用重複的 `--callsite-id` 做明確的非-FLUX CSP fixture（例如
+authority/schema 測試），但 raw／FLUX／unknown callsite 會在簽署前拒絕。所有
+輸出都標示 synthetic test-only，不能冒充 operator production approval。FLUX.2-dev
+的 BFL Non-Commercial 限制尚未取得正式法務簽核；因此
 formal platform 預設不註冊 image model／Agent，獨立 model stack 的 `flux2-dev`
 與 model-side shim 僅在明示 `flux-approved` profile、`GATE5_FLUX_LEGAL_APPROVED`
 與 signed profile 的 FLUX callsite binding 同時成立時才可啟動。disabled template
@@ -152,9 +160,24 @@ Static check：
 ```bash
 PYTHONPATH=packages/anila-security/src python \
   infra/policy/gate5/check_model_governance.py \
+  --repo-root . \
   --inventory infra/policy/gate5/model-governance-inventory.v1.json \
   --profile infra/policy/gate5/model-governance-profile.disabled-template.json \
   --allow-disabled-template
+```
+
+正式部署的 `GATE5_MATERIAL_DIR` 是 repo 外的四個唯讀檔案；CLI 的
+`--repo-root` 必須明確指向實際 source tree，不能由外部 inventory 路徑推導。
+模型 lifecycle 會以 `docker network create --driver bridge --internal
+anila-models-net` 建立並在每次 preflight／up／restart／status 讀回
+`Internal=true`；既有錯誤 network 只會 fail-closed 並印出人工確認 attached
+containers 後的安全重建指令。
+
+可在有 Docker daemon 與本地 `python:3.11-slim` image 時執行 live topology
+negative smoke（不開 host port、以 direct IP/TCP 驗證）：
+
+```bash
+bash infra/deployment/scripts/gate5-network-negative-smoke.sh
 ```
 
 R6 的 deterministic contract runner 只接受明確的 R3 runtime adapter interface；

@@ -72,6 +72,12 @@ class _InvocationLockEntry:
 
 _INVOCATION_LOCKS: dict[str, _InvocationLockEntry] = {}
 _INVOCATION_LOCKS_GUARD = asyncio.Lock()
+# The durable Agent FileTaskStore remains the final idempotency authority. CSP
+# also remembers the accepted resume key for the lifetime of this process so a
+# terminal replay with a different key cannot be mistaken for the same retry.
+# A future CSP SessionEventRun schema should persist this latch across CSP
+# restarts; until then cache misses fail closed only when authority is absent.
+_RESUME_IDEMPOTENCY_KEYS: dict[str, str] = {}
 
 
 def _positive(value: object, *, field: str) -> int:
@@ -454,6 +460,7 @@ def build_agent_outbound_headers(
     authority: DispatchAuthority,
     *,
     grant_token: str,
+    idempotency_key: str | None = None,
 ) -> dict[str, str]:
     """Build CSP-authored, per-agent-only outbound headers."""
 
@@ -483,7 +490,9 @@ def build_agent_outbound_headers(
         "X-ANILA-Route-Decision-Id": b.route_decision_id,
         "X-ANILA-Policy-Decision-Id": b.policy_decision_id,
         "X-ANILA-Classification-Level": quote(b.classification.to_storage(), safe=""),
-        "X-ANILA-Idempotency-Key": b.invocation_id,
+        # Initial dispatches use the invocation id as their exactly-once key;
+        # an approve/resume call supplies its own CSP-issued retry key.
+        "X-ANILA-Idempotency-Key": idempotency_key or b.invocation_id,
     }
 
 
@@ -552,6 +561,65 @@ def _extract_agent_content(payload: object) -> str:
     return message["content"]
 
 
+def _append_agent_event_history(
+    bridge: StreamBridge,
+    payload: object,
+) -> tuple[StepEvent, ...]:
+    """Rebind the Agent's durable event projection into CSP's event ledger.
+
+    The Agent response is never trusted as an authority object.  Its
+    ``anila_events`` list is only a replay hint; :class:`StreamBridge` validates
+    every StepEvent, overwrites governance identity/cursor fields from the
+    already-authorized binding and applies the durable idempotency/terminal
+    latches.  A malformed projection therefore fails closed before a response
+    is returned to Router.
+    """
+
+    if not isinstance(payload, Mapping):
+        return ()
+    raw_events = payload.get("anila_events")
+    if raw_events is None:
+        return ()
+    if not isinstance(raw_events, list):
+        raise ValueError("Agent anila_events 必須是 list")
+    for raw_event in raw_events:
+        if not isinstance(raw_event, Mapping):
+            raise ValueError("Agent anila_events item 必須是 object")
+        bridge.append(
+            STEP_EVENT_SSE_NAME,
+            json.dumps(dict(raw_event), ensure_ascii=False, separators=(",", ":")),
+        )
+    return bridge.replay_events()
+
+
+def _paused_payload(authority: DispatchAuthority) -> dict[str, Any]:
+    """Return a non-terminal HITL response without fabricating completion."""
+
+    b = authority.binding
+    return {
+        "object": "anila.task",
+        "task_id": str(b.task_id),
+        "run_id": str(b.run_id),
+        "session_id": b.session_id,
+        "invocation_id": b.invocation_id,
+        "status": "paused",
+        "anila_meta": {
+            "task_id": str(b.task_id),
+            "run_id": str(b.run_id),
+            "session_id": b.session_id,
+            "invocation_id": b.invocation_id,
+            "status": "paused",
+        },
+    }
+
+
+def _bridge_is_paused(bridge: StreamBridge) -> bool:
+    """Return true when the newest durable event is BLOCKED and non-terminal."""
+
+    events = bridge.replay_events()
+    return bool(events and events[-1].status is StepStatus.BLOCKED and bridge.terminal_event() is None)
+
+
 def _canonical_nonstream_response(
     *,
     content: str,
@@ -596,6 +664,7 @@ def _openai_content_frame(event: StepEvent, *, model: str) -> str | None:
         StepStatus.COMPLETED,
         StepStatus.FAILED,
         StepStatus.CANCELLED,
+        StepStatus.BLOCKED,
     }:
         return None
     content = event.safe_output_summary
@@ -852,6 +921,18 @@ async def dispatch_nonstream(
         try:
             async with httpx.AsyncClient(timeout=float(settings.LLM_TIMEOUT)) as client:
                 response = await client.post(authority.endpoint_url, json=body, headers=headers)
+                # Official Agent uses HTTP 202 to report a durable HITL pause.
+                # It is deliberately not an OpenAI completion and must never
+                # enter the ordinary content/terminal path.
+                if getattr(response, "status_code", 200) == 202:
+                    payload = response.json()
+                    _append_agent_event_history(bridge, payload)
+                    # The HTTP status/payload flag is not durable authority.
+                    # CSP only exposes a pause after an actual BLOCKED event
+                    # has been rebound into its SessionEventStore.
+                    if _bridge_is_paused(bridge):
+                        return _paused_payload(authority)
+                    raise ValueError("Agent 202 response 缺少 durable blocked event")
                 response.raise_for_status()
                 content_type = response.headers.get("content-type", "")
                 raw = response.text
@@ -869,13 +950,20 @@ async def dispatch_nonstream(
                 db.rollback()
             raise HTTPException(status_code=502, detail="Agent 呼叫失敗，已安全終止") from exc
         try:
+            _append_agent_event_history(bridge, payload)
+            if _bridge_is_paused(bridge):
+                return _paused_payload(authority)
             content = _extract_agent_content(payload)
             # append_terminal enforces the same bounded safe-summary and
             # secret policy as streamed content.  Invalid output is terminal
             # failure, never a raw response passthrough.
-            terminal_receipt = bridge.append_terminal(
-                StepStatus.COMPLETED, safe_output_summary=content
-            )
+            terminal_receipt = bridge.terminal_event()
+            if terminal_receipt is None:
+                terminal_receipt = bridge.append_terminal(
+                    StepStatus.COMPLETED, safe_output_summary=content
+                )
+            elif terminal_receipt.status is not StepStatus.COMPLETED:
+                return _terminal_payload(bridge) or _paused_payload(authority)
         except (EventConflictError, EventOrderError, TerminalConflictError) as exc:
             db.rollback()
             raise HTTPException(status_code=409, detail="Agent dispatch terminal conflict") from exc
@@ -887,10 +975,121 @@ async def dispatch_nonstream(
             except Exception:
                 db.rollback()
             raise HTTPException(status_code=502, detail="Agent 回應未通過 CSP 驗證") from exc
+    return _canonical_nonstream_response(
+        content=content,
+        authority=authority,
+        terminal_event=terminal_receipt.event,
+    )
+
+
+async def dispatch_resume(
+    *,
+    db: Session,
+    authority: DispatchAuthority,
+    grant_token: str,
+    idempotency_key: str,
+    interrupt_id: str | None = None,
+    answer: Any = None,
+) -> dict[str, Any]:
+    """Perform the formal CSP→Agent approve/resume transition.
+
+    Resume is intentionally a sibling of normal dispatch, not a call to the
+    legacy public ``/v1/agents/{id}/sessions/...`` proxy.  CSP reuses the same
+    complete authority binding/grant, checks the durable blocked cursor before
+    network I/O, sends only the per-agent ``csk-`` plus correlation/grant
+    headers, then revalidates the Agent's canonical event projection into the
+    CSP-owned :class:`SessionEventStore`.
+    """
+
+    key = _text(idempotency_key, field="X-ANILA-Idempotency-Key")
+    if len(key) > 255:
+        raise HTTPException(status_code=400, detail="X-ANILA-Idempotency-Key 過長")
+    async with _invocation_guard(authority.binding.invocation_id):
+        bridge = _bridge(authority, db)
+        _reject_completed_without_terminal(authority, bridge)
+        previous_key = _RESUME_IDEMPOTENCY_KEYS.get(authority.binding.run_id)
+        if previous_key is not None and previous_key != key:
+            raise HTTPException(status_code=409, detail="resume idempotency key conflicts with run")
+        existing_terminal = bridge.terminal_event()
+        if existing_terminal is not None:
+            # Exact retries replay the one durable terminal without touching
+            # Agent again.  A conflicting key cannot mutate this latch.
+            return _terminal_payload(bridge) or _paused_payload(authority)
+        if not _bridge_is_paused(bridge):
+            raise HTTPException(status_code=409, detail="Task 尚未處於可恢復的 blocked 狀態")
+        _RESUME_IDEMPOTENCY_KEYS[authority.binding.run_id] = key
+
+        headers = build_agent_outbound_headers(
+            db,
+            authority,
+            grant_token=grant_token,
+            idempotency_key=key,
+        )
+        # R5 is an explicit binary approval seam.  The Agent validates this
+        # mode and approves the persisted pending interruptions; no client-
+        # supplied interrupt id/answer is accepted or silently ignored.
+        if interrupt_id is not None or answer is not None:
+            raise HTTPException(status_code=400, detail="resume 不接受 interrupt_id/answer")
+        body: dict[str, Any] = {"approval_mode": "approve_all"}
+        target = authority.agent.endpoint_url.rstrip("/") + f"/v1/tasks/{authority.binding.task_id}/approve"
+        try:
+            async with httpx.AsyncClient(timeout=float(settings.LLM_TIMEOUT)) as client:
+                response = await client.post(target, json=body, headers=headers)
+                if response.status_code >= 400:
+                    # The Agent's 409 is the durable idempotency/lifecycle
+                    # conflict contract.  Preserve that status; other
+                    # downstream failures are hidden behind a safe 502.
+                    if response.status_code == 409:
+                        raise HTTPException(status_code=409, detail="Agent resume idempotency/lifecycle conflict")
+                    if response.status_code in {401, 403}:
+                        raise HTTPException(status_code=502, detail="Agent resume authentication failed")
+                    raise HTTPException(status_code=502, detail="Agent resume failed")
+                payload = response.json()
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="Agent resume failed") from exc
+
+        try:
+            _append_agent_event_history(bridge, payload)
+            # A 202/status marker without a canonical BLOCKED event is
+            # malformed and must not create a resumable cursor.
+            if _bridge_is_paused(bridge):
+                return _paused_payload(authority)
+            if getattr(response, "status_code", 200) == 202 or (
+                isinstance(payload, Mapping) and payload.get("status") == "paused"
+            ):
+                raise ValueError("Agent resume pause response 缺少 durable blocked event")
+
+            content = _extract_agent_content(payload)
+            terminal_receipt = bridge.terminal_event()
+            if terminal_receipt is None:
+                terminal_receipt = bridge.append_terminal(
+                    StepStatus.COMPLETED, safe_output_summary=content
+                )
+            elif terminal_receipt.status is not StepStatus.COMPLETED:
+                return _terminal_payload(bridge) or _paused_payload(authority)
+        except (EventConflictError, EventOrderError, TerminalConflictError) as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Agent resume event conflict") from exc
+        except Exception as exc:
+            try:
+                if bridge.terminal_event() is None:
+                    bridge.append_terminal(
+                        StepStatus.FAILED, safe_output_summary="Agent resume response 驗證失敗"
+                    )
+            except Exception:
+                db.rollback()
+            raise HTTPException(status_code=502, detail="Agent resume response 未通過 CSP 驗證") from exc
+        terminal_event = (
+            terminal_receipt.event
+            if hasattr(terminal_receipt, "event")
+            else terminal_receipt
+        )
         return _canonical_nonstream_response(
             content=content,
             authority=authority,
-            terminal_event=terminal_receipt.event,
+            terminal_event=terminal_event,
         )
 
 
@@ -1020,7 +1219,11 @@ async def dispatch_stream(
             raise HTTPException(status_code=502, detail="Agent stream 失敗，已安全終止") from exc
         try:
             existing_terminal = bridge.terminal_event()
-            if existing_terminal is None:
+            # ``BLOCKED`` is a resumable pause, not a terminal state.  The
+            # downstream Agent already emitted ``anila.step`` + ``[DONE]``;
+            # writing a synthetic COMPLETED here would permanently destroy
+            # HITL semantics and make approve/resume impossible.
+            if existing_terminal is None and not _bridge_is_paused(bridge):
                 terminal_receipt = bridge.append_terminal(
                     StepStatus.COMPLETED, safe_output_summary="執行完成"
                 )

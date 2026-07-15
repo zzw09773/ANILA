@@ -4,8 +4,12 @@
 The generated profile is deliberately synthetic and must never be copied into
 a production bundle.  Ed25519 private keys are created only in memory, used to
 sign the profile, and discarded; the output contains public trust keys only.
-The default enabled callsite is the Router CSP path, so no FLUX/legal approval
-is implied by this fixture.
+The default enabled callsite is the CSP memory extraction/embedding seam,
+which currently has an executable empty agent scope.  The public and shared
+CSP proxy seams can be selected explicitly for authority/schema tests, but
+their scoped admission requires caller-agent context that the current proxy
+path does not supply.  No Router, raw-model, or FLUX/legal approval is
+implied by this fixture.
 """
 
 from __future__ import annotations
@@ -13,9 +17,9 @@ from __future__ import annotations
 import argparse
 import base64
 import copy
-import hashlib
 import json
 import sys
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -38,6 +42,58 @@ INVENTORY_PATH = ROOT / "infra/policy/gate5/model-governance-inventory.v1.json"
 TEMPLATE_PATH = ROOT / "infra/policy/gate5/model-governance-profile.disabled-template.json"
 OBSERVED_SCHEMA = "anila.gate5.model-governance.observed.v1"
 ROLES = ("system_owner", "data_owner", "security", "operations")
+DEFAULT_CALLSITE_IDS = (
+    "r7.csp.memory",
+)
+SYNTHETIC_PROFILE_ID = "synthetic-gate5-smoke-not-production"
+
+
+def _selected_callsites(
+    inventory: dict,
+    *,
+    callsite_ids: Sequence[str] | None,
+    callsite_id: str | None,
+) -> list[dict]:
+    """Resolve and validate explicit synthetic callsites.
+
+    ``callsite_id`` is retained as a compatibility alias for callers of the
+    original single-callsite helper.  New callers should use ``callsite_ids``
+    (and the CLI's repeatable ``--callsite-id`` option).
+    """
+
+    if callsite_ids is not None and callsite_id is not None:
+        raise ValueError("pass callsite_ids or callsite_id, not both")
+    selected_ids = tuple(
+        callsite_ids
+        if callsite_ids is not None
+        else ((callsite_id,) if callsite_id is not None else DEFAULT_CALLSITE_IDS)
+    )
+    if not selected_ids:
+        raise ValueError("at least one callsite must be selected")
+    if len(selected_ids) != len(set(selected_ids)):
+        raise ValueError("callsite ids must be unique")
+
+    by_id = {item["id"]: item for item in inventory["callsites"]}
+    unknown = [item for item in selected_ids if item not in by_id]
+    if unknown:
+        raise ValueError(f"unknown callsite id(s): {', '.join(unknown)}")
+
+    calls = [by_id[item] for item in selected_ids]
+    invalid = [
+        call["id"]
+        for call in calls
+        if call["raw_endpoint"]
+        or call["gateway_id"] != "csp-model-gateway"
+        or not call["usage_sink"]
+        or not call["audit_sink"]
+        or call["id"].startswith("r7.flux.")
+    ]
+    if invalid:
+        raise ValueError(
+            "synthetic material only supports non-FLUX CSP callsites with "
+            f"durable usage/audit sinks: {', '.join(invalid)}"
+        )
+    return calls
 
 
 def _load(path: Path) -> dict:
@@ -47,14 +103,27 @@ def _load(path: Path) -> dict:
     return value
 
 
-def generate(output_dir: Path, *, callsite_id: str = "r7.router.core") -> dict[str, Path]:
-    """Write synthetic public material and return the four paths."""
+def generate(
+    output_dir: Path,
+    *,
+    callsite_ids: Sequence[str] | None = None,
+    callsite_id: str | None = None,
+) -> dict[str, Path]:
+    """Write synthetic public material and return the four paths.
+
+    Every enabled callsite shares one synthetic artifact/deployment pair so
+    tests exercise multi-callsite authority with the same signed facts.  The
+    output remains test-only and contains no private signing key.
+    """
 
     inventory = _load(INVENTORY_PATH)
     template = _load(TEMPLATE_PATH)
-    call = next(
-        item for item in inventory["callsites"] if item["id"] == callsite_id
+    calls = _selected_callsites(
+        inventory,
+        callsite_ids=callsite_ids,
+        callsite_id=callsite_id,
     )
+    selected_ids = [call["id"] for call in calls]
     now = datetime.now(timezone.utc).replace(microsecond=0)
     artifact = {
         "artifact_id": "artifact.gate5-synthetic",
@@ -88,18 +157,18 @@ def generate(output_dir: Path, *, callsite_id: str = "r7.router.core") -> dict[s
     profile = copy.deepcopy(template)
     profile.update(
         {
-            "profile_id": "synthetic-gate5-smoke-not-production",
+            "profile_id": SYNTHETIC_PROFILE_ID,
             "profile_version": "synthetic-1.0.0",
             "enabled": True,
-            "enabled_callsites": [callsite_id],
+            "enabled_callsites": selected_ids,
             "disabled_callsites": [
                 item["id"]
                 for item in inventory["callsites"]
-                if item["id"] != callsite_id
+                if item["id"] not in selected_ids
             ],
             "callsite_bindings": [
                 {
-                    "callsite_id": callsite_id,
+                    "callsite_id": call["id"],
                     "gateway_id": call["gateway_id"],
                     "classification_ceiling": call["classification_ceiling"],
                     "usage_sink": call["usage_sink"],
@@ -108,6 +177,7 @@ def generate(output_dir: Path, *, callsite_id: str = "r7.router.core") -> dict[s
                     "model_artifact_id": artifact["artifact_id"],
                     "deployment_id": deployment["deployment_id"],
                 }
+                for call in calls
             ],
             "model_artifacts": [artifact],
             "deployments": [deployment],
@@ -187,12 +257,23 @@ def main() -> int:
         required=True,
         help="temporary directory outside the repository preferred",
     )
-    parser.add_argument("--callsite-id", default="r7.router.core")
+    parser.add_argument(
+        "--callsite-id",
+        dest="callsite_ids",
+        action="append",
+        help=(
+            "enable one non-FLUX CSP callsite (repeat for multiple); "
+            "defaults to executable r7.csp.memory"
+        ),
+    )
     args = parser.parse_args()
-    paths = generate(args.output_dir, callsite_id=args.callsite_id)
+    paths = generate(args.output_dir, callsite_ids=args.callsite_ids)
     for name, path in paths.items():
         print(f"{name}={path}")
-    print("synthetic material only; no private key was written")
+    print(
+        "synthetic test-only material; not an operator production approval; "
+        "no private key was written"
+    )
     return 0
 
 

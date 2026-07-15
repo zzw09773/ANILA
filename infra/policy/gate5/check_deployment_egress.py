@@ -35,7 +35,7 @@ import argparse
 import json
 import os
 import re
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlsplit
 
@@ -150,6 +150,17 @@ def _mounts(service: Mapping[str, Any]) -> list[dict[str, Any]]:
             continue
         raise DeploymentEgressError("resolved volume entry is malformed")
     return result
+
+
+def _ports(service: Mapping[str, Any]) -> list[object]:
+    """Return resolved host-published ports, preserving malformed values."""
+
+    value = service.get("ports", [])
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise DeploymentEgressError("resolved service ports must be a list")
+    return list(value)
 
 
 def _service_labels(service: Mapping[str, Any]) -> dict[str, str]:
@@ -372,6 +383,7 @@ def _check_formal_services(
                     )
 
     flux_present = any("flux" in name.lower() for name in platform_services)
+    flux_services: set[str] = set()
     for document in documents[1:]:
         model_services = _services(document)
         for service_name, raw_service in model_services.items():
@@ -379,6 +391,11 @@ def _check_formal_services(
                 raise DeploymentEgressError(f"resolved model service {service_name} is malformed")
             if "flux" in service_name.lower():
                 flux_present = True
+                flux_services.add(service_name)
+            if _ports(raw_service):
+                raise DeploymentEgressError(
+                    f"formal model service {service_name} must not publish host ports"
+                )
             labels = _service_labels(raw_service)
             role = labels.get("com.anila.inference-role", "model-runtime")
             if AGENT_NAME.search(service_name) and role != "model-side-shim":
@@ -390,18 +407,33 @@ def _check_formal_services(
                     f"unknown model-side shim is not admitted: {service_name}"
                 )
             if role == "model-side-shim":
+                if labels.get("com.anila.required-profile") != "flux-approved":
+                    raise DeploymentEgressError(
+                        f"model-side shim {service_name} must resolve under flux-approved profile"
+                    )
                 for key, value in _environment(raw_service).items():
                     if key == "FLUX_BACKEND_URL" and value.strip() and not _as_bool(
                         csp_env.get("GATE5_FLUX_LEGAL_APPROVED", "")
                     ):
                         raise DeploymentEgressError(
-                            "FLUX model-side shim has a backend URL without legal approval"
+                            "FLUX model-side shim has a backend URL without legal-approved profile"
                         )
 
+    legal_approved = _as_bool(csp_env.get("GATE5_FLUX_LEGAL_APPROVED", ""))
+    if legal_approved and not flux_present:
+        raise DeploymentEgressError(
+            "GATE5_FLUX_LEGAL_APPROVED=true requires resolved model Compose with --profile flux-approved"
+        )
     if flux_present:
-        if not _as_bool(csp_env.get("GATE5_FLUX_LEGAL_APPROVED", "")):
+        if not legal_approved:
             raise DeploymentEgressError(
                 "FLUX services are present but no legal-approved Gate 5 profile is declared"
+            )
+        required_flux = {"flux2-dev", "flux2-dev-agent"}
+        if flux_services != required_flux:
+            raise DeploymentEgressError(
+                "flux-approved resolved model Compose must include exactly flux2-dev and flux2-dev-agent; "
+                f"resolved={sorted(flux_services)}"
             )
         profile_source = next(
             (

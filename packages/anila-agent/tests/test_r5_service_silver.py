@@ -267,6 +267,18 @@ def test_csp_approved_resume_survives_restart_and_is_exactly_once(
         paused = first_service.post("/v1/chat/completions", json=payload, headers=headers)
         assert paused.status_code == 202
         assert paused.json()["status"] == "paused"
+        malformed_resume = first_service.post(
+            "/v1/tasks/task-resume-1/approve",
+            content=b"{not-json",
+            headers={**headers, "X-ANILA-Idempotency-Key": "idem-malformed"},
+        )
+        assert malformed_resume.status_code == 400
+        legacy_fields = first_service.post(
+            "/v1/tasks/task-resume-1/approve",
+            json={"interrupt_id": "approval-1", "answer": "yes"},
+            headers={**headers, "X-ANILA-Idempotency-Key": "idem-legacy-fields"},
+        )
+        assert legacy_fields.status_code == 400
 
     # A fresh lifespan instance must use the same FileTaskStore and can resume
     # a durable state produced before restart.

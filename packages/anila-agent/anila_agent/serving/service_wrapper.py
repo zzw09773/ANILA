@@ -32,7 +32,7 @@ from urllib.parse import unquote
 
 from anila_contracts import AgentManifest, Classification
 from anila_contracts.events import StepKind, StepStatus
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from openai.types.responses import ResponseTextDeltaEvent
 from pydantic import BaseModel
@@ -549,6 +549,7 @@ async def cancel_task(
 @app.post("/v1/tasks/{task_id}/resume", include_in_schema=False)
 async def approve_and_resume_task(
     task_id: str,
+    request: Request,
     x_csp_service_token: str | None = Header(default=None, alias="X-CSP-Service-Token"),
     x_anila_user_id: str | None = Header(default=None, alias="X-ANILA-User-Id"),
     x_anila_user_email: str | None = Header(default=None, alias="X-ANILA-User-Email"),
@@ -581,6 +582,37 @@ async def approve_and_resume_task(
         raise HTTPException(status_code=503, detail="durable resume is not admitted for this agent")
     if not verify_service_token(x_csp_service_token, CSP_SERVICE_TOKEN, allow_unset=False):
         raise HTTPException(status_code=401, detail="missing or invalid X-CSP-Service-Token")
+    # R5 uses an explicit binary approval contract.  The Agent never accepts a
+    # client-provided interruption list or answer: CSP has already made the
+    # policy decision, and the persisted SDK RunState remains the sole source
+    # of pending interruptions.  Unknown/legacy body fields are rejected
+    # before state loading rather than being silently ignored.
+    # Parse the body ourselves so malformed JSON cannot be silently converted
+    # into an empty approval.  A genuinely empty body is the only shorthand
+    # accepted (TestClient/HTTP clients may omit Content-Length); any declared
+    # non-zero body that is empty is malformed and fails closed.
+    try:
+        raw_resume_bytes = await request.body()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="resume body 無法讀取") from exc
+    if not raw_resume_bytes.strip():
+        content_length = request.headers.get("content-length")
+        if content_length not in (None, "0"):
+            raise HTTPException(status_code=400, detail="resume body JSON 無效")
+        raw_resume_body: Any = {}
+    else:
+        try:
+            raw_resume_body = json.loads(raw_resume_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail="resume body JSON 無效") from exc
+    if not isinstance(raw_resume_body, dict):
+        raise HTTPException(status_code=400, detail="resume body 必須是 object")
+    unknown_resume_fields = set(raw_resume_body) - {"approval_mode"}
+    if unknown_resume_fields:
+        raise HTTPException(status_code=400, detail="resume body 含未定義欄位")
+    approval_mode = raw_resume_body.get("approval_mode", "approve_all")
+    if approval_mode != "approve_all":
+        raise HTTPException(status_code=400, detail="resume approval_mode 必須是 approve_all")
     (
         manifest,
         bound_task_id,
@@ -960,6 +992,18 @@ def _response_from_task(record: TaskRecord) -> dict[str, Any]:
                 "finish_reason": "stop",
             }
         ],
+        # Events have already been validated/rebound by FileTaskStore on both
+        # write and read.  Returning the canonical history lets CSP rebuild its
+        # own durable SessionEventStore after an approve/resume call without
+        # trusting arbitrary Agent response fields.
+        "anila_events": list(record.events),
+        "anila_meta": {
+            "task_id": record.task_id,
+            "run_id": record.run_id,
+            "session_id": record.session_id,
+            "invocation_id": record.invocation_id,
+            "status": record.status.value,
+        },
     }
 
 
@@ -975,6 +1019,16 @@ def _paused_task_response(record: TaskRecord) -> JSONResponse:
             "session_id": record.session_id,
             "invocation_id": record.invocation_id,
             "status": TaskStatus.PAUSED.value,
+            # CSP consumes only this validated StepEvent projection; no raw
+            # SDK state or interruption object crosses the trust boundary.
+            "anila_events": list(record.events),
+            "anila_meta": {
+                "task_id": record.task_id,
+                "run_id": record.run_id,
+                "session_id": record.session_id,
+                "invocation_id": record.invocation_id,
+                "status": TaskStatus.PAUSED.value,
+            },
         },
     )
 
