@@ -133,10 +133,7 @@ class Gate5TestMaterialGeneratorTests(unittest.TestCase):
                 {"artifact.gate5-synthetic"},
             )
             self.assertEqual(
-                {
-                    binding["deployment_id"]
-                    for binding in profile["callsite_bindings"]
-                },
+                {binding["deployment_id"] for binding in profile["callsite_bindings"]},
                 {"deployment.gate5-synthetic"},
             )
 
@@ -155,9 +152,7 @@ class Gate5TestMaterialGeneratorTests(unittest.TestCase):
                 authority.bindings["r7.csp.proxy-agent"].agent_scope,
                 ("registered-agent",),
             )
-            self.assertEqual(
-                authority.bindings["r7.csp.proxy-service"].agent_scope, ()
-            )
+            self.assertEqual(authority.bindings["r7.csp.proxy-service"].agent_scope, ())
             self.assertEqual(
                 authority.bindings["r7.csp.proxy-service-agent"].agent_scope,
                 ("registered-agent",),
@@ -174,9 +169,7 @@ class Gate5TestMaterialGeneratorTests(unittest.TestCase):
             with self.subTest(callsite_ids=callsite_ids, pattern=pattern):
                 with tempfile.TemporaryDirectory() as temp_dir:
                     with self.assertRaisesRegex(ValueError, pattern):
-                        _generator().generate(
-                            Path(temp_dir), callsite_ids=callsite_ids
-                        )
+                        _generator().generate(Path(temp_dir), callsite_ids=callsite_ids)
 
 
 if __name__ == "__main__":
