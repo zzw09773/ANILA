@@ -583,6 +583,15 @@
       "reason": "The complete SQLite CSP suite skips without ANILA_GATE3_RETENTION_PG_URL; postgres-rls runs retention and artifact upload race proofs as csp_app."
     },
     {
+      "path": "services/csp/tests/test_retention_lifecycle.py",
+      "kind": "pytest.skip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "backend-csp",
+      "ci_command_fragment": "python -m pytest -q",
+      "reason": "Only Windows without symlink privilege skips; the required Ubuntu CSP job executes the case."
+    },
+    {
       "path": "services/csp/tests/test_ingestion_generations_pg.py",
       "kind": "pytest.skip",
       "count": 1,
