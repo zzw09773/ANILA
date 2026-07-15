@@ -21,6 +21,7 @@ import errno
 import logging
 import os
 import re as _re
+import stat
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -306,6 +307,48 @@ def _image_persistence_error(
     )
 
 
+def _image_reconciliation_error(reason: str) -> StoreError:
+    """Build a non-retryable error for an unsafe image residue state.
+
+    Residue reconciliation is deliberately fail-closed.  An ambiguous
+    backup/temp set cannot be safely guessed at by a retry, so preserve every
+    copy and require operator intervention instead of misclassifying it as a
+    transient disk error.
+    """
+    return StoreError(
+        code="E_IMAGE_RECONCILIATION_FAILED",
+        retryable=False,
+        severity="critical",
+        user_message="圖片儲存狀態無法安全收斂，已停止處理。",
+        details={"operation": "reconcile", "reason": reason},
+    )
+
+
+def _is_rls_violation(exc: BaseException) -> bool:
+    """Return whether an asyncpg failure is a PostgreSQL RLS denial."""
+    return isinstance(exc, asyncpg.exceptions.InsufficientPrivilegeError) or (
+        getattr(exc, "sqlstate", None) == "42501"
+    )
+
+
+def _image_rls_error(*, rows_attempted: int, rows_inserted: int = 0) -> StoreError:
+    """Build the critical, non-retryable image RLS error.
+
+    Keep SQL text, exception messages, and filesystem paths out of both the
+    user-facing message and structured details.  The exception remains the
+    chained cause for server-side logs only.
+    """
+    return StoreError.rls_violation(
+        user_message="圖片資料寫入違反資料隔離政策，已停止處理。",
+        details={
+            "operation": "db_insert",
+            "reason": "rls_violation",
+            "rows_attempted": rows_attempted,
+            "rows_inserted": rows_inserted,
+        },
+    )
+
+
 def _cleanup_image_files(paths: list[str]) -> None:
     """Best-effort cleanup for files written by the current persistence run.
 
@@ -322,6 +365,50 @@ def _cleanup_image_files(paths: list[str]) -> None:
             logger.warning(
                 "Image persistence cleanup failed (%s)", type(exc).__name__,
             )
+
+
+def _cleanup_stale_image_temps(images_root: str) -> None:
+    """Remove hard-crash temp residue for one document before a retry.
+
+    A worker job lease serialises persistence attempts for the same document,
+    so direct children matching ``*.tmp-*`` are safe to reconcile here.  Do
+    not follow symlinks or recurse: a symlink/nested directory is an unsafe
+    state and must remain untouched while the job fails closed.
+    """
+    try:
+        root_mode = os.lstat(images_root).st_mode
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise _image_storage_error("reconcile", exc) from exc
+    if stat.S_ISLNK(root_mode) or not stat.S_ISDIR(root_mode):
+        raise _image_reconciliation_error("unsafe_image_directory")
+
+    try:
+        with os.scandir(images_root) as entries:
+            temp_paths = [
+                entry.path
+                for entry in entries
+                if ".tmp-" in entry.name
+            ]
+    except OSError as exc:
+        raise _image_storage_error("reconcile", exc) from exc
+
+    for temp_path in temp_paths:
+        try:
+            mode = os.lstat(temp_path).st_mode
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise _image_storage_error("reconcile", exc) from exc
+        if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
+            raise _image_reconciliation_error("unsafe_temp_residue")
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise _image_storage_error("reconcile", exc) from exc
 
 
 def _reconcile_stale_image_backups(final_path: str) -> None:
@@ -347,7 +434,7 @@ def _reconcile_stale_image_backups(final_path: str) -> None:
         return
 
     if len(backup_paths) != 1:
-        raise OSError(errno.EIO, "ambiguous image backup set")
+        raise _image_reconciliation_error("ambiguous_backups")
     os.replace(backup_paths[0], final_path)
 
 
@@ -495,6 +582,10 @@ async def _persist_images(
         os.makedirs(images_root, mode=0o755, exist_ok=True)
     except OSError as exc:
         raise _image_storage_error("mkdir", exc) from exc
+    # A hard crash can leave a UUID-suffixed temp file behind before publish
+    # gets a chance to run.  The ingestion job lease serialises retries for a
+    # document, so reconcile that document directory before staging new bytes.
+    _cleanup_stale_image_temps(images_root)
 
     # Build the to-be-inserted rows AND collect captions for batch embed.
     rows: list[dict[str, Any]] = []
@@ -624,6 +715,11 @@ async def _persist_images(
         raise
     except Exception as exc:  # noqa: BLE001
         _cleanup_image_files(written_paths)
+        if _is_rls_violation(exc):
+            raise _image_rls_error(
+                rows_attempted=len(rows),
+                rows_inserted=0,
+            ) from exc
         raise _image_persistence_error(
             "db_insert",
             exc,
@@ -1134,10 +1230,11 @@ async def ingest_document(
                 code="E_INTERNAL",
                 retryable=False,
                 severity="error",
-                user_message=(
-                    f"Uploaded blob missing on disk: {storage_path or '(no path)'}"
-                ),
-                details={"storage_path": storage_path},
+                user_message="上傳檔案目前無法使用。",
+                details={
+                    "reason": "missing_blob",
+                    "has_path": bool(storage_path),
+                },
             )
 
         # 1. Parse — pure function, fast.

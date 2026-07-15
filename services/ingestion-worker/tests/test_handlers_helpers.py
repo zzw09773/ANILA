@@ -25,6 +25,7 @@ import errno
 import io
 from types import SimpleNamespace
 
+import asyncpg
 import pytest
 from PIL import Image
 
@@ -432,6 +433,42 @@ async def test_persist_images_db_rls_failure_is_retryable_and_cleans_files(
     assert list(tmp_path.rglob("*.png")) == []
 
 
+async def test_persist_images_db_rls_violation_is_critical_and_cleans_files(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    connection = _FakeConnection(
+        fail_after=1,
+        failure=asyncpg.exceptions.InsufficientPrivilegeError(
+            "RLS denied /sensitive/database/details"
+        ),
+    )
+
+    with pytest.raises(StoreError) as exc_info:
+        await handlers._persist_images(
+            _FakePool(connection),
+            7,
+            42,
+            {"img1": _FakeRef(_gradient_png())},
+            None,
+            None,
+        )
+
+    error = exc_info.value
+    assert error.code == "E_PG_RLS_VIOLATION"
+    assert error.retryable is False
+    assert error.severity == "critical"
+    assert error.details == {
+        "operation": "db_insert",
+        "reason": "rls_violation",
+        "rows_attempted": 1,
+        "rows_inserted": 0,
+    }
+    assert "/sensitive" not in str(error)
+    assert "RLS denied" not in str(error)
+    assert list(tmp_path.rglob("*.tmp-*")) == []
+
+
 async def test_persist_images_db_failure_preserves_preexisting_final_file(
     monkeypatch, tmp_path
 ):
@@ -636,13 +673,74 @@ async def test_persist_images_ambiguous_backups_fail_closed(
             None,
         )
 
-    assert exc_info.value.code == "E_IMAGE_STORAGE_UNAVAILABLE"
-    assert exc_info.value.retryable is True
-    assert exc_info.value.details == {"operation": "publish", "errno": "EIO"}
+    assert exc_info.value.code == "E_IMAGE_RECONCILIATION_FAILED"
+    assert exc_info.value.retryable is False
+    assert exc_info.value.severity == "critical"
+    assert exc_info.value.details == {
+        "operation": "reconcile",
+        "reason": "ambiguous_backups",
+    }
     assert not final_path.exists()
     assert backup_one.read_bytes() == b"candidate-one"
     assert backup_two.read_bytes() == b"candidate-two"
     assert list(tmp_path.rglob("*.tmp-*")) == []
+
+
+async def test_persist_images_reconciles_crash_temp_before_retry(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    image_root = tmp_path / "anila-images" / "42"
+    image_root.mkdir(parents=True)
+    final_path = image_root / "img1.png"
+    stale_temp = image_root / "img1.png.tmp-crashed"
+    stale_temp.write_bytes(b"partial-crash-residue")
+    new_bytes = _gradient_png()
+
+    result = await handlers._persist_images(
+        _FakePool(_FakeConnection()),
+        7,
+        42,
+        {"img1": _FakeRef(new_bytes)},
+        None,
+        None,
+    )
+
+    assert result == 1
+    assert final_path.read_bytes() == new_bytes
+    assert not stale_temp.exists()
+    assert list(tmp_path.rglob("*.tmp-*")) == []
+
+
+async def test_persist_images_temp_reconcile_failure_fails_closed(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    image_root = tmp_path / "anila-images" / "42"
+    image_root.mkdir(parents=True)
+    stale_temp = image_root / "img1.png.tmp-crashed"
+    stale_temp.write_bytes(b"partial-crash-residue")
+    real_unlink = handlers.os.unlink
+
+    def _unlink_failure(path):
+        if ".tmp-" in str(path):
+            raise OSError(errno.EIO, "temp cleanup failed at /sensitive/path")
+        return real_unlink(path)
+
+    monkeypatch.setattr(handlers.os, "unlink", _unlink_failure)
+    with pytest.raises(StoreError) as exc_info:
+        await handlers._persist_images(
+            _FakePool(_FakeConnection()),
+            7,
+            42,
+            {"img1": _FakeRef(_gradient_png())},
+            None,
+            None,
+        )
+
+    error = exc_info.value
+    assert error.code == "E_IMAGE_STORAGE_UNAVAILABLE"
+    assert error.retryable is True
+    assert error.details == {"operation": "reconcile", "errno": "EIO"}
+    assert stale_temp.exists()
 
 
 async def test_persist_images_cleanup_failure_does_not_mask_db_error(
@@ -729,6 +827,27 @@ async def test_persist_images_empty_and_uniform_images_are_legal_skips(
         "uniform": _FakeRef(_solid_png((26, 54, 93))),
     }
     assert await handlers._persist_images(None, 1, 42, images, None, None) == 0
+
+
+async def test_ingest_missing_blob_error_does_not_expose_storage_path(
+    monkeypatch, tmp_path
+):
+    state = _install_ingest_fakes(
+        monkeypatch,
+        tmp_path,
+        chunks=[],
+        embedder=object(),
+    )
+    monkeypatch.setattr(handlers.os.path, "exists", lambda _path: False)
+
+    with pytest.raises(StoreError) as exc_info:
+        await handlers.ingest_document(state["ctx"], document_id=41)
+
+    error = exc_info.value
+    assert error.user_message == "上傳檔案目前無法使用。"
+    assert error.details == {"reason": "missing_blob", "has_path": True}
+    assert str(tmp_path) not in error.user_message
+    assert str(tmp_path) not in str(error.details)
 
 
 

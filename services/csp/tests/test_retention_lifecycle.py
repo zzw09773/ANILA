@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from sqlalchemy import text
@@ -278,12 +279,25 @@ def test_missing_blob_and_post_unlink_db_failure_converge(db, tmp_path, monkeypa
 
 def test_document_erase_removes_images_chunks_refs_and_reconciles_counters(db, tmp_path):
     _owner, collection, document, blob, image = _document_due(db, tmp_path)
+    image_dir = image.parent
+    stale_temp = image_dir / f"{image.name}.tmp-crashed"
+    stale_backup = image_dir / f"{image.name}.bak-crashed"
+    unknown_orphan = image_dir / "orphan-unknown.bin"
+    other_document_orphan = image_dir.parent / "999" / "orphan.bin"
+    other_document_orphan.parent.mkdir(parents=True)
+    other_document_orphan.write_bytes(b"other-document-residue")
+    stale_temp.write_bytes(b"partial-crash-residue")
+    stale_backup.write_bytes(b"old-image")
+    unknown_orphan.write_bytes(b"unknown-residue")
     result = run_retention_batch(
         db, now=NOW, artifact_root=str(tmp_path / "artifacts"),
         ingestion_root=str(tmp_path),
     )
     assert result.documents_erased == 1, result.errors
     assert not blob.exists() and not image.exists()
+    assert not stale_temp.exists() and not stale_backup.exists()
+    assert not unknown_orphan.exists() and not image_dir.exists()
+    assert other_document_orphan.exists()
     db.refresh(document)
     db.refresh(collection)
     assert document.lifecycle_state == "erased"
@@ -292,6 +306,79 @@ def test_document_erase_removes_images_chunks_refs_and_reconciles_counters(db, t
     assert db.execute(text("SELECT count(*) FROM document_chunks")).scalar() == 0
     assert (collection.document_count, collection.chunk_count) == (0, 0)
     assert collection.bytes_stored == collection.image_count == 0
+
+
+def test_document_image_directory_rmdir_failure_is_not_success(
+    db, tmp_path, monkeypatch
+):
+    _owner, _collection, document, _blob, image = _document_due(db, tmp_path)
+    image_dir = image.parent
+    original_rmdir = Path.rmdir
+
+    def fail_image_dir_rmdir(path):
+        if path == image_dir:
+            raise OSError("directory cleanup denied")
+        return original_rmdir(path)
+
+    monkeypatch.setattr(Path, "rmdir", fail_image_dir_rmdir)
+    result = run_retention_batch(
+        db,
+        now=NOW,
+        artifact_root=str(tmp_path / "artifacts"),
+        ingestion_root=str(tmp_path),
+    )
+
+    assert result.documents_erased == 0
+    assert any("directory cleanup failed" in error for error in result.errors)
+    db.refresh(document)
+    assert document.lifecycle_state == "erase_due"
+    assert image_dir.exists()
+
+
+def test_document_image_symlink_residue_fails_closed(db, tmp_path):
+    _owner, _collection, document, blob, image = _document_due(db, tmp_path)
+    image_dir = image.parent
+    outside = tmp_path.parent / "retention-image-outside.bin"
+    outside.write_bytes(b"must survive")
+    link = image_dir / "orphan-link"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation is unavailable on this platform")
+
+    result = run_retention_batch(
+        db,
+        now=NOW,
+        artifact_root=str(tmp_path / "artifacts"),
+        ingestion_root=str(tmp_path),
+    )
+
+    assert result.documents_erased == 0
+    assert any("symlink" in error for error in result.errors)
+    assert blob.exists() and image.exists() and link.is_symlink()
+    assert outside.exists()
+    db.refresh(document)
+    assert document.lifecycle_state == "erase_due"
+
+
+def test_document_image_nested_directory_fails_closed(db, tmp_path):
+    _owner, _collection, document, blob, image = _document_due(db, tmp_path)
+    nested = image.parent / "nested"
+    nested.mkdir()
+    (nested / "orphan.bin").write_bytes(b"nested-residue")
+
+    result = run_retention_batch(
+        db,
+        now=NOW,
+        artifact_root=str(tmp_path / "artifacts"),
+        ingestion_root=str(tmp_path),
+    )
+
+    assert result.documents_erased == 0
+    assert any("nested directory" in error for error in result.errors)
+    assert blob.exists() and image.exists() and nested.exists()
+    db.refresh(document)
+    assert document.lifecycle_state == "erase_due"
 
 
 def test_nonterminal_job_created_after_document_marker_prevents_unlink(db, tmp_path):

@@ -398,6 +398,76 @@ def _image_rows(db: Session, document_id: int) -> list[tuple[int, str]]:
     ]
 
 
+def _erase_document_image_files(
+    ingestion_root: str, *, document_id: int, image_paths: list[Path]
+) -> None:
+    """Erase every direct image file belonging to one document only.
+
+    The worker publishes finals beside UUID-suffixed ``.tmp-*`` and
+    ``.bak-*`` residues.  The DB only records finals, so retention must scan
+    the canonical ``anila-images/<document_id>`` directory to remove unknown
+    orphan files as well.  The directory and every child are lstat-checked;
+    symlinks, nested directories, traversal, and unlink failures fail closed
+    before metadata is marked erased.
+    """
+    image_dir = safe_ingestion_path(
+        ingestion_root, os.path.join("anila-images", str(document_id))
+    )
+    for image_path in image_paths:
+        if image_path.parent != image_dir:
+            raise RetentionSafetyError(
+                "ingestion image path escapes its document directory"
+            )
+
+    try:
+        directory_mode = image_dir.lstat().st_mode
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise RetentionSafetyError("document image directory cannot be inspected") from exc
+    if stat.S_ISLNK(directory_mode):
+        raise RetentionSafetyError("document image directory contains a symlink")
+    if not stat.S_ISDIR(directory_mode):
+        raise RetentionSafetyError("document image path is not a directory")
+
+    try:
+        with os.scandir(image_dir) as entries:
+            child_paths = [image_dir / entry.name for entry in entries]
+    except OSError as exc:
+        raise RetentionSafetyError("document image directory cannot be scanned") from exc
+
+    safe_children: list[Path] = []
+    for child in child_paths:
+        try:
+            mode = child.lstat().st_mode
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise RetentionSafetyError("document image residue cannot be inspected") from exc
+        if stat.S_ISLNK(mode):
+            raise RetentionSafetyError("document image residue contains a symlink")
+        if stat.S_ISDIR(mode):
+            raise RetentionSafetyError("document image residue contains a nested directory")
+        if not stat.S_ISREG(mode):
+            raise RetentionSafetyError("document image residue is not a regular file")
+        safe_children.append(child)
+
+    for child in safe_children:
+        try:
+            child.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise RetentionSafetyError("document image residue cleanup failed") from exc
+
+    try:
+        image_dir.rmdir()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise RetentionSafetyError("document image directory cleanup failed") from exc
+
+
 def _erase_document(
     db: Session, *, document_id: int, now: datetime, ingestion_root: str,
     after_marker: Callable[[Session], None] | None = None,
@@ -461,8 +531,11 @@ def _erase_document(
         safe_ingestion_path(ingestion_root, document.storage_path)
         if document.storage_path else None
     )
-    for path in image_paths:
-        path.unlink(missing_ok=True)
+    _erase_document_image_files(
+        ingestion_root,
+        document_id=document.id,
+        image_paths=image_paths,
+    )
     shared = db.query(IngestionDocument.id).filter(
         IngestionDocument.sha256 == document.sha256,
         IngestionDocument.id != document.id,
