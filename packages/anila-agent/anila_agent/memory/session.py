@@ -12,17 +12,19 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
-from agents import SQLiteSession
+from agents import SQLiteSession, TResponseInputItem
+from agents.memory import Session
 
 if TYPE_CHECKING:
-    from agents import Session
+    from agents import SessionSettings
 
     from anila_agent.config import AppConfig
 
-Summarizer = Callable[[list[dict]], Awaitable[str]]
+Summarizer = Callable[[list[TResponseInputItem]], Awaitable[str]]
 
 
 def build_session(cfg: AppConfig, session_id: str) -> Session:
@@ -32,7 +34,7 @@ def build_session(cfg: AppConfig, session_id: str) -> Session:
         dsn = os.environ.get("ANILA_SESSION_DSN")
         if not dsn:
             raise ValueError("ANILA_SESSION_BACKEND=postgres 需設 ANILA_SESSION_DSN")
-        return PostgresSession(session_id, dsn)
+        return cast(Session, PostgresSession(session_id, dsn))
     cfg.home.mkdir(parents=True, exist_ok=True)
     return SQLiteSession(session_id, db_path=str(cfg.home / "sessions.db"))
 
@@ -44,11 +46,29 @@ class PostgresSession:
     asyncpg 延遲匯入，首次使用時建表。
     """
 
+    session_settings: SessionSettings | None = None
+
     def __init__(self, session_id: str, dsn: str, *, table: str = "anila_agent_messages") -> None:
+        if not session_id.strip():
+            raise ValueError("session_id 不得為空白")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
+            raise ValueError("table 必須是安全的 SQL identifier")
         self._session_id = session_id
         self._dsn = dsn
         self._table = table
         self._pool: Any = None
+
+    @property
+    def session_id(self) -> str:
+        """The SDK Session protocol's stable conversation identifier."""
+
+        return self._session_id
+
+    @session_id.setter
+    def session_id(self, value: str) -> None:
+        if not value.strip():
+            raise ValueError("session_id 不得為空白")
+        self._session_id = value
 
     async def _ensure(self) -> Any:
         if self._pool is None:
@@ -58,13 +78,16 @@ class PostgresSession:
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     f"CREATE TABLE IF NOT EXISTS {self._table} "
-                    "(session_id text NOT NULL, idx bigserial PRIMARY KEY, item jsonb NOT NULL)"
+                    "(session_id text NOT NULL, idx bigserial NOT NULL, item jsonb NOT NULL, "
+                    "PRIMARY KEY (session_id, idx))"
                 )
         return self._pool
 
-    async def get_items(self, limit: int | None = None) -> list[dict]:
+    async def get_items(self, limit: int | None = None) -> list[TResponseInputItem]:
         import json
 
+        if limit is not None and limit <= 0:
+            return []
         pool = await self._ensure()
         async with pool.acquire() as conn:
             if limit is None:
@@ -80,9 +103,14 @@ class PostgresSession:
                     self._session_id,
                     limit,
                 )
-        return [json.loads(r["item"]) if isinstance(r["item"], str) else r["item"] for r in rows]
+        result: list[TResponseInputItem] = []
+        for row in rows:
+            item = row["item"]
+            if item is not None:
+                result.append(cast(TResponseInputItem, json.loads(item) if isinstance(item, str) else item))
+        return result
 
-    async def add_items(self, items: list[dict]) -> None:
+    async def add_items(self, items: list[TResponseInputItem]) -> None:
         import json
 
         if not items:
@@ -91,10 +119,13 @@ class PostgresSession:
         async with pool.acquire() as conn:
             await conn.executemany(
                 f"INSERT INTO {self._table} (session_id, item) VALUES ($1, $2)",
-                [(self._session_id, json.dumps(it)) for it in items],
+                [
+                    (self._session_id, json.dumps(it, ensure_ascii=False, separators=(",", ":")))
+                    for it in items
+                ],
             )
 
-    async def pop_item(self) -> dict | None:
+    async def pop_item(self) -> TResponseInputItem | None:
         import json
 
         pool = await self._ensure()
@@ -108,7 +139,7 @@ class PostgresSession:
         if row is None:
             return None
         item = row["item"]
-        return json.loads(item) if isinstance(item, str) else item
+        return cast(TResponseInputItem, json.loads(item) if isinstance(item, str) else item)
 
     async def clear_session(self) -> None:
         pool = await self._ensure()
@@ -140,14 +171,26 @@ class SummarizingSession:
         self._max_items = max_items
         self._keep_last = keep_last
 
-    async def get_items(self, limit: int | None = None) -> list[dict]:
+    @property
+    def session_id(self) -> str:
+        return self._inner.session_id
+
+    @session_id.setter
+    def session_id(self, value: str) -> None:
+        self._inner.session_id = value
+
+    @property
+    def session_settings(self) -> Any:
+        return getattr(self._inner, "session_settings", None)
+
+    async def get_items(self, limit: int | None = None) -> list[TResponseInputItem]:
         return await self._inner.get_items(limit)
 
-    async def add_items(self, items: list[dict]) -> None:
+    async def add_items(self, items: list[TResponseInputItem]) -> None:
         await self._inner.add_items(items)
         await self._maybe_compact()
 
-    async def pop_item(self) -> dict | None:
+    async def pop_item(self) -> TResponseInputItem | None:
         return await self._inner.pop_item()
 
     async def clear_session(self) -> None:

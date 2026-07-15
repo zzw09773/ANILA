@@ -104,6 +104,8 @@ _MANDATORY_REQUIRED_NAMED = {
     "redis-data",
     "csp-attachments",
     "anila-studio-artifacts",
+    "anila-agent-state",
+    "router-state",
     "n8n_data",
     "gitlab_config",
     "gitlab_logs",
@@ -112,9 +114,12 @@ _MANDATORY_REQUIRED_NAMED = {
 _MANDATORY_REQUIRED_BINDS = {
     "../../share/uploads/ingestion",
     "../../share/uploads",
-    "../../share/uploads/flux",
     "../../share/pki",
     "../../share/static",
+    "${GATE5_MATERIAL_DIR:-/var/lib/anila/governance}/inventory.json",
+    "${GATE5_MATERIAL_DIR:-/var/lib/anila/governance}/profile.json",
+    "${GATE5_MATERIAL_DIR:-/var/lib/anila/governance}/trust-store.json",
+    "${GATE5_MATERIAL_DIR:-/var/lib/anila/governance}/observed-facts.json",
     (
         "${ANILA_SECRETS_DIR:?ANILA_SECRETS_DIR must be an absolute path "
         "outside the repo}"

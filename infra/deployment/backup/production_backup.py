@@ -196,7 +196,7 @@ def _linux_mount_fstype(path: Path) -> str:
             separator = fields.index("-")
         except ValueError:
             continue
-        if len(fields) <= separator + 1:
+        if len(fields) <= 4 or len(fields) <= separator + 1:
             continue
         mountpoint = (
             fields[4]
@@ -983,15 +983,20 @@ def validate_envelope(bundle: Path, public_key: Path) -> dict[str, Any]:
         or not signature_path.is_file()
     ):
         raise BackupAutomationError("bundle lacks envelope or signature")
-    verified = subprocess.run(
-        [
-            "openssl", "dgst", "-sha256", "-verify", str(public_key),
-            "-signature", str(signature_path), str(envelope_path),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    try:
+        verified = subprocess.run(
+            [
+                "openssl", "dgst", "-sha256", "-verify", str(public_key),
+                "-signature", str(signature_path), str(envelope_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as exc:
+        raise BackupAutomationError(
+            "backup envelope signature verification could not start"
+        ) from exc
     if verified.returncode != 0:
         raise BackupAutomationError("backup envelope signature verification failed")
     envelope = strict_json_bytes(envelope_path.read_bytes(), label="envelope")
@@ -1030,12 +1035,15 @@ def validate_envelope(bundle: Path, public_key: Path) -> dict[str, Any]:
 
 
 def _decrypt_bytes(path: Path, identity: Path) -> bytes:
-    result = subprocess.run(
-        ["age", "-d", "-i", str(identity), str(path)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["age", "-d", "-i", str(identity), str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as exc:
+        raise BackupAutomationError("age decryption could not start") from exc
     if result.returncode != 0:
         raise BackupAutomationError(
             "age authentication/decryption failed: "
@@ -1246,11 +1254,16 @@ def prepare_restore(
     try:
         for component in manifest["components"]:
             encrypted = bundle / component["file"]
-            process = subprocess.Popen(
-                ["age", "-d", "-i", str(identity), str(encrypted)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+            try:
+                process = subprocess.Popen(
+                    ["age", "-d", "-i", str(identity), str(encrypted)],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            except OSError as exc:
+                raise BackupAutomationError(
+                    "age component decryption could not start"
+                ) from exc
             assert process.stdout is not None
             try:
                 if component["format"] == "tar-gzip-tree-v1":
@@ -1314,9 +1327,13 @@ def prepare_restore(
 
 
 def _docker_output(argv: list[str]) -> str:
-    result = subprocess.run(
-        argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False
-    )
+    try:
+        result = subprocess.run(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False
+        )
+    except OSError as exc:
+        command = argv[0] if argv else "command"
+        raise BackupAutomationError(f"command failed to start ({command})") from exc
     if result.returncode != 0:
         raise BackupAutomationError(
             result.stderr.decode("utf-8", errors="replace")[-2000:]

@@ -1,0 +1,112 @@
+name: Gate 5 required static CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - prod-intranet-card
+  push:
+    branches:
+      - main
+      - prod-intranet-card
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate5-static-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate5-static:
+    name: Gate 5 / static foundation (required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONPATH: packages/anila-security/src
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install static policy dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest ruff
+          python -m pip install -e "./packages/anila-security"
+
+      - name: Verify frozen R6 routing dataset
+        run: python infra/ci/check_gate5_routing_eval.py
+
+      - name: Verify disabled R7 model-governance profile
+        run: |
+          python infra/policy/gate5/check_model_governance.py \
+            --repo-root . \
+            --inventory infra/policy/gate5/model-governance-inventory.v1.json \
+            --profile infra/policy/gate5/model-governance-profile.disabled-template.json \
+            --allow-disabled-template
+
+      - name: Run R6 and R7 static contract tests
+        run: |
+          python -m pytest \
+            infra/ci/tests/test_gate5_routing_eval.py \
+            infra/ci/tests/test_gate5_routing_contract.py \
+            infra/policy/tests/test_gate5_model_governance.py \
+            packages/anila-security/tests/test_model_governance.py -q
+
+      - name: Lint R6 and R7 static policy code
+        run: |
+          python -m ruff check \
+            infra/ci/run_gate5_routing_contract.py \
+            infra/ci/gate5_r3_eval_adapter.py \
+            infra/ci/check_gate5_routing_eval.py \
+            infra/ci/tests/test_gate5_routing_contract.py \
+            infra/ci/tests/test_gate5_r3_eval_adapter.py \
+            infra/ci/tests/test_gate5_routing_eval.py \
+            infra/policy/gate5/check_model_governance.py \
+            infra/policy/tests/test_gate5_model_governance.py \
+            packages/anila-security/src/anila_security/model_governance.py \
+            packages/anila-security/tests/test_model_governance.py
+
+  gate5-routing-runtime:
+    name: Gate 5 / routing runtime exit gate (required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONPATH: .
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install local R3 runtime packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ./packages/anila-contracts \
+            -e ./packages/anila-security \
+            -e './packages/anila-core[dev]'
+
+      - name: Test the formal R3 adapter and mutation guards
+        run: |
+          python -m pytest \
+            infra/ci/tests/test_gate5_r3_eval_adapter.py \
+            infra/ci/tests/test_gate5_routing_contract.py -q
+
+      - name: Run R6 contract against the formal R3 adapter
+        run: |
+          python infra/ci/run_gate5_routing_contract.py \
+            --adapter infra.ci.gate5_r3_eval_adapter:build_adapter \
+            --runner-commit "${GITHUB_SHA}"

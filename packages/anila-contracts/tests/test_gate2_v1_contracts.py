@@ -263,6 +263,6 @@ def test_invocation_nested_fixtures_match_the_standalone_contract_fixtures() -> 
 
 
 def test_package_reports_gate2_v1_version() -> None:
-    assert anila_contracts.__version__ == "1.0.0"
+    assert anila_contracts.__version__ == "2.0.0"
     pyproject = (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'version = "1.0.0"' in pyproject
+    assert 'version = "2.0.0"' in pyproject

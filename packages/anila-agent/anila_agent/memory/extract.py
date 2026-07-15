@@ -32,7 +32,8 @@ _SECRET_PATTERNS = [
 ]
 
 # extractor(redacted_transcript, existing_manifest) -> list[dict{name,description,type,body}]
-Extractor = Callable[[str, dict[str, str]], Awaitable[list[dict]]]
+MemoryPayload = dict[str, object]
+Extractor = Callable[[str, dict[str, str]], Awaitable[list[MemoryPayload]]]
 
 
 def redact(text: str) -> str:
@@ -92,7 +93,9 @@ def make_extractor(
 ) -> Extractor:
     """建構打 ``/chat/completions`` 的抽取器（reasoning 模型：給足 max_tokens）。"""
 
-    async def _extract(redacted_transcript: str, existing_manifest: dict[str, str]) -> list[dict]:
+    async def _extract(
+        redacted_transcript: str, existing_manifest: dict[str, str]
+    ) -> list[MemoryPayload]:
         import httpx
 
         existing = "\n".join(f"- {n}: {d}" for n, d in existing_manifest.items()) or "（無）"
@@ -111,6 +114,13 @@ def make_extractor(
             )
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"].get("content")
-        return parse_json_object(content).get("memories", [])
+        memories = parse_json_object(content).get("memories")
+        if not isinstance(memories, list):
+            return []
+        return [
+            {str(key): value for key, value in item.items()}
+            for item in memories
+            if isinstance(item, dict)
+        ]
 
     return _extract

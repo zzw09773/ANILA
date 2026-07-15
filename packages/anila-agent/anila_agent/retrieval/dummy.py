@@ -34,7 +34,7 @@ class DummyRetriever:
         self._docs: dict[str, str] = dict(corpus if corpus is not None else _DEFAULT_CORPUS)
 
     @property
-    def metadata(self) -> dict:
+    def metadata(self) -> dict[str, object]:
         return {"backend": "dummy", "size": len(self._docs)}
 
     async def search(self, query: str, k: int = 5) -> list[Document]:

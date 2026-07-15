@@ -608,6 +608,45 @@
       "ci_job": "postgres-rls",
       "ci_command_fragment": "services/ingestion-worker/tests/test_similarity_relations_pg.py",
       "reason": "The worker unit suite skips without a disposable PostgreSQL DSN; postgres-rls runs concurrent request dedupe, single-owner claim, expired-lease recovery, and stale-owner fencing proofs."
+    },
+    {
+      "path": "packages/anila-agent/tests/test_r5_service_silver.py",
+      "kind": "pytest.importorskip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "backend-agent",
+      "ci_command_fragment": "python -m pytest -m \"not live\" -q",
+      "reason": "The Silver service tests require the serving extra; the required backend-agent job installs it and must not silently skip the suite."
+    },
+    {
+      "path": "packages/anila-security/tests/test_model_governance.py",
+      "kind": "pytest.importorskip",
+      "count": 1,
+      "required_execution": false,
+      "reason": "The classification-order compatibility assertion is optional when the separate anila-contracts package is not installed; the governance test remains fail-closed for all available contract fields."
+    },
+    {
+      "path": "services/csp/tests/test_gate5_model_governance_receipts_pg.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": false,
+      "reason": "The Gate 5 receipt race proof is an opt-in PostgreSQL test and skips without ANILA_GATE2_LEDGER_PG_URL; local SQLite runs must register the skip rather than hide it."
+    },
+    {
+      "path": "services/csp/tests/test_gate5_r4_session_event_store_pg.py",
+      "kind": "pytest.skip",
+      "count": 5,
+      "required_execution": false,
+      "reason": "The Gate 5 session-event race proof is an opt-in PostgreSQL test and skips when TEST_DATABASE_URL/DATABASE_URL is absent or not migrated; local runs must register the skip rather than hide it."
+    },
+    {
+      "path": "services/csp/tests/test_gate5_r5_durable_resume_authority.py",
+      "kind": "pytest.skip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_gate5_r5_durable_resume_authority.py -q -m integration",
+      "reason": "Only the local SQLite/no-DSN path may skip; postgres-rls sets TEST_POSTGRES_URL to the migrated csp_app database and must execute the two-contender durable resume claim proof."
     }
   ],
   "quarantine": [],

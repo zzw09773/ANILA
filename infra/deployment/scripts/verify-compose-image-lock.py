@@ -56,7 +56,7 @@ IMAGE_ENV_BY_SERVICE = {
     "nginx": "ANILA_IMAGE_NGINX",
     "pptx-renderer": "ANILA_IMAGE_PPTX_RENDERER",
     "anila-studio": "ANILA_IMAGE_ANILA_STUDIO",
-    "flux2-dev-agent": "ANILA_IMAGE_FLUX2_DEV_AGENT",
+    "anila-agent": "ANILA_IMAGE_ANILA_AGENT",
     "anilalm": "ANILA_IMAGE_ANILALM",
     "anila-ui": "ANILA_IMAGE_ANILA_UI",
     "codeserver": "ANILA_IMAGE_CODESERVER",

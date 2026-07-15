@@ -8,8 +8,8 @@ gpt-oss-20b	tensorrt-llm-hf:1.3.0rc10	default
 gemma4	vllm-gemma4:latest	default
 nv-embed-triton	tritonserver:25.04-nv-embed-v2	default
 nv-embed-proxy	embedding-proxy:migration	default
-flux2-dev	flux2-dev:bf16	default
-flux2-dev-agent	anila-flux-agent:latest	default
+flux2-dev	flux2-dev:bf16	profile:flux-approved
+flux2-dev-agent	anila-flux-agent:latest	profile:flux-approved
 gemma-4-26b-a4b	vllm/vllm-openai:v0.22.1-cu129-ubuntu2404	profile:intranet
 gemma-4-12b	vllm/vllm-openai:v0.22.1-cu129-ubuntu2404	profile:intranet
 gpt-oss-120b	vllm/vllm-openai:v0.22.1-cu129-ubuntu2404	profile:intranet

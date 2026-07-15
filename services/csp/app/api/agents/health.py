@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime, timezone
 
 import httpx
+from anila_contracts import Classification
 from anila_security import UnsafeEndpointError, validate_outbound_url
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -18,6 +19,7 @@ from app.config import settings
 from app.database import get_db
 from app.models.agent import Agent
 from app.models.trace_span import TraceSpan
+from app.models.task import Task, TaskRun
 from app.models.user import User
 from app.schemas.contracts.agents import (
     STATE_AFTER_TRACE_PASS,
@@ -27,6 +29,7 @@ from app.schemas.contracts.agents import (
     TraceTestReport,
 )
 from app.services import agent_credential_service
+from app.services.agent_readiness import governance_fingerprint
 from app.services.audit_service import log_audit_event
 from app.services.auth_service import is_admin_tier, require_admin
 
@@ -83,6 +86,7 @@ async def trigger_agent_health_check(
         validate_outbound_url(agent.endpoint_url, endpoint_kind="agent")
     except UnsafeEndpointError as exc:
         agent.health_status = "unhealthy"
+        agent.health_checked_at = datetime.now(timezone.utc)
         db.commit()
         log_audit_event(
             db, actor=admin, action="health_check",
@@ -103,6 +107,7 @@ async def trigger_agent_health_check(
                     )
                     if resp.status_code < 500:
                         agent.health_status = "healthy"
+                        agent.health_checked_at = datetime.now(timezone.utc)
                         db.commit()
                         log_audit_event(
                             db, actor=admin, action="health_check",
@@ -118,6 +123,7 @@ async def trigger_agent_health_check(
                 except httpx.ConnectError:
                     continue
             agent.health_status = "unhealthy"
+            agent.health_checked_at = datetime.now(timezone.utc)
             db.commit()
             log_audit_event(
                 db, actor=admin, action="health_check",
@@ -129,6 +135,7 @@ async def trigger_agent_health_check(
             return {"status": "unhealthy", "detail": "無法連線到 agent 端點"}
     except Exception as e:
         agent.health_status = "unhealthy"
+        agent.health_checked_at = datetime.now(timezone.utc)
         db.commit()
         log_audit_event(
             db, actor=admin, action="health_check",
@@ -228,8 +235,11 @@ async def _poll_trace_spans(
     """Bounded poll for agent-emitted spans landing under ``trace_id``.
 
     Re-reads with a fresh transaction each round (``db.rollback()``) so spans
-    the agent ships back over the Full Trace callback become visible. Returns
-    as soon as any span is seen, or an empty list once the deadline lapses.
+    the agent ships back over the Full Trace callback become visible.  A
+    callback may arrive in multiple batches; do not return after the first
+    span because that would make a valid, slightly-later lifecycle batch look
+    like a failed trace-test.  Return early only once all pass-blocking core
+    lifecycle types are present, or return the latest rows at timeout.
     """
     deadline = time.monotonic() + max(timeout_s, 0.0)
     while True:
@@ -237,7 +247,10 @@ async def _poll_trace_spans(
         rows = (
             db.query(TraceSpan).filter(TraceSpan.trace_id == trace_id).all()
         )
-        if rows or time.monotonic() >= deadline:
+        observed = {row.span_type for row in rows}
+        if set(_TRACE_TEST_REQUIRED_SPAN_TYPES).issubset(observed):
+            return rows
+        if time.monotonic() >= deadline:
             return rows
         await asyncio.sleep(interval_s)
 
@@ -426,9 +439,42 @@ async def run_agent_trace_test(
         )
 
     ip = _client_ip(request)
-    trace_id = f"tracetest-{uuid.uuid4().hex}"
-    synthetic_task_id = f"tracetest-task-{uuid.uuid4().hex}"
     classification = agent.default_classification_level or "無機密"
+    try:
+        classification = Classification.from_storage(classification).to_storage()
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail="Agent 分類治理狀態無效") from exc
+
+    # Full Trace ingest is task-owned and verifies the callback's integer task
+    # id plus owner username.  Keep a real synthetic Task/TaskRun in the
+    # durable spine instead of inventing an unresolvable ``tracetest-task-*``
+    # string; the trace-test report can then be audited through GET /api/traces.
+    synthetic_task = Task(
+        title=f"Agent trace-test: {agent.name}",
+        task_type="query",
+        requester_user_id=current_user.id,
+        status="running",
+        classification_level=classification,
+        legacy_runtime_call=False,
+    )
+    # Preserve the existing human-readable trace-test prefix while binding the
+    # id to the actual Task row looked up by the callback ingest endpoint.
+    synthetic_task.trace_id = f"tracetest-{uuid.uuid4().hex}"
+    db.add(synthetic_task)
+    db.flush()
+    synthetic_run = TaskRun(
+        task_id=synthetic_task.id,
+        run_sequence=1,
+        dispatch_target="agent",
+        status="running",
+        started_at=datetime.now(timezone.utc),
+        classification_level=classification,
+    )
+    db.add(synthetic_run)
+    db.commit()
+    db.refresh(synthetic_task)
+    trace_id = synthetic_task.trace_id
+    synthetic_task_id = synthetic_task.id
 
     url = f"{agent.endpoint_url.rstrip('/')}/v1/chat/completions"
     body = {
@@ -440,7 +486,8 @@ async def run_agent_trace_test(
     headers = {
         "X-CSP-Service-Token": token,
         "X-ANILA-Trace-Id": trace_id,
-        "X-ANILA-Task-Id": synthetic_task_id,
+        "X-ANILA-Task-Id": str(synthetic_task_id),
+        "X-ANILA-User-Id": current_user.username,
         "X-ANILA-Classification-Level": classification,
     }
 
@@ -483,9 +530,24 @@ async def run_agent_trace_test(
         checked_at=datetime.now(timezone.utc),
     )
 
+    synthetic_run.status = "completed" if passed else "failed"
+    synthetic_run.finished_at = datetime.now(timezone.utc)
+    if not passed:
+        synthetic_run.error = {"code": "trace_test_failed"}
+    synthetic_task.status = "completed" if passed else "failed"
+
     # Persist the report either way; only stamp trace_test_passed_at + advance
     # the state machine on a full pass (doc 05 §6 approval blocker).
-    agent.trace_test_report = report.model_dump(mode="json")
+    persisted_report = report.model_dump(mode="json")
+    # Evidence is bound to the exact governance material that was exercised;
+    # a later endpoint/manifest/model/ceiling change therefore cannot reuse it.
+    if passed:
+        fingerprint = governance_fingerprint(agent)
+        agent.trace_test_governance_fingerprint = fingerprint
+        persisted_report["governance_fingerprint"] = fingerprint
+        persisted_report["manifest_sha256"] = getattr(agent, "manifest_sha256", None)
+        persisted_report["manifest_revision"] = getattr(agent, "manifest_revision", None)
+    agent.trace_test_report = persisted_report
     if passed:
         agent.trace_test_passed_at = datetime.now(timezone.utc)
         agent.approval_status = STATE_AFTER_TRACE_PASS

@@ -10,10 +10,13 @@ dependencies = [
     # Framework-neutral Gate 4 StepEvent wire envelope.  Air-gap builds install
     # the reviewed local wheel before this package; never resolve it from a
     # public index in deployment workflows.
-    "anila-contracts>=1.0.0,<2.0.0",
+    "anila-contracts>=2.0.0,<3.0.0",
     # Runtime base. Pinned exactly: RunState/HITL persistence is bound to the
     # SDK schema version, and the 0.3->0.17 surface change is large. See REBUILD_PLAN.md.
     "openai-agents==0.17.5",
+    # 2.45.0 adds a required InputTokensDetails.cache_write_tokens field that
+    # openai-agents 0.17.5 does not construct. Pin the last compatible release.
+    "openai==2.44.0",
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
@@ -46,6 +49,7 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.5",
     "mypy>=1.10",
+    "types-PyYAML>=6.0",
 ]
 
 [project.scripts]

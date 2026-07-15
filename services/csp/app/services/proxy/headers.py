@@ -9,11 +9,16 @@ import logging
 import re
 import time
 from threading import Lock
+from collections.abc import Mapping
 from typing import Optional
 
 from app.config import settings
 from app.database import SessionLocal
 from app.services import agent_credential_service
+from app.services.router_context_token import (
+    ROUTER_CONTEXT_HEADER,
+    issue_router_context_token,
+)
 
 logger = logging.getLogger("app.services.proxy_service")
 
@@ -182,7 +187,11 @@ def build_agent_headers(
     return headers
 
 
-def build_model_gateway_headers(user_identity: Optional[str]) -> dict:
+def build_model_gateway_headers(
+    user_identity: Optional[str],
+    *,
+    router_caller_user_id: int | None = None,
+) -> dict:
     """Build headers for an LLM / embedding model gateway (.12) call.
 
     Carries ONLY the employee ID (員編) in ``X-ANILA-User-Id`` for
@@ -194,11 +203,50 @@ def build_model_gateway_headers(user_identity: Optional[str]) -> dict:
 
     ``X-ANILA-User-Id`` is omitted when ``user_identity`` is falsy
     (non-card accounts send no identity rather than a forged one; the
-    model call still proceeds).
+    model call still proceeds).  ``router_caller_user_id`` is a separate,
+    integer DB-PK context used only when the destination is the internal
+    ``anila-router`` model.  Callers must leave it ``None`` for ordinary
+    LLM/embedding destinations; it is never an employee-id alias.
     """
     headers: dict = {"Content-Type": "application/json"}
     if user_identity:
         headers["X-ANILA-User-Id"] = user_identity
+    if router_caller_user_id is not None:
+        if int(router_caller_user_id) <= 0:
+            raise ValueError("router caller user id must be a positive integer")
+        headers["X-ANILA-Caller-User-Id"] = str(int(router_caller_user_id))
+    return headers
+
+
+def build_router_model_gateway_headers(
+    user_identity: Optional[str],
+    *,
+    router_caller_user_id: int,
+    router_context: Mapping[str, object],
+    request_body: Mapping[str, object],
+) -> dict:
+    """Build the *Router-only* model gateway header contract.
+
+    ``build_model_gateway_headers`` intentionally carries only employee
+    identity for ordinary model calls.  The internal ``anila-router`` target
+    receives the complete CSP-derived task context as one short-lived,
+    body-bound ``X-ANILA-Router-Context`` JWT.  ``request_body`` must be the
+    finalized object passed to the HTTP client (including streaming options),
+    so the token cannot be replayed against a different prompt or session.
+
+    The finalized request body is mandatory.  Keeping a raw-header fallback
+    would allow a caller to bypass the single signed authority envelope.
+    """
+
+    if not isinstance(router_context, Mapping):
+        raise TypeError("router_context 必須是 mapping")
+    token = issue_router_context_token(
+        router_context=router_context,
+        request_body=request_body,
+        caller_user_id=router_caller_user_id,
+    )
+    headers = build_model_gateway_headers(user_identity)
+    headers[ROUTER_CONTEXT_HEADER] = token
     return headers
 
 

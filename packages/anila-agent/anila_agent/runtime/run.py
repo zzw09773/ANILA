@@ -5,14 +5,14 @@ P2 會在此加入 RunState persist/resume（HITL 暫停/恢復）輔助。
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from agents import Runner
 
 from anila_agent.runtime.agent_factory import AssembledAgent
 
 if TYPE_CHECKING:  # 僅型別用，避免在無 session 後端時硬相依
-    from agents import RunHooks, RunResult, RunResultStreaming
+    from agents import RunHooks, RunResult, RunResultStreaming, RunState
     from agents.memory import Session
 
 DEFAULT_MAX_TURNS = 10
@@ -20,7 +20,7 @@ DEFAULT_MAX_TURNS = 10
 
 async def run_once(
     assembled: AssembledAgent,
-    user_input: str | list,
+    user_input: str | list[Any],
     *,
     session: Session | None = None,
     max_turns: int | None = None,
@@ -37,9 +37,37 @@ async def run_once(
     )
 
 
+async def run_once_state(
+    assembled: AssembledAgent,
+    state: RunState,
+    *,
+    session: Session | None = None,
+    hooks: RunHooks | None = None,
+) -> RunResult:
+    """Resume one persisted SDK ``RunState`` through the same Runner path.
+
+    ``RunState`` carries the original input, generated items, approval state,
+    trace state and max-turn budget.  Reusing ``Runner.run`` with the state as
+    its input is the SDK-supported resume protocol; no second agent engine is
+    introduced here.  The assembled context is supplied so a restarted
+    process can rebind the durable state to the freshly built official agent.
+    """
+
+    # ``load_state`` rebinds the SDK RunContextWrapper to the freshly
+    # assembled request context.  Do not pass ``assembled.context`` here:
+    # the SDK treats any non-None context as an override and would replace the
+    # restored wrapper, silently discarding ``approve_all`` decisions.
+    return await Runner.run(
+        assembled.agent,
+        state,
+        session=session,
+        hooks=hooks,
+    )
+
+
 def run_streamed(
     assembled: AssembledAgent,
-    user_input: str | list,
+    user_input: str | list[Any],
     *,
     session: Session | None = None,
     max_turns: int | None = None,

@@ -67,8 +67,8 @@ class ProductionBackupProfileTests(unittest.TestCase):
             {
                 "derivable": 4,
                 "excluded": 2,
-                "required": 17,
-                "total": 23,
+                "required": 22,
+                "total": 28,
             },
         )
 
@@ -93,6 +93,8 @@ class ProductionBackupProfileTests(unittest.TestCase):
                     "path outside the repo}/artifact-blobs"
                 ),
                 "anila-studio-artifacts",
+                "anila-agent-state",
+                "router-state",
                 "redis-data",
                 "n8n_data",
                 "gitlab_config",
@@ -100,6 +102,63 @@ class ProductionBackupProfileTests(unittest.TestCase):
                 "gitlab_data",
             },
             required,
+        )
+
+    def test_agent_and_router_runtime_state_have_explicit_restore_contracts(self) -> None:
+        profile = _profile()
+        self.assertIn(
+            "anila-agent", profile["automation"]["consistency"]["writer_services"]
+        )
+        surfaces = {
+            surface["source"]["name"]: surface for surface in profile["surfaces"]
+        }
+        self.assertEqual(
+            surfaces["anila-agent-state"],
+            {
+                "id": "anila-agent-runtime-state",
+                "source": {
+                    "kind": "named_volume",
+                    "name": "anila-agent-state",
+                    "mounts": [
+                        {
+                            "service": "anila-agent",
+                            "target": "/var/lib/anila-agent",
+                            "read_only": False,
+                        }
+                    ],
+                },
+                "disposition": "required",
+                "data_classification": "極機密",
+                "owner": "agent-operations",
+                "reason": "Durable Agent task, session, and admission state is required for restart recovery and audit continuity.",
+                "acceptance_gate": "Gate 5 R5",
+                "backup_method": "volume_archive",
+                "restore_order": 40,
+            },
+        )
+        self.assertEqual(
+            surfaces["router-state"],
+            {
+                "id": "router-runtime-state",
+                "source": {
+                    "kind": "named_volume",
+                    "name": "router-state",
+                    "mounts": [
+                        {
+                            "service": "router",
+                            "target": "/var/lib/anila-router",
+                            "read_only": False,
+                        }
+                    ],
+                },
+                "disposition": "required",
+                "data_classification": "極機密",
+                "owner": "router-operations",
+                "reason": "Durable Router session and resume state is required to recover in-flight governed interactions after restart.",
+                "acceptance_gate": "Gate 5 R4",
+                "backup_method": "volume_archive",
+                "restore_order": 45,
+            },
         )
 
     def test_cli_reports_machine_readable_coverage_counts(self) -> None:
@@ -112,7 +171,7 @@ class ProductionBackupProfileTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
-            "total=23, required=17, derivable=4, excluded=2", result.stdout
+            "total=28, required=22, derivable=4, excluded=2", result.stdout
         )
 
     def _assert_profile_rejected(

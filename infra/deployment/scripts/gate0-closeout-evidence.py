@@ -241,6 +241,12 @@ def exec_csp(code: str, *, check: bool = True):
 
 
 def collect_runtime(bundle: EvidenceBundle) -> dict[str, Any]:
+    # Keep the runtime evidence's posture check tied to the same resolved
+    # Compose graph used by collect_profile.  This also avoids treating an
+    # undefined host variable as evidence for the deployment identity.
+    config = compose_config()
+    services = config.get("services") or {}
+    csp_env = (services.get("csp") or {}).get("environment") or {}
     containers = []
     by_service = {}
     for item in inspect_containers():

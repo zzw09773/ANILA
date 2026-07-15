@@ -24,6 +24,25 @@ class ContractModel(BaseModel):
     )
 
 
+class StrictContractModel(ContractModel):
+    """Strict base for the v2 governance envelopes.
+
+    v1 predates the routing contracts and intentionally retains Pydantic's
+    normal coercion behaviour for backwards compatibility.  The v2 control
+    plane is a trust boundary, so its scalar fields use ``Strict*`` types and
+    reject values such as ``"false"`` or ``1.0``.  The model itself still
+    accepts normal JSON representations (arrays, enum strings and ISO time
+    strings) at the wire boundary.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        str_strip_whitespace=True,
+        validate_default=True,
+    )
+
+
 class FrozenDict(dict[str, Any]):
     """JSON-serializable mapping that cannot be mutated after validation."""
 
@@ -35,10 +54,12 @@ class FrozenDict(dict[str, Any]):
     __delitem__ = _immutable
     clear = _immutable
     pop = _immutable
-    popitem = _immutable
+    # ``dict.popitem`` is overloaded in typeshed; the runtime implementation
+    # intentionally has the same no-return mutation behaviour as all siblings.
+    popitem = _immutable  # type: ignore[assignment]
     setdefault = _immutable
     update = _immutable
-    __ior__ = _immutable
+    __ior__ = _immutable  # type: ignore[assignment]
 
 
 class FrozenList(list[Any]):
@@ -58,8 +79,11 @@ class FrozenList(list[Any]):
     remove = _immutable
     reverse = _immutable
     sort = _immutable
-    __iadd__ = _immutable
-    __imul__ = _immutable
+    # Python's list/mutable-sequence stubs express ``__iadd__`` with a
+    # self-referential generic overload; a narrow assignment ignore is needed
+    # while preserving the runtime TypeError implementation.
+    __iadd__ = _immutable  # type: ignore[assignment]
+    __imul__ = _immutable  # type: ignore[assignment]
 
 
 def freeze_json(value: Any) -> Any:

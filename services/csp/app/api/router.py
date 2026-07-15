@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 from app.api.agents import router as agents_router
+from app.api.agents.registry import router as agent_registry_router
 from app.api.banners import router as banners_router
 from app.api.auth import router as auth_router
 from app.api.auth_providers import router as auth_providers_router
@@ -17,6 +18,8 @@ from app.api.traces import router as traces_router
 from app.api.artifacts import router as artifacts_router
 from app.api.service_access_grants import router as service_access_grants_router
 from app.api.service_clients import router as service_clients_router
+from app.api.execution_grants import router as execution_grants_router
+from app.api.agent_dispatch import router as agent_dispatch_router
 from app.api.services import router as services_router
 from app.api.trusted_hosts import router as trusted_hosts_router
 from app.api.ingestion import (
@@ -52,8 +55,16 @@ api_router.include_router(memory_router)
 api_router.include_router(platform_links_router)
 api_router.include_router(service_access_grants_router)
 api_router.include_router(service_clients_router)
+# Versioned, service-only CSP grant mint seam.  The caller is a named Router
+# service client; the user context is carried in the dedicated header and is
+# revalidated against durable Task/AuthSession/registry state.
+api_router.include_router(execution_grants_router, prefix="/internal/v1/execution-grants")
+api_router.include_router(agent_dispatch_router, prefix="/internal/v1/agents")
 api_router.include_router(services_router)
 api_router.include_router(agents_router)
+# Versioned service-only registry projection.  It is intentionally outside
+# ``/api/agents`` (JWT control-plane CRUD) and never replaces legacy /v1/agents.
+api_router.include_router(agent_registry_router, prefix="/internal/v1/agents")
 api_router.include_router(banners_router)
 api_router.include_router(ingestion_collections_router)
 api_router.include_router(ingestion_credentials_router)

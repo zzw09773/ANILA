@@ -27,6 +27,7 @@ slices; only their package-root public surface is used.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -107,7 +108,13 @@ def attach_running_task_run(
     )
 
 
-def _resolve_acting_user(db: Session, *, caller, request_headers):
+def _resolve_acting_user(
+    db: Session,
+    *,
+    caller,
+    request_headers,
+    allow_router_caller_pk: bool = False,
+):
     """Return (acting_user, actor_type, actor_id) for the task check.
 
     Default: the authenticated caller acts for themselves. When the request
@@ -125,6 +132,32 @@ def _resolve_acting_user(db: Session, *, caller, request_headers):
     )
     if identity is None:
         raise HTTPException(status_code=401, detail="無效的 service token")
+
+    # Router's internal inference seam carries the durable CSP user PK.  It is
+    # preferred over the legacy card employee-id projection and is still
+    # trusted only after the same named service-token verification above.
+    caller_pk = (request_headers.get("X-ANILA-Caller-User-Id") or "").strip()
+    if caller_pk:
+        if not allow_router_caller_pk:
+            raise HTTPException(
+                status_code=403,
+                detail="caller user id 僅限 CSP internal Router seam",
+            )
+        if re.fullmatch(r"[1-9][0-9]*", caller_pk) is None:
+            raise HTTPException(
+                status_code=403, detail="服務呼叫帶任務時 caller user id 無效"
+            )
+        acting_user = (
+            db.query(User)
+            .filter(User.id == int(caller_pk), User.is_active.is_(True))
+            .first()
+        )
+        if acting_user is None:
+            raise HTTPException(
+                status_code=403, detail="caller user id 查無對應的有效使用者"
+            )
+        actor_id = identity.agent_id or identity.service_client_id
+        return acting_user, PolicyActorType.SERVICE.value, actor_id
 
     employee_id = (request_headers.get("X-ANILA-User-Id") or "").strip()
     if not employee_id or not _EMPLOYEE_ID_RE.match(employee_id):

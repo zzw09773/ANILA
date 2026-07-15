@@ -39,7 +39,11 @@ jobs:
           python-version: "3.11"
 
       - name: Install governance test dependencies
-        run: python -m pip install pytest cryptography pyyaml
+        run: |
+          python -m pip install pytest cryptography pyyaml
+          python -m pip install -e ./packages/anila-contracts \
+            -e ./packages/anila-security \
+            -e './packages/anila-core[dev]'
 
       - name: Validate F1/F3 suite and quarantine registry
         run: |
@@ -226,9 +230,11 @@ jobs:
       - name: Install local packages and CSP test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e "./packages/anila-contracts"
-          python -m pip install -e "./packages/anila-security"
-          python -m pip install -e "./packages/anila-core[rag]"
+          python -m pip install \
+            -e "./packages/anila-contracts" \
+            -e "./packages/anila-security" \
+            -e "./packages/anila-core[rag]" \
+            -e "./packages/anila-agent"
           python -m pip install -r services/csp/requirements-dev.txt
 
       - name: Run complete CSP suite
@@ -404,6 +410,14 @@ jobs:
           ANILA_TEST_PG_DSN: postgresql://csp:gate1-admin-db@127.0.0.1:5432/csp
           PYTHONPATH: .
         run: python -m pytest tests/test_gate2_auth_races_pg.py -q
+
+      - name: Prove Gate 5 durable resume claim concurrency on PostgreSQL
+        working-directory: services/csp
+        env:
+          TEST_POSTGRES_URL: postgresql://csp_app:gate1-app-db@127.0.0.1:5432/csp
+          DATABASE_URL: postgresql://csp_app:gate1-app-db@127.0.0.1:5432/csp
+          PYTHONPATH: .
+        run: python -m pytest tests/test_gate5_r5_durable_resume_authority.py -q -m integration
 
   frontend-governance:
     name: Frontend / CSP governance UI

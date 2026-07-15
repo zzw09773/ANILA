@@ -36,6 +36,34 @@ RUN pip install ./anila-contracts \
 RUN python -c "from anila_agent.serving.service_wrapper import app; print('import OK')"
 
 # ============================================================
+# silver-runtime：正式單 Agent service（Gate 5 R5）
+# ============================================================
+# Keep the developer/Jupyter image below as the default target for MLSteam,
+# but provide a separate immutable target for Compose.  The formal target has
+# no notebook, shell tools, or source checkout; it only exposes the governed
+# FastAPI wrapper and a named writable state directory.  Compose adds the
+# read-only root filesystem, capability drop, and tmpfs policy at runtime.
+FROM python:3.12-slim AS silver-runtime
+
+RUN useradd --create-home --uid 10001 anila \
+    && mkdir -p /var/lib/anila-agent \
+    && chown -R anila:anila /var/lib/anila-agent
+
+COPY --from=builder /opt/venv /opt/venv
+
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    ANILA_LOG_LEVEL=INFO \
+    ANILA_HOME=/var/lib/anila-agent
+
+USER anila
+WORKDIR /var/lib/anila-agent
+EXPOSE 8200
+
+CMD ["uvicorn", "anila_agent.serving.service_wrapper:app", "--host", "0.0.0.0", "--port", "8200"]
+
+# ============================================================
 # runtime：精簡層、非 root；只有「環境」，沒有源碼
 # ============================================================
 FROM python:3.12-slim AS runtime

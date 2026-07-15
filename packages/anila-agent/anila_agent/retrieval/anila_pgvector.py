@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Mapping
 from typing import Any
 
 from anila_agent.retrieval.schemas import Document
@@ -58,6 +59,27 @@ def _format_halfvec(values: list[float]) -> str:
     (pgvector-python's asyncpg helpers register `vector` only, not `halfvec`).
     """
     return "[" + ",".join(format(v, ".6g") for v in values) + "]"
+
+
+def _embedding_from_response(payload: object) -> list[float]:
+    """Validate an OpenAI-compatible embedding response before using it in SQL."""
+
+    if not isinstance(payload, Mapping):
+        raise ValueError("embedding response must be an object")
+    data = payload.get("data")
+    if not isinstance(data, list) or not data or not isinstance(data[0], Mapping):
+        raise ValueError("embedding response missing data[0]")
+    embedding = data[0].get("embedding")
+    if not isinstance(embedding, list):
+        raise ValueError("embedding response missing numeric embedding")
+    values: list[float] = []
+    for value in embedding:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("embedding response contains a non-numeric value")
+        values.append(float(value))
+    if not values:
+        raise ValueError("embedding response is empty")
+    return values
 
 
 class AnilaPgVectorRetriever:
@@ -141,7 +163,7 @@ class AnilaPgVectorRetriever:
                 json={"model": self._embed_model, "input": text},
             )
             response.raise_for_status()
-            return response.json()["data"][0]["embedding"]
+            return _embedding_from_response(response.json())
 
     async def search(self, query: str, k: int = 5) -> list[Document]:
         full = await self._embed(query)

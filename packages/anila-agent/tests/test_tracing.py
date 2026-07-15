@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import uuid
 from collections import Counter
 from typing import ClassVar
 
@@ -244,6 +245,17 @@ async def test_scripted_run_span_type_multiset(fake_http):
     })
 
 
+async def test_lifecycle_finish_uses_distinct_wire_id_and_logical_pair(fake_http):
+    em = _active()
+    async with em.run_span("risk-agent"):
+        pass
+    started = next(s for s in em._buffer if s["span_type"] == f"{RUN}.started")
+    finished = next(s for s in em._buffer if s["span_type"] == f"{RUN}.finished")
+    assert finished["span_id"] != started["span_id"]
+    assert finished["attributes"]["logical_span_id"] == started["span_id"]
+    assert finished["parent_span_id"] == started["span_id"]
+
+
 async def test_final_output_carries_citations_and_classification(fake_http):
     em = _active()
     await _scripted_run(em)
@@ -340,6 +352,25 @@ def test_tracing_retriever_matches_protocol():
 # ---- service_wrapper 整合：trace header → emitter → 回打 CSP -----------------
 
 
+def _formal_dispatch_headers(module, *, trace_id: str | None) -> dict[str, str]:
+    """Construct the CSP-owned binding now required by the formal service."""
+
+    assert module._ADMISSION is not None
+    nonce = uuid.uuid4().hex
+    headers = {
+        "X-ANILA-Agent-Id": module._ADMISSION.manifest.agent_id,
+        "X-ANILA-Task-Id": f"task-trace-{nonce}",
+        "X-ANILA-Run-Id": f"run-trace-{nonce}",
+        "X-ANILA-Session-Id": f"session-trace-{nonce}",
+        "X-ANILA-Invocation-Id": f"inv-trace-{nonce}",
+        "X-ANILA-Classification-Level": "%E7%84%A1%E6%A9%9F%E5%AF%86",
+        "X-ANILA-Idempotency-Key": f"idem-trace-{nonce}",
+    }
+    if trace_id is not None:
+        headers["X-ANILA-Trace-Id"] = trace_id
+    return headers
+
+
 def test_service_wrapper_ships_spans_when_trace_header_present(fake_http, monkeypatch):
     fastapi = pytest.importorskip("fastapi")  # noqa: F841
     from fastapi.testclient import TestClient
@@ -362,21 +393,25 @@ def test_service_wrapper_ships_spans_when_trace_header_present(fake_http, monkey
     monkeypatch.setattr(service_wrapper, "run_once", _fake_run_once)
 
     with TestClient(service_wrapper.app) as client:
+        headers = _formal_dispatch_headers(service_wrapper, trace_id="trace_xyz")
+        headers["X-ANILA-User-Id"] = "trace_owner"
         resp = client.post(
             "/v1/chat/completions",
-            headers={"X-ANILA-Trace-Id": "trace_xyz", "X-ANILA-Task-Id": "task_1"},
+            headers=headers,
             json={"model": "anila-agent", "messages": [{"role": "user", "content": "hi"}]},
         )
     assert resp.status_code == 200
     # emitter 應把 run + output span POST 回 CSP 的 /v1/traces/<id>/spans
     assert fake_http.calls, "沒有 trace span 被送出"
     assert fake_http.calls[0]["url"] == "https://csp.local/v1/traces/trace_xyz/spans"
+    assert fake_http.calls[0]["headers"]["X-ANILA-Task-Id"] == headers["X-ANILA-Task-Id"]
+    assert fake_http.calls[0]["headers"]["X-ANILA-User-Id"] == "trace_owner"
     span_types = {s["span_type"] for c in fake_http.calls for s in c["json"]["spans"]}
     assert {"agent.run.started", "agent.run.finished",
             "agent.output.started", "agent.output.finished"} <= span_types
 
 
-def test_service_wrapper_no_spans_without_trace_header(fake_http, monkeypatch):
+def test_service_wrapper_rejects_missing_trace_header(fake_http, monkeypatch):
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
@@ -398,7 +433,8 @@ def test_service_wrapper_no_spans_without_trace_header(fake_http, monkeypatch):
     with TestClient(service_wrapper.app) as client:
         resp = client.post(
             "/v1/chat/completions",
+            headers=_formal_dispatch_headers(service_wrapper, trace_id=None),
             json={"model": "anila-agent", "messages": [{"role": "user", "content": "hi"}]},
         )
-    assert resp.status_code == 200
-    assert fake_http.calls == []  # 無 trace header → 零外送
+    assert resp.status_code == 400
+    assert fake_http.calls == []  # 缺 CSP correlation 不得執行、更不得外送

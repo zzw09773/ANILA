@@ -13,7 +13,7 @@ anilalm	anila-platform-anilalm	01-anila-built.tar.gz	default	built
 anila-ui	anila-platform-anila-ui	01-anila-built.tar.gz	default	built
 pptx-renderer	anila-platform-pptx-renderer	01-anila-built.tar.gz	default	built
 anila-studio	anila-platform-anila-studio	01-anila-built.tar.gz	default	built
-flux2-dev-agent	anila-platform-flux2-dev-agent	01-anila-built.tar.gz	default	built
+anila-agent	anila-platform-anila-agent	01-anila-built.tar.gz	profile:gate5-silver	built
 csp-db	pgvector/pgvector:pg16	02-base.tar.gz	default	upstream
 redis	redis:7-alpine	02-base.tar.gz	default	upstream
 nginx	nginx:alpine	02-base.tar.gz	default	upstream

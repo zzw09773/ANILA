@@ -55,6 +55,18 @@ class Settings(BaseSettings):
     # must never be sufficient to claim the signed pilot posture.
     GATE2_PILOT_COMPOSE_POSTURE: str = ""
 
+    # Gate 5 model-governance runtime.  The feature is opt-in so existing
+    # development/test profiles remain usable; once enabled, readiness is
+    # fail-closed until every explicit signed material/facts path verifies.
+    GATE5_MODEL_GOVERNANCE_ENABLED: bool = False
+    GATE5_MODEL_GOVERNANCE_STARTUP_REQUIRED: bool = False
+    GATE5_MODEL_GOVERNANCE_INVENTORY_PATH: str = ""
+    GATE5_MODEL_GOVERNANCE_PROFILE_PATH: str = ""
+    GATE5_MODEL_GOVERNANCE_TRUST_STORE_PATH: str = ""
+    GATE5_MODEL_GOVERNANCE_OBSERVED_FACTS_PATH: str = ""
+    GATE5_MODEL_GOVERNANCE_OBSERVED_DEPLOYMENT_FACTS_PATH: str = ""
+    GATE5_MODEL_GATEWAY_ENDPOINT: str = ""
+
     # Unit/dev harness escape hatch only. Formal deployments must run Alembic
     # and the legacy idempotent migration pass before becoming ready. Startup
     # security rejects this flag unless the explicit dev posture is enabled.
@@ -130,6 +142,18 @@ class Settings(BaseSettings):
 
     # Health Check
     HEALTH_CHECK_INTERVAL: int = 60
+    # Readiness freshness is a governance TTL, not a UI polling interval.  A
+    # target with no timestamp (or a timestamp older than these bounds) is
+    # never dispatchable.  Keep the values explicit so production profiles
+    # can review them instead of inheriting a wall-clock constant in code.
+    AGENT_HEALTH_FRESHNESS_SECONDS: int = Field(default=300, ge=1, le=86400)
+    MODEL_HEALTH_FRESHNESS_SECONDS: int = Field(default=300, ge=1, le=86400)
+    AGENT_TRACE_TEST_FRESHNESS_SECONDS: int = Field(default=86400, ge=1, le=604800)
+    AGENT_REGISTRY_SNAPSHOT_TTL_SECONDS: int = Field(default=60, ge=1, le=3600)
+    # Legacy /v1 agent callers do not carry a registry snapshot or manifest
+    # revision.  Formal dispatch must keep this disabled; development can opt
+    # in explicitly while the Router v2 consumer is being rolled out.
+    ALLOW_LEGACY_AGENT_DISPATCH: bool = False
     TASK_RUN_STALE_SECONDS: int = Field(default=900, ge=60, le=86400)
 
     # Usage Writer

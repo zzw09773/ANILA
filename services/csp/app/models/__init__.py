@@ -54,6 +54,7 @@ from app.models.ingestion import (
 )
 from app.models.message import Message
 from app.models.model_registry import ModelRegistry
+from app.models.model_governance_receipt import ModelGovernanceReceipt
 from app.models.platform_link import PlatformLink
 from app.models.policy_decision import PolicyDecision
 from app.models.registered_service import (
@@ -61,9 +62,11 @@ from app.models.registered_service import (
     ServiceProjectBinding,
 )
 from app.models.retention import RetentionReaperLease
+from app.models.resume_authority import ResumeAttempt, ResumeAuthority
 from app.models.service_access_grant import ServiceAccessGrant
 from app.models.service_client import ServiceClient
 from app.models.service_launch import ServiceAuditCallback, ServiceLaunch
+from app.models.session_event import SessionEvent, SessionEventRun
 from app.models.source_snapshot import Citation, SourceSnapshot
 from app.models.task import Task, TaskRun
 from app.models.token_revocation import TokenRevocation
@@ -124,15 +127,20 @@ __all__ = [
     "SimilarityRecomputeRequest",
     "Message",
     "ModelRegistry",
+    "ModelGovernanceReceipt",
     "PlatformLink",
     "PolicyDecision",
     "RegisteredService",
     "RetentionReaperLease",
+    "ResumeAuthority",
+    "ResumeAttempt",
     "ServiceAccessGrant",
     "ServiceAuditCallback",
     "ServiceClient",
     "ServiceLaunch",
     "ServiceProjectBinding",
+    "SessionEvent",
+    "SessionEventRun",
     "SourceSnapshot",
     "SecurityCompartment",
     "Task",

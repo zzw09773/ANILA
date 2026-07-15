@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from types import SimpleNamespace
 
 # 同 house pattern(test_tasks_module.py 等):endpoint 測試會啟動 app,
 # startup_security 在 production 模式擋 dev 預設 secret — 測試環境放行。
@@ -37,6 +38,7 @@ from app.models.agent import UserAgentPermission
 from app.models.api_key import ApiKeyModelPermission
 from app.models.conversation import Conversation
 from app.models.policy_decision import PolicyDecision
+from app.models.source_snapshot import SourceSnapshot
 from app.models.task import Task, TaskRun
 from app.models.token_usage import TokenUsage
 from app.services import proxy_service
@@ -49,6 +51,101 @@ from app.services.proxy_service import (
 )
 
 from tests.conftest import make_agent, make_api_key, make_model, make_user
+
+
+def test_generic_service_token_cannot_impersonate_router_caller_pk(
+    db: Session, monkeypatch
+):
+    """The caller-PK projection is exclusive to the internal Router seam.
+
+    A valid non-Router service identity (including an Agent identity) must
+    not be able to opt into ``X-ANILA-Caller-User-Id`` and impersonate another
+    task requester through the generic task-link helper.
+    """
+    source = make_user(db, username="generic-service-source")
+    monkeypatch.setattr(
+        task_link.agent_credential_service,
+        "verify_service_token",
+        lambda _db, *, token: SimpleNamespace(
+            kind="agent",
+            agent_id=123,
+            service_client_id=None,
+            is_legacy=False,
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        task_link._resolve_acting_user(
+            db,
+            caller=SimpleNamespace(user=source),
+            request_headers={
+                "X-CSP-Service-Token": "csk-agent-token",
+                "X-ANILA-Caller-User-Id": "999",
+            },
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+def test_router_orchestration_uses_agent_task_run_for_formal_context(
+    client: TestClient, db: Session, monkeypatch
+):
+    """CSP's public Router target owns an Agent-shaped outer TaskRun.
+
+    ExecutionGrant minting intentionally accepts only an active Agent
+    dispatch run.  The Router model is therefore an orchestration sink: its
+    formal context carries the same run id that the nested CSP inference will
+    attach to, while the run remains available for the Router grant gate.
+    """
+    user = make_user(db, username="router-orchestration", role="admin")
+    model = make_model(db, name="anila-router")
+    task = _make_task(db, user)
+    snapshot = SourceSnapshot(
+        task_id=task.id,
+        origin="none",
+        source_scope="none",
+        classification_level="無機密",
+    )
+    db.add(snapshot)
+    db.flush()
+    task.source_snapshot_id = snapshot.id
+    db.commit()
+
+    seen: dict[str, object] = {}
+
+    async def _no_memory(*_args, **_kwargs):
+        return None
+
+    async def _fake_proxy_request(**kwargs):
+        seen.update(kwargs)
+        return {
+            "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+        }
+
+    monkeypatch.setattr(proxy_api, "_inject_memory", _no_memory)
+    monkeypatch.setattr(proxy_api, "_schedule_memory_write", lambda **_: None)
+    monkeypatch.setattr(proxy_api, "proxy_request", _fake_proxy_request)
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers={
+            **_bearer(create_tokens(user, amr=("pwd",))["access_token"]),
+            "X-ANILA-Task-Id": str(task.id),
+        },
+        json={
+            "model": model.name,
+            "messages": [{"role": "user", "content": "route me"}],
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    run = db.query(TaskRun).filter(TaskRun.task_id == task.id).one()
+    assert run.dispatch_target == "agent"
+    context = seen.get("router_context")
+    assert isinstance(context, dict)
+    assert context["task_id"] == task.id
+    assert context["run_id"] == run.id
+    assert context["source_snapshot_id"] == snapshot.id
 
 
 # ── Shared fixtures / helpers ───────────────────────────────────────────────
@@ -294,6 +391,12 @@ class TestUserCallerWithTask:
         """doc 05 §4:agent dispatch 帶 X-ANILA-Task-Id + X-ANILA-Trace-Id
         (trace id 取自 task 列)。"""
         user = make_user(db, username="task_user_ag")
+        # This fixture intentionally exercises the pre-Router-v2 legacy
+        # compatibility path. Formal dispatch tests provide the complete
+        # caller-scoped registry snapshot/manifest evidence instead.
+        monkeypatch.setattr(
+            proxy_service.settings, "ALLOW_LEGACY_AGENT_DISPATCH", True
+        )
         dev = make_user(db, username="task_dev_ag", role="developer")
         agent = make_agent(db, dev, name="task-agent", approval_status="approved")
         db.add(UserAgentPermission(user_id=user.id, agent_id=agent.id))
@@ -336,6 +439,11 @@ class TestUserCallerWithTask:
     def test_agent_nonstream_writes_task_attributed_token_usage(
         self, client: TestClient, db: Session, monkeypatch, task_sessions,
     ):
+        # Legacy fixture: keep the old task-linked call shape explicit while
+        # Gate5 formal callers migrate to snapshot headers.
+        monkeypatch.setattr(
+            proxy_service.settings, "ALLOW_LEGACY_AGENT_DISPATCH", True
+        )
         user = make_user(db, username="task_user_agent_nonstream")
         dev = make_user(db, username="task_dev_agent_nonstream", role="developer")
         base_model = make_model(db, name="task-agent-nonstream-base")

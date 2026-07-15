@@ -88,7 +88,8 @@ services:
       # flux2-dev-agent added: the image-generator agent + image model use this
       # docker service name (single-label), which the URL guard blocks unless
       # trusted (ALLOW_PRIVATE does NOT bypass the single-label check).
-      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,host.docker.internal}"
+      ANILA_TRUSTED_HOSTS: "${ANILA_TRUSTED_HOSTS:-gpt-oss-20b,gemma4,nv-embed-proxy,flux2-dev-agent,anila-agent,gate5-e2e-model,host.docker.internal}"
+      ANILA_DEPLOYMENT_PROFILE: "${ANILA_DEPLOYMENT_PROFILE_DEV:-development}"
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
       REFRESH_TOKEN_EXPIRE_DAYS: "${REFRESH_TOKEN_EXPIRE_DAYS:-30}"
@@ -145,6 +146,8 @@ services:
       # FLUX_CACHE_DIR defaults to $INGESTION_UPLOAD_DIR/flux-cache
     volumes:
       - ../../packages/anila-agent:/app/anila-template:ro
+      # Disposable Gate 5 seed helper; mounted only in this development stack.
+      - ../../infra/deployment/scripts/gate5-silver-seed.py:/opt/anila/gate5-silver-seed.py:ro
       # Named volume inherits UID 10001 from the CSP image and is shared with
       # the worker running under the same numeric identity.  A fresh Linux
       # checkout therefore does not get a root-owned bind directory.
@@ -162,7 +165,7 @@ services:
       csp-db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=2).read()\""]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -205,6 +208,13 @@ services:
       dockerfile: services/ingestion-worker/Dockerfile
     environment:
       ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-development}
+      # Development keeps direct model services/network access explicitly
+      # testable.  This marker is never accepted by the formal checker.
+      ANILA_DEV_DIRECT_MODEL_EGRESS: "1"
+      GATE5_MODEL_GOVERNANCE_ENABLED: "false"
+      GATE5_MODEL_GOVERNANCE_STARTUP_REQUIRED: "false"
+      GATE5_MODEL_GATEWAY_ENDPOINT: http://csp:8000/v1
+      GATE5_FLUX_LEGAL_APPROVED: "false"
       DATABASE_URL: postgresql://csp_app:csp@csp-db:5432/csp
       REDIS_URL: redis://redis:6379
       INGESTION_QUEUE_HMAC_KEY: ${INGESTION_QUEUE_HMAC_KEY:-dev-ingestion-queue-hmac-key-change-me}
@@ -282,9 +292,17 @@ services:
       - "9000"
     environment:
       CSP_BASE_URL: http://csp:8000
+      CSP_JWKS_URL: http://csp:8000/.well-known/jwks.json
+      ROUTER_CONTEXT_ISSUER: "https://anila.internal/csp"
       CSP_SERVICE_TOKEN: ${CSP_SERVICE_TOKEN:-dev-service-token}
+      ANILA_CSP_REGISTRY_SERVICE_TOKEN: "${ANILA_CSP_REGISTRY_SERVICE_TOKEN:-}"
+      ANILA_CSP_AGENT_SERVICE_TOKEN: "${ANILA_CSP_AGENT_SERVICE_TOKEN:-}"
+      ANILA_CSP_INFERENCE_SERVICE_TOKEN: "${ANILA_CSP_INFERENCE_SERVICE_TOKEN:-}"
+      ANILA_ROUTER_STATE_DIR: /var/lib/anila-router
       MODEL: ${LLM_MODEL:-gemma4}
       COOKIE_SECURE: "true"
+    volumes:
+      - router-state-dev:/var/lib/anila-router
     depends_on:
       csp:
         condition: service_healthy
@@ -295,6 +313,84 @@ services:
       retries: 6
       start_period: 20s
     restart: unless-stopped
+
+  # ── Official anila-agent Silver runtime (Gate 5 R5) ────────────────────
+  # Explicit profile keeps the normal dev stack lightweight; the disposable
+  # Gate 5 harness enables this profile and provisions a fresh csk-/registry
+  # row before sending any dispatch traffic.
+  anila-agent:
+    profiles: ["gate5-silver"]
+    build:
+      context: ../..
+      dockerfile: packages/anila-agent/Dockerfile
+      target: silver-runtime
+    image: "${ANILA_IMAGE_ANILA_AGENT_DEV:-anila-agent:silver-dev}"
+    expose:
+      - "8200"
+    environment:
+      ANILA_BASE_URL: http://csp:8000/v1
+      CSP_BASE_URL: http://csp:8000
+      ANILA_DEPLOYMENT_PROFILE: "${ANILA_DEPLOYMENT_PROFILE_DEV:-development}"
+      # Keep ordinary dev Compose interpolation compatible when the optional
+      # profile is not selected; service startup remains fail-closed because
+      # ANILA_ALLOW_NO_SERVICE_TOKEN is hardcoded to 0 below.
+      CSP_SERVICE_TOKEN: "${ANILA_AGENT_SERVICE_TOKEN_DEV:-}"
+      CSP_SEARCH_TOKEN: "${ANILA_AGENT_SERVICE_TOKEN_DEV:-}"
+      ANILA_AGENT_ID: "${ANILA_AGENT_ID_DEV:-anila-agent-silver}"
+      ANILA_AGENT_NAME: "${ANILA_AGENT_NAME_DEV:-anila-agent-silver}"
+      ANILA_AGENT_MODEL_ID: "${ANILA_AGENT_MODEL_ID_DEV:-1}"
+      ANILA_MODEL: "${ANILA_AGENT_MODEL_ID_DEV:-1}"
+      ANILA_HOME: /var/lib/anila-agent
+      ANILA_TRACE_ENDPOINT: http://csp:8000
+      ANILA_TRACE_ENABLED: "true"
+      ANILA_CLASSIFICATION_DEFAULT: "無機密"
+      ANILA_CLASSIFICATION_CEILING: "無機密"
+      ANILA_ALLOW_NO_SERVICE_TOKEN: "0"
+      # Test-only native SDK approval edge; default is disabled even in dev.
+      ANILA_E2E_REQUIRE_TOOL_APPROVAL: "${ANILA_E2E_REQUIRE_TOOL_APPROVAL:-0}"
+      ANILA_E2E_HARNESS: "${ANILA_E2E_HARNESS:-}"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - anila-agent-state-dev:/var/lib/anila-agent
+    networks:
+      - default
+    depends_on:
+      csp:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8200/ready', timeout=2).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+
+  # Deterministic model shim used only by gate5-silver E2E.  The Agent still
+  # reaches it through CSP_BASE_URL; no Agent container is attached to the
+  # external model network and no raw model URL is admitted by startup.
+  gate5-e2e-model:
+    profiles: ["gate5-silver"]
+    image: python:3.12-slim
+    command: ["python", "/opt/gate5/gate5-e2e-model.py"]
+    environment:
+      GATE5_E2E_MODEL_PORT: "8105"
+    volumes:
+      - ../../infra/deployment/scripts/gate5-e2e-model.py:/opt/gate5/gate5-e2e-model.py:ro
+    expose:
+      - "8105"
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8105/ready', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: "no"
 
   # ── pptx-renderer ───────────────────────────────────────────────────────
   pptx-renderer:
@@ -323,6 +419,10 @@ services:
       - "8100"
     environment:
       ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-development}
+      ANILA_DEV_DIRECT_MODEL_EGRESS: "1"
+      GATE5_MODEL_GOVERNANCE_ENABLED: "false"
+      GATE5_MODEL_GOVERNANCE_STARTUP_REQUIRED: "false"
+      GATE5_MODEL_GATEWAY_ENDPOINT: http://csp:8000/v1
       CSP_BASE_URL: http://csp:8000
       # 跟 csp 共用同一把 service-to-service token,讓 cold-start sync
       # /api/auth/revocations 能透過 X-CSP-Service-Token header 通過
@@ -470,5 +570,7 @@ volumes:
   csp-source-snapshots-dev:
   csp-artifact-blobs-dev:
   csp-secrets-dev:
+  anila-agent-state-dev:
+  router-state-dev:
   anila-studio-flux-cache-dev:
   anila-studio-artifacts-dev:

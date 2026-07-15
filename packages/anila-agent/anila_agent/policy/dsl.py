@@ -15,12 +15,13 @@ enforcement 餵進單一 SDK tool-input-guardrail（見 policy.guardrail），�
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
 WILDCARD = "*"
+PolicyArgs = dict[str, object]
 
 
 class Effect(str, Enum):
@@ -39,10 +40,10 @@ class Decision:
 class Rule:
     effect: Effect
     pattern: str  # 工具名，或 "*"
-    when: Callable[[dict], bool] | None = None
+    when: Callable[[PolicyArgs], bool] | None = None
     reason: str = ""
 
-    def matches(self, tool_name: str, args: dict, *, wildcard: bool) -> bool:
+    def matches(self, tool_name: str, args: PolicyArgs, *, wildcard: bool) -> bool:
         is_wild = self.pattern == WILDCARD
         if wildcard != is_wild:
             return False
@@ -67,7 +68,7 @@ class Policy:
     rules: tuple[Rule, ...] = ()
     default: Effect = Effect.DENY
 
-    def evaluate(self, tool_name: str, args: dict | None = None) -> Decision:
+    def evaluate(self, tool_name: str, args: PolicyArgs | None = None) -> Decision:
         args = args or {}
         for wildcard, effect in _BUCKETS:
             for rule in self.rules:
@@ -82,32 +83,40 @@ class Policy:
 
 # ---- builders ----
 
-def allow(pattern: str, *, when: Callable[[dict], bool] | None = None, reason: str = "") -> Rule:
+def allow(
+    pattern: str, *, when: Callable[[PolicyArgs], bool] | None = None, reason: str = ""
+) -> Rule:
     return Rule(Effect.ALLOW, pattern, when, reason)
 
 
-def deny(pattern: str, *, when: Callable[[dict], bool] | None = None, reason: str = "") -> Rule:
+def deny(
+    pattern: str, *, when: Callable[[PolicyArgs], bool] | None = None, reason: str = ""
+) -> Rule:
     return Rule(Effect.DENY, pattern, when, reason)
 
 
-def ask_user(pattern: str, *, when: Callable[[dict], bool] | None = None, reason: str = "") -> Rule:
+def ask_user(
+    pattern: str, *, when: Callable[[PolicyArgs], bool] | None = None, reason: str = ""
+) -> Rule:
     return Rule(Effect.ASK, pattern, when, reason)
 
 
 # ---- loader ----
 
 def load_policy(
-    capabilities: dict[str, object],
+    capabilities: Mapping[str, object],
     config_dir: str | os.PathLike[str] | None = None,
 ) -> Policy:
     """從 configs/policy.yaml 組 Policy；預設 deny-all + 明列 allow 唯讀工具。"""
     cfg_dir = Path(config_dir) if config_dir is not None else Path("configs")
     path = cfg_dir / "policy.yaml"
-    data: dict = {}
+    data: dict[str, object] = {}
     if path.is_file():
         import yaml
 
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        loaded: object = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            data = {str(key): value for key, value in loaded.items()}
 
     default = Effect(str(data.get("default", "deny")).strip().lower())
     rules: list[Rule] = []
@@ -118,11 +127,15 @@ def load_policy(
             if getattr(cap, "value", str(cap)) == "read_only":
                 rules.append(allow(name, reason="read_only tool"))
 
-    for raw in data.get("rules", []) or []:
+    raw_rules = data.get("rules", [])
+    if not isinstance(raw_rules, list):
+        raw_rules = []
+    for raw in raw_rules:
         if not isinstance(raw, dict):
             continue
-        effect = Effect(str(raw["effect"]).strip().lower())
-        pattern = str(raw.get("tool", WILDCARD))
-        rules.append(Rule(effect, pattern, None, str(raw.get("reason", ""))))
+        rule = {str(key): value for key, value in raw.items()}
+        effect = Effect(str(rule["effect"]).strip().lower())
+        pattern = str(rule.get("tool", WILDCARD))
+        rules.append(Rule(effect, pattern, None, str(rule.get("reason", ""))))
 
     return Policy(rules=tuple(rules), default=default)

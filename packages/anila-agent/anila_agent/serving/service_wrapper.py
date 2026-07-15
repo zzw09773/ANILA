@@ -18,33 +18,63 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import unquote
 
-from anila_contracts import Classification
-from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import StreamingResponse
+from anila_contracts import AgentManifest, Classification
+from anila_contracts.events import StepKind, StepStatus
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from openai.types.responses import ResponseTextDeltaEvent
 from pydantic import BaseModel
 
-from anila_agent.config import load_config
+from anila_agent.config import load_config, with_model
 from anila_agent.memory.runtime import MemdirRuntime, auto_memory_enabled
+from anila_agent.memory.session import build_session
 from anila_agent.observability.hooks import AuditHooks
 from anila_agent.observability.timeline import (
+    TIMELINE_EVENT_NAME,
     TimelineEmitter,
     TimelineRetriever,
     TimelineRunHooks,
 )
 from anila_agent.retrieval.csp_http import CspHttpRetriever
-from anila_agent.runtime.agent_factory import build_agent
+from anila_agent.retrieval.dummy import DummyRetriever
+from anila_agent.runtime.admission import (
+    AgentAdmission,
+    AgentAdmissionError,
+    admit_startup,
+    build_agent_manifest,
+    canonical_manifest_json,
+)
+from anila_agent.runtime.agent_factory import build_agent, validate_e2e_approval_mode
 from anila_agent.runtime.model import build_model
-from anila_agent.runtime.run import run_once, run_streamed
+from anila_agent.runtime.run import run_once, run_once_state, run_streamed
+from anila_agent.runtime.runstate import (
+    approve_all,
+    dump_state,
+    has_interruptions,
+    load_state,
+    state_from_result,
+)
+from anila_agent.runtime.task import (
+    FileTaskStore,
+    IdempotencyConflict,
+    TaskRecord,
+    TaskStatus,
+    TaskStoreConflict,
+    TaskStoreCorruption,
+    request_digest,
+)
 from anila_agent.serving.auth import trusted_user_identity, verify_service_token
 from anila_agent.tracing import (
     OUTPUT,
@@ -85,11 +115,14 @@ TRACE_ENABLED = os.environ.get("ANILA_TRACE_ENABLED", "1").lower() not in (
 CLASSIFICATION_LEVEL = os.environ.get("ANILA_CLASSIFICATION_LEVEL", "") or None
 
 
-def _build_emitter(trace_id: str | None, task_id: str | None) -> TraceEmitter:
+def _build_emitter(
+    trace_id: str | None, task_id: str | None, user_id: str | None
+) -> TraceEmitter:
     """由入向 trace header 建 emitter（缺 trace_id/endpoint 時自動停用）。"""
     return TraceEmitter.from_context(
         trace_id=trace_id,
         task_id=task_id,
+        user_id=user_id,
         endpoint=TRACE_ENDPOINT,
         api_key=CSP_SEARCH_TOKEN,  # 與 RAG 出向同一把 Agent Integration Key（csk-）
         agent_id=MODEL_NAME,
@@ -143,11 +176,198 @@ def _usage_from_run_result(result: Any) -> dict[str, int] | None:
 
 _CONFIG: Any = None
 _MODEL: Any = None  # 共用的 OpenAIChatCompletionsModel（避免每請求新建 httpx client）
+_ADMISSION: AgentAdmission | None = None
+_TASK_STORE: FileTaskStore | None = None
+_ACTIVE_TASKS: dict[str, asyncio.Task[Any]] = {}
+_ACTIVE_TIMELINES: dict[str, TimelineEmitter] = {}
+_CORRELATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$")
+# CSP issues 32 random bytes through ``secrets.token_urlsafe(32)``.  Its
+# canonical service-token wire representation is therefore exactly
+# ``csk-`` + 43 base64url characters.  R5 must not promote a generic string
+# (or a development placeholder) into durable-resume authority merely because
+# it is non-empty.
+_CSP_SERVICE_TOKEN = re.compile(r"^csk-[A-Za-z0-9_-]{43}$")
+_SERVICE_TOKEN_PLACEHOLDERS = frozenset(
+    {
+        "",
+        "not-set",
+        "changeme",
+        "dev-service-token",
+        "dev-secret-key-change-in-prod",
+        "change-me",
+        "change_me",
+        "placeholder",
+        "replace-me",
+        "replace_me",
+        "none",
+        "null",
+        "undefined",
+        "<openssl rand -hex 32>",
+        "<openssl rand -base64 24>",
+        "<openssl rand -base64 32>",
+    }
+)
+
+
+def _is_canonical_csp_service_token(value: object) -> bool:
+    """Return whether *value* has CSP's bounded, non-placeholder csk shape.
+
+    This is deliberately only a local admission prerequisite: CSP remains the
+    authority that validates the credential against its provisioned record at
+    dispatch time.  The shape check still prevents an accidental arbitrary
+    value from advertising R5 resume support before that authority boundary.
+    """
+
+    if not isinstance(value, str) or value != value.strip():
+        return False
+    return bool(
+        value.lower() not in _SERVICE_TOKEN_PLACEHOLDERS
+        and _CSP_SERVICE_TOKEN.fullmatch(value)
+    )
+
+
+def _validate_csp_service_token_for_admission() -> bool:
+    """Validate token posture before admitting formal durable resume.
+
+    An unset token remains an explicit local-development/non-resumable mode.
+    In contrast, an explicitly configured placeholder or malformed token is a
+    configuration error and must fail process startup; ``ALLOW_NO`` must never
+    turn it into an authority-bearing R5 instance.
+    """
+
+    if not CSP_SERVICE_TOKEN:
+        return False
+    if not _is_canonical_csp_service_token(CSP_SERVICE_TOKEN):
+        raise AgentAdmissionError(
+            "CSP_SERVICE_TOKEN 必須是 CSP 發行的 csk- 加 43 個 base64url 字元；"
+            "不得使用 placeholder 或任意字串"
+        )
+    return True
+
+
+def _manifest_for_discovery() -> AgentManifest:
+    """Return the admitted declaration, or a validated pre-start projection."""
+
+    if _ADMISSION is not None:
+        return _ADMISSION.manifest
+    return build_agent_manifest(_service_config())
+
+
+def _require_admission() -> AgentAdmission:
+    """Keep invocation fail-closed until official startup admission succeeded."""
+
+    if _ADMISSION is None or _MODEL is None or _TASK_STORE is None:
+        raise HTTPException(status_code=503, detail="agent admission not ready")
+    return _ADMISSION
+
+
+def _resume_is_admitted() -> bool:
+    """Return true only for CSP-authenticated durable-resume service mode."""
+
+    return bool(
+        _ADMISSION is not None
+        and _ADMISSION.manifest.supports_resume
+        and _is_canonical_csp_service_token(CSP_SERVICE_TOKEN)
+        and not ALLOW_NO_SERVICE_TOKEN
+        and _TASK_STORE is not None
+    )
+
+
+def _require_correlation_id(value: str | None, *, header_name: str) -> str:
+    """Require a CSP-issued, single-line correlation identifier."""
+
+    if value is None or not _CORRELATION_ID.fullmatch(value):
+        raise HTTPException(status_code=400, detail=f"missing or invalid {header_name}")
+    return value
+
+
+def _require_idempotency_key(value: str | None, *, header_name: str) -> str:
+    """Require a bounded idempotency key rather than accepting arbitrary input."""
+
+    if value is None or not _IDEMPOTENCY_KEY.fullmatch(value):
+        raise HTTPException(status_code=400, detail=f"missing or invalid {header_name}")
+    return value
+
+
+def _bind_dispatch_context(
+    *,
+    agent_id: str | None,
+    task_id: str | None,
+    run_id: str | None,
+    session_id: str | None,
+    invocation_id: str | None,
+    trace_id: str | None,
+    classification_level: str | None,
+) -> tuple[AgentManifest, str, str, str, str, str, Classification]:
+    """Validate the CSP-owned invocation correlation before any Agent work.
+
+    The service token authenticates the caller; these headers bind that caller
+    to exactly this admitted Agent and one durable Task/Run/Session/Invocation
+    chain.  Local defaults would create an untraceable execution, so Silver
+    dispatch rejects missing or malformed values instead of manufacturing them.
+    """
+
+    manifest = _require_admission().manifest
+    if agent_id != manifest.agent_id:
+        raise HTTPException(status_code=403, detail="agent dispatch target does not match this host")
+    bound_task_id = _require_correlation_id(task_id, header_name="X-ANILA-Task-Id")
+    bound_run_id = _require_correlation_id(run_id, header_name="X-ANILA-Run-Id")
+    bound_session_id = _require_correlation_id(session_id, header_name="X-ANILA-Session-Id")
+    bound_invocation_id = _require_correlation_id(
+        invocation_id, header_name="X-ANILA-Invocation-Id"
+    )
+    bound_trace_id = _require_correlation_id(trace_id, header_name="X-ANILA-Trace-Id")
+    if classification_level is None:
+        raise HTTPException(status_code=400, detail="missing X-ANILA-Classification-Level")
+    try:
+        classification = Classification.from_storage(unquote(classification_level))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid X-ANILA-Classification-Level") from None
+    if classification > manifest.classification.ceiling:
+        raise HTTPException(status_code=403, detail="classification exceeds agent admission ceiling")
+    return (
+        manifest,
+        bound_task_id,
+        bound_run_id,
+        bound_session_id,
+        bound_invocation_id,
+        bound_trace_id,
+        classification,
+    )
+
+
+def _service_config() -> Any:
+    """Resolve the official service model through CSP by default.
+
+    ``ANILA_BASE_URL`` is intentionally the explicit override.  The old
+    package YAML points at a local vLLM for standalone experiments; service
+    mode must never silently inherit that raw endpoint.
+    """
+
+    cfg = load_config()
+    if not os.environ.get("ANILA_BASE_URL"):
+        cfg = with_model(cfg, base_url=f"{CSP_BASE_URL.rstrip('/')}/v1")
+    return cfg
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    global _CONFIG, _MODEL
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    global _CONFIG, _MODEL, _ADMISSION, _TASK_STORE
+    # A module can be reloaded by a worker supervisor.  Do not let a previous
+    # failed/retired admission leak into a new readiness probe.
+    _CONFIG = None
+    _MODEL = None
+    _ADMISSION = None
+    _TASK_STORE = None
+    _ACTIVE_TASKS.clear()
+    _ACTIVE_TIMELINES.clear()
+    try:
+        # Reject an ambient E2E approval toggle before readiness is exposed;
+        # production must never inherit a test-only tool policy from the host.
+        validate_e2e_approval_mode()
+    except ValueError as exc:
+        raise AgentAdmissionError(str(exc)) from exc
     if not CSP_SERVICE_TOKEN:
         if ALLOW_NO_SERVICE_TOKEN:
             logger.warning(
@@ -160,6 +380,11 @@ async def lifespan(app: FastAPI):
                 "fail-closed). Set the agent's csk-, or ANILA_ALLOW_NO_SERVICE_TOKEN=1 "
                 "for local dev only."
             )
+    # A token is optional only for explicitly non-resumable local development.
+    # Once configured, it must be a bounded CSP service token regardless of
+    # ANILA_ALLOW_NO_SERVICE_TOKEN; accepting a placeholder here would let the
+    # process falsely advertise formal R5 authority.
+    formal_token_configured = _validate_csp_service_token_for_admission()
     if not SSL_VERIFY:
         # 自簽憑證時翻 litellm 的全域 ssl_verify（僅在裝了 [litellm] extra 時）。
         try:
@@ -168,20 +393,51 @@ async def lifespan(app: FastAPI):
             litellm.ssl_verify = False
         except ImportError:
             pass
-    _CONFIG = load_config()
-    _MODEL = build_model(_CONFIG.model)  # 一次建立、全程重用底層 httpx client
+    _CONFIG = _service_config()
+    _TASK_STORE = FileTaskStore(_CONFIG.home / "tasks")
+    try:
+        _TASK_STORE.ensure_writable()
+        _TASK_STORE.recover()
+    except (OSError, TaskStoreCorruption) as exc:
+        _TASK_STORE = None
+        raise AgentAdmissionError("durable FileTaskStore 無法寫入或恢復") from exc
+    resume_requested = formal_token_configured and not ALLOW_NO_SERVICE_TOKEN
+    try:
+        _ADMISSION = admit_startup(
+            _CONFIG,
+            csp_base_url=CSP_BASE_URL,
+            supports_resume=resume_requested,
+        )
+    except AgentAdmissionError:
+        _TASK_STORE = None
+        logger.exception("official Agent startup admission failed")
+        raise
+    _MODEL = build_model(
+        _CONFIG.model,
+        csp_base_url=CSP_BASE_URL,
+        require_csp_endpoint=True,
+    )  # 一次建立、全程重用底層 httpx client
     if COLLECTION_ID <= 0:
-        logger.error(
-            "ANILA_COLLECTION_ID 未設或 <=0（got %s）——/v1/chat/completions 的檢索會失敗。"
-            "請設定正整數 collection id。",
+        logger.info(
+            "ANILA_COLLECTION_ID 未設或 <=0（got %s）——以 non-RAG Silver Agent 啟動。",
             COLLECTION_ID,
         )
-    yield
-    # shutdown：關閉共用 model 的底層 client，避免 fd 殘留。
-    client = getattr(_MODEL, "_client", None)
-    if client is not None:
-        with contextlib.suppress(Exception):
-            await client.close()
+    try:
+        yield
+    finally:
+        for active in tuple(_ACTIVE_TASKS.values()):
+            if not active.done():
+                active.cancel()
+        _ACTIVE_TASKS.clear()
+        _ACTIVE_TIMELINES.clear()
+        # shutdown：關閉共用 model 的底層 client，避免 fd 殘留。
+        client = getattr(_MODEL, "_client", None)
+        if client is not None:
+            with contextlib.suppress(Exception):
+                await client.close()
+        _MODEL = None
+        _ADMISSION = None
+        _TASK_STORE = None
 
 
 app = FastAPI(title=MODEL_NAME, lifespan=lifespan)
@@ -238,13 +494,298 @@ def _has_only_non_text_parts(content: str | list[dict[str, Any]] | None) -> bool
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "model": MODEL_NAME}
+    return {
+        "status": "ok",
+        "model": MODEL_NAME,
+        "manifest_schema_version": "agent-manifest/v1",
+    }
+
+
+@app.get("/ready")
+async def ready() -> dict[str, str]:
+    """Fail closed until official startup admission has completed."""
+
+    admission = _require_admission()
+    return {"status": "ready", "manifest_schema_version": admission.manifest.schema_version}
+
+
+@app.get("/.well-known/anila-agent.json")
+async def agent_manifest() -> Response:
+    """Expose the canonical, schema-validated formal Agent declaration."""
+
+    return Response(
+        content=canonical_manifest_json(_manifest_for_discovery()),
+        media_type="application/json",
+    )
+
+
+@app.post("/v1/tasks/{task_id}/cancel")
+async def cancel_task(
+    task_id: str,
+    x_csp_service_token: str | None = Header(default=None, alias="X-CSP-Service-Token"),
+) -> dict[str, str]:
+    """Durably cancel a live Task and interrupt its local stream if present."""
+
+    if not verify_service_token(
+        x_csp_service_token, CSP_SERVICE_TOKEN, allow_unset=ALLOW_NO_SERVICE_TOKEN
+    ):
+        raise HTTPException(status_code=401, detail="missing or invalid X-CSP-Service-Token")
+    if _TASK_STORE is None:
+        raise HTTPException(status_code=503, detail="agent task store not ready")
+    try:
+        timeline = _ACTIVE_TIMELINES.get(task_id)
+        terminal_event: dict[str, Any] | None = None
+        if timeline is not None:
+            before = len(timeline.events)
+            timeline.cancel()
+            if len(timeline.events) > before:
+                terminal_event = timeline.events[-1].model_dump(mode="json")
+        record = _TASK_STORE.cancel(task_id, terminal_event=terminal_event)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="task not found") from None
+    except (TaskStoreCorruption, ValueError):
+        raise HTTPException(status_code=503, detail="durable task state is corrupt") from None
+    active = _ACTIVE_TASKS.get(task_id)
+    if active is not None and not active.done():
+        active.cancel()
+    return {"task_id": record.task_id, "status": record.status.value}
+
+
+@app.post("/v1/tasks/{task_id}/approve")
+@app.post("/v1/tasks/{task_id}/resume", include_in_schema=False)
+async def approve_and_resume_task(
+    task_id: str,
+    request: Request,
+    x_csp_service_token: str | None = Header(default=None, alias="X-CSP-Service-Token"),
+    x_anila_user_id: str | None = Header(default=None, alias="X-ANILA-User-Id"),
+    x_anila_user_email: str | None = Header(default=None, alias="X-ANILA-User-Email"),
+    x_anila_user_groups: str | None = Header(default=None, alias="X-ANILA-User-Groups"),
+    x_anila_trace_id: str | None = Header(default=None, alias="X-ANILA-Trace-Id"),
+    x_anila_task_id: str | None = Header(default=None, alias="X-ANILA-Task-Id"),
+    x_anila_agent_id: str | None = Header(default=None, alias="X-ANILA-Agent-Id"),
+    x_anila_session_id: str | None = Header(default=None, alias="X-ANILA-Session-Id"),
+    x_anila_run_id: str | None = Header(default=None, alias="X-ANILA-Run-Id"),
+    x_anila_invocation_id: str | None = Header(
+        default=None, alias="X-ANILA-Invocation-Id"
+    ),
+    x_anila_idempotency_key: str | None = Header(
+        default=None, alias="X-ANILA-Idempotency-Key"
+    ),
+    x_anila_classification_level: str | None = Header(
+        default=None, alias="X-ANILA-Classification-Level"
+    ),
+) -> Any:
+    """Resume one paused SDK state after CSP has granted the HITL transition.
+
+    This endpoint deliberately has no client-controlled ``approve`` body.  A
+    direct caller cannot self-authorize a pending tool/action: only CSP can
+    reach it with the per-agent service credential and the canonical dispatch
+    binding.  CSP remains the authority that evaluates admin/HITL policy and
+    decides whether to make this call.
+    """
+
+    if not _resume_is_admitted():
+        raise HTTPException(status_code=503, detail="durable resume is not admitted for this agent")
+    if not verify_service_token(x_csp_service_token, CSP_SERVICE_TOKEN, allow_unset=False):
+        raise HTTPException(status_code=401, detail="missing or invalid X-CSP-Service-Token")
+    # R5 uses an explicit binary approval contract.  The Agent never accepts a
+    # client-provided interruption list or answer: CSP has already made the
+    # policy decision, and the persisted SDK RunState remains the sole source
+    # of pending interruptions.  Unknown/legacy body fields are rejected
+    # before state loading rather than being silently ignored.
+    # Parse the body ourselves so malformed JSON cannot be silently converted
+    # into an empty approval.  A genuinely empty body is the only shorthand
+    # accepted (TestClient/HTTP clients may omit Content-Length); any declared
+    # non-zero body that is empty is malformed and fails closed.
+    try:
+        raw_resume_bytes = await request.body()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="resume body 無法讀取") from exc
+    if not raw_resume_bytes.strip():
+        content_length = request.headers.get("content-length")
+        if content_length not in (None, "0"):
+            raise HTTPException(status_code=400, detail="resume body JSON 無效")
+        raw_resume_body: Any = {}
+    else:
+        try:
+            raw_resume_body = json.loads(raw_resume_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail="resume body JSON 無效") from exc
+    if not isinstance(raw_resume_body, dict):
+        raise HTTPException(status_code=400, detail="resume body 必須是 object")
+    unknown_resume_fields = set(raw_resume_body) - {"approval_mode"}
+    if unknown_resume_fields:
+        raise HTTPException(status_code=400, detail="resume body 含未定義欄位")
+    approval_mode = raw_resume_body.get("approval_mode", "approve_all")
+    if approval_mode != "approve_all":
+        raise HTTPException(status_code=400, detail="resume approval_mode 必須是 approve_all")
+    (
+        manifest,
+        bound_task_id,
+        run_id,
+        session_id,
+        invocation_id,
+        trace_id,
+        timeline_classification,
+    ) = _bind_dispatch_context(
+        agent_id=x_anila_agent_id,
+        task_id=x_anila_task_id,
+        run_id=x_anila_run_id,
+        session_id=x_anila_session_id,
+        invocation_id=x_anila_invocation_id,
+        trace_id=x_anila_trace_id,
+        classification_level=x_anila_classification_level,
+    )
+    if bound_task_id != task_id:
+        raise HTTPException(status_code=403, detail="task path does not match dispatch binding")
+    resume_idempotency_key = _require_idempotency_key(
+        x_anila_idempotency_key, header_name="X-ANILA-Idempotency-Key"
+    )
+    if _TASK_STORE is None:
+        raise HTTPException(status_code=503, detail="agent task store not ready")
+    try:
+        existing = _TASK_STORE.get(task_id)
+        _validate_record_binding(
+            existing,
+            manifest=manifest,
+            task_id=task_id,
+            run_id=run_id,
+            session_id=session_id,
+            invocation_id=invocation_id,
+            classification=timeline_classification,
+        )
+        record, owns_execution = _TASK_STORE.claim_resume(
+            task_id,
+            idempotency_key=resume_idempotency_key,
+            request_hash=request_digest(
+                {
+                    "operation": "csp_approve_resume/v1",
+                    "agent_id": manifest.agent_id,
+                    "task_id": task_id,
+                    "run_id": run_id,
+                    "session_id": session_id,
+                    "invocation_id": invocation_id,
+                    "classification": timeline_classification.value,
+                }
+            ),
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="task not found") from None
+    except IdempotencyConflict:
+        raise HTTPException(status_code=409, detail="resume idempotency key conflicts with task") from None
+    except TaskStoreCorruption:
+        raise HTTPException(status_code=503, detail="durable task state is corrupt") from None
+    except ValueError:
+        # Validation of the header happened above; the remaining expected
+        # ValueError is a lifecycle mismatch (not paused/runnable).
+        raise HTTPException(status_code=409, detail="task cannot be resumed in its current state") from None
+
+    if not owns_execution:
+        if record.status is TaskStatus.COMPLETED:
+            return _response_from_task(record)
+        if record.status is TaskStatus.PAUSED:
+            return _paused_task_response(record)
+        if record.status is TaskStatus.CANCELLED:
+            raise HTTPException(status_code=409, detail="task was cancelled")
+        if record.status is TaskStatus.FAILED:
+            raise HTTPException(status_code=409, detail="task failed before resume completed")
+        raise HTTPException(status_code=409, detail="task resume is already running")
+
+    # The service-token assertion is the authority boundary.  Only after it
+    # succeeds may this process trust caller identity headers for audit/memory.
+    identity = trusted_user_identity(
+        True,
+        user_id=x_anila_user_id,
+        email=x_anila_user_email,
+        groups=x_anila_user_groups,
+    )
+    assembled, request_session, emitter, timeline, hooks = _build_invocation_runtime(
+        manifest=manifest,
+        identity=identity,
+        task_id=task_id,
+        run_id=run_id,
+        session_id=session_id,
+        invocation_id=invocation_id,
+        trace_id=trace_id,
+        classification=timeline_classification,
+    )
+    timeline.set_sequence_floor(
+        max((int(event.get("sequence", 0)) for event in record.events), default=0)
+    )
+    try:
+        current = asyncio.current_task()
+        if current is not None:
+            _ACTIVE_TASKS[record.task_id] = current
+        _ACTIVE_TIMELINES[record.task_id] = timeline
+        if not record.state_string:
+            raise RuntimeError("paused task lost its durable RunState")
+        state = await load_state(
+            assembled.agent,
+            record.state_string,
+            context_override=assembled.context,
+        )
+        # No user-supplied approval list is accepted.  CSP made this request
+        # only after policy; the persisted SDK state determines exactly what
+        # remains pending.
+        approve_all(state, list(state.get_interruptions()))
+        timeline.emit(
+            step_id=f"agent:{timeline.agent_id}",
+            kind=StepKind.AGENT,
+            status=StepStatus.RUNNING,
+            safe_input_summary="CSP 核准後恢復單一 Task",
+        )
+        result = await run_once_state(assembled, state, session=request_session, hooks=hooks)
+        if has_interruptions(result):
+            paused = _pause_task(
+                record,
+                timeline,
+                result,
+                summary="等待 CSP 再次核准後恢復",
+            )
+            if paused is None or paused.status is not TaskStatus.PAUSED:
+                raise HTTPException(status_code=409, detail="task changed while resuming")
+            return _paused_task_response(paused)
+
+        answer = getattr(result, "final_output", None) or ""
+        timeline.emit(
+            step_id=f"agent:{timeline.agent_id}",
+            kind=StepKind.AGENT,
+            status=StepStatus.COMPLETED,
+            safe_output_summary="Task 恢復後執行完成",
+            terminal=True,
+        )
+        finished = _finish_task(record, timeline, status=TaskStatus.COMPLETED, result=answer)
+        if finished is None or finished.status is not TaskStatus.COMPLETED:
+            raise HTTPException(status_code=409, detail="task changed while resuming")
+        memory = getattr(getattr(assembled, "context", None), "memory", None)
+        _schedule_absorb(memory, str(record.history[-1].get("content", "")), answer)
+        return _response_from_task(finished)
+    except asyncio.CancelledError:
+        _finish_task(
+            record,
+            timeline,
+            status=TaskStatus.CANCELLED,
+            error_code="cancelled_by_caller",
+        )
+        raise HTTPException(status_code=409, detail="task was cancelled") from None
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("durable task resume failed task_id=%s", task_id)
+        timeline.fail()
+        _finish_task(record, timeline, status=TaskStatus.FAILED, error_code="resume_failed")
+        raise HTTPException(status_code=500, detail="task resume failed") from None
+    finally:
+        _ACTIVE_TASKS.pop(record.task_id, None)
+        _ACTIVE_TIMELINES.pop(record.task_id, None)
+        await emitter.flush()
 
 
 @app.get("/v1/models")
 async def list_models() -> dict[str, Any]:
     # model_type=agent 是 CSP 註冊 manifest 標記；勿改欄位名/形狀。
     # created/owned_by 是 OpenAI /v1/models 規格必含欄位，補上但不動既有欄位。
+    manifest = _manifest_for_discovery()
     return {
         "object": "list",
         "data": [{
@@ -253,12 +794,16 @@ async def list_models() -> dict[str, Any]:
             "created": int(time.time()),
             "owned_by": "anila-agent",
             "model_type": "agent",
+            # Keep the OpenAI model projection above for existing CSP clients;
+            # the canonical declaration is nested and validated by
+            # ``AgentManifest`` on both sides of registration.
+            "agent_manifest": manifest.model_dump(mode="json"),
         }],
     }
 
 
 # 背景抽取任務的強參考集合，避免被 GC（asyncio 只保 weakref）。
-_ABSORB_TASKS: set[asyncio.Task] = set()
+_ABSORB_TASKS: set[asyncio.Task[Any]] = set()
 
 
 def _schedule_absorb(memory: MemdirRuntime | None, user_text: str, answer_text: str) -> None:
@@ -320,14 +865,247 @@ def _usage_chunk(cid: str, created: int, usage: dict[str, int]) -> str:
     return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
 
 
+def _begin_task(
+    req: ChatCompletionRequest,
+    user_prompt: str,
+    *,
+    task_id: str,
+    run_id: str,
+    session_id: str,
+    invocation_id: str,
+    idempotency_key: str,
+    agent_id: str,
+    classification: Classification,
+) -> tuple[TaskRecord | None, bool]:
+    """Create/replay the durable service task before any model call."""
+
+    if _TASK_STORE is None:
+        return None, True
+    record = _TASK_STORE.create(
+        task_id=task_id,
+        run_id=run_id,
+        session_id=session_id,
+        invocation_id=invocation_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_digest(
+            {
+                "request": req.model_dump(mode="json"),
+                # A key must not replay one session's governed answer into a
+                # different session/Agent/classification context.
+                "agent_id": agent_id,
+                "session_id": session_id,
+                "classification": classification.value,
+            }
+        ),
+    )
+    if record.terminal or record.status is TaskStatus.PAUSED:
+        return record, False
+    if record.status is TaskStatus.RUNNING:
+        return record, False
+    record.status = TaskStatus.RUNNING
+    if not record.history:
+        record.history = [message.model_dump(mode="json") for message in req.messages]
+        if not record.history:
+            record.history = [{"role": "user", "content": user_prompt}]
+    return _TASK_STORE.save(record), True
+
+
+def _capture_task_events(record: TaskRecord, timeline: TimelineEmitter | None) -> None:
+    if timeline is None:
+        return
+    known = {str(item.get("event_id")) for item in record.events}
+    for event in timeline.events:
+        if event.event_id not in known:
+            record.events.append(event.model_dump(mode="json"))
+
+
+def _finish_task(
+    record: TaskRecord | None,
+    timeline: TimelineEmitter | None,
+    *,
+    status: TaskStatus,
+    result: Any = None,
+    error_code: str | None = None,
+) -> TaskRecord | None:
+    if record is None or _TASK_STORE is None:
+        return record
+    record.status = status
+    if result is not None:
+        record.result = result
+        record.history.append({"role": "assistant", "content": str(result)})
+    if error_code is not None:
+        record.error = error_code
+    _capture_task_events(record, timeline)
+    try:
+        return _TASK_STORE.save(record)
+    except TaskStoreConflict:
+        # A concurrent cancel wins over an old runner completion.  Refresh the
+        # canonical record rather than surfacing a raw storage exception or
+        # resurrecting a terminal task.
+        try:
+            current = _TASK_STORE.get(record.task_id)
+        except (FileNotFoundError, TaskStoreCorruption):
+            logger.warning("durable task finalization lost its record task_id=%s", record.task_id)
+            return None
+        logger.warning(
+            "durable task finalization lost CAS race task_id=%s status=%s",
+            record.task_id,
+            current.status.value,
+        )
+        return current
+
+
+def _pause_task(
+    record: TaskRecord | None,
+    timeline: TimelineEmitter | None,
+    result: Any,
+    *,
+    summary: str,
+) -> TaskRecord | None:
+    """Persist an SDK interruption before exposing a resumable pause.
+
+    The durable state is written before a ``202`` / terminal SSE boundary is
+    emitted.  An agent must never advertise a pause that cannot survive a
+    process restart.  This helper intentionally does not manufacture a
+    terminal StepEvent: ``blocked`` remains resumable, while the final resumed
+    outcome owns the one-way terminal latch.
+    """
+
+    if record is None:
+        raise RuntimeError("durable task record is required for a resumable pause")
+    record.state_string = dump_state(state_from_result(result))
+    if not record.state_string:
+        raise RuntimeError("SDK interruption did not produce a durable RunState")
+    record.status = TaskStatus.PAUSED
+    record.error = None
+    if timeline is not None:
+        timeline.emit(
+            step_id=f"agent:{timeline.agent_id}",
+            kind=StepKind.AGENT,
+            status=StepStatus.BLOCKED,
+            safe_output_summary=summary,
+        )
+    return _finish_task(record, timeline, status=TaskStatus.PAUSED)
+
+
+def _response_from_task(record: TaskRecord) -> dict[str, Any]:
+    answer = str(record.result or "")
+    return {
+        "id": f"chatcmpl-{record.invocation_id}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": MODEL_NAME,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": answer},
+                "finish_reason": "stop",
+            }
+        ],
+        # Events have already been validated/rebound by FileTaskStore on both
+        # write and read.  Returning the canonical history lets CSP rebuild its
+        # own durable SessionEventStore after an approve/resume call without
+        # trusting arbitrary Agent response fields.
+        "anila_events": list(record.events),
+        "anila_meta": {
+            "task_id": record.task_id,
+            "run_id": record.run_id,
+            "session_id": record.session_id,
+            "invocation_id": record.invocation_id,
+            "status": record.status.value,
+        },
+    }
+
+
+def _paused_task_response(record: TaskRecord) -> JSONResponse:
+    """Return an explicit durable-HITL pause instead of an empty fake answer."""
+
+    return JSONResponse(
+        status_code=202,
+        content={
+            "object": "anila.task",
+            "task_id": record.task_id,
+            "run_id": record.run_id,
+            "session_id": record.session_id,
+            "invocation_id": record.invocation_id,
+            "status": TaskStatus.PAUSED.value,
+            # CSP consumes only this validated StepEvent projection; no raw
+            # SDK state or interruption object crosses the trust boundary.
+            "anila_events": list(record.events),
+            "anila_meta": {
+                "task_id": record.task_id,
+                "run_id": record.run_id,
+                "session_id": record.session_id,
+                "invocation_id": record.invocation_id,
+                "status": TaskStatus.PAUSED.value,
+            },
+        },
+    )
+
+
+async def _replay_task_stream(record: TaskRecord) -> AsyncIterator[str]:
+    response = _response_from_task(record)
+    cid = str(response["id"])
+    created = int(response["created"])
+    yield _chunk(cid, created, delta={"role": "assistant"})
+    # Records are validated as canonical StepEvents by FileTaskStore before
+    # this point, so a restart replay retains the exact named timeline rather
+    # than reducing a governed run to plain text.
+    for event in record.events:
+        yield (
+            f"event: {TIMELINE_EVENT_NAME}\n"
+            f"data: {json.dumps(event, ensure_ascii=False, separators=(',', ':'))}\n\n"
+        )
+    answer = str(record.result or "")
+    if answer:
+        yield _chunk(cid, created, delta={"content": answer})
+    yield _chunk(cid, created, delta={}, finish_reason="stop")
+    yield "data: [DONE]\n\n"
+
+
+async def _run_once_with_session(
+    assembled: Any,
+    user_prompt: str | list[Any],
+    *,
+    session: Any,
+    hooks: Any,
+) -> Any:
+    params = inspect.signature(run_once).parameters
+    kwargs: dict[str, Any] = {"hooks": hooks}
+    if "session" in params or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in params.values()
+    ):
+        kwargs["session"] = session
+    return await run_once(assembled, user_prompt, **kwargs)
+
+
+def _run_streamed_with_session(
+    assembled: Any,
+    user_prompt: str | list[Any],
+    *,
+    session: Any,
+    hooks: Any,
+) -> Any:
+    params = inspect.signature(run_streamed).parameters
+    kwargs: dict[str, Any] = {"hooks": hooks}
+    if "session" in params or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in params.values()
+    ):
+        kwargs["session"] = session
+    return run_streamed(assembled, user_prompt, **kwargs)
+
+
 async def _sse_stream(
     assembled: Any,
-    user_prompt: str,
+    run_input: str | list[Any],
     hooks: AuditHooks,
     *,
     emitter: TraceEmitter | None = None,
     timeline: TimelineEmitter | None = None,
     include_usage: bool = False,
+    session: Any = None,
+    task_record: TaskRecord | None = None,
+    memory_user_prompt: str = "",
 ) -> AsyncIterator[str]:
     """agent 串流輸出 → OpenAI SSE：role → content deltas → finish → [usage] → ``[DONE]``。
 
@@ -353,11 +1131,31 @@ async def _sse_stream(
     em = emitter if emitter is not None else _NULL_EMITTER
     cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(time.time())
+    if task_record is not None:
+        current = asyncio.current_task()
+        if current is not None:
+            _ACTIVE_TASKS[task_record.task_id] = current
+        if timeline is not None:
+            _ACTIVE_TIMELINES[task_record.task_id] = timeline
     yield _chunk(cid, created, delta={"role": "assistant"})
+    if timeline is not None:
+        timeline.emit(
+            step_id=f"agent:{timeline.agent_id}",
+            kind=StepKind.AGENT,
+            status=StepStatus.RUNNING,
+            safe_input_summary="開始單一 Task 執行",
+        )
+        # Silver's stream carries both the OpenAI chunks and the canonical
+        # named StepEvent projection.  Dropping this initial frame made a
+        # stream look complete while its durable timeline was incomplete.
+        for frame in timeline.drain():
+            yield frame
 
     parts: list[str] = []  # 累積最終答案，供 turn 結束後自動抽取記憶。
     async with em.run_span(MODEL_NAME, attributes={"stream": True}):
-        result = run_streamed(assembled, user_prompt, hooks=hooks)
+        result = _run_streamed_with_session(
+            assembled, run_input, session=session, hooks=hooks
+        )
         try:
             async for event in result.stream_events():
                 if timeline is not None:
@@ -373,37 +1171,223 @@ async def _sse_stream(
             if timeline is not None:
                 for frame in timeline.drain():
                     yield frame
-        except (asyncio.CancelledError, GeneratorExit):
+        except GeneratorExit:
             # Starlette may cancel the task, while direct async-generator
-            # consumers inject GeneratorExit via ``aclose()``.  Both paths
-            # must stop SDK background work; neither is a normal finish.
+            # consumers inject GeneratorExit via ``aclose()``.  It is unsafe
+            # to yield during GeneratorExit, but the durable state still must
+            # latch cancelled before the generator closes.
             result.cancel(mode="immediate")
             if timeline is not None:
                 timeline.cancel()
+            _finish_task(task_record, timeline, status=TaskStatus.CANCELLED, error_code="cancelled_by_caller")
+            if task_record is not None:
+                _ACTIVE_TASKS.pop(task_record.task_id, None)
+                _ACTIVE_TIMELINES.pop(task_record.task_id, None)
             raise
-        except Exception as exc:
+        except asyncio.CancelledError:
+            # A CSP cancel request targets this generator's task.  Stop the
+            # SDK run and emit the canonical terminal frame once before ending
+            # the OpenAI stream cleanly; do not leak a cancellation traceback.
+            result.cancel(mode="immediate")
+            if timeline is not None:
+                timeline.cancel()
+                for frame in timeline.drain():
+                    yield frame
+            _finish_task(
+                task_record,
+                timeline,
+                status=TaskStatus.CANCELLED,
+                error_code="cancelled_by_caller",
+            )
+            if task_record is not None:
+                _ACTIVE_TASKS.pop(task_record.task_id, None)
+                _ACTIVE_TIMELINES.pop(task_record.task_id, None)
+            # The helper is also used directly by SDK-facing unit consumers.
+            # Preserve their cancellation signal rather than converting it to
+            # a normal completion; the HTTP route has a durable task record
+            # and can end its SSE body cleanly after latching cancellation.
+            if task_record is None:
+                raise
+            yield "data: [DONE]\n\n"
+            return
+        except Exception:
             # 串流中途失敗：headers 已送出、status 無法再改，記錄 + error span 後乾淨收尾。
             logger.exception("streaming run failed mid-flight")
-            em.error(repr(exc))
+            em.error("stream_failed")
             if timeline is not None:
                 timeline.fail()
                 for frame in timeline.drain():
                     yield frame
+            _finish_task(task_record, timeline, status=TaskStatus.FAILED, error_code="stream_failed")
+            if task_record is not None:
+                _ACTIVE_TASKS.pop(task_record.task_id, None)
+                _ACTIVE_TIMELINES.pop(task_record.task_id, None)
+            # Keep the pre-existing OpenAI stream contract: an interrupted
+            # response still has a finish frame before its terminal [DONE].
+            yield _chunk(cid, created, delta={}, finish_reason="stop")
+            yield "data: [DONE]\n\n"
+            return
+
+        if has_interruptions(result):
+            if not _resume_is_admitted():
+                # A no-token/dev profile must never leave an unreachable
+                # paused task behind.  The stream has already started, so
+                # express the fail-closed outcome through its canonical event
+                # and latch it durably before ending the SSE response.
+                logger.error("SDK requested pause while durable resume is not admitted")
+                if timeline is not None:
+                    timeline.fail()
+                    for frame in timeline.drain():
+                        yield frame
+                _finish_task(
+                    task_record,
+                    timeline,
+                    status=TaskStatus.FAILED,
+                    error_code="resume_not_admitted",
+                )
+                if task_record is not None:
+                    _ACTIVE_TASKS.pop(task_record.task_id, None)
+                    _ACTIVE_TIMELINES.pop(task_record.task_id, None)
+                yield "data: [DONE]\n\n"
+                await em.flush()
+                return
+            paused_task = _pause_task(
+                task_record,
+                timeline,
+                result,
+                summary="等待 CSP 核准後恢復",
+            )
+            if timeline is not None:
+                for frame in timeline.drain():
+                    yield frame
+            if task_record is not None:
+                _ACTIVE_TASKS.pop(task_record.task_id, None)
+                _ACTIVE_TIMELINES.pop(task_record.task_id, None)
+            # Do not fabricate a normal OpenAI completion: CSP consumes the
+            # named blocked StepEvent and subsequently calls the authenticated
+            # approve/resume endpoint when policy grants execution.
+            yield "data: [DONE]\n\n"
+            await em.flush()
+            if paused_task is None or paused_task.status is not TaskStatus.PAUSED:
+                return
+            return
 
         usage_payload = _usage_from_run_result(result)
         yield _chunk(cid, created, delta={}, finish_reason="stop")
         if include_usage and usage_payload is not None:
             yield _usage_chunk(cid, created, usage_payload)
-        yield "data: [DONE]\n\n"
-
         answer_text = "".join(parts)
+        if timeline is not None:
+            timeline.emit(
+                step_id=f"agent:{timeline.agent_id}",
+                kind=StepKind.AGENT,
+                status=StepStatus.COMPLETED,
+                safe_output_summary="Task 執行完成",
+                terminal=True,
+            )
+            for frame in timeline.drain():
+                yield frame
+        finished_task = _finish_task(task_record, timeline, status=TaskStatus.COMPLETED, result=answer_text)
+        if task_record is not None:
+            _ACTIVE_TASKS.pop(task_record.task_id, None)
+            _ACTIVE_TIMELINES.pop(task_record.task_id, None)
+        if finished_task is not None and finished_task.status is not TaskStatus.COMPLETED:
+            # A terminal cancel/failed state won the CAS race.  Do not claim a
+            # successful final answer after the authoritative state changed.
+            yield "data: [DONE]\n\n"
+            return
+        yield "data: [DONE]\n\n"
         async with em.span(OUTPUT, MODEL_NAME) as out:
             _annotate_output(out, answer_text, usage_payload)
     await em.flush()
 
     # 答案已全部串出 → 背景抽取記憶（不延後回應）。
     memory = getattr(getattr(assembled, "context", None), "memory", None)
-    _schedule_absorb(memory, user_prompt, answer_text)
+    _schedule_absorb(memory, memory_user_prompt, answer_text)
+
+
+def _build_invocation_runtime(
+    *,
+    manifest: AgentManifest,
+    identity: dict[str, str | None],
+    task_id: str,
+    run_id: str,
+    session_id: str,
+    invocation_id: str,
+    trace_id: str,
+    classification: Classification,
+) -> tuple[Any, Any, TraceEmitter, TimelineEmitter, Any]:
+    """Rebuild the same admitted runtime for an initial call or durable resume."""
+
+    if _CONFIG is None or _MODEL is None:
+        raise HTTPException(status_code=503, detail="agent admission not ready")
+    request_session = build_session(_CONFIG, session_id=session_id)
+    emitter = _build_emitter(trace_id, task_id, identity.get("user_id"))
+    if COLLECTION_ID > 0:
+        retriever: Any = CspHttpRetriever(
+            csp_base_url=CSP_BASE_URL,
+            collection_id=COLLECTION_ID,
+            api_key=CSP_SEARCH_TOKEN,
+            min_score=CSP_MIN_SCORE,
+            verify_ssl=SSL_VERIFY,
+        )
+    else:
+        # Collection scope is required only for an Agent that actually
+        # declares retrieval.  A non-RAG formal Agent remains invokable.
+        retriever = DummyRetriever()
+    timeline = TimelineEmitter(
+        task_id=task_id,
+        trace_id=trace_id,
+        agent_id=manifest.agent_id,
+        session_id=session_id,
+        run_id=run_id,
+        classification=classification,
+        invocation_id=invocation_id,
+    )
+    retriever = TimelineRetriever(retriever, timeline)
+    if emitter.active:
+        retriever = TracingRetriever(retriever, emitter)
+    uid = (identity.get("user_id") or "").strip()
+    email = (identity.get("email") or "").strip()
+    assembled = build_agent(
+        _CONFIG,
+        retriever=retriever,
+        name=MODEL_NAME,
+        model=_MODEL,
+        memory_tenant=uid or email or None,
+        memory_requires_tenant=True,
+    )
+    audit = AuditHooks(user_id=identity.get("user_id"))
+    timeline_hooks = TimelineRunHooks(timeline, inner=audit)
+    hooks: Any = TracingRunHooks(emitter, inner=timeline_hooks) if emitter.active else timeline_hooks
+    return assembled, request_session, emitter, timeline, hooks
+
+
+def _validate_record_binding(
+    record: TaskRecord,
+    *,
+    manifest: AgentManifest,
+    task_id: str,
+    run_id: str,
+    session_id: str,
+    invocation_id: str,
+    classification: Classification,
+) -> None:
+    """Make resume reject a stale/cross-agent task before SDK state loading."""
+
+    if (
+        record.task_id != task_id
+        or record.run_id != run_id
+        or record.session_id != session_id
+        or record.invocation_id != invocation_id
+    ):
+        raise HTTPException(status_code=403, detail="task correlation does not match dispatch binding")
+    for event in record.events:
+        if (
+            event.get("agent_id") != manifest.agent_id
+            or event.get("classification") != classification.value
+        ):
+            raise HTTPException(status_code=403, detail="task governance binding does not match dispatch")
 
 
 @app.post("/v1/chat/completions")
@@ -418,6 +1402,12 @@ async def chat_completions(
     x_anila_agent_id: str | None = Header(default=None, alias="X-ANILA-Agent-Id"),
     x_anila_session_id: str | None = Header(default=None, alias="X-ANILA-Session-Id"),
     x_anila_run_id: str | None = Header(default=None, alias="X-ANILA-Run-Id"),
+    x_anila_invocation_id: str | None = Header(
+        default=None, alias="X-ANILA-Invocation-Id"
+    ),
+    x_anila_idempotency_key: str | None = Header(
+        default=None, alias="X-ANILA-Idempotency-Key"
+    ),
     x_anila_classification_level: str | None = Header(
         default=None, alias="X-ANILA-Classification-Level"
     ),
@@ -434,6 +1424,23 @@ async def chat_completions(
                 "(or set ANILA_ALLOW_NO_SERVICE_TOKEN=1 to disable)."
             ),
         )
+    (
+        manifest,
+        task_id,
+        run_id,
+        session_id,
+        invocation_id,
+        trace_id,
+        timeline_classification,
+    ) = _bind_dispatch_context(
+        agent_id=x_anila_agent_id,
+        task_id=x_anila_task_id,
+        run_id=x_anila_run_id,
+        session_id=x_anila_session_id,
+        invocation_id=x_anila_invocation_id,
+        trace_id=x_anila_trace_id,
+        classification_level=x_anila_classification_level,
+    )
     # 驗過 service token 後才信任 X-ANILA-User-* 身分。
     identity = trusted_user_identity(
         allowed, user_id=x_anila_user_id, email=x_anila_user_email, groups=x_anila_user_groups
@@ -455,69 +1462,56 @@ async def chat_completions(
     if not user_prompt:
         raise HTTPException(status_code=400, detail="no user message in `messages`")
 
-    # 設定守衛：缺 collection id 時回明確 503，而非讓裸 ValueError 變不可解讀的 500。
-    if COLLECTION_ID <= 0:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "agent misconfigured: ANILA_COLLECTION_ID must be a positive collection id; "
-                "set the env var before dispatching."
-            ),
-        )
-
-    # Full Trace：CSP dispatch 帶 X-ANILA-Trace-Id 才啟用；否則 emitter 停用、零行為變化。
-    emitter = _build_emitter(x_anila_trace_id, x_anila_task_id)
-
-    # Retrieval via CSP HTTP（無 DB）；build_agent(retriever=) escape hatch 直接注入。
-    retriever: Any = CspHttpRetriever(
-        csp_base_url=CSP_BASE_URL,
-        collection_id=COLLECTION_ID,
-        api_key=CSP_SEARCH_TOKEN,
-        min_score=CSP_MIN_SCORE,
-        verify_ssl=SSL_VERIFY,
-    )
+    idempotency_key = x_anila_idempotency_key or f"task:{task_id}"
+    _require_idempotency_key(idempotency_key, header_name="X-ANILA-Idempotency-Key")
     try:
-        timeline_classification = Classification.from_storage(
-            x_anila_classification_level or CLASSIFICATION_LEVEL or "無機密"
+        task_record, is_new_task = _begin_task(
+            req,
+            user_prompt,
+            task_id=task_id,
+            run_id=run_id,
+            session_id=session_id,
+            invocation_id=invocation_id,
+            idempotency_key=idempotency_key,
+            agent_id=manifest.agent_id,
+            classification=timeline_classification,
         )
-    except ValueError:
-        # A malformed classification must not downgrade a direct/dev call.
-        timeline_classification = Classification.TOP_SECRET
-    timeline = TimelineEmitter(
-        task_id=x_anila_task_id or "legacy-no-task",
-        trace_id=x_anila_trace_id or "legacy-no-trace",
-        agent_id=x_anila_agent_id or MODEL_NAME,
-        session_id=x_anila_session_id or x_anila_task_id or "legacy-no-session",
-        run_id=x_anila_run_id or uuid.uuid4().hex,
+    except IdempotencyConflict:
+        raise HTTPException(status_code=409, detail="idempotency key conflicts with existing task") from None
+    except TaskStoreCorruption:
+        raise HTTPException(status_code=503, detail="durable task state is corrupt") from None
+    if task_record is not None and not is_new_task:
+        if task_record.status is TaskStatus.COMPLETED:
+            if req.stream:
+                return StreamingResponse(
+                    _replay_task_stream(task_record),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
+            return _response_from_task(task_record)
+        if task_record.status is TaskStatus.RUNNING:
+            raise HTTPException(status_code=409, detail="task is already running")
+        if task_record.status is TaskStatus.CANCELLED:
+            raise HTTPException(status_code=409, detail="task was cancelled")
+        if task_record.status is TaskStatus.PAUSED:
+            if _resume_is_admitted():
+                return _paused_task_response(task_record)
+            raise HTTPException(status_code=409, detail="task is paused; resume is not admitted")
+
+    assembled, request_session, emitter, timeline, hooks = _build_invocation_runtime(
+        manifest=manifest,
+        identity=identity,
+        task_id=task_id,
+        run_id=run_id,
+        session_id=session_id,
+        invocation_id=invocation_id,
+        trace_id=trace_id,
         classification=timeline_classification,
     )
-    retriever = TimelineRetriever(retriever, timeline)
-    if emitter.active:
-        # 包一層 → search 前後送 agent.retrieval span（掛在工具 span 下）。
-        retriever = TracingRetriever(retriever, emitter)
-    # 重用 lifespan 建好的共用 model client；掛 AuditHooks 做 per-user 稽核/計量。
-    # 多租戶記憶：以 CSP 轉發的 X-ANILA-User-Id（退回 email）當分艙 key，記憶不跨用戶。
-    # 必須 strip 後再判斷——全空白 id 是 truthy，靠 `or` 會繞過 email 並塌縮成共用桶。
-    # memory_requires_tenant=True：此為多人共用部署，無可辨識身分一律不給記憶。
-    uid = (identity.get("user_id") or "").strip()
-    email = (identity.get("email") or "").strip()
-    tenant = uid or email or None
-    assembled = build_agent(
-        _CONFIG,
-        retriever=retriever,
-        name=MODEL_NAME,
-        model=_MODEL,
-        memory_tenant=tenant,
-        memory_requires_tenant=True,
-    )
-    # 追蹤啟用時把 AuditHooks 包進 TracingRunHooks（step/model/tool spans + 稽核 fan-out）。
-    audit = AuditHooks(user_id=identity.get("user_id"))
-    timeline_hooks = TimelineRunHooks(timeline, inner=audit)
-    hooks: Any = (
-        TracingRunHooks(emitter, inner=timeline_hooks)
-        if emitter.active
-        else timeline_hooks
-    )
+    # The SDK receives the complete OpenAI history for a new session rather
+    # than only the last user sentence.  Session storage then preserves the
+    # same canonical input across subsequent turns/restarts.
+    run_input: list[dict[str, Any]] = [message.model_dump(mode="json") for message in req.messages]
 
     # 串流：CSP Router 對 agent 強制 stream=true 並逐行解析 OpenAI SSE
     # （proxy_service.proxy_stream）。回 text/event-stream 的 chat.completion.chunk。
@@ -526,11 +1520,14 @@ async def chat_completions(
         return StreamingResponse(
             _sse_stream(
                 assembled,
-                user_prompt,
+                run_input,
                 hooks,
                 emitter=emitter,
                 timeline=timeline,
                 include_usage=include_usage,
+                session=request_session,
+                task_record=task_record,
+                memory_user_prompt=user_prompt,
             ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -538,13 +1535,77 @@ async def chat_completions(
 
     # 非串流：Router 對 agent 回應走 resp.json()（也容忍 SSE，但我們回 JSON）。
     try:
+        if task_record is not None:
+            current = asyncio.current_task()
+            if current is not None:
+                _ACTIVE_TASKS[task_record.task_id] = current
+            _ACTIVE_TIMELINES[task_record.task_id] = timeline
         async with emitter.run_span(MODEL_NAME, attributes={"stream": False}):
-            result = await run_once(assembled, user_prompt, hooks=hooks)
+            if timeline is not None:
+                timeline.emit(
+                    step_id=f"agent:{timeline.agent_id}",
+                    kind=StepKind.AGENT,
+                    status=StepStatus.RUNNING,
+                    safe_input_summary="開始單一 Task 執行",
+                )
+            result = await _run_once_with_session(
+                assembled, run_input, session=request_session, hooks=hooks
+            )
+            if has_interruptions(result):
+                if not _resume_is_admitted():
+                    # Do not retain a pause that no authorized CSP caller can
+                    # ever resume.  This is intentionally a hard failure for
+                    # no-token/dev profiles rather than a local opt-in.
+                    if timeline is not None:
+                        timeline.fail()
+                    _finish_task(
+                        task_record,
+                        timeline,
+                        status=TaskStatus.FAILED,
+                        error_code="resume_not_admitted",
+                    )
+                    raise HTTPException(
+                        status_code=503,
+                        detail="SDK pause requires CSP-admitted durable resume",
+                    )
+                paused_task = _pause_task(
+                    task_record,
+                    timeline,
+                    result,
+                    summary="等待 CSP 核准後恢復",
+                )
+                if paused_task is None or paused_task.status is not TaskStatus.PAUSED:
+                    raise HTTPException(status_code=409, detail="task changed while pausing")
+                return _paused_task_response(paused_task)
             answer = result.final_output or ""
             usage_payload = _usage_from_run_result(result)
             async with emitter.span(OUTPUT, MODEL_NAME) as out:
                 _annotate_output(out, answer, usage_payload)
+            if timeline is not None:
+                timeline.emit(
+                    step_id=f"agent:{timeline.agent_id}",
+                    kind=StepKind.AGENT,
+                    status=StepStatus.COMPLETED,
+                    safe_output_summary="Task 執行完成",
+                    terminal=True,
+                )
+            finished_task = _finish_task(
+                task_record, timeline, status=TaskStatus.COMPLETED, result=answer
+            )
+            if finished_task is not None and finished_task.status is not TaskStatus.COMPLETED:
+                raise HTTPException(status_code=409, detail="task was cancelled before completion")
+    except asyncio.CancelledError:
+        _finish_task(task_record, timeline, status=TaskStatus.CANCELLED, error_code="cancelled_by_caller")
+        raise HTTPException(status_code=409, detail="task was cancelled") from None
+    except HTTPException:
+        raise
+    except Exception:
+        _finish_task(task_record, timeline, status=TaskStatus.FAILED, error_code="execution_failed")
+        raise
     finally:
+        if task_record is not None:
+            _ACTIVE_TASKS.pop(task_record.task_id, None)
+            _ACTIVE_TIMELINES.pop(task_record.task_id, None)
         await emitter.flush()
     # 回應建好後在背景抽取記憶（不延後 JSON 回應）。
     memory = getattr(getattr(assembled, "context", None), "memory", None)
