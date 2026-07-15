@@ -13,6 +13,9 @@
 # 環境變數:
 #   WITH_MODELS=1   把 model image 一起打包進 04-models.tar.gz。
 #                    預設 OFF — image 數十 GB,確定內網要本機跑模型才開。
+#   MODEL_PROFILES  WITH_MODELS=1 時額外啟用的 model Compose profile，預設不啟用；
+#                    可用空白或逗號分隔（例如 intranet,flux-approved），重複／空值／
+#                    非英數底線連字號名稱會 fail-closed。archive 與 model lock 共用此閉集合。
 #   WITH_WEIGHTS=1  把 HF 權重打包成 05-weights-<name>.tar (無壓縮 —
 #                    safetensors 壓不動,gzip 數百 GB 純耗時)。
 #                    內網無下載通道,權重只能從這裡帶。
@@ -33,6 +36,7 @@
 #     ├── PLATFORM-IMAGE-LOCK.tsv      (每個 platform tag 的輸出 image ID)
 #     ├── MODEL-IMAGE-INVENTORY.tsv   (optional model compose service/image 清單)
 #     ├── MODEL-IMAGE-STATUS.tsv      (optional model bundle 實際收錄狀態)
+#     ├── MODEL-IMAGE-LOCK.tsv        (WITH_MODELS=1 時的 model content-ID lock)
 #     ├── INTRANET-LOAD.sh           (內網端用的 import 腳本)
 #     └── MANIFEST.txt               (image 清單 + 大小,給 IT 對 checksum)
 #
@@ -45,9 +49,12 @@ OUTPUT_DIR="${1:-/tmp/anila-images-export}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 INVENTORY_FILE="$REPO_ROOT/infra/deployment/intranet/platform-image-inventory.tsv"
 MODEL_INVENTORY_FILE="$REPO_ROOT/infra/deployment/intranet/model-image-inventory.tsv"
+MODEL_COMPOSE_FILE="$REPO_ROOT/infra/models/docker-compose.yml"
 INVENTORY_CHECKER="$REPO_ROOT/infra/deployment/intranet/check_airgap_inventory.py"
 IMAGE_LOCK_VERIFIER="$REPO_ROOT/infra/deployment/scripts/verify-compose-image-lock.py"
+MODEL_IMAGE_LOCK_VERIFIER="$REPO_ROOT/infra/deployment/scripts/verify-model-image-lock.py"
 PLATFORM_LOCK_FILE="$OUTPUT_DIR/PLATFORM-IMAGE-LOCK.tsv"
+MODEL_LOCK_FILE="$OUTPUT_DIR/MODEL-IMAGE-LOCK.tsv"
 
 cd "$REPO_ROOT"
 mkdir -p "$OUTPUT_DIR"
@@ -76,6 +83,7 @@ OUTPUT_CANDIDATES=(
     "$OUTPUT_DIR"/PLATFORM-IMAGE-LOCK.tsv
     "$OUTPUT_DIR"/MODEL-IMAGE-INVENTORY.tsv
     "$OUTPUT_DIR"/MODEL-IMAGE-STATUS.tsv
+    "$OUTPUT_DIR"/MODEL-IMAGE-LOCK.tsv
 )
 EXISTING_OUTPUT=()
 for artifact in "${OUTPUT_CANDIDATES[@]}"; do
@@ -172,9 +180,66 @@ docker save "${BUNDLE_IMAGES[@]}" | gzip > "$OUTPUT_DIR/03-cold.tar.gz"
 # 別的管道 (USB / 內部資料閘道) 進內網。預設不打包,需要時:
 #   WITH_MODELS=1 bash infra/deployment/intranet/build-and-export-for-intranet.sh
 MODEL_STATUS_FILE="$OUTPUT_DIR/MODEL-IMAGE-STATUS.tsv"
-mapfile -t MODEL_IMAGES < <(awk -F '\t' '
-    $0 !~ /^#/ && NF == 3 && !seen[$2]++ { print $2 }
-' "$MODEL_INVENTORY_FILE")
+MODEL_PROFILE_ARGS=()
+if [ -n "${MODEL_PROFILES:-}" ]; then
+    # MODEL_PROFILES is deliberately separate from ambient COMPOSE_PROFILES;
+    # comma and whitespace separators are accepted for operator convenience.
+    if [[ "$MODEL_PROFILES" =~ ^[[:space:]]*, ]] \
+       || [[ "$MODEL_PROFILES" =~ ,[[:space:]]*$ ]] \
+       || [[ "$MODEL_PROFILES" =~ ,[[:space:]]*, ]]; then
+        echo "✗ MODEL_PROFILES contains an empty profile token" >&2
+        exit 1
+    fi
+    read -r -a REQUESTED_MODEL_PROFILES <<< "${MODEL_PROFILES//,/ }"
+    [ ${#REQUESTED_MODEL_PROFILES[@]} -gt 0 ] || {
+        echo "✗ MODEL_PROFILES contains no profile name" >&2
+        exit 1
+    }
+    declare -A SEEN_MODEL_PROFILES=()
+    for model_profile in "${REQUESTED_MODEL_PROFILES[@]}"; do
+        [[ "$model_profile" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || {
+            echo "✗ MODEL_PROFILES contains an unsafe profile name: $model_profile" >&2
+            exit 1
+        }
+        [[ -z "${SEEN_MODEL_PROFILES[$model_profile]+x}" ]] || {
+            echo "✗ MODEL_PROFILES contains duplicate profile: $model_profile" >&2
+            exit 1
+        }
+        SEEN_MODEL_PROFILES["$model_profile"]=1
+        MODEL_PROFILE_ARGS+=(--profile "$model_profile")
+    done
+fi
+if [ "${WITH_MODELS:-0}" = "1" ]; then
+    # Generate the lock before archiving.  This both resolves the exact active
+    # closure (default + MODEL_PROFILES) and fails closed if any enabled image
+    # is missing; the archive is then derived from the same lock rows.
+    MODEL_LOCK_COMMAND=(
+        python3 "$MODEL_IMAGE_LOCK_VERIFIER"
+        --compose "$MODEL_COMPOSE_FILE"
+        --inventory "$MODEL_INVENTORY_FILE"
+        emit-lock
+        --output "$MODEL_LOCK_FILE"
+    )
+    MODEL_LOCK_COMMAND+=("${MODEL_PROFILE_ARGS[@]}")
+    "${MODEL_LOCK_COMMAND[@]}"
+    MODEL_VERIFY_COMMAND=(
+        python3 "$MODEL_IMAGE_LOCK_VERIFIER"
+        --compose "$MODEL_COMPOSE_FILE"
+        --inventory "$MODEL_INVENTORY_FILE"
+        verify-lock
+        --lock "$MODEL_LOCK_FILE"
+        --inspect-docker
+    )
+    MODEL_VERIFY_COMMAND+=("${MODEL_PROFILE_ARGS[@]}")
+    "${MODEL_VERIFY_COMMAND[@]}"
+    mapfile -t MODEL_IMAGES < <(awk -F '\t' '
+        $0 !~ /^#/ && NF == 4 && !seen[$2]++ { print $2 }
+    ' "$MODEL_LOCK_FILE")
+else
+    mapfile -t MODEL_IMAGES < <(awk -F '\t' '
+        $0 !~ /^#/ && NF == 3 && !seen[$2]++ { print $2 }
+    ' "$MODEL_INVENTORY_FILE")
+fi
 model_activation_for_image() {
     awk -F '\t' -v image="$1" '
         $0 !~ /^#/ && NF == 3 && $2 == image {
@@ -202,6 +267,10 @@ if [ "${WITH_MODELS:-0}" = "1" ]; then
         fi
     done
 
+    if [ "${WITH_MODELS:-0}" = "1" ] && [ ${#EXISTING_MODELS[@]} -ne ${#MODEL_IMAGES[@]} ]; then
+        echo "✗ enabled model image disappeared after content-ID lock generation" >&2
+        exit 1
+    fi
     if [ ${#EXISTING_MODELS[@]} -gt 0 ]; then
         docker save "${EXISTING_MODELS[@]}" | gzip > "$OUTPUT_DIR/04-models.tar.gz"
         echo "    ✓ Saved ${#EXISTING_MODELS[@]} model image(s)"
@@ -214,6 +283,10 @@ else
         activation="$(model_activation_for_image "$img")"
         printf '%s\t%s\tskipped\tWITH_MODELS=0\n' "$img" "$activation" >> "$MODEL_STATUS_FILE"
     done
+fi
+
+if [ "${WITH_MODELS:-0}" = "1" ]; then
+    echo "    ✓ Wrote model content-ID lock: $MODEL_LOCK_FILE"
 fi
 echo
 
@@ -242,10 +315,22 @@ echo "▶ [4/5] Writing MANIFEST.txt + INTRANET-LOAD.sh..."
 
 # CHECKSUMS.sha256:純機器可讀格式 (相對路徑),供 INTRANET-LOAD.sh 內網端
 # `sha256sum -c` 自動驗檔用。MANIFEST.txt 內也保留一份人類可讀版,給 IT 對檔。
-( cd "$OUTPUT_DIR" && shopt -s nullglob && \
-  sha256sum *.tar.gz *.tar PLATFORM-IMAGE-INVENTORY.tsv MODEL-IMAGE-INVENTORY.tsv \
-    PLATFORM-IMAGE-LOCK.tsv MODEL-IMAGE-STATUS.tsv \
-    > CHECKSUMS.sha256 )
+(
+    cd "$OUTPUT_DIR" || exit 1
+    shopt -s nullglob
+    CHECKSUM_FILES=(
+        *.tar.gz
+        *.tar
+        PLATFORM-IMAGE-INVENTORY.tsv
+        MODEL-IMAGE-INVENTORY.tsv
+        PLATFORM-IMAGE-LOCK.tsv
+        MODEL-IMAGE-STATUS.tsv
+    )
+    if [ -f MODEL-IMAGE-LOCK.tsv ]; then
+        CHECKSUM_FILES+=(MODEL-IMAGE-LOCK.tsv)
+    fi
+    sha256sum "${CHECKSUM_FILES[@]}" > CHECKSUMS.sha256
+)
 
 {
     echo "ANILA Platform — Intranet Image Bundle"
@@ -268,6 +353,14 @@ echo "▶ [4/5] Writing MANIFEST.txt + INTRANET-LOAD.sh..."
     cat "$OUTPUT_DIR/MODEL-IMAGE-INVENTORY.tsv"
     echo
     cat "$MODEL_STATUS_FILE"
+    echo
+    echo "── Optional model image content-ID lock ───────────────"
+    if [ -f "$MODEL_LOCK_FILE" ]; then
+        cat "$MODEL_LOCK_FILE"
+    else
+        echo "(not emitted; WITH_MODELS=0)"
+    fi
+    echo "NOTE: MODEL-IMAGE-LOCK is content-ID evidence only; it is not a signed release envelope, SBOM, CA bundle hash, clean-host deployment, or Gate 6/P4 acceptance."
     echo
     echo "── SHA256 checksum (IT 對檔用,機器驗檔請用 CHECKSUMS.sha256) ──"
     cat "$OUTPUT_DIR/CHECKSUMS.sha256"
@@ -296,6 +389,9 @@ REQUIRED_BUNDLE_FILES=(
     02-base.tar.gz
     03-cold.tar.gz
 )
+if [ -f 04-models.tar.gz ]; then
+    REQUIRED_BUNDLE_FILES+=(MODEL-IMAGE-LOCK.tsv)
+fi
 for required_file in "${REQUIRED_BUNDLE_FILES[@]}"; do
     [ -s "$required_file" ] || {
         echo "✗ Required bundle file missing/empty: $required_file" >&2
@@ -376,6 +472,85 @@ if [ -f MODEL-IMAGE-STATUS.tsv ]; then
     if grep -Eq $'\t(missing|skipped)\t' MODEL-IMAGE-STATUS.tsv; then
         echo "⚠ optional model bundle 並非完整本機模型部署;依實際拓撲補 image/權重"
     fi
+    echo
+fi
+
+if [ -f 04-models.tar.gz ]; then
+    # Re-read the self-contained model inventory + lock after docker load.
+    # Profile provenance is reconstructed from lock activation rows, then the
+    # closed set is checked before any model service is started.
+    echo "── Verifying model image content-ID lock ──"
+    model_lock_failures=0
+    model_profiles_file="$(mktemp)"
+    trap 'rm -f "$model_profiles_file"' EXIT
+    while IFS=$'\t' read -r lock_service lock_image lock_id lock_activation extra; do
+        [ -n "${lock_service:-}" ] || continue
+        [[ "$lock_service" == \#* ]] && continue
+        [ -z "${extra:-}" ] || {
+            echo "  ✗ MODEL-IMAGE-LOCK malformed row: $lock_service" >&2
+            model_lock_failures=$((model_lock_failures + 1))
+            continue
+        }
+        [[ "$lock_id" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "  ✗ MODEL-IMAGE-LOCK invalid digest: $lock_service" >&2
+            model_lock_failures=$((model_lock_failures + 1))
+            continue
+        }
+        inventory_row="$(awk -F '\t' -v wanted="$lock_service" '
+            $0 !~ /^#/ && $1 == wanted { print; count++ }
+            END { if (count != 1) exit 2 }
+        ' MODEL-IMAGE-INVENTORY.tsv 2>/dev/null || true)"
+        if [ -z "$inventory_row" ]; then
+            echo "  ✗ MODEL-IMAGE-LOCK extra/unknown service: $lock_service" >&2
+            model_lock_failures=$((model_lock_failures + 1))
+            continue
+        fi
+        IFS=$'\t' read -r inventory_service inventory_image inventory_activation <<< "$inventory_row"
+        if [ "$lock_image" != "$inventory_image" ] || [ "$lock_activation" != "$inventory_activation" ]; then
+            echo "  ✗ MODEL-IMAGE-LOCK inventory metadata mismatch: $lock_service" >&2
+            model_lock_failures=$((model_lock_failures + 1))
+            continue
+        fi
+        if [[ "$lock_activation" == profile:* ]]; then
+            printf '%s\n' "${lock_activation#profile:}" >> "$model_profiles_file"
+        fi
+        actual_id="$(docker image inspect --format '{{.Id}}' "$lock_image" 2>/dev/null || true)"
+        if [ "$actual_id" = "$lock_id" ]; then
+            echo "  ✓ $lock_service -> $lock_image @ $lock_id ($lock_activation)"
+        else
+            echo "  ✗ MODEL-IMAGE-LOCK stale/missing: $lock_service expected $lock_id actual ${actual_id:-missing}" >&2
+            model_lock_failures=$((model_lock_failures + 1))
+        fi
+    done < MODEL-IMAGE-LOCK.tsv
+
+    # Every default service and every service in a profile named by the lock
+    # must occur exactly once; unselected profiles must not appear.
+    while IFS=$'\t' read -r inventory_service inventory_image inventory_activation; do
+        [ -n "${inventory_service:-}" ] || continue
+        [[ "$inventory_service" == \#* ]] && continue
+        required=0
+        if [ "$inventory_activation" = default ]; then
+            required=1
+        elif grep -Fxq "${inventory_activation#profile:}" "$model_profiles_file"; then
+            required=1
+        fi
+        lock_count="$(awk -F '\t' -v wanted="$inventory_service" '$0 !~ /^#/ && $1 == wanted { count++ } END { print count + 0 }' MODEL-IMAGE-LOCK.tsv)"
+        if [ "$required" -eq 1 ] && [ "$lock_count" -ne 1 ]; then
+            echo "  ✗ MODEL-IMAGE-LOCK missing/duplicate enabled service: $inventory_service" >&2
+            model_lock_failures=$((model_lock_failures + 1))
+        elif [ "$required" -eq 0 ] && [ "$lock_count" -ne 0 ]; then
+            echo "  ✗ MODEL-IMAGE-LOCK contains unselected profile service: $inventory_service" >&2
+            model_lock_failures=$((model_lock_failures + 1))
+        fi
+    done < MODEL-IMAGE-INVENTORY.tsv
+    rm -f "$model_profiles_file"
+    trap - EXIT
+    [ "$model_lock_failures" -eq 0 ] || {
+        echo "✗ model image content-ID closure failed;拒絕宣告 model load 完成" >&2
+        exit 1
+    }
+    echo "✓ Model image content-ID closure verified."
+    echo "  (content-ID evidence only; not signed release envelope/SBOM/CA hash/clean-host/P4 acceptance)"
     echo
 fi
 
