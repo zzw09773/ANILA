@@ -84,6 +84,17 @@ try:
                 "model inference; preferred over the registry token."
             ),
         )
+        csp_jwks_url: Optional[str] = Field(
+            default=None,
+            description=(
+                "CSP JWKS URL used to verify router-context/v1; when unset "
+                "the Router derives /.well-known/jwks.json from csp_base_url."
+            ),
+        )
+        router_context_issuer: str = Field(
+            default="https://anila.internal/csp",
+            description="Exact issuer accepted for CSP router-context/v1 JWTs.",
+        )
         allow_legacy_agent_dispatch: bool = Field(
             default=False,
             description="Explicit compatibility-only DISPATCH adapter switch.",
@@ -137,6 +148,8 @@ except ImportError:
         csp_registry_service_token: Optional[str] = None
         csp_agent_service_token: Optional[str] = None
         csp_inference_service_token: Optional[str] = None
+        csp_jwks_url: Optional[str] = None
+        router_context_issuer: str = "https://anila.internal/csp"
         allow_legacy_agent_dispatch: bool = False
         api_key: Optional[str] = None
         api_dev_mode: bool = False

@@ -62,6 +62,7 @@ from app.models.registered_service import (
     ServiceProjectBinding,
 )
 from app.models.retention import RetentionReaperLease
+from app.models.resume_authority import ResumeAttempt, ResumeAuthority
 from app.models.service_access_grant import ServiceAccessGrant
 from app.models.service_client import ServiceClient
 from app.models.service_launch import ServiceAuditCallback, ServiceLaunch
@@ -131,6 +132,8 @@ __all__ = [
     "PolicyDecision",
     "RegisteredService",
     "RetentionReaperLease",
+    "ResumeAuthority",
+    "ResumeAttempt",
     "ServiceAccessGrant",
     "ServiceAuditCallback",
     "ServiceClient",

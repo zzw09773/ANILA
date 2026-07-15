@@ -14,6 +14,9 @@ dependencies = [
     # Runtime base. Pinned exactly: RunState/HITL persistence is bound to the
     # SDK schema version, and the 0.3->0.17 surface change is large. See REBUILD_PLAN.md.
     "openai-agents==0.17.5",
+    # 2.45.0 adds a required InputTokensDetails.cache_write_tokens field that
+    # openai-agents 0.17.5 does not construct. Pin the last compatible release.
+    "openai==2.44.0",
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "python-dotenv>=1.0",

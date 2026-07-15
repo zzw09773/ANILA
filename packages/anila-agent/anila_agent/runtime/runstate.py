@@ -16,12 +16,28 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, cast
 
 from agents import Agent, RunState, ToolApprovalItem
 from agents.run_state import CURRENT_SCHEMA_VERSION
 
 SCHEMA_VERSION = CURRENT_SCHEMA_VERSION
+CONTEXT_SCHEMA = "anila-agent-run-context/v1"
+
+
+def _serialize_context(_context: Any) -> Mapping[str, Any]:
+    """Return only the durable marker for an execution context.
+
+    ``AnilaRunContext`` deliberately contains live process resources (the
+    retriever, tracing wrappers and optional memory runtime).  None of those
+    objects is a durable input, and serializing their dataclass fields would
+    either leak credentials or leave a restart with a dead client.  The
+    service rebuilds the complete context for every request and supplies it as
+    ``context_override`` when restoring the SDK state.
+    """
+
+    return {"schema": CONTEXT_SCHEMA}
 
 
 def has_interruptions(result: Any) -> bool:
@@ -35,13 +51,37 @@ def state_from_result(result: Any) -> RunState:
 
 
 def dump_state(state: RunState) -> str:
-    """序列化 RunState 成字串（存 DB 前；務必連同 SCHEMA_VERSION 一起記）。"""
-    return state.to_string()
+    """Serialize a RunState without persisting live context dependencies.
+
+    The OpenAI Agents SDK's context serializer is the supported extension
+    point for custom run contexts.  Passing ``strict_context`` keeps this
+    boundary fail-closed if the SDK ever changes its custom-context handling.
+    """
+
+    return state.to_string(context_serializer=_serialize_context, strict_context=True)
 
 
-async def load_state(initial_agent: Agent, state_string: str) -> RunState:
-    """從字串還原 RunState（恢復用）。"""
-    return await RunState.from_string(initial_agent, state_string)
+async def load_state(
+    initial_agent: Agent,
+    state_string: str,
+    *,
+    context_override: Any,
+) -> RunState:
+    """Restore state while rebinding a freshly assembled execution context.
+
+    A persisted context marker is intentionally not executable.  Callers must
+    provide the new request's ``AnilaRunContext`` so retriever, trace emitter,
+    memory and other process-local dependencies cannot survive a restart.
+    """
+
+    if context_override is None:
+        raise ValueError("durable RunState restore requires a fresh context_override")
+    return await RunState.from_string(
+        initial_agent,
+        state_string,
+        context_override=context_override,
+        strict_context=True,
+    )
 
 
 def approve_all(

@@ -801,7 +801,11 @@ class SingleTaskRunner:
             raise ValueError("只有 paused Task 可以 resume")
         if not record.state_string:
             raise ValueError("paused Task 缺少 durable RunState")
-        state = await load_state(assembled.agent, record.state_string)
+        state = await load_state(
+            assembled.agent,
+            record.state_string,
+            context_override=assembled.context,
+        )
         record.status = TaskStatus.RUNNING
         self._emit(timeline, StepStatus.RUNNING, "恢復單一 Task")
         self._capture_events(record, timeline)

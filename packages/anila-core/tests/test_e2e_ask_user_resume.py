@@ -35,6 +35,8 @@ from anila_core.memory import close_all_connections
 CSP_BASE = settings.csp_base_url
 CSP_CHAT_URL = f"{CSP_BASE}/v1/chat/completions"
 CSP_AGENTS_URL = f"{CSP_BASE}/v1/agents"
+LEGACY_DISPATCH_HEADERS = {"X-ANILA-Legacy-Dispatch": "1"}
+LEGACY_RESUME_HEADERS = {"X-ANILA-Legacy-Resume": "1"}
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -205,7 +207,7 @@ def test_ask_user_then_resume_end_to_end(db_path: Path) -> None:
             "stream": True,
             "session_id": "sid-e2e",
         },
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
     )
     assert first_resp.status_code == 200
     body = first_resp.text
@@ -232,7 +234,7 @@ def test_ask_user_then_resume_end_to_end(db_path: Path) -> None:
     resume_resp = client.post(
         "/v1/sessions/sid-e2e/answer",
         json={"interrupt_id": "int-7", "answer": "a.txt"},
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_RESUME_HEADERS},
     )
     assert resume_resp.status_code == 200
 

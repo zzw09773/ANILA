@@ -104,6 +104,8 @@ _MANDATORY_REQUIRED_NAMED = {
     "redis-data",
     "csp-attachments",
     "anila-studio-artifacts",
+    "anila-agent-state",
+    "router-state",
     "n8n_data",
     "gitlab_config",
     "gitlab_logs",

@@ -165,6 +165,19 @@ def test_no_token_profile_never_advertises_or_accepts_resume(service) -> None:
     assert rejected.status_code == 503
 
 
+def test_gate5_approval_toggle_rejects_production_startup(
+    service, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The disposable HITL switch cannot be enabled by a production ambient env."""
+
+    module, _tmp_path = service
+    monkeypatch.setenv("ANILA_E2E_REQUIRE_TOOL_APPROVAL", "1")
+    monkeypatch.setenv("ANILA_DEPLOYMENT_PROFILE", "production")
+    monkeypatch.setenv("ANILA_E2E_HARNESS", "gate5-silver")
+    with pytest.raises(module.AgentAdmissionError, match="test-only"), TestClient(module.app):
+        pass
+
+
 @pytest.mark.parametrize(
     "token",
     [
@@ -212,7 +225,11 @@ def test_csp_approved_resume_survives_restart_and_is_exactly_once(
     calls = {"initial": 0, "resume": 0}
 
     class _State:
-        def to_string(self) -> str:
+        def to_string(self, **kwargs) -> str:
+            # ``dump_state`` supplies the SDK context serializer so a real
+            # AnilaRunContext never crosses the durable task boundary.
+            assert kwargs["strict_context"] is True
+            assert callable(kwargs["context_serializer"])
             return "durable-state-v1"
 
         def get_interruptions(self) -> list[str]:

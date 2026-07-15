@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+import re
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -16,6 +17,7 @@ from app.services.agent_dispatch_service import (
     authorize_dispatch,
     dispatch_nonstream,
     dispatch_resume,
+    resume_by_session,
     dispatch_stream,
 )
 
@@ -36,6 +38,13 @@ class AgentResumeRequest(BaseModel):
     # R5 is an explicit binary approval seam.  The CSP policy decision is
     # already complete before this endpoint is reached; the Agent approves
     # every persisted pending interruption in the bound RunState.
+    approval_mode: StrictStr = Field(default="approve_all", min_length=1, max_length=32)
+
+
+class ResumeBySessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    session_id: StrictStr = Field(min_length=1, max_length=255)
     approval_mode: StrictStr = Field(default="approve_all", min_length=1, max_length=32)
 
 
@@ -150,6 +159,36 @@ async def resume_agent(
     return JSONResponse(result, status_code=status_code)
 
 
+def _resolve_resume_caller_user_id(raw: str | None) -> int:
+    if raw is None or re.fullmatch(r"[1-9][0-9]*", raw) is None:
+        raise HTTPException(status_code=400, detail="X-ANILA-Caller-User-Id 無效")
+    return int(raw)
+
+
+@router.post("/resume-by-session", response_model=None)
+async def resume_agent_by_session(
+    payload: ResumeBySessionRequest,
+    *,
+    caller: CallerIdentity | None = Depends(verify_service_token),
+    caller_user_id: str | None = Header(default=None, alias="X-ANILA-Caller-User-Id"),
+    idempotency_key: str | None = Header(default=None, alias="X-ANILA-Idempotency-Key"),
+    db: Session = Depends(get_db),
+):
+    """Named-Router-only restart-safe resume using opaque session identity."""
+
+    if not idempotency_key:
+        raise HTTPException(status_code=400, detail="必須提供 X-ANILA-Idempotency-Key")
+    result = await resume_by_session(
+        db=db,
+        caller=caller,
+        session_id=payload.session_id,
+        caller_user_id=_resolve_resume_caller_user_id(caller_user_id),
+        idempotency_key=idempotency_key,
+        approval_mode=payload.approval_mode,
+    )
+    return JSONResponse(result, status_code=202 if result.get("status") == "paused" else 200)
+
+
 def _binding_from_resume_headers(request: Request) -> dict[str, Any]:
     """Reconstruct the immutable binding for a body-less resume request.
 
@@ -179,4 +218,11 @@ def _binding_from_resume_headers(request: Request) -> dict[str, Any]:
     return required
 
 
-__all__ = ["AgentDispatchRequest", "AgentResumeRequest", "dispatch_agent", "resume_agent", "router"]
+__all__ = [
+    "AgentDispatchRequest",
+    "AgentResumeRequest",
+    "ResumeBySessionRequest",
+    "dispatch_agent",
+    "resume_agent",
+    "router",
+]

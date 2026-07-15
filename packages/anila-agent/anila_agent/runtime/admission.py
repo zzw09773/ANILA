@@ -129,9 +129,21 @@ def build_agent_manifest(
     if default > ceiling:
         raise AgentAdmissionError("classification.default 不得高於 classification.ceiling")
 
-    model_id = cfg.model.model
-    if not _IDENTIFIER.fullmatch(model_id):
+    # The runtime keeps the model identifier as a string because the
+    # OpenAI-compatible client sends it on the wire.  The canonical Silver
+    # manifest has a stricter CSP registry contract: a decimal model id is a
+    # database identity and must be represented as a positive ``int`` (with
+    # no leading-zero ambiguity), alongside the manifest's ``base_model_id``.
+    # Named models remain strings and deliberately do not self-assert a base
+    # database id.
+    runtime_model_id = cfg.model.model
+    if not _IDENTIFIER.fullmatch(runtime_model_id):
         raise AgentAdmissionError("ANILA_MODEL 必須是 canonical model identifier")
+    model_id: int | str = runtime_model_id
+    base_model_id: int | None = None
+    if re.fullmatch(r"[1-9][0-9]*", runtime_model_id):
+        model_id = int(runtime_model_id)
+        base_model_id = model_id
 
     gold_requested = os.getenv("ANILA_GOLD_CONFORMANCE", "0").strip().lower() in {
         "1",
@@ -185,6 +197,7 @@ def build_agent_manifest(
             "supports_resume": supports_resume,
             "supports_cancel": True,
             "supports_idempotency": True,
+            "base_model_id": base_model_id,
             "model_binding": ModelBinding(
                 model_id=model_id,
                 model_revision=os.getenv("ANILA_MODEL_REVISION"),

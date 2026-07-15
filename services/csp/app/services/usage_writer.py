@@ -106,7 +106,15 @@ async def _flush_batch(batch: list[dict]):
         return
     for attempt in range(1, 4):
         try:
-            _write_batch(batch)
+            # SQLAlchemy's synchronous session/commit can block on a row or
+            # transaction lock held by the request that just enqueued this
+            # usage record.  Running it on the event-loop thread creates a
+            # self-deadlock: the request cannot resume to release its
+            # transaction while the writer is waiting for that transaction.
+            # Keep the existing synchronous SessionLocal boundary, but move
+            # the blocking DB work to the default executor so the ASGI loop
+            # can continue and release request-scoped transactions.
+            await asyncio.to_thread(_write_batch, batch)
             logger.info("已寫入 %s 筆用量記錄", len(batch))
             return
         except Exception as exc:

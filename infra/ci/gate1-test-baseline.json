@@ -638,6 +638,15 @@
       "count": 5,
       "required_execution": false,
       "reason": "The Gate 5 session-event race proof is an opt-in PostgreSQL test and skips when TEST_DATABASE_URL/DATABASE_URL is absent or not migrated; local runs must register the skip rather than hide it."
+    },
+    {
+      "path": "services/csp/tests/test_gate5_r5_durable_resume_authority.py",
+      "kind": "pytest.skip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "postgres-rls",
+      "ci_command_fragment": "python -m pytest tests/test_gate5_r5_durable_resume_authority.py -q -m integration",
+      "reason": "Only the local SQLite/no-DSN path may skip; postgres-rls sets TEST_POSTGRES_URL to the migrated csp_app database and must execute the two-contender durable resume claim proof."
     }
   ],
   "quarantine": [],

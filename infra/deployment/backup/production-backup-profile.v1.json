@@ -43,6 +43,7 @@
         "csp",
         "ingestion-worker",
         "router",
+        "anila-agent",
         "anila-studio",
         "n8n",
         "gitlab",
@@ -146,6 +147,48 @@
       "acceptance_gate": "Gate 6 P1",
       "backup_method": "filesystem_archive",
       "restore_order": 30
+    },
+    {
+      "id": "anila-agent-runtime-state",
+      "source": {
+        "kind": "named_volume",
+        "name": "anila-agent-state",
+        "mounts": [
+          {
+            "service": "anila-agent",
+            "target": "/var/lib/anila-agent",
+            "read_only": false
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "極機密",
+      "owner": "agent-operations",
+      "reason": "Durable Agent task, session, and admission state is required for restart recovery and audit continuity.",
+      "acceptance_gate": "Gate 5 R5",
+      "backup_method": "volume_archive",
+      "restore_order": 40
+    },
+    {
+      "id": "router-runtime-state",
+      "source": {
+        "kind": "named_volume",
+        "name": "router-state",
+        "mounts": [
+          {
+            "service": "router",
+            "target": "/var/lib/anila-router",
+            "read_only": false
+          }
+        ]
+      },
+      "disposition": "required",
+      "data_classification": "極機密",
+      "owner": "router-operations",
+      "reason": "Durable Router session and resume state is required to recover in-flight governed interactions after restart.",
+      "acceptance_gate": "Gate 5 R4",
+      "backup_method": "volume_archive",
+      "restore_order": 45
     },
     {
       "id": "csp-conversation-attachments",

@@ -1,9 +1,11 @@
 # Gate 5 R6 frozen routing eval
 
-`routing-eval.v1.json` 是 Router runtime 接入前的 frozen fixture。這一批只提供
-可審計的資料集與 static verifier；不呼叫模型、不執行 Router，也不從
-`expected` 欄位反推 100% 的假 metric。真正的 runtime runner 由後續 R3/R6
-工作接上。
+`routing-eval.v1.json` 是不可依結果調整的 frozen fixture。Static verifier 仍只
+驗證資料集 identity、denominator 與 threshold，不呼叫模型；Gate 5 現已另以
+`infra.ci.gate5_r3_eval_adapter:build_adapter` 接上正式 R3 `ExecutionRuntime`，由
+required routing runtime exit job 實際執行全部 160 筆 case。Adapter 只能讀取
+immutable `input`／`messages`／`context` projection，不能讀取 `expected`、case id
+或 category，因此 runtime metric 不是從答案欄反推的假分數。
 
 ## Frozen identity
 
@@ -63,8 +65,9 @@ Verifier 會檢查每個 ID 存在、無重複、`count == len(case_ids)`，以�
 - `false_dispatch_max_exclusive`: `0.01`
 - `policy_bypass_max`: `0`
 
-這些 threshold 目前只作 frozen policy metadata 與 static drift check；本批不
-宣稱已取得 runtime quality 結果。
+這些 threshold 同時是 frozen policy metadata、static drift check 與 required
+runtime exit gate。正式 R3 adapter 的實跑結果為：`route_top1=60/60=1.0`、
+`false_dispatch=0/90`、`policy_bypass=0/20`，全部通過 frozen threshold。
 
 ## Case contract
 
@@ -182,13 +185,14 @@ bash infra/deployment/scripts/gate5-network-negative-smoke.sh
 
 R6 的 deterministic contract runner 只接受明確的 R3 runtime adapter interface；
 adapter 只會看到 immutable 的 `input`／`messages`／`context` projection，不能讀到
-case id、category、`expected` 或 `must_not_route_to`。未提供 adapter 時 runner 會
+case id、category、`expected` 或 `must_not_route_to`。未提供 adapter 時 runner 仍會
 以 non-zero incomplete code 回報 `SKIPPED`，不會拿 frozen `expected` 欄位冒充
-prediction，也不會產生假 metric。required static foundation job 只執行 frozen
-dataset 與 disabled-profile checks；另外的
-required routing runtime exit job 會保留 non-zero incomplete 狀態，直到真正的 R3
-adapter 接上，因而不宣稱 live routing 結果。
+prediction，也不會產生假 metric；但 Gate 5 required routing runtime exit job
+現在已明確傳入正式 R3 adapter，不再處於 `SKIPPED`／incomplete 狀態。
 
-有 adapter 的報告必須帶 dataset version/hash、runner commit，以及每個 frozen
-denominator 的 numerator／denominator；未提供 adapter 的報告只帶 identity 與
-`SKIPPED` reason，不會填入任何 metric。
+Required job 會先執行 adapter 與 mutation-guard tests，再以 runner 實跑 frozen
+dataset；目前 read-back 為 `route_top1=60/60=1.0`、`false_dispatch=0/90`、
+`policy_bypass=0/20`。報告包含 dataset version/hash、runner commit 與各 denominator
+的 numerator／denominator。這只證明 Gate 5 frozen routing contract，不能解讀為
+production signed model profile、實體環境容量或 Gate 6 法務／人員簽核；R7 的
+production profile 仍維持 disabled，FLUX 法務界線亦未改變。

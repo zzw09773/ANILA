@@ -22,6 +22,7 @@ from anila_core.memory import close_all_connections
 CSP_BASE = settings.csp_base_url
 CSP_URL = f"{CSP_BASE}/v1/chat/completions"
 CSP_AGENTS_URL = f"{CSP_BASE}/v1/agents"
+LEGACY_DISPATCH_HEADERS = {"X-ANILA-Legacy-Dispatch": "1"}
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -139,7 +140,7 @@ def test_streaming_multi_turn_streams_only_final_synthesis(
             "stream": True,
             "anila_multi_turn": 2,
         },
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
     )
     assert response.status_code == 200
     assert response.headers["X-Anila-Session-Id"]
@@ -189,7 +190,7 @@ def test_streaming_multi_turn_handles_direct_answer(db_path: Path) -> None:
             "stream": True,
             "anila_multi_turn": 3,
         },
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
     )
     assert response.status_code == 200
     events = _parse_sse(response.text)
@@ -245,7 +246,7 @@ def test_single_shot_streaming_uses_existing_path(db_path: Path) -> None:
             "stream": True,
             # No anila_multi_turn → defaults to 1.
         },
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
     )
     assert response.status_code == 200
     # Single-shot path uses _stream_llm_sse which expects SSE format.
@@ -280,6 +281,6 @@ def test_multi_turn_stream_emits_session_header(db_path: Path) -> None:
             "anila_multi_turn": 2,
             "session_id": "s-pinned",
         },
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
     )
     assert response.headers["X-Anila-Session-Id"] == "s-pinned"

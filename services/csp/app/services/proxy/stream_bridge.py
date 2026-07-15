@@ -139,6 +139,13 @@ class EventOrderError(StreamBridgeError):
     code = "EVENT_OUT_OF_ORDER"
 
 
+class EventBudgetExceeded(StreamBridgeError):
+    """A run has reached its durable ordinary-event budget."""
+
+    status_code = 409
+    code = "EVENT_RUN_BUDGET_EXCEEDED"
+
+
 class TerminalEventError(StreamBridgeError):
     """A run already has its exactly-once terminal event."""
 
@@ -628,11 +635,17 @@ class SessionEventStore(Protocol):
     """Pluggable store contract for authoritative session event persistence.
 
     Implementations must make append atomic with their idempotency key and
-    terminal constraint.  No in-memory implementation is considered durable.
+    terminal constraint.  ``authoritative_terminal`` is CSP-internal metadata,
+    not part of the Agent ``StepEvent`` wire payload; ordinary Agent events
+    must leave it false.  No in-memory implementation is considered durable.
     """
 
     def append(
-        self, event: StepEvent, *, binding: BridgeContext
+        self,
+        event: StepEvent,
+        *,
+        binding: BridgeContext,
+        authoritative_terminal: bool = False,
     ) -> SessionAppendResult: ...
 
     def read_after(
@@ -650,7 +663,9 @@ class CspSessionEventStore(SessionEventStore, Protocol):
 class _RunState:
     binding: BridgeContext
     events: list[StepEvent]
-    by_event_id: dict[str, tuple[str, StepEvent]]
+    # The authority bit is part of idempotency identity.  A terminal event
+    # cannot be silently replayed as an ordinary Agent event (or vice versa).
+    by_event_id: dict[str, tuple[str, StepEvent, bool]]
     next_cursor: int = 0
     last_source_order: int | None = None
     terminal_event_id: str | None = None
@@ -666,9 +681,16 @@ class InMemorySessionEventStore:
 
     durable = False
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_events_per_run: int = MAX_EVENTS_PER_RUN) -> None:
         self._runs: dict[str, _RunState] = {}
         self._lock = RLock()
+        if (
+            isinstance(max_events_per_run, bool)
+            or not isinstance(max_events_per_run, int)
+            or max_events_per_run < 0
+        ):
+            raise ValueError("max_events_per_run 必須是非負整數")
+        self.max_events_per_run = max_events_per_run
 
     @staticmethod
     def _binding_key(binding: BridgeContext) -> tuple[str, str, str, str, str]:
@@ -724,10 +746,20 @@ class InMemorySessionEventStore:
             )
 
     def append(
-        self, event: StepEvent, *, binding: BridgeContext
+        self,
+        event: StepEvent,
+        *,
+        binding: BridgeContext,
+        authoritative_terminal: bool = False,
     ) -> SessionAppendResult:
         if not isinstance(event, StepEvent):
             raise TypeError("event 必須是 StepEvent")
+        if authoritative_terminal and event.status not in {
+            StepStatus.COMPLETED,
+            StepStatus.FAILED,
+            StepStatus.CANCELLED,
+        }:
+            raise ValueError("authoritative terminal status 必須是 completed/failed/cancelled")
         self._assert_binding(event, binding)
         with self._lock:
             state = self._runs.get(binding.run_id)
@@ -739,10 +771,16 @@ class InMemorySessionEventStore:
 
             existing = state.by_event_id.get(event.event_id)
             if existing is not None:
-                existing_digest, existing_event = existing
+                existing_digest, existing_event, existing_authoritative = existing
                 if existing_digest != self._event_digest(event):
                     raise EventConflictError(
                         "相同 (run_id,event_id) 的 payload 不一致",
+                        run_id=binding.run_id,
+                        event_id=event.event_id,
+                    )
+                if existing_authoritative != authoritative_terminal:
+                    raise EventConflictError(
+                        "相同 (run_id,event_id) 的 terminal authority 不一致",
                         run_id=binding.run_id,
                         event_id=event.event_id,
                     )
@@ -751,6 +789,17 @@ class InMemorySessionEventStore:
             if state.terminal_event_id is not None:
                 raise TerminalEventError(
                     "run 已寫入 terminal event，不接受後續事件",
+                    run_id=binding.run_id,
+                    event_id=event.event_id,
+                )
+
+            # This counter is retained by the store, not by StreamValidator,
+            # so a fresh bridge/process cannot reset the per-run budget.  CSP
+            # authoritative terminals are explicitly exempt and can close a
+            # run even after ordinary events consumed the whole budget.
+            if not authoritative_terminal and state.next_cursor >= self.max_events_per_run:
+                raise EventBudgetExceeded(
+                    "run 已達 ordinary event budget",
                     run_id=binding.run_id,
                     event_id=event.event_id,
                 )
@@ -767,13 +816,13 @@ class InMemorySessionEventStore:
             stored = event.model_copy(update={"cursor": str(state.next_cursor)})
             digest = self._event_digest(event)
             state.events.append(stored)
-            state.by_event_id[event.event_id] = (digest, stored)
+            state.by_event_id[event.event_id] = (
+                digest,
+                stored,
+                authoritative_terminal,
+            )
             state.last_source_order = source_order
-            if event.status in {
-                StepStatus.COMPLETED,
-                StepStatus.FAILED,
-                StepStatus.CANCELLED,
-            }:
+            if authoritative_terminal:
                 state.terminal_event_id = event.event_id
             return SessionAppendResult(stored, duplicate=False)
 
@@ -989,7 +1038,11 @@ class StreamBridge:
         validated = self._validated_event(event.model_dump_json())
         if validated is None:
             return None
-        return self._require_store().append(validated, binding=self.context)
+        return self._require_store().append(
+            validated,
+            binding=self.context,
+            authoritative_terminal=False,
+        )
 
     def append(
         self,
@@ -1014,7 +1067,11 @@ class StreamBridge:
         validated = self._validated_event(data)
         if validated is None:
             return None
-        receipt = self._require_store().append(validated, binding=self.context)
+        receipt = self._require_store().append(
+            validated,
+            binding=self.context,
+            authoritative_terminal=False,
+        )
         return self._frame(receipt.event)
 
     ingest = append
@@ -1109,7 +1166,11 @@ class StreamBridge:
         )
         # Bypass the live budget for a CSP-authored terminal, but still pass
         # through the same trusted store binding and exactly-once constraint.
-        return store.append(event, binding=self.context)
+        return store.append(
+            event,
+            binding=self.context,
+            authoritative_terminal=True,
+        )
 
 
 class BridgeCore(StreamBridge):
@@ -1148,6 +1209,7 @@ __all__ = [
     "CspProxyRequiredError",
     "CspSessionEventStore",
     "EventBindingError",
+    "EventBudgetExceeded",
     "EventConflictError",
     "EventOrderError",
     "InMemorySessionEventStore",

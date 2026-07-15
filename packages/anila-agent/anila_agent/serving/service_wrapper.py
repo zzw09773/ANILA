@@ -56,7 +56,7 @@ from anila_agent.runtime.admission import (
     build_agent_manifest,
     canonical_manifest_json,
 )
-from anila_agent.runtime.agent_factory import build_agent
+from anila_agent.runtime.agent_factory import build_agent, validate_e2e_approval_mode
 from anila_agent.runtime.model import build_model
 from anila_agent.runtime.run import run_once, run_once_state, run_streamed
 from anila_agent.runtime.runstate import (
@@ -362,6 +362,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _TASK_STORE = None
     _ACTIVE_TASKS.clear()
     _ACTIVE_TIMELINES.clear()
+    try:
+        # Reject an ambient E2E approval toggle before readiness is exposed;
+        # production must never inherit a test-only tool policy from the host.
+        validate_e2e_approval_mode()
+    except ValueError as exc:
+        raise AgentAdmissionError(str(exc)) from exc
     if not CSP_SERVICE_TOKEN:
         if ALLOW_NO_SERVICE_TOKEN:
             logger.warning(
@@ -713,7 +719,11 @@ async def approve_and_resume_task(
         _ACTIVE_TIMELINES[record.task_id] = timeline
         if not record.state_string:
             raise RuntimeError("paused task lost its durable RunState")
-        state = await load_state(assembled.agent, record.state_string)
+        state = await load_state(
+            assembled.agent,
+            record.state_string,
+            context_override=assembled.context,
+        )
         # No user-supplied approval list is accepted.  CSP made this request
         # only after policy; the persisted SDK state determines exactly what
         # remains pending.

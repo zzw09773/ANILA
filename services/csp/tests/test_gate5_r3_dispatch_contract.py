@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -19,13 +20,18 @@ import app.services.agent_dispatch_service as dispatch_service
 from app.services.agent_dispatch_service import (
     DispatchAuthority,
     DispatchBinding,
+    _binding_from_request,
     _normalize_agent_block,
+    _resume_binding_payload,
+    _resume_headers_from_authority,
+    build_agent_outbound_headers,
     dispatch_nonstream,
     dispatch_resume,
     dispatch_stream,
 )
 from app.services.proxy.stream_bridge import (
     BridgeContext,
+    EventBudgetExceeded,
     InMemorySessionEventStore,
     StreamBridge,
 )
@@ -127,7 +133,7 @@ def _authority(*, invocation_id: str = "invocation-test", run_status: str | None
     return DispatchAuthority(
         caller=object(),
         user=object(),
-        agent=SimpleNamespace(name="research-agent", endpoint_url="http://agent.test"),
+        agent=SimpleNamespace(id=1, name="research-agent", endpoint_url="http://agent.test"),
         grant=object(),
         binding=DispatchBinding(
             caller_user_id=1,
@@ -152,6 +158,116 @@ def _authority(*, invocation_id: str = "invocation-test", run_status: str | None
         endpoint_url="http://agent.test/v1/chat/completions",
         run_status=run_status,
     )
+
+
+class _OwnerQuery:
+    def __init__(self, owner: object | None) -> None:
+        self.owner = owner
+
+    def filter(self, *_args: object) -> _OwnerQuery:
+        return self
+
+    def populate_existing(self) -> _OwnerQuery:
+        return self
+
+    def one_or_none(self) -> object | None:
+        return self.owner
+
+
+class _OwnerDb:
+    def __init__(self, owner: object | None) -> None:
+        self.owner = owner
+
+    def query(self, _model: object) -> _OwnerQuery:
+        return _OwnerQuery(self.owner)
+
+
+def test_outbound_headers_use_canonical_database_owner_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Trace callbacks must receive the durable requester username, not caller input."""
+    monkeypatch.setattr(
+        dispatch_service,
+        "get_active_plaintext_for_agent",
+        lambda _db, *, agent_id: "csk-agent" if agent_id else None,
+    )
+    authority = replace(_authority(), user=SimpleNamespace(id=1, username="forged-caller-input"))
+    owner = SimpleNamespace(id=1, username="canonical-owner")
+
+    headers = build_agent_outbound_headers(_OwnerDb(owner), authority, grant_token="grant")
+
+    assert headers["X-ANILA-User-Id"] == "canonical-owner"
+    assert headers["X-ANILA-User-Id"] != authority.user.username
+    assert headers["X-ANILA-Caller-User-Id"] == "1"
+
+
+def test_resume_synthetic_headers_bind_case_insensitively() -> None:
+    """Authority-derived Title-Case headers must pass the real binding parser."""
+
+    authority = _authority()
+    binding = authority.binding
+    authority = replace(
+        authority,
+        grant=SimpleNamespace(
+            task_id=binding.task_id,
+            run_id=binding.run_id,
+            source_snapshot_id=binding.source_snapshot_id,
+            trace_id=binding.trace_id,
+            invocation_id=binding.invocation_id,
+            session_id=binding.session_id,
+            target=SimpleNamespace(id=binding.agent_id),
+            registry_snapshot_id=binding.registry_snapshot_id,
+            manifest_revision=binding.manifest_revision,
+            grant_id=binding.grant_id,
+            route_decision_id=binding.route_decision_id,
+            policy_decision_id=binding.policy_decision_id,
+            classification=binding.classification,
+        ),
+    )
+    headers = _resume_headers_from_authority(authority, grant_token="signed-grant")
+
+    parsed = _binding_from_request(
+        headers=headers,
+        binding_payload=_resume_binding_payload(authority),
+        grant=authority.grant,
+    )
+
+    assert parsed == binding
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"X-ANILA-Task-Id": ""},
+        {"X-ANILA-Task-Id": "1", "x-anila-task-id": "2"},
+    ],
+)
+def test_binding_header_empty_or_duplicate_fails_closed(headers: dict[str, str]) -> None:
+    with pytest.raises(HTTPException) as caught:
+        dispatch_service._header(headers, "x-anila-task-id")
+    assert caught.value.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "owner",
+    [
+        None,
+        SimpleNamespace(id=2, username="other-owner"),
+        SimpleNamespace(id=1, username=""),
+        SimpleNamespace(id=1, username="forged\r\nidentity"),
+    ],
+)
+def test_outbound_headers_fail_closed_on_owner_drift_or_forged_identity(
+    monkeypatch: pytest.MonkeyPatch, owner: object | None
+) -> None:
+    monkeypatch.setattr(
+        dispatch_service,
+        "get_active_plaintext_for_agent",
+        lambda _db, *, agent_id: "csk-agent" if agent_id else None,
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        build_agent_outbound_headers(_OwnerDb(owner), _authority(), grant_token="grant")
+
+    assert caught.value.status_code == 403
 
 
 def _blocked_event(*, event_id: str = "blocked-1") -> dict[str, object]:
@@ -536,6 +652,62 @@ def test_nonstream_rejects_secret_oversize_and_malformed_agent_payload(monkeypat
     terminal = bridge.terminal_event()
     assert terminal is not None
     assert terminal.status.value == "failed"
+
+
+def test_nonstream_event_budget_maps_to_fixed_409_and_closes_run(monkeypatch) -> None:
+    bridge = _bridge()
+    authority = _authority(invocation_id="nonstream-budget")
+
+    class Response:
+        headers = {"content-type": "application/json"}
+        text = json.dumps({"choices": [{"message": {"content": "unused"}}]})
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> object:
+            return {"choices": [{"message": {"content": "unused"}}]}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, *_args, **_kwargs):
+            return Response()
+
+    def _overflow(_bridge, _payload):
+        raise EventBudgetExceeded("internal run budget detail", run_id="secret-run")
+
+    monkeypatch.setattr(dispatch_service, "_bridge", lambda _authority, _db: bridge)
+    monkeypatch.setattr(
+        dispatch_service,
+        "build_agent_outbound_headers",
+        lambda _db, _authority, grant_token: {"X-CSP-Service-Token": "csk-test"},
+    )
+    monkeypatch.setattr(dispatch_service, "_append_agent_event_history", _overflow)
+    monkeypatch.setattr(dispatch_service.httpx, "AsyncClient", lambda **_kwargs: Client())
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            dispatch_nonstream(
+                db=SimpleNamespace(rollback=lambda: None),
+                authority=authority,
+                messages=[{"role": "user", "content": "hello"}],
+                grant_token="signed-grant",
+            )
+        )
+
+    assert caught.value.status_code == 409
+    assert caught.value.detail == {
+        "code": "EVENT_RUN_BUDGET_EXCEEDED",
+        "message": "執行事件數已達上限",
+    }
+    terminal = bridge.terminal_event()
+    assert terminal is not None
+    assert terminal.status is StepStatus.FAILED
 
 
 def test_completed_run_without_terminal_fails_before_agent_call(monkeypatch) -> None:

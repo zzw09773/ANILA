@@ -23,13 +23,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from collections.abc import Mapping
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
-from urllib.parse import unquote
+from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from anila_contracts.contexts import AuthAssurance
+from anila_contracts import AgentManifest
 from anila_contracts.routing import RouteType
 
 from ..config import settings
@@ -55,6 +55,12 @@ from ..router import (
     RequestContextBuilder,
 )
 from ..router.csp_registry_client import ExecutionGrantEnvelope, ExecutionGrantMinter
+from ..security.router_context import (
+    ROUTER_CONTEXT_HEADER,
+    RouterContextClaims,
+    RouterContextTokenVerifier,
+    RouterContextVerificationError,
+)
 from ..tools.dispatch_tool import dispatch_to_agent_response
 from .session_owner import (
     ensure_session_owner,
@@ -66,11 +72,11 @@ from .session_owner import (
 logger = logging.getLogger(__name__)
 
 _MAX_ROUTER_MULTI_TURN = 3
-_FORMAL_RESUME_MAX_CONTEXTS = 256
-_FORMAL_RESUME_TTL_SECONDS = 15 * 60
 
 SECURE_ACCESS_COOKIE_NAME = "__Host-anila_access_token"
 DEV_ACCESS_COOKIE_NAME = "anila_dev_access_token"
+LEGACY_RESUME_OPT_IN_HEADER = "X-ANILA-Legacy-Resume"
+LEGACY_DISPATCH_OPT_IN_HEADER = "X-ANILA-Legacy-Dispatch"
 
 
 def _access_cookie_name(secure: bool) -> str:
@@ -98,6 +104,63 @@ _FORMAL_FORWARDED_HEADERS = frozenset(
     }
 )
 
+_FORMAL_AUTHORITY_HEADERS = frozenset(
+    {
+        "x-anila-caller-user-id",
+        "x-anila-owner-id",
+        "x-anila-task-id",
+        "x-anila-run-id",
+        "x-anila-source-snapshot-id",
+        "x-anila-trace-id",
+        "x-anila-invocation-id",
+        "x-anila-session-id",
+        "x-anila-task-type",
+        "x-anila-classification-level",
+        "x-anila-scopes",
+        "x-anila-required-capabilities",
+        "x-anila-auth-assurance",
+        "x-anila-auth-session-id",
+        "x-anila-auth-methods",
+        "x-anila-auth-level",
+        "x-anila-auth-time",
+        "x-anila-break-glass",
+    }
+)
+
+
+def _router_context_header_values(headers: Mapping[str, str]) -> list[str]:
+    getlist = getattr(headers, "getlist", None)
+    if callable(getlist):
+        return [str(value) for value in getlist(ROUTER_CONTEXT_HEADER)]
+    value = headers.get(ROUTER_CONTEXT_HEADER)
+    return [] if value is None else [str(value)]
+
+
+_FORMAL_AUDIT_ONLY_HEADERS = frozenset(
+    {
+        "x-anila-trace-id",
+        "x-anila-task-id",
+        "x-anila-user-id",
+        "x-anila-conversation-id",
+    }
+)
+
+
+def _has_raw_formal_authority(
+    headers: Mapping[str, str], *, include_audit: bool = True
+) -> bool:
+    """Detect any raw authority field that cannot authorize legacy traffic."""
+
+    for key in headers:
+        lowered = key.lower()
+        if not include_audit and lowered in _FORMAL_AUDIT_ONLY_HEADERS:
+            continue
+        if lowered in _FORMAL_AUTHORITY_HEADERS:
+            return True
+        if lowered.startswith("x-anila-router-context-"):
+            return True
+    return False
+
 
 def _formal_forwarded_headers(headers: Mapping[str, str]) -> dict[str, str]:
     """Keep only CSP authority/audit fields on formal Router hops."""
@@ -106,6 +169,31 @@ def _formal_forwarded_headers(headers: Mapping[str, str]) -> dict[str, str]:
         key: value
         for key, value in headers.items()
         if key.lower() in _FORMAL_FORWARDED_HEADERS
+    }
+
+
+def _formal_claim_forwarded_headers(claims: RouterContextClaims) -> dict[str, str]:
+    """Reconstruct correlation headers from verified claims only.
+
+    These values are transport metadata for CSP's nested inference seam; they
+    are never read from the inbound request after the token has been verified.
+    """
+
+    return {
+        "X-ANILA-Caller-User-Id": claims.caller_user_id,
+        "X-ANILA-Owner-Id": claims.owner_id,
+        "X-ANILA-Task-Id": claims.task_id,
+        "X-ANILA-Run-Id": claims.run_id,
+        "X-ANILA-Source-Snapshot-Id": claims.source_snapshot_id,
+        "X-ANILA-Trace-Id": claims.trace_id,
+        "X-ANILA-Invocation-Id": claims.invocation_id,
+        "X-ANILA-Session-Id": claims.session_id,
+        "X-ANILA-Task-Type": claims.task_type,
+        "X-ANILA-Classification-Level": quote(claims.classification, safe=""),
+        "X-ANILA-Scopes": ",".join(claims.scopes),
+        "X-ANILA-Required-Capabilities": ",".join(
+            claims.required_capabilities
+        ),
     }
 
 
@@ -342,6 +430,11 @@ def _formal_route_prompt(
     for entry in snapshot.entries:
         if not entry.ready_for_dispatch or entry.manifest is None:
             continue
+        if not isinstance(entry.manifest, AgentManifest):
+            # RegistryEntry retains malformed JSON projections so the trust
+            # boundary can report them as invalid; never route from a raw
+            # unvalidated mapping.
+            continue
         capabilities = entry.capabilities or ()
         candidates.append(
             {
@@ -374,103 +467,26 @@ def _formal_route_prompt(
     return [{"role": "system", "content": system}, *messages]
 
 
-def _formal_positive_header(
-    request: Request, name: str, *, required: bool = True
-) -> int | None:
-    raw = request.headers.get(name)
-    if raw is None or not raw.strip():
-        if required:
-            raise ValueError(f"缺少 {name}")
-        return None
-    text = raw.strip()
-    if not re.fullmatch(r"[1-9][0-9]*", text):
-        raise ValueError(f"{name} 必須是 positive numeric id")
-    return int(text)
-
-
-def _formal_required_header(request: Request, name: str) -> str:
-    value = request.headers.get(name)
-    if value is None or not value.strip():
-        raise ValueError(f"缺少 {name}")
-    # HTTP field-values are commonly constrained to latin-1 by client
-    # libraries; CSP may therefore percent-encode the canonical UTF-8
-    # classification value before forwarding it to the Router.
-    return unquote(value.strip())
-
-
-def _formal_context(
-    request: Request,
+def _formal_context_from_claims(
+    claims: RouterContextClaims,
     body: dict[str, Any],
     *,
-    session_id: str,
     messages: list[dict[str, Any]],
 ) -> tuple[int, RequestContext]:
-    """Build a complete server-derived context from CSP forwarding facts."""
+    """Build formal runtime context from the verified token, never headers."""
 
-    caller_user_id = _formal_positive_header(request, "X-ANILA-Caller-User-Id")
-    assert caller_user_id is not None
-    owner_id = _formal_positive_header(request, "X-ANILA-Owner-Id")
-    assert owner_id is not None
-    task_id = _formal_positive_header(request, "X-ANILA-Task-Id")
-    run_id = _formal_positive_header(request, "X-ANILA-Run-Id")
-    source_snapshot_id = _formal_positive_header(request, "X-ANILA-Source-Snapshot-Id")
-    trace_id = _formal_required_header(request, "X-ANILA-Trace-Id")
-    task_type = _formal_required_header(request, "X-ANILA-Task-Type")
-    classification = _formal_required_header(request, "X-ANILA-Classification-Level")
-    invocation_id = _formal_required_header(request, "X-ANILA-Invocation-Id")
-    scopes_raw = _formal_required_header(request, "X-ANILA-Scopes")
-    capabilities_raw = request.headers.get("X-ANILA-Required-Capabilities", "")
-    scopes = [token.strip() for token in scopes_raw.split(",") if token.strip()]
-    required_capabilities = [
-        token.strip() for token in capabilities_raw.split(",") if token.strip()
-    ]
-
-    assurance_raw = request.headers.get("X-ANILA-Auth-Assurance")
-    if assurance_raw:
-        try:
-            assurance_value: Any = json.loads(unquote(assurance_raw))
-        except json.JSONDecodeError as exc:
-            raise ValueError("X-ANILA-Auth-Assurance JSON 無效") from exc
-    else:
-        # CSP may forward the immutable assurance as individual headers when
-        # a proxy cannot preserve a JSON header.  Absence is a hard deny.
-        auth_sid = _formal_required_header(request, "X-ANILA-Auth-Session-Id")
-        auth_amr = _formal_required_header(request, "X-ANILA-Auth-Methods")
-        auth_acr = _formal_required_header(request, "X-ANILA-Auth-Level")
-        auth_time_raw = _formal_required_header(request, "X-ANILA-Auth-Time")
-        try:
-            auth_time = datetime.fromisoformat(auth_time_raw.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise ValueError("X-ANILA-Auth-Time 無效") from exc
-        assurance_value = {
-            "sid": auth_sid,
-            "amr": tuple(token.strip() for token in auth_amr.split(",") if token.strip()),
-            "acr": auth_acr,
-            "auth_time": auth_time,
-            "break_glass": request.headers.get("X-ANILA-Break-Glass", "false").lower()
-            == "true",
+    values = claims.context_values(messages)
+    values.update(
+        {
+            "requested_max_steps": body.get("max_steps"),
+            "requested_timeout_ms": body.get("timeout_ms"),
         }
-    assurance = AuthAssurance.model_validate(assurance_value)
-    context_values: dict[str, Any] = {
-        "identity": str(caller_user_id),
-        "owner_id": str(owner_id),
-        "session_id": session_id,
-        "task_id": task_id,
-        "run_id": run_id,
-        "source_snapshot_id": source_snapshot_id,
-        "trace_id": trace_id,
-        "invocation_id": invocation_id,
-        "task_type": task_type,
-        "classification": classification,
-        "scopes": scopes,
-        "required_capabilities": required_capabilities,
-        "auth_assurance": assurance,
-        "messages": messages,
-        "requested_max_steps": body.get("max_steps"),
-        "requested_timeout_ms": body.get("timeout_ms"),
-    }
-    context = RequestContextBuilder().build(context_values)
-    return caller_user_id, context
+    )
+    try:
+        context = RequestContextBuilder().build(values)
+    except (TypeError, ValueError) as exc:
+        raise RouterContextVerificationError("Router context contract 無效") from exc
+    return int(claims.caller_user_id), context
 
 
 def _formal_legacy_enabled() -> bool:
@@ -665,8 +681,13 @@ def _make_trace_step(
     *,
     status: str = "ok",
     latency_ms: int | None = None,
-) -> dict[str, Any]:
-    step = {"kind": kind, "label": label, "detail": detail, "status": status}
+) -> dict[str, str | int]:
+    step: dict[str, str | int] = {
+        "kind": kind,
+        "label": label,
+        "detail": detail,
+        "status": status,
+    }
     if latency_ms is not None:
         step["latency_ms"] = latency_ms
     return step
@@ -797,7 +818,10 @@ def _extract_bearer_api_key(request: Request) -> str:
     ``Authorization: Bearer …`` so CSP's ``get_caller`` dependency can
     resolve the user on either path.
     """
-    authorization = request.headers.get("Authorization", "")
+    authorization_values = request.headers.getlist("Authorization")
+    if len(authorization_values) > 1:
+        raise HTTPException(status_code=400, detail="Authorization header 不得重複")
+    authorization = authorization_values[0] if authorization_values else ""
     if authorization.startswith("Bearer "):
         token = authorization[7:].strip()
         if token:
@@ -867,6 +891,148 @@ async def _resolve_session_owner_hash(caller_api_key: str) -> str:
     return fingerprint_session_owner(f"jwt-user:{stable_user_id}")
 
 
+async def _resolve_public_caller_user_id(caller_api_key: str) -> int:
+    """Resolve the public caller through CSP's authenticated user endpoint.
+
+    The value is intentionally derived from the original bearer/cookie token
+    and never from an ``X-ANILA-Caller-User-Id`` request header.  Formal resume
+    needs this stable identity after a Router restart, when no process-local
+    context or grant cache is available.
+    """
+
+    token = str(caller_api_key or "").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing public caller credential")
+    url = f"{settings.csp_base_url.rstrip('/')}/api/auth/me"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to verify caller identity with CSP.",
+        ) from exc
+
+    if response.status_code in {401, 403}:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail="CSP rejected caller token.",
+        )
+    if response.status_code >= 500:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to verify caller identity with CSP.",
+        )
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to verify caller identity with CSP.",
+        ) from exc
+
+    try:
+        user = response.json()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="CSP returned an invalid caller identity response.",
+        ) from exc
+    if not isinstance(user, Mapping):
+        raise HTTPException(
+            status_code=502,
+            detail="CSP returned an invalid caller identity response.",
+        )
+    raw_user_id = user.get("id") or user.get("user_id") or user.get("sub")
+    if isinstance(raw_user_id, bool) or not re.fullmatch(
+        r"[1-9][0-9]*", str(raw_user_id or "").strip()
+    ):
+        raise HTTPException(
+            status_code=502,
+            detail="CSP caller identity response is missing a stable user id.",
+        )
+    return int(str(raw_user_id).strip())
+
+
+def _canonical_resume_idempotency_key(request: Request) -> str:
+    """Return exactly one validated canonical resume idempotency header."""
+
+    values = request.headers.getlist("X-ANILA-Idempotency-Key")
+    if len(values) != 1 or not values[0].strip():
+        raise HTTPException(
+            status_code=400,
+            detail="必須提供單一 canonical X-ANILA-Idempotency-Key",
+        )
+    value = values[0].strip()
+    if len(value) > 255 or any(
+        ord(char) < 0x20 or ord(char) == 0x7F for char in value
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="X-ANILA-Idempotency-Key 格式無效",
+        )
+    return value
+
+
+def _legacy_resume_opt_in(request: Request) -> bool:
+    """Require an explicit, unambiguous compatibility opt-in for legacy resume."""
+
+    values = request.headers.getlist(LEGACY_RESUME_OPT_IN_HEADER)
+    if not values:
+        return False
+    if len(values) != 1 or values[0].strip() != "1":
+        raise HTTPException(
+            status_code=400,
+            detail=f"{LEGACY_RESUME_OPT_IN_HEADER} 必須是單一 canonical '1'",
+        )
+
+    formal_markers = (
+        bool(_router_context_header_values(request.headers))
+        or _has_raw_formal_authority(request.headers)
+        or bool(request.headers.getlist("X-ANILA-Idempotency-Key"))
+    )
+    if formal_markers:
+        raise HTTPException(
+            status_code=400,
+            detail="legacy resume opt-in 不得與 formal resume headers 混用",
+        )
+    if not _formal_legacy_enabled():
+        raise HTTPException(
+            status_code=400,
+            detail="legacy resume compatibility 未啟用",
+        )
+    return True
+
+
+def _legacy_chat_compat_opt_in(request: Request) -> bool:
+    """Require an explicit compatibility opt-in for legacy chat dispatch."""
+
+    values = request.headers.getlist(LEGACY_DISPATCH_OPT_IN_HEADER)
+    if not values:
+        return False
+    if len(values) != 1 or values[0].strip() != "1":
+        raise HTTPException(
+            status_code=400,
+            detail=f"{LEGACY_DISPATCH_OPT_IN_HEADER} 必須是單一 canonical '1'",
+        )
+    if _router_context_header_values(request.headers) or _has_raw_formal_authority(
+        request.headers, include_audit=False
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="legacy dispatch opt-in 不得與 formal authority headers 混用",
+        )
+    if not _formal_legacy_enabled():
+        raise HTTPException(
+            status_code=400,
+            detail="legacy dispatch compatibility 未啟用",
+        )
+    return True
+
+
 def create_router_app(
     session_db_path: str | None = None,
     session_factory: Any = None,
@@ -875,6 +1041,7 @@ def create_router_app(
     agent_client: Any = None,
     inference_client: Any = None,
     grant_minter: ExecutionGrantMinter | None = None,
+    router_context_verifier: Any = None,
 ) -> FastAPI:
     """Build and return the ANILA Core Router FastAPI application.
 
@@ -932,41 +1099,21 @@ def create_router_app(
         settings.csp_base_url,
         service_token=registry_service_token,
     )
+    formal_router_context_verifier = router_context_verifier
+    if formal_router_context_verifier is None:
+        jwks_url = (
+            getattr(settings, "csp_jwks_url", None)
+            or f"{settings.csp_base_url.rstrip('/')}/.well-known/jwks.json"
+        )
+        formal_router_context_verifier = RouterContextTokenVerifier(
+            jwks_url,
+            issuer=getattr(
+                settings,
+                "router_context_issuer",
+                "https://anila.internal/csp",
+            ),
+        )
     formal_runtime = ExecutionRuntime()
-    # Formal resume keeps the original CSP grant evidence in the Router
-    # process only as a transport cache.  CSP revalidates the complete
-    # binding/grant on every approve call; this cache is never authority and a
-    # missing entry (for example after a Router restart) fails closed instead
-    # of falling back to the legacy proxy.  Durable cross-restart recovery is
-    # a CSP encrypted-context follow-up, not fabricated from client headers.
-    formal_resume_contexts: dict[str, tuple[float, dict[str, Any]]] = {}
-
-    def _remember_formal_resume_context(session_key: str, payload: dict[str, Any]) -> None:
-        now = time.monotonic()
-        # Expire stale paused contexts before enforcing the bounded cache cap.
-        for stale_key, (created_at, _value) in list(formal_resume_contexts.items()):
-            if now - created_at >= _FORMAL_RESUME_TTL_SECONDS:
-                formal_resume_contexts.pop(stale_key, None)
-        if session_key in formal_resume_contexts:
-            formal_resume_contexts.pop(session_key, None)
-        while len(formal_resume_contexts) >= _FORMAL_RESUME_MAX_CONTEXTS:
-            oldest_key = min(formal_resume_contexts, key=lambda key: formal_resume_contexts[key][0])
-            formal_resume_contexts.pop(oldest_key, None)
-        formal_resume_contexts[session_key] = (now, payload)
-
-    def _get_formal_resume_context(session_key: str) -> dict[str, Any] | None:
-        record = formal_resume_contexts.get(session_key)
-        if record is None:
-            return None
-        created_at, payload = record
-        if time.monotonic() - created_at >= _FORMAL_RESUME_TTL_SECONDS:
-            formal_resume_contexts.pop(session_key, None)
-            return None
-        return payload
-
-    def _forget_formal_resume_context(session_key: str) -> None:
-        formal_resume_contexts.pop(session_key, None)
-
     resolved_db_path = session_db_path or settings.session_db_path
 
     def _make_session(sid: str) -> Session:
@@ -1134,15 +1281,11 @@ def create_router_app(
             or body.get("anila_session_id")
             or new_session_id()
         )
-        # Formal R3 is the default authority.  The old RemoteAgentRegistry /
-        # DISPATCH parser is reachable only when the deployment explicitly
-        # enables the compatibility flag *and* the request lacks the CSP
-        # caller-PK header.  A request carrying that header must never be
-        # downgraded to the legacy path on any parse/readiness failure.
-        formal_requested = (
-            "x-anila-caller-user-id" in request.headers
-            or not _formal_legacy_enabled()
-        )
+        # Formal R3 is the default authority.  Compatibility is reachable
+        # only when explicitly enabled and the request carries neither the
+        # canonical signed token nor any raw formal authority field.  A
+        # malformed/duplicate/alternate token can never downgrade to legacy.
+        formal_requested = not _legacy_chat_compat_opt_in(request)
         if formal_requested:
             return await _formal_chat(
                 request=request,
@@ -1550,7 +1693,7 @@ def create_router_app(
         last_agent_id = agent_id
         last_manifest = manifest
         if max_iterations > 1 and not agent_response["error"]:
-            async def _pin_owner_cb(agent_id_inner: str) -> None:
+            async def _pin_owner_cb_non_streaming(agent_id_inner: str) -> None:
                 await _pin_owner(session_id, agent_id_inner)
 
             (
@@ -1573,7 +1716,7 @@ def create_router_app(
                 started_at=started_at,
                 session_id=session_id,
                 router_reasoning=router_reasoning,
-                pin_owner=_pin_owner_cb,
+                pin_owner=_pin_owner_cb_non_streaming,
             )
             if final_text is not None:
                 # Router LLM produced a final synthesis without further
@@ -1719,33 +1862,50 @@ def create_router_app(
         """
 
         started_at = time.time()
-        forwarded_headers = _formal_forwarded_headers(request.headers)
         base_trace: list[dict[str, Any]] = []
 
+        token_values = _router_context_header_values(request.headers)
+        if len(token_values) != 1:
+            raise HTTPException(
+                status_code=401,
+                detail="Router formal path requires exactly one X-ANILA-Router-Context token",
+            )
+        # Any alternate spelling is rejected even when a valid canonical token
+        # is also present.  This prevents ambiguous authority selection at
+        # intermediary/header-normalization boundaries.
+        alternate_headers = [
+            key
+            for key in request.headers
+            if key.lower().startswith("x-anila-router-context-")
+        ]
+        if alternate_headers:
+            raise HTTPException(
+                status_code=401,
+                detail="Router formal path rejects alternate context headers",
+            )
+
         try:
-            caller_user_id, context = _formal_context(
-                request,
+            verified_claims = await formal_router_context_verifier.verify(
+                token_values[0], body
+            )
+            if not isinstance(verified_claims, RouterContextClaims):
+                raise RouterContextVerificationError("Router verifier returned invalid claims")
+            session_id = verified_claims.session_id
+            caller_user_id, context = _formal_context_from_claims(
+                verified_claims,
                 body,
-                session_id=session_id,
                 messages=messages,
             )
-        except (TypeError, ValueError) as exc:
-            base_trace.append(
-                _make_trace_step("context", "建立 Router context", "context authority 無效", status="error")
-            )
-            meta = _merge_anila_meta(
-                base_trace,
-                None,
-                latency_ms=int((time.time() - started_at) * 1000),
-            )
-            meta["reason_codes"] = ["CONTEXT_INVALID"]
-            logger.info("formal Router context denied: %s", exc)
-            return _respond(
-                "目前無法安全建立執行上下文，請重新登入或稍後再試。",
-                meta,
-                stream,
-                session_id=session_id,
-            )
+            forwarded_headers = _formal_claim_forwarded_headers(verified_claims)
+        except (RouterContextVerificationError, TypeError, ValueError) as exc:
+            # This check runs before registry refresh, inference, grant mint,
+            # or Agent network I/O.  Never downgrade a presented token to the
+            # legacy parser.
+            logger.info("formal Router context token denied: %s", exc)
+            raise HTTPException(
+                status_code=401,
+                detail="Router context token 無效",
+            ) from exc
 
         try:
             snapshot = await formal_registry_client.fetch_snapshot(caller_user_id)
@@ -1952,16 +2112,6 @@ def create_router_app(
                 "目前無法取得 CSP 簽發的執行授權，已安全停止派工。",
                 status="error",
             )
-
-        _remember_formal_resume_context(session_id, {
-            "context": context,
-            "snapshot": snapshot,
-            "entry": entry,
-            "decision": decision,
-            "policy_result": policy_result,
-            "grant_input": grant_input,
-            "execution_grant": execution_grant,
-        })
 
         async def _complete_agent(
             current_context: RequestContext,
@@ -2287,16 +2437,16 @@ def create_router_app(
         first, then deltas + named events from the agent.
         """
         caller_api_key = _extract_bearer_api_key(request)
-        body: dict = await request.json()
+        body: Any = await request.json()
 
-        formal_resume_requested = (
-            "x-anila-caller-user-id" in request.headers
-            or not _formal_legacy_enabled()
-        )
+        legacy_resume_requested = _legacy_resume_opt_in(request)
+        formal_resume_requested = not legacy_resume_requested
         if formal_resume_requested:
-            # Formal R4/R5 resume is a CSP-authorized binary approve seam.  It
+            # Formal R5 resume is a CSP-authorized binary approve seam.  It
             # intentionally does not accept the legacy interrupt_id/answer
-            # body or consult Router's SQLite owner table.
+            # body, consult Router's SQLite owner table, or reuse a process-
+            # local grant/context cache.  CSP resolves the durable authority
+            # by opaque session id and renews the grant at the final sink.
             if not isinstance(body, dict):
                 raise HTTPException(status_code=400, detail="formal resume body 必須是 object")
             if set(body) - {"approval_mode"}:
@@ -2304,43 +2454,19 @@ def create_router_app(
             approval_mode = body.get("approval_mode", "approve_all")
             if approval_mode != "approve_all":
                 raise HTTPException(status_code=400, detail="approval_mode 必須是 approve_all")
-            idempotency_key = request.headers.get("X-ANILA-Idempotency-Key")
-            if not idempotency_key:
-                raise HTTPException(status_code=400, detail="必須提供 X-ANILA-Idempotency-Key")
-            caller_user_header = request.headers.get("X-ANILA-Caller-User-Id")
-            if caller_user_header is None or re.fullmatch(r"[1-9][0-9]*", caller_user_header.strip()) is None:
-                raise HTTPException(status_code=403, detail="formal resume 缺少可信 caller user binding")
-
-            cached = _get_formal_resume_context(session_id)
-            if cached is None:
-                raise HTTPException(
-                    status_code=409,
-                    detail="formal resume context unavailable; Router restart/expiry requires a new governed turn",
-                )
-            cached_context = cached.get("context")
-            cached_identity = str(getattr(cached_context, "identity", "")).strip()
-            cached_owner = str(getattr(cached_context, "owner_id", "")).strip()
-            if caller_user_header.strip() != cached_identity or caller_user_header.strip() != cached_owner:
-                raise HTTPException(status_code=403, detail="formal resume caller/owner binding 不一致")
+            idempotency_key = _canonical_resume_idempotency_key(request)
+            caller_user_id = await _resolve_public_caller_user_id(caller_api_key)
             try:
-                result = await formal_agent_client.resume(
-                    entry=cached["entry"],
-                    snapshot=cached["snapshot"],
-                    # The Router transport never forwards/caches the public
-                    # bearer; CspAgentClient ignores this compatibility field.
-                    caller_api_key="",
+                result = await formal_agent_client.resume_by_session(
                     session_id=session_id,
-                    context=cached["context"],
-                    route_decision=cached["decision"],
-                    policy_result=cached["policy_result"],
-                    grant_input=cached["grant_input"],
-                    execution_grant=cached["execution_grant"],
+                    caller_user_id=caller_user_id,
                     idempotency_key=idempotency_key,
                     approval_mode=approval_mode,
                 )
             except AgentClientError as exc:
                 logger.info("formal Router resume denied: %s", exc)
-                status = 409 if "conflict" in str(exc).lower() else 502
+                error_status = getattr(exc, "status_code", None)
+                status = error_status if error_status in {401, 403, 409} else 502
                 raise HTTPException(status_code=status, detail="formal resume 未完成") from exc
 
             if not isinstance(result, Mapping):
@@ -2360,7 +2486,6 @@ def create_router_app(
                 # approval; never turn a blocked cursor into completion.
                 resumed_payload["anila_events"] = list(result.get("anila_events") or [])
                 return JSONResponse(resumed_payload, status_code=202)
-            _forget_formal_resume_context(session_id)
             content = result.get("content")
             if not isinstance(content, str):
                 raise HTTPException(status_code=502, detail="formal resume content 無效")
@@ -3403,10 +3528,10 @@ def _extract_openai_stream_content(chunk: dict[str, Any]) -> str:
     for choice in _openai_choices(chunk):
         if not isinstance(choice, dict):
             continue
-        delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
-        message = (
-            choice.get("message") if isinstance(choice.get("message"), dict) else {}
-        )
+        delta_value = choice.get("delta")
+        delta = delta_value if isinstance(delta_value, dict) else {}
+        message_value = choice.get("message")
+        message = message_value if isinstance(message_value, dict) else {}
         content = (
             _flatten_openai_content(delta.get("content"))
             or _flatten_openai_content(message.get("content"))

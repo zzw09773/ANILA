@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import re
+from importlib.metadata import version
 from pathlib import Path
+
+from agents.usage import InputTokensDetails
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PACKAGE_ROOT.parents[1]
@@ -30,6 +33,13 @@ def test_agent_metadata_keeps_contract_version_constraint():
     """Metadata remains explicit while Makefile controls source provenance."""
     pyproject = (PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert '"anila-contracts>=2.0.0,<3.0.0"' in pyproject
+
+
+def test_agents_sdk_and_openai_runtime_versions_are_compatible():
+    """Keep the SDK's usage defaults compatible with the OpenAI client schema."""
+    assert version("openai-agents") == "0.17.5"
+    assert version("openai") == "2.44.0"
+    assert InputTokensDetails(cached_tokens=0).cached_tokens == 0
 
 
 def test_ci_installs_contract_and_agent_in_one_local_resolver_invocation():

@@ -260,12 +260,11 @@ class DeploymentContainmentTests(unittest.TestCase):
             (ROOT / "share/codeserver-sandbox").resolve(),
         )
 
-        dev = compose_config(
-            "-f",
-            "infra/compose/platform.yml",
-            "-f",
-            "infra/compose/dev.yml",
-        )
+        # The dev stack is an isolated Compose project.  Do not merge the
+        # production and dev files: Compose concatenates list-valued security
+        # options for duplicate services, which can create an invalid mixed
+        # graph (and violates the separate volume/network contract).
+        dev = compose_config("-f", "compose.dev.yaml")
         dev_links = json.loads(dev["services"]["csp"]["environment"]["AUTO_REGISTER_LINKS"])
         dev_urls = {link["name"]: link["url"] for link in dev_links}
         self.assertEqual(dev_urls["n8n 工作流程"], "https://n8n.ai.ncsist.org.tw/")

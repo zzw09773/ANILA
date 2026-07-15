@@ -411,6 +411,14 @@ jobs:
           PYTHONPATH: .
         run: python -m pytest tests/test_gate2_auth_races_pg.py -q
 
+      - name: Prove Gate 5 durable resume claim concurrency on PostgreSQL
+        working-directory: services/csp
+        env:
+          TEST_POSTGRES_URL: postgresql://csp_app:gate1-app-db@127.0.0.1:5432/csp
+          DATABASE_URL: postgresql://csp_app:gate1-app-db@127.0.0.1:5432/csp
+          PYTHONPATH: .
+        run: python -m pytest tests/test_gate5_r5_durable_resume_authority.py -q -m integration
+
   frontend-governance:
     name: Frontend / CSP governance UI
     runs-on: ubuntu-latest

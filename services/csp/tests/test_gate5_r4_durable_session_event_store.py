@@ -13,9 +13,11 @@ from anila_contracts import Classification, StepEvent
 from anila_contracts.events import StepKind, StepStatus
 
 from app.database import Base
+from app.models.session_event import SessionEvent
 from app.services.proxy.session_event_store import SqlAlchemySessionEventStore
 from app.services.proxy.stream_bridge import (
     BridgeContext,
+    EventBudgetExceeded,
     EventBindingError,
     EventConflictError,
     EventOrderError,
@@ -151,6 +153,40 @@ def test_append_replay_survives_engine_dispose_and_fresh_process_equivalent(tmp_
         fresh_engine.dispose()
 
 
+def test_run_event_budget_survives_fresh_session_and_terminal_bypasses_cap(
+    store_sessions,
+):
+    _engine, Session, db = store_sessions
+    context = _context()
+    first_store = SqlAlchemySessionEventStore(db, max_events_per_run=1)
+    first = StreamBridge(context, store=first_store).append_event(_event(sequence=1))
+    assert first is not None
+    db.close()
+
+    restarted_db = Session()
+    try:
+        restarted_store = SqlAlchemySessionEventStore(
+            restarted_db, max_events_per_run=1
+        )
+        restarted = StreamBridge(context, store=restarted_store, max_events_per_run=1)
+        with pytest.raises(EventBudgetExceeded) as exc_info:
+            restarted.append_event(_event(event_id="evt-2", sequence=2))
+        assert exc_info.value.code == "EVENT_RUN_BUDGET_EXCEEDED"
+
+        terminal = restarted.append_terminal(
+            StepStatus.COMPLETED,
+            event_id="budget-terminal",
+            safe_output_summary="完成",
+        )
+        assert terminal.event.cursor == "2"
+        assert [event.event_id for event in restarted.replay_events()] == [
+            "evt-1",
+            "budget-terminal",
+        ]
+    finally:
+        restarted_db.close()
+
+
 def test_duplicate_event_is_idempotent_and_changed_payload_conflicts(store_sessions):
     _engine, _Session, db = store_sessions
     bridge = StreamBridge(_context(), store=SqlAlchemySessionEventStore(db))
@@ -216,6 +252,82 @@ def test_terminal_retry_is_exactly_once_and_blocks_new_events(store_sessions):
         )
     with pytest.raises(TerminalEventError):
         bridge.append_event(_event(event_id="after-terminal", sequence=2))
+
+
+def test_completed_agent_events_are_non_terminal_until_authoritative_append(
+    store_sessions,
+):
+    _engine, _Session, db = store_sessions
+    context = _context()
+    bridge = StreamBridge(context, store=SqlAlchemySessionEventStore(db))
+
+    first = bridge.append_event(_event(status=StepStatus.COMPLETED))
+    second = bridge.append_event(
+        _event(
+            event_id="agent-completed",
+            sequence=2,
+            status=StepStatus.COMPLETED,
+            kind=StepKind.AGENT,
+            step_id=f"agent:{context.agent_id}",
+            parent_step_id=None,
+            tool_name=None,
+        )
+    )
+    assert first is not None and second is not None
+    assert bridge.terminal_event() is None
+
+    terminal = bridge.append_terminal(
+        StepStatus.COMPLETED,
+        event_id="csp-terminal",
+        safe_output_summary="完成",
+    )
+    assert bridge.terminal_event() == terminal.event
+    assert [event.event_id for event in bridge.replay_events()] == [
+        "evt-1",
+        "agent-completed",
+        "csp-terminal",
+    ]
+    rows = (
+        db.query(SessionEvent)
+        .filter(SessionEvent.run_id == context.run_id)
+        .order_by(SessionEvent.cursor.asc())
+        .all()
+    )
+    assert [bool(row.is_terminal) for row in rows] == [False, False, True]
+
+
+def test_terminal_authority_mismatch_conflicts_in_sql_store(store_sessions):
+    _engine, _Session, db = store_sessions
+    context = _context()
+    store = SqlAlchemySessionEventStore(db)
+    bridge = StreamBridge(context, store=store)
+
+    first = bridge.append_event(_event(status=StepStatus.COMPLETED))
+    assert first is not None
+    with pytest.raises(EventConflictError) as exc_info:
+        store.append(first.event, binding=context, authoritative_terminal=True)
+    assert exc_info.value.code == "EVENT_ID_CONFLICT"
+
+    terminal = bridge.append_terminal(
+        StepStatus.COMPLETED,
+        event_id="terminal-authority",
+        safe_output_summary="完成",
+    )
+    with pytest.raises(EventConflictError) as reverse_exc_info:
+        store.append(terminal.event, binding=context, authoritative_terminal=False)
+    assert reverse_exc_info.value.code == "EVENT_ID_CONFLICT"
+
+
+def test_authoritative_terminal_rejects_non_terminal_status_in_sql_store(
+    store_sessions,
+):
+    _engine, _Session, db = store_sessions
+    with pytest.raises(ValueError, match="authoritative terminal status"):
+        SqlAlchemySessionEventStore(db).append(
+            _event(status=StepStatus.RUNNING),
+            binding=_context(),
+            authoritative_terminal=True,
+        )
 
 
 def test_binding_isolation_applies_to_replay_and_append(store_sessions):

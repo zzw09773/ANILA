@@ -1,9 +1,11 @@
 """SQLAlchemy-backed durable implementation of the Gate 5 event-store port.
 
 ``StreamBridge`` owns wire validation and rebinding; this adapter owns the
-durable cursor, append-only event rows and idempotency/terminal latches.  Each
-append runs in one database transaction and commits the event before returning
-so a fresh CSP session (or a restarted process) can replay the same run.
+durable cursor, append-only event rows and idempotency/terminal latches.  The
+terminal latch is driven only by the CSP-internal ``authoritative_terminal``
+bit, never by an Agent status alone.  Each append runs in one database
+transaction and commits the event before returning so a fresh CSP session (or
+a restarted process) can replay the same run.
 """
 
 from __future__ import annotations
@@ -24,8 +26,10 @@ from app.models.session_event import SessionEvent, SessionEventRun
 from app.services.proxy.stream_bridge import (
     BridgeContext,
     EventBindingError,
+    EventBudgetExceeded,
     EventConflictError,
     EventOrderError,
+    MAX_EVENTS_PER_RUN,
     SessionAppendResult,
     SessionEventStore as SessionEventStoreProtocol,
     TerminalEventError,
@@ -48,8 +52,17 @@ class SqlAlchemySessionEventStore(SessionEventStoreProtocol):
 
     durable = True
 
-    def __init__(self, db: Session) -> None:
+    def __init__(
+        self, db: Session, *, max_events_per_run: int = MAX_EVENTS_PER_RUN
+    ) -> None:
         self.db = db
+        if (
+            isinstance(max_events_per_run, bool)
+            or not isinstance(max_events_per_run, int)
+            or max_events_per_run < 0
+        ):
+            raise ValueError("max_events_per_run 必須是非負整數")
+        self.max_events_per_run = max_events_per_run
 
     @staticmethod
     def _binding_key(binding: BridgeContext) -> tuple[str, str, str, str, str]:
@@ -235,10 +248,22 @@ class SqlAlchemySessionEventStore(SessionEventStoreProtocol):
         return cursor
 
     def append(
-        self, event: StepEvent, *, binding: BridgeContext
+        self,
+        event: StepEvent,
+        *,
+        binding: BridgeContext,
+        authoritative_terminal: bool = False,
     ) -> SessionAppendResult:
         if not isinstance(event, StepEvent):
             raise TypeError("event 必須是 StepEvent")
+        if authoritative_terminal and event.status not in {
+            StepStatus.COMPLETED,
+            StepStatus.FAILED,
+            StepStatus.CANCELLED,
+        }:
+            raise ValueError(
+                "authoritative terminal status 必須是 completed/failed/cancelled"
+            )
         self._assert_event_binding(event, binding)
         digest = self._event_digest(event)
         try:
@@ -261,6 +286,12 @@ class SqlAlchemySessionEventStore(SessionEventStoreProtocol):
                         run_id=binding.run_id,
                         event_id=event.event_id,
                     )
+                if bool(existing.is_terminal) != authoritative_terminal:
+                    raise EventConflictError(
+                        "相同 (run_id,event_id) 的 terminal authority 不一致",
+                        run_id=binding.run_id,
+                        event_id=event.event_id,
+                    )
                 replayed = self._event_from_row(existing, binding=binding)
                 self.db.commit()
                 return SessionAppendResult(replayed, duplicate=True)
@@ -268,6 +299,17 @@ class SqlAlchemySessionEventStore(SessionEventStoreProtocol):
             if run.terminal_event_id is not None:
                 raise TerminalEventError(
                     "run 已寫入 terminal event，不接受後續事件",
+                    run_id=binding.run_id,
+                    event_id=event.event_id,
+                )
+
+            # ``next_cursor`` is durable and protected by the run row lock,
+            # so a fresh CSP process cannot reset this ordinary-event budget.
+            # CSP authoritative terminal writes intentionally bypass the cap
+            # so a run can always close after exhausting its stream budget.
+            if not authoritative_terminal and int(run.next_cursor or 0) >= self.max_events_per_run:
+                raise EventBudgetExceeded(
+                    "run 已達 ordinary event budget",
                     run_id=binding.run_id,
                     event_id=event.event_id,
                 )
@@ -286,11 +328,7 @@ class SqlAlchemySessionEventStore(SessionEventStoreProtocol):
             cursor = int(run.next_cursor) + 1
             persisted = event.model_copy(update={"cursor": str(cursor)})
             payload = cast(dict[str, Any], persisted.model_dump(mode="json"))
-            is_terminal = persisted.status in {
-                StepStatus.COMPLETED,
-                StepStatus.FAILED,
-                StepStatus.CANCELLED,
-            }
+            is_terminal = authoritative_terminal
             row = SessionEvent(
                 run_id=binding.run_id,
                 task_id=binding.task_id,

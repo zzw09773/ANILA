@@ -10,6 +10,8 @@ JWKS without importing the CSP application.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import secrets
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
@@ -26,7 +28,9 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.models.agent import Agent
 from app.models.auth_session import AuthRefreshToken, AuthSession
+from app.models.policy_decision import PolicyDecision
 from app.models.service_client import ServiceClient
 from app.models.source_snapshot import SourceSnapshot
 from app.models.task import Task, TaskRun
@@ -117,9 +121,10 @@ def _durable_auth_assurance(
     caller_user_id: int,
     now: datetime,
 ) -> AuthAssurance:
-    if request.session_id != request.auth_assurance.sid:
-        _deny("session_id 與 auth_assurance.sid 不一致")
-
+    # ``session_id`` identifies the conversation/run being granted, while
+    # ``auth_assurance.sid`` identifies the durable authentication session.
+    # They are intentionally independent bindings; resolve the latter only
+    # through the durable AuthSession row below.
     session = (
         db.query(AuthSession)
         .filter(AuthSession.sid == request.auth_assurance.sid)
@@ -504,6 +509,244 @@ def mint_execution_grant(
     )
 
 
+def _sign_execution_grant(
+    grant: ExecutionGrant, *, manifest_sha256_value: str, jti: str
+) -> str:
+    """Sign one already-validated inner grant with a fresh transport jti."""
+
+    return jwt.encode(
+        _envelope_payload(grant, manifest_sha256=manifest_sha256_value, jti=jti),
+        get_private_key(),
+        algorithm=ALGORITHM,
+        headers={"kid": settings.JWT_KID, "typ": EXECUTION_GRANT_TYPE},
+    )
+
+
+def renew_execution_grant_for_resume(
+    db: Session,
+    *,
+    authority: Any,
+    caller: CallerIdentity,
+    caller_user_id: int,
+    now: datetime | None = None,
+) -> ExecutionGrantMintResponse:
+    """Revalidate a durable blocked authority and issue a short-lived grant.
+
+    The original signed JWT is intentionally not required (and is allowed to
+    be expired).  ``authority.grant_json`` contains only the canonical inner
+    grant.  The logical ``grant_id`` remains stable while the new JWT receives
+    a fresh jti and at most a 60-second lifetime.
+    """
+
+    from app.models.resume_authority import ResumeAuthority
+
+    if not isinstance(authority, ResumeAuthority):
+        raise ExecutionGrantMintDenied("resume authority 類型無效")
+    resolved_user_id = _positive_id(caller_user_id, field_name="caller_user_id")
+    _require_router_client(db, caller)
+    instant = _as_utc(now or datetime.now(timezone.utc))
+    try:
+        grant = ExecutionGrant.model_validate(authority.grant_json)
+    except (ValidationError, TypeError, ValueError) as exc:
+        raise ExecutionGrantMintDenied("resume authority grant 不可重新驗證") from exc
+
+    if (
+        grant.grant_id != authority.grant_id
+        or grant.run_id != authority.run_id
+        or grant.task_id != authority.task_id
+        or grant.source_snapshot_id != authority.source_snapshot_id
+        or grant.trace_id != authority.trace_id
+        or grant.invocation_id != authority.invocation_id
+        or grant.session_id != authority.session_id
+        or grant.target.id != authority.agent_id
+        or grant.registry_snapshot_id != authority.registry_snapshot_id
+        or grant.manifest_revision != authority.manifest_revision
+        or grant.route_decision_id != authority.route_decision_id
+        or grant.policy_decision_id != authority.policy_decision_id
+        or grant.classification.to_storage() != authority.classification
+        or grant.auth_assurance.sid != authority.auth_session_sid
+    ):
+        raise ExecutionGrantMintDenied("resume authority binding 不一致")
+    if not isinstance(authority.grant_sha256, str) or not authority.grant_sha256:
+        raise ExecutionGrantMintDenied("resume authority grant digest 缺失")
+    canonical_grant_json = json.dumps(
+        grant.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if hashlib.sha256(canonical_grant_json).hexdigest() != authority.grant_sha256:
+        raise ExecutionGrantMintDenied("resume authority grant digest 不一致")
+
+    user = (
+        db.query(User)
+        .filter(
+            User.id == resolved_user_id,
+            User.is_active.is_(True),
+            User.is_approved.is_(True),
+        )
+        .one_or_none()
+    )
+    if user is None or authority.owner_id != resolved_user_id or authority.caller_user_id != resolved_user_id:
+        raise ExecutionGrantMintDenied("resume caller/owner 不一致")
+
+    task = (
+        db.query(Task)
+        .filter(Task.id == authority.task_id)
+        .populate_existing()
+        .with_for_update()
+        .one_or_none()
+    )
+    run = (
+        db.query(TaskRun)
+        .filter(TaskRun.id == authority.run_id, TaskRun.task_id == authority.task_id)
+        .populate_existing()
+        .with_for_update()
+        .one_or_none()
+    )
+    snapshot = (
+        db.query(SourceSnapshot)
+        .filter(
+            SourceSnapshot.id == authority.source_snapshot_id,
+            SourceSnapshot.task_id == authority.task_id,
+        )
+        .populate_existing()
+        .with_for_update()
+        .one_or_none()
+    )
+    if task is None or run is None or snapshot is None:
+        raise ExecutionGrantMintDenied("resume Task/TaskRun/SourceSnapshot 缺失")
+    if (
+        task.requester_user_id != resolved_user_id
+        or task.trace_id != authority.trace_id
+        or task.source_snapshot_id != authority.source_snapshot_id
+        or task.status not in {"running", "waiting_for_user"}
+        or run.status != "running"
+        or run.dispatch_target != "agent"
+    ):
+        raise ExecutionGrantMintDenied("resume Task/TaskRun 狀態已變更")
+    try:
+        task_level = _stored_classification(task.classification_level, field_name="Task.classification_level")
+        run_level = _stored_classification(run.classification_level, field_name="TaskRun.classification_level")
+        source_level = _stored_classification(snapshot.classification_level, field_name="SourceSnapshot.classification_level")
+    except ExecutionGrantMintDenied:
+        raise
+    if grant.classification is not task_level or grant.classification is not run_level or source_level > task_level:
+        raise ExecutionGrantMintDenied("resume classification binding 已變更")
+    policy = db.get(PolicyDecision, task.policy_decision_id) if task.policy_decision_id else None
+    if policy is None or policy.task_id != task.id or policy.decision != "allow":
+        raise ExecutionGrantMintDenied("resume current policy 不允許")
+
+    durable_assurance = _durable_auth_assurance_from_grant(
+        db, grant=grant, caller_user_id=resolved_user_id, now=instant
+    )
+    try:
+        snapshot_now = build_registry_snapshot(db, user_id=resolved_user_id, now=instant)
+    except (TypeError, ValueError) as exc:
+        raise ExecutionGrantMintDenied("resume registry snapshot 無效") from exc
+    if snapshot_now.expires_at <= instant or (
+        snapshot_now.snapshot_id != authority.registry_snapshot_id
+        or snapshot_now.snapshot_revision != authority.registry_snapshot_revision
+        or snapshot_now.snapshot_hash != authority.registry_snapshot_hash
+    ):
+        raise ExecutionGrantMintDenied("resume registry snapshot 已變更")
+    entries = [entry for entry in snapshot_now.agents if entry.agent_id == authority.agent_id]
+    if len(entries) != 1:
+        raise ExecutionGrantMintDenied("resume Agent 不在 current registry")
+    entry = entries[0]
+    if (
+        entry.registry_id != authority.agent_db_id
+        or not entry.ready_for_dispatch
+        or not entry.approved
+        or entry.approval_status != "approved"
+        or not entry.manifest_valid
+        or not entry.endpoint_via_csp
+        or entry.model_gateway != "csp"
+        or entry.manifest is None
+        or entry.manifest_revision != authority.manifest_revision
+        or entry.manifest_sha256 != authority.manifest_sha256
+        or entry.manifest.model_binding != grant.target.model_binding
+    ):
+        raise ExecutionGrantMintDenied("resume Agent readiness/manifest/model binding 已變更")
+    if manifest_sha256(entry.manifest) != authority.manifest_sha256:
+        raise ExecutionGrantMintDenied("resume Agent manifest hash drift")
+    agent = (
+        db.query(Agent)
+        .filter(Agent.id == authority.agent_db_id, Agent.name == authority.agent_id)
+        .populate_existing()
+        .with_for_update()
+        .one_or_none()
+    )
+    if agent is None or not bool(agent.is_active) or agent.approval_status != "approved":
+        raise ExecutionGrantMintDenied("resume Agent 未 active/approved")
+
+    issued_at = datetime.fromtimestamp(int(instant.timestamp()), tz=timezone.utc)
+    renewed = grant.model_copy(
+        update={
+            "auth_assurance": durable_assurance,
+            "issued_at": issued_at,
+            "expires_at": issued_at + timedelta(seconds=MAX_EXECUTION_GRANT_TTL_SECONDS),
+        }
+    )
+    token = _sign_execution_grant(
+        renewed,
+        manifest_sha256_value=authority.manifest_sha256,
+        jti=secrets.token_urlsafe(32),
+    )
+    return ExecutionGrantMintResponse(
+        schema_version=EXECUTION_GRANT_ENVELOPE_SCHEMA_VERSION,
+        token=token,
+        grant=renewed,
+    )
+
+
+def _durable_auth_assurance_from_grant(
+    db: Session,
+    *,
+    grant: ExecutionGrant,
+    caller_user_id: int,
+    now: datetime,
+) -> AuthAssurance:
+    """Re-read AuthSession assurance for renewal without a mint request."""
+
+    session = (
+        db.query(AuthSession)
+        .filter(AuthSession.sid == grant.auth_assurance.sid)
+        .populate_existing()
+        .with_for_update()
+        .one_or_none()
+    )
+    if session is None or session.user_id != caller_user_id or session.revoked_at is not None:
+        raise ExecutionGrantMintDenied("resume AuthSession 已撤銷或 owner 不符")
+    refresh_rows = (
+        db.query(AuthRefreshToken)
+        .filter(
+            AuthRefreshToken.sid == session.sid,
+            AuthRefreshToken.consumed_at.is_(None),
+            AuthRefreshToken.revoked_at.is_(None),
+        )
+        .all()
+    )
+    if not any(isinstance(row.expires_at, datetime) and _as_utc(row.expires_at) > now for row in refresh_rows):
+        raise ExecutionGrantMintDenied("resume AuthSession refresh family 已過期")
+    try:
+        methods, acr, auth_time_epoch, break_glass, _ticket, break_glass_expires = _assurance_from_session(session)
+    except (TypeError, ValueError) as exc:
+        raise ExecutionGrantMintDenied("resume AuthSession assurance 無效") from exc
+    if break_glass_expires is not None and _as_utc(break_glass_expires) <= now:
+        raise ExecutionGrantMintDenied("resume AuthSession assurance 已過期")
+    durable = AuthAssurance(
+        sid=session.sid,
+        amr=methods,
+        acr=acr,
+        auth_time=datetime.fromtimestamp(auth_time_epoch, tz=timezone.utc),
+        break_glass=break_glass,
+    )
+    if durable != grant.auth_assurance or durable.auth_time > now:
+        raise ExecutionGrantMintDenied("resume AuthSession assurance binding 不一致")
+    return durable
+
+
 def _claim_string(payload: Mapping[str, Any], name: str) -> str:
     value = payload.get(name)
     if not isinstance(value, str) or not value:
@@ -680,5 +923,6 @@ __all__ = [
     "ExecutionGrantVerificationError",
     "MAX_EXECUTION_GRANT_TTL_SECONDS",
     "mint_execution_grant",
+    "renew_execution_grant_for_resume",
     "verify_execution_grant_token",
 ]

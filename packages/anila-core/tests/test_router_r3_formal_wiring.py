@@ -7,10 +7,13 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
 import pytest
 import httpx
+import respx
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from jose import jwk, jwt
 from fastapi.testclient import TestClient
 
 from anila_contracts import AgentManifest, ExecutionGrant
@@ -25,12 +28,54 @@ from anila_core.router import (
     RegistrySnapshot,
     RequestContextBuilder,
 )
+from anila_core.security.router_context import (
+    ROUTER_CONTEXT_HEADER,
+    RouterContextTokenVerifier,
+    canonical_router_body_sha256,
+)
 
 
 FIXTURE = Path(__file__).parents[2] / "anila-contracts" / "tests" / "fixtures" / "agent-manifest-v1.json"
 SNAPSHOT_ID = "a" * 64
 MANIFEST_REVISION = "sha256:" + "b" * 64
 MANIFEST_HASH = "c" * 64
+_ROUTER_TEST_KID = "router-formal-test-kid"
+_ROUTER_TEST_ISSUER = "https://csp.test/issuer"
+_ROUTER_TEST_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+_ROUTER_TEST_PRIVATE = _ROUTER_TEST_KEY.private_bytes(
+    serialization.Encoding.PEM,
+    serialization.PrivateFormat.PKCS8,
+    serialization.NoEncryption(),
+)
+_ROUTER_TEST_PUBLIC = jwk.construct(
+    _ROUTER_TEST_KEY.public_key(), algorithm="RS256"
+).to_dict()
+_ROUTER_TEST_JWK = {
+    **_ROUTER_TEST_PUBLIC,
+    "kid": _ROUTER_TEST_KID,
+    "alg": "RS256",
+    "use": "sig",
+}
+
+
+def _router_test_jwks(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={"keys": [_ROUTER_TEST_JWK]},
+        request=request,
+    )
+
+
+_ROUTER_TEST_VERIFIER = RouterContextTokenVerifier(
+    "https://csp.test/.well-known/jwks.json",
+    issuer=_ROUTER_TEST_ISSUER,
+    transport=httpx.MockTransport(_router_test_jwks),
+)
+
+
+def _create_formal_app(**kwargs: Any):
+    kwargs.setdefault("router_context_verifier", _ROUTER_TEST_VERIFIER)
+    return router_server.create_router_app(**kwargs)
 
 
 def _snapshot(*, ready: bool = True, expired: bool = False) -> RegistrySnapshot:
@@ -84,8 +129,7 @@ def _route(**overrides: Any) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _headers(now: datetime | None = None) -> dict[str, str]:
-    instant = now or datetime.now(timezone.utc)
+def _router_context_token(*, body: dict[str, Any], instant: datetime) -> str:
     assurance = {
         "sid": "sid-1",
         "amr": ["pwd"],
@@ -93,19 +137,51 @@ def _headers(now: datetime | None = None) -> dict[str, str]:
         "auth_time": instant.isoformat(),
         "break_glass": False,
     }
+    issued_at = int(instant.timestamp())
+    payload = {
+        "iss": _ROUTER_TEST_ISSUER,
+        "aud": "anila-router",
+        "iat": issued_at,
+        "exp": issued_at + 60,
+        "jti": "formal-router-test-jti",
+        "type": "router-context/v1",
+        "sub": "123",
+        "caller_user_id": "123",
+        "owner_id": "123",
+        "task_id": "1",
+        "run_id": "1",
+        "source_snapshot_id": "1",
+        "trace_id": "trace-1",
+        "invocation_id": "invocation-1",
+        "session_id": str(body["session_id"]),
+        "task_type": "knowledge_search",
+        "classification": "無機密",
+        "scopes": ["agent:invoke"],
+        "required_capabilities": ["retrieval"],
+        "auth_assurance": assurance,
+        "body_sha256": canonical_router_body_sha256(body),
+    }
+    return jwt.encode(
+        payload,
+        _ROUTER_TEST_PRIVATE,
+        algorithm="RS256",
+        headers={"kid": _ROUTER_TEST_KID, "typ": "anila-router-context"},
+    )
+
+
+def _headers(
+    now: datetime | None = None,
+    *,
+    session_id: str = "session-1",
+) -> dict[str, str]:
+    instant = now or datetime.now(timezone.utc)
+    body = {
+        "session_id": session_id,
+        "messages": [{"role": "user", "content": "query"}],
+    }
     return {
         "Authorization": "Bearer sk-test",
-        "X-ANILA-Caller-User-Id": "123",
-        "X-ANILA-Owner-Id": "123",
-        "X-ANILA-Task-Id": "1",
-        "X-ANILA-Run-Id": "1",
-        "X-ANILA-Source-Snapshot-Id": "1",
-        "X-ANILA-Trace-Id": "trace-1",
-        "X-ANILA-Invocation-Id": "invocation-1",
-        "X-ANILA-Task-Type": "knowledge_search",
-        "X-ANILA-Classification-Level": quote("機密"),
-        "X-ANILA-Scopes": "agent:invoke",
-        "X-ANILA-Auth-Assurance": quote(json.dumps(assurance, ensure_ascii=False)),
+        ROUTER_CONTEXT_HEADER: _router_context_token(body=body, instant=instant),
     }
 
 
@@ -146,6 +222,7 @@ class _Registry:
 class _AgentSpy:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.resume_calls: list[dict[str, Any]] = []
 
     async def complete(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(kwargs)
@@ -159,6 +236,10 @@ class _AgentSpy:
     async def resume(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(kwargs)
         return {"content": "resumed answer", "anila_meta": {"status": "completed"}}
+
+    async def resume_by_session(self, **kwargs: Any) -> dict[str, Any]:
+        self.resume_calls.append(kwargs)
+        return {"content": "resumed answer", "status": "completed", "anila_meta": {"status": "completed"}}
 
 
 @pytest.mark.parametrize(
@@ -179,7 +260,7 @@ def test_formal_invalid_route_outputs_make_zero_agent_calls(
 
     monkeypatch.setattr(router_server, "_call_llm_non_stream", _call)
     spy = _AgentSpy()
-    app = router_server.create_router_app(
+    app = _create_formal_app(
         session_factory=lambda _sid: None,
         registry_client=_Registry(_snapshot()),
         agent_client=spy,
@@ -187,7 +268,10 @@ def test_formal_invalid_route_outputs_make_zero_agent_calls(
     response = TestClient(app).post(
         "/v1/chat/completions",
         headers=_headers(),
-        json={"messages": [{"role": "user", "content": "query"}]},
+        json={
+            "session_id": "session-1",
+            "messages": [{"role": "user", "content": "query"}],
+        },
     )
     assert response.status_code == 200
     assert spy.calls == []
@@ -202,7 +286,7 @@ def test_formal_unhealthy_or_stale_snapshot_makes_zero_agent_calls(
 
     monkeypatch.setattr(router_server, "_call_llm_non_stream", _call)
     spy = _AgentSpy()
-    app = router_server.create_router_app(
+    app = _create_formal_app(
         session_factory=lambda _sid: None,
         registry_client=_Registry(snapshot),
         agent_client=spy,
@@ -210,7 +294,10 @@ def test_formal_unhealthy_or_stale_snapshot_makes_zero_agent_calls(
     response = TestClient(app).post(
         "/v1/chat/completions",
         headers=_headers(),
-        json={"messages": [{"role": "user", "content": "query"}]},
+        json={
+            "session_id": "session-1",
+            "messages": [{"role": "user", "content": "query"}],
+        },
     )
     assert response.status_code == 200
     assert spy.calls == []
@@ -233,7 +320,7 @@ def test_formal_allowed_route_without_csp_grant_is_blocked_before_agent_call(
     route_llm: None,
 ) -> None:
     spy = _AgentSpy()
-    app = router_server.create_router_app(
+    app = _create_formal_app(
         session_factory=lambda _sid: None,
         registry_client=_Registry(_snapshot()),
         agent_client=spy,
@@ -241,7 +328,10 @@ def test_formal_allowed_route_without_csp_grant_is_blocked_before_agent_call(
     response = TestClient(app).post(
         "/v1/chat/completions",
         headers=_headers(),
-        json={"messages": [{"role": "user", "content": "query"}]},
+        json={
+            "session_id": "session-1",
+            "messages": [{"role": "user", "content": "query"}],
+        },
     )
     assert response.status_code == 200
     assert "CSP" in response.json()["choices"][0]["message"]["content"]
@@ -267,14 +357,17 @@ def test_formal_direct_answer_policy_deny_has_zero_second_inference(monkeypatch)
         }
 
     monkeypatch.setattr(router_server, "_call_llm_non_stream", _call)
-    app = router_server.create_router_app(
+    app = _create_formal_app(
         session_factory=lambda _sid: None,
         registry_client=_Registry(_snapshot()),
     )
     response = TestClient(app).post(
         "/v1/chat/completions",
         headers=_headers(),
-        json={"messages": [{"role": "user", "content": "query"}]},
+        json={
+            "session_id": "session-1",
+            "messages": [{"role": "user", "content": "query"}],
+        },
     )
     assert response.status_code == 200
     assert calls == 1
@@ -326,7 +419,7 @@ def test_formal_allowed_route_uses_selected_entry_and_carries_grant(
     route_llm: None,
 ) -> None:
     spy = _AgentSpy()
-    app = router_server.create_router_app(
+    app = _create_formal_app(
         session_factory=lambda _sid: None,
         registry_client=_Registry(_snapshot()),
         agent_client=spy,
@@ -335,7 +428,10 @@ def test_formal_allowed_route_uses_selected_entry_and_carries_grant(
     response = TestClient(app).post(
         "/v1/chat/completions",
         headers=_headers(),
-        json={"messages": [{"role": "user", "content": "query"}]},
+        json={
+            "session_id": "session-1",
+            "messages": [{"role": "user", "content": "query"}],
+        },
     )
     assert response.status_code == 200
     assert response.json()["choices"][0]["message"]["content"] == "agent answer"
@@ -346,13 +442,17 @@ def test_formal_allowed_route_uses_selected_entry_and_carries_grant(
     assert call["execution_grant"].grant.grant_id == "grant-1"
 
 
-def test_formal_resume_requires_cached_caller_owner_binding(
+@respx.mock
+def test_formal_resume_uses_server_resolved_caller_and_ignores_raw_spoof(
     route_llm: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ALLOW_LEGACY_AGENT_DISPATCH", "0")
+    respx.get(f"{router_server.settings.csp_base_url}/api/auth/me").mock(
+        return_value=httpx.Response(200, json={"id": 123})
+    )
     spy = _AgentSpy()
-    app = router_server.create_router_app(
+    app = _create_formal_app(
         session_factory=lambda _sid: None,
         registry_client=_Registry(_snapshot()),
         agent_client=spy,
@@ -361,7 +461,7 @@ def test_formal_resume_requires_cached_caller_owner_binding(
     client = TestClient(app)
     first = client.post(
         "/v1/chat/completions",
-        headers=_headers(),
+        headers=_headers(session_id="formal-resume-authz"),
         json={
             "session_id": "formal-resume-authz",
             "messages": [{"role": "user", "content": "query"}],
@@ -369,7 +469,7 @@ def test_formal_resume_requires_cached_caller_owner_binding(
     )
     assert first.status_code == 200
     resume_headers = {
-        **_headers(),
+        **_headers(session_id="formal-resume-authz"),
         "X-ANILA-Idempotency-Key": "resume-authz-1",
         "X-ANILA-Caller-User-Id": "999",
     }
@@ -378,13 +478,16 @@ def test_formal_resume_requires_cached_caller_owner_binding(
         headers=resume_headers,
         json={"approval_mode": "approve_all"},
     )
-    assert denied.status_code == 403
+    assert denied.status_code == 200
     assert len(spy.calls) == 1
+    assert len(spy.resume_calls) == 1
+    assert spy.resume_calls[0]["caller_user_id"] == 123
+    assert spy.resume_calls[0]["session_id"] == "formal-resume-authz"
 
 
 def test_formal_unsigned_grant_is_rejected_before_agent_call(route_llm: None) -> None:
     spy = _AgentSpy()
-    app = router_server.create_router_app(
+    app = _create_formal_app(
         session_factory=lambda _sid: None,
         registry_client=_Registry(_snapshot()),
         agent_client=spy,
@@ -393,10 +496,35 @@ def test_formal_unsigned_grant_is_rejected_before_agent_call(route_llm: None) ->
     response = TestClient(app).post(
         "/v1/chat/completions",
         headers=_headers(),
-        json={"messages": [{"role": "user", "content": "query"}]},
+        json={
+            "session_id": "session-1",
+            "messages": [{"role": "user", "content": "query"}],
+        },
     )
     assert response.status_code == 200
     assert "CSP" in response.json()["choices"][0]["message"]["content"]
+    assert spy.calls == []
+
+
+def test_raw_formal_authority_spoof_without_signed_context_is_rejected() -> None:
+    spy = _AgentSpy()
+    app = _create_formal_app(
+        session_factory=lambda _sid: None,
+        registry_client=_Registry(_snapshot()),
+        agent_client=spy,
+    )
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        headers={
+            "Authorization": "Bearer sk-test",
+            "X-ANILA-Caller-User-Id": "123",
+        },
+        json={
+            "session_id": "session-1",
+            "messages": [{"role": "user", "content": "query"}],
+        },
+    )
+    assert response.status_code == 401
     assert spy.calls == []
 
 
@@ -423,7 +551,7 @@ def test_csp_agent_transport_uses_named_service_token_not_inbound_bearer(
         service_token="csk-router-primary",
         transport=httpx.MockTransport(_dispatch),
     )
-    app = router_server.create_router_app(
+    app = _create_formal_app(
         session_factory=lambda _sid: None,
         registry_client=_Registry(_snapshot()),
         agent_client=client,
@@ -432,7 +560,10 @@ def test_csp_agent_transport_uses_named_service_token_not_inbound_bearer(
     response = TestClient(app).post(
         "/v1/chat/completions",
         headers=_headers(),
-        json={"messages": [{"role": "user", "content": "query"}]},
+        json={
+            "session_id": "session-1",
+            "messages": [{"role": "user", "content": "query"}],
+        },
     )
     assert response.status_code == 200
     assert captured["x-csp-service-token"] == "csk-router-primary"

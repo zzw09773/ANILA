@@ -11,6 +11,7 @@ trust contract.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -24,6 +25,7 @@ from urllib.parse import quote, unquote
 import httpx
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from anila_contracts import Classification, ExecutionGrant, StepEvent
 from anila_contracts.events import STEP_EVENT_SSE_NAME, StepKind, StepStatus
@@ -32,6 +34,7 @@ from app.config import settings
 from app.models.agent import Agent
 from app.models.auth_session import AuthRefreshToken, AuthSession
 from app.models.policy_decision import PolicyDecision
+from app.models.resume_authority import ResumeAttempt, ResumeAuthority
 from app.models.service_client import ServiceClient
 from app.models.source_snapshot import SourceSnapshot
 from app.models.task import Task, TaskRun
@@ -42,6 +45,8 @@ from app.services.agent_registry import build_registry_snapshot
 from app.services.auth_service import _assurance_from_session
 from app.services.execution_grant_service import (
     ExecutionGrantVerificationError,
+    ExecutionGrantMintDenied,
+    renew_execution_grant_for_resume,
     verify_execution_grant_token,
 )
 from app.services.proxy.guard import _guard_outbound
@@ -49,6 +54,7 @@ from app.services.proxy.session_event_store import SqlAlchemySessionEventStore
 from app.services.proxy.sse import _aggregate_sse_to_chat_completion, _parse_sse_block
 from app.services.proxy.stream_bridge import (
     BridgeContext,
+    EventBudgetExceeded,
     EventConflictError,
     EventOrderError,
     MAX_EVENT_BYTES,
@@ -63,6 +69,11 @@ logger = logging.getLogger(__name__)
 _POSITIVE = re.compile(r"\A[1-9][0-9]*\Z")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
+_EVENT_BUDGET_ERROR_DETAIL = {
+    "code": EventBudgetExceeded.code,
+    "message": "執行事件數已達上限",
+}
+
 
 @dataclass(slots=True)
 class _InvocationLockEntry:
@@ -72,12 +83,24 @@ class _InvocationLockEntry:
 
 _INVOCATION_LOCKS: dict[str, _InvocationLockEntry] = {}
 _INVOCATION_LOCKS_GUARD = asyncio.Lock()
-# The durable Agent FileTaskStore remains the final idempotency authority. CSP
-# also remembers the accepted resume key for the lifetime of this process so a
-# terminal replay with a different key cannot be mistaken for the same retry.
-# A future CSP SessionEventRun schema should persist this latch across CSP
-# restarts; until then cache misses fail closed only when authority is absent.
-_RESUME_IDEMPOTENCY_KEYS: dict[str, str] = {}
+# Resume idempotency is persisted in ``resume_attempts``.  There is
+# intentionally no process-local key cache: a fresh CSP process must observe
+# the same claim/terminal latch through PostgreSQL row locks and constraints.
+
+
+def _event_budget_http_error(
+    *, db: Session, bridge: StreamBridge
+) -> HTTPException:
+    """Close a capped run, then expose a fixed non-sensitive 409 contract."""
+
+    try:
+        bridge.append_terminal(
+            StepStatus.FAILED,
+            safe_output_summary="執行事件數已達上限",
+        )
+    except Exception:
+        db.rollback()
+    return HTTPException(status_code=409, detail=dict(_EVENT_BUDGET_ERROR_DETAIL))
 
 
 def _positive(value: object, *, field: str) -> int:
@@ -93,7 +116,20 @@ def _text(value: object, *, field: str) -> str:
 
 
 def _header(request_headers: Mapping[str, str], name: str) -> str:
-    value = request_headers.get(name.lower()) or request_headers.get(name)
+    # ``request.headers`` is a case-insensitive Starlette mapping, but the
+    # durable resume path synthesizes a regular Title-Case dict from the
+    # authority row.  Normalize keys here so both paths enforce the same
+    # required-header contract.  Do not use ``or``: an explicitly empty value
+    # must fail validation rather than falling through to another key.
+    expected = name.casefold()
+    matches = [
+        value
+        for key, value in request_headers.items()
+        if isinstance(key, str) and key.casefold() == expected
+    ]
+    if len(matches) > 1:
+        raise HTTPException(status_code=400, detail=f"{name} 重複")
+    value = matches[0] if matches else None
     return _text(value, field=name)
 
 
@@ -131,6 +167,7 @@ class DispatchAuthority:
     # intentionally optional for older injected/unit callers; the real CSP
     # sink always supplies it before an outbound claim.
     run_status: str | None = None
+    blocked_cursor: int | None = None
 
 
 def _require_named_router_client(db: Session, caller: CallerIdentity | None) -> ServiceClient:
@@ -237,6 +274,12 @@ def _binding_from_request(
         "policy_decision_id": "X-ANILA-Policy-Decision-Id",
     }
     values = {name: _header(headers, header) for name, header in text_fields.items()}
+    header_values: dict[str, object] = {
+        "task_id": task_id,
+        "run_id": run_id,
+        "source_snapshot_id": source_id,
+        **values,
+    }
     classification_raw = unquote(_header(headers, "x-anila-classification-level"))
     try:
         classification = Classification.from_storage(classification_raw)
@@ -300,7 +343,7 @@ def _binding_from_request(
         "policy_decision_id": grant.policy_decision_id,
     }
     for name, expected in expected_grant.items():
-        if payload_values.get(name) != expected or values.get(name) != expected:
+        if payload_values.get(name) != expected or header_values.get(name) != expected:
             raise HTTPException(status_code=403, detail=f"ExecutionGrant binding {name} 不一致")
     if grant.classification is not classification:
         raise HTTPException(status_code=403, detail="ExecutionGrant classification binding 不一致")
@@ -376,7 +419,7 @@ def authorize_dispatch(
     )
     if task is None or run is None or snapshot is None:
         raise HTTPException(status_code=409, detail="Task/TaskRun/SourceSnapshot 不存在")
-    if task.requester_user_id != user.id or task.status not in {"running", "completed"}:
+    if task.requester_user_id != user.id or task.status not in {"running", "waiting_for_user", "completed"}:
         raise HTTPException(status_code=403, detail="Task owner/status 不允許 dispatch")
     if task.trace_id != binding.trace_id or task.source_snapshot_id != binding.source_snapshot_id:
         raise HTTPException(status_code=403, detail="Task trace/source binding 不一致")
@@ -468,11 +511,29 @@ def build_agent_outbound_headers(
     if not token:
         raise HTTPException(status_code=403, detail="Agent 缺少 active per-agent credential")
     b = authority.binding
+    # The Agent wrapper returns this header unchanged to CSP trace ingest.  Do
+    # not trust any Router/caller-provided identity (or a stale authority
+    # object): re-read the durable task owner and fail closed on drift.
+    owner = (
+        db.query(User)
+        .filter(
+            User.id == b.owner_id,
+            User.is_active.is_(True),
+            User.is_approved.is_(True),
+        )
+        .populate_existing()
+        .one_or_none()
+    )
+    if owner is None or owner.id != b.owner_id:
+        raise HTTPException(status_code=403, detail="Agent dispatch owner 未核准或已變更")
+    if not isinstance(owner.username, str) or not owner.username.strip() or _CONTROL.search(owner.username):
+        raise HTTPException(status_code=403, detail="Agent dispatch owner identity 無效")
     return {
         "Content-Type": "application/json",
         "X-CSP-Service-Token": token,
         "X-ANILA-Agent-Id": authority.agent.name,
         "X-ANILA-Caller-User-Id": str(b.caller_user_id),
+        "X-ANILA-User-Id": owner.username,
         "X-ANILA-Owner-Id": str(b.owner_id),
         "X-ANILA-Task-Id": str(b.task_id),
         "X-ANILA-Run-Id": str(b.run_id),
@@ -517,6 +578,508 @@ def _bridge(authority: DispatchAuthority, db: Session) -> StreamBridge:
         ),
         store=SqlAlchemySessionEventStore(db),
     )
+
+
+def _db_session_capable(db: object) -> bool:
+    return callable(getattr(db, "query", None)) and callable(getattr(db, "commit", None))
+
+
+def _event_cursor(event: StepEvent) -> int:
+    try:
+        cursor = int(event.cursor)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail="durable event cursor 無效") from exc
+    if cursor <= 0:
+        raise HTTPException(status_code=409, detail="durable event cursor 無效")
+    return cursor
+
+
+def _resume_authority_payload(
+    authority: DispatchAuthority,
+    *,
+    blocked_cursor: int,
+) -> dict[str, Any]:
+    """Serialize verified authority without signed tokens or credentials."""
+
+    grant = authority.grant
+    if not isinstance(grant, ExecutionGrant) or grant.target.model_binding is None:
+        raise HTTPException(status_code=409, detail="resume authority grant/model binding 無效")
+    grant_json = grant.model_dump(mode="json")
+    encoded = json.dumps(
+        grant_json, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return {
+        "run_id": authority.binding.run_id,
+        "task_id": authority.binding.task_id,
+        "caller_user_id": authority.binding.caller_user_id,
+        "owner_id": authority.binding.owner_id,
+        "source_snapshot_id": authority.binding.source_snapshot_id,
+        "trace_id": authority.binding.trace_id,
+        "invocation_id": authority.binding.invocation_id,
+        "session_id": authority.binding.session_id,
+        "agent_db_id": authority.agent.id,
+        "agent_id": authority.binding.agent_id,
+        "classification": authority.binding.classification.to_storage(),
+        "registry_snapshot_id": authority.binding.registry_snapshot_id,
+        "registry_snapshot_revision": authority.binding.registry_snapshot_revision,
+        "registry_snapshot_hash": authority.binding.registry_snapshot_hash,
+        "manifest_revision": authority.binding.manifest_revision,
+        "manifest_sha256": authority.binding.manifest_sha256,
+        "grant_id": authority.binding.grant_id,
+        "route_decision_id": authority.binding.route_decision_id,
+        "policy_decision_id": authority.binding.policy_decision_id,
+        "auth_session_sid": grant.auth_assurance.sid,
+        "model_binding": grant.target.model_binding.model_dump(mode="json"),
+        "capabilities": list(grant.allowed_capabilities),
+        "scopes": list(grant.allowed_scopes),
+        "grant_json": grant_json,
+        "grant_sha256": hashlib.sha256(encoded).hexdigest(),
+        "blocked_cursor": blocked_cursor,
+    }
+
+
+def persist_blocked_authority(
+    db: Session, *, authority: DispatchAuthority, bridge: StreamBridge
+) -> ResumeAuthority | None:
+    """Persist only after a canonical, non-terminal BLOCKED ledger event."""
+
+    if not _db_session_capable(db):
+        return None
+    events = bridge.replay_events()
+    if (
+        not events
+        or events[-1].status is not StepStatus.BLOCKED
+        or bridge.terminal_event() is not None
+    ):
+        return None
+    blocked_cursor = _event_cursor(events[-1])
+    values = _resume_authority_payload(authority, blocked_cursor=blocked_cursor)
+    row = (
+        db.query(ResumeAuthority)
+        .filter(ResumeAuthority.run_id == values["run_id"])
+        .populate_existing()
+        .with_for_update()
+        .one_or_none()
+    )
+    if row is None:
+        row = ResumeAuthority(**values)
+        db.add(row)
+    else:
+        for name in (
+            "task_id", "caller_user_id", "owner_id", "source_snapshot_id",
+            "trace_id", "invocation_id", "session_id", "agent_db_id", "agent_id",
+            "classification", "registry_snapshot_id", "registry_snapshot_revision",
+            "registry_snapshot_hash", "manifest_revision", "manifest_sha256",
+            "grant_id", "route_decision_id", "policy_decision_id", "auth_session_sid",
+        ):
+            if getattr(row, name) != values[name]:
+                db.rollback()
+                raise HTTPException(status_code=409, detail="resume authority binding conflict")
+        if int(row.blocked_cursor or 0) > blocked_cursor:
+            return row
+        for name in (
+            "model_binding", "capabilities", "scopes", "grant_json", "grant_sha256",
+            "blocked_cursor",
+        ):
+            setattr(row, name, values[name])
+        row.lifecycle = "blocked"
+        row.terminal_at = None
+        row.terminal_cursor = None
+        row.resumed_at = None
+        row.updated_at = datetime.now(timezone.utc)
+    try:
+        db.flush()
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="resume authority session binding conflict") from exc
+    return row
+
+
+def _resume_attempt_cursor(
+    db: Session, *, authority: DispatchAuthority, bridge: StreamBridge
+) -> int:
+    if authority.blocked_cursor is not None and authority.blocked_cursor > 0:
+        return int(authority.blocked_cursor)
+    if _db_session_capable(db):
+        row = (
+            db.query(ResumeAuthority)
+            .filter(ResumeAuthority.run_id == authority.binding.run_id)
+            .populate_existing()
+            .one_or_none()
+        )
+        if row is not None and int(row.blocked_cursor or 0) > 0:
+            return int(row.blocked_cursor)
+    events = bridge.replay_events()
+    blocked = [event for event in events if event.status is StepStatus.BLOCKED]
+    if not blocked:
+        raise HTTPException(status_code=409, detail="Task 尚未處於可恢復的 blocked 狀態")
+    return _event_cursor(blocked[-1])
+
+
+def _resume_request_hash(*, run_id: int, blocked_cursor: int) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            {"run_id": run_id, "blocked_cursor": blocked_cursor, "approval_mode": "approve_all"},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _bridge_latest_cursor(bridge: StreamBridge) -> int:
+    """Read the store cursor through its binding-aware protocol."""
+
+    store = getattr(bridge, "store", None)
+    latest_cursor = getattr(store, "latest_cursor", None)
+    context = getattr(bridge, "context", None)
+    if callable(latest_cursor) and context is not None:
+        return int(latest_cursor(binding=context))
+    events = bridge.replay_events()
+    if not events:
+        return 0
+    return int(events[-1].cursor)
+
+
+def _claim_resume_attempt(
+    db: Session,
+    *,
+    authority: DispatchAuthority,
+    bridge: StreamBridge,
+    idempotency_key: str,
+) -> ResumeAttempt | None:
+    """Claim one run/cursor via durable unique key and row lock."""
+
+    if not _db_session_capable(db):
+        # Legacy focused tests inject an in-memory event store and a small
+        # fake DB. Formal HTTP endpoints always use a real SQLAlchemy Session.
+        return None
+    cursor = _resume_attempt_cursor(db, authority=authority, bridge=bridge)
+    key_hash = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
+    request_hash = _resume_request_hash(
+        run_id=authority.binding.run_id, blocked_cursor=cursor
+    )
+    existing = (
+        db.query(ResumeAttempt)
+        .filter(
+            ResumeAttempt.run_id == authority.binding.run_id,
+            ResumeAttempt.blocked_cursor == cursor,
+        )
+        .populate_existing()
+        .with_for_update()
+        .one_or_none()
+    )
+    if existing is not None:
+        if existing.idempotency_key_sha256 != key_hash or existing.request_sha256 != request_hash:
+            raise HTTPException(status_code=409, detail="resume idempotency key conflicts with blocked cursor")
+        if existing.status == "claimed":
+            raise HTTPException(status_code=409, detail="resume 已在執行")
+        return existing
+    attempt = ResumeAttempt(
+        run_id=authority.binding.run_id,
+        blocked_cursor=cursor,
+        idempotency_key_sha256=key_hash,
+        request_sha256=request_hash,
+        status="claimed",
+    )
+    db.add(attempt)
+    try:
+        db.flush()
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = (
+            db.query(ResumeAttempt)
+            .filter(
+                ResumeAttempt.run_id == authority.binding.run_id,
+                ResumeAttempt.blocked_cursor == cursor,
+            )
+            .populate_existing()
+            .with_for_update()
+            .one_or_none()
+        )
+        if existing is None:
+            raise HTTPException(status_code=409, detail="resume claim conflict")
+        if existing.idempotency_key_sha256 != key_hash or existing.request_sha256 != request_hash:
+            raise HTTPException(status_code=409, detail="resume idempotency key conflicts with blocked cursor")
+        if existing.status == "claimed":
+            raise HTTPException(status_code=409, detail="resume 已在執行")
+        return existing
+    return attempt
+
+
+def _mark_resume_attempt(
+    db: Session,
+    *,
+    authority: DispatchAuthority,
+    bridge: StreamBridge,
+    status: str,
+    blocked_cursor: int | None = None,
+) -> None:
+    if not _db_session_capable(db):
+        return
+    cursor = blocked_cursor or _resume_attempt_cursor(db, authority=authority, bridge=bridge)
+    attempt = (
+        db.query(ResumeAttempt)
+        .filter(
+            ResumeAttempt.run_id == authority.binding.run_id,
+            ResumeAttempt.blocked_cursor == cursor,
+        )
+        .populate_existing()
+        .with_for_update()
+        .one_or_none()
+    )
+    latest_cursor = _bridge_latest_cursor(bridge)
+    if attempt is not None:
+        attempt.status = status
+        attempt.response_cursor = latest_cursor
+        attempt.response_status = status
+        attempt.response_meta = {"status": status, "cursor": attempt.response_cursor}
+        attempt.updated_at = datetime.now(timezone.utc)
+    authority_row = (
+        db.query(ResumeAuthority)
+        .filter(ResumeAuthority.run_id == authority.binding.run_id)
+        .populate_existing()
+        .with_for_update()
+        .one_or_none()
+    )
+    if authority_row is not None:
+        authority_row.lifecycle = status
+        authority_row.resumed_at = datetime.now(timezone.utc)
+        authority_row.updated_at = datetime.now(timezone.utc)
+        if status in {"completed", "failed", "cancelled"}:
+            authority_row.terminal_at = datetime.now(timezone.utc)
+            authority_row.terminal_cursor = latest_cursor
+    db.commit()
+
+
+def _authority_from_row(
+    db: Session,
+    *,
+    row: ResumeAuthority,
+    caller: CallerIdentity,
+) -> DispatchAuthority:
+    try:
+        grant = ExecutionGrant.model_validate(row.grant_json)
+        classification = Classification.from_storage(row.classification)
+        canonical_grant_json = json.dumps(
+            grant.model_dump(mode="json"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail="resume authority state 無效") from exc
+    model_binding = grant.target.model_binding
+    if (
+        model_binding is None
+        or not isinstance(row.grant_sha256, str)
+        or hashlib.sha256(canonical_grant_json).hexdigest() != row.grant_sha256
+        or row.model_binding != model_binding.model_dump(mode="json")
+        or list(row.capabilities or []) != list(grant.allowed_capabilities)
+        or list(row.scopes or []) != list(grant.allowed_scopes)
+        or row.auth_session_sid != grant.auth_assurance.sid
+        or int(row.blocked_cursor or 0) <= 0
+    ):
+        raise HTTPException(status_code=409, detail="resume authority integrity state 無效")
+    user = (
+        db.query(User)
+        .filter(User.id == row.owner_id)
+        .populate_existing()
+        .one_or_none()
+    )
+    agent = (
+        db.query(Agent)
+        .filter(Agent.id == row.agent_db_id, Agent.name == row.agent_id)
+        .populate_existing()
+        .one_or_none()
+    )
+    run = db.query(TaskRun).filter(TaskRun.id == row.run_id).populate_existing().one_or_none()
+    if user is None or agent is None or run is None:
+        raise HTTPException(status_code=409, detail="resume authority reference state 缺失")
+    binding = DispatchBinding(
+        caller_user_id=int(row.caller_user_id),
+        owner_id=int(row.owner_id),
+        task_id=int(row.task_id),
+        run_id=int(row.run_id),
+        source_snapshot_id=int(row.source_snapshot_id),
+        trace_id=str(row.trace_id),
+        invocation_id=str(row.invocation_id),
+        session_id=str(row.session_id),
+        agent_id=str(row.agent_id),
+        registry_snapshot_id=str(row.registry_snapshot_id),
+        registry_snapshot_revision=str(row.registry_snapshot_revision),
+        registry_snapshot_hash=str(row.registry_snapshot_hash),
+        manifest_revision=str(row.manifest_revision),
+        manifest_sha256=str(row.manifest_sha256),
+        grant_id=str(row.grant_id),
+        route_decision_id=str(row.route_decision_id),
+        policy_decision_id=str(row.policy_decision_id),
+        classification=classification,
+    )
+    if (
+        grant.grant_id != binding.grant_id
+        or grant.task_id != binding.task_id
+        or grant.run_id != binding.run_id
+        or grant.session_id != binding.session_id
+        or grant.target.id != binding.agent_id
+        or grant.classification is not classification
+    ):
+        raise HTTPException(status_code=409, detail="resume authority grant binding 無效")
+    return DispatchAuthority(
+        caller=caller,
+        user=user,
+        agent=agent,
+        grant=grant,
+        binding=binding,
+        endpoint_url=agent.endpoint_url.rstrip("/") + "/v1/chat/completions",
+        run_status=run.status,
+        blocked_cursor=int(row.blocked_cursor),
+    )
+
+
+def _resume_headers_from_authority(
+    authority: DispatchAuthority, *, grant_token: str
+) -> dict[str, str]:
+    b = authority.binding
+    return {
+        "X-ANILA-Caller-User-Id": str(b.caller_user_id),
+        "X-ANILA-Owner-Id": str(b.owner_id),
+        "X-ANILA-Task-Id": str(b.task_id),
+        "X-ANILA-Run-Id": str(b.run_id),
+        "X-ANILA-Source-Snapshot-Id": str(b.source_snapshot_id),
+        "X-ANILA-Trace-Id": b.trace_id,
+        "X-ANILA-Invocation-Id": b.invocation_id,
+        "X-ANILA-Session-Id": b.session_id,
+        "X-ANILA-Agent-Id": b.agent_id,
+        "X-ANILA-Registry-Snapshot-Id": b.registry_snapshot_id,
+        "X-ANILA-Registry-Snapshot-Revision": b.registry_snapshot_revision,
+        "X-ANILA-Registry-Snapshot-Hash": b.registry_snapshot_hash,
+        "X-ANILA-Agent-Manifest-Revision": b.manifest_revision,
+        "X-ANILA-Agent-Manifest-SHA256": b.manifest_sha256,
+        "X-ANILA-Execution-Grant-Id": b.grant_id,
+        "X-ANILA-Route-Decision-Id": b.route_decision_id,
+        "X-ANILA-Policy-Decision-Id": b.policy_decision_id,
+        "X-ANILA-Classification-Level": quote(b.classification.to_storage(), safe=""),
+        "X-ANILA-Execution-Grant": grant_token,
+    }
+
+
+def _resume_binding_payload(authority: DispatchAuthority) -> dict[str, Any]:
+    b = authority.binding
+    return {
+        "owner_id": b.owner_id,
+        "task_id": b.task_id,
+        "run_id": b.run_id,
+        "source_snapshot_id": b.source_snapshot_id,
+        "trace_id": b.trace_id,
+        "invocation_id": b.invocation_id,
+        "session_id": b.session_id,
+        "agent_id": b.agent_id,
+        "registry_snapshot_id": b.registry_snapshot_id,
+        "registry_snapshot_revision": b.registry_snapshot_revision,
+        "registry_snapshot_hash": b.registry_snapshot_hash,
+        "manifest_revision": b.manifest_revision,
+        "manifest_sha256": b.manifest_sha256,
+        "grant_id": b.grant_id,
+        "route_decision_id": b.route_decision_id,
+        "policy_decision_id": b.policy_decision_id,
+    }
+
+
+async def resume_by_session(
+    *,
+    db: Session,
+    caller: CallerIdentity | None,
+    session_id: str,
+    caller_user_id: int,
+    idempotency_key: str,
+    approval_mode: str = "approve_all",
+) -> dict[str, Any]:
+    """Resume from CSP durable authority using only opaque session identity."""
+
+    _require_named_router_client(db, caller)
+    session_value = _text(session_id, field="session_id")
+    if len(session_value) > 255:
+        raise HTTPException(status_code=400, detail="session_id 過長")
+    key = _text(idempotency_key, field="X-ANILA-Idempotency-Key")
+    if len(key) > 255:
+        raise HTTPException(status_code=400, detail="X-ANILA-Idempotency-Key 過長")
+    if approval_mode != "approve_all":
+        raise HTTPException(status_code=400, detail="approval_mode 必須是 approve_all")
+    if not _db_session_capable(db):
+        raise HTTPException(status_code=503, detail="resume durable authority unavailable")
+    row = (
+        db.query(ResumeAuthority)
+        .filter(
+            ResumeAuthority.session_id == session_value,
+            ResumeAuthority.caller_user_id == caller_user_id,
+            ResumeAuthority.owner_id == caller_user_id,
+        )
+        .populate_existing()
+        .with_for_update()
+        .one_or_none()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="resume authority 不存在")
+    authority = _authority_from_row(db, row=row, caller=caller)  # type: ignore[arg-type]
+    bridge = _bridge(authority, db)
+    terminal = bridge.terminal_event()
+    if terminal is not None:
+        # A terminal replay is valid only for the exact durable attempt that
+        # produced it.  Missing/corrupt attempt state fails closed.
+        attempt = (
+            db.query(ResumeAttempt)
+            .filter(
+                ResumeAttempt.run_id == row.run_id,
+                ResumeAttempt.blocked_cursor == row.blocked_cursor,
+            )
+            .populate_existing()
+            .with_for_update()
+            .one_or_none()
+        )
+        expected_key = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        expected_request = _resume_request_hash(
+            run_id=row.run_id, blocked_cursor=int(row.blocked_cursor)
+        )
+        if (
+            attempt is None
+            or attempt.idempotency_key_sha256 != expected_key
+            or attempt.request_sha256 != expected_request
+            or attempt.status not in {"completed", "failed", "cancelled"}
+        ):
+            raise HTTPException(status_code=409, detail="terminal resume replay state 無效")
+        db.rollback()
+        return _terminal_payload(bridge) or _paused_payload(authority)
+    if not _bridge_is_paused(bridge):
+        raise HTTPException(status_code=409, detail="Task 尚未處於可恢復的 blocked 狀態")
+    try:
+        renewed = renew_execution_grant_for_resume(
+            db,
+            authority=row,
+            caller=caller,  # type: ignore[arg-type]
+            caller_user_id=caller_user_id,
+        )
+        headers = _resume_headers_from_authority(authority, grant_token=renewed.token)
+        # Re-read all mutable CSP state through the existing final sink using
+        # only authority-derived binding values; nothing from the client body
+        # is used as a grant/binding/interrupt/answer.
+        authorized = authorize_dispatch(
+            db,
+            caller=caller,
+            headers=headers,
+            binding_payload=_resume_binding_payload(authority),
+            grant_token=renewed.token,
+        )
+        return await dispatch_resume(
+            db=db,
+            authority=authorized,
+            grant_token=renewed.token,
+            idempotency_key=key,
+        )
+    except ExecutionGrantMintDenied as exc:
+        db.rollback()
+        raise HTTPException(status_code=403, detail="resume authority denied") from exc
 
 
 def _terminal_payload(bridge: StreamBridge) -> dict[str, Any] | None:
@@ -931,6 +1494,7 @@ async def dispatch_nonstream(
                     # CSP only exposes a pause after an actual BLOCKED event
                     # has been rebound into its SessionEventStore.
                     if _bridge_is_paused(bridge):
+                        persist_blocked_authority(db, authority=authority, bridge=bridge)
                         return _paused_payload(authority)
                     raise ValueError("Agent 202 response 缺少 durable blocked event")
                 response.raise_for_status()
@@ -943,6 +1507,8 @@ async def dispatch_nonstream(
                 )
         except HTTPException:
             raise
+        except EventBudgetExceeded as exc:
+            raise _event_budget_http_error(db=db, bridge=bridge) from exc
         except Exception as exc:
             try:
                 bridge.append_terminal(StepStatus.FAILED, safe_output_summary="Agent 呼叫失敗")
@@ -952,6 +1518,7 @@ async def dispatch_nonstream(
         try:
             _append_agent_event_history(bridge, payload)
             if _bridge_is_paused(bridge):
+                persist_blocked_authority(db, authority=authority, bridge=bridge)
                 return _paused_payload(authority)
             content = _extract_agent_content(payload)
             # append_terminal enforces the same bounded safe-summary and
@@ -964,6 +1531,8 @@ async def dispatch_nonstream(
                 )
             elif terminal_receipt.status is not StepStatus.COMPLETED:
                 return _terminal_payload(bridge) or _paused_payload(authority)
+        except EventBudgetExceeded as exc:
+            raise _event_budget_http_error(db=db, bridge=bridge) from exc
         except (EventConflictError, EventOrderError, TerminalConflictError) as exc:
             db.rollback()
             raise HTTPException(status_code=409, detail="Agent dispatch terminal conflict") from exc
@@ -1007,90 +1576,191 @@ async def dispatch_resume(
     async with _invocation_guard(authority.binding.invocation_id):
         bridge = _bridge(authority, db)
         _reject_completed_without_terminal(authority, bridge)
-        previous_key = _RESUME_IDEMPOTENCY_KEYS.get(authority.binding.run_id)
-        if previous_key is not None and previous_key != key:
-            raise HTTPException(status_code=409, detail="resume idempotency key conflicts with run")
-        existing_terminal = bridge.terminal_event()
-        if existing_terminal is not None:
-            # Exact retries replay the one durable terminal without touching
-            # Agent again.  A conflicting key cannot mutate this latch.
-            return _terminal_payload(bridge) or _paused_payload(authority)
-        if not _bridge_is_paused(bridge):
-            raise HTTPException(status_code=409, detail="Task 尚未處於可恢復的 blocked 狀態")
-        _RESUME_IDEMPOTENCY_KEYS[authority.binding.run_id] = key
-
-        headers = build_agent_outbound_headers(
+        attempt = _claim_resume_attempt(
             db,
-            authority,
-            grant_token=grant_token,
+            authority=authority,
+            bridge=bridge,
             idempotency_key=key,
         )
-        # R5 is an explicit binary approval seam.  The Agent validates this
-        # mode and approves the persisted pending interruptions; no client-
-        # supplied interrupt id/answer is accepted or silently ignored.
-        if interrupt_id is not None or answer is not None:
-            raise HTTPException(status_code=400, detail="resume 不接受 interrupt_id/answer")
-        body: dict[str, Any] = {"approval_mode": "approve_all"}
-        target = authority.agent.endpoint_url.rstrip("/") + f"/v1/tasks/{authority.binding.task_id}/approve"
-        try:
-            async with httpx.AsyncClient(timeout=float(settings.LLM_TIMEOUT)) as client:
-                response = await client.post(target, json=body, headers=headers)
-                if response.status_code >= 400:
-                    # The Agent's 409 is the durable idempotency/lifecycle
-                    # conflict contract.  Preserve that status; other
-                    # downstream failures are hidden behind a safe 502.
-                    if response.status_code == 409:
-                        raise HTTPException(status_code=409, detail="Agent resume idempotency/lifecycle conflict")
-                    if response.status_code in {401, 403}:
-                        raise HTTPException(status_code=502, detail="Agent resume authentication failed")
-                    raise HTTPException(status_code=502, detail="Agent resume failed")
-                payload = response.json()
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail="Agent resume failed") from exc
+        attempt_cursor: int | None = None
+        raw_attempt_cursor = (
+            getattr(attempt, "blocked_cursor", None)
+            if attempt is not None
+            else getattr(authority, "blocked_cursor", None)
+        )
+        if isinstance(raw_attempt_cursor, int) and raw_attempt_cursor > 0:
+            attempt_cursor = raw_attempt_cursor
+        # Only a freshly inserted ``claimed`` row is owned by this call.  An
+        # existing paused/terminal row is a deliberate replay and must never
+        # be rewritten to failed merely because its transport is skipped.
+        claim_owned = bool(attempt is not None and attempt.status == "claimed")
 
-        try:
-            _append_agent_event_history(bridge, payload)
-            # A 202/status marker without a canonical BLOCKED event is
-            # malformed and must not create a resumable cursor.
-            if _bridge_is_paused(bridge):
-                return _paused_payload(authority)
-            if getattr(response, "status_code", 200) == 202 or (
-                isinstance(payload, Mapping) and payload.get("status") == "paused"
-            ):
-                raise ValueError("Agent resume pause response 缺少 durable blocked event")
-
-            content = _extract_agent_content(payload)
-            terminal_receipt = bridge.terminal_event()
-            if terminal_receipt is None:
-                terminal_receipt = bridge.append_terminal(
-                    StepStatus.COMPLETED, safe_output_summary=content
-                )
-            elif terminal_receipt.status is not StepStatus.COMPLETED:
-                return _terminal_payload(bridge) or _paused_payload(authority)
-        except (EventConflictError, EventOrderError, TerminalConflictError) as exc:
-            db.rollback()
-            raise HTTPException(status_code=409, detail="Agent resume event conflict") from exc
-        except Exception as exc:
+        def mark_owned_failed() -> None:
+            nonlocal claim_owned
+            if not claim_owned:
+                return
             try:
-                if bridge.terminal_event() is None:
-                    bridge.append_terminal(
-                        StepStatus.FAILED, safe_output_summary="Agent resume response 驗證失敗"
-                    )
+                _mark_resume_attempt(
+                    db,
+                    authority=authority,
+                    bridge=bridge,
+                    status="failed",
+                    blocked_cursor=attempt_cursor,
+                )
             except Exception:
                 db.rollback()
-            raise HTTPException(status_code=502, detail="Agent resume response 未通過 CSP 驗證") from exc
-        terminal_event = (
-            terminal_receipt.event
-            if hasattr(terminal_receipt, "event")
-            else terminal_receipt
-        )
-        return _canonical_nonstream_response(
-            content=content,
-            authority=authority,
-            terminal_event=terminal_event,
-        )
+                raise
+            claim_owned = False
+
+        try:
+            if attempt is not None or _db_session_capable(db):
+                attempt_cursor = _resume_attempt_cursor(
+                    db, authority=authority, bridge=bridge
+                )
+            existing_terminal = bridge.terminal_event()
+            if existing_terminal is not None:
+                # Exact retries replay the one durable terminal without
+                # touching Agent again.  A conflicting key cannot mutate this
+                # latch.  A rare race where this call inserted the claim after
+                # the terminal event is still completed, never left claimed.
+                if claim_owned:
+                    _mark_resume_attempt(
+                        db,
+                        authority=authority,
+                        bridge=bridge,
+                        status=existing_terminal.status.value,
+                        blocked_cursor=attempt_cursor,
+                    )
+                    claim_owned = False
+                return _terminal_payload(bridge) or _paused_payload(authority)
+            if not _bridge_is_paused(bridge):
+                raise HTTPException(status_code=409, detail="Task 尚未處於可恢復的 blocked 狀態")
+            if attempt is not None and attempt.status == "paused":
+                return _paused_payload(authority)
+
+            headers = build_agent_outbound_headers(
+                db,
+                authority,
+                grant_token=grant_token,
+                idempotency_key=key,
+            )
+            # R5 is an explicit binary approval seam.  The Agent validates
+            # this mode and approves persisted pending interruptions; no
+            # client-supplied interrupt id/answer is accepted or ignored.
+            if interrupt_id is not None or answer is not None:
+                raise HTTPException(status_code=400, detail="resume 不接受 interrupt_id/answer")
+            body: dict[str, Any] = {"approval_mode": "approve_all"}
+            target = authority.agent.endpoint_url.rstrip("/") + f"/v1/tasks/{authority.binding.task_id}/approve"
+            try:
+                async with httpx.AsyncClient(timeout=float(settings.LLM_TIMEOUT)) as client:
+                    response = await client.post(target, json=body, headers=headers)
+                    if response.status_code >= 400:
+                        # The Agent's 409 is the durable idempotency/lifecycle
+                        # conflict contract.  Preserve that status; other
+                        # downstream failures are hidden behind a safe 502.
+                        if response.status_code == 409:
+                            raise HTTPException(status_code=409, detail="Agent resume idempotency/lifecycle conflict")
+                        if response.status_code in {401, 403}:
+                            raise HTTPException(status_code=502, detail="Agent resume authentication failed")
+                        raise HTTPException(status_code=502, detail="Agent resume failed")
+                    payload = response.json()
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(status_code=502, detail="Agent resume failed") from exc
+
+            try:
+                _append_agent_event_history(bridge, payload)
+                # A 202/status marker without a canonical BLOCKED event is
+                # malformed and must not create a resumable cursor.
+                if _bridge_is_paused(bridge):
+                    persist_blocked_authority(db, authority=authority, bridge=bridge)
+                    _mark_resume_attempt(
+                        db,
+                        authority=authority,
+                        bridge=bridge,
+                        status="paused",
+                        blocked_cursor=attempt_cursor,
+                    )
+                    claim_owned = False
+                    return _paused_payload(authority)
+                if getattr(response, "status_code", 200) == 202 or (
+                    isinstance(payload, Mapping) and payload.get("status") == "paused"
+                ):
+                    raise ValueError("Agent resume pause response 缺少 durable blocked event")
+
+                content = _extract_agent_content(payload)
+                terminal_receipt = bridge.terminal_event()
+                if terminal_receipt is None:
+                    terminal_receipt = bridge.append_terminal(
+                        StepStatus.COMPLETED, safe_output_summary=content
+                    )
+                elif terminal_receipt.status is not StepStatus.COMPLETED:
+                    _mark_resume_attempt(
+                        db,
+                        authority=authority,
+                        bridge=bridge,
+                        status=terminal_receipt.status.value,
+                        blocked_cursor=attempt_cursor,
+                    )
+                    claim_owned = False
+                    return _terminal_payload(bridge) or _paused_payload(authority)
+            except EventBudgetExceeded as exc:
+                raise _event_budget_http_error(db=db, bridge=bridge) from exc
+            except (EventConflictError, EventOrderError, TerminalConflictError) as exc:
+                raise HTTPException(status_code=409, detail="Agent resume event conflict") from exc
+            except Exception as exc:
+                # Keep the wire response generic, but retain the concrete
+                # validation/terminal exception for fail-closed diagnosis.
+                # Do not log Agent payloads, state strings, grants, or keys.
+                logger.exception(
+                    "Agent resume response validation failure run_id=%s invocation_id=%s",
+                    authority.binding.run_id,
+                    authority.binding.invocation_id,
+                )
+                try:
+                    if bridge.terminal_event() is None:
+                        bridge.append_terminal(
+                            StepStatus.FAILED, safe_output_summary="Agent resume response 驗證失敗"
+                        )
+                except Exception:
+                    db.rollback()
+                raise HTTPException(status_code=502, detail="Agent resume response 未通過 CSP 驗證") from exc
+            terminal_event = (
+                terminal_receipt.event
+                if hasattr(terminal_receipt, "event")
+                else terminal_receipt
+            )
+            result = _canonical_nonstream_response(
+                content=content,
+                authority=authority,
+                terminal_event=terminal_event,
+            )
+            _mark_resume_attempt(
+                db,
+                authority=authority,
+                bridge=bridge,
+                status="completed",
+                blocked_cursor=attempt_cursor,
+            )
+            claim_owned = False
+            return result
+        except HTTPException:
+            mark_owned_failed()
+            raise
+        except Exception as exc:
+            # Keep the public response deliberately generic, but retain the
+            # actual unexpected exception in CSP logs for fail-closed resume
+            # diagnosis.  Only durable binding identifiers are logged; no
+            # downstream payload, state string, grant, or credential crosses
+            # this diagnostic boundary.
+            logger.exception(
+                "Agent resume unexpected failure run_id=%s invocation_id=%s",
+                authority.binding.run_id,
+                authority.binding.invocation_id,
+            )
+            mark_owned_failed()
+            raise HTTPException(status_code=502, detail="Agent resume failed") from exc
 
 
 async def dispatch_stream(
@@ -1184,6 +1854,8 @@ async def dispatch_stream(
                                 model=authority.agent.name,
                                 source_sequence=source_sequence,
                             )
+                            if _bridge_is_paused(bridge):
+                                persist_blocked_authority(db, authority=authority, bridge=bridge)
                             for frame in frames:
                                 yield frame
                             continue
@@ -1197,6 +1869,8 @@ async def dispatch_stream(
                                 model=authority.agent.name,
                                 source_sequence=source_sequence,
                             )
+                            if _bridge_is_paused(bridge):
+                                persist_blocked_authority(db, authority=authority, bridge=bridge)
                             for frame in frames:
                                 yield frame
         except asyncio.CancelledError:
@@ -1211,6 +1885,8 @@ async def dispatch_stream(
             except Exception:
                 db.rollback()
             raise
+        except EventBudgetExceeded as exc:
+            raise _event_budget_http_error(db=db, bridge=bridge) from exc
         except Exception as exc:
             try:
                 bridge.append_terminal(StepStatus.FAILED, safe_output_summary="Agent stream 失敗")
@@ -1228,6 +1904,8 @@ async def dispatch_stream(
                     StepStatus.COMPLETED, safe_output_summary="執行完成"
                 )
                 yield _step_frame(terminal_receipt.event)
+        except EventBudgetExceeded as exc:
+            raise _event_budget_http_error(db=db, bridge=bridge) from exc
         except (EventConflictError, EventOrderError, TerminalConflictError) as exc:
             raise HTTPException(status_code=409, detail="Agent stream terminal conflict") from exc
         yield "data: [DONE]\n\n"
@@ -1240,4 +1918,7 @@ __all__ = [
     "build_agent_outbound_headers",
     "dispatch_nonstream",
     "dispatch_stream",
+    "dispatch_resume",
+    "persist_blocked_authority",
+    "resume_by_session",
 ]

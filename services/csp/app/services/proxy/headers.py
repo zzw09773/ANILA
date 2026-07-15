@@ -6,17 +6,19 @@ behavior-preserving refactor). SECURITY-CRITICAL: ``downstream_identity`` /
 employee-id (員編) downstream semantics — moved unchanged.
 """
 import logging
-import json
 import re
 import time
 from threading import Lock
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import Optional
-from urllib.parse import quote
 
 from app.config import settings
 from app.database import SessionLocal
 from app.services import agent_credential_service
+from app.services.router_context_token import (
+    ROUTER_CONTEXT_HEADER,
+    issue_router_context_token,
+)
 
 logger = logging.getLogger("app.services.proxy_service")
 
@@ -216,134 +218,35 @@ def build_model_gateway_headers(
     return headers
 
 
-_ROUTER_CONTEXT_HEADERS = {
-    "task_id": "X-ANILA-Task-Id",
-    "run_id": "X-ANILA-Run-Id",
-    "source_snapshot_id": "X-ANILA-Source-Snapshot-Id",
-    "trace_id": "X-ANILA-Trace-Id",
-    "task_type": "X-ANILA-Task-Type",
-    "classification_level": "X-ANILA-Classification-Level",
-    "scopes": "X-ANILA-Scopes",
-    "required_capabilities": "X-ANILA-Required-Capabilities",
-    "auth_assurance": "X-ANILA-Auth-Assurance",
-    "auth_session_id": "X-ANILA-Auth-Session-Id",
-    "auth_methods": "X-ANILA-Auth-Methods",
-    "auth_level": "X-ANILA-Auth-Level",
-    "auth_time": "X-ANILA-Auth-Time",
-    "break_glass": "X-ANILA-Break-Glass",
-    "owner_id": "X-ANILA-Owner-Id",
-    "invocation_id": "X-ANILA-Invocation-Id",
-}
-
-_ROUTER_REQUIRED_CONTEXT = frozenset(
-    {
-        "task_id",
-        "run_id",
-        "source_snapshot_id",
-        "trace_id",
-        "task_type",
-        "classification_level",
-        "scopes",
-    }
-)
-_POSITIVE_DECIMAL_RE = re.compile(r"\A[1-9][0-9]*\Z")
-_HEADER_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
-
-
-def _router_wire_text(value: object, *, name: str) -> str:
-    """Return a safe single-line Router header value."""
-
-    text = str(value).strip()
-    if not text or _HEADER_CONTROL_RE.search(text):
-        raise ValueError(f"{name} 必須是非空單行字串")
-    return text
-
-
-def _router_wire_positive(value: object, *, name: str) -> str:
-    if isinstance(value, bool):
-        raise ValueError(f"{name} 必須是 positive numeric id")
-    text = str(value).strip()
-    if not _POSITIVE_DECIMAL_RE.fullmatch(text):
-        raise ValueError(f"{name} 必須是 positive numeric id")
-    return text
-
-
-def _router_wire_tokens(value: object, *, name: str) -> str:
-    if isinstance(value, str):
-        values = [part.strip() for part in value.split(",")]
-    elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
-        values = [str(part).strip() for part in value]
-    else:
-        raise ValueError(f"{name} 必須是 token sequence")
-    values = [part for part in values if part]
-    if not values or any(_HEADER_CONTROL_RE.search(part) for part in values):
-        raise ValueError(f"{name} 必須是非空 token sequence")
-    return ",".join(values)
-
-
 def build_router_model_gateway_headers(
     user_identity: Optional[str],
     *,
     router_caller_user_id: int,
     router_context: Mapping[str, object],
+    request_body: Mapping[str, object],
 ) -> dict:
     """Build the *Router-only* model gateway header contract.
 
     ``build_model_gateway_headers`` intentionally carries only employee
-    identity plus the dedicated caller PK.  The internal ``anila-router``
-    target is different: it needs the complete CSP-derived task context for
-    R3 admission.  This helper is therefore the sole place that can add
-    formal context headers, and it rejects an incomplete/unknown projection
-    instead of silently inventing governance values.  Callers must pass a
-    server-derived mapping; ordinary model/embedding destinations never call
-    this helper.
+    identity for ordinary model calls.  The internal ``anila-router`` target
+    receives the complete CSP-derived task context as one short-lived,
+    body-bound ``X-ANILA-Router-Context`` JWT.  ``request_body`` must be the
+    finalized object passed to the HTTP client (including streaming options),
+    so the token cannot be replayed against a different prompt or session.
+
+    The finalized request body is mandatory.  Keeping a raw-header fallback
+    would allow a caller to bypass the single signed authority envelope.
     """
 
     if not isinstance(router_context, Mapping):
         raise TypeError("router_context 必須是 mapping")
-    unknown = set(router_context) - set(_ROUTER_CONTEXT_HEADERS)
-    if unknown:
-        raise ValueError("router_context 含有未允許欄位")
-    missing = _ROUTER_REQUIRED_CONTEXT - set(router_context)
-    if missing:
-        raise ValueError(
-            "Router formal context 缺少必要欄位: " + ", ".join(sorted(missing))
-        )
-
-    headers = build_model_gateway_headers(
-        user_identity,
-        router_caller_user_id=router_caller_user_id,
+    token = issue_router_context_token(
+        router_context=router_context,
+        request_body=request_body,
+        caller_user_id=router_caller_user_id,
     )
-    positive = {"task_id", "run_id", "source_snapshot_id", "owner_id"}
-    token_fields = {
-        "scopes",
-        "required_capabilities",
-        "auth_methods",
-    }
-    for name, value in router_context.items():
-        if value is None:
-            continue
-        header_name = _ROUTER_CONTEXT_HEADERS[name]
-        if name in positive:
-            headers[header_name] = _router_wire_positive(value, name=name)
-        elif name in token_fields:
-            headers[header_name] = _router_wire_tokens(value, name=name)
-        elif name == "auth_assurance":
-            if isinstance(value, Mapping):
-                value = json.dumps(dict(value), ensure_ascii=False, separators=(",", ":"))
-            headers[header_name] = quote(
-                _router_wire_text(value, name=name), safe=""
-            )
-        elif name == "break_glass":
-            if not isinstance(value, bool):
-                raise ValueError("break_glass 必須是 bool")
-            headers[header_name] = "true" if value else "false"
-        else:
-            # Starlette/httpx header values are latin-1 constrained in many
-            # deployments; Router's formal parser unquotes these values.
-            headers[header_name] = quote(
-                _router_wire_text(value, name=name), safe=""
-            )
+    headers = build_model_gateway_headers(user_identity)
+    headers[ROUTER_CONTEXT_HEADER] = token
     return headers
 
 

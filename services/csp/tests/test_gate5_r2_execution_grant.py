@@ -30,6 +30,7 @@ from app.schemas.agent_registry import (
 )
 from app.schemas.execution_grant import ExecutionGrantMintRequest
 from app.services.agent_credential_service import CallerIdentity
+from app.services.agent_dispatch_service import _binding_from_request
 from app.services.execution_grant_service import (
     EXECUTION_GRANT_TYPE,
     ExecutionGrantMintDenied,
@@ -152,7 +153,9 @@ def _request(now: datetime) -> ExecutionGrantMintRequest:
         source_snapshot_id=1,
         trace_id="trace-1",
         invocation_id="invocation-1",
-        session_id="s" * 40,
+        # Conversation identity is deliberately distinct from the durable
+        # authentication-session SID carried in ``auth_assurance``.
+        session_id="conversation-session-001",
         registry_snapshot_id=SNAPSHOT_ID,
         registry_snapshot_revision=SNAPSHOT_ID,
         registry_snapshot_hash=SNAPSHOT_ID,
@@ -298,7 +301,122 @@ def test_mint_signs_and_verify_rechecks_the_inner_bindings(db, monkeypatch) -> N
     now = datetime.now(timezone.utc).replace(microsecond=0)
     caller = _db_state(db, now)
     _patch_registry(monkeypatch, now)
+    request = _request(now)
+    assert request.session_id != request.auth_assurance.sid
 
+    response = mint_execution_grant(
+        db,
+        request=request,
+        caller=caller,
+        caller_user_id=1,
+        now=now,
+    )
+    assert response.token
+    assert response.grant.ttl_seconds == 60
+    assert response.grant.session_id == request.session_id
+    assert response.grant.auth_assurance.sid == request.auth_assurance.sid
+    parsed = verify_execution_grant_token(response.token, now=now + timedelta(seconds=1))
+    assert parsed.grant_id == response.grant.grant_id
+    assert parsed.target.id == "research-agent"
+
+
+def test_mint_rejects_forged_auth_session_sid_even_with_valid_conversation_session(
+    db, monkeypatch
+) -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    caller = _db_state(db, now)
+    _patch_registry(monkeypatch, now)
+    request = _request(now)
+    forged_assurance = {
+        **request.auth_assurance.model_dump(mode="json"),
+        "sid": "forged-auth-session",
+    }
+
+    with pytest.raises(ExecutionGrantMintDenied):
+        mint_execution_grant(
+            db,
+            request=_request_with(request, auth_assurance=forged_assurance),
+            caller=caller,
+            caller_user_id=1,
+            now=now,
+        )
+
+
+def _dispatch_evidence(grant):
+    headers = {
+        "x-anila-caller-user-id": "1",
+        "x-anila-owner-id": "1",
+        "x-anila-task-id": str(grant.task_id),
+        "x-anila-run-id": str(grant.run_id),
+        "x-anila-source-snapshot-id": str(grant.source_snapshot_id),
+        "x-anila-trace-id": grant.trace_id,
+        "x-anila-invocation-id": grant.invocation_id,
+        "x-anila-session-id": grant.session_id,
+        "x-anila-agent-id": grant.target.id,
+        "x-anila-registry-snapshot-id": grant.registry_snapshot_id,
+        "x-anila-registry-snapshot-revision": grant.registry_snapshot_id,
+        "x-anila-registry-snapshot-hash": grant.registry_snapshot_id,
+        "x-anila-agent-manifest-revision": grant.manifest_revision,
+        "x-anila-agent-manifest-sha256": grant.manifest_revision.removeprefix("sha256:"),
+        "x-anila-execution-grant-id": grant.grant_id,
+        "x-anila-route-decision-id": grant.route_decision_id,
+        "x-anila-policy-decision-id": grant.policy_decision_id,
+        "x-anila-classification-level": "無機密",
+    }
+    payload = {
+        "task_id": grant.task_id,
+        "run_id": grant.run_id,
+        "source_snapshot_id": grant.source_snapshot_id,
+        "trace_id": grant.trace_id,
+        "invocation_id": grant.invocation_id,
+        "session_id": grant.session_id,
+        "agent_id": grant.target.id,
+        "registry_snapshot_id": grant.registry_snapshot_id,
+        "registry_snapshot_revision": grant.registry_snapshot_id,
+        "registry_snapshot_hash": grant.registry_snapshot_id,
+        "manifest_revision": grant.manifest_revision,
+        "manifest_sha256": grant.manifest_revision.removeprefix("sha256:"),
+        "grant_id": grant.grant_id,
+        "route_decision_id": grant.route_decision_id,
+        "policy_decision_id": grant.policy_decision_id,
+        "owner_id": 1,
+    }
+    return headers, payload
+
+
+def test_mint_to_authorize_preserves_distinct_session_and_auth_sid_with_numeric_headers(
+    db, monkeypatch
+) -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    caller = _db_state(db, now)
+    _patch_registry(monkeypatch, now)
+    request = _request(now)
+    response = mint_execution_grant(
+        db,
+        request=request,
+        caller=caller,
+        caller_user_id=1,
+        now=now,
+    )
+    headers, payload = _dispatch_evidence(response.grant)
+
+    binding = _binding_from_request(
+        headers=headers,
+        binding_payload=payload,
+        grant=response.grant,
+    )
+    assert binding.session_id == request.session_id
+    assert response.grant.auth_assurance.sid == request.auth_assurance.sid
+    assert binding.session_id != response.grant.auth_assurance.sid
+    assert binding.task_id == response.grant.task_id
+    assert binding.run_id == response.grant.run_id
+    assert binding.source_snapshot_id == response.grant.source_snapshot_id
+
+
+def test_authorize_rejects_numeric_header_mismatch_against_signed_grant(db, monkeypatch) -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    caller = _db_state(db, now)
+    _patch_registry(monkeypatch, now)
     response = mint_execution_grant(
         db,
         request=_request(now),
@@ -306,11 +424,16 @@ def test_mint_signs_and_verify_rechecks_the_inner_bindings(db, monkeypatch) -> N
         caller_user_id=1,
         now=now,
     )
-    assert response.token
-    assert response.grant.ttl_seconds == 60
-    parsed = verify_execution_grant_token(response.token, now=now + timedelta(seconds=1))
-    assert parsed.grant_id == response.grant.grant_id
-    assert parsed.target.id == "research-agent"
+    headers, payload = _dispatch_evidence(response.grant)
+    headers["x-anila-task-id"] = "999"
+
+    with pytest.raises(HTTPException) as caught:
+        _binding_from_request(
+            headers=headers,
+            binding_payload=payload,
+            grant=response.grant,
+        )
+    assert caught.value.status_code == 403
 
 
 @pytest.mark.parametrize(

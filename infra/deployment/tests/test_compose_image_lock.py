@@ -202,7 +202,13 @@ set -e
         with tempfile.TemporaryDirectory() as directory:
             env_path = Path(directory) / ".env"
             env_path.write_text(self._env_text(), encoding="utf-8")
-            with self.assertRaisesRegex(MODULE.ImageLockError, "ANILA_IMAGE_CODESERVER"):
+            first_optional = next(
+                entry
+                for entry in self.inventory.values()
+                if entry.activation != "default"
+            )
+            expected_variable = MODULE.IMAGE_ENV_BY_SERVICE[first_optional.service]
+            with self.assertRaisesRegex(MODULE.ImageLockError, expected_variable):
                 MODULE.verify_env(
                     env_path,
                     self.inventory,

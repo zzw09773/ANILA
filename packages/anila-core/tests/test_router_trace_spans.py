@@ -28,6 +28,9 @@ from anila_core.registry.remote_agent_manifest import (
 from anila_core.tracing.sdk import TraceSession
 
 
+LEGACY_DISPATCH_HEADERS = {"X-ANILA-Legacy-Dispatch": "1"}
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def _enable_legacy_dispatch_compat(monkeypatch):
     """Trace fixtures predate the R3 formal CSP context contract."""
@@ -136,6 +139,7 @@ def test_streaming_dispatch_emits_anila_spans_when_configured(
         "/v1/chat/completions",
         headers={
             "Authorization": "Bearer sk-x",
+            **LEGACY_DISPATCH_HEADERS,
             "X-ANILA-Trace-Id": "trace-123",
             "X-ANILA-Task-Id": "73",
             "X-ANILA-User-Id": "synthetic-trace-user-73",
@@ -203,7 +207,11 @@ def test_streaming_dispatch_emits_no_spans_when_unconfigured(
     client = TestClient(app)
     resp = client.post(
         "/v1/chat/completions",
-        headers={"Authorization": "Bearer sk-x", "X-ANILA-Trace-Id": "trace-xyz"},
+        headers={
+            "Authorization": "Bearer sk-x",
+            **LEGACY_DISPATCH_HEADERS,
+            "X-ANILA-Trace-Id": "trace-xyz",
+        },
         json={"messages": [{"role": "user", "content": "hi"}], "stream": True},
     )
     assert resp.status_code == 200
@@ -236,7 +244,11 @@ def test_streaming_dispatch_cancelled_terminal_stops_router_success_tail(
     app = router_server.create_router_app(session_db_path=str(db_path))
     response = TestClient(app).post(
         "/v1/chat/completions",
-        headers={"Authorization": "Bearer sk-x", "X-ANILA-Task-Id": "73"},
+        headers={
+            "Authorization": "Bearer sk-x",
+            **LEGACY_DISPATCH_HEADERS,
+            "X-ANILA-Task-Id": "73",
+        },
         json={"messages": [{"role": "user", "content": "hi"}], "stream": True},
     )
     assert response.status_code == 200
@@ -274,7 +286,11 @@ def test_non_streaming_dispatch_records_spans_when_configured(
     client = TestClient(app)
     resp = client.post(
         "/v1/chat/completions",
-        headers={"Authorization": "Bearer sk-x", "X-ANILA-Trace-Id": "trace-ns"},
+        headers={
+            "Authorization": "Bearer sk-x",
+            **LEGACY_DISPATCH_HEADERS,
+            "X-ANILA-Trace-Id": "trace-ns",
+        },
         json={"messages": [{"role": "user", "content": "hi"}], "stream": False},
     )
     assert resp.status_code == 200
@@ -316,7 +332,11 @@ def test_non_streaming_dispatch_no_spans_when_unconfigured(
     client = TestClient(app)
     resp = client.post(
         "/v1/chat/completions",
-        headers={"Authorization": "Bearer sk-x", "X-ANILA-Trace-Id": "trace-ns2"},
+        headers={
+            "Authorization": "Bearer sk-x",
+            **LEGACY_DISPATCH_HEADERS,
+            "X-ANILA-Trace-Id": "trace-ns2",
+        },
         json={"messages": [{"role": "user", "content": "hi"}], "stream": False},
     )
     # No exception, normal answer, and nothing traced.

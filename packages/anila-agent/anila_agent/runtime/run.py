@@ -53,10 +53,13 @@ async def run_once_state(
     process can rebind the durable state to the freshly built official agent.
     """
 
+    # ``load_state`` rebinds the SDK RunContextWrapper to the freshly
+    # assembled request context.  Do not pass ``assembled.context`` here:
+    # the SDK treats any non-None context as an override and would replace the
+    # restored wrapper, silently discarding ``approve_all`` decisions.
     return await Runner.run(
         assembled.agent,
         state,
-        context=assembled.context,
         session=session,
         hooks=hooks,
     )

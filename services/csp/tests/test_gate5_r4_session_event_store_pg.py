@@ -32,6 +32,7 @@ from app.models.session_event import SessionEvent, SessionEventRun
 from app.services.proxy.session_event_store import SqlAlchemySessionEventStore
 from app.services.proxy.stream_bridge import (
     BridgeContext,
+    EventConflictError,
     EventOrderError,
     SessionAppendResult,
     TerminalEventError,
@@ -130,6 +131,8 @@ def _append_worker(
     binding: BridgeContext,
     event: StepEvent,
     barrier: Barrier,
+    *,
+    authoritative_terminal: bool = False,
 ) -> object:
     """Append from one engine/session pair and return errors for assertions."""
 
@@ -138,7 +141,11 @@ def _append_worker(
     db = Session()
     try:
         barrier.wait(timeout=30)
-        return SqlAlchemySessionEventStore(db).append(event, binding=binding)
+        return SqlAlchemySessionEventStore(db).append(
+            event,
+            binding=binding,
+            authoritative_terminal=authoritative_terminal,
+        )
     except Exception as exc:  # The caller asserts the allowed race outcomes.
         return exc
     finally:
@@ -150,12 +157,28 @@ def _race(
     database_url: str,
     binding: BridgeContext,
     events: tuple[StepEvent, ...],
+    *,
+    authoritative_terminal: bool | tuple[bool, ...] = False,
 ) -> list[object]:
     barrier = Barrier(len(events))
+    authorities = (
+        authoritative_terminal
+        if isinstance(authoritative_terminal, tuple)
+        else (authoritative_terminal,) * len(events)
+    )
+    if len(authorities) != len(events):
+        raise ValueError("authoritative_terminal race tuple must match events")
     with ThreadPoolExecutor(max_workers=len(events)) as executor:
         futures = [
-            executor.submit(_append_worker, database_url, binding, event, barrier)
-            for event in events
+            executor.submit(
+                _append_worker,
+                database_url,
+                binding,
+                event,
+                barrier,
+                authoritative_terminal=authority,
+            )
+            for event, authority in zip(events, authorities, strict=True)
         ]
         return [future.result(timeout=60) for future in futures]
 
@@ -309,6 +332,7 @@ def test_postgres_dispatch_claim_allows_one_concurrent_agent_side_effect_and_res
                         binding,
                     ),
                     binding=binding,
+                    authoritative_terminal=True,
                 )
             else:
                 db.rollback()
@@ -329,6 +353,78 @@ def test_postgres_dispatch_claim_allows_one_concurrent_agent_side_effect_and_res
         ledger = _read_ledger(postgres_database_url, binding)
         assert ledger["terminal_event_id"] == f"{run_id}-terminal"
         assert ledger["terminal"] == f"{run_id}-terminal"
+    finally:
+        _cleanup(postgres_database_url, run_id)
+
+
+def test_postgres_completed_wire_events_do_not_latch_until_authoritative_terminal(
+    postgres_database_url: str,
+) -> None:
+    run_id = f"pg-r4-authority-{uuid4().hex}"
+    binding = _context(run_id)
+    tool_completed = _bound(
+        _event(
+            event_id=f"{run_id}-tool-completed",
+            sequence=1,
+            status=StepStatus.COMPLETED,
+        ),
+        binding,
+    )
+    agent_completed = _bound(
+        _event(
+            event_id=f"{run_id}-agent-completed",
+            sequence=2,
+            status=StepStatus.COMPLETED,
+        ),
+        binding,
+    ).model_copy(
+        update={
+            "kind": StepKind.AGENT,
+            "step_id": f"agent:{binding.agent_id}",
+            "parent_step_id": None,
+            "tool_name": None,
+        }
+    )
+    terminal = _bound(
+        _event(
+            event_id=f"{run_id}-terminal",
+            sequence=2_147_483_647,
+            status=StepStatus.COMPLETED,
+        ),
+        binding,
+    )
+    try:
+        store_engine = create_engine(postgres_database_url, pool_pre_ping=True)
+        StoreSession = sessionmaker(bind=store_engine)
+        db = StoreSession()
+        try:
+            store = SqlAlchemySessionEventStore(db)
+            assert store.append(tool_completed, binding=binding).duplicate is False
+            assert store.append(agent_completed, binding=binding).duplicate is False
+            assert store.terminal(binding=binding) is None
+            authoritative = store.append(
+                terminal,
+                binding=binding,
+                authoritative_terminal=True,
+            )
+            assert authoritative.duplicate is False
+            with pytest.raises(EventConflictError):
+                store.append(
+                    terminal,
+                    binding=binding,
+                    authoritative_terminal=False,
+                )
+        finally:
+            db.close()
+            store_engine.dispose()
+
+        ledger = _read_ledger(postgres_database_url, binding)
+        assert ledger["terminal_event_id"] == terminal.event_id
+        assert ledger["rows"] == (
+            (tool_completed.event_id, 1, 1, False),
+            (agent_completed.event_id, 2, 2, False),
+            (terminal.event_id, 3, 2_147_483_647, True),
+        )
     finally:
         _cleanup(postgres_database_url, run_id)
 
@@ -400,14 +496,25 @@ def test_postgres_terminal_latch_survives_duplicate_and_new_event_race(
         seed_db = SeedSession()
         try:
             seeded = SqlAlchemySessionEventStore(seed_db).append(
-                terminal, binding=binding
+                terminal,
+                binding=binding,
+                authoritative_terminal=True,
             )
             assert seeded.duplicate is False
         finally:
             seed_db.close()
             seed_engine.dispose()
 
-        results = _race(postgres_database_url, binding, (terminal, after_terminal))
+        seeded_ledger = _read_ledger(postgres_database_url, binding)
+        assert seeded_ledger["terminal_event_id"] == terminal.event_id
+        assert seeded_ledger["rows"] == ((terminal.event_id, 1, 1, True),)
+
+        results = _race(
+            postgres_database_url,
+            binding,
+            (terminal, after_terminal),
+            authoritative_terminal=(True, False),
+        )
         duplicate_retries = [
             result for result in results if isinstance(result, SessionAppendResult)
         ]

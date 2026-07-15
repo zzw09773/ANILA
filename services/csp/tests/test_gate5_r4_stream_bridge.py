@@ -22,6 +22,7 @@ from app.services.proxy.stream_bridge import (
     CspProxyAgentClient,
     CspProxyRequiredError,
     EventBindingError,
+    EventBudgetExceeded,
     EventConflictError,
     EventOrderError,
     InMemorySessionEventStore,
@@ -205,6 +206,79 @@ def test_terminal_is_exactly_once_and_blocks_later_events():
         bridge.append_event(_event(event_id="after-terminal", cursor="2", sequence=2))
 
 
+def test_completed_agent_wire_events_do_not_latch_until_csp_authority():
+    store = InMemorySessionEventStore()
+    bridge = StreamBridge(_context(), store=store)
+
+    # Tool completion and TimelineRunHooks.on_agent_end both use the ordinary
+    # Agent wire path.  Neither is CSP authority to close the run.
+    tool_completed = bridge.append_event(
+        _event(event_id="tool-completed", sequence=1, status=StepStatus.COMPLETED)
+    )
+    agent_completed = bridge.append_event(
+        _event(
+            event_id="agent-completed",
+            sequence=2,
+            status=StepStatus.COMPLETED,
+            kind=StepKind.AGENT,
+            step_id="agent:root",
+            tool_name=None,
+        )
+    )
+    after_agent = bridge.append_event(
+        _event(event_id="after-agent", sequence=3, status=StepStatus.RUNNING)
+    )
+
+    assert tool_completed is not None
+    assert agent_completed is not None
+    assert after_agent is not None
+    assert bridge.terminal_event() is None
+
+    terminal = bridge.append_terminal(
+        StepStatus.COMPLETED,
+        event_id="csp-terminal",
+        safe_output_summary="完成",
+    )
+    assert bridge.terminal_event() == terminal.event
+    assert [event.event_id for event in bridge.replay_events()] == [
+        "tool-completed",
+        "agent-completed",
+        "after-agent",
+        "csp-terminal",
+    ]
+
+
+def test_terminal_authority_bit_mismatch_is_a_typed_conflict():
+    store = InMemorySessionEventStore()
+    context = _context()
+    bridge = StreamBridge(context, store=store)
+    first = bridge.append_event(_event(status=StepStatus.COMPLETED))
+    assert first is not None
+
+    with pytest.raises(EventConflictError) as exc_info:
+        store.append(first.event, binding=context, authoritative_terminal=True)
+    assert exc_info.value.code == "EVENT_ID_CONFLICT"
+
+    terminal = bridge.append_terminal(
+        StepStatus.COMPLETED,
+        event_id="terminal-authority",
+        safe_output_summary="完成",
+    )
+    with pytest.raises(EventConflictError) as reverse_exc_info:
+        store.append(terminal.event, binding=context, authoritative_terminal=False)
+    assert reverse_exc_info.value.code == "EVENT_ID_CONFLICT"
+
+
+def test_authoritative_terminal_rejects_non_terminal_status():
+    store = InMemorySessionEventStore()
+    with pytest.raises(ValueError, match="authoritative terminal status"):
+        store.append(
+            _event(status=StepStatus.RUNNING),
+            binding=_context(),
+            authoritative_terminal=True,
+        )
+
+
 def test_terminal_retry_ignores_authority_timestamp_but_rejects_changed_payload():
     store = InMemorySessionEventStore()
     bridge = StreamBridge(_context(), store=store)
@@ -244,6 +318,29 @@ def test_unknown_malformed_secret_and_flood_are_dropped_without_store_append():
     assert flood_bridge.append("anila.step", _event(event_id="ok-2", cursor="2", sequence=2).model_dump_json()) is not None
     assert flood_bridge.append("anila.step", _event(event_id="flood", cursor="3", sequence=3).model_dump_json()) is None
     assert [event.event_id for event in store.all_events(binding=_context())] == ["ok-1", "ok-2"]
+
+
+def test_durable_store_budget_survives_bridge_restart_and_terminal_bypasses_cap():
+    store = InMemorySessionEventStore(max_events_per_run=1)
+    first_bridge = StreamBridge(_context(), store=store, max_events_per_run=1)
+    first = first_bridge.append_event(_event(event_id="budget-1", sequence=1))
+    assert first is not None
+
+    restarted_bridge = StreamBridge(_context(), store=store, max_events_per_run=1)
+    with pytest.raises(EventBudgetExceeded) as exc_info:
+        restarted_bridge.append_event(_event(event_id="budget-2", sequence=2))
+    assert exc_info.value.code == "EVENT_RUN_BUDGET_EXCEEDED"
+
+    terminal = restarted_bridge.append_terminal(
+        StepStatus.COMPLETED,
+        event_id="budget-terminal",
+        safe_output_summary="完成",
+    )
+    assert terminal.event.cursor == "2"
+    assert [event.event_id for event in restarted_bridge.replay_events()] == [
+        "budget-1",
+        "budget-terminal",
+    ]
 
 
 def test_agent_client_only_prepares_csp_proxy_request_with_all_bindings():

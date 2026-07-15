@@ -1052,12 +1052,39 @@ def _is_internal_router_model(model: ModelRegistry | None) -> bool:
     )
 
 
+def _ensure_router_session_id(body: dict) -> str:
+    """Ensure the body has one stable Router session identifier.
+
+    CSP signs the finalized body, so Router must see exactly the same session
+    value that was selected here.  A caller may use either OpenAI's
+    ``session_id`` extension or ANILA's ``anila_session_id``; when both are
+    present they must agree.  No client-supplied value is silently replaced.
+    """
+
+    standard = body.get("session_id")
+    extension = body.get("anila_session_id")
+    candidates = [value for value in (standard, extension) if value not in (None, "")]
+    if any(not isinstance(value, str) for value in candidates):
+        raise HTTPException(status_code=400, detail="Router session_id 必須是字串")
+    if len(candidates) == 2 and candidates[0] != candidates[1]:
+        raise HTTPException(status_code=400, detail="Router session_id 欄位不一致")
+    session_id = candidates[0] if candidates else f"router-{uuid.uuid4().hex}"
+    if not session_id.strip() or len(session_id) > 255 or any(
+        ord(char) < 0x20 or ord(char) == 0x7F for char in session_id
+    ):
+        raise HTTPException(status_code=400, detail="Router session_id 無效")
+    if not candidates:
+        body["anila_session_id"] = session_id
+    return session_id
+
+
 def _router_formal_context(
     request: Request,
     *,
     db: Session,
     task_ctx,
     admitted_classification_level: str | None,
+    session_id: str,
 ) -> dict[str, object] | None:
     """Project CSP-owned task/auth facts for the internal Router target.
 
@@ -1104,11 +1131,13 @@ def _router_formal_context(
         "run_id": task_ctx.task_run_id,
         "source_snapshot_id": int(task.source_snapshot_id),
         "trace_id": task_ctx.trace_id,
+        "session_id": session_id,
         "task_type": task.task_type,
         "classification_level": (
             admitted_classification_level or task.classification_level
         ),
         "scopes": ("agent:invoke",),
+        "required_capabilities": tuple(),
         "auth_assurance": {
             "sid": sid,
             "amr": tuple(amr),
@@ -1442,6 +1471,11 @@ async def _chat_completions_impl(
             status_code=403,
             detail="Router internal inference 不得呼叫 Agent 或遞迴 anila-router",
         )
+    router_session_id: str | None = None
+    if _is_internal_router_model(pre_resolved_model):
+        # The session is selected before Task/Router egress and becomes part
+        # of both the body-bound signed context and the forwarded body.
+        router_session_id = _ensure_router_session_id(body)
     if internal_router:
         request.state.prevalidated_task_ctx = attach_running_task_run(
             db,
@@ -2151,10 +2185,19 @@ async def _chat_completions_impl(
             db=db,
             task_ctx=task_ctx,
             admitted_classification_level=admitted_level,
+            session_id=router_session_id or "",
         )
         if _is_internal_router_model(model)
         else None
     )
+    if _is_internal_router_model(model) and router_context is None:
+        # The internal Router target has no legacy raw-authority fallback.
+        # API-key-only callers (or requests without CSP-issued auth claims)
+        # must stop before the first downstream HTTP attempt.
+        raise HTTPException(
+            status_code=403,
+            detail="anila-router 需要 CSP signed router-context/v1 provenance",
+        )
     usage_trace_id = task_ctx.trace_id if task_ctx else trace_id
     if stream:
         target_url = (

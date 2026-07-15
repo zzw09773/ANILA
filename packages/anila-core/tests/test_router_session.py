@@ -32,6 +32,7 @@ CSP_BASE = settings.csp_base_url
 CSP_URL = f"{CSP_BASE}/v1/chat/completions"
 CSP_AGENTS_URL = f"{CSP_BASE}/v1/agents"
 CSP_ME_URL = f"{CSP_BASE}/api/auth/me"
+LEGACY_DISPATCH_HEADERS = {"X-ANILA-Legacy-Dispatch": "1"}
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -97,7 +98,7 @@ def test_router_generates_session_id_when_caller_omits(
             "messages": [{"role": "user", "content": "say hi"}],
             "stream": False,
         },
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
     )
     assert response.status_code == 200
     sid = response.headers.get("X-Anila-Session-Id")
@@ -121,7 +122,7 @@ def test_router_echoes_caller_supplied_session_id(db_path: Path) -> None:
             "stream": False,
             "session_id": "s-pinned",
         },
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
     )
     assert response.headers["X-Anila-Session-Id"] == "s-pinned"
 
@@ -143,7 +144,7 @@ def test_router_accepts_anila_session_id_alias(db_path: Path) -> None:
             "stream": False,
             "anila_session_id": "s-alias",
         },
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
     )
     assert response.headers["X-Anila-Session-Id"] == "s-alias"
 
@@ -172,7 +173,7 @@ def test_state_endpoint_returns_persisted_user_message(
             "stream": False,
             "session_id": "s-state",
         },
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
     )
 
     state_response = client.get(
@@ -209,7 +210,7 @@ def test_state_endpoint_requires_auth(db_path: Path) -> None:
             "stream": False,
             "session_id": "s-private",
         },
-        headers={"Authorization": "Bearer sk-owner"},
+        headers={"Authorization": "Bearer sk-owner", **LEGACY_DISPATCH_HEADERS},
     )
     assert response.status_code == 200
 
@@ -230,14 +231,20 @@ def test_router_accepts_only_the_configured_host_cookie(db_path: Path) -> None:
     accepted = client.post(
         "/v1/chat/completions",
         json={"messages": [{"role": "user", "content": "x"}], "stream": False},
-        headers={"Cookie": f"{ACCESS_COOKIE_NAME}=sk-cookie-user"},
+        headers={
+            "Cookie": f"{ACCESS_COOKIE_NAME}=sk-cookie-user",
+            **LEGACY_DISPATCH_HEADERS,
+        },
     )
     assert accepted.status_code == 200, accepted.text
 
     rejected = client.post(
         "/v1/chat/completions",
         json={"messages": [{"role": "user", "content": "x"}], "stream": False},
-        headers={"Cookie": "anila_access_token=sk-attacker-shadow"},
+        headers={
+            "Cookie": "anila_access_token=sk-attacker-shadow",
+            **LEGACY_DISPATCH_HEADERS,
+        },
     )
     assert rejected.status_code == 401
 
@@ -259,7 +266,7 @@ def test_state_endpoint_rejects_different_caller(db_path: Path) -> None:
             "stream": False,
             "session_id": "s-owned",
         },
-        headers={"Authorization": "Bearer sk-owner"},
+        headers={"Authorization": "Bearer sk-owner", **LEGACY_DISPATCH_HEADERS},
     )
     assert response.status_code == 200
 
@@ -315,7 +322,10 @@ def test_state_endpoint_accepts_refreshed_jwt_for_same_user(
             "stream": False,
             "session_id": "s-jwt-rotate",
         },
-        headers={"Authorization": f"Bearer {_jwt('access-v1')}"},
+        headers={
+            "Authorization": f"Bearer {_jwt('access-v1')}",
+            **LEGACY_DISPATCH_HEADERS,
+        },
     )
     assert first.status_code == 200, first.text
 
@@ -388,7 +398,7 @@ def test_dispatch_forwards_session_id_to_target_agent(
             "stream": False,
             "session_id": "s-dispatch",
         },
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
     )
 
     # Find the agent-dispatch payload (model = agent_id)
@@ -428,7 +438,7 @@ def test_session_factory_override_used() -> None:
             "stream": False,
             "session_id": "s-mem",
         },
-        headers={"Authorization": "Bearer sk-test"},
+        headers={"Authorization": "Bearer sk-test", **LEGACY_DISPATCH_HEADERS},
     )
     assert response.status_code == 200
     assert "s-mem" in captured
@@ -464,7 +474,10 @@ def test_session_factory_jwt_chat_does_not_resolve_owner_hash(monkeypatch) -> No
             "stream": False,
             "session_id": "s-custom-jwt",
         },
-        headers={"Authorization": f"Bearer {_jwt('access-v1')}"},
+        headers={
+            "Authorization": f"Bearer {_jwt('access-v1')}",
+            **LEGACY_DISPATCH_HEADERS,
+        },
     )
 
     assert response.status_code == 200, response.text

@@ -41,12 +41,27 @@ _PLACEHOLDER_TOKENS = frozenset(
 )
 
 
+def _validate_resume_idempotency_key(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise AgentClientError("resume 缺少 idempotency key")
+    normalized = value.strip()
+    if len(normalized) > 255 or any(
+        ord(char) < 0x20 or ord(char) == 0x7F for char in normalized
+    ):
+        raise AgentClientError("resume idempotency key 格式無效")
+    return normalized
+
+
 class RegistryClientError(RuntimeError):
     """Raised when the CSP authority snapshot cannot be obtained safely."""
 
 
 class AgentClientError(RuntimeError):
     """Raised when a CSP Agent proxy call cannot be completed safely."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class GrantMintUnavailable(RuntimeError):
@@ -147,6 +162,15 @@ class AgentClient(Protocol):
         policy_result: PolicyGateResult,
         grant_input: ExecutionGrantInput,
         execution_grant: ExecutionGrantEnvelope,
+        idempotency_key: str,
+        approval_mode: str = "approve_all",
+    ) -> dict[str, Any]: ...
+
+    async def resume_by_session(
+        self,
+        *,
+        session_id: str,
+        caller_user_id: int,
         idempotency_key: str,
         approval_mode: str = "approve_all",
     ) -> dict[str, Any]: ...
@@ -535,7 +559,7 @@ class CspInferenceClient:
         classification_obj = getattr(context, "classification", None)
         classification = (
             classification_obj.to_storage()
-            if hasattr(classification_obj, "to_storage")
+            if isinstance(classification_obj, ClassificationLevel)
             else self._text(classification_obj, name="classification")
         )
         scopes = tuple(getattr(context, "scopes", ()) or ())
@@ -858,6 +882,7 @@ class CspAgentClient:
         service_token: str | None = None,
         dispatch_path: str = "/internal/v1/agents/dispatch",
         resume_path: str | None = None,
+        resume_by_session_path: str | None = None,
         timeout: float = 120.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
@@ -872,9 +897,19 @@ class CspAgentClient:
         resolved_resume_path = resume_path or f"{dispatch_path.rstrip('/')}/resume"
         if not resolved_resume_path.startswith("/") or "?" in resolved_resume_path or "#" in resolved_resume_path:
             raise ValueError("CSP Agent resume path 必須是 origin-relative path")
+        resolved_resume_by_session_path = resume_by_session_path or (
+            f"{dispatch_path.rstrip('/').rsplit('/', 1)[0]}/resume-by-session"
+        )
+        if (
+            not resolved_resume_by_session_path.startswith("/")
+            or "?" in resolved_resume_by_session_path
+            or "#" in resolved_resume_by_session_path
+        ):
+            raise ValueError("CSP Agent resume-by-session path 必須是 origin-relative path")
         self.service_token = (service_token or "").strip()
         self.dispatch_path = dispatch_path
         self.resume_path = resolved_resume_path
+        self.resume_by_session_path = resolved_resume_by_session_path
         self.timeout = timeout
         self.transport = transport
 
@@ -1053,10 +1088,7 @@ class CspAgentClient:
         explicit R5 binary ``approval_mode`` body and resume path.
         """
 
-        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
-            raise AgentClientError("resume 缺少 idempotency key")
-        if len(idempotency_key) > 255 or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in idempotency_key):
-            raise AgentClientError("resume idempotency key 格式無效")
+        idempotency_key = _validate_resume_idempotency_key(idempotency_key)
         if approval_mode != "approve_all":
             raise AgentClientError("resume approval_mode 必須是 approve_all")
         base = self.build_request(
@@ -1073,11 +1105,45 @@ class CspAgentClient:
             stream=False,
         )
         headers = dict(base.headers)
-        headers["X-ANILA-Idempotency-Key"] = idempotency_key.strip()
+        headers["X-ANILA-Idempotency-Key"] = idempotency_key
         return CspAgentRequest(
             url=f"{self.base_url}{self.resume_path}",
             payload={"approval_mode": approval_mode},
             headers=headers,
+        )
+
+    def build_resume_by_session_request(
+        self,
+        *,
+        session_id: str,
+        caller_user_id: int,
+        idempotency_key: str,
+        approval_mode: str = "approve_all",
+    ) -> CspAgentRequest:
+        """Build the restart-safe opaque-session CSP resume request.
+
+        No grant, binding, interrupt id, answer, or bearer is accepted from
+        the caller. CSP resolves the durable authority by session id.
+        """
+
+        if not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 255:
+            raise AgentClientError("resume session_id 格式無效")
+        if not isinstance(caller_user_id, int) or isinstance(caller_user_id, bool) or caller_user_id <= 0:
+            raise AgentClientError("resume caller_user_id 必須是 positive numeric id")
+        idempotency_key = _validate_resume_idempotency_key(idempotency_key)
+        if approval_mode != "approve_all":
+            raise AgentClientError("resume approval_mode 必須是 approve_all")
+        if not self.is_configured:
+            raise AgentClientError("缺少具名 Router service-client token；CSP internal Agent seam 未啟用")
+        return CspAgentRequest(
+            url=f"{self.base_url}{self.resume_by_session_path}",
+            payload={"session_id": session_id.strip(), "approval_mode": approval_mode},
+            headers={
+                "X-CSP-Service-Token": self.service_token,
+                "X-ANILA-Caller-User-Id": str(caller_user_id),
+                "X-ANILA-Idempotency-Key": idempotency_key,
+                "Content-Type": "application/json",
+            },
         )
 
     async def complete(
@@ -1263,6 +1329,65 @@ class CspAgentClient:
             raise AgentClientError("CSP Agent resume response shape 無效") from exc
         if not isinstance(content, str):
             raise AgentClientError("CSP Agent resume content 必須是字串")
+        result.update({"content": content, "anila_meta": data.get("anila_meta")})
+        return result
+
+    async def resume_by_session(
+        self,
+        *,
+        session_id: str,
+        caller_user_id: int,
+        idempotency_key: str,
+        approval_mode: str = "approve_all",
+    ) -> dict[str, Any]:
+        request = self.build_resume_by_session_request(
+            session_id=session_id,
+            caller_user_id=caller_user_id,
+            idempotency_key=idempotency_key,
+            approval_mode=approval_mode,
+        )
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
+                response = await client.post(
+                    request.url,
+                    json=request.payload,
+                    headers=request.headers,
+                )
+                if response.status_code in {401, 403}:
+                    raise AgentClientError(
+                        "CSP resume-by-session caller authorization denied",
+                        status_code=response.status_code,
+                    )
+                if response.status_code == 409:
+                    raise AgentClientError(
+                        "CSP resume-by-session idempotency/lifecycle conflict",
+                        status_code=409,
+                    )
+                if response.status_code >= 500:
+                    raise AgentClientError(
+                        "CSP resume-by-session upstream failure",
+                        status_code=502,
+                    )
+                response.raise_for_status()
+                data = response.json()
+        except AgentClientError:
+            raise
+        except (httpx.HTTPError, ValueError, TypeError) as exc:
+            raise AgentClientError("CSP resume-by-session call 失敗") from exc
+        if not isinstance(data, Mapping):
+            raise AgentClientError("CSP resume-by-session response 必須是 JSON object")
+        result = {"raw": dict(data), **dict(data)}
+        if data.get("status") == "paused" or response.status_code == 202:
+            result.setdefault("content", "")
+            result.setdefault("anila_meta", data.get("anila_meta"))
+            return result
+        try:
+            message = data["choices"][0]["message"]
+            content = message.get("content", "")
+        except (KeyError, IndexError, TypeError) as exc:
+            raise AgentClientError("CSP resume-by-session response shape 無效") from exc
+        if not isinstance(content, str):
+            raise AgentClientError("CSP resume-by-session content 必須是字串")
         result.update({"content": content, "anila_meta": data.get("anila_meta")})
         return result
 

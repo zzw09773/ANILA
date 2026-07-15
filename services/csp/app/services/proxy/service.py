@@ -695,11 +695,17 @@ async def _proxy_request_impl(
         router_target = (
             str(getattr(model, "name", "")).strip().lower() == "anila-router"
         )
-        if router_target and router_caller_user_id is not None and router_context is not None:
+        if router_target:
+            if router_caller_user_id is None or router_context is None:
+                raise HTTPException(
+                    status_code=403,
+                    detail="anila-router outbound 缺少 signed router-context/v1 provenance",
+                )
             req_headers = build_router_model_gateway_headers(
                 user_identity,
                 router_caller_user_id=router_caller_user_id,
                 router_context=router_context,
+                request_body=request_body,
             )
         else:
             req_headers = build_model_gateway_headers(
@@ -1198,6 +1204,15 @@ async def _proxy_stream_impl(
     # (員編) is the wire identity. Builder chosen by DESTINATION
     # (target_agent_id) — never a caller flag — so the model gateway can
     # never receive the CSP service token.
+    # Finalize the exact JSON object before signing the Router context.  The
+    # streaming proxy adds usage options; hashing the pre-finalized request
+    # would let a body-bound token validate a different byte-level request.
+    body = {
+        **request_body,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+
     if target_agent_id is not None:
         headers = build_agent_headers(
             user_identity,
@@ -1222,11 +1237,17 @@ async def _proxy_stream_impl(
         # Doc 04 §3/AC5: model gateway gets Bearer key + 員編 ONLY — no
         # task / trace headers, structurally (builder has no such params).
         router_target = str(model_name or "").strip().lower() == "anila-router"
-        if router_target and router_caller_user_id is not None and router_context is not None:
+        if router_target:
+            if router_caller_user_id is None or router_context is None:
+                raise HTTPException(
+                    status_code=403,
+                    detail="anila-router outbound 缺少 signed router-context/v1 provenance",
+                )
             headers = build_router_model_gateway_headers(
                 user_identity,
                 router_caller_user_id=router_caller_user_id,
                 router_context=router_context,
+                request_body=body,
             )
         else:
             headers = build_model_gateway_headers(
@@ -1240,10 +1261,6 @@ async def _proxy_stream_impl(
     # None → _apply_gateway_auth 退回全域 env(既有行為)。
     if target_agent_id is None:
         _apply_gateway_auth(headers, gateway_api_key)
-    # Force stream_options so the downstream sends usage in last chunk
-    body = {**request_body, "stream": True,
-            "stream_options": {"include_usage": True}}
-
     start_time = time.time()
     prompt_tokens = completion_tokens = 0
     usage_seen = False
