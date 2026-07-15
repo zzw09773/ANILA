@@ -1,11 +1,11 @@
 # Gate 6 Production Acceptance durable handoff（INCOMPLETE / NO-GO）
 
-更新時間：2026-07-16 05:00:12（UTC+8）
+更新時間：2026-07-16 05:45（UTC+8；05:45 後現況）
 
 ## 先看結論
 
 - **Gate 6 engineering checkpoint 的變更已提交並推送；Production Acceptance 結論仍為 No-Go。**
-- Gate 6 branch 目前為 `bdf1177495ca6364e2a1bb22915482a76b2d8e97`；draft PR
+- Gate 6 branch 目前為 `f538a734fcc76a9254713414aac6440c9ef24fc9`；draft PR
   [#32](https://github.com/zzw09773/ANILA/pull/32) 為 `OPEN / MERGEABLE / Draft`。
   PR 不得 merge、不得改 ready，也不得據此宣告 Go。
 - P0 schema／verifier、disabled template、P9 inventory exporter、backup contract、CI
@@ -13,6 +13,9 @@
   **不能因此宣告 P0、P1、P9 pass，更不能宣告 P0–P9 全數通過或 production Go。**
 - Gate 6 的 P3 七日觀測、P6 獨立具名人類覆核、P7 法務授權、P8 實體卡矩陣，以及
   P0–P9 的五方人員簽核，都是不可由 schema／CI／AI 壓縮的外部 blocker。
+- **Gate 6 維持 No-Go。** AI／Claude／Opus／Fable／Luna 不可代替 P0 五方簽章、P3
+  連續 7 日 time-lock、P6 獨立具名人類、P7 法務／採購裁決、P8 實體卡／reader／HiPKI，
+  也不能把 P1 production-equivalent restore 或 P9 production network evidence 壓縮完成。
 - Gate 5 已 merge；這個 checkpoint 只是從 Gate 5 進入 Gate 6 的工程收尾，不是
   Production Acceptance 核准。
 
@@ -23,17 +26,18 @@
 | Worktree | `C:\Users\USER\.codex\worktrees\ANILA-gate6` |
 | Branch | `codex/gate6-production-acceptance` |
 | Base | `main`；Gate 5 merge `bca5af0cc091dac231903d5b9cfa3dc66d2fa95d` |
-| Gate 6 commits | `6a126870d760c7d34b2632fe642229c3a878f00c`、`d545630f38336f1e99190ef360711aa0df2ea71d`、`bdf1177495ca6364e2a1bb22915482a76b2d8e97` |
-| Current committed HEAD | `bdf1177495ca6364e2a1bb22915482a76b2d8e97`（Gate 6 current head） |
+| Gate 6 commits | `6a126870d760c7d34b2632fe642229c3a878f00c`、`d545630f38336f1e99190ef360711aa0df2ea71d`、`bdf1177495ca6364e2a1bb22915482a76b2d8e97`、`83f0d3556b086a56581e82aa908e26842522d59d`、`4650347af2e9beffbc03efe9ee2233457be596af`、`f538a734fcc76a9254713414aac6440c9ef24fc9` |
+| Current committed HEAD | `f538a734fcc76a9254713414aac6440c9ef24fc9`（restore tests unittest-compatible；P1 checkpoint 在 `4650347…`，P2 fail-closed 在 `83f0d35…`） |
 | Gate 5 PR | [#31](https://github.com/zzw09773/ANILA/pull/31)；merge commit `bca5af0cc091dac231903d5b9cfa3dc66d2fa95d` |
 | Gate 6 PR URL / number | [#32](https://github.com/zzw09773/ANILA/pull/32) |
 | Gate 6 PR state / draft / mergeability | `OPEN / Draft / MERGEABLE`；不得 merge 或改 ready |
-| Gate 6 pushed head SHA | `bdf1177495ca6364e2a1bb22915482a76b2d8e97` |
+| Gate 6 pushed head SHA | `f538a734fcc76a9254713414aac6440c9ef24fc9` |
 | Remote | `origin=https://github.com/zzw09773/ANILA.git` |
-| Working tree | 05:00 snapshot 只有 handoff untracked；本文件後續將 docs-only commit/push，發布後以 `git rev-parse HEAD` 讀回包含 handoff 的 PR head；last reviewed code head 仍為 `bdf1177495ca6364e2a1bb22915482a76b2d8e97` |
+| Working tree | 本次只更新此 handoff，其他檔案不得修改；current pushed code head 為 `f538a734fcc76a9254713414aac6440c9ef24fc9` |
 
 目前的 `HEAD` 是 Gate 6 current head，不是 Gate 5 merge；`bca5af0…` 僅是 base。後續
-CI／review 仍必須指向 `bdf1177…`，不可把較早的 `6a12687…` 或 `d545630…` 誤當最終 head。
+CI／review 必須指向 `f538a734fcc76a9254713414aac6440c9ef24fc9`；`4650347…` 是 P1
+checkpoint、`83f0d35…` 是 P2 code head，不可誤當目前 PR head。
 
 ## 本 checkpoint 的具體變更與用途
 
@@ -72,14 +76,17 @@ CI／review 仍必須指向 `bdf1177…`，不可把較早的 `6a12687…` 或 `
   hardening。
 - `infra/deployment/tests/test_production_backup_automation.py`：backup／pg_dump／docker
   readiness／container cleanup 啟動失敗與 disposable restore smoke 的測試覆蓋。
+- `services/ingestion-worker/src/ingestion_worker/handlers.py` 與其 helpers tests（current
+  head `83f0d3556b086a56581e82aa908e26842522d59d`）：P2 image persistence filesystem／DB／RLS／
+  chmod failure fail-closed、atomic publish、rollback cleanup 與 backup reconciliation hardening。
 
 ## P0–P9 狀態矩陣
 
 | 項目 | 目前狀態 | 已有／尚有的精確缺口 |
 |---|---|---|
 | **P0** | **PARTIAL；Production Acceptance 不成立** | schema、verifier、disabled template 與五方 signer role／簽章規則已有 code/test；但尚缺由 system owner、data owner、PKI owner、資安、維運完成的 production signed acceptance profile（含實際 topology、feature、資料上限、RTO/RPO、SLO、load、觀測窗、workflow matrix、callsite inventory、revocation／PKI policy、finding rule、impact matrix 等）。不能把 synthetic test signatures 當成 production 五方簽核。 |
-| **P1** | **PARTIAL；No-Go** | 已有 backup launch hardening 與 disposable Docker restore smoke；尚缺 production-equivalent restore、P0 RTO/RPO 內計時、DB／blob／artifact／active vector generation checksum／referential integrity，以及 RLS、compartment、revocation 後讀取 negative tests 的完整 drill。 |
-| **P2** | **NOT DONE** | Redis／worker／CSP、磁碟滿、網路中斷等 fault drills、lease/retry 終態、RPO/RTO reconciliation 與 fail-closed 證據尚缺。 |
+| **P1** | **PARTIAL；No-Go** | P1 verifier 已完成 checkpoint；11 focused root pass、P1+P0 agent validation **32 pass**、backup+P1 **54 pass / 1 skipped**、posture pass。expected／actual 同屬同一 report，且未綁 signed backup manifest，因此只能作 checkpoint，**P1 仍未 pass**；尚缺 production-equivalent restore、P0 RTO/RPO 內計時、DB／blob／artifact／active vector generation checksum／referential integrity，以及 RLS、compartment、revocation 後讀取 negative tests 的完整 drill。 |
+| **P2** | **PARTIAL；No-Go** | current head 已補 image persistence fail-closed 與 88 focused regression tests；仍尚缺 Redis／worker／CSP、磁碟滿、網路中斷等 production fault drills、lease/retry 終態、RPO/RTO reconciliation 與完整 production evidence。 |
 | **P3** | **BLOCKED / NOT DONE** | signed load profile 下連續 7 日的 time-locked observation 尚未完成；沒有觀測窗與未處置 Sev-1／Sev-2 的證據。 |
 | **P4** | **NOT DONE** | signed release envelope、單一 code line 對應的 image/model digest、SBOM、CA bundle hash、deployment topology／feature／data ceiling、bundle signature 與 clean-host air-gap deploy 尚缺。 |
 | **P5** | **NOT DONE** | P0 先凍結的 signed workflow matrix、各登入法／分類／compartment 的正負 fixture、固定 N 的 production-like 全鏈（upload → chunk → retrieval → citation → artifact → trace）抽驗與逐筆證據尚缺。 |
@@ -99,39 +106,56 @@ CI／review 仍必須指向 `bdf1177…`，不可把較早的 `6a12687…` 或 `
 |---|---|
 | `anila-security` | **65 passed**（含新增 loader tests） |
 | Gate 5 + P9 focused policy contracts | **30 passed（Python 3.11）**；Docker Python 3.12 **30 passed**；Docker 已清理 |
-| Gate 6 repository posture | **8 passed** |
+| Gate 6 repository posture（current tree） | **10 tests PASS** |
 | Production backup automation | **27 passed / 1 skipped** |
 | Combined sequential Gate 6／Gate 5 suite（Fable fixes 後） | **131 passed / 1 skipped** |
-| Disposable Docker restore smoke（另跑） | **1 passed / 27 deselected**，9.93s；container／volume 無殘留 |
+| Disposable Docker restore smoke（另跑） | **1 passed** |
+| Ingestion-worker P2 focused regression | **88 passed** |
+| Ingestion-worker full suite | **235 passed / 10 skipped** |
+| P1 verifier focused root validation | **11 passed** |
+| P1 + P0 agent validation | **32 passed** |
+| Backup + P1 validation | **54 passed / 1 skipped**；posture PASS |
+| 465 deployment checks | **failed**：新 test 以頂層 `pytest`／unittest discovery 執行，但環境未裝 pytest；已由 Luna 改為純 unittest |
+| f538 focused deployment unittest | **5 passed** |
+| f538 full deployment discovery | **162 passed / 2 skipped** |
+| f538 deployment Ruff | **PASS** |
 | Ruff／compileall／`git diff --check` | **PASS** |
 | Gate 6 workflow posture／static checks | **PASS** |
-| PR #32 code-head CI snapshot | **23/23 checks 全綠**（2026-07-16 04:36 UTC+8）；`gh pr checks 32` exit 0 |
+| PR #32 current head `f538a73…` CI | **PENDING**；不得宣稱 current PR checks 已綠 |
 
 先前並行 source-scanner 曾因 shared-worktree temporary fixture race 失敗；該競態不是產品
 failure，序列重跑的 current Gate 5／P9 suite 為 30 passed，且工作樹／Docker 無殘留。不得
 把這些工程 contract 結果擴寫成 P9 runtime network 或 usage 已驗收。
 
-### CI run provenance（均指向 Gate 6 current head）
+### CI run provenance（歷史 bdf code head；current 83f head 尚 pending）
 
 - Run `29445861023`：因缺少 local `anila_core` install 失敗；已修正。
 - Run `29447399506`：Python 3.11 pass；Python 3.12 因 PEP 701 f-string scanner 失敗；
   scanner 已修正。
-- Run `29448123678`：PR #32 code head `bdf1177495ca6364e2a1bb22915482a76b2d8e97` 的
-  23 個 checks 於 `2026-07-16 04:36:01`（UTC+8）read-back 全部 pass；`gh pr checks 32`
-  exit 0。這是 code-head CI 全綠證據，不是 production approval。
+- Run `29448123678`：前一個 code head `bdf1177495ca6364e2a1bb22915482a76b2d8e97` 的
+  23 個 checks 於 `2026-07-16 04:36:01`（UTC+8）read-back 全部 pass；這是歷史工程
+  證據，不代表 current head `f538a73…` 的 PR checks 已完成。
 - CSP full suite job `87463604849`：**success**，耗時 `8m59s`。
 - PostgreSQL RLS job `87465627161`：**success**，完成於 `2026-07-16 04:36:01`（UTC+8）。
 - Gate 6 Python 3.11 job `87463600938` 已於 `2026-07-15T20:26:06Z`
   （UTC+8 `2026-07-16 04:26:06`）成功完成。
 
-## Argus provenance
+### Editable-install contamination note
 
-- Workflow：**Opus 4.8 xhigh read-only Workflow**；workflow child：`claude-sonnet-5` 子任務。
-- Session ID：`ec0aae0d-7d6d-424e-905f-e5422b072318`。
-- Workflow ID：`wf_65cc3531-b18`。
-- Final synthesis：**完成，10/10 tasks、0 error；頂層 verdict = No-Go**。
-- 這份 Argus synthesis 是 read-only engineering／security evidence，**不得把它當 P6
-  獨立具名人類 reviewer，也不得代替五方人員簽核**。
+曾以 bare `pytest` 執行而載入 ANILA-gate3 的 editable install；該結果不可作為 Gate 6
+evidence。接手或重跑 ingestion-worker 時，必須顯式指定 Gate6 source path：
+`PYTHONPATH=C:\Users\USER\.codex\worktrees\ANILA-gate6\services\ingestion-worker\src`，
+不可依賴未確認的 editable package。
+
+## Opus／Argus provenance
+
+- Current Opus read-only workflow session：`2eb9a4dd…`，**已完成**。
+- 該 workflow 提出 P1／P2／P4／P5／P9 的 engineering package；它是工程建議與風險整理，
+  **不等於 Production Acceptance，不等於 P0–P9 pass，也不等於 Go**。
+- Historical Argus synthesis：session `ec0aae0d-7d6d-424e-905f-e5422b072318`、workflow
+  `wf_65cc3531-b18`，10/10 tasks、0 error、頂層 verdict **No-Go**。
+- Opus／Argus output 是 read-only engineering／security evidence，**不得把它當 P6 獨立
+  具名人類 reviewer，也不得代替五方人員簽核**。
 
 ### Argus 補充的尚未關閉 blocker
 
@@ -157,52 +181,59 @@ failure，序列重跑的 current Gate 5／P9 suite 為 30 passed，且工作樹
   code-head incremental review 已為 **Verdict: Approve**：確認 PEP 701 scanner fix correct，
   無 blocker。新增的 INFO 為 tokenize error 目前回傳 `[]` 的窄 fail-open，以及 future
   Python 3.14 t-string 支援提醒；兩者均不影響本 PR。
+- Current Fable5 review session：`cc881337…`，正在審查 `6ae7f7a…` →
+  `83f0d3556b086a56581e82aa908e26842522d59d`；verdict 尚未完成。Claude PID／process
+  狀態不在 handoff 內寫死，接手者必須讀 session JSONL 尾端確認。
 - Codex Security diff scan：**no reportable findings**；exact report path：
   `C:\Users\USER\AppData\Local\Temp\codex-security-scans\ANILA\bca5af0_20260715T194201Z\report.md`。
 - Fable5、Claude、Argus 與 Codex scan 都是工程／安全證據，不是 P6 獨立具名人類 reviewer，
   也不取代五方人員簽核、法務裁決或實體卡驗證。
 
-## 05:00（UTC+8）decision section：正式 read-back
+## 05:45+（UTC+8）current decision／process snapshot
 
-05:00:12（UTC+8）read-back 確認：Git `HEAD` 與 PR head 均為
-`bdf1177495ca6364e2a1bb22915482a76b2d8e97`，branch 為 `codex/gate6-production-acceptance`，
-PR #32 為 `OPEN / Draft / MERGEABLE`；23/23 checks 為 `SUCCESS`、`notGreen=[]`，且
-`gh pr checks 32` exit 0。工作樹只剩本 handoff untracked。
+05:45 後 read-back 確認：Git `HEAD` 與 pushed PR head 均為
+`f538a734fcc76a9254713414aac6440c9ef24fc9`，branch 為 `codex/gate6-production-acceptance`，
+PR #32 為 `OPEN / Draft / MERGEABLE`。Current PR checks **PENDING**；不得宣稱 current
+head CI 已綠。這份 handoff 只記錄工程與流程狀態，不改 PR、不 merge、不改 Draft。
 
-**正式判定：無法在 06:00 前完成 Gate 6 Production Acceptance，維持 No-Go。** 不可壓縮的
-blocker 至少包括：P3 連續 7 日 time-lock、P6 獨立具名人類 reviewer、P7 法務／採購書面
-裁決、P8 實體卡／reader／HiPKI 矩陣、P0 五方簽章；另 P1／P2／P4／P5／P9 的 production
-evidence 仍缺。這個判定不是把工程 CI 綠燈寫成 P0–P9 acceptance，也不是 Production Go。
+**Gate 6 正式維持 No-Go。** P0 五方簽章、P3 連續 7 日 time-lock、P6 獨立具名人類、P7
+法務／採購書面裁決、P8 實體卡／reader／HiPKI、P1 production-equivalent restore 與 P9
+production network／usage evidence 均不可由 AI 或工程測試代替；P2 雖已補 fail-closed code，
+仍未完成 production fault evidence。P4／P5 production evidence 亦仍缺。
 
-### 05:00 process／session／stage snapshot
+### Current process／session／stage
 
-- 05:00 時 workflow／review：**none running**；Fable sessions 與 Argus 均 completed。
-- Claude CLI processes：**none**；Luna agents：**completed / no running**；GitHub workflows：
-  **none**；Docker `python:3.12-slim` 與 `anila-backup-test-source` containers：**none**。
-- stopped sessions／stage：
-  - Argus session `ec0aae0d-7d6d-424e-905f-e5422b072318`、workflow
-    `wf_65cc3531-b18`：completed No-Go synthesis。
-  - Fable `f54f286d-511d-4ec5-aa8d-a560b9435de2`：Request changes，fixed-time expiry
-    已修；Fable `96d866b7-5f87-4e4d-92e4-b1eb2fab7b3d`：對 d545 與 bdf 均 Approve，已完成。
-  - GitHub code-head checks：completed green；Luna tasks：completed。
-- exact stopped stage：Gate 5 已 merge；Gate 6 engineering checkpoint code 在
-  `bdf1177495ca6364e2a1bb22915482a76b2d8e97` 完成、pushed、reviewed、CI-green；停止於 Gate 6
-  Production Acceptance external evidence collection，尚未完成 P1／P2／P3／P4／P5／P6／P7／
-  P8／P9 closure。PR 保持 Draft，不 merge。
-- 05:00 更新者與時間：root，`2026-07-16 05:00:12`（UTC+8）。
+- Opus workflow session `2eb9a4dd…`：**completed**；提出 P1／P2／P4／P5／P9 engineering
+  package，但不等於 acceptance。
+- P1 verifier Luna：**checkpoint 已完成並 push**；11 focused root pass、P1+P0 32 pass、
+  backup+P1 54 pass / 1 skipped、posture pass。但 expected／actual 同屬同一 report，未綁
+  signed backup manifest，故 **P1 仍未 pass**，不可宣告 production acceptance。
+- Fable review session `cc881337…`：**正在審查** `6ae7f7a…` → `83f0d355…`；verdict
+  尚未完成。Claude PID／process 狀態不寫死，依下方 JSONL 指令即時檢查。
+- GitHub current PR checks：**PENDING**；`f538a73…` 的 CI 不得沿用 `bdf1177…` 歷史綠燈。
+  465 deployment jobs 曾因頂層 pytest／unittest discovery 缺少 pytest 失敗，已由 Luna
+  改為純 unittest 並推送 f538；新的 CI 仍 pending。
+  結果。Disposable Docker restore smoke 已有 **1 passed**，但不等於 production restore。
+- exact current stage：Gate 5 已 merge；P2 image persistence fail-closed code 在 `83f0d35…`，
+  P1 verifier checkpoint 在 `4650347…`，restore tests unittest-compatible 修正已在
+  `f538a734fcc76a9254713414aac6440c9ef24fc9` pushed；root focused/full validation 已完成。
+  仍停在 Gate 6 external acceptance evidence collection，等待 Fable review 與 current PR CI，
+  且 P1 因 unsigned backup-manifest binding 限制仍未 pass；
+  仍缺 P0／P1／P2／P3／P4／P5／P6／P7／P8／P9 closure。
 
-### 05:00 最終更新 checklist（已完成 read-back）
+### Current handoff checklist
 
-- [x] Git `HEAD` 與 PR head：`bdf1177495ca6364e2a1bb22915482a76b2d8e97`；branch
-      `codex/gate6-production-acceptance`
-- [x] Gate 6 PR：[#32](https://github.com/zzw09773/ANILA/pull/32)，`OPEN / MERGEABLE / Draft`
-- [x] Code-head required checks：23/23 `SUCCESS`、`notGreen=[]`；`gh pr checks 32` exit 0
-- [x] Fable5 final incremental review：session
-      `96d866b7-5f87-4e4d-92e4-b1eb2fab7b3d`、exact head
-      `bdf1177495ca6364e2a1bb22915482a76b2d8e97`、verdict **Approve**（無 blocker；INFO notes
-      見上方 provenance）
-- [x] Argus／Fable／Luna／GitHub／Docker stopped state、exact stopped stage 與 05:00 decision
-      已記錄；未完成的 P0–P9 blocker 與 owner／resume action 見下節。
+- [x] HEAD／branch／PR #32 state 與 current pushed head `f538a734fcc76a9254713414aac6440c9ef24fc9`
+      已 read-back。
+- [x] P2 focused **88 passed**、ingestion-worker full **235 passed / 10 skipped**、
+      ruff／compile／diff 與 disposable Docker restore smoke **1 passed** 已記錄。
+- [x] Opus session `2eb9a4dd…` completed，engineering package 與 No-Go 邊界已記錄。
+- [ ] Current PR #32 checks：**PENDING**；不得提前宣稱綠燈。
+- [x] P1 verifier checkpoint：11 focused、P1+P0 32、backup+P1 54/1skip、posture pass 已記錄；
+      expected／actual 同 report 且無 signed backup manifest，P1 仍標記 No-Go。
+- [ ] Fable session `cc881337…`：審查 `6ae7f7a…` → `83f0d35…` 進行中；尚未覆蓋 `4650347…`。
+- [x] P0／P3／P6／P7／P8 及 P1／P2／P4／P5／P9 external blockers、owner 與 resume action
+      已列出；仍維持 Gate 6 No-Go。
 
 ## 下一接手優先順序與 owner
 
@@ -241,26 +272,38 @@ git fetch origin main codex/gate6-production-acceptance --prune
 git status --short --branch
 git branch --show-current
 git rev-parse HEAD
-git show --no-patch --format=fuller bdf1177495ca6364e2a1bb22915482a76b2d8e97
+git show --no-patch --format=fuller f538a734fcc76a9254713414aac6440c9ef24fc9
 git log -5 --oneline --decorate
-git diff --stat bca5af0cc091dac231903d5b9cfa3dc66d2fa95d..bdf1177495ca6364e2a1bb22915482a76b2d8e97
-git diff --name-status bca5af0cc091dac231903d5b9cfa3dc66d2fa95d..bdf1177495ca6364e2a1bb22915482a76b2d8e97
+git diff --stat bca5af0cc091dac231903d5b9cfa3dc66d2fa95d..f538a734fcc76a9254713414aac6440c9ef24fc9
+git diff --name-status bca5af0cc091dac231903d5b9cfa3dc66d2fa95d..f538a734fcc76a9254713414aac6440c9ef24fc9
 git diff --check
 ```
 
-PR #32／current head `bdf1177495ca6364e2a1bb22915482a76b2d8e97` 的 exact read-back：
+PR #32／current head `f538a734fcc76a9254713414aac6440c9ef24fc9` 的 exact read-back：
 
 ```powershell
 gh pr view 32 --json number,url,state,isDraft,headRefName,baseRefName,headRefOid,mergeable,reviewDecision,statusCheckRollup
 gh pr checks 32
-gh run view 29448123678 --json databaseId,status,conclusion,headSha,workflowName,jobs
+gh run list --branch codex/gate6-production-acceptance --limit 5
 ```
 
-目前 code-head 的 23 個 checks 已全綠；若需重新確認 current run read-back，可執行：
+目前 current head checks 為 **PENDING**；不得沿用 `bdf1177…` 歷史綠燈。若需追蹤 current
+PR checks，可執行：
 
 ```powershell
-gh run watch 29448123678
 gh pr checks 32 --watch
+```
+
+Fable session JSONL／Claude process 狀態檢查（不寫死 PID）：
+
+```powershell
+$claudeProjects = Join-Path $env:USERPROFILE '.claude\projects'
+$sessionId = 'cc881337'
+$sessionFile = Get-ChildItem -LiteralPath $claudeProjects -Recurse -Filter '*.jsonl' -File |
+  Select-String -Pattern $sessionId -List |
+  Select-Object -First 1 -ExpandProperty Path
+if ($sessionFile) { Get-Content -LiteralPath $sessionFile -Tail 120 }
+Get-Process -Name claude -ErrorAction SilentlyContinue
 ```
 
 重跑 Gate 6／Gate 5 focused policy contracts：
@@ -270,6 +313,21 @@ $env:PYTHONPATH='packages/anila-security/src'
 python -m pytest packages/anila-security/tests -q
 python -m pytest infra/policy/tests/test_gate6_p9_enabled_callsite_inventory.py infra/policy/tests/test_gate5_model_governance.py -q
 python -m pytest infra/policy/tests/test_gate6_repository_posture.py -q
+```
+
+Ingestion-worker 重跑必須顯式使用 Gate6 source；不要直接 bare `pytest`，避免載入
+ANILA-gate3 editable install：
+
+```powershell
+$env:PYTHONPATH='C:\Users\USER\.codex\worktrees\ANILA-gate6\services\ingestion-worker\src'
+python -m pytest services/ingestion-worker/tests/test_handlers_helpers.py -q
+python -m pytest services/ingestion-worker/tests -q
+```
+
+Deployment restore tests 已改為純 unittest；重跑使用：
+
+```powershell
+python -m unittest discover -s infra/deployment/tests -p 'test_*.py'
 ```
 
 重跑 backup contracts 與 disposable Docker restore smoke（Docker 必須可用；測試預設會
