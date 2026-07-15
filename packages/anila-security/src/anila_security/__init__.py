@@ -69,6 +69,18 @@ from anila_security.model_governance import (
     verify_profile_signatures,
 )
 from anila_security.queue_integrity import create_queue_proof, verify_queue_proof
+from anila_security.production_acceptance_profile import (
+    PRODUCTION_ACCEPTANCE_SCHEMA,
+    PRODUCTION_SIGNER_ROLES,
+    REQUIRED_PRODUCTION_SIGNER_ROLES,
+    ProductionAcceptanceProfileError,
+    VerifiedProductionAcceptanceProfile,
+    production_profile_content_sha256,
+    validate_production_acceptance_profile,
+    verify_production_acceptance_profile,
+    verify_signed_production_acceptance_profile,
+    verify_signed_production_profile,
+)
 
 __all__ = [
     "ENDPOINT_KIND_AGENT",
@@ -128,4 +140,14 @@ __all__ = [
     "validate_profile_shape",
     "validate_profile_approver_shape",
     "verify_profile_signatures",
+    "PRODUCTION_ACCEPTANCE_SCHEMA",
+    "PRODUCTION_SIGNER_ROLES",
+    "REQUIRED_PRODUCTION_SIGNER_ROLES",
+    "ProductionAcceptanceProfileError",
+    "VerifiedProductionAcceptanceProfile",
+    "production_profile_content_sha256",
+    "validate_production_acceptance_profile",
+    "verify_production_acceptance_profile",
+    "verify_signed_production_acceptance_profile",
+    "verify_signed_production_profile",
 ]

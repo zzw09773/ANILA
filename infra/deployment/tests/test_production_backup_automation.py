@@ -197,6 +197,94 @@ class ProductionBackupAutomationTests(unittest.TestCase):
             self.assertIsInstance(caught.exception.__cause__, OSError)
             self.assertFalse(target.exists())
 
+    def test_stream_to_age_wraps_age_launch_oserror(self) -> None:
+        automation = backup.ProductionBackup(ROOT, PROFILE)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            destination = root / "component.age"
+            recipients = root / "recipients.txt"
+            with mock.patch.object(
+                backup, "_required_file_env", return_value=recipients
+            ), mock.patch.object(
+                backup.subprocess,
+                "Popen",
+                side_effect=FileNotFoundError("age secret path missing"),
+            ):
+                with self.assertRaises(backup.BackupAutomationError) as caught:
+                    automation._stream_to_age(
+                        destination=destination,
+                        surfaces=("csp-postgresql",),
+                        logical_format="postgres-custom-v1",
+                        source_bytes=b"dump",
+                    )
+            self.assertIn("age encryption process could not start", str(caught.exception))
+            self.assertNotIn("secret path", str(caught.exception))
+            self.assertIsInstance(caught.exception.__cause__, OSError)
+            self.assertFalse(destination.with_suffix(".age.tmp").exists())
+
+    def test_stream_to_age_wraps_pg_dump_launch_oserror_and_cleans_temp(self) -> None:
+        automation = backup.ProductionBackup(ROOT, PROFILE)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            destination = root / "csp-postgresql.age"
+            recipients = root / "recipients.txt"
+            age = mock.Mock()
+            age.stdin = mock.Mock()
+            age.poll.return_value = None
+            age.wait.return_value = 0
+            with mock.patch.object(
+                backup, "_required_file_env", return_value=recipients
+            ), mock.patch.object(
+                backup.subprocess,
+                "Popen",
+                side_effect=[age, FileNotFoundError("pg_dump secret path missing")],
+            ):
+                with self.assertRaises(backup.BackupAutomationError) as caught:
+                    automation._stream_to_age(
+                        destination=destination,
+                        surfaces=("csp-postgresql",),
+                        logical_format="postgres-custom-v1",
+                        source_argv=["docker", "compose", "exec", "csp-db", "pg_dump"],
+                    )
+            self.assertIn("PostgreSQL pg_dump capture process could not start", str(caught.exception))
+            self.assertNotIn("secret path", str(caught.exception))
+            self.assertIsInstance(caught.exception.__cause__, OSError)
+            age.kill.assert_called_once()
+            self.assertFalse(destination.with_suffix(".age.tmp").exists())
+
+    def test_stream_to_age_wraps_capture_communication_oserror(self) -> None:
+        automation = backup.ProductionBackup(ROOT, PROFILE)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            destination = root / "csp-postgresql.age"
+            recipients = root / "recipients.txt"
+            age = mock.Mock()
+            age.stdin = mock.Mock()
+            age.poll.return_value = None
+            age.wait.return_value = 0
+            source = mock.Mock()
+            source.stdout.read.side_effect = BrokenPipeError("capture secret path")
+            source.poll.return_value = None
+            source.wait.return_value = 0
+            with mock.patch.object(
+                backup, "_required_file_env", return_value=recipients
+            ), mock.patch.object(
+                backup.subprocess, "Popen", side_effect=[age, source]
+            ):
+                with self.assertRaises(backup.BackupAutomationError) as caught:
+                    automation._stream_to_age(
+                        destination=destination,
+                        surfaces=("csp-postgresql",),
+                        logical_format="postgres-custom-v1",
+                        source_argv=["docker", "compose", "exec", "csp-db", "pg_dump"],
+                    )
+            self.assertIn("PostgreSQL pg_dump capture process communication failed", str(caught.exception))
+            self.assertNotIn("secret path", str(caught.exception))
+            self.assertIsInstance(caught.exception.__cause__, OSError)
+            source.kill.assert_called_once()
+            age.kill.assert_called_once()
+            self.assertFalse(destination.with_suffix(".age.tmp").exists())
+
     def test_docker_output_wraps_start_oserror(self) -> None:
         with mock.patch.object(
             backup.subprocess, "run", side_effect=OSError("docker missing")
@@ -204,6 +292,89 @@ class ProductionBackupAutomationTests(unittest.TestCase):
             with self.assertRaises(backup.BackupAutomationError) as caught:
                 backup._docker_output(["docker", "version"])
         self.assertIsInstance(caught.exception.__cause__, OSError)
+
+    def test_restore_smoke_wraps_pg_restore_start_oserror_and_cleans_container(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            prepared = Path(temp) / "prepared"
+            prepared.mkdir()
+            (prepared / "RESTORE_PREPARED.json").write_bytes(
+                backup._canonical_json({"schema_version": backup.PREPARED_SCHEMA})
+            )
+            (prepared / "manifest.json").write_bytes(
+                backup._canonical_json({"compose_images": {"csp-db": "pgvector:test"}})
+            )
+            (prepared / "db-csp.dump").write_bytes(b"dump")
+            completed = subprocess.CompletedProcess([], 0, b"", b"")
+            with mock.patch.object(
+                backup.subprocess,
+                "run",
+                side_effect=[completed, completed, completed, completed,
+                             OSError("pg_restore missing"), completed],
+            ) as run:
+                with self.assertRaises(backup.BackupAutomationError) as caught:
+                    backup.restore_smoke(prepared, {"surfaces": []})
+            self.assertIn("command failed to start (docker)", str(caught.exception))
+            self.assertIsInstance(caught.exception.__cause__, OSError)
+            self.assertEqual(run.call_count, 6)
+            self.assertFalse((prepared / "RESTORE_SMOKE.json").exists())
+
+    def test_restore_smoke_wraps_pg_isready_start_oserror_and_cleans_container(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            prepared = Path(temp) / "prepared"
+            prepared.mkdir()
+            (prepared / "RESTORE_PREPARED.json").write_bytes(
+                backup._canonical_json({"schema_version": backup.PREPARED_SCHEMA})
+            )
+            (prepared / "manifest.json").write_bytes(
+                backup._canonical_json({"compose_images": {"csp-db": "pgvector:test"}})
+            )
+            (prepared / "db-csp.dump").write_bytes(b"dump")
+            with mock.patch.object(backup, "_docker_output", return_value=""), mock.patch.object(
+                backup.subprocess,
+                "run",
+                side_effect=[
+                    OSError("pg_isready secret path missing"),
+                    subprocess.CompletedProcess(["docker", "rm"], 0, b"", b""),
+                ],
+            ) as run:
+                with self.assertRaises(backup.BackupAutomationError) as caught:
+                    backup.restore_smoke(prepared, {"surfaces": []})
+            self.assertIn("PostgreSQL readiness check could not start", str(caught.exception))
+            self.assertIsInstance(caught.exception.__cause__, OSError)
+            self.assertEqual(run.call_count, 2)
+            cleanup_argv = run.call_args_list[1].args[0]
+            self.assertEqual(cleanup_argv[:3], ["docker", "rm", "-f"])
+            self.assertTrue(cleanup_argv[3].startswith("anila-restore-smoke-"))
+            self.assertFalse((prepared / "RESTORE_SMOKE.json").exists())
+
+    def test_restore_smoke_cleanup_start_oserror_does_not_leave_success_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            prepared = Path(temp) / "prepared"
+            prepared.mkdir()
+            (prepared / "RESTORE_PREPARED.json").write_bytes(
+                backup._canonical_json({"schema_version": backup.PREPARED_SCHEMA})
+            )
+            (prepared / "manifest.json").write_bytes(
+                backup._canonical_json({"compose_images": {"csp-db": "pgvector:test"}})
+            )
+            (prepared / "db-csp.dump").write_bytes(b"dump")
+            docker_outputs = ["", "", "", "", "0|0|0|0|0", "", "", ""]
+            with mock.patch.object(
+                backup, "_docker_output", side_effect=docker_outputs
+            ), mock.patch.object(
+                backup.subprocess,
+                "run",
+                side_effect=[
+                    subprocess.CompletedProcess(["docker", "exec"], 0, b"", b""),
+                    OSError("docker rm secret path missing"),
+                ],
+            ) as run:
+                with self.assertRaises(backup.BackupAutomationError) as caught:
+                    backup.restore_smoke(prepared, {"surfaces": []})
+            self.assertIn("container cleanup could not start", str(caught.exception))
+            self.assertIsInstance(caught.exception.__cause__, OSError)
+            self.assertEqual(run.call_count, 2)
+            self.assertFalse((prepared / "RESTORE_SMOKE.json").exists())
 
     def _run_minimal_backup(
         self,
