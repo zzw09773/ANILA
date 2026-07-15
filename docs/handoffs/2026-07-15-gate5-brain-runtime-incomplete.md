@@ -6,10 +6,13 @@
 
 - Worktree：`C:\Users\USER\.codex\worktrees\ANILA-gate5`
 - Branch：`codex/gate5-brain-runtime`
-- Base：`prod-intranet-card`
+- Base：`main`
 - Draft PR：[#31](https://github.com/zzw09773/ANILA/pull/31)
 - Remote：`origin=https://github.com/zzw09773/ANILA.git`
 - 文件更新開始時的 committed／remote checkpoint：`eb3ab37710aeec7e8efa4fb88b6db2d61b3d9535`
+- PR #27–30 已依序 merge 到 `main`；2026-07-16 已把 PR #31 base 從錯誤的
+  `prod-intranet-card` 修正為 `main`，避免重複帶入 Gate 2–4。Gate 5 GitHub diff 為
+  `184 files`，source-like security worklist 為 `108 rows`。
 - 目前 working tree 含尚未 commit 的 Gate 5 收尾變更；`eb3ab37` 的 required checks
   全綠只代表舊 remote checkpoint，不代表尚未 push 的 working tree 已通過 CI。
 - 本文件不預填下一個 commit 或 final PR head 的未知 SHA。commit／push 後必須以
