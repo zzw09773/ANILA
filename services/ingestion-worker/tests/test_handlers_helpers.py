@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import io
+import stat
 from types import SimpleNamespace
 
 import asyncpg
@@ -686,6 +687,94 @@ async def test_persist_images_ambiguous_backups_fail_closed(
     assert list(tmp_path.rglob("*.tmp-*")) == []
 
 
+@pytest.mark.parametrize(
+    "unsafe_mode",
+    [stat.S_IFLNK, stat.S_IFDIR, stat.S_IFIFO],
+)
+async def test_persist_images_unsafe_backup_fails_closed(
+    monkeypatch, tmp_path, unsafe_mode
+):
+    """Backup residue must never be followed, recursed into, or restored."""
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    image_root = tmp_path / "anila-images" / "42"
+    image_root.mkdir(parents=True)
+    backup_path = image_root / "img1.png.bak-unsafe"
+    backup_path.write_bytes(b"candidate")
+    real_lstat = handlers.os.lstat
+
+    def _lstat_with_unsafe_backup(path):
+        if str(path) == str(backup_path):
+            return SimpleNamespace(st_mode=unsafe_mode)
+        return real_lstat(path)
+
+    monkeypatch.setattr(handlers.os, "lstat", _lstat_with_unsafe_backup)
+    with pytest.raises(StoreError) as exc_info:
+        await handlers._persist_images(
+            _FakePool(_FakeConnection()),
+            7,
+            42,
+            {"img1": _FakeRef(_gradient_png())},
+            None,
+            None,
+        )
+
+    error = exc_info.value
+    assert error.code == "E_IMAGE_RECONCILIATION_FAILED"
+    assert error.retryable is False
+    assert error.severity == "critical"
+    assert error.details == {
+        "operation": "reconcile",
+        "reason": "unsafe_backup",
+    }
+    assert backup_path.exists()
+    assert list(tmp_path.rglob("*.tmp-*")) == []
+
+
+@pytest.mark.parametrize(
+    "unsafe_mode",
+    [stat.S_IFLNK, stat.S_IFDIR, stat.S_IFIFO],
+)
+async def test_persist_images_unsafe_final_fails_closed(
+    monkeypatch, tmp_path, unsafe_mode
+):
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    image_root = tmp_path / "anila-images" / "42"
+    image_root.mkdir(parents=True)
+    final_path = image_root / "img1.png"
+    final_path.write_bytes(b"current")
+    backup_path = image_root / "img1.png.bak-unsafe-final"
+    backup_path.write_bytes(b"previous")
+    real_lstat = handlers.os.lstat
+
+    def _lstat_with_unsafe_final(path):
+        if str(path) == str(final_path):
+            return SimpleNamespace(st_mode=unsafe_mode)
+        return real_lstat(path)
+
+    monkeypatch.setattr(handlers.os, "lstat", _lstat_with_unsafe_final)
+    with pytest.raises(StoreError) as exc_info:
+        await handlers._persist_images(
+            _FakePool(_FakeConnection()),
+            7,
+            42,
+            {"img1": _FakeRef(_gradient_png())},
+            None,
+            None,
+        )
+
+    error = exc_info.value
+    assert error.code == "E_IMAGE_RECONCILIATION_FAILED"
+    assert error.retryable is False
+    assert error.severity == "critical"
+    assert error.details == {
+        "operation": "reconcile",
+        "reason": "unsafe_final",
+    }
+    assert final_path.read_bytes() == b"current"
+    assert backup_path.read_bytes() == b"previous"
+    assert list(tmp_path.rglob("*.tmp-*")) == []
+
+
 async def test_persist_images_reconciles_crash_temp_before_retry(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
     image_root = tmp_path / "anila-images" / "42"
@@ -707,6 +796,79 @@ async def test_persist_images_reconciles_crash_temp_before_retry(monkeypatch, tm
     assert result == 1
     assert final_path.read_bytes() == new_bytes
     assert not stale_temp.exists()
+    assert list(tmp_path.rglob("*.tmp-*")) == []
+
+
+async def test_persist_images_unsafe_temp_residue_fails_closed(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    image_root = tmp_path / "anila-images" / "42"
+    image_root.mkdir(parents=True)
+    stale_temp = image_root / "img1.png.tmp-unsafe"
+    stale_temp.write_bytes(b"partial-crash-residue")
+    real_lstat = handlers.os.lstat
+
+    def _lstat_with_unsafe_temp(path):
+        if str(path) == str(stale_temp):
+            return SimpleNamespace(st_mode=stat.S_IFLNK)
+        return real_lstat(path)
+
+    monkeypatch.setattr(handlers.os, "lstat", _lstat_with_unsafe_temp)
+    with pytest.raises(StoreError) as exc_info:
+        await handlers._persist_images(
+            _FakePool(_FakeConnection()),
+            7,
+            42,
+            {"img1": _FakeRef(_gradient_png())},
+            None,
+            None,
+        )
+
+    error = exc_info.value
+    assert error.code == "E_IMAGE_RECONCILIATION_FAILED"
+    assert error.retryable is False
+    assert error.severity == "critical"
+    assert error.details == {
+        "operation": "reconcile",
+        "reason": "unsafe_temp_residue",
+    }
+    assert stale_temp.exists()
+    assert list(tmp_path.rglob("*.tmp-*")) == [stale_temp]
+
+
+async def test_persist_images_unsafe_image_directory_fails_closed(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path))
+    image_root = tmp_path / "anila-images" / "42"
+    image_root.mkdir(parents=True)
+    real_lstat = handlers.os.lstat
+
+    def _lstat_with_unsafe_root(path):
+        if str(path) == str(image_root):
+            return SimpleNamespace(st_mode=stat.S_IFLNK)
+        return real_lstat(path)
+
+    monkeypatch.setattr(handlers.os, "lstat", _lstat_with_unsafe_root)
+    with pytest.raises(StoreError) as exc_info:
+        await handlers._persist_images(
+            _FakePool(_FakeConnection()),
+            7,
+            42,
+            {"img1": _FakeRef(_gradient_png())},
+            None,
+            None,
+        )
+
+    error = exc_info.value
+    assert error.code == "E_IMAGE_RECONCILIATION_FAILED"
+    assert error.retryable is False
+    assert error.severity == "critical"
+    assert error.details == {
+        "operation": "reconcile",
+        "reason": "unsafe_image_directory",
+    }
     assert list(tmp_path.rglob("*.tmp-*")) == []
 
 

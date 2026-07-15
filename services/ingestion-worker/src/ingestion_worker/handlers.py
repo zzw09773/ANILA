@@ -421,21 +421,95 @@ def _reconcile_stale_image_backups(final_path: str) -> None:
     """
     parent = os.path.dirname(final_path) or "."
     prefix = f"{os.path.basename(final_path)}.bak-"
-    with os.scandir(parent) as entries:
-        backup_paths = [
-            entry.path for entry in entries if entry.name.startswith(prefix)
-        ]
-    if not backup_paths:
-        return
 
-    if os.path.exists(final_path):
+    # A backup can disappear between ``scandir`` and the operation below
+    # (for example, an operator may be cleaning up a failed publish).  Retry
+    # one fresh directory scan rather than treating that benign race as an
+    # internal error.  Repeated disappearance is not safe to guess through:
+    # preserve the remaining residue and fail closed with a stable reason.
+    for attempt in range(2):
+        try:
+            with os.scandir(parent) as entries:
+                backup_paths = [
+                    entry.path
+                    for entry in entries
+                    if entry.name.startswith(prefix)
+                ]
+        except FileNotFoundError:
+            # The document directory itself was removed during reconciliation;
+            # there are no backups left for this publish attempt.
+            return
+        except OSError as exc:
+            raise _image_storage_error("reconcile", exc) from exc
+
+        if not backup_paths:
+            return
+
+        validated_paths: list[str] = []
+        missing_backup = False
         for backup_path in backup_paths:
-            os.unlink(backup_path)
+            try:
+                mode = os.lstat(backup_path).st_mode
+            except FileNotFoundError:
+                missing_backup = True
+                break
+            except OSError as exc:
+                raise _image_storage_error("reconcile", exc) from exc
+            # Never follow a backup symlink, recurse into a nested directory,
+            # or replace a final image from a device/FIFO/socket.  These are
+            # operator-controlled residue states and are not retryable disk
+            # failures.
+            if not stat.S_ISREG(mode):
+                raise _image_reconciliation_error("unsafe_backup")
+            validated_paths.append(backup_path)
+
+        if missing_backup:
+            if attempt == 0:
+                continue
+            raise _image_reconciliation_error("backup_race")
+
+        try:
+            final_mode = os.lstat(final_path).st_mode
+        except FileNotFoundError:
+            final_exists = False
+        except OSError as exc:
+            raise _image_storage_error("reconcile", exc) from exc
+        else:
+            # ``lstat`` deliberately treats a symlink as an existing final;
+            # it is unsafe to remove backups or publish through any final
+            # residue that is not an ordinary file.
+            if not stat.S_ISREG(final_mode):
+                raise _image_reconciliation_error("unsafe_final")
+            final_exists = True
+
+        if final_exists:
+            try:
+                for backup_path in validated_paths:
+                    os.unlink(backup_path)
+            except FileNotFoundError:
+                if attempt == 0:
+                    continue
+                raise _image_reconciliation_error("backup_race")
+            except OSError as exc:
+                raise _image_storage_error("reconcile", exc) from exc
+            return
+
+        if len(validated_paths) != 1:
+            raise _image_reconciliation_error("ambiguous_backups")
+        try:
+            os.replace(validated_paths[0], final_path)
+        except FileNotFoundError:
+            if attempt == 0:
+                continue
+            raise _image_reconciliation_error("backup_race")
+        except OSError as exc:
+            raise _image_storage_error("reconcile", exc) from exc
         return
 
-    if len(backup_paths) != 1:
-        raise _image_reconciliation_error("ambiguous_backups")
-    os.replace(backup_paths[0], final_path)
+    # The loop either returns or raises on the second attempt.  Keep an
+    # explicit fail-closed guard so future edits cannot accidentally turn a
+    # persistent race into a silent success.
+    raise _image_reconciliation_error("backup_race")
 
 
 def _publish_image_files(staged_paths: list[tuple[str, str]]) -> None:
