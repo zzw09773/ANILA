@@ -3,10 +3,11 @@ from __future__ import annotations
 import base64
 import copy
 import sys
+import tempfile
+import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -175,59 +176,73 @@ def _report() -> dict:
     }
 
 
-def test_complete_restore_report_verifies_as_non_acceptance() -> None:
-    authority = _authority()
-    result = verify_restore_evidence(_report(), authority, now=NOW)
+class RestoreDrillVerifierTests(unittest.TestCase):
+    def test_complete_restore_report_verifies_as_non_acceptance(self) -> None:
+        authority = _authority()
+        result = verify_restore_evidence(_report(), authority, now=NOW)
 
-    assert result.status == RESTORE_EVIDENCE_STATUS
-    assert result.acceptance_status == "NOT_ACCEPTANCE"
-    assert result.gate6_pass is False
-    assert result.as_dict()["production_approval"] is False
-    assert result.as_dict()["environment"] == "synthetic"
+        self.assertEqual(result.status, RESTORE_EVIDENCE_STATUS)
+        self.assertEqual(result.acceptance_status, "NOT_ACCEPTANCE")
+        self.assertFalse(result.gate6_pass)
+        self.assertFalse(result.as_dict()["production_approval"])
+        self.assertEqual(result.as_dict()["environment"], "synthetic")
 
+    def test_plain_mapping_cannot_claim_p0_verification(self) -> None:
+        with self.assertRaisesRegex(RestoreEvidenceError, "VerifiedProductionAcceptanceProfile"):
+            verify_restore_evidence(_report(), {"profile": "pretend"})  # type: ignore[arg-type]
 
-def test_plain_mapping_cannot_claim_p0_verification() -> None:
-    with pytest.raises(RestoreEvidenceError, match="VerifiedProductionAcceptanceProfile"):
-        verify_restore_evidence(_report(), {"profile": "pretend"})  # type: ignore[arg-type]
+    def test_mutations_fail_closed(self) -> None:
+        mutations = (
+            ("missing datasets", lambda r: r.pop("datasets")),
+            ("rto mismatch", lambda r: r["restore"].update(restore_seconds=3601)),
+            (
+                "vector checksum mismatch",
+                lambda r: r["datasets"]["vector_generation"]["checksums"]["actual"].update(
+                    payload="e" * 64
+                ),
+            ),
+            (
+                "referential integrity violation",
+                lambda r: r["datasets"]["db"]["referential_integrity"].update(violations=1),
+            ),
+            ("rls allowed", lambda r: r["negative_controls"]["rls"][0].update(rejected=False)),
+            (
+                "compartment allowed",
+                lambda r: r["negative_controls"]["compartment"][0].update(
+                    observed_status="allowed"
+                ),
+            ),
+            (
+                "revocation not attempted",
+                lambda r: r["negative_controls"]["revocation"][0].update(attempted=False),
+            ),
+        )
+        for name, mutation in mutations:
+            with self.subTest(mutation=name):
+                report = copy.deepcopy(_report())
+                mutation(report)
+                with self.assertRaises(RestoreEvidenceError):
+                    verify_restore_evidence(report, _authority(), now=NOW)
 
+    def test_rto_and_rpo_are_profile_thresholds(self) -> None:
+        report = _report()
+        report["restore"]["restore_seconds"] = 3601
+        report["restore"]["restore_completed_at"] = (
+            datetime.fromisoformat(report["restore"]["restore_started_at"])
+            + timedelta(seconds=3601)
+        ).isoformat()
+        report["generated_at"] = (NOW + timedelta(seconds=1)).isoformat()
+        with self.assertRaisesRegex(RestoreEvidenceError, "exceeds P0 RTO"):
+            verify_restore_evidence(report, _authority(), now=NOW + timedelta(seconds=2))
 
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        lambda r: r.pop("datasets"),
-        lambda r: r["restore"].update(restore_seconds=3601),
-        lambda r: r["datasets"]["vector_generation"]["checksums"]["actual"].update(payload="e" * 64),
-        lambda r: r["datasets"]["db"]["referential_integrity"].update(violations=1),
-        lambda r: r["negative_controls"]["rls"][0].update(rejected=False),
-        lambda r: r["negative_controls"]["compartment"][0].update(observed_status="allowed"),
-        lambda r: r["negative_controls"]["revocation"][0].update(attempted=False),
-    ],
-)
-def test_mutations_fail_closed(mutation) -> None:
-    report = copy.deepcopy(_report())
-    mutation(report)
-    with pytest.raises(RestoreEvidenceError):
-        verify_restore_evidence(report, _authority(), now=NOW)
+    def test_duplicate_or_bom_report_is_rejected(self) -> None:
+        from restore_drill_verifier import read_restore_report
 
-
-def test_rto_and_rpo_are_profile_thresholds() -> None:
-    report = _report()
-    report["restore"]["restore_seconds"] = 3601
-    report["restore"]["restore_completed_at"] = (
-        datetime.fromisoformat(report["restore"]["restore_started_at"]) + timedelta(seconds=3601)
-    ).isoformat()
-    report["generated_at"] = (NOW + timedelta(seconds=1)).isoformat()
-    with pytest.raises(RestoreEvidenceError, match="exceeds P0 RTO"):
-        verify_restore_evidence(report, _authority(), now=NOW + timedelta(seconds=2))
-
-
-def test_duplicate_or_bom_report_is_rejected(tmp_path: Path) -> None:
-    from restore_drill_verifier import read_restore_report
-
-    path = tmp_path / "report.json"
-    path.write_text('{"status":"pass","status":"pass"}', encoding="utf-8")
-    with pytest.raises(RestoreEvidenceError, match="duplicate JSON key"):
-        read_restore_report(path)
-    path.write_bytes(b"\xef\xbb\xbf{}")
-    with pytest.raises(RestoreEvidenceError, match="BOM"):
-        read_restore_report(path)
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "report.json"
+            path.write_text('{"status":"pass","status":"pass"}', encoding="utf-8")
+            with self.assertRaisesRegex(RestoreEvidenceError, "duplicate JSON key"):
+                read_restore_report(path)
+            path.write_bytes(b"\xef\xbb\xbf{}")
+            with self.assertRaisesRegex(RestoreEvidenceError, "BOM"):
+                read_restore_report(path)
