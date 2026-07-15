@@ -49,6 +49,7 @@ _CREDENTIAL_NAME_MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 _MATERIAL_SUFFIXES = frozenset({".asc", ".crt", ".der", ".key", ".p12", ".pem", ".pfx", ".sig"})
+_PEM_MARKER_RE = re.compile(r"-----BEGIN [A-Z0-9][A-Z0-9 ]*-----")
 
 
 class RepositoryPostureError(RuntimeError):
@@ -71,13 +72,41 @@ def _read_json(path: Path) -> dict[str, Any]:
         raise RepositoryPostureError(f"cannot read JSON material: {path}") from exc
     if raw.startswith(b"\xef\xbb\xbf"):
         raise RepositoryPostureError(f"UTF-8 BOM is forbidden in JSON material: {path}")
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise RepositoryPostureError(
+                    f"duplicate JSON key {key!r} in {path}"
+                )
+            result[key] = value
+        return result
+
     try:
-        value = json.loads(raw.decode("utf-8"))
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicates)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RepositoryPostureError(f"invalid JSON material: {path}") from exc
     if not isinstance(value, dict):
         raise RepositoryPostureError(f"JSON root must be an object: {path}")
     return value
+
+
+def _contains_key(value: Any, key: str) -> bool:
+    if isinstance(value, dict):
+        return key in value or any(_contains_key(item, key) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_key(item, key) for item in value)
+    return False
+
+
+def _contains_pem_marker(value: Any) -> bool:
+    if isinstance(value, str):
+        return _PEM_MARKER_RE.search(value) is not None
+    if isinstance(value, dict):
+        return any(_contains_pem_marker(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_pem_marker(item) for item in value)
+    return False
 
 
 def _assert_disabled_p0_template(path: Path) -> dict[str, Any]:
@@ -197,9 +226,13 @@ def _assert_no_production_evidence(repo_root: Path, p0_template: Path) -> list[s
             # Unrelated JSON-like files are outside this posture contract.  A
             # Gate 6-named credential file was rejected above by its filename.
             continue
-        if "trusted_signers" in payload:
+        if _contains_key(payload, "trusted_signers"):
             raise RepositoryPostureError(
                 f"production trust-store material is checked in: {relative}"
+            )
+        if _contains_pem_marker(payload):
+            raise RepositoryPostureError(
+                f"PEM key/certificate material is checked in: {relative}"
             )
         if payload.get("schema_version") == "anila.gate6.production-acceptance.v1":
             if (

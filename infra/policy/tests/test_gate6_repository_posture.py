@@ -12,6 +12,7 @@ from infra.ci.check_gate6_repository_posture import (  # noqa: E402
     RepositoryPostureError,
     _assert_disabled_p0_template,
     _assert_no_production_evidence,
+    _read_json,
     check_repository_posture,
 )
 
@@ -84,4 +85,39 @@ def test_gate6_enabled_json_evidence_is_rejected(tmp_path: Path) -> None:
     )
 
     with pytest.raises(RepositoryPostureError, match="acceptance evidence"):
+        _assert_no_production_evidence(root, p0)
+
+
+def test_posture_json_loader_rejects_duplicate_keys_and_bom(tmp_path: Path) -> None:
+    path = tmp_path / "material.json"
+    path.write_text('{"trusted_signers": {}, "trusted_signers": {}}', encoding="utf-8")
+    with pytest.raises(RepositoryPostureError, match="duplicate JSON key"):
+        _read_json(path)
+
+    path.write_bytes(b"\xef\xbb\xbf{}")
+    with pytest.raises(RepositoryPostureError, match="UTF-8 BOM"):
+        _read_json(path)
+
+
+def test_gate6_nested_trust_store_and_pem_markers_are_rejected(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    material = root / "infra/policy/gate6"
+    material.mkdir(parents=True)
+    p0 = material / "production-acceptance-profile.disabled-template.json"
+    p0.write_text("{}", encoding="utf-8")
+
+    nested = root / "evidence/bundle.json"
+    nested.parent.mkdir(parents=True)
+    nested.write_text(
+        json.dumps({"metadata": {"trusted_signers": {"security": "PEM"}}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(RepositoryPostureError, match="trust-store material"):
+        _assert_no_production_evidence(root, p0)
+
+    nested.write_text(
+        json.dumps({"metadata": {"certificate": "-----BEGIN CERTIFICATE-----"}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(RepositoryPostureError, match="PEM key/certificate"):
         _assert_no_production_evidence(root, p0)

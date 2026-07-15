@@ -194,10 +194,28 @@ profile_content_sha256 = production_profile_content_sha256
 
 
 def _read_json(path: str | Path, *, label: str) -> dict[str, Any]:
+    path = Path(path)
     try:
-        value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raw = path.read_bytes()
+    except OSError as exc:
         raise ProductionAcceptanceProfileError(f"cannot read {label}: {exc}") from exc
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raise ProductionAcceptanceProfileError(f"UTF-8 BOM is forbidden in {label}")
+
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ProductionAcceptanceProfileError(
+                    f"duplicate JSON key {key!r} in {label}"
+                )
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ProductionAcceptanceProfileError(f"invalid JSON {label}: {exc}") from exc
     if not isinstance(value, dict):
         raise ProductionAcceptanceProfileError(f"{label} root must be an object")
     return value

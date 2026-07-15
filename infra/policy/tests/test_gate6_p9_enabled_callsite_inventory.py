@@ -51,7 +51,9 @@ def _profile_digest(profile: dict) -> str:
     return sha256_hex(unsigned)
 
 
-def _base_profile(callsite_id: str = "r7.router.core") -> dict:
+def _base_profile(
+    callsite_id: str = "r7.router.core", *, now: datetime = NOW
+) -> dict:
     inventory = _load_json(INVENTORY)
     profile = copy.deepcopy(_load_json(TEMPLATE))
     call = next(item for item in inventory["callsites"] if item["id"] == callsite_id)
@@ -60,8 +62,8 @@ def _base_profile(callsite_id: str = "r7.router.core") -> dict:
     profile["disabled_callsites"] = [
         item["id"] for item in inventory["callsites"] if item["id"] != callsite_id
     ]
-    profile["valid_from"] = (NOW - timedelta(minutes=5)).isoformat()
-    profile["valid_until"] = (NOW + timedelta(days=7)).isoformat()
+    profile["valid_from"] = (now - timedelta(minutes=5)).isoformat()
+    profile["valid_until"] = (now + timedelta(days=7)).isoformat()
     profile["approvers"] = [
         {"role": role, "subject": f"synthetic-{role}"}
         for role in ("system_owner", "data_owner", "security", "operations")
@@ -93,7 +95,7 @@ def _base_profile(callsite_id: str = "r7.router.core") -> dict:
                 "health_url": "/health",
                 "readiness_url": "/ready",
                 "freshness_seconds": 60,
-                "last_check": (NOW - timedelta(seconds=10)).isoformat(),
+                "last_check": (now - timedelta(seconds=10)).isoformat(),
                 "healthy": True,
                 "ready": True,
             },
@@ -149,7 +151,7 @@ def _write_signed_profile(tmp_path: Path, profile: dict) -> tuple[Path, Path]:
 _P0_ROLES = ("system_owner", "data_owner", "pki_owner", "security", "operations")
 
 
-def _base_p0_profile() -> dict:
+def _base_p0_profile(*, now: datetime = NOW) -> dict:
     inventory = _load_json(INVENTORY)
     profile = {
         "schema_version": PRODUCTION_ACCEPTANCE_SCHEMA,
@@ -187,8 +189,8 @@ def _base_p0_profile() -> dict:
             "workflow_ids": ["chat-basic", "retrieval-basic"],
         },
         "observation_window": {
-            "start": (NOW - timedelta(days=8)).isoformat(),
-            "end": (NOW - timedelta(days=1)).isoformat(),
+            "start": (now - timedelta(days=8)).isoformat(),
+            "end": (now - timedelta(days=1)).isoformat(),
             "minimum_duration_seconds": 7 * 86400,
         },
         "workflow_matrix": [
@@ -252,8 +254,8 @@ def _base_p0_profile() -> dict:
             "version": "impact-2026-07-16.1",
             "sha256": "d" * 64,
         },
-        "valid_from": (NOW - timedelta(days=9)).isoformat(),
-        "valid_until": (NOW + timedelta(days=30)).isoformat(),
+        "valid_from": (now - timedelta(days=9)).isoformat(),
+        "valid_until": (now + timedelta(days=30)).isoformat(),
         "signer_roles": list(_P0_ROLES),
         "signatures": [],
     }
@@ -353,9 +355,27 @@ def test_enabled_profile_requires_p0_arguments(tmp_path: Path) -> None:
             profile_path=profile_path,
             trust_store_path=trust_path,
             repo_root=ROOT,
+            allow_disabled_template=True,
             now=NOW,
             generated_at=NOW,
         )
+
+    acceptance_profile_path, acceptance_trust_path = _write_signed_p0_profile(
+        tmp_path, _base_p0_profile()
+    )
+    evidence = generate_evidence(
+        inventory_path=INVENTORY,
+        profile_path=profile_path,
+        trust_store_path=trust_path,
+        acceptance_profile_path=acceptance_profile_path,
+        acceptance_trust_store_path=acceptance_trust_path,
+        repo_root=ROOT,
+        allow_disabled_template=True,
+        now=NOW,
+        generated_at=NOW,
+    )
+    assert evidence["status"] == "VERIFIED"
+    assert evidence["gate6_pass"] is False
 
 
 @pytest.mark.parametrize(
@@ -559,17 +579,18 @@ def test_cli_exit_code_and_non_production_marker(tmp_path: Path) -> None:
 
 
 def test_cli_enabled_profile_requires_and_emits_p0_evidence(tmp_path: Path) -> None:
-    gate5_profile = _base_profile()
-    gate5_profile["valid_from"] = (NOW - timedelta(days=1)).isoformat()
+    cli_now = datetime.now(timezone.utc)
+    gate5_profile = _base_profile(now=cli_now)
+    gate5_profile["valid_from"] = (cli_now - timedelta(days=1)).isoformat()
     gate5_profile["deployments"][0]["health_readiness"]["last_check"] = (
-        datetime.now(timezone.utc) - timedelta(seconds=10)
+        cli_now - timedelta(seconds=10)
     ).isoformat()
     gate5_profile["profile_content_sha256"] = _profile_digest(gate5_profile)
     gate5_profile_path, gate5_trust_path = _write_signed_profile(
         tmp_path, gate5_profile
     )
     p0_profile_path, p0_trust_path = _write_signed_p0_profile(
-        tmp_path, _base_p0_profile()
+        tmp_path, _base_p0_profile(now=cli_now)
     )
     common = [
         sys.executable,
@@ -583,7 +604,7 @@ def test_cli_enabled_profile_requires_and_emits_p0_evidence(tmp_path: Path) -> N
         "--trust-store",
         str(gate5_trust_path),
         "--generated-at",
-        "2026-07-16T12:00:00Z",
+        cli_now.isoformat(),
     ]
     missing = subprocess.run(
         common,

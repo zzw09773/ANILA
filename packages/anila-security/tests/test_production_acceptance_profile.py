@@ -259,6 +259,22 @@ def test_repository_disabled_template_is_rejected_by_path_verifier(tmp_path: Pat
         )
 
 
+def test_signed_profile_loader_rejects_duplicate_keys_and_bom(tmp_path: Path) -> None:
+    profile, trust, _ = _signed_fixture()
+    profile_path = tmp_path / "profile.json"
+    trust_path = tmp_path / "trust.json"
+    profile_path.write_text(
+        json.dumps(profile)[:-1] + ',"enabled":true}', encoding="utf-8"
+    )
+    trust_path.write_text(json.dumps(trust), encoding="utf-8")
+    with pytest.raises(ProductionAcceptanceProfileError, match="duplicate JSON key"):
+        verify_signed_production_acceptance_profile(profile_path, trust_path, now=NOW)
+
+    profile_path.write_bytes(b"\xef\xbb\xbf" + json.dumps(profile).encode("utf-8"))
+    with pytest.raises(ProductionAcceptanceProfileError, match="UTF-8 BOM"):
+        verify_signed_production_acceptance_profile(profile_path, trust_path, now=NOW)
+
+
 def test_observation_window_requires_seven_days_and_validity_containment() -> None:
     profile, trust, _ = _signed_fixture()
     profile["observation_window"]["minimum_duration_seconds"] = 7 * 86400 - 1
