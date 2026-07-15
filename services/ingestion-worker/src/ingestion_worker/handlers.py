@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import asyncio
 from contextvars import ContextVar
+import errno
 import logging
 import os
 import re as _re
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 from anila_security import verify_queue_proof
@@ -259,6 +261,156 @@ def _is_uniform_color(
         return False
 
 
+def _image_storage_error(operation: str, exc: BaseException) -> StoreError:
+    """Build a safe, retryable error for image filesystem failures.
+
+    ``str(exc)`` is deliberately not copied into the structured error: an
+    ``OSError`` commonly contains the absolute upload path, which is an
+    implementation detail and may expose deployment layout to callers.  The
+    errno name is useful for operations (ENOSPC/EROFS/EIO/EDQUOT, etc.) and
+    does not contain user content or a path.
+    """
+    raw_errno = getattr(exc, "errno", None)
+    errno_name = errno.errorcode.get(raw_errno) if isinstance(raw_errno, int) else None
+    details: dict[str, Any] = {"operation": operation}
+    if errno_name:
+        details["errno"] = errno_name
+    return StoreError(
+        code="E_IMAGE_STORAGE_UNAVAILABLE",
+        retryable=True,
+        severity="error",
+        user_message="圖片儲存空間暫時無法使用，系統將自動重試。",
+        details=details,
+    )
+
+
+def _image_persistence_error(
+    operation: str,
+    exc: BaseException,
+    *,
+    rows_attempted: int = 0,
+    rows_inserted: int = 0,
+) -> StoreError:
+    """Build a safe, retryable error for image DB/persistence failures."""
+    return StoreError(
+        code="E_IMAGE_PERSISTENCE_FAILED",
+        retryable=True,
+        severity="error",
+        user_message="圖片資料寫入失敗，系統將自動重試。",
+        details={
+            "operation": operation,
+            "cause": type(exc).__name__,
+            "rows_attempted": rows_attempted,
+            "rows_inserted": rows_inserted,
+        },
+    )
+
+
+def _cleanup_image_files(paths: list[str]) -> None:
+    """Best-effort cleanup for files written by the current persistence run.
+
+    Cleanup is intentionally non-throwing.  The original storage/DB error is
+    the actionable failure and must remain the exception observed by the job
+    retry path even if an unlink also fails.
+    """
+    for path in dict.fromkeys(paths):
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            continue
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Image persistence cleanup failed (%s)", type(exc).__name__,
+            )
+
+
+def _reconcile_stale_image_backups(final_path: str) -> None:
+    """Reconcile backups left by an interrupted/failed publish attempt.
+
+    A present final is the authoritative current image, so stale backups for
+    it can be removed. If the final is absent, exactly one backup is the only
+    recoverable copy and is restored; ambiguity is fail-closed and leaves all
+    copies untouched for operator/retry handling.
+    """
+    parent = os.path.dirname(final_path) or "."
+    prefix = f"{os.path.basename(final_path)}.bak-"
+    with os.scandir(parent) as entries:
+        backup_paths = [
+            entry.path for entry in entries if entry.name.startswith(prefix)
+        ]
+    if not backup_paths:
+        return
+
+    if os.path.exists(final_path):
+        for backup_path in backup_paths:
+            os.unlink(backup_path)
+        return
+
+    if len(backup_paths) != 1:
+        raise OSError(errno.EIO, "ambiguous image backup set")
+    os.replace(backup_paths[0], final_path)
+
+
+def _publish_image_files(staged_paths: list[tuple[str, str]]) -> None:
+    """Atomically publish staged files while preserving previous versions.
+
+    The database transaction is committed before this function runs, so an
+    existing final file must never be truncated while DB/RLS failure is still
+    possible.  Each replacement is backed up until all replacements succeed;
+    a later publish failure restores the prior final files best-effort.
+    """
+    backups: list[tuple[str, str | None]] = []
+    try:
+        for temp_path, final_path in staged_paths:
+            _reconcile_stale_image_backups(final_path)
+            backup_path = f"{final_path}.bak-{uuid.uuid4().hex}"
+            try:
+                os.replace(final_path, backup_path)
+            except FileNotFoundError:
+                backup_path = None
+            backups.append((final_path, backup_path))
+            os.replace(temp_path, final_path)
+    except Exception:
+        # Roll back both ordinary storage errors and unexpected replacement
+        # failures, but re-raise the original exception unchanged. The caller
+        # only classifies OSError as retryable storage; programming errors
+        # still converge through the worker's E_INTERNAL wrapper.
+        for final_path, backup_path in reversed(backups):
+            try:
+                if backup_path is None:
+                    os.unlink(final_path)
+                else:
+                    os.replace(backup_path, final_path)
+            except FileNotFoundError:
+                continue
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Image publish rollback failed (%s)", type(exc).__name__,
+                )
+        raise
+
+    # The final file and DB row are already consistent, so do not roll them
+    # back when backup cleanup fails. However, an orphaned classified-image
+    # copy is still a persistence failure: surface the first cleanup error so
+    # the job enters the retry path and a later attempt can remove the backup.
+    cleanup_error: BaseException | None = None
+    for _final_path, backup_path in backups:
+        if backup_path is None:
+            continue
+        try:
+            os.unlink(backup_path)
+        except FileNotFoundError:
+            continue
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Image publish backup cleanup failed (%s)", type(exc).__name__,
+            )
+            if cleanup_error is None:
+                cleanup_error = exc
+    if cleanup_error is not None:
+        raise cleanup_error
+
+
 async def _persist_images(
     pool: Any,
     collection_id: int,
@@ -276,7 +428,7 @@ async def _persist_images(
       1. Bytes flushed to ``<UPLOAD_DIR>/anila-images/<doc_id>/<image_id>.<ext>``
          where the extension comes from ``ref.mime`` (image/png → .png).
       2. A row inserted into ``ingestion_images`` with the caption + a
-         caption embedding for vector search. ``ON CONFLICT DO NOTHING``
+         caption embedding for vector search. ``ON CONFLICT DO UPDATE``
          on (document_id, image_id) so re-ingesting the same document
          doesn't duplicate rows; the worker's existing chunk-level
          delete-and-reinsert dance handles the cleanup of stale rows
@@ -295,77 +447,109 @@ async def _persist_images(
     """
     if not images:
         return 0
+
     upload_dir = settings.upload_dir
+
+    # Filter before touching the filesystem. Empty refs and near-uniform PDF
+    # background fills are intentionally legal skips; they must not fail a
+    # document merely because the upload volume is unavailable.
+    candidates: list[dict[str, Any]] = []
+    for img_id, ref in images.items():
+        mime = getattr(ref, "mime", None) or "image/png"
+        ext = ".png" if "png" in mime else (".jpg" if "jpeg" in mime else ".bin")
+        safe_img_id = "".join(
+            c if c.isalnum() or c in "-_" else "_" for c in str(img_id)
+        )[:64]
+        rel_path = os.path.join(
+            "anila-images", str(document_id), f"{safe_img_id}{ext}",
+        )
+        abs_path = os.path.join(upload_dir, rel_path)
+        image_bytes = getattr(ref, "image_bytes", b"") or b""
+        if not image_bytes:
+            continue
+        # Defensive filter: drop uniform-color images even when captioning is
+        # disabled/bypassed. These are PDF background rectangles with no
+        # informational value and are a documented legal skip path.
+        if _is_uniform_color(image_bytes):
+            logger.info(
+                "Skipping persist for uniform-color image %s (doc %s)",
+                img_id, document_id,
+            )
+            continue
+        candidates.append(
+            {
+                "ref": ref,
+                "image_id": safe_img_id,
+                "rel_path": rel_path,
+                "abs_path": abs_path,
+                "mime": mime,
+                "image_bytes": image_bytes,
+            }
+        )
+
+    if not candidates:
+        return 0
+
     images_root = os.path.join(upload_dir, "anila-images", str(document_id))
     try:
         os.makedirs(images_root, mode=0o755, exist_ok=True)
-    except OSError as e:
-        # If we can't even mkdir we won't be able to persist anything;
-        # bail loudly so an op-level alert can fire (the rest of ingest
-        # still completes — the captions are already inlined in `text`).
-        logger.error(
-            "Failed to mkdir %s for image persistence: %s", images_root, e,
-        )
-        return 0
+    except OSError as exc:
+        raise _image_storage_error("mkdir", exc) from exc
 
     # Build the to-be-inserted rows AND collect captions for batch embed.
     rows: list[dict[str, Any]] = []
     captions_to_embed: list[str] = []
-    for img_id, ref in images.items():
+    written_paths: list[str] = []
+    staged_paths: list[tuple[str, str]] = []
+    for candidate in candidates:
+        ref = candidate["ref"]
+        abs_path = candidate["abs_path"]
+        temp_path = f"{abs_path}.tmp-{uuid.uuid4().hex}"
+        written_paths.append(temp_path)
         try:
-            mime = getattr(ref, "mime", None) or "image/png"
-            ext = ".png" if "png" in mime else (".jpg" if "jpeg" in mime else ".bin")
-            # Sanitise image_id for the filename (parser uses UUID-ish so
-            # this is paranoia, but cheap insurance against future ID
-            # shapes that could include path separators).
-            safe_img_id = "".join(
-                c if c.isalnum() or c in "-_" else "_" for c in str(img_id)
-            )[:64]
-            rel_path = os.path.join(
-                "anila-images", str(document_id), f"{safe_img_id}{ext}",
-            )
-            abs_path = os.path.join(upload_dir, rel_path)
-            image_bytes = getattr(ref, "image_bytes", b"") or b""
-            if not image_bytes:
-                continue
-            # Defensive filter: drop uniform-color images even if
-            # captioning was disabled / bypassed. Covers the path where
-            # ``settings.enable_image_captions`` is False but the PDF
-            # extractor still produced background-fill rectangles.
-            # Confirmed against doc 1: img_4fd6f21243.jpg (RGB(26,54,93)),
-            # img_d2e6cf287b.jpg and img_6cb40697ca.jpg (RGB(44,82,129)).
-            if _is_uniform_color(image_bytes):
-                logger.info(
-                    "Skipping persist for uniform-color image %s "
-                    "(doc %s) — likely PDF background fill",
-                    img_id, document_id,
-                )
-                continue
-            with open(abs_path, "wb") as f:
-                f.write(image_bytes)
-            try:
-                os.chmod(abs_path, 0o644)
-            except OSError:
-                pass
+            with open(temp_path, "wb") as f:
+                written = f.write(candidate["image_bytes"])
+                if written is not None and written != len(candidate["image_bytes"]):
+                    raise OSError(errno.ENOSPC, "short image write")
+        except asyncio.CancelledError:
+            _cleanup_image_files(written_paths)
+            raise
+        except OSError as exc:
+            _cleanup_image_files(written_paths)
+            raise _image_storage_error("write", exc) from exc
+        except Exception:
+            _cleanup_image_files(written_paths)
+            raise
 
-            caption = getattr(ref, "caption", "") or ""
-            page = getattr(ref, "page", None)
-            alt_text = getattr(ref, "alt_text", "") or None
-            rows.append({
-                "image_id": safe_img_id,
+        try:
+            os.chmod(temp_path, 0o644)
+        except asyncio.CancelledError:
+            _cleanup_image_files(written_paths)
+            raise
+        except OSError as exc:
+            _cleanup_image_files(written_paths)
+            raise _image_storage_error("chmod", exc) from exc
+        except Exception:
+            _cleanup_image_files(written_paths)
+            raise
+
+        staged_paths.append((temp_path, abs_path))
+
+        caption = getattr(ref, "caption", "") or ""
+        page = getattr(ref, "page", None)
+        alt_text = getattr(ref, "alt_text", "") or None
+        rows.append(
+            {
+                "image_id": candidate["image_id"],
                 "page": page,
-                "storage_path": rel_path,
-                "mime": mime,
+                "storage_path": candidate["rel_path"],
+                "mime": candidate["mime"],
                 "alt_text": alt_text,
                 "caption": caption,
-                "bytes_size": len(image_bytes),
-            })
-            captions_to_embed.append(caption or alt_text or "image")
-        except Exception as e:  # noqa: BLE001 — per-image best-effort
-            logger.warning(
-                "Skip persisting image %s for doc %s: %s",
-                img_id, document_id, e,
-            )
+                "bytes_size": len(candidate["image_bytes"]),
+            }
+        )
+        captions_to_embed.append(caption or alt_text or "image")
 
     if not rows:
         return 0
@@ -401,50 +585,65 @@ async def _persist_images(
     # start and tries to atof() the literal — surfacing as the
     # "could not convert string to float" we hit on the first
     # deployment of this code path.
-    from pgvector import HalfVector
-
     inserted = 0
-    # Outer transaction so the SET LOCAL GUC takes effect (SET LOCAL is
-    # txn-scoped) and is confined to this acquire — it never leaks to the next
-    # pooled user. ingestion_images is FORCE-RLS (migration 0037): the INSERT
-    # policy (WITH CHECK reuses the collection_id USING expr) only accepts rows
-    # whose collection_id matches anila.collection_id, so we scope it here.
-    async with pool.acquire() as conn, conn.transaction():
-        await conn.execute(
-            f"SET LOCAL anila.collection_id = {int(collection_id)}"
-        )
-        for i, row in enumerate(rows):
-            emb = embeddings[i] if embeddings is not None else None
-            emb_value = HalfVector(emb) if emb is not None else None
-            try:
-                # Savepoint per row: a single bad row rolls back to here rather
-                # than aborting the whole batch (preserves the prior best-effort
-                # continue-on-error behaviour now that we're inside a txn).
-                async with conn.transaction():
-                    await conn.execute(
-                        """
-                        INSERT INTO ingestion_images
-                            (collection_id, document_id, image_id, page,
-                             storage_path, mime, alt_text, caption,
-                             bytes_size, embedding)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                        ON CONFLICT (document_id, image_id) DO UPDATE
-                           SET caption     = EXCLUDED.caption,
-                               storage_path= EXCLUDED.storage_path,
-                               bytes_size  = EXCLUDED.bytes_size,
-                               embedding   = EXCLUDED.embedding,
-                               updated_at  = CURRENT_TIMESTAMP
-                        """,
-                        collection_id, document_id, row["image_id"], row["page"],
-                        row["storage_path"], row["mime"], row["alt_text"],
-                        row["caption"], row["bytes_size"], emb_value,
-                    )
-                inserted += 1
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "Failed to insert image row %s for doc %s: %s",
-                    row["image_id"], document_id, e,
+    try:
+        from pgvector import HalfVector
+
+        # Outer transaction so SET LOCAL is scoped to this pooled connection.
+        # ingestion_images is FORCE-RLS (migration 0037), therefore every row
+        # is inserted under the collection GUC and any DB/RLS failure aborts
+        # the whole image persistence operation instead of being skipped.
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                f"SET LOCAL anila.collection_id = {int(collection_id)}"
+            )
+            for i, row in enumerate(rows):
+                emb = embeddings[i] if embeddings is not None else None
+                emb_value = HalfVector(emb) if emb is not None else None
+                await conn.execute(
+                    """
+                    INSERT INTO ingestion_images
+                        (collection_id, document_id, image_id, page,
+                         storage_path, mime, alt_text, caption,
+                         bytes_size, embedding)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    ON CONFLICT (document_id, image_id) DO UPDATE
+                       SET caption     = EXCLUDED.caption,
+                           storage_path= EXCLUDED.storage_path,
+                           bytes_size  = EXCLUDED.bytes_size,
+                           embedding   = EXCLUDED.embedding,
+                           updated_at  = CURRENT_TIMESTAMP
+                    """,
+                    collection_id, document_id, row["image_id"], row["page"],
+                    row["storage_path"], row["mime"], row["alt_text"],
+                    row["caption"], row["bytes_size"], emb_value,
                 )
+                inserted += 1
+    except asyncio.CancelledError:
+        _cleanup_image_files(written_paths)
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _cleanup_image_files(written_paths)
+        raise _image_persistence_error(
+            "db_insert",
+            exc,
+            rows_attempted=len(rows),
+            # The surrounding transaction rolls back all prior rows when any
+            # insert fails; do not report pre-rollback progress as committed.
+            rows_inserted=0,
+        ) from exc
+
+    try:
+        _publish_image_files(staged_paths)
+    except asyncio.CancelledError:
+        _cleanup_image_files(written_paths)
+        raise
+    except OSError as exc:
+        _cleanup_image_files(written_paths)
+        raise _image_storage_error("publish", exc) from exc
+    except Exception:
+        _cleanup_image_files(written_paths)
+        raise
     logger.info(
         "Persisted %d/%d images for doc %s (with embedding=%s)",
         inserted, len(rows), document_id, embeddings is not None,
@@ -974,22 +1173,15 @@ async def ingest_document(
             await require_current_clearance()
             text = await _caption_images_into(text, images)
             # 1b. Persist captioned images to disk + DB so Studio can
-            # vector-search over them (Phase 5). Best-effort: a failure
-            # here doesn't fail ingest — the captions are already inlined
-            # into `text` from step 1a, so retrieval over chunks still
-            # works. Only the image-as-image use case is degraded.
-            try:
-                await _persist_images(
-                    pool, collection_id, document_id, images,
-                    embedder, billing_user_id,
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "Image persistence failed for doc %s: %s — captions "
-                    "are still inlined in chunks; image-as-image retrieval "
-                    "will be empty for this document.",
-                    document_id, e,
-                )
+            # vector-search over them (Phase 5). Image bytes are part of the
+            # document's durable output, so filesystem/DB failures must fail
+            # this job and enter the normal structured retry path. Caption
+            # embedding itself remains an explicit best-effort downgrade in
+            # _persist_images: rows are retained with a NULL embedding.
+            await _persist_images(
+                pool, collection_id, document_id, images,
+                embedder, billing_user_id,
+            )
 
         # 2. Chunk — bounded by document size, also fast.
         # Semantic strategies need embeddings up-front: pre-split into
