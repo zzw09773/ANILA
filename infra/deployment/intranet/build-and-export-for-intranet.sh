@@ -376,6 +376,53 @@ cat > "$OUTPUT_DIR/INTRANET-LOAD.sh" <<'EOF'
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
+# A checksum manifest is not a closed-set declaration by itself: sha256sum -c
+# deliberately ignores files which are not listed and accepts duplicate rows.
+# Optional artifacts are security-sensitive inputs, so every exact relative
+# filename must occur once (with one canonical 64-hex digest) before it is
+# loaded or extracted.  In particular, reject ./foo and path-prefixed aliases
+# rather than treating them as the same bundle member.
+require_exact_checksum_entry() {
+    local artifact="$1"
+    local count
+    count="$(awk -v wanted="$artifact" '
+        $0 !~ /^[[:space:]]*#/ && NF == 2 \
+            && ($2 == wanted || $2 == "*" wanted) \
+            && length($1) == 64 && $1 ~ /^[0-9A-Fa-f]+$/ { count++ }
+        END { print count + 0 }
+    ' CHECKSUMS.sha256)"
+    if [ "$count" -ne 1 ]; then
+        echo "✗ CHECKSUMS.sha256 must contain exactly one canonical entry for: $artifact" >&2
+        exit 1
+    fi
+}
+
+require_regular_bundle_file() {
+    local artifact="$1"
+    if [ -L "$artifact" ] || [ ! -f "$artifact" ]; then
+        echo "✗ Optional bundle artifact must be a regular non-symlink file: $artifact" >&2
+        exit 1
+    fi
+}
+
+# 04-models.tar.gz and MODEL-IMAGE-LOCK.tsv are one closed optional set.  A
+# leftover lock from a prior export must not be silently accepted when the
+# archive is absent, and an archive without its lock has no content-ID proof.
+model_bundle_present=0
+model_lock_present=0
+if [ -L 04-models.tar.gz ] || [ -e 04-models.tar.gz ]; then
+    require_regular_bundle_file 04-models.tar.gz
+    model_bundle_present=1
+fi
+if [ -L MODEL-IMAGE-LOCK.tsv ] || [ -e MODEL-IMAGE-LOCK.tsv ]; then
+    require_regular_bundle_file MODEL-IMAGE-LOCK.tsv
+    model_lock_present=1
+fi
+if [ "$model_bundle_present" -ne "$model_lock_present" ]; then
+    echo "✗ 04-models.tar.gz and MODEL-IMAGE-LOCK.tsv must either both exist or both be absent" >&2
+    exit 1
+fi
+
 # ── SHA256 完整性檢查 (fail-closed transport integrity) ─────────────────
 # tar.gz 從外網機器經 USB / 內部閘道送進內網,任何中途竄改都可能塞後門進
 # image。`sha256sum -c` 比對 build 時計算的 hash,不通過就拒絕 load。
@@ -389,7 +436,7 @@ REQUIRED_BUNDLE_FILES=(
     02-base.tar.gz
     03-cold.tar.gz
 )
-if [ -f 04-models.tar.gz ]; then
+if [ "$model_bundle_present" -eq 1 ]; then
     REQUIRED_BUNDLE_FILES+=(MODEL-IMAGE-LOCK.tsv)
 fi
 for required_file in "${REQUIRED_BUNDLE_FILES[@]}"; do
@@ -397,6 +444,21 @@ for required_file in "${REQUIRED_BUNDLE_FILES[@]}"; do
         echo "✗ Required bundle file missing/empty: $required_file" >&2
         exit 1
     }
+done
+
+# Prove the exact optional files are represented in the manifest before any
+# optional load/extraction.  This closes the stale-file/additional-file gap in
+# `sha256sum -c`, which only verifies rows it was given.
+if [ "$model_bundle_present" -eq 1 ]; then
+    require_exact_checksum_entry 04-models.tar.gz
+    require_exact_checksum_entry MODEL-IMAGE-LOCK.tsv
+fi
+
+shopt -s nullglob
+WEIGHT_TARS=(05-weights-*.tar)
+for tar in "${WEIGHT_TARS[@]}"; do
+    require_regular_bundle_file "$tar"
+    require_exact_checksum_entry "$tar"
 done
 
 echo "── Verifying SHA256 checksums ──"
@@ -414,7 +476,7 @@ for tar in 01-anila-built.tar.gz 02-base.tar.gz 03-cold.tar.gz; do
     echo "▶ $tar"
     gunzip -c "$tar" | docker load
 done
-if [ -f 04-models.tar.gz ]; then
+if [ "$model_bundle_present" -eq 1 ]; then
     echo "▶ 04-models.tar.gz (optional model bundle)"
     gunzip -c 04-models.tar.gz | docker load
 fi
@@ -559,7 +621,6 @@ fi
 # docker-compose.yml 的權重掛載預設)。先 export ANILA_HF_DIR=<repo>/models/model
 # 再跑本腳本;放別處就之後在 .env 設同一個值。
 HF_DIR="${ANILA_HF_DIR:-$HOME/project/Huggingface}"
-shopt -s nullglob
 WEIGHT_TARS=(05-weights-*.tar)
 if [ ${#WEIGHT_TARS[@]} -gt 0 ]; then
     echo "── Extracting model weights → $HF_DIR ──"

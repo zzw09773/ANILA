@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import importlib.util
+import gzip
+import hashlib
+import io
+import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 import uuid
@@ -13,6 +18,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "infra/deployment/scripts/verify-model-image-lock.py"
+EXPORTER = ROOT / "infra/deployment/intranet/build-and-export-for-intranet.sh"
 SPEC = importlib.util.spec_from_file_location("verify_model_image_lock", SCRIPT)
 if SPEC is None or SPEC.loader is None:  # pragma: no cover - import guard
     raise RuntimeError(f"cannot import {SCRIPT}")
@@ -22,6 +28,152 @@ SPEC.loader.exec_module(MODULE)
 
 
 class ModelImageLockTests(unittest.TestCase):
+    @staticmethod
+    def _require_bash() -> str:
+        bash = shutil.which("bash")
+        if bash is None:
+            raise AssertionError("Bash is required for the exporter loader contract")
+        return bash
+
+    @staticmethod
+    def _extract_loader() -> str:
+        exporter = EXPORTER.read_text(encoding="utf-8")
+        marker = 'cat > "$OUTPUT_DIR/INTRANET-LOAD.sh" <<\'EOF\'\n'
+        suffix = '\nEOF\nchmod +x "$OUTPUT_DIR/INTRANET-LOAD.sh"'
+        try:
+            body = exporter.split(marker, 1)[1]
+            loader, _ = body.split(suffix, 1)
+        except (IndexError, ValueError) as exc:
+            raise AssertionError("exporter INTRANET-LOAD heredoc is missing") from exc
+        return loader.replace("\r\n", "\n") + "\n"
+
+    @staticmethod
+    def _write_gzip(path: Path) -> None:
+        with gzip.open(path, "wb") as stream:
+            stream.write(b"synthetic docker archive")
+
+    @staticmethod
+    def _write_weight_tar(path: Path) -> None:
+        with tarfile.open(path, "w") as archive:
+            payload = b"synthetic model weight"
+            info = tarfile.TarInfo("weight.bin")
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+
+    @staticmethod
+    def _write_manifest(root: Path, *, omit: set[str] | None = None) -> None:
+        omitted = omit or set()
+        rows: list[str] = []
+        for path in sorted(root.iterdir(), key=lambda item: item.name):
+            if path.name == "CHECKSUMS.sha256" or path.name in omitted:
+                continue
+            if not path.is_file():
+                continue
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            rows.append(f"{digest}  {path.name}")
+        (root / "CHECKSUMS.sha256").write_bytes(
+            ("\n".join(rows) + "\n").encode("utf-8")
+        )
+
+    @classmethod
+    def _make_loader_bundle(
+        cls,
+        root: Path,
+        *,
+        include_models: bool = False,
+        include_lock: bool = False,
+        include_weights: bool = False,
+        omit_checksums: set[str] | None = None,
+        duplicate_checksum: str | None = None,
+        binary_checksum_marker: bool = False,
+    ) -> str:
+        required = {
+            "PLATFORM-IMAGE-INVENTORY.tsv": "# service\timage\tbundle\tactivation\tsource\n",
+            "PLATFORM-IMAGE-LOCK.tsv": "# service\timage\timage_id\tbundle\tactivation\n",
+            "MODEL-IMAGE-INVENTORY.tsv": "# service\timage\tactivation\n",
+            "MODEL-IMAGE-STATUS.tsv": "# image\tactivation\tstatus\tnote\n",
+        }
+        for name, content in required.items():
+            (root / name).write_text(content, encoding="utf-8")
+        for name in ("01-anila-built.tar.gz", "02-base.tar.gz", "03-cold.tar.gz"):
+            cls._write_gzip(root / name)
+        if include_models:
+            cls._write_gzip(root / "04-models.tar.gz")
+        if include_lock:
+            (root / "MODEL-IMAGE-LOCK.tsv").write_text(
+                "# service\timage\timage_id\tactivation\n", encoding="utf-8"
+            )
+        if include_weights:
+            cls._write_weight_tar(root / "05-weights-demo.tar")
+        cls._write_manifest(root, omit=omit_checksums)
+        if duplicate_checksum is not None:
+            checksum_path = root / "CHECKSUMS.sha256"
+            lines = checksum_path.read_text(encoding="utf-8").splitlines()
+            matching = [line for line in lines if line.endswith(f"  {duplicate_checksum}")]
+            if not matching:
+                raise AssertionError(f"fixture checksum missing: {duplicate_checksum}")
+            checksum_path.write_bytes(
+                ("\n".join(lines + [matching[0]]) + "\n").encode("utf-8")
+            )
+        if binary_checksum_marker:
+            checksum_path = root / "CHECKSUMS.sha256"
+            lines = checksum_path.read_text(encoding="utf-8").splitlines()
+            replaced = [
+                line.replace("  04-models.tar.gz", " *04-models.tar.gz", 1)
+                if line.endswith("  04-models.tar.gz")
+                else line
+                for line in lines
+            ]
+            checksum_path.write_bytes(("\n".join(replaced) + "\n").encode("utf-8"))
+        return cls._extract_loader()
+
+    @staticmethod
+    def _write_fake_docker(bin_dir: Path) -> None:
+        docker = bin_dir / "docker"
+        docker.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "case \"${1:-}\" in\n"
+            "  load) cat >/dev/null ;;\n"
+            "  images) : ;;\n"
+            "  *) : ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        docker.chmod(0o755)
+
+    @classmethod
+    def _run_loader(cls, root: Path, loader: str) -> subprocess.CompletedProcess[str]:
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        cls._write_fake_docker(bin_dir)
+        bash = cls._require_bash()
+        environment = os.environ.copy()
+        environment["PATH"] = os.pathsep.join((str(bin_dir), environment["PATH"]))
+        environment["ANILA_HF_DIR"] = str(root / "weights")
+        # Feeding the generated heredoc on stdin is portable across Windows
+        # and Linux, but Bash has no BASH_SOURCE[0] for stdin scripts.  Keep
+        # the exact source for the syntax test; normalize only this launcher
+        # path before exercising the loader's integrity gates.
+        loader_for_stdin = loader.replace(
+            'cd "$(dirname "${BASH_SOURCE[0]}")"', 'cd "."', 1
+        )
+        completed = subprocess.run(
+            [bash],
+            input=loader_for_stdin.encode("utf-8"),
+            cwd=root,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=False,
+        )
+        return subprocess.CompletedProcess(
+            completed.args,
+            completed.returncode,
+            completed.stdout.decode("utf-8", errors="replace"),
+            completed.stderr.decode("utf-8", errors="replace"),
+        )
+
     def setUp(self) -> None:
         self.inventory = MODULE.read_inventory(MODULE.DEFAULT_INVENTORY)
         self.compose = MODULE.read_compose(MODULE.DEFAULT_COMPOSE)
@@ -298,6 +450,99 @@ class ModelImageLockTests(unittest.TestCase):
         )
         self.assertIn("model image content-ID closure failed", exporter)
         self.assertIn("MODEL-IMAGE-LOCK extra/unknown service", exporter)
+
+    def test_exporter_heredoc_loader_is_platform_executable(self) -> None:
+        loader = self._extract_loader()
+        bash = self._require_bash()
+        completed = subprocess.run(
+            [bash, "-n"],
+            input=loader.encode("utf-8"),
+            check=False,
+            capture_output=True,
+            text=False,
+        )
+        stderr = completed.stderr.decode("utf-8", errors="replace")
+        self.assertEqual(completed.returncode, 0, stderr)
+        self.assertIn("require_exact_checksum_entry", loader)
+        self.assertIn("require_regular_bundle_file", loader)
+
+    def test_loader_rejects_optional_artifacts_without_exact_checksum(self) -> None:
+        self._require_bash()
+        cases = (
+            (
+                "model archive",
+                dict(
+                    include_models=True,
+                    include_lock=True,
+                    omit_checksums={"04-models.tar.gz"},
+                ),
+                "04-models.tar.gz",
+            ),
+            (
+                "model lock",
+                dict(
+                    include_models=True,
+                    include_lock=True,
+                    omit_checksums={"MODEL-IMAGE-LOCK.tsv"},
+                ),
+                "MODEL-IMAGE-LOCK.tsv",
+            ),
+            (
+                "weight archive",
+                dict(include_weights=True, omit_checksums={"05-weights-demo.tar"}),
+                "05-weights-demo.tar",
+            ),
+        )
+        for name, options, artifact in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                loader = self._make_loader_bundle(root, **options)
+                completed = self._run_loader(root, loader)
+                self.assertNotEqual(completed.returncode, 0, completed.stdout)
+                self.assertIn(artifact, completed.stderr)
+                self.assertIn("exactly one canonical entry", completed.stderr)
+
+    def test_loader_rejects_duplicate_and_binary_marker_checksum_rows(self) -> None:
+        self._require_bash()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            loader = self._make_loader_bundle(
+                root,
+                include_models=True,
+                include_lock=True,
+                duplicate_checksum="04-models.tar.gz",
+                binary_checksum_marker=True,
+            )
+            completed = self._run_loader(root, loader)
+            self.assertNotEqual(completed.returncode, 0, completed.stdout)
+            self.assertIn("04-models.tar.gz", completed.stderr)
+            self.assertIn("exactly one canonical entry", completed.stderr)
+
+    def test_loader_rejects_model_archive_lock_presence_mismatch(self) -> None:
+        self._require_bash()
+        for name, include_models, include_lock in (
+            ("archive without lock", True, False),
+            ("lock without archive", False, True),
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                loader = self._make_loader_bundle(
+                    root,
+                    include_models=include_models,
+                    include_lock=include_lock,
+                )
+                completed = self._run_loader(root, loader)
+                self.assertNotEqual(completed.returncode, 0, completed.stdout)
+                self.assertIn("must either both exist or both be absent", completed.stderr)
+
+    def test_loader_requires_optional_regular_non_symlink_files(self) -> None:
+        loader = self._extract_loader()
+        self.assertIn(
+            'if [ -L "$artifact" ] || [ ! -f "$artifact" ]; then', loader
+        )
+        self.assertIn(
+            "Optional bundle artifact must be a regular non-symlink file", loader
+        )
 
     @unittest.skipUnless(shutil.which("docker"), "Docker CLI is not installed")
     def test_docker_smoke_emits_distinct_ids_and_tamper_fails(self) -> None:
