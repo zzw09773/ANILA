@@ -12,14 +12,25 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(ROOT / "infra" / "deployment" / "backup"))
+_SECURITY_SRC = ROOT / "packages" / "anila-security" / "src"
+_BACKUP_SRC = ROOT / "infra" / "deployment" / "backup"
 
+# Resolve imports from this checkout explicitly.  A bare ``unittest`` command
+# imports this module before deployment test discovery has a chance to add the
+# shared package source path; relying on discovery order could otherwise load
+# an installed package (or a different checkout) instead.
+for _source in (_SECURITY_SRC, _BACKUP_SRC):
+    if _source.is_dir() and str(_source) not in sys.path:
+        sys.path.insert(0, str(_source))
+
+import anila_security  # noqa: E402
 from anila_security.production_acceptance_profile import (  # noqa: E402
     PRODUCTION_ACCEPTANCE_SCHEMA,
     canonical_json,
     production_profile_content_sha256,
     verify_production_acceptance_profile,
 )
+import restore_drill_verifier as restore_drill_verifier_module  # noqa: E402
 from restore_drill_verifier import (  # noqa: E402
     RESTORE_EVIDENCE_STATUS,
     RestoreEvidenceError,
@@ -177,6 +188,18 @@ def _report() -> dict:
 
 
 class RestoreDrillVerifierTests(unittest.TestCase):
+    def test_imports_resolve_from_this_checkout(self) -> None:
+        security_module = Path(anila_security.__file__).resolve()
+        verifier_module = Path(restore_drill_verifier_module.__file__).resolve()
+        self.assertTrue(
+            security_module.is_relative_to(_SECURITY_SRC.resolve()),
+            security_module,
+        )
+        self.assertTrue(
+            verifier_module.is_relative_to(_BACKUP_SRC.resolve()),
+            verifier_module,
+        )
+
     def test_complete_restore_report_verifies_as_non_acceptance(self) -> None:
         authority = _authority()
         result = verify_restore_evidence(_report(), authority, now=NOW)
