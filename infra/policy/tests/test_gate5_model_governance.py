@@ -23,6 +23,7 @@ from anila_security.model_governance import (  # noqa: E402
 )
 from infra.policy.gate5.check_model_governance import (  # noqa: E402
     ModelGovernancePolicyError,
+    _finding_for_file,
     _load_json,
     inventory_hash,
     scan_inference_sources,
@@ -160,6 +161,20 @@ def test_scanner_and_inventory_are_exhaustive() -> None:
     assert any("relation-llm" in item["id"] for item in inventory["callsites"])
     assert any("judge" in item["id"] for item in inventory["callsites"])
     assert any("flux" in item["id"] for item in inventory["callsites"])
+
+
+def test_scanner_counts_endpoint_literals_inside_f_strings(tmp_path: Path) -> None:
+    source = tmp_path / "fstring_sink.py"
+    source.write_text(
+        "async def invoke(client, version):\n"
+        "    return await client.post(f'/v1/chat/completions{version}')\n",
+        encoding="utf-8",
+    )
+
+    finding = _finding_for_file(source, tmp_path)
+
+    assert finding is not None
+    assert finding.sink_kinds == ("chat_completions",)
 
 
 def test_external_material_uses_explicit_repository_root(tmp_path: Path) -> None:
