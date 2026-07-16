@@ -44,9 +44,32 @@ _SKIP_PARTS = frozenset(
 _GATE6_NAME_MARKER_RE = re.compile(
     r"(?:gate6|production[-_.]?acceptance)", re.IGNORECASE
 )
-_CREDENTIAL_NAME_MARKER_RE = re.compile(
-    r"(?:trust|sign(?:ature|er|ing)?|private|secret|key|evidence)",
-    re.IGNORECASE,
+_PATH_WORD_RE = re.compile(
+    r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+"
+)
+_CREDENTIAL_MARKERS = frozenset(
+    {
+        "evidence",
+        "key",
+        "keypair",
+        "keypairs",
+        "keys",
+        "private",
+        "privatekey",
+        "privatekeypair",
+        "secret",
+        "secrets",
+        "sign",
+        "signature",
+        "signatures",
+        "signed",
+        "signer",
+        "signers",
+        "signing",
+        "trust",
+        "trusted",
+        "truststore",
+    }
 )
 _MATERIAL_SUFFIXES = frozenset({".asc", ".crt", ".der", ".key", ".p12", ".pem", ".pfx", ".sig"})
 _PEM_MARKER_RE = re.compile(r"-----BEGIN [A-Z0-9][A-Z0-9 ]*-----")
@@ -200,6 +223,13 @@ def _iter_repository_files(repo_root: Path) -> Sequence[Path]:
     return tuple(files)
 
 
+def _contains_credential_path_marker(relative_path: str) -> bool:
+    """Match explicit sensitive words after separator/camel/acronym splitting."""
+
+    tokens = {match.group(0).casefold() for match in _PATH_WORD_RE.finditer(relative_path)}
+    return not tokens.isdisjoint(_CREDENTIAL_MARKERS)
+
+
 def _assert_no_production_evidence(repo_root: Path, p0_template: Path) -> list[str]:
     """Reject checked-in P0 trust/signature/private material, fail closed."""
 
@@ -209,8 +239,10 @@ def _assert_no_production_evidence(repo_root: Path, p0_template: Path) -> list[s
             continue
         relative = path.relative_to(repo_root).as_posix()
         lower = relative.lower()
-        name = path.name
-        if _GATE6_NAME_MARKER_RE.search(name) and _CREDENTIAL_NAME_MARKER_RE.search(name):
+        # Check the complete normalized relative path before any suffix-based
+        # filtering.  Gate 6 and credential markers may be split across a
+        # parent directory and a non-JSON child filename.
+        if _GATE6_NAME_MARKER_RE.search(lower) and _contains_credential_path_marker(relative):
             raise RepositoryPostureError(
                 f"Gate 6 production trust/signature material is checked in: {relative}"
             )
@@ -245,10 +277,6 @@ def _assert_no_production_evidence(repo_root: Path, p0_template: Path) -> list[s
                 raise RepositoryPostureError(
                     f"non-disabled Gate 6 acceptance evidence is checked in: {relative}"
                 )
-        if _GATE6_NAME_MARKER_RE.search(lower) and _CREDENTIAL_NAME_MARKER_RE.search(lower):
-            raise RepositoryPostureError(
-                f"Gate 6 production evidence is checked in: {relative}"
-            )
     # The list is deliberately empty on success.  Returning every JSON file
     # would make CI output noisy and could be mistaken for evidence inventory.
     return []

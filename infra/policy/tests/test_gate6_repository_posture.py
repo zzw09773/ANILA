@@ -63,6 +63,74 @@ def test_gate6_trust_store_filename_is_rejected(tmp_path: Path) -> None:
         _assert_no_production_evidence(root, p0)
 
 
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "private.txt",
+        "evidence.txt",
+        "trusted_signers.txt",
+        "signatures.txt",
+        "keypair.txt",
+        "private key.txt",
+        "production evidence.txt",
+    ],
+)
+def test_gate6_parent_and_non_json_credential_filename_are_rejected(
+    tmp_path: Path, filename: str
+) -> None:
+    root = tmp_path / "repo"
+    material = root / "infra/policy/gate6"
+    material.mkdir(parents=True)
+    p0 = material / "production-acceptance-profile.disabled-template.json"
+    p0.write_text("{}", encoding="utf-8")
+    (material / filename).write_text("not JSON", encoding="utf-8")
+
+    with pytest.raises(RepositoryPostureError, match="trust/signature material"):
+        _assert_no_production_evidence(root, p0)
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "gate6-privateKey.json",
+        "gate6-trustStore.json",
+        "gate6-signed-profile.yaml",
+        "gate6-TRUSTStore.yaml",
+    ],
+)
+def test_gate6_compound_and_acronym_credential_markers_are_rejected(
+    tmp_path: Path, filename: str
+) -> None:
+    root = tmp_path / "repo"
+    material = root / "infra/policy/gate6"
+    material.mkdir(parents=True)
+    p0 = material / "production-acceptance-profile.disabled-template.json"
+    p0.write_text("{}", encoding="utf-8")
+    candidate = material / filename
+    payload = json.dumps({"blob": "bm90LWEtcGVt"}) if candidate.suffix == ".json" else "opaque"
+    candidate.write_text(payload, encoding="utf-8")
+
+    with pytest.raises(RepositoryPostureError, match="trust/signature material"):
+        _assert_no_production_evidence(root, p0)
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["operator-notes.txt", "design-notes.txt", "monkey-compatibility.md"],
+)
+def test_unrelated_non_json_file_is_not_rejected(
+    tmp_path: Path, filename: str
+) -> None:
+    root = tmp_path / "repo"
+    material = root / "infra/policy/gate6"
+    material.mkdir(parents=True)
+    p0 = material / "production-acceptance-profile.disabled-template.json"
+    p0.write_text("{}", encoding="utf-8")
+    (material / filename).write_text("not JSON", encoding="utf-8")
+
+    assert _assert_no_production_evidence(root, p0) == []
+
+
 def test_gate6_enabled_json_evidence_is_rejected(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     material = root / "evidence"
