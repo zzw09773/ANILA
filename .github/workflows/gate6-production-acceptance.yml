@@ -83,6 +83,9 @@ jobs:
       - name: Run production backup automation contracts
         run: python -m pytest infra/deployment/tests/test_production_backup_automation.py -q
 
+      - name: Run restore-drill evidence verifier contracts
+        run: python -m pytest infra/deployment/tests/test_restore_drill_verifier.py -q
+
       - name: Run Gate 6 repository posture tests
         run: python -m pytest infra/policy/tests/test_gate6_repository_posture.py -q
 
@@ -111,6 +114,7 @@ jobs:
         run: |
           python -m ruff check \
             infra/ci/check_gate6_repository_posture.py \
+            infra/deployment/backup/restore_drill_verifier.py \
             infra/policy/tests/test_gate6_repository_posture.py \
             infra/policy/gate6/generate_p9_enabled_callsite_inventory.py \
             infra/policy/tests/test_gate6_p9_enabled_callsite_inventory.py \
@@ -121,6 +125,7 @@ jobs:
         run: |
           python -m compileall -q \
             infra/ci/check_gate6_repository_posture.py \
+            infra/deployment/backup/restore_drill_verifier.py \
             infra/policy/gate6/generate_p9_enabled_callsite_inventory.py \
             packages/anila-security/src/anila_security/production_acceptance_profile.py
 
@@ -138,6 +143,26 @@ jobs:
           for required in ("gate6-posture", "gate6-contract-tests", "gate6-static-contract"):
               assert required in jobs
           assert "production acceptance" not in document["name"].lower()
+
+          contract_steps = jobs["gate6-contract-tests"]["steps"]
+          restore_step = next(
+              step for step in contract_steps
+              if step.get("name") == "Run restore-drill evidence verifier contracts"
+          )
+          assert restore_step["run"] == (
+              "python -m pytest infra/deployment/tests/test_restore_drill_verifier.py -q"
+          )
+
+          static_steps = jobs["gate6-static-contract"]["steps"]
+          lint_step = next(
+              step for step in static_steps if step.get("name") == "Lint Gate 6 contract code"
+          )
+          compile_step = next(
+              step for step in static_steps if step.get("name") == "Compile Gate 6 contract scripts"
+          )
+          verifier = "infra/deployment/backup/restore_drill_verifier.py"
+          assert verifier in lint_step["run"]
+          assert verifier in compile_step["run"]
           PY
 
       - name: Check changed-file whitespace
