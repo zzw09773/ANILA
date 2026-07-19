@@ -65,6 +65,7 @@ def _base_profile() -> dict:
             "start": (NOW - timedelta(days=8)).isoformat(),
             "end": (NOW - timedelta(days=1)).isoformat(),
             "minimum_duration_seconds": 7 * 86400,
+            "cadence": {"interval_seconds": 86400, "tolerance_seconds": 0},
         },
         "workflow_matrix": [
             {
@@ -117,7 +118,10 @@ def _base_profile() -> dict:
             "low": "accept",
             "blocked_categories": ["auth", "classification", "egress"],
             "conditional_requirements": [
-                "owner", "expiry", "compensating_control", "independent_signoff"
+                "owner",
+                "expiry",
+                "compensating_control",
+                "independent_signoff",
             ],
         },
         "revalidation_impact_matrix": {"version": "impact-2026-07-16.1", "sha256": "d" * 64},
@@ -139,7 +143,9 @@ def _signed_fixture(*, same_key: bool = False) -> tuple[dict, dict, dict]:
     trust = {
         "trusted_signers": {
             role: key.public_key()
-            .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+            .public_bytes(
+                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+            )
             .decode("ascii")
             for role, key in keys.items()
         }
@@ -147,7 +153,10 @@ def _signed_fixture(*, same_key: bool = False) -> tuple[dict, dict, dict]:
     payload = dict(profile)
     payload.pop("signatures")
     profile["signatures"] = [
-        {"role": role, "signature": base64.b64encode(keys[role].sign(canonical_json(payload))).decode("ascii")}
+        {
+            "role": role,
+            "signature": base64.b64encode(keys[role].sign(canonical_json(payload))).decode("ascii"),
+        }
         for role in ROLES
     ]
     return profile, trust, keys
@@ -160,9 +169,7 @@ def _resign(profile: dict, keys: dict[str, Ed25519PrivateKey]) -> None:
     profile["signatures"] = [
         {
             "role": role,
-            "signature": base64.b64encode(keys[role].sign(canonical_json(payload))).decode(
-                "ascii"
-            ),
+            "signature": base64.b64encode(keys[role].sign(canonical_json(payload))).decode("ascii"),
         }
         for role in ROLES
     ]
@@ -177,6 +184,41 @@ def test_five_party_signed_profile_verifies_with_temporary_test_keys() -> None:
     assert verified.data_classification_ceiling == "營業秘密"
     assert verified.inventory_version == "inventory-2026-07-16.1"
     assert verified.profile_content_sha256 == production_profile_content_sha256(profile)
+
+
+@pytest.mark.parametrize(
+    "environment",
+    ["development", "prod", "Production", " production", "production "],
+)
+def test_five_party_signed_noncanonical_environment_is_rejected(
+    environment: str,
+) -> None:
+    profile, trust, keys = _signed_fixture()
+    profile["production_topology"]["environment"] = environment
+    _resign(profile, keys)
+
+    with pytest.raises(
+        ProductionAcceptanceProfileError,
+        match="production_topology.environment must be exactly production",
+    ):
+        verify_production_acceptance_profile(profile, trust, now=NOW)
+
+
+def test_disabled_authoring_template_with_null_topology_remains_valid() -> None:
+    template_path = (
+        Path(__file__).parents[3]
+        / "infra"
+        / "policy"
+        / "gate6"
+        / "production-acceptance-profile.disabled-template.json"
+    )
+    template = json.loads(template_path.read_text(encoding="utf-8"))
+
+    validate_production_acceptance_profile(
+        template,
+        allow_disabled_template=True,
+    )
+    assert template["production_topology"] is None
 
 
 def test_canonical_json_is_stable_and_unicode_preserving() -> None:
@@ -254,18 +296,14 @@ def test_repository_disabled_template_is_rejected_by_path_verifier(tmp_path: Pat
         / "production-acceptance-profile.disabled-template.json"
     )
     with pytest.raises(ProductionAcceptanceProfileError, match="not a production approval"):
-        verify_signed_production_acceptance_profile(
-            template_path, trust_path, now=NOW
-        )
+        verify_signed_production_acceptance_profile(template_path, trust_path, now=NOW)
 
 
 def test_signed_profile_loader_rejects_duplicate_keys_and_bom(tmp_path: Path) -> None:
     profile, trust, _ = _signed_fixture()
     profile_path = tmp_path / "profile.json"
     trust_path = tmp_path / "trust.json"
-    profile_path.write_text(
-        json.dumps(profile)[:-1] + ',"enabled":true}', encoding="utf-8"
-    )
+    profile_path.write_text(json.dumps(profile)[:-1] + ',"enabled":true}', encoding="utf-8")
     trust_path.write_text(json.dumps(trust), encoding="utf-8")
     with pytest.raises(ProductionAcceptanceProfileError, match="duplicate JSON key"):
         verify_signed_production_acceptance_profile(profile_path, trust_path, now=NOW)
@@ -296,12 +334,87 @@ def test_observation_window_requires_seven_days_and_validity_containment() -> No
         verify_production_acceptance_profile(profile, trust, now=NOW)
 
 
+@pytest.mark.parametrize(
+    ("name", "mutation", "match"),
+    [
+        (
+            "missing cadence",
+            lambda profile: profile["observation_window"].pop("cadence"),
+            "unknown or missing",
+        ),
+        (
+            "unknown cadence field",
+            lambda profile: profile["observation_window"]["cadence"].update({"unexpected": True}),
+            "unknown or missing",
+        ),
+        (
+            "zero interval",
+            lambda profile: profile["observation_window"]["cadence"].update(
+                {"interval_seconds": 0}
+            ),
+            "outside allowed range",
+        ),
+        (
+            "interval above maximum",
+            lambda profile: profile["observation_window"]["cadence"].update(
+                {"interval_seconds": 86_401}
+            ),
+            "outside allowed range",
+        ),
+        (
+            "boolean interval",
+            lambda profile: profile["observation_window"]["cadence"].update(
+                {"interval_seconds": True}
+            ),
+            "must be an integer",
+        ),
+        (
+            "tolerance greater than interval",
+            lambda profile: profile["observation_window"]["cadence"].update(
+                {"interval_seconds": 60, "tolerance_seconds": 61}
+            ),
+            "outside allowed range",
+        ),
+        (
+            "negative tolerance",
+            lambda profile: profile["observation_window"]["cadence"].update(
+                {"tolerance_seconds": -1}
+            ),
+            "outside allowed range",
+        ),
+    ],
+)
+def test_observation_window_cadence_mutations_fail_closed(name: str, mutation, match: str) -> None:
+    profile, trust, keys = _signed_fixture()
+    mutation(profile)
+    _resign(profile, keys)
+
+    with pytest.raises(ProductionAcceptanceProfileError, match=match):
+        verify_production_acceptance_profile(profile, trust, now=NOW)
+
+
+def test_observation_window_cadence_accepts_tolerance_equal_to_interval() -> None:
+    profile, trust, keys = _signed_fixture()
+    profile["observation_window"]["cadence"].update(
+        {"interval_seconds": 60, "tolerance_seconds": 60}
+    )
+    _resign(profile, keys)
+
+    verified = verify_production_acceptance_profile(profile, trust, now=NOW)
+
+    assert verified.profile["observation_window"]["cadence"] == {
+        "interval_seconds": 60,
+        "tolerance_seconds": 60,
+    }
+
+
 def test_profile_can_be_signed_before_a_future_observation_window() -> None:
     profile, trust, keys = _signed_fixture()
     profile["observation_window"] = {
         "start": (NOW + timedelta(days=1)).isoformat(),
         "end": (NOW + timedelta(days=8)).isoformat(),
         "minimum_duration_seconds": 7 * 86400,
+        "cadence": {"interval_seconds": 86400, "tolerance_seconds": 0},
     }
     _resign(profile, keys)
     verified = verify_production_acceptance_profile(profile, trust, now=NOW)

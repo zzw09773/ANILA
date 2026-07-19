@@ -42,6 +42,7 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")
 _MAX_PROFILE_DAYS = 365
 _MAX_OBSERVATION_DAYS = 365
 _MAX_DURATION_SECONDS = 365 * 24 * 60 * 60
+_MAX_CADENCE_SECONDS = 86_400
 _MIN_OBSERVATION_SECONDS = 7 * 24 * 60 * 60
 _MAX_RTO_RPO_SECONDS = 365 * 24 * 60 * 60
 _MAX_REVOCATION_SECONDS = 7 * 24 * 60 * 60
@@ -103,18 +104,15 @@ _SLO_FIELDS = frozenset(
 _LOAD_FIELDS = frozenset(
     {"profile_id", "concurrency", "requests_per_second", "duration_seconds", "workflow_ids"}
 )
-_OBSERVATION_FIELDS = frozenset({"start", "end", "minimum_duration_seconds"})
-_CALLSITE_INVENTORY_FIELDS = frozenset(
-    {"schema_version", "version", "sha256", "callsite_ids"}
-)
+_OBSERVATION_FIELDS = frozenset({"start", "end", "minimum_duration_seconds", "cadence"})
+_CADENCE_FIELDS = frozenset({"interval_seconds", "tolerance_seconds"})
+_CALLSITE_INVENTORY_FIELDS = frozenset({"schema_version", "version", "sha256", "callsite_ids"})
 _REVOCATION_FIELDS = frozenset({"token_seconds", "card_seconds"})
 _PKI_FIELDS = frozenset(
     {"stale_after_seconds", "offline_behavior", "missing_behavior", "refresh_failure_behavior"}
 )
 _SEVERITY_FIELDS = frozenset({"sev1", "sev2"})
-_SEVERITY_ENTRY_FIELDS = frozenset(
-    {"definition", "ack_seconds", "mitigate_seconds"}
-)
+_SEVERITY_ENTRY_FIELDS = frozenset({"definition", "ack_seconds", "mitigate_seconds"})
 _FINDING_FIELDS = frozenset(
     {
         "critical",
@@ -206,9 +204,7 @@ def _read_json(path: str | Path, *, label: str) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for key, value in pairs:
             if key in result:
-                raise ProductionAcceptanceProfileError(
-                    f"duplicate JSON key {key!r} in {label}"
-                )
+                raise ProductionAcceptanceProfileError(f"duplicate JSON key {key!r} in {label}")
             result[key] = value
         return result
 
@@ -222,12 +218,7 @@ def _read_json(path: str | Path, *, label: str) -> dict[str, Any]:
 
 
 def _require_string(value: Any, field: str, *, max_length: int = 512) -> str:
-    if (
-        not isinstance(value, str)
-        or not value
-        or value != value.strip()
-        or len(value) > max_length
-    ):
+    if not isinstance(value, str) or not value or value != value.strip() or len(value) > max_length:
         raise ProductionAcceptanceProfileError(f"{field} must be a non-empty trimmed string")
     return value
 
@@ -273,9 +264,7 @@ def _require_unique_strings(
     return result
 
 
-def _require_bounded_int(
-    value: Any, field: str, *, minimum: int, maximum: int
-) -> int:
+def _require_bounded_int(value: Any, field: str, *, minimum: int, maximum: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ProductionAcceptanceProfileError(f"{field} must be an integer")
     if not minimum <= value <= maximum:
@@ -319,7 +308,9 @@ def _normalise_now(value: datetime | None) -> datetime:
     return current.astimezone(timezone.utc)
 
 
-def _validate_profile_window(profile: Mapping[str, Any], *, now: datetime) -> tuple[datetime, datetime]:
+def _validate_profile_window(
+    profile: Mapping[str, Any], *, now: datetime
+) -> tuple[datetime, datetime]:
     valid_from = _parse_rfc3339(profile["valid_from"], "valid_from")
     valid_until = _parse_rfc3339(profile["valid_until"], "valid_until")
     if valid_until <= valid_from:
@@ -334,14 +325,15 @@ def _validate_profile_window(profile: Mapping[str, Any], *, now: datetime) -> tu
 def _validate_topology(value: Any) -> None:
     topology = _require_exact_object(value, _TOPOLOGY_FIELDS, "production_topology")
     _require_identifier(topology["topology_id"], "production_topology.topology_id")
-    _require_identifier(topology["environment"], "production_topology.environment")
+    if topology["environment"] != "production":
+        raise ProductionAcceptanceProfileError(
+            "production_topology.environment must be exactly production"
+        )
     _require_unique_strings(topology["regions"], "production_topology.regions")
     _require_unique_strings(topology["network_zones"], "production_topology.network_zones")
     _require_unique_strings(topology["services"], "production_topology.services")
     if topology["egress_policy"] != "csp_only":
-        raise ProductionAcceptanceProfileError(
-            "production_topology.egress_policy must be csp_only"
-        )
+        raise ProductionAcceptanceProfileError("production_topology.egress_policy must be csp_only")
     artifact_hashes = topology["artifact_hashes"]
     if not isinstance(artifact_hashes, Mapping) or not artifact_hashes:
         raise ProductionAcceptanceProfileError(
@@ -373,7 +365,9 @@ def _validate_rto_rpo(value: Any) -> None:
 
 def _validate_slos(value: Any) -> None:
     values = _require_exact_object(value, _SLO_FIELDS, "slo_thresholds")
-    _require_bounded_int(values["ingestion_p99_ms"], "slo_thresholds.ingestion_p99_ms", minimum=1, maximum=86_400_000)
+    _require_bounded_int(
+        values["ingestion_p99_ms"], "slo_thresholds.ingestion_p99_ms", minimum=1, maximum=86_400_000
+    )
     _require_bounded_number(
         values["dispatch_success_rate"],
         "slo_thresholds.dispatch_success_rate",
@@ -381,8 +375,18 @@ def _validate_slos(value: Any) -> None:
         maximum=1,
         minimum_inclusive=False,
     )
-    _require_bounded_int(values["queue_age_seconds"], "slo_thresholds.queue_age_seconds", minimum=0, maximum=_MAX_DURATION_SECONDS)
-    _require_bounded_int(values["stuck_job_count"], "slo_thresholds.stuck_job_count", minimum=0, maximum=_MAX_P5_SAMPLE_N)
+    _require_bounded_int(
+        values["queue_age_seconds"],
+        "slo_thresholds.queue_age_seconds",
+        minimum=0,
+        maximum=_MAX_DURATION_SECONDS,
+    )
+    _require_bounded_int(
+        values["stuck_job_count"],
+        "slo_thresholds.stuck_job_count",
+        minimum=0,
+        maximum=_MAX_P5_SAMPLE_N,
+    )
     _require_bounded_number(
         values["artifact_download_success_rate"],
         "slo_thresholds.artifact_download_success_rate",
@@ -401,7 +405,9 @@ def _validate_slos(value: Any) -> None:
 def _validate_load_profile(value: Any) -> None:
     values = _require_exact_object(value, _LOAD_FIELDS, "load_profile")
     _require_identifier(values["profile_id"], "load_profile.profile_id")
-    _require_bounded_int(values["concurrency"], "load_profile.concurrency", minimum=1, maximum=1_000_000)
+    _require_bounded_int(
+        values["concurrency"], "load_profile.concurrency", minimum=1, maximum=1_000_000
+    )
     _require_bounded_number(
         values["requests_per_second"],
         "load_profile.requests_per_second",
@@ -409,7 +415,12 @@ def _validate_load_profile(value: Any) -> None:
         maximum=1_000_000,
         minimum_inclusive=False,
     )
-    _require_bounded_int(values["duration_seconds"], "load_profile.duration_seconds", minimum=1, maximum=_MAX_DURATION_SECONDS)
+    _require_bounded_int(
+        values["duration_seconds"],
+        "load_profile.duration_seconds",
+        minimum=1,
+        maximum=_MAX_DURATION_SECONDS,
+    )
     _require_unique_strings(values["workflow_ids"], "load_profile.workflow_ids")
 
 
@@ -423,13 +434,26 @@ def _validate_observation_window(value: Any) -> tuple[datetime, datetime]:
         minimum=_MIN_OBSERVATION_SECONDS,
         maximum=_MAX_OBSERVATION_DAYS * 86400,
     )
+    cadence = _require_exact_object(
+        values["cadence"], _CADENCE_FIELDS, "observation_window.cadence"
+    )
+    interval = _require_bounded_int(
+        cadence["interval_seconds"],
+        "observation_window.cadence.interval_seconds",
+        minimum=1,
+        maximum=_MAX_CADENCE_SECONDS,
+    )
+    _require_bounded_int(
+        cadence["tolerance_seconds"],
+        "observation_window.cadence.tolerance_seconds",
+        minimum=0,
+        maximum=interval,
+    )
     elapsed = (end - start).total_seconds()
     if elapsed <= 0:
         raise ProductionAcceptanceProfileError("observation_window.end must be after start")
     if elapsed < _MIN_OBSERVATION_SECONDS:
-        raise ProductionAcceptanceProfileError(
-            "observation_window must cover at least seven days"
-        )
+        raise ProductionAcceptanceProfileError("observation_window must cover at least seven days")
     if elapsed < minimum:
         raise ProductionAcceptanceProfileError(
             "observation_window is shorter than minimum_duration_seconds"
@@ -443,14 +467,25 @@ def _validate_workflow_matrix(value: Any, *, ceiling: str) -> set[str]:
     if not isinstance(value, list) or not value:
         raise ProductionAcceptanceProfileError("workflow_matrix must be a non-empty list")
     expected = frozenset(
-        {"workflow_id", "auth_method", "classification", "compartment", "positive_fixture", "negative_fixture"}
+        {
+            "workflow_id",
+            "auth_method",
+            "classification",
+            "compartment",
+            "positive_fixture",
+            "negative_fixture",
+        }
     )
     seen: set[tuple[str, str, str, str]] = set()
     workflow_ids: set[str] = set()
     for index, row in enumerate(value):
         item = _require_exact_object(row, expected, f"workflow_matrix[{index}]")
-        workflow_id = _require_identifier(item["workflow_id"], f"workflow_matrix[{index}].workflow_id")
-        auth_method = _require_identifier(item["auth_method"], f"workflow_matrix[{index}].auth_method")
+        workflow_id = _require_identifier(
+            item["workflow_id"], f"workflow_matrix[{index}].workflow_id"
+        )
+        auth_method = _require_identifier(
+            item["auth_method"], f"workflow_matrix[{index}].auth_method"
+        )
         classification = item["classification"]
         if classification not in CLASSIFICATION_LEVELS:
             raise ProductionAcceptanceProfileError(
@@ -460,12 +495,16 @@ def _validate_workflow_matrix(value: Any, *, ceiling: str) -> set[str]:
             raise ProductionAcceptanceProfileError(
                 f"workflow_matrix[{index}].classification exceeds data ceiling"
             )
-        compartment = _require_identifier(item["compartment"], f"workflow_matrix[{index}].compartment")
+        compartment = _require_identifier(
+            item["compartment"], f"workflow_matrix[{index}].compartment"
+        )
         _require_identifier(item["positive_fixture"], f"workflow_matrix[{index}].positive_fixture")
         _require_identifier(item["negative_fixture"], f"workflow_matrix[{index}].negative_fixture")
         key = (workflow_id, auth_method, classification, compartment)
         if key in seen:
-            raise ProductionAcceptanceProfileError("workflow_matrix contains duplicate combinations")
+            raise ProductionAcceptanceProfileError(
+                "workflow_matrix contains duplicate combinations"
+            )
         seen.add(key)
         workflow_ids.add(workflow_id)
     return workflow_ids
@@ -499,24 +538,43 @@ def _validate_callsite_inventory(
     )
     for callsite_id in callsite_ids:
         _require_identifier(callsite_id, "enabled_inference_callsite_inventory.callsite_ids[]")
-    if expected_hash is not None and digest != _require_hash(expected_hash, "expected_inventory_sha256"):
+    if expected_hash is not None and digest != _require_hash(
+        expected_hash, "expected_inventory_sha256"
+    ):
         raise ProductionAcceptanceProfileError("enabled inference callsite inventory hash mismatch")
     if expected_version is not None and version != _require_string(
         expected_version, "expected_inventory_version", max_length=128
     ):
-        raise ProductionAcceptanceProfileError("enabled inference callsite inventory version mismatch")
+        raise ProductionAcceptanceProfileError(
+            "enabled inference callsite inventory version mismatch"
+        )
     return version, digest
 
 
 def _validate_revocation(value: Any) -> None:
     values = _require_exact_object(value, _REVOCATION_FIELDS, "revocation_sla")
-    _require_bounded_int(values["token_seconds"], "revocation_sla.token_seconds", minimum=1, maximum=_MAX_REVOCATION_SECONDS)
-    _require_bounded_int(values["card_seconds"], "revocation_sla.card_seconds", minimum=1, maximum=_MAX_REVOCATION_SECONDS)
+    _require_bounded_int(
+        values["token_seconds"],
+        "revocation_sla.token_seconds",
+        minimum=1,
+        maximum=_MAX_REVOCATION_SECONDS,
+    )
+    _require_bounded_int(
+        values["card_seconds"],
+        "revocation_sla.card_seconds",
+        minimum=1,
+        maximum=_MAX_REVOCATION_SECONDS,
+    )
 
 
 def _validate_pki_policy(value: Any) -> None:
     values = _require_exact_object(value, _PKI_FIELDS, "pki_policy")
-    _require_bounded_int(values["stale_after_seconds"], "pki_policy.stale_after_seconds", minimum=1, maximum=_MAX_DURATION_SECONDS)
+    _require_bounded_int(
+        values["stale_after_seconds"],
+        "pki_policy.stale_after_seconds",
+        minimum=1,
+        maximum=_MAX_DURATION_SECONDS,
+    )
     for field in ("offline_behavior", "missing_behavior", "refresh_failure_behavior"):
         if values[field] != "fail_closed":
             raise ProductionAcceptanceProfileError(f"pki_policy.{field} must be fail_closed")
@@ -552,17 +610,13 @@ def _validate_finding_rule(value: Any) -> None:
     for severity in ("critical", "high", "medium", "low"):
         decision = rule[severity]
         if decision not in allowed:
-            raise ProductionAcceptanceProfileError(
-                f"finding_acceptance_rule.{severity} is invalid"
-            )
+            raise ProductionAcceptanceProfileError(f"finding_acceptance_rule.{severity} is invalid")
     if rule["critical"] != "reject" or rule["high"] != "reject":
         raise ProductionAcceptanceProfileError(
             "critical/high findings must be rejected, not risk-accepted"
         )
     if rule["medium"] != "conditional_accept":
-        raise ProductionAcceptanceProfileError(
-            "medium findings require conditional_accept"
-        )
+        raise ProductionAcceptanceProfileError("medium findings require conditional_accept")
     blocked = set(
         _require_unique_strings(
             rule["blocked_categories"],
@@ -688,9 +742,7 @@ def validate_production_acceptance_profile(
                 "disabled profile must explicitly declare template_only and disabled_template"
             )
         if not allow_disabled_template:
-            raise ProductionAcceptanceProfileError(
-                "disabled template is not a production approval"
-            )
+            raise ProductionAcceptanceProfileError("disabled template is not a production approval")
         return
     _validate_enabled_profile(
         profile,
@@ -719,7 +771,9 @@ def _verify_signatures(profile: Mapping[str, Any], trust_store: Mapping[str, Any
     fingerprints: set[str] = set()
     for index, entry in enumerate(signatures):
         if not isinstance(entry, Mapping) or set(entry) != {"role", "signature"}:
-            raise ProductionAcceptanceProfileError(f"signatures[{index}] has unknown or missing fields")
+            raise ProductionAcceptanceProfileError(
+                f"signatures[{index}] has unknown or missing fields"
+            )
         role = entry["role"]
         if role not in REQUIRED_PRODUCTION_SIGNER_ROLES or role in seen:
             raise ProductionAcceptanceProfileError(f"invalid or duplicate signer role: {role!r}")
@@ -746,9 +800,7 @@ def _verify_signatures(profile: Mapping[str, Any], trust_store: Mapping[str, Any
                 raise ValueError("Ed25519 signature must be 64 bytes")
             key.verify(signature, canonical_json(payload))
         except Exception as exc:  # noqa: BLE001 - signature policy must fail closed
-            raise ProductionAcceptanceProfileError(
-                f"invalid signature for {role}: {exc}"
-            ) from exc
+            raise ProductionAcceptanceProfileError(f"invalid signature for {role}: {exc}") from exc
         seen.add(role)
         fingerprints.add(fingerprint)
     if seen != REQUIRED_PRODUCTION_SIGNER_ROLES:
@@ -827,7 +879,9 @@ def verify_signed_production_acceptance_profile(
         expected_inventory_sha256 = sha256_hex(inventory)
         candidate_version = inventory.get("version", inventory.get("inventory_version"))
         if not isinstance(candidate_version, str) or not candidate_version.strip():
-            raise ProductionAcceptanceProfileError("inventory must contain version or inventory_version")
+            raise ProductionAcceptanceProfileError(
+                "inventory must contain version or inventory_version"
+            )
         expected_inventory_version = candidate_version
     return verify_production_acceptance_profile(
         profile,
