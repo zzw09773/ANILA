@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import contextlib
+import io
+import json
+import os
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+import urllib.error
 
 import yaml
 
@@ -18,6 +25,51 @@ class Gate5AgentComposeTests(unittest.TestCase):
     def _service(self, path: Path, name: str = "anila-agent") -> dict:
         document = yaml.safe_load(path.read_text(encoding="utf-8"))
         return document["services"][name]
+
+    def _registry_probe_source(self) -> str:
+        script = E2E.read_text(encoding="utf-8")
+        function_start = script.index("wait_registry_converged()")
+        heredoc = '        csp "$PYTHON_BIN" - <<\'PY\'\n'
+        probe_start = script.index(heredoc, function_start) + len(heredoc)
+        probe_end = script.index("\nPY\n", probe_start)
+        return script[probe_start:probe_end]
+
+    def _run_registry_probe(self, source: str, payload: object = None, error=None) -> str:
+        class Response:
+            def __init__(self, body: object) -> None:
+                self.body = body
+
+            def __enter__(self) -> "Response":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self) -> object:
+                return self.body
+
+        expected_hash = "a" * 64
+        environment = {
+            "E2E_REGISTRY_SERVICE_TOKEN": "service-token",
+            "E2E_REGISTRY_CALLER_USER_ID": "42",
+            "E2E_REGISTRY_AGENT_ID": "agent-1",
+            "E2E_REGISTRY_SNAPSHOT_HASH": expected_hash,
+        }
+        response = Response(json.dumps(payload).encode("utf-8"))
+        output = io.StringIO()
+        urlopen_patch = (
+            patch("urllib.request.urlopen", side_effect=error)
+            if error is not None
+            else patch("urllib.request.urlopen", return_value=response)
+        )
+        with (
+            patch.dict(os.environ, environment, clear=False),
+            urlopen_patch,
+            contextlib.redirect_stdout(output),
+        ):
+            compiled = compile(source, str(E2E) + ":registry-probe", "exec")
+            exec(compiled, {})
+        return output.getvalue().strip()
 
     def test_platform_agent_is_explicitly_profiled_and_image_locked(self) -> None:
         service = self._service(PLATFORM)
@@ -98,6 +150,68 @@ class Gate5AgentComposeTests(unittest.TestCase):
         ):
             self.assertIn(marker, script)
 
+    def test_restart_waits_for_csp_owned_registry_convergence_fail_closed(self) -> None:
+        script = E2E.read_text(encoding="utf-8")
+        restart = script.index(
+            "compose up -d --force-recreate --no-deps csp router anila-agent"
+        )
+        convergence = script.index(
+            'wait_registry_converged "$USER_ID" "$AGENT_ID" "$REGISTRY_HASH"',
+            restart,
+        )
+        resume = script.index('router_http_post "/v1/sessions/$SESSION_ID/answer"', convergence)
+        self.assertLess(convergence, resume)
+        for marker in (
+            "wait_registry_converged()",
+            'http://127.0.0.1:8000/internal/v1/agents/registry',
+            '"X-CSP-Service-Token"',
+            '"X-ANILA-Caller-User-Id"',
+            'payload.get("snapshot_hash")',
+            'entries[0].get("health_status") == "healthy"',
+            'entries[0].get("health_ready") is True',
+            'entries[0].get("ready_for_dispatch") is True',
+            'print("ready" if converged else "not-ready")',
+            'print("not-ready")',
+            "CSP registry/Agent readiness did not converge",
+        ):
+            self.assertIn(marker, script)
+        # A transient 4xx/5xx/network failure is retryable, but no response
+        # may be treated as ready and no resume request is sent in that path.
+        self.assertIn(
+            "urllib.error.HTTPError,",
+            script,
+        )
+
+    def test_registry_probe_compiles_and_executes_fail_closed(self) -> None:
+        source = self._registry_probe_source()
+        expected_hash = "a" * 64
+        converged = {
+            "snapshot_id": expected_hash,
+            "snapshot_revision": expected_hash,
+            "snapshot_hash": expected_hash,
+            "registry_snapshot_id": expected_hash,
+            "agents": [
+                {
+                    "agent_id": "agent-1",
+                    "health_status": "healthy",
+                    "health_ready": True,
+                    "ready_for_dispatch": True,
+                }
+            ],
+        }
+        self.assertEqual(self._run_registry_probe(source, converged), "ready")
+        for payload in (
+            [],
+            {**converged, "agents": {"agent-1": converged["agents"][0]}},
+            {**converged, "agents": [None]},
+            {**converged, "snapshot_hash": "b" * 64},
+        ):
+            self.assertEqual(self._run_registry_probe(source, payload), "not-ready")
+        self.assertEqual(
+            self._run_registry_probe(source, error=urllib.error.URLError("not ready")),
+            "not-ready",
+        )
+
     def test_silver_target_is_non_root_service_wrapper(self) -> None:
         dockerfile = DOCKERFILE.read_text(encoding="utf-8")
         self.assertIn("FROM python:3.12-slim AS silver-runtime", dockerfile)
@@ -159,6 +273,9 @@ class Gate5AgentComposeTests(unittest.TestCase):
         for marker in (
             "set -euo pipefail",
             "gate5-silver",
+            'SEED_HELPER="$ROOT_DIR/infra/deployment/scripts/gate5-silver-seed.py"',
+            'csp "$PYTHON_BIN" - model < "$SEED_HELPER"',
+            'csp "$PYTHON_BIN" - authority < "$SEED_HELPER"',
             "docker compose",
             "execution-grants/mint",
             "/internal/v1/agents/dispatch",

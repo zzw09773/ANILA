@@ -280,7 +280,7 @@ services:
       - default
       # 跨 project 的 external network — 解 ``gemma4`` / ``gpt-oss-20b`` /
       # ``nv-embed-proxy`` (在 infra/models/docker-compose.yml)。bootstrap 一次:
-      #   docker network create --driver bridge --internal anila-models-net
+      #   bash infra/deployment/scripts/ensure-models-network.sh ensure
       - anila-models-net
     depends_on:
       csp-db:
@@ -554,6 +554,10 @@ services:
       - "8100"
     environment:
       ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:?ANILA_DEPLOYMENT_PROFILE must be declared}
+      # Formal image inference must revalidate CSP provider authority before
+      # every downstream call; the explicit flag is also consumed by the
+      # model-side FLUX shim in infra/models/docker-compose.yml.
+      GATE5_MODEL_GOVERNANCE_ENABLED: "${GATE5_MODEL_GOVERNANCE_ENABLED:-true}"
       CSP_BASE_URL: http://csp:8000
       # 跟 csp 共用同一把 service-to-service token,讓 cold-start sync
       # /api/auth/revocations 能透過 X-CSP-Service-Token header 通過
@@ -817,7 +821,8 @@ networks:
   default:
     name: anila-net
   # 跟 infra/models/docker-compose.yml 共用。external → 兩個 project 任一個 down
-  # 都不會刪掉它。bootstrap: docker network create --driver bridge --internal anila-models-net
+  # 都不會刪掉它。bootstrap 只能透過 shared helper:
+  #   bash infra/deployment/scripts/ensure-models-network.sh ensure
   anila-models-net:
     external: true
     name: anila-models-net

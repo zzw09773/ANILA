@@ -64,12 +64,12 @@ models/inference/        # TensorRT-LLM / Triton local build context + perf logs
 
 ## Startup & deployment
 
-Prefer the `infra/deployment/intranet/model-serve.sh` wrapper (auto-`source`s the repo-root `.env`, auto-creates `anila-models-net`, and always passes `--profile intranet` so both in- and out-of-profile services can be named):
+Prefer the `infra/deployment/intranet/model-serve.sh` wrapper (auto-`source`s the repo-root `.env`, uses the shared `ensure-models-network.sh` helper to create/read back `anila-models-net`, and always passes `--profile intranet` so both in- and out-of-profile services can be named):
 
 ```bash
-# One-time bootstrap: create the net and re-apply networking to the platform stack
-# (restart does NOT attach a newly-added network — use up -d).
-docker network create anila-models-net
+# One-time bootstrap: use the shared helper, then re-apply networking to the
+# platform stack (restart does NOT attach a newly-added network — use up -d).
+bash infra/deployment/scripts/ensure-models-network.sh ensure
 docker compose up -d csp            # at repo root, via the root shim compose.yaml; csp joins anila-models-net
 
 # Day-to-day (at repo root)
@@ -90,6 +90,26 @@ docker compose -f infra/models/docker-compose.yml down
 ```
 
 > ⚠️ Do not use `START-HERE.sh` / `intranet-deploy.sh` for small model-layer tweaks — those are the one-time card bootstrap. Use `model-serve.sh` for model lifecycle and `infra/deployment/scripts/deploy-prod.sh` for the platform lifecycle. Apply config changes with `up -d` (`docker restart` does not reload `.env` / compose).
+
+### External Triton embedding overlay (standalone)
+
+When NV-Embed-v2 Triton gRPC runs on another host (currently `172.16.120.35:9001`), use the dedicated [`docker-compose.external-embed.yml`](./docker-compose.external-embed.yml) and [`external-embed-serve.sh`](./external-embed-serve.sh):
+
+```bash
+export TRITON_GRPC_URL=172.16.120.35:9001   # exact host:port; DNS/FQDN is also accepted
+bash infra/deployment/scripts/ensure-models-network.sh ensure
+bash infra/models/external-embed-serve.sh up
+bash infra/models/external-embed-serve.sh smoke
+bash infra/models/external-embed-serve.sh down
+```
+
+The overlay is its own Compose project, `anila-external-embed`, and defines only `nv-embed-proxy` (no Triton service, GPU reservation, or local weights). The proxy exposes only internal port 8000 and joins both the shared external `anila-models-net` and a project-owned `embedding-egress` bridge with one attacher. The shared network must first be read back by the helper as `Internal=true, Driver=bridge`; the overlay never owns or removes it.
+
+**Never** merge it with `docker-compose.yml` (`docker compose -f docker-compose.yml -f docker-compose.external-embed.yml ...`) and never use `--remove-orphans` with this overlay (that can expand cleanup into the `anila-models` project). Use the fixed-project wrapper only; it rejects extra compose files and project arguments.
+
+The overlay also requires the `ANILA_EXTERNAL_EMBED_STANDALONE` marker, which only the wrapper sets to a fixed value; a base-plus-overlay `config` run without the wrapper therefore fails closed. This is an anti-footgun **trust boundary**, not security authentication: an operator who deliberately sets the marker can bypass it, so it must not be treated as an egress security control.
+
+`embedding-egress` currently proves only app-target + single-attacher topology. It is **not host-firewall exact-destination enforcement**; a formal Gate 5 enabled profile still needs host firewall/egress-gateway evidence and must not auto-pass from the dedicated bridge alone.
 
 ---
 

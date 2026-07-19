@@ -15,9 +15,13 @@ if str(SECURITY_SRC) not in sys.path:
     sys.path.insert(0, str(SECURITY_SRC))
 
 from anila_security.model_governance import (  # noqa: E402
+    BINDING_FIELDS_V2,
+    PROVIDER_BINDING_FIELDS,
+    TransportTarget,
     VerifiedModelGovernanceAuthority,
     inventory_content_sha256,
     profile_content_sha256,
+    transport_target_sha256,
 )
 
 
@@ -50,14 +54,37 @@ class Gate5TestMaterialGeneratorTests(unittest.TestCase):
             self.assertEqual(
                 profile["profile_id"], "synthetic-gate5-smoke-not-production"
             )
+            self.assertEqual(
+                profile["schema_version"], "anila.gate5.model-governance.profile.v2"
+            )
             self.assertEqual(set(profile["enabled_callsites"]), DEFAULT_CALLS)
             self.assertEqual(
                 len(profile["disabled_callsites"]), len(inventory["callsites"]) - 1
             )
             self.assertEqual(len(profile["callsite_bindings"]), 1)
+            binding = profile["callsite_bindings"][0]
+            self.assertEqual(set(binding), BINDING_FIELDS_V2)
             self.assertEqual(
-                profile["callsite_bindings"][0]["callsite_id"], "r7.csp.memory"
+                binding["callsite_id"], "r7.csp.memory"
             )
+            self.assertEqual(
+                binding["provider_binding_ids"], ["provider.gate5-synthetic"]
+            )
+            self.assertNotIn("model_artifact_id", binding)
+            self.assertNotIn("deployment_id", binding)
+            self.assertNotIn("transport_target", binding)
+            self.assertNotIn("upstream_transport_target", binding)
+            self.assertEqual(len(profile["provider_bindings"]), 1)
+            provider = profile["provider_bindings"][0]
+            self.assertEqual(set(provider), PROVIDER_BINDING_FIELDS)
+            target = TransportTarget.from_dict(provider["transport_target"])
+            self.assertEqual(target.canonical, "synthetic-model:8000")
+            self.assertEqual(
+                provider["transport_target_sha256"], transport_target_sha256(target)
+            )
+            self.assertIsNone(provider["upstream_transport_target"])
+            self.assertIsNone(provider["upstream_transport_target_sha256"])
+            self.assertNotIn("gpu_topology", provider)
             self.assertEqual(
                 profile["model_artifacts"][0]["artifact_id"],
                 "artifact.gate5-synthetic",
@@ -127,14 +154,18 @@ class Gate5TestMaterialGeneratorTests(unittest.TestCase):
             )
             self.assertEqual(
                 {
-                    binding["model_artifact_id"]
+                    tuple(binding["provider_binding_ids"])
                     for binding in profile["callsite_bindings"]
                 },
-                {"artifact.gate5-synthetic"},
+                {("provider.gate5-synthetic",)},
             )
             self.assertEqual(
-                {binding["deployment_id"] for binding in profile["callsite_bindings"]},
-                {"deployment.gate5-synthetic"},
+                [set(binding) for binding in profile["callsite_bindings"]],
+                [BINDING_FIELDS_V2] * len(callsite_ids),
+            )
+            self.assertEqual(
+                [set(provider) for provider in profile["provider_bindings"]],
+                [PROVIDER_BINDING_FIELDS],
             )
 
             now = datetime.fromisoformat(

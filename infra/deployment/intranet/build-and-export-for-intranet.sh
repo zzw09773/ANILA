@@ -37,6 +37,7 @@
 #     ├── MODEL-IMAGE-INVENTORY.tsv   (optional model compose service/image 清單)
 #     ├── MODEL-IMAGE-STATUS.tsv      (optional model bundle 實際收錄狀態)
 #     ├── MODEL-IMAGE-LOCK.tsv        (WITH_MODELS=1 時的 model content-ID lock)
+#     ├── ensure-models-network.sh    (shared external network lifecycle helper)
 #     ├── INTRANET-LOAD.sh           (內網端用的 import 腳本)
 #     └── MANIFEST.txt               (image 清單 + 大小,給 IT 對 checksum)
 #
@@ -53,6 +54,7 @@ MODEL_COMPOSE_FILE="$REPO_ROOT/infra/models/docker-compose.yml"
 INVENTORY_CHECKER="$REPO_ROOT/infra/deployment/intranet/check_airgap_inventory.py"
 IMAGE_LOCK_VERIFIER="$REPO_ROOT/infra/deployment/scripts/verify-compose-image-lock.py"
 MODEL_IMAGE_LOCK_VERIFIER="$REPO_ROOT/infra/deployment/scripts/verify-model-image-lock.py"
+MODEL_NETWORK_HELPER="$REPO_ROOT/infra/deployment/scripts/ensure-models-network.sh"
 PLATFORM_LOCK_FILE="$OUTPUT_DIR/PLATFORM-IMAGE-LOCK.tsv"
 MODEL_LOCK_FILE="$OUTPUT_DIR/MODEL-IMAGE-LOCK.tsv"
 
@@ -84,6 +86,7 @@ OUTPUT_CANDIDATES=(
     "$OUTPUT_DIR"/MODEL-IMAGE-INVENTORY.tsv
     "$OUTPUT_DIR"/MODEL-IMAGE-STATUS.tsv
     "$OUTPUT_DIR"/MODEL-IMAGE-LOCK.tsv
+    "$OUTPUT_DIR"/ensure-models-network.sh
 )
 EXISTING_OUTPUT=()
 for artifact in "${OUTPUT_CANDIDATES[@]}"; do
@@ -310,8 +313,13 @@ else
 fi
 echo
 
-# ── Phase 5: 寫 manifest + intranet import script ────────────────────────
+# ── Phase 5: 寫 manifest + network helper + intranet import script ────────
 echo "▶ [4/5] Writing MANIFEST.txt + INTRANET-LOAD.sh..."
+
+[ -f "$MODEL_NETWORK_HELPER" ] && [ ! -L "$MODEL_NETWORK_HELPER" ] \
+    || { echo "✗ shared model network helper missing: $MODEL_NETWORK_HELPER" >&2; exit 1; }
+cp "$MODEL_NETWORK_HELPER" "$OUTPUT_DIR/ensure-models-network.sh"
+chmod 755 "$OUTPUT_DIR/ensure-models-network.sh"
 
 # CHECKSUMS.sha256:純機器可讀格式 (相對路徑),供 INTRANET-LOAD.sh 內網端
 # `sha256sum -c` 自動驗檔用。MANIFEST.txt 內也保留一份人類可讀版,給 IT 對檔。
@@ -325,6 +333,7 @@ echo "▶ [4/5] Writing MANIFEST.txt + INTRANET-LOAD.sh..."
         MODEL-IMAGE-INVENTORY.tsv
         PLATFORM-IMAGE-LOCK.tsv
         MODEL-IMAGE-STATUS.tsv
+        ensure-models-network.sh
     )
     if [ -f MODEL-IMAGE-LOCK.tsv ]; then
         CHECKSUM_FILES+=(MODEL-IMAGE-LOCK.tsv)
@@ -371,7 +380,7 @@ cat > "$OUTPUT_DIR/INTRANET-LOAD.sh" <<'EOF'
 # INTRANET-LOAD.sh — 內網端 docker load 用。執行前確認:
 #   1. docker 已裝且能跑 (docker info 不報錯)
 #   2. 同目錄有 01~03 tar.gz、IMAGE-INVENTORY、IMAGE-LOCK、STATUS、CHECKSUMS；
-#      04-models / 05-weights 則依 bundle 選項存在
+#      ensure-models-network.sh；04-models / 05-weights 則依 bundle 選項存在
 #   3. $HOME/ANILA repo 已 clone 到內網機器 (帶 .env 進去)
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -386,10 +395,22 @@ require_exact_checksum_entry() {
     local artifact="$1"
     local count
     count="$(awk -v wanted="$artifact" '
-        $0 !~ /^[[:space:]]*#/ && NF == 2 \
-            && ($2 == wanted || $2 == "*" wanted) \
-            && length($1) == 64 && $1 ~ /^[0-9A-Fa-f]+$/ { count++ }
-        END { print count + 0 }
+        $0 !~ /^[[:space:]]*#/ && NF == 2 {
+            normalized = $2
+            sub(/^\*/, "", normalized)
+            sub(/^.*\//, "", normalized)
+            if ($2 != wanted && normalized == wanted) {
+                noncanonical++
+            }
+            if ($2 == wanted && length($1) == 64 \
+                && $1 ~ /^[0-9A-Fa-f]+$/) {
+                canonical++
+            }
+        }
+        END {
+            if (noncanonical > 0) print -1
+            else print canonical + 0
+        }
     ' CHECKSUMS.sha256)"
     if [ "$count" -ne 1 ]; then
         echo "✗ CHECKSUMS.sha256 must contain exactly one canonical entry for: $artifact" >&2
@@ -399,8 +420,9 @@ require_exact_checksum_entry() {
 
 require_regular_bundle_file() {
     local artifact="$1"
+    local kind="${2:-Optional}"
     if [ -L "$artifact" ] || [ ! -f "$artifact" ]; then
-        echo "✗ Optional bundle artifact must be a regular non-symlink file: $artifact" >&2
+        echo "✗ $kind bundle artifact must be a regular non-symlink file: $artifact" >&2
         exit 1
     fi
 }
@@ -435,15 +457,20 @@ REQUIRED_BUNDLE_FILES=(
     01-anila-built.tar.gz
     02-base.tar.gz
     03-cold.tar.gz
+    ensure-models-network.sh
 )
 if [ "$model_bundle_present" -eq 1 ]; then
     REQUIRED_BUNDLE_FILES+=(MODEL-IMAGE-LOCK.tsv)
 fi
 for required_file in "${REQUIRED_BUNDLE_FILES[@]}"; do
+    require_regular_bundle_file "$required_file" Required
     [ -s "$required_file" ] || {
         echo "✗ Required bundle file missing/empty: $required_file" >&2
         exit 1
     }
+    if [ "$required_file" != CHECKSUMS.sha256 ]; then
+        require_exact_checksum_entry "$required_file"
+    fi
 done
 
 # Prove the exact optional files are represented in the manifest before any
@@ -469,6 +496,11 @@ if ! sha256sum -c CHECKSUMS.sha256; then
     exit 1
 fi
 echo "✓ All checksums verified."
+echo
+
+echo "── Ensuring shared anila-models-net topology ──"
+bash ./ensure-models-network.sh ensure
+echo "✓ anila-models-net is ready (Internal=true, Driver=bridge)."
 echo
 
 echo "── Loading ANILA images into local docker ──"
@@ -636,7 +668,7 @@ docker images | grep -E "anila-platform|pgvector|redis|nginx|code-server|n8n|git
 echo
 echo "✓ Load complete. 後續步驟:"
 echo "   cd <repo-root>"
-echo "   docker network create anila-models-net  # 若還沒建"
+echo "   bash <bundle-dir>/ensure-models-network.sh ensure  # 建立/驗證 internal bridge"
 echo "   bash infra/deployment/intranet/intranet-deploy.sh"
 echo "   # 正式入口會把 bundle 的 PLATFORM-IMAGE-LOCK.tsv 寫成 ANILA_IMAGE_* content-ID lock。"
 echo "   # 不要在 lock 寫入前直接 docker compose up；compose 會 fail-closed。"

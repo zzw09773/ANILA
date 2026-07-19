@@ -85,6 +85,17 @@ print('Swagger UI downloaded')" 2>/dev/null || echo "Swagger UI download skipped
 # (ingestion uploads and JWT keys) without making them world-writable.
 RUN groupadd --gid 10001 csp && \
     useradd --uid 10001 --gid csp --no-create-home --shell /usr/sbin/nologin csp && \
+    # The checkout used for offline builds may be mode 0640 (root-owned).
+    # Keep the application tree root-owned, but grant only the csp group the
+    # read/traverse access required by the non-root runtime.  Do not make the
+    # source world-readable or executable, and keep /app/secrets private.
+    chgrp -R csp /app/app /app/migrations /app/scripts /app/policy /app/frontend-dist && \
+    chgrp csp /app/alembic.ini && \
+    find /app/app /app/migrations /app/scripts /app/policy /app/frontend-dist \
+      -type d -exec chmod 0750 {} + && \
+    find /app/app /app/migrations /app/scripts /app/policy /app/frontend-dist \
+      -type f -exec chmod 0640 {} + && \
+    chmod 0640 /app/alembic.ini && \
     mkdir -p /app/logs /app/secrets /var/anila/attachments /var/anila/ingestion-uploads /var/lib/anila/source-snapshots /var/lib/anila/artifact-blobs && \
     touch /var/anila/attachments/.volume-init /var/anila/ingestion-uploads/.volume-init /var/lib/anila/source-snapshots/.volume-init /var/lib/anila/artifact-blobs/.volume-init && \
     chown -R csp:csp /app/logs /app/secrets && \

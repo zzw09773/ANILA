@@ -82,6 +82,7 @@ def _authority():
             "start": (NOW - timedelta(days=8)).isoformat(),
             "end": (NOW - timedelta(days=1)).isoformat(),
             "minimum_duration_seconds": 7 * 86400,
+            "cadence": {"interval_seconds": 86400, "tolerance_seconds": 0},
         },
         "workflow_matrix": [
             {
@@ -108,8 +109,16 @@ def _authority():
             "refresh_failure_behavior": "fail_closed",
         },
         "severity_taxonomy": {
-            "sev1": {"definition": ["auth bypass"], "ack_seconds": 300, "mitigate_seconds": 3600},
-            "sev2": {"definition": ["degradation"], "ack_seconds": 1800, "mitigate_seconds": 86400},
+            "sev1": {
+                "definition": ["auth bypass"],
+                "ack_seconds": 300,
+                "mitigate_seconds": 3600,
+            },
+            "sev2": {
+                "definition": ["degradation"],
+                "ack_seconds": 1800,
+                "mitigate_seconds": 86400,
+            },
         },
         "finding_acceptance_rule": {
             "critical": "reject",
@@ -117,9 +126,17 @@ def _authority():
             "medium": "conditional_accept",
             "low": "accept",
             "blocked_categories": ["auth", "classification", "egress"],
-            "conditional_requirements": ["owner", "expiry", "compensating_control", "independent_signoff"],
+            "conditional_requirements": [
+                "owner",
+                "expiry",
+                "compensating_control",
+                "independent_signoff",
+            ],
         },
-        "revalidation_impact_matrix": {"version": "impact.synthetic", "sha256": "d" * 64},
+        "revalidation_impact_matrix": {
+            "version": "impact.synthetic",
+            "sha256": "d" * 64,
+        },
         "valid_from": (NOW - timedelta(days=9)).isoformat(),
         "valid_until": (NOW + timedelta(days=30)).isoformat(),
         "signer_roles": list(ROLES),
@@ -128,15 +145,22 @@ def _authority():
     keys = {role: Ed25519PrivateKey.generate() for role in ROLES}
     payload = dict(profile)
     profile["signatures"] = [
-        {"role": role, "signature": base64.b64encode(key.sign(canonical_json(payload))).decode("ascii")}
+        {
+            "role": role,
+            "signature": base64.b64encode(key.sign(canonical_json(payload))).decode(
+                "ascii"
+            ),
+        }
         for role, key in keys.items()
     ]
     trust = {
         "trusted_signers": {
-            role: key.public_key().public_bytes(
+            role: key.public_key()
+            .public_bytes(
                 serialization.Encoding.PEM,
                 serialization.PublicFormat.SubjectPublicKeyInfo,
-            ).decode("ascii")
+            )
+            .decode("ascii")
             for role, key in keys.items()
         }
     }
@@ -176,13 +200,40 @@ def _report() -> dict:
             "restore_seconds": 1800,
             "rpo_seconds_observed": 120,
         },
-        "datasets": {name: _dataset(letter) for name, letter in {
-            "db": "a", "blob": "b", "artifact": "c", "vector_generation": "d"
-        }.items()},
+        "datasets": {
+            name: _dataset(letter)
+            for name, letter in {
+                "db": "a",
+                "blob": "b",
+                "artifact": "c",
+                "vector_generation": "d",
+            }.items()
+        },
         "negative_controls": {
-            "rls": [{"id": "rls-cross-collection-read", "attempted": True, "rejected": True, "observed_status": "denied"}],
-            "compartment": [{"id": "cross-compartment-read", "attempted": True, "rejected": True, "observed_status": "forbidden"}],
-            "revocation": [{"id": "revoked-token-read", "attempted": True, "rejected": True, "observed_status": "revoked"}],
+            "rls": [
+                {
+                    "id": "rls-cross-collection-read",
+                    "attempted": True,
+                    "rejected": True,
+                    "observed_status": "denied",
+                }
+            ],
+            "compartment": [
+                {
+                    "id": "cross-compartment-read",
+                    "attempted": True,
+                    "rejected": True,
+                    "observed_status": "forbidden",
+                }
+            ],
+            "revocation": [
+                {
+                    "id": "revoked-token-read",
+                    "attempted": True,
+                    "rejected": True,
+                    "observed_status": "revoked",
+                }
+            ],
         },
     }
 
@@ -211,7 +262,9 @@ class RestoreDrillVerifierTests(unittest.TestCase):
         self.assertEqual(result.as_dict()["environment"], "synthetic")
 
     def test_plain_mapping_cannot_claim_p0_verification(self) -> None:
-        with self.assertRaisesRegex(RestoreEvidenceError, "VerifiedProductionAcceptanceProfile"):
+        with self.assertRaisesRegex(
+            RestoreEvidenceError, "VerifiedProductionAcceptanceProfile"
+        ):
             verify_restore_evidence(_report(), {"profile": "pretend"})  # type: ignore[arg-type]
 
     def test_mutations_fail_closed(self) -> None:
@@ -220,15 +273,20 @@ class RestoreDrillVerifierTests(unittest.TestCase):
             ("rto mismatch", lambda r: r["restore"].update(restore_seconds=3601)),
             (
                 "vector checksum mismatch",
-                lambda r: r["datasets"]["vector_generation"]["checksums"]["actual"].update(
-                    payload="e" * 64
-                ),
+                lambda r: r["datasets"]["vector_generation"]["checksums"][
+                    "actual"
+                ].update(payload="e" * 64),
             ),
             (
                 "referential integrity violation",
-                lambda r: r["datasets"]["db"]["referential_integrity"].update(violations=1),
+                lambda r: r["datasets"]["db"]["referential_integrity"].update(
+                    violations=1
+                ),
             ),
-            ("rls allowed", lambda r: r["negative_controls"]["rls"][0].update(rejected=False)),
+            (
+                "rls allowed",
+                lambda r: r["negative_controls"]["rls"][0].update(rejected=False),
+            ),
             (
                 "compartment allowed",
                 lambda r: r["negative_controls"]["compartment"][0].update(
@@ -237,7 +295,9 @@ class RestoreDrillVerifierTests(unittest.TestCase):
             ),
             (
                 "revocation not attempted",
-                lambda r: r["negative_controls"]["revocation"][0].update(attempted=False),
+                lambda r: r["negative_controls"]["revocation"][0].update(
+                    attempted=False
+                ),
             ),
         )
         for name, mutation in mutations:
@@ -256,7 +316,9 @@ class RestoreDrillVerifierTests(unittest.TestCase):
         ).isoformat()
         report["generated_at"] = (NOW + timedelta(seconds=1)).isoformat()
         with self.assertRaisesRegex(RestoreEvidenceError, "exceeds P0 RTO"):
-            verify_restore_evidence(report, _authority(), now=NOW + timedelta(seconds=2))
+            verify_restore_evidence(
+                report, _authority(), now=NOW + timedelta(seconds=2)
+            )
 
     def test_duplicate_or_bom_report_is_rejected(self) -> None:
         from restore_drill_verifier import read_restore_report

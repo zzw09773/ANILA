@@ -19,6 +19,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "infra/deployment/scripts/verify-model-image-lock.py"
 EXPORTER = ROOT / "infra/deployment/intranet/build-and-export-for-intranet.sh"
+NETWORK_HELPER = ROOT / "infra/deployment/scripts/ensure-models-network.sh"
 SPEC = importlib.util.spec_from_file_location("verify_model_image_lock", SCRIPT)
 if SPEC is None or SPEC.loader is None:  # pragma: no cover - import guard
     raise RuntimeError(f"cannot import {SCRIPT}")
@@ -95,6 +96,8 @@ class ModelImageLockTests(unittest.TestCase):
         }
         for name, content in required.items():
             (root / name).write_text(content, encoding="utf-8")
+        shutil.copyfile(NETWORK_HELPER, root / "ensure-models-network.sh")
+        (root / "ensure-models-network.sh").chmod(0o755)
         for name in ("01-anila-built.tar.gz", "02-base.tar.gz", "03-cold.tar.gz"):
             cls._write_gzip(root / name)
         if include_models:
@@ -134,7 +137,12 @@ class ModelImageLockTests(unittest.TestCase):
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
             "case \"${1:-}\" in\n"
-            "  load) cat >/dev/null ;;\n"
+            "  load)\n"
+            "    cat >/dev/null\n"
+            "    if [ -n \"${DOCKER_LOAD_MARKER:-}\" ]; then\n"
+            "      : > \"$DOCKER_LOAD_MARKER\"\n"
+            "    fi\n"
+            "    ;;\n"
             "  images) : ;;\n"
             "  *) : ;;\n"
             "esac\n",
@@ -151,6 +159,7 @@ class ModelImageLockTests(unittest.TestCase):
         environment = os.environ.copy()
         environment["PATH"] = os.pathsep.join((str(bin_dir), environment["PATH"]))
         environment["ANILA_HF_DIR"] = str(root / "weights")
+        environment["DOCKER_LOAD_MARKER"] = str(root / "docker-load-called")
         # Feeding the generated heredoc on stdin is portable across Windows
         # and Linux, but Bash has no BASH_SOURCE[0] for stdin scripts.  Keep
         # the exact source for the syntax test; normalize only this launcher
@@ -466,6 +475,20 @@ class ModelImageLockTests(unittest.TestCase):
         self.assertIn("require_exact_checksum_entry", loader)
         self.assertIn("require_regular_bundle_file", loader)
 
+    def test_exporter_loader_bundles_checksums_and_invokes_network_helper(self) -> None:
+        exporter = EXPORTER.read_text(encoding="utf-8")
+        self.assertIn(
+            'cp "$MODEL_NETWORK_HELPER" "$OUTPUT_DIR/ensure-models-network.sh"',
+            exporter,
+        )
+        checksum_block = exporter.split("CHECKSUM_FILES=(", 1)[1].split(")", 1)[0]
+        self.assertIn("ensure-models-network.sh", checksum_block)
+
+        loader = self._extract_loader()
+        required_block = loader.split("REQUIRED_BUNDLE_FILES=(", 1)[1].split(")", 1)[0]
+        self.assertIn("ensure-models-network.sh", required_block)
+        self.assertIn("bash ./ensure-models-network.sh ensure", loader)
+
     def test_loader_rejects_optional_artifacts_without_exact_checksum(self) -> None:
         self._require_bash()
         cases = (
@@ -501,6 +524,90 @@ class ModelImageLockTests(unittest.TestCase):
                 self.assertNotEqual(completed.returncode, 0, completed.stdout)
                 self.assertIn(artifact, completed.stderr)
                 self.assertIn("exactly one canonical entry", completed.stderr)
+
+    def test_loader_rejects_required_artifacts_without_exact_checksum(self) -> None:
+        self._require_bash()
+        cases = (
+            "01-anila-built.tar.gz",
+            "PLATFORM-IMAGE-LOCK.tsv",
+            "PLATFORM-IMAGE-INVENTORY.tsv",
+            "ensure-models-network.sh",
+        )
+        for artifact in cases:
+            with self.subTest(artifact=artifact), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                loader = self._make_loader_bundle(
+                    root,
+                    omit_checksums={artifact},
+                )
+                completed = self._run_loader(root, loader)
+                self.assertNotEqual(completed.returncode, 0, completed.stdout)
+                self.assertIn(artifact, completed.stderr)
+                self.assertIn("exactly one canonical entry", completed.stderr)
+                self.assertFalse((root / "docker-load-called").exists())
+
+    def test_loader_rejects_duplicate_required_checksum_rows(self) -> None:
+        self._require_bash()
+        for artifact in (
+            "01-anila-built.tar.gz",
+            "PLATFORM-IMAGE-LOCK.tsv",
+            "PLATFORM-IMAGE-INVENTORY.tsv",
+            "ensure-models-network.sh",
+        ):
+            with self.subTest(artifact=artifact), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                loader = self._make_loader_bundle(
+                    root,
+                    duplicate_checksum=artifact,
+                )
+                completed = self._run_loader(root, loader)
+                self.assertNotEqual(completed.returncode, 0, completed.stdout)
+                self.assertIn(artifact, completed.stderr)
+                self.assertIn("exactly one canonical entry", completed.stderr)
+                self.assertFalse((root / "docker-load-called").exists())
+
+    def test_loader_rejects_required_checksum_aliases(self) -> None:
+        self._require_bash()
+        artifact = "PLATFORM-IMAGE-INVENTORY.tsv"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            loader = self._make_loader_bundle(root)
+            checksum_path = root / "CHECKSUMS.sha256"
+            checksum_text = checksum_path.read_text(encoding="utf-8")
+            checksum_path.write_text(
+                checksum_text.replace(f"  {artifact}", f"  ./{artifact}", 1),
+                encoding="utf-8",
+            )
+            completed = self._run_loader(root, loader)
+            self.assertNotEqual(completed.returncode, 0, completed.stdout)
+            self.assertIn(artifact, completed.stderr)
+            self.assertIn("exactly one canonical entry", completed.stderr)
+            self.assertFalse((root / "docker-load-called").exists())
+
+    def test_loader_rejects_required_artifact_symlinks_before_docker_load(self) -> None:
+        self._require_bash()
+        for artifact in (
+            "CHECKSUMS.sha256",
+            "01-anila-built.tar.gz",
+            "PLATFORM-IMAGE-LOCK.tsv",
+            "PLATFORM-IMAGE-INVENTORY.tsv",
+            "ensure-models-network.sh",
+        ):
+            with self.subTest(artifact=artifact), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                loader = self._make_loader_bundle(root)
+                target = root / artifact
+                target.unlink()
+                target.symlink_to(root / "MODEL-IMAGE-STATUS.tsv")
+                completed = self._run_loader(root, loader)
+                self.assertNotEqual(completed.returncode, 0, completed.stdout)
+                self.assertIn(artifact, completed.stderr)
+                self.assertIn(
+                    "Required bundle artifact must be a regular non-symlink file",
+                    completed.stderr,
+                )
+                self.assertNotIn("Optional bundle artifact", completed.stderr)
+                self.assertFalse((root / "docker-load-called").exists())
 
     def test_loader_rejects_duplicate_and_binary_marker_checksum_rows(self) -> None:
         self._require_bash()
@@ -541,7 +648,11 @@ class ModelImageLockTests(unittest.TestCase):
             'if [ -L "$artifact" ] || [ ! -f "$artifact" ]; then', loader
         )
         self.assertIn(
-            "Optional bundle artifact must be a regular non-symlink file", loader
+            'local kind="${2:-Optional}"', loader
+        )
+        self.assertIn(
+            'echo "✗ $kind bundle artifact must be a regular non-symlink file: $artifact"',
+            loader,
         )
 
     @unittest.skipUnless(shutil.which("docker"), "Docker CLI is not installed")

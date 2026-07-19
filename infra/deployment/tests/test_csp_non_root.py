@@ -79,6 +79,23 @@ class CspNonRootContractTests(unittest.TestCase):
         self.assertIn("/var/anila/attachments", dockerfile)
         self.assertNotRegex(dockerfile, r"(?m)^USER\s+(?:root|0)(?::0)?\s*$")
 
+    def test_production_source_tree_is_readable_by_csp_without_world_access(self) -> None:
+        dockerfile = PRODUCTION_DOCKERFILE.read_text(encoding="utf-8")
+        runtime_roots = (
+            "/app/app",
+            "/app/migrations",
+            "/app/scripts",
+            "/app/policy",
+            "/app/frontend-dist",
+        )
+        roots = " ".join(runtime_roots)
+        self.assertIn(f"chgrp -R csp {roots}", dockerfile)
+        self.assertIn("-type d -exec chmod 0750 {} +", dockerfile)
+        self.assertIn("-type f -exec chmod 0640 {} +", dockerfile)
+        self.assertIn("chgrp csp /app/alembic.ini", dockerfile)
+        self.assertIn("chmod 0640 /app/alembic.ini", dockerfile)
+        self.assertNotIn("chmod -R 0777 /app", dockerfile)
+
     def test_ingestion_worker_uses_shared_non_root_runtime_identity(self) -> None:
         dockerfile = INGESTION_WORKER_DOCKERFILE.read_text(encoding="utf-8")
         self.assertRegex(dockerfile, r"(?m)^USER\s+ingestion(?::ingestion)?\s*$")
