@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import os
 import stat
@@ -36,11 +37,270 @@ _TASK_TERMINAL = frozenset({"completed", "failed", "cancelled", "blocked_by_poli
 _ARTIFACT_JOB_TERMINAL = frozenset({"completed", "failed", "cancelled"})
 _INGESTION_JOB_TERMINAL = frozenset({"succeeded", "failed", "cancelled", "dead_letter"})
 _LEASE_NAME = "classified-data-retention"
+_SUPPORTS_DIR_FD = frozenset(os.supports_dir_fd)
+_SUPPORTS_FD = frozenset(os.supports_fd)
+_DIRFD_CLEANUP_SUPPORTED = all(
+    operation in _SUPPORTS_DIR_FD
+    for operation in (os.open, os.stat, os.unlink, os.rmdir)
+)
+_FD_SCANDIR_SUPPORTED = os.scandir in _SUPPORTS_FD
 
 
 class RetentionSafetyError(RuntimeError):
     """A path or DB invariant made erasure unsafe; leave the row retryable."""
 
+
+@dataclass
+class _TrustedRoot:
+    """An open, no-follow directory chain for one configured storage root."""
+
+    fd: int
+    fds: list[int]
+    anchors: list[tuple[int, str, tuple[int, int]]]
+
+    def revalidate(self) -> None:
+        """Reject replacement of any path component after the chain opened."""
+        for parent_fd, name, expected in self.anchors:
+            try:
+                current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError as exc:
+                raise RetentionSafetyError(
+                    "configured storage root was replaced"
+                ) from exc
+            except OSError as exc:
+                raise RetentionSafetyError(
+                    "configured storage root cannot be revalidated"
+                ) from exc
+            if (current.st_dev, current.st_ino) != expected:
+                raise RetentionSafetyError("configured storage root was replaced")
+
+    def close(self) -> None:
+        for fd in reversed(self.fds):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _fd_cleanup_flags() -> int:
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory_flag is None:
+        raise RetentionSafetyError(
+            "retention filesystem cleanup requires O_NOFOLLOW and O_DIRECTORY"
+        )
+    if not _DIRFD_CLEANUP_SUPPORTED:
+        raise RetentionSafetyError(
+            "retention filesystem cleanup requires dirfd filesystem operations"
+        )
+    return os.O_RDONLY | directory_flag | nofollow | getattr(os, "O_CLOEXEC", 0)
+
+
+def _target_probe_flags() -> int:
+    """Return non-blocking flags for validating an object before unlinking it."""
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    path_only = getattr(os, "O_PATH", None)
+    if nofollow is None or path_only is None:
+        raise RetentionSafetyError(
+            "retention file cleanup requires O_PATH and O_NOFOLLOW"
+        )
+    return path_only | nofollow | getattr(os, "O_CLOEXEC", 0)
+
+
+def _open_trusted_root(root: str | Path) -> _TrustedRoot:
+    """Open an absolute root one component at a time, never following links.
+
+    The caller owns the returned descriptor chain. A missing or inaccessible
+    configured root is unsafe because its bytes may return after a remount.
+    """
+    flags = _fd_cleanup_flags()
+    root_path = Path(root).expanduser().absolute()
+    if not root_path.is_absolute():
+        raise RetentionSafetyError("configured storage root must be absolute")
+
+    fds: list[int] = []
+    anchors: list[tuple[int, str, tuple[int, int]]] = []
+    try:
+        current_fd = os.open(os.sep, flags)
+        fds.append(current_fd)
+        for component in root_path.parts[1:]:
+            try:
+                expected = os.stat(
+                    component, dir_fd=current_fd, follow_symlinks=False
+                )
+            except FileNotFoundError as exc:
+                raise RetentionSafetyError(
+                    "configured storage root is unavailable"
+                ) from exc
+            except OSError as exc:
+                raise RetentionSafetyError(
+                    "configured storage root cannot be inspected"
+                ) from exc
+            if not stat.S_ISDIR(expected.st_mode):
+                raise RetentionSafetyError("configured storage root is not a directory")
+            try:
+                child_fd = os.open(component, flags, dir_fd=current_fd)
+            except FileNotFoundError as exc:
+                raise RetentionSafetyError(
+                    "configured storage root changed during open"
+                ) from exc
+            except OSError as exc:
+                if exc.errno in {
+                    getattr(errno, "ELOOP", -1),
+                    getattr(errno, "ENOTDIR", -1),
+                }:
+                    raise RetentionSafetyError(
+                        "configured storage root contains a symlink"
+                    ) from exc
+                raise RetentionSafetyError(
+                    "configured storage root cannot be opened"
+                ) from exc
+            actual = os.fstat(child_fd)
+            if not stat.S_ISDIR(actual.st_mode):
+                os.close(child_fd)
+                raise RetentionSafetyError("configured storage root is not a directory")
+            if (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino):
+                os.close(child_fd)
+                raise RetentionSafetyError("configured storage root was replaced")
+            anchors.append(
+                (current_fd, component, (actual.st_dev, actual.st_ino))
+            )
+            fds.append(child_fd)
+            current_fd = child_fd
+        return _TrustedRoot(fd=current_fd, fds=fds, anchors=anchors)
+    except Exception:
+        for fd in reversed(fds):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        raise
+
+
+def _open_child_directory(root: _TrustedRoot, name: str) -> tuple[int, tuple[int, int]] | None:
+    """Open one direct child directory and return its fd plus expected inode."""
+    flags = _fd_cleanup_flags()
+    try:
+        expected = os.stat(name, dir_fd=root.fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RetentionSafetyError("storage directory cannot be inspected") from exc
+    if stat.S_ISLNK(expected.st_mode):
+        raise RetentionSafetyError("storage directory contains a symlink")
+    if not stat.S_ISDIR(expected.st_mode):
+        raise RetentionSafetyError("storage path is not a directory")
+    try:
+        fd = os.open(name, flags, dir_fd=root.fd)
+    except FileNotFoundError as exc:
+        raise RetentionSafetyError("storage directory changed during open") from exc
+    except OSError as exc:
+        if exc.errno in {getattr(errno, "ELOOP", -1), getattr(errno, "ENOTDIR", -1)}:
+            raise RetentionSafetyError("storage directory contains a symlink") from exc
+        raise RetentionSafetyError("storage directory cannot be opened") from exc
+    actual = os.fstat(fd)
+    if (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino):
+        os.close(fd)
+        raise RetentionSafetyError("storage directory was replaced")
+    return fd, (actual.st_dev, actual.st_ino)
+
+
+def _relative_storage_parts(root: str | Path, path: Path) -> tuple[str, ...]:
+    """Turn a validated path into components for root-fd-relative operations."""
+    # ``safe_ingestion_path`` has already checked the configured root.  Keep
+    # this conversion lexical; resolving again would re-open the root-swap
+    # race that the trusted descriptor is meant to close.
+    root_path = Path(root).expanduser().absolute()
+    try:
+        relative = path.relative_to(root_path)
+    except ValueError as exc:
+        raise RetentionSafetyError("storage path escapes configured root") from exc
+    parts = tuple(relative.parts)
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise RetentionSafetyError("storage path is not a nested relative path")
+    return parts
+
+
+def _unlink_root_relative(
+    root: _TrustedRoot,
+    parts: tuple[str, ...],
+    *,
+    expected: tuple[int, int] | None = None,
+) -> bool:
+    """Unlink one regular file through a no-follow descriptor chain."""
+    if not parts:
+        raise RetentionSafetyError("storage path cannot be empty")
+    root.revalidate()
+    parent_fd = root.fd
+    opened: list[int] = []
+    parent_anchors: list[tuple[int, str, tuple[int, int]]] = []
+    try:
+        for component in parts[:-1]:
+            child = _open_child_directory(
+                _TrustedRoot(parent_fd, [parent_fd], parent_anchors), component
+            )
+            if child is None:
+                return False
+            child_fd, child_inode = child
+            parent_anchors.append((parent_fd, component, child_inode))
+            opened.append(child_fd)
+            parent_fd = child_fd
+        name = parts[-1]
+        try:
+            initial = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            raise RetentionSafetyError("storage file cannot be inspected") from exc
+        if stat.S_ISLNK(initial.st_mode):
+            raise RetentionSafetyError("storage file cannot be a symlink")
+        if not stat.S_ISREG(initial.st_mode):
+            raise RetentionSafetyError("storage file must be a regular file")
+        initial_inode = (initial.st_dev, initial.st_ino)
+        if expected is not None and initial_inode != expected:
+            raise RetentionSafetyError("storage file was replaced")
+        try:
+            target_fd = os.open(
+                name,
+                _target_probe_flags(),
+                dir_fd=parent_fd,
+            )
+        except FileNotFoundError as exc:
+            raise RetentionSafetyError("storage file changed during open") from exc
+        try:
+            target_stat = os.fstat(target_fd)
+            if not stat.S_ISREG(target_stat.st_mode):
+                raise RetentionSafetyError("storage file must be a regular file")
+            if (target_stat.st_dev, target_stat.st_ino) != initial_inode:
+                raise RetentionSafetyError("storage file was replaced")
+            current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != initial_inode:
+                raise RetentionSafetyError("storage file was replaced")
+            root.revalidate()
+            try:
+                os.unlink(name, dir_fd=parent_fd)
+            except FileNotFoundError:
+                return False
+            root.revalidate()
+            for ancestor_fd, ancestor_name, ancestor_inode in parent_anchors:
+                current_parent = os.stat(
+                    ancestor_name,
+                    dir_fd=ancestor_fd,
+                    follow_symlinks=False,
+                )
+                if (current_parent.st_dev, current_parent.st_ino) != ancestor_inode:
+                    raise RetentionSafetyError("storage directory was replaced")
+            return True
+        finally:
+            os.close(target_fd)
+    except FileNotFoundError:
+        return False
+    finally:
+        for fd in reversed(opened):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 @dataclass
 class RetentionRunResult:
@@ -64,7 +324,9 @@ def _utc(value: datetime | None) -> datetime | None:
 
 def safe_ingestion_path(root: str | Path, stored_path: str) -> Path:
     """Resolve an ingestion path without following symlinks or traversal."""
-    base = Path(root).expanduser().resolve()
+    # Keep validation lexical.  Filesystem access during retention is always
+    # performed through a pre-opened trusted descriptor chain below.
+    base = Path(root).expanduser().absolute()
     raw = Path(stored_path)
     candidate = raw if raw.is_absolute() else base / raw
     candidate = Path(os.path.abspath(candidate))
@@ -399,73 +661,159 @@ def _image_rows(db: Session, document_id: int) -> list[tuple[int, str]]:
 
 
 def _erase_document_image_files(
-    ingestion_root: str, *, document_id: int, image_paths: list[Path]
+    ingestion_root: str,
+    *,
+    document_id: int,
+    image_paths: list[Path],
+    trusted_root: _TrustedRoot | None = None,
 ) -> None:
-    """Erase every direct image file belonging to one document only.
+    """Erase one document image directory through a trusted descriptor chain."""
+    _fd_cleanup_flags()
+    if not _FD_SCANDIR_SUPPORTED:
+        raise RetentionSafetyError(
+            "document image cleanup requires fd-backed directory scanning"
+        )
+    owns_root = trusted_root is None
+    root: _TrustedRoot
+    if trusted_root is None:
+        # Anchor before lexical DB-path validation so a root rename/swap in
+        # that validation window cannot redirect a later open.
+        root = _open_trusted_root(ingestion_root)
+    else:
+        root = trusted_root
+    try:
+        image_dir = safe_ingestion_path(
+            ingestion_root, os.path.join("anila-images", str(document_id))
+        )
+        for image_path in image_paths:
+            if image_path.parent != image_dir:
+                raise RetentionSafetyError(
+                    "ingestion image path escapes its document directory"
+                )
+    except Exception:
+        if owns_root:
+            root.close()
+        raise
 
-    The worker publishes finals beside UUID-suffixed ``.tmp-*`` and
-    ``.bak-*`` residues.  The DB only records finals, so retention must scan
-    the canonical ``anila-images/<document_id>`` directory to remove unknown
-    orphan files as well.  The directory and every child are lstat-checked;
-    symlinks, nested directories, traversal, and unlink failures fail closed
-    before metadata is marked erased.
-    """
-    image_dir = safe_ingestion_path(
-        ingestion_root, os.path.join("anila-images", str(document_id))
-    )
-    for image_path in image_paths:
-        if image_path.parent != image_dir:
-            raise RetentionSafetyError(
-                "ingestion image path escapes its document directory"
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    assert nofollow is not None and directory_flag is not None
+    flags = os.O_RDONLY | directory_flag | nofollow | getattr(os, "O_CLOEXEC", 0)
+    parent_name = "anila-images"
+    document_name = str(document_id)
+    parent_fd: int | None = None
+    image_fd: int | None = None
+    try:
+        try:
+            root.revalidate()
+            expected_parent = os.stat(
+                parent_name, dir_fd=root.fd, follow_symlinks=False
             )
-
-    try:
-        directory_mode = image_dir.lstat().st_mode
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        raise RetentionSafetyError("document image directory cannot be inspected") from exc
-    if stat.S_ISLNK(directory_mode):
-        raise RetentionSafetyError("document image directory contains a symlink")
-    if not stat.S_ISDIR(directory_mode):
-        raise RetentionSafetyError("document image path is not a directory")
-
-    try:
-        with os.scandir(image_dir) as entries:
-            child_paths = [image_dir / entry.name for entry in entries]
-    except OSError as exc:
-        raise RetentionSafetyError("document image directory cannot be scanned") from exc
-
-    safe_children: list[Path] = []
-    for child in child_paths:
-        try:
-            mode = child.lstat().st_mode
+            if not stat.S_ISDIR(expected_parent.st_mode):
+                raise RetentionSafetyError("document image path is not a directory")
+            parent_fd = os.open(parent_name, flags, dir_fd=root.fd)
+            parent_stat = os.fstat(parent_fd)
+            if (parent_stat.st_dev, parent_stat.st_ino) != (
+                expected_parent.st_dev,
+                expected_parent.st_ino,
+            ):
+                raise RetentionSafetyError("document image parent was replaced")
+            expected_image = os.stat(
+                document_name, dir_fd=parent_fd, follow_symlinks=False
+            )
+            if not stat.S_ISDIR(expected_image.st_mode):
+                raise RetentionSafetyError("document image path is not a directory")
+            image_fd = os.open(document_name, flags, dir_fd=parent_fd)
+            expected_image_inode = (expected_image.st_dev, expected_image.st_ino)
+            image_stat = os.fstat(image_fd)
+            if (image_stat.st_dev, image_stat.st_ino) != expected_image_inode:
+                raise RetentionSafetyError("document image directory was replaced")
+            if not stat.S_ISDIR(image_stat.st_mode):
+                raise RetentionSafetyError("document image path is not a directory")
         except FileNotFoundError:
-            continue
+            return
+        except NotADirectoryError as exc:
+            raise RetentionSafetyError("document image path is not a directory") from exc
         except OSError as exc:
-            raise RetentionSafetyError("document image residue cannot be inspected") from exc
-        if stat.S_ISLNK(mode):
-            raise RetentionSafetyError("document image residue contains a symlink")
-        if stat.S_ISDIR(mode):
-            raise RetentionSafetyError("document image residue contains a nested directory")
-        if not stat.S_ISREG(mode):
-            raise RetentionSafetyError("document image residue is not a regular file")
-        safe_children.append(child)
+            if exc.errno in {getattr(errno, "ELOOP", -1), getattr(errno, "ENOTDIR", -1)}:
+                raise RetentionSafetyError(
+                    "document image directory contains a symlink"
+                ) from exc
+            raise RetentionSafetyError(
+                "document image directory cannot be inspected"
+            ) from exc
 
-    for child in safe_children:
         try:
-            child.unlink()
-        except FileNotFoundError:
-            continue
+            with os.scandir(image_fd) as entries:
+                child_names = [entry.name for entry in entries]
         except OSError as exc:
-            raise RetentionSafetyError("document image residue cleanup failed") from exc
+            raise RetentionSafetyError("document image directory cannot be scanned") from exc
 
-    try:
-        image_dir.rmdir()
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        raise RetentionSafetyError("document image directory cleanup failed") from exc
+        safe_children: list[tuple[str, tuple[int, int]]] = []
+        for child_name in child_names:
+            try:
+                child_stat = os.stat(
+                    child_name, dir_fd=image_fd, follow_symlinks=False
+                )
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise RetentionSafetyError(
+                    "document image residue cannot be inspected"
+                ) from exc
+            if stat.S_ISLNK(child_stat.st_mode):
+                raise RetentionSafetyError("document image residue contains a symlink")
+            if stat.S_ISDIR(child_stat.st_mode):
+                raise RetentionSafetyError(
+                    "document image residue contains a nested directory"
+                )
+            if not stat.S_ISREG(child_stat.st_mode):
+                raise RetentionSafetyError("document image residue is not a regular file")
+            safe_children.append((child_name, (child_stat.st_dev, child_stat.st_ino)))
+
+        for child_name, expected_child_inode in safe_children:
+            try:
+                current_child = os.stat(
+                    child_name, dir_fd=image_fd, follow_symlinks=False
+                )
+            except FileNotFoundError:
+                continue
+            if (current_child.st_dev, current_child.st_ino) != expected_child_inode:
+                raise RetentionSafetyError("document image residue was replaced")
+            try:
+                os.unlink(child_name, dir_fd=image_fd)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise RetentionSafetyError(
+                    "document image residue cleanup failed"
+                ) from exc
+
+        root.revalidate()
+        try:
+            current = os.stat(
+                document_name, dir_fd=parent_fd, follow_symlinks=False
+            )
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise RetentionSafetyError(
+                "document image directory cannot be revalidated"
+            ) from exc
+        if (current.st_dev, current.st_ino) != expected_image_inode:
+            raise RetentionSafetyError("document image directory was replaced")
+        try:
+            os.rmdir(document_name, dir_fd=parent_fd)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise RetentionSafetyError("document image directory cleanup failed") from exc
+    finally:
+        for fd in (image_fd, parent_fd):
+            if fd is not None:
+                os.close(fd)
+        if owns_root:
+            root.close()
 
 
 def _erase_document(
@@ -525,24 +873,35 @@ def _erase_document(
         db.rollback()
         return False
     _scope_collection_rls(db, document.collection_id)
-    images = _image_rows(db, document.id)
-    image_paths = [safe_ingestion_path(ingestion_root, path) for _id, path in images]
-    doc_path = (
-        safe_ingestion_path(ingestion_root, document.storage_path)
-        if document.storage_path else None
-    )
-    _erase_document_image_files(
-        ingestion_root,
-        document_id=document.id,
-        image_paths=image_paths,
-    )
-    shared = db.query(IngestionDocument.id).filter(
-        IngestionDocument.sha256 == document.sha256,
-        IngestionDocument.id != document.id,
-        IngestionDocument.lifecycle_state != "erased",
-    ).first()
-    if doc_path is not None and shared is None:
-        doc_path.unlink(missing_ok=True)
+    # Anchor the configured ingestion root before validating DB paths.  The
+    # descriptor chain remains tied to the original inode if an attacker
+    # renames the root and swaps in an external directory or symlink.
+    trusted_root = _open_trusted_root(ingestion_root)
+    try:
+        images = _image_rows(db, document.id)
+        image_paths = [safe_ingestion_path(ingestion_root, path) for _id, path in images]
+        doc_path = (
+            safe_ingestion_path(ingestion_root, document.storage_path)
+            if document.storage_path else None
+        )
+        _erase_document_image_files(
+            ingestion_root,
+            document_id=document.id,
+            image_paths=image_paths,
+            trusted_root=trusted_root,
+        )
+        shared = db.query(IngestionDocument.id).filter(
+            IngestionDocument.sha256 == document.sha256,
+            IngestionDocument.id != document.id,
+            IngestionDocument.lifecycle_state != "erased",
+        ).first()
+        if doc_path is not None and shared is None:
+            _unlink_root_relative(
+                trusted_root,
+                _relative_storage_parts(ingestion_root, doc_path),
+            )
+    finally:
+        trusted_root.close()
 
     tables = set(inspect(db.connection()).get_table_names())
     if "ingestion_images" in tables:

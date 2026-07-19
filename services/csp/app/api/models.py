@@ -1,5 +1,15 @@
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from anila_security import UnsafeEndpointError, validate_outbound_url
+import ipaddress
+from typing import Any
+
+from anila_security import (
+    ModelGovernanceError,
+    ProviderLocality,
+    TransportTarget,
+    UnsafeEndpointError,
+    validate_outbound_url,
+)
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from anila_contracts import Classification as ClassificationLevel
@@ -7,8 +17,14 @@ from app.database import get_db
 from app.models.model_registry import ModelRegistry
 from app.models.token_usage import TokenUsage
 from app.models.user import User
-from app.schemas.model_registry import ModelCreate, ModelUpdate, ModelResponse
+from app.schemas.model_registry import (
+    ModelCreate,
+    ModelResponse,
+    ModelUpdate,
+    validate_provider_snapshot_fields,
+)
 from app.services.audit_service import log_audit_event
+from app.services.model_governance_receipts import admit_registry_provider
 from app.services.auth_service import (
     get_current_user,
     is_owner,
@@ -35,6 +51,274 @@ router = APIRouter(prefix="/api/models", tags=["模型管理"])
 ENDPOINT_REDACTED = "<owner-only>"
 ENDPOINT_INTERNAL = "<internal>"
 
+_SNAPSHOT_FIELDS = {
+    "provider_locality",
+    "transport_target",
+    "transport_target_sha256",
+    "model_registry_revision",
+    "upstream_provider_locality",
+    "upstream_transport_target",
+    "upstream_transport_target_sha256",
+    "egress_policy_id",
+    "upstream_egress_policy_id",
+}
+
+
+def _require_provider_authority(model: ModelRegistry) -> None:
+    """Fail closed in formal Gate 5 posture before enabling or probing a row."""
+
+    try:
+        admit_registry_provider(model)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="模型 provider authority 驗證失敗，操作已拒絕",
+        ) from exc
+
+
+def _lock_model_row(db: Session, model_id: int) -> ModelRegistry | None:
+    """Load one registry row with a mutation lock in the caller transaction."""
+
+    return (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.id == model_id)
+        .populate_existing()
+        .with_for_update()
+        .one_or_none()
+    )
+
+
+def _snapshot_locality(value: Any) -> str:
+    raw = value or ProviderLocality.UNCLASSIFIED.value
+    if isinstance(raw, ProviderLocality):
+        return raw.value
+    return str(raw)
+
+
+def _parse_target(value: Any, *, locality: str | None, field: str) -> TransportTarget | None:
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        target = TransportTarget.from_dict(value, field=field)
+    elif isinstance(value, str):
+        dns_policy = (
+            "production_fail_closed"
+            if locality == ProviderLocality.EXTERNAL_GOVERNED.value
+            else "none"
+        )
+        target = TransportTarget.parse(value, dns_policy=dns_policy, field=field)
+    else:
+        raise ModelGovernanceError(f"{field} must be a transport target string or object")
+    if locality == ProviderLocality.EXTERNAL_GOVERNED.value:
+        try:
+            ipaddress.ip_address(target.host)
+        except ValueError:
+            pass
+        else:
+            if target.dns_policy != "none":
+                target = TransportTarget(
+                    target.scheme,
+                    target.host,
+                    target.port,
+                    target.port_mode,
+                    target.path,
+                    "none",
+                )
+    return target
+
+
+def _endpoint_target(endpoint_url: str, locality: str) -> TransportTarget:
+    """Parse the compatibility endpoint using the locality's DNS policy."""
+
+    dns_policy = (
+        "production_fail_closed"
+        if locality == ProviderLocality.EXTERNAL_GOVERNED.value
+        else "none"
+    )
+    target = TransportTarget.parse(
+        endpoint_url,
+        dns_policy=dns_policy,
+        field="endpoint_url",
+    )
+    normalized = _parse_target(target.to_dict(), locality=locality, field="endpoint_url")
+    if normalized is None:  # pragma: no cover - defensive type guard
+        raise ModelGovernanceError("endpoint_url must be a transport target")
+    return normalized
+
+
+def _next_provider_revision(previous: str | None) -> str:
+    if previous is None or not str(previous).strip():
+        return "1"
+    raw = str(previous).strip()
+    if raw.isdigit():
+        return str(int(raw) + 1)
+    # Preserve opaque operator-supplied revisions while making every rebuilt
+    # snapshot distinct and auditable.
+    if raw.endswith(":1"):
+        return raw[:-2] + ":2"
+    return f"{raw}:1"
+
+
+def _provider_is_internal(locality: str, legacy_value: Any) -> bool:
+    if locality in {
+        ProviderLocality.INTERNAL_ISOLATED.value,
+        ProviderLocality.INTERNAL_SHIM.value,
+    }:
+        return True
+    if locality == ProviderLocality.EXTERNAL_GOVERNED.value:
+        return False
+    return bool(legacy_value)
+
+
+def _snapshot_values(
+    *,
+    endpoint_url: str,
+    provider_locality: str,
+    transport_target: Any,
+    transport_target_sha256: str | None,
+    model_registry_revision: str | None,
+    upstream_provider_locality: str | None,
+    upstream_transport_target: Any,
+    upstream_transport_target_sha256: str | None,
+    egress_policy_id: str | None,
+    upstream_egress_policy_id: str | None,
+    previous_revision: str | None = None,
+    snapshot_changed: bool = True,
+) -> dict[str, Any]:
+    """Build one complete canonical provider snapshot for a row.
+
+    The compatibility ``endpoint_url`` is normalized to the same canonical
+    target string whenever a snapshot is present.  Unclassified legacy rows
+    may intentionally have no target snapshot.
+    """
+
+    locality = _snapshot_locality(provider_locality)
+    # Classified rows must have a complete target.  If the caller did not send
+    # the new field, derive it from endpoint_url; this keeps old clients
+    # compatible without promoting is_internal to policy.
+    supplied_target = _parse_target(
+        transport_target,
+        locality=locality,
+        field="transport_target",
+    )
+    target = supplied_target
+    if target is None and locality != ProviderLocality.UNCLASSIFIED.value:
+        target = _endpoint_target(endpoint_url, locality)
+
+    if target is None:
+        # An unclassified row is allowed to remain a legacy compatibility row.
+        validate_provider_snapshot_fields(
+            provider_locality=locality,
+            transport_target=None,
+            transport_target_sha256=None,
+            upstream_provider_locality=None,
+            upstream_transport_target=None,
+            upstream_transport_target_sha256=None,
+            egress_policy_id=None,
+            upstream_egress_policy_id=None,
+        )
+        return {
+            "endpoint_url": endpoint_url,
+            "provider_locality": locality,
+            "transport_target": None,
+            "transport_target_sha256": None,
+            "model_registry_revision": None,
+            "upstream_provider_locality": None,
+            "upstream_transport_target": None,
+            "upstream_transport_target_sha256": None,
+            "egress_policy_id": None,
+            "upstream_egress_policy_id": None,
+            "is_internal": _provider_is_internal(locality, False),
+        }
+
+    endpoint_target = _endpoint_target(endpoint_url, locality)
+    if endpoint_target.canonical != target.canonical:
+        raise ModelGovernanceError(
+            "transport_target canonical value must equal endpoint_url"
+        )
+
+    upstream = _parse_target(
+        upstream_transport_target,
+        locality=upstream_provider_locality,
+        field="upstream_transport_target",
+    )
+    target_dict = target.to_dict()
+    upstream_dict = None if upstream is None else upstream.to_dict()
+    validate_provider_snapshot_fields(
+        provider_locality=locality,
+        transport_target=target_dict,
+        transport_target_sha256=transport_target_sha256,
+        upstream_provider_locality=upstream_provider_locality,
+        upstream_transport_target=upstream_dict,
+        upstream_transport_target_sha256=upstream_transport_target_sha256,
+        egress_policy_id=egress_policy_id,
+        upstream_egress_policy_id=upstream_egress_policy_id,
+        allow_incomplete_unclassified=False,
+    )
+    if snapshot_changed:
+        revision = (
+            _next_provider_revision(previous_revision)
+            if previous_revision is not None
+            else model_registry_revision or "1"
+        )
+    else:
+        revision = previous_revision or model_registry_revision or "1"
+    return {
+        "endpoint_url": target.canonical,
+        "provider_locality": locality,
+        "transport_target": target_dict,
+        "transport_target_sha256": target.sha256,
+        "model_registry_revision": revision,
+        "upstream_provider_locality": upstream_provider_locality,
+        "upstream_transport_target": upstream_dict,
+        "upstream_transport_target_sha256": (
+            None if upstream is None else upstream.sha256
+        ),
+        "egress_policy_id": egress_policy_id,
+        "upstream_egress_policy_id": upstream_egress_policy_id,
+        "is_internal": _provider_is_internal(locality, False),
+    }
+
+
+def _prepare_provider_snapshot(
+    *,
+    endpoint_url: str,
+    provider_locality: str,
+    transport_target: Any,
+    transport_target_sha256: str | None,
+    model_registry_revision: str | None,
+    upstream_provider_locality: str | None,
+    upstream_transport_target: Any,
+    upstream_transport_target_sha256: str | None,
+    egress_policy_id: str | None,
+    upstream_egress_policy_id: str | None,
+    previous_revision: str | None = None,
+    snapshot_changed: bool = True,
+    legacy_is_internal: Any = False,
+) -> dict[str, Any]:
+    try:
+        values = _snapshot_values(
+            endpoint_url=endpoint_url,
+            provider_locality=provider_locality,
+            transport_target=transport_target,
+            transport_target_sha256=transport_target_sha256,
+            model_registry_revision=model_registry_revision,
+            upstream_provider_locality=upstream_provider_locality,
+            upstream_transport_target=upstream_transport_target,
+            upstream_transport_target_sha256=upstream_transport_target_sha256,
+            egress_policy_id=egress_policy_id,
+            upstream_egress_policy_id=upstream_egress_policy_id,
+            previous_revision=previous_revision,
+            snapshot_changed=snapshot_changed,
+        )
+    except ModelGovernanceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if values["provider_locality"] == ProviderLocality.UNCLASSIFIED.value:
+        values["is_internal"] = _provider_is_internal(
+            values["provider_locality"], legacy_is_internal
+        )
+    return values
+
 
 def _enforce_endpoint_url(url: str) -> None:
     """SSRF guard parity with agents.py / ingestion credentials.
@@ -59,6 +343,10 @@ def _enforce_endpoint_url(url: str) -> None:
     production HTTPS invariant applies — a production deployment
     (``ANILA_ENV=production``) rejects http:// model endpoints even with
     ``ANILA_ALLOW_HTTP_ENDPOINT=1`` (fail-closed, no flag bypass).
+
+    Provider snapshot fields and egress policy IDs are client-supplied
+    metadata, not verified authority.  Until server-side signed authority is
+    wired, they must never bypass this shared URL guard.
     """
     try:
         validate_outbound_url(url, endpoint_kind="model")
@@ -91,7 +379,13 @@ def _build_response(model: ModelRegistry, *, caller: User | None = None) -> dict
     we redact too — opt-in to surface by passing the caller explicitly.
     """
     show_endpoint = caller is not None and is_owner(caller)
-    is_internal = bool(getattr(model, "is_internal", False))
+    provider_locality = _snapshot_locality(
+        getattr(model, "provider_locality", ProviderLocality.UNCLASSIFIED.value)
+    )
+    is_internal = _provider_is_internal(
+        provider_locality,
+        getattr(model, "is_internal", False),
+    )
     # Redaction sentinel picks the variant that conveys the most intent:
     # internal models → <internal> (lives on anila-models-net, unreachable
     # from outside the platform stack); external → <owner-only> (admin can
@@ -110,6 +404,30 @@ def _build_response(model: ModelRegistry, *, caller: User | None = None) -> dict
     classification_ceiling = ClassificationLevel.from_storage(
         raw_ceiling
     ).to_storage()
+    provider_snapshot = {
+        "transport_target": getattr(model, "transport_target", None),
+        "transport_target_sha256": getattr(model, "transport_target_sha256", None),
+        "model_registry_revision": getattr(model, "model_registry_revision", None),
+        "upstream_provider_locality": getattr(
+            model, "upstream_provider_locality", None
+        ),
+        "upstream_transport_target": getattr(
+            model, "upstream_transport_target", None
+        ),
+        "upstream_transport_target_sha256": getattr(
+            model, "upstream_transport_target_sha256", None
+        ),
+        "egress_policy_id": getattr(model, "egress_policy_id", None),
+        "upstream_egress_policy_id": getattr(
+            model, "upstream_egress_policy_id", None
+        ),
+    }
+    if not show_endpoint:
+        # Provider transport, hashes, revisions and egress identifiers are
+        # deployment authority material, not ordinary model metadata.  Match
+        # endpoint redaction for every non-owner response, including service
+        # callers that pass no user object.
+        provider_snapshot = {field: None for field in provider_snapshot}
 
     data = {
         "id": model.id,
@@ -132,6 +450,8 @@ def _build_response(model: ModelRegistry, *, caller: User | None = None) -> dict
         "base_model_id": model.base_model_id,
         "base_model_name": model.base_model.display_name if model.base_model else None,
         "is_internal": is_internal,
+        "provider_locality": provider_locality,
+        **provider_snapshot,
         # Slice 6a (doc 04 §2/§3): ModelEndpoint formalized fields. The
         # per-model key is exposed ONLY as a boolean presence flag — never the
         # ciphertext / secret ref, never plaintext.
@@ -179,13 +499,26 @@ def create_model(
     if existing:
         raise HTTPException(status_code=400, detail="模型名稱已存在")
 
-    _enforce_endpoint_url(request.endpoint_url)
-
     # Validate base_model_id if provided
     if request.base_model_id:
         base = db.query(ModelRegistry).filter(ModelRegistry.id == request.base_model_id).first()
         if not base:
             raise HTTPException(status_code=400, detail="底層模型不存在")
+
+    snapshot = _prepare_provider_snapshot(
+        endpoint_url=request.endpoint_url,
+        provider_locality=request.provider_locality,
+        transport_target=request.transport_target,
+        transport_target_sha256=request.transport_target_sha256,
+        model_registry_revision=request.model_registry_revision,
+        upstream_provider_locality=request.upstream_provider_locality,
+        upstream_transport_target=request.upstream_transport_target,
+        upstream_transport_target_sha256=request.upstream_transport_target_sha256,
+        egress_policy_id=request.egress_policy_id,
+        upstream_egress_policy_id=request.upstream_egress_policy_id,
+        legacy_is_internal=request.is_internal,
+    )
+    _enforce_endpoint_url(request.endpoint_url)
 
     # Slice 6a (doc 04 §3): api_key is write-only — encrypt into the
     # ``enc::v1::`` envelope and store as api_key_secret_ref; never a column
@@ -193,10 +526,23 @@ def create_model(
     data = request.model_dump()
     data["classification_ceiling"] = request.classification_ceiling.to_storage()
     api_key = (data.pop("api_key", None) or "").strip()
+    for field in _SNAPSHOT_FIELDS:
+        data.pop(field, None)
+    data.update(snapshot)
     model = ModelRegistry(**data)
     if api_key:
         model.api_key_secret_ref = encode_service_token_envelope(api_key)
     db.add(model)
+    # Registration is the first formal admission boundary.  Flush so the
+    # server-assigned registry id participates in the exact signed-provider
+    # match, but do not commit an active row until that match succeeds.
+    try:
+        db.flush()
+        if model.is_active:
+            _require_provider_authority(model)
+    except Exception:
+        db.rollback()
+        raise
     db.commit()
     db.refresh(model)
     log_audit_event(
@@ -250,22 +596,27 @@ def set_router_primary(
     db: Session = Depends(get_db),
 ):
     """Mark a model as ANILA Router's primary LLM (clearing any previous one)."""
-    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    model = _lock_model_row(db, model_id)
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
     if model.model_type != "llm":
         raise HTTPException(status_code=400, detail="僅 LLM 類型可設為 ANILA 主路由模型")
     if not model.is_active:
         raise HTTPException(status_code=400, detail="已停用的模型不能設為主路由模型")
+    try:
+        _require_provider_authority(model)
 
-    # Clear previous primary first to avoid violating the partial unique index.
-    (
-        db.query(ModelRegistry)
-        .filter(ModelRegistry.is_router_primary.is_(True), ModelRegistry.id != model_id)
-        .update({"is_router_primary": False}, synchronize_session=False)
-    )
-    model.is_router_primary = True
-    db.commit()
+        # Clear previous primary first to avoid violating the partial unique index.
+        (
+            db.query(ModelRegistry)
+            .filter(ModelRegistry.is_router_primary.is_(True), ModelRegistry.id != model_id)
+            .update({"is_router_primary": False}, synchronize_session=False)
+        )
+        model.is_router_primary = True
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(model)
     log_audit_event(
         db,
@@ -329,6 +680,12 @@ def get_image_primary(
         raise HTTPException(status_code=404, detail="尚未指定主圖像模型")
     if not model.is_active:
         raise HTTPException(status_code=409, detail="已指定的主圖像模型已被停用")
+    # The primary flag is only a selector.  Re-admit the locked registry row
+    # against the current signed provider authority on every consumer fetch;
+    # this closes the window where a cached endpoint survives profile
+    # rotation/revocation and would otherwise be handed to a downstream
+    # image client.
+    _require_provider_authority(model)
     return {
         "id": model.id,
         "name": model.name,
@@ -354,6 +711,7 @@ def set_image_primary(
         raise HTTPException(status_code=400, detail="僅 image 類型可設為主圖像模型")
     if not model.is_active:
         raise HTTPException(status_code=400, detail="已停用的模型不能設為主圖像模型")
+    _require_provider_authority(model)
 
     # Clear previous primary first to avoid violating the partial unique index.
     (
@@ -427,7 +785,7 @@ def update_model(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    model = _lock_model_row(db, model_id)
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
 
@@ -437,8 +795,112 @@ def update_model(
             "classification_ceiling"
         ].to_storage()
 
-    if "endpoint_url" in update_data and update_data["endpoint_url"] is not None:
-        _enforce_endpoint_url(update_data["endpoint_url"])
+    candidate_endpoint = update_data.get("endpoint_url", model.endpoint_url)
+    if candidate_endpoint is None:
+        raise HTTPException(status_code=400, detail="endpoint_url 不得為空")
+    current_locality = _snapshot_locality(
+        getattr(model, "provider_locality", ProviderLocality.UNCLASSIFIED.value)
+    )
+    candidate_locality = _snapshot_locality(
+        update_data.get("provider_locality", current_locality)
+    )
+    locality_changed = candidate_locality != current_locality
+    snapshot_changed = bool(
+        _SNAPSHOT_FIELDS.intersection(update_data)
+        or "endpoint_url" in update_data
+        or locality_changed
+    )
+
+    # Omitted fields retain the existing snapshot unless locality changes. A
+    # locality transition starts a fresh snapshot; callers must provide the
+    # new shim upstream when switching into internal_shim.
+    if "transport_target" in update_data:
+        candidate_target = update_data["transport_target"]
+    elif (
+        (locality_changed or "endpoint_url" in update_data)
+        and candidate_locality == ProviderLocality.UNCLASSIFIED.value
+    ):
+        candidate_target = None
+    elif locality_changed or "endpoint_url" in update_data:
+        # Re-derive a classified target from the new compatibility endpoint;
+        # retaining the old target would leave a mixed old/new snapshot.
+        candidate_target = None
+    else:
+        candidate_target = getattr(model, "transport_target", None)
+
+    if "upstream_provider_locality" in update_data:
+        candidate_upstream_locality = update_data["upstream_provider_locality"]
+    elif locality_changed:
+        candidate_upstream_locality = None
+    else:
+        candidate_upstream_locality = getattr(model, "upstream_provider_locality", None)
+
+    if "upstream_transport_target" in update_data:
+        candidate_upstream_target = update_data["upstream_transport_target"]
+    elif locality_changed:
+        candidate_upstream_target = None
+    else:
+        candidate_upstream_target = getattr(model, "upstream_transport_target", None)
+
+    def _candidate_value(field: str) -> Any:
+        if field in update_data:
+            return update_data[field]
+        return getattr(model, field, None)
+
+    candidate_target_hash = (
+        update_data.get("transport_target_sha256")
+        if "transport_target_sha256" in update_data
+        else (
+            None
+            if "transport_target" in update_data
+            or "endpoint_url" in update_data
+            or locality_changed
+            else getattr(model, "transport_target_sha256", None)
+        )
+    )
+    candidate_upstream_hash = (
+        update_data.get("upstream_transport_target_sha256")
+        if "upstream_transport_target_sha256" in update_data
+        else (
+            None
+            if "upstream_transport_target" in update_data
+            or "upstream_provider_locality" in update_data
+            or locality_changed
+            else getattr(model, "upstream_transport_target_sha256", None)
+        )
+    )
+
+    # Explicit hash values are accepted for compatibility but are always
+    # recomputed from the canonical target before persistence. Clearing a
+    # target therefore also clears its hash atomically.
+    try:
+        snapshot = _prepare_provider_snapshot(
+            endpoint_url=candidate_endpoint,
+            provider_locality=candidate_locality,
+            transport_target=candidate_target,
+            transport_target_sha256=candidate_target_hash,
+            model_registry_revision=_candidate_value("model_registry_revision"),
+            upstream_provider_locality=candidate_upstream_locality,
+            upstream_transport_target=candidate_upstream_target,
+            upstream_transport_target_sha256=candidate_upstream_hash,
+            egress_policy_id=(
+                _candidate_value("egress_policy_id")
+                if not locality_changed
+                else update_data.get("egress_policy_id")
+            ),
+            upstream_egress_policy_id=(
+                _candidate_value("upstream_egress_policy_id")
+                if not locality_changed
+                else update_data.get("upstream_egress_policy_id")
+            ),
+            previous_revision=getattr(model, "model_registry_revision", None),
+            snapshot_changed=snapshot_changed,
+            legacy_is_internal=getattr(model, "is_internal", False),
+        )
+    except HTTPException:
+        raise
+
+    _enforce_endpoint_url(candidate_endpoint)
 
     # Validate base_model_id if provided
     if "base_model_id" in update_data and update_data["base_model_id"]:
@@ -454,10 +916,32 @@ def update_model(
     if api_key is not None and str(api_key).strip():
         model.api_key_secret_ref = encode_service_token_envelope(str(api_key).strip())
 
+    for field in _SNAPSHOT_FIELDS:
+        update_data.pop(field, None)
+    update_data.pop("endpoint_url", None)
+    # ``is_internal`` is projection-only for classified rows; retain the
+    # legacy value only while a row remains unclassified.
+    update_data.pop("is_internal", None)
     for field, value in update_data.items():
         setattr(model, field, value)
 
-    db.commit()
+    for field, value in snapshot.items():
+        if field == "is_internal" and snapshot["provider_locality"] == ProviderLocality.UNCLASSIFIED.value:
+            # The helper used the old value for unclassified rows; an explicit
+            # legacy is_internal PATCH remains authoritative for compatibility.
+            value = request.is_internal if "is_internal" in request.model_fields_set else value
+        setattr(model, field, value)
+
+    try:
+        # The row lock remains held while the final active status and the
+        # complete provider snapshot are validated.  A concurrent deactivate
+        # or endpoint replacement therefore cannot race this authority check.
+        if model.is_active:
+            _require_provider_authority(model)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(model)
     log_audit_event(
         db,
@@ -487,7 +971,7 @@ def deactivate_model(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    model = _lock_model_row(db, model_id)
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
     model.is_active = False
@@ -503,7 +987,11 @@ def deactivate_model(
     # stay pinned as primary.
     if model.is_image_primary:
         model.is_image_primary = False
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     log_audit_event(
         db,
         actor=admin,
@@ -531,13 +1019,22 @@ def activate_model(
     primary explicitly via ``POST /{model_id}/set-router-primary`` after
     re-activation.
     """
-    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    model = _lock_model_row(db, model_id)
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
-    if model.is_active:
-        return _build_response(model, caller=admin)
-    model.is_active = True
-    db.commit()
+    try:
+        if model.is_active:
+            _require_provider_authority(model)
+            return _build_response(model, caller=admin)
+        # Validate the locked, still-inactive row before changing its status.
+        # The same transaction then commits the authority decision and
+        # activation.
+        _require_provider_authority(model)
+        model.is_active = True
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(model)
     log_audit_event(
         db,
@@ -607,6 +1104,7 @@ async def _probe_and_persist(model: ModelRegistry, admin: User, db: Session, ip:
     result. Returns ``{status, last_checked, latency_ms}``. The probe carries
     NO real user data (doc 04 §9).
     """
+    _require_provider_authority(model)
     status, latency_ms = await probe_model_health_detailed(model.endpoint_url)
     checked_at = datetime.now(timezone.utc)
     model.health_status = status

@@ -123,6 +123,74 @@ async def test_connection_error_keeps_last_cached_value():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_formal_governance_rechecks_before_each_inference_and_clears_on_denial():
+    """A revoked provider cannot survive the normal TTL in formal posture."""
+    route = respx.get(_URL).mock(
+        side_effect=[
+            httpx.Response(200, json=_OK_BODY),
+            httpx.Response(503, json={"detail": "provider authority revoked"}),
+        ]
+    )
+    fetcher = _fetcher(governance_required=True, ttl_seconds=60.0)
+
+    first = await fetcher.get()
+    second = await fetcher.get()
+
+    assert first == ("https://flux-a.example.com", "flux-cloud-a")
+    assert second == (None, None)
+    assert route.call_count == 2
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_formal_connection_failure_clears_last_cached_value():
+    respx.get(_URL).mock(
+        side_effect=[httpx.Response(200, json=_OK_BODY), httpx.ConnectError("boom")]
+    )
+    fetcher = _fetcher(governance_required=True, ttl_seconds=60.0)
+
+    assert await fetcher.get() == ("https://flux-a.example.com", "flux-cloud-a")
+    assert await fetcher.get() == (None, None)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_formal_auth_and_malformed_responses_clear_last_cached_value():
+    route = respx.get(_URL).mock(
+        side_effect=[
+            httpx.Response(200, json=_OK_BODY),
+            httpx.Response(401, json={"detail": "revoked token"}),
+            httpx.Response(200, json={"id": 1}),
+        ]
+    )
+    fetcher = _fetcher(governance_required=True)
+
+    assert await fetcher.get() == ("https://flux-a.example.com", "flux-cloud-a")
+    assert await fetcher.get() == (None, None)
+    # A later malformed response remains fail-closed rather than resurrecting
+    # the value that was already cleared by the auth denial.
+    assert await fetcher.get() == (None, None)
+    assert route.call_count == 3
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_formal_malformed_response_clears_existing_authority():
+    route = respx.get(_URL).mock(
+        side_effect=[
+            httpx.Response(200, json=_OK_BODY),
+            httpx.Response(200, json={"id": 1}),
+        ]
+    )
+    fetcher = _fetcher(governance_required=True)
+
+    assert await fetcher.get() == ("https://flux-a.example.com", "flux-cloud-a")
+    assert await fetcher.get() == (None, None)
+    assert route.call_count == 2
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_401_clears_cache_falls_back_to_env():
     """spec 錯誤處理表：401/403 且無 rotating token 機制 → fallback env。
     舊快取必須清掉，否則 token 被撤銷後會永遠沿用最後一次的 CSP 值

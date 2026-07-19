@@ -8,7 +8,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Query
 
 from anila_contracts import Classification
 from app.models.audit_log import AuditLog
@@ -17,6 +19,7 @@ from app.models.clearance import (
     CollectionAccessGrant,
 )
 from app.models.ingestion import IngestionCollection, IngestionDocument
+from app.modules.clearance import service as clearance_service
 from app.modules.clearance.service import (
     ClearancePolicyDataError,
     _classification_from_storage,
@@ -27,6 +30,7 @@ from app.modules.clearance.service import (
     grant_collection_access,
     issue_clearance_grant,
     resolve_and_evaluate_data_access,
+    resolve_and_evaluate_data_access_batch,
     resolve_data_access_context,
     revoke_clearance_grant,
 )
@@ -118,12 +122,8 @@ def test_five_level_boundary_requires_grant_at_or_above_resource(
     subject = make_user(db, "subject")
     owner = make_user(db, "data-owner")
     collection = _collection(db, owner, level=required_level)
-    grant = _active_grant(
-        db, manager=manager, subject=subject, level=grant_level
-    )
-    _collection_access(
-        db, manager=manager, grant=grant, collection=collection
-    )
+    grant = _active_grant(db, manager=manager, subject=subject, level=grant_level)
+    _collection_access(db, manager=manager, grant=grant, collection=collection)
 
     decision = resolve_and_evaluate_data_access(
         db,
@@ -165,9 +165,7 @@ def test_same_level_different_compartment_is_denied(db) -> None:
         clearance_grant_id=grant.id,
         compartment_id=other.id,
     )
-    _collection_access(
-        db, manager=manager, grant=grant, collection=collection
-    )
+    _collection_access(db, manager=manager, grant=grant, collection=collection)
 
     decision = resolve_and_evaluate_data_access(
         db, user_id=subject.id, collection_id=collection.id, now=NOW
@@ -176,7 +174,9 @@ def test_same_level_different_compartment_is_denied(db) -> None:
 
 
 @pytest.mark.parametrize("role", ["admin", "owner"])
-def test_platform_role_without_clearance_never_bypasses_data_policy(db, role: str) -> None:
+def test_platform_role_without_clearance_never_bypasses_data_policy(
+    db, role: str
+) -> None:
     subject = make_user(db, f"subject-{role}", role=role)
     data_owner = make_user(db, "data-owner")
     collection = _collection(db, data_owner, level=Classification.UNCLASSIFIED)
@@ -277,13 +277,9 @@ def test_expired_future_and_revoked_grants_deny(db, state: str) -> None:
         valid_from=windows[state][0],
         expires_at=windows[state][1],
     )
-    _collection_access(
-        db, manager=manager, grant=grant, collection=collection
-    )
+    _collection_access(db, manager=manager, grant=grant, collection=collection)
     if state == "revoked":
-        revoke_clearance_grant(
-            db, actor=manager, clearance_grant_id=grant.id, now=NOW
-        )
+        revoke_clearance_grant(db, actor=manager, clearance_grant_id=grant.id, now=NOW)
 
     decision = resolve_and_evaluate_data_access(
         db, user_id=subject.id, collection_id=collection.id, now=NOW
@@ -343,9 +339,7 @@ def test_authority_cannot_be_composed_across_clearance_grants(db) -> None:
     access_grant = _active_grant(
         db, manager=manager, subject=subject, level=Classification.UNCLASSIFIED
     )
-    _collection_access(
-        db, manager=manager, grant=access_grant, collection=collection
-    )
+    _collection_access(db, manager=manager, grant=access_grant, collection=collection)
 
     decision = resolve_and_evaluate_data_access(
         db, user_id=subject.id, collection_id=collection.id, now=NOW
@@ -411,9 +405,7 @@ def test_document_effective_requirements_union_collection_and_document(db) -> No
         clearance_grant_id=grant.id,
         compartment_id=collection_compartment.id,
     )
-    _collection_access(
-        db, manager=manager, grant=grant, collection=collection
-    )
+    _collection_access(db, manager=manager, grant=grant, collection=collection)
 
     context = resolve_data_access_context(
         db,
@@ -428,13 +420,16 @@ def test_document_effective_requirements_union_collection_and_document(db) -> No
     )
     with pytest.raises(FrozenInstanceError):
         context.collection_id = 999  # type: ignore[misc]
-    assert resolve_and_evaluate_data_access(
-        db,
-        user_id=subject.id,
-        collection_id=collection.id,
-        document_id=document.id,
-        now=NOW,
-    ).allowed is False
+    assert (
+        resolve_and_evaluate_data_access(
+            db,
+            user_id=subject.id,
+            collection_id=collection.id,
+            document_id=document.id,
+            now=NOW,
+        ).allowed
+        is False
+    )
 
     add_grant_compartment(
         db,
@@ -442,13 +437,414 @@ def test_document_effective_requirements_union_collection_and_document(db) -> No
         clearance_grant_id=grant.id,
         compartment_id=document_compartment.id,
     )
-    assert resolve_and_evaluate_data_access(
+    assert (
+        resolve_and_evaluate_data_access(
+            db,
+            user_id=subject.id,
+            collection_id=collection.id,
+            document_id=document.id,
+            now=NOW,
+        ).allowed
+        is True
+    )
+
+
+def test_batch_decisions_match_single_collection_and_document_decisions(db) -> None:
+    manager = make_user(db, "batch-manager", role="admin")
+    subject = make_user(db, "batch-subject")
+    owner = make_user(db, "batch-owner")
+    collection = _collection(db, owner, level=Classification.CONFIDENTIAL)
+    documents = [
+        _document(db, collection, level=level, salt=index + 100)
+        for index, level in enumerate(
+            [Classification.UNCLASSIFIED, Classification.SECRET]
+        )
+    ]
+    compartment = create_security_compartment(
+        db, actor=manager, code="BATCH_SCOPE", name="Batch scope"
+    )
+    assign_document_required_compartment(
+        db,
+        actor=manager,
+        document_id=documents[1].id,
+        compartment_id=compartment.id,
+        basis_ticket="BATCH-REQ",
+    )
+    grant = _active_grant(
+        db, manager=manager, subject=subject, level=Classification.TOP_SECRET
+    )
+    add_grant_compartment(
+        db,
+        actor=manager,
+        clearance_grant_id=grant.id,
+        compartment_id=compartment.id,
+    )
+    _collection_access(db, manager=manager, grant=grant, collection=collection)
+
+    singles = {
+        (collection.id, document_id): resolve_and_evaluate_data_access(
+            db,
+            user_id=subject.id,
+            collection_id=collection.id,
+            document_id=document_id,
+            now=NOW,
+        )
+        for document_id in [None, *(document.id for document in documents)]
+    }
+    batch = resolve_and_evaluate_data_access_batch(
+        db,
+        user_id=subject.id,
+        collection_ids=[collection.id],
+        document_ids=[document.id for document in documents],
+        now=NOW,
+    )
+
+    assert set(batch) == set(singles)
+    for key, decision in batch.items():
+        single = singles[key]
+        assert decision.allowed is single.allowed
+        assert decision.reason_code == single.reason_code
+        assert decision.authorized_classification is single.authorized_classification
+        assert decision.clearance_grant_id == single.clearance_grant_id
+        assert decision.context == single.context
+
+
+@pytest.mark.parametrize("denial", ["no_grant", "missing_membership", "compartment"])
+def test_batch_denials_match_single_evaluator(db, denial: str) -> None:
+    manager = make_user(db, f"batch-deny-manager-{denial}", role="admin")
+    subject = make_user(db, f"batch-deny-subject-{denial}")
+    owner = make_user(db, f"batch-deny-owner-{denial}")
+    collection = _collection(db, owner, level=Classification.CONFIDENTIAL)
+    document = _document(db, collection, level=Classification.CONFIDENTIAL, salt=200)
+
+    if denial != "no_grant":
+        grant = _active_grant(
+            db, manager=manager, subject=subject, level=Classification.TOP_SECRET
+        )
+        if denial != "missing_membership":
+            _collection_access(db, manager=manager, grant=grant, collection=collection)
+        if denial == "compartment":
+            required = create_security_compartment(
+                db,
+                actor=manager,
+                code="BATCH_DENY",
+                name="Batch deny",
+            )
+            assign_document_required_compartment(
+                db,
+                actor=manager,
+                document_id=document.id,
+                compartment_id=required.id,
+                basis_ticket="BATCH-DENY",
+            )
+
+    single = resolve_and_evaluate_data_access(
         db,
         user_id=subject.id,
         collection_id=collection.id,
         document_id=document.id,
         now=NOW,
-    ).allowed is True
+    )
+    batch = resolve_and_evaluate_data_access_batch(
+        db,
+        user_id=subject.id,
+        collection_ids=[collection.id],
+        document_ids=[document.id],
+        now=NOW,
+    )[(collection.id, document.id)]
+
+    assert batch.allowed is False
+    assert batch.reason_code == single.reason_code
+    assert batch.authorized_classification is single.authorized_classification
+
+
+def test_batch_rejects_document_collection_mismatch_like_single(db) -> None:
+    owner = make_user(db, "batch-mismatch-owner")
+    first = _collection(db, owner, level=Classification.UNCLASSIFIED)
+    second = _collection(db, owner, level=Classification.UNCLASSIFIED)
+    document = _document(db, second, level=Classification.UNCLASSIFIED, salt=300)
+
+    with pytest.raises(LookupError, match="document"):
+        resolve_and_evaluate_data_access(
+            db,
+            user_id=owner.id,
+            collection_id=first.id,
+            document_id=document.id,
+            now=NOW,
+        )
+    with pytest.raises(LookupError, match="document"):
+        resolve_and_evaluate_data_access_batch(
+            db,
+            user_id=owner.id,
+            collection_ids=[first.id],
+            document_ids=[document.id],
+            now=NOW,
+        )
+
+
+def test_batch_inactive_and_corrupt_grants_fail_closed_like_single(db) -> None:
+    manager = make_user(db, "batch-corrupt-manager", role="admin")
+    subject = make_user(db, "batch-corrupt-subject")
+    owner = make_user(db, "batch-corrupt-owner")
+    collection = _collection(db, owner, level=Classification.UNCLASSIFIED)
+    grant = _active_grant(
+        db, manager=manager, subject=subject, level=Classification.TOP_SECRET
+    )
+    _collection_access(db, manager=manager, grant=grant, collection=collection)
+
+    subject.is_active = False
+    db.commit()
+    single = resolve_and_evaluate_data_access(
+        db, user_id=subject.id, collection_id=collection.id, now=NOW
+    )
+    batch = resolve_and_evaluate_data_access_batch(
+        db,
+        user_id=subject.id,
+        collection_ids=[collection.id],
+        document_ids=[],
+        now=NOW,
+    )[(collection.id, None)]
+    assert single.reason_code == batch.reason_code == "subject_inactive"
+
+    subject.is_active = True
+    db.commit()
+    grant.max_classification_level = "公開"
+    with db.no_autoflush:
+        with pytest.raises(ClearancePolicyDataError, match="未知 classification"):
+            resolve_and_evaluate_data_access(
+                db, user_id=subject.id, collection_id=collection.id, now=NOW
+            )
+        with pytest.raises(ClearancePolicyDataError, match="未知 classification"):
+            resolve_and_evaluate_data_access_batch(
+                db,
+                user_id=subject.id,
+                collection_ids=[collection.id],
+                document_ids=[],
+                now=NOW,
+            )
+
+
+def test_batch_query_count_is_constant_and_every_authority_read_is_locked(
+    db, monkeypatch
+) -> None:
+    manager = make_user(db, "batch-query-manager", role="admin")
+    subject = make_user(db, "batch-query-subject")
+    owner = make_user(db, "batch-query-owner")
+    collection = _collection(db, owner, level=Classification.UNCLASSIFIED)
+    documents = [
+        _document(
+            db,
+            collection,
+            level=Classification.UNCLASSIFIED,
+            salt=400 + index,
+        )
+        for index in range(5)
+    ]
+    grant = _active_grant(
+        db, manager=manager, subject=subject, level=Classification.UNCLASSIFIED
+    )
+    compartment = create_security_compartment(
+        db,
+        actor=manager,
+        code="BATCH_LOCK_ORDER",
+        name="Batch lock order",
+        description=None,
+    )
+    assign_collection_required_compartment(
+        db,
+        actor=manager,
+        collection_id=collection.id,
+        compartment_id=compartment.id,
+        basis_ticket="BATCH-LOCK-COLLECTION",
+    )
+    assign_document_required_compartment(
+        db,
+        actor=manager,
+        document_id=documents[0].id,
+        compartment_id=compartment.id,
+        basis_ticket="BATCH-LOCK-DOCUMENT",
+    )
+    add_grant_compartment(
+        db,
+        actor=manager,
+        clearance_grant_id=grant.id,
+        compartment_id=compartment.id,
+    )
+    _collection_access(db, manager=manager, grant=grant, collection=collection)
+    subject_id = subject.id
+    collection_id = collection.id
+    document_ids = [document.id for document in documents]
+
+    lock_calls: list[dict] = []
+    original_with_for_update = Query.with_for_update
+
+    def lock_spy(query, *args, **kwargs):
+        lock_calls.append(dict(kwargs))
+        return original_with_for_update(query, *args, **kwargs)
+
+    monkeypatch.setattr(Query, "with_for_update", lock_spy)
+
+    def statements_for(document_subset) -> list[str]:
+        statements: list[str] = []
+
+        def record(_connection, _cursor, statement, _parameters, _context, _many):
+            if statement.lstrip().upper().startswith("SELECT"):
+                statements.append(" ".join(statement.lower().split()))
+
+        sqlalchemy_event.listen(db.get_bind(), "before_cursor_execute", record)
+        try:
+            resolve_and_evaluate_data_access_batch(
+                db,
+                user_id=subject_id,
+                collection_ids=[collection_id],
+                document_ids=document_subset,
+                now=NOW,
+            )
+        finally:
+            sqlalchemy_event.remove(db.get_bind(), "before_cursor_execute", record)
+        return statements
+
+    single_statements: list[str] = []
+
+    def record_single(_connection, _cursor, statement, _parameters, _context, _many):
+        if statement.lstrip().upper().startswith("SELECT"):
+            single_statements.append(" ".join(statement.lower().split()))
+
+    sqlalchemy_event.listen(db.get_bind(), "before_cursor_execute", record_single)
+    try:
+        single_context = resolve_data_access_context(
+            db,
+            user_id=subject_id,
+            collection_id=collection_id,
+            document_id=document_ids[0],
+            now=NOW,
+        )
+    finally:
+        sqlalchemy_event.remove(db.get_bind(), "before_cursor_execute", record_single)
+    single_lock_calls = list(lock_calls)
+    lock_calls.clear()
+
+    assert single_context.required_compartment_ids == frozenset({compartment.id})
+    assert single_lock_calls and all(
+        call.get("read") is True for call in single_lock_calls
+    )
+    single_expected_ordering = {
+        "collection_required_compartments": (
+            "order by collection_required_compartments.collection_id asc, "
+            "collection_required_compartments.compartment_id asc"
+        ),
+        "document_required_compartments": (
+            "order by document_required_compartments.document_id asc, "
+            "document_required_compartments.compartment_id asc"
+        ),
+        "security_compartments": "order by security_compartments.id asc",
+    }
+    for table, order_clause in single_expected_ordering.items():
+        matching = [
+            statement for statement in single_statements if f" {table}" in statement
+        ]
+        assert len(matching) == 1
+        assert order_clause in matching[0]
+
+    one = statements_for(document_ids[:1])
+    one_lock_count = len(lock_calls)
+    lock_calls.clear()
+    five = statements_for(document_ids)
+    five_lock_count = len(lock_calls)
+
+    assert len(one) == len(five)
+    assert one_lock_count == five_lock_count
+    assert lock_calls and all(call.get("read") is True for call in lock_calls)
+    tables = (
+        "users",
+        "clearance_grants",
+        "ingestion_collections",
+        "ingestion_documents",
+        "collection_required_compartments",
+        "document_required_compartments",
+        "security_compartments",
+        "clearance_grant_compartments",
+        "collection_access_grants",
+    )
+    for table in tables:
+        assert sum(f" {table}" in statement for statement in one) == 1
+        assert sum(f" {table}" in statement for statement in five) == 1
+
+    expected_ordering = {
+        "clearance_grants": "order by clearance_grants.id asc",
+        "ingestion_collections": "order by ingestion_collections.id asc",
+        "ingestion_documents": "order by ingestion_documents.id asc",
+        "collection_required_compartments": (
+            "order by collection_required_compartments.collection_id asc, "
+            "collection_required_compartments.compartment_id asc"
+        ),
+        "document_required_compartments": (
+            "order by document_required_compartments.document_id asc, "
+            "document_required_compartments.compartment_id asc"
+        ),
+        "security_compartments": "order by security_compartments.id asc",
+        "clearance_grant_compartments": (
+            "order by clearance_grant_compartments.clearance_grant_id asc, "
+            "clearance_grant_compartments.compartment_id asc"
+        ),
+        "collection_access_grants": "order by collection_access_grants.id asc",
+    }
+    for table, order_clause in expected_ordering.items():
+        one_statement = next(statement for statement in one if f" {table}" in statement)
+        five_statement = next(
+            statement for statement in five if f" {table}" in statement
+        )
+        assert order_clause in one_statement
+        assert order_clause in five_statement
+
+
+def test_governance_multirow_locks_follow_resource_before_authority_order(
+    db, monkeypatch
+) -> None:
+    """Write locks must match runtime collection/compartment-before-grant order."""
+
+    manager = make_user(db, "lock-order-manager", role="admin")
+    subject = make_user(db, "lock-order-subject")
+    owner = make_user(db, "lock-order-owner")
+    collection = _collection(db, owner, level=Classification.UNCLASSIFIED)
+    grant = _active_grant(
+        db, manager=manager, subject=subject, level=Classification.UNCLASSIFIED
+    )
+    compartment = create_security_compartment(
+        db,
+        actor=manager,
+        code="LOCK_ORDER_COMPARTMENT",
+        name="Lock order compartment",
+    )
+
+    locked_models: list[str] = []
+    original_for_update_get = clearance_service._for_update_get
+
+    def lock_spy(session, model, primary_key):
+        locked_models.append(model.__tablename__)
+        return original_for_update_get(session, model, primary_key)
+
+    monkeypatch.setattr(clearance_service, "_for_update_get", lock_spy)
+
+    grant_collection_access(
+        db,
+        actor=manager,
+        clearance_grant_id=grant.id,
+        collection_id=collection.id,
+        membership_granted=True,
+        need_to_know=True,
+        basis_ticket="LOCK-ORDER-COLLECTION",
+    )
+    assert locked_models == ["ingestion_collections", "clearance_grants"]
+
+    locked_models.clear()
+    add_grant_compartment(
+        db,
+        actor=manager,
+        clearance_grant_id=grant.id,
+        compartment_id=compartment.id,
+    )
+    assert locked_models == ["security_compartments", "clearance_grants"]
 
 
 def test_unknown_and_null_classification_fail_closed(db) -> None:
@@ -491,9 +887,7 @@ def test_inactive_required_compartment_is_policy_corruption_not_a_bypass(db) -> 
         clearance_grant_id=grant.id,
         compartment_id=compartment.id,
     )
-    _collection_access(
-        db, manager=manager, grant=grant, collection=collection
-    )
+    _collection_access(db, manager=manager, grant=grant, collection=collection)
     compartment.is_active = False
     db.commit()
 
@@ -554,12 +948,8 @@ def test_issue_collection_grant_and_revoke_are_audited(db) -> None:
     grant = _active_grant(
         db, manager=manager, subject=subject, level=Classification.UNCLASSIFIED
     )
-    access = _collection_access(
-        db, manager=manager, grant=grant, collection=collection
-    )
-    revoke_clearance_grant(
-        db, actor=manager, clearance_grant_id=grant.id, now=NOW
-    )
+    access = _collection_access(db, manager=manager, grant=grant, collection=collection)
+    revoke_clearance_grant(db, actor=manager, clearance_grant_id=grant.id, now=NOW)
 
     events = db.query(AuditLog).order_by(AuditLog.id.asc()).all()
     actions = [event.action for event in events]

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import stat
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 from sqlalchemy import text
@@ -277,6 +278,29 @@ def test_missing_blob_and_post_unlink_db_failure_converge(db, tmp_path, monkeypa
     assert version.lifecycle_state == "erased"
 
 
+def test_missing_artifact_root_keeps_version_reference_retryable(db, tmp_path):
+    artifact_root = tmp_path / "artifact-root"
+    _owner, _collection, _task, _artifact, version, path = _artifact_due(
+        db, artifact_root
+    )
+    held_root = tmp_path / "artifact-root-held"
+    artifact_root.rename(held_root)
+
+    result = run_retention_batch(
+        db,
+        now=NOW,
+        artifact_root=str(artifact_root),
+        ingestion_root=str(tmp_path / "ingestion-root"),
+    )
+
+    assert result.artifacts_erased == 0
+    assert any("artifact blob root is unavailable" in error for error in result.errors)
+    assert (held_root / path.relative_to(artifact_root)).exists()
+    db.refresh(version)
+    assert version.lifecycle_state == "erase_due"
+    assert version.blob_key is not None
+
+
 def test_document_erase_removes_images_chunks_refs_and_reconciles_counters(db, tmp_path):
     _owner, collection, document, blob, image = _document_due(db, tmp_path)
     image_dir = image.parent
@@ -313,14 +337,14 @@ def test_document_image_directory_rmdir_failure_is_not_success(
 ):
     _owner, _collection, document, _blob, image = _document_due(db, tmp_path)
     image_dir = image.parent
-    original_rmdir = Path.rmdir
+    original_rmdir = retention_reaper.os.rmdir
 
-    def fail_image_dir_rmdir(path):
-        if path == image_dir:
+    def fail_image_dir_rmdir(path, *, dir_fd=None):
+        if path == str(document.id) and dir_fd is not None:
             raise OSError("directory cleanup denied")
-        return original_rmdir(path)
+        return original_rmdir(path, dir_fd=dir_fd)
 
-    monkeypatch.setattr(Path, "rmdir", fail_image_dir_rmdir)
+    monkeypatch.setattr(retention_reaper.os, "rmdir", fail_image_dir_rmdir)
     result = run_retention_batch(
         db,
         now=NOW,
@@ -333,6 +357,222 @@ def test_document_image_directory_rmdir_failure_is_not_success(
     db.refresh(document)
     assert document.lifecycle_state == "erase_due"
     assert image_dir.exists()
+
+
+def test_document_image_parent_swap_during_unlink_never_touches_outside(
+    db, tmp_path, monkeypatch
+):
+    _owner, _collection, document, blob, image = _document_due(db, tmp_path)
+    image_dir = image.parent
+    held_dir = image_dir.with_name(f"{image_dir.name}-held")
+    outside_dir = tmp_path.parent / "retention-image-race-outside"
+    outside_dir.mkdir()
+    outside = outside_dir / image.name
+    outside.write_bytes(b"must survive parent swap")
+    symlink_probe = tmp_path / "retention-image-symlink-probe"
+    try:
+        symlink_probe.symlink_to(outside_dir, target_is_directory=True)
+    except OSError:
+        # The actual production target is Linux; keep the suite portable when
+        # a test runner cannot create symlinks.
+        pytest.skip("symlink creation is unavailable on this platform")
+    symlink_probe.unlink()
+
+    original_unlink = retention_reaper.os.unlink
+    swapped = False
+
+    def swap_parent_before_first_unlink(path, *, dir_fd=None):
+        nonlocal swapped
+        if not swapped and dir_fd is not None:
+            image_dir.rename(held_dir)
+            image_dir.symlink_to(outside_dir, target_is_directory=True)
+            swapped = True
+        return original_unlink(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(
+        retention_reaper.os, "unlink", swap_parent_before_first_unlink
+    )
+    result = run_retention_batch(
+        db,
+        now=NOW,
+        artifact_root=str(tmp_path / "artifacts"),
+        ingestion_root=str(tmp_path),
+    )
+
+    assert swapped
+    assert result.documents_erased == 0
+    assert any("replaced" in error for error in result.errors)
+    assert outside.read_bytes() == b"must survive parent swap"
+    assert blob.exists()
+    db.refresh(document)
+    assert document.lifecycle_state == "erase_due"
+
+
+def test_ingestion_root_swap_before_open_fails_closed(db, tmp_path, monkeypatch):
+    _owner, _collection, document, blob, image = _document_due(db, tmp_path)
+    outside_root = tmp_path.parent / f"{tmp_path.name}-retention-root-race-outside"
+    (outside_root / "anila-images" / str(document.id)).mkdir(parents=True)
+    outside_image = outside_root / "anila-images" / str(document.id) / image.name
+    outside_image.write_bytes(b"must survive root swap")
+    try:
+        probe = tmp_path.parent / f"{tmp_path.name}-retention-root-symlink-probe"
+        probe.symlink_to(outside_root, target_is_directory=True)
+        probe.unlink()
+    except OSError:
+        pytest.skip("symlink creation is unavailable on this platform")
+
+    held_root = tmp_path.parent / f"{tmp_path.name}-retention-root-held"
+    original_stat = retention_reaper.os.stat
+    swapped = False
+
+    def swap_root_before_final_open(path, *, dir_fd=None, follow_symlinks=True):
+        nonlocal swapped
+        if not swapped and dir_fd is not None and path == tmp_path.name:
+            tmp_path.rename(held_root)
+            tmp_path.symlink_to(outside_root, target_is_directory=True)
+            swapped = True
+        return original_stat(path, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(retention_reaper.os, "stat", swap_root_before_final_open)
+    result = run_retention_batch(
+        db,
+        now=NOW,
+        artifact_root=str(tmp_path / "artifacts"),
+        ingestion_root=str(tmp_path),
+    )
+
+    assert swapped
+    assert result.documents_erased == 0
+    assert any("configured storage root" in error for error in result.errors)
+    assert outside_image.read_bytes() == b"must survive root swap"
+    assert (held_root / blob.relative_to(tmp_path)).exists()
+    assert (held_root / image.relative_to(tmp_path)).exists()
+    db.refresh(document)
+    assert document.lifecycle_state == "erase_due"
+
+
+def test_document_storage_parent_swap_never_touches_outside(
+    db, tmp_path, monkeypatch
+):
+    _owner, _collection, document, blob, _image = _document_due(db, tmp_path)
+    outside_dir = tmp_path.parent / f"{tmp_path.name}-retention-document-race-outside"
+    outside_dir.mkdir()
+    outside = outside_dir / blob.name
+    outside.write_bytes(b"must survive document parent swap")
+    try:
+        probe = tmp_path / f"{tmp_path.name}-retention-document-symlink-probe"
+        probe.symlink_to(outside_dir, target_is_directory=True)
+        probe.unlink()
+    except OSError:
+        pytest.skip("symlink creation is unavailable on this platform")
+
+    held_parent = blob.parent.with_name(f"{blob.parent.name}-held")
+    original_unlink = retention_reaper.os.unlink
+    swapped = False
+
+    def swap_document_parent_before_unlink(path, *, dir_fd=None):
+        nonlocal swapped
+        if not swapped and dir_fd is not None and path == blob.name:
+            blob.parent.rename(held_parent)
+            blob.parent.symlink_to(outside_dir, target_is_directory=True)
+            swapped = True
+        return original_unlink(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(
+        retention_reaper.os, "unlink", swap_document_parent_before_unlink
+    )
+    result = run_retention_batch(
+        db,
+        now=NOW,
+        artifact_root=str(tmp_path / "artifacts"),
+        ingestion_root=str(tmp_path),
+    )
+
+    assert swapped
+    assert result.documents_erased == 0
+    assert any("storage directory was replaced" in error for error in result.errors)
+    assert outside.read_bytes() == b"must survive document parent swap"
+    db.refresh(document)
+    assert document.lifecycle_state == "erase_due"
+
+
+def test_document_fd_cleanup_unsupported_fails_closed(db, tmp_path, monkeypatch):
+    _owner, _collection, document, blob, image = _document_due(db, tmp_path)
+    monkeypatch.setattr(retention_reaper, "_DIRFD_CLEANUP_SUPPORTED", False)
+    result = run_retention_batch(
+        db,
+        now=NOW,
+        artifact_root=str(tmp_path / "artifacts"),
+        ingestion_root=str(tmp_path),
+    )
+    assert result.documents_erased == 0
+    assert any("dirfd" in error for error in result.errors)
+    assert blob.exists() and image.exists()
+    db.refresh(document)
+    assert document.lifecycle_state == "erase_due"
+
+
+def test_missing_ingestion_root_keeps_document_reference_retryable(db, tmp_path):
+    ingestion_root = tmp_path / "ingestion-root"
+    _owner, _collection, document, blob, image = _document_due(db, ingestion_root)
+    held_root = tmp_path / "ingestion-root-held"
+    ingestion_root.rename(held_root)
+
+    result = run_retention_batch(
+        db,
+        now=NOW,
+        artifact_root=str(tmp_path / "artifact-root"),
+        ingestion_root=str(ingestion_root),
+    )
+
+    assert result.documents_erased == 0
+    assert any("configured storage root is unavailable" in error for error in result.errors)
+    assert (held_root / blob.relative_to(ingestion_root)).exists()
+    assert (held_root / image.relative_to(ingestion_root)).exists()
+    db.refresh(document)
+    assert document.lifecycle_state == "erase_due"
+    assert document.storage_path is not None
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "O_PATH") or not hasattr(os, "mkfifo"),
+    reason="O_PATH FIFO probe is unavailable on this platform",
+)
+def test_document_fifo_swap_before_probe_fails_closed(db, tmp_path, monkeypatch):
+    _owner, _collection, document, blob, _image = _document_due(db, tmp_path)
+    original_open = retention_reaper.os.open
+    swapped = False
+
+    def swap_target_before_probe(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if (
+            not swapped
+            and path == blob.name
+            and dir_fd is not None
+            and flags & os.O_PATH
+        ):
+            blob.unlink()
+            os.mkfifo(blob)
+            swapped = True
+        if dir_fd is None:
+            return original_open(path, flags, mode)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(retention_reaper.os, "open", swap_target_before_probe)
+    result = run_retention_batch(
+        db,
+        now=NOW,
+        artifact_root=str(tmp_path / "artifact-root"),
+        ingestion_root=str(tmp_path),
+    )
+
+    assert swapped
+    assert result.documents_erased == 0
+    assert any("regular file" in error for error in result.errors)
+    assert stat.S_ISFIFO(blob.stat().st_mode)
+    db.refresh(document)
+    assert document.lifecycle_state == "erase_due"
+    assert document.storage_path is not None
 
 
 def test_document_image_symlink_residue_fails_closed(db, tmp_path):

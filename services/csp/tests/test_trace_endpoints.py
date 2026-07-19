@@ -21,7 +21,7 @@ import os
 # default secrets in production mode — allow in tests.
 os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from anila_core.tracing import TraceExporter
 
 from app.models.service_client import ServiceClient
+from app.models.clearance import ClearanceGrant
 from app.models.trace_span import TraceSpan
 from app.services.service_token_envelope import (
     compute_lookup_hash,
@@ -83,6 +84,27 @@ def _seed_span(
     db.add(row)
     db.commit()
     return row
+
+
+def _grant_trace_read_clearance(
+    db: Session,
+    *,
+    subject,
+    issuer,
+    level: str = "無機密",
+) -> None:
+    now = datetime.now(timezone.utc)
+    db.add(
+        ClearanceGrant(
+            subject_user_id=subject.id,
+            max_classification_level=level,
+            valid_from=now - timedelta(minutes=1),
+            expires_at=now + timedelta(hours=1),
+            basis_ticket=f"trace-read-{subject.username}",
+            issued_by_user_id=issuer.id,
+        )
+    )
+    db.commit()
 
 
 def _span_payload(span_id: str, **over) -> dict:
@@ -321,9 +343,15 @@ class TestQuery:
     def test_requester_gets_flat_ordered_spans(
         self, client: TestClient, db: Session
     ):
+        issuer = make_user(db, username="tr_get_issuer", role="admin")
         user = make_user(db, username="tr_get")
         token = login(client, "tr_get")
         task = _make_task(db, user)
+        _grant_trace_read_clearance(
+            db,
+            subject=user,
+            issuer=issuer,
+        )
         # Seed out of order; expect sort by started_at then span_id.
         _seed_span(db, task.trace_id, "later", task_id=task.id,
                    started_at=datetime(2026, 7, 2, 3, 0, 0))
@@ -355,17 +383,24 @@ class TestQuery:
         )
         assert resp.status_code == 403
 
-    def test_admin_bypass_allowed(self, client: TestClient, db: Session):
+    def test_admin_task_access_requires_data_clearance(
+        self, client: TestClient, db: Session
+    ):
         owner = make_user(db, username="tr_owner2")
-        make_user(db, username="tr_admin", role="admin")
+        admin = make_user(db, username="tr_admin", role="admin")
         token = login(client, "tr_admin")
         task = _make_task(db, owner)
         _seed_span(db, task.trace_id, "s1", task_id=task.id)
 
-        resp = client.get(
-            f"/api/traces/{task.trace_id}", headers=_bearer(token)
+        url = f"/api/traces/{task.trace_id}"
+        assert client.get(url, headers=_bearer(token)).status_code == 403
+
+        _grant_trace_read_clearance(
+            db,
+            subject=admin,
+            issuer=admin,
         )
-        assert resp.status_code == 200
+        assert client.get(url, headers=_bearer(token)).status_code == 200
 
     def test_unknown_trace_returns_404(
         self, client: TestClient, db: Session
@@ -383,7 +418,7 @@ class TestQuery:
         # Spans exist for a trace with no owning task → admin/owner only.
         _seed_span(db, "orphan-trace", "s1")
         make_user(db, username="tr_plain")
-        make_user(db, username="tr_admin_orphan", role="admin")
+        admin = make_user(db, username="tr_admin_orphan", role="admin")
 
         plain_token = login(client, "tr_plain")
         assert client.get(
@@ -391,6 +426,14 @@ class TestQuery:
         ).status_code == 403
 
         admin_token = login(client, "tr_admin_orphan")
+        assert client.get(
+            "/api/traces/orphan-trace", headers=_bearer(admin_token)
+        ).status_code == 403
+        _grant_trace_read_clearance(
+            db,
+            subject=admin,
+            issuer=admin,
+        )
         assert client.get(
             "/api/traces/orphan-trace", headers=_bearer(admin_token)
         ).status_code == 200
@@ -472,11 +515,11 @@ class TestProxyEmittedSpans:
         resp = client.post(
             "/v1/chat/completions",
             headers={**_bearer(_jwt(user)),
-                     "X-ANILA-Task-Id": str(task.id),
-                     "X-ANILA-Registry-Snapshot-Id": snapshot.snapshot_id,
-                     "X-ANILA-Registry-Snapshot-Revision": snapshot.snapshot_revision,
-                     "X-ANILA-Registry-Snapshot-Hash": snapshot.snapshot_hash,
-                     "X-ANILA-Agent-Manifest-Revision": agent.manifest_revision,
+                "X-ANILA-Task-Id": str(task.id),
+                "X-ANILA-Registry-Snapshot-Id": snapshot.snapshot_id,
+                "X-ANILA-Registry-Snapshot-Revision": snapshot.snapshot_revision,
+                "X-ANILA-Registry-Snapshot-Hash": snapshot.snapshot_hash,
+                "X-ANILA-Agent-Manifest-Revision": agent.manifest_revision,
                      "X-ANILA-Agent-Manifest-SHA256": agent.manifest_sha256},
             json={"model": agent.name, "stream": True,
                   "messages": [{"role": "user", "content": "hi"}]},

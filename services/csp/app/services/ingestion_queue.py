@@ -37,17 +37,40 @@ async def _get_pool() -> ArqRedis:
     return _pool
 
 
-async def enqueue_ingest_document(document_id: int) -> str:
-    """Enqueue an ``ingest_document`` job for one document.
+def _require_positive_int(value: object, *, field: str) -> int:
+    """Validate an integer identity used by the durable worker contract."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{field} must be a positive integer")
+    return value
 
-    Returns the Arq job id (a UUID string) so the API can surface it in
-    the ``ingestion_jobs`` row and let the dev UI poll for completion.
+
+async def enqueue_ingest_document(
+    document_id: int,
+    *,
+    ingestion_job_id: int,
+    attempt_number: int,
+) -> str:
+    """Enqueue one *fenced* ``ingest_document`` attempt.
+
+    This compatibility helper is kept for callers that still publish
+    directly, but it may not create a legacy job with no durable identity.
+    The job identity and attempt are included in both the worker arguments
+    and the HMAC payload, matching the transactional ingestion outbox
+    contract.  The worker then claims the corresponding lease before any
+    ingestion mutation.
     """
+    document_id = _require_positive_int(document_id, field="document_id")
+    ingestion_job_id = _require_positive_int(
+        ingestion_job_id, field="ingestion_job_id"
+    )
+    attempt_number = _require_positive_int(
+        attempt_number, field="attempt_number"
+    )
     pool = await _get_pool()
     payload = {
         "document_id": document_id,
-        "ingestion_job_id": None,
-        "attempt_number": 1,
+        "ingestion_job_id": ingestion_job_id,
+        "attempt_number": attempt_number,
     }
     proof = create_queue_proof(
         settings.INGESTION_QUEUE_HMAC_KEY,
@@ -55,12 +78,17 @@ async def enqueue_ingest_document(document_id: int) -> str:
         payload=payload,
     )
     job = await pool.enqueue_job(
-        "ingest_document", document_id, None, 1, proof,
+        "ingest_document",
+        document_id,
+        ingestion_job_id,
+        attempt_number,
+        proof,
+        _job_id=f"ingest-job-{ingestion_job_id}-attempt-{attempt_number}",
     )
     if job is None:
-        # Arq returns None when a duplicate job_id collides; we don't
-        # set an explicit one, so this branch is theoretically
-        # unreachable. Surface as a clear error if it ever fires.
+        # Arq returns None when the deterministic durable job id already
+        # exists. Surface as a clear error rather than returning an
+        # unverified enqueue result to the caller.
         raise RuntimeError(
             "Arq returned no job — possible duplicate id collision. "
             "Investigate the redis 'arq:' keys."
@@ -70,9 +98,16 @@ async def enqueue_ingest_document(document_id: int) -> str:
 
 async def enqueue_with_metadata(
     document_id: int,
+    *,
+    ingestion_job_id: int,
+    attempt_number: int,
 ) -> dict[str, Any]:
-    """Convenience wrapper returning what the API row insert needs."""
-    job_id = await enqueue_ingest_document(document_id)
+    """Return the Arq identity for a fenced ingestion attempt."""
+    job_id = await enqueue_ingest_document(
+        document_id,
+        ingestion_job_id=ingestion_job_id,
+        attempt_number=attempt_number,
+    )
     return {"arq_job_id": job_id}
 
 

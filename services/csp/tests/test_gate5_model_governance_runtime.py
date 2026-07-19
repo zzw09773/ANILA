@@ -4,6 +4,7 @@ import base64
 import copy
 import hashlib
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,7 +13,13 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from anila_security.model_governance import canonical_json
+from anila_security.model_governance import (
+    TransportTarget,
+    canonical_json,
+    transport_target_sha256,
+)
+from app.models.model_governance_receipt import ModelGovernanceReceipt
+from app.models.token_usage import TokenUsage
 from app.schemas.model_governance import (
     ObservedArtifactFacts,
     ObservedDeploymentFacts,
@@ -20,10 +27,12 @@ from app.schemas.model_governance import (
     ObservedGpuTopology,
     ObservedHealthReadiness,
 )
+from app.services.model_governance_receipts import ReceiptSubject, SqlAlchemyReceiptSink
 from app.services.model_governance_runtime import (
     ModelGovernanceRuntime,
     ModelGovernanceRuntimeError,
 )
+from tests.conftest import make_model, make_user
 
 
 ROOT = Path(__file__).parents[3]
@@ -121,6 +130,30 @@ def _profile() -> dict:
                     },
                 }
             ],
+            "provider_bindings": [
+                {
+                    "provider_binding_id": "provider.synthetic",
+                    "model_registry_id": "42",
+                    "model_registry_name": "synthetic-model",
+                    "model_registry_revision": "registry-rev-1",
+                    "provider_locality": "internal_isolated",
+                    "transport_target": TransportTarget.parse(
+                        "model.internal:8000", dns_policy="none"
+                    ).to_dict(),
+                    "transport_target_sha256": transport_target_sha256(
+                        TransportTarget.parse(
+                            "model.internal:8000", dns_policy="none"
+                        ).to_dict()
+                    ),
+                    "upstream_provider_locality": None,
+                    "upstream_transport_target": None,
+                    "upstream_transport_target_sha256": None,
+                    "egress_policy_id": None,
+                    "upstream_egress_policy_id": None,
+                    "model_artifact_id": "artifact.synthetic",
+                    "deployment_id": "deployment.synthetic",
+                }
+            ],
             "callsite_bindings": [
                 {
                     "callsite_id": callsite_id,
@@ -129,8 +162,7 @@ def _profile() -> dict:
                     "usage_sink": call["usage_sink"],
                     "audit_sink": call["audit_sink"],
                     "agent_scope": call["agent_scope"],
-                    "model_artifact_id": "artifact.synthetic",
-                    "deployment_id": "deployment.synthetic",
+                    "provider_binding_ids": ["provider.synthetic"],
                 }
             ],
         }
@@ -237,6 +269,29 @@ def _facts(profile: dict) -> tuple[dict, dict]:
     return profile["model_artifacts"][0], profile["deployments"][0]
 
 
+def _revoke_profile(profile: dict, profile_path: Path) -> None:
+    revoked = copy.deepcopy(profile)
+    revoked["enabled"] = False
+    revoked["enabled_callsites"] = []
+    revoked["disabled_callsites"] = [
+        item["id"] for item in _inventory()["callsites"]
+    ]
+    revoked["callsite_bindings"] = []
+    revoked["model_artifacts"] = []
+    revoked["deployments"] = []
+    revoked["valid_from"] = None
+    revoked["valid_until"] = None
+    revoked["approvers"] = []
+    revoked["signatures"] = []
+    unsigned = dict(revoked)
+    unsigned.pop("profile_content_sha256", None)
+    unsigned.pop("signatures", None)
+    revoked["profile_content_sha256"] = hashlib.sha256(
+        canonical_json(unsigned)
+    ).hexdigest()
+    profile_path.write_text(json.dumps(revoked), encoding="utf-8")
+
+
 def test_bootstrap_authorize_and_post_receipts_are_required(tmp_path: Path) -> None:
     usage = ReceiptSink()
     audit = ReceiptSink()
@@ -252,6 +307,7 @@ def test_bootstrap_authorize_and_post_receipts_are_required(tmp_path: Path) -> N
         "https://csp-model-gateway/v1/chat/completions",
         artifact,
         deployment,
+        provider_binding_id="provider.synthetic",
         invocation_id="inv-synthetic-1",
         now=NOW,
     )
@@ -382,11 +438,14 @@ def test_stale_health_and_observed_gpu_or_image_drift_fail_closed(
             "https://csp-model-gateway/v1/chat/completions",
             artifact,
             deployment,
+            provider_binding_id="provider.synthetic",
             now=NOW,
         )
 
 
-def test_rotation_revocation_and_toc_tou_reload_are_fail_closed(tmp_path: Path) -> None:
+def test_revocation_blocks_new_admission_but_closes_authorized_snapshot(
+    tmp_path: Path,
+) -> None:
     usage = ReceiptSink()
     audit = ReceiptSink()
     runtime, profile, profile_path, _, _ = _runtime(
@@ -400,27 +459,11 @@ def test_rotation_revocation_and_toc_tou_reload_are_fail_closed(tmp_path: Path) 
         "https://csp-model-gateway/v1/chat/completions",
         artifact,
         deployment,
+        provider_binding_id="provider.synthetic",
         now=NOW,
     )
 
-    revoked = copy.deepcopy(profile)
-    revoked["enabled"] = False
-    revoked["enabled_callsites"] = []
-    revoked["disabled_callsites"] = [item["id"] for item in _inventory()["callsites"]]
-    revoked["callsite_bindings"] = []
-    revoked["model_artifacts"] = []
-    revoked["deployments"] = []
-    revoked["valid_from"] = None
-    revoked["valid_until"] = None
-    revoked["approvers"] = []
-    revoked["signatures"] = []
-    unsigned = dict(revoked)
-    unsigned.pop("profile_content_sha256", None)
-    unsigned.pop("signatures", None)
-    revoked["profile_content_sha256"] = hashlib.sha256(
-        canonical_json(unsigned)
-    ).hexdigest()
-    profile_path.write_text(json.dumps(revoked), encoding="utf-8")
+    _revoke_profile(profile, profile_path)
 
     with pytest.raises(ModelGovernanceRuntimeError, match="not ready|disabled"):
         runtime.authorize_model_invocation(
@@ -430,10 +473,183 @@ def test_rotation_revocation_and_toc_tou_reload_are_fail_closed(tmp_path: Path) 
             "https://csp-model-gateway/v1/chat/completions",
             artifact,
             deployment,
+            provider_binding_id="provider.synthetic",
             now=NOW,
         )
+    completion = runtime.record_post_usage(
+        authorization,
+        {"prompt_tokens": 1},
+        now=NOW,
+    )
+    assert completion.invocation_id == authorization.invocation_id
+    post_event = next(event for kind, event in usage.events if kind == "post_usage")
+    assert (
+        post_event["profile_content_sha256"]
+        == authorization.authority_profile_content_sha256
+    )
+    assert post_event["inventory_sha256"] == authorization.authority_inventory_sha256
+
+
+@pytest.mark.parametrize("authority_change", ["rotation", "expiry"])
+def test_rotation_or_expiry_still_allows_failure_closure_from_snapshot(
+    tmp_path: Path,
+    authority_change: str,
+) -> None:
+    usage = ReceiptSink()
+    audit = ReceiptSink()
+    runtime, profile, profile_path, _, _ = _runtime(
+        tmp_path,
+        usage_sink=usage,
+        audit_sink=audit,
+    )
+    artifact, deployment = _facts(profile)
+    authorization = runtime.authorize_model_invocation(
+        "r7.router.core",
+        "機密",
+        "router",
+        "https://csp-model-gateway/v1/chat/completions",
+        artifact,
+        deployment,
+        provider_binding_id="provider.synthetic",
+        invocation_id=f"inv-{authority_change}",
+        now=NOW,
+    )
+
+    closure_now = NOW
+    if authority_change == "rotation":
+        rotated = copy.deepcopy(profile)
+        rotated["profile_version"] = "1.0.1"
+        rotated.pop("signatures", None)
+        unsigned = dict(rotated)
+        unsigned.pop("profile_content_sha256", None)
+        rotated["profile_content_sha256"] = hashlib.sha256(
+            canonical_json(unsigned)
+        ).hexdigest()
+        _write_signed_material(tmp_path, rotated)
+        assert runtime.bootstrap(now=closure_now).ready is True
+    else:
+        closure_now = NOW + timedelta(days=8)
+        with pytest.raises(ModelGovernanceRuntimeError, match="not ready|expired"):
+            runtime.authorize_model_invocation(
+                "r7.router.core",
+                "機密",
+                "router",
+                "https://csp-model-gateway/v1/chat/completions",
+                artifact,
+                deployment,
+                provider_binding_id="provider.synthetic",
+                now=closure_now,
+            )
+
+    completion = runtime.record_post_failure(
+        authorization,
+        "synthetic downstream failure",
+        now=closure_now,
+    )
+    assert completion.invocation_id == authorization.invocation_id
+
+
+def test_sql_closure_after_revocation_is_terminal_and_snapshot_bound(
+    tmp_path: Path,
+    db,
+) -> None:
+    user = make_user(db, username="gate5-authority-rotation-owner")
+    model = make_model(db, name="gate5-authority-rotation-model")
+    sink = SqlAlchemyReceiptSink(
+        db,
+        subject=ReceiptSubject(user_id=user.id, model_id=model.id),
+    )
+    runtime, profile, profile_path, _, _ = _runtime(tmp_path)
+    artifact, deployment = _facts(profile)
+
+    def authorize(invocation_id: str):
+        return runtime.authorize_model_invocation(
+            "r7.router.core",
+            "機密",
+            "router",
+            "https://csp-model-gateway/v1/chat/completions",
+            artifact,
+            deployment,
+            provider_binding_id="provider.synthetic",
+            invocation_id=invocation_id,
+            now=NOW,
+            usage_sink=sink,
+            audit_sink=sink,
+        )
+
+    success_authorization = authorize("inv-rotation-success")
+    failure_authorization = authorize("inv-rotation-failure")
+    _revoke_profile(profile, profile_path)
+
     with pytest.raises(ModelGovernanceRuntimeError, match="not ready|disabled"):
-        runtime.record_post_usage(authorization, {"prompt_tokens": 1}, now=NOW)
+        authorize("inv-after-revocation")
+
+    forged_hash = replace(
+        success_authorization,
+        authority_profile_content_sha256="0" * 64,
+    )
+    with pytest.raises(ModelGovernanceRuntimeError, match="receipt failed"):
+        runtime.record_post_usage(
+            forged_hash,
+            {"prompt_tokens": 1},
+            now=NOW,
+            usage_sink=sink,
+            audit_sink=sink,
+        )
+
+    cross_invocation = replace(
+        success_authorization,
+        invocation_id=failure_authorization.invocation_id,
+    )
+    with pytest.raises(ModelGovernanceRuntimeError, match="receipt failed"):
+        runtime.record_post_usage(
+            cross_invocation,
+            {"prompt_tokens": 1},
+            now=NOW,
+            usage_sink=sink,
+            audit_sink=sink,
+        )
+
+    runtime.record_post_usage(
+        success_authorization,
+        {"prompt_tokens": 3, "completion_tokens": 5},
+        now=NOW,
+        usage_sink=sink,
+        audit_sink=sink,
+    )
+    runtime.record_post_failure(
+        failure_authorization,
+        "synthetic downstream failure",
+        now=NOW,
+        usage_sink=sink,
+        audit_sink=sink,
+    )
+
+    rows = {
+        row.invocation_id: row.status
+        for row in db.query(ModelGovernanceReceipt)
+        .filter(
+            ModelGovernanceReceipt.invocation_id.in_(
+                ["inv-rotation-success", "inv-rotation-failure"]
+            )
+        )
+        .all()
+    }
+    assert rows == {
+        "inv-rotation-success": "completed",
+        "inv-rotation-failure": "failed",
+    }
+    assert "authorized" not in rows.values()
+    assert (
+        db.query(TokenUsage)
+        .filter(
+            TokenUsage.trace_id.in_(
+                ["inv-rotation-success", "inv-rotation-failure"]
+            )
+        )
+        .count()
+        == 2
+    )
 
 
 def test_raw_endpoint_scope_and_receipt_failures_never_authorize(
@@ -454,6 +670,7 @@ def test_raw_endpoint_scope_and_receipt_failures_never_authorize(
             "http://raw-model:8000/v1/chat/completions",
             artifact,
             deployment,
+            provider_binding_id="provider.synthetic",
             now=NOW,
         )
     with pytest.raises(ModelGovernanceRuntimeError, match="selector"):
@@ -464,6 +681,7 @@ def test_raw_endpoint_scope_and_receipt_failures_never_authorize(
             "https://csp-model-gateway/v1/chat/completions",
             artifact,
             deployment,
+            provider_binding_id="provider.synthetic",
             now=NOW,
         )
     assert usage.events == []
@@ -484,6 +702,7 @@ def test_raw_endpoint_scope_and_receipt_failures_never_authorize(
             "https://csp-model-gateway/v1/chat/completions",
             artifact,
             deployment,
+            provider_binding_id="provider.synthetic",
             now=NOW,
         )
     assert any(kind == "compensate_pre_usage" for kind, _ in failing_usage.events)

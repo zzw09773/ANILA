@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 from fastapi import HTTPException
 
+from app.config import is_model_governance_required, settings
 from app.clients.csp_client import (
     CspClientError,
     CspForbiddenError,
@@ -80,6 +81,18 @@ def get_flux_provider() -> "FluxImageProvider | None":
     global _FLUX_PROVIDER, _FLUX_PROVIDER_INITIALISED
     if _FLUX_PROVIDER_INITIALISED:
         return _FLUX_PROVIDER
+
+    # This legacy synchronous helper cannot obtain a fresh CSP authority.
+    # Formal deployments must use get_active_flux_provider(), which performs
+    # the per-inference authority fetch; returning None here prevents an env
+    # endpoint from bypassing that boundary.
+    if is_model_governance_required():
+        _FLUX_PROVIDER_INITIALISED = True
+        logger.warning(
+            "formal model governance requires CSP image-primary; "
+            "legacy env-only Flux provider is disabled"
+        )
+        return None
 
     flux_url = os.environ.get("FLUX_BACKEND_URL", "").strip()
     if not flux_url:
@@ -137,7 +150,7 @@ def get_flux_provider() -> "FluxImageProvider | None":
 # swapping in a new FluxImageProvider instance — the next _generate()
 # naturally dials the new URL.
 _FLUX_DYNAMIC_PROVIDER: "FluxImageProvider | None" = None
-_FLUX_DYNAMIC_KEY: tuple[str, str] | None = None
+_FLUX_DYNAMIC_KEY: tuple[str, str, bool] | None = None
 
 
 async def get_active_flux_provider() -> "FluxImageProvider | None":
@@ -154,21 +167,40 @@ async def get_active_flux_provider() -> "FluxImageProvider | None":
     """
     global _FLUX_DYNAMIC_PROVIDER, _FLUX_DYNAMIC_KEY
 
+    formal = is_model_governance_required()
     csp_endpoint, csp_model = await get_image_primary()
 
-    if csp_endpoint:
+    if formal and csp_endpoint:
+        # The endpoint is authority evidence only.  Formal image bytes always
+        # traverse CSP's task-bound runtime Images gateway; the selected model
+        # name remains a request hint for CSP's active registry lookup.
+        flux_url = settings.CSP_BASE_URL.rstrip("/")
+        model = csp_model or "flux.2-dev"
+        source = "csp-runtime"
+        via_csp_runtime = True
+    elif csp_endpoint:
         flux_url = csp_endpoint
         model = csp_model or "flux.2-dev"
         source = "csp"
+        via_csp_runtime = False
+    elif formal:
+        # A missing/denied/stale authority is terminal in formal posture.  In
+        # particular, do not retain a previously built provider or use env.
+        logger.warning(
+            "formal model governance has no current CSP image-primary authority; "
+            "Flux inference disabled"
+        )
+        return None
     else:
         flux_url = os.environ.get("FLUX_BACKEND_URL", "").strip()
         model = os.environ.get("FLUX_MODEL", "flux.2-dev").strip() or "flux.2-dev"
         source = "env"
+        via_csp_runtime = False
 
     if not flux_url:
         return None
 
-    key = (flux_url, model)
+    key = (flux_url, model, via_csp_runtime)
     if _FLUX_DYNAMIC_PROVIDER is not None and _FLUX_DYNAMIC_KEY == key:
         return _FLUX_DYNAMIC_PROVIDER
 
@@ -190,6 +222,7 @@ async def get_active_flux_provider() -> "FluxImageProvider | None":
         timeout_seconds=timeout,
         model=model,
         api_key=api_key,
+        via_csp_runtime=via_csp_runtime,
     )
     _FLUX_DYNAMIC_KEY = key
     logger.info(
@@ -229,8 +262,25 @@ async def _gated_generate(
         return cached, 0
 
     for attempt in range(FLUX_GATE_MAX_RETRIES + 1):
+        active_provider = flux_provider
+        if is_model_governance_required():
+            # ``flux_provider`` may have been resolved for an earlier slide
+            # (or a prior gate retry).  Before any new FLUX HTTP request, get
+            # the current CSP authority again.  The cache check above remains
+            # deliberately before this branch: a local, accepted cache hit
+            # makes no downstream model-network call and therefore needs no
+            # fresh provider resolution.
+            active_provider = await get_active_flux_provider()
+            if active_provider is None:
+                logger.warning(
+                    "formal model governance denied image inference before "
+                    "gate attempt %d/%d",
+                    attempt,
+                    FLUX_GATE_MAX_RETRIES,
+                )
+                return None, attempt
         attempt_seed = seed + attempt * FLUX_GATE_SEED_STRIDE
-        candidates = await flux_provider.generate_candidates(
+        candidates = await active_provider.generate_candidates(
             prompt,
             use_case=use_case,
             seed=attempt_seed,
@@ -244,7 +294,7 @@ async def _gated_generate(
         if best is not None:
             # Persist under the per-slide (deterministic) seed, not the
             # per-attempt retry seed, so a re-run hits the cache.
-            flux_provider.persist_chosen(
+            active_provider.persist_chosen(
                 best, prompt=prompt, use_case=use_case, seed=seed, style_id=style_id,
             )
             logger.info(

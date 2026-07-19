@@ -159,3 +159,34 @@ async def test_generate_system_prompt_raises_on_empty_choices(db, monkeypatch):
 
     with pytest.raises(RuntimeError, match="LLM 回傳空內容"):
         await prompt_gen_service.generate_system_prompt(db, col.id, "測試構想", owner)
+
+
+@pytest.mark.asyncio
+async def test_formal_authority_denial_happens_before_http_client(db, monkeypatch):
+    owner = make_user(db, username="pg_owner_formal")
+    make_model(db, name="pg-llm-formal")
+    col = _make_collection(db, owner.id, name="正式治理知識庫")
+    client_calls = []
+
+    class _DeniedGoverned:
+        def authorize(self, **_kwargs):
+            raise RuntimeError("synthetic provider authority denial")
+
+    monkeypatch.setattr(prompt_gen_service, "validate_outbound_url", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        prompt_gen_service.GovernedModelInvocation,
+        "from_runtime",
+        lambda *_a, **_k: _DeniedGoverned(),
+    )
+
+    def forbidden_client(*_args, **_kwargs):
+        client_calls.append(True)
+        raise AssertionError("HTTP client must not open before formal admission")
+
+    monkeypatch.setattr(prompt_gen_service.httpx, "AsyncClient", forbidden_client)
+
+    with pytest.raises(RuntimeError, match="synthetic provider authority denial"):
+        await prompt_gen_service.generate_system_prompt(
+            db, col.id, "測試正式治理", owner
+        )
+    assert client_calls == []

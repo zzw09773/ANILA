@@ -12,7 +12,9 @@ import logging
 import time
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from types import MappingProxyType
 from typing import AsyncIterator, Optional
 
 from fastapi import HTTPException
@@ -66,6 +68,58 @@ _DEFAULT_GOVERNANCE_CALLSITE = "r7.csp.proxy-service"
 _AGENT_GOVERNANCE_CALLSITE = "r7.csp.proxy-service-agent"
 
 
+@dataclass(frozen=True, slots=True)
+class _LockedModelSnapshot:
+    """Immutable model values captured before receipt commit/network I/O."""
+
+    id: int
+    name: str
+    model_type: str
+    endpoint_url: str
+    api_version: str
+    api_key_secret_ref: str | None
+    provider_locality: str | None
+    transport_target: object | None
+    transport_target_sha256: str | None
+    model_registry_revision: str | None
+    upstream_provider_locality: str | None
+    upstream_transport_target: object | None
+    upstream_transport_target_sha256: str | None
+    egress_policy_id: str | None
+    upstream_egress_policy_id: str | None
+    classification_ceiling: str | None
+
+
+def _freeze_locked_model(model: ModelRegistry) -> _LockedModelSnapshot:
+    """Detach all outbound model inputs from SQLAlchemy expiry semantics."""
+
+    def freeze_json(value):
+        return MappingProxyType(dict(value)) if isinstance(value, Mapping) else value
+
+    return _LockedModelSnapshot(
+        id=int(model.id),
+        name=str(model.name),
+        model_type=str(model.model_type),
+        endpoint_url=str(model.endpoint_url),
+        api_version=str(getattr(model, "api_version", "v1") or "v1"),
+        api_key_secret_ref=getattr(model, "api_key_secret_ref", None),
+        provider_locality=getattr(model, "provider_locality", None),
+        transport_target=freeze_json(getattr(model, "transport_target", None)),
+        transport_target_sha256=getattr(model, "transport_target_sha256", None),
+        model_registry_revision=getattr(model, "model_registry_revision", None),
+        upstream_provider_locality=getattr(model, "upstream_provider_locality", None),
+        upstream_transport_target=freeze_json(
+            getattr(model, "upstream_transport_target", None)
+        ),
+        upstream_transport_target_sha256=getattr(
+            model, "upstream_transport_target_sha256", None
+        ),
+        egress_policy_id=getattr(model, "egress_policy_id", None),
+        upstream_egress_policy_id=getattr(model, "upstream_egress_policy_id", None),
+        classification_ceiling=getattr(model, "classification_ceiling", None),
+    )
+
+
 def _build_governed_model_invocation(
     *,
     governance_db,
@@ -79,6 +133,7 @@ def _build_governed_model_invocation(
     trace_id: str | None,
     caller_agent_id: int | None = None,
     governance_agent_id: str | None = None,
+    registry_model: ModelRegistry | None = None,
 ) -> GovernedModelInvocation | None:
     """Build the central Gate 5 seam for model egress only.
 
@@ -87,7 +142,7 @@ def _build_governed_model_invocation(
     A formal enabled runtime cannot silently fall back when the caller forgot
     the DB binding; that denial happens before an HTTP client is created.
     """
-    if target_agent_id is not None or model_type == "agent":
+    if target_agent_id is not None:
         return None
     runtime = resolve_model_governance_runtime()
     if runtime is None or not runtime.enabled:
@@ -105,6 +160,7 @@ def _build_governed_model_invocation(
     return GovernedModelInvocation.from_runtime(
         governance_db,
         runtime=runtime,
+        registry_model=registry_model,
         subject=ReceiptSubject(
             user_id=user_id,
             model_id=model_id,
@@ -499,6 +555,11 @@ def _lock_registry_admission(
         )
     # The caller chooses the lock lifetime. ``proxy_stream`` commits the
     # snapshot before opening SSE; synchronous paths release it in closure.
+    # Never hand the synchronous caller an expiring ORM object: the durable
+    # pre-receipt commits the session before outbound I/O and SQLAlchemy would
+    # otherwise reload endpoint/key fields after a concurrent registry update.
+    if registry_agent_id is None:
+        return _freeze_locked_model(locked)
     return locked
 
 
@@ -964,9 +1025,11 @@ async def proxy_request(
     closure_id = uuid.uuid4().hex
     usage_capture: dict = {}
     is_agent_target = model.model_type == "agent" or target_agent_id is not None
+    outbound_model = model
     governed = None
     authorization = None
     governance_closed = False
+    effective_level = admitted_classification_level
     try:
         _require_pilot_sink_admission(
             inference_callsite_id=inference_callsite_id,
@@ -981,7 +1044,7 @@ async def proxy_request(
             task_run_id=task_run_id,
             admitted_classification_level=admitted_classification_level,
         )
-        _lock_registry_admission(
+        locked_registry_model = _lock_registry_admission(
             governance_db=governance_db,
             registry_model_id=(
                 None if target_agent_id is not None else getattr(model, "id", None)
@@ -997,6 +1060,8 @@ async def proxy_request(
             registry_manifest_revision=registry_manifest_revision,
             registry_manifest_sha256=registry_manifest_sha256,
         )
+        if target_agent_id is None and locked_registry_model is not None:
+            outbound_model = locked_registry_model
         governed = _build_governed_model_invocation(
             governance_db=governance_db,
             governance_callsite_id=governance_callsite_id,
@@ -1009,20 +1074,19 @@ async def proxy_request(
             trace_id=trace_id,
             caller_agent_id=caller_agent_id,
             governance_agent_id=governance_agent_id,
+            registry_model=locked_registry_model,
         )
         if governed is not None:
             authorization = _authorize_governance(
                 governed,
                 callsite_id=governance_callsite_id or _DEFAULT_GOVERNANCE_CALLSITE,
-                classification=_governance_classification(
-                    admitted_classification_level
-                ),
+                classification=_governance_classification(effective_level),
                 invocation_id=f"proxy-{closure_id}",
                 agent_id=governance_agent_id,
             )
         try:
             result = await _proxy_request_impl(
-                model=model,
+                model=outbound_model,
                 api_key_id=api_key_id,
                 user_id=user_id,
                 department_id=department_id,
@@ -1043,7 +1107,7 @@ async def proxy_request(
                 legacy_runtime_call=legacy_runtime_call,
                 inference_callsite_id=inference_callsite_id,
                 governance_db=governance_db,
-                admitted_classification_level=admitted_classification_level,
+                admitted_classification_level=effective_level,
                 task_run_id=task_run_id,
                 usage_capture=usage_capture,
             )
@@ -1085,13 +1149,17 @@ async def proxy_request(
                         started_at=span_started_at,
                         status="failed",
                         is_agent=is_agent_target,
-                        target_id=(target_agent_id if is_agent_target else model.id),
-                        target_name=model.name,
+                        target_id=(
+                            target_agent_id
+                            if is_agent_target
+                            else outbound_model.id
+                        ),
+                        target_name=outbound_model.name,
                         error={
                             "code": f"http_{exc.status_code}",
                             "message": str(exc.detail),
                         },
-                        classification_level=admitted_classification_level,
+                        classification_level=effective_level,
                         callsite=inference_callsite_id,
                     ),
                 )
@@ -1113,10 +1181,12 @@ async def proxy_request(
                 started_at=span_started_at,
                 status="completed",
                 is_agent=is_agent_target,
-                target_id=(target_agent_id if is_agent_target else model.id),
-                target_name=model.name,
+                target_id=(
+                    target_agent_id if is_agent_target else outbound_model.id
+                ),
+                target_name=outbound_model.name,
                 usage=usage_capture.get("record"),
-                classification_level=admitted_classification_level,
+                classification_level=effective_level,
                 callsite=inference_callsite_id,
             ),
         )
@@ -1133,11 +1203,13 @@ async def proxy_request(
                 started_at=span_started_at,
                 status="completed",
                 is_agent=is_agent_target,
-                target_id=(target_agent_id if is_agent_target else model.id),
-                target_name=model.name,
+                target_id=(
+                    target_agent_id if is_agent_target else outbound_model.id
+                ),
+                target_name=outbound_model.name,
                 usage=usage_capture.get("record"),
                 finalize_run=False,
-                classification_level=admitted_classification_level,
+                classification_level=effective_level,
                 callsite=inference_callsite_id,
             ),
         )
@@ -1656,6 +1728,7 @@ async def proxy_stream(
     governed = None
     authorization = None
     governance_closed = False
+    effective_level = admitted_classification_level
     try:
         _require_pilot_sink_admission(
             inference_callsite_id=inference_callsite_id,
@@ -1670,7 +1743,7 @@ async def proxy_stream(
             task_run_id=task_run_id,
             admitted_classification_level=admitted_classification_level,
         )
-        _lock_registry_admission(
+        locked_registry_model = _lock_registry_admission(
             governance_db=governance_db,
             registry_model_id=(
                 None if target_agent_id is not None else usage_model_id
@@ -1686,7 +1759,6 @@ async def proxy_stream(
             registry_manifest_revision=registry_manifest_revision,
             registry_manifest_sha256=registry_manifest_sha256,
         )
-        _commit_stream_admission(governance_db)
         governed = _build_governed_model_invocation(
             governance_db=governance_db,
             governance_callsite_id=governance_callsite_id,
@@ -1699,17 +1771,21 @@ async def proxy_stream(
             trace_id=trace_id,
             caller_agent_id=caller_agent_id,
             governance_agent_id=governance_agent_id,
+            registry_model=locked_registry_model,
         )
         if governed is not None:
             authorization = _authorize_governance(
                 governed,
                 callsite_id=governance_callsite_id or _DEFAULT_GOVERNANCE_CALLSITE,
-                classification=_governance_classification(
-                    admitted_classification_level
-                ),
+                classification=_governance_classification(effective_level),
                 invocation_id=f"proxy-{closure_id}",
                 agent_id=governance_agent_id,
             )
+        # Provider authority must consume the row snapshot while its registry
+        # admission is still locked.  The durable pre-receipt may commit the
+        # session itself; after this point the outbound target is already
+        # pinned to the exact signed provider snapshot.
+        _commit_stream_admission(governance_db)
         async with registry.register(task_id) as cancel_event:
             upstream = _proxy_stream_impl(
                 target_url=target_url,
@@ -1735,7 +1811,7 @@ async def proxy_stream(
                 gateway_api_key=gateway_api_key,
                 inference_callsite_id=inference_callsite_id,
                 governance_db=governance_db,
-                admitted_classification_level=admitted_classification_level,
+                admitted_classification_level=effective_level,
                 task_run_id=task_run_id,
                 task_run_started_at=task_run_started_at,
                 usage_capture=usage_capture,
@@ -1788,7 +1864,7 @@ async def proxy_stream(
                     ),
                     target_name=model_name,
                     usage=usage_capture.get("record"),
-                    classification_level=admitted_classification_level,
+                    classification_level=effective_level,
                         callsite=inference_callsite_id,
                         finalize_run=finalize_task_run_on_completion,
                 ),
@@ -1819,7 +1895,7 @@ async def proxy_stream(
         if cancel_terminal_capture["claimed"]:
             try:
                 cancellation_level = Classification.from_storage(
-                    admitted_classification_level
+                    effective_level
                     or ("機密" if requires_encryption else "無機密")
                 )
             except (TypeError, ValueError):
@@ -1880,7 +1956,7 @@ async def proxy_stream(
                             # cancelled after the upstream usage frame.
                             usage=usage_capture.get("record"),
                             error=error,
-                            classification_level=admitted_classification_level,
+                            classification_level=effective_level,
                             callsite=inference_callsite_id,
                             finalize_run=finalize_task_run_on_completion,
                         ),

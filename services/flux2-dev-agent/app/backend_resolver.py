@@ -27,16 +27,28 @@ class BackendResolver:
         fetcher: Optional[_ImagePrimaryFetcherProto],
         fallback_endpoint: str,
         fallback_model: str,
+        governance_required: bool = False,
     ) -> None:
         self._fetcher = fetcher
         self._fallback_endpoint = fallback_endpoint
         self._fallback_model = fallback_model
+        self.governance_required = bool(governance_required)
 
     async def resolve(self) -> tuple[str, str]:
         if self._fetcher is not None:
             endpoint, model = await self._fetcher.get()
             if endpoint and model:
                 return endpoint, model
+            if self.governance_required or getattr(
+                self._fetcher, "governance_required", False
+            ) is True:
+                raise FluxBackendUnconfigured(
+                    "formal model governance 未提供目前有效的 image-primary authority"
+                )
+        elif self.governance_required:
+            raise FluxBackendUnconfigured(
+                "formal model governance 未配置 image-primary authority fetcher"
+            )
         if self._fallback_endpoint and self._fallback_model:
             return self._fallback_endpoint, self._fallback_model
         raise FluxBackendUnconfigured(
