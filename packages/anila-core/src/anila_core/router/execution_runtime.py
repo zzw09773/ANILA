@@ -110,6 +110,7 @@ class ExecutionRuntime:
         provider_output: object,
         snapshot: RegistrySnapshot | None,
         *,
+        request_content: str | None = None,
         now: datetime | None = None,
     ) -> tuple[
         RequestContext,
@@ -126,6 +127,7 @@ class ExecutionRuntime:
             candidates,
             snapshot,
             context=context,
+            request_content=request_content,
             now=now,
         )
         if decision_result.decision is None:
@@ -186,6 +188,7 @@ class ExecutionRuntime:
         snapshot: RegistrySnapshot | None = None,
         *,
         dispatcher: Dispatcher | Callable[..., Any] | None = None,
+        request_content: str | None = None,
         now: datetime | None = None,
     ) -> RuntimeResult:
         """Synchronously evaluate the pipeline.
@@ -196,7 +199,11 @@ class ExecutionRuntime:
         """
 
         context, candidates, decision_result, policy_result, entry, grant_input = self._evaluate(
-            context_input, provider_output, snapshot, now=now
+            context_input,
+            provider_output,
+            snapshot,
+            request_content=request_content,
+            now=now,
         )
         selected_dispatcher = dispatcher if dispatcher is not None else self.dispatcher
         dispatch_result: Any = None
@@ -243,12 +250,17 @@ class ExecutionRuntime:
         snapshot: RegistrySnapshot | None = None,
         *,
         dispatcher: Dispatcher | Callable[..., Any] | None = None,
+        request_content: str | None = None,
         now: datetime | None = None,
     ) -> RuntimeResult:
         """Async equivalent that can await an injected dispatcher double."""
 
         context, candidates, decision_result, policy_result, entry, grant_input = self._evaluate(
-            context_input, provider_output, snapshot, now=now
+            context_input,
+            provider_output,
+            snapshot,
+            request_content=request_content,
+            now=now,
         )
         selected_dispatcher = dispatcher if dispatcher is not None else self.dispatcher
         dispatch_result: Any = None

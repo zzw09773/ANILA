@@ -221,7 +221,7 @@ Git CLI 可使用 GitLab 原生 HTTPS/PAT，或
 # 外網機：
 bash infra/deployment/intranet/build-and-export-for-intranet.sh
 # 內網（複製 export 目錄 + repo 進來）：
-docker network create anila-models-net                        # 第一次
+bash <bundle-dir>/ensure-models-network.sh ensure              # 建立/驗證 internal bridge
 docker compose -f infra/models/docker-compose.yml up -d        # 模型 stack（獨立 lifecycle）
 bash infra/deployment/intranet/intranet-deploy.sh              # card bootstrap
 bash infra/deployment/scripts/deploy-prod.sh                   # app stack lifecycle

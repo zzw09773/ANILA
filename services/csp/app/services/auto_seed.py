@@ -16,6 +16,11 @@ from app.models.api_key import ApiKey, ApiKeyModelPermission
 from app.models.model_registry import ModelRegistry
 from app.models.registered_service import RegisteredService
 from app.models.user import User
+from app.services.model_governance_receipts import (
+    admit_registry_provider,
+    resolve_model_governance_runtime,
+)
+from app.services.model_governance_runtime import governance_required_for_settings
 from app.utils.security import hash_password
 from app.utils.slug import unique_slug
 
@@ -63,6 +68,29 @@ def _absolute_seed_url(raw_url: str) -> str:
     return urljoin(f"{site_url.rstrip('/')}/", raw)
 
 logger = logging.getLogger(__name__)
+
+
+def _formal_model_governance_enabled() -> bool:
+    """Return whether startup seeding must enforce signed provider authority."""
+
+    runtime = resolve_model_governance_runtime()
+    return bool(
+        governance_required_for_settings(settings)
+        or getattr(settings, "GATE5_MODEL_GOVERNANCE_ENABLED", False)
+        or (runtime is not None and runtime.enabled)
+    )
+
+
+def _admit_active_seed_row(model: ModelRegistry, endpoint_url: str, *, formal: bool) -> None:
+    """Keep an env seed from mutating a live formal provider behind authority."""
+
+    if not formal or not model.is_active:
+        return
+    if model.endpoint_url != endpoint_url:
+        raise RuntimeError(
+            f"正式治理模式禁止 AUTO_REGISTER_MODELS 直接改寫 active 模型端點: {model.name}"
+        )
+    admit_registry_provider(model)
 
 
 def sync_env_seeded_services(db, links_config: list[dict], *, now=None) -> None:
@@ -212,7 +240,14 @@ def _parse_model_env_vars() -> list[dict]:
 def auto_seed():
     """Run on startup: create admin, auto-register models/agents, seed dev keys."""
     db = SessionLocal()
+    # Readiness/posture resolution is a security prerequisite, not seed work:
+    # it must remain fatal.  Once it succeeds, later seed transaction errors
+    # are rolled back and logged without crash-looping the CSP lifespan.
+    formal_model_governance = True
+    posture_resolved = False
     try:
+        formal_model_governance = _formal_model_governance_enabled()
+        posture_resolved = True
         # 1. Ensure admin user exists.
         #
         # First-time bootstrap: seeded ADMIN_USERNAME is the platform
@@ -273,81 +308,95 @@ def auto_seed():
             ]
 
         if models_config:
-            try:
+            # Pass 1: register non-agent models first.
+            # Do not catch seed failures here: after the governance posture has
+            # resolved, the outer transaction boundary owns one rollback/log/
+            # close sequence for every seed error.
+            for m in models_config:
+                if m.get("model_type") == "agent":
+                    continue
+                existing = db.query(ModelRegistry).filter(
+                    ModelRegistry.name == m["name"]
+                ).first()
+                if not existing:
+                    model = ModelRegistry(
+                        name=m["name"],
+                        display_name=m.get("display_name", m["name"]),
+                        model_type=m.get("model_type", "llm"),
+                        endpoint_url=m["endpoint_url"],
+                        api_version=m.get("api_version", "v1"),
+                        description=m.get("description", ""),
+                        context_window=m.get("context_window"),
+                        # Formal deployments may discover env configuration,
+                        # but it remains a non-routable quarantine row until
+                        # an operator supplies signed provider authority and
+                        # activates it through the normal API boundary.
+                        is_active=not formal_model_governance,
+                    )
+                    db.add(model)
+                    logger.info(f"自動註冊模型: {m['name']} -> {m['endpoint_url']}")
+                else:
+                    _admit_active_seed_row(
+                        existing,
+                        m["endpoint_url"],
+                        formal=formal_model_governance,
+                    )
+                    if existing.endpoint_url != m["endpoint_url"]:
+                        existing.endpoint_url = m["endpoint_url"]
+                        logger.info(f"更新模型端點: {m['name']} -> {m['endpoint_url']}")
 
-                # Pass 1: register non-agent models first
-                for m in models_config:
-                    if m.get("model_type") == "agent":
-                        continue
-                    existing = db.query(ModelRegistry).filter(
-                        ModelRegistry.name == m["name"]
+            db.flush()  # Ensure base models have IDs
+
+            # Pass 2: register agent models (may reference base_model by name)
+            for m in models_config:
+                if m.get("model_type") != "agent":
+                    continue
+                existing = db.query(ModelRegistry).filter(
+                    ModelRegistry.name == m["name"]
+                ).first()
+
+                # Resolve base_model by name
+                base_model_id = None
+                base_model_name = m.get("base_model")
+                if base_model_name:
+                    base = db.query(ModelRegistry).filter(
+                        ModelRegistry.name == base_model_name
                     ).first()
-                    if not existing:
-                        model = ModelRegistry(
-                            name=m["name"],
-                            display_name=m.get("display_name", m["name"]),
-                            model_type=m.get("model_type", "llm"),
-                            endpoint_url=m["endpoint_url"],
-                            api_version=m.get("api_version", "v1"),
-                            description=m.get("description", ""),
-                            context_window=m.get("context_window"),
-                        )
-                        db.add(model)
-                        logger.info(f"自動註冊模型: {m['name']} -> {m['endpoint_url']}")
+                    if base:
+                        base_model_id = base.id
                     else:
-                        if existing.endpoint_url != m["endpoint_url"]:
-                            existing.endpoint_url = m["endpoint_url"]
-                            logger.info(f"更新模型端點: {m['name']} -> {m['endpoint_url']}")
-
-                db.flush()  # Ensure base models have IDs
-
-                # Pass 2: register agent models (may reference base_model by name)
-                for m in models_config:
-                    if m.get("model_type") != "agent":
-                        continue
-                    existing = db.query(ModelRegistry).filter(
-                        ModelRegistry.name == m["name"]
-                    ).first()
-
-                    # Resolve base_model by name
-                    base_model_id = None
-                    base_model_name = m.get("base_model")
-                    if base_model_name:
-                        base = db.query(ModelRegistry).filter(
-                            ModelRegistry.name == base_model_name
-                        ).first()
-                        if base:
-                            base_model_id = base.id
-                        else:
-                            logger.warning(
-                                f"Agent {m['name']} 的底層模型 '{base_model_name}' 未找到"
-                            )
-
-                    if not existing:
-                        model = ModelRegistry(
-                            name=m["name"],
-                            display_name=m.get("display_name", m["name"]),
-                            model_type="agent",
-                            endpoint_url=m["endpoint_url"],
-                            api_version=m.get("api_version", "v1"),
-                            description=m.get("description", ""),
-                            context_window=m.get("context_window"),
-                            base_model_id=base_model_id,
+                        logger.warning(
+                            f"Agent {m['name']} 的底層模型 '{base_model_name}' 未找到"
                         )
-                        db.add(model)
-                        logger.info(
-                            f"自動註冊 Agent: {m['name']} -> {m['endpoint_url']}"
-                            f" (底層: {base_model_name or '無'})"
-                        )
-                    else:
-                        if existing.endpoint_url != m["endpoint_url"]:
-                            existing.endpoint_url = m["endpoint_url"]
-                        if base_model_id and existing.base_model_id != base_model_id:
-                            existing.base_model_id = base_model_id
-                            logger.info(f"更新 Agent 底層模型: {m['name']} -> {base_model_name}")
 
-            except Exception as e:
-                logger.error(f"模型自動註冊失敗: {e}")
+                if not existing:
+                    model = ModelRegistry(
+                        name=m["name"],
+                        display_name=m.get("display_name", m["name"]),
+                        model_type="agent",
+                        endpoint_url=m["endpoint_url"],
+                        api_version=m.get("api_version", "v1"),
+                        description=m.get("description", ""),
+                        context_window=m.get("context_window"),
+                        base_model_id=base_model_id,
+                        is_active=not formal_model_governance,
+                    )
+                    db.add(model)
+                    logger.info(
+                        f"自動註冊 Agent: {m['name']} -> {m['endpoint_url']}"
+                        f" (底層: {base_model_name or '無'})"
+                    )
+                else:
+                    _admit_active_seed_row(
+                        existing,
+                        m["endpoint_url"],
+                        formal=formal_model_governance,
+                    )
+                    if existing.endpoint_url != m["endpoint_url"]:
+                        existing.endpoint_url = m["endpoint_url"]
+                    if base_model_id and existing.base_model_id != base_model_id:
+                        existing.base_model_id = base_model_id
+                        logger.info(f"更新 Agent 底層模型: {m['name']} -> {base_model_name}")
 
         # 3. Auto-register agents from AUTO_REGISTER_AGENTS env
         if settings.AUTO_REGISTER_AGENTS:
@@ -543,7 +592,15 @@ def auto_seed():
 
         db.commit()
     except Exception as e:
+        if not posture_resolved:
+            logger.exception("模型治理 posture/readiness 解析失敗，拒絕繼續啟動")
+            raise
         db.rollback()
-        logger.error(f"自動初始化失敗: {e}")
+        logger.exception(
+            "自動初始化 seed transaction 已回滾；"
+            "CSP 繼續啟動 (formal_model_governance=%s): %s",
+            formal_model_governance,
+            e,
+        )
     finally:
         db.close()

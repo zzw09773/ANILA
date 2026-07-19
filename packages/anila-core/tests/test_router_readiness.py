@@ -42,6 +42,7 @@ def test_production_readiness_fails_when_trace_endpoint_is_missing(monkeypatch):
 
 def test_production_readiness_accepts_configured_trace_endpoint(monkeypatch):
     monkeypatch.setenv("ANILA_ENV", "production")
+    monkeypatch.setenv("ALLOW_LEGACY_AGENT_DISPATCH", "0")
     monkeypatch.setenv("ANILA_TRACE_ENDPOINT", "http://csp:8000")
     _set_named_tokens(monkeypatch)
     client = TestClient(create_router_app())
@@ -52,6 +53,27 @@ def test_production_readiness_accepts_configured_trace_endpoint(monkeypatch):
     assert response.json()["status"] == "ready"
     assert response.json()["trace_endpoint_configured"] is True
     assert response.json()["missing_capabilities"] == []
+
+
+def test_production_readiness_rejects_enabled_legacy_dispatch_posture(
+    monkeypatch, caplog
+):
+    secret = "csk-readiness-secret-must-not-leak"
+    monkeypatch.setenv("ANILA_ENV", "production")
+    monkeypatch.setenv("ALLOW_LEGACY_AGENT_DISPATCH", "1")
+    monkeypatch.setenv("ANILA_TRACE_ENDPOINT", "http://csp:8000")
+    _set_named_tokens(monkeypatch)
+    monkeypatch.setenv("ANILA_CSP_REGISTRY_SERVICE_TOKEN", secret)
+
+    response = TestClient(create_router_app()).get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["status"] == "not_ready"
+    assert response.json()["legacy_dispatch_enabled"] is False
+    assert response.json()["legacy_dispatch_misconfigured"] is True
+    assert "legacy_dispatch_posture" in response.json()["missing_capabilities"]
+    assert secret not in response.text
+    assert secret not in caplog.text
 
 
 def test_production_readiness_fails_when_one_named_token_is_missing(monkeypatch):

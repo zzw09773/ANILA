@@ -10,8 +10,8 @@
 #     $HOME/project/My-OpenAI-Frontend/docker-compose.migration.yml
 #     so the cutover is a stop-and-swap, not a redesign
 #
-# Bootstrap (one-time, on the host):
-#     docker network create --driver bridge --internal anila-models-net
+# Bootstrap (one-time, on the host; no Compose project owns this network):
+#     bash infra/deployment/scripts/ensure-models-network.sh ensure
 #     docker compose restart csp   # CSP joins the net (repo 根,經 root shim)
 #
 # 目錄佈局 (2026-07 §17.1 重組):
@@ -217,8 +217,12 @@ services:
     environment:
       TZ: Asia/Taipei
       TRITON_URL: http://nv-embed-triton:8000
+      # The base model stack is pinned to its local HTTP Triton service. Do not
+      # inherit an operator-shell gRPC target; external mode has its own file.
+      TRITON_GRPC_URL: ""
       MODEL_NAME: nv-embed-v2
       REQUEST_TIMEOUT: "60"
+      READINESS_TIMEOUT: "5"
     expose:
       - "8000"
     depends_on:
@@ -230,9 +234,9 @@ services:
       # embedding-proxy image 沒有 curl — 之前用 curl 導致 exit 127,
       # 「unhealthy 四週」其實是誤報(R2 演練 2026-06-11 查明,服務一直正常)。
       # 照 flux2-dev-agent 的 python urllib 寫法。
-      test: ["CMD-SHELL", "python -c \"import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/v1/models', timeout=5).status == 200 else 1)\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=15).status == 200 else 1)\""]
       interval: 30s
-      timeout: 10s
+      timeout: 20s
       retries: 5
       start_period: 30s
 
@@ -310,6 +314,11 @@ services:
       context: ../../services/flux2-dev-agent
     environment:
       TZ: Asia/Taipei
+      # Keep the model-side consumer's posture explicit.  Development
+      # .env.example sets this to false; formal deployments default true and
+      # therefore fail closed when CSP authority is unavailable or rotated.
+      ANILA_DEPLOYMENT_PROFILE: ${ANILA_DEPLOYMENT_PROFILE:-production}
+      GATE5_MODEL_GOVERNANCE_ENABLED: ${GATE5_MODEL_GOVERNANCE_ENABLED:-true}
       # 2026-07 起 agent 底層打圖走 OpenAI 相容 Images API
       # (POST {base}/v1/images/generations);base 指伺服器根或含 /v1 皆可。
       # 本機 flux2-dev 已同步提供 /v1/images/generations 端點。

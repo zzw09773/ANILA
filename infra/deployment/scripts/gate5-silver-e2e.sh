@@ -8,6 +8,8 @@ IFS=$'\n\t'
 # rows and removes them with its isolated project/volumes.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$ROOT_DIR"
+# shellcheck disable=SC1091
+source "$ROOT_DIR/infra/deployment/scripts/ensure-models-network.sh"
 PROJECT="gate5-silver-e2e"
 COMPOSE_FILE="compose.dev.yaml"
 PROFILE="gate5-silver"
@@ -25,11 +27,9 @@ if ! docker info >/dev/null 2>&1; then
 fi
 
 COMPOSE=(docker compose --project-name "$PROJECT" --file "$COMPOSE_FILE" --profile "$PROFILE")
-# Git Bash/MSYS rewrites container-absolute arguments such as
-# ``/opt/anila/gate5-silver-seed.py`` into a host path before Docker sees
-# them.  Keep path conversion disabled only for the Compose wrapper; the
-# repository-relative Compose file and bind mounts remain resolved by
-# Compose itself.
+# Keep path conversion disabled for the Compose wrapper.  The seed helper is
+# streamed over stdin below so a mode-restricted checkout cannot turn its
+# read-only bind mount into a root-only file inside the csp container.
 compose() { MSYS_NO_PATHCONV=1 "${COMPOSE[@]}" "$@"; }
 
 RUN_ID="gate5-$(date -u +%Y%m%dT%H%M%SZ)-$($PYTHON_BIN -c 'import secrets; print(secrets.token_hex(6))')"
@@ -58,14 +58,10 @@ export ANILA_CSP_INFERENCE_SERVICE_TOKEN="$ROUTER_TOKEN"
 export ANILA_E2E_REQUIRE_TOOL_APPROVAL=1
 export ANILA_E2E_HARNESS=gate5-silver
 
-CREATED_MODELS_NET=0
 cleanup() {
   local rc=$?
   if [[ "${GATE5_E2E_KEEP:-0}" != "1" ]]; then
     compose down --volumes --remove-orphans >/dev/null 2>&1 || true
-    if [[ "$CREATED_MODELS_NET" == "1" ]]; then
-      docker network rm anila-models-net >/dev/null 2>&1 || true
-    fi
     rm -rf "$TMP_DIR"
   else
     echo "GATE5_E2E_KEEP=1: preserved project $PROJECT and $TMP_DIR" >&2
@@ -74,10 +70,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if ! docker network inspect anila-models-net >/dev/null 2>&1; then
-  docker network create --driver bridge --internal anila-models-net >/dev/null
-  CREATED_MODELS_NET=1
-fi
+ensure_models_network
 
 # Fail before creating containers if interpolation, profile isolation or
 # read-only state wiring is invalid.  Do not print the resolved environment.
@@ -99,16 +92,105 @@ wait_ready() {
   return 1
 }
 
+# A container-level /ready only proves that the CSP process can serve HTTP.
+# Agent health is written by CSP's background checker and is intentionally
+# part of the caller-scoped registry snapshot hash.  After a coordinated
+# restart the first probe can therefore publish a fail-closed ``unhealthy``
+# snapshot before the Agent is reachable again.  Poll the CSP-owned registry
+# authority instead of sleeping a guessed number of seconds; resume remains
+# blocked until the exact pre-pause snapshot and ready Agent entry converge.
+wait_registry_converged() {
+  local caller_user_id="$1" expected_agent_id="$2" expected_snapshot_hash="$3"
+  local attempts="${4:-90}" i state
+  for ((i = 1; i <= attempts; i++)); do
+    if state="$(
+      compose exec -T \
+        -e E2E_REGISTRY_SERVICE_TOKEN="$ROUTER_TOKEN" \
+        -e E2E_REGISTRY_CALLER_USER_ID="$caller_user_id" \
+        -e E2E_REGISTRY_AGENT_ID="$expected_agent_id" \
+        -e E2E_REGISTRY_SNAPSHOT_HASH="$expected_snapshot_hash" \
+        csp "$PYTHON_BIN" - <<'PY'
+import json
+import os
+import urllib.error
+import urllib.request
+
+request = urllib.request.Request(
+    "http://127.0.0.1:8000/internal/v1/agents/registry",
+    headers={
+        "X-CSP-Service-Token": os.environ["E2E_REGISTRY_SERVICE_TOKEN"],
+        "X-ANILA-Caller-User-Id": os.environ["E2E_REGISTRY_CALLER_USER_ID"],
+    },
+)
+try:
+    with urllib.request.urlopen(request, timeout=2) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+except (
+    urllib.error.HTTPError,
+    urllib.error.URLError,
+    TimeoutError,
+    TypeError,
+    ValueError,
+    OSError,
+):
+    print("not-ready")
+else:
+    if not isinstance(payload, dict):
+        print("not-ready")
+    else:
+        raw_entries = payload.get("agents")
+        if not isinstance(raw_entries, list):
+            print("not-ready")
+        else:
+            entries = [
+                item
+                for item in raw_entries
+                if isinstance(item, dict)
+                and item.get("agent_id") == os.environ["E2E_REGISTRY_AGENT_ID"]
+            ]
+            converged = (
+                payload.get("snapshot_id") == os.environ["E2E_REGISTRY_SNAPSHOT_HASH"]
+                and payload.get("snapshot_revision")
+                == os.environ["E2E_REGISTRY_SNAPSHOT_HASH"]
+                and payload.get("snapshot_hash")
+                == os.environ["E2E_REGISTRY_SNAPSHOT_HASH"]
+                and payload.get("registry_snapshot_id")
+                == os.environ["E2E_REGISTRY_SNAPSHOT_HASH"]
+                and len(entries) == 1
+                and entries[0].get("health_status") == "healthy"
+                and entries[0].get("health_ready") is True
+                and entries[0].get("ready_for_dispatch") is True
+            )
+            print("ready" if converged else "not-ready")
+PY
+    )"; then
+      :
+    else
+      # A transient exec/container failure is not readiness evidence.  Keep
+      # polling rather than turning an unavailable probe into a resume.
+      state="not-ready"
+    fi
+    if [[ "$state" == "ready" ]]; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "BLOCKED: CSP registry/Agent readiness did not converge to the persisted snapshot" >&2
+  return 1
+}
+
 wait_ready csp http://127.0.0.1:8000/ready 90
 wait_ready router http://127.0.0.1:9000/health 60
 wait_ready gate5-e2e-model http://127.0.0.1:8105/ready 45
+
+SEED_HELPER="$ROOT_DIR/infra/deployment/scripts/gate5-silver-seed.py"
 
 # Model row is seeded first so the Agent manifest can bind to its numeric CSP
 # model id.  The seed helper never creates an ExecutionGrant.
 MODEL_ID="$(compose exec -T \
   -e PYTHONPATH=/app \
   -e E2E_MODEL_TEMP_NAME="$MODEL_TEMP_NAME" \
-  csp "$PYTHON_BIN" /opt/anila/gate5-silver-seed.py model | tail -n 1 | tr -d '\r')"
+  csp "$PYTHON_BIN" - model < "$SEED_HELPER" | tail -n 1 | tr -d '\r')"
 if [[ ! "$MODEL_ID" =~ ^[1-9][0-9]*$ ]]; then
   echo "BLOCKED: CSP model seed did not return a numeric id" >&2
   exit 1
@@ -125,7 +207,7 @@ CONTEXT_JSON="$(compose exec -T \
   -e E2E_ROUTER_TOKEN="$ROUTER_TOKEN" \
   -e E2E_MODEL_ID="$MODEL_ID" \
   -e E2E_INCLUDE_ACCESS_TOKEN=1 \
-  csp "$PYTHON_BIN" /opt/anila/gate5-silver-seed.py authority | tail -n 1 | tr -d '\r')"
+  csp "$PYTHON_BIN" - authority < "$SEED_HELPER" | tail -n 1 | tr -d '\r')"
 export CONTEXT_JSON
 if ! "$PYTHON_BIN" -c 'import json,os; json.loads(os.environ["CONTEXT_JSON"])' >/dev/null; then
   echo "BLOCKED: CSP authority seed did not return context JSON" >&2
@@ -481,6 +563,7 @@ compose up -d --force-recreate --no-deps csp router anila-agent >/dev/null
 wait_ready csp http://127.0.0.1:8000/ready 90
 wait_ready router http://127.0.0.1:9000/health 60
 wait_ready anila-agent http://127.0.0.1:8200/ready 90
+wait_registry_converged "$USER_ID" "$AGENT_ID" "$REGISTRY_HASH" 90
 
 RESUME_PAYLOAD='{"approval_mode":"approve_all"}'
 ROUTER_RESUME_HEADERS="$(

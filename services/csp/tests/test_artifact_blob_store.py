@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
+import stat
 import zipfile
 
 import pytest
@@ -118,3 +120,101 @@ def test_wrong_ooxml_container_and_macro_never_publish(tmp_path):
         with pytest.raises(blob_store.BlobValidationError):
             _store(tmp_path, content)
     assert not list(tmp_path.rglob("*.pptx"))
+
+
+def test_remove_blob_parent_swap_never_unlinks_external_file(tmp_path, monkeypatch):
+    root = tmp_path / "artifact-root"
+    parent = root / "ab"
+    parent.mkdir(parents=True)
+    name = f"{'a' * 64}.pdf"
+    original = parent / name
+    original.write_bytes(b"trusted")
+
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    outside = outside_dir / name
+    outside.write_bytes(b"must survive")
+    try:
+        probe = tmp_path / "symlink-probe"
+        probe.symlink_to(outside_dir, target_is_directory=True)
+        probe.unlink()
+    except OSError:
+        pytest.skip("symlink creation is unavailable on this platform")
+
+    held_parent = root / "ab-held"
+    swapped = False
+    original_unlink = blob_store.os.unlink
+
+    def swap_parent_before_unlink(path, *, dir_fd=None):
+        nonlocal swapped
+        if not swapped and path == name and dir_fd is not None:
+            parent.rename(held_parent)
+            parent.symlink_to(outside_dir, target_is_directory=True)
+            swapped = True
+        return original_unlink(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(blob_store.os, "unlink", swap_parent_before_unlink)
+    with pytest.raises(blob_store.BlobValidationError, match="parent was replaced"):
+        blob_store.remove_blob(root, f"ab/{name}")
+    assert swapped
+    assert outside.read_bytes() == b"must survive"
+
+
+def test_remove_blob_unsupported_fd_capability_fails_closed(tmp_path, monkeypatch):
+    root = tmp_path / "artifact-root"
+    parent = root / "ab"
+    parent.mkdir(parents=True)
+    name = f"{'a' * 64}.pdf"
+    blob = parent / name
+    blob.write_bytes(b"trusted")
+    monkeypatch.setattr(blob_store, "_DIRFD_CLEANUP_SUPPORTED", False)
+
+    with pytest.raises(blob_store.BlobValidationError, match="dirfd"):
+        blob_store.remove_blob(root, f"ab/{name}")
+    assert blob.exists()
+
+
+def test_remove_blob_missing_root_fails_closed(tmp_path):
+    missing_root = tmp_path / "missing-artifact-root"
+    name = f"{'a' * 64}.pdf"
+
+    with pytest.raises(blob_store.BlobValidationError, match="root is unavailable"):
+        blob_store.remove_blob(missing_root, f"ab/{name}")
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "O_PATH") or not hasattr(os, "mkfifo"),
+    reason="O_PATH FIFO probe is unavailable on this platform",
+)
+def test_remove_blob_fifo_swap_before_probe_fails_closed(tmp_path, monkeypatch):
+    root = tmp_path / "artifact-root"
+    parent = root / "ab"
+    parent.mkdir(parents=True)
+    name = f"{'a' * 64}.pdf"
+    blob = parent / name
+    blob.write_bytes(b"trusted")
+    original_open = blob_store.os.open
+    swapped = False
+
+    def swap_target_before_probe(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if (
+            not swapped
+            and path == name
+            and dir_fd is not None
+            and flags & os.O_PATH
+        ):
+            blob.unlink()
+            os.mkfifo(blob)
+            swapped = True
+        if dir_fd is None:
+            return original_open(path, flags, mode)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(blob_store.os, "open", swap_target_before_probe)
+
+    with pytest.raises(blob_store.BlobValidationError, match="regular file"):
+        blob_store.remove_blob(root, f"ab/{name}")
+
+    assert swapped
+    assert stat.S_ISFIFO(blob.stat().st_mode)

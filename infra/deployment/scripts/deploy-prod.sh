@@ -35,6 +35,7 @@
 #   STUDIO_ARTIFACT_SERVICE_TOKEN dedicated named artifact-writer credential
 #   INTERNAL_PLATFORM_API_KEY 內部 system worker API key,ingestion-worker 用
 #   SECRET_KEY                JWT signing key + agent credential AES key
+#   ANILA_EMBEDDING_TOPOLOGY  Gate 5 model artifact: internal 或 external
 #
 # 環境變數(可選,有合理 default):
 #   LOCAL_LLM_MODEL / LOCAL_LLM_BASE_URL
@@ -47,7 +48,7 @@
 #   1. 現在 git branch 是 `prod-intranet-card`
 #   2. Docker daemon running
 #   3. docker compose v2 可用
-#   4. anila-models-net network 已存在(模型 stack 先起來)
+#   4. shared helper 可建立/驗證 anila-models-net (模型 stack 可先起來)
 #   5. 模型服務(gemma4 / nv-embed-proxy)healthy；FLUX 預設停用
 #   6. Gate 5 governance material 是 repo 外的唯讀正式部署輸入
 #   7. 必要 env 已設且非 dev fallback
@@ -57,6 +58,11 @@ umask 077
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$REPO_ROOT"
+
+# The platform Compose file consumes anila-models-net as an external network;
+# its lifecycle is owned by this shared helper, never by a Compose project.
+# shellcheck disable=SC1091
+source "$REPO_ROOT/infra/deployment/scripts/ensure-models-network.sh"
 
 env_file_value() {
   if [[ -f .env ]]; then
@@ -123,6 +129,7 @@ N8N_RUNTIME_IMAGE="${N8N_RUNTIME_IMAGE:-n8nio/n8n:2.29.10}"
 GITLAB_RUNTIME_IMAGE="${GITLAB_RUNTIME_IMAGE:-gitlab/gitlab-ce:19.1.1-ce.0}"
 IMAGE_LOCK_VERIFIER=infra/deployment/scripts/verify-compose-image-lock.py
 GATE5_EGRESS_CHECKER=infra/policy/gate5/check_deployment_egress.py
+EXTERNAL_EMBED_WRAPPER=infra/models/external-embed-serve.sh
 TOOL_VERSION_MARKER=.anila-managed-image
 COMPOSE_PROJECT=anila-platform
 
@@ -258,7 +265,7 @@ check_external_secret_paths() {
 check_env() {
   # 必要 env(沒設就停)。CSP_SECRET_KEY / SECRET_KEY 擇一即可
   # (infra/compose/platform.yml 內 csp service 看的是 CSP_SECRET_KEY)。
-  local required=(CSP_SERVICE_TOKEN STUDIO_ARTIFACT_SERVICE_TOKEN STUDIO_RUNTIME_SERVICE_TOKEN STUDIO_JOB_ENVELOPE_HMAC_KEY INGESTION_QUEUE_HMAC_KEY INTERNAL_PLATFORM_API_KEY SITE_URL GITLAB_SSH_BIND_IP ANILA_ENV ANILA_DEPLOYMENT_PROFILE GATE5_MATERIAL_DIR ANILA_STATE_DIR ANILA_SECRETS_DIR ANILA_TLS_CERTS_DIR)
+  local required=(CSP_SERVICE_TOKEN STUDIO_ARTIFACT_SERVICE_TOKEN STUDIO_RUNTIME_SERVICE_TOKEN STUDIO_JOB_ENVELOPE_HMAC_KEY INGESTION_QUEUE_HMAC_KEY INTERNAL_PLATFORM_API_KEY SITE_URL GITLAB_SSH_BIND_IP ANILA_ENV ANILA_DEPLOYMENT_PROFILE ANILA_EMBEDDING_TOPOLOGY GATE5_MATERIAL_DIR ANILA_STATE_DIR ANILA_SECRETS_DIR ANILA_TLS_CERTS_DIR)
   local branch
   branch="$(git branch --show-current 2>/dev/null || true)"
   if [[ "$branch" == "prod-intranet-card" ]]; then
@@ -343,6 +350,13 @@ check_gate5_egress_policy() {
   [[ -f "$GATE5_EGRESS_CHECKER" ]] \
     || fatal "找不到 Gate 5 deployment egress checker: $GATE5_EGRESS_CHECKER"
 
+  local topology="${ANILA_EMBEDDING_TOPOLOGY:-}"
+  case "$topology" in
+    internal|external) ;;
+    "") fatal "ANILA_EMBEDDING_TOPOLOGY 未設定；formal preflight 必須明確選擇 internal 或 external" ;;
+    *) fatal "ANILA_EMBEDDING_TOPOLOGY 只能是 internal 或 external，目前為 '$topology'" ;;
+  esac
+
   local tmp platform_json models_json profile rc
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/anila-gate5-egress.XXXXXX")" \
     || fatal "無法建立 Gate 5 Compose read-back 暫存目錄"
@@ -353,16 +367,35 @@ check_gate5_egress_policy() {
     rm -rf -- "$tmp"
     fatal "無法解析 formal platform resolved Compose"
   fi
-  local model_compose_args=( -p anila-models -f infra/models/docker-compose.yml )
-  if [[ "${GATE5_FLUX_LEGAL_APPROVED:-false}" == "true" || "${GATE5_FLUX_LEGAL_APPROVED:-0}" == "1" ]]; then
-    # A legal-approved FLUX posture is meaningful only when the resolved model
-    # document was rendered with the named profile.  The egress checker then
-    # performs the full service/label/network/binding checks.
-    model_compose_args+=(--profile flux-approved)
-  fi
-  if ! docker compose "${model_compose_args[@]}" config --format json >"$models_json"; then
-    rm -rf -- "$tmp"
-    fatal "無法解析 formal model-stack resolved Compose"
+  if [[ "$topology" == "internal" ]]; then
+    local model_compose_args=( -p anila-models -f infra/models/docker-compose.yml )
+    if [[ "${GATE5_FLUX_LEGAL_APPROVED:-false}" == "true" || "${GATE5_FLUX_LEGAL_APPROVED:-0}" == "1" ]]; then
+      # A legal-approved FLUX posture is meaningful only when the resolved
+      # internal model document was rendered with the named profile.
+      model_compose_args+=(--profile flux-approved)
+    fi
+    if ! docker compose "${model_compose_args[@]}" config --format json >"$models_json"; then
+      rm -rf -- "$tmp"
+      fatal "無法解析 formal internal model-stack resolved Compose"
+    fi
+  else
+    [[ -n "${TRITON_GRPC_URL:-}" ]] || {
+      rm -rf -- "$tmp"
+      fatal "external embedding topology 必須明確設定 canonical TRITON_GRPC_URL=host:port"
+    }
+    [[ -f "$EXTERNAL_EMBED_WRAPPER" ]] || {
+      rm -rf -- "$tmp"
+      fatal "找不到 external embedding standalone wrapper: $EXTERNAL_EMBED_WRAPPER"
+    }
+    if [[ "${GATE5_FLUX_LEGAL_APPROVED:-false}" == "true" || "${GATE5_FLUX_LEGAL_APPROVED:-0}" == "1" ]]; then
+      rm -rf -- "$tmp"
+      fatal "external embedding topology 只能驗 standalone overlay；不可混入 base/FLUX Compose"
+    fi
+    if ! TRITON_GRPC_URL="$TRITON_GRPC_URL" \
+      bash "$EXTERNAL_EMBED_WRAPPER" render >"$models_json"; then
+      rm -rf -- "$tmp"
+      fatal "無法驗證 formal external embedding standalone resolved Compose"
+    fi
   fi
   set +e
   python3 "$GATE5_EGRESS_CHECKER" \
@@ -377,29 +410,10 @@ check_gate5_egress_policy() {
   ok "Gate 5 formal deployment egress/governance policy 通過"
 }
 
-model_network_recreate_hint() {
-  cat >&2 <<'EOF'
-安全重建指令（僅限先確認 network 沒有任何 attached containers）：
-  docker network inspect anila-models-net --format '{{json .Containers}}'
-  docker network rm anila-models-net
-  docker network create --driver bridge --internal anila-models-net
-EOF
-}
-
 check_models_network_internal() {
-  if ! docker network inspect anila-models-net >/dev/null 2>&1; then
-    fatal "anila-models-net network 不存在；先執行 docker network create --driver bridge --internal anila-models-net，再重跑"
-  fi
-  local internal driver containers
-  internal="$(docker network inspect anila-models-net --format '{{.Internal}}' 2>/dev/null || true)"
-  driver="$(docker network inspect anila-models-net --format '{{.Driver}}' 2>/dev/null || echo unknown)"
-  if [[ "$internal" != "true" || "$driver" != "bridge" ]]; then
-    containers="$(docker network inspect anila-models-net --format '{{json .Containers}}' 2>/dev/null || echo unknown)"
-    err "anila-models-net 必須是 Docker internal bridge (Internal=true, Driver=bridge); actual Internal=${internal:-missing} Driver=$driver Containers=$containers"
-    model_network_recreate_hint
-    fatal "拒絕使用既有錯誤 network；不會自動刪除任何 attached-container network"
-  fi
-  ok "anila-models-net = internal bridge (Internal=true)"
+  ensure_models_network \
+    || fatal "anila-models-net topology 驗證失敗；拒絕使用或修改既有 network"
+  ok "anila-models-net = internal bridge (Internal=true, Driver=bridge)"
 }
 
 check_flux_runtime_profile() {
@@ -424,12 +438,9 @@ check_models_stack() {
   # ── 遠端模型模式 (內網拓撲:模型在 10.53.100.12,平台在 10.53.100.15) ──
   # ANILA_REMOTE_MODELS=1 → 本機沒有 models stack:跳過本機 container
   # health,改 curl .env 給的 *_BASE_URL。compose 仍引用 external network
-  # anila-models-net (缺了 up 會失敗),這裡順手建一個空的。
+  # anila-models-net is external and is created/read back only by the shared
+  # helper, even when models run on another host.
   if [[ "${ANILA_REMOTE_MODELS:-0}" == "1" ]]; then
-    if ! docker network inspect anila-models-net >/dev/null 2>&1; then
-      log "遠端模型模式:建立空的 anila-models-net (compose external 引用需要)"
-      docker network create --driver bridge --internal anila-models-net >/dev/null
-    fi
     check_models_network_internal
     check_flux_runtime_profile
 
@@ -462,13 +473,6 @@ check_models_stack() {
     return
   fi
 
-  if ! docker network inspect anila-models-net >/dev/null 2>&1; then
-    err "anila-models-net network 不存在"
-    fatal "請先起模型 stack:
-       bash infra/deployment/intranet/model-serve.sh up trial
-       (確認 gemma4 / nv-embed-proxy 都 healthy；FLUX 需另有法務核准 profile)
-       模型在別台主機的內網部署 → export ANILA_REMOTE_MODELS=1 重跑"
-  fi
   check_models_network_internal
   check_flux_runtime_profile
 

@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.api.agents import health
 from app.main import app as csp_app
 from app.models.agent import Agent
+from app.models.clearance import ClearanceGrant
 from app.models.task import Task, TaskRun
 from app.models.trace_span import TraceSpan
 from app.schemas.contracts.agents import AgentManifest, RuntimeType
@@ -375,7 +376,22 @@ class TestTraceTest:
         GET endpoint.
         """
 
+        clearance_issuer = make_user(
+            db, username="tt_asgi_clearance_issuer", role="admin"
+        )
         owner = make_user(db, username="tt_asgi_owner", role="developer")
+        now = datetime.now(timezone.utc)
+        db.add(
+            ClearanceGrant(
+                subject_user_id=owner.id,
+                max_classification_level="無機密",
+                valid_from=now - timedelta(minutes=1),
+                expires_at=now + timedelta(hours=1),
+                basis_ticket="trace-test-asgi-fixture",
+                issued_by_user_id=clearance_issuer.id,
+            )
+        )
+        db.commit()
         agent = make_agent(
             db, owner, name="tt-asgi-agent", approval_status="pending_trace_test"
         )

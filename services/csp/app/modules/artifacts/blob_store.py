@@ -9,6 +9,7 @@ an existing destination, so a collision can never overwrite prior bytes.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import re
@@ -25,6 +26,10 @@ _KEY_RE = re.compile(r"^[0-9a-f]{2}/[0-9a-f]{64}\.[a-z0-9]{1,8}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _CHUNK_SIZE = 1024 * 1024
 _MAX_ARTIFACT_BYTES = 100 * 1024 * 1024
+_SUPPORTS_DIR_FD = frozenset(os.supports_dir_fd)
+_DIRFD_CLEANUP_SUPPORTED = all(
+    operation in _SUPPORTS_DIR_FD for operation in (os.open, os.stat, os.unlink)
+)
 
 _PRIMARY_FORMATS: dict[str, tuple[str, str]] = {
     "slides": (
@@ -43,6 +48,138 @@ _PRIMARY_FORMATS: dict[str, tuple[str, str]] = {
 
 class BlobValidationError(ValueError):
     """The supplied bytes do not match the declared artifact contract."""
+
+
+@dataclass
+class _TrustedRoot:
+    fd: int
+    fds: list[int]
+    anchors: list[tuple[int, str, tuple[int, int]]]
+
+    def revalidate(self) -> None:
+        for parent_fd, name, expected in self.anchors:
+            try:
+                current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            except OSError as exc:
+                raise BlobValidationError(
+                    "artifact blob root cannot be revalidated"
+                ) from exc
+            if (current.st_dev, current.st_ino) != expected:
+                raise BlobValidationError("artifact blob root was replaced")
+
+    def close(self) -> None:
+        for fd in reversed(self.fds):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _cleanup_flags() -> int:
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory_flag is None:
+        raise BlobValidationError(
+            "artifact blob cleanup requires O_NOFOLLOW and O_DIRECTORY"
+        )
+    if not _DIRFD_CLEANUP_SUPPORTED:
+        raise BlobValidationError("artifact blob cleanup requires dirfd operations")
+    return os.O_RDONLY | directory_flag | nofollow | getattr(os, "O_CLOEXEC", 0)
+
+
+def _target_probe_flags() -> int:
+    """Return non-blocking flags for validating an object before unlinking it."""
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    path_only = getattr(os, "O_PATH", None)
+    if nofollow is None or path_only is None:
+        raise BlobValidationError(
+            "artifact blob cleanup requires O_PATH and O_NOFOLLOW"
+        )
+    return path_only | nofollow | getattr(os, "O_CLOEXEC", 0)
+
+
+def _open_trusted_root(storage_root: str | Path) -> _TrustedRoot:
+    flags = _cleanup_flags()
+    root_path = Path(storage_root).expanduser().absolute()
+    fds: list[int] = []
+    anchors: list[tuple[int, str, tuple[int, int]]] = []
+    try:
+        current_fd = os.open(os.sep, flags)
+        fds.append(current_fd)
+        for component in root_path.parts[1:]:
+            try:
+                expected = os.stat(
+                    component, dir_fd=current_fd, follow_symlinks=False
+                )
+            except FileNotFoundError as exc:
+                raise BlobValidationError(
+                    "artifact blob root is unavailable"
+                ) from exc
+            except OSError as exc:
+                raise BlobValidationError(
+                    "artifact blob root cannot be inspected"
+                ) from exc
+            if not stat.S_ISDIR(expected.st_mode):
+                raise BlobValidationError("artifact blob root is not a directory")
+            try:
+                child_fd = os.open(component, flags, dir_fd=current_fd)
+            except FileNotFoundError as exc:
+                raise BlobValidationError(
+                    "artifact blob root changed during open"
+                ) from exc
+            except OSError as exc:
+                if exc.errno in {
+                    getattr(errno, "ELOOP", -1),
+                    getattr(errno, "ENOTDIR", -1),
+                }:
+                    raise BlobValidationError("artifact blob root contains a symlink") from exc
+                raise BlobValidationError("artifact blob root cannot be opened") from exc
+            actual = os.fstat(child_fd)
+            if not stat.S_ISDIR(actual.st_mode):
+                os.close(child_fd)
+                raise BlobValidationError("artifact blob root is not a directory")
+            if (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino):
+                os.close(child_fd)
+                raise BlobValidationError("artifact blob root was replaced")
+            anchors.append((current_fd, component, (actual.st_dev, actual.st_ino)))
+            fds.append(child_fd)
+            current_fd = child_fd
+        return _TrustedRoot(current_fd, fds, anchors)
+    except Exception:
+        for fd in reversed(fds):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        raise
+
+
+def _open_blob_parent(root: _TrustedRoot, name: str) -> tuple[int, tuple[int, int]] | None:
+    flags = _cleanup_flags()
+    try:
+        expected = os.stat(name, dir_fd=root.fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise BlobValidationError("artifact blob parent cannot be inspected") from exc
+    if stat.S_ISLNK(expected.st_mode):
+        raise BlobValidationError("artifact blob parent cannot be a symlink")
+    if not stat.S_ISDIR(expected.st_mode):
+        raise BlobValidationError("artifact blob parent must be a directory")
+    try:
+        fd = os.open(name, flags, dir_fd=root.fd)
+    except FileNotFoundError as exc:
+        raise BlobValidationError("artifact blob parent changed during open") from exc
+    except OSError as exc:
+        if exc.errno in {getattr(errno, "ELOOP", -1), getattr(errno, "ENOTDIR", -1)}:
+            raise BlobValidationError("artifact blob parent cannot be a symlink") from exc
+        raise BlobValidationError("artifact blob parent cannot be opened") from exc
+    actual = os.fstat(fd)
+    inode = (actual.st_dev, actual.st_ino)
+    if inode != (expected.st_dev, expected.st_ino):
+        os.close(fd)
+        raise BlobValidationError("artifact blob parent was replaced")
+    return fd, inode
 
 
 @dataclass(frozen=True)
@@ -197,11 +334,68 @@ def resolve_blob_path(storage_root: str | Path, key: str) -> Path:
 
 
 def remove_blob(storage_root: str | Path, key: str) -> None:
-    path = resolve_blob_path(storage_root, key)
+    """Remove one blob without following a swapped root or parent directory."""
+    if not _KEY_RE.fullmatch(key or ""):
+        raise BlobValidationError("非法 artifact blob key")
+    root = _open_trusted_root(storage_root)
+    parent_fd: int | None = None
+    target_fd: int | None = None
+    parent_name = key[:2]
+    name = Path(key).name
     try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
+        root.revalidate()
+        opened_parent = _open_blob_parent(root, parent_name)
+        if opened_parent is None:
+            return
+        parent_fd, parent_inode = opened_parent
+        try:
+            initial = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise BlobValidationError("artifact blob cannot be inspected") from exc
+        if stat.S_ISLNK(initial.st_mode):
+            raise BlobValidationError("artifact blob cannot be a symlink")
+        if not stat.S_ISREG(initial.st_mode):
+            raise BlobValidationError("artifact blob must be a regular file")
+        expected_inode = (initial.st_dev, initial.st_ino)
+        try:
+            target_fd = os.open(
+                name,
+                _target_probe_flags(),
+                dir_fd=parent_fd,
+            )
+        except FileNotFoundError as exc:
+            raise BlobValidationError("artifact blob changed during open") from exc
+        except OSError as exc:
+            if exc.errno in {getattr(errno, "ELOOP", -1), getattr(errno, "ENOTDIR", -1)}:
+                raise BlobValidationError("artifact blob cannot be a symlink") from exc
+            raise BlobValidationError("artifact blob cannot be opened") from exc
+        target_stat = os.fstat(target_fd)
+        if not stat.S_ISREG(target_stat.st_mode):
+            raise BlobValidationError("artifact blob must be a regular file")
+        if (target_stat.st_dev, target_stat.st_ino) != expected_inode:
+            raise BlobValidationError("artifact blob was replaced")
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != expected_inode:
+            raise BlobValidationError("artifact blob was replaced")
+        root.revalidate()
+        try:
+            os.unlink(name, dir_fd=parent_fd)
+        except FileNotFoundError:
+            return
+        root.revalidate()
+        current_parent = os.stat(
+            parent_name, dir_fd=root.fd, follow_symlinks=False
+        )
+        if (current_parent.st_dev, current_parent.st_ino) != parent_inode:
+            raise BlobValidationError("artifact blob parent was replaced")
+    finally:
+        if target_fd is not None:
+            os.close(target_fd)
+        if parent_fd is not None:
+            os.close(parent_fd)
+        root.close()
 
 
 __all__ = [

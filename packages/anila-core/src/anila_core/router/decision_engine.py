@@ -16,38 +16,58 @@ from datetime import datetime
 from typing import Any
 
 from anila_contracts import RouteDecision
-from anila_contracts.routing import RouteConstraints, RouteType
+from anila_contracts.routing import RouteConstraints, RouteFallback, RouteType
+from anila_security.model_governance import classification_rank
 
-from .candidate_filter import CandidateFilterResult, RegistryEntry, RegistrySnapshot
+from .candidate_filter import (
+    CandidateFilterResult,
+    RegistryEntry,
+    RegistrySnapshot,
+    candidate_eligibility_reasons,
+)
+from .injection_detection import MAX_REQUEST_CONTENT_SCAN_CHARS, contains_injection
 from .request_context import RequestContext
 
 
 _LEGACY_DISPATCH_RE = re.compile(r"\bdispatch\s*:", re.IGNORECASE)
 _MARKDOWN_RE = re.compile(r"```|^\s*#{1,6}\s", re.MULTILINE)
-_INJECTION_PATTERNS = (
-    re.compile(
-        r"ignore\s+(?:(?:all|any|the)\s+)?(?:previous|prior|all|any)?\s*"
-        r"(?:instructions?|rules?)",
-        re.I,
-    ),
-    re.compile(r"忽略(?:所有|先前|之前).{0,16}(?:規則|指示)", re.I),
-    re.compile(r"(?:system|developer)\s*(?:message|prompt)\s*[:：]", re.I),
-    re.compile(r"you\s+are\s+now\b", re.I),
-    re.compile(r"<\|(?:system|developer|assistant|im_start|im_end)\|>", re.I),
-    re.compile(r"\b(?:jailbreak|prompt\s+injection|override\s+policy)\b", re.I),
-)
+_PLAIN_TEXT_CAPABILITIES = frozenset({"text"})
+
+
+def available_registry_entries(
+    snapshot: RegistrySnapshot | None,
+    context: RequestContext | None = None,
+    *,
+    include_classification: bool = True,
+    eligible_except_scope: bool = False,
+) -> tuple[RegistryEntry, ...]:
+    """Return the canonical CandidateFilter-eligible registry projection.
+
+    With no request context this is the structural registry projection used by
+    the routing prompt and E3 profile matching.  E2 supplies a context and
+    disables only the classification comparison while it evaluates the
+    ceilings; every other CandidateFilter predicate remains shared and active.
+    E3 may additionally request the context-aware projection with scope
+    checking deferred to its per-profile complete-scope test.
+    """
+
+    if snapshot is None:
+        return ()
+    return tuple(
+        entry
+        for entry in snapshot.entries
+        if not candidate_eligibility_reasons(
+            entry,
+            context,
+            snapshot,
+            include_classification=include_classification,
+            eligible_except_scope=eligible_except_scope,
+        )
+    )
 
 
 def _contains_injection(value: Any) -> bool:
-    if isinstance(value, str):
-        return any(pattern.search(value) for pattern in _INJECTION_PATTERNS)
-    if isinstance(value, Mapping):
-        return any(
-            _contains_injection(key) or _contains_injection(item) for key, item in value.items()
-        )
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return any(_contains_injection(item) for item in value)
-    return False
+    return contains_injection(value)
 
 
 def _contains_legacy_dispatch(value: Any) -> bool:
@@ -61,6 +81,23 @@ def _contains_legacy_dispatch(value: Any) -> bool:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return any(_contains_legacy_dispatch(item) for item in value)
     return False
+
+
+def _request_has_injection(
+    context: RequestContext | None,
+    request_content: str | None,
+) -> bool:
+    """Scan only untrusted request content, never authority or model fields."""
+
+    if isinstance(request_content, str):
+        if len(request_content) > MAX_REQUEST_CONTENT_SCAN_CHARS:
+            return True
+        return _contains_injection(request_content)
+    if context is None:
+        return False
+    if any(item.role == "user" and _contains_injection(item.content) for item in context.history):
+        return True
+    return bool(context.history_summary and _contains_injection(context.history_summary))
 
 
 def _extract_candidates(
@@ -147,6 +184,131 @@ class DecisionEngine:
             return dict(provider_output)
         raise ValueError("INVALID_JSON")
 
+    @staticmethod
+    def _forced_deny(decision: RouteDecision, reason: str) -> DecisionResult:
+        """Return a redacted deny projection for a de-escalated route."""
+
+        denied = decision.model_copy(
+            update={
+                "route_type": RouteType.DENY,
+                "candidate_agent_ids": (),
+                "selected_agent_id": None,
+                "rewritten_query": None,
+                "reason_codes": (reason,),
+                "fallback": RouteFallback.DENY,
+                "execution_plan": None,
+            }
+        )
+        return DecisionResult(
+            decision=denied,
+            route_type=RouteType.DENY,
+            action="deny",
+            dispatch_allowed=False,
+            reason_codes=(reason,),
+            safe_message="目前無法安全決定派工，請補充資訊或稍後再試。",
+        )
+
+    @staticmethod
+    def _classification_exceeds_every_ceiling(
+        context: RequestContext | None,
+        snapshot: RegistrySnapshot | None,
+    ) -> bool:
+        if context is None or snapshot is None:
+            return False
+        ceilings = tuple(
+            entry.classification_ceiling
+            for entry in available_registry_entries(
+                snapshot,
+                context,
+                include_classification=False,
+            )
+            if entry.classification_ceiling is not None
+        )
+        if not ceilings:
+            return False
+        request_rank = classification_rank(context.classification)
+        return all(request_rank > classification_rank(ceiling) for ceiling in ceilings)
+
+    @staticmethod
+    def _missing_specialized_scopes(
+        context: RequestContext | None,
+        snapshot: RegistrySnapshot | None,
+        *,
+        selected_agent_id: str | None = None,
+    ) -> tuple[str, ...]:
+        """Return missing scopes for the selected or a viable profile.
+
+        An unknown capability is specialized by default.  When it has no
+        advertised matching profile, the absence of an authoritative scope
+        contract is itself a denial; it cannot pass merely because the
+        baseline ``agent:invoke`` scope is present.  A selected route checks
+        only that selected profile.  A non-selected route passes when at least
+        one matching profile's complete CSP-owned ``required_scopes`` set is
+        satisfied; unrelated profiles never contribute a false-denying scope.
+        """
+
+        if context is None or snapshot is None:
+            return ()
+        required = set(context.required_capabilities)
+        if not required.difference(_PLAIN_TEXT_CAPABILITIES):
+            return ()
+
+        eligible = available_registry_entries(
+            snapshot,
+            context,
+            include_classification=True,
+            eligible_except_scope=True,
+        )
+        eligible_ids = {entry.agent_id for entry in eligible}
+        if selected_agent_id is not None and selected_agent_id not in eligible_ids:
+            return ("INELIGIBLE_SELECTED_AGENT",)
+
+        matching = tuple(entry for entry in eligible if required.issubset(set(entry.capabilities)))
+        if not matching:
+            return ("UNADVERTISED_CAPABILITY",)
+        if selected_agent_id is not None:
+            selected = next(
+                (entry for entry in matching if entry.agent_id == selected_agent_id),
+                None,
+            )
+            if selected is not None:
+                return tuple(sorted(set(selected.required_scopes).difference(context.scopes)))
+        if any(set(entry.required_scopes).issubset(set(context.scopes)) for entry in matching):
+            return ()
+        return ("MISSING_REQUIRED_SCOPES",)
+
+    def _enforce_fail_closed(
+        self,
+        decision: RouteDecision,
+        context: RequestContext | None,
+        snapshot: RegistrySnapshot | None,
+        request_content: str | None,
+    ) -> DecisionResult | None:
+        """Apply ordered de-escalation rules after model parsing only."""
+
+        # A deny is already the lowest-authority outcome.  Enforcement may
+        # never turn it into another route or replace its provider reason.
+        if decision.route_type is RouteType.DENY:
+            return DecisionResult(
+                decision=decision,
+                route_type=RouteType.DENY,
+                action="deny",
+                dispatch_allowed=False,
+                reason_codes=tuple(decision.reason_codes),
+                safe_message="目前無法安全決定派工，請補充資訊或稍後再試。",
+            )
+        if _request_has_injection(context, request_content):
+            return self._forced_deny(decision, "INJECTION_INPUT_DENIED")
+        if self._classification_exceeds_every_ceiling(context, snapshot):
+            return self._forced_deny(decision, "CLASSIFICATION_CEILING_DENIED")
+        if self._missing_specialized_scopes(
+            context,
+            snapshot,
+            selected_agent_id=decision.selected_agent_id,
+        ):
+            return self._forced_deny(decision, "SCOPE_CAPABILITY_DENIED")
+        return None
+
     def decide(
         self,
         provider_output: object,
@@ -154,6 +316,7 @@ class DecisionEngine:
         snapshot: RegistrySnapshot | None = None,
         *,
         context: RequestContext | None = None,
+        request_content: str | None = None,
         now: datetime | None = None,
     ) -> DecisionResult:
         """Return a typed result without calling any model or Agent.
@@ -175,6 +338,15 @@ class DecisionEngine:
             decision = RouteDecision.model_validate(decoded)
         except Exception:
             return self._invalid("INVALID_ROUTE_DECISION")
+
+        enforced = self._enforce_fail_closed(
+            decision,
+            context,
+            snapshot,
+            request_content,
+        )
+        if enforced is not None:
+            return enforced
 
         if decision.route_type is RouteType.SINGLE_AGENT and snapshot is None:
             return self._invalid("SNAPSHOT_MISSING")
@@ -261,4 +433,4 @@ class DecisionEngine:
     evaluate = decide
 
 
-__all__ = ["DecisionEngine", "DecisionResult"]
+__all__ = ["DecisionEngine", "DecisionResult", "available_registry_entries"]

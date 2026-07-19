@@ -13,6 +13,9 @@
 # 環境變數:
 #   WITH_MODELS=1   把 model image 一起打包進 04-models.tar.gz。
 #                    預設 OFF — image 數十 GB,確定內網要本機跑模型才開。
+#   MODEL_PROFILES  WITH_MODELS=1 時額外啟用的 model Compose profile，預設不啟用；
+#                    可用空白或逗號分隔（例如 intranet,flux-approved），重複／空值／
+#                    非英數底線連字號名稱會 fail-closed。archive 與 model lock 共用此閉集合。
 #   WITH_WEIGHTS=1  把 HF 權重打包成 05-weights-<name>.tar (無壓縮 —
 #                    safetensors 壓不動,gzip 數百 GB 純耗時)。
 #                    內網無下載通道,權重只能從這裡帶。
@@ -33,6 +36,8 @@
 #     ├── PLATFORM-IMAGE-LOCK.tsv      (每個 platform tag 的輸出 image ID)
 #     ├── MODEL-IMAGE-INVENTORY.tsv   (optional model compose service/image 清單)
 #     ├── MODEL-IMAGE-STATUS.tsv      (optional model bundle 實際收錄狀態)
+#     ├── MODEL-IMAGE-LOCK.tsv        (WITH_MODELS=1 時的 model content-ID lock)
+#     ├── ensure-models-network.sh    (shared external network lifecycle helper)
 #     ├── INTRANET-LOAD.sh           (內網端用的 import 腳本)
 #     └── MANIFEST.txt               (image 清單 + 大小,給 IT 對 checksum)
 #
@@ -45,9 +50,13 @@ OUTPUT_DIR="${1:-/tmp/anila-images-export}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 INVENTORY_FILE="$REPO_ROOT/infra/deployment/intranet/platform-image-inventory.tsv"
 MODEL_INVENTORY_FILE="$REPO_ROOT/infra/deployment/intranet/model-image-inventory.tsv"
+MODEL_COMPOSE_FILE="$REPO_ROOT/infra/models/docker-compose.yml"
 INVENTORY_CHECKER="$REPO_ROOT/infra/deployment/intranet/check_airgap_inventory.py"
 IMAGE_LOCK_VERIFIER="$REPO_ROOT/infra/deployment/scripts/verify-compose-image-lock.py"
+MODEL_IMAGE_LOCK_VERIFIER="$REPO_ROOT/infra/deployment/scripts/verify-model-image-lock.py"
+MODEL_NETWORK_HELPER="$REPO_ROOT/infra/deployment/scripts/ensure-models-network.sh"
 PLATFORM_LOCK_FILE="$OUTPUT_DIR/PLATFORM-IMAGE-LOCK.tsv"
+MODEL_LOCK_FILE="$OUTPUT_DIR/MODEL-IMAGE-LOCK.tsv"
 
 cd "$REPO_ROOT"
 mkdir -p "$OUTPUT_DIR"
@@ -76,6 +85,8 @@ OUTPUT_CANDIDATES=(
     "$OUTPUT_DIR"/PLATFORM-IMAGE-LOCK.tsv
     "$OUTPUT_DIR"/MODEL-IMAGE-INVENTORY.tsv
     "$OUTPUT_DIR"/MODEL-IMAGE-STATUS.tsv
+    "$OUTPUT_DIR"/MODEL-IMAGE-LOCK.tsv
+    "$OUTPUT_DIR"/ensure-models-network.sh
 )
 EXISTING_OUTPUT=()
 for artifact in "${OUTPUT_CANDIDATES[@]}"; do
@@ -172,9 +183,66 @@ docker save "${BUNDLE_IMAGES[@]}" | gzip > "$OUTPUT_DIR/03-cold.tar.gz"
 # 別的管道 (USB / 內部資料閘道) 進內網。預設不打包,需要時:
 #   WITH_MODELS=1 bash infra/deployment/intranet/build-and-export-for-intranet.sh
 MODEL_STATUS_FILE="$OUTPUT_DIR/MODEL-IMAGE-STATUS.tsv"
-mapfile -t MODEL_IMAGES < <(awk -F '\t' '
-    $0 !~ /^#/ && NF == 3 && !seen[$2]++ { print $2 }
-' "$MODEL_INVENTORY_FILE")
+MODEL_PROFILE_ARGS=()
+if [ -n "${MODEL_PROFILES:-}" ]; then
+    # MODEL_PROFILES is deliberately separate from ambient COMPOSE_PROFILES;
+    # comma and whitespace separators are accepted for operator convenience.
+    if [[ "$MODEL_PROFILES" =~ ^[[:space:]]*, ]] \
+       || [[ "$MODEL_PROFILES" =~ ,[[:space:]]*$ ]] \
+       || [[ "$MODEL_PROFILES" =~ ,[[:space:]]*, ]]; then
+        echo "✗ MODEL_PROFILES contains an empty profile token" >&2
+        exit 1
+    fi
+    read -r -a REQUESTED_MODEL_PROFILES <<< "${MODEL_PROFILES//,/ }"
+    [ ${#REQUESTED_MODEL_PROFILES[@]} -gt 0 ] || {
+        echo "✗ MODEL_PROFILES contains no profile name" >&2
+        exit 1
+    }
+    declare -A SEEN_MODEL_PROFILES=()
+    for model_profile in "${REQUESTED_MODEL_PROFILES[@]}"; do
+        [[ "$model_profile" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || {
+            echo "✗ MODEL_PROFILES contains an unsafe profile name: $model_profile" >&2
+            exit 1
+        }
+        [[ -z "${SEEN_MODEL_PROFILES[$model_profile]+x}" ]] || {
+            echo "✗ MODEL_PROFILES contains duplicate profile: $model_profile" >&2
+            exit 1
+        }
+        SEEN_MODEL_PROFILES["$model_profile"]=1
+        MODEL_PROFILE_ARGS+=(--profile "$model_profile")
+    done
+fi
+if [ "${WITH_MODELS:-0}" = "1" ]; then
+    # Generate the lock before archiving.  This both resolves the exact active
+    # closure (default + MODEL_PROFILES) and fails closed if any enabled image
+    # is missing; the archive is then derived from the same lock rows.
+    MODEL_LOCK_COMMAND=(
+        python3 "$MODEL_IMAGE_LOCK_VERIFIER"
+        --compose "$MODEL_COMPOSE_FILE"
+        --inventory "$MODEL_INVENTORY_FILE"
+        emit-lock
+        --output "$MODEL_LOCK_FILE"
+    )
+    MODEL_LOCK_COMMAND+=("${MODEL_PROFILE_ARGS[@]}")
+    "${MODEL_LOCK_COMMAND[@]}"
+    MODEL_VERIFY_COMMAND=(
+        python3 "$MODEL_IMAGE_LOCK_VERIFIER"
+        --compose "$MODEL_COMPOSE_FILE"
+        --inventory "$MODEL_INVENTORY_FILE"
+        verify-lock
+        --lock "$MODEL_LOCK_FILE"
+        --inspect-docker
+    )
+    MODEL_VERIFY_COMMAND+=("${MODEL_PROFILE_ARGS[@]}")
+    "${MODEL_VERIFY_COMMAND[@]}"
+    mapfile -t MODEL_IMAGES < <(awk -F '\t' '
+        $0 !~ /^#/ && NF == 4 && !seen[$2]++ { print $2 }
+    ' "$MODEL_LOCK_FILE")
+else
+    mapfile -t MODEL_IMAGES < <(awk -F '\t' '
+        $0 !~ /^#/ && NF == 3 && !seen[$2]++ { print $2 }
+    ' "$MODEL_INVENTORY_FILE")
+fi
 model_activation_for_image() {
     awk -F '\t' -v image="$1" '
         $0 !~ /^#/ && NF == 3 && $2 == image {
@@ -202,6 +270,10 @@ if [ "${WITH_MODELS:-0}" = "1" ]; then
         fi
     done
 
+    if [ "${WITH_MODELS:-0}" = "1" ] && [ ${#EXISTING_MODELS[@]} -ne ${#MODEL_IMAGES[@]} ]; then
+        echo "✗ enabled model image disappeared after content-ID lock generation" >&2
+        exit 1
+    fi
     if [ ${#EXISTING_MODELS[@]} -gt 0 ]; then
         docker save "${EXISTING_MODELS[@]}" | gzip > "$OUTPUT_DIR/04-models.tar.gz"
         echo "    ✓ Saved ${#EXISTING_MODELS[@]} model image(s)"
@@ -214,6 +286,10 @@ else
         activation="$(model_activation_for_image "$img")"
         printf '%s\t%s\tskipped\tWITH_MODELS=0\n' "$img" "$activation" >> "$MODEL_STATUS_FILE"
     done
+fi
+
+if [ "${WITH_MODELS:-0}" = "1" ]; then
+    echo "    ✓ Wrote model content-ID lock: $MODEL_LOCK_FILE"
 fi
 echo
 
@@ -237,15 +313,33 @@ else
 fi
 echo
 
-# ── Phase 5: 寫 manifest + intranet import script ────────────────────────
+# ── Phase 5: 寫 manifest + network helper + intranet import script ────────
 echo "▶ [4/5] Writing MANIFEST.txt + INTRANET-LOAD.sh..."
+
+[ -f "$MODEL_NETWORK_HELPER" ] && [ ! -L "$MODEL_NETWORK_HELPER" ] \
+    || { echo "✗ shared model network helper missing: $MODEL_NETWORK_HELPER" >&2; exit 1; }
+cp "$MODEL_NETWORK_HELPER" "$OUTPUT_DIR/ensure-models-network.sh"
+chmod 755 "$OUTPUT_DIR/ensure-models-network.sh"
 
 # CHECKSUMS.sha256:純機器可讀格式 (相對路徑),供 INTRANET-LOAD.sh 內網端
 # `sha256sum -c` 自動驗檔用。MANIFEST.txt 內也保留一份人類可讀版,給 IT 對檔。
-( cd "$OUTPUT_DIR" && shopt -s nullglob && \
-  sha256sum *.tar.gz *.tar PLATFORM-IMAGE-INVENTORY.tsv MODEL-IMAGE-INVENTORY.tsv \
-    PLATFORM-IMAGE-LOCK.tsv MODEL-IMAGE-STATUS.tsv \
-    > CHECKSUMS.sha256 )
+(
+    cd "$OUTPUT_DIR" || exit 1
+    shopt -s nullglob
+    CHECKSUM_FILES=(
+        *.tar.gz
+        *.tar
+        PLATFORM-IMAGE-INVENTORY.tsv
+        MODEL-IMAGE-INVENTORY.tsv
+        PLATFORM-IMAGE-LOCK.tsv
+        MODEL-IMAGE-STATUS.tsv
+        ensure-models-network.sh
+    )
+    if [ -f MODEL-IMAGE-LOCK.tsv ]; then
+        CHECKSUM_FILES+=(MODEL-IMAGE-LOCK.tsv)
+    fi
+    sha256sum "${CHECKSUM_FILES[@]}" > CHECKSUMS.sha256
+)
 
 {
     echo "ANILA Platform — Intranet Image Bundle"
@@ -269,6 +363,14 @@ echo "▶ [4/5] Writing MANIFEST.txt + INTRANET-LOAD.sh..."
     echo
     cat "$MODEL_STATUS_FILE"
     echo
+    echo "── Optional model image content-ID lock ───────────────"
+    if [ -f "$MODEL_LOCK_FILE" ]; then
+        cat "$MODEL_LOCK_FILE"
+    else
+        echo "(not emitted; WITH_MODELS=0)"
+    fi
+    echo "NOTE: MODEL-IMAGE-LOCK is content-ID evidence only; it is not a signed release envelope, SBOM, CA bundle hash, clean-host deployment, or Gate 6/P4 acceptance."
+    echo
     echo "── SHA256 checksum (IT 對檔用,機器驗檔請用 CHECKSUMS.sha256) ──"
     cat "$OUTPUT_DIR/CHECKSUMS.sha256"
 } > "$OUTPUT_DIR/MANIFEST.txt"
@@ -278,10 +380,70 @@ cat > "$OUTPUT_DIR/INTRANET-LOAD.sh" <<'EOF'
 # INTRANET-LOAD.sh — 內網端 docker load 用。執行前確認:
 #   1. docker 已裝且能跑 (docker info 不報錯)
 #   2. 同目錄有 01~03 tar.gz、IMAGE-INVENTORY、IMAGE-LOCK、STATUS、CHECKSUMS；
-#      04-models / 05-weights 則依 bundle 選項存在
+#      ensure-models-network.sh；04-models / 05-weights 則依 bundle 選項存在
 #   3. $HOME/ANILA repo 已 clone 到內網機器 (帶 .env 進去)
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
+
+# A checksum manifest is not a closed-set declaration by itself: sha256sum -c
+# deliberately ignores files which are not listed and accepts duplicate rows.
+# Optional artifacts are security-sensitive inputs, so every exact relative
+# filename must occur once (with one canonical 64-hex digest) before it is
+# loaded or extracted.  In particular, reject ./foo and path-prefixed aliases
+# rather than treating them as the same bundle member.
+require_exact_checksum_entry() {
+    local artifact="$1"
+    local count
+    count="$(awk -v wanted="$artifact" '
+        $0 !~ /^[[:space:]]*#/ && NF == 2 {
+            normalized = $2
+            sub(/^\*/, "", normalized)
+            sub(/^.*\//, "", normalized)
+            if ($2 != wanted && normalized == wanted) {
+                noncanonical++
+            }
+            if ($2 == wanted && length($1) == 64 \
+                && $1 ~ /^[0-9A-Fa-f]+$/) {
+                canonical++
+            }
+        }
+        END {
+            if (noncanonical > 0) print -1
+            else print canonical + 0
+        }
+    ' CHECKSUMS.sha256)"
+    if [ "$count" -ne 1 ]; then
+        echo "✗ CHECKSUMS.sha256 must contain exactly one canonical entry for: $artifact" >&2
+        exit 1
+    fi
+}
+
+require_regular_bundle_file() {
+    local artifact="$1"
+    local kind="${2:-Optional}"
+    if [ -L "$artifact" ] || [ ! -f "$artifact" ]; then
+        echo "✗ $kind bundle artifact must be a regular non-symlink file: $artifact" >&2
+        exit 1
+    fi
+}
+
+# 04-models.tar.gz and MODEL-IMAGE-LOCK.tsv are one closed optional set.  A
+# leftover lock from a prior export must not be silently accepted when the
+# archive is absent, and an archive without its lock has no content-ID proof.
+model_bundle_present=0
+model_lock_present=0
+if [ -L 04-models.tar.gz ] || [ -e 04-models.tar.gz ]; then
+    require_regular_bundle_file 04-models.tar.gz
+    model_bundle_present=1
+fi
+if [ -L MODEL-IMAGE-LOCK.tsv ] || [ -e MODEL-IMAGE-LOCK.tsv ]; then
+    require_regular_bundle_file MODEL-IMAGE-LOCK.tsv
+    model_lock_present=1
+fi
+if [ "$model_bundle_present" -ne "$model_lock_present" ]; then
+    echo "✗ 04-models.tar.gz and MODEL-IMAGE-LOCK.tsv must either both exist or both be absent" >&2
+    exit 1
+fi
 
 # ── SHA256 完整性檢查 (fail-closed transport integrity) ─────────────────
 # tar.gz 從外網機器經 USB / 內部閘道送進內網,任何中途竄改都可能塞後門進
@@ -295,12 +457,35 @@ REQUIRED_BUNDLE_FILES=(
     01-anila-built.tar.gz
     02-base.tar.gz
     03-cold.tar.gz
+    ensure-models-network.sh
 )
+if [ "$model_bundle_present" -eq 1 ]; then
+    REQUIRED_BUNDLE_FILES+=(MODEL-IMAGE-LOCK.tsv)
+fi
 for required_file in "${REQUIRED_BUNDLE_FILES[@]}"; do
+    require_regular_bundle_file "$required_file" Required
     [ -s "$required_file" ] || {
         echo "✗ Required bundle file missing/empty: $required_file" >&2
         exit 1
     }
+    if [ "$required_file" != CHECKSUMS.sha256 ]; then
+        require_exact_checksum_entry "$required_file"
+    fi
+done
+
+# Prove the exact optional files are represented in the manifest before any
+# optional load/extraction.  This closes the stale-file/additional-file gap in
+# `sha256sum -c`, which only verifies rows it was given.
+if [ "$model_bundle_present" -eq 1 ]; then
+    require_exact_checksum_entry 04-models.tar.gz
+    require_exact_checksum_entry MODEL-IMAGE-LOCK.tsv
+fi
+
+shopt -s nullglob
+WEIGHT_TARS=(05-weights-*.tar)
+for tar in "${WEIGHT_TARS[@]}"; do
+    require_regular_bundle_file "$tar"
+    require_exact_checksum_entry "$tar"
 done
 
 echo "── Verifying SHA256 checksums ──"
@@ -313,12 +498,17 @@ fi
 echo "✓ All checksums verified."
 echo
 
+echo "── Ensuring shared anila-models-net topology ──"
+bash ./ensure-models-network.sh ensure
+echo "✓ anila-models-net is ready (Internal=true, Driver=bridge)."
+echo
+
 echo "── Loading ANILA images into local docker ──"
 for tar in 01-anila-built.tar.gz 02-base.tar.gz 03-cold.tar.gz; do
     echo "▶ $tar"
     gunzip -c "$tar" | docker load
 done
-if [ -f 04-models.tar.gz ]; then
+if [ "$model_bundle_present" -eq 1 ]; then
     echo "▶ 04-models.tar.gz (optional model bundle)"
     gunzip -c 04-models.tar.gz | docker load
 fi
@@ -379,12 +569,90 @@ if [ -f MODEL-IMAGE-STATUS.tsv ]; then
     echo
 fi
 
+if [ -f 04-models.tar.gz ]; then
+    # Re-read the self-contained model inventory + lock after docker load.
+    # Profile provenance is reconstructed from lock activation rows, then the
+    # closed set is checked before any model service is started.
+    echo "── Verifying model image content-ID lock ──"
+    model_lock_failures=0
+    model_profiles_file="$(mktemp)"
+    trap 'rm -f "$model_profiles_file"' EXIT
+    while IFS=$'\t' read -r lock_service lock_image lock_id lock_activation extra; do
+        [ -n "${lock_service:-}" ] || continue
+        [[ "$lock_service" == \#* ]] && continue
+        [ -z "${extra:-}" ] || {
+            echo "  ✗ MODEL-IMAGE-LOCK malformed row: $lock_service" >&2
+            model_lock_failures=$((model_lock_failures + 1))
+            continue
+        }
+        [[ "$lock_id" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "  ✗ MODEL-IMAGE-LOCK invalid digest: $lock_service" >&2
+            model_lock_failures=$((model_lock_failures + 1))
+            continue
+        }
+        inventory_row="$(awk -F '\t' -v wanted="$lock_service" '
+            $0 !~ /^#/ && $1 == wanted { print; count++ }
+            END { if (count != 1) exit 2 }
+        ' MODEL-IMAGE-INVENTORY.tsv 2>/dev/null || true)"
+        if [ -z "$inventory_row" ]; then
+            echo "  ✗ MODEL-IMAGE-LOCK extra/unknown service: $lock_service" >&2
+            model_lock_failures=$((model_lock_failures + 1))
+            continue
+        fi
+        IFS=$'\t' read -r inventory_service inventory_image inventory_activation <<< "$inventory_row"
+        if [ "$lock_image" != "$inventory_image" ] || [ "$lock_activation" != "$inventory_activation" ]; then
+            echo "  ✗ MODEL-IMAGE-LOCK inventory metadata mismatch: $lock_service" >&2
+            model_lock_failures=$((model_lock_failures + 1))
+            continue
+        fi
+        if [[ "$lock_activation" == profile:* ]]; then
+            printf '%s\n' "${lock_activation#profile:}" >> "$model_profiles_file"
+        fi
+        actual_id="$(docker image inspect --format '{{.Id}}' "$lock_image" 2>/dev/null || true)"
+        if [ "$actual_id" = "$lock_id" ]; then
+            echo "  ✓ $lock_service -> $lock_image @ $lock_id ($lock_activation)"
+        else
+            echo "  ✗ MODEL-IMAGE-LOCK stale/missing: $lock_service expected $lock_id actual ${actual_id:-missing}" >&2
+            model_lock_failures=$((model_lock_failures + 1))
+        fi
+    done < MODEL-IMAGE-LOCK.tsv
+
+    # Every default service and every service in a profile named by the lock
+    # must occur exactly once; unselected profiles must not appear.
+    while IFS=$'\t' read -r inventory_service inventory_image inventory_activation; do
+        [ -n "${inventory_service:-}" ] || continue
+        [[ "$inventory_service" == \#* ]] && continue
+        required=0
+        if [ "$inventory_activation" = default ]; then
+            required=1
+        elif grep -Fxq "${inventory_activation#profile:}" "$model_profiles_file"; then
+            required=1
+        fi
+        lock_count="$(awk -F '\t' -v wanted="$inventory_service" '$0 !~ /^#/ && $1 == wanted { count++ } END { print count + 0 }' MODEL-IMAGE-LOCK.tsv)"
+        if [ "$required" -eq 1 ] && [ "$lock_count" -ne 1 ]; then
+            echo "  ✗ MODEL-IMAGE-LOCK missing/duplicate enabled service: $inventory_service" >&2
+            model_lock_failures=$((model_lock_failures + 1))
+        elif [ "$required" -eq 0 ] && [ "$lock_count" -ne 0 ]; then
+            echo "  ✗ MODEL-IMAGE-LOCK contains unselected profile service: $inventory_service" >&2
+            model_lock_failures=$((model_lock_failures + 1))
+        fi
+    done < MODEL-IMAGE-INVENTORY.tsv
+    rm -f "$model_profiles_file"
+    trap - EXIT
+    [ "$model_lock_failures" -eq 0 ] || {
+        echo "✗ model image content-ID closure failed;拒絕宣告 model load 完成" >&2
+        exit 1
+    }
+    echo "✓ Model image content-ID closure verified."
+    echo "  (content-ID evidence only; not signed release envelope/SBOM/CA hash/clean-host/P4 acceptance)"
+    echo
+fi
+
 # ── HF 權重 (05-weights-*.tar,WITH_WEIGHTS=1 打包時才有) ────────────────
 # 解到 ANILA_HF_DIR — 慣例是 <repo>/models/model (infra/models/
 # docker-compose.yml 的權重掛載預設)。先 export ANILA_HF_DIR=<repo>/models/model
 # 再跑本腳本;放別處就之後在 .env 設同一個值。
 HF_DIR="${ANILA_HF_DIR:-$HOME/project/Huggingface}"
-shopt -s nullglob
 WEIGHT_TARS=(05-weights-*.tar)
 if [ ${#WEIGHT_TARS[@]} -gt 0 ]; then
     echo "── Extracting model weights → $HF_DIR ──"
@@ -400,7 +668,7 @@ docker images | grep -E "anila-platform|pgvector|redis|nginx|code-server|n8n|git
 echo
 echo "✓ Load complete. 後續步驟:"
 echo "   cd <repo-root>"
-echo "   docker network create anila-models-net  # 若還沒建"
+echo "   bash <bundle-dir>/ensure-models-network.sh ensure  # 建立/驗證 internal bridge"
 echo "   bash infra/deployment/intranet/intranet-deploy.sh"
 echo "   # 正式入口會把 bundle 的 PLATFORM-IMAGE-LOCK.tsv 寫成 ANILA_IMAGE_* content-ID lock。"
 echo "   # 不要在 lock 寫入前直接 docker compose up；compose 會 fail-closed。"

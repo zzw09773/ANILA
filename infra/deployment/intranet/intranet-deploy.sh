@@ -7,7 +7,7 @@
 #   [2] 模型 gateway 出向 CA (share/pki/model-ca.pem)
 #   [3] 產 / 更新 .env (自動生 secret + 互動填 gateway key / owner 員工編號)
 #   [4] load image (呼叫 image 包的 INTRANET-LOAD.sh,含 SHA256 驗檔 + re-tag)
-#   [5] 建 docker network
+#   [5] 透過 shared helper 建立/驗證 docker network
 #   [6] docker compose up -d --no-build --pull never
 #   [7] 等 healthy + 驗證
 #
@@ -34,6 +34,9 @@ asksecret() { local p="$1" a; read -rsp "$(c '1;35' '?') ${p}: " a; echo >&2; pr
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$REPO_ROOT"
+
+# shellcheck disable=SC1091
+source "$REPO_ROOT/infra/deployment/scripts/ensure-models-network.sh"
 
 # Must match infra/docker/csp.Dockerfile.  A fixed numeric identity makes bind
 # mount ownership deterministic even though the image is deployed offline.
@@ -643,9 +646,9 @@ docker run --rm --pull never --user 0:0 --network none --read-only \
 
 # ── 5. network ───────────────────────────────────────────────────────────
 info "[5/7] docker network anila-models-net"
-docker network inspect anila-models-net >/dev/null 2>&1 \
-  && ok "已存在" \
-  || { docker network create anila-models-net >/dev/null && ok "已建立"; }
+ensure_models_network \
+  && ok "已建立/驗證 internal bridge" \
+  || die "anila-models-net topology 驗證失敗；拒絕使用或修改既有 network"
 
 # ── 6. up ────────────────────────────────────────────────────────────────
 info "[6/7] docker compose up -d --no-build --pull never"
@@ -657,6 +660,7 @@ info "[6/7] docker compose up -d --no-build --pull never"
 for _deploy_key in \
   CSP_SERVICE_TOKEN STUDIO_ARTIFACT_SERVICE_TOKEN STUDIO_RUNTIME_SERVICE_TOKEN STUDIO_JOB_ENVELOPE_HMAC_KEY INGESTION_QUEUE_HMAC_KEY INTERNAL_PLATFORM_API_KEY CSP_SECRET_KEY SECRET_KEY \
   SITE_URL GITLAB_SSH_BIND_IP ANILA_ENV ANILA_DEPLOYMENT_PROFILE \
+  ANILA_EMBEDDING_TOPOLOGY TRITON_GRPC_URL GATE5_MATERIAL_DIR \
   N8N_HOST N8N_EDITOR_BASE_URL N8N_WEBHOOK_URL N8N_TLS_REJECT_UNAUTHORIZED \
   N8N_OWNER_EMAIL N8N_OWNER_PASSWORD_HASH N8N_ENCRYPTION_KEY \
   GITLAB_HOST GITLAB_ROOT_PASSWORD CODESERVER_HOST CODESERVER_PASSWORD; do

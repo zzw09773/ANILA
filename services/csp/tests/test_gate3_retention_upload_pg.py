@@ -99,12 +99,8 @@ def test_document_erasure_scopes_force_rls_rows_and_unlinks_bytes(tmp_path: Path
     now = datetime.now(timezone.utc)
     db = factory()
     document_path = tmp_path / "documents" / f"{suffix}.pdf"
-    image_relative = f"images/{suffix}.png"
-    image_path = tmp_path / image_relative
     document_path.parent.mkdir(parents=True, exist_ok=True)
-    image_path.parent.mkdir(parents=True, exist_ok=True)
     document_path.write_bytes(b"classified document")
-    image_path.write_bytes(b"classified image")
 
     try:
         owner = _user(suffix, "retention-rls")
@@ -144,6 +140,10 @@ def test_document_erasure_scopes_force_rls_rows_and_unlinks_bytes(tmp_path: Path
         )
         db.add(document)
         db.flush()
+        image_relative = f"anila-images/{document.id}/{suffix}.png"
+        image_path = tmp_path / image_relative
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        image_path.write_bytes(b"classified image")
         generation = IngestionDocumentGeneration(
             document_id=document.id,
             collection_id=collection.id,
@@ -204,6 +204,7 @@ def test_document_erasure_scopes_force_rls_rows_and_unlinks_bytes(tmp_path: Path
         db.commit()
         document_id = int(document.id)
         collection_id = int(collection.id)
+        image_dir = tmp_path / "anila-images" / str(document_id)
 
         assert retention_reaper._erase_document(
             db,
@@ -213,6 +214,7 @@ def test_document_erasure_scopes_force_rls_rows_and_unlinks_bytes(tmp_path: Path
         )
         assert not document_path.exists()
         assert not image_path.exists()
+        assert not image_dir.exists()
 
         db.execute(
             text("SELECT set_config('anila.collection_id', :cid, true)"),

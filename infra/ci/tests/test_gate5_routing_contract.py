@@ -65,6 +65,29 @@ class Gate5RoutingContractTests(unittest.TestCase):
         with self.assertRaisesRegex(runner.RoutingContractError, "missing field"):
             runner.run_contract(DATASET_PATH, adapter=adapter)
 
+    def test_deny_observation_requires_null_selection_and_false_policy(self) -> None:
+        for selected_agent_id, policy_allowed in (
+            ("unexpected-agent", False),
+            (None, True),
+        ):
+            with self.subTest(
+                selected_agent_id=selected_agent_id, policy_allowed=policy_allowed
+            ):
+                with self.assertRaisesRegex(
+                    runner.RoutingContractError,
+                    "deny observation requires",
+                ):
+                    runner.RoutingObservation.from_value(
+                        {
+                            "route_type": "deny",
+                            "selected_agent_id": selected_agent_id,
+                            "policy_allowed": policy_allowed,
+                            "policy_reason_codes": ["contract_test"],
+                            "fallback": "deny",
+                        },
+                        path="observation",
+                    )
+
     def test_async_adapter_is_not_silently_accepted(self) -> None:
         async def adapter(_: runner.RoutingRequest) -> dict[str, object]:
             return {

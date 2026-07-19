@@ -516,6 +516,25 @@ class DeploymentContainmentTests(unittest.TestCase):
         self.assertIn("set_env_single_quoted()", ops)
         self.assertIn('set_env_single_quoted MODEL_GATEWAY_API_KEY "$key"', ops)
 
+    def test_intranet_exports_all_deploy_preflight_inputs_from_dotenv(self) -> None:
+        intranet = read("infra/deployment/intranet/intranet-deploy.sh")
+        deploy = read("infra/deployment/scripts/deploy-prod.sh")
+        export_block = intranet[intranet.index("for _deploy_key in") : intranet.index(
+            "bash infra/deployment/scripts/deploy-prod.sh up", intranet.index("for _deploy_key in")
+        )]
+        required_match = re.search(r"local required=\(([^\n]+)\)", deploy)
+        self.assertIsNotNone(required_match)
+        required = set(required_match.group(1).split())
+        reviewed_exports = set(re.findall(r"\b[A-Z][A-Z0-9_]+\b", export_block))
+        reviewed_exports.update(
+            {"ANILA_STATE_DIR", "ANILA_SECRETS_DIR", "ANILA_TLS_CERTS_DIR"}
+        )
+        self.assertTrue(required <= reviewed_exports)
+        for key in ("ANILA_EMBEDDING_TOPOLOGY", "GATE5_MATERIAL_DIR", "TRITON_GRPC_URL"):
+            self.assertIn(key, export_block)
+        self.assertIn('get_env_unquoted "$_deploy_key"', export_block)
+        self.assertIsNone(re.search(r"^\s*(?:source|\.)\s+\.env(?:\s|$)", intranet, re.MULTILINE))
+
     def test_intranet_card_profile_requires_offline_crl_evidence(self) -> None:
         script = read("infra/deployment/intranet/intranet-deploy.sh")
         self.assertIn("share/pki/card-crl-bundle.pem", script)

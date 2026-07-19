@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -31,9 +32,11 @@ from app.models.registered_service import RegisteredService
 from app.models.service_client import ServiceClient
 from app.models.source_snapshot import SourceSnapshot
 from app.models.task import Task, TaskRun
+from app.models.user import UserModelPermission
+from app.api import proxy as proxy_api
 from app.services import agent_credential_service
 from app.services.proxy.task_link import attach_running_task_run
-from tests.conftest import make_user
+from tests.conftest import make_model, make_user
 
 
 _TOKEN = "csk-test-studio-runtime"
@@ -473,6 +476,146 @@ async def test_chat_delegation_attaches_existing_run_without_terminalizing(
     assert run.classification_level == runtime_scope.task.classification_level
     assert task_ctx.owns_lifecycle is False
     assert db.query(TaskRun).count() == 1
+
+
+def _runtime_headers(scope) -> dict[str, str]:
+    return {
+        "X-CSP-Service-Token": _TOKEN,
+        "X-ANILA-Task-Id": str(scope.task.id),
+        "X-ANILA-Trace-Id": scope.task.trace_id,
+        "X-Studio-Job-Id": scope.job.job_id,
+        "X-Studio-Artifact-Type": scope.job.artifact_type,
+        "X-Studio-Requester-User-Id": str(scope.user.id),
+        "X-Studio-Collection-Id": str(scope.collection.id),
+        "X-Studio-Task-Id": str(scope.task.id),
+        "X-Studio-Snapshot-Id": str(scope.snapshot.id),
+        "X-Studio-Attempt": "1",
+        "X-Studio-Lease-Token": "lease-token-123456789",
+    }
+
+
+def _runtime_image_request(scope, payload: dict[str, object]) -> Request:
+    headers = [
+        (key.lower().encode(), value.encode())
+        for key, value in _runtime_headers(scope).items()
+    ]
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/studio-runtime/images/generations",
+            "headers": headers,
+        }
+    )
+    request._body = json.dumps(payload).encode()
+    return request
+
+
+def _runtime_image_model(scope, db):
+    model = make_model(db, name="studio-runtime-image")
+    model.model_type = "image"
+    model.is_image_primary = True
+    db.add(UserModelPermission(user_id=scope.user.id, model_id=model.id))
+    db.commit()
+    return model
+
+
+@pytest.mark.asyncio
+async def test_image_delegation_uses_generic_governed_proxy_and_preserves_openai_shape(
+    runtime_scope, db, monkeypatch
+):
+    """A Studio service client has no Agent identity and never owns the run."""
+
+    model = _runtime_image_model(runtime_scope, db)
+    seen: dict[str, object] = {}
+
+    async def fake_proxy_request(**kwargs):
+        seen.update(kwargs)
+        return {
+            "created": 1_720_000_000,
+            "data": [{"b64_json": "c3ludGhldGlj"}],
+        }
+
+    monkeypatch.setattr(proxy_api, "proxy_request", fake_proxy_request)
+    response = await studio_runtime.runtime_image_generations(
+        _runtime_image_request(
+            runtime_scope,
+            {
+                "model": model.name,
+                "prompt": "synthetic image",
+                "n": 1,
+                "size": "1024x1024",
+                "response_format": "b64_json",
+            },
+        ),
+        _bind(runtime_scope),
+        db,
+    )
+
+    assert response == {
+        "created": 1_720_000_000,
+        "data": [{"b64_json": "c3ludGhldGlj"}],
+    }
+    assert seen["endpoint_path"] == "/v1/images/generations"
+    assert seen["task_run_id"] == runtime_scope.run.id
+    assert seen["finalize_task_run_on_completion"] is False
+    assert seen["governance_callsite_id"] == "r7.csp.proxy"
+    assert seen["caller_agent_id"] is None
+    db.expire_all()
+    run = db.get(TaskRun, runtime_scope.run.id)
+    assert run is not None and run.status == "running"
+
+
+@pytest.mark.asyncio
+async def test_image_delegation_rejects_unpermitted_model_before_proxy(
+    runtime_scope, db, monkeypatch
+):
+    model = make_model(db, name="studio-runtime-unpermitted-image")
+    model.model_type = "image"
+    db.commit()
+
+    async def must_not_proxy(**_kwargs):
+        raise AssertionError("unpermitted Studio image inference reached proxy")
+
+    monkeypatch.setattr(proxy_api, "proxy_request", must_not_proxy)
+    with pytest.raises(HTTPException) as exc:
+        await studio_runtime.runtime_image_generations(
+            _runtime_image_request(
+                runtime_scope,
+                {"model": model.name, "prompt": "must be rejected"},
+            ),
+            _bind(runtime_scope),
+            db,
+        )
+
+    assert exc.value.status_code == 403
+    assert "無權使用此圖像模型" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_image_delegation_upstream_failure_does_not_close_outer_run(
+    runtime_scope, db, monkeypatch
+):
+    model = _runtime_image_model(runtime_scope, db)
+
+    async def failed_proxy(**_kwargs):
+        raise HTTPException(status_code=502, detail="synthetic image upstream failure")
+
+    monkeypatch.setattr(proxy_api, "proxy_request", failed_proxy)
+    with pytest.raises(HTTPException) as exc:
+        await studio_runtime.runtime_image_generations(
+            _runtime_image_request(
+                runtime_scope,
+                {"model": model.name, "prompt": "synthetic failure"},
+            ),
+            _bind(runtime_scope),
+            db,
+        )
+
+    assert exc.value.status_code == 502
+    db.expire_all()
+    run = db.get(TaskRun, runtime_scope.run.id)
+    assert run is not None and run.status == "running"
 
 
 def test_nested_studio_inference_rejects_non_studio_running_task_run(

@@ -15,6 +15,7 @@ os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 import pytest
 from anila_security import PilotTarget, VerifiedPilotAdmission
 from anila_contracts import Classification
+from anila_core.memory import EMBED_DIM, EMBED_NATIVE_DIM
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
@@ -423,11 +424,14 @@ async def test_nested_proxy_success_keeps_outer_run_running_and_ends_transaction
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("response_dim", [EMBED_DIM, EMBED_NATIVE_DIM])
 async def test_retrieval_embedding_carries_context_without_finalizing_outer_run(
-    db: Session, db_engine, monkeypatch,
+    db: Session, db_engine, monkeypatch, response_dim: int,
 ) -> None:
-    user = make_user(db, username="retrieval-context-owner", role="admin")
-    model = make_model(db, name="retrieval-context-embedding")
+    user = make_user(
+        db, username=f"retrieval-context-owner-{response_dim}", role="admin"
+    )
+    model = make_model(db, name=f"retrieval-context-embedding-{response_dim}")
     model.model_type = "embedding"
     model.classification_ceiling = Classification.TOP_SECRET.to_storage()
     task, run, task_ctx = _running_context(db, user)
@@ -438,25 +442,57 @@ async def test_retrieval_embedding_carries_context_without_finalizing_outer_run(
     async def nested_proxy(**kwargs):
         observed.update(kwargs)
         _assert_running(kwargs["governance_db"], task_ctx)
-        return {"data": [{"embedding": [0.1, 0.2, 0.3, 0.4]}]}
+        return {"data": [{"embedding": [0.1] * response_dim}]}
 
     monkeypatch.setattr(retrieval_service, "proxy_request", nested_proxy)
     vector = await retrieval_service.embed_query(
         db,
         user,
         model.name,
-        4,
+        EMBED_DIM,
         "retrieval query",
         task_ctx=task_ctx,
         trusted_classification_level=Classification.UNCLASSIFIED,
     )
 
-    assert vector == [0.1, 0.2, 0.3, 0.4]
+    assert vector == [0.1] * EMBED_DIM
     assert observed["task_id"] == task.id
     assert observed["task_run_id"] == run.id
     assert observed["finalize_task_run_on_completion"] is False
     db.expire_all()
     assert db.get(TaskRun, run.id).status == "running"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response_dim", [EMBED_DIM - 1, EMBED_NATIVE_DIM + 512])
+async def test_retrieval_embedding_rejects_unexpected_dimension_before_use(
+    db: Session, db_engine, monkeypatch, response_dim: int,
+) -> None:
+    user = make_user(
+        db, username=f"retrieval-invalid-dim-owner-{response_dim}", role="admin"
+    )
+    model = make_model(db, name=f"retrieval-invalid-dim-model-{response_dim}")
+    model.model_type = "embedding"
+    model.classification_ceiling = Classification.TOP_SECRET.to_storage()
+    db.commit()
+    factory = sessionmaker(bind=db_engine, expire_on_commit=False)
+    monkeypatch.setattr(retrieval_service, "SessionLocal", factory)
+
+    async def wrong_dimension_proxy(**kwargs):
+        return {"data": [{"embedding": [0.2] * response_dim}]}
+
+    monkeypatch.setattr(retrieval_service, "proxy_request", wrong_dimension_proxy)
+    with pytest.raises(retrieval_service.RetrievalFailure) as excinfo:
+        await retrieval_service.embed_query(
+            db,
+            user,
+            model.name,
+            EMBED_DIM,
+            "retrieval query",
+            trusted_classification_level=Classification.UNCLASSIFIED,
+        )
+    assert excinfo.value.code == "embedding_dimension_mismatch"
+    assert str(response_dim) in str(excinfo.value)
 
 
 @pytest.mark.asyncio

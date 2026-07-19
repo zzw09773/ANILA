@@ -27,9 +27,20 @@ from __future__ import annotations
 from typing import Optional
 
 try:
-    from pydantic_settings import BaseSettings  # type: ignore[import]
     from pydantic import Field
-    from pydantic_settings import SettingsConfigDict  # type: ignore[import]
+    from pydantic_settings import (  # type: ignore[import]
+        BaseSettings,
+        DotEnvSettingsSource,
+        EnvSettingsSource,
+        PydanticBaseSettingsSource,
+        SettingsConfigDict,
+    )
+
+    class _KnownFieldsDotEnvSettingsSource(DotEnvSettingsSource):
+        """Load recognized dotenv fields without forwarding unrelated keys."""
+
+        def __call__(self) -> dict[str, object]:
+            return EnvSettingsSource.__call__(self)
 
     class Settings(BaseSettings):
         """Application-wide configuration loaded from environment variables."""
@@ -132,7 +143,34 @@ try:
             env_file=".env",
             env_file_encoding="utf-8",
             case_sensitive=False,
+            extra="forbid",
         )
+
+        @classmethod
+        def settings_customise_sources(
+            cls,
+            settings_cls: type[BaseSettings],
+            init_settings: PydanticBaseSettingsSource,
+            env_settings: PydanticBaseSettingsSource,
+            dotenv_settings: PydanticBaseSettingsSource,
+            file_secret_settings: PydanticBaseSettingsSource,
+        ) -> tuple[PydanticBaseSettingsSource, ...]:
+            if not isinstance(dotenv_settings, DotEnvSettingsSource):
+                raise TypeError("dotenv settings source must be DotEnvSettingsSource")
+            known_dotenv_settings = _KnownFieldsDotEnvSettingsSource(
+                settings_cls,
+                env_file=dotenv_settings.env_file,
+                env_file_encoding=dotenv_settings.env_file_encoding,
+                case_sensitive=dotenv_settings.case_sensitive,
+                env_prefix=dotenv_settings.env_prefix,
+                env_nested_delimiter=dotenv_settings.env_nested_delimiter,
+            )
+            return (
+                init_settings,
+                env_settings,
+                known_dotenv_settings,
+                file_secret_settings,
+            )
 
 except ImportError:
     # Fallback when pydantic-settings is not installed

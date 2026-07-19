@@ -20,6 +20,7 @@ import os
 os.environ.setdefault("ANILA_ALLOW_DEV_SECRET", "1")
 
 import pytest
+from fastapi import HTTPException
 
 from app.models.model_registry import ModelRegistry
 from tests.conftest import login, make_user
@@ -198,3 +199,23 @@ class TestGetImagePrimary:
         }
         for forbidden in ("key", "api_key", "api_key_secret_ref", "has_api_key"):
             assert forbidden not in body
+
+    def test_active_primary_revalidates_provider_authority(
+        self, client, db, service_token_header, monkeypatch
+    ):
+        """A revoked/rotated provider must not be served from the selector row."""
+        model = make_image_model(db)
+        headers = admin_headers(client, db)
+        client.post(f"/api/models/{model.id}/set-image-primary", headers=headers)
+
+        from app.api import models as models_api
+
+        def deny(_model):
+            raise HTTPException(status_code=503, detail="provider authority revoked")
+
+        monkeypatch.setattr(models_api, "_require_provider_authority", deny)
+
+        resp = client.get("/api/models/image-primary", headers=service_token_header)
+
+        assert resp.status_code == 503
+        assert "provider authority" in resp.json()["detail"]
