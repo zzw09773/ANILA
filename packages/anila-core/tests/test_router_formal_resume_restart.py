@@ -200,6 +200,103 @@ def test_legacy_dispatch_flag_alone_does_not_downgrade_formal_chat(
     assert "formal path" in response.text
 
 
+def test_production_rejects_legacy_chat_before_outbound_or_session_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret = "csk-chat-secret-must-not-leak"
+    session_calls: list[str] = []
+    monkeypatch.setenv("ANILA_ENV", "production")
+    monkeypatch.setenv("ALLOW_LEGACY_AGENT_DISPATCH", "1")
+    monkeypatch.setattr(settings, "csp_service_token", secret)
+
+    response = TestClient(
+        create_router_app(session_factory=lambda sid: session_calls.append(sid)),
+        raise_server_exceptions=False,
+    ).post(
+        "/v1/chat/completions",
+        headers={
+            "Authorization": "Bearer public-caller-token",
+            LEGACY_DISPATCH_OPT_IN_HEADER: "1",
+        },
+        json={"messages": [{"role": "user", "content": "hello"}]},
+    )
+
+    assert response.status_code == 403
+    assert "production" in response.text
+    assert session_calls == []
+    assert secret not in response.text
+    assert secret not in caplog.text
+
+
+def test_production_rejects_legacy_resume_without_state_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret = "csk-resume-secret-must-not-leak"
+    session_calls: list[str] = []
+    resume_spy = _ResumeSpy()
+    monkeypatch.setenv("ANILA_ENV", "formal")
+    monkeypatch.setenv("ALLOW_LEGACY_AGENT_DISPATCH", "true")
+    monkeypatch.setattr(settings, "csp_service_token", secret)
+
+    response = TestClient(
+        create_router_app(
+            agent_client=resume_spy,
+            session_factory=lambda sid: session_calls.append(sid),
+        )
+    ).post(
+        "/v1/sessions/legacy-production/answer",
+        headers={
+            "Authorization": "Bearer public-caller-token",
+            LEGACY_RESUME_OPT_IN_HEADER: "1",
+        },
+        json={"interrupt_id": "i-1", "answer": "yes"},
+    )
+
+    assert response.status_code == 403
+    assert "production" in response.text
+    assert session_calls == []
+    assert resume_spy.calls == []
+    assert secret not in response.text
+    assert secret not in caplog.text
+
+
+@pytest.mark.parametrize("environment", [None, "development"])
+def test_non_production_legacy_dispatch_opt_in_enters_compatibility_seam(
+    monkeypatch: pytest.MonkeyPatch,
+    environment: str | None,
+) -> None:
+    class LegacySeamEntered(Exception):
+        pass
+
+    session_calls: list[str] = []
+    if environment is None:
+        monkeypatch.delenv("ANILA_ENV", raising=False)
+    else:
+        monkeypatch.setenv("ANILA_ENV", environment)
+    monkeypatch.setenv("ALLOW_LEGACY_AGENT_DISPATCH", "1")
+
+    def enter_legacy_seam(session_id: str) -> None:
+        session_calls.append(session_id)
+        raise LegacySeamEntered
+
+    with pytest.raises(LegacySeamEntered):
+        TestClient(create_router_app(session_factory=enter_legacy_seam)).post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer public-caller-token",
+                LEGACY_DISPATCH_OPT_IN_HEADER: "1",
+            },
+            json={
+                "messages": [{"role": "user", "content": "hello"}],
+                "session_id": "legacy-dev-seam",
+            },
+        )
+
+    assert session_calls == ["legacy-dev-seam"]
+
+
 def test_legacy_dispatch_opt_in_rejects_formal_authority_headers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

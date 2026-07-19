@@ -13,6 +13,7 @@ import pytest
 from anila_contracts import AgentManifest, RouteDecision
 from anila_contracts.classification import ClassificationLevel
 from anila_contracts.contexts import AuthAssurance
+from anila_contracts.routing import RouteType
 from anila_core.router import (
     CapabilityFilter,
     DecisionEngine,
@@ -220,7 +221,7 @@ def _context_values(**overrides: Any) -> dict[str, Any]:
             json.dumps(
                 _route(selected_agent_id="unknown-agent", candidate_agent_ids=["unknown-agent"])
             ),
-            "UNKNOWN_AGENT",
+            "SCOPE_CAPABILITY_DENIED",
         ),
         (json.dumps(_route(registry_snapshot_id="other-snapshot")), "SNAPSHOT_MISMATCH"),
         (
@@ -240,6 +241,9 @@ def test_invalid_routing_output_never_dispatches(provider_output: object, reason
     assert calls == []
     assert result.dispatcher_called is False
     assert reason in result.reason_codes
+    if reason == "SCOPE_CAPABILITY_DENIED":
+        assert result.decision_result.route_type is RouteType.DENY
+        assert result.decision_result.dispatch_allowed is False
 
 
 def test_valid_single_agent_is_clamped_and_binds_policy_and_grant_input() -> None:

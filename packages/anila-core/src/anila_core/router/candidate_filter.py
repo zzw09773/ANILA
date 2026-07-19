@@ -277,6 +277,101 @@ class RegistrySnapshot:
         return self.snapshot_id
 
 
+def candidate_eligibility_reasons(
+    entry: RegistryEntry,
+    context: RequestContext | None,
+    snapshot: RegistrySnapshot,
+    *,
+    include_classification: bool = True,
+    eligible_except_scope: bool = False,
+) -> tuple[str, ...]:
+    """Return the canonical CandidateFilter rejection reasons for one entry.
+
+    ``include_classification=False`` is used only while E2 is determining the
+    ceiling set: every other CandidateFilter predicate remains active, and the
+    classification comparison is then performed by E2 itself.  Keeping this
+    predicate here prevents the decision engine from inventing a weaker
+    readiness projection.
+
+    ``eligible_except_scope=True`` is the narrow E3 projection: every
+    context-aware eligibility predicate remains active, but E3 evaluates each
+    matching profile's complete ``required_scopes`` set itself.
+    """
+
+    reasons: list[str] = []
+    if entry.snapshot_id != snapshot.snapshot_id:
+        reasons.append("ENTRY_SNAPSHOT_MISMATCH")
+        return tuple(reasons)
+    if entry.manifest is None:
+        reasons.append("MANIFEST_MISSING")
+        return tuple(reasons)
+    if not entry.manifest_valid:
+        reasons.append("MANIFEST_INVALID")
+        return tuple(reasons)
+    if entry.manifest_revision is None or not entry.manifest_revision.strip():
+        reasons.append("MANIFEST_REVISION_MISSING")
+        return tuple(reasons)
+    if not entry.ready_for_dispatch:
+        if not entry.approved:
+            reasons.append("AGENT_NOT_APPROVED")
+        if not entry.health_ready:
+            reasons.append("AGENT_UNHEALTHY")
+        if not entry.trace_test_passed:
+            reasons.append("TRACE_TEST_NOT_READY")
+        reasons.append("AGENT_NOT_READY")
+        return tuple(reasons)
+    if not entry.approved or not entry.health_ready or not entry.trace_test_passed:
+        reasons.append("AGENT_NOT_READY")
+        return tuple(reasons)
+    if not entry.has_csp_model_binding:
+        reasons.append("MODEL_BINDING_MISSING")
+        return tuple(reasons)
+    if entry.classification_ceiling is None:
+        reasons.append("CLASSIFICATION_CEILING_MISSING")
+        return tuple(reasons)
+
+    if context is not None:
+        if context.task_type not in set(entry.effective_task_types):
+            reasons.append("TASK_TYPE_UNSUPPORTED")
+            return tuple(reasons)
+        if not set(context.required_capabilities).issubset(set(entry.capabilities)):
+            reasons.append("CAPABILITY_MISMATCH")
+            return tuple(reasons)
+        if not eligible_except_scope and not set(entry.required_scopes).issubset(
+            set(context.scopes)
+        ):
+            reasons.append("INSUFFICIENT_SCOPE")
+            return tuple(reasons)
+        if (
+            include_classification
+            and context.classification > entry.effective_classification_ceiling
+        ):
+            reasons.append("CLASSIFICATION_EXCEEDS_CEILING")
+            return tuple(reasons)
+    if not entry.endpoint_via_csp:
+        reasons.append("UNTRUSTED_ENDPOINT")
+    return tuple(reasons)
+
+
+def is_candidate_eligible(
+    entry: RegistryEntry,
+    context: RequestContext | None,
+    snapshot: RegistrySnapshot,
+    *,
+    include_classification: bool = True,
+    eligible_except_scope: bool = False,
+) -> bool:
+    """Return whether an entry passes the shared CandidateFilter predicate."""
+
+    return not candidate_eligibility_reasons(
+        entry,
+        context,
+        snapshot,
+        include_classification=include_classification,
+        eligible_except_scope=eligible_except_scope,
+    )
+
+
 @dataclass(frozen=True)
 class CandidateFilterResult:
     """Deterministic candidate set and safe audit reason codes."""
@@ -320,55 +415,11 @@ class CapabilityFilter:
 
         accepted: list[RegistryEntry] = []
         reasons: list[str] = []
-        required_caps = set(context.required_capabilities)
-        user_scopes = set(context.scopes)
 
         for entry in snapshot.entries:
-            if entry.snapshot_id != snapshot.snapshot_id:
-                reasons.append("ENTRY_SNAPSHOT_MISMATCH")
-                continue
-            if entry.manifest is None:
-                reasons.append("MANIFEST_MISSING")
-                continue
-            if not entry.manifest_valid:
-                reasons.append("MANIFEST_INVALID")
-                continue
-            if entry.manifest_revision is None or not entry.manifest_revision.strip():
-                reasons.append("MANIFEST_REVISION_MISSING")
-                continue
-            if not entry.ready_for_dispatch:
-                if not entry.approved:
-                    reasons.append("AGENT_NOT_APPROVED")
-                if not entry.health_ready:
-                    reasons.append("AGENT_UNHEALTHY")
-                if not entry.trace_test_passed:
-                    reasons.append("TRACE_TEST_NOT_READY")
-                reasons.append("AGENT_NOT_READY")
-                continue
-            if not entry.approved or not entry.health_ready or not entry.trace_test_passed:
-                reasons.append("AGENT_NOT_READY")
-                continue
-            if not entry.has_csp_model_binding:
-                reasons.append("MODEL_BINDING_MISSING")
-                continue
-            if entry.classification_ceiling is None:
-                reasons.append("CLASSIFICATION_CEILING_MISSING")
-                continue
-            task_types = set(entry.effective_task_types)
-            if context.task_type not in task_types:
-                reasons.append("TASK_TYPE_UNSUPPORTED")
-                continue
-            if not required_caps.issubset(set(entry.capabilities)):
-                reasons.append("CAPABILITY_MISMATCH")
-                continue
-            if not set(entry.required_scopes).issubset(user_scopes):
-                reasons.append("INSUFFICIENT_SCOPE")
-                continue
-            if context.classification > entry.effective_classification_ceiling:
-                reasons.append("CLASSIFICATION_EXCEEDS_CEILING")
-                continue
-            if not entry.endpoint_via_csp:
-                reasons.append("UNTRUSTED_ENDPOINT")
+            entry_reasons = candidate_eligibility_reasons(entry, context, snapshot)
+            if entry_reasons:
+                reasons.extend(entry_reasons)
                 continue
             accepted.append(entry)
 
@@ -395,6 +446,8 @@ __all__ = [
     "AgentRegistrySnapshot",
     "CapabilityFilter",
     "CandidateFilterResult",
+    "candidate_eligibility_reasons",
+    "is_candidate_eligible",
     "RegistryEntry",
     "RegistrySnapshot",
     "RouterRegistryEntry",
