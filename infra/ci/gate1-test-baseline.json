@@ -277,6 +277,13 @@
       "evidence": "41 focused JWT assurance and durable JTI/SID revocation tests passed locally without invoking unrelated artifact or FLUX integration suites"
     },
     {
+      "id": "studio-full-durability",
+      "required": true,
+      "status": "passing",
+      "command": "cd services/anila-studio && ANILA_STUDIO_REDIS_TEST_URL=<isolated-redis-7> ANILA_STUDIO_REDIS_DOCKER_CONTAINER=<disposable-container> python -m pytest tests -q",
+      "evidence": "595 tests passed locally with 0 skips against disposable Redis 7 using appendonly=yes and appendfsync=everysec, including four real-Redis durability cases and the five-pipeline AOF restart proof"
+    },
+    {
       "id": "flux-agent-focused",
       "required": true,
       "status": "passing",
@@ -585,11 +592,38 @@
     {
       "path": "services/csp/tests/test_retention_lifecycle.py",
       "kind": "pytest.skip",
-      "count": 1,
+      "count": 4,
       "required_execution": true,
       "ci_job": "backend-csp",
       "ci_command_fragment": "python -m pytest -q",
       "reason": "Only Windows without symlink privilege skips; the required Ubuntu CSP job executes the case."
+    },
+    {
+      "path": "services/csp/tests/test_retention_lifecycle.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "backend-csp",
+      "ci_command_fragment": "python -m pytest -q",
+      "reason": "The O_PATH/FIFO probe is available on the required Ubuntu CSP job; other platforms register the guard explicitly."
+    },
+    {
+      "path": "services/csp/tests/test_artifact_blob_store.py",
+      "kind": "pytest.skip",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "backend-csp",
+      "ci_command_fragment": "python -m pytest -q",
+      "reason": "Only platforms without symlink privilege skip; the required Ubuntu CSP job executes the artifact safety case."
+    },
+    {
+      "path": "services/csp/tests/test_artifact_blob_store.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "backend-csp",
+      "ci_command_fragment": "python -m pytest -q",
+      "reason": "The O_PATH/FIFO probe is available on the required Ubuntu CSP job; other platforms register the guard explicitly."
     },
     {
       "path": "services/csp/tests/test_ingestion_generations_pg.py",
@@ -656,6 +690,92 @@
       "ci_job": "postgres-rls",
       "ci_command_fragment": "python -m pytest tests/test_gate5_r5_durable_resume_authority.py -q -m integration",
       "reason": "Only the local SQLite/no-DSN path may skip; postgres-rls sets TEST_POSTGRES_URL to the migrated csp_app database and must execute the two-contender durable resume claim proof."
+    },
+    {
+      "path": "infra/deployment/tests/test_airgap_image_inventory.py",
+      "kind": "self.skipTest",
+      "count": 2,
+      "required_execution": true,
+      "ci_job": "deployment-posture",
+      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
+      "reason": "The required Ubuntu deployment runner provides a usable Docker Compose CLI, so both environment guards execute their contract assertions instead of skipping."
+    },
+    {
+      "path": "infra/deployment/tests/test_csp_non_root.py",
+      "kind": "unittest.skipUnless",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "deployment-posture",
+      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
+      "reason": "The required Ubuntu deployment runner is POSIX and executes the non-root backup helper behavior contract."
+    },
+    {
+      "path": "infra/deployment/tests/test_deployment_containment.py",
+      "kind": "self.skipTest",
+      "count": 2,
+      "required_execution": true,
+      "ci_job": "deployment-posture",
+      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
+      "reason": "The required Ubuntu deployment runner provides a usable Docker Compose CLI, so both containment probes execute instead of skipping."
+    },
+    {
+      "path": "infra/deployment/tests/test_model_image_lock.py",
+      "kind": "self.skipTest",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "deployment-posture",
+      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
+      "reason": "The required Ubuntu deployment runner provides a usable Docker daemon and executes the image-lock tamper smoke test."
+    },
+    {
+      "path": "infra/deployment/tests/test_model_image_lock.py",
+      "kind": "unittest.skipUnless",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "deployment-posture",
+      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
+      "reason": "The required Ubuntu deployment runner provides Docker CLI and executes the image-lock tamper smoke test."
+    },
+    {
+      "path": "infra/deployment/tests/test_production_backup_automation.py",
+      "kind": "unittest.skipUnless",
+      "count": 1,
+      "required_execution": false,
+      "reason": "The disposable Docker restore smoke remains an explicit opt-in controlled by ANILA_RUN_DOCKER_RESTORE_SMOKE; its skip is registered rather than hidden from governance."
+    },
+    {
+      "path": "services/anila-studio/tests/test_auth.py",
+      "kind": "pytest.importorskip",
+      "count": 2,
+      "required_execution": true,
+      "ci_job": "backend-studio-full",
+      "ci_command_fragment": "python -m pytest tests -q",
+      "reason": "The required full Studio job installs the dev extra and FastAPI runtime, so both dependency guards execute instead of skipping."
+    },
+    {
+      "path": "services/anila-studio/tests/test_job_store_redis_integration.py",
+      "kind": "pytest.mark.skipif",
+      "count": 2,
+      "required_execution": true,
+      "ci_job": "backend-studio-full",
+      "ci_command_fragment": "python -m pytest tests -q",
+      "reason": "The required full Studio job supplies both the isolated Redis URL and its unique disposable container name, so the four real-Redis cases and five-pipeline AOF restart proof execute without skips."
+    },
+    {
+      "path": "infra/deployment/tests/test_slo_window_verifier.py",
+      "kind": "self.skipTest",
+      "count": 1,
+      "required_execution": true,
+      "ci_job": "deployment-posture",
+      "ci_command_fragment": "python -m unittest discover -s infra/deployment/tests -v",
+      "reason": "FIFO-creation platform guard; executes on Linux CI where os.mkfifo is present."
+    },
+    {
+      "path": "infra/ci/tests/test_gate5_recorded_provider_adapter.py",
+      "kind": "pytest.mark.skipif",
+      "count": 1,
+      "required_execution": false,
+      "reason": "PENDING_CAPTURE skipif guards on the v4 capture fixture's existence; the fixture is committed and always present, so this never skips in required CI."
     }
   ],
   "quarantine": [],

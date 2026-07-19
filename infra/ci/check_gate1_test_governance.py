@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 
-REQUIRED_SUITES = {
+REQUIRED_SUITE_IDS = {
     "anila-contracts",
     "anila-security",
     "anila-core-unit",
@@ -28,7 +28,17 @@ REQUIRED_SUITES = {
     "deployment-posture",
     "gate2-pilot-policy",
     "studio-auth-revocation",
+    "studio-full-durability",
     "flux-agent-focused",
+}
+REQUIRED_SUITES = REQUIRED_SUITE_IDS
+ALLOWED_CI_JOBS = {
+    "backend-agent",
+    "backend-core",
+    "backend-csp",
+    "backend-studio-full",
+    "deployment-posture",
+    "postgres-rls",
 }
 TEST_ROOTS = (
     "packages/anila-contracts/tests",
@@ -37,9 +47,17 @@ TEST_ROOTS = (
     "packages/anila-agent/tests",
     "services/ingestion-worker/tests",
     "services/csp/tests",
+    "services/anila-studio/tests",
+    "infra/ci/tests",
+    "infra/deployment/tests",
     "infra/policy/tests",
 )
 REQUIRED_WORKFLOW = ".github/workflows/gate1-ci.yml"
+GATE0_SECURITY_WORKFLOW = ".github/workflows/gate0-security.yml"
+CARD_MATERIAL_STEP_NAME = "Run deployment contract and behavior tests"
+CARD_MATERIAL_COMMAND = (
+    "python -m pytest infra/deployment/tests/test_card_material_scanner.py -q"
+)
 CLASSIFICATIONS = {"functional", "platform", "test-staleness"}
 HISTORICAL_CSP_RESULT = {
     "failed": 38,
@@ -53,6 +71,15 @@ SKIP_APIS = {
     "pytest.importorskip",
     "pytest.mark.skip",
     "pytest.mark.skipif",
+    "unittest.skip",
+    "unittest.skipIf",
+    "unittest.skipUnless",
+    "self.skipTest",
+}
+XFAIL_APIS = {
+    "pytest.xfail",
+    "pytest.mark.xfail",
+    "unittest.expectedFailure",
 }
 
 
@@ -70,8 +97,28 @@ def _dotted_name(node: ast.AST) -> str:
     return ".".join(reversed(parts))
 
 
+def _api_uses(tree: ast.AST, api_names: set[str]) -> list[tuple[str, int]]:
+    """Return runtime calls and decorators exactly once per source expression."""
+
+    uses: list[tuple[str, int]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            kind = _dotted_name(node.func)
+            if kind in api_names:
+                uses.append((kind, node.lineno))
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        for decorator in node.decorator_list:
+            if isinstance(decorator, ast.Call):
+                continue
+            kind = _dotted_name(decorator)
+            if kind in api_names:
+                uses.append((kind, decorator.lineno))
+    return uses
+
+
 def find_xfail_calls(root: Path) -> list[str]:
-    hits: list[str] = []
+    hits: set[str] = set()
     for relative_root in TEST_ROOTS:
         directory = root / relative_root
         if not directory.is_dir():
@@ -81,11 +128,10 @@ def find_xfail_calls(root: Path) -> list[str]:
                 tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             except (SyntaxError, UnicodeDecodeError) as exc:
                 raise GovernanceError(f"cannot inspect {path}: {exc}") from exc
-            for node in ast.walk(tree):
-                target = node.func if isinstance(node, ast.Call) else node
-                if _dotted_name(target) in {"pytest.xfail", "pytest.mark.xfail"}:
-                    hits.append(f"{path.relative_to(root).as_posix()}:{node.lineno}")
-    return sorted(set(hits))
+            relative = path.relative_to(root).as_posix()
+            for _kind, lineno in _api_uses(tree, XFAIL_APIS):
+                hits.add(f"{relative}:{lineno}")
+    return sorted(hits)
 
 
 def collect_skip_calls(root: Path) -> dict[str, int]:
@@ -102,13 +148,9 @@ def collect_skip_calls(root: Path) -> dict[str, int]:
             except (SyntaxError, UnicodeDecodeError) as exc:
                 raise GovernanceError(f"cannot inspect {path}: {exc}") from exc
             relative = path.relative_to(root).as_posix()
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                kind = _dotted_name(node.func)
-                if kind in SKIP_APIS:
-                    key = f"{relative}::{kind}"
-                    calls[key] = calls.get(key, 0) + 1
+            for kind, _lineno in _api_uses(tree, SKIP_APIS):
+                key = f"{relative}::{kind}"
+                calls[key] = calls.get(key, 0) + 1
     return dict(sorted(calls.items()))
 
 
@@ -119,9 +161,8 @@ def _require_text(entry: dict, field: str, label: str) -> str:
     return value.strip()
 
 
-def _workflow_jobs(workflow_text: str) -> dict[str, str]:
-    """Parse real YAML jobs so block-scalar text can never become a job boundary."""
-
+def _workflow_job_definitions(workflow_text: str) -> dict[str, dict]:
+    """Parse and validate the workflow's structured job definitions."""
     try:
         import yaml
     except ImportError as exc:
@@ -137,6 +178,14 @@ def _workflow_jobs(workflow_text: str) -> dict[str, str]:
         raise GovernanceError("required workflow has no job definitions")
     if any(not isinstance(job_id, str) or not isinstance(job, dict) for job_id, job in jobs.items()):
         raise GovernanceError("required workflow contains an invalid job definition")
+    return jobs
+
+
+def _workflow_jobs(workflow_text: str) -> dict[str, str]:
+    """Flatten real YAML jobs so block-scalar text cannot become a job boundary."""
+
+    jobs = _workflow_job_definitions(workflow_text)
+
     def _string_values(value: object) -> list[str]:
         if isinstance(value, str):
             return [value]
@@ -147,6 +196,81 @@ def _workflow_jobs(workflow_text: str) -> dict[str, str]:
         return []
 
     return {job_id: "\n".join(_string_values(job)) for job_id, job in jobs.items()}
+
+
+def _workflow_step(job: dict, name: str) -> dict:
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        raise GovernanceError("required workflow job has no steps list")
+    matches = [
+        step
+        for step in steps
+        if isinstance(step, dict) and step.get("name") == name
+    ]
+    if len(matches) != 1:
+        raise GovernanceError(f"Studio full CI requires exactly one {name!r} step")
+    return matches[0]
+
+
+def verify_studio_full_wiring(workflow_text: str) -> None:
+    """Require full Studio tests against an isolated, durable Redis target."""
+
+    jobs = _workflow_job_definitions(workflow_text)
+    job = jobs.get("backend-studio-full")
+    if not isinstance(job, dict):
+        raise GovernanceError("Studio full CI job 'backend-studio-full' is not defined")
+    env = job.get("env")
+    container_name = env.get("ANILA_STUDIO_REDIS_DOCKER_CONTAINER") if isinstance(env, dict) else None
+    if not isinstance(container_name, str) or not container_name.startswith(
+        "anila-gate1-studio-redis-"
+    ):
+        raise GovernanceError("Studio full CI requires a unique Redis container name")
+
+    install = _workflow_step(job, "Install complete Studio test dependencies")
+    if 'python -m pip install -e "./services/anila-studio[dev]"' not in str(
+        install.get("run", "")
+    ):
+        raise GovernanceError("Studio full CI must install the Studio dev extra")
+
+    start = _workflow_step(job, "Start isolated Redis durability target")
+    start_run = str(start.get("run", ""))
+    for fragment in (
+        "docker run --detach",
+        "--publish 127.0.0.1::6379",
+        "redis:7-alpine",
+        "--appendonly yes",
+        "--appendfsync everysec",
+        "redis-cli ping",
+        "ready=0",
+        "for attempt in $(seq 1 30); do",
+        "sleep 1\ndone\nif [ \"$ready\" -ne 1 ]; then",
+    ):
+        if fragment not in start_run:
+            raise GovernanceError(
+                f"Studio full CI start/AOF wiring missing {fragment!r}"
+            )
+    if not re.search(
+        r'echo "ANILA_STUDIO_REDIS_TEST_URL=redis://127\.0\.0\.1:\$\{port\}/0" '
+        r'\\\n\s*>> "\$GITHUB_ENV"',
+        start_run,
+    ):
+        raise GovernanceError(
+            "Studio full CI must append the resolved Redis URL to GITHUB_ENV"
+        )
+
+    full_test = _workflow_step(job, "Run complete Studio suite")
+    if full_test.get("working-directory") != "services/anila-studio":
+        raise GovernanceError("Studio full CI pytest working-directory is invalid")
+    if full_test.get("run") != "python -m pytest tests -q":
+        raise GovernanceError("Studio full CI must execute the complete pytest suite")
+
+    cleanup = _workflow_step(job, "Remove isolated Redis durability target")
+    if cleanup.get("if") != "${{ always() }}":
+        raise GovernanceError("Studio full CI cleanup must run under always()")
+    if 'docker rm -f "$ANILA_STUDIO_REDIS_DOCKER_CONTAINER"' not in str(
+        cleanup.get("run", "")
+    ):
+        raise GovernanceError("Studio full CI must remove its Redis container")
 
 
 def verify_required_skip_wiring(document: dict, workflow_text: str) -> None:
@@ -170,6 +294,53 @@ def verify_required_skip_wiring(document: dict, workflow_text: str) -> None:
             raise GovernanceError(
                 f"allowed skip {key}: command fragment is not wired in job {job_id!r}"
             )
+
+
+def verify_card_material_pytest_wiring(workflow_text: str) -> None:
+    """Require the pytest-style card-material suite in the Gate 0 required job."""
+
+    jobs = _workflow_job_definitions(workflow_text)
+    job = jobs.get("deployment-contracts")
+    if not isinstance(job, dict):
+        raise GovernanceError(
+            "card-material pytest: CI job 'deployment-contracts' is not defined"
+        )
+
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        raise GovernanceError("card-material pytest: deployment job has no steps list")
+    matches = [
+        step
+        for step in steps
+        if isinstance(step, dict) and step.get("name") == CARD_MATERIAL_STEP_NAME
+    ]
+    if len(matches) != 1:
+        raise GovernanceError(
+            "card-material pytest: required executing step must appear exactly once"
+        )
+    step = matches[0]
+    run = step.get("run")
+    normalized_run = " ".join(run.split()) if isinstance(run, str) else ""
+    normalized_command = " ".join(CARD_MATERIAL_COMMAND.split())
+    if normalized_command not in normalized_run:
+        raise GovernanceError(
+            "card-material pytest: command fragment is not wired in job "
+            "'deployment-contracts'"
+        )
+    if step.get("continue-on-error"):
+        raise GovernanceError(
+            "card-material pytest: required executing step must not continue on error"
+        )
+    if "if" in step:
+        normalized_if = " ".join(str(step["if"]).split()).lower()
+        if normalized_if not in {"${{ always() }}", "always()"}:
+            raise GovernanceError(
+                "card-material pytest: required executing step must not be gated out"
+            )
+    if step.get("working-directory") not in (None, "."):
+        raise GovernanceError(
+            "card-material pytest: required executing step must run from repository root"
+        )
 
 
 def validate_registry(document: dict, *, as_of: dt.date) -> None:
@@ -327,7 +498,11 @@ def validate_registry(document: dict, *, as_of: dt.date) -> None:
         if entry.get("required_execution") not in {True, False}:
             raise GovernanceError(f"allowed skip {key}: required_execution must be boolean")
         if entry["required_execution"] is True:
-            _require_text(entry, "ci_job", f"allowed skip {key}")
+            ci_job = _require_text(entry, "ci_job", f"allowed skip {key}")
+            if ci_job not in ALLOWED_CI_JOBS:
+                raise GovernanceError(
+                    f"allowed skip {key}: unsupported ci_job {ci_job!r}"
+                )
             _require_text(entry, "ci_command_fragment", f"allowed skip {key}")
 
 
@@ -344,6 +519,11 @@ def main(argv: list[str] | None = None) -> int:
         validate_registry(document, as_of=as_of)
         workflow_text = (root / REQUIRED_WORKFLOW).read_text(encoding="utf-8")
         verify_required_skip_wiring(document, workflow_text)
+        verify_studio_full_wiring(workflow_text)
+        gate0_workflow_text = (root / GATE0_SECURITY_WORKFLOW).read_text(
+            encoding="utf-8"
+        )
+        verify_card_material_pytest_wiring(gate0_workflow_text)
         xfails = find_xfail_calls(root)
         if xfails:
             raise GovernanceError("permanent xfail is forbidden: " + ", ".join(xfails))

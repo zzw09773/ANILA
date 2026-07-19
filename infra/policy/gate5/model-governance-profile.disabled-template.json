@@ -1,9 +1,9 @@
 {
-  "schema_version": "anila.gate5.model-governance.profile.v1",
+  "schema_version": "anila.gate5.model-governance.profile.v2",
   "profile_id": "DISABLED-TEMPLATE-NOT-AN-APPROVAL",
   "profile_version": "1.0.0",
-  "profile_content_sha256": "e6e7f758b2a06289cfa16fcbfdb1b27ad8741c624fb2d2d8388b05b58b653373",
-  "inventory_sha256": "e49b3be132dcce46925c97d50c4d944887f0d552e1d04c7a02bbaad6512ccbfe",
+  "profile_content_sha256": "19153c226b6e8f59ba1347070b39be422441090ef41c0a510cded940a1e92259",
+  "inventory_sha256": "5ac58bede7c90e776d478f12b52c3f0f1db94c0975b68868b81787321cbc6fd5",
   "enabled": false,
   "enabled_callsites": [],
   "disabled_callsites": [
@@ -49,6 +49,7 @@
     "r7.model-backend.triton-embedding"
   ],
   "callsite_bindings": [],
+  "provider_bindings": [],
   "model_artifacts": [],
   "deployments": [],
   "egress_policy": {

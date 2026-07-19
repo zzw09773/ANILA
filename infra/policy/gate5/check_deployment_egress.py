@@ -32,12 +32,24 @@ not an approval for a production deployment.
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlsplit
+
+
+# The deployment entrypoint invokes this checker with the system interpreter,
+# not with an installed editable package.  Keep the signed-authority import
+# usable from the repository checkout while retaining a dependency-free path
+# for topology-only development checks.
+_REPO_HINT = Path(__file__).resolve().parents[3]
+_SECURITY_SRC = _REPO_HINT / "packages/anila-security/src"
+if _SECURITY_SRC.is_dir() and str(_SECURITY_SRC) not in sys.path:
+    sys.path.insert(0, str(_SECURITY_SRC))
 
 
 class DeploymentEgressError(RuntimeError):
@@ -46,6 +58,11 @@ class DeploymentEgressError(RuntimeError):
 
 FORMAL_PROFILES = frozenset({"prod", "production"})
 MODEL_NETWORK_TOKENS = ("model", "inference")
+MODEL_NETWORK_LEXICAL_TOKENS = frozenset({"donkernet"})
+SHARED_MODEL_NETWORK_NAME = "anila-models-net"
+EXTERNAL_SHIM_UPSTREAM_EGRESS_POLICY_LABEL = (
+    "com.anila.upstream-egress-policy-id"
+)
 GOVERNANCE_TARGETS = {
     "GATE5_MODEL_GOVERNANCE_INVENTORY_PATH": "/etc/anila/governance/inventory.json",
     "GATE5_MODEL_GOVERNANCE_PROFILE_PATH": "/etc/anila/governance/profile.json",
@@ -61,6 +78,11 @@ RAW_ENDPOINT_KEYS = re.compile(
     r"(?:^ANILA_BASE_URL$|^(?:LOCAL_LLM|LOCAL_EMBEDDING|MODEL|VISION|RELATION_LLM|EMBEDDING|TRITON|FLUX)_.*URL$|^.*_MODEL_URL$|^FLUX_BACKEND_URL$)"
 )
 AGENT_NAME = re.compile(r"(?:^|[-_])agent(?:$|[-_])", re.IGNORECASE)
+CSP_GATEWAY_HOSTS = frozenset({"csp", "csp-model-gateway"})
+# Keep this pure-syntax rule equivalent to anila-security's transport target
+# parser.  ``ipaddress`` rejects legacy IPv4 spellings that libc/socket may
+# still resolve as an address; they must not subsequently be accepted as DNS.
+AMBIGUOUS_NUMERIC_IPV4_COMPONENT_RE = re.compile(r"(?:[0-9]+|0[xX][0-9A-Fa-f]+)$")
 
 
 def _as_bool(value: object) -> bool:
@@ -111,14 +133,111 @@ def _networks(service: Mapping[str, Any]) -> set[str]:
     raise DeploymentEgressError("resolved service networks must be a map or list")
 
 
-def _is_model_network(name: str, document: Mapping[str, Any]) -> bool:
+def _network_effective_name(
+    name: str,
+    document: Mapping[str, Any],
+) -> str | None:
+    """Return the Docker network identity from resolved Compose JSON.
+
+    Logical network keys are document-local aliases.  Cross-document
+    isolation decisions must use the resolved ``name`` that Docker receives;
+    otherwise two different aliases can silently attach to the same bridge.
+    The project fallback is retained for small pure fixtures, although normal
+    ``docker compose config --format json`` output always supplies ``name``.
+    """
+
     networks = document.get("networks")
     declared = networks.get(name) if isinstance(networks, Mapping) else None
-    effective = ""
-    if isinstance(declared, Mapping):
-        effective = str(declared.get("name", ""))
-    haystack = f"{name} {effective}".lower()
-    return any(token in haystack for token in MODEL_NETWORK_TOKENS)
+    if not isinstance(declared, Mapping):
+        return None
+    effective = str(declared.get("name", "")).strip()
+    if effective:
+        return effective
+    if declared.get("external") is True:
+        return None
+    project = str(document.get("name", "")).strip()
+    if not project:
+        return None
+    return f"{project}_{name}"
+
+
+def _is_model_network(name: str, document: Mapping[str, Any]) -> bool:
+    """Return whether a document's model network is admitted by Gate 5.
+
+    The shared model network has no Compose owner, so a resolved document must
+    describe it as the exact external ``anila-models-net`` instead of
+    pretending that the document owns ``internal: true``.  Any document-owned
+    model/inference network remains required to be an internal network.
+    """
+
+    networks = document.get("networks")
+    declared = networks.get(name) if isinstance(networks, Mapping) else None
+    if not isinstance(declared, Mapping):
+        return False
+    effective = _network_effective_name(name, document) or ""
+    if declared.get("external") is True:
+        return effective == SHARED_MODEL_NETWORK_NAME
+    if declared.get("internal") is not True:
+        return False
+    return _network_matches_model_tokens(name, document)
+
+
+def _network_matches_model_tokens(name: str, document: Mapping[str, Any]) -> bool:
+    effective = _network_effective_name(name, document) or ""
+    values = (name.casefold(), effective.casefold())
+    if any(token in value for token in MODEL_NETWORK_TOKENS for value in values):
+        return True
+    lexical_tokens = {
+        token
+        for value in values
+        for token in re.findall(r"[a-z0-9]+", value)
+    }
+    return not lexical_tokens.isdisjoint(MODEL_NETWORK_LEXICAL_TOKENS)
+
+
+def _is_external_shared_model_network(name: str, document: Mapping[str, Any]) -> bool:
+    networks = document.get("networks")
+    declared = networks.get(name) if isinstance(networks, Mapping) else None
+    return (
+        isinstance(declared, Mapping)
+        and declared.get("external") is True
+        and _network_effective_name(name, document) == SHARED_MODEL_NETWORK_NAME
+    )
+
+
+def _service_effective_networks(
+    service: Mapping[str, Any], document: Mapping[str, Any]
+) -> set[str] | None:
+    """Resolve every network a service joins to its Docker identity.
+
+    A Compose network key is only local to one document.  Returning ``None``
+    for an unresolved key makes the external-shim topology fail closed rather
+    than silently treating its local alias as an isolated bridge.
+    """
+
+    effective_networks: set[str] = set()
+    for logical_name in _networks(service):
+        effective_name = _network_effective_name(logical_name, document)
+        if effective_name is None:
+            return None
+        effective_networks.add(effective_name)
+    return effective_networks
+
+
+def _effective_network_attachers(
+    documents: list[Mapping[str, Any]], *, effective_network: str
+) -> list[tuple[int, str]]:
+    """Return every service attached to a Docker network across documents."""
+
+    attachers: list[tuple[int, str]] = []
+    for document_index, candidate_document in enumerate(documents):
+        for candidate_name, candidate in _services(candidate_document).items():
+            if not isinstance(candidate, Mapping):
+                continue
+            effective_networks = _service_effective_networks(candidate, candidate_document)
+            if effective_networks is not None and effective_network in effective_networks:
+                attachers.append((document_index, candidate_name))
+    return attachers
 
 
 def _mounts(service: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -202,8 +321,8 @@ def _host_is_csp(value: str, gateway: tuple[str, int | None, str]) -> bool:
         host, port, _ = _gateway_url(value)
     except DeploymentEgressError:
         return False
-    gateway_host, gateway_port, _ = gateway
-    return host in {"csp", "csp-model-gateway", gateway_host} and (
+    _, gateway_port, _ = gateway
+    return host in CSP_GATEWAY_HOSTS and (
         port is None or gateway_port is None or port == gateway_port
     )
 
@@ -227,8 +346,8 @@ def _csp_base_url(value: str, gateway: tuple[str, int | None, str]) -> bool:
         port = parsed.port
     except ValueError:
         return False
-    gateway_host, gateway_port, _ = gateway
-    return hostname.lower() in {"csp", "csp-model-gateway", gateway_host} and (
+    _, gateway_port, _ = gateway
+    return hostname.lower() in CSP_GATEWAY_HOSTS and (
         port is None or gateway_port is None or port == gateway_port
     )
 
@@ -245,12 +364,271 @@ def _raw_endpoint_violation(
         return None
     if not RAW_ENDPOINT_KEYS.search(key):
         return None
-    if key == "ANILA_BASE_URL" or "BASE_URL" in key or "BACKEND_URL" in key:
-        if not _host_is_csp(stripped, gateway):
-            return f"{service_name}.{key} is a raw/non-CSP model endpoint"
-    # MODEL_URL and TRITON_URL can be legitimate values on model-runtime
-    # services.  They are still forbidden on platform agents; model documents
-    # are checked separately below.
+    if not _host_is_csp(stripped, gateway):
+        return f"{service_name}.{key} is a raw/non-CSP model endpoint"
+    return None
+
+
+def _endpoint_host(value: str) -> str | None:
+    candidate = value.strip()
+    if not candidate:
+        return None
+    parsed_value = candidate if "://" in candidate else f"//{candidate}"
+    try:
+        parsed = urlsplit(parsed_value)
+        hostname = parsed.hostname
+    except ValueError:
+        return None
+    if not hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        return None
+    return hostname.lower()
+
+
+def _model_endpoint_violation(
+    *,
+    service_name: str,
+    key: str,
+    value: str,
+    allowed_hosts: set[str],
+    gateway: tuple[str, int | None, str],
+) -> str | None:
+    stripped = value.strip()
+    if not stripped:
+        return None
+    if key == "CSP_BASE_URL":
+        if not _csp_base_url(stripped, gateway):
+            return f"{service_name}.{key} must point to CSP gateway"
+        return None
+    if not RAW_ENDPOINT_KEYS.search(key):
+        return None
+    if key == "TRITON_GRPC_URL" and _normalise_external_target(stripped) is None:
+        return f"{service_name}.{key} must be a bare host:port model endpoint"
+    host = _endpoint_host(stripped)
+    if host not in allowed_hosts:
+        return f"{service_name}.{key} is an external/unknown model endpoint"
+    return None
+
+
+def _normalise_external_target(value: str) -> str | None:
+    candidate = value.strip()
+    if not candidate or value != candidate or "://" in candidate or "\\" in candidate:
+        return None
+    try:
+        parsed = urlsplit(f"//{candidate}")
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        not hostname
+        or port is None
+        or not 1 <= port <= 65535
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+        or parsed.username
+        or parsed.password
+    ):
+        return None
+    if parsed.netloc.endswith(":"):
+        return None
+    if "%" in hostname:
+        return None
+    try:
+        host = ipaddress.ip_address(hostname).compressed.lower()
+    except ValueError:
+        candidate_host = hostname[:-1] if hostname.endswith(".") else hostname
+        if candidate_host and all(
+            AMBIGUOUS_NUMERIC_IPV4_COMPONENT_RE.fullmatch(label)
+            for label in candidate_host.split(".")
+        ):
+            return None
+        if not candidate_host or ".." in candidate_host or ":" in candidate_host:
+            return None
+        try:
+            labels = tuple(
+                label.encode("idna").decode("ascii").lower()
+                for label in candidate_host.split(".")
+            )
+        except UnicodeError:
+            return None
+        if any(
+            not label
+            or len(label) > 63
+            or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label)
+            for label in labels
+        ) or len(".".join(labels)) > 253:
+            return None
+        host = ".".join(labels)
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+    host_text = f"[{host}]" if ip is not None and ip.version == 6 else host
+    return f"{host_text}:{port}"
+
+
+def _external_shim_contract_error(
+    *,
+    service_name: str,
+    service: Mapping[str, Any],
+    document: Mapping[str, Any],
+    documents: list[Mapping[str, Any]],
+    document_index: int,
+    signed_authority: Any | None = None,
+) -> str | None:
+    labels = _service_labels(service)
+    if labels.get("com.anila.inference-role") != "external-shim":
+        return f"model service {service_name} has an unclassified external-shim role"
+    if labels.get("com.anila.provider-locality") != "internal_shim":
+        return f"external shim {service_name} must declare internal_shim provider locality"
+    egress_network = labels.get("com.anila.egress-network", "").strip()
+    if not egress_network or egress_network not in _networks(service):
+        return f"external shim {service_name} must attach its declared egress network"
+    network_map = document.get("networks")
+    declared_network = network_map.get(egress_network) if isinstance(network_map, Mapping) else None
+    if not isinstance(declared_network, Mapping):
+        return f"external shim {service_name} egress network declaration is missing"
+    egress_effective_name = _network_effective_name(egress_network, document)
+    if egress_effective_name is None:
+        return f"external shim {service_name} egress network identity is unresolved"
+    if egress_effective_name == SHARED_MODEL_NETWORK_NAME:
+        return f"external shim {service_name} egress network must be dedicated"
+    # Compose's resolved JSON often omits an explicit ``internal: false``.
+    # Absence is therefore acceptable, but an internal or external-owned
+    # network is not a dedicated project egress bridge.
+    if declared_network.get("internal") is True:
+        return f"external shim {service_name} egress network must not be internal"
+    if declared_network.get("external") is True:
+        return f"external shim {service_name} egress network must be project-owned"
+    if str(declared_network.get("driver", "bridge")) != "bridge":
+        return f"external shim {service_name} egress network must use the bridge driver"
+    if _network_matches_model_tokens(egress_network, document):
+        return f"external shim {service_name} egress network must be dedicated"
+
+    logical_networks = _networks(service)
+    effective_networks = _service_effective_networks(service, document)
+    expected_effective_networks = {
+        SHARED_MODEL_NETWORK_NAME,
+        egress_effective_name,
+    }
+    if (
+        len(logical_networks) != 2
+        or effective_networks != expected_effective_networks
+        or not any(
+            _is_external_shared_model_network(logical_name, document)
+            for logical_name in logical_networks
+        )
+    ):
+        return (
+            f"external shim {service_name} network set must be exactly the external "
+            "shared model ingress and declared dedicated egress"
+        )
+
+    attachers = _effective_network_attachers(
+        documents, effective_network=egress_effective_name
+    )
+    if attachers != [(document_index, service_name)]:
+        return f"external shim {service_name} egress network must have one attached service"
+    target = _normalise_external_target(_environment(service).get("TRITON_GRPC_URL", ""))
+    if target is None:
+        return f"external shim {service_name} must declare a host:port TRITON_GRPC_URL"
+    if labels.get("com.anila.egress-target", "").strip() != target:
+        return f"external shim {service_name} egress target does not match TRITON_GRPC_URL"
+    if labels.get("com.anila.upstream-locality") != "external_governed":
+        return (
+            f"external shim {service_name} must declare external_governed "
+            "upstream locality"
+        )
+    if labels.get("com.anila.upstream-transport") != "triton-grpc":
+        return f"external shim {service_name} must declare triton-grpc upstream transport"
+    upstream_egress_policy_id = labels.get(
+        EXTERNAL_SHIM_UPSTREAM_EGRESS_POLICY_LABEL, ""
+    ).strip()
+    if not upstream_egress_policy_id:
+        return (
+            f"external shim {service_name} must declare its upstream egress policy id"
+        )
+
+    if signed_authority is not None:
+        model_name = _environment(service).get("MODEL_NAME", "").strip()
+        if not model_name:
+            return f"external shim {service_name} must declare MODEL_NAME"
+        provider_bindings = getattr(signed_authority, "provider_bindings", None)
+        if not isinstance(provider_bindings, Mapping):
+            return "signed model-governance authority has no provider bindings"
+        matches = [
+            binding
+            for binding in provider_bindings.values()
+            if getattr(binding, "model_registry_name", None) == model_name
+        ]
+        if len(matches) != 1:
+            return (
+                f"signed provider authority must contain exactly one binding for "
+                f"{model_name!r}; found {len(matches)}"
+            )
+        binding = matches[0]
+        if getattr(binding, "provider_locality", None) != labels.get(
+            "com.anila.provider-locality"
+        ):
+            return (
+                f"external shim {service_name} provider locality does not match "
+                "signed provider authority"
+            )
+        upstream_target = getattr(binding, "upstream_transport_target", None)
+        expected_upstream_hash = getattr(
+            binding, "upstream_transport_target_sha256", None
+        )
+        expected_upstream_locality = getattr(
+            binding, "upstream_provider_locality", None
+        )
+        expected_policy_id = getattr(binding, "upstream_egress_policy_id", None)
+        if upstream_target is None or not isinstance(expected_upstream_hash, str):
+            return (
+                f"signed provider authority for {model_name!r} lacks its "
+                "upstream transport target/hash"
+            )
+        if expected_upstream_locality != labels.get("com.anila.upstream-locality"):
+            return (
+                f"external shim {service_name} upstream locality does not match "
+                "signed provider authority"
+            )
+        if expected_policy_id != upstream_egress_policy_id:
+            return (
+                f"external shim {service_name} upstream egress policy id does not "
+                "match signed provider authority"
+            )
+        try:
+            from anila_security.model_governance import (
+                ModelGovernanceError,
+                TransportTarget,
+            )
+        except ImportError:
+            return (
+                f"external shim {service_name} cannot load the signed "
+                "transport-target verifier"
+            )
+        try:
+            actual_upstream_target = TransportTarget.parse(
+                target,
+                dns_policy=upstream_target.dns_policy,
+                field="resolved TRITON_GRPC_URL",
+            )
+        except ModelGovernanceError as exc:
+            return (
+                f"external shim {service_name} resolved TRITON_GRPC_URL cannot be "
+                f"bound to signed provider authority: {exc}"
+            )
+        if actual_upstream_target.canonical != upstream_target.canonical:
+            return (
+                f"external shim {service_name} resolved TRITON_GRPC_URL does not "
+                "match signed upstream_transport_target"
+            )
+        if actual_upstream_target.sha256 != expected_upstream_hash:
+            return (
+                f"external shim {service_name} upstream_transport_target_sha256 "
+                "does not match signed provider authority"
+            )
     return None
 
 
@@ -317,6 +695,60 @@ def _verify_governance_material(
             raise DeploymentEgressError("signed model-governance profile does not deny raw endpoints")
         result["profile_id"] = str(profile.get("profile_id", ""))
     return result
+
+
+def _read_governance_json(path: object, *, label: str) -> dict[str, Any]:
+    if not isinstance(path, str) or not path.strip():
+        raise DeploymentEgressError(f"signed governance {label} path is missing")
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DeploymentEgressError(
+            f"signed governance {label} is unreadable"
+        ) from exc
+    if not isinstance(value, dict):
+        raise DeploymentEgressError(f"signed governance {label} must be an object")
+    return value
+
+
+def _load_signed_provider_authority(
+    material: Mapping[str, Any],
+) -> Any:
+    files = material.get("files")
+    if not isinstance(files, Mapping):
+        raise DeploymentEgressError("signed governance material file map is missing")
+    inventory = _read_governance_json(
+        files.get("GATE5_MODEL_GOVERNANCE_INVENTORY_PATH"), label="inventory"
+    )
+    profile = _read_governance_json(
+        files.get("GATE5_MODEL_GOVERNANCE_PROFILE_PATH"), label="profile"
+    )
+    trust_store = _read_governance_json(
+        files.get("GATE5_MODEL_GOVERNANCE_TRUST_STORE_PATH"), label="trust store"
+    )
+    try:
+        from anila_security.model_governance import (
+            VerifiedModelGovernanceAuthority,
+        )
+
+        authority = VerifiedModelGovernanceAuthority.from_verified_payload(
+            inventory=inventory,
+            profile=profile,
+            trust_store=trust_store,
+        )
+    except ImportError as exc:
+        raise DeploymentEgressError(
+            "signed model-governance authority verifier is unavailable"
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - deployment policy must fail closed
+        raise DeploymentEgressError(
+            f"signed model-governance provider authority is invalid: {exc}"
+        ) from exc
+    if not authority.enabled:
+        raise DeploymentEgressError(
+            "signed model-governance provider authority is disabled"
+        )
+    return authority
 
 
 def _check_formal_services(
@@ -400,8 +832,33 @@ def _check_formal_services(
 
     flux_present = any("flux" in name.lower() for name in platform_services)
     flux_services: set[str] = set()
-    for document in documents[1:]:
+    signed_authority: Any | None = None
+    for document_index, document in enumerate(documents[1:], start=1):
         model_services = _services(document)
+        model_network_candidates = {
+            name
+            for name in (document.get("networks") or {})
+            if _network_matches_model_tokens(str(name), document)
+            or _is_external_shared_model_network(str(name), document)
+        }
+        invalid_model_networks = sorted(
+            name for name in model_network_candidates if not _is_model_network(str(name), document)
+        )
+        if invalid_model_networks:
+            raise DeploymentEgressError(
+                "formal model document model networks must be the exact external shared network "
+                "or owned internal networks: "
+                f"{invalid_model_networks}"
+            )
+        model_networks_in_document = {
+            name for name in model_network_candidates if _is_model_network(str(name), document)
+        }
+        if not model_networks_in_document:
+            raise DeploymentEgressError(
+                "formal model document must declare the exact external shared model network "
+                "or an owned internal model network"
+            )
+        allowed_model_hosts = set(model_services) | set(CSP_GATEWAY_HOSTS)
         for service_name, raw_service in model_services.items():
             if not isinstance(raw_service, Mapping):
                 raise DeploymentEgressError(f"resolved model service {service_name} is malformed")
@@ -414,6 +871,36 @@ def _check_formal_services(
                 )
             labels = _service_labels(raw_service)
             role = labels.get("com.anila.inference-role", "model-runtime")
+            external_shim_error = None
+            if role == "external-shim":
+                if require_material and signed_authority is None:
+                    signed_authority = _load_signed_provider_authority(material)
+                external_shim_error = _external_shim_contract_error(
+                    service_name=service_name,
+                    service=raw_service,
+                    document=document,
+                    documents=documents,
+                    document_index=document_index,
+                    signed_authority=signed_authority,
+                )
+            if external_shim_error:
+                raise DeploymentEgressError(external_shim_error)
+            for key, value in _environment(raw_service).items():
+                if role == "external-shim" and key == "TRITON_GRPC_URL":
+                    continue
+                if role == "external-shim" and RAW_ENDPOINT_KEYS.search(key):
+                    raise DeploymentEgressError(
+                        f"external shim {service_name} has an unsupported raw endpoint key: {key}"
+                    )
+                violation = _model_endpoint_violation(
+                    service_name=service_name,
+                    key=key,
+                    value=value,
+                    allowed_hosts=allowed_model_hosts,
+                    gateway=gateway,
+                )
+                if violation:
+                    raise DeploymentEgressError(violation)
             if AGENT_NAME.search(service_name) and role != "model-side-shim":
                 raise DeploymentEgressError(
                     f"model-stack Agent {service_name} lacks model-side-shim classification"

@@ -41,13 +41,18 @@ python infra/policy/gate6/generate_p9_enabled_callsite_inventory.py `
   --trust-store C:\outside\governance\trust-store.json `
   --acceptance-profile C:\outside\governance\production-acceptance-profile.json `
   --acceptance-trust-store C:\outside\governance\production-acceptance-trust-store.json `
-  --generated-at 2026-07-15T12:00:00Z `
   --output C:\outside\evidence\p9-enabled-callsites.json
 ```
 
-`--generated-at` 應由 evidence 呼叫者提供，才能讓相同輸入得到相同
-`content_sha256`。未提供時 exporter 使用目前 UTC 時間，仍會輸出有效 evidence，但
-每次輸出的 hash 會不同。
+enabled/production 模式必須省略 `--generated-at`。Exporter 只擷取一次 UTC
+verification instant，並用同一瞬間驗證 Gate 5、P0、產生 `generated_at`；較早或
+較晚的 caller timestamp 都會 fail closed。因此 enabled evidence 的
+`content_sha256` 會反映實際驗證瞬間，刻意不提供跨次執行的固定 hash。程式呼叫
+`generate_evidence()` 時即使同時提供 `now` 與 `generated_at`，兩者的
+UTC-normalized instant 也必須完全相同。
+
+固定時間戳只允許用於 disabled `NOT_ACCEPTANCE` 測試／盤點，讓該非正式輸出可
+重現；不得把這個例外用於 enabled evidence。
 
 enabled/production mode 不允許省略 P0 兩個參數；這是 P9「從 P0 signed profile
 自動產生」的硬性邊界，不可用 Gate 5 model-governance profile 取代。
@@ -71,7 +76,8 @@ disabled template 一律拒絕。
 ## Output contract
 
 輸出採 Gate 6 P9 schema
-`anila.gate6.p9.enabled-inference-callsite-evidence.v1`，以 shared
+`anila.gate6.p9.enabled-inference-callsite-evidence.v1`（`evidence_version`
+目前為 `1.1.0`），以 shared
 `canonical_json`（UTF-8、`ensure_ascii=false`、sorted keys、compact separators）
 序列化。根層至少包含：
 
@@ -82,8 +88,24 @@ disabled template 一律拒絕。
 - `artifact_digests`（model artifact digest）與 `deployment_digests`（image digest）；
 - 依 callsite ID stable sort 的 `enabled_callsites`。每筆含 category/kind、
   component/service、owner、path/source、symbol、gateway、`raw_endpoint`、分類
-  ceiling、usage/audit sink、agent scope，以及所綁 artifact/deployment digest；
+  ceiling、usage/audit sink、agent scope，以及 v2 `provider_binding_ids` 與
+  `provider_snapshots`。每個 provider snapshot 含 registry id/name/revision、
+  provider locality、canonical `transport_target_sha256`、upstream locality/hash、
+  egress policy IDs、artifact/deployment identity、digest/revision。target 的原始
+  hostname、IP、FQDN、port、path 一律不輸出；`transport_target_identity` 僅保留
+  `kind`（`host_port`／`fqdn`／`ip_literal`）、scheme、port mode 與 path 是否存在，
+  使 host:port 與 Domain/FQDN 仍以 canonical hash／非敏感 identity 可區分；
+- `provider_binding_ids`／`provider_snapshots` 根層彙整所有 enabled callsite 的
+  provider authority，並與 `authority_identity`、`signed_profile`、
+  `source_inventory` 的 signed profile/inventory identity 一致；
 - `content_sha256`，其值是 canonical root object 移除自身欄位後的 SHA-256。
+
+v2 enabled binding 的 provider IDs 必須非空、排序且唯一；每個 ID 必須在 signed
+`provider_bindings` 中恰好存在，且 target/upstream hash、artifact/deployment
+reference 與 authority 一致，否則 exporter fail closed。v1 material 僅保留明確的
+disabled/audit-only 相容路徑；v1 enabled profile 仍不是 production authority。disabled
+輸出固定為 `NOT_ACCEPTANCE`，`enabled_callsites`、`provider_binding_ids` 與
+`provider_snapshots` 全部為空。
 
 輸出不是 Gate 6 Go 宣告：`gate6_pass` 固定為 `false`，即使 Gate 5 與 P0 signed
 profiles 都驗證成功，也只代表 P9 inventory evidence 的輸入契約已驗證；network
