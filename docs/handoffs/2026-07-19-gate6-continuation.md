@@ -80,7 +80,7 @@ P2/P3/P4/P5 與 Gate 5 R6 已達 **engineering closure**（本機工程證據齊
 ## 6. 新 session 最小檢查
 
 ```bash
-cd /home/c1147259/桌面/ANILA/anila-migration-20260706/ANILA
+cd $HOME/桌面/ANILA/anila-migration-20260706/ANILA
 cat ~/.codex/AGENTS.md; cat AGENTS.md
 git status --short --branch; git rev-parse HEAD   # 應仍為 5c5a1b2
 # R6 重評（免 capture，用現行 v4 fixture）：

@@ -659,10 +659,8 @@
     "multiagent.router_entrypoints": [
       "packages/anila-core/src/anila_core/api/router_server.py::_build_agent_list",
       "packages/anila-core/src/anila_core/api/router_server.py::_dispatch_safe",
-      "packages/anila-core/src/anila_core/api/router_server.py::_legacy_dispatch_posture",
       "packages/anila-core/src/anila_core/api/router_server.py::_multi_turn_dispatch",
       "packages/anila-core/src/anila_core/api/router_server.py::_parse_dispatch",
-      "packages/anila-core/src/anila_core/api/router_server.py::_require_legacy_dispatch_posture",
       "packages/anila-core/src/anila_core/api/router_server.py::_router_streaming_multi_turn",
       "packages/anila-core/src/anila_core/api/router_server.py::_stream_agent_sse"
     ],

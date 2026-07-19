@@ -39,7 +39,7 @@
 
 | 欄位 | 目前值 |
 |---|---|
-| Repo | `/home/c1147259/桌面/ANILA/anila-migration-20260706/ANILA` |
+| Repo | `$HOME/桌面/ANILA/anila-migration-20260706/ANILA` |
 | Branch | `codex/gate6-production-acceptance` |
 | Local committed HEAD | `5c5a1b2f5e60ff199ebd746935bee2685459a3ee` |
 | Remote | `origin=https://github.com/zzw09773/ANILA.git` |
@@ -260,7 +260,7 @@ repo CSPKI 或 CI fixture 冒充 production CA provenance。
 ## 12. 新 session 開始時的最小檢查
 
 ```bash
-cd /home/c1147259/桌面/ANILA/anila-migration-20260706/ANILA
+cd $HOME/桌面/ANILA/anila-migration-20260706/ANILA
 cat ~/.codex/AGENTS.md
 cat AGENTS.md
 git status --short --branch
