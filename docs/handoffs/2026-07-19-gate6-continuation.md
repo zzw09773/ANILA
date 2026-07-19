@@ -7,7 +7,7 @@
 
 P2/P3/P4/P5 與 Gate 5 R6 已達 **engineering closure**（本機工程證據齊、經跨家審查與獨立對抗式驗收）；
 **Gate 6 正式 acceptance 仍 NO-GO**——P0–P9 的 production／external 證據、五方簽核、七日觀測、實體卡與獨立人類覆核均未取代。
-本輪**未 commit／未 push／未動 PR**；使用者尚未授權。
+本輪經使用者授權已 **commit + push** 到 `codex/gate6-production-acceptance`（見 §4）；PR #32 CI 對真 diff **24/24 綠**、MERGEABLE/CLEAN；**PR 仍 Draft、未 ready、未 merge**（等使用者進一步授權）。
 
 ## 1. 本 session 完成項（engineering，非 production acceptance）
 
@@ -64,10 +64,16 @@ P2/P3/P4/P5 與 Gate 5 R6 已達 **engineering closure**（本機工程證據齊
 | 欄位 | 值 |
 |---|---|
 | Branch | `codex/gate6-production-acceptance` |
-| Local HEAD | `5c5a1b2f5e60ff199ebd746935bee2685459a3ee`（**未變，本輪零 commit**） |
-| Remote / PR | `origin=github.com/zzw09773/ANILA.git` / PR #32（OPEN/Draft） |
-| 本地工作樹 | 151 個檔案異動（tracked M + untracked 新檔）；**未 commit／未 push** |
-| 遠端 checks | 僅涵蓋舊 head，不涵蓋當前本地 diff——不得宣稱 current head CI 綠 |
+| Base（session 起點） | `5c5a1b2f5e60ff199ebd746935bee2685459a3ee` |
+| 本輪 commit | 6 個邏輯 commit（`cff0737`→`0733555`，按子系統/concern 拆）＋1 個 CI-fix fixup（`a705166`）＝7 commit |
+| Remote / PR | `origin=github.com/zzw09773/ANILA.git` / PR #32；head=`a705166`（＝本地）；OPEN / **Draft** / MERGEABLE / CLEAN |
+| PR CI（真 diff） | **24/24 SUCCESS**（第一輪 22/2，兩個失敗＝Gate 0 card-material 員工ID路徑 + Gate 1 capability-freeze 機制錯，已修） |
+| 治理 exception | `capability-freeze-exceptions.json` 新增 `GATE1-PR32-LEGACY-DISPATCH-POSTURE`（owner=zzw09773、ticket=PR32、expires 2026-08-19）——見 §7.4 |
+| 尚未做 | PR ready、merge（等使用者授權）；跨 7 分支同步（`main` 起、cherry-pick，見 AGENTS.md §3） |
+
+### 7.4 CI 修復教訓（本輪最後、寫給下個 session）
+
+首次 push 後 CI 對真 diff 抓到兩個本機驗證漏掉的 gate：① Gate 0 `scan_card_material.py` 抓到 handoff 內絕對路徑 `/home/<id>/` 的員工 ID（已 redact 為 `$HOME`；本機另 9 個 jwt/tls key 是 gitignored、CI 乾淨 checkout 看不到）；② Gate 1 capability-freeze **禁止直接編輯 baseline**、新能力走 `capability-freeze-exceptions.json`——coding 直接改 baseline 是錯機制，且主對話**驗錯命令**（跑 `test_gate1_capability_freeze` 單元測試而非 CI 的 `check_capability_freeze.py --base-ref origin/main`）。**教訓：驗證一律跑「CI workflow 實際那條命令」，相關單元測試會漏。** 兩者已用實際 CI 命令驗 exit 0 後 push。
 
 ## 5. 下一步（精確順序；未取得使用者授權前不 commit/push/PR）
 
