@@ -72,6 +72,9 @@ services:
       # startup_security 對 dev 預設值的拒絕開關。Prod 必須是 0 / unset。
       # 預設改成 0 (不再 fallback 1) — 缺 .env 時直接 enforce prod 模式。
       ANILA_ALLOW_DEV_SECRET: "${ANILA_ALLOW_DEV_SECRET:-0}"
+      # Every named formal profile must declare a non-placeholder HTTPS host;
+      # deploy preflight validates HTTPS coherence before migrations/seeding.
+      ANILA_HOST: "${ANILA_HOST:?ANILA_HOST must be set to the formal HTTPS host}"
       # Gate 1 F6: deployment identity is declared, then CSP startup verifies
       # every security-sensitive flag against this exact profile contract.
       ANILA_DEPLOYMENT_PROFILE: "${ANILA_DEPLOYMENT_PROFILE:?ANILA_DEPLOYMENT_PROFILE must be declared}"
@@ -128,14 +131,16 @@ services:
       STUDIO_ARTIFACT_SERVICE_TOKEN: ${STUDIO_ARTIFACT_SERVICE_TOKEN:?STUDIO_ARTIFACT_SERVICE_TOKEN must be set}
       STUDIO_RUNTIME_SERVICE_TOKEN: ${STUDIO_RUNTIME_SERVICE_TOKEN:?STUDIO_RUNTIME_SERVICE_TOKEN must be set separately}
       INGESTION_QUEUE_HMAC_KEY: ${INGESTION_QUEUE_HMAC_KEY:?INGESTION_QUEUE_HMAC_KEY must be set}
-      # ── branch SSO:中科院憑證卡登入 (prod-intranet-card fork 區) ─────────
+      # ── formal authentication profile (card or password) ───────────────
       # ⚠ fork 區:main→prod sync 時不可拿 main 版 compose 整檔覆蓋 —
       # 6fcbdce (PR #16) 曾把這段蓋掉,內網就沒有刷卡登入了 (P0 迴歸)。
-      # 預設值 = 內網 prod (card-only)。dev 降級在 .env 設兩個 false。
+      # Password profiles pass explicit false values. Card/break-glass
+      # preflight supplies true values; CSP startup remains fail-closed when
+      # card posture/material is missing or inconsistent.
       # 私鑰/PIN 運算由使用者 PC 的 HiPKI 元件 (localhost:16888) 處理；backend
       # 仍會驗 CMS SignerInfo、challenge nonce 與釘選 CSPKI 憑證鏈後才抽 claims。
-      ENABLE_CARD_LOGIN: "${ENABLE_CARD_LOGIN:-true}"
-      REQUIRE_CARD_LOGIN_ONLY: "${REQUIRE_CARD_LOGIN_ONLY:-true}"
+      ENABLE_CARD_LOGIN: "${ENABLE_CARD_LOGIN:-false}"
+      REQUIRE_CARD_LOGIN_ONLY: "${REQUIRE_CARD_LOGIN_ONLY:-false}"
       JWT_ISSUER: "${JWT_ISSUER:-https://anila.internal/csp}"
       JWT_AUDIENCE: "${JWT_AUDIENCE:-anila-platform}"
       JWT_LEEWAY_SECONDS: "${JWT_LEEWAY_SECONDS:-60}"
@@ -143,6 +148,12 @@ services:
       # Dev uses its separate compose file and opts in explicitly.
       ENABLE_PUBLIC_SHARE: "${ENABLE_PUBLIC_SHARE:-false}"
       ENABLE_MEMORY: "${ENABLE_MEMORY:-false}"
+      DEBUG: "${DEBUG:-false}"
+      ENABLE_API_DOCS: "${ENABLE_API_DOCS:-false}"
+      SKIP_STARTUP_MIGRATIONS: "${SKIP_STARTUP_MIGRATIONS:-false}"
+      ALLOW_AUTO_KEYGEN: "${ALLOW_AUTO_KEYGEN:-false}"
+      CARD_DEV_SKIP_NONCE_BINDING: "${CARD_DEV_SKIP_NONCE_BINDING:-false}"
+      ALLOW_LEGACY_AGENT_DISPATCH: "${ALLOW_LEGACY_AGENT_DISPATCH:-false}"
       ANILA_PILOT_MODE: "${ANILA_PILOT_MODE:-false}"
       ENABLE_PILOT_PROMPT_GENERATOR: "${ENABLE_PILOT_PROMPT_GENERATOR:-false}"
       ENABLE_PILOT_INGESTION_JUDGE: "${ENABLE_PILOT_INGESTION_JUDGE:-false}"
@@ -155,10 +166,10 @@ services:
       # Used to normalize auto-seeded relative launch paths.  A formal host
       # must never seed localhost URLs into the governance registry.
       SITE_URL: ${SITE_URL:?SITE_URL must be set to the formal external origin}
-      # CSV 員工編號;列入者首刷直接建 owner + is_approved (bootstrap),其餘
-      # 走 pending → admin 核准。缺值 fail-fast;.env.example 的 placeholder
-      # 字面由 startup_security 在啟動時擋 (避免 bricked:沒人能 approve)。
-      CARD_INITIAL_OWNERS: ${CARD_INITIAL_OWNERS:?CARD_INITIAL_OWNERS must be set (CSV employee ids, include yourself)}
+      # Card-only bootstrap material is optional at Compose interpolation time
+      # so password profiles render without it. Card preflight and CSP startup
+      # still require every value when card-only is declared.
+      CARD_INITIAL_OWNERS: "${CARD_INITIAL_OWNERS:-}"
       # endpoint_url 是 base URL,proxy_service 自己加 ``/v1/chat/completions``
       # 或 ``/v1/embeddings``。**不要**在 URL 結尾加 ``/v1``,否則拼成
       # ``/v1/v1/...`` → 404 → router 端 RemoteProtocolError。
@@ -229,12 +240,12 @@ services:
       # packaged CSPKI roots by default, but allow an operator-provisioned
       # intranet CA from the read-only /etc/anila/pki mount.
       CARD_CA_BUNDLE_PATH: ${CARD_CA_BUNDLE_PATH:-/app/app/services/cspki_ca_bundle.pem}
-      CARD_CRL_REQUIRED: "true"
-      CARD_CRL_BUNDLE_PATH: ${CARD_CRL_BUNDLE_PATH:?CARD_CRL_BUNDLE_PATH must point inside /etc/anila/pki}
+      CARD_CRL_REQUIRED: "${CARD_CRL_REQUIRED:-false}"
+      CARD_CRL_BUNDLE_PATH: "${CARD_CRL_BUNDLE_PATH:-}"
       CARD_CRL_MAX_AGE_HOURS: "${CARD_CRL_MAX_AGE_HOURS:-24}"
-      CARD_CRL_SOURCE: ${CARD_CRL_SOURCE:?CARD_CRL_SOURCE must identify the offline sync source}
+      CARD_CRL_SOURCE: "${CARD_CRL_SOURCE:-}"
       CARD_REQUIRED_EKU_OID: "${CARD_REQUIRED_EKU_OID:-1.3.6.1.5.5.7.3.2}"
-      CARD_REQUIRED_CERT_POLICY_OIDS: ${CARD_REQUIRED_CERT_POLICY_OIDS:?CARD_REQUIRED_CERT_POLICY_OIDS must be set}
+      CARD_REQUIRED_CERT_POLICY_OIDS: "${CARD_REQUIRED_CERT_POLICY_OIDS:-}"
       # 內網模型 gateway (10.53.100.12 My-OpenAI-Frontend) 的 /v1 要
       # Authorization: Bearer。proxy_service 只對 model 呼叫注入,agent
       # dispatch 不帶。空值 = 不注入 (同主機裸 vLLM 不需要)。
@@ -595,7 +606,9 @@ services:
       JWT_AUDIENCE: "${JWT_AUDIENCE:-anila-platform}"
       JWT_LEEWAY_SECONDS: "${JWT_LEEWAY_SECONDS:-60}"
       REVOCATION_RECONCILE_INTERVAL_SECONDS: "${REVOCATION_RECONCILE_INTERVAL_SECONDS:-5}"
-      REQUIRE_CARD_LOGIN_ONLY: "true"
+      # Keep Studio's browser assurance flag aligned with CSP's selected
+      # formal profile; card posture is supplied by preflight, never hard-coded.
+      REQUIRE_CARD_LOGIN_ONLY: "${REQUIRE_CARD_LOGIN_ONLY:-false}"
       COOKIE_SECURE: "true"
       LOG_LEVEL: INFO
     depends_on:

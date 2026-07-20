@@ -229,7 +229,13 @@ def _assert_off_host_mount(
     if platform_name == "nt":
         profile = os.environ.get("ANILA_DEPLOYMENT_PROFILE", "").strip().lower()
         override = os.environ.get("ANILA_BACKUP_TEST_ALLOW_WINDOWS_OFFHOST", "")
-        if profile.startswith("prod-") or override != "1":
+        # Keep the non-prefixed exception aligned with the canonical formal set
+        # in infra/policy/gate5/check_deployment_egress.py and CSP startup posture.
+        if (
+            profile.startswith("prod-")
+            or profile == "trial-military"
+            or override != "1"
+        ):
             raise BackupAutomationError(
                 "Windows off-host validation is test-only and forbidden for formal profiles"
             )

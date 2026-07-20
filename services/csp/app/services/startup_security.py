@@ -72,10 +72,11 @@ _KNOWN_DEFAULTS: dict[str, frozenset[str]] = {
     # 只需擋 .env.example 的「請填我」placeholder。空值不算 offender — compose
     # 階段就會 fail-fast,輪不到這裡判。
     "ANILA_HOST": _PROD_PLACEHOLDERS,
-    # CARD_INITIAL_OWNERS 同 ANILA_HOST:compose ${CARD_INITIAL_OWNERS:?} 已擋空值,
-    # 但 placeholder 字面 (`<your-employee-id,or-csv-list>`) 是非空字串會通過 compose,
-    # runtime ``_parse_initial_owners()`` 會解出兩個假員工編號,真實刷卡者不在
-    # set 內被當 pending → 沒人能 approve → bricked。這層擋在 startup 比 runtime 早。
+    # Password profiles must be able to render without card bootstrap material,
+    # so Compose cannot require this value globally.  The formal card posture's
+    # CARD_OWNER_CONFIGURED assertion rejects both an empty value and this
+    # placeholder before migrations/seeding, avoiding a card-only deployment
+    # where every real user is pending and nobody can approve them.
     "CARD_INITIAL_OWNERS": _PROD_PLACEHOLDERS,
 }
 
@@ -146,10 +147,33 @@ def _resolved_posture() -> dict[str, object]:
             "CARD_DEV_SKIP_NONCE_BINDING"
         ),
         "CARD_CRL_REQUIRED": settings.CARD_CRL_REQUIRED,
+        "CARD_OWNER_CONFIGURED": _card_owner_configured(),
         # Formal profiles must use the CSP-owned readiness/snapshot gate;
         # legacy Agent dispatch is an explicit development-only bridge.
         "ALLOW_LEGACY_AGENT_DISPATCH": settings.ALLOW_LEGACY_AGENT_DISPATCH,
     }
+
+
+def _card_owner_configured() -> bool:
+    """Return whether card bootstrap has a real initial owner configured.
+
+    Card-only deployments must have an out-of-band owner who can approve
+    subsequent card users. Keep this check local to the card profiles so a
+    password-only deployment does not acquire an unnecessary card dependency.
+    """
+
+    raw = str(getattr(settings, "CARD_INITIAL_OWNERS", "") or "").strip()
+    if not raw:
+        return False
+    normalized_raw = raw.lower()
+    if (
+        normalized_raw in _PROD_PLACEHOLDERS
+        or "<" in normalized_raw
+        or ">" in normalized_raw
+    ):
+        return False
+    owners = [part.strip().lower() for part in raw.split(",") if part.strip()]
+    return bool(owners) and all(owner not in _PROD_PLACEHOLDERS for owner in owners)
 
 
 _PROD_INTRANET_CARD_POSTURE: dict[str, object] = {
@@ -172,6 +196,27 @@ _PROD_INTRANET_CARD_POSTURE: dict[str, object] = {
     "ANILA_ALLOW_PRIVATE_ENDPOINT": False,
     "CARD_DEV_SKIP_NONCE_BINDING": False,
     "CARD_CRL_REQUIRED": True,
+    "CARD_OWNER_CONFIGURED": True,
+    "ALLOW_LEGACY_AGENT_DISPATCH": False,
+}
+
+_PASSWORD_PRODUCTION_POSTURE: dict[str, object] = {
+    "ANILA_ENV": "production",
+    "ANILA_ALLOW_DEV_SECRET": False,
+    "DEBUG": False,
+    "ENABLE_API_DOCS": False,
+    "ENABLE_PUBLIC_SHARE": False,
+    "ENABLE_MEMORY": False,
+    "SKIP_STARTUP_MIGRATIONS": False,
+    "ALLOW_AUTO_KEYGEN": False,
+    "COOKIE_SECURE": True,
+    "ENABLE_CARD_LOGIN": False,
+    "REQUIRE_CARD_LOGIN_ONLY": False,
+    "ANILA_ALLOW_HTTP_ENDPOINT": False,
+    "ANILA_ALLOW_HTTP_AGENT_ENDPOINT": False,
+    "ANILA_ALLOW_PRIVATE_ENDPOINT": False,
+    "CARD_DEV_SKIP_NONCE_BINDING": False,
+    "CARD_CRL_REQUIRED": False,
     "ALLOW_LEGACY_AGENT_DISPATCH": False,
 }
 
@@ -181,6 +226,11 @@ _FORMAL_PROFILE_POSTURES: dict[str, dict[str, object]] = {
     # silent mutation of the normal card-only profile.  Card-only remains true:
     # only the owner password AMR is conditionally admitted at the JWT boundary.
     "prod-intranet-card-breakglass": dict(_PROD_INTRANET_CARD_POSTURE),
+    # Keep each password profile as an independent first-class contract even
+    # though their reviewed posture is currently identical.
+    "prod-public-passwd": dict(_PASSWORD_PRODUCTION_POSTURE),
+    "prod-military-passwd": dict(_PASSWORD_PRODUCTION_POSTURE),
+    "trial-military": dict(_PASSWORD_PRODUCTION_POSTURE),
 }
 
 _AUDIT_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}$")
@@ -342,7 +392,7 @@ def assert_deployment_profile_posture() -> None:
         ]
         if stale_metadata:
             raise RuntimeError(
-                "Refusing to start: normal card profile must not retain "
+                "Refusing to start: non-break-glass formal profile must not retain "
                 "break-glass metadata: " + ", ".join(stale_metadata)
             )
 

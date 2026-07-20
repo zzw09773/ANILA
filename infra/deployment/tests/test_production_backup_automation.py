@@ -592,6 +592,45 @@ class ProductionBackupAutomationTests(unittest.TestCase):
                     device_id=lambda _path: 7,
                 )
 
+    def test_windows_offhost_escape_is_refused_for_all_formal_profiles(self) -> None:
+        formal_profiles = (
+            "prod-intranet-card",
+            "prod-intranet-card-breakglass",
+            "prod-public-passwd",
+            "prod-military-passwd",
+            "trial-military",
+        )
+        for profile in formal_profiles:
+            with self.subTest(profile=profile), mock.patch.dict(
+                os.environ,
+                {
+                    "ANILA_BACKUP_TEST_ALLOW_WINDOWS_OFFHOST": "1",
+                    "ANILA_DEPLOYMENT_PROFILE": profile,
+                },
+                clear=False,
+            ), self.assertRaisesRegex(
+                backup.BackupAutomationError, "forbidden for formal profiles"
+            ):
+                backup._assert_off_host_mount(
+                    Path("C:/off-host"),
+                    Path("C:/local"),
+                    platform_name="nt",
+                )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ANILA_BACKUP_TEST_ALLOW_WINDOWS_OFFHOST": "1",
+                "ANILA_DEPLOYMENT_PROFILE": "development",
+            },
+            clear=False,
+        ), mock.patch.object(backup.sys, "stderr"):
+            backup._assert_off_host_mount(
+                Path("C:/off-host"),
+                Path("C:/local"),
+                platform_name="nt",
+            )
+
     def test_active_generation_restore_metrics_fail_closed(self) -> None:
         self.assertEqual(
             backup._validate_restore_db_metrics(["0", "0", "4", "0", "0"])[

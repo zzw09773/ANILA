@@ -362,9 +362,12 @@ def test_missing_or_disabled_material_is_not_ready(tmp_path: Path) -> None:
     assert "disabled" in disabled.readiness.reason
 
 
-def test_production_posture_cannot_leave_governance_disabled(tmp_path: Path) -> None:
+@pytest.mark.parametrize("profile", ["prod-intranet-card", "trial-military"])
+def test_formal_posture_cannot_leave_governance_disabled(
+    profile: str, tmp_path: Path
+) -> None:
     settings = SimpleNamespace(
-        ANILA_DEPLOYMENT_PROFILE="prod-intranet-card",
+        ANILA_DEPLOYMENT_PROFILE=profile,
         GATE5_MODEL_GOVERNANCE_ENABLED=False,
         GATE5_MODEL_GOVERNANCE_STARTUP_REQUIRED=False,
         GATE5_MODEL_GOVERNANCE_INVENTORY_PATH=str(tmp_path / "missing-inventory.json"),

@@ -349,9 +349,98 @@ def _set_formal_card_profile(monkeypatch) -> None:
         "ANILA_ALLOW_PRIVATE_ENDPOINT": "0",
         "CARD_DEV_SKIP_NONCE_BINDING": "false",
         "CARD_CRL_REQUIRED": "true",
+        "ALLOW_LEGACY_AGENT_DISPATCH": "false",
+        "CARD_INITIAL_OWNERS": "990000001",
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
+
+
+def _set_formal_password_profile(monkeypatch, profile: str) -> None:
+    values = {
+        "ANILA_DEPLOYMENT_PROFILE": profile,
+        "ANILA_ENV": "production",
+        "ANILA_ALLOW_DEV_SECRET": "0",
+        "DEBUG": "false",
+        "ENABLE_API_DOCS": "false",
+        "ENABLE_PUBLIC_SHARE": "false",
+        "ENABLE_MEMORY": "false",
+        "SKIP_STARTUP_MIGRATIONS": "false",
+        "ALLOW_AUTO_KEYGEN": "false",
+        "COOKIE_SECURE": "true",
+        "ENABLE_CARD_LOGIN": "false",
+        "REQUIRE_CARD_LOGIN_ONLY": "false",
+        "ANILA_ALLOW_HTTP_ENDPOINT": "0",
+        "ANILA_ALLOW_HTTP_AGENT_ENDPOINT": "0",
+        "ANILA_ALLOW_PRIVATE_ENDPOINT": "0",
+        "CARD_DEV_SKIP_NONCE_BINDING": "false",
+        "CARD_CRL_REQUIRED": "false",
+        "ALLOW_LEGACY_AGENT_DISPATCH": "false",
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+
+@pytest.mark.parametrize(
+    "profile", ["prod-public-passwd", "prod-military-passwd", "trial-military"]
+)
+def test_declared_formal_password_profiles_accept_exact_posture(
+    profile, monkeypatch, reload_startup_security
+):
+    _set_formal_password_profile(monkeypatch, profile)
+    reload_startup_security().assert_deployment_profile_posture()
+
+
+@pytest.mark.parametrize(
+    "name,bad_value",
+    [
+        ("ANILA_ENV", "development"),
+        ("ANILA_ALLOW_DEV_SECRET", "1"),
+        ("DEBUG", "true"),
+        ("ENABLE_API_DOCS", "true"),
+        ("ENABLE_PUBLIC_SHARE", "true"),
+        ("ENABLE_MEMORY", "true"),
+        ("SKIP_STARTUP_MIGRATIONS", "true"),
+        ("ALLOW_AUTO_KEYGEN", "true"),
+        ("COOKIE_SECURE", "false"),
+        ("ENABLE_CARD_LOGIN", "true"),
+        ("REQUIRE_CARD_LOGIN_ONLY", "true"),
+        ("ANILA_ALLOW_HTTP_ENDPOINT", "1"),
+        ("ANILA_ALLOW_HTTP_AGENT_ENDPOINT", "1"),
+        ("ANILA_ALLOW_PRIVATE_ENDPOINT", "1"),
+        ("CARD_DEV_SKIP_NONCE_BINDING", "true"),
+        ("CARD_CRL_REQUIRED", "true"),
+        ("ALLOW_LEGACY_AGENT_DISPATCH", "true"),
+    ],
+)
+@pytest.mark.parametrize(
+    "profile", ["prod-public-passwd", "prod-military-passwd", "trial-military"]
+)
+def test_declared_formal_password_profiles_reject_each_mismatch(
+    profile, name, bad_value, monkeypatch, reload_startup_security
+):
+    _set_formal_password_profile(monkeypatch, profile)
+    monkeypatch.setenv(name, bad_value)
+    with pytest.raises(RuntimeError, match=name):
+        reload_startup_security().assert_deployment_profile_posture()
+
+
+def test_formal_password_profiles_do_not_require_card_owner(
+    monkeypatch, reload_startup_security
+):
+    _set_formal_password_profile(monkeypatch, "prod-public-passwd")
+    monkeypatch.delenv("CARD_INITIAL_OWNERS", raising=False)
+    reload_startup_security().assert_deployment_profile_posture()
+
+
+@pytest.mark.parametrize("owner", ["", "<your-employee-id,or-csv-list>"])
+def test_formal_card_profiles_require_non_placeholder_owner(
+    owner, monkeypatch, reload_startup_security
+):
+    _set_formal_card_profile(monkeypatch)
+    monkeypatch.setenv("CARD_INITIAL_OWNERS", owner)
+    with pytest.raises(RuntimeError, match="CARD_OWNER_CONFIGURED"):
+        reload_startup_security().assert_deployment_profile_posture()
 
 
 def test_declared_formal_card_profile_accepts_exact_posture(
@@ -367,6 +456,15 @@ def test_normal_card_profile_rejects_stale_break_glass_metadata(
     _set_formal_card_profile(monkeypatch)
     monkeypatch.setenv("ANILA_BREAK_GLASS_TICKET", "INC-STALE-001")
     with pytest.raises(RuntimeError, match="must not retain break-glass metadata"):
+        reload_startup_security().assert_deployment_profile_posture()
+
+
+def test_password_profile_rejects_stale_break_glass_metadata_generically(
+    monkeypatch, reload_startup_security
+):
+    _set_formal_password_profile(monkeypatch, "prod-military-passwd")
+    monkeypatch.setenv("ANILA_BREAK_GLASS_TICKET", "INC-STALE-002")
+    with pytest.raises(RuntimeError, match="non-break-glass formal profile"):
         reload_startup_security().assert_deployment_profile_posture()
 
 
@@ -388,6 +486,8 @@ def test_normal_card_profile_rejects_stale_break_glass_metadata(
         ("ANILA_ALLOW_HTTP_AGENT_ENDPOINT", "0"),
         ("ANILA_ALLOW_PRIVATE_ENDPOINT", "1"),
         ("CARD_DEV_SKIP_NONCE_BINDING", "true"),
+        ("CARD_CRL_REQUIRED", "false"),
+        ("ALLOW_LEGACY_AGENT_DISPATCH", "true"),
     ],
 )
 def test_declared_formal_card_profile_rejects_each_mismatch(

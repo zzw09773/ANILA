@@ -303,6 +303,7 @@ class WorkerSettings(BaseSettings):
             "prod-intranet-card-breakglass",
             "prod-public-passwd",
             "prod-military-passwd",
+            "trial-military",
         } and (
             len(self.ingestion_queue_hmac_key.strip()) < 32
             or self.ingestion_queue_hmac_key.startswith("dev-")
