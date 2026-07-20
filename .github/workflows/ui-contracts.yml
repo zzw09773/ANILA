@@ -1,0 +1,52 @@
+name: UI contracts
+
+on:
+  pull_request:
+    branches:
+      - main
+      - prod-intranet-card
+      - fix/gate0-security-hardening
+    paths:
+      - "packages/tokens/**"
+      - "packages/ui/**"
+      - "apps/anila-shell/**"
+      - "infra/compose/**"
+      - ".github/workflows/ui-contracts.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ui-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            packages/ui/package-lock.json
+            apps/anila-shell/package-lock.json
+
+      - name: Verify framework-neutral tokens
+        working-directory: packages/tokens
+        run: npm test
+
+      - name: Test React primitives
+        working-directory: packages/ui
+        run: npm ci --no-audit --no-fund && npm test
+
+      - name: Test and build ANILA shell
+        working-directory: apps/anila-shell
+        run: npm ci --no-audit --no-fund && npm test && npm run build
+
+      - name: Verify production Docker build context
+        run: >-
+          docker build
+          -f apps/anila-shell/Dockerfile
+          --build-arg BASE_PATH=/anila/
+          -t anila-shell-ui-contract .

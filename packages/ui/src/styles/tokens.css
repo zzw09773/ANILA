@@ -1,0 +1,2 @@
+/* Compatibility entrypoint. New consumers should import @anila/tokens/tokens.css. */
+@import "../../../tokens/src/tokens.css";

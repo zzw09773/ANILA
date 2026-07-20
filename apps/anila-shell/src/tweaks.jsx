@@ -32,6 +32,8 @@ export const TweaksPanel = ({ open, onClose, tweaks, setTweaks }) => {
   );
 
   const accents = [
+    // official = 共用設計系統預設官方藍（@anila/ui --anila-color-accent）。
+    { name: "official", v: "#2b4c7e" },
     { name: "teal",   v: "#0b7285" },
     { name: "slate",  v: "#334155" },
     { name: "moss",   v: "#4a6444" },

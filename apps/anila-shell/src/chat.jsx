@@ -15,6 +15,9 @@ import {
   Kbd,
   MenuItem,
 } from "./components.jsx";
+// 側欄外殼（收合 rail / 展開寬欄）與分段切換器來自共用設計系統；
+// 側欄「內容」（對話清單 / 資料夾 / 搜尋）仍是 shell 業務碼。
+import { Sidebar as UiSidebar, Tabs } from "@anila/ui";
 import { useConfirm, useToast } from "./confirm.jsx";
 import {
   AnilaGlyph,
@@ -1536,12 +1539,7 @@ export const Sidebar = ({
 
   if (collapsed) {
     return (
-      <div style={{
-        width: 52, borderRight: "1px solid var(--border)",
-        background: "var(--bg-subtle)",
-        display: "flex", flexDirection: "column", alignItems: "center",
-        padding: "12px 0", gap: 6,
-      }}>
+      <UiSidebar collapsed aria-label="任務側欄">
         <div style={{ padding: 6 }}><AnilaGlyph size={22} /></div>
         <Divider />
         <IconButton onClick={onToggleCollapsed} title="展開側邊"><IconChevRight /></IconButton>
@@ -1552,17 +1550,12 @@ export const Sidebar = ({
         <ShellNav collapsed user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} />
         <div style={{ flex: 1 }} />
         <IconButton onClick={onOpenSettings} title="設定"><IconSettings /></IconButton>
-      </div>
+      </UiSidebar>
     );
   }
 
   return (
-    <div style={{
-      width: 272, flexShrink: 0,
-      borderRight: "1px solid var(--border)",
-      background: "var(--bg-subtle)",
-      display: "flex", flexDirection: "column",
-    }}>
+    <UiSidebar aria-label="任務側欄">
       <div style={{ padding: "14px 14px 10px", display: "flex", alignItems: "center", gap: 8 }}>
         <AnilaGlyph size={20} />
         <div style={{ fontWeight: 600, fontSize: 14, letterSpacing: 0.2 }}>ANILA</div>
@@ -1591,21 +1584,16 @@ export const Sidebar = ({
       <ShellNav user={user} onTaskCenter={onTaskCenter} onOpenServices={onOpenServices} />
       <div style={{ height: 1, background: "var(--border)", margin: "2px 10px 8px" }} />
 
-      <div style={{ padding: "0 10px", display: "flex", gap: 2, marginBottom: 8 }}>
-        {[
-          { id: "chats", label: "對話", icon: <IconMessage size={13} /> },
-          { id: "agents", label: "Agents", icon: <IconGrid size={13} /> },
-        ].map((t) => (
-          <button key={t.id} onClick={() => setTab(t.id)} style={{
-            flex: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5,
-            padding: "5px 8px", fontSize: 12, fontWeight: 500,
-            background: tab === t.id ? "var(--bg-elev)" : "transparent",
-            border: "1px solid " + (tab === t.id ? "var(--border)" : "transparent"),
-            borderRadius: "var(--radius)",
-            color: tab === t.id ? "var(--fg)" : "var(--fg-muted)",
-            cursor: "pointer",
-          }}>{t.icon}{t.label}</button>
-        ))}
+      <div style={{ padding: "0 10px", marginBottom: 8 }}>
+        <Tabs
+          aria-label="側欄清單切換"
+          tabs={[
+            { id: "chats", label: "對話", icon: <IconMessage size={13} /> },
+            { id: "agents", label: "Agents", icon: <IconGrid size={13} /> },
+          ]}
+          value={tab}
+          onChange={setTab}
+        />
       </div>
 
       {tab === "chats" ? (
@@ -1993,6 +1981,6 @@ export const Sidebar = ({
           )}
         </Dropdown>
       </div>
-    </div>
+    </UiSidebar>
   );
 };

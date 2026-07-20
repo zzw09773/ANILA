@@ -1,0 +1,28 @@
+{
+  "name": "@anila/ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "ANILA React 前端共用元件；跨框架 design tokens 由 @anila/tokens 提供。",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./styles/tokens.css": "./src/styles/tokens.css"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.3.0",
+    "@vitejs/plugin-react": "^4.4.1",
+    "jsdom": "^26.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vitest": "^3.1.3"
+  }
+}

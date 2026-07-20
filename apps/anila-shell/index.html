@@ -15,8 +15,9 @@
 
 <script>
   // ---- Tweak defaults (host may rewrite this block) ----
+  // accent 預設 = 共用設計系統的官方藍（packages/ui tokens：--anila-color-accent）。
   window.ANILA_TWEAKS = /*EDITMODE-BEGIN*/{
-    "accent": "#a05a2c",
+    "accent": "#2b4c7e",
     "dark": false,
     "density": 18,
     "sansFamily": "Noto Sans TC",
@@ -28,36 +29,49 @@
 
 <style>
   :root {
-    --bg:            oklch(0.985 0.002 90);
-    --bg-elev:       oklch(1 0 0);
-    --bg-subtle:     oklch(0.965 0.003 90);
-    --fg:            oklch(0.18 0.005 270);
-    --fg-muted:      oklch(0.48 0.005 270);
-    --fg-subtle:     oklch(0.62 0.005 270);
-    --border:        oklch(0.91 0.004 270);
-    --border-strong: oklch(0.85 0.005 270);
-    --accent:        #0b7285;
-    --accent-fg:     #ffffff;
-    --accent-soft:   oklch(0.95 0.02 200);
-    --danger:        oklch(0.55 0.18 25);
-    --warn:          oklch(0.72 0.14 75);
-    --success:       oklch(0.58 0.10 150);
+    /* 橋接層：shell 舊變數 → 共用設計系統 @anila/ui tokens（--anila-*，由
+       src/main.jsx import "@anila/ui/styles/tokens.css" 載入；淺色官方藍
+       institutional，見 packages/ui/src/styles/tokens.css）。全站 inline
+       style 沿用舊變數名即可自動跟隨共用主題，業務碼零改動。
+       fallback 值 = 共用 tokens 的同值複本，僅用於 bundle CSS 尚未載入的
+       首屏瞬間（boot screen），避免無樣式閃爍。 */
+    --bg:            var(--anila-color-bg, oklch(0.977 0.002 250));
+    --bg-elev:       var(--anila-color-bg-elev, oklch(1 0 0));
+    --bg-subtle:     var(--anila-color-bg-subtle, oklch(0.958 0.004 250));
+    --fg:            var(--anila-color-fg, oklch(0.24 0.02 260));
+    --fg-muted:      var(--anila-color-fg-muted, oklch(0.47 0.018 260));
+    --fg-subtle:     var(--anila-color-fg-subtle, oklch(0.62 0.014 260));
+    --border:        var(--anila-color-border, oklch(0.90 0.006 250));
+    --border-strong: var(--anila-color-border-strong, oklch(0.83 0.010 250));
+    --accent:        var(--anila-color-accent, #2b4c7e);
+    --accent-fg:     var(--anila-color-accent-fg, #ffffff);
+    --accent-soft:   var(--anila-color-accent-soft, oklch(0.93 0.022 258));
+    --danger:        var(--anila-color-danger, oklch(0.53 0.17 27));
+    --warn:          var(--anila-color-warn, oklch(0.70 0.13 75));
+    --success:       var(--anila-color-success, oklch(0.56 0.10 152));
 
-    --radius-sm: 4px;
-    --radius:    6px;
-    --radius-lg: 10px;
+    --radius-sm: var(--anila-radius-sm, 4px);
+    --radius:    var(--anila-radius-md, 6px);
+    --radius-lg: var(--anila-radius-lg, 8px);
 
-    /* System font stacks: Latin handles via -apple-system / Segoe UI / system-ui;
-       Traditional Chinese falls through to whatever the OS ships (PingFang TC
-       / Microsoft JhengHei / Noto Sans CJK TC). No webfont download needed. */
-    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft JhengHei",
-      "PingFang TC", "Noto Sans CJK TC", system-ui, sans-serif;
-    --font-mono: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    /* 字型堆疊同樣來自共用 tokens（系統字型、zh-TW aware、無 webfont）。 */
+    --font-sans: var(--anila-font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI",
+      "Microsoft JhengHei", "PingFang TC", "Noto Sans CJK TC", system-ui, sans-serif);
+    --font-mono: var(--anila-font-mono, ui-monospace, "JetBrains Mono", SFMono-Regular,
+      Menlo, Consolas, monospace);
 
     --density: 16px;
   }
 
-  [data-theme="dark"] {
+  /* 深色覆蓋：沿用改版前的值（第二主題屬後續 change brief，本次不交付）。
+     共用 tokens 只出淺色；此段維持既有深色切換行為不退步。
+     注意要同時覆蓋 legacy 變數（業務碼 inline style 用）與 --anila-*
+     （@anila/ui 殼層元件直接吃 --anila-*）——tokens.css 文件化的主題
+     擴充掛點就是這個 [data-theme] 覆蓋段。
+     選擇器用 :root[data-theme="dark"]（特異性 0,2,0）：bundle 的
+     tokens.css <link> 在本 <style> 之後載入，同特異性時 :root{淺色}
+     會以文件序勝出，必須用更高特異性壓回。 */
+  :root[data-theme="dark"] {
     --bg:            oklch(0.16 0.004 270);
     --bg-elev:       oklch(0.20 0.004 270);
     --bg-subtle:     oklch(0.22 0.004 270);
@@ -67,6 +81,16 @@
     --border:        oklch(0.28 0.005 270);
     --border-strong: oklch(0.36 0.005 270);
     --accent-soft:   oklch(0.30 0.04 200);
+
+    --anila-color-bg:            oklch(0.16 0.004 270);
+    --anila-color-bg-elev:       oklch(0.20 0.004 270);
+    --anila-color-bg-subtle:     oklch(0.22 0.004 270);
+    --anila-color-fg:            oklch(0.96 0.003 90);
+    --anila-color-fg-muted:      oklch(0.72 0.005 270);
+    --anila-color-fg-subtle:     oklch(0.55 0.005 270);
+    --anila-color-border:        oklch(0.28 0.005 270);
+    --anila-color-border-strong: oklch(0.36 0.005 270);
+    --anila-color-accent-soft:   oklch(0.30 0.04 200);
   }
 
   * { box-sizing: border-box; }
