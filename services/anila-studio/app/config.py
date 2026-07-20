@@ -168,6 +168,7 @@ _FORMAL_PROFILES = {
     "prod-intranet-card-breakglass",
     "prod-public-passwd",
     "prod-military-passwd",
+    "trial-military",
 }
 
 

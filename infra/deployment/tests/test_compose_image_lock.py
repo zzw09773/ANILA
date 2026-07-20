@@ -93,14 +93,60 @@ set -e
             )
         return "\n".join(rows) + "\n"
 
-    def _env_text(self, *, include_optional: bool = False) -> str:
-        rows: list[str] = ["ANILA_DEPLOYMENT_PROFILE=prod-intranet-card"]
+    def _env_text(
+        self,
+        *,
+        include_optional: bool = False,
+        profile: str = "prod-intranet-card",
+    ) -> str:
+        rows: list[str] = [f"ANILA_DEPLOYMENT_PROFILE={profile}"]
         for index, entry in enumerate(self.inventory.values(), 1):
             if entry.activation != "default" and not include_optional:
                 continue
             variable = MODULE.IMAGE_ENV_BY_SERVICE[entry.service]
             rows.append(f"{variable}=sha256:{index:064x}")
         return "\n".join(rows) + "\n"
+
+    def test_all_named_formal_profiles_are_accepted_and_unknown_is_rejected(self):
+        accepted = (
+            "prod-intranet-card",
+            "prod-intranet-card-breakglass",
+            "prod-public-passwd",
+            "prod-military-passwd",
+            "trial-military",
+        )
+        for profile in accepted:
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as directory:
+                env_path = Path(directory) / ".env"
+                env_path.write_text(self._env_text(profile=profile), encoding="utf-8")
+                if profile == "prod-intranet-card-breakglass":
+                    with env_path.open("a", encoding="utf-8") as stream:
+                        stream.write(
+                            "ANILA_BREAK_GLASS_OWNER=operator-a\n"
+                            "ANILA_BREAK_GLASS_TICKET=INC-100\n"
+                            "ANILA_BREAK_GLASS_EXPIRES_AT=2026-07-21T00:00:00Z\n"
+                        )
+                MODULE.verify_env(
+                    env_path,
+                    self.inventory,
+                    None,
+                    include_optional=False,
+                    inspect_docker=False,
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            env_path = Path(directory) / ".env"
+            env_path.write_text(
+                self._env_text(profile="unknown-formal-profile"), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(MODULE.ImageLockError, "unsupported formal"):
+                MODULE.verify_env(
+                    env_path,
+                    self.inventory,
+                    None,
+                    include_optional=False,
+                    inspect_docker=False,
+                )
 
     def _pilot_env_text(self) -> str:
         rows = [

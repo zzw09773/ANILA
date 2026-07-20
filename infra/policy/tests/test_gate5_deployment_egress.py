@@ -20,6 +20,7 @@ from infra.policy.gate5.check_deployment_egress import (
     _gateway_url,
     _is_model_network,
     _normalise_external_target,
+    main,
     verify_deployment_egress,
 )
 
@@ -110,14 +111,52 @@ def _models(*, flux: bool = False) -> dict:
     }
 
 
-def test_formal_csp_only_model_network_and_renderer_url_are_allowed() -> None:
+@pytest.mark.parametrize(
+    "profile",
+    (
+        "prod-intranet-card",
+        "prod-intranet-card-breakglass",
+        "prod-public-passwd",
+        "prod-military-passwd",
+        "trial-military",
+    ),
+)
+def test_named_formal_profiles_enter_enforcement_path(profile: str) -> None:
     result = verify_deployment_egress(
         [_platform(), _models()],
-        profile="prod-intranet-card",
+        profile=profile,
         require_material=False,
     )
     assert result["formal"] is True
     assert result["flux_present"] is False
+
+
+def test_trial_profile_never_uses_development_success_seam() -> None:
+    with pytest.raises(DeploymentEgressError, match="must contain a csp service"):
+        verify_deployment_egress(
+            [{"services": {}}],
+            profile="trial-military",
+            require_material=False,
+        )
+
+
+def test_cli_require_formal_rejects_development_profile(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    compose_path = tmp_path / "compose.json"
+    compose_path.write_text('{"services": {}}', encoding="utf-8")
+
+    assert main(
+        [
+            "--profile",
+            "development",
+            "--compose-json",
+            str(compose_path),
+            "--skip-material-check",
+            "--require-formal",
+        ]
+    ) == 1
+    assert "did not enter the formal enforcement path" in capsys.readouterr().out
 
 
 def test_formal_agent_cannot_join_model_network() -> None:

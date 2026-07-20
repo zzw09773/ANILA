@@ -56,7 +56,11 @@ class DeploymentEgressError(RuntimeError):
     """Raised when a resolved deployment violates a fail-closed invariant."""
 
 
-FORMAL_PROFILES = frozenset({"prod", "production"})
+# ``prod-*`` profiles are formal by syntax.  Reduction/demo identities such as
+# ``trial-military`` do not share that prefix, so keep them in this explicit
+# set; otherwise the deployment checker would silently return its development
+# success result and skip every Gate 5 network/governance invariant.
+FORMAL_PROFILES = frozenset({"prod", "production", "trial-military"})
 MODEL_NETWORK_TOKENS = ("model", "inference")
 MODEL_NETWORK_LEXICAL_TOKENS = frozenset({"donkernet"})
 SHARED_MODEL_NETWORK_NAME = "anila-models-net"
@@ -1021,6 +1025,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="only for pure topology fixtures; never use for a formal deploy",
     )
+    parser.add_argument(
+        "--require-formal",
+        action="store_true",
+        help="fail unless the selected profile entered the formal policy path",
+    )
     args = parser.parse_args(argv)
     try:
         result = verify_deployment_egress(
@@ -1029,6 +1038,10 @@ def main(argv: list[str] | None = None) -> int:
             repo_root=args.repo_root,
             require_material=not args.skip_material_check,
         )
+        if args.require_formal and result.get("formal") is not True:
+            raise DeploymentEgressError(
+                f"profile {args.profile!r} did not enter the formal enforcement path"
+            )
     except DeploymentEgressError as exc:
         print(f"FAIL: {exc}")
         return 1

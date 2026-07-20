@@ -255,7 +255,13 @@ def verify_env(
             + ", ".join(forbidden_in_file)
         )
     profile = values.get("ANILA_DEPLOYMENT_PROFILE", "")
-    if profile not in {"prod-intranet-card", "prod-intranet-card-breakglass"}:
+    if profile not in {
+        "prod-intranet-card",
+        "prod-intranet-card-breakglass",
+        "prod-public-passwd",
+        "prod-military-passwd",
+        "trial-military",
+    }:
         raise ImageLockError(
             f"{env_file}: unsupported formal ANILA_DEPLOYMENT_PROFILE {profile!r}"
         )
@@ -272,7 +278,7 @@ def verify_env(
             )
     elif any(values.get(name) for name in break_glass_fields):
         raise ImageLockError(
-            f"{env_file}: normal card profile must not retain break-glass metadata"
+            f"{env_file}: non-break-glass formal profile must not retain break-glass metadata"
         )
     pilot_requested = values.get("ANILA_PILOT_MODE", "").strip().lower() == "true"
     if posture == "gate2-pilot" and not pilot_requested:

@@ -2,15 +2,18 @@
 # ============================================================================
 # deploy-prod.sh
 # ----------------------------------------------------------------------------
-# ANILA prod-intranet-card 正式部署腳本（Gate 1 F6 reviewed scope）
+# ANILA formal production deployment script（Gate 1 F6 reviewed scope）
 #
-# 唯一接受的 prod branch:
+# 接受的 formal production branch/profile identity:
 #   - prod-intranet-card   中科院內網 + PKI 自然人憑證卡
-# public/military 尚無 Gate 1 reviewed profile + image-lock lifecycle，不得混用。
+#   - prod-public-passwd   一般帳密 formal profile
+#   - prod-military-passwd 軍方帳密 formal profile
+#   - trial-military       軍方試用帳密 formal profile
+# 卡片 branch 另接受明確、具時效的 prod-intranet-card-breakglass profile。
 #
 # 用法:
-#   git checkout prod-intranet-card && git pull
-#   set -a; source /path/to/prod-intranet-card.env; set +a
+#   git checkout <formal branch> && git pull
+#   set -a; source /path/to/<matching-formal-profile>.env; set +a
 #   bash infra/deployment/scripts/deploy-prod.sh [SUBCOMMAND]
 #
 # SUBCOMMAND:
@@ -20,7 +23,7 @@
 #   up               docker compose up -d --no-build + wait + fail-closed verify
 #   down             docker compose down (保留 volumes,db 資料不丟)
 #   restart          完整 preflight 通過後才 down + locked up
-#   rebuild <svc>    正式 profile 一律拒絕；必須重出 air-gap bundle
+#   rebuild <svc>    formal profile 一律拒絕；必須重出 air-gap bundle
 #   status           顯示所有 service health
 #   postconfigure    收斂帶狀態 upstream 工具的 runtime 安全姿態
 #   logs <svc>       tail -f 單一 service logs
@@ -45,7 +48,7 @@
 #                           model container 檢查,改 curl *_BASE_URL 探測
 #
 # 前置條件(腳本會自動 check):
-#   1. 現在 git branch 是 `prod-intranet-card`
+#   1. 現在 git branch/profile 是上述核准的 formal identity 組合
 #   2. Docker daemon running
 #   3. docker compose v2 可用
 #   4. shared helper 可建立/驗證 anila-models-net (模型 stack 可先起來)
@@ -71,16 +74,21 @@ env_file_value() {
   return 0
 }
 
+effective_env_value() {
+  local variable="$1"
+  if [[ -v "$variable" ]]; then
+    printf '%s' "${!variable}"
+  else
+    env_file_value "$variable"
+  fi
+}
+
 deployment_profile() {
-  printf '%s' "${ANILA_DEPLOYMENT_PROFILE:-$(env_file_value ANILA_DEPLOYMENT_PROFILE)}"
+  effective_env_value ANILA_DEPLOYMENT_PROFILE
 }
 
 pilot_mode_value() {
-  if [[ -v ANILA_PILOT_MODE ]]; then
-    printf '%s' "$ANILA_PILOT_MODE"
-  else
-    printf '%s' "$(env_file_value ANILA_PILOT_MODE)"
-  fi
+  effective_env_value ANILA_PILOT_MODE
 }
 
 FORMAL_POSTURE=normal
@@ -109,6 +117,14 @@ compose() {
 
 is_gate2_pilot_posture() {
   [[ "$FORMAL_POSTURE" == gate2-pilot ]]
+}
+
+is_formal_profile() {
+  case "${1:-$(deployment_profile)}" in
+    prod-intranet-card|prod-intranet-card-breakglass|prod-public-passwd|prod-military-passwd|trial-military)
+      return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 is_formal_card_profile() {
@@ -165,24 +181,45 @@ prepare_csp_runtime_mount() {
 }
 
 # ── Pre-flight: 環境 ──────────────────────────────────────────────────────
-# Gate 1 F6 的 executable posture/image lock 只審查 card 分支。
+# Gate 1 F6 的 executable posture/image lock 審查所有 named formal profiles。
 # 防呆:在其他 prod、main、dev-*、feature/* 上跑都必須被擋掉。
-_PROD_BRANCHES=(prod-intranet-card)
+_PROD_BRANCHES=(
+  prod-intranet-card
+  prod-public-passwd
+  prod-military-passwd
+  trial-military
+)
 
 check_branch() {
   local branch
   branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-  local matched=0
-  for b in "${_PROD_BRANCHES[@]}"; do
-    [[ "$branch" == "$b" ]] && matched=1 && break
-  done
-  if (( matched == 0 )); then
+  case "$branch" in
+    prod-intranet-card|prod-public-passwd|prod-military-passwd|trial-military) ;;
+    *)
     err "目前在 '$branch' 分支,prod 部署必須切到下列其中一條:"
     for b in "${_PROD_BRANCHES[@]}"; do err "  - $b"; done
-    fatal "deployment identity mismatch: 請切到 prod-intranet-card 並同步正式 release"
-  fi
+    fatal "deployment identity mismatch: 請切到對應的 formal deployment branch 並同步正式 release" ;;
+  esac
+
+  local profile
+  profile="$(deployment_profile)"
+  case "$branch:$profile" in
+    prod-intranet-card:prod-intranet-card|prod-intranet-card:prod-intranet-card-breakglass)
+      ;;
+    prod-public-passwd:prod-public-passwd|prod-military-passwd:prod-military-passwd|trial-military:trial-military)
+      ;;
+    *)
+      fatal "deployment identity mismatch: branch '$branch' 不接受 profile '${profile:-<unset>}'" ;;
+  esac
+
   ok "git branch = $branch"
-  ok "  特性: 中科院內網 + PKI 自然人憑證卡"
+  case "$branch" in
+    prod-intranet-card) ok "  特性: 中科院內網 + PKI 自然人憑證卡" ;;
+    prod-public-passwd) ok "  特性: 一般帳密 formal profile" ;;
+    prod-military-passwd) ok "  特性: 軍方帳密 formal profile" ;;
+    trial-military) ok "  特性: 軍方試用帳密 formal profile" ;;
+  esac
+  ok "  profile = $profile"
 }
 
 check_docker() {
@@ -203,14 +240,12 @@ check_compose_control_env() {
 }
 
 check_formal_image_lock() {
-  local profile branch
-  branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-  [[ "$branch" == "prod-intranet-card" ]] \
-    || fatal "deployment identity mismatch: profile/image-lock lifecycle 只核准 prod-intranet-card branch（目前 $branch）"
+  local profile
+  check_branch
   profile="$(deployment_profile)"
   [[ -n "$profile" ]] || fatal "ANILA_DEPLOYMENT_PROFILE 未宣告"
-  if ! is_formal_card_profile "$profile"; then
-    fatal "本 Gate 1 lifecycle 只核准 prod-intranet-card 與 prod-intranet-card-breakglass；目前為未審查 profile: $profile"
+  if ! is_formal_profile "$profile"; then
+    fatal "本 formal image-lock lifecycle 不支援未審查 deployment profile: $profile"
   fi
   command -v python3 >/dev/null 2>&1 \
     || fatal "formal image-lock verifier 需要 python3"
@@ -262,15 +297,115 @@ check_external_secret_paths() {
   ok "JWT/TLS 私鑰路徑位於 repo 外"
 }
 
+require_formal_value() {
+  local variable="$1" expected="$2" actual
+  actual="$(effective_env_value "$variable")"
+  [[ "$actual" == "$expected" ]] \
+    || fatal "formal posture mismatch: $variable 必須是 '$expected'，目前為 '${actual:-<unset>}'"
+}
+
+check_formal_posture() {
+  local profile host site authority
+  profile="$(deployment_profile)"
+  is_formal_profile "$profile" \
+    || fatal "formal posture guard 不支援未知 deployment profile: ${profile:-<unset>}"
+
+  # These values are deliberately exact: accepting aliases such as 1/0 or
+  # prod here would make the shell preflight disagree with CSP startup's
+  # formal profile contract.
+  local common=(
+    "ANILA_ENV=production"
+    "ANILA_ALLOW_DEV_SECRET=0"
+    "DEBUG=false"
+    "ENABLE_API_DOCS=false"
+    "ENABLE_PUBLIC_SHARE=false"
+    "ENABLE_MEMORY=false"
+    "SKIP_STARTUP_MIGRATIONS=false"
+    "ALLOW_AUTO_KEYGEN=false"
+    "COOKIE_SECURE=true"
+    "ANILA_ALLOW_HTTP_ENDPOINT=0"
+    "ANILA_ALLOW_PRIVATE_ENDPOINT=0"
+    "CARD_DEV_SKIP_NONCE_BINDING=false"
+    "ALLOW_LEGACY_AGENT_DISPATCH=false"
+  )
+  local item variable expected
+  for item in "${common[@]}"; do
+    variable="${item%%=*}"
+    expected="${item#*=}"
+    require_formal_value "$variable" "$expected"
+  done
+
+  case "$profile" in
+    prod-intranet-card|prod-intranet-card-breakglass)
+      local card=(
+        "ENABLE_CARD_LOGIN=true"
+        "REQUIRE_CARD_LOGIN_ONLY=true"
+        "ANILA_ALLOW_HTTP_AGENT_ENDPOINT=1"
+        "CARD_CRL_REQUIRED=true"
+      )
+      for item in "${card[@]}"; do
+        variable="${item%%=*}"
+        expected="${item#*=}"
+        require_formal_value "$variable" "$expected"
+      done
+      for variable in CARD_INITIAL_OWNERS CARD_CRL_BUNDLE_PATH CARD_CRL_SOURCE CARD_REQUIRED_CERT_POLICY_OIDS; do
+        local card_value
+        card_value="$(effective_env_value "$variable")"
+        [[ -n "$card_value" && "$card_value" != \<*\> ]] \
+          || fatal "formal card posture requires $variable (non-placeholder)"
+      done
+      if [[ "$profile" == "prod-intranet-card-breakglass" ]]; then
+        for variable in ANILA_BREAK_GLASS_OWNER ANILA_BREAK_GLASS_TICKET ANILA_BREAK_GLASS_EXPIRES_AT; do
+          [[ -n "$(effective_env_value "$variable")" ]] \
+            || fatal "break-glass profile requires $variable"
+        done
+      else
+        for variable in ANILA_BREAK_GLASS_OWNER ANILA_BREAK_GLASS_TICKET ANILA_BREAK_GLASS_EXPIRES_AT; do
+          [[ -z "$(effective_env_value "$variable")" ]] \
+            || fatal "normal card profile must not retain $variable"
+        done
+      fi
+      ;;
+    prod-public-passwd|prod-military-passwd|trial-military)
+      local password=(
+        "ENABLE_CARD_LOGIN=false"
+        "REQUIRE_CARD_LOGIN_ONLY=false"
+        "ANILA_ALLOW_HTTP_AGENT_ENDPOINT=0"
+        "CARD_CRL_REQUIRED=false"
+      )
+      for item in "${password[@]}"; do
+        variable="${item%%=*}"
+        expected="${item#*=}"
+        require_formal_value "$variable" "$expected"
+      done
+      for variable in ANILA_BREAK_GLASS_OWNER ANILA_BREAK_GLASS_TICKET ANILA_BREAK_GLASS_EXPIRES_AT; do
+        [[ -z "$(effective_env_value "$variable")" ]] \
+          || fatal "password profile must not retain $variable"
+      done
+      ;;
+  esac
+
+  host="$(effective_env_value ANILA_HOST)"
+  site="$(effective_env_value SITE_URL)"
+  [[ -n "$host" && "$host" != \<*\> && "$host" != *"://"* && "$host" != */* ]] \
+    || fatal "formal posture requires a non-placeholder ANILA_HOST hostname"
+  [[ "$host" =~ ^[A-Za-z0-9]([-A-Za-z0-9.]*[A-Za-z0-9])?$ ]] \
+    || fatal "ANILA_HOST 必須是 hostname（不得帶 scheme/path）"
+  [[ "$site" =~ ^https://([^/?#]+)(/)?$ ]] \
+    || fatal "formal posture requires SITE_URL=https://<ANILA_HOST> (HTTPS only)"
+  authority="${BASH_REMATCH[1]}"
+  [[ "$authority" == "$host" || "$authority" == "$host:443" ]] \
+    || fatal "SITE_URL host 必須與 ANILA_HOST 一致（目前 $authority vs $host）"
+  ok "formal posture = $profile（flags/HTTPS origin exact）"
+}
+
 check_env() {
   # 必要 env(沒設就停)。CSP_SECRET_KEY / SECRET_KEY 擇一即可
   # (infra/compose/platform.yml 內 csp service 看的是 CSP_SECRET_KEY)。
-  local required=(CSP_SERVICE_TOKEN STUDIO_ARTIFACT_SERVICE_TOKEN STUDIO_RUNTIME_SERVICE_TOKEN STUDIO_JOB_ENVELOPE_HMAC_KEY INGESTION_QUEUE_HMAC_KEY INTERNAL_PLATFORM_API_KEY SITE_URL GITLAB_SSH_BIND_IP ANILA_ENV ANILA_DEPLOYMENT_PROFILE ANILA_EMBEDDING_TOPOLOGY GATE5_MATERIAL_DIR ANILA_STATE_DIR ANILA_SECRETS_DIR ANILA_TLS_CERTS_DIR)
-  local branch
-  branch="$(git branch --show-current 2>/dev/null || true)"
-  if [[ "$branch" == "prod-intranet-card" ]]; then
-    required+=(N8N_HOST N8N_EDITOR_BASE_URL N8N_WEBHOOK_URL N8N_TLS_REJECT_UNAUTHORIZED N8N_OWNER_EMAIL N8N_OWNER_PASSWORD_HASH N8N_ENCRYPTION_KEY GITLAB_HOST GITLAB_ROOT_PASSWORD CODESERVER_HOST CODESERVER_PASSWORD)
-  fi
+  check_formal_posture
+  local required=(CSP_SERVICE_TOKEN STUDIO_ARTIFACT_SERVICE_TOKEN STUDIO_RUNTIME_SERVICE_TOKEN STUDIO_JOB_ENVELOPE_HMAC_KEY INGESTION_QUEUE_HMAC_KEY INTERNAL_PLATFORM_API_KEY SITE_URL GITLAB_SSH_BIND_IP ANILA_ENV ANILA_DEPLOYMENT_PROFILE ANILA_EMBEDDING_TOPOLOGY GATE5_MATERIAL_DIR ANILA_STATE_DIR ANILA_SECRETS_DIR ANILA_TLS_CERTS_DIR N8N_HOST N8N_EDITOR_BASE_URL N8N_WEBHOOK_URL N8N_TLS_REJECT_UNAUTHORIZED N8N_OWNER_EMAIL N8N_OWNER_PASSWORD_HASH N8N_ENCRYPTION_KEY GITLAB_HOST GITLAB_ROOT_PASSWORD CODESERVER_HOST CODESERVER_PASSWORD)
+  local profile
+  profile="$(deployment_profile)"
   local missing=()
   for v in "${required[@]}"; do
     if [[ -z "${!v:-}" ]]; then
@@ -298,35 +433,32 @@ check_env() {
     || fatal "STUDIO_JOB_ENVELOPE_HMAC_KEY 長度必須 >= 32"
   (( ${#INGESTION_QUEUE_HMAC_KEY} >= 32 )) \
     || fatal "INGESTION_QUEUE_HMAC_KEY 長度必須 >= 32"
-  if [[ "$branch" == "prod-intranet-card" ]]; then
+  if is_formal_card_profile "$profile"; then
     [[ "${N8N_HOST:-}" == "n8n.ai.ncsist.org.tw" ]] \
       || fatal "prod-intranet-card 的 N8N_HOST 必須是 n8n.ai.ncsist.org.tw"
     [[ "${N8N_EDITOR_BASE_URL:-}" == "https://n8n.ai.ncsist.org.tw/" ]] \
       || fatal "N8N_EDITOR_BASE_URL 必須是 https://n8n.ai.ncsist.org.tw/"
     [[ "${N8N_WEBHOOK_URL:-}" == "https://n8n.ai.ncsist.org.tw/" ]] \
       || fatal "N8N_WEBHOOK_URL 必須是 https://n8n.ai.ncsist.org.tw/ (ingress 仍由 nginx 封鎖)"
-    [[ "${N8N_TLS_REJECT_UNAUTHORIZED:-}" == "1" ]] \
-      || fatal "N8N_TLS_REJECT_UNAUTHORIZED 必須是 1"
-    [[ "${N8N_NODE_FUNCTION_ALLOW_EXTERNAL:-}" != *"*"* ]] \
-      || fatal "N8N_NODE_FUNCTION_ALLOW_EXTERNAL 不得使用 wildcard"
-    [[ "${N8N_NODE_FUNCTION_ALLOW_BUILTIN:-}" != *"*"* ]] \
-      || fatal "N8N_NODE_FUNCTION_ALLOW_BUILTIN 不得使用 wildcard"
     [[ "${GITLAB_HOST:-}" == "gitlab.ai.ncsist.org.tw" ]] \
       || fatal "prod-intranet-card 的 GITLAB_HOST 必須是 gitlab.ai.ncsist.org.tw"
     [[ "${CODESERVER_HOST:-}" == "code.ai.ncsist.org.tw" ]] \
       || fatal "prod-intranet-card 的 CODESERVER_HOST 必須是 code.ai.ncsist.org.tw"
-    [[ "${N8N_OWNER_EMAIL:-}" =~ ^[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)*ncsist\.org\.tw$ ]] \
-      || fatal "N8N_OWNER_EMAIL 必須是正式 ncsist.org.tw 信箱"
-    [[ "${N8N_OWNER_PASSWORD_HASH:-}" =~ ^\$2[aby]\$([0-9]{2})\$[./A-Za-z0-9]{53}$ ]] \
-      || fatal "N8N_OWNER_PASSWORD_HASH 必須是完整 bcrypt hash"
-    (( 10#${BASH_REMATCH[1]} >= 12 )) || fatal "N8N_OWNER_PASSWORD_HASH bcrypt cost 必須 >= 12"
-    (( ${#N8N_ENCRYPTION_KEY} >= 32 )) || fatal "N8N_ENCRYPTION_KEY 長度必須 >= 32"
-    (( ${#GITLAB_ROOT_PASSWORD} >= 16 )) || fatal "GITLAB_ROOT_PASSWORD 長度必須 >= 16"
-    (( ${#CODESERVER_PASSWORD} >= 16 )) || fatal "CODESERVER_PASSWORD 長度必須 >= 16"
   fi
-  if [[ "${ANILA_ENV:-}" != "production" && "${ANILA_ENV:-}" != "prod" ]]; then
-    fatal "ANILA_ENV 必須是 production/prod，否則正式模型 HTTP fail-closed 守衛不會啟用"
-  fi
+  [[ "${N8N_TLS_REJECT_UNAUTHORIZED:-}" == "1" ]] \
+    || fatal "N8N_TLS_REJECT_UNAUTHORIZED 必須是 1"
+  [[ "${N8N_NODE_FUNCTION_ALLOW_EXTERNAL:-}" != *"*"* ]] \
+    || fatal "N8N_NODE_FUNCTION_ALLOW_EXTERNAL 不得使用 wildcard"
+  [[ "${N8N_NODE_FUNCTION_ALLOW_BUILTIN:-}" != *"*"* ]] \
+    || fatal "N8N_NODE_FUNCTION_ALLOW_BUILTIN 不得使用 wildcard"
+  [[ "${N8N_OWNER_EMAIL:-}" =~ ^[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)*ncsist\.org\.tw$ ]] \
+    || fatal "N8N_OWNER_EMAIL 必須是正式 ncsist.org.tw 信箱"
+  [[ "${N8N_OWNER_PASSWORD_HASH:-}" =~ ^\$2[aby]\$([0-9]{2})\$[./A-Za-z0-9]{53}$ ]] \
+    || fatal "N8N_OWNER_PASSWORD_HASH 必須是完整 bcrypt hash"
+  (( 10#${BASH_REMATCH[1]} >= 12 )) || fatal "N8N_OWNER_PASSWORD_HASH bcrypt cost 必須 >= 12"
+  (( ${#N8N_ENCRYPTION_KEY} >= 32 )) || fatal "N8N_ENCRYPTION_KEY 長度必須 >= 32"
+  (( ${#GITLAB_ROOT_PASSWORD} >= 16 )) || fatal "GITLAB_ROOT_PASSWORD 長度必須 >= 16"
+  (( ${#CODESERVER_PASSWORD} >= 16 )) || fatal "CODESERVER_PASSWORD 長度必須 >= 16"
   check_external_secret_paths
   command -v realpath >/dev/null 2>&1 \
     || fatal "未找到 realpath，無法驗證 Gate 5 material 路徑"
@@ -400,6 +532,7 @@ check_gate5_egress_policy() {
   set +e
   python3 "$GATE5_EGRESS_CHECKER" \
     --profile "$profile" \
+    --require-formal \
     --repo-root "$REPO_ROOT" \
     --compose-json "$platform_json" \
     --compose-json "$models_json"
@@ -678,6 +811,9 @@ cmd_up() {
 }
 
 cmd_down() {
+  # Even a stop operation must not be able to target the formal stack from a
+  # crossed/unknown branch or profile.  Check identity before touching Docker.
+  check_branch
   check_docker
   section "docker compose down (保留 named volumes,db 資料不丟)"
   compose down
@@ -723,6 +859,7 @@ cmd_codeserver_up() {
 }
 
 cmd_codeserver_down() {
+  check_branch
   check_docker
   section "Disable code-server"
   compose --profile developer-tools stop codeserver
@@ -738,10 +875,11 @@ cmd_rebuild() {
     n8n|gitlab)
       fatal "$svc 是帶狀態的 upstream 工具，不可用 rebuild 繞過分段升級護欄" ;;
   esac
+  check_branch
   check_docker
-  is_formal_card_profile \
-    || fatal "本 Gate 1 lifecycle 不支援未審查 deployment profile: $(deployment_profile)"
-  fatal "formal card profile 禁止在部署主機 rebuild；請在外網 build-and-export 產生新 bundle/content-ID lock，再以 intranet-deploy 套用"
+  is_formal_profile \
+    || fatal "formal lifecycle 不支援未審查 deployment profile: $(deployment_profile)"
+  fatal "formal profile 禁止在部署主機 rebuild；請在外網 build-and-export 產生新 bundle/content-ID lock，再以正式部署流程套用"
 }
 
 # ── Subcommand: status ─────────────────────────────────────────────────────

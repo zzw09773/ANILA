@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -104,11 +105,15 @@ class DeploymentContainmentTests(unittest.TestCase):
                     "sk-internal-0123456789abcdef0123456789abcdef"
                 ),
                 "SITE_URL": "https://anila.inventory-check.invalid",
+                "ANILA_HOST": "anila.inventory-check.invalid",
                 "ANILA_STATE_DIR": str(ROOT.parent / ".anila-test-state"),
                 "ANILA_SECRETS_DIR": str(ROOT.parent / ".anila-test-state" / "secrets"),
                 "ANILA_TLS_CERTS_DIR": str(ROOT.parent / ".anila-test-state" / "tls"),
                 "ANILA_DEV_TLS_CERTS_DIR": str(ROOT.parent / ".anila-test-state" / "dev-tls"),
                 "CARD_CA_BUNDLE_PATH": "/etc/anila/pki/cht-synthetic-ca.pem",
+                "ENABLE_CARD_LOGIN": "true",
+                "REQUIRE_CARD_LOGIN_ONLY": "true",
+                "CARD_CRL_REQUIRED": "true",
                 "N8N_HOST": "n8n.ai.ncsist.org.tw",
                 "N8N_EDITOR_BASE_URL": "https://n8n.ai.ncsist.org.tw/",
                 "N8N_WEBHOOK_URL": "https://n8n.ai.ncsist.org.tw/",
@@ -136,11 +141,13 @@ class DeploymentContainmentTests(unittest.TestCase):
             variable = "ANILA_IMAGE_" + service.upper().replace("-", "_")
             env[variable] = image
 
-        def compose_config(*args: str) -> dict[str, object]:
+        def compose_config(
+            *args: str, compose_env: dict[str, str] = env
+        ) -> dict[str, object]:
             result = subprocess.run(
                 ["docker", "compose", *args, "config", "--format", "json"],
                 cwd=ROOT,
-                env=env,
+                env=compose_env,
                 check=False,
                 capture_output=True,
                 text=True,
@@ -272,6 +279,134 @@ class DeploymentContainmentTests(unittest.TestCase):
         self.assertEqual(
             dev_urls["Code Server (按需)"], "https://code.ai.ncsist.org.tw/"
         )
+
+    def test_password_profile_renders_without_card_material(self) -> None:
+        if shutil.which("docker") is None:
+            self.skipTest("docker compose is not installed")
+        probe = subprocess.run(
+            ["docker", "compose", "version"],
+            check=False,
+            capture_output=True,
+            encoding="utf-8",
+        )
+        if probe.returncode != 0:
+            self.skipTest("docker compose is not usable in this environment")
+
+        password_env: dict[str, str] = {}
+        password_env.update(
+            {
+                "ADMIN_PASSWORD": "test-admin-0123456789012345",
+                "CSP_APP_DB_PASSWORD": "0123456789abcdef0123456789abcdef",
+                "CSP_DB_PASSWORD": "abcdef0123456789abcdef0123456789",
+                "CSP_SECRET_KEY": "0123456789abcdef0123456789abcdef",
+                "CSP_SERVICE_TOKEN": "abcdef0123456789abcdef0123456789",
+                "STUDIO_ARTIFACT_SERVICE_TOKEN": "csk-studio-artifact-containment-test",
+                "STUDIO_RUNTIME_SERVICE_TOKEN": "csk-studio-runtime-containment-test",
+                "STUDIO_JOB_ENVELOPE_HMAC_KEY": "studio-envelope-containment-test-0123456789abcdef",
+                "INGESTION_QUEUE_HMAC_KEY": "ingestion-queue-containment-test-0123456789abcdef",
+                "INTERNAL_PLATFORM_API_KEY": "sk-internal-0123456789abcdef0123456789abcdef",
+                "SITE_URL": "https://anila.inventory-check.invalid",
+                "ANILA_HOST": "anila.inventory-check.invalid",
+                "ANILA_STATE_DIR": str(ROOT.parent / ".anila-password-test-state"),
+                "ANILA_SECRETS_DIR": str(ROOT.parent / ".anila-password-test-state" / "secrets"),
+                "ANILA_TLS_CERTS_DIR": str(ROOT.parent / ".anila-password-test-state" / "tls"),
+                "GITLAB_SSH_BIND_IP": "10.53.100.15",
+                "CODESERVER_PASSWORD": "test-code-0123456789012345",
+                "N8N_HOST": "n8n.ai.ncsist.org.tw",
+                "N8N_EDITOR_BASE_URL": "https://n8n.ai.ncsist.org.tw/",
+                "N8N_WEBHOOK_URL": "https://n8n.ai.ncsist.org.tw/",
+                "N8N_OWNER_EMAIL": "n8n-owner@example.invalid",
+                "N8N_OWNER_PASSWORD_HASH": "$2b$12$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ01234",
+                "N8N_ENCRYPTION_KEY": "0123456789abcdef0123456789abcdef",
+                "GITLAB_HOST": "gitlab.ai.ncsist.org.tw",
+                "GITLAB_ROOT_PASSWORD": "gitlab-root-test-password-0123456789",
+                "ANILA_DEPLOYMENT_PROFILE": "prod-public-passwd",
+                "EMBEDDING_MODEL_FINGERPRINT": "0" * 64,
+            }
+        )
+        inventory = read("infra/deployment/intranet/platform-image-inventory.tsv")
+        for raw in inventory.splitlines():
+            if not raw or raw.startswith("#"):
+                continue
+            service, image, *_ = raw.split("\t")
+            variable = "ANILA_IMAGE_" + service.upper().replace("-", "_")
+            password_env[variable] = image
+        password_env.update(
+            {
+                "ANILA_DEPLOYMENT_PROFILE": "prod-public-passwd",
+                "ENABLE_CARD_LOGIN": "false",
+                "REQUIRE_CARD_LOGIN_ONLY": "false",
+                "CARD_CRL_REQUIRED": "false",
+                "ENABLE_PUBLIC_SHARE": "false",
+                "ENABLE_MEMORY": "false",
+            }
+        )
+        for variable in (
+            "CARD_INITIAL_OWNERS",
+            "CARD_CA_BUNDLE_PATH",
+            "CARD_CRL_BUNDLE_PATH",
+            "CARD_CRL_SOURCE",
+            "CARD_REQUIRED_CERT_POLICY_OIDS",
+        ):
+            # The repository may contain an operator .env during local tests;
+            # an explicit empty exported value proves Compose does not require
+            # card material for a password profile.
+            password_env[variable] = ""
+
+        # Explicit --env-file keeps a real operator .env out of this render;
+        # the subprocess receives only synthetic test values and cannot leak
+        # inherited credentials into Compose interpolation.
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / "password.env"
+            env_file.write_text(
+                "".join(
+                    f"{name}={value}\n"
+                    for name, value in sorted(password_env.items())
+                ),
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    "docker",
+                    "compose",
+                    "--env-file",
+                    str(env_file),
+                    "config",
+                    "--format",
+                    "json",
+                ],
+                cwd=ROOT,
+                env={"PATH": os.environ.get("PATH", "")},
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            resolved = json.loads(result.stdout)
+        csp = resolved["services"]["csp"]["environment"]
+        studio = resolved["services"]["anila-studio"]["environment"]
+        for name in (
+            "ENABLE_CARD_LOGIN",
+            "REQUIRE_CARD_LOGIN_ONLY",
+            "CARD_CRL_REQUIRED",
+            "ENABLE_PUBLIC_SHARE",
+            "ENABLE_MEMORY",
+        ):
+            self.assertEqual(csp[name], "false", name)
+        for name in (
+            "CARD_INITIAL_OWNERS",
+            "CARD_CRL_BUNDLE_PATH",
+            "CARD_CRL_SOURCE",
+            "CARD_REQUIRED_CERT_POLICY_OIDS",
+        ):
+            self.assertEqual(csp[name], "", name)
+        self.assertEqual(csp["COOKIE_SECURE"], "true")
+        self.assertEqual(
+            studio["REVOCATION_RECONCILE_INTERVAL_SECONDS"], "5"
+        )
+        self.assertEqual(studio["REQUIRE_CARD_LOGIN_ONLY"], "false")
+        self.assertEqual(studio["COOKIE_SECURE"], "true")
 
     def test_n8n_and_gitlab_remain_default_intranet_services(self) -> None:
         for service in ("n8n", "gitlab"):

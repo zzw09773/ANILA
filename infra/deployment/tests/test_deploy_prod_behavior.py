@@ -190,6 +190,8 @@ class DeployProdBehaviorTests(unittest.TestCase):
         embedding_topology: str | None = None,
         triton_grpc_url: str | None = None,
         egress_only: bool = False,
+        posture_only: bool = False,
+        posture_overrides: dict[str, str] | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], float]:
         # The managed runner mounts /tmp noexec, so an executable ``docker``
         # stub created there cannot be launched by the Bash fixture.  Keep the
@@ -209,6 +211,16 @@ class DeployProdBehaviorTests(unittest.TestCase):
                     script[:entrypoint]
                     + "configure_formal_posture\n"
                     + "check_gate5_egress_policy\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
+            if posture_only:
+                script = test_script.read_text(encoding="utf-8")
+                entrypoint = script.index("# ── Entrypoint")
+                test_script.write_text(
+                    script[:entrypoint]
+                    + "configure_formal_posture\n"
+                    + "check_formal_posture\n",
                     encoding="utf-8",
                     newline="\n",
                 )
@@ -295,6 +307,71 @@ exit 0
             env["ANILA_TEST_REAL_PYTHON"] = shutil.which("python3") or "python3"
             env["ANILA_WAIT_TIMEOUT_SECONDS"] = str(wait_timeout)
             env["ANILA_DEPLOYMENT_PROFILE"] = profile
+            if posture_only:
+                posture_values = {
+                    "ANILA_DEPLOYMENT_PROFILE": profile,
+                    "ANILA_ENV": "production",
+                    "ANILA_ALLOW_DEV_SECRET": "0",
+                    "DEBUG": "false",
+                    "ENABLE_API_DOCS": "false",
+                    "ENABLE_PUBLIC_SHARE": "false",
+                    "ENABLE_MEMORY": "false",
+                    "SKIP_STARTUP_MIGRATIONS": "false",
+                    "ALLOW_AUTO_KEYGEN": "false",
+                    "COOKIE_SECURE": "true",
+                    "ANILA_ALLOW_HTTP_ENDPOINT": "0",
+                    "ANILA_ALLOW_PRIVATE_ENDPOINT": "0",
+                    "CARD_DEV_SKIP_NONCE_BINDING": "false",
+                    "ALLOW_LEGACY_AGENT_DISPATCH": "false",
+                    "ANILA_HOST": "anila.example.internal",
+                    "SITE_URL": "https://anila.example.internal",
+                    "ENABLE_CARD_LOGIN": "false",
+                    "REQUIRE_CARD_LOGIN_ONLY": "false",
+                    "ANILA_ALLOW_HTTP_AGENT_ENDPOINT": "0",
+                    "CARD_CRL_REQUIRED": "false",
+                }
+                if profile in {
+                    "prod-intranet-card",
+                    "prod-intranet-card-breakglass",
+                }:
+                    posture_values.update(
+                        {
+                            "ENABLE_CARD_LOGIN": "true",
+                            "REQUIRE_CARD_LOGIN_ONLY": "true",
+                            "ANILA_ALLOW_HTTP_AGENT_ENDPOINT": "1",
+                            "CARD_CRL_REQUIRED": "true",
+                            "CARD_INITIAL_OWNERS": "990000001",
+                            "CARD_CRL_BUNDLE_PATH": "/etc/anila/pki/card-crl-bundle.pem",
+                            "CARD_CRL_SOURCE": "synthetic-inventory-feed",
+                            "CARD_REQUIRED_CERT_POLICY_OIDS": "1.3.6.1.4.1.55555.1.1",
+                        }
+                    )
+                if profile == "prod-intranet-card-breakglass":
+                    posture_values.update(
+                        {
+                            "ANILA_BREAK_GLASS_OWNER": "operator-a",
+                            "ANILA_BREAK_GLASS_TICKET": "INC-100",
+                            "ANILA_BREAK_GLASS_EXPIRES_AT": "2099-07-21T00:00:00Z",
+                        }
+                    )
+                posture_values.update(posture_overrides or {})
+                test_root.joinpath(".env").write_text(
+                    "".join(f"{name}={value}\n" for name, value in posture_values.items()),
+                    encoding="utf-8",
+                    newline="\n",
+                )
+                for name in set(posture_values).union(
+                    {
+                        "ANILA_BREAK_GLASS_OWNER",
+                        "ANILA_BREAK_GLASS_TICKET",
+                        "ANILA_BREAK_GLASS_EXPIRES_AT",
+                        "CARD_INITIAL_OWNERS",
+                        "CARD_CRL_BUNDLE_PATH",
+                        "CARD_CRL_SOURCE",
+                        "CARD_REQUIRED_CERT_POLICY_OIDS",
+                    }
+                ):
+                    env.pop(name, None)
             if pilot_mode is None:
                 env.pop("ANILA_PILOT_MODE", None)
             else:
@@ -363,6 +440,19 @@ exit 0
         )
         self.assertIn('CHECKER_JSON {"name":"anila-models"', output)
         self.assertNotIn("docker-compose.external-embed.yml", output)
+
+    def test_trial_gate5_preflight_requires_the_formal_checker_path(self) -> None:
+        result, _ = self.run_deploy(
+            "all-healthy",
+            "unused",
+            branch="trial-military",
+            profile="trial-military",
+            embedding_topology="internal",
+            egress_only=True,
+        )
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertIn("--profile trial-military --require-formal", output)
 
     def test_gate5_external_topology_renders_only_the_standalone_artifact(self) -> None:
         for target in ("172.16.120.35:9001", "embed.example.internal:9001"):
@@ -496,6 +586,113 @@ exit 0
                     "all-healthy", "tool-preflight", profile=profile
                 )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_password_branches_accept_only_their_matching_profiles(self) -> None:
+        for branch in ("prod-public-passwd", "prod-military-passwd", "trial-military"):
+            with self.subTest(branch=branch):
+                result, _ = self.run_deploy(
+                    "all-healthy", "tool-preflight", branch=branch, profile=branch
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                for crossed in (
+                    "prod-intranet-card",
+                    "prod-public-passwd",
+                    "prod-military-passwd",
+                    "trial-military",
+                ):
+                    if crossed == branch:
+                        continue
+                    with self.subTest(crossed=crossed):
+                        result, _ = self.run_deploy(
+                            "all-healthy",
+                            "tool-preflight",
+                            branch=branch,
+                            profile=crossed,
+                        )
+                        output = result.stdout + result.stderr
+                        self.assertNotEqual(result.returncode, 0, output)
+                        self.assertIn("deployment identity mismatch", output)
+
+    def test_formal_posture_guard_reads_compliant_dotenv_for_each_profile(self) -> None:
+        profiles = (
+            "prod-intranet-card",
+            "prod-intranet-card-breakglass",
+            "prod-public-passwd",
+            "prod-military-passwd",
+            "trial-military",
+        )
+        for profile in profiles:
+            with self.subTest(profile=profile):
+                result, _ = self.run_deploy(
+                    "all-healthy",
+                    "unused",
+                    branch=(
+                        "prod-intranet-card"
+                        if profile.startswith("prod-intranet-card")
+                        else profile
+                    ),
+                    profile=profile,
+                    posture_only=True,
+                )
+                output = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 0, output)
+                self.assertIn("formal posture =", output)
+
+    def test_formal_posture_guard_rejects_security_and_origin_violations(self) -> None:
+        profiles = (
+            "prod-public-passwd",
+            "prod-military-passwd",
+            "trial-military",
+        )
+        violations = (
+            ("ANILA_ALLOW_DEV_SECRET", "1", "ANILA_ALLOW_DEV_SECRET"),
+            ("ANILA_ALLOW_HTTP_ENDPOINT", "1", "ANILA_ALLOW_HTTP_ENDPOINT"),
+            ("ANILA_ALLOW_HTTP_AGENT_ENDPOINT", "1", "ANILA_ALLOW_HTTP_AGENT_ENDPOINT"),
+            ("REQUIRE_CARD_LOGIN_ONLY", "true", "REQUIRE_CARD_LOGIN_ONLY"),
+            ("CARD_CRL_REQUIRED", "true", "CARD_CRL_REQUIRED"),
+            ("SITE_URL", "http://anila.example.internal", "SITE_URL"),
+            ("ANILA_HOST", "other.example.internal", "SITE_URL host"),
+        )
+        for profile in profiles:
+            for variable, value, expected in violations:
+                with self.subTest(profile=profile, variable=variable):
+                    result, _ = self.run_deploy(
+                        "all-healthy",
+                        "unused",
+                        branch=profile,
+                        profile=profile,
+                        posture_only=True,
+                        posture_overrides={variable: value},
+                    )
+                    output = result.stdout + result.stderr
+                    self.assertNotEqual(result.returncode, 0, output)
+                    self.assertIn(expected, output)
+
+        for profile in profiles:
+            with self.subTest(profile=profile, variable="ENABLE_CARD_LOGIN"):
+                result, _ = self.run_deploy(
+                    "all-healthy",
+                    "unused",
+                    branch=profile,
+                    profile=profile,
+                    posture_only=True,
+                    posture_overrides={"ENABLE_CARD_LOGIN": "true"},
+                )
+                output = result.stdout + result.stderr
+                self.assertNotEqual(result.returncode, 0, output)
+                self.assertIn("ENABLE_CARD_LOGIN", output)
+
+        result, _ = self.run_deploy(
+            "all-healthy",
+            "unused",
+            branch="prod-intranet-card",
+            profile="prod-intranet-card",
+            posture_only=True,
+            posture_overrides={"CARD_INITIAL_OWNERS": ""},
+        )
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn("CARD_INITIAL_OWNERS", output)
 
     def test_non_card_prod_branch_cannot_claim_card_profile(self) -> None:
         for branch in ("prod-public-passwd", "prod-military-passwd"):

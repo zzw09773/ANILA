@@ -46,7 +46,10 @@ def governance_required_for_settings(settings: Any) -> bool:
     """Return whether the deployment posture may run without Gate 5 material."""
 
     profile = str(getattr(settings, "ANILA_DEPLOYMENT_PROFILE", "")).strip().lower()
-    return profile in {"production", "prod"} or profile.startswith("prod-")
+    return (
+        profile in {"production", "prod", "trial-military"}
+        or profile.startswith("prod-")
+    )
 
 
 class ModelGovernanceRuntimeError(RuntimeError):

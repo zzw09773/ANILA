@@ -12,7 +12,7 @@ import httpx
 import pytest
 import respx
 
-from app.image_primary_fetcher import ImagePrimaryFetcher
+from app.image_primary_fetcher import ImagePrimaryFetcher, governance_required_from_env
 
 _URL = "http://csp:8000/api/models/image-primary"
 _OK_BODY = {
@@ -31,6 +31,18 @@ def _fetcher(**kw) -> ImagePrimaryFetcher:
     kw.setdefault("csp_base_url", "http://csp:8000")
     kw.setdefault("service_token", "svc-token")
     return ImagePrimaryFetcher(**kw)
+
+
+def test_trial_military_requires_gate5_governance(monkeypatch):
+    monkeypatch.setenv("ANILA_DEPLOYMENT_PROFILE", "trial-military")
+    monkeypatch.delenv("GATE5_MODEL_GOVERNANCE_ENABLED", raising=False)
+    assert governance_required_from_env() is True
+
+
+def test_trial_military_cannot_disable_gate5_governance(monkeypatch):
+    monkeypatch.setenv("ANILA_DEPLOYMENT_PROFILE", "trial-military")
+    monkeypatch.setenv("GATE5_MODEL_GOVERNANCE_ENABLED", "false")
+    assert governance_required_from_env() is True
 
 
 @pytest.mark.asyncio
