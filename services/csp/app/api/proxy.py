@@ -1736,13 +1736,20 @@ async def _chat_completions_impl(
             task_ctx=task_ctx,
         )
         stage = "memory"
-        memory_read = await _inject_memory(
-            db,
-            user.id,
-            body,
-            exclude_conversation_id=conv_id_int,
-            task_ctx=task_ctx,
-        )
+        # The Router-internal route-decision inference is not a user
+        # conversation turn: it has no consuming conversation to bind and its
+        # system template must never receive long-term user memory. Skip
+        # injection entirely — the fail-closed memory policy would otherwise
+        # 503 every formal routing decision on this seam.
+        memory_read = None
+        if not internal_router:
+            memory_read = await _inject_memory(
+                db,
+                user.id,
+                body,
+                exclude_conversation_id=conv_id_int,
+                task_ctx=task_ctx,
+            )
     except HTTPException as exc:
         detail = exc.detail
         code = (
